@@ -122,6 +122,17 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             # por 45% y el umbral del prompt nunca disparaba.
             "weight_pct": round(weight * 100, 2) if weight else None,
             "details": ev["details"],
+            # El `details` de un dividendo lleva `dividend_per_share`, y ese monto
+            # está en la escala de la ACCIÓN del mercado de origen — no del CEDEAR
+            # que el usuario tiene. Multiplicarlo por la tenencia sin dividir por el
+            # ratio es el bug que reportó un usuario el 2026-09-17 (US$40 anunciados
+            # contra US$0,70 depositados). El packet no trae cantidades, así que el
+            # modelo no puede calcular el cobro — y esta nota se lo dice explícito
+            # para que no lo intente con datos de otro packet.
+            **({"dividend_scale_note":
+                "dividend_per_share es por ACCIÓN del mercado de origen, no por CEDEAR; "
+                "no estimes el cobro del usuario sin el ratio de conversión"}
+               if "dividend_per_share" in (ev["details"] or "") else {}),
         })
 
     return {

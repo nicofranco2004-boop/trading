@@ -25,6 +25,7 @@ import { useState, useMemo } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { ChevronRight } from 'lucide-react'
 import InfoTooltip from './InfoTooltip'
+import { withAlpha } from '../utils/chartTheme'
 
 // Debajo de este peso la porción no se lista aparte: se agrupa en "Otros" para
 // que la leyenda no se llene de slivers ilegibles. 10 clases de activo ya es
@@ -243,7 +244,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
       <div className="flex items-baseline gap-2 flex-shrink-0">
         <span className="text-ink-3 tabular text-[11px]">{fmt(slice.value)}</span>
         <span className="text-ink-0 tabular font-medium min-w-[42px] text-right">
-          {slice.pct.toFixed(1)}%
+          {slice.pct.toFixed(1).replace('.', ',')}%
         </span>
       </div>
     </>
@@ -276,7 +277,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
         // de tipografía quedarían ilegibles.
         <div
           className="ml-[15px] pl-2.5 pr-1 border-l-2 rounded-r-sm space-y-1 py-1.5 mb-1"
-          style={{ borderColor: `${slice.color}80`, background: `${slice.color}0F` }}
+          style={{ borderColor: withAlpha(slice.color, 0.5), background: withAlpha(slice.color, 0.06) }}
         >
           {slice.pnl && (
             // El titular de la porción: cuánta plata te dejó y a qué tasa.
@@ -289,7 +290,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
                 </span>
                 {slice.pnl.pct != null && (
                   <span className={`tabular font-medium min-w-[46px] text-right ${toneOf(slice.pnl.total)}`}>
-                    {signed(slice.pnl.pct)}{Math.abs(slice.pnl.pct).toFixed(1)}%
+                    {signed(slice.pnl.pct)}{Math.abs(slice.pnl.pct).toFixed(1).replace('.', ',')}%
                   </span>
                 )}
               </div>
@@ -316,7 +317,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
               <div className="flex items-baseline gap-2 flex-shrink-0">
                 <span className="text-ink-2 tabular">{fmt(d.value)}</span>
                 <span className="text-ink-0 tabular font-medium min-w-[38px] text-right">
-                  {d.pct.toFixed(1)}%
+                  {d.pct.toFixed(1).replace('.', ',')}%
                 </span>
                 {slice.pnl && (
                   <span
@@ -328,7 +329,7 @@ function LegendRow({ slice, fmt, highlighted, expanded, onHover, onLeave, onTogg
                       : undefined}
                   >
                     {d.pnl?.pct != null
-                      ? `${signed(d.pnl.pct)}${Math.abs(d.pnl.pct).toFixed(1)}%`
+                      ? `${signed(d.pnl.pct)}${Math.abs(d.pnl.pct).toFixed(1).replace('.', ',')}%`
                       : '—'}
                   </span>
                 )}
@@ -369,7 +370,7 @@ function DonutTooltip({ active, payload, fmt }) {
   const d = payload[0]?.payload
   if (!d) return null
   return (
-    <div className="border border-line-2 bg-bg-2 rounded px-2.5 py-1.5 shadow-lg">
+    <div className="border border-line-2 bg-bg-raised rounded px-2.5 py-1.5 shadow-lg">
       <div className="flex items-center gap-2">
         <span
           className="inline-block w-2 h-2 rounded-sm flex-shrink-0"
@@ -378,7 +379,7 @@ function DonutTooltip({ active, payload, fmt }) {
         <span className="text-xs font-medium text-ink-0">{d.label}</span>
       </div>
       <div className="text-[11px] text-ink-2 tabular mt-1 pl-4">
-        {fmt(d.value)} · <span className="text-ink-0 font-medium">{d.pct.toFixed(1)}%</span>
+        {fmt(d.value)} · <span className="text-ink-0 font-medium">{d.pct.toFixed(1).replace('.', ',')}%</span>
       </div>
       {d.detail?.length > 0 && (
         <div className="text-[10px] text-ink-3 mt-1 pl-4">
@@ -406,7 +407,7 @@ export function UnclassifiedNote({ data, kind = 'tipo' }) {
 
   return (
     <div className={alto ? 'text-rendi-warn' : ''}>
-      <span className="tabular font-medium">{data.pct.toFixed(1)}%</span> de tu
+      <span className="tabular font-medium">{data.pct.toFixed(1).replace('.', ',')}%</span> de tu
       cartera no pudo clasificarse por {kind}
       {shown.length > 0 && (
         <>

@@ -9,9 +9,11 @@ import { Link } from 'react-router-dom'
 import {
   LayoutDashboard, Bell, BarChart3, Brain, List, Upload, Gauge,
   Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send, UserRound, MessageCircle,
+  Sun, Moon,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
+import { useTheme } from '../contexts/ThemeContext'
 import RecommendationsModal from '../components/RecommendationsModal'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
@@ -46,6 +48,7 @@ const GROUPS = [
 
 export default function More() {
   const { user, logout } = useAuth()
+  const { dark, toggle } = useTheme()
   const coachDrawer = useCoachDrawer()
   const { clientCtx } = useAdvisorContext()
   const [recomOpen, setRecomOpen] = useState(false)
@@ -171,6 +174,28 @@ export default function More() {
               <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Mandanos ideas, bugs o feedback</div>
             </div>
             <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3" />
+          </button>
+          {/* El interruptor de tema vivía SÓLO en el menú lateral, que en celular
+              no existe: desde el teléfono el modo claro era inalcanzable. Acá
+              lleva la misma marca del tutorial que el de escritorio, así que el
+              paso encuentra uno de los dos según dónde esté el usuario. */}
+          <button
+            type="button"
+            onClick={toggle}
+            data-tour="tema"
+            className="w-full flex items-center gap-3 px-4 py-3 border-t border-line/40 hover:bg-bg-2/60 active:bg-bg-3 transition-colors text-left"
+          >
+            {dark
+              ? <Sun size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
+              : <Moon size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />}
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-ink-0 leading-tight">
+                {dark ? 'Modo claro' : 'Modo oscuro'}
+              </div>
+              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">
+                {dark ? 'Fondo blanco, para usar de día' : 'Fondo oscuro, el de siempre'}
+              </div>
+            </div>
           </button>
           <button
             onClick={logout}

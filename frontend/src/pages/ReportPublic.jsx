@@ -5,15 +5,32 @@
 // es la del ASESOR — Rendi aparece solo en el pie. Papel claro a propósito:
 // es un documento que se lee/imprime (mockup aprobado por Nico), no una
 // pantalla de la app. "Descargar PDF" = window.print() con print CSS.
+//
+// ── DOS CAPAS, Y SOLO UNA SIGUE AL TEMA ───────────────────────────────────
+// Un papel apoyado sobre una mesa. El PAPEL (la paleta `P` de abajo) es claro
+// SIEMPRE, en los dos temas: el mismo link lo abren diez personas con diez
+// configuraciones distintas y el informe tiene que verse igual para todas —
+// además de que se imprime. Por eso `P` son hex fijos y NO variables, y eso
+// es deliberado, no deuda.
+// La MESA (el fondo del shell, los estados de carga y error, el botón
+// "Descargar PDF") sí sigue al tema: es cromo de la app, no del documento.
+// En claro la mesa queda gris y el papel blanco se separa por su sombra.
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import PageMeta from '../components/PageMeta'
+import { pctTxt } from '../utils/format'
 
+// La paleta del PAPEL. Hex fijos a propósito: el informe se ve igual para
+// todo el que abra el link y para la impresora. No son variables de tema.
 const P = {
   paper: '#FDFDFB', paper2: '#F4F4F1', ink0: '#191D26', ink2: '#5C6474',
   ink3: '#8B92A3', line: '#E6E6E0', brand: '#1E1840',
   up: '#0FA968', down: '#E04250',
+  // Estaban sueltos en el JSX, cada uno escrito a mano donde se usaba. Mismos
+  // valores, una sola fuente: `line2` es el divisor de filas de la tabla de
+  // movimientos, y el par `invite*` el aviso de "pedile que te invite".
+  line2: '#F0F0EA', inviteBg: '#F5F3FF', inviteLine: '#E3DEFB',
 }
 
 const fmtUsd = (n) => (n == null ? '—' : `US$ ${Math.round(n).toLocaleString('es-AR')}`)
@@ -39,9 +56,9 @@ export default function ReportPublic() {
 
   if (error) {
     return (
-      <div style={{ minHeight: '100vh', background: '#07090C', display: 'grid', placeItems: 'center', padding: 20 }}>
-        <div style={{ color: '#9CA3B5', fontSize: 14, textAlign: 'center' }}>
-          <p style={{ color: '#E6EAF2', fontSize: 18, fontWeight: 600, marginBottom: 6 }}>Informe no disponible</p>
+      <div style={{ minHeight: '100vh', background: 'rgb(var(--bg-0))', display: 'grid', placeItems: 'center', padding: 20 }}>
+        <div style={{ color: 'rgb(var(--ink-2))', fontSize: 14, textAlign: 'center' }}>
+          <p style={{ color: 'rgb(var(--ink-0))', fontSize: 18, fontWeight: 600, marginBottom: 6 }}>Informe no disponible</p>
           {error}
         </div>
       </div>
@@ -49,8 +66,8 @@ export default function ReportPublic() {
   }
   if (!data) {
     return (
-      <div style={{ minHeight: '100vh', background: '#07090C', display: 'grid', placeItems: 'center' }}>
-        <p style={{ color: '#5A6478', fontSize: 14 }}>Cargando el informe…</p>
+      <div style={{ minHeight: '100vh', background: 'rgb(var(--bg-0))', display: 'grid', placeItems: 'center' }}>
+        <p style={{ color: 'rgb(var(--ink-3))', fontSize: 14 }}>Cargando el informe…</p>
       </div>
     )
   }
@@ -60,7 +77,7 @@ export default function ReportPublic() {
   const holdingsMax = Math.max(...(r.holdings || []).map(h => h.weight_pct || 0), 1)
 
   return (
-    <div className="report-shell" style={{ minHeight: '100vh', background: '#07090C', padding: '28px 14px 60px' }}>
+    <div className="report-shell" style={{ minHeight: '100vh', background: 'rgb(var(--bg-0))', padding: '28px 14px 60px' }}>
       <PageMeta title={`Informe de cartera — ${r.client_label}`} noindex={true} />
       <style>{`
         @media print {
@@ -83,7 +100,7 @@ export default function ReportPublic() {
           <button
             type="button"
             onClick={() => window.print()}
-            style={{ background: '#8B7DFF', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            style={{ background: 'rgb(var(--data-violet))', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
           >
             Descargar PDF
           </button>
@@ -123,7 +140,7 @@ export default function ReportPublic() {
             <div>
               <div style={{ fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase', color: P.ink2, fontWeight: 700, marginBottom: 4 }}>Resultado del período</div>
               <div style={{ fontSize: 24, fontWeight: 750, color: (r.market_usd ?? 0) >= 0 ? P.up : P.down }}>
-                {r.ret_pct != null ? `${r.ret_pct >= 0 ? '+' : ''}${r.ret_pct}%` : '—'}
+                {r.ret_pct != null ? `${r.ret_pct >= 0 ? '+' : ''}${pctTxt(r.ret_pct)}` : '—'}
               </div>
               <div style={{ fontSize: 11, color: P.ink2, marginTop: 3 }}>{signed(r.market_usd)} · neto de comisiones</div>
             </div>
@@ -182,7 +199,7 @@ export default function ReportPublic() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                   <tbody>
                     {r.movements.map((m, i) => (
-                      <tr key={i} style={{ borderBottom: '1px solid #F0F0EA' }}>
+                      <tr key={i} style={{ borderBottom: `1px solid ${P.line2}` }}>
                         <td style={{ padding: '7px 6px', color: P.ink2, whiteSpace: 'nowrap' }}>{m.date}</td>
                         <td style={{ padding: '7px 6px' }}>{m.type || 'Operación'} {m.asset}{m.quantity ? ` · ${m.quantity}` : ''}</td>
                       </tr>
@@ -244,7 +261,7 @@ export default function ReportPublic() {
 
           {/* Invitación si el cliente todavía no reclamó su cuenta */}
           {r.claimed === false && (
-            <div className="no-print" style={{ marginTop: 18, padding: '10px 14px', background: '#F5F3FF', border: '1px solid #E3DEFB', borderRadius: 10, fontSize: 12.5, color: P.ink2 }}>
+            <div className="no-print" style={{ marginTop: 18, padding: '10px 14px', background: P.inviteBg, border: `1px solid ${P.inviteLine}`, borderRadius: 10, fontSize: 12.5, color: P.ink2 }}>
               ¿Querés seguir tu cartera al día, desde tu celular? Pedile a {r.branding?.name || 'tu asesor'} que te invite a tu cuenta de Rendi.
             </div>
           )}

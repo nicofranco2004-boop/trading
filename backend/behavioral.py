@@ -27,6 +27,7 @@ Outputs comunes (shape uniforme para que el frontend renderee genérico):
   }
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import re
 from datetime import datetime
@@ -529,14 +530,14 @@ def detect_disposition_effect(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         severity = "high"
         title = "Vendés ganadoras mucho más rápido que perdedoras"
         one_liner = (
-            f"Mantenés tus perdedoras {1/ratio:.1f}× más tiempo que tus ganadoras. "
+            f"Mantenés tus perdedoras {fmt_num(1/ratio, 1)}× más tiempo que tus ganadoras. "
             "Es el patrón clásico del disposition effect."
         )
     elif ratio < 0.7:
         severity = "medium"
         title = "Tendencia a vender ganadoras temprano"
         one_liner = (
-            f"En promedio aguantás {1/ratio:.1f}× más tus perdedoras que tus ganadoras. "
+            f"En promedio aguantás {fmt_num(1/ratio, 1)}× más tus perdedoras que tus ganadoras. "
             "Vale la pena revisar criterios de salida."
         )
     elif ratio < 1.3:
@@ -547,7 +548,7 @@ def detect_disposition_effect(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         severity = "medium"
         title = "Aguantás ganadoras más tiempo que perdedoras"
         one_liner = (
-            f"Mantenés ganadoras {ratio:.1f}× más que perdedoras. "
+            f"Mantenés ganadoras {fmt_num(ratio, 1)}× más que perdedoras. "
             "Es lo opuesto al disposition effect (positivo), pero verificá que no haya posiciones \"diamond hands\" sin tesis."
         )
     else:
@@ -564,7 +565,7 @@ def detect_disposition_effect(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         "severity": severity,
         "detected": severity in ("high", "medium"),
         "score": round(min(100, abs(1 - ratio) * 100), 1),
-        "value_label": f"{ratio:.2f}× (winners/losers)",
+        "value_label": f"{fmt_num(ratio, 2)}× (winners/losers)",
         "one_liner": one_liner,
         "evidence": {
             "winners_count": len(winners),
@@ -628,24 +629,24 @@ def detect_overtrade(ops: List[Dict[str, Any]], positions: Optional[List[Dict[st
         severity = "high"
         title = "Estás operando muy alto"
         one_liner = (
-            f"Tu portfolio rota {annual_turnover:.1f}× por año. "
+            f"Tu portfolio rota {fmt_num(annual_turnover, 1)}× por año. "
             "Comisiones y spreads pueden estar comiendo gran parte del rendimiento."
         )
     elif annual_turnover >= 2:
         severity = "medium"
         title = "Frecuencia de trades elevada"
         one_liner = (
-            f"Tu portfolio rota {annual_turnover:.1f}× por año. "
+            f"Tu portfolio rota {fmt_num(annual_turnover, 1)}× por año. "
             "Es activo — verificá que las comisiones netas justifiquen el ritmo."
         )
     elif annual_turnover >= 0.3:
         severity = "positive"
         title = "Frecuencia de trades razonable"
-        one_liner = f"Tu portfolio rota {annual_turnover:.1f}× por año. Estás en el rango del inversor a mediano plazo."
+        one_liner = f"Tu portfolio rota {fmt_num(annual_turnover, 1)}× por año. Estás en el rango del inversor a mediano plazo."
     else:
         severity = "positive"
         title = "Estilo buy & hold"
-        one_liner = f"Tu portfolio rota apenas {annual_turnover:.2f}× por año. Estilo pasivo, comisiones mínimas."
+        one_liner = f"Tu portfolio rota apenas {fmt_num(annual_turnover, 2)}× por año. Estilo pasivo, comisiones mínimas."
 
     return {
         "code": "overtrade",
@@ -653,7 +654,7 @@ def detect_overtrade(ops: List[Dict[str, Any]], positions: Optional[List[Dict[st
         "severity": severity,
         "detected": severity in ("high", "medium"),
         "score": round(min(100, annual_turnover * 25), 1),
-        "value_label": f"{annual_turnover:.1f}× / año",
+        "value_label": f"{fmt_num(annual_turnover, 1)}× / año",
         "one_liner": one_liner,
         "evidence": {
             "total_trades": len(trades),
@@ -702,14 +703,14 @@ def detect_loss_aversion(ops: List[Dict[str, Any]], tc_blue: float = 1415.0) -> 
         severity = "high"
         title = "Tus perdedoras son más grandes que tus ganadoras"
         one_liner = (
-            f"En promedio tus losers son {ratio:.1f}× más grandes (en USD) que tus winners. "
+            f"En promedio tus losers son {fmt_num(ratio, 1)}× más grandes (en USD) que tus winners. "
             "Patrón clásico de loss aversion: aguantás posiciones grandes en rojo."
         )
     elif ratio >= 1.5:
         severity = "medium"
         title = "Tendencia a aguantar perdedoras grandes"
         one_liner = (
-            f"Tus losers tienen tamaño promedio {ratio:.1f}× tus winners. "
+            f"Tus losers tienen tamaño promedio {fmt_num(ratio, 1)}× tus winners. "
             "Vale revisar criterios de salida — un stop loss firme ayudaría."
         )
     elif ratio >= 0.7:
@@ -720,7 +721,7 @@ def detect_loss_aversion(ops: List[Dict[str, Any]], tc_blue: float = 1415.0) -> 
         severity = "positive"
         title = "Tus ganadoras son más grandes que tus perdedoras"
         one_liner = (
-            f"Patrón saludable: tus winners ({ratio:.1f}× ratio inverso) son más grandes que tus losers. "
+            f"Patrón saludable: tus winners ({fmt_num(ratio, 1)}× ratio inverso) son más grandes que tus losers. "
             "Cortás pérdidas chicas y dejás correr ganadoras."
         )
 
@@ -730,7 +731,7 @@ def detect_loss_aversion(ops: List[Dict[str, Any]], tc_blue: float = 1415.0) -> 
         "severity": severity,
         "detected": severity in ("high", "medium"),
         "score": round(min(100, max(0, (ratio - 1) * 50)), 1),
-        "value_label": f"losers {ratio:.1f}× winners",
+        "value_label": f"losers {fmt_num(ratio, 1)}× winners",
         "one_liner": one_liner,
         "evidence": {
             "winners_count": len(winners),
@@ -848,7 +849,7 @@ def detect_averaging_down(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         title = "Promedio a la baja recurrente"
         one_liner = (
             f"Detectamos {instances_count} instancias de promediar a la baja en <60 días "
-            f"(caída promedio {avg_drop:.1f}%). Asegurate de tener tesis para cada compra."
+            f"(caída promedio {fmt_num(avg_drop, 1)}%). Asegurate de tener tesis para cada compra."
         )
     elif instances_count >= 2:
         severity = "medium"
@@ -912,37 +913,37 @@ def detect_winrate_payoff(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         severity = "high"
         title = "Tu estrategia pierde plata en agregado"
         one_liner = (
-            f"Win rate {win_rate:.0f}% con payoff {payoff:.2f}× resulta en expectancy "
-            f"negativo ({expectancy:+.2f} USD/op). Aunque ganás más veces que perdés, "
+            f"Win rate {win_rate:.0f}% con payoff {fmt_num(payoff, 2)}× resulta en expectancy "
+            f"negativo ({fmt_num(expectancy, 2, signed=True)} USD/op). Aunque ganás más veces que perdés, "
             "el tamaño de las pérdidas se come las ganancias."
         )
     elif win_rate >= 60 and payoff < 0.7:
         severity = "medium"
         title = "Win rate alto pero pérdidas grandes"
         one_liner = (
-            f"Ganás el {win_rate:.0f}% de las veces pero tu payoff es {payoff:.2f}× — "
+            f"Ganás el {win_rate:.0f}% de las veces pero tu payoff es {fmt_num(payoff, 2)}× — "
             "las pocas pérdidas se llevan gran parte de las ganancias."
         )
     elif win_rate < 40 and payoff < 1.5:
         severity = "medium"
         title = "Win rate bajo sin compensación"
         one_liner = (
-            f"Ganás solo el {win_rate:.0f}% de las veces y el payoff es {payoff:.2f}×. "
+            f"Ganás solo el {win_rate:.0f}% de las veces y el payoff es {fmt_num(payoff, 2)}×. "
             "Para que funcione un win rate bajo, el payoff debería ser ≥2×."
         )
     elif expectancy > 0 and payoff >= 1.5:
         severity = "positive"
         title = "Combinación win rate + payoff sólida"
         one_liner = (
-            f"Win rate {win_rate:.0f}% con payoff {payoff:.2f}× = expectancy "
-            f"{expectancy:+.2f} USD por operación. Funciona."
+            f"Win rate {win_rate:.0f}% con payoff {fmt_num(payoff, 2)}× = expectancy "
+            f"{fmt_num(expectancy, 2, signed=True)} USD por operación. Funciona."
         )
     else:
         severity = "low"
         title = "Win rate y payoff equilibrados"
         one_liner = (
-            f"Ganás el {win_rate:.0f}% con payoff {payoff:.2f}×. Expectancy "
-            f"{expectancy:+.2f} USD/op — positivo pero ajustado."
+            f"Ganás el {win_rate:.0f}% con payoff {fmt_num(payoff, 2)}×. Expectancy "
+            f"{fmt_num(expectancy, 2, signed=True)} USD/op — positivo pero ajustado."
         )
 
     return {
@@ -951,7 +952,7 @@ def detect_winrate_payoff(ops: List[Dict[str, Any]]) -> Dict[str, Any]:
         "severity": severity,
         "detected": severity in ("high", "medium"),
         "score": round(min(100, max(0, -expectancy / max(avg_loss, 1) * 100 if expectancy < 0 else 0)), 1),
-        "value_label": f"{win_rate:.0f}% · payoff {payoff:.2f}×",
+        "value_label": f"{win_rate:.0f}% · payoff {fmt_num(payoff, 2)}×",
         "one_liner": one_liner,
         "evidence": {
             "win_rate_pct": round(win_rate, 1),
@@ -1026,7 +1027,7 @@ def detect_concentration(positions: List[Dict[str, Any]], prices: Optional[Dict[
         severity = "positive"
         title = "Portfolio bien diversificado"
         one_liner = (
-            f"Tu activo más grande ({top1_asset}) representa {top1_pct:.1f}% — "
+            f"Tu activo más grande ({top1_asset}) representa {fmt_num(top1_pct, 1)}% — "
             "concentración baja, riesgo individual contenido."
         )
     else:
@@ -1130,7 +1131,7 @@ def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str,
         severity = "medium"
         title = "Casi sin exposición a Argentina"
         one_liner = (
-            f"Solo el {ar_pct:.1f}% en AR. Si tu vida es en pesos (gastos, salario), "
+            f"Solo el {fmt_num(ar_pct, 1)}% en AR. Si tu vida es en pesos (gastos, salario), "
             "podés sumar algo de exposición ARS/CEDEARs para hedge natural."
         )
     elif 20 <= ar_pct <= 50:
@@ -1246,7 +1247,7 @@ def detect_cash_drag(positions: List[Dict[str, Any]], tc_blue: float = 1415.0,
         severity = "low"
         title = "Sin cushion de cash"
         one_liner = (
-            f"Solo {cash_pct:.1f}% en cash. Aprovechás todo el capital pero te quedás sin "
+            f"Solo {fmt_num(cash_pct, 1)}% en cash. Aprovechás todo el capital pero te quedás sin "
             "dry powder para aprovechar caídas."
         )
     else:
@@ -1334,20 +1335,20 @@ def detect_inflation_loss(positions: List[Dict[str, Any]], inflation_monthly: Op
         severity = "high"
         title = "Pérdida grande por inflación"
         one_liner = (
-            f"Tu cash en pesos perdió ~US$ {loss_usd:,.0f} de poder de compra en los últimos 12 meses "
+            f"Tu cash en pesos perdió ~US$ {fmt_num(loss_usd, 0)} de poder de compra en los últimos 12 meses "
             f"(inflación acumulada {inflation_cum_pct:.0f}%). Invertir aunque sea en MEP o Lecaps lo hubiera evitado."
         )
     elif loss_usd >= 100:
         severity = "medium"
         title = "Inflación erosionando tu cash ARS"
         one_liner = (
-            f"Perdiste ~US$ {loss_usd:,.0f} en poder de compra. "
+            f"Perdiste ~US$ {fmt_num(loss_usd, 0)} en poder de compra. "
             "Considerá MEP, Lecaps en pesos o CEDEARs para hedge."
         )
     else:
         severity = "low"
         title = "Impacto bajo de inflación"
-        one_liner = f"Tu cash ARS es chico — pérdida estimada US$ {loss_usd:,.0f}."
+        one_liner = f"Tu cash ARS es chico — pérdida estimada US$ {fmt_num(loss_usd, 0)}."
 
     return {
         "code": "inflation_loss",
@@ -1355,7 +1356,7 @@ def detect_inflation_loss(positions: List[Dict[str, Any]], inflation_monthly: Op
         "severity": severity,
         "detected": severity in ("high", "medium"),
         "score": round(min(100, loss_usd / 50), 1),
-        "value_label": f"−US$ {loss_usd:,.0f}",
+        "value_label": f"−US$ {fmt_num(loss_usd, 0)}",
         "one_liner": one_liner,
         "evidence": {
             "cash_ars_pesos": round(cash_ars_pesos, 2),
@@ -1470,27 +1471,27 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
         severity = "high"
         title = "Hubieras ganado más NO vendiendo"
         one_liner = (
-            f"Si no hubieras cerrado tus ventas anteriores, hoy tendrías ~US$ {delta_total:,.0f} más. "
+            f"Si no hubieras cerrado tus ventas anteriores, hoy tendrías ~US$ {fmt_num(delta_total, 0)} más. "
             "Vender ganadoras temprano costó plata real."
         )
     elif delta_total > 300:
         severity = "medium"
         title = "Vender temprano te costó algo de upside"
         one_liner = (
-            f"Hubieras hecho ~US$ {delta_total:,.0f} más si mantenías. "
+            f"Hubieras hecho ~US$ {fmt_num(delta_total, 0)} más si mantenías. "
             "No siempre pasa, pero es interesante mirar el patrón."
         )
     elif delta_total < -300:
         severity = "positive"
         title = "Vender fue acertado"
         one_liner = (
-            f"Hubieras perdido ~US$ {abs(delta_total):,.0f} más si mantenías. "
+            f"Hubieras perdido ~US$ {fmt_num(abs(delta_total), 0)} más si mantenías. "
             "Cerrar a tiempo fue buena decisión."
         )
     else:
         severity = "low"
         title = "Tus ventas fueron neutrales"
-        one_liner = f"La diferencia con haber mantenido es de apenas US$ {delta_total:,.0f}."
+        one_liner = f"La diferencia con haber mantenido es de apenas US$ {fmt_num(delta_total, 0)}."
 
     # Ordenar breakdown por delta absoluto
     breakdown.sort(key=lambda x: -abs(x["delta_usd"]))
@@ -1500,7 +1501,7 @@ def detect_counterfactual(ops: List[Dict[str, Any]], prices: Optional[Dict[str, 
         "severity": severity,
         "detected": severity in ("high", "medium"),
         "score": round(min(100, abs(delta_total) / 100), 1),
-        "value_label": f"{'+' if delta_total >= 0 else '−'}US$ {abs(delta_total):,.0f}",
+        "value_label": f"{'+' if delta_total >= 0 else '−'}US$ {fmt_num(abs(delta_total), 0)}",
         "one_liner": one_liner,
         "evidence": {
             "realized_total_usd": round(realized_total, 2),

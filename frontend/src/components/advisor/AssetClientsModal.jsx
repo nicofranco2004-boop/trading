@@ -96,7 +96,7 @@ export default function AssetClientsModal({ asset, market, label, fmt, onClose }
                 }`}>
                   {c.pct == null
                     ? '—'
-                    : `${signed(c.pct)}${Math.abs(c.pct).toFixed(1)}%`}
+                    : `${signed(c.pct)}${Math.abs(c.pct).toFixed(1).replace('.', ',')}%`}
                 </span>
               </div>
             ))}

@@ -22,7 +22,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
-import UpgradePromoCard from './ai/UpgradePromoCard'
+import UpgradePromoCard, { kindDeCuota } from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
 import { useVoz } from '../contexts/VozContext'
 import { useMicrofono } from './voz/BotonMicrofono'
@@ -82,7 +82,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           status: vozStatus, current: vozCurrent,
           thread: messages, ask, limpiar,
           sending, loading, paso, askError: error,
-          upgradeInfo, usageDelError, motivoSinVoz } = useVoz()
+          upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError,
+          motivoSinVoz } = useVoz()
   // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
   //
   // No alcanza con que coincida el texto: la respuesta se guarda como "actual"
@@ -221,7 +222,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   return (
     <div className={fullHeight
       ? 'flex flex-col h-full min-h-0'
-      : 'bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col'}>
+      : 'bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col'}>
       {/* Header — solo en modo embebido; la página /ai trae su propio chrome */}
       {!fullHeight && (
       <div className="flex items-center justify-between px-4 py-3 border-b border-line/70 dark:border-line/40">
@@ -282,7 +283,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         {messages.length === 0 && !loading && (
           <div className="text-center pt-6 pb-2">
             <div className="w-12 h-12 rounded-2xl mx-auto grid place-items-center text-white text-xl"
-              style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+              style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
             <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-3 mb-1.5">
               ¿Qué querés saber de tu plata?
             </p>
@@ -330,7 +331,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           return (
             <div key={i} className="flex items-start gap-3">
               <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
-                style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+                style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
               <div className="flex-1 min-w-0 pt-0.5">
                 {(meta?.verdict || meta?.headline) && (() => {
                   const band = VERDICT_BAND[meta.tone] || VERDICT_BAND.neutral
@@ -451,7 +452,9 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           <UpgradePromoCard
             usage={usage}
             upgrade={upgradeInfo}
-            kind="chat"
+            kind={kindDeCuota(usage, kindDeCuotaDelError)}
+            codigo={codigoDelError}
+            mensaje={error}
             source="coach_drawer_429"
           />
         )}

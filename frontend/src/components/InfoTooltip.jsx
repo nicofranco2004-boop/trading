@@ -55,7 +55,7 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       </button>
       {open && (
         <div
-          className={`absolute z-30 w-64 max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-2 dark:bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
+          className={`absolute z-30 w-64 max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
             align === 'center' ? 'left-1/2 -translate-x-1/2'
               : align === 'right' ? 'right-0' : 'left-0'
           } ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}

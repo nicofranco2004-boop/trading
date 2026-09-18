@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // ReturnGauge — bullet chart del retorno real vs la meta del perfil.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body del módulo de retorno en el perfil: barra horizontal (divs, sin libs)
@@ -63,7 +64,7 @@ export default function ReturnGauge({ realPct, floorPct, expectationLabel, compa
             className="absolute top-full mt-1.5 -translate-x-1/2 font-mono text-[10px] text-ink-2 tabular-nums whitespace-nowrap"
             style={{ left: `${clampTag(meta)}%` }}
           >
-            meta {sign(floorPct)}{floorPct}%
+            meta {sign(floorPct)}{pctTxt(floorPct)}
           </div>
 
           {/* Real — línea del color del fill + tag arriba del track */}
@@ -75,7 +76,7 @@ export default function ReturnGauge({ realPct, floorPct, expectationLabel, compa
             className={`absolute bottom-full mb-1.5 -translate-x-1/2 font-mono text-[10px] tabular-nums whitespace-nowrap ${toneCls}`}
             style={{ left: `${clampTag(real)}%` }}
           >
-            real {sign(realPct)}{realPct}%
+            real {sign(realPct)}{pctTxt(realPct)}
           </div>
         </div>
       </div>
@@ -85,7 +86,7 @@ export default function ReturnGauge({ realPct, floorPct, expectationLabel, compa
         inflación) es{' '}
         <span className={`${toneCls} tabular-nums`}>
           {sign(realPct)}
-          {realPct}%
+          {pctTxt(realPct)}
         </span>{' '}
         · {compText}.
       </p>

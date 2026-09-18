@@ -1,3 +1,4 @@
+import { pctTxt } from '../../utils/format'
 // DeltaSinceVisit — chips "Desde tu última visita".
 // ═══════════════════════════════════════════════════════════════════════════
 // Renderiza SOLO el body: el shell (título "Desde tu última visita" + badge con
@@ -26,7 +27,7 @@ export default function DeltaSinceVisit({ delta }) {
         <Chip dot="bg-data-violet">
           Tu cartera:{' '}
           <b className="text-ink-0 tabular-nums">
-            {valueDeltaPct > 0 ? '+' : ''}{valueDeltaPct}%
+            {valueDeltaPct > 0 ? '+' : ''}{pctTxt(valueDeltaPct)}
           </b>
         </Chip>
       )}

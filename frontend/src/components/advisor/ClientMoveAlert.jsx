@@ -7,14 +7,8 @@ import Panel from '../Panel'
 import { api } from '../../utils/api'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useToast } from '../Toast'
+import { parseNum } from '../../utils/format'
 
-// Coma o punto: en Argentina se tipea "0,5" (mismo helper que las alertas).
-function parseNum(v) {
-  let s = String(v == null ? '' : v).trim().replace(/\s/g, '')
-  if (!s) return NaN
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.')
-  return parseFloat(s)
-}
 
 export default function ClientMoveAlert({ config, onSaved }) {
   const toast = useToast()

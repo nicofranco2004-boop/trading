@@ -129,8 +129,8 @@ export default function AskAIAbout({
       {!discovered && (
         <style>{`
           @keyframes ai-discover-pulse {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(125, 140, 255, 0.4); }
-            50%      { box-shadow: 0 0 0 5px rgba(125, 140, 255, 0); }
+            0%, 100% { box-shadow: 0 0 0 0 rgb(var(--data-violet) / 0.4); }
+            50%      { box-shadow: 0 0 0 5px rgb(var(--data-violet) / 0); }
           }
           .ai-discover-pulse { animation: ai-discover-pulse 2.2s ease-in-out infinite; }
         `}</style>

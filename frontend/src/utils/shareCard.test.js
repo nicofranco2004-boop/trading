@@ -94,7 +94,7 @@ describe('specFromMonth', () => {
       capital_final: 10512,
     })
     expect(spec.kind).toBe('performance')
-    expect(spec.title).toBe('+5.12%')
+    expect(spec.title).toBe('+5,12%')
     expect(spec.pill.tone).toBe('green')
     expect(spec.pill.label).toBe('Mes positivo')
     expect(spec.eyebrow).toBe('Mi Abril 2026 en Rendi')
@@ -105,7 +105,7 @@ describe('specFromMonth', () => {
       pnl_pct: -0.082,
       month_label: 'Marzo 2026',
     })
-    expect(spec.title).toBe('−8.20%')
+    expect(spec.title).toBe('−8,20%')
     expect(spec.pill.tone).toBe('red')
     expect(spec.pill.label).toBe('Mes negativo')
   })
@@ -155,9 +155,9 @@ describe('specFromMonth', () => {
     expect(spec.stats.find(s => s.label === 'Capital final')).toBeFalsy()
   })
 
-  it('pnl_pct cero → +0.00% (mes positivo en el borde)', () => {
+  it('pnl_pct cero → +0,00% (mes positivo en el borde)', () => {
     const spec = specFromMonth({ pnl_pct: 0 })
-    expect(spec.title).toBe('+0.00%')
+    expect(spec.title).toBe('+0,00%')
     expect(spec.pill.tone).toBe('green')
   })
 

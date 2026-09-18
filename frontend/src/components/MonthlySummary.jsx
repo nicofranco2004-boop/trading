@@ -5,7 +5,7 @@ import Modal from './Modal'
 import Card from './Card'
 import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
-import { usd, ars, pct, pctSigned, colorClass, MONTHS } from '../utils/format'
+import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -27,8 +27,17 @@ const EMPTY = {
   capital_final: 0,
 }
 
+// Los 6 campos de plata viven en el form como TEXTO —lo que el usuario tipeó,
+// con su coma— y se convierten a número recién acá y en save(). Normalizar en
+// cada tecla traba la escritura: al tipear "10," el parseo devuelve 10, el campo
+// se reescribe "10" y el decimal no se puede terminar nunca.
+const CAMPOS_PLATA = ['capital_inicio', 'deposits', 'withdrawals', 'pnl_realized', 'pnl_unrealized', 'capital_final']
+
+const numsDe = (f) => Object.fromEntries(CAMPOS_PLATA.map(k => [k, parseNum(f[k]) || 0]))
+
 function calcFinal(f) {
-  return +(f.capital_inicio + f.deposits - f.withdrawals + f.pnl_realized + f.pnl_unrealized).toFixed(2)
+  const n = numsDe(f)
+  return +(n.capital_inicio + n.deposits - n.withdrawals + n.pnl_realized + n.pnl_unrealized).toFixed(2)
 }
 
 function snap(n, eps = 1e-6) {
@@ -204,7 +213,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     setForm(f => {
       const updated = { ...f, [key]: val }
       if (autoCalc && key !== 'capital_final') {
-        updated.capital_final = calcFinal(updated)
+        updated.capital_final = numToInput(calcFinal(updated))
       }
       return updated
     })
@@ -213,13 +222,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   function openAdd() {
     setAutoCalc(true)
     const base = { ...EMPTY, broker: tab }
-    setForm({ ...base, capital_final: calcFinal(base) })
+    setForm({ ...base, capital_final: numToInput(calcFinal(base)) })
     setModal('add')
   }
 
   function openEdit(e) {
     setAutoCalc(false)
-    setForm({ ...e })
+    // Lo que vuelve del backend son números: pasan a texto para que el campo los
+    // muestre con la misma coma con la que se escriben.
+    setForm({ ...e, ...Object.fromEntries(CAMPOS_PLATA.map(k => [k, numToInput(e[k])])) })
     setModal('edit')
   }
 
@@ -230,7 +241,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       broker: tab,
       year,
       month,
-      capital_inicio: fromEntry.capital_final,
+      capital_inicio: numToInput(fromEntry.capital_final),
     }
     setClosingEntry(fromEntry)
     setAutoCalc(true)
@@ -309,7 +320,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     setSaving(true)
     try {
       if (modal === 'edit') {
-        await api.put(`/monthly/${form.id}`, form)
+        await api.put(`/monthly/${form.id}`, { ...form, ...numsDe(form) })
 
       } else if (modal === 'next') {
         const allBrokerNames = ['global', ...brokers.map(b => b.name)]
@@ -343,7 +354,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         await syncUnrealizedForAll()
 
       } else {
-        await api.post('/monthly', form)
+        await api.post('/monthly', { ...form, ...numsDe(form) })
       }
 
       setModal(null)
@@ -381,7 +392,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
   const thClass = 'px-4 py-2 text-left text-[12.5px] text-ink-3 font-semibold'
   const tdClass = 'px-4 py-2 text-sm'
-  const inputClass = 'w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
+  const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-1 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
     <div>
@@ -430,7 +441,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               onClick={() => setViewMode('simple')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
                 viewMode === 'simple'
-                  ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                  ? 'bg-bg-2 text-ink-0 shadow-sm'
                   : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
               title="Vista simple"
@@ -439,7 +450,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               onClick={() => setViewMode('advanced')}
               className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
                 viewMode === 'advanced'
-                  ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                  ? 'bg-bg-2 text-ink-0 shadow-sm'
                   : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
               }`}
               title="Vista detallada"
@@ -462,7 +473,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
             onClick={() => setTab(b)}
             className={`px-4 py-1.5 text-sm rounded-md font-medium transition-colors capitalize ${
               tab === b
-                ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                ? 'bg-bg-2 text-ink-0 shadow-sm'
                 : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
             }`}
           >
@@ -575,7 +586,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                               En curso
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 dark:bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
+                            <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-2 text-ink-3 border border-line/50 dark:border-line">
                               <Lock size={9} /> Cerrado
                             </span>
                           )}
@@ -713,8 +724,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
 
             <div>
               <label className="block text-xs text-ink-3 mb-1">Capital Inicio (USD)</label>
-              <input type="number" step="any" value={form.capital_inicio}
-                onChange={e => setField('capital_inicio', +e.target.value)}
+              <input type="text"
+                          inputMode="decimal" value={form.capital_inicio}
+                onChange={e => setField('capital_inicio', e.target.value)}
                 className={inputClass}
                 readOnly={modal === 'next'}
               />
@@ -729,8 +741,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
               ].map(([label, key]) => (
                 <div key={key}>
                   <label className="block text-xs text-ink-3 mb-1">{label}</label>
-                  <input type="number" step="any" value={form[key]}
-                    onChange={e => setField(key, +e.target.value)}
+                  <input type="text"
+                          inputMode="decimal" value={form[key]}
+                    onChange={e => setField(key, e.target.value)}
                     className={inputClass} />
                 </div>
               ))}
@@ -745,7 +758,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                     checked={autoCalc}
                     onChange={e => {
                       setAutoCalc(e.target.checked)
-                      if (e.target.checked) setForm(f => ({ ...f, capital_final: calcFinal(f) }))
+                      if (e.target.checked) setForm(f => ({ ...f, capital_final: numToInput(calcFinal(f)) }))
                     }}
                     className="rounded-sm accent-rendi-pos"
                   />
@@ -753,11 +766,12 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                 </label>
               </div>
               <input
-                type="number" step="any"
+                type="text"
+                          inputMode="decimal"
                 value={form.capital_final}
-                onChange={e => setField('capital_final', +e.target.value)}
+                onChange={e => setField('capital_final', e.target.value)}
                 readOnly={autoCalc}
-                className={`${inputClass} ${autoCalc ? 'opacity-70 cursor-default bg-bg-2 dark:bg-bg-2' : ''}`}
+                className={`${inputClass} ${autoCalc ? 'opacity-70 cursor-default bg-bg-2' : ''}`}
               />
               {autoCalc && (
                 <p className="text-[11px] text-ink-3 mt-1">
@@ -826,7 +840,7 @@ function ConciliationBanner({ live, entries }) {
   const significantDrift = drift != null && (Math.abs(drift) > 0.5 || Math.abs(driftPct) > 0.05)
 
   return (
-    <div className="mb-5 bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-4">
+    <div className="mb-5 bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
         <h3 className="text-xs font-semibold text-ink-3">
           Conciliación

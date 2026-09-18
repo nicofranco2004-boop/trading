@@ -56,6 +56,7 @@
 //     coefficient endpoint.
 
 import { CANJE_2020_BY_TICKER } from './bondSchedulesAR'
+import { pctTxt } from './format'
 
 // ════════════════════════════════════════════════════════════════════════════
 // SOBERANOS AR — Canje 2020 (Decreto 391/2020 + 676/2020)
@@ -228,16 +229,16 @@ export function formatCouponLabel(meta) {
     const rates = meta.couponSchedule.map(p => p.rate)
     const min = Math.min(...rates)
     const max = Math.max(...rates)
-    return `cupón step-up ${min}% → ${max}% TNA (${adj})`
+    return `cupón step-up ${pctTxt(min)} → ${pctTxt(max)} TNA (${adj})`
   }
 
   // Cupón fijo: TNA + cupón por período si la freq es conocida.
   const rate = meta.couponRate
   if (ppy && rate) {
     const perPeriod = +(rate / ppy).toFixed(4)
-    return `cupón ${rate}% TNA (${perPeriod}% por cupón, ${adj})`
+    return `cupón ${pctTxt(rate)} TNA (${pctTxt(perPeriod)} por cupón, ${adj})`
   }
-  return `cupón ${rate}% TNA (${adj})`
+  return `cupón ${pctTxt(rate)} TNA (${adj})`
 }
 
 // Tooltip explicativo del cupón TNA — disambiguar para usuarios no expertos.

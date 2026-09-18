@@ -1,3 +1,4 @@
+from money_fmt import fmt_num
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
@@ -6560,10 +6561,19 @@ def _fetch_yf_events(ticker: str) -> list:
                 # cal puede ser DataFrame o dict según versión de yfinance
                 earnings_date = None
                 eps_estimate = None
+                earnings_confirmed = True   # sin señal en contra, la fecha es firme
                 if hasattr(cal, 'loc'):
                     # DataFrame variant — buscar Earnings Date
                     if 'Earnings Date' in cal.index:
                         ed = cal.loc['Earnings Date']
+                        # Mismo criterio que la rama dict de abajo: más de una fecha
+                        # = ventana estimada. Sin esto, el dato salía "confirmado"
+                        # o no según la versión de yfinance instalada.
+                        try:
+                            if hasattr(ed, '__len__') and not isinstance(ed, str) and len(ed) > 1:
+                                earnings_confirmed = False
+                        except TypeError:
+                            pass
                         earnings_date = ed.iloc[0] if hasattr(ed, 'iloc') else ed
                     if 'Earnings Average' in cal.index:
                         ea = cal.loc['Earnings Average']
@@ -6571,6 +6581,12 @@ def _fetch_yf_events(ticker: str) -> list:
                 elif isinstance(cal, dict):
                     earnings_date = cal.get('Earnings Date')
                     if isinstance(earnings_date, list):
+                        # yfinance devuelve DOS fechas cuando la empresa todavía no
+                        # confirmó el día y el dato es una VENTANA estimada; una sola
+                        # fecha = confirmada. Antes guardábamos confirmed=1 siempre,
+                        # así que el KPI "Confirmados" de Novedades decía 100% sin
+                        # haber medido nada.
+                        earnings_confirmed = len(earnings_date) == 1
                         earnings_date = earnings_date[0] if earnings_date else None
                     eps_estimate = cal.get('Earnings Average')
                 if earnings_date is not None:
@@ -6586,7 +6602,7 @@ def _fetch_yf_events(ticker: str) -> list:
                             'event_type': 'earnings',
                             'event_date': date_str,
                             'details': details,
-                            'confirmed': 1,
+                            'confirmed': 1 if earnings_confirmed else 0,
                         })
         except Exception:
             pass
@@ -6596,18 +6612,55 @@ def _fetch_yf_events(ticker: str) -> list:
             info = t.info  # cache interno de yfinance
             ex_div = info.get('exDividendDate')  # timestamp UNIX
             div_amount = info.get('lastDividendValue')
+            # Fecha a la que corresponde `lastDividendValue`. NO siempre es `ex_div`:
+            # yfinance mezcla la PRÓXIMA ex-date (declarada por la empresa) con el
+            # ÚLTIMO monto PAGADO. Medido 2026-09-17: AVGO devuelve ex-date
+            # 2026-09-21 y el monto del ex-date 2026-06-22. Si la empresa subió el
+            # dividendo en el medio, publicábamos el viejo como si fuera un hecho.
+            last_div_date = info.get('lastDividendDate')
             if ex_div:
                 # ex_div es timestamp unix (segundos); convertir a fecha ISO
                 d = datetime.utcfromtimestamp(ex_div).strftime('%Y-%m-%d')
                 if _DATE_RE.match(d):
                     details = {}
+                    same_period = False
+                    try:
+                        same_period = (last_div_date is not None
+                                       and abs(int(last_div_date) - int(ex_div)) < 86400)
+                    except (TypeError, ValueError):
+                        same_period = False
                     if div_amount is not None and isinstance(div_amount, (int, float)):
                         details['dividend_per_share'] = round(float(div_amount), 4)
+                        # El consumidor tiene que poder distinguir "esto es lo que la
+                        # empresa declaró para ESTA fecha" de "esto es lo que pagó la
+                        # vez pasada". La UI lo rotula con ~ / "est.".
+                        details['dividend_amount_estimated'] = not same_period
+                        if last_div_date is not None and not same_period:
+                            try:
+                                details['dividend_as_of'] = datetime.utcfromtimestamp(
+                                    int(last_div_date)).strftime('%Y-%m-%d')
+                            except (TypeError, ValueError, OSError):
+                                pass
+                    # ⚠️ ESCALA DEL MONTO. yfinance sólo cotiza el SUBYACENTE, así que
+                    # `dividend_per_share` es siempre por acción del mercado de origen
+                    # (la acción US, o el ADR en el caso de las argentinas). Quien
+                    # tenga el CEDEAR tiene una FRACCIÓN de acción — 130 CEDEARs de
+                    # AVGO son 3,33 acciones, no 130. Multiplicar este monto por la
+                    # cantidad de la posición sin dividir por el ratio infla el cobro
+                    # hasta 58× (reportado por un usuario 2026-09-17: Rendi decía
+                    # US$40 de dividendo de GOOGL y el broker depositó US$0,70).
+                    # Quien convierta a la escala de la tenencia:
+                    # frontend/src/utils/cedearRatio.js.
+                    if 'dividend_per_share' in details:
+                        details['dividend_scale'] = 'underlying_share'
                     events.append({
                         'ticker': ticker,
                         'event_type': 'ex_dividend',
                         'event_date': d,
                         'details': details,
+                        # La FECHA sí la declaró la empresa (es lo que rotula la UI al
+                        # lado del día). Lo que puede ser estimado es el MONTO, y eso
+                        # viaja en details.dividend_amount_estimated.
                         'confirmed': 1,
                     })
         except Exception:
@@ -11148,7 +11201,7 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     if data.direction == 'withdraw' and new_invested < 0:
                         raise HTTPException(
                             400,
-                            f"Saldo insuficiente. Disponible: {cash_pos['invested'] or 0:.2f} {currency}"
+                            f"Saldo insuficiente. Disponible: {fmt_num(cash_pos['invested'] or 0, 2)} {currency}"
                         )
                     conn.execute(
                         "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
@@ -11834,7 +11887,7 @@ def _adjust_cash(conn, uid: int, broker_name: str, asset: str, delta: float, tc_
         if new_invested < -1e-6:
             raise HTTPException(
                 400,
-                f"Saldo insuficiente en {broker_name}. Disponible: {existing:.2f}"
+                f"Saldo insuficiente en {broker_name}. Disponible: {fmt_num(existing, 2)}"
             )
         new_invested = max(0.0, new_invested)
         # Actualizar tc_compra promedio ponderado solo en compras (delta>0) y si nos pasaron TC
@@ -13136,16 +13189,31 @@ class OperationIn(BaseModel):
     # como default — transparente para el frontend.
     currency: Optional[str] = Field(None, max_length=10)
     fx_to_usd: Optional[float] = Field(None, gt=0, le=_FINITE_BOUND)
-    # 'futures' → resultado realizado del cierre de una posición de futuros.
-    # Además de registrar el P&L, ACREDITA el monto al efectivo del broker: esa
-    # plata ya está en la cuenta. Es el mismo efecto que produce el import
-    # (persister._persist_futures_pnl), que existe desde siempre pero no se podía
-    # invocar a mano — un usuario cerró un futuro de BTC con +47 USDT, no encontró
-    # dónde cargarlo, registró solo el P&L y le quedó el efectivo 47 dólares corto.
+    # ¿Esta operación MOVIÓ la plata del broker?
+    #
+    #   True  → además de registrar el resultado, lo SUMA al efectivo del broker
+    #           (y lo RESTA si fue pérdida): esa plata ya está —o ya no está— en
+    #           la cuenta.
+    #   False → sólo queda registrada en el historial. El efectivo no se toca.
+    #   None  → el cliente no opinó. En el alta equivale a False; en la edición
+    #           quiere decir "no cambies el tratamiento que ya tenía" (ver
+    #           `update_operation`), que es lo que necesitan los clientes viejos
+    #           y los PUT que sólo vienen a corregir un precio.
+    #
+    # Empezó siendo una pregunta sólo para futuros: un usuario cerró un futuro de
+    # BTC con +47 USDT, no encontró dónde cargarlo, registró sólo el P&L y le
+    # quedó el efectivo 47 dólares corto. Pero el desfasaje no es de los futuros:
+    # le pasa a cualquier operación cuyo resultado ya esté en la cuenta y todavía
+    # no figure en Rendi. Por eso la pregunta se hace para TODAS.
     #
     # NO se deduce de `op_type`, que es texto libre y cuyo placeholder dice
     # "LONG, SHORT, Futuros…": si se dedujera de ahí, escribir la palabra con una
     # grafía movería plata y con otra no. Mover plata se pide explícito.
+    mueve_efectivo: Optional[bool] = None
+    # LEGACY — `kind='futures'` es como el frontend viejo pedía exactamente lo
+    # mismo. Se sigue aceptando (hay bundles cacheados en los navegadores y el
+    # cierre de futuros lo manda) y se resuelve a `mueve_efectivo` en UN solo
+    # lugar: `_pide_mover_efectivo`.
     kind: Optional[str] = Field(None, max_length=20)
 
     @field_validator('date')
@@ -13400,6 +13468,11 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
                 raise HTTPException(400, "Esa posición ya se está cerrando.")
 
             moneda = _resolve_op_currency(conn, uid, pos["broker"], None)
+            # Lo que se le aplica al efectivo va en la moneda del broker. Se calcula
+            # ANTES del INSERT porque también se guarda en la foto de reverso: el
+            # borrado devuelve ese monto y no lo recalcula (ver `_cash_nativo_de_meta`).
+            pnl_nat = (_pnl_en_moneda_del_broker(conn, uid, pos["broker"], pnl, fecha)
+                       if pnl else 0.0)
             cur = conn.execute(
                 """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
                      exit_price, quantity, pnl_usd, pnl_pct, commissions, currency, undo_meta_json)
@@ -13407,12 +13480,12 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
                 (uid, fecha, pos["broker"], pos["symbol"], "Futuros",
                  pos["entry_price"], data.exit_price, pos["quantity"], pnl, None,
                  data.commissions or 0, moneda,
-                 json.dumps({"src": "manual_futures", "cash": pnl,
-                             "cash_broker": pos["broker"], "futuro_id": fid})),
+                 json.dumps({"src": "manual_futures", "cash": pnl, "cash_native": pnl_nat,
+                             "cash_broker": pos["broker"], "cash_on": True,
+                             "futuro_id": fid})),
             )
             if pnl:
-                _adjust_broker_cash(conn, uid, pos["broker"],
-                                    _pnl_en_moneda_del_broker(conn, uid, pos["broker"], pnl, fecha))
+                _adjust_broker_cash(conn, uid, pos["broker"], pnl_nat)
                 y, m = int(fecha[:4]), int(fecha[5:7])
                 _update_monthly_pnl_realized(conn, uid, pos["broker"], y, m, pnl)
                 _update_monthly_pnl_realized(conn, uid, "global", y, m, pnl)
@@ -13432,10 +13505,27 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
 @app.get("/api/operations")
 def get_operations(uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
+        # `_importada` sale de una subconsulta y no de un JOIN: una operación puede
+        # tener más de un link y el JOIN la devolvería duplicada en la lista.
         rows = conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date DESC", (uid,)
+            """SELECT o.*,
+                      EXISTS(SELECT 1 FROM import_op_links l
+                              WHERE l.operation_id = o.id) AS _importada
+                 FROM operations o
+                WHERE o.user_id=? ORDER BY o.date DESC""", (uid,)
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        importada = bool(d.pop('_importada', 0))
+        try:
+            meta = json.loads(d.get('undo_meta_json') or '{}') or {}
+        except (ValueError, TypeError):
+            meta = {}
+        # Para que el formulario no ofrezca una palanca que no puede funcionar.
+        d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(importada, meta)
+        out.append(d)
+    return out
 
 
 @app.get("/api/movements")
@@ -14908,6 +14998,85 @@ def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional
     return "USD"
 
 
+# ── ¿la operación mueve el efectivo del broker? ──────────────────────────────
+# Cuatro funciones chiquitas que existen para que la pregunta se conteste en UN
+# solo lugar. Antes vivía inline en `create_operation` y la edición y el borrado
+# la re-deducían cada uno a su manera.
+
+def _pide_mover_efectivo(op: OperationIn) -> Optional[bool]:
+    """Qué pidió el CLIENTE, en tres estados: True, False o None (no lo mencionó).
+
+    El None importa: un PUT que sólo viene a corregir un precio no manda el
+    campo, y no puede significar "apagá el movimiento de efectivo" — eso le
+    dejaría al usuario la plata cambiada sin haberla tocado. `model_fields_set`
+    distingue "no vino" de "vino en null", que es lo que manda el formulario
+    cuando el usuario elige que NO mueva plata."""
+    campos = op.model_fields_set
+    if 'mueve_efectivo' in campos and op.mueve_efectivo is not None:
+        return bool(op.mueve_efectivo)
+    if 'kind' in campos:          # cliente viejo: kind='futures' | null
+        return (op.kind or '').strip().lower() == 'futures'
+    return None
+
+
+def _meta_movio_efectivo(meta: dict) -> bool:
+    """Qué hizo la operación cuando se guardó, según su foto de reverso.
+
+    `src='manual_futures'` es un nombre HEREDADO: hoy marca "esta operación tocó
+    el efectivo", venga de un futuro o de cualquier otra cosa. No se renombró
+    porque está escrito en filas que ya viven en la base, y un segundo nombre
+    para lo mismo es exactamente la deuda que venimos limpiando.
+    `cash_on` es explícito y gana cuando está (las filas nuevas siempre lo traen);
+    las viejas se resuelven por el `src`."""
+    if not isinstance(meta, dict):
+        return False
+    if 'cash_on' in meta:
+        return bool(meta['cash_on'])
+    return meta.get('src') == 'manual_futures'
+
+
+# Operaciones cuyo efectivo lo mueve OTRO mecanismo. El interruptor no se les
+# ofrece: sumarle éste sería contar la misma plata dos veces.
+_SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow')
+
+
+def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
+    """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
+
+    Sólo a las CARGADAS A MANO y que no muevan plata por su cuenta:
+
+      • Importadas — su borrado lo resuelve el rebuild del import (la fila de
+        `import_op_links` manda sobre la foto de reverso), así que un efectivo
+        prendido acá no se revertiría nunca: quedaría plata fabricada. Y además
+        ya acreditaron, porque eso lo hace el importador.
+      • Ventas FIFO y cobros de bonos — acreditan por su propio camino.
+
+    Se calcula en UN lugar y lo usan los dos lados: el GET se lo cuenta al
+    formulario (para no mostrar una palanca que no hace nada) y el PUT lo hace
+    valer (para que mandarlo igual no mueva plata)."""
+    if importada:
+        return False
+    return (meta or {}).get('src') not in _SRC_CON_EFECTIVO_PROPIO
+
+
+def _cash_nativo_de_meta(conn, uid: int, meta: dict, broker: str, fecha: str) -> float:
+    """Cuánto se le sumó realmente al efectivo, en la MONEDA DEL BROKER.
+
+    AUDIT 2026-09-18. La foto guardaba sólo el P&L en dólares, pero al efectivo
+    se le aplica el monto CONVERTIDO. Con un broker en dólares da igual; con uno
+    en pesos, no: medido, un alta de US$100 en Rofex acreditó 150.250 pesos y el
+    borrado devolvió 100 — quedaban 150.150 pesos fabricados en la cuenta. Las
+    filas nuevas guardan `cash_native` y no hay nada que adivinar; las viejas se
+    reconvierten con el TC de la fecha de la operación, que es el mismo que usó
+    el alta."""
+    if isinstance(meta, dict) and meta.get('cash_native') is not None:
+        return float(meta['cash_native'] or 0)
+    usd = float((meta or {}).get('cash') or 0)
+    if not usd:
+        return 0.0
+    return _pnl_en_moneda_del_broker(conn, uid, broker, usd, fecha)
+
+
 @app.post("/api/operations")
 @reintentar_si_trabada
 def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
@@ -14923,22 +15092,33 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
-        # FUTUROS: el cierre de un futuro deja la plata en la cuenta, así que además
-        # del P&L hay que acreditar el efectivo. Sin esto el usuario queda con el saldo
-        # corto y la única "solución" a mano —cargar un depósito— le mete el resultado
-        # DOS VECES en el capital del mes (una como ganancia y otra como aporte) y
-        # además le ensucia el capital aportado, que es el denominador del rendimiento.
-        es_futuros = (op.kind or "").strip().lower() == "futures"
-        pnl_cash = float(op.pnl_usd or 0) if es_futuros else 0.0
+        # ¿MUEVE EL EFECTIVO? Si el resultado de la operación ya está (o ya no está)
+        # en la cuenta del broker, además del P&L hay que mover el efectivo. Sin esto
+        # el usuario queda con el saldo corto y la única "solución" a mano —cargar un
+        # depósito— le mete el resultado DOS VECES en el capital del mes (una como
+        # ganancia y otra como aporte) y además le ensucia el capital aportado, que es
+        # el denominador del rendimiento.
+        #
+        # El monto es el P&L, y eso vale para cualquier operación: en un viaje de ida
+        # y vuelta (compra + venta) la plata de la compra salió y volvió, así que el
+        # efecto NETO sobre el saldo es exactamente el resultado.
+        mueve_cash = _pide_mover_efectivo(op) is True
+        pnl_cash = float(op.pnl_usd or 0) if mueve_cash else 0.0
+        # El efectivo va en la MONEDA DEL BROKER; el P&L se guarda en USD.
+        pnl_cash_nativo = (_pnl_en_moneda_del_broker(conn, uid, op.broker, pnl_cash, op.date)
+                           if pnl_cash else 0.0)
 
         # `undo_meta_json` guarda el CAMINO de creación, porque la fila sola no permite
         # distinguirlo y adivinarlo rompe plata:
         #   manual_form     — SOLO existe la fila de P&L; borrarla es sacarla y recalcular.
-        #   manual_futures  — además acreditó efectivo; el borrado tiene que devolverlo,
-        #                     y guardamos CUÁNTO para revertir exacto aunque la fila se
-        #                     haya editado después.
-        undo_meta = (json.dumps({"src": "manual_futures", "cash": pnl_cash})
-                     if es_futuros else '{"src":"manual_form"}')
+        #   manual_futures  — además movió efectivo (nombre heredado, ver
+        #                     `_meta_movio_efectivo`); el borrado tiene que devolverlo,
+        #                     y guardamos CUÁNTO —en dólares y en la moneda que se
+        #                     aplicó— para revertir exacto aunque la fila se edite después.
+        undo_meta = (json.dumps({"src": "manual_futures", "cash": pnl_cash,
+                                 "cash_native": pnl_cash_nativo,
+                                 "cash_broker": op.broker, "cash_on": True})
+                     if mueve_cash else '{"src":"manual_form"}')
 
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price, exit_price,
@@ -14948,12 +15128,10 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
              op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd,
              undo_meta),
         )
-        if pnl_cash:
+        if pnl_cash_nativo:
             # Mismo helper que usa el import — una sola implementación del movimiento
             # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
-            # El efectivo va en la MONEDA DEL BROKER; el P&L se guarda en USD.
-            _adjust_broker_cash(conn, uid, op.broker,
-                                _pnl_en_moneda_del_broker(conn, uid, op.broker, pnl_cash, op.date))
+            _adjust_broker_cash(conn, uid, op.broker, pnl_cash_nativo)
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         # Sync cache de pnl_realized en monthly_entries
         try:
@@ -14982,40 +15160,77 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
 def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective_user)):
     """Update operation manual + sync cache pnl_realized (audit follow-up).
 
-    Si la operación es de FUTUROS, el efectivo tiene que seguir a la edición:
-    editar el resultado de 47 a 100 y dejar el saldo en +47 es una inconsistencia
-    silenciosa, y encima el borrado —que revierte con la foto de undo_meta_json—
-    devolvería el monto viejo. Por eso movemos el efectivo por la DIFERENCIA y
-    reescribimos la foto. Cambiar de broker debita en el viejo y acredita en el
-    nuevo, que es lo único correcto cuando la plata cambia de cuenta.
+    El efectivo tiene que seguir a la edición: editar el resultado de 47 a 100 y
+    dejar el saldo en +47 es una inconsistencia silenciosa, y encima el borrado
+    —que revierte con la foto de undo_meta_json— devolvería el monto viejo. Por
+    eso movemos el efectivo por la DIFERENCIA y reescribimos la foto. Cambiar de
+    broker debita en el viejo y acredita en el nuevo, que es lo único correcto
+    cuando la plata cambia de cuenta.
+
+    Y el interruptor se puede dar vuelta acá: prenderlo acredita ahora, apagarlo
+    devuelve lo que se había acreditado. Mientras el backend decidía sólo por la
+    foto guardada, el check del formulario en modo edición no hacía nada — se
+    veía como una opción y era un adorno.
     """
     conn = get_db()
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
         prev = conn.execute(
-            "SELECT broker, undo_meta_json FROM operations WHERE id=? AND user_id=?",
+            "SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
             (oid, uid)).fetchone()
+        if not prev:
+            # Se corta ACÁ y no después del UPDATE. Abajo se mueve efectivo, y
+            # hacerlo por una operación que no existe —o que es de otro usuario—
+            # dependía de que nadie commiteara antes del 404 para no dejar plata
+            # inventada. Eso funcionaba, pero por omisión: cualquier commit que se
+            # agregue en el medio lo rompería en silencio.
+            conn.close()
+            raise HTTPException(404, "Not found")
         meta_prev = {}
         if prev and prev["undo_meta_json"]:
             try:
                 meta_prev = json.loads(prev["undo_meta_json"]) or {}
             except (ValueError, TypeError):
                 meta_prev = {}
-        es_futuros = meta_prev.get("src") == "manual_futures"
+        movia_antes = _meta_movio_efectivo(meta_prev)
+        pedido = _pide_mover_efectivo(op)
+        # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
+        # ventas FIFO, cobros de bonos): su efectivo lo mueve otro mecanismo. El
+        # formulario ya no se los ofrece; acá se hace valer igual, porque un cliente
+        # viejo —o uno que reintente— puede mandarlo lo mismo.
+        importada = conn.execute(
+            "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
+        ).fetchone() is not None
+        if not _acepta_interruptor_de_efectivo(importada, meta_prev):
+            pedido = None
+        # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
+        mueve_ahora = movia_antes if pedido is None else pedido
 
         undo_meta_nuevo = None
-        if es_futuros:
-            cash_antes = float(meta_prev.get("cash") or 0)
-            cash_ahora = float(op.pnl_usd or 0)
-            broker_antes = meta_prev.get("cash_broker") or (prev["broker"] if prev else op.broker)
+        if movia_antes or mueve_ahora:
+            broker_antes = meta_prev.get("cash_broker") or prev["broker"]
+            fecha_antes = prev["date"] or op.date
+            # Lo que se aplicó al saldo, en la moneda del broker (no en dólares:
+            # ver `_cash_nativo_de_meta`). Si se apaga, lo de ahora es cero.
+            nat_antes = (_cash_nativo_de_meta(conn, uid, meta_prev, broker_antes, fecha_antes)
+                         if movia_antes else 0.0)
+            cash_ahora = float(op.pnl_usd or 0) if mueve_ahora else 0.0
+            nat_ahora = (_pnl_en_moneda_del_broker(conn, uid, op.broker, cash_ahora, op.date)
+                         if cash_ahora else 0.0)
             if broker_antes != op.broker:
-                _adjust_broker_cash(conn, uid, broker_antes, -cash_antes)
-                _adjust_broker_cash(conn, uid, op.broker, cash_ahora)
-            elif cash_ahora != cash_antes:
-                _adjust_broker_cash(conn, uid, op.broker, cash_ahora - cash_antes)
-            undo_meta_nuevo = json.dumps({"src": "manual_futures", "cash": cash_ahora,
-                                          "cash_broker": op.broker})
+                _adjust_broker_cash(conn, uid, broker_antes, -nat_antes)
+                _adjust_broker_cash(conn, uid, op.broker, nat_ahora)
+            elif nat_ahora != nat_antes:
+                _adjust_broker_cash(conn, uid, op.broker, nat_ahora - nat_antes)
+            # Se PISAN sólo las claves del efectivo. El resto de la foto se conserva
+            # —`futuro_id` sobre todo—: reescribirla entera la perdía, y sin ella
+            # borrar la operación ya no reabría la posición de futuros que la generó.
+            meta_nuevo = dict(meta_prev)
+            meta_nuevo.update({"src": "manual_futures", "cash": cash_ahora,
+                               "cash_native": nat_ahora, "cash_broker": op.broker,
+                               "cash_on": bool(mueve_ahora)})
+            undo_meta_nuevo = json.dumps(meta_nuevo)
 
         conn.execute(
             """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
@@ -15234,12 +15449,17 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
         # pérdida). Devolvemos exactamente eso. El monto sale de la foto y no del
         # pnl_usd actual: si la operación se editó después, el efectivo que se movió
         # es el que quedó registrado acá, y `update_operation` lo mantiene al día.
-        cash = float(meta.get("cash") or 0)
-        if cash:
-            cash_broker = meta.get("cash_broker") or broker
-            _adjust_broker_cash(conn, uid, cash_broker, -cash)
-            # El "Deshacer" ya re-invierte `cash` genéricamente contra `cash_broker`.
-            undo["cash"] = -cash
+        # Y se devuelve en la MONEDA DEL BROKER, que es la que se aplicó: devolver
+        # los dólares en un broker en pesos dejaba el saldo inflado (ver
+        # `_cash_nativo_de_meta`).
+        cash_broker = meta.get("cash_broker") or broker
+        cash_nat = _cash_nativo_de_meta(conn, uid, meta, cash_broker, op["date"] or "")
+        if cash_nat:
+            _adjust_broker_cash(conn, uid, cash_broker, -cash_nat)
+            # El "Deshacer" re-invierte `cash_native` contra `cash_broker`. `cash`
+            # queda por compatibilidad con los journals que ya estaban escritos.
+            undo["cash"] = -float(meta.get("cash") or 0)
+            undo["cash_native"] = -cash_nat
             undo["cash_broker"] = cash_broker
 
     elif src != "manual_form":
@@ -15462,10 +15682,16 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
         if _fr:
             conn.execute("UPDATE futures_positions SET closed_at=? WHERE id=? AND user_id=?",
                          (_fr.get("closed_at"), _fr.get("id"), uid))
-        # Re-invertir el cash que el borrado movió, en el MISMO broker que tocó.
-        if p.get("cash"):
+        # Re-invertir el cash que el borrado movió, en el MISMO broker que tocó y
+        # por el MISMO monto. `cash_native` es el que se aplicó de verdad (moneda
+        # del broker); `cash` —dólares— sólo se lee en los journals viejos, que se
+        # escribieron antes de que existiera la distinción.
+        _u_cash = p.get("cash_native")
+        if _u_cash is None:
+            _u_cash = p.get("cash")
+        if _u_cash:
             _adjust_broker_cash(conn, uid, p.get("cash_broker") or broker,
-                                -float(p["cash"]))
+                                -float(_u_cash))
         # Re-invertir lo que el borrado le devolvió a CADA lote (las amortizaciones
         # restauran varios; el resto, uno solo).
         for _l in (p.get("lots") or []):
@@ -17420,7 +17646,7 @@ def admin_diagnose_negative_capital(min_capital: float = -50000.0, limit_account
             summary = (f"#{au}: " +
                        (f"AR marcado USD → {', '.join(sus)}" if sus else "broker bien marcado") +
                        (f" | salta {jump['ym']} por {jump['term_mas_negativo']}" if jump else "") +
-                       (f" | cash top: {jump_cash['op']} {jump_cash['gross_amount']:,.0f} "
+                       (f" | cash top: {jump_cash['op']} {fmt_num(jump_cash['gross_amount'], 0)} "
                         f"ccy={jump_cash['currency']} "
                         f"{'★SEED-SINTÉTICO' if jump_cash['is_seed_synthetic'] else ''} "
                         f"notes='{jump_cash['notes'][:50]}'"
@@ -19052,7 +19278,7 @@ def admin_repair_comisiones(apply: bool = False, limite: int = 5000,
             "no_tocadas_por_el_piso": {
                 "cuantas": len(bajo_el_piso),
                 "por_que": (f"La comisión supera el 5% pero no el piso absoluto "
-                            f"(ARS {_PISO_COMISION_ARS:,.0f} / USD {_PISO_COMISION_USD:,.0f}). "
+                            f"(ARS {fmt_num(_PISO_COMISION_ARS, 0)} / USD {fmt_num(_PISO_COMISION_USD, 0)}). "
                             "Ahí no se puede distinguir una comisión falsa chica de "
                             "un fee FIJO legítimo sobre una posición chica — Balanz "
                             "cobra ~USD 14 y eso sobre una compra de USD 12 es 115%, "
@@ -23177,14 +23403,14 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "Fair Value (consenso analistas)",
             "value": fair_value,
-            "value_label": f"US$ {fair_value:.2f} (margen {margin_pct:+.1f}%)",
+            "value_label": f"US$ {fmt_num(fair_value, 2)} (margen {fmt_num(margin_pct, 1, signed=True)}%)",
             "reference": f"> 15% bajo el precio = oportunidad ({n_analysts} analistas)",
             "status": status,
             "n_analysts": n_analysts,
             "confidence": fair_value_confidence,
             "interpretation_hint": (
-                f"Target medio US$ {fair_value:.2f} (consenso {n_analysts} analistas) "
-                f"vs precio actual US$ {current_price:.2f}. Margen {margin_pct:+.1f}%."
+                f"Target medio US$ {fmt_num(fair_value, 2)} (consenso {n_analysts} analistas) "
+                f"vs precio actual US$ {fmt_num(current_price, 2)}. Margen {fmt_num(margin_pct, 1, signed=True)}%."
                 + confidence_note
             ),
         })
@@ -23197,11 +23423,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "PER actual vs forward",
             "value": trailing_pe,
-            "value_label": f"{trailing_pe:.1f}× (forward {forward_pe:.1f}×)",
+            "value_label": f"{fmt_num(trailing_pe, 1)}× (forward {fmt_num(forward_pe, 1)}×)",
             "reference": "Forward < actual = ganancias esperadas crecen",
             "status": status,
             "interpretation_hint": (
-                f"PER actual {trailing_pe:.1f}× vs forward {forward_pe:.1f}× ({pe_change_pct:+.1f}%). "
+                f"PER actual {fmt_num(trailing_pe, 1)}× vs forward {fmt_num(forward_pe, 1)}× ({fmt_num(pe_change_pct, 1, signed=True)}%). "
                 f"{'Las ganancias esperadas crecen — el múltiplo se contrae a futuro.' if pe_change_pct < 0 else 'Las ganancias esperadas no acompañan el precio actual.'}"
             ),
         })
@@ -23209,10 +23435,10 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "PER actual",
             "value": trailing_pe,
-            "value_label": f"{trailing_pe:.1f}×",
+            "value_label": f"{fmt_num(trailing_pe, 1)}×",
             "reference": "Forward P/E no disponible en API",
             "status": "na",
-            "interpretation_hint": f"PER {trailing_pe:.1f}× sin proyección forward disponible para comparar.",
+            "interpretation_hint": f"PER {fmt_num(trailing_pe, 1)}× sin proyección forward disponible para comparar.",
         })
 
     # Métrica 3: PEG Ratio
@@ -23221,11 +23447,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "PEG Ratio",
             "value": peg,
-            "value_label": f"{peg:.2f}",
+            "value_label": f"{fmt_num(peg, 2)}",
             "reference": "< 1.0 (ideal value)",
             "status": status,
             "interpretation_hint": (
-                f"PEG {peg:.2f} — "
+                f"PEG {fmt_num(peg, 2)} — "
                 f"{'el precio luce barato vs el crecimiento esperado.' if status == 'green' else 'el mercado ya descuenta parte del crecimiento.' if status == 'amber' else 'el premium sobre crecimiento esperado es alto.' if status == 'red' else 'dato anómalo, ignorá para esta consulta.'}"
             ),
         })
@@ -23236,11 +23462,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "Payout Ratio",
             "value": payout_pct,
-            "value_label": f"{payout_pct:.1f}%",
+            "value_label": f"{fmt_num(payout_pct, 1)}%",
             "reference": "< 50% (sostenible)",
             "status": status,
             "interpretation_hint": (
-                f"Payout {payout_pct:.1f}% — "
+                f"Payout {fmt_num(payout_pct, 1)}% — "
                 f"{'dividendo cómodamente sostenible, mucha plata reinvertida.' if status == 'green' else 'dividendo OK pero cerca del límite.' if status == 'amber' else 'paga casi todo o más que sus ganancias — frágil.' if status == 'red' else 'dato anómalo (probable distorsión cambiaria en ADRs AR).'}"
             ),
         })
@@ -23251,11 +23477,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "ROE (Return on Equity)",
             "value": roe_pct,
-            "value_label": f"{roe_pct:.1f}%",
+            "value_label": f"{fmt_num(roe_pct, 1)}%",
             "reference": "> 15% (alta calidad)",
             "status": status,
             "interpretation_hint": (
-                f"ROE {roe_pct:.1f}% — "
+                f"ROE {fmt_num(roe_pct, 1)}% — "
                 f"{'rentabilidad sobre capital muy alta, calidad fundamental.' if status == 'green' else 'rentabilidad razonable.' if status == 'amber' else 'rentabilidad débil, capital trabajando poco.'}"
             ),
         })
@@ -23267,11 +23493,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
             metrics.append({
                 "name": "Debt/Equity",
                 "value": de_ratio,
-                "value_label": f"{de_ratio:.2f}",
+                "value_label": f"{fmt_num(de_ratio, 2)}",
                 "reference": "< 0.5 (balance solido)",
                 "status": status,
                 "interpretation_hint": (
-                    f"D/E {de_ratio:.2f} — "
+                    f"D/E {fmt_num(de_ratio, 2)} — "
                     f"{'balance solido, deuda baja.' if status == 'green' else 'deuda en rango razonable.' if status == 'amber' else 'apalancamiento alto, sensible a tasas.'}"
                 ),
             })
@@ -23282,11 +23508,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "Profit Margin",
             "value": pm_pct,
-            "value_label": f"{pm_pct:.1f}%",
+            "value_label": f"{fmt_num(pm_pct, 1)}%",
             "reference": "> 15% (negocio rentable)",
             "status": status,
             "interpretation_hint": (
-                f"Margen {pm_pct:.1f}% — "
+                f"Margen {fmt_num(pm_pct, 1)}% — "
                 f"{'negocio muy rentable, alto poder de pricing.' if status == 'green' else 'margen aceptable.' if status == 'amber' else 'margen débil, vulnerable a shocks de costo.'}"
             ),
         })
@@ -23297,11 +23523,11 @@ def _yf_scorecard_fetcher(yf_ticker: str) -> dict:
         metrics.append({
             "name": "Revenue Growth YoY",
             "value": rg_pct,
-            "value_label": f"{rg_pct:+.1f}%",
+            "value_label": f"{fmt_num(rg_pct, 1, signed=True)}%",
             "reference": "> 10% (crecimiento sólido)",
             "status": status,
             "interpretation_hint": (
-                f"Revenue YoY {rg_pct:+.1f}% — "
+                f"Revenue YoY {fmt_num(rg_pct, 1, signed=True)}% — "
                 f"{'crecimiento de doble dígito.' if status == 'green' else 'crecimiento positivo pero modesto.' if status == 'amber' else 'revenue contrayendo, alerta.'}"
             ),
         })
@@ -23405,7 +23631,7 @@ def _yf_earnings_fetcher(yf_ticker: str) -> dict:
     # cortaba la segunda string literal silenciosamente).
     hint_parts = []
     if surprise_avg is not None:
-        hint_parts.append(f"Surprise promedio últimos 4Q: {surprise_avg:+.1f}%.")
+        hint_parts.append(f"Surprise promedio últimos 4Q: {fmt_num(surprise_avg, 1, signed=True)}%.")
     hint_parts.append(
         "Surprises positivas consistentes (>5%) sugieren conservadurismo de la "
         "empresa o capacidad de superar guidance. Surprises negativas grandes "
@@ -23488,7 +23714,7 @@ def _yf_analysts_fetcher(yf_ticker: str) -> dict:
         "n_analysts": n_analysts,
         "_interpretation_hint": (
             f"{n_analysts} analistas cubren. Recomendación: {rec_label}. "
-            f"Target medio US$ {target_mean:.2f} = upside {upside_pct:+.1f}% sobre precio actual. "
+            f"Target medio US$ {fmt_num(target_mean, 2)} = upside {fmt_num(upside_pct, 1, signed=True)}% sobre precio actual. "
             "Recordá: targets de analistas son OPINIONES, no certezas — útiles como contexto, no como decisión."
         ) if all([n_analysts, rec_label, target_mean, upside_pct is not None]) else "",
     }
@@ -23855,8 +24081,8 @@ def _md_label(v, unit):
     if v is None:
         return "—"
     if unit == "pct":
-        return f"{v:.2f}%"
-    return f"{v:.2f}x"
+        return f"{fmt_num(v, 2)}%"
+    return f"{fmt_num(v, 2)}x"
 
 
 def _fund_raw_values(fund: dict, metrics_block: dict, cagr: dict = None) -> dict:
@@ -24041,13 +24267,13 @@ def _build_categories_detail(fund: dict, metrics_block: dict, cagr: dict = None,
         a = abs(v)
         sign = "-" if v < 0 else ""
         if a >= 1e12:
-            return f"{sign}${a/1e12:.2f}T"
+            return f"{sign}${fmt_num(a/1e12, 2)}T"
         if a >= 1e9:
-            return f"{sign}${a/1e9:.2f}B"
+            return f"{sign}${fmt_num(a/1e9, 2)}B"
         if a >= 1e6:
-            return f"{sign}${a/1e6:.1f}M"
+            return f"{sign}${fmt_num(a/1e6, 1)}M"
         if a >= 1e3:
-            return f"{sign}${a/1e3:.1f}K"
+            return f"{sign}${fmt_num(a/1e3, 1)}K"
         return f"{sign}${a:.0f}"
 
     def _label(v, unit):
@@ -24936,7 +25162,7 @@ def _trade_draft_context(uid: int) -> str:
 def _fmt_qty(q: float) -> str:
     if q == int(q):
         return str(int(q))
-    return f"{q:.8f}".rstrip("0").rstrip(".")
+    return f"{fmt_num(q, 8)}".rstrip("0").rstrip(".")
 
 
 def _register_trade_summary(p: dict) -> str:
@@ -24944,40 +25170,48 @@ def _register_trade_summary(p: dict) -> str:
     if p["action"] == "convert":
         _rate = "al MEP" if p.get("tc_from_today") else "al dólar"
         if p.get("conv_direction") == "ars_to_usd":
-            s = (f"COMPRA DE DÓLARES: $ {p['conv_ars']:,.2f} → US$ "
-                 f"{p['conv_usd']:,.2f} en {p['broker']} ({_rate} {p['conv_tc']:,.0f})")
+            s = (f"COMPRA DE DÓLARES: $ {fmt_num(p['conv_ars'], 2)} → US$ "
+                 f"{fmt_num(p['conv_usd'], 2)} en {p['broker']} ({_rate} {fmt_num(p['conv_tc'], 0)})")
         else:
-            s = (f"VENTA DE DÓLARES: US$ {p['conv_usd']:,.2f} → $ "
-                 f"{p['conv_ars']:,.2f} en {p['broker']} ({_rate} {p['conv_tc']:,.0f})")
+            s = (f"VENTA DE DÓLARES: US$ {fmt_num(p['conv_usd'], 2)} → $ "
+                 f"{fmt_num(p['conv_ars'], 2)} en {p['broker']} ({_rate} {fmt_num(p['conv_tc'], 0)})")
         if p.get("date_is_today") is False:
             s += f" con fecha {p['date']}"
-        return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+        # Los números ya vienen de fmt_num con los separadores argentinos puestos.
+        # Acá vivía un swap coma↔punto sobre la frase ENTERA: con fmt_num delante,
+        # ese swap los daba vuelta de nuevo y los dejaba a la inglesa.
+        return s
     if p["action"] in ("deposit", "withdraw", "transfer"):
         if p["action"] == "deposit":
-            s = f"DEPÓSITO {ccy} {p['amount']:,.2f} en {p['broker']}"
+            s = f"DEPÓSITO {ccy} {fmt_num(p['amount'], 2)} en {p['broker']}"
         elif p["action"] == "withdraw":
-            s = f"RETIRO {ccy} {p['amount']:,.2f} de {p['broker']}"
+            s = f"RETIRO {ccy} {fmt_num(p['amount'], 2)} de {p['broker']}"
         else:
-            s = (f"TRANSFERENCIA {ccy} {p['amount']:,.2f} de {p['broker']} a "
+            s = (f"TRANSFERENCIA {ccy} {fmt_num(p['amount'], 2)} de {p['broker']} a "
                  f"{p.get('to_broker')} (se anota como retiro en {p['broker']} "
                  f"+ depósito en {p.get('to_broker')})")
         if p.get("date_is_today") is False:
             s += f" con fecha {p['date']}"
-        return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+        # Los números ya vienen de fmt_num con los separadores argentinos puestos.
+        # Acá vivía un swap coma↔punto sobre la frase ENTERA: con fmt_num delante,
+        # ese swap los daba vuelta de nuevo y los dejaba a la inglesa.
+        return s
     side = "COMPRA" if p["action"] == "buy" else "VENTA"
     tipo = {"CRYPTO": "cripto", "CEDEAR": "CEDEAR", "STOCK": "acción",
             "AR_STOCK": "acción AR"}.get(p["kind"], p["kind"])
     s = (f"{side} {_fmt_qty(p['quantity'])} {p['asset']} ({tipo}) @ {ccy} "
-         f"{p['price']:,.2f} = {ccy} {p['amount']:,.2f} en {p['broker']}")
+         f"{fmt_num(p['price'], 2)} = {ccy} {fmt_num(p['amount'], 2)} en {p['broker']}")
     if p["action"] == "sell" and p.get("tc_venta"):
-        s += f" (P&L al dólar {p['tc_venta']:,.0f})"
+        s += f" (P&L al dólar {fmt_num(p['tc_venta'], 0)})"
     if p.get("date_is_today") is False:
         s += f" con fecha {p['date']}"
     if p.get("autodeposit_needed"):
         s += (f". OJO: tu cash en {p['broker']} no alcanza — registro también un "
-              f"depósito de {ccy} {p['autodeposit_needed']:,.2f} para cubrirlo")
+              f"depósito de {ccy} {fmt_num(p['autodeposit_needed'], 2)} para cubrirlo")
     # separador de miles → punto (es-AR), decimal → coma
-    return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+    # Los separadores ya los puso fmt_num en cada número; el swap sobre la
+    # frase entera que había acá los volvía a dar vuelta.
+    return s
 
 
 def _num_or_none(v):
@@ -25422,8 +25656,8 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     _mep_now = _current_cedear_rate() or _user_tc_blue(conn, uid)
                 except Exception:
                     _mep_now = None
-                _offer = (f" (o la registro al MEP de hoy, $ {_mep_now:,.0f}"
-                          .replace(",", ".") + ")") if _mep_now else ""
+                _offer = (f" (o la registro al MEP de hoy, $ {fmt_num(_mep_now, 0)}"
+                          + ")") if _mep_now else ""
                 missing.append(f"tc — a qué cotización del dólar operó{_offer}. "
                                "Si acepta el de hoy, re-llamá con "
                                "price_source='market_today'; si dio otro, mandá tc=<ese número>")
@@ -25632,14 +25866,14 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
                     f"Los números no cierran: {_fmt_qty(quantity)} × {price} = "
-                    f"{quantity*price:,.2f} ≠ monto {amount:,.2f}. Preguntá cuál vale."
+                    f"{fmt_num(quantity*price, 2)} ≠ monto {fmt_num(amount, 2)}. Preguntá cuál vale."
                 )}
             if quantity < 1e-8:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": "La cantidad da prácticamente cero — revisá monto y precio con el usuario."}
         if amount > _TRADE_MAX_NOTIONAL.get(currency, 5_000_000):
             _TRADE_DRAFT.pop(uid, None)
-            return {"error": f"El monto ({amount:,.0f} {currency}) es demasiado grande para registrar por chat. Que lo cargue desde la app."}
+            return {"error": f"El monto ({fmt_num(amount, 0)} {currency}) es demasiado grande para registrar por chat. Que lo cargue desde la app."}
 
         # Cinturón: un precio DICTADO de HOY lejísimos del mercado es casi
         # seguro moneda o escala equivocada (los bugs reales fueron 327× y
@@ -25696,8 +25930,8 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 if conv_ars > _have + 0.005:
                     _TRADE_DRAFT.pop(uid, None)
                     return {"error": (
-                        f"El usuario tiene {_have:,.2f} ARS en {broker} y la compra "
-                        f"cuesta {conv_ars:,.2f}. Avisale y preguntá el monto correcto."
+                        f"El usuario tiene {fmt_num(_have, 2)} ARS en {broker} y la compra "
+                        f"cuesta {fmt_num(conv_ars, 2)}. Avisale y preguntá el monto correcto."
                     )}
             else:                          # vender dólares: origen = sub-broker USD
                 conv_direction = "usd_to_ars"
@@ -25723,8 +25957,8 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                 if conv_usd > _have + 0.005:
                     _TRADE_DRAFT.pop(uid, None)
                     return {"error": (
-                        f"El usuario tiene US$ {_have:,.2f} en {broker} y quiere "
-                        f"vender US$ {conv_usd:,.2f}. Avisale y preguntá el monto correcto."
+                        f"El usuario tiene US$ {fmt_num(_have, 2)} en {broker} y quiere "
+                        f"vender US$ {fmt_num(conv_usd, 2)}. Avisale y preguntá el monto correcto."
                     )}
             # Ambas patas > 0 (review LOW): un monto minúsculo redondeaba una
             # pata a 0,00 y armaba un draft confirmable que reventaba con
@@ -25788,8 +26022,8 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             if amount > cash_now + 0.005:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
-                    f"El usuario tiene {cash_now:,.2f} {currency} de cash en "
-                    f"{broker} y quiere sacar {amount:,.2f}. Avisale y preguntá "
+                    f"El usuario tiene {fmt_num(cash_now, 2)} {currency} de cash en "
+                    f"{broker} y quiere sacar {fmt_num(amount, 2)}. Avisale y preguntá "
                     "si el monto o el broker son otros."
                 )}
         elif action == "buy":
@@ -26123,7 +26357,7 @@ def _register_blocks_epilogue(uid: int, text: str = "") -> str:
                     except Exception:
                         return str(v)
                 if k in ("price", "amount") and isinstance(v, (int, float)):
-                    return f"{v:,.2f}".replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+                    return fmt_num(v, 2)
                 return str(v)
 
             rows = []
@@ -28601,7 +28835,7 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
     # nombre de dólares. Un cobro de $12.100 quedaba anotado como "12.100 dólares"
     # en `subscriptions.amount_usd`, en `credit_ledger.amount_usd`, en
     # `users.credit_anchor_amount_usd` — y el aviso al admin lo IMPRIME así
-    # (`send_plan_change_admin` formatea `USD {monto:,.2f}`, emails.py:988): cada
+    # (`send_plan_change_admin` formatea `USD {fmt_num(monto, 2)}`, emails.py:988): cada
     # alta avisaba "USD 12.100,00" por un cobro de ~US$ 8,50.
     #
     # Lo que NO afectaba, verificado: los días de acceso salen de
@@ -29545,7 +29779,19 @@ _FREE_QUESTIONS_NORMALIZED = frozenset(_normalize_question(q) for q in _FREE_QUE
 
 _TRADE_INTENT_RE = re.compile(
     r"\b(compr[eéoóá]\w*|vend[ií]\w*|anot[aáeé]\w*|registr[aáoóeé]\w*|"
-    r"carg[aáoóuú]\w*|agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
+    # `agreg…` NO cuando viene de "me/le/nos/les agrega": eso es sumar riesgo o
+    # volatilidad, no registrar nada. Rompía UNA de las 12 preguntas guiadas
+    # —"¿Qué activo es el que más riesgo me agrega?"— al DICTARLA: sin los
+    # signos "¿?" deja de ser whitelist, el detector la tomaba por registro, el
+    # emparejador no le ofrecía la pregunta y el mensaje viajaba como si fuera
+    # una operación (gastando la consulta). "agregame una compra" no se toca:
+    # ahí el pronombre va pegado atrás, no adelante.
+    # `carg…` sin el PARTICIPIO ni el gerundio: "tengo 3 brokers cargados" y
+    # "los tengo cargados" son DESCRIPCIONES de lo que ya está, no la orden de
+    # registrar algo. Antes pasaban el gate, forzaban la tool de registro y
+    # encima le cobraban la consulta. "cargá", "cargué", "cargame", "cargalos"
+    # siguen entrando: el filtro mira sólo lo que viene pegado a la raíz.
+    r"carg[aáoóuú](?!d[oa]s?\b|ndo\b)\w*|(?<!me )(?<!le )(?<!nos )(?<!les )agreg[aáoóuú]\w*|deshac[eé]\w*|desharme|revert[íi]\w*|"
     r"corregí|me equivoqué)\b",
     re.IGNORECASE)
 # Movimientos de cash: los VERBOS solos son ambiguos en castellano ('me
@@ -29582,6 +29828,57 @@ _GROUP_INTENT_RE = re.compile(
     r"c[oó]mpra(le|les)|comprale[s]?)\b")
 
 
+# ─── "Tengo 0,001 bitcoin" TAMBIÉN es registrar ──────────────────────────────
+# Un usuario Free escribió exactamente eso y rebotó contra el candado del chat
+# libre (producción 2026-09-16). Es la forma más natural de decirlo y su plan SÍ
+# se lo permite: lo que no lo permitía era este detector, que sólo miraba VERBOS
+# de operación ("compré", "vendí", "deposité").
+#
+# 🔴 "tengo" SOLO no alcanza, y por lejos: "tengo una duda", "tengo 3 brokers",
+# "qué riesgos ves en lo que tengo". Se exige la terna completa —tenencia +
+# CANTIDAD + un activo que Rendi sepa registrar—, que es el mismo criterio que
+# ya se le aplica a los verbos de cash ('me retiro a dormir' no es un retiro).
+_TENENCIA_RE = re.compile(
+    r"\b(tengo|ten[ií]a|poseo|me\s+qued[ao]n?|acumul[eé]|junt[eé])\b",
+    re.IGNORECASE)
+# La cantidad y el activo, PEGADOS: el activo tiene que ser LO QUE SE CUENTA.
+# Sin esa adyacencia "tengo 2 preguntas para vos" registraría Paramount (PARA).
+# El mínimo de 2 letras deja afuera los tickers de una sola (T, V, F, U, C…),
+# que en una frase castellana son ruido garantizado.
+_CANTIDAD_ACTIVO_RE = re.compile(
+    r"\b\d[\d.,]*\s*"
+    r"(?:(?:acciones?|unidades?|nominales?|cedears?|papeles?|monedas?)\s+)?"
+    r"(?:de\s+)?"
+    r"([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9.\-]{1,14})",
+    re.IGNORECASE)
+# Tickers que ADEMÁS son palabras castellanas. NO es una lista a ojo: sale de
+# cruzar las cuatro listas de ai/trade_tickers.py contra vocabulario castellano
+# corriente. Son 11, y cada una es un ticker de verdad —"tengo 3 de esos"
+# resolvería DE (Deere) y "tengo 1 dia libre" resolvería DIA (el ETF del Dow)—.
+# La lista no los borra del catálogo: los deja fuera de ESTE camino nada más.
+# Por el verbo ("compré 10 DE") siguen entrando igual que siempre.
+_TICKERS_QUE_SON_PALABRAS = {
+    "BRASIL", "COME", "DE", "DIA", "DOME", "LONG", "ONE", "PARA", "ROSE",
+    "TON", "UNI",
+}
+
+
+def _menciona_activo_registrable(text: str) -> bool:
+    """¿El mensaje dice una CANTIDAD de un activo que Rendi sabe registrar?
+
+    El activo se valida contra `trade_tickers.resolve_asset` — la MISMA
+    allowlist que usa el write-path del chat. Si Rendi no lo sabe registrar, no
+    hay ninguna razón para abrirle la puerta al mensaje: sería cambiar un
+    rebote temprano y claro por uno tardío y confuso (y encima cobrado)."""
+    from ai.trade_tickers import resolve_asset
+    for token in _CANTIDAD_ACTIVO_RE.findall(text or ""):
+        if token.upper() in _TICKERS_QUE_SON_PALABRAS:
+            continue
+        if resolve_asset(token)[0]:
+            return True
+    return False
+
+
 def _is_trade_intent(text: str) -> bool:
     """¿El mensaje es intención de REGISTRAR o DESHACER una operación ('compré
     2000 usd de btc a 65000', 'anotame una compra', 'deshacelo')? Gate del texto
@@ -29600,7 +29897,8 @@ def _is_trade_intent(text: str) -> bool:
         _TRADE_INTENT_RE.search(t)
         or _CASH_NOUN_RE.search(t)
         or _CASH_NOUN2_RE.search(t)
-        or (_CASH_VERB_RE.search(t) and _CASH_CONTEXT_RE.search(t)))
+        or (_CASH_VERB_RE.search(t) and _CASH_CONTEXT_RE.search(t))
+        or (_TENENCIA_RE.search(t) and _menciona_activo_registrable(t)))
 
 
 def _is_whitelisted_question(text: str) -> bool:
@@ -30503,6 +30801,16 @@ def _chat_quota_429(tier: str, usage: dict, es_analisis: bool = False) -> HTTPEx
         429,
         detail={
             "error": "chat_quota_exceeded",
+            # 🔴 QUÉ cupo se agotó, en un campo que se pueda LEER.
+            #
+            # El dato ya existía acá (es_analisis) pero sólo salía adentro de
+            # `message`, en prosa. La tarjeta de upgrade no muestra ese texto:
+            # arma su propio título con los contadores, y tenía el tipo escrito
+            # a mano como "chat". Resultado: a alguien que se quedó sin
+            # ANÁLISIS le decía "Usaste 0 de 1 consultas al Coach IA" —
+            # el sustantivo equivocado Y un número que se contradice solo.
+            # Reportado en producción (2026-09-16).
+            "kind": "analyses" if es_analisis else "chat",
             "message": msg,
             "usage": usage,
             "upgrade": {
@@ -30867,7 +31175,7 @@ El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operat
 
 BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (inflación AR, S&P 500 total return, dólar blue, Merval) y los del usuario (USD y pesos-aprox), YA calculados — usá esos números tal cual y respetá las reglas de comparación de su _note (USD contra USD, pesos contra pesos). Si summary.benchmarks NO está o un campo es null, decí con franqueza que no tenés ese dato — NUNCA inventes el retorno de un índice.'''}
 
-RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días.
+RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días. Y los números se escriben a la argentina: "US$ 1.037,74", "+5,2%" — el punto para los miles y la coma para los decimales, aunque el dato te haya llegado como 1037.74.
 
 RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad— y después una línea ofreciendo DISTINTOS caminos para seguir, para que elija el usuario. Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé DOS chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como una de las puertas. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: Rendi empieza a hablar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
@@ -39472,7 +39780,7 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
 def _fmt_ar(n: float) -> str:
     """Miles con punto, estilo es-AR (el :,.0f de Python usa coma en-US y en
     Argentina '12,346' se lee doce-coma-tres; audit)."""
-    return f"{n:,.0f}".replace(",", ".")
+    return f"{fmt_num(n, 0)}"
 
 
 def _report_wa_text(p: dict, url: str) -> str:
@@ -39486,7 +39794,7 @@ def _report_wa_text(p: dict, url: str) -> str:
         mu = round(p["market_usd"], 2) + 0.0   # -0.004 → -0.0 → 0.0 (sin "ganó -0")
         signo = "ganó" if mu >= 0 else "perdió"
         rp = (round(p["ret_pct"], 1) + 0.0) if p.get("ret_pct") is not None else None
-        extra = f" ({rp:+.1f}%)" if rp is not None else ""
+        extra = f" ({fmt_num(rp, 1, signed=True)}%)" if rp is not None else ""
         f = round(p.get("flows_usd") or 0, 2) + 0.0
         flujo = (f"tus aportes netos fueron US$ {_fmt_ar(f)}" if f >= 0
                  else f"tus retiros netos fueron US$ {_fmt_ar(abs(f))}")
@@ -39983,8 +40291,8 @@ def _group_op_summary(asset: str, ccy: str, price: float, date, prows: list) -> 
     parts = []
     for p in prows:
         amt = p["quantity"] * p["buy_price"]
-        parts.append(f"{p['_label']}: {_fmt_qty(p['quantity'])} × {sym} {p['buy_price']:,.2f} "
-                     f"= {sym} {amt:,.2f} en {p['broker']}")
+        parts.append(f"{p['_label']}: {_fmt_qty(p['quantity'])} × {sym} {fmt_num(p['buy_price'], 2)} "
+                     f"= {sym} {fmt_num(amt, 2)} en {p['broker']}")
     when = f" con fecha {date}" if date else ""
     return (f"COMPRA GRUPAL de {asset} ({ccy}){when} para {len(prows)} "
             f"cliente{'s' if len(prows) != 1 else ''} — " + " · ".join(parts))
@@ -40109,7 +40417,7 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
                     continue
             notional = float(qty) * price
             if notional > max_notional:
-                row_problems.append(f"{client['label']}: {ccy} {notional:,.0f} supera el tope de seguridad — confirmá el número con el asesor")
+                row_problems.append(f"{client['label']}: {ccy} {fmt_num(notional, 0)} supera el tope de seguridad — confirmá el número con el asesor")
                 continue
             broker = _suggest_group_broker(conn, client["client_uid"], asset, ccy)
             if broker is None:
@@ -40131,7 +40439,7 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
         # serio y corta el disparate.
         total_notional = sum(p["quantity"] * p["buy_price"] for p in prows)
         if total_notional > max_notional * 5:
-            return {"error": (f"el TOTAL del lote ({ccy} {total_notional:,.0f}) supera el tope "
+            return {"error": (f"el TOTAL del lote ({ccy} {fmt_num(total_notional, 0)}) supera el tope "
                               "de seguridad — confirmá los números con el asesor y, si son "
                               "reales, registralo en tandas más chicas o desde Clientes → "
                               "Operación grupal")}
@@ -40146,7 +40454,7 @@ def _register_group_op_handler(inp: dict, uid: int, request_id=None,
         if _excl:
             summary += " · ⚠️ NO entran: " + "; ".join(str(p) for p in _excl[:6])
         # Total del lote (audit: era el número que faltaba para confirmar).
-        summary += f" · TOTAL {ccy} {total_notional:,.0f}"
+        summary += f" · TOTAL {ccy} {fmt_num(total_notional, 0)}"
         payload = {"asset": asset, "asset_type": fields.get("asset_type"),
                    "currency": ccy, "entry_date": date_s,
                    "rows": [{k: v for k, v in p.items() if k != "_label"} for p in prows]}

@@ -12,7 +12,11 @@
 // texto adentro no se puede comprimir. Las barras muestran la forma sin leer un
 // solo número y sí se comprimen; el detalle aparece al pasar el mouse.
 //
-// Visual: barras en los verdes/rojos semánticos, números en Geist + tabular.
+// Visual: barras en los verdes/rojos de RELLENO (no los de texto: una barra es
+// un trazo, no un número), y el hover en `--bar-hover-*`. El hover tiene que
+// alejarse del fondo, y el fondo cambia de tema: aclara en oscuro, oscurece en
+// claro. Antes eran `green-200`/`red-100` fijos, que sobre blanco dan 1,65:1 —
+// la barra se borraba justo al señalarla. Números en Geist + tabular.
 
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -91,7 +95,7 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
           <div className="flex items-baseline gap-1.5 mt-1 leading-none">
             <b className={`text-[13px] font-semibold tabular ${
               activo.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-              {activo.pct >= 0 ? '+' : '−'}{Math.abs(activo.pct).toFixed(2)}%
+              {activo.pct >= 0 ? '+' : '−'}{Math.abs(activo.pct).toFixed(2).replace('.', ',')}%
             </b>
             <span className="text-ink-3 text-[11px]">·</span>
             <b className={`text-[13px] font-semibold tabular ${
@@ -130,7 +134,7 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
             onBlur={() => setEncima(null)}
             tabIndex={m ? 0 : -1}
             aria-label={m
-              ? `${m.label}: ${m.pct >= 0 ? '+' : '−'}${Math.abs(m.pct).toFixed(2)} por ciento, ${money.fmtMoney(m.usd, { signed: true })}`
+              ? `${m.label}: ${m.pct >= 0 ? '+' : '−'}${Math.abs(m.pct).toFixed(2).replace('.', ',')} por ciento, ${money.fmtMoney(m.usd, { signed: true })}`
               : undefined}
             className={`flex-1 min-w-0 relative rounded-sm transition-colors
                         focus:outline-none focus-visible:ring-1 focus-visible:ring-rendi-accent
@@ -141,8 +145,8 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
               <div
                 className={`absolute left-[14%] right-[14%] rounded-xs transition-colors ${
                   m.pct >= 0
-                    ? `bottom-1/2 ${encima === i ? 'bg-green-200' : 'bg-rendi-pos'}`
-                    : `top-1/2 ${encima === i ? 'bg-red-100' : 'bg-rendi-neg'}`}`}
+                    ? `bottom-1/2 ${encima === i ? 'bg-[rgb(var(--bar-hover-up))]' : 'bg-rendi-pos-fill'}`
+                    : `top-1/2 ${encima === i ? 'bg-[rgb(var(--bar-hover-down))]' : 'bg-rendi-neg-fill'}`}`}
                 style={{ height: `${Math.max(2, (Math.abs(m.pct) / max) * ALTO_MAX_PCT / 2)}%` }}
               />
             ) : (
@@ -168,7 +172,7 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
 
       {conDato.length > 0 && (
         <div className="text-[10px] text-ink-3 text-right mt-1.5 tabular leading-none">
-          barra más alta = {max.toFixed(1)}%
+          barra más alta = {max.toFixed(1).replace('.', ',')}%
         </div>
       )}
     </div>
@@ -229,12 +233,12 @@ function Veredicto({ nombre, articulo, pp, detalle }) {
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1)} puntos porcentuales`
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1).replace('.', ',')} puntos porcentuales`
              + (detalle ? `. ${detalle}` : '')}
     >
       vs {nombre}
       <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1)} pp
+        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1).replace('.', ',')} pp
       </b>
     </span>
   )
@@ -279,10 +283,10 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   const datos = []
   if (resumen.sp500_return_pct != null) {
     datos.push({ label: 'S&P 500 ese año',
-                 valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1)}%` })
+                 valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1).replace('.', ',')}%` })
   }
   if (resumen.inflation_pct != null) {
-    datos.push({ label: 'Inflación AR', valor: `+${resumen.inflation_pct.toFixed(1)}%` })
+    datos.push({ label: 'Inflación AR', valor: `+${resumen.inflation_pct.toFixed(1).replace('.', ',')}%` })
   }
   if (resumen.deposits > 0) {
     datos.push({ label: 'Aportaste', valor: money.fmtMoney(resumen.deposits) })
@@ -297,14 +301,14 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   if (resumen.trades_count > 0) {
     datos.push({ label: 'Operaciones', valor: `${resumen.trades_count} cerradas` })
     if (resumen.win_rate != null) {
-      datos.push({ label: 'Win rate', valor: `${resumen.win_rate.toFixed(0)}%` })
+      datos.push({ label: 'Win rate', valor: `${resumen.win_rate.toFixed(0).replace('.', ',')}%` })
     }
   }
   if (pcts.length > 0) {
     datos.push({ label: 'Meses en verde', valor: `${verdes} de ${mesesDelAnio}` })
     const mejor = Math.max(...pcts), peor = Math.min(...pcts)
-    datos.push({ label: 'Mejor mes', valor: `+${mejor.toFixed(1)}%`, tono: 'pos' })
-    if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1)}%`, tono: 'neg' })
+    datos.push({ label: 'Mejor mes', valor: `+${mejor.toFixed(1).replace('.', ',')}%`, tono: 'pos' })
+    if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1).replace('.', ',')}%`, tono: 'neg' })
   }
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
   // ruido que el ojo tiene que descartar en cada pasada.
@@ -443,7 +447,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                     <span className={`text-[22px] font-semibold tracking-tight leading-none tabular ${
                       resumen.basis === 'contable' ? 'text-ink-1'
                         : pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                      {pct >= 0 ? '+' : '−'}{Math.abs(pct).toFixed(2)}%
+                      {pct >= 0 ? '+' : '−'}{Math.abs(pct).toFixed(2).replace('.', ',')}%
                     </span>
                   ) : bloqueado ? (
                     <Link to="/planes" className="inline-flex items-center gap-1.5 text-[13px] text-rendi-accent hover:text-rendi-accent/80 font-medium leading-none">
@@ -496,7 +500,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   <Veredicto
                     nombre="inflación" articulo="la" pp={parcial ? null : resumen?.vs_inflation_pct}
                     detalle={!enPesos && resumen?.retorno_ars_pct != null
-                      ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2)} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1)} %`
+                      ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2).replace('.', ',')} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1).replace('.', ',')} %`
                       : null}
                   />
                 </div>

@@ -194,7 +194,25 @@
     }
     </script>
 
-    <script>if(localStorage.getItem('rendi_theme')!=='light')document.documentElement.classList.add('dark')</script>
+    <!-- Tema, antes del primer pixel. Sin esto la app arranca con el tema que
+         diga el CSS y salta al del usuario cuando monta React: un parpadeo en
+         cada carga. Por eso se lee la preferencia acá y no en React.
+
+         OJO — ESTE SCRIPT Y EL LOCK DE ThemeContext.jsx SE MUEVEN JUNTOS.
+         `LIGHT_MODE_LOCKED` está en `false` desde 2026-09-16: el modo claro
+         está abierto. Se deja puesto para poder apagarlo sin revertir cuatro
+         tandas de trabajo — pero si se pone en `true` acá y no allá (o al
+         revés), la app parpadea en cada carga o arranca del color equivocado
+         para quien ya eligió. -->
+    <script>
+      (function () {
+        var LIGHT_MODE_LOCKED = false
+        var pref = null
+        try { pref = localStorage.getItem('rendi_theme') } catch (e) { /* modo privado */ }
+        var dark = LIGHT_MODE_LOCKED || pref !== 'light'
+        document.documentElement.classList.toggle('dark', dark)
+      })()
+    </script>
 
     <!-- Meta Pixel -->
     <script>

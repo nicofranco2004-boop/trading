@@ -18,14 +18,377 @@
    • Neg: pink → red financiero #FF5360
    ════════════════════════════════════════════════════════════════════════ */
 
+/* ════════════════════════════════════════════════════════════════════════
+   F0 — LOS TOKENS SON VARIABLES, NO VALORES FIJOS  (2026-09-15)
+   ════════════════════════════════════════════════════════════════════════
+   Hasta acá los 33 tokens de abajo vivían como hex literales en
+   tailwind.config.js. Eso hacía imposible el modo claro: ~8.900 usos en el
+   código pedían un color que no podía cambiar de valor. Ahora el config
+   apunta a estas variables y el tema las redefine.
+
+   ── Por qué CANALES (`7 9 12`) y no hex (`#07090C`) ────────────────────
+   1.937 usos del código piden el color a media transparencia
+   (`bg-bg-2/40`, `border-line/50`). Para poder inyectar esa opacidad,
+   Tailwind necesita componer `rgb(var(--x) / 0.4)` — y eso sólo funciona
+   si la variable trae los tres canales sueltos. Con un hex adentro, el
+   `/40` se descarta en silencio: sin error, sin warning, 1.937 lugares
+   renderizando opaco. Si algún día alguien "simplifica" esto a hex, ese
+   es el bug que va a estar creando.
+   El guard que lo vigila: src/__design__/theme-tokens.test.js
+
+   ── La dirección ───────────────────────────────────────────────────────
+   `:root` = claro · `.dark` = oscuro. Es al revés de como se siente hoy
+   (la app es oscura siempre), pero es la que esperan los 482 `dark:` que
+   quedaron del sistema anterior y la única que Tailwind soporta con
+   darkMode:'class'. Quién pone la clase: index.html (antes del primer
+   pixel, contra el flash) y ThemeContext.jsx (en cada cambio).
+
+   ── Los valores claros NO son los oscuros invertidos ───────────────────
+   Están elegidos para producir sobre blanco el mismo PESO que su gemelo
+   produce sobre negro. Ejemplo del porqué: `line` oscuro (#1B2230) sobre
+   el panel oscuro contrasta 1,18:1 — un susurro. Ese mismo hex sobre
+   blanco contrasta 15,93:1: pasa a ser lo más oscuro de la pantalla. El
+   valor claro (#E5E6EE) vuelve a dar 1,24:1. Mismo peso, otro número.
+
+   ── Lo que NO entró acá ────────────────────────────────────────────────
+   Las escalas de 9 pasos (green-50..800, red-50..800) siguen siendo hex
+   fijos: son rampas de heatmap y no se arreglan cambiando valores, hay
+   que recorrerlas al revés. Eso es F2.
+   ════════════════════════════════════════════════════════════════════════ */
+
+@layer base {
+  /* ── El tema del NAVEGADOR, no sólo el de la app ─────────────────────────
+     Esto es lo que decide el cromo que Rendi no dibuja: el fondo con el que
+     Chrome pinta un campo autocompletado, las barras de scroll nativas, el
+     calendario de un `<input type=date>`, los desplegables de `<select>` y el
+     color por defecto detrás de todo.
+
+     Sin esto, el `<meta name="color-scheme" content="dark light">` de
+     index.html manda siempre y es ESTÁTICO: en modo claro el navegador seguiría
+     usando su cromo oscuro. El síntoma más visible sería un campo de email
+     autocompletado por Chrome con fondo casi negro en medio de un formulario
+     blanco — y no hay CSS de la app que lo pueda pisar, porque ese fondo lo
+     pinta el navegador por fuera de la cascada.
+
+     El meta se deja como está: pinta el fondo inicial antes de que cargue esta
+     hoja, y eso es lo que evita el flash blanco al arrancar.
+
+     ⚠️ Va DENTRO de cada bloque, no en un `:root` aparte: el guard lee el
+     primer `:root {` hasta su cierre, y un segundo bloque le esconde los
+     tokens — lo cazó apenas se intentó. */
+  :root {
+    color-scheme: light;
+
+    /* ── Superficies ───────────────────────────────────────────────────── */
+    --bg-0                : 240 240 246    ;  /* fondo de la app */
+    --bg-1                : 255 255 255    ;  /* panel / card (el atomo Panel) */
+    --bg-2                : 244 244 249    ;  /* hover y relleno sutil */
+    --bg-3                : 231 232 240    ;  /* activo / presionado */
+
+    /* ── Texto ─────────────────────────────────────────────────────────── */
+    --ink-0               : 21 23 30       ;  /* texto principal */
+    --ink-1               : 61 67 81       ;  /* texto secundario */
+    --ink-2               : 85 94 112      ;  /* rotulos, captions */
+    --ink-3               : 110 118 134    ;  /* pistas, deshabilitado */
+
+    /* ── Lineas ────────────────────────────────────────────────────────── */
+    --line                : 229 230 238    ;  /* bordes y dividers */
+    --line-2              : 212 215 226    ;  /* bordes elevados (modales, dropdowns) */
+    --line-3              : 183 187 202    ;  /* bordes muy elevados (focus, seleccion) */
+
+    /* ── Semanticos ────────────────────────────────────────────────────── */
+    --rendi-pos           : 10 129 73      ;  /* ganancia — TEXTO */
+    --rendi-neg           : 198 43 56      ;  /* perdida — TEXTO */
+    --rendi-pos-fill      : 20 165 96      ;  /* ganancia — RELLENO de barras y areas */
+    --rendi-neg-fill      : 226 58 71      ;  /* perdida — RELLENO de barras y areas */
+    --rendi-warn          : 138 90 4       ;  /* warnings */
+    --rendi-accent        : 31 111 212     ;  /* info, benchmarks, links */
+
+    /* ── Data accents ──────────────────────────────────────────────────── */
+    --data-cyan           : 10 122 140     ;  /* sync, hints, neutro */
+    --data-blue           : 31 111 212     ;  /* info */
+    --data-violet         : 91 75 214      ;  /* marca, accion, botones primarios */
+    --data-amber          : 138 90 4       ;  /* warnings sobrios */
+
+    /* ── Brand kit ─────────────────────────────────────────────────────── */
+    --rendi-violet-hover  : 74 59 192      ;  /* :hover de botones violet */
+    --rendi-violet-deep   : 238 236 252    ;  /* background tintado (oscuro en dark, claro en light) */
+    --rendi-charcoal      : 255 255 255    ;  /* paneles */
+    --rendi-slate         : 244 244 249    ;  /* cards elevadas */
+    --rendi-sky           : 31 111 212     ;  /* alias semantico de rendi-accent */
+
+    /* ── Aliases legacy ────────────────────────────────────────────────── */
+    --rendi-green         : 10 129 73      ;
+    --rendi-green-dark    : 10 107 61      ;
+    --rendi-aqua          : 10 122 140     ;
+    --rendi-pink          : 198 43 56      ;
+    --rendi-bg            : 240 240 246    ;
+    --rendi-card          : 255 255 255    ;
+    --rendi-muted         : 85 94 112      ;
+
+    /* ── Rampa de polaridad — LA DIRECCIÓN SE INVIERTE, no los valores ──
+       En oscuro, intenso = BRILLANTE (la rampa sube hacia el verde señal).
+       En claro, intenso = OSCURO Y SATURADO (la rampa baja hacia el verde
+       profundo). No es el mismo color aclarado: es la misma familia
+       recorrida al revés. Si se "simplifica" invirtiendo hex, el paso más
+       intenso queda pálido y el más suave queda negro — que es exactamente
+       lo que se veía antes.
+       Cada paso trae su tinta: el fondo cambia de luminancia entre temas,
+       así que el texto de encima también. Todos los pares miden >= 4,5:1.
+       Los cortes (cuánto es "poco" y cuánto "fuerte") NO viven acá: son
+       distintos para el día y para el mes. Están en utils/polarityScale.js */
+
+    /* ── Rampa de polaridad (heatmap · calendario) ─────────────────────── */
+    --pol-up-1            : 191 235 210    ;  /* sube poco */
+    --pol-up-2            : 79 189 136     ;  /* sube */
+    --pol-up-3            : 10 129 73      ;  /* sube fuerte */
+    --pol-up-1-ink        : 21 23 30       ;
+    --pol-up-2-ink        : 10 46 27       ;
+    --pol-up-3-ink        : 255 255 255    ;
+
+    --pol-down-1          : 252 210 214    ;  /* baja poco */
+    --pol-down-2          : 232 115 124    ;  /* baja */
+    --pol-down-3          : 176 36 47      ;  /* baja fuerte */
+    --pol-down-1-ink      : 21 23 30       ;
+    --pol-down-2-ink      : 57 9 13        ;
+    --pol-down-3-ink      : 255 255 255    ;
+
+    --pol-flat            : 238 239 244    ;  /* no se movió — tiende al fondo, no a un gris fijo */
+    --pol-flat-ink        : 110 118 134    ;
+
+    /* ── Chrome de los gráficos (utils/chartTheme.js) ───────────────────
+       La grilla NO puede reusar `line`: el mismo valor que sobre el panel
+       oscuro es un susurro (1,18:1), sobre blanco da 15,93:1 y pesa más que
+       los datos. La rampa monocroma se recorre al revés, igual que la de
+       polaridad: en oscuro la porción mayor es la más brillante, en claro
+       la más profunda. */
+    --chart-grid          : 212 215 226    ;  /* la grilla — recesiva en los dos temas */
+    --mono-violet-1       : 74 59 192      ;  /* rampa monocroma: 1 = la porción más grande */
+    --mono-violet-2       : 111 98 207     ;
+    --mono-violet-3       : 148 138 222    ;
+    --mono-violet-4       : 184 177 236    ;
+    --mono-violet-5       : 221 216 251    ;
+
+    /* No son colores: son las dos cosas del gráfico que cambian de FORMA
+       entre temas. La transparencia se percibe más débil sobre blanco, así
+       que el relleno bajo la línea sube. Y la elevación en claro se hace con
+       sombra, porque sobre un panel ya blanco no queda nada que aclarar.
+       `--shadow-raised` es la sombra de TODO lo que flota —el globo de datos
+       y el átomo Panel con `elevated`—, no sólo del gráfico: son la misma
+       cosa y llevan un solo nombre. */
+    --chart-area-op       : 0.22           ;
+    --shadow-raised: 0 1px 2px rgb(21 23 30 / .06), 0 8px 24px -12px rgb(21 23 30 / .28);
+
+    /* ── El hover de una barra del año (reports/PerformanceCalendar) ─────
+       El hover tiene que ALEJARSE del fondo, y el fondo cambia de tema: en
+       oscuro eso es aclarar, en claro es oscurecer. Usaba `green-200` y
+       `red-100` fijos, que sobre blanco dan 1,65:1 — la barra desaparecía
+       justo al señalarla. Los valores oscuros son los de siempre. */
+    --bar-hover-up        : 10 107 61      ;
+    --bar-hover-down      : 142 29 38      ;
+
+    /* ── Colores de categoría (tipo de activo · sector · composición) ────
+       Identidad, no magnitud: cada categoría conserva SU tono en los dos
+       temas; lo que cambia es la luminancia. En oscuro son los de siempre;
+       en claro bajan hasta pasar 4:1 contra el blanco, porque su swatch en
+       la leyenda es de 2-3 px y un área chica necesita más contraste que
+       una grande. Once de los veinte quedaban por debajo de 3:1.
+       Los otros seis tonos de estas paletas ya eran tokens del sistema
+       (rendi-pos, data-cyan, rendi-accent, data-violet, data-amber, ink-3)
+       y se usan directamente, sin duplicar variable. */
+    --cat-steel           : 77 124 170     ;
+    --cat-teal            : 78 132 125     ;
+    --cat-indigo          : 119 101 248    ;
+    --cat-slate           : 113 122 152    ;
+    --cat-gray-2          : 111 123 147    ;
+    --cat-slate-2         : 119 121 152    ;
+    --cat-olive           : 118 129 67     ;
+    --cat-brown           : 158 114 82     ;
+    --cat-bronze          : 165 112 34     ;
+    --cat-gold            : 161 115 35     ;
+    --cat-magenta         : 201 53 212     ;
+    --cat-pink            : 211 72 121     ;
+    --cat-orange          : 195 96 9       ;
+
+    /* ── WhatsApp ────────────────────────────────────────────────────────
+       Marca de terceros, no un token del sistema: no se reemplaza por uno.
+       Pero el verde brillante (#25D366) sobre blanco da 1,98:1 y el botón
+       "Escribirle" quedaba ilegible. En claro va el teal oscuro, que TAMBIÉN
+       es de la paleta oficial de WhatsApp (la familia de #128C7E / #075E54),
+       apenas más profundo para llegar a 4,64:1. En oscuro se queda el verde
+       de siempre, que es el que la gente reconoce. */
+    --whatsapp            : 16 131 118     ;
+
+    /* ── La superficie que FLOTA (modales, menús, globos, el buscador) ───
+       El defecto que F3 viene a arreglar: `bg-2` hacía dos trabajos que en
+       claro tiran para lados opuestos. Como "hover" tiene que ALEJARSE del
+       panel, y como "elevado" tiene que estar POR ENCIMA de él. En oscuro los
+       dos son aclarar, así que el mismo valor servía para ambos. En claro el
+       panel ya es blanco: elevar es quedarse en blanco y dejar que la sombra
+       haga el trabajo, mientras que el hover se va al gris. Direcciones
+       opuestas, un solo token: eso no cierra.
+       Ahora `bg-2` se queda con hover y relleno sutil, y lo que flota usa
+       esto. En oscuro vale lo mismo que `bg-2` valía — cero cambio. */
+    --bg-raised           : 255 255 255    ;
+  }
+
+  .dark {
+    color-scheme: dark;
+    /* ── Superficies ───────────────────────────────────────────────────── */
+    --bg-0                : 7 9 12         ;  /* fondo de la app */
+    --bg-1                : 14 18 24       ;  /* panel / card (el atomo Panel) */
+    --bg-2                : 20 25 35       ;  /* hover y relleno sutil */
+    --bg-3                : 27 34 48       ;  /* activo / presionado */
+
+    /* ── Texto ─────────────────────────────────────────────────────────── */
+    --ink-0               : 230 234 242    ;  /* texto principal */
+    --ink-1               : 195 202 216    ;  /* texto secundario */
+    --ink-2               : 156 163 181    ;  /* rotulos, captions */
+    --ink-3               : 90 100 120     ;  /* pistas, deshabilitado */
+
+    /* ── Lineas ────────────────────────────────────────────────────────── */
+    --line                : 27 34 48       ;  /* bordes y dividers */
+    --line-2              : 38 46 64       ;  /* bordes elevados (modales, dropdowns) */
+    --line-3              : 58 66 86       ;  /* bordes muy elevados (focus, seleccion) */
+
+    /* ── Semanticos ────────────────────────────────────────────────────── */
+    --rendi-pos           : 33 208 122     ;  /* ganancia — TEXTO */
+    --rendi-neg           : 255 83 96      ;  /* perdida — TEXTO */
+    --rendi-pos-fill      : 33 208 122     ;  /* ganancia — RELLENO de barras y areas */
+    --rendi-neg-fill      : 255 83 96      ;  /* perdida — RELLENO de barras y areas */
+    --rendi-warn          : 232 177 74     ;  /* warnings */
+    --rendi-accent        : 91 157 249     ;  /* info, benchmarks, links */
+
+    /* ── Data accents ──────────────────────────────────────────────────── */
+    --data-cyan           : 70 198 224     ;  /* sync, hints, neutro */
+    --data-blue           : 91 157 249     ;  /* info */
+    --data-violet         : 139 125 255    ;  /* marca, accion, botones primarios */
+    --data-amber          : 232 177 74     ;  /* warnings sobrios */
+
+    /* ── Brand kit ─────────────────────────────────────────────────────── */
+    --rendi-violet-hover  : 110 95 240     ;  /* :hover de botones violet */
+    --rendi-violet-deep   : 30 24 64       ;  /* background tintado (oscuro en dark, claro en light) */
+    --rendi-charcoal      : 13 16 21       ;  /* paneles */
+    --rendi-slate         : 20 25 35       ;  /* cards elevadas */
+    --rendi-sky           : 91 157 249     ;  /* alias semantico de rendi-accent */
+
+    /* ── Aliases legacy ────────────────────────────────────────────────── */
+    --rendi-green         : 33 208 122     ;
+    --rendi-green-dark    : 20 165 96      ;
+    --rendi-aqua          : 70 198 224     ;
+    --rendi-pink          : 255 83 96      ;
+    --rendi-bg            : 7 9 12         ;
+    --rendi-card          : 14 18 24       ;
+    --rendi-muted         : 156 163 181    ;
+
+    /* ── Rampa de polaridad — LA DIRECCIÓN SE INVIERTE, no los valores ──
+       En oscuro, intenso = BRILLANTE (la rampa sube hacia el verde señal).
+       En claro, intenso = OSCURO Y SATURADO (la rampa baja hacia el verde
+       profundo). No es el mismo color aclarado: es la misma familia
+       recorrida al revés. Si se "simplifica" invirtiendo hex, el paso más
+       intenso queda pálido y el más suave queda negro — que es exactamente
+       lo que se veía antes.
+       Cada paso trae su tinta: el fondo cambia de luminancia entre temas,
+       así que el texto de encima también. Todos los pares miden >= 4,5:1.
+       Los cortes (cuánto es "poco" y cuánto "fuerte") NO viven acá: son
+       distintos para el día y para el mes. Están en utils/polarityScale.js */
+
+    /* ── Rampa de polaridad (heatmap · calendario) ─────────────────────── */
+    --pol-up-1            : 15 92 54       ;  /* sube poco */
+    --pol-up-2            : 20 165 96      ;  /* sube */
+    --pol-up-3            : 33 208 122     ;  /* sube fuerte */
+    --pol-up-1-ink        : 230 234 242    ;
+    --pol-up-2-ink        : 6 22 14        ;
+    --pol-up-3-ink        : 6 22 14        ;
+
+    --pol-down-1          : 142 43 51      ;  /* baja poco */
+    --pol-down-2          : 200 51 62      ;  /* baja */
+    --pol-down-3          : 255 83 96      ;  /* baja fuerte */
+    --pol-down-1-ink      : 230 234 242    ;
+    --pol-down-2-ink      : 230 234 242    ;
+    --pol-down-3-ink      : 31 10 12       ;
+
+    --pol-flat            : 27 34 48       ;  /* no se movió — tiende al fondo, no a un gris fijo */
+    --pol-flat-ink        : 90 100 120     ;
+
+    /* ── Chrome de los gráficos (utils/chartTheme.js) ───────────────────
+       La grilla NO puede reusar `line`: el mismo valor que sobre el panel
+       oscuro es un susurro (1,18:1), sobre blanco da 15,93:1 y pesa más que
+       los datos. La rampa monocroma se recorre al revés, igual que la de
+       polaridad: en oscuro la porción mayor es la más brillante, en claro
+       la más profunda. */
+    --chart-grid          : 27 34 48       ;  /* la grilla — recesiva en los dos temas */
+    --mono-violet-1       : 139 125 255    ;  /* rampa monocroma: 1 = la porción más grande */
+    --mono-violet-2       : 116 102 232    ;
+    --mono-violet-3       : 95 83 196      ;
+    --mono-violet-4       : 76 66 158      ;
+    --mono-violet-5       : 61 53 126      ;
+
+    --chart-area-op       : 0.18           ;
+    --shadow-raised: none           ;
+
+    /* ── El hover de una barra del año (reports/PerformanceCalendar) ─────
+       El hover tiene que ALEJARSE del fondo, y el fondo cambia de tema: en
+       oscuro eso es aclarar, en claro es oscurecer. Usaba `green-200` y
+       `red-100` fijos, que sobre blanco dan 1,65:1 — la barra desaparecía
+       justo al señalarla. Los valores oscuros son los de siempre. */
+    --bar-hover-up        : 95 225 157     ;
+    --bar-hover-down      : 255 180 186    ;
+
+    /* ── Colores de categoría (tipo de activo · sector · composición) ────
+       Identidad, no magnitud: cada categoría conserva SU tono en los dos
+       temas; lo que cambia es la luminancia. En oscuro son los de siempre;
+       en claro bajan hasta pasar 4:1 contra el blanco, porque su swatch en
+       la leyenda es de 2-3 px y un área chica necesita más contraste que
+       una grande. Once de los veinte quedaban por debajo de 3:1.
+       Los otros seis tonos de estas paletas ya eran tokens del sistema
+       (rendi-pos, data-cyan, rendi-accent, data-violet, data-amber, ink-3)
+       y se usan directamente, sin duplicar variable. */
+    --cat-steel           : 79 124 168     ;
+    --cat-teal            : 111 168 160    ;
+    --cat-indigo          : 124 107 245    ;
+    --cat-slate           : 126 134 160    ;
+    --cat-gray-2          : 138 147 166    ;
+    --cat-slate-2         : 141 143 168    ;
+    --cat-olive           : 154 168 92     ;
+    --cat-brown           : 168 124 92     ;
+    --cat-bronze          : 201 138 46     ;
+    --cat-gold            : 212 162 76     ;
+    --cat-magenta         : 217 123 224    ;
+    --cat-pink            : 224 138 168    ;
+    --cat-orange          : 242 153 74     ;
+
+    /* ── WhatsApp ────────────────────────────────────────────────────────
+       Marca de terceros, no un token del sistema: no se reemplaza por uno.
+       Pero el verde brillante (#25D366) sobre blanco da 1,98:1 y el botón
+       "Escribirle" quedaba ilegible. En claro va el teal oscuro, que TAMBIÉN
+       es de la paleta oficial de WhatsApp (la familia de #128C7E / #075E54),
+       apenas más profundo para llegar a 4,64:1. En oscuro se queda el verde
+       de siempre, que es el que la gente reconoce. */
+    --whatsapp            : 37 211 102     ;
+
+    /* ── La superficie que FLOTA (modales, menús, globos, el buscador) ───
+       El defecto que F3 viene a arreglar: `bg-2` hacía dos trabajos que en
+       claro tiran para lados opuestos. Como "hover" tiene que ALEJARSE del
+       panel, y como "elevado" tiene que estar POR ENCIMA de él. En oscuro los
+       dos son aclarar, así que el mismo valor servía para ambos. En claro el
+       panel ya es blanco: elevar es quedarse en blanco y dejar que la sombra
+       haga el trabajo, mientras que el hover se va al gris. Direcciones
+       opuestas, un solo token: eso no cierra.
+       Ahora `bg-2` se queda con hover y relleno sutil, y lo que flota usa
+       esto. En oscuro vale lo mismo que `bg-2` valía — cero cambio. */
+    --bg-raised           : 20 25 35       ;
+  }
+}
+
 body {
   font-family: 'Geist', system-ui, -apple-system, sans-serif;
   font-feature-settings: 'tnum', 'ss01', 'cv11';
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   letter-spacing: -0.005em;
-  background: #07090C;
-  color: #E6EAF2;
+  background: rgb(var(--bg-0));
+  color: rgb(var(--ink-0));
 }
 
 /* Tabular nums globalmente — todos los números alinean pixel-perfect.
@@ -98,7 +461,10 @@ body {
     @apply list-disc pl-6 space-y-1.5 mb-5 text-ink-1;
   }
   .blog-prose ul li::marker {
-    color: rgb(125 133 144);  /* ink-3 */
+    /* Decía `/* ink-3 *\/` pero el valor escrito era 125 133 144, e ink-3 es
+       90 100 120. Ahora toma el token: en oscuro el marcador queda un punto
+       más oscuro que antes, y en claro deja de ser un gris ilegible. */
+    color: rgb(var(--ink-3));
   }
   .blog-prose ol {
     @apply list-decimal pl-6 space-y-1.5 mb-5 text-ink-1;
@@ -131,7 +497,10 @@ body {
     @apply list-disc pl-5 space-y-1.5 text-ink-1;
   }
   .advisor-note ul li::marker {
-    color: rgb(157 140 255);  /* data-violet */
+    /* Mismo caso: decía data-violet y tenía 157 140 255; data-violet es
+       139 125 255. Importa más que el de arriba — sobre blanco, el violeta
+       viejo daba 2,9:1 y el token da 6,1:1. */
+    color: rgb(var(--data-violet));
   }
   .advisor-note strong {
     @apply text-ink-0 font-medium;
@@ -227,9 +596,9 @@ body {
 
 /* Scrollbar — neutro, sin acento de marca */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #07090C; }
-::-webkit-scrollbar-thumb { background: #262E40; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3A4256; }
+::-webkit-scrollbar-track { background: rgb(var(--bg-0)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--line-2)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--line-3)); }
 
 /* Pretty date input — calendar indicator styling for dark mode */
 .date-input-pretty::-webkit-calendar-picker-indicator {
@@ -243,17 +612,14 @@ body {
 .date-input-pretty::-webkit-datetime-edit {
   color: inherit;
 }
-.dark .date-input-pretty::-webkit-datetime-edit-text,
-.dark .date-input-pretty::-webkit-datetime-edit-month-field,
-.dark .date-input-pretty::-webkit-datetime-edit-day-field,
-.dark .date-input-pretty::-webkit-datetime-edit-year-field {
-  color: #E6EAF2;
-}
+/* Eran dos bloques, uno por tema, con el hex de cada uno escrito a mano
+   (#E6EAF2 en `.dark`, #07090C afuera). Es el patrón exacto que F1 sale a
+   enterrar: con el token variable, una sola regla sirve para los dos. */
 .date-input-pretty::-webkit-datetime-edit-text,
 .date-input-pretty::-webkit-datetime-edit-month-field,
 .date-input-pretty::-webkit-datetime-edit-day-field,
 .date-input-pretty::-webkit-datetime-edit-year-field {
-  color: #07090C;
+  color: rgb(var(--ink-0));
 }
 
 /* Range slider — paleta v2 (signal #21D07A) */
@@ -262,7 +628,7 @@ body {
   appearance: none;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(to right, #21D07A 0%, #21D07A var(--val, 0%), rgba(38, 46, 64, 0.6) var(--val, 0%), rgba(38, 46, 64, 0.6) 100%);
+  background: linear-gradient(to right, rgb(var(--rendi-pos-fill)) 0%, rgb(var(--rendi-pos-fill)) var(--val, 0%), rgb(var(--line-2) / 0.6) var(--val, 0%), rgb(var(--line-2) / 0.6) 100%);
   outline: none;
   cursor: pointer;
 }
@@ -272,9 +638,9 @@ body {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #21D07A;
-  border: 2px solid #0E1218;
-  box-shadow: 0 0 0 1px rgba(33, 208, 122, 0.4);
+  background: rgb(var(--rendi-pos-fill));
+  border: 2px solid rgb(var(--bg-1));
+  box-shadow: 0 0 0 1px rgb(var(--rendi-pos-fill) / 0.4);
   cursor: grab;
   transition: transform 0.1s ease;
 }
@@ -286,9 +652,9 @@ body {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #21D07A;
-  border: 2px solid #0E1218;
-  box-shadow: 0 0 0 1px rgba(33, 208, 122, 0.4);
+  background: rgb(var(--rendi-pos-fill));
+  border: 2px solid rgb(var(--bg-1));
+  box-shadow: 0 0 0 1px rgb(var(--rendi-pos-fill) / 0.4);
   cursor: grab;
 }
 
@@ -302,15 +668,15 @@ body {
    (datos sync recientes, no para todo). v2 mantiene el patrón con el
    verde signal más vivo. */
 @keyframes rendi-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(33, 208, 122, 0.45); }
-  50% { box-shadow: 0 0 0 4px rgba(33, 208, 122, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--rendi-pos-fill) / 0.45); }
+  50% { box-shadow: 0 0 0 4px rgb(var(--rendi-pos-fill) / 0); }
 }
 .live-dot {
   display: inline-block;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #21D07A;
+  background: rgb(var(--rendi-pos-fill));
   animation: rendi-pulse 2s ease-in-out infinite;
 }
 
@@ -354,8 +720,8 @@ body {
 }
 .grid-bg {
   background-image:
-    linear-gradient(rgba(38, 46, 64, 0.35) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(38, 46, 64, 0.35) 1px, transparent 1px);
+    linear-gradient(rgb(var(--line-2) / 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--line-2) / 0.35) 1px, transparent 1px);
   background-size: 40px 40px;
   animation: grid-shimmer 18s linear infinite;
 }
@@ -376,6 +742,11 @@ body {
 .reveal-up.in { animation: reveal-up 720ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
 /* Glow sutil verde — para métricas live/positivas en el mock */
+/* Los dos hex de acá NO entran a F0 a propósito: #5FE19D es green-200, un
+   paso de la escala de 9, y esa escala se recorre al revés en claro — no se
+   arregla cambiándole el valor. Queda para F2 junto con heatmap y calendario.
+   En claro, hasta entonces, este glow se ve pálido sobre blanco. Lo usa el
+   mock de la landing, que es oscura siempre. */
 @keyframes value-pulse {
   0%, 100% { color: #21D07A; }
   50%      { color: #5FE19D; }
@@ -386,12 +757,12 @@ body {
    "vivo" (precio/portfolio refrescado). Verde si subió, rojo si bajó. ~420ms.
    Lo usa <FlashValue>. Distinto de value-pulse (glow de color en loop). */
 @keyframes flash-up {
-  0%   { background-color: rgba(33, 208, 122, 0.22); }
-  100% { background-color: rgba(33, 208, 122, 0); }
+  0%   { background-color: rgb(var(--rendi-pos-fill) / 0.22); }
+  100% { background-color: rgb(var(--rendi-pos-fill) / 0); }
 }
 @keyframes flash-down {
-  0%   { background-color: rgba(255, 83, 96, 0.22); }
-  100% { background-color: rgba(255, 83, 96, 0); }
+  0%   { background-color: rgb(var(--rendi-neg-fill) / 0.22); }
+  100% { background-color: rgb(var(--rendi-neg-fill) / 0); }
 }
 .flash-up   { animation: flash-up   420ms ease-out; border-radius: 4px; }
 .flash-down { animation: flash-down 420ms ease-out; border-radius: 4px; }
@@ -410,7 +781,7 @@ body {
   50%      { background-position: 100% 50%; }
 }
 .headline-sweep {
-  background: linear-gradient(120deg, #E6EAF2 0%, #E6EAF2 35%, #8B7DFF 50%, #E6EAF2 65%, #E6EAF2 100%);
+  background: linear-gradient(120deg, rgb(var(--ink-0)) 0%, rgb(var(--ink-0)) 35%, rgb(var(--data-violet)) 50%, rgb(var(--ink-0)) 65%, rgb(var(--ink-0)) 100%);
   background-size: 200% auto;
   -webkit-background-clip: text;
   background-clip: text;

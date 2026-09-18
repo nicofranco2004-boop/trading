@@ -17,6 +17,9 @@ describe('cada paso resalta algo que está de verdad', () => {
     // Los pasos de Alertas: el resumen diario del mercado (lo nuevo) y los
     // avisos de precio (lo que ya estaba).
     '../alerts/MarketBriefPrefs.jsx', '../alerts/AlertsManager.jsx',
+    // El interruptor de tema: en el menú lateral (computadora) y en «Más»
+    // (celular). Los dos llevan la misma marca a propósito.
+    '../Sidebar.jsx', '../../pages/More.jsx',
   ].map(leer).join('\n')
 
   it('todas las marcas existen en la pantalla', () => {
@@ -63,13 +66,32 @@ describe('cada paso resalta algo que está de verdad', () => {
     expect(PASOS[0].ruta).toBeNull()
   })
 
-  it('el paseo termina en Alertas, y primero lo nuevo', () => {
+  it('en Alertas va primero lo nuevo, y los dos van juntos', () => {
     // Orden pedido por Nico: el resumen del mercado es la novedad, así que va
     // antes que los avisos de precio, que ya existían. Si alguien los da
     // vuelta, el tutorial presenta como noticia algo que el usuario ya tenía.
+    //
+    // Antes esto también exigía que fueran los DOS ÚLTIMOS del tutorial. Era
+    // cierto cuando se escribió —no había nada después— pero no es lo que la
+    // regla protege: lo que importa es que vayan en ese orden y pegados, para
+    // que el tutorial no entre y salga de /alertas dos veces. El paso del tema
+    // va después a propósito: no es del asistente, es de la app entera, y los
+    // cinco primeros cuentan una historia que no conviene cortar.
     const ids = PASOS.map(p => p.id)
-    expect(ids.indexOf('resumen-mercado')).toBeLessThan(ids.indexOf('alertas-precio'))
-    expect(ids.slice(-2)).toEqual(['resumen-mercado', 'alertas-precio'])
+    const i = ids.indexOf('resumen-mercado')
+    expect(i).toBeGreaterThan(-1)
+    expect(ids[i + 1]).toBe('alertas-precio')
+  })
+
+  it('el paso del tema cierra el tutorial y apunta a donde el interruptor existe', () => {
+    // El interruptor vive en DOS lugares según el tamaño de pantalla: el menú
+    // lateral (computadora) y «Más» (celular). Con `ruta: null` el paso se
+    // mostraría donde el usuario quedó —/alertas, por los dos pasos de antes—
+    // y en celular ahí no hay ninguno: se saltearía justo para el usuario que
+    // no tiene menú lateral.
+    const ids = PASOS.map(p => p.id)
+    expect(ids[ids.length - 1]).toBe('tema')
+    expect(PASOS.find(p => p.id === 'tema').ruta).toBe('/mas')
   })
 
   it('los pasos de Alertas llevan a /alertas', () => {

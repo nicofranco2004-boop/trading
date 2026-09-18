@@ -15,7 +15,7 @@ import { useMoneyFormat } from '../../contexts/CurrencyContext'
 function fmtPct(p, withSign = true) {
   if (p == null) return '—'
   const sign = withSign ? (p >= 0 ? '+' : '−') : (p < 0 ? '−' : '')
-  return `${sign}${Math.abs(p).toFixed(1)}%`
+  return `${sign}${Math.abs(p).toFixed(1).replace('.', ',')}%`
 }
 
 // ─── Renderers por código de insight ────────────────────────────────────────
@@ -85,11 +85,11 @@ function WinRateEvidence({ ev }) {
     <div className="space-y-2 text-[11px]">
       <div className="flex items-baseline justify-between">
         <span className="text-ink-2">Este período</span>
-        <span className="font-mono tabular text-ink-0">{ev.period_wr?.toFixed(0)}%</span>
+        <span className="font-mono tabular text-ink-0">{ev.period_wr?.toFixed(0).replace('.', ',')}%</span>
       </div>
       <div className="flex items-baseline justify-between">
         <span className="text-ink-2">Promedio histórico</span>
-        <span className="font-mono tabular text-ink-1">{ev.historical_wr?.toFixed(0)}%</span>
+        <span className="font-mono tabular text-ink-1">{ev.historical_wr?.toFixed(0).replace('.', ',')}%</span>
       </div>
     </div>
   )
@@ -254,7 +254,7 @@ function HighTurnoverEvidence({ ev }) {
       </div>
       <div>
         <div className="text-ink-3 text-[12.5px] font-medium">Promedio</div>
-        <div className="font-mono tabular text-ink-2">{ev.avg?.toFixed(1)}</div>
+        <div className="font-mono tabular text-ink-2">{ev.avg?.toFixed(1).replace('.', ',')}</div>
       </div>
     </div>
   )

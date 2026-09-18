@@ -34,54 +34,82 @@ export default {
         mono:    ['JetBrains Mono', 'ui-monospace', 'monospace'],
       },
       colors: {
-        // ── Cold neutrals (9 pasos del ink al text-50) ─────────────────────
+        // ── TODO LO QUE CAMBIA ENTRE TEMAS VIVE EN src/index.css ──────────
+        // Estos 33 tokens eran hex literales hasta F0 (2026-09-15). Ahora
+        // apuntan a variables CSS y el tema las redefine: `:root` claro,
+        // `.dark` oscuro. Los VALORES están en index.css, no acá — este
+        // archivo sólo dice "andá a buscarlo a la variable".
+        //
+        // `rgb(var(--x) / <alpha-value>)` NO es adorno: es lo único que
+        // deja funcionar los 1.937 usos con opacidad (`bg-bg-2/40`). Con un
+        // hex adentro de la variable, ese `/40` se descarta EN SILENCIO.
+        // Ver el comentario largo en index.css antes de tocar esto.
+        //
+        // ── Cold neutrals (superficie · tinta · línea) ─────────────────────
         bg: {
-          0: '#07090C',  // ink — fondo de la app
-          1: '#0E1218',  // charcoal — surface base (Panel default)
-          2: '#141923',  // slate — surface elevada / hover
-          3: '#1B2230',  // gunmetal — surface más elevada / active
+          0: 'rgb(var(--bg-0) / <alpha-value>)',  // ink — fondo de la app
+          1: 'rgb(var(--bg-1) / <alpha-value>)',  // charcoal — surface base (Panel default)
+          2: 'rgb(var(--bg-2) / <alpha-value>)',  // slate — surface elevada / hover
+          3: 'rgb(var(--bg-3) / <alpha-value>)',  // gunmetal — surface más elevada / active
         },
         ink: {
-          0: '#E6EAF2',  // texto principal
-          1: '#C3CAD8',  // texto secundario (default)
-          2: '#9CA3B5',  // texto terciario, captions
-          3: '#5A6478',  // disabled, hints
+          0: 'rgb(var(--ink-0) / <alpha-value>)',  // texto principal
+          1: 'rgb(var(--ink-1) / <alpha-value>)',  // texto secundario (default)
+          2: 'rgb(var(--ink-2) / <alpha-value>)',  // texto terciario, captions
+          3: 'rgb(var(--ink-3) / <alpha-value>)',  // disabled, hints
         },
         line: {
-          DEFAULT: '#1B2230',  // bordes y dividers principales
-          2: '#262E40',         // bordes elevados (modales, dropdowns)
-          3: '#3A4256',         // bordes muy elevados (focus, selección)
+          DEFAULT: 'rgb(var(--line) / <alpha-value>)',    // bordes y dividers principales
+          2: 'rgb(var(--line-2) / <alpha-value>)',        // bordes elevados (modales, dropdowns)
+          3: 'rgb(var(--line-3) / <alpha-value>)',        // bordes muy elevados (focus, selección)
         },
 
         // ── Semánticos — alineados con Brand Kit v1.0 ─────────────────────
-        // Source of truth: public/brand-kit/tokens.css. Ver tokens.json para
-        // mapping completo de los tokens del manual de marca.
-        'rendi-pos':    '#21D07A',  // signal verde — positivo, ganancia
-        'rendi-neg':    '#FF5360',  // red financiero sobrio — pérdida, error
-        'rendi-warn':   '#E8B14A',  // amber — warnings (alias de --rendi-amber)
-        'rendi-accent': '#5B9DF9',  // sky — información, benchmarks, links
-                                    // (antes #4E83FF; alineado con Brand Kit v1.0)
+        // Source of truth de los valores: src/index.css. El brand kit
+        // (public/brand-kit/tokens.css) documenta la versión oscura.
+        'rendi-pos':    'rgb(var(--rendi-pos) / <alpha-value>)',     // signal verde — positivo, ganancia
+        'rendi-neg':    'rgb(var(--rendi-neg) / <alpha-value>)',     // red financiero sobrio — pérdida, error
+        'rendi-warn':   'rgb(var(--rendi-warn) / <alpha-value>)',    // amber — warnings
+        'rendi-accent': 'rgb(var(--rendi-accent) / <alpha-value>)',  // sky — información, benchmarks, links
+
+        // ── La superficie que flota (F3) ──────────────────────────────────
+        // Modales, menús, globos de datos, el desplegable del buscador. Usaban
+        // `bg-2`, que además es el hover: dos trabajos que en claro tiran para
+        // lados opuestos (elevar es quedarse blanco, el hover es irse al gris).
+        // En oscuro vale lo mismo que valía `bg-2`.
+        'bg-raised': 'rgb(var(--bg-raised) / <alpha-value>)',
+
+        // ── El verde y el rojo se parten en dos trabajos (F0) ─────────────
+        // En oscuro un solo verde alcanzaba para el número Y para la barra
+        // del gráfico. Sobre blanco no: el verde vivo como TEXTO da 2,03:1
+        // (ilegible), pero como RELLENO de un área grande está perfecto.
+        // Por eso son dos tokens. En oscuro valen lo mismo — la diferencia
+        // sólo aparece en claro.
+        //   -pos / -neg        → números, flechas, texto. Legibles (AA).
+        //   -pos-fill / -neg-fill → barras, áreas, celdas de heatmap.
+        'rendi-pos-fill': 'rgb(var(--rendi-pos-fill) / <alpha-value>)',
+        'rendi-neg-fill': 'rgb(var(--rendi-neg-fill) / <alpha-value>)',
 
         // ── Data accents (uso restringido) ────────────────────────────────
         // Solo para tipos de dato secundarios (benchmarks, info chips).
         // NUNCA como acento decorativo o de marca.
-        'data-cyan':    '#46C6E0',  // aqua — sync, hints, neutro
-        'data-blue':    '#5B9DF9',  // sky — info (alineado con --rendi-sky)
-        'data-violet':  '#8B7DFF',  // marca · acción · botones primarios
-        'data-amber':   '#E8B14A',  // warnings sobrios
+        'data-cyan':    'rgb(var(--data-cyan) / <alpha-value>)',    // aqua — sync, hints, neutro
+        'data-blue':    'rgb(var(--data-blue) / <alpha-value>)',    // sky — info
+        'data-violet':  'rgb(var(--data-violet) / <alpha-value>)',  // marca · acción · botones primarios
+        'data-amber':   'rgb(var(--data-amber) / <alpha-value>)',   // warnings sobrios
 
         // ── Brand Kit v1.0 — tokens adicionales (variants violet + surfaces) ─
-        // Estos NO existían antes; provienen del brand kit oficial.
-        // Usar para nuevos componentes que necesiten estados o capas
-        // específicas (hover violet, charcoal panel, etc.). Code legacy
-        // sigue usando los tokens viejos (bg-1, bg-2, line — sin cambios).
-        'rendi-violet-hover': '#6E5FF0',  // :hover de botones violet
-        'rendi-violet-deep':  '#1E1840',  // background tintado profundo
-        'rendi-charcoal':     '#0D1015',  // paneles (alternativa a bg-1)
-        'rendi-slate':        '#141923',  // cards elevadas
-        'rendi-sky':          '#5B9DF9',  // alias semántico de rendi-accent
+        'rendi-violet-hover': 'rgb(var(--rendi-violet-hover) / <alpha-value>)',  // :hover de botones violet
+        'rendi-violet-deep':  'rgb(var(--rendi-violet-deep) / <alpha-value>)',   // background tintado (profundo en dark, suave en light)
+        'rendi-charcoal':     'rgb(var(--rendi-charcoal) / <alpha-value>)',      // paneles (alternativa a bg-1)
+        'rendi-slate':        'rgb(var(--rendi-slate) / <alpha-value>)',         // cards elevadas
+        'rendi-sky':          'rgb(var(--rendi-sky) / <alpha-value>)',           // alias semántico de rendi-accent
 
         // ── Polarity scales (9 pasos cada uno — heatmaps + backgrounds tonales)
+        // NO son variables a propósito: son rampas de heatmap, y una rampa no
+        // se arregla cambiándole los valores — hay que RECORRERLA AL REVÉS.
+        // En oscuro, intenso = brillante (arranca casi negra). En claro,
+        // intenso = oscuro y saturado (arranca casi blanca). Eso es F2.
         green: {
           50:  '#CFF7DF',
           100: '#9CEDC0',
@@ -108,13 +136,13 @@ export default {
         // ── Aliases legacy (mantenidos para compatibilidad con componentes
         // que importan `rendi.X` directo). Migrar progresivamente.
         rendi: {
-          green: '#21D07A',
-          'green-dark': '#14A560',
-          aqua: '#46C6E0',
-          pink: '#FF5360',
-          bg: '#07090C',
-          card: '#0E1218',
-          muted: '#9CA3B5',
+          green: 'rgb(var(--rendi-green) / <alpha-value>)',
+          'green-dark': 'rgb(var(--rendi-green-dark) / <alpha-value>)',
+          aqua: 'rgb(var(--rendi-aqua) / <alpha-value>)',
+          pink: 'rgb(var(--rendi-pink) / <alpha-value>)',
+          bg: 'rgb(var(--rendi-bg) / <alpha-value>)',
+          card: 'rgb(var(--rendi-card) / <alpha-value>)',
+          muted: 'rgb(var(--rendi-muted) / <alpha-value>)',
         },
       },
       borderRadius: {

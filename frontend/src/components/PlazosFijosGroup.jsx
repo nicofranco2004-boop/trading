@@ -11,7 +11,7 @@ import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
 import { hoyISO } from '../utils/fecha'
 
-const pct = (x) => (x * 100).toFixed(2) + '%'
+const pct = (x) => (x * 100).toFixed(2).replace('.', ',') + '%'
 const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 
@@ -117,7 +117,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   return (
     <div className="mt-6">
       {Header}
-      <div className="bg-white dark:bg-bg-2/40 border border-line rounded-md overflow-hidden">
+      <div className="bg-bg-2/40 border border-line rounded-md overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

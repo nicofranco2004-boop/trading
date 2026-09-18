@@ -18,6 +18,7 @@ import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useAlerts } from '../../hooks/useAlerts'
 import { POPULAR_TICKERS } from '../../utils/tickers'
 import { api } from '../../utils/api'
+import { parseNum } from '../../utils/format'
 
 const EMPTY_FORM = {
   kind: 'price_target',
@@ -33,23 +34,11 @@ const EMPTY_FORM = {
   repeat: 'once',
 }
 
-// Parseo tolerante al formato argentino: coma decimal + punto de miles, y también
-// formato US. '0,01'→0.01 · '10,5'→10.5 · '9.000'→9000 · '380.5'→380.5 · '1.234,56'→1234.56
-function parseNum(v) {
-  let s = String(v == null ? '' : v).trim().replace(/\s/g, '')
-  if (!s) return NaN
-  if (s.includes(',')) {
-    s = s.replace(/\./g, '').replace(',', '.')     // coma = decimal (puntos = miles)
-  } else if (/^\d{1,3}(\.\d{3})+$/.test(s)) {
-    s = s.replace(/\./g, '')                        // solo puntos en grupos de 3 = miles
-  }
-  return parseFloat(s)
-}
 
 function fmtPrice(v, ccy) {
   if (v == null) return '—'
   if ((ccy || '').toUpperCase() === 'ARS') return '$' + Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })
-  return 'US$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return 'US$' + Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 function displaySym(s) {
@@ -432,7 +421,7 @@ function TickerCombobox({ value, onChange, placeholder }) {
         />
       </div>
       {open && results.length > 0 && (
-        <div className="absolute z-30 left-0 right-0 mt-1 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
+        <div className="absolute z-30 left-0 right-0 mt-1 bg-bg-raised border border-line rounded-lg shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
           {results.map(t => (
             <AssetResultRow
               key={t.symbol}

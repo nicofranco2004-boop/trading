@@ -160,12 +160,12 @@ export default function DateInput({ value, onChange, min, max, className = '', p
           onChange={e => handleType(e.target.value)}
           onBlur={handleBlur}
           placeholder={placeholder}
-          className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md pl-9 pr-3 py-2 text-sm text-ink-0 font-mono focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition placeholder:text-ink-3 placeholder:font-sans hover:border-ink-3"
+          className="w-full bg-bg-2 border border-line rounded-md pl-9 pr-3 py-2 text-sm text-ink-0 font-mono focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition placeholder:text-ink-3 placeholder:font-sans hover:border-ink-3"
         />
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 left-0 bg-white dark:bg-bg-2 border border-line rounded-lg shadow-2xl p-3 w-[280px]">
+        <div className="absolute z-50 mt-1 left-0 bg-bg-raised border border-line rounded-lg shadow-2xl p-3 w-[280px]">
           {/* Header — saltos de mes (‹ ›) y de año (« »), para llegar rápido a fechas viejas */}
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center">

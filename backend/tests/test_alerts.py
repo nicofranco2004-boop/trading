@@ -365,7 +365,7 @@ def test_el_cuerpo_del_mail_trae_los_numeros_y_no_manda_a_buscarlos():
     """El bug original: el cuerpo decía 'entrá a Rendi para ver' y el asunto
     informaba más que el mail. El cuerpo tiene que traer % y precio."""
     body = ae._email_detail(_alert(), "MELI", 2145.30, -3.14)
-    assert "3.1%" in body and "US$ 2.145,30" in body
+    assert "3,1%" in body and "US$ 2.145,30" in body
     assert "Entrá a Rendi" not in body
 
 
@@ -483,7 +483,7 @@ def test_el_reloj_se_corre_solo_con_el_horario_de_verano_de_eeuu():
 # ─── La moneda sale del activo, no de la fila de la alerta ──────────────────
 
 def test_la_moneda_sale_del_activo_y_no_de_la_fila_de_la_alerta():
-    """El mail decía "INTC cayó 5.8% … y cotiza a US$ 31.020,00". Esos 31.020
+    """El mail decía "INTC cayó 5,8% … y cotiza a US$ 31.020,00". Esos 31.020
     eran PESOS: es el CEDEAR en BYMA. Una alerta de "toda mi cartera" guarda UNA
     moneda al crearse y después se expande a tenencias de los dos rieles, así
     que la moneda tiene que salir del símbolo que disparó."""
@@ -565,7 +565,7 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
     hm._QUOTE_CACHE.clear()
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
     assert _events(conn)[0]["symbol"] == "NFLX.BA"
-    assert _events(conn)[0]["message"] == "NFLX cayó 3.2% hoy"
+    assert _events(conn)[0]["message"] == "NFLX cayó 3,2% hoy"
     hm._QUOTE_CACHE.clear()
 
 
@@ -611,11 +611,11 @@ def test_toda_la_cartera_manda_un_solo_mail_con_la_lista(clean, buzon, monkeypat
     assert len(mails) == 1 and len(pushes) == 1        # UN mail y UN push
     m = mails[0]
     assert m["lines"] == [                             # ordenado por tamaño del movimiento
-        "INTC cayó 5.8% y cotiza a $31.020",
-        "NVDA cayó 3.4% y cotiza a $14.080",
-        "NFLX subió 3.4% y cotiza a $2.675",
+        "INTC cayó 5,8% y cotiza a $31.020",
+        "NVDA cayó 3,4% y cotiza a $14.080",
+        "NFLX subió 3,4% y cotiza a $2.675",
     ]
-    assert m["heading"] == "INTC cayó 5.8%, NVDA cayó 3.4% y 1 más hoy"
+    assert m["heading"] == "INTC cayó 5,8%, NVDA cayó 3,4% y 1 más hoy"
     assert "se movieron 3 activos de tu cartera hoy" in m["detail"]
     # …y en la app siguen siendo tres avisos, los tres marcados como entregados.
     ev = _events(conn)
@@ -658,10 +658,10 @@ def test_el_mail_agrupado_arma_la_lista_en_html_y_en_texto(monkeypatch):
                         lambda to, subject, html_, text, **kw:
                         capturado.update(subject=subject, html=html_, text=text) or True)
     _emails.send_alert_email(to="a@a.co", user_name="nicolas",
-                             heading="INTC cayó 5.8% y NVDA cayó 3.4% hoy",
+                             heading="INTC cayó 5,8% y NVDA cayó 3,4% hoy",
                              detail="se movieron 2 activos de tu cartera hoy:",
-                             lines=["INTC cayó 5.8% y cotiza a $31.020",
-                                    "NVDA cayó 3.4% y cotiza a $14.080"])
-    assert capturado["subject"] == "INTC cayó 5.8% y NVDA cayó 3.4% hoy"
-    assert "<li" in capturado["html"] and "INTC cayó 5.8% y cotiza a $31.020" in capturado["html"]
-    assert "  · NVDA cayó 3.4% y cotiza a $14.080" in capturado["text"]
+                             lines=["INTC cayó 5,8% y cotiza a $31.020",
+                                    "NVDA cayó 3,4% y cotiza a $14.080"])
+    assert capturado["subject"] == "INTC cayó 5,8% y NVDA cayó 3,4% hoy"
+    assert "<li" in capturado["html"] and "INTC cayó 5,8% y cotiza a $31.020" in capturado["html"]
+    assert "  · NVDA cayó 3,4% y cotiza a $14.080" in capturado["text"]

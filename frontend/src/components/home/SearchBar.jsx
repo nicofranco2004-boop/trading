@@ -46,12 +46,12 @@ export const FILTERS = [
 function fmtPct(p) {
   if (p == null) return null
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2)}%`
+  return `${sign}${p.toFixed(2).replace('.', ',')}%`
 }
 
 function fmtUsd(v) {
   if (v == null) return null
-  return `$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+  return `$${v.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
 }
 
 export default function SearchBar() {

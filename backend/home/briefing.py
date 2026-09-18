@@ -13,6 +13,7 @@ V2: agregamos hitos (cost basis crossed, etc.).
 V3: AI explanation de movimientos ("post earnings").
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import logging
 from dataclasses import dataclass, field, asdict
@@ -79,9 +80,9 @@ def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6
             kind="holding_move",
             icon="🚀" if positive else "📉",
             headline=f"{h['asset']} {'subió' if positive else 'bajó'} hoy",
-            value=f"{'+' if positive else ''}{pct:.1f}%",
+            value=f"{'+' if positive else ''}{fmt_num(pct, 1)}%",
             value_tone="positive" if positive else "negative",
-            context=f"US${h['price']:.2f}",
+            context=f"US${fmt_num(h['price'], 2)}",
             cta_label="Ver posición →",
             cta_href=f"/posiciones?asset={h['asset']}",
         ))

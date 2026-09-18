@@ -153,7 +153,7 @@ export default function RendiAI() {
       <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-3.5 border-b border-line/60 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-xl grid place-items-center text-white text-[15px] flex-none"
-            style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}>✦</div>
+            style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
           {/* QUÉ ESTÁ MIRANDO RENDI — va acá abajo del título y no como chip
               suelto a la derecha.
               El chip decía `hidden md:inline-flex`: aparecía según el ancho de

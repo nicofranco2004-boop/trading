@@ -157,6 +157,10 @@ def _cost_in_pesos(p: dict) -> bool:
 BYMA_EXCEPCIONES = {
     'BRK.B': 'BRKB',
     'BRK B': 'BRKB',
+    # Y con guión: así lo guardan los imports que ya normalizaron el ticker para
+    # yfinance (que cotiza las clases con guión). Faltaba, y en producción una
+    # cuenta seguía pidiendo 'BRK-B.BA' — el mismo bug por la otra puerta.
+    'BRK-B': 'BRKB',
 }
 
 
@@ -924,7 +928,34 @@ def _falta_estructural(asset_type, base_sym, universo_bonos):
         (`importing/maturity.letra_maturity`), así que la convención vive en un
         solo lugar.
     """
-    if (asset_type or '').upper() not in _FIXED_INCOME_TYPES:
+    tipo = (asset_type or '').upper()
+
+    # ── UN FONDO QUE NO SE PUDO MAPEAR NO PUEDE MATAR LA FOTO DE LA CUENTA ────
+    #
+    # Acá no hay nada que deducir: el importador YA declaró que es un fondo
+    # (`asset_type='FUND'`), y el símbolo con el que se está pidiendo el precio
+    # no es el del catálogo (`FCI:<slug>`) sino el ticker crudo del broker, que
+    # termina pidiéndose como si fuera una acción de BYMA — `COCOSPPA.BA`. Eso no
+    # lo cotiza nadie, hoy ni nunca.
+    #
+    # DE DÓNDE VIENE. Cuando el mapa curado no reconoce un fondo, el normalizer
+    # lo deja crudo a propósito, y su test lo explica: "Fondos no confirmados
+    # (COCOSPPA, BAHUSDA, ALRTAFA) quedan crudos = al costo (sin regresión)". La
+    # decisión es razonable PARA ESA POSICIÓN. Lo que no se midió es el eslabón
+    # de al lado: sin precio, la cuenta entera cae abajo del 95 % de cobertura y
+    # el cron deja de escribirle la foto. Medido el 2026-09-15: COCOSPPA sola
+    # bloquea 61 cuentas, y los que siguen en el ranking —BCMMA 19, BMMA 12,
+    # IOLDOLD 12, IOLCAMA 10, INSTITUA 10…— son todos fondos. "Sin regresión"
+    # era cierto para el número de esa posición y falso para el historial
+    # completo de esas personas.
+    #
+    # Un fondo del catálogo al que hoy le falta el VCP NO entra acá: ése sí es
+    # transitorio (la fuente publica 185 y hoy faltaron 17), y el guard tiene que
+    # seguir frenando.
+    if tipo == 'FUND' and not str(base_sym or '').upper().startswith('FCI:'):
+        return True
+
+    if tipo not in _FIXED_INCOME_TYPES:
         return False
     if not universo_bonos:
         return False

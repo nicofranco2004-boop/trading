@@ -82,27 +82,27 @@ def test_from_fund_and_metrics_block_formatting():
     arr = _by_key(main._build_metrics_detail(fund, mb))
 
     # valuation (x)
-    assert arr["pe"]["value"] == 32.88 and arr["pe"]["value_label"] == "32.88x"
-    assert arr["pe_fwd"]["value_label"] == "28.06x"
-    assert arr["pb"]["value_label"] == "14.59x"
-    assert arr["ev_ebitda"]["value_label"] == "32.07x"
-    assert arr["peg"]["value_label"] == "2.17x"
+    assert arr["pe"]["value"] == 32.88 and arr["pe"]["value_label"] == "32,88x"
+    assert arr["pe_fwd"]["value_label"] == "28,06x"
+    assert arr["pb"]["value_label"] == "14,59x"
+    assert arr["ev_ebitda"]["value_label"] == "32,07x"
+    assert arr["peg"]["value_label"] == "2,17x"
 
     # growth / profitability (%)
-    assert arr["rev_growth_yoy"]["value"] == 38.91 and arr["rev_growth_yoy"]["value_label"] == "38.91%"
-    assert arr["earnings_yoy"]["value"] == 82.80 and arr["earnings_yoy"]["value_label"] == "82.80%"
-    assert arr["roe"]["value"] == 48.49 and arr["roe"]["value_label"] == "48.49%"
-    assert arr["roa"]["value"] == 22.30 and arr["roa"]["value_label"] == "22.30%"
-    assert arr["net_margin"]["value_label"] == "22.30%"
-    assert arr["oper_margin"]["value_label"] == "35.40%"
-    assert arr["gross_margin"]["value_label"] == "62.96%"
+    assert arr["rev_growth_yoy"]["value"] == 38.91 and arr["rev_growth_yoy"]["value_label"] == "38,91%"
+    assert arr["earnings_yoy"]["value"] == 82.80 and arr["earnings_yoy"]["value_label"] == "82,80%"
+    assert arr["roe"]["value"] == 48.49 and arr["roe"]["value_label"] == "48,49%"
+    assert arr["roa"]["value"] == 22.30 and arr["roa"]["value_label"] == "22,30%"
+    assert arr["net_margin"]["value_label"] == "22,30%"
+    assert arr["oper_margin"]["value_label"] == "35,40%"
+    assert arr["gross_margin"]["value_label"] == "62,96%"
 
     # health
-    assert arr["debt_equity"]["value_label"] == "0.54x"
-    assert arr["current_ratio"]["value_label"] == "4.10x"
-    assert arr["quick_ratio"]["value_label"] == "3.80x"
-    assert arr["payout"]["value"] == 1.9 and arr["payout"]["value_label"] == "1.90%"
-    assert arr["fcf_margin"]["value"] == 20.00 and arr["fcf_margin"]["value_label"] == "20.00%"
+    assert arr["debt_equity"]["value_label"] == "0,54x"
+    assert arr["current_ratio"]["value_label"] == "4,10x"
+    assert arr["quick_ratio"]["value_label"] == "3,80x"
+    assert arr["payout"]["value"] == 1.9 and arr["payout"]["value_label"] == "1,90%"
+    assert arr["fcf_margin"]["value"] == 20.00 and arr["fcf_margin"]["value_label"] == "20,00%"
 
 
 def test_cagr_metrics_always_null():
@@ -150,7 +150,7 @@ def test_cagr_passed_through_when_provided():
     """Si se pasa el dict cagr (del fetcher 'financials'), los 3 CAGR se llenan."""
     cagr = {"rev_growth_3y_pct": 38.91, "rev_growth_5y_pct": 25.0, "eps_growth_3y_pct": 86.40}
     arr = _by_key(main._build_metrics_detail({}, {}, cagr))
-    assert arr["rev_growth_3y"]["value"] == 38.91 and arr["rev_growth_3y"]["value_label"] == "38.91%"
+    assert arr["rev_growth_3y"]["value"] == 38.91 and arr["rev_growth_3y"]["value_label"] == "38,91%"
     assert arr["rev_growth_5y"]["value"] == 25.0
     assert arr["eps_growth_3y"]["value"] == 86.40
 
@@ -254,8 +254,8 @@ def test_health_info_metrics_have_no_status():
     h = _metrics_by_key(cats["health"])
     assert h["total_cash"]["direction"] == "info"
     assert h["total_cash"]["status"] == "na" and h["total_cash"]["status_label"] == ""
-    assert h["total_cash"]["value_label"] == "$1.20B"
-    assert h["total_debt"]["value_label"] == "$500.0M"
+    assert h["total_cash"]["value_label"] == "$1,20B"
+    assert h["total_debt"]["value_label"] == "$500,0M"
     assert h["debt_equity"]["status"] == "green"
     assert h["current_ratio"]["status"] == "green"  # 2.5 >= 2
     assert h["quick_ratio"]["status"] == "green"     # 1.2 >= 1

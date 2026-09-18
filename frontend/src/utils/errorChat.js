@@ -46,6 +46,17 @@ export function traducirErrorDeChat(e) {
     out.mensaje = detail.message
     if (detail.usage) out.usage = detail.usage
     if (detail.upgrade && detail.upgrade.available) out.upgrade = detail.upgrade
+    // Qué cupo se agotó ('analyses' | 'chat'). Sin esto la tarjeta lo adivinaba
+    // mal: ver kindDeCuota() en UpgradePromoCard.jsx.
+    if (detail.kind) out.kind = detail.kind
+    // 🔴 Y POR QUÉ se frenó, que NO siempre es la cuota.
+    //
+    // 'free_chat_not_allowed' (403) no es quedarse sin cupo: es que la pregunta
+    // libre no está en el plan. La tarjeta de upgrade pisa el mensaje de error,
+    // así que sin este código mostraba "Llegaste al límite · Usaste 0 de 1
+    // consultas" — un contador que no frenó nada, y encima escondía el texto
+    // que SÍ servía ("elegí una guiada, o registrá una operación").
+    if (detail.error) out.codigo = detail.error
     return out
   }
   if (Array.isArray(detail) && detail.length > 0) {

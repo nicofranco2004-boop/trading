@@ -609,7 +609,7 @@ export default function Planes({ embedded = false }) {
           href={whatsappUrl('Hola, tengo una consulta sobre los planes de Rendi.')}
           target="_blank"
           rel="noreferrer noopener"
-          className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-[#25D366] transition-colors"
+          className="inline-flex items-center gap-1.5 text-xs text-ink-2 hover:text-[rgb(var(--whatsapp))] transition-colors"
         >
           <WhatsAppIcon size={13} />
           ¿Dudas sobre el plan? Hablanos por WhatsApp
@@ -828,7 +828,7 @@ function PlanCard({
   const isPro  = variant === 'pro'
   // Hover: cada card levanta + intensifica shadow / border. Pro suma escala.
   const wrapperClass = isPro
-    ? 'border-2 border-data-violet/60 bg-gradient-to-br from-data-violet/[0.08] via-bg-1 to-data-violet/[0.04] shadow-[0_0_50px_-12px_rgba(139,125,255,0.35)] ring-1 ring-data-violet/20 hover:-translate-y-1.5 hover:scale-[1.02] hover:shadow-[0_0_70px_-8px_rgba(139,125,255,0.55)] hover:border-data-violet hover:ring-data-violet/40'
+    ? 'border-2 border-data-violet/60 bg-gradient-to-br from-data-violet/[0.08] via-bg-1 to-data-violet/[0.04] shadow-[0_0_50px_-12px_rgb(var(--data-violet) / 0.35)] ring-1 ring-data-violet/20 hover:-translate-y-1.5 hover:scale-[1.02] hover:shadow-[0_0_70px_-8px_rgb(var(--data-violet) / 0.55)] hover:border-data-violet hover:ring-data-violet/40'
     : isPlus
       ? 'border border-data-cyan/30 bg-bg-1 hover:-translate-y-1.5 hover:border-data-cyan/60 hover:shadow-[0_0_40px_-12px_rgba(70,198,224,0.35)]'
       : 'border border-line/80 bg-bg-1 hover:-translate-y-1.5 hover:border-line/100 hover:shadow-[0_0_30px_-12px_rgba(255,255,255,0.08)]'

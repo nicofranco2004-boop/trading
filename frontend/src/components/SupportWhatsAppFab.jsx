@@ -46,7 +46,7 @@ export default function SupportWhatsAppFab() {
       rel="noreferrer noopener"
       aria-label="Consultas por WhatsApp"
       title="Consultas por WhatsApp"
-      className={`fixed ${bottomOffset} right-4 sm:right-5 z-40 inline-flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-[#25D366] text-white shadow-lg shadow-[#25D366]/30 hover:shadow-xl hover:shadow-[#25D366]/40 hover:scale-105 transition-all`}
+      className={`fixed ${bottomOffset} right-4 sm:right-5 z-40 inline-flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-[rgb(var(--whatsapp))] text-white shadow-lg shadow-[rgb(var(--whatsapp))]/30 hover:shadow-xl hover:shadow-[rgb(var(--whatsapp))]/40 hover:scale-105 transition-all`}
     >
       <WhatsAppIcon size={28} />
     </a>

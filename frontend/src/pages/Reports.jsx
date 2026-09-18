@@ -602,7 +602,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: `P&L ${periodLabel}`,
       value: usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : '—',
-      sub: pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+      sub: pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}%`
         : noBasis ? 'falta el cierre del arranque' : null,
       tone: noBasis ? undefined : (isPos ? 'pos' : 'neg'),
     })
@@ -630,7 +630,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   if (m.trades_count > 0 && m.win_rate != null) {
     kpis.push({
       label: 'Win rate',
-      value: `${m.win_rate.toFixed(0)}%`,
+      value: `${m.win_rate.toFixed(0).replace('.', ',')}%`,
       sub: `${m.win_count || 0} ganadas · ${m.loss_count || 0} perdidas`,
       tone: m.win_rate >= 50 ? 'pos' : 'neg',
     })
@@ -650,7 +650,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       // base para medir el rendimiento": al lado del "—" del P&L, un
       // "+1565.9%". Uno de los dos está mintiendo, y es éste.
       sub: (capitalNow != null && !noBasis)
-        ? `Retorno sobre aportes: ${capitalNow > snap.cum_deposited ? '+' : '−'}${(((capitalNow - snap.cum_deposited) / snap.cum_deposited) * 100).toFixed(1)}%`
+        ? `Retorno sobre aportes: ${capitalNow > snap.cum_deposited ? '+' : '−'}${(((capitalNow - snap.cum_deposited) / snap.cum_deposited) * 100).toFixed(1).replace('.', ',')}%`
         : 'depósitos netos',
       tone: (capitalNow != null && !noBasis)
         ? (capitalNow >= snap.cum_deposited ? 'pos' : 'neg')
@@ -678,7 +678,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // % + fecha del snapshot anterior en el subtítulo.
   if (snap.delta_1d) {
     const d = snap.delta_1d
-    const pctStr = `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2)}%`
+    const pctStr = `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%`
     const fechaStr = d.prev_date ? ` · vs ${formatDateShort(d.prev_date)}` : ''
     kpis.push({
       label: 'Δ último cierre',
@@ -694,7 +694,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: 'Δ 7 días',
       value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
-      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2)}%`,
+      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%`,
       tone: d.pct >= 0 ? 'pos' : 'neg',
     })
   }
@@ -705,7 +705,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: 'Δ 30 días',
       value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
-      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2)}%`,
+      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%`,
       tone: d.pct >= 0 ? 'pos' : 'neg',
     })
   }
@@ -719,7 +719,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       : `YTD ${snap.ytd.since_year}`
     kpis.push({
       label,
-      value: `${snap.ytd.pct >= 0 ? '+' : ''}${snap.ytd.pct.toFixed(2)}%`,
+      value: `${snap.ytd.pct >= 0 ? '+' : ''}${snap.ytd.pct.toFixed(2).replace('.', ',')}%`,
       sub: `${snap.ytd.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(snap.ytd.usd))}`,
       tone: snap.ytd.pct >= 0 ? 'pos' : 'neg',
     })
@@ -751,7 +751,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     const vs = m.vs_sp500_pct
     kpis.push({
       label: 'vs S&P 500',
-      value: `${vs >= 0 ? '+' : ''}${vs.toFixed(1)}pp`,
+      value: `${vs >= 0 ? '+' : ''}${vs.toFixed(1).replace('.', ',')}pp`,
       sub: vs >= 0 ? 'por encima' : 'por debajo',
       tone: vs >= 0 ? 'pos' : 'neg',
     })
@@ -815,7 +815,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         {!isFlat && (
           <div className="flex items-baseline gap-2">
             <span className={`text-2xl font-mono font-semibold tabular ${colorClass}`}>
-              {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '—'}
+              {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}%` : '—'}
             </span>
             <span className={`text-sm font-mono tabular ${colorClass}`}>
               {usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : ''}
@@ -890,13 +890,13 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
             {bestMover && (
               <KVRow label={bestMover.delta_usd >= 0 ? 'Mejor activo' : 'Menor caída'}
                 value={`${bestMover.asset} ${bestMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(bestMover.delta_usd))}`}
-                sub={bestMover.delta_pct != null ? `${bestMover.delta_pct >= 0 ? '+' : ''}${bestMover.delta_pct.toFixed(1)}%` : null}
+                sub={bestMover.delta_pct != null ? `${bestMover.delta_pct >= 0 ? '+' : ''}${bestMover.delta_pct.toFixed(1).replace('.', ',')}%` : null}
                 tone={bestMover.delta_usd >= 0 ? 'pos' : 'neg'} />
             )}
             {worstMover && (
               <KVRow label={worstMover.delta_usd < 0 ? 'Peor pérdida' : 'Menor suba'}
                 value={`${worstMover.asset} ${worstMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(worstMover.delta_usd))}`}
-                sub={worstMover.delta_pct != null ? `${worstMover.delta_pct >= 0 ? '+' : ''}${worstMover.delta_pct.toFixed(1)}%` : null}
+                sub={worstMover.delta_pct != null ? `${worstMover.delta_pct >= 0 ? '+' : ''}${worstMover.delta_pct.toFixed(1).replace('.', ',')}%` : null}
                 tone={worstMover.delta_usd < 0 ? 'neg' : 'pos'} />
             )}
             {!bestMover && !worstMover && !period.movers_available && (

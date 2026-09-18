@@ -43,6 +43,28 @@ function fmtReset(iso) {
 const TIER_LABEL = { free: 'Free', plus: 'Plus', pro: 'Pro', advisor: 'Asesor', admin: 'Admin' }
 
 /**
+ * ¿De qué cupo se quedó sin: del de análisis (el botón ✦) o del de consultas?
+ *
+ * 🔴 NO se puede escribir a mano en la superficie. Por el chat pasan LOS DOS
+ * cupos, así que `kind="chat"` fijo hacía que a alguien sin ANÁLISIS la tarjeta
+ * le dijera "Usaste 0 de 1 consultas al Coach IA": el sustantivo equivocado y
+ * un número que se contradice con el título. Pasó en producción (2026-09-16).
+ *
+ * Orden: lo que dice el backend manda. Si no lo dice —un backend más viejo que
+ * este bundle, o un 429 armado en otro lado— se DEDUCE de los contadores: el
+ * cupo que quedó en cero es el que frenó. Sólo si los dos están en cero (o
+ * ninguno) se usa `porDefecto`, que es el contexto de la pantalla.
+ */
+export function kindDeCuota(usage, kindDelBackend, porDefecto = 'chat') {
+  if (kindDelBackend === 'chat' || kindDelBackend === 'analyses') return kindDelBackend
+  const sinAnalisis = usage?.analyses_remaining === 0
+  const sinChat = usage?.chat_remaining === 0
+  if (sinAnalisis && !sinChat) return 'analyses'
+  if (sinChat && !sinAnalisis) return 'chat'
+  return porDefecto
+}
+
+/**
  * @param {object} props
  * @param {object} props.usage - { analyses_count?, analyses_limit?, chat_count?, chat_limit?, resets_on? }
  * @param {object} props.upgrade - { available, current_tier, target_tier, benefits, resets_on? }
@@ -53,9 +75,20 @@ export default function UpgradePromoCard({
   usage,
   upgrade,
   kind = 'analyses',
+  codigo = null,
+  mensaje = null,
   source = 'drawer_429',
 }) {
   const isChat = kind === 'chat'
+  // 🔴 NO todo lo que muestra esta tarjeta es una cuota agotada.
+  //
+  // El 403 'free_chat_not_allowed' es otra cosa: la pregunta libre no está en
+  // el plan. No hay contador que se haya llenado. Como la tarjeta PISA el
+  // banner de error, mostrarla con el layout de cuota le decía a un Free
+  // "Llegaste al límite · Usaste 0 de 1 consultas" —un número que no frenó
+  // nada— y de paso escondía el único texto útil, el que le dice qué SÍ puede
+  // hacer (elegir una guiada, o registrar una operación). Producción 2026-09-16.
+  const esBloqueoDePlan = codigo === 'free_chat_not_allowed'
 
   // Resolver count/limit según el tipo de cuota agotada
   const count = isChat
@@ -80,7 +113,12 @@ export default function UpgradePromoCard({
   const resetsOn = upgrade?.resets_on || usage?.resets_on
   const resetLabel = fmtReset(resetsOn)
   const resourceLabel = isChat ? 'consultas al Coach IA' : 'análisis'
-  const resourceShort = isChat ? 'consulta' : 'análisis'
+  // La frase ENTERA, no sólo el sustantivo: "Tu próxima {análisis}" concuerda
+  // mal en castellano, y así se le mostró a todo el que se quedó sin análisis.
+  // El backend ya la arma completa (_chat_quota_429); acá estaba partida.
+  const proximaSeLibera = isChat
+    ? 'Tu próxima consulta se libera'
+    : 'Tu próximo análisis se libera'
 
   const navigate = useNavigate()
 
@@ -96,26 +134,37 @@ export default function UpgradePromoCard({
         <Sparkles size={14} strokeWidth={1.75} className="text-data-violet mt-0.5 flex-shrink-0" />
         <div className="flex-1 min-w-0">
           <p className="text-[12px] text-data-violet leading-none mb-1 font-medium">
-            Llegaste al límite del plan {currentLabel}
+            {esBloqueoDePlan
+              ? `No llegaste a ningún límite`
+              : `Llegaste al límite del plan ${currentLabel}`}
           </p>
           <h3 className="text-sm font-medium text-ink-0 leading-snug">
-            Usaste {count} de {limit} {resourceLabel} esta semana
+            {esBloqueoDePlan
+              ? `Las preguntas libres son del plan ${targetLabel}`
+              : `Usaste ${count} de ${limit} ${resourceLabel} esta semana`}
           </h3>
         </div>
       </div>
 
-      {/* Reset info */}
-      {resetLabel && (
+      {/* Qué SÍ puede hacer ahora mismo. El texto viene del backend: es el
+          mismo que la tarjeta estaba tapando. No se reescribe acá — dos copias
+          del mismo cartel se despegan a la primera edición. */}
+      {esBloqueoDePlan && mensaje && (
+        <p className="text-xs text-ink-2 leading-relaxed">{mensaje}</p>
+      )}
+
+      {/* Reset info — sólo si hay un contador que se renueve. */}
+      {!esBloqueoDePlan && resetLabel && (
         <div className="flex items-center gap-1.5 text-xs text-ink-2">
           <Calendar size={11} strokeWidth={1.75} className="text-ink-3" />
-          <span>Tu próxima {resourceShort} se libera el <span className="text-ink-0">{resetLabel}</span>.</span>
+          <span>{proximaSeLibera} el <span className="text-ink-0">{resetLabel}</span>.</span>
         </div>
       )}
 
       {/* Pitch al target tier */}
       <div className="pt-3 border-t border-line/40 space-y-2.5">
         <p className="text-xs text-ink-2">
-          Para más cuota{isChat ? ' y chat libre sin restricción' : ' y respuestas más profundas'}, pasate a <span className="text-data-violet font-medium">Rendi {targetLabel}</span>:
+          {esBloqueoDePlan ? 'Con' : `Para más cuota${isChat ? ' y chat libre sin restricción' : ' y respuestas más profundas'}, pasate a`} <span className="text-data-violet font-medium">Rendi {targetLabel}</span>:
         </p>
         <ul className="space-y-1.5">
           {benefits.map((b, i) => (

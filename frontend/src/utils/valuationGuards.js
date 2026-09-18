@@ -62,7 +62,7 @@ export function checkPositionRow(row, { pct = 'ratio' } = {}) {
       // Tolerancia: 1 punto porcentual absoluto o 3% relativo (value/pnl vienen
       // redondeados a 2 decimales → drift legítimo). Escalada a la convención.
       if (drift > Math.max(0.01 * scale, 0.03 * Math.abs(derived))) {
-        const toPct = (x) => (pct === 'percent' ? x : x * 100).toFixed(1)
+        const toPct = (x) => (pct === 'percent' ? x : x * 100).toFixed(1).replace('.', ',')
         issues.push(
           `pnl_pct ${toPct(Number(reported))}% no cierra con value/pnl (derivado ${toPct(derived)}%)`
         )

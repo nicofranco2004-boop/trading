@@ -1156,6 +1156,7 @@ class TestSimboloByma(unittest.TestCase):
         from snapshots_job import simbolo_byma
         self.assertEqual(simbolo_byma('BRK.B'), 'BRKB.BA')
         self.assertEqual(simbolo_byma('BRK B'), 'BRKB.BA')
+        self.assertEqual(simbolo_byma('BRK-B'), 'BRKB.BA')
 
     def test_no_es_una_regla_de_sacar_puntos(self):
         """BYMA publica AKO.B CON punto. Generalizar la excepción a una regla
@@ -1255,6 +1256,34 @@ class FaltaEstructuralTest(unittest.TestCase):
         conn.commit(); conn.close()
         r, n, _ = self._correr({'AL30': 91610.0}, sin_precio_para=('AAPL',))
         self.assertFalse(r['ok'], "una acción sin precio es la fuente caída, no el papel")
+        self.assertEqual(n, 0)
+
+
+    def test_un_fondo_sin_mapear_no_mata_la_foto_de_la_cuenta(self):
+        """El caso que más cuentas bloquea en producción: 61 sólo con COCOSPPA.
+
+        El importador declara `asset_type='FUND'` y, si el mapa curado no
+        reconoce el fondo, deja el ticker crudo del broker. Ese ticker termina
+        pidiéndose como `COCOSPPA.BA`, una acción de BYMA que no existe. No es
+        una falla de la fuente: es un símbolo que nunca va a cotizar.
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE positions SET asset='COCOSPPA', asset_type='FUND' WHERE asset='TZX26'")
+        conn.commit(); conn.close()
+        r, n, cob = self._correr({'AL30': 91610.0}, sin_precio_para=('COCOSPPA',))
+        self.assertTrue(r['ok'], "un fondo sin mapear no puede costar el historial de la cuenta")
+        self.assertEqual(n, 1)
+        self.assertIn('COCOSPPA', r['estructural'])
+        self.assertIsNotNone(cob, "y la foto declara cuánto se midió de verdad")
+
+    def test_un_fondo_del_catalogo_sin_precio_hoy_si_sigue_bloqueando(self):
+        """Ése es transitorio: la fuente publica 185 fondos y hoy faltaron 17.
+        Mañana vuelve, así que el guard tiene que seguir frenando."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE positions SET asset='FCI:COCOS-AHORRO-A', asset_type='FUND' WHERE asset='TZX26'")
+        conn.commit(); conn.close()
+        r, n, _ = self._correr({'AL30': 91610.0}, sin_precio_para=('FCI:',))
+        self.assertFalse(r['ok'])
         self.assertEqual(n, 0)
 
     def test_una_letra_que_todavia_no_venció_no_es_estructural(self):

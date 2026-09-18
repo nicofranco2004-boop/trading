@@ -156,7 +156,7 @@ describe('la frase del Dashboard usa el MISMO número que el hero', () => {
     const insight = buildDashboardInsight({
       totalValue: 35_000, netDeposited: 5_000, capitalMaximo: cap, positions,
     })
-    expect(insight.text).toContain('+60.0%')
+    expect(insight.text).toContain('+60,0%')
     expect(insight.text).not.toContain('600')
   })
 
@@ -174,7 +174,7 @@ describe('la frase del Dashboard usa el MISMO número que el hero', () => {
     const insight = buildDashboardInsight({
       totalValue: 30_000, netDeposited: 10_000, capitalMaximo: cap, positions,
     })
-    expect(insight.text).toContain('+200.0%')
+    expect(insight.text).toContain('+200,0%')
   })
 })
 

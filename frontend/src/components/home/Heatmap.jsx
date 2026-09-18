@@ -10,32 +10,23 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
+import { polarityColor, CORTES_DIA } from '../../utils/polarityScale'
 import AssetQuickView from './AssetQuickView'
 
-// Escala G/R 9 pasos en lugar de continuo — más operativo, replica Finviz.
-// Bins: <-3, -3 a -1.5, -1.5 a -0.5, -0.5 a 0, 0, 0 a 0.5, 0.5 a 1.5, 1.5 a 3, >3
-const GREEN_BINS = ['#06160E', '#072A18', '#0B4127', '#0F5C36', '#14A560', '#21D07A', '#5FE19D', '#9CEDC0', '#CFF7DF']
-const RED_BINS   = ['#1F0A0C', '#3E1418', '#5E1F25', '#8E2B33', '#C8333E', '#FF5360', '#FF8A93', '#FFB4BA', '#FFDADD']
-const NEUTRAL    = '#1B2230'  // gunmetal (line)
-
-function colorForChange(pct) {
-  if (pct == null) return NEUTRAL
-  if (Math.abs(pct) < 0.05) return NEUTRAL  // banda neutra muy chica
-  const abs = Math.abs(pct)
-  // Buckets: 0–0.5, 0.5–1, 1–2, 2–3, 3–5, 5+
-  let idx = 4  // mid (default = G500/R400 — el "fuerte sobrio")
-  if (abs < 0.5)      idx = 3
-  else if (abs < 1)   idx = 4
-  else if (abs < 2)   idx = 5  // = signal/red base (#21D07A / #FF5360)
-  else if (abs < 3)   idx = 5
-  else                idx = 5
-  return pct >= 0 ? GREEN_BINS[idx] : RED_BINS[idx]
-}
+// Los colores salen de la rampa única (utils/polarityScale.js), que conoce los
+// dos temas. Acá vivían dos arrays de 9 hex y una función propia — construidos
+// para fondo oscuro, donde "intenso" es BRILLANTE. Sobre blanco esa escala se
+// leía al revés: 0,4 % se pintaba casi negro y +1 % se pintaba pálido.
+//
+// De los 9 pasos que declaraba, la función usaba 3 (los índices 3, 4 y 5): los
+// seis restantes eran inalcanzables. La rampa nueva tiene esos 3 y nada más.
+//
+// Los cortes son los del DÍA (0,5 % y 1 %) porque esto mide una rueda.
 
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(1)}%`
+  return `${sign}${p.toFixed(1).replace('.', ',')}%`
 }
 
 // Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. El endpoint
@@ -234,6 +225,10 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
             const symFontSize = Math.max(9, Math.min(baseSize, 22))
             const pctFontSize = Math.max(8, Math.min(symFontSize * 0.62, 12))
             const yOffset = showPct ? -symFontSize * 0.25 : 0
+            // El fondo y su tinta salen juntos: el fondo cambia de luminancia
+            // entre temas, así que el texto de encima también. Antes el texto
+            // era `white` fijo — sobre una celda clara no se veía.
+            const celda = polarityColor(b.change_pct, CORTES_DIA)
             return (
               <g
                 key={b.symbol}
@@ -242,8 +237,8 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
               >
                 <rect
                   x={b.x} y={b.y} width={b.w} height={b.h}
-                  fill={colorForChange(b.change_pct)}
-                  stroke="#07090C"
+                  fill={celda.bg}
+                  stroke="rgb(var(--bg-0))"
                   strokeWidth="1"
                 />
                 {isLargeEnough && (
@@ -251,7 +246,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
                     x={b.x + b.w / 2}
                     y={b.y + b.h / 2 + yOffset + symFontSize * 0.35}
                     textAnchor="middle"
-                    fill="white"
+                    fill={celda.ink}
                     fontSize={symFontSize}
                     fontWeight="600"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -264,7 +259,8 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
                     x={b.x + b.w / 2}
                     y={b.y + b.h / 2 + symFontSize * 0.85}
                     textAnchor="middle"
-                    fill="rgba(255,255,255,0.85)"
+                    fill={celda.ink}
+                    fillOpacity="0.85"
                     fontSize={pctFontSize}
                     fontFamily="monospace"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}

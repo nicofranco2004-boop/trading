@@ -3,6 +3,7 @@
 import { isBondTicker } from './tickers'
 import { claveSemanaISO } from './semanas'
 import { hoyISO } from './fecha'
+import { pctTxt } from './format'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
@@ -467,10 +468,10 @@ const REPORTS_TIMELINE = (() => {
       ? ['NVDA', 'MSFT', 'BTC', 'GGAL'][Math.floor(Math.random() * 4)]
       : ['TSLA', 'YPFD', 'SOL', 'AMD'][Math.floor(Math.random() * 4)]
     const vsSpStr = Math.abs(vsSp) >= 0.5
-      ? ` Quedaste ${Math.abs(vsSp).toFixed(1)} puntos ${vsSp > 0 ? 'encima' : 'debajo'} del S&P 500.`
+      ? ` Quedaste ${Math.abs(vsSp).toFixed(1).replace('.', ',')} puntos ${vsSp > 0 ? 'encima' : 'debajo'} del S&P 500.`
       : ''
     const narrative = (isRelevant || isCurrent)
-      ? `En ${MONTH_NAMES_ES[m.month - 1].toLowerCase()} ${m.year} ${direction} US$ ${deltaUsdFmt} (${delta_pct >= 0 ? '+' : ''}${delta_pct.toFixed(1)}%) sobre un capital inicial de US$ ${startValueFmt}. ${delta_pct >= 0 ? `${sampleAssets} fue el aporte más relevante del período.` : `${sampleAssets} concentró las pérdidas del mes.`} Cerraste ${trades} operaciones con ${winRate.toFixed(0)}% de win rate, sumando US$ ${(pnlTotal >= 0 ? '+' : '−') + Math.abs(m.pnl_realized).toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.${vsSpStr}`
+      ? `En ${MONTH_NAMES_ES[m.month - 1].toLowerCase()} ${m.year} ${direction} US$ ${deltaUsdFmt} (${delta_pct >= 0 ? '+' : ''}${delta_pct.toFixed(1).replace('.', ',')}%) sobre un capital inicial de US$ ${startValueFmt}. ${delta_pct >= 0 ? `${sampleAssets} fue el aporte más relevante del período.` : `${sampleAssets} concentró las pérdidas del mes.`} Cerraste ${trades} operaciones con ${winRate.toFixed(0).replace('.', ',')}% de win rate, sumando US$ ${(pnlTotal >= 0 ? '+' : '−') + Math.abs(m.pnl_realized).toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.${vsSpStr}`
       : null
 
     return {
@@ -547,7 +548,7 @@ function buildDemoPeriodReport(periodType, periodKey) {
     const today = new Date()
     const isCurrent = today.getFullYear() === y
     const direction = deltaPct >= 0 ? 'ganaste' : 'perdiste'
-    const narrative = `En ${periodKey} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%) sobre un capital inicial de US$ ${startV.toLocaleString('es-AR', { maximumFractionDigits: 0 })}. Aportaste US$ ${Math.abs(flows).toLocaleString('es-AR', { maximumFractionDigits: 0 })} netos en el año. Cerraste ${trades} operaciones, sumando US$ ${realized.toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.`
+    const narrative = `En ${periodKey} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1).replace('.', ',')}%) sobre un capital inicial de US$ ${startV.toLocaleString('es-AR', { maximumFractionDigits: 0 })}. Aportaste US$ ${Math.abs(flows).toLocaleString('es-AR', { maximumFractionDigits: 0 })} netos en el año. Cerraste ${trades} operaciones, sumando US$ ${realized.toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.`
     return {
       period_type: 'year',
       period_key: periodKey,
@@ -576,9 +577,9 @@ function buildDemoPeriodReport(periodType, periodKey) {
           vs_inflation_pct: +(deltaPct - 80).toFixed(1),
         }
       })(),
-      headline: deltaPct > 10 ? `Año sólido — +${deltaPct.toFixed(1)}%.`
-        : deltaPct < -3 ? `Año difícil — ${deltaPct.toFixed(1)}%.`
-        : `Año mixto — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%.`,
+      headline: deltaPct > 10 ? `Año sólido — +${deltaPct.toFixed(1).replace('.', ',')}%.`
+        : deltaPct < -3 ? `Año difícil — ${deltaPct.toFixed(1).replace('.', ',')}%.`
+        : `Año mixto — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1).replace('.', ',')}%.`,
       subheadline: null,
       narrative,
       highlights: [],
@@ -608,7 +609,7 @@ function buildDemoPeriodReport(periodType, periodKey) {
         const ops = dentro.metrics.trades_count
         return {
           ...dentro,
-          narrative: `En esta semana ${signo} US$ ${monto} (${dentro.metrics.delta_pct >= 0 ? '+' : ''}${dentro.metrics.delta_pct}%). `
+          narrative: `En esta semana ${signo} US$ ${monto} (${dentro.metrics.delta_pct >= 0 ? '+' : ''}${pctTxt(dentro.metrics.delta_pct)}). `
             + (ops > 0 ? `Cerraste ${ops} operacion${ops === 1 ? '' : 'es'}.` : 'Sin operaciones cerradas.'),
           portfolio_snapshot: _demoPortfolioSnapshot(),
         }
@@ -661,13 +662,13 @@ function buildDemoPeriodReport(periodType, periodKey) {
   const direction = deltaPct >= 0 ? 'ganaste' : 'perdiste'
   const periodWord = isWeek ? 'esta semana' : 'este día'
   const narrative = isRelevant
-    ? `En ${periodWord.toLowerCase()} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%). ${trades > 0 ? `Cerraste ${trades} operación${trades !== 1 ? 'es' : ''} en el período.` : 'Sin operaciones cerradas.'}`
+    ? `En ${periodWord.toLowerCase()} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1).replace('.', ',')}%). ${trades > 0 ? `Cerraste ${trades} operación${trades !== 1 ? 'es' : ''} en el período.` : 'Sin operaciones cerradas.'}`
     : null
   const headline = !isRelevant
     ? `${isWeek ? 'Semana' : 'Día'} sin grandes movimientos.`
-    : deltaPct >= 1 ? `${isWeek ? 'Semana sólida' : 'Día sólido'} — +${deltaPct.toFixed(2)}%.`
-    : deltaPct <= -1 ? `${isWeek ? 'Semana difícil' : 'Día difícil'} — ${deltaPct.toFixed(2)}%.`
-    : `${isWeek ? 'Semana mixta' : 'Día mixto'} — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(2)}%.`
+    : deltaPct >= 1 ? `${isWeek ? 'Semana sólida' : 'Día sólido'} — +${deltaPct.toFixed(2).replace('.', ',')}%.`
+    : deltaPct <= -1 ? `${isWeek ? 'Semana difícil' : 'Día difícil'} — ${deltaPct.toFixed(2).replace('.', ',')}%.`
+    : `${isWeek ? 'Semana mixta' : 'Día mixto'} — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(2).replace('.', ',')}%.`
 
   return {
     period_type: periodType,
@@ -2075,7 +2076,7 @@ const _MD_SPEC = [
 
 function _mdLabel(value, unit) {
   if (value == null || Number.isNaN(value)) return '—'
-  return unit === '%' ? `${value.toFixed(2)}%` : `${value.toFixed(2)}x`
+  return unit === '%' ? `${value.toFixed(2).replace('.', ',')}%` : `${value.toFixed(2).replace('.', ',')}x`
 }
 
 // vals: { key: number } — claves ausentes salen null/"—".
@@ -2164,18 +2165,18 @@ const _CD_SPEC = [
 
 function _cdValueLabel(value, unit) {
   if (value == null || Number.isNaN(value)) return '—'
-  if (unit === '%') return `${value.toFixed(2)}%`
+  if (unit === '%') return `${value.toFixed(2).replace('.', ',')}%`
   if (unit === '$') return _fundUsdCompact(value)
-  return `${value.toFixed(2)}x`
+  return `${value.toFixed(2).replace('.', ',')}x`
 }
 
 function _fundUsdCompact(n) {
   if (n == null || Number.isNaN(n)) return '—'
   const abs = Math.abs(n)
   const sign = n < 0 ? '−' : ''
-  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2).replace('.', ',')}T`
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2).replace('.', ',')}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2).replace('.', ',')}M`
   return `${sign}$${abs.toFixed(0)}`
 }
 
@@ -2529,7 +2530,7 @@ function _genericFundamentals(ticker) {
       available: true, kind: 'analyst', value_pct: upside,
       label: upside > 15 ? 'Oportunidad' : upside > 0 ? 'En precio' : 'Flojo',
       position_pct: Math.max(0, Math.min(100, 50 - upside)),
-      caption: `${upside >= 0 ? '+' : ''}${upside}% vs el precio objetivo de los analistas`,
+      caption: `${upside >= 0 ? '+' : ''}${pctTxt(upside)} vs el precio objetivo de los analistas`,
     },
     analysts: {
       available: true, recommendation_key: recKey, recommendation_label: recLabel,
@@ -2705,7 +2706,7 @@ function _genericAISummary(ticker, fund) {
   const pros = []
   const cons = []
   if ((m.revenue_growth_pct ?? 0) > 12) {
-    pros.push(`Está creciendo: las ventas suben ${m.revenue_growth_pct}% al año.`)
+    pros.push(`Está creciendo: las ventas suben ${pctTxt(m.revenue_growth_pct)} al año.`)
   } else {
     cons.push('El crecimiento es flojo: las ventas casi no se mueven.')
   }
@@ -2715,7 +2716,7 @@ function _genericAISummary(ticker, fund) {
     cons.push('Márgenes ajustados: gana poco por cada dólar que vende.')
   }
   if ((m.roe_pct ?? 0) > 15) {
-    pros.push(`Usa bien el capital: ROE de ${m.roe_pct}%.`)
+    pros.push(`Usa bien el capital: ROE de ${pctTxt(m.roe_pct)}.`)
   }
   if ((m.trailing_pe ?? 0) > 30) {
     cons.push(`Está cara: un P/E de ${m.trailing_pe} deja poco margen de error.`)

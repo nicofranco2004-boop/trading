@@ -43,11 +43,11 @@ const MAX_DISPERSOS = 4
 // usan ASSET_CLASS_META y SECTOR_META). Nunca rendi-neg (#FF5360): en esta app
 // el rojo es pérdida, no una categoría.
 const ASSET_PALETTE = [
-  '#5B9DF9', '#21D07A', '#8B7DFF', '#E8B14A', '#46C6E0', '#D97BE0',
-  '#9AA85C', '#F2994A', '#7C6BF5', '#E08AA8', '#6FA8A0', '#A87C5C',
-  '#4F7CA8', '#C98A2E',
+  'rgb(var(--rendi-accent))', 'rgb(var(--rendi-pos))', 'rgb(var(--data-violet))', 'rgb(var(--data-amber))', 'rgb(var(--data-cyan))', 'rgb(var(--cat-magenta))',
+  'rgb(var(--cat-olive))', 'rgb(var(--cat-orange))', 'rgb(var(--cat-indigo))', 'rgb(var(--cat-pink))', 'rgb(var(--cat-teal))', 'rgb(var(--cat-brown))',
+  'rgb(var(--cat-steel))', 'rgb(var(--cat-bronze))',
 ]
-const REST_COLOR = '#5A6478'
+const REST_COLOR = 'rgb(var(--ink-3))'
 
 /**
  * assetSlicesFromRows — la torta "Distribución de activos" del libro.

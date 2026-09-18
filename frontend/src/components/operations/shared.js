@@ -10,6 +10,7 @@ import {
   ArrowUpRight, ArrowDownRight, ArrowDownToLine, ArrowUpFromLine,
   Coins, Receipt, SlidersHorizontal,
 } from 'lucide-react'
+import { LOCALE } from '../../utils/format'
 
 // ─── Tipos de movimiento ───────────────────────────────────────────────────
 // UN solo mapa. Antes eran dos (`TYPE_META` desktop / `MOVE_TYPE_META` mobile)
@@ -103,9 +104,9 @@ export function formatDateLabel(date) {
 // movería números en pantalla.
 export function formatQty(q) {
   if (q == null || isNaN(q)) return '—'
-  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('en-US')
-  if (Math.abs(q) >= 1) return q.toFixed(2).replace(/\.00$/, '')
-  return q.toFixed(4)
+  if (Math.abs(q) >= 1000) return Math.round(q).toLocaleString('es-AR')
+  if (Math.abs(q) >= 1) return q.toLocaleString(LOCALE, { maximumFractionDigits: 2 })
+  return q.toFixed(4).replace('.', ',')
 }
 
 // ─── P&L de un movimiento ──────────────────────────────────────────────────

@@ -315,7 +315,7 @@ export default function Sidebar() {
                 {showDot && (
                   <span aria-hidden title="Tenés alertas sin ver"
                     className={`w-2 h-2 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
-                    style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgba(139,125,255,0.12)' }} />
+                    style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgb(var(--data-violet) / 0.12)' }} />
                 )}
                 {isActive && <ActiveBar />}
               </>
@@ -373,6 +373,7 @@ export default function Sidebar() {
             <div title={`Plan ${user.tier || 'free'}`} className="mb-1"><PlanBadge tier={user.tier} compact /></div>
           )}
           <button onClick={toggle}
+            data-tour="tema"
             className="p-1.5 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-1 transition-colors"
             title={dark ? 'Modo claro' : 'Modo oscuro'} aria-label={dark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}>
             {dark ? <Sun size={14} strokeWidth={1.75} aria-hidden="true" /> : <Moon size={14} strokeWidth={1.75} aria-hidden="true" />}

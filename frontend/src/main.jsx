@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import { ToastProvider } from './components/Toast'
 import { initAnalytics } from './utils/analytics'
 import { initMetaPixel } from './utils/metaPixel'
+import { isChunkLoadError, urlsAReparar, repararAssets } from './utils/chunkErrors'
 import './index.css'
 
 // Inicializar GA4 al arranque. No-op si VITE_GA_MEASUREMENT_ID no está seteada
@@ -38,50 +39,59 @@ initMetaPixel()
 // el reload no soluciona el problema (caso: el deploy realmente está roto).
 // Si hace > 10s desde el último reload, intentamos de nuevo. Si no,
 // dejamos el error visible para que React lo maneje.
-const CHUNK_ERROR_PATTERNS = [
-  'Loading chunk',
-  'Loading CSS chunk',
-  'Failed to fetch dynamically imported module',
-  'Importing a module script failed',
-  "MIME type ('text/html')",
-  'is not executable',
-  'Unexpected token',  // safari cuando parsea HTML como JS
-]
-
-function isChunkLoadError(msg) {
-  const s = String(msg || '')
-  return CHUNK_ERROR_PATTERNS.some(p => s.includes(p))
+// Antes de recargar hay que REPARAR, no alcanza con volver a pedir la página:
+// si el navegador tiene un /assets/*.js envenenado (HTML guardado como si fuera
+// JavaScript, con `immutable` de un año), recargar le vuelve a dar el HTML de su
+// propio cache sin consultar al servidor — y el usuario queda en loop. El
+// `cache: 'reload'` de repararAssets() es lo único que pisa esa entrada.
+async function repararYRecargar(mensaje) {
+  try {
+    const recursos = performance.getEntriesByType('resource').map(r => r.name)
+    const nodos = [...document.querySelectorAll('script[src], link[href]')]
+      .map(n => n.src || n.href)
+    await repararAssets(
+      urlsAReparar({ mensaje, recursos, nodos, origin: window.location.origin }),
+    )
+  } catch {
+    // La reparación es best-effort: si algo falla, recargamos igual.
+  }
+  try {
+    // location.reload() sin args usa el cache. Para forzar bypass del
+    // bfcache de Safari, navegamos con un cache-buster query.
+    const url = new URL(window.location.href)
+    url.searchParams.set('_t', String(Date.now()))
+    window.location.replace(url.toString())
+  } catch {
+    window.location.reload()
+  }
 }
 
-function maybeReloadOnce() {
+function maybeReloadOnce(mensaje) {
   try {
     const KEY = 'rendi_chunk_reload_at'
     const lastReload = parseInt(sessionStorage.getItem(KEY) || '0', 10)
     const now = Date.now()
     if (now - lastReload > 10_000) {
       sessionStorage.setItem(KEY, String(now))
-      // location.reload() sin args usa el cache. Para forzar bypass del
-      // bfcache de Safari, navegamos con un cache-buster query.
-      const url = new URL(window.location.href)
-      url.searchParams.set('_t', String(Date.now()))
-      window.location.replace(url.toString())
+      repararYRecargar(mensaje)
     }
   } catch {
     // sessionStorage puede no estar disponible en private mode iOS.
-    // Como último recurso, reload normal.
-    window.location.reload()
+    // Como último recurso, reparamos y recargamos igual.
+    repararYRecargar(mensaje)
   }
 }
 
 window.addEventListener('error', (event) => {
+  const mensaje = event.error?.message || event.message
   if (isChunkLoadError(event.message) || isChunkLoadError(event.error?.message)) {
-    maybeReloadOnce()
+    maybeReloadOnce(`${mensaje} ${event.filename || ''}`)
   }
 })
 
 window.addEventListener('unhandledrejection', (event) => {
   if (isChunkLoadError(event.reason?.message) || isChunkLoadError(event.reason)) {
-    maybeReloadOnce()
+    maybeReloadOnce(event.reason?.message || event.reason)
   }
 })
 

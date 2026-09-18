@@ -116,7 +116,7 @@ export default function MobileTopBar({ onRefresh }) {
                   <li key={sym} className="flex items-center gap-1.5 text-[10px]">
                     <span className="text-ink-3 font-medium font-mono">{label}</span>
                     <span className={positive ? 'text-rendi-pos tabular' : 'text-rendi-neg tabular'}>
-                      {positive ? '+' : '−'}{Math.abs(change).toFixed(2)}%
+                      {positive ? '+' : '−'}{Math.abs(change).toFixed(2).replace('.', ',')}%
                     </span>
                   </li>
                 )

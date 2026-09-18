@@ -180,7 +180,7 @@ export default function VerifyEmail() {
   }
 
   return (
-    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-0 flex items-center justify-center px-4">
       <PageMeta
         title="Verificar email — Rendi"
         description="Confirmá tu email para activar tu cuenta de Rendi."
@@ -193,7 +193,7 @@ export default function VerifyEmail() {
           <span className="text-2xl font-bold text-ink-0 dark:text-white tracking-tight">rendi</span>
         </div>
 
-        <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-2xl p-7">
+        <div className="bg-bg-2/60 border border-line/50 rounded-2xl p-7">
           <div className="text-center mb-6">
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-rendi-pos/10 mb-3">
               <CheckCircle2 size={22} className="text-rendi-pos" strokeWidth={1.75} />

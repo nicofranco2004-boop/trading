@@ -92,16 +92,16 @@ const ON_RE = /^[A-Z]{2,4}\d?[A-Z]?O$/
 // la paleta de charts de la app (ver PIE_COLORS en Insights.jsx).
 
 export const ASSET_CLASS_META = {
-  cedear:    { label: 'CEDEARs',        color: '#8B7DFF' },
-  accion_ar: { label: 'Acciones AR',    color: '#46C6E0' },
-  accion_us: { label: 'Acciones US',    color: '#5B9DF9' },
-  etf:       { label: 'ETFs',           color: '#21D07A' },
-  bono:      { label: 'Bonos y letras', color: '#E8B14A' },
-  plazo_fijo:{ label: 'Plazo fijo',     color: '#C98A2E' },  // sintética, ver extraSlices
-  fci:       { label: 'FCI',            color: '#D97BE0' },
-  cripto:    { label: 'Cripto',         color: '#F2994A' },
-  cash:      { label: 'Efectivo',       color: '#5A6478' },
-  otro:      { label: 'Sin clasificar', color: '#8A93A6' },
+  cedear:    { label: 'CEDEARs',        color: 'rgb(var(--data-violet))' },
+  accion_ar: { label: 'Acciones AR',    color: 'rgb(var(--data-cyan))' },
+  accion_us: { label: 'Acciones US',    color: 'rgb(var(--rendi-accent))' },
+  etf:       { label: 'ETFs',           color: 'rgb(var(--rendi-pos))' },
+  bono:      { label: 'Bonos y letras', color: 'rgb(var(--data-amber))' },
+  plazo_fijo:{ label: 'Plazo fijo',     color: 'rgb(var(--cat-bronze))' },  // sintética, ver extraSlices
+  fci:       { label: 'FCI',            color: 'rgb(var(--cat-magenta))' },
+  cripto:    { label: 'Cripto',         color: 'rgb(var(--cat-orange))' },
+  cash:      { label: 'Efectivo',       color: 'rgb(var(--ink-3))' },
+  otro:      { label: 'Sin clasificar', color: 'rgb(var(--cat-gray-2))' },
 }
 
 // ─── El corte grueso: variable / fija / efectivo ────────────────────────────
@@ -127,10 +127,10 @@ export const ASSET_CLASS_META = {
 // cualquiera de los dos lados sería inventar. Va a su propia barra, que la UI
 // muestra solo si tiene peso.
 export const RISK_GROUP_META = {
-  variable: { label: 'Renta variable', color: '#8B7DFF' },
-  fija:     { label: 'Renta fija',     color: '#E8B14A' },
-  efectivo: { label: 'Efectivo',       color: '#5A6478' },
-  otro:     { label: 'Sin clasificar', color: '#8A93A6' },
+  variable: { label: 'Renta variable', color: 'rgb(var(--data-violet))' },
+  fija:     { label: 'Renta fija',     color: 'rgb(var(--data-amber))' },
+  efectivo: { label: 'Efectivo',       color: 'rgb(var(--ink-3))' },
+  otro:     { label: 'Sin clasificar', color: 'rgb(var(--cat-gray-2))' },
 }
 
 export const RISK_GROUP_ORDER = Object.keys(RISK_GROUP_META)

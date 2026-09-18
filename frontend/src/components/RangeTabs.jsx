@@ -24,7 +24,7 @@ export default function RangeTabs({ value, onChange, ranges = RANGES, size = 'md
             onClick={() => onChange(r.id)}
             className={`${padX} ${padY} ${text} rounded-full font-semibold tracking-wide transition-colors ${
               active
-                ? 'bg-white dark:bg-bg-2 text-ink-0 shadow-sm'
+                ? 'bg-bg-2 text-ink-0 shadow-sm'
                 : 'text-ink-3 hover:text-ink-0 dark:hover:text-ink-0'
             }`}
           >

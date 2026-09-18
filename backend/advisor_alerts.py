@@ -19,6 +19,7 @@ Lo evalúa el MISMO cron que las alertas de precio (cada ~10 min) → el asesor 
 tiene que dar de alta nada nuevo.
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import logging
 from datetime import datetime, timedelta
@@ -145,8 +146,8 @@ def _titular(items) -> str:
     if len(items) == 1:
         return items[0]["msg"]
     verbo = lambda it: "subió" if it["pct"] >= 0 else "cayó"
-    a = f"La cartera de {items[0]['label']} {verbo(items[0])} {abs(items[0]['pct']):.1f}%"
-    b = f"la de {items[1]['label']} {verbo(items[1])} {abs(items[1]['pct']):.1f}%"
+    a = f"La cartera de {items[0]['label']} {verbo(items[0])} {fmt_num(abs(items[0]['pct']), 1)}%"
+    b = f"la de {items[1]['label']} {verbo(items[1])} {fmt_num(abs(items[1]['pct']), 1)}%"
     if len(items) == 2:
         return f"{a} y {b} hoy"
     return f"{a}, {b} y {len(items) - 2} más hoy"
@@ -333,14 +334,14 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                     continue
 
                 verbo = "subió" if side == "up" else "cayó"
-                msg = f"La cartera de {labels.get(cid)} {verbo} {abs(pct):.1f}% hoy"
+                msg = f"La cartera de {labels.get(cid)} {verbo} {fmt_num(abs(pct), 1)}% hoy"
                 # El cuerpo del mail lleva los números, no "entrá a Rendi para
                 # verlos": el valor de hoy y el movimiento, que ya los tenemos
                 # acá. Mismo criterio que alerts_engine._email_detail.
                 from money_fmt import fmt_money
                 _val = fmt_money(now_v, "USD", decimals=0)
                 detail = (f"La cartera de {labels.get(cid)} {verbo} "
-                          f"{abs(pct):.1f}% desde el cierre de ayer y hoy vale "
+                          f"{fmt_num(abs(pct), 1)}% desde el cierre de ayer y hoy vale "
                           f"{_val}. El movimiento es del mercado: los depósitos "
                           f"y retiros del día ya están descontados.")
                 # Sellar el estado y el evento ANTES de mandar: el envío son dos
@@ -361,7 +362,7 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 pendientes.append({
                     "msg": msg, "detail": detail, "event_id": _evid,
                     "label": labels.get(cid), "pct": pct,
-                    "line": (f"{labels.get(cid)}: {verbo} {abs(pct):.1f}% "
+                    "line": (f"{labels.get(cid)}: {verbo} {fmt_num(abs(pct), 1)}% "
                              f"y hoy vale {_val}"),
                 })
                 fired += 1

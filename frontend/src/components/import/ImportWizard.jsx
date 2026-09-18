@@ -79,6 +79,7 @@ const STEP_SEED = 'seed'
 const STEP_RECONCILE = 'reconcile'
 import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
+import { parseNum, parseNumOrNull } from '../../utils/format'
 
 const STEP_DONE = 'done'
 
@@ -637,7 +638,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
             .filter(([_, v]) => v !== '')
             .map(([cur, v]) => {
               const F = Number(b.final_balance?.[cur] || 0)
-              return [cur, Number(v) - F]   // ajuste = saldo_real − estimado (+ o −)
+              return [cur, parseNum(v) - F]   // ajuste = saldo_real − estimado (+ o −)
             })
             // Mandamos el ajuste sea POSITIVO (faltaba plata previa) o NEGATIVO
             // (el cash estimado por los trades quedó más alto que el real — típico
@@ -651,11 +652,11 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           // aunque el user no haya puesto precio: se crean con costo 0 (editable
           // luego) para no volver a perderlas. Las de qty mínima (sell sin compra
           // previa) siguen siendo opcionales — solo si el user cargó el precio.
-          .filter(a => a.symbol && Number(a.qty) > 0 && (a.cost_basis_unit !== '' || a.exact_qty))
+          .filter(a => a.symbol && parseNum(a.qty) > 0 && (a.cost_basis_unit !== '' || a.exact_qty))
           .map(a => ({
             symbol: a.symbol.trim().toUpperCase(),
-            qty: Number(a.qty),
-            cost_basis_unit: a.cost_basis_unit === '' ? 0 : Number(a.cost_basis_unit),
+            qty: parseNum(a.qty),
+            cost_basis_unit: a.cost_basis_unit === '' ? 0 : parseNum(a.cost_basis_unit),
           })),
       }))
       .filter(b => Object.keys(b.cash).length > 0 || b.assets.length > 0)
@@ -760,7 +761,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 overflow-y-auto">
-      <div className="bg-white dark:bg-bg-2 border border-line rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
+      <div className="bg-bg-raised border border-line rounded-t-2xl sm:rounded-xl w-full max-w-3xl shadow-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-line flex-shrink-0">
           <h2 className="font-semibold text-ink-0 text-sm sm:text-base">
             Importar
@@ -1122,7 +1123,7 @@ function Stepper({ step, skipMap, hasSeed, hasSeedAssets, hasTenencia }) {
       {steps.map((s, i) => (
         <div key={s.id} className="flex items-center gap-2">
           <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold
-            ${i <= idx ? 'bg-rendi-accent text-white' : 'bg-bg-2 dark:bg-bg-2 text-ink-3'}`}>
+            ${i <= idx ? 'bg-rendi-accent text-white' : 'bg-bg-2 text-ink-3'}`}>
             {i + 1}
           </span>
           <span className={i === idx ? 'text-ink-0 font-medium' : ''}>{s.label}</span>
@@ -1297,7 +1298,7 @@ function IntroStep({ parserGroups, sourceType, setSourceType, platform,
                 <select
                   value={singleBroker}
                   onChange={e => setSingleBroker(e.target.value)}
-                  className="w-full bg-bg-2 dark:bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
+                  className="w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0"
                 >
                   <option value="">Elegí un broker…</option>
                   {brokers.map(b => <option key={b.id} value={b.name}>{b.name} ({b.currency})</option>)}
@@ -1550,12 +1551,12 @@ function UploadStep({ faltaTenencia = null, sourceType, platform, format, parser
                 {files.map(f => (
                   <li
                     key={`${f.name}::${f.size}`}
-                    className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-bg-2 dark:bg-bg-2"
+                    className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-bg-2"
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <FileText size={14} className="flex-shrink-0 text-ink-3" />
                       <span className="font-medium truncate">{f.name}</span>
-                      <span className="text-ink-3 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1)} KB)</span>
+                      <span className="text-ink-3 text-xs flex-shrink-0">({(f.size / 1024).toFixed(1).replace('.', ',')} KB)</span>
                     </div>
                     <button
                       type="button"
@@ -1733,7 +1734,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
         </div>
         <div className="flex flex-wrap gap-1.5">
           {headers.map(h => (
-            <span key={h} className="text-xs bg-white dark:bg-bg-2 border border-line rounded-xl px-2 py-0.5 font-mono">
+            <span key={h} className="text-xs bg-bg-2 border border-line rounded-xl px-2 py-0.5 font-mono">
               {h}
             </span>
           ))}
@@ -1998,7 +1999,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
                 ) : <span className="w-3 flex-shrink-0" />}
                 <div className="min-w-0">
                   <span className="font-mono text-xs text-ink-1">{tk || '—'}</span>
-                  <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-white/5 text-ink-3">
+                  <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-bg-3 text-ink-3">
                     {MOTIVO_LABEL[x.motivo] || 'a revisar'}
                   </span>
                   {x.detalle && <p className="text-xs text-ink-2 mt-0.5">{x.detalle}</p>}
@@ -2028,7 +2029,7 @@ function ReconcileStep({ data, aprobados, onToggle }) {
 
 function RecSection({ titulo, sub, chip, tono, children }) {
   const borde = tono === 'ok' ? 'border-blue-500/30'
-    : tono === 'decide' ? 'border-amber-500/40' : 'border-white/10'
+    : tono === 'decide' ? 'border-amber-500/40' : 'border-line-2'
   return (
     <div className={`rounded-md border ${borde} px-3 py-2.5`}>
       <div className="flex items-start justify-between gap-2 mb-1">
@@ -2064,7 +2065,7 @@ function OverrideDetalle({ ov }) {
   const removed = ov.removed || []
   if (!ov.capped && !skipped.length && !removed.length) return null
   return (
-    <div className="rounded-md border border-white/10 px-3 py-2.5 space-y-2">
+    <div className="rounded-md border border-line-2 px-3 py-2.5 space-y-2">
       <div className="font-medium text-sm text-ink-0">Lo que no tocamos</div>
 
       {ov.capped && (
@@ -2092,7 +2093,7 @@ function OverrideDetalle({ ov }) {
           <div className="mt-1 flex flex-wrap gap-1">
             {skipped.map(tk => (
               <span key={`sk-${tk}`}
-                    className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-white/5 text-ink-1">
+                    className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-bg-3 text-ink-1">
                 {tk}
               </span>
             ))}
@@ -2455,7 +2456,7 @@ function PreviewStep({ preview, importMode, singleBroker, useCurrencyRouting,
           </p>
           <div className="max-h-60 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-white dark:bg-bg-2">
+              <thead className="sticky top-0 bg-bg-2">
                 <tr className="text-left text-ink-3">
                   <th className="py-1 w-6"></th>
                   <th className="py-1">#</th>
@@ -2573,7 +2574,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-ink-0 text-sm">{b.broker}</span>
                 {b.broker_currency && (
-                  <span className="text-[12px] px-1.5 py-0.5 rounded bg-bg-2 dark:bg-bg-2 text-ink-1 font-medium">
+                  <span className="text-[12px] px-1.5 py-0.5 rounded bg-bg-2 text-ink-1 font-medium">
                     {displayCur(b.broker_currency, b.broker)}
                   </span>
                 )}
@@ -2595,7 +2596,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                     const hasF = F != null
                     const current = b.cash?.[cur] ?? ''       // saldo de HOY que pone el user
                     const isSame = hasF && F >= 0 && current !== '' &&
-                      Math.abs(Number(current) - F) < 0.01
+                      Math.abs(parseNum(current) - F) < 0.01
                     return (
                       <div key={cur} className="block">
                         <div className="mb-2 flex items-center gap-2 flex-wrap">
@@ -2632,9 +2633,8 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           </button>
                         )}
                         <input
-                          type="number"
-                          step="any"
-                          min="0"
+                          type="text"
+                          inputMode="decimal"
                           value={current}
                           onChange={e => setCash(bi, cur, e.target.value)}
                           placeholder={`¿Cuánto ${curLabel} tenés hoy?`}
@@ -2674,7 +2674,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                     {(b.assets || []).map((a, ai) => {
                       const curLabel = displayCur(b.broker_currency, b.broker)
                       const empty = a.cost_basis_unit === '' || a.cost_basis_unit == null
-                      const isZero = !empty && Number(a.cost_basis_unit) === 0
+                      const isZero = !empty && parseNum(a.cost_basis_unit) === 0
                       // exact_qty = posición que SÍ se va a crear (transferida o
                       // compra sin precio) → el precio es requerido (o "no sé" → 0).
                       // min_qty = venta sin compra previa → opcional (el motor
@@ -2698,9 +2698,8 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                           <div className="flex items-center gap-1.5 ml-auto">
                             <span className="text-[12px] text-ink-3 font-medium">{curLabel}</span>
                             <input
-                              type="number"
-                              step="any"
-                              min="0"
+                              type="text"
+                          inputMode="decimal"
                               value={a.cost_basis_unit}
                               onChange={e => setAsset(bi, ai, 'cost_basis_unit', e.target.value)}
                               placeholder={a.exact_qty ? 'precio prom.' : 'precio (opcional)'}
@@ -2761,8 +2760,8 @@ function CashReconcileCard({ c, onApplied }) {
   const computedFmt = formatMoney(c.balance, c.currency)
 
   // Diff preview en vivo mientras el user escribe
-  const target = value === '' ? null : Number(value)
-  const validTarget = target !== null && Number.isFinite(target)
+  const target = parseNumOrNull(value)
+  const validTarget = target !== null
   const diff = validTarget ? target - c.balance : null
   const diffAbs = diff !== null ? Math.abs(diff) : 0
   const diffSig = diff !== null && Math.abs(diff) >= 0.01
@@ -2839,12 +2838,13 @@ function CashReconcileCard({ c, onApplied }) {
               {currencySymbol}
             </span>
             <input
-              type="number" step="0.01" value={value}
+              type="text"
+                          inputMode="decimal" value={value}
               onChange={e => { setValue(e.target.value); setErr(null) }}
               onKeyDown={e => { if (e.key === 'Enter' && validTarget) apply() }}
               disabled={busy}
-              placeholder="0.00"
-              className="w-full pl-9 pr-2 py-2 text-sm bg-white dark:bg-bg-2 border border-line-2 rounded-md tabular text-ink-0 focus:outline-none focus:border-rendi-accent disabled:opacity-50"
+              placeholder="0,00"
+              className="w-full pl-9 pr-2 py-2 text-sm bg-bg-2 border border-line-2 rounded-md tabular text-ink-0 focus:outline-none focus:border-rendi-accent disabled:opacity-50"
             />
           </div>
         </div>

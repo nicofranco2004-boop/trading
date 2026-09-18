@@ -24,14 +24,14 @@ const HEIGHT = 100
 
 function fmtPrice(v) {
   if (v == null) return '—'
-  if (v >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 })
-  return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (v >= 1000) return v.toLocaleString('es-AR', { maximumFractionDigits: 0 })
+  return v.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2)}%`
+  return `${sign}${p.toFixed(2).replace('.', ',')}%`
 }
 
 export default function AssetMiniChart({ symbol }) {

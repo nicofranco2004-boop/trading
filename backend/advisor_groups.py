@@ -22,6 +22,7 @@ el importador. Un activo que no cae en ninguno queda 'otro' y NO suma a ninguna
 clase (mejor no clasificar que clasificar mal — el % tiene que ser defendible).
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 
 import json
 import logging
@@ -134,9 +135,9 @@ def describe(rules: dict) -> str:
     if r.get("has_asset"):
         bits.append(f"tienen {r['has_asset']}")
     if r.get("aum_min"):
-        bits.append(f"tienen más de US$ {r['aum_min']:,.0f}".replace(",", "."))
+        bits.append(f"tienen más de US$ {fmt_num(r['aum_min'], 0)}")
     if r.get("aum_max"):
-        bits.append(f"tienen menos de US$ {r['aum_max']:,.0f}".replace(",", "."))
+        bits.append(f"tienen menos de US$ {fmt_num(r['aum_max'], 0)}")
     if r.get("cash_pct_min"):
         bits.append(f"tienen {r['cash_pct_min']:.0f}% o más sin invertir")
     if r.get("class"):

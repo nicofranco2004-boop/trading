@@ -18,7 +18,7 @@ import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { fmtUsd as fmtUsdRaw, colorClass } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, colorClass, parseNum, parseNumOrNull } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -49,7 +49,10 @@ import {
 // rápido SÓLO con P&L (sin precios) y deja el campo en blanco, termina
 // guardando 0 sin darse cuenta porque el value=0 era el default y "parece
 // completado". Lo manejamos abajo en save(): vacío → null al backend.
-const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '' }
+// `mueve_efectivo` arranca en false: el default es "sólo registrar", que es lo
+// que el formulario hizo siempre. Prender el efectivo es una decisión que mueve
+// plata, y la toma el usuario — no un default.
+const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '', mueve_efectivo: false }
 
 const RESULT_OPTIONS = [
   { id: 'all',    label: 'Todas' },
@@ -157,9 +160,10 @@ export default function Operations() {
       pnl_usd: (op.pnl_usd_native ?? op.pnl_usd) ?? '',
       pnl_pct: op.pnl_pct ?? '',
       commissions: op.commissions ?? '',
-      // El backend decide por la foto de reverso guardada en el alta, no por
-      // este campo; acá es sólo para que el check se vea en el estado correcto.
-      kind: esOpDeFuturos(op) ? 'futures' : null,
+      // Estado real del interruptor, leído de la foto de reverso que dejó el alta.
+      // En la edición se puede dar vuelta: el backend acredita o devuelve según
+      // cómo quede.
+      mueve_efectivo: opMovioEfectivo(op),
     })
     setModal('edit')
   }
@@ -167,19 +171,31 @@ export default function Operations() {
   async function save() {
     const body = {
       ...form,
-      entry_price: form.entry_price !== '' ? +form.entry_price : null,
-      exit_price: form.exit_price !== '' ? +form.exit_price : null,
-      quantity: form.quantity !== '' ? +form.quantity : null,
+      entry_price: parseNumOrNull(form.entry_price),
+      exit_price: parseNumOrNull(form.exit_price),
+      quantity: parseNumOrNull(form.quantity),
       // P&L USD: si el user lo deja vacío, mandamos null (no 0) — eso
       // significa "no registré la ganancia/pérdida". Backend distingue
       // null vs 0 explícito (un trade flat sí puede tener pnl_usd=0).
-      pnl_usd: form.pnl_usd !== '' && form.pnl_usd !== null ? +form.pnl_usd : null,
-      pnl_pct: form.pnl_pct !== '' ? +form.pnl_pct : null,
-      commissions: form.commissions !== '' ? +form.commissions : 0,
-      // 'futures' hace que el backend ACREDITE el P&L al efectivo del broker.
-      // Sólo se manda cuando el usuario lo tildó: cualquier otra operación
-      // conserva el comportamiento de siempre (registra P&L y no toca la plata).
-      kind: form.kind === 'futures' ? 'futures' : null,
+      pnl_usd: parseNumOrNull(form.pnl_usd),
+      pnl_pct: parseNumOrNull(form.pnl_pct),
+      commissions: parseNum(form.commissions) || 0,
+      // ¿El backend mueve el efectivo del broker? Se manda SIEMPRE, en los dos
+      // estados: en la edición, "false" es una orden (devolvé la plata que habías
+      // acreditado), no un silencio. Un PUT que no lo mencione deja el tratamiento
+      // como estaba.
+      mueve_efectivo: !!form.mueve_efectivo,
+      // Y el nombre viejo del mismo pedido, por si el bundle queda hablando con un
+      // backend anterior a este cambio. Los dos salen del MISMO booleano, así que
+      // no pueden contradecirse.
+      kind: form.mueve_efectivo ? 'futures' : null,
+    }
+    // Operaciones donde el efectivo lo maneja otro mecanismo (importadas, ventas
+    // FIFO, cobros de bonos): no se manda ni prendido ni apagado. El backend lo
+    // ignora igual, pero mandar una orden que se descarta es pedir una confusión.
+    if (form.mueve_efectivo_editable === false) {
+      delete body.mueve_efectivo
+      delete body.kind
     }
     if (modal === 'edit') await api.put(`/operations/${form.id}`, body)
     else {
@@ -474,7 +490,7 @@ export default function Operations() {
           {winRate != null && (
             <KpiCell
               label="Win rate"
-              value={`${(winRate * 100).toFixed(0)}%`}
+              value={`${(winRate * 100).toFixed(0).replace('.', ',')}%`}
               tone={winRate >= 0.5 ? 'pos' : 'neg'}
               sub={`${wins} ganadoras · ${losses} perdedoras · ${trades} cerradas`}
             />
@@ -517,7 +533,7 @@ export default function Operations() {
                   Win rate
                 </div>
                 <div className="text-xl font-medium tabular text-ink-0 leading-none">
-                  {(winRate * 100).toFixed(0)}%
+                  {(winRate * 100).toFixed(0).replace('.', ',')}%
                 </div>
                 <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
                   <span className="text-rendi-pos">{wins}W</span> · <span className="text-rendi-neg">{losses}L</span> · {trades} cerradas
@@ -794,12 +810,19 @@ function FilterPill({ label, value, onChange, options }) {
     </label>
   )
 }
-// ¿Esta operación acreditó efectivo al crearse? El backend lo estampa en
-// `undo_meta_json` (src='manual_futures') porque la fila sola no permite
-// distinguir el camino. La API lo devuelve crudo, así que se parsea acá.
-function esOpDeFuturos(op) {
+// ¿Esta operación movió el efectivo del broker? El backend lo estampa en
+// `undo_meta_json` porque la fila sola no permite distinguir el camino. La API lo
+// devuelve crudo, así que se parsea acá.
+//   cash_on              — explícito, lo traen todas las filas nuevas.
+//   src='manual_futures' — el nombre HEREDADO de cuando esto era sólo para futuros.
+//                          Sigue siendo la marca en la base, así que resuelve las
+//                          filas viejas. Mismo criterio que `_meta_movio_efectivo`
+//                          en el backend: si cambia uno, cambia el otro.
+function opMovioEfectivo(op) {
   try {
-    return JSON.parse(op?.undo_meta_json || '{}')?.src === 'manual_futures'
+    const meta = JSON.parse(op?.undo_meta_json || '{}') || {}
+    if ('cash_on' in meta) return !!meta.cash_on
+    return meta.src === 'manual_futures'
   } catch {
     return false
   }
@@ -808,7 +831,20 @@ function esOpDeFuturos(op) {
 // ─── Modal ───────────────────────────────────────────────────────────────────
 
 function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
-  const esFuturos = form.kind === 'futures'
+  const mueveEfectivo = !!form.mueve_efectivo
+  // Hay operaciones a las que el interruptor no se les puede tocar: las
+  // importadas (el borrado lo resuelve el rebuild del import, así que un efectivo
+  // prendido acá no se revertiría nunca) y las que ya mueven plata por su cuenta
+  // —ventas FIFO, cobros de bonos—. El backend lo decide y lo manda en la fila;
+  // `undefined` es un alta, donde siempre se puede.
+  const puedeElegir = form.mueve_efectivo_editable !== false
+  // El monto que se va a mover es el P&L. En un viaje de ida y vuelta (compra +
+  // venta) la plata de la compra salió y volvió, así que el efecto NETO sobre el
+  // saldo del broker es exactamente el resultado. Se muestra en vivo para que la
+  // decisión no dependa de leer bien una frase.
+  const montoCash = parseNumOrNull(form.pnl_usd)
+  const brokerSel = brokers.find(b => b.name === form.broker)
+  const brokerEnPesos = (brokerSel?.currency || '').toUpperCase() === 'ARS'
   const inputClass = 'w-full bg-bg-2 border border-line rounded-sm px-2.5 py-1.5 text-sm text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-2'
   const labelClass = 'block text-[12.5px] text-ink-2 mb-1 font-medium'
   return (
@@ -844,28 +880,31 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
             <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…" />
           </div>
         </div>
-        {!esFuturos && (
+        {/* Precios y cantidad son OPCIONALES y se muestran siempre. Antes se
+            escondían al tildar "futuros" —un resultado de futuros no los tiene—,
+            pero esa casilla ya no habla de futuros sino de si la plata se movió,
+            y una operación común que movió plata sí tiene precios. El atajo de
+            abajo explica que se pueden dejar vacíos. */}
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className={labelClass}>P. Entrada</label>
-            <input type="number" step="any" value={form.entry_price} onChange={e => setForm(f => ({ ...f, entry_price: e.target.value }))} className={inputClass} />
+            <input type="text" inputMode="decimal" value={form.entry_price} onChange={e => setForm(f => ({ ...f, entry_price: e.target.value }))} className={inputClass} />
           </div>
           <div>
             <label className={labelClass}>P. Salida</label>
-            <input type="number" step="any" value={form.exit_price} onChange={e => setForm(f => ({ ...f, exit_price: e.target.value }))} className={inputClass} />
+            <input type="text" inputMode="decimal" value={form.exit_price} onChange={e => setForm(f => ({ ...f, exit_price: e.target.value }))} className={inputClass} />
           </div>
           <div>
             <label className={labelClass}>Cantidad</label>
-            <input type="number" step="any" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} className={inputClass} />
+            <input type="text" inputMode="decimal" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} className={inputClass} />
           </div>
         </div>
-        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={labelClass}>P&L (USD)</label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               value={form.pnl_usd}
               onChange={e => setForm(f => ({ ...f, pnl_usd: e.target.value }))}
               className={inputClass}
@@ -874,64 +913,104 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           </div>
           <div>
             <label className={labelClass}>Comisiones</label>
-            <input type="number" step="any" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
+            <input type="text" inputMode="decimal" value={form.commissions} onChange={e => setForm(f => ({ ...f, commissions: e.target.value }))} className={inputClass} placeholder="0" />
           </div>
         </div>
-        {/* FUTUROS. Va explícito y no deducido del campo "Tipo" (que es texto
-            libre): esto MUEVE PLATA, y no puede depender de cómo se escribió una
-            palabra. Un usuario cerró un futuro con +47 USDT, no encontró dónde
-            cargarlo y registró solo el P&L — le quedó el efectivo 47 dólares corto. */}
-        <div className="flex items-start gap-2.5 rounded-sm border border-line bg-bg-1 px-3 py-2.5">
-          <input
-            id="op-es-futuros"
-            type="checkbox"
-            checked={esFuturos}
-            onChange={e => {
-              const on = e.target.checked
-              setForm(f => ({
-                ...f,
-                kind: on ? 'futures' : null,
-                // el tipo es sólo la etiqueta que se ve en la tabla
-                op_type: on && !f.op_type ? 'Futuros' : f.op_type,
-                // precios y cantidad no aplican a un resultado de futuros
-                ...(on ? { entry_price: '', exit_price: '', quantity: '' } : {}),
-              }))
-            }}
-            className="mt-0.5 accent-data-violet cursor-pointer"
-          />
-          <div className="text-[12.5px] leading-tight flex-1 min-w-0">
-            <div className="flex items-center gap-1.5">
-              <label htmlFor="op-es-futuros" className="font-semibold text-ink-0 cursor-pointer">
-                Resultado de futuros
-              </label>
-              {/* Fuera del <label> a propósito: adentro, el click en el (?) toggleaba
-                  el check en vez de abrir la explicación. */}
-              {/* side="top": el cuerpo del modal tiene overflow-y auto y termina
-                  justo debajo de este bloque — abriendo hacia abajo se recortaban
-                  las últimas líneas (medido: el tooltip llegaba a 865 y el
-                  contenedor cortaba en 764). */}
-              <InfoTooltip label="Cómo impacta en tus números" align="left" side="top">
-                <p className="font-semibold text-ink-0">Sube tu capital como GANANCIA.</p>
-                <p>
-                  El resultado entra al efectivo del broker, así que el total de tu
-                  cartera sube (o baja) por ese monto.
-                </p>
-                <p>
-                  Ese mismo monto se cuenta como <strong>ganancia</strong>: suma al
-                  P&L realizado del mes y del broker.
-                </p>
-                <p className="text-ink-3">
-                  No suma al capital aportado — esa plata no la pusiste, la ganaste.
-                  Por eso mejora tu rendimiento, en vez de dejarlo igual como haría
-                  cargarlo de depósito.
-                </p>
-              </InfoTooltip>
-            </div>
-            <p className="text-ink-2 font-medium">
-              Suma el P&L al efectivo del broker, porque esa plata ya está en tu cuenta.
-              No cuenta como capital aportado.
-            </p>
+        {/* ¿MUEVE LA PLATA DEL BROKER? Empezó siendo una casilla sólo para futuros,
+            pero el desfasaje no es de los futuros: le pasa a cualquier operación
+            cuyo resultado ya esté en la cuenta y todavía no figure en Rendi. Ahora
+            la pregunta se hace siempre, y son DOS opciones visibles y no una casilla
+            apagada: "sin tildar" no es una respuesta, y acá se mueve plata.
+            No se deduce del campo "Tipo" (texto libre): si se dedujera de ahí,
+            escribir la palabra con una grafía movería plata y con otra no. */}
+        <div className="rounded-sm border border-line bg-bg-1 px-3 py-2.5 space-y-2">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[12.5px] font-semibold text-ink-0">
+              ¿Esta operación movió la plata de tu broker?
+            </span>
+            {/* Fuera del <label> a propósito: adentro, el click en el (?) cambiaba
+                la opción en vez de abrir la explicación. */}
+            {/* side="top": el cuerpo del modal tiene overflow-y auto y termina
+                justo debajo de este bloque — abriendo hacia abajo se recortaban
+                las últimas líneas (medido: el tooltip llegaba a 865 y el
+                contenedor cortaba en 764). */}
+            <InfoTooltip label="Cómo impacta en tus números" align="left" side="top">
+              <p className="font-semibold text-ink-0">Si elegís que sí, sube tu capital como GANANCIA.</p>
+              <p>
+                El resultado entra al efectivo del broker, así que el total de tu
+                cartera sube (o baja) por ese monto.
+              </p>
+              <p>
+                Ese mismo monto se cuenta como <strong>ganancia</strong>: suma al
+                P&L realizado del mes y del broker.
+              </p>
+              <p className="text-ink-3">
+                No suma al capital aportado — esa plata no la pusiste, la ganaste.
+                Por eso mejora tu rendimiento, en vez de dejarlo igual como haría
+                cargarlo de depósito.
+              </p>
+              <p className="text-ink-3">
+                Si elegís que no, la operación queda sólo en tu historial: cuenta en
+                el P&L y no toca el efectivo. Es lo que corresponde cuando la plata
+                ya está cargada por otro lado (un import, un depósito, una venta).
+              </p>
+            </InfoTooltip>
           </div>
+          {!puedeElegir && (
+            <p className="text-[12.5px] leading-tight text-ink-2 font-medium">
+              En esta operación el efectivo ya lo maneja Rendi solo — viene de un
+              import, de una venta o del cobro de un bono. Tocarlo acá contaría la
+              misma plata dos veces, así que no se puede elegir.
+            </p>
+          )}
+          {puedeElegir && (
+          <div className="space-y-1.5">
+            {[
+              [false, 'No, sólo registrarla', 'Queda en el historial. El efectivo del broker no se toca.'],
+              [true, 'Sí, sumar o restar el resultado al efectivo', 'Esa plata ya está (o ya no está) en la cuenta.'],
+            ].map(([valor, titulo, detalle]) => (
+              <label
+                key={String(valor)}
+                className="flex items-start gap-2.5 text-[12.5px] leading-tight cursor-pointer"
+              >
+                <input
+                  type="radio"
+                  name="op-mueve-efectivo"
+                  checked={mueveEfectivo === valor}
+                  onChange={() => setForm(f => ({ ...f, mueve_efectivo: valor }))}
+                  className="mt-0.5 accent-data-violet cursor-pointer"
+                />
+                <span className="flex-1 min-w-0">
+                  <span className="font-semibold text-ink-0">{titulo}</span>
+                  <span className="block text-ink-2 font-medium">{detalle}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          )}
+          {/* El monto exacto, en vivo. Que el usuario NO tenga que deducir cuánta
+              plata se mueve a partir de una frase: se lo decimos. */}
+          {puedeElegir && mueveEfectivo && montoCash != null && montoCash !== 0 && (
+            <p className="text-[12.5px] leading-tight text-ink-1 font-medium border-t border-line pt-2">
+              {montoCash > 0 ? 'Se suman ' : 'Se restan '}
+              <span className={`tabular font-semibold ${colorClass(montoCash)}`}>
+                {fmtUsdRaw(Math.abs(montoCash))}
+              </span>
+              {montoCash > 0 ? ' al efectivo de ' : ' del efectivo de '}
+              <span className="font-semibold text-ink-0">{form.broker || 'tu broker'}</span>.
+              {brokerEnPesos && (
+                <span className="text-ink-3">
+                  {' '}Como {form.broker} opera en pesos, se convierten al dólar de la fecha
+                  de la operación.
+                </span>
+              )}
+            </p>
+          )}
+          {puedeElegir && mueveEfectivo && (montoCash == null || montoCash === 0) && (
+            <p className="text-[12.5px] leading-tight text-ink-3 font-medium border-t border-line pt-2">
+              Completá el P&L (USD) para ver cuánta plata se va a mover: es ese mismo monto.
+            </p>
+          )}
         </div>
 
         <p className="text-[12.5px] text-ink-2 leading-tight font-medium">

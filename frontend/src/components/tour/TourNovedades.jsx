@@ -178,7 +178,7 @@ export default function TourNovedades() {
         style={{
           left: caja.x, top: caja.y, width: caja.w, height: caja.h,
           boxShadow: '0 0 0 9999px rgba(0,0,0,0.72)',
-          outline: '2px solid rgba(139,125,255,0.9)',
+          outline: '2px solid rgb(var(--data-violet) / 0.9)',
         }}
       />
 
@@ -192,7 +192,7 @@ export default function TourNovedades() {
           recorte lo corre —lo resaltado pegado a un borde—, LA PUNTA de abajo
           mantiene la conexión: ver el comentario de `puntaX`. */}
       <div
-        className="absolute rounded-xl border border-line-3 bg-bg-2 shadow-2xl p-4"
+        className="absolute rounded-xl border border-line-3 bg-bg-raised shadow-2xl p-4"
         style={{ ...cartel, ...(debajo
           ? { top: Math.min(alto - 210, caja.y + caja.h + 12) }
           : { bottom: Math.max(12, alto - caja.y + 12) }) }}

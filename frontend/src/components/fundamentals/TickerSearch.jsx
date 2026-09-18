@@ -149,7 +149,7 @@ export default function TickerSearch({ onSelect, autoFocus = false }) {
       </div>
 
       {open && results.length > 0 && (
-        <div className="absolute z-30 left-0 right-0 mt-1.5 bg-bg-2 border border-line rounded-lg overflow-hidden">
+        <div className="absolute z-30 left-0 right-0 mt-1.5 bg-bg-raised border border-line rounded-lg overflow-hidden">
           {results.map((t, i) => (
             <button
               key={t.symbol}

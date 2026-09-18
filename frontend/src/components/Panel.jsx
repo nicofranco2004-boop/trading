@@ -15,7 +15,9 @@
 //   as         → 'div' (default), 'section', etc.
 //   hoverable  → bool, hover sutil de border (Linear-style)
 //   accent     → bool, border en signal verde (para KPI principal o estado live)
-//   elevated   → bool, bg-bg-2 (panel "raised", para modales o dropdowns)
+//   elevated   → bool, bg-bg-raised (la superficie que flota: modales,
+//                menús, globos). En oscuro vale lo mismo que bg-2 valía; en
+//                claro se queda blanco y la sombra hace la elevación.
 
 export default function Panel({
   children,
@@ -34,7 +36,7 @@ export default function Panel({
     padding === 'lg'   ? 'p-5' :
                          'p-4'
 
-  const bg = elevated ? 'bg-bg-2' : 'bg-bg-1'
+  const bg = elevated ? 'bg-bg-raised' : 'bg-bg-1'
   const borderClass = accent
     ? 'border border-rendi-pos/40'
     : 'border border-line'
@@ -42,10 +44,24 @@ export default function Panel({
     ? 'transition-colors hover:border-line-2'
     : ''
 
+  // Lo elevado necesita sombra en claro: ahí `bg-raised` es blanco y el panel
+  // de abajo también, así que sin sombra no habría nada que los separe. En
+  // oscuro la variable vale `none` — el sistema eleva aclarando, no con sombra.
+  //
+  // Va por estilo y NO como `shadow-[var(--shadow-raised)]`: esa clase compila,
+  // pero Tailwind toma el valor arbitrario como COLOR de sombra y emite
+  // `--tw-shadow-color` en vez de la sombra — o sea, no pinta nada y no avisa.
+  // Se ve en el CSS compilado, no en los tests.
+  const { style: styleDelLlamador, ...resto } = rest
+  const style = elevated
+    ? { boxShadow: 'var(--shadow-raised)', ...styleDelLlamador }
+    : styleDelLlamador
+
   return (
     <Tag
       className={`${bg} ${borderClass} rounded-xl ${padClass} ${hover} ${className}`}
-      {...rest}
+      style={style}
+      {...resto}
     >
       {children}
     </Tag>

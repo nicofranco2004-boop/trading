@@ -28,7 +28,7 @@ tener un dueño de datos y dos ramas de render sobre renderers compartidos en
 
 ---
 
-## Las 7 reglas
+## Las 8 reglas
 
 ### R1 — Los números van en Geist con `tabular`. Nunca en `font-mono`.
 
@@ -171,6 +171,52 @@ del sistema viejo devolviera 19 falsos positivos apuntando justo a lo ya migrado
 `tracking-label` (token real del config), `aria-label` (129 usos) y `<label>` (134): habría
 cambiado un señuelo por uno peor.
 
+### R8 — El tema no se escribe a mano.
+
+Desde F0 (2026-09-15) los 33 colores del sistema son **variables CSS**, no valores fijos:
+`bg-bg-1` vale `#0E1218` en oscuro y `#FFFFFF` en claro. Un hex escrito a mano en un
+componente **no sigue al tema**, y por eso el modo claro se rompió las dos veces que se
+intentó antes. La deuda se limpió de 334 a 94 usos entre F0 y F3.
+
+**Lo que sigue siendo legítimo, y por qué:**
+
+1. **Marcas de terceros con su propio fondo** — los logos de brokers, las banderas de países.
+2. **El informe público** (`ReportPublic.jsx`): su paleta `P` es papel claro **siempre**, en
+   los dos temas. El mismo link lo abren diez personas con diez configuraciones y el informe
+   tiene que verse igual para todas, además de que se imprime.
+3. **El canvas** (`utils/shareCard.js`): no resuelve `var()`. La imagen para redes queda
+   oscura siempre, para que la marca se vea igual en el feed de todos.
+4. **El blanco de verdad**: el fondo detrás del logo de una empresa, la perilla de un
+   interruptor, el velo negro de un modal.
+
+El criterio completo —incluido **qué NO tocar** y por qué— está en
+`src/__design__/CRITERIO-modo-claro.md`. Es lo único que no se re-aplica solo si hay que
+rehacer el trabajo sobre otra base.
+
+#### Las tres trampas que no dan error
+
+1. **Las variables van en CANALES (`14 18 24`), nunca en hex.** 1.937 usos piden el color a
+   media transparencia (`bg-bg-2/40`). Tailwind compone `rgb(var(--x) / .4)`; con un hex
+   adentro eso es CSS inválido y **el navegador descarta la declaración entera sin avisar**.
+
+2. **Pegarle dos dígitos hex a un color** (`` `${color}80` ``) sólo funciona si el color ES un
+   hex. Con `rgb(var(--x))` produce basura que el navegador descarta. Para eso está
+   `withAlpha()` en `utils/chartTheme.js`.
+
+3. **`shadow-[var(--x)]` compila y no pinta.** Tailwind toma el valor arbitrario como *color*
+   de sombra y emite `--tw-shadow-color` en vez de la sombra. Se ve en el CSS compilado, no
+   en los tests. La sombra va por `style`.
+
+#### Una rampa no se adapta cambiándole los valores: se recorre al revés
+
+En oscuro "intenso" es BRILLANTE; en claro es OSCURO Y SATURADO. Invertir hex deja el paso
+más intenso pálido y el más suave negro — que es exactamente lo que se veía antes. Los dos
+recorridos viven en `index.css` y los sirven `utils/polarityScale.js` (la rampa verde/roja)
+y `utils/chartTheme.js` (grilla, ejes, globo de datos, series).
+
+**Los cortes NO son parte de la rampa.** Un día que se movió 2 % es un día fuerte; un mes que
+rindió 2 % es un mes tibio. La rampa es una; los cortes son varios.
+
 ---
 
 ## El guard
@@ -223,6 +269,8 @@ archivo nuevo con 40 `font-mono` falla aunque nadie lo haya agregado al JSON.
 | `clase_renombrada` | R7 | 0 | congelada: el nombre viejo no vuelve |
 | `comentarios_fosiles` | R7 | 0 | congelada: los 7 fósiles conocidos, muertos |
 | `fork_ternario` | R6 | 0 | congelada: la variante que todavía no existe |
+| `color_a_mano` | R8 | 94 | hex en JSX/JS. Los 94 son deliberados — ver R8 |
+| `superficie_fija` | R8 | 5 | blanco/negro sin par. Los 5 son blanco de verdad |
 
 **`Landing.jsx` no se migra.** Es la única superficie que ve un visitante sin sesión, el look
 terminal ahí es deliberado (chrome de ventana simulada, marquee de brokers, tabla demo con

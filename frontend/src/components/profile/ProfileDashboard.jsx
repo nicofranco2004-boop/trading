@@ -28,6 +28,7 @@ import LiquidityBar from './LiquidityBar'
 import HorizonStat from './HorizonStat'
 import ObjectiveStat from './ObjectiveStat'
 import DrawdownStat from './DrawdownStat'
+import { pctTxt } from '../../utils/format'
 
 const MODULE_META = {
   radar:         { title: 'Radar de perfil',        icon: Layers,         aiCode: null },
@@ -147,7 +148,7 @@ function moduleBody(id, cards, dash) {
       return (
         <DrawdownStat
           behaviorLabel={card.declared?.behaviorLabel}
-          toleranceLabel={`${card.declared?.impliedTolerance?.min}-${card.declared?.impliedTolerance?.max}%`}
+          toleranceLabel={`${card.declared?.impliedTolerance?.min}-${pctTxt(card.declared?.impliedTolerance?.max)}`}
           drawdownPct={card.actual.drawdownPct}
           comparison={card.comparison}
         />
@@ -167,7 +168,7 @@ export default function ProfileDashboard({ cards, positions = [] }) {
   // una sección en blanco ni 9 candados.
   if (dash.availCount === 0) {
     return (
-      <div className="bg-white dark:bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
+      <div className="bg-bg-1 border border-line/80 dark:border-line rounded p-6 flex flex-col items-start gap-3">
         <p className="text-sm text-ink-1 leading-snug max-w-xl">
           Tu test está cargado. Cargá tus posiciones (o importá tu cartera) y acá
           la cruzamos contra lo que declaraste: asignación, concentración,

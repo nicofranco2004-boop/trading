@@ -16,12 +16,12 @@ import { notifyWatchlistChanged } from '../../utils/watchlistEvents'
 function fmtPct(p) {
   if (p == null) return '—'
   const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2)}%`
+  return `${sign}${p.toFixed(2).replace('.', ',')}%`
 }
 
 function fmtPrice(p) {
   if (p == null) return '—'
-  return `US$${p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return `US$${p.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 export default function AssetQuickView({ symbol, onClose }) {

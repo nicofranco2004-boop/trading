@@ -181,7 +181,7 @@ def test_mejor_y_peor_mes_usan_EL_MISMO_retorno_que_el_slide_de_rendimiento():
     assert _twr.dietz(10000, 21050, 10000) == pytest.approx(0.07, abs=1e-9)
     best = _slide_best_month(rows)
     assert best['metric']['label'] == 'ENERO'
-    assert best['metric']['value'] == '+10.00%'
+    assert best['metric']['value'] == '+10,00%'
 
 
 def test_un_mes_que_no_se_puede_medir_no_entra_a_ningun_slide():
@@ -247,7 +247,7 @@ def test_slide_pnl_positive_tone():
     s = _slide_pnl(rows, 2026)
     assert s['tone'] == 'positive'
     assert s['title'].startswith('+')
-    assert '1,000' in s['metric']['value'] or '+$1,000' in s['metric']['value']
+    assert '1.000' in s['metric']['value'] or '+$1.000' in s['metric']['value']
 
 
 def test_slide_pnl_negative_tone():

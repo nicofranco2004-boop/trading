@@ -44,7 +44,10 @@ import { useMoneyFormat } from '../../contexts/CurrencyContext'
 
 // El color de la porción "Plazo fijo" en el vocabulario de clases de activo —
 // para que la porción sintética se vea igual en las tres tortas.
-const PF_COLOR = '#C98A2E'
+// El bronce de la paleta de categorías: es el mismo tono que usa
+// `assetClass` para plazo fijo. Estaba suelto acá porque no vive en esa
+// paleta sino en una constante propia.
+const PF_COLOR = 'rgb(var(--cat-bronze))'
 
 export default function BookComposition({ data, error = false }) {
   // ⚠️ Todos los hooks ANTES de cualquier return. Esta página ya tiene un bug

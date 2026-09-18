@@ -13,7 +13,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp, Check, X as XIcon, Loader2, CircleDollarSign } from 'lucide-react'
 import AssetLogo from './AssetLogo'
 
-const fmt = (n, dec = 2) => n.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec })
+const fmt = (n, dec = 2) => n.toLocaleString('es-AR', { minimumFractionDigits: dec, maximumFractionDigits: dec })
 
 // ¿El monto teórico (en moneda del BONO) se puede acreditar tal cual al broker?
 function sameCurrency(brokerCcy, bondCcy) {

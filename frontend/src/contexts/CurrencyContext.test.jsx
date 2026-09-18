@@ -104,7 +104,7 @@ describe('fmtMoneyCompactRaw (Phase B abbreviated)', () => {
   })
 
   it('1k-10k: abrevia con 1 decimal', () => {
-    expect(fmtMoneyCompactRaw(5000, 'USD', 1415)).toBe('US$5.0k')
+    expect(fmtMoneyCompactRaw(5000, 'USD', 1415)).toBe('US$5,0k')
   })
 
   it('10k-1M: abrevia con k', () => {
@@ -114,27 +114,27 @@ describe('fmtMoneyCompactRaw (Phase B abbreviated)', () => {
   it('boundary 9.95k-10k: no muestra "10.0k" (smooth jump)', () => {
     // Antes del fix: 9999 → "10.0k", 10000 → "10k" (flicker visual)
     // Después: ambos → "10k" (consistente)
-    expect(fmtMoneyCompactRaw(9499, 'USD', 1415)).toBe('US$9.5k')
-    expect(fmtMoneyCompactRaw(9949, 'USD', 1415)).toBe('US$9.9k')
+    expect(fmtMoneyCompactRaw(9499, 'USD', 1415)).toBe('US$9,5k')
+    expect(fmtMoneyCompactRaw(9949, 'USD', 1415)).toBe('US$9,9k')
     expect(fmtMoneyCompactRaw(9950, 'USD', 1415)).toBe('US$10k')   // ← clave
     expect(fmtMoneyCompactRaw(9999, 'USD', 1415)).toBe('US$10k')
     expect(fmtMoneyCompactRaw(10000, 'USD', 1415)).toBe('US$10k')
   })
 
   it('boundary 9.95M-10M: misma lógica', () => {
-    expect(fmtMoneyCompactRaw(9_499_999, 'USD', 1415)).toBe('US$9.5M')
-    expect(fmtMoneyCompactRaw(9_949_999, 'USD', 1415)).toBe('US$9.9M')
+    expect(fmtMoneyCompactRaw(9_499_999, 'USD', 1415)).toBe('US$9,5M')
+    expect(fmtMoneyCompactRaw(9_949_999, 'USD', 1415)).toBe('US$9,9M')
     expect(fmtMoneyCompactRaw(9_950_000, 'USD', 1415)).toBe('US$10M')
     expect(fmtMoneyCompactRaw(10_000_000, 'USD', 1415)).toBe('US$10M')
   })
 
   it('1M+: abrevia con M', () => {
-    expect(fmtMoneyCompactRaw(5_000_000, 'USD', 1415)).toBe('US$5.0M')
+    expect(fmtMoneyCompactRaw(5_000_000, 'USD', 1415)).toBe('US$5,0M')
     expect(fmtMoneyCompactRaw(50_000_000, 'USD', 1415)).toBe('US$50M')
   })
 
   it('1B+: abrevia con B', () => {
-    expect(fmtMoneyCompactRaw(5_000_000_000, 'USD', 1415)).toBe('US$5.0B')
+    expect(fmtMoneyCompactRaw(5_000_000_000, 'USD', 1415)).toBe('US$5,0B')
   })
 
   it('ARS convierte y abrevia: 50k USD → ~71M ARS al blue 1415', () => {
@@ -191,7 +191,7 @@ describe('fmtConvertedRaw (helper sin conversión)', () => {
 
 describe('fmtConvertedCompactRaw (helper sin conversión, abreviado)', () => {
   it('k bucket: USD', () => {
-    expect(fmtConvertedCompactRaw(5000, 'USD')).toBe('US$5.0k')
+    expect(fmtConvertedCompactRaw(5000, 'USD')).toBe('US$5,0k')
   })
 
   it('k bucket: ARS (input YA en ARS, no se multiplica)', () => {
@@ -199,7 +199,7 @@ describe('fmtConvertedCompactRaw (helper sin conversión, abreviado)', () => {
   })
 
   it('M bucket: ARS', () => {
-    expect(fmtConvertedCompactRaw(5_500_000, 'ARS')).toBe('$5.5M')
+    expect(fmtConvertedCompactRaw(5_500_000, 'ARS')).toBe('$5,5M')
   })
 
   it('boundary smooth: 9999 → "10k" sin flicker', () => {

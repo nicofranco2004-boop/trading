@@ -9,6 +9,7 @@ Reglas:
 - Tipos de operación: acepta los aliases definidos en schema.OP_TYPE_ALIASES.
 """
 from __future__ import annotations
+from money_fmt import fmt_num
 import logging
 import re
 from typing import List, Optional, Tuple
@@ -401,8 +402,8 @@ def normalize_rows(raw_rows: List[RawRow]) -> Tuple[List[NormalizedTx], List[Row
                     "fila %s: comisión implausible (%.1f%% de %.2f) — la pongo en 0. "
                     "broker=%s activo=%s fees=%s", ridx, _pct, _base,
                     d.get("broker"), asset_raw, fees)
-                notes_fee = (f"⚠ Comisión de {_pct:,.0f}% descartada por implausible "
-                             f"(era {fees:,.2f}). Revisá el archivo del broker.")
+                notes_fee = (f"⚠ Comisión de {fmt_num(_pct, 0)}% descartada por implausible "
+                             f"(era {fmt_num(fees, 2)}). Revisá el archivo del broker.")
                 fees = 0.0
             else:
                 notes_fee = None

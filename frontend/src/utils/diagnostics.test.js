@@ -347,7 +347,7 @@ describe('fees_drag', () => {
     expect(out).toMatch(/USD 30/)              // 41809/1415 ≈ 29.55, fmtUsd redondea
     expect(out).not.toMatch(/USD 41/)
     expect(out).not.toMatch(/726/)             // % no debe ser absurdo
-    expect(out).toMatch(/0\.5%/)               // ~0.51% del portfolio
+    expect(out).toMatch(/0,5%/)               // ~0.51% del portfolio
   })
 
   it('mezcla ARS+USD brokers convierte solo los ARS', () => {
@@ -532,14 +532,14 @@ describe('generadores de métricas (proMetrics)', () => {
   }
 
   it('cada métrica fires con proMetrics completo y menciona su valor', () => {
-    expect(gen('metric_cagr').generate({ proMetrics: full })).toContain('+18.0%')
-    expect(gen('metric_volatility').generate({ proMetrics: full })).toContain('22.0%')
-    expect(gen('metric_sharpe').generate({ proMetrics: full })).toContain('1.40')
-    expect(gen('metric_sortino').generate({ proMetrics: full })).toContain('1.90')
-    expect(gen('metric_beta').generate({ proMetrics: full })).toContain('1.15')
-    expect(gen('metric_alpha').generate({ proMetrics: full })).toContain('+3.0%')
-    expect(gen('metric_info_ratio').generate({ proMetrics: full })).toContain('0.70')
-    expect(gen('metric_calmar').generate({ proMetrics: full })).toContain('2.10')
+    expect(gen('metric_cagr').generate({ proMetrics: full })).toContain('+18,0%')
+    expect(gen('metric_volatility').generate({ proMetrics: full })).toContain('22,0%')
+    expect(gen('metric_sharpe').generate({ proMetrics: full })).toContain('1,40')
+    expect(gen('metric_sortino').generate({ proMetrics: full })).toContain('1,90')
+    expect(gen('metric_beta').generate({ proMetrics: full })).toContain('1,15')
+    expect(gen('metric_alpha').generate({ proMetrics: full })).toContain('+3,0%')
+    expect(gen('metric_info_ratio').generate({ proMetrics: full })).toContain('0,70')
+    expect(gen('metric_calmar').generate({ proMetrics: full })).toContain('2,10')
   })
 
   it('todas son severidad info (viven en el tier Diagnóstico)', () => {
@@ -592,9 +592,9 @@ describe('generadores de métricas (proMetrics)', () => {
     const vol = fired.find(f => f.id === 'metric_volatility')
     expect(cagr.locked).toBeFalsy()
     expect(cagr.text).toMatch(/CAGR anualizado es/)
-    expect(cagr.text).toMatch(/18\.0%/)   // muestra el valor
+    expect(cagr.text).toMatch(/18,0%/)   // muestra el valor
     expect(vol.locked).toBeFalsy()
-    expect(vol.text).toMatch(/22\.0%/)
+    expect(vol.text).toMatch(/22,0%/)
   })
 
   it('isFree=false → métricas premium con valor, sin locked', () => {
@@ -602,7 +602,7 @@ describe('generadores de métricas (proMetrics)', () => {
     const sharpe = fired.find(f => f.id === 'metric_sharpe')
     expect(sharpe.locked).toBeUndefined()
     expect(sharpe.text).toMatch(/Sharpe ratio es/)
-    expect(sharpe.text).toMatch(/1\.40/)
+    expect(sharpe.text).toMatch(/1,40/)
   })
 
   it('los diagnósticos NO-premium nunca se bloquean, aunque sea Free', () => {
@@ -623,7 +623,7 @@ describe('generadores de drawdown (leen drawdown.max, no .maxPct)', () => {
     const out = findGen('at_highs').generate({ drawdown: { current: 0, max: -15 } })
     expect(out).toBeTruthy()
     expect(out).toMatch(/máximos históricos/i)
-    expect(out).toMatch(/15\.0%/)
+    expect(out).toMatch(/15,0%/)
   })
 
   it('at_highs NO fires si no hubo drawdown histórico relevante (max > -3)', () => {
@@ -634,7 +634,7 @@ describe('generadores de drawdown (leen drawdown.max, no .maxPct)', () => {
     const out = findGen('drawdown_recovery').generate({ drawdown: { current: -2, max: -20 } })
     expect(out).toBeTruthy()
     expect(out).toMatch(/Recuperaste/)
-    expect(out).toMatch(/-20\.0%/)
+    expect(out).toMatch(/-20,0%/)
   })
 
   it('ambos toleran drawdown null sin fires', () => {

@@ -32,6 +32,7 @@ describe('el símbolo de BYMA', () => {
   it('Berkshire se pide como BRKB.BA, no como BRK.B.BA', () => {
     expect(priceSymbol('BRK.B', true)).toBe('BRKB.BA')
     expect(priceSymbol('BRK B', true)).toBe('BRKB.BA')
+    expect(priceSymbol('BRK-B', true)).toBe('BRKB.BA')
     // Y por la rama del CEDEAR, que es por donde entra desde un broker en dólares.
     expect(priceSymbol('BRK.B', false, 'CEDEAR')).toBe('BRKB.BA')
   })

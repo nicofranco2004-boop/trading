@@ -32,7 +32,7 @@ import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import Modal from '../components/Modal'
-import { usd, fmtMoney } from '../utils/format'
+import { usd, fmtMoney, parseNum } from '../utils/format'
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
@@ -344,7 +344,7 @@ function ClientCard({ c, salud, onOpen, onNotes, onInvite, onRevoke, menuOpen, o
             target="_blank" rel="noreferrer noopener"
             onClick={(e) => e.stopPropagation()}
             aria-label="Escribirle por WhatsApp"
-            className="p-1.5 rounded-md text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
+            className="p-1.5 rounded-md text-[rgb(var(--whatsapp))] hover:bg-[rgb(var(--whatsapp))]/10 transition-colors"
           >
             <WhatsAppIcon size={14} />
           </a>
@@ -764,7 +764,7 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
   const chosen = useMemo(() => (prep || []).filter((c) => selected[c.client_uid]), [prep, selected])
   const validRows = useMemo(() => chosen.filter((c) => {
     const r = rows[c.client_uid]
-    return r && r.broker && Number(r.quantity) > 0 && Number(r.price) >= 0
+    return r && r.broker && parseNum(r.quantity) > 0 && parseNum(r.price) >= 0
   }), [chosen, rows])
 
   const submit = async () => {
@@ -778,8 +778,8 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
         rows: validRows.map((c) => ({
           client_uid: c.client_uid,
           broker: rows[c.client_uid].broker,
-          quantity: Number(rows[c.client_uid].quantity),
-          buy_price: Number(rows[c.client_uid].price),
+          quantity: parseNum(rows[c.client_uid].quantity),
+          buy_price: parseNum(rows[c.client_uid].price),
         })),
       }
       const d = await api.post('/advisor/group-op', body)
@@ -847,7 +847,8 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label htmlFor="gop-price" className="block text-xs text-ink-2 mb-1">Precio *</label>
-              <input id="gop-price" type="number" min="0" step="any" className={inputCls} value={price}
+              <input id="gop-price" type="text"
+                          inputMode="decimal" className={inputCls} value={price}
                      onChange={(e) => setPrice(e.target.value)} placeholder="58.900" />
             </div>
             <div>
@@ -904,7 +905,7 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
               <label key={c.client_uid} className={`flex items-center gap-3 px-3 py-2.5 text-sm ${c.brokers.length === 0 ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:bg-bg-1'}`}>
                 <input
                   type="checkbox"
-                  className="accent-[#8B7DFF]"
+                  className="accent-data-violet"
                   disabled={c.brokers.length === 0}
                   checked={!!selected[c.client_uid]}
                   onChange={(e) => setSelected({ ...selected, [c.client_uid]: e.target.checked })}
@@ -946,8 +947,8 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
               <tbody className="divide-y divide-line/40">
                 {chosen.map((c) => {
                   const r = rows[c.client_uid] || {}
-                  const amount = Number(r.quantity) > 0 && Number(r.price) >= 0
-                    ? Number(r.quantity) * Number(r.price) : null
+                  const amount = parseNum(r.quantity) > 0 && parseNum(r.price) >= 0
+                    ? parseNum(r.quantity) * parseNum(r.price) : null
                   const set = (patch) => setRows({ ...rows, [c.client_uid]: { ...r, ...patch } })
                   return (
                     <tr key={c.client_uid}>
@@ -965,12 +966,14 @@ function GroupOpModal({ onClose, onApplied, initialAsset = null }) {
                         </select>
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <input type="number" min="0" step="any" aria-label={`Cantidad de ${c.label}`}
+                        <input type="text"
+                          inputMode="decimal" aria-label={`Cantidad de ${c.label}`}
                                className="w-24 bg-bg-1 border border-line rounded px-2 py-1 text-xs text-right text-ink-0 focus:outline-none focus:border-data-violet"
                                value={r.quantity ?? ''} onChange={(e) => set({ quantity: e.target.value })} />
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <input type="number" min="0" step="any" aria-label={`Precio de ${c.label}`}
+                        <input type="text"
+                          inputMode="decimal" aria-label={`Precio de ${c.label}`}
                                className="w-24 bg-bg-1 border border-line rounded px-2 py-1 text-xs text-right text-ink-0 focus:outline-none focus:border-data-violet"
                                value={r.price ?? ''} onChange={(e) => set({ price: e.target.value })} />
                       </td>

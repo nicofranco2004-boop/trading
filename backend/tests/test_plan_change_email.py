@@ -118,8 +118,8 @@ class SendPlanChangeAdminTest(unittest.TestCase):
         ret, send = self._call(user_email="x@gmail.com", old_plan="free",
                                new_plan="pro", source="payment", amount_usd=9.0)
         html_body, text = send.call_args[0][2], send.call_args[0][3]
-        self.assertIn("USD 9.00", html_body)
-        self.assertIn("USD 9.00", text)
+        self.assertIn("USD 9,00", html_body)
+        self.assertIn("USD 9,00", text)
 
     def test_source_label_humanized(self):
         ret, send = self._call(user_email="x@gmail.com", old_plan="free",

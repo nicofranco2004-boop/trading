@@ -800,7 +800,7 @@ export default function Config() {
             href={whatsappUrl()}
             target="_blank"
             rel="noreferrer noopener"
-            className="inline-flex items-center gap-1.5 text-xs bg-[#25D366]/10 hover:bg-[#25D366]/15 text-[#25D366] border border-[#25D366]/30 px-3 py-2 rounded-sm transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs bg-[rgb(var(--whatsapp))]/10 hover:bg-[rgb(var(--whatsapp))]/15 text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 px-3 py-2 rounded-sm transition-colors"
           >
             <WhatsAppIcon size={13} />
             Hablanos por WhatsApp
@@ -1354,7 +1354,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           <div className="text-[10px] text-ink-3 leading-tight">
             Acceso a <span className="text-ink-2 capitalize">{anchorPlan}</span>{' '}
             ({anchorPeriod === 'annual' ? 'anual' : 'mensual'}){' '}
-            equivale a <span className="text-ink-2 tabular">${creditUsd.toFixed(2)}</span>
+            equivale a <span className="text-ink-2 tabular">${creditUsd.toFixed(2).replace('.', ',')}</span>
           </div>
           {periodEndLabel && (
             <div className="text-[10px] text-ink-3 leading-tight mt-0.5">

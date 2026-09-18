@@ -254,13 +254,13 @@ export function fmtConvertedCompactRaw(value, targetCurrency, opts = {}) {
   let body
   if (abs >= 1e9) {
     const b = abs / 1e9
-    body = (b < 9.95 ? b.toFixed(1) : String(Math.round(b))) + 'B'
+    body = (b < 9.95 ? b.toFixed(1).replace('.', ',') : String(Math.round(b))) + 'B'
   } else if (abs >= 1e6) {
     const m = abs / 1e6
-    body = (m < 9.95 ? m.toFixed(1) : String(Math.round(m))) + 'M'
+    body = (m < 9.95 ? m.toFixed(1).replace('.', ',') : String(Math.round(m))) + 'M'
   } else if (abs >= 1e3) {
     const k = abs / 1e3
-    body = (k < 9.95 ? k.toFixed(1) : String(Math.round(k))) + 'k'
+    body = (k < 9.95 ? k.toFixed(1).replace('.', ',') : String(Math.round(k))) + 'k'
   } else {
     body = Math.round(abs).toLocaleString('es-AR')
   }
@@ -281,13 +281,13 @@ export function fmtMoneyCompactRaw(usdValue, currency, tcValuacion, opts = {}) {
   let body
   if (abs >= 1e9) {
     const b = abs / 1e9
-    body = (b < 9.95 ? b.toFixed(1) : String(Math.round(b))) + 'B'
+    body = (b < 9.95 ? b.toFixed(1).replace('.', ',') : String(Math.round(b))) + 'B'
   } else if (abs >= 1e6) {
     const m = abs / 1e6
-    body = (m < 9.95 ? m.toFixed(1) : String(Math.round(m))) + 'M'
+    body = (m < 9.95 ? m.toFixed(1).replace('.', ',') : String(Math.round(m))) + 'M'
   } else if (abs >= 1e3) {
     const k = abs / 1e3
-    body = (k < 9.95 ? k.toFixed(1) : String(Math.round(k))) + 'k'
+    body = (k < 9.95 ? k.toFixed(1).replace('.', ',') : String(Math.round(k))) + 'k'
   } else {
     body = Math.round(abs).toLocaleString('es-AR')
   }

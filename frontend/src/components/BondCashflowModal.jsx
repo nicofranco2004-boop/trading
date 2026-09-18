@@ -31,6 +31,7 @@ import { nextPaymentForPosition, cerOptsFor } from '../utils/bondSchedule'
 import { useFxHistory } from '../hooks/useFxHistory'
 import { suggestBrokerAmount } from '../utils/bondCashflowFx'
 import { hoyISO } from '../utils/fecha'
+import { parseNum, nfmt, numToInput } from '../utils/format'
 
 const today = () => hoyISO()
 
@@ -121,7 +122,7 @@ export default function BondCashflowModal({
   // repetían ese número como si fueran pesos, así que confirmar sin tocar nada
   // registraba 79 pesos donde el usuario había cobrado 79 dólares.
   const [amount, setAmount] = useState(
-    sug.applies ? '' : (estimate?.amount?.toFixed(2) || '')
+    sug.applies ? '' : (estimate?.amount != null ? numToInput(+estimate.amount.toFixed(2)) : '')
   )
   // Monto exacto que puso el chip. Si el input sigue siendo ese string, sabemos
   // que el número que se va a guardar salió de NUESTRO tipo de cambio y podemos
@@ -164,7 +165,7 @@ export default function BondCashflowModal({
     if (amount && amount !== sembrado.current) return   // lo tocó el usuario
     setDate(estimate.date)
     if (!sug.applies) {
-      const v = estimate.amount.toFixed(2)
+      const v = numToInput(+estimate.amount.toFixed(2))
       setAmount(v)
       sembrado.current = v
     }
@@ -174,7 +175,7 @@ export default function BondCashflowModal({
   // Aplicar la sugerencia al campo (click del chip).
   function aplicarSugerido() {
     if (!(sug.amount > 0)) return
-    const s = sug.amount.toFixed(2)
+    const s = numToInput(+sug.amount.toFixed(2))
     setAmount(s)
     setAppliedAmountStr(s)
     // Lo que se sella NO es el TC de la conversión sino el que le corresponde a la
@@ -195,7 +196,7 @@ export default function BondCashflowModal({
 
   async function submit(e) {
     e.preventDefault()
-    const amt = +amount
+    const amt = parseNum(amount)
     if (!amt || amt <= 0) {
       toast.push('Ingresá un monto válido.', { type: 'warn' })
       return
@@ -222,7 +223,7 @@ export default function BondCashflowModal({
         flow_type: flowType,
         amount: amt,
         date,
-        commissions: +commissions || 0,
+        commissions: parseNum(commissions) || 0,
         notes: notes.trim() || null,
         decrement_quantity: willDecrement,
         ...(faceAmortized != null ? { face_amortized: faceAmortized } : {}),
@@ -236,7 +237,7 @@ export default function BondCashflowModal({
       const res = await api.post('/bonds/cashflow', payload)
       let msg = `${isCoupon ? 'Cupón' : 'Amortización'} de ${asset} registrado · ${moneyLabel} ${amt}`
       if (res.qty_decremented > 0) {
-        msg += ` · ${res.qty_decremented.toFixed(2)} VN amortizados`
+        msg += ` · ${nfmt(res.qty_decremented, 2)} VN amortizados`
       } else if (res.cross_currency_skipped) {
         // El sanity check disparó — informar al user que su qty NO se tocó.
         msg += ' · qty intacta (cross-currency: pasá face_amortized para decrementar)'
@@ -262,7 +263,7 @@ export default function BondCashflowModal({
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-md shadow-2xl flex flex-col"
+        className="bg-bg-1 border border-line rounded-t-2xl sm:rounded w-full max-w-md shadow-2xl flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -309,7 +310,7 @@ export default function BondCashflowModal({
                 : 'Pre-llenado según cronograma:'}{' '}
               <strong>{estimate.date}</strong> · estimado{' '}
               <strong>
-                {bondMeta?.currency} {estimate.amount.toFixed(2)} por {position?.quantity || '?'} VN
+                {bondMeta?.currency} {nfmt(estimate.amount, 2)} por {position?.quantity || '?'} VN
               </strong>
               {sug.applies && (
                 <span className="block text-rendi-warn mt-0.5">
@@ -336,7 +337,7 @@ export default function BondCashflowModal({
                   Usar {moneyLabel} {sug.amount.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </button>
                 <p className="text-ink-2 font-mono mt-1.5">
-                  {bondMeta?.currency} {estimate.amount.toFixed(2)}{' '}
+                  {bondMeta?.currency} {nfmt(estimate.amount, 2)}{' '}
                   {sug.operacion === 'dividir' ? '÷' : '×'}{' '}
                   {sug.tc.toLocaleString('es-AR', { maximumFractionDigits: 4 })}
                   {' '}({sug.source === 'blue' ? 'blue' : 'MEP'} del {sug.asOf})
@@ -370,20 +371,20 @@ export default function BondCashflowModal({
                 type="date"
                 value={date}
                 onChange={e => setDate(e.target.value)}
-                className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+                className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
                 required
               />
             </div>
             <div>
               <label className="block text-xs text-ink-2 mb-1">Monto bruto ({moneyLabel})</label>
               <input
-                type="number"
-                step="any"
+                type="text"
+                          inputMode="decimal"
                 inputMode="decimal"
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+                className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
                 autoFocus
                 required
               />
@@ -393,13 +394,13 @@ export default function BondCashflowModal({
           <div>
             <label className="block text-xs text-ink-2 mb-1">Comisiones / retenciones ({moneyLabel}) — opcional</label>
             <input
-              type="number"
-              step="any"
+              type="text"
+                          inputMode="decimal"
               inputMode="decimal"
               value={commissions}
               onChange={e => setCommissions(e.target.value)}
               placeholder="0.00"
-              className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+              className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 tabular focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
             />
             <p className="text-[10px] text-ink-3 mt-1">
               Se descuentan del monto neto que se acredita al cash.
@@ -456,7 +457,7 @@ export default function BondCashflowModal({
             <div className="px-3 py-2 rounded-sm bg-bg-3 border border-line text-xs text-ink-1">
               <span className="font-mono">Neto al cash {broker}: </span>
               <span className="font-semibold text-rendi-pos tabular">
-                +{moneyLabel} {(((+amount || 0) - (+commissions || 0))).toFixed(2)}
+                +{moneyLabel} {nfmt((parseNum(amount) || 0) - (parseNum(commissions) || 0), 2)}
               </span>
             </div>
           )}
@@ -468,7 +469,7 @@ export default function BondCashflowModal({
               value={notes}
               onChange={e => setNotes(e.target.value)}
               placeholder="Ej.: Cupón nominal USD 28, recibí 27.500 después de retención"
-              className="w-full bg-bg-2 dark:bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
+              className="w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60"
             />
           </div>
 

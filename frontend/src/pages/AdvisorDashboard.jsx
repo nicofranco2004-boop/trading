@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke, areaFill, MONO_VIOLET } from '../utils/chartTheme'
 import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart, FileText, ExternalLink } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -21,7 +22,7 @@ import Modal from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
-import { usd as usdFmt, ars as arsFmt } from '../utils/format'
+import { usd as usdFmt, ars as arsFmt, pctTxt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
 import BookComposition from '../components/advisor/BookComposition'
 
@@ -34,7 +35,7 @@ const moneyHelpers = ({ isArs, convert }) => {
   const smoney = (n) => (n >= 0 ? `+${money(n, 0)}` : `−${money(Math.abs(n), 0)}`)
   return { money, smoney }
 }
-const signedPct = (n) => (n >= 0 ? `+${n}%` : `${n}%`)
+const signedPct = (n) => (n >= 0 ? `+${pctTxt(n)}` : `${pctTxt(n)}`)
 
 export default function AdvisorDashboard() {
   const navigate = useNavigate()
@@ -247,7 +248,10 @@ function BookHero({ book }) {
 // no es ganancia) y su suma cierra EXACTO con el hero — misma regla de
 // comparabilidad que /advisor/book (solo clientes con foto en ambos cortes).
 
-const COMP_COLORS = ['#8B7DFF', '#7466E8', '#5F53C4', '#4C429E', '#3D357E']
+// Rampa monocroma: el color dice CUÁNTO pesa cada parte, no quién es. Por eso
+// es un tono en pasos y no la paleta de series — y por eso se recorre al revés
+// en claro (la porción mayor es la más profunda, no la más brillante).
+const COMP_COLORS = MONO_VIOLET
 const DETAIL_GRID = { display: 'grid', gridTemplateColumns: '1.5fr 0.9fr 1fr 1.35fr 1.25fr', gap: '12px', alignItems: 'center' }
 
 function BookDetailModal({ onClose }) {
@@ -273,7 +277,7 @@ function BookDetailModal({ onClose }) {
     const restV = valued.slice(5).reduce((s, c) => s + c.value_usd, 0)
     const comp = top.map((c, i) => ({ label: c.label, pct: c.share_pct ?? 0, color: COMP_COLORS[i] }))
     if (restV > 0 && data?.total_usd > 0) {
-      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: '#3A4256' })
+      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: 'rgb(var(--line-3))' })
     }
     return {
       rows: sorted, edge, comp,
@@ -308,7 +312,7 @@ function BookDetailModal({ onClose }) {
                 {comp.map((s) => (
                   <span key={s.label} className="inline-flex items-center gap-1.5 text-[11px] text-ink-2">
                     <i className="w-2 h-2 rounded-[2px]" style={{ background: s.color }} />
-                    {s.label} <span className="tabular-nums">{s.pct}%</span>
+                    {s.label} <span className="tabular-nums">{pctTxt(s.pct)}</span>
                   </span>
                 ))}
               </div>
@@ -347,7 +351,7 @@ function BookDetailModal({ onClose }) {
                       <span className="text-[13px] font-medium text-ink-0 truncate">{c.label}</span>
                       <span className="text-right text-[13px] text-ink-0 tabular-nums">{money(c.value_usd, 0)}</span>
                       <span className="flex items-center justify-end gap-2">
-                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
+                        <b className="text-xs font-medium text-ink-1 tabular-nums">{c.share_pct != null ? `${pctTxt(c.share_pct)}` : '—'}</b>
                         <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
                           <i className="block h-full bg-data-violet rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                         </span>
@@ -390,7 +394,7 @@ function BookDetailModal({ onClose }) {
                         <>
                           <span className="text-right text-[13px] text-ink-1 tabular-nums">{money(c.value_usd, 0)}</span>
                           <span className="flex items-center justify-end gap-2">
-                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct != null ? `${c.share_pct}%` : '—'}</b>
+                            <b className="text-xs font-medium text-ink-2 tabular-nums">{c.share_pct != null ? `${pctTxt(c.share_pct)}` : '—'}</b>
                             <span className="w-12 h-1 bg-bg-3 rounded-full overflow-hidden shrink-0">
                               <i className="block h-full bg-line-3 rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                             </span>
@@ -502,8 +506,8 @@ function BookEvolution({ series, error }) {
     const v = isArs ? convert(vUsd) : vUsd
     const sym = isArs ? '$' : 'US$'
     const abs = Math.abs(v)
-    if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1)}B`
-    if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1)}M`
+    if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1).replace('.', ',')}B`
+    if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(1).replace('.', ',')}M`
     if (abs >= 1e3) return `${sym}${Math.round(v / 1e3)}k`
     return `${sym}${Math.round(v)}`
   }
@@ -548,38 +552,36 @@ function BookEvolution({ series, error }) {
           <AreaChart data={visible} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <defs>
               <linearGradient id="bookEvoFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#8B7DFF" stopOpacity={0.18} />
-                <stop offset="100%" stopColor="#8B7DFF" stopOpacity={0} />
+                <stop offset="0%" stopColor={areaFill('rgb(var(--data-violet))')} stopOpacity={1} />
+                <stop offset="100%" stopColor="rgb(var(--data-violet))" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid stroke="#1B2230" strokeOpacity={0.35} strokeDasharray="2 4" vertical={false} />
-            <XAxis dataKey="date" tick={{ fill: '#7C8698', fontSize: 11 }}
+            <CartesianGrid {...chartGrid} />
+            <XAxis dataKey="date" tick={chartTickSm}
                    axisLine={false} tickLine={false} minTickGap={48} dy={4}
                    tickFormatter={(d) => {
                      const dt = new Date(d + 'T12:00:00')
                      return dt.toLocaleDateString('es-AR', { day: 'numeric', month: 'short' })
                    }} />
-            <YAxis tick={{ fill: '#7C8698', fontSize: 11 }} axisLine={false} tickLine={false}
+            <YAxis tick={chartTickSm} axisLine={false} tickLine={false}
                    tickFormatter={fmtShort} width={64}
                    domain={[mn > 0 ? mn * 0.97 : 0, mx * 1.02]} />
             <Tooltip
-              cursor={{ stroke: '#5A5C5B', strokeWidth: 1, strokeDasharray: '3 3' }}
-              contentStyle={{ background: '#10151F', border: '1px solid #262E40',
-                              borderRadius: 12, padding: '10px 14px',
-                              boxShadow: '0 12px 32px -12px rgba(0,0,0,.6)' }}
-              labelStyle={{ color: '#E6EAF2', fontSize: 12, fontWeight: 600, marginBottom: 5 }}
-              itemStyle={{ color: '#F4F4F0', fontSize: 12.5, padding: '2px 0' }}
+              cursor={chartTooltip.cursor}
+              contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+              labelStyle={chartTooltip.labelStyle}
+              itemStyle={chartTooltip.itemStyle}
               formatter={(v, name) => [money(v, 0), name === 'aum_usd' ? 'Administrado' : 'Aportado neto']}
               labelFormatter={(label, payload) => {
                 const p = payload?.[0]?.payload
                 return p ? `${p.date} · ${p.clients} cliente${p.clients === 1 ? '' : 's'}` : label
               }}
             />
-            <Area type="monotone" dataKey="net_deposited_usd" stroke="#3A4256" strokeWidth={1.5}
+            <Area type="monotone" dataKey="net_deposited_usd" stroke={chartReferenceStroke} strokeWidth={1.5}
                   strokeDasharray="4 4" fill="none" dot={false} activeDot={false} />
-            <Area type="monotone" dataKey="aum_usd" stroke="#8B7DFF" strokeWidth={1.75}
+            <Area type="monotone" dataKey="aum_usd" stroke="rgb(var(--data-violet))" strokeWidth={1.75}
                   fill="url(#bookEvoFill)" dot={false}
-                  activeDot={{ r: 4, fill: '#8B7DFF', stroke: '#0A0B0E', strokeWidth: 2 }} />
+                  activeDot={{ r: 4, fill: 'rgb(var(--data-violet))', stroke: 'rgb(var(--bg-1))', strokeWidth: 2 }} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -625,7 +627,7 @@ function CallQueue({ queues, onOpen }) {
               <a
                 href={whatsappUrl(`Hola ${(q.label || '').split(' ')[0]}! Estuve revisando tu cartera y quiero comentarte un par de cosas. ¿Cuándo te queda cómodo un llamado?`, q.phone)}
                 target="_blank" rel="noreferrer noopener"
-                className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1 flex-shrink-0"
+                className="text-[11px] font-semibold text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 hover:bg-[rgb(var(--whatsapp))]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1 flex-shrink-0"
               >
                 <WhatsAppIcon size={11} /> Escribirle
               </a>
@@ -917,7 +919,7 @@ function ReportModal({ onClose }) {
                 </button>
                 {phoneOf[r.client_uid] ? (
                   <a href={whatsappUrl(r.wa_text, phoneOf[r.client_uid])} target="_blank" rel="noreferrer noopener"
-                    className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                    className="text-[11px] font-semibold text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 hover:bg-[rgb(var(--whatsapp))]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
                     <WhatsAppIcon size={11} /> Mandar por WhatsApp
                   </a>
                 ) : (
@@ -973,7 +975,7 @@ function ReportModal({ onClose }) {
                   )}
                   {activo && r.phone && r.wa_text && (
                     <a href={whatsappUrl(r.wa_text, r.phone)} target="_blank" rel="noreferrer noopener"
-                      className="text-[11px] font-semibold text-[#25D366] border border-[#25D366]/30 hover:bg-[#25D366]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
+                      className="text-[11px] font-semibold text-[rgb(var(--whatsapp))] border border-[rgb(var(--whatsapp))]/30 hover:bg-[rgb(var(--whatsapp))]/10 rounded-md px-2.5 py-1.5 transition-colors inline-flex items-center gap-1">
                       <WhatsAppIcon size={11} /> WhatsApp
                     </a>
                   )}
@@ -1032,13 +1034,13 @@ function ReportModal({ onClose }) {
           )}
           <div className="border border-line rounded-md max-h-44 overflow-y-auto divide-y divide-line/40">
             <label className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] font-semibold text-ink-0 cursor-pointer hover:bg-bg-2/50">
-              <input type="checkbox" className="accent-[#8B7DFF]" checked={!!allChecked}
+              <input type="checkbox" className="accent-data-violet" checked={!!allChecked}
                      onChange={toggleAll} />
               Todos {clients ? `(${clients.length})` : ''}
             </label>
             {(clients || []).map(c => (
               <label key={c.client_uid} className="flex items-center gap-2.5 px-3 py-2 text-[12.5px] text-ink-1 cursor-pointer hover:bg-bg-2/50">
-                <input type="checkbox" className="accent-[#8B7DFF]"
+                <input type="checkbox" className="accent-data-violet"
                        checked={!!checked?.has(c.client_uid)}
                        onChange={() => toggleOne(c.client_uid)} />
                 <span className="truncate">{c.label}</span>

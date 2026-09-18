@@ -6,6 +6,7 @@ import StatCard from '../components/StatCard'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
+import { pctTxt } from '../utils/format'
 
 // Nombre de cada plan, en un solo lugar. Estaba escrito inline en tres sitios
 // del grant y ninguno contemplaba 'advisor', asi que el Plan Asesor se
@@ -241,7 +242,7 @@ export default function Admin() {
             <StatCard label="Operaciones" value={stats.operations_total} sub={`${stats.monthly_total} registros mensuales`} />
           </div>
 
-          <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+          <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
             <div className="flex items-center gap-2 mb-3">
               <Activity size={16} className="text-ink-3" />
               <h2 className="font-semibold text-ink-0">Estado del sistema</h2>
@@ -254,14 +255,14 @@ export default function Admin() {
               </Row>
               <Row label="Snapshots almacenados"><Database size={12} className="inline text-ink-3" /> {stats.snapshots_total}</Row>
               <Row label="Tasa de actividad">
-                {stats.users_total > 0 ? `${((stats.active_last_7d / stats.users_total) * 100).toFixed(0)}%` : '—'}
+                {stats.users_total > 0 ? `${((stats.active_last_7d / stats.users_total) * 100).toFixed(0).replace('.', ',')}%` : '—'}
               </Row>
             </div>
           </div>
 
           {/* ── Embudo de activación ─────────────────────────────────────── */}
           {stats.activation && (
-            <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+            <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
               <div className="flex items-center gap-2 mb-1">
                 <Activity size={16} className="text-ink-3" />
                 <h2 className="font-semibold text-ink-0">Embudo de activación</h2>
@@ -293,10 +294,10 @@ export default function Admin() {
                           </div>
                           <div className="w-24 text-right text-sm tabular flex-shrink-0">
                             <span className="text-ink-0 font-medium">{s.n}</span>
-                            <span className="text-ink-3"> · {pct}%</span>
+                            <span className="text-ink-3"> · {pctTxt(pct)}</span>
                           </div>
                           <div className="w-14 text-right text-xs tabular text-rendi-neg flex-shrink-0">
-                            {i > 0 && drop > 0 ? `−${drop}%` : ''}
+                            {i > 0 && drop > 0 ? `−${pctTxt(drop)}` : ''}
                           </div>
                         </div>
                       )
@@ -362,7 +363,7 @@ export default function Admin() {
         </div>
       )}
 
-      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
+      <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2 flex-wrap">
           <Users size={16} className="text-ink-3" />
           <h2 className="font-semibold text-ink-0">
@@ -572,7 +573,7 @@ function BroadcastPanel({ toast }) {
   const inputCls = 'w-full text-sm px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-2/40 border border-line/60 focus:border-data-violet/60 outline-none text-ink-1 placeholder:text-ink-3'
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Send size={16} className="text-data-violet" />
         <h2 className="font-semibold text-ink-0">Email a usuarios · escribí el tuyo</h2>
@@ -713,7 +714,7 @@ function ReengagementPanel({ toast }) {
   const toSend = resend ? recipients : pending
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Mail size={16} className="text-data-violet" />
@@ -828,7 +829,7 @@ function BackupPanel({ toast }) {
 
   const st = result?.stats || {}
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-start gap-2">
           <Database size={16} className="text-rendi-accent mt-0.5 flex-shrink-0" />
@@ -850,7 +851,7 @@ function BackupPanel({ toast }) {
         <div className={`mt-3 text-xs px-3 py-2 rounded-md border ${result.ok ? 'bg-rendi-pos/10 border-rendi-pos/30 text-rendi-pos' : 'bg-rendi-warn/10 border-rendi-warn/30 text-rendi-warn'}`}>
           {result.ok ? '✅ Backup subido a S3' : '⚠ Backup con errores'}
           {(st.s3_key || st.key) && <span className="text-ink-2"> · {st.s3_key || st.key}</span>}
-          {st.size_bytes && <span className="text-ink-2"> · {(st.size_bytes / 1e6).toFixed(1)} MB</span>}
+          {st.size_bytes && <span className="text-ink-2"> · {(st.size_bytes / 1e6).toFixed(1).replace('.', ',')} MB</span>}
           {st.errors?.length > 0 && <span className="text-ink-2"> · {st.errors.length} error(es)</span>}
         </div>
       )}
@@ -906,7 +907,7 @@ function TrialInvitePanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Mail size={16} className="text-data-violet" />
@@ -1050,7 +1051,7 @@ function GiftPlanPanel({ toast }) {
   const toSend = resend ? recipients : pending
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Mail size={16} className="text-emerald-500" />
@@ -1268,7 +1269,7 @@ function BackfillPanel({ toast }) {
   const changes = preview?.changes || []
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-data-violet" />
@@ -1350,9 +1351,9 @@ function BackfillPanel({ toast }) {
                       <td className="px-2 py-1 text-ink-2">{c.broker}</td>
                       <td className="px-2 py-1 text-ink-1">{c.asset}</td>
                       <td className="px-2 py-1 text-ink-3">{c.kind || c.tag}</td>
-                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.before?.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.before?.toLocaleString('es-AR')}</td>
                       <td className={`px-2 py-1 text-right tabular ${c.after === 0 ? 'text-rose-500' : 'text-ink-1'}`}>
-                        {c.after?.toLocaleString()} {c.after === 0 && '· eliminada'}
+                        {c.after?.toLocaleString('es-AR')} {c.after === 0 && '· eliminada'}
                       </td>
                     </tr>
                   ))}
@@ -1384,10 +1385,10 @@ function BackfillPanel({ toast }) {
                       <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
                       <td className="px-2 py-1 text-ink-2">{c.broker}</td>
                       <td className="px-2 py-1 text-ink-1">{c.asset}</td>
-                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.invested_before?.toLocaleString()}</td>
-                      <td className="px-2 py-1 text-right tabular text-ink-1">{c.invested_after?.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-2">{c.invested_before?.toLocaleString('es-AR')}</td>
+                      <td className="px-2 py-1 text-right tabular text-ink-1">{c.invested_after?.toLocaleString('es-AR')}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-3">
-                        {c.comm_before !== c.comm_after ? `${c.comm_before?.toLocaleString()} → ${c.comm_after?.toLocaleString()}` : '—'}
+                        {c.comm_before !== c.comm_after ? `${c.comm_before?.toLocaleString('es-AR')} → ${c.comm_after?.toLocaleString('es-AR')}` : '—'}
                       </td>
                     </tr>
                   ))}
@@ -1512,7 +1513,7 @@ function MtmBackfillPanel({ toast }) {
   const changes = preview?.changes || []
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <TrendingUp size={16} className="text-data-violet" />
@@ -1574,8 +1575,8 @@ function MtmBackfillPanel({ toast }) {
                     <tr key={i} className="border-b border-line/20">
                       <td className="px-2 py-1 text-ink-2">#{c.uid}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-2">{c.months_changed}</td>
-                      <td className="px-2 py-1 text-ink-1 tabular">{c.first_ym}: {Math.round(c.first_before).toLocaleString()}→{Math.round(c.first_after).toLocaleString()}</td>
-                      <td className="px-2 py-1 text-ink-1 tabular">{c.last_ym}: {Math.round(c.last_before).toLocaleString()}→{Math.round(c.last_after).toLocaleString()}</td>
+                      <td className="px-2 py-1 text-ink-1 tabular">{c.first_ym}: {Math.round(c.first_before).toLocaleString('es-AR')}→{Math.round(c.first_after).toLocaleString('es-AR')}</td>
+                      <td className="px-2 py-1 text-ink-1 tabular">{c.last_ym}: {Math.round(c.last_before).toLocaleString('es-AR')}→{Math.round(c.last_after).toLocaleString('es-AR')}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-3">{c.cost_fallbacks}</td>
                     </tr>
                   ))}
@@ -1626,7 +1627,7 @@ function FciRefreshPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RefreshCw size={16} className="text-violet-500" />
@@ -1675,7 +1676,7 @@ function RepairCaja1415Panel({ toast }) {
   const n = prev?.meses_a_corregir?.length ?? 0
   const fmt = v => (v ?? 0).toLocaleString('es-AR')
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <AlertTriangle size={16} className="text-amber-500" />
@@ -1752,7 +1753,7 @@ function RepairInteresPfPanel({ toast }) {
 
   const n = prev?.filas_a_sellar?.length ?? 0
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <AlertTriangle size={16} className="text-amber-500" />
@@ -1836,7 +1837,7 @@ function AlcanceAuditoriaPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Search size={16} className="text-cyan-500" />
@@ -1938,7 +1939,7 @@ function MtmAuditPanel({ toast }) {
     } finally { setBusy(false) }
   }
 
-  const pct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
+  const pct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2).replace('.', ',')}%`)
 
   async function verMes(m) {
     setMes(m); setBusy(true); setGap(null)
@@ -1949,7 +1950,7 @@ function MtmAuditPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Activity size={16} className="text-violet-500" />
@@ -1996,7 +1997,7 @@ function MtmAuditPanel({ toast }) {
               {(data.meses_con_fuentes_distintas || []).length > 0 && (
                 <span className="block font-normal text-ink-2 mt-1">
                   {data.meses_con_fuentes_distintas.map(x =>
-                    `${x.mes}: ΔG ${x.delta_G} (${x.pct}% del capital) → ${x.delta_pp}pp`
+                    `${x.mes}: ΔG ${x.delta_G} (${pctTxt(x.pct)} del capital) → ${x.delta_pp}pp`
                   ).join(' · ')}
                 </span>
               )}
@@ -2076,7 +2077,7 @@ function MtmAuditPanel({ toast }) {
                 Blue {gap.fx?.blue_ini ?? '—'} → {gap.fx?.blue_fin ?? '—'}
                 {gap.fx?.variacion_pct != null && (
                   <b className={Math.abs(gap.fx.variacion_pct) < 2 ? ' text-ink-3' : ' text-amber-500'}>
-                    {' '}({gap.fx.variacion_pct > 0 ? '+' : ''}{gap.fx.variacion_pct}%)
+                    {' '}({gap.fx.variacion_pct > 0 ? '+' : ''}{pctTxt(gap.fx.variacion_pct)})
                   </b>
                 )} — {gap.fx?.lectura}
               </p>
@@ -2088,7 +2089,7 @@ function MtmAuditPanel({ toast }) {
                   <p className="text-[11px] text-amber-500 font-medium">
                     P&L sin contrapartida de costo: US$ {gap.pnl_sin_contrapartida_de_costo.total}
                     {gap.pnl_sin_contrapartida_de_costo.explica_del_delta_G_pct != null && (
-                      <> — explica el <b>{gap.pnl_sin_contrapartida_de_costo.explica_del_delta_G_pct}%</b> del ΔG</>
+                      <> — explica el <b>{pctTxt(gap.pnl_sin_contrapartida_de_costo.explica_del_delta_G_pct)}</b> del ΔG</>
                     )}
                   </p>
                   <p className="text-[10px] text-ink-3">{gap.pnl_sin_contrapartida_de_costo.lectura}</p>
@@ -2154,8 +2155,8 @@ function MtmAuditPanel({ toast }) {
                           <td className="py-1 pr-2">{o.activo} <span className="text-ink-3">({o.broker})</span></td>
                           <td className="py-1 pr-2 text-right tabular text-ink-3">{o.precio_entrada} → {o.precio_salida}</td>
                           <td className="py-1 pr-2 text-right tabular">{o.pnl_usd}</td>
-                          <td className="py-1 pr-2 text-right tabular text-red-400">{o.pnl_pct_guardado}%</td>
-                          <td className="py-1 pr-2 text-right tabular">{o.pnl_pct_por_precios}%</td>
+                          <td className="py-1 pr-2 text-right tabular text-red-400">{pctTxt(o.pnl_pct_guardado)}</td>
+                          <td className="py-1 pr-2 text-right tabular">{pctTxt(o.pnl_pct_por_precios)}</td>
                           <td className="py-1 text-right tabular text-red-400">{o.desvio_pp}pp</td>
                         </tr>
                       ))}
@@ -2200,7 +2201,7 @@ function MtmAuditPanel({ toast }) {
                     <td className={`py-1.5 pr-3 text-right tabular ${
                       o.delta_G_pct == null ? 'text-ink-3'
                         : Math.abs(o.delta_G_pct) > 2 ? 'text-red-400 font-medium' : 'text-ink-3'}`}>
-                      {o.delta_G_pct == null ? '—' : `${o.delta_G_pct}%`}
+                      {o.delta_G_pct == null ? '—' : `${pctTxt(o.delta_G_pct)}`}
                     </td>
                     <td className={`py-1.5 text-right tabular font-medium ${
                       o.delta_pp == null ? 'text-ink-3'
@@ -2354,8 +2355,8 @@ function FxMigratePanel({ toast }) {
       const dPnl = ids.reduce((a, id) => a + (sims[id]?.delta?.pnl_ventas_usd || 0), 0)
       const dDep = ids.reduce((a, id) => a + ((sims[id]?.delta?.deposits_usd || 0) - (sims[id]?.delta?.withdrawals_usd || 0)), 0)
       if (!confirm(`¿Migrar ${ids.length} cuenta(s) al TC histórico?\n` +
-                   `Δ P&L de ventas (simulado): US$ ${Math.round(dPnl).toLocaleString()}\n` +
-                   `Δ Aportado neto (simulado): US$ ${Math.round(dDep).toLocaleString()}\n` +
+                   `Δ P&L de ventas (simulado): US$ ${Math.round(dPnl).toLocaleString('es-AR')}\n` +
+                   `Δ Aportado neto (simulado): US$ ${Math.round(dDep).toLocaleString('es-AR')}\n` +
                    `El % por operación NO cambia. Hacé un backup antes.`)) return
     }
     setRunning(apply ? 'apply' : 'sim')
@@ -2414,10 +2415,10 @@ function FxMigratePanel({ toast }) {
     }
   }
 
-  const fmt = (n) => (n == null ? '—' : Math.round(n).toLocaleString())
+  const fmt = (n) => (n == null ? '—' : Math.round(n).toLocaleString('es-AR'))
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RefreshCw size={16} className="text-violet-500" />
@@ -2484,8 +2485,8 @@ function FxMigratePanel({ toast }) {
               {aportado.loading ? <div className="text-xs text-ink-3">Calculando…</div> : (
                 <>
                   <div className="text-xs text-ink-2">
-                    Aportado neto US$ {Math.round(aportado.aportado_neto_v1 || 0).toLocaleString()}
-                    {' → '}US$ {Math.round(aportado.aportado_neto_v2 || 0).toLocaleString()}
+                    Aportado neto US$ {Math.round(aportado.aportado_neto_v1 || 0).toLocaleString('es-AR')}
+                    {' → '}US$ {Math.round(aportado.aportado_neto_v2 || 0).toLocaleString('es-AR')}
                     {aportado.factor != null ? ` (×${aportado.factor})` : ''}
                     {aportado.filas_sin_tc_en_serie ? ` · ${aportado.filas_sin_tc_en_serie} fila(s) sin TC en la serie` : ''}
                   </div>
@@ -2495,7 +2496,7 @@ function FxMigratePanel({ toast }) {
                   {(aportado.sinteticas?.filas || 0) > 0 && (
                     <div className="text-[11px] text-emerald-500/90">
                       + {aportado.sinteticas.filas} fila(s) del "Estado inicial"
-                      ({Math.round(aportado.sinteticas.ars).toLocaleString()} pesos, desde{' '}
+                      ({Math.round(aportado.sinteticas.ars).toLocaleString('es-AR')} pesos, desde{' '}
                       {(aportado.sinteticas.desde || '').slice(0, 10)}) — quedan al dólar de HOY,
                       no se re-estampan: el usuario tipeó ese monto en pesos de hoy y el wizard
                       lo fechó un día antes del primer movimiento.
@@ -2521,9 +2522,9 @@ function FxMigratePanel({ toast }) {
                               {f.op === 'DEPOSIT' ? 'Depósito' : 'Retiro'}
                             </td>
                             <td className="py-1 pr-3 text-right">{f.filas}</td>
-                            <td className="py-1 pr-3 text-right">{Math.round(f.ars).toLocaleString()}</td>
-                            <td className="py-1 pr-3 text-right">{Math.round(f.usd_v1).toLocaleString()}</td>
-                            <td className="py-1 pr-3 text-right font-medium">{Math.round(f.usd_v2).toLocaleString()}</td>
+                            <td className="py-1 pr-3 text-right">{Math.round(f.ars).toLocaleString('es-AR')}</td>
+                            <td className="py-1 pr-3 text-right">{Math.round(f.usd_v1).toLocaleString('es-AR')}</td>
+                            <td className="py-1 pr-3 text-right font-medium">{Math.round(f.usd_v2).toLocaleString('es-AR')}</td>
                             <td className="py-1 pr-3 text-right text-ink-3">
                               {f.tc_implicito_v1 ?? '—'} → {f.tc_implicito_v2 ?? '—'}
                             </td>
@@ -2560,10 +2561,10 @@ function FxMigratePanel({ toast }) {
                                 <td className={`py-1 pr-3 ${f.op === 'DEPOSIT' ? 'text-emerald-500' : 'text-amber-500'}`}>
                                   {f.op === 'DEPOSIT' ? 'Dep.' : 'Ret.'}
                                 </td>
-                                <td className="py-1 pr-3 text-right">{Math.round(f.ars).toLocaleString()}</td>
+                                <td className="py-1 pr-3 text-right">{Math.round(f.ars).toLocaleString('es-AR')}</td>
                                 <td className="py-1 pr-3 text-right text-ink-3">{f.tc ?? '—'}</td>
-                                <td className="py-1 pr-3 text-right font-medium">{f.usd_v2 != null ? Math.round(f.usd_v2).toLocaleString() : '—'}</td>
-                                <td className="py-1 pr-3 text-right text-ink-3">{Math.round(f.usd_hoy).toLocaleString()}</td>
+                                <td className="py-1 pr-3 text-right font-medium">{f.usd_v2 != null ? Math.round(f.usd_v2).toLocaleString('es-AR') : '—'}</td>
+                                <td className="py-1 pr-3 text-right text-ink-3">{Math.round(f.usd_hoy).toLocaleString('es-AR')}</td>
                                 <td className="py-1 pr-3">{f.broker || '—'}</td>
                                 <td className="py-1 pr-3 max-w-[320px]">
                                   <div className="truncate">{f.archivo || f.parser || '—'}</div>
@@ -2787,10 +2788,10 @@ function FxMigratePanel({ toast }) {
                                       ~5 se multiplica ×280). Lo que hay que mirar es si el múltiplo
                                       es coherente con la ÉPOCA de los flujos de esa cuenta. */}
                                   {v.aportado_antes_usd != null ? (
-                                    <> · aportado US$ {Math.round(v.aportado_antes_usd).toLocaleString()}
-                                      {' → '}US$ {Math.round(v.aportado_despues_usd).toLocaleString()}
+                                    <> · aportado US$ {Math.round(v.aportado_antes_usd).toLocaleString('es-AR')}
+                                      {' → '}US$ {Math.round(v.aportado_despues_usd).toLocaleString('es-AR')}
                                       {v.aportado_delta_pct != null && Math.abs(v.aportado_delta_pct) >= 1
-                                        ? ` (${v.aportado_delta_pct > 0 ? '+' : ''}${v.aportado_delta_pct}% · ×${(v.aportado_despues_usd / (v.aportado_antes_usd || 1)).toFixed(1)})`
+                                        ? ` (${v.aportado_delta_pct > 0 ? '+' : ''}${pctTxt(v.aportado_delta_pct)} · ×${(v.aportado_despues_usd / (v.aportado_antes_usd || 1)).toFixed(1).replace('.', ',')})`
                                         : ''}
                                     </>
                                   ) : ''}
@@ -2803,10 +2804,10 @@ function FxMigratePanel({ toast }) {
                                   {(v.rendimiento_antes_pct != null || v.rendimiento_despues_pct != null) ? (
                                     <span className={v.denominador_roto ? 'text-red-400 font-medium' : 'text-slate-300'}>
                                       {' · '}rendimiento del usuario{' '}
-                                      {v.rendimiento_antes_pct != null ? `${v.rendimiento_antes_pct > 0 ? '+' : ''}${v.rendimiento_antes_pct}%` : '—'}
+                                      {v.rendimiento_antes_pct != null ? `${v.rendimiento_antes_pct > 0 ? '+' : ''}${pctTxt(v.rendimiento_antes_pct)}` : '—'}
                                       {' → '}
-                                      {v.rendimiento_despues_pct != null ? `${v.rendimiento_despues_pct > 0 ? '+' : ''}${v.rendimiento_despues_pct}%` : '—'}
-                                      {v.valor_cartera_usd != null ? ` (cartera US$ ${Math.round(v.valor_cartera_usd).toLocaleString()})` : ''}
+                                      {v.rendimiento_despues_pct != null ? `${v.rendimiento_despues_pct > 0 ? '+' : ''}${pctTxt(v.rendimiento_despues_pct)}` : '—'}
+                                      {v.valor_cartera_usd != null ? ` (cartera US$ ${Math.round(v.valor_cartera_usd).toLocaleString('es-AR')})` : ''}
                                     </span>
                                   ) : ''}
                                   {v.denominador_roto ? <span className="text-red-400"> · ⛔ {v.denominador_roto}</span> : ''}
@@ -2816,14 +2817,14 @@ function FxMigratePanel({ toast }) {
                                     ? <span className="text-amber-400"> · ⚠️ pasa de ganar a perder casi todo lo aportado — revisá el desglose por año</span>
                                     : ''}
                                   {(v.baseline_borrada_usd || 0) !== 0
-                                    ? <span className="text-amber-400"> · ⚠️ se borra el capital inicial cargado a mano (US$ {Math.round(v.baseline_borrada_usd).toLocaleString()})</span>
+                                    ? <span className="text-amber-400"> · ⚠️ se borra el capital inicial cargado a mano (US$ {Math.round(v.baseline_borrada_usd).toLocaleString('es-AR')})</span>
                                     : ''}
-                                  {v.delta_pnl_implausible ? ` · ⚠️ Δ P&L IMPLAUSIBLE (US$ ${Math.round(v.delta_pnl_por_venta).toLocaleString()}/venta) — el P&L ya estaba corrupto y migrar lo multiplica` : ''}
+                                  {v.delta_pnl_implausible ? ` · ⚠️ Δ P&L IMPLAUSIBLE (US$ ${Math.round(v.delta_pnl_por_venta).toLocaleString('es-AR')}/venta) — el P&L ya estaba corrupto y migrar lo multiplica` : ''}
                                   {(s.rebuild?.errores || []).length ? ` · ⚠️ ${s.rebuild.errores.length} activo(s) con error de rebuild` : ''}
                                   {(v.ventas_con_tc_distinto || []).length ? ` · ${v.ventas_con_tc_distinto.length} venta(s) con TC distinto` : ''}
                                   {v.en_pares_salteados ? ` · ${v.en_pares_salteados} venta(s) de pares manuales (TC viejo, esperado)` : ''}
                                   {v.sin_serie_fx ? ` · ${v.sin_serie_fx} pre-serie FX (TC viejo)` : ''}
-                                  {(v.flujos_manuales_usd_no_migrables || 0) > 0 ? ` · US$ ${Math.round(v.flujos_manuales_usd_no_migrables).toLocaleString()} de flujos manuales no migrables` : ''}
+                                  {(v.flujos_manuales_usd_no_migrables || 0) > 0 ? ` · US$ ${Math.round(v.flujos_manuales_usd_no_migrables).toLocaleString('es-AR')} de flujos manuales no migrables` : ''}
                                 </span>
                               })()
                             : c.ventas_manuales > 0 ? `${c.ventas_manuales} venta(s) manual(es)` : ''}
@@ -2911,10 +2912,10 @@ function CurrencyBackfillPanel({ toast }) {
 
   const changes = preview?.changes || []
   const fciFunds = Object.entries(preview?.fci_funds || {}).sort((a, b) => b[1].max_amt - a[1].max_amt)
-  const fmt = (n) => Math.round(n || 0).toLocaleString()
+  const fmt = (n) => Math.round(n || 0).toLocaleString('es-AR')
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <AlertTriangle size={16} className="text-amber-500" />
@@ -3079,7 +3080,7 @@ function RepairUserPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2">
         <RotateCcw size={16} className="text-rendi-warn" />
         <h2 className="font-semibold text-ink-0">Reparar histórico de un usuario</h2>
@@ -3173,7 +3174,7 @@ function ResetUserPanel({ toast }) {
   const puedeBorrar = preview && confirmar.trim().toLowerCase() === email.trim().toLowerCase()
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Trash2 size={16} className="text-rose-500" />
         <h2 className="font-semibold text-ink-0">Dejar una cuenta en cero</h2>
@@ -3346,7 +3347,7 @@ function MassRepairPanel({ toast }) {
   }
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <RotateCcw size={16} className="text-rendi-warn" />
@@ -3397,7 +3398,7 @@ function MassRepairPanel({ toast }) {
 function ConversionPanel({ data }) {
   if (!data) {
     return (
-      <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+      <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
         <div className="flex items-center gap-2 mb-2">
           <Sparkles size={16} className="text-data-violet" />
           <h2 className="font-semibold text-ink-0">Conversión Pro</h2>
@@ -3414,7 +3415,7 @@ function ConversionPanel({ data }) {
   const totalEvents = Object.values(data.totals || {}).reduce((s, n) => s + n, 0)
 
   return (
-    <div className="bg-white dark:bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-5">
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Sparkles size={16} className="text-data-violet" />
@@ -3567,7 +3568,7 @@ function TrialFunnelPanel({ data }) {
       <span className="text-sm text-ink-1 flex-1">{label}</span>
       <span className="text-sm font-medium text-ink-0 tabular-nums">{n ?? 0}</span>
       <span className="text-xs text-ink-3 tabular-nums w-14 text-right">
-        {pct != null ? `${pct}%` : '—'}
+        {pct != null ? `${pctTxt(pct)}` : '—'}
       </span>
       {nota && <span className="text-[11px] text-ink-3">{nota}</span>}
     </div>
@@ -3636,7 +3637,7 @@ function TrialFunnelPanel({ data }) {
       <div className="mt-3 pt-3 border-t border-line flex items-baseline gap-2 flex-wrap">
         <span className="text-sm text-ink-2">Conversión sobre los que terminaron:</span>
         <span className="text-lg font-semibold text-ink-0 tabular-nums">
-          {pctCerrada != null ? `${pctCerrada}%` : '—'}
+          {pctCerrada != null ? `${pctTxt(pctCerrada)}` : '—'}
         </span>
         <span className="text-[11px] text-ink-3">
           (los que siguen probando todavía no decidieron)
@@ -3677,7 +3678,7 @@ function TrialFunnelPanel({ data }) {
             <ConvCell
               label="Subieron a Pro"
               value={upsell.subieron_a_pro}
-              hint={upsell.pct_upgrade != null ? `${upsell.pct_upgrade}% de los cerrados` : 'sobre los cerrados'}
+              hint={upsell.pct_upgrade != null ? `${pctTxt(upsell.pct_upgrade)} de los cerrados` : 'sobre los cerrados'}
             />
           </div>
 

@@ -155,13 +155,13 @@ class LasSuperficiesLoAplicanTest(unittest.TestCase):
         self.assertIsNotNone(s)
         self.assertNotIn("188", s["subtitle"], "publicó el % imposible")
         self.assertNotIn("%", s["subtitle"], "arriba del techo no va ninguna tasa")
-        self.assertIn("200,000", s["subtitle"], "…pero el MONTO sí se publica")
+        self.assertIn("200.000", s["subtitle"], "…pero el MONTO sí se publica")
 
     def test_wrapped_si_publica_el_porcentaje_normal(self):
         import wrapped
         sano = [{"asset": "AAPL", "op_type": "Venta", "exit_price": 1.0,
                  "pnl_usd": 500.0, "pnl_pct": 18.2}]
-        self.assertIn("18.2%", wrapped._slide_best_trade(sano)["subtitle"])
+        self.assertIn("18,2%", wrapped._slide_best_trade(sano)["subtitle"])
 
     def test_los_paquetes_de_la_ia_lo_aplican(self):
         """CONTRATO: los builders que leen operations.pnl_pct y se lo pasan al

@@ -105,7 +105,7 @@ export default function AdvisorAccessRequest() {
   const btnBase = 'w-full rounded-lg py-2.5 text-sm font-medium transition-colors inline-flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed'
 
   return (
-    <div className="min-h-screen bg-bg-2 dark:bg-bg-0 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-bg-0 flex items-center justify-center px-4">
       <PageMeta
         title="Pedido de acceso — Rendi"
         description="Un asesor te pide acceso a tu cartera en Rendi. Vos decidís."
@@ -118,7 +118,7 @@ export default function AdvisorAccessRequest() {
           <span className="text-2xl font-bold text-ink-0 dark:text-white tracking-tight">rendi</span>
         </div>
 
-        <div className="bg-white dark:bg-bg-2/60 border border-line/50 rounded-xl p-7">
+        <div className="bg-bg-2/60 border border-line/50 rounded-xl p-7">
           {done ? (
             <div className="text-center">
               <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full mb-3 ${done === 'accepted' ? 'bg-rendi-pos/10' : 'bg-bg-2'}`}>
