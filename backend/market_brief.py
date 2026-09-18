@@ -44,6 +44,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
+from typing import NamedTuple, Optional
 
 from fechas import hoy_art
 
@@ -732,9 +733,44 @@ def narrate(contexto: list, news: list, tickers: list, holders: dict = None):
         return None
 
 
+# ─── Por qué un resumen NO salió ─────────────────────────────────────────────
+# `build_brief` devolvía `{}` en tres situaciones que no tienen nada que ver
+# entre sí, y el cron las sumaba todas en un mismo "salteados". Esa línea no
+# distinguía "nadie lo prendió todavía" —el estado de fábrica, sano— de "once
+# personas lo prendieron y a las once les fallamos": los dos se leen `sent: 0`.
+#
+# El motivo nace ADENTRO de `build_brief` y ahí es el único lugar donde se
+# sabe. Por eso viaja con el resultado en vez de deducirse después.
+APAGADO = "apagado"                              # lo apagó entre la consulta y acá
+YA_LO_RECIBIERON = "ya_lo_recibieron"            # el cron ya corrió hoy
+SIN_ACTIVOS = "sin_activos"                      # no tiene cartera cargada
+SIN_NOTICIAS = "sin_noticias"                    # no hubo material que narrar
+NARRACION_DESCARTADA = "narracion_descartada"    # el modelo inventó números
+SIN_EMAIL = "sin_email"                          # la cuenta no tiene casilla
+
+MOTIVOS = (APAGADO, YA_LO_RECIBIERON, SIN_ACTIVOS, SIN_NOTICIAS,
+           NARRACION_DESCARTADA, SIN_EMAIL)
+
+
+class Armado(NamedTuple):
+    """El resumen de una persona y, si no salió, por qué no.
+
+    `brief` vacío ⇒ no se manda, y `motivo` dice cuál de las tres razones fue.
+    Se devuelve una tupla nombrada y no un dict con una clave extra a propósito:
+    un dict con `{"motivo": ...}` es VERDADERO, y el día que alguien escriba
+    `if data:` sin mirar, se le va un mail vacío a un usuario. Así no compila.
+    """
+    brief: dict
+    motivo: Optional[str] = None   # None = salió bien
+
+
 def build_brief(conn, uid: int, day: str = None, contexto: list = None,
-                narrar: bool = True) -> dict:
-    """Contenido del mail. Devuelve {} si no hay NADA que contar.
+                narrar: bool = True) -> "Armado":
+    """Contenido del mail, junto con el motivo si no hay NADA que contar.
+
+    ⚠️ DEVUELVE UN `Armado`, NO UN DICT — el contenido está en `.brief`. Antes
+    devolvía el dict pelado y `{}` era las tres formas de no tener nada, todas
+    indistinguibles desde afuera.
 
     Un mail vacío es peor que ningún mail: entrena a la persona a no abrirlo, y
     el día que sí tenga algo importante ya no lo mira. Sin narración tampoco se
@@ -751,7 +787,7 @@ def build_brief(conn, uid: int, day: str = None, contexto: list = None,
     day = day or _today_art()
     tickers = portfolio_tickers(conn, uid)[:MAX_TICKERS]
     if not tickers:
-        return {}
+        return Armado({}, SIN_ACTIVOS)
 
     desde = _news_window_start(day)
     if contexto is None:
@@ -763,7 +799,7 @@ def build_brief(conn, uid: int, day: str = None, contexto: list = None,
     # AAPL presenta balance" es una línea de calendario, no un resumen del
     # mercado, y no justifica un mail.
     if not contexto and not news:
-        return {}
+        return Armado({}, SIN_NOTICIAS)
 
     out = {
         "date": day,
@@ -775,20 +811,42 @@ def build_brief(conn, uid: int, day: str = None, contexto: list = None,
         "context_n": len(contexto),
     }
     if not narrar:
-        return out
+        return Armado(out)
 
     narrativa = narrate(contexto, news, tickers)
     if narrativa is None:
-        return {}
+        return Armado({}, NARRACION_DESCARTADA)
     out["narrative"] = {
         "titular": narrativa.titular,
         "mercado": list(narrativa.mercado),
         "tu_cartera": list(narrativa.tu_cartera),
     }
-    return out
+    return Armado(out)
 
 
 # ─── Corrida (la dispara el cron externo) ────────────────────────────────────
+
+def _resultado(day, sent, failed, fetched, motivos, prendidos) -> dict:
+    """El parte de la corrida, en una sola forma para todos los que lo leen.
+
+    `prendidos` es el número que hacía falta y no estaba: sin él, `sent: 0` es
+    ambiguo para siempre. Con él, `prendidos: 11, sent: 0` se lee solo.
+
+    `alarma` se calcula UNA vez y acá. Si el mail al admin y la línea del
+    registro decidieran cada uno por su cuenta cuándo algo anduvo mal, el día
+    que alguien cambie un criterio quedarían diciendo cosas distintas del mismo
+    día. Es el mismo error que ya nos costó una constante haciendo dos trabajos.
+
+    `skipped` se conserva —es la suma de los motivos— para no romper a quien lo
+    estuviera leyendo; lo que se agrega es el desglose, no un reemplazo.
+    """
+    alarma = bool(failed
+                  or motivos.get(NARRACION_DESCARTADA)
+                  or (prendidos and not sent and not motivos.get(YA_LO_RECIBIERON)))
+    return {"date": day, "prendidos": prendidos, "sent": sent, "failed": failed,
+            "news_fetched": fetched, "skipped": sum(motivos.values()),
+            "motivos": dict(motivos), "alarma": alarma}
+
 
 def run_briefs(get_db, only_uid: int = None) -> dict:
     """Trae las noticias de todos los suscriptos y les manda el resumen.
@@ -798,9 +856,18 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
     El fetch de noticias se hace UNA vez para la UNIÓN de los activos de todos
     —dos personas con GGAL lo buscan una sola vez— y de paso deja la base
     fresca para la pantalla de Novedades del resto de la app.
+
+    Devuelve el parte de la corrida (ver `_resultado`): cuántos lo tienen
+    prendido, cuántos mails salieron, y por qué no salieron los demás — cada
+    motivo con su nombre. Es lo que se escribe en el registro y lo que arma el
+    mail diario al admin.
     """
     day = _today_art()
-    sent = skipped = failed = 0
+    sent = failed = 0
+    # Un contador POR MOTIVO, no un "salteados" que junta cinco cosas. La
+    # pregunta que esta línea tiene que poder contestar sola es "¿anduvo?", y
+    # `sent: 0` no la contesta: puede ser que nadie lo haya prendido.
+    motivos = {m: 0 for m in MOTIVOS}
     conn = get_db()
     try:
         uids = [only_uid] if only_uid else subscriber_uids(conn)
@@ -809,13 +876,19 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
         #    buscar noticias de carteras a las que no les vamos a escribir.
         pending, tickers_by_uid = [], {}
         for uid in uids:
-            if only_uid is None and (not brief_enabled(conn, uid)
-                                     or already_sent(conn, uid, day)):
-                skipped += 1
-                continue
+            if only_uid is None:
+                # Separados y no en un `or`: `subscriber_uids` ya filtró por
+                # prendido, así que APAGADO tendría que dar siempre 0. Si algún
+                # día no da 0, las dos consultas se contradicen y quiero verlo.
+                if not brief_enabled(conn, uid):
+                    motivos[APAGADO] += 1
+                    continue
+                if already_sent(conn, uid, day):
+                    motivos[YA_LO_RECIBIERON] += 1
+                    continue
             t = portfolio_tickers(conn, uid)[:MAX_TICKERS]
             if not t:
-                skipped += 1
+                motivos[SIN_ACTIVOS] += 1
                 continue
             pending.append(uid)
             tickers_by_uid[uid] = t
@@ -828,8 +901,7 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
         refresh_market_news()
 
         if not pending:
-            return {"date": day, "sent": 0, "skipped": skipped, "failed": 0,
-                    "news_fetched": 0}
+            return _resultado(day, 0, 0, 0, motivos, len(uids))
 
         # 2) LA RED, con la base sin transacción abierta. Sostener el candado
         #    de escritura durante llamadas a internet le tira "database is
@@ -847,14 +919,18 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
         from billing import emails
         for i, uid in enumerate(pending):
             try:
-                data = build_brief(conn, uid, day, contexto=contexto)
-                if not data:
-                    skipped += 1
+                armado = build_brief(conn, uid, day, contexto=contexto)
+                if not armado.brief:
+                    # `.get`/`+1` y no `motivos[m] += 1`: un motivo nuevo que
+                    # alguien agregue y olvide declarar se anota igual, en vez
+                    # de reventar la corrida entera de los demás.
+                    motivos[armado.motivo] = motivos.get(armado.motivo, 0) + 1
                     continue
+                data = armado.brief
                 row = conn.execute("SELECT email, name FROM users WHERE id=?",
                                    (uid,)).fetchone()
                 if not row or not row["email"]:
-                    skipped += 1
+                    motivos[SIN_EMAIL] += 1
                     continue
 
                 if i:
@@ -876,7 +952,6 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
                 failed += 1
                 log.error("market_brief uid=%s falló: %s", uid, ex)
 
-        return {"date": day, "sent": sent, "skipped": skipped, "failed": failed,
-                "news_fetched": fetched}
+        return _resultado(day, sent, failed, fetched, motivos, len(uids))
     finally:
         conn.close()

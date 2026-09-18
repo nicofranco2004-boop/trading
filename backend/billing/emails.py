@@ -1241,6 +1241,105 @@ def send_trials_ended_admin(*, emails_list: list) -> bool:
                  from_addr=_from_noreply())
 
 
+# ─── Aviso INTERNO: cómo salió el resumen del mercado de hoy ────────────────
+
+# Cómo se dice cada motivo en castellano. La clave la escribe el motor
+# (market_brief.MOTIVOS); el texto vive acá, que es donde se lee.
+_MOTIVOS_TEXTO = {
+    "apagado": "lo apagaron entre la consulta y el envío",
+    "ya_lo_recibieron": "ya lo habían recibido hoy",
+    "sin_activos": "sin activos cargados",
+    "sin_noticias": "no hubo noticias que contar",
+    "narracion_descartada": "narración descartada (el modelo inventó números)",
+    "sin_email": "sin casilla de mail",
+}
+
+
+def send_market_brief_run_admin(*, res: Optional[dict] = None,
+                                error: Optional[str] = None) -> bool:
+    """Aviso INTERNO, uno por corrida del cron: cómo salió el resumen de hoy.
+
+    POR QUÉ EXISTE. El parte quedaba sólo en los registros de Railway, y para
+    leerlo hay que entrar a la consola, elegir el servicio y filtrar por texto.
+    Nadie hace eso todas las mañanas, así que el día que el mail dejara de
+    salir nos íbamos a enterar por un usuario — o por nadie.
+
+    ⚠️ QUE LLEGUE TODOS LOS DÍAS ES PARTE DEL DISEÑO, no ruido. Si sólo se
+    mandara cuando algo falla, un cron que directamente no corre —el modo de
+    falla más probable, y el que ya nos pasó con el recolector de noticias— no
+    manda ninguna señal: el silencio se lee igual que "todo bien". Llegando
+    siempre, **la ausencia del mail ES la alarma**.
+
+    `error` es para cuando la corrida ni siquiera terminó: ahí no hay parte que
+    mostrar, pero es justamente el caso que más hay que avisar.
+    """
+    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "soporte@rendi.finance").strip()
+    if not to:
+        return False
+
+    if error:
+        subject = "Rendi · el resumen del mercado NO corrió"
+        body_html = (
+            '<h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">'
+            'La corrida se cortó</h1>'
+            '<p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">'
+            'El cron entró, pero el motor falló antes de terminar. Hoy no salió '
+            'ningún resumen.</p>'
+            f'<pre style="font-size:13px;color:#b91c1c;background:#fef2f2;padding:12px;'
+            f'border-radius:6px;white-space:pre-wrap;margin:0;">{html.escape(str(error))}</pre>')
+        return _send(to, subject, _wrap_html(body_html),
+                     f"El resumen del mercado no corrió hoy.\n\n{error}\n",
+                     from_addr=_from_noreply())
+
+    res = res or {}
+    prendidos = int(res.get("prendidos") or 0)
+    sent = int(res.get("sent") or 0)
+    motivos = res.get("motivos") or {}
+
+    # El asunto tiene que contestar solo, sin abrir el mail.
+    if not prendidos:
+        subject = "Rendi · resumen del mercado: nadie lo tiene prendido"
+        titular = "Todavía no lo prendió nadie"
+    elif res.get("alarma"):
+        subject = f"Rendi · resumen del mercado: salieron {sent} de {prendidos}"
+        titular = f"Salieron {sent} de {prendidos}"
+    else:
+        plural = "resumen" if sent == 1 else "resúmenes"
+        subject = f"Rendi · resumen del mercado: {sent} {plural}"
+        titular = f"{sent} {plural} enviados"
+
+    # Sólo los motivos que ocurrieron: una tabla de ceros tapa lo que importa.
+    filas = "".join(
+        f'<tr><td style="padding:4px 0;font-size:14px;color:#374151;">'
+        f'{_MOTIVOS_TEXTO.get(k, k)}</td>'
+        f'<td style="padding:4px 0;font-size:14px;color:#1a1f2e;text-align:right;">'
+        f'<b>{int(v)}</b></td></tr>'
+        for k, v in motivos.items() if v)
+    tabla = (f'<table style="width:100%;border-collapse:collapse;margin:0 0 20px;">'
+             f'{filas}</table>') if filas else ""
+
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 6px;">{html.escape(titular)}</h1>
+      <p style="font-size:13px;color:#9ca3af;margin:0 0 18px;">
+        {html.escape(str(res.get("date") or ""))} · lo tienen prendido {prendidos}
+        · noticias nuevas {int(res.get("news_fetched") or 0)}
+      </p>
+      {tabla}
+      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0;">
+        Este mail llega TODOS los días hábiles, salga bien o mal. Si un día no
+        llega, el cron no corrió.
+      </p>
+    """
+    text = (f"{titular} — {res.get('date','')}\n"
+            f"Prendido por: {prendidos}. Enviados: {sent}. "
+            f"Fallados: {int(res.get('failed') or 0)}.\n"
+            + "".join(f"  - {_MOTIVOS_TEXTO.get(k, k)}: {v}\n"
+                      for k, v in motivos.items() if v)
+            + "\nEste mail llega todos los días hábiles. Si no llega, el cron no corrió.\n")
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
 # ─── Email al usuario: le regalaron Plus/Pro (grant-comp del admin) ──────────
 
 def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,

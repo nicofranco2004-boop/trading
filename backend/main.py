@@ -37523,6 +37523,19 @@ _market_brief_lock = threading.Lock()
 _market_brief_running = {"v": False}
 
 
+def _avisar_admin(fn, **kw):
+    """Manda el parte al admin sin que un fallo del mail tape lo que pasó.
+
+    Va aparte y con su propio try porque se llama TAMBIÉN desde el `except` de
+    la corrida: si ahí adentro reventara el envío, la excepción del mail
+    reemplazaría a la del motor y perderíamos justo el error que queríamos ver.
+    """
+    try:
+        fn(**kw)
+    except Exception as ex:
+        log.warning("no se pudo avisar al admin del resumen: %s", ex)
+
+
 @app.api_route("/api/market-brief/run-cron", methods=["GET", "POST"])
 def market_brief_run_cron(request: Request):
     """Manda el resumen del mercado a quienes lo activaron. Lo pega un cron
@@ -37556,12 +37569,20 @@ def market_brief_run_cron(request: Request):
         _market_brief_running["v"] = True
 
     def _bg():
+        # El parte de la corrida sale por DOS canales: el registro (para
+        # diagnosticar) y un mail al admin (para enterarse sin diagnosticar).
+        # El segundo existe porque nadie entra a los registros todos los días,
+        # y un mail diario que no llega es la única señal que delata a un cron
+        # que directamente dejó de correr.
+        from billing import emails
         try:
             import market_brief
             res = market_brief.run_briefs(get_db)
             log.info("market brief: %s", res)
+            _avisar_admin(emails.send_market_brief_run_admin, res=res)
         except Exception as ex:
             log.error("market brief falló: %s", ex)
+            _avisar_admin(emails.send_market_brief_run_admin, error=str(ex))
         finally:
             with _market_brief_lock:
                 _market_brief_running["v"] = False
