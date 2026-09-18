@@ -19,6 +19,9 @@
 // - ESC → cierra
 // - Lockea scroll del body mientras está abierto
 // - safe-area-inset-bottom para no cortar el footer
+// - Se apoya ARRIBA del teclado del teléfono (visualViewport). Sin esto, con el
+//   teclado abierto la hoja queda debajo y el campo y el botón de confirmar son
+//   inalcanzables: el formulario se ve y no se puede usar.
 // - Animación slide-up al abrir, slide-down al cerrar (160ms)
 //
 // API:
@@ -52,6 +55,7 @@ export default function BottomSheet({
   const [closing, setClosing] = useState(false)
   const startY = useRef(null)
   const dragging = useRef(false)
+  const tecladoPx = useAltoDelTeclado(open || closing)
 
   // Lock body scroll mientras está abierto
   useEffect(() => {
@@ -124,12 +128,19 @@ export default function BottomSheet({
     ? 0
     : Math.max(0.35, 1 - dragOffset / 400)
 
+  // `bottom: tecladoPx` — el teclado del teléfono NO achica el viewport de
+  // layout: `inset-0` sigue llegando hasta el borde de abajo de la pantalla, o
+  // sea POR DEBAJO del teclado. Con `items-end` eso deja la hoja —y con ella el
+  // campo y el botón de confirmar— tapados, y como el body tiene el scroll
+  // bloqueado no hay forma de subirla: el formulario se abre y no se puede
+  // usar. Subimos el piso del contenedor lo que mida el teclado.
   return (
     <div
       className="fixed inset-0 z-[60] flex items-end"
       role="dialog"
       aria-modal="true"
       aria-label={ariaLabel || title || 'Sheet'}
+      style={tecladoPx > 0 ? { bottom: tecladoPx } : undefined}
       onClick={(e) => {
         if (e.target === e.currentTarget) triggerClose()
       }}
@@ -151,7 +162,9 @@ export default function BottomSheet({
         style={{
           transform: sheetTransform,
           transition: sheetTransition,
-          maxHeight,
+          // Con el teclado abierto, 92vh es más de lo que queda a la vista: el
+          // alto se mide contra el espacio que realmente sobra.
+          maxHeight: tecladoPx > 0 ? `calc(100vh - ${tecladoPx}px)` : maxHeight,
           paddingBottom: 'env(safe-area-inset-bottom, 0px)',
           ...(open && !closing && dragOffset === 0 ? { animation: 'mobile-slide-up 220ms cubic-bezier(0.32, 0.72, 0, 1)' } : null),
         }}
@@ -210,4 +223,37 @@ export default function BottomSheet({
       </div>
     </div>
   )
+}
+
+// ─── Cuánto de la pantalla se está comiendo el teclado ──────────────────────
+// `window.innerHeight` no cambia cuando se abre el teclado en iOS ni en buena
+// parte de Android: el que sabe es `visualViewport`, que mide lo que el usuario
+// VE. Donde no exista (escritorio viejo, jsdom, SSR) devuelve 0 y todo queda
+// exactamente como antes.
+function useAltoDelTeclado(activo) {
+  const [px, setPx] = useState(0)
+
+  useEffect(() => {
+    if (!activo) { setPx(0); return }
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null
+    if (!vv) return
+    const medir = () => {
+      // `offsetTop` entra en la cuenta porque iOS desplaza el viewport visual
+      // hacia arriba cuando el foco queda debajo del teclado.
+      const tapado = window.innerHeight - vv.height - vv.offsetTop
+      // Menos de 80px no es un teclado: es la barra de direcciones del browser
+      // apareciendo o yéndose con el scroll. Moverse por eso haría saltar la
+      // hoja en cada gesto.
+      setPx(tapado > 80 ? Math.round(tapado) : 0)
+    }
+    medir()
+    vv.addEventListener('resize', medir)
+    vv.addEventListener('scroll', medir)
+    return () => {
+      vv.removeEventListener('resize', medir)
+      vv.removeEventListener('scroll', medir)
+    }
+  }, [activo])
+
+  return px
 }

@@ -433,8 +433,8 @@ export default function Operations() {
         </div>
       )}
       {isMobile && (
-        <div className="px-4 pt-3">
-          <div className="flex w-full rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-medium">
+        <div className="px-4 pt-3 flex items-center gap-2">
+          <div className="flex flex-1 min-w-0 rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-medium">
             <button
               onClick={() => setTab('trades')}
               className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'trades' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
@@ -448,6 +448,19 @@ export default function Operations() {
               Movimientos
             </button>
           </div>
+          {/* El alta de una operación existía SÓLO en la rama ancha: el feed no
+              tenía ningún botón que la abriera, así que desde el teléfono no
+              había forma de cargar un movimiento histórico. Va pegado al
+              selector de tabs porque sirve para las dos (un trade cerrado y un
+              depósito viejo entran por el mismo formulario), y con la etiqueta
+              a la vista: lo que faltaba era justamente descubrirlo. */}
+          <button
+            onClick={openAdd}
+            aria-label="Nueva operación"
+            className="flex-shrink-0 inline-flex items-center gap-1 rounded-sm bg-data-violet hover:bg-data-violet/90 text-white px-2.5 py-2 text-xs font-medium transition-colors shadow-sm"
+          >
+            <Plus size={13} strokeWidth={2.5} /> Nueva
+          </button>
         </div>
       )}
 
@@ -722,8 +735,17 @@ export default function Operations() {
         </BottomSheet>
       )}
 
-      {/* Alta/edición: sólo la rama ancha (el feed no tiene botón que lo abra). */}
-      {!isMobile && modal && (
+      </>
+      )}
+
+      {/* Alta/edición — FUERA del bloque `tab === 'trades'` y en las DOS
+          anchuras. Estaba adentro, y encima con `!isMobile`, así que fallaba dos
+          veces: en el teléfono no había botón que lo abriera, y en la compu,
+          parado en la tab "Todos los movimientos", "Nueva operación" ponía el
+          estado pero el formulario no se dibujaba — el botón no hacía nada.
+          `Modal` ya resuelve la forma: modal centrado en la compu, bottom sheet
+          en el teléfono. */}
+      {modal && (
         <OpFormModal
           mode={modal}
           form={form}
@@ -732,8 +754,6 @@ export default function Operations() {
           onSave={save}
           onClose={() => setModal(null)}
         />
-      )}
-      </>
       )}
     </div>
   )

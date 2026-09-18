@@ -3234,6 +3234,76 @@ class CashFlowDepositAllowsRecoverFromNegativeTest(unittest.TestCase):
         self.assertIn("insuficiente", res.text.lower())
 
 
+class CashFlowFechaDecideElMesTest(unittest.TestCase):
+    """La FECHA del depósito decide en qué mes se asienta el aporte.
+
+    `date` es opcional en `CashFlowIn` y, cuando falta, el endpoint bookea con
+    `datetime.utcnow()` — o sea, el mes de HOY. La pantalla de la cartera en el
+    CELULAR no tenía campo de fecha y mandaba el POST sin `date`: un depósito de
+    marzo cargado desde el teléfono entraba como aporte del mes corriente y
+    corría el capital aportado, que es el DENOMINADOR del rendimiento.
+
+    Este test fija el mecanismo del lado del servidor (que ya estaba bien) para
+    que el contrato quede escrito: con fecha, al mes de la fecha; sin fecha, al
+    mes de hoy. El guard del lado del navegador —que TODAS las pantallas manden
+    la fecha— vive en frontend/src/components/cash/cashFlowProps.test.js.
+    """
+
+    def setUp(self):
+        conn = main.get_db()
+        self.uid = _new_user(conn, email=f"cashflow-fecha-{id(self)}@rendi.test")
+        _add_broker(conn, self.uid, "Cocos", "USDT")
+        conn.commit()
+        conn.close()
+        self.token = main.create_token(self.uid)
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def _post(self, **extra):
+        body = {"broker_name": "Cocos", "direction": "deposit", "amount": 1000}
+        body.update(extra)
+        return self.client.post(
+            "/api/cash/flow", json=body,
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+    def _meses_con_aporte(self):
+        conn = main.get_db()
+        filas = conn.execute(
+            """SELECT year, month, deposits FROM monthly_entries
+               WHERE user_id=? AND broker='Cocos' AND deposits > 0
+               ORDER BY year, month""",
+            (self.uid,),
+        ).fetchall()
+        conn.close()
+        return [(f["year"], f["month"], f["deposits"]) for f in filas]
+
+    def test_con_fecha_pasada_se_asienta_en_ESE_mes(self):
+        res = self._post(date="2024-03-15")
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+        meses = self._meses_con_aporte()
+        self.assertEqual([(a, m) for a, m, _ in meses], [(2024, 3)],
+                         f"el aporte tenía que quedar en marzo 2024, quedó en {meses}")
+
+    def test_sin_fecha_cae_al_mes_de_HOY(self):
+        """El comportamiento que tenía el celular por no mandar la fecha."""
+        from datetime import datetime
+        res = self._post()
+        self.assertEqual(res.status_code, 200, f"body: {res.text}")
+        # UTC a propósito: es el reloj que usa el endpoint cuando no hay fecha.
+        # Compararlo contra el día ARGENTINO pondría el test en rojo solo entre
+        # las 21:00 y la medianoche.
+        hoy = datetime.utcnow()
+        meses = self._meses_con_aporte()
+        self.assertEqual([(a, m) for a, m, _ in meses], [(hoy.year, hoy.month)])
+
+    def test_dos_depositos_de_meses_distintos_no_se_pisan(self):
+        self.assertEqual(self._post(date="2024-03-15").status_code, 200)
+        self.assertEqual(self._post(date="2024-07-02").status_code, 200)
+        meses = self._meses_con_aporte()
+        self.assertEqual([(a, m) for a, m, _ in meses], [(2024, 3), (2024, 7)])
+
+
 class ReconcileCashTest(unittest.TestCase):
     """POST /api/brokers/reconcile-cash — ajusta el cash a un valor real
     reportado por el broker externo y registra el diff como movimiento

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Pencil, Trash2, DollarSign, ArrowDownCircle, ArrowUpCircle, ChevronDown, ChevronUp, Wallet, ShoppingCart, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff, Bell } from 'lucide-react'
+import { Plus, DollarSign, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -19,6 +19,9 @@ import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition } from '../utils/tickers'
+import { buildPositionActions } from '../utils/positionActions'
+import CashFlowModal from '../components/cash/CashFlowModal'
+import CashMenuModal from '../components/cash/CashMenuModal'
 import { detectPendingCashflows } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
@@ -2855,85 +2858,14 @@ function PositionsDesktop() {
       )}
 
       {modal === 'cashflow' && (
-        <Modal
-          title={`${cashFlowForm.direction === 'deposit' ? 'Depositar en' : 'Retirar de'} ${cashFlowForm.broker}`}
+        <CashFlowModal
+          form={cashFlowForm}
+          setForm={setCashFlowForm}
+          tcValuacion={tcValuacion}
+          fxHist={fxHist}
           onClose={() => setModal(null)}
-        >
-          <div className="space-y-4">
-            <p className="text-sm text-ink-2">
-              {cashFlowForm.direction === 'deposit'
-                ? `Ingresá el monto a depositar. Se acreditará al cash del broker y se registrará como aporte del mes de la fecha que elijas.`
-                : `Ingresá el monto a retirar. Se debitará del cash del broker y se registrará como retiro del mes de la fecha que elijas.`}
-            </p>
-            {cashFlowForm.direction === 'withdraw' && (
-              <p className="text-xs text-ink-3">
-                Disponible: <span className="font-medium text-ink-2">
-                  {cashFlowForm.currency === 'ARS' ? ars(cashFlowForm.available) : `$${usd(cashFlowForm.available)}`} {cashFlowForm.currency}
-                </span>
-              </p>
-            )}
-            <div>
-              <label className="block text-xs text-ink-3 mb-1">Fecha</label>
-              <DateInput
-                value={cashFlowForm.date || ''}
-                max={hoyISO()}
-                onChange={v => setCashFlowForm(f => ({ ...f, date: v || f.date }))}
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-ink-3 mb-1">
-                Monto ({cashFlowForm.currency})
-              </label>
-              <input
-                type="text"
-                          inputMode="decimal"
-                autoFocus
-                value={cashFlowForm.amount}
-                onChange={e => setCashFlowForm(f => ({ ...f, amount: e.target.value }))}
-                className={inputClass}
-                placeholder="0"
-              />
-            </div>
-            {cashFlowForm.currency === 'ARS' && (() => {
-              // El dólar que se va a aplicar es el de la FECHA elegida, no el de hoy.
-              // Mostrarlo evita la caja negra: si el aporte se dolariza a un TC que no
-              // es el de ese día, el capital aportado (denominador del rendimiento)
-              // queda mal y no hay nada en pantalla que lo delate.
-              const hoy = hoyISO()
-              const fecha = cashFlowForm.date || hoy
-              const esHoy = fecha >= hoy
-              const tc = esHoy ? tcValuacion : (fxHist.getMepOrFallback(fecha) || tcValuacion)
-              return (
-                <p className="text-xs text-ink-3">
-                  Equivalente en USD al dólar {esHoy ? 'de hoy' : `del ${fecha.split('-').reverse().join('/')}`} ({Math.round(tc)}):
-                  <span className="font-medium text-ink-2 ml-1">
-                    ${usd((parseNum(cashFlowForm.amount) || 0) / (tc || 1))}
-                  </span>
-                  {' '}· es el valor que va a contar como capital aportado.
-                </p>
-              )
-            })()}
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                onClick={() => setModal(null)}
-                className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={confirmCashFlow}
-                disabled={!(parseNum(cashFlowForm.amount) > 0)}
-                className={`px-4 py-2 text-sm rounded-md font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition ${
-                  cashFlowForm.direction === 'deposit'
-                    ? 'bg-emerald-600 hover:bg-emerald-500'
-                    : 'bg-orange-600 hover:bg-orange-500'
-                }`}
-              >
-                Confirmar {cashFlowForm.direction === 'deposit' ? 'depósito' : 'retiro'}
-              </button>
-            </div>
-          </div>
-        </Modal>
+          onConfirm={confirmCashFlow}
+        />
       )}
 
       {modal === 'sell' && (
@@ -3140,87 +3072,13 @@ function PositionsDesktop() {
           cashflow tradicional. El user elige acá broker y dirección antes
           de pasar al modal de monto. */}
       {modal === 'cash-menu' && (
-        <Modal title="Movimiento de cash" onClose={() => setModal(null)}>
-          <div className="space-y-4">
-            <p className="text-sm text-ink-2 leading-relaxed">
-              Registrá un depósito (plata que entra al broker) o un retiro (plata que sale).
-            </p>
-
-            {/* Selector broker */}
-            <div>
-              <label className="block text-xs text-ink-3 mb-1.5">Broker</label>
-              <select
-                value={cashMenuForm.broker}
-                onChange={e => setCashMenuForm(f => ({ ...f, broker: e.target.value }))}
-                className={inputClass}
-                autoFocus
-              >
-                {brokers.map(b => (
-                  <option key={b.id} value={b.name}>{b.name} ({brokerCurrencyLabel(b, brokers)})</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Selector dirección */}
-            <div>
-              <label className="block text-xs text-ink-3 mb-1.5">¿Qué movimiento?</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCashMenuForm(f => ({ ...f, direction: 'deposit' }))}
-                  className={`p-3 border rounded text-left transition-all ${
-                    cashMenuForm.direction === 'deposit'
-                      ? 'border-emerald-500/50 bg-emerald-500/10'
-                      : 'border-line hover:border-line-3'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <ArrowDownCircle size={14} strokeWidth={2} className="text-emerald-500" />
-                    <span className="text-sm font-medium text-ink-0">Depósito</span>
-                  </div>
-                  <div className="text-[11px] text-ink-3 leading-relaxed">
-                    Metés plata al broker
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCashMenuForm(f => ({ ...f, direction: 'withdraw' }))}
-                  className={`p-3 border rounded text-left transition-all ${
-                    cashMenuForm.direction === 'withdraw'
-                      ? 'border-orange-500/50 bg-orange-500/10'
-                      : 'border-line hover:border-line-3'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <ArrowUpCircle size={14} strokeWidth={2} className="text-orange-500" />
-                    <span className="text-sm font-medium text-ink-0">Retiro</span>
-                  </div>
-                  <div className="text-[11px] text-ink-3 leading-relaxed">
-                    Sacás plata del broker
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-line/40">
-              <button
-                type="button"
-                onClick={() => setModal(null)}
-                className="text-xs text-ink-3 hover:text-ink-0 px-3 py-2 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={continueCashMenu}
-                disabled={!cashMenuForm.broker}
-                className="inline-flex items-center gap-1.5 text-xs bg-data-violet hover:bg-data-violet/90 disabled:bg-data-violet/40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-sm transition-colors"
-              >
-                Continuar →
-              </button>
-            </div>
-          </div>
-        </Modal>
+        <CashMenuModal
+          form={cashMenuForm}
+          setForm={setCashMenuForm}
+          brokers={brokers}
+          onClose={() => setModal(null)}
+          onContinue={continueCashMenu}
+        />
       )}
 
       {modal === 'convert' && (
@@ -3251,7 +3109,7 @@ function PositionsDesktop() {
   )
 }
 
-function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
+export function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm }) {
   // Conversión interna ARS ↔ USD dentro de un mismo broker. La modal soporta
   // ambas direcciones; los campos cambian de etiqueta según `direction`.
   // Al confirmar, llama a POST /api/conversions que:
@@ -3657,93 +3515,48 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
   )
 }
 
+// Adaptador: los ítems del menú los decide `buildPositionActions` (uno solo
+// para las dos anchuras, ver utils/positionActions.js). Acá sólo se traduce el
+// descriptor neutro al shape que espera ActionMenu — el ícono como JSX y el
+// `tone` como color.
+const TONO_ICONO = {
+  pos:    'text-rendi-pos',
+  neg:    'text-rendi-neg',
+  warn:   'text-data-amber',
+  accent: 'text-data-violet',
+}
+
 function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openSell, openAlert, del, openCashFlow, openConvert, openBondCashflow, broker, isAgg, lotCount, expanded, onToggleLots }) {
-  // Fila AGREGADA (varios lotes del mismo ticker): editar/eliminar son POR LOTE
-  // (la posición agregada es sintética, no un registro real — no hay un único id
-  // que editar, y promediar rompería el costo FIFO y las fechas de compra).
-  // "Editar lotes" despliega los lotes; cada lote tiene su propio menú con
-  // Editar/Eliminar. Vender opera FIFO sobre toda la posición.
-  if (isAgg) {
-    // Fila que fusiona las DOS patas de la cuenta (comprada en pesos y en
-    // dólares). `p.broker` es null a propósito — no hay un broker único al que
-    // mandar una escritura, y elegir `lots[0].broker` sería arbitrario: además
-    // de caer en el ledger FIFO equivocado, el nombre del broker es el contrato
-    // de PRECIO (decide si un CEDEAR cotiza por su `.BA` o por el ticker US).
-    // Así que las escrituras salen sin broker preseleccionado y el flujo
-    // pregunta a cuál pata va, y "Ver lotes" queda primero: ahí cada lote es su
-    // posición real, con su broker y su precio de compra, y se edita como
-    // siempre.
-    if (p._multiBroker || p._multiCcy) {
-      return [
-        { label: expanded ? `Ocultar lotes (${lotCount})` : `Ver lotes (${lotCount})`,
-          icon: expanded ? <ChevronUp size={13} /> : <LayersIcon size={13} />, onClick: onToggleLots },
-        { divider: true },
-        { label: 'Editar posición', icon: <Pencil size={13} />, onClick: () => openEditGroup(p) },
-        { divider: true },
-        { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openAdd() },
-        { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
-        { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
-      ]
+  const acciones = buildPositionActions(p, {
+    onBuy:   pos => (pos?.is_cash ? openAdd(pos?.broker) : openBuy(pos)),
+    onSell:  openSell,
+    onAlert: openAlert,
+    onEdit:  openEdit,
+    onEditGroup: openEditGroup,
+    // `del` toma el id, no la fila.
+    onDelete: pos => del(pos.id),
+    onCashFlow: openCashFlow,
+    onConvert:  openConvert,
+    onBondCashflow: openBondCashflow,
+    onToggleLots,
+  }, {
+    broker,
+    isAgg,
+    isBond: !p.is_cash && isBondPosition(p),
+    lotCount,
+    expanded,
+  })
+
+  return acciones.map(a => {
+    if (a.divider) return a
+    const Icon = a.icon
+    return {
+      label: a.label,
+      onClick: a.onClick,
+      danger: a.danger,
+      icon: Icon ? <Icon size={13} className={a.danger ? undefined : TONO_ICONO[a.tone]} /> : null,
     }
-    return [
-      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
-      { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
-      { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
-      { divider: true },
-      // Dos caminos distintos, y antes había uno solo: "Editar lotes" (que en
-      // realidad solo DESPLEGABA) era la única puerta, así que corregir el ticker
-      // de una posición de 17 lotes pedía 17 ediciones — y ni siquiera aparecía
-      // "Editar posición", porque la fila agregada no es un registro real.
-      { label: expanded ? `Ocultar lotes (${lotCount})` : `Ver lotes (${lotCount})`,
-        icon: expanded ? <ChevronUp size={13} /> : <LayersIcon size={13} />, onClick: onToggleLots },
-      { label: 'Editar posición', icon: <Pencil size={13} />, onClick: () => openEditGroup(p) },
-    ]
-  }
-  if (p.is_cash) {
-    const isArsCash = broker?.currency === 'ARS'
-    const isUsdCashSubBroker = broker?.currency === 'USDT' && broker?.parent_broker_id != null
-    const items = [
-      { label: 'Depositar',       icon: <ArrowDownCircle size={13} className="text-emerald-500" />, onClick: () => openCashFlow(p, 'deposit') },
-      { label: 'Retirar',         icon: <ArrowUpCircle size={13} className="text-orange-500" />,    onClick: () => openCashFlow(p, 'withdraw') },
-    ]
-    if (isArsCash) {
-      items.push({ label: 'Comprar USD', icon: <DollarSign size={13} className="text-blue-500" />, onClick: () => openConvert(p, 'ars_to_usd') })
-    }
-    if (isUsdCashSubBroker) {
-      items.push({ label: 'Vender USD a ARS', icon: <DollarSign size={13} className="text-violet-500" />, onClick: () => openConvert(p, 'usd_to_ars') })
-    }
-    items.push(
-      { divider: true },
-      { label: 'Editar posición', icon: <Pencil size={13} />, onClick: () => openEdit(p) },
-      { label: 'Eliminar',        icon: <Trash2 size={13} />, onClick: () => del(p.id), danger: true },
-    )
-    return items
-  }
-  // Para bonos agregamos entries específicas — cupón y amortización son
-  // los eventos que generan cash recibido del bono. Van arriba porque son
-  // las acciones más frecuentes en una posición de renta fija.
-  const isBond = isBondPosition(p)
-  if (isBond) {
-    return [
-      { label: 'Registrar cupón',         icon: <Coins size={13} className="text-rendi-pos" />,       onClick: () => openBondCashflow(p, 'coupon') },
-      { label: 'Registrar amortización',  icon: <LayersIcon size={13} className="text-rendi-accent" />, onClick: () => openBondCashflow(p, 'amortization') },
-      { divider: true },
-      { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
-      { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
-      { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
-      { divider: true },
-      { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
-      { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },
-    ]
-  }
-  return [
-    { label: 'Agregar compra',  icon: <ShoppingCart size={13} />, onClick: () => openBuy(p) },
-    { label: 'Registrar venta', icon: <DollarSign size={13} />,   onClick: () => openSell(p) },
-    { label: 'Crear alerta',    icon: <Bell size={13} />,         onClick: () => openAlert(p) },
-    { divider: true },
-    { label: 'Editar posición', icon: <Pencil size={13} />,       onClick: () => openEdit(p) },
-    { label: 'Eliminar',        icon: <Trash2 size={13} />,       onClick: () => del(p.id), danger: true },
-  ]
+  })
 }
 
 export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClose, onConfirm }) {
