@@ -29,7 +29,7 @@ import UpgradeModal from '../components/plan/UpgradeModal'
 // ETFs/INDICES/AR_LIDER/AR_GENERAL/BONDS_*). Lazy-load para que el primer
 // render de /cartera no espere a parsearlo — solo cuando el user abre el flow.
 const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
-import { PositionFormModal, SellModal, ConvertModal, EMPTY_POS, today } from './Positions'
+import { PositionFormModal, SellModal, ConvertModal, EditGroupModal, EMPTY_POS, today } from './Positions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
 import BondCashflowModal from '../components/BondCashflowModal'
@@ -230,6 +230,10 @@ export default function PositionsMobile() {
   const [convertForm, setConvertForm] = useState(null)
   // Cupón / amortización de un bono.
   const [bondCashflow, setBondCashflow] = useState(null)
+  // "Editar posición" sobre la fila AGREGADA: los cambios bajan a todos los
+  // lotes del ticker (PATCH /positions/group), no a un id.
+  const [groupTarget, setGroupTarget] = useState(null)
+  const [groupCtx, setGroupCtx] = useState(null)
 
   useEffect(() => { loadAll() }, [])
 
@@ -555,6 +559,53 @@ export default function PositionsMobile() {
     const sym = priceSymbol(p.asset, arsRail, p.asset_type)
     const ccy = arsRail ? 'ARS' : 'USD'
     navigate(`/alertas?new=${encodeURIComponent(sym)}&ccy=${ccy}`)
+  }
+
+  // ─── "Editar posición" de una fila AGREGADA ─────────────────────────────
+  // El agregado es sintético: su `id` es la string 'agg:<broker>:<ticker>', así
+  // que mandarlo por `PUT /positions/{id}` da 422 y el formulario muere en
+  // "no pudimos guardar". La edición de un ticker con varios lotes va por
+  // `PATCH /positions/group`, que aplica el cambio a TODOS los lotes y devuelve
+  // un token para deshacer. Es exactamente lo que hace la pantalla grande.
+  //
+  // La fila que junta dos patas no llega acá: el menú manda antes al selector
+  // de pata (ver PositionRow).
+  async function openEditGroup(p) {
+    if (!p || p._multiBroker || p._multiCcy) return
+    setGroupTarget(p)
+    setGroupCtx(null)
+    setAddModal('edit-group')
+    try {
+      const q = new URLSearchParams({ broker: p.broker, asset: p.asset })
+      if (p.currency) q.set('currency', p.currency)
+      setGroupCtx(await api.get(`/positions/group/context?${q.toString()}`))
+    } catch { /* el aviso es un extra: si falla, el modal igual funciona */ }
+  }
+
+  async function saveGroup(changes) {
+    const p = groupTarget
+    try {
+      const res = await api.patch('/positions/group', {
+        broker: p.broker, asset: p.asset, currency: p.currency || undefined, ...changes,
+      })
+      setAddModal(null)
+      setGroupTarget(null)
+      await loadAll()
+      toast.push(`Listo: ${res.lots} ${res.lots === 1 ? 'lote actualizado' : 'lotes actualizados'}.`, {
+        type: 'success', duration: 12000, actionLabel: 'Deshacer',
+        onAction: async () => {
+          try {
+            await api.post(`/positions/group/undo/${res.undo_token}`)
+            loadAll()
+            toast.push('Listo, lo dejamos como estaba.', { type: 'success' })
+          } catch (ex) {
+            toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
+          }
+        },
+      })
+    } catch (ex) {
+      toast.push(ex?.message || 'No se pudo editar la posición.', { type: 'error', duration: 8000 })
+    }
   }
 
   function openEditPosition(p) {
@@ -1522,6 +1573,7 @@ export default function PositionsMobile() {
                 onConvertPosition={openConvert}
                 onBondCashflowPosition={openBondCashflow}
                 onEditPosition={openEditPosition}
+                onEditGroupPosition={openEditGroup}
                 onDeletePosition={deletePosition}
                 onToggleTicker={toggleTicker}
               />
@@ -1563,7 +1615,7 @@ export default function PositionsMobile() {
                 onConvert={openConvert}
                 onBondCashflow={openBondCashflow}
                 onEditPos={openEditPosition}
-                onEditGroup={openEditPosition}
+                onEditGroup={openEditGroup}
                 onDeletePos={deletePosition}
                 onToggleTicker={toggleTicker}
               />
@@ -1862,6 +1914,16 @@ export default function PositionsMobile() {
         />
       )}
 
+      {/* Editar TODOS los lotes de un ticker — mismo modal que escritorio. */}
+      {addModal === 'edit-group' && groupTarget && (
+        <EditGroupModal
+          group={groupTarget}
+          ctx={groupCtx}
+          onClose={() => { setAddModal(null); setGroupTarget(null) }}
+          onSave={saveGroup}
+        />
+      )}
+
       {/* Comprar USD / Vender USD a ARS — mismo modal que escritorio. */}
       {addModal === 'convert' && convertForm && (
         <ConvertModal
@@ -2078,7 +2140,7 @@ const BrokerSection = memo(function BrokerSection({
   label, unified = false, puedeUnificarse = false, monedasCuenta = [], onToggleUnificar,
   onEdit, onDelete, brokerDe,
   onSellPosition, onBuyPosition, onAlertPosition, onCashFlowPosition, onConvertPosition,
-  onBondCashflowPosition, onEditPosition, onDeletePosition, onToggleTicker,
+  onBondCashflowPosition, onEditPosition, onEditGroupPosition, onDeletePosition, onToggleTicker,
 }) {
   // Color asignado por nombre — estable entre re-renders. Antes el header
   // de cada broker era casi invisible (text-[11px] mono sobre bg-0). Ahora
@@ -2203,7 +2265,7 @@ const BrokerSection = memo(function BrokerSection({
             onConvert={onConvertPosition}
             onBondCashflow={onBondCashflowPosition}
             onEditPos={onEditPosition}
-            onEditGroup={onEditPosition}
+            onEditGroup={onEditGroupPosition}
             onDeletePos={onDeletePosition}
             onToggleTicker={onToggleTicker}
           />
@@ -2486,15 +2548,22 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   // mobile era inalcanzable.
   const navigate = useNavigate()
 
-  // Las patas de una fila fusionada, agrupadas por broker.
+  // Las patas de una fila fusionada, agrupadas por (broker, MONEDA).
+  //
+  // Por la MONEDA además del broker, y no sólo por el broker: un mismo broker
+  // puede tener lotes en las dos —es lo que produce el importador de Balanz— y
+  // agrupando sólo por nombre esos dos volvían a caer en el mismo renglón, que
+  // es justo lo que la pantalla está tratando de separar. La moneda la resuelve
+  // `sellCurrency`, la misma que decide en qué moneda se registra una venta.
   const patasDeLaFila = (() => {
-    if (!p._multiBroker) return []
+    if (!p._multiBroker && !p._multiCcy) return []
     const m = new Map()
     for (const l of (p._lots || [])) {
-      if (!m.has(l.broker)) m.set(l.broker, [])
-      m.get(l.broker).push(l)
+      const k = `${l.broker}\u0000${sellCurrency(l, brokerDe?.(l.broker))}`
+      if (!m.has(k)) m.set(k, [])
+      m.get(k).push(l)
     }
-    return [...m.entries()].map(([broker, lots]) => ({ broker, lots }))
+    return [...m.values()].map(lots => ({ broker: lots[0].broker, lots }))
   })()
 
   // Los ítems del menú los decide `buildPositionActions`, el mismo que usa la
@@ -2529,9 +2598,13 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
       track('mobile_row_action', { code: pos.is_cash ? 'edit_cash' : 'edit', asset: pos.asset })
       onEditPos(pos)
     }),
-    // Fila agregada: además de los lotes se ofrece elegir la PATA, que es la
-    // unidad que el usuario reconoce ("la parte en pesos"), igual que escritorio.
-    onEditGroup: (p._multiBroker ? (() => setPataPara('edit')) : onEditGroup),
+    // Fila agregada: "Editar posición" baja los cambios a TODOS los lotes del
+    // ticker (PATCH /positions/group), no a un id — el agregado es sintético y
+    // su `id` es la string 'agg:…'. Cuando la fila junta dos patas no hay un
+    // grupo único al que mandarlo, así que primero se elige la pata: es la
+    // unidad que el usuario reconoce ("la parte en pesos") y el mismo criterio
+    // que escritorio (`openEditGroup`, que corta con `_multiBroker || _multiCcy`).
+    onEditGroup: ((p._multiBroker || p._multiCcy) ? (() => setPataPara('edit')) : onEditGroup),
     onDelete: onDeletePos && (pos => {
       track('mobile_row_action', { code: pos.is_cash ? 'delete_cash' : 'delete', asset: pos.asset })
       onDeletePos(pos)

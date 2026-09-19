@@ -127,6 +127,30 @@ describe('nadie vuelve a escribir el menú a mano', () => {
     }
   })
 
+  it('el editar de la fila AGREGADA no puede ser el editar de una posición', () => {
+    // La fila agregada es SINTÉTICA: su `id` es la string 'agg:<broker>:<ticker>'.
+    // Mandarla por `PUT /positions/{id}` da 422 y el formulario muere en "no
+    // pudimos guardar". Va por `PATCH /positions/group`, que baja el cambio a
+    // todos los lotes. Cablear `onEditGroup` al mismo handler que `onEdit` es un
+    // error que compila, pasa los tests de render y sólo se ve cuando un usuario
+    // con dos compras del mismo ticker toca "Editar posición" — o sea, tarde.
+    const pares = []
+    for (const f of fuentes(SRC)) {
+      const src = readFileSync(f, 'utf8')
+      const re = /\bonEditGroup(?:Position)?=\{(\w+)\}/g
+      let m
+      while ((m = re.exec(src)) !== null) {
+        const grupo = m[1]
+        // el handler de "editar UNA posición" declarado en el mismo archivo
+        const uno = src.match(/\bonEditPos(?:ition)?=\{(\w+)\}/)?.[1]
+        pares.push({ archivo: f.slice(SRC.length + 1), grupo, uno })
+      }
+    }
+    expect(pares.length).toBeGreaterThan(0)
+    const mal = pares.filter(x => x.uno && x.grupo === x.uno)
+    expect(mal).toEqual([])
+  })
+
   it('"Agregar compra" se declara como ítem de menú en UN solo archivo', () => {
     // Si `label: 'Agregar compra'` aparece en otro lado, alguien armó un segundo
     // menú — que es exactamente cómo las dos copias se separaron la vez pasada.
