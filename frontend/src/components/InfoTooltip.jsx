@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { HelpCircle } from 'lucide-react'
 
 /**
@@ -17,10 +17,52 @@ import { HelpCircle } from 'lucide-react'
  * 'left' | 'center'. Usá 'center' cuando el ícono queda en el medio de una
  * columna angosta: con 'right' el globo mide 256px hacia un solo lado y se
  * escapa del contenedor (y de la pantalla, en mobile).
+ *
+ * ⚠️ El `align` es la INTENCIÓN, no la última palabra: elegir bien el lado
+ * depende de dónde caiga el ícono, y eso cambia con el ancho de la pantalla.
+ * Un `align` que en la compu queda perfecto puede tirar el globo fuera del
+ * teléfono — medido: el (?) de "¿movió la plata?" quedaba en x=297 de 375 y el
+ * globo (256px hacia la derecha) se cortaba en TODAS sus líneas. Por eso, si el
+ * globo se saldría de la pantalla, se corre lo justo para entrar. Sólo se mueve
+ * el que se iba a salir: los que ya entraban quedan exactamente donde estaban.
  */
 export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
+  const globoRef = useRef(null)
+  // Corrimiento horizontal para que el globo entre en la pantalla. Va por
+  // `marginLeft` y no por `transform`: la variante 'center' ya usa
+  // `-translate-x-1/2`, y un transform inline la pisaría.
+  const [corrimiento, setCorrimiento] = useState(0)
+  const corrimientoRef = useRef(0)
+
+  useLayoutEffect(() => {
+    if (!open) {
+      corrimientoRef.current = 0
+      setCorrimiento(0)
+      return
+    }
+    const acomodar = () => {
+      const el = globoRef.current
+      if (!el) return
+      const MARGEN = 8
+      const r = el.getBoundingClientRect()
+      // La posición SIN el corrimiento ya aplicado, para no acumular.
+      const izq = r.left - corrimientoRef.current
+      const der = r.right - corrimientoRef.current
+      let d = 0
+      if (der > window.innerWidth - MARGEN) d = (window.innerWidth - MARGEN) - der
+      if (izq + d < MARGEN) d = MARGEN - izq
+      d = Math.round(d)
+      if (d !== corrimientoRef.current) {
+        corrimientoRef.current = d
+        setCorrimiento(d)
+      }
+    }
+    acomodar()
+    window.addEventListener('resize', acomodar)
+    return () => window.removeEventListener('resize', acomodar)
+  }, [open, children])
 
   useEffect(() => {
     if (!open) return
@@ -55,6 +97,8 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       </button>
       {open && (
         <div
+          ref={globoRef}
+          style={corrimiento ? { marginLeft: corrimiento } : undefined}
           className={`absolute z-30 w-64 max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
             align === 'center' ? 'left-1/2 -translate-x-1/2'
               : align === 'right' ? 'right-0' : 'left-0'

@@ -202,6 +202,13 @@ describe('contrato de diseño — R6, no se bifurca por viewport', () => {
     // obvio fuera bajar la aserción.
     const CONOCIDOS = [
       'src/components/ActionMenu.jsx',  // clamp de posición de popup, no breakpoint
+      'src/components/InfoTooltip.jsx', // ídem: el globo del (?) mide 256px hacia
+                                        // UN lado, y del lado que caiga el ícono
+                                        // depende que entre o no. Medido en 375px:
+                                        // el (?) de "¿movió la plata?" quedaba en
+                                        // x=297 y el globo se cortaba entero. Se
+                                        // corre lo justo para entrar; no decide
+                                        // NADA por tamaño de pantalla.
       'src/components/tour/TourNovedades.jsx',  // ídem: ubica el cartel del
                                         // tutorial al lado de lo que resalta y
                                         // lo recorta contra los bordes.

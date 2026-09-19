@@ -386,7 +386,12 @@ export default function PositionsMobile() {
       currency: broker?.currency || 'USDT',
       direction,
       amount: '',
-      available: p.invested || p.quantity || 0,
+      // El saldo es `invested`, que es la columna que el backend descuenta y
+      // sobre la que valida el sobregiro. El `|| p.quantity` que había acá no
+      // existe en escritorio y no describe ningún dato real: el efectivo nace
+      // sin `quantity` (los INSERT de posiciones cash no la escriben), así que
+      // sólo podía dejar pasar un retiro que el servidor iba a rechazar.
+      available: p.invested || 0,
       date: today(),
     })
     setAddModal('cashflow')
