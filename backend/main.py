@@ -13189,16 +13189,31 @@ class OperationIn(BaseModel):
     # como default — transparente para el frontend.
     currency: Optional[str] = Field(None, max_length=10)
     fx_to_usd: Optional[float] = Field(None, gt=0, le=_FINITE_BOUND)
-    # 'futures' → resultado realizado del cierre de una posición de futuros.
-    # Además de registrar el P&L, ACREDITA el monto al efectivo del broker: esa
-    # plata ya está en la cuenta. Es el mismo efecto que produce el import
-    # (persister._persist_futures_pnl), que existe desde siempre pero no se podía
-    # invocar a mano — un usuario cerró un futuro de BTC con +47 USDT, no encontró
-    # dónde cargarlo, registró solo el P&L y le quedó el efectivo 47 dólares corto.
+    # ¿Esta operación MOVIÓ la plata del broker?
+    #
+    #   True  → además de registrar el resultado, lo SUMA al efectivo del broker
+    #           (y lo RESTA si fue pérdida): esa plata ya está —o ya no está— en
+    #           la cuenta.
+    #   False → sólo queda registrada en el historial. El efectivo no se toca.
+    #   None  → el cliente no opinó. En el alta equivale a False; en la edición
+    #           quiere decir "no cambies el tratamiento que ya tenía" (ver
+    #           `update_operation`), que es lo que necesitan los clientes viejos
+    #           y los PUT que sólo vienen a corregir un precio.
+    #
+    # Empezó siendo una pregunta sólo para futuros: un usuario cerró un futuro de
+    # BTC con +47 USDT, no encontró dónde cargarlo, registró sólo el P&L y le
+    # quedó el efectivo 47 dólares corto. Pero el desfasaje no es de los futuros:
+    # le pasa a cualquier operación cuyo resultado ya esté en la cuenta y todavía
+    # no figure en Rendi. Por eso la pregunta se hace para TODAS.
     #
     # NO se deduce de `op_type`, que es texto libre y cuyo placeholder dice
     # "LONG, SHORT, Futuros…": si se dedujera de ahí, escribir la palabra con una
     # grafía movería plata y con otra no. Mover plata se pide explícito.
+    mueve_efectivo: Optional[bool] = None
+    # LEGACY — `kind='futures'` es como el frontend viejo pedía exactamente lo
+    # mismo. Se sigue aceptando (hay bundles cacheados en los navegadores y el
+    # cierre de futuros lo manda) y se resuelve a `mueve_efectivo` en UN solo
+    # lugar: `_pide_mover_efectivo`.
     kind: Optional[str] = Field(None, max_length=20)
 
     @field_validator('date')
@@ -13453,6 +13468,11 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
                 raise HTTPException(400, "Esa posición ya se está cerrando.")
 
             moneda = _resolve_op_currency(conn, uid, pos["broker"], None)
+            # Lo que se le aplica al efectivo va en la moneda del broker. Se calcula
+            # ANTES del INSERT porque también se guarda en la foto de reverso: el
+            # borrado devuelve ese monto y no lo recalcula (ver `_cash_nativo_de_meta`).
+            pnl_nat = (_pnl_en_moneda_del_broker(conn, uid, pos["broker"], pnl, fecha)
+                       if pnl else 0.0)
             cur = conn.execute(
                 """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price,
                      exit_price, quantity, pnl_usd, pnl_pct, commissions, currency, undo_meta_json)
@@ -13460,12 +13480,12 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
                 (uid, fecha, pos["broker"], pos["symbol"], "Futuros",
                  pos["entry_price"], data.exit_price, pos["quantity"], pnl, None,
                  data.commissions or 0, moneda,
-                 json.dumps({"src": "manual_futures", "cash": pnl,
-                             "cash_broker": pos["broker"], "futuro_id": fid})),
+                 json.dumps({"src": "manual_futures", "cash": pnl, "cash_native": pnl_nat,
+                             "cash_broker": pos["broker"], "cash_on": True,
+                             "futuro_id": fid})),
             )
             if pnl:
-                _adjust_broker_cash(conn, uid, pos["broker"],
-                                    _pnl_en_moneda_del_broker(conn, uid, pos["broker"], pnl, fecha))
+                _adjust_broker_cash(conn, uid, pos["broker"], pnl_nat)
                 y, m = int(fecha[:4]), int(fecha[5:7])
                 _update_monthly_pnl_realized(conn, uid, pos["broker"], y, m, pnl)
                 _update_monthly_pnl_realized(conn, uid, "global", y, m, pnl)
@@ -13485,10 +13505,27 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
 @app.get("/api/operations")
 def get_operations(uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
+        # `_importada` sale de una subconsulta y no de un JOIN: una operación puede
+        # tener más de un link y el JOIN la devolvería duplicada en la lista.
         rows = conn.execute(
-            "SELECT * FROM operations WHERE user_id=? ORDER BY date DESC", (uid,)
+            """SELECT o.*,
+                      EXISTS(SELECT 1 FROM import_op_links l
+                              WHERE l.operation_id = o.id) AS _importada
+                 FROM operations o
+                WHERE o.user_id=? ORDER BY o.date DESC""", (uid,)
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        importada = bool(d.pop('_importada', 0))
+        try:
+            meta = json.loads(d.get('undo_meta_json') or '{}') or {}
+        except (ValueError, TypeError):
+            meta = {}
+        # Para que el formulario no ofrezca una palanca que no puede funcionar.
+        d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(importada, meta)
+        out.append(d)
+    return out
 
 
 @app.get("/api/movements")
@@ -14961,6 +14998,85 @@ def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional
     return "USD"
 
 
+# ── ¿la operación mueve el efectivo del broker? ──────────────────────────────
+# Cuatro funciones chiquitas que existen para que la pregunta se conteste en UN
+# solo lugar. Antes vivía inline en `create_operation` y la edición y el borrado
+# la re-deducían cada uno a su manera.
+
+def _pide_mover_efectivo(op: OperationIn) -> Optional[bool]:
+    """Qué pidió el CLIENTE, en tres estados: True, False o None (no lo mencionó).
+
+    El None importa: un PUT que sólo viene a corregir un precio no manda el
+    campo, y no puede significar "apagá el movimiento de efectivo" — eso le
+    dejaría al usuario la plata cambiada sin haberla tocado. `model_fields_set`
+    distingue "no vino" de "vino en null", que es lo que manda el formulario
+    cuando el usuario elige que NO mueva plata."""
+    campos = op.model_fields_set
+    if 'mueve_efectivo' in campos and op.mueve_efectivo is not None:
+        return bool(op.mueve_efectivo)
+    if 'kind' in campos:          # cliente viejo: kind='futures' | null
+        return (op.kind or '').strip().lower() == 'futures'
+    return None
+
+
+def _meta_movio_efectivo(meta: dict) -> bool:
+    """Qué hizo la operación cuando se guardó, según su foto de reverso.
+
+    `src='manual_futures'` es un nombre HEREDADO: hoy marca "esta operación tocó
+    el efectivo", venga de un futuro o de cualquier otra cosa. No se renombró
+    porque está escrito en filas que ya viven en la base, y un segundo nombre
+    para lo mismo es exactamente la deuda que venimos limpiando.
+    `cash_on` es explícito y gana cuando está (las filas nuevas siempre lo traen);
+    las viejas se resuelven por el `src`."""
+    if not isinstance(meta, dict):
+        return False
+    if 'cash_on' in meta:
+        return bool(meta['cash_on'])
+    return meta.get('src') == 'manual_futures'
+
+
+# Operaciones cuyo efectivo lo mueve OTRO mecanismo. El interruptor no se les
+# ofrece: sumarle éste sería contar la misma plata dos veces.
+_SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow')
+
+
+def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
+    """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
+
+    Sólo a las CARGADAS A MANO y que no muevan plata por su cuenta:
+
+      • Importadas — su borrado lo resuelve el rebuild del import (la fila de
+        `import_op_links` manda sobre la foto de reverso), así que un efectivo
+        prendido acá no se revertiría nunca: quedaría plata fabricada. Y además
+        ya acreditaron, porque eso lo hace el importador.
+      • Ventas FIFO y cobros de bonos — acreditan por su propio camino.
+
+    Se calcula en UN lugar y lo usan los dos lados: el GET se lo cuenta al
+    formulario (para no mostrar una palanca que no hace nada) y el PUT lo hace
+    valer (para que mandarlo igual no mueva plata)."""
+    if importada:
+        return False
+    return (meta or {}).get('src') not in _SRC_CON_EFECTIVO_PROPIO
+
+
+def _cash_nativo_de_meta(conn, uid: int, meta: dict, broker: str, fecha: str) -> float:
+    """Cuánto se le sumó realmente al efectivo, en la MONEDA DEL BROKER.
+
+    AUDIT 2026-09-18. La foto guardaba sólo el P&L en dólares, pero al efectivo
+    se le aplica el monto CONVERTIDO. Con un broker en dólares da igual; con uno
+    en pesos, no: medido, un alta de US$100 en Rofex acreditó 150.250 pesos y el
+    borrado devolvió 100 — quedaban 150.150 pesos fabricados en la cuenta. Las
+    filas nuevas guardan `cash_native` y no hay nada que adivinar; las viejas se
+    reconvierten con el TC de la fecha de la operación, que es el mismo que usó
+    el alta."""
+    if isinstance(meta, dict) and meta.get('cash_native') is not None:
+        return float(meta['cash_native'] or 0)
+    usd = float((meta or {}).get('cash') or 0)
+    if not usd:
+        return 0.0
+    return _pnl_en_moneda_del_broker(conn, uid, broker, usd, fecha)
+
+
 @app.post("/api/operations")
 @reintentar_si_trabada
 def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
@@ -14976,22 +15092,33 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
-        # FUTUROS: el cierre de un futuro deja la plata en la cuenta, así que además
-        # del P&L hay que acreditar el efectivo. Sin esto el usuario queda con el saldo
-        # corto y la única "solución" a mano —cargar un depósito— le mete el resultado
-        # DOS VECES en el capital del mes (una como ganancia y otra como aporte) y
-        # además le ensucia el capital aportado, que es el denominador del rendimiento.
-        es_futuros = (op.kind or "").strip().lower() == "futures"
-        pnl_cash = float(op.pnl_usd or 0) if es_futuros else 0.0
+        # ¿MUEVE EL EFECTIVO? Si el resultado de la operación ya está (o ya no está)
+        # en la cuenta del broker, además del P&L hay que mover el efectivo. Sin esto
+        # el usuario queda con el saldo corto y la única "solución" a mano —cargar un
+        # depósito— le mete el resultado DOS VECES en el capital del mes (una como
+        # ganancia y otra como aporte) y además le ensucia el capital aportado, que es
+        # el denominador del rendimiento.
+        #
+        # El monto es el P&L, y eso vale para cualquier operación: en un viaje de ida
+        # y vuelta (compra + venta) la plata de la compra salió y volvió, así que el
+        # efecto NETO sobre el saldo es exactamente el resultado.
+        mueve_cash = _pide_mover_efectivo(op) is True
+        pnl_cash = float(op.pnl_usd or 0) if mueve_cash else 0.0
+        # El efectivo va en la MONEDA DEL BROKER; el P&L se guarda en USD.
+        pnl_cash_nativo = (_pnl_en_moneda_del_broker(conn, uid, op.broker, pnl_cash, op.date)
+                           if pnl_cash else 0.0)
 
         # `undo_meta_json` guarda el CAMINO de creación, porque la fila sola no permite
         # distinguirlo y adivinarlo rompe plata:
         #   manual_form     — SOLO existe la fila de P&L; borrarla es sacarla y recalcular.
-        #   manual_futures  — además acreditó efectivo; el borrado tiene que devolverlo,
-        #                     y guardamos CUÁNTO para revertir exacto aunque la fila se
-        #                     haya editado después.
-        undo_meta = (json.dumps({"src": "manual_futures", "cash": pnl_cash})
-                     if es_futuros else '{"src":"manual_form"}')
+        #   manual_futures  — además movió efectivo (nombre heredado, ver
+        #                     `_meta_movio_efectivo`); el borrado tiene que devolverlo,
+        #                     y guardamos CUÁNTO —en dólares y en la moneda que se
+        #                     aplicó— para revertir exacto aunque la fila se edite después.
+        undo_meta = (json.dumps({"src": "manual_futures", "cash": pnl_cash,
+                                 "cash_native": pnl_cash_nativo,
+                                 "cash_broker": op.broker, "cash_on": True})
+                     if mueve_cash else '{"src":"manual_form"}')
 
         cur = conn.execute(
             """INSERT INTO operations (user_id, date, broker, asset, op_type, entry_price, exit_price,
@@ -15001,12 +15128,10 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
              op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0, currency, op.fx_to_usd,
              undo_meta),
         )
-        if pnl_cash:
+        if pnl_cash_nativo:
             # Mismo helper que usa el import — una sola implementación del movimiento
             # de efectivo. Un P&L negativo lo DESCUENTA, que es lo correcto.
-            # El efectivo va en la MONEDA DEL BROKER; el P&L se guarda en USD.
-            _adjust_broker_cash(conn, uid, op.broker,
-                                _pnl_en_moneda_del_broker(conn, uid, op.broker, pnl_cash, op.date))
+            _adjust_broker_cash(conn, uid, op.broker, pnl_cash_nativo)
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (cur.lastrowid, uid)).fetchone()
         # Sync cache de pnl_realized en monthly_entries
         try:
@@ -15035,40 +15160,77 @@ def create_operation(op: OperationIn, uid: int = Depends(get_effective_user)):
 def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective_user)):
     """Update operation manual + sync cache pnl_realized (audit follow-up).
 
-    Si la operación es de FUTUROS, el efectivo tiene que seguir a la edición:
-    editar el resultado de 47 a 100 y dejar el saldo en +47 es una inconsistencia
-    silenciosa, y encima el borrado —que revierte con la foto de undo_meta_json—
-    devolvería el monto viejo. Por eso movemos el efectivo por la DIFERENCIA y
-    reescribimos la foto. Cambiar de broker debita en el viejo y acredita en el
-    nuevo, que es lo único correcto cuando la plata cambia de cuenta.
+    El efectivo tiene que seguir a la edición: editar el resultado de 47 a 100 y
+    dejar el saldo en +47 es una inconsistencia silenciosa, y encima el borrado
+    —que revierte con la foto de undo_meta_json— devolvería el monto viejo. Por
+    eso movemos el efectivo por la DIFERENCIA y reescribimos la foto. Cambiar de
+    broker debita en el viejo y acredita en el nuevo, que es lo único correcto
+    cuando la plata cambia de cuenta.
+
+    Y el interruptor se puede dar vuelta acá: prenderlo acredita ahora, apagarlo
+    devuelve lo que se había acreditado. Mientras el backend decidía sólo por la
+    foto guardada, el check del formulario en modo edición no hacía nada — se
+    veía como una opción y era un adorno.
     """
     conn = get_db()
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
         prev = conn.execute(
-            "SELECT broker, undo_meta_json FROM operations WHERE id=? AND user_id=?",
+            "SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
             (oid, uid)).fetchone()
+        if not prev:
+            # Se corta ACÁ y no después del UPDATE. Abajo se mueve efectivo, y
+            # hacerlo por una operación que no existe —o que es de otro usuario—
+            # dependía de que nadie commiteara antes del 404 para no dejar plata
+            # inventada. Eso funcionaba, pero por omisión: cualquier commit que se
+            # agregue en el medio lo rompería en silencio.
+            conn.close()
+            raise HTTPException(404, "Not found")
         meta_prev = {}
         if prev and prev["undo_meta_json"]:
             try:
                 meta_prev = json.loads(prev["undo_meta_json"]) or {}
             except (ValueError, TypeError):
                 meta_prev = {}
-        es_futuros = meta_prev.get("src") == "manual_futures"
+        movia_antes = _meta_movio_efectivo(meta_prev)
+        pedido = _pide_mover_efectivo(op)
+        # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
+        # ventas FIFO, cobros de bonos): su efectivo lo mueve otro mecanismo. El
+        # formulario ya no se los ofrece; acá se hace valer igual, porque un cliente
+        # viejo —o uno que reintente— puede mandarlo lo mismo.
+        importada = conn.execute(
+            "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
+        ).fetchone() is not None
+        if not _acepta_interruptor_de_efectivo(importada, meta_prev):
+            pedido = None
+        # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
+        mueve_ahora = movia_antes if pedido is None else pedido
 
         undo_meta_nuevo = None
-        if es_futuros:
-            cash_antes = float(meta_prev.get("cash") or 0)
-            cash_ahora = float(op.pnl_usd or 0)
-            broker_antes = meta_prev.get("cash_broker") or (prev["broker"] if prev else op.broker)
+        if movia_antes or mueve_ahora:
+            broker_antes = meta_prev.get("cash_broker") or prev["broker"]
+            fecha_antes = prev["date"] or op.date
+            # Lo que se aplicó al saldo, en la moneda del broker (no en dólares:
+            # ver `_cash_nativo_de_meta`). Si se apaga, lo de ahora es cero.
+            nat_antes = (_cash_nativo_de_meta(conn, uid, meta_prev, broker_antes, fecha_antes)
+                         if movia_antes else 0.0)
+            cash_ahora = float(op.pnl_usd or 0) if mueve_ahora else 0.0
+            nat_ahora = (_pnl_en_moneda_del_broker(conn, uid, op.broker, cash_ahora, op.date)
+                         if cash_ahora else 0.0)
             if broker_antes != op.broker:
-                _adjust_broker_cash(conn, uid, broker_antes, -cash_antes)
-                _adjust_broker_cash(conn, uid, op.broker, cash_ahora)
-            elif cash_ahora != cash_antes:
-                _adjust_broker_cash(conn, uid, op.broker, cash_ahora - cash_antes)
-            undo_meta_nuevo = json.dumps({"src": "manual_futures", "cash": cash_ahora,
-                                          "cash_broker": op.broker})
+                _adjust_broker_cash(conn, uid, broker_antes, -nat_antes)
+                _adjust_broker_cash(conn, uid, op.broker, nat_ahora)
+            elif nat_ahora != nat_antes:
+                _adjust_broker_cash(conn, uid, op.broker, nat_ahora - nat_antes)
+            # Se PISAN sólo las claves del efectivo. El resto de la foto se conserva
+            # —`futuro_id` sobre todo—: reescribirla entera la perdía, y sin ella
+            # borrar la operación ya no reabría la posición de futuros que la generó.
+            meta_nuevo = dict(meta_prev)
+            meta_nuevo.update({"src": "manual_futures", "cash": cash_ahora,
+                               "cash_native": nat_ahora, "cash_broker": op.broker,
+                               "cash_on": bool(mueve_ahora)})
+            undo_meta_nuevo = json.dumps(meta_nuevo)
 
         conn.execute(
             """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
@@ -15287,12 +15449,17 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
         # pérdida). Devolvemos exactamente eso. El monto sale de la foto y no del
         # pnl_usd actual: si la operación se editó después, el efectivo que se movió
         # es el que quedó registrado acá, y `update_operation` lo mantiene al día.
-        cash = float(meta.get("cash") or 0)
-        if cash:
-            cash_broker = meta.get("cash_broker") or broker
-            _adjust_broker_cash(conn, uid, cash_broker, -cash)
-            # El "Deshacer" ya re-invierte `cash` genéricamente contra `cash_broker`.
-            undo["cash"] = -cash
+        # Y se devuelve en la MONEDA DEL BROKER, que es la que se aplicó: devolver
+        # los dólares en un broker en pesos dejaba el saldo inflado (ver
+        # `_cash_nativo_de_meta`).
+        cash_broker = meta.get("cash_broker") or broker
+        cash_nat = _cash_nativo_de_meta(conn, uid, meta, cash_broker, op["date"] or "")
+        if cash_nat:
+            _adjust_broker_cash(conn, uid, cash_broker, -cash_nat)
+            # El "Deshacer" re-invierte `cash_native` contra `cash_broker`. `cash`
+            # queda por compatibilidad con los journals que ya estaban escritos.
+            undo["cash"] = -float(meta.get("cash") or 0)
+            undo["cash_native"] = -cash_nat
             undo["cash_broker"] = cash_broker
 
     elif src != "manual_form":
@@ -15515,10 +15682,16 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
         if _fr:
             conn.execute("UPDATE futures_positions SET closed_at=? WHERE id=? AND user_id=?",
                          (_fr.get("closed_at"), _fr.get("id"), uid))
-        # Re-invertir el cash que el borrado movió, en el MISMO broker que tocó.
-        if p.get("cash"):
+        # Re-invertir el cash que el borrado movió, en el MISMO broker que tocó y
+        # por el MISMO monto. `cash_native` es el que se aplicó de verdad (moneda
+        # del broker); `cash` —dólares— sólo se lee en los journals viejos, que se
+        # escribieron antes de que existiera la distinción.
+        _u_cash = p.get("cash_native")
+        if _u_cash is None:
+            _u_cash = p.get("cash")
+        if _u_cash:
             _adjust_broker_cash(conn, uid, p.get("cash_broker") or broker,
-                                -float(p["cash"]))
+                                -float(_u_cash))
         # Re-invertir lo que el borrado le devolvió a CADA lote (las amortizaciones
         # restauran varios; el resto, uno solo).
         for _l in (p.get("lots") or []):
@@ -37658,6 +37831,19 @@ _market_brief_lock = threading.Lock()
 _market_brief_running = {"v": False}
 
 
+def _avisar_admin(fn, **kw):
+    """Manda el parte al admin sin que un fallo del mail tape lo que pasó.
+
+    Va aparte y con su propio try porque se llama TAMBIÉN desde el `except` de
+    la corrida: si ahí adentro reventara el envío, la excepción del mail
+    reemplazaría a la del motor y perderíamos justo el error que queríamos ver.
+    """
+    try:
+        fn(**kw)
+    except Exception as ex:
+        log.warning("no se pudo avisar al admin del resumen: %s", ex)
+
+
 @app.api_route("/api/market-brief/run-cron", methods=["GET", "POST"])
 def market_brief_run_cron(request: Request):
     """Manda el resumen del mercado a quienes lo activaron. Lo pega un cron
@@ -37691,12 +37877,20 @@ def market_brief_run_cron(request: Request):
         _market_brief_running["v"] = True
 
     def _bg():
+        # El parte de la corrida sale por DOS canales: el registro (para
+        # diagnosticar) y un mail al admin (para enterarse sin diagnosticar).
+        # El segundo existe porque nadie entra a los registros todos los días,
+        # y un mail diario que no llega es la única señal que delata a un cron
+        # que directamente dejó de correr.
+        from billing import emails
         try:
             import market_brief
             res = market_brief.run_briefs(get_db)
             log.info("market brief: %s", res)
+            _avisar_admin(emails.send_market_brief_run_admin, res=res)
         except Exception as ex:
             log.error("market brief falló: %s", ex)
+            _avisar_admin(emails.send_market_brief_run_admin, error=str(ex))
         finally:
             with _market_brief_lock:
                 _market_brief_running["v"] = False

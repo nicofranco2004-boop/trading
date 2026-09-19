@@ -170,8 +170,21 @@ class MarketBriefTest(unittest.TestCase):
             enviados.append({"to": to, "brief": brief})
             return True
 
+        # El parte de la corrida NO viaja en la respuesta (el endpoint contesta
+        # "arrancó" al instante). Se lo saca de donde de verdad lo usa
+        # producción: el mail al admin. Así el test mira el mismo dato que Nico
+        # va a leer en su casilla, y no una copia armada para el test.
+        self._parte = None
+        self._aviso = []
+
+        def _fake_admin(**kw):
+            self._aviso.append(kw)
+            self._parte = kw.get("res")
+            return True
+
         with patch.object(main.threading, "Thread", _ThreadSincrono), \
              patch.object(emails, "send_market_brief", _fake_send), \
+             patch.object(emails, "send_market_brief_run_admin", _fake_admin), \
              patch.object(market_brief, "_refresh_news_for",
                           return_value=refresh_ret) as m_refresh, \
              patch.object(market_brief, "SEND_GAP_SECONDS", 0):
@@ -687,8 +700,174 @@ class MarketBriefTest(unittest.TestCase):
         self.assertIn("user_id", cols_log)
 
 
-if __name__ == "__main__":
-    unittest.main()
+    # ── el parte: que se pueda contestar "¿anduvo?" sin diagnosticar ─────────
+
+    def test_cero_por_nadie_prendido_NO_es_lo_mismo_que_cero_por_falla(self):
+        """El test que justifica todo el cambio.
+
+        Los dos escenarios terminan en cero mails. Antes escribían además el
+        MISMO renglón, así que el estado de fábrica sano y la falla total se
+        leían igual. Si alguien vuelve a juntarlos, este test se pone rojo."""
+        # A) nadie lo prendió. Cero mails, y está perfecto.
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia presenta resultados")
+        self._macro("La Fed define la tasa")
+        _, enviados_a, _ = self._correr_cron()
+        nadie = self._parte
+
+        # B) lo prendió, y el modelo inventó números las dos veces.
+        self._suscribir()
+        with patch.object(market_brief, "narrate", lambda *a, **k: None):
+            _, enviados_b, _ = self._correr_cron()
+        falla = self._parte
+
+        # Lo que NO los distingue (y era todo lo que había):
+        self.assertEqual(enviados_a, [])
+        self.assertEqual(enviados_b, [])
+        self.assertEqual(nadie["sent"], 0)
+        self.assertEqual(falla["sent"], 0)
+
+        # Lo que sí:
+        self.assertEqual(nadie["prendidos"], 0)
+        self.assertEqual(falla["prendidos"], 1)
+        self.assertEqual(falla["motivos"]["narracion_descartada"], 1)
+        self.assertFalse(nadie["alarma"], "nadie prendido no es una falla")
+        self.assertTrue(falla["alarma"], "le fallamos al único que lo prendió")
+
+    def test_cada_motivo_se_cuenta_con_su_nombre(self):
+        """Dos personas lo prendieron; a una le sale y a la otra no, por una
+        razón concreta. El parte tiene que nombrarla, no sumarla a un bolsón."""
+        self._pos("NVDA", uid=1)
+        self._news("NVDA", "Nvidia sube")
+        self._macro("La Fed define la tasa")
+        self._suscribir(uid=1)
+        self._suscribir(uid=2)          # prendido, pero sin cartera cargada
+
+        _, enviados, _ = self._correr_cron()
+        parte = self._parte
+
+        self.assertEqual([e["to"] for e in enviados], ["nico@test.co"])
+        self.assertEqual(parte["prendidos"], 2)
+        self.assertEqual(parte["sent"], 1)
+        self.assertEqual(parte["motivos"]["sin_activos"], 1)
+        self.assertEqual(parte["motivos"]["narracion_descartada"], 0)
+        self.assertFalse(parte["alarma"], "uno sin cartera no es una falla")
+
+    def test_ya_recibido_no_es_alarma(self):
+        """Re-correr el cron el mismo día deja `sent: 0` — y eso está bien. Si
+        contara como alarma, el aviso gritaría cada vez que alguien reintenta."""
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia sube")
+        self._macro("La Fed define la tasa")
+        self._suscribir()
+        self._correr_cron()
+        _, enviados2, _ = self._correr_cron()
+
+        self.assertEqual(enviados2, [], "no se manda dos veces el mismo día")
+        self.assertEqual(self._parte["sent"], 0)
+        self.assertEqual(self._parte["motivos"]["ya_lo_recibieron"], 1)
+        self.assertFalse(self._parte["alarma"])
+
+    def test_el_total_viejo_sigue_siendo_la_suma_de_los_motivos(self):
+        """`skipped` se conservó para no romper a quien lo leyera. Si deja de
+        cuadrar con el desglose, el renglón miente en una de las dos puntas."""
+        self._pos("NVDA", uid=1)
+        self._news("NVDA", "Nvidia sube")
+        self._macro("La Fed define la tasa")
+        self._suscribir(uid=1)
+        self._suscribir(uid=2)
+        self._correr_cron()
+        parte = self._parte
+        self.assertEqual(parte["skipped"], sum(parte["motivos"].values()))
+
+    # ── el aviso al admin ────────────────────────────────────────────────────
+
+    def test_el_parte_le_llega_al_admin_aunque_todo_haya_salido_bien(self):
+        """Tiene que llegar SIEMPRE, no sólo cuando falla.
+
+        Si sólo avisara en la mala, un cron que directamente dejó de correr no
+        manda ninguna señal y el silencio se lee igual que "todo bien". Llegando
+        todos los días, la ausencia del mail ES la alarma."""
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia sube")
+        self._macro("La Fed define la tasa")
+        self._suscribir()
+        self._correr_cron()
+
+        self.assertEqual(len(self._aviso), 1, "un aviso por corrida, siempre")
+        self.assertIsNone(self._aviso[0].get("error"))
+        self.assertEqual(self._aviso[0]["res"]["sent"], 1)
+
+    def test_si_la_corrida_revienta_el_admin_igual_se_entera(self):
+        """El caso que más hay que avisar es justo el que no deja parte."""
+        avisos = []
+
+        def _boom(*a, **k):
+            raise RuntimeError("se cayó la base")
+
+        with patch.object(main.threading, "Thread", _ThreadSincrono), \
+             patch.object(market_brief, "run_briefs", _boom), \
+             patch.object(emails, "send_market_brief_run_admin",
+                          lambda **kw: (avisos.append(kw), True)[1]):
+            r = self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("se cayó la base", avisos[0]["error"])
+
+    def test_si_el_aviso_falla_la_corrida_no_se_cae_ni_queda_trabada(self):
+        """Avisar es lo ÚLTIMO y lo menos importante: los mails a los usuarios
+        ya salieron y no se pueden deshacer.
+
+        Y sobre todo: el candado tiene que soltarse igual. Si quedara puesto,
+        todas las corridas siguientes contestarían 'already_running' y el
+        resumen no saldría nunca más — sin un solo error a la vista."""
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia sube")
+        self._macro("La Fed define la tasa")
+        self._suscribir()
+        enviados = []
+
+        def _fake_send(*, to, user_name="", brief):
+            enviados.append(to)
+            return True
+
+        def _explota(**kw):
+            raise RuntimeError("el proveedor de mail está caído")
+
+        with patch.object(main.threading, "Thread", _ThreadSincrono), \
+             patch.object(emails, "send_market_brief", _fake_send), \
+             patch.object(emails, "send_market_brief_run_admin", _explota), \
+             patch.object(market_brief, "_refresh_news_for", return_value=1), \
+             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+            r = self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(enviados, ["nico@test.co"], "el mail al usuario salió")
+        # El candado quedó libre: la corrida siguiente arranca de verdad.
+        r2, _, _ = self._correr_cron()
+        self.assertEqual(r2.json().get("status"), "started")
+
+    def test_el_asunto_del_aviso_distingue_el_dia_bueno_del_malo(self):
+        """Se lee en la notificación del teléfono, sin abrir el mail. Si los dos
+        días dijeran lo mismo, el aviso diario se vuelve ruido de fondo."""
+        capturados = []
+        with patch.object(emails, "_send",
+                          lambda to, subject, h, t, **k: (capturados.append(subject), True)[1]):
+            emails.send_market_brief_run_admin(res={
+                "date": "2026-09-18", "prendidos": 10, "sent": 9, "failed": 0,
+                "news_fetched": 45, "motivos": {"sin_activos": 1}, "alarma": False})
+            emails.send_market_brief_run_admin(res={
+                "date": "2026-09-18", "prendidos": 11, "sent": 0, "failed": 0,
+                "news_fetched": 45, "motivos": {"narracion_descartada": 11},
+                "alarma": True})
+            emails.send_market_brief_run_admin(error="se cayó la base")
+
+        bueno, malo, roto = capturados
+        self.assertNotEqual(bueno, malo)
+        self.assertIn("9", bueno)
+        self.assertIn("0 de 11", malo)
+        self.assertIn("NO corrió", roto)
 
 
 class BriefDelAsesorTest(unittest.TestCase):
@@ -1052,3 +1231,7 @@ class VistaPreviaDelAsesorTest(unittest.TestCase):
                       "el preview del asesor narra sin tope: un click = una llamada")
         self.assertIn('if kind == "open":', bloque,
                       "el tope tiene que aplicar sólo al de apertura, que es el que narra")
+
+
+if __name__ == "__main__":
+    unittest.main()
