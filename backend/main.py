@@ -47,6 +47,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
 import requests
 import logging
+import functools
 log = logging.getLogger(__name__)
 
 
@@ -33768,7 +33769,30 @@ def import_tenencia_preview(
         conn.close()
 
 
+def _medir_import(nombre):
+    """Decorador de medición para los endpoints del importador: loguea cuánto
+    tardó cada llamada y de qué usuario fue. La carga por tanda del asesor corre
+    N de estas en serie — sin este número la espera que muestra la pantalla
+    sería una adivinanza (ver PLAN_importar_historiales.md).
+    `functools.wraps` conserva la firma: FastAPI la inspecciona para armar los
+    parámetros del endpoint, así que un wrapper con *args/**kwargs lo rompería."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            _t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                data = kwargs.get("data")
+                log.info("%s uid=%s batch=%s dur_ms=%d", nombre, kwargs.get("uid"),
+                         getattr(data, "session_id", None),
+                         int((time.perf_counter() - _t0) * 1000))
+        return wrapper
+    return deco
+
+
 @app.post("/api/imports/preview")
+@_medir_import("import_preview")
 def import_preview(
     files: Optional[List[UploadFile]] = File(None),       # multi-file (preferido)
     file: Optional[UploadFile] = File(None),               # legacy, single file
@@ -34068,6 +34092,7 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
 
 
 @app.post("/api/imports/confirm")
+@_medir_import("import_confirm")
 def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)):
     """Confirma el import: aplica los side-effects y marca el batch como 'confirmed'.
     `skip_row_indices` permite omitir filas específicas que el usuario marcó en

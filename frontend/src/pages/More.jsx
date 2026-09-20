@@ -70,6 +70,7 @@ export default function More() {
         { to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' },
         ...(atOwnLevel ? [{ to: '/novedades', label: 'Novedades', icon: Bell, sub: 'Eventos y noticias de los activos de tus clientes' }] : []),
         ...(atOwnLevel ? [{ to: '/alertas', label: 'Alertas', icon: BellRing, sub: 'Brief del libro y avisos de tus clientes' }] : []),
+        ...(atOwnLevel ? [{ to: '/importar-historiales', label: 'Importar historiales', icon: Upload, sub: 'Cargá los archivos de varios clientes en una sola tanda' }] : []),
       ],
     }] : []),
     // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.

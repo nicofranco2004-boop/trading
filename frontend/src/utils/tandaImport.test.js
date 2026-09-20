@@ -1,0 +1,145 @@
+import { describe, it, expect } from 'vitest'
+import { correrTanda, estadoFinal, filaLista, faltante, ESTADO, resumen } from './tandaImport'
+
+// Los tests atraviesan el orquestador REAL con una api falsa que registra cada
+// pedido: qué ruta, en qué orden y A NOMBRE DE QUIÉN (opts.clientId). Eso último
+// es la única forma de que dos clientes no se crucen, y es lo que más importa.
+
+function apiFalsa({ previewDe = () => ({ session_id: 'sess-1', errors: [] }), confirmDe = () => ({ operations_created: 3, cash_movements: 1, conversions: 0, auto_skipped_duplicates: 0 }), crearDe = () => ({ client_uid: 900 }) } = {}) {
+  const llamadas = []
+  return {
+    llamadas,
+    async post(path, body, opts) {
+      llamadas.push({ path, body, clientId: opts?.clientId ?? null })
+      if (path === '/advisor/clients') return crearDe(body)
+      if (path === '/imports/confirm') return confirmDe(body, opts)
+      throw new Error('ruta inesperada ' + path)
+    },
+    async upload(path, fd, opts) {
+      llamadas.push({ path, files: fd.getAll('files').length, format: fd.get('format'), clientId: opts?.clientId ?? null })
+      return previewDe(fd, opts)
+    },
+  }
+}
+
+const archivo = (n = 'a.csv') => new File(['x'], n, { type: 'text/csv' })
+const fila = (extra = {}) => ({ id: 1, clientUid: 11, esNuevo: false, nombre: '', format: 'cocos', archivos: [archivo()], soloLectura: false, ...extra })
+
+describe('filaLista / faltante', () => {
+  it('una fila completa está lista y no le falta nada', () => {
+    expect(filaLista(fila())).toBe(true)
+    expect(faltante(fila())).toBeNull()
+  })
+  it('sólo lectura nunca está lista, aunque tenga todo', () => {
+    expect(filaLista(fila({ soloLectura: true }))).toBe(false)
+    expect(faltante(fila({ soloLectura: true }))).toBe('Vínculo de sólo lectura')
+  })
+  it('cliente nuevo necesita nombre; existente necesita uid entero', () => {
+    expect(filaLista(fila({ esNuevo: true, clientUid: null, nombre: '  ' }))).toBe(false)
+    expect(filaLista(fila({ esNuevo: true, clientUid: null, nombre: 'Lucía F' }))).toBe(true)
+    expect(faltante(fila({ clientUid: '11' }))).toBe('Falta el cliente')
+    expect(faltante(fila({ format: '' }))).toBe('Falta el broker')
+    expect(faltante(fila({ archivos: [] }))).toBe('Faltan archivos')
+  })
+})
+
+describe('estadoFinal', () => {
+  it('cuenta lo ESCRITO por el confirm, no filas del archivo', () => {
+    const r = estadoFinal({ errors: [] }, { operations_created: 5, cash_movements: 2, conversions: 1, auto_skipped_duplicates: 4 })
+    expect(r.estado).toBe(ESTADO.COMPLETO)
+    expect(r.cargados).toBe(8)
+    expect(r.repetidos).toBe(4)
+    expect(r.notas).toEqual(['4 repetidos omitidos'])
+  })
+  it('errores del preview se informan sin frenar', () => {
+    const r = estadoFinal({ errors: [{}, {}, {}] }, { operations_created: 1 })
+    expect(r.estado).toBe(ESTADO.COMPLETO)
+    expect(r.errores).toBe(3)
+    expect(r.notas).toEqual(['3 filas con error, omitidas'])
+  })
+  it('si faltan posiciones previas queda en REVISAR, no en completo', () => {
+    const r = estadoFinal({ errors: [], seed_suggestions: { needed: true } }, { operations_created: 9 })
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.cargados).toBe(9)
+    expect(r.detalle).toMatch(/posiciones previas/)
+  })
+})
+
+describe('correrTanda', () => {
+  it('corre EN SERIE y cada pedido va a nombre del cliente de SU fila, nunca del contexto', async () => {
+    const orden = []
+    const api = apiFalsa({
+      previewDe: (fd, opts) => { orden.push('p' + opts.clientId); return { session_id: 's' + opts.clientId, errors: [] } },
+      confirmDe: (body, opts) => { orden.push('c' + opts.clientId); return { operations_created: 1 } },
+    })
+    const filas = [fila({ id: 1, clientUid: 11 }), fila({ id: 2, clientUid: 22, format: 'iol' })]
+    const r = await correrTanda(filas, { api })
+    expect(orden).toEqual(['p11', 'c11', 'p22', 'c22'])
+    const confirms = api.llamadas.filter(l => l.path === '/imports/confirm')
+    expect(confirms.map(c => c.clientId)).toEqual([11, 22])
+    expect(confirms.map(c => c.body.session_id)).toEqual(['s11', 's22'])
+    expect(r.total).toBe(2); expect(r.completos).toBe(2)
+  })
+
+  it('la tanda NO pregunta: sin seed_state, sin include_duplicates, aprobar_tickers vacío', async () => {
+    const api = apiFalsa()
+    await correrTanda([fila()], { api })
+    const c = api.llamadas.find(l => l.path === '/imports/confirm')
+    expect(c.body).toEqual({ session_id: 'sess-1', skip_row_indices: [], aprobar_tickers: [] })
+    expect('seed_state' in c.body).toBe(false)
+    expect('include_duplicates' in c.body).toBe(false)
+  })
+
+  it('si el preview falla, NO se confirma y se muestra el motivo del backend', async () => {
+    const api = apiFalsa({ previewDe: () => { const e = new Error('HTTP 400'); e.payload = { detail: 'El archivo no es el formato de Bull Market.' }; throw e } })
+    const updates = []
+    const r = await correrTanda([fila()], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(api.llamadas.some(l => l.path === '/imports/confirm')).toBe(false)
+    expect(r.errores).toBe(1)
+    expect(updates.at(-1).estado).toBe(ESTADO.ERROR)
+    expect(updates.at(-1).detalle).toBe('El archivo no es el formato de Bull Market.')
+  })
+
+  it('un cliente nuevo se crea primero y el uid creado es el que viaja en preview y confirm', async () => {
+    const api = apiFalsa({ crearDe: () => ({ client_uid: 777 }) })
+    const updates = []
+    await correrTanda([fila({ esNuevo: true, clientUid: null, nombre: ' Lucía F ' })], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(api.llamadas[0]).toMatchObject({ path: '/advisor/clients', body: { label: 'Lucía F' } })
+    expect(api.llamadas[1]).toMatchObject({ path: '/imports/preview', clientId: 777, files: 1, format: 'cocos' })
+    expect(api.llamadas[2]).toMatchObject({ path: '/imports/confirm', clientId: 777 })
+    expect(updates.some(u => u.creado === true && u.clientUid === 777)).toBe(true)
+  })
+
+  it('una fila que falla no frena a la siguiente', async () => {
+    let n = 0
+    const api = apiFalsa({ previewDe: () => { n += 1; if (n === 1) throw new Error('rompió'); return { session_id: 'ok', errors: [] } } })
+    const r = await correrTanda([fila({ id: 1 }), fila({ id: 2, clientUid: 22 })], { api })
+    expect(r.errores).toBe(1); expect(r.completos).toBe(1)
+  })
+
+  it('una fila incompleta o de sólo lectura no genera ningún pedido', async () => {
+    const api = apiFalsa()
+    const r = await correrTanda([fila({ soloLectura: true }), fila({ archivos: [] })], { api })
+    expect(api.llamadas).toEqual([])
+    expect(r.errores).toBe(2)
+  })
+
+  it('abortar corta ANTES de la fila siguiente, nunca a mitad de una', async () => {
+    const ac = new AbortController()
+    const api = apiFalsa({ confirmDe: () => { ac.abort(); return { operations_created: 1 } } })
+    const r = await correrTanda([fila({ id: 1 }), fila({ id: 2, clientUid: 22 })], { api, signal: ac.signal })
+    expect(api.llamadas.filter(l => l.path === '/imports/confirm')).toHaveLength(1)
+    expect(r.total).toBe(1)
+  })
+})
+
+describe('resumen', () => {
+  it('suma movimientos, repetidos y filas con error de todas las filas', () => {
+    const r = resumen([
+      { estado: ESTADO.COMPLETO, cargados: 10, repetidos: 2, errores: 0 },
+      { estado: ESTADO.REVISAR, cargados: 5, repetidos: 0, errores: 3 },
+      { estado: ESTADO.ERROR },
+    ])
+    expect(r).toEqual({ total: 3, completos: 1, revisar: 1, errores: 1, movimientos: 15, repetidos: 2, filasConError: 3 })
+  })
+})

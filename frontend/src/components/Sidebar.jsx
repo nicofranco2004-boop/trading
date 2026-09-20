@@ -203,6 +203,18 @@ export default function Sidebar() {
                 {!collapsed && <span>Novedades</span>}
               </>)}
             </NavLink>
+            {/* Carga de historiales de varios clientes por tanda. Reemplaza, a
+                este nivel, al "Importar CSV" que se oculta (el asesor no tiene
+                cartera propia que importar). */}
+            <NavLink to="/importar-historiales" title={collapsed ? 'Importar historiales' : undefined}
+              onMouseEnter={() => prefetchRoute('/importar-historiales')} onFocus={() => prefetchRoute('/importar-historiales')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <Upload size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Importar historiales</span>}
+              </>)}
+            </NavLink>
           </div>
         )}
         {/* Dentro de un cliente, "Clientes" sigue accesible para volver al

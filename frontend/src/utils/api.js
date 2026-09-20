@@ -101,7 +101,11 @@ async function req(method, path, body, opts) {
   const headers = { 'Content-Type': 'application/json' }
   // Plan Asesor: contexto de cliente activo → el backend resuelve la cuenta
   // del cliente (o ignora el header en los prefijos exentos).
-  if (_clientCtx?.id) headers['X-Rendi-Client-Id'] = String(_clientCtx.id)
+  // `opts.clientId` pisa el contexto SOLO para este pedido: lo usa la carga
+  // de historiales por tanda, que desde el nivel propio del asesor le habla a
+  // varios clientes seguidos sin "entrar" en ninguno.
+  const ctxId = clientIdFor(opts)
+  if (ctxId) headers['X-Rendi-Client-Id'] = ctxId
 
   const doFetch = () => fetch('/api' + path, {
     method,
@@ -212,7 +216,16 @@ export function gatewayMessage({ write } = {}) {
       'esperá un momento y recargá. Si sigue igual, escribinos a soporte.'
 }
 
-async function upload(path, formData) {
+// Resuelve a qué cliente va un pedido: el explícito de `opts.clientId` gana
+// sobre el contexto global. Un solo lugar para las 2 rutas que lo aceptan
+// (req y upload); getBlob y chatStream siguen el contexto — no hay caso de uso
+// que baje un CSV o chatee "a nombre de" un cliente sin haber entrado.
+function clientIdFor(opts) {
+  if (opts && opts.clientId != null) return String(opts.clientId)
+  return _clientCtx?.id ? String(_clientCtx.id) : null
+}
+
+async function upload(path, formData, opts) {
   // En demo mode no soportamos imports (el wizard de CSV requiere parsing
   // server-side). Throw inmediato con mensaje claro.
   if (isDemoMode()) {
@@ -224,7 +237,8 @@ async function upload(path, formData) {
   // Contexto de cliente (Plan Asesor): mismo header que req() — sin esto el
   // import caía SILENCIOSAMENTE en la cuenta del asesor con el ctx activo.
   const upHeaders = {}
-  if (_clientCtx?.id) upHeaders['X-Rendi-Client-Id'] = String(_clientCtx.id)
+  const upCtxId = clientIdFor(opts)
+  if (upCtxId) upHeaders['X-Rendi-Client-Id'] = upCtxId
   const doFetch = () => fetch('/api' + path, {
     method: 'POST',
     credentials: 'include',
@@ -419,10 +433,10 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
 
 export const api = {
   get: (path, opts) => req('GET', path, undefined, opts),
-  post: (path, body) => req('POST', path, body),
-  put: (path, body) => req('PUT', path, body),
-  patch: (path, body) => req('PATCH', path, body),
-  delete: (path, body) => req('DELETE', path, body),
+  post: (path, body, opts) => req('POST', path, body, opts),
+  put: (path, body, opts) => req('PUT', path, body, opts),
+  patch: (path, body, opts) => req('PATCH', path, body, opts),
+  delete: (path, body, opts) => req('DELETE', path, body, opts),
   upload,
   getBlob,
   chatStream,

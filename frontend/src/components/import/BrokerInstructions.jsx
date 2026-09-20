@@ -230,6 +230,11 @@ const BROKERS = [
   },
 ]
 
+// Exportado como UN solo diccionario: la carga de historiales por tanda
+// (pages/AdvisorImports) muestra los mismos pasos en su panel "¿Cómo lo
+// descargo?". Si se corrige un paso acá, se corrige en los dos lugares.
+export const BROKER_GUIDES = BROKERS
+
 // lockBrokerId: si viene, el widget queda fijo a ese broker (sin chips ni
 // selector) — lo usa el Paso 0 del wizard, donde el broker ya fue elegido.
 export default function BrokerInstructions({ defaultBrokerId = 'cocos', lockBrokerId = null }) {

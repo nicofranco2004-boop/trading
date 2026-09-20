@@ -73,6 +73,8 @@ const Cartera = lazy(() => import('./pages/Cartera'))
 const PerfilInversor = lazy(() => import('./pages/PerfilInversor'))
 // Plan Asesor: roster de clientes + drill-down + operación grupal (tier advisor)
 const AdvisorClients = lazy(() => import('./pages/AdvisorClients'))
+// Plan Asesor: carga de historiales de varios clientes por tanda (nivel propio)
+const AdvisorImports = lazy(() => import('./pages/AdvisorImports'))
 const More = lazy(() => import('./pages/More'))
 const Planes = lazy(() => import('./pages/Planes'))
 // BillingReturn exporta 3 componentes — Vite los dedupea en un solo chunk
@@ -258,6 +260,7 @@ function AppRoutes() {
       <Route path="/perfil-inversor" element={<PerfilInversor />} />
       {/* Plan Asesor — gateado adentro por tier (advisor/admin) */}
       <Route path="/clientes" element={<AdvisorClients />} />
+      <Route path="/importar-historiales" element={<AdvisorImports />} />
       {/* /objetivos sigue siendo redirect a /posiciones?tab=objetivos arriba */}
       <Route path="/wrapped" element={<Wrapped />} />
       <Route path="/imports" element={<Imports />} />
