@@ -15,6 +15,12 @@ Con eso existen tres cosas que la Fase 1 no tenía:
      si un lote tiene ventas posteriores o algo que el revert seguro rechaza,
      ESE falla y se informa; nunca se fuerza el modo nuclear desde acá.
 
+⚠️ `rows_json` lo escribe el FRONT (PATCH) y es lo que el asesor VIO. La verdad
+sobre qué lotes existen y en qué estado están vive en `import_batches`
+(`tanda_id`, `status`, `user_id`): `detalle`, `listar` y sobre todo `revertir`
+la leen de ahí. Un rows_json viejo (un PATCH que llegó tarde) no puede hacer
+que un lote se saltee.
+
 Todo lo que escribe pasa por `conn` del caller (main.py) para compartir la
 transacción y el patrón `with conn:` del resto del código.
 """
@@ -27,10 +33,15 @@ from typing import Any, Dict, List, Optional
 # Tope de filas por tanda. El front tiene el mismo número (MAX_FILAS): si se
 # cambia uno se cambia el otro — acá está la verdad, allá la copia.
 MAX_FILAS = 50
-# Tope del JSON de filas que guarda el front (nombres de archivo, estados).
-MAX_ROWS_JSON = 64 * 1024
+# Tope del JSON de filas que guarda el front. 50 filas × (detalle 500 + 20
+# archivos × 120 + notas) entra holgado; 64 KB no entraba con nombres largos.
+MAX_ROWS_JSON = 256 * 1024
 
-ESTADOS_FILA = {"pendiente", "cargando", "completo", "revisar", "error", "revertido", "revert_fallo"}
+ESTADOS_FILA = {"pendiente", "cargando", "completo", "revisar", "error",
+                "revertido", "revert_fallo", "foto_pendiente"}
+# Estados en los que un lote confirmado puede seguir vivo (y por tanto revertirse).
+_CON_LOTE = {"completo", "revisar", "foto_pendiente"}
+_INT_MAX = 2 ** 63 - 1
 
 
 def ensure_schema(conn) -> None:
@@ -56,10 +67,35 @@ def ensure_schema(conn) -> None:
     cols = [r[1] for r in conn.execute("PRAGMA table_info(import_batches)").fetchall()]
     if cols and "tanda_id" not in cols:
         conn.execute("ALTER TABLE import_batches ADD COLUMN tanda_id TEXT")
+    # El índice va FUERA del branch del ALTER: si el CREATE INDEX fallara una
+    # vez, al siguiente arranque la columna ya existiría y no se reintentaría.
+    if cols:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_import_batches_tanda ON import_batches(tanda_id)")
 
 
 # ─── Filas ───────────────────────────────────────────────────────────────────
+
+def _entero(v, campo: str, *, opcional: bool = False, minimo: int = 0) -> Optional[int]:
+    """Entero de verdad (no bool, no float, no dict), acotado a 63 bits: SQLite
+    no puede bindear más y el 500 saltaba recién en el revert."""
+    if v is None:
+        if opcional:
+            return None
+        return 0
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"{campo} debe ser entero")
+    if v < minimo or v > _INT_MAX:
+        raise ValueError(f"{campo} fuera de rango")
+    return v
+
+
+def _texto(v, largo: int) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, (dict, list)):
+        raise ValueError("texto inválido")
+    return str(v)[:largo]
+
 
 def _sanitize_rows(rows: Any) -> List[Dict[str, Any]]:
     """Lo que el front manda por fila, tipado y acotado. No se confía en nada:
@@ -75,25 +111,32 @@ def _sanitize_rows(rows: Any) -> List[Dict[str, Any]]:
         estado = str(r.get("estado") or "pendiente")
         if estado not in ESTADOS_FILA:
             raise ValueError(f"estado desconocido: {estado}")
-        cu = r.get("client_uid")
-        if cu is not None and not isinstance(cu, int):
-            raise ValueError("client_uid debe ser entero")
         archivos = r.get("archivos") or []
         if not isinstance(archivos, list):
             raise ValueError("archivos debe ser una lista")
+        notas = r.get("notas") or []
+        if not isinstance(notas, list):
+            raise ValueError("notas debe ser una lista")
         out.append({
-            "id": int(r.get("id") or 0),
-            "client_uid": cu,
-            "label": str(r.get("label") or "")[:120],
-            "platform": str(r.get("platform") or "")[:40],
-            "archivos": [str(a)[:200] for a in archivos][:20],
+            "id": _entero(r.get("id"), "id"),
+            "client_uid": _entero(r.get("client_uid"), "client_uid", opcional=True, minimo=1),
+            "label": _texto(r.get("label"), 120) or "",
+            # `platform` = id de la plataforma (cocos, balanz…); `platform_label`
+            # = cómo se muestra. Los dos: uno para rearmar la fila, otro para leer.
+            "platform": _texto(r.get("platform"), 40) or "",
+            "platform_label": _texto(r.get("platform_label"), 60) or "",
+            "archivos": [(_texto(a, 120) or "") for a in archivos][:20],
             "estado": estado,
-            "batch_id": (str(r.get("batch_id"))[:64] if r.get("batch_id") else None),
-            "cargados": int(r.get("cargados") or 0),
-            "repetidos": int(r.get("repetidos") or 0),
-            "errores": int(r.get("errores") or 0),
-            "detalle": (str(r.get("detalle"))[:500] if r.get("detalle") else None),
+            "batch_id": _texto(r.get("batch_id"), 64) or None,
+            "cargados": _entero(r.get("cargados"), "cargados"),
+            "repetidos": _entero(r.get("repetidos"), "repetidos"),
+            "errores": _entero(r.get("errores"), "errores"),
+            "detalle": _texto(r.get("detalle"), 500) or None,
+            "notas": [(_texto(n, 160) or "") for n in notas][:6],
             "creado": bool(r.get("creado")),
+            # 5xx en el confirm: no sabemos si llegó a guardarse. Se conserva
+            # para que la tanda reabierta no diga "no se cargó nada".
+            "incierto": bool(r.get("incierto")),
         })
     blob = json.dumps(out, ensure_ascii=False)
     if len(blob) > MAX_ROWS_JSON:
@@ -136,29 +179,49 @@ def actualizar(conn, advisor_uid: int, tanda_id: str, rows: Any = None,
     return detalle(conn, advisor_uid, tanda_id)
 
 
-def _estado_lotes(conn, filas: List[Dict[str, Any]]) -> Dict[str, str]:
-    """status real de cada lote (`confirmed`/`reverted`/`preview`) — la verdad
-    vive en import_batches, el JSON es lo que el front vio en su momento."""
-    ids = [f["batch_id"] for f in filas if f.get("batch_id")]
-    if not ids:
-        return {}
-    ph = ",".join("?" * len(ids))
-    return {r["id"]: r["status"] for r in conn.execute(
-        f"SELECT id, status FROM import_batches WHERE id IN ({ph})", ids).fetchall()}
+# ─── La verdad: los lotes de la tanda en import_batches ─────────────────────
+
+def _lotes_de_tanda(conn, tanda_id: str) -> Dict[str, Dict[str, Any]]:
+    """{batch_id: {user_id, status}} de TODOS los lotes estampados con esta
+    tanda — no depende de lo que el front haya llegado a guardar."""
+    return {r["id"]: {"user_id": r["user_id"], "status": r["status"]} for r in conn.execute(
+        "SELECT id, user_id, status FROM import_batches WHERE tanda_id=?", (tanda_id,)).fetchall()}
+
+
+def _reconciliar(filas: List[Dict[str, Any]], lotes: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Cruza rows_json (lo que el front vio) con import_batches (lo que pasó).
+    - una fila con batch_id → hereda el status real; revertido gana.
+    - un lote estampado que ninguna fila nombra (PATCH que llegó tarde) → se
+      asigna a la fila de ese cliente que quedó 'cargando'/'pendiente'.
+    Sólo se miran lotes de la tanda: nunca ids sueltos que el front pueda mandar."""
+    conocidos = {f["batch_id"] for f in filas if f.get("batch_id")}
+    for f in filas:
+        bid = f.get("batch_id")
+        info = lotes.get(bid) if bid else None
+        f["batch_status"] = info["status"] if info else None
+        if info and info["status"] == "reverted" and f["estado"] in _CON_LOTE:
+            f["estado"] = "revertido"
+    for bid, info in lotes.items():
+        if bid in conocidos or info["status"] not in ("confirmed", "reverted"):
+            continue
+        huerfana = next((f for f in filas
+                         if f.get("client_uid") == info["user_id"]
+                         and not f.get("batch_id")
+                         and f["estado"] in ("pendiente", "cargando")), None)
+        if huerfana is not None:
+            huerfana["batch_id"] = bid
+            huerfana["batch_status"] = info["status"]
+            huerfana["estado"] = "revertido" if info["status"] == "reverted" else "completo"
+            huerfana["notas"] = list(huerfana.get("notas") or []) + ["el detalle de esta fila no llegó a guardarse; el lote sí"]
+            conocidos.add(bid)
+    return filas
 
 
 def detalle(conn, advisor_uid: int, tanda_id: str) -> Dict[str, Any]:
     r = _row(conn, advisor_uid, tanda_id)
     if not r:
         raise LookupError("tanda")
-    filas = json.loads(r["rows_json"] or "[]")
-    estados = _estado_lotes(conn, filas)
-    for f in filas:
-        f["batch_status"] = estados.get(f.get("batch_id"))
-        # Un lote revertido desde la cuenta del cliente (botón individual) se
-        # refleja acá aunque el JSON diga 'completo'.
-        if f.get("batch_id") and f["batch_status"] == "reverted" and f["estado"] in ("completo", "revisar"):
-            f["estado"] = "revertido"
+    filas = _reconciliar(json.loads(r["rows_json"] or "[]"), _lotes_de_tanda(conn, tanda_id))
     return {
         "id": r["id"],
         "created_at": r["created_at"],
@@ -174,10 +237,10 @@ def _resumen(filas: List[Dict[str, Any]]) -> Dict[str, int]:
     return {
         "total": len(filas),
         "completos": n("completo"),
-        "revisar": n("revisar"),
+        "revisar": n("revisar") + n("foto_pendiente"),
         "errores": n("error"),
         "revertidos": n("revertido") + n("revert_fallo"),
-        "movimientos": sum(int(f.get("cargados") or 0) for f in filas),
+        "movimientos": sum(int(f.get("cargados") or 0) for f in filas if f.get("estado") in _CON_LOTE),
         "en_curso": n("pendiente") + n("cargando"),
     }
 
@@ -189,11 +252,7 @@ def listar(conn, advisor_uid: int, limit: int = 20) -> List[Dict[str, Any]]:
         (advisor_uid, int(limit))).fetchall()
     out = []
     for r in rows:
-        filas = json.loads(r["rows_json"] or "[]")
-        estados = _estado_lotes(conn, filas)
-        for f in filas:
-            if f.get("batch_id") and estados.get(f["batch_id"]) == "reverted" and f["estado"] in ("completo", "revisar"):
-                f["estado"] = "revertido"
+        filas = _reconciliar(json.loads(r["rows_json"] or "[]"), _lotes_de_tanda(conn, r["id"]))
         out.append({
             "id": r["id"], "created_at": r["created_at"], "finished_at": r["finished_at"],
             "resumen": _resumen(filas),
@@ -205,35 +264,44 @@ def listar(conn, advisor_uid: int, limit: int = 20) -> List[Dict[str, Any]]:
 
 # ─── Deshacer toda la tanda ─────────────────────────────────────────────────
 
+_MSG_SIN_VINCULO = "Ya no tenés permiso de escritura sobre este cliente: revertilo desde su cuenta si recuperás el acceso."
+_MSG_CLIENTE_BORRADO = "La cuenta de este cliente ya no existe: no hay nada que revertir."
+_MSG_TRANSITORIO = "Error momentáneo al revertir (la base estaba ocupada): volvé a intentar en un momento."
+
+
 def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_lote) -> Dict[str, Any]:
     """Revierte cada lote de la tanda en la cuenta de SU cliente.
 
     `puede_escribir(client_uid) -> bool` es el write-gate del vínculo (la misma
     regla que `get_effective_user`: vínculo activo + permission read_write).
     `revertir_lote(client_uid, batch_id)` hace el revert SEGURO y levanta
-    Exception con mensaje si no puede (ventas posteriores, etc.).
+    RuntimeError con el mensaje del persister si no puede (ventas posteriores…).
 
+    Los lotes salen de `import_batches.tanda_id` (la verdad), no de rows_json.
     Idempotente: un lote ya revertido se saltea como 'ya estaba revertido'.
     Nunca aborta la tanda entera por un lote: informa fila por fila.
     """
     r = _row(conn, advisor_uid, tanda_id)
     if not r:
         raise LookupError("tanda")
-    filas = json.loads(r["rows_json"] or "[]")
-    estados = _estado_lotes(conn, filas)
+    lotes = _lotes_de_tanda(conn, tanda_id)
+    filas = _reconciliar(json.loads(r["rows_json"] or "[]"), lotes)
     resultado = []
     for f in filas:
         bid, cu = f.get("batch_id"), f.get("client_uid")
-        if not bid or f.get("estado") in ("error", "pendiente", "cargando"):
+        info = lotes.get(bid) if bid else None
+        if not info:
             resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": None, "motivo": "no había nada cargado"})
             continue
-        if estados.get(bid) == "reverted":
+        # El dueño real del lote manda sobre lo que diga la fila.
+        cu = info["user_id"]
+        if info["status"] == "reverted":
             f["estado"] = "revertido"
             resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": True, "motivo": "ya estaba revertido"})
             continue
-        if not cu or not puede_escribir(cu):
+        if not puede_escribir(cu):
             f["estado"] = "revert_fallo"
-            f["detalle"] = "El vínculo con este cliente ya no permite escribir: revertilo desde su cuenta si recuperás el acceso."
+            f["detalle"] = _MSG_SIN_VINCULO
             resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": False, "motivo": f["detalle"]})
             continue
         try:
@@ -241,9 +309,13 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
             f["estado"] = "revertido"
             f["detalle"] = None
             resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": True, "motivo": None})
-        except Exception as ex:  # noqa: BLE001 — el motivo viaja al asesor tal cual
+        except RuntimeError as ex:   # el persister dijo que no (ventas posteriores, etc.)
             f["estado"] = "revert_fallo"
-            f["detalle"] = str(getattr(ex, "message", None) or ex)
+            f["detalle"] = str(ex)
+            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": False, "motivo": f["detalle"]})
+        except Exception:  # noqa: BLE001 — base ocupada u otro transitorio: NO se graba el texto crudo
+            f["estado"] = "revert_fallo"
+            f["detalle"] = _MSG_TRANSITORIO
             resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": False, "motivo": f["detalle"]})
     conn.execute("UPDATE advisor_import_tandas SET rows_json=? WHERE id=?",
                  (json.dumps(filas, ensure_ascii=False), tanda_id))
@@ -252,7 +324,35 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
     return {"tanda_id": tanda_id, "revertidos": ok, "fallidos": fallo, "filas": resultado}
 
 
+# ─── Ciclo de vida ──────────────────────────────────────────────────────────
+
 def borrar_de_asesor(conn, advisor_uid: int) -> int:
     """Cascada del borrado de cuenta: las tandas son del asesor, no del cliente.
     Los lotes (`import_batches`) son del cliente y siguen su propio ciclo."""
     return conn.execute("DELETE FROM advisor_import_tandas WHERE advisor_uid=?", (advisor_uid,)).rowcount
+
+
+def olvidar_cliente(conn, client_uid: int) -> int:
+    """Cuando se borra la cuenta de un CLIENTE, su nombre no puede sobrevivir
+    en las tandas de su asesor (mismo hallazgo que advisor_reports). La fila
+    queda como 'Cliente eliminado', sin uid, con el estado que corresponde."""
+    n = 0
+    rows = conn.execute(
+        "SELECT id, rows_json FROM advisor_import_tandas WHERE rows_json LIKE ?",
+        (f'%"client_uid": {int(client_uid)},%',)).fetchall()
+    for r in rows:
+        filas = json.loads(r["rows_json"] or "[]")
+        tocada = False
+        for f in filas:
+            if f.get("client_uid") == client_uid:
+                f["client_uid"] = None
+                f["label"] = "Cliente eliminado"
+                if f.get("estado") in _CON_LOTE:
+                    f["estado"] = "revert_fallo"
+                    f["detalle"] = _MSG_CLIENTE_BORRADO
+                tocada = True
+        if tocada:
+            conn.execute("UPDATE advisor_import_tandas SET rows_json=? WHERE id=?",
+                         (json.dumps(filas, ensure_ascii=False), r["id"]))
+            n += 1
+    return n

@@ -30,10 +30,12 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES } from '../components/import/BrokerInstructions'
 import {
   correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO,
-  resumen as resumir,
+  resumen as resumir, filaAlServidor, filaDelServidor, fechaServidor, marcarInterrumpidas,
 } from '../utils/tandaImport'
 
-const btnPrimary = 'inline-flex items-center gap-1.5 text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded px-3.5 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+const btnBase = 'inline-flex items-center gap-1.5 text-xs font-medium rounded px-3.5 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+const btnPrimary = `${btnBase} text-white bg-data-violet hover:bg-data-violet/85`
+const btnDanger = `${btnBase} text-white bg-rendi-neg hover:bg-rendi-neg/85`
 const btnGhost = 'inline-flex items-center gap-1.5 text-xs font-medium text-ink-1 border border-line hover:border-data-violet/50 hover:text-ink-0 rounded px-3 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
 const selectCls = 'w-full bg-bg-2 border border-line-2 rounded px-3 py-2 text-sm text-ink-0 disabled:opacity-60'
 
@@ -47,35 +49,6 @@ const SIN_TANDA = new Set(['generic'])
 
 const STORAGE_KEY = 'rendi_tanda_ultima'
 
-// ── La tanda en el servidor (Fase 2) ─────────────────────────────────────────
-// Lo que viaja por fila a /api/advisor/tandas (sin los File: sólo nombres).
-function filaAlServidor(f) {
-  return {
-    id: f.id,
-    client_uid: Number.isInteger(f.clientUid) ? f.clientUid : null,
-    label: f.label || f.nombre || '',
-    platform: f.platformLabel || f.platform || '',
-    archivos: (f.archivos || []).map(a => a.name),
-    estado: f.estado || ESTADO.PENDIENTE,
-    batch_id: f.batchId || null,
-    cargados: f.cargados || 0,
-    repetidos: f.repetidos || 0,
-    errores: f.errores || 0,
-    detalle: f.detalle || null,
-    creado: !!f.creado,
-  }
-}
-// Lo que vuelve del servidor, en la forma que dibuja esta pantalla.
-function filaDelServidor(r) {
-  return {
-    id: r.id, clientUid: r.client_uid, esNuevo: false, nombre: '', label: r.label || '',
-    platform: r.platform || '', platformLabel: r.platform || '', format: '',
-    archivos: (r.archivos || []).map(n => ({ name: n, size: 0 })),
-    estado: r.estado, batchId: r.batch_id || null, cargados: r.cargados || 0,
-    repetidos: r.repetidos || 0, errores: r.errores || 0, detalle: r.detalle || null,
-    creado: !!r.creado, notas: [], incierto: false,
-  }
-}
 const FINALES = new Set([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR])
 
 let _seq = 0
@@ -97,12 +70,7 @@ function leerLocal() {
     // Las filas que quedaron "cargando"/"pendiente" en una tanda cortada no
     // corrieron o no sabemos cómo terminaron: se marcan como interrumpidas.
     const cortada = x.momento === 'cargando'
-    x.filas = x.filas.map(f => {
-      if (!cortada) return f
-      if (f.estado === ESTADO.CARGANDO) return { ...f, estado: ESTADO.ERROR, incierto: true, detalle: 'La carga se cortó mientras corría esta fila: no sabemos si llegó a guardarse.' }
-      if (f.estado === ESTADO.PENDIENTE) return { ...f, estado: ESTADO.ERROR, incierto: false, detalle: 'No llegó a arrancar: la tanda se cortó antes.' }
-      return f
-    })
+    if (cortada) x.filas = marcarInterrumpidas(x.filas)
     x.filas.forEach(f => { _seq = Math.max(_seq, Number(f.id) || 0) })
     return { ...x, cortada }
   } catch { return null }
@@ -201,9 +169,15 @@ export default function AdvisorImports() {
     // en diferido, y persistir desde él justo al terminar guardaba la penúltima
     // versión (la última fila quedaba "Cargando" para siempre al volver).
     let latest = aCorrer
+    // Los PATCH van EN COLA: uno detrás de otro, nunca en paralelo. Si no, el
+    // de la fila 1 podía quedar esperando la llave de escritura detrás del
+    // confirm de la fila 2 y aplicarse DESPUÉS, dejando en el servidor una fila
+    // "cargando" para siempre (y el deshacer de la tanda sin ese lote).
+    let cola = Promise.resolve()
     const sincronizar = (finished) => {
       if (!tid) return Promise.resolve()
-      return api.patch(`/advisor/tandas/${tid}`, { rows: latest.map(filaAlServidor), ...(finished ? { finished: true } : {}) }).catch(() => {})
+      cola = cola.then(() => api.patch(`/advisor/tandas/${tid}`, { rows: latest.map(filaAlServidor), ...(finished ? { finished: true } : {}) }).catch(() => {}))
+      return cola
     }
     await correrTanda(aCorrer, {
       api, signal: ac.signal, tandaId: tid,
@@ -245,6 +219,9 @@ export default function AdvisorImports() {
   function verUltima() {
     const u = leerLocal()
     if (!u) return
+    // Si la tanda existe en el servidor, manda el servidor (ahí está lo que
+    // pasó después: un deshacer, un revert desde la cuenta del cliente).
+    if (u.tandaId) { verTanda(u.tandaId); return }
     setFilas(u.filas); setInicio(u.inicio); setFin(u.fin); setCortada(!!u.cortada); setTandaId(u.tandaId || null); setDeshacer(null); setMomento('resultado')
   }
 
@@ -252,11 +229,14 @@ export default function AdvisorImports() {
   async function verTanda(id) {
     try {
       const d = await api.get(`/advisor/tandas/${id}`)
-      setFilas((d.rows || []).map(filaDelServidor))
-      setInicio(d.created_at ? Date.parse(d.created_at + 'Z') || null : null)
-      setFin(d.finished_at ? Date.parse(d.finished_at + 'Z') || null : null)
-      setCortada(!d.finished_at && (d.resumen?.en_curso || 0) > 0)
+      const filasSrv = (d.rows || []).map(filaDelServidor)
+      const seCorto = !d.finished_at && (d.resumen?.en_curso || 0) > 0
+      setFilas(seCorto ? marcarInterrumpidas(filasSrv) : filasSrv)
+      setInicio(fechaServidor(d.created_at))
+      setFin(fechaServidor(d.finished_at))
+      setCortada(seCorto)
       setTandaId(d.id); setDeshacer(null); setMomento('resultado')
+      persistir(filasSrv, 'resultado', fechaServidor(d.created_at), fechaServidor(d.finished_at), d.id)
     } catch (e) {
       setErrorCarga(errorMessage(e) || 'No se pudo abrir esa tanda.')
     }
@@ -270,7 +250,9 @@ export default function AdvisorImports() {
     try {
       const res = await api.post(`/advisor/tandas/${tandaId}/revert`, {})
       const d = await api.get(`/advisor/tandas/${tandaId}`)
-      setFilas((d.rows || []).map(filaDelServidor))
+      const filasSrv = (d.rows || []).map(filaDelServidor)
+      setFilas(filasSrv)
+      persistir(filasSrv, 'resultado', inicio, fin, tandaId)
       setDeshacer({ resultado: res })
       api.get('/advisor/tandas').then(t => setHistorial(t?.tandas || [])).catch(() => {})
     } catch (e) {
@@ -611,9 +593,15 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
     <>
       <PageHeader
         eyebrow="Plan Asesor"
-        title={cortada ? 'La tanda se cortó' : 'Tanda cargada'}
+        title={cortada ? 'La tanda se cortó' : (revertibles === 0 && revertidos > 0 ? 'Tanda revertida' : 'Tanda cargada')}
         subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}.${frase ? ` ${frase}.` : ''}${revertidos > 0 ? ` ${plural(revertidos, 'importación revertida', 'importaciones revertidas')}.` : ''}`}
       />
+      {!tandaId && !cortada && (
+        <div className="mb-3.5 flex items-start gap-2 text-xs text-ink-0 border border-line bg-bg-1 rounded-xl px-3 py-2">
+          <Info size={14} className="mt-0.5 shrink-0 text-ink-2" aria-hidden="true" />
+          <span>Esta tanda no quedó guardada en el historial (el servidor no la registró al empezar). Los historiales sí se cargaron; para revertir alguno, hacelo desde la cuenta de ese cliente.</span>
+        </div>
+      )}
       {cortada && (
         <div className="mb-3.5 flex items-start gap-2 text-xs text-ink-0 border border-rendi-warn/30 bg-rendi-warn/10 rounded-xl px-3 py-2">
           <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rendi-warn" aria-hidden="true" />
@@ -698,12 +686,12 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
           {deshacer === 'confirmar' && (
             <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-0">
               ¿Revertir {plural(revertibles, 'importación', 'importaciones')} de {plural(revertibles, 'cliente', 'clientes')}? Se puede volver a cargar después.
-              <button type="button" className={`${btnPrimary} !bg-rendi-neg hover:!bg-rendi-neg/85`} onClick={onDeshacer}>Sí, deshacer</button>
+              <button type="button" className={btnDanger} onClick={onDeshacer}>Sí, deshacer</button>
               <button type="button" className={btnGhost} onClick={onCancelarDeshacer}>Cancelar</button>
             </span>
           )}
           {deshacer === 'corriendo' && <span className="inline-flex items-center gap-1.5 text-xs text-ink-2"><Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> Deshaciendo…</span>}
-          {revertidos > 0 && revertibles === 0 && deshacer === null && <span className="text-xs text-ink-2">Tanda revertida.</span>}
+          {revertidos > 0 && revertibles === 0 && typeof deshacer !== 'object' && <span className="text-xs text-ink-2">Tanda revertida.</span>}
           <button type="button" className={btnPrimary} onClick={onNueva}>Nueva tanda</button>
         </div>
       </div>
@@ -744,10 +732,9 @@ function Pildora({ estado }) {
 const movs = (n) => plural(n ?? 0, 'movimiento', 'movimientos')
 
 function fechaCorta(iso) {
-  if (!iso) return ''
-  const d = new Date(String(iso).replace(' ', 'T') + (String(iso).endsWith('Z') ? '' : 'Z'))
-  if (Number.isNaN(d.getTime())) return String(iso)
-  return d.toLocaleString('es-AR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+  const t = fechaServidor(iso)
+  if (t == null) return iso ? String(iso) : ''
+  return new Date(t).toLocaleString('es-AR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 function resumenCorto(r) {
   if (!r) return ''

@@ -199,6 +199,94 @@ class AdvisorTandasTest(unittest.TestCase):
         por = {x["label"]: x["estado"] for x in d["rows"]}
         self.assertEqual(por, {"Juan P": "revertido", "Ana G": "revert_fallo"})
 
+    def test_revert_usa_los_lotes_estampados_aunque_el_json_no_los_tenga(self):
+        """Un PATCH que llegó tarde deja la fila 'cargando' sin batch_id. El lote
+        igual está estampado con tanda_id → detalle lo reconcilia y revert lo
+        revierte. rows_json es lo que el front vio; import_batches es la verdad."""
+        tid, bids = self._tanda_cargada()
+        rows = [self._row(self.c1, "Juan P", estado="completo", batch_id=bids[self.c1], cargados=1),
+                self._row(self.c2, "Ana G", estado="cargando")]          # sin batch_id
+        self.http.patch(f"/api/advisor/tandas/{tid}", json={"rows": rows, "finished": True}, headers=self._h())
+        d = self.http.get(f"/api/advisor/tandas/{tid}", headers=self._h()).json()
+        ana = next(x for x in d["rows"] if x["label"] == "Ana G")
+        self.assertEqual(ana["batch_id"], bids[self.c2])
+        self.assertEqual(ana["estado"], "completo")
+        r = self.http.post(f"/api/advisor/tandas/{tid}/revert", headers=self._h())
+        self.assertEqual((r.json()["revertidos"], r.json()["fallidos"]), (2, 0), r.text)
+        self.assertEqual(self._batch(bids[self.c2])["status"], "reverted")
+
+    def test_revert_seguro_que_el_persister_rechaza_queda_como_revert_fallo(self):
+        """Un lote con VENTA no se revierte en modo seguro: la fila dice por qué,
+        el lote sigue confirmado y los demás sí se revierten."""
+        tid = self.http.post("/api/advisor/tandas", json={"rows": [self._row(self.c1, "Juan P"), self._row(self.c2, "Ana G")]}, headers=self._h()).json()["id"]
+        p1 = self._preview(self.c1, _csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100.000;0;0;0;0;100.000",
+            "3;4;16-01-2024;16-01-2024;Compra;BONO AL30 (AL30);ARS;BYMA;100;500;50.000;0;0;0;0;-50.000",
+            "5;6;17-01-2024;17-01-2024;Venta;BONO AL30 (AL30);ARS;BYMA;-100;600;60.000;0;0;0;0;60.000"), tanda_id=tid)
+        self.assertEqual(p1.status_code, 200, p1.text)
+        self.assertEqual(self._confirm(self.c1, p1.json()["session_id"]).status_code, 200)
+        p2 = self._preview(self.c2, _csv("7;8;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;200.000;0;0;0;0;200.000"), tanda_id=tid)
+        self.assertEqual(self._confirm(self.c2, p2.json()["session_id"]).status_code, 200)
+        r = self.http.post(f"/api/advisor/tandas/{tid}/revert", headers=self._h())
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["revertidos"], r.json()["fallidos"]), (1, 1), r.text)
+        d = self.http.get(f"/api/advisor/tandas/{tid}", headers=self._h()).json()
+        por = {x["label"]: x for x in d["rows"]}
+        self.assertEqual(por["Juan P"]["estado"], "revert_fallo")
+        self.assertTrue(por["Juan P"]["detalle"])                       # el motivo del persister, no vacío
+        self.assertNotIn("database", por["Juan P"]["detalle"].lower())  # y no un error crudo de la base
+        self.assertEqual(self._batch(p1.json()["session_id"])["status"], "confirmed")
+        self.assertEqual(por["Ana G"]["estado"], "revertido")
+
+    def test_valores_raros_en_el_patch_son_400_no_500(self):
+        tid = self.http.post("/api/advisor/tandas", json={"rows": [self._row(self.c1, "Juan P")]}, headers=self._h()).json()["id"]
+        for malo in ({"id": {"a": 1}}, {"client_uid": 2 ** 70}, {"client_uid": True}, {"cargados": "x"}, {"detalle": {"z": 1}}):
+            r = self.http.patch(f"/api/advisor/tandas/{tid}", json={"rows": [{**self._row(self.c1, "Juan P"), **malo}]}, headers=self._h())
+            self.assertEqual(r.status_code, 400, f"{malo}: {r.status_code} {r.text}")
+
+    def test_detalle_no_lee_lotes_que_no_son_de_la_tanda(self):
+        """Un batch_id ajeno metido por PATCH no devuelve su status."""
+        tid, bids = self._tanda_cargada()
+        # lote suelto (sin tanda) del mismo cliente
+        p = self._preview(self.c1, _csv("9;9;01-02-2024;01-02-2024;Recibo De Cobro;;ARS;;;;5.000;0;0;0;0;5.000"))
+        suelto = p.json()["session_id"]
+        rows = [self._row(self.c1, "Juan P", estado="completo", batch_id=suelto)]
+        self.http.patch(f"/api/advisor/tandas/{tid}", json={"rows": rows}, headers=self._h())
+        d = self.http.get(f"/api/advisor/tandas/{tid}", headers=self._h()).json()
+        self.assertIsNone(d["rows"][0]["batch_status"])
+
+    def test_borrar_al_cliente_olvida_su_nombre_en_la_tanda(self):
+        import advisor_tandas as at
+        tid, bids = self._tanda_cargada()
+        conn = main.get_db()
+        try:
+            n = at.olvidar_cliente(conn, self.c2)
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(n, 1)
+        d = self.http.get(f"/api/advisor/tandas/{tid}", headers=self._h()).json()
+        labels = [x["label"] for x in d["rows"]]
+        self.assertNotIn("Ana G", labels)
+        self.assertIn("Cliente eliminado", labels)
+        eliminado = next(x for x in d["rows"] if x["label"] == "Cliente eliminado")
+        self.assertIsNone(eliminado["client_uid"])
+
+    def test_preview_con_tanda_ajena_no_deja_lote_huerfano(self):
+        tid = self.http.post("/api/advisor/tandas", json={"rows": [self._row(self.c1, "Juan P")]}, headers=self._h()).json()["id"]
+        conn = main.get_db(); _link(conn, self.otro, self.c2, label="X"); conn.commit(); conn.close()
+        antes = self._n_batches(self.c2)
+        p = self._preview(self.c2, _csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;1.000;0;0;0;0;1.000"), tanda_id=tid, who=self.otro)
+        self.assertEqual(p.status_code, 400)
+        self.assertEqual(self._n_batches(self.c2), antes)
+
+    def _n_batches(self, uid):
+        conn = main.get_db()
+        try:
+            return conn.execute("SELECT COUNT(*) FROM import_batches WHERE user_id=?", (uid,)).fetchone()[0]
+        finally:
+            conn.close()
+
     def test_detalle_refleja_un_revert_hecho_desde_la_cuenta_del_cliente(self):
         tid, bids = self._tanda_cargada()
         r = self.http.post(f"/api/imports/{bids[self.c1]}/revert", headers=self._h(None, self.c1))

@@ -245,6 +245,59 @@ async function crearCliente(api, nombre, dormir) {
   }
 }
 
+// ── Contrato con el servidor (Fase 2): ida y vuelta sin pérdida ─────────────
+// `platform` viaja como ID (cocos, balanz…) para poder rearmar la fila;
+// `platform_label` para mostrarla. `incierto`, `notas` y `status` también van:
+// sin ellos, una tanda reabierta decía "No se cargó ningún movimiento" sobre un
+// 5xx que quizás guardó, y perdía "ya estaba cargado: archivo idéntico".
+export function filaAlServidor(f) {
+  return {
+    id: f.id,
+    client_uid: Number.isInteger(f.clientUid) ? f.clientUid : null,
+    label: f.label || f.nombre || '',
+    platform: f.platform || '',
+    platform_label: f.platformLabel || '',
+    archivos: (f.archivos || []).map(a => String(a.name || '').split(/[\\/]/).pop()),
+    estado: f.estado || ESTADO.PENDIENTE,
+    batch_id: f.batchId || null,
+    cargados: f.cargados || 0,
+    repetidos: f.repetidos || 0,
+    errores: f.errores || 0,
+    detalle: f.detalle || null,
+    notas: (f.notas || []).slice(0, 6),
+    creado: !!f.creado,
+    incierto: !!f.incierto,
+  }
+}
+export function filaDelServidor(r) {
+  return {
+    id: r.id, clientUid: Number.isInteger(r.client_uid) ? r.client_uid : null, esNuevo: false, nombre: '',
+    label: r.label || '', platform: r.platform || '', platformLabel: r.platform_label || r.platform || '',
+    format: '', archivos: (r.archivos || []).map(n => ({ name: n, size: 0 })),
+    estado: r.estado, batchId: r.batch_id || null, cargados: r.cargados || 0,
+    repetidos: r.repetidos || 0, errores: r.errores || 0, detalle: r.detalle || null,
+    notas: Array.isArray(r.notas) ? r.notas : [], creado: !!r.creado, incierto: !!r.incierto,
+    batchStatus: r.batch_status || null,
+  }
+}
+// SQLite guarda "2026-09-20 14:01:02" (con espacio, en UTC). Safari no parsea
+// el espacio: se normaliza a ISO con 'T' y 'Z'. Devuelve ms o null.
+export function fechaServidor(v) {
+  if (!v) return null
+  const iso = String(v).replace(' ', 'T') + (/Z$|[+-]\d\d:\d\d$/.test(String(v)) ? '' : 'Z')
+  const t = Date.parse(iso)
+  return Number.isNaN(t) ? null : t
+}
+// Al reabrir una tanda que no terminó, lo que quedó 'cargando'/'pendiente' no
+// corrió o no sabemos cómo terminó: se marca como interrumpido.
+export function marcarInterrumpidas(filas) {
+  return filas.map(f => {
+    if (f.estado === ESTADO.CARGANDO) return { ...f, estado: ESTADO.ERROR, incierto: true, detalle: 'La carga se cortó mientras corría esta fila: no sabemos si llegó a guardarse.' }
+    if (f.estado === ESTADO.PENDIENTE) return { ...f, estado: ESTADO.ERROR, incierto: false, detalle: 'No llegó a arrancar: la tanda se cortó antes.' }
+    return f
+  })
+}
+
 export function resumen(resultados) {
   const por = (e) => resultados.filter(r => r.estado === e).length
   return {

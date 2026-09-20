@@ -256,3 +256,30 @@ describe('correrTanda — tanda del servidor (F2)', () => {
     expect(api.llamadas.find(l => l.path === '/imports/preview').tandaId).toBeNull()
   })
 })
+
+import { filaAlServidor, filaDelServidor, fechaServidor, marcarInterrumpidas } from './tandaImport'
+
+describe('contrato con el servidor (F2)', () => {
+  it('ida y vuelta sin perder lo que la pantalla necesita', () => {
+    const f = { id: 7, clientUid: 44, esNuevo: false, nombre: '', label: 'Ana G', platform: 'cocos', platformLabel: 'Cocos Capital',
+      format: 'cocos', archivos: [{ name: 'C:\\Users\\x\\cocos-2024.csv', size: 10 }], estado: ESTADO.ERROR, batchId: 'b1',
+      cargados: 3, repetidos: 1, errores: 2, detalle: 'gateway', notas: ['ya estaba cargado'], creado: true, incierto: true }
+    const vuelta = filaDelServidor(filaAlServidor(f))
+    expect(vuelta).toMatchObject({ id: 7, clientUid: 44, label: 'Ana G', platform: 'cocos', platformLabel: 'Cocos Capital',
+      estado: ESTADO.ERROR, batchId: 'b1', cargados: 3, repetidos: 1, errores: 2, detalle: 'gateway', notas: ['ya estaba cargado'], creado: true, incierto: true })
+    expect(vuelta.archivos).toEqual([{ name: 'cocos-2024.csv', size: 0 }])
+  })
+  it('un cliente nuevo todavía sin cuenta viaja con client_uid null y vuelve sin uid', () => {
+    const v = filaDelServidor(filaAlServidor({ id: 1, esNuevo: true, nombre: 'Lucía F', archivos: [], estado: ESTADO.PENDIENTE }))
+    expect(v.clientUid).toBeNull(); expect(v.label).toBe('Lucía F')
+  })
+  it('fechaServidor entiende el formato de SQLite (espacio, UTC)', () => {
+    expect(fechaServidor('2026-09-20 14:01:02')).toBe(Date.parse('2026-09-20T14:01:02Z'))
+    expect(fechaServidor(null)).toBeNull(); expect(fechaServidor('nada')).toBeNull()
+  })
+  it('marcarInterrumpidas convierte cargando/pendiente en error explicado', () => {
+    const r = marcarInterrumpidas([{ estado: ESTADO.CARGANDO }, { estado: ESTADO.PENDIENTE }, { estado: ESTADO.COMPLETO }])
+    expect(r.map(x => x.estado)).toEqual([ESTADO.ERROR, ESTADO.ERROR, ESTADO.COMPLETO])
+    expect(r[0].incierto).toBe(true); expect(r[1].incierto).toBe(false)
+  })
+})

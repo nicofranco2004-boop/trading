@@ -4233,6 +4233,10 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
                 if _n:
                     deleted["advisor_reports"] = deleted.get("advisor_reports", 0) + _n
                 conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+                # Tandas de importación del asesor: el nombre del cliente no
+                # sobrevive a su borrado (queda "Cliente eliminado").
+                import advisor_tandas as _at
+                _at.olvidar_cliente(conn, _sid)
                 # Pedidos de acceso: no tienen columna user_id, así que el
                 # barrido genérico no los toca. Un pendiente hacia una cuenta
                 # borrada es un link vivo apuntando a la nada.
@@ -22045,6 +22049,8 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
                     conn.execute("DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
                                  (_sid, _sid))
                     conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+                    import advisor_tandas as _at
+                    _at.olvidar_cliente(conn, _sid)
                     conn.execute("""DELETE FROM advisor_link_requests
                                     WHERE advisor_uid=? OR client_uid=? OR shadow_uid=?""",
                                  (_sid, _sid, _sid))
@@ -33876,6 +33882,18 @@ def import_preview(
     flag_route = (route_by_currency or "").strip().lower() in ("1", "true", "yes", "on")
     conn = get_db()
     try:
+        # Tanda del asesor: se valida ANTES de parsear/persistir nada. La tanda es
+        # del ASESOR (auth_uid), el lote del CLIENTE (uid): una tanda ajena o
+        # inexistente es 400 sin dejar un lote preview huérfano en la cuenta.
+        _tid = None
+        if tanda_id:
+            _auth = getattr(getattr(request, "state", None), "rendi_auth_uid", None)
+            _tid = str(tanda_id).strip()[:64]
+            _own = conn.execute(
+                "SELECT 1 FROM advisor_import_tandas WHERE id=? AND advisor_uid=?",
+                (_tid, _auth)).fetchone() if _auth else None
+            if not _own:
+                raise HTTPException(400, "La tanda no existe o no es tuya.")
         with conn:
             payload = _import_pipeline.run_preview(
                 conn,
@@ -33892,17 +33910,8 @@ def import_preview(
             raise HTTPException(400, payload["error"])
         # Anotamos cuántos archivos componen el batch (para el preview UI)
         payload["source_file_count"] = len(file_data)
-        # Tanda del asesor: el lote queda colgado de ella. La tanda es del ASESOR
-        # (auth_uid), el lote del CLIENTE (uid): se verifica que la tanda exista
-        # y sea suya antes de estampar — una tanda ajena es 400, no se ignora.
-        if tanda_id:
-            _auth = getattr(getattr(request, "state", None), "rendi_auth_uid", None)
-            _tid = str(tanda_id).strip()[:64]
-            _own = conn.execute(
-                "SELECT 1 FROM advisor_import_tandas WHERE id=? AND advisor_uid=?",
-                (_tid, _auth)).fetchone() if _auth else None
-            if not _own:
-                raise HTTPException(400, "La tanda no existe o no es tuya.")
+        # El lote queda colgado de la tanda (validada arriba).
+        if _tid and payload.get("session_id"):
             with conn:
                 conn.execute("UPDATE import_batches SET tanda_id=? WHERE id=? AND user_id=?",
                              (_tid, payload.get("session_id"), uid))
