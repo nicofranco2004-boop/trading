@@ -58,9 +58,13 @@ export function faltante(fila) {
 export function estadoFinal(preview, confirm) {
   const errores = Array.isArray(preview?.errors) ? preview.errors.length : 0
   const repetidos = Number(confirm?.auto_skipped_duplicates || 0)
-  // Lo que el confirm dice haber ESCRITO (persist_batch): operaciones +
-  // movimientos de caja + conversiones. No se cuentan filas del archivo.
-  const cargados = ['operations_created', 'cash_movements', 'conversions']
+  // Lo que el confirm dice haber ESCRITO (persist_batch). Una COMPRA crea una
+  // posición (positions_created); una venta/cierre, una operación
+  // (operations_created); depósitos y retiros, movimientos de caja; el dólar
+  // MEP, conversiones. Verificado contra la respuesta real: un archivo con un
+  // depósito y una compra vuelve como positions_created=1, cash_movements=1,
+  // operations_created=0 — sin `positions_created` la pantalla decía "1".
+  const cargados = ['positions_created', 'operations_created', 'cash_movements', 'conversions']
     .reduce((a, k) => a + Number(confirm?.[k] || 0), 0)
   const notas = []
   if (repetidos > 0) notas.push(`${repetidos} repetidos omitidos`)

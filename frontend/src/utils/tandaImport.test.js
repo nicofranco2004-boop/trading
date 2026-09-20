@@ -44,10 +44,10 @@ describe('filaLista / faltante', () => {
 })
 
 describe('estadoFinal', () => {
-  it('cuenta lo ESCRITO por el confirm, no filas del archivo', () => {
-    const r = estadoFinal({ errors: [] }, { operations_created: 5, cash_movements: 2, conversions: 1, auto_skipped_duplicates: 4 })
+  it('cuenta lo ESCRITO por el confirm (compras incluidas), no filas del archivo', () => {
+    const r = estadoFinal({ errors: [] }, { positions_created: 2, operations_created: 5, cash_movements: 2, conversions: 1, auto_skipped_duplicates: 4 })
     expect(r.estado).toBe(ESTADO.COMPLETO)
-    expect(r.cargados).toBe(8)
+    expect(r.cargados).toBe(10)
     expect(r.repetidos).toBe(4)
     expect(r.notas).toEqual(['4 repetidos omitidos'])
   })

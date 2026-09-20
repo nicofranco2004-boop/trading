@@ -366,7 +366,7 @@ function Progreso({ filas, inicio }) {
           <div className="text-xs text-ink-1 tabular">
             {f.estado === ESTADO.CARGANDO ? `${f.paso || 'Cargando'}…`
               : f.estado === ESTADO.PENDIENTE ? 'En espera'
-              : f.detalle || (f.notas?.length ? f.notas.join(' · ') : `${f.cargados ?? 0} movimientos`)}
+              : f.detalle || (f.notas?.length ? f.notas.join(' · ') : movs(f.cargados))}
           </div>
         </div>
       ))}
@@ -420,7 +420,7 @@ function Resultado({ filas, inicio, fin, onNueva, irACliente, onReintentar }) {
                 <>{f.detalle}<span className="block text-[11px] text-ink-3 mt-0.5">No se tocó nada en su cuenta.</span></>
               ) : (
                 <>
-                  {f.cargados ?? 0} movimientos cargados
+                  {movs(f.cargados)} cargados
                   {(f.detalle || f.notas?.length > 0 || f.creado) && (
                     <span className="block text-[11px] text-ink-3 mt-0.5">
                       {[f.detalle, ...(f.notas || []), f.creado ? 'Cuenta creada. Podés invitarlo cuando quieras desde Clientes.' : null].filter(Boolean).join(' · ')}
@@ -473,6 +473,8 @@ function Pildora({ estado }) {
     </span>
   )
 }
+
+const movs = (n) => `${n ?? 0} ${n === 1 ? 'movimiento' : 'movimientos'}`
 
 function nombreDe(f) {
   return f.esNuevo ? (f.nombre || 'Cliente nuevo') : (f.label || (f.clientUid ? `Cliente ${f.clientUid}` : 'Sin cliente'))
