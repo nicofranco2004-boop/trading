@@ -61,7 +61,7 @@ describe('estadoFinal', () => {
     const r = estadoFinal({ errors: [], seed_suggestions: { needed: true } }, { operations_created: 9 })
     expect(r.estado).toBe(ESTADO.REVISAR)
     expect(r.cargados).toBe(9)
-    expect(r.detalle).toMatch(/posiciones previas/)
+    expect(r.detalle).toMatch(/posiciones previas|fondeo inicial/)
   })
 })
 
@@ -141,5 +141,104 @@ describe('resumen', () => {
       { estado: ESTADO.ERROR },
     ])
     expect(r).toEqual({ total: 3, completos: 1, revisar: 1, errores: 1, movimientos: 15, repetidos: 2, filasConError: 3 })
+  })
+})
+
+// ── Lo que la auditoría de F1 encontró que la tanda "perdía en silencio" ──────
+import { archivoAceptado } from './tandaImport'
+
+describe('estadoFinal — lo que el asistente pregunta y la tanda no puede', () => {
+  const okConfirm = { positions_created: 1, cash_movements: 1 }
+  it('traspaso entre brokers del mismo cliente → REVISAR (si no, el título se cuenta dos veces)', () => {
+    const r = estadoFinal({ errors: [], traspasos: [{ activo: 'GGAL', broker_origen: 'Bull Market', cantidad: 100 }] }, okConfirm)
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.detalle).toMatch(/GGAL.*Bull Market/)
+  })
+  it('filas que el guardado no pudo escribir (skipped_rows) → REVISAR con el motivo', () => {
+    const r = estadoFinal({ errors: [] }, { ...okConfirm, skipped_rows: [{ row_index: 3, message: 'Broker no encontrado' }] })
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.detalle).toContain('Broker no encontrado')
+  })
+  it('filas que exigen aprobación (skipped_by_user) → REVISAR', () => {
+    expect(estadoFinal({ errors: [] }, { ...okConfirm, skipped_by_user: 2 }).estado).toBe(ESTADO.REVISAR)
+  })
+  it('caja negativa al terminar → REVISAR nombrando el broker', () => {
+    const r = estadoFinal({ errors: [] }, { ...okConfirm, cash_health: [{ broker: 'Balanz', currency: 'ARS', balance: -1500 }] })
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.detalle).toContain('Balanz ARS')
+  })
+  it('post-proceso con error → REVISAR (antes fallaba en silencio)', () => {
+    const r = estadoFinal({ errors: [] }, { ...okConfirm, post_proceso: { rebuild: 'error' } })
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.detalle).toMatch(/recálculo/)
+  })
+  it('estado inicial por caja (sin ventas) explica el fondeo, no ventas fantasma', () => {
+    const r = estadoFinal({ errors: [], seed_suggestions: { needed: true, totals: { sell_errors: 0 } } }, okConfirm)
+    expect(r.detalle).toMatch(/fondeo inicial/)
+    const v = estadoFinal({ errors: [], seed_suggestions: { needed: true, totals: { sell_errors: 2 } } }, okConfirm)
+    expect(v.detalle).toMatch(/ventas de activos/)
+  })
+  it('cuenta FILAS con error (summary.invalid_rows), no entradas de error', () => {
+    const r = estadoFinal({ errors: [{}, {}], summary: { invalid_rows: 1 } }, okConfirm)
+    expect(r.errores).toBe(1)
+    expect(r.notas).toEqual(['1 fila con error, omitida'])
+  })
+})
+
+describe('correrTanda — reintentos, duplicados y tope de altas', () => {
+  it('al crear un cliente nuevo la fila pasa a esNuevo:false (reintentar no lo crea de nuevo)', async () => {
+    const api = apiFalsa({ crearDe: () => ({ client_uid: 55 }) })
+    const updates = []
+    await correrTanda([fila({ esNuevo: true, clientUid: null, nombre: 'Lucía F' })], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(updates.some(u => u.esNuevo === false && u.clientUid === 55 && u.label === 'Lucía F')).toBe(true)
+  })
+  it('el mismo cliente nuevo en dos filas se crea UNA vez', async () => {
+    const api = apiFalsa({ crearDe: () => ({ client_uid: 66 }) })
+    await correrTanda([
+      fila({ id: 1, esNuevo: true, clientUid: null, nombre: 'Ana G' }),
+      fila({ id: 2, esNuevo: true, clientUid: null, nombre: ' ana g ', format: 'balanz_movimientos' }),
+    ], { api })
+    expect(api.llamadas.filter(l => l.path === '/advisor/clients')).toHaveLength(1)
+    expect(api.llamadas.filter(l => l.path === '/imports/confirm').map(c => c.clientId)).toEqual([66, 66])
+  })
+  it('429 al crear: espera y reintenta una vez', async () => {
+    let n = 0
+    const api = apiFalsa({ crearDe: () => { n += 1; if (n === 1) { const e = new Error('HTTP 429'); e.status = 429; throw e } return { client_uid: 77 } } })
+    const esperas = []
+    const r = await correrTanda([fila({ esNuevo: true, clientUid: null, nombre: 'Diego S' })], { api, dormir: async (ms) => { esperas.push(ms) } })
+    expect(esperas).toEqual([61_000])
+    expect(r.completos).toBe(1)
+  })
+  it('archivo idéntico a uno ya cargado: no se confirma y queda Completo con nota', async () => {
+    const api = apiFalsa({ previewDe: () => ({ session_id: 's', errors: [], duplicate_of_batch_id: 'viejo' }) })
+    const updates = []
+    const r = await correrTanda([fila()], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(api.llamadas.some(l => l.path === '/imports/confirm')).toBe(false)
+    expect(r.completos).toBe(1)
+    expect(updates.at(-1).notas[0]).toMatch(/idéntico/)
+  })
+  it('si el confirm cae con 502, la fila queda "incierta" (no "no se tocó nada")', async () => {
+    const api = apiFalsa({ confirmDe: () => { const e = new Error('gateway'); e.status = 502; throw e } })
+    const updates = []
+    await correrTanda([fila()], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(updates.at(-1)).toMatchObject({ estado: ESTADO.ERROR, incierto: true, status: 502 })
+    const api4 = apiFalsa({ previewDe: () => { const e = new Error('x'); e.status = 400; e.payload = { detail: 'formato' }; throw e } })
+    const u4 = []
+    await correrTanda([fila()], { api: api4, onUpdate: (id, p) => u4.push(p) })
+    expect(u4.at(-1)).toMatchObject({ incierto: false, detalle: 'formato' })
+  })
+  it('nunca manda un pedido sin cliente identificado', async () => {
+    const api = apiFalsa({ crearDe: () => ({}) })
+    const r = await correrTanda([fila({ esNuevo: true, clientUid: null, nombre: 'X' })], { api })
+    expect(api.llamadas.some(l => l.path === '/imports/preview')).toBe(false)
+    expect(r.errores).toBe(1)
+  })
+})
+
+describe('archivoAceptado', () => {
+  it('acepta csv/xlsx/xls/txt y rechaza pdf', () => {
+    expect(archivoAceptado('a.CSV')).toBe(true)
+    expect(archivoAceptado('b.xlsx')).toBe(true)
+    expect(archivoAceptado('resumen.pdf')).toBe(false)
   })
 })

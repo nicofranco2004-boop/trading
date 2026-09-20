@@ -33784,8 +33784,13 @@ def _medir_import(nombre):
                 return fn(*args, **kwargs)
             finally:
                 data = kwargs.get("data")
-                log.info("%s uid=%s batch=%s dur_ms=%d", nombre, kwargs.get("uid"),
-                         getattr(data, "session_id", None),
+                _req = kwargs.get("request")
+                # uid = cuenta EFECTIVA (el cliente, si vino header); auth_uid = quién
+                # lo hizo (el asesor). Sin el segundo, una tanda de 20 clientes se ve
+                # como 20 usuarios distintos y no se puede medir por asesor.
+                _auth = getattr(getattr(_req, "state", None), "rendi_auth_uid", None)
+                log.info("%s uid=%s auth_uid=%s batch=%s dur_ms=%d", nombre, kwargs.get("uid"),
+                         _auth, getattr(data, "session_id", None),
                          int((time.perf_counter() - _t0) * 1000))
         return wrapper
     return deco
@@ -33801,6 +33806,7 @@ def import_preview(
     mapping: Optional[str] = Form(None),                   # JSON: {"columns":{}, "defaults":{}}
     route_by_currency: Optional[str] = Form(None),         # "1"/"true" → routing per-row
     uid: int = Depends(get_effective_user),
+    request: Request = None,   # sólo para el log de medición (auth_uid); opcional y último
 ):
     """Sube uno o más CSVs y genera el preview unificado. Persiste un batch en
     estado 'preview'. Devuelve session_id (= batch_id) para usar en /confirm.
@@ -34068,6 +34074,10 @@ def _reconstruir_mtm(uid: int) -> dict:
         conn.close()
 
 
+_MTM_RUNNING: set = set()
+_MTM_RUNNING_LOCK = threading.Lock()
+
+
 def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
     """Dispara la reconstrucción EN BACKGROUND y vuelve al toque.
 
@@ -34083,8 +34093,23 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
     """
     try:
         import threading as _th
-        _th.Thread(target=_reconstruir_mtm, args=(uid,), daemon=True,
-                   name=f"mtm-backfill-{uid}").start()
+        # Un solo hilo por usuario: la tanda del asesor confirma dos lotes del
+        # MISMO cliente seguidos (dos brokers) y sin esto el hilo del primero
+        # escribía `snapshots` mientras el confirm del segundo hacía rebuild —
+        # el que perdía el lock dejaba la curva a medias, sin aviso.
+        with _MTM_RUNNING_LOCK:
+            if uid in _MTM_RUNNING:
+                return {"reconstruida": "en_curso", "motivo": "ya_corriendo"}
+            _MTM_RUNNING.add(uid)
+
+        def _run():
+            try:
+                _reconstruir_mtm(uid)
+            finally:
+                with _MTM_RUNNING_LOCK:
+                    _MTM_RUNNING.discard(uid)
+
+        _th.Thread(target=_run, daemon=True, name=f"mtm-backfill-{uid}").start()
         return {"reconstruida": "en_curso"}
     except Exception:
         log.exception("mtm-auto: no se pudo lanzar la reconstrucción de %s", uid)
@@ -34093,7 +34118,9 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
 
 @app.post("/api/imports/confirm")
 @_medir_import("import_confirm")
-def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)):
+# `request` va ÚLTIMO y opcional: tests y callers internos llaman
+# `import_confirm(data, uid)` posicional; FastAPI lo inyecta igual esté donde esté.
+def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user), request: Request = None):
     """Confirma el import: aplica los side-effects y marca el batch como 'confirmed'.
     `skip_row_indices` permite omitir filas específicas que el usuario marcó en
     el preview como problemáticas, sin re-subir el archivo.
@@ -34168,6 +34195,10 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
 
 
+        # Qué pasos del post-proceso fallaron. Viaja en la respuesta para que la
+        # pantalla (y la tanda del asesor) no diga "Completo" sobre un rebuild que
+        # no corrió: antes esto sólo quedaba en el log del servidor.
+        post_proceso: Dict[str, str] = {}
         # ── POST-PROCESO: FUERA de la transacción, cada uno con la suya ──────
         # Todo lo de acá abajo ya estaba envuelto en try/except con traceback: el
         # propio código las declara "Best-effort: si falla, el batch ya está
@@ -34203,6 +34234,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["rebuild"] = "error"
 
         # Sweep de vencimientos: las letras/LECAPs se rescatan al vencer SIN
         # una venta explícita — el cash entra como "Renta Y Amortizacion"
@@ -34216,6 +34248,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["letras"] = "error"
 
         # Sweep de amortizaciones: los bonos que amortizan (AL30/GD30/…)
         # devuelven capital en cuotas; el mercado los cotiza por nominal
@@ -34230,6 +34263,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["amortizaciones"] = "error"
 
         # Tagear renta fija por el universo de data912 (soberanos, CER, BOPREAL,
         # ONs): los imports que no etiquetan el tipo (IEB) dejan bonos/ONs como
@@ -34251,6 +34285,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["bonos_data912"] = "error"
 
         # Normalización de unidad de bonos: el importador puede guardar el costo
         # "por 100 nominales" (IEB siempre; Balanz a veces) mientras el precio
@@ -34263,6 +34298,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["unidades_bonos"] = "error"
 
         # Comisiones en ARS guardadas en posiciones USD (Balanz reporta Gastos en
         # pesos aun para trades dólar/cable) → comisión ×MEP infla el costo (P&L
@@ -34273,6 +34309,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["comisiones_usd"] = "error"
 
         # Auto-recalc post-import: el persister es incremental (cada tx
         # actualiza monthly_entries por separado vía _update_monthly_*).
@@ -34290,6 +34327,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             # batch ya está persistido. Loggeamos pero seguimos.
             import traceback
             traceback.print_exc()
+            post_proceso["recalc"] = "error"
 
         # Re-backfill de snapshots month-end: persist_batch ya los generó,
         # pero ANTES del rebuild — con el capital_final viejo. Tras el rebuild
@@ -34301,6 +34339,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["snapshots"] = "error"
 
         # ── FCI valuation override de la foto de tenencia (Balanz): estampamos el
         # precio-por-cuotaparte del Resumen en positions.price_override de los FCI que
@@ -34323,6 +34362,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         except Exception:
             import traceback
             traceback.print_exc()
+            post_proceso["fci_override"] = "error"
 
         # ── Tipo de cambio histórico: migrar la cuenta si todavía está en v1 ──
         # VA ACÁ A PROPÓSITO: FUERA del `with conn:`, o sea con el import YA
@@ -34344,6 +34384,7 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                 "skipped_by_user": len(skip_set), "auto_skipped_duplicates": auto_skipped,
                 "fx_migracion": fx_migracion,
                 "mtm_reconstruccion": mtm_reconstruccion,
+                "post_proceso": post_proceso,
                 **summary}
     except HTTPException:
         raise

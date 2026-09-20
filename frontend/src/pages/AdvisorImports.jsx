@@ -8,13 +8,18 @@
 // Tres momentos, en un solo archivo y sin fork por viewport (frontend/CLAUDE.md R6):
 // armar → cargando → resultado. En mobile la fila se apila (grid → 1 columna).
 //
+// El resultado (y el progreso a medio camino) se guarda en sessionStorage:
+// entrar a un cliente desde "Ver cartera" y volver con Atrás no lo destruye, y
+// si la tanda se cortó (cerró la pestaña, navegó) al volver se ve qué quedó
+// hecho y qué no. Sólo por pestaña; la Fase 2 lo persiste en el servidor.
+//
 // Sólo al nivel propio del asesor (`tier === 'advisor' && !clientCtx`). Adentro
 // de un cliente, importar es /imports como para cualquier usuario.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import {
   Plus, X, FileUp, HelpCircle, ChevronDown, ChevronUp, CheckCircle2,
-  AlertTriangle, XCircle, Loader2, ArrowRight, Info,
+  AlertTriangle, XCircle, Loader2, ArrowRight, Info, History,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -23,36 +28,81 @@ import { api, errorMessage } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES } from '../components/import/BrokerInstructions'
-import { correrTanda, filaLista, faltante, ESTADO, resumen as resumir } from '../utils/tandaImport'
+import {
+  correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO,
+  resumen as resumir,
+} from '../utils/tandaImport'
 
 const btnPrimary = 'inline-flex items-center gap-1.5 text-xs font-medium text-white bg-data-violet hover:bg-data-violet/85 rounded px-3.5 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
 const btnGhost = 'inline-flex items-center gap-1.5 text-xs font-medium text-ink-1 border border-line hover:border-data-violet/50 hover:text-ink-0 rounded px-3 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
 const selectCls = 'w-full bg-bg-2 border border-line-2 rounded px-3 py-2 text-sm text-ink-0 disabled:opacity-60'
 
-// Tope de filas por tanda. En F1 vive acá; en F2 lo hereda el backend con la tanda.
+// Tope de filas por tanda. La verdad vive en backend/advisor_tandas.MAX_FILAS;
+// esta es la copia del front. Si cambia una, cambia la otra.
 export const MAX_FILAS = 50
 
 // La tanda no incluye el CSV genérico: exige mapear columnas a mano, que es
 // justamente lo que una tanda no puede preguntar. Va al asistente por cliente.
 const SIN_TANDA = new Set(['generic'])
 
+const STORAGE_KEY = 'rendi_tanda_ultima'
+
 let _seq = 0
-const nuevaFila = () => ({ id: ++_seq, clientUid: null, esNuevo: false, nombre: '', platform: '', format: '', archivos: [], soloLectura: false, estado: ESTADO.PENDIENTE })
+const nuevaFila = () => ({ id: ++_seq, clientUid: null, esNuevo: false, nombre: '', label: '', platform: '', platformLabel: '', format: '', archivos: [], soloLectura: false, estado: ESTADO.PENDIENTE })
+
+// Lo que se guarda por pestaña: sin los File (no se serializan), sólo nombres.
+function serializar(filas, momento, inicio, fin) {
+  return {
+    momento, inicio, fin, ts: Date.now(),
+    filas: filas.map(f => ({ ...f, archivos: (f.archivos || []).map(a => ({ name: a.name, size: a.size })) })),
+  }
+}
+function guardarLocal(x) { try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(x)) } catch {} }
+function leerLocal() {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    const x = raw ? JSON.parse(raw) : null
+    if (!x || !Array.isArray(x.filas)) return null
+    // Las filas que quedaron "cargando"/"pendiente" en una tanda cortada no
+    // corrieron o no sabemos cómo terminaron: se marcan como interrumpidas.
+    const cortada = x.momento === 'cargando'
+    x.filas = x.filas.map(f => {
+      if (!cortada) return f
+      if (f.estado === ESTADO.CARGANDO) return { ...f, estado: ESTADO.ERROR, incierto: true, detalle: 'La carga se cortó mientras corría esta fila: no sabemos si llegó a guardarse.' }
+      if (f.estado === ESTADO.PENDIENTE) return { ...f, estado: ESTADO.ERROR, incierto: false, detalle: 'No llegó a arrancar: la tanda se cortó antes.' }
+      return f
+    })
+    x.filas.forEach(f => { _seq = Math.max(_seq, Number(f.id) || 0) })
+    return { ...x, cortada }
+  } catch { return null }
+}
 
 export default function AdvisorImports() {
   const { user } = useAuth()
-  const { clientCtx, enterClient } = useAdvisorContext()
+  const { clientCtx, enterClient, exitClient } = useAdvisorContext()
   const navigate = useNavigate()
   const isAdvisor = user?.tier === 'advisor'
 
   const [roster, setRoster] = useState(null)      // null = cargando
   const [grupos, setGrupos] = useState([])        // parsers agrupados por plataforma
   const [errorCarga, setErrorCarga] = useState(null)
-  const [filas, setFilas] = useState(() => [nuevaFila()])
-  const [momento, setMomento] = useState('armar')  // armar | cargando | resultado
-  const [inicio, setInicio] = useState(null)
-  const [fin, setFin] = useState(null)
+  const [ultima] = useState(() => leerLocal())    // resultado guardado en la pestaña
+  const [filas, setFilas] = useState(() => (ultima && ultima.momento !== 'armar' ? ultima.filas : [nuevaFila()]))
+  const [momento, setMomento] = useState(() => (ultima && ultima.momento !== 'armar' ? 'resultado' : 'armar'))
+  const [inicio, setInicio] = useState(() => ultima?.inicio || null)
+  const [fin, setFin] = useState(() => ultima?.fin || null)
+  const [cortada, setCortada] = useState(() => !!ultima?.cortada)
+  const [hayGuardada, setHayGuardada] = useState(() => !!ultima)
   const abortRef = useRef(null)
+  const pendientesRef = useRef([])   // filas incompletas que no viajaron: vuelven en "Nueva tanda"
+  const filasRef = useRef(filas)
+  filasRef.current = filas
+
+  // Con Atrás desde "Ver cartera"/"Revisar" se vuelve con el contexto del
+  // cliente puesto. Si hay un resultado guardado, se sale del cliente y se
+  // muestra; si no, esta pantalla no existe adentro de un cliente.
+  const volviendo = !!clientCtx && !!ultima
+  useEffect(() => { if (volviendo) exitClient() }, [volviendo, exitClient])
 
   const cargar = useCallback(async () => {
     setErrorCarga(null)
@@ -61,7 +111,7 @@ export default function AdvisorImports() {
       setRoster(r.clients || [])
       setGrupos((Array.isArray(g) ? g : []).filter(p => !SIN_TANDA.has(p.platform) && (p.exports || []).some(e => e.supported)))
     } catch (e) {
-      setErrorCarga(errorMessage(e))
+      setErrorCarga(errorMessage(e) || 'No se pudo cargar la lista de clientes.')
       setRoster([])
     }
   }, [])
@@ -71,43 +121,86 @@ export default function AdvisorImports() {
   // (es atómico del lado del servidor), sí antes de la fila siguiente.
   useEffect(() => () => abortRef.current?.abort(), [])
 
+  // Cerrar la pestaña mientras corre: el navegador pregunta.
+  useEffect(() => {
+    if (momento !== 'cargando') return undefined
+    const h = (e) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', h)
+    return () => window.removeEventListener('beforeunload', h)
+  }, [momento])
+
   if (user && !isAdvisor) return <Navigate to="/" replace />
-  if (clientCtx) return <Navigate to="/imports" replace />
+  if (clientCtx && !volviendo) return <Navigate to="/imports" replace />
+
+  const persistir = (fs, mom, ini = inicio, f = fin) => { guardarLocal(serializar(fs, mom, ini, f)); setHayGuardada(true) }
 
   const patch = (id, p) => setFilas(fs => fs.map(f => (f.id === id ? { ...f, ...(typeof p === 'function' ? p(f) : p) } : f)))
   const quitar = (id) => setFilas(fs => fs.filter(f => f.id !== id))
   const agregar = () => setFilas(fs => (fs.length >= MAX_FILAS ? fs : [...fs, nuevaFila()]))
 
   const listas = filas.filter(filaLista)
+  const incompletas = filas.length - listas.length
   const nArchivos = filas.reduce((a, f) => a + f.archivos.length, 0)
-  const nNuevos = filas.filter(f => f.esNuevo && (f.nombre || '').trim()).length
+  const nNuevos = new Set(filas.filter(f => f.esNuevo && (f.nombre || '').trim()).map(f => f.nombre.trim().toLowerCase())).size
 
   async function guardar() {
     if (listas.length === 0) return
-    // Las filas incompletas no viajan: se quedan en la lista, no entorpecen.
-    const aCorrer = filas.filter(filaLista)
-    setFilas(aCorrer.map(f => ({ ...f, estado: ESTADO.PENDIENTE, paso: null, detalle: null })))
+    // Las filas incompletas no viajan: se guardan aparte y vuelven en "Nueva tanda".
+    pendientesRef.current = filas.filter(f => !filaLista(f))
+    const aCorrer = filas.filter(filaLista).map(f => ({ ...f, estado: ESTADO.PENDIENTE, paso: null, detalle: null }))
+    const t0 = Date.now()
+    setFilas(aCorrer)
     setMomento('cargando')
-    setInicio(Date.now())
-    setFin(null)
+    setInicio(t0); setFin(null); setCortada(false)
+    persistir(aCorrer, 'cargando', t0, null)
     const ac = new AbortController()
     abortRef.current = ac
-    await correrTanda(aCorrer, { api, signal: ac.signal, onUpdate: patch })
-    setFin(Date.now())
+    // `latest` es la copia propia de las filas: el estado de React se actualiza
+    // en diferido, y persistir desde él justo al terminar guardaba la penúltima
+    // versión (la última fila quedaba "Cargando" para siempre al volver).
+    let latest = aCorrer
+    await correrTanda(aCorrer, {
+      api, signal: ac.signal,
+      onUpdate: (id, p) => {
+        latest = latest.map(f => (f.id === id ? { ...f, ...p } : f))
+        guardarLocal(serializar(latest, 'cargando', t0, null))
+        setFilas(latest)
+      },
+    })
+    if (ac.signal.aborted) return   // desmontada: lo guardado ya dice hasta dónde llegó
+    const t1 = Date.now()
+    setFin(t1)
     setMomento('resultado')
+    persistir(latest, 'resultado', t0, t1)
     // El roster puede tener clientes nuevos → para la próxima tanda.
     api.get('/advisor/clients').then(r => setRoster(r.clients || [])).catch(() => {})
   }
 
-  function nuevaTanda() {
-    setFilas([nuevaFila()])
+  function nuevaTanda(extra = []) {
+    const base = [...extra, ...pendientesRef.current]
+    pendientesRef.current = []
+    setFilas(base.length ? base : [nuevaFila()])
     setMomento('armar')
     setInicio(null); setFin(null)
   }
 
+  // Volver a intentar UNA fila: se arma una tanda nueva con esa fila (sin
+  // archivos) y el resultado anterior sigue guardado ("Ver la última tanda").
+  function reintentar(fila) {
+    const f = { ...fila, estado: ESTADO.PENDIENTE, paso: null, detalle: null, archivos: [] }
+    if (Number.isInteger(f.clientUid)) { f.esNuevo = false; f.label = f.label || f.nombre }
+    nuevaTanda([f])
+  }
+
+  function verUltima() {
+    const u = leerLocal()
+    if (!u) return
+    setFilas(u.filas); setInicio(u.inicio); setFin(u.fin); setCortada(!!u.cortada); setMomento('resultado')
+  }
+
   const irACliente = (fila, ruta) => {
     const c = roster?.find(x => x.client_uid === fila.clientUid)
-    enterClient({ id: fila.clientUid, label: c?.label || fila.nombre || `Cliente ${fila.clientUid}` })
+    enterClient({ id: fila.clientUid, label: c?.label || fila.label || fila.nombre || `Cliente ${fila.clientUid}` })
     navigate(ruta)
   }
 
@@ -119,6 +212,11 @@ export default function AdvisorImports() {
             eyebrow="Plan Asesor"
             title="Importar historiales de varios clientes"
             subtitle="Una fila por cliente: elegís de quién es, de qué broker viene y soltás sus archivos. Al guardar, Rendi carga los historiales uno detrás de otro y te avisa lo que necesite tu revisión."
+            action={hayGuardada ? (
+              <button type="button" className={btnGhost} onClick={verUltima}>
+                <History size={14} aria-hidden="true" /> Ver la última tanda
+              </button>
+            ) : undefined}
           />
           {errorCarga && (
             <div className="mb-4 flex items-start gap-2 text-xs text-rendi-neg border border-rendi-neg/30 bg-rendi-neg/5 rounded-xl px-3 py-2">
@@ -142,8 +240,8 @@ export default function AdvisorImports() {
                   <button type="button" className={btnGhost} onClick={agregar} disabled={filas.length >= MAX_FILAS}>
                     <Plus size={14} aria-hidden="true" /> Agregar cliente
                   </button>
-                  <span className="text-xs text-ink-3">
-                    {filas.length >= MAX_FILAS ? `Hasta ${MAX_FILAS} filas por tanda.` : 'Podés repetir un cliente si tiene más de un broker.'}
+                  <span className="text-xs text-ink-2">
+                    {filas.length >= MAX_FILAS ? `Hasta ${MAX_FILAS} filas por tanda.` : 'Podés repetir un cliente si tiene más de un broker. Si los títulos pasaron de un broker a otro, la fila va a pedirte revisarla.'}
                   </span>
                 </div>
               </div>
@@ -156,7 +254,11 @@ export default function AdvisorImports() {
                 </div>
                 <div className="flex items-center gap-3">
                   {listas.length > 0 && (
-                    <span className="text-xs text-ink-3 tabular">Listas para cargar: {listas.length} de {filas.length}</span>
+                    <span className="text-xs text-ink-2 tabular">
+                      {incompletas > 0
+                        ? `Se cargan ${listas.length} de ${filas.length}; ${plural(incompletas, 'fila incompleta queda', 'filas incompletas quedan')} para la próxima tanda`
+                        : `Listas para cargar: ${listas.length} de ${filas.length}`}
+                    </span>
                   )}
                   <button type="button" className={btnPrimary} onClick={guardar} disabled={listas.length === 0}>
                     Guardar y cargar
@@ -173,19 +275,19 @@ export default function AdvisorImports() {
           <PageHeader
             eyebrow="Plan Asesor"
             title="Cargando historiales"
-            subtitle="Van de a uno, en orden. Lo que ya se cargó queda cargado aunque cierres esta pestaña; lo que falta no arranca hasta que vuelvas a guardar."
+            subtitle="Van de a uno, en orden. Si salís de esta pantalla, la fila que está corriendo termina y las siguientes no arrancan; al volver vas a ver hasta dónde llegó."
           />
           <Progreso filas={filas} inicio={inicio} />
           <div className="mt-3.5 flex items-start gap-2.5 rounded-xl bg-data-violet/10 px-3.5 py-3 text-xs text-ink-0">
             <Info size={14} className="mt-0.5 shrink-0 text-data-violet" aria-hidden="true" />
-            <p><span className="font-semibold">La tanda no se frena a preguntar.</span> Las filas repetidas se omiten solas y las que tengan error se informan al final. Lo que necesite una decisión tuya, como completar posiciones previas al archivo, queda marcado para revisar cliente por cliente.</p>
+            <p><span className="font-semibold">La tanda no se frena a preguntar.</span> Las filas repetidas se omiten solas y las que tengan error se informan al final. Lo que necesite una decisión tuya, como completar posiciones previas al archivo o aprobar un traspaso entre brokers, queda marcado para revisar cliente por cliente.</p>
           </div>
         </>
       )}
 
       {momento === 'resultado' && (
-        <Resultado filas={filas} inicio={inicio} fin={fin} onNueva={nuevaTanda} irACliente={irACliente}
-          onReintentar={(fila) => { setFilas([{ ...fila, estado: ESTADO.PENDIENTE, paso: null, detalle: null, archivos: [] }]); setMomento('armar') }} />
+        <Resultado filas={filas} inicio={inicio} fin={fin} cortada={cortada}
+          onNueva={() => nuevaTanda()} irACliente={irACliente} onReintentar={reintentar} />
       )}
     </div>
   )
@@ -195,8 +297,12 @@ export default function AdvisorImports() {
 
 function Fila({ fila, roster, grupos, onChange, onQuitar }) {
   const [guiaAbierta, setGuiaAbierta] = useState(false)
+  const [rechazados, setRechazados] = useState([])
   const inputRef = useRef(null)
   const falta = faltante(fila)
+  const grupo = grupos.find(g => g.platform === fila.platform)
+  const exportsSoportados = grupo ? (grupo.exports || []).filter(e => e.supported) : []
+  const guia = BROKER_GUIDES.find(g => g.id === fila.platform)
 
   const elegirCliente = (v) => {
     if (v === '__new') { onChange({ esNuevo: true, clientUid: null, label: '', soloLectura: false }); return }
@@ -207,11 +313,14 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
   const elegirPlataforma = (platform) => {
     const g = grupos.find(x => x.platform === platform)
     const exp = g ? (g.exports || []).find(e => e.supported) : null
-    onChange({ platform, format: exp?.id || '' })
+    onChange({ platform, platformLabel: g?.platform_label || '', format: exp?.id || '' })
     if (!g) setGuiaAbierta(false)
   }
   const agregarArchivos = (list) => {
-    const nuevos = Array.from(list || [])
+    const todos = Array.from(list || [])
+    const malos = todos.filter(a => !archivoAceptado(a.name)).map(a => a.name)
+    setRechazados(malos)
+    const nuevos = todos.filter(a => archivoAceptado(a.name))
     if (!nuevos.length) return
     onChange(f => {
       const vistos = new Set(f.archivos.map(a => `${a.name}:${a.size}`))
@@ -219,21 +328,22 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
     })
   }
   const quitarArchivo = (i) => onChange(f => ({ archivos: f.archivos.filter((_, j) => j !== i) }))
-  const guia = BROKER_GUIDES.find(g => g.id === fila.platform)
-  const grupo = grupos.find(g => g.platform === fila.platform)
 
   return (
-    <div className="border-b border-line last:border-b-0">
+    <div className={`border-b border-line last:border-b-0 ${fila.soloLectura ? 'opacity-70' : ''}`}>
       <div className="grid grid-cols-1 md:grid-cols-[1.1fr_.8fr_1.6fr_150px_36px] gap-2.5 md:gap-3.5 items-start px-4 py-3">
         {/* Cliente */}
         <div className="flex flex-col gap-1.5">
-          <label className="md:hidden text-[11px] text-ink-2">Cliente</label>
+          <div className="md:hidden flex items-center justify-between">
+            <span className="text-[11px] text-ink-2">Cliente</span>
+            <button type="button" className="text-ink-2 hover:text-rendi-neg p-1 rounded" aria-label="Sacar fila" onClick={onQuitar}><X size={14} aria-hidden="true" /></button>
+          </div>
           <select className={selectCls} aria-label="Cliente"
             value={fila.esNuevo ? '__new' : (fila.clientUid ?? '')}
             onChange={e => elegirCliente(e.target.value)}>
             <option value="">Elegí un cliente…</option>
             {roster.map(c => (
-              <option key={c.client_uid} value={c.client_uid}>
+              <option key={c.client_uid} value={c.client_uid} disabled={c.permission !== 'read_write'}>
                 {c.label}{c.permission !== 'read_write' ? ' — sólo lectura' : ''}
               </option>
             ))}
@@ -245,15 +355,20 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
           )}
         </div>
 
-        {/* Broker + guía */}
+        {/* Broker + export + guía */}
         <div className="flex flex-col gap-1.5 min-w-0">
-          <label className="md:hidden text-[11px] text-ink-2">Broker</label>
+          <span className="md:hidden text-[11px] text-ink-2">Broker</span>
           <select className={selectCls} aria-label="Broker" value={fila.platform} onChange={e => elegirPlataforma(e.target.value)}>
             <option value="">Broker…</option>
             {grupos.map(g => <option key={g.platform} value={g.platform}>{g.platform_label}</option>)}
           </select>
+          {exportsSoportados.length > 1 && (
+            <select className={`${selectCls} text-xs py-1.5`} aria-label="Tipo de archivo" value={fila.format} onChange={e => onChange({ format: e.target.value })}>
+              {exportsSoportados.map(e => <option key={e.id} value={e.id}>{e.label}</option>)}
+            </select>
+          )}
           <button type="button"
-            className="inline-flex items-center gap-1 text-[11px] font-medium text-data-violet hover:underline disabled:text-ink-3 disabled:no-underline w-max"
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-data-violet hover:underline disabled:text-ink-2 disabled:no-underline w-max"
             disabled={!guia} aria-expanded={guiaAbierta}
             onClick={() => setGuiaAbierta(v => !v)}>
             <HelpCircle size={12} aria-hidden="true" />
@@ -264,10 +379,10 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
 
         {/* Archivos */}
         <div className="min-w-0">
-          <label className="md:hidden text-[11px] text-ink-2">Archivos del historial</label>
+          <span className="md:hidden block text-[11px] text-ink-2 mb-1.5">Archivos del historial</span>
           <div
             role="button" tabIndex={0}
-            className="min-h-[38px] flex flex-wrap items-center gap-1.5 border border-dashed border-line-3 hover:border-data-violet rounded px-2 py-1.5 text-xs text-ink-3 cursor-pointer"
+            className="min-h-[38px] flex flex-wrap items-center gap-1.5 border border-dashed border-line-3 hover:border-data-violet rounded px-2 py-1.5 text-xs text-ink-2 cursor-pointer"
             onClick={() => inputRef.current?.click()}
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current?.click() } }}
             onDragOver={e => e.preventDefault()}
@@ -276,8 +391,9 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
             {fila.archivos.map((a, i) => (
               <span key={`${a.name}:${a.size}`} className="inline-flex items-center gap-1.5 bg-bg-2 border border-line rounded px-2 py-0.5 text-[11px] text-ink-1 max-w-full">
                 <span className="truncate text-ink-0">{a.name}</span>
-                <button type="button" className="text-ink-3 hover:text-rendi-neg" aria-label={`Quitar ${a.name}`}
-                  onClick={e => { e.stopPropagation(); quitarArchivo(i) }}><X size={11} aria-hidden="true" /></button>
+                <span role="button" tabIndex={0} className="text-ink-2 hover:text-rendi-neg cursor-pointer" aria-label={`Quitar ${a.name}`}
+                  onClick={e => { e.stopPropagation(); quitarArchivo(i) }}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); quitarArchivo(i) } }}><X size={11} aria-hidden="true" /></span>
               </span>
             ))}
             <span className="inline-flex items-center gap-1">
@@ -285,19 +401,27 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
               {fila.archivos.length ? 'agregar' : 'Soltá los CSV o Excel del broker'}
             </span>
           </div>
+          {rechazados.length > 0 && (
+            <p className="mt-1 text-[11px] text-rendi-warn">
+              {plural(rechazados.length, 'archivo no entra', 'archivos no entran')} en la tanda ({rechazados.slice(0, 2).join(', ')}{rechazados.length > 2 ? '…' : ''}): acá van los CSV o Excel de movimientos. La foto en PDF se sube después desde la cuenta del cliente.
+            </p>
+          )}
           <input ref={inputRef} type="file" multiple hidden accept=".csv,.xlsx,.xls,.txt"
             onChange={e => { agregarArchivos(e.target.files); e.target.value = '' }} />
         </div>
 
         {/* Estado */}
-        <div className="flex items-center gap-2 text-xs text-ink-2 md:pt-2">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${falta ? (fila.soloLectura ? 'bg-rendi-neg' : 'bg-line-3') : 'bg-rendi-pos'}`} aria-hidden="true" />
-          {falta || (fila.esNuevo ? 'Se crea y se carga' : 'Lista')}
+        <div className="flex items-start gap-2 text-xs text-ink-2 md:pt-2">
+          <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${falta ? (fila.soloLectura ? 'bg-rendi-neg' : 'bg-line-3') : 'bg-rendi-pos'}`} aria-hidden="true" />
+          <span>
+            {falta || (fila.esNuevo ? 'Se crea y se carga' : 'Lista')}
+            {fila.soloLectura && <span className="block text-[11px]">Pedile permiso de edición desde Clientes.</span>}
+          </span>
         </div>
 
-        {/* Quitar */}
-        <div className="flex md:justify-end md:pt-1.5">
-          <button type="button" className="text-ink-3 hover:text-rendi-neg p-1 rounded" aria-label="Sacar fila" onClick={onQuitar}>
+        {/* Quitar (desktop) */}
+        <div className="hidden md:flex md:justify-end md:pt-1.5">
+          <button type="button" className="text-ink-2 hover:text-rendi-neg p-1 rounded" aria-label="Sacar fila" onClick={onQuitar}>
             <X size={16} aria-hidden="true" />
           </button>
         </div>
@@ -307,33 +431,26 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
         <div className="mx-4 mb-3 rounded-xl bg-bg-2 border border-line px-4 py-3.5">
           <div className="flex items-start justify-between gap-3">
             <h4 className="text-sm font-semibold text-ink-0">Cómo descargar el historial de {grupo?.platform_label || guia.label}</h4>
-            <button type="button" className="text-ink-3 hover:text-ink-0" aria-label="Cerrar la guía" onClick={() => setGuiaAbierta(false)}><X size={14} aria-hidden="true" /></button>
+            <button type="button" className="text-ink-2 hover:text-ink-0" aria-label="Cerrar la guía" onClick={() => setGuiaAbierta(false)}><X size={14} aria-hidden="true" /></button>
           </div>
           <ol className="mt-2 pl-5 list-decimal space-y-1.5 text-[13px] text-ink-1 max-w-[78ch]">
-            {guia.steps.map((s, i) => (
+            {guia.steps.map((s, i) => (guia.pasosSoloAsistente || []).includes(i) ? null : (
               <li key={i}>
                 {s}
-                {esPasoDeFoto(s) && (
+                {(guia.pasosFoto || []).includes(i) && (
                   <span className="ml-1.5 inline-block align-middle text-[10px] font-medium text-rendi-warn bg-rendi-warn/10 rounded px-1.5 py-0.5">
                     la foto va después, desde su cuenta
                   </span>
                 )}
               </li>
             ))}
+            <li>Soltá el archivo de movimientos en esta fila.{(guia.pasosFoto || []).length > 0 ? ' La foto de tenencia no va en la tanda.' : ''}</li>
           </ol>
-          <p className="mt-2.5 text-[11px] text-ink-3">En la tanda se cargan los archivos de <b>movimientos</b>. La foto de tenencia se sube después desde la cuenta de cada cliente, porque exige aprobar qué se cierra y qué se crea.</p>
+          <p className="mt-2.5 text-[11px] text-ink-2">En la tanda se cargan los archivos de <b>movimientos</b>. La foto de tenencia se sube después desde la cuenta de cada cliente, porque exige aprobar qué se cierra y qué se crea.</p>
         </div>
       )}
     </div>
   )
-}
-
-// Los pasos de las guías que hablan de la FOTO (PDF / Estado de Cuenta /
-// Portafolio / Tenencia) se etiquetan: en F1 la tanda no la acepta.
-function esPasoDeFoto(texto) {
-  const t = String(texto || '').toLowerCase()
-  return /\bpdf\b|estado de cuenta|resumen de cuenta|tenencia valorizada|portafolio\b|posición consolidada|descargar portfolio/.test(t)
-    && !/movimientos:\s/.test(t)
 }
 
 // ─── Progreso (momento "cargando") ───────────────────────────────────────────
@@ -353,20 +470,21 @@ function Progreso({ filas, inicio }) {
           <span className="text-sm font-semibold text-ink-0 tabular">
             {actual ? `Cliente ${idx + 1} de ${filas.length} · ${nombreDe(actual)}` : 'Terminando…'}
           </span>
-          <span className="text-xs text-ink-3 tabular">Empezó hace {Math.floor(seg / 60)}:{String(seg % 60).padStart(2, '0')}</span>
+          <span className="text-xs text-ink-2 tabular">Empezó hace {Math.floor(seg / 60)}:{String(seg % 60).padStart(2, '0')}</span>
         </div>
         <div className="mt-2.5 h-1.5 bg-bg-3 rounded-full overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-          <span className="block h-full bg-data-violet rounded-full transition-[width] duration-500" style={{ width: `${pct}%` }} />
+          <span className="block h-full bg-data-violet rounded-full transition-[width] duration-500 motion-reduce:transition-none" style={{ width: `${pct}%` }} />
         </div>
       </div>
       {filas.map(f => (
         <div key={f.id} className="grid grid-cols-1 md:grid-cols-[1.1fr_.8fr_1fr] gap-2 md:gap-3.5 items-center px-4 py-3 border-b border-line last:border-b-0">
-          <div className="min-w-0"><div className="text-sm font-medium text-ink-0 truncate">{nombreDe(f)}</div><div className="text-[11px] text-ink-3">{f.platform}</div></div>
+          <div className="min-w-0"><div className="text-sm font-medium text-ink-0 truncate">{nombreDe(f)}</div><div className="text-[11px] text-ink-2">{f.platformLabel || f.platform}</div></div>
           <div><Pildora estado={f.estado} /></div>
           <div className="text-xs text-ink-1 tabular">
             {f.estado === ESTADO.CARGANDO ? `${f.paso || 'Cargando'}…`
               : f.estado === ESTADO.PENDIENTE ? 'En espera'
-              : f.detalle || (f.notas?.length ? f.notas.join(' · ') : movs(f.cargados))}
+              : f.estado === ESTADO.ERROR ? f.detalle
+              : f.notas?.length ? `${movs(f.cargados)} · ${f.notas.join(' · ')}` : movs(f.cargados)}
           </div>
         </div>
       ))}
@@ -376,10 +494,10 @@ function Progreso({ filas, inicio }) {
 
 // ─── Resultado ───────────────────────────────────────────────────────────────
 
-function Resultado({ filas, inicio, fin, onNueva, irACliente, onReintentar }) {
+function Resultado({ filas, inicio, fin, cortada, onNueva, irACliente, onReintentar }) {
   const r = useMemo(() => resumir(filas), [filas])
   const seg = inicio && fin ? Math.max(1, Math.round((fin - inicio) / 1000)) : null
-  const dur = seg == null ? '' : seg < 60 ? `${seg} segundos` : `${Math.floor(seg / 60)} ${Math.floor(seg / 60) === 1 ? 'minuto' : 'minutos'} ${seg % 60} segundos`
+  const dur = seg == null ? '' : seg < 60 ? plural(seg, 'segundo', 'segundos') : `${plural(Math.floor(seg / 60), 'minuto', 'minutos')} ${plural(seg % 60, 'segundo', 'segundos')}`
   const frase = [
     r.completos ? `${r.completos} ${r.completos === 1 ? 'quedó completo' : 'quedaron completos'}` : null,
     r.revisar ? `${r.revisar} ${r.revisar === 1 ? 'necesita' : 'necesitan'} tu revisión` : null,
@@ -394,14 +512,20 @@ function Resultado({ filas, inicio, fin, onNueva, irACliente, onReintentar }) {
     <>
       <PageHeader
         eyebrow="Plan Asesor"
-        title="Tanda cargada"
-        subtitle={`${r.total} ${r.total === 1 ? 'cliente' : 'clientes'}${dur ? ` en ${dur}` : ''}. ${frase}.`}
+        title={cortada ? 'La tanda se cortó' : 'Tanda cargada'}
+        subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}. ${frase}.`}
       />
+      {cortada && (
+        <div className="mb-3.5 flex items-start gap-2 text-xs text-ink-0 border border-rendi-warn/30 bg-rendi-warn/10 rounded-xl px-3 py-2">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rendi-warn" aria-hidden="true" />
+          <span>Se salió de la pantalla mientras corría. Lo que dice "Completo" quedó cargado; las filas marcadas como cortadas no arrancaron o no sabemos cómo terminaron: revisá la cuenta del cliente antes de repetirlas.</span>
+        </div>
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5 tabular">
-        <Kpi label="Movimientos cargados" valor={r.movimientos} sub={`en ${r.completos + r.revisar} ${r.completos + r.revisar === 1 ? 'cliente' : 'clientes'}`} />
+        <Kpi label="Movimientos cargados" valor={r.movimientos} sub={`en ${plural(r.completos + r.revisar, 'cliente', 'clientes')}`} />
         <Kpi label="Repetidos omitidos" valor={r.repetidos} sub="ya estaban cargados de antes" />
         <Kpi label="Filas con error" valor={r.filasConError} sub="se informan, no frenan" warn={r.filasConError > 0} />
-        <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={`de ${r.total} ${r.total === 1 ? 'cliente' : 'clientes'}`} warn={r.revisar > 0} />
+        <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={`de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
       </div>
 
       <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
@@ -412,26 +536,32 @@ function Resultado({ filas, inicio, fin, onNueva, irACliente, onReintentar }) {
                 {nombreDe(f)}
                 {f.creado && <span className="text-[10px] font-medium text-ink-2 bg-bg-2 rounded-full px-2 py-0.5">cuenta nueva</span>}
               </div>
-              <div className="text-[11px] text-ink-3 tabular">{f.platform} · {f.archivos.length} {f.archivos.length === 1 ? 'archivo' : 'archivos'}</div>
+              <div className="text-[11px] text-ink-2 tabular">{f.platformLabel || f.platform} · {plural(f.archivos.length, 'archivo', 'archivos')}</div>
             </div>
             <div><Pildora estado={f.estado} /></div>
             <div className="text-xs text-ink-1 tabular">
               {f.estado === ESTADO.ERROR ? (
-                <>{f.detalle}<span className="block text-[11px] text-ink-3 mt-0.5">No se tocó nada en su cuenta.</span></>
+                <>
+                  {f.detalle}
+                  <span className="block text-[11px] text-ink-2 mt-0.5">
+                    {f.incierto ? 'No sabemos si llegó a guardarse: revisá su cuenta antes de repetir.' : 'No se cargó ningún movimiento.'}
+                    {f.creado ? ' La cuenta del cliente sí quedó creada.' : ''}
+                  </span>
+                </>
               ) : (
                 <>
-                  {movs(f.cargados)} cargados
+                  {plural(f.cargados ?? 0, 'movimiento cargado', 'movimientos cargados')}
                   {(f.detalle || f.notas?.length > 0 || f.creado) && (
-                    <span className="block text-[11px] text-ink-3 mt-0.5">
-                      {[f.detalle, ...(f.notas || []), f.creado ? 'Cuenta creada. Podés invitarlo cuando quieras desde Clientes.' : null].filter(Boolean).join(' · ')}
+                    <span className="block text-[11px] text-ink-2 mt-0.5">
+                      {[f.detalle, ...(f.notas || []), f.creado ? 'Cuenta creada. Desde Clientes podés mandar la invitación cuando quieras.' : null].filter(Boolean).join(' · ')}
                     </span>
                   )}
                 </>
               )}
             </div>
             <div className="flex md:justify-end">
-              {f.estado === ESTADO.REVISAR && <button type="button" className={btnPrimary} onClick={() => irACliente(f, '/imports')}>Completar <ArrowRight size={12} aria-hidden="true" /></button>}
-              {f.estado === ESTADO.COMPLETO && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/posiciones')}>Ver cartera</button>}
+              {f.estado === ESTADO.REVISAR && <button type="button" className={btnPrimary} onClick={() => irACliente(f, '/imports')}>Revisar <ArrowRight size={12} aria-hidden="true" /></button>}
+              {f.estado === ESTADO.COMPLETO && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/posiciones')}>Ver cartera</button>}
               {f.estado === ESTADO.ERROR && <button type="button" className={btnGhost} onClick={() => onReintentar(f)}>Cambiar archivo</button>}
             </div>
           </div>
@@ -439,7 +569,7 @@ function Resultado({ filas, inicio, fin, onNueva, irACliente, onReintentar }) {
       </div>
 
       <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 bg-bg-1 border border-line rounded-xl px-4 py-3.5">
-        <p className="text-xs text-ink-3 max-w-[60ch]">Cada cliente quedó como una importación propia: desde su cuenta, en Importar, podés revertirla sola.</p>
+        <p className="text-xs text-ink-2 max-w-[60ch]">Cada cliente quedó como una importación propia: desde su cuenta, en Importar, podés revertirla o usar "Editar y rehacer" para completarla.</p>
         <button type="button" className={btnPrimary} onClick={onNueva}>Nueva tanda</button>
       </div>
     </>
@@ -451,7 +581,7 @@ function Kpi({ label, valor, sub, warn }) {
     <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
       <div className="text-xs text-ink-2">{label}</div>
       <div className={`text-2xl font-semibold tracking-tight mt-0.5 ${warn ? 'text-rendi-warn' : 'text-ink-0'}`}>{valor}</div>
-      <div className="text-[11px] text-ink-3 mt-0.5">{sub}</div>
+      <div className="text-[11px] text-ink-2 mt-0.5">{sub}</div>
     </div>
   )
 }
@@ -468,13 +598,13 @@ function Pildora({ estado }) {
   const Icon = p.Icon
   return (
     <span className={`inline-flex items-center gap-1.5 text-[11px] font-medium rounded-full px-2.5 py-0.5 ${p.cls}`}>
-      {Icon && <Icon size={12} className={estado === ESTADO.CARGANDO ? 'animate-spin' : ''} aria-hidden="true" />}
+      {Icon && <Icon size={12} className={estado === ESTADO.CARGANDO ? 'animate-spin motion-reduce:animate-none' : ''} aria-hidden="true" />}
       {p.t}
     </span>
   )
 }
 
-const movs = (n) => `${n ?? 0} ${n === 1 ? 'movimiento' : 'movimientos'}`
+const movs = (n) => plural(n ?? 0, 'movimiento', 'movimientos')
 
 function nombreDe(f) {
   return f.esNuevo ? (f.nombre || 'Cliente nuevo') : (f.label || (f.clientUid ? `Cliente ${f.clientUid}` : 'Sin cliente'))

@@ -104,6 +104,10 @@ const BROKERS = [
   {
     id: 'cocos',
     label: 'Cocos',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [1],
+    pasosSoloAsistente: [2],
     Logo: CocosLogo,
     summary: 'Subí dos archivos juntos: el historial de Movimientos (reconstruye tu cartera y tu P&L) + el Estado de Cuenta / Portfolio (completa las posiciones que ya tenías de antes).',
     steps: [
@@ -116,6 +120,10 @@ const BROKERS = [
   {
     id: 'balanz',
     label: 'Balanz',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [2],
+    pasosSoloAsistente: [3],
     Logo: BalanzLogo,
     summary: 'Subí dos archivos juntos: el export de Movimientos (reconstruye tu historial, tu P&L y tu efectivo) + el Resumen de Cuenta / Posición consolidada (PDF), que fija tus tenencias y tu saldo de HOY exactos.',
     steps: [
@@ -129,6 +137,10 @@ const BROKERS = [
   {
     id: 'balanz_internacional',
     label: 'Balanz Internacional',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [],
+    pasosSoloAsistente: [2],
     Logo: BalanzLogo,
     summary: 'Tu cuenta del EXTERIOR (Balanz Capital International, en dólares, donde comprás acciones de EE.UU. reales). Subí el export de Movimientos y reconstruimos tu cartera, tu P&L y tu efectivo en USD.',
     steps: [
@@ -141,6 +153,10 @@ const BROKERS = [
   {
     id: 'binance',
     label: 'Binance',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [],
+    pasosSoloAsistente: [],
     Logo: BinanceLogo,
     summary: 'Usamos el Historial de transacciones completo para reconstruir cripto y caja stable.',
     steps: [
@@ -153,6 +169,10 @@ const BROKERS = [
   {
     id: 'schwab',
     label: 'Charles Schwab',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [],
+    pasosSoloAsistente: [3],
     Logo: SchwabLogo,
     summary: 'Usamos el export de History (transacciones) en formato CSV.',
     steps: [
@@ -166,6 +186,10 @@ const BROKERS = [
   {
     id: 'bullmarket',
     label: 'Bull Market',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [2],
+    pasosSoloAsistente: [3],
     Logo: BullMarketLogo,
     summary: 'Subí la Cuenta Corriente (Excel) + la Tenencia valorizada (PDF), todo junto, y armamos tu cartera completa.',
     steps: [
@@ -179,6 +203,10 @@ const BROKERS = [
   {
     id: 'iol',
     label: 'IOL',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [2],
+    pasosSoloAsistente: [3],
     Logo: IolLogo,
     summary: 'Subí dos archivos juntos: el Detalle de Movimientos (reconstruye tu historial y tu efectivo) + el Resumen de Cuenta (PDF), que fija tus tenencias y tu saldo de HOY.',
     steps: [
@@ -192,6 +220,10 @@ const BROKERS = [
   {
     id: 'ieb',
     label: 'IEB',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [2],
+    pasosSoloAsistente: [3],
     Logo: IebLogo,
     summary: 'Subí dos archivos juntos: el export de "Toda la actividad" (Movimientos) + el "Portafolio" (Excel) — reconstruimos tus operaciones y ajustamos tus posiciones y saldos a la foto de hoy.',
     steps: [
@@ -205,6 +237,10 @@ const BROKERS = [
   {
     id: 'ppi',
     label: 'PPI',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [2],
+    pasosSoloAsistente: [3],
     Logo: PpiLogo,
     summary: 'Subí dos archivos juntos: el export de Movimientos (Excel) + el Estado de Cuenta (Excel) — reconstruimos tu cartera y completamos las posiciones que ya tenías de antes.',
     steps: [
@@ -218,6 +254,10 @@ const BROKERS = [
   {
     id: 'inviu',
     label: 'inviu',
+    // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
+    // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
+    pasosFoto: [2],
+    pasosSoloAsistente: [3],
     Logo: InviuLogo,
     summary: 'Subí dos archivos juntos: el Reporte de cuenta corriente (reconstruye tu historial, tu P&L y tu efectivo) + el Portfolio (tu foto de tenencias de HOY, que fija tus posiciones y saldos exactos).',
     steps: [

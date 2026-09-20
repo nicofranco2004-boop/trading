@@ -141,7 +141,8 @@ class TandaImportTest(unittest.TestCase):
 
         # El confirm devuelve lo que la pantalla suma como "movimientos cargados".
         j = c1.json()
-        for k in ("operations_created", "cash_movements", "conversions", "auto_skipped_duplicates"):
+        for k in ("positions_created", "operations_created", "cash_movements", "conversions",
+                  "auto_skipped_duplicates", "skipped_rows", "cash_health", "post_proceso"):
             self.assertIn(k, j, f"falta {k} en la respuesta del confirm")
         self.assertGreaterEqual(j["cash_movements"] + j["operations_created"], 1)
 
@@ -192,6 +193,23 @@ class TandaImportTest(unittest.TestCase):
         self.assertIn(r.status_code, (400, 404), r.text)
         self.assertEqual(self._batches_de(self.c1)[0]["status"], "preview")
         self.assertEqual(self._batches_de(self.c2), [])
+
+    def test_venta_sin_compra_previa_pide_estado_inicial(self):
+        """La tanda no manda seed_state: lo que la pantalla puede hacer es marcar
+        'Revisar'. Eso depende de que el preview traiga `seed_suggestions.needed`
+        para un archivo que arranca vendiendo algo que nunca compró."""
+        csv1 = _cocos_csv(
+            "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100.000;0;0;0;0;100.000",
+            "3;4;16-01-2024;16-01-2024;Venta;BONO AL30 (AL30);ARS;BYMA;-100;500;50.000;0;0;0;0;50.000",
+        )
+        p = self._preview(self.c1, csv1)
+        self.assertEqual(p.status_code, 200, p.text)
+        seed = p.json().get("seed_suggestions") or {}
+        self.assertTrue(seed.get("needed"), f"el preview no pidió estado inicial: {seed}")
+        # Y el confirm sin seed igual entra (la tanda carga lo que había).
+        c = self._confirm(self.c1, p.json()["session_id"])
+        self.assertEqual(c.status_code, 200, c.text)
+        self.assertEqual(c.json().get("post_proceso"), {}, "ningún paso del post-proceso debería fallar")
 
     def test_el_decorador_de_medicion_conserva_la_firma(self):
         import inspect
