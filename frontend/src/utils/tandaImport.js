@@ -25,6 +25,7 @@
 // La pantalla (pages/AdvisorImports.jsx) sólo dibuja lo que este módulo le
 // va contando por `onUpdate`.
 import { errorMessage } from './api'
+import { TENENCIA_BROKER_BY_FORMAT } from '../components/import/tenenciaBrokers'
 
 export const ESTADO = {
   PENDIENTE: 'pendiente',
@@ -32,6 +33,9 @@ export const ESTADO = {
   COMPLETO: 'completo',
   REVISAR: 'revisar',
   ERROR: 'error',
+  // F3: los movimientos entraron y la FOTO de tenencia espera que el asesor
+  // apruebe qué se cierra y qué se crea (fail-closed, como en el asistente).
+  FOTO_PENDIENTE: 'foto_pendiente',
 }
 
 // Sub-pasos que se muestran mientras una fila corre. El orden es el real.
@@ -39,12 +43,14 @@ export const PASOS = {
   CREANDO: 'Creando la cuenta del cliente',
   LEYENDO: 'Leyendo los archivos',
   GUARDANDO: 'Guardando movimientos',
+  CLASIFICANDO: 'Separando la foto de los movimientos',
+  FOTO: 'Comparando contra la foto del broker',
 }
 
-// Extensiones que el importador de movimientos entiende. El PDF (la foto de
-// tenencia) queda afuera en F1: soltarlo acá rompería la fila entera con un
-// mensaje que no dice qué sacar.
-export const EXTENSIONES = ['csv', 'xlsx', 'xls', 'txt']
+// Extensiones que entran en la fila: movimientos (csv/xlsx/xls/txt) y, desde
+// F3, la FOTO de tenencia (pdf de Bull Market, o el Estado de Cuenta/Portfolio
+// en csv/xlsx que el servidor distingue por contenido con /classify-tenencia).
+export const EXTENSIONES = ['csv', 'xlsx', 'xls', 'txt', 'pdf']
 export function archivoAceptado(nombre) {
   const ext = String(nombre || '').toLowerCase().split('.').pop()
   return EXTENSIONES.includes(ext)
@@ -190,9 +196,32 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
         // propia del asesor (el bug que el header existe para evitar).
         throw new Error('No se pudo identificar la cuenta del cliente.')
       }
+      // F3: ¿alguno de los archivos es la FOTO de tenencia? Lo decide el
+      // servidor por contenido (PPI y Cocos exportan foto y movimientos con la
+      // misma extensión). La foto se aparta: primero entran los movimientos,
+      // después se compara contra la foto.
+      let archivosMov = fila.archivos
+      let foto = null
+      let fotoFormat = null
+      if (fila.archivos.length > 1 || fila.archivos.some(a => /\.pdf$/i.test(a.name || ''))) {
+        onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.CLASIFICANDO })
+        try {
+          const cfd = new FormData()
+          fila.archivos.forEach(f => cfd.append('files', f))
+          const cls = await api.upload('/imports/classify-tenencia', cfd, { clientId: clientUid })
+          if (cls?.file_name) {
+            foto = fila.archivos.find(a => a.name === cls.file_name) || null
+            fotoFormat = cls.format || null
+            archivosMov = fila.archivos.filter(a => a !== foto)
+          }
+        } catch { /* sin clasificación → todo va como movimientos, como en F1 */ }
+      }
+      if (foto && archivosMov.length === 0) {
+        throw Object.assign(new Error('La fila tiene sólo la foto de tenencia: agregá también el archivo de movimientos, que es el que reconstruye el historial.'), { status: 400 })
+      }
       onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.LEYENDO })
       const fd = new FormData()
-      fila.archivos.forEach(f => fd.append('files', f))
+      archivosMov.forEach(f => fd.append('files', f))
       fd.append('format', fila.format)
       if (tandaId) fd.append('tanda_id', String(tandaId))
       const preview = await api.upload('/imports/preview', fd, { clientId: clientUid })
@@ -214,6 +243,34 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
       }, { clientId: clientUid })
 
       const r = { id: fila.id, clientUid, batchId: preview.session_id, paso: null, creado, ...estadoFinal(preview, confirm) }
+      if (foto) {
+        // La foto se compara DESPUÉS de confirmar los movimientos: reconcilia
+        // contra lo que quedó importado. Si hay algo que decidir, la fila queda
+        // 'foto_pendiente' con el detalle; si no, se anota y sigue.
+        onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.FOTO })
+        try {
+          const tfd = new FormData()
+          tfd.append('file', foto)
+          tfd.append('broker', TENENCIA_BROKER_BY_FORMAT[fotoFormat] || TENENCIA_BROKER_BY_FORMAT[fila.format] || 'Bull Market')
+          if (fotoFormat) tfd.append('format', fotoFormat)
+          const tp = await api.upload('/imports/tenencia/preview', tfd, { clientId: clientUid })
+          if (tp?.session_id) {
+            r.estadoMovimientos = r.estado
+            r.estado = ESTADO.FOTO_PENDIENTE
+            r.foto = { ...tp, nombre: foto.name }
+          } else if (tp?.nothing_to_do && tp?.motivo) {
+            // El servidor NO comparó (p. ej. la foto no trae fecha): no es
+            // "todo coincide", es "no se pudo". La fila queda para revisar
+            // con el motivo que devuelve el servidor, sin inventar otro.
+            r.estado = ESTADO.REVISAR
+            r.detalle = [r.detalle, `La foto no se aplicó: ${tp.message || tp.motivo}`].filter(Boolean).join(' ')
+          } else {
+            r.notas = [...(r.notas || []), 'foto: todo coincide con el resumen del broker']
+          }
+        } catch (err) {
+          r.notas = [...(r.notas || []), `foto: no se pudo comparar (${errorMessage(err) || 'error'}); subila desde su cuenta`]
+        }
+      }
       onUpdate(fila.id, r); resultados.push(r)
     } catch (err) {
       const status = Number(err?.status) || null
@@ -303,11 +360,34 @@ export function resumen(resultados) {
   return {
     total: resultados.length,
     completos: por(ESTADO.COMPLETO),
-    revisar: por(ESTADO.REVISAR),
+    revisar: por(ESTADO.REVISAR) + por(ESTADO.FOTO_PENDIENTE),
+    fotos: por(ESTADO.FOTO_PENDIENTE),
     errores: por(ESTADO.ERROR),
     // Sólo lo que sigue cargado: una fila revertida no suma movimientos.
-    movimientos: resultados.reduce((a, r) => a + ([ESTADO.COMPLETO, ESTADO.REVISAR].includes(r.estado) ? (r.cargados || 0) : 0), 0),
+    movimientos: resultados.reduce((a, r) => a + ([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.FOTO_PENDIENTE].includes(r.estado) ? (r.cargados || 0) : 0), 0),
     repetidos: resultados.reduce((a, r) => a + (r.repetidos || 0), 0),
     filasConError: resultados.reduce((a, r) => a + (r.errores || 0), 0),
+  }
+}
+
+// ── F3: decidir la foto de una fila ─────────────────────────────────────────
+// `aprobados` = tickers que el asesor marcó (opt-in; lo no nombrado no entra).
+// Devuelve el patch para la fila: vuelve al estado de los movimientos y anota.
+export async function aplicarFoto(api, fila, aprobados = []) {
+  const sid = fila?.foto?.session_id
+  if (!sid || !Number.isInteger(fila.clientUid)) throw new Error('Esta foto ya no se puede aplicar desde acá: subila desde la cuenta del cliente.')
+  await api.post('/imports/confirm', { session_id: sid, skip_row_indices: [], aprobar_tickers: Array.from(aprobados) }, { clientId: fila.clientUid })
+  const n = Array.from(aprobados).length
+  return {
+    estado: fila.estadoMovimientos || ESTADO.COMPLETO,
+    foto: null, estadoMovimientos: null,
+    notas: [...(fila.notas || []), n > 0 ? `foto aplicada (${plural(n, 'decisión aprobada', 'decisiones aprobadas')})` : 'foto aplicada sin los dudosos'],
+  }
+}
+export function omitirFoto(fila) {
+  return {
+    estado: fila.estadoMovimientos || ESTADO.COMPLETO,
+    foto: null, estadoMovimientos: null,
+    notas: [...(fila.notas || []), 'foto omitida: los movimientos quedaron, la foto no se aplicó'],
   }
 }

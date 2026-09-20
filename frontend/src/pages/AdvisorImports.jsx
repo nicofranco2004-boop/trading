@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import {
   Plus, X, FileUp, HelpCircle, ChevronDown, ChevronUp, CheckCircle2,
-  AlertTriangle, XCircle, Loader2, ArrowRight, Info, History, Undo2,
+  AlertTriangle, XCircle, Loader2, ArrowRight, Info, History, Undo2, Camera,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -28,9 +28,11 @@ import { api, errorMessage } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES } from '../components/import/BrokerInstructions'
+import { ReconcileStep } from '../components/import/ImportWizard'
 import {
   correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO,
   resumen as resumir, filaAlServidor, filaDelServidor, fechaServidor, marcarInterrumpidas,
+  aplicarFoto, omitirFoto,
 } from '../utils/tandaImport'
 
 const btnBase = 'inline-flex items-center gap-1.5 text-xs font-medium rounded px-3.5 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
@@ -49,7 +51,7 @@ const SIN_TANDA = new Set(['generic'])
 
 const STORAGE_KEY = 'rendi_tanda_ultima'
 
-const FINALES = new Set([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR])
+const FINALES = new Set([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR, ESTADO.FOTO_PENDIENTE])
 
 let _seq = 0
 const nuevaFila = () => ({ id: ++_seq, clientUid: null, esNuevo: false, nombre: '', label: '', platform: '', platformLabel: '', format: '', archivos: [], soloLectura: false, estado: ESTADO.PENDIENTE })
@@ -260,6 +262,19 @@ export default function AdvisorImports() {
     }
   }
 
+  // F3: aprobar u omitir la foto de una fila. Se confirma a nombre del
+  // cliente con los tickers aprobados (opt-in), y la fila vuelve al estado de
+  // sus movimientos. Se sincroniza al servidor y a la pestaña.
+  async function decidirFoto(fila, aprobados, omitir = false) {
+    const patchFila = omitir ? omitirFoto(fila) : await aplicarFoto(api, fila, aprobados)
+    setFilas(fs => {
+      const next = fs.map(f => (f.id === fila.id ? { ...f, ...patchFila } : f))
+      persistir(next, 'resultado', inicio, fin, tandaId)
+      if (tandaId) api.patch(`/advisor/tandas/${tandaId}`, { rows: next.map(filaAlServidor) }).catch(() => {})
+      return next
+    })
+  }
+
   const irACliente = (fila, ruta) => {
     const c = roster?.find(x => x.client_uid === fila.clientUid)
     enterClient({ id: fila.clientUid, label: c?.label || fila.label || fila.nombre || `Cliente ${fila.clientUid}` })
@@ -366,7 +381,7 @@ export default function AdvisorImports() {
       {momento === 'resultado' && (
         <Resultado filas={filas} inicio={inicio} fin={fin} cortada={cortada}
           tandaId={tandaId} deshacer={deshacer} onDeshacer={deshacerTanda} onPedirDeshacer={() => setDeshacer('confirmar')} onCancelarDeshacer={() => setDeshacer(null)}
-          onNueva={() => nuevaTanda()} irACliente={irACliente} onReintentar={reintentar} />
+          onNueva={() => nuevaTanda()} irACliente={irACliente} onReintentar={reintentar} onDecidirFoto={decidirFoto} />
       )}
     </div>
   )
@@ -477,12 +492,12 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
             ))}
             <span className="inline-flex items-center gap-1">
               <FileUp size={12} aria-hidden="true" />
-              {fila.archivos.length ? 'agregar' : 'Soltá los CSV o Excel del broker'}
+              {fila.archivos.length ? 'agregar' : 'Soltá los archivos del broker (movimientos y foto)'}
             </span>
           </div>
           {rechazados.length > 0 && (
             <p className="mt-1 text-[11px] text-rendi-warn">
-              {plural(rechazados.length, 'archivo no entra', 'archivos no entran')} en la tanda ({rechazados.slice(0, 2).join(', ')}{rechazados.length > 2 ? '…' : ''}): acá van los CSV o Excel de movimientos. La foto en PDF se sube después desde la cuenta del cliente.
+              {plural(rechazados.length, 'archivo no entra', 'archivos no entran')} en la tanda ({rechazados.slice(0, 2).join(', ')}{rechazados.length > 2 ? '…' : ''}): acá van los CSV, Excel o PDF que exporta el broker.
             </p>
           )}
           <input ref={inputRef} type="file" multiple hidden accept=".csv,.xlsx,.xls,.txt"
@@ -517,15 +532,15 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
               <li key={i}>
                 {s}
                 {(guia.pasosFoto || []).includes(i) && (
-                  <span className="ml-1.5 inline-block align-middle text-[10px] font-medium text-rendi-warn bg-rendi-warn/10 rounded px-1.5 py-0.5">
-                    la foto va después, desde su cuenta
+                  <span className="ml-1.5 inline-block align-middle text-[10px] font-medium text-data-violet bg-data-violet/10 rounded px-1.5 py-0.5">
+                    la foto también va en la fila
                   </span>
                 )}
               </li>
             ))}
-            <li>Soltá el archivo de movimientos en esta fila.{(guia.pasosFoto || []).length > 0 ? ' La foto de tenencia no va en la tanda.' : ''}</li>
+            <li>Soltá {(guia.pasosFoto || []).length > 0 ? 'los dos archivos juntos' : 'el archivo de movimientos'} en esta fila.</li>
           </ol>
-          <p className="mt-2.5 text-[11px] text-ink-2">En la tanda se cargan los archivos de <b>movimientos</b>. La foto de tenencia se sube después desde la cuenta de cada cliente, porque exige aprobar qué se cierra y qué se crea.</p>
+          <p className="mt-2.5 text-[11px] text-ink-2">Rendi separa solo la foto de los movimientos. Primero entra el historial; después compara contra la foto y, si hay algo que cerrar o crear, la fila queda en <b>"Aprobar foto"</b> para que lo decidas vos. Nada de eso se aplica sin tu aprobación.</p>
         </div>
       )}
     </div>
@@ -573,15 +588,16 @@ function Progreso({ filas, inicio }) {
 
 // ─── Resultado ───────────────────────────────────────────────────────────────
 
-function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer, onPedirDeshacer, onCancelarDeshacer, onNueva, irACliente, onReintentar }) {
+function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer, onPedirDeshacer, onCancelarDeshacer, onNueva, irACliente, onReintentar, onDecidirFoto }) {
   const r = useMemo(() => resumir(filas), [filas])
-  const revertibles = filas.filter(f => f.batchId && [ESTADO.COMPLETO, ESTADO.REVISAR].includes(f.estado)).length
+  const revertibles = filas.filter(f => f.batchId && [ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.FOTO_PENDIENTE].includes(f.estado)).length
   const revertidos = filas.filter(f => f.estado === 'revertido').length
   const seg = inicio && fin ? Math.max(1, Math.round((fin - inicio) / 1000)) : null
   const dur = seg == null ? '' : seg < 60 ? plural(seg, 'segundo', 'segundos') : `${plural(Math.floor(seg / 60), 'minuto', 'minutos')} ${plural(seg % 60, 'segundo', 'segundos')}`
   const frase = [
     r.completos ? `${r.completos} ${r.completos === 1 ? 'quedó completo' : 'quedaron completos'}` : null,
-    r.revisar ? `${r.revisar} ${r.revisar === 1 ? 'necesita' : 'necesitan'} tu revisión` : null,
+    (r.revisar - r.fotos) ? `${r.revisar - r.fotos} ${(r.revisar - r.fotos) === 1 ? 'necesita' : 'necesitan'} tu revisión` : null,
+    r.fotos ? `${r.fotos} ${r.fotos === 1 ? 'espera' : 'esperan'} que apruebes la foto` : null,
     r.errores ? `${r.errores} no se ${r.errores === 1 ? 'pudo' : 'pudieron'} cargar` : null,
   ].filter(Boolean).join(', ')
 
@@ -612,12 +628,13 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
         <Kpi label="Movimientos cargados" valor={r.movimientos} sub={`en ${plural(r.completos + r.revisar, 'cliente', 'clientes')}`} />
         <Kpi label="Repetidos omitidos" valor={r.repetidos} sub="ya estaban cargados de antes" />
         <Kpi label="Filas con error" valor={r.filasConError} sub="se informan, no frenan" warn={r.filasConError > 0} />
-        <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={`de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
+        <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={r.fotos > 0 ? `${plural(r.fotos, 'foto para aprobar', 'fotos para aprobar')}` : `de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
       </div>
 
       <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
         {filas.map(f => (
-          <div key={f.id} className="grid grid-cols-1 md:grid-cols-[1.1fr_.8fr_1fr_150px] gap-2 md:gap-3.5 items-center px-4 py-3 border-b border-line last:border-b-0">
+          <div key={f.id} className="border-b border-line last:border-b-0">
+          <div className="grid grid-cols-1 md:grid-cols-[1.1fr_.8fr_1fr_150px] gap-2 md:gap-3.5 items-center px-4 py-3">
             <div className="min-w-0">
               <div className="text-sm font-medium text-ink-0 truncate flex items-center gap-2">
                 {nombreDe(f)}
@@ -627,7 +644,14 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
             </div>
             <div><Pildora estado={f.estado} /></div>
             <div className="text-xs text-ink-1 tabular">
-              {f.estado === 'revertido' ? (
+              {f.estado === ESTADO.FOTO_PENDIENTE ? (
+                <>
+                  {plural(f.cargados ?? 0, 'movimiento cargado', 'movimientos cargados')}
+                  <span className="block text-[11px] text-ink-2 mt-0.5">
+                    {f.foto ? `La foto ${f.foto.nombre ? `(${f.foto.nombre}) ` : ''}tiene diferencias con lo importado: mirá abajo y decidí qué aplicar.` : 'La foto quedó sin aplicar cuando se cerró la pantalla: subila desde su cuenta.'}
+                  </span>
+                </>
+              ) : f.estado === 'revertido' ? (
                 <>Se revirtió: su cuenta quedó como antes de esta importación.</>
               ) : f.estado === 'revert_fallo' ? (
                 <>{f.detalle || 'No se pudo revertir.'}<span className="block text-[11px] text-ink-2 mt-0.5">Los movimientos siguen cargados en su cuenta.</span></>
@@ -652,10 +676,15 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
             </div>
             <div className="flex md:justify-end">
               {f.estado === ESTADO.REVISAR && <button type="button" className={btnPrimary} onClick={() => irACliente(f, '/imports')}>Revisar <ArrowRight size={12} aria-hidden="true" /></button>}
+              {f.estado === ESTADO.FOTO_PENDIENTE && !f.foto && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/imports')}>Subir la foto allá</button>}
               {f.estado === ESTADO.COMPLETO && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/posiciones')}>Ver cartera</button>}
               {f.estado === ESTADO.ERROR && <button type="button" className={btnGhost} onClick={() => onReintentar(f)}>Cambiar archivo</button>}
               {f.estado === 'revert_fallo' && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/imports')}>Ver en su cuenta</button>}
             </div>
+          </div>
+          {f.estado === ESTADO.FOTO_PENDIENTE && f.foto && (
+            <PanelFoto fila={f} onDecidir={onDecidirFoto} />
+          )}
           </div>
         ))}
       </div>
@@ -699,6 +728,33 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
   )
 }
 
+// F3: la foto de UNA fila, con el mismo paso de aprobación del asistente
+// individual (ReconcileStep) y las mismas dos salidas: aplicar con lo aprobado,
+// u omitir. Lo dudoso no entra si no se marca.
+function PanelFoto({ fila, onDecidir }) {
+  const [aprobados, setAprobados] = useState(() => new Set())
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const correr = async (omitir) => {
+    setBusy(true); setError(null)
+    try { await onDecidir(fila, aprobados, omitir) } catch (e) { setError(errorMessage(e) || 'No se pudo aplicar la foto.') } finally { setBusy(false) }
+  }
+  return (
+    <div className="mx-4 mb-3 rounded-xl border border-data-violet/30 bg-bg-2 px-4 py-3.5">
+      <ReconcileStep data={fila.foto} aprobados={aprobados}
+        onToggle={tk => setAprobados(prev => { const n = new Set(prev); n.has(tk) ? n.delete(tk) : n.add(tk); return n })} />
+      {error && <p className="mt-2 text-xs text-rendi-neg">{error}</p>}
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        <button type="button" className={btnGhost} disabled={busy} onClick={() => correr(true)}>Omitir la foto</button>
+        <button type="button" className={btnPrimary} disabled={busy} onClick={() => correr(false)}>
+          {busy && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+          {aprobados.size > 0 ? `Aplicar (con ${plural(aprobados.size, 'aprobado', 'aprobados')})` : 'Aplicar sin los dudosos'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function Kpi({ label, valor, sub, warn }) {
   return (
     <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
@@ -715,6 +771,7 @@ const PILDORA = {
   [ESTADO.COMPLETO]: { t: 'Completo', cls: 'text-rendi-pos bg-rendi-pos/10', Icon: CheckCircle2 },
   [ESTADO.REVISAR]: { t: 'Revisar', cls: 'text-rendi-warn bg-rendi-warn/10', Icon: AlertTriangle },
   [ESTADO.ERROR]: { t: 'No se cargó', cls: 'text-rendi-neg bg-rendi-neg/10', Icon: XCircle },
+  [ESTADO.FOTO_PENDIENTE]: { t: 'Aprobar foto', cls: 'text-data-violet bg-data-violet/10', Icon: Camera },
   revertido: { t: 'Revertido', cls: 'text-ink-2 bg-bg-2', Icon: Undo2 },
   revert_fallo: { t: 'No se pudo revertir', cls: 'text-rendi-neg bg-rendi-neg/10', Icon: XCircle },
 }

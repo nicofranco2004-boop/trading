@@ -5,7 +5,7 @@ import { correrTanda, estadoFinal, filaLista, faltante, ESTADO, resumen } from '
 // pedido: qué ruta, en qué orden y A NOMBRE DE QUIÉN (opts.clientId). Eso último
 // es la única forma de que dos clientes no se crucen, y es lo que más importa.
 
-function apiFalsa({ previewDe = () => ({ session_id: 'sess-1', errors: [] }), confirmDe = () => ({ operations_created: 3, cash_movements: 1, conversions: 0, auto_skipped_duplicates: 0 }), crearDe = () => ({ client_uid: 900 }) } = {}) {
+function apiFalsa({ previewDe = () => ({ session_id: 'sess-1', errors: [] }), confirmDe = () => ({ operations_created: 3, cash_movements: 1, conversions: 0, auto_skipped_duplicates: 0 }), crearDe = () => ({ client_uid: 900 }), ...extra } = {}) {
   const llamadas = []
   return {
     llamadas,
@@ -16,7 +16,9 @@ function apiFalsa({ previewDe = () => ({ session_id: 'sess-1', errors: [] }), co
       throw new Error('ruta inesperada ' + path)
     },
     async upload(path, fd, opts) {
-      llamadas.push({ path, files: fd.getAll('files').length, format: fd.get('format'), tandaId: fd.get('tanda_id'), clientId: opts?.clientId ?? null })
+      llamadas.push({ path, files: fd.getAll('files').length, file: fd.get('file')?.name || null, broker: fd.get('broker'), format: fd.get('format'), tandaId: fd.get('tanda_id'), clientId: opts?.clientId ?? null })
+      if (path === '/imports/classify-tenencia') return (extra.classifyDe || (() => ({ file_name: null, format: null })))(fd)
+      if (path === '/imports/tenencia/preview') return (extra.tenenciaDe || (() => ({})))(fd, opts)
       return previewDe(fd, opts)
     },
   }
@@ -140,7 +142,7 @@ describe('resumen', () => {
       { estado: ESTADO.REVISAR, cargados: 5, repetidos: 0, errores: 3 },
       { estado: ESTADO.ERROR },
     ])
-    expect(r).toEqual({ total: 3, completos: 1, revisar: 1, errores: 1, movimientos: 15, repetidos: 2, filasConError: 3 })
+    expect(r).toEqual({ total: 3, completos: 1, revisar: 1, fotos: 0, errores: 1, movimientos: 15, repetidos: 2, filasConError: 3 })
   })
 })
 
@@ -236,10 +238,11 @@ describe('correrTanda — reintentos, duplicados y tope de altas', () => {
 })
 
 describe('archivoAceptado', () => {
-  it('acepta csv/xlsx/xls/txt y rechaza pdf', () => {
+  it('acepta csv/xlsx/xls/txt y, desde F3, el pdf de la foto; rechaza el resto', () => {
     expect(archivoAceptado('a.CSV')).toBe(true)
     expect(archivoAceptado('b.xlsx')).toBe(true)
-    expect(archivoAceptado('resumen.pdf')).toBe(false)
+    expect(archivoAceptado('resumen.pdf')).toBe(true)
+    expect(archivoAceptado('foto.png')).toBe(false)
   })
 })
 
@@ -281,5 +284,59 @@ describe('contrato con el servidor (F2)', () => {
     const r = marcarInterrumpidas([{ estado: ESTADO.CARGANDO }, { estado: ESTADO.PENDIENTE }, { estado: ESTADO.COMPLETO }])
     expect(r.map(x => x.estado)).toEqual([ESTADO.ERROR, ESTADO.ERROR, ESTADO.COMPLETO])
     expect(r[0].incierto).toBe(true); expect(r[1].incierto).toBe(false)
+  })
+})
+
+import { aplicarFoto, omitirFoto } from './tandaImport'
+
+describe('F3 — la foto de tenencia adentro de la fila', () => {
+  const mov = archivo('cocos-mov.csv'); const pdf = archivo('tenencia.pdf')
+  it('clasifica, importa primero los movimientos y después compara la foto; con algo que decidir queda foto_pendiente', async () => {
+    const api = apiFalsa({ classifyDe: () => ({ file_name: 'tenencia.pdf', format: 'bullmarket' }), tenenciaDe: () => ({ session_id: 'foto-1', to_seed: [{ ticker: 'GGAL' }] }) })
+    const updates = []
+    const r = await correrTanda([fila({ archivos: [mov, pdf], format: 'bullmarket' })], { api, onUpdate: (id, p) => updates.push(p) })
+    const paths = api.llamadas.map(l => l.path)
+    expect(paths).toEqual(['/imports/classify-tenencia', '/imports/preview', '/imports/confirm', '/imports/tenencia/preview'])
+    expect(api.llamadas[1].files).toBe(1)                       // sólo movimientos al preview
+    expect(api.llamadas[3]).toMatchObject({ file: 'tenencia.pdf', broker: 'Bull Market', format: 'bullmarket', clientId: 11 })
+    const fin = updates.at(-1)
+    expect(fin.estado).toBe(ESTADO.FOTO_PENDIENTE)
+    expect(fin.estadoMovimientos).toBe(ESTADO.COMPLETO)
+    expect(fin.foto.session_id).toBe('foto-1')
+    expect(r.fotos).toBe(1); expect(r.revisar).toBe(1)
+  })
+  it('si la foto coincide con todo, la fila sigue Completo con la nota', async () => {
+    const api = apiFalsa({ classifyDe: () => ({ file_name: 'tenencia.pdf', format: 'bullmarket' }), tenenciaDe: () => ({ ok: true }) })
+    const updates = []
+    await correrTanda([fila({ archivos: [mov, pdf], format: 'bullmarket' })], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(updates.at(-1).estado).toBe(ESTADO.COMPLETO)
+    expect(updates.at(-1).notas.join(' ')).toMatch(/todo coincide/)
+  })
+  it('si el servidor no pudo comparar la foto (sin fecha), la fila queda Revisar con su motivo, no "todo coincide"', async () => {
+    const api = apiFalsa({ classifyDe: () => ({ file_name: 'tenencia.pdf', format: 'bullmarket' }), tenenciaDe: () => ({ session_id: null, nothing_to_do: true, motivo: 'fecha_desconocida', message: 'No pudimos leer la fecha de este resumen.' }) })
+    const updates = []
+    await correrTanda([fila({ archivos: [mov, pdf], format: 'bullmarket' })], { api, onUpdate: (id, p) => updates.push(p) })
+    expect(updates.at(-1).estado).toBe(ESTADO.REVISAR)
+    expect(updates.at(-1).detalle).toMatch(/No pudimos leer la fecha/)
+  })
+  it('sólo la foto, sin movimientos: la fila no se carga y lo dice', async () => {
+    const api = apiFalsa({ classifyDe: () => ({ file_name: 'tenencia.pdf', format: 'bullmarket' }) })
+    const r = await correrTanda([fila({ archivos: [pdf], format: 'bullmarket' })], { api })
+    expect(api.llamadas.some(l => l.path === '/imports/preview')).toBe(false)
+    expect(r.errores).toBe(1)
+  })
+  it('un solo archivo csv no pasa por el clasificador (misma ruta que F1)', async () => {
+    const api = apiFalsa()
+    await correrTanda([fila()], { api })
+    expect(api.llamadas.map(l => l.path)).toEqual(['/imports/preview', '/imports/confirm'])
+  })
+  it('aplicarFoto confirma con los tickers aprobados a nombre del cliente y devuelve la fila a su estado', async () => {
+    const api = apiFalsa()
+    const f = { clientUid: 11, estado: ESTADO.FOTO_PENDIENTE, estadoMovimientos: ESTADO.REVISAR, foto: { session_id: 'foto-1' }, notas: ['x'] }
+    const patch = await aplicarFoto(api, f, new Set(['GGAL']))
+    expect(api.llamadas.at(-1)).toMatchObject({ path: '/imports/confirm', clientId: 11, body: { session_id: 'foto-1', aprobar_tickers: ['GGAL'] } })
+    expect(patch.estado).toBe(ESTADO.REVISAR); expect(patch.foto).toBeNull()
+    expect(omitirFoto(f).estado).toBe(ESTADO.REVISAR)
+    expect(omitirFoto(f).notas.at(-1)).toMatch(/omitida/)
   })
 })

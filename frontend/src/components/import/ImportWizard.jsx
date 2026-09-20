@@ -156,24 +156,7 @@ export function resolverFaltaTenencia(parserGroups, platform,
 // Broker que crea cada parser específico (hardcoded en el registry del backend).
 // La foto de tenencia se aplica sobre ese broker; para parsers específicos el
 // wizard no pide elegir broker (singleBroker queda vacío) → resolvemos por formato.
-const TENENCIA_BROKER_BY_FORMAT = {
-  bullmarket: 'Bull Market',
-  cocos: 'Cocos',
-  ppi: 'PPI',
-  ieb: 'IEB',
-  iol: 'IOL',
-  inviu: 'inviu',
-  // La plataforma Balanz tiene 3 exports (balanz=Órdenes, balanz_movimientos,
-  // balanz_resultados) y el wizard arranca en el PRIMERO (balanz). Todos crean el
-  // broker 'Balanz', así que mapeamos los tres → la foto se aplica bien sin importar
-  // cuál export quedó seleccionado.
-  balanz: 'Balanz',
-  balanz_movimientos: 'Balanz',
-  balanz_resultados: 'Balanz',
-  // Balanz Internacional = plataforma/broker aparte (USD). Su foto de tenencia
-  // (Resumen de Cuenta Internacional) es un follow-up; el mapeo queda listo.
-  balanz_internacional: 'Balanz Internacional',
-}
+import { TENENCIA_BROKER_BY_FORMAT } from './tenenciaBrokers'
 
 // Plataformas cuya importación está temporalmente deshabilitada (parser
 // incompleto o todavía inexistente — falta data del CSV). La plataforma
@@ -1857,7 +1840,9 @@ const MOTIVO_LABEL = {
  * único que puede reducir una tenencia. Eso viaja en `data.confianza` y se
  * muestra.
  */
-function ReconcileStep({ data, aprobados, onToggle }) {
+// Exportado: la tanda del asesor (pages/AdvisorImports) monta ESTE paso por
+// cliente para aprobar cada foto — mismo componente, misma regla fail-closed.
+export function ReconcileStep({ data, aprobados, onToggle }) {
   const dudosos = data.no_reconciliable || []
   // 🔴 Lo que espera aprobación NO puede aparecer también en "se completan":
   // esa lista afirma que se va a aplicar, y esto justamente no se aplica solo.
