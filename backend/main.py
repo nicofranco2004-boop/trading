@@ -2886,6 +2886,12 @@ def init_db():
         if batch_cols and 'override_info' not in batch_cols:
             conn.execute("ALTER TABLE import_batches ADD COLUMN override_info TEXT")
 
+        # Tandas de importación del asesor (Fase 2): tabla propia + columna
+        # `tanda_id` en import_batches. Chequeo con PRAGMA directo adentro del
+        # módulo — no pasa por la allowlist de `_table_cols`.
+        import advisor_tandas as _advisor_tandas
+        _advisor_tandas.ensure_schema(conn)
+
         # Mapping templates guardados por usuario. Sirve para reusar el mapeo
         # de columnas entre imports recurrentes (ej.: usuario que importa export
         # de IBKR mensualmente, mapea una vez y reusa).
@@ -4239,7 +4245,8 @@ def delete_my_account(response: Response, uid: int = Depends(get_effective_user)
             # user_id no las toca: sin esto sobrevivían los nombres privados de
             # los grupos, sus reglas y los ids de los ex-clientes excluidos.
             for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
-                       "advisor_alert_events", "advisor_brief_log"):
+                       "advisor_alert_events", "advisor_brief_log",
+                       "advisor_import_tandas"):
                 conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (uid,))
             # Lotes de operación grupal del asesor (sin columna user_id)
             adv_batches = [r["id"] for r in conn.execute(
@@ -22043,7 +22050,8 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
                                  (_sid, _sid, _sid))
                 conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
                 for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
-                           "advisor_alert_events", "advisor_brief_log"):
+                           "advisor_alert_events", "advisor_brief_log",
+                           "advisor_import_tandas"):
                     conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (user_id,))
                 adv_batches = [r["id"] for r in conn.execute(
                     "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (user_id,)).fetchall()]
@@ -33805,8 +33813,9 @@ def import_preview(
     format: Optional[str] = Form(None),
     mapping: Optional[str] = Form(None),                   # JSON: {"columns":{}, "defaults":{}}
     route_by_currency: Optional[str] = Form(None),         # "1"/"true" → routing per-row
+    tanda_id: Optional[str] = Form(None),                  # tanda del asesor (Fase 2)
     uid: int = Depends(get_effective_user),
-    request: Request = None,   # sólo para el log de medición (auth_uid); opcional y último
+    request: Request = None,   # log de medición (auth_uid) y dueño de la tanda; opcional y último
 ):
     """Sube uno o más CSVs y genera el preview unificado. Persiste un batch en
     estado 'preview'. Devuelve session_id (= batch_id) para usar en /confirm.
@@ -33883,6 +33892,20 @@ def import_preview(
             raise HTTPException(400, payload["error"])
         # Anotamos cuántos archivos componen el batch (para el preview UI)
         payload["source_file_count"] = len(file_data)
+        # Tanda del asesor: el lote queda colgado de ella. La tanda es del ASESOR
+        # (auth_uid), el lote del CLIENTE (uid): se verifica que la tanda exista
+        # y sea suya antes de estampar — una tanda ajena es 400, no se ignora.
+        if tanda_id:
+            _auth = getattr(getattr(request, "state", None), "rendi_auth_uid", None)
+            _tid = str(tanda_id).strip()[:64]
+            _own = conn.execute(
+                "SELECT 1 FROM advisor_import_tandas WHERE id=? AND advisor_uid=?",
+                (_tid, _auth)).fetchone() if _auth else None
+            if not _own:
+                raise HTTPException(400, "La tanda no existe o no es tuya.")
+            with conn:
+                conn.execute("UPDATE import_batches SET tanda_id=? WHERE id=? AND user_id=?",
+                             (_tid, payload.get("session_id"), uid))
         return payload
     except HTTPException:
         raise
@@ -35458,26 +35481,9 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_effect
     try:
         with conn:
             try:
-                result = _import_persister.revert_batch(
-                    conn, uid=uid, batch_id=batch_id, helpers=_import_helpers,
-                    nuclear=bool(nuclear),
-                )
+                result = _revert_batch_de(conn, uid, batch_id, nuclear=bool(nuclear))
             except _import_persister.PersistError as ex:
                 raise HTTPException(400, ex.message)
-            # Si el batch revertido era una foto que fijó price_override en FCI, esos
-            # fondos (creados por OTRO batch de Movimientos) conservan el override → los
-            # limpiamos y re-aplicamos las fotos que SIGAN confirmadas (foto anterior gana,
-            # o queda a costo/live si no hay ninguna).
-            _fpo_row = conn.execute(
-                "SELECT fund_price_overrides FROM import_batches WHERE id=? AND user_id=?",
-                (batch_id, uid)).fetchone()
-            if _fpo_row and _fpo_row["fund_price_overrides"]:
-                for _o in json.loads(_fpo_row["fund_price_overrides"]):
-                    conn.execute(
-                        "UPDATE positions SET price_override=NULL WHERE user_id=? AND broker=? "
-                        "AND asset=? AND is_cash=0 AND UPPER(asset_type)='FUND'",
-                        (uid, _o["broker"], _o["asset"]))
-                _import_recompute._reapply_fund_overrides(conn, uid)
         return result
     except HTTPException:
         raise
@@ -35485,6 +35491,33 @@ def import_revert(batch_id: str, nuclear: int = 0, uid: int = Depends(get_effect
         raise HTTPException(500, f"Error al revertir el import: {ex}")
     finally:
         conn.close()
+
+
+def _revert_batch_de(conn, uid: int, batch_id: str, *, nuclear: bool = False):
+    """Revierte UN lote en la cuenta `uid`. Es el cuerpo del endpoint
+    `POST /api/imports/{batch_id}/revert`, extraído para que el deshacer de una
+    TANDA del asesor (que revierte N lotes, cada uno en la cuenta de su cliente)
+    corra exactamente lo mismo — un solo revert, no dos copias. Levanta
+    `PersistError` si el modo seguro no puede (ventas posteriores, etc.).
+    El caller pone el `with conn:`."""
+    result = _import_persister.revert_batch(
+        conn, uid=uid, batch_id=batch_id, helpers=_import_helpers, nuclear=nuclear,
+    )
+    # Si el batch revertido era una foto que fijó price_override en FCI, esos
+    # fondos (creados por OTRO batch de Movimientos) conservan el override → los
+    # limpiamos y re-aplicamos las fotos que SIGAN confirmadas (foto anterior gana,
+    # o queda a costo/live si no hay ninguna).
+    _fpo_row = conn.execute(
+        "SELECT fund_price_overrides FROM import_batches WHERE id=? AND user_id=?",
+        (batch_id, uid)).fetchone()
+    if _fpo_row and _fpo_row["fund_price_overrides"]:
+        for _o in json.loads(_fpo_row["fund_price_overrides"]):
+            conn.execute(
+                "UPDATE positions SET price_override=NULL WHERE user_id=? AND broker=? "
+                "AND asset=? AND is_cash=0 AND UPPER(asset_type)='FUND'",
+                (uid, _o["broker"], _o["asset"]))
+        _import_recompute._reapply_fund_overrides(conn, uid)
+    return result
 
 
 @app.post("/api/imports/{batch_id}/redo")
@@ -37574,6 +37607,113 @@ def advisor_data_health(uid: int = Depends(get_current_user)):
         _require_advisor(conn, uid)
         import advisor_twr
         return advisor_twr.salud_del_libro(conn, uid)
+    finally:
+        conn.close()
+
+
+# ─── Tandas de importación (Fase 2) ──────────────────────────────────────────
+# Bajo /api/advisor/ a propósito: ese prefijo está en CLIENT_CTX_EXEMPT_PREFIXES,
+# así que el uid es SIEMPRE el asesor aunque tenga un cliente "puesto".
+
+class AdvisorTandaIn(BaseModel):
+    rows: list = Field(..., max_length=64)
+
+
+class AdvisorTandaPatchIn(BaseModel):
+    rows: Optional[list] = Field(None, max_length=64)
+    finished: Optional[bool] = None
+
+
+@app.post("/api/advisor/tandas")
+def advisor_tanda_create(data: AdvisorTandaIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_tandas as at
+        try:
+            with conn:
+                return at.crear(conn, uid, data.rows)
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/tandas")
+def advisor_tanda_list(uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_tandas as at
+        return {"tandas": at.listar(conn, uid)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/advisor/tandas/{tanda_id}")
+def advisor_tanda_detail(tanda_id: str, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_tandas as at
+        try:
+            return at.detalle(conn, uid, tanda_id)
+        except LookupError:
+            raise HTTPException(404, "Tanda no encontrada.")
+    finally:
+        conn.close()
+
+
+@app.patch("/api/advisor/tandas/{tanda_id}")
+def advisor_tanda_patch(tanda_id: str, data: AdvisorTandaPatchIn, uid: int = Depends(get_current_user)):
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_tandas as at
+        try:
+            with conn:
+                return at.actualizar(conn, uid, tanda_id, rows=data.rows, finished=data.finished)
+        except LookupError:
+            raise HTTPException(404, "Tanda no encontrada.")
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+    finally:
+        conn.close()
+
+
+@app.post("/api/advisor/tandas/{tanda_id}/revert")
+def advisor_tanda_revert(tanda_id: str, uid: int = Depends(get_current_user)):
+    """Deshace toda la tanda: cada lote en la cuenta de SU cliente, con el
+    write-gate del vínculo, en modo SEGURO. Un lote que no se puede revertir
+    se informa; no aborta a los demás ni fuerza el modo nuclear."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        import advisor_tandas as at
+
+        def _puede_escribir(client_uid: int) -> bool:
+            row = conn.execute(
+                """SELECT 1 FROM advisor_clients
+                   WHERE advisor_uid=? AND client_uid=? AND status='active'
+                     AND permission='read_write'""",
+                (uid, int(client_uid))).fetchone()
+            return bool(row)
+
+        def _revertir_lote(client_uid: int, batch_id: str):
+            # Cada lote en su propia transacción: si uno falla, los anteriores
+            # quedan revertidos y el estado de la tanda refleja fila por fila.
+            with conn:
+                try:
+                    _revert_batch_de(conn, int(client_uid), batch_id, nuclear=False)
+                except _import_persister.PersistError as ex:
+                    raise RuntimeError(ex.message)
+
+        try:
+            res = at.revertir(conn, uid, tanda_id, puede_escribir=_puede_escribir, revertir_lote=_revertir_lote)
+            conn.commit()
+            return res
+        except LookupError:
+            raise HTTPException(404, "Tanda no encontrada.")
     finally:
         conn.close()
 

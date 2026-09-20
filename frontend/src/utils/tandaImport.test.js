@@ -16,7 +16,7 @@ function apiFalsa({ previewDe = () => ({ session_id: 'sess-1', errors: [] }), co
       throw new Error('ruta inesperada ' + path)
     },
     async upload(path, fd, opts) {
-      llamadas.push({ path, files: fd.getAll('files').length, format: fd.get('format'), clientId: opts?.clientId ?? null })
+      llamadas.push({ path, files: fd.getAll('files').length, format: fd.get('format'), tandaId: fd.get('tanda_id'), clientId: opts?.clientId ?? null })
       return previewDe(fd, opts)
     },
   }
@@ -240,5 +240,19 @@ describe('archivoAceptado', () => {
     expect(archivoAceptado('a.CSV')).toBe(true)
     expect(archivoAceptado('b.xlsx')).toBe(true)
     expect(archivoAceptado('resumen.pdf')).toBe(false)
+  })
+})
+
+describe('correrTanda — tanda del servidor (F2)', () => {
+  it('manda tanda_id en cada preview cuando la tanda existe en el servidor', async () => {
+    const api = apiFalsa()
+    await correrTanda([fila({ id: 1 }), fila({ id: 2, clientUid: 22 })], { api, tandaId: 'abc123' })
+    const previews = api.llamadas.filter(l => l.path === '/imports/preview')
+    expect(previews.map(p => p.tandaId)).toEqual(['abc123', 'abc123'])
+  })
+  it('sin tanda no manda el campo (compatibilidad con el importador de siempre)', async () => {
+    const api = apiFalsa()
+    await correrTanda([fila()], { api })
+    expect(api.llamadas.find(l => l.path === '/imports/preview').tandaId).toBeNull()
   })
 })

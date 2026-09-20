@@ -153,8 +153,10 @@ const espera = (ms) => new Promise(r => setTimeout(r, ms))
  * un confirm, que es atómico del lado del servidor.
  * `dormir` se inyecta en tests para no esperar de verdad.
  * Devuelve el resumen final.
+ * `tandaId` (Fase 2): el id de la tanda en el servidor; viaja como `tanda_id`
+ * en cada preview para que el lote quede colgado de ella.
  */
-export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dormir = espera } = {}) {
+export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dormir = espera, tandaId = null } = {}) {
   const resultados = []
   // Un cliente NUEVO nombrado en dos filas (tiene dos brokers) se crea UNA vez.
   const creados = new Map()
@@ -192,6 +194,7 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
       const fd = new FormData()
       fila.archivos.forEach(f => fd.append('files', f))
       fd.append('format', fila.format)
+      if (tandaId) fd.append('tanda_id', String(tandaId))
       const preview = await api.upload('/imports/preview', fd, { clientId: clientUid })
 
       // Archivo IDÉNTICO a uno ya confirmado: no hay nada que confirmar (dejaría
@@ -249,7 +252,8 @@ export function resumen(resultados) {
     completos: por(ESTADO.COMPLETO),
     revisar: por(ESTADO.REVISAR),
     errores: por(ESTADO.ERROR),
-    movimientos: resultados.reduce((a, r) => a + (r.cargados || 0), 0),
+    // Sólo lo que sigue cargado: una fila revertida no suma movimientos.
+    movimientos: resultados.reduce((a, r) => a + ([ESTADO.COMPLETO, ESTADO.REVISAR].includes(r.estado) ? (r.cargados || 0) : 0), 0),
     repetidos: resultados.reduce((a, r) => a + (r.repetidos || 0), 0),
     filasConError: resultados.reduce((a, r) => a + (r.errores || 0), 0),
   }

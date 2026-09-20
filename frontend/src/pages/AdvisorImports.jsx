@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import {
   Plus, X, FileUp, HelpCircle, ChevronDown, ChevronUp, CheckCircle2,
-  AlertTriangle, XCircle, Loader2, ArrowRight, Info, History,
+  AlertTriangle, XCircle, Loader2, ArrowRight, Info, History, Undo2,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -47,13 +47,44 @@ const SIN_TANDA = new Set(['generic'])
 
 const STORAGE_KEY = 'rendi_tanda_ultima'
 
+// ── La tanda en el servidor (Fase 2) ─────────────────────────────────────────
+// Lo que viaja por fila a /api/advisor/tandas (sin los File: sólo nombres).
+function filaAlServidor(f) {
+  return {
+    id: f.id,
+    client_uid: Number.isInteger(f.clientUid) ? f.clientUid : null,
+    label: f.label || f.nombre || '',
+    platform: f.platformLabel || f.platform || '',
+    archivos: (f.archivos || []).map(a => a.name),
+    estado: f.estado || ESTADO.PENDIENTE,
+    batch_id: f.batchId || null,
+    cargados: f.cargados || 0,
+    repetidos: f.repetidos || 0,
+    errores: f.errores || 0,
+    detalle: f.detalle || null,
+    creado: !!f.creado,
+  }
+}
+// Lo que vuelve del servidor, en la forma que dibuja esta pantalla.
+function filaDelServidor(r) {
+  return {
+    id: r.id, clientUid: r.client_uid, esNuevo: false, nombre: '', label: r.label || '',
+    platform: r.platform || '', platformLabel: r.platform || '', format: '',
+    archivos: (r.archivos || []).map(n => ({ name: n, size: 0 })),
+    estado: r.estado, batchId: r.batch_id || null, cargados: r.cargados || 0,
+    repetidos: r.repetidos || 0, errores: r.errores || 0, detalle: r.detalle || null,
+    creado: !!r.creado, notas: [], incierto: false,
+  }
+}
+const FINALES = new Set([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR])
+
 let _seq = 0
 const nuevaFila = () => ({ id: ++_seq, clientUid: null, esNuevo: false, nombre: '', label: '', platform: '', platformLabel: '', format: '', archivos: [], soloLectura: false, estado: ESTADO.PENDIENTE })
 
 // Lo que se guarda por pestaña: sin los File (no se serializan), sólo nombres.
-function serializar(filas, momento, inicio, fin) {
+function serializar(filas, momento, inicio, fin, tandaId = null) {
   return {
-    momento, inicio, fin, ts: Date.now(),
+    momento, inicio, fin, tandaId, ts: Date.now(),
     filas: filas.map(f => ({ ...f, archivos: (f.archivos || []).map(a => ({ name: a.name, size: a.size })) })),
   }
 }
@@ -93,6 +124,9 @@ export default function AdvisorImports() {
   const [fin, setFin] = useState(() => ultima?.fin || null)
   const [cortada, setCortada] = useState(() => !!ultima?.cortada)
   const [hayGuardada, setHayGuardada] = useState(() => !!ultima)
+  const [tandaId, setTandaId] = useState(() => ultima?.tandaId || null)   // id en el servidor (F2)
+  const [historial, setHistorial] = useState([])   // tandas anteriores (servidor)
+  const [deshacer, setDeshacer] = useState(null)   // null | 'confirmar' | 'corriendo' | {resultado}
   const abortRef = useRef(null)
   const pendientesRef = useRef([])   // filas incompletas que no viajaron: vuelven en "Nueva tanda"
   const filasRef = useRef(filas)
@@ -109,6 +143,8 @@ export default function AdvisorImports() {
     try {
       const [r, g] = await Promise.all([api.get('/advisor/clients'), api.get('/imports/parsers/grouped')])
       setRoster(r.clients || [])
+      // Tandas anteriores: si el servidor todavía no las tiene, la pantalla sigue.
+      api.get('/advisor/tandas').then(t => setHistorial(t?.tandas || [])).catch(() => setHistorial([]))
       setGrupos((Array.isArray(g) ? g : []).filter(p => !SIN_TANDA.has(p.platform) && (p.exports || []).some(e => e.supported)))
     } catch (e) {
       setErrorCarga(errorMessage(e) || 'No se pudo cargar la lista de clientes.')
@@ -132,7 +168,7 @@ export default function AdvisorImports() {
   if (user && !isAdvisor) return <Navigate to="/" replace />
   if (clientCtx && !volviendo) return <Navigate to="/imports" replace />
 
-  const persistir = (fs, mom, ini = inicio, f = fin) => { guardarLocal(serializar(fs, mom, ini, f)); setHayGuardada(true) }
+  const persistir = (fs, mom, ini = inicio, f = fin, tid = tandaId) => { guardarLocal(serializar(fs, mom, ini, f, tid)); setHayGuardada(true) }
 
   const patch = (id, p) => setFilas(fs => fs.map(f => (f.id === id ? { ...f, ...(typeof p === 'function' ? p(f) : p) } : f)))
   const quitar = (id) => setFilas(fs => fs.filter(f => f.id !== id))
@@ -151,27 +187,41 @@ export default function AdvisorImports() {
     const t0 = Date.now()
     setFilas(aCorrer)
     setMomento('cargando')
-    setInicio(t0); setFin(null); setCortada(false)
-    persistir(aCorrer, 'cargando', t0, null)
+    setInicio(t0); setFin(null); setCortada(false); setDeshacer(null)
+    // La tanda nace en el servidor ANTES de correr: así cada lote queda colgado
+    // de ella y, si la pestaña se cierra, "Tandas anteriores" muestra hasta
+    // dónde llegó. Si el servidor no puede, la tanda corre igual, suelta.
+    let tid = null
+    try { tid = (await api.post('/advisor/tandas', { rows: aCorrer.map(filaAlServidor) }))?.id || null } catch { tid = null }
+    setTandaId(tid)
+    persistir(aCorrer, 'cargando', t0, null, tid)
     const ac = new AbortController()
     abortRef.current = ac
     // `latest` es la copia propia de las filas: el estado de React se actualiza
     // en diferido, y persistir desde él justo al terminar guardaba la penúltima
     // versión (la última fila quedaba "Cargando" para siempre al volver).
     let latest = aCorrer
+    const sincronizar = (finished) => {
+      if (!tid) return Promise.resolve()
+      return api.patch(`/advisor/tandas/${tid}`, { rows: latest.map(filaAlServidor), ...(finished ? { finished: true } : {}) }).catch(() => {})
+    }
     await correrTanda(aCorrer, {
-      api, signal: ac.signal,
+      api, signal: ac.signal, tandaId: tid,
       onUpdate: (id, p) => {
         latest = latest.map(f => (f.id === id ? { ...f, ...p } : f))
-        guardarLocal(serializar(latest, 'cargando', t0, null))
+        guardarLocal(serializar(latest, 'cargando', t0, null, tid))
         setFilas(latest)
+        // Al servidor sólo cuando una fila TERMINA (no en cada sub-paso).
+        if (p.estado && FINALES.has(p.estado)) sincronizar(false)
       },
     })
-    if (ac.signal.aborted) return   // desmontada: lo guardado ya dice hasta dónde llegó
+    if (ac.signal.aborted) { sincronizar(false); return }   // desmontada: lo guardado ya dice hasta dónde llegó
     const t1 = Date.now()
     setFin(t1)
     setMomento('resultado')
-    persistir(latest, 'resultado', t0, t1)
+    persistir(latest, 'resultado', t0, t1, tid)
+    await sincronizar(true)
+    api.get('/advisor/tandas').then(t => setHistorial(t?.tandas || [])).catch(() => {})
     // El roster puede tener clientes nuevos → para la próxima tanda.
     api.get('/advisor/clients').then(r => setRoster(r.clients || [])).catch(() => {})
   }
@@ -195,7 +245,37 @@ export default function AdvisorImports() {
   function verUltima() {
     const u = leerLocal()
     if (!u) return
-    setFilas(u.filas); setInicio(u.inicio); setFin(u.fin); setCortada(!!u.cortada); setMomento('resultado')
+    setFilas(u.filas); setInicio(u.inicio); setFin(u.fin); setCortada(!!u.cortada); setTandaId(u.tandaId || null); setDeshacer(null); setMomento('resultado')
+  }
+
+  // Una tanda anterior, desde el servidor.
+  async function verTanda(id) {
+    try {
+      const d = await api.get(`/advisor/tandas/${id}`)
+      setFilas((d.rows || []).map(filaDelServidor))
+      setInicio(d.created_at ? Date.parse(d.created_at + 'Z') || null : null)
+      setFin(d.finished_at ? Date.parse(d.finished_at + 'Z') || null : null)
+      setCortada(!d.finished_at && (d.resumen?.en_curso || 0) > 0)
+      setTandaId(d.id); setDeshacer(null); setMomento('resultado')
+    } catch (e) {
+      setErrorCarga(errorMessage(e) || 'No se pudo abrir esa tanda.')
+    }
+  }
+
+  // Deshacer toda la tanda: primero confirma, después revierte lote por lote
+  // en el servidor y vuelve a leer la tanda para mostrar el estado real.
+  async function deshacerTanda() {
+    if (!tandaId) return
+    setDeshacer('corriendo')
+    try {
+      const res = await api.post(`/advisor/tandas/${tandaId}/revert`, {})
+      const d = await api.get(`/advisor/tandas/${tandaId}`)
+      setFilas((d.rows || []).map(filaDelServidor))
+      setDeshacer({ resultado: res })
+      api.get('/advisor/tandas').then(t => setHistorial(t?.tandas || [])).catch(() => {})
+    } catch (e) {
+      setDeshacer({ error: errorMessage(e) || 'No se pudo deshacer la tanda.' })
+    }
   }
 
   const irACliente = (fila, ruta) => {
@@ -265,6 +345,22 @@ export default function AdvisorImports() {
                   </button>
                 </div>
               </div>
+
+              {historial.length > 0 && (
+                <section className="mt-6" aria-label="Tandas anteriores">
+                  <h2 className="text-sm font-semibold text-ink-0 mb-2">Tandas anteriores</h2>
+                  <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
+                    {historial.slice(0, 8).map(t => (
+                      <button type="button" key={t.id} onClick={() => verTanda(t.id)}
+                        className="w-full text-left grid grid-cols-1 md:grid-cols-[170px_1fr_auto] gap-1 md:gap-3.5 items-center px-4 py-3 border-b border-line last:border-b-0 hover:bg-bg-2 transition-colors">
+                        <span className="text-xs text-ink-1 tabular">{fechaCorta(t.created_at)}{!t.finished_at && t.resumen?.en_curso > 0 ? <span className="ml-2 text-[10px] font-medium text-rendi-warn bg-rendi-warn/10 rounded-full px-2 py-0.5">se cortó</span> : null}</span>
+                        <span className="text-xs text-ink-2 truncate">{(t.clientes || []).filter(Boolean).join(', ')}</span>
+                        <span className="text-xs text-ink-1 tabular">{resumenCorto(t.resumen)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
             </>
           )}
         </>
@@ -287,6 +383,7 @@ export default function AdvisorImports() {
 
       {momento === 'resultado' && (
         <Resultado filas={filas} inicio={inicio} fin={fin} cortada={cortada}
+          tandaId={tandaId} deshacer={deshacer} onDeshacer={deshacerTanda} onPedirDeshacer={() => setDeshacer('confirmar')} onCancelarDeshacer={() => setDeshacer(null)}
           onNueva={() => nuevaTanda()} irACliente={irACliente} onReintentar={reintentar} />
       )}
     </div>
@@ -494,8 +591,10 @@ function Progreso({ filas, inicio }) {
 
 // ─── Resultado ───────────────────────────────────────────────────────────────
 
-function Resultado({ filas, inicio, fin, cortada, onNueva, irACliente, onReintentar }) {
+function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer, onPedirDeshacer, onCancelarDeshacer, onNueva, irACliente, onReintentar }) {
   const r = useMemo(() => resumir(filas), [filas])
+  const revertibles = filas.filter(f => f.batchId && [ESTADO.COMPLETO, ESTADO.REVISAR].includes(f.estado)).length
+  const revertidos = filas.filter(f => f.estado === 'revertido').length
   const seg = inicio && fin ? Math.max(1, Math.round((fin - inicio) / 1000)) : null
   const dur = seg == null ? '' : seg < 60 ? plural(seg, 'segundo', 'segundos') : `${plural(Math.floor(seg / 60), 'minuto', 'minutos')} ${plural(seg % 60, 'segundo', 'segundos')}`
   const frase = [
@@ -513,7 +612,7 @@ function Resultado({ filas, inicio, fin, cortada, onNueva, irACliente, onReinten
       <PageHeader
         eyebrow="Plan Asesor"
         title={cortada ? 'La tanda se cortó' : 'Tanda cargada'}
-        subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}. ${frase}.`}
+        subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}.${frase ? ` ${frase}.` : ''}${revertidos > 0 ? ` ${plural(revertidos, 'importación revertida', 'importaciones revertidas')}.` : ''}`}
       />
       {cortada && (
         <div className="mb-3.5 flex items-start gap-2 text-xs text-ink-0 border border-rendi-warn/30 bg-rendi-warn/10 rounded-xl px-3 py-2">
@@ -540,7 +639,11 @@ function Resultado({ filas, inicio, fin, cortada, onNueva, irACliente, onReinten
             </div>
             <div><Pildora estado={f.estado} /></div>
             <div className="text-xs text-ink-1 tabular">
-              {f.estado === ESTADO.ERROR ? (
+              {f.estado === 'revertido' ? (
+                <>Se revirtió: su cuenta quedó como antes de esta importación.</>
+              ) : f.estado === 'revert_fallo' ? (
+                <>{f.detalle || 'No se pudo revertir.'}<span className="block text-[11px] text-ink-2 mt-0.5">Los movimientos siguen cargados en su cuenta.</span></>
+              ) : f.estado === ESTADO.ERROR ? (
                 <>
                   {f.detalle}
                   <span className="block text-[11px] text-ink-2 mt-0.5">
@@ -563,14 +666,46 @@ function Resultado({ filas, inicio, fin, cortada, onNueva, irACliente, onReinten
               {f.estado === ESTADO.REVISAR && <button type="button" className={btnPrimary} onClick={() => irACliente(f, '/imports')}>Revisar <ArrowRight size={12} aria-hidden="true" /></button>}
               {f.estado === ESTADO.COMPLETO && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/posiciones')}>Ver cartera</button>}
               {f.estado === ESTADO.ERROR && <button type="button" className={btnGhost} onClick={() => onReintentar(f)}>Cambiar archivo</button>}
+              {f.estado === 'revert_fallo' && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/imports')}>Ver en su cuenta</button>}
             </div>
           </div>
         ))}
       </div>
 
+      {deshacer && typeof deshacer === 'object' && (
+        <div className={`mt-3.5 flex items-start gap-2 text-xs rounded-xl px-3 py-2 border ${deshacer.error ? 'text-rendi-neg border-rendi-neg/30 bg-rendi-neg/5' : 'text-ink-0 border-line bg-bg-1'}`}>
+          <Undo2 size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            {deshacer.error ? deshacer.error : (
+              <>
+                Se {deshacer.resultado.revertidos === 1 ? 'revirtió' : 'revirtieron'} {plural(deshacer.resultado.revertidos, 'importación', 'importaciones')}.
+                {deshacer.resultado.fallidos > 0 ? ` ${plural(deshacer.resultado.fallidos, 'no se pudo deshacer', 'no se pudieron deshacer')}: el motivo está en cada fila.` : ' Las cuentas quedaron como antes de la tanda.'}
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
       <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 bg-bg-1 border border-line rounded-xl px-4 py-3.5">
-        <p className="text-xs text-ink-2 max-w-[60ch]">Cada cliente quedó como una importación propia: desde su cuenta, en Importar, podés revertirla o usar "Editar y rehacer" para completarla.</p>
-        <button type="button" className={btnPrimary} onClick={onNueva}>Nueva tanda</button>
+        <p className="text-xs text-ink-2 max-w-[60ch]">
+          Cada cliente quedó como una importación propia: desde su cuenta, en Importar, podés revertirla sola o usar "Editar y rehacer" para completarla.
+          {tandaId && revertibles > 0 ? ' Este botón revierte todas las de esta tanda juntas.' : ''}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {tandaId && revertibles > 0 && deshacer !== 'confirmar' && deshacer !== 'corriendo' && (
+            <button type="button" className={btnGhost} onClick={onPedirDeshacer}><Undo2 size={13} aria-hidden="true" /> Deshacer toda la tanda</button>
+          )}
+          {deshacer === 'confirmar' && (
+            <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-0">
+              ¿Revertir {plural(revertibles, 'importación', 'importaciones')} de {plural(revertibles, 'cliente', 'clientes')}? Se puede volver a cargar después.
+              <button type="button" className={`${btnPrimary} !bg-rendi-neg hover:!bg-rendi-neg/85`} onClick={onDeshacer}>Sí, deshacer</button>
+              <button type="button" className={btnGhost} onClick={onCancelarDeshacer}>Cancelar</button>
+            </span>
+          )}
+          {deshacer === 'corriendo' && <span className="inline-flex items-center gap-1.5 text-xs text-ink-2"><Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> Deshaciendo…</span>}
+          {revertidos > 0 && revertibles === 0 && deshacer === null && <span className="text-xs text-ink-2">Tanda revertida.</span>}
+          <button type="button" className={btnPrimary} onClick={onNueva}>Nueva tanda</button>
+        </div>
       </div>
     </>
   )
@@ -592,6 +727,8 @@ const PILDORA = {
   [ESTADO.COMPLETO]: { t: 'Completo', cls: 'text-rendi-pos bg-rendi-pos/10', Icon: CheckCircle2 },
   [ESTADO.REVISAR]: { t: 'Revisar', cls: 'text-rendi-warn bg-rendi-warn/10', Icon: AlertTriangle },
   [ESTADO.ERROR]: { t: 'No se cargó', cls: 'text-rendi-neg bg-rendi-neg/10', Icon: XCircle },
+  revertido: { t: 'Revertido', cls: 'text-ink-2 bg-bg-2', Icon: Undo2 },
+  revert_fallo: { t: 'No se pudo revertir', cls: 'text-rendi-neg bg-rendi-neg/10', Icon: XCircle },
 }
 function Pildora({ estado }) {
   const p = PILDORA[estado] || PILDORA[ESTADO.PENDIENTE]
@@ -605,6 +742,22 @@ function Pildora({ estado }) {
 }
 
 const movs = (n) => plural(n ?? 0, 'movimiento', 'movimientos')
+
+function fechaCorta(iso) {
+  if (!iso) return ''
+  const d = new Date(String(iso).replace(' ', 'T') + (String(iso).endsWith('Z') ? '' : 'Z'))
+  if (Number.isNaN(d.getTime())) return String(iso)
+  return d.toLocaleString('es-AR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+function resumenCorto(r) {
+  if (!r) return ''
+  const partes = []
+  if (r.completos) partes.push(`${r.completos} ok`)
+  if (r.revisar) partes.push(`${r.revisar} a revisar`)
+  if (r.errores) partes.push(`${r.errores} sin cargar`)
+  if (r.revertidos) partes.push(`${r.revertidos} revertidos`)
+  return `${plural(r.total, 'cliente', 'clientes')}${partes.length ? ' · ' + partes.join(' · ') : ''}`
+}
 
 function nombreDe(f) {
   return f.esNuevo ? (f.nombre || 'Cliente nuevo') : (f.label || (f.clientUid ? `Cliente ${f.clientUid}` : 'Sin cliente'))
