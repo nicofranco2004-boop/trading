@@ -33982,11 +33982,17 @@ def import_preview(
             raise HTTPException(400, payload["error"])
         # Anotamos cuántos archivos componen el batch (para el preview UI)
         payload["source_file_count"] = len(file_data)
-        # El lote queda colgado de la tanda (validada arriba).
+        # El lote queda colgado de la tanda (validada arriba). Si el archivo es
+        # IDÉNTICO a uno ya confirmado la tanda no lo va a confirmar nunca: el
+        # borrador se borra acá mismo en vez de quedar colgado una hora.
         if _tid and payload.get("session_id"):
             with conn:
-                conn.execute("UPDATE import_batches SET tanda_id=? WHERE id=? AND user_id=?",
-                             (_tid, payload.get("session_id"), uid))
+                if payload.get("duplicate_of_batch_id"):
+                    conn.execute("DELETE FROM import_batches WHERE id=? AND user_id=? AND status='preview'",
+                                 (payload.get("session_id"), uid))
+                else:
+                    conn.execute("UPDATE import_batches SET tanda_id=? WHERE id=? AND user_id=?",
+                                 (_tid, payload.get("session_id"), uid))
         return payload
     except HTTPException:
         raise
@@ -34253,14 +34259,17 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         # nada: aplicarlo dejaría GGAL 30 donde la foto decía 80. Se rechaza
         # y se pide volver a subir la foto.
         _b_meta = conn.execute(
-            "SELECT parser_format, created_at FROM import_batches WHERE id=? AND user_id=?",
+            "SELECT parser_format, created_at, broker FROM import_batches WHERE id=? AND user_id=?",
             (data.session_id, uid)).fetchone()
         if _b_meta and "tenencia" in str(_b_meta["parser_format"] or ""):
+            # Sólo cuenta un revert del MISMO par de brokers (la foto es por
+            # broker): revertir Balanz no invalida una foto de Cocos.
+            _par = _import_persister.broker_pair(conn, uid, _b_meta["broker"] or "") or [_b_meta["broker"]]
             _rev = conn.execute(
-                """SELECT 1 FROM import_batches
+                f"""SELECT 1 FROM import_batches
                     WHERE user_id=? AND status='reverted' AND reverted_at IS NOT NULL
-                      AND reverted_at >= ? LIMIT 1""",
-                (uid, _b_meta["created_at"])).fetchone()
+                      AND reverted_at >= ? AND broker IN ({",".join("?" * len(_par))}) LIMIT 1""",
+                (uid, _b_meta["created_at"], *_par)).fetchone()
             if _rev:
                 raise HTTPException(400, "La foto se comparó contra un historial que después se revirtió: "
                                          "volvé a subirla para compararla de nuevo.")
