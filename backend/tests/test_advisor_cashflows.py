@@ -2,7 +2,7 @@
 
 El servidor entrega QUÉ renta fija tiene cada cliente elegido; el cronograma lo
 arma el frontend con el mismo motor que la Cartera. Acá se prueba el contrato
-del endpoint: alcance (sólo mis clientes), agregación por (cliente, ticker,
+del endpoint: alcance (sólo mis clientes, elegidos con casillas), agregación por (cliente, ticker,
 moneda), clasificación de renta fija, y permisos.
 
 Corre con: cd backend && python3 -m pytest tests/test_advisor_cashflows.py
@@ -165,16 +165,6 @@ class CobrosLibro(unittest.TestCase):
         d = self._call({"client_uids": [self.c2]}).json()
         self.assertEqual(d["clients"], []); self.assertEqual(d["positions"], [])
 
-    def test_grupo_guardado_resuelve_a_sus_clientes(self):
-        conn = main.get_db()
-        cur = conn.execute("INSERT INTO advisor_groups (advisor_uid, name, rules) VALUES (?,?,?)",
-                           (self.adv, "Los de GD35", '{"has_asset": "GD35"}'))
-        gid = cur.lastrowid
-        conn.commit(); conn.close()
-        d = self._call({"group_id": gid}).json()
-        self.assertEqual([c["client_uid"] for c in d["clients"]], [self.c2])
-        self.assertEqual({p["asset"] for p in d["positions"]}, {"GD35"})
-
     def test_broker_huerfano_se_excluye_y_se_cuenta(self):
         conn = main.get_db()
         _pos(conn, self.c2, "Broker Borrado", "AE38", 500, asset_type="BOND")
@@ -182,9 +172,6 @@ class CobrosLibro(unittest.TestCase):
         d = self._call({"client_uids": [self.c2]}).json()
         self.assertEqual({p["asset"] for p in d["positions"]}, {"GD35"})
         self.assertEqual(d["skipped"], {"orphan_broker": 1})
-
-    def test_grupo_inexistente_es_404(self):
-        self.assertEqual(self._call({"group_id": 999999}).status_code, 404)
 
 
 if __name__ == "__main__":

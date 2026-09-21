@@ -39648,10 +39648,11 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
 # frontend… se omiten": acá se dejan de omitir.
 
 class AdvisorCashflowsIn(BaseModel):
-    # Subconjunto de clientes; vacío/None = todo el libro. Un grupo guardado
-    # se resuelve a clientes acá, con las mismas reglas que /groups/{id}/clients.
+    # Subconjunto de clientes; vacío/None = todo el libro. Se eligen con
+    # casillas, nada más: los grupos guardados quedaron afuera a propósito
+    # (Nico, 2026-09-21: "es muy complejo, ¿por qué no sólo se seleccionan
+    # los usuarios?").
     client_uids: Optional[List[int]] = None
-    group_id: Optional[int] = Field(None, ge=1)
 
 
 def _advisor_fixed_income_positions(conn, ids: list, stats: dict = None) -> list:
@@ -39722,20 +39723,13 @@ def advisor_cashflows_positions(body: AdvisorCashflowsIn,
                       "SELECT client_uid, label FROM advisor_clients WHERE advisor_uid=? AND status='active'",
                       (uid,)).fetchall()}
         ids = list(book)
-        if body.group_id:
-            import advisor_groups as ag
-            g = ag.get_group(conn, uid, body.group_id)
-            if not g:
-                raise HTTPException(404, "Grupo no encontrado.")
-            ids = [c["client_uid"] for c in ag.evaluate(conn, uid, g["rules"], g["excluded"])]
         if body.client_uids:
             wanted = set(int(x) for x in body.client_uids)
             ids = [c for c in ids if c in wanted]
         # Nunca fuera del libro, venga de donde venga la lista.
         ids = [c for c in ids if c in labels]
 
-        # Un solo orden para clientes y posiciones, venga la lista del libro o
-        # de un grupo (que ordena por AUM): por etiqueta, como el radar.
+        # Un solo orden para clientes y posiciones: por etiqueta, como el radar.
         ids.sort(key=lambda c: (labels[c].lower(), c))
         orden = {c: i for i, c in enumerate(ids)}
         stats = {}
