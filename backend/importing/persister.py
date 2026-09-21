@@ -26,6 +26,7 @@ operation_id) que enumera todos los IDs creados por el batch. Más simple
 para revert.
 """
 from __future__ import annotations
+import datetime as _dt
 import json
 import logging
 from datetime import datetime
@@ -1468,7 +1469,22 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                         "No se puede revertir: una posición creada por este import ya no existe "
                         "(probablemente fue vendida en una operación posterior). Deshacé esa venta primero.")
                 if not pos["is_cash"] and l["operation_type"] == "BUY":
-                    if (pos["quantity"] or 0) < (l["normalized_qty"] or 0) - 1e-9:
+                    esperado = float(l["normalized_qty"] or 0)
+                    # Bonos amortizantes: `positions.quantity` guarda el nominal
+                    # RESIDUAL (sweep_bond_amortizations lo re-escala en cada
+                    # import) y el link guarda el nominal ORIGINAL de la compra.
+                    # Comparar los dos crudos decía "parcialmente vendida" para
+                    # TODA cartera con AL30/GD30 y dejaba sin Revertir a casi
+                    # cualquier cuenta argentina. Se compara en la misma escala.
+                    try:
+                        from pricing.bond_amortization import is_amortizing_bond, residual_factor
+                        _clave = pos["asset"] if is_amortizing_bond(pos["asset"]) else (
+                            pos["name"] if ("name" in pos.keys() and is_amortizing_bond(pos["name"])) else None)
+                        if _clave:
+                            esperado *= residual_factor(_clave, _dt.date.today().isoformat())
+                    except Exception:  # noqa: BLE001 — sin schedule/columna: escala 1, como antes
+                        pass
+                    if (pos["quantity"] or 0) < esperado - 1e-6:
                         raise PersistError(0,
                             f"No se puede revertir: la posición {pos['asset']} en {pos['broker']} "
                             f"fue parcialmente vendida después del import. Deshacé esa venta primero.")

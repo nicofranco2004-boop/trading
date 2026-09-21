@@ -12,20 +12,30 @@ function apiFalsa({ previewDe = () => ({ session_id: 'sess-1', errors: [] }), co
     async post(path, body, opts) {
       llamadas.push({ path, body, clientId: opts?.clientId ?? null })
       if (path === '/advisor/clients') return crearDe(body)
-      if (path === '/imports/confirm') return confirmDe(body, opts)
+      if (path === '/imports/confirm') {
+        if (extra.confirmError) throw extra.confirmError
+        return extra.confirm ? extra.confirm : confirmDe(body, opts)
+      }
       throw new Error('ruta inesperada ' + path)
     },
     async upload(path, fd, opts) {
       llamadas.push({ path, files: fd.getAll('files').length, file: fd.get('file')?.name || null, broker: fd.get('broker'), format: fd.get('format'), tandaId: fd.get('tanda_id'), clientId: opts?.clientId ?? null })
-      if (path === '/imports/classify-tenencia') return (extra.classifyDe || (() => ({ file_name: null, format: null })))(fd)
-      if (path === '/imports/tenencia/preview') return (extra.tenenciaDe || (() => ({})))(fd, opts)
+      if (path === '/imports/classify-tenencia') return extra.classify ? extra.classify : (extra.classifyDe || (() => ({ file_name: null, format: null })))(fd)
+      if (path === '/imports/tenencia/preview') {
+        if (extra.tenenciaError) throw extra.tenenciaError
+        return extra.tenencia ? extra.tenencia : (extra.tenenciaDe || (() => ({})))(fd, opts)
+      }
       return previewDe(fd, opts)
     },
   }
 }
 
 const archivo = (n = 'a.csv') => new File(['x'], n, { type: 'text/csv' })
-const fila = (extra = {}) => ({ id: 1, clientUid: 11, esNuevo: false, nombre: '', format: 'cocos', archivos: [archivo()], soloLectura: false, ...extra })
+const fila = (extra = {}) => {
+  const f = { id: 1, clientUid: 11, esNuevo: false, nombre: '', format: 'cocos', archivos: [archivo()], soloLectura: false, ...extra }
+  f.archivos = f.archivos.map(a => (a instanceof File ? a : archivo(a.name)))
+  return f
+}
 
 describe('filaLista / faltante', () => {
   it('una fila completa está lista y no le falta nada', () => {
@@ -107,8 +117,9 @@ describe('correrTanda', () => {
     const updates = []
     await correrTanda([fila({ esNuevo: true, clientUid: null, nombre: ' Lucía F ' })], { api, onUpdate: (id, p) => updates.push(p) })
     expect(api.llamadas[0]).toMatchObject({ path: '/advisor/clients', body: { label: 'Lucía F' } })
-    expect(api.llamadas[1]).toMatchObject({ path: '/imports/preview', clientId: 777, files: 1, format: 'cocos' })
-    expect(api.llamadas[2]).toMatchObject({ path: '/imports/confirm', clientId: 777 })
+    expect(api.llamadas[1]).toMatchObject({ path: '/imports/classify-tenencia', clientId: 777 })
+    expect(api.llamadas[2]).toMatchObject({ path: '/imports/preview', clientId: 777, files: 1, format: 'cocos' })
+    expect(api.llamadas[3]).toMatchObject({ path: '/imports/confirm', clientId: 777 })
     expect(updates.some(u => u.creado === true && u.clientUid === 777)).toBe(true)
   })
 
@@ -287,7 +298,7 @@ describe('contrato con el servidor (F2)', () => {
   })
 })
 
-import { aplicarFoto, omitirFoto } from './tandaImport'
+import { aplicarFoto, omitirFoto, fusionarFotosLocales } from './tandaImport'
 
 describe('F3 — la foto de tenencia adentro de la fila', () => {
   const mov = archivo('cocos-mov.csv'); const pdf = archivo('tenencia.pdf')
@@ -325,10 +336,55 @@ describe('F3 — la foto de tenencia adentro de la fila', () => {
     expect(api.llamadas.some(l => l.path === '/imports/preview')).toBe(false)
     expect(r.errores).toBe(1)
   })
-  it('un solo archivo csv no pasa por el clasificador (misma ruta que F1)', async () => {
+  it('un solo archivo también pasa por el clasificador (el Estado de Cuenta solo es foto, no movimientos)', async () => {
     const api = apiFalsa()
     await correrTanda([fila()], { api })
-    expect(api.llamadas.map(l => l.path)).toEqual(['/imports/preview', '/imports/confirm'])
+    expect(api.llamadas.map(l => l.path)).toEqual(['/imports/classify-tenencia', '/imports/preview', '/imports/confirm'])
+  })
+  it('dos fotos en la fila: no se carga nada y lo dice', async () => {
+    const api = apiFalsa({ classify: { file_name: 'a.pdf', format: 'bullmarket', files: [{ file_name: 'a.pdf', format: 'bullmarket' }, { file_name: 'b.pdf', format: 'bullmarket' }] } })
+    const cambios = []
+    await correrTanda([fila({ archivos: [{ name: 'mov.csv' }, { name: 'a.pdf' }, { name: 'b.pdf' }] })], { api, onUpdate: (id, p) => cambios.push(p) })
+    const fin = cambios.at(-1)
+    expect(fin.estado).toBe(ESTADO.ERROR)
+    expect(fin.detalle).toMatch(/2 fotos/)
+    expect(api.llamadas.map(l => l.path)).toEqual(['/imports/classify-tenencia'])
+  })
+  it('si el servidor no pudo ni comparar la foto (400), la fila queda Revisar, no Completo con nota', async () => {
+    const api = apiFalsa({ classify: { file_name: 'foto.pdf', format: 'bullmarket' }, tenenciaError: Object.assign(new Error('x'), { status: 400, payload: { detail: "No encontramos el broker 'PPI'." } }) })
+    const cambios = []
+    await correrTanda([fila({ archivos: [{ name: 'mov.csv' }, { name: 'foto.pdf' }] })], { api, onUpdate: (id, p) => cambios.push(p) })
+    const fin = cambios.at(-1)
+    expect(fin.estado).toBe(ESTADO.REVISAR)
+    expect(fin.detalle).toMatch(/No encontramos el broker/)
+  })
+  it('la foto viaja con el tanda_id (su lote también es de la tanda)', async () => {
+    const api = apiFalsa({ classify: { file_name: 'foto.pdf', format: 'bullmarket' }, tenencia: { session_id: 'sf', to_seed: [{ ticker: 'GGAL', qty: 1 }] } })
+    await correrTanda([fila({ archivos: [{ name: 'mov.csv' }, { name: 'foto.pdf' }] })], { api, tandaId: 'T1' })
+    const tp = api.llamadas.find(l => l.path === '/imports/tenencia/preview')
+    expect(tp.tandaId).toBe('T1')
+  })
+  it('aplicarFoto lee la respuesta: lo que la foto escribió suma, y un recálculo fallido vuelve la fila a Revisar', async () => {
+    const api = apiFalsa({ confirm: { ok: true, positions_created: 2, post_proceso: { rebuild: 'error' } } })
+    const r = await aplicarFoto(api, { id: 1, clientUid: 7, cargados: 10, foto: { session_id: 'sf' }, estadoMovimientos: ESTADO.COMPLETO, notas: [] }, ['GGAL'])
+    expect(r.cargados).toBe(12)
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.fotoBatchId).toBe('sf')
+  })
+  it('aplicarFoto con el borrador vencido: la fila queda Revisar y lo explica (no "omitida")', async () => {
+    const api = apiFalsa({ confirmError: Object.assign(new Error('x'), { status: 400, payload: { detail: 'Sesión de import no encontrada o expirada.' } }) })
+    const r = await aplicarFoto(api, { id: 1, clientUid: 7, foto: { session_id: 'sf' }, estadoMovimientos: ESTADO.COMPLETO, notas: [] }, [])
+    expect(r.estado).toBe(ESTADO.REVISAR)
+    expect(r.detalle).toMatch(/venció/)
+    expect(r.foto).toBeNull()
+  })
+  it('contrato ida/vuelta guarda la foto (session, lote, estado de los movimientos)', () => {
+    const f = { id: 3, clientUid: 7, label: 'Ana', platform: 'cocos', platformLabel: 'Cocos', archivos: [], estado: ESTADO.FOTO_PENDIENTE, batchId: 'b1', fotoBatchId: null, estadoMovimientos: ESTADO.COMPLETO, foto: { session_id: 'sf', nombre: 'p.csv', to_seed: [] } }
+    const v = filaDelServidor(filaAlServidor(f))
+    expect(v.foto).toEqual({ session_id: 'sf', nombre: 'p.csv', sinDetalle: true })
+    expect(v.estadoMovimientos).toBe(ESTADO.COMPLETO)
+    const fus = fusionarFotosLocales([v], [f])
+    expect(fus[0].foto.to_seed).toEqual([])
   })
   it('aplicarFoto confirma con los tickers aprobados a nombre del cliente y devuelve la fila a su estado', async () => {
     const api = apiFalsa()

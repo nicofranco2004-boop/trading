@@ -30,7 +30,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES } from '../components/import/BrokerInstructions'
 import { ReconcileStep } from '../components/import/ImportWizard'
 import {
-  correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO,
+  correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO, EXTENSIONES, fusionarFotosLocales,
   resumen as resumir, filaAlServidor, filaDelServidor, fechaServidor, marcarInterrumpidas,
   aplicarFoto, omitirFoto,
 } from '../utils/tandaImport'
@@ -231,7 +231,8 @@ export default function AdvisorImports() {
   async function verTanda(id) {
     try {
       const d = await api.get(`/advisor/tandas/${id}`)
-      const filasSrv = (d.rows || []).map(filaDelServidor)
+      const local = leerLocal()
+      const filasSrv = fusionarFotosLocales((d.rows || []).map(filaDelServidor), local?.tandaId === d.id ? local.filas : [])
       const seCorto = !d.finished_at && (d.resumen?.en_curso || 0) > 0
       setFilas(seCorto ? marcarInterrumpidas(filasSrv) : filasSrv)
       setInicio(fechaServidor(d.created_at))
@@ -485,6 +486,7 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
             {fila.archivos.map((a, i) => (
               <span key={`${a.name}:${a.size}`} className="inline-flex items-center gap-1.5 bg-bg-2 border border-line rounded px-2 py-0.5 text-[11px] text-ink-1 max-w-full">
                 <span className="truncate text-ink-0">{a.name}</span>
+                {/\.pdf$/i.test(a.name || '') && <span className="text-[10px] font-medium text-data-violet bg-data-violet/10 rounded px-1">foto</span>}
                 <span role="button" tabIndex={0} className="text-ink-2 hover:text-rendi-neg cursor-pointer" aria-label={`Quitar ${a.name}`}
                   onClick={e => { e.stopPropagation(); quitarArchivo(i) }}
                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); quitarArchivo(i) } }}><X size={11} aria-hidden="true" /></span>
@@ -494,13 +496,16 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
               <FileUp size={12} aria-hidden="true" />
               {fila.archivos.length ? 'agregar' : 'Soltá los archivos del broker (movimientos y foto)'}
             </span>
+            <span className="sr-only">
+              Rendi decide al cargar cuál archivo es la foto; los PDF se marcan de antemano.
+            </span>
           </div>
           {rechazados.length > 0 && (
             <p className="mt-1 text-[11px] text-rendi-warn">
               {plural(rechazados.length, 'archivo no entra', 'archivos no entran')} en la tanda ({rechazados.slice(0, 2).join(', ')}{rechazados.length > 2 ? '…' : ''}): acá van los CSV, Excel o PDF que exporta el broker.
             </p>
           )}
-          <input ref={inputRef} type="file" multiple hidden accept=".csv,.xlsx,.xls,.txt"
+          <input ref={inputRef} type="file" multiple hidden accept={EXTENSIONES.map(e => `.${e}`).join(',')}
             onChange={e => { agregarArchivos(e.target.files); e.target.value = '' }} />
         </div>
 
@@ -552,7 +557,7 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
 function Progreso({ filas, inicio }) {
   const [, tick] = useState(0)
   useEffect(() => { const t = setInterval(() => tick(x => x + 1), 1000); return () => clearInterval(t) }, [])
-  const hechas = filas.filter(f => [ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.ERROR].includes(f.estado)).length
+  const hechas = filas.filter(f => FINALES.has(f.estado)).length
   const actual = filas.find(f => f.estado === ESTADO.CARGANDO)
   const idx = actual ? filas.indexOf(actual) : hechas
   const seg = inicio ? Math.round((Date.now() - inicio) / 1000) : 0
@@ -609,7 +614,7 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
     <>
       <PageHeader
         eyebrow="Plan Asesor"
-        title={cortada ? 'La tanda se cortó' : (revertibles === 0 && revertidos > 0 ? 'Tanda revertida' : 'Tanda cargada')}
+        title={cortada ? 'La tanda se cortó' : (revertibles === 0 && revertidos > 0 ? 'Tanda revertida' : (r.fotos > 0 ? `Falta aprobar ${plural(r.fotos, 'foto', 'fotos')}` : 'Tanda cargada'))}
         subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}.${frase ? ` ${frase}.` : ''}${revertidos > 0 ? ` ${plural(revertidos, 'importación revertida', 'importaciones revertidas')}.` : ''}`}
       />
       {!tandaId && !cortada && (
@@ -628,7 +633,7 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
         <Kpi label="Movimientos cargados" valor={r.movimientos} sub={`en ${plural(r.completos + r.revisar, 'cliente', 'clientes')}`} />
         <Kpi label="Repetidos omitidos" valor={r.repetidos} sub="ya estaban cargados de antes" />
         <Kpi label="Filas con error" valor={r.filasConError} sub="se informan, no frenan" warn={r.filasConError > 0} />
-        <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={r.fotos > 0 ? `${plural(r.fotos, 'foto para aprobar', 'fotos para aprobar')}` : `de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
+        <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={r.fotos > 0 ? `${plural(r.fotos, 'foto para aprobar', 'fotos para aprobar')}${(r.revisar - r.fotos) > 0 ? ` · ${r.revisar - r.fotos} por otros motivos` : ''}` : `de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
       </div>
 
       <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
@@ -648,7 +653,7 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
                 <>
                   {plural(f.cargados ?? 0, 'movimiento cargado', 'movimientos cargados')}
                   <span className="block text-[11px] text-ink-2 mt-0.5">
-                    {f.foto ? `La foto ${f.foto.nombre ? `(${f.foto.nombre}) ` : ''}tiene diferencias con lo importado: mirá abajo y decidí qué aplicar.` : 'La foto quedó sin aplicar cuando se cerró la pantalla: subila desde su cuenta.'}
+                    {f.foto ? `La foto ${f.foto.nombre ? `(${f.foto.nombre}) ` : ''}tiene diferencias con lo importado: mirá abajo y decidí qué aplicar.` : 'La foto quedó sin aplicar y su borrador ya no está: subila desde su cuenta.'}
                   </span>
                 </>
               ) : f.estado === 'revertido' ? (
@@ -735,23 +740,34 @@ function PanelFoto({ fila, onDecidir }) {
   const [aprobados, setAprobados] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const nombre = nombreDe(fila)
+  const quien = `${nombre}${fila.platformLabel || fila.platform ? ` · ${fila.platformLabel || fila.platform}` : ''}`
+  const tituloId = `foto-${fila.id}`
   const correr = async (omitir) => {
     setBusy(true); setError(null)
     try { await onDecidir(fila, aprobados, omitir) } catch (e) { setError(errorMessage(e) || 'No se pudo aplicar la foto.') } finally { setBusy(false) }
   }
   return (
-    <div className="mx-4 mb-3 rounded-xl border border-data-violet/30 bg-bg-2 px-4 py-3.5">
-      <ReconcileStep data={fila.foto} aprobados={aprobados}
-        onToggle={tk => setAprobados(prev => { const n = new Set(prev); n.has(tk) ? n.delete(tk) : n.add(tk); return n })} />
-      {error && <p className="mt-2 text-xs text-rendi-neg">{error}</p>}
+    <section className="mx-4 mb-3 rounded-xl border border-data-violet/30 bg-bg-1 px-4 py-3.5" aria-labelledby={tituloId}>
+      <h3 id={tituloId} className="text-sm font-semibold text-ink-0 mb-2">Foto de {quien}{fila.foto?.nombre ? <span className="font-normal text-ink-2"> · {fila.foto.nombre}</span> : null}</h3>
+      {fila.foto?.sinDetalle ? (
+        <p className="text-xs text-ink-1">
+          La foto quedó comparada y pendiente de decidir, pero el detalle no se guardó al cerrar la pantalla.
+          Podés aplicarla sin lo dudoso (sólo entra lo que no requiere aprobación) u omitirla y subirla de nuevo desde su cuenta para verla completa.
+        </p>
+      ) : (
+        <ReconcileStep data={fila.foto} aprobados={aprobados} sujeto="cliente"
+          onToggle={tk => setAprobados(prev => { const n = new Set(prev); n.has(tk) ? n.delete(tk) : n.add(tk); return n })} />
+      )}
+      {error && <p className="mt-2 text-xs text-rendi-neg" role="alert">{error}</p>}
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        <button type="button" className={btnGhost} disabled={busy} onClick={() => correr(true)}>Omitir la foto</button>
-        <button type="button" className={btnPrimary} disabled={busy} onClick={() => correr(false)}>
+        <button type="button" className={btnGhost} disabled={busy} onClick={() => correr(true)} aria-label={`Omitir la foto de ${nombre}`}>Omitir la foto</button>
+        <button type="button" className={btnPrimary} disabled={busy} onClick={() => correr(false)} aria-label={`Aplicar la foto de ${nombre}`}>
           {busy && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
           {aprobados.size > 0 ? `Aplicar (con ${plural(aprobados.size, 'aprobado', 'aprobados')})` : 'Aplicar sin los dudosos'}
         </button>
       </div>
-    </div>
+    </section>
   )
 }
 

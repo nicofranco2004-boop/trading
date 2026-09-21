@@ -19,7 +19,7 @@ _MOV = ("\n".join([_HDR,
     "1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100.000;0;0;0;0;100.000",
     "3;4;16-01-2024;16-01-2024;Compra;BONO AL30 (AL30);ARS;BYMA;100;500;50.000;0;0;0;0;-50.000"]) + "\n").encode()
 _FOTO = ("instrumento;cantidad;precio;moneda;total\n"
-         "BONO AL30 (AL30);100;600;ARS;60000\n"
+         "BONO AL30 (AL30);200;600;ARS;120000\n"
          "GRUPO FINANCIERO GALICIA S.A ESCRIT.  B  1 V (GGAL);50;7715;ARS;385750\n"
          "ARS;50000;1;ARS;50000\n").encode()
 
@@ -69,6 +69,11 @@ class TandaFotoTest(unittest.TestCase):
         self.assertEqual(self._batches(self.advisor), [])              # nada en la cuenta del asesor
         self.assertEqual([b["status"] for b in self._batches(self.c1)], ["confirmed", "preview"])
         # 4) aplicar: sin aprobar nada, lo marcado "requiere aprobación" no entra
+        conn = main.get_db()
+        try:
+            al30_antes = float(conn.execute("SELECT SUM(quantity) FROM positions WHERE user_id=? AND asset='AL30'", (self.c1,)).fetchone()[0] or 0)
+        finally:
+            conn.close()
         c2 = self.http.post("/api/imports/confirm", json={"session_id": j["session_id"], "skip_row_indices": [], "aprobar_tickers": []}, headers=self._h(self.c1))
         self.assertEqual(c2.status_code, 200, c2.text)
         self.assertEqual([b["status"] for b in self._batches(self.c1)], ["confirmed", "confirmed"])
@@ -82,8 +87,64 @@ class TandaFotoTest(unittest.TestCase):
         # requería y no se nombró, tiene que quedar afuera. Lo que no puede pasar
         # es que un "requiere aprobación" entre sin aprobarse:
         requiere = {x.get("ticker") for x in (j.get("no_reconciliable") or []) if x.get("requiere_aprobacion")}
-        for tk in requiere:
-            self.assertNotIn(tk, tickers, f"{tk} requería aprobación y entró igual")
+        # La aserción de arriba era VACÍA con la foto anterior (AL30 100 = 100 →
+        # nada que aprobar). Con AL30 200 contra 100 en Rendi, el bono amortizante
+        # con hueco SÍ queda marcado — y tiene que quedar afuera sin aprobarlo.
+        self.assertIn("AL30", requiere, j)
+        conn = main.get_db()
+        try:
+            al30 = conn.execute("SELECT SUM(quantity) FROM positions WHERE user_id=? AND asset='AL30'", (self.c1,)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertAlmostEqual(float(al30 or 0), al30_antes, places=3, msg="AL30 requería aprobación y entró igual")
+        # El ajuste de caja YA NO es invisible: la respuesta lo trae.
+        self.assertIn("cash_ajustes", j)
+
+    def test_dos_fotos_en_la_fila_se_ven_las_dos(self):
+        cls = self.http.post("/api/imports/classify-tenencia",
+                             files=[("files", ("a.csv", io.BytesIO(_FOTO), "text/csv")), ("files", ("b.csv", io.BytesIO(_FOTO), "text/csv"))],
+                             headers=self._h(self.c1))
+        self.assertEqual(cls.status_code, 200, cls.text)
+        self.assertEqual([x["file_name"] for x in cls.json()["files"]], ["a.csv", "b.csv"])
+        self.assertEqual(cls.json()["file_name"], "a.csv")   # compat con el asistente
+
+    def test_deshacer_la_tanda_tambien_revierte_la_foto(self):
+        # tanda → movimientos con tanda_id → foto con tanda_id → aplicar → revert
+        t = self.http.post("/api/advisor/tandas", json={"rows": [{"id": 1, "client_uid": self.c1, "label": "Juan P", "platform": "cocos", "archivos": ["mov.csv"], "estado": "pendiente"}]}, headers=self._h())
+        self.assertEqual(t.status_code, 200, t.text); tid = t.json()["id"]
+        p = self.http.post("/api/imports/preview", files=[("files", ("mov.csv", io.BytesIO(_MOV), "text/csv"))],
+                           data={"format": "cocos", "tanda_id": tid}, headers=self._h(self.c1))
+        self.assertEqual(p.status_code, 200, p.text)
+        c = self.http.post("/api/imports/confirm", json={"session_id": p.json()["session_id"], "skip_row_indices": [], "aprobar_tickers": []}, headers=self._h(self.c1))
+        self.assertEqual(c.status_code, 200, c.text)
+        tp = self.http.post("/api/imports/tenencia/preview", files=[("file", ("portfolio_report_20240120.csv", io.BytesIO(_FOTO), "text/csv"))],
+                            data={"broker": "Cocos", "format": "cocos", "tanda_id": tid}, headers=self._h(self.c1))
+        self.assertEqual(tp.status_code, 200, tp.text)
+        sid = tp.json()["session_id"]
+        c2 = self.http.post("/api/imports/confirm", json={"session_id": sid, "skip_row_indices": [], "aprobar_tickers": []}, headers=self._h(self.c1))
+        self.assertEqual(c2.status_code, 200, c2.text)
+        conn = main.get_db()
+        try:
+            self.assertEqual({r["tanda_id"] for r in conn.execute("SELECT tanda_id FROM import_batches WHERE user_id=?", (self.c1,))}, {tid})
+            self.assertIn("GGAL", {r["asset"] for r in conn.execute("SELECT asset FROM positions WHERE user_id=? AND is_cash=0", (self.c1,))})
+        finally:
+            conn.close()
+        rv = self.http.post(f"/api/advisor/tandas/{tid}/revert", headers=self._h())
+        self.assertEqual(rv.status_code, 200, rv.text)
+        self.assertEqual(rv.json()["fallidos"], 0, rv.json())
+        self.assertEqual(rv.json()["revertidos"], 2, rv.json())   # la foto Y los movimientos
+        conn = main.get_db()
+        try:
+            self.assertEqual([r["status"] for r in conn.execute("SELECT status FROM import_batches WHERE user_id=?", (self.c1,))], ["reverted", "reverted"])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0", (self.c1,)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_tanda_ajena_en_la_foto_es_400_sin_lote(self):
+        tp = self.http.post("/api/imports/tenencia/preview", files=[("file", ("portfolio_report_20240120.csv", io.BytesIO(_FOTO), "text/csv"))],
+                            data={"broker": "Cocos", "format": "cocos", "tanda_id": "no-existe"}, headers=self._h(self.c1))
+        self.assertEqual(tp.status_code, 400, tp.text)
+        self.assertEqual(self._batches(self.c1), [])
 
     def test_solo_lectura_no_puede_comparar_la_foto(self):
         conn = main.get_db(); conn.execute("UPDATE advisor_clients SET permission='read' WHERE advisor_uid=?", (self.advisor,)); conn.commit(); conn.close()

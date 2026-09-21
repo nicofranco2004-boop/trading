@@ -1842,7 +1842,19 @@ const MOTIVO_LABEL = {
  */
 // Exportado: la tanda del asesor (pages/AdvisorImports) monta ESTE paso por
 // cliente para aprobar cada foto — mismo componente, misma regla fail-closed.
-export function ReconcileStep({ data, aprobados, onToggle }) {
+// `sujeto`: a quién le habla el texto. 'vos' = el dueño de la cuenta (asistente
+// individual); 'cliente' = el asesor mirando la cuenta de un cliente (tanda).
+// Sin esto el asesor leía "tenés 50 GGAL" sobre una cartera que no es suya.
+export function ReconcileStep({ data, aprobados, onToggle, sujeto = 'vos' }) {
+  const esCliente = sujeto === 'cliente'
+  const T = {
+    historico: esCliente ? 'su histórico' : 'tu histórico',
+    cartera: esCliente ? 'su cartera' : 'tu cartera',
+    broker: esCliente ? 'el resumen de su broker' : 'El resumen de tu broker',
+    tiene: esCliente ? 'tiene' : 'tenés',
+    tuyos: esCliente ? 'los suyos' : 'los tuyos',
+    cargo: esCliente ? 'cargados a mano' : 'que cargaste a mano',
+  }
   const dudosos = data.no_reconciliable || []
   // 🔴 Lo que espera aprobación NO puede aparecer también en "se completan":
   // esa lista afirma que se va a aplicar, y esto justamente no se aplica solo.
@@ -1879,8 +1891,8 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
   // venía hardcodeada en "verificada_composicion".
   const Chip = ({ ok, no = 'sin verificar' }) => (
     <span className={`text-[10px] px-1.5 py-0.5 rounded ${ok
-      ? 'bg-blue-500/10 text-blue-400' : 'bg-amber-500/10 text-amber-500'}`}>
-      {ok ? 'verificado contra tu histórico' : no}
+      ? 'bg-data-blue/10 text-data-blue' : 'bg-rendi-warn/10 text-rendi-warn'}`}>
+      {ok ? `verificado contra ${T.historico}` : no}
     </span>
   )
 
@@ -1899,24 +1911,24 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
             publicaba como `verifica: true` — el mismo valor que "comprobamos y
             coincide". Se dice una vez, arriba, y con el tono que corresponde. */}
         {data.fecha_origen === 'fallback_hoy' && (
-          <p className="text-xs text-amber-500 mt-1">
-            El archivo no traía fecha, así que comparamos contra tu cartera de HOY.
+          <p className="text-xs text-rendi-warn mt-1">
+            El archivo no traía fecha, así que comparamos contra {T.cartera} de HOY.
             Si la foto es de otro día, lo que se compró o vendió en el medio va a
             aparecer como diferencia.
           </p>
         )}
         {data.proyeccion?.estado === 'sin_referencia' && (
-          <p className="text-xs text-amber-500 mt-1">
-            No pudimos contrastar esto contra tu histórico: no tenemos un registro
+          <p className="text-xs text-rendi-warn mt-1">
+            No pudimos contrastar esto contra {T.historico}: no tenemos un registro
             nuestro de esa fecha. Puede estar bien — pero no lo comprobamos.
           </p>
         )}
       </div>
 
       {nada && (
-        <div className="px-3 py-3 rounded-md bg-blue-500/10 border border-blue-500/40 text-sm">
+        <div className="px-3 py-3 rounded bg-data-blue/10 border border-data-blue/40 text-sm">
           <div className="flex items-start gap-2">
-            <Info size={16} className="mt-0.5 flex-shrink-0 text-blue-500" />
+            <Info size={16} className="mt-0.5 flex-shrink-0 text-data-blue" />
             <span className="text-ink-1">Todo coincide con el resumen del broker.</span>
           </div>
         </div>
@@ -1940,7 +1952,7 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
                  sub="Están en Rendi y no aparecen en la foto. Puede ser una venta que el archivo no trajo, o que estén en otro broker."
                  chip={<Chip ok={conf.not_in_snapshot === 'verificada_composicion'} />} tono="warn">
           {ausentes.map(x => (
-            <RecFila key={`n-${x.ticker}`} tk={x.ticker} detalle={`tenés ${x.qty}`} />
+            <RecFila key={`n-${x.ticker}`} tk={x.ticker} detalle={`${T.tiene} ${x.qty}`} />
           ))}
         </RecSection>
       )}
@@ -1952,9 +1964,9 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
           : (over.length === 1 ? '1 activo con más cantidad que el resumen'
                                : `${over.length} activos con más cantidad que el resumen`)}
                  sub={ajustamos
-                   ? ('El resumen de tu broker dice menos que lo que teníamos: ajustamos, '
+                   ? (`${T.broker} dice menos que lo que teníamos: ajustamos, `
                       + 'y puede que falte una venta en el archivo.')
-                   : 'El resumen de tu broker dice menos que lo que teníamos. No los tocamos.'}
+                   : `${T.broker} dice menos que lo que teníamos. No los tocamos.`}
                  chip={<Chip ok={false} no="sin verificar la cantidad" />} tono="warn">
           {over.map(x => (
             <RecFila key={`o-${x.ticker}`} tk={x.ticker}
@@ -1965,7 +1977,7 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
         </RecSection>
       )}
 
-      <OverrideDetalle ov={ov} />
+      <OverrideDetalle ov={ov} sujeto={sujeto} />
 
       {dudosos.length > 0 && (
         <RecSection titulo={dudosos.length === 1 ? 'Necesitamos que decidas vos'
@@ -1979,7 +1991,7 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
             return (
               <div key={`d-${tk || i}`} className="flex items-start gap-2 py-1.5">
                 {aprobable ? (
-                  <input type="checkbox" className="mt-0.5 flex-shrink-0"
+                  <input type="checkbox" className="mt-0.5 flex-shrink-0" aria-label={`Aprobar ${tk}`}
                          checked={aprobados.has(tk)} onChange={() => onToggle(tk)} />
                 ) : <span className="w-3 flex-shrink-0" />}
                 <div className="min-w-0">
@@ -2001,10 +2013,21 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
         </RecSection>
       )}
 
+      {(data.cash_ajustes || []).filter(c => Math.abs(Number(c.diff) || 0) > 0.009).length > 0 && (
+        <RecSection titulo="Ajuste de efectivo al resumen"
+                    sub={`${T.broker.charAt(0).toUpperCase() + T.broker.slice(1)} dice otro saldo que el que dejaron los movimientos: al aplicar, la caja se lleva a ese número con un depósito o retiro de ajuste.`}
+                    chip={<Chip ok={false} no="entra al aplicar" />} tono="warn">
+          {data.cash_ajustes.filter(c => Math.abs(Number(c.diff) || 0) > 0.009).map(c => (
+            <RecFila key={`c-${c.broker}-${c.moneda}`} tk={`${c.broker} · ${c.moneda}`}
+                     detalle={`${Number(c.rendi).toLocaleString('es-AR', { maximumFractionDigits: 2 })} → ${Number(c.foto).toLocaleString('es-AR', { maximumFractionDigits: 2 })} (${Number(c.diff) > 0 ? '+' : ''}${Number(c.diff).toLocaleString('es-AR', { maximumFractionDigits: 2 })})`} />
+          ))}
+        </RecSection>
+      )}
+
       {(data.tickers_normalizados || []).length > 0 && (
         <p className="text-[11px] text-ink-3">
           Ajustamos {data.tickers_normalizados.length} nombre(s) de la foto para que coincidan
-          con los tuyos ({data.tickers_normalizados.slice(0, 3).map(t => `${t.de}→${t.a}`).join(', ')}
+          con {T.tuyos} ({data.tickers_normalizados.slice(0, 3).map(t => `${t.de}→${t.a}`).join(', ')}
           {data.tickers_normalizados.length > 3 ? '…' : ''}).
         </p>
       )}
@@ -2013,10 +2036,10 @@ export function ReconcileStep({ data, aprobados, onToggle }) {
 }
 
 function RecSection({ titulo, sub, chip, tono, children }) {
-  const borde = tono === 'ok' ? 'border-blue-500/30'
-    : tono === 'decide' ? 'border-amber-500/40' : 'border-line-2'
+  const borde = tono === 'ok' ? 'border-data-blue/30'
+    : tono === 'decide' ? 'border-rendi-warn/40' : 'border-line-2'
   return (
-    <div className={`rounded-md border ${borde} px-3 py-2.5`}>
+    <div className={`rounded border ${borde} px-3 py-2.5`}>
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="font-medium text-sm text-ink-0">{titulo}</div>
         {chip}
@@ -2044,21 +2067,22 @@ function RecSection({ titulo, sub, chip, tono, children }) {
  * cuando dispara, `over` y `not_in_snapshot` se vacían y la pantalla se queda
  * SIN NADA que mostrar — no es que avisa poco, es que no avisa.
  */
-function OverrideDetalle({ ov }) {
+function OverrideDetalle({ ov, sujeto = 'vos' }) {
+  const esCliente = sujeto === 'cliente'
   if (!ov) return null
   const skipped = ov.skipped_manual || []
   const removed = ov.removed || []
   if (!ov.capped && !skipped.length && !removed.length) return null
   return (
-    <div className="rounded-md border border-line-2 px-3 py-2.5 space-y-2">
+    <div className="rounded border border-line-2 px-3 py-2.5 space-y-2">
       <div className="font-medium text-sm text-ink-0">Lo que no tocamos</div>
 
       {ov.capped && (
-        <div className="px-2.5 py-2 rounded bg-amber-500/10 border border-amber-500/30">
+        <div className="px-2.5 py-2 rounded bg-rendi-warn/10 border border-rendi-warn/30">
           <p className="text-xs text-ink-1">
             <span className="font-medium">No ajustamos ninguna cantidad.</span> Las
             diferencias contra el resumen eran demasiadas —más de la mitad de lo que
-            tenés— así que preferimos no tocar tu cartera. Completamos lo que faltaba
+            {esCliente ? ' tiene' : ' tenés'}— así que preferimos no tocar {esCliente ? 'su' : 'tu'} cartera. Completamos lo que faltaba
             y dejamos el resto como estaba.
           </p>
           <p className="text-xs text-ink-2 mt-1">
@@ -2072,8 +2096,8 @@ function OverrideDetalle({ ov }) {
         <div>
           <p className="text-xs text-ink-2">
             {skipped.length === 1
-              ? 'Este activo tiene datos que cargaste a mano, así que no lo tocamos:'
-              : `Estos ${skipped.length} activos tienen datos que cargaste a mano, así que no los tocamos:`}
+              ? `Este activo tiene datos ${esCliente ? 'cargados a mano' : 'que cargaste a mano'}, así que no lo tocamos:`
+              : `Estos ${skipped.length} activos tienen datos ${esCliente ? 'cargados a mano' : 'que cargaste a mano'}, así que no los tocamos:`}
           </p>
           <div className="mt-1 flex flex-wrap gap-1">
             {skipped.map(tk => (

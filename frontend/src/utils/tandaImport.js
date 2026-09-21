@@ -203,18 +203,25 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
       let archivosMov = fila.archivos
       let foto = null
       let fotoFormat = null
-      if (fila.archivos.length > 1 || fila.archivos.some(a => /\.pdf$/i.test(a.name || ''))) {
-        onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.CLASIFICANDO })
-        try {
-          const cfd = new FormData()
-          fila.archivos.forEach(f => cfd.append('files', f))
-          const cls = await api.upload('/imports/classify-tenencia', cfd, { clientId: clientUid })
-          if (cls?.file_name) {
-            foto = fila.archivos.find(a => a.name === cls.file_name) || null
-            fotoFormat = cls.format || null
-            archivosMov = fila.archivos.filter(a => a !== foto)
-          }
-        } catch { /* sin clasificación → todo va como movimientos, como en F1 */ }
+      // Siempre se clasifica (también con un solo archivo): el Estado de Cuenta
+      // de PPI o el portfolio de Cocos solos son foto en csv/xlsx y antes iban
+      // a /imports/preview como si fueran movimientos.
+      onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.CLASIFICANDO })
+      let fotos = []
+      try {
+        const cfd = new FormData()
+        fila.archivos.forEach(f => cfd.append('files', f))
+        const cls = await api.upload('/imports/classify-tenencia', cfd, { clientId: clientUid })
+        const lista = Array.isArray(cls?.files) ? cls.files : (cls?.file_name ? [cls] : [])
+        fotos = lista.map(x => ({ archivo: fila.archivos.find(a => a.name === x.file_name) || null, format: x.format || null })).filter(x => x.archivo)
+      } catch { /* sin clasificación → todo va como movimientos, como en F1 */ }
+      if (fotos.length > 1) {
+        throw Object.assign(new Error(`La fila tiene ${fotos.length} fotos de tenencia (${fotos.map(x => x.archivo.name).join(', ')}): dejá una sola, la más reciente.`), { status: 400 })
+      }
+      if (fotos.length === 1) {
+        foto = fotos[0].archivo
+        fotoFormat = fotos[0].format
+        archivosMov = fila.archivos.filter(a => a !== foto)
       }
       if (foto && archivosMov.length === 0) {
         throw Object.assign(new Error('La fila tiene sólo la foto de tenencia: agregá también el archivo de movimientos, que es el que reconstruye el historial.'), { status: 400 })
@@ -253,6 +260,9 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
           tfd.append('file', foto)
           tfd.append('broker', TENENCIA_BROKER_BY_FORMAT[fotoFormat] || TENENCIA_BROKER_BY_FORMAT[fila.format] || 'Bull Market')
           if (fotoFormat) tfd.append('format', fotoFormat)
+          // El lote de la foto también es de la tanda: sin esto "Deshacer toda
+          // la tanda" lo dejaba vivo en la cuenta del cliente.
+          if (tandaId) tfd.append('tanda_id', String(tandaId))
           const tp = await api.upload('/imports/tenencia/preview', tfd, { clientId: clientUid })
           if (tp?.session_id) {
             r.estadoMovimientos = r.estado
@@ -268,7 +278,10 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
             r.notas = [...(r.notas || []), 'foto: todo coincide con el resumen del broker']
           }
         } catch (err) {
-          r.notas = [...(r.notas || []), `foto: no se pudo comparar (${errorMessage(err) || 'error'}); subila desde su cuenta`]
+          // La foto NO se aplicó: eso es para revisar, no una nota al pie de un
+          // "Completo" (así nunca volvía a mirarse).
+          r.estado = ESTADO.REVISAR
+          r.detalle = [r.detalle, `La foto no se pudo comparar: ${errorMessage(err) || 'error del servidor'}. Subila desde su cuenta.`].filter(Boolean).join(' ')
         }
       }
       onUpdate(fila.id, r); resultados.push(r)
@@ -324,6 +337,13 @@ export function filaAlServidor(f) {
     notas: (f.notas || []).slice(0, 6),
     creado: !!f.creado,
     incierto: !!f.incierto,
+    // F3: la foto. El borrador (session_id) alcanza para terminar de decidir
+    // desde una tanda reabierta; el lote (batch_id) para que el deshacer y el
+    // historial la vean.
+    foto_batch_id: f.fotoBatchId || null,
+    foto_session_id: f.foto?.session_id || null,
+    foto_nombre: f.foto?.nombre || null,
+    estado_movimientos: f.estadoMovimientos || null,
   }
 }
 export function filaDelServidor(r) {
@@ -335,7 +355,18 @@ export function filaDelServidor(r) {
     repetidos: r.repetidos || 0, errores: r.errores || 0, detalle: r.detalle || null,
     notas: Array.isArray(r.notas) ? r.notas : [], creado: !!r.creado, incierto: !!r.incierto,
     batchStatus: r.batch_status || null,
+    fotoBatchId: r.foto_batch_id || null,
+    estadoMovimientos: r.estado_movimientos || null,
+    // Sin el detalle (to_seed/over/…) el panel no se puede dibujar, pero con el
+    // session_id sí se puede aplicar u omitir. `sinDetalle` lo dice.
+    foto: r.foto_session_id ? { session_id: r.foto_session_id, nombre: r.foto_nombre || '', sinDetalle: true } : null,
   }
+}
+// Al reabrir desde el servidor, recuperar el detalle de la foto que quedó en
+// la pestaña (mismo borrador): así el panel completo vuelve a dibujarse.
+export function fusionarFotosLocales(filasSrv, filasLocales) {
+  const porSesion = new Map((filasLocales || []).filter(f => f?.foto?.session_id && !f.foto.sinDetalle).map(f => [f.foto.session_id, f.foto]))
+  return filasSrv.map(f => (f.foto?.sinDetalle && porSesion.has(f.foto.session_id)) ? { ...f, foto: porSesion.get(f.foto.session_id) } : f)
 }
 // SQLite guarda "2026-09-20 14:01:02" (con espacio, en UTC). Safari no parsea
 // el espacio: se normaliza a ISO con 'T' y 'Z'. Devuelve ms o null.
@@ -376,12 +407,35 @@ export function resumen(resultados) {
 export async function aplicarFoto(api, fila, aprobados = []) {
   const sid = fila?.foto?.session_id
   if (!sid || !Number.isInteger(fila.clientUid)) throw new Error('Esta foto ya no se puede aplicar desde acá: subila desde la cuenta del cliente.')
-  await api.post('/imports/confirm', { session_id: sid, skip_row_indices: [], aprobar_tickers: Array.from(aprobados) }, { clientId: fila.clientUid })
+  let confirm
+  try {
+    confirm = await api.post('/imports/confirm', { session_id: sid, skip_row_indices: [], aprobar_tickers: Array.from(aprobados) }, { clientId: fila.clientUid })
+  } catch (err) {
+    // El borrador de la foto vive 1 hora en el servidor. Si venció, no es "no
+    // se pudo": es que hay que volver a subirla. La fila lo dice y vuelve a
+    // Revisar, sin fingir que se omitió.
+    if (Number(err?.status) === 400 && /expirad|no encontrada/i.test(errorMessage(err))) {
+      return {
+        estado: ESTADO.REVISAR, foto: null, estadoMovimientos: null,
+        detalle: [fila.detalle, 'La foto venció antes de aprobarse (el borrador dura una hora): subila de nuevo desde su cuenta.'].filter(Boolean).join(' '),
+      }
+    }
+    throw err
+  }
+  // La respuesta del confirm de la foto se LEE igual que la de los movimientos
+  // (regla 2 del encabezado): lo que se escribió suma al contador y lo que falló
+  // vuelve la fila a Revisar.
   const n = Array.from(aprobados).length
+  const lectura = estadoFinal(null, confirm)
+  const notas = [...(fila.notas || []), n > 0 ? `foto aplicada (${plural(n, 'decisión aprobada', 'decisiones aprobadas')})` : 'foto aplicada sin los dudosos']
+  const base = fila.estadoMovimientos || ESTADO.COMPLETO
   return {
-    estado: fila.estadoMovimientos || ESTADO.COMPLETO,
+    estado: lectura.motivos.length > 0 ? ESTADO.REVISAR : base,
+    detalle: lectura.motivos.length > 0 ? [fila.detalle, ...lectura.motivos].filter(Boolean).join(' ') : fila.detalle,
+    cargados: (fila.cargados || 0) + (lectura.cargados || 0),
+    fotoBatchId: sid,
     foto: null, estadoMovimientos: null,
-    notas: [...(fila.notas || []), n > 0 ? `foto aplicada (${plural(n, 'decisión aprobada', 'decisiones aprobadas')})` : 'foto aplicada sin los dudosos'],
+    notas,
   }
 }
 export function omitirFoto(fila) {

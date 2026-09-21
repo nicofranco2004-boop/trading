@@ -32849,9 +32849,16 @@ def import_classify_tenencia(
     para que el wizard la aparte de los Movimientos en el upload combinado. Pensado
     sobre todo para PPI, cuya foto (Estado de Cuenta) es xlsx IGUAL que los
     Movimientos → el browser no puede distinguirla por contenido. Detecta:
-    PDF→bullmarket, CSV con header de Cocos→cocos, xlsx PPI→ppi. Devuelve el PRIMERO
-    que matchee, o {file_name: None}. No persiste nada (solo clasifica)."""
+    PDF→bullmarket/balanz/iol, CSV con header de Cocos→cocos, xlsx PPI→ppi/ieb/inviu.
+    `file_name`/`format` = la PRIMERA coincidencia (compatibilidad con el asistente);
+    `files` = TODAS, para que la tanda del asesor rechace una fila con dos fotos en
+    vez de mandar la segunda como movimientos. No persiste nada (solo clasifica)."""
     cap = _import_pipeline.MAX_FILE_BYTES
+    hallados: List[Dict[str, Any]] = []
+
+    def _hit(name, fmt):
+        hallados.append({"file_name": name, "format": fmt})
+
     for f in (files or []):
         name = f.filename or ""
         chunks: List[bytes] = []
@@ -32869,8 +32876,17 @@ def import_classify_tenencia(
             continue
         try:
             if _import_excel.is_pdf(data):
-                if _import_tenencia.looks_like_tenencia(_import_excel.pdf_to_text(data)):
-                    return {"file_name": name, "format": "bullmarket"}
+                _pdf_text = _import_excel.pdf_to_text(data)
+                if _import_tenencia.looks_like_tenencia(_pdf_text):
+                    _hit(name, "bullmarket"); continue
+                # Balanz e IOL también mandan la foto en PDF. El asistente
+                # individual aparta cualquier .pdf del lado del navegador; la
+                # tanda delega acá, y sin estas dos ramas el Resumen de Balanz
+                # iba a /imports/preview junto con el CSV y tumbaba la fila.
+                if _import_tenencia.looks_like_balanz_tenencia(_pdf_text):
+                    _hit(name, "balanz"); continue
+                if _import_tenencia.looks_like_iol_tenencia(_pdf_text):
+                    _hit(name, "iol"); continue
             elif _import_excel.is_xlsx(data):
                 # IEB primero: es MULTI-hoja (Patrimonio+Saldos) y se distingue del
                 # PPI (que trae 'estado de cuenta'/'por tipo de activo' en la grilla).
@@ -32880,19 +32896,20 @@ def import_classify_tenencia(
                 finally:
                     wb.close()
                 if is_ieb_file:
-                    return {"file_name": name, "format": "ieb"}
+                    _hit(name, "ieb"); continue
                 _xrows = _import_excel.xlsx_to_rows(data)
                 if _import_tenencia.looks_like_ppi_tenencia(_xrows):
-                    return {"file_name": name, "format": "ppi"}
+                    _hit(name, "ppi"); continue
                 if _import_tenencia.looks_like_inviu_tenencia(_xrows):
-                    return {"file_name": name, "format": "inviu"}
+                    _hit(name, "inviu"); continue
             else:
                 text = _import_pipeline._decode_csv(data) or ""
                 if _import_tenencia.looks_like_cocos_tenencia(text):
-                    return {"file_name": name, "format": "cocos"}
+                    _hit(name, "cocos"); continue
         except Exception:
             continue
-    return {"file_name": None, "format": None}
+    primero = hallados[0] if hallados else {"file_name": None, "format": None}
+    return {**primero, "files": hallados}
 
 
 def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, current,
@@ -33011,6 +33028,7 @@ def import_tenencia_preview(
     file: UploadFile = File(...),
     broker: str = Form(...),
     format: Optional[str] = Form(None),
+    tanda_id: Optional[str] = Form(None),   # tanda del asesor: el lote de la foto también es de la tanda
     uid: int = Depends(get_effective_user),
 ):
     """FOTO de posiciones actuales = Tenencia valorizada (PDF) de Bull Market, o
@@ -33147,6 +33165,18 @@ def import_tenencia_preview(
 
     conn = get_db()
     try:
+        # Tanda del asesor (misma regla que /imports/preview): se valida ANTES de
+        # comparar nada. Sin esto el lote de la foto nacía suelto y "Deshacer toda
+        # la tanda" lo dejaba vivo en la cuenta del cliente.
+        _tid = None
+        if tanda_id:
+            _auth = getattr(getattr(request, "state", None), "rendi_auth_uid", None)
+            _tid = str(tanda_id).strip()[:64]
+            _own = conn.execute(
+                "SELECT 1 FROM advisor_import_tandas WHERE id=? AND advisor_uid=?",
+                (_tid, _auth)).fetchone() if _auth else None
+            if not _own:
+                raise HTTPException(400, "La tanda no existe o no es tuya.")
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)).fetchone():
             raise HTTPException(400, f"No encontramos el broker '{broker}'. {broker_hint}")
         # 🔴 CUANDO NO SE PUDO LEER LA FECHA, DECIRLO. Antes esto caía al reloj
@@ -33601,7 +33631,19 @@ def import_tenencia_preview(
         # de "de esto no sé", no dos mecanismos distintos.
         if _proy_no_rec:
             rec.no_reconciliable += _proy_no_rec
-        if fecha_origen != "fallback_hoy":
+        _otros_brokers = [r["name"] for r in conn.execute(
+            "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()
+            if r["name"] not in set(pair)]
+        if fecha_origen != "fallback_hoy" and _otros_brokers:
+            # El snapshot del cron lista la composición de TODA la cuenta sin
+            # broker; la proyección es sólo de este par. Compararlos daba un
+            # "no coincide" falso en cada foto de un cliente con dos brokers.
+            _ver = {"estado": _import_proyeccion.ESTADO_SIN_REFERENCIA,
+                    "motivo_sin_referencia": "cliente_con_otros_brokers",
+                    "detalle": ("la cuenta tiene otros brokers y el snapshot del cron no "
+                                "separa por broker, así que no hay con qué contrastar "
+                                "sólo este.")}
+        elif fecha_origen != "fallback_hoy":
             _ver = _import_proyeccion.verificar_contra_snapshot(
                 conn, uid, seed_date, current)
             # 🔴 `estado`, NO un booleano. Antes esto era `verifica: _falla is
@@ -33722,8 +33764,17 @@ def import_tenencia_preview(
             if override_info:
                 conn.execute("UPDATE import_batches SET override_info=? WHERE id=?",
                              (json.dumps(override_info, default=str), sid))
+            if _tid:
+                conn.execute("UPDATE import_batches SET tanda_id=? WHERE id=? AND user_id=?",
+                             (_tid, sid, uid))
         return {
             "session_id": sid,
+            # El ajuste de efectivo que la foto va a aplicar. Antes sólo se
+            # logueaba: la pantalla decía "todo coincide" y al aplicar entraba un
+            # depósito que nadie vio. Ahora se muestra como lo demás.
+            "cash_ajustes": [{"broker": _b, "moneda": _ccy, "rendi": round(_cur, 2),
+                              "foto": round(_tgt, 2), "diff": round(_diff, 2)}
+                             for _b, _ccy, _cur, _tgt, _diff in _cash_applied],
             "date": snap.date,
             "matched": len(rec.matched),
             "foto_completa": _foto_completa,
@@ -34107,6 +34158,7 @@ def _reconstruir_mtm(uid: int) -> dict:
 
 
 _MTM_RUNNING: set = set()
+_MTM_PENDIENTE: set = set()   # uids que pidieron otra corrida mientras había una en curso
 _MTM_RUNNING_LOCK = threading.Lock()
 
 
@@ -34131,15 +34183,28 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
         # el que perdía el lock dejaba la curva a medias, sin aviso.
         with _MTM_RUNNING_LOCK:
             if uid in _MTM_RUNNING:
-                return {"reconstruida": "en_curso", "motivo": "ya_corriendo"}
+                # No se descarta: el hilo que está corriendo repite UNA vez al
+                # terminar, así la curva incluye la foto / el segundo broker que
+                # llegó mientras tanto (la tanda los confirma segundos después).
+                _MTM_PENDIENTE.add(uid)
+                return {"reconstruida": "en_curso", "motivo": "ya_corriendo_se_repite"}
             _MTM_RUNNING.add(uid)
 
         def _run():
             try:
-                _reconstruir_mtm(uid)
-            finally:
+                while True:
+                    _reconstruir_mtm(uid)
+                    with _MTM_RUNNING_LOCK:
+                        if uid in _MTM_PENDIENTE:
+                            _MTM_PENDIENTE.discard(uid)
+                            continue
+                        _MTM_RUNNING.discard(uid)
+                        return
+            except Exception:
                 with _MTM_RUNNING_LOCK:
                     _MTM_RUNNING.discard(uid)
+                    _MTM_PENDIENTE.discard(uid)
+                raise
 
         _th.Thread(target=_run, daemon=True, name=f"mtm-backfill-{uid}").start()
         return {"reconstruida": "en_curso"}

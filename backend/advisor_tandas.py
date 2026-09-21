@@ -128,6 +128,14 @@ def _sanitize_rows(rows: Any) -> List[Dict[str, Any]]:
             "archivos": [(_texto(a, 120) or "") for a in archivos][:20],
             "estado": estado,
             "batch_id": _texto(r.get("batch_id"), 64) or None,
+            # La foto de tenencia (F3): su lote, el borrador pendiente y qué
+            # estado tenían los movimientos antes de "Aprobar foto". Sin esto
+            # una fila 'foto_pendiente' recargada no se podía terminar.
+            "foto_batch_id": _texto(r.get("foto_batch_id"), 64) or None,
+            "foto_session_id": _texto(r.get("foto_session_id"), 64) or None,
+            "foto_nombre": _texto(r.get("foto_nombre"), 120) or None,
+            "estado_movimientos": (_texto(r.get("estado_movimientos"), 20) or None)
+                if (r.get("estado_movimientos") in ESTADOS_FILA) else None,
             "cargados": _entero(r.get("cargados"), "cargados"),
             "repetidos": _entero(r.get("repetidos"), "repetidos"),
             "errores": _entero(r.get("errores"), "errores"),
@@ -184,8 +192,8 @@ def actualizar(conn, advisor_uid: int, tanda_id: str, rows: Any = None,
 def _lotes_de_tanda(conn, tanda_id: str) -> Dict[str, Dict[str, Any]]:
     """{batch_id: {user_id, status}} de TODOS los lotes estampados con esta
     tanda — no depende de lo que el front haya llegado a guardar."""
-    return {r["id"]: {"user_id": r["user_id"], "status": r["status"]} for r in conn.execute(
-        "SELECT id, user_id, status FROM import_batches WHERE tanda_id=?", (tanda_id,)).fetchall()}
+    return {r["id"]: {"user_id": r["user_id"], "status": r["status"], "rowid": r["rowid"]} for r in conn.execute(
+        "SELECT rowid, id, user_id, status FROM import_batches WHERE tanda_id=?", (tanda_id,)).fetchall()}
 
 
 def _reconciliar(filas: List[Dict[str, Any]], lotes: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -194,7 +202,8 @@ def _reconciliar(filas: List[Dict[str, Any]], lotes: Dict[str, Dict[str, Any]]) 
     - un lote estampado que ninguna fila nombra (PATCH que llegó tarde) → se
       asigna a la fila de ese cliente que quedó 'cargando'/'pendiente'.
     Sólo se miran lotes de la tanda: nunca ids sueltos que el front pueda mandar."""
-    conocidos = {f["batch_id"] for f in filas if f.get("batch_id")}
+    conocidos = ({f["batch_id"] for f in filas if f.get("batch_id")}
+                 | {f["foto_batch_id"] for f in filas if f.get("foto_batch_id")})
     for f in filas:
         bid = f.get("batch_id")
         info = lotes.get(bid) if bid else None
@@ -277,7 +286,10 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
     `revertir_lote(client_uid, batch_id)` hace el revert SEGURO y levanta
     RuntimeError con el mensaje del persister si no puede (ventas posteriores…).
 
-    Los lotes salen de `import_batches.tanda_id` (la verdad), no de rows_json.
+    Los lotes salen de `import_batches.tanda_id` (la verdad), no de rows_json, y
+    se revierten del MÁS NUEVO al más viejo: la foto (que se aplica después de
+    los movimientos) antes que los movimientos, porque el revert seguro de un
+    lote rechaza deshacer posiciones que un lote posterior ya tocó.
     Idempotente: un lote ya revertido se saltea como 'ya estaba revertido'.
     Nunca aborta la tanda entera por un lote: informa fila por fila.
     """
@@ -286,37 +298,43 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
         raise LookupError("tanda")
     lotes = _lotes_de_tanda(conn, tanda_id)
     filas = _reconciliar(json.loads(r["rows_json"] or "[]"), lotes)
+
+    def _fila_de(bid):
+        return next((f for f in filas if f.get("batch_id") == bid or f.get("foto_batch_id") == bid), None)
+
     resultado = []
-    for f in filas:
-        bid, cu = f.get("batch_id"), f.get("client_uid")
-        info = lotes.get(bid) if bid else None
-        if not info:
-            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": None, "motivo": "no había nada cargado"})
-            continue
-        # El dueño real del lote manda sobre lo que diga la fila.
-        cu = info["user_id"]
+    # Del más nuevo al más viejo (rowid crece con la creación).
+    for bid in sorted(lotes, key=lambda b: lotes[b]["rowid"], reverse=True):
+        info = lotes[bid]
+        f = _fila_de(bid) or {}
+        es_foto = f.get("foto_batch_id") == bid
+        etiqueta = (f.get("label") or "") + (" (foto)" if es_foto else "")
+        cu = info["user_id"]   # el dueño real del lote manda sobre lo que diga la fila
         if info["status"] == "reverted":
-            f["estado"] = "revertido"
-            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": True, "motivo": "ya estaba revertido"})
+            if f and not es_foto: f["estado"] = "revertido"
+            resultado.append({"id": f.get("id"), "label": etiqueta, "ok": True, "motivo": "ya estaba revertido"})
             continue
+        if info["status"] != "confirmed":
+            continue   # un borrador (preview) no está aplicado: no hay nada que revertir
         if not puede_escribir(cu):
-            f["estado"] = "revert_fallo"
-            f["detalle"] = _MSG_SIN_VINCULO
-            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": False, "motivo": f["detalle"]})
+            if f: f["estado"] = "revert_fallo"; f["detalle"] = _MSG_SIN_VINCULO
+            resultado.append({"id": f.get("id"), "label": etiqueta, "ok": False, "motivo": _MSG_SIN_VINCULO})
             continue
         try:
             revertir_lote(cu, bid)
-            f["estado"] = "revertido"
-            f["detalle"] = None
-            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": True, "motivo": None})
+            if f and not es_foto:
+                f["estado"] = "revertido"; f["detalle"] = None
+            resultado.append({"id": f.get("id"), "label": etiqueta, "ok": True, "motivo": None})
         except RuntimeError as ex:   # el persister dijo que no (ventas posteriores, etc.)
-            f["estado"] = "revert_fallo"
-            f["detalle"] = str(ex)
-            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": False, "motivo": f["detalle"]})
+            if f: f["estado"] = "revert_fallo"; f["detalle"] = str(ex)
+            resultado.append({"id": f.get("id"), "label": etiqueta, "ok": False, "motivo": str(ex)})
         except Exception:  # noqa: BLE001 — base ocupada u otro transitorio: NO se graba el texto crudo
-            f["estado"] = "revert_fallo"
-            f["detalle"] = _MSG_TRANSITORIO
-            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": False, "motivo": f["detalle"]})
+            if f: f["estado"] = "revert_fallo"; f["detalle"] = _MSG_TRANSITORIO
+            resultado.append({"id": f.get("id"), "label": etiqueta, "ok": False, "motivo": _MSG_TRANSITORIO})
+    con_lote = {f.get("batch_id") for f in filas} | {f.get("foto_batch_id") for f in filas}
+    for f in filas:
+        if not f.get("batch_id") and not f.get("foto_batch_id"):
+            resultado.append({"id": f.get("id"), "label": f.get("label"), "ok": None, "motivo": "no había nada cargado"})
     conn.execute("UPDATE advisor_import_tandas SET rows_json=? WHERE id=?",
                  (json.dumps(filas, ensure_ascii=False), tanda_id))
     ok = sum(1 for x in resultado if x["ok"] is True)
