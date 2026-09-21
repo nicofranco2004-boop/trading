@@ -44,6 +44,7 @@ export const PASOS = {
   LEYENDO: 'Leyendo los archivos',
   GUARDANDO: 'Guardando movimientos',
   CLASIFICANDO: 'Separando la foto de los movimientos',
+  ESPERANDO_CUPO: 'Esperando un minuto: el alta de clientes tiene un tope por minuto',
   FOTO: 'Comparando contra la foto del broker',
 }
 
@@ -65,7 +66,7 @@ export function filaLista(fila) {
 
 /** Qué le falta a la fila, en palabras de la pantalla. null = nada. */
 export function faltante(fila) {
-  if (fila.soloLectura) return 'Vínculo de sólo lectura'
+  if (fila.soloLectura) return 'Sólo lectura: no podés cargarle archivos'
   if (fila.esNuevo ? !(fila.nombre || '').trim() : !Number.isInteger(fila.clientUid)) return 'Falta el cliente'
   if (!fila.format) return 'Falta el broker'
   if (!fila.archivos || fila.archivos.length === 0) return 'Faltan archivos'
@@ -104,7 +105,7 @@ export function estadoFinal(preview, confirm) {
   const traspasos = Array.isArray(preview?.traspasos) ? preview.traspasos : []
   if (traspasos.length > 0) {
     const t = traspasos[0]
-    motivos.push(`${plural(traspasos.length, 'título vino', 'títulos vinieron')} de otro broker suyo (${t.activo || ''} desde ${t.broker_origen || 'otro broker'}): falta aprobar el cierre allá para no contarlo dos veces.`)
+    motivos.push(`${plural(traspasos.length, 'título vino', 'títulos vinieron')} de otro broker suyo (${t.activo || ''} desde ${t.broker_origen || 'otro broker'}): falta aprobar el cierre en ${t.broker_origen || 'ese broker'} desde su cuenta, para no contarlo dos veces.`)
   }
   // Filas que el guardado no pudo escribir (el preview las dio por buenas).
   const skipped = Array.isArray(confirm?.skipped_rows) ? confirm.skipped_rows : []
@@ -113,8 +114,11 @@ export function estadoFinal(preview, confirm) {
     motivos.push(`${plural(skipped.length, 'fila no se pudo guardar', 'filas no se pudieron guardar')}${m ? `: ${m}` : '.'}`)
   }
   // Filas que exigen aprobación explícita (fail-closed): no entraron.
-  if (Number(confirm?.skipped_by_user || 0) > 0) {
-    motivos.push(`${plural(Number(confirm.skipped_by_user), 'fila requiere', 'filas requieren')} tu aprobación y no entró.`)
+  // `skipped_pending_approval` (no `skipped_by_user`, que antes sumaba también
+  // los repetidos y mandaba a Revisar una re-importación normal).
+  const pendAprob = Number(confirm?.skipped_pending_approval || 0)
+  if (pendAprob > 0) {
+    motivos.push(`${plural(pendAprob, 'fila necesitaba', 'filas necesitaban')} una aprobación que la tanda no puede pedir y ${pendAprob === 1 ? 'no entró' : 'no entraron'}: revisalo desde su cuenta.`)
   }
   // Estado inicial: el archivo arranca a mitad de la historia.
   if (preview?.seed_suggestions?.needed) {
@@ -134,10 +138,12 @@ export function estadoFinal(preview, confirm) {
   const pp = confirm?.post_proceso && typeof confirm.post_proceso === 'object' ? confirm.post_proceso : {}
   const fallidos = Object.keys(pp).filter(k => pp[k] === 'error')
   if (fallidos.length > 0) {
-    motivos.push('Se guardaron los movimientos pero falló el recálculo posterior de la cartera: entrá a su cuenta y usá "Recalcular".')
+    motivos.push('Se guardaron los movimientos pero falló el recálculo posterior: entrá a su cuenta, sección Importar, y usá "Recalcular la cartera".')
   }
-  if (confirm?.fx_migracion && confirm.fx_migracion.migrada === false && confirm.fx_migracion.motivo) {
-    notas.push(`tipo de cambio: ${confirm.fx_migracion.motivo}`)
+  if (confirm?.fx_migracion && confirm.fx_migracion.migrada === false) {
+    // El motivo del servidor es texto interno (puede nombrar rutas de admin):
+    // acá va un texto fijo para el asesor.
+    notas.push('el tipo de cambio histórico de esta cuenta no se pudo actualizar; los importes en dólares pueden estar con el dólar viejo')
   }
 
   const base = { cargados, repetidos, errores, notas }
@@ -183,7 +189,7 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
         if (creados.has(clave)) {
           clientUid = creados.get(clave)
         } else {
-          clientUid = await crearCliente(api, nombre, dormir)
+          clientUid = await crearCliente(api, nombre, dormir, () => onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.ESPERANDO_CUPO }))
           creados.set(clave, clientUid)
           creado = true
         }
@@ -224,7 +230,7 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
         archivosMov = fila.archivos.filter(a => a !== foto)
       }
       if (foto && archivosMov.length === 0) {
-        throw Object.assign(new Error('La fila tiene sólo la foto de tenencia: agregá también el archivo de movimientos, que es el que reconstruye el historial.'), { status: 400 })
+        throw Object.assign(new Error('La fila tiene sólo la foto de tenencia: agregá también el archivo de movimientos, que es el que reconstruye el historial. Si el historial ya está cargado, subí la foto sola desde su cuenta.'), { status: 400 })
       }
       onUpdate(fila.id, { estado: ESTADO.CARGANDO, paso: PASOS.LEYENDO })
       const fd = new FormData()
@@ -302,13 +308,14 @@ export async function correrTanda(filas, { api, onUpdate = () => {}, signal, dor
 
 // El alta de clientes tiene tope de 30 por minuto en el servidor; una tanda de
 // 50 clientes nuevos lo pisa. Ante 429 se espera y se reintenta UNA vez.
-async function crearCliente(api, nombre, dormir) {
+async function crearCliente(api, nombre, dormir, onEspera = () => {}) {
   const body = { label: nombre, name: nombre }
   try {
     const c = await api.post('/advisor/clients', body)
     return c?.client_uid
   } catch (err) {
     if (Number(err?.status) !== 429) throw err
+    onEspera()
     await dormir(61_000)
     const c = await api.post('/advisor/clients', body)
     return c?.client_uid
@@ -388,8 +395,11 @@ export function marcarInterrumpidas(filas) {
 
 export function resumen(resultados) {
   const por = (e) => resultados.filter(r => r.estado === e).length
+  const clientesCon = (estados) => new Set(resultados.filter(r => estados.includes(r.estado) && Number.isInteger(r.clientUid)).map(r => r.clientUid)).size
   return {
     total: resultados.length,
+    clientes: new Set(resultados.filter(r => Number.isInteger(r.clientUid)).map(r => r.clientUid)).size || resultados.length,
+    clientesCargados: clientesCon([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.FOTO_PENDIENTE]),
     completos: por(ESTADO.COMPLETO),
     revisar: por(ESTADO.REVISAR) + por(ESTADO.FOTO_PENDIENTE),
     fotos: por(ESTADO.FOTO_PENDIENTE),
@@ -427,7 +437,7 @@ export async function aplicarFoto(api, fila, aprobados = []) {
   // vuelve la fila a Revisar.
   const n = Array.from(aprobados).length
   const lectura = estadoFinal(null, confirm)
-  const notas = [...(fila.notas || []), n > 0 ? `foto aplicada (${plural(n, 'decisión aprobada', 'decisiones aprobadas')})` : 'foto aplicada sin los dudosos']
+  const notas = [...(fila.notas || []), n > 0 ? `foto aplicada (${plural(n, 'decisión aprobada', 'decisiones aprobadas')})` : 'foto aplicada sólo con lo seguro (lo que pedía aprobación quedó afuera)']
   const base = fila.estadoMovimientos || ESTADO.COMPLETO
   return {
     estado: lectura.motivos.length > 0 ? ESTADO.REVISAR : base,

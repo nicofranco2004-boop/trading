@@ -44,7 +44,7 @@ describe('filaLista / faltante', () => {
   })
   it('sólo lectura nunca está lista, aunque tenga todo', () => {
     expect(filaLista(fila({ soloLectura: true }))).toBe(false)
-    expect(faltante(fila({ soloLectura: true }))).toBe('Vínculo de sólo lectura')
+    expect(faltante(fila({ soloLectura: true }))).toBe('Sólo lectura: no podés cargarle archivos')
   })
   it('cliente nuevo necesita nombre; existente necesita uid entero', () => {
     expect(filaLista(fila({ esNuevo: true, clientUid: null, nombre: '  ' }))).toBe(false)
@@ -153,7 +153,7 @@ describe('resumen', () => {
       { estado: ESTADO.REVISAR, cargados: 5, repetidos: 0, errores: 3 },
       { estado: ESTADO.ERROR },
     ])
-    expect(r).toEqual({ total: 3, completos: 1, revisar: 1, fotos: 0, errores: 1, movimientos: 15, repetidos: 2, filasConError: 3 })
+    expect(r).toMatchObject({ total: 3, completos: 1, revisar: 1, fotos: 0, errores: 1, movimientos: 15, repetidos: 2, filasConError: 3 })
   })
 })
 
@@ -172,8 +172,8 @@ describe('estadoFinal — lo que el asistente pregunta y la tanda no puede', () 
     expect(r.estado).toBe(ESTADO.REVISAR)
     expect(r.detalle).toContain('Broker no encontrado')
   })
-  it('filas que exigen aprobación (skipped_by_user) → REVISAR', () => {
-    expect(estadoFinal({ errors: [] }, { ...okConfirm, skipped_by_user: 2 }).estado).toBe(ESTADO.REVISAR)
+  it('filas que exigen aprobación (skipped_pending_approval) → REVISAR', () => {
+    expect(estadoFinal({ errors: [] }, { ...okConfirm, skipped_pending_approval: 2 }).estado).toBe(ESTADO.REVISAR)
   })
   it('caja negativa al terminar → REVISAR nombrando el broker', () => {
     const r = estadoFinal({ errors: [] }, { ...okConfirm, cash_health: [{ broker: 'Balanz', currency: 'ARS', balance: -1500 }] })

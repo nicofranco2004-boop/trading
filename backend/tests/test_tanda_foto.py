@@ -140,6 +140,39 @@ class TandaFotoTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_el_borrador_de_la_foto_no_se_aplica_si_los_movimientos_se_revirtieron(self):
+        t = self.http.post("/api/advisor/tandas", json={"rows": [{"id": 1, "client_uid": self.c1, "label": "Juan P", "platform": "cocos", "archivos": ["mov.csv"], "estado": "pendiente"}]}, headers=self._h())
+        tid = t.json()["id"]
+        p = self.http.post("/api/imports/preview", files=[("files", ("mov.csv", io.BytesIO(_MOV), "text/csv"))], data={"format": "cocos", "tanda_id": tid}, headers=self._h(self.c1))
+        self.http.post("/api/imports/confirm", json={"session_id": p.json()["session_id"], "skip_row_indices": [], "aprobar_tickers": []}, headers=self._h(self.c1))
+        tp = self.http.post("/api/imports/tenencia/preview", files=[("file", ("portfolio_report_20240120.csv", io.BytesIO(_FOTO), "text/csv"))],
+                            data={"broker": "Cocos", "format": "cocos", "tanda_id": tid}, headers=self._h(self.c1))
+        sid = tp.json()["session_id"]; self.assertTrue(sid)
+        # Deshacer la tanda: el borrador de la foto se borra en la misma pasada
+        rv = self.http.post(f"/api/advisor/tandas/{tid}/revert", headers=self._h())
+        self.assertEqual(rv.status_code, 200, rv.text)
+        c2 = self.http.post("/api/imports/confirm", json={"session_id": sid, "skip_row_indices": [], "aprobar_tickers": ["GGAL"]}, headers=self._h(self.c1))
+        self.assertEqual(c2.status_code, 400, c2.text)
+        conn = main.get_db()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM positions WHERE user_id=? AND is_cash=0 AND quantity>0", (self.c1,)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_un_borrador_de_foto_no_se_aplica_si_se_revirtio_desde_la_cuenta_del_cliente(self):
+        # Sin tanda: el revert individual de los movimientos también invalida el borrador
+        p = self.http.post("/api/imports/preview", files=[("files", ("mov.csv", io.BytesIO(_MOV), "text/csv"))], data={"format": "cocos"}, headers=self._h(self.c1))
+        bid = p.json()["session_id"]
+        self.http.post("/api/imports/confirm", json={"session_id": bid, "skip_row_indices": [], "aprobar_tickers": []}, headers=self._h(self.c1))
+        tp = self.http.post("/api/imports/tenencia/preview", files=[("file", ("portfolio_report_20240120.csv", io.BytesIO(_FOTO), "text/csv"))],
+                            data={"broker": "Cocos", "format": "cocos"}, headers=self._h(self.c1))
+        sid = tp.json()["session_id"]; self.assertTrue(sid)
+        rv = self.http.post(f"/api/imports/{bid}/revert", headers=self._h(self.c1))
+        self.assertEqual(rv.status_code, 200, rv.text)
+        c2 = self.http.post("/api/imports/confirm", json={"session_id": sid, "skip_row_indices": [], "aprobar_tickers": ["GGAL"]}, headers=self._h(self.c1))
+        self.assertEqual(c2.status_code, 400, c2.text)
+        self.assertIn("revirti", c2.text)
+
     def test_tanda_ajena_en_la_foto_es_400_sin_lote(self):
         tp = self.http.post("/api/imports/tenencia/preview", files=[("file", ("portfolio_report_20240120.csv", io.BytesIO(_FOTO), "text/csv"))],
                             data={"broker": "Cocos", "format": "cocos", "tanda_id": "no-existe"}, headers=self._h(self.c1))

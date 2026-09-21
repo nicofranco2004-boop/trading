@@ -296,6 +296,11 @@ class AdvisorTandasTest(unittest.TestCase):
         self.assertEqual(por["Juan P"], "revertido")
         self.assertEqual(por["Ana G"], "completo")
 
+    def test_estado_movimientos_con_tipo_raro_es_400_no_500(self):
+        r = self.http.post("/api/advisor/tandas", json={"rows": [{"id": 1, "estado_movimientos": ["x"]}]}, headers=self._h())
+        self.assertIn(r.status_code, (200, 400), r.text)
+        self.assertNotEqual(r.status_code, 500)
+
 
 if __name__ == "__main__":
     unittest.main()

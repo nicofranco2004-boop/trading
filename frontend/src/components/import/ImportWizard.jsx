@@ -1853,7 +1853,6 @@ export function ReconcileStep({ data, aprobados, onToggle, sujeto = 'vos' }) {
     broker: esCliente ? 'el resumen de su broker' : 'El resumen de tu broker',
     tiene: esCliente ? 'tiene' : 'tenés',
     tuyos: esCliente ? 'los suyos' : 'los tuyos',
-    cargo: esCliente ? 'cargados a mano' : 'que cargaste a mano',
   }
   const dudosos = data.no_reconciliable || []
   // 🔴 Lo que espera aprobación NO puede aparecer también en "se completan":
@@ -2018,7 +2017,7 @@ export function ReconcileStep({ data, aprobados, onToggle, sujeto = 'vos' }) {
                     sub={`${T.broker.charAt(0).toUpperCase() + T.broker.slice(1)} dice otro saldo que el que dejaron los movimientos: al aplicar, la caja se lleva a ese número con un depósito o retiro de ajuste.`}
                     chip={<Chip ok={false} no="entra al aplicar" />} tono="warn">
           {data.cash_ajustes.filter(c => Math.abs(Number(c.diff) || 0) > 0.009).map(c => (
-            <RecFila key={`c-${c.broker}-${c.moneda}`} tk={`${c.broker} · ${c.moneda}`}
+            <RecFila key={`c-${c.broker}-${c.moneda}`} tk={`${c.broker} · ${c.moneda}`} mono={false}
                      detalle={`${Number(c.rendi).toLocaleString('es-AR', { maximumFractionDigits: 2 })} → ${Number(c.foto).toLocaleString('es-AR', { maximumFractionDigits: 2 })} (${Number(c.diff) > 0 ? '+' : ''}${Number(c.diff).toLocaleString('es-AR', { maximumFractionDigits: 2 })})`} />
           ))}
         </RecSection>
@@ -2121,10 +2120,10 @@ function OverrideDetalle({ ov, sujeto = 'vos' }) {
   )
 }
 
-function RecFila({ tk, detalle }) {
+function RecFila({ tk, detalle, mono = true }) {
   return (
     <div className="flex items-center justify-between py-1 text-xs">
-      <span className="font-mono text-ink-1">{tk}</span>
+      <span className={`${mono ? 'font-mono' : ''} text-ink-1`}>{tk}</span>
       <span className="text-ink-2 tabular">{detalle}</span>
     </div>
   )

@@ -156,7 +156,7 @@ const BROKERS = [
     // Para la tanda del asesor (AdvisorImports): qué pasos hablan de la FOTO de
     // tenencia (se etiquetan) y cuáles describen el asistente individual (se omiten).
     pasosFoto: [],
-    pasosSoloAsistente: [],
+    pasosSoloAsistente: [2],
     Logo: BinanceLogo,
     summary: 'Usamos el Historial de transacciones completo para reconstruir cripto y caja stable.',
     steps: [
@@ -177,9 +177,9 @@ const BROKERS = [
     summary: 'Usamos el export de History (transacciones) en formato CSV.',
     steps: [
       'Entrá a schwab.com → Accounts → History (Historial).',
-      'Elegí la cuenta y el rango de fechas (lo más amplio posible: desde que abriste la cuenta hasta hoy).',
+      'Elegí la cuenta y el rango de fechas (lo más amplio posible: desde que abriste la cuenta hasta hoy). Si tenés varias cuentas, exportá una por una: cada una es un archivo aparte.',
       'Hacé clic en el ícono de export (arriba a la derecha de la tabla) y elegí CSV.',
-      'Subí ese CSV acá. Si tenés varias cuentas, exportá una por una.',
+      'Subí ese CSV acá.',
     ],
     parserNote: 'Schwab exporta en USD — Rendi crea el broker en dólares automáticamente.',
   },
@@ -228,7 +228,7 @@ const BROKERS = [
     summary: 'Subí dos archivos juntos: el export de "Toda la actividad" (Movimientos) + el "Portafolio" (Excel) — reconstruimos tus operaciones y ajustamos tus posiciones y saldos a la foto de hoy.',
     steps: [
       'Entrá al homebanking web de IEB (hb.iebmas.com.ar) e iniciá sesión. ⚠️ Tiene que ser desde la WEB, no desde la app.',
-      'Movimientos: andá a Actividad → Toda la actividad (Movimientos totales). En "Desde" poné la fecha más antigua posible (idealmente desde que abriste la cuenta) y en "Hasta" hoy, y descargá el .xlsx.',
+      'Movimientos: andá a Actividad → Toda la actividad (Movimientos totales). En "Desde" poné la fecha más antigua posible (idealmente desde que abriste la cuenta) y en "Hasta" hoy, y descargá el .xlsx (guardalo tal cual, sin abrirlo ni convertirlo).',
       'Portafolio (tu tenencia de hoy): andá a Portafolio, seleccioná la moneda Pesos y descargá el Excel.',
       'Subí los dos Excel juntos acá, tal cual, sin abrirlos ni convertirlos — los acomodamos solos (el Portafolio completa lo que el historial no alcanza y pone el costo real).',
     ],
@@ -274,6 +274,32 @@ const BROKERS = [
 // (pages/AdvisorImports) muestra los mismos pasos en su panel "¿Cómo lo
 // descargo?". Si se corrige un paso acá, se corrige en los dos lugares.
 export const BROKER_GUIDES = BROKERS
+
+// Los pasos están escritos para el dueño de la cuenta ("tu cuenta", "desde que
+// abriste"). El asesor los lee sobre la cuenta de un CLIENTE: misma guía, otra
+// persona gramatical. Un solo texto fuente, dos lecturas.
+const _A_CLIENTE = [
+  [/DESDE EL INICIO DE TU CUENTA/g, 'DESDE EL INICIO DE LA CUENTA'],
+  [/desde que abriste la cuenta/g, 'desde que se abrió la cuenta'],
+  [/en tu cuenta Internacional/g, 'en la cuenta Internacional del cliente'],
+  [/tu saldo en dólares/g, 'el saldo en dólares'],
+  [/tu cuenta de PPI/g, 'la cuenta de PPI del cliente'],
+  [/tu tenencia de hoy/g, 'la tenencia de hoy'],
+  [/tu foto de hoy/g, 'la foto de hoy'],
+  [/tu historial/g, 'el historial'],
+  [/tu cartera/g, 'la cartera'],
+  [/¿Tenés muchos años de historia/g, '¿Tiene muchos años de historia'],
+  [/Si operaste en dólares/g, 'Si operó en dólares'],
+  [/Si tenés varias cuentas/g, 'Si tiene varias cuentas'],
+  [/Si tenés un fondo común/g, 'Si tiene un fondo común'],
+  [/tu broker/g, 'su broker'],
+  [/\btus\b/g, 'sus'],
+]
+export function pasosPara(guia, sujeto = 'vos') {
+  const steps = guia?.steps || []
+  if (sujeto !== 'cliente') return steps
+  return steps.map(s => _A_CLIENTE.reduce((acc, [re, rep]) => acc.replace(re, rep), s))
+}
 
 // lockBrokerId: si viene, el widget queda fijo a ese broker (sin chips ni
 // selector) — lo usa el Paso 0 del wizard, donde el broker ya fue elegido.

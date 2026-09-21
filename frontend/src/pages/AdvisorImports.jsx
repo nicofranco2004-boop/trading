@@ -27,7 +27,7 @@ import EmptyState from '../components/EmptyState'
 import { api, errorMessage } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { BROKER_GUIDES } from '../components/import/BrokerInstructions'
+import { BROKER_GUIDES, pasosPara } from '../components/import/BrokerInstructions'
 import { ReconcileStep } from '../components/import/ImportWizard'
 import {
   correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO, EXTENSIONES, fusionarFotosLocales,
@@ -297,7 +297,7 @@ export default function AdvisorImports() {
             ) : undefined}
           />
           {errorCarga && (
-            <div className="mb-4 flex items-start gap-2 text-xs text-rendi-neg border border-rendi-neg/30 bg-rendi-neg/5 rounded-xl px-3 py-2">
+            <div className="mb-4 flex items-start gap-2 text-xs text-rendi-neg border border-rendi-neg/30 bg-rendi-neg/5 rounded-xl px-3 py-2" role="alert">
               <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
               <span>{errorCarga} <button type="button" className="underline" onClick={cargar}>Reintentar</button></span>
             </div>
@@ -476,30 +476,24 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
         <div className="min-w-0">
           <span className="md:hidden block text-[11px] text-ink-2 mb-1.5">Archivos del historial</span>
           <div
-            role="button" tabIndex={0}
-            className="min-h-[38px] flex flex-wrap items-center gap-1.5 border border-dashed border-line-3 hover:border-data-violet rounded px-2 py-1.5 text-xs text-ink-2 cursor-pointer"
-            onClick={() => inputRef.current?.click()}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current?.click() } }}
+            className="min-h-[38px] flex flex-wrap items-center gap-1.5 border border-dashed border-line-3 hover:border-data-violet rounded px-2 py-1.5 text-xs text-ink-2"
             onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); agregarArchivos(e.dataTransfer?.files) }}
-            aria-label="Soltá los archivos del broker o hacé click para elegirlos">
+            onDrop={e => { e.preventDefault(); agregarArchivos(e.dataTransfer?.files) }}>
             {fila.archivos.map((a, i) => (
               <span key={`${a.name}:${a.size}`} className="inline-flex items-center gap-1.5 bg-bg-2 border border-line rounded px-2 py-0.5 text-[11px] text-ink-1 max-w-full">
                 <span className="truncate text-ink-0">{a.name}</span>
                 {/\.pdf$/i.test(a.name || '') && <span className="text-[10px] font-medium text-data-violet bg-data-violet/10 rounded px-1">foto</span>}
-                <span role="button" tabIndex={0} className="text-ink-2 hover:text-rendi-neg cursor-pointer" aria-label={`Quitar ${a.name}`}
-                  onClick={e => { e.stopPropagation(); quitarArchivo(i) }}
-                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); quitarArchivo(i) } }}><X size={11} aria-hidden="true" /></span>
+                <button type="button" className="text-ink-2 hover:text-rendi-neg rounded" aria-label={`Quitar ${a.name}`} onClick={() => quitarArchivo(i)}>
+                  <X size={11} aria-hidden="true" />
+                </button>
               </span>
             ))}
-            <span className="inline-flex items-center gap-1">
+            <button type="button" className="inline-flex items-center gap-1 text-data-violet hover:underline rounded" onClick={() => inputRef.current?.click()}>
               <FileUp size={12} aria-hidden="true" />
-              {fila.archivos.length ? 'agregar' : 'Soltá los archivos del broker (movimientos y foto)'}
-            </span>
-            <span className="sr-only">
-              Rendi decide al cargar cuál archivo es la foto; los PDF se marcan de antemano.
-            </span>
+              {fila.archivos.length ? 'agregar' : 'Elegir o soltar los archivos del broker (movimientos y foto)'}
+            </button>
           </div>
+          <p className="mt-1 text-[11px] text-ink-2">Rendi reconoce cuál archivo es la foto al cargar; los PDF se marcan de antemano.</p>
           {rechazados.length > 0 && (
             <p className="mt-1 text-[11px] text-rendi-warn">
               {plural(rechazados.length, 'archivo no entra', 'archivos no entran')} en la tanda ({rechazados.slice(0, 2).join(', ')}{rechazados.length > 2 ? '…' : ''}): acá van los CSV, Excel o PDF que exporta el broker.
@@ -533,7 +527,7 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
             <button type="button" className="text-ink-2 hover:text-ink-0" aria-label="Cerrar la guía" onClick={() => setGuiaAbierta(false)}><X size={14} aria-hidden="true" /></button>
           </div>
           <ol className="mt-2 pl-5 list-decimal space-y-1.5 text-[13px] text-ink-1 max-w-[78ch]">
-            {guia.steps.map((s, i) => (guia.pasosSoloAsistente || []).includes(i) ? null : (
+            {pasosPara(guia, 'cliente').map((s, i) => (guia.pasosSoloAsistente || []).includes(i) ? null : (
               <li key={i}>
                 {s}
                 {(guia.pasosFoto || []).includes(i) && (
@@ -543,7 +537,7 @@ function Fila({ fila, roster, grupos, onChange, onQuitar }) {
                 )}
               </li>
             ))}
-            <li>Soltá {(guia.pasosFoto || []).length > 0 ? 'los dos archivos juntos' : 'el archivo de movimientos'} en esta fila.</li>
+            <li>Soltá {(guia.pasosFoto || []).length > 0 ? 'todos esos archivos juntos (movimientos y foto)' : 'el archivo de movimientos'} en esta fila.</li>
           </ol>
           <p className="mt-2.5 text-[11px] text-ink-2">Rendi separa solo la foto de los movimientos. Primero entra el historial; después compara contra la foto y, si hay algo que cerrar o crear, la fila queda en <b>"Aprobar foto"</b> para que lo decidas vos. Nada de eso se aplica sin tu aprobación.</p>
         </div>
@@ -571,7 +565,7 @@ function Progreso({ filas, inicio }) {
           </span>
           <span className="text-xs text-ink-2 tabular">Empezó hace {Math.floor(seg / 60)}:{String(seg % 60).padStart(2, '0')}</span>
         </div>
-        <div className="mt-2.5 h-1.5 bg-bg-3 rounded-full overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+        <div className="mt-2.5 h-1.5 bg-bg-3 rounded-full overflow-hidden" role="progressbar" aria-label="Avance de la tanda" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
           <span className="block h-full bg-data-violet rounded-full transition-[width] duration-500 motion-reduce:transition-none" style={{ width: `${pct}%` }} />
         </div>
       </div>
@@ -583,7 +577,7 @@ function Progreso({ filas, inicio }) {
             {f.estado === ESTADO.CARGANDO ? `${f.paso || 'Cargando'}…`
               : f.estado === ESTADO.PENDIENTE ? 'En espera'
               : f.estado === ESTADO.ERROR ? f.detalle
-              : f.notas?.length ? `${movs(f.cargados)} · ${f.notas.join(' · ')}` : movs(f.cargados)}
+              : [movs(f.cargados), f.detalle, ...(f.notas || [])].filter(Boolean).join(' · ')}
           </div>
         </div>
       ))}
@@ -614,13 +608,13 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
     <>
       <PageHeader
         eyebrow="Plan Asesor"
-        title={cortada ? 'La tanda se cortó' : (revertibles === 0 && revertidos > 0 ? 'Tanda revertida' : (r.fotos > 0 ? `Falta aprobar ${plural(r.fotos, 'foto', 'fotos')}` : 'Tanda cargada'))}
+        title={cortada ? 'La tanda se cortó' : (revertibles === 0 && revertidos > 0 ? 'Tanda revertida' : (r.fotos > 0 ? `Falta aprobar ${plural(r.fotos, 'foto', 'fotos')}` : (r.completos + r.revisar === 0 ? 'La tanda no cargó nada' : (r.errores > 0 ? 'Tanda terminada' : 'Tanda cargada'))))}
         subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}.${frase ? ` ${frase}.` : ''}${revertidos > 0 ? ` ${plural(revertidos, 'importación revertida', 'importaciones revertidas')}.` : ''}`}
       />
       {!tandaId && !cortada && (
         <div className="mb-3.5 flex items-start gap-2 text-xs text-ink-0 border border-line bg-bg-1 rounded-xl px-3 py-2">
           <Info size={14} className="mt-0.5 shrink-0 text-ink-2" aria-hidden="true" />
-          <span>Esta tanda no quedó guardada en el historial (el servidor no la registró al empezar). Los historiales sí se cargaron; para revertir alguno, hacelo desde la cuenta de ese cliente.</span>
+          <span>Esta tanda no quedó guardada en el historial (Rendi no pudo anotarla al empezar). Los historiales sí se cargaron; para revertir alguno, hacelo desde la cuenta de ese cliente.</span>
         </div>
       )}
       {cortada && (
@@ -630,7 +624,7 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
         </div>
       )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5 tabular">
-        <Kpi label="Movimientos cargados" valor={r.movimientos} sub={`en ${plural(r.completos + r.revisar, 'cliente', 'clientes')}`} />
+        <Kpi label="Movimientos y posiciones cargados" valor={r.movimientos} sub={`en ${plural(r.clientesCargados, 'cliente', 'clientes')}${r.fotos === 0 && filas.some(f => f.fotoBatchId) ? ' · incluye lo que completó la foto' : ''}`} />
         <Kpi label="Repetidos omitidos" valor={r.repetidos} sub="ya estaban cargados de antes" />
         <Kpi label="Filas con error" valor={r.filasConError} sub="se informan, no frenan" warn={r.filasConError > 0} />
         <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={r.fotos > 0 ? `${plural(r.fotos, 'foto para aprobar', 'fotos para aprobar')}${(r.revisar - r.fotos) > 0 ? ` · ${r.revisar - r.fotos} por otros motivos` : ''}` : `de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
@@ -681,8 +675,9 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
             </div>
             <div className="flex md:justify-end">
               {f.estado === ESTADO.REVISAR && <button type="button" className={btnPrimary} onClick={() => irACliente(f, '/imports')}>Revisar <ArrowRight size={12} aria-hidden="true" /></button>}
-              {f.estado === ESTADO.FOTO_PENDIENTE && !f.foto && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/imports')}>Subir la foto allá</button>}
+              {f.estado === ESTADO.FOTO_PENDIENTE && !f.foto && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/imports')}>Subir la foto desde su cuenta</button>}
               {f.estado === ESTADO.COMPLETO && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/posiciones')}>Ver cartera</button>}
+              {f.estado === ESTADO.ERROR && Number.isInteger(f.clientUid) && <button type="button" className={f.incierto ? btnPrimary : btnGhost} onClick={() => irACliente(f, '/imports')}>Ver su cuenta</button>}
               {f.estado === ESTADO.ERROR && <button type="button" className={btnGhost} onClick={() => onReintentar(f)}>Cambiar archivo</button>}
               {f.estado === 'revert_fallo' && Number.isInteger(f.clientUid) && <button type="button" className={btnGhost} onClick={() => irACliente(f, '/imports')}>Ver en su cuenta</button>}
             </div>
@@ -701,7 +696,7 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
             {deshacer.error ? deshacer.error : (
               <>
                 Se {deshacer.resultado.revertidos === 1 ? 'revirtió' : 'revirtieron'} {plural(deshacer.resultado.revertidos, 'importación', 'importaciones')}.
-                {deshacer.resultado.fallidos > 0 ? ` ${plural(deshacer.resultado.fallidos, 'no se pudo deshacer', 'no se pudieron deshacer')}: el motivo está en cada fila.` : ' Las cuentas quedaron como antes de la tanda.'}
+                {deshacer.resultado.fallidos > 0 ? ` ${plural(deshacer.resultado.fallidos, 'no se pudo deshacer', 'no se pudieron deshacer')}: el motivo está en cada fila.` : (filas.some(f => f.creado) ? ' Los historiales se revirtieron; las cuentas que la tanda creó siguen existiendo, vacías.' : ' Las cuentas quedaron como antes de la tanda.')}
               </>
             )}
           </span>
@@ -719,7 +714,7 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
           )}
           {deshacer === 'confirmar' && (
             <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-0">
-              ¿Revertir {plural(revertibles, 'importación', 'importaciones')} de {plural(revertibles, 'cliente', 'clientes')}? Se puede volver a cargar después.
+              ¿Revertir {plural(revertibles, 'importación', 'importaciones')} de {plural(new Set(filas.filter(f => FINALES.has(f.estado) && f.batchId).map(f => f.clientUid)).size, 'cliente', 'clientes')}? Se puede volver a cargar después.
               <button type="button" className={btnDanger} onClick={onDeshacer}>Sí, deshacer</button>
               <button type="button" className={btnGhost} onClick={onCancelarDeshacer}>Cancelar</button>
             </span>
@@ -764,7 +759,7 @@ function PanelFoto({ fila, onDecidir }) {
         <button type="button" className={btnGhost} disabled={busy} onClick={() => correr(true)} aria-label={`Omitir la foto de ${nombre}`}>Omitir la foto</button>
         <button type="button" className={btnPrimary} disabled={busy} onClick={() => correr(false)} aria-label={`Aplicar la foto de ${nombre}`}>
           {busy && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
-          {aprobados.size > 0 ? `Aplicar (con ${plural(aprobados.size, 'aprobado', 'aprobados')})` : 'Aplicar sin los dudosos'}
+          {aprobados.size > 0 ? `Aplicar (con ${plural(aprobados.size, 'aprobado', 'aprobados')})` : 'Aplicar sólo lo seguro'}
         </button>
       </div>
     </section>
@@ -807,12 +802,14 @@ const movs = (n) => plural(n ?? 0, 'movimiento', 'movimientos')
 function fechaCorta(iso) {
   const t = fechaServidor(iso)
   if (t == null) return iso ? String(iso) : ''
-  return new Date(t).toLocaleString('es-AR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+  const d = new Date(t)
+  const conAnio = d.getFullYear() !== new Date().getFullYear()
+  return d.toLocaleString('es-AR', { day: '2-digit', month: 'short', ...(conAnio ? { year: '2-digit' } : {}), hour: '2-digit', minute: '2-digit' })
 }
 function resumenCorto(r) {
   if (!r) return ''
   const partes = []
-  if (r.completos) partes.push(`${r.completos} ok`)
+  if (r.completos) partes.push(`${r.completos} completos`)
   if (r.revisar) partes.push(`${r.revisar} a revisar`)
   if (r.errores) partes.push(`${r.errores} sin cargar`)
   if (r.revertidos) partes.push(`${r.revertidos} revertidos`)

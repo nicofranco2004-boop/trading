@@ -204,13 +204,13 @@ export default function Imports() {
               <button
                 onClick={doRecalcPnl}
                 disabled={recalculating}
-                title="Recalcula P&L, deposits y withdrawals mensuales desde las operations e imports confirmados. Útil si el dashboard quedó con drift de cycles import/revert."
+                title="Vuelve a calcular resultados, depósitos y retiros de cada mes a partir de lo importado. Útil si los números quedaron desfasados después de importar o revertir."
                 className="inline-flex items-center gap-1.5 text-[12.5px] border border-line bg-bg-2 hover:bg-bg-3 text-ink-2 hover:text-ink-0 px-2.5 py-1.5 rounded-sm transition-colors disabled:opacity-50 font-medium"
               >
                 {recalculating
                   ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" />
                   : <RotateCcw size={12} strokeWidth={1.75} />}
-                Recalcular aggregates
+                Recalcular la cartera
               </button>
             )}
             {!isFirstUse && (

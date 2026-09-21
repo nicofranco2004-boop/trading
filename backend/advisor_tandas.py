@@ -134,8 +134,8 @@ def _sanitize_rows(rows: Any) -> List[Dict[str, Any]]:
             "foto_batch_id": _texto(r.get("foto_batch_id"), 64) or None,
             "foto_session_id": _texto(r.get("foto_session_id"), 64) or None,
             "foto_nombre": _texto(r.get("foto_nombre"), 120) or None,
-            "estado_movimientos": (_texto(r.get("estado_movimientos"), 20) or None)
-                if (r.get("estado_movimientos") in ESTADOS_FILA) else None,
+            "estado_movimientos": r.get("estado_movimientos")
+                if (isinstance(r.get("estado_movimientos"), str) and r.get("estado_movimientos") in ESTADOS_FILA) else None,
             "cargados": _entero(r.get("cargados"), "cargados"),
             "repetidos": _entero(r.get("repetidos"), "repetidos"),
             "errores": _entero(r.get("errores"), "errores"),
@@ -217,6 +217,17 @@ def _reconciliar(filas: List[Dict[str, Any]], lotes: Dict[str, Dict[str, Any]]) 
                          if f.get("client_uid") == info["user_id"]
                          and not f.get("batch_id")
                          and f["estado"] in ("pendiente", "cargando")), None)
+        if huerfana is None and info["status"] == "confirmed":
+            # Un lote confirmado que ninguna fila nombra y cuyo cliente ya
+            # figura "revertido" (p. ej. una foto aprobada DESPUÉS de deshacer):
+            # tiene que verse, no quedar invisible detrás de un "revertido".
+            rev = next((f for f in filas if f.get("client_uid") == info["user_id"] and f["estado"] == "revertido"), None)
+            if rev is not None:
+                rev["estado"] = "revert_fallo"
+                rev["foto_batch_id"] = bid
+                rev["detalle"] = "Quedó un lote aplicado después del deshacer: revertilo desde su cuenta."
+                conocidos.add(bid)
+                continue
         if huerfana is not None:
             huerfana["batch_id"] = bid
             huerfana["batch_status"] = info["status"]
@@ -314,8 +325,14 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
             if f and not es_foto: f["estado"] = "revertido"
             resultado.append({"id": f.get("id"), "label": etiqueta, "ok": True, "motivo": "ya estaba revertido"})
             continue
+        if info["status"] == "preview":
+            # Un borrador de foto calculado contra movimientos que se están
+            # revirtiendo ya no describe nada: se borra, no puede quedar
+            # confirmable durante una hora sobre una cuenta vacía.
+            conn.execute("DELETE FROM import_batches WHERE id=? AND status='preview'", (bid,))
+            continue
         if info["status"] != "confirmed":
-            continue   # un borrador (preview) no está aplicado: no hay nada que revertir
+            continue
         if not puede_escribir(cu):
             if f: f["estado"] = "revert_fallo"; f["detalle"] = _MSG_SIN_VINCULO
             resultado.append({"id": f.get("id"), "label": etiqueta, "ok": False, "motivo": _MSG_SIN_VINCULO})
@@ -323,7 +340,11 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
         try:
             revertir_lote(cu, bid)
             if f and not es_foto:
-                f["estado"] = "revertido"; f["detalle"] = None
+                if f.get("estado") == "revert_fallo":
+                    # La foto (más nueva) falló antes: la fila NO queda "revertida".
+                    f["detalle"] = f"Los movimientos se revirtieron, pero la foto no: {f.get('detalle') or ''}".strip()
+                else:
+                    f["estado"] = "revertido"; f["detalle"] = None
             resultado.append({"id": f.get("id"), "label": etiqueta, "ok": True, "motivo": None})
         except RuntimeError as ex:   # el persister dijo que no (ventas posteriores, etc.)
             if f: f["estado"] = "revert_fallo"; f["detalle"] = str(ex)
@@ -365,6 +386,10 @@ def olvidar_cliente(conn, client_uid: int) -> int:
             if f.get("client_uid") == client_uid:
                 f["client_uid"] = None
                 f["label"] = "Cliente eliminado"
+                # Los nombres de archivo del broker suelen llevar nombre y DNI.
+                f["archivos"] = []
+                f["foto_nombre"] = None
+                f["notas"] = []
                 if f.get("estado") in _CON_LOTE:
                     f["estado"] = "revert_fallo"
                     f["detalle"] = _MSG_CLIENTE_BORRADO

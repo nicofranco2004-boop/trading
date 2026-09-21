@@ -32854,6 +32854,8 @@ def import_classify_tenencia(
     `files` = TODAS, para que la tanda del asesor rechace una fila con dos fotos en
     vez de mandar la segunda como movimientos. No persiste nada (solo clasifica)."""
     cap = _import_pipeline.MAX_FILE_BYTES
+    if len(files or []) > 20:
+        raise HTTPException(400, "Subiste demasiados archivos (máximo 20).")
     hallados: List[Dict[str, Any]] = []
 
     def _hit(name, fmt):
@@ -32870,7 +32872,7 @@ def import_classify_tenencia(
             chunks.append(chunk)
             total += len(chunk)
             if total > cap:
-                break
+                raise HTTPException(400, f"'{name}' excede el límite de {cap // 1_000_000} MB.")
         data = b"".join(chunks)
         if not data:
             continue
@@ -33049,6 +33051,21 @@ def import_tenencia_preview(
         if total > cap:
             raise HTTPException(400, f"El archivo excede el límite de {cap // 1_000_000} MB.")
     data = b"".join(chunks)
+
+    # La tanda se valida ANTES de gastar CPU parseando la foto (igual que en
+    # /imports/preview). Más abajo se vuelve a mirar con la misma conexión que
+    # estampa el lote; esto es sólo para fallar temprano.
+    if tanda_id:
+        _c0 = get_db()
+        try:
+            _auth0 = getattr(getattr(request, "state", None), "rendi_auth_uid", None)
+            _own0 = _c0.execute(
+                "SELECT 1 FROM advisor_import_tandas WHERE id=? AND advisor_uid=?",
+                (str(tanda_id).strip()[:64], _auth0)).fetchone() if _auth0 else None
+        finally:
+            _c0.close()
+        if not _own0:
+            raise HTTPException(400, "La tanda no existe o no es tuya.")
 
     fmt = (format or "").strip().lower()
     is_ppi = fmt.startswith("ppi")
@@ -33631,18 +33648,22 @@ def import_tenencia_preview(
         # de "de esto no sé", no dos mecanismos distintos.
         if _proy_no_rec:
             rec.no_reconciliable += _proy_no_rec
-        _otros_brokers = [r["name"] for r in conn.execute(
-            "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()
-            if r["name"] not in set(pair)]
+        # Brokers fuera del par CON tenencia (un broker creado y vacío no cambia
+        # la composición que el cron estampó, así que no invalida la comparación).
+        _otros_brokers = [r["broker"] for r in conn.execute(
+            """SELECT DISTINCT broker FROM positions
+                WHERE user_id=? AND is_cash=0 AND quantity>0""", (uid,)).fetchall()
+            if r["broker"] not in set(pair)]
         if fecha_origen != "fallback_hoy" and _otros_brokers:
             # El snapshot del cron lista la composición de TODA la cuenta sin
             # broker; la proyección es sólo de este par. Compararlos daba un
             # "no coincide" falso en cada foto de un cliente con dos brokers.
-            _ver = {"estado": _import_proyeccion.ESTADO_SIN_REFERENCIA,
-                    "motivo_sin_referencia": "cliente_con_otros_brokers",
-                    "detalle": ("la cuenta tiene otros brokers y el snapshot del cron no "
-                                "separa por broker, así que no hay con qué contrastar "
-                                "sólo este.")}
+            proy_info = {"fecha": seed_date, "estado": _import_proyeccion.ESTADO_SIN_REFERENCIA,
+                         "snapshot_fecha": None,
+                         "motivo_sin_referencia": "cliente_con_otros_brokers",
+                         "detalle": ("la cuenta tiene tenencia en otros brokers y el registro "
+                                     "del cron no separa por broker, así que no hay con qué "
+                                     "contrastar sólo este.")}
         elif fecha_origen != "fallback_hoy":
             _ver = _import_proyeccion.verificar_contra_snapshot(
                 conn, uid, seed_date, current)
@@ -34177,10 +34198,11 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
     """
     try:
         import threading as _th
-        # Un solo hilo por usuario: la tanda del asesor confirma dos lotes del
-        # MISMO cliente seguidos (dos brokers) y sin esto el hilo del primero
-        # escribía `snapshots` mientras el confirm del segundo hacía rebuild —
-        # el que perdía el lock dejaba la curva a medias, sin aviso.
+        # Un solo hilo de reconstrucción por usuario. NO serializa el hilo
+        # contra el confirm siguiente (eso lo absorbe el busy_timeout de la
+        # base): lo que evita es que dos reconstrucciones del mismo cliente
+        # corran a la vez y que la segunda se pierda — la tanda confirma dos
+        # lotes del MISMO cliente seguidos (dos brokers, o movimientos + foto).
         with _MTM_RUNNING_LOCK:
             if uid in _MTM_RUNNING:
                 # No se descarta: el hilo que está corriendo repite UNA vez al
@@ -34225,6 +34247,23 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
     parcial (faltan aportes y posiciones previas)."""
     conn = get_db()
     try:
+        # El borrador de una FOTO es un DIFF calculado contra los movimientos
+        # que había en ese momento ("sembrar GGAL +30, caja +5.000"). Si
+        # después se revirtió un lote de la cuenta, ese diff ya no describe
+        # nada: aplicarlo dejaría GGAL 30 donde la foto decía 80. Se rechaza
+        # y se pide volver a subir la foto.
+        _b_meta = conn.execute(
+            "SELECT parser_format, created_at FROM import_batches WHERE id=? AND user_id=?",
+            (data.session_id, uid)).fetchone()
+        if _b_meta and "tenencia" in str(_b_meta["parser_format"] or ""):
+            _rev = conn.execute(
+                """SELECT 1 FROM import_batches
+                    WHERE user_id=? AND status='reverted' AND reverted_at IS NOT NULL
+                      AND reverted_at >= ? LIMIT 1""",
+                (uid, _b_meta["created_at"])).fetchone()
+            if _rev:
+                raise HTTPException(400, "La foto se comparó contra un historial que después se revirtió: "
+                                         "volvé a subirla para compararla de nuevo.")
         with conn:
             try:
                 txs, raw_id_by_index = _import_pipeline.load_session_with_seed_revalidate(
@@ -34239,9 +34278,13 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             # que vengan nombradas. Ver `tenencia.MARCA_APROBACION`.
             _aprobados = {str(x).strip().upper()
                           for x in (data.aprobar_tickers or [])}
+            _por_usuario = len(skip_set)
+            _pendientes_aprobacion = 0
             for _t in txs:
                 if (_import_tenencia.requiere_aprobacion(getattr(_t, "notes", None))
                         and (getattr(_t, "asset_symbol", "") or "").upper() not in _aprobados):
+                    if _t.row_index not in skip_set:
+                        _pendientes_aprobacion += 1
                     skip_set.add(_t.row_index)
 
             # ── Anti-duplicación de re-importación ────────────────────────────
@@ -34478,7 +34521,14 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
         mtm_reconstruccion = _reconstruir_mtm_post_import(uid)
 
         return {"ok": True, "batch_id": data.session_id,
-                "skipped_by_user": len(skip_set), "auto_skipped_duplicates": auto_skipped,
+                # Tres cosas distintas que antes viajaban sumadas como "por el
+                # usuario": lo que él omitió, lo que exigía aprobación y no se
+                # nombró, y los repetidos automáticos. La tanda del asesor decide
+                # con el segundo — sumarle los repetidos mandaba a "Revisar" una
+                # re-importación normal del mes nuevo.
+                "skipped_by_user": _por_usuario,
+                "skipped_pending_approval": _pendientes_aprobacion,
+                "auto_skipped_duplicates": auto_skipped,
                 "fx_migracion": fx_migracion,
                 "mtm_reconstruccion": mtm_reconstruccion,
                 "post_proceso": post_proceso,
@@ -37699,7 +37749,8 @@ class AdvisorTandaPatchIn(BaseModel):
 
 
 @app.post("/api/advisor/tandas")
-def advisor_tanda_create(data: AdvisorTandaIn, uid: int = Depends(get_current_user)):
+def advisor_tanda_create(data: AdvisorTandaIn, request: Request, uid: int = Depends(get_current_user)):
+    _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"tanda_create:{uid}")
     conn = get_db()
     try:
         _require_advisor(conn, uid)

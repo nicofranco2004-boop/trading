@@ -171,6 +171,11 @@ class TandaImportTest(unittest.TestCase):
         self.assertEqual(c2.status_code, 200, c2.text)
         self.assertGreaterEqual(c2.json()["auto_skipped_duplicates"], 1)
 
+        # Lo repetido NO cuenta como "requiere aprobación" ni como "omitido por
+        # el usuario": la tanda del asesor decide "Revisar" con esos dos números.
+        self.assertEqual(c2.json().get("skipped_by_user"), 0, c2.json())
+        self.assertEqual(c2.json().get("skipped_pending_approval"), 0, c2.json())
+
     def test_solo_lectura_no_puede_ni_previsualizar(self):
         csv1 = _cocos_csv("1;2;15-01-2024;15-01-2024;Recibo De Cobro;;ARS;;;;100000;0;0;0;0;100000")
         r = self._preview(self.ro, csv1)
