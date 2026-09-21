@@ -39620,6 +39620,130 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
         conn.close()
 
 
+# ─── Cobros del libro: los bonos/letras de los clientes elegidos ──────────────
+# El cronograma de cupones y amortizaciones se arma en el FRONTEND
+# (utils/bondSchedule.js + bondMeta.js), igual que en la Cartera y en el
+# detalle del bono. Este endpoint NO lo duplica en Python —sería una segunda
+# fuente de verdad, la causa raíz más frecuente de este repo—: sólo entrega
+# QUÉ renta fija tiene cada cliente, y la pantalla corre el mismo motor una vez
+# por (cliente, ticker) y suma. Por eso el radar decía "bonos AR los arma el
+# frontend… se omiten": acá se dejan de omitir.
+
+class AdvisorCashflowsIn(BaseModel):
+    # Subconjunto de clientes; vacío/None = todo el libro. Un grupo guardado
+    # se resuelve a clientes acá, con las mismas reglas que /groups/{id}/clients.
+    client_uids: Optional[List[int]] = None
+    group_id: Optional[int] = Field(None, ge=1)
+
+
+def _advisor_fixed_income_positions(conn, ids: list) -> list:
+    """Renta fija abierta de esos clientes, AGREGADA por (cliente, ticker, moneda).
+
+    El motor del frontend recibe (ticker, cantidad): dos lotes del mismo bono en
+    el mismo cliente son UNA tenencia para el cronograma, así que se suman acá y
+    no en la pantalla. La moneda es la del broker padre (un bono en 'Cocos · USD'
+    cuenta como USD): misma regla que la zona Renta Fija de la Cartera.
+
+    Clasificador: `importing.sections.position_section`, el mismo que decide qué
+    va a la zona Renta Fija (espejo declarado de utils/sections.js). Lo que él no
+    reconoce no es renta fija y no viaja."""
+    if not ids:
+        return []
+    from importing.sections import position_section
+    ph = ",".join("?" * len(ids))
+    brokers = {}
+    for r in conn.execute(
+        f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})",
+        ids,
+    ).fetchall():
+        brokers[(r["user_id"], r["name"])] = dict(r)
+    by_id = {b["id"]: b for b in brokers.values()}
+
+    def _ccy(uid, broker_name):
+        b = brokers.get((uid, broker_name))
+        if not b:
+            return "ARS"
+        # El sibling '· USD' es USD; el resto hereda la moneda del padre.
+        parent = by_id.get(b.get("parent_broker_id")) if b.get("parent_broker_id") else None
+        c = (b.get("currency") or (parent or {}).get("currency") or "ARS").upper()
+        return "USD" if c in ("USD", "USDT") else "ARS"
+
+    agg = {}
+    for r in conn.execute(
+        f"""SELECT user_id, broker, asset, asset_type, quantity, currency, entry_date
+              FROM positions
+             WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0 AND quantity > 0""",
+        ids,
+    ).fetchall():
+        sec = position_section(r["asset_type"], r["asset"], r["currency"])
+        if not sec:
+            continue
+        ccy = _ccy(r["user_id"], r["broker"])
+        key = (r["user_id"], (r["asset"] or "").upper(), ccy)
+        a = agg.setdefault(key, {
+            "client_uid": r["user_id"], "asset": key[1], "currency": ccy,
+            "category": sec[0], "asset_type": r["asset_type"] or "",
+            "quantity": 0.0, "brokers": [], "first_entry_date": None,
+        })
+        a["quantity"] += float(r["quantity"] or 0)
+        if r["broker"] and r["broker"] not in a["brokers"]:
+            a["brokers"].append(r["broker"])
+        d = r["entry_date"]
+        if d and (a["first_entry_date"] is None or d < a["first_entry_date"]):
+            a["first_entry_date"] = d
+    out = list(agg.values())
+    for a in out:
+        a["quantity"] = round(a["quantity"], 8)
+    out.sort(key=lambda a: (a["client_uid"], a["asset"], a["currency"]))
+    return out
+
+
+@app.post("/api/advisor/cashflows/positions")
+def advisor_cashflows_positions(body: AdvisorCashflowsIn,
+                                uid: int = Depends(get_current_user)):
+    """Las tenencias de renta fija de los clientes elegidos, para que la pantalla
+    de Cobros arme el calendario con el motor del frontend.
+
+    Sólo lectura: alcanza con el vínculo activo, sin importar el permiso
+    (read / read_write), igual que el libro y el radar. Un cliente que no es
+    del asesor se ignora en silencio —no se filtra su existencia con un 404—."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        book = _advisor_client_ids(conn, uid)
+        labels = {r["client_uid"]: (r["label"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      "SELECT client_uid, label FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+                      (uid,)).fetchall()}
+        ids = list(book)
+        if body.group_id:
+            import advisor_groups as ag
+            g = ag.get_group(conn, uid, body.group_id)
+            if not g:
+                raise HTTPException(404, "Grupo no encontrado.")
+            ids = [c["client_uid"] for c in ag.evaluate(conn, uid, g["rules"], g["excluded"])]
+        if body.client_uids:
+            wanted = set(int(x) for x in body.client_uids)
+            ids = [c for c in ids if c in wanted]
+        # Nunca fuera del libro, venga de donde venga la lista.
+        ids = [c for c in ids if c in labels]
+
+        positions = _advisor_fixed_income_positions(conn, ids)
+        con_rf = {p["client_uid"] for p in positions}
+        clients = [{"client_uid": c, "label": labels[c], "has_fixed_income": c in con_rf}
+                   for c in ids]
+        return {
+            "clients": clients,
+            "positions": positions,
+            # La cotización con la que la pantalla pasa los pesos a dólares: UNA
+            # para todo el libro (consistencia cross-cliente, como el libro).
+            "tc_mep": _advisor_book_fx(conn)[1],
+            "as_of": _iso_today(),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/advisor/radar/news")
 def advisor_radar_news(limit: int = 30, uid: int = Depends(get_current_user)):
     """Noticias de los activos que tiene cualquiera de los clientes del
