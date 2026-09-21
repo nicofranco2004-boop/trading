@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
+import { hayMultiLote } from '../utils/lotes'
 import { useNavigate } from 'react-router-dom'
 import { Plus, DollarSign, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
@@ -167,6 +168,8 @@ function PositionsDesktop() {
   const [editPickFrom, setEditPickFrom] = useState(null)
   const [expandedTickers, setExpandedTickers] = useState(() => new Set())
   const [showAllLots, setShowAllLots] = useState(false)
+  // "Ver lotes" sólo se ofrece si hay algo que desglosar (ver utils/lotes.js).
+  const multiLote = useMemo(() => hayMultiLote(positions), [positions])
   // Densidad de la tabla (cómodo/compacto), persistida. Feedback de un usuario
   // Pro: con muchas columnas la tabla scrollea de costado y se hace tediosa.
   const [compact, setCompact] = useState(() => {
@@ -1569,20 +1572,20 @@ function PositionsDesktop() {
   // (especialmente en mobile o brokers con muchas posiciones) el header
   // quede pegado arriba — convención fintech standard (Robinhood, Stripe).
   // Densidad: compacto baja padding (y alto de fila) para que entren más columnas.
-  const thBase = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} text-left kpi-label whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
+  const thBase = `${compact ? 'px-2 py-1' : 'px-2 py-2.5'} text-left kpi-label whitespace-nowrap sticky top-0 bg-bg-2/95 backdrop-blur-sm`
   const thClass = `${thBase} z-10`
   // Columna "Activo" FIJA al scrollear de costado (sticky left): no perdés la
   // referencia de qué activo estás viendo. Fondo sólido (bg-bg-1) para que el
   // contenido scrolleado no se transparente por debajo + divisor/sombra a la
   // derecha que marca que está fija. El header va z-20 (sobre el resto z-10).
   const thClassSticky = `${thBase} left-0 z-20 border-r border-line`
-  const tdClass = `${compact ? 'px-2 py-1.5 text-[13px]' : 'px-2 py-2.5 text-[13px]'} whitespace-nowrap`
-  const tdClassSticky = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} whitespace-nowrap sticky left-0 z-10 bg-bg-1 border-r border-line shadow-[6px_0_10px_-8px_rgba(0,0,0,0.45)]`
+  const tdClass = `${compact ? 'px-2 py-1 text-[12px]' : 'px-2 py-2.5 text-[13px]'} whitespace-nowrap`
+  const tdClassSticky = `${compact ? 'px-2 py-1 text-[12px]' : 'px-2 py-2.5'} whitespace-nowrap sticky left-0 z-10 bg-bg-1 border-r border-line shadow-[6px_0_10px_-8px_rgba(0,0,0,0.45)]`
   // Columna de ACCIONES (kebab) FIJA a la derecha: el menú de los tres puntitos
   // queda SIEMPRE visible aunque la tabla scrollee de costado (antes quedaba
   // cortado fuera del borde derecho en ventanas angostas). Espejo del sticky-left.
   const thClassStickyRight = `${thBase} right-0 z-20 border-l border-line`
-  const tdClassStickyRight = `${compact ? 'px-2 py-1.5' : 'px-2 py-2.5'} whitespace-nowrap sticky right-0 z-10 bg-bg-1 border-l border-line shadow-[-6px_0_10px_-8px_rgba(0,0,0,0.45)]`
+  const tdClassStickyRight = `${compact ? 'px-2 py-1' : 'px-2 py-2.5'} whitespace-nowrap sticky right-0 z-10 bg-bg-1 border-l border-line shadow-[-6px_0_10px_-8px_rgba(0,0,0,0.45)]`
   const inputClass = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
@@ -1941,19 +1944,23 @@ function PositionsDesktop() {
           options={[{ id: 'all', label: 'Todos' }, ...displaySections.map(s => ({ id: s.key, label: s.label }))]}
         />
         <FilterPill label="Ordenar" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
-        <button
-          type="button"
-          onClick={() => setShowAllLots(v => !v)}
-          className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
-          title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
-        >
-          <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
-        </button>
+        {multiLote && (
+          <button
+            type="button"
+            onClick={() => setShowAllLots(v => !v)}
+            aria-pressed={showAllLots}
+            className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
+            title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
+          >
+            <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
+          </button>
+        )}
         <button
           type="button"
           onClick={toggleCompact}
+          aria-pressed={compact}
           className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
-          title="Compacta las filas para ver más columnas sin scrollear de costado."
+          title={compact ? 'Vista compacta activa: filas más bajas y letra más chica. Tocá para volver a la cómoda.' : 'Achica filas y letra para ver más activos y columnas sin scrollear.'}
         >
           <RowsIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {compact ? 'Cómodo' : 'Compacto'}
         </button>

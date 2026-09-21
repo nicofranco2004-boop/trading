@@ -15,6 +15,7 @@
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
 import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo } from 'react'
+import { hayMultiLote } from '../utils/lotes'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, Download, Wallet, ChevronDown, ArrowRight, MoreVertical } from 'lucide-react'
 import { groupBrokersIntoAccounts, brokerLegLabel } from '../utils/brokerAccounts'
@@ -159,6 +160,8 @@ export default function PositionsMobile() {
   const [sellQuery, setSellQuery] = useState('')
   const [expandedTickers, setExpandedTickers] = useState(() => new Set())
   const [showAllLots, setShowAllLots] = useState(false)
+  // Misma regla que el escritorio: sin activos multi-lote no se ofrece "Ver lotes".
+  const multiLote = useMemo(() => hayMultiLote(positions), [positions])
   function toggleTicker(key) {
     setExpandedTickers(prev => {
       const n = new Set(prev)
@@ -1983,17 +1986,19 @@ export default function PositionsMobile() {
             value={brokerFilter}
             onChange={setBrokerFilter}
           />
-          <div>
-            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Detalle</div>
-            <div className="space-y-2">
-              <FilaToggle
-                label="Ver lotes"
-                hint="Desglosa cada compra en vez de una card por ticker."
-                active={showAllLots}
-                onToggle={() => setShowAllLots(v => !v)}
-              />
+          {multiLote && (
+            <div>
+              <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Detalle</div>
+              <div className="space-y-2">
+                <FilaToggle
+                  label="Ver lotes"
+                  hint="Desglosa cada compra en vez de una card por ticker."
+                  active={showAllLots}
+                  onToggle={() => setShowAllLots(v => !v)}
+                />
+              </div>
             </div>
-          </div>
+          )}
           <div className="pt-2 flex items-center gap-2">
             <button
               onClick={restablecerVista}
