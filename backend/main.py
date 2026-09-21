@@ -35499,18 +35499,36 @@ class SectionRestoreIn(BaseModel):
     archive_id: int
 
 
-def _positions_in_section(conn, uid: int, cat: str, ccy: str):
-    """Posiciones (no-cash) del user que caen en la sección (categoría, moneda)."""
+def _fixed_income_rows(conn, uids: list):
+    """UNA regla de "qué es renta fija y en qué moneda" para todo el backend.
+
+    Devuelve [(row, (categoría, moneda))] de las posiciones no-cash de esos
+    usuarios que el clasificador reconoce como bono / letra / FCI. La moneda es
+    la de la POSICIÓN (`positions.currency`), exactamente como la zona Renta
+    Fija de la Cartera (`utils/sections.js` es el espejo declarado de
+    `importing/sections.py`). Hasta 2026-09-21 el endpoint del asesor decidía la
+    moneda por el broker padre/sibling: el mismo bono salía "ARS" para el asesor
+    y "Bonos USD" para el cliente. Este helper existe para que no vuelva a haber
+    dos reglas."""
     from importing import sections as _sections
+    if not uids:
+        return []
+    ph = ",".join("?" * len(uids))
     rows = conn.execute(
-        "SELECT * FROM positions WHERE user_id=? AND is_cash=0", (uid,)
+        f"SELECT * FROM positions WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0",
+        list(uids),
     ).fetchall()
     out = []
     for r in rows:
         sec = _sections.position_section(r["asset_type"], r["asset"], r["currency"])
-        if sec == (cat, ccy):
-            out.append(r)
+        if sec:
+            out.append((r, sec))
     return out
+
+
+def _positions_in_section(conn, uid: int, cat: str, ccy: str):
+    """Posiciones (no-cash) del user que caen en la sección (categoría, moneda)."""
+    return [r for r, sec in _fixed_income_rows(conn, [uid]) if sec == (cat, ccy)]
 
 
 @app.get("/api/sections/archived")
@@ -39636,53 +39654,42 @@ class AdvisorCashflowsIn(BaseModel):
     group_id: Optional[int] = Field(None, ge=1)
 
 
-def _advisor_fixed_income_positions(conn, ids: list) -> list:
+def _advisor_fixed_income_positions(conn, ids: list, stats: dict = None) -> list:
     """Renta fija abierta de esos clientes, AGREGADA por (cliente, ticker, moneda).
 
     El motor del frontend recibe (ticker, cantidad): dos lotes del mismo bono en
-    el mismo cliente son UNA tenencia para el cronograma, así que se suman acá y
-    no en la pantalla. La moneda es la del broker padre (un bono en 'Cocos · USD'
-    cuenta como USD): misma regla que la zona Renta Fija de la Cartera.
+    el mismo cliente son UNA tenencia para el cronograma, así que se suman acá.
 
-    Clasificador: `importing.sections.position_section`, el mismo que decide qué
-    va a la zona Renta Fija (espejo declarado de utils/sections.js). Lo que él no
-    reconoce no es renta fija y no viaja."""
+    La moneda de la clave es la de la POSICIÓN, vía `_fixed_income_rows` — la
+    misma regla que la zona Renta Fija de la Cartera. Viaja como
+    `account_currency` a propósito: es la pata donde ESTÁ el título, no la
+    moneda en que PAGA. La moneda de pago la decide el catálogo del frontend
+    (`getBondMeta(asset).currency`): un AL30 en la pata pesos paga dólares, y
+    dividir ese cupón por el MEP porque "la cuenta es ARS" lo achicaría ~1.400×.
+
+    Broker huérfano (renombrado/borrado sin cascada): se EXCLUYE y se cuenta en
+    `stats['orphan_broker']`, igual que hace el libro (`_advisor_positions_valued`);
+    inventarle una moneda sería peor que no mostrarlo.
+
+    `first_entry_date` es informativo ("desde cuándo lo tiene"); el cronograma no
+    lo usa."""
     if not ids:
         return []
-    from importing.sections import position_section
     ph = ",".join("?" * len(ids))
-    brokers = {}
-    for r in conn.execute(
-        f"SELECT id, user_id, name, currency, parent_broker_id FROM brokers WHERE user_id IN ({ph})",
-        ids,
-    ).fetchall():
-        brokers[(r["user_id"], r["name"])] = dict(r)
-    by_id = {b["id"]: b for b in brokers.values()}
-
-    def _ccy(uid, broker_name):
-        b = brokers.get((uid, broker_name))
-        if not b:
-            return "ARS"
-        # El sibling '· USD' es USD; el resto hereda la moneda del padre.
-        parent = by_id.get(b.get("parent_broker_id")) if b.get("parent_broker_id") else None
-        c = (b.get("currency") or (parent or {}).get("currency") or "ARS").upper()
-        return "USD" if c in ("USD", "USDT") else "ARS"
-
+    known = {(r["user_id"], r["name"]) for r in conn.execute(
+        f"SELECT user_id, name FROM brokers WHERE user_id IN ({ph})", ids).fetchall()}
     agg = {}
-    for r in conn.execute(
-        f"""SELECT user_id, broker, asset, asset_type, quantity, currency, entry_date
-              FROM positions
-             WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0 AND quantity > 0""",
-        ids,
-    ).fetchall():
-        sec = position_section(r["asset_type"], r["asset"], r["currency"])
-        if not sec:
+    for r, (cat, ccy) in _fixed_income_rows(conn, ids):
+        if not (float(r["quantity"] or 0) > 0):
             continue
-        ccy = _ccy(r["user_id"], r["broker"])
+        if (r["user_id"], r["broker"]) not in known:
+            if stats is not None:
+                stats["orphan_broker"] = stats.get("orphan_broker", 0) + 1
+            continue
         key = (r["user_id"], (r["asset"] or "").upper(), ccy)
         a = agg.setdefault(key, {
-            "client_uid": r["user_id"], "asset": key[1], "currency": ccy,
-            "category": sec[0], "asset_type": r["asset_type"] or "",
+            "client_uid": r["user_id"], "asset": key[1], "account_currency": ccy,
+            "category": cat, "asset_type": r["asset_type"] or "",
             "quantity": 0.0, "brokers": [], "first_entry_date": None,
         })
         a["quantity"] += float(r["quantity"] or 0)
@@ -39694,7 +39701,6 @@ def _advisor_fixed_income_positions(conn, ids: list) -> list:
     out = list(agg.values())
     for a in out:
         a["quantity"] = round(a["quantity"], 8)
-    out.sort(key=lambda a: (a["client_uid"], a["asset"], a["currency"]))
     return out
 
 
@@ -39728,16 +39734,29 @@ def advisor_cashflows_positions(body: AdvisorCashflowsIn,
         # Nunca fuera del libro, venga de donde venga la lista.
         ids = [c for c in ids if c in labels]
 
-        positions = _advisor_fixed_income_positions(conn, ids)
+        # Un solo orden para clientes y posiciones, venga la lista del libro o
+        # de un grupo (que ordena por AUM): por etiqueta, como el radar.
+        ids.sort(key=lambda c: (labels[c].lower(), c))
+        orden = {c: i for i, c in enumerate(ids)}
+        stats = {}
+        positions = _advisor_fixed_income_positions(conn, ids, stats=stats)
+        positions.sort(key=lambda p: (orden[p["client_uid"]], p["asset"], p["account_currency"]))
         con_rf = {p["client_uid"] for p in positions}
         clients = [{"client_uid": c, "label": labels[c], "has_fixed_income": c in con_rf}
                    for c in ids]
+        # La cotización con la que la pantalla pasa a dólares lo que PAGA en
+        # pesos: UNA para todo el libro (consistencia cross-cliente). Con su
+        # fecha: un número que dice "hoy" trae la fecha de su medición, y si la
+        # tabla está vacía el helper cae a un valor fijo — hay que poder verlo.
+        _, tc_mep = _advisor_book_fx(conn)
+        _fxrow = conn.execute(
+            "SELECT MAX(date) d FROM fx_rates_daily WHERE mep_venta IS NOT NULL").fetchone()
         return {
             "clients": clients,
             "positions": positions,
-            # La cotización con la que la pantalla pasa los pesos a dólares: UNA
-            # para todo el libro (consistencia cross-cliente, como el libro).
-            "tc_mep": _advisor_book_fx(conn)[1],
+            "skipped": stats,
+            "tc_mep": tc_mep,
+            "fx_date": _fxrow["d"] if _fxrow else None,
             "as_of": _iso_today(),
         }
     finally:

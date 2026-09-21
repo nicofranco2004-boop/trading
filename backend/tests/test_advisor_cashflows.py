@@ -65,6 +65,10 @@ class CobrosLibro(unittest.TestCase):
         _pos(conn, self.c1, "Cocos", "AL30", 100, asset_type="BOND", entry_date="2026-03-01")
         _pos(conn, self.c1, "Cocos", "AL30", 50, asset_type="BOND", entry_date="2026-01-15")
         _pos(conn, self.c1, "Cocos · USD", "AL30", 200, asset_type="BOND", currency="USD")
+        # Lote en DÓLARES dentro del broker padre ARS (así lo estampa el importador
+        # en un AL30D o un bono liquidado en USD sin sibling): la Cartera lo pone
+        # en "Bonos USD" por positions.currency, y acá tiene que salir igual.
+        _pos(conn, self.c1, "Cocos", "GD30", 40, asset_type="BOND", currency="USD")
         _pos(conn, self.c1, "Cocos", "S30O6", 1000)                 # letra: por patrón del ticker
         _pos(conn, self.c1, "Cocos", "GGAL", 300)                   # acción: no es renta fija
         _pos(conn, self.c1, "Cocos", "FCI:COCOS-AHORRO", 500, asset_type="FUND")
@@ -100,12 +104,15 @@ class CobrosLibro(unittest.TestCase):
         d = r.json()
         self.assertEqual([c["label"] for c in d["clients"]], ["Ferreyra", "Ocampo"])
         self.assertTrue(all(c["has_fixed_income"] for c in d["clients"]))
-        pos = {(p["client_uid"], p["asset"], p["currency"]): p for p in d["positions"]}
+        pos = {(p["client_uid"], p["asset"], p["account_currency"]): p for p in d["positions"]}
         # Dos lotes en pesos → UNA tenencia de 150; la pata dólar aparte.
         self.assertEqual(pos[(self.c1, "AL30", "ARS")]["quantity"], 150)
         self.assertEqual(pos[(self.c1, "AL30", "ARS")]["first_entry_date"], "2026-01-15")
         self.assertEqual(pos[(self.c1, "AL30", "USD")]["quantity"], 200)
         self.assertEqual(pos[(self.c1, "AL30", "USD")]["brokers"], ["Cocos · USD"])
+        # Misma regla que la Cartera: la moneda es la de la POSICIÓN, no la del broker.
+        self.assertEqual(pos[(self.c1, "GD30", "USD")]["brokers"], ["Cocos"])
+        self.assertNotIn((self.c1, "GD30", "ARS"), pos)
         self.assertEqual(pos[(self.c1, "S30O6", "ARS")]["category"], "LETRA")
         self.assertEqual(pos[(self.c1, "FCI:COCOS-AHORRO", "ARS")]["category"], "FCI")
         self.assertEqual(pos[(self.c2, "GD35", "ARS")]["quantity"], 70)
@@ -114,7 +121,11 @@ class CobrosLibro(unittest.TestCase):
         self.assertNotIn((self.c1, "GGAL"), assets)
         self.assertNotIn((self.c1, "AE38"), assets)
         self.assertFalse(any(p["client_uid"] == self.ajeno for p in d["positions"]))
-        self.assertIn("tc_mep", d); self.assertIn("as_of", d)
+        self.assertIn("tc_mep", d); self.assertIn("as_of", d); self.assertIn("fx_date", d)
+        # Orden único: clientes por etiqueta, posiciones siguiendo ese orden.
+        self.assertEqual([p["client_uid"] for p in d["positions"]],
+                         sorted([p["client_uid"] for p in d["positions"]],
+                                key=lambda c: [x["client_uid"] for x in d["clients"]].index(c)))
 
     def test_subconjunto_de_clientes(self):
         d = self._call({"client_uids": [self.c2]}).json()
@@ -141,6 +152,36 @@ class CobrosLibro(unittest.TestCase):
         d = self._call({"client_uids": [c3]}).json()
         self.assertEqual(d["positions"], [])
         self.assertEqual(d["clients"], [{"client_uid": c3, "label": "Sin bonos", "has_fixed_income": False}])
+
+    def test_vinculo_revocado_queda_afuera(self):
+        conn = main.get_db()
+        conn.execute("UPDATE advisor_clients SET status='revoked' WHERE advisor_uid=? AND client_uid=?",
+                     (self.adv, self.c2))
+        conn.commit(); conn.close()
+        d = self._call().json()
+        self.assertEqual([c["client_uid"] for c in d["clients"]], [self.c1])
+        self.assertFalse(any(p["client_uid"] == self.c2 for p in d["positions"]))
+        # Ni pidiéndolo explícitamente.
+        d = self._call({"client_uids": [self.c2]}).json()
+        self.assertEqual(d["clients"], []); self.assertEqual(d["positions"], [])
+
+    def test_grupo_guardado_resuelve_a_sus_clientes(self):
+        conn = main.get_db()
+        cur = conn.execute("INSERT INTO advisor_groups (advisor_uid, name, rules) VALUES (?,?,?)",
+                           (self.adv, "Los de GD35", '{"has_asset": "GD35"}'))
+        gid = cur.lastrowid
+        conn.commit(); conn.close()
+        d = self._call({"group_id": gid}).json()
+        self.assertEqual([c["client_uid"] for c in d["clients"]], [self.c2])
+        self.assertEqual({p["asset"] for p in d["positions"]}, {"GD35"})
+
+    def test_broker_huerfano_se_excluye_y_se_cuenta(self):
+        conn = main.get_db()
+        _pos(conn, self.c2, "Broker Borrado", "AE38", 500, asset_type="BOND")
+        conn.commit(); conn.close()
+        d = self._call({"client_uids": [self.c2]}).json()
+        self.assertEqual({p["asset"] for p in d["positions"]}, {"GD35"})
+        self.assertEqual(d["skipped"], {"orphan_broker": 1})
 
     def test_grupo_inexistente_es_404(self):
         self.assertEqual(self._call({"group_id": 999999}).status_code, 404)
