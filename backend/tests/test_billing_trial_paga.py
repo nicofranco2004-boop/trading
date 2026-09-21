@@ -234,10 +234,22 @@ class PagarDuranteLaPrueba(TrialQuePagaBase):
     def test_el_credito_pago_vigente_sigue_convirtiendose_por_plata(self):
         # Regresión: CON anchor la regla sigue siendo valuar el remanente en
         # USD y reconvertirlo, no sumar días crudos.
-        self._con_anchor(plan="plus", period="monthly", dias=15)   # 15d × $4/30 = $2
-        self._pagar(plan="pro", period="monthly")                  # $9/30 = $0.30/día
-        # $2 / 0.30 = 6.67 días + 30 comprados ≈ 36.67 (NO 45)
-        self.assertAlmostEqual(self._dias_de_credito(), 36.67, delta=0.2)
+        #
+        # ⚠️ El esperado se DERIVA de la tabla de precios, no se escribe a mano.
+        # Antes decía 36,67 —calculado con Plus USD 4 / Pro USD 9— y el día que
+        # cambiaron los precios (2026-10-15: Plus 8.900 / Pro 15.900) se puso
+        # rojo aunque la regla que vigila se seguía cumpliendo. Un número
+        # congelado acá certifica el precio de ayer, no el comportamiento.
+        from billing.credits import daily_rate
+        rate_plus = daily_rate("plus", "monthly")
+        rate_pro = daily_rate("pro", "monthly")
+        esperado = (15 * rate_plus) / rate_pro + 30   # remanente valuado + lo comprado
+
+        self._con_anchor(plan="plus", period="monthly", dias=15)
+        self._pagar(plan="pro", period="monthly")
+        # Lo que NO tiene que pasar es sumar días crudos (15 + 30 = 45).
+        self.assertLess(esperado, 45)
+        self.assertAlmostEqual(self._dias_de_credito(), esperado, delta=0.2)
 
 
 class FallbackDelWebhook(TrialQuePagaBase):

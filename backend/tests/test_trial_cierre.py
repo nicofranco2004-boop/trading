@@ -309,7 +309,17 @@ class PagarDuranteLaPruebaTest(Base):
         self.assertAlmostEqual(con - sin, tr.TRIAL_TOTAL_DAYS, delta=0.1)
 
     def test_el_que_no_hizo_la_prueba_convierte_igual_que_siempre(self):
-        self.assertAlmostEqual(self._pagar_y_cambiar(False), 67.5, delta=0.1)
+        """30 días de Pro pasados a Plus = 30 × (rate Pro / rate Plus).
+
+        ⚠️ El esperado se DERIVA de la tabla de precios. Antes decía 67,5
+        —que es 30 × 9/4, los precios en USD de antes— y el día que cambiaron
+        los precios (2026-10-15: Plus 8.900 / Pro 15.900) se puso rojo aunque
+        la regla que vigila se seguía cumpliendo al pie de la letra.
+        """
+        esperado = 30 * (cr.daily_rate("pro", "monthly") / cr.daily_rate("plus", "monthly"))
+        # Pro es más caro que Plus, así que la ventana TIENE que alargarse.
+        self.assertGreater(esperado, 30)
+        self.assertAlmostEqual(self._pagar_y_cambiar(False), esperado, delta=0.1)
 
     def test_pagar_no_le_acorta_la_ventana(self):
         """La regla de producto: los días de prueba se respetan al pagar."""

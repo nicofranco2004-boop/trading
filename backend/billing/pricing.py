@@ -1,70 +1,85 @@
-"""pricing — constantes de precios para suscripciones Plus y Pro.
+"""pricing — LA fuente de verdad de los precios de Rendi, en pesos.
+
 ═══════════════════════════════════════════════════════════════════════════
-Cambiar acá afecta:
-  • MP preapproval (monto + frecuencia)
-  • Frontend /planes (display)
-  • Webhook validation (sanity-check del monto)
+⚠️  ESTE ARCHIVO ES EL ÚNICO LUGAR DONDE SE ESCRIBE UN PRECIO EN EL BACKEND.
 
+Quien lee de acá:
+  • `billing/credits.py` — deriva el precio en USD para el motor de crédito
+    (los días que le quedan a quien cambia de plan). NO tiene su propia tabla.
+  • `billing/mercadopago.py` — camino legacy, apagado (ver main.py:27634).
+  • `GET /api/billing/pricing` → el frontend.
+
+Quien NO lee de acá, y por eso hay que tocarlo A MANO:
+  🔴 **El monto que realmente se le cobra a la tarjeta NO está en este repo.**
+     Vive en los planes del dashboard de Rebill, y Rendi sólo los referencia
+     por id vía las 4 variables `REBILL_PLAN_ID_{PLAN}_{PERIOD}` de Railway
+     (ver `billing/rebill.py:_plan_id`). Cambiar los números de acá sin crear
+     los planes nuevos en Rebill hace que la página prometa un precio y la
+     tarjeta cobre otro.
+  🔴 `frontend/src/pages/Planes.jsx` tiene su propia copia en ARS para no
+     depender de un fetch para pintar la landing. Si cambiás acá, cambiá allá.
+
+═══════════════════════════════════════════════════════════════════════════
 Estrategia ARS:
-  Cobramos en pesos para evitar números feos por FX. Re-pricing cada 3
-  meses. Precios buscan ser ≈ $4 USD (Plus) y ≈ $7 USD (Pro) al blue
-  (≈ 1420 ARS/USD), con IVA 21% encima.
+  Cobramos en pesos (Rebill cobra fee mínimo USD 500/mes si facturás en USD).
+  Precio fijo en pesos, re-pricing con anuncio previo.
 
-Plus (mensual):
-  Target marketing-friendly debajo de los ARS 6k psicológicos.
-  Base ARS 4.950 + IVA 21% (1.040) = ARS 5.990/mes total.
-  Equivalente a ≈ USD 4 al blue 1420 (incluyendo IVA). El display USD
-  es aproximado — el precio real cobrado siempre es en ARS.
+Precios vigentes desde el 2026-10-15 (antes: Plus 5.990 / Pro 13.990):
+  Plus  8.900/mes ·  89.000/año (16,7% off)
+  Pro  15.900/mes · 159.000/año (16,7% off)
 
-Pro (mensual):
-  USD 6.99 × 1420 ≈ ARS 9.925 → redondeamos a ARS 10.000 base + IVA 21%
-  = ARS 12.100/mes total.
-
-Plan anual Pro (15% descuento):
-  Base = 102.000 + IVA = ARS 123.420/año total. Ahorro vs mensual: ARS 21.780.
-
-Plus por ahora solo tiene plan mensual. Si se justifica, sumamos anual.
+  El IVA (21%) va INCLUIDO en el total — el total es lo que se cobra.
 """
 
 from __future__ import annotations
 from typing import Literal
 
-# ─── Plus (mensual) ─────────────────────────────────────────────────────────
+# ─── Plus ───────────────────────────────────────────────────────────────────
 
-PLUS_ARS_MONTHLY_BASE  = 4_950
-PLUS_ARS_MONTHLY_IVA   = 1_040   # 21% de 4.950 (redondeo)
-PLUS_ARS_MONTHLY_TOTAL = 5_990   # base + IVA — psicológicamente debajo de 6k
-PLUS_USD_MONTHLY_DISPLAY = "4"   # aproximado al blue, incluyendo IVA
+PLUS_ARS_MONTHLY_TOTAL = 8_900    # lo que se cobra
+PLUS_ARS_MONTHLY_BASE  = 7_355    # 8.900 / 1,21
+PLUS_ARS_MONTHLY_IVA   = 1_545    # 8.900 − 7.355
 
-# ─── Plus (anual, 15% descuento) ────────────────────────────────────────────
-# 5.990 × 12 × 0.85 ≈ 61.098 → redondeamos psicológicamente a 59.990 total
-# (sub 60k). Equivale a ~5.000/mes = 16.5% off real vs mensual.
-PLUS_ARS_ANNUAL_BASE   = 49_580   # 59.990 / 1.21
-PLUS_ARS_ANNUAL_IVA    = 10_410
-PLUS_ARS_ANNUAL_TOTAL  = 59_990
-PLUS_USD_ANNUAL_DISPLAY = "3.50"  # 5.000 / 1420 (promedio mensual del anual)
+PLUS_ARS_ANNUAL_TOTAL  = 89_000   # vs 12×8.900=106.800 → 16,7% off
+PLUS_ARS_ANNUAL_BASE   = 73_554   # 89.000 / 1,21
+PLUS_ARS_ANNUAL_IVA    = 15_446
 
-# ─── Pro (mensual) ──────────────────────────────────────────────────────────
+# ─── Pro ────────────────────────────────────────────────────────────────────
 
-ARS_MONTHLY_BASE  = 10_000   # antes de IVA
-ARS_MONTHLY_IVA   = 2_100    # 21% s/ base
-ARS_MONTHLY_TOTAL = 12_100   # base + IVA — esto es lo que se cobra
+ARS_MONTHLY_TOTAL = 15_900        # lo que se cobra
+ARS_MONTHLY_BASE  = 13_140        # 15.900 / 1,21
+ARS_MONTHLY_IVA   = 2_760
 
-# ─── Pro Anual (15% descuento) ──────────────────────────────────────────────
-
-ARS_ANNUAL_BASE   = 102_000  # 12 × 8.500 = ARS 10.285/mes equiv (sin IVA)
-ARS_ANNUAL_IVA    = 21_420   # 21% s/ base
-ARS_ANNUAL_TOTAL  = 123_420  # base + IVA — esto es lo que se cobra
+ARS_ANNUAL_TOTAL  = 159_000       # vs 12×15.900=190.800 → 16,7% off
+ARS_ANNUAL_BASE   = 131_405       # 159.000 / 1,21
+ARS_ANNUAL_IVA    = 27_595
 
 # ─── Constantes de cálculo ──────────────────────────────────────────────────
 
-IVA_PCT           = 0.21
-ANNUAL_DISCOUNT_PCT = 0.15   # vs 12 meses al precio mensual
+IVA_PCT             = 0.21
+ANNUAL_DISCOUNT_PCT = 0.167   # vs 12 meses al precio mensual
 
-# ─── Equivalencia USD (informativa, varia con FX) ──────────────────────────
+# ─── Equivalencia USD ───────────────────────────────────────────────────────
+# Un solo tipo de cambio declarado para TODO el repo. No es el precio: el
+# precio es en pesos. Sirve para (a) mostrar un "≈ USD x" informativo y
+# (b) darle al motor de crédito una unidad común.
+#
+# ⚠️ Lo que le importa al motor de crédito es la PROPORCIÓN entre planes, no
+# el valor absoluto: `credits.convert_plan` valúa los días que te quedan al
+# rate del plan viejo y los divide por el del nuevo. Con la tabla anterior
+# (USD 4 y USD 9) la proporción era 0,444 mientras la de los pesos reales
+# (5.990/13.990) era 0,428 — pasar de Plus a Pro te daba de menos. Derivando
+# los dos del mismo peso, la proporción es exacta por construcción.
+ARS_PER_USD_DISPLAY = 1_500
 
-USD_MONTHLY_DISPLAY = "6.99"  # Pro mensual
-USD_ANNUAL_DISPLAY  = "5.99"  # Pro anual (promedio mensual)
+def _usd(ars: int) -> float:
+    """ARS → USD al TC declarado. Sin redondear: redondear rompe la proporción."""
+    return ars / ARS_PER_USD_DISPLAY
+
+PLUS_USD_MONTHLY_DISPLAY = f"{_usd(PLUS_ARS_MONTHLY_TOTAL):.2f}"        # ≈ 5.93
+PLUS_USD_ANNUAL_DISPLAY  = f"{_usd(PLUS_ARS_ANNUAL_TOTAL) / 12:.2f}"    # ≈ 4.94/mes
+USD_MONTHLY_DISPLAY      = f"{_usd(ARS_MONTHLY_TOTAL):.2f}"             # ≈ 10.60
+USD_ANNUAL_DISPLAY       = f"{_usd(ARS_ANNUAL_TOTAL) / 12:.2f}"         # ≈ 8.83
 
 # ─── Helper: shape para frontend ────────────────────────────────────────────
 

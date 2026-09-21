@@ -31,15 +31,25 @@ from typing import Optional, Tuple
 log = logging.getLogger("billing.credits")
 
 
-# ─── Pricing source of truth ────────────────────────────────────────────────
-# Mantener sincronizado con Planes.jsx y los plan IDs de Rebill.
-# Si cambian los precios, también hay que ajustar daily_rate aquí.
+# ─── Pricing: NO se escribe acá ─────────────────────────────────────────────
+# Los precios viven en `billing/pricing.py`, en pesos, y acá se DERIVAN a USD
+# al único TC declarado del repo. Antes esta tabla tenía los montos a mano
+# (USD 4/9/40/90) y se desincronizó de los pesos: la proporción Plus:Pro era
+# 0,444 acá y 0,428 en los precios reales, así que `convert_plan` le daba de
+# menos a quien pasaba de Plus a Pro. Lo que le importa a este motor es la
+# PROPORCIÓN entre planes, y derivando los dos del mismo peso es exacta.
+#
+# La unidad sigue siendo USD porque las columnas ya escritas (`amount_usd`,
+# `credit_ledger`) están en USD y cambiarles la unidad rompería la auditoría
+# de todo lo histórico.
+
+from billing import pricing as _pricing
 
 PLAN_PRICES_USD = {
-    ('plus', 'monthly'):  4.0,
-    ('plus', 'annual'):  40.0,
-    ('pro',  'monthly'):  9.0,
-    ('pro',  'annual'):  90.0,
+    ('plus', 'monthly'): _pricing._usd(_pricing.PLUS_ARS_MONTHLY_TOTAL),
+    ('plus', 'annual'):  _pricing._usd(_pricing.PLUS_ARS_ANNUAL_TOTAL),
+    ('pro',  'monthly'): _pricing._usd(_pricing.ARS_MONTHLY_TOTAL),
+    ('pro',  'annual'):  _pricing._usd(_pricing.ARS_ANNUAL_TOTAL),
 }
 
 PERIOD_DAYS = {

@@ -16,6 +16,13 @@
 import { useState } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { ChevronDown } from 'lucide-react'
+// Los precios NO se escriben acá: se importan de Planes.jsx, que es la copia
+// del frontend. Estaban a mano ("Plus $5.990 / Pro $13.990") y se habrían
+// quedado en el número viejo el día que cambiaran los precios — con el
+// agravante de que esta respuesta va al JSON-LD que Google indexa.
+import {
+  fmtArs, PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
+} from '../../pages/Planes'
 
 // Orden = secuencia de objeciones que frenan el signup (no orden SEO). La #1 de
 // un retail frío que va a cargar su cartera es la confianza/seguridad, así que
@@ -52,7 +59,7 @@ const FAQS = [
   },
   {
     q: '¿Cobran en pesos argentinos o en dólares?',
-    a: 'Cobramos en pesos argentinos a precio fijo. Plus $5.990 / Pro $13.990 por mes, sin sorpresas. El cargo en tu tarjeta es el mismo número que ves en la página de planes. Periódicamente ajustamos los precios para mantenernos en equilibrio con la inflación — siempre con anuncio previo y respetando el precio actual de tu próximo cobro si ya estás suscripto.',
+    a: `Cobramos en pesos argentinos a precio fijo. Plus $${fmtArs(PLUS_PRICE_ARS_MONTHLY)} / Pro $${fmtArs(PRO_PRICE_ARS_MONTHLY)} por mes, sin sorpresas. El cargo en tu tarjeta es el mismo número que ves en la página de planes. Periódicamente ajustamos los precios para mantenernos en equilibrio con la inflación — siempre con anuncio previo y respetando el precio actual de tu próximo cobro si ya estás suscripto.`,
   },
   {
     q: '¿Qué hace el Coach IA y en qué planes está incluido?',

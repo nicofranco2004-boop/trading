@@ -41,16 +41,20 @@ import {
 //
 // Antes: pricing en USD con conversión arsPriceRounded(usd, tcValuacion) → ARS.
 // Ahora: ARS hardcoded como source of truth.
-export const PLUS_PRICE_ARS_MONTHLY = '5990'
-export const PRO_PRICE_ARS_MONTHLY = '13990'
-// Anual con ~16% off vs monthly × 12 (mismo ratio que tenían los USD)
-export const PLUS_PRICE_ARS_ANNUAL = '59900'   // vs 12×5990=71880 → 16.7% off
-export const PRO_PRICE_ARS_ANNUAL = '139900'   // vs 12×13990=167880 → 16.7% off
+// Vigentes desde el 2026-10-15. Antes: Plus 5.990 / Pro 13.990.
+// ⚠️ Esta es LA copia del frontend. La del backend está en
+// backend/billing/pricing.py, y el monto que realmente se cobra está en los
+// planes del dashboard de Rebill. Los tres tienen que decir lo mismo.
+export const PLUS_PRICE_ARS_MONTHLY = '8900'
+export const PRO_PRICE_ARS_MONTHLY = '15900'
+// Anual con 16,7% off vs monthly × 12
+export const PLUS_PRICE_ARS_ANNUAL = '89000'   // vs 12×8900=106800 → 16,7% off
+export const PRO_PRICE_ARS_ANNUAL = '159000'   // vs 12×15900=190800 → 16,7% off
 
 // Mensual equivalente cuando elige plan anual (para display "X/mes · facturado anual")
 // Math.round(annual / 12)
-export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '4992'   // 59900/12 = 4991.67
-export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '11658'   // 139900/12 = 11658.33
+export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '7417'   // 89000/12 = 7416.67
+export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '13250'   // 159000/12 = 13250
 
 // Helper: formatea un número ARS al estilo argentino con punto miles.
 //   5990 → "5.990"
@@ -60,39 +64,6 @@ export function fmtArs(amount) {
   const n = typeof amount === 'string' ? parseInt(amount, 10) : amount
   if (!Number.isFinite(n)) return String(amount)
   return n.toLocaleString('es-AR')
-}
-
-// ─── Aliases back-compat (deprecated) ───────────────────────────────────────
-// Mantenemos estas exports para no romper imports existentes durante la
-// transición. Los callers nuevos deben usar las constants ARS de arriba.
-//
-// @deprecated — usar PLUS_PRICE_ARS_MONTHLY directamente
-export const PLUS_PRICE_USD = '4'
-// @deprecated — usar PRO_PRICE_ARS_MONTHLY directamente
-export const PRO_PRICE_USD = '9'
-// @deprecated — usar PLUS_PRICE_ARS_ANNUAL directamente
-export const PLUS_PRICE_ANNUAL_USD = '40'
-// @deprecated — usar PRO_PRICE_ARS_ANNUAL directamente
-export const PRO_PRICE_ANNUAL_USD = '90'
-// @deprecated — ya no convertimos, usamos precios ARS fijos
-export const ARS_PLUS_MONTHLY = PLUS_PRICE_ARS_MONTHLY
-export const ARS_PLUS_ANNUAL = PLUS_PRICE_ARS_ANNUAL
-export const ARS_PLUS_ANNUAL_MONTHLY_EQ = PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ
-export const ARS_MONTHLY = PRO_PRICE_ARS_MONTHLY
-// @deprecated — ya no hace falta convertir, precios son ARS fijos
-export function arsPriceRounded(usdAmount, _tcBlueIgnored) {
-  // Fallback de back-compat: si alguien todavía llama esto con USD 4 o USD 9,
-  // mapeamos a los ARS hardcoded. Cualquier otro valor cae a un cálculo
-  // legacy con TC 1466 (solo para no romper en lugares oscuros).
-  const usd = String(usdAmount).trim()
-  if (usd === '4' || usd === '4.0') return PLUS_PRICE_ARS_MONTHLY
-  if (usd === '9' || usd === '9.0') return PRO_PRICE_ARS_MONTHLY
-  if (usd === '40') return PLUS_PRICE_ARS_ANNUAL
-  if (usd === '90') return PRO_PRICE_ARS_ANNUAL
-  // Fallback genérico (no debería ejecutarse en producción)
-  const raw = Number(usdAmount) * 1466
-  const rounded = Math.round(raw / 100) * 100
-  return rounded.toLocaleString('es-AR')
 }
 
 // ─── Listas de features por plan (template 3-secciones) ──────────────────────
