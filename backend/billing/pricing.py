@@ -25,8 +25,12 @@ Estrategia ARS:
   Precio fijo en pesos, re-pricing con anuncio previo.
 
 Precios vigentes desde el 2026-10-15 (antes: Plus 5.990 / Pro 13.990):
-  Plus  8.900/mes ·  89.000/año (16,7% off)
-  Pro  15.900/mes · 159.000/año (16,7% off)
+  Plus  8.900/mes ·  79.000/año (26% off — 3 meses gratis)
+  Pro  15.900/mes · 139.000/año (27% off — 3 meses gratis)
+
+  El anual se empuja fuerte a propósito: el fijo de USD 0,20 que cobra
+  Rebill por transacción se paga UNA vez al año en vez de doce, así que el
+  fee efectivo baja de ~6% a ~4% — el descuento se paga casi solo.
 
   El IVA (21%) va INCLUIDO en el total — el total es lo que se cobra.
 """
@@ -40,9 +44,9 @@ PLUS_ARS_MONTHLY_TOTAL = 8_900    # lo que se cobra
 PLUS_ARS_MONTHLY_BASE  = 7_355    # 8.900 / 1,21
 PLUS_ARS_MONTHLY_IVA   = 1_545    # 8.900 − 7.355
 
-PLUS_ARS_ANNUAL_TOTAL  = 89_000   # vs 12×8.900=106.800 → 16,7% off
-PLUS_ARS_ANNUAL_BASE   = 73_554   # 89.000 / 1,21
-PLUS_ARS_ANNUAL_IVA    = 15_446
+PLUS_ARS_ANNUAL_TOTAL  = 79_000   # vs 12×8.900=106.800 → 26% off (3 meses gratis)
+PLUS_ARS_ANNUAL_BASE   = 65_289   # 79.000 / 1,21
+PLUS_ARS_ANNUAL_IVA    = 13_711
 
 # ─── Pro ────────────────────────────────────────────────────────────────────
 
@@ -50,14 +54,14 @@ ARS_MONTHLY_TOTAL = 15_900        # lo que se cobra
 ARS_MONTHLY_BASE  = 13_140        # 15.900 / 1,21
 ARS_MONTHLY_IVA   = 2_760
 
-ARS_ANNUAL_TOTAL  = 159_000       # vs 12×15.900=190.800 → 16,7% off
-ARS_ANNUAL_BASE   = 131_405       # 159.000 / 1,21
-ARS_ANNUAL_IVA    = 27_595
+ARS_ANNUAL_TOTAL  = 139_000       # vs 12×15.900=190.800 → 27% off (3 meses gratis)
+ARS_ANNUAL_BASE   = 114_876       # 139.000 / 1,21
+ARS_ANNUAL_IVA    = 24_124
 
 # ─── Constantes de cálculo ──────────────────────────────────────────────────
 
 IVA_PCT             = 0.21
-ANNUAL_DISCOUNT_PCT = 0.167   # vs 12 meses al precio mensual
+ANNUAL_DISCOUNT_PCT = 0.26    # vs 12 meses al precio mensual (el menor de los dos planes)
 
 # ─── Equivalencia USD ───────────────────────────────────────────────────────
 # Un solo tipo de cambio declarado para TODO el repo. No es el precio: el

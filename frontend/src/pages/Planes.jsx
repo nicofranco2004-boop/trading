@@ -47,14 +47,15 @@ import {
 // planes del dashboard de Rebill. Los tres tienen que decir lo mismo.
 export const PLUS_PRICE_ARS_MONTHLY = '8900'
 export const PRO_PRICE_ARS_MONTHLY = '15900'
-// Anual con 16,7% off vs monthly × 12
-export const PLUS_PRICE_ARS_ANNUAL = '89000'   // vs 12×8900=106800 → 16,7% off
-export const PRO_PRICE_ARS_ANNUAL = '159000'   // vs 12×15900=190800 → 16,7% off
+// Anual con ~26% off vs monthly × 12 — tres meses gratis. Se empuja fuerte
+// porque el fijo de USD 0,20 de Rebill se paga 1 vez al año en vez de 12.
+export const PLUS_PRICE_ARS_ANNUAL = '79000'   // vs 12×8900=106800 → 26% off
+export const PRO_PRICE_ARS_ANNUAL = '139000'   // vs 12×15900=190800 → 27% off
 
 // Mensual equivalente cuando elige plan anual (para display "X/mes · facturado anual")
 // Math.round(annual / 12)
-export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '7417'   // 89000/12 = 7416.67
-export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '13250'   // 159000/12 = 13250
+export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '6583'   // 79000/12 = 6583.33
+export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '11583'   // 139000/12 = 11583.33
 
 // Helper: formatea un número ARS al estilo argentino con punto miles.
 //   5990 → "5.990"
