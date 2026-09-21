@@ -28,7 +28,7 @@ import { api, errorMessage } from '../utils/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { BROKER_GUIDES, pasosPara } from '../components/import/BrokerInstructions'
-import { ReconcileStep } from '../components/import/ImportWizard'
+import { ReconcileStep, decisionesPendientes, tickersAprobados } from '../components/import/ImportWizard'
 import {
   correrTanda, filaLista, faltante, archivoAceptado, plural, ESTADO, EXTENSIONES, fusionarFotosLocales,
   resumen as resumir, filaAlServidor, filaDelServidor, fechaServidor, marcarInterrumpidas,
@@ -732,7 +732,10 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
 // individual (ReconcileStep) y las mismas dos salidas: aplicar con lo aprobado,
 // u omitir. Lo dudoso no entra si no se marca.
 function PanelFoto({ fila, onDecidir }) {
-  const [aprobados, setAprobados] = useState(() => new Set())
+  const [decisiones, setDecisiones] = useState(() => new Map())   // ticker → 'si' | 'no'
+  // Sin el detalle guardado no hay nada que decidir ítem por ítem.
+  const faltan = fila.foto?.sinDetalle ? 0 : decisionesPendientes(fila.foto, decisiones)
+  const aprobados = tickersAprobados(decisiones)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const nombre = nombreDe(fila)
@@ -751,15 +754,21 @@ function PanelFoto({ fila, onDecidir }) {
           Podés aplicarla sin lo dudoso (sólo entra lo que no requiere aprobación) u omitirla y subirla de nuevo desde su cuenta para verla completa.
         </p>
       ) : (
-        <ReconcileStep data={fila.foto} aprobados={aprobados} sujeto="cliente"
-          onToggle={tk => setAprobados(prev => { const n = new Set(prev); n.has(tk) ? n.delete(tk) : n.add(tk); return n })} />
+        <ReconcileStep data={fila.foto} decisiones={decisiones} sujeto="cliente"
+          onDecidir={(tk, v) => setDecisiones(prev => new Map(prev).set(tk, v))} />
       )}
       {error && <p className="mt-2 text-xs text-rendi-neg" role="alert">{error}</p>}
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         <button type="button" className={btnGhost} disabled={busy} onClick={() => correr(true)} aria-label={`Omitir la foto de ${nombre}`}>Omitir la foto</button>
-        <button type="button" className={btnPrimary} disabled={busy} onClick={() => correr(false)} aria-label={`Aplicar la foto de ${nombre}`}>
+        {/* Trabado hasta que cada ítem dudoso tenga su sí o su no: una casilla
+            sin tildar se leía como "no lo vi", y la foto se aplicaba dejando
+            los activos vendidos en la cartera. */}
+        <button type="button" className={btnPrimary} disabled={busy || faltan > 0} onClick={() => correr(false)}
+                aria-label={`Aplicar la foto de ${nombre}`}
+                title={faltan > 0 ? 'Contestá sí o no en cada ítem para poder aplicar la foto.' : undefined}>
           {busy && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
-          {aprobados.size > 0 ? `Aplicar (con ${plural(aprobados.size, 'aprobado', 'aprobados')})` : 'Aplicar sólo lo seguro'}
+          {faltan > 0 ? `Faltan ${plural(faltan, 'decisión', 'decisiones')}`
+            : aprobados.length > 0 ? `Aplicar (con ${plural(aprobados.length, 'aprobado', 'aprobados')})` : 'Aplicar la foto'}
         </button>
       </div>
     </section>
