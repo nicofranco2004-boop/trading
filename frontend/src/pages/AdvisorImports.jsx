@@ -561,7 +561,7 @@ function Progreso({ filas, inicio }) {
       <div className="px-4 py-3.5 border-b border-line">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <span className="text-sm font-semibold text-ink-0 tabular">
-            {actual ? `Cliente ${idx + 1} de ${filas.length} · ${nombreDe(actual)}` : 'Terminando…'}
+            {actual ? `Cliente ${idx + 1} de ${filas.length} · ${nombreDe(actual)}` : (hechas === 0 ? 'Empezando…' : 'Terminando…')}
           </span>
           <span className="text-xs text-ink-2 tabular">Empezó hace {Math.floor(seg / 60)}:{String(seg % 60).padStart(2, '0')}</span>
         </div>
@@ -608,8 +608,13 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
     <>
       <PageHeader
         eyebrow="Plan Asesor"
-        title={cortada ? 'La tanda se cortó' : (revertibles === 0 && revertidos > 0 ? 'Tanda revertida' : (r.fotos > 0 ? `Falta aprobar ${plural(r.fotos, 'foto', 'fotos')}` : (r.completos + r.revisar === 0 ? 'La tanda no cargó nada' : (r.errores > 0 ? 'Tanda terminada' : 'Tanda cargada'))))}
-        subtitle={`${plural(r.total, 'cliente', 'clientes')}${dur ? ` en ${dur}` : ''}.${frase ? ` ${frase}.` : ''}${revertidos > 0 ? ` ${plural(revertidos, 'importación revertida', 'importaciones revertidas')}.` : ''}`}
+        title={cortada ? 'La tanda se cortó'
+          : (r.noRevertidos > 0 && revertibles === 0) ? `No se pudo deshacer: ${plural(r.noRevertidos, 'importación sigue cargada', 'importaciones siguen cargadas')}`
+          : (revertibles === 0 && revertidos > 0) ? 'Tanda revertida'
+          : (r.fotos > 0) ? `Falta aprobar ${plural(r.fotos, 'foto', 'fotos')}`
+          : (r.completos + r.revisar === 0) ? 'La tanda no cargó nada'
+          : (r.errores > 0) ? 'Tanda terminada' : 'Tanda cargada'}
+        subtitle={`${plural(r.clientes, 'cliente', 'clientes')}${r.total !== r.clientes ? ` en ${plural(r.total, 'fila', 'filas')}` : ''}${dur ? ` en ${dur}` : ''}.${frase ? ` ${frase}.` : ''}${revertidos > 0 ? ` ${plural(revertidos, 'importación revertida', 'importaciones revertidas')}.` : ''}${r.noRevertidos > 0 ? ` ${plural(r.noRevertidos, 'no se pudo deshacer', 'no se pudieron deshacer')}.` : ''}`}
       />
       {!tandaId && !cortada && (
         <div className="mb-3.5 flex items-start gap-2 text-xs text-ink-0 border border-line bg-bg-1 rounded-xl px-3 py-2">
@@ -625,8 +630,8 @@ function Resultado({ filas, inicio, fin, cortada, tandaId, deshacer, onDeshacer,
       )}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5 tabular">
         <Kpi label="Movimientos y posiciones cargados" valor={r.movimientos} sub={`en ${plural(r.clientesCargados, 'cliente', 'clientes')}${r.fotos === 0 && filas.some(f => f.fotoBatchId) ? ' · incluye lo que completó la foto' : ''}`} />
-        <Kpi label="Repetidos omitidos" valor={r.repetidos} sub="ya estaban cargados de antes" />
-        <Kpi label="Filas con error" valor={r.filasConError} sub="se informan, no frenan" warn={r.filasConError > 0} />
+        <Kpi label="Líneas repetidas omitidas" valor={r.repetidos} sub={r.archivosIdenticos > 0 ? `+ ${plural(r.archivosIdenticos, 'archivo idéntico', 'archivos idénticos')} a uno anterior` : 'ya estaban cargadas de antes'} />
+        <Kpi label="Líneas con error" valor={r.filasConError} sub={r.errores > 0 ? `+ ${plural(r.errores, 'fila que no se cargó', 'filas que no se cargaron')}` : 'se informan, no frenan'} warn={r.filasConError + r.errores > 0} />
         <Kpi label="Necesitan tu revisión" valor={r.revisar} sub={r.fotos > 0 ? `${plural(r.fotos, 'foto para aprobar', 'fotos para aprobar')}${(r.revisar - r.fotos) > 0 ? ` · ${r.revisar - r.fotos} por otros motivos` : ''}` : `de ${plural(r.total, 'cliente', 'clientes')}`} warn={r.revisar > 0} />
       </div>
 
@@ -813,6 +818,7 @@ function resumenCorto(r) {
   if (r.revisar) partes.push(`${r.revisar} a revisar`)
   if (r.errores) partes.push(`${r.errores} sin cargar`)
   if (r.revertidos) partes.push(`${r.revertidos} revertidos`)
+  if (r.no_revertidos) partes.push(`${r.no_revertidos} no se pudieron deshacer`)
   return `${plural(r.total, 'cliente', 'clientes')}${partes.length ? ' · ' + partes.join(' · ') : ''}`
 }
 
