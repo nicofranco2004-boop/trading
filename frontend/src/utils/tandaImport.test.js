@@ -396,3 +396,17 @@ describe('F3 — la foto de tenencia adentro de la fila', () => {
     expect(omitirFoto(f).notas.at(-1)).toMatch(/omitida/)
   })
 })
+
+describe('resumen después de un Deshacer que falló', () => {
+  it('lo que no se pudo revertir SIGUE cargado: suma movimientos y no cuenta como revertido', () => {
+    const r = resumen([
+      { id: 1, clientUid: 7, estado: 'revert_fallo', cargados: 13 },
+      { id: 2, clientUid: 8, estado: 'revert_fallo', cargados: 13 },
+      { id: 3, clientUid: 9, estado: 'revertido', cargados: 5 },
+    ])
+    expect(r.movimientos).toBe(26)
+    expect(r.clientesCargados).toBe(2)
+    expect(r.noRevertidos).toBe(2)
+    expect(r.revertidos).toBe(1)
+  })
+})

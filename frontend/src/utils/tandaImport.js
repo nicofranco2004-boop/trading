@@ -36,6 +36,10 @@ export const ESTADO = {
   // F3: los movimientos entraron y la FOTO de tenencia espera que el asesor
   // apruebe qué se cierra y qué se crea (fail-closed, como en el asistente).
   FOTO_PENDIENTE: 'foto_pendiente',
+  // F2: los pone el servidor al deshacer la tanda. `revert_fallo` = el lote
+  // SIGUE cargado (el revert seguro dijo que no): cuenta como cargado.
+  REVERTIDO: 'revertido',
+  REVERT_FALLO: 'revert_fallo',
 }
 
 // Sub-pasos que se muestran mientras una fila corre. El orden es el real.
@@ -393,20 +397,29 @@ export function marcarInterrumpidas(filas) {
   })
 }
 
+// Estados en los que el lote SIGUE en la cuenta del cliente. `revert_fallo`
+// está a propósito: "no se pudo deshacer" significa que quedó cargado.
+export const SIGUE_CARGADO = [ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.FOTO_PENDIENTE, ESTADO.REVERT_FALLO]
+
 export function resumen(resultados) {
   const por = (e) => resultados.filter(r => r.estado === e).length
   const clientesCon = (estados) => new Set(resultados.filter(r => estados.includes(r.estado) && Number.isInteger(r.clientUid)).map(r => r.clientUid)).size
   return {
     total: resultados.length,
     clientes: new Set(resultados.filter(r => Number.isInteger(r.clientUid)).map(r => r.clientUid)).size || resultados.length,
-    clientesCargados: clientesCon([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.FOTO_PENDIENTE]),
+    clientesCargados: clientesCon(SIGUE_CARGADO),
     completos: por(ESTADO.COMPLETO),
     revisar: por(ESTADO.REVISAR) + por(ESTADO.FOTO_PENDIENTE),
     fotos: por(ESTADO.FOTO_PENDIENTE),
     errores: por(ESTADO.ERROR),
+    revertidos: por(ESTADO.REVERTIDO),
+    noRevertidos: por(ESTADO.REVERT_FALLO),
     // Sólo lo que sigue cargado: una fila revertida no suma movimientos.
-    movimientos: resultados.reduce((a, r) => a + ([ESTADO.COMPLETO, ESTADO.REVISAR, ESTADO.FOTO_PENDIENTE].includes(r.estado) ? (r.cargados || 0) : 0), 0),
+    movimientos: resultados.reduce((a, r) => a + (SIGUE_CARGADO.includes(r.estado) ? (r.cargados || 0) : 0), 0),
+    // Unidades distintas, a propósito: `repetidos`/`filasConError` son LÍNEAS
+    // de archivo; `archivosIdenticos` y `errores` son FILAS de la tanda.
     repetidos: resultados.reduce((a, r) => a + (r.repetidos || 0), 0),
+    archivosIdenticos: resultados.filter(r => (r.notas || []).some(n => /idéntico/.test(n))).length,
     filasConError: resultados.reduce((a, r) => a + (r.errores || 0), 0),
   }
 }

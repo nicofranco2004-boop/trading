@@ -1443,7 +1443,7 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             f"manualmente desde Operaciones / Posiciones antes de revertir el resto.")
 
     links = conn.execute(
-        """SELECT l.*, n.operation_type, n.quantity AS normalized_qty
+        """SELECT l.*, n.operation_type, n.quantity AS normalized_qty, n.date AS normalized_date
              FROM import_op_links l
              LEFT JOIN import_normalized_tx n
                     ON n.batch_id = l.batch_id AND n.raw_row_id = l.raw_row_id
@@ -1469,25 +1469,33 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                         "No se puede revertir: una posición creada por este import ya no existe "
                         "(probablemente fue vendida en una operación posterior). Deshacé esa venta primero.")
                 if not pos["is_cash"] and l["operation_type"] == "BUY":
-                    esperado = float(l["normalized_qty"] or 0)
-                    # Bonos amortizantes: `positions.quantity` guarda el nominal
-                    # RESIDUAL (sweep_bond_amortizations lo re-escala en cada
-                    # import) y el link guarda el nominal ORIGINAL de la compra.
-                    # Comparar los dos crudos decía "parcialmente vendida" para
-                    # TODA cartera con AL30/GD30 y dejaba sin Revertir a casi
-                    # cualquier cuenta argentina. Se compara en la misma escala.
-                    try:
-                        from pricing.bond_amortization import is_amortizing_bond, residual_factor
-                        _clave = pos["asset"] if is_amortizing_bond(pos["asset"]) else (
-                            pos["name"] if ("name" in pos.keys() and is_amortizing_bond(pos["name"])) else None)
-                        if _clave:
-                            esperado *= residual_factor(_clave, _dt.date.today().isoformat())
-                    except Exception:  # noqa: BLE001 — sin schedule/columna: escala 1, como antes
-                        pass
-                    if (pos["quantity"] or 0) < esperado - 1e-6:
+                    # ¿Alguien VENDIÓ este activo en este broker después de la
+                    # compra, fuera de este lote? Se pregunta eso, directo.
+                    #
+                    # Antes se INFERÍA comparando cantidades (link original vs
+                    # positions.quantity), y eso mintió dos veces: (1) con bonos
+                    # amortizantes `positions.quantity` guarda el nominal RESIDUAL
+                    # (sweep_bond_amortizations lo re-escala) → "parcialmente
+                    # vendida" para TODA cartera con AL30/GD30, sin venta alguna;
+                    # (2) corregirlo escalando por el factor de HOY dejaba pasar
+                    # una venta chica si entre el import y el revert cayó una
+                    # cuota (la posición quedó con el factor del último sweep,
+                    # el chequeo usaba el de hoy). Una venta es una fila 'Venta'
+                    # en operations: se busca esa fila, no su sombra.
+                    _buy_date = l["normalized_date"] if "normalized_date" in l.keys() else None
+                    _venta = conn.execute(
+                        """SELECT 1 FROM operations o
+                            WHERE o.user_id=? AND o.broker=? AND o.asset=? AND o.op_type='Venta'
+                              AND (? IS NULL OR o.date >= ?)
+                              AND NOT EXISTS (SELECT 1 FROM import_op_links k
+                                               WHERE k.batch_id=? AND k.operation_id=o.id)
+                            LIMIT 1""",
+                        (uid, pos["broker"], pos["asset"], _buy_date, _buy_date, batch_id),
+                    ).fetchone()
+                    if _venta:
                         raise PersistError(0,
                             f"No se puede revertir: la posición {pos['asset']} en {pos['broker']} "
-                            f"fue parcialmente vendida después del import. Deshacé esa venta primero.")
+                            f"fue vendida (total o parcialmente) después del import. Deshacé esa venta primero.")
 
     brokers_touched = set()
     tc_blue = _read_tc_blue(conn, uid)

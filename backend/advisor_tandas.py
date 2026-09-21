@@ -259,8 +259,12 @@ def _resumen(filas: List[Dict[str, Any]]) -> Dict[str, int]:
         "completos": n("completo"),
         "revisar": n("revisar") + n("foto_pendiente"),
         "errores": n("error"),
-        "revertidos": n("revertido") + n("revert_fallo"),
-        "movimientos": sum(int(f.get("cargados") or 0) for f in filas if f.get("estado") in _CON_LOTE),
+        "revertidos": n("revertido"),
+        # "no se pudo deshacer" NO es "revertido": el lote sigue cargado.
+        "no_revertidos": n("revert_fallo"),
+        # revert_fallo también suma: "no se pudo deshacer" = sigue cargado.
+        "movimientos": sum(int(f.get("cargados") or 0) for f in filas
+                           if f.get("estado") in _CON_LOTE or f.get("estado") == "revert_fallo"),
         "en_curso": n("pendiente") + n("cargando"),
     }
 
@@ -330,6 +334,9 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
             # revirtiendo ya no describe nada: se borra, no puede quedar
             # confirmable durante una hora sobre una cuenta vacía.
             conn.execute("DELETE FROM import_batches WHERE id=? AND status='preview'", (bid,))
+            if f:
+                f["foto_session_id"] = None
+                f["foto_nombre"] = None
             continue
         if info["status"] != "confirmed":
             continue
@@ -339,6 +346,9 @@ def revertir(conn, advisor_uid: int, tanda_id: str, *, puede_escribir, revertir_
             continue
         try:
             revertir_lote(cu, bid)
+            if f and es_foto and str(f.get("detalle") or "").startswith("Quedó un lote aplicado"):
+                # Era el lote "aparecido" después del deshacer; ya no está.
+                f["estado"] = "revertido"; f["detalle"] = None
             if f and not es_foto:
                 if f.get("estado") == "revert_fallo":
                     # La foto (más nueva) falló antes: la fila NO queda "revertida".

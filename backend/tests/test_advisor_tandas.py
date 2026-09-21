@@ -304,3 +304,16 @@ class AdvisorTandasTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResumenNoRevertidosTest(unittest.TestCase):
+    def test_no_se_pudo_deshacer_no_cuenta_como_revertido(self):
+        import advisor_tandas as at
+        r = at._resumen([
+            {"estado": "revert_fallo", "cargados": 13},
+            {"estado": "revert_fallo", "cargados": 13},
+            {"estado": "revertido", "cargados": 5},
+        ])
+        self.assertEqual(r["revertidos"], 1)
+        self.assertEqual(r["no_revertidos"], 2)
+        self.assertEqual(r["movimientos"], 26)
