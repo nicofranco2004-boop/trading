@@ -19,7 +19,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import {
   Briefcase, List, Wallet, LineChart, Activity, Newspaper, Compass, TrendingUp,
   Gauge, Bell, Upload, BookOpen, Settings, MessageCircle, Sparkles, Shield,
-  Sun, Moon, LogOut, Menu, ChevronRight, LayoutDashboard, UserRound, Users,
+  Sun, Moon, LogOut, Menu, ChevronRight, LayoutDashboard, UserRound, Users, CalendarDays,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import CurrencySwitcher from './CurrencySwitcher'
@@ -201,6 +201,17 @@ export default function Sidebar() {
                 {isActive && <ActiveBar />}
                 <Newspaper size={18} strokeWidth={1.75} aria-hidden="true" />
                 {!collapsed && <span>Novedades</span>}
+              </>)}
+            </NavLink>
+            {/* Cobros: cupones y amortizaciones de los bonos de TODOS los
+                clientes, con quién cobra cuánto (pedido de un tester, 2026-09). */}
+            <NavLink to="/cobros" title={collapsed ? 'Cobros' : undefined}
+              onMouseEnter={() => prefetchRoute('/cobros')} onFocus={() => prefetchRoute('/cobros')}
+              className={rowCls}>
+              {({ isActive }) => (<>
+                {isActive && <ActiveBar />}
+                <CalendarDays size={18} strokeWidth={1.75} aria-hidden="true" />
+                {!collapsed && <span>Cobros</span>}
               </>)}
             </NavLink>
             {/* Carga de historiales de varios clientes por tanda. Reemplaza, a
