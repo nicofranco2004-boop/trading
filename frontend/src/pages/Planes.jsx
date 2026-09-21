@@ -66,6 +66,31 @@ export function fmtArs(amount) {
   return n.toLocaleString('es-AR')
 }
 
+// ─── Descuento del plan anual: SE CALCULA, no se escribe ────────────────────
+// El cartel del selector decía "−15%" a mano mientras el descuento real era
+// 16,7%: la página vendía peor de lo que Rendi daba. Y el ahorro en pesos no
+// se mostraba en ningún lado, que es el número que de verdad convence.
+const _n = (v) => (typeof v === 'string' ? parseInt(v, 10) : v)
+
+export function annualSavingsArs(plan) {
+  const mensual = _n(plan === 'plus' ? PLUS_PRICE_ARS_MONTHLY : PRO_PRICE_ARS_MONTHLY)
+  const anual = _n(plan === 'plus' ? PLUS_PRICE_ARS_ANNUAL : PRO_PRICE_ARS_ANNUAL)
+  return mensual * 12 - anual
+}
+
+export function annualDiscountPct(plan) {
+  const mensual = _n(plan === 'plus' ? PLUS_PRICE_ARS_MONTHLY : PRO_PRICE_ARS_MONTHLY)
+  // Math.floor, no Math.round: 16,67% redondeado da 17% y el cartel prometería
+  // un poco más de lo que la cuenta da. El cartel nunca promete de más.
+  return Math.floor((annualSavingsArs(plan) / (mensual * 12)) * 100)
+}
+
+// El cartel del selector es uno para los dos planes. Si algún día los
+// descuentos difieren, mostramos el menor: prometer de menos y dar de más.
+export const ANNUAL_DISCOUNT_BADGE_PCT = Math.min(
+  annualDiscountPct('plus'), annualDiscountPct('pro'),
+)
+
 // ─── Listas de features por plan (template 3-secciones) ──────────────────────
 // Cada feature es { label, sub? } — sub es la nota chica abajo (opcional).
 // El template separa visualmente:
@@ -430,7 +455,7 @@ export default function Planes({ embedded = false }) {
                 >
                   Anual
                   <span className="text-[12.5px] px-1 py-px rounded-sm bg-rendi-pos/15 text-rendi-pos font-medium">
-                    −15%
+                    −{ANNUAL_DISCOUNT_BADGE_PCT}%
                   </span>
                 </button>
               </div>
@@ -477,7 +502,7 @@ export default function Planes({ embedded = false }) {
                   tagline="Multi-broker + features avanzadas"
                   price={`$${arsMonthly}`}
                   priceSub={billingPeriod === 'annual'
-                    ? `por mes · facturado anual ($${arsAnnualTotal})`
+                    ? `por mes · facturado anual ($${arsAnnualTotal}) · ahorrás $${fmtArs(annualSavingsArs('plus'))}`
                     : 'por mes'}
                   priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PLUS_FEATURES}
@@ -520,7 +545,7 @@ export default function Planes({ embedded = false }) {
                   tagline="IA premium + brokers ilimitados"
                   price={`$${arsMonthly}`}
                   priceSub={billingPeriod === 'annual'
-                    ? `por mes · facturado anual ($${arsAnnualTotal})`
+                    ? `por mes · facturado anual ($${arsAnnualTotal}) · ahorrás $${fmtArs(annualSavingsArs('pro'))}`
                     : 'por mes'}
                   priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PRO_FEATURES}
