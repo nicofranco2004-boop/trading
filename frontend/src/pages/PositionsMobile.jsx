@@ -15,7 +15,6 @@
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
 import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo } from 'react'
-import { hayMultiLote } from '../utils/lotes'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, Download, Wallet, ChevronDown, ArrowRight, MoreVertical } from 'lucide-react'
 import { groupBrokersIntoAccounts, brokerLegLabel } from '../utils/brokerAccounts'
@@ -160,8 +159,6 @@ export default function PositionsMobile() {
   const [sellQuery, setSellQuery] = useState('')
   const [expandedTickers, setExpandedTickers] = useState(() => new Set())
   const [showAllLots, setShowAllLots] = useState(false)
-  // Misma regla que el escritorio: sin activos multi-lote no se ofrece "Ver lotes".
-  const multiLote = useMemo(() => hayMultiLote(positions), [positions])
   function toggleTicker(key) {
     setExpandedTickers(prev => {
       const n = new Set(prev)
@@ -1316,6 +1313,13 @@ export default function PositionsMobile() {
     return flattenMobile(agg)
   }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas])
 
+  // ¿Hay algo que desglosar en lo que se ve? Sale de los MISMOS grupos que se
+  // dibujan (`grouped` / `flatList`), no de una regla aparte — misma decisión
+  // que el escritorio. Sin esto, "Ver lotes" aparecía sin hacer nada.
+  const multiLote = brokerFilter === ALL_FILTER
+    ? (grouped || []).some(g => (g.positions || []).some(p => p._isAgg))
+    : (flatList || []).some(p => p._isAgg)
+
   // ¿La vista filtrada está mirando una cuenta unificada? Lo necesita el render
   // para decidir si cada fila lleva su chip de moneda.
   const filtroEsCuentaUnificada = (() => {
@@ -1521,7 +1525,7 @@ export default function PositionsMobile() {
             {[
               brokerFilter !== ALL_FILTER && brokerFilterLabel,
               sortBy !== 'value' && `orden: ${SORT_OPTIONS.find(o => o.id === sortBy)?.label}`,
-              showAllLots && 'por lote',
+              showAllLots && multiLote && 'por lote',
             ].filter(Boolean).join(' · ')}
           </span>
           <button

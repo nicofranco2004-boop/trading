@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
-import { hayMultiLote } from '../utils/lotes'
 import { useNavigate } from 'react-router-dom'
 import { Plus, DollarSign, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
@@ -168,8 +167,6 @@ function PositionsDesktop() {
   const [editPickFrom, setEditPickFrom] = useState(null)
   const [expandedTickers, setExpandedTickers] = useState(() => new Set())
   const [showAllLots, setShowAllLots] = useState(false)
-  // "Ver lotes" sólo se ofrece si hay algo que desglosar (ver utils/lotes.js).
-  const multiLote = useMemo(() => hayMultiLote(positions), [positions])
   // Densidad de la tabla (cómodo/compacto), persistida. Feedback de un usuario
   // Pro: con muchas columnas la tabla scrollea de costado y se hace tediosa.
   const [compact, setCompact] = useState(() => {
@@ -1238,7 +1235,7 @@ function PositionsDesktop() {
     const rows = []
     for (const g of groups) {
       rows.push({ key: g.key, p: g.p, isAgg: g.isAgg, isLot: false, lotCount: g.lots.length })
-      if (g.isAgg && (showAllLots || expandedTickers.has(g.key))) {
+      if (g.isAgg && (lotesVisibles || expandedTickers.has(g.key))) {
         for (const lot of g.lots) {
           rows.push({ key: `${g.key}:${lot.id}`, p: lot, isAgg: false, isLot: true, lotCount: 0 })
         }
@@ -1587,6 +1584,8 @@ function PositionsDesktop() {
   const thClassStickyRight = `${thBase} right-0 z-20 border-l border-line`
   const tdClassStickyRight = `${compact ? 'px-2 py-1' : 'px-2 py-2.5'} whitespace-nowrap sticky right-0 z-10 bg-bg-1 border-l border-line shadow-[-6px_0_10px_-8px_rgba(0,0,0,0.45)]`
   const inputClass = 'w-full bg-bg-2 border border-line rounded-md px-3 py-2 text-sm text-ink-0'
+  // Chips de la fila (CASH/moneda/CEDEAR) a escala de la celda en compacto.
+  const chipSize = compact ? 'text-[11.5px]' : 'text-[12.5px]'
 
   const selectedBrokerCurrency = brokers.find(b => b.name === form.broker)?.currency ?? 'USDT'
 
@@ -1787,6 +1786,23 @@ function PositionsDesktop() {
     return out
   })()
 
+  // ¿Hay algo que desglosar EN LO QUE SE VE? "Ver lotes" sólo se ofrece si
+  // alguna de las tablas que se dibujan tiene un activo con más de un lote.
+  // Se decide con los MISMOS grupos que arma la tabla (mismas patas, mismo
+  // filtro de broker y de búsqueda, misma exclusión de renta fija, misma clave
+  // por moneda o por ticker en cuentas unificadas) — no con una regla aparte:
+  // una segunda regla ya divergía en cuatro casos (auditoría de f9a38c27).
+  const multiLote = displaySections.some(section => {
+    if (filterBroker !== 'all' && section.key !== filterBroker) return false
+    const raw = positions.filter(p => section.patasNames.has(p.broker) && matchesAsset(p) && !isFixedIncome(p))
+    return aggregateAndSort(raw, section.currency === 'ARS', section.key, section.isPair).some(g => g.isAgg)
+  })
+  // El desglose sólo cuenta mientras haya algo que desglosar: sin esto, un
+  // "Ver lotes" que quedó prendido y ya no tiene botón (vendió, filtró) seguía
+  // mandando en la tabla. Derivado, no un hook: acá abajo ya hubo renders que
+  // cortan antes y un hook nuevo en este punto cambia el conteo entre renders.
+  const lotesVisibles = showAllLots && multiLote
+
   const visibleSectionCount = displaySections.filter(s => {
     if (filterBroker !== 'all' && s.key !== filterBroker) return false
     if (assetFiltering) return positions.some(p => s.patasNames.has(p.broker) && matchesAsset(p))
@@ -1948,17 +1964,15 @@ function PositionsDesktop() {
           <button
             type="button"
             onClick={() => setShowAllLots(v => !v)}
-            aria-pressed={showAllLots}
-            className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${showAllLots ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
+            className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${lotesVisibles ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
             title="Por defecto se ve la posición total por ticker (precio promedio + P&L total). Activá esto para desglosar cada compra (lote)."
           >
-            <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {showAllLots ? 'Ver agregado' : 'Ver lotes'}
+            <LayersIcon size={12} strokeWidth={1.75} aria-hidden="true" /> {lotesVisibles ? 'Ver agregado' : 'Ver lotes'}
           </button>
         )}
         <button
           type="button"
           onClick={toggleCompact}
-          aria-pressed={compact}
           className={`inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border transition ${compact ? 'bg-data-violet/15 border-data-violet/40 text-data-violet' : 'bg-bg-2 border-line-2 text-ink-1 hover:text-ink-0 hover:border-line-3 hover:bg-bg-3'} font-medium`}
           title={compact ? 'Vista compacta activa: filas más bajas y letra más chica. Tocá para volver a la cómoda.' : 'Achica filas y letra para ver más activos y columnas sin scrollear.'}
         >
@@ -2286,7 +2300,7 @@ function PositionsDesktop() {
                   </thead>
                   <tbody>
                     {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
-                      const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
+                      const tickerExpanded = lotesVisibles || expandedTickers.has(rowKey)
                       const c = calcRowTabla(p, section.isPair)
                       // Moneda de ESTA fila (null si fusiona las dos patas).
                       const rowCcy = p._multiCcy ? null : _ccyDeLote(p, isARS)
@@ -2378,7 +2392,7 @@ function PositionsDesktop() {
                                       {p.asset}
                                     </button>
                                   )}
-                                  {!!p.is_cash && <span className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {!!p.is_cash && <span className={`${chipSize} tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium`}><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
                                   {/* Chip de moneda: sólo en la cuenta unificada,
                                       donde conviven las dos patas y hace falta
                                       saber de cuál viene cada fila. En una cuenta
@@ -2387,19 +2401,19 @@ function PositionsDesktop() {
                                   {section.isPair && !p.is_cash && (
                                     rowCcy === null ? (
                                       <span
-                                        className="text-[12.5px] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 font-medium"
+                                        className={`${chipSize} px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 font-medium`}
                                         title={`Comprado en las dos monedas de la cuenta (${(p._brokers || []).join(' y ')})`}
                                       >ARS + USD</span>
                                     ) : (
                                       <span
-                                        className={`text-[12.5px] px-1 py-0.5 rounded-sm border font-medium ${rowCcy === 'ARS' ? 'bg-rendi-warn/10 text-rendi-warn border-rendi-warn/30' : 'bg-data-cyan/10 text-data-cyan border-data-cyan/30'}`}
+                                        className={`${chipSize} px-1 py-0.5 rounded-sm border font-medium ${rowCcy === 'ARS' ? 'bg-rendi-warn/10 text-rendi-warn border-rendi-warn/30' : 'bg-data-cyan/10 text-data-cyan border-data-cyan/30'}`}
                                         title={`Comprado en ${rowCcy === 'ARS' ? 'pesos' : 'dólares'} — ${brokerLegLabel(p.broker, brokers)}`}
                                       >{rowCcy === 'ARS' ? 'ARS' : 'USD'}</span>
                                     )
                                   )}
                                   {isBond && (
                                     <span
-                                      className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium"
+                                      className={`${chipSize} tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium`}
                                       title="Bono / Obligación Negociable"
                                     >
                                       <Coins size={9} strokeWidth={1.5} /> BONO
@@ -2428,7 +2442,7 @@ function PositionsDesktop() {
                                         else if (isAgg) openEditGroup(p)
                                         else openEdit(p)
                                       }}
-                                      className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 font-medium hover:bg-rendi-warn/25 transition"
+                                      className={`${chipSize} tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 font-medium hover:bg-rendi-warn/25 transition`}
                                       title="Sin tipo de cambio de compra registrado — este lote usa el dólar de hoy para el costo en USD. Tocá para cargarlo."
                                     >
                                       TC?
@@ -2602,7 +2616,7 @@ function PositionsDesktop() {
                 </thead>
                 <tbody>
                   {bposRows.map(({ key: rowKey, p, isAgg, isLot, lotCount }) => {
-                    const tickerExpanded = showAllLots || expandedTickers.has(rowKey)
+                    const tickerExpanded = lotesVisibles || expandedTickers.has(rowKey)
                     const c = calcRowUSDT(p)
                     const isBond = isBondPosition(p) && !p.is_cash
                     const bondKey = `${p.broker}:${p.asset}`
