@@ -197,14 +197,24 @@ export default function Operations() {
       delete body.mueve_efectivo
       delete body.kind
     }
-    if (modal === 'edit') await api.put(`/operations/${form.id}`, body)
-    else {
-      await api.post('/operations', body)
-      track('operation_added', {
-        mode: body.op_type,
-        only_pnl: body.entry_price == null && body.pnl_usd != null,
-        broker: body.broker,
-      })
+    // El guardado puede fallar y el usuario tiene que ENTERARSE: un asesor que
+    // entra a un cliente con acceso de sólo lectura recibe un 403 del servidor,
+    // y antes ese error moría sin manejar — el formulario quedaba abierto, sin
+    // cartel, y "el botón no hacía nada" (reporte de un tester, 2026-09-20).
+    // Con error el formulario NO se cierra: lo cargado no se pierde.
+    try {
+      if (modal === 'edit') await api.put(`/operations/${form.id}`, body)
+      else {
+        await api.post('/operations', body)
+        track('operation_added', {
+          mode: body.op_type,
+          only_pnl: body.entry_price == null && body.pnl_usd != null,
+          broker: body.broker,
+        })
+      }
+    } catch (ex) {
+      toast.push(ex?.message || 'No pudimos guardar la operación.', { type: 'error', duration: 8000 })
+      return
     }
     setModal(null)
     load()

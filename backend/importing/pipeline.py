@@ -8,6 +8,7 @@ al inicio de cada preview nuevo (cleanup oportunista, no necesita cron job).
 """
 from __future__ import annotations
 import hashlib
+from collections import Counter
 import logging
 import json
 import secrets
@@ -277,6 +278,52 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
     return [t for t in txs if id(t) not in fuera]
 
 
+def confirmed_fingerprint_counts(conn, uid: int, *, exclude_session: str = None,
+                                 broker: str = None) -> "Counter":
+    """CUÁNTAS veces existe cada huella en los batches confirmados del usuario.
+
+    Es un conteo y no un conjunto a propósito. La huella (fecha+broker+tipo+
+    activo+cantidad+precio+monto) NO incluye el comprobante del broker, así que
+    una orden ejecutada en 4 partes iguales son 4 filas con la MISMA huella.
+    Con un conjunto ("¿existe?"), bastaba que 1 de las 4 hubiera entrado en un
+    intento anterior para que el siguiente omitiera LAS CUATRO — cada reintento
+    del asesor se comía operaciones reales (reporte Cocos, 2026-09-20). Con el
+    conteo se omiten sólo las que ya están y entran las que faltan."""
+    q = """SELECT n.fingerprint fp, COUNT(*) c
+             FROM import_normalized_tx n
+             JOIN import_batches b ON n.batch_id = b.id
+            WHERE b.user_id=? AND b.status='confirmed' AND n.fingerprint IS NOT NULL"""
+    args = [uid]
+    if exclude_session:
+        q += " AND b.id != ?"; args.append(exclude_session)
+    if broker:
+        q += " AND b.broker = ?"; args.append(broker)
+    q += " GROUP BY n.fingerprint"
+    return Counter({r["fp"]: int(r["c"]) for r in conn.execute(q, args).fetchall()})
+
+
+def duplicate_row_indices_by_count(counts: "Counter", txs, already_skipped=()) -> set:
+    """row_index de las filas que YA están confirmadas, respetando multiplicidad:
+    cada huella existente "consume" a lo sumo `counts[fp]` filas del archivo
+    nuevo (en orden de fila); el resto entra. Mira la huella actual y la legacy
+    (símbolo canónico, imports anteriores a 2026-07) contra el mismo presupuesto."""
+    if not counts:
+        return set()
+    budget = Counter(counts)
+    skip = set(already_skipped)
+    out = set()
+    for t in sorted(txs, key=lambda t: t.row_index):
+        if t.row_index in skip:
+            continue
+        fp = _row_fingerprint(t)
+        if budget.get(fp, 0) > 0:
+            budget[fp] -= 1; out.add(t.row_index); continue
+        lfp = _row_fingerprint_legacy(t)
+        if lfp != fp and budget.get(lfp, 0) > 0:
+            budget[lfp] -= 1; out.add(t.row_index)
+    return out
+
+
 def already_imported_row_indices(conn, uid: int, session_id: str, txs,
                                  already_skipped=()) -> set:
     """row_index de las filas cuyo fingerprint YA existe en OTRO batch confirmado
@@ -284,24 +331,11 @@ def already_imported_row_indices(conn, uid: int, session_id: str, txs,
 
     Es cross-batch (no intra-batch): dos ops idénticas en el MISMO archivo se
     respetan; solo se saltea lo que ya entró en una importación anterior. Así una
-    actualización mensual agrega SOLO lo nuevo y conserva el historial previo."""
-    existing = {
-        r["fingerprint"] for r in conn.execute(
-            """SELECT DISTINCT n.fingerprint
-                 FROM import_normalized_tx n
-                 JOIN import_batches b ON n.batch_id = b.id
-                WHERE b.user_id=? AND b.status='confirmed' AND b.id != ?
-                  AND n.fingerprint IS NOT NULL""",
-            (uid, session_id),
-        ).fetchall()
-    }
-    if not existing:
-        return set()
-    skip = set(already_skipped)
-    return {t.row_index for t in txs
-            if t.row_index not in skip
-            and (_row_fingerprint(t) in existing
-                 or _row_fingerprint_legacy(t) in existing)}
+    actualización mensual agrega SOLO lo nuevo y conserva el historial previo.
+    Por CONTEO (ver `confirmed_fingerprint_counts`): si ya entró 1 de 4 iguales,
+    entran las otras 3."""
+    counts = confirmed_fingerprint_counts(conn, uid, exclude_session=session_id)
+    return duplicate_row_indices_by_count(counts, txs, already_skipped)
 
 
 def inspect(file_bytes: bytes) -> Dict[str, Any]:
@@ -603,6 +637,19 @@ def run_preview(
     # parsers específicos; el genérico ('rendi_generic') no está y sigue por fila.
     fmt_base = FORMAT_BASE_CURRENCY.get(parser.format_id)
 
+    # 🔴 LAS ESCRITURAS SOBRE `brokers` SE DIFIEREN. En SQLite la PRIMERA
+    # escritura de la transacción toma el candado de toda la base, y de ahí en
+    # adelante cualquier otro usuario que quiera escribir espera (15 s) y muere
+    # con "database is locked". El comentario de más abajo (sobre el DELETE de
+    # previews vencidos) explicaba que el candado se tomaba "recién cuando de
+    # verdad vamos a escribir" — pero estas dos escrituras (curar la moneda del
+    # broker y crear el broker nuevo) ya lo tomaban 150 líneas ANTES, y lo
+    # retenían durante la validación, el análisis de traspasos y el resto del
+    # parseo. Reporte real: un asesor vio "database is locked" en la
+    # previsualización (2026-09-20). Acá sólo se DECIDE qué escribir; la
+    # escritura sale junto con el resto, al final.
+    _escrituras_diferidas: List[tuple] = []   # (sql, params, callback(lastrowid))
+
     # Auto-heal: si el broker destino YA existe con una moneda distinta a la base
     # de la plataforma (típico: lo creó un preview viejo con el bug de inferencia,
     # ej. "Cocos" quedó en USD) y está VACÍO (sin posiciones), le corregimos la
@@ -625,8 +672,9 @@ def run_preview(
             ).fetchone()
             if has_data:
                 continue
-            conn.execute("UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
-                         (fmt_base, uid, name))
+            _escrituras_diferidas.append((
+                "UPDATE brokers SET currency=? WHERE user_id=? AND name=?",
+                (fmt_base, uid, name), None))
             info["currency"] = fmt_base
 
     # Auto-crear brokers que aparecen en el CSV pero no existen para este
@@ -685,21 +733,22 @@ def run_preview(
             inferred = "ARS"
         else:
             inferred = "USD"
-        cur = conn.execute(
-            "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
-            (uid, broker_name, inferred),
-        )
         new_brokers_created.append({
             "name": broker_name,
             "currency": inferred,
             "rows": len(rows_for_broker),
         })
-        user_brokers[broker_name] = {
-            "id": cur.lastrowid,
+        _entry = {
+            "id": None,   # lo completa la escritura diferida (validate no lo usa)
             "name": broker_name,
             "currency": inferred,
             "parent_broker_id": None,
         }
+        user_brokers[broker_name] = _entry
+        _escrituras_diferidas.append((
+            "INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+            (uid, broker_name, inferred),
+            (lambda rid, _e=_entry: _e.__setitem__("id", rid))))
         canonical_by_norm[key] = broker_name
         # Re-asignar las txs de este grupo al nombre canónico (por si la fila
         # vino con otro casing del mismo nombre)
@@ -770,11 +819,15 @@ def run_preview(
         len({t.broker for t in valid_txs}) > 1
     )
 
-    # Limpieza de previews vencidos. VA ACÁ, no al principio de la función: es un
-    # DELETE, o sea la PRIMERA escritura de la transacción — y en SQLite la primera
-    # escritura es la que TOMA el lock. Arriba, el lock quedaba tomado durante todo
-    # el parseo del archivo; con el endpoint corriendo en el event loop eso
-    # congelaba la app entera. Acá se toma recién cuando de verdad vamos a escribir.
+    # Acá empieza a escribirse — y no antes. Primero los brokers que la decisión
+    # de arriba dejó pendientes (curar moneda / crear), después la limpieza y el
+    # batch. En SQLite la primera escritura es la que TOMA el candado: hasta esta
+    # línea la función sólo leyó, así que el candado dura lo que dura escribir.
+    for _sql, _params, _cb in _escrituras_diferidas:
+        _cur = conn.execute(_sql, _params)
+        if _cb:
+            _cb(_cur.lastrowid)
+    # Limpieza de previews vencidos, junto con el resto de las escrituras.
     cleanup_stale_previews(conn)
 
     conn.execute(
@@ -816,17 +869,10 @@ def run_preview(
                 ensure_ascii=False)))
         raw_id_by_index[tx.row_index] = cur.lastrowid
 
-    # Fingerprints existentes en batches confirmados — para detectar dupes
-    existing_fingerprints = set(
-        r[0] for r in conn.execute(
-            """SELECT DISTINCT n.fingerprint
-                 FROM import_normalized_tx n
-                 JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.fingerprint IS NOT NULL""",
-            (uid,),
-        ).fetchall()
-    )
-    duplicate_row_indices: List[int] = []
+    # Huellas ya confirmadas — para anticipar en la previsualización EXACTAMENTE
+    # lo que el confirm va a omitir (mismo helper, mismo conteo).
+    duplicate_row_indices: List[int] = sorted(duplicate_row_indices_by_count(
+        confirmed_fingerprint_counts(conn, uid), valid_txs))
 
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_import = _read_user_tc_blue(conn, uid)
@@ -834,8 +880,6 @@ def run_preview(
 
     for tx in valid_txs:
         fp = _row_fingerprint(tx)
-        if fp in existing_fingerprints or _row_fingerprint_legacy(tx) in existing_fingerprints:
-            duplicate_row_indices.append(tx.row_index)
         gross_usd = stamp_tx_gross_usd(tx, tc_blue_at_import,
                                             conn=conn if _hist else None,
                                             date=tx.date if _hist else None)

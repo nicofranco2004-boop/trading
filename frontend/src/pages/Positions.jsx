@@ -2030,6 +2030,9 @@ function PositionsDesktop() {
         // una sola, así que da exactamente el filtro de antes.
         const bposRaw = positions.filter(p => section.patasNames.has(p.broker) && matchesAsset(p) && !isFixedIncome(p))
         if (assetFiltering && bposRaw.length === 0) return null
+        // Cuántos bonos/letras/FCI de ESTA cuenta viven en la zona Renta Fija de
+        // abajo: la tarjeta lo dice, para que nadie los busque acá.
+        const rfEnEstaCuenta = positions.filter(p => section.patasNames.has(p.broker) && isFixedIncome(p)).length
         // Vista default: 1 fila por ticker (agregado). bposRows aplana los grupos
         // a filas (activo + lotes si está expandido). bposRaw sigue teniendo TODOS
         // los lotes (para el footer/total y la variación diaria del broker).
@@ -2166,6 +2169,12 @@ function PositionsDesktop() {
                 {isSubBroker && (
                   <span className="text-[10.5px] rounded-full px-2 py-0.5 bg-bg-2 text-ink-3" title="Creado automáticamente al convertir ARS a USD">
                     sub-broker
+                  </span>
+                )}
+                {rfEnEstaCuenta > 0 && (
+                  <span className="text-[10.5px] rounded-full px-2 py-0.5 bg-bg-2 text-ink-3"
+                        title="Los bonos, letras y fondos de esta cuenta se muestran en la zona Renta Fija, más abajo. El subtotal de esta tarjeta no los incluye; el total de arriba sí.">
+                    {rfEnEstaCuenta === 1 ? '1 título en Renta Fija ↓' : `${rfEnEstaCuenta} títulos en Renta Fija ↓`}
                   </span>
                 )}
                 {/* El control de unificar/separar vive ACÁ, pegado al nombre de
