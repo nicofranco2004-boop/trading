@@ -22,6 +22,7 @@ from ai.voz import VOZ
 # un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
 from ai import tts
 from ai import preguntas as _preguntas
+from pricing import letras as _letras_mod
 from collections import defaultdict
 
 # ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
@@ -8180,12 +8181,18 @@ _ad_letras_cache = {'data': None, 'ts': 0}
 AD_LETRAS_TTL = 900  # 15 min — el feed se actualiza 1x/día, no hace falta más
 
 
-def _fetch_argentinadatos_letras():
-    """{ticker: precio per-1 VN en ARS} de las letras vivas. {} si la fuente cae.
+def _fetch_argentinadatos_letras_raw():
+    """{ticker: {price_per_100, tem_pct, maturity, currency}} de las letras vivas.
+    {} si la fuente cae.
 
     Sólo trae las que NO vencieron: la fuente publica el universo vivo. Eso es
     deseable — un papel vencido no tiene precio en ningún lado, y pedirle a una
     fuente que lo invente sería peor que no tenerlo.
+
+    UNA sola bajada y UN solo cache para los dos usos del feed: el PRECIO (que
+    valúa la tenencia, vía `_fetch_argentinadatos_letras`) y el PAGO AL VENCER
+    (que arma el calendario de cobros, vía `pricing/letras.py`). Dos fetches del
+    mismo JSON podrían mostrar dos verdades distintas en la misma pantalla.
     """
     now = time.time()
     cached = _ad_letras_cache['data']
@@ -8195,12 +8202,7 @@ def _fetch_argentinadatos_letras():
         r = requests.get("https://api.argentinadatos.com/v1/finanzas/letras", timeout=8)
         if r.status_code != 200:
             return cached or {}
-        out = {}
-        for item in (r.json() or {}).get('letras', []) or []:
-            t = (item.get('ticker') or '').strip().upper()
-            px = item.get('precioArs')
-            if t and isinstance(px, (int, float)) and px > 0:
-                out[t] = px / 100.0     # per-100 declarado → per-1, como todo el resto
+        out = _letras_mod.parse_letras_feed(r.json())
         if out:
             _ad_letras_cache['data'] = out
             _ad_letras_cache['ts'] = now
@@ -8208,6 +8210,16 @@ def _fetch_argentinadatos_letras():
         return cached or {}
     except Exception:
         return cached or {}
+
+
+def _fetch_argentinadatos_letras():
+    """{ticker: precio per-1 VN en ARS} de las letras vivas. {} si la fuente cae.
+
+    El feed declara el precio por cada 100 nominales (`precioArs`): se divide por
+    100 UNA sola vez, acá, y lo que sale ya es per-1 VN como el resto del sistema.
+    """
+    return {t: rec['price_per_100'] / 100.0
+            for t, rec in (_fetch_argentinadatos_letras_raw() or {}).items()}
 
 
 def _resolve_ar_bond_price(symbol):
@@ -35502,18 +35514,36 @@ class SectionRestoreIn(BaseModel):
     archive_id: int
 
 
-def _positions_in_section(conn, uid: int, cat: str, ccy: str):
-    """Posiciones (no-cash) del user que caen en la sección (categoría, moneda)."""
+def _fixed_income_rows(conn, uids: list):
+    """UNA regla de "qué es renta fija y en qué moneda" para todo el backend.
+
+    Devuelve [(row, (categoría, moneda))] de las posiciones no-cash de esos
+    usuarios que el clasificador reconoce como bono / letra / FCI. La moneda es
+    la de la POSICIÓN (`positions.currency`), exactamente como la zona Renta
+    Fija de la Cartera (`utils/sections.js` es el espejo declarado de
+    `importing/sections.py`). Hasta 2026-09-21 el endpoint del asesor decidía la
+    moneda por el broker padre/sibling: el mismo bono salía "ARS" para el asesor
+    y "Bonos USD" para el cliente. Este helper existe para que no vuelva a haber
+    dos reglas."""
     from importing import sections as _sections
+    if not uids:
+        return []
+    ph = ",".join("?" * len(uids))
     rows = conn.execute(
-        "SELECT * FROM positions WHERE user_id=? AND is_cash=0", (uid,)
+        f"SELECT * FROM positions WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0",
+        list(uids),
     ).fetchall()
     out = []
     for r in rows:
         sec = _sections.position_section(r["asset_type"], r["asset"], r["currency"])
-        if sec == (cat, ccy):
-            out.append(r)
+        if sec:
+            out.append((r, sec))
     return out
+
+
+def _positions_in_section(conn, uid: int, cat: str, ccy: str):
+    """Posiciones (no-cash) del user que caen en la sección (categoría, moneda)."""
+    return [r for r, sec in _fixed_income_rows(conn, [uid]) if sec == (cat, ccy)]
 
 
 @app.get("/api/sections/archived")
@@ -39623,6 +39653,152 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
         conn.close()
 
 
+# ─── Cobros del libro: los bonos/letras de los clientes elegidos ──────────────
+# El cronograma de cupones y amortizaciones se arma en el FRONTEND
+# (utils/bondSchedule.js + bondMeta.js), igual que en la Cartera y en el
+# detalle del bono. Este endpoint NO lo duplica en Python —sería una segunda
+# fuente de verdad, la causa raíz más frecuente de este repo—: sólo entrega
+# QUÉ renta fija tiene cada cliente, y la pantalla corre el mismo motor una vez
+# por (cliente, ticker) y suma. Por eso el radar decía "bonos AR los arma el
+# frontend… se omiten": acá se dejan de omitir.
+
+class AdvisorCashflowsIn(BaseModel):
+    # Subconjunto de clientes; vacío/None = todo el libro. Se eligen con
+    # casillas, nada más: los grupos guardados quedaron afuera a propósito
+    # (Nico, 2026-09-21: "es muy complejo, ¿por qué no sólo se seleccionan
+    # los usuarios?").
+    client_uids: Optional[List[int]] = None
+
+
+def _advisor_fixed_income_positions(conn, ids: list, stats: dict = None) -> list:
+    """Renta fija abierta de esos clientes, AGREGADA por (cliente, ticker, moneda).
+
+    El motor del frontend recibe (ticker, cantidad): dos lotes del mismo bono en
+    el mismo cliente son UNA tenencia para el cronograma, así que se suman acá.
+
+    La moneda de la clave es la de la POSICIÓN, vía `_fixed_income_rows` — la
+    misma regla que la zona Renta Fija de la Cartera. Viaja como
+    `account_currency` a propósito: es la pata donde ESTÁ el título, no la
+    moneda en que PAGA. La moneda de pago la decide el catálogo del frontend
+    (`getBondMeta(asset).currency`): un AL30 en la pata pesos paga dólares, y
+    dividir ese cupón por el MEP porque "la cuenta es ARS" lo achicaría ~1.400×.
+
+    Broker huérfano (renombrado/borrado sin cascada): se EXCLUYE y se cuenta en
+    `stats['orphan_broker']`, igual que hace el libro (`_advisor_positions_valued`);
+    inventarle una moneda sería peor que no mostrarlo.
+
+    `first_entry_date` es informativo ("desde cuándo lo tiene"); el cronograma no
+    lo usa."""
+    if not ids:
+        return []
+    ph = ",".join("?" * len(ids))
+    known = {(r["user_id"], r["name"]) for r in conn.execute(
+        f"SELECT user_id, name FROM brokers WHERE user_id IN ({ph})", ids).fetchall()}
+    agg = {}
+    for r, (cat, ccy) in _fixed_income_rows(conn, ids):
+        if not (float(r["quantity"] or 0) > 0):
+            continue
+        if (r["user_id"], r["broker"]) not in known:
+            if stats is not None:
+                stats["orphan_broker"] = stats.get("orphan_broker", 0) + 1
+            continue
+        key = (r["user_id"], (r["asset"] or "").upper(), ccy)
+        a = agg.setdefault(key, {
+            "client_uid": r["user_id"], "asset": key[1], "account_currency": ccy,
+            "category": cat, "asset_type": r["asset_type"] or "",
+            "quantity": 0.0, "brokers": [], "first_entry_date": None,
+        })
+        a["quantity"] += float(r["quantity"] or 0)
+        if r["broker"] and r["broker"] not in a["brokers"]:
+            a["brokers"].append(r["broker"])
+        d = r["entry_date"]
+        if d and (a["first_entry_date"] is None or d < a["first_entry_date"]):
+            a["first_entry_date"] = d
+    out = list(agg.values())
+    for a in out:
+        a["quantity"] = round(a["quantity"], 8)
+    return out
+
+
+def _advisor_letras_catalog(positions: list, today: str) -> dict:
+    """Lo que devuelve cada LETRA de la cartera de esos clientes el día que vence.
+
+    Sin esto una letra es una tenencia sin cronograma y no entra al calendario:
+    el frontend sabe de bonos por catálogo (`bondMeta.js`), pero una letra no
+    tiene prospecto que catalogar — su pago se lee del mercado, y al mercado lo
+    ve el servidor (es el que baja el feed). La regla de qué califica y la
+    fórmula viven en `pricing/letras.py`; acá sólo se elige a quién preguntarle.
+
+    Sólo los tickers que están EN la cartera: mandar el catálogo entero sería
+    data que la pantalla no usa. Si la fuente se cae, {} — y las letras vuelven
+    a mostrarse como "sin cronograma conocido", que es lo que pasaba antes."""
+    from importing.maturity import letra_maturity
+    tickers = [p.get("asset") for p in (positions or [])]
+    if not tickers:
+        return {}
+    try:
+        records = _fetch_argentinadatos_letras_raw() or {}
+    except Exception:
+        return {}
+    return _letras_mod.letras_catalog(records, tickers, today, letra_maturity)
+
+
+@app.post("/api/advisor/cashflows/positions")
+def advisor_cashflows_positions(body: AdvisorCashflowsIn,
+                                uid: int = Depends(get_current_user)):
+    """Las tenencias de renta fija de los clientes elegidos, para que la pantalla
+    de Cobros arme el calendario con el motor del frontend.
+
+    Sólo lectura: alcanza con el vínculo activo, sin importar el permiso
+    (read / read_write), igual que el libro y el radar. Un cliente que no es
+    del asesor se ignora en silencio —no se filtra su existencia con un 404—."""
+    conn = get_db()
+    try:
+        _require_advisor(conn, uid)
+        book = _advisor_client_ids(conn, uid)
+        labels = {r["client_uid"]: (r["label"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      "SELECT client_uid, label FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+                      (uid,)).fetchall()}
+        ids = list(book)
+        if body.client_uids:
+            wanted = set(int(x) for x in body.client_uids)
+            ids = [c for c in ids if c in wanted]
+        # Nunca fuera del libro, venga de donde venga la lista.
+        ids = [c for c in ids if c in labels]
+
+        # Un solo orden para clientes y posiciones: por etiqueta, como el radar.
+        ids.sort(key=lambda c: (labels[c].lower(), c))
+        orden = {c: i for i, c in enumerate(ids)}
+        stats = {}
+        positions = _advisor_fixed_income_positions(conn, ids, stats=stats)
+        positions.sort(key=lambda p: (orden[p["client_uid"]], p["asset"], p["account_currency"]))
+        con_rf = {p["client_uid"] for p in positions}
+        clients = [{"client_uid": c, "label": labels[c], "has_fixed_income": c in con_rf}
+                   for c in ids]
+        # La cotización con la que la pantalla pasa a dólares lo que PAGA en
+        # pesos: UNA para todo el libro (consistencia cross-cliente). Con su
+        # fecha: un número que dice "hoy" trae la fecha de su medición, y si la
+        # tabla está vacía el helper cae a un valor fijo — hay que poder verlo.
+        _, tc_mep = _advisor_book_fx(conn)
+        _fxrow = conn.execute(
+            "SELECT MAX(date) d FROM fx_rates_daily WHERE mep_venta IS NOT NULL").fetchone()
+        as_of = _iso_today()
+        return {
+            "clients": clients,
+            "positions": positions,
+            "skipped": stats,
+            "tc_mep": tc_mep,
+            "fx_date": _fxrow["d"] if _fxrow else None,
+            # Las letras no salen del catálogo del frontend: su pago al vencer se
+            # lee del mercado y viaja acá, por ticker de la cartera.
+            "letras": _advisor_letras_catalog(positions, as_of),
+            "as_of": as_of,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/advisor/radar/news")
 def advisor_radar_news(limit: int = 30, uid: int = Depends(get_current_user)):
     """Noticias de los activos que tiene cualquiera de los clientes del
@@ -42164,7 +42340,8 @@ def advisor_book_asset_clients(asset: str, is_ar_market: bool = None,
 
 
 @app.get("/api/advisor/book/history")
-def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
+def advisor_book_history(days: int = 365, clients: Optional[str] = None,
+                         uid: int = Depends(get_current_user)):
     """Serie histórica del capital administrado (idea de Nico): la evolución
     del AUM total del libro, día a día, desde los snapshots nocturnos — con
     la línea de "plata aportada neta" al lado, para distinguir a ojo si el
@@ -42174,16 +42351,34 @@ def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
     ÚLTIMO snapshot conocido de CADA cliente (forward-fill) — un cliente sin
     snapshot ESE día no hace caer la serie (hipo del cron ≠ retiro masivo), y
     un cliente nuevo empieza a sumar desde su primer snapshot (el salto es
-    REAL: entró capital al libro). Clientes revocados no cuentan."""
+    REAL: entró capital al libro). Clientes revocados no cuentan.
+
+    `clients`: ids separados por coma para ver la evolución de UN SUBCONJUNTO
+    (Nico, 2026-09-21: "lo que ven en el dashboard, pero seleccionando de qué
+    usuarios"). Se intersecta con el libro: un id ajeno se ignora. Sin el
+    parámetro, todo el libro — la respuesta trae `client_list` para que la
+    pantalla arme las casillas sin otra llamada."""
     if days <= 0 or days > 730:
         raise HTTPException(422, "days debe estar entre 1 y 730")
     from datetime import datetime as _dt, timedelta as _td
     conn = get_db()
     try:
         _require_advisor(conn, uid)
-        ids = _advisor_client_ids(conn, uid)
+        book = _advisor_client_ids(conn, uid)
+        labels = {r["client_uid"]: (r["label"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      "SELECT client_uid, label FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+                      (uid,)).fetchall()}
+        client_list = [{"client_uid": c, "label": labels.get(c, f"Cliente {c}")} for c in book]
+        ids = list(book)
+        if clients is not None and clients.strip() != "":
+            try:
+                wanted = {int(x) for x in clients.split(",") if x.strip()}
+            except ValueError:
+                raise HTTPException(422, "clients debe ser una lista de ids separados por coma")
+            ids = [c for c in book if c in wanted]
         if not ids:
-            return {"series": [], "clients": 0}
+            return {"series": [], "clients": 0, "client_list": client_list}
         cutoff = (_dt.utcnow().date() - _td(days=days)).isoformat()
         # Seed del forward-fill: el último snapshot ANTERIOR a la ventana de
         # cada cliente — sin esto, un cliente con historia vieja arrancaría
@@ -42219,7 +42414,7 @@ def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
         if len(series) > 400:
             stride = (len(series) + 399) // 400
             series = series[::stride] + ([series[-1]] if series[-1] not in series[::stride] else [])
-        return {"series": series, "clients": len(ids)}
+        return {"series": series, "clients": len(ids), "client_list": client_list}
     finally:
         conn.close()
 
