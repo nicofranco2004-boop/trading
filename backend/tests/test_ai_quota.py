@@ -156,10 +156,17 @@ def test_limits_free_has_no_hub_access():
 
 
 def test_limits_pro_is_10x_plus():
-    # Cap Pro: 60/sem = exactamente 10× Plus, claim de marketing literal.
+    # Este test vigilaba un claim de marketing literal ("10× Plus"), y el
+    # múltiplo exacto dejó de ser una regla el 2026-10-15: cuando el Plus dejó
+    # de ser un plan de IA su cupo pasó de 6 a 2, o sea 30×. Lo que sigue siendo
+    # una regla de producto es que la IA del Pro sea de OTRA categoría, no un
+    # poco más. Que el múltiplo que dice la página coincida con el real lo
+    # vigila tests/test_promesas_vs_producto.py, que lo compara con el catálogo.
     pro = quota.LIMITS["pro"]["analyses_per_week"]
     plus = quota.LIMITS["plus"]["analyses_per_week"]
-    assert pro == plus * 10, f"Pro ({pro}) debe ser exactamente 10× Plus ({plus})"
+    assert pro >= plus * 10, (
+        f"Pro ({pro}) tiene que ser al menos 10× Plus ({plus}): si se acercan, "
+        "la única razón de pagar Pro se desdibuja")
 
 
 def test_limits_admin_unlimited():

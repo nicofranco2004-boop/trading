@@ -102,6 +102,35 @@ class LosCuposQuePrometeLaPantalla(unittest.TestCase):
         self.assertNotEqual(_quotas_del_catalogo("plus").get("Brokers"), "∞")
 
 
+class LosMultiplosQueLaPaginaCanta(unittest.TestCase):
+    """El catálogo no sólo dice cupos: dice "60× más que Free · 30× que Plus".
+    Ese múltiplo es una cuenta entre dos cupos, así que se desincroniza solo el
+    día que cambia cualquiera de los dos — y ya pasó: decía "10× que Plus"
+    cuando el Plus bajó de 6 a 2."""
+
+    def _sub_de(self, plan: str, etiqueta: str) -> str:
+        fuente = open(CATALOGO, encoding="utf-8").read()
+        bloque = re.search(
+            r"export const %s_FEATURES = \{(.*?)\n\}\n" % plan.upper(),
+            fuente, re.S).group(1)
+        m = re.search(
+            r"\{ label: '%s'[^}]*?sub: '([^']+)'" % re.escape(etiqueta), bloque)
+        assert m, f"no encontré el sub de «{etiqueta}» en {plan}"
+        return m.group(1)
+
+    def test_el_multiplo_contra_free_es_el_real(self):
+        sub = self._sub_de("pro", "60 análisis IA / semana")
+        real = LIMITS["pro"]["analyses_per_week"] // LIMITS["free"]["analyses_per_week"]
+        self.assertIn(f"{real}× más que Free", sub,
+                      f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
+
+    def test_el_multiplo_contra_plus_es_el_real(self):
+        sub = self._sub_de("pro", "60 análisis IA / semana")
+        real = LIMITS["pro"]["analyses_per_week"] // LIMITS["plus"]["analyses_per_week"]
+        self.assertIn(f"{real}× que Plus", sub,
+                      f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
+
+
 class LoQueTodaviaNoExisteNoSeVende(unittest.TestCase):
     """El catálogo separa `roadmap` de las features activas, y avisa en un
     comentario que NUNCA van mezcladas. El muro las mezcló: vendía "carpeta de

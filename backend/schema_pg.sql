@@ -1809,6 +1809,7 @@ CREATE TABLE IF NOT EXISTS users (
   trial_ends_at text,
   quota_window_from text,
   requires_plan integer DEFAULT 0,
+  quota_plus_legacy integer DEFAULT 0,
   UNIQUE (email)
 );
 

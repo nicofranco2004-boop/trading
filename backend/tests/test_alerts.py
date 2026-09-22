@@ -112,9 +112,18 @@ def test_quota_free_caps_at_3(clean):
 
 
 def test_quota_plus_higher(clean):
+    """El tope de alertas del Plus se DERIVA. Estaba escrito 25 a mano, y el
+    2026-10-15 —cuando el Plus pasó a tener las métricas completas— quedó sin
+    tope: el test se puso rojo certificando el plan de ayer. Lo que sigue siendo
+    la regla es que el Plus tenga más aire que el Free, no el número."""
     conn = clean
     ok, info = plan.check_alert_quota(conn, 2)   # plus
-    assert ok is True and info["limit"] == 25
+    tope_plus = plan.PLAN_LIMITS["plus"]["alerts_max"]
+    tope_free = plan.PLAN_LIMITS["free"]["alerts_max"]
+    assert ok is True
+    assert info["limit"] == tope_plus
+    assert tope_plus is None or tope_plus > tope_free, (
+        "el Plus dejó de tener más alertas que el Free")
 
 
 def test_pct_move_gated_free_not_plus(clean):

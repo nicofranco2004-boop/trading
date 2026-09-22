@@ -191,15 +191,20 @@ class CobraLaFichaQueCorrespondeTest(_Base):
         self.assertEqual(self._contador("chat_count"), 1)
         self.assertEqual(self._contador("analyses_count"), 0)
 
-    def test_plus_conserva_sus_seis_analisis(self):
-        """Los números que se estaban por perder. Plus tiene 6 análisis y 9
-        consultas por semana. Seis botones entran, el séptimo no, y las nueve
-        consultas escritas siguen enteras."""
+    def test_el_boton_gasta_el_cupo_de_analisis_del_plan_y_no_el_de_chat(self):
+        """La regla: el botón cobra ANÁLISIS, no chat, y corta en el tope del
+        plan — cualquiera sea ese tope.
+
+        ⚠️ El tope se DERIVA. Estaba escrito 6 a mano y el test se llamaba
+        "plus conserva sus seis análisis": cuando el Plus dejó de ser un plan de
+        IA y su cupo pasó a 2 (2026-10-15), se puso rojo certificando el plan de
+        ayer, no el comportamiento del botón."""
+        tope = quota.LIMITS["plus"]["analyses_per_week"]
         self.conn.execute("UPDATE users SET tier='plus' WHERE id=?", (self.uid,))
         self.conn.commit()
-        for i in range(6):
+        for i in range(tope):
             self.assertEqual(self._boton("operations").status_code, 200, "botón %d" % (i + 1))
-        self.assertEqual(self._contador("analyses_count"), 6)
+        self.assertEqual(self._contador("analyses_count"), tope)
         self.assertEqual(self._contador("chat_count"), 0)
         r = self._boton("operations")
         self.assertEqual(r.status_code, 429)
@@ -301,7 +306,8 @@ class LaReservaDeAnalisisEsAtomicaTest(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    TOPE = 6                             # el de Plus (Free tiene 1)
+    # Se deriva: era 6 a mano y el cupo del Plus pasó a 2 en el 2026-10-15.
+    TOPE = quota.LIMITS["plus"]["analyses_per_week"]
 
     def test_no_deja_pasar_mas_que_el_tope(self):
         ok = sum(1 for _ in range(self.TOPE + 3)

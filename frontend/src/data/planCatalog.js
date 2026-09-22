@@ -31,30 +31,37 @@ export const FREE_FEATURES = {
   ],
 }
 
+// Plus = **Rendi entero, sin el analista** (2026-10-15). Antes se definía por
+// recortes —6 de 12 detectores, 6 puntos de diagnóstico, 25 alertas— y nadie
+// podía nombrar lo que compraba. Ahora las métricas están COMPLETAS y lo que
+// lo separa del Pro son dos cosas que se dicen en una frase: la IA y los
+// brokers. El cupo de IA bajó a 2/sem justamente para que quede claro que el
+// Plus no es el plan de la IA (Free tiene 1).
 export const PLUS_FEATURES = {
   essentials: [
-    { label: 'Todo lo del Free' },
-    { label: 'Personalizá el diagnóstico sin límite', sub: '“No me interesa” ilimitado (Free: 2/semana)' },
-    { label: '6 detectores de comportamiento visibles (de 12 disponibles)' },
+    { label: 'Todo lo del Free, sin recortes' },
+    { label: 'Diagnóstico completo', sub: 'Todos los puntos, y personalizalo sin límite (Free: 2/semana)' },
+    { label: 'Los 12 detectores de comportamiento' },
     { label: 'Métricas de riesgo desbloqueadas', sub: 'Sharpe, Sortino, beta, alfa, Information Ratio y Calmar (en Free se ven bloqueadas; CAGR y volatilidad ya vienen gratis)' },
     { label: 'Distribución por activo desbloqueada' },
     { label: 'Reportes históricos completos (todos los meses)' },
+    { label: 'Alertas sin tope' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
-    { label: '9× más Chat Rendi AI que Free', sub: '9 consultas/semana vs 1 en Free' },
+    { label: 'Hasta 3 brokers consolidados' },
   ],
   diff: {
     title: 'Vs Free',
     items: [
       'Hasta 3 brokers (3× más)',
-      '9× más Chat Rendi AI (9 vs 1 /sem)',
-      'Personalizá el diagnóstico sin límite (Free: 2/sem)',
+      'Diagnóstico completo y los 12 detectores de comportamiento',
       'Métricas de riesgo desbloqueadas (Sharpe, Sortino, alfa, Calmar…)',
-      '6 detectores de comportamiento (2× más)',
+      'Alertas sin tope (Free: 3, y sólo de precio objetivo)',
       'Reportes históricos + Export CSV',
+      '9× más Chat Rendi AI (9 vs 1 /sem)',
     ],
   },
   quotas: [
-    { label: 'Análisis IA / sem', value: '6', note: '6× Free' },
+    { label: 'Análisis IA / sem', value: '2' },
     { label: 'Chat Rendi AI / sem', value: '9', note: '9× Free' },
     { label: 'Brokers', value: '3' },
   ],
@@ -63,21 +70,23 @@ export const PLUS_FEATURES = {
 export const PRO_FEATURES = {
   essentials: [
     { label: 'Todo lo del Plus' },
-    { label: '60 análisis IA / semana', sub: '60× más que Free · 10× que Plus' },
+    { label: '60 análisis IA / semana', sub: '60× más que Free · 30× que Plus' },
     { label: 'Chat libre con Rendi AI', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
     { label: 'Respuestas con causalidad y comparaciones', sub: 'Modo research-note: no solo describe, infiere por qué' },
     { label: 'Follow-ups: profundizá cualquier análisis con preguntas libres' },
     { label: 'Memoria persistente del Coach', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
     { label: 'Brokers ilimitados' },
-    { label: '12 detectores de comportamiento completos' },
   ],
+  // Vs Plus quedó reducido a propósito: desde que el Plus tiene las métricas
+  // completas, TODO lo que separa al Pro es la IA — más los brokers.
   diff: {
     title: 'Vs Plus',
     items: [
-      '10× más análisis IA (60/sem vs 6/sem)',
+      '30× más análisis IA (60/sem vs 2/sem)',
       'Chat libre con Rendi AI (vs 12 preguntas guiadas)',
       'IA con causalidad y memoria persistente',
-      'Comportamiento completo (12 vs 6) + brokers ilimitados',
+      'Repreguntá sobre cualquier análisis (follow-ups)',
+      'Brokers ilimitados (Plus: 3)',
     ],
   },
   quotas: [

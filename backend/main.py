@@ -2536,6 +2536,13 @@ def init_db():
         # Sin índice encima (la columna se lee siempre por id de usuario).
         if user_cols_after and 'requires_plan' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN requires_plan INTEGER DEFAULT 0")
+        # ¿Se le respeta el cupo de análisis que el Plus tenía ANTES del
+        # 2026-10-15? El cupo bajó de 6 a 2 cuando el Plus dejó de ser un plan de
+        # IA, y a quien ya estaba pagando no se le recorta lo que se le prometió.
+        # 1 = conserva los 6 (ver `quota.ANALISIS_PLUS_ANTES_DEL_CAMBIO`).
+        # Se estampa a mano sobre los que ya pagaban; nadie nuevo la recibe.
+        if user_cols_after and 'quota_plus_legacy' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN quota_plus_legacy INTEGER DEFAULT 0")
         conn.commit()
 
         # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la

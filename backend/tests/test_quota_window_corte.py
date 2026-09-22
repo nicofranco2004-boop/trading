@@ -122,7 +122,7 @@ class PrimerDiaDePlusTest(Base):
         self._hasta_el_primer_dia_de_plus(6)
         u = self._uso()
         self.assertEqual(u["analyses_count"], 0)
-        self.assertEqual(u["analyses_limit"], 6)
+        self.assertEqual(u["analyses_limit"], quota.LIMITS["plus"]["analyses_per_week"])
         self.assertTrue(quota.can_analyze(self.conn, self.uid)[0])
 
     def test_ni_siquiera_quemando_todo_el_tope_de_pro(self):
