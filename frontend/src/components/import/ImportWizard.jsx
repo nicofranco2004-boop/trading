@@ -242,7 +242,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   // NO se aplican solos (el backend los manda marcados). Estado propio, separado
   // del de la foto de tenencia, aunque los dos terminen en `aprobar_tickers`.
   const [traspasosOk, setTraspasosOk] = useState(new Set())
-  const [aprobados, setAprobados] = useState(new Set())  // 'cocos' (CSV) o null (Bull Market PDF)
+  const [decisiones, setDecisiones] = useState(new Map())  // ticker → 'si' | 'no' (paso de la foto)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [inspect, setInspect] = useState(null)        // {headers, sample_rows, rendi_fields, suggested_mapping}
@@ -683,7 +683,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           // que mirar, se muestra y se decide.
           if (tp?.session_id) {
             setTenenciaPreview({ ...tp, _movimientos: data })
-            setAprobados(new Set())
+            setDecisiones(new Map())
             setStep(STEP_RECONCILE)
             track('import_completed', { broker: format, rows: data?.imported ?? data?.rows ?? null })
             onConfirmed?.(data)
@@ -717,7 +717,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
       await api.post('/imports/confirm', {
         session_id: tenenciaPreview.session_id,
         skip_row_indices: [],
-        aprobar_tickers: Array.from(aprobados),
+        aprobar_tickers: tickersAprobados(decisiones),
       })
       setConfirmResult({ ...(tenenciaPreview._movimientos || {}), tenencia: tenenciaPreview })
       setStep(STEP_DONE)
@@ -843,12 +843,8 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           {step === STEP_RECONCILE && tenenciaPreview && (
             <ReconcileStep
               data={tenenciaPreview}
-              aprobados={aprobados}
-              onToggle={tk => setAprobados(prev => {
-                const n = new Set(prev)
-                n.has(tk) ? n.delete(tk) : n.add(tk)
-                return n
-              })}
+              decisiones={decisiones}
+              onDecidir={(tk, v) => setDecisiones(prev => new Map(prev).set(tk, v))}
             />
           )}
 
@@ -963,16 +959,23 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
                 >
                   Omitir la foto
                 </button>
-                <button
-                  onClick={aplicarTenencia}
-                  disabled={busy}
-                  className="px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 flex items-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 text-white"
-                >
-                  {busy && <Loader2 size={14} className="animate-spin" />}
-                  {aprobados.size > 0
-                    ? `Aplicar (con ${aprobados.size} aprobado${aprobados.size === 1 ? '' : 's'})`
-                    : 'Aplicar sin los dudosos'}
-                </button>
+                {(() => {
+                  const faltan = decisionesPendientes(tenenciaPreview, decisiones)
+                  const si = tickersAprobados(decisiones).length
+                  return (
+                    <button
+                      onClick={aplicarTenencia}
+                      disabled={busy || faltan > 0}
+                      title={faltan > 0 ? 'Contestá sí o no en cada ítem para poder aplicar la foto.' : undefined}
+                      className="px-4 py-2 text-sm rounded-md font-semibold transition disabled:opacity-50 flex items-center gap-2 bg-rendi-accent hover:bg-rendi-accent/90 text-white"
+                    >
+                      {busy && <Loader2 size={14} className="animate-spin" />}
+                      {faltan > 0
+                        ? `Faltan ${faltan} decisi${faltan === 1 ? 'ón' : 'ones'}`
+                        : si > 0 ? `Aplicar (con ${si} aprobado${si === 1 ? '' : 's'})` : 'Aplicar la foto'}
+                    </button>
+                  )
+                })()}
               </div>
             )}
             {step === STEP_PREVIEW && (() => {
@@ -1845,7 +1848,33 @@ const MOTIVO_LABEL = {
 // `sujeto`: a quién le habla el texto. 'vos' = el dueño de la cuenta (asistente
 // individual); 'cliente' = el asesor mirando la cuenta de un cliente (tanda).
 // Sin esto el asesor leía "tenés 50 GGAL" sobre una cartera que no es suya.
-export function ReconcileStep({ data, aprobados, onToggle, sujeto = 'vos' }) {
+// Los tickers de la foto que exigen una decisión explícita. Es la MISMA regla
+// que usa el render para mostrar los botones: si la casilla no se muestra
+// (el cap anuló la decisión), tampoco cuenta como pendiente.
+export function tickersADecidir(data) {
+  const cap = !!data?.override?.capped
+  return (data?.no_reconciliable || [])
+    .filter(x => x.requiere_aprobacion && x.ticker
+      && !(cap && x.motivo === 'ausente_en_la_foto'))
+    .map(x => x.ticker)
+}
+
+// Cuántas decisiones faltan. `decisiones` es Map ticker → 'si' | 'no'.
+export function decisionesPendientes(data, decisiones) {
+  return tickersADecidir(data).filter(tk => !decisiones?.has(tk)).length
+}
+
+// Lo que se manda al servidor: sólo lo que se contestó "sí".
+export function tickersAprobados(decisiones) {
+  return Array.from(decisiones?.entries?.() || []).filter(([, v]) => v === 'si').map(([tk]) => tk)
+}
+
+// `decisiones`: Map ticker → 'si' | 'no'. Cada ítem dudoso pide una respuesta
+// EXPLÍCITA en vez de una casilla: una casilla sin tildar se confunde con "no
+// lo vi" (un tester del plan asesor aplicó la foto sin ver los tildes, y los
+// activos vendidos siguieron en la cartera). Quien llama traba el botón
+// Aplicar mientras `decisionesPendientes` > 0.
+export function ReconcileStep({ data, decisiones, onDecidir, sujeto = 'vos' }) {
   const esCliente = sujeto === 'cliente'
   const T = {
     historico: esCliente ? 'su histórico' : 'tu histórico',
@@ -1981,24 +2010,47 @@ export function ReconcileStep({ data, aprobados, onToggle, sujeto = 'vos' }) {
       {dudosos.length > 0 && (
         <RecSection titulo={dudosos.length === 1 ? 'Necesitamos que decidas vos'
           : `${dudosos.length} cosas que necesitan que decidas vos`}
-                 sub="No pudimos concluir nada por nuestra cuenta. Nada de esto se aplica salvo que lo marques."
+                 sub="No pudimos concluir nada por nuestra cuenta. Contestá sí o no en cada una: hasta que estén todas, la foto no se puede aplicar."
                  tono="decide">
           {dudosos.map((x, i) => {
             const tk = x.ticker
             const aprobable = !!x.requiere_aprobacion
               && !(capAnulaLaDecision && x.motivo === 'ausente_en_la_foto')
+            const dec = decisiones?.get(tk)
+            const btn = (valor, texto) => {
+              const activo = dec === valor
+              const tono = valor === 'si'
+                ? 'border-rendi-pos/40 bg-rendi-pos/15 text-rendi-pos'
+                : 'border-line bg-bg-3 text-ink-1'
+              return (
+                <button type="button" role="radio" aria-checked={activo}
+                        onClick={() => onDecidir?.(tk, valor)}
+                        className={`text-[11.5px] px-2.5 py-1 rounded border transition-colors ${activo
+                          ? tono + ' font-semibold'
+                          : 'border-line text-ink-3 hover:text-ink-1 hover:border-ink-3'}`}>
+                  {texto}
+                </button>
+              )
+            }
             return (
-              <div key={`d-${tk || i}`} className="flex items-start gap-2 py-1.5">
-                {aprobable ? (
-                  <input type="checkbox" className="mt-0.5 flex-shrink-0" aria-label={`Aprobar ${tk}`}
-                         checked={aprobados.has(tk)} onChange={() => onToggle(tk)} />
-                ) : <span className="w-3 flex-shrink-0" />}
+              <div key={`d-${tk || i}`} className={`py-2 ${aprobable && !dec ? 'border-l-2 border-rendi-warn pl-2 -ml-2' : ''}`}>
                 <div className="min-w-0">
                   <span className="font-mono text-xs text-ink-1">{tk || '—'}</span>
                   <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-bg-3 text-ink-3">
                     {MOTIVO_LABEL[x.motivo] || 'a revisar'}
                   </span>
+                  {aprobable && !dec && (
+                    <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-rendi-warn/10 text-rendi-warn font-semibold">
+                      falta decidir
+                    </span>
+                  )}
                   {x.detalle && <p className="text-xs text-ink-2 mt-0.5">{x.detalle}</p>}
+                  {aprobable && (
+                    <div className="mt-1.5 flex items-center gap-2" role="radiogroup" aria-label={`Decisión sobre ${tk}`}>
+                      {btn('si', 'Sí, aplicar')}
+                      {btn('no', 'No, dejar como está')}
+                    </div>
+                  )}
                   {x.requiere_aprobacion && !aprobable && (
                     <p className="text-[11px] text-ink-3 mt-0.5">
                       Esta vez no se puede aplicar: no ajustamos ninguna cantidad

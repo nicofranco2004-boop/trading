@@ -185,6 +185,15 @@ export default function RentaFijaSections({
           <h3 className="text-[15px] font-semibold leading-tight text-ink-0">Renta Fija</h3>
           <span className="text-ink-3 text-xs">· {keys.length} {keys.length === 1 ? 'sección' : 'secciones'}</span>
         </div>
+        {/* Por qué esto está separado. Un usuario (y después un tester del plan
+            asesor) preguntó por qué "el bono de la cartera está aparte del resto":
+            la única explicación vivía en un tooltip del total. Se dice acá, donde
+            se mira. */}
+        <p className="basis-full text-[12px] text-ink-3 leading-snug -mt-1">
+          Bonos, letras y fondos de todos tus brokers, juntos por tipo y moneda, para ver
+          vencimientos y cobros en un solo lugar. Siguen perteneciendo a su broker, y el
+          total de arriba ya los cuenta.
+        </p>
         <div className="flex items-center gap-2 flex-wrap">
           {cobradoYearUsd > 0.01 && (
             <span className="text-[12px] text-ink-2 bg-bg-1 border border-line rounded-full px-2.5 py-1 tabular">

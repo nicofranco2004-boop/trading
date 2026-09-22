@@ -1313,6 +1313,13 @@ export default function PositionsMobile() {
     return flattenMobile(agg)
   }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas])
 
+  // ¿Hay algo que desglosar en lo que se ve? Sale de los MISMOS grupos que se
+  // dibujan (`grouped` / `flatList`), no de una regla aparte — misma decisión
+  // que el escritorio. Sin esto, "Ver lotes" aparecía sin hacer nada.
+  const multiLote = brokerFilter === ALL_FILTER
+    ? (grouped || []).some(g => (g.positions || []).some(p => p._isAgg))
+    : (flatList || []).some(p => p._isAgg)
+
   // ¿La vista filtrada está mirando una cuenta unificada? Lo necesita el render
   // para decidir si cada fila lleva su chip de moneda.
   const filtroEsCuentaUnificada = (() => {
@@ -1518,7 +1525,7 @@ export default function PositionsMobile() {
             {[
               brokerFilter !== ALL_FILTER && brokerFilterLabel,
               sortBy !== 'value' && `orden: ${SORT_OPTIONS.find(o => o.id === sortBy)?.label}`,
-              showAllLots && 'por lote',
+              showAllLots && multiLote && 'por lote',
             ].filter(Boolean).join(' · ')}
           </span>
           <button
@@ -1983,17 +1990,19 @@ export default function PositionsMobile() {
             value={brokerFilter}
             onChange={setBrokerFilter}
           />
-          <div>
-            <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Detalle</div>
-            <div className="space-y-2">
-              <FilaToggle
-                label="Ver lotes"
-                hint="Desglosa cada compra en vez de una card por ticker."
-                active={showAllLots}
-                onToggle={() => setShowAllLots(v => !v)}
-              />
+          {multiLote && (
+            <div>
+              <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Detalle</div>
+              <div className="space-y-2">
+                <FilaToggle
+                  label="Ver lotes"
+                  hint="Desglosa cada compra en vez de una card por ticker."
+                  active={showAllLots}
+                  onToggle={() => setShowAllLots(v => !v)}
+                />
+              </div>
             </div>
-          </div>
+          )}
           <div className="pt-2 flex items-center gap-2">
             <button
               onClick={restablecerVista}

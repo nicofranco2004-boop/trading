@@ -33978,17 +33978,24 @@ def import_preview(
                 (_tid, _auth)).fetchone() if _auth else None
             if not _own:
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
-        with conn:
-            payload = _import_pipeline.run_preview(
-                conn,
-                uid=uid,
-                file_bytes=combined_bytes,
-                file_name=combined_name,
-                broker_hint=broker,
-                parser_format=format,
-                mapping=parsed_mapping,
-                route_by_currency=flag_route,
-            )
+        def _previsualizar():
+            with conn:
+                return _import_pipeline.run_preview(
+                    conn,
+                    uid=uid,
+                    file_bytes=combined_bytes,
+                    file_name=combined_name,
+                    broker_hint=broker,
+                    parser_format=format,
+                    mapping=parsed_mapping,
+                    route_by_currency=flag_route,
+                )
+        # Si otro usuario tiene el candado de la base (un confirm largo, la tanda
+        # del asesor, el cron), el `with conn:` hace rollback y se vuelve a
+        # intentar: re-parsear el archivo es barato y no deja nada a medias. Sin
+        # esto el error crudo terminaba en el cartel rojo "database is locked" y el
+        # usuario creía que el problema era su archivo (reporte 2026-09-20).
+        payload = _run_with_lock_retry(_previsualizar, attempts=3, base_delay=0.5)
         if payload.get("error"):
             # No es 500 — es un error esperado (archivo inválido, formato no soportado).
             raise HTTPException(400, payload["error"])
@@ -34773,17 +34780,11 @@ def _wallbit_ensure_broker(conn, uid: int, broker: str = "Wallbit"):
         (uid, broker))
 
 
-def _wallbit_confirmed_fingerprints(conn, uid: int, broker: str = "Wallbit") -> set:
-    """Fingerprints de TRADEs ya importados en batches confirmados de Wallbit.
-    Sirve para que cada sync agregue SOLO lo nuevo (idempotente, sin duplicar)."""
-    rows = conn.execute(
-        """SELECT DISTINCT n.fingerprint
-             FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id=? AND b.broker=? AND b.status='confirmed'
-              AND n.fingerprint IS NOT NULL""",
-        (uid, broker)).fetchall()
-    return {r["fingerprint"] for r in rows}
+def _wallbit_confirmed_fingerprints(conn, uid: int, broker: str = "Wallbit"):
+    """Huellas de TRADEs ya importados en batches confirmados de Wallbit, CON su
+    conteo (mismo helper que el importador de archivos: dos fills iguales son dos
+    filas, no una). Sirve para que cada sync agregue SOLO lo nuevo."""
+    return _import_pipeline.confirmed_fingerprint_counts(conn, uid, broker=broker)
 
 
 def _wallbit_last_from_date(conn, uid: int) -> Optional[str]:
@@ -34919,7 +34920,9 @@ def _wallbit_do_sync(conn, uid: int, api_key: str, *, full: bool) -> dict:
     with _wallbit_sync_locks[uid]:
         # 1) Trades → posiciones/P&L
         seen = _wallbit_confirmed_fingerprints(conn, uid)
-        new_txs = [t for t in txs if _import_pipeline._row_fingerprint(t) not in seen]
+        # `trades_to_normalized` ya numera row_index 1..N en orden de fecha.
+        _dup = _import_pipeline.duplicate_row_indices_by_count(seen, txs)
+        new_txs = [t for t in txs if t.row_index not in _dup]
         res["new_trades"] = len(new_txs)
         if new_txs:
             for i, t in enumerate(new_txs, start=1):
