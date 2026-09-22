@@ -1527,6 +1527,31 @@ class BookHistoryTest(AdvisorBase):
                           headers=self._hdr(self.stranger))
         self.assertEqual(r.status_code, 403)
 
+    def test_subconjunto_de_clientes(self):
+        # Sólo Ana (client2): la serie es SU capital, y el libro entero viaja
+        # en client_list para las casillas.
+        r = self.http.get(f"/api/advisor/book/history?days=30&clients={self.client2}",
+                          headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertEqual(d["clients"], 1)
+        p1 = next(p for p in d["series"] if p["date"] == self.d1)
+        self.assertEqual(p1["aum_usd"], 500.0)
+        self.assertEqual({c["client_uid"] for c in d["client_list"]}, {self.client_uid, self.client2})
+
+    def test_cliente_ajeno_en_el_filtro_se_ignora(self):
+        r = self.http.get(f"/api/advisor/book/history?days=30&clients={self.stranger},{self.client_uid}",
+                          headers=self._hdr(self.advisor))
+        d = r.json()
+        self.assertEqual(d["clients"], 1)
+        p1 = next(p for p in d["series"] if p["date"] == self.d1)
+        self.assertEqual(p1["aum_usd"], 1200.0)   # sólo el cliente 1
+
+    def test_filtro_invalido_es_422(self):
+        r = self.http.get("/api/advisor/book/history?clients=abc",
+                          headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 422)
+
 
 class BookDetailTest(AdvisorBase):
     """GET /api/advisor/book/detail — desglose por cliente del hero.

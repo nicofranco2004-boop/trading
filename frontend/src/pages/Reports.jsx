@@ -533,6 +533,11 @@ function PeriodRow({ period, expanded, onToggle }) {
 // expandido con un KPI strip arriba y el MonthCard completo abajo.
 
 function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
+  // ARRIBA de los dos `return` de abajo: este componente se monta con
+  // loading=true (Reports.jsx:285 le pasa `loadingItems`), así que un useState
+  // después del return temprano renderiza 0 hooks primero y 1 después —
+  // "Rendered more hooks than during the previous render", pantalla rota.
+  const [showTech, setShowTech] = useState(false)
   if (loading) {
     return (
       <div className="p-10 text-center text-ink-3">
@@ -549,7 +554,6 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     )
   }
 
-  const [showTech, setShowTech] = useState(false)
   const m = period.metrics || {}
   const snap = period.portfolio_snapshot || {}
   // AUDIT D-1: ver PeriodRow. Con base incomparable no hay resultado del período

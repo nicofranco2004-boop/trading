@@ -25,6 +25,7 @@ import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { usd as usdFmt, ars as arsFmt, pctTxt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
 import BookComposition from '../components/advisor/BookComposition'
+import ClientPicker from '../components/advisor/ClientPicker'
 
 // El libro calcula en USD; la MONEDA DE DISPLAY sigue la elección del asesor
 // en Config → Tipos de cambio (mismo CurrencyContext que el resto de la app;
@@ -43,6 +44,10 @@ export default function AdvisorDashboard() {
   const [book, setBook] = useState(null)     // null = cargando
   const [history, setHistory] = useState(null)  // serie AUM (evolución del libro)
   const [historyError, setHistoryError] = useState(false)
+  // Evolución de un SUBCONJUNTO de clientes (Nico, 2026-09-21): de base se ve
+  // el total; las casillas eligen de quiénes ver la curva. `null` = todos.
+  const [evoClients, setEvoClients] = useState(null)       // [{client_uid,label}] del libro
+  const [evoSelected, setEvoSelected] = useState(null)     // Set; null = todos
   const [error, setError] = useState(false)
   const [composition, setComposition] = useState(null)   // en qué está el libro
   const [compositionError, setCompositionError] = useState(false)
@@ -60,6 +65,8 @@ export default function AdvisorDashboard() {
     try {
       const h = await api.get('/advisor/book/history?days=730')
       setHistory(h.series || [])
+      setEvoClients(h.client_list || [])
+      setEvoSelected(prev => prev ?? new Set((h.client_list || []).map(c => c.client_uid)))
       setHistoryError(false)
     } catch {
       // Distinguir error de "sin datos": el empty-state decía "en unos días
@@ -79,6 +86,22 @@ export default function AdvisorDashboard() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Cambió la selección de clientes → sólo la serie se vuelve a pedir; el
+  // resto del libro (hero, colas, composición) sigue siendo el total.
+  const evoFirst = useRef(true)
+  useEffect(() => {
+    if (!evoSelected || !evoClients) return
+    if (evoFirst.current) { evoFirst.current = false; return }
+    let cancelled = false
+    const all = evoSelected.size === evoClients.length
+    const q = all ? '' : `&clients=${Array.from(evoSelected).join(',') || '0'}`
+    setHistory(null)
+    api.get(`/advisor/book/history?days=730${q}`)
+      .then(h => { if (!cancelled) { setHistory(h.series || []); setHistoryError(false) } })
+      .catch(() => { if (!cancelled) { setHistory([]); setHistoryError(true) } })
+    return () => { cancelled = true }
+  }, [evoSelected, evoClients])
 
   const openClient = (c) => {
     enterClient({ id: c.client_uid, label: c.label })
@@ -136,7 +159,11 @@ export default function AdvisorDashboard() {
       ) : (
         <>
           {book.aum && <BookHero book={book} />}
-          <BookEvolution series={history} error={historyError} />
+          <BookEvolution series={history} error={historyError}
+            picker={evoClients && evoClients.length > 1 ? (
+              <ClientPicker clients={evoClients} selected={evoSelected} onChange={setEvoSelected} label="Viendo" />
+            ) : null}
+            subset={evoClients && evoSelected && evoSelected.size < evoClients.length ? evoSelected.size : 0} />
           {book.queues?.length > 0 && <CallQueue queues={book.queues} onOpen={openClient} />}
           {(book.star || book.distribution) && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
@@ -440,8 +467,14 @@ const EVO_RANGES = [
   { key: '1A', days: 365 }, { key: 'Todo', days: 99999 },
 ]
 
-function BookEvolution({ series, error }) {
-  const { money, smoney } = moneyHelpers(useMoneyFormat())
+function BookEvolution({ series, error, picker = null, subset = 0 }) {
+  // UNA sola llamada al hook, y ANTES de los dos `return` de abajo (cargando /
+  // sin historia). Un `use*` después de un return temprano cambia la cantidad
+  // de hooks entre renders: React avisa "change in the order of Hooks" y, en
+  // cuanto sea un useState/useMemo (y no un useContext, que no ocupa lugar),
+  // pasa a ser la pantalla en blanco de "Rendered more hooks".
+  const fmt = useMoneyFormat()
+  const { money, smoney } = moneyHelpers(fmt)
   const [range, setRange] = useState('3M')
 
   const { visible, baseline } = useMemo(() => {
@@ -482,18 +515,31 @@ function BookEvolution({ series, error }) {
     if (fit) setRange(fit.key)
   }, [series, visible])
 
-  if (series === null) return <Skeleton className="h-56 rounded-xl mb-4" />
+  const titulo = subset > 0
+    ? `Evolución del capital · ${subset} cliente${subset === 1 ? '' : 's'}`
+    : 'Evolución del capital administrado'
+  if (series === null) {
+    return (
+      <div className="bg-bg-1 border border-line/60 rounded-xl p-4 mb-4">
+        {picker && <div className="mb-3">{picker}</div>}
+        <Skeleton className="h-52" />
+      </div>
+    )
+  }
   if (series.length < 2) {
     return (
       <div className="bg-bg-1 border border-line/60 rounded-xl p-4 mb-4">
         <h2 className="flex items-center gap-2 text-[13px] font-semibold text-ink-0 mb-1">
           <LineChart size={13} strokeWidth={1.75} className="text-data-violet" />
-          Evolución del capital administrado
+          {titulo}
         </h2>
+        {picker && <div className="my-3">{picker}</div>}
         <p className="text-[11.5px] text-ink-3">
           {error
             ? 'No pudimos cargar la evolución recién — recargá la página para reintentar.'
-            : `Se dibuja solo con los snapshots nocturnos — con un par de días de
+            : subset > 0
+              ? 'Los clientes elegidos todavía no tienen historia suficiente para dibujar la curva.'
+              : `Se dibuja solo con los snapshots nocturnos — con un par de días de
           historia ya vas a ver la curva (y si el libro sube por el mercado o
           porque entra plata nueva).`}
         </p>
@@ -501,7 +547,7 @@ function BookEvolution({ series, error }) {
     )
   }
 
-  const { isArs, convert } = useMoneyFormat()
+  const { isArs, convert } = fmt
   const fmtShort = (vUsd) => {
     const v = isArs ? convert(vUsd) : vUsd
     const sym = isArs ? '$' : 'US$'
@@ -521,7 +567,7 @@ function BookEvolution({ series, error }) {
         <div>
           <h2 className="flex items-center gap-2 text-[13px] font-semibold text-ink-0">
             <LineChart size={13} strokeWidth={1.75} className="text-data-violet" />
-            Evolución del capital administrado
+            {titulo}
           </h2>
           {delta && (
             <p className="text-[11px] text-ink-3 mt-0.5 ml-[21px]">
@@ -547,6 +593,7 @@ function BookEvolution({ series, error }) {
           ))}
         </div>
       </div>
+      {picker && <div className="mb-3">{picker}</div>}
       <div className="h-52">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={visible} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>

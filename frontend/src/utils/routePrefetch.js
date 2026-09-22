@@ -31,6 +31,7 @@ const importMap = {
   '/novedades':       () => import('../pages/Novedades'),
   '/clientes':        () => import('../pages/AdvisorClients'),
   '/importar-historiales': () => import('../pages/AdvisorImports'),
+  '/cobros':          () => import('../pages/AdvisorCobros'),
   '/operaciones':     () => import('../pages/Operations'),
   '/config':          () => import('../pages/Config'),
   '/perfil-inversor': () => import('../pages/PerfilInversor'),

@@ -6,7 +6,7 @@
 // hace meses. El backend ahora sirve UVA en su lugar —el BCRA la actualiza POR
 // CER, así que el RATIO entre dos fechas es el mismo— y lo declara en `basis`.
 //
-// Ese dato tiene que viajar Positions → RentaFijaSections → BondDetail. Si se
+// Ese dato tiene que viajar Positions → BondDetailRow → BondDetail. Si se
 // cae en el camino, la pantalla vuelve a rotular como "CER" un ajuste hecho con
 // otra serie: el número sería correcto y el rótulo mentiría. Es el mismo defecto
 // que la tanda F2 arregló en el Wrapped, en otra pantalla.
@@ -68,13 +68,6 @@ describe('el basis del ajuste CER viaja hasta la tarjeta', () => {
       // Sólo los que ya pasan la serie: el que no ajusta no necesita el rótulo.
       if (!/cerSeries/.test(r.props)) continue
       expect(r.props, `${r.archivo}: renderiza la tarjeta sin cerBasis`).toMatch(/cerBasis/)
-    }
-  })
-
-  it('quien renderiza la zona de renta fija también', () => {
-    for (const r of renders('RentaFijaSections')) {
-      if (!/cerSeries/.test(r.props)) continue
-      expect(r.props, `${r.archivo}: sin cerBasis`).toMatch(/cerBasis/)
     }
   })
 

@@ -11,8 +11,11 @@ import AssetLogo from '../components/AssetLogo'
 import AddPositionFlow from '../components/AddPositionFlow'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import FuturosGroup from '../components/FuturosGroup'
-import RentaFijaSections from '../components/RentaFijaSections'
-import { isFixedIncome } from '../utils/sections'
+import PosicionesArchivadas from '../components/PosicionesArchivadas'
+import { filasDeLaTarjeta } from '../utils/tarjetaBroker'
+import { lineaDelBono } from '../utils/lineaDelBono'
+import { bondSummaryDeLaFila } from '../utils/bondSummaryMerge'
+import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
@@ -276,7 +279,10 @@ function PositionsDesktop() {
   }, [tcValuacion, publishTcValuacion])
 
   function toggleBondExpand(p) {
-    const key = `${p.broker}:${p.asset}`
+    // La MISMA clave que arma la fila (con todas las patas del grupo): con
+    // `${p.broker}:` la fila de cuenta unificada abría y cerraba una clave
+    // ("null:GD30") distinta de la que consulta el panel.
+    const key = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
     setExpandedBonds(prev => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
@@ -668,7 +674,7 @@ function PositionsDesktop() {
     // justamente el caso que crea el importador de Balanz). Esa fila tampoco
     // tiene UN costo que editar, y sin el guard `saveGroup` mandaba
     // `currency: undefined` y el backend elegía por su cuenta.
-    if (p?._multiBroker || p?._multiCcy) {
+    if (filaSinUnaPata(p)) {
       const porPata = new Map()
       for (const l of (p._lots || [])) {
         // Por (broker, MONEDA): con lotes en dos monedas dentro del mismo
@@ -833,7 +839,7 @@ function PositionsDesktop() {
     // En vez de cortar, se abre el MISMO selector que "Registrar venta" del
     // header, acotado a los lotes de este activo — el usuario elige la pata y
     // sigue por el flujo normal.
-    if (p._multiBroker || p._multiCcy || p.broker == null) {
+    if (filaSinUnaPata(p)) {
       setSellPickFrom(p._lots || [])
       setSellQuery('')
       setModal('sell-selector')
@@ -1056,8 +1062,12 @@ function PositionsDesktop() {
     const c = isARS ? calcARS(p) : calcUSDT(p)
     const dv = dvFor(p, isARS)
     const isBond = isBondPosition(p) && !p.is_cash
+    // El MISMO resumen que usa la celda (por todas las patas del grupo). Con
+    // la clave de una sola pata, una fila de cuenta unificada se ORDENABA por
+    // un P&L sin cupones mientras MOSTRABA uno con cupones: la tabla quedaba
+    // ordenada por un número que no estaba en pantalla.
     const pnlContrib = isBond
-      ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
+      ? (bondSummaryDeLaFila(p, bondCashflowsByKey)?.pnlContribution || 0)
       : 0
     const basePnl = isARS ? c.pnlArs : c.pnl
     const adjPnl = (basePnl != null && pnlContrib) ? basePnl + pnlContrib : basePnl
@@ -1192,7 +1202,7 @@ function PositionsDesktop() {
   // entre tablas: `expandedTickers` es un Set único de toda la página, así que
   // abrir los lotes de AL30 en IOL abría también los de AL30 en Balanz. La
   // convención correcta ya estaba en este mismo archivo — `expandedBonds` keyea
-  // `${p.broker}:${p.asset}` — sólo que la de acá no la seguía.
+  // por broker y activo — sólo que la de acá no la seguía.
   //
   // `unified`: en la tarjeta de cuenta (padre + sub-broker "· USD") se agrupa por
   // TICKER solo, no por (ticker, moneda) — un renglón por activo, que es lo que
@@ -1425,8 +1435,7 @@ function PositionsDesktop() {
   function calcRowCuenta(p) {
     if (p._multiCcy) {
       // Fila que fusiona monedas: se suma lote por lote con `valuePos`, que
-      // rutea cada uno por la regla de SU broker real. Es el mismo helper que
-      // usa la zona Renta Fija, que ya es cross-broker en producción.
+      // rutea cada uno por la regla de SU broker real.
       const lots = p._lots || [p]
       let valueUsd = 0, investedUsd = 0
       for (const l of lots) {
@@ -1501,7 +1510,7 @@ function PositionsDesktop() {
     }
   }
 
-  // Valuación unificada por posición (en USD) para la zona Renta Fija. Despacha a
+  // Valuación unificada por posición (en USD). Despacha a
   // calcARS/calcUSDT según la moneda del broker REAL de la posición (la sección es
   // cross-broker) — misma lógica que las tablas, sin duplicar valuación. Si no hay
   // precio, cae al costo (P&L 0), como el resto de la app.
@@ -1510,7 +1519,7 @@ function PositionsDesktop() {
     if (b && b.currency === 'ARS') {
       const c = calcARS(p)
       // Tomar el costo de calcARS (invUsd): para un lote costInUsd el costo YA está
-      // en USD y NO debe dividirse por el blue (sino P&L% explota en Renta Fija). El
+      // en USD y NO debe dividirse por el blue (sino el P&L% del bono explota). El
       // fallback ÷tcValuacion solo aplica a lotes ARS (calcARS omite invUsd sin precio).
       const invUsd = c.invUsd ?? routedInvUsd(p, tcValuacion)
       const valueUsd = c.valueUsd != null ? c.valueUsd : invUsd
@@ -1659,11 +1668,6 @@ function PositionsDesktop() {
   const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
   const heroValue = totals.value + pfValueUsd
   const heroInvested = totals.invested + pfInvestedUsd
-  // ¿Hay tenencia fuera de las tarjetas por broker? La renta fija (bonos/letras/ONs/
-  // FCI) se excluye de esas tarjetas a propósito y vive en su propia zona; el hero sí
-  // la suma. Sirve para avisar por qué sumar las tarjetas no da el total.
-  const hasFixedIncome = useMemo(
-    () => positions.some(p => !p.is_cash && isFixedIncome(p)), [positions])
   const heroPnl = heroValue - heroInvested
   const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
   // Hero en display ARS: cifras mode-INDEPENDENT (pesos nativos + tenencias USD al
@@ -1789,12 +1793,13 @@ function PositionsDesktop() {
   // ¿Hay algo que desglosar EN LO QUE SE VE? "Ver lotes" sólo se ofrece si
   // alguna de las tablas que se dibujan tiene un activo con más de un lote.
   // Se decide con los MISMOS grupos que arma la tabla (mismas patas, mismo
-  // filtro de broker y de búsqueda, misma exclusión de renta fija, misma clave
-  // por moneda o por ticker en cuentas unificadas) — no con una regla aparte:
-  // una segunda regla ya divergía en cuatro casos (auditoría de f9a38c27).
+  // filtro de broker y de búsqueda, mismas filas, misma clave por moneda o por
+  // ticker en cuentas unificadas) — no con una regla aparte: una segunda regla
+  // ya divergía en cuatro casos (auditoría de f9a38c27). Las filas salen de
+  // `filasDeLaTarjeta`, la misma función que las pide la tabla de abajo.
   const multiLote = displaySections.some(section => {
     if (filterBroker !== 'all' && section.key !== filterBroker) return false
-    const raw = positions.filter(p => section.patasNames.has(p.broker) && matchesAsset(p) && !isFixedIncome(p))
+    const raw = filasDeLaTarjeta(positions, section, matchesAsset)
     return aggregateAndSort(raw, section.currency === 'ARS', section.key, section.isPair).some(g => g.isAgg)
   })
   // El desglose sólo cuenta mientras haya algo que desglosar: sin esto, un
@@ -1910,21 +1915,16 @@ function PositionsDesktop() {
           <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
             {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
           </span>
-          {/* Reconciliación: el hero suma TODO (incluida la renta fija, que vive en su
-              propia zona más abajo, y los plazos fijos, que no tienen tarjeta). Las
-              tarjetas por broker excluyen la renta fija a propósito, así que sumarlas
-              NO da este número — un usuario nos reportó justamente esa diferencia.
-              Solo se muestra cuando efectivamente hay algo fuera de las tarjetas. */}
-          {!hidden && (hasFixedIncome || pfValueUsd > 0) && (
+          {/* Reconciliación: el hero suma TODO. La renta fija ya NO está afuera —
+              volvió a la tabla de su broker, así que las tarjetas la suman. Lo
+              único que sigue sin tarjeta es el plazo fijo, y sólo por eso puede
+              haber diferencia entre sumar las tarjetas y este total. */}
+          {!hidden && pfValueUsd > 0 && (
             <span
               className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-3 text-[12px]"
-              title={'Este total incluye todo lo que tenés: las tarjetas por broker de acá abajo, '
-                + [hasFixedIncome && 'la zona de Renta Fija', pfValueUsd > 0 && 'los plazos fijos']
-                    .filter(Boolean).join(' y ')
-                + '. Por eso sumar solo las tarjetas da menos.'}
+              title="Este total incluye todo lo que tenés: las tarjetas por broker de acá abajo y los plazos fijos, que no tienen tarjeta propia. Por eso sumar solo las tarjetas da menos."
             >
-              incluye {[hasFixedIncome && 'renta fija', pfValueUsd > 0 && 'plazos fijos']
-                .filter(Boolean).join(' y ')}
+              incluye plazos fijos
             </span>
           )}
         </div>
@@ -2043,17 +2043,14 @@ function PositionsDesktop() {
         // entera (no dejamos el header vacío). `bpos` queda ordenado + cash al
         // final; `r` (header + footer) se calcula sobre el subset visible, así
         // los totales reflejan lo que se ve. Sin filtros: idéntico a antes.
-        // Renta fija (bonos/letras/FCI) se excluye de la tabla del broker — se
-        // muestra agrupada en la zona "Renta Fija". El subtotal del broker usa este
-        // mismo subset, así no desajusta. El hero/total sí los cuenta (suma sobre
-        // TODAS las posiciones), por eso la partición no cambia el patrimonio.
+        // TODOS los activos de la cuenta, renta fija incluida: el bono es una
+        // fila más (ver utils/tarjetaBroker.js). El subtotal del broker se
+        // calcula sobre este mismo subconjunto, así que ahora incluye la renta
+        // fija y sumar las tarjetas vuelve a dar el total del encabezado.
         // El pool de lotes de la sección: TODAS sus patas. En modo separado es
         // una sola, así que da exactamente el filtro de antes.
-        const bposRaw = positions.filter(p => section.patasNames.has(p.broker) && matchesAsset(p) && !isFixedIncome(p))
+        const bposRaw = filasDeLaTarjeta(positions, section, matchesAsset)
         if (assetFiltering && bposRaw.length === 0) return null
-        // Cuántos bonos/letras/FCI de ESTA cuenta viven en la zona Renta Fija de
-        // abajo: la tarjeta lo dice, para que nadie los busque acá.
-        const rfEnEstaCuenta = positions.filter(p => section.patasNames.has(p.broker) && isFixedIncome(p)).length
         // Vista default: 1 fila por ticker (agregado). bposRows aplana los grupos
         // a filas (activo + lotes si está expandido). bposRaw sigue teniendo TODOS
         // los lotes (para el footer/total y la variación diaria del broker).
@@ -2192,12 +2189,6 @@ function PositionsDesktop() {
                     sub-broker
                   </span>
                 )}
-                {rfEnEstaCuenta > 0 && (
-                  <span className="text-[10.5px] rounded-full px-2 py-0.5 bg-bg-2 text-ink-3"
-                        title="Los bonos, letras y fondos de esta cuenta se muestran en la zona Renta Fija, más abajo. El subtotal de esta tarjeta no los incluye; el total de arriba sí.">
-                    {rfEnEstaCuenta === 1 ? '1 título en Renta Fija ↓' : `${rfEnEstaCuenta} títulos en Renta Fija ↓`}
-                  </span>
-                )}
                 {/* El control de unificar/separar vive ACÁ, pegado al nombre de
                     la cuenta que se unificó, y no en la toolbar: allá era el
                     sexto botón de una fila y pasaba desapercibido justo la
@@ -2309,8 +2300,14 @@ function PositionsDesktop() {
                       // del bono — captura tanto la variación de precio como los
                       // flujos cobrados durante la tenencia.
                       const isBond = isBondPosition(p) && !p.is_cash
-                      const bondKey = `${p.broker}:${p.asset}`
-                      const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
+                      // La clave incluye TODAS las patas del grupo: una fila de cuenta
+                      // unificada fusiona el mismo bono de la pata pesos y la dólar, y
+                      // su `broker` es null a propósito (ver `_buildAgg`). Con
+                      // `${p.broker}:` esa fila buscaba "null:GD30", no encontraba nada
+                      // y se comía los cupones: US$1.298 de diferencia con la misma
+                      // cuenta separada (medido 2026-09-22, ver bondSummaryMerge.js).
+                      const bondKey = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
+                      const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey) : null
                       // Phase 3D sub-fix: P&L augmentado usa pnlContribution
                       // (sólo cupones + ganancia realizada de amorts), NO el
                       // cash total — la devolución de capital de los amorts
@@ -2450,7 +2447,16 @@ function PositionsDesktop() {
                                   )}
                                 </div>
                                 <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
-                                  <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
+                                  <span>{
+                                    // En un bono, el renglón de contexto dice vencimiento y
+                                    // próximo cobro en vez de la fecha de compra: es lo que la
+                                    // zona "Renta Fija" mostraba en su card y lo que hace que el
+                                    // bono se entienda siendo una fila más. En un LOTE suelto
+                                    // sigue yendo la fecha, que es lo único que lo distingue de
+                                    // sus hermanos (el vencimiento es el mismo para todos).
+                                    (!isLot && lineaDelBono(p))
+                                    || (isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha'))
+                                  }</span>
                                   {isAgg && lotCount > 1 && (
                                     <button
                                       type="button"
@@ -2540,6 +2546,7 @@ function PositionsDesktop() {
                         {expanded && (
                           <BondDetailRow
                             p={p}
+                            filaFusionada={filaSinUnaPata(p)}
                             colSpan={arsColSpan}
                             summary={bondSummary}
                             pendingDates={pendingDatesByKey.get(bondKey)}
@@ -2619,8 +2626,10 @@ function PositionsDesktop() {
                     const tickerExpanded = lotesVisibles || expandedTickers.has(rowKey)
                     const c = calcRowUSDT(p)
                     const isBond = isBondPosition(p) && !p.is_cash
-                    const bondKey = `${p.broker}:${p.asset}`
-                    const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
+                    // Ver el comentario equivalente en la tabla ARS: la clave lleva
+                    // TODAS las patas, porque la fila de cuenta unificada no tiene una.
+                    const bondKey = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
+                    const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey) : null
                     // Phase 3D sub-fix: ver comentario equivalente en tabla ARS.
                     const cobranzasCash = bondSummary?.total || 0
                     const pnlContrib = bondSummary?.pnlContribution || 0
@@ -2690,7 +2699,16 @@ function PositionsDesktop() {
                                 {!hidden && <TcMissingBadge p={p} costBasis={costBasis} />}
                               </div>
                               <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
-                                <span>{isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha')}</span>
+                                <span>{
+                                    // En un bono, el renglón de contexto dice vencimiento y
+                                    // próximo cobro en vez de la fecha de compra: es lo que la
+                                    // zona "Renta Fija" mostraba en su card y lo que hace que el
+                                    // bono se entienda siendo una fila más. En un LOTE suelto
+                                    // sigue yendo la fecha, que es lo único que lo distingue de
+                                    // sus hermanos (el vencimiento es el mismo para todos).
+                                    (!isLot && lineaDelBono(p))
+                                    || (isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha'))
+                                  }</span>
                                 {isAgg && lotCount > 1 && (
                                   <button
                                     type="button"
@@ -2768,6 +2786,7 @@ function PositionsDesktop() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
+                          filaFusionada={filaSinUnaPata(p)}
                           colSpan={showDetail ? 10 : 9}
                           summary={bondSummary}
                           pendingDates={pendingDatesByKey.get(bondKey)}
@@ -2826,17 +2845,10 @@ function PositionsDesktop() {
         </div>
       )}
 
-      {/* Zona Renta Fija: bonos/letras/FCI agrupados cross-broker, con borrado/restore por sección */}
-      <RentaFijaSections positions={positions} valuePos={valuePos} brokers={brokers}
-        displayCurrency={displayCurrency} tcValuacion={tcValuacion} onChanged={loadAll}
-        onEdit={openEdit} onDelete={del} onEditGroup={openEditGroup}
-        bondCashflowsByKey={bondCashflowsByKey}
-        pendingDatesByKey={pendingDatesByKey}
-        openBondCashflow={openBondCashflow}
-        tcMep={tcMepStrict} cerSeries={cerSeries} cerStale={cerStale} cerBasis={cerBasis}
-        isArsFor={(p) => brokers.find(b => b.name === p.broker)?.currency === 'ARS'}
-        priceFor={(p) => (brokers.find(b => b.name === p.broker)?.currency === 'ARS') ? calcARS(p).priceArs : calcUSDT(p).price}
-        priceMeta={prices?.__meta || null} />
+      {/* Lo que quedó de la zona Renta Fija: el listado de secciones que el
+          usuario archivó en su momento, para poder restaurarlas. Sin esto no
+          habría ninguna pantalla desde donde traerlas de vuelta. */}
+      <PosicionesArchivadas reloadKey={positions.length} onChanged={loadAll} />
 
       {/* Futuros abiertos: sección propia porque un futuro NO es una tenencia
           (no tenés el activo, y un short vale al revés). */}
