@@ -59,29 +59,19 @@ PLAN_LIMITS = {
             "alerts.pct_move": False,              # el desbloqueo de funcionalidad = Plus
         },
     },
-    # Plus — **Rendi entero, sin el analista** (decisión de producto 2026-10-15).
-    #
-    # Antes era un tier intermedio definido por RECORTES: 6 de 12 detectores, 6
-    # puntos de diagnóstico, 25 alertas. Un plan que se define por "la mitad de
-    # las cosas" no se puede nombrar ni recordar, y el usuario no sabía qué
-    # estaba comprando. Ahora las métricas están COMPLETAS y lo que separa al
-    # Plus del Pro son dos cosas que sí se pueden decir en una frase:
-    #   1. la IA (2 análisis/sem vs 60, chat guiado vs libre, sin follow-ups);
-    #   2. los brokers (3 vs sin tope).
-    #
-    # Lo que se movió de Pro a Plus: diagnóstico completo, los 12 detectores de
-    # comportamiento y las alertas sin tope. Lo que NO se movió: nada de IA, y
-    # el "ilimitado" de brokers, que queda como la palanca del Pro que no
-    # depende de que al usuario le guste la IA.
+    # Plus — tier intermedio. Captura users que necesitan multi-broker,
+    # reportes históricos, distribución por activo, pero no necesitan IA
+    # avanzada. La IA queda igual que Free (Hub y follow-ups son Pro-only)
+    # para preservar el upgrade path por features de IA.
     "plus": {
-        "brokers_max": 3,                          # ★ lo único no-IA que separa del Pro
-        "insights_diagnostic_visible": None,       # completo (antes 6)
-        "behavioral_tags_visible": None,           # los 12 (antes 6)
-        "alerts_max": None,                        # sin tope (antes 25)
+        "brokers_max": 3,
+        "insights_diagnostic_visible": 6,
+        "behavioral_tags_visible": 6,
+        "alerts_max": 25,                          # desbloquea alertas de % sobre la cartera
         "can_access": {
-            "ai.followup": False,                  # Pro-only — es IA
-            "ai.hub": False,                       # Pro-only — es IA
-            "comportamiento.full": True,           # ★ movido de Pro
+            "ai.followup": False,                  # Pro-only
+            "ai.hub": False,                       # Pro-only
+            "comportamiento.full": False,          # parcial (behavioral_tags_visible=6 de 12)
             "insights.distribucion_activo": True,
             "reportes.historicos": True,
             "export.csv": True,
@@ -242,9 +232,8 @@ def _count_alerts(conn, user_id: int) -> int:
 def check_alert_quota(conn, user_id: int) -> tuple[bool, dict]:
     """¿Puede el user crear una alerta nueva? Mismo patrón que check_broker_quota.
 
-    Free = 3 alertas (solo precio objetivo). Plus/Pro/Admin = sin tope
-    (el Plus dejó de tener tope el 2026-10-15, cuando pasó a tener las métricas
-    completas; antes eran 25). El número sale de PLAN_LIMITS, no de acá. Grandfather-aware (si ya tiene más que el tope por
+    Free = 3 alertas (solo precio objetivo). Plus = 25 (+ alertas de %).
+    Pro/Admin = sin tope. Grandfather-aware (si ya tiene más que el tope por
     un downgrade, no puede crear más pero conserva las existentes)."""
     tier = quota.get_tier(conn, user_id)
     limits = PLAN_LIMITS.get(tier, PLAN_LIMITS["free"])
