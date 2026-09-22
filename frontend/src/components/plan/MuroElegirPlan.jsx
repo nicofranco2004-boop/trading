@@ -163,8 +163,24 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
   // descartaba y la lista quedaba vacía, así que `inert` no se aplicaba a nada.
   // Un no-op silencioso, con un comentario arriba diciendo que funcionaba.
   useEffect(() => {
-    const afuera = hermanosDe(caja.current)
-    afuera.forEach(el => { el.inert = true; el.setAttribute('aria-hidden', 'true') })
+    // ⚠️ Se re-aplica ante cada cambio del DOM, no una sola vez al montar. La
+    // primera versión apagaba los hermanos QUE EXISTÍAN en ese instante, y
+    // medido en el navegador apagó 2 de 5: el sidebar (<aside>) y el
+    // acompañante se montan DESPUÉS, así que quedaban vivos y tabulables —
+    // justo lo que este efecto existe para evitar.
+    const apagar = () => {
+      hermanosDe(caja.current).forEach(el => {
+        if (el.inert) return
+        el.inert = true
+        el.setAttribute('aria-hidden', 'true')
+      })
+    }
+    apagar()
+    const padre = caja.current?.parentElement
+    const observador = padre
+      ? new MutationObserver(apagar)
+      : null
+    observador?.observe(padre, { childList: true })
 
     const foco = () => caja.current?.querySelectorAll(
       'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])')
@@ -184,8 +200,12 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
     }
     document.addEventListener('keydown', alTabular)
     return () => {
+      observador?.disconnect()
       document.removeEventListener('keydown', alTabular)
-      afuera.forEach(el => { el.inert = false; el.removeAttribute('aria-hidden') })
+      hermanosDe(caja.current).forEach(el => {
+        el.inert = false
+        el.removeAttribute('aria-hidden')
+      })
     }
   }, [])
 
@@ -202,9 +222,18 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="muro-titulo"
-      className="fixed inset-0 z-[100] flex items-center justify-center
-                 overflow-y-auto bg-bg-0/[0.92] p-4 sm:p-10"
+      className="fixed inset-0 z-[100] overflow-y-auto bg-bg-0/[0.92]"
     >
+      {/* ⚠️ El scroll va en el contenedor de AFUERA y el centrado en un envoltorio
+          con `min-h-full` ADENTRO. Centrar con `items-center` en el mismo
+          elemento que scrollea es el bug clásico de flex: cuando la caja es más
+          alta que la ventana, el excedente se reparte para los dos lados y la
+          parte de ARRIBA queda fuera del alcance del scroll. Medido en una
+          ventana de 720 px: la caja mide 926, su borde superior quedaba en
+          −106 px y el contenedor creía medir 860 — el título y el cartel
+          "Terminaron tus 20 días" eran INALCANZABLES. Una notebook de 768 px
+          entra justo en ese caso. */}
+      <div className="flex min-h-full items-center justify-center p-4 sm:p-10">
       <div className="w-full max-w-[880px] rounded-xl border border-line bg-bg-1
                       p-6 sm:p-10">
         <div className="text-center">
@@ -280,6 +309,7 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
             Salir de mi cuenta
           </button>
         </div>
+      </div>
       </div>
     </div>
   )

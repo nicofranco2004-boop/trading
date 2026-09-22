@@ -176,6 +176,11 @@ function VozGate() {
   const { pathname } = useLocation()
   if (!user) return null
   if (SIN_ACOMPANANTE.some(r => pathname.startsWith(r))) return null
+  // Con la cuenta EN PAUSA tampoco. Visto en el navegador: la burbuja quedaba
+  // flotando ENCIMA del muro, con sus propios botones, ofreciéndose a explicar
+  // una app a la que esa persona no puede entrar. Y encima le tapaba la mitad
+  // del muro, que es la única pantalla que le queda.
+  if (user.cuenta_en_pausa) return null
   // EL ASESOR TAMBIÉN. Quedó afuera cuando esto se armó, con un motivo que era
   // cierto entonces: el acompañante le habría mandado el snapshot de su cuenta
   // personal, que está vacía. Desde que el modo LIBRO existe eso ya no pasa —
