@@ -22,7 +22,7 @@ import { ChevronDown } from 'lucide-react'
 // agravante de que esta respuesta va al JSON-LD que Google indexa.
 import {
   fmtArs, PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
-} from '../../pages/Planes'
+} from '../../data/pricing'
 
 // Orden = secuencia de objeciones que frenan el signup (no orden SEO). La #1 de
 // un retail frío que va a cargar su cartera es la confianza/seguridad, así que

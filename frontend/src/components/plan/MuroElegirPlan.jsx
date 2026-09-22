@@ -67,6 +67,17 @@ const PLANES = {
 // muro es una decisión, no la comparativa completa: para eso está /planes.
 const LINEAS_POR_TARJETA = 4
 
+/** Los elementos que hay que apagar para que el muro sea de verdad modal:
+ *  los HERMANOS del muro dentro de su padre. Exportada para poder probarla sin
+ *  un navegador (los tests de este repo corren en 'node', sin DOM).
+ *
+ *  Devuelve [] si no hay nodo o no tiene padre — nunca revienta. */
+export function hermanosDe(nodo) {
+  const padre = nodo?.parentElement
+  if (!padre) return []
+  return Array.from(padre.children).filter(el => el !== nodo)
+}
+
 function TarjetaPlan({ plan, anual, destacado, onElegir }) {
   const p = PLANES[plan]
   const precio = anual ? p.anualEq : p.mensual
@@ -105,7 +116,7 @@ function TarjetaPlan({ plan, anual, destacado, onElegir }) {
       {/* Los cupos, con los números del catálogo. Van aparte de la lista porque
           son lo que más se mira y lo que más caro sale prometer mal. */}
       <div className="mt-4 grid grid-cols-3 gap-2 border-t border-line pt-3">
-        {p.catalogo.quotas.map(q => (
+        {(p.catalogo.quotas || []).map(q => (
           <div key={q.label}>
             <div className="text-[15px] font-semibold tabular text-ink-0">{q.value}</div>
             <div className="text-[10.5px] leading-tight text-ink-3">{q.label}</div>
@@ -145,9 +156,14 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
   // `inert` sobre el resto de la app es la forma corta y la soportan todos los
   // navegadores actuales; el ciclado del foco de abajo es el respaldo para los
   // que no, y además es lo que hace que Tab dé la vuelta adentro del muro.
+  //
+  // ⚠️ Los hermanos se buscan desde el PADRE DEL MURO, no desde `#root`. La
+  // primera versión filtraba los hijos de `#root`, y `#root` tiene UN solo hijo
+  // —el <div> que envuelve toda la app— que CONTIENE al muro: el filtro lo
+  // descartaba y la lista quedaba vacía, así que `inert` no se aplicaba a nada.
+  // Un no-op silencioso, con un comentario arriba diciendo que funcionaba.
   useEffect(() => {
-    const raiz = document.getElementById('root')
-    const afuera = Array.from(raiz?.children || []).filter(el => !el.contains(caja.current))
+    const afuera = hermanosDe(caja.current)
     afuera.forEach(el => { el.inert = true; el.setAttribute('aria-hidden', 'true') })
 
     const foco = () => caja.current?.querySelectorAll(

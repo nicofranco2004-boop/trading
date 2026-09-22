@@ -2967,23 +2967,32 @@ def get_current_user(
         uid = int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise HTTPException(401, "Token inválido")
-    # Verificar que el user existe y que el token no quedó invalidado por cambio de pass
+    # Verificar que el user existe y que el token no quedó invalidado por cambio de pass.
+    #
+    # ⚠️ `requires_plan` viaja en ESTA consulta —la que el chequeo ya hacía— para
+    # que el muro de `get_effective_user` no abra una SEGUNDA conexión en cada
+    # request de cada usuario: el 99% tiene requires_plan=0 y no puede estar en
+    # pausa, así que para ellos el muro no cuesta nada.
+    #
+    # Y va con red: en Postgres `init_db` NO corre las migraciones incrementales
+    # (arranca de `schema_pg.sql` y vuelve), así que una base creada antes de que
+    # esta columna existiera no la tiene. Sin el fallback, esta consulta —que
+    # corre en TODOS los requests autenticados— tiraría la app entera. Es la
+    # misma forma que la caída del 2026-08-02 (el índice antes que su columna).
     with db_abierta() as conn:
-        row = conn.execute(
-            "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?", (uid,)
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?",
+                (uid,)).fetchone()
+            marca = None if row is None else bool(row["requires_plan"])
+        except Exception:
+            # Base sin la columna: se sigue como siempre y el muro pregunta él.
+            row = conn.execute(
+                "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
+            marca = None
     if not row:
         raise HTTPException(401, "Token inválido")
-    # `requires_plan` se lee de arriba —de la consulta que este chequeo YA hacía—
-    # y se guarda en el request para que el muro de `get_effective_user` no
-    # tenga que abrir una SEGUNDA conexión en cada request de cada usuario.
-    # Importa porque el 99% de la población tiene requires_plan=0 y no puede
-    # estar en pausa: para ellos el muro ahora no cuesta nada. Tolera que la
-    # columna no exista todavía (base sin migrar → None → como siempre).
-    try:
-        request.state.rendi_requires_plan = bool(row["requires_plan"])
-    except Exception:
-        request.state.rendi_requires_plan = None
+    request.state.rendi_requires_plan = marca
     pca = payload.get("pca")
     if pca and row["password_changed_at"] and pca != row["password_changed_at"]:
         raise HTTPException(401, "Token expirado por cambio de contraseña")
@@ -3489,13 +3498,27 @@ def register(data: RegisterIn, request: Request, response: Response,
             # El admin queda siempre afuera.
             from billing import trial as _trial
             requires_plan = 0 if is_admin_signup else (1 if _trial.paywall_nuevos() else 0)
-            cur = conn.execute(
-                """INSERT INTO users (email, name, password_hash, is_admin, approved,
-                                     email_verified, requires_plan)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
-                 email_verified, requires_plan),
-            )
+            # Con red por el mismo motivo: una base sin la columna (Postgres
+            # creado antes de esta migración) no puede tumbar un REGISTRO — es
+            # lo último que se puede permitir romper en un cambio cuyo objetivo
+            # es cobrar. Sin la columna, el alta entra como los de antes.
+            try:
+                cur = conn.execute(
+                    """INSERT INTO users (email, name, password_hash, is_admin, approved,
+                                         email_verified, requires_plan)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
+                     email_verified, requires_plan),
+                )
+            except Exception as ex:
+                log.error("INSERT con requires_plan falló (%s); alta sin la marca", ex)
+                cur = conn.execute(
+                    """INSERT INTO users (email, name, password_hash, is_admin, approved,
+                                         email_verified)
+                       VALUES (?,?,?,?,?,?)""",
+                    (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
+                     email_verified),
+                )
             uid = cur.lastrowid
 
             # SOLO el admin hereda los datos legacy con user_id=0 (datos iniciales del owner).
@@ -3885,8 +3908,8 @@ def me(uid: int = Depends(get_effective_user)):
     from ai import quota
     with db_abierta() as conn:
         row = conn.execute(
-            "SELECT id, email, name, is_admin, created_at, last_login_at, "
-            "requires_plan FROM users WHERE id=?", (uid,)
+            "SELECT id, email, name, is_admin, created_at, last_login_at "
+            "FROM users WHERE id=?", (uid,)
         ).fetchone()
         if not row:
             raise HTTPException(404)
@@ -3966,7 +3989,13 @@ def me(uid: int = Depends(get_effective_user)):
         # El muro real no es este campo: es el 402 de `get_effective_user`. Esto
         # es para que la app pueda mostrar la pantalla en vez de una pared de
         # errores rojos, que es lo que vería si sólo tuviera el 402.
-        d["requires_plan"] = bool(d.get("requires_plan"))
+        # `requires_plan` NO va en el SELECT de arriba: en Postgres `init_db` no
+        # corre las migraciones incrementales, así que una base creada antes de
+        # que la columna existiera haría fallar la consulta — y ésta es la que
+        # arranca la app. Se pregunta con la primitiva que ya tolera su
+        # ausencia, la misma que usan el trial y el muro.
+        from billing import trial as _trial
+        d["requires_plan"] = _trial._requiere_plan(conn, uid)
         d["cuenta_en_pausa"] = cuenta_en_pausa(conn, uid)
         # Con la cuenta en pausa, ESTE es el dato que convence: "tus 4 brokers y
         # 312 movimientos quedaron guardados" dice que no se perdió nada mucho
