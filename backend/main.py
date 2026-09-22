@@ -22,6 +22,7 @@ from ai.voz import VOZ
 # un deploy sin OPENAI_API_KEY arranca igual (el endpoint responde 503).
 from ai import tts
 from ai import preguntas as _preguntas
+from pricing import letras as _letras_mod
 from collections import defaultdict
 
 # ─── Cargar .env del backend antes de leer cualquier variable de entorno ────
@@ -8180,12 +8181,18 @@ _ad_letras_cache = {'data': None, 'ts': 0}
 AD_LETRAS_TTL = 900  # 15 min — el feed se actualiza 1x/día, no hace falta más
 
 
-def _fetch_argentinadatos_letras():
-    """{ticker: precio per-1 VN en ARS} de las letras vivas. {} si la fuente cae.
+def _fetch_argentinadatos_letras_raw():
+    """{ticker: {price_per_100, tem_pct, maturity, currency}} de las letras vivas.
+    {} si la fuente cae.
 
     Sólo trae las que NO vencieron: la fuente publica el universo vivo. Eso es
     deseable — un papel vencido no tiene precio en ningún lado, y pedirle a una
     fuente que lo invente sería peor que no tenerlo.
+
+    UNA sola bajada y UN solo cache para los dos usos del feed: el PRECIO (que
+    valúa la tenencia, vía `_fetch_argentinadatos_letras`) y el PAGO AL VENCER
+    (que arma el calendario de cobros, vía `pricing/letras.py`). Dos fetches del
+    mismo JSON podrían mostrar dos verdades distintas en la misma pantalla.
     """
     now = time.time()
     cached = _ad_letras_cache['data']
@@ -8195,12 +8202,7 @@ def _fetch_argentinadatos_letras():
         r = requests.get("https://api.argentinadatos.com/v1/finanzas/letras", timeout=8)
         if r.status_code != 200:
             return cached or {}
-        out = {}
-        for item in (r.json() or {}).get('letras', []) or []:
-            t = (item.get('ticker') or '').strip().upper()
-            px = item.get('precioArs')
-            if t and isinstance(px, (int, float)) and px > 0:
-                out[t] = px / 100.0     # per-100 declarado → per-1, como todo el resto
+        out = _letras_mod.parse_letras_feed(r.json())
         if out:
             _ad_letras_cache['data'] = out
             _ad_letras_cache['ts'] = now
@@ -8208,6 +8210,16 @@ def _fetch_argentinadatos_letras():
         return cached or {}
     except Exception:
         return cached or {}
+
+
+def _fetch_argentinadatos_letras():
+    """{ticker: precio per-1 VN en ARS} de las letras vivas. {} si la fuente cae.
+
+    El feed declara el precio por cada 100 nominales (`precioArs`): se divide por
+    100 UNA sola vez, acá, y lo que sale ya es per-1 VN como el resto del sistema.
+    """
+    return {t: rec['price_per_100'] / 100.0
+            for t, rec in (_fetch_argentinadatos_letras_raw() or {}).items()}
 
 
 def _resolve_ar_bond_price(symbol):
@@ -39705,6 +39717,29 @@ def _advisor_fixed_income_positions(conn, ids: list, stats: dict = None) -> list
     return out
 
 
+def _advisor_letras_catalog(positions: list, today: str) -> dict:
+    """Lo que devuelve cada LETRA de la cartera de esos clientes el día que vence.
+
+    Sin esto una letra es una tenencia sin cronograma y no entra al calendario:
+    el frontend sabe de bonos por catálogo (`bondMeta.js`), pero una letra no
+    tiene prospecto que catalogar — su pago se lee del mercado, y al mercado lo
+    ve el servidor (es el que baja el feed). La regla de qué califica y la
+    fórmula viven en `pricing/letras.py`; acá sólo se elige a quién preguntarle.
+
+    Sólo los tickers que están EN la cartera: mandar el catálogo entero sería
+    data que la pantalla no usa. Si la fuente se cae, {} — y las letras vuelven
+    a mostrarse como "sin cronograma conocido", que es lo que pasaba antes."""
+    from importing.maturity import letra_maturity
+    tickers = [p.get("asset") for p in (positions or [])]
+    if not tickers:
+        return {}
+    try:
+        records = _fetch_argentinadatos_letras_raw() or {}
+    except Exception:
+        return {}
+    return _letras_mod.letras_catalog(records, tickers, today, letra_maturity)
+
+
 @app.post("/api/advisor/cashflows/positions")
 def advisor_cashflows_positions(body: AdvisorCashflowsIn,
                                 uid: int = Depends(get_current_user)):
@@ -39745,13 +39780,17 @@ def advisor_cashflows_positions(body: AdvisorCashflowsIn,
         _, tc_mep = _advisor_book_fx(conn)
         _fxrow = conn.execute(
             "SELECT MAX(date) d FROM fx_rates_daily WHERE mep_venta IS NOT NULL").fetchone()
+        as_of = _iso_today()
         return {
             "clients": clients,
             "positions": positions,
             "skipped": stats,
             "tc_mep": tc_mep,
             "fx_date": _fxrow["d"] if _fxrow else None,
-            "as_of": _iso_today(),
+            # Las letras no salen del catálogo del frontend: su pago al vencer se
+            # lee del mercado y viaja acá, por ticker de la cartera.
+            "letras": _advisor_letras_catalog(positions, as_of),
+            "as_of": as_of,
         }
     finally:
         conn.close()

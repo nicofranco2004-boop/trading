@@ -80,6 +80,50 @@ describe('aggregateCashflows', () => {
     expect(r.sinCronograma).toEqual(['FCI:COCOS-AHORRO'])
   })
 
+  // ─── Letras ───────────────────────────────────────────────────────────────
+  // No están en el catálogo de bonos (no tienen prospecto): su único pago lo
+  // manda el servidor leído del mercado, en `opts.letras`.
+  const LETRAS = {
+    S30O6: { maturity: '2026-10-30', payout_per_100: 135.33, currency: 'ARS',
+             price_per_100: 132.45, tem_pct: 1.71, source: 'ArgentinaDatos' },
+  }
+
+  it('una letra entra al calendario como vencimiento, con el pago del mercado', () => {
+    const r = aggregateCashflows([{ client_uid: 1, asset: 'S30O6', quantity: 1000000, account_currency: 'ARS' }],
+      clients, { today: TODAY, range: 'year', tcMep: 1500, letras: LETRAS })
+    expect(r.sinCronograma).toEqual([])
+    const pay = r.days[0].payments[0]
+    expect([pay.date, pay.kind, pay.payCurrency]).toEqual(['2026-10-30', 'vencimiento', 'ARS'])
+    expect(pay.totalNative).toBeCloseTo(1353300, 2)        // 135,33 por cada 100 nominales
+    expect(pay.totalUsd).toBeCloseTo(1353300 / 1500, 2)
+    expect(pay.estimateKind).toBe('letra')                  // la pantalla lo marca distinto del CER
+    expect(pay.holders[0].label).toBe('Ferreyra')
+  })
+
+  it('el pago de una letra NO es su nominal: capitaliza, y por eso lo trae el servidor', () => {
+    // La trampa que motivó esto: mostrar "cantidad × 100" daba 1.000.000 cuando
+    // el mercado dice 1.353.300 — 26 % menos plata de la que el cliente cobra.
+    const r = aggregateCashflows([{ client_uid: 1, asset: 'S30O6', quantity: 1000000, account_currency: 'ARS' }],
+      clients, { today: TODAY, range: 'year', tcMep: 1500, letras: LETRAS })
+    expect(r.days[0].payments[0].totalNative).toBeGreaterThan(1000000)
+  })
+
+  it('una letra sin pago conocido se lista, no se inventa el monto', () => {
+    // Sin catálogo (fuente caída), o un papel que no califica: mismo lugar que
+    // cualquier ticker sin cronograma.
+    const r = aggregateCashflows([{ client_uid: 1, asset: 'S30O6', quantity: 1000000, account_currency: 'ARS' }],
+      clients, { today: TODAY, range: 'year', tcMep: 1500 })
+    expect(r.days).toEqual([])
+    expect(r.sinCronograma).toEqual(['S30O6'])
+  })
+
+  it('una letra que ya venció no es un cobro por venir', () => {
+    const r = aggregateCashflows([{ client_uid: 1, asset: 'S30O6', quantity: 1000000, account_currency: 'ARS' }],
+      clients, { today: '2026-11-15', range: 'year', tcMep: 1500, letras: LETRAS })
+    expect(r.days).toEqual([])
+    expect(r.sinCronograma).toEqual(['S30O6'])
+  })
+
   it('agrupa por mes y avisa el fin de semana', () => {
     const days = [{ date: '2027-01-09', totalUsd: 10, payments: [] }, { date: '2027-01-15', totalUsd: 5, payments: [] }, { date: '2027-02-01', totalUsd: 1, payments: [] }]
     const m = groupDaysByMonth(days)

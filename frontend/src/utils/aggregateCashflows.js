@@ -6,6 +6,12 @@
 // No hay una segunda copia del cálculo financiero: si el cronograma de un bono
 // está mal, está mal en un solo lugar.
 //
+// Las LETRAS son la excepción al "todo sale del catálogo del frontend": no
+// tienen prospecto (devuelven todo junto al vencer, y capitalizan), así que su
+// único pago lo calcula el servidor con el precio de mercado y viaja en
+// `opts.letras`. Es una ESTIMACIÓN y sale marcada como tal — se muestra, no se
+// registra.
+//
 // Monedas — dos cosas distintas que no se mezclan:
 //   • `account_currency` (viene del servidor): la PATA donde está el título. No
 //     se usa para convertir nada.
@@ -45,10 +51,12 @@ export function settlementNote(iso) {
  *
  * @param positions  [{client_uid, asset, quantity, account_currency, category}]
  * @param clients    [{client_uid, label}]
- * @param opts       { today, range: '30d'|'90d'|'year', end (ISO, pisa a range), tcMep, cerSeries }
+ * @param opts       { today, range: '30d'|'90d'|'year', end (ISO, pisa a range), tcMep,
+ *                     cerSeries, letras: {TICKER: {maturity, payout_per_100, currency}} }
  * @returns {{
  *   days: [{date, totalUsd, payments: [{asset, kind, totalUsd, totalNative,
- *           payCurrency, estimated, holders: [{client_uid, label, amountUsd}]}]}],
+ *           payCurrency, estimated, estimateKind: 'cer'|'letra'|null,
+ *           holders: [{client_uid, label, amountUsd}]}]}],
  *   byClient: [{client_uid, label, totalUsd, count, assets}],
  *   totals: {usd30, count30, usdRange, countRange},
  *   sinCronograma: [asset],
@@ -61,6 +69,7 @@ export function aggregateCashflows(positions, clients, opts = {}) {
   const end = opts.end || rangeEnd(range, today)
   const in30 = addDaysIso(today, 30)
   const tc = opts.tcMep > 0 ? opts.tcMep : null
+  const letras = opts.letras || {}
   const labelOf = new Map((clients || []).map(c => [c.client_uid, c.label]))
 
   // Un bono en pesos sin cotización no se convierte: mostrar un dólar inventado
@@ -73,23 +82,53 @@ export function aggregateCashflows(positions, clients, opts = {}) {
 
   const byKey = new Map()          // `${date}|${asset}` → payment
   const sinCronograma = new Set()
-  const scheduleCache = new Map()  // asset → payments per 100 (o null)
+  const planCache = new Map()      // asset → {sched, payCcy, estimateKind, maturity} | null
+
+  // Plan de pagos de un ticker: del catálogo de bonos, o del de letras que manda
+  // el servidor. Una letra no tiene prospecto que catalogar —devuelve todo junto
+  // al vencer, y CAPITALIZA— así que su pago lo trae el servidor leído del
+  // mercado (`pricing/letras.py`); acá sólo se lo pone en el calendario.
+  const planFor = (asset) => {
+    if (planCache.has(asset)) return planCache.get(asset)
+    let plan = null
+    const meta = getBondMeta(asset)
+    if (meta?.maturity) {
+      const sched = getRemainingPayments(asset, today, cerOptsFor(asset, opts.cerSeries))
+      if (sched && sched.length > 0) {
+        plan = {
+          sched,
+          payCcy: meta.currency === 'ARS' ? 'ARS' : 'USD',
+          maturity: meta.maturity,
+          // CER: el cupón futuro depende de un índice que todavía no existe. Se
+          // muestra, pero marcado; con la serie caída ni siquiera está ajustado.
+          estimateKind: meta.type === 'cer' ? 'cer' : null,
+        }
+      }
+    } else {
+      const l = letras[asset]
+      // `> today` como los bonos (`getRemainingPayments`): el cobro de hoy ya no
+      // es un cobro por venir. El servidor ya filtra, pero su "hoy" se calculó
+      // cuando respondió y este es el del navegador.
+      if (l?.maturity && l.payout_per_100 > 0 && l.maturity > today) {
+        plan = {
+          sched: [{ date: l.maturity, coupon: 0, amort: l.payout_per_100, total: l.payout_per_100 }],
+          payCcy: l.currency === 'USD' ? 'USD' : 'ARS',
+          maturity: l.maturity,
+          estimateKind: 'letra',
+        }
+      }
+    }
+    planCache.set(asset, plan)
+    return plan
+  }
 
   for (const p of positions || []) {
     const asset = (p.asset || '').toUpperCase()
     const qty = Number(p.quantity) || 0
     if (!asset || qty <= 0) continue
-    const meta = getBondMeta(asset)
-    if (!meta?.maturity) { sinCronograma.add(asset); continue }
-    if (!scheduleCache.has(asset)) {
-      scheduleCache.set(asset, getRemainingPayments(asset, today, cerOptsFor(asset, opts.cerSeries)))
-    }
-    const sched = scheduleCache.get(asset)
-    if (!sched || sched.length === 0) { sinCronograma.add(asset); continue }
-    const payCcy = meta.currency === 'ARS' ? 'ARS' : 'USD'
-    // CER: el cupón futuro depende de un índice que todavía no existe. Se
-    // muestra, pero marcado; con la serie caída ni siquiera está ajustado.
-    const estimated = meta.type === 'cer'
+    const plan = planFor(asset)
+    if (!plan) { sinCronograma.add(asset); continue }
+    const { sched, payCcy, estimateKind } = plan
 
     for (const s of sched) {
       if (s.date > end) break
@@ -100,9 +139,10 @@ export function aggregateCashflows(positions, clients, opts = {}) {
       let pay = byKey.get(key)
       if (!pay) {
         const kind = s.coupon > 0 && s.amort > 0 ? 'cupon+amort'
-          : s.amort > 0 ? (s.date === meta.maturity ? 'vencimiento' : 'amort')
+          : s.amort > 0 ? (s.date === plan.maturity ? 'vencimiento' : 'amort')
           : 'cupon'
-        pay = { date: s.date, asset, kind, payCurrency: payCcy, estimated,
+        pay = { date: s.date, asset, kind, payCurrency: payCcy,
+                estimated: !!estimateKind, estimateKind,
                 totalNative: 0, totalUsd: 0, holders: [] }
         byKey.set(key, pay)
       }

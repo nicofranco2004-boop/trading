@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
@@ -35,6 +36,17 @@ def _link(conn, advisor, client, label, permission="read_write"):
     conn.execute(
         """INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, permission, status, label)
            VALUES (?,?,?,?,?,?)""", (advisor, client, "managed", permission, "active", label))
+
+
+# Feed de letras como lo publica ArgentinaDatos (valores medidos el 2026-09-22).
+# En los tests NUNCA se baja de la red: la fuente se reemplaza en setUp.
+_FEED_LETRAS = {
+    "S30O6": {"ticker": "S30O6", "price_per_100": 132.45, "tem_pct": 1.71,
+              "maturity": "2026-10-30", "currency": "ARS"},
+    "S13N6": {"ticker": "S13N6", "price_per_100": 106.04, "tem_pct": 1.98,
+              "maturity": "2026-11-13", "currency": "ARS"},
+}
+_HOY_FIJO = "2026-09-22"   # para que el monto no dependa del día en que corra
 
 
 def _pos(conn, uid, broker, asset, qty, asset_type="", currency=None, entry_date=None):
@@ -80,7 +92,19 @@ class CobrosLibro(unittest.TestCase):
         conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.ajeno, "IOL", "ARS"))
         _pos(conn, self.ajeno, "IOL", "AL30", 999, asset_type="BOND")
         conn.commit(); conn.close()
+        # La fuente de letras no se baja en los tests: la red no es parte del
+        # contrato del endpoint (y sin esto cada corrida saldría a internet).
+        p = mock.patch.object(main, "_fetch_argentinadatos_letras_raw",
+                              lambda: dict(_FEED_LETRAS))
+        p.start(); self.addCleanup(p.stop)
         self.http = TestClient(main.app)
+
+    def _hoy_fijo(self):
+        """Congela el día argentino: el monto de una letra depende de cuántos
+        días le faltan, y un test que se mueve con el calendario se pone en rojo
+        solo cuando la letra vence."""
+        p = mock.patch.object(main, "_iso_today", lambda: _HOY_FIJO)
+        p.start(); self.addCleanup(p.stop)
 
     def tearDown(self):
         conn = main.get_db()
@@ -172,6 +196,44 @@ class CobrosLibro(unittest.TestCase):
         d = self._call({"client_uids": [self.c2]}).json()
         self.assertEqual({p["asset"] for p in d["positions"]}, {"GD35"})
         self.assertEqual(d["skipped"], {"orphan_broker": 1})
+
+    # ─── Letras ───────────────────────────────────────────────────────────────
+    # El cronograma de un bono sale del catálogo del frontend; una letra no tiene
+    # catálogo (no tiene prospecto: devuelve todo junto al vencer, capitalizado),
+    # así que su único pago viaja en la respuesta, leído del mercado.
+
+    def test_la_letra_de_la_cartera_viaja_con_su_pago(self):
+        self._hoy_fijo()
+        d = self._call({"client_uids": [self.c1]}).json()
+        self.assertEqual(list(d["letras"]), ["S30O6"])      # la que TIENE el cliente
+        l = d["letras"]["S30O6"]
+        self.assertEqual(l["maturity"], "2026-10-30")
+        self.assertEqual(l["currency"], "ARS")
+        self.assertAlmostEqual(l["payout_per_100"], 135.33, places=1)
+        # Capitaliza: el pago es mayor que el nominal (100) y que el precio de hoy.
+        self.assertGreater(l["payout_per_100"], l["price_per_100"])
+        self.assertGreater(l["payout_per_100"], 100.0)
+
+    def test_no_viaja_el_catalogo_entero_sino_lo_que_el_libro_tiene(self):
+        self._hoy_fijo()
+        d = self._call({"client_uids": [self.c1]}).json()
+        self.assertNotIn("S13N6", d["letras"])   # está en la fuente, no en la cartera
+        # Un cliente sin letras no recibe ninguna.
+        self.assertEqual(self._call({"client_uids": [self.c2]}).json()["letras"], {})
+
+    def test_si_la_fuente_se_cae_no_se_inventa_el_pago(self):
+        # Sin catálogo la pantalla muestra la letra en "sin cronograma conocido",
+        # que es exactamente lo que hacía antes de esto.
+        with mock.patch.object(main, "_fetch_argentinadatos_letras_raw",
+                               side_effect=RuntimeError("fuente caída")):
+            d = self._call({"client_uids": [self.c1]}).json()
+        self.assertEqual(d["letras"], {})
+        self.assertTrue(any(p["asset"] == "S30O6" for p in d["positions"]))
+
+    def test_una_letra_vencida_no_viaja(self):
+        p = mock.patch.object(main, "_iso_today", lambda: "2026-11-01")  # después del venc.
+        p.start(); self.addCleanup(p.stop)
+        self.assertEqual(self._call({"client_uids": [self.c1]}).json()["letras"], {})
 
 
 if __name__ == "__main__":

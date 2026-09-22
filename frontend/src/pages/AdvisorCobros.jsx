@@ -30,6 +30,14 @@ const RANGES = [
 const KIND_LABEL = {
   cupon: 'cupón', amort: 'amortización', 'cupon+amort': 'cupón + amortización', vencimiento: 'vencimiento',
 }
+// Dos motivos distintos para marcar un monto como estimado, y conviene que se
+// note cuál es: el del CER depende de un índice que todavía no se publicó; el de
+// una letra, del precio de mercado de hoy.
+const ESTIMADO_LABEL = { cer: 'estimado con CER', letra: 'estimado al mercado' }
+const ESTIMADO_AYUDA = {
+  cer: 'El cupón se ajusta por CER y el índice de esa fecha todavía no existe: se proyecta con el último publicado.',
+  letra: 'Una letra devuelve el capital más el interés que capitalizó. El monto se estima con el precio de mercado de hoy y su tasa mensual, así que se mueve con el mercado.',
+}
 const MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
              'septiembre', 'octubre', 'noviembre', 'diciembre']
 
@@ -59,7 +67,9 @@ export default function AdvisorCobros() {
     if (!data || !selected) return null
     const clients = (data.clients || []).filter(c => selected.has(c.client_uid))
     const positions = (data.positions || []).filter(p => selected.has(p.client_uid))
-    return aggregateCashflows(positions, clients, { today, range, tcMep: data.tc_mep, cerSeries })
+    return aggregateCashflows(positions, clients, {
+      today, range, tcMep: data.tc_mep, cerSeries, letras: data.letras,
+    })
   }, [data, selected, range, cerSeries, today])
 
   const months = useMemo(() => result ? groupDaysByMonth(result.days) : [], [result])
@@ -178,7 +188,7 @@ export default function AdvisorCobros() {
             )
           })}
           <p className="text-[11.5px] text-ink-3 px-4 py-3 border-t border-line leading-snug">
-            Los montos en pesos se muestran al dólar MEP de hoy y cambian con la cotización. Los cupones CER se estiman con el último índice publicado.
+            Los montos en pesos se muestran al dólar MEP de hoy y cambian con la cotización. Los cupones CER se estiman con el último índice publicado, y las letras —que devuelven el capital con el interés capitalizado— con su precio de mercado de hoy.
           </p>
         </Panel>
       </div>
@@ -195,7 +205,10 @@ function PaymentRow({ p }) {
           <span className="text-[12.5px] font-semibold text-ink-0 tabular">{p.asset}</span>
           <span className={`text-[11px] ml-1.5 ${p.kind === 'cupon' ? 'text-ink-2' : 'text-data-cyan'}`}>{KIND_LABEL[p.kind] || p.kind}</span>
           {p.estimated && (
-            <span className="text-[10.5px] ml-1.5 px-1.5 py-px rounded-xs text-rendi-warn bg-rendi-warn/10">estimado con CER</span>
+            <span className="text-[10.5px] ml-1.5 px-1.5 py-px rounded-xs text-rendi-warn bg-rendi-warn/10"
+                  title={ESTIMADO_AYUDA[p.estimateKind] || undefined}>
+              {ESTIMADO_LABEL[p.estimateKind] || 'estimado'}
+            </span>
           )}
         </div>
         <div className="text-right whitespace-nowrap leading-tight">
