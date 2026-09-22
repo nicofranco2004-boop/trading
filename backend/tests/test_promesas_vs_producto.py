@@ -131,6 +131,83 @@ class LosMultiplosQueLaPaginaCanta(unittest.TestCase):
                       f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
 
 
+class LosDiasDeLaPruebaQueDiceLaLANDING(unittest.TestCase):
+    """La landing es PÚBLICA: no hay sesión, así que no puede preguntarle los
+    días de la prueba al backend como hace la app. Los tiene escritos en
+    `planCatalog.js`, y sin este test nadie se enteraría el día que la prueba
+    cambie de largo: la home seguiría ofreciendo 20 días para siempre."""
+
+    def _const_del_catalogo(self, nombre: str) -> int:
+        fuente = open(CATALOGO, encoding="utf-8").read()
+        m = re.search(r"export const %s = (\d+)" % re.escape(nombre), fuente)
+        assert m, f"no encontré {nombre} en planCatalog.js"
+        return int(m.group(1))
+
+    def test_el_total_coincide_con_el_backend(self):
+        from billing.trial import TRIAL_TOTAL_DAYS
+        self.assertEqual(
+            self._const_del_catalogo("TRIAL_TOTAL_DAYS"), TRIAL_TOTAL_DAYS,
+            "la landing ofrece una cantidad de días que el backend no da")
+
+    def test_las_dos_etapas_tambien(self):
+        from billing.trial import TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS
+        self.assertEqual(self._const_del_catalogo("TRIAL_PRO_DAYS"), TRIAL_PRO_DAYS)
+        self.assertEqual(self._const_del_catalogo("TRIAL_PLUS_DAYS"), TRIAL_PLUS_DAYS)
+
+    def test_y_las_etapas_suman_el_total(self):
+        """Contra el falso verde: los tres podrían coincidir con el backend y
+        no cerrar entre ellos si alguien toca sólo uno en los dos lados."""
+        self.assertEqual(
+            self._const_del_catalogo("TRIAL_PRO_DAYS")
+            + self._const_del_catalogo("TRIAL_PLUS_DAYS"),
+            self._const_del_catalogo("TRIAL_TOTAL_DAYS"))
+
+
+class ElPRECIOQueLeeGOOGLE(unittest.TestCase):
+    """`frontend/index.html` lleva un bloque JSON-LD con los precios, y eso es
+    lo que Google puede mostrar en los resultados de búsqueda. Es HTML estático:
+    no puede importar `src/data/pricing.js`, así que los números están a mano.
+
+    Estaban ofreciendo el plan Free y los precios en DÓLARES VIEJOS ($4 y $9)
+    — el precio real está en pesos y hace meses que es otro. Nadie se enteró
+    porque un dato estructurado desactualizado no produce ningún error: sale
+    mal en Google y calla."""
+
+    INDEX = os.path.join(os.path.dirname(BACKEND), "frontend", "index.html")
+
+    def _ofertas(self) -> dict:
+        import json
+        s = open(self.INDEX, encoding="utf-8").read()
+        i = s.index("application/ld+json")
+        j = s.index("</script>", i)
+        d = json.loads(s[s.index("{", i):j])
+        return {o["name"]: o for o in d.get("offers", [])}
+
+    def test_el_json_ld_es_json_valido(self):
+        """Un comentario HTML adentro del <script> rompe el bloque entero y
+        Google deja de leerlo. Ya pasó una vez, escribiéndolo."""
+        self._ofertas()      # revienta si el JSON está roto
+
+    def test_los_precios_son_los_del_backend_y_en_pesos(self):
+        from billing.pricing import PLUS_ARS_MONTHLY_TOTAL, ARS_MONTHLY_TOTAL
+        ofertas = self._ofertas()
+        for nombre, real in (("Plus", PLUS_ARS_MONTHLY_TOTAL),
+                             ("Pro", ARS_MONTHLY_TOTAL)):
+            self.assertIn(nombre, ofertas, "falta la oferta en el JSON-LD")
+            self.assertEqual(
+                ofertas[nombre]["price"], str(real),
+                f"Google muestra {ofertas[nombre]['price']} para {nombre} y el "
+                f"precio real es {real}")
+            self.assertEqual(
+                ofertas[nombre]["priceCurrency"], "ARS",
+                "se cobra en pesos; el JSON-LD dice otra moneda")
+
+    def test_ya_no_se_ofrece_el_plan_free(self):
+        """Quien se registra de ahora en adelante no tiene plan gratis: la home
+        no puede ofrecerlo, y menos en el dato que lee Google."""
+        self.assertNotIn("Free", self._ofertas())
+
+
 class LoQueTodaviaNoExisteNoSeVende(unittest.TestCase):
     """El catálogo separa `roadmap` de las features activas, y avisa en un
     comentario que NUNCA van mezcladas. El muro las mezcló: vendía "carpeta de

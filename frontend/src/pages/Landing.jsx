@@ -13,11 +13,16 @@ import {
 } from 'lucide-react'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
+// Precios y features desde `data/`, NO desde la página de planes: importarlos
+// de ahí arrastraba esa página entera al bundle de la landing y anulaba su
+// carga diferida. FREE_FEATURES ya no se importa — la tarjeta de Free se fue.
 import {
-  fmtArs,
-  FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
-  PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
-} from './Planes'
+  fmtArs, PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
+} from '../data/pricing'
+import {
+  PLUS_FEATURES, PRO_FEATURES,
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
+} from '../data/planCatalog'
 import { api } from '../utils/api'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
@@ -138,7 +143,7 @@ function Hero() {
             to="/login?mode=register"
             className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
           >
-            Crear mi cuenta gratis
+            Probar 20 días gratis
           </Link>
           <button
             type="button"
@@ -154,7 +159,7 @@ function Hero() {
             del fold, sin agregar una sección. */}
         <p className="flex items-center justify-center gap-1.5 text-[12px] text-ink-3 mb-14">
           <Lock size={12} strokeWidth={2} className="text-data-violet/70" />
-          Gratis para siempre · Solo lectura: no pedimos las claves de tu broker
+          20 días gratis, sin tarjeta · Solo lectura: no pedimos las claves de tu broker
         </p>
 
         {/* Stats strip */}
@@ -188,12 +193,12 @@ function StatsStrip() {
   // Barra de confianza + deseo + fricción-cero — no specs internas. El '8+'
   // mantiene el count-up (es el ancla multi-broker); el resto comunica
   // seguridad ('0 claves'), el diferencial AR ('USD real') y cero fricción
-  // ('Gratis · sin tarjeta').
+  // ('20 días · sin tarjeta' — ya no hay plan gratis para quien se registra).
   const items = [
     { v: brokers, label: 'brokers en una pantalla', suffix: '+' },
     { text: '0',      label: 'claves de tu broker que pedimos' },
     { text: 'USD',    label: 'tu ganancia al dólar real' },
-    { text: 'Gratis', label: 'para empezar · sin tarjeta' },
+    { text: '20 días', label: 'de prueba · sin tarjeta' },
   ]
 
   return (
@@ -495,8 +500,8 @@ function HowItWorks() {
       Icon: MessageSquare,
       meta: 'IA · CHAT CONVERSACIONAL',
       title: 'Le preguntás lo que necesites',
-      body: 'En todos los planes accedés al Coach IA con 12 preguntas guiadas (6 consultas por semana). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
-      chips: ['12 guiadas · 6/sem (Free)', 'Chat libre · 40/sem (Pro)', 'Memoria persistente'],
+      body: 'En todos los planes accedés al Coach IA con 12 preguntas guiadas (9 consultas por semana en Plus). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
+      chips: ['12 guiadas · 9/sem (Plus)', 'Chat libre · 40/sem (Pro)', 'Memoria persistente'],
       Visual: MockChat,
       cta: { label: 'Ver plan Pro', to: '/planes' },
     },
@@ -1024,28 +1029,27 @@ function Pricing() {
   // USD 500/mes mínimo si facturás en USD).
   return (
     <section id="pricing" ref={ref} className="reveal-up relative max-w-6xl mx-auto px-4 sm:px-6 pb-24">
+      {/* ⚠️ La tarjeta de Free SE FUE, y no es una decisión de diseño: quien se
+          registra de ahora en adelante NO tiene plan gratis. Su puerta de
+          entrada es la prueba de TRIAL_TOTAL_DAYS días, y al final elige Plus
+          o Pro. Dejar el "Gratis · Para siempre" acá era ofrecerle en la home
+          un plan que la app no le va a dar — la promesa se rompía en el paso
+          siguiente, que es el peor lugar donde puede romperse.
+          (El plan Free sigue EXISTIENDO para los ~1.300 que ya lo tenían; lo
+          que no existe es como puerta de entrada.) */}
       <div className="text-center mb-12">
         <div className="text-[11px] font-mono uppercase tracking-label text-ink-3 mb-3">/ pricing</div>
-        <h2 className="display-heading mb-2">Empezá gratis. Subí cuando lo necesites.</h2>
+        <h2 className="display-heading mb-2">
+          Probá {TRIAL_TOTAL_DAYS} días gratis. Después elegís.
+        </h2>
         <p className="text-sm text-ink-3 max-w-2xl mx-auto">
-          Pago mensual en pesos, sin sorpresas. Free para empezar. Plus para sumar brokers, reportes históricos y export.
-          Pro para IA premium y features avanzadas.
+          Arrancás con Rendi completo y sin tarjeta: {TRIAL_PRO_DAYS} días con Pro y {TRIAL_PLUS_DAYS} con
+          Plus. Cuando se terminan, elegís el plan que te sirve. Pago mensual en pesos, sin sorpresas.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-3">
-        {/* Free — gris neutral */}
-        <PlanCard
-          variant="free"
-          name="Free"
-          tagline="Para empezar a entender tu cartera"
-          price="Gratis"
-          priceSub="Para siempre"
-          features={FREE_FEATURES}
-          ctaLabel="Empezar gratis"
-          ctaTo="/login?mode=register"
-        />
-
+      {/* Dos planes, no tres: la grilla es de 2 columnas y se centra. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 max-w-4xl mx-auto">
         {/* Plus — cyan distintivo. Pricing fijo en pesos. */}
         <PlanCard
           variant="plus"
@@ -1053,9 +1057,9 @@ function Pricing() {
           tagline="Multi-broker + reportes completos"
           price={`$${fmtArs(PLUS_PRICE_ARS_MONTHLY)}`}
           priceSub="/ mes"
-          priceFootnote="Sin sorpresas. Pago mensual en pesos."
+          priceFootnote={`Después de tus ${TRIAL_TOTAL_DAYS} días gratis. Sin tarjeta para empezar.`}
           features={PLUS_FEATURES}
-          ctaLabel="Empezar con Plus"
+          ctaLabel="Probar y elegir Plus"
           ctaTo="/login?mode=register"
         />
 
@@ -1067,15 +1071,15 @@ function Pricing() {
           tagline="IA premium + brokers ilimitados"
           price={`$${fmtArs(PRO_PRICE_ARS_MONTHLY)}`}
           priceSub="/ mes"
-          priceFootnote="Sin sorpresas. Pago mensual en pesos."
+          priceFootnote={`Con el que arrancás tus primeros ${TRIAL_PRO_DAYS} días de prueba.`}
           features={PRO_FEATURES}
-          ctaLabel="Empezar con Pro"
+          ctaLabel="Probar y elegir Pro"
           ctaTo="/login?mode=register"
         />
       </div>
 
       <p className="text-center text-[11px] text-ink-3 mt-6">
-        ¿Querés ver el detalle completo? <Link to="/login?mode=register" className="text-ink-1 hover:text-data-violet transition-colors">Creá una cuenta</Link> y mirá la comparativa.
+        No te pedimos la tarjeta para probar. <Link to="/login?mode=register" className="text-ink-1 hover:text-data-violet transition-colors">Creá tu cuenta</Link> y arrancá tus {TRIAL_TOTAL_DAYS} días hoy.
       </p>
     </section>
   )
@@ -1345,7 +1349,7 @@ function CtaFinal() {
               to="/login?mode=register"
               className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
             >
-              Crear cuenta gratis
+              Probar 20 días gratis
               <ArrowRight size={14} strokeWidth={2} />
             </Link>
             <button
@@ -1438,7 +1442,7 @@ function Footer() {
               Cuenta
             </h3>
             <ul className="space-y-2 text-sm">
-              <li><Link to="/login?mode=register" className="text-ink-1 hover:text-ink-0 transition-colors">Crear cuenta gratis</Link></li>
+              <li><Link to="/login?mode=register" className="text-ink-1 hover:text-ink-0 transition-colors">Probar 20 días gratis</Link></li>
               <li><Link to="/login" className="text-ink-1 hover:text-ink-0 transition-colors">Iniciar sesión</Link></li>
               <li>
                 <button

@@ -94,6 +94,15 @@
     <link rel="preconnect" href="https://trading-production-143b.up.railway.app" crossorigin />
 
     <!-- Structured data: SoftwareApplication (qué es Rendi) -->
+    <!-- ⚠️ El JSON-LD de abajo ES LO QUE LEE GOOGLE y puede mostrar en los
+         resultados de búsqueda. Ofrecía el plan Free (que ya no es la puerta de
+         entrada) y los precios en DÓLARES VIEJOS ($4 y $9) — en pesos son otros
+         y hace meses. Se cobra en ARS, así que la moneda va en ARS.
+         Este archivo es HTML estático y no puede importar `src/data/pricing.js`,
+         así que los números están a mano: los compara
+         `backend/tests/test_promesas_vs_producto.py` contra `billing/pricing.py`
+         y se pone rojo si se desfasan.
+         (Y OJO: un comentario ADENTRO del script rompe el JSON — ya pasó.) -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
@@ -104,9 +113,8 @@
       "operatingSystem": "Web",
       "inLanguage": "es-AR",
       "offers": [
-        { "@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD" },
-        { "@type": "Offer", "name": "Plus", "price": "4", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } },
-        { "@type": "Offer", "name": "Pro", "price": "9", "priceCurrency": "USD", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } }
+        { "@type": "Offer", "name": "Plus", "price": "5990", "priceCurrency": "ARS", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } },
+        { "@type": "Offer", "name": "Pro", "price": "13990", "priceCurrency": "ARS", "priceSpecification": { "@type": "UnitPriceSpecification", "billingDuration": "P1M" } }
       ]
     }
     </script>
@@ -256,7 +264,7 @@
         </ul>
         <p>
           <a href="https://rendi.finance/planes">Ver planes y precios</a> ·
-          <a href="https://rendi.finance/login?mode=register">Crear cuenta gratis</a> ·
+          <a href="https://rendi.finance/login?mode=register">Probar 20 días gratis</a> ·
           <a href="https://rendi.finance/login">Iniciar sesión</a>
         </p>
         <p style="color:#7d8590;font-size:13px;margin-top:32px;">

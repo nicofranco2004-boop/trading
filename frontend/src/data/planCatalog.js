@@ -13,6 +13,19 @@
 //   3. quotas: grid mini de números (análisis/sem, chat/sem, brokers)
 // Sin emojis (decisión de producto: ASCII + tipografía + color, no glyph).
 
+// ─── La prueba ───────────────────────────────────────────────────────────────
+// Los días viven acá porque la LANDING los necesita y la landing es pública:
+// no hay sesión, así que no puede preguntárselos al backend como hace la app
+// (`trial.total_days` en /api/plan/features).
+//
+// ⚠️ Que estos números coincidan con los del backend (`billing/trial.py`) NO
+// queda al cuidado de nadie: lo compara `backend/tests/test_promesas_vs_producto.py`.
+// Si alguien cambia la prueba de 20 a 14 días y se olvida de la landing, ese
+// test se pone rojo. Sin eso, la home seguiría ofreciendo 20 días para siempre.
+export const TRIAL_TOTAL_DAYS = 20
+export const TRIAL_PRO_DAYS = 10
+export const TRIAL_PLUS_DAYS = 10
+
 export const FREE_FEATURES = {
   essentials: [
     { label: 'Dashboard completo con 4 KPIs + curva de evolución' },
