@@ -1982,6 +1982,13 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
     # en su título. El texto decía "semana" porque la etapa Pro duraba 7 días.
     _titulo = ("Mañana termina tu semana de Pro" if pro_days == 7
                else f"Mañana terminan tus {pro_days} días de Pro")
+    # Los cupos se DERIVAN: decía "60/semana contra 6 en Plus" con el 6 escrito
+    # a mano, y el 2026-10-15 el cupo del Plus bajó a 2. Un mail que compara dos
+    # planes con un número viejo no falla: miente, y encima justo en el mail que
+    # más convierte.
+    from ai.quota import LIMITS as _L
+    _pro_sem = _L["pro"]["analyses_per_week"]
+    _plus_sem = _L["plus"]["analyses_per_week"]
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{_titulo}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
@@ -1990,7 +1997,7 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
         <li>El <b>chat libre</b> — a partir de mañana volvés a las preguntas fijas.</li>
-        <li>Los <b>análisis sin freno</b> (60 por semana contra 6 en Plus).</li>
+        <li>Los <b>análisis sin freno</b> ({_pro_sem} por semana contra {_plus_sem} en Plus).</li>
       </ul>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
         Si te está sirviendo, podés quedarte en Pro desde
@@ -2000,8 +2007,8 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
     text = (
         f"{_titulo}\n\n"
         f"Hola {user_name}: mañana pasás a Plus por {plus_days} días más.\n\n"
-        "Hoy todavía tenés el chat libre y los análisis sin freno (60/semana "
-        "contra 6 en Plus). Aprovechalo.\n\n"
+        f"Hoy todavía tenés el chat libre y los análisis sin freno ({_pro_sem}/semana "
+        f"contra {_plus_sem} en Plus). Aprovechalo.\n\n"
         f"Seguir en Pro: {_TRIAL_URL}\n\n— Rendi"
     )
     return _send(to, _titulo, _wrap_html(body_html), text,
