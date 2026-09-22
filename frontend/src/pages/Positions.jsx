@@ -14,6 +14,7 @@ import FuturosGroup from '../components/FuturosGroup'
 import PosicionesArchivadas from '../components/PosicionesArchivadas'
 import { filasDeLaTarjeta } from '../utils/tarjetaBroker'
 import { lineaDelBono } from '../utils/lineaDelBono'
+import { bondSummaryDeLaFila } from '../utils/bondSummaryMerge'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
@@ -277,7 +278,10 @@ function PositionsDesktop() {
   }, [tcValuacion, publishTcValuacion])
 
   function toggleBondExpand(p) {
-    const key = `${p.broker}:${p.asset}`
+    // La MISMA clave que arma la fila (con todas las patas del grupo): con
+    // `${p.broker}:` la fila de cuenta unificada abría y cerraba una clave
+    // ("null:GD30") distinta de la que consulta el panel.
+    const key = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
     setExpandedBonds(prev => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
@@ -1057,8 +1061,12 @@ function PositionsDesktop() {
     const c = isARS ? calcARS(p) : calcUSDT(p)
     const dv = dvFor(p, isARS)
     const isBond = isBondPosition(p) && !p.is_cash
+    // El MISMO resumen que usa la celda (por todas las patas del grupo). Con
+    // la clave de una sola pata, una fila de cuenta unificada se ORDENABA por
+    // un P&L sin cupones mientras MOSTRABA uno con cupones: la tabla quedaba
+    // ordenada por un número que no estaba en pantalla.
     const pnlContrib = isBond
-      ? (bondCashflowsByKey.get(`${p.broker}:${p.asset}`)?.pnlContribution || 0)
+      ? (bondSummaryDeLaFila(p, bondCashflowsByKey)?.pnlContribution || 0)
       : 0
     const basePnl = isARS ? c.pnlArs : c.pnl
     const adjPnl = (basePnl != null && pnlContrib) ? basePnl + pnlContrib : basePnl
@@ -1193,7 +1201,7 @@ function PositionsDesktop() {
   // entre tablas: `expandedTickers` es un Set único de toda la página, así que
   // abrir los lotes de AL30 en IOL abría también los de AL30 en Balanz. La
   // convención correcta ya estaba en este mismo archivo — `expandedBonds` keyea
-  // `${p.broker}:${p.asset}` — sólo que la de acá no la seguía.
+  // por broker y activo — sólo que la de acá no la seguía.
   //
   // `unified`: en la tarjeta de cuenta (padre + sub-broker "· USD") se agrupa por
   // TICKER solo, no por (ticker, moneda) — un renglón por activo, que es lo que
@@ -1426,8 +1434,7 @@ function PositionsDesktop() {
   function calcRowCuenta(p) {
     if (p._multiCcy) {
       // Fila que fusiona monedas: se suma lote por lote con `valuePos`, que
-      // rutea cada uno por la regla de SU broker real. Es el mismo helper que
-      // usa la zona Renta Fija, que ya es cross-broker en producción.
+      // rutea cada uno por la regla de SU broker real.
       const lots = p._lots || [p]
       let valueUsd = 0, investedUsd = 0
       for (const l of lots) {
@@ -1502,7 +1509,7 @@ function PositionsDesktop() {
     }
   }
 
-  // Valuación unificada por posición (en USD) para la zona Renta Fija. Despacha a
+  // Valuación unificada por posición (en USD). Despacha a
   // calcARS/calcUSDT según la moneda del broker REAL de la posición (la sección es
   // cross-broker) — misma lógica que las tablas, sin duplicar valuación. Si no hay
   // precio, cae al costo (P&L 0), como el resto de la app.
@@ -1511,7 +1518,7 @@ function PositionsDesktop() {
     if (b && b.currency === 'ARS') {
       const c = calcARS(p)
       // Tomar el costo de calcARS (invUsd): para un lote costInUsd el costo YA está
-      // en USD y NO debe dividirse por el blue (sino P&L% explota en Renta Fija). El
+      // en USD y NO debe dividirse por el blue (sino el P&L% del bono explota). El
       // fallback ÷tcValuacion solo aplica a lotes ARS (calcARS omite invUsd sin precio).
       const invUsd = c.invUsd ?? routedInvUsd(p, tcValuacion)
       const valueUsd = c.valueUsd != null ? c.valueUsd : invUsd
@@ -2292,8 +2299,14 @@ function PositionsDesktop() {
                       // del bono — captura tanto la variación de precio como los
                       // flujos cobrados durante la tenencia.
                       const isBond = isBondPosition(p) && !p.is_cash
-                      const bondKey = `${p.broker}:${p.asset}`
-                      const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
+                      // La clave incluye TODAS las patas del grupo: una fila de cuenta
+                      // unificada fusiona el mismo bono de la pata pesos y la dólar, y
+                      // su `broker` es null a propósito (ver `_buildAgg`). Con
+                      // `${p.broker}:` esa fila buscaba "null:GD30", no encontraba nada
+                      // y se comía los cupones: US$1.298 de diferencia con la misma
+                      // cuenta separada (medido 2026-09-22, ver bondSummaryMerge.js).
+                      const bondKey = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
+                      const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey) : null
                       // Phase 3D sub-fix: P&L augmentado usa pnlContribution
                       // (sólo cupones + ganancia realizada de amorts), NO el
                       // cash total — la devolución de capital de los amorts
@@ -2611,8 +2624,10 @@ function PositionsDesktop() {
                     const tickerExpanded = lotesVisibles || expandedTickers.has(rowKey)
                     const c = calcRowUSDT(p)
                     const isBond = isBondPosition(p) && !p.is_cash
-                    const bondKey = `${p.broker}:${p.asset}`
-                    const bondSummary = isBond ? bondCashflowsByKey.get(bondKey) : null
+                    // Ver el comentario equivalente en la tabla ARS: la clave lleva
+                    // TODAS las patas, porque la fila de cuenta unificada no tiene una.
+                    const bondKey = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
+                    const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey) : null
                     // Phase 3D sub-fix: ver comentario equivalente en tabla ARS.
                     const cobranzasCash = bondSummary?.total || 0
                     const pnlContrib = bondSummary?.pnlContribution || 0

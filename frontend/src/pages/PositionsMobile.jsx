@@ -2696,10 +2696,17 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   // formas distintas ("Cocos · USD", "Cocos" a secas donde ARS había que
   // deducirlo, y nada en las fusionadas). La moneda pasa a un chip en TODAS las
   // filas, como en desktop, y el subtítulo se queda con lo que sí varía.
-  // En un bono el renglón dice vencimiento y próximo cobro — lo que la zona
-  // "Renta Fija" mostraba en su card, ahora que el bono es una fila más.
-  // En un LOTE no: ahí lo único que lo distingue de sus hermanos es la fecha.
-  const delBono = p._isLot ? null : lineaDelBono(p, undefined, { compacta: true })
+  // En un bono el renglón dice cuándo cobrás — lo que la zona "Renta Fija"
+  // mostraba en su card, ahora que el bono es una fila más.
+  // Dos excepciones, y las dos son para NO tapar información que ya estaba:
+  //   • un LOTE: lo único que lo distingue de sus hermanos es la fecha;
+  //   • una fila AGRUPADA: acá el "N lotes" es el ÚNICO aviso de que esa fila
+  //     junta varias compras (a diferencia de escritorio, que tiene un botón
+  //     aparte). Poniendo el bono encima, un AL30 comprado dos veces se veía
+  //     como una compra sola. El vencimiento se ve igual tocando la fila.
+  const delBono = (p._isLot || p._isAgg || p._multiBroker)
+    ? null
+    : lineaDelBono(p, undefined, { compacta: true })
   const contexto = p.is_cash ? 'Efectivo'
     : delBono ? delBono
     : p._multiBroker ? `${p._lotCount} lotes`

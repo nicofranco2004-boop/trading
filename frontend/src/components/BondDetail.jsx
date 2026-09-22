@@ -46,6 +46,12 @@ export function BondDetailBody({
   const moneyLabel = dispArs ? 'ARS' : 'USD'
   const fmt = dispArs ? ars : usd
   const toDisp = (nativeAmt, usdAmt = null) => {
+    // Sin monto nativo pero CON el de dólares: es la fila que junta las dos
+    // patas de una cuenta (pesos y dólares). Ahí no existe un total nativo —
+    // sumar pesos con dólares no da nada— pero el de USD sí, y es el riel en
+    // el que esa fila muestra toda su plata. Sin esta rama, el panel se iba a
+    // "Aún no registraste cobranzas" con los cupones cobrados y acreditados.
+    if (nativeAmt == null && usdAmt != null) return dispArs ? usdAmt * (tcValuacion || 1) : usdAmt
     if (nativeAmt == null) return nativeAmt
     if (isARS === dispArs) return nativeAmt
     if (isARS && !dispArs) return usdAmt != null ? usdAmt : (tcValuacion ? nativeAmt / tcValuacion : nativeAmt)
@@ -64,7 +70,10 @@ export function BondDetailBody({
   // sellado en la op. Hoy coinciden porque los dos son el blue; en cuanto el
   // backend selle el MEP del día, el total y la suma de sus filas se separan.
   const usdByOpId = summary?.usdByOpId
-  const recoveryPct = invested > 0 ? (total / invested) : 0
+  // El % de capital recuperado compara dos montos NATIVOS. En la fila que junta
+  // las dos patas no hay total nativo, así que no hay porcentaje que publicar:
+  // null y la línea no lo muestra (un 0% sería falso, no "todavía nada").
+  const recoveryPct = (summary?.total != null && invested > 0) ? (total / invested) : null
   const amortRealizedGain = pnlContribution - coupons
   // Versiones en el riel de display (las nativas quedan para gates de signo).
   const couponsUsd = summary?.couponsUsd || 0
@@ -229,17 +238,17 @@ export function BondDetailBody({
           <p className="flex items-center gap-2 text-[11px] font-bold tracking-[0.07em] uppercase text-ink-3 mb-2.5">
             <span className="w-1.5 h-1.5 rounded-full bg-data-violet inline-block" aria-hidden /> Tu inversión
           </p>
-          {total > 0 ? (
+          {totalDisp > 0 ? (
             <>
               <p className="text-[21px] font-bold text-rendi-pos tabular leading-none">+{moneyLabel} {fmt(totalDisp)}</p>
               <p className="text-[11px] text-ink-3 mt-1">
-                cobrado en total{invested > 0 && <> · <span className="text-ink-2 font-medium">{pctSigned(recoveryPct)} del capital recuperado</span></>}
+                cobrado en total{recoveryPct != null && invested > 0 && <> · <span className="text-ink-2 font-medium">{pctSigned(recoveryPct)} del capital recuperado</span></>}
               </p>
               <div className="mt-2.5 rounded-xl bg-bg-2/70 px-3 py-2.5 text-[11.5px] text-ink-2 space-y-1">
-                {coupons > 0 && <div className="flex justify-between"><span>Cupones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(couponsDisp)}</b></div>}
-                {amortizations > 0 && <div className="flex justify-between"><span>Amortizaciones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(amortizationsDisp)}</b></div>}
+                {couponsDisp > 0 && <div className="flex justify-between"><span>Cupones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(couponsDisp)}</b></div>}
+                {amortizationsDisp > 0 && <div className="flex justify-between"><span>Amortizaciones</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(amortizationsDisp)}</b></div>}
                 <div className="flex justify-between border-t border-line/60 pt-1 mt-1"><span>De eso es ganancia real</span><b className={`tabular ${pnlContribution >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{pnlContribution >= 0 ? '+' : '−'}{moneyLabel} {fmt(Math.abs(pnlContributionDisp))}</b></div>
-                {amortizations > 0 && (
+                {amortizationsDisp > 0 && (
                   <div className="flex justify-between"><span>Devolución de tu capital</span><b className="text-ink-1 tabular">{moneyLabel} {fmt(Math.max(0, amortizationsDisp - Math.max(0, amortRealizedGainDisp)))}</b></div>
                 )}
               </div>
@@ -253,6 +262,19 @@ export function BondDetailBody({
               para confirmar acá y en el inbox de Cartera.
             </p>
           )}
+          {/* Registrar un cobro necesita saber a QUÉ cuenta acreditarlo. En una
+              fila que fusiona la pata pesos y la pata dólar no hay una sola, y
+              el repo ya resuelve así la venta y la edición: se pasa por los
+              lotes. Antes estos botones se mostraban igual y el registro moría
+              con el error crudo del backend ("broker: Input should be a valid
+              string"), con la moneda equivocada en el formulario. */}
+          {summary?._variasPatas ? (
+            <p className="text-[11px] text-ink-3 leading-relaxed mt-3">
+              Esta fila junta las dos monedas de la cuenta. Para registrar un cobro nuevo,
+              separá las monedas con el botón «separar ARS / USD» de la cabecera y hacelo
+              en la cuenta que lo cobró.
+            </p>
+          ) : (
           <div className="flex flex-wrap gap-2 mt-3">
             <button
               onClick={onAddCoupon}
@@ -267,6 +289,7 @@ export function BondDetailBody({
               <LayersIcon size={12} strokeWidth={1.75} /> Amortización
             </button>
           </div>
+          )}
         </div>
 
         {/* Rendimiento */}

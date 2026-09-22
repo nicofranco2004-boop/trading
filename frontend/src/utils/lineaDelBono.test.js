@@ -12,6 +12,10 @@
 // sólo se afirman FECHAS, y este test lo fija: si alguien agrega un número, cae.
 import { describe, it, expect } from 'vitest'
 import { lineaDelBono, fechaCorta } from './lineaDelBono.js'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+const SRC2 = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 describe('lineaDelBono', () => {
   it('un bono dice cuándo vence', () => {
@@ -70,5 +74,19 @@ describe('en la lista de celular entra un solo dato', () => {
   it('sin pagos por delante, el compacto cae al vencimiento', () => {
     expect(lineaDelBono({ asset: 'AL30', quantity: 100 }, '2099-01-01', { compacta: true }))
       .toMatch(/^vence /)
+  })
+})
+
+describe('el renglón del bono no tapa lo que la fila ya decía', () => {
+  it('en celular, una fila agrupada conserva su "N lotes"', () => {
+    // El "N lotes" es el ÚNICO aviso, en celular, de que esa fila junta varias
+    // compras: escritorio tiene un botón aparte, la lista no. Si el renglón del
+    // bono lo pisa, un AL30 comprado dos veces se lee como una compra sola.
+    const src = readFileSync(join(SRC2, 'pages/PositionsMobile.jsx'), 'utf8')
+    const m = src.match(/const delBono = [^\n]*\n?[^\n]*\n?[^\n]*/)
+    expect(m, 'no se encontró el cálculo del renglón del bono').toBeTruthy()
+    expect(m[0]).toMatch(/_isAgg/)
+    expect(m[0]).toMatch(/_multiBroker/)
+    expect(m[0]).toMatch(/_isLot/)
   })
 })
