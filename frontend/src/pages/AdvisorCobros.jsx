@@ -83,12 +83,11 @@ export default function AdvisorCobros() {
       {/* Toolbar: clientes + rango */}
       <Panel padding="sm" className="mb-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5">
-          <span className="text-[12px] text-ink-3">Clientes</span>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0">
             {data
-              ? <ClientPicker compact clients={data.clients} selected={selected} onChange={setSelected}
+              ? <ClientPicker clients={data.clients} selected={selected} onChange={setSelected}
                               hint={c => conRf.has(c.client_uid) ? null : 'sin renta fija'} />
-              : <Skeleton className="h-7 w-72" />}
+              : <Skeleton className="h-8 w-44" />}
           </div>
           <div className="inline-flex border border-line rounded-lg overflow-hidden ml-auto" role="radiogroup" aria-label="Rango">
             {RANGES.map(r => (

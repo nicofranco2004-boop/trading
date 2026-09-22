@@ -42298,7 +42298,8 @@ def advisor_book_asset_clients(asset: str, is_ar_market: bool = None,
 
 
 @app.get("/api/advisor/book/history")
-def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
+def advisor_book_history(days: int = 365, clients: Optional[str] = None,
+                         uid: int = Depends(get_current_user)):
     """Serie histórica del capital administrado (idea de Nico): la evolución
     del AUM total del libro, día a día, desde los snapshots nocturnos — con
     la línea de "plata aportada neta" al lado, para distinguir a ojo si el
@@ -42308,16 +42309,34 @@ def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
     ÚLTIMO snapshot conocido de CADA cliente (forward-fill) — un cliente sin
     snapshot ESE día no hace caer la serie (hipo del cron ≠ retiro masivo), y
     un cliente nuevo empieza a sumar desde su primer snapshot (el salto es
-    REAL: entró capital al libro). Clientes revocados no cuentan."""
+    REAL: entró capital al libro). Clientes revocados no cuentan.
+
+    `clients`: ids separados por coma para ver la evolución de UN SUBCONJUNTO
+    (Nico, 2026-09-21: "lo que ven en el dashboard, pero seleccionando de qué
+    usuarios"). Se intersecta con el libro: un id ajeno se ignora. Sin el
+    parámetro, todo el libro — la respuesta trae `client_list` para que la
+    pantalla arme las casillas sin otra llamada."""
     if days <= 0 or days > 730:
         raise HTTPException(422, "days debe estar entre 1 y 730")
     from datetime import datetime as _dt, timedelta as _td
     conn = get_db()
     try:
         _require_advisor(conn, uid)
-        ids = _advisor_client_ids(conn, uid)
+        book = _advisor_client_ids(conn, uid)
+        labels = {r["client_uid"]: (r["label"] or f"Cliente {r['client_uid']}")
+                  for r in conn.execute(
+                      "SELECT client_uid, label FROM advisor_clients WHERE advisor_uid=? AND status='active'",
+                      (uid,)).fetchall()}
+        client_list = [{"client_uid": c, "label": labels.get(c, f"Cliente {c}")} for c in book]
+        ids = list(book)
+        if clients is not None and clients.strip() != "":
+            try:
+                wanted = {int(x) for x in clients.split(",") if x.strip()}
+            except ValueError:
+                raise HTTPException(422, "clients debe ser una lista de ids separados por coma")
+            ids = [c for c in book if c in wanted]
         if not ids:
-            return {"series": [], "clients": 0}
+            return {"series": [], "clients": 0, "client_list": client_list}
         cutoff = (_dt.utcnow().date() - _td(days=days)).isoformat()
         # Seed del forward-fill: el último snapshot ANTERIOR a la ventana de
         # cada cliente — sin esto, un cliente con historia vieja arrancaría
@@ -42353,7 +42372,7 @@ def advisor_book_history(days: int = 365, uid: int = Depends(get_current_user)):
         if len(series) > 400:
             stride = (len(series) + 399) // 400
             series = series[::stride] + ([series[-1]] if series[-1] not in series[::stride] else [])
-        return {"series": series, "clients": len(ids)}
+        return {"series": series, "clients": len(ids), "client_list": client_list}
     finally:
         conn.close()
 
