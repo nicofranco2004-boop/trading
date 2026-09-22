@@ -16,6 +16,11 @@
 //     cobrados y acreditados al cash, y el cronograma decía "sin registro".
 //   • el contador del botón ("Ver cobranzas (2)") desaparecía.
 //
+// Este archivo sólo SUMA. Si la fila puede o no registrar un cobro nuevo NO se
+// decide acá: lo decide la fila (`utils/filaFusionada.js`). Una versión anterior
+// marcaba el resumen y fallaba justo en el caso más común — un bono en las dos
+// patas sin ningún cobro todavía no tiene resumen que marcar.
+//
 // Todo lo que se suma acá es aditivo entre patas PORQUE está en USD. La única
 // excepción es `pnlContribution`, que está en la moneda NATIVA de cada pata:
 // sumar los pesos de una con los dólares de la otra daría un número sin unidad.
@@ -56,9 +61,6 @@ export function mergeBondSummaries(sums) {
     usdByOpId,
     hasLegacyOps: reales.some(s => s.hasLegacyOps),
     currency: mismaMoneda ? (reales[0].currency || null) : null,
-    // Marca para la fila: acá hay más de una pata, así que registrar un cobro
-    // nuevo no sabe a cuál mandarlo. El panel se muestra, pero de sólo lectura.
-    _variasPatas: true,
   }
 }
 

@@ -34,6 +34,11 @@ function diffDaysAbs(a, b) {
 export function BondDetailBody({
   p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, cerBasis = 'CER',
   onAddCoupon, onAddAmortization, pendingDates = null,
+  // ¿La fila junta las dos patas de la cuenta? Lo decide la FILA, no el
+  // resumen de cobranzas: un bono en las dos patas SIN cobros todavía —el caso
+  // más común— no tiene resumen, y colgar la condición de ahí dejaba los
+  // botones a la vista para que el registro muriera con el error del backend.
+  filaFusionada = false,
   isArsDisp = null, tcValuacion = null,
 }) {
   const meta = getBondMeta(p.asset)
@@ -268,7 +273,7 @@ export function BondDetailBody({
               lotes. Antes estos botones se mostraban igual y el registro moría
               con el error crudo del backend ("broker: Input should be a valid
               string"), con la moneda equivocada en el formulario. */}
-          {summary?._variasPatas ? (
+          {filaFusionada ? (
             <p className="text-[11px] text-ink-3 leading-relaxed mt-3">
               Esta fila junta las dos monedas de la cuenta. Para registrar un cobro nuevo,
               separá las monedas con el botón «separar ARS / USD» de la cabecera y hacelo

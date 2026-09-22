@@ -51,10 +51,12 @@ describe('una fila que junta las dos patas ve las cobranzas de las dos', () => {
     expect(m.currency).toBe('USD')
   })
 
-  it('marca la fila como de varias patas: registrar un cobro no sabría a cuál', () => {
-    expect(mergeBondSummaries([patar(), patar()])._variasPatas).toBe(true)
-    // Con una sola pata NO se marca: ahí el registro funciona como siempre.
-    expect(mergeBondSummaries([patar()])._variasPatas).toBeUndefined()
+  it('NO opina sobre si se puede registrar un cobro: eso lo decide la fila', () => {
+    // La primera versión marcaba el resumen, y fallaba en el caso más común:
+    // un bono en las dos patas SIN cobros todavía no tiene resumen que marcar,
+    // así que los botones quedaban a la vista y el registro moría con el error
+    // crudo del backend. La condición vive en utils/filaFusionada.js.
+    expect(mergeBondSummaries([patar(), patar()])._variasPatas).toBeUndefined()
   })
 
   it('sin ninguna cobranza en ninguna pata devuelve null, no un resumen en cero', () => {
@@ -121,9 +123,8 @@ describe('nadie vuelve a armar la clave del bono con un solo broker', () => {
     expect((src.match(/_brokers \|\| \[p\.broker\]/g) || []).length).toBe(3)
   })
 
-  it('el panel no ofrece registrar un cobro cuando la fila junta dos patas', () => {
-    const src = readFileSync(join(SRC, 'components/BondDetail.jsx'), 'utf8')
-    expect(src, 'volvieron los botones que mandaban broker:null al backend')
-      .toMatch(/_variasPatas/)
+  it('las dos tablas le pasan al panel si la fila junta patas', () => {
+    const src = readFileSync(join(SRC, 'pages/Positions.jsx'), 'utf8')
+    expect((src.match(/filaFusionada=\{filaSinUnaPata\(p\)\}/g) || []).length).toBe(2)
   })
 })

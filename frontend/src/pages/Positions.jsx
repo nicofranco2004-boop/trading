@@ -15,6 +15,7 @@ import PosicionesArchivadas from '../components/PosicionesArchivadas'
 import { filasDeLaTarjeta } from '../utils/tarjetaBroker'
 import { lineaDelBono } from '../utils/lineaDelBono'
 import { bondSummaryDeLaFila } from '../utils/bondSummaryMerge'
+import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
@@ -673,7 +674,7 @@ function PositionsDesktop() {
     // justamente el caso que crea el importador de Balanz). Esa fila tampoco
     // tiene UN costo que editar, y sin el guard `saveGroup` mandaba
     // `currency: undefined` y el backend elegía por su cuenta.
-    if (p?._multiBroker || p?._multiCcy) {
+    if (filaSinUnaPata(p)) {
       const porPata = new Map()
       for (const l of (p._lots || [])) {
         // Por (broker, MONEDA): con lotes en dos monedas dentro del mismo
@@ -838,7 +839,7 @@ function PositionsDesktop() {
     // En vez de cortar, se abre el MISMO selector que "Registrar venta" del
     // header, acotado a los lotes de este activo — el usuario elige la pata y
     // sigue por el flujo normal.
-    if (p._multiBroker || p._multiCcy || p.broker == null) {
+    if (filaSinUnaPata(p)) {
       setSellPickFrom(p._lots || [])
       setSellQuery('')
       setModal('sell-selector')
@@ -2545,6 +2546,7 @@ function PositionsDesktop() {
                         {expanded && (
                           <BondDetailRow
                             p={p}
+                            filaFusionada={filaSinUnaPata(p)}
                             colSpan={arsColSpan}
                             summary={bondSummary}
                             pendingDates={pendingDatesByKey.get(bondKey)}
@@ -2784,6 +2786,7 @@ function PositionsDesktop() {
                       {expanded && (
                         <BondDetailRow
                           p={p}
+                          filaFusionada={filaSinUnaPata(p)}
                           colSpan={showDetail ? 10 : 9}
                           summary={bondSummary}
                           pendingDates={pendingDatesByKey.get(bondKey)}

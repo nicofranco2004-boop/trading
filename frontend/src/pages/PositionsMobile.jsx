@@ -37,6 +37,7 @@ import { buildPositionActions } from '../utils/positionActions'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import PosicionesArchivadas from '../components/PosicionesArchivadas'
 import { lineaDelBono } from '../utils/lineaDelBono'
+import { filaSinUnaPata } from '../utils/filaFusionada'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
@@ -306,7 +307,7 @@ export default function PositionsMobile() {
     // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
     // equivocado. Se abren los lotes — cada uno es su posición real, con su
     // broker y su precio de compra.
-    if (p?._multiBroker || (p && !p.is_cash && p.broker == null)) {
+    if (filaSinUnaPata(p)) {
       onToggleTickerRef(p)
       toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
       return
@@ -576,7 +577,7 @@ export default function PositionsMobile() {
   // La fila que junta dos patas no llega acá: el menú manda antes al selector
   // de pata (ver PositionRow).
   async function openEditGroup(p) {
-    if (!p || p._multiBroker || p._multiCcy) return
+    if (filaSinUnaPata(p)) return
     setGroupTarget(p)
     setGroupCtx(null)
     setAddModal('edit-group')
@@ -618,7 +619,7 @@ export default function PositionsMobile() {
     // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
     // equivocado. Se abren los lotes — cada uno es su posición real, con su
     // broker y su precio de compra.
-    if (p?._multiBroker || (p && !p.is_cash && p.broker == null)) {
+    if (filaSinUnaPata(p)) {
       onToggleTickerRef(p)
       toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
       return
@@ -680,7 +681,7 @@ export default function PositionsMobile() {
     // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
     // equivocado. Se abren los lotes — cada uno es su posición real, con su
     // broker y su precio de compra.
-    if (p?._multiBroker || (p && !p.is_cash && p.broker == null)) {
+    if (filaSinUnaPata(p)) {
       onToggleTickerRef(p)
       toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
       return
@@ -2615,7 +2616,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
     // grupo único al que mandarlo, así que primero se elige la pata: es la
     // unidad que el usuario reconoce ("la parte en pesos") y el mismo criterio
     // que escritorio (`openEditGroup`, que corta con `_multiBroker || _multiCcy`).
-    onEditGroup: ((p._multiBroker || p._multiCcy) ? (() => setPataPara('edit')) : onEditGroup),
+    onEditGroup: (filaSinUnaPata(p) ? (() => setPataPara('edit')) : onEditGroup),
     onDelete: onDeletePos && (pos => {
       track('mobile_row_action', { code: pos.is_cash ? 'delete_cash' : 'delete', asset: pos.asset })
       onDeletePos(pos)

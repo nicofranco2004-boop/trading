@@ -35,6 +35,7 @@ import {
   ShoppingCart, DollarSign, Bell, Pencil, Trash2, Coins, Sparkles,
   ArrowDownCircle, ArrowUpCircle, ChevronUp, Layers as LayersIcon,
 } from 'lucide-react'
+import { filaSinUnaPata } from './filaFusionada'
 
 /**
  * @param {object}  p          La fila (posición, lote, agregado o efectivo).
@@ -75,7 +76,7 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
     // La fila que fusiona las DOS patas de la cuenta (comprada en pesos y en
     // dólares) no tiene UN broker al que mandar una escritura: "Ver lotes" va
     // primero porque ahí cada lote es su posición real.
-    if (p._multiBroker || p._multiCcy) {
+    if (filaSinUnaPata(p)) {
       return compact([
         analizar,
         verLotes,
