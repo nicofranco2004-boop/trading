@@ -20,6 +20,7 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
+import { usePlanFeatures } from '../../hooks/usePlanFeatures'
 import { track } from '../../utils/track'
 import {
   fmtArs, annualSavingsArs, ANNUAL_DISCOUNT_BADGE_PCT,
@@ -142,7 +143,16 @@ function TarjetaPlan({ plan, anual, destacado, onElegir }) {
 export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
   const navigate = useNavigate()
   const { logout } = useAuth()
+  const { trial } = usePlanFeatures()
   const caja = useRef(null)
+
+  // Cuántos días duró la prueba: sale del backend, NO escrito acá. El cartel
+  // decía "20" a mano — el mismo número congelado que venimos sacando de los
+  // mails y los tests, y en la pantalla más visible de todas. `trial.total_days`
+  // llega aunque la prueba ya haya terminado (billing/trial.py:492), y
+  // /api/plan/features es uno de los endpoints que la pausa deja pasar.
+  // Sin el dato, la frase omite el número en vez de inventarlo.
+  const dias = trial?.total_days
 
   useEffect(() => { track('paywall_muro_visto') }, [])
 
@@ -241,7 +251,7 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
                           px-3 py-1.5">
             <span className="text-[11.5px] font-semibold uppercase tracking-wide
                              text-data-violet">
-              Terminaron tus 20 días
+              {dias ? `Terminaron tus ${dias} días de prueba` : 'Terminó tu prueba'}
             </span>
           </div>
           <h1 id="muro-titulo"
