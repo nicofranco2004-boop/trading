@@ -3065,6 +3065,57 @@ def _resolve_client_context(request: Request, uid: int) -> Optional[int]:
     return client_id
 
 
+CUENTA_EN_PAUSA = 402   # "Payment Required". El frontend lo mapea al muro.
+
+# Lo que sigue abierto con la cuenta en pausa. La lista NO es una concesión:
+# son los caminos por los que la persona sale de la pausa, y sin ellos el muro
+# sería una puerta cerrada con la llave adentro.
+#   · /api/auth/   → saber quién es y que su cuenta está en pausa (/auth/me es
+#                    justamente el endpoint que le dice al frontend que muestre
+#                    el muro), cerrar sesión, cambiar la contraseña.
+#   · /api/billing/→ ver los planes y PAGAR. Sin esto no puede elegir un plan:
+#                    el muro se vuelve inescapable.
+#   · /api/plan/   → qué incluye cada plan (lo que el muro pinta) y la métrica.
+# Se comparan como PREFIJO de la ruta, así que cubren también los endpoints que
+# se agreguen debajo.
+EXENTOS_CON_CUENTA_EN_PAUSA = ("/api/auth/", "/api/billing/", "/api/plan/")
+
+
+def cuenta_en_pausa(conn, uid: int) -> bool:
+    """¿Esta cuenta está en pausa por no haber elegido un plan?
+
+    Sólo para quien nació sin plan gratis (`users.requires_plan`): se le terminó
+    la prueba de 20 días y no eligió plan, así que no entra hasta que elija.
+    Para todos los demás —los que ya existían— devuelve False siempre.
+
+    El plan vigente se pregunta a `quota.get_tier`, que NO es lo mismo que leer
+    `users.tier`: get_tier ya destrata un 'pro' cuyo crédito venció aunque el
+    cron diario todavía no haya corrido. Gracias a eso el muro aparece el
+    instante en que se termina la prueba y se levanta el instante en que la
+    persona paga, sin esperar a ningún cron ni depender de que haya corrido.
+    """
+    try:
+        row = conn.execute(
+            "SELECT requires_plan, is_admin, managed_by FROM users WHERE id=?",
+            (uid,)).fetchone()
+        if not row or not row["requires_plan"]:
+            return False
+        if row["is_admin"]:
+            return False
+        # Cuenta administrada por un asesor: el plan lo paga el asesor, y el
+        # cliente no tiene que elegir nada.
+        if row["managed_by"] is not None:
+            return False
+        from ai import quota as _q
+        return _q.get_tier(conn, uid) in (None, "free")
+    except Exception as ex:
+        # Un error acá NO puede dejar a nadie afuera de su cuenta: ante la duda
+        # se deja pasar. El muro es una decisión de cobranza, no de seguridad —
+        # nada de lo que protege es secreto, son los datos del propio usuario.
+        log.warning("cuenta_en_pausa falló uid=%s: %s", uid, ex)
+        return False
+
+
 def get_effective_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -3073,11 +3124,40 @@ def get_effective_user(
 
     Es el Depends por defecto de los endpoints de DATOS. Los endpoints de
     identidad/cuenta/billing/admin usan get_current_user (o quedan cubiertos
-    por los prefijos exentos, que ignoran el header)."""
+    por los prefijos exentos, que ignoran el header).
+
+    Acá vive también el muro de "elegí un plan", y vive acá justamente porque
+    esta función ES el único paso obligado de los endpoints de datos: un muro
+    puesto en el frontend se esquiva pegándole a la API, y uno puesto endpoint
+    por endpoint se queda a medias el día que alguien agrega el endpoint 300.
+    Que los endpoints de identidad y de billing usen `get_current_user` no es
+    una omisión: son exactamente los que tienen que seguir funcionando con la
+    cuenta en pausa, porque son los que le permiten mirar los planes y pagar.
+    """
     uid = get_current_user(request, creds)
     # Stash del uid AUTENTICADO para que endpoints que necesitan ambos (p.ej.
     # /api/plan/features) no re-resuelvan el JWT + SELECT users una 2da vez.
     request.state.rendi_auth_uid = uid
+
+    # Se evalúa sobre el uid AUTENTICADO, no sobre el cliente que se está
+    # mirando: si un asesor con plan mira la cuenta de un cliente, lo que manda
+    # es el plan del asesor.
+    #
+    # ⚠️ El chequeo se saltea en los caminos de identidad y de pago. Sin esta
+    # excepción el muro se muerde la cola: `/api/auth/me` —el endpoint que le
+    # avisa al frontend que hay que mostrar el muro— y `/api/billing/subscribe`
+    # —el que cobra— pasan los dos por esta misma función, así que la cuenta en
+    # pausa quedaba sin forma de enterarse ni de salir.
+    ruta = request.url.path
+    if not ruta.startswith(EXENTOS_CON_CUENTA_EN_PAUSA):
+        with db_abierta() as _conn:
+            if cuenta_en_pausa(_conn, uid):
+                raise HTTPException(
+                    CUENTA_EN_PAUSA,
+                    detail={"code": "plan_requerido",
+                            "message": "Terminó tu prueba. Elegí un plan para seguir."},
+                )
+
     client_uid = _resolve_client_context(request, uid)
     return client_uid if client_uid is not None else uid
 
@@ -3791,7 +3871,8 @@ def me(uid: int = Depends(get_effective_user)):
     from ai import quota
     with db_abierta() as conn:
         row = conn.execute(
-            "SELECT id, email, name, is_admin, created_at, last_login_at FROM users WHERE id=?", (uid,)
+            "SELECT id, email, name, is_admin, created_at, last_login_at, "
+            "requires_plan FROM users WHERE id=?", (uid,)
         ).fetchone()
         if not row:
             raise HTTPException(404)
@@ -3863,6 +3944,17 @@ def me(uid: int = Depends(get_effective_user)):
         #   • 'cancelled'   → user canceló manualmente, sigue en grace period
         #                     hasta credit_active_until
         #   • 'free'        → tier = free (o anulado)
+        # ¿Nació sin plan gratis, y su cuenta está en pausa por no haber
+        # elegido uno? Son DOS datos distintos y el frontend necesita los dos:
+        #   • requires_plan → cambia los textos durante la prueba ("el día 21
+        #     elegís un plan" en vez de "vuelve a Free").
+        #   • cuenta_en_pausa → mostrar el muro AHORA.
+        # El muro real no es este campo: es el 402 de `get_effective_user`. Esto
+        # es para que la app pueda mostrar la pantalla en vez de una pared de
+        # errores rojos, que es lo que vería si sólo tuviera el 402.
+        d["requires_plan"] = bool(d.get("requires_plan"))
+        d["cuenta_en_pausa"] = cuenta_en_pausa(conn, uid)
+
         sub_status = d.get("subscription_status")
         cred_active = bool(d.get("credit_days_remaining", 0) > 0)
         tier = d.get("tier")
