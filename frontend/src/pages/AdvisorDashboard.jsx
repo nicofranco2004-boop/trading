@@ -468,7 +468,13 @@ const EVO_RANGES = [
 ]
 
 function BookEvolution({ series, error, picker = null, subset = 0 }) {
-  const { money, smoney } = moneyHelpers(useMoneyFormat())
+  // UNA sola llamada al hook, y ANTES de los dos `return` de abajo (cargando /
+  // sin historia). Un `use*` después de un return temprano cambia la cantidad
+  // de hooks entre renders: React avisa "change in the order of Hooks" y, en
+  // cuanto sea un useState/useMemo (y no un useContext, que no ocupa lugar),
+  // pasa a ser la pantalla en blanco de "Rendered more hooks".
+  const fmt = useMoneyFormat()
+  const { money, smoney } = moneyHelpers(fmt)
   const [range, setRange] = useState('3M')
 
   const { visible, baseline } = useMemo(() => {
@@ -541,7 +547,7 @@ function BookEvolution({ series, error, picker = null, subset = 0 }) {
     )
   }
 
-  const { isArs, convert } = useMoneyFormat()
+  const { isArs, convert } = fmt
   const fmtShort = (vUsd) => {
     const v = isArs ? convert(vUsd) : vUsd
     const sym = isArs ? '$' : 'US$'
