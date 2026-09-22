@@ -3107,6 +3107,17 @@ CUENTA_EN_PAUSA = 402   # "Payment Required". El frontend lo mapea al muro.
 # se agreguen debajo.
 EXENTOS_CON_CUENTA_EN_PAUSA = ("/api/auth/", "/api/billing/", "/api/plan/")
 
+# Rutas EXACTAS (método + path), no prefijos. Van aparte porque `/api/me` como
+# prefijo abriría también `/api/me/reset-data` y `/api/me/advisor/*`, que no
+# tienen por qué funcionar con la cuenta en pausa.
+#
+# 🔴 `DELETE /api/me` es el cierre de cuenta, y pasa por `get_effective_user`
+# como cualquier endpoint de datos: sin esta excepción, quien no quiere pagar
+# queda ATRAPADO — no puede usar Rendi ni irse. Eso deja de ser una decisión de
+# cobranza y pasa a ser impedirle borrar sus propios datos, que es justo el
+# derecho que el propio endpoint dice respetar ("derecho al olvido").
+EXENTOS_EXACTOS_CON_CUENTA_EN_PAUSA = {("DELETE", "/api/me")}
+
 
 def cuenta_en_pausa(conn, uid: int) -> bool:
     """¿Esta cuenta está en pausa por no haber elegido un plan?
@@ -3180,7 +3191,9 @@ def get_effective_user(
     # None = no lo sabemos (columna sin migrar) y entonces sí se pregunta.
     ruta = request.url.path
     marca = getattr(request.state, "rendi_requires_plan", None)
-    if marca is not False and not ruta.startswith(EXENTOS_CON_CUENTA_EN_PAUSA):
+    exento = (ruta.startswith(EXENTOS_CON_CUENTA_EN_PAUSA)
+              or (request.method, ruta) in EXENTOS_EXACTOS_CON_CUENTA_EN_PAUSA)
+    if marca is not False and not exento:
         with db_abierta() as _conn:
             if cuenta_en_pausa(_conn, uid):
                 raise HTTPException(
