@@ -1,4 +1,4 @@
-import { useEffect, useRef, lazy, Suspense } from 'react'
+import { useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { VozProvider } from './contexts/VozContext'
 import RendiMate from './components/voz/RendiMate'
@@ -20,6 +20,7 @@ import DemoBanner from './components/DemoBanner'
 // Barra del free trial — en el shell, no en /planes: el aviso del día 8
 // ("mañana pasás a Plus") tiene que verlo el que está usando la app.
 import { TrialBanner } from './components/plan/TrialCta'
+import MuroElegirPlan from './components/plan/MuroElegirPlan'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
@@ -310,6 +311,36 @@ function AppRoutes() {
   )
 }
 
+// EL MURO de "elegí un plan". Hermano de <Layout/> por el mismo motivo que el
+// acompañante: montado adentro habría que ponerlo en los DOS shells (celular y
+// escritorio) y el día que alguien toque uno solo, el muro desaparece en el
+// otro. Acá se monta una vez y tapa los dos.
+//
+// El muro de verdad lo aplica el backend: 402 `plan_requerido` en cualquier
+// endpoint de datos. Esto es la cara visible de ese 402 — sin esta pantalla, la
+// cuenta en pausa mostraría la app llena de errores rojos sin explicación.
+function MuroDePlanGate() {
+  const { user } = useAuth()
+  const { pathname } = useLocation()
+  const [anual, setAnual] = useState(false)
+
+  if (!user?.cuenta_en_pausa) return null
+  // ⚠️ El muro NO puede taparle las páginas por las que sale de la pausa. Sus
+  // propios botones llevan a /planes: si se tapara ahí, el muro sería una
+  // puerta cerrada con la llave adentro (el mismo agujero que tuvo el backend
+  // con /api/billing/subscribe).
+  if (pathname.startsWith('/planes') || pathname.startsWith('/billing')) return null
+
+  return (
+    <MuroElegirPlan
+      anual={anual}
+      onCambiarPeriodo={setAnual}
+      resumen={user.pausa_resumen || null}
+    />
+  )
+}
+
+
 function Layout() {
   const { user } = useAuth()
   const isMobile = useIsMobile()
@@ -446,6 +477,7 @@ export default function App() {
                   importa para los ads) era invisible en analytics. */}
               <RouteTracker />
               <Layout />
+              <MuroDePlanGate />
               {/* EL ACOMPAÑANTE. Hermano de <Layout/>, no hijo de una página:
                   montado adentro el router lo desmontaría al navegar, el
                   <audio> se destruiría y Rendi se callaría a mitad de frase —

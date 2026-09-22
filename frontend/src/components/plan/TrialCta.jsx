@@ -17,6 +17,7 @@ import { api } from '../../utils/api'
 import InfoTooltip from '../InfoTooltip'
 import Modal from '../Modal'
 import { usePlanFeatures, refreshPlanFeatures } from '../../hooks/usePlanFeatures'
+import { useAuth } from '../../contexts/AuthContext'
 import { track } from '../../utils/track'
 import { useToast } from '../Toast'
 
@@ -42,14 +43,26 @@ export function canOfferTrial(trial) {
 /** El aviso del banner, o null si no hay nada urgente que decir.
  *  El aviso ANTES del cambio es el que sirve: le da tiempo a usar lo que está
  *  por perder y a decidir. Después ya es la notificación de algo consumado. */
-export function trialNotice(trial) {
+// Cuántos días antes del final la barra se pone urgente. Es el MISMO número
+// que usa el mail (`MAIL_AVISO_DIAS_ANTES` en billing/trial.py): si acá fueran
+// 2 y allá 3, el día que falten 3 le llega un mail diciendo "elegí un plan"
+// mientras la app no le muestra nada.
+export const DIAS_PARA_APURAR = 3
+
+export function trialNotice(trial, requierePlan = false) {
   if (!trial?.active) return null
   const { stage, days_left: left, days_to_switch: toSwitch } = trial
   if (stage === 'pro' && toSwitch != null && toSwitch <= 1) {
     return 'Mañana pasás a Plus: aprovechá hoy el chat libre y los análisis.'
   }
-  if (left != null && left <= 2) {
-    return `Te ${left === 1 ? 'queda 1 día' : `quedan ${left} días`} de prueba.`
+  if (left != null && left <= DIAS_PARA_APURAR) {
+    const cuanto = left === 1 ? 'queda 1 día' : `quedan ${left} días`
+    // Para quien no tiene plan gratis al que caer, el dato no es cuánto le
+    // queda: es que tiene que hacer algo. Decirle sólo "te quedan 2 días de
+    // prueba" le oculta justamente la parte que lo obliga a decidir.
+    return requierePlan
+      ? `Te ${cuanto}: elegí un plan para no perder el acceso.`
+      : `Te ${cuanto} de prueba.`
   }
   return null
 }
@@ -362,9 +375,13 @@ export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfir
  *  se ve, el usuario pierde Pro sin enterarse de que lo tenía. */
 export function TrialBanner({ onSeePlans }) {
   const { trial, features } = usePlanFeatures()
+  const { user } = useAuth()
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const up = features?.pro_upsell
+  // Nació sin plan gratis: al final de la prueba la cuenta queda EN PAUSA, no
+  // vuelve a Free. Cambia el texto y, sobre el final, el tono de la barra.
+  const requierePlan = !!user?.requires_plan
 
   // La prueba de Pro sobre un plan pago usa la MISMA barra: para el usuario es
   // lo mismo ("estoy probando algo que se termina"), y tener dos barras
@@ -406,8 +423,11 @@ export function TrialBanner({ onSeePlans }) {
 
   const { stage, days_left: left } = trial
   const plan = stage === 'plus' ? 'Plus' : 'Pro'
-  const aviso = trialNotice(trial)
+  const aviso = trialNotice(trial, requierePlan)
   const diasLabel = trialDaysLabel(left)
+  // Ámbar sólo cuando de verdad aprieta y hay algo que decidir. Antes de eso,
+  // apurar a alguien que está probando la app sólo molesta.
+  const apura = requierePlan && left != null && left <= DIAS_PARA_APURAR
   // En /planes el botón no lleva a ningún lado nuevo.
   const enPlanes = pathname === '/planes'
 
@@ -418,10 +438,13 @@ export function TrialBanner({ onSeePlans }) {
   }
 
   return (
-    <div className="sticky top-0 z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm">
+    <div className={`sticky top-0 z-40 border-b backdrop-blur-sm ${
+      apura ? 'border-rendi-warn/30 bg-rendi-warn/[0.07]' : 'border-data-violet/30 bg-bg-1/95'}`}>
       <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
         <div className="flex items-center gap-2 min-w-0">
-          <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
+          <Sparkles size={13} strokeWidth={1.75}
+            className={`flex-shrink-0 ${apura ? 'text-rendi-warn' : 'text-data-violet'}`}
+            aria-hidden="true" />
           <p className="text-xs text-ink-1 min-w-0">
             <span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
             {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}
@@ -432,9 +455,12 @@ export function TrialBanner({ onSeePlans }) {
           <button
             type="button"
             onClick={verPlanes}
-            className="flex-shrink-0 inline-flex items-center gap-1 text-xs bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors"
+            className={`flex-shrink-0 inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-sm transition-colors border ${
+              apura
+                ? 'bg-data-violet text-bg-0 border-transparent hover:bg-rendi-violet-hover font-semibold'
+                : 'bg-data-violet/15 hover:bg-data-violet/25 text-data-violet border-data-violet/30'}`}
           >
-            Ver planes
+            {apura ? 'Elegir plan' : 'Ver planes'}
             <ArrowRight size={11} strokeWidth={2} />
           </button>
         )}

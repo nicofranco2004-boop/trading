@@ -3954,6 +3954,31 @@ def me(uid: int = Depends(get_effective_user)):
         # errores rojos, que es lo que vería si sólo tuviera el 402.
         d["requires_plan"] = bool(d.get("requires_plan"))
         d["cuenta_en_pausa"] = cuenta_en_pausa(conn, uid)
+        # Con la cuenta en pausa, ESTE es el dato que convence: "tus 4 brokers y
+        # 312 movimientos quedaron guardados" dice que no se perdió nada mucho
+        # mejor que la palabra "guardado". Va acá porque /api/auth/me es uno de
+        # los pocos endpoints que la pausa deja pasar — los de datos, que son los
+        # que sabrían contar esto, están justamente bloqueados.
+        # Si no hay nada que contar, no se manda: el muro omite la frase antes
+        # que decir "tus 0 brokers".
+        d["pausa_resumen"] = None
+        if d["cuenta_en_pausa"]:
+            try:
+                nb = conn.execute(
+                    "SELECT COUNT(*) c FROM brokers WHERE user_id=?", (uid,)
+                ).fetchone()["c"] or 0
+                nm = conn.execute(
+                    "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
+                ).fetchone()["c"] or 0
+                partes = []
+                if nb:
+                    partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
+                if nm:
+                    partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
+                if partes:
+                    d["pausa_resumen"] = " y ".join(partes)
+            except Exception as ex:
+                log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
 
         sub_status = d.get("subscription_status")
         cred_active = bool(d.get("credit_days_remaining", 0) > 0)

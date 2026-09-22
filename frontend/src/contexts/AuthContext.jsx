@@ -58,6 +58,19 @@ function mapMeToUser(me) {
     // (cambió plan, vive del crédito) | 'cancelled' (canceló manual,
     // grace period) | 'free'.
     access_mode:           me.access_mode || 'free',
+    // Paywall de los que nacen sin plan gratis. Son DOS datos distintos:
+    //   · requires_plan   → no tiene plan gratis al que caer. Cambia los
+    //                       textos DURANTE la prueba ("el día 21 elegís un
+    //                       plan" en vez de "vuelve a Free").
+    //   · cuenta_en_pausa → se le terminó la prueba y no eligió: muro AHORA.
+    // El muro de verdad lo aplica el backend (402 en cualquier endpoint de
+    // datos). Esto existe para poder mostrar la pantalla en vez de una pared
+    // de errores rojos, que es lo único que se vería con el 402 solo.
+    requires_plan:   !!me.requires_plan,
+    cuenta_en_pausa: !!me.cuenta_en_pausa,
+    // "4 brokers y 312 movimientos" — el resumen que el muro muestra para
+    // dejar claro que no se perdió nada. null cuando no hay nada que contar.
+    pausa_resumen:   me.pausa_resumen || null,
   }
 }
 

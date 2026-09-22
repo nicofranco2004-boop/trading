@@ -4,7 +4,8 @@
 // can_start. Nada de recalcular elegibilidad en el front — así es como se
 // terminan mostrando botones que fallan al apretarlos.
 import { describe, it, expect } from 'vitest'
-import { canOfferTrial, trialNotice, trialDaysLabel, trialProStageLabel } from './TrialCta'
+import { canOfferTrial, trialNotice, trialDaysLabel, trialProStageLabel,
+         DIAS_PARA_APURAR } from './TrialCta'
 
 describe('canOfferTrial — cuándo se muestra el botón', () => {
   it('se ofrece a quien nunca lo usó', () => {
@@ -61,6 +62,39 @@ describe('trialNotice — el aviso del banner', () => {
   it('sin trial activo no hay aviso', () => {
     expect(trialNotice({ active: false, can_start: true })).toBeNull()
     expect(trialNotice(null)).toBeNull()
+  })
+
+  // ── El que NO tiene plan gratis al que caer ─────────────────────────────
+  // Para él el final de la prueba no es "vuelvo a Free": es que la cuenta
+  // queda en pausa. El aviso tiene que decirle que hay algo que HACER.
+
+  it('al que no tiene plan gratis le dice que elija, no sólo cuánto le queda', () => {
+    const t = { active: true, stage: 'plus', days_left: 2 }
+    expect(trialNotice(t, true)).toMatch(/elegí un plan/i)
+    // Y sigue diciendo cuánto le queda: el plazo es la mitad del mensaje.
+    expect(trialNotice(t, true)).toMatch(/quedan 2 días/)
+  })
+
+  it('al de siempre no se le cambia el mensaje', () => {
+    const t = { active: true, stage: 'plus', days_left: 2 }
+    expect(trialNotice(t, false)).toMatch(/quedan 2 días de prueba/)
+    expect(trialNotice(t, false)).not.toMatch(/elegí un plan/i)
+  })
+
+  it('el aviso arranca DIAS_PARA_APURAR días antes, no dos', () => {
+    // Tiene que ser el mismo número que MAIL_AVISO_DIAS_ANTES del backend: si
+    // acá fueran 2 y allá 3, el día que falten 3 le llega un mail diciéndole
+    // "elegí un plan" y la app no le muestra nada.
+    expect(DIAS_PARA_APURAR).toBe(3)
+    expect(trialNotice({ active: true, stage: 'plus', days_left: 3 }, true))
+      .toMatch(/quedan 3 días/)
+    expect(trialNotice({ active: true, stage: 'plus', days_left: 4 }, true))
+      .toBeNull()
+  })
+
+  it('la víspera del paso a Plus sigue ganando, también sin plan gratis', () => {
+    const t = { active: true, stage: 'pro', days_left: 2, days_to_switch: 1 }
+    expect(trialNotice(t, true)).toMatch(/Mañana pasás a Plus/)
   })
 })
 
