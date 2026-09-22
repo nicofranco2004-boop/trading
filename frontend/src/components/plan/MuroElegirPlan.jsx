@@ -140,7 +140,7 @@ function TarjetaPlan({ plan, anual, destacado, onElegir }) {
   )
 }
 
-export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
+export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen, motivo }) {
   const navigate = useNavigate()
   const { logout } = useAuth()
   const { trial } = usePlanFeatures()
@@ -153,6 +153,14 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
   // /api/plan/features es uno de los endpoints que la pausa deja pasar.
   // Sin el dato, la frase omite el número en vez de inventarlo.
   const dias = trial?.total_days
+
+  // ⚠️ Hay DOS formas de llegar a esta pantalla y decirle la equivocada es
+  // mentirle: quien hizo sus 20 días y se le acabaron, y quien NUNCA los tuvo
+  // acá porque esa casilla de mail ya había usado la prueba en otra cuenta
+  // (la marca sobrevive al borrado, y el +alias y los puntos de Gmail son la
+  // misma bandeja). Al segundo el muro le decía "terminaron tus 20 días" el
+  // día que se registraba, sin haber tenido ninguno.
+  const yaLaUso = motivo === 'prueba_usada'
 
   useEffect(() => { track('paywall_muro_visto') }, [])
 
@@ -251,24 +259,32 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
                           px-3 py-1.5">
             <span className="text-[11.5px] font-semibold uppercase tracking-wide
                              text-data-violet">
-              {dias ? `Terminaron tus ${dias} días de prueba` : 'Terminó tu prueba'}
+              {yaLaUso
+                ? 'Ya usaste tu prueba'
+                : (dias ? `Terminaron tus ${dias} días de prueba` : 'Terminó tu prueba')}
             </span>
           </div>
           <h1 id="muro-titulo"
               className="mb-2.5 text-[25px] font-semibold leading-tight tracking-tight
                          text-ink-0 sm:text-[32px]">
-            Elegí un plan para seguir<br className="hidden sm:inline" />
-            {' '}organizando tus inversiones
+            {yaLaUso
+              ? <>Elegí un plan para<br className="hidden sm:inline" />
+                  {' '}empezar a usar Rendi</>
+              : <>Elegí un plan para seguir<br className="hidden sm:inline" />
+                  {' '}organizando tus inversiones</>}
           </h1>
           {/* El resumen es SUYO: "4 brokers y 312 movimientos" convence de que
               no se perdió nada mucho más que la palabra "guardado". Si no lo
               tenemos, se omite antes que decir un número inventado. */}
           <p className="mx-auto max-w-[520px] text-[14px] leading-relaxed text-ink-2">
-            {resumen
-              ? <>Tus <b className="text-ink-0">{resumen}</b> quedaron guardados.
-                  Elegí un plan y seguís donde estabas.</>
-              : <>Todo lo que cargaste quedó guardado. Elegí un plan y seguís
-                  donde estabas.</>}
+            {yaLaUso
+              ? <>Esta dirección de mail ya hizo la prueba gratis. Elegí un plan
+                  y entrás ahora mismo.</>
+              : resumen
+                ? <>Tus <b className="text-ink-0">{resumen}</b> quedaron guardados.
+                    Elegí un plan y seguís donde estabas.</>
+                : <>Todo lo que cargaste quedó guardado. Elegí un plan y seguís
+                    donde estabas.</>}
           </p>
         </div>
 

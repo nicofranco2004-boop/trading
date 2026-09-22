@@ -71,6 +71,8 @@ function mapMeToUser(me) {
     // "4 brokers y 312 movimientos" — el resumen que el muro muestra para
     // dejar claro que no se perdió nada. null cuando no hay nada que contar.
     pausa_resumen:   me.pausa_resumen || null,
+    // 'prueba_terminada' | 'prueba_usada' — ver el porqué en /api/auth/me.
+    pausa_motivo:    me.pausa_motivo || null,
   }
 }
 

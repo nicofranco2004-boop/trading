@@ -343,6 +343,7 @@ function MuroDePlanGate() {
       anual={anual}
       onCambiarPeriodo={setAnual}
       resumen={user.pausa_resumen || null}
+      motivo={user.pausa_motivo || null}
     />
   )
 }

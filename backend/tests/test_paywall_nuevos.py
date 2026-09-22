@@ -309,6 +309,72 @@ class LosFrenosDePromocionNoAplican(Base):
 # 5. El alta: la marca y el arranque automático
 # ═══════════════════════════════════════════════════════════════════════════
 
+class LaCasillaQueYaUsoLaPrueba(Base):
+    """🔴 Encontrado auditando PRODUCCIÓN, no los tests.
+
+    `trial_consumed` marca la casilla de mail para siempre —sobrevive al
+    borrado de la cuenta— y `normalizar_email` trata al +alias y a los puntos
+    de Gmail como la MISMA bandeja. Efecto: alguien que ya hizo la prueba se
+    registra de nuevo, la prueba no le arranca, y como nació sin plan gratis
+    queda en pausa EL DÍA 1 — viendo "terminaron tus 20 días" sin haber tenido
+    ninguno en esa cuenta.
+
+    Que quede en pausa es la regla de negocio (una prueba por persona). Lo que
+    no se puede es mentirle: el muro tiene que decir otra cosa, y para eso
+    /api/auth/me manda `pausa_motivo`.
+    """
+
+    def _con_la_casilla_quemada(self):
+        vieja = self._usuario(requires_plan=0)       # usa su prueba y la quema
+        self.assertIsNotNone(vieja)
+        email = self.conn.execute(
+            "SELECT email FROM users WHERE id=?", (vieja,)).fetchone()["email"]
+        usuario, dominio = email.split("@")
+        # Un +alias de la MISMA bandeja: para Rendi es el mismo mail.
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified, "
+            "                   requires_plan) VALUES (?,?,1,1,1)",
+            (f"{usuario}+otra@{dominio}", "x"))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def test_la_prueba_no_le_arranca(self):
+        uid = self._con_la_casilla_quemada()
+        res = tr.start(self.conn, uid)
+        self.assertFalse(res.get("ok"))
+        self.assertEqual(res.get("reason"), "already_used")
+
+    def test_queda_en_pausa_el_dia_uno(self):
+        """La regla de negocio: una prueba por persona, y sin plan gratis al
+        que caer. Lo que se vigila acá es que el estado sea EXPLÍCITO."""
+        uid = self._con_la_casilla_quemada()
+        tr.start(self.conn, uid)
+        self.assertTrue(self._en_pausa(uid))
+
+    def test_el_muro_NO_le_dice_que_terminaron_sus_20_dias(self):
+        """El motivo tiene que distinguir los dos casos. Sin esto, a alguien que
+        se acaba de registrar le aparece "Terminaron tus 20 días de prueba"."""
+        uid = self._con_la_casilla_quemada()
+        tr.start(self.conn, uid)
+        me = self.client.get("/api/auth/me", headers=self._headers(uid)).json()
+        self.assertTrue(me["cuenta_en_pausa"])
+        self.assertEqual(me["pausa_motivo"], "prueba_usada")
+
+    def test_al_que_SI_hizo_sus_dias_el_motivo_es_el_otro(self):
+        """La contracara: el caso normal no se contamina."""
+        uid = self._usuario()                        # prueba arrancada de verdad
+        self._viajar(uid, tr.TRIAL_TOTAL_DAYS + 1)
+        me = self.client.get("/api/auth/me", headers=self._headers(uid)).json()
+        self.assertTrue(me["cuenta_en_pausa"])
+        self.assertEqual(me["pausa_motivo"], "prueba_terminada")
+
+    def test_sin_pausa_no_hay_motivo(self):
+        uid = self._usuario()
+        me = self.client.get("/api/auth/me", headers=self._headers(uid)).json()
+        self.assertFalse(me["cuenta_en_pausa"])
+        self.assertIsNone(me["pausa_motivo"])
+
+
 class ElAlta(Base):
     def test_la_prueba_dura_20_dias_repartidos_10_y_10(self):
         """No es decoración: son los días que prometen la pantalla y los mails."""

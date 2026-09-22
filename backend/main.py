@@ -4005,6 +4005,25 @@ def me(uid: int = Depends(get_effective_user)):
         from billing import trial as _trial
         d["requires_plan"] = _trial._requiere_plan(conn, uid)
         d["cuenta_en_pausa"] = cuenta_en_pausa(conn, uid)
+        # POR QUÉ está en pausa. Son dos situaciones distintas y decirle la
+        # equivocada es mentirle en la cara:
+        #   · 'prueba_terminada' → hizo sus 20 días y se le acabaron.
+        #   · 'prueba_usada'     → la prueba NUNCA arrancó en esta cuenta porque
+        #     esa casilla de mail ya la había usado antes (`trial_consumed`
+        #     sobrevive al borrado de la cuenta, y `normalizar_email` trata al
+        #     +alias y a los puntos de Gmail como la misma bandeja). A esa
+        #     persona el muro le decía "terminaron tus 20 días" el día que se
+        #     registró, sin haber tenido ninguno acá.
+        # Se distingue por `trial_started_at`: si nunca arrancó, es NULL.
+        d["pausa_motivo"] = None
+        if d["cuenta_en_pausa"]:
+            try:
+                arrancó = conn.execute(
+                    "SELECT trial_started_at FROM users WHERE id=?", (uid,)
+                ).fetchone()["trial_started_at"]
+                d["pausa_motivo"] = "prueba_terminada" if arrancó else "prueba_usada"
+            except Exception as ex:
+                log.warning("pausa_motivo falló uid=%s: %s", uid, ex)
         # Con la cuenta en pausa, ESTE es el dato que convence: "tus 4 brokers y
         # 312 movimientos quedaron guardados" dice que no se perdió nada mucho
         # mejor que la palabra "guardado". Va acá porque /api/auth/me es uno de
