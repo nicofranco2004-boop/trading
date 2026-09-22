@@ -35,8 +35,8 @@ import CashMenuModal from '../components/cash/CashMenuModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import { buildPositionActions } from '../utils/positionActions'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
-import RentaFijaSections from '../components/RentaFijaSections'
-import { isFixedIncome } from '../utils/sections'
+import PosicionesArchivadas from '../components/PosicionesArchivadas'
+import { lineaDelBono } from '../utils/lineaDelBono'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
@@ -1066,8 +1066,8 @@ export default function PositionsMobile() {
         }
       }
       return {
-        // investedUsd expuesto = el DISPLAY (refleja el modo) para consumidores como
-        // RentaFijaSections; investedUsdToday se carga aparte para la derivación de las
+        // investedUsd expuesto = el DISPLAY (refleja el modo) para los consumidores
+        // de la fila; investedUsdToday se carga aparte para la derivación de las
         // cifras en pesos al re-agregar por ticker.
         ...p, valueUsd, investedUsd: investedUsdDisplay, investedUsdToday: investedUsd,
         priceLocal, pnlUsd, pnlUsdToday, pnlPct, pnlLocal,
@@ -1269,7 +1269,8 @@ export default function PositionsMobile() {
 
     const map = new Map()
     for (const p of filteredByBroker) {
-      if (isFixedIncome(p)) continue   // renta fija → zona "Renta Fija" (abajo)
+      // La renta fija NO se saltea: el bono es un activo más de la lista de su
+      // broker, igual que en escritorio (ver utils/tarjetaBroker.js).
       // Una posición de un broker que ya no está en `brokers` (huérfana de un
       // rename viejo) cae en su propia sección, como antes.
       const key = seccionDe.get(p.broker) || p.broker
@@ -1592,13 +1593,9 @@ export default function PositionsMobile() {
             ))}
           </div>
           <div className="px-4 pb-2">
-            <RentaFijaSections positions={enriched}
-              valuePos={p => ({ valueUsd: p.valueUsd, investedUsd: p.investedUsd, pnlUsd: p.pnlUsd,
-                // % en USD (refleja el modo), consistente con el $ de la fila y el
-                // total de sección; NO el % nativo en pesos (p.pnlPct) que en 'purchase'
-                // contradiría el $ USD. Espeja el desktop (valuePos re-computa pnlUsd/invUsd).
-                pnlPct: p.investedUsd > 0 ? p.pnlUsd / p.investedUsd : 0 })}
-              brokers={brokers} displayCurrency={currency} tcValuacion={tcValuacion} onChanged={loadAll} />
+            {/* Lo que quedó de la zona Renta Fija: las secciones archivadas, para
+                poder restaurarlas. Los bonos ya son filas de la lista de su broker. */}
+            <PosicionesArchivadas reloadKey={enriched.length} onChanged={loadAll} />
             <PlazosFijosGroup reloadKey={pfReloadKey} onAdd={() => setPfFormOpen(true)} onTotals={setPfTotals} brokers={brokers} onChange={loadAll} />
           </div>
         </>
@@ -2699,7 +2696,12 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   // formas distintas ("Cocos · USD", "Cocos" a secas donde ARS había que
   // deducirlo, y nada en las fusionadas). La moneda pasa a un chip en TODAS las
   // filas, como en desktop, y el subtítulo se queda con lo que sí varía.
+  // En un bono el renglón dice vencimiento y próximo cobro — lo que la zona
+  // "Renta Fija" mostraba en su card, ahora que el bono es una fila más.
+  // En un LOTE no: ahí lo único que lo distingue de sus hermanos es la fecha.
+  const delBono = p._isLot ? null : lineaDelBono(p, undefined, { compacta: true })
   const contexto = p.is_cash ? 'Efectivo'
+    : delBono ? delBono
     : p._multiBroker ? `${p._lotCount} lotes`
     : p._isAgg ? (enCuentaUnificada ? `${p._lotCount} lotes` : `${p.broker} · ${p._lotCount} lotes`)
     : p._isLot ? `${(enCuentaUnificada || p._enFusion) ? monedaDeLote : p.broker} · ${fecha || 'lote'}`
