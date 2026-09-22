@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { api, clearClientContext } from '../utils/api'
+import { api, clearClientContext, EVENTO_PLAN_REQUERIDO } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
 import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
@@ -125,6 +125,31 @@ export function AuthProvider({ children }) {
       })
       .finally(() => setBootstrapped(true))
   }, [])
+
+  // El 402 "elegí un plan" despierta el muro sin recargar.
+  // ──────────────────────────────────────────────────────────────────────────
+  // `cuenta_en_pausa` sale de /auth/me y sólo se pedía al montar la app. A quien
+  // se le vence la prueba con la pestaña abierta (el caso normal: la prueba
+  // vence a la medianoche) le empezaba a fallar todo con 402 y el muro no
+  // aparecía hasta recargar: veía la app rompiéndose sin una explicación.
+  //
+  // `utils/api.js` emite el evento en CUALQUIER 402 con `code:
+  // "plan_requerido"`, y acá se vuelve a pedir /auth/me, que trae el estado
+  // nuevo y dibuja el muro. Se ignora si ya está marcado en pausa para no
+  // pedir /auth/me una vez por cada request que falla.
+  useEffect(() => {
+    if (!user || isDemoMode()) return
+    let pidiendo = false
+    const alPausar = () => {
+      if (pidiendo || user.cuenta_en_pausa) return
+      pidiendo = true
+      refreshUser()
+        .catch(() => {})
+        .finally(() => { pidiendo = false })
+    }
+    window.addEventListener(EVENTO_PLAN_REQUERIDO, alPausar)
+    return () => window.removeEventListener(EVENTO_PLAN_REQUERIDO, alPausar)
+  }, [user])
 
   // Keep-alive: pinga /api/health cada 4 min para que Railway no duerma el servicio.
   // Se activa solo cuando hay un usuario logueado (no en demo ni sin sesión).

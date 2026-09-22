@@ -143,6 +143,26 @@ async function req(method, path, body, opts) {
 // — el caso del 429 de IA). Si es dict, intentamos extraer .error / .message /
 // .detail; si no, JSON.stringify como último recurso. Adjuntamos el payload
 // crudo en err.payload por si el caller necesita info adicional (ej. usage).
+// El 402 de "elegí un plan" avisa a la app, no sólo al caller.
+// ════════════════════════════════════════════════════════════════════════════
+// El muro se dibuja con `user.cuenta_en_pausa`, que sale de /auth/me y sólo se
+// refresca al montar la app. Sin este aviso, a quien se le vence la prueba con
+// la pestaña abierta le empieza a fallar TODO —402 en cada request— y el muro
+// no aparece hasta que recargue: ve la app rompiéndose sin una sola
+// explicación, que es justo el usuario que estamos tratando de convertir.
+//
+// Se hace con un evento del navegador y no importando el contexto de sesión
+// para no crear un import circular (AuthContext ya importa este archivo).
+export const EVENTO_PLAN_REQUERIDO = 'rendi:plan-requerido'
+
+function avisarPlanRequerido(res, payload) {
+  if (res.status !== 402) return
+  if (payload?.detail?.code !== 'plan_requerido') return
+  try {
+    window.dispatchEvent(new CustomEvent(EVENTO_PLAN_REQUERIDO))
+  } catch { /* navegador sin CustomEvent: el muro aparece al recargar */ }
+}
+
 async function buildHttpError(res, ctx = {}) {
   let message = GATEWAY_ERRORS.includes(res.status)
     ? gatewayMessage(ctx)
@@ -157,6 +177,7 @@ async function buildHttpError(res, ctx = {}) {
       message = detail.error || detail.message || detail.detail || JSON.stringify(detail)
     }
   } catch { /* body no es JSON — dejamos el HTTP {status} */ }
+  avisarPlanRequerido(res, payload)
   const err = new Error(message)
   err.status = res.status
   err.payload = payload

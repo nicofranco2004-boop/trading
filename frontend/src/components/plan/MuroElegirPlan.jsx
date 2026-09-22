@@ -17,7 +17,7 @@
 //
 // El muro REAL lo aplica el backend (402 `plan_requerido` en cualquier
 // endpoint de datos, desde `get_effective_user`). Esto es la cara visible.
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { track } from '../../utils/track'
@@ -26,36 +26,46 @@ import {
   PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
   PLUS_PRICE_ARS_ANNUAL, PRO_PRICE_ARS_ANNUAL,
   PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ, PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ,
-} from '../../pages/Planes'
+} from '../../data/pricing'
+import { PLUS_FEATURES, PRO_FEATURES } from '../../data/planCatalog'
 
+// ⚠️ LAS FEATURES NO SE ESCRIBEN ACÁ. Salen de `data/planCatalog.js`, que es la
+// fuente única del producto y la que lee la página de planes.
+//
+// Esta pantalla las tuvo escritas a mano y prometía CUATRO cosas falsas, en la
+// pantalla donde se le pide la plata:
+//   · "Brokers ilimitados" en Plus, cuando Plus tiene tope 3 (ilimitado es Pro);
+//   · "20 análisis por semana" en Plus, cuando son 6;
+//   · "sin límite de análisis" en Pro, cuando son 60 por semana;
+//   · "calendario de cobros" y "carpeta de impuestos", que son ROADMAP del
+//     catálogo (`Tax helper AFIP`) y el propio catálogo avisa que NUNCA van
+//     mezcladas con las features activas.
+// Nada de eso produce un error: se cobra y después el producto no cumple.
+//
+// Se usa `diff.items` —el "vs el plan anterior", que es la pregunta del muro—
+// más `quotas`, que trae los números reales. El roadmap queda afuera siempre.
 const PLANES = {
   plus: {
     nombre: 'Plus',
-    bajada: 'Todos tus brokers en un lugar',
+    bajada: 'Hasta 3 brokers y métricas de riesgo',
     mensual: PLUS_PRICE_ARS_MONTHLY,
     anualEq: PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ,
     anualTotal: PLUS_PRICE_ARS_ANNUAL,
-    features: [
-      'Brokers ilimitados y consolidado',
-      'Cartera, movimientos y reportes',
-      'Rendimiento vs inflación y S&P 500',
-      '20 análisis de IA por semana',
-    ],
+    catalogo: PLUS_FEATURES,
   },
   pro: {
     nombre: 'Pro',
-    bajada: 'Todo, sin límite de análisis',
+    bajada: 'Chat libre y brokers ilimitados',
     mensual: PRO_PRICE_ARS_MONTHLY,
     anualEq: PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ,
     anualTotal: PRO_PRICE_ARS_ANNUAL,
-    features: [
-      'Todo lo de Plus, más:',
-      'Análisis de IA sin límite',
-      'Calidad de cartera y calendario de cobros',
-      'Informe del período y carpeta de impuestos',
-    ],
+    catalogo: PRO_FEATURES,
   },
 }
+
+// Cuántas líneas del "vs el plan anterior" entran en la tarjeta del muro. El
+// muro es una decisión, no la comparativa completa: para eso está /planes.
+const LINEAS_POR_TARJETA = 4
 
 function TarjetaPlan({ plan, anual, destacado, onElegir }) {
   const p = PLANES[plan]
@@ -87,9 +97,18 @@ function TarjetaPlan({ plan, anual, destacado, onElegir }) {
       <div className="my-5 h-px bg-line" />
 
       <div className="flex flex-grow flex-col gap-2.5">
-        {p.features.map((f, i) => (
-          <div key={f} className={`text-[13px] ${i === 0 && plan === 'pro' ? 'text-ink-0' : 'text-ink-2'}`}>
-            {f}
+        {(p.catalogo.diff?.items || []).slice(0, LINEAS_POR_TARJETA).map(f => (
+          <div key={f} className="text-[13px] text-ink-2">{f}</div>
+        ))}
+      </div>
+
+      {/* Los cupos, con los números del catálogo. Van aparte de la lista porque
+          son lo que más se mira y lo que más caro sale prometer mal. */}
+      <div className="mt-4 grid grid-cols-3 gap-2 border-t border-line pt-3">
+        {p.catalogo.quotas.map(q => (
+          <div key={q.label}>
+            <div className="text-[15px] font-semibold tabular text-ink-0">{q.value}</div>
+            <div className="text-[10.5px] leading-tight text-ink-3">{q.label}</div>
           </div>
         ))}
       </div>
@@ -112,8 +131,47 @@ function TarjetaPlan({ plan, anual, destacado, onElegir }) {
 export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
   const navigate = useNavigate()
   const { logout } = useAuth()
+  const caja = useRef(null)
 
   useEffect(() => { track('paywall_muro_visto') }, [])
+
+  // El muro declara `aria-modal` y tiene que cumplirlo. Se monta como hermano
+  // de <Layout/>, así que todo lo de atrás sigue en el orden de tabulación:
+  // sin esto, con Tab se llega al sidebar y a los botones de la cartera
+  // desenfocada, se los activa, y cada uno responde con un 402. No es un
+  // agujero de seguridad —el backend corta igual— pero es una pantalla que
+  // dice ser modal y no lo es.
+  //
+  // `inert` sobre el resto de la app es la forma corta y la soportan todos los
+  // navegadores actuales; el ciclado del foco de abajo es el respaldo para los
+  // que no, y además es lo que hace que Tab dé la vuelta adentro del muro.
+  useEffect(() => {
+    const raiz = document.getElementById('root')
+    const afuera = Array.from(raiz?.children || []).filter(el => !el.contains(caja.current))
+    afuera.forEach(el => { el.inert = true; el.setAttribute('aria-hidden', 'true') })
+
+    const foco = () => caja.current?.querySelectorAll(
+      'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    foco()?.[0]?.focus()
+
+    const alTabular = (e) => {
+      if (e.key !== 'Tab') return
+      const items = foco()
+      if (!items?.length) return
+      const primero = items[0]
+      const ultimo = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === primero) {
+        e.preventDefault(); ultimo.focus()
+      } else if (!e.shiftKey && document.activeElement === ultimo) {
+        e.preventDefault(); primero.focus()
+      }
+    }
+    document.addEventListener('keydown', alTabular)
+    return () => {
+      document.removeEventListener('keydown', alTabular)
+      afuera.forEach(el => { el.inert = false; el.removeAttribute('aria-hidden') })
+    }
+  }, [])
 
   const elegir = (plan) => {
     track('paywall_muro_elegir', { plan, period: anual ? 'annual' : 'monthly' })
@@ -124,6 +182,7 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen }) {
     // role="dialog" + aria-modal: para un lector de pantalla esto ES la
     // pantalla, no una capa encima de otra cosa navegable.
     <div
+      ref={caja}
       role="dialog"
       aria-modal="true"
       aria-labelledby="muro-titulo"

@@ -61,7 +61,26 @@ ARS_ANNUAL_IVA    = 24_124
 # ─── Constantes de cálculo ──────────────────────────────────────────────────
 
 IVA_PCT             = 0.21
-ANNUAL_DISCOUNT_PCT = 0.26    # vs 12 meses al precio mensual (el menor de los dos planes)
+
+
+def annual_discount_pct(plan: str = "pro") -> float:
+    """Descuento REAL del plan anual, calculado de los precios.
+
+    Era una constante 0.26 para los dos planes, y los dos ya no coinciden: el
+    Plus anual descuenta 26,03% y el Pro 27,15%. Una constante compartida vuelve
+    a ser un número escrito a mano que se desincroniza del precio — lo mismo que
+    la tabla en dólares que este módulo vino a eliminar.
+    """
+    if plan == "plus":
+        mensual, anual = PLUS_ARS_MONTHLY_TOTAL, PLUS_ARS_ANNUAL_TOTAL
+    else:
+        mensual, anual = ARS_MONTHLY_TOTAL, ARS_ANNUAL_TOTAL
+    return round(1 - anual / (mensual * 12), 4)
+
+
+# @deprecated — quedó para no romper un caller viejo; usar annual_discount_pct().
+# Devuelve el MENOR de los dos: promete de menos, nunca de más.
+ANNUAL_DISCOUNT_PCT = min(annual_discount_pct("plus"), annual_discount_pct("pro"))
 
 # ─── Equivalencia USD ───────────────────────────────────────────────────────
 # Un solo tipo de cambio declarado para TODO el repo. No es el precio: el
@@ -106,7 +125,7 @@ def get_pricing(plan: Plan = "pro", period: Period = "monthly") -> dict:
                 "total_ars": PLUS_ARS_ANNUAL_TOTAL,
                 "iva_pct": IVA_PCT,
                 "monthly_equivalent_ars": PLUS_ARS_ANNUAL_TOTAL // 12,
-                "discount_pct": ANNUAL_DISCOUNT_PCT,
+                "discount_pct": annual_discount_pct("plus"),
                 "savings_vs_monthly_ars": (PLUS_ARS_MONTHLY_TOTAL * 12) - PLUS_ARS_ANNUAL_TOTAL,
                 "usd_equivalent_monthly": PLUS_USD_ANNUAL_DISPLAY,
             }
@@ -132,7 +151,7 @@ def get_pricing(plan: Plan = "pro", period: Period = "monthly") -> dict:
             "total_ars": ARS_ANNUAL_TOTAL,
             "iva_pct": IVA_PCT,
             "monthly_equivalent_ars": ARS_ANNUAL_TOTAL // 12,
-            "discount_pct": ANNUAL_DISCOUNT_PCT,
+            "discount_pct": annual_discount_pct("pro"),
             "savings_vs_monthly_ars": (ARS_MONTHLY_TOTAL * 12) - ARS_ANNUAL_TOTAL,
             "usd_equivalent_monthly": USD_ANNUAL_DISPLAY,
         }

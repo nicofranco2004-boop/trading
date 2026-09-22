@@ -1977,9 +1977,13 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
     y el texto hablaba de "tu semana de Pro" — que con 10 días de Pro es
     directamente otra cosa. Nada de esto produce un error: sale mal y calla.
     """
-    _etapa = "semana" if pro_days == 7 else f"{pro_days} días"
+    # La frase entera, con su verbo: interpolar sólo "{pro_days} días" detrás de
+    # "tu" producía "Mañana termina tu 10 días de Pro" — en el asunto del mail y
+    # en su título. El texto decía "semana" porque la etapa Pro duraba 7 días.
+    _titulo = ("Mañana termina tu semana de Pro" if pro_days == 7
+               else f"Mañana terminan tus {pro_days} días de Pro")
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Mañana termina tu {_etapa} de Pro</h1>
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{_titulo}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
         Hola {user_name}: mañana pasás a Plus por {plus_days} días más. Hoy todavía
         tenés todo Pro, así que aprovechá:
@@ -1994,13 +1998,13 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
       </p>
     """
     text = (
-        f"Mañana termina tu {_etapa} de Pro\n\n"
+        f"{_titulo}\n\n"
         f"Hola {user_name}: mañana pasás a Plus por {plus_days} días más.\n\n"
         "Hoy todavía tenés el chat libre y los análisis sin freno (60/semana "
         "contra 6 en Plus). Aprovechalo.\n\n"
         f"Seguir en Pro: {_TRIAL_URL}\n\n— Rendi"
     )
-    return _send(to, f"Mañana termina tu {_etapa} de Pro", _wrap_html(body_html), text,
+    return _send(to, _titulo, _wrap_html(body_html), text,
                  from_addr=_from_noreply())
 
 
@@ -2089,8 +2093,14 @@ def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None,
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 8px;">{_ventana}:</p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">{items}</ul>"""
     if requiere_plan:
+        # Sin `total_days` la frase omite el número en vez de inventarlo: tenía
+        # `total_days or 20` escrito a mano, el mismo patrón de número congelado
+        # que este archivo vino a limpiar.
+        # El VERBO va adentro de cada rama: "se terminó tus 20 días" no concuerda.
+        _se_termino = (f"se terminaron tus {total_days} días" if total_days
+                       else "se terminó tu prueba")
         _apertura = (
-            f"Hola {user_name}, se terminaron tus {total_days or 20} días. Tu cuenta "
+            f"Hola {user_name}, {_se_termino}. Tu cuenta "
             "quedó <b>en pausa</b>: todo lo que cargaste sigue ahí, guardado, "
             "esperándote."
         )
@@ -2129,8 +2139,8 @@ def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None,
       </p>{_firma}
     """
     _apertura_txt = (
-        f"Hola {user_name}, se terminaron tus {total_days or 20} días. Tu cuenta "
-        "quedó en pausa: todo lo que cargaste sigue ahí, guardado."
+        f"Hola {user_name}, {_se_termino if requiere_plan else ''}. "
+        "Tu cuenta quedó en pausa: todo lo que cargaste sigue ahí, guardado."
         if requiere_plan else
         f"Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos ahí: "
         "lo que cambia son los límites."

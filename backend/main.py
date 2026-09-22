@@ -2970,10 +2970,20 @@ def get_current_user(
     # Verificar que el user existe y que el token no quedó invalidado por cambio de pass
     with db_abierta() as conn:
         row = conn.execute(
-            "SELECT id, password_changed_at FROM users WHERE id=?", (uid,)
+            "SELECT id, password_changed_at, requires_plan FROM users WHERE id=?", (uid,)
         ).fetchone()
     if not row:
         raise HTTPException(401, "Token inválido")
+    # `requires_plan` se lee de arriba —de la consulta que este chequeo YA hacía—
+    # y se guarda en el request para que el muro de `get_effective_user` no
+    # tenga que abrir una SEGUNDA conexión en cada request de cada usuario.
+    # Importa porque el 99% de la población tiene requires_plan=0 y no puede
+    # estar en pausa: para ellos el muro ahora no cuesta nada. Tolera que la
+    # columna no exista todavía (base sin migrar → None → como siempre).
+    try:
+        request.state.rendi_requires_plan = bool(row["requires_plan"])
+    except Exception:
+        request.state.rendi_requires_plan = None
     pca = payload.get("pca")
     if pca and row["password_changed_at"] and pca != row["password_changed_at"]:
         raise HTTPException(401, "Token expirado por cambio de contraseña")
@@ -3148,8 +3158,12 @@ def get_effective_user(
     # avisa al frontend que hay que mostrar el muro— y `/api/billing/subscribe`
     # —el que cobra— pasan los dos por esta misma función, así que la cuenta en
     # pausa quedaba sin forma de enterarse ni de salir.
+    # `rendi_requires_plan` lo estampó get_current_user con la consulta que ya
+    # hacía. False = imposible que esté en pausa, y salimos sin tocar la base;
+    # None = no lo sabemos (columna sin migrar) y entonces sí se pregunta.
     ruta = request.url.path
-    if not ruta.startswith(EXENTOS_CON_CUENTA_EN_PAUSA):
+    marca = getattr(request.state, "rendi_requires_plan", None)
+    if marca is not False and not ruta.startswith(EXENTOS_CON_CUENTA_EN_PAUSA):
         with db_abierta() as _conn:
             if cuenta_en_pausa(_conn, uid):
                 raise HTTPException(
@@ -3964,9 +3978,12 @@ def me(uid: int = Depends(get_effective_user)):
         d["pausa_resumen"] = None
         if d["cuenta_en_pausa"]:
             try:
-                nb = conn.execute(
-                    "SELECT COUNT(*) c FROM brokers WHERE user_id=?", (uid,)
-                ).fetchone()["c"] or 0
+                # El contador OFICIAL, el mismo que usa la cuota del plan y el
+                # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
+                # distinto en las cuentas con sub-brokers, y el muro terminaba
+                # diciendo "6 brokers" donde el mail del mismo día decía 4.
+                from ai import plan as _plan
+                nb = _plan.count_broker_accounts(conn, uid) or 0
                 nm = conn.execute(
                     "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
                 ).fetchone()["c"] or 0
