@@ -1901,17 +1901,43 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
 _TRIAL_URL = "https://rendi.finance/planes"
 
 
-def send_trial_started(*, to: str, user_name: str, pro_days: int = 7,
-                       total_days: int = 15) -> bool:
+def send_trial_started(*, to: str, user_name: str, pro_days: int,
+                       total_days: int, requiere_plan: bool = False) -> bool:
     """Día 1. Lo importante no es dar la bienvenida: es que haga TRES COSAS
-    concretas hoy. Un trial que arranca sin uso el primer día no se recupera."""
+    concretas hoy. Un trial que arranca sin uso el primer día no se recupera.
+
+    `pro_days` y `total_days` son OBLIGATORIOS. Tenían default 7 y 15 —los días
+    de cuando la prueba duraba 15— y un default así no produce ningún error: si
+    un caller nuevo se los olvida, el mail sale con los días de la prueba vieja
+    y nadie se entera. Los días los sabe `billing/trial.py`, no este archivo.
+
+    `requiere_plan` = este usuario nació SIN plan gratis. Cambia el final del
+    mail, y no es un matiz: decirle "cuando se termina tu cuenta vuelve a Free"
+    a alguien que no tiene Free es prometerle algo que no existe, y encima le
+    saca la urgencia de la única decisión que tiene que tomar.
+    """
     plus_days = total_days - pro_days
+    if requiere_plan:
+        _cierre_html = (
+            "No te pedimos tarjeta y no se cobra nada solo: a los "
+            f"<b>{total_days} días</b> elegís un plan para seguir."
+        )
+        _cierre_txt = (
+            f"Sin tarjeta: a los {total_days} días elegís un plan para seguir."
+        )
+    else:
+        _cierre_html = (
+            "No cargamos ninguna tarjeta: cuando se termina, tu cuenta vuelve "
+            "a Free sola."
+        )
+        _cierre_txt = (
+            "Sin tarjeta: cuando se termina, tu cuenta vuelve a Free sola."
+        )
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Ya tenés Rendi Pro, {user_name}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
         Durante los próximos <b>{pro_days} días</b> tenés todo Pro, y después seguís
-        {plus_days} días con Plus. No cargamos ninguna tarjeta: cuando se termina,
-        tu cuenta vuelve a Free sola.
+        {plus_days} días con Plus. {_cierre_html}
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 12px;">
         Tres cosas que te conviene hacer hoy:
@@ -1928,23 +1954,32 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int = 7,
     text = (
         f"Ya tenés Rendi Pro, {user_name}\n\n"
         f"{pro_days} días con todo Pro y después {plus_days} días de Plus. "
-        f"Sin tarjeta: cuando se termina, tu cuenta vuelve a Free sola.\n\n"
+        f"{_cierre_txt}\n\n"
         "Tres cosas para hacer hoy:\n"
         "1. Preguntale lo que quieras al chat (sin preguntas fijas).\n"
         "2. Pedí un análisis de tu cartera.\n"
         "3. Sumá tus otros brokers.\n\n"
         "Entrá: https://rendi.finance/dashboard\n\n— Rendi"
     )
-    return _send(to, "Ya tenés Rendi Pro por 7 días", _wrap_html(body_html), text,
+    # El asunto llevaba el "7" escrito a mano: decía 7 días mientras el cuerpo
+    # del mismo mail decía 10.
+    return _send(to, f"Ya tenés Rendi Pro por {pro_days} días", _wrap_html(body_html), text,
                  from_addr=_from_noreply())
 
 
-def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int = 8) -> bool:
-    """Día 7 — la víspera. Este es el mail que más convierte: le da tiempo a
-    usar lo que está por perder y a decidir. Después ya es notificar algo
-    consumado."""
+def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
+                          pro_days: int) -> bool:
+    """La víspera del paso a Plus. Este es el mail que más convierte: le da
+    tiempo a usar lo que está por perder y a decidir. Después ya es notificar
+    algo consumado.
+
+    Los dos días son OBLIGATORIOS: `plus_days` tenía default 8 (la prueba vieja)
+    y el texto hablaba de "tu semana de Pro" — que con 10 días de Pro es
+    directamente otra cosa. Nada de esto produce un error: sale mal y calla.
+    """
+    _etapa = "semana" if pro_days == 7 else f"{pro_days} días"
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Mañana termina tu semana de Pro</h1>
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Mañana termina tu {_etapa} de Pro</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
         Hola {user_name}: mañana pasás a Plus por {plus_days} días más. Hoy todavía
         tenés todo Pro, así que aprovechá:
@@ -1959,24 +1994,52 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int = 8) -> boo
       </p>
     """
     text = (
-        f"Mañana termina tu semana de Pro\n\n"
+        f"Mañana termina tu {_etapa} de Pro\n\n"
         f"Hola {user_name}: mañana pasás a Plus por {plus_days} días más.\n\n"
         "Hoy todavía tenés el chat libre y los análisis sin freno (60/semana "
         "contra 6 en Plus). Aprovechalo.\n\n"
         f"Seguir en Pro: {_TRIAL_URL}\n\n— Rendi"
     )
-    return _send(to, "Mañana termina tu semana de Pro", _wrap_html(body_html), text,
+    return _send(to, f"Mañana termina tu {_etapa} de Pro", _wrap_html(body_html), text,
                  from_addr=_from_noreply())
 
 
-def send_trial_ending_soon(*, to: str, user_name: str, days_left: int = 2) -> bool:
-    """Día 14. La ventana real para decidir, con los dos planes a la vista."""
+def send_trial_ending_soon(*, to: str, user_name: str, days_left: int,
+                           requiere_plan: bool = False) -> bool:
+    """La ventana real para decidir, con los dos planes a la vista.
+
+    `days_left` es OBLIGATORIO (tenía default 2, de cuando el aviso salía a los
+    13 días de 15). Lo calcula el cron con el MISMO helper que usa la barra de
+    la app, así el mail y la pantalla nunca dicen distinto el mismo día.
+    """
     dias = "1 día" if days_left == 1 else f"{days_left} días"
+    _queda = 'queda' if days_left == 1 else 'quedan'
+    if requiere_plan:
+        # Para éste no hay "vuelve a Free": la cuenta queda EN PAUSA. Y lo que
+        # de verdad lo mueve no es la lista de features, es que lo que ya cargó
+        # deja de actualizarse.
+        _que_pasa = (
+            f"Hola {user_name}, en {dias} tu cuenta queda en pausa. Todo lo que "
+            "cargaste queda guardado —no se borra nada— pero deja de actualizarse "
+            "hasta que elijas un plan."
+        )
+        _que_pasa_txt = (
+            f"Hola {user_name}, tu cuenta queda en pausa. Nada se borra, pero "
+            "deja de actualizarse hasta que elijas un plan."
+        )
+    else:
+        _que_pasa = (
+            f"Hola {user_name}, en {dias} tu cuenta vuelve a Free: 1 análisis por "
+            "semana y el chat con preguntas fijas."
+        )
+        _que_pasa_txt = (
+            f"Hola {user_name}, después tu cuenta vuelve a Free: 1 análisis por "
+            "semana y el chat con preguntas fijas."
+        )
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Te {'queda' if days_left == 1 else 'quedan'} {dias} de prueba</h1>
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Te {_queda} {dias} de prueba</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, en {dias} tu cuenta vuelve a Free: 1 análisis por semana
-        y el chat con preguntas fijas.
+        {_que_pasa}
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
         Si Rendi te está sirviendo, <b>Plus</b> mantiene el multi-broker y los
@@ -1987,19 +2050,29 @@ def send_trial_ending_soon(*, to: str, user_name: str, days_left: int = 2) -> bo
       </p>
     """
     text = (
-        f"Te {'queda' if days_left == 1 else 'quedan'} {dias} de prueba\n\n"
-        f"Hola {user_name}, después tu cuenta vuelve a Free: 1 análisis por semana "
-        "y el chat con preguntas fijas.\n\n"
+        f"Te {_queda} {dias} de prueba\n\n"
+        f"{_que_pasa_txt}\n\n"
         "Plus mantiene el multi-broker y los análisis; Pro te devuelve el chat libre.\n\n"
         f"Ver planes: {_TRIAL_URL}\n\n— Rendi"
     )
-    return _send(to, f"Te {'queda' if days_left == 1 else 'quedan'} {dias} de prueba en Rendi",
+    return _send(to, f"Te {_queda} {dias} de prueba en Rendi",
                  _wrap_html(body_html), text, from_addr=_from_noreply())
 
 
-def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None) -> bool:
-    """Día 16. Lleva SU resumen: un dato propio convierte mucho más que una
-    lista de features. Si no hay nada que contar, se omite el bloque."""
+def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None,
+                     total_days: Optional[int] = None,
+                     requiere_plan: bool = False) -> bool:
+    """El día después. Lleva SU resumen: un dato propio convierte mucho más que
+    una lista de features. Si no hay nada que contar, se omite el bloque.
+
+    `total_days` completa la frase "en estos N días": estaba escrito 15 a mano y
+    seguía diciendo 15 con una prueba de 20. Sin él, la frase se omite antes que
+    mentir.
+
+    `requiere_plan`: la cuenta queda EN PAUSA, no "vuelve a Free". Y cierra
+    pidiéndole que cuente en qué se quedó corto — con la prueba sin tarjeta, la
+    respuesta a ese mail es la única fuente de por qué no convirtió.
+    """
     s = stats or {}
     filas = []
     if s.get("brokers"):
@@ -2008,32 +2081,67 @@ def send_trial_ended(*, to: str, user_name: str, stats: Optional[dict] = None) -
         filas.append(f"{s['operations']} operaciones importadas")
     if s.get("analyses"):
         filas.append(f"{s['analyses']} análisis pedidos")
+    _ventana = f"En estos {total_days} días" if total_days else "En tu prueba"
     resumen_html = ""
     if filas:
         items = "".join(f"<li>{f}</li>" for f in filas)
         resumen_html = f"""
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 8px;">En estos 15 días:</p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 8px;">{_ventana}:</p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">{items}</ul>"""
+    if requiere_plan:
+        _apertura = (
+            f"Hola {user_name}, se terminaron tus {total_days or 20} días. Tu cuenta "
+            "quedó <b>en pausa</b>: todo lo que cargaste sigue ahí, guardado, "
+            "esperándote."
+        )
+        _cierre = (
+            "Elegís un plan y entrás justo donde lo dejaste. No hay que importar "
+            "nada de nuevo."
+        )
+        # Firma personal: es el mail que más información devuelve, porque el que
+        # no pagó contesta acá. Ver la regla de la firma en el brand kit.
+        _firma = """
+      <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0;">
+        Si Rendi no te sirvió, contame en qué se quedó corto — respondé este mail
+        y lo leo yo. Es la información que más me sirve.
+      </p>
+      <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:12px 0 0;">Nicolás — Rendi</p>"""
+    else:
+        _apertura = (
+            f"Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos "
+            "ahí: lo que cambia son los límites."
+        )
+        _cierre = (
+            "Si querés seguir con el chat libre y los análisis completos, elegí un "
+            "plan. Cancelás cuando quieras."
+        )
+        _firma = ""
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Terminó tu prueba</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos ahí:
-        lo que cambia son los límites.
+        {_apertura}
       </p>{resumen_html}
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
-        Si querés seguir con el chat libre y los análisis completos, elegí un plan.
-        Cancelás cuando quieras.
+        {_cierre}
       </p>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
-        <a href="{_TRIAL_URL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">Ver los planes →</a>
-      </p>
+        <a href="{_TRIAL_URL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">Elegir un plan →</a>
+      </p>{_firma}
     """
+    _apertura_txt = (
+        f"Hola {user_name}, se terminaron tus {total_days or 20} días. Tu cuenta "
+        "quedó en pausa: todo lo que cargaste sigue ahí, guardado."
+        if requiere_plan else
+        f"Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos ahí: "
+        "lo que cambia son los límites."
+    )
     text = (
         f"Terminó tu prueba\n\n"
-        f"Hola {user_name}, tu cuenta volvió a Free. Tus datos siguen todos ahí: "
-        "lo que cambia son los límites.\n\n"
-        + (("En estos 15 días: " + ", ".join(filas) + ".\n\n") if filas else "")
-        + f"Ver los planes: {_TRIAL_URL}\n\n— Rendi"
+        f"{_apertura_txt}\n\n"
+        + ((f"{_ventana}: " + ", ".join(filas) + ".\n\n") if filas else "")
+        + f"Elegir un plan: {_TRIAL_URL}\n\n"
+        + ("Si Rendi no te sirvió, contame en qué se quedó corto: respondé este "
+           "mail y lo leo yo.\n\nNicolás — Rendi" if requiere_plan else "— Rendi")
     )
     return _send(to, "Terminó tu prueba de Rendi", _wrap_html(body_html), text,
                  from_addr=_from_noreply())

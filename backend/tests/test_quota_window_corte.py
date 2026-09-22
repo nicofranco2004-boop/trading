@@ -101,13 +101,13 @@ class Base(unittest.TestCase):
         return quota.get_current_usage(self.conn, self.uid)
 
 
-class DiaOchoTest(Base):
+class PrimerDiaDePlusTest(Base):
     """Pro → Plus, por el cron."""
 
-    def _hasta_el_dia_8(self, analisis):
+    def _hasta_el_primer_dia_de_plus(self, analisis):
         tr.start(self.conn, self.uid)
         self._consumir(analisis)
-        self._viajar_trial(7)
+        self._viajar_trial(tr.TRIAL_PRO_DAYS)
         # El consumo fue en la etapa Pro = ayer, bien adentro de la ventana móvil.
         self._consumir(0)
         self.conn.execute(
@@ -119,7 +119,7 @@ class DiaOchoTest(Base):
 
     def test_no_hereda_el_consumo_de_la_etapa_pro(self):
         """EL bug: 6 análisis (10% del tope de Pro) lo dejaban en 6/6 de Plus."""
-        self._hasta_el_dia_8(6)
+        self._hasta_el_primer_dia_de_plus(6)
         u = self._uso()
         self.assertEqual(u["analyses_count"], 0)
         self.assertEqual(u["analyses_limit"], 6)
@@ -128,35 +128,35 @@ class DiaOchoTest(Base):
     def test_ni_siquiera_quemando_todo_el_tope_de_pro(self):
         """Cuanto mejor le fue en la prueba, peor le iba después: con los 60 que
         el propio trial le regaló quedaba bloqueado hasta el día 13."""
-        self._hasta_el_dia_8(60)
+        self._hasta_el_primer_dia_de_plus(60)
         self.assertEqual(self._uso()["analyses_count"], 0)
         self.assertTrue(quota.can_analyze(self.conn, self.uid)[0])
 
     def test_lo_consumido_YA_en_plus_si_cuenta(self):
         """La contracara: el corte no puede volver la cuota infinita."""
-        self._hasta_el_dia_8(6)
+        self._hasta_el_primer_dia_de_plus(6)
         for _ in range(6):
             quota.record_analysis(self.conn, self.uid)
         self.assertEqual(self._uso()["analyses_count"], 6)
         self.assertFalse(quota.can_analyze(self.conn, self.uid)[0])
 
 
-class DiaDieciseisTest(Base):
+class DiaDeDespuesTest(Base):
     """Plus → Free, SIN cron: lo resuelve get_tier en tiempo real."""
 
-    def _hasta_el_dia_16(self, analisis):
+    def _hasta_el_dia_de_despues(self, analisis):
         tr.start(self.conn, self.uid)
         self._consumir(analisis, hace_dias=2)
-        # 16 días: la ventana de 15 se terminó AYER (el día 16 es el primero de
-        # después). Traveling 15 dejaría el vencimiento justo en este instante.
-        self._viajar_trial(16)
+        # Un día DESPUÉS del final: la ventana se terminó ayer. Viajar justo
+        # TRIAL_TOTAL_DAYS dejaría el vencimiento en este mismo instante.
+        self._viajar_trial(tr.TRIAL_TOTAL_DAYS + 1)
         self.conn.execute("UPDATE users SET tier='plus' WHERE id=?", (self.uid,))
         self.conn.commit()
 
     def test_el_analisis_semanal_de_free_existe(self):
         """El mail de cierre le promete 1 análisis por semana. Con 1 solo
         análisis hecho en la etapa Plus, ese análisis no existía."""
-        self._hasta_el_dia_16(1)
+        self._hasta_el_dia_de_despues(1)
         self.assertEqual(quota.get_tier(self.conn, self.uid), "free")
         u = self._uso()
         self.assertEqual(u["analyses_count"], 0)
@@ -168,7 +168,7 @@ class DiaDieciseisTest(Base):
         quota_window_from fue hace 15 días (al arrancar la prueba); entre
         entonces y hoy NADIE escribió nada, y el día 16 igual tiene que cortar.
         El único dato que lo permite es credit_active_until vencido."""
-        self._hasta_el_dia_16(1)
+        self._hasta_el_dia_de_despues(1)
         # La marca que dejó trial.start es vieja: no puede ser la que corta.
         self.conn.execute(
             "UPDATE users SET quota_window_from=? WHERE id=?",

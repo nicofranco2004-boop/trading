@@ -2523,6 +2523,19 @@ def init_db():
         # quota.note_tier_change donde se cambia el tier. Sin índice encima.
         if user_cols_after and 'quota_window_from' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN quota_window_from TEXT")
+        # ¿Este usuario necesita un plan pago para entrar? 1 = sí (nació sin plan
+        # gratis: la prueba de 20 días es su puerta de entrada y cuando se termina
+        # la cuenta queda en pausa). 0/NULL = como siempre, cae a free y sigue
+        # usando Rendi gratis.
+        #
+        # Es una MARCA POR USUARIO y no una fecha de corte a propósito: derivarlo
+        # de `created_at >= 15/10` haría que la respuesta cambie sola si algún día
+        # se mueve la fecha, y no dejaría rastro de a quién se le aplicó. Así,
+        # hacerlo retroactivo el día que Nico lo decida es un UPDATE explícito y
+        # auditable, y apagarlo para los nuevos es la variable PAYWALL_NUEVOS.
+        # Sin índice encima (la columna se lee siempre por id de usuario).
+        if user_cols_after and 'requires_plan' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN requires_plan INTEGER DEFAULT 0")
         conn.commit()
 
         # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
@@ -3376,10 +3389,18 @@ def register(data: RegisterIn, request: Request, response: Response,
             # auto-verifica el email (acceso interno directo).
             approved = 1
             email_verified = 1 if is_admin_signup else 0
+            # ¿Nace sin plan gratis? Se decide UNA vez, acá, y queda escrito en
+            # la fila: si mañana se apaga PAYWALL_NUEVOS, quien ya entró con la
+            # marca la conserva (no le cambiamos las reglas a mitad de la prueba).
+            # El admin queda siempre afuera.
+            from billing import trial as _trial
+            requires_plan = 0 if is_admin_signup else (1 if _trial.paywall_nuevos() else 0)
             cur = conn.execute(
-                """INSERT INTO users (email, name, password_hash, is_admin, approved, email_verified)
-                   VALUES (?,?,?,?,?,?)""",
-                (data.email, data.name, h, 1 if is_admin_signup else 0, approved, email_verified),
+                """INSERT INTO users (email, name, password_hash, is_admin, approved,
+                                     email_verified, requires_plan)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (data.email, data.name, h, 1 if is_admin_signup else 0, approved,
+                 email_verified, requires_plan),
             )
             uid = cur.lastrowid
 
@@ -3559,17 +3580,50 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
             # Verificar email = login implícito. Registramos en login_history
             # también (igual no manda alerta porque es el primer login post-signup).
             _record_login_and_maybe_alert(conn, user["id"], email_norm, user["name"], request)
+            # Quien nace sin plan gratis arranca su prueba de 20 días ACÁ, sola.
+            # Acá y no en el registro porque entre registrarse y verificar el mail
+            # pueden pasar días, y arrancarla antes le quemaría la prueba sin que
+            # haya podido entrar una sola vez.
+            #
+            # Best-effort a propósito: si esto falla, el usuario igual queda
+            # logueado y en el peor caso ve la pantalla de elegir plan. Lo que NO
+            # puede pasar es que un error del trial le impida entrar a la cuenta
+            # que acaba de verificar.
+            prueba_arrancada = False
+            try:
+                from billing import trial as _trial
+                if _trial._requiere_plan(conn, user["id"]):
+                    res = _trial.start(conn, user["id"])
+                    prueba_arrancada = bool(res.get("ok"))
+                    if not prueba_arrancada:
+                        # No debería pasar: para un requires_plan, eligibility sólo
+                        # dice no si ya la usó o si ya está pagando. Queda loggeado
+                        # con el motivo porque el efecto es visible (ve el muro).
+                        log.warning(
+                            "trial.start no arrancó para uid=%s (requires_plan): %s",
+                            user["id"], res.get("reason"))
+            except Exception as ex:
+                log.error("Auto-start del trial falló para uid=%s: %s", user["id"], ex)
+
             # Registro completado → mail de bienvenida (best-effort, no bloquea el
             # login). Se manda una sola vez: este branch solo corre en la transición
             # no-verificado → verificado (si ya estaba verificado, cortamos arriba).
-            try:
-                from billing import emails
-                emails.send_welcome_free(
-                    to=email_norm,
-                    user_name=user["name"] or email_norm.split("@")[0],
-                )
-            except Exception as ex:
-                log.error("Welcome (free) email failed for uid=%s: %s", user["id"], ex)
+            #
+            # ⚠️ Si la prueba arrancó, el mail de bienvenida YA SALIÓ: lo manda
+            # `trial.start()` en el momento (billing/trial.py, MAIL_STARTED), a
+            # propósito, porque el primer día decide si la prueba se usa o se
+            # quema. Mandar acá el de "bienvenido al plan gratis" además sería
+            # dos mails en el mismo minuto, y uno de los dos mintiendo: ese
+            # usuario no tiene plan gratis.
+            if not prueba_arrancada:
+                try:
+                    from billing import emails
+                    emails.send_welcome_free(
+                        to=email_norm,
+                        user_name=user["name"] or email_norm.split("@")[0],
+                    )
+                except Exception as ex:
+                    log.error("Welcome (free) email failed for uid=%s: %s", user["id"], ex)
             # Alerta interna al equipo por cada signup real (primeros N usuarios),
             # para reachout temprano. Best-effort + gated por count — nunca bloquea.
             try:

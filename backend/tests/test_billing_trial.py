@@ -1,4 +1,10 @@
-"""Free trial de 15 días: 7 de Pro + 8 de Plus, encadenados.
+"""Free trial: TRIAL_PRO_DAYS de Pro + TRIAL_PLUS_DAYS de Plus, encadenados.
+
+⚠️ Los días NO se escriben en este archivo: se derivan de `billing/trial.py`.
+Estaban a mano (15 / 7 / 8 / 16 / 2) y al pasar la prueba de 15 a 20 días este
+archivo se puso rojo en 11 tests sin que ninguna regla dejara de cumplirse: los
+viajes en el tiempo caían en la etapa equivocada. Un día escrito a mano acá
+certifica el calendario de ayer.
 
 Lo que estos tests protegen, en orden de importancia:
   1. Que el tier REAL que ve el usuario sea el correcto en cada tramo — se
@@ -137,11 +143,11 @@ class TrialLifecycle(TrialBase):
         st = tr.status(self.conn, self.uid)
         self.assertTrue(st["active"])
         self.assertEqual(st["stage"], "pro")
-        self.assertEqual(st["days_left"], 15)
+        self.assertEqual(st["days_left"], tr.TRIAL_TOTAL_DAYS)
 
     def test_dia_8_pasa_a_plus_y_no_se_acorta_el_vencimiento(self):
         tr.start(self.conn, self.uid)
-        self._viajar(7)                      # ya cumplió la semana de Pro
+        self._viajar(tr.TRIAL_PRO_DAYS)      # ya cumplió la etapa de Pro
         # Se lee DESPUÉS de viajar: _viajar mueve la fecha a propósito, así que
         # el antes/después tiene que medir solo el efecto del step-down.
         vence_antes = self.conn.execute(
@@ -156,14 +162,14 @@ class TrialLifecycle(TrialBase):
 
     def test_dia_16_cae_a_free_solo(self):
         tr.start(self.conn, self.uid)
-        self._viajar(16)
+        self._viajar(tr.TRIAL_TOTAL_DAYS + 1)
         # Sin correr NADA: get_tier corta por sí mismo al vencer el crédito.
         self.assertEqual(self._tier(), "free")
         self.assertFalse(tr.status(self.conn, self.uid)["active"])
 
     def test_el_paso_a_plus_es_idempotente(self):
         tr.start(self.conn, self.uid)
-        self._viajar(7)
+        self._viajar(tr.TRIAL_PRO_DAYS)
         self.assertEqual(tr.step_down_due_trials(self.conn), 1)
         self.assertEqual(tr.step_down_due_trials(self.conn), 0)   # segunda corrida: nada
         self.assertEqual(self._tier(), "plus")
@@ -179,7 +185,7 @@ class TrialLifecycle(TrialBase):
         self.assertEqual(self._tier(), "plus")
 
     def test_el_dia_7_todavia_es_pro(self):
-        # Borde: recién al CUMPLIRSE los 7 días baja, no antes.
+        # Borde: recién al CUMPLIRSE la etapa de Pro baja, no antes.
         tr.start(self.conn, self.uid)
         self._viajar(6)
         self.assertEqual(tr.step_down_due_trials(self.conn), 0)
@@ -266,7 +272,7 @@ class TrialCron(TrialBase):
 
     def test_el_job_diario_incluye_el_paso_a_plus(self):
         tr.start(self.conn, self.uid)
-        self._viajar(7)
+        self._viajar(tr.TRIAL_PRO_DAYS)
         res = subs.run_lifecycle_job(self.conn)
         self.assertEqual(res.get("trials_stepped_down"), 1)
         self.assertEqual(self._tier(), "plus")
@@ -274,7 +280,7 @@ class TrialCron(TrialBase):
     def test_al_que_se_suscribio_en_el_medio_no_se_le_toca_el_plan(self):
         tr.start(self.conn, self.uid)
         self._suscribir()
-        self._viajar(7)
+        self._viajar(tr.TRIAL_PRO_DAYS)
         self.assertEqual(tr.step_down_due_trials(self.conn), 0)
         self.assertEqual(self._tier(), "pro", "pagó Pro: no se lo bajamos a Plus")
 
@@ -384,7 +390,7 @@ class TrialAuditFixes(TrialBase):
 
     # ── La UI no puede contradecir al gate ──────────────────────────────────
     def test_la_etapa_sigue_al_tier_real_no_al_calendario(self):
-        # Cron caído: pasó el día 8 pero el usuario TODAVÍA tiene Pro.
+        # Cron caído: pasó el primer día de Plus pero TODAVÍA tiene Pro.
         tr.start(self.conn, self.uid)
         self._viajar(10)
         self.assertEqual(self._tier(), "pro")
@@ -424,19 +430,19 @@ class TrialAvisos(TrialBase):
         tr.start(self.conn, self.uid)
         self.assertEqual([n for n, _ in self.enviados], ["send_trial_started"])
         kw = self.enviados[0][1]
-        self.assertEqual(kw["pro_days"], 7)
-        self.assertEqual(kw["total_days"], 15)
+        self.assertEqual(kw["pro_days"], tr.TRIAL_PRO_DAYS)
+        self.assertEqual(kw["total_days"], tr.TRIAL_TOTAL_DAYS)
 
     def test_avisa_la_vispera_del_cambio_a_plus(self):
         tr.start(self.conn, self.uid)
         self.enviados.clear()
-        self._viajar(6)                       # día 7: mañana pasa a Plus
+        self._viajar(tr.TRIAL_PRO_DAYS - 1)   # la víspera del paso a Plus
         self.assertEqual(tr.send_due_trial_emails(self.conn), 1)
         self.assertEqual(self.enviados[0][0], "send_trial_pro_ending")
 
     def test_ese_aviso_NO_se_repite_al_dia_siguiente(self):
         tr.start(self.conn, self.uid)
-        self._viajar(6)
+        self._viajar(tr.TRIAL_PRO_DAYS - 1)   # la víspera del paso a Plus
         tr.send_due_trial_emails(self.conn)
         self.enviados.clear()
         self._viajar(1)                       # el cron corre de nuevo
@@ -444,10 +450,13 @@ class TrialAvisos(TrialBase):
         self.assertEqual([n for n, _ in self.enviados], [],
                          "un aviso por trial, no uno por día")
 
-    def test_avisa_cuando_faltan_dos_dias(self):
+    def test_avisa_los_dias_antes_que_dice_la_constante(self):
         tr.start(self.conn, self.uid)
         self.enviados.clear()
-        self._viajar(13)                      # quedan 2
+        # El aviso sale MAIL_AVISO_DIAS_ANTES días antes del final. El viaje
+        # decía 13 (quedaban 2 de 15); con la prueba de 20 días el día 13 está
+        # a 7 del final y el aviso no corresponde todavía.
+        self._viajar(tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES)
         tr.send_due_trial_emails(self.conn)
         nombres = [n for n, _ in self.enviados]
         self.assertIn("send_trial_ending_soon", nombres)
@@ -458,7 +467,7 @@ class TrialAvisos(TrialBase):
         self.conn.commit()
         tr.start(self.conn, self.uid)
         self.enviados.clear()
-        self._viajar(16)                      # terminó
+        self._viajar(tr.TRIAL_TOTAL_DAYS + 1)  # terminó
         tr.send_due_trial_emails(self.conn)
         cierre = [kw for n, kw in self.enviados if n == "send_trial_ended"]
         self.assertEqual(len(cierre), 1)
@@ -472,14 +481,14 @@ class TrialAvisos(TrialBase):
         tr.start(self.conn, self.uid)
         self._suscribir()
         self.enviados.clear()
-        self._viajar(16)
+        self._viajar(tr.TRIAL_TOTAL_DAYS + 1)
         tr.send_due_trial_emails(self.conn)
         self.assertEqual([n for n, _ in self.enviados], [],
                          "pagó: no se le anuncia que perdió nada")
 
     def test_dos_corridas_simultaneas_no_duplican(self):
         tr.start(self.conn, self.uid)
-        self._viajar(6)
+        self._viajar(tr.TRIAL_PRO_DAYS - 1)   # la víspera del paso a Plus
         tr.send_due_trial_emails(self.conn)
         tr.send_due_trial_emails(self.conn)
         self.assertEqual(self._kinds().count(tr.MAIL_PRO_ENDING), 1)

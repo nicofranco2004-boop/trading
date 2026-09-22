@@ -127,19 +127,28 @@ class EmbudoDelTrial(unittest.TestCase):
     @classmethod
     def _sembrar(cls):
         # ── EN CURSO (arrancaron hace poco, no vencieron, no pagaron) ───────
+        # ⚠️ Los días se DERIVAN de las constantes de la prueba. Estaban a mano
+        # (9 y 12 como "etapa Plus", porque Pro duraba 7): al pasar Pro a 10
+        # días, el 9 quedó adentro de Pro y el embudo repartía 4 y 1 — el test
+        # medía el calendario viejo, no el reparto.
+        _medio_pro = tr.TRIAL_PRO_DAYS // 2
+        _medio_plus = tr.TRIAL_PRO_DAYS + (tr.TRIAL_PLUS_DAYS // 2)
         cls.en_curso_pro = [cls._trial("curso-pro", d, importo=True, uso_ia=True)
-                            for d in (0, 2, 5)]          # 3, etapa Pro
+                            for d in (0, 2, _medio_pro)]            # 3, etapa Pro
         cls.en_curso_plus = [cls._trial("curso-plus", d, importo=True)
-                             for d in (9, 12)]           # 2, etapa Plus
+                             for d in (tr.TRIAL_PRO_DAYS, _medio_plus)]  # 2, etapa Plus
         # ── EN CURSO PERO YA PAGÓ (el caso que rompía en_curso) ────────────
         cls.pago_en_curso = cls._trial("pago-en-curso", 3, pago_dia=2,
                                        importo=True, uso_ia=True)
         # ── TERMINADOS ─────────────────────────────────────────────────────
         cls.term_sin_pagar = [cls._trial("fin-sin-pagar", d, importo=True)
-                              for d in (20, 30, 45)]     # 3
-        cls.term_pago_pro = cls._trial("fin-pago-pro", 40, pago_dia=3, uso_ia=True)
-        cls.term_pago_plus = cls._trial("fin-pago-plus", 50, pago_dia=10, uso_ia=True)
-        cls.term_pago_desp = cls._trial("fin-pago-desp", 60, pago_dia=20)
+                              for d in (tr.TRIAL_TOTAL_DAYS + 1, 30, 45)]   # 3
+        cls.term_pago_pro = cls._trial("fin-pago-pro", 40, pago_dia=_medio_pro,
+                                       uso_ia=True)
+        cls.term_pago_plus = cls._trial("fin-pago-plus", 50, pago_dia=_medio_plus,
+                                        uso_ia=True)
+        cls.term_pago_desp = cls._trial("fin-pago-desp", 60,
+                                        pago_dia=tr.TRIAL_TOTAL_DAYS + 1)
         # ── FUERA DE LA VENTANA (200 días: no entra en 90) ─────────────────
         cls.viejo = cls._trial("viejo", 200, importo=True, uso_ia=True)
 
@@ -276,8 +285,14 @@ class EmbudoDelTrial(unittest.TestCase):
     def test_la_etapa_del_pago_sale_de_cuando_entro_la_plata(self):
         """subscriptions.created_at es cuándo se generó el LINK, no cuándo se
         pagó: el webhook actualiza esa misma fila sin tocarlo. Alguien que abrió
-        el checkout el día 13 y pagó el 20 —ya terminado el trial— figuraba como
-        'pagó durante los días de Plus'."""
+        el checkout DURANTE la etapa Plus y pagó ya terminada la prueba figuraba
+        como 'pagó durante los días de Plus'.
+
+        Los dos días se derivan: eran 13 y 20 a mano, y con la prueba de 20 días
+        el 20 pasó a ser el último día de la prueba en vez del primero de
+        después — el caso que el test existe para vigilar dejaba de existir."""
+        _dia_link = tr.TRIAL_PRO_DAYS + (tr.TRIAL_PLUS_DAYS // 2)   # durante Plus
+        _dia_plata = tr.TRIAL_TOTAL_DAYS + 1                        # ya terminada
         # Se mide el DELTA: la cohorte de la clase ya trae un pago "después".
         antes = self._funnel(90)["cuando_pagan"]
         ini = self.ahora - timedelta(days=30)
@@ -290,22 +305,23 @@ class EmbudoDelTrial(unittest.TestCase):
             (f"tarde-{uuid.uuid4().hex[:6]}@rendi.test", _iso(ini), _iso(ini),
              _iso(fin), _iso(fin)))
         uid = cur.lastrowid
-        self.conn.execute(                       # link el día 13
+        self.conn.execute(                       # link durante la etapa Plus
             """INSERT INTO subscriptions (user_id, status, external_reference, period,
                                           amount_ars, created_at)
                VALUES (?, 'authorized', ?, 'monthly', 12100, ?)""",
-            (uid, f"link-{uid}", _iso(ini + timedelta(days=13)).replace("T", " ")[:19]))
-        self.conn.execute(                       # plata el día 20
+            (uid, f"link-{uid}",
+             _iso(ini + timedelta(days=_dia_link)).replace("T", " ")[:19]))
+        self.conn.execute(                       # la plata, ya terminada la prueba
             """INSERT INTO credit_ledger (user_id, kind, amount_usd, days_delta, created_at)
                VALUES (?, 'payment', 9.0, 30, ?)""",
-            (uid, _iso(ini + timedelta(days=20)).replace("T", " ")[:19]))
+            (uid, _iso(ini + timedelta(days=_dia_plata)).replace("T", " ")[:19]))
         self.conn.commit()
         try:
             c = self._funnel(90)["cuando_pagan"]
             self.assertEqual(c["despues"] - antes["despues"], 1,
-                             "el pago del día 20 no se contó como 'después de que terminó'")
+                             "el pago posterior al final no se contó como 'después'")
             self.assertEqual(c["durante_plus"], antes["durante_plus"],
-                             "se movió el pago del día 20 a la etapa Plus (la fecha del LINK)")
+                             "se movió ese pago a la etapa Plus (la fecha del LINK)")
         finally:
             self.conn.execute("DELETE FROM credit_ledger WHERE user_id=?", (uid,))
             self.conn.execute("DELETE FROM subscriptions WHERE user_id=?", (uid,))

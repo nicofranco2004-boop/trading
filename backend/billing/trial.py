@@ -35,9 +35,34 @@ from datetime import datetime, timedelta
 log = logging.getLogger("billing.trial")
 
 # ─── Parámetros (cambiarlos NO requiere tocar nada más) ─────────────────────
-TRIAL_PRO_DAYS = 7          # días en Pro
-TRIAL_PLUS_DAYS = 8         # días en Plus, después de Pro
-TRIAL_TOTAL_DAYS = TRIAL_PRO_DAYS + TRIAL_PLUS_DAYS
+TRIAL_PRO_DAYS = 10         # días en Pro
+TRIAL_PLUS_DAYS = 10        # días en Plus, después de Pro
+TRIAL_TOTAL_DAYS = TRIAL_PRO_DAYS + TRIAL_PLUS_DAYS   # 20
+
+# ⚠️ Estos tres números NO se escriben en ningún otro lugar. Antes eran 7+8=15,
+# cuando la prueba era un extra opcional encima del plan gratis. Desde el
+# 2026-10-15 la prueba ES la puerta de entrada (no hay plan gratis para quien se
+# registra), así que pasó a 10+10=20. Cualquier cosa que diga "15 días", "7 días
+# de Pro" o "una semana de Pro" en un texto, un mail o un test está midiendo con
+# la regla vieja: derivar de acá, nunca escribir el número.
+
+
+def paywall_nuevos() -> bool:
+    """¿Los que se registran de ahora en adelante nacen SIN plan gratis?
+
+    True (el default desde el 2026-10-15) = al verificar el mail se les arranca
+    la prueba de 20 días sola, y cuando se termina la cuenta queda en pausa
+    hasta que elijan un plan. El plan gratis deja de existir para ellos.
+
+    La válvula de escape es `PAYWALL_NUEVOS=0` en Railway: apaga el cambio para
+    los registros NUEVOS sin tocar a nadie que ya lo tenga marcado. Se apaga
+    en caliente si algo sale mal el día del cambio; no hay que redeployar.
+
+    A los que ya existen NO les toca nada: su marca (`users.requires_plan`) se
+    escribe en el registro, y pasarlos a todos es un UPDATE aparte el día que
+    Nico decida hacerlo retroactivo.
+    """
+    return (os.environ.get("PAYWALL_NUEVOS") or "1").strip() not in ("0", "false", "False", "no")
 
 
 def trials_enabled() -> bool:
@@ -294,12 +319,38 @@ def eligibility(conn, user_id: int) -> dict:
     # decidido con dos casillas de correo, y no queremos más fricción que esa.
     if "email_verified" in keys and not bool(g("email_verified")):
         return {"can_start": False, "reason": "email_not_verified"}
+
+    # ⚠️ Los dos frenos de abajo son frenos de PROMOCIÓN: existen porque el trial
+    # nació como un extra opcional encima del plan gratis, y el peor caso de
+    # frenarlo era que alguien siguiera gratis. Para quien nace SIN plan gratis
+    # (`requires_plan`) el peor caso es el opuesto: sin prueba no tiene NADA, y
+    # la pantalla de "elegí un plan" le aparecería el día que se registra, antes
+    # de haber visto un solo número suyo en Rendi. Para ellos la prueba no es una
+    # promoción: es la única puerta de entrada, y no se puede cerrar por un tope
+    # mensual ni por un interruptor de campaña.
+    if bool(g("requires_plan")):
+        return {"can_start": True, "reason": None}
+
     if not trials_enabled():
         return {"can_start": False, "reason": "disabled"}
     cap = monthly_cap()
     if cap and _activations_this_month(conn) >= cap:
         return {"can_start": False, "reason": "monthly_cap_reached"}
     return {"can_start": True, "reason": None}
+
+
+def _requiere_plan(conn, user_id: int) -> bool:
+    """¿Este usuario nació sin plan gratis? (users.requires_plan)
+
+    Tolera que la columna no exista todavía: una base que no corrió la
+    migración responde False, o sea "como siempre".
+    """
+    try:
+        row = conn.execute(
+            "SELECT requires_plan FROM users WHERE id=?", (user_id,)).fetchone()
+        return bool(row and row["requires_plan"])
+    except Exception:
+        return False
 
 
 class _TopeDelMes(Exception):
@@ -320,7 +371,13 @@ def start(conn, user_id: int) -> dict:
     now = datetime.utcnow()
     until = (now + timedelta(days=TRIAL_TOTAL_DAYS)).isoformat()
     now_iso = now.isoformat()
-    cap = monthly_cap()
+    # El tope del mes se chequea DOS veces: en eligibility() y otra vez adentro
+    # de _start_tx, que es el que cuenta de verdad (corre en la transacción, a
+    # prueba de dos altas simultáneas). Eximir sólo eligibility dejaba el
+    # arreglo a medias: el alta seguía muriendo adentro con _TopeDelMes. Se
+    # neutraliza en el ÚNICO lugar donde se decide el cap del alta — acá — y
+    # `_start_tx` ya trata cap=0 como "sin tope".
+    cap = 0 if _requiere_plan(conn, user_id) else monthly_cap()
     try:
         return _start_tx(conn, user_id, until, now_iso, cap)
     except _TopeDelMes:
@@ -580,6 +637,12 @@ MAIL_PRO_ENDING = "pro_ending"
 MAIL_ENDING_SOON = "ending_soon"
 MAIL_ENDED = "ended"
 
+# Cuántos días antes del final sale el aviso de "elegí un plan". Eran 2 (escrito
+# a mano en el timedelta de la consulta Y en el default del mail, en dos
+# archivos distintos). Con la prueba de 20 días pasa a 3: es el mail que más
+# convierte y 48 horas es poco margen para decidir un gasto mensual.
+MAIL_AVISO_DIAS_ANTES = 3
+
 
 def _already_sent(conn, user_id: int, kind: str) -> bool:
     try:
@@ -677,7 +740,7 @@ def send_due_trial_emails(conn) -> int:
     def _name(r):
         return (r["name"] or (r["email"] or "").split("@")[0] or "Hola")
 
-    # ── día 7: mañana termina Pro (solo a quien SIGUE en la etapa Pro) ──────
+    # ── la víspera del paso a Plus (solo a quien SIGUE en la etapa Pro) ────
     try:
         rows = conn.execute(
             # SIN borde inferior ni filtro por tier: la idempotencia ya la da
@@ -703,19 +766,21 @@ def send_due_trial_emails(conn) -> int:
                 continue
         try:
             emails.send_trial_pro_ending(to=r["email"], user_name=_name(r),
-                                         plus_days=TRIAL_PLUS_DAYS)
+                                         plus_days=TRIAL_PLUS_DAYS,
+                                         pro_days=TRIAL_PRO_DAYS)
             sent += 1
         except Exception as ex:
             log.warning("mail trial pro_ending falló uid=%s: %s", r["id"], ex)
 
-    # ── día 14: quedan 2 días ──────────────────────────────────────────────
+    # ── el aviso de MAIL_AVISO_DIAS_ANTES días antes del final ─────────────
     try:
         rows = conn.execute(
-            """SELECT id, email, name, trial_ends_at FROM users
+            """SELECT id, email, name, trial_ends_at, requires_plan FROM users
                 WHERE trial_ends_at IS NOT NULL
                   AND credit_active_until = trial_ends_at
                   AND trial_ends_at > ? AND trial_ends_at <= ?""",
-            (now.isoformat(), (now + timedelta(days=2)).isoformat()),
+            (now.isoformat(),
+             (now + timedelta(days=MAIL_AVISO_DIAS_ANTES)).isoformat()),
         ).fetchall()
     except Exception as ex:
         log.error("trial mails (ending_soon) falló: %s", ex)
@@ -730,20 +795,22 @@ def send_due_trial_emails(conn) -> int:
             # Mismo helper que la app: si acá truncábamos y allá redondeábamos
             # para arriba, el mismo día el mail decía "te queda 1" y la barra
             # "te quedan 2".
-            emails.send_trial_ending_soon(to=r["email"], user_name=_name(r),
-                                          days_left=dias_restantes(r["trial_ends_at"], now))
+            emails.send_trial_ending_soon(
+                to=r["email"], user_name=_name(r),
+                days_left=dias_restantes(r["trial_ends_at"], now),
+                requiere_plan=bool(r["requires_plan"]))
             sent += 1
         except Exception as ex:
             log.warning("mail trial ending_soon falló uid=%s: %s", r["id"], ex)
 
-    # ── día 16: terminó (el crédito ya venció; el tier lo bajó el otro paso) ─
+    # ── terminó (el crédito ya venció; el tier lo bajó el otro paso) ───────
     try:
         rows = conn.execute(
             # El guard de credit_active_until faltaba acá (las otras dos
             # ventanas sí lo tienen): sin él, a quien terminó el trial y después
             # recibió un regalo de Pro le llegaba "tu cuenta volvió a Free"
             # empujándolo a pagar algo que ya tenía (audit 2026-08-10).
-            """SELECT id, email, name FROM users
+            """SELECT id, email, name, requires_plan FROM users
                 WHERE trial_ends_at IS NOT NULL AND trial_ends_at <= ?
                   AND trial_ends_at > ?
                   AND (credit_active_until IS NULL
@@ -764,7 +831,9 @@ def send_due_trial_emails(conn) -> int:
                 continue
         try:
             emails.send_trial_ended(to=r["email"], user_name=_name(r),
-                                    stats=_trial_stats(conn, r["id"]))
+                                    stats=_trial_stats(conn, r["id"]),
+                                    total_days=TRIAL_TOTAL_DAYS,
+                                    requiere_plan=bool(r["requires_plan"]))
             sent += 1
         except Exception as ex:
             log.warning("mail trial ended falló uid=%s: %s", r["id"], ex)
