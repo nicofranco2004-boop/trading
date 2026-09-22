@@ -37952,6 +37952,71 @@ def snapshots_run_cron(request: Request):
     return {"ok": True, "status": "started"}
 
 
+# ─── Cron EXTERNO del ciclo de vida de las suscripciones ─────────────────────
+# ⚠️ POR QUÉ EXISTE, y no es teórico: `subscription_lifecycle` corría SOLO en el
+# scheduler in-process (03:30 UTC), que **se saltea la ventana si el proceso de
+# Railway está frío** — el mismo problema que hacía que la "variación diaria" de
+# la cartera fuera de varios días, y que ya se resolvió para alertas, snapshots
+# y el lab de IOL con una puerta externa. Este job se había quedado afuera.
+#
+# Antes eso era molesto. Con la prueba de 20 días es el negocio entero:
+#   · manda los tres mails de la prueba (día 10, día 17, día 21) y **sin tarjeta
+#     al inicio, esos mails SON la conversión** — el que no vuelve a entrar sólo
+#     se entera por mail;
+#   · hace el paso de Pro a Plus el día 11;
+#   · baja a Free/pausa a quien se le venció el crédito.
+# Si el proceso durmió a las 03:30, nada de eso pasa y no hay ningún error: el
+# usuario simplemente no recibe el aviso de que su prueba se termina.
+#
+# (El MURO no depende de esto: lo decide `quota.get_tier` en tiempo real. Lo que
+# se pierde sin el cron son los avisos y la etapa, no el corte.)
+_lifecycle_cron_lock = threading.Lock()
+_lifecycle_cron_running = False
+
+
+def _run_lifecycle_bg():
+    global _lifecycle_cron_running
+    try:
+        _run_subscription_lifecycle_job()
+    finally:
+        with _lifecycle_cron_lock:
+            _lifecycle_cron_running = False
+
+
+@app.api_route("/api/billing/run-cron", methods=["GET", "POST"])
+def billing_run_cron(request: Request):
+    """Dispara el ciclo de vida de suscripciones y los avisos de la prueba.
+
+    Mismo motor que el scheduler in-process (`run_lifecycle_job`), disparado por
+    un cron EXTERNO para que no dependa de que Railway esté despierto.
+
+    Corre en un thread de fondo y devuelve 200 al instante: el job manda mails
+    (httpx, hasta 10s cada uno) y con muchos usuarios pasa el timeout del
+    gateway. Idempotente por diseño — cada aviso se marca en `trial_email_log`
+    ANTES de enviarse, así que re-correrlo no reenvía nada.
+
+    Lo pega un cron externo (cron-job.org) 1×/día. Auth: header X-Cron-Token o
+    ?token= contra BILLING_CRON_TOKEN. Sin token configurado → 503.
+
+    ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
+    Railway. Es la misma limitación que el cron de snapshots.
+    """
+    expected = (os.environ.get("BILLING_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(503, "Billing cron no configurado (falta BILLING_CRON_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    global _lifecycle_cron_running
+    with _lifecycle_cron_lock:
+        if _lifecycle_cron_running:
+            return {"ok": True, "status": "already_running"}
+        _lifecycle_cron_running = True
+    threading.Thread(target=_run_lifecycle_bg, daemon=True).start()
+    return {"ok": True, "status": "started"}
+
+
 # Guarda anti-doble-corrida del brief (mismo patrón que el cron de snapshots):
 # dos pings solapados mandaban el mail dos veces (el log es check-then-act).
 _brief_cron_lock = threading.Lock()
