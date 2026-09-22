@@ -16,8 +16,9 @@
 //   • `account_currency` (viene del servidor): la PATA donde está el título. No
 //     se usa para convertir nada.
 //   • `meta.currency` (catálogo del frontend): en qué PAGA el bono. Es la única
-//     que decide si el monto se pasa a dólares con el MEP. Misma regla que la
-//     zona Renta Fija de la Cartera (`RentaFijaSections.jsx`).
+//     que decide si el monto se pasa a dólares con el MEP. Misma regla que en la
+//     Cartera, donde el bono es una fila más de su broker (`lineaDelBono.js` y
+//     `BondDetail.jsx` leen la moneda de pago del mismo `getBondMeta`).
 import { getBondMeta } from './bondMeta'
 import { getRemainingPayments, cerOptsFor } from './bondSchedule'
 import { hoyISO } from './fecha'
