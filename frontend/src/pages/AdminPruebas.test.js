@@ -21,10 +21,10 @@ function persona(extra = {}) {
     inicio: '2026-09-17', termina: '2026-10-07', dia: 7, days_left: 14,
     tiene: { brokers: 2, posiciones: 210, operaciones: 64, a_mano: 0 },
     ventanas: {
-      1: { filas: 0, archivos: 0, ia: 0, entradas: 1, dias_entro: 1 },
-      3: { filas: 8, archivos: 1, ia: 0, entradas: 3, dias_entro: 2 },
-      7: { filas: 210, archivos: 3, ia: 6, entradas: 9, dias_entro: 6 },
-      15: { filas: 210, archivos: 3, ia: 6, entradas: 9, dias_entro: 6 },
+      1: { filas: 0, archivos: 0, ia: 0, entradas: 1, dias_entro: 1, dias_posibles: 1 },
+      3: { filas: 8, archivos: 1, ia: 0, entradas: 3, dias_entro: 2, dias_posibles: 3 },
+      7: { filas: 210, archivos: 3, ia: 6, entradas: 9, dias_entro: 6, dias_posibles: 7 },
+      15: { filas: 210, archivos: 3, ia: 6, entradas: 9, dias_entro: 6, dias_posibles: 7 },
     },
     ultimo_login: '2026-09-23', ultima_importacion: '2026-09-22',
     estado_uso: 'avanzando',
@@ -68,7 +68,41 @@ describe('los valores que van al CSV son los CRUDOS', () => {
     const p = persona()
     expect(c.find(x => x.key === 'posiciones').get(p)).toBe(210)
     expect(c.find(x => x.key === 'carga7').get(p)).toBe(210)
-    expect(c.find(x => x.key === 'frecuencia').get(p)).toBe(6)
+    // La frecuencia va como PORCENTAJE: 6 de 7 días = 86%.
+    expect(c.find(x => x.key === 'frecuencia').get(p)).toBe(86)
+  })
+
+  it('la frecuencia se mide contra los días que la prueba PUDO vivir', () => {
+    // ⭐ El que arrancó ayer y entró los dos días tiene frecuencia 100%, no
+    // "2 de 7". Con la cuenta cruda, el orden por frecuencia premiaba tener la
+    // prueba más vieja en vez de entrar más seguido.
+    const c = cols()
+    const novato = persona({
+      ventanas: { ...persona().ventanas,
+                  7: { filas: 5, archivos: 1, ia: 0, entradas: 4,
+                       dias_entro: 2, dias_posibles: 2 } },
+    })
+    const viejo = persona({
+      ventanas: { ...persona().ventanas,
+                  7: { filas: 5, archivos: 1, ia: 0, entradas: 3,
+                       dias_entro: 3, dias_posibles: 7 } },
+    })
+    const frec = c.find(x => x.key === 'frecuencia')
+    expect(frec.get(novato)).toBe(100)
+    expect(frec.get(viejo)).toBe(43)
+    // Y el orden los pone en ese orden, no al revés.
+    const [primero] = ordenarFilas([viejo, novato], frec, 'desc')
+    expect(primero.ventanas[7].dias_posibles).toBe(2)
+  })
+
+  it('sin días vividos la frecuencia es vacía, no cero ni infinito', () => {
+    const c = cols()
+    const p = persona({
+      ventanas: { ...persona().ventanas,
+                  7: { filas: 0, archivos: 0, ia: 0, entradas: 0,
+                       dias_entro: 0, dias_posibles: 0 } },
+    })
+    expect(c.find(x => x.key === 'frecuencia').get(p)).toBeNull()
   })
 
   it('escapa lo que rompería el archivo', () => {

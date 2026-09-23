@@ -294,8 +294,11 @@ class LaVentanaDeDias(Base):
             for d in p["dias"][-n:]:
                 for k in a_mano:
                     a_mano[k] += d[k]
-            # La frecuencia son días DISTINTOS, no entradas: se cuenta aparte.
+            # Los otros dos campos son DERIVADOS de la misma tira, no sumas:
+            # los días DISTINTOS en que entró, y cuántos días pudo entrar (que
+            # para una prueba de dos días son dos, no siete).
             a_mano["dias_entro"] = sum(1 for d in p["dias"][-n:] if d["entradas"])
+            a_mano["dias_posibles"] = len(p["dias"][-n:])
             self.assertEqual(p["ventanas"][str(n)], a_mano,
                              f"la ventana de {n} días no coincide con la tira")
 
@@ -635,6 +638,88 @@ class ElResumenDeLaTanda(Base):
         self.assertEqual(r["en_pro"], 1)
         self.assertEqual(r["en_plus"], 1)
         self.assertEqual(r["en_pro"] + r["en_plus"], r["en_curso"])
+
+
+class LosTresBugsDeCalculo(Base):
+    """Los tres que encontró la auditoría de cálculos. Ninguno rompía nada: los
+    tres mostraban un número creíble y equivocado, que es la forma cara."""
+
+    def test_importar_solo_efectivo_no_es_tener_la_app_vacia(self):
+        """⭐ Las filas de caja (`is_cash=1`) no son posiciones, así que quien
+        importaba un archivo de puros movimientos de plata quedaba marcado «app
+        vacía» en la MISMA fila que decía «Cargó 7d +9». Y de las dos, manda la
+        peor: «app vacía» es el cartel de "el problema es el onboarding", y esa
+        persona justamente pasó el importador."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=2)
+        bid = self._importó(uid, hace_dias=1, filas=0)
+        for i in range(9):                       # 9 filas, TODAS de efectivo
+            cur = self.conn.execute(
+                "INSERT INTO positions (user_id, broker, asset, quantity, is_cash) "
+                "VALUES (?,?,?,?,1)", (uid, "Cocos", f"USD{i}", 100))
+            self.conn.execute(
+                "INSERT INTO import_op_links (batch_id, position_id) VALUES (?,?)",
+                (bid, cur.lastrowid))
+        self.conn.commit()
+
+        p = self._fila(uid)
+        self.assertGreater(p["ventanas"]["7"]["filas"], 0, "el import no se contó")
+        self.assertNotEqual(
+            p["estado_uso"], "sin_datos",
+            "la fila dice «app vacía» y «cargó filas» al mismo tiempo")
+
+    def test_el_que_arranco_ayer_no_puede_tener_siete_dias(self):
+        """⭐ La frecuencia decía "2/7" de alguien que entró los DOS días que
+        llevaba de prueba. El denominador tiene que ser cuántos días pudo
+        entrar, no el largo de la ventana."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=1)
+        self._entró(uid, hace_dias=1)
+        self._entró(uid, hace_dias=0)
+        v = self._fila(uid)["ventanas"]["7"]
+        self.assertEqual(v["dias_posibles"], 2,
+                         "cuenta días que la prueba todavía no vivió")
+        self.assertEqual(v["dias_entro"], 2)
+
+    def test_y_con_la_prueba_entera_el_denominador_es_siete(self):
+        """El contraveneno: que el arreglo no achique también las ventanas de
+        quien sí lleva más de una semana."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=12)
+        self.assertEqual(self._fila(uid)["ventanas"]["7"]["dias_posibles"], 7)
+
+    def test_el_abandono_solo_cuenta_pruebas_VIVAS(self):
+        """⭐ La tarjeta promete "la lista de a quién escribirle". Una prueba
+        vencida hace 25 días sin pagar entraba como abandono: es verdad que no
+        volvió, pero eso ya lo cuenta la conversión, y a esa persona no se le
+        puede escribir nada. Medido antes del arreglo: 50% de abandono con una
+        sola prueba viva y una vieja."""
+        # Arranca hace 12 y su última señal es de ese día: para estar «frenada»
+        # la última señal tiene que caer FUERA de los 7 días, así que la prueba
+        # tiene que llevar más de una semana viva.
+        viva = self._persona()
+        self._con_prueba(viva, arrancó_hace=12)
+        self._importó(viva, hace_dias=12, filas=5)
+        self._entró(viva, hace_dias=12)          # no vuelve → frenada, y sigue viva
+
+        vieja = self._persona()
+        self._con_prueba(vieja, arrancó_hace=tr.TRIAL_TOTAL_DAYS + 25)
+        self._importó(vieja, hace_dias=tr.TRIAL_TOTAL_DAYS + 25, filas=40)
+
+        r = tr.progreso(self.conn, days=60)["resumen"]
+        self.assertEqual(r["base_abandono"], 1, "el denominador mete pruebas terminadas")
+        self.assertEqual(r["frenados"], 1)
+        self.assertEqual(r["tasa_abandono"], 100.0)
+
+    def test_la_fila_vencida_igual_se_pinta_frenada(self):
+        """El arreglo cambia la POBLACIÓN de la tasa, no lo que dice cada fila:
+        de una prueba vencida que no volvió, «Frenado» sigue siendo cierto."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=tr.TRIAL_TOTAL_DAYS + 25)
+        self._importó(uid, hace_dias=tr.TRIAL_TOTAL_DAYS + 25, filas=40)
+        p = [x for x in tr.progreso(self.conn, days=60)["personas"]
+             if x["id"] == uid][0]
+        self.assertEqual(p["estado_uso"], "frenado")
 
 
 class LosDosPanelesCuentanLaMismaGente(Base):

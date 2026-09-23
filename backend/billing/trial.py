@@ -1419,6 +1419,11 @@ def _sumar_dias(dias: list) -> dict:
     # alguien que abrió la app seis veces un martes y no volvió usó Rendi un
     # día, no seis. Es la "frecuencia" de la tabla ("6/7 días").
     total["dias_entro"] = sum(1 for d in dias if d.get("entradas"))
+    # ⭐ Y cuántos días PUDO haber entrado, que no siempre es el largo de la
+    # ventana: quien arrancó ayer tiene dos días de vida, no siete. Sin esto la
+    # columna decía "2/7" —que se lee como flojo— cuando en realidad entró
+    # todos los días que existió.
+    total["dias_posibles"] = len(dias)
     return total
 
 
@@ -1704,7 +1709,16 @@ def progreso(conn, days: int = 30, limit: int = 200, detalle: bool = False) -> d
         except (TypeError, ValueError):
             transcurridos = 1
 
-        tiene_datos = bool(posiciones.get(uid, 0) or operaciones.get(uid, 0))
+        # ⭐ "La app tiene datos adentro" pregunta por las tres cosas, no por
+        # dos. Preguntando sólo posiciones y operaciones, quien importó un
+        # archivo que sólo trajo MOVIMIENTOS DE EFECTIVO (las filas de caja no
+        # son posiciones: `is_cash=1`) salía marcado «app vacía» en la misma
+        # fila que decía «Cargó 7d +9». Dos celdas de la misma persona
+        # diciéndose que no, y la que manda es la peor: «app vacía» es el
+        # cartel de "el problema es el onboarding", y esa persona justamente
+        # pasó el importador.
+        tiene_datos = bool(posiciones.get(uid, 0) or operaciones.get(uid, 0)
+                           or ultimo_import.get(uid))
         salida["personas"].append({
             "id": uid,
             "email": r["email"],
@@ -1758,10 +1772,18 @@ def _resumen(personas: list, pagaron: set) -> dict:
     # "Llegó a cargar datos" es exactamente lo contrario de `sin_datos`, que es
     # lo que la fila ya muestra como «app vacía».
     con_datos = [p for p in personas if p["estado_uso"] != "sin_datos"]
-    # Abandono = cargó datos y hace más de una semana que no da señales. Es la
-    # misma definición que pinta la fila de rojo con «Frenado».
-    frenados = [p for p in personas if p["estado_uso"] == "frenado"]
-    # El denominador de la conversión son las prubas VENCIDAS por fecha, igual
+    # ⭐ Abandono = está PROBANDO, ya cargó datos, y hace más de una semana que
+    # no da señales. La fila se sigue pintando «Frenado» para cualquiera —es
+    # cierto de cualquiera—, pero la TASA mira sólo las pruebas vivas, y el
+    # motivo está escrito en la tarjeta: "es la lista de a quién escribirle".
+    # Contando también las terminadas, una prueba que se venció hace 25 días
+    # sin pagar entraba como abandono; es verdad que no volvió, pero eso ya lo
+    # dice la conversión, y acá ensuciaba el único número que sirve para actuar
+    # con gente a la que ya no se le puede hacer nada. Medido: 50% de abandono
+    # con una sola prueba viva y una vieja.
+    base_abandono = [p for p in activas if p["estado_uso"] != "sin_datos"]
+    frenados = [p for p in base_abandono if p["estado_uso"] == "frenado"]
+    # El denominador de la conversión son las pruebas VENCIDAS por fecha, igual
     # que en el embudo: el que sigue probando todavía no tuvo su chance de
     # decidir, y meterlo abajo hace que el número parezca peor de lo que es.
     cerradas = [p for p in personas if p["vencida"]]
@@ -1773,7 +1795,8 @@ def _resumen(personas: list, pagaron: set) -> dict:
         "sin_datos": len(personas) - len(con_datos),
         "tasa_uso": _pct(len(con_datos), len(personas)),
         "frenados": len(frenados),
-        "tasa_abandono": _pct(len(frenados), len(con_datos)),
+        "base_abandono": len(base_abandono),
+        "tasa_abandono": _pct(len(frenados), len(base_abandono)),
         "terminadas": len(cerradas),
         "convirtieron": len(convirtieron),
         "tasa_conversion": _pct(len(convirtieron), len(cerradas)),

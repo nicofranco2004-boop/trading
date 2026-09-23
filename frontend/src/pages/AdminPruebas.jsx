@@ -158,13 +158,26 @@ export function columnas(hoy, totalDias, diasAviso) {
       },
     },
     {
-      key: 'frecuencia', label: 'Frecuencia', num: true,
-      get: p => p.ventanas?.['7']?.dias_entro ?? 0,
-      celda: p => (
-        <span className="tabular text-ink-1">
-          {p.ventanas?.['7']?.dias_entro ?? 0}<span className="text-ink-3">/7 días</span>
-        </span>
-      ),
+      // ⭐ Ordena y exporta como PORCENTAJE, no como cuenta de días. Con la
+      // cuenta cruda, alguien con 3 de 7 quedaba arriba de alguien que entró
+      // los 2 días que llevaba de prueba — o sea, el orden premiaba tener la
+      // prueba más vieja. El denominador es cuántos días PUDO entrar, que para
+      // el que arrancó ayer son dos y no siete.
+      key: 'frecuencia', label: 'Frecuencia (%)', num: true,
+      get: p => {
+        const v = p.ventanas?.['7']
+        if (!v?.dias_posibles) return null
+        return Math.round(v.dias_entro / v.dias_posibles * 100)
+      },
+      celda: p => {
+        const v = p.ventanas?.['7']
+        if (!v?.dias_posibles) return <span className="text-ink-3">—</span>
+        return (
+          <span className="tabular text-ink-1">
+            {v.dias_entro}<span className="text-ink-3">/{v.dias_posibles} días</span>
+          </span>
+        )
+      },
     },
     {
       key: 'login', label: 'Último login', get: p => p.ultimo_login,
@@ -304,13 +317,17 @@ function Resumen({ r, personas, days }) {
         />
         <Tasa
           label="Tasa de abandono" valor={r.tasa_abandono} tono="text-rendi-neg"
-          de={`${r.frenados} de ${r.con_datos} cargaron y desaparecieron`}
-          def="De los que sí cargaron datos, los que hace más de 7 días que no entran. Es la lista de a quién escribirle."
+          de={`${r.frenados} de ${r.base_abandono} que están probando`}
+          def="De los que ESTÁN PROBANDO y ya cargaron datos, los que hace más de 7 días que no entran. Sólo las pruebas vivas: es la lista de a quién escribirle, y a una que ya se venció no se le puede escribir nada — eso ya lo cuenta la conversión."
         />
         <Tasa
           label="Conversión" valor={r.tasa_conversion} tono="text-rendi-pos"
           de={`${r.convirtieron} de ${r.terminadas} que ya terminaron`}
-          def="Sobre las pruebas TERMINADAS, no sobre todas: los que siguen probando todavía no tuvieron su chance de decidir."
+          def={`Sobre las pruebas VENCIDAS por fecha, no sobre todas: el que sigue probando todavía no tuvo su chance de decidir.${
+            r.pagaron > r.convirtieron
+              ? ` Ojo: ${r.pagaron - r.convirtieron} pagaron a mitad de la prueba y entran a esta cuenta cuando llegue su fecha de fin — es la misma regla que usa el embudo, para que el de arriba y el de abajo hablen siempre de la misma gente.`
+              : ''
+          }`}
         />
       </div>
 
