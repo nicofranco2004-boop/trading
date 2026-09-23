@@ -1144,6 +1144,32 @@ def pro_upsell_stats(conn, days: int = 90, limit: int = 200) -> dict:
     return out
 
 
+# ⭐ QUÉ ES "CONVERTIR". Una sola definición para todo el admin.
+#
+# Es ENTRÓ PLATA después de arrancar la prueba, y la fuente es
+# `credit_ledger` con kind='payment', que sólo tiene fila cuando se acreditó un
+# cobro de verdad. NO se le pregunta a `subscriptions`: ahí hay fila desde que
+# se GENERA EL LINK de pago, y el cron la pasa a 'cancelled' a los 7 días — o
+# sea que 'cancelled' es el estado final de un CHECKOUT ABANDONADO, no de
+# alguien que pagó y se dio de baja. Reproducido: 3 personas que abrieron el
+# link y nunca pagaron + 1 que pagó daban "convirtieron 4, conversión 100%"
+# cuando la respuesta es 1 y 25%.
+#
+# Están acá arriba y no adentro de funnel() porque el panel de pruebas cuenta
+# la misma conversión: con la definición escrita dos veces, los dos números se
+# separan el día que alguien toque uno y nada avisa.
+def _pct(n, base):
+    """Porcentaje con un decimal, o None si no hay de qué sacarlo. Nunca 0%
+    cuando el denominador es cero: "0%" y "todavía no hay nadie" son cosas
+    distintas y la pantalla tiene que poder distinguirlas."""
+    return round(n / base * 100, 1) if base else None
+
+
+SQL_JOIN_PAGO = """JOIN credit_ledger l ON l.user_id = u.id AND l.kind='payment'"""
+SQL_PAGO_DESPUES_DE_ARRANCAR = (
+    """l.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)""")
+
+
 def funnel(conn, days: int = 90) -> dict:
     """Embudo del trial de los últimos `days` días."""
     since = (datetime.utcnow() - timedelta(days=max(1, days))).isoformat()
@@ -1211,8 +1237,7 @@ def funnel(conn, days: int = 90) -> dict:
     # "convirtieron 4, conversión 100%" cuando la respuesta es 1 y 25%.
     # Abandonar un checkout es lo más común que hay, así que el error no era de
     # borde: inflaba justo el número con el que se decide escalar el gasto.
-    _PAGO = """JOIN credit_ledger l ON l.user_id = u.id AND l.kind='payment'"""
-    _DESPUES = """l.created_at >= substr(replace(u.trial_started_at,'T',' '),1,19)"""
+    _PAGO, _DESPUES = SQL_JOIN_PAGO, SQL_PAGO_DESPUES_DE_ARRANCAR
     convirtieron = _one(
         f"""SELECT COUNT(DISTINCT u.id) c FROM users u {_PAGO}
             WHERE u.trial_started_at >= ? AND {_DESPUES}""", (since,))
@@ -1258,9 +1283,6 @@ def funnel(conn, days: int = 90) -> dict:
                 etapas["despues"] += 1
     except Exception as ex:
         log.warning("funnel etapas falló: %s", ex)
-
-    def _pct(n, base):
-        return round(n / base * 100, 1) if base else None
 
     return {
         "days": days,
@@ -1374,6 +1396,10 @@ def _sumar_dias(dias: list) -> dict:
     for d in dias:
         for k in total:
             total[k] += int(d.get(k) or 0)
+    # Días DISTINTOS en los que entró, que NO es la cantidad de entradas:
+    # alguien que abrió la app seis veces un martes y no volvió usó Rendi un
+    # día, no seis. Es la "frecuencia" de la tabla ("6/7 días").
+    total["dias_entro"] = sum(1 for d in dias if d.get("entradas"))
     return total
 
 
@@ -1579,14 +1605,39 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
              WHERE user_id IN ({ph}) AND status='confirmed'
              GROUP BY user_id""", tuple(ids))
 
+    # Quiénes pusieron plata DESPUÉS de arrancar la prueba. Es la misma
+    # definición que usa el embudo (`SQL_JOIN_PAGO`), y de acá salen las dos
+    # cosas: la etiqueta "Pagó" de la fila y el numerador de la conversión. Si
+    # la etiqueta saliera de `subscriptions` y la tasa del ledger, la tabla
+    # podría mostrar 3 "Pagó" con una conversión que cuenta 1 y nadie
+    # entendería cuál de los dos miente.
+    pagaron = set()
+    try:
+        for r in conn.execute(
+            f"""SELECT DISTINCT u.id uid FROM users u {SQL_JOIN_PAGO}
+                 WHERE u.id IN ({ph}) AND {SQL_PAGO_DESPUES_DE_ARRANCAR}""",
+                tuple(ids)):
+            pagaron.add(int(r["uid"]))
+    except Exception as ex:
+        log.warning("progreso: quiénes pagaron falló: %s", ex)
+
     # ── Armar cada persona ──────────────────────────────────────────────────
     for r in filas:
         uid = int(r["id"])
         inicio = _dia_de(r["trial_started_at"]) or hoy
         fin_dia = _dia_de(r["trial_ends_at"])
         fin = prueba_viva(conn, r, ahora)
-        pago = _has_paid_sub(conn, uid)
-        estado = "pago" if pago else ("activa" if fin else "terminada")
+        # "Pagó" va primero: entró plata, y ése es el desenlace de la prueba
+        # aunque por fecha todavía le queden días.
+        estado = "pago" if uid in pagaron else ("activa" if fin else "terminada")
+        # ¿Se le venció la fecha? Es el denominador de la conversión y tiene
+        # que ser el mismo criterio que usa el embudo: el que sigue probando
+        # todavía no tuvo su chance de decidir.
+        try:
+            vencida = datetime.fromisoformat(
+                str(r["trial_ends_at"]).replace("Z", "")) <= ahora
+        except (TypeError, ValueError):
+            vencida = False
 
         # La tira va del arranque hasta hoy. Si ya terminó, los días de después
         # también entran: sirven para ver si volvió después del muro.
@@ -1608,6 +1659,7 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
             "email": r["email"],
             "name": r["name"],
             "estado": estado,
+            "vencida": vencida,
             "stage": stage_by_calendar(r["trial_started_at"], ahora) if fin else None,
             "inicio": inicio,
             "termina": fin_dia,
@@ -1640,4 +1692,49 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
         orden.get(p["estado"], 3),
         p["days_left"] if p["estado"] == "activa" else -_orden_fecha(p["termina"])))
     salida["activas"] = sum(1 for p in salida["personas"] if p["estado"] == "activa")
+    salida["resumen"] = _resumen(salida["personas"], pagaron)
     return salida
+
+
+def _resumen(personas: list, pagaron: set) -> dict:
+    """Las tasas de la tanda, cada una derivada de lo que ya decidió la tabla.
+
+    Nada se vuelve a calcular con otro criterio: «app vacía», «frenado» y
+    «Pagó» ya están resueltos fila por fila, y el resumen sólo cuenta. Así es
+    imposible que la tabla muestre 4 con la app vacía y el resumen diga 3 —
+    que es la forma en que un panel pierde la confianza y no vuelve.
+    """
+    activas = [p for p in personas if p["estado"] == "activa"]
+    # "Llegó a cargar datos" es exactamente lo contrario de `sin_datos`, que es
+    # lo que la fila ya muestra como «app vacía».
+    con_datos = [p for p in personas if p["estado_uso"] != "sin_datos"]
+    # Abandono = cargó datos y hace más de una semana que no da señales. Es la
+    # misma definición que pinta la fila de rojo con «Frenado».
+    frenados = [p for p in personas if p["estado_uso"] == "frenado"]
+    # El denominador de la conversión son las prubas VENCIDAS por fecha, igual
+    # que en el embudo: el que sigue probando todavía no tuvo su chance de
+    # decidir, y meterlo abajo hace que el número parezca peor de lo que es.
+    cerradas = [p for p in personas if p["vencida"]]
+    convirtieron = [p for p in cerradas if p["id"] in pagaron]
+
+    return {
+        "total": len(personas),
+        "con_datos": len(con_datos),
+        "sin_datos": len(personas) - len(con_datos),
+        "tasa_uso": _pct(len(con_datos), len(personas)),
+        "frenados": len(frenados),
+        "tasa_abandono": _pct(len(frenados), len(con_datos)),
+        "terminadas": len(cerradas),
+        "convirtieron": len(convirtieron),
+        "tasa_conversion": _pct(len(convirtieron), len(cerradas)),
+        "en_curso": len(activas),
+        "en_pro": sum(1 for p in activas if p["stage"] != "plus"),
+        "en_plus": sum(1 for p in activas if p["stage"] == "plus"),
+        # Los que están por vencer, con el MISMO corte que dispara el mail de
+        # aviso: si algún día el mail sale con otra anticipación, el panel se
+        # mueve solo y los dos siguen hablando de la misma gente.
+        "por_terminar": sum(1 for p in activas
+                            if p["days_left"] <= MAIL_AVISO_DIAS_ANTES),
+        "dias_aviso": MAIL_AVISO_DIAS_ANTES,
+        "pagaron": sum(1 for p in personas if p["estado"] == "pago"),
+    }

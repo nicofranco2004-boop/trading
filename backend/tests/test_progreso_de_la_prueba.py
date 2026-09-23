@@ -177,6 +177,21 @@ class Base(unittest.TestCase):
             "VALUES (?,?,?,?)", (uid, dia, analisis, chat))
         self.conn.commit()
 
+    def _pagó(self, uid):
+        """La misma alta que usa test_billing_trial: una suscripción cobrada de
+        verdad es fila en `subscriptions` Y plata en el ledger."""
+        ts = self.ahora.strftime("%Y-%m-%d %H:%M:%S")
+        self.conn.execute(
+            "INSERT INTO subscriptions (user_id, status, external_reference, "
+            "                           period, amount_ars, created_at) "
+            "VALUES (?, 'authorized', ?, 'monthly', 10000, ?)",
+            (uid, f"ref-{uid}", ts))
+        self.conn.execute(
+            "INSERT INTO credit_ledger (user_id, kind, amount_usd, days_delta, "
+            "                           created_at) "
+            "VALUES (?, 'payment', 9.0, 30, ?)", (uid, ts))
+        self.conn.commit()
+
     def _fila(self, uid):
         for p in tr.progreso(self.conn)["personas"]:
             if p["id"] == uid:
@@ -276,6 +291,8 @@ class LaVentanaDeDias(Base):
             for d in p["dias"][-n:]:
                 for k in a_mano:
                     a_mano[k] += d[k]
+            # La frecuencia son días DISTINTOS, no entradas: se cuenta aparte.
+            a_mano["dias_entro"] = sum(1 for d in p["dias"][-n:] if d["entradas"])
             self.assertEqual(p["ventanas"][str(n)], a_mano,
                              f"la ventana de {n} días no coincide con la tira")
 
@@ -408,19 +425,7 @@ class QuienEntraYQuienNo(Base):
         infla «los que están probando» con gente que ya es cliente."""
         uid = self._persona()
         self._con_prueba(uid, arrancó_hace=3)
-        # La misma alta que usa test_billing_trial: una suscripción cobrada de
-        # verdad es fila en `subscriptions` Y plata en el ledger.
-        ts = self.ahora.strftime("%Y-%m-%d %H:%M:%S")
-        self.conn.execute(
-            "INSERT INTO subscriptions (user_id, status, external_reference, "
-            "                           period, amount_ars, created_at) "
-            "VALUES (?, 'authorized', ?, 'monthly', 10000, ?)",
-            (uid, f"ref-{uid}", ts))
-        self.conn.execute(
-            "INSERT INTO credit_ledger (user_id, kind, amount_usd, days_delta, "
-            "                           created_at) "
-            "VALUES (?, 'payment', 9.0, 30, ?)", (uid, ts))
-        self.conn.commit()
+        self._pagó(uid)
         p = self._fila(uid)
         self.assertEqual(p["estado"], "pago")
         self.assertEqual(tr.progreso(self.conn)["activas"], 0)
@@ -451,6 +456,150 @@ class QuienEntraYQuienNo(Base):
         vivos = [p["id"] for p in tr.progreso(self.conn)["personas"]
                  if p["estado"] == "activa"]
         self.assertEqual(vivos[0], apurado)
+
+
+class ElResumenDeLaTanda(Base):
+    """Las tasas de abajo de la tabla. La regla que las gobierna: NINGUNA se
+    vuelve a calcular con otro criterio — todas cuentan lo que la fila ya
+    decidió. Un panel donde la tabla muestra 4 con la app vacía y el resumen
+    dice 3 no se arregla: se deja de mirar."""
+
+    def _res(self):
+        return tr.progreso(self.conn)["resumen"]
+
+    def test_la_tasa_de_uso_es_quienes_llegaron_a_cargar(self):
+        cargo = self._persona()
+        self._con_prueba(cargo, arrancó_hace=3)
+        self._importó(cargo, hace_dias=1, filas=5)
+        for _ in range(2):
+            vacio = self._persona()
+            self._con_prueba(vacio, arrancó_hace=3)
+        r = self._res()
+        self.assertEqual(r["total"], 3)
+        self.assertEqual(r["con_datos"], 1)
+        self.assertEqual(r["sin_datos"], 2)
+        self.assertEqual(r["tasa_uso"], 33.3)
+
+    def test_el_resumen_no_puede_contradecir_la_tabla(self):
+        """⭐ El invariante: contar las filas a mano tiene que dar el resumen."""
+        for hace, filas in ((2, 5), (12, 9), (4, 0), (14, 3)):
+            uid = self._persona()
+            self._con_prueba(uid, arrancó_hace=hace)
+            if filas:
+                self._importó(uid, hace_dias=hace, filas=filas)
+        d = tr.progreso(self.conn)
+        r, ps = d["resumen"], d["personas"]
+        self.assertEqual(r["total"], len(ps))
+        self.assertEqual(r["sin_datos"],
+                         sum(1 for p in ps if p["estado_uso"] == "sin_datos"))
+        self.assertEqual(r["frenados"],
+                         sum(1 for p in ps if p["estado_uso"] == "frenado"))
+        self.assertEqual(r["en_curso"],
+                         sum(1 for p in ps if p["estado"] == "activa"))
+        self.assertEqual(r["pagaron"],
+                         sum(1 for p in ps if p["estado"] == "pago"))
+
+    def test_el_abandono_se_mide_sobre_los_que_cargaron(self):
+        """Quien nunca cargó nada no "abandonó": nunca arrancó. Meterlo en el
+        denominador diluye el número que dice a quién escribirle."""
+        frenado = self._persona()
+        self._con_prueba(frenado, arrancó_hace=14)
+        self._importó(frenado, hace_dias=12, filas=40)
+        activo = self._persona()
+        self._con_prueba(activo, arrancó_hace=5)
+        self._importó(activo, hace_dias=1, filas=7)
+        vacio = self._persona()
+        self._con_prueba(vacio, arrancó_hace=5)
+
+        r = self._res()
+        self.assertEqual(r["con_datos"], 2)
+        self.assertEqual(r["frenados"], 1)
+        self.assertEqual(r["tasa_abandono"], 50.0,
+                         "el abandono se está midiendo sobre los 3 y no sobre los 2")
+
+    def test_la_conversion_va_sobre_las_que_ya_terminaron(self):
+        vencida_paga = self._persona()
+        self._con_prueba(vencida_paga, arrancó_hace=tr.TRIAL_TOTAL_DAYS + 2)
+        self._pagó(vencida_paga)
+        vencida_no = self._persona()
+        self._con_prueba(vencida_no, arrancó_hace=tr.TRIAL_TOTAL_DAYS + 2)
+        en_curso = self._persona()
+        self._con_prueba(en_curso, arrancó_hace=2)
+
+        r = self._res()
+        self.assertEqual(r["terminadas"], 2, "el que sigue probando no terminó")
+        self.assertEqual(r["convirtieron"], 1)
+        self.assertEqual(r["tasa_conversion"], 50.0)
+
+    def test_un_checkout_abandonado_no_es_una_conversion(self):
+        """⭐ El bug documentado del embudo: hay fila en `subscriptions` desde
+        que se GENERA el link de pago. Contarla daba 100% de conversión con
+        gente que nunca pagó un peso."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=tr.TRIAL_TOTAL_DAYS + 2)
+        self.conn.execute(
+            "INSERT INTO subscriptions (user_id, status, external_reference, "
+            "                           period, amount_ars, created_at) "
+            "VALUES (?, 'cancelled', ?, 'monthly', 13990, ?)",
+            (uid, f"ref-{uid}", self.ahora.strftime("%Y-%m-%d %H:%M:%S")))
+        self.conn.commit()
+        r = self._res()
+        self.assertEqual(r["convirtieron"], 0)
+        self.assertEqual(r["tasa_conversion"], 0.0)
+        self.assertNotEqual(self._fila(uid)["estado"], "pago")
+
+    def test_sin_nadie_las_tasas_son_None_y_no_cero(self):
+        """"0%" y "todavía no hay nadie" son cosas distintas: si el panel
+        muestra 0% de conversión sin una sola prueba terminada, se lee como que
+        la prueba no funciona."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=2)
+        r = self._res()
+        self.assertEqual(r["terminadas"], 0)
+        self.assertIsNone(r["tasa_conversion"])
+        self.assertIsNone(r["tasa_abandono"], "nadie cargó datos todavía")
+
+    def test_los_que_estan_por_vencer_usan_el_corte_del_mail(self):
+        """El «se terminan pronto» del panel y el mail de aviso tienen que
+        hablar de la misma gente."""
+        justo = self._persona()
+        self._con_prueba(justo, arrancó_hace=tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES)
+        lejos = self._persona()
+        self._con_prueba(lejos, arrancó_hace=2)
+        r = self._res()
+        self.assertEqual(r["dias_aviso"], tr.MAIL_AVISO_DIAS_ANTES)
+        self.assertEqual(r["por_terminar"], 1)
+        self.assertEqual(self._fila(justo)["days_left"], tr.MAIL_AVISO_DIAS_ANTES)
+
+    def test_pro_y_plus_parten_a_los_que_estan_probando(self):
+        en_pro = self._persona()
+        self._con_prueba(en_pro, arrancó_hace=2)
+        en_plus = self._persona()
+        self._con_prueba(en_plus, arrancó_hace=tr.TRIAL_PRO_DAYS + 2)
+        r = self._res()
+        self.assertEqual(r["en_pro"], 1)
+        self.assertEqual(r["en_plus"], 1)
+        self.assertEqual(r["en_pro"] + r["en_plus"], r["en_curso"])
+
+
+class LaFrecuenciaDeUso(Base):
+    """"6/7 días" son días DISTINTOS, no entradas."""
+
+    def test_entrar_seis_veces_el_mismo_dia_es_un_solo_dia(self):
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=8)
+        self._entró(uid, hace_dias=1, veces=6)
+        v = self._fila(uid)["ventanas"]["7"]
+        self.assertEqual(v["entradas"], 6)
+        self.assertEqual(v["dias_entro"], 1,
+                         "seis entradas de un martes están contando como seis días")
+
+    def test_tres_dias_distintos_son_tres(self):
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=8)
+        for d in (0, 2, 5):
+            self._entró(uid, hace_dias=d)
+        self.assertEqual(self._fila(uid)["ventanas"]["7"]["dias_entro"], 3)
 
 
 class LaPuertaDelPanel(Base):

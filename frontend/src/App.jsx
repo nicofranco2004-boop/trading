@@ -53,6 +53,7 @@ const Operations = lazy(() => import('./pages/Operations'))
 const Config = lazy(() => import('./pages/Config'))
 const Insights = lazy(() => import('./pages/Insights'))
 const Admin = lazy(() => import('./pages/Admin'))
+const AdminPruebas = lazy(() => import('./pages/AdminPruebas'))
 const Goals = lazy(() => import('./pages/Goals'))
 const Imports = lazy(() => import('./pages/Imports'))
 const IolLab = lazy(() => import('./pages/IolLab'))   // escondida: /lab/iol (PLAN_iol_sync.md)
@@ -280,6 +281,7 @@ function AppRoutes() {
       <Route path="/bienvenida" element={<FirstInsight />} />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/admin" element={<Admin />} />
+      <Route path="/admin/pruebas" element={<AdminPruebas />} />
       <Route path="/planes" element={<Planes />} />
       {/* Páginas legales — duplicadas en flow no-auth abajo para que sean
           accesibles sin login (linkeadas desde Planes.jsx antes del CTA de pago). */}
