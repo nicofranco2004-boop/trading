@@ -1341,6 +1341,41 @@ def send_market_brief_run_admin(*, res: Optional[dict] = None,
                  from_addr=_from_noreply())
 
 
+# ─── Email interno: quedó una suscripción cobrando a una cuenta BORRADA ──────
+
+def send_orphan_subscription_admin(*, sub_id: str, user_email: str, error: str) -> bool:
+    """Aviso INTERNO y urgente: se borró una cuenta pero la cancelación del cobro
+    falló. Nadie más se va a enterar: la fila de `subscriptions` se borró con la
+    cuenta, así que no queda de dónde reintentar ni a quién reclamarle. Si no se
+    cancela a mano, a esa persona le siguen saliendo los cobros —y los avisos de
+    cobro— de una cuenta que ya no existe.
+
+    SECURITY: email y error son texto externo → html.escape antes del HTML."""
+    to = (os.environ.get("ADMIN_NOTIFY_EMAIL") or "soporte@rendi.finance").strip()
+    if not to:
+        return False
+    subject = f"⚠️ Rendi · cancelá a mano la suscripción {sub_id}"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Quedó un cobro vivo</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Se borró la cuenta de <strong>{html.escape(user_email)}</strong> pero no se
+        pudo cancelar su suscripción. <strong>Hay que cancelarla a mano en el panel
+        de Rebill antes del próximo cobro.</strong>
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 8px;">
+        Suscripción: <code>{html.escape(sub_id)}</code>
+      </p>
+      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0 0 20px;">
+        Motivo de la falla: {html.escape(error[:300])}
+      </p>
+    """
+    text = (f"Se borró la cuenta de {user_email} pero la suscripción {sub_id} sigue "
+            f"viva.\nCancelala a mano en Rebill antes del próximo cobro.\n\n"
+            f"Motivo de la falla: {error[:300]}\n")
+    return _send(to, subject, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
 # ─── Email al usuario: le regalaron Plus/Pro (grant-comp del admin) ──────────
 
 def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
