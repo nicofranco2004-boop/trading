@@ -19,11 +19,11 @@
 //   · `celda(p)`→ opcional, cómo se dibuja. Puede ser una etiqueta de color o
 //                 una barrita; el dato de abajo sigue siendo el mismo.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Download, RefreshCw, ChevronLeft, ArrowUp, ArrowDown } from 'lucide-react'
 import { api } from '../utils/api'
-import { pctTxt } from '../utils/format'
+import { pctTxt, nfmt } from '../utils/format'
 import { hoyISO } from '../utils/fecha'
 import { PageSkeleton } from '../components/Skeleton'
 
@@ -81,7 +81,11 @@ export function columnas(hoy, totalDias, diasAviso) {
     },
     {
       key: 'estado', label: 'Estado', get: p => ESTADO[p.estado]?.txt || p.estado,
-      celda: p => <Tag cls={ESTADO[p.estado]?.cls}>{ESTADO[p.estado]?.txt}</Tag>,
+      // El `||` no es decorativo: si el backend agrega un estado nuevo, la
+      // celda muestra el código en vez de quedar en blanco.
+      celda: p => <Tag cls={ESTADO[p.estado]?.cls || 'bg-bg-3 text-ink-2'}>
+        {ESTADO[p.estado]?.txt || p.estado}
+      </Tag>,
     },
     {
       key: 'plan', label: 'Plan',
@@ -128,7 +132,7 @@ export function columnas(hoy, totalDias, diasAviso) {
       key: 'posiciones', label: 'Posiciones', num: true, get: p => p.tiene.posiciones,
       celda: p => (
         <span className="tabular">
-          {p.tiene.posiciones}
+          {nfmt(p.tiene.posiciones, 0)}
           {/* El punto ciego, marcado donde se ve: esas filas no guardan de qué
               día son, así que no aparecen en «Cargó 7d». Sin esta marca, quien
               carga todo a mano se lee igual que quien no hizo nada. */}
@@ -149,7 +153,7 @@ export function columnas(hoy, totalDias, diasAviso) {
       celda: p => {
         const n = p.ventanas?.['7']?.filas ?? 0
         return n
-          ? <span className="tabular text-rendi-pos font-semibold">+{n}</span>
+          ? <span className="tabular text-rendi-pos font-semibold">+{nfmt(n, 0)}</span>
           : <span className="text-ink-3">—</span>
       },
     },
@@ -174,7 +178,9 @@ export function columnas(hoy, totalDias, diasAviso) {
     },
     {
       key: 'senal', label: 'Señal', get: p => USO[p.estado_uso]?.txt || p.estado_uso,
-      celda: p => <span className={USO[p.estado_uso]?.cls}>{USO[p.estado_uso]?.txt}</span>,
+      celda: p => <span className={USO[p.estado_uso]?.cls || 'text-ink-2'}>
+        {USO[p.estado_uso]?.txt || p.estado_uso || '—'}
+      </span>,
     },
   ]
 }
@@ -255,7 +261,10 @@ function Celda({ n, k, h, alerta = false, tono = '' }) {
 }
 
 function Resumen({ r, personas, days }) {
-  if (!r) return null
+  // Sin resumen: el backend no lo manda (deploy viejo). Con resumen en cero:
+  // no hay pruebas, y de eso ya avisa la tabla — tres tarjetas diciendo "sin
+  // datos" no agregan nada.
+  if (!r || !r.total) return null
   const total = r.total || 0
   const tramos = [
     { n: r.en_pro, txt: `${r.en_pro} en Pro`, cls: 'bg-data-violet/85 text-bg-0',
@@ -371,17 +380,29 @@ export default function AdminPruebas() {
   const [q, setQ] = useState('')
   const [filtro, setFiltro] = useState('todas')
   const [orden, setOrden] = useState({ key: 'carga7', dir: 'desc' })
+  // Guard anti-carrera, el mismo patrón que el buscador de /admin: cambiar la
+  // ventana dos veces seguidas larga dos pedidos, y el de 30 días puede llegar
+  // DESPUÉS del de 180. Sin esto, la pantalla queda mostrando la respuesta
+  // vieja con el selector diciendo otra cosa — y no hay ningún error.
+  const pedido = useRef(0)
 
   useEffect(() => { cargar() }, [days])
 
   async function cargar() {
+    const mio = ++pedido.current
     setCargando(true); setError('')
     try {
-      setData(await api.get(`/admin/billing/trial-progress?days=${days}`))
+      const r = await api.get(`/admin/billing/trial-progress?days=${days}`)
+      if (mio === pedido.current) setData(r)
     } catch (e) {
-      setError(e.message)
+      if (mio !== pedido.current) return
+      // El 403 es el caso esperable —alguien que no es admin abrió el link— y
+      // "HTTP 403" no le dice nada a nadie.
+      setError(e?.status === 403
+        ? 'Esta página es sólo para administradores.'
+        : `No pudimos traer las pruebas: ${e?.message || 'error desconocido'}`)
     } finally {
-      setCargando(false)
+      if (mio === pedido.current) setCargando(false)
     }
   }
 
@@ -448,7 +469,7 @@ export default function AdminPruebas() {
       <div className="flex items-center gap-2 flex-wrap mb-3.5">
         <input
           value={q} onChange={e => setQ(e.target.value)}
-          placeholder="Buscar por nombre o mail…"
+          placeholder="Buscar por nombre o mail…" aria-label="Buscar por nombre o mail"
           className="flex-1 min-w-[200px] max-w-[330px] px-3 py-2 rounded border border-line bg-bg-1 text-[13px] text-ink-1 placeholder:text-ink-3 focus:outline-none focus:border-line-3"
         />
         {FILTROS.map(f => (
@@ -482,7 +503,7 @@ export default function AdminPruebas() {
 
       {error && (
         <div className="rounded-lg border border-rendi-neg/30 bg-rendi-neg/5 p-4 text-[13px] text-rendi-neg mb-4">
-          No pudimos traer las pruebas: {error}
+          {error}
         </div>
       )}
 
@@ -493,6 +514,9 @@ export default function AdminPruebas() {
               <tr>
                 {cols.map(c => (
                   <th key={c.key} onClick={() => ordenarPor(c.key)}
+                      aria-sort={orden.key === c.key
+                        ? (orden.dir === 'asc' ? 'ascending' : 'descending')
+                        : 'none'}
                       className={`sticky top-0 z-[2] bg-bg-2 px-2.5 py-2.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-3 whitespace-nowrap border-b border-line-2 cursor-pointer select-none hover:text-ink-2 ${c.num ? 'text-right' : 'text-left'}`}>
                     {c.label}
                     {orden.key === c.key && (
@@ -510,7 +534,15 @@ export default function AdminPruebas() {
                   {cols.map(c => (
                     <td key={c.key}
                         className={`px-2.5 py-2.5 border-b border-line/75 text-[12.5px] text-ink-1 whitespace-nowrap ${c.num ? 'text-right' : ''}`}>
-                      {c.celda ? c.celda(p) : <span className={c.num ? 'tabular' : ''}>{c.get(p) ?? '—'}</span>}
+                      {/* Los enteros pasan por `nfmt`: en Rendi el punto es el
+                          separador de miles en TODA la app, y "12500" en una
+                          tabla que al lado dice "12.500" se lee como otro
+                          número. Al CSV va el crudo — eso lo da `get`. */}
+                      {c.celda
+                        ? c.celda(p)
+                        : <span className={c.num ? 'tabular' : ''}>
+                            {c.num ? nfmt(c.get(p), 0) : (c.get(p) || '—')}
+                          </span>}
                     </td>
                   ))}
                 </tr>

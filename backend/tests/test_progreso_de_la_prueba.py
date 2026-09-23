@@ -654,6 +654,72 @@ class LaFrecuenciaDeUso(Base):
         self.assertEqual(self._fila(uid)["ventanas"]["7"]["dias_entro"], 3)
 
 
+class LosBordes(Base):
+    """Lo que pasa cuando falta un dato o el reloj miente. Nada de esto tiene
+    que reventar la pantalla entera: es un panel de admin, y el que lo abre a
+    las 2 de la mañana porque algo pasa necesita ver el resto."""
+
+    def test_sin_una_sola_prueba_devuelve_la_forma_completa(self):
+        """La pantalla lee `resumen.dias_aviso` y `ventanas` antes de tener
+        datos. Si faltan con la base vacía, se rompe en el primer render."""
+        d = tr.progreso(self.conn)
+        self.assertEqual(d["personas"], [])
+        self.assertEqual(d["ventanas"], list(tr.VENTANAS_PROGRESO))
+        self.assertEqual(d["total_dias"], tr.TRIAL_TOTAL_DAYS)
+        self.assertFalse(d["truncado"])
+        self.assertIn("hoy", d)
+
+    def test_sin_pruebas_igual_viene_el_resumen(self):
+        """⭐ La pantalla muestra "el backend no responde este panel" cuando NO
+        viene resumen. Sin este campo, una base sin pruebas se vería como un
+        deploy roto — y las dos cosas piden lo contrario: una es esperar, la
+        otra es correr a mirar Railway."""
+        r = tr.progreso(self.conn)["resumen"]
+        self.assertEqual(r["total"], 0)
+        self.assertEqual(r["en_curso"], 0)
+        self.assertIsNone(r["tasa_uso"])
+        self.assertIsNone(r["tasa_conversion"])
+        self.assertEqual(r["dias_aviso"], tr.MAIL_AVISO_DIAS_ANTES)
+
+    def test_alguien_sin_nombre_no_rompe_nada(self):
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=2)
+        p = self._fila(uid)
+        self.assertIsNone(p["name"])
+        self.assertTrue(p["email"])
+
+    def test_una_prueba_que_arranca_en_el_futuro_no_explota(self):
+        """Pasa con un reloj corrido o una fecha cargada a mano desde admin.
+        La tira queda vacía y la fila sigue existiendo."""
+        uid = self._persona()
+        self._con_prueba(uid)
+        from datetime import timedelta as _td
+        self.conn.execute(
+            "UPDATE users SET trial_started_at=? WHERE id=?",
+            ((self.ahora + _td(days=3)).isoformat(), uid))
+        self.conn.commit()
+        p = self._fila(uid)
+        self.assertEqual(p["dias"], [])
+        self.assertEqual(p["ventanas"]["7"]["filas"], 0)
+        self.assertEqual(p["dia"], 1, "el día de la prueba nunca puede ser negativo")
+
+    def test_la_ventana_de_dias_se_recorta_a_lo_permitido(self):
+        """`days` gigante no puede convertirse en una consulta sin techo."""
+        self.assertEqual(tr.progreso(self.conn, days=99999)["days"], 365)
+        self.assertEqual(tr.progreso(self.conn, days=0)["days"], 1)
+
+    def test_el_tope_de_filas_se_declara(self):
+        for _ in range(4):
+            uid = self._persona()
+            self._con_prueba(uid, arrancó_hace=2)
+        d = tr.progreso(self.conn, limit=2)
+        self.assertEqual(len(d["personas"]), 2)
+        self.assertEqual(d["total_en_ventana"], 4)
+        self.assertTrue(d["truncado"], "cortó la lista y no lo dijo")
+        # Y el resumen habla de lo que entró, no de una mezcla.
+        self.assertEqual(d["resumen"]["total"], 2)
+
+
 class LaPuertaDelPanel(Base):
     """Por el endpoint real: es admin-only y contesta lo que la pantalla lee."""
 

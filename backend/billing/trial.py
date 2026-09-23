@@ -1476,7 +1476,10 @@ def progreso(conn, days: int = 30, limit: int = 200) -> dict:
     """
     ahora = datetime.utcnow()
     hoy = ahora.date().isoformat()
-    ventana = max(1, min(int(days or 30), 365))
+    # `days or 30` convertía un 0 en 30 sin decir nada: pedir "cero días" y
+    # recibir un mes es la clase de sorpresa silenciosa que después se lee como
+    # un bug de los datos. None sigue siendo el default; el resto se recorta.
+    ventana = max(1, min(int(30 if days is None else days), 365))
     corte = (ahora - timedelta(days=ventana)).date().isoformat()
 
     salida = {
@@ -1511,6 +1514,12 @@ def progreso(conn, days: int = 30, limit: int = 200) -> dict:
     salida["truncado"] = len(filas) > max(1, limit)
     filas = filas[:max(1, limit)]
     if not filas:
+        # ⭐ El resumen VACÍO se manda igual. Si faltara, la pantalla no puede
+        # distinguir "no hay ninguna prueba todavía" de "el backend no responde
+        # este panel" —que es el mensaje que muestra cuando no viene resumen— y
+        # esas dos cosas piden acciones opuestas. Por eso la salida por ERROR de
+        # arriba sí se va sin resumen: ahí sí está roto.
+        salida["resumen"] = _resumen([], set())
         return salida
 
     ids = [int(r["id"]) for r in filas]
