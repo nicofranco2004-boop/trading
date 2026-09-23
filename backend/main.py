@@ -4391,143 +4391,268 @@ def reset_my_data(uid: int = Depends(get_effective_user)):
     return {"ok": True, "estado": "corriendo"}
 
 
+# ─── Borrado de cuenta: UN SOLO motor para los dos caminos ──────────────────
+#
+# Había DOS copias de esta cascada —el cierre self-service (`DELETE /api/me`) y
+# el del panel de admin (`DELETE /api/admin/users/{id}`)— y ya habían divergido
+# en dos cosas que importan:
+#
+#   1. La del admin NUNCA cancelaba la suscripción externa. Borrar a un usuario
+#      que pagaba lo sacaba de Rendi pero dejaba el cobro vivo en Rebill: le
+#      seguían llegando los avisos de cobro (y el cobro) de una cuenta que ya
+#      no existe.
+#   2. La del admin se llevaba puesto `credit_ledger` en vez de anonimizarlo,
+#      justo el arreglo anti-abuso que la otra copia sí tiene.
+#
+# Ambas son la misma forma de bug: un arreglo aplicado a UN call site. Se
+# unifican acá para que la próxima tabla se agregue una sola vez.
+
+# Tablas que NO se borran con la cuenta: se les saca el user_id. Son las
+# append-only sobre las que se apoya un límite o una métrica — si se borran,
+# borrar la cuenta se vuelve la forma de resetear el límite.
+_NO_BORRAR_ANONIMIZAR = ("credit_ledger",)
+
+
+def _wipe_user_rows(conn, _uid: int, esquema: dict) -> dict:
+    """Barrido dinámico de TODAS las filas de un usuario. Asume transacción abierta.
+
+    `esquema` es {tabla: columnas} leído por el caller ANTES de abrir la
+    transacción (ver `_esquema_por_tabla`)."""
+    wiped = {}
+    batch_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
+    if batch_ids:
+        _ph = ",".join("?" * len(batch_ids))
+        for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
+            conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
+    for t, cols in esquema.items():
+        if t in _NO_BORRAR_ANONIMIZAR:
+            continue                     # se anonimizan abajo, no se borran
+        if "user_id" in cols:
+            n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,)).rowcount
+            if n:
+                wiped[t] = wiped.get(t, 0) + n
+    # credit_ledger es APPEND-ONLY y se cuenta para el tope mensual de trials.
+    # El barrido dinámico de arriba se lo llevaba por tener una columna user_id,
+    # así que borrar la cuenta DEVOLVÍA un cupo: crear, activar la prueba, borrar
+    # y repetir salteaba el único freno de gasto que hay — y de paso inflaba la
+    # conversión del panel. Se desvincula del usuario en vez de borrarse: la fila
+    # sigue contando y deja de apuntar a una persona.
+    #
+    # user_id=0 y no NULL porque la columna es NOT NULL y cambiarlo en SQLite
+    # obliga a reconstruir la tabla — no vale el riesgo sobre una tabla de
+    # auditoría de billing. Ningún usuario tiene id 0 (el AUTOINCREMENT arranca
+    # en 1), así que 0 significa "sin dueño".
+    for t in _NO_BORRAR_ANONIMIZAR:
+        try:
+            n = conn.execute(
+                f"UPDATE {t} SET user_id=0 WHERE user_id=?", (_uid,)).rowcount
+            if n:
+                wiped[f"{t} (anonimizadas)"] = n
+        except Exception as ex:
+            log.warning("no pudimos anonimizar %s uid=%s: %s", t, _uid, ex)
+    wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
+    return wiped
+
+
+def _esquema_por_tabla(conn) -> dict:
+    """{tabla: set(columnas)} de toda la base.
+
+    Se lee UNA vez por borrado y, sobre todo, ANTES de abrir la transacción.
+    Antes se recorría el esquema entero (un PRAGMA por tabla, ~60 tablas) DENTRO
+    de la transacción de borrado, y otra vez por cada cliente shadow: un asesor
+    con 30 clientes hacía ~1.800 round-trips con el lock de escritura AGARRADO.
+    En SQLite el lock de escritura es uno solo para toda la base, así que ese
+    tiempo es tiempo en que cualquier otra escritura de la app se choca contra
+    `database is locked`. Leerlo antes achica la ventana de bloqueo a los DELETE.
+
+    A propósito NO se cachea entre borrados: el barrido dinámico es correcto
+    justamente porque ve TODAS las tablas, incluida cualquiera que se cree
+    después. Un caché de proceso convertiría una tabla nueva en datos que
+    sobreviven al borrado, en silencio. El ahorro serían microsegundos."""
+    return {r["name"]: {c["name"] for c in conn.execute(
+                f"PRAGMA table_info({r['name']})").fetchall()}
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'").fetchall()}
+
+
+def _borrar_usuario_y_datos(conn, uid: int) -> dict:
+    """Borra al usuario `uid` y TODOS sus datos, atómico. NO toca nada externo.
+
+    Si el usuario es un ASESOR, también sus clientes shadow (managed_by=uid):
+    sin dueño no tienen login, ni email real, ni camino de borrado — quedarían
+    como PII financiera huérfana e imposible de recolectar (derecho al olvido).
+
+    Es IDEMPOTENTE y atómica (`with conn:`): si el commit falla por lock, no se
+    aplicó nada y re-correrla no duplica. Eso es lo que la hace apta para
+    `_run_with_lock_retry`."""
+    esquema = _esquema_por_tabla(conn)   # ANTES de abrir la transacción (ver docstring)
+    with conn:
+        deleted = {}
+        shadow_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
+        # Los vínculos van PRIMERO: advisor_clients tiene FK a users(id) y
+        # bloquearía el DELETE del shadow (FOREIGN KEY constraint).
+        n_links_pre = conn.execute(
+            "DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
+            (uid, uid)).rowcount
+        for sid in shadow_ids:
+            conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
+                         (sid, sid))
+            for t, n in _wipe_user_rows(conn, sid, esquema).items():
+                deleted[f"shadow.{t}"] = deleted.get(f"shadow.{t}", 0) + n
+        if n_links_pre:
+            deleted["advisor_clients"] = n_links_pre
+        # Artefactos del plan asesor SIN columna user_id (audit: quedaban
+        # huérfanos sirviendo data borrada): informes públicos congelados,
+        # perfil/marca del asesor, e items de lotes donde este usuario es
+        # el CLIENTE (lotes de OTRO asesor).
+        for _sid in [uid] + shadow_ids:
+            _n = conn.execute(
+                "DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
+                (_sid, _sid)).rowcount
+            if _n:
+                deleted["advisor_reports"] = deleted.get("advisor_reports", 0) + _n
+            conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
+            # Tandas de importación del asesor: el nombre del cliente no
+            # sobrevive a su borrado (queda "Cliente eliminado").
+            import advisor_tandas as _at
+            _at.olvidar_cliente(conn, _sid)
+            # Pedidos de acceso: no tienen columna user_id, así que el barrido
+            # genérico no los toca. Un pendiente hacia una cuenta borrada es un
+            # link vivo apuntando a la nada.
+            conn.execute(
+                """DELETE FROM advisor_link_requests
+                   WHERE advisor_uid=? OR client_uid=? OR shadow_uid=?""",
+                (_sid, _sid, _sid))
+        conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (uid,))
+        # Estas tablas usan advisor_uid, así que el barrido genérico por user_id
+        # no las toca: sin esto sobrevivían los nombres privados de los grupos,
+        # sus reglas y los ids de los ex-clientes excluidos.
+        for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
+                   "advisor_alert_events", "advisor_brief_log",
+                   "advisor_import_tandas"):
+            conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (uid,))
+        # Lotes de operación grupal del asesor (sin columna user_id)
+        adv_batches = [r["id"] for r in conn.execute(
+            "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (uid,)).fetchall()]
+        if adv_batches:
+            _ph = ",".join("?" * len(adv_batches))
+            conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
+                         tuple(adv_batches))
+            conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
+                         tuple(adv_batches))
+        for t, n in _wipe_user_rows(conn, uid, esquema).items():
+            deleted[t] = n
+    return deleted
+
+
+def _suscripcion_externa_viva(conn, uid: int) -> Optional[str]:
+    """Id de la suscripción que todavía cobra, o None. Se lee ANTES del borrado:
+    después, la fila de `subscriptions` ya no existe y el cobro queda huérfano
+    sin que quede rastro de a quién cancelarle."""
+    try:
+        sub = conn.execute(
+            "SELECT mp_subscription_id FROM subscriptions WHERE user_id=? AND status='authorized' "
+            "ORDER BY created_at DESC LIMIT 1", (uid,)).fetchone()
+        return (sub["mp_subscription_id"] or None) if sub else None
+    except Exception as ex:
+        log.warning("no pudimos leer la suscripción de uid=%s: %s", uid, ex)
+        return None
+
+
+def _cancelar_suscripcion_externa(sub_id: str, uid: int, email: Optional[str]) -> bool:
+    """Cancela el cobro recurrente en Rebill. True si quedó cancelado.
+
+    Si falla NO se reintenta sola y NO se puede reconstruir después (la fila de
+    `subscriptions` ya no está), así que el aviso al admin no es decorativo: es
+    el único camino que queda para que alguien la cancele a mano antes del
+    próximo cobro. Un cobro a una cuenta borrada es plata cobrada de más Y un
+    mail de Rendi llegándole a alguien que se fue."""
+    try:
+        from billing import rebill
+        rebill.cancel_subscription(sub_id)
+        log.info("suscripción %s cancelada al borrar uid=%s", sub_id, uid)
+        return True
+    except Exception as ex:
+        log.error("CANCELACIÓN FALLÓ al borrar uid=%s sub=%s: %s — "
+                  "la suscripción sigue VIVA y hay que cancelarla a mano en Rebill",
+                  uid, sub_id, ex)
+        try:
+            from billing import emails as _emails
+            _emails.send_orphan_subscription_admin(
+                sub_id=sub_id, user_email=email or f"uid {uid}", error=str(ex))
+        except Exception as ex2:
+            log.error("tampoco pudimos avisar del huérfano %s: %s", sub_id, ex2)
+        return False
+
+
+def _borrar_cuenta(conn, uid: int) -> dict:
+    """Los dos endpoints de borrado pasan por acá.
+
+    ORDEN, y es a propósito:
+      1. leer la suscripción (todavía existe la fila),
+      2. BORRAR (reintentando si la base está trabada),
+      3. recién entonces cancelar el cobro externo.
+
+    Antes se cancelaba primero. Con ese orden, un borrado que fallaba dejaba al
+    usuario adentro de Rendi pero sin su plan pago: perdía Pro sin pedirlo. Con
+    este orden, un borrado que falla no toca nada y se puede reintentar limpio.
+    La cancelación queda FUERA del reintento porque es un efecto externo: si el
+    reintento la incluyera, un lock transitorio dispararía dos PATCH a Rebill."""
+    sub_id = _suscripcion_externa_viva(conn, uid)
+    row = conn.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()
+    email = row["email"] if row else None
+
+    # attempts=3 → hasta ~46s (cada intento ya espera adentro el busy_timeout de
+    # 15s, más 0,5s y 1s de backoff). Es un borrado manual y raro: vale la pena
+    # esperar a que el import/cron que tiene el lock lo suelte, en vez de tirarle
+    # "database is locked" a quien apretó el botón.
+    deleted = _run_with_lock_retry(
+        lambda: _borrar_usuario_y_datos(conn, uid), attempts=3, base_delay=0.5)
+
+    if sub_id:
+        deleted["suscripcion_cancelada"] = _cancelar_suscripcion_externa(sub_id, uid, email)
+    log.info("cuenta borrada uid=%s deleted=%s", uid, deleted)
+    return deleted
+
+
+def _http_error_borrado(e: Exception, que: str) -> HTTPException:
+    """Traduce la excepción a algo que se pueda leer y accionar.
+
+    `database is locked` no es un error del borrado: es que otra escritura tiene
+    agarrada la base (SQLite deja escribir de a uno). Se contesta 503 + "probá de
+    nuevo", que es exactamente lo que hay que hacer, en vez de un 500 con la
+    frase cruda de SQLite."""
+    if dberrors.es_base_trabada(e):
+        return HTTPException(
+            status_code=503,
+            detail=("La base está ocupada en este momento (hay otra operación escribiendo). "
+                    "No se borró nada. Probá de nuevo en un minuto."))
+    return HTTPException(status_code=500, detail=f"{que}: {type(e).__name__}: {e}")
+
+
 @app.delete("/api/me")
 def delete_my_account(response: Response, uid: int = Depends(get_effective_user)):
-    """Cierre de cuenta self-service (irreversible). Cancela la suscripción externa
-    (best-effort, para que no lo sigan cobrando) y BORRA al usuario + TODOS sus datos
-    de la DB: brokers, posiciones, operaciones, imports, snapshots, config, monthly,
-    suscripción/billing, watchlist, etc. Después de esto el usuario desaparece de
-    todos lados de Rendi — incluidos los paneles de admin de reengagement/regalo, que
-    leen de `users`. Dinámico (borra de toda tabla con columna user_id → cubre tablas
-    futuras) + las hijas de import (por batch_id). Gate: el propio usuario logueado."""
+    """Cierre de cuenta self-service (irreversible). BORRA al usuario + TODOS sus
+    datos de la DB (brokers, posiciones, operaciones, imports, snapshots, config,
+    monthly, suscripción/billing, watchlist, etc.) y cancela el cobro externo
+    para que no lo sigan cobrando. Después de esto el usuario desaparece de todos
+    lados de Rendi — incluidos los paneles de admin de reengagement/regalo y
+    TODOS los motores de mail, que resuelven el destinatario leyendo `users` en
+    el momento de enviar. Gate: el propio usuario logueado.
+    La cascada vive en `_borrar_cuenta` y la comparte con el panel de admin."""
     conn = get_db()
     try:
-        # 1) Cancelar la suscripción externa (Rebill) — best-effort, no bloquea el borrado.
-        try:
-            from billing import rebill
-            sub = conn.execute(
-                "SELECT mp_subscription_id FROM subscriptions WHERE user_id=? AND status='authorized' "
-                "ORDER BY created_at DESC LIMIT 1", (uid,)).fetchone()
-            if sub and sub["mp_subscription_id"]:
-                rebill.cancel_subscription(sub["mp_subscription_id"])
-        except Exception as ex:
-            log.warning("delete_my_account: cancel Rebill falló uid=%s: %s (sigo con el borrado)", uid, ex)
-
-        # 2) Borrar TODOS los datos del usuario, atómico. Si el usuario es un
-        # ASESOR, también sus clientes shadow (managed_by=uid): sin dueño no
-        # tienen login, ni email real, ni camino de borrado — quedarían como
-        # PII financiera huérfana e imposible de recolectar (derecho al olvido).
-        # Tablas que NO se borran con la cuenta: se les saca el user_id. Son las
-        # append-only sobre las que se apoya un límite o una métrica — si se
-        # borran, borrar la cuenta se vuelve la forma de resetear el límite.
-        _NO_BORRAR_ANONIMIZAR = ("credit_ledger",)
-
-        def _wipe_user_rows(_uid):
-            wiped = {}
-            batch_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
-            if batch_ids:
-                _ph = ",".join("?" * len(batch_ids))
-                for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                    conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
-            tables = [r["name"] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-            for t in tables:
-                if t in _NO_BORRAR_ANONIMIZAR:
-                    continue                     # se anonimizan abajo, no se borran
-                cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
-                if "user_id" in cols:
-                    n = conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,)).rowcount
-                    if n:
-                        wiped[t] = wiped.get(t, 0) + n
-            # credit_ledger es APPEND-ONLY y se cuenta para el tope mensual de
-            # trials. El barrido dinámico de arriba se lo llevaba por tener una
-            # columna user_id, así que borrar la cuenta DEVOLVÍA un cupo: crear,
-            # activar la prueba, borrar y repetir salteaba el único freno de
-            # gasto que hay — y de paso inflaba la conversión del panel. Se
-            # desvincula del usuario en vez de borrarse: la fila sigue contando y
-            # deja de apuntar a una persona.
-            #
-            # user_id=0 y no NULL porque la columna es NOT NULL y cambiarlo en
-            # SQLite obliga a reconstruir la tabla — no vale el riesgo sobre una
-            # tabla de auditoría de billing. Ningún usuario tiene id 0 (el
-            # AUTOINCREMENT arranca en 1), así que 0 significa "sin dueño".
-            for t in _NO_BORRAR_ANONIMIZAR:
-                try:
-                    n = conn.execute(
-                        f"UPDATE {t} SET user_id=0 WHERE user_id=?", (_uid,)).rowcount
-                    if n:
-                        wiped[f"{t} (anonimizadas)"] = n
-                except Exception as ex:
-                    log.warning("no pudimos anonimizar %s uid=%s: %s", t, _uid, ex)
-            wiped["users"] = conn.execute("DELETE FROM users WHERE id=?", (_uid,)).rowcount
-            return wiped
-
-        with conn:
-            deleted = {}
-            shadow_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM users WHERE managed_by=?", (uid,)).fetchall()]
-            # Los vínculos van PRIMERO: advisor_clients tiene FK a users(id) y
-            # bloquearía el DELETE del shadow (FOREIGN KEY constraint).
-            n_links_pre = conn.execute(
-                "DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
-                (uid, uid)).rowcount
-            for sid in shadow_ids:
-                conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
-                             (sid, sid))
-                for t, n in _wipe_user_rows(sid).items():
-                    deleted[f"shadow.{t}"] = deleted.get(f"shadow.{t}", 0) + n
-            if n_links_pre:
-                deleted["advisor_clients"] = n_links_pre
-            # Artefactos del plan asesor SIN columna user_id (audit: quedaban
-            # huérfanos sirviendo data borrada): informes públicos congelados,
-            # perfil/marca del asesor, e items de lotes donde este usuario es
-            # el CLIENTE (lotes de OTRO asesor).
-            for _sid in [uid] + shadow_ids:
-                _n = conn.execute(
-                    "DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
-                    (_sid, _sid)).rowcount
-                if _n:
-                    deleted["advisor_reports"] = deleted.get("advisor_reports", 0) + _n
-                conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
-                # Tandas de importación del asesor: el nombre del cliente no
-                # sobrevive a su borrado (queda "Cliente eliminado").
-                import advisor_tandas as _at
-                _at.olvidar_cliente(conn, _sid)
-                # Pedidos de acceso: no tienen columna user_id, así que el
-                # barrido genérico no los toca. Un pendiente hacia una cuenta
-                # borrada es un link vivo apuntando a la nada.
-                conn.execute(
-                    """DELETE FROM advisor_link_requests
-                       WHERE advisor_uid=? OR client_uid=? OR shadow_uid=?""",
-                    (_sid, _sid, _sid))
-            conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (uid,))
-            # Estas tablas usan advisor_uid, así que el barrido genérico por
-            # user_id no las toca: sin esto sobrevivían los nombres privados de
-            # los grupos, sus reglas y los ids de los ex-clientes excluidos.
-            for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
-                       "advisor_alert_events", "advisor_brief_log",
-                       "advisor_import_tandas"):
-                conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (uid,))
-            # Lotes de operación grupal del asesor (sin columna user_id)
-            adv_batches = [r["id"] for r in conn.execute(
-                "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (uid,)).fetchall()]
-            if adv_batches:
-                _ph = ",".join("?" * len(adv_batches))
-                conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
-                             tuple(adv_batches))
-                conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
-                             tuple(adv_batches))
-            for t, n in _wipe_user_rows(uid).items():
-                deleted[t] = n
-        log.info("delete_my_account uid=%s deleted=%s", uid, deleted)
+        deleted = _borrar_cuenta(conn, uid)
         clear_auth_cookie(response)   # invalida la sesión server-side
         return {"ok": True, "deleted": deleted}
     except HTTPException:
         raise
     except Exception as e:
         log.exception("delete_my_account FAILED uid=%s", uid)
-        raise HTTPException(status_code=500, detail=f"Error al eliminar la cuenta: {type(e).__name__}: {e}")
+        raise _http_error_borrado(e, "Error al eliminar la cuenta")
     finally:
         conn.close()
 
@@ -22281,7 +22406,14 @@ def admin_wipe_broker_data(broker: str, uid: int = Depends(get_admin_user)):
 
 @app.delete("/api/admin/users/{user_id}")
 def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
-    """Borra un usuario y todos sus datos. No permite borrarse a sí mismo ni a otros admins."""
+    """(Admin) Borra un usuario y todos sus datos. No permite borrarse a sí mismo
+    ni a otros admins.
+
+    Usa EXACTAMENTE la misma cascada que el cierre self-service (`_borrar_cuenta`).
+    Tenía su propia copia y había divergido en dos cosas: no cancelaba el cobro
+    externo (el usuario desaparecía de Rendi pero Rebill le seguía cobrando y
+    avisándole) y borraba `credit_ledger` en vez de anonimizarlo (borrar la cuenta
+    devolvía el cupo de prueba gratis)."""
     if user_id == uid:
         raise HTTPException(400, "No podés borrar tu propio usuario admin")
     with db_abierta() as conn:
@@ -22291,58 +22423,13 @@ def admin_delete_user(user_id: int, uid: int = Depends(get_admin_user)):
         if target["is_admin"]:
             raise HTTPException(403, "No se puede borrar otro admin desde la API")
         try:
-            # Cascada COMPLETA (audit: la lista hardcodeada de 6 tablas fallaba por
-            # FOREIGN KEY con cualquier usuario del plan asesor — advisor_clients /
-            # batches referencian users — y no había camino de soporte para purgar
-            # un shadow revocado). Mismo barrido dinámico que delete_my_account.
-            def _wipe(_uid):
-                batch_ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM import_batches WHERE user_id=?", (_uid,)).fetchall()]
-                if batch_ids:
-                    _ph = ",".join("?" * len(batch_ids))
-                    for t in ("import_normalized_tx", "import_op_links", "import_raw_rows"):
-                        conn.execute(f"DELETE FROM {t} WHERE batch_id IN ({_ph})", tuple(batch_ids))
-                for t in [r["name"] for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]:
-                    cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
-                    if "user_id" in cols:
-                        conn.execute(f"DELETE FROM {t} WHERE user_id=?", (_uid,))
-                conn.execute("DELETE FROM users WHERE id=?", (_uid,))
-            with conn:
-                shadow_ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM users WHERE managed_by=?", (user_id,)).fetchall()]
-                conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=? OR client_uid=?",
-                             (user_id, user_id))
-                for _sid in [user_id] + shadow_ids:
-                    conn.execute("DELETE FROM advisor_reports WHERE advisor_uid=? OR client_uid=?",
-                                 (_sid, _sid))
-                    conn.execute("DELETE FROM advisor_op_batch_items WHERE client_uid=?", (_sid,))
-                    import advisor_tandas as _at
-                    _at.olvidar_cliente(conn, _sid)
-                    conn.execute("""DELETE FROM advisor_link_requests
-                                    WHERE advisor_uid=? OR client_uid=? OR shadow_uid=?""",
-                                 (_sid, _sid, _sid))
-                conn.execute("DELETE FROM advisor_profile WHERE advisor_uid=?", (user_id,))
-                for _t in ("advisor_groups", "advisor_alerts", "advisor_alert_state",
-                           "advisor_alert_events", "advisor_brief_log",
-                           "advisor_import_tandas"):
-                    conn.execute(f"DELETE FROM {_t} WHERE advisor_uid=?", (user_id,))
-                adv_batches = [r["id"] for r in conn.execute(
-                    "SELECT id FROM advisor_op_batches WHERE advisor_uid=?", (user_id,)).fetchall()]
-                if adv_batches:
-                    _ph = ",".join("?" * len(adv_batches))
-                    conn.execute(f"DELETE FROM advisor_op_batch_items WHERE batch_id IN ({_ph})",
-                                 tuple(adv_batches))
-                    conn.execute(f"DELETE FROM advisor_op_batches WHERE id IN ({_ph})",
-                                 tuple(adv_batches))
-                for _sid in shadow_ids:
-                    conn.execute("DELETE FROM advisor_clients WHERE client_uid=? OR advisor_uid=?",
-                                 (_sid, _sid))
-                    _wipe(_sid)
-                _wipe(user_id)
-            return {"ok": True}
+            deleted = _borrar_cuenta(conn, user_id)
+            return {"ok": True, "deleted": deleted}
+        except HTTPException:
+            raise
         except Exception as ex:
-            raise HTTPException(500, f"Error al borrar: {ex}")
+            log.exception("admin_delete_user FAILED user_id=%s", user_id)
+            raise _http_error_borrado(ex, "Error al borrar")
 
 
 # ─── AI (Claude) ────────────────────────────────────────────────────────────
