@@ -967,15 +967,48 @@ def pro_upsell_status(conn, user_id: int) -> dict:
         except (TypeError, ValueError):
             fin = None
         if fin and fin > ahora:
-            restan = (fin - ahora).total_seconds() / 86400.0
             out["active"] = True
             out["ends_at"] = str(hasta)
-            # Mismo criterio de techo que status(): la barra de la app y
-            # cualquier otro lector tienen que decir el mismo número.
-            out["days_left"] = max(0, int(restan) + (1 if restan % 1 else 0))
+            # Por la definición única: la barra de la app y cualquier otro
+            # lector tienen que decir el mismo número.
+            out["days_left"] = dias_restantes(fin, ahora)
     if not out["active"]:
         out["can_start"] = bool(pro_upsell_eligibility(conn, user_id).get("can_start"))
     return out
+
+
+def prueba_viva(conn, row, ahora=None):
+    """¿Esta persona está PROBANDO ahora mismo? Devuelve cuándo se le termina,
+    o None si no.
+
+    Es el corte que usa la app para decidir si le muestra la barra de "estás
+    probando Rendi Pro", y son tres preguntas, no una:
+
+      1. ¿el crédito que tiene vigente es el de la prueba? (`credit_is_trial`)
+         — el que compró un plan tiene crédito, pero no es el de la prueba;
+      2. ¿no se venció todavía?
+      3. ¿no pagó? — el que activó la prueba y a los dos días pagó conserva su
+         `trial_ends_at` futuro, así que por fecha sigue "en curso" cuando ya
+         es un cliente. Contarlo como que está probando mezcla a los que
+         todavía no decidieron con los que ya decidieron que sí.
+
+    Vive acá y no adentro de activos() porque el panel de seguimiento tiene que
+    hacerse la misma pregunta: con el corte escrito dos veces, alcanza con que
+    alguien toque uno para que los dos paneles cuenten poblaciones distintas y
+    nada avise.
+    """
+    ahora = ahora or datetime.utcnow()
+    if not credit_is_trial(row["credit_active_until"], row["trial_ends_at"]):
+        return None
+    try:
+        fin = datetime.fromisoformat(str(row["trial_ends_at"]).replace("Z", ""))
+    except (TypeError, ValueError):
+        return None
+    if fin <= ahora:
+        return None
+    if _has_paid_sub(conn, row["id"]):
+        return None
+    return fin
 
 
 def activos(conn, limit: int = 200) -> dict:
@@ -1011,18 +1044,10 @@ def activos(conn, limit: int = 200) -> dict:
         return salida
 
     for r in filas:
-        if not credit_is_trial(r["credit_active_until"], r["trial_ends_at"]):
-            continue
-        try:
-            fin = datetime.fromisoformat(str(r["trial_ends_at"]).replace("Z", ""))
-        except (TypeError, ValueError):
-            continue
-        if fin <= ahora:
-            continue
-        if _has_paid_sub(conn, r["id"]):
+        fin = prueba_viva(conn, r, ahora)
+        if not fin:
             continue
         etapa = stage_by_calendar(r["trial_started_at"], ahora)
-        restan = (fin - ahora).total_seconds() / 86400.0
         salida["total"] += 1
         salida["en_plus" if etapa == "plus" else "en_pro"] += 1
         if len(salida["usuarios"]) < max(1, limit):
@@ -1031,10 +1056,10 @@ def activos(conn, limit: int = 200) -> dict:
                 "email": r["email"],
                 "name": r["name"],
                 "stage": etapa,
-                # Días ENTEROS que le quedan, con el mismo criterio de techo que
-                # usa status() para que la barra de la app y el panel no digan
-                # números distintos sobre la misma persona.
-                "days_left": max(0, int(restan) + (1 if restan % 1 else 0)),
+                # Por la definición única (`dias_restantes`), para que la
+                # barra de la app, el mail y este panel no digan números
+                # distintos sobre la misma persona el mismo día.
+                "days_left": dias_restantes(fin, ahora),
                 "ends_at": r["trial_ends_at"],
             })
     return salida
@@ -1097,13 +1122,12 @@ def pro_upsell_stats(conn, days: int = 90, limit: int = 200) -> dict:
             continue
         if fin <= ahora:
             continue
-        restan = (fin - ahora).total_seconds() / 86400.0
         out["activos"] += 1
         if len(out["usuarios"]) < max(1, limit):
             out["usuarios"].append({
                 "id": r["id"], "email": r["email"], "name": r["name"],
                 "plan": (r["credit_anchor_plan"] or "plus"),
-                "days_left": max(0, int(restan) + (1 if restan % 1 else 0)),
+                "days_left": dias_restantes(fin, ahora),
                 "ends_at": r["pro_trial_until"],
             })
     out["terminados"] = max(0, out["activaron"] - out["activos"])
@@ -1267,3 +1291,342 @@ def funnel(conn, days: int = 90) -> dict:
         "monthly_cap": monthly_cap(),
         "activados_este_mes": _activations_this_month(conn),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SEGUIMIENTO: ¿se nota el progreso de cada prueba?
+# ═══════════════════════════════════════════════════════════════════════════
+# El embudo de arriba cuenta cabezas: cuántos activaron, cuántos importaron,
+# cuántos pagaron. Contesta "¿la prueba funciona?" pero no contesta "¿ESTA
+# persona está enganchando?" — que es la única pregunta que se puede mirar
+# MIENTRAS la prueba corre, o sea cuando todavía se puede hacer algo.
+#
+# ⚠️ DE DÓNDE SALE CADA NÚMERO, porque no todo lo que se carga queda fechado:
+#
+#  · Lo que entra por IMPORTACIÓN sí. `import_batches` guarda cuándo se
+#    confirmó el archivo y `import_op_links` ata cada posición y cada operación
+#    creada a ese archivo. Es exacto, y —esto es lo que importa— sobrevive a
+#    los recálculos: el rebuild borra y rehace las ventas, pero las vuelve a
+#    atar al MISMO lote, cuya fecha nadie toca. Si en cambio fechásemos las
+#    filas con una columna propia, cualquier backfill administrativo
+#    restamparía media base y el panel mostraría un pico de actividad que no
+#    pasó nunca.
+#  · Lo cargado A MANO no. `positions` y `operations` no tienen columna de
+#    "cuándo se creó esta fila", y ponérsela es tocar los 330 lugares que
+#    insertan ahí. Así que de lo cargado a mano se muestra el TOTAL, y nunca
+#    repartido por día: fechar esas filas sería inventar.
+#  · La IA se guarda POR DÍA (`ai_usage_daily` no tiene hora), así que la
+#    ventana de 1 día es el día de HOY en UTC, no las últimas 24 horas.
+#
+# Las ventanas son días de calendario en UTC terminando hoy, y se calculan
+# sobre el MISMO array de días que dibuja la tira de la pantalla. Una sola
+# fuente para las dos vistas: el número de la tabla y el dibujo no pueden
+# discrepar.
+
+# Cuántos días mira cada ventana. Cambiar esto cambia la tabla Y la pantalla:
+# el frontend las lee de la respuesta, no las tiene escritas.
+VENTANAS_PROGRESO = (1, 3, 7, 15)
+
+# Tope de días que devuelve la tira por persona. La prueba dura
+# TRIAL_TOTAL_DAYS; el resto es para ver qué hizo DESPUÉS del vencimiento.
+_TOPE_TIRA = 45
+
+
+def _dia_de(valor):
+    """'2026-09-10', salga como salga el timestamp guardado.
+
+    Conviven dos formatos: `datetime.utcnow().isoformat()` escribe con 'T' y
+    microsegundos, y los DEFAULT de la base escriben con espacio y al segundo.
+    Compararlos crudos deja afuera justo lo del mismo día."""
+    if not valor:
+        return None
+    return str(valor).replace("T", " ")[:10]
+
+
+def _sql_dia(col: str) -> str:
+    """La misma normalización, del lado del SQL."""
+    return f"substr(replace({col},'T',' '),1,10)"
+
+
+def _rango_de_dias(desde: str, hasta: str) -> list:
+    """Todos los días entre dos fechas, las dos incluidas.
+
+    Los días SIN actividad tienen que existir igual: el hueco es justamente lo
+    que se quiere ver."""
+    try:
+        d = datetime.fromisoformat(str(desde)).date()
+        fin = datetime.fromisoformat(str(hasta)).date()
+    except (TypeError, ValueError):
+        return []
+    dias = []
+    while d <= fin and len(dias) < _TOPE_TIRA:
+        dias.append(d.isoformat())
+        d += timedelta(days=1)
+    return dias
+
+
+def _dia_vacio() -> dict:
+    return {"filas": 0, "archivos": 0, "ia": 0, "entradas": 0}
+
+
+def _sumar_dias(dias: list) -> dict:
+    total = _dia_vacio()
+    for d in dias:
+        for k in total:
+            total[k] += int(d.get(k) or 0)
+    return total
+
+
+def _hubo_algo(dias: list) -> bool:
+    return any(d["filas"] or d["archivos"] or d["ia"] or d["entradas"]
+               for d in dias)
+
+
+def _estado_de_uso(dias: list, tiene_datos: bool) -> str:
+    """Una palabra que resume la tira, para no tener que leer 20 celdas.
+
+      · `sin_datos` — nunca entró nada. La prueba está corriendo sobre una app
+        vacía, así que no está probando nada: es el peor caso y el más barato
+        de arreglar, porque el problema es el onboarding y no el precio.
+      · `avanzando` — hubo algo en los últimos 3 días.
+      · `tibio`     — hubo algo en los últimos 7, pero nada en los últimos 3.
+      · `frenado`   — cargó alguna vez y hace más de una semana que no aparece.
+    """
+    if not tiene_datos:
+        return "sin_datos"
+    if _hubo_algo(dias[-3:]):
+        return "avanzando"
+    if _hubo_algo(dias[-7:]):
+        return "tibio"
+    return "frenado"
+
+
+def _orden_fecha(dia) -> int:
+    """'2026-09-10' → 20260910, para ordenar sin parsear."""
+    try:
+        return int(str(dia).replace("-", "")[:8])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _brokers_de(conn, uid: int) -> int:
+    """Cuántas CUENTAS de broker tiene.
+
+    Va por `count_broker_accounts` y no por un COUNT(*) a `brokers`: el
+    sub-broker en dólares es una fila más pero NO es una cuenta más, y el panel
+    tiene que decir el mismo número que la persona ve en su Cartera."""
+    try:
+        from ai.plan import count_broker_accounts
+        return int(count_broker_accounts(conn, uid) or 0)
+    except Exception as ex:
+        log.warning("progreso: brokers de uid=%s falló: %s", uid, ex)
+        return 0
+
+
+def progreso(conn, days: int = 30, limit: int = 120) -> dict:
+    """Persona por persona: cuándo arrancó, cuánto le queda y si avanza.
+
+    `days` cuenta hacia atrás desde hoy: entran las pruebas vivas y las que
+    terminaron hace menos de eso. Ver a quién se le venció sin pagar es la
+    mitad del valor del panel — es la lista de a quién preguntarle por qué.
+    """
+    ahora = datetime.utcnow()
+    hoy = ahora.date().isoformat()
+    ventana = max(1, min(int(days or 30), 365))
+    corte = (ahora - timedelta(days=ventana)).date().isoformat()
+
+    salida = {
+        "days": ventana,
+        "hoy": hoy,
+        "ventanas": list(VENTANAS_PROGRESO),
+        "total_dias": TRIAL_TOTAL_DAYS,
+        "dias_pro": TRIAL_PRO_DAYS,
+        "activas": 0,
+        "personas": [],
+    }
+
+    try:
+        filas = conn.execute(
+            f"""SELECT id, email, name, trial_started_at, trial_ends_at,
+                       credit_active_until
+                  FROM users
+                 WHERE trial_started_at IS NOT NULL
+                   AND trial_ends_at IS NOT NULL
+                   AND {_sql_dia('trial_ends_at')} >= ?
+                 ORDER BY trial_ends_at DESC""", (corte,)).fetchall()
+    except Exception as ex:
+        log.warning("progreso: no se pudo leer la cohorte: %s", ex)
+        return salida
+
+    filas = filas[:max(1, limit)]
+    if not filas:
+        return salida
+
+    ids = [int(r["id"]) for r in filas]
+    ph = ",".join("?" for _ in ids)
+    # El día más viejo que hay que traer: el arranque de la prueba más antigua
+    # de la tanda. Pedir desde más acá deja la tira con agujeros al principio.
+    primer_dia = min((_dia_de(r["trial_started_at"]) or hoy) for r in filas)
+
+    # ── Actividad por persona y por día ─────────────────────────────────────
+    # Un diccionario (uid, día) → contadores. Tres consultas para TODA la
+    # tanda, no tres por persona: con 40 personas serían 120 consultas.
+    act = {}
+
+    def _celda(uid, dia):
+        return act.setdefault((int(uid), dia), _dia_vacio())
+
+    _DIA_LOTE = _sql_dia("COALESCE(b.confirmed_at, b.created_at)")
+    try:
+        # LEFT JOIN a propósito: un archivo que no creó ninguna fila (una foto
+        # de tenencia que sólo confirma lo que ya estaba) es actividad igual —
+        # la persona entró e hizo algo. Con JOIN normal desaparecía.
+        for r in conn.execute(
+            f"""SELECT b.user_id uid, {_DIA_LOTE} d,
+                       COUNT(DISTINCT b.id) archivos,
+                       COUNT(CASE WHEN l.position_id IS NOT NULL
+                                    OR l.operation_id IS NOT NULL
+                                  THEN 1 END) filas
+                  FROM import_batches b
+                  LEFT JOIN import_op_links l ON l.batch_id = b.id
+                 WHERE b.user_id IN ({ph})
+                   AND b.status = 'confirmed'
+                   AND {_DIA_LOTE} >= ?
+                 GROUP BY b.user_id, {_DIA_LOTE}""", (*ids, primer_dia)):
+            c = _celda(r["uid"], r["d"])
+            c["archivos"] += int(r["archivos"] or 0)
+            c["filas"] += int(r["filas"] or 0)
+    except Exception as ex:
+        log.warning("progreso: importaciones por día falló: %s", ex)
+
+    try:
+        for r in conn.execute(
+            f"""SELECT user_id uid, date d,
+                       COALESCE(analyses_count,0) + COALESCE(chat_count,0) ia
+                  FROM ai_usage_daily
+                 WHERE user_id IN ({ph}) AND date >= ?""", (*ids, primer_dia)):
+            _celda(r["uid"], r["d"])["ia"] += int(r["ia"] or 0)
+    except Exception as ex:
+        log.warning("progreso: uso de IA por día falló: %s", ex)
+
+    try:
+        for r in conn.execute(
+            f"""SELECT user_id uid, {_sql_dia('created_at')} d, COUNT(*) n
+                  FROM login_history
+                 WHERE user_id IN ({ph}) AND {_sql_dia('created_at')} >= ?
+                 GROUP BY user_id, {_sql_dia('created_at')}""",
+                (*ids, primer_dia)):
+            _celda(r["uid"], r["d"])["entradas"] += int(r["n"] or 0)
+    except Exception as ex:
+        log.warning("progreso: entradas por día falló: %s", ex)
+
+    # ── Lo que hay cargado HOY: es una foto, no una serie ────────────────────
+    def _conteo(nombre, sql, params=()) -> dict:
+        out = {}
+        try:
+            for r in conn.execute(sql, params):
+                out[int(r["uid"])] = int(r["n"] or 0)
+        except Exception as ex:
+            log.warning("progreso: conteo de %s falló: %s", nombre, ex)
+        return out
+
+    # `is_cash=0`: las filas de efectivo son saldo, no posiciones cargadas.
+    posiciones = _conteo("posiciones",
+        f"""SELECT user_id uid, COUNT(*) n FROM positions
+             WHERE user_id IN ({ph}) AND COALESCE(is_cash,0) = 0
+             GROUP BY user_id""", tuple(ids))
+    operaciones = _conteo("operaciones",
+        f"""SELECT user_id uid, COUNT(*) n FROM operations
+             WHERE user_id IN ({ph}) GROUP BY user_id""", tuple(ids))
+    # A mano = lo que no vino de ninguna importación. Es justo lo que el resto
+    # del panel NO puede fechar; se muestra aparte para que se vea que existe y
+    # que un "0 esta semana" con 12 acá no significa que la persona no hizo nada.
+    a_mano = _conteo("cargado a mano",
+        f"""SELECT p.user_id uid, COUNT(*) n FROM positions p
+             WHERE p.user_id IN ({ph}) AND COALESCE(p.is_cash,0) = 0
+               AND NOT EXISTS (SELECT 1 FROM import_op_links l
+                                WHERE l.position_id = p.id)
+             GROUP BY p.user_id""", tuple(ids))
+
+    def _ultimo(nombre, sql, params=()) -> dict:
+        out = {}
+        try:
+            for r in conn.execute(sql, params):
+                out[int(r["uid"])] = _dia_de(r["t"])
+        except Exception as ex:
+            log.warning("progreso: último %s falló: %s", nombre, ex)
+        return out
+
+    # Estos dos miran TODA la historia, no la ventana: "no entra hace 9 días"
+    # es exactamente el dato que se busca, y 9 puede caer fuera de la tira.
+    ultimo_login = _ultimo("login",
+        f"""SELECT user_id uid, MAX(created_at) t FROM login_history
+             WHERE user_id IN ({ph}) GROUP BY user_id""", tuple(ids))
+    ultimo_import = _ultimo("importación",
+        f"""SELECT user_id uid, MAX(COALESCE(confirmed_at, created_at)) t
+              FROM import_batches
+             WHERE user_id IN ({ph}) AND status='confirmed'
+             GROUP BY user_id""", tuple(ids))
+
+    # ── Armar cada persona ──────────────────────────────────────────────────
+    for r in filas:
+        uid = int(r["id"])
+        inicio = _dia_de(r["trial_started_at"]) or hoy
+        fin_dia = _dia_de(r["trial_ends_at"])
+        fin = prueba_viva(conn, r, ahora)
+        pago = _has_paid_sub(conn, uid)
+        estado = "pago" if pago else ("activa" if fin else "terminada")
+
+        # La tira va del arranque hasta hoy. Si ya terminó, los días de después
+        # también entran: sirven para ver si volvió después del muro.
+        dias = [dict(d=d, **_dia_vacio()) for d in _rango_de_dias(inicio, hoy)]
+        for d in dias:
+            c = act.get((uid, d["d"]))
+            if c:
+                d.update(c)
+
+        try:
+            transcurridos = (datetime.fromisoformat(hoy).date()
+                             - datetime.fromisoformat(inicio).date()).days + 1
+        except (TypeError, ValueError):
+            transcurridos = 1
+
+        tiene_datos = bool(posiciones.get(uid, 0) or operaciones.get(uid, 0))
+        salida["personas"].append({
+            "id": uid,
+            "email": r["email"],
+            "name": r["name"],
+            "estado": estado,
+            "stage": stage_by_calendar(r["trial_started_at"], ahora) if fin else None,
+            "inicio": inicio,
+            "termina": fin_dia,
+            # "día 7 de 20". Si ya terminó muestra el total, no un número que
+            # sigue creciendo para siempre.
+            "dia": min(max(1, transcurridos), TRIAL_TOTAL_DAYS),
+            "days_left": dias_restantes(fin, ahora) if fin else 0,
+            "tiene": {
+                "brokers": _brokers_de(conn, uid),
+                "posiciones": posiciones.get(uid, 0),
+                "operaciones": operaciones.get(uid, 0),
+                "a_mano": a_mano.get(uid, 0),
+            },
+            "dias": dias,
+            "ventanas": {str(n): _sumar_dias(dias[-n:]) for n in VENTANAS_PROGRESO},
+            # Todo lo que hizo desde que arrancó, sin ventana: el resumen de la
+            # prueba entera.
+            "en_la_prueba": _sumar_dias(
+                [d for d in dias if not fin_dia or d["d"] <= fin_dia]),
+            "ultimo_login": ultimo_login.get(uid),
+            "ultima_importacion": ultimo_import.get(uid),
+            "estado_uso": _estado_de_uso(dias, tiene_datos),
+        })
+
+    # Primero los que están probando (y de ésos, al que menos le queda), después
+    # los que pagaron, y al final los terminados del más reciente al más viejo.
+    # Es el orden en que se actúa: a los vivos todavía se los puede ayudar.
+    orden = {"activa": 0, "pago": 1, "terminada": 2}
+    salida["personas"].sort(key=lambda p: (
+        orden.get(p["estado"], 3),
+        p["days_left"] if p["estado"] == "activa" else -_orden_fecha(p["termina"])))
+    salida["activas"] = sum(1 for p in salida["personas"] if p["estado"] == "activa")
+    return salida

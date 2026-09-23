@@ -19,6 +19,7 @@ export default function Admin() {
   const [users, setUsers] = useState([])
   const [conversion, setConversion] = useState(null)
   const [trialFunnel, setTrialFunnel] = useState(null)
+  const [trialProgress, setTrialProgress] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
@@ -53,16 +54,18 @@ export default function Admin() {
     setLoading(true)
     setError('')
     try {
-      const [s, u, c, t] = await Promise.all([
+      const [s, u, c, t, pr] = await Promise.all([
         api.get('/admin/stats'),
         api.get('/admin/users'),
         api.get('/admin/plan/conversion').catch(() => null),  // optional, no romper si falla
         api.get('/admin/billing/trial-funnel?days=90').catch(() => null),
+        api.get('/admin/billing/trial-progress?days=30').catch(() => null),
       ])
       setStats(s)
       setUsers(u)
       setConversion(c)
       setTrialFunnel(t)
+      setTrialProgress(pr)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -313,6 +316,7 @@ export default function Admin() {
       {/* ── Conversión Pro (paywall analytics) ─────────────────────────── */}
       <ConversionPanel data={conversion} />
       <TrialFunnelPanel data={trialFunnel} />
+      <TrialProgressPanel data={trialProgress} />
 
       {/* ── Broadcast: mail custom que vos escribís a los usuarios ── */}
       <BroadcastPanel toast={toast} />
@@ -3714,6 +3718,253 @@ function TrialFunnelPanel({ data }) {
           La prueba de Pro sobre un plan pago no está reportando. El backend que está
           corriendo no manda esa métrica — revisá que el último deploy haya levantado.
         </p>
+      )}
+    </section>
+  )
+}
+
+// ─── Seguimiento de las pruebas ────────────────────────────────────────────
+// El embudo de arriba cuenta cabezas al final del camino. Esto mira a cada
+// persona MIENTRAS prueba, que es el único momento en que todavía se puede
+// hacer algo: al que no cargó nada en tres días se le puede escribir; al que
+// ya se le venció, no.
+//
+// La tira de días es el centro del panel y no un adorno: la pregunta real no
+// es "¿cuánto cargó?" sino "¿sigue cargando o arrancó y se fue?", y esa forma
+// se ve de un vistazo y no se ve en una tabla de totales.
+//
+// ⚠️ Las ventanas (1/3/7/15) las manda el backend en `data.ventanas` — no
+// están escritas acá. Se calculan sobre el MISMO array de días que dibuja la
+// tira, así que el número y el dibujo no pueden discrepar.
+
+const USO_LABEL = {
+  avanzando: { txt: 'avanzando', cls: 'bg-rendi-pos/15 text-rendi-pos' },
+  tibio:     { txt: 'se enfrió',  cls: 'bg-rendi-warn/15 text-rendi-warn' },
+  frenado:   { txt: 'frenado',    cls: 'bg-rendi-neg/15 text-rendi-neg' },
+  sin_datos: { txt: 'app vacía',  cls: 'bg-rendi-neg/15 text-rendi-neg' },
+}
+
+const ESTADO_LABEL = {
+  activa:    { txt: 'probando',  cls: 'bg-data-violet/15 text-data-violet' },
+  pago:      { txt: 'pagó',      cls: 'bg-rendi-pos/15 text-rendi-pos' },
+  terminada: { txt: 'terminada', cls: 'bg-bg-3 text-ink-2' },
+}
+
+// Cuánto se pinta cada día. Escala ABSOLUTA y no relativa a la persona: con
+// una escala relativa, el que cargó 3 filas en total se ve tan "lleno" como el
+// que cargó 500, y entonces la tira deja de servir para comparar gente.
+function tonoDelDia(d) {
+  if (d.filas >= 200) return 'bg-data-violet'
+  if (d.filas >= 50)  return 'bg-data-violet/70'
+  if (d.filas >= 10)  return 'bg-data-violet/45'
+  if (d.filas > 0)    return 'bg-data-violet/25'
+  // Sin filas nuevas, pero pasó algo: entró, usó la IA, subió un archivo que
+  // no creó nada. Es señal de vida y no puede verse igual que un día muerto.
+  if (d.archivos || d.ia) return 'bg-data-cyan/30'
+  if (d.entradas) return 'bg-ink-3/20'
+  return 'bg-bg-3'
+}
+
+function resumenDelDia(d) {
+  const partes = []
+  if (d.filas) partes.push(`${d.filas} ${d.filas === 1 ? 'fila' : 'filas'}`)
+  if (d.archivos) partes.push(`${d.archivos} ${d.archivos === 1 ? 'archivo' : 'archivos'}`)
+  if (d.ia) partes.push(`${d.ia} IA`)
+  if (d.entradas) partes.push(`entró ${d.entradas}×`)
+  return `${d.d}${partes.length ? ' · ' + partes.join(' · ') : ' · nada'}`
+}
+
+// "hace 3 días" en vez de una fecha: lo que se quiere leer es la distancia.
+function haceCuanto(dia, hoy) {
+  if (!dia) return 'nunca'
+  const d = Math.round((new Date(hoy + 'T00:00:00') - new Date(dia + 'T00:00:00')) / 86400000)
+  if (d <= 0) return 'hoy'
+  if (d === 1) return 'ayer'
+  return `hace ${d} días`
+}
+
+function TiraDeDias({ persona, diasPro, totalDias }) {
+  // ⭐ La tira mide SIEMPRE la prueba entera, aunque la persona vaya por el día
+  // 5. Con una tira que se estira para ocupar el ancho, el que lleva 5 días y
+  // el que lleva 14 se ven igual de largos y las dos tiras dejan de poder
+  // compararse — que es justamente para lo que sirve ponerlas una debajo de
+  // otra. Los días que todavía no llegaron van vacíos y se ven como lo que
+  // son: lo que le queda.
+  const largo = Math.max(persona.dias.length, totalDias)
+  return (
+    <div className="flex items-end gap-[2px] flex-wrap" aria-hidden="true">
+      {Array.from({ length: largo }, (_, i) => {
+        const d = persona.dias[i]
+        // El corte de Pro → Plus, marcado con una línea: sin eso no se puede
+        // ver si la persona se frenó JUSTO cuando perdió las funciones de Pro,
+        // que es la hipótesis más cara de no poder contestar.
+        // Dos marcas: donde pasa a Plus y donde se le terminó la prueba. La
+        // segunda sólo aparece en las tiras que siguen más allá del final, y
+        // es la que contesta "¿volvió después del muro?".
+        const corte = i === diasPro
+          ? 'ml-[3px] border-l border-data-cyan/70 pl-[3px] '
+          : (i === totalDias ? 'ml-[3px] border-l border-rendi-neg/60 pl-[3px] ' : '')
+        if (!d) {
+          // Contorno y no relleno: "todavía no llegó" tiene que leerse distinto
+          // de "llegó y no pasó nada", que es un relleno apagado.
+          return <div key={`f${i}`} className={`${corte}h-4 w-3 rounded-xs border border-line/50`} />
+        }
+        return (
+          <div key={d.d} title={resumenDelDia(d)}
+               className={`${corte}h-4 w-3 rounded-xs ${tonoDelDia(d)}`} />
+        )
+      })}
+    </div>
+  )
+}
+
+function PersonaEnPrueba({ p, ventanas, diasPro, totalDias, hoy }) {
+  const uso = USO_LABEL[p.estado_uso] || USO_LABEL.frenado
+  const est = ESTADO_LABEL[p.estado] || ESTADO_LABEL.terminada
+  return (
+    <div className="py-3">
+      <div className="flex items-baseline gap-2 flex-wrap mb-2">
+        <span className="text-sm text-ink-0 truncate max-w-[16rem]">{p.email}</span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-sm ${est.cls}`}>{est.txt}</span>
+        {p.stage && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-bg-3 text-ink-2">
+            {p.stage === 'plus' ? 'Plus' : 'Pro'}
+          </span>
+        )}
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-sm ${uso.cls}`}>{uso.txt}</span>
+        <span className="flex-1" />
+        <span className="text-[11px] text-ink-3 tabular">
+          día {p.dia} de {totalDias}
+          {p.estado === 'activa' && (
+            <> · {p.days_left === 1 ? 'último día' : `le quedan ${p.days_left}`}</>
+          )}
+        </span>
+      </div>
+
+      <TiraDeDias persona={p} diasPro={diasPro} totalDias={totalDias} />
+
+      <div className="mt-2 flex items-baseline gap-4 flex-wrap">
+        {/* Lo que pidió el panel: cuánto aumentó en cada ventana. El número
+            grande es "filas cargadas", que es lo que se quiere ver crecer. */}
+        {ventanas.map(n => {
+          const v = p.ventanas[String(n)] || {}
+          const vivo = v.filas || v.ia || v.entradas
+          return (
+            <div key={n} className="min-w-[3.5rem]">
+              <div className={`text-sm tabular ${vivo ? 'text-ink-0' : 'text-ink-3'}`}>
+                {v.filas ? `+${v.filas}` : '—'}
+              </div>
+              <div className="text-[10px] text-ink-3">
+                {n === 1 ? 'hoy' : `${n} días`}
+                {!v.filas && (v.ia || v.entradas) ? ' · entró' : ''}
+              </div>
+            </div>
+          )
+        })}
+
+        <div className="flex-1" />
+
+        <div className="text-[11px] text-ink-2 tabular text-right">
+          {p.tiene.brokers} {p.tiene.brokers === 1 ? 'broker' : 'brokers'} ·{' '}
+          {p.tiene.posiciones} pos. · {p.tiene.operaciones} ops.
+          {p.tiene.a_mano > 0 && (
+            <span className="text-data-cyan"> · {p.tiene.a_mano} a mano</span>
+          )}
+          <div className="text-ink-3">
+            entró {haceCuanto(p.ultimo_login, hoy)} · importó {haceCuanto(p.ultima_importacion, hoy)}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrialProgressPanel({ data }) {
+  // Si el backend no manda nada, el que está corriendo es viejo. Decirlo es
+  // más útil que no mostrar nada, que vuelve indistinguible "no hay nadie
+  // probando" de "esto está roto" — el mismo error que ya se cometió con el
+  // bloque de la prueba de Pro.
+  if (!data) {
+    return (
+      <section className="bg-bg-1 border border-line rounded-lg p-5 mb-5">
+        <h2 className="text-sm font-semibold text-ink-0 mb-1">Seguimiento de las pruebas</h2>
+        <p className="text-[11px] text-ink-3">
+          El backend que está corriendo no responde este panel. Revisá que el último deploy
+          haya levantado.
+        </p>
+      </section>
+    )
+  }
+
+  const { personas = [], ventanas = [], total_dias: totalDias, dias_pro: diasPro, hoy, days } = data
+  const vacias = personas.filter(p => p.estado === 'activa' && p.estado_uso === 'sin_datos').length
+  const avanzan = personas.filter(p => p.estado === 'activa' && p.estado_uso === 'avanzando').length
+
+  return (
+    <section className="bg-bg-1 border border-line rounded-lg p-5 mb-5">
+      <div className="flex items-baseline justify-between gap-2 flex-wrap mb-1">
+        <h2 className="text-sm font-semibold text-ink-0">Seguimiento de las pruebas</h2>
+        <span className="text-[11px] text-ink-3">
+          vivas + las que terminaron hace menos de {days} días
+        </span>
+      </div>
+
+      {personas.length === 0 ? (
+        <p className="text-[11px] text-ink-3 mt-2">
+          No hay ninguna prueba activa ni terminada en los últimos {days} días. El panel se llena
+          solo cuando alguien verifica su mail: ahí le arranca la prueba.
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-ink-2 mb-3">
+            <span className="text-ink-0 tabular">{data.activas}</span> probando ahora ·{' '}
+            <span className="tabular">{avanzan}</span> con movimiento en 3 días ·{' '}
+            <span className={vacias ? 'text-rendi-neg' : ''}>
+              <span className="tabular">{vacias}</span> con la app vacía
+            </span>
+          </p>
+
+          <div className="divide-y divide-line/50">
+            {personas.map(p => (
+              <PersonaEnPrueba key={p.id} p={p} ventanas={ventanas}
+                               diasPro={diasPro} totalDias={totalDias} hoy={hoy} />
+            ))}
+          </div>
+
+          {/* Qué está mirando cada color, y qué NO puede mirar. Lo segundo es
+              tan importante como lo primero: sin este renglón, un "0 esta
+              semana" en alguien que cargó todo a mano se lee como abandono. */}
+          <div className="mt-4 pt-3 border-t border-line text-[10px] text-ink-3 space-y-1">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-3 rounded-xs bg-data-violet inline-block" /> importó filas
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-3 rounded-xs bg-data-cyan/30 inline-block" /> usó la IA o subió un archivo
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-3 rounded-xs bg-ink-3/20 inline-block" /> sólo entró
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-3 rounded-xs bg-bg-3 inline-block" /> nada
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-3 rounded-xs border border-line/50 inline-block" /> todavía no llegó
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-px h-3 bg-data-cyan/60 inline-block" /> pasa a Plus
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-px h-3 bg-rendi-neg/60 inline-block" /> se le terminó
+              </span>
+            </div>
+            <p>
+              Las filas se cuentan por importación, que es lo único que queda fechado. Lo cargado
+              a mano se ve en el total («a mano») pero no en las ventanas: esas filas no guardan
+              de qué día son. Los días son UTC.
+            </p>
+          </div>
+        </>
       )}
     </section>
   )

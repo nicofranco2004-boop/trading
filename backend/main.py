@@ -28552,6 +28552,28 @@ def admin_trial_funnel(days: int = 90, uid: int = Depends(get_admin_user)):
         conn.close()
 
 
+@app.get("/api/admin/billing/trial-progress")
+def admin_trial_progress(days: int = 30, uid: int = Depends(get_admin_user)):
+    """Seguimiento persona por persona de las pruebas: cuándo arrancó cada uno,
+    cuánto le queda y —lo que el embudo no dice— si está AVANZANDO.
+
+    El embudo cuenta cabezas al final del camino. Esto se mira mientras la
+    prueba corre, que es el único momento en que todavía se puede hacer algo:
+    al que no importó nada en 3 días se le puede escribir; al que se le venció
+    ya no.
+
+    `days` mira hacia atrás: entran las pruebas vivas y las que terminaron hace
+    menos de eso."""
+    if days < 1 or days > 365:
+        raise HTTPException(422, "days debe estar entre 1 y 365")
+    from billing import trial as _trial
+    conn = get_db()
+    try:
+        return _trial.progreso(conn, days=days)
+    finally:
+        conn.close()
+
+
 @app.get("/api/billing/trial")
 def billing_trial_status(uid: int = Depends(get_current_user)):
     """Estado del trial de la persona logueada: si está activo, en qué etapa,
