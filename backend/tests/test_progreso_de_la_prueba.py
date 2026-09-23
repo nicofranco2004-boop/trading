@@ -192,8 +192,11 @@ class Base(unittest.TestCase):
             "VALUES (?, 'payment', 9.0, 30, ?)", (uid, ts))
         self.conn.commit()
 
-    def _fila(self, uid):
-        for p in tr.progreso(self.conn)["personas"]:
+    def _fila(self, uid, detalle=False):
+        """La fila de una persona. `detalle=True` pide además la tira día por
+        día, que la respuesta NO manda por defecto (son 1,2 MB con 200 filas y
+        la tabla no la dibuja)."""
+        for p in tr.progreso(self.conn, detalle=detalle)["personas"]:
             if p["id"] == uid:
                 return p
         self.fail(f"uid={uid} no aparece en el panel")
@@ -285,7 +288,7 @@ class LaVentanaDeDias(Base):
         self._importó(uid, hace_dias=6, filas=5)
         self._usó_ia(uid, hace_dias=2, analisis=4)
         self._entró(uid, hace_dias=0, veces=2)
-        p = self._fila(uid)
+        p = self._fila(uid, detalle=True)
         for n in (1, 3, 7, 15):
             a_mano = {"filas": 0, "archivos": 0, "ia": 0, "entradas": 0}
             for d in p["dias"][-n:]:
@@ -300,7 +303,7 @@ class LaVentanaDeDias(Base):
         """Los días sin nada tienen que existir igual: el hueco ES el dato."""
         uid = self._persona()
         self._con_prueba(uid, arrancó_hace=6)
-        p = self._fila(uid)
+        p = self._fila(uid, detalle=True)
         self.assertEqual(len(p["dias"]), 7, "faltan días en la tira")
         self.assertEqual(p["dias"][0]["d"], p["inicio"])
         self.assertEqual(p["dias"][-1]["d"], self.ahora.date().isoformat())
@@ -328,7 +331,7 @@ class LaTiraNoPuedeEmpezarHaceMeses(Base):
     def test_la_tira_siempre_termina_hoy(self):
         uid = self._persona()
         self._con_prueba(uid, arrancó_hace=60)
-        p = [x for x in tr.progreso(self.conn, days=90)["personas"]
+        p = [x for x in tr.progreso(self.conn, days=90, detalle=True)["personas"]
              if x["id"] == uid][0]
         self.assertEqual(p["dias"][-1]["d"], self.ahora.date().isoformat(),
                          "la tira no llega hasta hoy: las ventanas miran el pasado")
@@ -634,6 +637,32 @@ class ElResumenDeLaTanda(Base):
         self.assertEqual(r["en_pro"] + r["en_plus"], r["en_curso"])
 
 
+class LosDosPanelesCuentanLaMismaGente(Base):
+    """⭐ /admin muestra el embudo y la tabla muestra las pruebas. Los dos dicen
+    cuántas están corriendo AHORA, por caminos distintos: el embudo barre todos
+    los usuarios con prueba y la tabla arranca de una ventana de días. Si algún
+    día los dos números se separan, el panel deja de ser creíble entero — y
+    nadie sabe cuál de los dos creer."""
+
+    def test_el_embudo_y_la_tabla_cuentan_lo_mismo(self):
+        for hace in (1, 5, tr.TRIAL_PRO_DAYS + 1, tr.TRIAL_TOTAL_DAYS + 2):
+            uid = self._persona()
+            self._con_prueba(uid, arrancó_hace=hace)
+        pago = self._persona()
+        self._con_prueba(pago, arrancó_hace=6)
+        self._pagó(pago)
+
+        self.assertEqual(tr.activos(self.conn)["total"],
+                         tr.progreso(self.conn)["resumen"]["en_curso"])
+
+    def test_y_tambien_el_reparto_entre_pro_y_plus(self):
+        for hace in (2, 3, tr.TRIAL_PRO_DAYS + 2):
+            uid = self._persona()
+            self._con_prueba(uid, arrancó_hace=hace)
+        a, r = tr.activos(self.conn), tr.progreso(self.conn)["resumen"]
+        self.assertEqual((a["en_pro"], a["en_plus"]), (r["en_pro"], r["en_plus"]))
+
+
 class LaFrecuenciaDeUso(Base):
     """"6/7 días" son días DISTINTOS, no entradas."""
 
@@ -698,7 +727,7 @@ class LosBordes(Base):
             "UPDATE users SET trial_started_at=? WHERE id=?",
             ((self.ahora + _td(days=3)).isoformat(), uid))
         self.conn.commit()
-        p = self._fila(uid)
+        p = self._fila(uid, detalle=True)
         self.assertEqual(p["dias"], [])
         self.assertEqual(p["ventanas"]["7"]["filas"], 0)
         self.assertEqual(p["dia"], 1, "el día de la prueba nunca puede ser negativo")
@@ -746,6 +775,30 @@ class LaPuertaDelPanel(Base):
         yo = [p for p in d["personas"] if p["id"] == uid][0]
         self.assertEqual(yo["ventanas"]["1"]["filas"], 3)
         self.assertIn("estado_uso", yo)
+
+    def test_la_tira_no_viaja_al_navegador_si_no_la_piden(self):
+        """⭐ Medido: 200 filas × 45 días son 1,2 MB de respuesta que la tabla
+        no dibuja (quedó con columnas, no con tiras). Los NÚMEROS no cambian:
+        las ventanas, la frecuencia y el estado de uso se calculan igual sobre
+        la tira — lo único que decide `detalle` es si se serializa."""
+        jefe = self._persona(admin=1)
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=5)
+        self._importó(uid, hace_dias=1, filas=4)
+
+        liviana = self.client.get("/api/admin/billing/trial-progress",
+                                  headers=self._headers(jefe)).json()["personas"][0]
+        completa = self.client.get("/api/admin/billing/trial-progress?detalle=1",
+                                   headers=self._headers(jefe)).json()["personas"][0]
+        self.assertNotIn("dias", liviana, "la tira viaja sin que nadie la pida")
+        self.assertIn("dias", completa)
+        # Y el número que la pantalla muestra es EL MISMO en las dos.
+        self.assertEqual(liviana["ventanas"], completa["ventanas"])
+        self.assertEqual(liviana["estado_uso"], completa["estado_uso"])
+        # La frecuencia vive adentro de la ventana de 7 días (`dias_entro`), que
+        # es lo que la columna "6/7 días" dibuja.
+        self.assertEqual(liviana["ventanas"]["7"]["dias_entro"],
+                         completa["ventanas"]["7"]["dias_entro"])
 
     def test_days_fuera_de_rango_se_rechaza(self):
         jefe = self._persona(admin=1)

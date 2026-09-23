@@ -1340,6 +1340,13 @@ def funnel(conn, days: int = 90) -> dict:
 #  · La IA se guarda POR DÍA (`ai_usage_daily` no tiene hora), así que la
 #    ventana de 1 día es el día de HOY en UTC, no las últimas 24 horas.
 #
+# ⏰ LOS TRES RELOJES SON EL MISMO, y está verificado y no supuesto: los lotes y
+# los logins se fechan con el DEFAULT de la base (`now() at time zone 'utc'`),
+# `ai_usage_daily.date` con `date.today()` del proceso —que en Railway es UTC—
+# y esta función con `datetime.utcnow()`. Si alguno pasara a hora argentina,
+# su actividad caería hasta 3 horas corrida de bucket y las noches argentinas
+# aparecerían en el día siguiente: mirar esto ANTES de explicar un número raro.
+#
 # Las ventanas son días de calendario en UTC terminando hoy, y se calculan
 # sobre el MISMO array de días que dibuja la tira de la pantalla. Una sola
 # fuente para las dos vistas: el número de la tabla y el dibujo no pueden
@@ -1467,13 +1474,20 @@ def _brokers_de(conn, uid: int) -> int:
         return 0
 
 
-def progreso(conn, days: int = 30, limit: int = 200) -> dict:
+def progreso(conn, days: int = 30, limit: int = 200, detalle: bool = False) -> dict:
     """Persona por persona: cuándo arrancó, cuánto le queda y si avanza.
 
     `days` cuenta hacia atrás desde hoy: entran las pruebas vivas y las que
     terminaron hace menos de eso. Ver a quién se le venció sin pagar es la
     mitad del valor del panel — es la lista de a quién preguntarle por qué.
-    """
+
+    `detalle` agrega el array día por día de cada persona. Va apagado por
+    defecto y NO cambia ningún número: la tira se construye igual siempre,
+    porque las ventanas, la frecuencia y el estado de uso salen de ella. Lo
+    único que decide es si se serializa. Medido: con 200 filas de 45 días son
+    1,2 MB de respuesta que la tabla no dibuja — la pantalla quedó con columnas
+    y no con tiras. Se prende para mirar una prueba en detalle y en el test que
+    compara la ventana contra la suma de la tira."""
     ahora = datetime.utcnow()
     hoy = ahora.date().isoformat()
     # `days or 30` convertía un 0 en 30 sin decir nada: pedir "cero días" y
@@ -1710,12 +1724,15 @@ def progreso(conn, days: int = 30, limit: int = 200) -> dict:
                 "operaciones": operaciones.get(uid, 0),
                 "a_mano": a_mano.get(uid, 0),
             },
-            "dias": dias,
+            # Los números de abajo se calculan SIEMPRE sobre `dias`; el array
+            # se manda sólo si lo piden (ver el docstring).
             "ventanas": {str(n): _sumar_dias(dias[-n:]) for n in VENTANAS_PROGRESO},
             "ultimo_login": ultimo_login.get(uid),
             "ultima_importacion": ultimo_import.get(uid),
             "estado_uso": _estado_de_uso(dias, tiene_datos),
         })
+        if detalle:
+            salida["personas"][-1]["dias"] = dias
 
     # Primero los que están probando (y de ésos, al que menos le queda), después
     # los que pagaron, y al final los terminados del más reciente al más viejo.

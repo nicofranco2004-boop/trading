@@ -28553,7 +28553,8 @@ def admin_trial_funnel(days: int = 90, uid: int = Depends(get_admin_user)):
 
 
 @app.get("/api/admin/billing/trial-progress")
-def admin_trial_progress(days: int = 30, uid: int = Depends(get_admin_user)):
+def admin_trial_progress(days: int = 30, detalle: bool = False,
+                         uid: int = Depends(get_admin_user)):
     """Seguimiento persona por persona de las pruebas: cuándo arrancó cada uno,
     cuánto le queda y —lo que el embudo no dice— si está AVANZANDO.
 
@@ -28569,7 +28570,7 @@ def admin_trial_progress(days: int = 30, uid: int = Depends(get_admin_user)):
     from billing import trial as _trial
     conn = get_db()
     try:
-        return _trial.progreso(conn, days=days)
+        return _trial.progreso(conn, days=days, detalle=detalle)
     finally:
         conn.close()
 

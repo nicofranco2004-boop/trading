@@ -3564,9 +3564,8 @@ function TrialFunnelPanel({ data }) {
     convirtieron, pct_importaron: pctImp, pct_usaron_ia: pctIa,
     pct_conversion_cerrada: pctCerrada, cuando_pagan: cuando,
     enabled, monthly_cap: cap, activados_este_mes: esteMes, days,
-    activos, pro_upsell: upsell,
+    pro_upsell: upsell,
   } = data
-  const viven = activos?.usuarios || []
 
   const paso = (label, n, pct, nota) => (
     <div className="flex items-baseline gap-3 py-1.5">
@@ -3592,45 +3591,12 @@ function TrialFunnelPanel({ data }) {
         {enCurso} arrancaron y no vencieron · {terminados} terminados
       </p>
 
-      {/* ⭐ Quiénes la tienen corriendo AHORA. Es distinto de "en curso": ése
-          cuenta por fecha de vencimiento y se lleva puestos a los que ya
-          pagaron (siguen con su trial_ends_at futuro pero ya decidieron).
-          Acá el corte es el mismo que usa la app para mostrar la barra. */}
-      {activos && (
-        <div className="mb-4 border border-data-violet/30 bg-data-violet/[0.05] rounded-lg px-4 py-3">
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="text-2xl font-semibold text-ink-0 tabular-nums">{activos.total}</span>
-            <span className="text-sm text-ink-1">
-              {activos.total === 1 ? 'la tiene activa ahora' : 'la tienen activa ahora'}
-            </span>
-            {activos.total > 0 && (
-              <span className="text-xs text-ink-3">
-                · {activos.en_pro} en la semana de Pro · {activos.en_plus} en los días de Plus
-              </span>
-            )}
-          </div>
-
-          {viven.length > 0 && (
-            <div className="mt-2.5 max-h-44 overflow-auto divide-y divide-line/40">
-              {viven.map(u => (
-                <div key={u.id} className="py-1.5 flex items-baseline justify-between gap-3 text-[11px]">
-                  <span className="text-ink-2 truncate flex-1">{u.email}</span>
-                  <span className={`px-1.5 py-0.5 rounded-sm font-mono text-[9px] tracking-caps ${
-                    u.stage === 'plus' ? 'bg-data-cyan/15 text-data-cyan' : 'bg-data-violet/15 text-data-violet'
-                  }`}>
-                    {u.stage === 'plus' ? 'PLUS' : 'PRO'}
-                  </span>
-                  {/* Ordenados por el que se vence primero: se lee como la
-                      lista de a quién le queda menos tiempo para decidir. */}
-                  <span className="text-ink-3 tabular-nums w-20 text-right">
-                    {u.days_left === 1 ? 'último día' : `${u.days_left} días`}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* La lista de quiénes están probando AHORA vivía acá, con su etapa y
+          los días que le quedan. Se fue a /admin/pruebas, que la muestra con
+          todo lo que hace falta para actuar (qué cargó, cuándo entró, si
+          avanza). Dos listas de la misma gente en la misma pantalla es una
+          sola cosa que mantener por duplicado y dos números que un día se
+          separan. El embudo vuelve a ser sólo el embudo. */}
 
       <div className="divide-y divide-line/60">
         {paso('Activaron la prueba', activados, null)}
