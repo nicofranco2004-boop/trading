@@ -305,6 +305,21 @@ class LoQueNoSePuedeFechar(Base):
                 p["ventanas"][n]["filas"], 0,
                 "una fila sin fecha se está contando como si fuera de hoy")
 
+    def test_una_operacion_registrada_a_mano_tambien_cuenta(self):
+        """Una venta cargada por el chat del Coach no pasa por ningún lote.
+        Contando sólo `positions`, esa persona se leía como que no hizo nada."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=3)
+        self.conn.execute(
+            "INSERT INTO operations (user_id, date, broker, asset, op_type) "
+            "VALUES (?,?,?,?,'Venta')",
+            (uid, self.ahora.date().isoformat(), "Cocos", "GGAL"))
+        self.conn.commit()
+        p = self._fila(uid)
+        self.assertEqual(p["tiene"]["operaciones"], 1)
+        self.assertEqual(p["tiene"]["a_mano"], 1,
+                         "la operación cargada a mano no se está contando")
+
     def test_lo_importado_no_cuenta_como_cargado_a_mano(self):
         uid = self._persona()
         self._con_prueba(uid, arrancó_hace=3)

@@ -1541,12 +1541,23 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
     # A mano = lo que no vino de ninguna importación. Es justo lo que el resto
     # del panel NO puede fechar; se muestra aparte para que se vea que existe y
     # que un "0 esta semana" con 12 acá no significa que la persona no hizo nada.
-    a_mano = _conteo("cargado a mano",
+    #
+    # Van las DOS tablas y no sólo las posiciones: una venta registrada por el
+    # chat del Coach también es una carga a mano, y contando sólo `positions`
+    # esa persona se leía como que no había hecho nada.
+    a_mano = _conteo("posiciones a mano",
         f"""SELECT p.user_id uid, COUNT(*) n FROM positions p
              WHERE p.user_id IN ({ph}) AND COALESCE(p.is_cash,0) = 0
                AND NOT EXISTS (SELECT 1 FROM import_op_links l
                                 WHERE l.position_id = p.id)
              GROUP BY p.user_id""", tuple(ids))
+    for uid_, n in _conteo("operaciones a mano",
+        f"""SELECT o.user_id uid, COUNT(*) n FROM operations o
+             WHERE o.user_id IN ({ph})
+               AND NOT EXISTS (SELECT 1 FROM import_op_links l
+                                WHERE l.operation_id = o.id)
+             GROUP BY o.user_id""", tuple(ids)).items():
+        a_mano[uid_] = a_mano.get(uid_, 0) + n
 
     def _ultimo(nombre, sql, params=()) -> dict:
         out = {}
