@@ -263,7 +263,9 @@ function Resumen({ r, personas, days }) {
     { n: r.en_plus, txt: `${r.en_plus} en Plus`, cls: 'bg-data-violet/45 text-bg-0',
       leg: 'Probando, en los días de Plus' },
     { n: r.pagaron, txt: `${r.pagaron}`, cls: 'bg-rendi-pos-fill text-bg-0', leg: 'Pagaron' },
-    { n: r.terminadas - r.convirtieron, txt: `${r.terminadas - r.convirtieron} terminadas`,
+    // Por resta, no por su propia cuenta: así los cuatro tramos suman el total
+    // exacto y la barra no puede quedar corta.
+    { n: r.terminadas_sin_pagar, txt: `${r.terminadas_sin_pagar} terminadas`,
       cls: 'bg-bg-3 text-ink-2', leg: 'Se les terminó sin pagar' },
   ].filter(t => t.n > 0)
 
@@ -333,8 +335,12 @@ function Resumen({ r, personas, days }) {
                alerta={r.por_terminar > 0} tono={r.por_terminar > 0 ? 'text-rendi-warn' : ''} />
         <Celda n={r.en_pro} k="En los días de Pro" h="día 1 al 10" />
         <Celda n={r.en_plus} k="En los días de Plus" h="día 11 al 20" />
-        <Celda n={r.terminadas} k="Terminadas"
-               h={`${r.terminadas - r.convirtieron} sin pagar`} />
+        {/* Éste es el denominador de la conversión —las que ya se vencieron—
+            y por eso el pie habla de los que pagaron, no de los que no: es la
+            misma frase que la tarjeta de Conversión. El tramo gris de la barra
+            cuenta otra cosa y por eso se llama distinto. */}
+        <Celda n={r.terminadas} k="Ya se vencieron"
+               h={`${r.convirtieron} pagaron`} />
       </div>
 
       <p className="text-[11px] text-ink-3 mt-4 leading-relaxed">
@@ -462,6 +468,17 @@ export default function AdminPruebas() {
           <option value={180}>180 días</option>
         </select>
       </div>
+
+      {/* Si la tanda no entró entera, el resumen de abajo se calculó sobre lo
+          que se ve. Decirlo importa: el "total" es justamente el número con el
+          que se toman decisiones. */}
+      {data?.truncado && (
+        <div className="rounded-lg border border-rendi-warn/30 bg-rendi-warn/5 p-3 text-[12px] text-rendi-warn mb-3.5">
+          Hay {data.total_en_ventana} pruebas en esta ventana y la tabla muestra las{' '}
+          {personas.length} más recientes. El resumen de abajo cuenta sólo esas: para verlas
+          todas, achicá la ventana de días.
+        </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-rendi-neg/30 bg-rendi-neg/5 p-4 text-[13px] text-rendi-neg mb-4">

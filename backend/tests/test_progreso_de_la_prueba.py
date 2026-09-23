@@ -307,6 +307,42 @@ class LaVentanaDeDias(Base):
         self.assertTrue(all(d["filas"] == 0 for d in p["dias"]))
 
 
+class LaTiraNoPuedeEmpezarHaceMeses(Base):
+    """⭐ La tira tiene un tope de días. Si ese tope se aplica desde el ARRANQUE
+    en vez de desde hoy, una prueba vieja devuelve los primeros 45 días y las
+    ventanas —que son "los últimos N de la tira"— pasan a mirar un pedazo del
+    pasado: el panel diría "cargó 90 filas hoy" con una importación de hace dos
+    meses. Sale con la ventana de 90/180 días del selector."""
+
+    def test_una_prueba_de_hace_dos_meses_no_muestra_actividad_vieja_como_de_hoy(self):
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=60)
+        self._importó(uid, hace_dias=55, filas=90)
+        p = [x for x in tr.progreso(self.conn, days=90)["personas"]
+             if x["id"] == uid][0]
+        for n in ("1", "3", "7", "15"):
+            self.assertEqual(
+                p["ventanas"][n]["filas"], 0,
+                f"la ventana de {n} días está mostrando una carga de hace 55 días")
+
+    def test_la_tira_siempre_termina_hoy(self):
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=60)
+        p = [x for x in tr.progreso(self.conn, days=90)["personas"]
+             if x["id"] == uid][0]
+        self.assertEqual(p["dias"][-1]["d"], self.ahora.date().isoformat(),
+                         "la tira no llega hasta hoy: las ventanas miran el pasado")
+
+    def test_y_lo_de_ayer_sigue_entrando(self):
+        """El contraveneno: que el arreglo no corte también lo reciente."""
+        uid = self._persona()
+        self._con_prueba(uid, arrancó_hace=60)
+        self._importó(uid, hace_dias=1, filas=7)
+        p = [x for x in tr.progreso(self.conn, days=90)["personas"]
+             if x["id"] == uid][0]
+        self.assertEqual(p["ventanas"]["3"]["filas"], 7)
+
+
 class LoQueNoSePuedeFechar(Base):
     """⭐ Lo cargado a mano se cuenta, pero nunca se reparte por día."""
 
@@ -570,6 +606,22 @@ class ElResumenDeLaTanda(Base):
         self.assertEqual(r["dias_aviso"], tr.MAIL_AVISO_DIAS_ANTES)
         self.assertEqual(r["por_terminar"], 1)
         self.assertEqual(self._fila(justo)["days_left"], tr.MAIL_AVISO_DIAS_ANTES)
+
+    def test_los_cuatro_pedazos_suman_la_tanda_entera(self):
+        """⭐ La barra de "dónde está cada una" se dibuja con cuatro tramos. Si
+        no suman el total, la barra queda corta y nadie sabe quién falta."""
+        for hace in (2, tr.TRIAL_PRO_DAYS + 2, tr.TRIAL_TOTAL_DAYS + 2):
+            uid = self._persona()
+            self._con_prueba(uid, arrancó_hace=hace)
+        pago = self._persona()
+        self._con_prueba(pago, arrancó_hace=5)
+        self._pagó(pago)
+
+        r = self._res()
+        self.assertEqual(
+            r["en_pro"] + r["en_plus"] + r["pagaron"] + r["terminadas_sin_pagar"],
+            r["total"], "los cuatro tramos de la barra no suman la tanda")
+        self.assertGreaterEqual(r["terminadas_sin_pagar"], 0)
 
     def test_pro_y_plus_parten_a_los_que_estan_probando(self):
         en_pro = self._persona()

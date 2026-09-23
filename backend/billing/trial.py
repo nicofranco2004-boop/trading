@@ -1371,17 +1371,29 @@ def _sql_dia(col: str) -> str:
 
 
 def _rango_de_dias(desde: str, hasta: str) -> list:
-    """Todos los días entre dos fechas, las dos incluidas.
+    """Todos los días entre dos fechas, las dos incluidas, terminando en
+    `hasta`. Si no entran en el tope, se recortan los MÁS VIEJOS.
 
-    Los días SIN actividad tienen que existir igual: el hueco es justamente lo
-    que se quiere ver."""
+    ⚠️ Recortar por el otro lado es un bug caro y silencioso: las ventanas se
+    calculan como "los últimos N días de la tira", así que una tira que arranca
+    en el día 1 de una prueba de hace dos meses y se corta a los 45 hace que
+    «los últimos 3 días» miren el día 43 de esa prueba. El panel diría "cargó
+    90 filas hoy" con una importación de hace dos meses, y al revés: una carga
+    de ayer no aparecería en ninguna ventana. Reproducido con la ventana de 90
+    días del selector.
+
+    Los días SIN actividad tienen que existir igual: el hueco es el dato."""
     try:
         d = datetime.fromisoformat(str(desde)).date()
         fin = datetime.fromisoformat(str(hasta)).date()
     except (TypeError, ValueError):
         return []
+    # El piso: como mucho _TOPE_TIRA días hacia atrás desde el final.
+    piso = fin - timedelta(days=_TOPE_TIRA - 1)
+    if d < piso:
+        d = piso
     dias = []
-    while d <= fin and len(dias) < _TOPE_TIRA:
+    while d <= fin:
         dias.append(d.isoformat())
         d += timedelta(days=1)
     return dias
@@ -1440,7 +1452,13 @@ def _brokers_de(conn, uid: int) -> int:
 
     Va por `count_broker_accounts` y no por un COUNT(*) a `brokers`: el
     sub-broker en dólares es una fila más pero NO es una cuenta más, y el panel
-    tiene que decir el mismo número que la persona ve en su Cartera."""
+    tiene que decir el mismo número que la persona ve en su Cartera.
+
+    Sí, es una consulta por persona en vez de una agrupada para toda la tanda.
+    Es a propósito: agruparla obliga a reescribir la condición acá, y esa
+    condición tiene UN solo dueño —`count_broker_accounts`— porque ya pasó que
+    dos copias contaran distinto y a alguien le comieran un cupo que pagó. Son
+    COUNTs indexados sobre un tope de 200 filas en una pantalla de admin."""
     try:
         from ai.plan import count_broker_accounts
         return int(count_broker_accounts(conn, uid) or 0)
@@ -1449,7 +1467,7 @@ def _brokers_de(conn, uid: int) -> int:
         return 0
 
 
-def progreso(conn, days: int = 30, limit: int = 120) -> dict:
+def progreso(conn, days: int = 30, limit: int = 200) -> dict:
     """Persona por persona: cuándo arrancó, cuánto le queda y si avanza.
 
     `days` cuenta hacia atrás desde hoy: entran las pruebas vivas y las que
@@ -1468,6 +1486,8 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
         "total_dias": TRIAL_TOTAL_DAYS,
         "dias_pro": TRIAL_PRO_DAYS,
         "activas": 0,
+        "total_en_ventana": 0,
+        "truncado": False,
         "personas": [],
     }
 
@@ -1484,6 +1504,11 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
         log.warning("progreso: no se pudo leer la cohorte: %s", ex)
         return salida
 
+    # ⚠️ Si la tanda no entra entera, el resumen se calcula sobre lo que SÍ
+    # entró — así que hay que decirlo. Un total que miente por lo bajo sin
+    # avisar es peor que no mostrarlo: se toman decisiones con él.
+    salida["total_en_ventana"] = len(filas)
+    salida["truncado"] = len(filas) > max(1, limit)
     filas = filas[:max(1, limit)]
     if not filas:
         return salida
@@ -1491,8 +1516,11 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
     ids = [int(r["id"]) for r in filas]
     ph = ",".join("?" for _ in ids)
     # El día más viejo que hay que traer: el arranque de la prueba más antigua
-    # de la tanda. Pedir desde más acá deja la tira con agujeros al principio.
-    primer_dia = min((_dia_de(r["trial_started_at"]) or hoy) for r in filas)
+    # de la tanda, pero nunca más atrás de donde empieza la tira — traer meses
+    # de actividad que después se descarta es trabajo de la base para nada.
+    tope_tira = (ahora.date() - timedelta(days=_TOPE_TIRA - 1)).isoformat()
+    primer_dia = max(tope_tira,
+                     min((_dia_de(r["trial_started_at"]) or hoy) for r in filas))
 
     # ── Actividad por persona y por día ─────────────────────────────────────
     # Un diccionario (uid, día) → contadores. Tres consultas para TODA la
@@ -1527,8 +1555,8 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
 
     try:
         for r in conn.execute(
-            f"""SELECT user_id uid, date d,
-                       COALESCE(analyses_count,0) + COALESCE(chat_count,0) ia
+            f"""SELECT user_id AS uid, date AS d,
+                       COALESCE(analyses_count,0) + COALESCE(chat_count,0) AS ia
                   FROM ai_usage_daily
                  WHERE user_id IN ({ph}) AND date >= ?""", (*ids, primer_dia)):
             _celda(r["uid"], r["d"])["ia"] += int(r["ia"] or 0)
@@ -1675,10 +1703,6 @@ def progreso(conn, days: int = 30, limit: int = 120) -> dict:
             },
             "dias": dias,
             "ventanas": {str(n): _sumar_dias(dias[-n:]) for n in VENTANAS_PROGRESO},
-            # Todo lo que hizo desde que arrancó, sin ventana: el resumen de la
-            # prueba entera.
-            "en_la_prueba": _sumar_dias(
-                [d for d in dias if not fin_dia or d["d"] <= fin_dia]),
             "ultimo_login": ultimo_login.get(uid),
             "ultima_importacion": ultimo_import.get(uid),
             "estado_uso": _estado_de_uso(dias, tiene_datos),
@@ -1737,4 +1761,12 @@ def _resumen(personas: list, pagaron: set) -> dict:
                             if p["days_left"] <= MAIL_AVISO_DIAS_ANTES),
         "dias_aviso": MAIL_AVISO_DIAS_ANTES,
         "pagaron": sum(1 for p in personas if p["estado"] == "pago"),
+        # ⭐ El cuarto pedazo de la barra, calculado por RESTA y no por su
+        # propia consulta. Así los cuatro tramos —en Pro, en Plus, pagaron y
+        # esto— suman el total EXACTO por construcción, y la barra no puede
+        # quedar corta. Con una cuenta propia se escapaba un caso raro (alguien
+        # cuyo crédito vigente ya no es el de la prueba antes de vencerse) y la
+        # barra se dibujaba al 95% sin que nada avisara.
+        "terminadas_sin_pagar": (len(personas) - len(activas)
+                                 - sum(1 for p in personas if p["estado"] == "pago")),
     }
