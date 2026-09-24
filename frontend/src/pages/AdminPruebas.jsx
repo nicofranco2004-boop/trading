@@ -322,12 +322,8 @@ function Resumen({ r, personas, days }) {
         />
         <Tasa
           label="Conversión" valor={r.tasa_conversion} tono="text-rendi-pos"
-          de={`${r.convirtieron} de ${r.terminadas} que ya terminaron`}
-          def={`Sobre las pruebas VENCIDAS por fecha, no sobre todas: el que sigue probando todavía no tuvo su chance de decidir.${
-            r.pagaron > r.convirtieron
-              ? ` Ojo: ${r.pagaron - r.convirtieron} pagaron a mitad de la prueba y entran a esta cuenta cuando llegue su fecha de fin — es la misma regla que usa el embudo, para que el de arriba y el de abajo hablen siempre de la misma gente.`
-              : ''
-          }`}
+          de={`${r.convirtieron} de ${r.decidieron} que ya decidieron`}
+          def="Sobre los que YA DECIDIERON: se les venció la prueba sin pagar, o pagaron. El que sigue probando y no pagó todavía no tuvo su chance, y meterlo abajo hace que el número parezca peor de lo que es. Pagar cuenta el día que se paga, no el día que se habría vencido — es la misma regla que el embudo de arriba."
         />
       </div>
 

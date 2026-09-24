@@ -534,34 +534,52 @@ class TrialEmbudo(TrialBase):
         self.assertEqual(f["en_curso"], 2)
         self.assertEqual(f["terminados"], 0)
 
-    def test_la_tasa_cerrada_ignora_a_los_que_siguen_probando(self):
+    def test_el_que_sigue_probando_y_no_pago_no_entra_en_el_denominador(self):
+        """Todavía no tuvo su chance de decidir: contarlo abajo hace que el
+        número parezca peor de lo que es."""
         terminado = self._otro("term@rendi.test", dias_atras=20)   # ya terminó
         self._otro("curso@rendi.test")                              # en curso
         # El cobro tiene que quedar DESPUÉS del arranque del trial para contar.
         self._suscribir(terminado, cuando=datetime.utcnow() - timedelta(days=5))
         f = tr.funnel(self.conn)
         self.assertEqual(f["convirtieron"], 1)
-        self.assertEqual(f["terminados"], 1)
-        # 1 de 1 que terminó = 100%, aunque sobre el total sea 50%.
-        self.assertEqual(f["pct_conversion_cerrada"], 100.0)
+        self.assertEqual(f["decidieron"], 1, "el que sigue probando se coló abajo")
+        # 1 de 1 que decidió = 100%, aunque sobre el total sea 50%.
+        self.assertEqual(f["pct_conversion"], 100.0)
         self.assertEqual(f["pct_convirtieron"], 50.0)
 
-    def test_la_tasa_cerrada_nunca_pasa_de_100(self):
-        # Numerador y denominador tienen que hablar de la MISMA gente: si se
-        # cuentan las conversiones de los que siguen probando contra los que ya
-        # terminaron, el número se va arriba de 100 justo cuando el trial anda
-        # bien (mucha conversión temprana) — audit 2026-08-10.
+    def test_el_que_paga_a_mitad_de_la_prueba_cuenta_el_dia_que_paga(self):
+        """⭐ Pagar ES la decisión. Antes el denominador eran sólo las pruebas
+        vencidas POR FECHA, así que el que pagaba el día 8 quedaba fuera del
+        numerador Y del denominador hasta que le llegara su fecha de fin: con 3
+        pagando y 1 vencido sin pagar, el panel decía 0%. Un número que nadie
+        puede creer, y con el que se deja de creer todo lo demás.
+
+        Lo que NO cambia y este test sigue protegiendo: numerador y denominador
+        hablan de la misma gente, así que la tasa no puede pasar de 100 — que
+        es como se rompía antes, justo cuando el trial andaba bien (audit
+        2026-08-10)."""
         for i in range(3):                       # 3 en curso, todos convierten
             u = self._otro(f"curso{i}@rendi.test")
             self._suscribir(u)
-        term = self._otro("term2@rendi.test", dias_atras=20)   # 1 terminado, no convierte
+        self._otro("term2@rendi.test", dias_atras=20)   # 1 vencido, no convierte
         self.conn.commit()
         f = tr.funnel(self.conn)
         self.assertEqual(f["terminados"], 1)
-        self.assertEqual(f["convirtieron"], 3)          # total, incluye en curso
-        self.assertEqual(f["convirtieron_cerrados"], 0) # de los terminados, ninguno
-        self.assertEqual(f["pct_conversion_cerrada"], 0.0)
-        self.assertLessEqual(f["pct_conversion_cerrada"], 100.0)
+        self.assertEqual(f["convirtieron"], 3)
+        # Los 4 ya decidieron: 1 dejó vencer la prueba y 3 pusieron la plata.
+        self.assertEqual(f["decidieron"], 4)
+        self.assertEqual(f["pct_conversion"], 75.0)
+        self.assertLessEqual(f["pct_conversion"], 100.0)
+
+    def test_el_que_pago_Y_ademas_vencio_se_cuenta_una_sola_vez(self):
+        """El denominador es una UNIÓN, no una suma: si el que pagó y además se
+        le venció entrara dos veces, la tasa se hundiría sola."""
+        u = self._otro("ambos@rendi.test", dias_atras=20)        # vencido
+        self._suscribir(u, cuando=datetime.utcnow() - timedelta(days=5))
+        f = tr.funnel(self.conn)
+        self.assertEqual(f["decidieron"], 1, "se contó dos veces a la misma persona")
+        self.assertEqual(f["pct_conversion"], 100.0)
 
     def test_cuenta_el_import_del_mismo_dia_que_activo(self):
         # Los formatos de fecha no coinciden (uno con 'T', otro con espacio) y
@@ -605,4 +623,4 @@ class TrialEmbudo(TrialBase):
         f = tr.funnel(self.conn)
         self.assertEqual(f["activados"], 0)
         self.assertIsNone(f["pct_convirtieron"])
-        self.assertIsNone(f["pct_conversion_cerrada"])
+        self.assertIsNone(f["pct_conversion"])

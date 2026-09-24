@@ -192,11 +192,16 @@ class EmbudoDelTrial(unittest.TestCase):
         self.assertEqual(c["despues"], 1)
         self.assertEqual(sum(c.values()), f["convirtieron"])
 
-    def test_la_conversion_cerrada_no_puede_pasar_de_cien(self):
+    def test_la_conversion_no_puede_pasar_de_cien(self):
+        """El numerador son los que pagaron y el denominador los que ya
+        decidieron —vencidos sin pagar, más los que pagaron—, así que el
+        primero está contenido en el segundo por construcción."""
         f = self._funnel(90)
-        self.assertLessEqual(f["convirtieron_cerrados"], f["terminados"])
-        if f["pct_conversion_cerrada"] is not None:
-            self.assertLessEqual(f["pct_conversion_cerrada"], 100.0)
+        self.assertLessEqual(f["convirtieron"], f["decidieron"])
+        # Y nadie decide dos veces: no puede haber más decididos que activados.
+        self.assertLessEqual(f["decidieron"], f["activados"])
+        if f["pct_conversion"] is not None:
+            self.assertLessEqual(f["pct_conversion"], 100.0)
 
     # ── ⭐ lo nuevo: quiénes la tienen ACTIVA ahora ──────────────────────────
 
@@ -275,7 +280,7 @@ class EmbudoDelTrial(unittest.TestCase):
             # Los 3 abandonos NO suman: convirtieron sigue siendo los 4 que pagaron.
             self.assertEqual(f["convirtieron"], 4,
                              "un checkout abandonado se está contando como conversión")
-            self.assertLessEqual(f["pct_conversion_cerrada"] or 0, 100.0)
+            self.assertLessEqual(f["pct_conversion"] or 0, 100.0)
         finally:
             for uid in ids:
                 self.conn.execute("DELETE FROM subscriptions WHERE user_id=?", (uid,))
@@ -334,7 +339,15 @@ class EmbudoDelTrial(unittest.TestCase):
         exista trial_started_at. Con la ventana por instante quedaba excluido
         por definición justo el caso más común, y el paso 'la app con datos
         adentro' mostraba 20% donde la respuesta era 100%."""
-        ini = self.ahora - timedelta(days=20)
+        # ⏰ Al MEDIODÍA y no "hace 20 días a esta hora". El embudo compara por
+        # DÍA (decisión documentada: así entra el import que disparó la prueba),
+        # y el batch de este test nace 4 minutos ANTES del arranque. Corriendo la
+        # suite en los primeros 4 minutos de un día UTC, esos 4 minutos caían en
+        # el día anterior y el test se ponía rojo solo — sin que nada estuviera
+        # mal. Reproducido a las 00:00 UTC, y también con el código de antes de
+        # tocar el embudo.
+        ini = (self.ahora - timedelta(days=20)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
         fin = ini + timedelta(days=tr.TRIAL_TOTAL_DAYS)
         cur = self.conn.execute(
             """INSERT INTO users (email, password_hash, approved, email_verified, tier,

@@ -1247,14 +1247,24 @@ def funnel(conn, days: int = 90) -> dict:
             WHERE trial_started_at >= ? AND trial_ends_at > ?""", (since, now))
     terminados = max(0, activados - en_curso)
 
-    # Conversiones SOLO de los que ya terminaron: el numerador y el denominador
-    # tienen que hablar de la misma gente. Mezclarlos daba más de 100% justo
-    # cuando el trial funciona bien —mucha conversión temprana— que es cuando
-    # más se mira el número (audit 2026-08-10).
-    convirtieron_cerrados = _one(
+    # ⭐ EL DENOMINADOR SON LOS QUE YA DECIDIERON, y decidir es dos cosas: que
+    # se te haya vencido la prueba sin pagar, o haber pagado.
+    #
+    # El numerador y el denominador tienen que hablar de la misma gente —eso
+    # sigue valiendo, y es lo que evita pasar de 100% (audit 2026-08-10)—, pero
+    # antes el corte era sólo "vencida por fecha", y eso dejaba fuera de LOS DOS
+    # al que paga el día 8, hasta que le llegara su fecha de fin. El panel llegó
+    # a mostrar "2 pagaron · conversión 0%": un número que nadie puede creer, y
+    # con el que se deja de creer todo lo demás. Pagar ES la decisión; esperar
+    # doce días para contarla no la hace más cierta.
+    #
+    # La unión no puede contar dos veces al que pagó Y además ya se le venció:
+    # por eso el sumando son los que pagaron y TODAVÍA NO vencieron.
+    pagaron_sin_vencer = _one(
         f"""SELECT COUNT(DISTINCT u.id) c FROM users u {_PAGO}
-            WHERE u.trial_started_at >= ? AND u.trial_ends_at <= ?
+            WHERE u.trial_started_at >= ? AND u.trial_ends_at > ?
               AND {_DESPUES}""", (since, now))
+    decidieron = terminados + pagaron_sin_vencer
 
     # ¿En qué momento pagan? Dice si conviene mover el corte de Pro o los avisos.
     #
@@ -1296,10 +1306,12 @@ def funnel(conn, days: int = 90) -> dict:
         "pct_importaron": _pct(importaron, activados),
         "pct_usaron_ia": _pct(usaron_ia, activados),
         "pct_convirtieron": _pct(convirtieron, activados),
-        # La tasa que de verdad mide el trial: sobre los que lo TERMINARON
-        # (los que están en curso todavía no tuvieron su chance de decidir).
-        "convirtieron_cerrados": convirtieron_cerrados,
-        "pct_conversion_cerrada": _pct(convirtieron_cerrados, terminados),
+        # La tasa que de verdad mide el trial: sobre los que YA DECIDIERON —
+        # se les venció sin pagar, o pagaron. El que sigue probando y no pagó
+        # todavía no tuvo su chance, y meterlo abajo hace que el número
+        # parezca peor de lo que es.
+        "decidieron": decidieron,
+        "pct_conversion": _pct(convirtieron, decidieron),
         "cuando_pagan": etapas,
         # QUIÉNES la tienen corriendo ahora. `en_curso` de arriba cuenta por
         # fecha y se lleva puestos a los que ya pagaron; esto usa el mismo
@@ -1783,11 +1795,20 @@ def _resumen(personas: list, pagaron: set) -> dict:
     # con una sola prueba viva y una vieja.
     base_abandono = [p for p in activas if p["estado_uso"] != "sin_datos"]
     frenados = [p for p in base_abandono if p["estado_uso"] == "frenado"]
-    # El denominador de la conversión son las pruebas VENCIDAS por fecha, igual
-    # que en el embudo: el que sigue probando todavía no tuvo su chance de
-    # decidir, y meterlo abajo hace que el número parezca peor de lo que es.
+    # ⭐ El denominador de la conversión son LOS QUE YA DECIDIERON, y decidir
+    # es dos cosas: que se te haya vencido la prueba sin pagar, o haber pagado.
+    #
+    # Antes era sólo "vencida por fecha", y eso dejaba al que paga el día 8
+    # fuera del numerador Y del denominador hasta que le llegara su fecha de
+    # fin: la pantalla llegó a decir "2 pagaron · conversión 0%", que es un
+    # número que nadie puede creer y hace desconfiar del panel entero. Pagar ES
+    # la decisión; esperar doce días para contarla no la hace más cierta.
+    #
+    # La unión se arma sin contar dos veces: el que pagó y ADEMÁS se le venció
+    # entra una sola vez.
+    decidieron = [p for p in personas if p["vencida"] or p["id"] in pagaron]
+    convirtieron = [p for p in personas if p["id"] in pagaron]
     cerradas = [p for p in personas if p["vencida"]]
-    convirtieron = [p for p in cerradas if p["id"] in pagaron]
 
     return {
         "total": len(personas),
@@ -1798,8 +1819,9 @@ def _resumen(personas: list, pagaron: set) -> dict:
         "base_abandono": len(base_abandono),
         "tasa_abandono": _pct(len(frenados), len(base_abandono)),
         "terminadas": len(cerradas),
+        "decidieron": len(decidieron),
         "convirtieron": len(convirtieron),
-        "tasa_conversion": _pct(len(convirtieron), len(cerradas)),
+        "tasa_conversion": _pct(len(convirtieron), len(decidieron)),
         "en_curso": len(activas),
         "en_pro": sum(1 for p in activas if p["stage"] != "plus"),
         "en_plus": sum(1 for p in activas if p["stage"] == "plus"),

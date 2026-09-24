@@ -28625,10 +28625,11 @@ def admin_trial_funnel(days: int = 90, uid: int = Depends(get_admin_user)):
     """Embudo del free trial: activaron → importaron → usaron la IA →
     convirtieron, más en qué momento pagan. Todo sale de lo que ya se guarda.
 
-    La tasa que importa es `pct_conversion_cerrada` (sobre los que TERMINARON
-    el trial): los que están en curso todavía no tuvieron su chance de
-    decidir, y meterlos en el denominador hace que el número parezca peor de
-    lo que es."""
+    La tasa que importa es `pct_conversion` (sobre los que YA DECIDIERON: se
+    les venció la prueba sin pagar, o pagaron). El que sigue probando y no pagó
+    todavía no tuvo su chance de decidir, y meterlo en el denominador hace que
+    el número parezca peor de lo que es.
+    """
     if days < 1 or days > 730:
         raise HTTPException(422, "days debe estar entre 1 y 730")
     from billing import trial as _trial

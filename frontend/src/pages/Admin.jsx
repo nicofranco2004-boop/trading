@@ -3562,7 +3562,7 @@ function TrialFunnelPanel({ data }) {
   const {
     activados, en_curso: enCurso, terminados, importaron, usaron_ia: usaronIa,
     convirtieron, pct_importaron: pctImp, pct_usaron_ia: pctIa,
-    pct_conversion_cerrada: pctCerrada, cuando_pagan: cuando,
+    pct_conversion: pctConv, decidieron, cuando_pagan: cuando,
     enabled, monthly_cap: cap, activados_este_mes: esteMes, days,
     pro_upsell: upsell,
   } = data
@@ -3606,12 +3606,12 @@ function TrialFunnelPanel({ data }) {
       </div>
 
       <div className="mt-3 pt-3 border-t border-line flex items-baseline gap-2 flex-wrap">
-        <span className="text-sm text-ink-2">Conversión sobre los que terminaron:</span>
+        <span className="text-sm text-ink-2">Conversión sobre los que ya decidieron:</span>
         <span className="text-lg font-semibold text-ink-0 tabular-nums">
-          {pctCerrada != null ? `${pctTxt(pctCerrada)}` : '—'}
+          {pctConv != null ? `${pctTxt(pctConv)}` : '—'}
         </span>
         <span className="text-[11px] text-ink-3">
-          (los que siguen probando todavía no decidieron)
+          ({decidieron ?? 0} decidieron: se les venció sin pagar, o pagaron)
         </span>
       </div>
 
@@ -3729,7 +3729,7 @@ function PruebasResumen({ data }) {
         <ConvCell label="Tasa de uso" value={pctTxt(r.tasa_uso)}
                   hint={`${r.con_datos} de ${r.total} cargaron datos`} />
         <ConvCell label="Conversión" value={pctTxt(r.tasa_conversion)}
-                  hint={`${r.convirtieron} de ${r.terminadas} terminadas`} />
+                  hint={`${r.convirtieron} de ${r.decidieron} que ya decidieron`} />
       </div>
 
       {r.sin_datos > 0 && (
