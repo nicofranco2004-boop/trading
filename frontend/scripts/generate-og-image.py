@@ -48,7 +48,18 @@ ROJO      = (255, 83, 96)     # #FF5360  rendi-neg
 AQUI   = Path(__file__).parent
 FUENTES = AQUI.parent.parent / 'design' / 'fonts'
 LOGOS   = AQUI.parent / 'public' / 'logos'
-OUT     = AQUI.parent / 'public' / 'og-image.png'
+# ⚠️ EL NOMBRE LLEVA VERSIÓN, Y NO ES UN CAPRICHO. Las redes cachean la imagen
+# por URL, y X no tiene —desde que retiró el Card Validator— ninguna forma de
+# pedirle que la vuelva a leer: su copia vieja vive días. Con el nombre fijo,
+# cambiar el dibujo no cambia nada de lo que ve la gente, y eso es exactamente
+# lo que pasó: la imagen nueva estaba servida y X seguía mostrando la que
+# ofrecía un plan gratis y precios en dólares de hace meses.
+#
+# Cambiar el arte = subir la versión acá Y en los dos lugares que la nombran
+# (`index.html` y `PageMeta.jsx`). El test no deja que se desincronicen.
+# El archivo viejo NO se borra: los posteos que ya salieron apuntan ahí.
+OG_VERSION = 'v2'
+OUT     = AQUI.parent / 'public' / f'og-image-{OG_VERSION}.png'
 
 # Los números que se muestran. Una cartera de ejemplo, coherente entre sí.
 CARTERA_USD   = 'US$ 24.180'

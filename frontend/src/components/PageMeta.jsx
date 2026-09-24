@@ -24,7 +24,11 @@
 import { Helmet } from 'react-helmet-async'
 
 const BASE_URL = 'https://rendi.finance'
-const DEFAULT_OG_IMAGE = '/og-image.png'
+// ⚠️ Versionado a propósito: las redes cachean la imagen por URL y X no tiene
+// forma de purgar la suya. Si cambia el arte, sube la versión en los TRES
+// lugares (acá, `index.html` y `scripts/generate-og-image.py`) — hay un test
+// que no deja que queden distintos.
+const DEFAULT_OG_IMAGE = '/og-image-v2.png'
 
 export default function PageMeta({
   title,
