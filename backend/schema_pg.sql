@@ -2007,6 +2007,7 @@ CREATE INDEX IF NOT EXISTS idx_import_norm_fingerprint ON import_normalized_tx(f
 CREATE INDEX IF NOT EXISTS idx_import_op_links_batch ON import_op_links(batch_id);
 
 CREATE INDEX IF NOT EXISTS idx_import_op_links_op ON import_op_links(operation_id);
+CREATE INDEX IF NOT EXISTS idx_import_op_links_pos ON import_op_links(position_id);
 
 CREATE INDEX IF NOT EXISTS idx_import_raw_rows_batch ON import_raw_rows(batch_id);
 

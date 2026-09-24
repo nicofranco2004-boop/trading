@@ -2793,6 +2793,16 @@ def init_db():
             -- full scan de la tabla — con ~150k links, el panel de migración hacía
             -- timeout al listar candidatos.
             CREATE INDEX IF NOT EXISTS idx_import_op_links_op ON import_op_links(operation_id);
+            -- position_id es el gemelo del de arriba y faltaba, por el mismo motivo
+            -- por el que no se notaba: hasta 2026-09-24 NADIE filtraba por esta
+            -- columna (el revert y los diagnósticos van por batch_id o por
+            -- operation_id). El panel de pruebas la estrenó, para contar lo que se
+            -- cargó A MANO —o sea, las posiciones que NO vienen de ningún lote— y sin
+            -- índice esa consulta hace un scan COMPLETO de la tabla de vínculos por
+            -- cada posición mirada. Medido con 40k posiciones y 300k vínculos: 1,99 s
+            -- sin el índice, 0,00 s con él. En producción /admin se quedaba colgado en
+            -- el esqueleto de carga, sin un solo error.
+            CREATE INDEX IF NOT EXISTS idx_import_op_links_pos ON import_op_links(position_id);
         """)
 
         # Migración: ai_usage_daily.chat_count (agregada al introducir chat tiered).

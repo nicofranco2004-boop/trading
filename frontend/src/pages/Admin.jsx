@@ -54,23 +54,42 @@ export default function Admin() {
   async function load() {
     setLoading(true)
     setError('')
+    // ⭐ El `Promise.all` espera al MÁS LENTO, así que cada cosa que se le
+    // suma acá es una forma nueva de que /admin no abra. Pasó, y feo: el
+    // resumen de las pruebas hacía una consulta sin índice, tardaba minutos, y
+    // la página entera se quedaba en el esqueleto de carga SIN UN SOLO ERROR —
+    // ni en pantalla ni en la consola, porque nada falla: espera.
+    //
+    // Por eso acá adentro va sólo lo que la página NO PUEDE dibujar sin ello.
+    // Todo panel que sea un agregado se pide aparte y se dibuja cuando llega.
     try {
-      const [s, u, c, t, pr] = await Promise.all([
+      const [s, u, c, t] = await Promise.all([
         api.get('/admin/stats'),
         api.get('/admin/users'),
         api.get('/admin/plan/conversion').catch(() => null),  // optional, no romper si falla
         api.get('/admin/billing/trial-funnel?days=90').catch(() => null),
-        api.get('/admin/billing/trial-progress?days=30').catch(() => null),
       ])
       setStats(s)
       setUsers(u)
       setConversion(c)
       setTrialFunnel(t)
-      setTrialProgress(pr)
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
+    }
+    // Sin `await`: la página ya se dibujó y este panel se completa solo.
+    cargarPruebas()
+  }
+
+  async function cargarPruebas() {
+    setTrialProgress(null)
+    try {
+      setTrialProgress(await api.get('/admin/billing/trial-progress?days=30'))
+    } catch (e) {
+      // Que el panel diga que NO PUDO, en vez de quedarse en blanco haciendo
+      // creer que no hay ninguna prueba.
+      setTrialProgress({ error: e?.message || 'no respondió' })
     }
   }
 
@@ -3695,16 +3714,24 @@ function TrialFunnelPanel({ data }) {
 // persona. Acá quedan sólo los cuatro números que se miran de paso y el link,
 // porque un panel de admin que tiene TODO arriba no se lee: se scrollea.
 function PruebasResumen({ data }) {
-  // Sin respuesta, el backend que está corriendo es viejo. Decirlo es más útil
-  // que no mostrar nada, que vuelve indistinguible "no hay nadie probando" de
-  // "esto está roto".
-  if (!data?.resumen) {
+  // Tres estados distintos, y confundirlos ya costó caro: TODAVÍA NO LLEGÓ,
+  // NO PUDO, y llegó vacío. El panel se pide aparte de la página justamente
+  // para que el primero no congele nada, así que tiene que poder mostrarse.
+  if (!data) {
     return (
       <section className="bg-bg-1 border border-line rounded-lg p-5 mb-5">
         <h2 className="text-sm font-semibold text-ink-0 mb-1">Pruebas</h2>
-        <p className="text-[11px] text-ink-3">
-          El backend que está corriendo no responde el seguimiento de pruebas. Revisá que el
-          último deploy haya levantado.
+        <p className="text-[11px] text-ink-3">Buscando…</p>
+      </section>
+    )
+  }
+  if (!data.resumen) {
+    return (
+      <section className="bg-bg-1 border border-line rounded-lg p-5 mb-5">
+        <h2 className="text-sm font-semibold text-ink-0 mb-1">Pruebas</h2>
+        <p className="text-[11px] text-rendi-warn">
+          No se pudo traer el seguimiento de pruebas{data.error ? `: ${data.error}` : ''}.
+          El resto del panel está bien — esto sólo afecta a este bloque.
         </p>
       </section>
     )

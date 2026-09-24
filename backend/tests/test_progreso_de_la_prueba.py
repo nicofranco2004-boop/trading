@@ -722,6 +722,50 @@ class LosTresBugsDeCalculo(Base):
         self.assertEqual(p["estado_uso"], "frenado")
 
 
+class ElPanelNoPuedeColGARLaPagina(Base):
+    """⭐ 2026-09-24, en producción: /admin se quedaba en el esqueleto de carga,
+    para siempre, SIN UN SOLO ERROR — ni en pantalla ni en la consola. Nada
+    fallaba: una consulta de este panel tardaba minutos y la página la
+    esperaba.
+
+    La causa: `import_op_links.position_id` era la única columna de esa tabla
+    sin índice, porque hasta este panel NADIE había filtrado por ella (el
+    revert y los diagnósticos van por `batch_id` o por `operation_id`, y los
+    dos SÍ tienen el suyo — con un comentario que dice que se agregaron por
+    exactamente este mismo timeout). Sin índice, SQLite escanea la tabla de
+    vínculos entera por cada posición.
+
+    Un scan no se puede vigilar con un assert sobre el resultado, porque el
+    resultado es CORRECTO: sólo tarda. Por eso el test le pide el PLAN a
+    SQLite."""
+
+    def test_contar_lo_cargado_a_mano_usa_el_indice_y_no_escanea(self):
+        """⚠️ El plan nombra el ALIAS («SCAN l»), no la tabla. La primera
+        versión de este test buscaba "SCAN import_op_links" y por eso no se
+        habría puesto en rojo NUNCA: comprobado a mano borrando el índice."""
+        import re
+        sql = tr.sql_posiciones_a_mano("?")
+        plan = " ".join(str(f[-1]) for f in
+                        self.conn.execute("EXPLAIN QUERY PLAN " + sql, (1,)).fetchall())
+        self.assertIn(
+            "idx_import_op_links_pos", plan,
+            f"la consulta dejó de usar el índice de position_id.\nPlan: {plan}")
+        self.assertIsNone(
+            re.search(r"\bSCAN l\b", plan),
+            f"volvió el scan completo de los vínculos.\nPlan: {plan}")
+
+    def test_el_indice_existe_en_la_base(self):
+        """Por si alguien reescribe la consulta: el índice tiene que seguir ahí
+        igual, porque es de la tabla y no de esta consulta."""
+        idx = {r[0] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='import_op_links'")}
+        self.assertIn("idx_import_op_links_pos", idx)
+        # Y los dos hermanos, que ya estaban y por el mismo motivo.
+        self.assertIn("idx_import_op_links_op", idx)
+        self.assertIn("idx_import_op_links_batch", idx)
+
+
 class LosDosPanelesCuentanLaMismaGente(Base):
     """⭐ /admin muestra el embudo y la tabla muestra las pruebas. Los dos dicen
     cuántas están corriendo AHORA, por caminos distintos: el embudo barre todos

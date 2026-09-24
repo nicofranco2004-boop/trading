@@ -1491,6 +1491,27 @@ def _brokers_de(conn, uid: int) -> int:
         return 0
 
 
+def sql_posiciones_a_mano(ph: str) -> str:
+    """Las posiciones que NO vienen de ningún lote: lo cargado a mano.
+
+    ⚠️ ESTA CONSULTA TUMBÓ /admin EL 2026-09-24 y no por su culpa: filtra por
+    `import_op_links.position_id`, y esa columna era la ÚNICA de la tabla sin
+    índice —nadie había filtrado por ella antes—, así que SQLite escaneaba la
+    tabla de vínculos ENTERA por cada posición mirada. Medido con 40k
+    posiciones y 300k vínculos: 1,99 s sin índice contra 0,00 s con él, y en
+    producción la página se quedaba colgada en el esqueleto sin un solo error.
+
+    Vive en una función y no adentro de `progreso` para que el test pueda
+    pedirle el PLAN a SQLite y ponerse en rojo el día que el índice
+    desaparezca: es la única forma de vigilar un scan, porque un scan no falla
+    — sólo tarda."""
+    return f"""SELECT p.user_id uid, COUNT(*) n FROM positions p
+                WHERE p.user_id IN ({ph}) AND COALESCE(p.is_cash,0) = 0
+                  AND NOT EXISTS (SELECT 1 FROM import_op_links l
+                                   WHERE l.position_id = p.id)
+                GROUP BY p.user_id"""
+
+
 def progreso(conn, days: int = 30, limit: int = 200, detalle: bool = False) -> dict:
     """Persona por persona: cuándo arrancó, cuánto le queda y si avanza.
 
@@ -1639,12 +1660,7 @@ def progreso(conn, days: int = 30, limit: int = 200, detalle: bool = False) -> d
     # Van las DOS tablas y no sólo las posiciones: una venta registrada por el
     # chat del Coach también es una carga a mano, y contando sólo `positions`
     # esa persona se leía como que no había hecho nada.
-    a_mano = _conteo("posiciones a mano",
-        f"""SELECT p.user_id uid, COUNT(*) n FROM positions p
-             WHERE p.user_id IN ({ph}) AND COALESCE(p.is_cash,0) = 0
-               AND NOT EXISTS (SELECT 1 FROM import_op_links l
-                                WHERE l.position_id = p.id)
-             GROUP BY p.user_id""", tuple(ids))
+    a_mano = _conteo("posiciones a mano", sql_posiciones_a_mano(ph), tuple(ids))
     for uid_, n in _conteo("operaciones a mano",
         f"""SELECT o.user_id uid, COUNT(*) n FROM operations o
              WHERE o.user_id IN ({ph})
