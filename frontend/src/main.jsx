@@ -10,12 +10,9 @@ import { initMetaPixel } from './utils/metaPixel'
 import { isChunkLoadError, urlsAReparar, repararAssets } from './utils/chunkErrors'
 import './index.css'
 
-// Inicializar GA4 al arranque. No-op si VITE_GA_MEASUREMENT_ID no está seteada
-// (dev local, o si decidimos no usar tracking).
+// Inicializar GA4 y el Meta Pixel (Facebook/Instagram Ads) al arranque.
+// No-op fuera de rendi.finance (servidor local, previews): ver utils/medicion.js.
 initAnalytics()
-
-// Inicializar Meta Pixel (Facebook/Instagram Ads). No-op mientras META_PIXEL_ID
-// esté vacío en utils/metaPixel.js (o sea, hasta que tengamos la cuenta Meta).
 initMetaPixel()
 
 // ─── Auto-reload on stale chunk error ────────────────────────────────────────
