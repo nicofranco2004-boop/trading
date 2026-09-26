@@ -13,6 +13,7 @@ uno por uno, los criterios de aceptación de la ronda.
 """
 import calendar
 import datetime as _d
+import json
 import os
 import tempfile
 import unittest
@@ -387,7 +388,10 @@ class NingunLectorPublicaLaBrechaTest(_Base):
         self.cron("2026-07-10", self.MERCADO)
         d = insights_drawdown.build(self.conn, self.uid, window_days=365)
         self.assertNotEqual(d.get("max_pct"), -47.26)
-        self.assertNotEqual(d.get("peak_value"), self.COSTO)
+        # El pico inventado (la foto al costo) no puede viajar al modelo por
+        # NINGÚN campo. Antes se miraba `peak_value`, que ya no existe: la
+        # comparación pasaba siempre y no controlaba nada.
+        self.assertNotIn("13957", json.dumps(d))
 
 
 class LosGuardsDelAsesorMiranElDatoTest(_Base):

@@ -198,7 +198,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # ── 3) Computar card específica (lógica mínima por code) ──────────────
     # Para cada code, calculamos los datos crudos. El LLM se encarga del
     # razonamiento, no precisamos formatear como hace profileMatch.js.
-    card_data = _build_card_data(code, profile_declared, positions, brokers, operations, conn, user_id, tc_blue, tc_mep)
+    card_data = _build_card_data(code, profile_declared, positions, brokers, operations, conn, user_id, tc_blue, tc_mep,
+                                 pantalla=kwargs)
 
     return {
         "screen": "profile.card",
@@ -226,6 +227,7 @@ def _build_card_data(
     user_id: int,
     tc_blue: float,
     tc_mep: float | None = None,
+    pantalla: dict | None = None,
 ) -> dict:
     """Devuelve { status, declared, actual, comparison } según el code.
 
@@ -334,13 +336,35 @@ def _build_card_data(
         }
 
     if code == "drawdown":
-        # Drawdown real requiere el cómputo de TWRR que vive en frontend.
-        # Para el LLM le damos el preferido + un nota de que el drawdown real
-        # no está en el packet (queda como limitación honesta del builder).
+        # La caída REAL, la misma que muestra la card "Caída tolerada vs real"
+        # (`drawdown.max` de la pantalla = `/insights/performance`). Antes el
+        # paquete decía "no disponible en backend" porque vivía en el frontend;
+        # desde `caida_medida` el servidor la mide con el mismo motor y con la
+        # moneda, el modo y el valor de ahora que manda la pantalla (`pantalla`).
+        # El cruce con la tolerancia declarada NO se replica acá: vive en
+        # `computeDrawdownTolerance` (profileMatch.js) y una segunda copia es cómo
+        # dos números se separan. El modelo recibe las dos puntas.
+        from . import caida_medida
+        _p = pantalla or {}
+        m = caida_medida.medir(conn, user_id, moneda=_p.get("moneda"),
+                               valor_live=_p.get("valor_live"), modo=_p.get("modo"))
         return {
-            "status": "ready",
+            "status": "ready" if m.get("max_pct") is not None else "no_data",
             "declared": {"drawdown_preference": profile.get("drawdown")},
-            "actual": {"note": "drawdown_max_pct no disponible en backend builder — el user ve el valor en pantalla"},
+            "actual": {
+                # Sin la palabra "rendimiento" a propósito: el paquete del perfil
+                # no lleva números de retorno (test_ai_profile_crosses, el −64,9 %
+                # fantasma). Esto es una CAÍDA, y así se la presenta.
+                "que_es": ("La peor caída de la cartera desde su máximo y la de hoy, "
+                           "descontando depósitos y retiros (un retiro no es una "
+                           "caída). Son los mismos números que la card de pantalla."),
+                "max_pct": m["max_pct"],          # peor caída de la historia medida
+                "current_pct": m["current_pct"],
+                "moneda": m["moneda"],
+                "medido_desde": m["medido_desde"],
+                "medido_hasta": m["medido_hasta"],
+                "motivo": m.get("reason"),        # por qué no hay número, si no lo hay
+            },
             "comparison": None,
         }
 

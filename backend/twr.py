@@ -1368,8 +1368,8 @@ def _aportado_por_punto(conn, uid: int, filas):
     y el día dentro del mes decidido por la estampa.
 
         aportado(d) = clamp( canon(M) − (estampa(rn) − estampa(d)),
-                             min(canon(M−1), canon(M)),
-                             max(canon(M−1), canon(M)) )        rn = última fila de M
+                             canon(M−1) − retiros(M),
+                             canon(M−1) + depósitos(M) )        rn = última fila de M
 
     ⚠️ POR QUÉ ASÍ, DESPUÉS DE DOS INTENTOS FALLIDOS.
 
@@ -1391,12 +1391,33 @@ def _aportado_por_punto(conn, uid: int, filas):
     estampa stale se filtre: cuando el mes no tuvo flujo el corredor colapsa a un
     punto, que es exactamente el caso del import a mitad de mes.
 
+    ⚠️ EL CORREDOR SE ARMA CON LOS FLUJOS BRUTOS DEL MES, NO CON SUS DOS PUNTAS.
+    Hasta 2026-09 era [min, max] de canon(M−1) y canon(M), o sea suponía que
+    dentro de un mes la plata sólo entra o sólo sale. Un mes con un retiro Y un
+    depósito sale de ese rango a mitad de camino: 20.000 → retira 9.000 → deposita
+    5.000 daba el corredor [16.000, 20.000], el día del retiro quedaba "aportado
+    16.000" con la cartera en 11.000, y la tarjeta publicaba −27,8 % de caída y
+    +5,05 % de acumulado con el mercado quieto (no se autocuraba nunca). El camino
+    real de lo aportado dentro del mes está SIEMPRE entre canon(M−1) − retiros(M)
+    y canon(M−1) + depósitos(M). Cuando el mes va en una sola dirección eso es
+    exactamente el corredor anterior, y cuando no tuvo flujos sigue colapsando a
+    un punto: las dos protecciones de arriba quedan intactas.
+
     (El ideal sigue siendo reconstruir el aportado desde las FECHAS REALES de los
     movimientos. Esto NO lo reemplaza — pero tampoco hacía falta esperar a eso.)
     """
     canon = netdep_canonico(conn, uid)
     if canon is None:                      # sin contabilidad: sólo queda la estampa
         return lambda r: float(r["net_deposited"] or 0)
+
+    # Depósitos y retiros BRUTOS de cada mes, de las mismas filas que `canon`.
+    brutos = {}
+    for b in conn.execute(
+            "SELECT year, month, deposits, withdrawals FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (uid,)).fetchall():
+        k = f"{int(b['year']):04d}-{int(b['month']):02d}"
+        d0, w0 = brutos.get(k, (0.0, 0.0))
+        brutos[k] = (d0 + float(b["deposits"] or 0), w0 + float(b["withdrawals"] or 0))
 
     ultimo_del_mes = {}
     for r in filas:
@@ -1417,7 +1438,11 @@ def _aportado_por_punto(conn, uid: int, filas):
         if rn is None:
             return c_m
         v = c_m - (float(rn["net_deposited"] or 0) - float(r["net_deposited"] or 0))
-        lo, hi = (c_prev, c_m) if c_prev <= c_m else (c_m, c_prev)
+        dep, ret = brutos.get(ym, (0.0, 0.0))
+        # Nunca más angosto que el corredor anterior (el `min`/`max` con las dos
+        # puntas cubre un ajuste cargado con signo negativo).
+        lo = min(c_prev, c_m, c_prev - ret)
+        hi = max(c_prev, c_m, c_prev + dep)
         return max(lo, min(hi, v))
     return _en
 
@@ -2135,6 +2160,10 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # respuesta: es la ronda 7 al revés.
     curva = []
     tramos_info = []       # {desde, hasta, twr, dd_max, dd_actual, legs} por tramo
+    # (pico, fecha) del índice PUBLICADO de cada tramo, en paralelo a `tramos_info`.
+    # Es el mismo máximo contra el que se midió el drawdown de cada punto; el
+    # cierre live lo necesita para seguir midiendo contra ÉSE (ver abajo).
+    picos_tramo = []
     idx_ultimo_tramo = 1.0
     # El SEGMENTO DIBUJADO. Es más fino que el tramo: un tramo se parte también
     # donde cambia la BASE, porque ahí la línea no puede seguir de largo. Viaja por
@@ -2392,6 +2421,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         # de un punto no-apto, decía que la medición arrancaba meses antes de
         # donde de verdad arranca.
         _aptos_t = [q for q in tramo if q["apto"]]
+        picos_tramo.append((pico, pico_fecha))
         tramos_info.append({
             "desde": (_aptos_t[0]["date"] if _aptos_t else tramo[0]["date"]),
             "hasta": (_aptos_t[-1]["date"] if _aptos_t else tramo[-1]["date"]),
@@ -2448,13 +2478,19 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         dd_max_fecha = _t["drawdown_maximo_fecha"]
         dd_max_pico_fecha = _t["drawdown_maximo_pico"]
         dd_actual = _t["drawdown_actual"]
-        # `pico` sólo se usa de acá en adelante para el cierre live. El HWM del
-        # tramo es el índice más alto que alcanzó; se recalcula desde la curva
-        # para no depender de en qué punto quedó `idx`.
-        _idxs = [c["index"] for c in curva if c.get("apto")]
-        pico = max(_idxs) if _idxs else 1.0
-        pico_fecha = next((c["date"] for c in curva
-                           if c.get("apto") and c["index"] == pico), None)
+        # `pico` sólo se usa de acá en adelante para el cierre live: es el máximo
+        # del tramo contra el que se mide el drawdown de "hoy".
+        # ⚠️ EL DEL ÍNDICE PUBLICADO, NO EL DEL DIBUJO. Acá se tomaba
+        # `max(c["index"])`, y `index` es la FORMA: encadena también la foto
+        # intradía, así que con un depósito en el medio no coincide con `idx`, que
+        # es el número. El cierre live dividía el índice publicado por el pico del
+        # dibujo: 10.000 → intradía 11.000 → depósito de 10.000 → 21.000, con la
+        # cartera de hoy igual al cierre (mercado quieto), publicaba "caída actual
+        # −3,03 %" donde sin el valor de hoy decía 0,0 %. Se usa el MISMO máximo
+        # que midió el drawdown de cada punto del tramo.
+        pico, pico_fecha = picos_tramo[tramos_info.index(_t)]
+        if pico is None:
+            pico, pico_fecha = 1.0, None
     else:
         # ⚠️ Sin ningún tramo medido (o con la serie partida) el índice se quedó
         # en 1.0 — y devolver eso como `twr: 0.0` / `drawdown: 0.0` es publicar
@@ -2540,7 +2576,14 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # `idx_dib_ultimo_apto`, no `curva[-1]["index"]`: si el último punto es
             # una intradía, su índice ya trae el leg apto→intradía y multiplicarlo
             # por (1+r) contaría la caída de hoy dos veces.
-            _idx_hoy = (idx_dib_ultimo_apto * (1.0 + r)) if modo == MODO_ESTIMADO else idx
+            # ⚠️ Y EN CERTERO TAMBIÉN. `index` es la FORMA; `idx`, el número. Donde
+            # difieren (una foto intradía con un depósito en el medio, o un leg
+            # dudoso que reinició el dibujo) el "hoy" con `idx` le pegaba a la línea
+            # un escalón que nadie vivió: 10.000 → intradía 11.000 → depósito →
+            # 21.000, hoy igual, dibujaba +10,0 % → +6,67 % en un día plano. Es el
+            # mismo cruce de índices que tenía el pico de acá arriba. El número
+            # publicado de "hoy" sigue siendo `idx` (`index_publicado`).
+            _idx_hoy = idx_dib_ultimo_apto * (1.0 + r)
             _ip_hoy = (idx_est * (1.0 + r)) if modo == MODO_ESTIMADO else idx
             curva.append({"date": "hoy", "index": round(_idx_hoy, 6),
                           "index_publicado": round(_ip_hoy, 6),

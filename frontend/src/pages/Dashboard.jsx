@@ -1476,7 +1476,8 @@ function PersonalDashboard() {
         <TopNewsCard />
       </div>
 
-      <MonthlyTeaser />
+      {/* El mes en curso con el MISMO número que la card "Este mes". */}
+      <MonthlyTeaser mesEnCurso={monthlyVar} />
     </div>
   )
 }
