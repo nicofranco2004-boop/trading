@@ -30,7 +30,12 @@ function daysLeftInMonth(year, month) {
   return Math.max(0, lastDay - today.getDate())
 }
 
-export default function MonthlyTeaser() {
+// `mesEnCurso`: el número de la card "Este mes" del Dashboard ({ usd, pct }, o
+// null si no se puede medir). ⚠️ SI LLEGA, MANDA PARA EL MES EN CURSO. El hook
+// mide hasta el último CIERRE guardado (ayer) y la card hasta el valor de
+// AHORA: en la misma pantalla se leía "Septiembre en curso −1,2 %" al lado de
+// "Este mes +0,1 %", y la diferencia era exactamente el movimiento de hoy.
+export default function MonthlyTeaser({ mesEnCurso } = {}) {
   // Reusamos el mismo hook de /reportes — con 'global' como default.
   // Esto incluye un re-fetch en cada mount del Dashboard, pero el costo es
   // bajo (los endpoints son cacheables del lado del browser).
@@ -54,9 +59,14 @@ export default function MonthlyTeaser() {
   // El mes en curso puede no tener un rendimiento calculable todavía (sin baseline
   // MtM en los snapshots) → deltaUsd null. En ese caso mostramos un estado neutro
   // "en curso" sin un número fantasma. Ver useMonthlyData (quick-win C1).
-  const hasDelta = lastMonth.deltaUsd != null
-  const isPositive = hasDelta && lastMonth.deltaUsd >= 0
-  const showPct = hasDelta && lastMonth.deltaPct != null && lastMonth.source !== 'derived'
+  const usaPantalla = isLive && mesEnCurso !== undefined
+  const deltaUsd = usaPantalla ? (mesEnCurso ? mesEnCurso.usd : null) : lastMonth.deltaUsd
+  const deltaFrac = usaPantalla
+    ? (mesEnCurso ? mesEnCurso.pct : null)
+    : (lastMonth.deltaPct != null ? lastMonth.deltaPct / 100 : null)
+  const hasDelta = deltaUsd != null
+  const isPositive = hasDelta && deltaUsd >= 0
+  const showPct = hasDelta && deltaFrac != null && (usaPantalla || lastMonth.source !== 'derived')
 
   const tone = !hasDelta
     ? 'bg-bg-2/40 border-line hover:border-line-2'
@@ -90,13 +100,13 @@ export default function MonthlyTeaser() {
             <span className={`text-base font-semibold tabular ${
               isPositive ? 'text-rendi-pos' : 'text-rendi-neg'
             }`}>
-              {isPositive ? '+' : '−'}USD {usd(Math.abs(lastMonth.deltaUsd))}
+              {isPositive ? '+' : '−'}USD {usd(Math.abs(deltaUsd))}
             </span>
             {showPct && (
               <span className={`text-sm tabular ${
                 isPositive ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
               }`}>
-                ({pctSigned(lastMonth.deltaPct / 100)})
+                ({pctSigned(deltaFrac)})
               </span>
             )}
           </>
