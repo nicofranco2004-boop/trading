@@ -368,30 +368,52 @@ def primera_fecha_con_posiciones(conn, uid: int):
     Se mira la tenencia abierta (`positions.entry_date`) y también la ya cerrada
     (`operations`), porque el usuario que vendió todo es justamente el caso a cubrir.
     """
-    fechas = []
-    for q, args in (
-        ("SELECT MIN(entry_date) AS d FROM positions "
-         "WHERE user_id=? AND COALESCE(is_cash,0)=0 AND entry_date IS NOT NULL", (uid,)),
-        ("SELECT MIN(COALESCE(entry_date, date)) AS d FROM operations "
-         "WHERE user_id=? AND COALESCE(entry_date, date) IS NOT NULL", (uid,)),
+    return primeras_fechas_con_posiciones(conn, [uid]).get(int(uid))
+
+
+def primeras_fechas_con_posiciones(conn, uids) -> dict:
+    """{uid: primera_fecha_con_posiciones(uid)} para muchos usuarios, en TRES
+    consultas en vez de dos por usuario.
+
+    ⚠️ ES LA ÚNICA IMPLEMENTACIÓN: `primera_fecha_con_posiciones` delega acá. Existe
+    porque el libro del asesor clasifica la serie de cada cliente, y con la versión
+    de a uno eran ~1.000 idas y vueltas a la base por cada carga de un libro de 500
+    clientes (en Postgres, cada una es un viaje de red).
+    """
+    uids = [int(u) for u in uids]
+    if not uids:
+        return {}
+    ph = ",".join("?" * len(uids))
+    fechas = defaultdict(list)
+    for q in (
+        f"SELECT user_id, MIN(entry_date) AS d FROM positions "
+        f"WHERE user_id IN ({ph}) AND COALESCE(is_cash,0)=0 AND entry_date IS NOT NULL "
+        f"GROUP BY user_id",
+        f"SELECT user_id, MIN(COALESCE(entry_date, date)) AS d FROM operations "
+        f"WHERE user_id IN ({ph}) AND COALESCE(entry_date, date) IS NOT NULL "
+        f"GROUP BY user_id",
     ):
         try:
-            r = conn.execute(q, args).fetchone()
+            filas = conn.execute(q, uids).fetchall()
         except Exception:
             continue
-        if r is not None and r["d"]:
-            fechas.append(str(r["d"])[:10])
-    if not fechas:
-        # Sin fechas utilizables, pero puede haber posiciones no-cash sin entry_date:
-        # ahí lo conservador es asumir que SÍ tenía (no ascender nada).
+        for r in filas:
+            if r["d"]:
+                fechas[int(r["user_id"])].append(str(r["d"])[:10])
+    # Sin fechas utilizables, pero puede haber posiciones no-cash sin entry_date:
+    # ahí lo conservador es asumir que SÍ tenía (no ascender nada).
+    sin_fecha = [u for u in uids if not fechas.get(u)]
+    hay = set()
+    if sin_fecha:
+        ph2 = ",".join("?" * len(sin_fecha))
         try:
-            hay = conn.execute(
-                "SELECT 1 FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 LIMIT 1",
-                (uid,)).fetchone() is not None
+            hay = {int(r["user_id"]) for r in conn.execute(
+                f"SELECT DISTINCT user_id FROM positions "
+                f"WHERE user_id IN ({ph2}) AND COALESCE(is_cash,0)=0", sin_fecha).fetchall()}
         except Exception:
-            hay = False
-        return "0000-01-01" if hay else None
-    return min(fechas)
+            hay = set()
+    return {u: (min(fechas[u]) if fechas.get(u) else ("0000-01-01" if u in hay else None))
+            for u in uids}
 
 
 def _tenia_posiciones_en(primera, fecha) -> bool:

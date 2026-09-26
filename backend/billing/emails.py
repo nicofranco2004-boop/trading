@@ -1842,10 +1842,14 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
         head_bits.append(f"Administrás US$ {fmt_num(aum, 0)}")
     if brief.get("clients_n"):
         head_bits.append(f"{brief['clients_n']} cliente" + ("s" if brief["clients_n"] != 1 else ""))
-    if day.get("delta_usd") is not None:
+    # ⚠️ EL TRAMO LO DICE `rotulo`, NO ESTE ARCHIVO. Acá decía "hoy" fijo, y la base
+    # del Δ es el último cierre medido de cada cliente, que puede ser de hace días
+    # (`advisor_brief.tramo`). Sin rótulo no se publica el número: afirmar "hoy"
+    # por defecto es exactamente el error que se sacó.
+    if day.get("delta_usd") is not None and day.get("rotulo"):
         _s = "+" if day["delta_usd"] >= 0 else "−"
         _p = f" ({fmt_num(day['pct'], 1, signed=True)}%)" if day.get("pct") is not None else ""
-        head_bits.append(f"hoy {_s}US$ {fmt_num(abs(day['delta_usd']), 0)}" + _p)
+        head_bits.append(f"{day['rotulo']} {_s}US$ {fmt_num(abs(day['delta_usd']), 0)}" + _p)
     headline = " · ".join(head_bits)
 
     secs_html, secs_txt = [], []

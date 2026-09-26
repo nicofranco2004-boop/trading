@@ -45,6 +45,45 @@ def _today_art() -> str:
     return hoy_art()
 
 
+def tramo(base_iso: str, hoy_iso: str) -> dict:
+    """De cuándo es la base contra la que se mide "hoy", y cómo decirlo.
+
+    ⚠️ "HOY" SÓLO SI LA BASE ES EL CIERRE DE AYER. El Δ del cierre y las alertas
+    comparan el valor en vivo contra el ÚLTIMO CIERRE MEDIDO de cada cliente, y ese
+    cierre puede ser de hace varios días (el cron no lo midió, o sus fotos más
+    nuevas son del import). Llamarle "hoy" a eso es publicar varios días de mercado
+    como si fueran uno.
+
+    Mismo criterio que el Dashboard del inversor (`computeDailyPnl` →
+    `dayDiff`, `Dashboard.jsx`: "Hoy" / "Últimos N días"): no se descarta la base
+    vieja —para un día no hace falta el borde de 5 días—, se ROTULA el tramo.
+
+    {"dias": N, "rotulo": "hoy" | "en los últimos N días",
+     "desde": "desde el cierre de ayer" | "desde el cierre de hace N días"}
+    """
+    from datetime import date as _date
+    n = max(1, (_date.fromisoformat(str(hoy_iso)[:10])
+                - _date.fromisoformat(str(base_iso)[:10])).days)
+    if n == 1:
+        return {"dias": 1, "rotulo": "hoy", "desde": "desde el cierre de ayer"}
+    return {"dias": n, "rotulo": f"en los últimos {n} días",
+            "desde": f"desde el cierre de hace {n} días"}
+
+
+def aportado_vivo(conn, cid: int):
+    """Aportado neto ACTUAL del cliente (misma fuente que el snapshot). None si no
+    se puede calcular → en ese caso no se descuenta nada (conservador).
+
+    Lo usan el mail de cierre y la alerta de movimiento: los dos comparan el valor
+    en vivo contra el último cierre, y los dos tienen que descontar la plata que
+    entró o salió en el medio. Vivía sólo en la alerta; el mail no descontaba."""
+    try:
+        from snapshots_job import compute_net_deposited_db
+        return float(compute_net_deposited_db(conn, cid, include_baseline=True) or 0.0)
+    except Exception:
+        return None
+
+
 def advisor_uids(conn) -> list:
     """Asesores con el plan activo (tier literal, sin el bypass de admin)."""
     try:
@@ -351,7 +390,7 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
             # haría que "cómo cerró hoy" se compare contra un valor de hoy.
             _hoy = _today_art()
             snaps = {r["user_id"]: r for r in conn.execute(
-                f"""SELECT s.user_id, s.date, s.total_value FROM snapshots s
+                f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited FROM snapshots s
                     WHERE s.user_id IN ({ph}) AND s.date < ?
                       AND COALESCE(s.apto, CASE WHEN COALESCE(s.source,'') IN ('import','mtm_backfill') THEN 0 ELSE 1 END) = 1
                     -- ⚠️ POR LA COLUMNA `apto`, NO POR EL STRING `source` (ronda 11).
@@ -389,7 +428,11 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
             # caso más caro de los once: en el informe firmado el guard SÍ existe
             # (`_cortes_adentro`), y en este mail no.
             #
-            # Sin flujos que descontar: se compara el vivo contra el cierre anterior.
+            # ⚠️ LOS DEPÓSITOS SE DESCUENTAN, igual que en la alerta de movimiento
+            # (`advisor_alerts.evaluate`). Sin esto, un cliente que depositó 10.000
+            # salía "el mejor del día: +105%": la plata que entró no es el mercado.
+            # Con una base de varios días el error crece, porque entran los
+            # depósitos de todos esos días.
             # Es la MISMA función del motor, importada y no copiada.
             from twr import leg_dudoso as _leg_dudoso_brief
             per = []
@@ -398,31 +441,70 @@ def build_brief(conn, uid: int, kind: str, price_cache: dict = None,
                 base = float(s["total_value"] or 0) if s else 0.0
                 if base <= 0:
                     continue
-                if _leg_dudoso_brief(base, now_v, 0.0):
+                _nd_now = aportado_vivo(conn, cid)
+                flow = (_nd_now - float(s["net_deposited"] or 0)) if _nd_now is not None else 0.0
+                if _leg_dudoso_brief(base, now_v, flow):
                     continue
+                delta = (now_v - flow) - base
                 per.append({"cid": cid, "label": labels.get(cid), "now": now_v,
-                            "delta": now_v - base, "pct": (now_v - base) / base * 100})
+                            "base": base, "delta": delta, "pct": delta / base * 100,
+                            "base_date": str(s["date"])[:10],
+                            **tramo(str(s["date"]), _hoy)})
+            # ⚠️ EL TOTAL ES DE LOS CLIENTES QUE COMPARTEN EL TRAMO MÁS CORTO. El Δ se
+            # mide contra el último cierre de cada cliente, y ese cierre puede ser de
+            # hace días (el cron no lo pudo valuar, o sus fotos nuevas son del
+            # import). Sumar todo en un solo número obliga a rotularlo con el tramo
+            # más largo: un solo cliente frenado 40 días convertía el "hoy" de todo el
+            # libro en "en los últimos 40 días", con el 98% del número de un día.
+            # Los que se miden contra un cierre más viejo van aparte, cada uno con
+            # SU rótulo — no se esconden, pero tampoco le cambian el nombre al total.
+            _corto = min((p["dias"] for p in per), default=None)
+            viejos = [p for p in per if p["dias"] != _corto]
+            per = [p for p in per if p["dias"] == _corto]
             if per:
-                tot_now = sum(p["now"] for p in per)
                 tot_delta = sum(p["delta"] for p in per)
-                tot_base = tot_now - tot_delta
+                tot_base = sum(p["base"] for p in per)
+                _t = tramo(per[0]["base_date"], _hoy)
                 out["day"] = {
                     "delta_usd": round(tot_delta, 2),
                     "pct": round(tot_delta / tot_base * 100, 2) if tot_base > 0 else None,
                     "clients_n": len(per),
-                    "as_of_base": max((str(snaps[p["cid"]]["date"]) for p in per), default=None),
+                    # La base de todos los que entran al total (comparten tramo).
+                    "as_of_base": per[0]["base_date"],
+                    "dias": _t["dias"],
+                    "rotulo": _t["rotulo"],
+                    "clients_otro_tramo": len(viejos),
                 }
                 movers = sorted(per, key=lambda p: -p["pct"])
                 _best, _worst = movers[0], movers[-1]
-                _items = [{"label": _best["label"],
-                           "detail": ("el mejor del día" if _best["pct"] >= 0
-                                      else "el que menos cayó") + f": {fmt_num(_best['pct'], 1, signed=True)}%"}]
+
+                def _mover(p, mejor: bool) -> str:
+                    # Cada cliente con SU tramo: "del día" sólo si su base es el
+                    # cierre de ayer. Un cliente medido contra hace 3 días no fue
+                    # "el mejor del día", fue el mejor de sus 3 días.
+                    un_dia = p["dias"] == 1
+                    if mejor:
+                        q = (("el mejor del día" if un_dia else "el mejor")
+                             if p["pct"] >= 0 else "el que menos cayó")
+                    else:
+                        # Si nadie cerró en rojo, "el que más cayó" sería mentira.
+                        q = "el que más cayó" if p["pct"] < 0 else "el que menos subió"
+                    return (f"{q}: {fmt_num(p['pct'], 1, signed=True)}%"
+                            + ("" if un_dia else f" {p['rotulo']}"))
+
+                _items = [{"label": _best["label"], "detail": _mover(_best, True)}]
                 if len(movers) > 1:
-                    # Si nadie cerró en rojo, "el que más cayó" sería mentira.
-                    _items.append({"label": _worst["label"],
-                                   "detail": ("el que más cayó" if _worst["pct"] < 0
-                                              else "el que menos subió") + f": {fmt_num(_worst['pct'], 1, signed=True)}%"})
+                    _items.append({"label": _worst["label"], "detail": _mover(_worst, False)})
                 out["sections"].append({"title": "Cómo cerraron tus clientes", "items": _items})
+            if viejos:
+                # Los mayores movimientos primero: es a quién conviene mirar.
+                viejos.sort(key=lambda p: -abs(p["pct"]))
+                out["sections"].append({
+                    "title": "Comparados contra un cierre más viejo",
+                    "items": [{"label": p["label"],
+                               "detail": f"{fmt_num(p['pct'], 1, signed=True)}% {p['rotulo']}"
+                                         f" (su último cierre a precio de mercado es de hace {p['dias']} días)"}
+                              for p in viejos[:5]]})
         # Qué activo pesa hoy en el libro (motor estrella — P&L acumulado)
         star = (book.get("star") or {})
         losers = (star.get("losers") or [])[:2]

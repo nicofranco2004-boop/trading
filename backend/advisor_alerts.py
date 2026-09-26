@@ -103,16 +103,6 @@ def purge_old(conn, days: int = HISTORY_DAYS):
         pass
 
 
-def _net_deposited_now(conn, cid: int):
-    """Aportado neto ACTUAL del cliente (misma fuente que el snapshot). None si
-    no se puede calcular → en ese caso no se descuenta nada (conservador)."""
-    try:
-        from snapshots_job import compute_net_deposited_db
-        return float(compute_net_deposited_db(conn, cid, include_baseline=True) or 0.0)
-    except Exception:
-        return None
-
-
 def _side(pct, up_pct, down_pct):
     """'up' | 'down' | None — umbrales asimétricos, cualquiera puede ser None."""
     if pct is None:
@@ -148,9 +138,16 @@ def _titular(items) -> str:
     verbo = lambda it: "subió" if it["pct"] >= 0 else "cayó"
     a = f"La cartera de {items[0]['label']} {verbo(items[0])} {fmt_num(abs(items[0]['pct']), 1)}%"
     b = f"la de {items[1]['label']} {verbo(items[1])} {fmt_num(abs(items[1]['pct']), 1)}%"
+    cuando = _cuando(items)
     if len(items) == 2:
-        return f"{a} y {b} hoy"
-    return f"{a}, {b} y {len(items) - 2} más hoy"
+        return f"{a} y {b} {cuando}"
+    return f"{a}, {b} y {len(items) - 2} más {cuando}"
+
+
+def _cuando(items) -> str:
+    """El rótulo de una tanda: el del tramo MÁS LARGO. Si una de las carteras se
+    mide contra un cierre de hace 3 días, la tanda no es "de hoy"."""
+    return max(items, key=lambda it: it.get("dias") or 1).get("rotulo") or "hoy"
 
 
 def _deliver(conn, uid: int, channel: str, title: str, items) -> tuple:
@@ -180,7 +177,7 @@ def _deliver(conn, uid: int, channel: str, title: str, items) -> tuple:
                     detail = items[0]["detail"] or items[0]["msg"]
                     lines = None
                 else:
-                    detail = f"se movieron {len(items)} carteras de tu libro hoy:"
+                    detail = f"se movieron {len(items)} carteras de tu libro {_cuando(items)}:"
                     lines = [it["line"] for it in items]
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
@@ -276,7 +273,7 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
             # costo) se comparaba contra semanas atrás y el "% del día" era un
             # invento (audit). 4 días cubre un finde largo.
             _floor = (hoy_art_date() - timedelta(days=4)).isoformat()
-            snaps, base_nd = {}, {}
+            snaps, base_nd, base_fecha = {}, {}, {}
             # OJO: se excluye HOY a propósito. El browser escribe un snapshot
             # intradiario al abrir la app, y si ese pasaba a ser la base el
             # "% del día" se comparaba contra sí mismo → daba ~0 y la alerta
@@ -310,6 +307,7 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                     continue          # base vieja → este cliente no se evalúa
                 snaps[r["user_id"]] = float(r["total_value"] or 0)
                 base_nd[r["user_id"]] = float(r["net_deposited"] or 0)
+                base_fecha[r["user_id"]] = str(r["date"])
 
             pendientes: list = []
             for cid, now_v in live.items():
@@ -319,7 +317,8 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 # Descontar los flujos ocurridos DESPUÉS de la base: un depósito
                 # de hoy no es "la cartera subió" (audit). El net_deposited vivo
                 # sale del mismo lugar que el del snapshot.
-                _nd_now = _net_deposited_now(conn, cid)
+                # Misma función que el mail de cierre (`advisor_brief.aportado_vivo`).
+                _nd_now = advisor_brief.aportado_vivo(conn, cid)
                 _flow = (_nd_now - base_nd.get(cid, 0.0)) if _nd_now is not None else 0.0
                 pct = ((now_v - _flow) - base) / base * 100.0
                 side = _side(pct, cfg["up_pct"], cfg["down_pct"])
@@ -334,16 +333,23 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                     continue
 
                 verbo = "subió" if side == "up" else "cayó"
-                msg = f"La cartera de {labels.get(cid)} {verbo} {fmt_num(abs(pct), 1)}% hoy"
+                # ⚠️ "HOY" SÓLO SI LA BASE ES EL CIERRE DE AYER. La base puede tener
+                # hasta 4 días (`_floor`, arriba) y el aviso decía igual "subió 6%
+                # hoy" y "desde el cierre de ayer": varios días de mercado contados
+                # como uno. El rótulo sale de `advisor_brief.tramo`, el mismo que
+                # usa el mail de cierre — una sola forma de decir de cuándo es.
+                _t = advisor_brief.tramo(base_fecha[cid], today)
+                msg = f"La cartera de {labels.get(cid)} {verbo} {fmt_num(abs(pct), 1)}% {_t['rotulo']}"
                 # El cuerpo del mail lleva los números, no "entrá a Rendi para
                 # verlos": el valor de hoy y el movimiento, que ya los tenemos
                 # acá. Mismo criterio que alerts_engine._email_detail.
                 from money_fmt import fmt_money
                 _val = fmt_money(now_v, "USD", decimals=0)
                 detail = (f"La cartera de {labels.get(cid)} {verbo} "
-                          f"{fmt_num(abs(pct), 1)}% desde el cierre de ayer y hoy vale "
+                          f"{fmt_num(abs(pct), 1)}% {_t['desde']} y hoy vale "
                           f"{_val}. El movimiento es del mercado: los depósitos "
-                          f"y retiros del día ya están descontados.")
+                          f"y retiros {'del día' if _t['dias'] == 1 else 'de esos días'}"
+                          f" ya están descontados.")
                 # Sellar el estado y el evento ANTES de mandar: el envío son dos
                 # llamadas HTTP y no puede correr con el write-lock tomado. Si el
                 # push/email falla, el aviso igual queda registrado UNA vez —
@@ -362,8 +368,10 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 pendientes.append({
                     "msg": msg, "detail": detail, "event_id": _evid,
                     "label": labels.get(cid), "pct": pct,
+                    "dias": _t["dias"], "rotulo": _t["rotulo"],
                     "line": (f"{labels.get(cid)}: {verbo} {fmt_num(abs(pct), 1)}% "
-                             f"y hoy vale {_val}"),
+                             + ("" if _t["dias"] == 1 else f"{_t['rotulo']} ")
+                             + f"y hoy vale {_val}"),
                 })
                 fired += 1
             if pendientes:

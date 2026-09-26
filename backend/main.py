@@ -40334,6 +40334,11 @@ def _advisor_book_chat_context(uid: int) -> dict:
 
         valued, skipped = _advisor_positions_valued(conn, ids, tc_blue, tc_mep)
         latest = _latest_snapshots(conn, ids)
+        # El retorno por cliente sale del ÚLTIMO CIERRE a mercado, igual que la
+        # tarjeta Mejor/Peor (`advisor_book`): el prompt rankea con este número y la
+        # pantalla lo muestra, así que tienen que ver la misma foto.
+        _cierres_chat = {cid: _ultimo_cierre(f)
+                         for cid, f in _serie_reciente_del_libro(conn, ids).items()}
 
         per_client: dict = {}
         for vr in valued:
@@ -40381,7 +40386,7 @@ def _advisor_book_chat_context(uid: int) -> dict:
             # mismo helper. El `aum_usd` de arriba, en cambio, sale de la fila sin
             # filtrar a propósito: para valuar la cuenta una reconstrucción es la
             # mejor valuación que hay; lo que no se puede es RESTARLA.
-            _r = _retorno_vs_aportado(snap, _max_nd_chat.get(cid, 0.0))
+            _r = _retorno_vs_aportado(_cierres_chat.get(cid), _max_nd_chat.get(cid, 0.0))
             ret = round(_r, 1) if _r is not None else None
             agg = per_client.get(cid, {"tot": 0.0, "pos": []})
             top = sorted(agg["pos"], key=lambda r: -r["value_usd"])[:5]
@@ -40526,12 +40531,13 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
             base_date = str(base_row["date"])
             # Base vieja (cron caído): los números son reales pero la ventana
             # no es la del título — el informe lo aclara (audit).
-            try:
-                from datetime import date as _ddate
-                if (_ddate.fromisoformat(start) - _ddate.fromisoformat(base_date)).days > 10:
-                    base_note = "stale"
-            except ValueError:
-                pass
+            # ⚠️ EL PISO ES EL DE REPORTES (`_border_is_fresh`, 5 días), no un 10
+            # escrito a mano: con el 10, una base de 6 a 10 días antes del arranque
+            # se publicaba en el informe FIRMADO como si fuera la del período, sin
+            # ninguna nota. Es el mismo borde que decide el resto del libro.
+            from reporting.builder import _border_is_fresh as _bif_informe
+            if not _bif_informe(base_date, start):
+                base_note = "stale"
         elif base_row is None:
             # Sin snapshot previo al período. Dos casos MUY distintos (audit #2):
             #  a) cuenta nueva de verdad (primer aporte dentro del período) →
@@ -41625,7 +41631,7 @@ def _pico_es_plausible(adj_mx: float, total_value: float) -> bool:
 def _es_base_de_mercado(row) -> bool:
     """¿Este snapshot sirve como PUNTA de una resta contra otra punta a mercado?
 
-    ⚠️ EL BARRIDO DE LA RONDA 10. `_latest_snapshots` y `_snapshots_asof` eligen por
+    ⚠️ EL BARRIDO DE LA RONDA 10. `_latest_snapshots` (y el `_snapshots_asof` que ya no está) eligen por
     MAX(date) y no preguntan en qué BASE está la fila. Para mostrar el AUM eso está
     bien —una reconstrucción es la mejor valuación que hay de ese cliente— pero para
     restar dos puntas NO: si una sale de la cadena contable (import) o de una foto
@@ -41727,19 +41733,224 @@ def _latest_snapshots(conn, ids: list) -> dict:
     ).fetchall()}
 
 
-def _snapshots_asof(conn, ids: list, cutoff: str) -> dict:
-    """{uid: row} del último snapshot con date <= cutoff, por cliente."""
+# ═══════════════════════════════════════════════════════════════════════════
+# QUÉ FOTO CIERRA UN PERÍODO DEL LIBRO — UNA SOLA REGLA PARA TODO EL ASESOR
+#
+# El libro publica variaciones en varias superficies: "Últimos 7 días" (hero y
+# modal), "Aportes − retiros (este mes)", "el mercado sumó X" de la evolución, la
+# tarjeta Mejor/Peor (y la IA del libro, que rankea con ese número), la cola "Su
+# ganancia cayó X%" y el grupo "están perdiendo". Cada una elegía sus puntas a su
+# manera, y ninguna de las maneras aguantaba las dos fotos que NO son un cierre:
+#
+#   · la del IMPORT (`SINTETICO_COSTO`): la cadena contable copiada AL COSTO. Restarla
+#     contra una medición publica la brecha entre dos formas de medir como si fuera
+#     el mercado — el caso 452: 196.631 al costo contra 67.214 a mercado;
+#   · la de MEDIA RUEDA que escribe el browser cuando alguien abre la cuenta (el
+#     cliente, o el propio asesor entrando a su vista): valuada a mercado, pero no es
+#     un cierre. Las superficies que tomaban "la última foto" y exigían que fuera
+#     apta hacían DESAPARECER al cliente todo ese día — del "Últimos 7 días", de
+#     Mejor/Peor, del grupo "están perdiendo" y de las alertas atadas a ese grupo.
+#
+# La regla, para todas: la foto que cierra es el último CIERRE APTO del cliente
+# (clasificación canónica de `twr`, la misma que `GET /api/snapshots`), y la base
+# es el último cierre apto al corte, pegado al arranque (`_border_is_fresh`, 5
+# días, el borde de Reportes). Las dos puntas tienen que cubrir el período: la de
+# cierre tampoco puede ser de hace semanas (`_ventana_cubre`, el mismo control).
+#
+# La AUM ("Total administrado", "Capital") sigue saliendo de la última foto, sea la
+# que sea: para MOSTRAR cuánto vale una cartera la mejor valuación disponible sirve;
+# lo que no se puede es RESTARLA sin esta regla.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Cuánta historia mira el libro para sus variaciones (7 días, el mes, el último
+# cierre de cada cliente). Un cliente cuyo último cierre a mercado es más viejo que
+# esto no entra en Mejor/Peor ni en "Su ganancia cayó": su dato no es de este
+# momento. La evolución del capital no usa este tope: trae la serie entera.
+_LIBRO_HISTORIA_RECIENTE_DIAS = 120
+
+# Margen de filas ANTES del primer día que se necesita. La clase de una foto vieja
+# sin `source` depende de su vecindario (racha de 7 días del cron,
+# `twr.RACHA_CRON_MINIMA`); con este margen la racha que cruza el borde de la
+# consulta se sigue viendo entera en las filas que se usan.
+_MARGEN_CLASIFICACION_DIAS = 14
+
+
+def _serie_clasificada_de_clientes(conn, ids: list, desde: str = None) -> dict:
+    """{uid: [fila, ...]} en orden de fecha — LA serie de fotos de cada cliente,
+    cada fila con su `clase`, su `base`, si es `apto` y si es `dibujable`.
+
+    ⚠️ LA CLASIFICACIÓN ES LA CANÓNICA, LA MISMA QUE `GET /api/snapshots`:
+    `twr.clasificar_serie` → `twr.bases_de_serie` → `twr.es_apto`. La evolución
+    del libro leía las fotos SIN clasificar, así que la foto que fabrica el import
+    —la cadena contable copiada AL COSTO— entraba a la curva igual que una
+    medición del cron.
+
+    `desde`: el primer día que el llamador va a usar. Se traen filas desde un
+    margen antes (`_MARGEN_CLASIFICACION_DIAS`) para que la clase no dependa de
+    dónde se cortó la consulta. Sin `desde`, la serie entera.
+
+      · `apto`      — puede ser PUNTA de una resta (base o cierre de un período).
+      · `dibujable` — entra a la curva sumada: clase de la línea (`ACEPTA_LINEA`:
+                      medición, reconstrucción, foto de media rueda) Y valuada a
+                      mercado. Lo segundo es más estricto que la curva personal: allá
+                      un tramo costo→mercado se CORTA; en una suma de clientes no hay
+                      dónde cortar, así que la foto al costo directamente no entra.
+    """
     if not ids:
         return {}
+    import twr as _twr
+    from datetime import date as _date, timedelta as _td
+    from reporting.builder import _tiene_columna as _tc
+    # Guarda de columna, igual que `get_snapshots`: un deploy donde el código
+    # llega antes que su columna es cómo se cayó producción el 2026-08-02.
+    _cov = "mtm_coverage" if _tc(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
+    _bse = "base" if _tc(conn, "snapshots", "base") else "NULL AS base"
+    _apt = "apto" if _tc(conn, "snapshots", "apto") else "NULL AS apto"
     ph = ",".join("?" * len(ids))
-    return {r["user_id"]: r for r in conn.execute(
-        f"""SELECT s.user_id, s.date, s.total_value, s.net_deposited, s.source, s.apto
-            FROM snapshots s
-            WHERE s.user_id IN ({ph})
-              AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
-                            WHERE s2.user_id = s.user_id AND s2.date <= ?)""",
-        (*ids, cutoff),
-    ).fetchall()}
+    args = list(ids)
+    _filtro = ""
+    if desde:
+        _filtro = " AND date >= ?"
+        args.append((_date.fromisoformat(str(desde)[:10])
+                     - _td(days=_MARGEN_CLASIFICACION_DIAS)).isoformat())
+    por_cliente: dict = {}
+    for r in conn.execute(
+            # `holdings_json` se pide como bandera y no entera: el clasificador sólo
+            # pregunta si hay composición (`bool(...)`), y traer el JSON de cada
+            # foto de cada cliente de un libro grande es megas para nada.
+            f"""SELECT user_id, date, total_value, net_deposited, fx_to_usd_blue,
+                       CASE WHEN holdings_json IS NOT NULL AND holdings_json <> ''
+                            THEN 1 END AS holdings_json,
+                       source, {_cov}, {_bse}, {_apt}
+                FROM snapshots WHERE user_id IN ({ph}){_filtro}
+                ORDER BY user_id, date""", args).fetchall():
+        por_cliente.setdefault(r["user_id"], []).append(r)
+    # Una consulta para todos, no dos por cliente (en Postgres, cada una es un viaje).
+    primeras = _twr.primeras_fechas_con_posiciones(conn, list(por_cliente))
+    out = {}
+    for cid, filas in por_cliente.items():
+        clases = _twr.clasificar_serie(filas, primeras.get(int(cid)))
+        bases = _twr.bases_de_serie(filas, clases)
+        out[cid] = [{
+            "date": str(r["date"])[:10],
+            "total_value": float(r["total_value"] or 0),
+            "net_deposited": float(r["net_deposited"] or 0),
+            "clase": c,
+            "base": b,
+            "apto": _twr.es_apto(c, b),
+            "dibujable": c in _twr.ACEPTA_LINEA and b == _twr.VALUADO_A_MERCADO,
+        } for r, c, b in zip(filas, clases, bases)]
+    return out
+
+
+def _serie_reciente_del_libro(conn, ids: list) -> dict:
+    """La serie clasificada de los últimos `_LIBRO_HISTORIA_RECIENTE_DIAS` de cada
+    cliente. UNA sola ventana para todas las superficies del libro que no son la
+    evolución (hero, detalle, Mejor/Peor, IA del libro, grupos): si cada una trajera
+    su propio recorte, la misma foto podría clasificarse distinto en dos pantallas."""
+    from datetime import timedelta as _td
+    return _serie_clasificada_de_clientes(
+        conn, ids,
+        desde=(_hoy_art_date() - _td(days=_LIBRO_HISTORIA_RECIENTE_DIAS)).isoformat())
+
+
+def _ultimo_cierre(filas: list):
+    """El último cierre APTO de un cliente (o None). La punta de cualquier resta del
+    libro, y el valor con el que se juzga "está perdiendo" / "su ganancia cayó"."""
+    for f in reversed(filas or []):
+        if f["apto"]:
+            return f
+    return None
+
+
+def _tramo_medido(filas: list, corte: str, hoy: str,
+                  desde_su_primera_medicion: bool = False):
+    """(base, fin, estado) de UN cliente para el período que va del día siguiente a
+    `corte` hasta `hoy`. `base`/`fin` son None salvo en "ok" y "entro".
+
+      · "ok"           — base = su último cierre apto <= corte, FRESCO (pegado al
+                         arranque, `_border_is_fresh`); fin = su último cierre apto,
+                         que también cubre el final (`_ventana_cubre`).
+      · "entro"        — no tenía NINGÚN cierre apto al corte (cliente nuevo, o su
+                         historia de antes es la del import) y se lo mide desde su
+                         primera medición. Sólo con `desde_su_primera_medicion`.
+      · "sin_base"     — no tenía cierre apto al corte, y no se lo mide desde después.
+      · "sin_medicion" — no tiene ningún cierre apto en toda la serie.
+      · "hueco"        — tenía base pero vieja, o dejó de medirse: meter ese tramo
+                         metería mercado de fuera del período.
+
+    ⚠️ "entro" NO ES UNA BASE VIEJA NI AJENA. Es la misma excepción que el informe
+    del período (`base_note="onboarding"`) y que `computeReturnDelta` en el frontend:
+    sin ninguna medición antes, el tramo arranca en la primera — mide una ventana
+    más corta, no una ajena. Y es la única que puede usar la evolución: la curva
+    muestra a esos clientes entrando, y sacarlos del "mercado sumó X" dejaba un libro
+    joven midiendo sólo a los clientes del primer día. Un cliente con base VIEJA, en
+    cambio, no se re-ancla después del hueco: lo que se movió en el hueco no tiene
+    fecha y no se le puede asignar a este período.
+    """
+    from datetime import date as _date, timedelta as _td
+    from reporting.builder import _border_is_fresh, _ventana_cubre
+    aptas = [f for f in (filas or []) if f["apto"] and f["date"] <= hoy]
+    if not aptas:
+        return None, None, "sin_medicion"
+    desde = (_date.fromisoformat(corte) + _td(days=1)).isoformat()
+    base = None
+    for f in aptas:
+        if f["date"] > corte:
+            break
+        base = f
+    estado = "ok"
+    if base is None:
+        if not desde_su_primera_medicion:
+            return None, None, "sin_base"
+        base, estado = aptas[0], "entro"
+    elif not _border_is_fresh(base["date"], desde):
+        return None, None, "hueco"
+    fin = aptas[-1]
+    if fin["date"] <= base["date"]:
+        # Una sola medición desde que entró: todavía no hay tramo que medir.
+        return None, None, ("sin_base" if estado == "entro" else "hueco")
+    # El arranque ya lo controló `_border_is_fresh` (o es "entro", que arranca
+    # adentro a propósito): acá sólo se mira que el CIERRE llegue hasta hoy. Un
+    # cliente que dejó de medirse hace 60 días no "mide los últimos 90".
+    if not _ventana_cubre(desde, fin["date"], desde, hoy, es_actual=False):
+        return None, None, "hueco"
+    return base, fin, estado
+
+
+# "ÚLTIMOS 7 DÍAS" DEL LIBRO. El hero (`advisor_book`) y el modal de detalle
+# (`advisor_book_detail`) publican el mismo número —el modal promete sumar EXACTO lo
+# del hero— y cada uno tenía su copia de la regla: la del modal no tenía piso de
+# antigüedad (publicaba 30 días de mercado como 7) y cortaba el día con UTC. Ahora
+# los dos leen `_tramo_medido`, igual que la evolución.
+_LIBRO_VENTANA_DIAS = 7
+
+
+def _variacion_7d_del_libro(ids: list, latest: dict, serie: dict):
+    """(estados, tramos) de "Últimos 7 días" de cada cliente.
+
+    `estados[cid]`: "ok" · "new" (no hay cierre a mercado de hace 7 días: cliente
+    nuevo, o su historia de antes es la del import) · "gap" (tiene historia pero le
+    faltan fotos de esos días) · "no_snapshot" (todavía no tiene ninguna foto).
+    `tramos[cid]` = (base, fin), sólo para los "ok".
+    """
+    hoy = _hoy_art_date()
+    from datetime import timedelta as _td
+    corte = (hoy - _td(days=_LIBRO_VENTANA_DIAS)).isoformat()
+    estados, tramos = {}, {}
+    for cid in ids:
+        if latest.get(cid) is None:
+            estados[cid] = "no_snapshot"
+            continue
+        base, fin, estado = _tramo_medido(serie.get(cid, []), corte, hoy.isoformat())
+        if estado == "ok":
+            estados[cid] = "ok"
+            tramos[cid] = (base, fin)
+        elif estado == "hueco":
+            estados[cid] = "gap"
+        else:
+            estados[cid] = "new"
+    return estados, tramos
 
 
 def _advisor_book_fx(conn):
@@ -41919,64 +42130,49 @@ def advisor_book(uid: int = Depends(get_current_user)):
         # cron usa el mismo `fechas.hoy_art()` y el comentario dice la verdad.
         today = _hoy_art_date()
         latest = _latest_snapshots(conn, ids)
-        asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
-        # Base del mes = ÚLTIMO día del mes anterior. El snapshot fechado el 1°
-        # es el CIERRE del día 1 (ya incluye sus flujos) → usarlo de base
-        # borraba los depósitos del día 1 (audit off-by-one).
-        asof_month = _snapshots_asof(conn, ids, (today.replace(day=1) - _td(days=1)).isoformat())
+        # Las puntas de TODAS las variaciones del libro salen de acá: la serie
+        # clasificada con la regla canónica y `_tramo_medido` / `_ultimo_cierre`
+        # (ver el bloque "QUÉ FOTO CIERRA UN PERÍODO DEL LIBRO").
+        serie = _serie_reciente_del_libro(conn, ids)
+        cierres = {cid: _ultimo_cierre(serie.get(cid)) for cid in ids}
 
         # ── AUM + deltas (solo clientes CON snapshot; los nuevos no restan) ──
         total = sum(float(r["total_value"] or 0) for r in latest.values())
         with_data = len(latest)
 
-        def _delta(asof: dict):
-            # Comparar solo clientes presentes en AMBOS cortes (base comparable)
-            # y con FECHAS distintas: con el cron caído, latest == asof y un
-            # "+0 · +0%" mentiría que la semana fue plana.
-            # Piso de antigüedad de la base (audit): un cliente con snapshots
-            # frenados 60 días metía su delta de 2 meses en "últimos 7 días".
-            _floor7 = (today - _td(days=14)).isoformat()
-            # ⚠️ Y LAS DOS PUNTAS EN BASE DE MERCADO (ver `_es_base_de_mercado`).
-            # El caso que le pega es justo el 452: un cliente cuya historia se
-            # reconstruyó y a quien el cron le empezó hace poco tiene la base al
-            # COSTO y el `latest` a mercado, así que su brecha entraba entera como
-            # "lo que se movió el libro esta semana".
-            common = [i for i in latest if i in asof
-                      and str(latest[i]["date"]) != str(asof[i]["date"])
-                      and str(asof[i]["date"]) >= _floor7
-                      and _es_base_de_mercado(latest[i])
-                      and _es_base_de_mercado(asof[i])]
-            if not common:
-                return None, None
-            now_v = sum(float(latest[i]["total_value"] or 0) for i in common)
-            then_v = sum(float(asof[i]["total_value"] or 0) for i in common)
+        # "Últimos 7 días": la regla es `_variacion_7d_del_libro`, la MISMA que usa
+        # el modal de detalle (tiene que sumar exacto esto).
+        _est7, _tramos7 = _variacion_7d_del_libro(ids, latest, serie)
+        d7_usd = d7_pct = None
+        common = [i for i in ids if _est7.get(i) == "ok"]
+        if common:
+            now_v = sum(_tramos7[i][1]["total_value"] for i in common)
+            then_v = sum(_tramos7[i][0]["total_value"] for i in common)
             d = now_v - then_v
-            return round(d, 2), (round(d / then_v * 100, 2) if then_v > 0 else None)
-
-        d7_usd, d7_pct = _delta(asof_7d)
+            d7_usd = round(d, 2)
+            d7_pct = round(d / then_v * 100, 2) if then_v > 0 else None
 
         # ── Captación del mes (Δ net_deposited desde el 1° del mes, en USD) ──
         flows = None
-        _stale_floor = (today.replace(day=1) - _td(days=8)).isoformat()
-        # ⚠️ ÉSTE ERA EL ÚNICO DELTA DEL LIBRO QUE QUEDÓ SIN FILTRAR. El hero
-        # (`_delta`, más arriba) ya exige `_es_base_de_mercado` en las dos puntas;
-        # acá se calcula `market_effect_usd = (v_now − v_then) − flujos` y se
-        # publica como "el mercado restó US$65.967". Con `v_then` saliendo de la
-        # foto del import (contable) y `v_now` del cierre del cron (mercado), eso
-        # no es el mercado: es el escalón entre dos reglas de medición, con el
-        # nombre del mercado puesto encima.
-        common_m = [i for i in latest if i in asof_month
-                    and str(latest[i]["date"]) != str(asof_month[i]["date"])
-                    # Base demasiado vieja (cron caído): depósitos del mes
-                    # ANTERIOR se colarían como captación de este mes (audit).
-                    and str(asof_month[i]["date"]) >= _stale_floor
-                    and _es_base_de_mercado(latest[i])
-                    and _es_base_de_mercado(asof_month[i])]
-        if common_m:
-            dep_now = sum(float(latest[i]["net_deposited"] or 0) for i in common_m)
-            dep_then = sum(float(asof_month[i]["net_deposited"] or 0) for i in common_m)
-            v_now = sum(float(latest[i]["total_value"] or 0) for i in common_m)
-            v_then = sum(float(asof_month[i]["total_value"] or 0) for i in common_m)
+        # ⚠️ ESTE DELTA SE PUBLICA COMO "el mercado restó US$65.967": las dos puntas
+        # tienen que ser cierres a mercado. Con la base en la foto del import y la
+        # punta en el cron, eso no es el mercado: es el escalón entre dos reglas de
+        # medición. La base es el cierre del ÚLTIMO día del mes anterior (el del 1°
+        # ya trae los flujos del 1°: usarlo borraba esos depósitos), pegada al 1°
+        # con el piso de Reportes; si es vieja, depósitos del mes ANTERIOR se
+        # colarían como captación de este mes.
+        _tramos_m = {}
+        for i in ids:
+            _b, _f, _e = _tramo_medido(serie.get(i, []),
+                                       (today.replace(day=1) - _td(days=1)).isoformat(),
+                                       today.isoformat())
+            if _e == "ok":
+                _tramos_m[i] = (_b, _f)
+        if _tramos_m:
+            dep_now = sum(f["net_deposited"] for _b, f in _tramos_m.values())
+            dep_then = sum(b["net_deposited"] for b, _f in _tramos_m.values())
+            v_now = sum(f["total_value"] for _b, f in _tramos_m.values())
+            v_then = sum(b["total_value"] for b, _f in _tramos_m.values())
             net_dep = round(dep_now - dep_then, 2)
             flows = {
                 "net_deposited_usd": net_dep,
@@ -41988,7 +42184,12 @@ def advisor_book(uid: int = Depends(get_current_user)):
         dist = None
         perf = []
         _max_nd = _max_net_deposited(conn, ids)
-        for i, r in latest.items():
+        # ⚠️ LA PUNTA ES EL ÚLTIMO CIERRE, NO LA ÚLTIMA FOTO. Con la última foto, un
+        # cliente que abrió la app hoy (foto de media rueda, no apta) desaparecía de
+        # Mejor/Peor —y del ranking de la IA— hasta el cierre de la noche.
+        for i, r in cierres.items():
+            if r is None:
+                continue
             # ⚠️ ESTO ES UN PORCENTAJE PUBLICADO, NO UN VALOR MOSTRADO. Sale por la
             # tarjeta Mejor/Peor del libro (AdvisorDashboard.jsx:702) y también entra
             # al prompt de la IA del libro como `ret_pct`
@@ -42125,8 +42326,13 @@ def advisor_book(uid: int = Depends(get_current_user)):
             # cartera (audit: dividir la caída de resultado por el valor total
             # daba un % que no era ni una cosa ni la otra). Piso USD 500 para
             # no gritar drawdown sobre resultados chiquitos.
-            if tv is not None and snap is not None and ms and ms["adj_mx"] >= 500:
-                adj_now = tv - float(snap["net_deposited"] or 0)
+            # ⚠️ EL "HOY" DE LA CAÍDA ES EL ÚLTIMO CIERRE A MERCADO. El pico ya salía
+            # de `snapshots_medibles`, pero la punta salía de la última foto: si era
+            # la del import (al costo), el libro —y el mail "Para llamar hoy"—
+            # decía "Su ganancia cayó 87%" comparando costo contra mercado.
+            _c = cierres.get(cid)
+            if _c is not None and ms and ms["adj_mx"] >= 500:
+                adj_now = _c["total_value"] - _c["net_deposited"]
                 dd = (adj_now - ms["adj_mx"]) / ms["adj_mx"] * 100
                 # ⚠️ Y ADEMÁS EL PICO TIENE QUE SER POSIBLE. El guard de arriba exige
                 # que el borde sea una MEDICION, pero no que sea plausible: con un
@@ -42135,7 +42341,7 @@ def advisor_book(uid: int = Depends(get_current_user)):
                 # eso, y verlo le hace desconfiar de las otras 71 alertas, que están
                 # bien. Lo silenciado NO se esconde: `/api/admin/diagnose-reportes-basis`
                 # lo lista en `picos_implausibles` con los números al lado.
-                if dd <= -15 and _pico_es_plausible(ms["adj_mx"], tv):
+                if dd <= -15 and _pico_es_plausible(ms["adj_mx"], _c["total_value"]):
                     reasons.append({"kind": "drawdown",
                                     "detail": f"Su ganancia cayó {abs(dd):.0f}% desde el mejor momento — conviene que lo llames"})
             # 3. Cash ARS ocioso > 15% del portfolio
@@ -42781,6 +42987,11 @@ def advisor_book_asset_clients(asset: str, is_ar_market: bool = None,
         conn.close()
 
 
+# Las ventanas que ofrece la pantalla (1M/3M/6M/1A). "Todo" se calcula aparte,
+# desde el primer punto dibujado.
+_LIBRO_PERIODOS_DIAS = (30, 90, 180, 365)
+
+
 @app.get("/api/advisor/book/history")
 def advisor_book_history(days: int = 365, clients: Optional[str] = None,
                          uid: int = Depends(get_current_user)):
@@ -42789,11 +43000,22 @@ def advisor_book_history(days: int = 365, clients: Optional[str] = None,
     la línea de "plata aportada neta" al lado, para distinguir a ojo si el
     libro sube porque el MERCADO rindió o porque ENTRÓ plata/clientes.
 
-    Construcción: por cada fecha con algún snapshot en la ventana, se suma el
-    ÚLTIMO snapshot conocido de CADA cliente (forward-fill) — un cliente sin
-    snapshot ESE día no hace caer la serie (hipo del cron ≠ retiro masivo), y
-    un cliente nuevo empieza a sumar desde su primer snapshot (el salto es
-    REAL: entró capital al libro). Clientes revocados no cuentan.
+    Construcción: por cada fecha con alguna foto DIBUJABLE en la ventana, se
+    suma la ÚLTIMA foto dibujable de CADA cliente (forward-fill) — un cliente
+    sin foto ESE día no hace caer la serie (hipo del cron ≠ retiro masivo), y
+    un cliente nuevo empieza a sumar desde su primera medición (el salto es
+    REAL: entró capital al libro). Clientes revocados no cuentan. Qué foto es
+    dibujable lo decide `_serie_clasificada_de_clientes` (clasificación canónica):
+    la del import, al costo, no entra.
+
+    `periods`: la descomposición "el mercado sumó X · aportes Y" de cada
+    ventana, calculada ACÁ y no en la pantalla. La pantalla restaba punta contra
+    punta de la curva sumada, y eso no puede separar las tres cosas que mueven el
+    total: el mercado, los aportes, y los clientes que entran con su capital (y
+    con TODA su ganancia previa, que se leía como "mercado del período"). Acá se
+    mide cliente por cliente, con `_tramo_medido`: base y fin a mercado, base
+    pegada al arranque, y sólo entran los clientes que se pueden medir — los
+    demás se cuentan, para que la pantalla lo diga.
 
     `clients`: ids separados por coma para ver la evolución de UN SUBCONJUNTO
     (Nico, 2026-09-21: "lo que ven en el dashboard, pero seleccionando de qué
@@ -42802,7 +43024,7 @@ def advisor_book_history(days: int = 365, clients: Optional[str] = None,
     pantalla arme las casillas sin otra llamada."""
     if days <= 0 or days > 730:
         raise HTTPException(422, "days debe estar entre 1 y 730")
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import timedelta as _td
     conn = get_db()
     try:
         _require_advisor(conn, uid)
@@ -42820,43 +43042,81 @@ def advisor_book_history(days: int = 365, clients: Optional[str] = None,
                 raise HTTPException(422, "clients debe ser una lista de ids separados por coma")
             ids = [c for c in book if c in wanted]
         if not ids:
-            return {"series": [], "clients": 0, "client_list": client_list}
-        cutoff = (_dt.utcnow().date() - _td(days=days)).isoformat()
-        # Seed del forward-fill: el último snapshot ANTERIOR a la ventana de
-        # cada cliente — sin esto, un cliente con historia vieja arrancaría
+            return {"series": [], "clients": 0, "client_list": client_list, "periods": {}}
+        # El día argentino, no UTC: es la fecha con la que se estampan las fotos.
+        hoy = _hoy_art_date()
+        cutoff = (hoy - _td(days=days)).isoformat()
+        serie = _serie_clasificada_de_clientes(conn, ids)
+        # Seed del forward-fill: la última foto dibujable ANTERIOR a la ventana
+        # de cada cliente — sin esto, un cliente con historia vieja arrancaría
         # la ventana aportando 0 y la serie mostraría una rampa falsa.
-        seed = _snapshots_asof(conn, ids, cutoff)
-        last = {cid: {"tv": float(r["total_value"] or 0),
-                      "nd": float(r["net_deposited"] or 0)}
-                for cid, r in seed.items()}
-        ph = ",".join("?" * len(ids))
-        rows = conn.execute(
-            f"""SELECT user_id, date, total_value, net_deposited
-                FROM snapshots
-                WHERE user_id IN ({ph}) AND date > ?
-                ORDER BY date ASC""",
-            (*ids, cutoff),
-        ).fetchall()
+        last: dict = {}
         by_date: dict = {}
-        for r in rows:
-            by_date.setdefault(str(r["date"]), []).append(r)
+        for cid in ids:
+            for f in serie.get(cid, []):
+                if not f["dibujable"]:
+                    continue
+                if f["date"] <= cutoff:
+                    last[cid] = f
+                else:
+                    by_date.setdefault(f["date"], []).append((cid, f))
         series = []
         for date_s in sorted(by_date):
-            for r in by_date[date_s]:
-                last[r["user_id"]] = {"tv": float(r["total_value"] or 0),
-                                      "nd": float(r["net_deposited"] or 0)}
+            for cid, f in by_date[date_s]:
+                last[cid] = f
             series.append({
                 "date": date_s,
-                "aum_usd": round(sum(v["tv"] for v in last.values()), 2),
-                "net_deposited_usd": round(sum(v["nd"] for v in last.values()), 2),
+                "aum_usd": round(sum(v["total_value"] for v in last.values()), 2),
+                "net_deposited_usd": round(sum(v["net_deposited"] for v in last.values()), 2),
                 "clients": len(last),
             })
+
+        _hoy_iso = hoy.isoformat()
+
+        def _periodo(corte: str) -> dict:
+            # Cliente por cliente, con `_tramo_medido`. Un cliente que ENTRÓ en el
+            # período (sin ningún cierre a mercado antes del corte) se mide desde
+            # su primera medición: la curva lo muestra entrando, y dejarlo afuera
+            # hacía que un libro joven midiera sólo a los clientes del primer día.
+            # Su capital de entrada no es mercado ni aporte: es el "+N clientes".
+            medidos = entraron = sin_medicion = hueco = 0
+            mercado = aportes = 0.0
+            for cid in ids:
+                base, fin, estado = _tramo_medido(serie.get(cid, []), corte, _hoy_iso,
+                                                  desde_su_primera_medicion=True)
+                if estado in ("ok", "entro"):
+                    medidos += 1
+                    entraron += estado == "entro"
+                    flujo = fin["net_deposited"] - base["net_deposited"]
+                    aportes += flujo
+                    mercado += (fin["total_value"] - base["total_value"]) - flujo
+                elif estado == "hueco":
+                    hueco += 1
+                else:
+                    sin_medicion += 1
+            return {
+                "corte": corte,
+                "mercado_usd": round(mercado, 2) if medidos else None,
+                "aportes_usd": round(aportes, 2) if medidos else None,
+                "clientes_medidos": medidos,
+                "clientes_entraron": entraron,
+                "clientes_sin_medicion": sin_medicion,
+                "clientes_con_hueco": hueco,
+                "clientes_total": len(ids),
+            }
+
+        periods = {str(n): _periodo((hoy - _td(days=n)).isoformat())
+                   for n in _LIBRO_PERIODOS_DIAS if n <= days}
+        if series:
+            periods["todo"] = _periodo(series[0]["date"])
+
         # Downsample defensivo (2 años diarios ≈ 730 puntos): stride que
         # PRESERVA primero y último — el gráfico no necesita más de ~400.
         if len(series) > 400:
             stride = (len(series) + 399) // 400
             series = series[::stride] + ([series[-1]] if series[-1] not in series[::stride] else [])
-        return {"series": series, "clients": len(ids), "client_list": client_list}
+        return {"series": series, "clients": len(ids), "client_list": client_list,
+                "periods": periods}
     finally:
         conn.close()
 
@@ -42868,13 +43128,14 @@ def advisor_book_detail(uid: int = Depends(get_current_user)):
     7 días. MISMA fuente y MISMAS reglas que advisor_book, para que el total
     y el delta de acá cierren EXACTO con el hero:
       · AUM = suma del último snapshot por cliente.
-      · Δ7d por cliente solo si tiene snapshot en ambos cortes con FECHAS
-        distintas (regla del hero — con el cron caído no se miente "+0").
-        Los demás salen con estado: "new" = sin base de 7 días (cliente
-        nuevo O snapshot único), "no_snapshot" = se calcula esta noche.
+      · Δ7d por cliente con LA regla del hero (`_variacion_7d_del_libro`, una
+        sola copia para las dos pantallas): del cierre a mercado de hace 7 días
+        al último cierre a mercado. Los demás salen con estado: "new" = sin
+        cierre a mercado de hace 7 días (cliente nuevo, foto única o historia
+        importada al costo), "gap" = tiene historia pero le faltan fotos de esos
+        días, "no_snapshot" = se calcula esta noche.
       · El Δ se separa en aportes (Δ net_deposited) y mercado (el resto):
         un depósito del cliente no se disfraza de ganancia."""
-    from datetime import datetime as _dt, timedelta as _td
     conn = get_db()
     try:
         _require_advisor(conn, uid)
@@ -42887,9 +43148,12 @@ def advisor_book_detail(uid: int = Depends(get_current_user)):
                       """SELECT ac.client_uid, ac.label, u.name
                          FROM advisor_clients ac JOIN users u ON u.id = ac.client_uid
                          WHERE ac.advisor_uid=? AND ac.status='active'""", (uid,)).fetchall()}
-        today = _dt.utcnow().date()
         latest = _latest_snapshots(conn, ids)
-        asof_7d = _snapshots_asof(conn, ids, (today - _td(days=7)).isoformat())
+        # La regla de "Últimos 7 días" NO se escribe acá: es la del hero. Esta
+        # copia no tenía el piso de antigüedad de la base y cortaba el día con
+        # UTC (a las 22 h de Buenos Aires ya era mañana), así que el modal podía
+        # publicar 30 días de mercado como 7 y dejar de sumar lo que dice el hero.
+        estados, tramos = _variacion_7d_del_libro(ids, latest, _serie_reciente_del_libro(conn, ids))
 
         total = sum(float(r["total_value"] or 0) for r in latest.values())
         out, d_sum, then_sum = [], 0.0, 0.0
@@ -42907,22 +43171,18 @@ def advisor_book_detail(uid: int = Depends(get_current_user)):
                    "value_usd": round(tv, 2),
                    "share_pct": round(tv / total * 100, 1) if total > 0 else None,
                    "as_of": str(snap["date"])}
-            then = asof_7d.get(cid)
-            # Mismo criterio que el delta del libro: restar dos puntas exige que las
-            # dos estén en base de mercado. El AUM (`value_usd`, arriba) sigue
-            # saliendo del último snapshot sea cual sea — ahí la reconstrucción es la
-            # mejor valuación disponible; lo que no se puede es RESTARLA.
-            if not (_es_base_de_mercado(snap) and _es_base_de_mercado(then)):
-                then = None
-            if then is None or str(then["date"]) == str(snap["date"]):
-                row.update({"state": "new", "delta_7d_usd": None,
+            # El AUM (`value_usd`, arriba) sale del último snapshot sea cual sea —
+            # ahí la reconstrucción es la mejor valuación disponible; lo que no se
+            # puede es RESTARLA sin la regla.
+            if estados.get(cid) != "ok":
+                row.update({"state": estados.get(cid) or "new", "delta_7d_usd": None,
                             "delta_7d_pct": None, "flows_7d_usd": None,
                             "market_7d_usd": None})
             else:
-                then_v = float(then["total_value"] or 0)
-                d = tv - then_v
-                flows = (float(snap["net_deposited"] or 0)
-                         - float(then["net_deposited"] or 0))
+                then, fin = tramos[cid]
+                then_v = then["total_value"]
+                d = fin["total_value"] - then_v
+                flows = fin["net_deposited"] - then["net_deposited"]
                 row.update({
                     "state": "ok",
                     "delta_7d_usd": round(d, 2),

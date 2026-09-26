@@ -14,6 +14,10 @@ Los cinco:
   5. scripts.backfill_historical_mtm._persist_mtm_snapshots  (a quién NO pisar)
   6. twr.diagnosticar                                   (el semáforo de datos)
   7. GET /api/admin/diagnose-reportes-basis            (el diagnóstico del dueño)
+  8. main._serie_clasificada_de_clientes               (la evolución del LIBRO del asesor)
+
+El octavo apareció el 2026-09-25: la evolución del capital administrado leía las
+fotos sin clasificar y dibujaba la del import (al costo) como si fuera mercado.
 
 Los dos últimos aparecieron en el barrido "¿quién MÁS lee este dato?". El
 docstring del endpoint admin dice textual: «un diagnóstico que reimplemente el
@@ -123,9 +127,15 @@ class ContratoDeClasificacionTest(unittest.TestCase):
         # Si la última fila fuera INTRADIA, `medicion` no llegaría a DIAS.
         return twr.MEDICION if d["por_clase"][twr.MEDICION] == self.DIAS else None
 
+    def _clase_serie_del_libro(self):
+        filas = main._serie_clasificada_de_clientes(self.conn, [self.uid]).get(self.uid, [])
+        f = [x for x in filas if x["date"] == self.ultima]
+        return f[0]["clase"] if f and f[0]["apto"] else None
+
     def test_los_lectores_deciden_lo_mismo(self):
         veredictos = {
             "twr.serie_medible": self._clase_serie_medible(),
+            "main._serie_clasificada_de_clientes": self._clase_serie_del_libro(),
             "twr.bordes_medibles": self._clase_bordes_medibles(),
             "twr.diagnosticar": self._clase_diagnosticar(),
             "builder.fetch_snapshot_at_or_before": self._clase_borde_periodo(),

@@ -235,14 +235,21 @@ def client_profiles(conn, uid: int, price_cache: dict = None) -> dict:
         usd = amt / tc_mep if (r["c"] == "ARS" and tc_mep) else amt
         if usd > 0 and r["u"] in prof:
             prof[r["u"]]["cash_usd"] += usd
-    for r in conn.execute(
-            f"""SELECT s.user_id, s.total_value, s.net_deposited FROM snapshots s
-                WHERE s.user_id IN ({ph})
-                  AND s.date = (SELECT MAX(s2.date) FROM snapshots s2
-                                WHERE s2.user_id = s.user_id)""", ids).fetchall():
-        if r["user_id"] in prof:
-            prof[r["user_id"]]["snap_value"] = float(r["total_value"] or 0)
-            prof[r["user_id"]]["net_deposited"] = float(r["net_deposited"] or 0)
+    # ⚠️ "ESTÁN PERDIENDO" SE JUZGA CON EL ÚLTIMO CIERRE A MERCADO, no con la
+    # última foto. La última foto puede ser:
+    #   · la que fabricó el import: su valor ES EL COSTO (la cadena contable, con lo
+    #     no realizado en 0), así que "vale menos que lo aportado" no dice si pierde,
+    #     dice si realizó pérdidas;
+    #   · la de media rueda que escribe la app cuando alguien abre la cuenta: con
+    #     "última foto y que sea apta", el cliente SALÍA del grupo —y de las alertas
+    #     atadas a él— el día que el asesor lo miraba.
+    # Es la misma punta que la tarjeta Mejor/Peor (`main._ultimo_cierre`).
+    import main as _main
+    for cid, filas in _main._serie_reciente_del_libro(conn, ids).items():
+        c = _main._ultimo_cierre(filas)
+        if cid in prof and c is not None:
+            prof[cid]["snap_value"] = c["total_value"]
+            prof[cid]["net_deposited"] = c["net_deposited"]
 
     for p in prof.values():
         p["total_usd"] = p["holdings"] + p["cash_usd"]
