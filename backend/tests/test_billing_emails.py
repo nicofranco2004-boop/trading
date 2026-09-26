@@ -149,9 +149,30 @@ class ExpirationReminderTest(unittest.TestCase):
         """)
         return conn
 
-    def test_reminder_sent_for_cancelled_sub_expiring_in_3_days(self):
+    def test_no_avisa_que_vence_un_plan_que_ya_no_tiene(self):
+        """Si el tier ya no es un plan pago (lo bajaron a mano, un reembolso),
+        "tu plan Pro vence en 3 días" le anuncia algo que no tiene. Antes el
+        plan faltante caía a "pro" y el aviso salía igual."""
         conn = self._make_conn()
         conn.execute("INSERT INTO users (id, email, name) VALUES (1, 'a@x.com', 'Ana')")
+        period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
+        conn.execute(
+            """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
+                                          period, status, amount_ars, current_period_end)
+               VALUES (1, 'sub-y', 'rendi-1-monthly', 'monthly', 'cancelled', 12100, ?)""",
+            (period_end,),
+        )
+        conn.commit()
+        with patch("billing.emails._send") as mock_send:
+            count = billing_subs._send_expiration_reminders(conn, days_before=3)
+        self.assertEqual(count, 0)
+        self.assertFalse(mock_send.called)
+
+    def test_reminder_sent_for_cancelled_sub_expiring_in_3_days(self):
+        conn = self._make_conn()
+        # Con su plan puesto: al cancelar, el tier se mantiene hasta el fin del
+        # período (lo baja el job al vencer), que es cuando sale este aviso.
+        conn.execute("INSERT INTO users (id, email, name, tier) VALUES (1, 'a@x.com', 'Ana', 'pro')")
         period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
         conn.execute(
             """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,

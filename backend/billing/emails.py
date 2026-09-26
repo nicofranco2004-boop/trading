@@ -257,6 +257,14 @@ def _wrap_html(body: str) -> str:
 
 # ─── Plan helpers (Plus / Pro / Asesor) ────────────────────────────────────
 
+# El nombre de cada plan, UNA vez. Lo leen `_plan_label` (los mails al usuario,
+# que nunca hablan de Free) y `_tier_label` (el aviso de cambio de plan al
+# admin, donde Free sí existe). Cada una tenía su propio diccionario, y
+# 'advisor' se agregó en uno solo: en el aviso al admin el Asesor se leía
+# "Free", un alta "Free → Asesor" quedaba "Free → Free" y no se mandaba.
+_NOMBRES_DE_PLAN = {"plus": "Plus", "pro": "Pro", "advisor": "Asesor"}
+
+
 def _plan_del_mail(plan: str) -> str:
     """El plan que el mail nombra y describe: 'plus' y 'advisor' son ellos
     mismos, cualquier otra cosa se trata como 'pro'.
@@ -265,8 +273,15 @@ def _plan_del_mail(plan: str) -> str:
     (`_plan_features_*`, `_plan_loss_*`). Cuando cada una tenía su propio `if`,
     'advisor' se arregló en el nombre y en la lista de bienvenida y siguió
     cayendo en el `else` de la lista de pérdida: el aviso de vencimiento del
-    asesor decía "Tu plan Asesor vence" y le listaba lo que pierde un Pro."""
-    return plan if plan in ("plus", "advisor") else "pro"
+    asesor decía "Tu plan Asesor vence" y le listaba lo que pierde un Pro.
+
+    Un valor que no es un plan pago ('free', None, 'admin') se trata como Pro
+    —el default histórico de estos mails— pero queda en el log: si llega, el
+    que llama le está pasando un dato que no corresponde."""
+    if plan in _NOMBRES_DE_PLAN:
+        return plan
+    log.warning("mail de plan con plan=%r: se describe como Pro", plan)
+    return "pro"
 
 
 def _plan_label(plan: str) -> str:
@@ -276,7 +291,7 @@ def _plan_label(plan: str) -> str:
     el `else` y el mail que recibía el asesor decía "Te activamos Rendi Pro" con
     la lista de features de Pro. Se le regala un plan y se le nombra otro.
     """
-    return {"plus": "Plus", "advisor": "Asesor", "pro": "Pro"}[_plan_del_mail(plan)]
+    return _NOMBRES_DE_PLAN[_plan_del_mail(plan)]
 
 
 # Las cuatro listas de abajo NO tienen números escritos: los arma
@@ -285,26 +300,30 @@ def _plan_label(plan: str) -> str:
 # "10× más que Free" (son 60×), "4 análisis de comportamiento" (son 6
 # detectores), "vas a quedar en 6" al vencer un Pro (queda 1). El guard es
 # `tests/test_mails_vs_limites.py`.
+#
+# `cupos`: los de la PERSONA (`plan_textos.cupos_del_usuario`), que le pasa
+# quien manda el mail. Sin ellos, los del plan. Desde el 15/10 difieren para
+# los que ya pagaban Plus (se les respeta el cupo viejo de análisis).
 
-def _plan_features_html(plan: str) -> str:
+def _plan_features_html(plan: str, cupos: Optional[dict] = None) -> str:
     """Lo que incluye el plan, como <li> (mails de bienvenida y de regalo)."""
-    return plan_textos.a_html(plan_textos.incluye(_plan_del_mail(plan)))
+    return plan_textos.a_html(plan_textos.incluye(_plan_del_mail(plan), cupos))
 
 
-def _plan_features_text(plan: str) -> str:
+def _plan_features_text(plan: str, cupos: Optional[dict] = None) -> str:
     """Lo mismo que `_plan_features_html`, en texto plano: un renglón por item."""
-    return plan_textos.a_texto(plan_textos.incluye(_plan_del_mail(plan)))
+    return plan_textos.a_texto(plan_textos.incluye(_plan_del_mail(plan), cupos))
 
 
-def _plan_loss_html(plan: str) -> str:
+def _plan_loss_html(plan: str, cupos: Optional[dict] = None) -> str:
     """Lo que se pierde al volver a Free, como <li> (aviso de vencimiento). A
     quien nació sin plan gratis no se le manda: ver `send_expiration_reminder`."""
-    return plan_textos.a_html(plan_textos.se_pierde(_plan_del_mail(plan)))
+    return plan_textos.a_html(plan_textos.se_pierde(_plan_del_mail(plan), cupos))
 
 
-def _plan_loss_text(plan: str) -> str:
+def _plan_loss_text(plan: str, cupos: Optional[dict] = None) -> str:
     """Lo mismo que `_plan_loss_html`, en texto plano: un renglón por item."""
-    return plan_textos.a_texto(plan_textos.se_pierde(_plan_del_mail(plan)))
+    return plan_textos.a_texto(plan_textos.se_pierde(_plan_del_mail(plan), cupos))
 
 
 def _al_terminar(requiere_plan: bool) -> str:
@@ -329,7 +348,7 @@ def _al_terminar(requiere_plan: bool) -> str:
 
 def send_welcome_pro(*, to: str, user_name: str, period: str,
                     amount_ars: int, next_charge_date: Optional[str],
-                    plan: str = "pro") -> bool:
+                    plan: str = "pro", cupos: Optional[dict] = None) -> bool:
     """Email de bienvenida al activarse Plus o Pro.
 
     El nombre histórico es `send_welcome_pro` por back-compat con callers
@@ -372,7 +391,7 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
         Tu suscripción <b>{period_label}</b> está activa. Ya tenés acceso a:
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        {_plan_features_html(plan)}
+        {_plan_features_html(plan, cupos)}
       </ul>
       {detalle_html}
       <p style="font-size:14px;color:#374151;line-height:1.6;">
@@ -383,7 +402,7 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
         f"¡Bienvenido a Rendi {plan_label}, {user_name}!\n\n"
         f"Tu suscripción {period_label} está activa.\n\n"
         f"{detalle_text}\n\n"
-        f"Ya tenés acceso a:\n{_plan_features_text(plan)}\n\n"
+        f"Ya tenés acceso a:\n{_plan_features_text(plan, cupos)}\n\n"
         f"Podés cancelar cuando quieras desde Configuración → Mi plan.\n\n"
         f"— Rendi"
     )
@@ -511,7 +530,8 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
 
 def send_expiration_reminder(*, to: str, user_name: str,
                              days_left: int, expires_at: str,
-                             plan: str = "pro", requiere_plan: bool = False) -> bool:
+                             plan: str = "pro", requiere_plan: bool = False,
+                             cupos: Optional[dict] = None) -> bool:
     """3 días antes de que se termine un plan cancelado (o su crédito).
 
     La lista de "lo que vas a perder" describe la caída a Free ("N análisis
@@ -531,9 +551,9 @@ def send_expiration_reminder(*, to: str, user_name: str,
         Después de esa fecha, vas a perder acceso a:
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        {_plan_loss_html(plan)}
+        {_plan_loss_html(plan, cupos)}
       </ul>"""
-        _perdida_txt = f"Después de esa fecha, vas a perder acceso a:\n{_plan_loss_text(plan)}"
+        _perdida_txt = f"Después de esa fecha, vas a perder acceso a:\n{_plan_loss_text(plan, cupos)}"
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
@@ -544,7 +564,7 @@ def send_expiration_reminder(*, to: str, user_name: str,
       </p>
     """
     text = (
-        f"Tu plan Rendi {plan_label} vence en {days_left} días\n\n"
+        f"Tu plan Rendi {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}\n\n"
         f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}.\n\n"
         f"{_perdida_txt}\n\n"
         f"Para renovar: andá a rendi.finance/planes\n\n"
@@ -993,7 +1013,7 @@ def _pro_ganchos() -> tuple:
         "gráfico y cada sección sin estar cuidando la cuota.",
         ("Todos tus brokers en una sola cartera, sin límite de cuántos conectes."
          if brokers is None else
-         f"Hasta {brokers} brokers en una sola cartera."),
+         f"Hasta {brokers} {'broker' if brokers == 1 else 'brokers'} en una sola cartera."),
         "Se acuerda de lo que le aclarás entre sesiones, así no le repetís tu "
         "situación cada vez.",
     )
@@ -1116,13 +1136,14 @@ def send_new_signup_admin(*, to: str, new_user_email: str,
 # ─── Email interno: alerta al admin por cada CAMBIO DE PLAN ──────────────────
 
 def _tier_label(tier: Optional[str]) -> str:
-    """Normaliza el tier a una etiqueta legible. NULL / '' / 'free' / cualquier
-    valor desconocido → 'Free' (es el estado por defecto del usuario).
+    """Normaliza el tier a una etiqueta legible: plus/pro/advisor por su nombre
+    (`_NOMBRES_DE_PLAN`); NULL / '' / 'free' / cualquier valor desconocido →
+    'Free' (es el estado por defecto del usuario).
 
     OJO: distinto de _plan_label (más arriba), que asume plus/pro y devuelve
     'Pro' por defecto. Acá necesitamos manejar 'free'/None → 'Free'."""
     t = (tier or "").strip().lower()
-    return {"plus": "Plus", "pro": "Pro"}.get(t, "Free")
+    return _NOMBRES_DE_PLAN.get(t, "Free")
 
 
 # Etiqueta legible del origen del cambio (lo que disparó la transición).
@@ -1140,7 +1161,7 @@ def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
                            new_plan: Optional[str], source: str,
                            user_name: Optional[str] = None,
                            amount_usd: Optional[float] = None) -> bool:
-    """Aviso INTERNO al admin cuando un usuario CAMBIA de plan (free/plus/pro).
+    """Aviso INTERNO al admin cuando un usuario CAMBIA de plan (free/plus/pro/asesor).
 
     Cubre todas las transiciones: pago de Plus/Pro (free→pago), upgrade/downgrade
     plus↔pro, baja a Free (vencimiento de crédito o fin de período por
@@ -1399,7 +1420,8 @@ def send_orphan_subscription_admin(*, sub_id: str, user_email: str, error: str) 
 
 def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
                      days: int, active_until: Optional[str],
-                     requiere_plan: bool = False) -> bool:
+                     requiere_plan: bool = False,
+                     cupos: Optional[dict] = None) -> bool:
     """Email al USUARIO cuando un admin le REGALA Plus/Pro (grant-comp).
 
     No es un pago: es un acceso de cortesía por N días que se termina solo al
@@ -1418,7 +1440,7 @@ def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
         Te dimos acceso a <b>Rendi {plan_label}</b> sin costo por <b>{days} días</b>. Ya lo tenés activo en tu cuenta.
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        {_plan_features_html(plan)}
+        {_plan_features_html(plan, cupos)}
       </ul>
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px;margin:20px 0;">
         <p style="font-size:13px;color:#6b7280;margin:0 0 4px;">Tu acceso de cortesía</p>
@@ -1438,7 +1460,7 @@ def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
         f"Plan {plan_label} activo hasta {until_label}.\n"
         f"Cuando llegue esa fecha, {despues}, sin ningún cobro.\n\n"
         f"Entrá a {APP_URL} y aprovechá el acceso.\n\n"
-        f"Incluye:\n{_plan_features_text(plan)}\n\n"
+        f"Incluye:\n{_plan_features_text(plan, cupos)}\n\n"
         f"— Rendi"
     )
     return _send(to, f"Te activamos Rendi {plan_label} de regalo",

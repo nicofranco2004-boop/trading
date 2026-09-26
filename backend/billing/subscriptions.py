@@ -255,7 +255,7 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
     today_str = datetime.utcnow().isoformat()
     rows = conn.execute(
         """SELECT u.id as user_id, u.email, u.name, u.credit_active_until,
-                  u.credit_anchor_plan, u.credit_anchor_period
+                  u.credit_anchor_plan, u.credit_anchor_period, u.tier
            FROM users u
            WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL
@@ -309,14 +309,21 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
                 days_left = days_before
 
             from billing import trial as _trial
+            from billing import plan_textos as _plan_textos
+            # El plan que vence es el del ancla del crédito; si falta, el que
+            # tiene puesto (la consulta ya lo limita a pro/plus/advisor). Caía
+            # a "pro" y a un Plus sin ancla le avisaba que vencía su Pro.
+            plan = r["credit_anchor_plan"] or r["tier"]
             emails.send_expiration_reminder(
                 to=r["email"],
                 user_name=(r["name"] or r["email"].split("@")[0]),
                 days_left=days_left,
                 expires_at=r["credit_active_until"],
-                plan=r["credit_anchor_plan"] or "pro",
+                plan=plan,
                 # Nació sin plan gratis → no "pierde" features: queda en pausa.
                 requiere_plan=_trial._requiere_plan(conn, r["user_id"]),
+                # Los cupos de ESTA persona, no los del plan: ver cupos_del_usuario.
+                cupos=_plan_textos.cupos_del_usuario(conn, r["user_id"], plan),
             )
             # Marcar idempotencia en la sub más reciente del user
             with conn:
@@ -425,14 +432,25 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
                 days_left = days_before
 
             from billing import trial as _trial
+            from billing import plan_textos as _plan_textos
+            plan = r["tier"]
+            if plan not in ("plus", "pro", "advisor"):
+                # Ya no tiene un plan pago (lo bajaron a mano, o un reembolso):
+                # "tu plan Pro vence en 3 días" le anunciaría algo que no tiene.
+                # Antes caía a "pro". No se marca: si el plan vuelve, el aviso sale.
+                log.info("aviso de vencimiento salteado sub=%s: el tier es %r, "
+                         "no un plan pago", r["mp_subscription_id"], plan)
+                continue
             emails.send_expiration_reminder(
                 to=r["email"],
                 user_name=(r["name"] or r["email"].split("@")[0]),
                 days_left=days_left,
                 expires_at=r["current_period_end"],
-                plan=r["tier"] or "pro",
+                plan=plan,
                 # Nació sin plan gratis → no "pierde" features: queda en pausa.
                 requiere_plan=_trial._requiere_plan(conn, r["user_id"]),
+                # Los cupos de ESTA persona, no los del plan: ver cupos_del_usuario.
+                cupos=_plan_textos.cupos_del_usuario(conn, r["user_id"], plan),
             )
             with conn:
                 conn.execute(

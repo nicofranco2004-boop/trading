@@ -26,7 +26,8 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
-import { cuantosSeVen, planQueDestraba } from '../utils/planes'
+import { detectoresVisibles } from '../utils/detectoresVisibles'
+import { planQueDestraba } from '../utils/planes'
 import { pctTxt } from '../utils/format'
 import { SERIES_COLORS } from '../utils/chartTheme'
 
@@ -651,25 +652,27 @@ function EvidenceRow({ label, value, count, mono }) {
 }
 
 // ─── BehavioralCards — grid de cards con gate por plan ──────────────────────
-// • Pro/Admin (y el plan cuyo tope es `null`, sin tope): todas las cards con su
-//   análisis personalizado.
-// • Con tope (`behavioral_tags_visible` del backend): las cards visibles + el
-//   resto como "preview educativo" — explican QUÉ detecta cada sesgo
-//   (definición abstracta) sin exponer la data personal del user. Cada preview
-//   dice qué plan la destraba, leído de `features.planes` — nunca escrito acá.
+// Cuántas se ven lo dice `limits.behavioral_tags_visible` (la tabla de planes
+// del backend), no el nombre del plan — ver utils/detectoresVisibles.js:
+// • sin tope: todas las cards con su análisis personalizado;
+// • con tope: las visibles + el resto como "preview educativo" — explican QUÉ
+//   detecta cada sesgo (definición abstracta) sin exponer la data personal del
+//   user. Cada preview dice qué plan la destraba, leído de `features.planes`
+//   (utils/planes.js) — nunca escrito acá.
 //
 // Rationale: el patrón anterior (un solo "Desbloqueá 11 análisis más con
 // Pro") no comunicaba valor — el user no sabía qué sesgos se estaban
 // analizando. Con preview educativo, el user puede juzgar si los sesgos
 // son útiles para su caso antes de upgradear.
-function BehavioralCards({ cards, onCardClick }) {
-  const { limit, hasFullAccess, loading, features } = usePlanFeatures()
+export function BehavioralCards({ cards, onCardClick }) {
+  const { limit, features } = usePlanFeatures()
 
-  // Fail-CLOSED durante loading: en el primer page load sin cache, en lugar
-  // de mostrar todas las cards (flash que un Free podría capturar) mostramos
-  // la versión gateada. Si el user es Pro, dura ~100-300ms hasta que el
-  // fetch resuelve. Cubierto por localStorage cache → casi siempre instant.
-  if (hasFullAccess) {
+  // Fail-CLOSED durante loading: en el primer page load sin cache los features
+  // todavía no llegaron (undefined) y se muestra UNA carta, no todas (flash que
+  // un Free podría capturar). Dura ~100-300ms hasta que el fetch resuelve.
+  // Cubierto por localStorage cache → casi siempre instant.
+  const visibleCount = detectoresVisibles(limit('behavioral_tags_visible'))
+  if (visibleCount === Infinity) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {cards.map(card => (
@@ -687,10 +690,7 @@ function BehavioralCards({ cards, onCardClick }) {
     )
   }
 
-  // Loading (sin cache) o un plan con tope — split visible + preview educativo.
-  // `null` es SIN tope (todas): antes `|| 1` lo leía como una sola card, y el
-  // 15/10 el Plus pasa a no tener tope (ver utils/planes.js).
-  const visibleCount = cuantosSeVen(limit('behavioral_tags_visible'), cards.length)
+  // Loading (sin cache) o plan con tope — split visible + preview educativo
   const visible = cards.slice(0, visibleCount)
   const locked = cards.slice(visibleCount)
 

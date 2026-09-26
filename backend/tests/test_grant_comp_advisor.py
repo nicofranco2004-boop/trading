@@ -64,6 +64,41 @@ class PlanLabelAsesorTest(unittest.TestCase):
         self.assertNotIn("Rendi Pro", cuerpo)
 
 
+class ElAvisoAlAdminNombraAlAsesor(unittest.TestCase):
+    """El aviso interno de "cambio de plan" leía 'advisor' como "Free": regalar
+    el Plan Asesor a alguien en Free se veía "Free → Free" y, como no parecía
+    un cambio, NO SE MANDABA. Nico nunca se enteraba de un alta ni de una baja
+    de Asesor. El nombre sale ahora de la misma tabla que el de los mails al
+    usuario (`emails._NOMBRES_DE_PLAN`)."""
+
+    def test_la_etiqueta(self):
+        self.assertEqual(emails._tier_label("advisor"), "Asesor")
+        self.assertEqual(emails._tier_label("plus"), "Plus")
+        self.assertEqual(emails._tier_label(None), "Free")
+
+    def test_regalar_asesor_le_avisa_al_admin(self):
+        """Por el endpoint real. El mail del usuario va a una dirección común a
+        propósito: el aviso al admin se saltea las de dominios de prueba (el
+        `_send` está reemplazado, no sale nada)."""
+        client = TestClient(main.app)
+        tag = uuid.uuid4().hex[:10]
+        conn = main.get_db()
+        admin = _mk_user(conn, f"admin-{tag}@rendi.test", is_admin=1)
+        email = f"piloto.asesor.{tag}@gmail.com"
+        _mk_user(conn, email, tier="free")
+        conn.commit()
+        conn.close()
+        with patch.object(emails, "_send", return_value=True) as send:
+            r = client.post("/api/admin/billing/grant-comp",
+                            params={"email": email, "plan": "advisor", "days": 30},
+                            headers={"Authorization": f"Bearer {main.create_token(admin)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json().get("ok"), r.text)
+        asuntos = [str(c.args[1]) for c in send.call_args_list if len(c.args) > 1]
+        self.assertTrue(any("cambio de plan: Free → Asesor" in a for a in asuntos),
+                        f"no salió el aviso al admin; asuntos: {asuntos}")
+
+
 class GrantCompAsesorTest(unittest.TestCase):
     """El endpoint: regalar Asesor a alguien CON tiempo activo tiene que
     reemplazarle el plan, no dejarlo como estaba."""
