@@ -222,9 +222,14 @@ class CampanaDeInvitacion(unittest.TestCase):
         primera impresión posible, y encima llega justo cuando la persona entra
         a mirar."""
         from billing import emails
-        self.assertGreaterEqual(len(emails._PRO_GANCHOS), 3)
-        junto = " ".join(emails._PRO_GANCHOS).lower()
-        for concreto in ("chat libre", "60 análisis", "brokers"):
+        from ai.quota import LIMITS
+        ganchos = emails._pro_ganchos()
+        self.assertGreaterEqual(len(ganchos), 3)
+        junto = " ".join(ganchos).lower()
+        # El cupo se lee del límite, no se congela acá: con "60" escrito, el
+        # día que cambie el plan este test pediría el número viejo.
+        pro = LIMITS["pro"]["analyses_per_week"]
+        for concreto in ("chat libre", f"{pro} análisis", "brokers"):
             self.assertIn(concreto, junto, f"falta el gancho de {concreto}")
 
     def test_una_variante_inventada_cae_en_la_default(self):
