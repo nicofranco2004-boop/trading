@@ -104,7 +104,7 @@ _LO_QUE_QUEDA = {
     # tiene que caer acá con su número, no pasar por no reconocerlo.
     "analisis": (r"análisis IA por semana \(vas a quedar (?:con|en) (\d+)\)",
                  lambda: LIMITS[FREE]["analyses_per_week"]),
-    "chat": (r"por semana a Rendi AI \(vas a quedar con (\d+)\)",
+    "chat": (r"por semana a Rendi AI(?: con preguntas guiadas)? \(vas a quedar con (\d+)\)",
              lambda: LIMITS[FREE]["chat_per_week"]),
     "brokers": (r"(?:brokers?|Brokers ilimitados) \(en Free el tope es (\d+);",
                 lambda: PLAN_LIMITS[FREE]["brokers_max"]),
@@ -121,7 +121,7 @@ _ACCESOS = {
     "Follow-ups": "ai.followup",
     "Reportes históricos completos": "reportes.historicos",
     "Export CSV": "export.csv",
-    "de % sobre tu cartera": "alerts.pct_move",
+    "variación %": "alerts.pct_move",
 }
 
 # Lo que ya se prometió y no es cierto para NINGÚN plan. Cada uno con su porqué.
@@ -452,6 +452,25 @@ class CadaMailContraSuLimite(_Comparador):
                     self.assertIn("queda en pausa", texto, version)
 
 
+class LaTablaNoSeContradice(unittest.TestCase):
+    """PLAN_LIMITS dice lo mismo de Comportamiento en DOS campos:
+    `behavioral_tags_visible` (cuántos detectores, None = todos) y
+    `can_access["comportamiento.full"]`. El mail y la grilla de la app leen el
+    primero; el catálogo piensa en el segundo. Si alguien cambia uno sin el
+    otro (el 15/10 el revert cambia los dos juntos), el mail prometería
+    "Todos los detectores" y la pantalla mostraría otra cosa."""
+
+    def test_sin_tope_de_detectores_si_y_solo_si_comportamiento_completo(self):
+        for plan, limites in PLAN_LIMITS.items():
+            with self.subTest(plan=plan):
+                self.assertEqual(
+                    limites["behavioral_tags_visible"] is None,
+                    bool(limites["can_access"].get("comportamiento.full")),
+                    f"{plan}: behavioral_tags_visible="
+                    f"{limites['behavioral_tags_visible']} y comportamiento.full="
+                    f"{limites['can_access'].get('comportamiento.full')} se contradicen")
+
+
 # ─── Capa 3: con límites inventados ─────────────────────────────────────────
 
 # Números que no son de ningún plan. Si el mail los dice, los está leyendo.
@@ -504,12 +523,12 @@ class ConLimitesInventados(_Comparador):
         texto = _vencimiento("plus")["texto"]
         for frase in ("Hasta 4 brokers (en Free el tope es 2;",
                       "9 detectores de comportamiento (vas a quedar con 5)",
-                      "Hasta 17 alertas, también de % sobre tu cartera "
-                      "(en Free el tope es 8, sólo de precio;",
+                      "Hasta 17 alertas: de precio objetivo y de variación % "
+                      "(en Free el tope es 8, sólo de precio objetivo;",
                       "Personalizar el diagnóstico 13 veces por semana "
                       "(vas a quedar con 4 veces por semana)",
                       "7 análisis IA por semana (vas a quedar con 2)",
-                      "11 consultas por semana a Rendi AI (vas a quedar con 3)"):
+                      "11 consultas por semana a Rendi AI con preguntas guiadas (vas a quedar con 3)"):
             self.assertIn(frase, texto)
         self.assertIn("53 análisis IA por semana (vas a quedar con 2)",
                       _vencimiento("pro")["texto"])

@@ -46,15 +46,19 @@ mismo por construcción.
 from __future__ import annotations
 
 import html
+import logging
 import re
 from typing import Optional
 
 from ai.plan import PLAN_LIMITS
 from ai.quota import LIMITS
 
+log = logging.getLogger("billing.plan_textos")
+
 # Adónde cae una cuenta que TIENE Free cuando se le termina lo que tenía. Quien
 # nació sin plan gratis no cae a ningún lado: queda en pausa, y a esa persona
-# no se le manda esta lista (ver `emails._al_terminar`).
+# no se le manda esta lista (ver `emails._al_terminar`). Es el único destino:
+# los paréntesis de `_lo_que_queda` dicen "en Free".
 PLAN_AL_VENCER = "free"
 
 
@@ -62,16 +66,46 @@ def _n(n: int, uno: str, varios: str) -> str:
     return f"{n} {uno if n == 1 else varios}"
 
 
+# ─── Los cupos de UNA persona ───────────────────────────────────────────────
+
+def cupos_del_usuario(conn, user_id: int, plan: str) -> Optional[dict]:
+    """Los cupos semanales que ESTA cuenta tiene en `plan`, leídos de
+    `quota.get_current_usage` — la misma función que le muestra sus cupos en
+    la app.
+
+    Existe por los que ya pagaban Plus: desde el 2026-10-15 (`git revert
+    78f43739`) a ellos se les respeta el cupo viejo de análisis
+    (`quota.limites_del_usuario`, que `get_current_usage` consulta). Un mail
+    que leyera sólo `LIMITS[plan]` le diría a esa persona el número del plan,
+    no el suyo — justo en el aviso de vencimiento, que es a quien le puede
+    llegar si cancela con la suba de precio.
+
+    None si no se puede leer: el mail sale igual, con los cupos del plan."""
+    try:
+        from ai import quota
+        uso = quota.get_current_usage(conn, user_id, tier_override=plan)
+        return {"analyses_per_week": uso["analyses_limit"],
+                "chat_per_week": uso["chat_limit"],
+                "diag_dismiss_per_week": uso["diag_dismiss_limit"]}
+    except Exception as ex:
+        log.warning("cupos de uid=%s en %s: no se pudieron leer (%s); el mail "
+                    "va con los del plan", user_id, plan, ex)
+        return None
+
+
 # ─── Lo que da cada plan, leído de los límites ──────────────────────────────
 # `None` = sin tope, igual que en las dos tablas de origen.
 
-def _valor(clave: str, plan: str):
-    cupos, plan_limits = LIMITS[plan], PLAN_LIMITS[plan]
+def _valor(clave: str, plan: str, cupos: Optional[dict] = None):
+    """Lo que `plan` da en `clave`. `cupos` pisa los cupos semanales del plan
+    con los de una persona (ver `cupos_del_usuario`)."""
+    semana = {**LIMITS[plan], **(cupos or {})}
+    plan_limits = PLAN_LIMITS[plan]
     acceso = plan_limits["can_access"]
     if clave == "analisis":
-        return cupos["analyses_per_week"]
+        return semana["analyses_per_week"]
     if clave == "chat":
-        return cupos["chat_per_week"]
+        return semana["chat_per_week"]
     if clave == "followups":
         return bool(acceso.get("ai.followup"))
     if clave == "brokers":
@@ -79,10 +113,11 @@ def _valor(clave: str, plan: str):
     if clave == "detectores":
         return plan_limits["behavioral_tags_visible"]
     if clave == "alertas":
-        # El tope y el tipo van juntos: "hasta 3, sólo de precio" es UNA cosa.
+        # El tope y el tipo van juntos: "hasta 3, sólo de precio objetivo" es
+        # UNA cosa.
         return (plan_limits["alerts_max"], bool(acceso.get("alerts.pct_move")))
     if clave == "diagnostico":
-        return cupos["diag_dismiss_per_week"]
+        return semana["diag_dismiss_per_week"]
     if clave == "reportes":
         return bool(acceso.get("reportes.historicos"))
     if clave == "export":
@@ -103,13 +138,18 @@ def _da_mas(a, b) -> bool:
     return a > b
 
 
-def _frase(clave: str, v) -> Optional[str]:
-    """El renglón que describe `v`, o None si con eso no hay nada que decir
-    (un cupo en 0, un acceso que no está)."""
+def _frase(clave: str, v, plan: str) -> Optional[str]:
+    """El renglón que describe `v` (lo que `plan` da en `clave`), o None si
+    con eso no hay nada que decir (un cupo en 0, un acceso que no está)."""
     if clave == "analisis":
         return f"**{v} análisis IA** por semana" if v else None
     if clave == "chat":
-        return f"**{_n(v, 'consulta', 'consultas')} por semana** a Rendi AI" if v else None
+        if not v:
+            return None
+        cuantas = f"**{_n(v, 'consulta', 'consultas')} por semana** a Rendi AI"
+        # Sin chat libre, esas consultas son sólo las preguntas guiadas: sin
+        # aclararlo, "9 consultas" se lee como "preguntale lo que quieras".
+        return cuantas if plan in _PREMIUM else f"{cuantas} con preguntas guiadas"
     if clave == "followups":
         return "**Follow-ups**: repreguntás sobre cualquier análisis" if v else None
     if clave == "brokers":
@@ -121,13 +161,17 @@ def _frase(clave: str, v) -> Optional[str]:
             return "**Todos los detectores de comportamiento**"
         return f"**{_n(v, 'detector', 'detectores')} de comportamiento**" if v else None
     if clave == "alertas":
-        tope, de_porcentaje = v
+        tope, de_variacion = v
         if tope == 0:
             return None
         cuantas = ("**Alertas sin tope**" if tope is None
                    else f"Hasta **{_n(tope, 'alerta', 'alertas')}**")
-        return (f"{cuantas}, también de % sobre tu cartera" if de_porcentaje
-                else f"{cuantas} de precio")
+        # Los dos tipos, con el nombre que tienen en la pantalla de Alertas:
+        # "Precio objetivo" y "Variación %" (un activo que sube o baja X % —
+        # `alerts_engine.py`). Decía "de % sobre tu cartera", que suena a la
+        # cartera entera y no es lo que hace.
+        return (f"{cuantas}: de precio objetivo y de variación %" if de_variacion
+                else f"{cuantas} de precio objetivo")
     if clave == "diagnostico":
         if v is None:
             return "**Personalizar el diagnóstico sin límite**"
@@ -153,10 +197,11 @@ def _lo_que_queda(clave: str, v) -> Optional[str]:
     if clave == "brokers":
         return f"en Free el tope es {v}; los que ya tenés no se borran" if v else None
     if clave == "alertas":
-        tope, de_porcentaje = v
+        tope, de_variacion = v
         if not tope:
             return None
-        return (f"en Free el tope es {tope}{'' if de_porcentaje else ', sólo de precio'}; "
+        return (f"en Free el tope es {tope}"
+                f"{'' if de_variacion else ', sólo de precio objetivo'}; "
                 "las que ya tenés no se borran")
     return None      # accesos sí/no: se pierden enteros, no hay paréntesis
 
@@ -198,6 +243,10 @@ _SIN_NUMEROS_AL_PERDER = {
 
 # El orden de los renglones. Plus arranca por lo que lo define (los brokers y
 # las métricas); el resto, por la IA.
+# Los planes con chat libre y respuestas con causalidad: la misma regla que
+# `is_premium` en main.py (admin no se vende).
+_PREMIUM = ("pro", "advisor")
+
 _ORDEN = ("analisis", "chat", "followups", "brokers", "detectores", "alertas",
           "diagnostico", "reportes", "export")
 _ORDEN_PLUS = ("brokers", "detectores", "alertas", "diagnostico", "reportes",
@@ -216,7 +265,7 @@ def incluye(plan: str) -> list[str]:
     if plan == "advisor":
         return renglones
     for clave in _orden(plan):
-        frase = _frase(clave, _valor(clave, plan))
+        frase = _frase(clave, _valor(clave, plan), plan)
         if frase:
             renglones.append(frase)
     return renglones
@@ -230,7 +279,7 @@ def se_pierde(plan: str, destino: str = PLAN_AL_VENCER) -> list[str]:
         tiene, queda = _valor(clave, plan), _valor(clave, destino)
         if not _da_mas(tiene, queda):
             continue
-        frase = _frase(clave, tiene)
+        frase = _frase(clave, tiene, plan)
         if not frase:
             continue
         resto = _lo_que_queda(clave, queda)
