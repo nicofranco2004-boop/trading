@@ -12,6 +12,7 @@ Esta ronda no agrega el arreglo número diez: cambia la forma del dato.
 Los dos son KeyError, o sea que el uso inseguro no se puede escribir por descuido.
 """
 import datetime as _d
+import json
 import os
 import tempfile
 import unittest
@@ -262,7 +263,10 @@ class A4_PacketsDeIATest(_Base):
         self._cartera_452_sin_tramo_medido()
         d = insights_drawdown.build(self.conn, self.uid, window_days=365)
         self.assertNotEqual(d.get("max_pct"), -47.26)
-        self.assertNotEqual(d.get("peak_value"), self.COSTO)
+        # El pico inventado (la foto al costo) no puede viajar al modelo por
+        # NINGÚN campo. Antes se miraba `peak_value`, que ya no existe: la
+        # comparación pasaba siempre y no controlaba nada.
+        self.assertNotIn("13957", json.dumps(d))
         self.assertIsNone(d.get("max_pct"))          # la pantalla dice "—"; el packet también
 
     def test_dashboard_evolution_tampoco(self):

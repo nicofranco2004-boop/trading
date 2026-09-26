@@ -17,10 +17,12 @@ import UpgradePromoCard from './UpgradePromoCard'
 const VIOLET_BORDER = 'rgb(var(--data-violet) / .32)'
 const VIOLET_BG = 'linear-gradient(180deg, rgb(var(--data-violet) / .07), rgb(var(--data-violet) / .025))'
 
-export default function ProfileSummaryBlock({ className = '' }) {
+export default function ProfileSummaryBlock({ className = '', params }) {
   const { user } = useAuth()
+  // `params`: la moneda, el modo y el valor de ahora de la pantalla, para que la
+  // caída real del cruce "drawdown" sea la de la card de abajo.
   const { result, loading, error, upgrade, usage, tier, analyze, refresh } =
-    useAIAnalysis({ screen: 'profile.summary', autoload: false })
+    useAIAnalysis({ screen: 'profile.summary', params, autoload: false })
 
   // Antes de generar no sabemos qué tier usó el backend → usamos el del auth
   // como default (evita mostrar "Free" a un Pro). El del hook lo pisa después.

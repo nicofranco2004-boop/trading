@@ -656,7 +656,7 @@ def render_profile_card_prompt(tier: str = "pro") -> str:
         pitfalls=[
             "Si status='no_profile' → no hay test cargado, decir solo eso y sugerir completarlo. No inventar declaración.",
             "Si status='no_portfolio' → hay test pero sin cartera, comentar solo lo declarado sin inferir comportamiento.",
-            "Para code='drawdown', el packet NO trae el drawdown real (vive en frontend). Razonar sobre la preferencia declarada sin inventar números reales.",
+            "Para code='drawdown', card.actual trae la caída REAL medida como rendimiento (un depósito o un retiro no cuenta): max_pct = la peor de la historia medida (desde card.actual.medido_desde), current_pct = la de hoy, en card.actual.moneda — los mismos números de la card en pantalla. Cruzala con la preferencia declarada. Si max_pct es null, card.actual.motivo dice por qué: razoná sólo sobre la preferencia, sin inventar números.",
             "No usar 'deberías' / 'te conviene'. Tono descriptivo: 'la incongruencia entre X e Y suele implicar Z'.",
             "Para 'aligned', no agregar caveat artificial — si está bien alineado, decirlo claro.",
         ],
@@ -693,7 +693,7 @@ def render_profile_summary_prompt(tier: str = "pro") -> str:
             "Si profile_declared está vacío → no hay test cargado, decir solo eso y sugerir completarlo. No inventes declaración.",
             "El packet NO trae el retorno real (vive en el frontend). Podés mencionar la expectativa declarada (return_expectation), pero NUNCA inventes el retorno real ni cruces 'performance vs expectativa' con un número.",
             "Un cross con status 'no_portfolio'/'no_data'/'no_profile' no tiene data cruzable — no lo fuerces; concentrate en los que sí.",
-            "El cross 'drawdown' NO trae el drawdown real ni el máximo (su actual.note lo aclara: 'no disponible en backend'). Razoná SOLO sobre la preferencia declarada — no afirmes dirección ni magnitud ('aguantaste caídas de X', 'tu drawdown fue mayor a lo que tolerás'); eso no está en el packet.",
+            "El cross 'drawdown' trae la caída REAL en crosses.drawdown.actual (max_pct = peor caída de la historia medida, current_pct = la de hoy, medidas como rendimiento, en actual.moneda). Usá esos números para cruzar con la preferencia declarada. Si max_pct es null, actual.motivo dice por qué: ahí razoná SOLO sobre la preferencia — no afirmes dirección ni magnitud.",
             "NO card-por-card: es UNA lectura conectada, no 7 párrafos sueltos. Máximo 2-3 sections.",
             "No 'deberías'/'te conviene'. Tono descriptivo-causal: 'la tensión entre X e Y suele implicar Z'.",
         ],
@@ -1010,7 +1010,10 @@ def render_insights_prompt(tier: str = "pro") -> str:
         "realized_avg_pct_per_trade (% promedio por trade), "
         "UNREALIZED_PNL_TOTAL_USD (mark-to-market USD de TODAS las posiciones "
         "abiertas — el 'sobre papel' actual), total_equity_usd (valor cartera "
-        "HOY), vs benchmarks con deltas en pp, drawdown actual y máximo, "
+        "HOY), vs benchmarks con deltas en pp, drawdown actual y máximo "
+        "(medidos como rendimiento sobre TODA la historia medida, desde "
+        "drawdown.medido_desde — no sólo el período del twr_pct: una caída "
+        "vieja no es 'del último año'), "
         "stats de trades, REALIZED_ATTRIBUTION (top contributors/detractors de "
         "trades YA CERRADOS, scope='closed_trades', cada item con "
         "status='closed' e in_portfolio_now bool), CURRENT_HOLDINGS_TOP "
@@ -1125,9 +1128,14 @@ def render_insights_evolution_prompt(tier: str = "pro") -> str:
 def render_insights_drawdown_prompt(tier: str = "pro") -> str:
     view = "Perfil de drawdown del Insights — riesgo histórico"
     pkt = (
-        "current_pct (caída actual desde peak), max_pct (peor caída del "
-        "período), days_since_peak, peak/trough values, dd_events (top 5 "
-        "> -5% con start/end/depth/duration), recovered (bool)."
+        "Caídas MEDIDAS COMO RENDIMIENTO (un depósito o un retiro no es una subida "
+        "ni una caída), los mismos números que la tarjeta de la pantalla: "
+        "current_pct (caída actual desde el máximo), max_pct (peor caída de la "
+        "historia medida, desde medido_desde), max_date / max_peak_date (fondo y "
+        "pico de esa caída), days_since_peak, recovered (bool), worst_event y "
+        "dd_events (top 5 > -5% con start/trough/end, depth, duration_days del "
+        "pico a la salida —o a medido_hasta si la caída sigue abierta, end_date "
+        "null—, recovery_days del fondo a la salida), moneda, incluye_hoy."
     )
     free = _maybe_free("insights.drawdown", view, pkt, tier)
     if free:
@@ -1138,7 +1146,7 @@ def render_insights_drawdown_prompt(tier: str = "pro") -> str:
         focus=[
             "Profundidad del peor DD — < -20 grave, entre -10 y -20 normal, > -10 chico para portfolios con exposure tech.",
             "Cantidad y duración de eventos — más eventos = más volatilidad estructural; duration > 90 días = caída larga, no agradable bancarla.",
-            "Drawdown actual vs el histórico — si current > max histórico, alarma legítima; si current < max histórico × 0.5, contexto.",
+            "Caída actual vs la peor de la historia — si current_pct es igual a max_pct, la cartera está HOY en su peor momento medido (alarma legítima); si es menos de la mitad de max_pct, es contexto.",
             "Tiempo en recuperar — patrón del portfolio frente a caídas (rápido / lento / inconcluso).",
         ],
         insight_examples=[
@@ -1223,8 +1231,10 @@ def render_insights_observation_prompt(tier: str = "pro") -> str:
     view = "Observación individual del diagnóstico (zoom sobre UNA card)"
     pkt = (
         "observation {title, text, category, level, id} + portfolio_context "
-        "{total_value_usd, twr_pct, drawdown, top_holdings, "
-        "top_contributors, exposure}."
+        "{total_value_usd, twr_pct, drawdown_current_pct / drawdown_max_pct "
+        "(caída MEDIDA COMO RENDIMIENTO —un depósito o un retiro no cuenta—, en "
+        "drawdown_moneda, hasta drawdown_medido_hasta; si vienen null, "
+        "drawdown_motivo dice por qué), top_holdings, top_contributors, exposure}."
     )
     free = _maybe_free("insights.observation", view, pkt, tier)
     if free:

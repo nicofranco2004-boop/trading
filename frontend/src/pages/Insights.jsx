@@ -336,6 +336,17 @@ function InsightsDesktop({ _embeddedTab }) {
   // orden (medido: 70.983 en una cartera de 16.595) durante un render, con su
   // fetch y su curva mal cerrada hasta la respuesta siguiente.
   const liveKeyPerf = loading ? 0 : Math.round(liveUsdPerf || 0)
+  // Lo que el ✦ necesita para medir la caída IGUAL que esta pantalla: la moneda
+  // del selector, el modo (en estimado la pantalla no muestra caída: "—") y el
+  // valor de ahora con el que cierra la curva. El servidor usa el mismo motor y
+  // la misma llamada que `/insights/performance`
+  // (backend/ai/builders/caida_medida.py); sin esto, en pesos, en estimado o a
+  // media rueda la IA decía otro número que la tarjeta.
+  const paramsCaidaIA = {
+    moneda: _monedaVista,
+    modo: modoPerf,
+    valor_live: liveKeyPerf > 0 ? liveKeyPerf : null,
+  }
 
   // El benchmark se recorta al rango del usuario EN EL BACKEND, así que cambiar
   // el selector es una consulta nueva — no un re-slice de una serie ya traída.
@@ -2692,6 +2703,12 @@ function InsightsDesktop({ _embeddedTab }) {
     verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
+    // La caída del paquete, medida como la de la tira de KPIs: moneda, modo y el
+    // valor de ahora. (Va por /ai/analyze, que cachea por paquete, pero el
+    // paquete ya trae cotizaciones vivas —posiciones, no realizado—, así que el
+    // valor de ahora no le agrega cambios que no tuviera; sin él, a media rueda
+    // el resumen decía una caída y el hallazgo D2 de `findings`, otra.)
+    ...paramsCaidaIA,
   }
 
   return (
@@ -2704,7 +2721,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <div className="flex items-center gap-2 flex-wrap">
             <AnalyzeButton
               screen="insights"
-              params={{ window_days: 365 }}
+              params={{ window_days: 365, ...paramsCaidaIA }}
               subtitle="Tu performance del último año"
             />
           </div>
@@ -2851,7 +2868,7 @@ function InsightsDesktop({ _embeddedTab }) {
           Ver <DiagnosisSection> para la lógica completa.
           ══════════════════════════════════════════════════════════════════════ */}
       {diagnosisPool.length > 0 && (
-        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} />
+        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} aiParams={paramsCaidaIA} />
       )}
 
       {/* ── Distribución de activos — estándar, incluye cash. Movida arriba
@@ -3378,7 +3395,7 @@ function InsightsDesktop({ _embeddedTab }) {
       {showDrawdown && (
       <AskAIAbout
         topic="insights.drawdown"
-        params={{ window_days: 365 }}
+        params={paramsCaidaIA}
         subtitle="Drawdown de la cartera"
       >
       <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
@@ -3517,9 +3534,10 @@ function InsightsDesktop({ _embeddedTab }) {
         {/* Lectura IA holística — solo si hay test hecho (si no, la CTA a
             completar el test la muestra el propio ProfileInvestorBlock). */}
         {investorProfile && Object.keys(investorProfile).length > 0 && (
-          <ProfileSummaryBlock />
+          <ProfileSummaryBlock params={paramsCaidaIA} />
         )}
         <ProfileInvestorBlock
+          aiParams={paramsCaidaIA}
           allocationCard={allocationCard}
           objectiveCard={objectiveCard}
           horizonCard={horizonCard}
@@ -3782,7 +3800,7 @@ const DIAG_TIERS = [
   { key: 'positivo',    match: d => d.severity === 'positive' },
 ]
 
-function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
+function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
   // state ({dismissed, slots}) + collapsed ANTES de cualquier early return
   // (Rules of Hooks). `slots` = ids visibles por tier → reemplazo por-slot estable.
   const [state, setState] = useState(() => readDiagState(userKey))
@@ -3925,6 +3943,7 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
                   <DiagnosisCard
                     key={d.id}
                     d={d}
+                    aiParams={aiParams}
                     onDismiss={row.canRotate ? () => dismiss(row.key, d.id) : undefined}
                   />
                 ))}
@@ -4002,7 +4021,7 @@ function FeaturedFinding({ d }) {
   )
 }
 
-function DiagnosisCard({ d, onDismiss }) {
+function DiagnosisCard({ d, onDismiss, aiParams }) {
   const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
   // Botón "No me interesa" — compartido entre la card normal y la bloqueada.
   const dismissBtn = onDismiss ? (
@@ -4060,6 +4079,9 @@ function DiagnosisCard({ d, onDismiss }) {
         text: plainText,
         category: d.category,
         level: d.severity,
+        // La moneda, el modo y el valor de ahora: la caída del paquete tiene que
+        // ser la de la tira de KPIs (la observación D2 la cita en el título).
+        ...aiParams,
       }}
       subtitle={title.length > 60 ? title.slice(0, 60) + '…' : title}
       className="h-full"
@@ -4163,7 +4185,7 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
 
 function ProfileInvestorBlock({
   allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
-  styleCard, liquidityCard, returnExpectationCard, positions = [],
+  styleCard, liquidityCard, returnExpectationCard, positions = [], aiParams,
 }) {
   // Si las cards basadas en perfil NO tienen perfil utilizable, mostramos
   // un CTA único en vez de 9 módulos bloqueados.
@@ -4215,6 +4237,7 @@ function ProfileInvestorBlock({
         return_exp: returnExpectationCard,
       }}
       positions={positions}
+      aiParams={aiParams}
     />
   )
 }
