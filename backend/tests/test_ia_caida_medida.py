@@ -469,9 +469,17 @@ class ElPerfilDelInversorTest(_Base):
 
     def test_el_resumen_del_perfil_tambien(self):
         self.cierres(CAIDA_Y_RETIRO[:3])
-        cruce = self.paquete("profile.summary", pagina_nueva())["crosses"]["drawdown"]
+        # Lo que manda ProfileSummaryBlock: moneda y modo, SIN valor de ahora.
+        paquete = self.paquete("profile.summary", {"moneda": "usd", "modo": "certero"})
+        cruce = paquete["crosses"]["drawdown"]
         self.assertEqual(cruce["actual"]["max_pct"], -10.0)
         self.assertEqual(cruce["actual"]["current_pct"], -10.0)
+        # La regla de test_ai_profile_crosses ("sin rendimiento fantasma en el
+        # paquete del perfil") probada CON una caída real: allá la base en memoria
+        # no tiene snapshots y la caída nunca se mide.
+        crudo = json.dumps(paquete, ensure_ascii=False).lower()
+        for prohibida in ("twr", "real_return", "retorno_real", "rendimiento"):
+            self.assertNotIn(prohibida, crudo)
 
     def test_sin_mediciones_dice_por_que(self):
         self.cierre(8, 10000, 10000)
@@ -625,6 +633,49 @@ class ElMotorDeLaTarjetaTest(_Base):
         p = self.paquete("insights.drawdown", pagina_nueva())
         self.assertEqual((p["current_pct"], p["max_pct"]), (0.0, 0.0))
         self.assertNotIn(-27.78, set(_numeros(p)))
+
+    def test_un_traspaso_entre_brokers_no_abre_la_puerta_a_la_estampa_vieja(self):
+        """La otra cara del arreglo de arriba (lo encontró la 3ª auditoría).
+
+        Un traspaso entre brokers queda en la fila 'global' como un RETIRO y un
+        DEPÓSITO del mismo monto. Con el corredor armado sólo con los brutos del
+        mes, un mes de neto cero se abría [−30.000, +30.000] y dejaba pasar las
+        estampas VIEJAS que deja un import a mitad de mes (ronda 4): la cartera
+        quieta en 110.000 publicaba −24 % de caída y −24 % desde el 5/5.
+
+        El corredor se abre hacia abajo sólo si las estampas del mes BAJAN, y
+        hacia arriba sólo si SUBEN — con tope en los brutos del mes.
+        """
+        self.conn.execute(
+            "INSERT INTO operations (user_id, date, entry_date, asset, op_type, broker, "
+            "quantity, entry_price, exit_price, pnl_usd) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (self.uid, "2025-01-02", "2025-01-01", "MSFT", "Venta", "Schwab", 1, 1, 1, 0))
+        base, apto = twr.base_y_apto_para(twr.MEDICION)
+        fechas = ([f"2026-04-{d:02d}" for d in range(1, 31)]
+                  + [f"2026-05-{d:02d}" for d in range(1, 32)])
+        for f in fechas:
+            # El import del 16/5 corrió la contabilidad +50.000 hacia atrás: lo
+            # estampado ANTES quedó 50.000 abajo, y nadie lo re-estampó.
+            estampa = 60000.0 if f < "2026-05-16" else 110000.0
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+                "net_deposited, fx_to_usd_blue, source, holdings_json, base, apto) "
+                "VALUES (?,?,110000,110000,?,1400,'cron','[{\"a\":1}]',?,?)",
+                (self.uid, f, estampa, base, apto))
+        for (y, m, dep, ret, ci) in ((2026, 4, 0, 0, 110000), (2026, 5, 30000, 30000, 0)):
+            self.conn.execute(
+                "INSERT INTO monthly_entries (user_id, year, month, broker, deposits, "
+                "withdrawals, pnl_realized, pnl_unrealized, capital_inicio, capital_final) "
+                "VALUES (?,?,?,'global',?,?,0,0,?,0)", (self.uid, y, m, dep, ret, ci))
+        self.conn.commit()
+        pant = self.pantalla()
+        self.assertAlmostEqual(pant["twr"], 0.0, places=6)
+        self.assertAlmostEqual(pant["drawdown_maximo"], 0.0, places=6)
+        self.assertAlmostEqual(pant["drawdown_actual"], 0.0, places=6)
+        desde_el_5 = self.pantalla(desde="2026-05-05")
+        self.assertAlmostEqual(desde_el_5["twr"], 0.0, places=6)
+        rp = twr.rendimiento_publicable(self.conn, self.uid, desde="2026-05-05")
+        self.assertAlmostEqual(rp.get("pct") or 0.0, 0.0, places=4)
 
 
 if __name__ == "__main__":
