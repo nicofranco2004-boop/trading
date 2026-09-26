@@ -15,6 +15,7 @@ import { ArrowLeft, Calendar, Sparkles } from 'lucide-react'
 import { Helmet } from 'react-helmet-async'
 import RendiLogo from '../RendiLogo'
 import PageMeta from '../PageMeta'
+import { CTA_PRUEBA, PRUEBA_EN_UNA_LINEA } from '../../data/prueba'
 
 const BASE_URL = 'https://rendi.finance'
 
@@ -113,7 +114,7 @@ export default function BlogPost({
               className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 text-xs font-medium"
             >
               <Sparkles size={12} strokeWidth={2} />
-              Empezar gratis
+              Probar gratis
             </Link>
           </nav>
         </div>
@@ -154,16 +155,16 @@ export default function BlogPost({
 
         {/* CTA al final del post */}
         <section className="mt-16 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg p-6 text-center">
-          <h2 className="text-xl font-semibold text-ink-0 mb-2">Probá Rendi gratis</h2>
+          <h2 className="text-xl font-semibold text-ink-0 mb-2">Probá Rendi con tu cartera</h2>
           <p className="text-sm text-ink-2 mb-5 max-w-md mx-auto">
-            El tracker multi-broker para Argentina con Coach IA. Sin tarjeta.
+            El tracker multi-broker para Argentina, con Rendi AI. {PRUEBA_EN_UNA_LINEA}
           </p>
           <Link
             to="/login?mode=register"
             className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-colors"
           >
             <Sparkles size={14} strokeWidth={2} />
-            Crear cuenta gratis
+            {CTA_PRUEBA}
           </Link>
         </section>
 

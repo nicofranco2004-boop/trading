@@ -308,12 +308,15 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
             except Exception:
                 days_left = days_before
 
+            from billing import trial as _trial
             emails.send_expiration_reminder(
                 to=r["email"],
                 user_name=(r["name"] or r["email"].split("@")[0]),
                 days_left=days_left,
                 expires_at=r["credit_active_until"],
                 plan=r["credit_anchor_plan"] or "pro",
+                # Nació sin plan gratis → no "pierde" features: queda en pausa.
+                requiere_plan=_trial._requiere_plan(conn, r["user_id"]),
             )
             # Marcar idempotencia en la sub más reciente del user
             with conn:
@@ -396,7 +399,7 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
     from billing import emails
     rows = conn.execute(
         """SELECT s.id, s.mp_subscription_id, s.current_period_end,
-                  u.email, u.name, u.tier
+                  u.email, u.name, u.tier, u.id AS user_id
            FROM subscriptions s
            JOIN users u ON u.id = s.user_id
            WHERE s.status = 'cancelled'
@@ -421,12 +424,15 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
             except Exception:
                 days_left = days_before
 
+            from billing import trial as _trial
             emails.send_expiration_reminder(
                 to=r["email"],
                 user_name=(r["name"] or r["email"].split("@")[0]),
                 days_left=days_left,
                 expires_at=r["current_period_end"],
                 plan=r["tier"] or "pro",
+                # Nació sin plan gratis → no "pierde" features: queda en pausa.
+                requiere_plan=_trial._requiere_plan(conn, r["user_id"]),
             )
             with conn:
                 conn.execute(

@@ -1,0 +1,47 @@
+{
+  "_que_es": "El contrato entre la pantalla y la IA, y entre el motor de la pantalla y su gemelo del servidor. El número que la pantalla muestra (chip de la curva, 'Hoy', 'Este mes', 'Últimos 30 días') viaja tal cual al ✦ Analizar, y el servidor (Reportes Δ, el chat, el ✦ del Home de escritorio) calcula el MISMO con la misma regla. Lo leen DOS tests: frontend/src/utils/rendimientoAi.test.js (la pantalla calcula esto con rendimientoDelRango / computeDailyPnl y lo empaqueta así) y backend/tests/test_ia_mismo_numero_que_la_pantalla.py (el servidor lo recibe así, el modelo ve ese número, y _snapshot_delta da lo mismo). Si alguno cambia la regla o la forma, se pone rojo el otro.",
+
+  "deposito_en_el_medio": {
+    "_que_es": "Un mes con un depósito de US$ 8.000 en el medio. La cartera rindió US$ 200: +1,43 % con Dietz (200 / (10.000 + ½·8.000)), la regla del chip desde dc01e9bd. Restando valores a secas la curva sube de 10.000 a 18.300: '+83 %', con el depósito contado como ganancia. Es el caso del pedido: la IA diciendo 'subiste X %' al lado de un chip que dice otra cosa.",
+    "cierres": [
+      {"dias_atras": 30, "total_value": 10000, "net_deposited": 10000},
+      {"dias_atras": 28, "total_value": 10050, "net_deposited": 10000},
+      {"dias_atras": 15, "total_value": 18050, "net_deposited": 18000},
+      {"dias_atras": 1,  "total_value": 18300, "net_deposited": 18000}
+    ],
+    "vivo": {"valor": 18200, "aportado": 18000},
+    "rango": "1M",
+    "dias": 30,
+    "chip": {
+      "params": {"usd": 200, "pct": 0.01428571, "desde_dias_atras": 30, "dias": 30,
+                 "valor_inicio": 10000, "aportes": 8000},
+      "en_el_paquete": {"resultado_usd": 200.0, "resultado_pct": 1.43, "dias": 30,
+                        "valor_al_inicio_usd": 10000.0, "aportes_netos_usd": 8000.0}
+    },
+    "hoy": {
+      "_que_es": "La card 'Hoy' / 'P&L Día': contra el cierre de ayer (18.300), con la cartera valiendo 18.200 ahora y sin flujos: −US$ 100 (−0,55 %). El día divide por el valor de ayer (no Dietz).",
+      "params": {"usd": -100, "pct": -0.00546448, "desde_dias_atras": 1, "dias": 1,
+                 "valor_inicio": 18300, "aportes": 0},
+      "en_el_paquete": {"resultado_usd": -100.0, "resultado_pct": -0.55, "dias": 1,
+                        "valor_al_inicio_usd": 18300.0, "aportes_netos_usd": 0.0}
+    },
+    "resta_a_secas": {"usd": 8300, "pct": 0.83}
+  },
+
+  "sin_cierre_cerca_del_arranque": {
+    "_que_es": "Faltan cierres: el anterior al arranque de los 30 días es de hace 75 y el siguiente de hace 20. La regla del chip mide desde el MÁS CERCANO al arranque (hace 20, a 9 días contra 46) y lo rotula 'desde el DD/MM'. Nunca 'sin número' por antigüedad, nunca 75 días con el nombre '30 días'.",
+    "cierres": [
+      {"dias_atras": 75, "total_value": 10000, "net_deposited": 10000},
+      {"dias_atras": 20, "total_value": 18100, "net_deposited": 18000}
+    ],
+    "vivo": {"valor": 18200, "aportado": 18000},
+    "dias": 30,
+    "chip": {
+      "params": {"usd": 100, "pct": 0.00552486, "desde_dias_atras": 20, "dias": 20,
+                 "rotulo_con_fecha": true, "valor_inicio": 18100, "aportes": 0},
+      "en_el_paquete": {"resultado_usd": 100.0, "resultado_pct": 0.55, "dias": 20,
+                        "rotulo_con_fecha": true, "valor_al_inicio_usd": 18100.0,
+                        "aportes_netos_usd": 0.0}
+    }
+  }
+}

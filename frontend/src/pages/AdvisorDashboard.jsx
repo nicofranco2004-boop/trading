@@ -43,6 +43,10 @@ export default function AdvisorDashboard() {
   const { enterClient } = useAdvisorContext()
   const [book, setBook] = useState(null)     // null = cargando
   const [history, setHistory] = useState(null)  // serie AUM (evolución del libro)
+  // "el mercado sumó X · aportes Y" de cada ventana. Lo calcula el backend
+  // cliente por cliente (ver `advisor_book_history`): restando las puntas de la
+  // curva sumada no se puede separar mercado, aportes y clientes que entran.
+  const [historyPeriods, setHistoryPeriods] = useState(null)
   const [historyError, setHistoryError] = useState(false)
   // Evolución de un SUBCONJUNTO de clientes (Nico, 2026-09-21): de base se ve
   // el total; las casillas eligen de quiénes ver la curva. `null` = todos.
@@ -65,6 +69,7 @@ export default function AdvisorDashboard() {
     try {
       const h = await api.get('/advisor/book/history?days=730')
       setHistory(h.series || [])
+      setHistoryPeriods(h.periods || null)
       setEvoClients(h.client_list || [])
       setEvoSelected(prev => prev ?? new Set((h.client_list || []).map(c => c.client_uid)))
       setHistoryError(false)
@@ -97,8 +102,9 @@ export default function AdvisorDashboard() {
     const all = evoSelected.size === evoClients.length
     const q = all ? '' : `&clients=${Array.from(evoSelected).join(',') || '0'}`
     setHistory(null)
+    setHistoryPeriods(null)
     api.get(`/advisor/book/history?days=730${q}`)
-      .then(h => { if (!cancelled) { setHistory(h.series || []); setHistoryError(false) } })
+      .then(h => { if (!cancelled) { setHistory(h.series || []); setHistoryPeriods(h.periods || null); setHistoryError(false) } })
       .catch(() => { if (!cancelled) { setHistory([]); setHistoryError(true) } })
     return () => { cancelled = true }
   }, [evoSelected, evoClients])
@@ -159,7 +165,7 @@ export default function AdvisorDashboard() {
       ) : (
         <>
           {book.aum && <BookHero book={book} />}
-          <BookEvolution series={history} error={historyError}
+          <BookEvolution series={history} periods={historyPeriods} error={historyError}
             picker={evoClients && evoClients.length > 1 ? (
               <ClientPicker clients={evoClients} selected={evoSelected} onChange={setEvoSelected} label="Viendo" />
             ) : null}
@@ -413,11 +419,11 @@ function BookDetailModal({ onClose }) {
                     <div key={c.client_uid} style={DETAIL_GRID} className="border border-dashed border-line-2 rounded-md px-3 py-2.5">
                       <span className="text-[13px] text-ink-2 truncate">
                         {c.label}
-                        <span className={`ml-2 text-[10px] font-semibold rounded px-1.5 py-0.5 align-[1px] ${c.state === 'new' ? 'text-data-violet bg-rendi-violet-deep' : 'text-ink-2 bg-bg-3'}`}>
-                          {c.state === 'new' ? 'Sin base de 7 días' : 'Sin snapshot'}
+                        <span className={`ml-2 text-[10px] font-semibold rounded px-1.5 py-0.5 align-[1px] ${c.state === 'no_snapshot' ? 'text-ink-2 bg-bg-3' : 'text-data-violet bg-rendi-violet-deep'}`}>
+                          {c.state === 'no_snapshot' ? 'Sin snapshot' : 'Sin base de 7 días'}
                         </span>
                       </span>
-                      {c.state === 'new' ? (
+                      {c.state !== 'no_snapshot' ? (
                         <>
                           <span className="text-right text-[13px] text-ink-1 tabular-nums">{money(c.value_usd, 0)}</span>
                           <span className="flex items-center justify-end gap-2">
@@ -426,7 +432,11 @@ function BookDetailModal({ onClose }) {
                               <i className="block h-full bg-line-3 rounded-full" style={{ width: `${Math.min((c.share_pct ?? 0) / maxShare * 100, 100)}%` }} />
                             </span>
                           </span>
-                          <span className="text-right text-xs text-ink-3">Recién empezó a medirse</span>
+                          {/* "gap" = tiene historia, pero su última foto a mercado
+                              es de antes del piso: no "recién empezó". */}
+                          <span className="text-right text-xs text-ink-3">
+                            {c.state === 'gap' ? 'Le faltan fotos de esos días' : 'Recién empezó a medirse'}
+                          </span>
                           <span className="text-right text-xs text-ink-3">No entra en la variación</span>
                         </>
                       ) : (
@@ -462,12 +472,14 @@ function BookDetailModal({ onClose }) {
 // La brecha entre las dos ES el efecto mercado — se ve a ojo si el libro
 // sube porque los clientes ganan o porque entra plata/gente nueva.
 
+// `period` = la clave de ese rango en `periods` del backend.
 const EVO_RANGES = [
-  { key: '1M', days: 30 }, { key: '3M', days: 90 }, { key: '6M', days: 180 },
-  { key: '1A', days: 365 }, { key: 'Todo', days: 99999 },
+  { key: '1M', days: 30, period: '30' }, { key: '3M', days: 90, period: '90' },
+  { key: '6M', days: 180, period: '180' }, { key: '1A', days: 365, period: '365' },
+  { key: 'Todo', days: 99999, period: 'todo' },
 ]
 
-function BookEvolution({ series, error, picker = null, subset = 0 }) {
+function BookEvolution({ series, periods = null, error, picker = null, subset = 0 }) {
   // UNA sola llamada al hook, y ANTES de los dos `return` de abajo (cargando /
   // sin historia). Un `use*` después de un return temprano cambia la cantidad
   // de hooks entre renders: React avisa "change in the order of Hooks" y, en
@@ -477,30 +489,50 @@ function BookEvolution({ series, error, picker = null, subset = 0 }) {
   const { money, smoney } = moneyHelpers(fmt)
   const [range, setRange] = useState('3M')
 
+  const rangeDef = EVO_RANGES.find(r => r.key === range) ?? EVO_RANGES[1]
+  const period = periods?.[rangeDef.period] ?? null
+
   const { visible, baseline } = useMemo(() => {
     if (!series?.length) return { visible: [], baseline: null }
-    const days = EVO_RANGES.find(r => r.key === range)?.days ?? 90
-    const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
+    // El corte lo da el backend (día argentino) para que la curva visible y el
+    // "en el período" hablen del mismo tramo. Sin él, el de siempre.
+    const cutoff = period?.corte
+      ?? new Date(Date.now() - rangeDef.days * 86400000).toISOString().slice(0, 10)
     const firstIdx = series.findIndex(p => p.date >= cutoff)
     if (firstIdx === -1) return { visible: [], baseline: null }
     return {
       visible: series.slice(firstIdx),
-      // Base de la descomposición: el punto ANTERIOR a la ventana (si existe)
-      // — sin esto el cambio DEL PRIMER DÍA visible quedaba afuera del rótulo
-      // "mercado sumó X · aportes +Y" (audit: inconsistente con el hero, que
-      // usa el snapshot previo al período).
       baseline: firstIdx > 0 ? series[firstIdx - 1] : series[firstIdx],
     }
-  }, [series, range])
+  }, [series, range, period])
 
-  // Descomposición del período: ΔAUM = flujos (Δaportado) + mercado.
+  // ⚠️ "EL MERCADO SUMÓ X" YA NO SE CALCULA ACÁ. Era ΔAUM − Δaportado entre dos
+  // puntos de la curva sumada, y esa resta mezcla tres cosas que no son mercado:
+  //   · el salto de una foto del import (valuada AL COSTO) a la primera medición
+  //     del cron — el caso 452: 196.631 al costo contra 67.214 a mercado se
+  //     publicaba "el mercado restó 129.417";
+  //   · una base de cualquier antigüedad: un cliente con un hueco de fotos metía
+  //     en "el último mes" lo que se movió hace dos;
+  //   · el cliente que ENTRA con su capital, cuya ganancia de antes se leía como
+  //     mercado del período.
+  // El backend lo mide cliente por cliente (`periods`), con base y cierre a
+  // mercado y la base pegada al arranque, y dice a cuántos clientes pudo medir.
+  // Un cliente que ENTRÓ en el período se mide desde su primera foto a mercado:
+  // su capital de entrada es el "+N clientes", no mercado ni aportes.
   const delta = useMemo(() => {
-    if (visible.length < 2 || !baseline) return null
+    if (visible.length < 2 || !baseline || !period) return null
     const b = visible[visible.length - 1]
-    const dAum = b.aum_usd - baseline.aum_usd
-    const dFlows = b.net_deposited_usd - baseline.net_deposited_usd
-    return { market: dAum - dFlows, flows: dFlows, clients: b.clients - baseline.clients }
-  }, [visible, baseline])
+    return {
+      market: period.mercado_usd,
+      flows: period.aportes_usd,
+      clients: b.clients - baseline.clients,
+      measured: period.clientes_medidos ?? 0,
+      total: period.clientes_total ?? 0,
+      entered: period.clientes_entraron ?? 0,
+      noData: period.clientes_sin_medicion ?? 0,
+      gap: period.clientes_con_hueco ?? 0,
+    }
+  }, [visible, baseline, period])
 
   // U5 (audit): si la historia existe pero es más vieja que el rango default
   // (3M), auto-ampliamos UNA vez al rango más chico que muestre la curva —
@@ -569,7 +601,14 @@ function BookEvolution({ series, error, picker = null, subset = 0 }) {
             <LineChart size={13} strokeWidth={1.75} className="text-data-violet" />
             {titulo}
           </h2>
-          {delta && (
+          {delta && delta.market == null && (
+            <p className="text-[11px] text-ink-3 mt-0.5 ml-[21px]">
+              En este período ningún cliente tiene fotos a precio de mercado al
+              principio y al final: todavía no se puede separar cuánto fue mercado
+              y cuánto aportes.
+            </p>
+          )}
+          {delta && delta.market != null && (
             <p className="text-[11px] text-ink-3 mt-0.5 ml-[21px]">
               En el período: el mercado {delta.market >= 0 ? 'sumó' : 'restó'}{' '}
               <span className={delta.market >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>
@@ -578,6 +617,16 @@ function BookEvolution({ series, error, picker = null, subset = 0 }) {
               {' · '}aportes netos <span className="text-ink-1">{signed(delta.flows)}</span>
               {delta.clients !== 0 && (
                 <> · {delta.clients > 0 ? `+${delta.clients}` : delta.clients} cliente{Math.abs(delta.clients) === 1 ? '' : 's'}</>
+              )}
+              {(delta.measured < delta.total || delta.entered > 0) && (
+                <span className="block">
+                  {[
+                    delta.measured < delta.total && `Medido sobre ${delta.measured} de ${delta.total} clientes`,
+                    delta.entered > 0 && `${delta.entered} ${delta.entered === 1 ? 'se mide desde que empezó' : 'se miden desde que empezaron'} a medirse, ya dentro del período`,
+                    delta.gap > 0 && `${delta.gap} no ${delta.gap === 1 ? 'entra' : 'entran'} por un hueco de fotos`,
+                    delta.noData > 0 && `${delta.noData} todavía no ${delta.noData === 1 ? 'tiene' : 'tienen'} fotos a precio de mercado`,
+                  ].filter(Boolean).join(' · ')}.
+                </span>
               )}
             </p>
           )}
@@ -634,7 +683,8 @@ function BookEvolution({ series, error, picker = null, subset = 0 }) {
       </div>
       <p className="text-[10.5px] text-ink-3 mt-2">
         Línea violeta = todo lo que administrás · punteada = plata aportada neta.
-        La brecha entre las dos es lo que puso (o sacó) el mercado.
+        La brecha entre las dos es lo que ganaron o perdieron tus clientes desde que
+        empezó cada uno. Cuando entra un cliente, las dos líneas suben con su capital.
       </p>
     </div>
   )

@@ -692,24 +692,22 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     })
   }
 
-  // Variación 7 días — USD arriba, % en sub
-  if (snap.delta_7d) {
-    const d = snap.delta_7d
+  // Variación 7 y 30 días — USD arriba, % + fecha del cierre contra el que mide
+  // en el subtítulo, igual que "Δ último cierre".
+  //
+  // ⚠️ LA FECHA NO ES DECORACIÓN. El backend toma el último cierre ANTERIOR a
+  // la ventana por viejo que sea: con el cron cortado dos meses, "Δ 30 días"
+  // medía noventa y el rótulo no lo decía. Qué hacer con un arranque así (no
+  // publicar, o publicar diciendo desde cuándo) es una decisión pendiente para
+  // el chip del Dashboard; mientras tanto, el número dice contra qué fecha mide.
+  for (const [clave, label] of [['delta_7d', 'Δ 7 días'], ['delta_30d', 'Δ 30 días']]) {
+    const d = snap[clave]
+    if (!d) continue
+    const fechaStr = d.prev_date ? ` · vs ${formatDateShort(d.prev_date)}` : ''
     kpis.push({
-      label: 'Δ 7 días',
+      label,
       value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
-      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%`,
-      tone: d.pct >= 0 ? 'pos' : 'neg',
-    })
-  }
-
-  // Variación 30 días — USD arriba, % en sub
-  if (snap.delta_30d) {
-    const d = snap.delta_30d
-    kpis.push({
-      label: 'Δ 30 días',
-      value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
-      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%`,
+      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%` + fechaStr,
       tone: d.pct >= 0 ? 'pos' : 'neg',
     })
   }

@@ -93,7 +93,7 @@ export default function GuidePage({
               className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 text-xs font-medium"
             >
               <Sparkles size={12} strokeWidth={2} />
-              Empezar gratis
+              Probar gratis
             </Link>
           </nav>
         </div>

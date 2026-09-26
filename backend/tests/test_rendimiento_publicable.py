@@ -294,7 +294,11 @@ class LosChipsDelDashboardTest(unittest.TestCase):
         src = (_pl.Path(__file__).resolve().parent.parent / "main.py").read_text(
             encoding="utf-8")
         i = src.index("def _snapshot_delta(")
-        cuerpo = src[i:i + 6000]
+        # El cuerpo va hasta la próxima función, no una cantidad fija de letras:
+        # con 6.000 fijas, un comentario más largo arriba dejaba `leg_dudoso`
+        # afuera de la ventana y el test fallaba sin que nada hubiera cambiado.
+        _fin = src.find("\ndef ", i + 1)
+        cuerpo = src[i:_fin if _fin != -1 else len(src)]
         self.assertIn("leg_dudoso", cuerpo, "el chip perdió la cota de cordura")
         self.assertNotIn("SALTO_MAX_VECES =", cuerpo, "copió el umbral en vez de importarlo")
 

@@ -3,7 +3,8 @@
 // Página pública (sin login). Linkeada desde Planes.jsx y desde Terminos.jsx.
 //
 // Política del negocio (decidida fuera de código):
-//   - El plan Free no genera cargos; esta política aplica a Plus / Pro.
+//   - La prueba gratuita (y el plan Free de las cuentas que lo conservan) no
+//     genera cargos; esta política aplica a Plus / Pro.
 //   - Derecho de arrepentimiento obligatorio: 10 días corridos desde la
 //     contratación, reembolso total, sin penalidad (Ley 24.240 art. 34 +
 //     CCyC art. 1110 + Resolución 424/2020 — botón de arrepentimiento).
@@ -27,7 +28,7 @@ export default function Reembolso() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Política de Reembolso — Rendi"
-        description="Política de reembolso de Rendi: derecho de arrepentimiento de 10 días corridos con reembolso total (Ley 24.240), botón de arrepentimiento, cómo solicitarlo, plazos vía Rebill, proración al cambiar de plan y cancelación. Última actualización junio 2026."
+        description="Política de reembolso de Rendi: derecho de arrepentimiento de 10 días corridos con reembolso total (Ley 24.240), botón de arrepentimiento, cómo solicitarlo, plazos vía Rebill, proración al cambiar de plan y cancelación. Última actualización septiembre 2026."
         canonical="/reembolso"
       />
       {/* Header simple — logo + link a planes */}
@@ -44,7 +45,7 @@ export default function Reembolso() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de reembolso</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 3 de junio de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 26 de septiembre de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
@@ -55,7 +56,7 @@ export default function Reembolso() {
             <li>Pasados los 10 días, no devolvemos el monto del período ya cobrado — pero mantenés acceso pleno hasta el final de ese período.</li>
             <li>Cancelar desde <Link to="/config" className="text-data-violet hover:underline">/config</Link> frena las renovaciones a futuro y no genera nuevos cobros.</li>
             <li>Cambiar de plan no genera cobro adicional ni reembolso: convertimos el crédito proporcionalmente.</li>
-            <li>El plan Free no genera cargos, así que nunca hay nada que reembolsar.</li>
+            <li>La prueba gratuita no genera cargos (no te pedimos tarjeta), así que no hay nada que reembolsar. Tampoco el plan Free, en las cuentas que lo conservan.</li>
           </ul>
         </div>
 
@@ -68,9 +69,10 @@ export default function Reembolso() {
             <Link to="/planes" className="text-data-violet hover:underline">/planes</Link>.
           </p>
           <p>
-            El plan <strong className="text-ink-0">Free</strong> es gratuito y no genera ningún cargo,
-            por lo que no hay montos que reembolsar. Si nunca pagaste una suscripción, nada de lo que
-            sigue te genera obligaciones ni costos.
+            La <strong className="text-ink-0">prueba gratuita</strong> no genera ningún cargo —no te
+            pedimos tarjeta—, y tampoco el plan <strong className="text-ink-0">Free</strong> de las
+            cuentas que lo conservan, por lo que no hay montos que reembolsar. Si nunca pagaste una
+            suscripción, nada de lo que sigue te genera obligaciones ni costos.
           </p>
           <p>
             Rendi es una herramienta web de seguimiento de portafolio de inversiones, operada por un
@@ -266,9 +268,11 @@ export default function Reembolso() {
               <Link to="/config" className="text-data-violet hover:underline">/config</Link>.
             </li>
             <li>
-              Al expirar ese período, tu cuenta <strong className="text-ink-0">vuelve a Free</strong>{' '}
-              automáticamente. No perdés tu información: seguís pudiendo ver y exportar tus datos
-              históricos.
+              Al expirar ese período, si tu cuenta tenía el plan Free,{' '}
+              <strong className="text-ink-0">vuelve a Free</strong> y seguís pudiendo ver y exportar
+              tus datos históricos. Si te registraste con la prueba gratuita, tu cuenta{' '}
+              <strong className="text-ink-0">queda en pausa</strong> hasta que elijas un plan. En los
+              dos casos no perdés tu información: tus datos se conservan.
             </li>
             <li>
               Podés reactivar la suscripción cuando quieras desde{' '}

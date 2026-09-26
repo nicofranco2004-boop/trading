@@ -36,7 +36,7 @@ export default function Privacidad() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 12 de septiembre de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 26 de septiembre de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
@@ -400,8 +400,10 @@ export default function Privacidad() {
           <p>
             Conservamos tus datos <strong className="text-ink-0">mientras tengas una cuenta
             activa</strong> en Rendi, para que puedas seguir usando el servicio. Si cancelás
-            una suscripción paga y volvés al plan Free, tus datos siguen disponibles para vos
-            en tu cuenta.
+            una suscripción paga, o si termina tu prueba gratuita y todavía no elegiste un plan,
+            tus datos siguen guardados en tu cuenta: si tenías el plan Free, la cuenta vuelve a
+            él; si no, queda en pausa hasta que elijas un plan. En ningún caso los borramos por
+            eso.
           </p>
           <p>
             Cuando dejás de necesitar el servicio y solicitás la baja, eliminamos tu cuenta y

@@ -77,7 +77,7 @@ const STEP_SEED = 'seed'
 // la foto. Hasta ahora ese paso no existia: el wizard hacia preview +
 // confirm de la tenencia en la misma llamada, sin mostrar nada.
 const STEP_RECONCILE = 'reconcile'
-import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS } from '../plan/TrialCta'
+import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
 import { parseNum, parseNumOrNull } from '../../utils/format'
 
@@ -87,14 +87,18 @@ const STEP_DONE = 'done'
 function TrialImportOffer() {
   const { trial } = _usePlanFeaturesTrial()
   if (!trial?.can_start) return null
+  // Los días, del server; el catálogo sólo de respaldo (como en TrialFinePrint).
+  // Decía "7 días … y después una semana de Plus" con la prueba ya en 10 + 10.
+  const pro = trial?.pro_days ?? TRIAL_PRO_DAYS
+  const plus = trial?.plus_days ?? TRIAL_PLUS_DAYS
   return (
     <div className="rounded-lg border border-data-violet/40 bg-data-violet/[0.07] p-4">
       <h4 className="text-sm font-semibold text-ink-0 mb-1">
         Ahora que está tu cartera, probá Rendi Pro gratis
       </h4>
       <p className="text-xs text-ink-2 leading-relaxed mb-3">
-        {TRIAL_PRO_DAYS} días con el chat libre y los análisis completos sobre
-        los datos que acabás de cargar, y después una semana de Plus. Sin tarjeta.
+        {pro} días con el chat libre y los análisis completos sobre los datos que
+        acabás de cargar, y después {plus} días de Plus. Sin tarjeta.
       </p>
       <TrialCta source="import_done" />
       <TrialFinePrint />

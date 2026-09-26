@@ -162,6 +162,21 @@ class LosDiasDeLaPruebaQueDiceLaLANDING(unittest.TestCase):
             + self._const_del_catalogo("TRIAL_PLUS_DAYS"),
             self._const_del_catalogo("TRIAL_TOTAL_DAYS"))
 
+    def test_el_html_estatico_dice_los_mismos_dias(self):
+        """`index.html` trae un bloque para los que no corren JavaScript (el
+        scraper de WhatsApp, el de Facebook, Googlebot en cola) que dice
+        "Probar N días gratis". Es HTML estático: no puede importar el catálogo,
+        así que el número está a mano y sólo esto lo ata al backend."""
+        from billing.trial import TRIAL_TOTAL_DAYS
+        html = open(os.path.join(os.path.dirname(BACKEND), "frontend", "index.html"),
+                    encoding="utf-8").read()
+        dias = re.findall(r"(\d+) días gratis", html)
+        self.assertTrue(dias, "index.html ya no menciona la prueba: revisar este test")
+        for d in dias:
+            self.assertEqual(
+                int(d), TRIAL_TOTAL_DAYS,
+                f"index.html ofrece {d} días gratis y la prueba es de {TRIAL_TOTAL_DAYS}")
+
 
 class ElPRECIOQueLeeGOOGLE(unittest.TestCase):
     """`frontend/index.html` lleva un bloque JSON-LD con los precios, y eso es

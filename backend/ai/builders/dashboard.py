@@ -16,8 +16,12 @@ Shape del packet (estable — cambios acá invalidan el cache existente):
                                     # (`twr.rendimiento_publicable`), no de una
                                     # resta de puntas. null = no se pudo medir
     "twr_lifetime_pct": float|null,
-    "delta_30d_usd": float|null,    # Δ(valor − aportado) en 30d: descuenta los
-                                    # aportes, MISMO criterio que twr_30d_pct
+    "en_pantalla": {                # LO QUE EL USUARIO ESTÁ VIENDO: las cards
+      "hoy": {...} | null,          # "Hoy" y "Este mes" y el chip de la curva,
+      "este_mes": {...} | null,     # tal cual los manda Dashboard.jsx (forma de
+      "rango": str | null,          # `rendimiento_pantalla`). Ver abajo por qué
+      "rango_rendimiento": {...} | null,  # no hay un "delta_30d_usd" propio.
+    } | null,
     "best_position": {"asset": str, "pnl_pct": float} | null,
     "worst_position": {"asset": str, "pnl_pct": float} | null,
     "cash_pct": float,
@@ -38,6 +42,24 @@ Shape del packet (estable — cambios acá invalidan el cache existente):
 
 from __future__ import annotations
 from typing import Optional, Dict, Any, List
+
+from . import rendimiento_pantalla
+
+_RANGOS = ("1D", "1W", "1M", "6M", "1Y", "MAX")
+
+
+def _en_pantalla(p: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Las tres cifras de rendimiento que el Dashboard tiene a la vista, tal cual
+    las calculó el navegador. `None` si el pedido no trajo ninguna (un
+    navegador con la versión anterior de la página)."""
+    if not any(k in p for k in ("hoy", "este_mes", "rendimiento")):
+        return None
+    return {
+        "hoy": rendimiento_pantalla.leer(p.get("hoy")),
+        "este_mes": rendimiento_pantalla.leer(p.get("este_mes")),
+        "rango": p.get("rango") if p.get("rango") in _RANGOS else None,
+        "rango_rendimiento": rendimiento_pantalla.leer(p.get("rendimiento")),
+    }
 
 
 def _safe_round(v, decimals: int = 4):
@@ -76,7 +98,7 @@ def _compute_pnl_pct_for_position(p: dict, prices: dict,
     return (value_usd - invested_usd) / invested_usd
 
 
-def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
+def build(conn, user_id: int, period: str = "30d", **pantalla) -> Dict[str, Any]:
     """Construye el packet del Dashboard para `user_id`.
 
     Hace todas las queries acá adentro para mantener el builder autosuficiente.
@@ -149,36 +171,25 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     best = position_pnls[0] if position_pnls else None
     worst = position_pnls[-1] if position_pnls else None
 
-    # ─── 30d delta desde snapshots ────────────────────────────────────────
-    # snapshots vienen DESC. Tomamos el más viejo dentro de 30d y el más reciente.
+    # ─── 30 días ──────────────────────────────────────────────────────────
     twr_30d_pct = None
-    delta_30d_usd = None
     if snapshots:
-        # ordenar ascendente para tomar primero y último
-        sorted_snaps = sorted(snapshots, key=lambda s: s["date"])
         # ⚠️ EL RELOJ ARGENTINO, no UTC (F3). Acá decía `datetime.utcnow()`, y en
         # Railway eso es UTC: entre las 21:00 y la medianoche de Argentina el
         # `cutoff` se corre un día y la ventana deja afuera una rueda.
         import twr as _twr_d
         from datetime import date as _date_d
         cutoff = (_date_d.fromisoformat(_twr_d._hoy_art()) - timedelta(days=30)).isoformat()
-        in_window = [s for s in sorted_snaps if s["date"] >= cutoff]
-        if len(in_window) >= 2 and in_window[0]["total_value"]:
-            start_val = float(in_window[0]["total_value"])
-            end_val = float(in_window[-1]["total_value"])
-            if start_val > 0:
-                # ⚠️ EL MONTO SE MIDE CON EL MISMO CRITERIO QUE EL %, y esto lo
-                # introduje yo al migrar el porcentaje al motor: el % pasó a
-                # descontar los aportes y el monto seguía siendo `fin − inicio`.
-                # Los dos viajan en el MISMO packet, así que el modelo leía
-                # "ganaste US$1.000" al lado de "rendiste 0 %" — sobre un usuario
-                # que sólo había depositado esos US$1.000.
-                #
-                # `Δ(valor − aportado)` es el mismo criterio que `_snapshot_delta`
-                # de main.py, que ya lo resolvió así para los chips del Dashboard.
-                _nd0 = float(in_window[0].get("net_deposited") or 0)
-                _nd1 = float(in_window[-1].get("net_deposited") or 0)
-                delta_30d_usd = (end_val - _nd1) - (start_val - _nd0)
+        # ⚠️ ACÁ HABÍA UN `delta_30d_usd` PROPIO: `Δ(valor − aportado)` entre la
+        # primera foto ADENTRO de los 30 días y la última guardada. Descontaba los
+        # aportes, pero no era el número de ninguna pantalla: abría después que
+        # el chip de la curva (que abre en el cierre ANTERIOR al rango), terminaba
+        # en la foto de anoche y no en la cartera de ahora, y no miraba si ese
+        # arranque estaba pegado al período. El modelo lo citaba como "en los
+        # últimos 30 días ganaste US$ X" con el chip diciendo otra cifra al lado.
+        # Lo reemplaza `en_pantalla`: lo que el usuario está viendo, calculado una
+        # sola vez, en el navegador (ver `rendimiento_pantalla.py`).
+        #
         # ⚠️ EL % NO SE CALCULA ACÁ (F6). Era `(end − start) / start`: ni restaba
         # los flujos —un depósito de US$1.000 en una cartera de 10.000 salía como
         # "+10 % de rendimiento"— ni tenía uno solo de los guards del motor. Es el
@@ -278,12 +289,26 @@ def build(conn, user_id: int, period: str = "30d") -> Dict[str, Any]:
     # ─── Compose final packet ─────────────────────────────────────────────
     return {
         "screen": "dashboard",
-        "period": period,
+        # Lo manda el navegador: sólo el valor que existe. Antes se copiaba tal cual,
+        # y cualquier texto llegaba entero al contexto del modelo.
+        "period": "30d",
         "portfolio": {
             "value_usd": int(round(total_value_usd)),
             "twr_30d_pct": _safe_round(twr_30d_pct, 4),
             "twr_lifetime_pct": _safe_round(twr_lifetime_pct, 4),
-            "delta_30d_usd": _safe_round(delta_30d_usd, 0),
+            "en_pantalla": _en_pantalla(pantalla),
+            # Dos medidas distintas en el mismo paquete, dicho para que el modelo
+            # no las cruce: `twr_30d_pct` es la que se compara con el S&P.
+            "nota_rendimientos": (
+                "en_pantalla son las cifras que el usuario está viendo (la card "
+                "'Hoy', 'Este mes' y el chip de la curva en el rango elegido): si "
+                "hablás de cuánto ganó o perdió, usá ésas. twr_30d_pct es otra "
+                "medida (rendimiento por tiempo de 30 días, hasta el último cierre "
+                "guardado) y es la que se compara con el S&P en benchmarks. "
+                + rendimiento_pantalla.NOTA_PERIODO
+                + (" " + rendimiento_pantalla.nota_moneda(pantalla)
+                   if rendimiento_pantalla.nota_moneda(pantalla) else "")
+            ),
             "best_position": (
                 {"asset": best["asset"], "pnl_pct": _safe_round(best["pnl_pct"], 4)}
                 if best else None

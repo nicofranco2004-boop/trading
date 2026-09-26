@@ -38,6 +38,13 @@ import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import Planes from './Planes'
 import InvestorProfileForm from '../components/InvestorProfileForm'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
+// Qué le pasa a la cuenta cuando se termina la prueba o el plan pagado. Estaba
+// escrito a mano ("vuelve a Free") en cinco textos de esta pantalla, y para
+// quien se registró desde el 22/09/2026 es falso: no tiene plan gratis, queda
+// EN PAUSA hasta que elige. Se lo decíamos durante toda su etapa Plus de la
+// prueba, que es justo cuando tiene que decidir.
+import { alTerminar } from '../data/prueba'
+import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS } from '../data/planCatalog'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -1089,9 +1096,11 @@ function PruebaSobreElPlan({ dias, hasta, onVerPlanes }) {
  *  Responde las tres preguntas que la descripción de una línea no contestaba:
  *  cuánto me queda de Pro, CUÁNDO empieza Plus, y cuándo se termina todo. El
  *  punto lleno marca dónde está parado. */
-function FasesDelTrial({ trial }) {
-  const total = trial?.total_days ?? 15
-  const plusDias = trial?.plus_days ?? 8
+function FasesDelTrial({ trial, requierePlan = false }) {
+  // El respaldo, cuando el payload viene sin los días, es el del catálogo — no
+  // 15 y 8, que eran los de la prueba de antes.
+  const total = trial?.total_days ?? TRIAL_TOTAL_DAYS
+  const plusDias = trial?.plus_days ?? TRIAL_PLUS_DAYS
   const fin = trial?.ends_at ? new Date(String(trial.ends_at).replace(' ', 'T')) : null
   const arranquePlus = fin && !isNaN(fin)
     ? new Date(fin.getTime() - plusDias * 86400000) : null
@@ -1132,7 +1141,11 @@ function FasesDelTrial({ trial }) {
             !enPro && trial?.days_left != null
               ? (trial.days_left === 1 ? '1 día más' : `${trial.days_left} días más`)
               : `${plusDias} días`)}
-      {fila(false, false, 'Free', finFmt ? `desde el ${finFmt}` : 'cuando termine', null)}
+      {/* La tercera etapa no es "Free" para quien nació sin plan gratis. */}
+      {requierePlan
+        ? fila(false, false, 'Pausa',
+               finFmt ? `desde el ${finFmt}, si no elegiste un plan` : 'si no elegiste un plan', null)
+        : fila(false, false, 'Free', finFmt ? `desde el ${finFmt}` : 'cuando termine', null)}
     </div>
   )
 }
@@ -1180,6 +1193,8 @@ function PlanHeroPro({ tier = 'pro', usage }) {
   // activó una prueba gratis (audit).
   const isTrial = !!trial?.active
   const isCreditOnly = accessMode === 'credit_only' && !isTrial
+  // Nació sin plan gratis: cuando se le termina lo que tiene, no vuelve a Free.
+  const requierePlan = !!user?.requires_plan
   const isAuthorized = accessMode === 'authorized'
 
   // Estado del crédito (modelo Rendi-managed proration). Cuando el user
@@ -1276,15 +1291,15 @@ function PlanHeroPro({ tier = 'pro', usage }) {
         : 'Análisis profundos, follow-ups, brokers ilimitados, export CSV y mucho más. Se renueva automáticamente.')
     : isTrial
       ? (trial?.stage === 'pro'
-          ? `Prueba gratis: tenés Pro${trialProStageLabel(trial?.days_to_switch)} y después seguís con Plus hasta completar los ${trial?.total_days ?? 15} días. No hace falta que hagas nada: no cargamos ninguna tarjeta.`
-          : `Prueba gratis: estás en Plus${trial?.days_left != null ? ` por ${trial.days_left} día${trial.days_left === 1 ? '' : 's'} más` : ''}. Cuando termine tu cuenta vuelve a Free — si querés seguir, elegí un plan.`)
+          ? `Prueba gratis: tenés Pro${trialProStageLabel(trial?.days_to_switch)} y después seguís con Plus hasta completar los ${trial?.total_days ?? TRIAL_TOTAL_DAYS} días. No hace falta que hagas nada: no cargamos ninguna tarjeta.`
+          : `Prueba gratis: estás en Plus${trial?.days_left != null ? ` por ${trial.days_left} día${trial.days_left === 1 ? '' : 's'} más` : ''}. Cuando termine, ${alTerminar(requierePlan)}${requierePlan ? '.' : ' — si querés seguir, elegí un plan.'}`)
     : isCreditOnly
       ? (periodEndLabel
           ? `Cambiaste de plan: tenés acceso a ${isPlus ? 'Plus' : 'Pro'} hasta el ${periodEndLabel} con el crédito convertido. Después te avisamos para que configures el pago si querés seguir.`
           : `Cambiaste de plan: tenés acceso a ${isPlus ? 'Plus' : 'Pro'} con el crédito convertido del plan anterior. Cuando se acabe te avisamos para que configures el pago si querés seguir.`)
       : (periodEndLabel
-          ? `Tu suscripción está cancelada. Mantenés acceso hasta el ${periodEndLabel}. Después la cuenta vuelve a Free.`
-          : 'Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después la cuenta vuelve a Free.')
+          ? `Tu suscripción está cancelada. Mantenés acceso hasta el ${periodEndLabel}. Después ${alTerminar(requierePlan)}.`
+          : `Tu suscripción está cancelada. Mantenés acceso hasta fin del período cobrado. Después ${alTerminar(requierePlan)}.`)
 
   return (
     <>
@@ -1319,7 +1334,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
         {/* El calendario del trial encadenado: cuánto queda de Pro, CUÁNDO
             arranca Plus, y cuándo se termina. La descripción de una línea no
             contestaba ninguna de las tres. */}
-        {isTrial && <FasesDelTrial trial={trial} />}
+        {isTrial && <FasesDelTrial trial={trial} requierePlan={requierePlan} />}
       </div>
 
       <div className="min-w-[180px]">
@@ -1427,6 +1442,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
           phase={cancelModal.phase}
           tierLabel={tierLabel}
           periodEndLabel={periodEndLabel}
+          requierePlan={requierePlan}
           errorMsg={cancelModal.errorMsg}
           onConfirm={confirmCancel}
           onClose={closeCancelModal}
@@ -1444,7 +1460,7 @@ function PlanHeroPro({ tier = 'pro', usage }) {
 //   - 'pending':  request en flight. Spinner + texto.
 //   - 'success':  cancelado OK. Mensaje confirmando + reload automático.
 //   - 'error':    falló el API. Mensaje del backend + botón "Cerrar".
-function CancelSubscriptionModal({ phase, tierLabel, periodEndLabel, errorMsg, onConfirm, onClose }) {
+function CancelSubscriptionModal({ phase, tierLabel, periodEndLabel, requierePlan = false, errorMsg, onConfirm, onClose }) {
   const isPending = phase === 'pending'
   const isSuccess = phase === 'success'
   const isError = phase === 'error'
@@ -1471,7 +1487,7 @@ function CancelSubscriptionModal({ phase, tierLabel, periodEndLabel, errorMsg, o
               <p>
                 Mantenés acceso a {tierLabel} hasta el fin del período actual
                 {periodEndLabel ? <> (<span className="text-ink-0">{periodEndLabel}</span>)</> : null}.
-                Después tu cuenta vuelve a Free automáticamente.
+                Después {alTerminar(requierePlan)}.
               </p>
               <p className="text-xs text-ink-3">
                 Podés reactivarla en cualquier momento desde la página de Planes.
@@ -1515,7 +1531,7 @@ function CancelSubscriptionModal({ phase, tierLabel, periodEndLabel, errorMsg, o
                 <h2 className="text-base font-semibold text-ink-0">Suscripción cancelada</h2>
                 <p className="text-sm text-ink-2 mt-1 leading-relaxed">
                   Mantenés acceso a {tierLabel} hasta el fin del período cobrado.
-                  Después tu cuenta vuelve a Free.
+                  Después {alTerminar(requierePlan)}.
                 </p>
               </div>
             </div>

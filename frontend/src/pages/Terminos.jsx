@@ -20,7 +20,7 @@ export default function Terminos() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Términos y Condiciones — Rendi"
-        description="Términos y Condiciones de Rendi: definiciones, qué hacemos y qué no, planes Free/Plus/Pro, pagos y renovación, reembolsos, datos, propiedad intelectual, responsabilidades, Defensa del Consumidor y jurisdicción argentina (CABA). Última actualización junio 2026."
+        description="Términos y Condiciones de Rendi: definiciones, qué hacemos y qué no, la prueba gratuita y los planes Plus y Pro, pagos y renovación, reembolsos, datos, propiedad intelectual, responsabilidades, Defensa del Consumidor y jurisdicción argentina (CABA). Última actualización septiembre 2026."
         canonical="/terminos"
       />
       {/* Header simple — logo + link a home */}
@@ -37,7 +37,7 @@ export default function Terminos() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Términos y Condiciones</h1>
-        <p className="text-sm text-ink-3 mb-4">Última actualización: 3 de junio de 2026</p>
+        <p className="text-sm text-ink-3 mb-4">Última actualización: 26 de septiembre de 2026</p>
 
         <p className="text-sm text-ink-1 leading-relaxed mb-10">
           Estos Términos y Condiciones (los "Términos") regulan el acceso y uso de
@@ -74,7 +74,8 @@ export default function Terminos() {
             </li>
             <li>
               <strong className="text-ink-0">"Plan"</strong> — el nivel de suscripción que
-              tengas activo (Free, Plus o Pro), con sus features y, si corresponde, su precio.
+              tengas activo (Plus o Pro; Free, sólo en las cuentas que ya lo tenían antes de
+              la prueba gratuita), con sus features y, si corresponde, su precio.
             </li>
             <li>
               <strong className="text-ink-0">"Coach IA"</strong> — el asistente
@@ -201,11 +202,25 @@ export default function Terminos() {
         </Section>
 
         <Section title="6. Planes y suscripciones">
+          {/* Hasta el 26/09/2026 decía "Rendi ofrece un plan gratuito (Free) sin
+              vencimiento". Desde el 22/09 quien se registra no tiene plan gratis:
+              arranca la prueba y después elige Plus o Pro. Los días están escritos
+              a mano a propósito (es un texto legal, con fecha de versión); si la
+              prueba cambia, `data/prueba.test.js` se pone en rojo para que alguien
+              actualice este párrafo Y la fecha de arriba. */}
           <p>
-            Rendi ofrece un plan gratuito (<strong className="text-ink-0">"Free"</strong>) sin
-            vencimiento y dos planes pagos (<strong className="text-ink-0">"Plus"</strong> y{' '}
-            <strong className="text-ink-0">"Pro"</strong>) con límites y features ampliados. Los
-            precios vigentes y lo que incluye cada plan se publican en{' '}
+            Quien crea una cuenta en Rendi arranca con una{' '}
+            <strong className="text-ink-0">prueba gratuita de 20 días</strong>, sin tarjeta: los
+            primeros 10 días con el plan Pro y los 10 siguientes con el plan Plus. Al terminar la
+            prueba, para seguir usando Rendi tenés que elegir uno de los dos planes pagos
+            (<strong className="text-ink-0">"Plus"</strong> o{' '}
+            <strong className="text-ink-0">"Pro"</strong>); mientras no lo elijas, tu cuenta queda
+            en pausa y tus datos se conservan. La prueba se puede usar una sola vez por persona.
+          </p>
+          <p>
+            Las cuentas que ya tenían el plan gratuito (<strong className="text-ink-0">"Free"</strong>)
+            antes de que existiera la prueba lo conservan. Los precios vigentes y lo que incluye
+            cada plan se publican en{' '}
             <Link to="/planes" className="text-data-violet hover:underline">/planes</Link>.
           </p>
           <p>
@@ -232,7 +247,8 @@ export default function Terminos() {
             momento desde{' '}
             <Link to="/config" className="text-data-violet hover:underline">/config</Link>. Al
             cancelar, mantenés el acceso a tu plan pago hasta el final del período ya cobrado y,
-            a partir de ahí, tu cuenta vuelve a Free de forma automática. No se programan nuevos
+            a partir de ahí, tu cuenta vuelve al plan Free si lo tenías, o queda en pausa (con tus
+            datos conservados) hasta que elijas un plan. No se programan nuevos
             cobros una vez que cancelás.
           </p>
         </Section>
