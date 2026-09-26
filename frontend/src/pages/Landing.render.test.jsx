@@ -14,6 +14,10 @@ const texto = renderToStaticMarkup(
   <HelmetProvider><MemoryRouter><Landing /></MemoryRouter></HelmetProvider>,
 ).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 
+// El número que dice la página en ese lugar, o undefined si la frase cambió.
+// Así el aviso de un rojo dice "expected '6' to be '9'" y no 40 KB de HTML.
+const dice = (patron) => texto.match(patron)?.[1]
+
 describe('la home dice los cupos del chat que da el plan', () => {
   const plus = cupoDe(PLUS_FEATURES, 'Chat Rendi AI / sem')
   const pro = cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')
@@ -21,21 +25,24 @@ describe('la home dice los cupos del chat que da el plan', () => {
   it('el catálogo tiene los dos cupos (si no, la página diría "undefined")', () => {
     // Contra el falso verde: si alguien renombra la etiqueta del catálogo, la
     // página y este test leerían los dos `undefined` y coincidirían.
-    expect(plus).toMatch(/^\d+$/)
-    expect(pro).toMatch(/^\d+$/)
+    expect(plus, 'el catálogo ya no tiene «Chat Rendi AI / sem» en el Plus').toMatch(/^\d+$/)
+    expect(pro, 'el catálogo ya no tiene «Chat Rendi AI / sem» en el Pro').toMatch(/^\d+$/)
   })
 
   it('el paso 05 dice el cupo del Plus', () => {
-    expect(texto).toContain(`12 preguntas guiadas (${plus} consultas por semana en Plus)`)
-    expect(texto).toContain(`12 guiadas · ${plus}/sem (Plus)`)
+    expect(dice(/12 preguntas guiadas \((\S+) consultas por semana en Plus\)/),
+      'el texto del paso 05 de la home').toBe(plus)
+    expect(dice(/12 guiadas · (\S+)\/sem \(Plus\)/), 'la etiqueta del Plus del paso 05').toBe(plus)
   })
 
   it('y el del Pro', () => {
-    expect(texto).toContain(`Chat libre · ${pro}/sem (Pro)`)
+    expect(dice(/Chat libre · (\S+)\/sem \(Pro\)/), 'la etiqueta del Pro del paso 05').toBe(pro)
   })
 
   it('nombra a la IA con su nombre de hoy', () => {
     expect(texto).toContain('Rendi AI')
-    expect(texto).not.toMatch(/coach/i)
+    const i = texto.search(/coach/i)
+    expect(i === -1 ? null : texto.slice(Math.max(0, i - 60), i + 60),
+      'la home dice "coach" acá').toBeNull()
   })
 })
