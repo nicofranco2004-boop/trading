@@ -53,7 +53,7 @@ Shape:
   },
   "drawdown": {                     # MEDIDO COMO RENDIMIENTO (ver `_drawdown`)
     "que_es": str, "moneda": "usd" | "ars",
-    "medido_desde": str | null, "medido_hasta": str | null,
+    "medido_desde": str | null, "medido_hasta": str | null, "incluye_hoy": bool,
     "current_pct": float | null,     # caída actual desde el máximo
     "max_pct": float | null,         # peor caída de la historia medida
     "max_date": str | null,          # el fondo de esa caída
@@ -145,9 +145,10 @@ def _drawdown(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     la misma pantalla no digan dos números distintos.
     """
     m = caida_medida.medir(conn, user_id, moneda=kwargs.get("moneda"),
-                           valor_live=kwargs.get("valor_live"))
+                           valor_live=kwargs.get("valor_live"), modo=kwargs.get("modo"))
     out = {k: m[k] for k in ("que_es", "moneda", "medido_desde", "medido_hasta",
-                             "current_pct", "max_pct", "max_date", "days_since_peak")}
+                             "incluye_hoy", "current_pct", "max_pct", "max_date",
+                             "days_since_peak")}
     if m.get("insufficient_data"):
         # None, NO 0.0: "no se pudo medir" no es "no caíste".
         out.update(insufficient_data=True, reason=m["reason"])

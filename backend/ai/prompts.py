@@ -1010,7 +1010,10 @@ def render_insights_prompt(tier: str = "pro") -> str:
         "realized_avg_pct_per_trade (% promedio por trade), "
         "UNREALIZED_PNL_TOTAL_USD (mark-to-market USD de TODAS las posiciones "
         "abiertas — el 'sobre papel' actual), total_equity_usd (valor cartera "
-        "HOY), vs benchmarks con deltas en pp, drawdown actual y máximo, "
+        "HOY), vs benchmarks con deltas en pp, drawdown actual y máximo "
+        "(medidos como rendimiento sobre TODA la historia medida, desde "
+        "drawdown.medido_desde — no sólo el período del twr_pct: una caída "
+        "vieja no es 'del último año'), "
         "stats de trades, REALIZED_ATTRIBUTION (top contributors/detractors de "
         "trades YA CERRADOS, scope='closed_trades', cada item con "
         "status='closed' e in_portfolio_now bool), CURRENT_HOLDINGS_TOP "
@@ -1131,7 +1134,8 @@ def render_insights_drawdown_prompt(tier: str = "pro") -> str:
         "historia medida, desde medido_desde), max_date / max_peak_date (fondo y "
         "pico de esa caída), days_since_peak, recovered (bool), worst_event y "
         "dd_events (top 5 > -5% con start/trough/end, depth, duration_days del "
-        "pico a la salida, recovery_days del fondo a la salida), moneda."
+        "pico a la salida —o a medido_hasta si la caída sigue abierta, end_date "
+        "null—, recovery_days del fondo a la salida), moneda, incluye_hoy."
     )
     free = _maybe_free("insights.drawdown", view, pkt, tier)
     if free:
@@ -1142,7 +1146,7 @@ def render_insights_drawdown_prompt(tier: str = "pro") -> str:
         focus=[
             "Profundidad del peor DD — < -20 grave, entre -10 y -20 normal, > -10 chico para portfolios con exposure tech.",
             "Cantidad y duración de eventos — más eventos = más volatilidad estructural; duration > 90 días = caída larga, no agradable bancarla.",
-            "Drawdown actual vs el histórico — si current > max histórico, alarma legítima; si current < max histórico × 0.5, contexto.",
+            "Caída actual vs la peor de la historia — si current_pct es igual a max_pct, la cartera está HOY en su peor momento medido (alarma legítima); si es menos de la mitad de max_pct, es contexto.",
             "Tiempo en recuperar — patrón del portfolio frente a caídas (rápido / lento / inconcluso).",
         ],
         insight_examples=[

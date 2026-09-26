@@ -55,13 +55,13 @@ def _hace(dias: int) -> str:
 # Lo que manda el ✦ según la versión de la página:
 #   · la que está hoy en producción manda sólo `window_days` — el arreglo del
 #     servidor tiene que funcionar igual, sin esperar al deploy del frontend;
-#   · la nueva manda la moneda del selector y el valor de ahora (`paramsCaidaIA`
-#     en Insights.jsx), que es lo que la tarjeta usa para cerrar la curva.
+#   · la nueva manda la moneda del selector, el modo y el valor de ahora
+#     (`paramsCaidaIA` en Insights.jsx), que es lo que usa la tarjeta.
 PAGINA_VIEJA = {"window_days": 365}
 
 
-def pagina_nueva(moneda="usd", valor_live=None):
-    return {"moneda": moneda, "valor_live": valor_live}
+def pagina_nueva(moneda="usd", valor_live=None, modo="certero"):
+    return {"moneda": moneda, "modo": modo, "valor_live": valor_live}
 
 
 def _numeros(nodo):
@@ -173,6 +173,29 @@ class _Base(unittest.TestCase):
     def cierres(self, filas):
         for d, v, a in filas:
             self.cierre(d, v, a)
+
+    def foto_de_media_rueda(self, dias_atras: int, valor: float, aportado: float):
+        """La foto que escribe el navegador al abrir la app: sostiene la LÍNEA, no
+        es una medición (no puede ser pico ni denominador)."""
+        base, apto = twr.base_y_apto_para(twr.INTRADIA)
+        self.conn.execute(
+            "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+            "net_deposited, fx_to_usd_blue, source, holdings_json, base, apto) "
+            "VALUES (?,?,?,?,?,1400,'browser','[{\"a\":1}]',?,?)",
+            (self.uid, _hace(dias_atras), valor, valor, aportado, base, apto))
+        self.conn.commit()
+
+    def contabilidad(self, dias_atras: int, capital_inicio: float,
+                     depositos: float = 0.0, retiros: float = 0.0):
+        """La cadena mensual del mes de ese día: de donde el servidor saca lo
+        aportado HOY para la pata del valor vivo."""
+        d = date.fromisoformat(_hace(dias_atras))
+        self.conn.execute(
+            "INSERT INTO monthly_entries (user_id, year, month, broker, deposits, "
+            "withdrawals, pnl_realized, pnl_unrealized, capital_inicio, capital_final) "
+            "VALUES (?,?,?,'global',?,?,0,0,?,0)",
+            (self.uid, d.year, d.month, depositos, retiros, capital_inicio))
+        self.conn.commit()
 
     def contabilidad_del_retiro(self):
         """El retiro de 9.000 en la cadena mensual, en el mes en que ocurrió. Es de
@@ -351,6 +374,144 @@ class ElBotonGeneralDeMetricasTest(_Base):
         self.assertAlmostEqual(dd["current_pct"], pant["drawdown_actual"] * 100, places=2)
         self.assertAlmostEqual(dd["max_pct"], pant["drawdown_maximo"] * 100, places=2)
         self.assertEqual(dd["days_since_peak"], 2)
+
+
+    def test_en_pesos_y_con_el_valor_de_hoy_dice_lo_mismo_que_la_pantalla(self):
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        self.tipo_de_cambio()
+        pant = self.pantalla(moneda="ars")
+        dd = self.paquete("insights", {**PAGINA_VIEJA, **pagina_nueva(moneda="ars")})["drawdown"]
+        self.assertEqual(dd["moneda"], "ars")
+        self.assertAlmostEqual(dd["current_pct"], pant["drawdown_actual"] * 100, places=2)
+        self.assertAlmostEqual(dd["max_pct"], pant["drawdown_maximo"] * 100, places=2)
+
+    def test_en_modo_estimado_no_afirma_la_caida_que_la_pantalla_oculta(self):
+        """En estimado la tira de KPIs dice "—": la historia sale de la
+        contabilidad, que no es un camino de precios. El ✦ del encabezado (que se
+        ve en los dos modos) no puede darle al modelo el −10 % que la pantalla no
+        muestra, y tiene que decir por qué."""
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        pant = self.pantalla(modo="estimado")
+        self.assertIsNone(pant["drawdown_maximo"])
+        dd = self.paquete("insights", {**PAGINA_VIEJA, **pagina_nueva(modo="estimado")})["drawdown"]
+        self.assertIsNone(dd["current_pct"])
+        self.assertIsNone(dd["max_pct"])
+        self.assertIn("Estimado", dd["reason"])
+
+
+class LosOtrosBotonesQueHeredanLaCaidaTest(_Base):
+    """`insights.observation` (el ✦ de cada hallazgo del Diagnóstico) e
+    `insights.summary` (el resumen de arriba) arman su caída con el armador
+    general. Tienen que medirla en la moneda de la pantalla."""
+
+    def test_la_observacion_trae_la_caida_de_la_pantalla_en_pesos(self):
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        self.tipo_de_cambio()
+        pant = self.pantalla(moneda="ars")
+        ctx = self.paquete("insights.observation", {
+            "id": "D2", "title": "La cartera está abajo de su máximo.", "text": "x",
+            "category": "Riesgo", "level": "warn",
+            **pagina_nueva(moneda="ars")})["portfolio_context"]
+        self.assertEqual(ctx["drawdown_moneda"], "ars")
+        self.assertAlmostEqual(ctx["drawdown_current_pct"],
+                               pant["drawdown_actual"] * 100, places=2)
+        self.assertAlmostEqual(ctx["drawdown_max_pct"],
+                               pant["drawdown_maximo"] * 100, places=2)
+        self.assertEqual(ctx["drawdown_medido_hasta"], _hace(8))
+
+    def test_el_resumen_trae_la_caida_en_pesos_y_dice_hasta_cuando(self):
+        """Sin `valor_live` a propósito (va por /ai/analyze, que cachea por
+        paquete): mide hasta el último cierre y lo declara."""
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        self.tipo_de_cambio()
+        pant = self.pantalla(moneda="ars")
+        dd = self.paquete("insights.summary", {"moneda": "ars", "modo": "certero"})["drawdown"]
+        self.assertEqual(dd["moneda"], "ars")
+        self.assertIs(dd["incluye_hoy"], False)
+        self.assertEqual(dd["medido_hasta"], _hace(8))
+        self.assertAlmostEqual(dd["max_pct"], pant["drawdown_maximo"] * 100, places=2)
+
+
+class LasFechasYLosEmpatesTest(_Base):
+    """Lo que el paquete afirma sobre CUÁNDO: tiene que coincidir consigo mismo y
+    con la regla del motor."""
+
+    def test_un_pico_que_se_repite_empieza_el_primer_dia(self):
+        """El pico de un viernes que el cron repite sábado y domingo. El motor lo
+        fecha el primer día; el evento tenía que arrancar ese mismo día, no el
+        último (antes: `max_peak_date` y `worst_event.start_date` distintos, y la
+        duración contada dos días de menos)."""
+        self.cierres([(10, 10000, 10000), (9, 11000, 10000), (8, 11000, 10000),
+                      (7, 11000, 10000), (6, 9900, 10000), (5, 11000, 10000)])
+        p = self.paquete("insights.drawdown", pagina_nueva())
+        ev = p["worst_event"]
+        self.assertEqual(p["max_peak_date"], _hace(9))
+        self.assertEqual(ev["start_date"], _hace(9))
+        self.assertEqual((p["max_date"], ev["trough_date"]), (_hace(6), _hace(6)))
+        self.assertEqual(ev["duration_days"], 4)          # del 9 al 5
+        self.assertEqual(ev["recovery_days"], 1)
+
+    def test_una_baja_menor_al_redondeo_no_es_una_caida(self):
+        """−0,0001 %: el paquete dice 0,0 %; no puede decir además "todavía no te
+        recuperaste" con un evento abierto de profundidad 0,0."""
+        self.cierres([(10, 10000, 10000), (9, 9999.99, 10000)])
+        p = self.paquete("insights.drawdown", pagina_nueva())
+        self.assertEqual((p["current_pct"], p["max_pct"]), (0.0, 0.0))
+        self.assertIsNone(p["worst_event"])
+        self.assertIsNone(p["max_date"])
+        self.assertIs(p["recovered"], True)
+        self.assertEqual(p["days_since_peak"], 0)
+
+    def test_volver_a_centesimos_del_pico_es_recuperarse(self):
+        self.cierres([(10, 20000, 20000), (9, 18000, 20000), (8, 19999.9, 20000)])
+        p = self.paquete("insights.drawdown", pagina_nueva())
+        self.assertEqual(p["current_pct"], 0.0)
+        self.assertEqual(p["max_pct"], -10.0)
+        self.assertIs(p["recovered"], True)
+        self.assertEqual(p["worst_event"]["end_date"], _hace(8))
+
+    def test_valores_raros_del_navegador_se_ignoran(self):
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        for raro in (True, "abc", -5, 0, "1e999", "nan"):
+            p = self.paquete("insights.drawdown", {"moneda": "usd", "valor_live": raro})
+            self.assertIs(p["incluye_hoy"], False, raro)
+            self.assertEqual(p["current_pct"], -10.0, raro)
+
+
+class ElMotorDeLaTarjetaTest(_Base):
+    """Un error del MOTOR que usan la tarjeta y el ✦ (twr.curva_indexada), que
+    encontró la auditoría de este arreglo. Se mide por el camino de la pantalla."""
+
+    def test_el_valor_de_hoy_se_mide_contra_el_pico_del_numero_no_del_dibujo(self):
+        """10.000 → foto de media rueda 11.000 → depósito de 10.000 → 21.000, y la
+        cartera de hoy vale lo mismo que el último cierre (mercado quieto).
+
+        El cierre de "hoy" dividía el índice PUBLICADO (+6,67 %) por el pico del
+        índice del DIBUJO (+10 %, que pasa por la foto de media rueda): la tarjeta
+        decía "caída actual −3,03 %" en un día plano, en el pico."""
+        self.cierre(10, 10000, 10000)
+        self.foto_de_media_rueda(9, 11000, 10000)
+        self.cierre(8, 21000, 20000)
+        self.contabilidad(8, capital_inicio=10000, depositos=10000)
+        sin_hoy = self.pantalla()
+        self.assertEqual(sin_hoy["drawdown_actual"], 0.0)
+        pant = self.pantalla(valor_live=21000)
+        self.assertEqual(pant["curva"][-1]["date"], "hoy")
+        self.assertAlmostEqual(pant["drawdown_actual"], 0.0, places=6)
+        self.assertAlmostEqual(pant["drawdown_maximo"], 0.0, places=6)
+        p = self.paquete("insights.drawdown", pagina_nueva(valor_live=21000))
+        self.assertEqual((p["current_pct"], p["max_pct"]), (0.0, 0.0))
+
+    def test_una_caida_de_hoy_se_mide_contra_el_mismo_pico(self):
+        """El mismo caso con la cartera de hoy un 10 % abajo: −10 %, no −12,7 %."""
+        self.cierre(10, 10000, 10000)
+        self.foto_de_media_rueda(9, 11000, 10000)
+        self.cierre(8, 21000, 20000)
+        self.contabilidad(8, capital_inicio=10000, depositos=10000)
+        pant = self.pantalla(valor_live=18900)
+        self.assertAlmostEqual(pant["drawdown_actual"], -0.10, places=6)
+        p = self.paquete("insights.drawdown", pagina_nueva(valor_live=18900))
+        self.assertEqual(p["current_pct"], -10.0)
 
 
 if __name__ == "__main__":

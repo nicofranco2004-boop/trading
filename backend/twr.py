@@ -2135,6 +2135,10 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # respuesta: es la ronda 7 al revés.
     curva = []
     tramos_info = []       # {desde, hasta, twr, dd_max, dd_actual, legs} por tramo
+    # (pico, fecha) del índice PUBLICADO de cada tramo, en paralelo a `tramos_info`.
+    # Es el mismo máximo contra el que se midió el drawdown de cada punto; el
+    # cierre live lo necesita para seguir midiendo contra ÉSE (ver abajo).
+    picos_tramo = []
     idx_ultimo_tramo = 1.0
     # El SEGMENTO DIBUJADO. Es más fino que el tramo: un tramo se parte también
     # donde cambia la BASE, porque ahí la línea no puede seguir de largo. Viaja por
@@ -2392,6 +2396,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         # de un punto no-apto, decía que la medición arrancaba meses antes de
         # donde de verdad arranca.
         _aptos_t = [q for q in tramo if q["apto"]]
+        picos_tramo.append((pico, pico_fecha))
         tramos_info.append({
             "desde": (_aptos_t[0]["date"] if _aptos_t else tramo[0]["date"]),
             "hasta": (_aptos_t[-1]["date"] if _aptos_t else tramo[-1]["date"]),
@@ -2448,13 +2453,19 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
         dd_max_fecha = _t["drawdown_maximo_fecha"]
         dd_max_pico_fecha = _t["drawdown_maximo_pico"]
         dd_actual = _t["drawdown_actual"]
-        # `pico` sólo se usa de acá en adelante para el cierre live. El HWM del
-        # tramo es el índice más alto que alcanzó; se recalcula desde la curva
-        # para no depender de en qué punto quedó `idx`.
-        _idxs = [c["index"] for c in curva if c.get("apto")]
-        pico = max(_idxs) if _idxs else 1.0
-        pico_fecha = next((c["date"] for c in curva
-                           if c.get("apto") and c["index"] == pico), None)
+        # `pico` sólo se usa de acá en adelante para el cierre live: es el máximo
+        # del tramo contra el que se mide el drawdown de "hoy".
+        # ⚠️ EL DEL ÍNDICE PUBLICADO, NO EL DEL DIBUJO. Acá se tomaba
+        # `max(c["index"])`, y `index` es la FORMA: encadena también la foto
+        # intradía, así que con un depósito en el medio no coincide con `idx`, que
+        # es el número. El cierre live dividía el índice publicado por el pico del
+        # dibujo: 10.000 → intradía 11.000 → depósito de 10.000 → 21.000, con la
+        # cartera de hoy igual al cierre (mercado quieto), publicaba "caída actual
+        # −3,03 %" donde sin el valor de hoy decía 0,0 %. Se usa el MISMO máximo
+        # que midió el drawdown de cada punto del tramo.
+        pico, pico_fecha = picos_tramo[tramos_info.index(_t)]
+        if pico is None:
+            pico, pico_fecha = 1.0, None
     else:
         # ⚠️ Sin ningún tramo medido (o con la serie partida) el índice se quedó
         # en 1.0 — y devolver eso como `twr: 0.0` / `drawdown: 0.0` es publicar

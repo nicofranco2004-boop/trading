@@ -15,6 +15,7 @@ la plata con el mercado quieto era "una caída del 50 %". Ver la cabecera de
 Params (los manda AskAIAbout desde Insights.jsx):
     moneda      — 'usd' | 'ars', la del selector de la pantalla
     valor_live  — la cartera de ahora en USD, la misma que cierra la curva
+    modo        — 'certero' | 'estimado' (la tarjeta sólo existe en certero)
     window_days — lo mandaban versiones anteriores de la página; se ignora: la
                   tarjeta mide toda la historia ("Máx histórico"), y el paquete
                   declara la ventana real en `medido_desde`/`medido_hasta`.
@@ -50,7 +51,7 @@ from . import caida_medida
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     m = caida_medida.medir(conn, user_id, moneda=kwargs.get("moneda"),
-                           valor_live=kwargs.get("valor_live"))
+                           valor_live=kwargs.get("valor_live"), modo=kwargs.get("modo"))
     episodios = m.pop("episodios")
     eventos = [e for e in episodios if e["depth_pct"] <= caida_medida.UMBRAL_EVENTO_PCT]
     return {

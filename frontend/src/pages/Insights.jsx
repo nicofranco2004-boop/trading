@@ -337,12 +337,14 @@ function InsightsDesktop({ _embeddedTab }) {
   // fetch y su curva mal cerrada hasta la respuesta siguiente.
   const liveKeyPerf = loading ? 0 : Math.round(liveUsdPerf || 0)
   // Lo que el ✦ necesita para medir la caída IGUAL que esta pantalla: la moneda
-  // del selector y el valor de ahora con el que cierra la curva. El servidor usa
-  // el mismo motor y la misma llamada que `/insights/performance`
-  // (backend/ai/builders/caida_medida.py); sin esto, en pesos o a media rueda la
-  // IA decía otro número que la tarjeta.
+  // del selector, el modo (en estimado la pantalla no muestra caída: "—") y el
+  // valor de ahora con el que cierra la curva. El servidor usa el mismo motor y
+  // la misma llamada que `/insights/performance`
+  // (backend/ai/builders/caida_medida.py); sin esto, en pesos, en estimado o a
+  // media rueda la IA decía otro número que la tarjeta.
   const paramsCaidaIA = {
     moneda: _monedaVista,
+    modo: modoPerf,
     valor_live: liveKeyPerf > 0 ? liveKeyPerf : null,
   }
 
@@ -2701,6 +2703,12 @@ function InsightsDesktop({ _embeddedTab }) {
     verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
+    // La caída del paquete, en la moneda y el modo de la pantalla. SIN
+    // `valor_live`: este bloque va por /ai/analyze, que cachea por paquete, y el
+    // valor de ahora cambia con cada cotización — cada toque sería un análisis
+    // nuevo descontado del cupo. El paquete declara `medido_hasta`.
+    moneda: paramsCaidaIA.moneda,
+    modo: paramsCaidaIA.modo,
   }
 
   return (
@@ -2860,7 +2868,7 @@ function InsightsDesktop({ _embeddedTab }) {
           Ver <DiagnosisSection> para la lógica completa.
           ══════════════════════════════════════════════════════════════════════ */}
       {diagnosisPool.length > 0 && (
-        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} />
+        <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} aiParams={paramsCaidaIA} />
       )}
 
       {/* ── Distribución de activos — estándar, incluye cash. Movida arriba
@@ -3791,7 +3799,7 @@ const DIAG_TIERS = [
   { key: 'positivo',    match: d => d.severity === 'positive' },
 ]
 
-function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
+function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
   // state ({dismissed, slots}) + collapsed ANTES de cualquier early return
   // (Rules of Hooks). `slots` = ids visibles por tier → reemplazo por-slot estable.
   const [state, setState] = useState(() => readDiagState(userKey))
@@ -3934,6 +3942,7 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon' }) {
                   <DiagnosisCard
                     key={d.id}
                     d={d}
+                    aiParams={aiParams}
                     onDismiss={row.canRotate ? () => dismiss(row.key, d.id) : undefined}
                   />
                 ))}
@@ -4011,7 +4020,7 @@ function FeaturedFinding({ d }) {
   )
 }
 
-function DiagnosisCard({ d, onDismiss }) {
+function DiagnosisCard({ d, onDismiss, aiParams }) {
   const sev = SEVERITY_BADGE[d.severity] || SEVERITY_BADGE.info
   // Botón "No me interesa" — compartido entre la card normal y la bloqueada.
   const dismissBtn = onDismiss ? (
@@ -4069,6 +4078,9 @@ function DiagnosisCard({ d, onDismiss }) {
         text: plainText,
         category: d.category,
         level: d.severity,
+        // La moneda, el modo y el valor de ahora: la caída del paquete tiene que
+        // ser la de la tira de KPIs (la observación D2 la cita en el título).
+        ...aiParams,
       }}
       subtitle={title.length > 60 ? title.slice(0, 60) + '…' : title}
       className="h-full"

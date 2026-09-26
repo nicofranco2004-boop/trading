@@ -18,6 +18,7 @@ Params (todos opcionales menos title):
   category: str        # 'Concentración' | 'Drawdown' | 'Riesgo' | etc.
   level: str           # 'danger' | 'warning' | 'info' | 'positive'
   id: str              # 'D1', 'D2', etc. — solo para tracking
+  moneda, modo, valor_live  # los de la pantalla, para medir la caída igual que ella
 
 Shape:
 {
@@ -26,8 +27,10 @@ Shape:
   "portfolio_context": {
     "total_value_usd": float,
     "twr_pct": float | null,
-    "drawdown_current_pct": float,
-    "drawdown_max_pct": float,
+    "drawdown_current_pct": float | null,   # medida como rendimiento
+    "drawdown_max_pct": float | null,
+    "drawdown_moneda": "usd" | "ars",
+    "drawdown_medido_hasta": str | null,
     "top_holdings": [{ ticker, weight_pct, pnl_pct }],
     "top_contributors": [{ ticker, total_usd }],
     "exposure": { cash_pct, ar_pct, us_pct, crypto_pct },
@@ -64,15 +67,26 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         from .insights_attribution import build as build_attribution
         from .dashboard_top_holdings import build as build_top_holdings
 
-        ins = build_insights_general(conn, user_id, window_days=365)
+        # La moneda, el modo y el valor de ahora de la pantalla (`paramsCaidaIA`
+        # en Insights.jsx): la caída tiene que ser la misma que muestra la tira de
+        # KPIs — en pesos, en estimado ("—") o cerrando con el valor de hoy.
+        ins = build_insights_general(conn, user_id, window_days=365,
+                                     moneda=kwargs.get("moneda"),
+                                     valor_live=kwargs.get("valor_live"),
+                                     modo=kwargs.get("modo"))
         attr = build_attribution(conn, user_id)
         top = build_top_holdings(conn, user_id)
 
         portfolio_context = {
             "total_value_usd": top.get("total_value_usd"),
             "twr_pct": ins.get("twr_pct"),
+            # Medida como rendimiento (ver ai/builders/caida_medida.py). Con su
+            # moneda y su fecha: sin ellas, "−12 %" no dice en pesos o en dólares
+            # ni si es de hoy o del último cierre.
             "drawdown_current_pct": (ins.get("drawdown") or {}).get("current_pct"),
             "drawdown_max_pct": (ins.get("drawdown") or {}).get("max_pct"),
+            "drawdown_moneda": (ins.get("drawdown") or {}).get("moneda"),
+            "drawdown_medido_hasta": (ins.get("drawdown") or {}).get("medido_hasta"),
             "top_holdings": [
                 {
                     "ticker": h.get("ticker"),
