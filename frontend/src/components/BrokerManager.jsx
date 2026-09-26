@@ -72,7 +72,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
         const detail = ex.payload.detail
         track('feature_blocked_clicked', { feature: 'brokers.create', source: 'positions_broker_manager' })
         setBrokerUpgrade({
-          message: detail.error || 'El plan Free permite 1 broker.',
+          message: detail.error || 'Llegaste al máximo de brokers de tu plan.',
           benefits: detail.upgrade?.benefits,
         })
         return

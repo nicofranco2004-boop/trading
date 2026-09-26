@@ -262,7 +262,10 @@ def _wrap_html(body: str) -> str:
 # admin, donde Free sí existe). Cada una tenía su propio diccionario, y
 # 'advisor' se agregó en uno solo: en el aviso al admin el Asesor se leía
 # "Free", un alta "Free → Asesor" quedaba "Free → Free" y no se mandaba.
-_NOMBRES_DE_PLAN = {"plus": "Plus", "pro": "Pro", "advisor": "Asesor"}
+# Los planes pagos que describen estos mails. El NOMBRE de cada uno sale de
+# `plan_textos.NOMBRE`, la misma tabla que usan los carteles de upgrade: una
+# sola, para que "Asesor" no se arregle en un lado y quede "Pro" en el otro.
+_NOMBRES_DE_PLAN = {p: plan_textos.NOMBRE[p] for p in ("plus", "pro", "advisor")}
 
 
 def _plan_del_mail(plan: str) -> str:

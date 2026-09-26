@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom'
 // VERDAD con el hook de planes REAL. Al hook se lo alimenta por donde se
 // alimenta en producción: la respuesta de /api/plan/features.
 //
-// Existe por el 15/10 (`git revert 78f43739`): el Plus pasa a "sin tope"
+// Existe por el 15/10 (se revierte el commit «[15-10]»): el Plus pasa a "sin tope"
 // (`behavioral_tags_visible: null`), y la grilla decidía "todas" por el NOMBRE
 // del plan (sólo Pro/Asesor/Admin). Con el Plus en null caía en la rama con
 // tope y `null || 1` le mostraba UNA carta de doce.

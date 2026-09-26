@@ -791,7 +791,7 @@ export default function PositionsMobile() {
         const detail = ex.payload.detail
         track('feature_blocked_clicked', { feature: 'brokers.create', source: 'positions_mobile' })
         setBrokerUpgrade({
-          message: detail.error || 'El plan Free permite 1 broker.',
+          message: detail.error || 'Llegaste al máximo de brokers de tu plan.',
           benefits: detail.upgrade?.benefits,
         })
         return
@@ -3023,7 +3023,8 @@ function ActionsSheet({ onClose, positions, brokers, onBuy, onSell, onCash }) {
   // sheet). Mismo behavior: blob download + filename amistoso + fallback
   // upgrade modal si el user es Free.
   const [exporting, setExporting] = useState(false)
-  const [showUpgrade, setShowUpgrade] = useState(false)
+  // El 403 del backend tal cual: `{ error, upgrade: { target_tier, benefits } }`.
+  const [bloqueo, setBloqueo] = useState(null)
   // usePlanFeatures vive en el outer (hooks pueden romper si los importamos
   // acá doble). Para mantener el componente simple, no chequeamos pre-flight
   // — el backend responde 403 si Free y caemos al upgrade modal.
@@ -3045,9 +3046,12 @@ function ActionsSheet({ onClose, positions, brokers, onBuy, onSell, onCash }) {
       URL.revokeObjectURL(url)
       onClose()
     } catch (ex) {
-      if (ex?.status === 403 && ex?.payload?.detail?.upgrade) {
+      const detail = ex?.status === 403 ? ex?.payload?.detail : null
+      if (detail?.upgrade) {
         track('feature_blocked_clicked', { feature: 'export.csv', source: 'mobile_actions_sheet' })
-        setShowUpgrade(true)
+        // La lista la arma el backend (billing/plan_textos). Acá se abría el
+        // modal SIN ella, y el modal caía en la del Pro escrita a mano.
+        setBloqueo(detail)
       } else {
         console.error('Export CSV failed:', ex)
         alert('No pudimos generar el CSV. Probá de nuevo.')
@@ -3155,10 +3159,14 @@ function ActionsSheet({ onClose, positions, brokers, onBuy, onSell, onCash }) {
         </div>
       </div>
 
-      {showUpgrade && (
+      {bloqueo && (
         <UpgradeModal
+          targetTier={bloqueo.upgrade.target_tier}
+          message={bloqueo.error}
           feature="export.csv"
-          onClose={() => setShowUpgrade(false)}
+          source="mobile_actions_sheet"
+          benefits={bloqueo.upgrade.benefits}
+          onClose={() => setBloqueo(null)}
         />
       )}
     </>

@@ -1,7 +1,8 @@
 // /brokers/binance — keyword landing para "tracker Binance Argentina"
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { PASO_CREAR_CUENTA } from '../../data/prueba'
+import { PASO_CREAR_CUENTA, cupoDe } from '../../data/prueba'
+import { PRO_FEATURES } from '../../data/planCatalog'
 
 const FEATURES = [
   {
@@ -26,7 +27,7 @@ const FEATURES = [
   },
   {
     title: 'Rendi AI con contexto de tu cartera completa',
-    desc: 'Chat IA con tu portfolio total. "¿Mi exposición a BTC vs equities es coherente con mi perfil de inversor?", "¿Qué cripto me hizo perder más este año?". Pro: 40 consultas/sem + memoria.',
+    desc: `Chat IA con tu portfolio total. "¿Mi exposición a BTC vs equities es coherente con mi perfil de inversor?", "¿Qué cripto me hizo perder más este año?". Pro: ${cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')} consultas/sem + memoria.`,
   },
 ]
 

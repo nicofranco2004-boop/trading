@@ -4,10 +4,17 @@ Modelo de permisos centralizado. Cada feature paywallable del producto se
 declara acá con su gate por tier:
 
   • Boolean en `can_access` para acceso categórico (Comportamiento full,
-    Distribución por activo, Reportes históricos, AI Hub, etc.).
+    Reportes históricos, Export CSV, AI Hub, etc.).
   • Numérico en `limits` para cuotas cuantitativas (brokers_max,
-    insights_diagnostic_visible, behavioral_tags_visible).
+    behavioral_tags_visible, alerts_max).
   • Cuotas semanales de IA viven en `ai.quota.LIMITS` (no se duplican acá).
+
+Lo que es de TODOS los planes no se declara acá: el diagnóstico completo y
+la distribución por activo (decisión de producto del 2026-09-26). Estuvieron
+declarados como topes (`insights_diagnostic_visible`,
+`insights.distribucion_activo`) sin que ninguna pantalla los aplicara, y un
+tope declarado que nadie aplica es una promesa esperando a que alguien la
+escriba en un cartel — pasó en los mails y en los carteles de upgrade.
 
 Modo GRANDFATHER:
   Para usuarios Free preexistentes con N brokers > limit_free, los N
@@ -17,7 +24,7 @@ Modo GRANDFATHER:
 
 Convención de feature IDs:
   namespace.action (lowercase + dot). Ej: "comportamiento.full",
-  "insights.distribucion_activo", "ai.followup".
+  "reportes.historicos", "ai.followup".
 """
 
 from __future__ import annotations
@@ -32,7 +39,6 @@ FEATURE_IDS = {
     "ai.followup",                  # Follow-ups en análisis IA
     "ai.hub",                       # AI Hub (próximamente para todos)
     "comportamiento.full",          # Todas las tags de comportamiento (vs 1 sample en Free)
-    "insights.distribucion_activo", # Card "Distribución por activo" en Insights
     "reportes.historicos",          # Meses históricos en Reportes (Free ve teaser último)
     "export.csv",                   # Export CSV de operaciones / posiciones / monthly
     "tax.helper",                   # Tax helper AFIP (próximamente, todavía no construido)
@@ -45,14 +51,12 @@ FEATURE_IDS = {
 PLAN_LIMITS = {
     "free": {
         "brokers_max": 1,
-        "insights_diagnostic_visible": 3,
         "behavioral_tags_visible": 3,
         "alerts_max": 3,                           # solo precio objetivo (pct_move = Plus+)
         "can_access": {
             "ai.followup": False,
             "ai.hub": False,                       # próximamente
             "comportamiento.full": False,          # parcial (behavioral_tags_visible=3 de 12)
-            "insights.distribucion_activo": False,
             "reportes.historicos": False,
             "export.csv": False,
             "tax.helper": False,                   # próximamente (no construido)
@@ -65,14 +69,12 @@ PLAN_LIMITS = {
     # para preservar el upgrade path por features de IA.
     "plus": {
         "brokers_max": 3,
-        "insights_diagnostic_visible": 6,
         "behavioral_tags_visible": 6,
         "alerts_max": 25,                          # desbloquea alertas de % sobre la cartera
         "can_access": {
             "ai.followup": False,                  # Pro-only
             "ai.hub": False,                       # Pro-only
             "comportamiento.full": False,          # parcial (behavioral_tags_visible=6 de 12)
-            "insights.distribucion_activo": True,
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": False,                   # Pro-only (cuando exista)
@@ -81,14 +83,12 @@ PLAN_LIMITS = {
     },
     "pro": {
         "brokers_max": None,
-        "insights_diagnostic_visible": None,
         "behavioral_tags_visible": None,
         "alerts_max": None,                        # sin tope (Pro no tiene límites de cantidad)
         "can_access": {
             "ai.followup": True,
             "ai.hub": False,                       # próximamente (todavía no liberado)
             "comportamiento.full": True,
-            "insights.distribucion_activo": True,
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": False,                   # próximamente (todavía no construido)
@@ -101,14 +101,12 @@ PLAN_LIMITS = {
     # hay contexto de cliente activo (tier_override='pro' sobre esa cuenta).
     "advisor": {
         "brokers_max": None,
-        "insights_diagnostic_visible": None,
         "behavioral_tags_visible": None,
         "alerts_max": None,
         "can_access": {
             "ai.followup": True,
             "ai.hub": False,                       # mismo estado que Pro (no liberado)
             "comportamiento.full": True,
-            "insights.distribucion_activo": True,
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": False,
@@ -117,14 +115,12 @@ PLAN_LIMITS = {
     },
     "admin": {
         "brokers_max": None,
-        "insights_diagnostic_visible": None,
         "behavioral_tags_visible": None,
         "alerts_max": None,
         "can_access": {
             "ai.followup": True,
             "ai.hub": True,                        # admin ve todo, incluso flags en desarrollo
             "comportamiento.full": True,
-            "insights.distribucion_activo": True,
             "reportes.historicos": True,
             "export.csv": True,
             "tax.helper": True,                    # admin ve todo, incluso si Pro no lo tiene aún
@@ -132,6 +128,15 @@ PLAN_LIMITS = {
         },
     },
 }
+
+# Los planes que se le venden a una persona, del más barato al más caro. El
+# orden importa: "¿qué plan te destraba esto?" es el PRIMERO de esta lista que
+# lo da (la carta de comportamiento que ve el Plus no se vende como Pro).
+PLANES_EN_VENTA = ("plus", "pro")
+
+# Los topes de PLAN_LIMITS que la pantalla usa para decir qué plan destraba
+# qué. Lista cerrada a propósito: lo que no está acá no llega al navegador.
+_TOPES_PARA_LA_UI = ("brokers_max", "behavioral_tags_visible", "alerts_max")
 
 
 def can_access(conn, user_id: int, feature_id: str) -> bool:
@@ -257,9 +262,10 @@ def get_plan_features(conn, user_id: int, tier_override: str | None = None) -> d
     Shape estable consumido por hooks/usePlanFeatures() en el frontend:
         tier
         limits.brokers_max / brokers_current / brokers_can_create
-        limits.insights_diagnostic_visible
         limits.behavioral_tags_visible
-        access.<feature_id>: bool
+        access.<feature_id>: bool — sólo los de FEATURE_IDS
+        planes: [{tier, limits: {brokers_max, behavioral_tags_visible,
+                 alerts_max}}] — los planes en venta, del más barato al más caro
 
     tier_override: fuerza el tier SIN mirar la cuenta. Único caso de uso: el
     "lente Pro" del Plan Asesor — el asesor viendo la cuenta de un cliente
@@ -285,11 +291,21 @@ def get_plan_features(conn, user_id: int, tier_override: str | None = None) -> d
             "brokers_current": current_brokers,
             "brokers_can_create": brokers_can_create,
             "brokers_grandfather": brokers_max is not None and current_brokers > brokers_max,
-            "insights_diagnostic_visible": limits["insights_diagnostic_visible"],
             "behavioral_tags_visible": limits["behavioral_tags_visible"],
             "alerts_max": alerts_max,
             "alerts_current": current_alerts,
             "alerts_can_create": alerts_can_create,
         },
-        "access": dict(limits["can_access"]),
+        # Sólo lo declarado en FEATURE_IDS: una entrada que quedó en la tabla
+        # sin estar declarada (lo del Plus hasta el 15/10, ver PLAN_LIMITS) no
+        # le llega a la pantalla.
+        "access": {k: v for k, v in limits["can_access"].items() if k in FEATURE_IDS},
+        # Los topes de los planes que se venden, en orden de precio. Con esto
+        # la pantalla deriva qué plan destraba una carta bloqueada en vez de
+        # tenerlo escrito ("PLUS_VISIBLE_COUNT = 6" en Behavioral.jsx, que el
+        # 15/10 le iba a decir "Pro" a Free en cartas que el Plus ya muestra).
+        "planes": [
+            {"tier": p, "limits": {k: PLAN_LIMITS[p][k] for k in _TOPES_PARA_LA_UI}}
+            for p in PLANES_EN_VENTA
+        ],
     }

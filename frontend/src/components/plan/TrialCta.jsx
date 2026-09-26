@@ -156,7 +156,9 @@ export function TrialCta({ source = 'paywall', className = '', onStarted }) {
 // que hay para Pro —ya paga, ya usa la app— y era justo el único al que no se
 // le ofrecía nada, porque el trial normal lo excluye (le pisaría la ventana que
 // compró). El backend manda el estado resuelto en /api/plan/features →
-// pro_upsell: { active, used, can_start, days_left, days }.
+// pro_upsell: { active, used, can_start, days_left, days, benefits }.
+// `benefits` es lo que el Pro le da de más a ESA persona, armado con los
+// límites (`billing/plan_textos.cartel("prueba_pro", …)`): no se escribe acá.
 
 /** Botón "Probá Pro N días". Null si el server no lo habilita. */
 export function ProUpsellCta({ className = '', onStarted }) {
@@ -201,7 +203,7 @@ export function ProUpsellCta({ className = '', onStarted }) {
       </button>
       {confirmando && (
         <TrialConfirmModal
-          kind="pro_upsell" dias={up.days} busy={busy}
+          kind="pro_upsell" dias={up.days} busy={busy} beneficios={up.benefits}
           onConfirm={start} onClose={() => setConfirmando(false)}
         />
       )}
@@ -321,7 +323,8 @@ function EtapasDelTrial({ pro, plus, total }) {
 
 /** `kind`: 'trial' (la prueba encadenada, Pro y después Plus) | 'pro_upsell' (probar Pro sin
  *  dejar el Plus que ya se paga). */
-export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfirm, onClose }) {
+export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfirm, onClose,
+                                    beneficios }) {
   const esUpsell = kind === 'pro_upsell'
   const { user } = useAuth()
   return (
@@ -337,12 +340,15 @@ export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfir
               sigue exactamente igual</b>: misma suscripción, misma fecha de renovación, y
               no se te cobra nada extra.
             </p>
-            <ul className="text-sm text-ink-2 space-y-1.5 list-disc pl-5">
-              <li>Chat libre con Rendi AI, sin preguntas guiadas.</li>
-              <li>60 análisis por semana en vez de 6.</li>
-              <li>Brokers ilimitados y los 12 detectores de comportamiento.</li>
-              <li>Memoria: se acuerda de lo que le aclarás entre sesiones.</li>
-            </ul>
+            {/* La lista la arma el backend con los límites. Estaba escrita:
+                "60 análisis por semana en vez de 6" y "los 12 detectores",
+                que el 15/10 (Plus con 2 análisis y los 12 detectores) pasaban
+                a ser falsos contra el plan que la persona ya paga. */}
+            {Array.isArray(beneficios) && beneficios.length > 0 && (
+              <ul className="text-sm text-ink-2 space-y-1.5 list-disc pl-5">
+                {beneficios.map((b, i) => <li key={i}>{b}</li>)}
+              </ul>
+            )}
             <p className="text-xs text-ink-3 leading-relaxed">
               A los {dias} días volvés a tu Plus solo, sin que tengas que hacer nada.
               Se puede usar una sola vez.

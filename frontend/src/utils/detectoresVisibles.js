@@ -6,8 +6,8 @@
 //
 // ⚠️ POR QUÉ NO SE DECIDE POR EL NOMBRE DEL PLAN. La pantalla usaba
 // `hasFullAccess` (tier === 'pro' || 'advisor' || 'admin') para mostrar todas
-// las cartas, y el número sólo para los demás. El 2026-10-15 (`git revert
-// 78f43739`) el Plus pasa a ver los 12: la tabla dice "sin tope" (`null`)
+// las cartas, y el número sólo para los demás. El 2026-10-15 (el cambio
+// de planes: el commit «[15-10]» se revierte) el Plus pasa a ver los 12: la tabla dice "sin tope" (`null`)
 // pero Plus no es 'pro', así que caía en la rama con tope y `null || 1` le
 // mostraba UNA carta — justo al plan cuya promesa nueva es "Rendi entero".
 //

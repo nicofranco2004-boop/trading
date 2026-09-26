@@ -13,7 +13,7 @@ export default function InsightsYReportes() {
       prev={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
       next={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
       metaTitle="Insights y reportes — Guía Rendi"
-      metaDescription="Las 5 cards de Insights, timeline histórico, 12 detectores de comportamiento y export CSV consolidado para AFIP en Rendi."
+      metaDescription="Las 5 cards de Insights, timeline histórico, los 12 detectores de comportamiento y el export CSV consolidado para AFIP en Rendi."
       canonicalPath="/guia/insights-y-reportes"
     >
       <AdvisorNote>
@@ -108,9 +108,13 @@ export default function InsightsYReportes() {
         <li><strong>Loss Aversion</strong>: si vendiste activos ganadores y mantuviste perdedores.</li>
         <li><strong>Anchoring</strong>: si recomprás lo que vendiste mal recientemente.</li>
       </ul>
+      {/* Decía "Free ve 3 detectores. Plus ve 6. Pro ve los 12": escrito a
+          mano, y el 15/10 el Plus pasa a verlos todos. Esta página es pública
+          (no le puede preguntar al backend) y el catálogo no trae ese número:
+          se dice la regla, no la cuenta. */}
       <p>
-        <strong>Free</strong> ve 3 detectores. <strong>Plus</strong> ve 6.{' '}
-        <strong>Pro</strong> ve los 12 disponibles.
+        Cuántos detectores ves depende de tu plan (está en la comparación de
+        planes). <strong>Pro</strong> los ve todos.
       </p>
 
       <h2>Export CSV consolidado</h2>

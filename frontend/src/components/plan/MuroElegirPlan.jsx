@@ -29,6 +29,7 @@ import {
   PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ, PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ,
 } from '../../data/pricing'
 import { PLUS_FEATURES, PRO_FEATURES } from '../../data/planCatalog'
+import { cupoDe } from '../../data/prueba'
 
 // ⚠️ LAS FEATURES NO SE ESCRIBEN ACÁ. Salen de `data/planCatalog.js`, que es la
 // fuente única del producto y la que lee la página de planes.
@@ -48,7 +49,7 @@ import { PLUS_FEATURES, PRO_FEATURES } from '../../data/planCatalog'
 const PLANES = {
   plus: {
     nombre: 'Plus',
-    bajada: 'Hasta 3 brokers y métricas de riesgo',
+    bajada: `Hasta ${cupoDe(PLUS_FEATURES, 'Brokers')} brokers y métricas de riesgo`,
     mensual: PLUS_PRICE_ARS_MONTHLY,
     anualEq: PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ,
     anualTotal: PLUS_PRICE_ARS_ANNUAL,

@@ -43,8 +43,8 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 // quien se registró desde el 22/09/2026 es falso: no tiene plan gratis, queda
 // EN PAUSA hasta que elige. Se lo decíamos durante toda su etapa Plus de la
 // prueba, que es justo cuando tiene que decidir.
-import { alTerminar } from '../data/prueba'
-import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS } from '../data/planCatalog'
+import { alTerminar, vecesMas } from '../data/prueba'
+import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS, FREE_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -974,6 +974,8 @@ function PlanHero({ tier, usage }) {
 
 // PlanHero compacto para Free — KPIs de uso + CTA "Mejorar plan" prominente.
 // La comparativa completa de features vive en /planes (página dedicada).
+const masAnalisisQueFree = vecesMas(PRO_FEATURES, FREE_FEATURES, 'Análisis IA / sem')
+
 function PlanHeroFree({ usage }) {
   const navigate = useNavigate()
   const count = usage?.analyses_count ?? 0
@@ -1000,8 +1002,10 @@ function PlanHeroFree({ usage }) {
           <h2 className="text-base font-semibold text-ink-0 leading-snug">
             Mejorá a Pro y desbloqueá todo
           </h2>
+          {/* Decía "10× más análisis IA" a un Free, que tiene 1: son 60×. El
+              múltiplo sale del catálogo, sólo si la cuenta es exacta. */}
           <p className="text-xs text-ink-2 mt-1">
-            10× más análisis IA, brokers ilimitados, follow-ups y mucho más.
+            {masAnalisisQueFree ? `${masAnalisisQueFree}× más análisis IA` : 'Más análisis IA'}, brokers ilimitados, follow-ups y mucho más.
           </p>
         </div>
 

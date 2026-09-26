@@ -1,8 +1,14 @@
-// ExportCsvButton — botón "Exportar CSV" gateado por plan Pro.
+// ExportCsvButton — botón "Exportar CSV" gateado por plan (`export.csv`).
 // ═══════════════════════════════════════════════════════════════════════════
 // UX:
-//   • Pro/Admin: descarga directa con fetch authorizado, sin redirects.
-//   • Free: el click abre UpgradeModal (no descarga, no llamada de red).
+//   • Con acceso: descarga directa con fetch authorizado, sin redirects.
+//   • Sin acceso: el botón muestra el candado y el click le pregunta al
+//     backend, que responde el 403 con el cartel (`upgrade`) armado con los
+//     límites reales (`billing/plan_textos`). Antes abría el modal SIN pedir
+//     nada, y el modal caía en su lista de repuesto escrita a mano — la del
+//     Pro, con "10× más análisis IA (60/sem vs 6/sem)" y "Distribución por
+//     activo" — para un cartel que ofrece Plus. Un pedido que rebota en el
+//     gate cuesta milisegundos: el gate es lo primero que corre el endpoint.
 //
 // Uso:
 //   <ExportCsvButton resource="operations" label="Exportar a CSV" />
@@ -25,17 +31,13 @@ export default function ExportCsvButton({
 }) {
   const { can, loading: planLoading } = usePlanFeatures()
   const [downloading, setDownloading] = useState(false)
-  const [showUpgrade, setShowUpgrade] = useState(false)
+  // El 403 del backend tal cual: `{ error, upgrade: { target_tier, benefits } }`.
+  const [bloqueo, setBloqueo] = useState(null)
   const hasAccess = can('export.csv')
 
   async function onClick() {
     if (planLoading) return
-    if (!hasAccess) {
-      track('feature_blocked_clicked', { feature: 'export.csv', source: source || `export_${resource}` })
-      setShowUpgrade(true)
-      return
-    }
-    track('export_csv_downloaded', { resource })
+    if (hasAccess) track('export_csv_downloaded', { resource })
     setDownloading(true)
     try {
       // Descargar como blob para forzar el browser a abrir el "guardar como"
@@ -59,9 +61,12 @@ export default function ExportCsvButton({
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch (ex) {
-      // Si el server cambió y devolvió 403 (race con downgrade), abrimos el modal
-      if (ex?.status === 403 && ex?.payload?.detail?.upgrade) {
-        setShowUpgrade(true)
+      // 403 = no está en su plan (o se le venció en el medio): el cartel lo
+      // arma el backend, con la lista de lo que da el plan que ofrece.
+      const detail = ex?.status === 403 ? ex?.payload?.detail : null
+      if (detail?.upgrade) {
+        track('feature_blocked_clicked', { feature: 'export.csv', source: source || `export_${resource}` })
+        setBloqueo(detail)
       } else {
         console.error('Export CSV failed:', ex)
         alert('No pudimos generar el CSV. Probá de nuevo.')
@@ -80,7 +85,7 @@ export default function ExportCsvButton({
         type="button"
         onClick={onClick}
         disabled={downloading || planLoading}
-        title={!hasAccess ? 'Disponible en Rendi Pro' : 'Descargar CSV'}
+        title={!hasAccess ? 'Ver qué plan lo incluye' : 'Descargar CSV'}
         className={`
           inline-flex items-center gap-1.5
           ${isCompact ? 'text-xs px-2.5 py-1.5' : 'text-sm px-3 py-1.5'}
@@ -96,13 +101,14 @@ export default function ExportCsvButton({
         <span>{label}</span>
       </button>
 
-      {showUpgrade && (
+      {bloqueo && (
         <UpgradeModal
-          title="Export CSV disponible en Plus y Pro"
-          message="Descargá tus operaciones, posiciones y resumen mensual en CSV — listo para mandárselo a tu contador."
+          targetTier={bloqueo.upgrade.target_tier}
+          message={bloqueo.error}
           feature="export.csv"
           source={source || `export_${resource}`}
-          onClose={() => setShowUpgrade(false)}
+          benefits={bloqueo.upgrade.benefits}
+          onClose={() => setBloqueo(null)}
         />
       )}
     </>

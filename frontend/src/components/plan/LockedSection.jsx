@@ -3,11 +3,14 @@
 // 3 variantes según el caso:
 //
 //   <LockedSection.Placeholder ... />     ← Card completa bloqueada (Tipo B)
-//                                            ej: Distribución por activo
+//                                            ej: Reportes históricos
 //
 //   <LockedSection.BlurredList items={hiddenItems} ... />
 //                                          ← Lista con items blureados al final (Tipo A)
-//                                            ej: Comportamiento, Insights diagnóstico
+//                                            ej: detectores de Comportamiento
+//
+//   (La distribución por activo y el diagnóstico completo NO van acá: son de
+//   todos los planes, decisión del 2026-09-26.)
 //
 //   <LockedSection.Card variant="last_unlocked" ... />
 //                                          ← Item locked en una lista existente (Tipo B')

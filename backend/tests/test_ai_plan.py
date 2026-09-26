@@ -79,7 +79,6 @@ def test_pro_accesses_most_features_except_coming_soon():
     # Features liberadas
     assert pro["ai.followup"] is True
     assert pro["comportamiento.full"] is True
-    assert pro["insights.distribucion_activo"] is True
     assert pro["reportes.historicos"] is True
     assert pro["export.csv"] is True
     # Features próximamente — NO disponibles aún para Pro
@@ -153,7 +152,8 @@ def test_get_plan_features_free_shape():
     assert out["limits"]["brokers_current"] == 1
     assert out["limits"]["brokers_can_create"] is False
     assert out["limits"]["brokers_grandfather"] is False
-    assert out["limits"]["insights_diagnostic_visible"] == 3
+    # El diagnóstico completo es de todos (decisión 2026-09-26): no hay tope.
+    assert "insights_diagnostic_visible" not in out["limits"]
     assert out["limits"]["behavioral_tags_visible"] == 3
     # Free no tiene acceso a ninguna feature paywallable
     assert all(v is False for v in out["access"].values())
@@ -166,7 +166,7 @@ def test_get_plan_features_admin_shape():
     assert out["limits"]["brokers_max"] is None
     assert out["limits"]["brokers_current"] == 5
     assert out["limits"]["brokers_can_create"] is True
-    assert out["limits"]["insights_diagnostic_visible"] is None
+    assert "insights_diagnostic_visible" not in out["limits"]
     # Admin ve TODO (incluso ai.hub)
     assert all(v is True for v in out["access"].values())
 
@@ -193,12 +193,8 @@ def test_free_limits_stricter_than_pro():
     # brokers_max
     assert free["brokers_max"] is not None
     assert pro["brokers_max"] is None or pro["brokers_max"] > free["brokers_max"]
-    # diagnostic visibility
-    assert free["insights_diagnostic_visible"] is not None
-    assert (
-        pro["insights_diagnostic_visible"] is None
-        or pro["insights_diagnostic_visible"] > free["insights_diagnostic_visible"]
-    )
+    # (El tope de puntos del diagnóstico ya no existe: el diagnóstico completo
+    # es de todos los planes, decisión del 2026-09-26.)
     # behavioral tags
     assert free["behavioral_tags_visible"] is not None
     assert (

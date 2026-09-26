@@ -3,28 +3,35 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Recibe el payload del 403 del backend (con quota + upgrade) y muestra el
 // CTA + beneficios.
+//
+// ⚠️ LA LISTA NO SE ESCRIBE ACÁ. Los beneficios los arma el backend
+// (`billing/plan_textos.cartel`) con los límites que aplica, y llegan en
+// `upgrade.benefits` del 403/429. Este modal tenía una lista "de repuesto"
+// escrita a mano —"10× más análisis IA (60/sem vs 6/sem)", "Distribución por
+// activo"— y NO era un repuesto: el botón de Exportar abría el modal sin lista
+// y se la mostraba a todo Free (son 60×, y la distribución es de todos). Sin
+// lista, el modal muestra el mensaje y el botón, y nada que prometer.
 
 import { Sparkles, Check, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { track } from '../../utils/track'
 import { TrialCta, TrialFinePrint } from './TrialCta'
 
-const DEFAULT_BENEFITS = [
-  'Brokers ilimitados',
-  '10× más análisis IA (60/sem vs 6/sem)',
-  'Comportamiento completo (todas las tags)',
-  'Reportes históricos + Distribución por activo',
-]
+const NOMBRE_DEL_PLAN = { plus: 'Plus', pro: 'Pro' }
 
 export default function UpgradeModal({
-  title = 'Pasate a Rendi Pro',
+  title,
+  // El plan que ofrece el cartel (`upgrade.target_tier`). Da el título por
+  // defecto: el de Exportar decía "Pasate a Rendi Pro" ofreciendo Plus.
+  targetTier = 'pro',
   message,
   feature,
   source = 'upgrade_modal',
   benefits,
   onClose,
 }) {
-  const items = (benefits && benefits.length > 0) ? benefits : DEFAULT_BENEFITS
+  const items = Array.isArray(benefits) ? benefits : []
+  const titulo = title || `Pasate a Rendi ${NOMBRE_DEL_PLAN[targetTier] || 'Pro'}`
   const navigate = useNavigate()
 
   function onUpgradeClick() {
@@ -47,7 +54,7 @@ export default function UpgradeModal({
             <div className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-data-violet/15">
               <Sparkles size={15} strokeWidth={1.75} className="text-data-violet" />
             </div>
-            <h2 className="text-base font-semibold text-ink-0">{title}</h2>
+            <h2 className="text-base font-semibold text-ink-0">{titulo}</h2>
           </div>
           <button
             type="button"
@@ -63,14 +70,16 @@ export default function UpgradeModal({
           <p className="text-sm text-ink-2 leading-relaxed mb-4">{message}</p>
         )}
 
-        <ul className="space-y-2 mb-5">
-          {items.map((b, i) => (
-            <li key={i} className="flex items-start gap-2 text-sm text-ink-1">
-              <Check size={12} strokeWidth={2} className="text-data-violet mt-1 flex-shrink-0" />
-              <span className="leading-snug">{b}</span>
-            </li>
-          ))}
-        </ul>
+        {items.length > 0 && (
+          <ul className="space-y-2 mb-5">
+            {items.map((b, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-ink-1">
+                <Check size={12} strokeWidth={2} className="text-data-violet mt-1 flex-shrink-0" />
+                <span className="leading-snug">{b}</span>
+              </li>
+            ))}
+          </ul>
+        )}
 
         {/* Si nunca usó el trial, probar gratis es un "sí" mucho más fácil
             que pagar — y el que prueba con su cartera cargada convierte mejor.

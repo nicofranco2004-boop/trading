@@ -12,19 +12,12 @@ import { Sparkles, Calendar, Check } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { track } from '../../utils/track'
 
-const DEFAULT_BENEFITS_PRO = [
-  '10× más análisis IA (60/sem vs 6/sem)',
-  'Chat libre con Rendi AI (40 consultas/sem)',
-  'Respuestas con causalidad y memoria persistente',
-  'Brokers ilimitados + comportamiento completo',
-]
-
-const DEFAULT_BENEFITS_PLUS = [
-  '9× más Chat Rendi AI (9 consultas/sem vs 1)',
-  'Hasta 3 brokers (vs 1 en Free)',
-  'Reportes históricos + Export CSV',
-  'Métricas de riesgo desbloqueadas + personalización ilimitada del diagnóstico',
-]
+// ⚠️ LOS BENEFICIOS NO SE ESCRIBEN ACÁ: llegan en `upgrade.benefits` del 429,
+// armados por el backend (`billing/plan_textos.cartel`) con los límites que
+// aplica. Había dos listas "de repuesto" escritas a mano y las dos mentían
+// ("10× más análisis IA (60/sem vs 6/sem)" a un Free, que tiene 1: son 60×;
+// "9 consultas/sem vs 3" cuando el Free tiene 1). Sin lista, la tarjeta
+// muestra el cupo, la fecha y el botón: no hay nada que prometer a ciegas.
 
 function fmtReset(iso) {
   if (!iso) return null
@@ -104,11 +97,8 @@ export default function UpgradePromoCard({
   const currentLabel = TIER_LABEL[currentTier] || 'Free'
   const targetLabel = TIER_LABEL[targetTier] || 'Pro'
 
-  // Benefits: backend > default según target
-  const defaultBenefits = targetTier === 'plus' ? DEFAULT_BENEFITS_PLUS : DEFAULT_BENEFITS_PRO
-  const benefits = (upgrade && upgrade.benefits && upgrade.benefits.length > 0)
-    ? upgrade.benefits
-    : defaultBenefits
+  // Benefits: sólo los del backend (ver arriba).
+  const benefits = Array.isArray(upgrade?.benefits) ? upgrade.benefits : []
 
   const resetsOn = upgrade?.resets_on || usage?.resets_on
   const resetLabel = fmtReset(resetsOn)
@@ -161,10 +151,14 @@ export default function UpgradePromoCard({
         </div>
       )}
 
-      {/* Pitch al target tier */}
+      {/* Pitch al target tier — sólo si el backend mandó qué ofrecer. La frase
+          no promete nada por su cuenta: decía "y chat libre sin restricción"
+          (o "y respuestas más profundas") también cuando ofrecía Plus, que no
+          tiene ninguna de las dos. Lo que da cada plan lo dice la lista. */}
+      {benefits.length > 0 && (
       <div className="pt-3 border-t border-line/40 space-y-2.5">
         <p className="text-xs text-ink-2">
-          {esBloqueoDePlan ? 'Con' : `Para más cuota${isChat ? ' y chat libre sin restricción' : ' y respuestas más profundas'}, pasate a`} <span className="text-data-violet font-medium">Rendi {targetLabel}</span>:
+          {esBloqueoDePlan ? 'Con' : 'Para más cuota, pasate a'} <span className="text-data-violet font-medium">Rendi {targetLabel}</span>:
         </p>
         <ul className="space-y-1.5">
           {benefits.map((b, i) => (
@@ -175,6 +169,7 @@ export default function UpgradePromoCard({
           ))}
         </ul>
       </div>
+      )}
 
       {/* CTA */}
       <button

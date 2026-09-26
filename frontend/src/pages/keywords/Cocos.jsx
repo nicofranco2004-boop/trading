@@ -5,7 +5,8 @@
 // otros brokers (porque Cocos solo muestra Cocos).
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
-import { PASO_CREAR_CUENTA } from '../../data/prueba'
+import { PASO_CREAR_CUENTA, cupoDe } from '../../data/prueba'
+import { PRO_FEATURES } from '../../data/planCatalog'
 
 const FEATURES = [
   {
@@ -30,7 +31,7 @@ const FEATURES = [
   },
   {
     title: 'Rendi AI: preguntale por qué bajó tu cartera',
-    desc: 'Chat IA con contexto completo de tu cartera. "¿Por qué bajó mi mes?", "¿Dónde estoy concentrado?", "¿Cuánto realmente gané en NVDA?". Pro: 40 consultas/sem.',
+    desc: `Chat IA con contexto completo de tu cartera. "¿Por qué bajó mi mes?", "¿Dónde estoy concentrado?", "¿Cuánto realmente gané en NVDA?". Pro: ${cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')} consultas/sem.`,
   },
 ]
 

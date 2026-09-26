@@ -3038,14 +3038,12 @@ export function handleDemoRequest(method, path, body) {
           brokers_current: 3,
           brokers_can_create: true,
           brokers_grandfather: false,
-          insights_diagnostic_visible: null,
           behavioral_tags_visible: null,
         },
         access: {
           'ai.followup': true,
           'ai.hub': false,
           'comportamiento.full': true,
-          'insights.distribucion_activo': true,
           'reportes.historicos': true,
           'export.csv': true,
           'tax.helper': false,
@@ -3371,14 +3369,11 @@ export function handleDemoRequest(method, path, body) {
     if (_demoDiagDismissCount > limit) {
       return { __demoHttpError: { status: 429, payload: { detail: {
         error: 'diag_dismiss_quota_exceeded',
-        message: `Usaste tus ${limit} personalizaciones del diagnóstico de esta semana. Con Plus las descartás sin límite.`,
+        message: `Usaste tus ${limit} personalizaciones del diagnóstico de esta semana.`,
         usage: { tier: 'free', diag_dismiss_count: limit, diag_dismiss_limit: limit, diag_dismiss_remaining: 0 },
-        upgrade: { available: true, current_tier: 'free', target_tier: 'plus', resets_on: null, benefits: [
-          'Personalizá tu diagnóstico sin límite (descartá lo que no te sirve)',
-          'Hasta 3 brokers (vs 1 en Free)',
-          'Reportes históricos + Export CSV',
-          '9× más Chat con Rendi AI',
-        ] },
+        // Sin lista a propósito: la de verdad la arma el backend con los
+        // límites (billing/plan_textos). Una copia acá se queda vieja sola.
+        upgrade: { available: true, current_tier: 'free', target_tier: 'plus', resets_on: null },
       } } } }
     }
     return { ok: true, usage: { tier: 'free', diag_dismiss_count: _demoDiagDismissCount, diag_dismiss_limit: limit, diag_dismiss_remaining: limit - _demoDiagDismissCount } }
