@@ -41,6 +41,7 @@ import re
 import sys
 import unittest
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -51,6 +52,7 @@ if BACKEND not in sys.path:
 
 import main  # noqa: E402
 from ai.plan import PLAN_LIMITS  # noqa: E402
+from ai import quota as _quota  # noqa: E402
 from ai.quota import LIMITS  # noqa: E402
 from billing import emails  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -135,27 +137,73 @@ _NO_SE_PROMETE = {
 }
 
 
+# Los cupos SEMANALES son de la persona (`plan_textos.cupos_del_usuario`); el
+# resto sale siempre de la tabla del plan.
+_CUPO_SEMANAL = {"analisis": "analyses_per_week", "chat": "chat_per_week",
+                 "diagnostico": "diag_dismiss_per_week"}
+
+
+def _real(clave: str, plan: str, cupos=None):
+    """Lo que el plan (o la persona, si vienen sus `cupos`) tiene en `clave`."""
+    if cupos and clave in _CUPO_SEMANAL:
+        return cupos[_CUPO_SEMANAL[clave]]
+    return _LO_QUE_DICE[clave][2](plan)
+
+
+def _mas(a, b) -> bool:
+    """El oráculo del test para "da más": None es sin tope. Escrito acá y no
+    importado de plan_textos, para no certificar la función con ella misma."""
+    if a is None:
+        return b is not None
+    if b is None:
+        return False
+    return a > b
+
+
+def _obligatorias(plan: str, pierde: bool, cupos=None) -> set:
+    """Los cupos que el mail TIENE que nombrar: todos los que el plan da (o,
+    en la lista de pérdida, los que da más que Free). Contra el falso verde:
+    si un renglón desaparece, las comparaciones no tendrían nada que comparar
+    y pasarían igual."""
+    claves = set()
+    for clave in _LO_QUE_DICE:
+        v = _real(clave, plan, cupos)
+        if pierde:
+            if _mas(v, _real(clave, FREE)):
+                claves.add(clave)
+        elif v is None or v > 0:
+            claves.add(clave)
+    return claves
+
+
+def _lo_que_encuentra(texto: str) -> dict:
+    """Por clave: (números que dice, si dice la forma "sin tope")."""
+    return {clave: (re.findall(patron, texto, re.I),
+                    bool(sin_tope and re.search(sin_tope, texto, re.I)))
+            for clave, (patron, sin_tope, _real_) in _LO_QUE_DICE.items()}
+
+
 class _Comparador(unittest.TestCase):
     """Las comparaciones, compartidas por las tres capas."""
 
     def _dice_lo_que_da(self, mail: dict, plan: str, contexto: str, *,
-                        pierde: bool = False,
-                        obligatorias=("analisis", "brokers")):
+                        pierde: bool = False, cupos=None):
         """`pierde`: el mail es la lista de lo que se PIERDE al volver a Free,
-        así que un acceso que Free también tiene no va (no se pierde)."""
+        así que lo que Free también tiene no va (no se pierde).
+        `cupos`: los de la persona, cuando el mail se armó con los suyos."""
         # Cada versión en su subTest: que el texto plano falle no puede tapar
         # lo que diga el HTML (y al revés).
         for version, texto in mail.items():
             with self.subTest(contexto=contexto, version=version):
                 self._dice_lo_que_da_en(texto, plan, f"{contexto} ({version})",
-                                        pierde=pierde, obligatorias=obligatorias)
+                                        pierde=pierde, cupos=cupos)
 
-    def _dice_lo_que_da_en(self, texto, plan, contexto, *, pierde, obligatorias):
+    def _dice_lo_que_da_en(self, texto, plan, contexto, *, pierde, cupos):
         # Primero lo que MIENTE, que es lo que importa leer si esto se pone rojo.
         self._no_miente(texto, plan, contexto)
         vistos = set()
-        for clave, (patron, sin_tope, real) in _LO_QUE_DICE.items():
-            esperado = real(plan)
+        for clave, (patron, sin_tope, _tabla) in _LO_QUE_DICE.items():
+            esperado = _real(clave, plan, cupos)
             for m in re.finditer(patron, texto, re.I):
                 vistos.add(clave)
                 self.assertEqual(
@@ -176,12 +224,10 @@ class _Comparador(unittest.TestCase):
                 frase in texto, tiene,
                 f"{contexto}: «{frase}» {'falta' if tiene else 'aparece'} y el plan "
                 f"{plan} {'lo' if tiene else 'no lo'} tiene ({feature})")
-        # Contra el falso verde: un mail que dejó de nombrar los cupos pasaría
-        # todas las comparaciones de arriba sin comparar nada.
-        for clave in obligatorias:
-            self.assertIn(clave, vistos,
-                          f"{contexto}: el mail no dice su cupo de «{clave}» — "
-                          f"revisar el patrón o el texto\n{texto}")
+        faltan = _obligatorias(plan, pierde, cupos) - vistos
+        self.assertFalse(
+            faltan, f"{contexto}: el mail no nombra {sorted(faltan)}, que el plan "
+                    f"{plan} tiene — revisar el patrón o el texto\n{texto}")
 
     def _dice_lo_que_queda(self, mail: dict, plan: str, contexto: str):
         for version, texto in mail.items():
@@ -229,6 +275,56 @@ def _mails_a(send, email, marca):
     El job diario recorre TODA la base, así que se filtra por destinatario."""
     return [c for c in send.call_args_list
             if c.args and c.args[0] == email and marca in str(c.args[1])]
+
+
+@contextmanager
+def _con_cupo_propio(uid, analisis):
+    """Que `get_current_usage` —lo que la app le muestra a esa persona como su
+    cupo— le dé otro número de análisis que el de su plan. Hoy eso pasa sólo
+    así, parcheado; desde el 15/10 pasa de verdad con los que ya pagaban Plus
+    (`quota.limites_del_usuario`)."""
+    real = _quota.get_current_usage
+
+    def falso(conn, user_id, tier_override=None):
+        uso = real(conn, user_id, tier_override=tier_override)
+        return {**uso, "analyses_limit": analisis} if user_id == uid else uso
+
+    with patch.object(_quota, "get_current_usage", falso):
+        yield
+
+
+def _alta_rebill(client, uid, plan):
+    """El alta por Rebill entera: la fila pendiente de /subscribe + el webhook."""
+    conn = main.get_db()
+    conn.execute(
+        """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
+               period, status, amount_ars, created_at, updated_at)
+           VALUES (?, ?, ?, 'monthly', 'pending', 0, datetime('now'), datetime('now'))""",
+        (uid, f"link-{uuid.uuid4().hex[:8]}", f"rendi-{uid}-{plan}-monthly"))
+    conn.commit()
+    conn.close()
+    payload = {
+        "webhook": {"event": "subscription.created"},
+        "data": {
+            "subscription": {
+                "id": f"sub_{uuid.uuid4().hex[:10]}", "status": "active",
+                "nextChargeDate": "2026-10-08",
+                "metadata": {"rendi_user_id": str(uid), "rendi_plan": plan,
+                             "rendi_period": "monthly"},
+            },
+            "payment": {"id": f"pay_{uuid.uuid4().hex[:8]}", "amount": 12100},
+        },
+    }
+    return client.post("/api/billing/rebill-webhook", json=payload)
+
+
+def _correr_el_job():
+    from billing import subscriptions
+    conn = main.get_db()
+    try:
+        subscriptions.run_lifecycle_job(conn)
+    finally:
+        conn.close()
 
 
 class PorElCaminoDeProduccion(_Comparador):
@@ -370,12 +466,118 @@ class PorElCaminoDeProduccion(_Comparador):
         self._dice_lo_que_queda(mail, "advisor", "vencimiento asesor")
 
 
+    def test_los_cuatro_caminos_dicen_el_cupo_de_la_persona(self):
+        """Bienvenida, regalo y los dos avisos de vencimiento se arman con los
+        cupos de ESA persona (`plan_textos.cupos_del_usuario`), no con los del
+        plan. El 41 no es el cupo de ningún plan: si aparece, lo leyó."""
+        propio, free = 41, LIMITS[FREE]["analyses_per_week"]
+        conn = main.get_db()
+        admin = _mk_user(conn, f"admin-{uuid.uuid4().hex[:10]}@rendi.test", is_admin=1)
+        conn.commit()
+        conn.close()
+        h = {"Authorization": f"Bearer {main.create_token(admin)}"}
+
+        def nueva(tier=None):
+            conn = main.get_db()
+            email = f"propio-{uuid.uuid4().hex[:10]}@rendi.test"
+            uid = _mk_user(conn, email, tier=tier)
+            conn.commit()
+            conn.close()
+            return uid, email
+
+        with self.subTest(camino="bienvenida (webhook de Rebill)"):
+            uid, email = nueva()
+            with _con_cupo_propio(uid, propio), \
+                 patch.object(emails, "_send", return_value=True) as send:
+                self.assertEqual(_alta_rebill(self.client, uid, "plus").status_code, 200)
+            (mail,) = _mails_a(send, email, "Bienvenido")
+            self.assertIn(f"{propio} análisis IA por semana", _versiones(mail)["texto"])
+
+        with self.subTest(camino="regalo (grant-comp)"):
+            uid, email = nueva(tier="free")
+            with _con_cupo_propio(uid, propio), \
+                 patch.object(main, "_notify_plan_change", return_value=None), \
+                 patch.object(emails, "_send", return_value=True) as send:
+                r = self.client.post("/api/admin/billing/grant-comp", headers=h,
+                                     params={"email": email, "plan": "plus", "days": 30})
+            self.assertEqual(r.status_code, 200, r.text)
+            (mail,) = _mails_a(send, email, "de regalo")
+            self.assertIn(f"{propio} análisis IA por semana", _versiones(mail)["texto"])
+
+        with self.subTest(camino="vencimiento de la suscripción cancelada"):
+            uid, email = nueva(tier="plus")
+            conn = main.get_db()
+            conn.execute(
+                """INSERT INTO subscriptions (user_id, mp_subscription_id,
+                       external_reference, period, status, amount_ars, current_period_end)
+                   VALUES (?, ?, 'rendi-x-monthly', 'monthly', 'cancelled', 5990, ?)""",
+                (uid, f"sub-{uuid.uuid4().hex[:10]}",
+                 (datetime.utcnow() + timedelta(days=2)).isoformat()))
+            conn.commit()
+            conn.close()
+            with _con_cupo_propio(uid, propio), \
+                 patch.object(emails, "_send", return_value=True) as send:
+                _correr_el_job()
+            (mail,) = _mails_a(send, email, "vence en")
+            self.assertIn(f"{propio} análisis IA por semana (vas a quedar con {free})",
+                          _versiones(mail)["texto"])
+
+        with self.subTest(camino="vencimiento del crédito, sin plan anotado"):
+            # Sin `credit_anchor_plan` el aviso caía a "Pro" aunque la persona
+            # tuviera Plus: ahora nombra el plan que tiene puesto.
+            uid, email = nueva(tier="plus")
+            conn = main.get_db()
+            conn.execute("UPDATE users SET credit_active_until = ? WHERE id = ?",
+                         ((datetime.utcnow() + timedelta(days=2)).isoformat(), uid))
+            conn.execute(
+                """INSERT INTO subscriptions (user_id, mp_subscription_id,
+                       external_reference, period, status, amount_ars)
+                   VALUES (?, ?, 'rendi-x-monthly', 'monthly', 'cancelled', 0)""",
+                (uid, f"sub-{uuid.uuid4().hex[:10]}"))
+            conn.commit()
+            conn.close()
+            with _con_cupo_propio(uid, propio), \
+                 patch.object(emails, "_send", return_value=True) as send:
+                _correr_el_job()
+            (mail,) = _mails_a(send, email, "vence en")
+            self.assertIn("Plus", mail.args[1])
+            self.assertNotIn("Pro", mail.args[1])
+            self.assertIn(f"{propio} análisis IA por semana (vas a quedar con {free})",
+                          _versiones(mail)["texto"])
+
+    @unittest.skipUnless(hasattr(_quota, "limites_del_usuario"),
+                         "se activa sola con el revert de 78f43739 (2026-10-15)")
+    def test_el_plus_que_ya_pagaba_lee_su_cupo_de_antes(self):
+        """Desde el 15/10 a los que ya pagaban Plus se les respeta el cupo viejo
+        de análisis. Si cancelan con la suba de precio, el aviso tiene que
+        decir SU número, no el del plan nuevo."""
+        conn = main.get_db()
+        email = f"legacy-{uuid.uuid4().hex[:10]}@rendi.test"
+        uid = _mk_user(conn, email, tier="plus")
+        conn.execute("UPDATE users SET quota_plus_legacy = 1 WHERE id = ?", (uid,))
+        conn.execute(
+            """INSERT INTO subscriptions (user_id, mp_subscription_id,
+                   external_reference, period, status, amount_ars, current_period_end)
+               VALUES (?, ?, 'rendi-x-monthly', 'monthly', 'cancelled', 5990, ?)""",
+            (uid, f"sub-{uuid.uuid4().hex[:10]}",
+             (datetime.utcnow() + timedelta(days=2)).isoformat()))
+        conn.commit()
+        conn.close()
+        with patch.object(emails, "_send", return_value=True) as send:
+            _correr_el_job()
+        (mail,) = _mails_a(send, email, "vence en")
+        viejo, free = _quota.ANALISIS_PLUS_ANTES_DEL_CAMBIO, LIMITS[FREE]["analyses_per_week"]
+        self.assertIn(f"{viejo} análisis IA por semana (vas a quedar con {free})",
+                      _versiones(mail)["texto"])
+
+
 # ─── Capa 2: cada mail, cada plan, contra su límite ─────────────────────────
 
 def _mandar(funcion, **kwargs) -> dict:
     with patch.object(emails, "_send", return_value=True) as send:
         funcion(to="ana@rendi.test", user_name="Ana", **kwargs)
-    assert send.call_count == 1, f"{funcion.__name__} no mandó un mail"
+    if send.call_count != 1:
+        raise AssertionError(f"{funcion.__name__} mandó {send.call_count} mails, no 1")
     return _versiones(send.call_args)
 
 
@@ -433,11 +635,25 @@ class CadaMailContraSuLimite(_Comparador):
             for nombre, mail in (("bienvenida", _bienvenida(plan)),
                                  ("vencimiento", _vencimiento(plan))):
                 with self.subTest(mail=nombre, plan=plan):
-                    for clave, (patron, sin_tope, _real) in _LO_QUE_DICE.items():
-                        self.assertEqual(
-                            re.findall(patron, mail["html"]),
-                            re.findall(patron, mail["texto"]),
-                            f"{nombre} {plan}: «{clave}» distinto en HTML y texto")
+                    html_, texto = (_lo_que_encuentra(mail["html"]),
+                                    _lo_que_encuentra(mail["texto"]))
+                    self.assertEqual(html_, texto,
+                                     f"{nombre} {plan}: HTML y texto dicen distinto")
+                    # Contra el falso verde: [] == [] también es "igual".
+                    pierde = nombre == "vencimiento"
+                    for clave in _obligatorias(plan, pierde):
+                        numeros, sin_tope = texto[clave]
+                        self.assertTrue(numeros or sin_tope,
+                                        f"{nombre} {plan}: no dice «{clave}»")
+                    for frase in _ACCESOS:
+                        self.assertEqual(frase in mail["html"], frase in mail["texto"],
+                                         f"{nombre} {plan}: «{frase}» en uno solo")
+
+    def test_el_chat_sin_chat_libre_dice_que_son_preguntas_guiadas(self):
+        """Plus no tiene chat libre (main.py, `is_premium`): "9 consultas" a
+        secas se lee como "preguntale lo que quieras", y no es así."""
+        self.assertIn("con preguntas guiadas", _bienvenida("plus")["texto"])
+        self.assertNotIn("con preguntas guiadas", _bienvenida("pro")["texto"])
 
     def test_a_quien_nacio_sin_plan_gratis_no_le_lista_nada(self):
         """No vuelve a Free: queda en pausa. La lista de pérdida, con sus
@@ -469,6 +685,17 @@ class LaTablaNoSeContradice(unittest.TestCase):
                     f"{plan}: behavioral_tags_visible="
                     f"{limites['behavioral_tags_visible']} y comportamiento.full="
                     f"{limites['can_access'].get('comportamiento.full')} se contradicen")
+
+
+    def test_el_chat_libre_se_nombra_en_los_planes_que_lo_tienen(self):
+        """plan_textos dice "quién tiene chat libre" en dos lugares: `_PREMIUM`
+        (la aclaración de las preguntas guiadas) y el renglón "Chat libre" de
+        lo que se pierde. Si alguien cambia uno sin el otro, el mismo mail diría
+        las dos cosas. La regla de fondo es `is_premium` en main.py."""
+        from billing import plan_textos
+        nombran = {p for p, renglones in plan_textos._SIN_NUMEROS_AL_PERDER.items()
+                   if any("Chat libre" in r for r in renglones)}
+        self.assertEqual(nombran, set(plan_textos._PREMIUM))
 
 
 # ─── Capa 3: con límites inventados ─────────────────────────────────────────
@@ -543,6 +770,37 @@ class ConLimitesInventados(_Comparador):
         mail = _mandar(emails.send_trial_ending_soon, days_left=2)
         for version, texto in mail.items():
             self.assertIn("vuelve a Free: 2 análisis por semana", texto, version)
+
+
+class ConUnPlanQueCambiaDeForma(_Comparador):
+    """Los números inventados de arriba no cubren lo que hace el 15/10: cupos
+    que pasan a "sin tope" y accesos sí/no que cambian. Acá se da vuelta todo
+    eso en el Plus, con valores que no son los de ningún día real."""
+
+    def setUp(self):
+        for parche in (
+            patch.dict(PLAN_LIMITS["plus"], {"behavioral_tags_visible": None,
+                                             "alerts_max": None}),
+            patch.dict(PLAN_LIMITS["plus"]["can_access"], {"export.csv": False,
+                                                           "ai.followup": True,
+                                                           "comportamiento.full": True}),
+            patch.dict(LIMITS["plus"], {"analyses_per_week": 5,
+                                        "diag_dismiss_per_week": 7}),
+        ):
+            parche.start()
+            self.addCleanup(parche.stop)
+
+    def test_los_mails_acompanan(self):
+        self._dice_lo_que_da(_bienvenida("plus"), "plus", "bienvenida plus")
+        mail = _vencimiento("plus")
+        self._dice_lo_que_da(mail, "plus", "vencimiento plus", pierde=True)
+        self._dice_lo_que_queda(mail, "plus", "vencimiento plus")
+        texto = mail["texto"]
+        self.assertIn("Todos los detectores de comportamiento (vas a quedar con", texto)
+        self.assertIn("Alertas sin tope", texto)
+        self.assertIn("Follow-ups", texto)
+        self.assertNotIn("Export CSV", texto)
+        self.assertIn("Personalizar el diagnóstico 7 veces por semana", texto)
 
 
 if __name__ == "__main__":

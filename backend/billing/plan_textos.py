@@ -36,7 +36,8 @@ Si alguno de los dos vuelve a aplicarse, se suma acá.
 Lo que no es un número (el chat libre, las respuestas con causalidad, el panel
 del asesor) no está en esas tablas: el chat libre y el modo research-note se
 deciden por tier en `main.py` (`is_premium`), y el panel del asesor en
-`_require_advisor`. Va escrito a mano en `_SIN_NUMEROS`, y ahí no hay cifras.
+`_require_advisor`. Va escrito a mano en `_SIN_NUMEROS` (y `_PREMIUM` dice
+quién tiene chat libre), y ahí no hay cifras.
 
 Formato: cada renglón es un string con el tramo a resaltar entre `**`. El HTML
 lo vuelve <b> y el texto plano lo saca, así las dos versiones del mail dicen lo
@@ -138,9 +139,10 @@ def _da_mas(a, b) -> bool:
     return a > b
 
 
-def _frase(clave: str, v, plan: str) -> Optional[str]:
+def _frase(clave: str, v, plan: Optional[str] = None) -> Optional[str]:
     """El renglón que describe `v` (lo que `plan` da en `clave`), o None si
-    con eso no hay nada que decir (un cupo en 0, un acceso que no está)."""
+    con eso no hay nada que decir (un cupo en 0, un acceso que no está).
+    Sin `plan` no se agrega la aclaración de las preguntas guiadas."""
     if clave == "analisis":
         return f"**{v} análisis IA** por semana" if v else None
     if clave == "chat":
@@ -149,7 +151,9 @@ def _frase(clave: str, v, plan: str) -> Optional[str]:
         cuantas = f"**{_n(v, 'consulta', 'consultas')} por semana** a Rendi AI"
         # Sin chat libre, esas consultas son sólo las preguntas guiadas: sin
         # aclararlo, "9 consultas" se lee como "preguntale lo que quieras".
-        return cuantas if plan in _PREMIUM else f"{cuantas} con preguntas guiadas"
+        if plan is None or plan in _PREMIUM:
+            return cuantas
+        return f"{cuantas} con preguntas guiadas"
     if clave == "followups":
         return "**Follow-ups**: repreguntás sobre cualquier análisis" if v else None
     if clave == "brokers":
@@ -259,24 +263,30 @@ def _orden(plan: str) -> tuple:
 
 # ─── Las dos listas ─────────────────────────────────────────────────────────
 
-def incluye(plan: str) -> list[str]:
-    """Todo lo que el plan da. Para los mails de bienvenida y de regalo."""
+def incluye(plan: str, cupos: Optional[dict] = None) -> list[str]:
+    """Todo lo que el plan da. Para los mails de bienvenida y de regalo.
+    `cupos`: los de la persona (`cupos_del_usuario`), si difieren del plan."""
     renglones = list(_SIN_NUMEROS.get(plan, ()))
     if plan == "advisor":
         return renglones
     for clave in _orden(plan):
-        frase = _frase(clave, _valor(clave, plan), plan)
+        frase = _frase(clave, _valor(clave, plan, cupos), plan)
         if frase:
             renglones.append(frase)
     return renglones
 
 
-def se_pierde(plan: str, destino: str = PLAN_AL_VENCER) -> list[str]:
-    """Lo que `plan` da y `destino` no, con lo que queda entre paréntesis.
-    Para el aviso de vencimiento de quien vuelve a Free."""
+def se_pierde(plan: str, cupos: Optional[dict] = None) -> list[str]:
+    """Lo que `plan` da y Free no, con lo que queda entre paréntesis. Para el
+    aviso de vencimiento de quien vuelve a Free. `cupos`: los de la persona
+    (`cupos_del_usuario`), si difieren del plan.
+
+    No recibe "a qué plan cae": los paréntesis dicen "en Free" y aceptar otro
+    destino era prometer una cuenta que el texto no hacía."""
     renglones = list(_SIN_NUMEROS_AL_PERDER.get(plan, ()))
     for clave in _orden(plan):
-        tiene, queda = _valor(clave, plan), _valor(clave, destino)
+        tiene = _valor(clave, plan, cupos)
+        queda = _valor(clave, PLAN_AL_VENCER)
         if not _da_mas(tiene, queda):
             continue
         frase = _frase(clave, tiene, plan)

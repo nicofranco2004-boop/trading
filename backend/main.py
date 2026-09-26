@@ -22095,6 +22095,7 @@ def admin_billing_grant_comp(
         requiere_plan = _grant_trial._requiere_plan(conn, target_uid)
         try:
             from billing import emails as _grant_emails
+            from billing import plan_textos as _grant_textos
             _grant_emails.send_gifted_plan(
                 to=urow["email"],
                 user_name=urow["name"],
@@ -22102,6 +22103,8 @@ def admin_billing_grant_comp(
                 days=days,
                 active_until=after_iso,
                 requiere_plan=requiere_plan,
+                # Los cupos de ESTA persona: ver plan_textos.cupos_del_usuario.
+                cupos=_grant_textos.cupos_del_usuario(conn, target_uid, plan),
             )
         except Exception as _gift_ex:
             log.warning("gifted-plan email falló para %s: %s", urow["email"], _gift_ex)
@@ -29998,6 +30001,7 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
     if row["welcome_email_sent_at"]:
         return  # ya enviamos
     try:
+        from billing import plan_textos as _plan_textos
         sent = emails.send_welcome_pro(
             to=row["email"],
             user_name=(row["name"] or row["email"].split("@")[0]),
@@ -30005,6 +30009,9 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
             amount_ars=row["amount_ars"],
             next_charge_date=mp_state.get("next_payment_date"),
             plan=plan,
+            # Los cupos de ESTA persona (desde el 15/10, a los que ya pagaban
+            # Plus se les respeta el cupo viejo): ver plan_textos.cupos_del_usuario.
+            cupos=_plan_textos.cupos_del_usuario(conn, user_id, plan),
         )
         if sent or not emails.can_deliver(row["email"]):
             # Marcamos como enviado igual en modo "no configurado" (log-only)
