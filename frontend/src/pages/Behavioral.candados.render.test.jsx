@@ -72,6 +72,6 @@ describe('Comportamiento — cada candado ofrece el plan que la destraba', () =>
 
   it('el pie no promete la IA del Pro cuando ofrece Plus', async () => {
     const c = await candados({ tope: 3, planes: [plan('plus', null), plan('pro', null)] })
-    expect(c.html).not.toMatch(/recomendaciones del Coach/)
+    expect(c.html).not.toMatch(/recomendaciones/)
   })
 })
