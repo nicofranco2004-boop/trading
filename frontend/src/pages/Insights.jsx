@@ -336,6 +336,15 @@ function InsightsDesktop({ _embeddedTab }) {
   // orden (medido: 70.983 en una cartera de 16.595) durante un render, con su
   // fetch y su curva mal cerrada hasta la respuesta siguiente.
   const liveKeyPerf = loading ? 0 : Math.round(liveUsdPerf || 0)
+  // Lo que el ✦ necesita para medir la caída IGUAL que esta pantalla: la moneda
+  // del selector y el valor de ahora con el que cierra la curva. El servidor usa
+  // el mismo motor y la misma llamada que `/insights/performance`
+  // (backend/ai/builders/caida_medida.py); sin esto, en pesos o a media rueda la
+  // IA decía otro número que la tarjeta.
+  const paramsCaidaIA = {
+    moneda: _monedaVista,
+    valor_live: liveKeyPerf > 0 ? liveKeyPerf : null,
+  }
 
   // El benchmark se recorta al rango del usuario EN EL BACKEND, así que cambiar
   // el selector es una consulta nueva — no un re-slice de una serie ya traída.
@@ -2704,7 +2713,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <div className="flex items-center gap-2 flex-wrap">
             <AnalyzeButton
               screen="insights"
-              params={{ window_days: 365 }}
+              params={{ window_days: 365, ...paramsCaidaIA }}
               subtitle="Tu performance del último año"
             />
           </div>
@@ -3378,7 +3387,7 @@ function InsightsDesktop({ _embeddedTab }) {
       {showDrawdown && (
       <AskAIAbout
         topic="insights.drawdown"
-        params={{ window_days: 365 }}
+        params={paramsCaidaIA}
         subtitle="Drawdown de la cartera"
       >
       <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">

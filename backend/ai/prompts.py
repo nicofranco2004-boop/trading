@@ -1118,9 +1118,13 @@ def render_insights_evolution_prompt(tier: str = "pro") -> str:
 def render_insights_drawdown_prompt(tier: str = "pro") -> str:
     view = "Perfil de drawdown del Insights — riesgo histórico"
     pkt = (
-        "current_pct (caída actual desde peak), max_pct (peor caída del "
-        "período), days_since_peak, peak/trough values, dd_events (top 5 "
-        "> -5% con start/end/depth/duration), recovered (bool)."
+        "Caídas MEDIDAS COMO RENDIMIENTO (un depósito o un retiro no es una subida "
+        "ni una caída), los mismos números que la tarjeta de la pantalla: "
+        "current_pct (caída actual desde el máximo), max_pct (peor caída de la "
+        "historia medida, desde medido_desde), max_date / max_peak_date (fondo y "
+        "pico de esa caída), days_since_peak, recovered (bool), worst_event y "
+        "dd_events (top 5 > -5% con start/trough/end, depth, duration_days del "
+        "pico a la salida, recovery_days del fondo a la salida), moneda."
     )
     free = _maybe_free("insights.drawdown", view, pkt, tier)
     if free:

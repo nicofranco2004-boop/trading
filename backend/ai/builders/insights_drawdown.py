@@ -1,173 +1,62 @@
 """builders.insights_drawdown — packet de drawdown / riesgo del Insights.
 ═══════════════════════════════════════════════════════════════════════════
-Topic: insights.drawdown
+Topic: insights.drawdown — el ✦ de la tarjeta "Curva de drawdown" de Métricas:
+"¿Cuál fue mi peor caída y cuánto tardé en recuperarla?".
 
-Sub-componente del Insights — análisis específico del riesgo: caídas
-desde peak, profundidad histórica, tiempo de recovery, número de
-drawdown events superiores a un umbral.
+Caídas desde el máximo, la peor de la historia medida, cuánto tardó en
+recuperarse cada una. TODO MEDIDO COMO RENDIMIENTO (`caida_medida`, sobre
+`twr.curva_indexada`): un retiro no es una caída ni un depósito una subida. Son
+los mismos "Actual" y "Máx histórico" que muestra la tarjeta.
 
-Shape (~600 bytes):
+⚠️ Hasta 2026-09 esto se medía sobre el VALOR de la cartera: sacar la mitad de
+la plata con el mercado quieto era "una caída del 50 %". Ver la cabecera de
+`caida_medida.py`.
+
+Params (los manda AskAIAbout desde Insights.jsx):
+    moneda      — 'usd' | 'ars', la del selector de la pantalla
+    valor_live  — la cartera de ahora en USD, la misma que cierra la curva
+    window_days — lo mandaban versiones anteriores de la página; se ignora: la
+                  tarjeta mide toda la historia ("Máx histórico"), y el paquete
+                  declara la ventana real en `medido_desde`/`medido_hasta`.
+
+Shape (~700 bytes):
 {
   "screen": "insights.drawdown",
-  "window_days": int,
-  "current_pct": float,         # caída actual desde peak (0 si estamos en peak)
-  "max_pct": float,             # peor caída del período
+  "que_es": str,
+  "moneda": "usd" | "ars",
+  "medido_desde": str | null, "medido_hasta": str | null,
+  "incluye_hoy": bool,          # la curva cierra con la cartera de ahora
+  "current_pct": float | null,  # caída actual desde el máximo (0 = en el máximo)
+  "max_pct": float | null,      # peor caída de la historia medida
+  "max_date": str | null,       # el fondo de la peor caída
+  "max_peak_date": str | null,  # el pico desde el que cayó
   "days_since_peak": int | null,
-  "peak_value": float | null,
-  "trough_value": float | null,
-  "dd_events": [                # eventos > -5%
-    { "start_date": str, "end_date": str, "depth_pct": float, "duration_days": int }
+  "recovered": bool | null,     # ¿volvió al pico después de la peor caída?
+  "worst_event": {...} | null,  # la peor caída, con la forma de dd_events
+  "dd_events": [                # caídas de más de 5 %, las 5 más profundas
+    { "start_date", "trough_date", "end_date" | null, "depth_pct",
+      "duration_days", "recovery_days" | null }
   ],
   "events_count": int,
-  "recovered": bool,            # True si después del worst trough volvió al peak
+  "insufficient_data": true, "reason": str,   # sólo si no se puede medir
 }
 """
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
-from datetime import date, datetime, timedelta
 
+from typing import Any, Dict
 
-_DD_THRESHOLD = -5.0  # % — eventos de drawdown reportables
-
-
-def _parse_date(s) -> Optional[date]:
-    try:
-        return datetime.fromisoformat(str(s)[:10]).date()
-    except (TypeError, ValueError):
-        return None
+from . import caida_medida
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
-    window_days = int(kwargs.get("window_days", 365))
-    today = date.today()
-    cutoff = today - timedelta(days=window_days)
-
-    # ⚠️ NO se leen los snapshots crudos. La tabla mezcla mediciones reales del
-    # cron con fotos que el import FABRICA copiando la cadena contable
-    # (persister.py:1289-1292): esas no bajan con el mercado, asi que fijan
-    # picos que nunca existieron y el drawdown sale de la brecha entre dos
-    # formas de medir. `twr.serie_medible` deja solo lo que esta en base de
-    # mercado (medido por el cron o reconstruido a precio real).
-    import twr as _twr
-    _serie = _twr.serie_medible(conn, user_id)
-    # ⚠️ Y TAMPOCO se aplana la serie ignorando los TRAMOS. `serie_medible` la
-    # parte donde hubo más de `max_hueco_dias` de silencio; aplanando los puntos,
-    # el pico sale de un tramo y el fondo del otro, o sea el packet le afirma al
-    # modelo el derrumbe que ocurrió ADENTRO del hueco — el mismo que
-    # `curva_indexada` se niega a publicar por escrito y que la pantalla muestra
-    # como "—". Se usa SÓLO el tramo que produjo retorno; si hay más de uno, no
-    # hay drawdown afirmable.
-    _curva = _twr.curva_indexada(conn, user_id)
-    _tramos_con_legs = [t for t in _curva["tramos_detalle"] if t["legs"] > 0]
-    if len(_tramos_con_legs) == 1:
-        _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
-        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
-                                       if _d0 <= p["date"] <= _d1])
-    elif len(_tramos_con_legs) != 0:
-        # El motivo lo pone el motor: un hueco y una foto que no cierra
-        # (`medicion_dudosa`) parten la serie igual pero no se explican igual.
-        _serie = dict(_serie, medibles=[],
-                     motivo_texto=(_curva.get("motivo_texto")
-                                   or _twr.MOTIVO_TEXTO.get("serie_partida")))
-    snaps = [{"date": p["date"], "total_value": p["value"]} for p in _serie["medibles"]]
-    window = [
-        s for s in snaps
-        if _parse_date(s["date"]) and _parse_date(s["date"]) >= cutoff
-        and s["total_value"] is not None
-    ]
-
-    if len(window) < 2:
-        # ⚠️ None, NO 0.0. Un 0,0% con `recovered: True` le afirma al LLM "nunca
-        # caíste, estás en tu máximo" sobre una cuenta que fue de 150.000 a 60.000
-        # y de la que simplemente no hay mediciones suficientes. Es el mismo
-        # defecto que el frontend ya cierra mostrando "—".
-        return {
-            "screen": "insights.drawdown",
-            "window_days": window_days,
-            "current_pct": None,
-            "max_pct": None,
-            "days_since_peak": None,
-            "peak_value": None,
-            "trough_value": None,
-            "dd_events": [],
-            "events_count": 0,
-            "recovered": None,
-            "insufficient_data": True,
-            "reason": (_serie.get("motivo_texto")
-                       or "No hay mediciones a mercado suficientes para medir el drawdown."),
-        }
-
-    values = [(s["date"], float(s["total_value"] or 0)) for s in window]
-    peak = values[0][1]
-    peak_idx = 0
-    max_dd = 0.0
-    trough_value = peak
-
-    # Eventos de DD: tracking de start/end cuando cruzamos el threshold
-    events: List[Dict[str, Any]] = []
-    in_event = False
-    event_peak = peak
-    event_peak_date = values[0][0]
-    event_trough = peak
-
-    for i, (d, v) in enumerate(values):
-        if v > peak:
-            peak = v
-            peak_idx = i
-        dd_pct = ((v - peak) / peak * 100) if peak > 0 else 0
-        if dd_pct < max_dd:
-            max_dd = dd_pct
-            trough_value = v
-
-        # Event tracking
-        if not in_event:
-            if dd_pct <= _DD_THRESHOLD:
-                in_event = True
-                event_peak = peak
-                event_peak_date = values[peak_idx][0]
-                event_trough = v
-        else:
-            if v < event_trough:
-                event_trough = v
-            if v >= event_peak:
-                # Recovered → close event
-                depth = ((event_trough - event_peak) / event_peak * 100) if event_peak > 0 else 0
-                start_d = _parse_date(event_peak_date)
-                end_d = _parse_date(d)
-                duration = (end_d - start_d).days if (start_d and end_d) else None
-                events.append({
-                    "start_date": str(event_peak_date),
-                    "end_date": str(d),
-                    "depth_pct": round(depth, 2),
-                    "duration_days": duration,
-                })
-                in_event = False
-
-    # Si quedó un evento abierto al cierre, lo agregamos (sin end)
-    if in_event:
-        depth = ((event_trough - event_peak) / event_peak * 100) if event_peak > 0 else 0
-        start_d = _parse_date(event_peak_date)
-        events.append({
-            "start_date": str(event_peak_date),
-            "end_date": None,
-            "depth_pct": round(depth, 2),
-            "duration_days": (today - start_d).days if start_d else None,
-        })
-
-    current_value = values[-1][1]
-    current_dd = ((current_value - peak) / peak * 100) if peak > 0 else 0
-    days_since_peak = (len(values) - 1) - peak_idx
-
+    m = caida_medida.medir(conn, user_id, moneda=kwargs.get("moneda"),
+                           valor_live=kwargs.get("valor_live"))
+    episodios = m.pop("episodios")
+    eventos = [e for e in episodios if e["depth_pct"] <= caida_medida.UMBRAL_EVENTO_PCT]
     return {
         "screen": "insights.drawdown",
-        "window_days": window_days,
-        "current_pct": round(current_dd, 2),
-        "max_pct": round(max_dd, 2),
-        "days_since_peak": days_since_peak,
-        "peak_value": round(peak, 2),
-        "trough_value": round(trough_value, 2),
+        **m,
         # Cap a los 5 eventos más profundos para no inflar
-        "dd_events": sorted(events, key=lambda e: e["depth_pct"])[:5],
-        "events_count": len(events),
-        "recovered": (current_dd > -1.0),
+        "dd_events": sorted(eventos, key=lambda e: e["depth_pct"])[:5],
+        "events_count": len(eventos),
     }

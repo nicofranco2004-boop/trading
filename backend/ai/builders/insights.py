@@ -51,9 +51,12 @@ Shape:
                                          # dólares y restarle inflación argentina
                                          # no significa nada.
   },
-  "drawdown": {
-    "current_pct": float,           # caída actual desde peak
-    "max_pct": float,                # peor caída del período
+  "drawdown": {                     # MEDIDO COMO RENDIMIENTO (ver `_drawdown`)
+    "que_es": str, "moneda": "usd" | "ars",
+    "medido_desde": str | null, "medido_hasta": str | null,
+    "current_pct": float | null,     # caída actual desde el máximo
+    "max_pct": float | null,         # peor caída de la historia medida
+    "max_date": str | null,          # el fondo de esa caída
     "days_since_peak": int | null,
   },
   "trades": {
@@ -96,11 +99,13 @@ Shape:
 """
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
-from datetime import date, datetime
+from datetime import date
 
 from behavioral import _native_ccy, _trust_mkt_value_usd
 import realized_pnl as _realized_pnl
 import twr as _twr
+
+from . import caida_medida
 
 
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
@@ -130,42 +135,23 @@ _AR_LOCAL_TICKERS = {
 _AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX", "TO", "T2X")
 
 
-def _parse_date(s):
-    try:
-        return datetime.fromisoformat(str(s)[:10]).date()
-    except (TypeError, ValueError):
-        return None
+def _drawdown(conn, user_id: int, **kwargs) -> Dict[str, Any]:
+    """El bloque `drawdown`: el mismo "Drawdown actual" y "peak histórico" que la
+    tira de KPIs y la tarjeta de la pantalla, MEDIDOS COMO RENDIMIENTO.
 
-
-def _compute_drawdown(values: List[float]) -> Dict[str, Any]:
-    """Drawdown sobre serie de valores. No es TWRR — solo MV/peak, suficiente
-    para la narrativa. Devuelve current_pct, max_pct, days_since_peak."""
-    if not values or len(values) < 2:
-        # None, NO 0.0: "no se pudo medir" no es "no caíste". Ver el comentario
-        # equivalente en insights_drawdown.py.
-        return {"current_pct": None, "max_pct": None, "days_since_peak": None,
-                "insufficient_data": True}
-
-    peak = values[0]
-    peak_idx = 0
-    max_dd = 0.0
-    for i, v in enumerate(values):
-        if v > peak:
-            peak = v
-            peak_idx = i
-        if peak > 0:
-            dd = (v - peak) / peak * 100
-            if dd < max_dd:
-                max_dd = dd
-
-    current = values[-1]
-    current_dd = ((current - peak) / peak * 100) if peak > 0 else 0.0
-    days_since_peak = (len(values) - 1) - peak_idx
-    return {
-        "current_pct": round(current_dd, 2),
-        "max_pct": round(max_dd, 2),
-        "days_since_peak": days_since_peak,
-    }
+    ⚠️ Antes era `(valor − máximo) / máximo` sobre el valor de la cartera: un
+    retiro de la mitad con el mercado quieto era "−50 %". Ahora sale de la misma
+    cuenta que el ✦ de la tarjeta (`caida_medida`), para que los dos botones de
+    la misma pantalla no digan dos números distintos.
+    """
+    m = caida_medida.medir(conn, user_id, moneda=kwargs.get("moneda"),
+                           valor_live=kwargs.get("valor_live"))
+    out = {k: m[k] for k in ("que_es", "moneda", "medido_desde", "medido_hasta",
+                             "current_pct", "max_pct", "max_date", "days_since_peak")}
+    if m.get("insufficient_data"):
+        # None, NO 0.0: "no se pudo medir" no es "no caíste".
+        out.update(insufficient_data=True, reason=m["reason"])
+    return out
 
 
 def _classify_geography(asset: str, broker: str) -> str:
@@ -192,40 +178,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     window_days = int(kwargs.get("window_days", 365))
     today = date.today()
 
-    # ── 1. Snapshots para TWR + drawdown ─────────────────────────────────────
-    # ⚠️ NO se leen los snapshots crudos: la tabla mezcla mediciones reales del
-    # cron con fotos que el import FABRICA copiando la cadena contable
-    # (persister.py:1289-1292). Encadenadas contra una medición de verdad fijan
-    # picos que nunca existieron — es el "−45% de drawdown" que reportó el user.
-    _serie = _twr.serie_medible(conn, user_id)
-    # ⚠️ Y TAMPOCO se aplana la serie ignorando los TRAMOS. `serie_medible` la
-    # parte donde hubo más de `max_hueco_dias` de silencio; aplanando los puntos,
-    # el pico sale de un tramo y el fondo del otro, o sea el packet le afirma al
-    # modelo el derrumbe que ocurrió ADENTRO del hueco — el mismo que
-    # `curva_indexada` se niega a publicar por escrito y que la pantalla muestra
-    # como "—". Se usa SÓLO el tramo que produjo retorno; si hay más de uno, no
-    # hay drawdown afirmable.
-    _curva = _twr.curva_indexada(conn, user_id)
-    _tramos_con_legs = [t for t in _curva["tramos_detalle"] if t["legs"] > 0]
-    if len(_tramos_con_legs) == 1:
-        _d0, _d1 = _tramos_con_legs[0]["desde"], _tramos_con_legs[0]["hasta"]
-        _serie = dict(_serie, medibles=[p for p in _serie["medibles"]
-                                       if _d0 <= p["date"] <= _d1])
-    elif len(_tramos_con_legs) != 0:
-        # El motivo lo pone el motor: un hueco y una foto que no cierra
-        # (`medicion_dudosa`) parten la serie igual pero no se explican igual.
-        _serie = dict(_serie, medibles=[],
-                     motivo_texto=(_curva.get("motivo_texto")
-                                   or _twr.MOTIVO_TEXTO.get("serie_partida")))
-    snaps = [{"date": p["date"], "total_value": p["value"],
-              "net_deposited": p["net_deposited"]} for p in _serie["medibles"]]
-    # Filtrar al window
-    cutoff = today.toordinal() - window_days
-    window_snaps = [
-        s for s in snaps
-        if _parse_date(s["date"]) and _parse_date(s["date"]).toordinal() >= cutoff
-    ]
-    values = [float(s["total_value"] or 0) for s in window_snaps if s["total_value"] is not None]
+    # ── 1. Drawdown ──────────────────────────────────────────────────────────
+    # Sobre toda la historia medida, como la pantalla: ver `_drawdown`.
+    drawdown = _drawdown(conn, user_id, **kwargs)
 
     # TWR via monthly_entries (broker='global') — el backend ya guarda capital
     # inicio/final por mes con flujos neteados. Compoundeamos los % mensuales
@@ -285,8 +240,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             twr_pct = round((compound - 1) * 100, 2)
     except Exception:
         twr_pct = None
-
-    drawdown = _compute_drawdown(values)
 
     # ── 2. Operations: trades cerrados, win rate, best/worst, attribution ────
     # currency/fx_to_usd hacen falta para normalizar: en Cupón/Amortización
