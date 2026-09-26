@@ -1,7 +1,7 @@
 // analytics — wrapper de Google Analytics 4 + helpers de eventos custom.
 // ════════════════════════════════════════════════════════════════════════════
-// Inicializa GA4 solo si VITE_GA_MEASUREMENT_ID está seteada en build.
-// Eso permite arrancar dev local sin tracking y producción con tracking.
+// Inicializa GA4 sólo en rendi.finance (ver utils/medicion.js): el servidor
+// local y los previews no cargan gtag ni mandan nada.
 //
 // Eventos custom que trackeamos (alineados con embudo Rendi):
 //
@@ -30,6 +30,8 @@
 // Privacy: anonymize_ip=true. No mandamos email, name ni amount_usd en
 // los params — solo IDs/categorías. user_id se setea como uid hasheado.
 
+import { seMideAca } from './medicion'
+
 // GA4 Measurement ID — hardcoded porque Vercel no inyectaba el env var
 // correctamente (problema con flag VITE_ exposed). El ID es público por
 // diseño (aparece en el HTML de cualquier sitio que use GA4), no es secret.
@@ -42,14 +44,16 @@ let initialized = false
 
 /**
  * Inicializa GA4. Llamar 1 sola vez al arranque de la app (main.jsx).
- * Si no hay GA_ID seteado, no hace nada — la app sigue funcionando.
+ * Fuera de rendi.finance no hace nada — la app sigue funcionando, y como
+ * `initialized` queda en false, trackEvent/setUserId/etc. (y el reenvío de
+ * track.js, que mira `window.gtag`) tampoco mandan nada.
  */
 export function initAnalytics() {
   if (initialized) return
-  if (!GA_ID || typeof window === 'undefined') {
+  if (!GA_ID || !seMideAca()) {
     if (DEBUG) {
       // eslint-disable-next-line no-console
-      console.log('[analytics] VITE_GA_MEASUREMENT_ID no seteada — tracking deshabilitado')
+      console.log('[analytics] no es rendi.finance — GA4 no se carga')
     }
     return
   }

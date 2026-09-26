@@ -223,7 +223,12 @@
     </script>
 
     <!-- Meta Pixel -->
+    <!-- Sólo en rendi.finance: el servidor local y los previews no son
+         visitantes. La lista es la misma que SITIOS_MEDIDOS de
+         src/utils/medicion.js — se cambian juntas; medicion.test.js corre este
+         bloque con cada dirección y falla si difieren. -->
     <script>
+    if (['rendi.finance', 'www.rendi.finance'].indexOf(location.hostname) !== -1) {
     !function(f,b,e,v,n,t,s)
     {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
     n.callMethod.apply(n,arguments):n.queue.push(arguments)};
@@ -235,6 +240,7 @@
     if (!location.pathname.startsWith('/i/') && !location.pathname.startsWith('/claim') && !location.pathname.startsWith('/acceso')) {
       fbq('init', '1281911210681122');
       fbq('track', 'PageView');
+    }
     }
     </script>
     <!-- End Meta Pixel -->
