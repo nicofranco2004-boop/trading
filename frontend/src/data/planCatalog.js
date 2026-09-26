@@ -80,7 +80,7 @@ export const PRO_FEATURES = {
     { label: 'Chat libre con Rendi AI', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
     { label: 'Respuestas con causalidad y comparaciones', sub: 'Modo research-note: no solo describe, infiere por qué' },
     { label: 'Follow-ups: profundizá cualquier análisis con preguntas libres' },
-    { label: 'Memoria persistente del Coach', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
+    { label: 'Memoria persistente de Rendi AI', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
     { label: 'Brokers ilimitados' },
     { label: '12 detectores de comportamiento completos' },
   ],

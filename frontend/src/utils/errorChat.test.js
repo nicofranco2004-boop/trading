@@ -114,7 +114,7 @@ describe('traducirErrorDeChat — el 403 de "chat libre" NO es una cuota', () =>
       error: 'free_chat_not_allowed',
       message: 'El chat libre está disponible solo en el plan Pro. Elegí una de las preguntas guiadas, registrá una operación o un movimiento…',
       tier: 'free',
-      upgrade: { available: true, current_tier: 'free', target_tier: 'pro', benefits: ['Chat libre con el Coach IA — preguntá lo que quieras'] },
+      upgrade: { available: true, current_tier: 'free', target_tier: 'pro', benefits: ['Chat libre con Rendi AI — preguntá lo que quieras'] },
     } },
   }
 

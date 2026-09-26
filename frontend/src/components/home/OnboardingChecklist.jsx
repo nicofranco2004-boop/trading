@@ -183,7 +183,7 @@ export default function OnboardingChecklist() {
       id: 'ai',
       done: state.hasAI,
       Icon: Bot,
-      title: 'Probá el Coach IA',
+      title: 'Probá Rendi AI',
       desc: 'Pregúntale sobre tu cartera. Análisis con tus datos reales.',
       cta: 'Abrir',
       onClick: () => coachDrawer?.open?.(),

@@ -129,7 +129,7 @@ export default function InvestorProfileForm() {
     <div className="px-4 py-4 space-y-5">
       <div className="flex items-baseline justify-between flex-wrap gap-2">
         <p className="text-xs text-ink-3 leading-relaxed max-w-2xl">
-          {QUESTIONS.length} preguntas rápidas para que el Coach IA te conozca mejor — todas opcionales,
+          {QUESTIONS.length} preguntas rápidas para que Rendi AI te conozca mejor — todas opcionales,
           y cuantas más respondas, más insights de perfil desbloqueás. Se guarda automáticamente.
           Las respuestas no se comparten — solo viajan al prompt de la IA cuando le hablás.
         </p>
@@ -189,7 +189,7 @@ export default function InvestorProfileForm() {
       <div className="pt-2 border-t border-line/30 flex items-start gap-2">
         <Sparkles size={12} strokeWidth={1.75} className="text-data-violet flex-shrink-0 mt-0.5" />
         <p className="text-[11px] text-ink-3 leading-snug">
-          Cuanto más contestás, más útil es el Coach IA. Vas a poder volver y editar cuando quieras.
+          Cuanto más contestás, más útil es Rendi AI. Vas a poder volver y editar cuando quieras.
         </p>
       </div>
     </div>

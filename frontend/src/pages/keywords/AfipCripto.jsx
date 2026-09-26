@@ -25,8 +25,8 @@ const FEATURES = [
     desc: 'Cargás desde Binance (CSV directo) o manualmente desde otros exchanges. Stablecoins (USDT, USDC) tratadas como dólar; BTC/ETH/altcoins con precio live a USD.',
   },
   {
-    title: 'Coach IA con conocimiento fiscal AR',
-    desc: '"¿Cuánto ganancia declaro este año por mi BTC?", "¿Qué pasa con el staking en ETH?". Coach IA con contexto de la regulación argentina vigente.',
+    title: 'Rendi AI con conocimiento fiscal AR',
+    desc: '"¿Cuánto ganancia declaro este año por mi BTC?", "¿Qué pasa con el staking en ETH?". Rendi AI con contexto de la regulación argentina vigente.',
   },
 ]
 

@@ -232,7 +232,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           </div>
           <div>
             <h2 className="font-semibold text-ink-0">
-              Coach IA
+              Rendi AI
               {canChatFree && (
                 <span className="ml-2 text-[12.5px] text-data-violet border border-data-violet/40 bg-data-violet/5 px-1.5 py-0.5 rounded-sm align-middle font-medium">
                   Pro · libre

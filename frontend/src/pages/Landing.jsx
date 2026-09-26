@@ -30,7 +30,7 @@ import FAQ from '../components/landing/FAQ'
 // El botón de la prueba es el MISMO texto en la home, las landings de SEO, el
 // blog y la guía. Acá estaba escrito a mano ("Probar 20 días gratis") en tres
 // lugares, al lado de la constante que ya se importaba para la sección de precios.
-import { CTA_PRUEBA } from '../data/prueba'
+import { CTA_PRUEBA, cupoDe } from '../data/prueba'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 
@@ -132,12 +132,12 @@ function Hero() {
           <span className="block headline-sweep">En dólares, no en pesos.</span>
         </h1>
 
-        {/* Sub — keyword-rich AR (Cocos, IOL, Schwab, Binance, multi-broker, Coach IA)
+        {/* Sub — keyword-rich AR (Cocos, IOL, Schwab, Binance, multi-broker, Rendi AI)
             pero liderando con el dolor concreto, sin jerga ("P&L"/"USD blue"). */}
         <p className="max-w-2xl mx-auto text-base sm:text-lg text-ink-2 leading-relaxed mb-10">
           Juntá Cocos, IOL, Balanz, Schwab y Binance en una sola pantalla y mirá tu
           ganancia real en dólares —no el número inflado en pesos que te muestra el
-          broker. Con un Coach IA que conoce tu cartera y te dice por qué subió o bajó.
+          broker. Con Rendi AI, el asistente que conoce tu cartera y te dice por qué subió o bajó.
         </p>
 
         {/* CTAs — primario sólido = crear cuenta (objetivo); demo = secundario ghost.
@@ -462,6 +462,11 @@ function BrokerTicker() {
 
 function HowItWorks() {
   const ref = useReveal()
+  // Los cupos del chat salen del catálogo, como en la FAQ. Escritos a mano se
+  // quedan viejos solos: el paso 5 del HowTo de `index.html`, que repite este
+  // paso para Google, decía 6 consultas cuando el Plus da 9.
+  const chatPlus = cupoDe(PLUS_FEATURES, 'Chat Rendi AI / sem')
+  const chatPro = cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')
   const steps = [
     {
       n: '01',
@@ -504,8 +509,8 @@ function HowItWorks() {
       Icon: MessageSquare,
       meta: 'IA · CHAT CONVERSACIONAL',
       title: 'Le preguntás lo que necesites',
-      body: 'En todos los planes accedés al Coach IA con 12 preguntas guiadas (9 consultas por semana en Plus). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
-      chips: ['12 guiadas · 9/sem (Plus)', 'Chat libre · 40/sem (Pro)', 'Memoria persistente'],
+      body: `En todos los planes accedés a Rendi AI con 12 preguntas guiadas (${chatPlus} consultas por semana en Plus). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.`,
+      chips: [`12 guiadas · ${chatPlus}/sem (Plus)`, `Chat libre · ${chatPro}/sem (Pro)`, 'Memoria persistente'],
       Visual: MockChat,
       cta: { label: 'Ver plan Pro', to: '/planes' },
     },
@@ -978,7 +983,7 @@ function MockAnalyze() {
 
 function MockChat() {
   return (
-    <MockFrame title="rendi · coach IA · chat" footer="memoria activa · 12 hechos guardados">
+    <MockFrame title="rendi AI · chat" footer="memoria activa · 12 hechos guardados">
       <div className="space-y-3">
         {/* User msg */}
         <div className="flex justify-end">
@@ -994,7 +999,7 @@ function MockChat() {
               <div className="w-4 h-4 rounded bg-data-violet/20 border border-data-violet/40 flex items-center justify-center text-data-violet">
                 <Sparkles size={8} strokeWidth={2.5} />
               </div>
-              <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">coach IA</span>
+              <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">rendi AI</span>
             </div>
             <p className="text-[12px] text-ink-1 leading-snug">
               <span className="text-rendi-pos font-medium">+US$ 1.840 realizado</span> sobre 3 ventas (NVDA en 480, 510 y 545). Tu posición abierta tiene <span className="text-rendi-pos font-medium">+US$ 920 sin realizar</span> a precio de hoy.
@@ -1408,7 +1413,7 @@ function Footer() {
             </div>
             <p className="text-xs text-ink-2 leading-relaxed max-w-xs">
               Tracker multi-broker para Argentina. P&amp;L real en USD, FIFO
-              automático, Coach IA con memoria.
+              automático, Rendi AI con memoria.
             </p>
             <p className="text-[11px] font-mono uppercase tracking-label text-ink-2 mt-4">
               Hecho en Argentina

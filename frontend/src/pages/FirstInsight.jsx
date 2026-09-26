@@ -283,7 +283,7 @@ export default function FirstInsight() {
           <Sparkles size={16} strokeWidth={1.75} />
         </div>
         <div className="flex-1">
-          <div className="text-sm font-medium text-ink-0 mb-0.5">Preguntale al Coach IA sobre tu cartera</div>
+          <div className="text-sm font-medium text-ink-0 mb-0.5">Preguntale a Rendi AI sobre tu cartera</div>
           <p className="text-xs text-ink-2 leading-relaxed">
             Empezá por “¿Mi nivel de concentración es elevado?” — lo analiza con tu data en segundos.
           </p>

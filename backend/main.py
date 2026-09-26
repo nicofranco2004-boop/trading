@@ -26543,7 +26543,7 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                 broker=broker_name, asset=p["asset"], buy_price=p["price"],
                 quantity=p["quantity"], invested=p["amount"],
                 asset_type=p["asset_type"], currency=p["currency"],
-                entry_date=p["date"], notes="Registrado por Coach IA")
+                entry_date=p["date"], notes="Registrado por Rendi AI")
             row = create_position(pos_in, uid)
             _LAST_CHAT_TRADE[uid] = {
                 "kind": "buy", "position_id": row.get("id"),
@@ -28311,7 +28311,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
                     "benefits": [
                         "10× más análisis IA (60/sem vs 6/sem)",
                         "Respuestas con causalidad y comparaciones",
-                        "Chat libre con el Coach IA (40 consultas/sem)",
+                        "Chat libre con Rendi AI (40 consultas/sem)",
                         "Follow-ups: profundizá con preguntas libres",
                     ],
                 },
@@ -28539,7 +28539,7 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
                     "benefits": [
                         "10× más análisis IA (60/sem vs 6/sem)",
                         "Respuestas con causalidad y comparaciones",
-                        "Chat libre con el Coach IA (40 consultas/sem)",
+                        "Chat libre con Rendi AI (40 consultas/sem)",
                         "Follow-ups: profundizá con preguntas libres",
                     ],
                 },
@@ -31260,7 +31260,7 @@ def _chat_quota_429(tier: str, usage: dict, es_analisis: bool = False) -> HTTPEx
         ]
     else:  # plus → pro
         benefits = [
-            "Chat libre con el Coach IA (40 consultas/sem)",
+            "Chat libre con Rendi AI (40 consultas/sem)",
             "10× más análisis IA (60/sem vs 6/sem)",
             "Respuestas con causalidad y memoria persistente",
             "Brokers ilimitados + comportamiento completo",
@@ -31513,7 +31513,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
                         "current_tier": tier,
                         "target_tier": "pro",
                         "benefits": [
-                            "Chat libre con el Coach IA — preguntá lo que quieras",
+                            "Chat libre con Rendi AI — preguntá lo que quieras",
                             "40 consultas/semana (vs 12 preguntas guiadas)",
                             "Respuestas con causalidad y memoria persistente",
                             "10× más análisis IA + brokers ilimitados",
@@ -32138,9 +32138,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 ex_name = type(ex).__name__
                 log.warning("ai_chat stream exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
                 if ex_name in ("APITimeoutError", "APIConnectionError"):
-                    code, msg = "ai_timeout", "El coach IA está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
+                    code, msg = "ai_timeout", "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
                 elif ex_name in ("RateLimitError",):
-                    code, msg = "ai_rate_limit", "El coach IA está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
+                    code, msg = "ai_rate_limit", "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
                 else:
                     if ex_name in ("BadRequestError",):
                         log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
@@ -32315,7 +32315,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_timeout",
-                    "message": "El coach IA está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
+                    "message": "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
                 },
             )
         if ex_name in ("RateLimitError",):
@@ -32323,7 +32323,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_rate_limit",
-                    "message": "El coach IA está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
+                    "message": "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
                 },
             )
         if ex_name in ("BadRequestError",):

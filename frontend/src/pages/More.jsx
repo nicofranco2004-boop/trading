@@ -94,7 +94,7 @@ export default function More() {
         subtitle="Todas las secciones de Rendi."
       />
 
-      {/* Asistente — Coach IA abre el drawer global, no navega a una ruta */}
+      {/* Asistente — Rendi AI abre el drawer global, no navega a una ruta */}
       <section>
         <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Asistente
@@ -107,7 +107,7 @@ export default function More() {
           >
             <Sparkles size={16} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-ink-0 leading-tight">Coach IA</div>
+              <div className="text-sm font-medium text-ink-0 leading-tight">Rendi AI</div>
               <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Asistente con contexto de tu portfolio</div>
             </div>
             <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />

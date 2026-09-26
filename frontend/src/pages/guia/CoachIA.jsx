@@ -36,8 +36,7 @@ export default function CoachIA() {
         </ul>
         <p>
           El <strong>chat libre</strong> ya viene en tu plan: no tenés que pasar a Pro ni
-          acá ni adentro de tus clientes, y para el libro usamos un modelo más grande
-          (Sonnet) porque cruzar carteras es más pesado que mirar una sola.
+          acá ni adentro de tus clientes.
         </p>
         <p>
           Lo que <strong>no</strong> hace la IA a tu nivel es registrar operaciones en una
@@ -53,7 +52,7 @@ export default function CoachIA() {
       <h2>Qué es Rendi AI</h2>
       <p>
         Asistente conversacional con contexto completo de tu cartera. Usa{' '}
-        <strong>Claude Haiku 4.5</strong> (Anthropic) y recibe un snapshot de tus
+        <strong>Claude</strong>, de Anthropic, y recibe un snapshot de tus
         posiciones + operaciones + perfil cada vez que le preguntás algo. Eso le
         permite responder cosas específicas tuyas, no respuestas genéricas.
       </p>
@@ -139,7 +138,7 @@ export default function CoachIA() {
       </p>
       <p>
         Podés ver y gestionar tus hechos guardados desde{' '}
-        <strong>Config → Memoria del Coach</strong>.
+        <strong>Config → Memoria de Rendi AI</strong>.
       </p>
 
       <h2>Cuotas semanales</h2>

@@ -25,8 +25,8 @@ const FEATURES = [
     desc: 'En Insights ves cuánto de tu portfolio total está en CEDEARs vs acciones AR vs bonos vs cripto. Diversificación medida en USD, no pesos.',
   },
   {
-    title: 'Coach IA: preguntale por tus CEDEARs',
-    desc: '"¿Cuánto realmente gané en NVDA este año?", "¿Mi concentración en tech CEDEARs es alta?", "¿Qué pasó con TSLA.BA esta semana?". Coach IA con contexto y memoria.',
+    title: 'Rendi AI: preguntale por tus CEDEARs',
+    desc: '"¿Cuánto realmente gané en NVDA este año?", "¿Mi concentración en tech CEDEARs es alta?", "¿Qué pasó con TSLA.BA esta semana?". Rendi AI con contexto y memoria.',
   },
 ]
 
@@ -58,7 +58,7 @@ export default function Cedears() {
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="CEDEARs con FIFO automático — Rendi | P&L real en USD"
-      metaDescription="Tracker de CEDEARs (NVDA, AAPL, MELI, GGAL) con valor real en USD usando ratios. FIFO automático para AFIP, dividendos al MEP correcto, Coach IA con contexto."
+      metaDescription="Tracker de CEDEARs (NVDA, AAPL, MELI, GGAL) con valor real en USD usando ratios. FIFO automático para AFIP, dividendos al MEP correcto, Rendi AI con contexto."
       canonicalPath="/cedears"
     />
   )

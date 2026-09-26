@@ -14,13 +14,13 @@ import { track } from '../../utils/track'
 
 const DEFAULT_BENEFITS_PRO = [
   '10× más análisis IA (60/sem vs 6/sem)',
-  'Chat libre con el Coach IA (40 consultas/sem)',
+  'Chat libre con Rendi AI (40 consultas/sem)',
   'Respuestas con causalidad y memoria persistente',
   'Brokers ilimitados + comportamiento completo',
 ]
 
 const DEFAULT_BENEFITS_PLUS = [
-  '3× más Chat Coach IA (9 consultas/sem vs 3)',
+  '9× más Chat Rendi AI (9 consultas/sem vs 1)',
   'Hasta 3 brokers (vs 1 en Free)',
   'Reportes históricos + Export CSV',
   'Métricas de riesgo desbloqueadas + personalización ilimitada del diagnóstico',
@@ -112,7 +112,7 @@ export default function UpgradePromoCard({
 
   const resetsOn = upgrade?.resets_on || usage?.resets_on
   const resetLabel = fmtReset(resetsOn)
-  const resourceLabel = isChat ? 'consultas al Coach IA' : 'análisis'
+  const resourceLabel = isChat ? 'consultas a Rendi AI' : 'análisis'
   // La frase ENTERA, no sólo el sustantivo: "Tu próxima {análisis}" concuerda
   // mal en castellano, y así se le mostró a todo el que se quedó sin análisis.
   // El backend ya la arma completa (_chat_quota_429); acá estaba partida.
