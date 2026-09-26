@@ -1,6 +1,7 @@
 // /bonos-argentinos — keyword landing para bonos AR (AL30, GD30, TX26, etc.)
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
+import { PASO_CREAR_CUENTA } from '../../data/prueba'
 
 const FEATURES = [
   {
@@ -30,7 +31,10 @@ const FEATURES = [
 ]
 
 const HOW_STEPS = [
-  { n: 1, title: 'Creá tu cuenta gratis', desc: 'Sin tarjeta. El plan Free cubre carga manual de bonos AR.' },
+  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
+  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
+  // para quien se registra.
+  { n: 1, ...PASO_CREAR_CUENTA },
   { n: 2, title: 'Cargá tus bonos AR', desc: 'En /posiciones, agregás el ticker (AL30, GD30, TX26, etc.), broker, cantidad y precio de compra. Rendi reconoce el bono y aplica la metadata.' },
   { n: 3, title: 'Registrá cobros y amortizaciones', desc: 'Cuando recibís un cupón o amortización, lo registrás en Operaciones. Rendi calcula la parte de capital vs renta automáticamente.' },
   { n: 4, title: 'Ves TIR real + flujo proyectado', desc: 'Dashboard con TIR de tu cartera de bonos, próximos cupones programados, vencimientos. Todo en USD MEP — la moneda en que cobrás los flujos.' },

@@ -27,6 +27,10 @@ import { api } from '../utils/api'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import FAQ from '../components/landing/FAQ'
+// El botón de la prueba es el MISMO texto en la home, las landings de SEO, el
+// blog y la guía. Acá estaba escrito a mano ("Probar 20 días gratis") en tres
+// lugares, al lado de la constante que ya se importaba para la sección de precios.
+import { CTA_PRUEBA } from '../data/prueba'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 
@@ -143,7 +147,7 @@ function Hero() {
             to="/login?mode=register"
             className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
           >
-            Probar 20 días gratis
+            {CTA_PRUEBA}
           </Link>
           <button
             type="button"
@@ -159,7 +163,7 @@ function Hero() {
             del fold, sin agregar una sección. */}
         <p className="flex items-center justify-center gap-1.5 text-[12px] text-ink-3 mb-14">
           <Lock size={12} strokeWidth={2} className="text-data-violet/70" />
-          20 días gratis, sin tarjeta · Solo lectura: no pedimos las claves de tu broker
+          {TRIAL_TOTAL_DAYS} días gratis, sin tarjeta · Solo lectura: no pedimos las claves de tu broker
         </p>
 
         {/* Stats strip */}
@@ -198,7 +202,7 @@ function StatsStrip() {
     { v: brokers, label: 'brokers en una pantalla', suffix: '+' },
     { text: '0',      label: 'claves de tu broker que pedimos' },
     { text: 'USD',    label: 'tu ganancia al dólar real' },
-    { text: '20 días', label: 'de prueba · sin tarjeta' },
+    { text: `${TRIAL_TOTAL_DAYS} días`, label: 'de prueba · sin tarjeta' },
   ]
 
   return (
@@ -1349,7 +1353,7 @@ function CtaFinal() {
               to="/login?mode=register"
               className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all hover:shadow-[0_0_24px_-4px_rgb(var(--data-violet) / 0.6)]"
             >
-              Probar 20 días gratis
+              {CTA_PRUEBA}
               <ArrowRight size={14} strokeWidth={2} />
             </Link>
             <button
@@ -1442,7 +1446,7 @@ function Footer() {
               Cuenta
             </h3>
             <ul className="space-y-2 text-sm">
-              <li><Link to="/login?mode=register" className="text-ink-1 hover:text-ink-0 transition-colors">Probar 20 días gratis</Link></li>
+              <li><Link to="/login?mode=register" className="text-ink-1 hover:text-ink-0 transition-colors">{CTA_PRUEBA}</Link></li>
               <li><Link to="/login" className="text-ink-1 hover:text-ink-0 transition-colors">Iniciar sesión</Link></li>
               <li>
                 <button

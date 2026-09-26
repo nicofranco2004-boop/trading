@@ -16,19 +16,33 @@
 import { useState } from 'react'
 import { Helmet } from 'react-helmet-async'
 import { ChevronDown } from 'lucide-react'
-// Los precios NO se escriben acá: se importan de Planes.jsx, que es la copia
-// del frontend. Estaban a mano ("Plus $5.990 / Pro $13.990") y se habrían
+// Los precios NO se escriben acá: se importan de `data/pricing.js`, que es la
+// copia del frontend. Estaban a mano ("Plus $5.990 / Pro $13.990") y se habrían
 // quedado en el número viejo el día que cambiaran los precios — con el
 // agravante de que esta respuesta va al JSON-LD que Google indexa.
 import {
   fmtArs, PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
 } from '../../data/pricing'
+// Lo mismo con la prueba y los cupos de la IA. La respuesta sobre el costo
+// decía "El plan Free es gratis para siempre" meses después de que el plan
+// gratis dejara de existir para quien se registra: la home ofrecía la prueba y,
+// tres secciones más abajo, la FAQ (y Google) seguían ofreciendo el Free.
+import {
+  PLUS_FEATURES, PRO_FEATURES,
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
+} from '../../data/planCatalog'
+import { alTerminar, cupoDe } from '../../data/prueba'
+
+const chatPorSemana = (plan) => cupoDe(plan, 'Chat Rendi AI / sem')
 
 // Orden = secuencia de objeciones que frenan el signup (no orden SEO). La #1 de
 // un retail frío que va a cargar su cartera es la confianza/seguridad, así que
 // va primera y abierta por default. Luego privacidad de datos, después
 // validación (brokers) y costo (¿gratis?), y al final el detalle operativo.
-const FAQS = [
+//
+// Exportado para `FAQ.test.js`: lo que se prueba es lo mismo que se renderiza y
+// que va al JSON-LD, no una copia.
+export const FAQS = [
   {
     q: '¿Es seguro? ¿Rendi tiene acceso a mi plata o a mis brokers?',
     a: 'No. Rendi es una herramienta solo de seguimiento e informativa. No hay integración bancaria, ni custodia de fondos, ni operatoria. No ejecutamos órdenes ni vemos tus credenciales de broker — vos cargás los datos manualmente o por CSV. Tu plata vive en tu broker; Rendi solo te ayuda a ver todo consolidado.',
@@ -42,8 +56,8 @@ const FAQS = [
     a: 'Sí. Rendi es multi-broker: podés cargar tu cartera de Cocos Capital, IOL Invertí Online, Balanz, Bull Market Brokers, Schwab, Interactive Brokers, Binance y otros brokers o exchanges. Importás el CSV o cargás manualmente las posiciones. Cada broker queda con su moneda original, valor live en USD y P&L. El plan Plus permite hasta 3 brokers; Pro es ilimitado.',
   },
   {
-    q: '¿Es gratis de verdad? ¿Qué incluye el plan Free?',
-    a: 'Sí. El plan Free es gratis para siempre y no te pedimos tarjeta para empezar. Incluye el seguimiento de tu cartera con P&L real en dólares, FIFO automático para AFIP y 12 preguntas guiadas al Coach IA. Si en algún momento querés más —más brokers, chat libre con el Coach IA o métricas avanzadas— pasás a Plus o Pro. El Free no caduca.',
+    q: '¿Es gratis? ¿Cómo funciona la prueba?',
+    a: `${TRIAL_TOTAL_DAYS} días gratis y sin tarjeta. Los primeros ${TRIAL_PRO_DAYS} días usás Rendi Pro, con todo desbloqueado, incluido el chat libre con Rendi AI; los ${TRIAL_PLUS_DAYS} siguientes, Rendi Plus. Al terminar elegís uno de los dos planes para seguir: no hay un plan gratis permanente. Como no te pedimos tarjeta, nada se cobra solo. Si todavía no elegiste, ${alTerminar(true)}, y tus datos quedan guardados.`,
   },
   {
     q: '¿Cómo se calcula el P&L en dólares cuando opero en pesos?',
@@ -62,12 +76,18 @@ const FAQS = [
     a: `Cobramos en pesos argentinos a precio fijo. Plus $${fmtArs(PLUS_PRICE_ARS_MONTHLY)} / Pro $${fmtArs(PRO_PRICE_ARS_MONTHLY)} por mes, sin sorpresas. El cargo en tu tarjeta es el mismo número que ves en la página de planes. Periódicamente ajustamos los precios para mantenernos en equilibrio con la inflación — siempre con anuncio previo y respetando el precio actual de tu próximo cobro si ya estás suscripto.`,
   },
   {
-    q: '¿Qué hace el Coach IA y en qué planes está incluido?',
-    a: 'El Coach IA usa el modelo Claude Haiku 4.5 con contexto completo de tu cartera (posiciones, operaciones, P&L histórico). Free y Plus tienen 12 preguntas guiadas predefinidas + 3 a 9 consultas por semana. En Pro desbloqueás chat libre con 40 consultas por semana, follow-ups en cualquier análisis, memoria persistente (los hechos que le aclarás los respeta entre sesiones) y respuestas con causalidad ("por qué pasó X", no solo "qué pasó").',
+    // Sin nombre de modelo a propósito: decía "Claude Haiku 4.5" y el chat usa
+    // Sonnet 5 desde el 2026-09-12 (`main.py`, `chat_model`). Una versión escrita
+    // en la FAQ es un dato que se vence solo.
+    q: '¿Qué hace Rendi AI y en qué planes está incluido?',
+    a: `Rendi AI es el asistente de Rendi: usa Claude, de Anthropic, y recibe el contexto completo de tu cartera (posiciones, operaciones, P&L histórico), así que te contesta con tus números y no con generalidades. En Plus tenés 12 preguntas guiadas y ${chatPorSemana(PLUS_FEATURES)} consultas por semana. En Pro el chat es libre, con ${chatPorSemana(PRO_FEATURES)} consultas por semana, repreguntas sobre cualquier análisis, memoria persistente (los hechos que le aclarás los respeta entre sesiones) y respuestas con causalidad ("por qué pasó X", no solo "qué pasó"). En la prueba usás los dos: ${TRIAL_PRO_DAYS} días Pro y ${TRIAL_PLUS_DAYS} días Plus.`,
   },
   {
+    // "Vuelve a Free" era falso para todo el que llega por la home: nació sin
+    // plan gratis. Y la política de reembolso da 10 días de arrepentimiento con
+    // devolución total (Ley 24.240), que esta respuesta no decía.
     q: '¿Puedo cancelar mi suscripción cuando quiera?',
-    a: 'Sí, sin penalidad. Cancelás desde Configuración con un click. Mantenés acceso al plan pagado hasta el fin del período actual (mes o año) y después tu cuenta vuelve a Free automáticamente. No devolvemos el dinero del período en curso porque el servicio ya fue entregado por esos días — para casos especiales (cobro duplicado, falla material) ver nuestra Política de Reembolso.',
+    a: `Sí, sin penalidad. Cancelás desde Configuración con un click y mantenés el plan hasta el fin del período que pagaste (mes o año). Después, ${alTerminar(true)}; tus datos no se borran. Si te arrepentís dentro de los 10 días corridos desde que contrataste, te devolvemos el total. Pasado ese plazo no devolvemos el período en curso, porque el servicio ya se entregó esos días; para casos especiales (cobro duplicado, falla nuestra) mirá la Política de Reembolso.`,
   },
 ]
 

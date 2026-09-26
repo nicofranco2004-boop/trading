@@ -1,6 +1,7 @@
 // /brokers/binance — keyword landing para "tracker Binance Argentina"
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
+import { PASO_CREAR_CUENTA } from '../../data/prueba'
 
 const FEATURES = [
   {
@@ -30,7 +31,10 @@ const FEATURES = [
 ]
 
 const HOW_STEPS = [
-  { n: 1, title: 'Creá tu cuenta gratis en Rendi', desc: 'Free incluye 1 broker. Suficiente para empezar con Binance solo.' },
+  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
+  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
+  // para quien se registra.
+  { n: 1, ...PASO_CREAR_CUENTA },
   { n: 2, title: 'Exportá tu historial de Binance', desc: 'En Binance: Wallet → Transaction History → Export. Descargás el CSV con todas las trades, deposits, withdrawals, dividends, staking.' },
   { n: 3, title: 'Importá el CSV o cargá manual', desc: 'Subí el CSV en /imports o cargá las posiciones más relevantes manualmente. Rendi reconoce los pares y los precia automático.' },
   { n: 4, title: 'Ves tu portfolio crypto en USD', desc: 'Dashboard con valor live, P&L, allocation por token. Si sumás brokers tradicionales, ves el mix completo.' },

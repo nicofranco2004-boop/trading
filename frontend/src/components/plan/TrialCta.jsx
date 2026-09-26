@@ -1,4 +1,4 @@
-// Free trial de 15 días — el botón y el estado, en un solo lugar.
+// La prueba gratis — el botón y el estado, en un solo lugar.
 // ═══════════════════════════════════════════════════════════════════════════
 // El backend manda todo resuelto en /api/plan/features → trial:
 //   { active, used, can_start, stage: 'pro'|'plus', days_left, days_to_switch }
@@ -20,9 +20,16 @@ import { usePlanFeatures, refreshPlanFeatures } from '../../hooks/usePlanFeature
 import { useAuth } from '../../contexts/AuthContext'
 import { track } from '../../utils/track'
 import { useToast } from '../Toast'
-
-export const TRIAL_TOTAL_DAYS = 15
-export const TRIAL_PRO_DAYS = 7
+import { alTerminar } from '../../data/prueba'
+// Los días de la prueba viven en `data/planCatalog.js`, que el backend compara
+// contra `billing/trial.py`. Acá había una SEGUNDA copia con los de la prueba
+// vieja (15 y 7), y la pantalla de "importación completada" la leía para
+// ofrecer "7 días con el chat libre … y después una semana de Plus" cuando la
+// prueba ya era de 10 + 10. Se re-exportan para no romper a quien importa de acá.
+import {
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
+} from '../../data/planCatalog'
+export { TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS }
 
 // Traducción de los códigos del backend. 'already_used' no está: cuando ya lo
 // usó no se muestra nada (ver TrialCta), no un cartel de error.
@@ -96,7 +103,7 @@ export function TrialCta({ source = 'paywall', className = '', onStarted }) {
   if (!canOfferTrial(trial)) return null
 
   const pro = trial?.pro_days ?? TRIAL_PRO_DAYS
-  const plus = trial?.plus_days ?? (TRIAL_TOTAL_DAYS - TRIAL_PRO_DAYS)
+  const plus = trial?.plus_days ?? TRIAL_PLUS_DAYS
   const total = trial?.total_days ?? TRIAL_TOTAL_DAYS
 
   async function start() {
@@ -227,7 +234,7 @@ export function TrialFinePrint({ className = '' }) {
   if (!canOfferTrial(trial)) return null
 
   const pro = trial?.pro_days ?? TRIAL_PRO_DAYS
-  const plus = trial?.plus_days ?? (TRIAL_TOTAL_DAYS - TRIAL_PRO_DAYS)
+  const plus = trial?.plus_days ?? TRIAL_PLUS_DAYS
   const total = trial?.total_days ?? TRIAL_TOTAL_DAYS
 
   // Contenedor <div> y no <p>: el tooltip abre un <div> flotante, y un <div>
@@ -274,8 +281,15 @@ function TrialStage({ rango, plan, detalle }) {
 // importa, porque la mayoría entra desde el celular.
 
 /** Las etapas del trial encadenado. Una sola fuente para el (?) y el cartel:
- *  si mañana cambia el plazo, no pueden decir cosas distintas. */
+ *  si mañana cambia el plazo, no pueden decir cosas distintas.
+ *
+ *  La última etapa depende de si la persona tiene un plan gratis al que volver.
+ *  Quien nació sin él (`requires_plan`) no "vuelve a Free": elige un plan, o la
+ *  cuenta queda en pausa. Es la misma regla que ya aplicaban la barra de arriba
+ *  (TrialBanner) y los mails de la prueba, y que acá faltaba. */
 function EtapasDelTrial({ pro, plus, total }) {
+  const { user } = useAuth()
+  const requierePlan = !!user?.requires_plan
   return (
     <>
       <TrialStage
@@ -288,19 +302,28 @@ function EtapasDelTrial({ pro, plus, total }) {
         plan="Rendi Plus"
         detalle="Seguís con multi-broker y las features avanzadas, con menos cuota de IA."
       />
-      <TrialStage
-        rango={`Día ${total + 1}`}
-        plan="Volvés a Free"
-        detalle="Tus datos quedan intactos. Si querés seguir con un plan, lo elegís vos."
-      />
+      {requierePlan ? (
+        <TrialStage
+          rango={`Día ${total + 1}`}
+          plan="Elegís tu plan"
+          detalle="Si no elegís, tu cuenta queda en pausa con tus datos intactos. Nada se cobra solo."
+        />
+      ) : (
+        <TrialStage
+          rango={`Día ${total + 1}`}
+          plan="Volvés a Free"
+          detalle="Tus datos quedan intactos. Si querés seguir con un plan, lo elegís vos."
+        />
+      )}
     </>
   )
 }
 
-/** `kind`: 'trial' (los 15 días encadenados) | 'pro_upsell' (probar Pro sin
+/** `kind`: 'trial' (la prueba encadenada, Pro y después Plus) | 'pro_upsell' (probar Pro sin
  *  dejar el Plus que ya se paga). */
 export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfirm, onClose }) {
   const esUpsell = kind === 'pro_upsell'
+  const { user } = useAuth()
   return (
     <Modal
       title={esUpsell ? `Probá Rendi Pro por ${dias} días` : `Probá Rendi gratis ${total} días`}
@@ -328,7 +351,7 @@ export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfir
         ) : (
           <>
             <p className="text-sm text-ink-1 leading-relaxed">
-              Son {total} días en dos tramos, y después tu cuenta vuelve a Free.
+              Son {total} días en dos tramos, y después {alTerminar(!!user?.requires_plan)}.
             </p>
             <div className="text-sm text-ink-2 border border-line/60 rounded-lg px-3.5 py-2.5">
               <EtapasDelTrial pro={pro} plus={plus} total={total} />

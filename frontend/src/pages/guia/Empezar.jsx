@@ -2,6 +2,16 @@
 
 import GuidePage from '../../components/guide/GuidePage'
 import AdvisorNote from '../../components/guide/AdvisorNote'
+// La prueba y los brokers por plan salen del catálogo: la guía decía "Crear
+// cuenta gratis" y "Plan Free permite 1 broker", y quien se registra hoy no
+// tiene plan Free — arranca la prueba.
+import { PLUS_FEATURES, PRO_FEATURES, TRIAL_TOTAL_DAYS } from '../../data/planCatalog'
+import { PRUEBA_EN_UNA_LINEA, cupoDe } from '../../data/prueba'
+
+const brokersDe = (plan) => {
+  const v = cupoDe(plan, 'Brokers')
+  return v === '∞' ? 'ilimitados' : `hasta ${v}`
+}
 
 export default function Empezar() {
   return (
@@ -49,9 +59,10 @@ export default function Empezar() {
 
       <h2>1. Crear tu cuenta</h2>
       <p>
-        Andá a <a href="/login?mode=register">Crear cuenta gratis</a>. Te pedimos
+        Andá a <a href="/login?mode=register">Crear cuenta</a>. Te pedimos
         email + contraseña. Te llega un código de 6 dígitos al mail para verificar
-        que sos vos (revisá Spam si no aparece en 2 minutos). Listo, ya entrás.
+        que sos vos (revisá Spam si no aparece en 2 minutos). Listo: al verificar
+        el mail arranca tu prueba de {TRIAL_TOTAL_DAYS} días gratis. {PRUEBA_EN_UNA_LINEA}
       </p>
       <p>
         Antes de cargar tu data real, podés <a href="/?demo=1">probar la demo</a>{' '}
@@ -69,7 +80,7 @@ export default function Empezar() {
         <li><strong>Moneda</strong>: ARS (Cocos, IOL, Balanz, Bull), USD (Schwab, IBKR) o USDT (Binance, exchanges crypto).</li>
       </ul>
       <p>
-        Plan Free permite 1 broker. Plus hasta 3. Pro ilimitados.
+        Plus permite {brokersDe(PLUS_FEATURES)} brokers y Pro, {brokersDe(PRO_FEATURES)}.
       </p>
 
       <h2>3. Cargar tu primera operación</h2>
@@ -123,7 +134,7 @@ export default function Empezar() {
       <ul>
         <li><strong>Dashboard</strong>: tu portfolio total en USD, P&amp;L del mes, evolución.</li>
         <li><strong>Insights</strong>: 5 cards de análisis automático.</li>
-        <li><strong>Rendi AI</strong>: 12 preguntas guiadas (Free) o chat libre (Pro).</li>
+        <li><strong>Rendi AI</strong>: 12 preguntas guiadas (Plus) o chat libre (Pro).</li>
       </ul>
     </GuidePage>
   )

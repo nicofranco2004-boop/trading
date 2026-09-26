@@ -2,13 +2,42 @@
 
 import GuidePage from '../../components/guide/GuidePage'
 import AdvisorNote from '../../components/guide/AdvisorNote'
+// Precios, cupos y lo que incluye cada plan salen de los mismos archivos que
+// /planes. Esta sección estaba escrita a mano y contaba otro Rendi: "Free
+// (gratis para siempre)" —que no existe para quien se registra—, precios en
+// dólares ("USD 4 / mes"), "al TC blue del día", "−15%" anual y cupos de IA que
+// ya no eran. Nada de eso daba error; sólo lo leía el que estaba decidiendo.
+import {
+  FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
+} from '../../data/planCatalog'
+import {
+  fmtArs, PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY, ANNUAL_DISCOUNT_BADGE_PCT,
+} from '../../data/pricing'
+import { alTerminar, cupoDe } from '../../data/prueba'
+
+/** Lo que incluye un plan, tal cual lo publica /planes. */
+function LoQueIncluye({ plan }) {
+  const brokers = cupoDe(plan, 'Brokers')
+  return (
+    <ul>
+      {plan.essentials.map(f => (
+        <li key={f.label}>{f.label}{f.sub ? ` — ${f.sub}` : ''}</li>
+      ))}
+      <li>
+        {cupoDe(plan, 'Análisis IA / sem')} análisis IA y {cupoDe(plan, 'Chat Rendi AI / sem')}{' '}
+        consultas a Rendi AI por semana · brokers: {brokers === '∞' ? 'ilimitados' : brokers}
+      </li>
+    </ul>
+  )
+}
 
 export default function CuentaYPlanes() {
   return (
     <GuidePage
       n={6}
       title="Cuenta y planes"
-      intro="Configurar tu cuenta, gestionar brokers, planes Free/Plus/Pro, cambio de plan con conversión de crédito y cómo cancelar."
+      intro={`Configurar tu cuenta, gestionar brokers, la prueba de ${TRIAL_TOTAL_DAYS} días, los planes Plus y Pro, cambio de plan con conversión de crédito y cómo cancelar.`}
       prev={{ to: '/guia/novedades', label: 'Novedades y alertas' }}
       metaTitle="Cuenta y planes — Guía Rendi"
       metaDescription="Cómo configurar tu cuenta, cambiar de plan, cancelar tu suscripción y gestionar brokers en Rendi."
@@ -64,44 +93,32 @@ export default function CuentaYPlanes() {
 
       <h2>Planes — qué incluye cada uno</h2>
 
-      <h3>Free (gratis para siempre)</h3>
-      <ul>
-        <li>1 broker.</li>
-        <li>Dashboard completo + 4 KPIs + curva de evolución.</li>
-        <li>Posiciones, Operaciones, Wrapped anual, Objetivos.</li>
-        <li>Diagnóstico completo (con CAGR y volatilidad; las métricas ajustadas por riesgo —Sharpe, Sortino…— con Plus); personalizalo 2×/semana con “No me interesa”.</li>
-        <li>3 detectores de comportamiento.</li>
-        <li>6 análisis IA + 3 chat por semana (Rendi AI limitado a 12 preguntas guiadas).</li>
-        <li>Reportes: solo último mes.</li>
-      </ul>
+      <h3>La prueba: {TRIAL_TOTAL_DAYS} días gratis</h3>
+      <p>
+        Cuando creás tu cuenta y verificás el mail, arranca sola una prueba de{' '}
+        <strong>{TRIAL_TOTAL_DAYS} días, sin tarjeta</strong>: los primeros {TRIAL_PRO_DAYS} días
+        con Pro y los {TRIAL_PLUS_DAYS} siguientes con Plus. Al terminar elegís uno de los dos
+        planes para seguir. Si todavía no elegiste, {alTerminar(true)}: no se borra nada y
+        volvés a entrar apenas elegís.
+      </p>
 
-      <h3>Plus (USD 4 / mes)</h3>
-      <ul>
-        <li>Todo lo de Free.</li>
-        <li>Hasta 3 brokers.</li>
-        <li>Métricas de riesgo desbloqueadas (Sharpe, Sortino, alfa, Calmar…) + personalización ilimitada del diagnóstico; distribución por activo.</li>
-        <li>6 detectores de comportamiento visibles.</li>
-        <li>Reportes históricos completos (todos los meses).</li>
-        <li>Export CSV consolidado para tu contador.</li>
-        <li>6 análisis + 9 chat por semana (3× más chat que Free).</li>
-      </ul>
+      <h3>Plus (${fmtArs(PLUS_PRICE_ARS_MONTHLY)} por mes)</h3>
+      <LoQueIncluye plan={PLUS_FEATURES} />
 
-      <h3>Pro (USD 9 / mes)</h3>
-      <ul>
-        <li>Todo lo de Plus.</li>
-        <li>Brokers ilimitados.</li>
-        <li>60 análisis IA / semana (10× más que Free y Plus).</li>
-        <li><strong>Chat libre</strong> con Rendi AI (40 consultas/semana, texto libre).</li>
-        <li>Respuestas con causalidad y comparaciones (Modo research-note).</li>
-        <li>Follow-ups: profundizá cualquier análisis.</li>
-        <li>Memoria persistente del Coach: los hechos que aclarás se respetan entre sesiones.</li>
-        <li>12 detectores de comportamiento completos.</li>
-      </ul>
+      <h3>Pro (${fmtArs(PRO_PRICE_ARS_MONTHLY)} por mes)</h3>
+      <LoQueIncluye plan={PRO_FEATURES} />
 
       <p>
-        Todos los planes cobran en <strong>pesos argentinos al TC blue del día</strong>.
-        Anual tiene descuento de -15%.
+        Los precios son fijos y en <strong>pesos argentinos</strong>: no dependen del dólar
+        del día. Pagando el año ahorrás un {ANNUAL_DISCOUNT_BADGE_PCT}%.
       </p>
+
+      <h3>Free (sólo cuentas que ya lo tenían)</h3>
+      <p>
+        El plan Free ya no se ofrece: quien se registra hoy arranca con la prueba. Las
+        cuentas que ya lo tenían lo conservan, con esto:
+      </p>
+      <LoQueIncluye plan={FREE_FEATURES} />
 
       <h2>Cambiar de plan (proración automática)</h2>
       <p>
@@ -127,7 +144,11 @@ export default function CuentaYPlanes() {
       <ul>
         <li>Tu suscripción deja de renovarse.</li>
         <li>Mantenés acceso a tu plan hasta el fin del período actual ya cobrado.</li>
-        <li>Después tu cuenta vuelve a Free automáticamente. <em>No perdés tus datos</em>.</li>
+        <li>
+          Después, si tu cuenta tenía el plan Free, vuelve a él; si te registraste con la
+          prueba, queda en pausa hasta que elijas un plan. En los dos casos{' '}
+          <em>no perdés tus datos</em>.
+        </li>
         <li>Podés reactivar cuando quieras desde Planes.</li>
       </ul>
       <p>
