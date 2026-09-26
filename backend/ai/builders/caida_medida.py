@@ -42,6 +42,7 @@ que este módulo vino a sacar.
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import date
 from typing import Any, Dict, List, Optional
@@ -64,7 +65,10 @@ QUE_ES = (
     "si cierra con el valor de la cartera de ahora o en el último cierre guardado."
 )
 
+log = logging.getLogger(__name__)
+
 _SIN_MEDICIONES = "No hay mediciones a mercado suficientes para medir la caída."
+_NO_SE_PUDO = "No se pudo medir la caída en este momento."
 MOTIVO_ESTIMADO = (
     "La pantalla está en modo Estimado: esa historia se reconstruye de la "
     "contabilidad, que no es un camino de precios, así que no hay caída ni pico que "
@@ -185,8 +189,15 @@ def medir(conn, user_id: int, *, moneda=None, valor_live=None, modo=None) -> Dic
         return _sin_numero(out, MOTIVO_ESTIMADO)
     # La misma llamada que performance.py con los defaults de la pantalla (sin
     # `desde`/`hasta`, sin indeterminados).
-    c = _twr.curva_indexada(conn, user_id, valor_live=leer_valor_live(valor_live),
-                            moneda=_moneda)
+    # ⚠️ Una falla acá no puede tirar el paquete entero: la caída es un dato más
+    # de `insights`, del resumen, de la observación y del perfil. Falta ella, y
+    # se dice por qué.
+    try:
+        c = _twr.curva_indexada(conn, user_id, valor_live=leer_valor_live(valor_live),
+                                moneda=_moneda)
+    except Exception:
+        log.exception("caida_medida: curva_indexada falló uid=%s", user_id)
+        return _sin_numero(out, _NO_SE_PUDO)
     actual, maximo = c.get("drawdown_actual"), c.get("drawdown_maximo")
     puntos = [p for p in (c.get("curva") or [])
               if p.get("apto") and p.get("drawdown") is not None]

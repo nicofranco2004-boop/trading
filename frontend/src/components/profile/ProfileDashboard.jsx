@@ -159,7 +159,7 @@ function moduleBody(id, cards, dash) {
   }
 }
 
-export default function ProfileDashboard({ cards, positions = [] }) {
+export default function ProfileDashboard({ cards, positions = [], aiParams }) {
   const dash = buildProfileDashboard({ cards, positions })
 
   // Sin ningún módulo disponible: el caso "sin test" lo corta antes el caller
@@ -215,7 +215,10 @@ export default function ProfileDashboard({ cards, positions = [] }) {
         if (m.avail && meta.aiCode) {
           return (
             <div key={m.id} className={m.wide ? 'md:col-span-2' : ''}>
-              <AskAIAbout topic="profile.card" params={{ code: meta.aiCode }} subtitle={meta.title} className="h-full">
+              {/* `aiParams`: la moneda, el modo y el valor de ahora de la pantalla,
+                  para que la caída real del ✦ sea la de la card (ver
+                  backend/ai/builders/caida_medida.py). */}
+              <AskAIAbout topic="profile.card" params={{ code: meta.aiCode, ...aiParams }} subtitle={meta.title} className="h-full">
                 {shell}
               </AskAIAbout>
             </div>

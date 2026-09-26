@@ -662,7 +662,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             # confundió scope históricamente. Campos auto-descriptivos por
             # nombre (window_days, drawdown, vs_benchmarks, trades.*) son
             # confiables sin doc. Audit #3 B9.
-            "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (window_days, drawdown, vs_benchmarks, trades, attribution, monthly_summary, geo_distribution, behavioral) son explícitos por su nombre — confiá en ellos.",
+            "_doc_scope": "Solo documentamos campos ambiguos donde el nombre no basta. Los demás (window_days, vs_benchmarks, trades, attribution, monthly_summary, geo_distribution, behavioral) son explícitos por su nombre — confiá en ellos.",
+            # `drawdown` salió de la lista de "explícitos por su nombre": NO cubre
+            # `window_days`, cubre toda la historia medida. Al lado de un
+            # `window_days: 365` el modelo podía leer una caída de hace dos años
+            # como "del último año".
+            "drawdown": "Caída MEDIDA COMO RENDIMIENTO (un depósito o un retiro no cuenta) sobre TODA la historia medida, desde drawdown.medido_desde — NO sobre window_days: una caída vieja no es 'del último año'. Es el mismo número que la pantalla. Si trae insufficient_data, `reason` dice por qué no hay número.",
             "twr_pct": "TWR del período. Compuesto via monthly_entries. Combina P&L realizado de meses cerrados + unrealized mark-to-market del mes en curso. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
             "realized_pnl_usd": "USD ABSOLUTO sumado de trades CERRADOS. No es %, no es vs invested. Si negativo, perdiste en operaciones cerradas. Si chico vs total_equity_usd, casi todo el resultado está en unrealized.",
             "realized_avg_pct_per_trade": "Promedio simple de pnl_pct por trade cerrado. NO acumulado, NO compounded. Solo describe performance media por operación.",

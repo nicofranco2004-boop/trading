@@ -420,16 +420,65 @@ class LosOtrosBotonesQueHeredanLaCaidaTest(_Base):
         self.assertEqual(ctx["drawdown_medido_hasta"], _hace(8))
 
     def test_el_resumen_trae_la_caida_en_pesos_y_dice_hasta_cuando(self):
-        """Sin `valor_live` a propósito (va por /ai/analyze, que cachea por
-        paquete): mide hasta el último cierre y lo declara."""
         self.cierres(CAIDA_Y_RETIRO[:3])
         self.tipo_de_cambio()
         pant = self.pantalla(moneda="ars")
-        dd = self.paquete("insights.summary", {"moneda": "ars", "modo": "certero"})["drawdown"]
+        dd = self.paquete("insights.summary", pagina_nueva(moneda="ars"))["drawdown"]
         self.assertEqual(dd["moneda"], "ars")
         self.assertIs(dd["incluye_hoy"], False)
         self.assertEqual(dd["medido_hasta"], _hace(8))
         self.assertAlmostEqual(dd["max_pct"], pant["drawdown_maximo"] * 100, places=2)
+
+    def test_el_resumen_a_media_rueda_dice_la_caida_de_la_tira(self):
+        """La tira de KPIs cierra con la cartera de ahora. El resumen también:
+        sin el valor de hoy decía 0,0 % al lado de un hallazgo "Drawdown del
+        −10 %" que manda la misma pantalla."""
+        self.cierres(CAIDA_Y_RETIRO)
+        self.contabilidad_del_retiro()
+        pant = self.pantalla(valor_live=9090)            # hoy −10 % desde 10.100
+        dd = self.paquete("insights.summary", pagina_nueva(valor_live=9090))["drawdown"]
+        self.assertIs(dd["incluye_hoy"], True)
+        self.assertEqual(dd["current_pct"], -10.0)
+        self.assertAlmostEqual(dd["current_pct"], pant["drawdown_actual"] * 100, places=2)
+
+
+class ElPerfilDelInversorTest(_Base):
+    """La card "Caída tolerada vs real" muestra la peor caída real
+    (`drawdown.max` de la pantalla). Su ✦ (topic profile.card, code drawdown) y
+    el resumen del perfil (profile.summary) le decían al modelo "no disponible en
+    backend": ahora la reciben, medida igual que la card."""
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("UPDATE users SET investor_profile=? WHERE id=?",
+                          (json.dumps({"drawdown": "hold", "horizon": "long"}), self.uid))
+        self.conn.commit()
+
+    def test_la_card_del_perfil_trae_la_caida_real_de_la_pantalla(self):
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        self.tipo_de_cambio()
+        pant = self.pantalla(moneda="ars")
+        card = self.paquete("profile.card", {"code": "drawdown",
+                                             **pagina_nueva(moneda="ars")})["card"]
+        self.assertEqual(card["status"], "ready")
+        self.assertEqual(card["declared"]["drawdown_preference"], "hold")
+        self.assertEqual(card["actual"]["moneda"], "ars")
+        self.assertAlmostEqual(card["actual"]["max_pct"], pant["drawdown_maximo"] * 100,
+                               places=2)
+        self.assertNotIn("note", card["actual"])
+
+    def test_el_resumen_del_perfil_tambien(self):
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        cruce = self.paquete("profile.summary", pagina_nueva())["crosses"]["drawdown"]
+        self.assertEqual(cruce["actual"]["max_pct"], -10.0)
+        self.assertEqual(cruce["actual"]["current_pct"], -10.0)
+
+    def test_sin_mediciones_dice_por_que(self):
+        self.cierre(8, 10000, 10000)
+        card = self.paquete("profile.card", {"code": "drawdown", **pagina_nueva()})["card"]
+        self.assertEqual(card["status"], "no_data")
+        self.assertIsNone(card["actual"]["max_pct"])
+        self.assertTrue(card["actual"]["motivo"])
 
 
 class LasFechasYLosEmpatesTest(_Base):
@@ -470,6 +519,15 @@ class LasFechasYLosEmpatesTest(_Base):
         self.assertIs(p["recovered"], True)
         self.assertEqual(p["worst_event"]["end_date"], _hace(8))
 
+    def test_si_la_medicion_falla_falta_la_caida_y_no_el_paquete(self):
+        self.cierres(CAIDA_Y_RETIRO[:3])
+        with patch.object(twr, "curva_indexada", side_effect=RuntimeError("boom")):
+            p = self.paquete("insights", {**PAGINA_VIEJA, **pagina_nueva()})
+        self.assertIn("exposure", p)                      # el resto del paquete está
+        self.assertTrue(p["drawdown"]["insufficient_data"])
+        self.assertIsNone(p["drawdown"]["max_pct"])
+        self.assertTrue(p["drawdown"]["reason"])
+
     def test_valores_raros_del_navegador_se_ignoran(self):
         self.cierres(CAIDA_Y_RETIRO[:3])
         for raro in (True, "abc", -5, 0, "1e999", "nan"):
@@ -502,6 +560,21 @@ class ElMotorDeLaTarjetaTest(_Base):
         p = self.paquete("insights.drawdown", pagina_nueva(valor_live=21000))
         self.assertEqual((p["current_pct"], p["max_pct"]), (0.0, 0.0))
 
+    def test_la_linea_de_hoy_sigue_a_la_linea_y_no_al_numero(self):
+        """La línea de Performance se dibuja con `index` (la forma) y el número con
+        `index_publicado`. El "hoy" en certero tomaba el publicado como forma: con
+        el mercado quieto, la línea bajaba de +10,0 % a +6,67 % el último día."""
+        self.cierre(10, 10000, 10000)
+        self.foto_de_media_rueda(9, 11000, 10000)
+        self.cierre(8, 21000, 20000)
+        self.contabilidad(8, capital_inicio=10000, depositos=10000)
+        curva = self.pantalla(valor_live=21000)["curva"]
+        ultimo_cierre, hoy = curva[-2], curva[-1]
+        self.assertEqual(hoy["date"], "hoy")
+        self.assertAlmostEqual(hoy["index"], ultimo_cierre["index"], places=6)
+        self.assertAlmostEqual(hoy["index_publicado"], ultimo_cierre["index_publicado"],
+                               places=6)
+
     def test_una_caida_de_hoy_se_mide_contra_el_mismo_pico(self):
         """El mismo caso con la cartera de hoy un 10 % abajo: −10 %, no −12,7 %."""
         self.cierre(10, 10000, 10000)
@@ -512,6 +585,46 @@ class ElMotorDeLaTarjetaTest(_Base):
         self.assertAlmostEqual(pant["drawdown_actual"], -0.10, places=6)
         p = self.paquete("insights.drawdown", pagina_nueva(valor_live=18900))
         self.assertEqual(p["current_pct"], -10.0)
+
+    def test_un_mes_con_retiro_y_deposito_no_es_una_caida(self):
+        """Preexistente (2026-08-25) y del motor: un mes con un RETIRO y un
+        DEPÓSITO, mercado quieto todo el tiempo, y todos los cierres del cron.
+
+        Lo aportado de cada día se acota al "corredor" entre el cierre contable
+        del mes anterior y el de este mes (`twr._aportado_por_punto`), que supone
+        que dentro de un mes la plata sólo entra o sólo sale. Con 20.000 →
+        retira 9.000 → deposita 5.000, el corredor era [16.000, 20.000] y el día
+        del retiro quedaba "aportado 16.000" con la cartera en 11.000: la tarjeta
+        publicaba −27,8 % de caída y el acumulado +5,05 %, donde los dos son 0.
+
+        Fechas FIJAS: el caso necesita las dos patas en el mismo mes calendario.
+        """
+        self.conn.execute(
+            "INSERT INTO operations (user_id, date, entry_date, asset, op_type, broker, "
+            "quantity, entry_price, exit_price, pnl_usd) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (self.uid, "2025-01-02", "2025-01-01", "MSFT", "Venta", "Schwab", 1, 1, 1, 0))
+        base, apto = twr.base_y_apto_para(twr.MEDICION)
+        for f, v in (("2026-03-20", 20000), ("2026-03-25", 20000), ("2026-03-31", 20000),
+                     ("2026-04-05", 20000), ("2026-04-10", 11000), ("2026-04-15", 11000),
+                     ("2026-04-20", 16000), ("2026-04-25", 16000)):
+            self.conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+                "net_deposited, fx_to_usd_blue, source, holdings_json, base, apto) "
+                "VALUES (?,?,?,?,?,1400,'cron','[{\"a\":1}]',?,?)",
+                (self.uid, f, v, v, v, base, apto))
+        for (y, m, dep, ret, ci) in ((2026, 3, 0, 0, 20000), (2026, 4, 5000, 9000, 0)):
+            self.conn.execute(
+                "INSERT INTO monthly_entries (user_id, year, month, broker, deposits, "
+                "withdrawals, pnl_realized, pnl_unrealized, capital_inicio, capital_final) "
+                "VALUES (?,?,?,'global',?,?,0,0,?,0)", (self.uid, y, m, dep, ret, ci))
+        self.conn.commit()
+        pant = self.pantalla()
+        self.assertAlmostEqual(pant["twr"], 0.0, places=6)
+        self.assertAlmostEqual(pant["drawdown_maximo"], 0.0, places=6)
+        self.assertAlmostEqual(pant["drawdown_actual"], 0.0, places=6)
+        p = self.paquete("insights.drawdown", pagina_nueva())
+        self.assertEqual((p["current_pct"], p["max_pct"]), (0.0, 0.0))
+        self.assertNotIn(-27.78, set(_numeros(p)))
 
 
 if __name__ == "__main__":

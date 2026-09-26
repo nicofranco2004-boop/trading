@@ -1368,8 +1368,8 @@ def _aportado_por_punto(conn, uid: int, filas):
     y el día dentro del mes decidido por la estampa.
 
         aportado(d) = clamp( canon(M) − (estampa(rn) − estampa(d)),
-                             min(canon(M−1), canon(M)),
-                             max(canon(M−1), canon(M)) )        rn = última fila de M
+                             canon(M−1) − retiros(M),
+                             canon(M−1) + depósitos(M) )        rn = última fila de M
 
     ⚠️ POR QUÉ ASÍ, DESPUÉS DE DOS INTENTOS FALLIDOS.
 
@@ -1391,12 +1391,33 @@ def _aportado_por_punto(conn, uid: int, filas):
     estampa stale se filtre: cuando el mes no tuvo flujo el corredor colapsa a un
     punto, que es exactamente el caso del import a mitad de mes.
 
+    ⚠️ EL CORREDOR SE ARMA CON LOS FLUJOS BRUTOS DEL MES, NO CON SUS DOS PUNTAS.
+    Hasta 2026-09 era [min, max] de canon(M−1) y canon(M), o sea suponía que
+    dentro de un mes la plata sólo entra o sólo sale. Un mes con un retiro Y un
+    depósito sale de ese rango a mitad de camino: 20.000 → retira 9.000 → deposita
+    5.000 daba el corredor [16.000, 20.000], el día del retiro quedaba "aportado
+    16.000" con la cartera en 11.000, y la tarjeta publicaba −27,8 % de caída y
+    +5,05 % de acumulado con el mercado quieto (no se autocuraba nunca). El camino
+    real de lo aportado dentro del mes está SIEMPRE entre canon(M−1) − retiros(M)
+    y canon(M−1) + depósitos(M). Cuando el mes va en una sola dirección eso es
+    exactamente el corredor anterior, y cuando no tuvo flujos sigue colapsando a
+    un punto: las dos protecciones de arriba quedan intactas.
+
     (El ideal sigue siendo reconstruir el aportado desde las FECHAS REALES de los
     movimientos. Esto NO lo reemplaza — pero tampoco hacía falta esperar a eso.)
     """
     canon = netdep_canonico(conn, uid)
     if canon is None:                      # sin contabilidad: sólo queda la estampa
         return lambda r: float(r["net_deposited"] or 0)
+
+    # Depósitos y retiros BRUTOS de cada mes, de las mismas filas que `canon`.
+    brutos = {}
+    for b in conn.execute(
+            "SELECT year, month, deposits, withdrawals FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (uid,)).fetchall():
+        k = f"{int(b['year']):04d}-{int(b['month']):02d}"
+        d0, w0 = brutos.get(k, (0.0, 0.0))
+        brutos[k] = (d0 + float(b["deposits"] or 0), w0 + float(b["withdrawals"] or 0))
 
     ultimo_del_mes = {}
     for r in filas:
@@ -1417,7 +1438,11 @@ def _aportado_por_punto(conn, uid: int, filas):
         if rn is None:
             return c_m
         v = c_m - (float(rn["net_deposited"] or 0) - float(r["net_deposited"] or 0))
-        lo, hi = (c_prev, c_m) if c_prev <= c_m else (c_m, c_prev)
+        dep, ret = brutos.get(ym, (0.0, 0.0))
+        # Nunca más angosto que el corredor anterior (el `min`/`max` con las dos
+        # puntas cubre un ajuste cargado con signo negativo).
+        lo = min(c_prev, c_m, c_prev - ret)
+        hi = max(c_prev, c_m, c_prev + dep)
         return max(lo, min(hi, v))
     return _en
 
@@ -2551,7 +2576,14 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # `idx_dib_ultimo_apto`, no `curva[-1]["index"]`: si el último punto es
             # una intradía, su índice ya trae el leg apto→intradía y multiplicarlo
             # por (1+r) contaría la caída de hoy dos veces.
-            _idx_hoy = (idx_dib_ultimo_apto * (1.0 + r)) if modo == MODO_ESTIMADO else idx
+            # ⚠️ Y EN CERTERO TAMBIÉN. `index` es la FORMA; `idx`, el número. Donde
+            # difieren (una foto intradía con un depósito en el medio, o un leg
+            # dudoso que reinició el dibujo) el "hoy" con `idx` le pegaba a la línea
+            # un escalón que nadie vivió: 10.000 → intradía 11.000 → depósito →
+            # 21.000, hoy igual, dibujaba +10,0 % → +6,67 % en un día plano. Es el
+            # mismo cruce de índices que tenía el pico de acá arriba. El número
+            # publicado de "hoy" sigue siendo `idx` (`index_publicado`).
+            _idx_hoy = idx_dib_ultimo_apto * (1.0 + r)
             _ip_hoy = (idx_est * (1.0 + r)) if modo == MODO_ESTIMADO else idx
             curva.append({"date": "hoy", "index": round(_idx_hoy, 6),
                           "index_publicado": round(_ip_hoy, 6),

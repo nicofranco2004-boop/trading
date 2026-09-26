@@ -93,7 +93,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     crosses: Dict[str, Any] = {}
     for code in _CARD_TITLES:
         card_data = _build_card_data(
-            code, profile, positions, brokers, operations, conn, user_id, tc_blue, tc_mep
+            code, profile, positions, brokers, operations, conn, user_id, tc_blue, tc_mep,
+            pantalla=kwargs,
         )
         crosses[code] = {"title": _CARD_TITLES[code], **card_data}
 

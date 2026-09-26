@@ -2703,12 +2703,12 @@ function InsightsDesktop({ _embeddedTab }) {
     verdicts: verdictItems.filter(v => v.pct != null).map(v => ({ label: v.label, pct: Math.round(v.pct * 10) / 10 })),
     months_tracked: globalMonthly.length,
     missing_prices: [...new Set(missingPriceTickers)].slice(0, 12),
-    // La caída del paquete, en la moneda y el modo de la pantalla. SIN
-    // `valor_live`: este bloque va por /ai/analyze, que cachea por paquete, y el
-    // valor de ahora cambia con cada cotización — cada toque sería un análisis
-    // nuevo descontado del cupo. El paquete declara `medido_hasta`.
-    moneda: paramsCaidaIA.moneda,
-    modo: paramsCaidaIA.modo,
+    // La caída del paquete, medida como la de la tira de KPIs: moneda, modo y el
+    // valor de ahora. (Va por /ai/analyze, que cachea por paquete, pero el
+    // paquete ya trae cotizaciones vivas —posiciones, no realizado—, así que el
+    // valor de ahora no le agrega cambios que no tuviera; sin él, a media rueda
+    // el resumen decía una caída y el hallazgo D2 de `findings`, otra.)
+    ...paramsCaidaIA,
   }
 
   return (
@@ -3534,9 +3534,10 @@ function InsightsDesktop({ _embeddedTab }) {
         {/* Lectura IA holística — solo si hay test hecho (si no, la CTA a
             completar el test la muestra el propio ProfileInvestorBlock). */}
         {investorProfile && Object.keys(investorProfile).length > 0 && (
-          <ProfileSummaryBlock />
+          <ProfileSummaryBlock params={paramsCaidaIA} />
         )}
         <ProfileInvestorBlock
+          aiParams={paramsCaidaIA}
           allocationCard={allocationCard}
           objectiveCard={objectiveCard}
           horizonCard={horizonCard}
@@ -4184,7 +4185,7 @@ function InsightCard({ icon, title, children, accent, tooltip }) {
 
 function ProfileInvestorBlock({
   allocationCard, objectiveCard, horizonCard, drawdownCard, concentrationCard,
-  styleCard, liquidityCard, returnExpectationCard, positions = [],
+  styleCard, liquidityCard, returnExpectationCard, positions = [], aiParams,
 }) {
   // Si las cards basadas en perfil NO tienen perfil utilizable, mostramos
   // un CTA único en vez de 9 módulos bloqueados.
@@ -4236,6 +4237,7 @@ function ProfileInvestorBlock({
         return_exp: returnExpectationCard,
       }}
       positions={positions}
+      aiParams={aiParams}
     />
   )
 }
