@@ -1,7 +1,7 @@
 {
-  "name": "Rendi — Tu portfolio, con Coach IA",
+  "name": "Rendi — Tu portfolio, con IA",
   "short_name": "Rendi",
-  "description": "Tracker multi-broker para Argentina. P&L real en USD, FIFO automático, Coach IA con memoria.",
+  "description": "Tracker multi-broker para Argentina. P&L real en USD, FIFO automático, Rendi AI con memoria.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#07090c",

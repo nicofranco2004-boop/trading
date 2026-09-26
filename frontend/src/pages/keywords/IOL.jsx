@@ -25,7 +25,7 @@ const FEATURES = [
     desc: 'AL30, GD30, GD35, GD41, TX26, TZX27 y más. Cupones automáticos, amortizaciones, valor técnico, paridad. IOL te muestra el precio; Rendi te dice la historia.',
   },
   {
-    title: 'Coach IA con memoria persistente (Pro)',
+    title: 'Rendi AI con memoria persistente (Pro)',
     desc: 'Chat IA con contexto de tu cartera. "¿Cuánto realmente gané en AL30 este año?", "¿Por qué bajó mi cartera en mayo?". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
   },
 ]
@@ -58,7 +58,7 @@ export default function IOL() {
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker IOL Invertí Online — Rendi | P&L real en USD"
-      metaDescription="Seguí tu cartera de IOL en USD real con Rendi. Bonos AR (AL30, GD30, TX26), CEDEARs, acciones Merval. FIFO automático para AFIP, Coach IA, multi-broker."
+      metaDescription="Seguí tu cartera de IOL en USD real con Rendi. Bonos AR (AL30, GD30, TX26), CEDEARs, acciones Merval. FIFO automático para AFIP, Rendi AI, multi-broker."
       canonicalPath="/brokers/iol"
     />
   )

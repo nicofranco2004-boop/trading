@@ -113,7 +113,7 @@ export default function ProfileSummaryBlock({ className = '', params }) {
             </div>
             <h4 className="text-sm font-semibold text-ink-0 mb-1">Analizá tu perfil con la IA</h4>
             <p className="text-xs text-ink-2 max-w-md mx-auto mb-4 leading-relaxed">
-              El Coach lee tu test y tu cartera real, y arma una lectura a medida: qué importa
+              Rendi AI lee tu test y tu cartera real, y arma una lectura a medida: qué importa
               para vos y por qué. Se genera cuando la pedís y queda cacheada unas horas.
             </p>
             <button

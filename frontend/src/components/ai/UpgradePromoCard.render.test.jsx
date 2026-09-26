@@ -14,7 +14,7 @@ function texto(el) {
     .trim()
 }
 
-const UPGRADE_PRO = { available: true, current_tier: 'free', target_tier: 'pro', benefits: ['Chat libre con el Coach IA'] }
+const UPGRADE_PRO = { available: true, current_tier: 'free', target_tier: 'pro', benefits: ['Chat libre con Rendi AI'] }
 
 describe('UpgradePromoCard — el cartel de cuota agotada', () => {
   it('dice el contador que SÍ frenó (análisis), no el otro', () => {

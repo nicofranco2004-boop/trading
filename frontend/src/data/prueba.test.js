@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { archivosConTexto, esPublica, relativa, sinComentarios } from '../../scripts/texto-visible.mjs'
 import {
   CTA_PRUEBA, PRUEBA_EN_UNA_LINEA, PASO_CREAR_CUENTA, alTerminar, conservaElFree,
 } from './prueba'
@@ -58,36 +59,23 @@ describe('a quién se le muestra la tarjeta de Free en /planes', () => {
 // pública es el producto, y una promesa vieja no rompe ningún test ni tira
 // ningún error — sale en Google y calla. Son las páginas que lee alguien que
 // todavía no tiene cuenta, o sea alguien que nunca va a tener el plan Free.
-const PUBLICAS = [
-  'components/landing/FAQ.jsx',
-  'components/landing/KeywordLanding.jsx',
-  'components/blog/BlogPost.jsx',
-  'components/guide/GuidePage.jsx',
-  'pages/Landing.jsx',
-  'pages/keywords/Cedears.jsx',
-  'pages/keywords/Cocos.jsx',
-  'pages/keywords/IOL.jsx',
-  'pages/keywords/Binance.jsx',
-  'pages/keywords/BonosAR.jsx',
-  'pages/keywords/AfipCripto.jsx',
-  'pages/blog/articles/ComparativaBrokersArgentina.jsx',
-  'pages/guia/Empezar.jsx',
-  'pages/guia/CuentaYPlanes.jsx',
-  // Los legales: el visitante los lee antes de registrarse (y los acepta).
-  'pages/Terminos.jsx',
-  'pages/Reembolso.jsx',
-  'pages/Privacidad.jsx',
-]
+//
+// Qué páginas son públicas lo dice `scripts/texto-visible.mjs`, por carpeta: la
+// misma definición que usa el guard del nombre de la IA. Acá había una lista a
+// mano de 17 archivos que no incluía, por ejemplo, /planes ni el índice del blog.
+const PUBLICAS = archivosConTexto().filter(esPublica)
 const leer = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
-// El texto como lo lee la persona: sin comentarios (que SÍ nombran el bug para
-// explicarlo), sin etiquetas y sin cortes de línea. Sin sacar las etiquetas,
-// "vuelve a <strong>Free</strong> automáticamente" se le escapaba al patrón.
-const textoVisible = (src) => src
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter(l => !l.trimStart().startsWith('//')).join('\n')
-  .replace(/<[^>]+>/g, ' ')
-  .replace(/\{' '\}/g, ' ')
-  .replace(/\s+/g, ' ')
+// El texto como lo lee la persona, sin comentarios (que SÍ nombran el bug para
+// explicarlo; los decide un parser, ver texto-visible.mjs), en dos versiones:
+//   · sin etiquetas ni cortes de línea: sin sacarlas, "vuelve a
+//     <strong>Free</strong> automáticamente" se le escapaba al patrón;
+//   · con las etiquetas: sacándolas se iban también sus ATRIBUTOS, que es donde
+//     están la metaDescription de cada página y los <meta> que lee Google.
+const textosVisibles = (ruta) => {
+  const texto = sinComentarios(ruta, readFileSync(ruta, 'utf8'))
+  const plano = (s) => s.replace(/\{' '\}/g, ' ').replace(/\s+/g, ' ')
+  return [plano(texto.replace(/<[^>]+>/g, ' ')), plano(texto)]
+}
 
 // Las formas en que estas páginas ofrecían el Free. No se prohíbe NOMBRAR el
 // plan Free (la guía lo explica para las cuentas que lo conservan): se prohíbe
@@ -104,17 +92,29 @@ const OFERTAS = [
 ]
 
 describe('ninguna página pública ofrece el plan Free', () => {
-  it('los archivos existen (si alguien los mueve, esto tiene que avisar)', () => {
-    for (const rel of PUBLICAS) {
-      expect(existsSync(new URL(`../${rel}`, import.meta.url)), rel).toBe(true)
+  it('se leen, como mínimo, las 17 que se vigilaban a mano', () => {
+    // Contra el falso verde: si el recorrido se rompe, las de abajo pasan sin
+    // mirar nada. Éstas son las que ofrecían el Free el 22/09.
+    const leidas = PUBLICAS.map(relativa)
+    for (const rel of [
+      'components/landing/FAQ.jsx', 'components/landing/KeywordLanding.jsx',
+      'components/blog/BlogPost.jsx', 'components/guide/GuidePage.jsx', 'pages/Landing.jsx',
+      'pages/keywords/Cedears.jsx', 'pages/keywords/Cocos.jsx', 'pages/keywords/IOL.jsx',
+      'pages/keywords/Binance.jsx', 'pages/keywords/BonosAR.jsx', 'pages/keywords/AfipCripto.jsx',
+      'pages/blog/articles/ComparativaBrokersArgentina.jsx', 'pages/guia/Empezar.jsx',
+      'pages/guia/CuentaYPlanes.jsx', 'pages/Terminos.jsx', 'pages/Reembolso.jsx',
+      'pages/Privacidad.jsx',
+    ]) {
+      expect(leidas, rel).toContain(`src/${rel}`)
     }
   })
 
-  for (const rel of PUBLICAS) {
-    it(rel, () => {
-      const texto = textoVisible(leer(rel))
-      for (const oferta of OFERTAS) {
-        expect(texto, `${rel} volvió a ofrecer el Free (${oferta})`).not.toMatch(oferta)
+  for (const ruta of PUBLICAS) {
+    it(relativa(ruta), () => {
+      for (const texto of textosVisibles(ruta)) {
+        for (const oferta of OFERTAS) {
+          expect(texto, `${relativa(ruta)} volvió a ofrecer el Free (${oferta})`).not.toMatch(oferta)
+        }
       }
     })
   }

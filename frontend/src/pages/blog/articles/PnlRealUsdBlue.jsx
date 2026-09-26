@@ -133,7 +133,7 @@ export default function PnlRealUsdBlue() {
         <li>Cada operación se registra con su fecha y se le aplica el TC apropiado del día (blue, MEP, o ambos según el activo).</li>
         <li>El P&L en USD se actualiza en cada compra y venta.</li>
         <li>El dashboard te muestra <strong>en USD</strong> y <strong>en pesos</strong> lado a lado para que tengas la doble visión.</li>
-        <li>El Coach IA usa el USD como moneda principal para análisis — porque ahí está tu performance real.</li>
+        <li>Rendi AI usa el USD como moneda principal para análisis — porque ahí está tu performance real.</li>
       </ul>
 
       <h2>Conclusión</h2>

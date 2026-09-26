@@ -25,7 +25,7 @@ const FEATURES = [
     desc: 'Cargás tus bonos en cualquier broker. Rendi consolida la cartera total y te dice qué % está en soberanos vs CER vs corporativos.',
   },
   {
-    title: 'Coach IA: análisis de tus bonos',
+    title: 'Rendi AI: análisis de tus bonos',
     desc: '"¿Cuál es la TIR de mi cartera de bonos?", "¿Mi exposición a AL30 vs GD30 es coherente?", "¿Cuándo recibo el próximo cupón de TX26?". Tool especializado en bonos AR.',
   },
 ]

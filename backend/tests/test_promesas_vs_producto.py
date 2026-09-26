@@ -223,6 +223,44 @@ class ElPRECIOQueLeeGOOGLE(unittest.TestCase):
         self.assertNotIn("Free", self._ofertas())
 
 
+class ElChatQueDiceElHowToDeGOOGLE(unittest.TestCase):
+    """El HowTo de `frontend/index.html` (otro JSON-LD que Google puede mostrar)
+    cuenta en su paso 5 cuántas consultas por semana tiene el chat. La home dice
+    lo mismo leyéndolo del catálogo; el HTML estático no puede, así que los
+    números están a mano — y ya se desfasaron una vez: decía "6
+    consultas/semana" cuando el Plus daba 9."""
+
+    def _paso_del_chat(self) -> str:
+        import json
+        html = open(ElPRECIOQueLeeGOOGLE.INDEX, encoding="utf-8").read()
+        bloques = re.findall(
+            r'<script type="application/ld\+json">(.*?)</script>', html, re.S)
+        howto = [d for d in map(json.loads, bloques) if d.get("@type") == "HowTo"]
+        self.assertEqual(len(howto), 1, "index.html no tiene UN HowTo: revisar este test")
+        pasos = [p["text"] for p in howto[0]["step"] if "consultas" in p["text"]]
+        self.assertEqual(len(pasos), 1,
+                         "ya no hay UN paso que hable de las consultas: revisar este test")
+        return pasos[0]
+
+    def _numero(self, patron: str) -> int:
+        paso = self._paso_del_chat()
+        m = re.search(patron, paso)
+        self.assertTrue(m, f"el paso del chat ya no dice «{patron}»: revisar este test — «{paso}»")
+        return int(m.group(1))
+
+    def test_las_consultas_del_plus(self):
+        dice = self._numero(r"(\d+) consultas por semana en Plus")
+        real = LIMITS["plus"]["chat_per_week"]
+        self.assertEqual(dice, real,
+                         f"Google lee {dice} consultas por semana en Plus y el Plus da {real}")
+
+    def test_las_consultas_del_pro(self):
+        dice = self._numero(r"chat libre \((\d+) consultas por semana\)")
+        real = LIMITS["pro"]["chat_per_week"]
+        self.assertEqual(dice, real,
+                         f"Google lee {dice} consultas por semana en Pro y el Pro da {real}")
+
+
 class LoQueTodaviaNoExisteNoSeVende(unittest.TestCase):
     """El catálogo separa `roadmap` de las features activas, y avisa en un
     comentario que NUNCA van mezcladas. El muro las mezcló: vendía "carpeta de

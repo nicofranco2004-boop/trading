@@ -37,7 +37,7 @@ export default function WelcomeStep({ userName, onNext, onSkip }) {
         />
         <FeatureMini
           Icon={Bot}
-          title="Coach IA"
+          title="Rendi AI"
           desc="Hace análisis con tus datos, no en abstracto."
         />
       </div>

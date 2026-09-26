@@ -84,11 +84,11 @@ export default function MobileTopBar({ onRefresh }) {
                 estés, sin ir a buscarla a la pantalla que la tenga. Alineado a
                 la derecha para que el panel no se salga del viewport. */}
             <CurrencySwitcher variant="chip" align="right" className="mr-1" />
-            {/* Coach IA — botón siempre visible para abrir el drawer global */}
+            {/* Rendi AI — botón siempre visible para abrir el drawer global */}
             <button
               type="button"
               onClick={() => coachDrawer.open()}
-              aria-label="Coach IA"
+              aria-label="Rendi AI"
               className="p-2 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
             >
               <Sparkles size={16} strokeWidth={1.75} />

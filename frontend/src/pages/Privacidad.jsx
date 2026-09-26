@@ -46,8 +46,8 @@ export default function Privacidad() {
             <li>No tenemos acceso a tu dinero ni a tus cuentas: no hay integración bancaria. Vos cargás los datos manualmente o por CSV.</li>
             <li>No vendemos, alquilamos ni compartimos tus datos con fines comerciales, ni hacemos profiling publicitario.</li>
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
-            <li>El Coach IA usa Claude (Anthropic) para pensar la respuesta y, si pedís escucharla, OpenAI para leerla en voz alta. Ninguno de los dos entrena sus modelos con tus datos.</li>
-            <li>Si le hablás al Coach IA con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás. OpenAI lo retiene hasta 30 días para controlar abusos y después lo borra.</li>
+            <li>Rendi AI usa Claude (Anthropic) para pensar la respuesta y, si pedís escucharla, OpenAI para leerla en voz alta. Ninguno de los dos entrena sus modelos con tus datos.</li>
+            <li>Si le hablás a Rendi AI con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás. OpenAI lo retiene hasta 30 días para controlar abusos y después lo borra.</li>
             <li>Podés acceder, rectificar o eliminar tus datos en cualquier momento escribiéndonos.</li>
             <li>Sujeto a la Ley 25.326 (Protección de Datos Personales, Argentina).</li>
           </ul>
@@ -72,7 +72,7 @@ export default function Privacidad() {
           <p>
             <strong className="text-ink-0">Alcance.</strong> Esta política aplica a todo el
             tratamiento de datos que hacemos en el marco de Rendi: la creación y uso de tu
-            cuenta, los datos de cartera que cargás, el Coach IA y nuestras comunicaciones
+            cuenta, los datos de cartera que cargás, Rendi AI y nuestras comunicaciones
             con vos. No cubre los sitios o servicios de terceros que puedas visitar desde
             enlaces dentro de la app, que se rigen por sus propias políticas. El uso del
             servicio se complementa con nuestros{' '}
@@ -104,7 +104,7 @@ export default function Privacidad() {
             <li>Plazos fijos (capital, tasa, fechas de alta y vencimiento, cobros).</li>
             <li>Entradas mensuales (cash flow por broker).</li>
             <li>Perfil de inversor, si completás el cuestionario opcional (horizonte, tolerancia al riesgo).</li>
-            <li>Hechos persistentes que le aclarás al Coach IA para mejorar sus respuestas.</li>
+            <li>Hechos persistentes que le aclarás a Rendi AI para mejorar sus respuestas.</li>
           </ul>
           <p className="mt-4"><strong className="text-ink-0">Datos de uso y técnicos que se generan automáticamente:</strong></p>
           <ul>
@@ -153,8 +153,8 @@ export default function Privacidad() {
               Para registrarte, identificarte de forma segura y administrar tu suscripción.
             </li>
             <li>
-              <strong className="text-ink-0">Responder con el Coach IA (consentimiento).</strong>{' '}
-              Cuando le hacés una consulta al Coach IA, enviamos un snapshot de tu cartera
+              <strong className="text-ink-0">Responder con Rendi AI (consentimiento).</strong>{' '}
+              Cuando le hacés una consulta a Rendi AI, enviamos un snapshot de tu cartera
               a Anthropic (Claude) para que pueda responderte con contexto. Si además elegís
               escuchar la respuesta, enviamos el texto de ese resumen a OpenAI, que lo
               convierte en audio; y si elegís dictarle la pregunta en vez de escribirla,
@@ -183,9 +183,9 @@ export default function Privacidad() {
           </ul>
         </Section>
 
-        <Section title="4. Coach IA: procesamiento por Anthropic y OpenAI">
+        <Section title="4. Rendi AI: procesamiento por Anthropic y OpenAI">
           <p>
-            Rendi ofrece un <strong className="text-ink-0">Coach IA</strong> que usa Claude,
+            Rendi ofrece <strong className="text-ink-0">Rendi AI</strong>, un asistente que usa Claude,
             el modelo de inteligencia artificial de{' '}
             <strong className="text-ink-0">Anthropic</strong>, para responder preguntas
             sobre tu cartera.
@@ -205,7 +205,7 @@ export default function Privacidad() {
             </li>
             <li>
               <strong className="text-ink-0">Si pedís escuchar la respuesta.</strong> El
-              Coach IA puede leerte la respuesta en voz alta. Pensar la respuesta la sigue
+              Rendi AI puede leerte la respuesta en voz alta. Pensar la respuesta la sigue
               haciendo Claude; para convertirla en audio enviamos a{' '}
               <strong className="text-ink-0">OpenAI</strong> únicamente el{' '}
               <strong className="text-ink-0">texto de ese resumen hablado</strong> — tres
@@ -215,7 +215,7 @@ export default function Privacidad() {
             </li>
             <li>
               <strong className="text-ink-0">Si le hablás con el micrófono.</strong> Podés
-              dictarle la pregunta al Coach IA en vez de escribirla. Cuando tocás el
+              dictarle la pregunta a Rendi AI en vez de escribirla. Cuando tocás el
               micrófono, el navegador te pide permiso por su cuenta —nosotros no podemos
               prenderlo sin eso— y se graban como máximo{' '}
               <strong className="text-ink-0">30 segundos</strong>. Esa grabación se envía a{' '}
@@ -265,7 +265,7 @@ export default function Privacidad() {
             </li>
             <li>
               <strong className="text-ink-0">Para qué sirve y para qué no.</strong> Las
-              respuestas del Coach IA son informativas y pueden contener errores: es una
+              respuestas de Rendi AI son informativas y pueden contener errores: es una
               herramienta probabilística, no asesoramiento financiero. Las decisiones de
               inversión son tuyas y a tu propio riesgo (ver{' '}
               <Link to="/terminos" className="text-data-violet hover:underline">Términos y Condiciones</Link>).
@@ -289,12 +289,12 @@ export default function Privacidad() {
               Sirve la interfaz web de Rendi.
             </li>
             <li>
-              <strong className="text-ink-0">Anthropic (Coach IA).</strong> Recibe el
-              snapshot de tu cartera y tu consulta cuando usás el Coach IA. Política:{' '}
+              <strong className="text-ink-0">Anthropic (Rendi AI).</strong> Recibe el
+              snapshot de tu cartera y tu consulta cuando usás Rendi AI. Política:{' '}
               <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">anthropic.com/legal/privacy</a>.
             </li>
             <li>
-              <strong className="text-ink-0">OpenAI (la voz y el micrófono del Coach IA).</strong>{' '}
+              <strong className="text-ink-0">OpenAI (la voz y el micrófono de Rendi AI).</strong>{' '}
               Recibe el texto del resumen hablado cuando pedís escuchar una respuesta, y la
               grabación —más los nombres de tus activos y brokers, como ayuda de
               vocabulario— cuando le dictás una pregunta. El audio no lo guardamos nosotros.
@@ -471,7 +471,7 @@ export default function Privacidad() {
           <p>
             Los usamos <strong className="text-ink-0">exclusivamente para prestarte el
             servicio</strong>: mostrarte tu portafolio, calcular resultados, generar reportes
-            y alimentar el Coach IA cuando se lo pedís. No los vendemos, no los usamos para
+            y alimentar a Rendi AI cuando se lo pedís. No los vendemos, no los usamos para
             publicidad ni los compartimos con tu broker, AFIP, ARCA ni reguladores, salvo
             orden judicial. Vos mantenés la propiedad de tu información y podés exportarla o
             pedir su eliminación cuando quieras.
