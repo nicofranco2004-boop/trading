@@ -46,7 +46,7 @@ export default function Privacidad() {
             <li>No tenemos acceso a tu dinero ni a tus cuentas: no hay integración bancaria. Vos cargás los datos manualmente o por CSV.</li>
             <li>No vendemos, alquilamos ni compartimos tus datos con fines comerciales, ni hacemos profiling publicitario.</li>
             <li>El pago lo procesa Rebill: nunca almacenamos datos de tu tarjeta o medio de pago.</li>
-            <li>Rendi AI usa Claude (Anthropic) para pensar la respuesta y, si pedís escucharla, OpenAI para leerla en voz alta. Ninguno de los dos entrena sus modelos con tus datos.</li>
+            <li>Rendi AI usa Claude (Anthropic) para pensar la respuesta y OpenAI para leerla en voz alta: la lectura viene activada y la apagás con el botón del parlante. Ninguno de los dos entrena sus modelos con tus datos.</li>
             <li>Si le hablás a Rendi AI con el micrófono, ese audio va a OpenAI para convertirse en texto. Nosotros no lo guardamos en ningún lado, y el micrófono sólo se prende cuando vos lo tocás. OpenAI lo retiene hasta 30 días para controlar abusos y después lo borra.</li>
             <li>Podés acceder, rectificar o eliminar tus datos en cualquier momento escribiéndonos.</li>
             <li>Sujeto a la Ley 25.326 (Protección de Datos Personales, Argentina).</li>
@@ -155,11 +155,12 @@ export default function Privacidad() {
             <li>
               <strong className="text-ink-0">Responder con Rendi AI (consentimiento).</strong>{' '}
               Cuando le hacés una consulta a Rendi AI, enviamos un snapshot de tu cartera
-              a Anthropic (Claude) para que pueda responderte con contexto. Si además elegís
-              escuchar la respuesta, enviamos el texto de ese resumen a OpenAI, que lo
-              convierte en audio; y si elegís dictarle la pregunta en vez de escribirla,
-              enviamos a OpenAI la grabación para convertirla en texto. Lo hacemos porque
-              vos elegís usar esas funciones. Ver la sección 4 para el detalle.
+              a Anthropic (Claude) para que pueda responderte con contexto. Como la lectura en
+              voz alta viene activada, además enviamos a OpenAI el texto de un resumen de la
+              respuesta, que lo convierte en audio, salvo que la apagues con el botón del
+              parlante; y si elegís dictarle la pregunta en vez de escribirla, enviamos a
+              OpenAI la grabación para convertirla en texto. Lo hacemos porque vos elegís usar
+              Rendi AI, y la voz la podés apagar cuando quieras. Ver la sección 4 para el detalle.
             </li>
             <li>
               <strong className="text-ink-0">Comunicación transaccional (ejecución del contrato).</strong>{' '}
@@ -204,14 +205,16 @@ export default function Privacidad() {
               <a href="https://www.anthropic.com/legal/privacy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">anthropic.com/legal/privacy</a>.
             </li>
             <li>
-              <strong className="text-ink-0">Si pedís escuchar la respuesta.</strong> El
-              Rendi AI puede leerte la respuesta en voz alta. Pensar la respuesta la sigue
+              <strong className="text-ink-0">La lectura en voz alta.</strong> Rendi AI te lee
+              la respuesta en voz alta: viene activada, y con el botón del parlante la apagás o
+              la volvés a prender cuando quieras (en el plan Free no arranca sola: la iniciás
+              vos). Pensar la respuesta la sigue
               haciendo Claude; para convertirla en audio enviamos a{' '}
               <strong className="text-ink-0">OpenAI</strong> únicamente el{' '}
               <strong className="text-ink-0">texto de ese resumen hablado</strong> — tres
               oraciones con los montos redondeados. Para esta función no le enviamos tu
-              snapshot, ni tu email, ni ningún otro dato de tu cuenta. Es opcional: se
-              activa con el botón del parlante y podés apagarla cuando quieras.
+              snapshot, ni tu email, ni ningún otro dato de tu cuenta. Con el parlante
+              apagado, a OpenAI no le llega nada de tus respuestas.
             </li>
             <li>
               <strong className="text-ink-0">Si le hablás con el micrófono.</strong> Podés
@@ -295,8 +298,9 @@ export default function Privacidad() {
             </li>
             <li>
               <strong className="text-ink-0">OpenAI (la voz y el micrófono de Rendi AI).</strong>{' '}
-              Recibe el texto del resumen hablado cuando pedís escuchar una respuesta, y la
-              grabación —más los nombres de tus activos y brokers, como ayuda de
+              Recibe el texto del resumen hablado cuando Rendi AI te lee una respuesta (viene
+              activado; lo apagás con el botón del parlante), y la grabación —más los códigos
+              y nombres de los activos que tenés y los nombres de tus brokers, como ayuda de
               vocabulario— cuando le dictás una pregunta. El audio no lo guardamos nosotros.
               Política:{' '}
               <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.

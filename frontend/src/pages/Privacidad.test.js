@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { MAX_SEGUNDOS } from '../hooks/useDictado.js'
+import { VOZ_ARRANCA_PRENDIDA } from '../contexts/VozContext.jsx'
 
 // La página de Privacidad promete cosas concretas sobre el micrófono. Si el
 // código cambia y la página no, la página pasa a MENTIR — y nadie se entera,
@@ -78,5 +79,38 @@ describe('lo que la página promete sobre el micrófono sigue siendo cierto', ()
     // —viajan los nombres de tus activos—, así que ahora dice "para ESTA
     // función". Sin ese acote, dos párrafos de la misma página se contradicen.
     expect(pagina).toMatch(/Para esta función no le enviamos tu\s*\n?\s*snapshot/i)
+  })
+})
+
+// ── La lectura en voz alta viene PRENDIDA, y los dos legales tienen que decirlo ──
+// Hasta el 2026-09-26, Privacidad decía "Es opcional: se activa con el botón del
+// parlante" y los Términos "si pedís escuchar". Era al revés: el parlante arranca
+// prendido (`VOZ_ARRANCA_PRENDIDA` en VozContext.jsx) y, en los planes pagos y en
+// la prueba, Rendi lee sola cada respuesta —o sea, le manda el resumen a OpenAI—
+// sin que la persona toque nada. Esto ata los textos a ese valor: si alguien
+// apaga el parlante de entrada, o vuelve a escribir que se activa a pedido, rojo.
+describe('lo que los legales dicen de la lectura en voz alta sigue siendo cierto', () => {
+  const plano = (s) => s.replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ').replace(/<[^>]+>/g, ' ')
+    .replace(/\{' '\}/g, ' ').replace(/\s+/g, ' ')
+  const privacidad = plano(pagina)
+  const terminos = plano(readFileSync(new URL('./Terminos.jsx', import.meta.url), 'utf8'))
+  const COMO_SI_SE_PIDIERA = /si pedís escuchar|elegís escuchar|es opcional: se activa|se activa con el botón/i
+
+  it('arranca como dice VOZ_ARRANCA_PRENDIDA, y los dos legales lo dicen igual', () => {
+    for (const [nombre, texto] of [['Privacidad', privacidad], ['Términos', terminos]]) {
+      if (VOZ_ARRANCA_PRENDIDA) {
+        expect(texto, `${nombre} tiene que decir que la voz viene activada`).toMatch(/viene activad/i)
+        expect(texto, `${nombre} tiene que decir cómo se apaga`).toMatch(/lo apagás|la apagás/i)
+        expect(texto, `${nombre} vuelve a presentar la voz como algo que se pide`).not.toMatch(COMO_SI_SE_PIDIERA)
+      } else {
+        expect(texto, `la voz arranca apagada: ${nombre} no puede decir que viene activada`).not.toMatch(/viene activad/i)
+      }
+    }
+  })
+
+  it('también en el resumen de arriba, que es lo único que lee la mayoría', () => {
+    const corte = pagina.indexOf('1. Introducción')
+    expect(corte, 'no encuentro dónde termina el resumen').toBeGreaterThan(0)
+    expect(/viene activad/i.test(plano(pagina.slice(0, corte)))).toBe(VOZ_ARRANCA_PRENDIDA)
   })
 })

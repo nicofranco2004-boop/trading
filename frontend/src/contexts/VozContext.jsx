@@ -34,6 +34,13 @@ import { getClientContext } from '../utils/api'
 import { traducirErrorDeChat, esCancelacion } from '../utils/errorChat'
 
 const LS_ON = 'rendi:voz:on'
+// Con qué arranca el parlante para quien nunca lo tocó. Prendido: en los planes
+// pagos y en la prueba, Rendi lee sola cada respuesta, y para eso le manda a
+// OpenAI el resumen hablado. Términos (§1, §11) y Privacidad (resumen, §3, §4,
+// §5) lo dicen así —"viene activada y la apagás con el botón del parlante"—, y
+// `pages/Privacidad.test.js` los ata a este valor: si cambia, cambian ellos.
+// Hasta el 2026-09-26 los dos decían que se activaba con el parlante.
+export const VOZ_ARRANCA_PRENDIDA = true
 const LS_RATE = 'rendi:voz:rate'
 
 // 1,25× por defecto: a la velocidad natural el resumen de 3 oraciones dura 24
@@ -111,7 +118,7 @@ export function VozProvider({ children }) {
   const audioRef = useRef(null)
 
   // ── El parlante ──────────────────────────────────────────────────────────
-  const [enabled, setEnabledState] = useState(() => leerBool(LS_ON, true))
+  const [enabled, setEnabledState] = useState(() => leerBool(LS_ON, VOZ_ARRANCA_PRENDIDA))
   const [rate, setRateState] = useState(leerRate)
   const rateRef = useRef(rate)
   rateRef.current = rate

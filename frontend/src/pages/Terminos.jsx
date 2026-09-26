@@ -43,7 +43,7 @@ export default function Terminos() {
           Estos Términos y Condiciones (los "Términos") regulan el acceso y uso de
           Rendi. Te pedimos que los leas con atención: al crear una cuenta o usar el
           servicio, aceptás todo lo que sigue. Si algo no te cierra, no uses Rendi y
-          escribinos —prefermos aclararlo antes que después.
+          escribinos —preferimos aclararlo antes que después.
         </p>
 
         <Section title="1. Definiciones">
@@ -80,8 +80,9 @@ export default function Terminos() {
             <li>
               <strong className="text-ink-0">"Rendi AI"</strong> — el asistente
               conversacional de Rendi que responde preguntas sobre tu cartera apoyándose en
-              modelos de Claude (Anthropic). Si pedís escuchar una respuesta o le dictás una
-              pregunta, la voz y el dictado los hace OpenAI.
+              modelos de Claude (Anthropic). También puede leerte sus respuestas en voz alta
+              —viene activado y lo apagás con el botón del parlante— y tomarte las preguntas
+              dictadas: de pasar la respuesta a voz y tu voz a texto se encarga OpenAI.
             </li>
             <li>
               <strong className="text-ink-0">"Terceros"</strong> — proveedores externos que
@@ -361,14 +362,18 @@ export default function Terminos() {
               modelos</em>.
             </li>
             <li>
-              {/* Agregado el 2026-09-26 SIN aviso por mail (decisión de Nico): no es un
-                  cambio material del §18 — declara un tratamiento que la Política de
-                  Privacidad ya informaba. Los hechos son los de Privacidad §4 y §5. */}
-              <strong className="text-ink-0">OpenAI (voz y dictado).</strong> Si pedís escuchar
-              una respuesta de Rendi AI, se envía a OpenAI el texto de ese resumen hablado para
-              convertirlo en audio. Si le dictás una pregunta, se envía la grabación —junto con
-              los nombres de tus activos y de tus brokers, como ayuda de vocabulario— para
-              convertirla en texto. Según la política de OpenAI para su API,{' '}
+              {/* Agregado el 2026-09-26 SIN aviso por mail (decisión de Nico). La lectura en
+                  voz alta viene ACTIVADA (VozContext: `leerBool(LS_ON, true)`; arranca sola
+                  salvo en Free) y Privacidad decía que se activaba con el parlante: se
+                  corrigió el mismo día, también por decisión de Nico y sin aviso. Los
+                  hechos son los de Privacidad §4 y §5. */}
+              <strong className="text-ink-0">OpenAI (voz y dictado).</strong> La lectura en voz
+              alta de Rendi AI viene activada y la apagás con el botón del parlante. Cuando te
+              lee una respuesta, se envía a OpenAI un resumen hablado de esa respuesta —unas
+              tres oraciones, con los montos de tu cartera redondeados— para convertirlo en
+              audio. Si le dictás una pregunta, se envía la grabación —junto con los códigos y
+              nombres de los activos que tenés y los nombres de tus brokers, como ayuda de
+              vocabulario— para convertirla en texto. Según la política de OpenAI para su API,{' '}
               <em>esos datos no se usan para entrenar sus modelos</em>; OpenAI los guarda hasta
               30 días para detectar usos abusivos y después los borra. El detalle está en la{' '}
               <Link to="/privacidad" className="text-data-violet hover:underline">Política de Privacidad</Link>.
