@@ -4,6 +4,8 @@ import { isBondTicker } from './tickers'
 import { claveSemanaISO } from './semanas'
 import { hoyISO, fechaISO } from './fecha'
 import { pctTxt } from './format'
+import { computeBrokerValue } from './valuation'
+import { computeSectorBreakdown } from './assetSector'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
 // intercepta las llamadas al backend devolviendo fixtures hardcodeadas.
@@ -158,7 +160,7 @@ const POSITIONS = [
   // ── Cocos ARS (acciones AR + CEDEARs) ──
   { id: 201, broker: 'Cocos',   asset: 'GGAL',     is_cash: 0, buy_price: 4250,  quantity: 200, invested: 850000,  tc_compra: 1050, price_override: null, entry_date: '2024-04-10', commissions: 0 },
   { id: 202, broker: 'Cocos',   asset: 'YPFD',    is_cash: 0, buy_price: 28500, quantity: 30,  invested: 855000,  tc_compra: 1180, price_override: null, entry_date: '2024-10-22', commissions: 0 },
-  { id: 203, broker: 'Cocos',   asset: 'AAPL.BA', is_cash: 0, buy_price: 18800, quantity: 40,  invested: 752000,  tc_compra: 1240, price_override: null, entry_date: '2025-01-15', commissions: 0 },
+  { id: 203, broker: 'Cocos',   asset: 'AAPL',    is_cash: 0, buy_price: 18800, quantity: 40,  invested: 752000,  tc_compra: 1240, price_override: null, entry_date: '2025-01-15', commissions: 0 },
   { id: 204, broker: 'Cocos',   asset: 'AL30',    is_cash: 0, buy_price: 78200, quantity: 60,  invested: 4692000,  tc_compra: 1400, price_override: null, entry_date: '2026-03-15', commissions: 0 },
   { id: 299, broker: 'Cocos',   asset: 'ARS',     is_cash: 1, buy_price: null,  quantity: 180000, invested: 180000, tc_compra: null, price_override: null, entry_date: null,        commissions: 0 },
 
@@ -169,25 +171,65 @@ const POSITIONS = [
   { id: 399, broker: 'Binance', asset: 'USDT', is_cash: 1, buy_price: null,   quantity: 820,   invested: 820.00,  tc_compra: null, price_override: null, entry_date: null,         commissions: 0 },
 ]
 
-// Operaciones cerradas (para Operaciones page + win rate + profit factor)
+// Operaciones cerradas (Movimientos, win rate, profit factor, Reportes).
+//
+// ⚠️ FECHADAS RELATIVAS A HOY, y con el P&L que da su propia cuenta. Antes eran
+// fechas fijas de 2024–2025: ninguna operación en los últimos 12 meses mientras
+// Reportes anunciaba "2026: 46 operaciones cerradas" (un número al azar), y las
+// dos de Cocos declaraban un P&L en dólares ocho veces el de sus precios. Ahora
+// Reportes, Movimientos, el Dashboard y Comportamiento cuentan ESTAS catorce.
+// INTC (+148 %) es la mejor operación porque así lo dicen los textos de la IA
+// del demo: el fixture tiene que respaldar lo que el demo afirma.
+const _TC_OPS_AR = 1300   // dólar de referencia de las ventas en pesos
 const OPERATIONS = (() => {
+  const hoy = new Date()
+  const fecha = (mesesAtras, dia) => {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - mesesAtras, 1)
+    d.setDate(Math.min(dia, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()))
+    return fechaISO(d)
+  }
+  // activo, broker, precio de compra, de venta, cantidad, meses atrás, día
   const ops = [
-    { asset: 'NVDA', broker: 'Schwab', entry_price: 120, exit_price: 142, quantity: 10, pnl_usd: 220,  pnl_pct: 18.33, date: '2024-06-12', op_type: 'LONG' },
-    { asset: 'MELI', broker: 'Schwab', entry_price: 1820, exit_price: 1740, quantity: 2, pnl_usd: -160, pnl_pct: -4.40, date: '2024-07-04', op_type: 'LONG' },
-    { asset: 'GOOGL',broker: 'Schwab', entry_price: 165, exit_price: 182, quantity: 8, pnl_usd: 136,  pnl_pct: 10.30, date: '2024-08-20', op_type: 'LONG' },
-    { asset: 'AMD',  broker: 'Schwab', entry_price: 148, exit_price: 132, quantity: 15, pnl_usd: -240, pnl_pct: -10.81,date: '2024-09-15', op_type: 'LONG' },
-    { asset: 'BTC',  broker: 'Binance',entry_price: 58000,exit_price: 67500,quantity: 0.04, pnl_usd: 380, pnl_pct: 16.38,date: '2024-10-02', op_type: 'LONG' },
-    { asset: 'GGAL', broker: 'Cocos',  entry_price: 3850, exit_price: 4400, quantity: 50, pnl_usd: 195, pnl_pct: 14.28,date: '2024-10-30', op_type: 'LONG' },
-    { asset: 'TSLA', broker: 'Schwab', entry_price: 240, exit_price: 218, quantity: 5, pnl_usd: -110, pnl_pct: -9.17, date: '2024-11-08', op_type: 'LONG' },
-    { asset: 'ETH',  broker: 'Binance',entry_price: 2850, exit_price: 3320, quantity: 0.5, pnl_usd: 235, pnl_pct: 16.49,date: '2024-12-04', op_type: 'LONG' },
-    { asset: 'META', broker: 'Schwab', entry_price: 480, exit_price: 545, quantity: 4, pnl_usd: 260,  pnl_pct: 13.54, date: '2025-01-22', op_type: 'LONG' },
-    { asset: 'AAPL', broker: 'Schwab', entry_price: 185, exit_price: 172, quantity: 10, pnl_usd: -130, pnl_pct: -7.03, date: '2025-02-18', op_type: 'LONG' },
-    { asset: 'NVDA', broker: 'Schwab', entry_price: 130, exit_price: 156, quantity: 12, pnl_usd: 312,  pnl_pct: 20.00, date: '2025-03-12', op_type: 'LONG' },
-    { asset: 'SOL',  broker: 'Binance',entry_price: 180, exit_price: 154, quantity: 8, pnl_usd: -208, pnl_pct: -14.44,date: '2025-03-28', op_type: 'LONG' },
-    { asset: 'AVGO', broker: 'Schwab', entry_price: 142, exit_price: 168, quantity: 10, pnl_usd: 260,  pnl_pct: 18.31, date: '2025-04-15', op_type: 'LONG' },
-    { asset: 'YPFD', broker: 'Cocos',  entry_price: 24500,exit_price: 27800,quantity: 20, pnl_usd: 280,  pnl_pct: 13.46, date: '2025-05-02', op_type: 'LONG' },
+    ['NVDA', 'Schwab', 120, 142, 10, 17, 12],
+    ['MELI', 'Schwab', 1820, 1740, 2, 16, 4],
+    ['GOOGL', 'Schwab', 165, 182, 8, 15, 20],
+    ['AMD', 'Schwab', 148, 132, 15, 14, 15],
+    ['BTC', 'Binance', 58000, 67500, 0.04, 13, 2],
+    ['GGAL', 'Cocos', 3850, 4400, 50, 12, 28],
+    ['TSLA', 'Schwab', 240, 218, 5, 11, 8],
+    ['ETH', 'Binance', 2850, 3320, 0.5, 10, 4],
+    ['META', 'Schwab', 480, 545, 4, 9, 22],
+    ['AAPL', 'Schwab', 185, 172, 10, 8, 18],
+    ['NVDA', 'Schwab', 130, 156, 12, 7, 12],
+    ['SOL', 'Binance', 180, 154, 8, 5, 27],
+    ['INTC', 'Schwab', 13, 32.2, 60, 4, 9],
+    ['AVGO', 'Schwab', 142, 168, 10, 2, 15],
+    ['YPFD', 'Cocos', 24500, 27800, 20, 1, 5],
   ]
-  return ops.map((o, i) => ({ id: 1000 + i, ...o, commissions: 0 }))
+  return ops.map(([asset, broker, entry_price, exit_price, quantity, meses, dia], i) => {
+    const bruto = (exit_price - entry_price) * quantity
+    return {
+      id: 1000 + i, asset, broker, entry_price, exit_price, quantity,
+      pnl_usd: +(broker === 'Cocos' ? bruto / _TC_OPS_AR : bruto).toFixed(2),
+      pnl_pct: +(((exit_price / entry_price) - 1) * 100).toFixed(2),
+      date: fecha(meses, dia), op_type: 'LONG', commissions: 0,
+    }
+  })
+})()
+
+// Realizado, operaciones y ganadoras POR MES ('YYYY-MM'): lo leen la historia
+// mensual y Reportes, así que las tres pantallas cuentan las mismas operaciones.
+const _OPS_POR_MES = (() => {
+  const out = {}
+  for (const o of OPERATIONS) {
+    const k = o.date.slice(0, 7)
+    if (!out[k]) out[k] = { pnl: 0, trades: 0, wins: 0, activos: [] }
+    out[k].pnl += o.pnl_usd
+    out[k].trades += 1
+    if (o.pnl_usd > 0) out[k].wins += 1
+    out[k].activos.push(o)
+  }
+  return out
 })()
 
 // Precios actuales fake (snapshot del momento). Definido ARRIBA de MONTHLY a
@@ -217,6 +259,15 @@ const PRICES = {
 // cada render → no parpadea entre refreshes). Drift -2% a +2.5% con bias
 // hacia positivo (más symbols "en verde" hoy = portfolio demo se ve más
 // atractivo para marketing).
+// ⚠️ UNA SOLA VARIACIÓN DEL DÍA POR ACTIVO. El mapa de calor, los destacados y
+// el índice decían "NVDA +4,4 % hoy" mientras la Cartera mostraba NVDA −0,29 %
+// en el día (salía de un hash). Ahora los que aparecen en el mercado usan esta
+// tabla, que es la del mapa de calor (`buildHeatmapBlocks`); el resto, el hash.
+const _CAMBIO_DIA = {
+  NVDA: 4.4, AAPL: 1.0, MSFT: 1.2, TSLA: -2.1, AMD: 0.9, SPY: 0.42, GOOGL: -0.4, META: 0.3,
+  AVGO: 5.5, BTC: 2.7, ETH: 1.7, SOL: 1.9, 'GGAL.BA': 0.1, 'YPFD.BA': 1.2, 'AAPL.BA': 1.0,
+  PLTR: -2.1, COIN: 4.5,
+}
 const PREV_CLOSE = (() => {
   const out = {}
   for (const [sym, price] of Object.entries(PRICES)) {
@@ -224,7 +275,7 @@ const PREV_CLOSE = (() => {
     let hash = 0
     for (let i = 0; i < sym.length; i++) hash = (hash * 31 + sym.charCodeAt(i)) & 0xffff
     // Distribución: -2% a +2.5% (bias positivo levemente)
-    const dailyChange = ((hash % 450) - 200) / 10000
+    const dailyChange = _CAMBIO_DIA[sym] != null ? _CAMBIO_DIA[sym] / 100 : ((hash % 450) - 200) / 10000
     // prev_close = current / (1 + change) → si change > 0, today subió
     const prev = price / (1 + dailyChange)
     // Redondeo: 4 decimales para crypto chico, 2 para resto
@@ -233,168 +284,285 @@ const PREV_CLOSE = (() => {
   return out
 })()
 
-// Total USD del portfolio computado desde POSITIONS × PRICES, con el mismo
-// algoritmo que `computeBrokerValue` del frontend (valuation.js):
-//   • USD broker → price × quantity en USD directo (o invested para cash).
-//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcValuacion.
-//     Si no hay precio (ej. asset ya tiene '.BA' en el nombre y el lookup
-//     duplicaría el sufijo), fallback a cost basis (invested) / tcValuacion.
-//   • Cash ARS → quantity / tcValuacion; cash USD/USDT → invested.
-//
-// Este es el target al que MONTHLY tiene que converger en su último mes
-// para que el Dashboard no muestre un "Últimos 10 días" inflado.
-const _DEMO_TC_BLUE = 1415  // matches /config en demo
-
-// Valor live POR BROKER (USD), con el mismo algoritmo que computeBrokerValue
-// del frontend (valuation.js):
-//   • USD broker → price × quantity (o invested para cash).
-//   • ARS broker (Cocos) → precio[asset+'.BA'] × quantity en ARS, / tcValuacion;
-//     sin precio (ej. asset ya termina en '.BA') → cost basis (invested) / tcValuacion.
-//   • Cash ARS → quantity / tcValuacion; cash USD/USDT → invested.
-// Se usa para (a) el total del portfolio y (b) derivar los pesos por broker de
-// MONTHLY, así el último mes de cada broker ≈ su valor live y la serie de
-// Insights (cuyo punto "Hoy" sale del valor live) no pega un salto.
-const _BROKER_LIVE_USD = (() => {
-  const by = {}
-  for (const b of BROKERS) by[b.name] = 0
-  for (const p of POSITIONS) {
-    let v = 0
-    if (p.is_cash) {
-      v = p.broker === 'Cocos' ? (p.quantity || 0) / _DEMO_TC_BLUE : (p.invested || 0)
-    } else if (p.broker === 'Cocos') {
-      const priceArs = PRICES[p.asset + '.BA']
-      v = priceArs != null ? (priceArs * (p.quantity || 0)) / _DEMO_TC_BLUE : (p.invested || 0) / _DEMO_TC_BLUE
-    } else {
-      const priceUsd = PRICES[p.asset]
-      v = priceUsd != null ? priceUsd * (p.quantity || 0) : (p.invested || 0)
-    }
-    if (by[p.broker] != null) by[p.broker] += v
+// ─── Números FIJOS, no al azar ───────────────────────────────────────────────
+// ⚠️ ANTES TODO SALÍA DE Math.random AL CARGAR: cada recarga era otra cartera
+// ("Ganancia total" entre 16 % y 76 %, "P&L realizado" entre US$ 460 y 3.656) y
+// lo que el visitante miró hace un minuto ya no existía. Ahora cada serie tiene
+// su semilla, y cada MES la suya: sumar el mes nuevo no cambia los anteriores.
+function crearAzar(semilla) {
+  let a = semilla >>> 0
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
-  return by
-})()
-const _COMPUTED_PORTFOLIO_TOTAL_USD = Object.values(_BROKER_LIVE_USD).reduce((a, b) => a + b, 0)
+}
+// La semilla elige UNA historia verosímil entre las posibles: año en curso
+// positivo y cerca del S&P, ningún mes peor que −6 %. Cambiarla cambia todos los
+// números del demo a la vez (y siguen cerrando entre sí).
+const _SEMILLA_DEMO = 'rendi-demo-2'
+function azarDe(clave) { return crearAzar(_hashStr(`${_SEMILLA_DEMO}|${clave}`)) }
 
-// Cierres mensuales (para Monthly Reports / Reports timeline / Insights chart).
-// CRÍTICO: tiene que incluir capital_final para que buildCumulativeReturnSeries
-// pueda computar el TWR correctamente. Sin este campo, monthlyReturn = -100% y
-// el drawdown queda atascado en -100% propagado por todos los meses.
-//
-// Modelo consistente entre meses:
-//   capital_inicio[t] = capital_final[t-1]
-//   pnl_total = pnl_realized + pnl_unrealized  → vuelve al cap_final
-//   capital_final[t] = capital_inicio[t] + deposits − withdrawals + pnl_total
-// Pesos relativos por broker (suman ~1.0). Determinan cuánto del global
-// corresponde a cada broker — el chart ARS de Insights filtra por broker
-// específico, así que sin entries por broker el chart ARS queda vacío.
-//
-// Se DERIVAN del valor live real de cada broker (no hardcoded). Así el último
-// mes de cada broker en MONTHLY ≈ su valor live, y la línea de Insights —que
-// toma el punto "Hoy" del valor live— no pega un salto. Antes Cocos estaba fijo
-// en 0.06 pero su share real es ~0.13 (la posición AL30 lo infla) → la línea
-// ARS saltaba x2 en "Hoy".
+const _DEMO_TC_BLUE = 1415    // /config del demo
+const _DEMO_TC_MEP = 1424     // DOLAR.mep.venta: el dólar con el que valúa la pantalla
+const _DEMO_TC_CRIPTO = 1422  // DOLAR.cripto.venta
+
+// ⚠️ LA CARTERA SE VALÚA CON LA MISMA FUNCIÓN QUE LA PANTALLA (computeBrokerValue,
+// al MEP, con el costo 'purchase' que ve un visitante). Antes había una copia a
+// mano, al blue: el demo decía US$ 41.470 donde el Dashboard mostraba 41.435,82,
+// y el costo —del que sale el aportado— no era el de la pantalla.
+// La cartera a los precios de AYER: el cierre de ayer de la historia diaria.
+// Así "Hoy" es exactamente la suma de la variación del día de cada posición.
+const _VALOR_CIERRE_AYER = (() => {
+  let v = 0
+  for (const b of BROKERS) v += computeBrokerValue(POSITIONS, PREV_CLOSE, b, _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').value
+  return v
+})()
+
+const _VALUACION = (() => {
+  const porBroker = {}
+  let valor = 0
+  let costo = 0
+  for (const b of BROKERS) {
+    const r = computeBrokerValue(POSITIONS, PRICES, b, _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase')
+    porBroker[b.name] = r.value
+    valor += r.value
+    costo += r.invested
+  }
+  return { porBroker, valor, costo }
+})()
+
+// Peso de cada broker en la cartera de hoy: reparte la historia del total entre
+// brokers (el gráfico en pesos de Insights filtra por broker).
 const BROKER_WEIGHTS = (() => {
-  const total = _COMPUTED_PORTFOLIO_TOTAL_USD || 1
   const w = {}
-  for (const b of BROKERS) w[b.name] = (_BROKER_LIVE_USD[b.name] || 0) / total
+  for (const b of BROKERS) w[b.name] = (_VALUACION.porBroker[b.name] || 0) / (_VALUACION.valor || 1)
   return w
 })()
 
+// Cierres mensuales (Reportes, Insights, /mensual). Cada mes:
+//   capital_inicio[t] = capital_final[t-1]
+//   capital_final[t] = capital_inicio[t] + aportes + resultado
+//
+// ⚠️ LA HISTORIA CIERRA CON LA CARTERA DE HOY. El Dashboard verifica
+//     aportado + realizado = costo de lo que hay hoy
+// y lo que no cierra lo publica como "Dividendos e intereses · no cargados como
+// P&L" (o "Diferencia sin explicar"). Con aportes y realizado al azar, el demo
+// mostraba en 79 de 80 cargas entre US$ 1.700 y 6.900 de dividendos que no
+// existen, sobre NVDA, TSLA y BTC. Ahora:
+//   · el realizado de cada mes es el de las OPERATIONS de ese mes;
+//   · el capital inicial es lo que falta para que aportado = costo − realizado;
+//   · el rendimiento de los meses se ajusta, todos por igual, para que el último
+//     cierre sea exactamente el valor que muestra la pantalla.
+// El mes en curso rinde sólo lo transcurrido: si no, el día 1 "Hoy" publicaba
+// el mes entero (+3,9 % a las 10 de la mañana, antes de que abra el mercado).
 const MONTHLY = (() => {
-  const out = []
-  // Fecha LOCAL, no `new Date('2024-04-01')`: ese string se lee como medianoche
-  // UTC, que en Argentina es el 31 de marzo a las 21:00. La serie arrancaba en
-  // MARZO y el primer `setMonth(+1)` pedía el 31 de abril → 1° de mayo: abril de
-  // 2024 no existía en la demo.
-  const start = new Date(2024, 3, 1)
-  const today = new Date()
-  let valuation = 18500           // valor de mercado al inicio
-  while (start < today) {
-    const y = start.getFullYear()
-    const m = start.getMonth() + 1
-    const capInicio = Math.round(valuation)
-    // Aporte esporádico: 35% de los meses con $400-800
-    const deposit = Math.random() > 0.65 ? Math.round(400 + Math.random() * 400) : 0
-    const withdrawal = 0
-    // Rendimiento del mes: 1.2% mean ± 3% noise. Realista para retail diversificado.
-    const monthReturn = 0.012 + (Math.random() - 0.5) * 0.06
-    // ⚠️ EL MES EN CURSO RINDE SÓLO LO TRANSCURRIDO. Con el mes entero, el día 1
-    // "Hoy" y el chip de 1D publicaban el mes completo en un solo día (+3,9 % un
-    // 1° de junio a las 10 de la mañana, antes de que abra el mercado).
-    const esMesEnCurso = y === today.getFullYear() && m === today.getMonth() + 1
-    const transcurrido = esMesEnCurso ? today.getDate() / new Date(y, m, 0).getDate() : 1
-    const pnlTotal = capInicio * monthReturn * transcurrido
-    // Split realized / unrealized — la mayoría es unrealized (mark-to-market).
-    const pnlRealized = Math.round(pnlTotal * 0.2 + (Math.random() - 0.5) * 200)
-    const pnlUnrealized = Math.round(pnlTotal - pnlRealized)
-    const capFinal = capInicio + deposit - withdrawal + pnlTotal
-    valuation = capFinal
-
-    // Entry global (agregado de todos los brokers)
-    out.push({
-      broker: 'global',
-      year: y,
-      month: m,
-      capital_inicio: capInicio,
-      capital_final: Math.round(capFinal),
-      deposits: deposit,
-      withdrawals: withdrawal,
-      pnl_realized: pnlRealized,
-      pnl_unrealized: pnlUnrealized,
+  const hoy = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const plan = []
+  for (let d = new Date(2024, 3, 1); d <= hoy; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    const y = d.getFullYear()
+    const m = d.getMonth() + 1
+    const key = `${y}-${pad(m)}`
+    const r = azarDe('mes-' + key)
+    const deposito = r() > 0.65 ? Math.round(400 + r() * 400) : 0
+    const retorno = 0.012 + (r() - 0.5) * 0.06
+    const enCurso = y === hoy.getFullYear() && m === hoy.getMonth() + 1
+    const transcurrido = enCurso ? hoy.getDate() / new Date(y, m, 0).getDate() : 1
+    plan.push({ y, m, key, deposito, retorno, transcurrido, realizado: _OPS_POR_MES[key]?.pnl || 0 })
+  }
+  const realizado = plan.reduce((s, x) => s + x.realizado, 0)
+  const aportado = _VALUACION.costo - realizado
+  const inicial = aportado - plan.reduce((s, x) => s + x.deposito, 0)
+  const recorrer = (ajuste) => {
+    let v = inicial
+    return plan.map((x) => {
+      const ci = v
+      const cf = (ci + x.deposito) * (1 + (x.retorno + ajuste) * x.transcurrido)
+      v = cf
+      return { ci, cf }
     })
-
-    // Entries por broker — proporcionales al peso. Insights los necesita
-    // para el chart ARS (filtra por broker.currency === 'ARS').
-    for (const [brokerName, weight] of Object.entries(BROKER_WEIGHTS)) {
+  }
+  let lo = -0.2
+  let hi = 0.2
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2
+    const t = recorrer(mid)
+    if (t[t.length - 1].cf > _VALUACION.valor) hi = mid
+    else lo = mid
+  }
+  const tramos = recorrer((lo + hi) / 2)
+  tramos[tramos.length - 1].cf = _VALUACION.valor
+  const r2 = (n) => Math.round(n * 100) / 100
+  const out = []
+  plan.forEach((x, i) => {
+    const ci = r2(tramos[i].ci)
+    const cf = r2(tramos[i].cf)
+    const pnlRealized = r2(x.realizado)
+    const pnlUnrealized = r2(cf - ci - x.deposito - pnlRealized)
+    out.push({
+      broker: 'global', year: x.y, month: x.m,
+      capital_inicio: ci, capital_final: cf, deposits: x.deposito, withdrawals: 0,
+      pnl_realized: pnlRealized, pnl_unrealized: pnlUnrealized,
+    })
+    for (const [brokerName, w] of Object.entries(BROKER_WEIGHTS)) {
       out.push({
-        broker: brokerName,
-        year: y,
-        month: m,
-        capital_inicio: Math.round(capInicio * weight),
-        capital_final: Math.round(capFinal * weight),
-        deposits: Math.round(deposit * weight),
-        withdrawals: 0,
-        pnl_realized: Math.round(pnlRealized * weight),
-        pnl_unrealized: Math.round(pnlUnrealized * weight),
+        broker: brokerName, year: x.y, month: x.m,
+        capital_inicio: r2(ci * w), capital_final: r2(cf * w), deposits: r2(x.deposito * w), withdrawals: 0,
+        pnl_realized: r2(pnlRealized * w), pnl_unrealized: r2(pnlUnrealized * w),
       })
     }
-    start.setMonth(start.getMonth() + 1)
-  }
-
-  // ── Reconcile MONTHLY's final value con POSITIONS × PRICES ─────────────
-  // MONTHLY simula stochastic desde $18.5k (Apr 2024) → algo random en hoy.
-  // POSITIONS × PRICES es hardcoded → ~$41k. Si no alineamos, el Dashboard
-  // toma liveValue (positions × prices) y lo compara contra snapshots[1]
-  // (interpolado de MONTHLY) → P&L "Últimos N días" = gap entre las 2
-  // simulaciones (puede ser +$10k de la nada). Scaleamos todo MONTHLY
-  // proporcionalmente para que su última capital_final ≈ POSITIONS×PRICES.
-  // Los retornos mensuales (%) se preservan; sólo cambian los absolutos.
-  const lastGlobal = [...out].reverse().find(m => m.broker === 'global')
-  if (lastGlobal && lastGlobal.capital_final > 0 && _COMPUTED_PORTFOLIO_TOTAL_USD > 0) {
-    const scale = _COMPUTED_PORTFOLIO_TOTAL_USD / lastGlobal.capital_final
-    if (Math.abs(scale - 1) > 0.01) {
-      for (const m of out) {
-        m.capital_inicio = Math.round(m.capital_inicio * scale)
-        m.capital_final = Math.round(m.capital_final * scale)
-        m.deposits = Math.round((m.deposits || 0) * scale)
-        m.pnl_realized = Math.round((m.pnl_realized || 0) * scale)
-        m.pnl_unrealized = Math.round((m.pnl_unrealized || 0) * scale)
-      }
-    }
-  }
+  })
   return out
 })()
 
-// ⚠️ LA ÚLTIMA FILA DEL TOTAL, NO LA ÚLTIMA FILA. Desde f3dcb3b0 (2026-05-14)
-// `MONTHLY` trae por mes una fila 'global' y después una por broker (Schwab,
-// Cocos, Binance), así que `MONTHLY[MONTHLY.length - 1]` es BINANCE. Esta línea
-// se escribió 5 minutos antes que esas filas y nadie la volvió a mirar: durante
-// cuatro meses la "foto de hoy" del demo valió el saldo de Binance (US$ 14.517)
-// y el chip del gráfico publicó "−64,9 % en el mes" — la parte de Binance menos
-// uno — al lado de una cartera de US$ 41.400 que ganaba.
+// La última fila del TOTAL (no la última fila: detrás de cada mes vienen las de
+// cada broker, y leer `MONTHLY[length-1]` —Binance— fue el −64,9 % del chip).
 const _ULTIMO_GLOBAL = [...MONTHLY].reverse().find(m => m.broker === 'global')
-const MONTHLY_LAST_VALUATION = _ULTIMO_GLOBAL
-  ? _ULTIMO_GLOBAL.capital_final
-  : 18500
+const MONTHLY_LAST_VALUATION = _ULTIMO_GLOBAL ? _ULTIMO_GLOBAL.capital_final : _VALUACION.valor
+
+// Benchmarks mensuales (Insights y comparaciones). Mismas keys que el backend:
+// USD → sp500, shv (T-Bills), gld (Oro). ARS → inflation_ar, merval, uva, dolar_blue.
+//
+// ⚠️ INFLACIÓN REALISTA. La vieja arrancaba en 12 % MENSUAL y bajaba de a
+// 0,25: sumaba +300 % en el período del demo y Diagnóstico publicaba "Le
+// perdés a la inflación −43 %". Ahora es la serie mensual argentina de
+// referencia (INDEC hasta 2025, aproximada; 2026 supuesta), y el blue sigue un
+// camino plausible hasta el blue del demo.
+const _INFLACION_REF = {
+  2023: [6.0, 6.6, 7.7, 8.4, 7.8, 6.0, 6.3, 12.4, 12.7, 8.3, 12.8, 25.5],
+  2024: [20.6, 13.2, 11.0, 8.8, 4.2, 4.6, 4.0, 4.2, 3.5, 2.7, 2.4, 2.7],
+  2025: [2.2, 2.4, 3.7, 2.8, 1.5, 1.6, 1.9, 1.9, 2.1, 2.3, 2.5, 2.8],
+  2026: [2.3, 2.3, 2.2, 2.1, 2.0, 2.0, 1.9, 1.9, 1.9, 1.9, 1.9, 1.9],
+}
+const _BLUE_ANCLAS = [['2023-01', 380], ['2023-12', 1000], ['2024-04', 1020], ['2024-07', 1420],
+  ['2024-10', 1200], ['2024-12', 1220], ['2025-06', 1290], ['2025-12', 1370]]
+const BENCHMARKS = (() => {
+  const out = { sp500: {}, inflation_ar: {}, dolar_blue: {}, shv: {}, gld: {}, merval: {}, uva: {} }
+  const hoy = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const idxMes = (k) => Number(k.slice(0, 4)) * 12 + Number(k.slice(5, 7)) - 1
+  const blueEn = (k) => {
+    const i = idxMes(k)
+    const anclas = _BLUE_ANCLAS.map(([mk, v]) => [idxMes(mk), v])
+    if (i <= anclas[0][0]) return anclas[0][1]
+    for (let j = 1; j < anclas.length; j++) {
+      const [i0, v0] = anclas[j - 1]
+      const [i1, v1] = anclas[j]
+      if (i <= i1) return v0 * Math.pow(v1 / v0, (i - i0) / (i1 - i0))
+    }
+    const [iu, vu] = anclas[anclas.length - 1]
+    return vu * Math.pow(1.0035, i - iu)
+  }
+  let sp = 4700, shv = 110, gld = 185, merv = 400000, uva = 400
+  for (let d = new Date(2023, 0, 1); d <= hoy; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    const y = d.getFullYear()
+    const key = `${y}-${pad(d.getMonth() + 1)}`
+    const r = azarDe('bench-' + key)
+    sp = sp * (1 + 0.009 + (r() - 0.5) * 0.05)
+    out.sp500[key] = Math.round(sp * 100) / 100
+    const infl = (_INFLACION_REF[y] || _INFLACION_REF[2026])[d.getMonth()]
+    out.inflation_ar[key] = infl
+    out.dolar_blue[key] = Math.round(blueEn(key) * (1 + (r() - 0.5) * 0.02))
+    shv = shv * (1 + 0.0035 + (r() - 0.5) * 0.004)
+    out.shv[key] = Math.round(shv * 100) / 100
+    gld = gld * (1 + 0.012 + (r() - 0.5) * 0.045)
+    out.gld[key] = Math.round(gld * 100) / 100
+    merv = merv * (1 + infl / 100 + (r() - 0.5) * 0.07)
+    out.merval[key] = Math.round(merv)
+    uva = uva * (1 + infl / 100)
+    out.uva[key] = Math.round(uva * 100) / 100
+  }
+  // El último mes del blue = el blue del demo: la vista en pesos valúa "Hoy" al
+  // blue actual y el último mes al de la serie; si no coinciden, "Hoy" salta.
+  const claves = Object.keys(out.dolar_blue).sort()
+  const ultimo = claves.length ? out.dolar_blue[claves[claves.length - 1]] : 0
+  if (ultimo > 0) {
+    const escala = _DEMO_TC_BLUE / ultimo
+    for (const k of claves) out.dolar_blue[k] = Math.round(out.dolar_blue[k] * escala)
+  }
+  return { ...out, fetched_at: new Date().toISOString() }
+})()
+
+const DOLAR = {
+  blue:   { compra: 1395, venta: _DEMO_TC_BLUE },
+  mep:    { compra: 1420, venta: _DEMO_TC_MEP },
+  ccl:    { compra: 1430, venta: 1432 },
+  cripto: { compra: 1421, venta: _DEMO_TC_CRIPTO },
+  fetched_at: new Date().toISOString(),
+}
+
+
+// Fotos diarias DERIVADAS del MONTHLY para que ambos cuenten la misma historia:
+// un cierre por día, como el que escribe el cron en producción, y el último día
+// de cada mes ES su capital_final.
+//
+// ⚠️ UN CIERRE POR DÍA, NO UNO POR SEMANA. Con los 1/8/15/22 de antes el cierre
+// anterior al 1° de mes quedaba siempre a 7-10 días, más que los 5 que tolera
+// `esBordeFresco`: "Este mes" no tenía número NUNCA en la demo y "Hoy" decía
+// "Últimos 3 días". Una demo que no puede mostrar lo que ve un usuario con el
+// cron andando no demuestra nada.
+//
+// Las filas llevan `clase`/`base`/`apto`/`sintetico` con los valores EXACTOS que
+// devuelve GET /api/snapshots (twr.clasificar_serie + twr.es_apto), para que la
+// pantalla recorra en la demo los mismos guards que en producción.
+const SNAPSHOTS = (() => {
+  // Solo entries "global" — `MONTHLY` también contiene desagregados por
+  // broker (Schwab/Cocos/Binance), iterar sobre todos produce un zigzag
+  // brutal en el chart porque los valores parciales (ej. Cocos ~$1k vs
+  // global ~$30k) se alternan en la serie temporal.
+  const globals = MONTHLY.filter(m => m.broker === 'global')
+  if (globals.length === 0) return []
+  const hoy = hoyISO()
+  const [hoyY, hoyM, hoyD] = hoy.split('-').map(Number)
+  const medicion = { clase: 'medicion', base: 'mercado', apto: true, sintetico: false }
+  const out = []
+  let aportado = globals[0].capital_inicio
+  for (const m of globals) {
+    const flujo = (m.deposits || 0) - (m.withdrawals || 0)
+    // El aporte entra el día 1 y mueve valor y aportado JUNTOS: la ganancia
+    // (valor − aportado) no pega un escalón que no existió.
+    aportado += flujo
+    const resultado = m.capital_final - m.capital_inicio - flujo
+    const diasDelMes = new Date(m.year, m.month, 0).getDate()
+    // El mes en curso llega a su capital_final HOY (el valor vivo), no a fin de mes.
+    const tramo = (m.year === hoyY && m.month === hoyM) ? hoyD : diasDelMes
+    for (let dia = 1; dia <= diasDelMes; dia++) {
+      const fecha = fechaISO(new Date(m.year, m.month - 1, dia))
+      if (fecha >= hoy) break
+      // Ruido de ±0,25 % aprox. que se anula en el cierre de mes.
+      const ruido = dia === diasDelMes ? 0 : (azarDe('dia-' + fecha)() - 0.5) * 200
+      let valor = m.capital_inicio + flujo + resultado * (dia / tramo) + ruido
+      // El mes en curso llega AYER a la cartera valuada con los precios de ayer
+      // (PREV_CLOSE): "Hoy" = la variación del día de cada posición, sumada.
+      if (tramo === hoyD && hoyD > 1) {
+        const hastaAyer = (_VALOR_CIERRE_AYER - m.capital_inicio - flujo) * (dia / (hoyD - 1))
+        valor = m.capital_inicio + flujo + hastaAyer + (dia === hoyD - 1 ? 0 : ruido)
+      }
+      out.push({
+        date: fecha,
+        total_value: Math.round(valor * 100) / 100,
+        total_invested: Math.round(aportado * 0.95 * 100) / 100,
+        net_deposited: Math.round(aportado * 100) / 100,
+        ...medicion,
+      })
+    }
+  }
+  // La foto de hoy: la que el Dashboard escribe en la primera visita del día. En
+  // producción es INTRADIA (media rueda: sostiene la línea, nunca abre ni cierra
+  // un período) y la pantalla la reemplaza por el valor vivo.
+  out.push({
+    date: hoy,
+    total_value: Math.round(MONTHLY_LAST_VALUATION * 100) / 100,
+    total_invested: Math.round(aportado * 0.95 * 100) / 100,
+    net_deposited: Math.round(aportado * 100) / 100,
+    clase: 'intradia', base: 'mercado', apto: false, sintetico: true,
+  })
+  return out.sort((a, b) => b.date.localeCompare(a.date))
+})()
+
 
 // ─── Reports timeline derivada de MONTHLY ───────────────────────────────────
 // El backend devuelve PeriodReport por mes con metrics + headline. Acá
@@ -404,198 +572,179 @@ const MONTHLY_LAST_VALUATION = _ULTIMO_GLOBAL
 const MONTH_NAMES_ES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                         'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
 
-// ─── Semanas de cada mes (la tira "Semana a semana" de Reportes) ────────────
-// El backend real manda las semanas anidadas dentro de cada mes; el fixture las
-// mandaba vacías y la tira quedaba en blanco en la cuenta demo.
+// ─── Un período medido con las MISMAS fotos que el Dashboard ────────────────
+// Mes, semana, día y año de Reportes salen de acá: Δ(valor − aportado) entre el
+// último cierre ANTES del período y el último cierre DEL período (el de hoy si
+// está en curso), el % con Dietz como en Reportes de producción, y las
+// operaciones cerradas en esas fechas.
 //
-// El reparto usa pesos fijos, no azar: dado el resultado de un mes, sus semanas
-// salen siempre iguales. (El mes SÍ cambia entre recargas — MONTHLY se genera
-// con `Math.random`, de antes—, así que la tira igual se ve distinta cada vez.
-// Lo que este reparto garantiza es que las semanas siempre CIERREN con su mes.)
-// Los pesos suman uno, así que las semanas de un mes suman el resultado del mes.
-// Y el no realizado se deriva igual que en el motor —total menos realizado—
-// para que la barra partida cierre exactamente, como cierra en producción.
-const PESOS_SEMANA = [0.42, -0.18, 0.51, 0.16, 0.09]
+// ⚠️ ANTES CADA PANTALLA INVENTABA SU NÚMERO. La semana repartía el mes con
+// pesos fijos (un 16 % del mes caía en una semana que todavía no había
+// empezado), el día salía de azar nuevo en cada pedido (el mismo día daba
+// −US$ 208 y después +US$ 172) y las operaciones del mes eran 2 a 8 al azar
+// aunque Movimientos no tuviera ninguna. En una misma sesión, "Este mes",
+// "Septiembre en curso" y Reportes → Mes daban tres números distintos.
+const MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+const DIAS_CORTOS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
-function semanasDelMesDemo(m, deltaMes) {
-  // El "hoy" del repo, no uno propio: `utils/fecha` existe justamente porque 27
-  // lugares calculaban el día con UTC y de 21:00 a medianoche devolvían mañana.
+function _medirPeriodoDemo(inicio, fin) {
+  const asc = [...SNAPSHOTS].sort((a, b) => (a.date < b.date ? -1 : 1))
+  if (!asc.length) return null
+  const base = [...asc].reverse().find(s => s.date < inicio) || asc[0]
+  const cierre = [...asc].reverse().find(s => s.date <= fin)
+  if (!cierre || cierre.date < inicio || cierre === base) return null
+  const r2 = (n) => Math.round(n * 100) / 100
+  const aportes = cierre.net_deposited - base.net_deposited
+  const deltaUsd = (cierre.total_value - cierre.net_deposited) - (base.total_value - base.net_deposited)
+  const denominador = base.total_value + 0.5 * aportes
+  const ops = OPERATIONS.filter(o => o.date >= inicio && o.date <= fin)
+  const wins = ops.filter(o => o.pnl_usd > 0).length
+  const realizado = ops.reduce((s, o) => s + o.pnl_usd, 0)
+  return {
+    start_value: r2(base.total_value),
+    end_value: r2(cierre.total_value),
+    delta_usd: r2(deltaUsd),
+    delta_pct: denominador > 0 ? +((deltaUsd / denominador) * 100).toFixed(2) : null,
+    delta_pct_over_contrib: null,
+    realized_pnl: r2(realizado),
+    unrealized_pnl: r2(deltaUsd - realizado),
+    deposits: r2(Math.max(0, aportes)),
+    withdrawals: r2(Math.max(0, -aportes)),
+    trades_count: ops.length,
+    win_count: wins,
+    loss_count: ops.length - wins,
+    win_rate: ops.length ? Math.round((wins / ops.length) * 100) : null,
+    vs_sp500_pct: null,
+    vs_inflation_pct: null,
+    basis_incomparable: false,
+    _ops: ops,
+  }
+}
+
+// S&P del período, con la misma serie que dibuja el gráfico del demo.
+function _spDelPeriodo(claveMesAnterior, claveMesFinal) {
+  const a = BENCHMARKS.sp500[claveMesAnterior]
+  const b = BENCHMARKS.sp500[claveMesFinal]
+  return a > 0 && b > 0 ? (b / a - 1) * 100 : null
+}
+const _claveMes = (y, m) => `${y}-${String(m).padStart(2, '0')}`
+const _mesAnterior = (y, m) => (m === 1 ? _claveMes(y - 1, 12) : _claveMes(y, m - 1))
+
+function _textoOps(metrics) {
+  const ops = metrics._ops || []
+  if (!ops.length) return 'Sin operaciones cerradas: el resultado vino de las posiciones abiertas.'
+  const mayor = [...ops].sort((a, b) => Math.abs(b.pnl_usd) - Math.abs(a.pnl_usd))[0]
+  const signo = mayor.pnl_usd >= 0 ? '+' : '−'
+  return `Cerraste ${ops.length} operaci${ops.length === 1 ? 'ón' : 'ones'} (${metrics.win_count} ganadora${metrics.win_count === 1 ? '' : 's'}); la de más peso fue ${mayor.asset}, ${signo}US$ ${Math.abs(mayor.pnl_usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}.`
+}
+const _sinInterno = ({ _ops, ...m }) => m
+
+function _semanaDemo(lunesIso) {
+  const lunes = new Date(`${lunesIso}T00:00:00Z`)
+  const domingo = new Date(lunes.getTime())
+  domingo.setUTCDate(domingo.getUTCDate() + 6)
+  const finIso = domingo.toISOString().slice(0, 10)
   const hoyIso = hoyISO()
+  if (lunesIso > hoyIso) return null
+  const m = _medirPeriodoDemo(lunesIso, finIso)
+  if (!m) return null
+  const clave = claveSemanaISO(lunesIso)
+  return {
+    period_type: 'week',
+    period_key: clave,
+    period_label: `Semana ${Number(clave.slice(-2))}`,
+    period_start: lunesIso,
+    period_end: finIso,
+    is_current: lunesIso <= hoyIso && hoyIso <= finIso,
+    is_relevant: Math.abs(m.delta_usd) >= 100 || m.trades_count > 0,
+    metrics: _sinInterno(m),
+    headline: m.delta_usd > 0 ? 'Semana en alza.' : m.delta_usd < 0 ? 'Semana en baja.' : 'Semana sin cambios.',
+    subheadline: null,
+    insights: [],
+    highlights: [],
+    children: [],
+    _textoOps: _textoOps(m),
+  }
+}
 
+function semanasDelMesDemo(m) {
   const lunes = []
   const cursor = new Date(Date.UTC(m.year, m.month - 1, 1))
   while (cursor.getUTCMonth() === m.month - 1) {
-    if (cursor.getUTCDay() === 1) lunes.push(new Date(cursor.getTime()))
+    if (cursor.getUTCDay() === 1) lunes.push(cursor.toISOString().slice(0, 10))
     cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
-
-  const pesos = PESOS_SEMANA.slice(0, lunes.length)
-  const suma = pesos.reduce((a, b) => a + b, 0) || 1
-  const base = Math.max(m.capital_inicio || 0, 1)
-
-  return lunes.map((inicio, i) => {
-    const fin = new Date(inicio.getTime())
-    fin.setUTCDate(fin.getUTCDate() + 6)
-    const inicioIso = inicio.toISOString().slice(0, 10)
-    const finIso = fin.toISOString().slice(0, 10)
-    if (inicioIso > hoyIso) return null   // semana que todavía no empezó
-
-    const delta = Math.round((deltaMes * pesos[i]) / suma)
-    // El realizado del mes cae en dos semanas, no repartido parejo: así se ve
-    // la diferencia entre una semana de mercado y una con ventas.
-    const realizado = i === 1 ? Math.round((m.pnl_realized || 0) * 0.6)
-      : i === 3 ? Math.round((m.pnl_realized || 0) * 0.4)
-      : 0
-    return {
-      period_type: 'week',
-      period_key: claveSemanaISO(inicioIso),
-      // Sin el Number quedaba "Semana 07": el backend escribe "Semana 7"
-      // (reporting/builder.py:78, `int(w)`) y el propio demo también.
-      period_label: `Semana ${Number(claveSemanaISO(inicioIso).slice(-2))}`,
-      period_start: inicioIso,
-      period_end: finIso,
-      is_current: inicioIso <= hoyIso && hoyIso <= finIso,
-      is_relevant: Math.abs(delta) >= 100 || realizado !== 0,
-      metrics: {
-        start_value: base,
-        end_value: base + delta,
-        delta_usd: delta,
-        delta_pct: +((delta / base) * 100).toFixed(2),
-        realized_pnl: realizado,
-        unrealized_pnl: delta - realizado,
-        deposits: 0,
-        withdrawals: 0,
-        trades_count: realizado !== 0 ? 2 : 0,
-        basis_incomparable: false,
-      },
-      // WeekCard usa el headline como el texto de la fila: vacío, la lista de
-      // semanas de la cuenta demo se ve rota. Mismo tono que el resto del fixture.
-      headline: delta > 0 ? 'Semana en alza.' : delta < 0 ? 'Semana en baja.' : 'Semana sin cambios.',
-      subheadline: null,
-      insights: [],
-      highlights: [],
-      children: [],
-    }
-  }).filter(Boolean)
+  return lunes.map(_semanaDemo).filter(Boolean).map(({ _textoOps, ...w }) => w)
 }
 
 const REPORTS_TIMELINE = (() => {
-  // Solo los globals — el frontend agrupa por año
   const globals = MONTHLY.filter(m => m.broker === 'global')
-  if (globals.length === 0) return []
-
-  const today = new Date()
-  const currentYear = today.getFullYear()
-  const currentMonth = today.getMonth() + 1
-
-  return globals.map((m, idx) => {
-    const prev = idx > 0 ? globals[idx - 1] : null
-    const baseValue = m.capital_inicio || 1
-    const net = (m.deposits || 0) - (m.withdrawals || 0)
-    const pnlTotal = (m.capital_final || 0) - baseValue - net
-    const delta_pct = baseValue > 0 ? (pnlTotal / baseValue) * 100 : 0
-    const isCurrent = m.year === currentYear && m.month === currentMonth
-    const isRelevant = Math.abs(pnlTotal) > 50 || Math.abs(net) > 50
-    // Trades por mes: 2-8 (correlaciona con noise)
-    const trades = 2 + Math.floor(Math.random() * 7)
-    const winRate = 50 + (delta_pct > 0 ? 15 : -10) + Math.random() * 10
-    const vsSp = delta_pct - (1.2 + (Math.random() - 0.5) * 2)  // benchmark ~1.2% mean
+  const hoy = new Date()
+  return globals.map((m) => {
+    const clave = _claveMes(m.year, m.month)
+    const ultimoDia = new Date(m.year, m.month, 0).getDate()
+    const metrics = _medirPeriodoDemo(`${clave}-01`, `${clave}-${String(ultimoDia).padStart(2, '0')}`)
+      || { ...(_medirPeriodoDemo(`${clave}-01`, hoyISO()) || {}) }
+    const isCurrent = m.year === hoy.getFullYear() && m.month === hoy.getMonth() + 1
+    const pct = metrics.delta_pct ?? 0
+    const sp = _spDelPeriodo(_mesAnterior(m.year, m.month), clave)
+    const vsSp = sp != null ? +(pct - sp).toFixed(1) : null
+    const isRelevant = Math.abs(metrics.delta_usd || 0) > 50 || (metrics.deposits || 0) > 50 || (metrics.trades_count || 0) > 0
 
     let headline = 'Mes con movimiento moderado.'
-    if (delta_pct > 5) headline = 'Mes sólido — rally generalizado del mercado.'
-    else if (delta_pct > 2) headline = 'Buen rendimiento, por encima del benchmark.'
-    else if (delta_pct < -3) headline = 'Mes difícil — corrección del mercado afectó la cartera.'
-    else if (delta_pct < 0) headline = 'Mes ligeramente negativo, sin caídas relevantes.'
+    if (pct > 5) headline = 'Mes sólido — rally generalizado del mercado.'
+    else if (pct > 2) headline = 'Buen rendimiento del mes.'
+    else if (pct < -3) headline = 'Mes difícil — corrección del mercado afectó la cartera.'
+    else if (pct < 0) headline = 'Mes ligeramente negativo, sin caídas relevantes.'
 
-    // Narrativa "qué pasó" — texto largo determinístico
-    const direction = delta_pct >= 0 ? 'ganaste' : 'perdiste'
-    const startValueFmt = m.capital_inicio.toLocaleString('es-AR', { maximumFractionDigits: 0 })
-    const deltaUsdFmt = Math.abs(Math.round(pnlTotal)).toLocaleString('es-AR', { maximumFractionDigits: 0 })
-    const sampleAssets = delta_pct >= 0
-      ? ['NVDA', 'MSFT', 'BTC', 'GGAL'][Math.floor(Math.random() * 4)]
-      : ['TSLA', 'YPFD', 'SOL', 'AMD'][Math.floor(Math.random() * 4)]
-    const vsSpStr = Math.abs(vsSp) >= 0.5
+    const verbo = (metrics.delta_usd || 0) >= 0 ? 'ganaste' : 'perdiste'
+    const vsSpStr = vsSp != null && Math.abs(vsSp) >= 0.5
       ? ` Quedaste ${Math.abs(vsSp).toFixed(1).replace('.', ',')} puntos ${vsSp > 0 ? 'encima' : 'debajo'} del S&P 500.`
       : ''
     const narrative = (isRelevant || isCurrent)
-      ? `En ${MONTH_NAMES_ES[m.month - 1].toLowerCase()} ${m.year} ${direction} US$ ${deltaUsdFmt} (${delta_pct >= 0 ? '+' : ''}${delta_pct.toFixed(1).replace('.', ',')}%) sobre un capital inicial de US$ ${startValueFmt}. ${delta_pct >= 0 ? `${sampleAssets} fue el aporte más relevante del período.` : `${sampleAssets} concentró las pérdidas del mes.`} Cerraste ${trades} operaciones con ${winRate.toFixed(0).replace('.', ',')}% de win rate, sumando US$ ${(pnlTotal >= 0 ? '+' : '−') + Math.abs(m.pnl_realized).toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.${vsSpStr}`
+      ? `En ${MONTH_NAMES_ES[m.month - 1].toLowerCase()} ${m.year} ${verbo} US$ ${Math.abs(Math.round(metrics.delta_usd || 0)).toLocaleString('es-AR')} (${pct >= 0 ? '+' : ''}${pct.toFixed(1).replace('.', ',')}%) sobre un capital inicial de US$ ${Math.round(metrics.start_value || 0).toLocaleString('es-AR')}. ${_textoOps(metrics)}${vsSpStr}`
       : null
 
     return {
       period_type: 'month',
-      period_key: `${m.year}-${String(m.month).padStart(2, '0')}`,
+      period_key: clave,
       period_label: `${MONTH_NAMES_ES[m.month - 1]} ${m.year}`,
-      period_start: `${m.year}-${String(m.month).padStart(2, '0')}-01`,
-      period_end: new Date(m.year, m.month, 0).toISOString().slice(0, 10),
+      period_start: `${clave}-01`,
+      period_end: `${clave}-${String(ultimoDia).padStart(2, '0')}`,
       is_current: isCurrent,
       is_relevant: isRelevant || isCurrent,
-      metrics: (() => {
-        const wins = Math.round(trades * (winRate / 100))
-        const losses = trades - wins
-        const cumAportado = Math.max(m.capital_inicio, 1)
-        const overContrib = +((pnlTotal / cumAportado) * 100).toFixed(2)
-        return {
-          start_value: m.capital_inicio,
-          end_value: m.capital_final,
-          delta_pct: +delta_pct.toFixed(2),
-          delta_usd: Math.round(pnlTotal),
-          delta_pct_over_contrib: overContrib,
-          realized_pnl: m.pnl_realized,
-          unrealized_pnl: m.pnl_unrealized,
-          deposits: m.deposits,
-          withdrawals: m.withdrawals,
-          trades_count: trades,
-          win_count: wins,
-          loss_count: losses,
-          win_rate: +winRate.toFixed(0),
-          vs_sp500_pct: +vsSp.toFixed(1),
-          vs_inflation_pct: +(delta_pct - 5).toFixed(1),
-        }
-      })(),
+      metrics: { ..._sinInterno(metrics), vs_sp500_pct: vsSp },
       headline,
       subheadline: null,
       narrative,
       highlights: [],
       insights: [],
-      children: semanasDelMesDemo(m, Math.round(pnlTotal)),
+      children: semanasDelMesDemo(m),
     }
   }).reverse()  // descendente — mes en curso primero
 })()
 
-// ─── Reports period — generator on-demand para day/week/year ────────────────
-// El frontend pide /reports/period/{day|week|month|year}/{key} en la página
-// Reportes nueva (tabs). Para 'month' devolvemos el ítem precomputado de
-// REPORTS_TIMELINE; para day/week/year sintetizamos al vuelo a partir del
-// monthly data.
-
+// ─── Reports period — /reports/period/{day|week|month|year}/{key} ───────────
 function buildDemoPeriodReport(periodType, periodKey) {
-  // 'month' — buscamos en REPORTS_TIMELINE
   if (periodType === 'month') {
     const existing = REPORTS_TIMELINE.find(r => r.period_key === periodKey)
-    if (existing) return existing
+    if (existing) return { ...existing, portfolio_snapshot: _demoPortfolioSnapshot() }
   }
 
-  // 'year' — agregamos los meses del año
   if (periodType === 'year') {
     const y = parseInt(periodKey, 10)
-    const yearMonths = REPORTS_TIMELINE.filter(r => r.period_key.startsWith(`${y}-`))
-    if (yearMonths.length === 0) return _emptyDemoPeriod(periodType, periodKey, `Año ${y}`)
-    const first = yearMonths[yearMonths.length - 1]  // más viejo (timeline está descendente)
-    const last  = yearMonths[0]                       // más reciente
-    const startV = first.metrics.start_value
-    const endV   = last.metrics.end_value
-    const deposits   = yearMonths.reduce((s, m) => s + (m.metrics.deposits || 0), 0)
-    const withdrawals = yearMonths.reduce((s, m) => s + (m.metrics.withdrawals || 0), 0)
-    const realized   = yearMonths.reduce((s, m) => s + (m.metrics.realized_pnl || 0), 0)
-    const trades     = yearMonths.reduce((s, m) => s + (m.metrics.trades_count || 0), 0)
-    const flows = deposits - withdrawals
-    const deltaUsd = endV - startV - flows
-    const avg = startV + 0.5 * flows
-    const deltaPct = avg > 0 ? (deltaUsd / avg) * 100 : 0
-    const today = new Date()
-    const isCurrent = today.getFullYear() === y
-    const direction = deltaPct >= 0 ? 'ganaste' : 'perdiste'
-    const narrative = `En ${periodKey} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1).replace('.', ',')}%) sobre un capital inicial de US$ ${startV.toLocaleString('es-AR', { maximumFractionDigits: 0 })}. Aportaste US$ ${Math.abs(flows).toLocaleString('es-AR', { maximumFractionDigits: 0 })} netos en el año. Cerraste ${trades} operaciones, sumando US$ ${realized.toLocaleString('es-AR', { maximumFractionDigits: 0 })} de P&L realizado.`
+    const meses = REPORTS_TIMELINE.filter(r => r.period_key.startsWith(`${y}-`))
+    if (meses.length === 0) return _emptyDemoPeriod(periodType, periodKey, `Año ${y}`)
+    const primero = meses[meses.length - 1]   // la timeline viene descendente
+    const ultimo = meses[0]
+    const m = _medirPeriodoDemo(primero.period_start, ultimo.period_end)
+    if (!m) return _emptyDemoPeriod(periodType, periodKey, `Año ${y}`)
+    const sp = _spDelPeriodo(_claveMes(y - 1, 12), ultimo.period_key)
+    const vsSp = sp != null && m.delta_pct != null ? +(m.delta_pct - sp).toFixed(1) : null
+    const pct = m.delta_pct ?? 0
+    const isCurrent = new Date().getFullYear() === y
+    const verbo = m.delta_usd >= 0 ? 'ganaste' : 'perdiste'
+    const narrative = `En ${y} ${verbo} US$ ${Math.abs(Math.round(m.delta_usd)).toLocaleString('es-AR')} (${pct >= 0 ? '+' : ''}${pct.toFixed(1).replace('.', ',')}%) sobre un capital inicial de US$ ${Math.round(m.start_value).toLocaleString('es-AR')}. Aportaste US$ ${Math.round(m.deposits).toLocaleString('es-AR')} netos en el año. ${_textoOps(m)}`
     return {
       period_type: 'year',
       period_key: periodKey,
@@ -603,30 +752,11 @@ function buildDemoPeriodReport(periodType, periodKey) {
       period_start: `${y}-01-01`,
       period_end: `${y}-12-31`,
       is_current: isCurrent,
-      is_relevant: Math.abs(deltaUsd) >= 100 || trades > 0,
-      metrics: (() => {
-        const wins = Math.round(trades * 0.56)
-        return {
-          start_value: startV,
-          end_value: endV,
-          delta_usd: Math.round(deltaUsd),
-          delta_pct: +deltaPct.toFixed(2),
-          delta_pct_over_contrib: startV > 0 ? +((deltaUsd / startV) * 100).toFixed(2) : null,
-          realized_pnl: Math.round(realized),
-          unrealized_pnl: 0,
-          deposits: Math.round(deposits),
-          withdrawals: Math.round(withdrawals),
-          trades_count: trades,
-          win_count: wins,
-          loss_count: trades - wins,
-          win_rate: 56,
-          vs_sp500_pct: +(deltaPct - 12).toFixed(1),
-          vs_inflation_pct: +(deltaPct - 80).toFixed(1),
-        }
-      })(),
-      headline: deltaPct > 10 ? `Año sólido — +${deltaPct.toFixed(1).replace('.', ',')}%.`
-        : deltaPct < -3 ? `Año difícil — ${deltaPct.toFixed(1).replace('.', ',')}%.`
-        : `Año mixto — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1).replace('.', ',')}%.`,
+      is_relevant: Math.abs(m.delta_usd) >= 100 || m.trades_count > 0,
+      metrics: { ..._sinInterno(m), vs_sp500_pct: vsSp },
+      headline: pct > 10 ? `Año sólido — +${pct.toFixed(1).replace('.', ',')}%.`
+        : pct < -3 ? `Año difícil — ${pct.toFixed(1).replace('.', ',')}%.`
+        : `Año mixto — ${pct >= 0 ? '+' : ''}${pct.toFixed(1).replace('.', ',')}%.`,
       subheadline: null,
       narrative,
       highlights: [],
@@ -636,115 +766,48 @@ function buildDemoPeriodReport(periodType, periodKey) {
     }
   }
 
-  // 'week' — si esa semana ya existe dentro del timeline, se devuelve ESA.
-  //
-  // En producción las dos vistas de una semana (la barra de la tira y la
-  // tarjeta grande de abajo) salen del mismo `build_period_report`. Acá la
-  // tarjeta pega a este generador y la tira lee los `children` del timeline: si
-  // este generador sintetiza su propia semana con azar, la misma pantalla
-  // muestra dos números distintos del mismo período, uno al lado del otro.
   if (periodType === 'week') {
-    for (const mes of REPORTS_TIMELINE) {
-      const dentro = (mes.children || []).find(s => s.period_key === periodKey)
-      if (dentro) {
-        // La tarjeta grande muestra un párrafo que la barra no necesita, así que
-        // la semana del timeline no lo trae. Sin esto, el atajo dejaba esa
-        // tarjeta sin explicación — una regresión del propio arreglo.
-        const d = dentro.metrics.delta_usd
-        const signo = d >= 0 ? 'ganaste' : 'perdiste'
-        const monto = Math.abs(d).toLocaleString('es-AR', { maximumFractionDigits: 0 })
-        const ops = dentro.metrics.trades_count
-        return {
-          ...dentro,
-          narrative: `En esta semana ${signo} US$ ${monto} (${dentro.metrics.delta_pct >= 0 ? '+' : ''}${pctTxt(dentro.metrics.delta_pct)}). `
-            + (ops > 0 ? `Cerraste ${ops} operacion${ops === 1 ? '' : 'es'}.` : 'Sin operaciones cerradas.'),
-          portfolio_snapshot: _demoPortfolioSnapshot(),
-        }
-      }
+    // weekKey YYYY-Wnn → lunes ISO
+    const [yStr, wStr] = periodKey.split('-W')
+    const jan4 = new Date(Date.UTC(parseInt(yStr, 10), 0, 4))
+    const lunes = new Date(jan4)
+    lunes.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7) + (parseInt(wStr, 10) - 1) * 7)
+    const semana = _semanaDemo(lunes.toISOString().slice(0, 10))
+    if (!semana) return _emptyDemoPeriod(periodType, periodKey, `Semana ${parseInt(wStr, 10)}`)
+    const d = semana.metrics.delta_usd
+    const { _textoOps: texto, ...w } = semana
+    return {
+      ...w,
+      narrative: `En esta semana ${d >= 0 ? 'ganaste' : 'perdiste'} US$ ${Math.abs(Math.round(d)).toLocaleString('es-AR')} (${semana.metrics.delta_pct >= 0 ? '+' : ''}${pctTxt(semana.metrics.delta_pct)}). ${texto}`,
+      portfolio_snapshot: _demoPortfolioSnapshot(),
     }
   }
 
-  // 'week' que no está en el timeline, o 'day' — se sintetiza a partir del
-  // rendimiento mensual con ruido. Capital base: último valuation conocido.
-  const base = MONTHLY_LAST_VALUATION
-  const isWeek = periodType === 'week'
-  const periodReturn = isWeek
-    ? 0.003 + (Math.random() - 0.5) * 0.025  // ~0.3% mean ± 1.2%
-    : 0.0006 + (Math.random() - 0.5) * 0.012  // ~0.06% mean ± 0.6%
-  const startV = Math.round(base * (1 - periodReturn * 0.5))
-  const endV   = Math.round(base * (1 + periodReturn * 0.5))
-  const deltaUsd = endV - startV
-  const deltaPct = +(periodReturn * 100).toFixed(2)
-  const trades = isWeek ? (Math.random() > 0.4 ? 1 + Math.floor(Math.random() * 3) : 0)
-                        : (Math.random() > 0.85 ? 1 : 0)
-
-  // Determinar fechas del período
-  let periodStart, periodEnd, periodLabel, isCurrent
-  if (isWeek) {
-    // weekKey: YYYY-Wnn
-    const [yStr, wStr] = periodKey.split('-W')
-    const y = parseInt(yStr, 10), w = parseInt(wStr, 10)
-    const jan4 = new Date(Date.UTC(y, 0, 4))
-    const monday = new Date(jan4)
-    monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7))
-    monday.setUTCDate(monday.getUTCDate() + (w - 1) * 7)
-    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6)
-    periodStart = monday.toISOString().slice(0, 10)
-    periodEnd = sunday.toISOString().slice(0, 10)
-    periodLabel = `Semana ${w}`
-    // current = la semana que contiene hoy
-    const todayIso = new Date().toISOString().slice(0, 10)
-    isCurrent = todayIso >= periodStart && todayIso <= periodEnd
-  } else {
-    periodStart = periodKey
-    periodEnd = periodKey
-    const d = new Date(periodKey + 'T00:00:00Z')
-    const DIA = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']
-    const MES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic']
-    periodLabel = `${DIA[d.getUTCDay()]} ${d.getUTCDate()} ${MES[d.getUTCMonth()]}`
-    isCurrent = periodKey === new Date().toISOString().slice(0, 10)
-  }
-
-  const isRelevant = Math.abs(deltaUsd) >= (isWeek ? 80 : 30) || trades > 0
-  const direction = deltaPct >= 0 ? 'ganaste' : 'perdiste'
-  const periodWord = isWeek ? 'esta semana' : 'este día'
-  const narrative = isRelevant
-    ? `En ${periodWord.toLowerCase()} ${direction} US$ ${Math.abs(deltaUsd).toLocaleString('es-AR', { maximumFractionDigits: 0 })} (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1).replace('.', ',')}%). ${trades > 0 ? `Cerraste ${trades} operación${trades !== 1 ? 'es' : ''} en el período.` : 'Sin operaciones cerradas.'}`
-    : null
-  const headline = !isRelevant
-    ? `${isWeek ? 'Semana' : 'Día'} sin grandes movimientos.`
-    : deltaPct >= 1 ? `${isWeek ? 'Semana sólida' : 'Día sólido'} — +${deltaPct.toFixed(2).replace('.', ',')}%.`
-    : deltaPct <= -1 ? `${isWeek ? 'Semana difícil' : 'Día difícil'} — ${deltaPct.toFixed(2).replace('.', ',')}%.`
-    : `${isWeek ? 'Semana mixta' : 'Día mixto'} — ${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(2).replace('.', ',')}%.`
-
+  // 'day' — ese día contra el cierre anterior, con las fotos diarias.
+  const dia = periodKey
+  const m = _medirPeriodoDemo(dia, dia)
+  const f = new Date(`${dia}T00:00:00Z`)
+  const label = `${DIAS_CORTOS[f.getUTCDay()]} ${f.getUTCDate()} ${MESES_CORTOS[f.getUTCMonth()]}`
+  if (!m) return _emptyDemoPeriod('day', periodKey, label)
+  const pct = m.delta_pct ?? 0
+  const relevante = Math.abs(m.delta_usd) >= 30 || m.trades_count > 0
   return {
-    period_type: periodType,
+    period_type: 'day',
     period_key: periodKey,
-    period_label: periodLabel,
-    period_start: periodStart,
-    period_end: periodEnd,
-    is_current: isCurrent,
-    is_relevant: isRelevant,
-    metrics: {
-      start_value: startV,
-      end_value: endV,
-      delta_usd: deltaUsd,
-      delta_pct: deltaPct,
-      delta_pct_over_contrib: null,
-      realized_pnl: 0,
-      unrealized_pnl: deltaUsd,
-      deposits: 0,
-      withdrawals: 0,
-      trades_count: trades,
-      win_count: 0,
-      loss_count: 0,
-      win_rate: null,
-      vs_sp500_pct: null,
-      vs_inflation_pct: null,
-    },
-    headline,
+    period_label: label,
+    period_start: dia,
+    period_end: dia,
+    is_current: dia === hoyISO(),
+    is_relevant: relevante,
+    metrics: _sinInterno(m),
+    headline: !relevante ? 'Día sin grandes movimientos.'
+      : pct >= 1 ? `Día sólido — +${pct.toFixed(2).replace('.', ',')}%.`
+      : pct <= -1 ? `Día difícil — ${pct.toFixed(2).replace('.', ',')}%.`
+      : `Día mixto — ${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}%.`,
     subheadline: null,
-    narrative,
+    narrative: relevante
+      ? `En este día ${m.delta_usd >= 0 ? 'ganaste' : 'perdiste'} US$ ${Math.abs(Math.round(m.delta_usd)).toLocaleString('es-AR')} (${pct >= 0 ? '+' : ''}${pct.toFixed(1).replace('.', ',')}%). ${_textoOps(m)}`
+      : null,
     highlights: [],
     insights: [],
     children: [],
@@ -762,7 +825,9 @@ function _demoPortfolioSnapshot() {
   for (const m of globals) deposits += (m.deposits || 0) - (m.withdrawals || 0)
   const baseline = globals.length ? globals[0].capital_inicio : 0
   const rawCum = baseline + deposits
-  const cumDeposited = Math.min(rawCum, Math.round(MONTHLY_LAST_VALUATION * 0.85))
+  // Sin el tope al 85 % del valor que tenía antes: con él, en algunas cargas
+  // Reportes mostraba un "Capital aportado" distinto del Dashboard.
+  const cumDeposited = rawCum
 
   // Δ 7d / 30d derivados de SNAPSHOTS (snapshots están sorted DESC en el demo).
   // "now" = el snapshot más reciente del array (no MONTHLY_LAST_VALUATION,
@@ -824,10 +889,16 @@ function _demoPortfolioSnapshot() {
   const nonCashPositions = (typeof POSITIONS !== 'undefined' && POSITIONS)
     ? POSITIONS.filter(p => !p.is_cash && (p.quantity || 0) > 0)
     : []
+  // Ordenadas por VALOR EN DÓLARES con la valuación de la pantalla. Antes se
+  // ordenaba por `invested` crudo, que mezcla pesos con dólares: la "posición
+  // principal" de Reportes era AL30 (4,7 millones de PESOS) y en el Dashboard BTC.
+  const valorUsd = (p) => computeBrokerValue([p], PRICES, BROKERS.find(b => b.name === p.broker),
+    _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').value
   const topHoldings = nonCashPositions
-    .sort((a, b) => (b.invested || 0) - (a.invested || 0))
+    .map(p => ({ asset: p.asset, broker: p.broker, invested: p.invested || 0, valor: valorUsd(p) }))
+    .sort((a, b) => b.valor - a.valor)
     .slice(0, 3)
-    .map(p => ({ asset: p.asset, broker: p.broker, invested: p.invested || 0 }))
+    .map(({ valor, ...h }) => h)
 
   return {
     latest_value: nowVal,
@@ -1247,18 +1318,18 @@ const WRAPPED = (year) => ({
 // INTC +148% como mejor trade cerrado, mix Schwab + Cocos + Binance.
 const DEMO_AI_RESULTS = {
   dashboard: {
-    tldr: 'El +14% del período descansa sobre dos motores asimétricos — NVDA por peso y INTC por un único trade excepcional. La diversificación nominal de la cartera es mayor que su diversificación efectiva de fuentes de rendimiento.',
+    tldr: 'El {{ANIO}} del año descansa sobre dos motores asimétricos — NVDA por peso y INTC por un único trade excepcional. La diversificación nominal de la cartera es mayor que su diversificación efectiva de fuentes de rendimiento.',
     sections: [
-      { title: 'Dinámica del período', tone: 'neutral', body: 'El valor total se ubica en US$ 8.3K sobre un capital aportado neto de US$ 7.1K. El delta absoluto (~US$ 1.2K) es ganancia real, no efecto flujos. La curva del período no muestra picos extremos: el resultado se construye sobre un puñado de movimientos persistentes más que sobre un evento puntual.' },
-      { title: 'Factores que lo explican', tone: 'positive', body: 'NVDA con ~28% de weight y +29% de P&L acumulado actúa como motor principal por peso, mientras INTC aporta el +148% cerrado más rentable del año. La combinación es típica de portfolios que llegan a outperform sin batir al SPY: una posición core grande y un trade táctico excepcional, con el resto siguiendo de cerca al benchmark.' },
+      { title: 'Dinámica del período', tone: 'neutral', body: 'El valor total se ubica en {{VALOR}} sobre un capital aportado neto de {{APORTADO}}. La diferencia (~{{GANANCIA}}) es ganancia real, no efecto de los aportes. La curva del período no muestra picos extremos: el resultado se construye sobre un puñado de movimientos persistentes más que sobre un evento puntual.' },
+      { title: 'Factores que lo explican', tone: 'positive', body: 'NVDA con ~{{NVDA}} de peso y {{NVDA_PNL}} de P&L acumulado es uno de los motores de la cartera, mientras INTC aporta el +148% cerrado más rentable del año. La combinación es típica de portfolios que llegan a outperform sin batir al SPY: una posición core grande y un trade táctico excepcional, con el resto siguiendo de cerca al benchmark.' },
       { title: 'Lectura comparativa', tone: 'neutral', body: 'El TWR queda algunos puntos debajo del S&P 500 acumulado del período. Le gana a la inflación AR con margen, lo cual es coherente con una cartera con exposure mayoritario USD. Sobre el benchmark dominante, el cash drag y la inversión parcial en panel local explican la mayor parte del gap.' },
-      { title: 'Riesgo asimétrico actual', tone: 'warning', body: 'Si NVDA corrigiera un 25%, el portfolio perdería alrededor de 7 puntos de TWR — más de la mitad del rendimiento anual. El sesgo de disposition effect (medio) agrega tensión: la tentación a cerrar ganadoras en corrección choca con la lógica del trade core. Tener pre-definido el umbral de rebalance vale más que cualquier decisión en caliente.' },
+      { title: 'Riesgo asimétrico actual', tone: 'warning', body: 'Si NVDA corrigiera un 25 %, la cartera perdería alrededor de {{NVDA_25}} puntos. El sesgo de disposition effect (medio) agrega tensión: la tentación a cerrar ganadoras en corrección choca con la lógica del trade core. Tener pre-definido el umbral de rebalance vale más que cualquier decisión en caliente.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La diversificación que el HHI sugiere se diluye cuando uno mira las fuentes del rendimiento, no las del capital. Más del 60% del P&L viene de dos tickers — el resto de la cartera funciona casi como un buy-and-hold con beta menor. La pregunta operativa no es qué comprar, sino bajo qué condición concreta reducir la exposure dominante.' },
     ],
     follow_ups: ['¿Cuánto pierdo si NVDA cae 25%?'],
   },
   'dashboard.composition': {
-    tldr: 'El HHI sugiere concentración moderada, pero la lectura por fuente de rendimiento es más concentrada — NVDA pesa 28% del capital y explica una porción mucho mayor del P&L del período.',
+    tldr: 'El HHI sugiere concentración moderada, pero la lectura por fuente de rendimiento es más concentrada — NVDA pesa {{NVDA}} del capital y explica una porción mayor del P&L del período.',
     sections: [
       { title: 'Reparto del capital', tone: 'neutral', body: 'Los top 5 holdings acumulan aproximadamente 65% del portfolio, con NVDA, AAPL y MSFT al frente. La distribución por moneda queda partida en mayoría USD vía Schwab más una porción material en CEDEARs (Cocos), que económicamente también es exposure US.' },
       { title: 'Concentración real vs nominal', tone: 'warning', body: 'El HHI en zona media-alta capta la dispersión por activo, pero subestima la concentración por factor. Si NVDA, AAPL y MSFT comparten sensibilidad al ciclo tecnológico y a tasas, la diversificación efectiva es menor que la nominal. En una corrección growth, los tres se mueven en la misma dirección.' },
@@ -1278,7 +1349,7 @@ const DEMO_AI_RESULTS = {
     follow_ups: ['¿Cuánto duraron los drawdowns anteriores hasta recuperar?'],
   },
   'dashboard.top_holdings': {
-    tldr: 'Las dos posiciones que dominan el resultado lo hacen por razones distintas — NVDA por peso (28% × +29%) e INTC por un cierre excepcional (+148%). Sin esos dos vehículos, la cartera se acerca al comportamiento de un buy-and-hold pasivo.',
+    tldr: 'Las dos posiciones que dominan el resultado lo hacen por razones distintas — NVDA por peso ({{NVDA}} × {{NVDA_PNL}}) e INTC por un cierre excepcional (+148 %). Sin esos dos vehículos, la cartera se acerca al comportamiento de un buy-and-hold pasivo.',
     sections: [
       { title: 'Ganadoras por peso', tone: 'positive', body: 'NVDA combina weight alto y P&L positivo — esa combinación es la que más mueve el resultado anual. AAPL aporta segundo con +18% pero con weight menor, por lo que su impacto en el TWR es proporcionalmente más chico.' },
       { title: 'Ganadora por trade', tone: 'positive', body: 'INTC cerró +148% — un outlier que infla el P&L realizado del año. Si se excluyera ese trade, la expectancy promedio del sistema cae a un nivel mucho más cercano al break-even.' },
@@ -1301,7 +1372,7 @@ const DEMO_AI_RESULTS = {
     tldr: 'La ventana próxima concentra eventos sobre las posiciones de mayor peso — el riesgo idiosincrático del portfolio para los siguientes días depende de un puñado de reportes, no del mercado.',
     sections: [
       { title: 'Eventos en la ventana', tone: 'neutral', body: 'Earnings de NVDA y AAPL coinciden en la misma semana; dividendos de KO programados también en el período. Tres eventos materiales en 14 días.' },
-      { title: 'Concentración de exposure', tone: 'warning', body: 'El earnings de NVDA solo toca una posición que pesa cerca del 28% del portfolio. Sumado al earnings de AAPL, la exposure combinada del weight con reporte ronda el 40% de la cartera. Un movimiento típico post-earnings de ±8% en NVDA puede mover el TWR del portfolio 2-3 puntos en una sola sesión.' },
+      { title: 'Concentración de exposure', tone: 'warning', body: 'El earnings de NVDA toca una posición que pesa cerca del {{NVDA}} de la cartera. Sumado al de AAPL, lo expuesto a un reporte ronda el {{NVDA_AAPL}}. Un movimiento típico post-earnings de ±8 % en NVDA puede mover la cartera {{NVDA_8}} puntos en una sola sesión.' },
       { title: 'Comportamiento típico', tone: 'neutral', body: 'La reacción del precio a un beat o miss de earnings tiene baja correlación con la calidad real del reporte — la sorpresa relativa al consenso pesa más que los números absolutos. No es un evento sobre el cual el inversor individual tenga edge informacional.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La utilidad operativa del calendario de earnings no es decidir qué hacer ese día — es decidir, antes del evento, hasta qué movimiento adverso se está dispuesto a tolerar sin tocar la posición. Definir ese umbral ex-ante evita reacciones post-fact que la literatura muestra como sub-óptimas en promedio.' },
     ],
@@ -1330,7 +1401,7 @@ const DEMO_AI_RESULTS = {
     tldr: 'Le ganás a la inflación (+6%) y al plazo fijo, pero el diagnóstico marca dos cosas que van juntas: NVDA concentra tu resultado y tenés casi la mitad en cash sin desplegar.',
     sections: [
       { title: 'Concentración de resultado', tone: 'warning', body: 'NVDA es tu mayor posición y explica buena parte de lo que ganaste. No es un problema mientras acompañe — pero tu resultado hoy depende más de un solo activo que de la cartera entera. Una corrección del Nasdaq se siente fuerte acá.' },
-      { title: 'Cash sin desplegar', tone: 'neutral', body: 'Cerca del 45% está en cash (USDT + pesos). Si no es una reserva táctica con fecha, es el mayor freno del portfolio: es plata que no trabaja mientras esperás. La decisión pendiente no es qué activo sumar, sino bajo qué condición ese cash entra.' },
+      { title: 'Cash sin desplegar', tone: 'neutral', body: 'El efectivo es el {{CASH}} de la cartera (dólares, USDT y pesos): un colchón chico que no frena el rendimiento. La pregunta útil no es cuánto cash desplegar, sino qué hacer con la próxima entrada de plata.' },
       { title: 'Lo que sí funciona', tone: 'positive', body: 'Contra las alternativas locales vas bien: le ganás a la inflación y al plazo fijo, y tu operativa es tranquila (pocos trades). Esa mano quieta, con tanta cripto y tech, es hoy lo que más te ordena.' },
     ],
     follow_ups: [],
@@ -1341,7 +1412,7 @@ const DEMO_AI_RESULTS = {
       { title: 'Performance neta', tone: 'positive', body: 'TWR compoundeado de ~14% sobre los últimos 12 meses con un win rate del 56% en trades cerrados. El payoff 7x sugiere asimetría favorable: pocas ganadoras grandes pagan varias perdedoras chicas. El drawdown máximo del período (~-8%) está dentro del rango habitual para portfolios con exposure tech alto.' },
       { title: 'Origen del resultado', tone: 'neutral', body: 'Del P&L total combinado (realized + unrealized), NVDA aporta más del 55% solo. INTC suma vía el trade cerrado más rentable del año (+148%). Sin esos dos, el rendimiento se acerca al comportamiento de un buy-and-hold del SPY menos el cash drag. Detractores (AAVE/USDT, NFLX) son chicos en magnitud frente a las ganadoras.' },
       { title: 'Lectura comparativa', tone: 'neutral', body: 'vs SPY queda un par de puntos debajo — gap consistente con la combinación de cash material y exposure AR sin alpha relativo del año. vs inflación AR, el margen es claro: el portfolio defendió y aumentó poder de compra en moneda local. vs dólar blue, depende del mix de monedas — para la parte USD del portfolio el blue es referencia tangencial.' },
-      { title: 'Riesgo y exposure', tone: 'warning', body: 'La exposición se reparte ~47% US (Schwab + CEDEARs), ~8% panel AR, ~45% en cash distribuido entre USDT y ARS. El cash de esa magnitud, si no es reserva táctica activa, representa un costo de oportunidad anualizado material. La concentración en NVDA (28% weight) amplifica drawdowns en correcciones del Nasdaq.' },
+      { title: 'Riesgo y exposure', tone: 'warning', body: 'La exposición se reparte ~{{SCHWAB}} en acciones y ETFs de EE.UU., ~{{CRIPTO}} en cripto, ~{{AR}} en Argentina y ~{{CASH}} en efectivo. La cripto es la parte más volátil. La concentración en NVDA ({{NVDA}}) amplifica las caídas en correcciones del Nasdaq.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El portfolio supera a la inflación pero queda detrás del SPY — ese resultado es característico de carteras donde el alpha de stock-picking se ve neutralizado por el cash drag. La decisión estratégica relevante no es qué activo agregar sino bajo qué condición el cash actual se convierte en posición — fijar un umbral o calendario de despliegue elimina la fricción mensual de "todavía no".' },
     ],
     follow_ups: ['¿Cuánto cuesta el cash drag anualizado en esta cartera?'],
@@ -1359,7 +1430,7 @@ const DEMO_AI_RESULTS = {
   'insights.drawdown': {
     tldr: 'El peor drawdown del período se mantiene dentro del rango histórico habitual de la cartera. El actual es de magnitud menor — más cerca del ruido normal que de un cambio de régimen.',
     sections: [
-      { title: 'Profundidad histórica', tone: 'positive', body: 'El max drawdown del período se ubica alrededor del -8%, dentro de lo esperable para un portfolio con ~47% de exposure US tech. El S&P 500 mismo tuvo correcciones de magnitud similar en ventanas comparables — el portfolio no exhibió volatilidad excepcional respecto del benchmark relevante.' },
+      { title: 'Profundidad histórica', tone: 'positive', body: 'El peor retroceso de los últimos 12 meses fue de alrededor de {{DD}}, dentro de lo esperable para una cartera con {{CRIPTO}} en cripto. El S&P 500 mismo tuvo correcciones de magnitud similar en ventanas comparables — el portfolio no exhibió volatilidad excepcional respecto del benchmark relevante.' },
       { title: 'Eventos de DD', tone: 'neutral', body: 'Los dos eventos de drawdown más profundos del período duraron 2-3 semanas hasta recuperar el peak previo. Ninguno se extendió más allá de un mes, lo que sugiere que los gatillos fueron movimientos de mercado de corta duración, no deterioros estructurales del portfolio.' },
       { title: 'Estado actual', tone: 'positive', body: 'El drawdown actual está cerca de cero — el portfolio se mueve en la franja de los máximos históricos. La distancia al peak es pequeña, lo cual no implica que no pueda profundizar; solo describe que hoy no hay daño material acumulado desde el último high.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El patrón "drawdown chico y recuperación rápida" del período no es atributo permanente del portfolio — depende de que la exposure y el comportamiento de los activos sostengan ese ritmo. Una mejora útil al proceso es registrar el time-to-recover de cada DD: cuando ese tiempo se alarga, suele ser una señal anticipada de cambio en el régimen del portfolio, anterior al cambio en el TWR.' },
@@ -1516,7 +1587,7 @@ const DEMO_AI_RESULTS = {
     tldr: 'Le ganaste a la inflación AR con margen pero quedaste algunos puntos debajo del SPY — esa combinación es característica de portfolios con cash material y exposure mixto, no de un alpha negativo del stock-picking.',
     sections: [
       { title: 'vs Inflación AR', tone: 'positive', body: 'El TWR (~14% en USD equivalent) supera la inflación AR acumulada del período. En una economía con inflación de dos dígitos, defender y aumentar poder de compra real es el primer objetivo material — esa batalla la cartera la gana con margen.' },
-      { title: 'vs S&P 500', tone: 'neutral', body: 'Queda un par de puntos por debajo del SPY. El gap es consistente con dos factores estructurales del portfolio: cash del orden del 45% que no participó del rally, y exposure AR sin alpha relativo del año. No sugiere un déficit del stock-picking — sugiere un déficit de despliegue de capital.' },
+      { title: 'vs S&P 500', tone: 'neutral', body: 'En el año la cartera va {{ANIO}} contra {{SP_ANIO}} del S&P 500 ({{GAP_ANIO}}). Con {{CASH}} en efectivo, el cash no explica la diferencia: la explican la cripto ({{CRIPTO}}) y la parte argentina ({{AR}}), que no siguen al índice.' },
       { title: 'vs Dólar Blue', tone: 'neutral', body: 'Para la parte ARS de la cartera, ganarle al blue significa defender poder adquisitivo en pesos. Para la parte USD, el blue es referencia tangencial — esa porción ya está protegida de devaluación gradual. La métrica solo es material para evaluar el costo de quedarse en pesos vs dolarizar.' },
       { title: 'Insight clave', tone: 'neutral', body: 'La métrica útil acá no es "¿cómo le gano al SPY?" sino "¿qué porción del cash debería estar invertida si quiero achicar el gap?". El gap vs SPY es esencialmente cash drag — desplegarlo de forma escalonada y pre-pactada (no en función del precio diario) suele cerrar la diferencia sin agregar riesgo material.' },
     ],
@@ -1533,7 +1604,7 @@ const DEMO_BEHAVIORAL_CARDS = {
     sections: [
       { title: 'Qué muestra el dato', tone: 'warning', body: 'El ratio winners/losers de days held se ubica alrededor de 0.55x: las ganadoras se cierran rápido, las perdedoras quedan en cartera esperando recuperación. INTC, KO y otras ganadoras del año se cerraron temprano; AAVE/USDT y NFLX llevan meses con tesis implícita de mean reversion sin gatillo definido.' },
       { title: 'Por qué importa', tone: 'neutral', body: 'La literatura de Shefrin & Statman estima que invertir el patrón (mantener ganadoras, cortar perdedoras) suma 2-4 puntos por año en expectancy, dependiendo de la cantidad de operaciones. El costo no se ve en una métrica única — aparece como un drag silencioso en el resultado anualizado.' },
-      { title: 'Interacción con concentración', tone: 'neutral', body: 'El sesgo se vuelve más caro cuando hay una posición core grande: la tentación a cerrar la ganadora en corrección amplifica el efecto. NVDA con 28% de weight y el disposition effect activo arman exactamente esa tensión latente.' },
+      { title: 'Interacción con concentración', tone: 'neutral', body: 'El sesgo se vuelve más caro cuando hay una posición core grande: la tentación a cerrar la ganadora en corrección amplifica el efecto. NVDA con {{NVDA}} de peso y el disposition effect activo arman exactamente esa tensión latente.' },
       { title: 'Insight clave', tone: 'neutral', body: 'El cambio de leverage más alto no es psicológico — es procedural. Definir el criterio de salida ANTES de la entrada (stop por precio, por % de portfolio o por cambio en la tesis) saca la decisión del momento de tensión y la convierte en una verificación contra un umbral pre-acordado. Eso desarma el sesgo sin pelearlo en cada operación.' },
     ],
     follow_ups: ['¿Cuántos puntos por año estimás que cuesta este sesgo en mi caso?'],
@@ -1584,7 +1655,7 @@ const DEMO_BEHAVIORAL_CARDS = {
     follow_ups: ['¿En qué momentos típicamente se rompe este patrón?'],
   },
   cash_drag: {
-    tldr: 'El 45% en cash combinado (USDT + ARS) no es inversión defensiva — es capital sin desplegar. Si esa decisión no es activa (esperando un nivel concreto), el costo de oportunidad anualizado supera a cualquier alpha potencial del stock-picking del año.',
+    tldr: 'El efectivo es el {{CASH}} de la cartera: funciona como colchón de liquidez y no como freno. Con ese tamaño, el costo de oportunidad es chico frente al resto de las decisiones.',
     sections: [
       { title: 'Magnitud del drag', tone: 'warning', body: 'Cash material de esa proporción contra un benchmark como el SPY representa un gap de retorno estructural — no porque el cash sea malo, sino porque no participa del rendimiento del mercado. Sobre 12 meses, esa porción "sin trabajar" puede explicar buena parte del gap vs benchmark.' },
       { title: 'Reserva táctica vs cash drag', tone: 'neutral', body: 'El cash con función específica (deploy planificado, gasto cercano, reserva por evento) tiene sentido. El cash sin función específica acumulado por inacción no — es la posición default cuando no se decide. Diferenciar ambos casos cambia totalmente la lectura del riesgo.' },
@@ -1614,21 +1685,21 @@ function buildDemoFollowup(topic, question) {
   let tldr, sections
 
   if (q.includes('nvda') && (q.includes('cae') || q.includes('cay') || q.includes('baja'))) {
-    tldr = 'Con NVDA pesando ~28% de la cartera, una caída del 25% se traduce aproximadamente en 7 puntos de TWR del portfolio agregado — más de la mitad del rendimiento anual desaparecería en una sola sesión adversa.'
+    tldr = 'Con NVDA pesando ~{{NVDA}} de la cartera, una caída del 25 % se traduce en aproximadamente {{NVDA_25}} puntos de la cartera total.'
     sections = [
-      { title: 'Cálculo aproximado', tone: 'warning', body: 'El impacto absoluto sería del orden de 25% × 28% = 7pp sobre el TWR del portfolio. Sobre una cartera con valuación cercana a US$ 8.3K, eso son ~US$ 580 de pérdida no realizada en un día.' },
+      { title: 'Cálculo aproximado', tone: 'warning', body: 'El impacto sería del orden de 25 % × {{NVDA}} = {{NVDA_25}} puntos. Sobre una cartera de {{VALOR}}, eso son ~{{NVDA_25_USD}} de pérdida no realizada.' },
       { title: 'Contexto histórico', tone: 'neutral', body: 'Movimientos de NVDA del orden -20%/-30% no son inusuales en corrections del Nasdaq — el activo ha tenido al menos dos drawdowns intra-año de esa magnitud en los últimos ciclos. La pregunta práctica no es si puede pasar, sino cuándo y bajo qué criterio reacciones.' },
     ]
   } else if (q.includes('cash') || q.includes('drag') || q.includes('liquidez')) {
-    tldr = 'Tu cash drag está en torno a 45% combinado entre USDT y ARS. Con SPY rindiendo histórico ~10%/año, ese cash sin trabajar te cuesta del orden de 4-5 puntos anualizados de rendimiento esperado.'
+    tldr = 'Tu efectivo es el {{CASH}} de la cartera. Con el S&P rindiendo históricamente ~10 % anual, ese cash te cuesta del orden de {{CASH_COSTO}} puntos anuales: poco.'
     sections = [
       { title: 'Magnitud del costo', tone: 'warning', body: 'Sobre tu valor del portfolio, ~US$ 3.7K en cash a un costo de oportunidad del 10% anual = ~US$ 370/año que dejás arriba de la mesa por no estar invertido. Eso es un drag real, no contable.' },
       { title: 'Mejora estructural', tone: 'neutral', body: 'El despliegue escalonado (DCA mensual) suele cerrar la mayor parte de ese gap sin requerir convicción sobre timing. La pregunta es si tu cash actual es reserva táctica activa o cash drag por inacción.' },
     ]
   } else if (q.includes('s&p') || q.includes('spy') || q.includes('benchmark')) {
-    tldr = 'El gap vs SPY de este período se explica casi enteramente por dos factores estructurales: cash material (~45%) sin participar del rally + exposure AR sin alpha relativo. No es un déficit del stock-picking, es un déficit de despliegue.'
+    tldr = 'En el año la cartera va {{ANIO}} y el S&P 500 {{SP_ANIO}} ({{GAP_ANIO}}). La diferencia la explican sobre todo la cripto ({{CRIPTO}}) y la parte argentina ({{AR}}), que no siguen al índice.'
     sections = [
-      { title: 'Descomposición del gap', tone: 'neutral', body: 'Si el SPY rindió ~16% en el período y vos hiciste ~14%, los 2pp de diferencia se cubren con ~45% en cash rindiendo 0% vs SPY rindiendo 16%: 0.45 × 16 = 7.2pp negativos esperados. Pero tu stock-picking compensó ~5pp, así que el resultado neto es razonable.' },
+      { title: 'Descomposición del gap', tone: 'neutral', body: 'Con {{CASH}} en efectivo rindiendo 0, el cash explica apenas {{CASH_GAP}} puntos de la diferencia con el S&P. El resto sale de lo que no es S&P: cripto ({{CRIPTO}}) y Argentina ({{AR}}).' },
       { title: 'Lectura útil', tone: 'neutral', body: 'Para cerrar el gap vs SPY, la palanca dominante NO es elegir mejor stocks — es decidir cuándo desplegar el cash. Un schedule de DCA pre-pactado normalmente cierra la diferencia sin agregar riesgo material.' },
     ]
   } else if (q.includes('intc') || q.includes('148') || q.includes('mejor trade')) {
@@ -1638,7 +1709,7 @@ function buildDemoFollowup(topic, question) {
       { title: 'Validación de sistema', tone: 'neutral', body: 'La pregunta clave: ¿qué condiciones permitieron el setup de ese trade? Si son condiciones que se repiten (corrección sectorial + entrada a múltiplos bajos + paciencia hasta inflexión), es reproducible. Si fue un evento idiosincrático, fue suerte capturada bien.' },
     ]
   } else if (q.includes('concentr') || q.includes('rebalanc')) {
-    tldr = 'Tu concentración nominal (top1 ~28%) está en zona moderada, pero la concentración por fuente de rendimiento es claramente más alta. Esa asimetría es lo que justifica un rebalance pre-acordado.'
+    tldr = 'Tu concentración nominal (top1 ~{{TOP1_PCT}}) está en zona moderada, pero la concentración por fuente de rendimiento es claramente más alta. Esa asimetría es lo que justifica un rebalance pre-acordado.'
     sections = [
       { title: 'Regla útil', tone: 'neutral', body: 'Un umbral mecánico simple: recortar si una posición cruza el 30% del portfolio O si el top 3 combinado pasa el 60%. Eso convierte la decisión emocional (\\"me siento expuesto\\") en una regla objetiva que aplica solo cuando los datos lo justifican.' },
       { title: 'Frecuencia', tone: 'neutral', body: 'Rebalancear con criterio (umbral cruzado) es más eficiente que rebalancear calendario (mensual/trimestral). El primero solo actúa cuando hay desviación real; el segundo paga fricciones constantes incluso sin cambio material.' },
@@ -1684,7 +1755,7 @@ function buildDemoObservation(params = {}) {
   if (lower.includes('concentración') || (lower.includes('represent') && lower.includes('%'))) {
     bloc = {
       interpretation: 'El peso señalado por la observación capta concentración nominal, pero la dimensión que más importa es la concentración por fuente del rendimiento. En esta cartera, una posición con weight cercano al 30% suele explicar una porción aún mayor del P&L acumulado — la diversificación de capital no se traduce automáticamente en diversificación de riesgo.',
-      comparison: 'Sobre el portfolio agregado (~US$ 8.3K), un movimiento adverso del 25% en la posición señalada implica un impacto del orden de 7 puntos en el TWR del período. Comparado con el peor drawdown histórico de la cartera (~-8%), un escenario así sería el más profundo del año.',
+      comparison: 'Sobre una cartera de {{VALOR}}, un movimiento adverso del 25 % en la posición más grande ({{TOP1}}, {{TOP1_PCT}}) implica un impacto del orden de {{TOP1_25}} puntos. El peor retroceso de los últimos 12 meses fue de {{DD}}.',
       insight: 'La utilidad operativa de esta observación no es bajar la posición de manera reactiva, sino pre-definir un umbral de revisión: por ejemplo, recortar si el activo cruza X% del portfolio o si la combinación con otros del mismo sector excede Y%. Eso convierte una decisión emocional en una mecánica medible — el research muestra que decisiones tomadas en frío suelen ser superiores a las tomadas durante el evento.',
     }
   } else if (lower.includes('drawdown') || lower.includes('máximo histórico') || lower.includes('peak')) {
@@ -1696,7 +1767,7 @@ function buildDemoObservation(params = {}) {
   } else if (lower.includes('cash') || lower.includes('liquidez') || lower.includes('sin invertir')) {
     bloc = {
       interpretation: 'Cash material acumulado por inacción funciona como una apuesta implícita: "el mercado va a estar más barato pronto". Cuando esa apuesta no se materializa, el costo de oportunidad anualizado supera al alpha potencial del stock-picking del resto del portfolio. Diferenciar cash con función específica (deploy planificado) de cash drag estructural cambia totalmente la lectura.',
-      comparison: 'Sobre el portfolio actual, una porción cercana al 45% en cash combinado (USDT + ARS) significa que casi la mitad del capital no participó del rally del año. Contra un benchmark como el SPY, esa porción sola explica buena parte del gap del TWR — no es un déficit del stock-picking sino del despliegue.',
+      comparison: 'Sobre la cartera actual, el efectivo es el {{CASH}}: casi todo el capital participó del mercado. Contra el S&P, el cash explica apenas {{CASH_GAP}} puntos de la diferencia del año.',
       insight: 'La mejora de mayor leverage no es invertir el cash en bloque, sino pre-acordar una regla de despliegue escalonado. Deploy del X% mensual durante Y meses, independiente del precio del día, saca la decisión del territorio emocional y la convierte en mecánica. El research sobre DCA muestra que el promedio histórico queda dentro del 1% del óptimo retrospectivo — un costo muy bajo por eliminar la fricción del "todavía no".',
     }
   } else if (lower.includes('argentin') || lower.includes('bcba') || lower.includes('cedear') || lower.includes('blue') || (lower.includes('broker') && lower.includes('ar'))) {
@@ -1775,144 +1846,17 @@ const DEMO_CAGR = (() => {
   return { cagr: +(cagr * 100).toFixed(2), months: monthsCount }
 })()
 
-// Fotos diarias DERIVADAS del MONTHLY para que ambos cuenten la misma historia:
-// un cierre por día, como el que escribe el cron en producción, y el último día
-// de cada mes ES su capital_final.
-//
-// ⚠️ UN CIERRE POR DÍA, NO UNO POR SEMANA. Con los 1/8/15/22 de antes el cierre
-// anterior al 1° de mes quedaba siempre a 7-10 días, más que los 5 que tolera
-// `esBordeFresco`: "Este mes" no tenía número NUNCA en la demo y "Hoy" decía
-// "Últimos 3 días". Una demo que no puede mostrar lo que ve un usuario con el
-// cron andando no demuestra nada.
-//
-// Las filas llevan `clase`/`base`/`apto`/`sintetico` con los valores EXACTOS que
-// devuelve GET /api/snapshots (twr.clasificar_serie + twr.es_apto), para que la
-// pantalla recorra en la demo los mismos guards que en producción.
-const SNAPSHOTS = (() => {
-  // Solo entries "global" — `MONTHLY` también contiene desagregados por
-  // broker (Schwab/Cocos/Binance), iterar sobre todos produce un zigzag
-  // brutal en el chart porque los valores parciales (ej. Cocos ~$1k vs
-  // global ~$30k) se alternan en la serie temporal.
-  const globals = MONTHLY.filter(m => m.broker === 'global')
-  if (globals.length === 0) return []
-  const hoy = hoyISO()
-  const [hoyY, hoyM, hoyD] = hoy.split('-').map(Number)
-  const medicion = { clase: 'medicion', base: 'mercado', apto: true, sintetico: false }
-  const out = []
-  let aportado = globals[0].capital_inicio
-  for (const m of globals) {
-    const flujo = (m.deposits || 0) - (m.withdrawals || 0)
-    // El aporte entra el día 1 y mueve valor y aportado JUNTOS: la ganancia
-    // (valor − aportado) no pega un escalón que no existió.
-    aportado += flujo
-    const resultado = m.capital_final - m.capital_inicio - flujo
-    const diasDelMes = new Date(m.year, m.month, 0).getDate()
-    // El mes en curso llega a su capital_final HOY (el valor vivo), no a fin de mes.
-    const tramo = (m.year === hoyY && m.month === hoyM) ? hoyD : diasDelMes
-    for (let dia = 1; dia <= diasDelMes; dia++) {
-      const fecha = fechaISO(new Date(m.year, m.month - 1, dia))
-      if (fecha >= hoy) break
-      // Ruido de ±0,25 % aprox. que se anula en el cierre de mes.
-      const ruido = dia === diasDelMes ? 0 : (Math.random() - 0.5) * 200
-      const valor = m.capital_inicio + flujo + resultado * (dia / tramo) + ruido
-      out.push({
-        date: fecha,
-        total_value: Math.round(valor * 100) / 100,
-        total_invested: Math.round(aportado * 0.95 * 100) / 100,
-        net_deposited: Math.round(aportado * 100) / 100,
-        ...medicion,
-      })
-    }
-  }
-  // La foto de hoy: la que el Dashboard escribe en la primera visita del día. En
-  // producción es INTRADIA (media rueda: sostiene la línea, nunca abre ni cierra
-  // un período) y la pantalla la reemplaza por el valor vivo.
-  out.push({
-    date: hoy,
-    total_value: Math.round(MONTHLY_LAST_VALUATION * 100) / 100,
-    total_invested: Math.round(aportado * 0.95 * 100) / 100,
-    net_deposited: Math.round(aportado * 100) / 100,
-    clase: 'intradia', base: 'mercado', apto: false, sintetico: true,
-  })
-  return out.sort((a, b) => b.date.localeCompare(a.date))
-})()
-
 // Watchlist demo base (estado inicial — el overlay puede agregar/quitar)
 const WATCHLIST_BASE = [
-  { symbol: 'AVGO', asset_type: 'stock', added_at: '2025-03-20', price: 168.40, change_pct: 1.2 },
-  { symbol: 'PLTR', asset_type: 'stock', added_at: '2025-04-08', price: 24.85,  change_pct: -2.1 },
-  { symbol: 'COIN', asset_type: 'stock', added_at: '2025-05-01', price: 215.30, change_pct: 4.5 },
+  // Precio y variación de la MISMA fuente que el mapa de calor (antes AVGO
+  // figuraba a US$ 168,40 debajo de un mapa que lo mostraba a 198,40).
+  { symbol: 'AVGO', asset_type: 'stock', added_at: '2025-03-20', price: PRICES.AVGO, change_pct: _CAMBIO_DIA.AVGO },
+  { symbol: 'PLTR', asset_type: 'stock', added_at: '2025-04-08', price: PRICES.PLTR, change_pct: _CAMBIO_DIA.PLTR },
+  { symbol: 'COIN', asset_type: 'stock', added_at: '2025-05-01', price: PRICES.COIN, change_pct: _CAMBIO_DIA.COIN },
 ]
 
 // PRICES + PREV_CLOSE: ver arriba (movidos antes de MONTHLY para que el
 // scaling de MONTHLY pueda computar el target POSITIONS × PRICES).
-
-// Benchmarks mensuales para Insights chart. Mismas keys que sirve el backend:
-// USD → sp500, shv (T-Bills), gld (Oro). ARS → inflation_ar, merval, uva,
-// dolar_blue. Sin todas, el selector deja botones disabled y el chart no dibuja
-// esa línea (ej. Merval/Oro/T-Bills quedaban sin comparación).
-const BENCHMARKS = (() => {
-  const out = { sp500: {}, inflation_ar: {}, dolar_blue: {}, shv: {}, gld: {}, merval: {}, uva: {} }
-  const start = new Date('2023-01-01')
-  const today = new Date()
-  let sp = 4700        // S&P arranca en 4700
-  let blue = 850       // Blue 850 → ~1415 hoy
-  let shv = 110        // T-Bills ETF (SHV): casi sin volatilidad
-  let gld = 185        // Oro (GLD): tendencia alcista
-  let merv = 400000    // Merval (^MERV, ARS): sube fuerte → ~2,1M hoy
-  let uva = 400        // UVA: unidad que sigue la inflación
-  while (start <= today) {
-    const key = start.toISOString().slice(0, 7)
-    const monthsSince = (start.getFullYear() - 2023) * 12 + start.getMonth()
-    // S&P month-end close: +1% mean, ±2.5% noise
-    sp = sp * (1 + 0.009 + (Math.random() - 0.5) * 0.05)
-    out.sp500[key] = Math.round(sp * 100) / 100
-    // Inflación AR mensual % (alta al inicio, desacelerando — realista AR)
-    const baseInflation = Math.max(2.5, 12 - monthsSince * 0.25)
-    const infl = Math.round((baseInflation + (Math.random() - 0.5) * 1.5) * 100) / 100
-    out.inflation_ar[key] = infl
-    // Dólar blue tendencial — sube SIEMPRE (realista para AR), desacelerando
-    // pero sin caer nunca. El driftBlue viejo (0.025 - month*0.0008) se hacía
-    // negativo a mitad de la serie → el blue caía y la cartera en pesos "perdía".
-    const driftBlue = Math.max(0.005, 0.022 - monthsSince * 0.0003)  // desacelera, nunca negativo
-    blue = blue * (1 + driftBlue + (Math.random() - 0.5) * 0.02)
-    out.dolar_blue[key] = Math.round(blue)
-    // T-Bills (SHV): carry chico, casi plano
-    shv = shv * (1 + 0.0035 + (Math.random() - 0.5) * 0.004)
-    out.shv[key] = Math.round(shv * 100) / 100
-    // Oro (GLD): alcista con noise
-    gld = gld * (1 + 0.012 + (Math.random() - 0.5) * 0.045)
-    out.gld[key] = Math.round(gld * 100) / 100
-    // Merval (ARS): arrastrado por inflación/blue
-    merv = merv * (1 + 0.04 + (Math.random() - 0.5) * 0.07)
-    out.merval[key] = Math.round(merv)
-    // UVA: valor en pesos que sigue la inflación del mes
-    uva = uva * (1 + infl / 100)
-    out.uva[key] = Math.round(uva * 100) / 100
-    start.setMonth(start.getMonth() + 1)
-  }
-  // Continuidad del blue en "Hoy": la serie ARS de Insights valúa el punto "Hoy"
-  // al blue ACTUAL (tcValuacion=_DEMO_TC_BLUE) y el último mes al blue de ese mes. Si
-  // el blue del fixture no termina en ~tcValuacion, "Hoy" pega un salto de FX (~16%)
-  // en TODAS las líneas. Escalamos la serie para que su último mes = tcValuacion. Los
-  // % de retorno son invariantes al escalado uniforme del blue, así que esto solo
-  // arregla la continuidad sin tocar ninguna comparación.
-  const _bKeys = Object.keys(out.dolar_blue).sort()
-  const _lastBlue = _bKeys.length ? out.dolar_blue[_bKeys[_bKeys.length - 1]] : 0
-  if (_lastBlue > 0) {
-    const _blueScale = _DEMO_TC_BLUE / _lastBlue
-    for (const k of _bKeys) out.dolar_blue[k] = Math.round(out.dolar_blue[k] * _blueScale)
-  }
-  return { ...out, fetched_at: new Date().toISOString() }
-})()
-
-const DOLAR = {
-  blue:   { compra: 1395, venta: 1415 },
-  mep:    { compra: 1420, venta: 1424 },
-  ccl:    { compra: 1430, venta: 1432 },
-  cripto: { compra: 1421, venta: 1422 },
-  fetched_at: new Date().toISOString(),
-}
 
 // Strip de índices del Home — shape exacta del backend get_indices_strip()
 const INDICES_STRIP = [
@@ -1976,11 +1920,23 @@ const MOVERS = {
   },
 }
 
+const _MES_ACTUAL_NOMBRE = MONTH_NAMES_ES[new Date().getMonth()].toLowerCase()
+const _MES_ANTERIOR_NOMBRE = MONTH_NAMES_ES[(new Date().getMonth() + 11) % 12].toLowerCase()
+const _INFLACION_MES_ANTERIOR = (() => {
+  const d = new Date()
+  d.setDate(1)
+  d.setMonth(d.getMonth() - 1)
+  const v = (_INFLACION_REF[d.getFullYear()] || _INFLACION_REF[2026])[d.getMonth()]
+  return `${String(v).replace('.', ',')} %`
+})()
+
 // Noticias del mercado — mock con shape del backend
 const NEWS_MARKET = [
   {
-    title: 'La Reserva Federal mantiene tasas en 4.25-4.50% y modera expectativas de recortes',
-    summary: 'Powell confirmó una pausa en el ciclo de baja de tasas y enfatizó que aún no hay evidencia suficiente para una flexibilización rápida.',
+    // Antes de la reunión, no después: la agenda del demo tiene la decisión de
+    // la Fed dentro de 3 días y esta noticia decía que ya la había tomado.
+    title: 'El mercado anticipa que la Fed mantendría las tasas en su próxima reunión',
+    summary: 'Los futuros descuentan una pausa en el ciclo de baja de tasas; la atención está en el tono de Powell sobre los próximos recortes.',
     url: 'https://example.com/news/fed-hold',
     published_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
     query_source: 'Federal Reserve interest rates',
@@ -1999,8 +1955,10 @@ const NEWS_MARKET = [
     tags: ['nvda', 'semiconductores', 'mercado'],
   },
   {
-    title: 'Inflación argentina de abril en 2.8%: continúa la desaceleración mensual',
-    summary: 'El INDEC reportó que la inflación se desaceleró al 2.8% mensual en abril, marcando la cifra más baja en 14 meses.',
+    // El mes que ya se publicó (el anterior) y con el dato de la serie del demo;
+    // antes era "abril" todo el año y la agenda tenía el IPC de abril por venir.
+    title: `Inflación de ${_MES_ANTERIOR_NOMBRE} en ${_INFLACION_MES_ANTERIOR}: continúa la desaceleración`,
+    summary: `El INDEC informó que la inflación de ${_MES_ANTERIOR_NOMBRE} fue de ${_INFLACION_MES_ANTERIOR} mensual.`,
     url: 'https://example.com/news/indec-cpi',
     published_at: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
     query_source: 'inflación Argentina INDEC',
@@ -2043,7 +2001,7 @@ const NEWS_PORTFOLIO = [
     tags: ['nvda'],
   },
   {
-    title: 'GGAL reporta resultados Q1 por encima de lo esperado',
+    title: 'GGAL reporta resultados trimestrales por encima de lo esperado',
     summary: 'Galicia anunció utilidades por 158 mil millones y mejora la guía para el resto del año.',
     url: 'https://example.com/news/ggal-q1',
     published_at: new Date(Date.now() - 18 * 60 * 60 * 1000).toISOString(),
@@ -2058,7 +2016,7 @@ const NEWS_PORTFOLIO = [
 const _todayPlus = (days) => {
   const d = new Date()
   d.setDate(d.getDate() + days)
-  return d.toISOString().slice(0, 10)
+  return fechaISO(d)
 }
 
 const EVENTS_PORTFOLIO = [
@@ -2070,10 +2028,10 @@ const EVENTS_PORTFOLIO = [
 
 const EVENTS_POPULAR = [
   { ticker: '',     event_type: 'macro',       event_date: _todayPlus(3),  confirmed: 1, details: { title: 'FOMC · Decisión de tasas Fed' } },
-  { ticker: '',     event_type: 'macro',       event_date: _todayPlus(7),  confirmed: 1, details: { title: 'INDEC · IPC abril Argentina' } },
+  { ticker: '',     event_type: 'macro',       event_date: _todayPlus(7),  confirmed: 1, details: { title: `INDEC · IPC de ${_MES_ACTUAL_NOMBRE}` } },
   { ticker: 'NVDA', event_type: 'earnings',    event_date: _todayPlus(5),  confirmed: 1, details: { title: 'NVDA · Reporte trimestral' } },
   { ticker: 'AAPL', event_type: 'ex_dividend', event_date: _todayPlus(2),  confirmed: 1, details: { amount: 0.25 } },
-  { ticker: 'GGAL', event_type: 'earnings',    event_date: _todayPlus(14), confirmed: 0, details: { title: 'GGAL · Resultados Q1 (estimado)' } },
+  { ticker: 'GGAL', event_type: 'earnings',    event_date: _todayPlus(14), confirmed: 0, details: { title: 'GGAL · Próximos resultados (estimado)' } },
 ]
 
 // ─── Fundamentals (Rendi Score) ──────────────────────────────────────────────
@@ -2850,7 +2808,7 @@ export function handleDemoRequest(method, path, body) {
     }
     if (basePath === '/brokers')     return BROKERS
     if (basePath === '/operations')  return OPERATIONS
-    if (basePath === '/monthly')     return MONTHLY
+    if (basePath === '/monthly')     return _monthlyConAgregadas(overlay)
     if (basePath === '/snapshots') {
       // Respetar el param ?days=N filtrando por ventana. Si no viene, devolver
       // toda la serie. Backend ordena DESC por date — replicamos.
@@ -2930,9 +2888,9 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/config')      return { tc_mep: 1424, tc_blue: 1415 }
     if (basePath === '/home/personal') {
       return { cards: [
-        { kind: 'holding_move', value_tone: 'positive', headline: 'NVDA subió hoy', value: '+4.4%', context: '$178.50', cta_label: 'Ver posición →', cta_href: '/posiciones' },
-        { kind: 'holding_move', value_tone: 'negative', headline: 'TSLA bajó hoy', value: '−2.1%', context: '$248.10', cta_label: 'Ver posición →', cta_href: '/posiciones' },
-        { kind: 'earnings_soon', value_tone: 'neutral', headline: 'Earnings de NVDA', value: 'en 5 días', context: '2026-05-19', cta_label: 'Ver detalle →', cta_href: '/novedades?tab=eventos' },
+        { kind: 'holding_move', value_tone: 'positive', headline: 'NVDA subió hoy', value: '+4,4 %', context: 'US$ 178,50', cta_label: 'Ver posición →', cta_href: '/posiciones' },
+        { kind: 'holding_move', value_tone: 'negative', headline: 'TSLA bajó hoy', value: '−2,1 %', context: 'US$ 248,10', cta_label: 'Ver posición →', cta_href: '/posiciones' },
+        { kind: 'earnings_soon', value_tone: 'neutral', headline: 'Earnings de NVDA', value: 'en 5 días', context: _todayPlus(5), cta_label: 'Ver detalle →', cta_href: '/novedades?tab=eventos' },
       ] }
     }
     if (basePath.startsWith('/home/heatmap')) {
@@ -2951,7 +2909,13 @@ export function handleDemoRequest(method, path, body) {
       return {
         available: true,
         ticker: 'DEMO',
-        next_earnings_date: '2026-07-26',
+        // La fecha del evento de ese activo en la agenda del demo (antes: una
+        // fecha fija ya pasada para todos).
+        next_earnings_date: (() => {
+          const t = decodeURIComponent((query || '').match(/ticker=([^&]+)/)?.[1] || '').toUpperCase()
+          const ev = [...EVENTS_PORTFOLIO, ...EVENTS_POPULAR].find(e => e.ticker === t && e.event_type === 'earnings')
+          return ev ? ev.event_date : _todayPlus(20 + (_hashStr(t) % 40))
+        })(),
         next_earnings_estimates: { eps_average: 0.93, eps_low: 0.85, eps_high: 1.02 },
         last_quarters: [
           { date: '2026-04', eps_estimate: 0.85, eps_actual: 0.9, surprise_pct: 6.1 },
@@ -3000,40 +2964,18 @@ export function handleDemoRequest(method, path, body) {
     }
     // Goals + CAGR (Objetivos page) — demo siempre muestra una meta de ejemplo
     // para que el user vea el diagnostic (Sprint 7) sin tener que crear una.
+    // ⚠️ EL OBJETIVO SE CALCULA CON LA CARTERA DEL DEMO. Estaba escrito a mano y
+    // se contradecía solo: 36 meses en el encabezado y "38 meses (14 más que tu
+    // objetivo)" en el diagnóstico, "el plan está alineado" arriba de
+    // "Atrasado", y "38 operaciones en 12 meses" donde Movimientos tiene 15.
     if (basePath === '/goals') {
-      return [{
-        id: 1,
-        target_usd: 80000,
-        target_date: (() => {
-          const d = new Date()
-          d.setFullYear(d.getFullYear() + 3)
-          return d.toISOString().slice(0, 10)
-        })(),
-        expected_return_pct: 12,
-        label: 'Comprar mi primer auto',
-      }]
+      const o = _objetivoDemo()
+      return [{ id: 1, target_usd: o.meta, target_date: o.fecha, expected_return_pct: o.rendimientoAsumido, label: 'Comprar mi primer auto' }]
     }
     if (basePath === '/goals/cagr') return DEMO_CAGR
-    // Goal diagnostic (Sprint 7) — devuelve mock determinístico
-    if (/^\/goals\/\d+\/diagnostic$/.test(basePath)) {
-      return {
-        status: 'behind',
-        projected_value_at_target_date: 28400,
-        eta_months_at_current_rate: 38,
-        delta_pct_required: 6.5,
-        months_left: 24,
-        required_annual_pct: 18.4,
-        diagnostic: 'A este ritmo llegás en ~38 meses (14 más que tu objetivo). Necesitás acelerar o aumentar aportes.',
-        suggestion: {
-          code: 'overtrade',
-          title: 'Operás demasiado',
-          action: 'Cada operación restá comisiones y spread. Reducí frecuencia y vas a ver más capital trabajando para tu meta.',
-          evidence: 'Hicieron 38 operaciones cerradas en 12 meses — por encima del promedio Latam (≈18).',
-        },
-      }
-    }
+    if (/^\/goals\/\d+\/diagnostic$/.test(basePath)) return _objetivoDemo().diagnostico
     // Behavioral insights — sesgos comportamentales (Sprint 3-4)
-    if (basePath === '/behavioral/insights') return BEHAVIORAL_INSIGHTS
+    if (basePath === '/behavioral/insights') return _comportamientoDemo()
     // Wrapped anual — reseña del año (Sprint 6)
     if (basePath.startsWith('/wrapped/')) {
       const yearStr = basePath.slice('/wrapped/'.length).split('?')[0]
@@ -3068,7 +3010,7 @@ export function handleDemoRequest(method, path, body) {
         const daysToMon = (8 - today.getDay()) % 7 || 7
         const d = new Date(today)
         d.setDate(d.getDate() + daysToMon)
-        return d.toISOString().slice(0, 10)
+        return fechaISO(d)
       })()
       return {
         tier: 'pro',
@@ -3150,6 +3092,9 @@ export function handleDemoRequest(method, path, body) {
       const t = decodeURIComponent(basePath.slice('/fundamentals/'.length)).split('?')[0]
       return _buildDemoFundamentals(t)
     }
+    // Diagnóstico → Performance. Antes `{}`: la tarjeta decía "Sin mediciones
+    // todavía" y "TWRR · Acumulado 1A —" al lado de 30 meses de curva.
+    if (basePath === '/insights/performance') return _demoPerformance(query)
     if (basePath.startsWith('/insights')) return {}
     if (basePath.startsWith('/goals'))    return []
 
@@ -3193,7 +3138,7 @@ export function handleDemoRequest(method, path, body) {
           const r = buildDemoPeriodReport('year', String(y))
           const m = r.metrics || {}
           const finVentana = r.is_current
-            ? hoy.toISOString().slice(0, 10)
+            ? hoyISO()
             : `${y}-12-31`
           return {
             year: y,
@@ -3267,7 +3212,7 @@ export function handleDemoRequest(method, path, body) {
       current.push({
         symbol,
         asset_type: 'stock',
-        added_at: new Date().toISOString().slice(0, 10),
+        added_at: hoyISO(),
         price: PRICES[symbol] || null,
         change_pct: null,
       })
@@ -3287,7 +3232,7 @@ export function handleDemoRequest(method, path, body) {
   if (method === 'POST' && basePath === '/positions' && body) {
     // ID sintético >= 9000 para no colisionar con la fixture
     const id = 9000 + overlay.positions.length
-    const entry_date = body.entry_date || new Date().toISOString().slice(0, 10)
+    const entry_date = body.entry_date || hoyISO()
     const newPosition = {
       id,
       broker: body.broker,
@@ -3351,15 +3296,13 @@ export function handleDemoRequest(method, path, body) {
       }
     }
     if (_q.includes('riesgo') || _q.includes('concentr') || _q.includes('sesgo')) {
-      return {
-        tier: 'pro',
-        reply: 'Tu mayor riesgo hoy es la concentración: NVDA pesa el 28% de la cartera y explicó dos tercios de la suba del mes. Si corrige 15%, el golpe directo al portfolio es de ~4 puntos. El segundo factor es el cash (~45% entre USDT y ARS), que te protege de una corrección pero también explica la mayor parte del gap contra el S&P.\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)\n---RENDI---{"verdict":"Ojo acá","tone":"warn","headline":"NVDA concentra el 28% — una corrección suya te pega ~4 puntos directos.","stats":[{"l":"Mayor posición","v":"NVDA · 28%","t":"warn"},{"l":"Si corrige 15%","v":"−4,2 pp","t":"neg"},{"l":"Cash sin invertir","v":"~45%","t":"warn"}],"blocks":[{"type":"scenario","if":"NVDA corrige −15%","then":"−4,2 pp en tu cartera","tone":"neg"},{"type":"actions","title":"Siguientes pasos","items":[{"label":"Crear alerta: NVDA −10%","to":"/alertas?new=NVDA"},{"label":"Ver atribución completa","to":"/analisis"}]}],"followups":["¿Qué pasa si NVDA corrige 25%?","¿Me conviene rotar algo de NVDA?","¿Cómo despliego el cash gradualmente?"],"sources":["12 posiciones","3 brokers","snapshot demo"]}',
-      }
+      return { tier: 'pro', reply: _respuestaRiesgoDemo() }
     }
-    return {
-      tier: 'pro',
-      reply: 'La cartera demo vale US$ 41.416 y acumula +13,4% de ganancia no realizada. El motor es NVDA (28% del portfolio, +9,1% en el mes) — aportó dos tercios de la suba. INTC fue el mejor trade cerrado del año (+148%) y lo único que frena el rendimiento agregado es el cash: ~45% entre USDT y ARS que no está trabajando.\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)\n---RENDI---{"verdict":"Buen momento","tone":"pos","headline":"La cartera vale US$ 41.416, +13,4% no realizado, con NVDA de motor.","stats":[{"l":"Valor hoy","v":"US$ 41.416","t":"neutral"},{"l":"P&L no realizado","v":"+13,4%","t":"pos"},{"l":"Mayor posición","v":"NVDA · 28%","t":"warn"}],"blocks":[{"type":"compare","title":"Tu cartera vs benchmarks · YTD","items":[{"l":"Tu cartera","v":"+13,4%","pct":92},{"l":"S&P 500","v":"+11,1%","pct":76},{"l":"Inflación AR","v":"+8,6%","pct":59}]},{"type":"alloc","title":"Composición de tu cartera","items":[{"l":"NVDA","pct":28},{"l":"MSFT","pct":12},{"l":"Otros","pct":15},{"l":"Cash","pct":45}]}],"followups":["¿Qué riesgos detectás en mi cartera?","¿Cómo evalúo mi win rate?","¿Cómo vengo contra el S&P 500?"],"sources":["12 posiciones","3 brokers","snapshot demo"]}',
-    }
+    // ⚠️ CALCULADA CON EL DEMO, NO ESCRITA A MANO. La respuesta fija decía "vale
+    // US$ 41.416", "NVDA pesa el 28 %", "~45 % en efectivo" y un YTD inventado:
+    // en la pantalla de al lado NVDA era el 15 % y el efectivo el 5 %. Todos los
+    // botones "Analizar" del demo terminan acá.
+    return { tier: 'pro', reply: _respuestaChatDemo() }
   }
 
   // ── AI v2 analyze: mocks por topic (datos consistentes con la fixture demo)
@@ -3388,10 +3331,10 @@ export function handleDemoRequest(method, path, body) {
       const daysToMon = (8 - today.getDay()) % 7 || 7
       const d = new Date(today)
       d.setDate(d.getDate() + daysToMon)
-      return d.toISOString().slice(0, 10)
+      return fechaISO(d)
     })()
     return {
-      result,
+      result: _rellenarTextosDemo(result),
       cached: false,
       tier: 'pro',
       usage: {
@@ -3445,6 +3388,460 @@ export function handleDemoRequest(method, path, body) {
   return { ok: true }
 }
 
+// ─── Comportamiento con los números del demo ────────────────────────────────
+// ⚠️ LAS TARJETAS ESTABAN ESCRITAS PARA OTRA CARTERA (US$ 22.300, 14
+// operaciones con 8 ganadoras, "9 % en efectivo", "6 % AR") y la pantalla de
+// al lado mostraba otra: 5 % de efectivo, 13 % argentino, 64 % de acierto. Se
+// conservan los textos y la bibliografía; los datos se recalculan acá.
+function _comportamientoDemo() {
+  const out = JSON.parse(JSON.stringify(BEHAVIORAL_INSIGHTS))
+  const broker = (n) => BROKERS.find(b => b.name === n)
+  const valorDe = (p) => computeBrokerValue([p], PRICES, broker(p.broker), _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').value
+  const filas = POSITIONS.map(p => ({ ...p, value_usd: valorDe(p) }))
+  const total = _VALUACION.valor
+  const r1 = (n) => Math.round(n * 10) / 10
+  const r2 = (n) => Math.round(n * 100) / 100
+  const pct = (v) => r1((v / total) * 100)
+  const usdOp = (o, precio) => (o.broker === 'Cocos' ? precio * o.quantity / _TC_OPS_AR : precio * o.quantity)
+  const ganadoras = OPERATIONS.filter(o => o.pnl_usd > 0)
+  const perdedoras = OPERATIONS.filter(o => o.pnl_usd <= 0)
+  const prom = (xs, f) => (xs.length ? xs.reduce((s, x) => s + f(x), 0) / xs.length : 0)
+  const card = (code) => out.cards.find(c => c.code === code)
+
+  const disp = card('disposition_effect')
+  if (disp) { disp.evidence.winners_count = ganadoras.length; disp.evidence.losers_count = perdedoras.length }
+
+  const over = card('overtrade')
+  if (over) {
+    const primera = [...OPERATIONS].map(o => o.date).sort()[0]
+    const dias = Math.max(1, Math.round((Date.parse(hoyISO()) - Date.parse(primera)) / 86_400_000))
+    const anios = dias / 365
+    const nocional = OPERATIONS.reduce((s, o) => s + usdOp(o, o.exit_price), 0)
+    const capitalProm = MONTHLY.filter(m => m.broker === 'global').slice(-12).reduce((s, m, _i, a) => s + m.capital_final / a.length, 0)
+    const rotacion = nocional / (capitalProm || 1) / anios
+    Object.assign(over.evidence, { total_trades: OPERATIONS.length, period_days: dias, period_years: r2(anios),
+      annual_ops: r1(OPERATIONS.length / anios), annual_turnover: r2(rotacion), total_notional: Math.round(nocional), capital_avg: Math.round(capitalProm) })
+    over.value_label = `${rotacion.toFixed(2).replace('.', ',')}× / año`
+    over.one_liner = `Tu cartera rota ${rotacion.toFixed(2).replace('.', ',')}× por año (${OPERATIONS.length} operaciones en ${Math.round(dias / 30)} meses). Estás en el rango del inversor de mediano plazo.`
+  }
+
+  const loss = card('loss_aversion')
+  if (loss) {
+    const tamGan = prom(ganadoras, o => usdOp(o, o.entry_price))
+    const tamPer = prom(perdedoras, o => usdOp(o, o.entry_price))
+    const ratio = tamPer / (tamGan || 1)
+    Object.assign(loss.evidence, { winners_count: ganadoras.length, losers_count: perdedoras.length,
+      winners_avg_size_usd: Math.round(tamGan), losers_avg_size_usd: Math.round(tamPer), ratio: r1(ratio) })
+    loss.value_label = `losers ${ratio.toFixed(1).replace('.', ',')}× winners`
+    loss.one_liner = `El tamaño promedio de tus perdedoras es ${ratio.toFixed(1).replace('.', ',')}× el de tus ganadoras.${ratio > 1.2 ? ' Vale revisar criterios de salida.' : ' No hay señal de aguantar perdedoras grandes.'}`
+    loss.detected = ratio > 1.2
+    loss.severity = ratio > 1.2 ? 'medium' : 'positive'
+  }
+
+  const conc = card('concentration')
+  if (conc) {
+    const inv = filas.filter(p => !p.is_cash).sort((a, b) => b.value_usd - a.value_usd)
+    const suma = (xs) => xs.reduce((s, p) => s + p.value_usd, 0)
+    const top1 = pct(suma(inv.slice(0, 1)))
+    const top3 = pct(suma(inv.slice(0, 3)))
+    conc.title = `${inv[0].asset} es tu posición más grande`
+    conc.value_label = `Top 1: ${top1.toFixed(0)} %`
+    conc.one_liner = `Top 1 = ${top1.toFixed(0)} %, Top 3 = ${top3.toFixed(0)} %.${top3 > 50 ? ' La cartera depende mucho de pocos activos.' : ''}`
+    Object.assign(conc.evidence, { top_asset: inv[0].asset, top1_pct: top1, top3_pct: top3, top5_pct: pct(suma(inv.slice(0, 5))),
+      total_assets: inv.length, total_value_usd: Math.round(total),
+      top_5: inv.slice(0, 5).map(p => ({ asset: p.asset, value_usd: Math.round(p.value_usd), pct: pct(p.value_usd) })) })
+  }
+
+  const infl = card('inflation_loss')
+  if (infl) {
+    const cash = POSITIONS.find(p => p.is_cash && p.broker === 'Cocos')
+    const claves = Object.keys(BENCHMARKS.inflation_ar).sort().slice(-12)
+    const acum = claves.reduce((f, k) => f * (1 + BENCHMARKS.inflation_ar[k] / 100), 1) - 1
+    const pesos = cash ? cash.quantity : 0
+    const perdida = pesos * (1 - 1 / (1 + acum))
+    const usd = perdida / _DEMO_TC_MEP
+    Object.assign(infl.evidence, { cash_ars_pesos: pesos, inflation_cum_pct: r1(acum * 100), loss_pesos: Math.round(perdida), loss_usd: r2(usd) })
+    infl.value_label = `−US$ ${Math.round(usd)}`
+    infl.one_liner = `En 12 meses, la inflación le sacó ~US$ ${Math.round(usd)} de poder de compra a tus pesos quietos. Considerá MEP, Lecaps en pesos o CEDEARs para cubrirte.`
+  }
+
+  const cf = card('counterfactual')
+  if (cf) {
+    const precioHoy = (o) => (o.broker === 'Cocos' ? PRICES[`${o.asset}.BA`] : PRICES[o.asset])
+    const analizadas = OPERATIONS.filter(o => precioHoy(o) != null)
+    const deltas = analizadas.map(o => ({ o, delta: usdOp(o, precioHoy(o)) - usdOp(o, o.exit_price) }))
+    const deltaTotal = deltas.reduce((s, d) => s + d.delta, 0)
+    const realizado = analizadas.reduce((s, o) => s + o.pnl_usd, 0)
+    Object.assign(cf.evidence, { realized_total_usd: Math.round(realizado), hypothetical_total_usd: Math.round(realizado + deltaTotal),
+      delta_total_usd: Math.round(deltaTotal), trades_analyzed: analizadas.length,
+      top_misses: deltas.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 5).map(({ o, delta }) => ({
+        asset: o.asset, exit_price: o.exit_price, current_price: precioHoy(o), delta_usd: Math.round(delta), exit_date: o.date })) })
+    cf.value_label = `${deltaTotal >= 0 ? '+' : '−'}US$ ${Math.abs(Math.round(deltaTotal))}`
+    cf.one_liner = deltaTotal >= 0
+      ? `Sumando todas tus ventas, hubieras hecho ~US$ ${Math.round(deltaTotal)} más si mantenías (algunas bajaron después, otras subieron).`
+      : `Sumando todas tus ventas, vender te ahorró ~US$ ${Math.abs(Math.round(deltaTotal))}: en conjunto, lo vendido bajó después.`
+  }
+
+  const wr = card('winrate_payoff')
+  if (wr) {
+    const tasa = (ganadoras.length / OPERATIONS.length) * 100
+    const promGan = prom(ganadoras, o => o.pnl_usd)
+    const promPer = Math.abs(prom(perdedoras, o => o.pnl_usd))
+    const payoff = promGan / (promPer || 1)
+    const esperanza = prom(OPERATIONS, o => o.pnl_usd)
+    Object.assign(wr.evidence, { win_rate_pct: r1(tasa), winners_count: ganadoras.length, losers_count: perdedoras.length,
+      total_trades: OPERATIONS.length, avg_win_usd: r2(promGan), avg_loss_usd: r2(promPer), payoff_ratio: r2(payoff), expectancy_usd: r2(esperanza) })
+    wr.value_label = `${tasa.toFixed(0)} % · payoff ${payoff.toFixed(2).replace('.', ',')}×`
+    wr.one_liner = `Win rate ${tasa.toFixed(0)} % con payoff ${payoff.toFixed(2).replace('.', ',')}× = esperanza de ${esperanza >= 0 ? '+' : '−'}US$ ${Math.abs(esperanza).toFixed(2).replace('.', ',')} por operación.`
+  }
+
+  const home = card('home_bias')
+  if (home) {
+    const ar = _VALUACION.porBroker.Cocos || 0
+    home.value_label = `${pct(ar).toFixed(0)} % AR`
+    home.one_liner = `${pct(ar).toFixed(0)} % en Argentina y ${(100 - pct(ar)).toFixed(0)} % afuera. Si tu vida es en pesos (gastos, salario), podés sumar exposición local como cobertura natural.`
+    Object.assign(home.evidence, { ar_pct: pct(ar), intl_pct: r1(100 - pct(ar)), ar_value_usd: Math.round(ar), intl_value_usd: Math.round(total - ar), total_value_usd: Math.round(total) })
+  }
+
+  const cash = card('cash_drag')
+  if (cash) {
+    const enCaja = filas.filter(p => p.is_cash)
+    const cajaUsd = enCaja.reduce((s, p) => s + p.value_usd, 0)
+    const cajaArs = enCaja.filter(p => p.broker === 'Cocos').reduce((s, p) => s + p.value_usd, 0)
+    cash.value_label = `${pct(cajaUsd).toFixed(0)} % en cash`
+    cash.one_liner = `${pct(cajaUsd).toFixed(0)} % en cash — colchón razonable para liquidez sin perder oportunidades.`
+    Object.assign(cash.evidence, { cash_pct: pct(cajaUsd), cash_ars_pct: pct(cajaArs), cash_usd_amount: Math.round(cajaUsd - cajaArs),
+      cash_ars_usd_equiv: Math.round(cajaArs), invested_usd: Math.round(total - cajaUsd), total_usd: Math.round(total) })
+  }
+
+  const rec = card('recency_bias')
+  if (rec) {
+    rec.evidence.total_invested_usd = Math.round(_VALUACION.costo)
+    rec.evidence.chase_pct = r1((rec.evidence.chase_pumps_invested_usd / _VALUACION.costo) * 100)
+    rec.value_label = `${rec.evidence.chase_pct.toFixed(0)} % del invertido`
+    rec.one_liner = `${rec.evidence.chase_pct.toFixed(0)} % de lo invertido se compró alto. Magnitud baja, no es un patrón sistemático.`
+  }
+
+  const sec = card('sector_concentration')
+  if (sec) {
+    const b = computeSectorBreakdown(filas.map(p => ({ ...p, value_usd: p.value_usd })), BROKERS)
+    const it = b.items || []
+    if (it.length) {
+      const top3 = it.slice(0, 3).reduce((s, x) => s + x.pct, 0)
+      sec.title = `${it[0].label} pesa fuerte en tu cartera`
+      sec.value_label = `${it[0].label}: ${it[0].pct.toFixed(0)} %`
+      sec.one_liner = `${it[0].label} = ${it[0].pct.toFixed(0)} % · Top 3 sectores = ${top3.toFixed(0)} %. Diversificar entre sectores reduce el riesgo idiosincrático.`
+      Object.assign(sec.evidence, { top_sector: it[0].label, top1_pct: r1(it[0].pct), top3_pct: r1(top3), total_sectors: it.length,
+        total_value_usd: Math.round(b.total), unmapped_count: (b.unclassified?.assets || []).length,
+        breakdown: it.map(x => ({ sector: x.label, value_usd: Math.round(x.value), pct: r1(x.pct) })) })
+    }
+  }
+
+  const detectadas = out.cards.filter(c => c.detected)
+  out.summary = {
+    total_detected: detectadas.length,
+    total_high: out.cards.filter(c => c.severity === 'high').length,
+    total_medium: out.cards.filter(c => c.severity === 'medium').length,
+    total_positive: out.cards.filter(c => c.severity === 'positive').length,
+    total_cards: out.cards.length,
+  }
+  out.generated_at = new Date().toISOString()
+  return out
+}
+
+// ─── Hechos del demo para los textos de la IA ────────────────────────────────
+// Un solo lugar: los textos enlatados leen estos números en vez de afirmar
+// los suyos. Todo sale de la misma valuación que la pantalla (`_VALUACION`).
+function _hechosDelDemo() {
+  const broker = (n) => BROKERS.find(b => b.name === n)
+  const valorDe = (p) => computeBrokerValue([p], PRICES, broker(p.broker), _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').value
+  const filas = POSITIONS.map(p => ({ ...p, valor: valorDe(p) }))
+  const total = _VALUACION.valor || 1
+  const invertidas = filas.filter(p => !p.is_cash).sort((a, b) => b.valor - a.valor)
+  const pesoDe = (xs) => (xs.reduce((s, p) => s + p.valor, 0) / total) * 100
+  const cripto = new Set(['BTC', 'ETH', 'SOL'])
+  const mejor = [...OPERATIONS].sort((a, b) => b.pnl_pct - a.pnl_pct)[0]
+  const g = MONTHLY.filter(m => m.broker === 'global')
+  const aportado = (g[0]?.capital_inicio || 0) + g.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
+  const anio = buildDemoPeriodReport('year', String(new Date().getFullYear()))?.metrics || {}
+  return {
+    valor: _VALUACION.valor,
+    noRealizadoPct: ((_VALUACION.valor - _VALUACION.costo) / (_VALUACION.costo || 1)) * 100,
+    gananciaTotal: _VALUACION.valor - aportado,
+    top: { asset: invertidas[0]?.asset, peso: pesoDe(invertidas.slice(0, 1)) },
+    top3: pesoDe(invertidas.slice(0, 3)),
+    top3Activos: invertidas.slice(0, 3).map(p => ({ asset: p.asset, peso: pesoDe([p]) })),
+    efectivo: pesoDe(filas.filter(p => p.is_cash)),
+    cripto: pesoDe(filas.filter(p => cripto.has(p.asset))),
+    mejor,
+    anioPct: anio.delta_pct,
+    anioVsSp: anio.vs_sp500_pct,
+    operaciones: OPERATIONS.length,
+    ganadoras: OPERATIONS.filter(o => o.pnl_usd > 0).length,
+  }
+}
+const _pctDemo = (x, dec = 1) => (x == null ? '—' : `${x >= 0 ? '+' : ''}${x.toFixed(dec).replace('.', ',')}%`)
+const _usdDemo = (n) => `US$ ${Math.round(n).toLocaleString('es-AR')}`
+
+function _respuestaChatDemo() {
+  const h = _hechosDelDemo()
+  const texto = `La cartera demo vale ${_usdDemo(h.valor)} y lleva ${_pctDemo(h.noRealizadoPct)} de ganancia no realizada sobre lo invertido. `
+    + `La posición más grande es ${h.top.asset} (${h.top.peso.toFixed(0)} % de la cartera) y las tres principales suman ${h.top3.toFixed(0)} %. `
+    + `La mejor operación cerrada fue ${h.mejor.asset} (${_pctDemo(h.mejor.pnl_pct, 0)}). El efectivo es el ${h.efectivo.toFixed(0)} % y la cripto el ${h.cripto.toFixed(0)} %.`
+    + '\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)'
+  const bloques = [{ type: 'alloc', title: 'Composición de tu cartera', items: [
+    ...h.top3Activos.map(a => ({ l: a.asset, pct: Math.round(a.peso) })),
+    { l: 'Otros', pct: Math.max(0, Math.round(100 - h.top3 - h.efectivo)) },
+    { l: 'Efectivo', pct: Math.round(h.efectivo) },
+  ] }]
+  if (h.anioPct != null && h.anioVsSp != null) {
+    const sp = h.anioPct - h.anioVsSp
+    const escala = Math.max(Math.abs(h.anioPct), Math.abs(sp), 1)
+    bloques.unshift({ type: 'compare', title: `Tu cartera vs S&P 500 · ${new Date().getFullYear()}`, items: [
+      { l: 'Tu cartera', v: _pctDemo(h.anioPct), pct: Math.round((Math.abs(h.anioPct) / escala) * 90) },
+      { l: 'S&P 500', v: _pctDemo(sp), pct: Math.round((Math.abs(sp) / escala) * 90) },
+    ] })
+  }
+  const rendi = {
+    verdict: h.gananciaTotal >= 0 ? 'Buen momento' : 'A revisar',
+    tone: h.gananciaTotal >= 0 ? 'pos' : 'neg',
+    headline: `La cartera vale ${_usdDemo(h.valor)}, ${_pctDemo(h.noRealizadoPct)} no realizado, con ${h.top.asset} como posición más grande.`,
+    stats: [
+      { l: 'Valor hoy', v: _usdDemo(h.valor), t: 'neutral' },
+      { l: 'P&L no realizado', v: _pctDemo(h.noRealizadoPct), t: h.noRealizadoPct >= 0 ? 'pos' : 'neg' },
+      { l: 'Mayor posición', v: `${h.top.asset} · ${h.top.peso.toFixed(0)} %`, t: h.top.peso > 25 ? 'warn' : 'neutral' },
+    ],
+    blocks: bloques,
+    followups: ['¿Qué riesgos detectás en mi cartera?', '¿Cómo evalúo mi win rate?', '¿Cómo vengo contra el S&P 500?'],
+    sources: [`${POSITIONS.filter(p => !p.is_cash).length} posiciones`, `${BROKERS.length} brokers`, 'datos de la demo'],
+  }
+  return `${texto}\n---RENDI---${JSON.stringify(rendi)}`
+}
+
+function _respuestaRiesgoDemo() {
+  const h = _hechosDelDemo()
+  const golpe = (h.top.peso * 0.15).toFixed(1).replace('.', ',')
+  const texto = `Tu mayor riesgo hoy es la concentración: ${h.top.asset} pesa el ${h.top.peso.toFixed(0)} % de la cartera y las tres principales, el ${h.top3.toFixed(0)} %. `
+    + `Si ${h.top.asset} corrige 15 %, el golpe directo a la cartera es de ~${golpe} puntos. `
+    + `La cripto suma el ${h.cripto.toFixed(0)} %: es la parte más volátil. El efectivo (${h.efectivo.toFixed(0)} %) amortigua poco.`
+    + '\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)'
+  const rendi = {
+    verdict: h.top3 > 50 ? 'Concentrada' : 'Diversificada', tone: h.top3 > 50 ? 'warn' : 'neutral',
+    headline: `${h.top.asset} es el ${h.top.peso.toFixed(0)} % de la cartera; las tres principales, el ${h.top3.toFixed(0)} %.`,
+    stats: [
+      { l: 'Mayor posición', v: `${h.top.asset} · ${h.top.peso.toFixed(0)} %`, t: 'warn' },
+      { l: 'Top 3', v: `${h.top3.toFixed(0)} %`, t: h.top3 > 50 ? 'warn' : 'neutral' },
+      { l: 'Cripto', v: `${h.cripto.toFixed(0)} %`, t: 'neutral' },
+    ],
+    blocks: [],
+    followups: ['¿Cómo evalúo mi win rate?', '¿Cómo vengo contra el S&P 500?'],
+    sources: ['datos de la demo'],
+  }
+  return `${texto}\n---RENDI---${JSON.stringify(rendi)}`
+}
+
+// ─── Textos enlatados con los números del demo ───────────────────────────────
+// ⚠️ LOS TEXTOS ESTABAN ESCRITOS PARA OTRA CARTERA ("US$ 8.3K", "NVDA pesa el
+// 28 %", "45 % en cash"): en la pantalla de al lado la cartera valía US$ 41.500,
+// NVDA el 15 % y el efectivo el 5 %, y los análisis concluían que "casi la mitad
+// del capital no participó del rally". Los números van como {{MARCA}} y se
+// completan acá, con la misma valuación que la pantalla.
+function _marcasDemo() {
+  const h = _hechosDelDemo()
+  const broker = (n) => BROKERS.find(b => b.name === n)
+  const valorDe = (p) => computeBrokerValue([p], PRICES, broker(p.broker), _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').value
+  const pesoDe = (asset) => POSITIONS.filter(p => p.asset === asset && !p.is_cash && p.broker !== 'Cocos').reduce((s, p) => s + valorDe(p), 0) / (h.valor || 1) * 100
+  const nvda = POSITIONS.find(p => p.asset === 'NVDA')
+  const nvdaPnl = nvda ? ((PRICES.NVDA * nvda.quantity) / nvda.invested - 1) * 100 : 0
+  const nvdaPeso = pesoDe('NVDA')
+  const k = (n) => `US$ ${(n / 1000).toFixed(1).replace('.', ',')}K`
+  const pts = (n) => n.toFixed(1).replace('.', ',')
+  const pctTxtDemo = (n) => `${Math.round(n)} %`
+  // Peor retroceso de los últimos 12 meses, con las fotos diarias.
+  const desde = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return fechaISO(d) })()
+  const serie = [...SNAPSHOTS].filter(x => x.date >= desde).sort((a, b) => (a.date < b.date ? -1 : 1))
+  let pico = 0, peor = 0
+  for (const x of serie) { pico = Math.max(pico, x.total_value); peor = Math.min(peor, x.total_value / pico - 1) }
+  const g = MONTHLY.filter(m => m.broker === 'global')
+  const aportado = (g[0]?.capital_inicio || 0) + g.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
+  const spAnio = h.anioPct != null && h.anioVsSp != null ? h.anioPct - h.anioVsSp : null
+  return {
+    ANIO: _pctDemo(h.anioPct),
+    SP_ANIO: _pctDemo(spAnio),
+    GAP_ANIO: h.anioVsSp == null ? '—' : `${h.anioVsSp >= 0 ? '+' : '−'}${pts(Math.abs(h.anioVsSp))} puntos`,
+    VALOR: k(h.valor),
+    APORTADO: k(aportado),
+    GANANCIA: k(h.valor - aportado),
+    NVDA: pctTxtDemo(nvdaPeso),
+    NVDA_PNL: _pctDemo(nvdaPnl, 0),
+    NVDA_25: pts(nvdaPeso * 0.25),
+    NVDA_25_USD: _usdDemo(h.valor * nvdaPeso / 100 * 0.25),
+    NVDA_8: pts(nvdaPeso * 0.08),
+    NVDA_AAPL: pctTxtDemo(nvdaPeso + pesoDe('AAPL')),
+    CASH: pctTxtDemo(h.efectivo),
+    CASH_COSTO: pts(h.efectivo * 0.10),
+    CASH_GAP: pts(spAnio != null ? Math.abs(spAnio) * h.efectivo / 100 : 0),
+    CRIPTO: pctTxtDemo(h.cripto),
+    AR: pctTxtDemo(((_VALUACION.porBroker.Cocos || 0) / (h.valor || 1)) * 100),
+    SCHWAB: pctTxtDemo(((_VALUACION.porBroker.Schwab || 0) / (h.valor || 1)) * 100),
+    TOP1: h.top.asset,
+    TOP1_PCT: pctTxtDemo(h.top.peso),
+    TOP1_25: pts(h.top.peso * 0.25),
+    DD: `${(peor * 100).toFixed(1).replace('.', ',')} %`,
+  }
+}
+
+function _rellenarTextosDemo(obj) {
+  const marcas = _marcasDemo()
+  const rellenar = (v) => {
+    if (typeof v === 'string') return v.replace(/\{\{([A-Z0-9_]+)\}\}/g, (m, key) => (key in marcas ? String(marcas[key]) : m))
+    if (Array.isArray(v)) return v.map(rellenar)
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([kk, vv]) => [kk, rellenar(vv)]))
+    return v
+  }
+  return rellenar(obj)
+}
+
+// ─── /insights/performance del demo ──────────────────────────────────────────
+// La misma forma que `performance.performance` del backend, armada con las
+// fotos diarias: índice encadenado con Dietz tramo a tramo, el punto "hoy" con
+// el valor vivo, el benchmark indexado a 1 en la misma fecha y las caídas.
+function _demoPerformance(query) {
+  const q = new URLSearchParams(query || '')
+  const benchKey = q.get('bench') || 'sp500'
+  const moneda = String(q.get('moneda') || 'usd').toLowerCase() === 'ars' ? 'ars' : 'usd'
+  const desde = q.get('desde') || null
+  const hasta = q.get('hasta') || null
+  const vivo = q.get('valor_live') != null && q.get('valor_live') !== '' ? Number(q.get('valor_live')) : null
+  const hoy = hoyISO()
+  const fx = (fecha) => (moneda === 'ars' ? (BENCHMARKS.dolar_blue[String(fecha).slice(0, 7)] || _DEMO_TC_BLUE) : 1)
+  const filas = [...SNAPSHOTS]
+    .filter(x => x.apto && x.date < hoy && (!desde || x.date >= desde) && (!hasta || x.date <= hasta))
+    .sort((a, b) => (a.date < b.date ? -1 : 1))
+  if (filas.length < 2) {
+    return { curva: [], benchmark: [], benchmark_key: benchKey, moneda, twr: null, cagr: null,
+      motivo: 'sin_mediciones', motivo_texto: 'Todavía no hay dos cierres medidos.' }
+  }
+  const curva = []
+  let idx = 1
+  let pico = 1
+  let ddMax = 0
+  let ddFecha = null
+  let ddPico = null
+  let fechaPico = filas[0].date
+  const empujar = (fecha, valor, aportado, previo) => {
+    let ret = null
+    if (previo) {
+      const flujo = aportado - previo.aportado
+      const den = previo.valor + 0.5 * flujo
+      ret = den > 0 ? (valor - previo.valor - flujo) / den : 0
+      idx *= 1 + ret
+    }
+    if (idx > pico) { pico = idx; fechaPico = fecha }
+    const dd = idx / pico - 1
+    if (dd < ddMax) { ddMax = dd; ddFecha = fecha; ddPico = fechaPico }
+    curva.push({ date: fecha, index: +idx.toFixed(6), index_publicado: +idx.toFixed(6), valor_foto: null,
+      fx: moneda === 'ars' ? fx(fecha === 'hoy' ? hoy : fecha) : null, value: +valor.toFixed(2), clase: 'medicion',
+      apto: true, ret, estimado: false, base: 'mercado', segmento: 0, drawdown: +dd.toFixed(6) })
+    return { valor, aportado }
+  }
+  let previo = null
+  for (const x of filas) previo = empujar(x.date, x.total_value * fx(x.date), x.net_deposited * fx(x.date), previo)
+  const ultimoAportado = MONTHLY.filter(m => m.broker === 'global')
+    .reduce((s, m, i) => s + (i === 0 ? m.capital_inicio : 0) + (m.deposits || 0) - (m.withdrawals || 0), 0)
+  if (vivo != null && !hasta) empujar('hoy', vivo * fx(hoy), ultimoAportado * fx(hoy), previo)
+  // Benchmark indexado a 1 en la primera fecha de la curva (mensual, con arrastre).
+  const serie = BENCHMARKS[benchKey] || {}
+  const esPorcentual = benchKey === 'inflation_ar'
+  const meses = Object.keys(serie).sort()
+  const nivelEn = (ym) => {
+    if (esPorcentual) {
+      let f = 1
+      for (const m of meses) { if (m > curva[0].date.slice(0, 7) && m <= ym) f *= 1 + serie[m] / 100 }
+      return f
+    }
+    let v = null
+    for (const m of meses) { if (m <= ym) v = serie[m]; else break }
+    return v
+  }
+  const base = nivelEn(curva[0].date.slice(0, 7))
+  const benchmark = curva.map(pt => {
+    const n = nivelEn((pt.date === 'hoy' ? hoy : pt.date).slice(0, 7))
+    return { date: pt.date, index: base && n != null ? +(n / base).toFixed(6) : null }
+  })
+  const desdeF = filas[0].date
+  const hastaF = filas[filas.length - 1].date
+  const dias = Math.max(1, Math.round((Date.parse(hoy) - Date.parse(desdeF)) / 86_400_000))
+  const twr = idx - 1
+  return {
+    curva, benchmark, benchmark_key: benchKey, benchmark_resolucion: 'mensual',
+    moneda, riel_fx: moneda === 'ars' ? 'blue' : null, contable: [],
+    medido_desde: desdeF, medido_hasta: hastaF, cobertura: 1, cobertura_reconstruccion: null,
+    instrumentos_al_costo: [], modo: q.get('modo') || 'certero', por_clase: { medicion: filas.length },
+    tramos: 1, tramos_medidos: curva.length - 1, serie_partida: false, tramos_detalle: [],
+    twr, cagr: dias >= 365 ? Math.pow(1 + twr, 365 / dias) - 1 : null,
+    base_del_twr: 'mercado', excluye_no_realizado: false,
+    ventana_desde: desdeF, ventana_hasta: vivo != null && !hasta ? hoy : hastaF,
+    drawdown_actual: curva[curva.length - 1].drawdown, drawdown_maximo: +ddMax.toFixed(6),
+    drawdown_maximo_fecha: ddFecha, drawdown_maximo_pico: ddPico,
+    motivo: null, motivo_texto: null, cortes_dudosos: [], contable_superado: 0, contable_realineado: 0,
+  }
+}
+
+// ─── Objetivo del demo ───────────────────────────────────────────────────────
+// La meta es lo que la cartera del demo alcanza en 3 años con SU rendimiento
+// histórico y SUS aportes promedio, redondeado para abajo: así el diagnóstico,
+// el estado y los meses cuentan la misma historia.
+function _objetivoDemo() {
+  const meses = 36
+  const valor = _VALUACION.valor
+  const g = MONTHLY.filter(m => m.broker === 'global').slice(-12)
+  const aporteMes = g.reduce((s, m) => s + (m.deposits || 0), 0) / (g.length || 1)
+  const tasa = (DEMO_CAGR.cagr ?? 8) / 100
+  const proyectar = (r, n, aporte) => {
+    const rm = Math.pow(1 + r, 1 / 12) - 1
+    let v = valor
+    for (let i = 0; i < n; i++) v = v * (1 + rm) + aporte
+    return v
+  }
+  const proyectado = proyectar(tasa, meses, aporteMes)
+  const meta = Math.max(5000, Math.floor(proyectado / 5000) * 5000)
+  let eta = 0
+  while (proyectar(tasa, eta, aporteMes) < meta && eta < 600) eta++
+  let lo = -0.5
+  let hi = 2
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2
+    if (proyectar(mid, meses, aporteMes) >= meta) hi = mid
+    else lo = mid
+  }
+  const requerido = hi
+  const f = new Date()
+  f.setMonth(f.getMonth() + meses)
+  const pct = (x) => `${(x * 100).toFixed(1).replace('.', ',')} %`
+  const usd = (n) => `US$ ${Math.round(n).toLocaleString('es-AR')}`
+  return {
+    meta,
+    fecha: fechaISO(f),
+    rendimientoAsumido: Math.round(tasa * 100),
+    diagnostico: {
+      status: 'on_track',
+      projected_value_at_target_date: Math.round(proyectado),
+      eta_months_at_current_rate: eta,
+      delta_pct_required: +((requerido - tasa) * 100).toFixed(1),
+      months_left: meses,
+      required_annual_pct: +(requerido * 100).toFixed(1),
+      diagnostic: `A tu ritmo actual (${pct(tasa)} anual y ${usd(aporteMes)} de aporte por mes) llegás en ~${eta} meses: en fecha.`,
+      suggestion: {
+        code: 'aportes',
+        title: 'Sostené los aportes',
+        action: `La meta depende tanto del rendimiento como de aportar: con ${usd(aporteMes)} por mes llegás en fecha sin tener que buscar más rendimiento.`,
+        evidence: `En los últimos 12 meses aportaste ${usd(aporteMes)} por mes en promedio y la cartera rindió ${pct(tasa)} anual.`,
+      },
+    },
+  }
+}
+
 // ─── Escrituras del visitante (se bloquean) ──────────────────────────────────
 // Las de FONDO siguen en silencio: nadie las pidió a mano y un error ahí sólo
 // sería ruido (la foto diaria, el no realizado del mes, telemetría, "visto").
@@ -3468,6 +3865,24 @@ function _esEscrituraDelVisitante(method, path) {
   if (_ESCRITURAS_DE_FONDO.has(`${method} ${path}`)) return false
   if (/^\/positions\/[^/]+\/adjust-ratio$/.test(path)) return true
   return _BASES_DEL_VISITANTE.some(b => path === b || path.startsWith(b + '/'))
+}
+
+// ─── /monthly con las posiciones que agregó el visitante ────────────────────
+// ⚠️ LO QUE EL VISITANTE AGREGA ES PLATA QUE PUSO, NO GANANCIA. La posición
+// agregada sumaba su valor a la cartera sin sumar aporte: 10 META a US$ 600
+// pasaban "Hoy" a +14,8 % y "Ganancia total" de +51 % a +75 %, y quedaba así
+// entre recargas. Su costo entra como aporte del mes en curso.
+function _monthlyConAgregadas(overlay) {
+  const agregadas = overlay?.positions || []
+  const costo = agregadas.reduce((s, p) => {
+    const broker = BROKERS.find(b => b.name === p.broker)
+    if (!broker) return s
+    return s + (computeBrokerValue([p], PRICES, broker, _DEMO_TC_MEP, _DEMO_TC_MEP, _DEMO_TC_CRIPTO, 'purchase').invested || 0)
+  }, 0)
+  if (!(costo > 0)) return MONTHLY
+  return MONTHLY.map(m => (m === _ULTIMO_GLOBAL
+    ? { ...m, deposits: m.deposits + costo, capital_final: m.capital_final + costo }
+    : m))
 }
 
 // ─── /movements del demo ─────────────────────────────────────────────────────
@@ -3569,17 +3984,21 @@ function buildPriceHistory(query) {
   const symbol = (query || '').match(/symbol=([^&]+)/)?.[1] || 'UNKNOWN'
   const period = (query || '').match(/period=([^&]+)/)?.[1] || '1m'
   const points = period === '1w' ? 7 : period === '3m' ? 90 : period === '1y' ? 52 : 30
-  // Empezamos en un precio base y generamos walk con drift suave
-  const base = PRICES[symbol] || PRICES[symbol.replace('-USD', '')] || 100
-  const drift = (Math.random() - 0.4) * 0.002
-  let v = base * (1 - drift * points)
-  const out = []
-  const today = new Date()
-  for (let i = points - 1; i >= 0; i--) {
-    const d = new Date(today)
-    d.setDate(today.getDate() - i)
-    v = v * (1 + drift + (Math.random() - 0.5) * 0.02)
-    out.push({ date: d.toISOString().slice(0, 10), close: Math.round(v * 100) / 100 })
-  }
+  // ⚠️ FIJA POR ACTIVO Y TERMINA EN EL PRECIO DE HOY. Antes era azar nuevo en
+  // cada pedido y el último cierre no era el precio de la Cartera (NVDA cerraba
+  // entre 167,84 y 178,48 contra un precio de 178,50). Se camina hacia ATRÁS
+  // desde el precio actual con una semilla por activo y período.
+  const actual = PRICES[symbol] || PRICES[symbol.replace('-USD', '')] || 100
+  const r = azarDe(`precio-${symbol}-${period}`)
+  const drift = (r() - 0.4) * 0.002
+  const valores = [actual]
+  for (let i = 1; i < points; i++) valores.push(valores[i - 1] / (1 + drift + (r() - 0.5) * 0.02))
+  valores.reverse()
+  const hoy = new Date()
+  const out = valores.map((v, i) => {
+    const d = new Date(hoy)
+    d.setDate(hoy.getDate() - (points - 1 - i))
+    return { date: fechaISO(d), close: Math.round(v * 100) / 100 }
+  })
   return { symbol, period, points: out }
 }
