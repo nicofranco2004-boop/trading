@@ -831,7 +831,7 @@ function LockedCtaFooter({ hiddenCount, totalCount }) {
         </p>
       </div>
       <p className="text-xs text-ink-2 mb-3 max-w-md mx-auto">
-        Rendi Pro detecta {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica y recomendaciones de Rendi AI.
+        Rendi Pro detecta {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica y la lectura de Rendi AI.
       </p>
       <button
         type="button"

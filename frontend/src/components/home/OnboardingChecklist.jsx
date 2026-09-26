@@ -184,7 +184,7 @@ export default function OnboardingChecklist() {
       done: state.hasAI,
       Icon: Bot,
       title: 'Probá Rendi AI',
-      desc: 'Pregúntale sobre tu cartera. Análisis con tus datos reales.',
+      desc: 'Preguntale sobre tu cartera. Análisis con tus datos reales.',
       cta: 'Abrir',
       onClick: () => coachDrawer?.open?.(),
     },

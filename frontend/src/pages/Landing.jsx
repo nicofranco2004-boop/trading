@@ -983,7 +983,7 @@ function MockAnalyze() {
 
 function MockChat() {
   return (
-    <MockFrame title="rendi AI · chat" footer="memoria activa · 12 hechos guardados">
+    <MockFrame title="rendi · chat" footer="memoria activa · 12 hechos guardados">
       <div className="space-y-3">
         {/* User msg */}
         <div className="flex justify-end">

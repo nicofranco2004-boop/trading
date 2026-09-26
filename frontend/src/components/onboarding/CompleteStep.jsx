@@ -51,7 +51,7 @@ export default function CompleteStep({ skipped, position }) {
         <ActionCard
           Icon={Bot}
           title="Rendi AI"
-          desc="Pregúntale lo que quieras. Tiene contexto de tu cartera."
+          desc="Preguntale lo que quieras. Tiene contexto de tu cartera."
           onClick={openCoach}
         />
         <ActionCard
