@@ -119,16 +119,25 @@ class LosMultiplosQueLaPaginaCanta(unittest.TestCase):
         return m.group(1)
 
     def test_el_multiplo_contra_free_es_el_real(self):
+        """Si la tarjeta del Pro todavía se compara contra Free, el múltiplo
+        tiene que ser el real. Sin Free a futuro (decisión de Nico 2026-09-26)
+        la comparación se va del catálogo, y entonces no hay nada que chequear:
+        lo que prohíbe que vuelva es `LasTarjetasNoSeComparanContraFree`."""
         sub = self._sub_de("pro", "60 análisis IA / semana")
+        m = re.search(r"(\d+)× más que Free", sub)
+        if not m:
+            return
         real = LIMITS["pro"]["analyses_per_week"] // LIMITS["free"]["analyses_per_week"]
-        self.assertIn(f"{real}× más que Free", sub,
-                      f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
+        self.assertEqual(int(m.group(1)), real,
+                         f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
 
     def test_el_multiplo_contra_plus_es_el_real(self):
         sub = self._sub_de("pro", "60 análisis IA / semana")
+        m = re.search(r"(\d+)× (?:más )?que Plus", sub)
+        self.assertTrue(m, f"la tarjeta del Pro ya no se compara con el Plus: «{sub}»")
         real = LIMITS["pro"]["analyses_per_week"] // LIMITS["plus"]["analyses_per_week"]
-        self.assertIn(f"{real}× que Plus", sub,
-                      f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
+        self.assertEqual(int(m.group(1)), real,
+                         f"el catálogo dice otro múltiplo; el real es {real}× — «{sub}»")
 
 
 class LosDiasDeLaPruebaQueDiceLaLANDING(unittest.TestCase):
@@ -343,6 +352,10 @@ class CadaNumeroDelCatalogo(unittest.TestCase):
              lambda m: [(int(m[2]), an("pro")), (int(m[3]), an("plus")),
                         (int(m[1]) * int(m[3]), int(m[2]))]),
             (("pro",), r"(\d+) análisis IA / semana", lambda m: [(int(m[1]), an("pro"))]),
+            (("pro",), r"(?<!· )\b(\d+)× más que Plus",
+             lambda m: [(int(m[1]), an("pro") // an("plus"))]),
+            (("plus",), r"(\d+) consultas por semana a Rendi AI",
+             lambda m: [(int(m[1]), ch("plus"))]),
             (("pro",), r"(\d+)× más que Free · (\d+)× que Plus",
              lambda m: [(int(m[1]), an("pro") // an("free")),
                         (int(m[2]), an("pro") // an("plus"))]),
@@ -436,6 +449,39 @@ class CadaNumeroDelCatalogo(unittest.TestCase):
                 self.assertNotIn(
                     de_todos, bloque,
                     f"la tarjeta de {plan} vende «{de_todos}», que es de todos los planes")
+
+
+class LasTarjetasNoSeComparanContraFree(unittest.TestCase):
+    """No hay más Free a futuro (decisión de Nico, 2026-09-26): quien se registra
+    arranca la prueba y después elige Plus o Pro. Las tarjetas de Plus y Pro
+    que se venden en /planes, en el muro y en la landing se comparaban contra
+    Free ("Todo lo del Free", "Vs Free", "3× más", "60× más que Free"): contra un
+    plan que esa persona nunca tuvo ni puede tener.
+
+    Esas líneas son las que reescribe `git revert 78f43739` el 15/10, y tocarlas
+    antes hace chocar el revert. Por eso este test se ACTIVA con el revert (el
+    Plus pasa a tener los 12 detectores: `comportamiento.full`): ese día, en el
+    mismo commit, van los textos sin Free — están en la memoria
+    `project_precios_y_paywall`, ítem 3, probados. Hasta entonces, no chequea.
+
+    El Free sigue existiendo para las cuentas viejas (su propia tarjeta sólo se
+    les muestra a ellas): la tarjeta del Free no entra."""
+
+    def _bloque(self, plan: str) -> str:
+        fuente = open(CATALOGO, encoding="utf-8").read()
+        m = re.search(r"export const %s_FEATURES = \{(.*?)\n\}\n" % plan.upper(),
+                      fuente, re.S)
+        assert m, f"no encontré {plan.upper()}_FEATURES"
+        return m.group(1).split("roadmap:")[0]
+
+    def test_plus_y_pro_no_nombran_al_free(self):
+        if not PLAN_LIMITS["plus"]["can_access"].get("comportamiento.full"):
+            self.skipTest("se activa con el revert del 15/10 (ver el docstring)")
+        for plan in ("plus", "pro"):
+            bloque = self._bloque(plan)
+            for m in re.finditer(r"[^\n]*\bFree\b[^\n]*", bloque):
+                self.fail(f"la tarjeta de {plan} se compara contra Free, que ya no "
+                          f"existe para quien la lee: «{m.group(0).strip()}»")
 
 if __name__ == "__main__":
     unittest.main()
