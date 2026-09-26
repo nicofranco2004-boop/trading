@@ -1,27 +1,15 @@
-// planes — qué se ve con cada tope y qué plan destraba lo que no se ve.
+// planes — qué plan destraba lo que un tope deja afuera.
 // ════════════════════════════════════════════════════════════════════════════
-// Los topes vienen de `/api/plan/features` (`usePlanFeatures`), que los lee de
-// `backend/ai/plan.py`. Nada de acá tiene un número de plan escrito.
+// Los topes vienen de `/api/plan/features` → `features.planes` (los planes en
+// venta, del más barato al más caro), que el backend lee de `ai/plan.py`.
+// Nada de acá tiene un número de plan escrito. (Cuántos ítems se VEN con un
+// tope lo dice `utils/detectoresVisibles.js`.)
 //
 // Por qué existe: la pantalla de Comportamiento tenía `PLUS_VISIBLE_COUNT = 6`
 // escrito a mano para decidir si una carta bloqueada decía "Plus" o "Pro". El
-// 15/10 el Plus pasa a ver los 12 detectores y ese 6 le iba a decir "Pro" a un
-// Free en cartas que el Plus ya muestra. Peor: el tope "sin límite" llega como
-// `null`, y `limit(...) || 1` lo leía como UNO — el Plus, pagando, iba a ver
-// una sola carta y once bloqueadas.
-
-/**
- * Cuántos ítems se muestran con un tope del plan.
- *   · `null`      → sin tope: todos. (Es como lo manda el backend.)
- *   · un número   → ese, sin pasarse del total.
- *   · `undefined` → todavía no se sabe (cargando, sin cache): uno, como antes.
- *     Mostrar de menos un instante es mejor que mostrarle todo a un Free.
- */
-export function cuantosSeVen(tope, total) {
-  if (tope === null) return total
-  if (typeof tope === 'number' && tope > 0) return Math.min(tope, total)
-  return Math.min(1, total)
-}
+// 15/10 el Plus pasa a ver los 12 detectores, y ese 6 le iba a decir "Pro" a un
+// Free en cartas que el Plus ya muestra: le vendía el plan caro por algo que
+// trae el barato.
 
 /**
  * El plan MÁS BARATO que muestra el ítem número `indice` (0 = el primero).

@@ -50,7 +50,6 @@ import re
 from typing import Optional
 
 from ai.plan import PLAN_LIMITS, PLANES_EN_VENTA
-from ai.prompts import is_descriptive_tier
 from ai.quota import LIMITS
 
 log = logging.getLogger("billing.plan_textos")
@@ -83,14 +82,31 @@ def cupos_del_usuario(conn, user_id: int, plan: str) -> Optional[dict]:
     None si no se puede leer: el mail sale igual, con los cupos del plan."""
     try:
         from ai import quota
-        uso = quota.get_current_usage(conn, user_id, tier_override=plan)
-        return {"analyses_per_week": uso["analyses_limit"],
-                "chat_per_week": uso["chat_limit"],
-                "diag_dismiss_per_week": uso["diag_dismiss_limit"]}
+        return cupos_de_uso(quota.get_current_usage(conn, user_id, tier_override=plan), plan)
     except Exception as ex:
         log.warning("cupos de uid=%s en %s: no se pudieron leer (%s); el mail "
                     "va con los del plan", user_id, plan, ex)
         return None
+
+
+# El nombre de cada cupo en `quota.get_current_usage` → su nombre en LIMITS.
+_CUPOS_DEL_USO = {"analyses_per_week": "analyses_limit",
+                  "chat_per_week": "chat_limit",
+                  "diag_dismiss_per_week": "diag_dismiss_limit",
+                  "listens_per_week": "listens_limit"}
+
+
+def cupos_de_uso(usage: Optional[dict], plan: str) -> Optional[dict]:
+    """Los cupos de un `usage` (el de `quota.get_current_usage`) con las claves
+    de LIMITS, para pasarle a `_valor`. UNA sola traducción: la usan los mails
+    (`cupos_del_usuario`) y los carteles de upgrade, que ya reciben el `usage`
+    del endpoint — el mismo número que el 429 le muestra a la persona.
+
+    None si el `usage` es de OTRO plan (con la lente del asesor se mide con el
+    tope de 'pro') o no vino: entonces valen los del plan."""
+    if not usage or usage.get("tier") != plan:
+        return None
+    return {k: usage[v] for k, v in _CUPOS_DEL_USO.items() if v in usage}
 
 
 # ─── Lo que da cada plan, leído de los límites ──────────────────────────────
@@ -125,7 +141,7 @@ def _valor(clave: str, plan: str, cupos: Optional[dict] = None):
     if clave == "voz":
         # OJO: acá None NO es "sin tope" sino "no tiene cupo propio: cada audio
         # le cuesta una consulta" (ver `quota.listen_limit`).
-        return cupos.get("listens_per_week")
+        return semana.get("listens_per_week")
     raise KeyError(clave)
 
 
@@ -349,16 +365,8 @@ def nombre(plan: str) -> str:
 # El cupo que la persona TIENE puede no ser el de la tabla: desde el 15/10 a los
 # que ya pagaban Plus se les respeta el cupo de antes
 # (`quota.limites_del_usuario`), y el 429 les muestra ESE número ("usaste 6 de
-# 6"). El cartel compara contra lo que la persona ve arriba, no contra otro.
-_DEL_USO = {"analisis": "analyses_limit", "chat": "chat_limit",
-            "diagnostico": "diag_dismiss_limit", "voz": "listens_limit"}
-
-
-def _tiene(clave: str, plan: str, usage: Optional[dict] = None):
-    campo = _DEL_USO.get(clave)
-    if usage and campo in usage and usage.get("tier") == plan:
-        return usage[campo]
-    return _valor(clave, plan)
+# 6"). El cartel compara contra lo que la persona ve arriba: el origen se lee
+# con `cupos_de_uso(usage, origen)`, igual que en los mails.
 
 
 def _veces(a, b) -> Optional[int]:
@@ -379,10 +387,9 @@ def _mas_de(cosa: str, a, b) -> str:
 
 def _pasa_a_interpretar(origen: str, destino: str) -> bool:
     """¿El destino tiene chat libre y respuestas con causalidad y el origen no?
-    No es un número de las tablas: lo decide `ai.prompts.is_descriptive_tier`
-    (Free/Plus describen, Pro/Asesor interpretan), que es la misma regla que
-    usan el prompt y el chat."""
-    return is_descriptive_tier(origen) and not is_descriptive_tier(destino)
+    No es un número de las tablas: es `_PREMIUM`, la misma regla que usan los
+    mails para aclarar "con preguntas guiadas"."""
+    return origen not in _PREMIUM and destino in _PREMIUM
 
 
 # Lo que no es un número, y por eso va escrito: sólo se dice cuando
@@ -399,6 +406,7 @@ def _mejora(clave: str, origen: str, destino: str, usage: Optional[dict] = None,
     """El renglón de lo que `destino` da y `origen` no, o None si en `clave` el
     destino no da más — y entonces no se vende."""
     de = nombre(origen)
+    cupos = cupos_de_uso(usage, origen)
     if clave in _SIN_NUMEROS_CARTEL:
         return _SIN_NUMEROS_CARTEL[clave] if _pasa_a_interpretar(origen, destino) else None
     if clave == "reportes_export":
@@ -410,13 +418,13 @@ def _mejora(clave: str, origen: str, destino: str, usage: Optional[dict] = None,
     if clave == "voz":
         return _mejora_voz(origen, destino, usage)
     if clave == "chat_cupo":
-        a, b = _valor("chat", destino), _tiene("chat", origen, usage)
+        a, b = _valor("chat", destino), _valor("chat", origen, cupos)
         if not (_pasa_a_interpretar(origen, destino) and _da_mas(a, b)):
             return None
         entre = f", eligiendo entre {guiadas} preguntas guiadas" if guiadas else ""
         return f"{a} consultas por semana sobre lo que quieras (en {de}: {b}{entre})"
 
-    a, b = _valor(clave, destino), _tiene(clave, origen, usage)
+    a, b = _valor(clave, destino), _valor(clave, origen, cupos)
     if not _da_mas(a, b):
         return None
     if clave == "analisis":
@@ -436,10 +444,13 @@ def _mejora(clave: str, origen: str, destino: str, usage: Optional[dict] = None,
         (a_tope, a_pct), (b_tope, b_pct) = a, b
         cuantas = ("Alertas sin tope" if a_tope is None
                    else f"Hasta {_n(a_tope, 'alerta', 'alertas')}")
-        tipo = ", también de % sobre tu cartera" if a_pct and not b_pct else ""
+        # Los tipos con el nombre de la pantalla de Alertas, igual que los
+        # mails: "precio objetivo" y "variación %".
+        tipo = ", también de variación %" if a_pct and not b_pct else ""
         if b_tope is None:
             return f"{cuantas}{tipo}"
-        return f"{cuantas}{tipo} (vs {b_tope} en {de}{'' if b_pct else ', sólo de precio'})"
+        return (f"{cuantas}{tipo} "
+                f"(vs {b_tope} en {de}{'' if b_pct else ', sólo de precio objetivo'})")
     if clave == "diagnostico":
         cuanto = "sin límite" if a is None else f"{_n(a, 'vez', 'veces')} por semana"
         return (f"Personalizá tu diagnóstico {cuanto} "
@@ -462,8 +473,9 @@ def _mejora_voz(origen: str, destino: str, usage: Optional[dict] = None) -> Opti
     consultas / 2, escrito a mano. Y ni siquiera es el tope real — las
     respuestas del botón ✦ salen del cupo de análisis y también se escuchan.
     Se dice la regla, que es exacta, en vez de un tope que no lo es."""
+    cupos = cupos_de_uso(usage, origen)
     propio_destino = _valor("voz", destino)
-    propio_origen = _tiene("voz", origen, usage)
+    propio_origen = _valor("voz", origen, cupos)
     consultas = _valor("chat", destino)
     if propio_destino is not None:
         if propio_origen is not None and propio_destino <= propio_origen:
@@ -477,7 +489,7 @@ def _mejora_voz(origen: str, destino: str, usage: Optional[dict] = None) -> Opti
             return None
         antes = f"en {nombre(origen)}, {_n(propio_origen, 'audio', 'audios')} por semana"
     else:
-        consultas_origen = _tiene("chat", origen, usage)
+        consultas_origen = _valor("chat", origen, cupos)
         if not _da_mas(consultas, consultas_origen):
             return None
         antes = f"vs {consultas_origen} en {nombre(origen)}"
@@ -509,6 +521,12 @@ _CARTELES = {
                             "analisis", "brokers"),
     ("voz", "plus"): ("voz", "brokers", "reportes_export", "detectores",
                       "diagnostico"),
+    # "Probá Pro" para el que ya paga Plus (TrialCta): no lo dispara un tope,
+    # así que arranca por lo que más separa a los dos planes. Tenía la lista
+    # escrita en la pantalla: "60 análisis por semana en vez de 6" y "los 12
+    # detectores", que el 15/10 dejan de ser ciertos contra el Plus.
+    ("prueba_pro", "pro"): ("chat", "analisis", "brokers", "detectores",
+                            "causalidad_memoria", "followups"),
 }
 # Para una combinación que hoy no existe (p. ej. la voz ofreciendo Pro): el
 # motivo primero y después lo que haya.
@@ -522,9 +540,10 @@ def cartel(motivo: str, origen: str, destino: str, *, usage: Optional[dict] = No
     """Los beneficios de pasarse de `origen` a `destino`, para `upgrade.benefits`.
 
     `motivo`: el tope que se tocó ("brokers", "export", "followups",
-    "analisis", "chat", "diagnostico", "chat_libre", "voz"). Va primero.
+    "analisis", "chat", "diagnostico", "chat_libre", "voz"), que va primero;
+    o "prueba_pro", la oferta de probar Pro que se le hace al que paga Plus.
     `usage`: el de `quota.get_current_usage`, para comparar contra el cupo que
-    la persona tiene y no contra el de la tabla (ver `_DEL_USO`).
+    la persona tiene y no contra el de la tabla (ver `cupos_de_uso`).
     `guiadas`: cuántas preguntas guiadas hay, para el cartel del chat libre.
     Vive en main.py (`_FREE_QUESTIONS_WHITELIST`) y este módulo no lo importa."""
     claves = _CARTELES.get((motivo, destino)) or ((motivo,) + _RESTO)
@@ -566,7 +585,7 @@ def aviso_export() -> str:
 
 def mas_analisis(origen: str, destino: str, usage: Optional[dict] = None) -> str:
     """El remate del 429 de análisis. Decía "Para 10× más análisis" a todos."""
-    a, b = _valor("analisis", destino), _tiene("analisis", origen, usage)
+    a, b = _valor("analisis", destino), _valor("analisis", origen, cupos_de_uso(usage, origen))
     veces = _veces(a, b)
     cuanto = f"{veces}× más análisis" if veces else f"más análisis ({a} por semana)"
     return f"Para {cuanto} con respuestas profundas, pasate a Rendi {nombre(destino)}."

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cuantosSeVen, planQueDestraba } from './planes'
+import { planQueDestraba } from './planes'
 
 // Los topes de acá son INVENTADOS a propósito: el test prueba la regla, no el
 // plan de hoy. Los de verdad los compara el backend
@@ -13,25 +13,6 @@ const DESDE_EL_15_10 = [
   { tier: 'plus', limits: { behavioral_tags_visible: null } },
   { tier: 'pro', limits: { behavioral_tags_visible: null } },
 ]
-
-describe('cuantosSeVen — el tope del plan, aplicado', () => {
-  it('sin tope (null, como lo manda el backend) se ven TODAS', () => {
-    // El bug: `limit(...) || 1` leía null como 1. El 15/10 el Plus iba a ver
-    // una sola carta de doce.
-    expect(cuantosSeVen(null, 12)).toBe(12)
-  })
-
-  it('con tope, ese número y nunca más que el total', () => {
-    expect(cuantosSeVen(3, 12)).toBe(3)
-    expect(cuantosSeVen(20, 12)).toBe(12)
-  })
-
-  it('mientras carga (undefined) se muestra de menos, no de más', () => {
-    expect(cuantosSeVen(undefined, 12)).toBe(1)
-    expect(cuantosSeVen(0, 12)).toBe(1)
-    expect(cuantosSeVen(undefined, 0)).toBe(0)
-  })
-})
 
 describe('planQueDestraba — el plan más barato que muestra ese ítem', () => {
   it('con los topes de hoy: las que ve el Plus dicen Plus, el resto Pro', () => {

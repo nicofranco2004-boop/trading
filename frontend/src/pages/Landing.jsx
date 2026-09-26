@@ -31,7 +31,6 @@ import FAQ from '../components/landing/FAQ'
 // blog y la guía. Acá estaba escrito a mano ("Probar 20 días gratis") en tres
 // lugares, al lado de la constante que ya se importaba para la sección de precios.
 import { CTA_PRUEBA, cupoDe } from '../data/prueba'
-import { PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 

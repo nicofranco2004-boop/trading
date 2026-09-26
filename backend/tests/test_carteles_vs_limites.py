@@ -110,8 +110,8 @@ _FORMAS = (
     ("brokers", r"^(?:Hasta (\d+) brokers?|Brokers ilimitados) \(vs (\d+) en (\w+)\)$"),
     ("detectores", r"^(?:(\d+) detector(?:es)? de comportamiento|"
                    r"Todos los detectores de comportamiento) \(vs (\d+) en (\w+)\)$"),
-    ("alertas", r"^(?:Hasta (\d+) alertas?|Alertas sin tope)(, también de % sobre tu cartera)?"
-                r"(?: \(vs (\d+) en (\w+)(, sólo de precio)?\))?$"),
+    ("alertas", r"^(?:Hasta (\d+) alertas?|Alertas sin tope)(, también de variación %)?"
+                r"(?: \(vs (\d+) en (\w+)(, sólo de precio objetivo)?\))?$"),
     ("diagnostico", r"^Personalizá tu diagnóstico (?:sin límite|(\d+) veces? por semana) "
                     r"\(en (\w+), (\d+) veces? por semana\)$"),
     ("voz_fichas", r"^Más respuestas habladas: cada audio usa 1 de las (\d+) consultas "
@@ -136,6 +136,9 @@ _CONTESTA = {
     "diagnostico": {"diagnostico"},
     "chat_libre": {"chat_libre"},
     "voz": {"voz_fichas", "voz_propia"},
+    # La oferta de probar Pro al que paga Plus: no la dispara un tope, arranca
+    # por lo que más separa a los dos planes (el chat libre).
+    "prueba_pro": {"chat_libre_cupo"},
 }
 
 # Lo que se prometió y no es cierto para NINGÚN plan. Cada uno con su porqué.
@@ -404,6 +407,26 @@ class _PorElCamino(_Comparador):
             "snapshot": _CHAT_VACIO})
         return self._esperar(r, 403)
 
+    def _cartel_prueba_pro(self):
+        """El que paga Plus ve "Probá Pro N días": la lista viene en
+        /api/plan/features → pro_upsell.benefits. Se arma como un `upgrade`
+        para compararla igual que los carteles."""
+        from datetime import datetime, timedelta
+        uid, h = _mk_user("plus")
+        conn = main.get_db()
+        try:
+            conn.execute(
+                "UPDATE users SET credit_active_until=?, credit_anchor_plan='plus' WHERE id=?",
+                ((datetime.utcnow() + timedelta(days=20)).isoformat(), uid))
+            conn.commit()
+        finally:
+            conn.close()
+        f = self.client.get("/api/plan/features", headers=h).json()
+        up = f.get("pro_upsell") or {}
+        self.assertTrue(up.get("can_start"), f"la cuenta no califica para probar Pro: {up}")
+        return {"current_tier": f["tier"], "target_tier": "pro",
+                "benefits": up.get("benefits")}
+
     def _cartel_voz(self, tier):
         uid, h = _mk_user(tier)
         propio = _cupo("voz", tier)
@@ -508,6 +531,12 @@ class PorElCaminoDeProduccion(_PorElCamino):
                 d = self._cartel_chat_libre(tier)
                 self.assertEqual(d["error"], "free_chat_not_allowed")
                 self._cartel_dice_lo_que_da(d["upgrade"], "chat_libre", "403 chat libre")
+
+    def test_probar_pro_siendo_plus(self):
+        """El modal decía "60 análisis por semana en vez de 6" y "los 12
+        detectores" escritos a mano: el 15/10 las dos dejan de ser ciertas."""
+        self._cartel_dice_lo_que_da(self._cartel_prueba_pro(), "prueba_pro",
+                                    "Probá Pro")
 
     def test_la_voz_del_free_ofrece_lo_que_da_el_plus(self):
         d = self._cartel_voz(FREE)
@@ -648,6 +677,7 @@ _LOS_CARTELES = (
     ("diagnostico", "free", "plus"),
     ("chat_libre", "free", "pro"), ("chat_libre", "plus", "pro"),
     ("voz", "free", "plus"),
+    ("prueba_pro", "plus", "pro"),
 )
 
 
@@ -670,6 +700,8 @@ class CadaCartelContraSuLimite(_Comparador):
         cartel le vende algo que no le arregla nada. Pasaría, por ejemplo, si el
         Plus igualara al Free en chat y el 429 del chat siguiera ofreciendo Plus."""
         for motivo, origen, destino in _LOS_CARTELES:
+            if motivo == "prueba_pro":
+                continue      # no la dispara un tope: no hay nada que resolver
             with self.subTest(motivo=motivo, origen=origen):
                 self.assertTrue(plan_textos.resuelve(motivo, origen, destino),
                                 f"{destino} no le da a {origen} más «{motivo}»")
@@ -772,6 +804,9 @@ class ConLimitesInventados(_ConLimitesInventados, _PorElCamino):
                 d = pedir()
                 self._cartel_dice_lo_que_da(d["upgrade"], motivo, f"inventado {motivo}",
                                             usage=d.get("usage") if con_usage else None)
+        with self.subTest(motivo="prueba_pro"):
+            self._cartel_dice_lo_que_da(self._cartel_prueba_pro(), "prueba_pro",
+                                        "inventado prueba_pro")
 
     def test_los_numeros_inventados_estan_en_el_cartel(self):
         """La otra mitad: no alcanza con que no haya un número equivocado,

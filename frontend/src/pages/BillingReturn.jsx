@@ -26,6 +26,8 @@ import PageMeta from '../components/PageMeta'
 import { track } from '../utils/track'
 import { trackEvent } from '../utils/analytics'
 import { useAuth } from '../contexts/AuthContext'
+import { PRO_FEATURES } from '../data/planCatalog'
+import { cupoDe } from '../data/prueba'
 
 const POLL_INTERVAL_MS = 2_000   // /auth/me cada 2s
 const POLL_TIMEOUT_MS = 30_000   // hasta 30s totales
@@ -142,7 +144,8 @@ export function BillingSuccess() {
         tone="success"
         title={`¡Bienvenido a Rendi ${tierLabel}!`}
         description={tier === 'pro'
-          ? 'Tu suscripción Pro está activa. Tenés acceso a 60 análisis IA por semana, follow-ups, brokers ilimitados, export CSV y todas las features avanzadas.'
+          // El cupo sale del catálogo (vigilado contra el backend): el 60 estaba escrito.
+          ? `Tu suscripción Pro está activa. Tenés acceso a ${cupoDe(PRO_FEATURES, 'Análisis IA / sem')} análisis IA por semana, follow-ups, brokers ilimitados, export CSV y todas las features avanzadas.`
           : 'Tu suscripción Plus está activa. Tenés multi-broker, insights completos, comportamiento avanzado y export CSV.'
         }
         cta="Ir al dashboard"

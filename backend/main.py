@@ -28773,6 +28773,15 @@ def plan_features(
                 # Probar Pro sin dejar el plan que ya paga (para el suscriptor
                 # de Plus). Es otro mecanismo que el trial: va por separado.
                 out["pro_upsell"] = _trial.pro_upsell_status(conn, uid)
+                # Lo que el Pro le da de más a ESTA persona, con los límites y
+                # su cupo (billing/plan_textos). El modal de "Probá Pro" lo
+                # tenía escrito: "60 análisis por semana en vez de 6" y "los 12
+                # detectores", que el 15/10 dejan de ser ciertos contra el Plus.
+                if out["pro_upsell"].get("can_start"):
+                    from billing import plan_textos as _plan_textos
+                    out["pro_upsell"]["benefits"] = _plan_textos.cartel(
+                        "prueba_pro", out["tier"], "pro",
+                        usage=plan.quota.get_current_usage(conn, uid))
             except Exception as ex:
                 log.warning("plan_features: estado de trial falló uid=%s: %s", uid, ex)
         return out

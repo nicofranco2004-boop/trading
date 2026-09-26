@@ -249,5 +249,155 @@ class LoQueTodaviaNoExisteNoSeVende(unittest.TestCase):
                 f"el muro volvió a prometer «{promesa}», que no existe o no es así")
 
 
+
+class CadaNumeroDelCatalogo(unittest.TestCase):
+    """Todo número que el catálogo DICE, contra el backend — no sólo la grilla
+    de `quotas`.
+
+    Las tarjetas de /planes, del muro y de Configuración traen números en el
+    texto: "10× más análisis IA (60/sem vs 6/sem)", "Hasta 3 brokers (3× más)",
+    "6 detectores de comportamiento visibles (de 12 disponibles)". Hasta acá sólo
+    se vigilaban los tres cupos de la grilla y un múltiplo; el resto estaba
+    bien porque alguien lo escribió bien. Y el frontend ahora lee el catálogo
+    como LA copia vigilada (`cupoDe`, `vecesMas`, `data/cuposSinCopias.test.js`):
+    tiene que estar vigilada entera.
+
+    Un número que este test no sabe leer lo pone en rojo: es un número sin
+    vigilar (se suma una regla, no se lo saltea)."""
+
+    # Números del texto que no son de ningún plan: cosas del producto.
+    NO_SON_CUPOS = {
+        ("free", "4 KPIs"): "el dashboard trae cuatro KPIs para todos",
+    }
+
+    def setUp(self):
+        self.fuente = open(CATALOGO, encoding="utf-8").read()
+
+    def _bloque(self, plan: str) -> str:
+        m = re.search(r"export const %s_FEATURES = \{(.*?)\n\}\n" % plan.upper(),
+                      self.fuente, re.S)
+        assert m, f"no encontré {plan.upper()}_FEATURES"
+        # Lo que se vende, sin el roadmap (que no es una promesa de hoy).
+        return m.group(1).split("roadmap:")[0]
+
+    @staticmethod
+    def _total_detectores() -> int:
+        """Cuántos detectores hay: los que arma Comportamiento con una cartera
+        vacía (`behavioral.build_behavioral_insights`), no un 12 escrito."""
+        import behavioral
+        return len(behavioral.build_behavioral_insights([])["cards"])
+
+    @staticmethod
+    def _guiadas() -> int:
+        import main
+        return len(main._FREE_QUESTIONS_WHITELIST)
+
+    def _reglas(self):
+        """(bloques, patrón, qué dice cada grupo → qué tiene que valer)."""
+        L, P = LIMITS, PLAN_LIMITS
+        an = lambda p: L[p]["analyses_per_week"]
+        ch = lambda p: L[p]["chat_per_week"]
+        br = lambda p: P[p]["brokers_max"]
+        de = lambda p: P[p]["behavioral_tags_visible"]
+        total = self._total_detectores()
+        return [
+            (("pro",), r"(\d+)× más análisis IA \((\d+)/sem vs (\d+)/sem\)",
+             lambda m: [(int(m[2]), an("pro")), (int(m[3]), an("plus")),
+                        (int(m[1]) * int(m[3]), int(m[2]))]),
+            (("pro",), r"(\d+) análisis IA / semana", lambda m: [(int(m[1]), an("pro"))]),
+            (("pro",), r"(\d+)× más que Free · (\d+)× que Plus",
+             lambda m: [(int(m[1]), an("pro") // an("free")),
+                        (int(m[2]), an("pro") // an("plus"))]),
+            (("pro",), r"(\d+) consultas/sem\b", lambda m: [(int(m[1]), ch("pro"))]),
+            (("plus",), r"(\d+)× más Chat Rendi AI \((\d+) vs (\d+) /sem\)",
+             lambda m: [(int(m[2]), ch("plus")), (int(m[3]), ch("free")),
+                        (int(m[1]) * int(m[3]), int(m[2]))]),
+            (("plus",), r"(\d+)× más Chat Rendi AI que Free",
+             lambda m: [(int(m[1]) * ch("free"), ch("plus"))]),
+            (("plus",), r"(\d+) consultas/semana vs (\d+) en Free",
+             lambda m: [(int(m[1]), ch("plus")), (int(m[2]), ch("free"))]),
+            (("plus",), r"Hasta (\d+) brokers \((\d+)× más\)",
+             lambda m: [(int(m[1]), br("plus")), (int(m[2]) * br("free"), br("plus"))]),
+            (("plus",), r"Hasta (\d+) brokers consolidados",
+             lambda m: [(int(m[1]), br("plus"))]),
+            (("pro",), r"Brokers ilimitados \(Plus: (\d+)\)",
+             lambda m: [(int(m[1]), br("plus")), (br("pro"), None)]),
+            (("plus",), r"(\d+) detectores de comportamiento visibles \(de (\d+) disponibles\)",
+             lambda m: [(int(m[1]), de("plus")), (int(m[2]), total)]),
+            (("plus",), r"(\d+) detectores de comportamiento \((\d+)× más\)",
+             lambda m: [(int(m[1]), de("plus")), (int(m[2]) * de("free"), de("plus"))]),
+            (("free",), r"\+ (\d+) detectores de comportamiento",
+             lambda m: [(int(m[1]), de("free"))]),
+            (("free", "plus", "pro"), r"[Ll]os (\d+) detectores",
+             lambda m: [(int(m[1]), total)]),
+            (("pro",), r"(\d+) detectores de comportamiento completos",
+             lambda m: [(int(m[1]), total)]),
+            (("pro",), r"Comportamiento completo \((\d+) vs (\d+)\)",
+             lambda m: [(int(m[1]), total), (int(m[2]), de("plus"))]),
+            (("free", "plus", "pro"), r"\(Free: (\d+)/sem(?:ana)?\)",
+             lambda m: [(int(m[1]), L["free"]["diag_dismiss_per_week"])]),
+            (("plus",), r"\(Free: (\d+), y sólo de precio objetivo\)",
+             lambda m: [(int(m[1]), P["free"]["alerts_max"])]),
+            (("free",), r"personalizalo (\d+)×/sem",
+             lambda m: [(int(m[1]), L["free"]["diag_dismiss_per_week"])]),
+            (("free", "plus", "pro"), r"(\d+) preguntas guiadas",
+             lambda m: [(int(m[1]), self._guiadas())]),
+            # La nota de la grilla: "6× Free".
+            (("plus",), r"value: '(\d+)', note: '(\d+)× Free'",
+             lambda m: [(int(m[2]) * min(an("free"), ch("free")), int(m[1]))]),
+        ]
+
+    def test_cada_numero_es_el_del_backend(self):
+        vistos = 0
+        for plan in ("free", "plus", "pro"):
+            bloque = self._bloque(plan)
+            # Los valores de la grilla los compara LosCuposQuePrometeLaPantalla.
+            sin_grilla = re.sub(r"\{ label: '[^']+', value: '[^']+' \}", "", bloque)
+            cubierto = [False] * len(sin_grilla)
+            for planes, patron, pares in self._reglas():
+                if plan not in planes:
+                    continue
+                for m in re.finditer(patron, sin_grilla):
+                    vistos += 1
+                    for dice, real in pares(m):
+                        self.assertEqual(
+                            dice, real,
+                            f"{plan}: el catálogo dice «{m.group(0)}» y el backend da "
+                            f"{'sin tope' if real is None else real}")
+                    for i in range(*m.span()):
+                        cubierto[i] = True
+            for texto, porque in self.NO_SON_CUPOS.items():
+                if texto[0] == plan and texto[1] in sin_grilla:
+                    i = sin_grilla.index(texto[1])
+                    for j in range(i, i + len(texto[1])):
+                        cubierto[j] = True
+            sueltos = [sin_grilla[max(0, m.start() - 30):m.end() + 30].strip()
+                       for m in re.finditer(r"\d+", sin_grilla)
+                       if not cubierto[m.start()]]
+            self.assertEqual(
+                sueltos, [],
+                f"{plan}: números que este test no sabe leer (sumale una regla con "
+                f"su límite del backend, o a NO_SON_CUPOS con el porqué)")
+        # Contra el falso verde: que haya comparado algo.
+        self.assertGreaterEqual(vistos, 10)
+
+    def test_lo_que_es_de_todos_no_se_vende_como_de_un_plan(self):
+        """Decisión de producto del 2026-09-26: el diagnóstico completo y la
+        distribución por activo son de TODOS los planes. En la tarjeta del Free
+        se pueden nombrar (es lo que trae); en la de Plus o Pro, no: se leen
+        como algo que el plan pago agrega.
+
+        ⚠️ `git revert 78f43739` (15/10) trae de vuelta, en la tarjeta del Plus,
+        "Diagnóstico completo" y "Diagnóstico completo y los 12 detectores" (vs
+        Free): este test se pone rojo ese día a propósito. Se arregla en el mismo
+        commit del revert: "Los 12 detectores de comportamiento" y
+        "Personalizá el diagnóstico sin límite (Free: N/semana)"."""
+        for plan in ("plus", "pro"):
+            bloque = self._bloque(plan)
+            for de_todos in ("Diagnóstico completo", "Distribución por activo"):
+                self.assertNotIn(
+                    de_todos, bloque,
+                    f"la tarjeta de {plan} vende «{de_todos}», que es de todos los planes")
+
 if __name__ == "__main__":
     unittest.main()
