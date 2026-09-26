@@ -19,14 +19,16 @@ import { alTerminar, cupoDe } from '../../data/prueba'
 /** Lo que incluye un plan, tal cual lo publica /planes. */
 function LoQueIncluye({ plan }) {
   const brokers = cupoDe(plan, 'Brokers')
+  const chat = cupoDe(plan, 'Chat Rendi AI / sem')
   return (
     <ul>
       {plan.essentials.map(f => (
         <li key={f.label}>{f.label}{f.sub ? ` — ${f.sub}` : ''}</li>
       ))}
       <li>
-        {cupoDe(plan, 'Análisis IA / sem')} análisis IA y {cupoDe(plan, 'Chat Rendi AI / sem')}{' '}
-        consultas a Rendi AI por semana · brokers: {brokers === '∞' ? 'ilimitados' : brokers}
+        {cupoDe(plan, 'Análisis IA / sem')} análisis IA y {chat}{' '}
+        {chat === '1' ? 'consulta' : 'consultas'} a Rendi AI por semana · brokers:{' '}
+        {brokers === '∞' ? 'ilimitados' : brokers}
       </li>
     </ul>
   )
