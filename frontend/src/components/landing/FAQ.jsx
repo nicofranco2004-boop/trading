@@ -49,7 +49,10 @@ export const FAQS = [
   },
   {
     q: '¿Qué hacen con mis datos? ¿Puedo borrar mi cuenta?',
-    a: 'Tus datos son tuyos y los usamos solo para mostrarte tu cartera consolidada — no los vendemos ni los compartimos con terceros. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance. Más detalle en nuestra Política de Privacidad.',
+    // Decía "no los compartimos con terceros" a secas, y Privacidad §5 lista a
+    // quién sí le llegan (Anthropic, OpenAI, Rebill, Resend, el hosting): la
+    // promesa verdadera es "con fines comerciales", la misma de Privacidad.
+    a: 'Tus datos son tuyos y los usamos solo para prestarte el servicio: no los vendemos ni los compartimos con terceros con fines comerciales. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, la IA de Rendi AI—, y están todos listados en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
   },
   {
     q: '¿Rendi funciona con Cocos Capital, IOL, Balanz, Schwab y Binance?',
