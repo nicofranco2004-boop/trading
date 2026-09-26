@@ -33,10 +33,11 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
-import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
+import { fechaCorta } from '../utils/lineaDelBono'
+import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -64,7 +65,13 @@ export default function HomeMobile() {
         api.get('/monthly').catch(() => []),
         api.get('/brokers').catch(() => []),
         api.get('/dolar').catch(() => null),
-        api.get('/snapshots?days=30').catch(() => []),
+        // ⚠️ 40, NO 30. En el backend `days` es un LÍMITE DE FILAS, y el cierre
+        // que ABRE "Últimos 30 días" es el de hace 30 días: la fila 31 contando
+        // la foto de hoy. Con 30 filas no llegaba nunca, el motor caía a "empezaste
+        // dentro del período" y medía 29 días (y "P&L Mes", a fin de mes, perdía
+        // el cierre del mes anterior). 40 = 30 + los 5 días de tolerancia del
+        // borde (`esBordeFresco`) + la foto de hoy, con margen.
+        api.get('/snapshots?days=40').catch(() => []),
       ])
       setPositions(pos || [])
       setMonthly(mon || [])
@@ -125,8 +132,8 @@ export default function HomeMobile() {
   const tcMep = pickFinancialRate(dolar, 'mep') || tcValuacion
   const totalsMep = useMemo(() => {
     if (tcMep === tcCedear) return null  // riel MEP: reusar totals (evita doble cálculo)
-    const bt = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcMep, tcMep, tcCripto, costBasis) }))
-    return { totalValue: bt.reduce((s, b) => s + b.value, 0) }
+    // La misma cuenta que usa el Dashboard: `valorAlMep` (utils/valuation).
+    return { totalValue: valorAlMep(positions, prices, brokers, tcMep, tcCripto, costBasis) }
   }, [positions, prices, brokers, tcMep, tcCedear, tcCripto])
   const compareValue = totalsMep ? totalsMep.totalValue : totals.totalValue
 
@@ -143,14 +150,19 @@ export default function HomeMobile() {
 
   // Serie 30d desde snapshots + punto LIVE de hoy — base para sparkline + delta.
   // buildPortfolioValueSeries (mismo helper que la curva del Dashboard):
-  //  · appendea el valor VIVO como punto de hoy → el "Hoy" del sparkline es el
-  //    mismo número que el hero (antes era el cierre de ayer: dos "hoy" distintos
-  //    en la misma pantalla).
-  //  · filtra por VENTANA DE FECHAS real con anchor (GET /snapshots?days=30 es
+  //  · pone el valor VIVO como punto de hoy (reemplaza la foto guardada de hoy).
+  //    Es el valor al MEP, la vara de las fotos: con MEP elegido coincide con el
+  //    hero; con CCL, el hero va al CCL y la serie sigue al MEP (ver valorAlMep).
+  //  · filtra por VENTANA DE FECHAS real con anchor (GET /snapshots?days=N es
   //    LIMIT de filas, no de días — con huecos del cron devolvía 40-60 días).
-  // El delta del período va AJUSTADO POR FLUJOS: Δ(value − net_deposited), igual
-  // que periodChange del Dashboard. Antes era Δtotal_value crudo → un depósito de
-  // $5.000 se mostraba como "+$5.000 (+52%) en 30 días" de ganancia fantasma.
+  // El delta del período va AJUSTADO POR FLUJOS: Δ(value − net_deposited). Antes
+  // era Δtotal_value crudo → un depósito de $5.000 se mostraba como "+$5.000
+  // (+52%) en 30 días" de ganancia fantasma.
+  // ⚠️ Y SALE DEL MOTOR, NO DE LAS PUNTAS DE LA SPARKLINE. Restar el primer y el
+  // último punto era la misma copia que tenía el chip del Dashboard: terminaba en
+  // la foto guardada de hoy (la de la primera visita, no la cartera de ahora) y
+  // abría en un punto de cualquier antigüedad. Ver rendimientoDelRango. `null` =
+  // no se puede medir estos 30 días: la sparkline se dibuja igual y lo dice.
   const series30d = useMemo(() => {
     if (!snapshots?.length) return null
     const live = compareValue > 0 ? compareValue : null
@@ -158,15 +170,22 @@ export default function HomeMobile() {
     if (!points || points.length < 2) return null
     const first = points[0]
     const last = points[points.length - 1]
-    const deltaUsd = (last.valueUsd - last.netDeposited) - (first.valueUsd - first.netDeposited)
-    const deltaPct = first.valueUsd > 0 ? deltaUsd / first.valueUsd : 0
+    const delta = live != null
+      ? rendimientoDelRango(snapshots, { dias: 30, liveValue: live, liveNetDeposited: aportado })
+      : null
     return {
       values: points.map(p => p.valueUsd),
       first: first.valueUsd,
       last: last.valueUsd,
-      deltaUsd,
-      deltaPct,
-      positive: deltaUsd >= 0,
+      deltaUsd: delta ? delta.usd : null,
+      // Sin un cierre pegado al arranque de los 30 días se mide desde el más
+      // cercano y el título lo dice (ver rendimientoDelRango).
+      desde: delta ? delta.desde : null,
+      deltaPct: delta ? delta.pct : null,
+      // Sin número, el color sigue a lo que dibuja la línea (valor menos aportado).
+      positive: delta
+        ? delta.usd >= 0
+        : (last.valueUsd - last.netDeposited) >= (first.valueUsd - first.netDeposited),
     }
   }, [snapshots, compareValue, aportado])
 
@@ -346,18 +365,24 @@ export default function HomeMobile() {
             <div className="flex items-baseline justify-between mb-1.5">
               <div className="flex items-center gap-1.5">
                 <span className="text-[12.5px] text-ink-2 font-medium">
-                  Últimos 30 días
+                  {series30d.desde ? `Desde el ${fechaCorta(series30d.desde)}` : 'Últimos 30 días'}
                 </span>
-                <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                  {series30d.positive
-                    ? <TrendingUp size={11} strokeWidth={1.75} />
-                    : <TrendingDown size={11} strokeWidth={1.75} />}
-                  {pctSigned(series30d.deltaPct)}
-                </span>
+                {series30d.deltaPct != null && (
+                  <span className={`inline-flex items-center gap-0.5 text-xs font-medium tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                    {series30d.positive
+                      ? <TrendingUp size={11} strokeWidth={1.75} />
+                      : <TrendingDown size={11} strokeWidth={1.75} />}
+                    {pctSigned(series30d.deltaPct)}
+                  </span>
+                )}
               </div>
-              <span className={`text-xs tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcValuacion : series30d.deltaUsd))}`}
-              </span>
+              {series30d.deltaUsd != null ? (
+                <span className={`text-xs tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcValuacion : series30d.deltaUsd))}`}
+                </span>
+              ) : (
+                <span className="text-[11px] text-ink-3">sin rendimiento medible</span>
+              )}
             </div>
             <div className="h-12 -mx-1">
               <MiniSparkline
