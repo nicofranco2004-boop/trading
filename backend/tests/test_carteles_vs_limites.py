@@ -15,7 +15,7 @@ diez listas escritas a mano y mentían:
     que llegaba a 3;
   · la voz mostraba la lista del Plus aunque el cartel ofreciera Pro.
 
-Y el 15/10 (`git revert 78f43739`: Plus con 2 análisis, los 12 detectores y
+Y el 15/10 (se revierte el commit «[15-10]»: Plus con 2 análisis, los 12 detectores y
 alertas sin tope) todo "60/sem vs 6/sem" pasaba a ser falso y "comportamiento
 completo" dejaba de separar al Pro del Plus.
 
@@ -561,12 +561,6 @@ class PorElCaminoDeProduccion(_PorElCamino):
 
 _DE_TODOS = ("insights_diagnostic_visible", "insights.distribucion_activo")
 
-# Las dos líneas que quedan en el bloque del Plus de `ai/plan.py`: están pegadas a
-# las que reescribe `git revert 78f43739` y borrarlas antes hace que el revert
-# frene con un conflicto en los topes nuevos del Plus (probado el 2026-09-26).
-_SE_BORRAN_EL_15_10 = {("plus", "insights_diagnostic_visible"),
-                       ("plus", "insights.distribucion_activo")}
-
 REPO = os.path.dirname(BACKEND)
 # Los únicos archivos que pueden nombrarlas: la tabla (con el aviso de arriba) y
 # el módulo de textos, que explica por qué no se venden. Nadie más las lee.
@@ -592,22 +586,11 @@ def _archivos_de_codigo():
 
 class LoQueEsDeTodos(_PorElCamino):
 
-    def test_la_excepcion_del_plus_vence_con_el_revert_del_15_10(self):
-        """Hasta el 15/10 la tabla las declara SÓLO en el bloque del Plus. El
-        revert del 15/10 reescribe ese bloque (le da los 12 detectores:
-        `comportamiento.full` pasa a True); desde ahí ya no hay por qué
-        esperar, y este test lo exige."""
-        if PLAN_LIMITS["plus"]["can_access"].get("comportamiento.full"):
-            self.assertEqual(
-                _declaraciones(), set(),
-                "Ya se hizo el revert del 15/10: borrá del bloque del Plus en "
-                "backend/ai/plan.py las líneas «insights_diagnostic_visible» e "
-                "«insights.distribucion_activo», y después _SE_BORRAN_EL_15_10 de "
-                "este test y el aviso ⚠️ de arriba de PLAN_LIMITS.")
-        else:
-            # Antes del revert la excepción tiene que decir exactamente lo que
-            # hay: si alguien ya borró las líneas, que borre también esto.
-            self.assertEqual(_declaraciones(), _SE_BORRAN_EL_15_10)
+    def test_ningun_plan_lo_declara(self):
+        """Ni como tope ni como acceso, en ningún plan. Declararlo es invitar a
+        que alguien lo gatee o lo prometa: es lo que pasó con los mails y los
+        carteles mientras estuvo en la tabla sin que nadie lo aplicara."""
+        self.assertEqual(_declaraciones(), set())
 
     def test_no_es_una_feature_que_se_pueda_pedir(self):
         """Fuera de FEATURE_IDS, `can_access` no la da: nadie puede volver a

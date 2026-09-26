@@ -20,7 +20,7 @@ pago, que se arregló con `frontend/src/data/planCatalog.js` y el guard
 LA REGLA: todo número sale de los límites que el backend aplica —
 `ai.quota.LIMITS` (cupos semanales) y `ai.plan.PLAN_LIMITS` (brokers,
 detectores, alertas y accesos)— y se lee al armar el texto, no al importar el
-módulo. El 2026-10-15 se revierte `78f43739` (Plus: 2 análisis, los 12
+módulo. El 2026-10-15 se revierte el commit «[15-10]» (Plus: 2 análisis, los 12
 detectores, alertas sin tope) y los mails acompañan solos.
 
 LO QUE ES DE TODOS NO SE VENDE. El diagnóstico completo y la distribución por
@@ -72,8 +72,8 @@ def cupos_del_usuario(conn, user_id: int, plan: str) -> Optional[dict]:
     `quota.get_current_usage` — la misma función que le muestra sus cupos en
     la app.
 
-    Existe por los que ya pagaban Plus: desde el 2026-10-15 (`git revert
-    78f43739`) a ellos se les respeta el cupo viejo de análisis
+    Existe por los que ya pagaban Plus: desde el 2026-10-15 (se revierte el
+    commit «[15-10]») a ellos se les respeta el cupo viejo de análisis
     (`quota.limites_del_usuario`, que `get_current_usage` consulta). Un mail
     que leyera sólo `LIMITS[plan]` le diría a esa persona el número del plan,
     no el suyo — justo en el aviso de vencimiento, que es a quien le puede

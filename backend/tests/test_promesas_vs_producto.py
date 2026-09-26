@@ -354,6 +354,8 @@ class CadaNumeroDelCatalogo(unittest.TestCase):
             (("pro",), r"(\d+) análisis IA / semana", lambda m: [(int(m[1]), an("pro"))]),
             (("pro",), r"(?<!· )\b(\d+)× más que Plus",
              lambda m: [(int(m[1]), an("pro") // an("plus"))]),
+            (("plus",), r"Hasta (\d+) alertas",
+             lambda m: [(int(m[1]), P["plus"]["alerts_max"])]),
             (("plus",), r"(\d+) consultas por semana a Rendi AI",
              lambda m: [(int(m[1]), ch("plus"))]),
             (("pro",), r"(\d+)× más que Free · (\d+)× que Plus",
@@ -436,13 +438,7 @@ class CadaNumeroDelCatalogo(unittest.TestCase):
         """Decisión de producto del 2026-09-26: el diagnóstico completo y la
         distribución por activo son de TODOS los planes. En la tarjeta del Free
         se pueden nombrar (es lo que trae); en la de Plus o Pro, no: se leen
-        como algo que el plan pago agrega.
-
-        ⚠️ `git revert 78f43739` (15/10) trae de vuelta, en la tarjeta del Plus,
-        "Diagnóstico completo" y "Diagnóstico completo y los 12 detectores" (vs
-        Free): este test se pone rojo ese día a propósito. Se arregla en el mismo
-        commit del revert: "Los 12 detectores de comportamiento" y
-        "Personalizá el diagnóstico sin límite (Free: N/semana)"."""
+        como algo que el plan pago agrega."""
         for plan in ("plus", "pro"):
             bloque = self._bloque(plan)
             for de_todos in ("Diagnóstico completo", "Distribución por activo"):
@@ -453,19 +449,15 @@ class CadaNumeroDelCatalogo(unittest.TestCase):
 
 class LasTarjetasNoSeComparanContraFree(unittest.TestCase):
     """No hay más Free a futuro (decisión de Nico, 2026-09-26): quien se registra
-    arranca la prueba y después elige Plus o Pro. Las tarjetas de Plus y Pro
-    que se venden en /planes, en el muro y en la landing se comparaban contra
-    Free ("Todo lo del Free", "Vs Free", "3× más", "60× más que Free"): contra un
-    plan que esa persona nunca tuvo ni puede tener.
+    arranca la prueba y después elige Plus o Pro; el Free queda sólo para las
+    cuentas viejas ("para atrás"). Las tarjetas de Plus y Pro que se venden en
+    /planes, en el muro y en la landing se comparaban contra Free ("Todo lo del
+    Free", "Vs Free", "3× más", "60× más que Free"): contra un plan que esa
+    persona nunca tuvo ni puede tener. El muro se lo mostraba a todo el que
+    terminaba la prueba.
 
-    Esas líneas son las que reescribe `git revert 78f43739` el 15/10, y tocarlas
-    antes hace chocar el revert. Por eso este test se ACTIVA con el revert (el
-    Plus pasa a tener los 12 detectores: `comportamiento.full`): ese día, en el
-    mismo commit, van los textos sin Free — están en la memoria
-    `project_precios_y_paywall`, ítem 3, probados. Hasta entonces, no chequea.
-
-    El Free sigue existiendo para las cuentas viejas (su propia tarjeta sólo se
-    les muestra a ellas): la tarjeta del Free no entra."""
+    La tarjeta del Free (FREE_FEATURES) no entra: sólo la ven las cuentas que
+    todavía lo tienen, y describe el plan de ellas."""
 
     def _bloque(self, plan: str) -> str:
         fuente = open(CATALOGO, encoding="utf-8").read()
@@ -475,13 +467,31 @@ class LasTarjetasNoSeComparanContraFree(unittest.TestCase):
         return m.group(1).split("roadmap:")[0]
 
     def test_plus_y_pro_no_nombran_al_free(self):
-        if not PLAN_LIMITS["plus"]["can_access"].get("comportamiento.full"):
-            self.skipTest("se activa con el revert del 15/10 (ver el docstring)")
         for plan in ("plus", "pro"):
-            bloque = self._bloque(plan)
-            for m in re.finditer(r"[^\n]*\bFree\b[^\n]*", bloque):
+            for m in re.finditer(r"[^\n]*\bFree\b[^\n]*", self._bloque(plan)):
                 self.fail(f"la tarjeta de {plan} se compara contra Free, que ya no "
                           f"existe para quien la lee: «{m.group(0).strip()}»")
+
+    def test_lo_que_dice_sin_tope_es_sin_tope(self):
+        """"Alertas sin tope", "Brokers ilimitados", "Los 12 detectores": una
+        tarjeta que dice que no hay tope tiene que ser de un plan sin tope. Es
+        el día del 15/10 cuando esto cambia para el Plus, y va en las dos
+        direcciones (sin el cambio, el Plus no puede decirlo)."""
+        claves = (("Alertas sin tope", "alerts_max"),
+                  ("Brokers ilimitados", "brokers_max"),
+                  ("Los 12 detectores", "behavioral_tags_visible"),
+                  ("Todos los detectores", "behavioral_tags_visible"))
+        vistos = 0
+        for plan in ("plus", "pro"):
+            bloque = self._bloque(plan)
+            for frase, clave in claves:
+                if frase in bloque:
+                    vistos += 1
+                    self.assertIsNone(
+                        PLAN_LIMITS[plan][clave],
+                        f"la tarjeta de {plan} dice «{frase}» y el plan tiene tope "
+                        f"{PLAN_LIMITS[plan][clave]} ({clave})")
+        self.assertGreater(vistos, 0, "no encontré ninguna de las frases: revisar el test")
 
 if __name__ == "__main__":
     unittest.main()

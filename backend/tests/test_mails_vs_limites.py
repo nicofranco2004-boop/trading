@@ -26,8 +26,8 @@ Tres capas:
   2. Cada número que dice el mail, contra su límite, para Plus y Pro.
   3. Con límites INVENTADOS (7, 53, 11…): si quedara un número escrito a mano,
      el mail lo seguiría diciendo y acá se vería. Es la prueba de que los
-     textos derivan, y de que el 2026-10-15 (`git revert 78f43739`, que le
-     cambia los límites al Plus) los mails acompañan solos.
+     textos derivan, y de que el 2026-10-15 (se revierte el commit «[15-10]»,
+     que le cambia los límites al Plus) los mails acompañan solos.
 
 Ningún número de plan está escrito en este archivo: el esperado siempre se
 lee de las dos tablas. Los únicos números a mano son los inventados de la
@@ -546,7 +546,7 @@ class PorElCaminoDeProduccion(_Comparador):
                           _versiones(mail)["texto"])
 
     @unittest.skipUnless(hasattr(_quota, "limites_del_usuario"),
-                         "se activa sola con el revert de 78f43739 (2026-10-15)")
+                         "se activa sola el 15/10 (se revierte el commit «[15-10]»)")
     def test_el_plus_que_ya_pagaba_lee_su_cupo_de_antes(self):
         """Desde el 15/10 a los que ya pagaban Plus se les respeta el cupo viejo
         de análisis. Si cancelan con la suba de precio, el aviso tiene que
