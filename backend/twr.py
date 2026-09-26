@@ -1368,8 +1368,10 @@ def _aportado_por_punto(conn, uid: int, filas):
     y el día dentro del mes decidido por la estampa.
 
         aportado(d) = clamp( canon(M) − (estampa(rn) − estampa(d)),
-                             canon(M−1) − retiros(M),
-                             canon(M−1) + depósitos(M) )        rn = última fila de M
+                             canon(M−1) − min(retiros(M),  bajadas(M)),
+                             canon(M−1) + min(depósitos(M), subidas(M)) )
+                             rn = última fila de M; bajadas/subidas = cuánto bajaron
+                             y subieron las estampas del mes, fila a fila
 
     ⚠️ POR QUÉ ASÍ, DESPUÉS DE DOS INTENTOS FALLIDOS.
 
@@ -1403,12 +1405,36 @@ def _aportado_por_punto(conn, uid: int, filas):
     exactamente el corredor anterior, y cuando no tuvo flujos sigue colapsando a
     un punto: las dos protecciones de arriba quedan intactas.
 
+    ⚠️ PERO LOS BRUTOS SOLOS REABRÍAN LA RONDA 4. Un traspaso entre brokers queda
+    en la fila 'global' como un retiro Y un depósito del mismo monto: un mes de
+    neto cero, que antes colapsaba, se abría [−30.000, +30.000] y dejaba pasar la
+    estampa VIEJA de un import a mitad de mes — cartera quieta en 110.000, −24 %
+    de caída (3ª auditoría). Por eso cada lado se abre sólo si las estampas del
+    mes se MOVIERON en esa dirección, y como mucho lo que dicen los brutos: una
+    estampa vieja que sube 50.000 al re-estamparse no habilita bajar, y un
+    traspaso el mismo día (estampa quieta) no habilita nada.
+
     (El ideal sigue siendo reconstruir el aportado desde las FECHAS REALES de los
     movimientos. Esto NO lo reemplaza — pero tampoco hacía falta esperar a eso.)
     """
     canon = netdep_canonico(conn, uid)
     if canon is None:                      # sin contabilidad: sólo queda la estampa
         return lambda r: float(r["net_deposited"] or 0)
+
+    # Cuánto SUBIERON y cuánto BAJARON las estampas dentro de cada mes, fila a
+    # fila en orden de fecha. Una estampa vacía no es un movimiento: se saltea.
+    movido = {}
+    _ultima = {}
+    for r in sorted(filas, key=lambda x: str(x["date"])):
+        if r["net_deposited"] is None:
+            continue
+        ym = str(r["date"])[:7]
+        st = float(r["net_deposited"])
+        if ym in _ultima:
+            dlt = st - _ultima[ym]
+            sube, baja = movido.get(ym, (0.0, 0.0))
+            movido[ym] = (sube + max(dlt, 0.0), baja + max(-dlt, 0.0))
+        _ultima[ym] = st
 
     # Depósitos y retiros BRUTOS de cada mes, de las mismas filas que `canon`.
     brutos = {}
@@ -1439,10 +1465,11 @@ def _aportado_por_punto(conn, uid: int, filas):
             return c_m
         v = c_m - (float(rn["net_deposited"] or 0) - float(r["net_deposited"] or 0))
         dep, ret = brutos.get(ym, (0.0, 0.0))
-        # Nunca más angosto que el corredor anterior (el `min`/`max` con las dos
-        # puntas cubre un ajuste cargado con signo negativo).
-        lo = min(c_prev, c_m, c_prev - ret)
-        hi = max(c_prev, c_m, c_prev + dep)
+        sube, baja = movido.get(ym, (0.0, 0.0))
+        # Nunca más angosto que el corredor de dos puntas (el `min`/`max` con
+        # c_prev y c_m cubre además un ajuste cargado con signo negativo).
+        lo = min(c_prev, c_m, c_prev - min(ret, baja))
+        hi = max(c_prev, c_m, c_prev + min(dep, sube))
         return max(lo, min(hi, v))
     return _en
 

@@ -2817,12 +2817,18 @@ function InsightsDesktop({ _embeddedTab }) {
         // donde el backend publica None (serie partida: el rebase unía los dos
         // tramos). `acumuladoPublicado` rebasea `index_publicado` entre el primer y
         // el último punto APTO de la ventana, y da null si hay un corte en el medio.
-        // En ARS la serie no sale de `perf.curva` y no trae `ip`: cae al de antes.
-        const _pub = (!_modoEstimado && (currency === 'USD' || usaPerfEnPesos))
+        // En ARS SIN la serie del motor (`usaPerfEnPesos` falso) no hay `ip`: cae al
+        // de antes. ⚠️ CON la serie del motor en pesos, el KPI lee `_pub` igual que en
+        // dólares. Leía `lastRow[_kTotal]` —la FORMA— y coincidía con el chip sólo
+        // porque el punto "hoy" traía el índice publicado; cuando "hoy" pasó a
+        // continuar la línea (twr.py), en pesos el KPI decía +21,51 % con el chip
+        // en +17,8 % (3ª auditoría).
+        const _usaPub = currency === 'USD' || usaPerfEnPesos
+        const _pub = (!_modoEstimado && _usaPub)
           ? acumuladoPublicado(chartData, benchmarkKey) : null
         const cumulativeReturnPct = _modoEstimado
           ? (_acum ? _acum.pct : null)
-          : (currency === 'USD' ? (_pub ? _pub.pct : null) : (lastRow[_kTotal] ?? null))
+          : (_usaPub ? (_pub ? _pub.pct : null) : (lastRow[_kTotal] ?? null))
         // El benchmark del KPI, entre LAS MISMAS DOS FECHAS que el acumulado — es
         // lo que "mismo período" tiene que significar.
         const benchmarkReturnPct = (_pub && _pub.benchPct != null)
@@ -3534,7 +3540,13 @@ function InsightsDesktop({ _embeddedTab }) {
         {/* Lectura IA holística — solo si hay test hecho (si no, la CTA a
             completar el test la muestra el propio ProfileInvestorBlock). */}
         {investorProfile && Object.keys(investorProfile).length > 0 && (
-          <ProfileSummaryBlock params={paramsCaidaIA} />
+          /* SIN `valor_live`, a diferencia del resumen del Diagnóstico: éste va por
+             /ai/analyze, que cachea por paquete, y su paquete NO trae cotizaciones
+             vivas — el valor de ahora era lo único que lo hacía cambiar con cada
+             precio, y cada toque era un análisis nuevo descontado del cupo. La card
+             muestra la PEOR caída, que casi nunca cambia en el día; el paquete
+             declara `medido_hasta`. */
+          <ProfileSummaryBlock params={{ moneda: paramsCaidaIA.moneda, modo: paramsCaidaIA.modo }} />
         )}
         <ProfileInvestorBlock
           aiParams={paramsCaidaIA}

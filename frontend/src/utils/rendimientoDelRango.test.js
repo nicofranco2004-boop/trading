@@ -254,4 +254,10 @@ describe('las pantallas no vuelven a tener su propia copia', () => {
       expect(src).not.toMatch(/last\.valueUsd\s*-\s*last\.netDeposited\)\s*-\s*\(first\.valueUsd/)
     })
   }
+  it('la tarjeta "<Mes> en curso" muestra el número de "Este mes", no uno propio', () => {
+    // Medía hasta el cierre de AYER: "Septiembre en curso −1,2 %" al lado de
+    // "Este mes +0,1 %" en la misma pantalla (la diferencia era el día de hoy).
+    const src = readFileSync(resolve(AQUI, '../pages/Dashboard.jsx'), 'utf-8')
+    expect(src).toMatch(/<MonthlyTeaser mesEnCurso=\{monthlyVar\} \/>/)
+  })
 })
