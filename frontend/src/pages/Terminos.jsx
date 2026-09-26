@@ -80,7 +80,8 @@ export default function Terminos() {
             <li>
               <strong className="text-ink-0">"Rendi AI"</strong> — el asistente
               conversacional de Rendi que responde preguntas sobre tu cartera apoyándose en
-              modelos de Claude (Anthropic).
+              modelos de Claude (Anthropic). Si pedís escuchar una respuesta o le dictás una
+              pregunta, la voz y el dictado los hace OpenAI.
             </li>
             <li>
               <strong className="text-ink-0">"Terceros"</strong> — proveedores externos que
@@ -360,6 +361,19 @@ export default function Terminos() {
               modelos</em>.
             </li>
             <li>
+              {/* Agregado el 2026-09-26 SIN aviso por mail (decisión de Nico): no es un
+                  cambio material del §18 — declara un tratamiento que la Política de
+                  Privacidad ya informaba. Los hechos son los de Privacidad §4 y §5. */}
+              <strong className="text-ink-0">OpenAI (voz y dictado).</strong> Si pedís escuchar
+              una respuesta de Rendi AI, se envía a OpenAI el texto de ese resumen hablado para
+              convertirlo en audio. Si le dictás una pregunta, se envía la grabación —junto con
+              los nombres de tus activos y de tus brokers, como ayuda de vocabulario— para
+              convertirla en texto. Según la política de OpenAI para su API,{' '}
+              <em>esos datos no se usan para entrenar sus modelos</em>; OpenAI los guarda hasta
+              30 días para detectar usos abusivos y después los borra. El detalle está en la{' '}
+              <Link to="/privacidad" className="text-data-violet hover:underline">Política de Privacidad</Link>.
+            </li>
+            <li>
               <strong className="text-ink-0">Rebill.</strong> Procesa los pagos y maneja los
               datos de tarjeta. Rendi no almacena esa información.
             </li>
@@ -417,7 +431,7 @@ export default function Terminos() {
             <li>Intentar acceder a datos o cuentas de otros usuarios.</li>
             <li>Hacer scraping masivo, ataques de denegación de servicio (DoS) o ingeniería inversa del sistema.</li>
             <li>Vulnerar, sortear o probar mecanismos de seguridad sin autorización.</li>
-            <li>Usar Rendi AI para generar contenido ilegal o que viole los términos de Anthropic (contenido ilícito, deepfakes, spam, etc.).</li>
+            <li>Usar Rendi AI para generar contenido ilegal o que viole los términos de Anthropic o de OpenAI (contenido ilícito, deepfakes, spam, etc.).</li>
             <li>Cargar contenido ilegal, malicioso o que infrinja derechos de terceros.</li>
             <li>Usar el Servicio para cualquier fin contrario a la ley o a estos Términos.</li>
           </ul>
@@ -463,7 +477,7 @@ export default function Terminos() {
             <li>
               <strong className="text-ink-0">No garantizamos disponibilidad ininterrumpida.</strong>{' '}
               Hacemos nuestro mejor esfuerzo, pero pueden ocurrir caídas por mantenimiento,
-              problemas de proveedores (Vercel, Railway, Anthropic, Rebill, Resend), eventos de
+              problemas de proveedores (Vercel, Railway, Anthropic, OpenAI, Rebill, Resend), eventos de
               fuerza mayor o fallas técnicas.
             </li>
             <li>
