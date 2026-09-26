@@ -4781,29 +4781,29 @@ def get_brokers(uid: int = Depends(get_effective_user)):
 @reintentar_si_trabada
 def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     from ai import plan
+    from billing import plan_textos
     with db_abierta() as conn:
-        # Feature gate: Free permite 1 broker máximo. Grandfather: usuarios
-        # preexistentes con N > 1 conservan sus brokers pero no agregan más
-        # hasta upgrade. Admin/Pro: sin tope.
+        # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
+        # usuarios preexistentes con más conservan sus brokers pero no agregan
+        # más hasta upgrade. Admin/Pro: sin tope.
         allowed, quota_info = plan.check_broker_quota(conn, uid)
         if not allowed:
+            tier = quota_info["tier"]
+            # El texto y la lista salen de los límites (billing/plan_textos).
+            # Decía "El plan Free permite 1 broker" también al Plus que llegaba
+            # a 3 — y el frontend lo muestra en el modal.
             raise HTTPException(403, {
-                "error": (
-                    f"El plan Free permite 1 broker. Pasate a Rendi Pro para "
-                    f"conectar todos tus brokers."
-                ),
+                "error": plan_textos.aviso_brokers(tier, "pro"),
                 "quota": quota_info,
                 "upgrade": {
-                    "available": quota_info["tier"] == "free",
-                    "current_tier": quota_info["tier"],
+                    # Antes `tier == "free"`: el Plus en su tope quedaba sin
+                    # upgrade disponible, y el Pro sí le da más brokers.
+                    "available": plan_textos.resuelve("brokers", tier, "pro"),
+                    "current_tier": tier,
                     "target_tier": "pro",
                     "feature": "brokers.create",
-                    "benefits": [
-                        "Brokers ilimitados",
-                        "10× más análisis IA (60/sem vs 6/sem)",
-                        "Comportamiento completo (todas las tags)",
-                        "Reportes históricos + Distribución por activo",
-                    ],
+                    "benefits": plan_textos.cartel(
+                        "brokers", tier, "pro", usage=plan.quota.get_current_usage(conn, uid)),
                 },
             })
         # Validar parent_broker_id (si se pasa, debe pertenecer al user)
@@ -14865,6 +14865,7 @@ def _gate_export(uid: int, request: Request = None):
     export está incluido en SU plan — sin esto el asesor recibía un 403 con
     upsell sobre clientes reclamados."""
     from ai import plan
+    from billing import plan_textos
     conn = get_db()
     try:
         if not plan.can_access(conn, uid, "export.csv"):
@@ -14872,19 +14873,18 @@ def _gate_export(uid: int, request: Request = None):
             if _auth != uid and plan.quota.get_tier(conn, _auth) == "advisor":
                 return
             tier = plan.quota.get_tier(conn, uid)
+            # Texto y lista derivados de los límites (billing/plan_textos). La
+            # lista vieja prometía "Distribución por activo desbloqueada", que
+            # ya es de todos. Este 403 es también lo que muestra el botón de
+            # Exportar del frontend: no tiene otra copia de la lista.
             raise HTTPException(403, {
-                "error": "Export CSV está disponible en los planes Plus y Pro.",
+                "error": plan_textos.aviso_export(),
                 "upgrade": {
                     "available": tier == "free",
                     "current_tier": tier,
                     "target_tier": "plus",
                     "feature": "export.csv",
-                    "benefits": [
-                        "Export CSV consolidado para tu contador",
-                        "Hasta 3 brokers (vs 1 en Free)",
-                        "Reportes históricos completos",
-                        "Distribución por activo desbloqueada",
-                    ],
+                    "benefits": plan_textos.cartel("export", tier, "plus"),
                 },
             })
     finally:
@@ -28173,6 +28173,39 @@ def _ai_cache_invalidate(uid: int) -> None:
         log.warning("ai_cache_invalidate fallo para uid=%s: %s", uid, ex)
 
 
+def _analisis_429(tier: str, usage_now: dict) -> HTTPException:
+    """El 429 de "se te acabaron los análisis", para /api/ai/analyze y para el
+    resumen IA de fundamentales. Estaba copiado entero en los dos endpoints,
+    con la lista de beneficios escrita a mano ("10× más análisis IA (60/sem vs
+    6/sem)" también a Free, que tiene 1: son 60×) y el 6 del Plus como número
+    de repuesto del tope. Ahora todo sale de los límites (billing/plan_textos)
+    y del `usage`, que es el cupo que la persona TIENE."""
+    from billing import plan_textos
+    from ai.quota import LIMITS as _LIMITS
+    limit_n = usage_now.get("analyses_limit",
+                            _LIMITS.get(tier, _LIMITS["free"])["analyses_per_week"])
+    upgrade_available = tier in ("free", "plus")
+    error_msg = (
+        f"Llegaste al límite del plan {plan_textos.nombre(tier)} ({limit_n} análisis en los "
+        "últimos 7 días). Tu próximo análisis se libera al "
+        "expirar el más antiguo."
+    )
+    if upgrade_available:
+        error_msg += " " + plan_textos.mas_analisis(tier, "pro", usage_now)
+    return HTTPException(429, {
+        "error": error_msg,
+        "usage": usage_now,
+        "upgrade": {
+            "available": upgrade_available,
+            "current_tier": tier,
+            "target_tier": "pro",
+            "resets_on": usage_now.get("resets_on"),
+            "benefits": (plan_textos.cartel("analisis", tier, "pro", usage=usage_now)
+                         if upgrade_available else []),
+        },
+    })
+
+
 @app.post("/api/ai/analyze")
 def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effective_user)):
     """Análisis contextual estructurado de una pantalla o sub-componente.
@@ -28228,23 +28261,23 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
         # antes solo bloqueaba Free, Plus tenía un agujero silencioso que
         # diluía el incentivo a pasarse a Pro.
         if followup_question and tier in ("free", "plus"):
+            from billing import plan_textos
+            _usage_fu = quota.get_current_usage(conn, uid)
             raise HTTPException(403, {
                 "error": (
                     "Los follow-ups son exclusivos de Rendi Pro. "
                     "Profundizá cualquier análisis con preguntas libres."
                 ),
-                "usage": quota.get_current_usage(conn, uid),
+                "usage": _usage_fu,
                 "upgrade": {
                     "available": True,
                     "current_tier": tier,
                     "target_tier": "pro",
                     "feature": "follow_ups",
-                    "benefits": [
-                        "10× más análisis IA (60/sem vs 6/sem)",
-                        "Respuestas con causalidad y comparaciones",
-                        "Follow-ups: profundizá con preguntas libres",
-                        "AI Hub: exploración libre sobre tu portfolio (próximamente)",
-                    ],
+                    # Derivada de los límites (billing/plan_textos). La vieja
+                    # le decía "10×" también al Free (son 60×) y ofrecía el AI
+                    # Hub, que no existe: el roadmap mezclado con lo que se vende.
+                    "benefits": plan_textos.cartel("followups", tier, "pro", usage=_usage_fu),
                 },
             })
 
@@ -28288,34 +28321,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
         # Cache MISS o follow-up → chequeamos cupo (la llamada al LLM cuesta)
         allowed, usage_now = quota.can_analyze(conn, uid, tier_override=_lente_analyze)
         if not allowed:
-            # Mensaje 429 dinámico por tier — antes hardcodeaba "plan Free"
-            # aunque el user fuera Plus (mismo cap 6) y daba confusión.
-            tier_label = {"free": "Free", "plus": "Plus", "pro": "Pro", "admin": "Admin"}.get(tier, "Free")
-            limit_n = usage_now.get("analyses_limit", 6)
-            upgrade_available = tier in ("free", "plus")
-            error_msg = (
-                f"Llegaste al límite del plan {tier_label} ({limit_n} análisis en los "
-                "últimos 7 días). Tu próximo análisis se libera al "
-                "expirar el más antiguo."
-            )
-            if upgrade_available:
-                error_msg += " Para 10× más análisis con respuestas profundas, pasate a Rendi Pro."
-            raise HTTPException(429, {
-                "error": error_msg,
-                "usage": usage_now,
-                "upgrade": {
-                    "available": upgrade_available,
-                    "current_tier": tier,
-                    "target_tier": "pro",
-                    "resets_on": usage_now.get("resets_on"),
-                    "benefits": [
-                        "10× más análisis IA (60/sem vs 6/sem)",
-                        "Respuestas con causalidad y comparaciones",
-                        "Chat libre con el Coach IA (40 consultas/sem)",
-                        "Follow-ups: profundizá con preguntas libres",
-                    ],
-                },
-            })
+            raise _analisis_429(tier, usage_now)
 
         # Llamada al LLM — prompt resuelto según tier (Free=descriptivo,
         # Pro/Admin=research note). Si hay follow-up, pasamos la pregunta
@@ -28518,32 +28524,7 @@ def fundamentals_ai_summary(data: FundamentalsAISummaryIn, request: Request,
         # ande igual).
         allowed, usage_now = quota.can_analyze(conn, uid, tier_override=_lente_fund)
         if not allowed:
-            tier_label = {"free": "Free", "plus": "Plus", "pro": "Pro", "admin": "Admin"}.get(tier, "Free")
-            limit_n = usage_now.get("analyses_limit", 6)
-            upgrade_available = tier in ("free", "plus")
-            error_msg = (
-                f"Llegaste al límite del plan {tier_label} ({limit_n} análisis en los "
-                "últimos 7 días). Tu próximo análisis se libera al "
-                "expirar el más antiguo."
-            )
-            if upgrade_available:
-                error_msg += " Para 10× más análisis con respuestas profundas, pasate a Rendi Pro."
-            raise HTTPException(429, {
-                "error": error_msg,
-                "usage": usage_now,
-                "upgrade": {
-                    "available": upgrade_available,
-                    "current_tier": tier,
-                    "target_tier": "pro",
-                    "resets_on": usage_now.get("resets_on"),
-                    "benefits": [
-                        "10× más análisis IA (60/sem vs 6/sem)",
-                        "Respuestas con causalidad y comparaciones",
-                        "Chat libre con el Coach IA (40 consultas/sem)",
-                        "Follow-ups: profundizá con preguntas libres",
-                    ],
-                },
-            })
+            raise _analisis_429(tier, usage_now)
 
         system_prompt = render_fundamentals_prompt(tier=tier)
         try:
@@ -28760,6 +28741,8 @@ def plan_features(
       limits.insights_diagnostic_visible
       limits.behavioral_tags_visible
       access.<feature_id>: bool
+      planes: [{tier, limits}] — los topes de los planes en venta, del más
+              barato al más caro (para decir qué plan destraba qué)
       client_ctx: bool — True si el asesor está mirando la cuenta de un cliente
 
     LENTE PRO del Plan Asesor: si hay contexto de cliente activo (uid resuelto
@@ -31249,22 +31232,18 @@ def _chat_quota_429(tier: str, usage: dict, es_analisis: bool = False) -> HTTPEx
     alguien que tiene consultas de sobra y lo que se le acabaron son los
     análisis: el número que ve en pantalla no coincidiría con el que le
     frenó el botón."""
+    from billing import plan_textos
     upgrade_available = tier in ("free", "plus")
     target_tier = "plus" if tier == "free" else "pro"
-    if target_tier == "plus":
-        benefits = [
-            "9× más Chat Rendi AI (9 consultas/sem vs 1)",
-            "Hasta 3 brokers (vs 1 en Free)",
-            "Reportes históricos + Export CSV",
-            "Diagnóstico completo + 4 detectores de comportamiento",
-        ]
-    else:  # plus → pro
-        benefits = [
-            "Chat libre con el Coach IA (40 consultas/sem)",
-            "10× más análisis IA (60/sem vs 6/sem)",
-            "Respuestas con causalidad y memoria persistente",
-            "Brokers ilimitados + comportamiento completo",
-        ]
+    # La lista sale de los límites (billing/plan_textos) y del cupo que la
+    # persona tiene (`usage`). La vieja estaba a mano: al Free le vendía el Plus
+    # con "Diagnóstico completo + 4 detectores" (el Plus ve 6, y el diagnóstico
+    # completo ya lo ve el Free); al Plus, "10× más análisis" y "comportamiento
+    # completo", que el 15/10 dejan de ser ciertos. Y si lo que se agotó fueron
+    # los ANÁLISIS (botón ✦), el primer renglón habla de análisis.
+    benefits = (plan_textos.cartel("analisis" if es_analisis else "chat", tier,
+                                   target_tier, usage=usage)
+                if upgrade_available else [])
     # resets_on dinámico del usage (rolling 7d — NUNCA decir "lunes"). Y la
     # fecha se DICE ("el 19 de septiembre"), no se muestra como viene de la
     # base ("2026-09-19"): ese formato es de máquina y nadie lo lee.
@@ -31317,6 +31296,7 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)
     solo lleva la cuenta y decide si permitir. No toca el LLM (barato).
     """
     from ai import quota
+    from billing import plan_textos
     # Rate-limit defensivo (barato, pero evita ráfagas de un script).
     _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"diag_dismiss:{uid}")
     conn = get_db()
@@ -31328,9 +31308,11 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)
             # No prometemos una fecha exacta: usage['resets_on'] es cross-tipo
             # (mín. de CUALQUIER actividad de la ventana) → puede adelantar la
             # fecha real en que se libera un slot de dismiss. Mensaje genérico.
+            # El remate ("descartá sin límite") y la lista salen de los límites
+            # (billing/plan_textos): los dos estaban escritos a mano.
             msg = (f"Usaste tus {limit} personalizaciones del diagnóstico de esta "
-                   f"semana. Se van liberando en los próximos días — o pasate a "
-                   f"Plus y descartá sin límite.")
+                   f"semana. Se van liberando en los próximos días — "
+                   f"{plan_textos.aviso_diagnostico('plus')}.")
             raise HTTPException(
                 429,
                 detail={
@@ -31342,12 +31324,8 @@ def diagnostics_dismiss(request: Request, uid: int = Depends(get_effective_user)
                         "current_tier": tier,
                         "target_tier": "plus",
                         "resets_on": usage.get("resets_on"),
-                        "benefits": [
-                            "Personalizá tu diagnóstico sin límite (descartá lo que no te sirve)",
-                            "Hasta 3 brokers (vs 1 en Free)",
-                            "Reportes históricos + Export CSV",
-                            "9× más Chat con Rendi AI",
-                        ],
+                        "benefits": plan_textos.cartel("diagnostico", tier, "plus",
+                                                       usage=usage),
                     },
                 },
             )
@@ -31361,14 +31339,15 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     """Chat con el coach IA — tier-aware.
 
     Free/Plus:
-    - Solo aceptan mensajes en _FREE_QUESTIONS_WHITELIST (12 preguntas).
-    - Cuota 6/semana (rolling 7d) vía ai_usage_daily.chat_count.
-    - Prompt descriptivo, max_tokens=300, sin causalidad ni recomendaciones.
+    - Solo aceptan mensajes en _FREE_QUESTIONS_WHITELIST (preguntas guiadas).
+    - Cuota semanal (rolling 7d) vía ai_usage_daily.chat_count; el tope es
+      `ai.quota.LIMITS[tier]["chat_per_week"]` (no se repite acá: se desfasa).
+    - Prompt descriptivo, sin causalidad ni recomendaciones.
 
     Pro/Admin:
     - Texto libre permitido (chat libre real).
-    - Cuota 60/semana.
-    - Prompt completo causal, max_tokens=1000, tools habilitadas.
+    - Cuota semanal: la misma tabla.
+    - Prompt completo causal, tools habilitadas.
 
     Prompt-cache fix (audit #1/2 HIGH):
     - system_text = SOLO manifiesto estable por tier → cache hit ~99%.
@@ -31501,7 +31480,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
             # 403 con upgrade payload — para que el frontend muestre la card
             # promocional con CTA en lugar de un banner de error rojo. El
             # target Pro porque chat libre = Pro-only (Plus también está
-            # limitado a la whitelist de 12 preguntas).
+            # limitado a la whitelist de preguntas guiadas).
+            from billing import plan_textos
             raise HTTPException(
                 403,
                 detail={
@@ -31512,12 +31492,14 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
                         "available": True,
                         "current_tier": tier,
                         "target_tier": "pro",
-                        "benefits": [
-                            "Chat libre con el Coach IA — preguntá lo que quieras",
-                            "40 consultas/semana (vs 12 preguntas guiadas)",
-                            "Respuestas con causalidad y memoria persistente",
-                            "10× más análisis IA + brokers ilimitados",
-                        ],
+                        # Derivada (billing/plan_textos): decía "40 consultas/
+                        # semana" y "10× más análisis IA" escritos a mano.
+                        # `usage` es el del pre-chequeo de cupo de arriba (acá
+                        # la conexión ya está cerrada; en este camino no hay
+                        # `analisis`, así que es el de `can_chat`).
+                        "benefits": plan_textos.cartel(
+                            "chat_libre", tier, "pro", usage=usage,
+                            guiadas=len(_FREE_QUESTIONS_WHITELIST)),
                     },
                 },
             )
@@ -32388,6 +32370,8 @@ def _voz_quota_429(tier: str, usage: dict, con_cupo: bool) -> HTTPException:
     chat para que la tarjeta de upgrade y el shape no se bifurquen."""
     if not con_cupo:
         return _chat_quota_429(tier, usage)
+    from billing import plan_textos
+    target_tier = "plus" if tier == "free" else "pro"
     resets_on = usage.get("resets_on")
     # "escuche" como sustantivo suena a estudio de fonoaudiología; nadie dice
     # "usé mi escuche". Todo el mundo sabe qué es un audio. Y la fecha va en
@@ -32405,14 +32389,13 @@ def _voz_quota_429(tier: str, usage: dict, con_cupo: bool) -> HTTPException:
             "upgrade": {
                 "available": tier in ("free", "plus"),
                 "current_tier": tier,
-                "target_tier": "plus" if tier == "free" else "pro",
+                "target_tier": target_tier,
                 "resets_on": resets_on,
-                "benefits": [
-                    "Hasta 4 respuestas habladas por semana (en Free es 1)",
-                    "Hasta 3 brokers (vs 1 en Free)",
-                    "Reportes históricos + Export CSV",
-                    "Diagnóstico completo + 4 detectores de comportamiento",
-                ],
+                # Derivada (billing/plan_textos) y del plan que se ofrece: la
+                # vieja era la lista del Plus también cuando el cartel ofrecía
+                # Pro, con "Hasta 4 respuestas habladas" (9 consultas / 2,
+                # a mano) y "4 detectores" (el Plus ve 6).
+                "benefits": plan_textos.cartel("voz", tier, target_tier, usage=usage),
             },
         },
     )

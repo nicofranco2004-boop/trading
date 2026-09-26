@@ -133,6 +133,17 @@ PLAN_LIMITS = {
     },
 }
 
+# Los planes que se le venden a una persona, del más barato al más caro. El
+# orden importa: "¿qué plan te destraba esto?" es el PRIMERO de esta lista que
+# lo da (la carta de comportamiento que ve el Plus no se vende como Pro).
+PLANES_EN_VENTA = ("plus", "pro")
+
+# Los topes de PLAN_LIMITS que la pantalla usa para decir qué plan destraba
+# qué. `insights_diagnostic_visible` no va a propósito: ninguna pantalla lo
+# aplica (todos ven el diagnóstico entero) y mandarlo es invitar a que alguien
+# lo prometa.
+_TOPES_PARA_LA_UI = ("brokers_max", "behavioral_tags_visible", "alerts_max")
+
 
 def can_access(conn, user_id: int, feature_id: str) -> bool:
     """¿El user tiene acceso a esta feature por flag boolean?
@@ -260,6 +271,8 @@ def get_plan_features(conn, user_id: int, tier_override: str | None = None) -> d
         limits.insights_diagnostic_visible
         limits.behavioral_tags_visible
         access.<feature_id>: bool
+        planes: [{tier, limits: {brokers_max, behavioral_tags_visible,
+                 alerts_max}}] — los planes en venta, del más barato al más caro
 
     tier_override: fuerza el tier SIN mirar la cuenta. Único caso de uso: el
     "lente Pro" del Plan Asesor — el asesor viendo la cuenta de un cliente
@@ -292,4 +305,12 @@ def get_plan_features(conn, user_id: int, tier_override: str | None = None) -> d
             "alerts_can_create": alerts_can_create,
         },
         "access": dict(limits["can_access"]),
+        # Los topes de los planes que se venden, en orden de precio. Con esto
+        # la pantalla deriva qué plan destraba una carta bloqueada en vez de
+        # tenerlo escrito ("PLUS_VISIBLE_COUNT = 6" en Behavioral.jsx, que el
+        # 15/10 le iba a decir "Pro" a Free en cartas que el Plus ya muestra).
+        "planes": [
+            {"tier": p, "limits": {k: PLAN_LIMITS[p][k] for k in _TOPES_PARA_LA_UI}}
+            for p in PLANES_EN_VENTA
+        ],
     }
