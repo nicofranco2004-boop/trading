@@ -24,9 +24,14 @@ Estrategia ARS:
   Cobramos en pesos (Rebill cobra fee mínimo USD 500/mes si facturás en USD).
   Precio fijo en pesos, re-pricing con anuncio previo.
 
-Precios vigentes desde el 2026-10-15 (antes: Plus 5.990 / Pro 13.990):
-  Plus  8.900/mes ·  79.000/año (26% off — 3 meses gratis)
-  Pro  15.900/mes · 139.000/año (27% off — 3 meses gratis)
+Precios VIGENTES HOY. Los nuevos (Plus 8.900 / Pro 15.900, anual 79.000 y
+139.000) llegan el 2026-10-15 y están listos en el commit que este revierte:
+  Plus  5.990/mes ·  59.900/año (16,7% off)
+  Pro  13.990/mes · 139.900/año (16,7% off)
+
+⚠️ El monto que se cobra de verdad está en el dashboard de Rebill. Estos
+números y los de Rebill se cambian EL MISMO DÍA, o la página promete un precio
+y la tarjeta cobra otro.
 
   El anual se empuja fuerte a propósito: el fijo de USD 0,20 que cobra
   Rebill por transacción se paga UNA vez al año en vez de doce, así que el
@@ -40,23 +45,23 @@ from typing import Literal
 
 # ─── Plus ───────────────────────────────────────────────────────────────────
 
-PLUS_ARS_MONTHLY_TOTAL = 8_900    # lo que se cobra
-PLUS_ARS_MONTHLY_BASE  = 7_355    # 8.900 / 1,21
-PLUS_ARS_MONTHLY_IVA   = 1_545    # 8.900 − 7.355
+PLUS_ARS_MONTHLY_TOTAL = 5_990    # lo que se cobra
+PLUS_ARS_MONTHLY_BASE  = 4_950    # 5.990 / 1,21
+PLUS_ARS_MONTHLY_IVA   = 1_040
 
-PLUS_ARS_ANNUAL_TOTAL  = 79_000   # vs 12×8.900=106.800 → 26% off (3 meses gratis)
-PLUS_ARS_ANNUAL_BASE   = 65_289   # 79.000 / 1,21
-PLUS_ARS_ANNUAL_IVA    = 13_711
+PLUS_ARS_ANNUAL_TOTAL  = 59_900   # vs 12×5.990=71.880 → 16,7% off
+PLUS_ARS_ANNUAL_BASE   = 49_504   # 59.900 / 1,21
+PLUS_ARS_ANNUAL_IVA    = 10_396
 
 # ─── Pro ────────────────────────────────────────────────────────────────────
 
-ARS_MONTHLY_TOTAL = 15_900        # lo que se cobra
-ARS_MONTHLY_BASE  = 13_140        # 15.900 / 1,21
-ARS_MONTHLY_IVA   = 2_760
+ARS_MONTHLY_TOTAL = 13_990        # lo que se cobra
+ARS_MONTHLY_BASE  = 11_562        # 13.990 / 1,21
+ARS_MONTHLY_IVA   = 2_428
 
-ARS_ANNUAL_TOTAL  = 139_000       # vs 12×15.900=190.800 → 27% off (3 meses gratis)
-ARS_ANNUAL_BASE   = 114_876       # 139.000 / 1,21
-ARS_ANNUAL_IVA    = 24_124
+ARS_ANNUAL_TOTAL  = 139_900       # vs 12×13.990=167.880 → 16,7% off
+ARS_ANNUAL_BASE   = 115_620       # 139.900 / 1,21
+ARS_ANNUAL_IVA    = 24_280
 
 # ─── Constantes de cálculo ──────────────────────────────────────────────────
 

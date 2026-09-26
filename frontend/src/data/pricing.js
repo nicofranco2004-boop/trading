@@ -18,21 +18,22 @@
 //
 // Antes: pricing en USD con conversión arsPriceRounded(usd, tcValuacion) → ARS.
 // Ahora: ARS hardcoded como source of truth.
-// Vigentes desde el 2026-10-15. Antes: Plus 5.990 / Pro 13.990.
+// VIGENTES HOY. Los nuevos (8.900 / 15.900) llegan el 2026-10-15: están en el
+// commit que este revierte, y se cambian el MISMO día que los de Rebill.
 // ⚠️ Esta es LA copia del frontend. La del backend está en
 // backend/billing/pricing.py, y el monto que realmente se cobra está en los
 // planes del dashboard de Rebill. Los tres tienen que decir lo mismo.
-export const PLUS_PRICE_ARS_MONTHLY = '8900'
-export const PRO_PRICE_ARS_MONTHLY = '15900'
+export const PLUS_PRICE_ARS_MONTHLY = '5990'
+export const PRO_PRICE_ARS_MONTHLY = '13990'
 // Anual con ~26% off vs monthly × 12 — tres meses gratis. Se empuja fuerte
 // porque el fijo de USD 0,20 de Rebill se paga 1 vez al año en vez de 12.
-export const PLUS_PRICE_ARS_ANNUAL = '79000'   // vs 12×8900=106800 → 26% off
-export const PRO_PRICE_ARS_ANNUAL = '139000'   // vs 12×15900=190800 → 27% off
+export const PLUS_PRICE_ARS_ANNUAL = '59900'   // vs 12×5990=71880 → 16,7% off
+export const PRO_PRICE_ARS_ANNUAL = '139900'   // vs 12×13990=167880 → 16,7% off
 
 // Mensual equivalente cuando elige plan anual (para display "X/mes · facturado anual")
 // Math.round(annual / 12)
-export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '6583'   // 79000/12 = 6583.33
-export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '11583'   // 139000/12 = 11583.33
+export const PLUS_PRICE_ARS_ANNUAL_MONTHLY_EQ = '4992'   // 59900/12 = 4991.67
+export const PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ = '11658'   // 139900/12 = 11658.33
 
 // Helper: formatea un número ARS al estilo argentino con punto miles.
 //   5990 → "5.990"
