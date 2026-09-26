@@ -31,6 +31,7 @@ import OnboardingChecklist from '../components/home/OnboardingChecklist'
 import Eyebrow from '../components/Eyebrow'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
 import { computeBrokerValue, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
@@ -182,6 +183,9 @@ export default function HomeMobile() {
       // cercano y el título lo dice (ver rendimientoDelRango).
       desde: delta ? delta.desde : null,
       deltaPct: delta ? delta.pct : null,
+      // El objeto entero, para el ✦ Analizar: la IA recibe este mismo número,
+      // con su fecha de arranque y los aportes del tramo.
+      rendimiento: delta,
       // Sin número, el color sigue a lo que dibuja la línea (valor menos aportado).
       positive: delta
         ? delta.usd >= 0
@@ -330,6 +334,16 @@ export default function HomeMobile() {
               y prominente (no es hover-reveal porque mobile). */}
           <AnalyzeButton
             screen="home"
+            // Las tres cards de esta pantalla, tal cual las muestra (null =
+            // la card dice "—"). Antes la IA recibía el último cierre menos el
+            // anterior: sin descontar depósitos y sin la cartera de ahora, o sea
+            // otro número que "P&L Día". Ver utils/rendimientoAi.js.
+            params={{
+              hoy: rendimientoParaIa(kpis.pnlDayMeta),
+              mes: rendimientoParaIa(kpis.pnlMonthMeta),
+              ultimos_30_dias: rendimientoParaIa(series30d?.rendimiento),
+              moneda: currency,
+            }}
             subtitle="El mercado y tu cartera hoy"
             label="Analizar"
           />

@@ -337,9 +337,13 @@ class BuildersDeIATest(_Base):
         self.snap("2023-06-30", 100000.0)
         p = dashboard_evolution.build(self.conn, self.uid, period_days=365)
         if not p.get("insufficient_data"):
-            self.assertIn("ventana", p)
-            self.assertTrue(p["ventana"]["ampliada"])
-            self.assertEqual(p["ventana"]["hasta"], "2023-06-30")
+            # La ventana describe la CURVA (el valor de la cartera), así que vive
+            # adentro de `curva` desde que el paquete separa la curva del
+            # rendimiento del chip (2026-09-25). Lo que se cuida es lo mismo: que
+            # el paquete declare la ventana que los números describen de verdad.
+            self.assertIn("ventana", p["curva"])
+            self.assertTrue(p["curva"]["ventana"]["ampliada"])
+            self.assertEqual(p["curva"]["ventana"]["hasta"], "2023-06-30")
 
 
 class CagrDenominadorTest(_Base):

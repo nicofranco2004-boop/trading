@@ -11666,6 +11666,10 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 _repair_monthly_chain(conn, uid, data.broker_name)
                 _repair_monthly_chain(conn, uid, 'global')
 
+            # Un depósito o retiro cambia lo aportado: lo que la IA tenía guardado
+            # sobre esta cartera ya no vale. Era el único endpoint de movimientos
+            # que no lo avisaba.
+            _ai_cache_invalidate(uid)
             return {"ok": True, "direction": data.direction, "amount": data.amount, "currency": currency}
         except HTTPException:
             raise
@@ -19813,7 +19817,10 @@ def admin_diagnose_reportes_basis(user_id: Optional[int] = None,
             live = mercado or None
             if live_real:
                 try:
-                    lv = compute_live_portfolio_value(conn, au, _user_tc_blue(conn, au), CRYPTO_YF)
+                    # El MISMO valor vivo que el endpoint (dólar del día, no el de la
+                    # config): con `_user_tc_blue` este diagnóstico decía "lo que ve"
+                    # con otro tipo de cambio que la pantalla que dice replicar.
+                    lv = _valor_vivo_mercado(conn, au)
                     if lv and lv > 0:
                         live = lv
                 except Exception:
@@ -24987,6 +24994,11 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
 # que el snapshot del frontend.
 _CHAT_VAL_CACHE: dict = {}
 _CHAT_VAL_TTL_SEC = 60
+# Las cotizaciones que bajó la valuación del chat, por usuario: las reusa el valor
+# vivo de los rendimientos del mismo turno (`_valor_vivo_mercado`) en vez de pedir
+# las mismas otra vez. Son precios de mercado, no datos del usuario: no hace falta
+# tirarlas en `_ai_cache_invalidate` (un activo nuevo simplemente falta y se pide).
+_CHAT_PRECIOS: dict = {}
 
 
 def _valuate_positions_for_chat(conn, uid: int):
@@ -25036,6 +25048,10 @@ def _valuate_positions_for_chat(conn, uid: int):
         try:
             syms = build_price_symbols(positions, brokers)
             prices = fetch_prices_for_symbols(syms, CRYPTO_YF) if syms else {}
+            if prices:
+                if len(_CHAT_PRECIOS) > 500:
+                    _CHAT_PRECIOS.clear()
+                _CHAT_PRECIOS[uid] = (_time.time(), dict(prices))
         except Exception as ex:
             log.warning("chat valuation: fetch_prices failed: %s", ex)
             prices = {}
@@ -25324,12 +25340,26 @@ def _build_chat_benchmarks(conn, uid: int, _today=None):
     merval_ytd = _pct_move(merval, merval_cur_key, dec_prev)
 
     # Retornos del USER (consolidado, USD-MEP, cashflow-adjusted).
+    #
+    # ⚠️ HASTA EL VALOR DE AHORA, NO HASTA LA ÚLTIMA FOTO. Sin `live_value_override`
+    # los dos números terminaban en el último cierre guardado —el de anoche, o el
+    # de hace una semana si el cron se cortó— mientras la `_note` de abajo le
+    # dice al modelo que "el del user llega hasta hoy". Y el "30 días" de las
+    # pantallas (el chip del Dashboard en 1M, "Últimos 30 días" del celular, el
+    # "Δ 30 días" de Reportes) termina en la cartera de ahora. Con el mismo valor
+    # vivo que Reportes, el chat cita el MISMO número que esa pantalla: misma
+    # función (`_snapshot_delta`), mismas entradas.
     user_30d = user_ytd = user_ytd_since = None
+    user_30d_usd = user_30d_desde = user_30d_hasta = None
     try:
-        s = _portfolio_snapshot_summary(conn, uid, broker_filter="global")
+        s = _portfolio_snapshot_summary(conn, uid, broker_filter="global",
+                                        live_value_override=_valor_vivo_mercado(conn, uid))
         d30 = s.get("delta_30d") or {}
         yt = s.get("ytd") or {}
         user_30d = d30.get("pct")
+        user_30d_usd = d30.get("usd")
+        user_30d_desde = d30.get("prev_date")
+        user_30d_hasta = s.get("latest_date") if d30 else None
         user_ytd = yt.get("pct")
         user_ytd_since = yt.get("since_date")
     except Exception as ex:
@@ -25372,6 +25402,9 @@ def _build_chat_benchmarks(conn, uid: int, _today=None):
         "merval_ars": {"ytd_pct": merval_ytd},
         "user_portfolio": {
             "usd_30d_pct": user_30d,
+            "usd_30d_usd": user_30d_usd,
+            "usd_30d_desde": user_30d_desde,
+            "usd_30d_hasta": user_30d_hasta,
             "usd_ytd_pct": user_ytd,
             "ytd_since": user_ytd_since,
             "ars_ytd_pct_approx": user_ytd_ars,
@@ -25379,8 +25412,14 @@ def _build_chat_benchmarks(conn, uid: int, _today=None):
         "_note": (
             "Retornos REALES precalculados — citalos, NO hagas aritmética nueva. "
             "user_portfolio está en USD (MEP), cashflow-adjusted (los aportes no "
-            "cuentan como ganancia); usd_30d_pct es ventana RODANTE de 30 días "
-            "(no mes calendario); los month_pct de S&P/blue pueden incluir el "
+            "cuentan como ganancia); usd_30d_pct/usd_30d_usd son los últimos 30 "
+            "días (ventana RODANTE, no mes calendario) medidos desde el cierre de "
+            "usd_30d_desde hasta usd_30d_hasta — la misma cuenta que el 'Δ 30 "
+            "días' de Reportes. Si usd_30d_desde es bastante anterior a hace 30 "
+            "días (faltan cierres en el medio), el número cubre desde ESA fecha: "
+            "decilo con la fecha, no lo llames 'los últimos 30 días'. Si "
+            "usd_30d_pct es null es porque no hay con qué medirlo: decilo así, no "
+            "lo reemplaces con otra cuenta. Los month_pct de S&P/blue pueden incluir el "
             "mes EN CURSO parcial (al día de hoy). Comparaciones correctas: vs "
             "S&P 500 → usd_ytd_pct contra sp500_total_return_usd.ytd_pct (ambos "
             "USD; si ytd_since no es enero, la ventana del user es más corta que "
@@ -28113,6 +28152,16 @@ def _ai_cache_invalidate(uid: int) -> None:
     # para que una mutación (import/borrar broker/posición) no deje al chat con
     # números viejos hasta 60s (review follow-up). pop es no-op si no hay entrada.
     _CHAT_VAL_CACHE.pop(uid, None)
+    # Y el valor vivo de los rendimientos (60 s, por usuario y dólar). Sin esto,
+    # un depósito recién cargado entraba en lo aportado AL INSTANTE pero no en el
+    # valor —que seguía siendo el de antes del depósito— y durante un minuto el
+    # "Hoy" del chat y de Reportes lo mostraba como pérdida.
+    try:
+        import snapshots_job as _sj
+        for _k in [k for k in list(_sj._LIVE_VALUE_CACHE) if k and k[0] == uid]:
+            _sj._LIVE_VALUE_CACHE.pop(_k, None)
+    except Exception:
+        pass
     try:
         from ai import cache as _ai_cache
         conn = get_db()
@@ -28202,7 +28251,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
         # Build packet PRIMERO (es barato y determinístico) para ver si hay
         # cache hit antes de tocar el cupo.
         try:
-            packet = build_packet(conn, uid, **params)
+            packet = build_packet(conn, uid, **_params_de_boton(params))
         except Exception as ex:
             log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
             raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
@@ -30822,6 +30871,19 @@ _CAMPOS_QUE_YA_TRAE_LA_FOTO = frozenset((
 _AGREGADOS_QUE_LA_FOTO_NO_TIENE = frozenset(("brokers", "by_broker"))
 
 
+def _params_de_boton(params) -> dict:
+    """Los `params` que manda el navegador con un ✦, listos para `**` en un builder.
+
+    Los builders son `build(conn, user_id, **params)`: un `params` con la clave
+    `conn` o `user_id` chocaba con los argumentos posicionales (TypeError) y el ✦
+    se quedaba sin paquete. Y sólo pasan claves de texto: el resto no tiene cómo
+    ser un argumento válido."""
+    if not isinstance(params, dict):
+        return {}
+    return {k: v for k, v in params.items()
+            if isinstance(k, str) and k not in ("conn", "user_id")}
+
+
 def _podar_lo_que_ya_esta(nodo):
     """Saca los campos que la foto de la cartera ya publica con el motor
     canónico. Devuelve una copia — el paquete original no se toca (lo usa
@@ -31541,7 +31603,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
             if _topico:
                 _pconn = get_db()
                 try:
-                    _paquete = _topico[0](_pconn, uid, **(data.analisis.params or {}))
+                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params))
                 finally:
                     _pconn.close()
                 _paquete = _podar_lo_que_ya_esta(_paquete)
@@ -36866,7 +36928,9 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     snap_value = float(latest_snap["total_value"]) if latest_snap and broker_filter == "global" else None
     # Si tenemos live override y es global, usamos eso como "ahora";
     # el snap_value se reserva como base para calcular delta_1d (vs cierre).
-    if broker_filter == "global" and live_value_override is not None and live_value_override > 0:
+    _con_vivo = (broker_filter == "global" and live_value_override is not None
+                 and live_value_override > 0)
+    if _con_vivo:
         latest_value = live_value_override
         latest_date = _iso_today()
     else:
@@ -36939,8 +37003,21 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     # aportado", cuya semántica histórica no lo incluye.
     _latest_netdep = None
     if broker_filter == "global":
-        _latest_netdep = float(compute_net_deposited_db(
-            conn, uid, broker_filter="global", include_baseline=True) or 0)
+        # ⚠️ LO APORTADO TIENE QUE SER EL DE LA MISMA PUNTA QUE EL VALOR.
+        # Con valor vivo, la punta es AHORA y lo aportado es el de ahora (la SSoT).
+        # Sin valor vivo (precios caídos, cobertura < 95 %, o un período que no es
+        # el actual) la punta es el ÚLTIMO CIERRE, y restarle lo aportado HOY hacía
+        # que un depósito cargado después de ese cierre saliera como pérdida:
+        # medido en la auditoría del 2026-09-26, 18.050 → 18.300 con un depósito
+        # de 1.000 hecho hoy publicaba "Δ último cierre −750" donde era +250. Es la
+        # misma regla que el motor del frontend (`netDepositedOf(desc[0])` cuando
+        # no hay valor vivo).
+        if _con_vivo:
+            _latest_netdep = float(compute_net_deposited_db(
+                conn, uid, broker_filter="global", include_baseline=True) or 0)
+        elif latest_snap is not None:
+            _nd = float(latest_snap.get("net_deposited") or 0)
+            _latest_netdep = _nd if _nd != 0 else float(latest_snap.get("total_invested") or 0)
     delta_1d = _snapshot_delta(conn, uid, latest_value, latest_date, days=1, latest_netdep=_latest_netdep) if broker_filter == "global" else None
     delta_7d = _snapshot_delta(conn, uid, latest_value, latest_date, days=7, latest_netdep=_latest_netdep) if broker_filter == "global" else None
     delta_30d = _snapshot_delta(conn, uid, latest_value, latest_date, days=30, latest_netdep=_latest_netdep) if broker_filter == "global" else None
@@ -37074,14 +37151,25 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     `latest_netdep` opcional — si no se pasa, asume 0 (mismo en ambos
     lados → equivalente al raw diff legacy).
 
-    Devuelve `prev_date` para que el frontend pueda mostrar "vs vie 15 may".
-    Devuelve None si no hay data.
+    Devuelve `prev_date` para que el frontend pueda mostrar "vs vie 15 may", y
+    `dias`: cuántos días mide DE VERDAD (en el de 1 día puede ser más, si el
+    último cierre es del viernes). Devuelve None si no hay data.
+
+    ⚠️ ES LA VERSIÓN DEL SERVIDOR DEL CHIP "±USD X · ±Y % en <rango>" del
+    Dashboard (`rendimientoDelRango`, frontend/src/utils/evolution.js). Lo leen
+    Reportes (Δ último cierre / 7 / 30 días), el chat (`usd_30d_pct`) y el ✦ del
+    Home de escritorio, y el usuario compara estos números con el chip. Al
+    2026-09-26 difieren en dos puntos con una decisión de producto pendiente: qué
+    hacer con un arranque viejo y si el % de ventanas >1 día es simple o Dietz.
+    Cuando se decida, se mueven LOS DOS juntos; la tabla de casos compartida es
+    backend/tests/fixtures/rendimiento_pantalla.json.
     """
     if latest_value is None or latest_date is None:
         return None
     from datetime import date as _date, timedelta as _td
     try:
-        target = (_date.fromisoformat(latest_date) - _td(days=days)).isoformat()
+        _ultimo = _date.fromisoformat(latest_date)
+        target = (_ultimo - _td(days=days)).isoformat()
     except ValueError:
         return None
     # AUDIT D-1: una fila que el import fabricó al costo no es un cierre, y
@@ -37089,10 +37177,32 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     # variación de N días. Acá aceptamos también las filas legacy sin `source`
     # (INDETERMINADO): este chip no define el número principal de la pantalla, y
     # descartarlas se lo borraría a usuarios con snapshots válidos pero viejos.
-    from reporting.builder import fetch_snapshot_at_or_before
+    from reporting.builder import (fetch_snapshot_at_or_before, _border_is_fresh,
+                                   fetch_first_snapshot_between)
     from twr import MEDICION, INDETERMINADO
-    prev = fetch_snapshot_at_or_before(conn, uid, target,
-                                       accept=(MEDICION, INDETERMINADO))
+    _acepta = (MEDICION, INDETERMINADO)
+    prev = fetch_snapshot_at_or_before(conn, uid, target, accept=_acepta)
+    # ⚠️ LA BASE DE UNA VENTANA DE N DÍAS ES LA DEL CHIP (`rendimientoDelRango`).
+    # `fetch_snapshot_at_or_before` da el último cierre ANTERIOR al arranque por
+    # viejo que sea: con el cron cortado dos meses, "Δ 30 días" medía noventa sin
+    # decirlo, y el chat se los citaba como "tus últimos 30 días". La regla del
+    # chip (publicada 2026-09-26, dc01e9bd), idéntica acá:
+    #   · el cierre anterior al primer día de la ventana, si está a ≤ 5 días;
+    #   · si no, el cierre MÁS CERCANO a ese día, antes o después (empate: el de
+    #     antes), y `desde` trae su fecha para que quien lo muestre la diga.
+    # Nunca da None por antigüedad: lo que no se permite es un rótulo que no sea
+    # el período medido. El de UN día es la card "Hoy": el último cierre, por viejo
+    # que sea, y `dias` dice cuántos mide.
+    desde = None
+    if days > 1:
+        _inicio = (_ultimo - _td(days=days - 1)).isoformat()
+        if not (prev and _border_is_fresh(prev.get("date"), _inicio)):
+            _adentro = fetch_first_snapshot_between(conn, uid, _inicio, latest_date, _acepta)
+            _dist = lambda r: abs((_date.fromisoformat(_inicio)
+                                   - _date.fromisoformat(str(r["date"])[:10])).days)
+            _cands = sorted((r for r in (prev, _adentro) if r), key=_dist)  # estable
+            prev = _cands[0] if _cands else None
+            desde = str(prev["date"])[:10] if prev else None
     if not prev or prev.get("total_value") is None:
         return None
     prev_v = float(prev["total_value"])
@@ -37151,11 +37261,26 @@ def _snapshot_delta(conn, uid: int, latest_value: Optional[float],
     except Exception:
         log.exception("_snapshot_delta leg_dudoso uid=%s", uid)
 
-    # Pct sobre el VALOR base (no Total Return — ese podría ser 0 o negativo).
+    # El % de una ventana de más de un día va con DIETZ, como el chip y como
+    # Reportes: `usd / (valor_inicio + ½·aportes)`. Sobre el valor inicial solo,
+    # la plata que entró en el medio inflaba el % (+111 % al lado de "Ganancia
+    # total +11 %", medido en el audit del chip). El de un día divide por el cierre
+    # anterior, igual que la card "Hoy". Denominador ≤ 0: no hay %, no es "0 %".
+    _denom = prev_v + 0.5 * flows if days > 1 else prev_v
+    if not _denom > 0:
+        return None
+    try:
+        _dias = max(1, (_ultimo - _date.fromisoformat(str(prev["date"])[:10])).days)
+    except (TypeError, ValueError):
+        _dias = None
     return {
         "usd": round(delta_usd, 2),
-        "pct": round((delta_usd / prev_v) * 100, 2),
+        "pct": round((delta_usd / _denom) * 100, 2),
         "prev_date": prev["date"],
+        "dias": _dias,
+        # La fecha a rotular cuando la base NO es el cierre pegado al arranque
+        # (None = la ventana nominal es exacta). Misma semántica que el chip.
+        "desde": desde,
         "flows": round(flows, 2),  # útil para tooltip "incluyó +$X aportes"
     }
 
@@ -37290,6 +37415,54 @@ def _live_valuation_rate(conn, uid: int) -> float:
         return _user_tc_blue(conn, uid)
 
 
+def _valor_vivo_mercado(conn, uid: int) -> Optional[float]:
+    """El valor de la cartera AHORA, para medir un rendimiento contra las fotos
+    guardadas. `None` si no se puede afirmar (sin posiciones, precios caídos o
+    cobertura < 95 %): el llamador cae al último cierre.
+
+    Es exactamente el de Reportes —`compute_live_portfolio_value` al dólar de
+    `_live_valuation_rate`, con su caché de 60 s— y NO la valuación del chat
+    (`_valuate_positions_for_chat`), aunque ésa ya esté calculada: la del chat
+    no tiene el piso de cobertura ni el último precio conocido, así que con un
+    precio caído deja esa posición al costo, y restada contra un cierre a
+    mercado eso se publica como pérdida del período (AUDIT M-11). Y pasa a
+    dólares con el `tc_blue` guardado en la config y no con el del día: la
+    diferencia de tipos de cambio que AUDIT H-9 vio publicada como "Hoy −11,7 %"
+    con la cartera quieta.
+
+    Lo que SÍ reusa de la valuación del chat son las COTIZACIONES (`_CHAT_PRECIOS`,
+    60 s): son las mismas y se acaban de bajar. Sin eso, el primer mensaje de
+    cada minuto bajaba precios dos veces antes de que Rendi empezara a hablar.
+    """
+    try:
+        # Sin posiciones no hay nada que valuar, y el dólar del día puede salir a
+        # buscarse afuera: no se paga esa consulta para devolver None igual.
+        if conn.execute("SELECT 1 FROM positions WHERE user_id=? LIMIT 1",
+                        (uid,)).fetchone() is None:
+            return None
+        import time as _time
+        _ya = _CHAT_PRECIOS.get(uid)
+        _precios = (_ya[1] if _ya and (_time.time() - _ya[0]) < _CHAT_VAL_TTL_SEC
+                    else None)
+        # ⚠️ EN UNA CONEXIÓN PROPIA, QUE GUARDA Y SE CIERRA ACÁ. El cálculo ESCRIBE
+        # (`apply_last_known_prices` guarda los "últimos precios conocidos") y no
+        # hace commit: sobre la conexión del llamador, esa escritura dejaba la base
+        # tomada para escribir hasta que el llamador cerrara — en el ✦ del Home,
+        # con consultas de cotizaciones por internet en el medio. Mientras tanto,
+        # cualquier otro que escribiera esperaba o recibía "database is locked".
+        _c = get_db()
+        try:
+            lv = compute_live_portfolio_value(_c, uid, _live_valuation_rate(_c, uid),
+                                              CRYPTO_YF, precios=_precios)
+            _c.commit()
+        finally:
+            _c.close()
+    except Exception as ex:
+        log.warning("valor vivo para rendimiento falló uid=%s: %s", uid, ex)
+        return None
+    return lv if (lv is not None and lv > 0) else None
+
+
 # Helper canónico para convertir gross_amount → USD vive en
 # `backend/importing/pipeline.py:_stamp_gross_amount_usd` (Fase 4). NO se
 # replica acá para evitar drift de mantenimiento. Si main.py necesita la
@@ -37336,7 +37509,7 @@ def reports_timeline(
         live_value = None
         if broker == "global":
             try:
-                live_value = compute_live_portfolio_value(conn, uid, tc_blue, CRYPTO_YF)
+                live_value = _valor_vivo_mercado(conn, uid)
             except Exception:
                 live_value = None
             if not live_value or live_value <= 0:
@@ -37423,7 +37596,7 @@ def reports_years(
         if broker == "global":
             live_value = _latest_snapshot_value(conn, uid)
             try:
-                lv = compute_live_portfolio_value(conn, uid, tc_blue, CRYPTO_YF)
+                lv = _valor_vivo_mercado(conn, uid)
                 if lv is not None and lv > 0:
                     live_value = lv
             except Exception:
@@ -37617,7 +37790,7 @@ def reports_period_detail(
                 is_current_period_for_live = True
             if is_current_period_for_live:
                 try:
-                    lv = compute_live_portfolio_value(conn, uid, tc_blue, CRYPTO_YF)
+                    lv = _valor_vivo_mercado(conn, uid)
                     if lv is not None and lv > 0:
                         live_value = lv
                 except Exception:

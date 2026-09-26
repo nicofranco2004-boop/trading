@@ -40,6 +40,7 @@ import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDon
 import { computeClassBreakdown } from '../utils/assetClass'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
+import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { applyMtmToMonthly } from '../utils/insightsModel'
@@ -798,7 +799,17 @@ function PersonalDashboard() {
             {/* Analizar — abre el drawer con análisis IA contextual */}
             <AnalyzeButton
               screen="dashboard"
-              params={{ period: '30d' }}
+              // Las cifras de rendimiento que esta pantalla tiene a la vista, tal
+              // cual las calculó: sin esto el análisis usaba un "30 días" propio
+              // que no era el de ninguna card. Ver utils/rendimientoAi.js.
+              params={{
+                period: '30d',
+                hoy: rendimientoParaIa(dailyVar),
+                este_mes: rendimientoParaIa(monthlyVar),
+                rango: range,
+                rendimiento: rendimientoParaIa(periodChange),
+                moneda: currency,
+              }}
               subtitle="Estado de tu cartera"
             />
             {/* Export consolidado: todos los movimientos (compras, ventas,
@@ -1133,7 +1144,12 @@ function PersonalDashboard() {
         // Los días salen de RANGES, la misma tabla que usa la curva. La cadena
         // de ternarios que había acá no conocía '1D' ni '1W' (y preguntaba por un
         // '3M' que no existe): con 1D o 1S elegido, la IA recibía 5 años.
-        params={{ period_days: rangeDays ?? 1825 }}
+        //
+        // Y el rendimiento viaja CALCULADO: es el mismo objeto que dibuja el chip
+        // (null cuando no muestra número). El servidor lo sacaba restando la
+        // curva a secas, y con un depósito en el medio del mes la IA decía
+        // "+83 %" al lado de un chip que decía "+1,4 %".
+        params={{ period_days: rangeDays ?? 1825, rango: range, rendimiento: rendimientoParaIa(periodChange), moneda: currency }}
         className="mb-8"
         rounded={false}
       >
