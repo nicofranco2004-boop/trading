@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { isBondTicker } from './tickers'
 import { claveSemanaISO } from './semanas'
-import { hoyISO } from './fecha'
+import { hoyISO, fechaISO } from './fecha'
 import { pctTxt } from './format'
 
 // Cuando la URL tiene `?demo=1`, AuthContext setea un user demo y este módulo
@@ -75,7 +75,37 @@ export function isDemoMode() {
   // respuesta correcta cuando no se puede saber: es lo que pasa siempre salvo
   // que alguien haya entrado por el link de la demo.
   try {
-    return localStorage.getItem(DEMO_FLAG_KEY) === '1'
+    // La marca guarda CUÁNDO se activó (ver `demoVencido`); el `'1'` viejo también
+    // cuenta hasta que `vencerDemoSiCorresponde` lo limpie al abrir la app.
+    return !!localStorage.getItem(DEMO_FLAG_KEY)
+  } catch {
+    return false
+  }
+}
+
+// ⚠️ EL MODO DEMO VENCE. Antes la marca quedaba para siempre: quien probó el
+// demo y volvía otro día a rendi.finance no veía la portada ni podía iniciar
+// sesión — veía el demo otra vez, y la única salida era "Crear cuenta"
+// (verificado en producción el 2026-09-25). Ahora la marca guarda CUÁNDO se
+// activó y se evalúa UNA vez, al abrir la app (`AuthContext`): así nunca se
+// corta en medio de una visita.
+export const DEMO_DURA_MS = 12 * 60 * 60 * 1000
+
+/** ¿La marca de demo guardada es vieja? `'1'` es el formato anterior, sin fecha. */
+export function demoVencido(valor, ahora = Date.now()) {
+  if (!valor) return false
+  const desde = Number(valor)
+  return !(desde > 1) || ahora - desde > DEMO_DURA_MS
+}
+
+/** Al abrir la app: si la marca venció, se sale del demo. Devuelve si salió. */
+export function vencerDemoSiCorresponde() {
+  if (typeof window === 'undefined') return false
+  try {
+    if (!demoVencido(localStorage.getItem(DEMO_FLAG_KEY))) return false
+    localStorage.removeItem(DEMO_FLAG_KEY)
+    clearDemoOverlay()
+    return true
   } catch {
     return false
   }
@@ -83,7 +113,7 @@ export function isDemoMode() {
 
 export function enableDemoMode() {
   if (typeof window === 'undefined') return
-  localStorage.setItem(DEMO_FLAG_KEY, '1')
+  localStorage.setItem(DEMO_FLAG_KEY, String(Date.now()))
   // Limpiamos cualquier overlay residual al activar — siempre arranca limpio.
   clearDemoOverlay()
 }
@@ -271,7 +301,11 @@ const BROKER_WEIGHTS = (() => {
 
 const MONTHLY = (() => {
   const out = []
-  const start = new Date('2024-04-01')
+  // Fecha LOCAL, no `new Date('2024-04-01')`: ese string se lee como medianoche
+  // UTC, que en Argentina es el 31 de marzo a las 21:00. La serie arrancaba en
+  // MARZO y el primer `setMonth(+1)` pedía el 31 de abril → 1° de mayo: abril de
+  // 2024 no existía en la demo.
+  const start = new Date(2024, 3, 1)
   const today = new Date()
   let valuation = 18500           // valor de mercado al inicio
   while (start < today) {
@@ -283,7 +317,12 @@ const MONTHLY = (() => {
     const withdrawal = 0
     // Rendimiento del mes: 1.2% mean ± 3% noise. Realista para retail diversificado.
     const monthReturn = 0.012 + (Math.random() - 0.5) * 0.06
-    const pnlTotal = capInicio * monthReturn
+    // ⚠️ EL MES EN CURSO RINDE SÓLO LO TRANSCURRIDO. Con el mes entero, el día 1
+    // "Hoy" y el chip de 1D publicaban el mes completo en un solo día (+3,9 % un
+    // 1° de junio a las 10 de la mañana, antes de que abra el mercado).
+    const esMesEnCurso = y === today.getFullYear() && m === today.getMonth() + 1
+    const transcurrido = esMesEnCurso ? today.getDate() / new Date(y, m, 0).getDate() : 1
+    const pnlTotal = capInicio * monthReturn * transcurrido
     // Split realized / unrealized — la mayoría es unrealized (mark-to-market).
     const pnlRealized = Math.round(pnlTotal * 0.2 + (Math.random() - 0.5) * 200)
     const pnlUnrealized = Math.round(pnlTotal - pnlRealized)
@@ -345,8 +384,16 @@ const MONTHLY = (() => {
   return out
 })()
 
-const MONTHLY_LAST_VALUATION = MONTHLY.length
-  ? MONTHLY[MONTHLY.length - 1].capital_final
+// ⚠️ LA ÚLTIMA FILA DEL TOTAL, NO LA ÚLTIMA FILA. Desde f3dcb3b0 (2026-05-14)
+// `MONTHLY` trae por mes una fila 'global' y después una por broker (Schwab,
+// Cocos, Binance), así que `MONTHLY[MONTHLY.length - 1]` es BINANCE. Esta línea
+// se escribió 5 minutos antes que esas filas y nadie la volvió a mirar: durante
+// cuatro meses la "foto de hoy" del demo valió el saldo de Binance (US$ 14.517)
+// y el chip del gráfico publicó "−64,9 % en el mes" — la parte de Binance menos
+// uno — al lado de una cartera de US$ 41.400 que ganaba.
+const _ULTIMO_GLOBAL = [...MONTHLY].reverse().find(m => m.broker === 'global')
+const MONTHLY_LAST_VALUATION = _ULTIMO_GLOBAL
+  ? _ULTIMO_GLOBAL.capital_final
   : 18500
 
 // ─── Reports timeline derivada de MONTHLY ───────────────────────────────────
@@ -708,9 +755,12 @@ function buildDemoPeriodReport(periodType, periodKey) {
 function _demoPortfolioSnapshot() {
   // Capital aportado: baseline + deposits acumulados, capado a 85% del valor
   // actual para que el ratio "retorno acumulado" sea positivo en demo.
+  // Sólo las filas 'global': recorrer MONTHLY entero sumaba los aportes del total
+  // Y los de cada broker — el mismo aporte casi dos veces (ver MONTHLY_LAST_VALUATION).
+  const globals = MONTHLY.filter(m => m.broker === 'global')
   let deposits = 0
-  for (const m of MONTHLY) deposits += (m.deposits || 0) - (m.withdrawals || 0)
-  const baseline = MONTHLY.length ? MONTHLY[0].capital_inicio : 0
+  for (const m of globals) deposits += (m.deposits || 0) - (m.withdrawals || 0)
+  const baseline = globals.length ? globals[0].capital_inicio : 0
   const rawCum = baseline + deposits
   const cumDeposited = Math.min(rawCum, Math.round(MONTHLY_LAST_VALUATION * 0.85))
 
@@ -728,21 +778,35 @@ function _demoPortfolioSnapshot() {
     // SNAPSHOTS ordenado DESC — find devuelve el primer (más reciente) ≤ target
     const prev = SNAPSHOTS.find(s => s.date <= targetIso)
     if (!prev || !prev.total_value || prev.total_value <= 0) return null
+    // Descontando aportes, como `_snapshot_delta` del backend: la resta de
+    // valores a secas contaba el depósito del mes como ganancia de la semana.
+    const usd = (nowVal - (nowSnap.net_deposited || 0)) - (prev.total_value - (prev.net_deposited || 0))
     return {
-      usd: +(nowVal - prev.total_value).toFixed(2),
-      pct: +(((nowVal - prev.total_value) / prev.total_value) * 100).toFixed(2),
+      usd: +usd.toFixed(2),
+      pct: +((usd / prev.total_value) * 100).toFixed(2),
     }
   }
 
-  // YTD: desde el primer monthly_entry del año actual
+  // YTD: desde el primer monthly_entry del año actual, descontando los aportes
+  // del año y con el mismo denominador que `_ytd_delta` del backend (Dietz). La
+  // resta a secas publicaba "YTD +24,7 %" al lado de "P&L del año +10,9 %" en la
+  // misma tarjeta: la diferencia eran los aportes.
   const curYear = new Date().getFullYear()
-  const firstOfYear = MONTHLY.find(m => m.year === curYear && m.broker === 'global')
-  const ytd = (firstOfYear && firstOfYear.capital_inicio > 0)
-    ? {
-        usd: +(nowVal - firstOfYear.capital_inicio).toFixed(2),
-        pct: +(((nowVal - firstOfYear.capital_inicio) / firstOfYear.capital_inicio) * 100).toFixed(2),
-        since_year: curYear,
-      }
+  const delAnio = globals.filter(m => m.year === curYear)
+  const firstOfYear = delAnio[0]
+  const flujosDelAnio = delAnio.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
+  // Sin base positiva no hay YTD (Reports.jsx hace `ytd.pct.toFixed`: un pct
+  // nulo la rompería; un YTD ausente, no).
+  const baseYtd = firstOfYear ? firstOfYear.capital_inicio + 0.5 * flujosDelAnio : 0
+  const ytd = (firstOfYear && firstOfYear.capital_inicio > 0 && baseYtd > 0)
+    ? (() => {
+        const usd = nowVal - firstOfYear.capital_inicio - flujosDelAnio
+        return {
+          usd: +usd.toFixed(2),
+          pct: +((usd / baseYtd) * 100).toFixed(2),
+          since_year: curYear,
+        }
+      })()
     : null
 
   // Última operación cerrada del demo
@@ -767,19 +831,13 @@ function _demoPortfolioSnapshot() {
 
   return {
     latest_value: nowVal,
-    latest_date: new Date().toISOString().slice(0, 10),
+    latest_date: hoyISO(),
     cum_deposited: cumDeposited,
     positions_count: nonCashPositions.length || 12,
     brokers_count: 3,
-    // delta_1d sintético determinístico — los SNAPSHOTS del demo son
-    // semanales (sin daily real). Usamos un valor estable derivado de
-    // MONTHLY_LAST_VALUATION para que no cambie en cada render.
-    delta_1d: (() => {
-      // Seed basado en el day-of-year para que sea determinístico hoy.
-      const seed = new Date().getDate() + new Date().getMonth() * 31
-      const r = ((seed % 13) - 6) * 0.0008  // -0.48% a +0.48%, paso fijo
-      return { usd: +(nowVal * r).toFixed(2), pct: +(r * 100).toFixed(2) }
-    })(),
+    // Las fotos del demo ahora son diarias: el día sale de la serie, igual que
+    // la semana y el mes (antes era un número sintético porque eran semanales).
+    delta_1d: delta(1),
     delta_7d: delta(7),
     delta_30d: delta(30),
     ytd,
@@ -1717,12 +1775,19 @@ const DEMO_CAGR = (() => {
   return { cagr: +(cagr * 100).toFixed(2), months: monthsCount }
 })()
 
-// Snapshots semanales DERIVADOS del MONTHLY para que ambos cuenten la misma
-// historia. Interpolamos linealmente entre capital_inicio y capital_final
-// de cada mes para producir snapshots semanales coherentes.
+// Fotos diarias DERIVADAS del MONTHLY para que ambos cuenten la misma historia:
+// un cierre por día, como el que escribe el cron en producción, y el último día
+// de cada mes ES su capital_final.
 //
-// Esto evita la inconsistencia del bug previo donde snapshots y monthly se
-// generaban independientes y los flujos del TWR no cerraban.
+// ⚠️ UN CIERRE POR DÍA, NO UNO POR SEMANA. Con los 1/8/15/22 de antes el cierre
+// anterior al 1° de mes quedaba siempre a 7-10 días, más que los 5 que tolera
+// `esBordeFresco`: "Este mes" no tenía número NUNCA en la demo y "Hoy" decía
+// "Últimos 3 días". Una demo que no puede mostrar lo que ve un usuario con el
+// cron andando no demuestra nada.
+//
+// Las filas llevan `clase`/`base`/`apto`/`sintetico` con los valores EXACTOS que
+// devuelve GET /api/snapshots (twr.clasificar_serie + twr.es_apto), para que la
+// pantalla recorra en la demo los mismos guards que en producción.
 const SNAPSHOTS = (() => {
   // Solo entries "global" — `MONTHLY` también contiene desagregados por
   // broker (Schwab/Cocos/Binance), iterar sobre todos produce un zigzag
@@ -1730,35 +1795,44 @@ const SNAPSHOTS = (() => {
   // global ~$30k) se alternan en la serie temporal.
   const globals = MONTHLY.filter(m => m.broker === 'global')
   if (globals.length === 0) return []
+  const hoy = hoyISO()
+  const [hoyY, hoyM, hoyD] = hoy.split('-').map(Number)
+  const medicion = { clase: 'medicion', base: 'mercado', apto: true, sintetico: false }
   const out = []
-  let cumDeposits = globals[0].capital_inicio
+  let aportado = globals[0].capital_inicio
   for (const m of globals) {
-    const capStart = m.capital_inicio
-    const capEnd = m.capital_final
-    // 4 snapshots por mes (~semanal). Interpolación lineal con noise.
-    for (let w = 0; w < 4; w++) {
-      const frac = w / 4
-      const valueT = capStart + (capEnd - capStart) * frac + (Math.random() - 0.5) * 200
-      const d = new Date(m.year, m.month - 1, 1 + w * 7)
+    const flujo = (m.deposits || 0) - (m.withdrawals || 0)
+    // El aporte entra el día 1 y mueve valor y aportado JUNTOS: la ganancia
+    // (valor − aportado) no pega un escalón que no existió.
+    aportado += flujo
+    const resultado = m.capital_final - m.capital_inicio - flujo
+    const diasDelMes = new Date(m.year, m.month, 0).getDate()
+    // El mes en curso llega a su capital_final HOY (el valor vivo), no a fin de mes.
+    const tramo = (m.year === hoyY && m.month === hoyM) ? hoyD : diasDelMes
+    for (let dia = 1; dia <= diasDelMes; dia++) {
+      const fecha = fechaISO(new Date(m.year, m.month - 1, dia))
+      if (fecha >= hoy) break
+      // Ruido de ±0,25 % aprox. que se anula en el cierre de mes.
+      const ruido = dia === diasDelMes ? 0 : (Math.random() - 0.5) * 200
+      const valor = m.capital_inicio + flujo + resultado * (dia / tramo) + ruido
       out.push({
-        date: d.toISOString().slice(0, 10),
-        total_value: Math.round(valueT * 100) / 100,
-        total_invested: Math.round(cumDeposits * 0.95 * 100) / 100,
-        net_deposited: Math.round(cumDeposits * 100) / 100,
+        date: fecha,
+        total_value: Math.round(valor * 100) / 100,
+        total_invested: Math.round(aportado * 0.95 * 100) / 100,
+        net_deposited: Math.round(aportado * 100) / 100,
+        ...medicion,
       })
-      // Aporte llega aprox la semana 2 del mes
-      if (w === 1 && m.deposits) {
-        cumDeposits += m.deposits
-      }
     }
   }
-  // Snapshot del día actual con valuation final
-  const today = new Date()
+  // La foto de hoy: la que el Dashboard escribe en la primera visita del día. En
+  // producción es INTRADIA (media rueda: sostiene la línea, nunca abre ni cierra
+  // un período) y la pantalla la reemplaza por el valor vivo.
   out.push({
-    date: today.toISOString().slice(0, 10),
+    date: hoy,
     total_value: Math.round(MONTHLY_LAST_VALUATION * 100) / 100,
-    total_invested: Math.round(cumDeposits * 0.95 * 100) / 100,
-    net_deposited: Math.round(cumDeposits * 100) / 100,
+    total_invested: Math.round(aportado * 0.95 * 100) / 100,
+    net_deposited: Math.round(aportado * 100) / 100,
+    clase: 'intradia', base: 'mercado', apto: false, sintetico: true,
   })
   return out.sort((a, b) => b.date.localeCompare(a.date))
 })()
@@ -3088,6 +3162,24 @@ export function handleDemoRequest(method, path, body) {
     // que todavía no tiene cuenta, y le estábamos diciendo que no podemos medir.
     // El año se arma con `buildDemoPeriodReport`, que ya existía para la pestaña
     // Año — no hay un segundo generador.
+    // ⚠️ ESTOS ONCE SE ESCAPABAN AL BACKEND REAL (medido 2026-09-25 recorriendo
+    // todas las pantallas del demo). A un visitante sin sesión le volvía un 401:
+    // Movimientos mostraba "Unauthorized" y Alertas "No pudimos leer tu
+    // configuración". A uno CON sesión real le volvían SUS datos: sus
+    // movimientos y sus plazos fijos sumados al total del demo. Ahora el demo
+    // contesta todo y `api.js` no deja salir nada que no conozca.
+    if (basePath === '/movements')              return _demoMovimientos()
+    if (basePath === '/plazos-fijos')           return []
+    if (basePath === '/futures')                return []
+    if (basePath === '/bonds/cashflow/skips')   return []
+    if (basePath === '/positions/split-check')  return { suggestions: [] }
+    if (basePath === '/sections/archived')      return { archived: [] }
+    if (basePath === '/market-brief/prefs')     return { enabled: false }
+    if (basePath === '/me/advisor')             return { advisors: [], requests: [] }
+    if (basePath === '/wallbit/status')         return { connected: false }
+    if (basePath === '/advisor/alerts')         return { history: [] }
+    if (basePath === '/fx-rates')               return _demoFxRates()
+
     if (basePath === '/reports/years') {
       const años = [...new Set(REPORTS_TIMELINE.map(r => parseInt(r.period_key.slice(0, 4), 10)))]
         .sort((a, b) => b - a)
@@ -3152,6 +3244,16 @@ export function handleDemoRequest(method, path, body) {
   //   - posiciones (agregar manual)
   // El resto devuelve { __demoBlocked: true } para que api.js lance un Error
   // con mensaje claro y el componente lo muestre como toast/error inline.
+
+  // ⚠️ LO QUE EL VISITANTE GUARDA A MANO SE BLOQUEA, NO SE "APRUEBA" EN SILENCIO.
+  // El `{ ok: true }` del final contestaba "listo" a 95 escrituras: registrar un
+  // depósito, crear una alerta, un objetivo o un plazo fijo, conectar Wallbit…
+  // La pantalla decía "Listo" y al recargar no había nada. Y "Suscribirme" en
+  // Planes terminaba en "No pudimos generar el checkout". Se bloquea con el
+  // mismo mensaje que ya usan vender o importar: "creá una cuenta".
+  // Quedan en silencio sólo las escrituras de FONDO, que nadie pidió a mano
+  // (la foto del día, el no realizado, la telemetría, "marcar visto").
+  if (_esEscrituraDelVisitante(method, basePath)) return blocked()
 
   // ── Snapshots: silenciar (no falla pero tampoco persistimos)
   if (method === 'POST' && basePath === '/snapshots') return { ok: true }
@@ -3341,6 +3443,81 @@ export function handleDemoRequest(method, path, body) {
 
   // Default: 200 ok silencioso para no romper handlers no mapeados
   return { ok: true }
+}
+
+// ─── Escrituras del visitante (se bloquean) ──────────────────────────────────
+// Las de FONDO siguen en silencio: nadie las pidió a mano y un error ahí sólo
+// sería ruido (la foto diaria, el no realizado del mes, telemetría, "visto").
+const _ESCRITURAS_DE_FONDO = new Set([
+  'POST /snapshots',
+  'POST /monthly/sync-unrealized',
+  'POST /plan/track',
+  'POST /alerts/events/seen',
+  'POST /advisor/alerts/events/seen',
+  'POST /auth/logout',
+  'POST /feedback/recommendation',
+])
+const _BASES_DEL_VISITANTE = [
+  '/cash', '/monthly', '/positions/group', '/conversions', '/bonds/cashflow',
+  '/goals', '/wallbit', '/plazos-fijos', '/futures', '/alerts', '/movements',
+  '/me', '/market-brief', '/assets', '/sections', '/billing', '/iol',
+  '/advisor', '/admin', '/push', '/auth/investor-profile', '/ai/voz',
+]
+function _esEscrituraDelVisitante(method, path) {
+  if (method === 'GET') return false
+  if (_ESCRITURAS_DE_FONDO.has(`${method} ${path}`)) return false
+  if (/^\/positions\/[^/]+\/adjust-ratio$/.test(path)) return true
+  return _BASES_DEL_VISITANTE.some(b => path === b || path.startsWith(b + '/'))
+}
+
+// ─── /movements del demo ─────────────────────────────────────────────────────
+// Misma forma que `_build_movements` del backend (main.py): aportes, compras de
+// las posiciones abiertas y ventas cerradas con su P&L. Sale de los MISMOS
+// fixtures que el resto de las pantallas, así que Movimientos cuenta la misma
+// historia que el Dashboard.
+function _demoMovimientos() {
+  const pad = (n) => String(n).padStart(2, '0')
+  const blueEn = (fecha) => BENCHMARKS.dolar_blue?.[String(fecha).slice(0, 7)] || _DEMO_TC_BLUE
+  const base = { kind: 'movement', fees_usd: 0, notes: '', source: 'manual' }
+  const filas = []
+  const globals = MONTHLY.filter(m => m.broker === 'global')
+  globals.forEach((m, i) => {
+    const fecha = `${m.year}-${pad(m.month)}-01`
+    if (i === 0 && m.capital_inicio > 0) {
+      filas.push({ ...base, id: 'demo-dep-inicial', date: fecha, type: 'DEPOSIT', broker: 'Schwab', asset: '',
+        quantity: null, unit_price: null, amount_usd: m.capital_inicio, currency: 'USD', notes: 'Capital inicial' })
+    }
+    if ((m.deposits || 0) > 0) {
+      filas.push({ ...base, id: `demo-dep-${m.year}-${m.month}`, date: fecha, type: 'DEPOSIT', broker: 'Schwab', asset: '',
+        quantity: null, unit_price: null, amount_usd: m.deposits, currency: 'USD', notes: 'Aporte' })
+    }
+  })
+  for (const p of POSITIONS) {
+    if (p.is_cash || !p.entry_date) continue
+    const enPesos = p.broker === 'Cocos'
+    filas.push({ ...base, id: `demo-pos-${p.id}`, date: p.entry_date, type: 'BUY', broker: p.broker, asset: p.asset,
+      quantity: p.quantity, unit_price: p.buy_price, currency: enPesos ? 'ARS' : 'USD',
+      amount_usd: enPesos ? p.invested / (p.tc_compra || blueEn(p.entry_date)) : p.invested })
+  }
+  for (const o of OPERATIONS) {
+    const enPesos = o.broker === 'Cocos'
+    const bruto = o.exit_price * o.quantity
+    filas.push({ ...base, id: `demo-op-${o.id}`, date: o.date, type: 'SELL', broker: o.broker, asset: o.asset,
+      quantity: o.quantity, unit_price: o.exit_price, currency: enPesos ? 'ARS' : 'USD',
+      amount_usd: enPesos ? bruto / blueEn(o.date) : bruto, pnl_usd: o.pnl_usd })
+  }
+  return filas.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+}
+
+// ─── /fx-rates del demo ──────────────────────────────────────────────────────
+// La historia del dólar que usa la vista en pesos para convertir cada fecha con
+// SU cotización. Sale de la misma serie blue de los benchmarks del demo.
+function _demoFxRates() {
+  const mepSobreBlue = (DOLAR.mep.venta || 1424) / (DOLAR.blue.venta || 1415)
+  const filas = Object.entries(BENCHMARKS.dolar_blue || {})
+    .map(([mes, blue]) => ({ date: `${mes}-01`, blue, mep: Math.round(blue * mepSobreBlue) }))
+  filas.push({ date: hoyISO(), blue: DOLAR.blue.venta, mep: DOLAR.mep.venta })
+  return filas.sort((a, b) => (a.date < b.date ? -1 : 1))
 }
 
 // ─── Heatmap mock builder ────────────────────────────────────────────────────

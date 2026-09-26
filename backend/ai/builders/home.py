@@ -4,7 +4,8 @@ Topic: home
 
 El Home es la primera vista cuando entrás. Mezcla 3 dimensiones:
 - Estado de mercado (índices del día — SPY/NDX/blue/etc.).
-- Estado del portfolio del user (delta del día via snapshots).
+- Cómo viene la cartera: el MISMO número que muestra la pantalla (ver
+  `_resultado_de_la_cartera`; este builder no resta fotos).
 - Cards de "lo que te afecta hoy" (holdings que se movieron, eventos
   próximos en tus tickers).
 
@@ -19,10 +20,12 @@ Shape (~1KB):
     "indices": [{ "symbol": str, "kind": str, "change_pct": float | null }],
     "summary": "mostly_up" | "mostly_down" | "mixed" | "flat",
   },
-  "portfolio_today": {
-    "total_value_usd": float | null,
-    "delta_pct_today": float | null,
-    "delta_usd_today": float | null,
+  "portfolio_today": {                  # ver `_resultado_de_la_cartera`
+    "origen": "pantalla" | "servidor",
+    "hoy": {resultado_usd, resultado_pct, desde, dias, ...} | null,
+    "este_mes": {...} | null,           # sólo cuando lo manda la pantalla
+    "ultimos_30_dias": {...} | null,
+    "nota": str,
   },
   "personal_cards_count": int,         # cuántas cards condicionales aparecen
   "portfolio_events_window": {
@@ -36,8 +39,98 @@ Shape (~1KB):
 }
 """
 from __future__ import annotations
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import date, timedelta
+
+from . import rendimiento_pantalla
+
+# Lo que manda el home del CELULAR (HomeMobile.jsx): las tres cards que muestra,
+# "P&L Día", "P&L Mes" y "Últimos 30 días", con la forma de `rendimiento_pantalla`.
+_CLAVES_PANTALLA = ("hoy", "mes", "ultimos_30_dias")
+
+# Un número llamado "hoy" puede cubrir varios días (después de un fin de semana
+# la card dice "P&L 3d"), y "30 días" puede medir desde otra fecha si faltan
+# cierres. El modelo tiene que decir lo mismo que la pantalla, con la fecha.
+_NOTA_DIAS = ("`dias` y `desde` dicen qué tramo cubre cada número: si no coinciden con "
+              "el nombre (un 'hoy' de 3 días, unos '30 días' que arrancan en otra "
+              "fecha), decí desde qué fecha mide. `hasta` es la fecha del final: si "
+              "no es hoy, el número no incluye el movimiento de hoy.")
+
+
+def _resultado_de_la_cartera(conn, uid: int, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Cómo viene la cartera — con UN solo dueño por número, y el paquete dice cuál.
+
+    ⚠️ ACÁ HABÍA UNA RESTA A SECAS: el último cierre menos el anterior. Un
+    depósito de ayer salía como ganancia de hoy; si los dos últimos cierres eran
+    de hace dos semanas, esa resta igual se llamaba "hoy"; y terminaba en el
+    cierre de anoche, no en la cartera de ahora. La card "P&L Día" del mismo home
+    descuenta los aportes y mide hasta el valor vivo, así que la IA contradecía a
+    la pantalla desde la que la llamaron.
+
+      · "pantalla" — el home del CELULAR muestra las tres cards y las manda tal
+        cual (ver `rendimiento_pantalla.py`). Si una card dice "—", la IA recibe
+        null para esa: no se completa con otra cuenta.
+      · "servidor" — el home de ESCRITORIO no muestra ningún número de la
+        cartera, y la pregunta del botón es "¿Cómo vengo hoy?". Se usa el de
+        Reportes: `_snapshot_delta` hasta el valor vivo de `_valor_vivo_mercado`,
+        la misma regla que la card "Hoy" del Dashboard. No es una cuenta nueva:
+        es la que ya publica otra pantalla.
+    """
+    if any(k in params for k in _CLAVES_PANTALLA):
+        out = {
+            "origen": "pantalla",
+            "hoy": rendimiento_pantalla.leer(params.get("hoy")),
+            "este_mes": rendimiento_pantalla.leer(params.get("mes")),
+            "ultimos_30_dias": rendimiento_pantalla.leer(params.get("ultimos_30_dias")),
+            "nota": ("Son los números que el usuario tiene en pantalla: citá esos. "
+                     "null = esa card no muestra número; decilo así, no lo calcules. "
+                     + _NOTA_DIAS),
+        }
+        _moneda = rendimiento_pantalla.nota_moneda(params)
+        if _moneda:
+            out["nota_moneda"] = _moneda
+        return out
+    try:
+        import main as _m
+        s = _m._portfolio_snapshot_summary(
+            conn, uid, broker_filter="global",
+            live_value_override=_m._valor_vivo_mercado(conn, uid)) or {}
+    except Exception:
+        s = {}
+    _hasta = s.get("latest_date")
+    return {
+        "origen": "servidor",
+        "hoy": _de_reportes(s.get("delta_1d"), _hasta),
+        "este_mes": None,
+        "ultimos_30_dias": _de_reportes(s.get("delta_30d"), _hasta),
+        "nota": ("Esta pantalla no muestra números de la cartera: son los de Reportes "
+                 "(Δ último cierre y Δ 30 días), con la misma regla que la card 'Hoy' "
+                 "del Dashboard. null = no hay un cierre medido con qué comparar. "
+                 + _NOTA_DIAS),
+    }
+
+
+def _de_reportes(d, hasta=None) -> Optional[Dict[str, Any]]:
+    """Un Δ de `_snapshot_delta`, con la misma forma que los de la pantalla.
+    (`pct` ya viene en porcentaje; `flows` son los aportes netos del tramo.)
+    `hasta` es la punta: hoy con valor vivo, o el último cierre si faltaron los
+    precios — y en ese caso el número no es el de hoy, y el modelo lo tiene que
+    saber para no llamarlo así."""
+    if not isinstance(d, dict) or d.get("usd") is None or d.get("pct") is None:
+        return None
+    out: Dict[str, Any] = {"resultado_usd": round(float(d["usd"]), 2),
+                           "resultado_pct": round(float(d["pct"]), 2)}
+    if d.get("prev_date"):
+        out["desde"] = str(d["prev_date"])[:10]
+    if d.get("dias"):
+        out["dias"] = int(d["dias"])
+    if d.get("flows") is not None:
+        out["aportes_netos_usd"] = round(float(d["flows"]), 2)
+    if d.get("desde"):
+        out["rotulo_con_fecha"] = True
+    if hasta:
+        out["hasta"] = str(hasta)[:10]
+    return out
 
 
 def _market_summary(indices: List[Dict[str, Any]]) -> str:
@@ -83,34 +176,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "summary": _market_summary(indices_list),
     }
 
-    # ── 2. Portfolio del día via últimos 2 snapshots ─────────────────────────
-    # ⚠️ `snapshots_medibles`, NO `snapshots`. Esta resta es lo PRIMERO que ve el
-    # usuario al abrir la app, y la tabla cruda mezcla mediciones del cron con fotos
-    # que el import FABRICA copiando la cadena contable y con reconstrucciones que
-    # quedaron mayormente al costo. Si las dos puntas caen a distinto lado de ese
-    # borde, la resta no mide el día: mide la brecha entre dos formas de medir.
-    # Medido: publicaba `delta_pct_today = -47,26%` "HOY" para una cartera que no se
-    # había movido — el número exacto del caso 452, en el primer pantallazo.
-    # La vista sólo trae filas `apto=1` (base de mercado Y cierre afirmable), así que
-    # un lector que no sepa nada de esta historia hace lo correcto por default.
-    snaps = conn.execute(
-        """SELECT date, total_value FROM snapshots_medibles
-            WHERE user_id = ? ORDER BY date DESC LIMIT 2""",
-        (user_id,),
-    ).fetchall()
-    portfolio_today: Dict[str, Any] = {
-        "total_value_usd": None,
-        "delta_pct_today": None,
-        "delta_usd_today": None,
-    }
-    if snaps:
-        latest = float(snaps[0]["total_value"] or 0)
-        portfolio_today["total_value_usd"] = round(latest, 2)
-        if len(snaps) >= 2:
-            prev = float(snaps[1]["total_value"] or 0)
-            if prev > 0:
-                portfolio_today["delta_usd_today"] = round(latest - prev, 2)
-                portfolio_today["delta_pct_today"] = round((latest / prev - 1) * 100, 2)
+    # ── 2. Cómo viene la cartera: el número de la pantalla ───────────────────
+    portfolio_today = _resultado_de_la_cartera(conn, user_id, kwargs)
 
     # ── 3. Personal cards count (lo que cambió hoy para el user) ─────────────
     personal_cards_count = 0

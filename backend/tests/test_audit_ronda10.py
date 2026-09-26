@@ -237,6 +237,20 @@ class A3_GoalsCagrTest(_Base):
             self.assertTrue(r.get("cagr") is None or abs(r["cagr"]) < 1.0, r)
 
 
+def _numeros_de(nodo):
+    """Todos los números de un paquete, a cualquier profundidad."""
+    if isinstance(nodo, bool):
+        return
+    if isinstance(nodo, (int, float)):
+        yield nodo
+    elif isinstance(nodo, dict):
+        for x in nodo.values():
+            yield from _numeros_de(x)
+    elif isinstance(nodo, list):
+        for x in nodo:
+            yield from _numeros_de(x)
+
+
 class A4_PacketsDeIATest(_Base):
     def _cartera_452_sin_tramo_medido(self):
         for d in ("2026-06-05", "2026-06-15", "2026-06-25"):
@@ -255,8 +269,16 @@ class A4_PacketsDeIATest(_Base):
         from ai.builders import dashboard_evolution
         self._cartera_452_sin_tramo_medido()
         e = dashboard_evolution.build(self.conn, self.uid)
-        self.assertNotEqual(e.get("delta_pct"), -0.4726)
-        self.assertNotEqual(e.get("value_start"), 139571)
+        # Desde 2026-09-25 el paquete no tiene `delta_pct` ni `value_start` (el
+        # rendimiento lo manda la pantalla): mirar esas claves dejaría el test en
+        # verde sin probar nada. Lo que se cuida es la causa: las fotos al costo
+        # NO entran a la curva. Con una sola medición real no hay curva que
+        # describir, y el paquete lo dice en vez de armarla con la contabilidad.
+        self.assertIsNone(e["curva"], "la curva se armó con las fotos al costo")
+        self.assertTrue(e["insufficient_data"])
+        self.assertIsNone(e["caida_desde_el_mejor_momento_pct"])
+        self.assertNotIn(int(round(self.COSTO)),
+                         [int(x) for x in _numeros_de(e)])
 
 
 class B1_CoberturaOscilanteTest(_Base):

@@ -350,19 +350,8 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
         ).fetchone()
         return dict(row) if row else None
 
-    from twr import (clasificar_serie, primera_fecha_con_posiciones, MEDICION,
-                     bases_de_serie, BASE_MERCADO, VALUADO_A_MERCADO)
+    from twr import MEDICION
     allowed = accept if accept is not None else (MEDICION,)
-    # `mtm_coverage` es la columna más nueva. Pedirla a secas ata este lector a que
-    # la migración de startup ya haya corrido — y un deploy donde el código llega
-    # antes que su columna es exactamente cómo se cayó producción el 2026-08-02.
-    # Sin la columna el clasificador degrada las fotos reconstruidas a contable,
-    # que es el lado seguro del error.
-    _cov = "mtm_coverage" if _tiene_columna(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
-    # `base`/`apto` estampados (ronda 11). Misma defensa que `mtm_coverage`: si la
-    # migración todavía no corrió, se piden como NULL y el clasificador deduce.
-    _bse = "base" if _tiene_columna(conn, "snapshots", "base") else "NULL AS base"
-    _apt = "apto" if _tiene_columna(conn, "snapshots", "apto") else "NULL AS apto"
     # ⚠️ `total_value > 0` TIENE SENTIDO EN LA APERTURA Y NO EN EL CIERRE.
     # Como borde de ARRANQUE, un 0 no sirve: es el denominador del período y
     # dividir por él no da un porcentaje. Pero como borde de CIERRE, una cartera
@@ -377,13 +366,38 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
     # cierre". Son 160 usuarios cuya última fila medida quedaba descartada.
     _pos = " AND total_value > 0" if require_positive else ""
     rows = conn.execute(
-        f"""SELECT date, total_value, total_invested, net_deposited,
-                   fx_to_usd_blue, holdings_json, source, {_cov}, {_bse}, {_apt}
+        f"""SELECT {_columnas_de_borde(conn)}
               FROM snapshots
              WHERE user_id = ? AND date <= ?{_pos}
              ORDER BY date DESC LIMIT ?""",
         (uid, when, _BORDER_SCAN_LIMIT),
     ).fetchall()
+    return _primer_cierre_aceptado(conn, uid, rows, allowed, orden_desc=True)
+
+
+def _columnas_de_borde(conn) -> str:
+    """Las columnas que necesita la clasificación de un borde."""
+    # `mtm_coverage` es la columna más nueva. Pedirla a secas ata este lector a que
+    # la migración de startup ya haya corrido — y un deploy donde el código llega
+    # antes que su columna es exactamente cómo se cayó producción el 2026-08-02.
+    # Sin la columna el clasificador degrada las fotos reconstruidas a contable,
+    # que es el lado seguro del error.
+    _cov = "mtm_coverage" if _tiene_columna(conn, "snapshots", "mtm_coverage") else "NULL AS mtm_coverage"
+    # `base`/`apto` estampados (ronda 11). Misma defensa que `mtm_coverage`: si la
+    # migración todavía no corrió, se piden como NULL y el clasificador deduce.
+    _bse = "base" if _tiene_columna(conn, "snapshots", "base") else "NULL AS base"
+    _apt = "apto" if _tiene_columna(conn, "snapshots", "apto") else "NULL AS apto"
+    return (f"date, total_value, total_invested, net_deposited, fx_to_usd_blue, "
+            f"holdings_json, source, {_cov}, {_bse}, {_apt}")
+
+
+def _primer_cierre_aceptado(conn, uid: int, rows, allowed: tuple,
+                            orden_desc: bool) -> Optional[Dict[str, Any]]:
+    """La primera fila de `rows` (en su orden) que sirve de borde. La regla de
+    "esta fila es una medición" vive SÓLO acá: la usan `fetch_snapshot_at_or_before`
+    (hacia atrás) y `fetch_first_snapshot_between` (hacia adelante)."""
+    from twr import (clasificar_serie, primera_fecha_con_posiciones,
+                     bases_de_serie, BASE_MERCADO, VALUADO_A_MERCADO)
     # ⚠️ POR SERIE, igual que `twr.serie_medible`. Con `clasificar_fila` fila por
     # fila, los dos módulos decidían DISTINTO sobre la misma fila legacy: la
     # cadencia diaria —lo único que distingue una foto vieja del cron de una del
@@ -392,7 +406,7 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
     # anterior a julio-2026 no conseguía NINGÚN borde de período. Si dos módulos
     # deciden distinto qué fila es una medición, uno de los dos está mal.
     primera = primera_fecha_con_posiciones(conn, uid)
-    clases = clasificar_serie(rows, primera, orden_desc=True)
+    clases = clasificar_serie(rows, primera, orden_desc=orden_desc)
     # ⚠️ LA CLASE NO ALCANZA — HACE FALTA LA BASE. Éste era EL bug original, vivo
     # en la pantalla del reclamo original después de nueve rondas: `c in allowed`
     # acepta cualquier fila de clase RECONSTRUIDO, incluida una cuya cobertura es
@@ -415,6 +429,26 @@ def fetch_snapshot_at_or_before(conn, uid: int, when: str,
         if c in allowed and not (c in BASE_MERCADO and b != VALUADO_A_MERCADO):
             return dict(r)
     return None
+
+
+def fetch_first_snapshot_between(conn, uid: int, desde: str, hasta: str,
+                                 accept: tuple) -> Optional[Dict[str, Any]]:
+    """El PRIMER cierre que sirve de borde con `desde <= date < hasta`.
+
+    El espejo hacia adelante de `fetch_snapshot_at_or_before`, con la misma regla
+    de qué fila es una medición (`_primer_cierre_aceptado`). Lo necesita el Δ de
+    N días (`main._snapshot_delta`): cuando no hay un cierre pegado ANTES del
+    arranque, la regla del chip del Dashboard (`rendimientoDelRango`) mide desde
+    el cierre más cercano, antes o después.
+    """
+    rows = conn.execute(
+        f"""SELECT {_columnas_de_borde(conn)}
+              FROM snapshots
+             WHERE user_id = ? AND date >= ? AND date < ? AND total_value > 0
+             ORDER BY date ASC LIMIT ?""",
+        (uid, desde, hasta, _BORDER_SCAN_LIMIT),
+    ).fetchall()
+    return _primer_cierre_aceptado(conn, uid, rows, accept, orden_desc=False)
 
 
 def fetch_latest_measured_snapshot(conn, uid: int,

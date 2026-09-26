@@ -558,8 +558,20 @@ class TestHomeBuilder:
         assert "portfolio_events_window" in p
         assert p["portfolio_events_window"]["total"] == 0
 
-    def test_portfolio_today_computes_delta(self):
-        """Con 2 snapshots consecutivos el builder computa delta_pct/usd."""
+    def test_portfolio_today_trae_los_numeros_de_la_pantalla(self):
+        """⚠️ ESTE TEST AFIRMABA LA RESTA A SECAS, y el builder ya no la hace.
+
+        Antes: dos fotos (10.000 → 10.500) y el paquete decía "+5 % hoy". Esa
+        resta no descontaba aportes (si los 500 eran un depósito, igual eran
+        "+5 %"), terminaba en la foto de anoche y no en la cartera de ahora, y
+        contradecía a la card "P&L Día" de la misma pantalla. Lo que el test
+        cuidaba —que la IA tenga el resultado del día— sigue cuidado, con el
+        número que el usuario ve: el que manda la pantalla.
+
+        El camino SIN número en pantalla (Home de escritorio) usa el motor de
+        Reportes y se prueba con el esquema real en
+        tests/test_ia_mismo_numero_que_la_pantalla.py.
+        """
         conn = _phase3_db()
         conn.execute(
             "INSERT INTO snapshots (user_id, date, total_value) "
@@ -570,11 +582,15 @@ class TestHomeBuilder:
             "VALUES (1, '2026-05-15', 10500)"
         )
         from ai.builders.home import build
-        p = build(conn, 1)
-        assert p["portfolio_today"]["total_value_usd"] == 10500.0
-        # 10500/10000 - 1 = 5%
-        assert p["portfolio_today"]["delta_pct_today"] == 5.0
-        assert p["portfolio_today"]["delta_usd_today"] == 500.0
+        p = build(conn, 1, hoy={"usd": 120.0, "pct": 0.0115, "desde": "2026-05-14",
+                                "dias": 1, "valor_inicio": 10380.0, "aportes": 0.0},
+                  mes=None, ultimos_30_dias=None)
+        pt = p["portfolio_today"]
+        assert pt["origen"] == "pantalla"
+        assert pt["hoy"]["resultado_usd"] == 120.0
+        assert pt["hoy"]["resultado_pct"] == 1.15
+        assert pt["este_mes"] is None          # la card dice "—": la IA también
+        assert "delta_pct_today" not in pt     # la resta de fotos no volvió
 
 
 class TestNewsBuilder:

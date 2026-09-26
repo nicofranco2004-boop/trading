@@ -28,6 +28,14 @@ class ReportsLiveValueMonthTest(unittest.TestCase):
             conn.execute(f"DELETE FROM {t}")
         self.uid = _new_user(conn, f"rep-live-{id(self)}@rendi.test")
         conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (self.uid, "IOL", "ARS"))
+        # Una posición: sin ninguna no hay cartera que valuar, y el valor vivo
+        # corta antes de consultar el dólar del día (`main._valor_vivo_mercado`).
+        # El test simula el valor vivo; lo que no puede simular es una cartera
+        # vacía con valor (antes también daba None: `compute_live_portfolio_value`
+        # sin posiciones no calcula nada).
+        conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash) "
+            "VALUES (?,?,?,?,?,0)", (self.uid, "IOL", "GGAL", 10, 48986.0))
         now = datetime.utcnow()
         self.y, self.m = now.year, now.month
         # Mes en curso: aportó 47.756 sobre un capital inicial de 1.230, pero el

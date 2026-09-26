@@ -1224,6 +1224,7 @@ def compute_live_portfolio_value(
     uid: int,
     tc_blue: float,
     crypto_yf: dict,
+    precios: Optional[dict] = None,
 ) -> Optional[float]:
     """Calcula el total_value LIVE del portfolio sumando positions × precios
     actuales — sin persistir nada. Útil cuando se necesita "valor de hoy"
@@ -1231,6 +1232,12 @@ def compute_live_portfolio_value(
 
     Cachea por 60s para evitar fetches repetidos a yfinance en navegación rápida.
     Devuelve None si no hay positions o falla el fetch de precios.
+
+    `precios`: cotizaciones que el llamador YA bajó hace instantes (el chat las
+    baja para valuar la cartera y medía después los 30 días con otra bajada
+    idéntica, segundos más tarde, antes de empezar a responder). Si vienen, no
+    se vuelven a pedir; las que falten se piden igual, y los guards de abajo
+    —reintento, último precio conocido, cobertura— corren exactamente igual.
     """
     import time as _time
     cache_key = (uid, tc_blue)
@@ -1254,11 +1261,14 @@ def compute_live_portfolio_value(
     if not all_symbols:
         return None
 
-    try:
-        prices = fetch_prices_for_symbols(all_symbols, crypto_yf)
-    except Exception as e:
-        log.warning(f"compute_live_portfolio_value: fetch_prices failed: {e}")
-        return None
+    if precios:
+        prices = {s: precios.get(s) for s in all_symbols}
+    else:
+        try:
+            prices = fetch_prices_for_symbols(all_symbols, crypto_yf)
+        except Exception as e:
+            log.warning(f"compute_live_portfolio_value: fetch_prices failed: {e}")
+            return None
 
     # AUDIT M-11 (variaciones): las MISMAS 3 defensas que el cron. Sin esto, un
     # fetch flaky de yfinance dejaba posiciones a costo EN SILENCIO y Reportes

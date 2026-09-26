@@ -125,12 +125,14 @@ class TestDashboardIntegration:
         conn = _real_db()
         p = build(conn, ADMIN_UID)
         _assert_packet_screen(p, "dashboard.evolution")
-        # Evolution usa `points`, no `series`
+        # La curva (VALOR de la cartera) va separada del rendimiento del rango,
+        # que lo manda la pantalla (2026-09-25): `points`/`peak`/`trough` pasaron
+        # a `curva.puntos`/`valor_maximo`/`valor_minimo`.
         if not p.get("insufficient_data"):
-            _assert_has(p, "points")
-            # Debe tener al menos peak/trough/delta para que el LLM tenga material
-            _assert_has(p, "peak")
-            _assert_has(p, "trough")
+            _assert_has(p["curva"], "puntos")
+            # Debe tener al menos máximo/mínimo para que el LLM tenga material
+            _assert_has(p["curva"], "valor_maximo")
+            _assert_has(p["curva"], "valor_minimo")
 
     def test_dashboard_top_holdings_field_consistency(self):
         """Verifica el fix del bug — clave 'top_holdings' (no 'holdings')."""

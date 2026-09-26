@@ -921,6 +921,28 @@ export function computeBrokerValue(allPositions, prices, broker, tcValuacion, ce
   }
 }
 
+/**
+ * valorAlMep — el valor de las posiciones con la MISMA vara que las fotos
+ * guardadas, para todo lo que se COMPARA contra ellas ("Hoy", "Este mes", el
+ * chip y la punta de la curva).
+ *
+ * Las fotos (`snapshots`) viven al dólar MEP: el cron del backend valúa al MEP y
+ * el Dashboard sólo postea la suya cuando el usuario eligió MEP. Si el usuario
+ * eligió CCL, el título se valúa al CCL (es su preferencia de display), pero
+ * comparar ese valor contra fotos al MEP publica la brecha CCL/MEP como
+ * ganancia o pérdida de la cartera, sin que ningún activo se haya movido.
+ *
+ * El home mobile ya lo tenía resuelto adentro de la pantalla (`totalsMep`) y el
+ * Dashboard no: el mismo arreglo en uno de dos lugares. Vive acá para que los
+ * dos lo usen. Con MEP elegido da exactamente el total de la pantalla.
+ */
+export function valorAlMep(positions, prices, brokers, tcMep, tcCripto = null, costBasis = 'today') {
+  return (brokers || []).reduce(
+    (s, b) => s + (computeBrokerValue(positions || [], prices || {}, b, tcMep, tcMep, tcCripto, costBasis).value || 0),
+    0,
+  )
+}
+
 // ─── Plazos fijos ─────────────────────────────────────────────────────────────
 // Valuación determinística (modalidad "al vencimiento"). No usa precios de
 // mercado: el interés se devenga según rate_type.

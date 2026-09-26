@@ -269,9 +269,9 @@ _FREE_FOCUS = {
         "Reparto USD vs ARS y % en cash.",
     ],
     "dashboard.evolution": [
-        "Cómo se movió la curva en el período (sube / baja / lateral).",
+        "El rendimiento del rango (rendimiento_del_rango, el número del chip) — nunca calculado con los puntos de la curva.",
         "Mejor y peor mes.",
-        "Drawdown actual respecto del máximo.",
+        "Caída actual desde el mejor momento (caida_desde_el_mejor_momento_pct).",
     ],
     "dashboard.top_holdings": [
         "Ganadoras principales con su P&L.",
@@ -361,7 +361,7 @@ _FREE_FOCUS = {
     ],
     "home": [
         "Estado de mercado del día (mostly_up/down/mixed).",
-        "Delta del portfolio del día si está disponible.",
+        "Resultado de la cartera del día (portfolio_today.hoy) si está disponible.",
         "Cantidad de eventos próximos y peso afectado.",
     ],
     "news": [
@@ -432,7 +432,9 @@ _maybe_free = _maybe_descriptive
 def render_dashboard_prompt(tier: str = "pro") -> str:
     view = "Dashboard — snapshot agregado del portfolio"
     pkt = (
-        "valor actual, TWR del período, mejor/peor posición, vs "
+        "valor actual, en_pantalla (las cifras que el usuario ve: 'Hoy', 'Este "
+        "mes' y el chip de la curva — si hablás de cuánto ganó, citá ésas), TWR "
+        "de 30 días (para comparar con el S&P), mejor/peor posición, vs "
         "benchmarks (S&P 500 + inflación AR cuando aplique), behavioral "
         "bias dominante si está, % cash, anomalías detectadas."
     )
@@ -881,8 +883,12 @@ def render_dashboard_composition_prompt(tier: str = "pro") -> str:
 def render_dashboard_evolution_prompt(tier: str = "pro") -> str:
     view = "Curva de evolución del portfolio (sub-componente Dashboard)"
     pkt = (
-        "serie temporal del valor (12 puntos representativos), peak, "
-        "trough, drawdown actual vs peak, mejor / peor mes."
+        "rendimiento_del_rango (el chip de la tarjeta, tal cual lo calcula la "
+        "pantalla: descuenta aportes y retiros; null = la pantalla no tiene "
+        "número y dice por qué en rendimiento_motivo), curva (el VALOR de la "
+        "cartera: 12 puntos, valor máximo y mínimo — incluye aportes, que suba "
+        "no es ganar), caída desde el mejor momento medida como rendimiento, "
+        "mejor / peor mes."
     )
     free = _maybe_free("dashboard.evolution", view, pkt, tier)
     if free:
@@ -891,10 +897,10 @@ def render_dashboard_evolution_prompt(tier: str = "pro") -> str:
         view_name=view,
         packet_summary=pkt,
         focus=[
-            "Forma de la curva — sostenida vs volátil vs step-función — y qué dice del estilo del inversor.",
-            "Profundidad y duración del peor drawdown vs el actual.",
+            "El rendimiento del rango (rendimiento_del_rango) — es el número que el usuario ve en el chip; citá ése.",
+            "Si hubo aportes o retiros en el rango (aportes_netos_usd), separar cuánto del cambio de valor fue plata puesta o sacada y cuánto fue rendimiento.",
             "Asimetría entre mejor y peor mes — qué tan extrema es la dispersión y qué insinúa sobre exposure.",
-            "Distancia del peak histórico — drawdown leve, materializado, o ausente.",
+            "Distancia del mejor momento (caida_desde_el_mejor_momento_pct) — caída leve, materializada, o ausente.",
         ],
         insight_examples=[
             "Una curva sostenida con dispersión mensual baja sugiere demanda estructural, no rally puntual — el resultado tiende a ser más replicable que uno con varios picos extremos.",
@@ -902,6 +908,7 @@ def render_dashboard_evolution_prompt(tier: str = "pro") -> str:
         ],
         pitfalls=[
             "No predecir si va a seguir subiendo o cayendo.",
+            "NUNCA calcules un rendimiento con los puntos de la curva: son valores que incluyen aportes y retiros. Si rendimiento_del_rango es null, decí lo que dice rendimiento_motivo.",
             "Si insufficient_data, decirlo simple — sin pirotecnia ni 'esperá unos días con cariño'.",
         ],
     )
@@ -1462,8 +1469,9 @@ def render_home_prompt(tier: str = "pro") -> str:
     view = "Home — snapshot del día (mercado + portfolio + eventos próximos)"
     pkt = (
         "market.indices + summary (mostly_up/down/mixed/flat), portfolio_today "
-        "(total_value_usd, delta_pct_today, delta_usd_today), "
-        "personal_cards_count, portfolio_events_window {total, "
+        "(hoy / este_mes / ultimos_30_dias, cada uno con resultado_usd y "
+        "resultado_pct ya descontados los aportes; origen = de dónde salió el "
+        "número), personal_cards_count, portfolio_events_window {total, "
         "weight_at_risk_pct, next_event}, top_holdings_pulse."
     )
     free = _maybe_free("home", view, pkt, tier)
@@ -1485,7 +1493,8 @@ def render_home_prompt(tier: str = "pro") -> str:
         pitfalls=[
             "El día no es señal — un solo día de outperform no constituye alpha. Mantener el tono descriptivo del día sin extrapolar.",
             "No predecir el cierre del día siguiente.",
-            "Si los snapshots no tienen 2 días disponibles, decir que falta historial reciente.",
+            "Si portfolio_today.hoy es null, decir que no hay un cierre con qué comparar el día — no calcularlo por otro lado.",
+            "Si portfolio_today.hoy.dias es mayor a 1, el número cubre esos días (último cierre de hace más de un día): decirlo, no llamarlo 'hoy'.",
         ],
     )
 

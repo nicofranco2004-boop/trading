@@ -32,7 +32,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey, setBrokersRegistry } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -40,10 +40,12 @@ import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDon
 import { computeClassBreakdown } from '../utils/assetClass'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
-import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
+import { rendimientoParaIa } from '../utils/rendimientoAi'
+import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { applyMtmToMonthly } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
+import { fechaCorta } from '../utils/lineaDelBono'
 
 const REFRESH_MS = 90_000
 
@@ -246,6 +248,16 @@ function PersonalDashboard() {
   // positions-only, para que el PF no aparezca como un salto del día/mes.
   const totalValuePositions = totalValue - pf.valueUsd
   const netDepositedPositions = netDeposited - pf.investedUsd
+  // Lo que se COMPARA contra las fotos guardadas ("Hoy", "Este mes", el chip, la
+  // punta de la curva) va al dólar de las fotos: MEP. El título sigue al dólar que
+  // eligió el usuario. Con MEP elegido es el mismo número. Ver `valorAlMep`.
+  const tcMep = pickFinancialRate(dolar, 'mep') || tcValuacion
+  const valorFotos = useMemo(
+    () => (tcMep === tcCedear && tcMep === tcValuacion
+      ? totalValuePositions
+      : valorAlMep(positions, prices, brokers, tcMep, tcCripto, costBasis)),
+    [tcMep, tcCedear, tcValuacion, totalValuePositions, positions, prices, brokers, tcCripto, costBasis],
+  )
   const totalCostBasisPositions = totalCostBasis - pf.investedUsd
 
   // Realized P&L (cumulative across all months from monthly_entries global).
@@ -625,8 +637,11 @@ function PersonalDashboard() {
   // ── Portfolio evolution series (depends on range) ───────────────────────────
   const rangeDays = RANGES.find(r => r.id === range)?.days
   const evoSeries = useMemo(() => {
-    return buildPortfolioValueSeries(snapshots, rangeDays ?? null, totalValuePositions > 0 ? totalValuePositions : null, netDepositedPositions)
-  }, [snapshots, rangeDays, totalValuePositions, netDepositedPositions])
+    // Sin precios cargados el valor vivo sale al COSTO (computeBrokerValue cae a
+    // costo sin precio): la punta de la curva y el chip esperan a `lastUpdated`.
+    const vivo = lastUpdated && valorFotos > 0 ? valorFotos : null
+    return buildPortfolioValueSeries(snapshots, rangeDays ?? null, vivo, netDepositedPositions)
+  }, [snapshots, rangeDays, lastUpdated, valorFotos, netDepositedPositions])
 
   // Audit fix C1 (2026-05-31): cuando el toggle global está en ARS,
   // convertimos CADA punto usando su FX histórico (stamped > lookup > current).
@@ -651,18 +666,24 @@ function PersonalDashboard() {
     return Math.max(...evoSeriesDisplay.map(p => Math.max(p.valueUsd, p.netDeposited)))
   }, [evoSeriesDisplay])
 
-  // Period change (start → end of visible range)
-  // Δ(Total Return) cashflow-adjusted: (value − net_deposited)_fin − (…)_inicio.
-  // Antes era ΔvalueUsd crudo, que mezclaba aportes/retiros y contradecía el copy
-  // "ajustado por flujos de capital". Mismo criterio que el cuadro de variación.
-  const periodChange = useMemo(() => {
-    if (evoSeries.length < 2) return null
-    const first = evoSeries[0]
-    const last = evoSeries[evoSeries.length - 1]
-    const delta = (last.valueUsd - last.netDeposited) - (first.valueUsd - first.netDeposited)
-    const dPct = first.valueUsd > 0 ? delta / first.valueUsd : 0
-    return { delta, pct: dPct }
-  }, [evoSeries])
+  // Chip del rango: Δ(Total Return) ajustado por flujos, con el MISMO motor que
+  // "Hoy" y "Este mes" (ver rendimientoDelRango). Antes restaba las puntas de la
+  // curva: terminaba en la foto guardada de hoy en vez del valor vivo y abría en
+  // un punto de cualquier antigüedad. En la demo publicó −64,9 % "en el mes" al
+  // lado de una cartera que ganaba.
+  // Espera a los precios (`lastUpdated`): sin ellos el valor vivo es el COSTO y
+  // el chip saltaba de −10 % a +2 % mientras cargaba. MAX = "Ganancia total".
+  const periodChange = useMemo(
+    () => (lastUpdated && valorFotos > 0
+      ? rendimientoDelRango(snapshots, {
+          dias: rangeDays ?? null,
+          liveValue: valorFotos,
+          liveNetDeposited: netDepositedPositions,
+          gananciaTotal: (totalValue > 0 && netDeposited > 0) ? { usd: totalReturnUsd, pct: totalReturnPct } : null,
+        })
+      : null),
+    [snapshots, rangeDays, lastUpdated, valorFotos, netDepositedPositions, totalValue, netDeposited, totalReturnUsd, totalReturnPct],
+  )
 
   // ── Variación reciente (cuadro diaria + mensual) ────────────────────────────
   // Δ(Total Return) cashflow-adjusted — mismo criterio que el P&L Día del Home.
@@ -671,15 +692,15 @@ function PersonalDashboard() {
   // Guard: hasta que los precios live no llegaron, totalValue puede ser 0 y la
   // variación mostraría una pérdida falsa enorme. Esperamos a tener valor real.
   const dailyVar = useMemo(
-    () => (totalValuePositions > 0 ? computeDailyPnl(snapshots, { liveValue: totalValuePositions, liveNetDeposited: netDepositedPositions }) : null),
-    [snapshots, totalValuePositions, netDepositedPositions],
+    () => (valorFotos > 0 ? computeDailyPnl(snapshots, { liveValue: valorFotos, liveNetDeposited: netDepositedPositions }) : null),
+    [snapshots, valorFotos, netDepositedPositions],
   )
   const monthlyVar = useMemo(() => {
-    if (!(totalValuePositions > 0)) return null
+    if (!(valorFotos > 0)) return null
     const d = new Date()
     const monthStart = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
-    return computeReturnDelta(snapshots, { liveValue: totalValuePositions, liveNetDeposited: netDepositedPositions, sinceDate: monthStart })
-  }, [snapshots, totalValuePositions, netDepositedPositions])
+    return computeReturnDelta(snapshots, { liveValue: valorFotos, liveNetDeposited: netDepositedPositions, sinceDate: monthStart })
+  }, [snapshots, valorFotos, netDepositedPositions])
   // ¿Por qué no hay número? Sólo se arma cuando efectivamente no lo hay: si
   // `monthlyVar`/`dailyVar` salieron, esto queda null y no se muestra nada.
   const sinMedicion = useMemo(
@@ -778,7 +799,17 @@ function PersonalDashboard() {
             {/* Analizar — abre el drawer con análisis IA contextual */}
             <AnalyzeButton
               screen="dashboard"
-              params={{ period: '30d' }}
+              // Las cifras de rendimiento que esta pantalla tiene a la vista, tal
+              // cual las calculó: sin esto el análisis usaba un "30 días" propio
+              // que no era el de ninguna card. Ver utils/rendimientoAi.js.
+              params={{
+                period: '30d',
+                hoy: rendimientoParaIa(dailyVar),
+                este_mes: rendimientoParaIa(monthlyVar),
+                rango: range,
+                rendimiento: rendimientoParaIa(periodChange),
+                moneda: currency,
+              }}
               subtitle="Estado de tu cartera"
             />
             {/* Export consolidado: todos los movimientos (compras, ventas,
@@ -1110,7 +1141,15 @@ function PersonalDashboard() {
       <AskAIAbout
         topic="dashboard.evolution"
         subtitle="Evolución de la cartera"
-        params={{ period_days: range === '1Y' ? 365 : range === '6M' ? 180 : range === '3M' ? 90 : range === '1M' ? 30 : 1825 }}
+        // Los días salen de RANGES, la misma tabla que usa la curva. La cadena
+        // de ternarios que había acá no conocía '1D' ni '1W' (y preguntaba por un
+        // '3M' que no existe): con 1D o 1S elegido, la IA recibía 5 años.
+        //
+        // Y el rendimiento viaja CALCULADO: es el mismo objeto que dibuja el chip
+        // (null cuando no muestra número). El servidor lo sacaba restando la
+        // curva a secas, y con un depósito en el medio del mes la IA decía
+        // "+83 %" al lado de un chip que decía "+1,4 %".
+        params={{ period_days: rangeDays ?? 1825, rango: range, rendimiento: rendimientoParaIa(periodChange), moneda: currency }}
         className="mb-8"
         rounded={false}
       >
@@ -1128,16 +1167,32 @@ function PersonalDashboard() {
             <p className="text-xs text-ink-2 mt-1 max-w-md">
               Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
-            {periodChange ? (
-              <span className={`inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium tabular rounded-full px-2.5 py-1 ${periodChange.delta >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
-                {periodChange.delta >= 0 ? '+' : '−'}USD {usd(Math.abs(periodChange.delta))}
+            {periodChange && evoSeries.length >= 2 ? (
+              <span className={`inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium tabular rounded-full px-2.5 py-1 ${periodChange.usd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+                {/* Mismo formato que "Hoy" y "Este mes": sigue la moneda elegida
+                    y se tapa con "ocultar saldos". Antes decía "USD" siempre y
+                    quedaba a la vista con los saldos ocultos. */}
+                <PrivacyMask>{fmtSigned(periodChange.usd)}</PrivacyMask>
                 <span className="opacity-80">· {pctSigned(periodChange.pct)}</span>
-                <span className="text-ink-3 font-normal">en {rangeLabel(range)}</span>
+                {/* El rótulo es el período MEDIDO: 1D dice cuántos días (como la
+                    card "Hoy"); si no hubo un cierre pegado al arranque del rango,
+                    dice desde qué fecha se midió. */}
+                <span className="text-ink-3 font-normal">{
+                  range === '1D' && periodChange.dayDiff > 1 ? `en los últimos ${periodChange.dayDiff} días`
+                    : periodChange.desde ? `desde el ${fechaCorta(periodChange.desde)}`
+                      : `en ${rangeLabel(range)}`
+                }</span>
               </span>
-            ) : sinMedicion && (
+            ) : lastUpdated && (sinMedicion || evoSeries.length >= 2) && (
               /* El chip se borraba sin decir nada — y está pegado al gráfico, que
-                 es donde el usuario del caso 452 dedujo solo que algo no cerraba. */
-              <span className="inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 border border-line/60">
+                 es donde el usuario del caso 452 dedujo solo que algo no cerraba.
+                 Con el motor único también falta cuando no hay un cierre fresco
+                 al arranque del rango: la curva se dibuja igual, así que el vacío
+                 tiene que hablar. */
+              <span
+                className="inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 border border-line/60"
+                title="Todavía no hay un cierre de tu cartera medido a precio de mercado con el que comparar."
+              >
                 Sin rendimiento medible en {rangeLabel(range)}
               </span>
             )}
