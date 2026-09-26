@@ -1,8 +1,12 @@
-// Planes — página dedicada de comparativa Free vs Pro.
+// Planes — la página de precios: Plus y Pro.
 // ═══════════════════════════════════════════════════════════════════════════
-// Inspirado en pricing pages tipo Claude / Stripe: dos cards, Free a la
-// izquierda, Pro destacado a la derecha, lista de features con ✓ y CTA
-// principal en el card que el user no tiene aún.
+// Inspirado en pricing pages tipo Claude / Stripe: cards lado a lado, Pro
+// destacado, lista de features con ✓ y CTA principal en el card que el user no
+// tiene aún.
+//
+// La card de Free aparece SÓLO para quien conserva ese plan (`conservaElFree`):
+// desde el 22/09/2026 quien se registra no tiene plan gratis, así que al
+// visitante, al demo y a quien se registró con la prueba no se les ofrece.
 //
 // Linkeada desde:
 //   • Config PlanHero ("Mejorar plan" button)
@@ -26,7 +30,11 @@ import { track } from '../utils/track'
 import { trackEvent } from '../utils/analytics'
 import { isSafePaymentUrl } from '../utils/safeUrl'
 import { api } from '../utils/api'
-import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import {
+  FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
+} from '../data/planCatalog'
+import { alTerminar, conservaElFree } from '../data/prueba'
 import {
   TrialCta, TrialFinePrint, ProUpsellCta, ProUpsellFinePrint,
 } from '../components/plan/TrialCta'
@@ -76,7 +84,7 @@ export { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES }
 export default function Planes({ embedded = false }) {
   const navigate = useNavigate()
   const { tier, loading, trial } = usePlanFeatures()
-  const { user } = useAuth()
+  const { user, exitDemo } = useAuth()
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
   const [tcValuacion, setTcValuacion] = useState(1415)  // fallback
@@ -112,6 +120,12 @@ export default function Planes({ embedded = false }) {
   // y el mensaje es "quedate con Plus", el botón de Plus no se podía apretar.
   // (El audit anterior curó esto solo en la card de Pro, vía isCurrentAnchor.)
   const hasPaidProTier = hasProTier && !trial?.active
+  // Quién ve la card de Free, y qué le pasa a la cuenta cuando se le termina
+  // el plan. Sin sesión el tier cae a 'free' por defecto (usePlanFeatures), así
+  // que `isFree` sola le marcaba "Free · Tu plan actual" a cualquier visitante.
+  const verFree = conservaElFree(user)
+  const requierePlan = !!user?.requires_plan
+  const esVisitante = !user || !!user.demo
 
   // Estado del crédito (modelo Rendi-managed proration)
   const creditDays = Number(user?.credit_days_remaining || 0)
@@ -164,7 +178,18 @@ export default function Planes({ embedded = false }) {
     return subPeriod === cardPeriod
   }
 
+  // ⚠️ DESDE EL DEMO, PAGAR ES CREAR LA CUENTA. El usuario del demo es ficticio:
+  // "Suscribirme" le pegaba a /billing/subscribe, el demo contestaba sin link de
+  // pago y el visitante veía "No pudimos generar el checkout" justo cuando
+  // quería pagar. Lo mismo que el botón "Crear cuenta" de la barra del demo.
+  function desdeElDemoACrearCuenta() {
+    track('demo_plan_cta', { source: 'planes_page' })
+    exitDemo()
+    navigate('/login?mode=register')
+  }
+
   async function onSubscribeClick(planId) {
+    if (user?.demo) return desdeElDemoACrearCuenta()
     if (subscribing) return
     const targetPeriod = planId === 'plus' ? billingPeriod : billingPeriod
     track('upgrade_subscribe_clicked', {
@@ -219,6 +244,7 @@ export default function Planes({ embedded = false }) {
   // mostrar al user cuántos días le van a quedar con el plan nuevo antes
   // de confirmar.
   async function onChangePlanClick(planId, period) {
+    if (user?.demo) return desdeElDemoACrearCuenta()
     if (subscribing) return
     track('upgrade_subscribe_clicked', {
       from_tier: tier,
@@ -301,14 +327,16 @@ export default function Planes({ embedded = false }) {
       {!embedded && (
         <>
           <PageMeta
-            title="Planes y precios — Rendi | Plus desde ARS 5.990/mes"
-            description="Elegí el plan de Rendi: Free para empezar, Plus para multi-broker, Pro con Rendi AI libre y memoria. Precios en pesos al blue del día. Cancelá cuando quieras."
+            title={`Planes y precios — Rendi | Plus desde ARS ${fmtArs(PLUS_PRICE_ARS_MONTHLY)}/mes`}
+            description={`Probá Rendi ${TRIAL_TOTAL_DAYS} días gratis, sin tarjeta. Después elegís Plus, para multi-broker, o Pro, con Rendi AI libre y memoria. Precio fijo en pesos. Cancelás cuando quieras.`}
             canonical="/planes"
           />
           <PageHeader
             eyebrow="Planes / Mejora tu cuenta"
             title="Elegí el plan que mejor te sirve"
-            subtitle="Empezá gratis. Mejorá cuando necesites análisis más profundos, más brokers o features pro."
+            subtitle={esVisitante
+              ? `Probás ${TRIAL_TOTAL_DAYS} días gratis y sin tarjeta: ${TRIAL_PRO_DAYS} con Pro y ${TRIAL_PLUS_DAYS} con Plus. Después elegís el plan que te sirve.`
+              : 'Mejorá cuando necesites análisis más profundos, más brokers o features pro.'}
           />
         </>
       )}
@@ -354,7 +382,8 @@ export default function Planes({ embedded = false }) {
             Cancelaste tu suscripción.
             {' '}Mantenés acceso a <span className="font-medium capitalize">{anchorPlan}</span>
             {' '}por <span className="font-mono tabular text-ink-0">{Math.round(creditDays)} días más</span>
-            {' '}— después la cuenta vuelve a Free. Suscribite de nuevo para seguir.
+            {' '}— después {alTerminar(requierePlan)}.
+            {!requierePlan && ' Suscribite de nuevo para seguir.'}
           </div>
         </div>
       )}
@@ -419,19 +448,22 @@ export default function Planes({ embedded = false }) {
             </div>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-6xl mx-auto pt-6">
-            {/* ── Free card — gris neutral ─── */}
-            <PlanCard
-              variant="free"
-              name="Free"
-              tagline="Lo esencial para empezar"
-              price="Gratis"
-              priceSub="Para siempre"
-              features={FREE_FEATURES}
-              isCurrent={isFree}
-              ctaLabel={isFree ? 'Tu plan actual' : 'Tu plan base'}
-              ctaDisabled
-            />
+          <div className={`grid grid-cols-1 gap-4 mx-auto pt-6 ${
+            verFree ? 'md:grid-cols-3 max-w-6xl' : 'md:grid-cols-2 max-w-4xl'}`}>
+            {/* ── Free card — gris neutral. Sólo para quien lo conserva. ─── */}
+            {verFree && (
+              <PlanCard
+                variant="free"
+                name="Free"
+                tagline="Lo esencial para empezar"
+                price="Gratis"
+                priceSub="Para siempre"
+                features={FREE_FEATURES}
+                isCurrent={isFree}
+                ctaLabel={isFree ? 'Tu plan actual' : 'Tu plan base'}
+                ctaDisabled
+              />
+            )}
 
             {/* ── Plus card — cyan distintivo (tier intermedio) ─── */}
             {(() => {
@@ -445,6 +477,7 @@ export default function Planes({ embedded = false }) {
                 subscribing,
                 hasCredit,
                 isCancelledMode,
+                esDemo: !!user?.demo,
               })
               // Pricing ARS hardcoded (2026-05-31): cobramos pesos fijos.
               // No hay conversión a USD ni dependencia del blue para el display.
@@ -463,7 +496,7 @@ export default function Planes({ embedded = false }) {
                     : 'por mes'}
                   priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PLUS_FEATURES}
-                  isCurrent={plusIsCurrent || isPlus}
+                  isCurrent={!user?.demo && (plusIsCurrent || isPlus)}
                   ctaLabel={plusCtaInfo.label}
                   ctaDisabled={plusCtaInfo.disabled}
                   ctaLoading={subscribing}
@@ -490,6 +523,7 @@ export default function Planes({ embedded = false }) {
                 subscribing,
                 hasCredit,
                 isCancelledMode,
+                esDemo: !!user?.demo,
               })
               const arsMonthly = billingPeriod === 'annual'
                 ? fmtArs(PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ)
@@ -507,7 +541,7 @@ export default function Planes({ embedded = false }) {
                   priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PRO_FEATURES}
                   badge="Más completo"
-                  isCurrent={proIsCurrent || hasProTier}
+                  isCurrent={!user?.demo && (proIsCurrent || hasProTier)}
                   ctaLabel={proCtaInfo.label}
                   ctaDisabled={proCtaInfo.disabled}
                   ctaLoading={subscribing}
@@ -615,7 +649,12 @@ export default function Planes({ embedded = false }) {
 //     re-suscribirse a cualquier plan. Su plan anchor muestra "Reactivar"
 //     y los otros "Suscribirme". Conceptualmente la sub está terminada;
 //     el acceso restante viene del período ya pagado.
-function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit, isCancelledMode }) {
+function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit, isCancelledMode, esDemo = false }) {
+  // ⚠️ EL VISITANTE DEL DEMO NO TIENE PLAN. El usuario ficticio del demo es Pro
+  // (para mostrar todas las funciones), y Planes le decía "Tu plan actual" y
+  // "Ya tenés Pro" a alguien sin cuenta: ningún botón para suscribirse. El botón
+  // lo lleva a crear la cuenta (ver desdeElDemoACrearCuenta).
+  if (esDemo) return { label: 'Crear cuenta para suscribirme', disabled: false, action: 'subscribe' }
   if (subscribing) {
     return { label: 'Redirigiendo…', disabled: true, action: 'none' }
   }

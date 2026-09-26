@@ -344,6 +344,24 @@ def _plan_loss_text(plan: str) -> str:
             "reportes históricos, export CSV")
 
 
+def _al_terminar(requiere_plan: bool) -> str:
+    """Qué le pasa a la cuenta cuando se le termina lo que tenía (un plan
+    cancelado, un regalo). Depende de UNA sola cosa: `users.requires_plan`.
+
+      · nació sin plan gratis (desde el 22/09/2026) → no hay Free al que
+        volver: la cuenta queda EN PAUSA hasta que elija un plan;
+      · ya existía → vuelve a Free, como siempre.
+
+    Los mails de la prueba ya hacían esta distinción; el de la baja y el del
+    regalo no, y le decían "tu cuenta vuelve a Free" a quien no tiene Free — o
+    sea le prometían algo que no existe justo cuando tiene que decidir. La misma
+    regla, del lado de la app, es `alTerminar` en `frontend/src/data/prueba.js`."""
+    if requiere_plan:
+        return ("tu cuenta queda en pausa hasta que elijas un plan "
+                "(tus datos no se borran)")
+    return "tu cuenta vuelve a Free"
+
+
 # ─── Email #1: bienvenida (Plus / Pro) ──────────────────────────────────────
 
 def send_welcome_pro(*, to: str, user_name: str, period: str,
@@ -491,8 +509,11 @@ def send_payment_failed(*, to: str, user_name: str,
 # ─── Email #4: cancelación confirmada ──────────────────────────────────────
 
 def send_cancellation(*, to: str, user_name: str, valid_until: str,
-                     plan: str = "pro") -> bool:
+                     plan: str = "pro", requiere_plan: bool = False) -> bool:
+    """`requiere_plan`: el usuario nació sin plan gratis → al vencer queda en
+    pausa, no "vuelve a Free". Ver `_al_terminar`."""
     plan_label = _plan_label(plan)
+    despues = _al_terminar(requiere_plan)
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Cancelación confirmada</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
@@ -500,7 +521,7 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
       </p>
       <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:6px;padding:16px;margin:20px 0;">
         <p style="font-size:14px;color:#5b21b6;margin:0;">
-          ✓ Mantenés acceso completo a {plan_label} hasta el <b>{_fmt_date(valid_until)}</b>. Después de esa fecha, tu cuenta vuelve a Free.
+          ✓ Mantenés acceso completo a {plan_label} hasta el <b>{_fmt_date(valid_until)}</b>. Después de esa fecha, {despues}.
         </p>
       </div>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
@@ -514,7 +535,7 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
         f"Cancelación confirmada\n\n"
         f"Hola {user_name}, tu suscripción Rendi {plan_label} fue cancelada.\n\n"
         f"Mantenés {plan_label} hasta el {_fmt_date(valid_until)}. "
-        f"Después de esa fecha, tu cuenta vuelve a Free.\n\n"
+        f"Después de esa fecha, {despues}.\n\n"
         f"No te vamos a cobrar más. Si cancelaste por error, contestá este email.\n\n"
         f"— Rendi"
     )
@@ -527,19 +548,34 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
 
 def send_expiration_reminder(*, to: str, user_name: str,
                              days_left: int, expires_at: str,
-                             plan: str = "pro") -> bool:
+                             plan: str = "pro", requiere_plan: bool = False) -> bool:
+    """3 días antes de que se termine un plan cancelado (o su crédito).
+
+    La lista de "lo que vas a perder" describe la caída a Free ("vas a quedar
+    con 1 broker"). Para quien nació sin plan gratis (`requiere_plan`) eso es
+    falso: no queda en Free, su cuenta queda EN PAUSA. A esa persona se le dice
+    eso, en lugar de la lista. Ver `_al_terminar`."""
     plan_label = _plan_label(plan)
-    body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Hola {user_name}, te avisamos que tu suscripción Rendi {plan_label} va a expirar el <b>{_fmt_date(expires_at)}</b>.
-      </p>
+    if requiere_plan:
+        _perdida_html = f"""
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
+        Después de esa fecha, {_al_terminar(True)}.
+      </p>"""
+        _perdida_txt = f"Después de esa fecha, {_al_terminar(True)}."
+    else:
+        _perdida_html = f"""
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 20px;">
         Después de esa fecha, vas a perder acceso a:
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
         {_plan_loss_html(plan)}
-      </ul>
+      </ul>"""
+        _perdida_txt = f"Después vas a perder: {_plan_loss_text(plan)}."
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}, te avisamos que tu suscripción Rendi {plan_label} va a expirar el <b>{_fmt_date(expires_at)}</b>.
+      </p>{_perdida_html}
       <p style="font-size:14px;color:#374151;line-height:1.6;">
         Si querés mantener {plan_label}, volvé a suscribirte desde <a href="https://rendi.finance/planes" style="color:#8B7BFF;text-decoration:none;">tu panel</a>.
       </p>
@@ -547,7 +583,7 @@ def send_expiration_reminder(*, to: str, user_name: str,
     text = (
         f"Tu plan Rendi {plan_label} vence en {days_left} días\n\n"
         f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}.\n\n"
-        f"Después vas a perder: {_plan_loss_text(plan)}.\n\n"
+        f"{_perdida_txt}\n\n"
         f"Para renovar: andá a rendi.finance/planes\n\n"
         f"— Rendi"
     )
@@ -1222,6 +1258,10 @@ def send_trials_ended_admin(*, emails_list: list) -> bool:
     if not to:
         return False
     n = len(limpios)
+    # Los días salen de billing/trial.py: decía "la prueba de 15 días" con la
+    # prueba ya en 20, y "pasaron a Free" cuando las cuentas nuevas quedan en
+    # pausa (no tienen plan gratis).
+    from billing.trial import TRIAL_TOTAL_DAYS
     plural = "prueba gratis terminó" if n == 1 else "pruebas gratis terminaron"
     subject = f"Rendi · {n} {plural}"
     filas = "".join(
@@ -1231,12 +1271,15 @@ def send_trials_ended_admin(*, emails_list: list) -> bool:
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{n} {plural}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Se les venció la prueba de 15 días y pasaron a Free. No son bajas: nunca
-        pagaron. El mail de cierre les llega por su propia secuencia.
+        Se les terminó la prueba de {TRIAL_TOTAL_DAYS} días sin que eligieran un plan.
+        Las cuentas que ya existían antes de la prueba pasaron a Free; las que
+        nacieron sin plan gratis quedaron en pausa hasta que elijan uno. No son
+        bajas: nunca pagaron. El mail de cierre les llega por su propia secuencia.
       </p>
       <table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 20px;">{filas}</table>
     """
-    text = (f"{n} {plural} en Rendi (pasaron a Free)\n\n"
+    text = (f"{n} {plural} en Rendi (sin elegir plan: a Free las viejas, "
+            f"en pausa las nuevas)\n\n"
             + "\n".join(limpios) + "\n")
     return _send(to, subject, _wrap_html(body_html), text,
                  from_addr=_from_noreply())
@@ -1379,14 +1422,17 @@ def send_orphan_subscription_admin(*, sub_id: str, user_email: str, error: str) 
 # ─── Email al usuario: le regalaron Plus/Pro (grant-comp del admin) ──────────
 
 def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
-                     days: int, active_until: Optional[str]) -> bool:
+                     days: int, active_until: Optional[str],
+                     requiere_plan: bool = False) -> bool:
     """Email al USUARIO cuando un admin le REGALA Plus/Pro (grant-comp).
 
-    No es un pago: es un acceso de cortesía por N días que vuelve a Free solo al
-    vencer (sin cobros). Best-effort. El guard de _send evita mandar bajo pytest
-    o a dominios de prueba (.test/.local/etc).
+    No es un pago: es un acceso de cortesía por N días que se termina solo al
+    vencer (sin cobros): la cuenta vuelve a Free, o queda en pausa si nació sin
+    plan gratis (`requiere_plan`, ver `_al_terminar`). Best-effort. El guard de
+    _send evita mandar bajo pytest o a dominios de prueba (.test/.local/etc).
     """
     plan_label = _plan_label(plan)
+    despues = _al_terminar(requiere_plan)
     name = user_name or ((to or "").split("@")[0])
     safe_name = html.escape(name)
     until_label = _fmt_date(active_until)
@@ -1405,7 +1451,7 @@ def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
         </p>
       </div>
       <p style="font-size:14px;color:#374151;line-height:1.6;">
-        Cuando llegue esa fecha, tu cuenta vuelve a Free automáticamente, sin ningún cobro.
+        Cuando llegue esa fecha, {despues}, sin ningún cobro.
         Entrá a {APP_URL} y aprovechá el acceso.
       </p>
     """
@@ -1414,7 +1460,7 @@ def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
         f"Te dimos acceso a Rendi {plan_label} sin costo por {days} días. "
         f"Ya está activo en tu cuenta.\n\n"
         f"Plan {plan_label} activo hasta {until_label}.\n"
-        f"Cuando llegue esa fecha, tu cuenta vuelve a Free automáticamente, sin ningún cobro.\n\n"
+        f"Cuando llegue esa fecha, {despues}, sin ningún cobro.\n\n"
         f"Entrá a {APP_URL} y aprovechá el acceso.\n\n"
         f"Incluye: {_plan_features_text(plan)}.\n\n"
         f"— Rendi"
@@ -1931,9 +1977,9 @@ def send_advisor_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     return _send(to, subject, _wrap_html(body_html), text, from_addr=_from_noreply())
 
 
-# ─── Free trial (15 días: 7 de Pro + 8 de Plus) ─────────────────────────────
-# Cuatro mails, cada uno con un trabajo distinto. El del día 8 (cuando pasa a
-# Plus) NO está: ya se avisó el día anterior y va solo dentro de la app — dos
+# ─── La prueba (billing/trial.py: TRIAL_PRO_DAYS de Pro + TRIAL_PLUS_DAYS de Plus)
+# Cuatro mails, cada uno con un trabajo distinto. El del paso a Plus NO está:
+# ya se avisó el día anterior y va solo dentro de la app — dos
 # mails seguidos por lo mismo cansan y hacen que dejen de abrirlos justo antes
 # del aviso que más importa.
 

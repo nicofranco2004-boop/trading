@@ -1,6 +1,7 @@
 // /blog/comparativa-brokers-argentina
 
 import BlogPost from '../../../components/blog/BlogPost'
+import { CTA_PRUEBA } from '../../../data/prueba'
 
 const RELATED = [
   { to: '/brokers/cocos', label: 'Tracker para Cocos Capital', desc: 'Si ya estás en Cocos, así sumás otros brokers a tu tracking.' },
@@ -164,7 +165,7 @@ export default function ComparativaBrokersArgentina() {
       </p>
 
       <p>
-        <a href="/login?mode=register">Crear cuenta gratis</a> · <a href="/planes">Ver planes</a>
+        <a href="/login?mode=register">{CTA_PRUEBA}</a> · <a href="/planes">Ver planes</a>
       </p>
     </BlogPost>
   )

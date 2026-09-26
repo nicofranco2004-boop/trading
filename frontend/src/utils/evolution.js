@@ -1,5 +1,5 @@
 import { lookupHistoricalDolar } from './fx'
-import { hoyISO } from './fecha'
+import { hoyISO, fechaISO } from './fecha'
 
 // ⚠️ DOS PREGUNTAS DISTINTAS, DOS PREDICADOS DISTINTOS. Colapsarlas es el error
 // que hizo volver este bug once veces, y las dos direcciones del error ya se
@@ -158,9 +158,12 @@ export function baseIncomparable(inicioEsMedido, inicioValor, depositos = 0, ret
  * optionally filtered by `days`. Used by the Dashboard portfolio evolution
  * chart with the 1D / 1W / 1M / 6M / 1Y / MAX selector.
  *
- * If a `liveValue` is provided AND the latest snapshot is older than today
- * (or absent for today), we append a synthetic "today" point so the chart
- * always shows the current portfolio value as the rightmost data point.
+ * If a `liveValue` is provided, it IS today's point: it replaces any stored row
+ * dated today (the intraday photo the Dashboard wrote on the first visit of the
+ * day). The caller must pass it on the SAME basis as the stored photos —
+ * positions only (no plazos fijos) and at the MEP dollar (`valorAlMep`) — so the
+ * rightmost point is the live valuation, not a stale photo. It is NOT always the
+ * page title: the title includes plazos fijos and uses the dollar the user chose.
  *
  * @param {Array}  snapshots  [{ date, total_value, total_invested, net_deposited }]
  * @param {number} days       window in days (null = all)
@@ -233,21 +236,41 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
     fxToUsdBlue: s.fx_to_usd_blue != null ? +s.fx_to_usd_blue : null,
   }))
 
-  // Append "today" if live value supplied and last snapshot isn't already today
+  // ⚠️ EL PUNTO DE HOY ES EL VIVO, HAYA O NO UNA FILA GUARDADA CON FECHA DE HOY.
+  // Antes el vivo sólo se agregaba si NO había fila de hoy. Pero esa fila existe
+  // desde la SEGUNDA visita del día: la escribe este mismo Dashboard en la primera
+  // (POST /snapshots, una vez por día, con el valor de ESE momento). De ahí en
+  // más la punta de la curva era la foto de la mañana y no la cartera de ahora.
+  // En la demo pública esa fila valía el saldo de UN broker y el chip publicó
+  // −64,9 % "en el mes".
+  //
+  // El vivo reemplaza a toda fila fechada hoy o después. Una fecha posterior a
+  // "hoy" existe de verdad: el backend fecha en día argentino, y para quien vive
+  // al oeste de Argentina ese día ya es mañana antes de su medianoche. Ninguna
+  // fila guardada es más reciente que el valor de ahora. De la fila reemplazada
+  // se rescata lo que el vivo no trae: su dólar estampado.
   const today = hoyISO()
-  if (liveValue != null && (points.length === 0 || points[points.length - 1].date !== today)) {
+  if (liveValue != null) {
+    let filaDeHoy = null
+    while (points.length > 0 && points[points.length - 1].date >= today) filaDeHoy = points.pop()
     points.push({
       date: today,
       label: today.slice(5),
       valueUsd: +liveValue,
-      netDeposited: liveNet != null ? +liveNet : (points[points.length - 1]?.netDeposited ?? +liveValue),
-      fxToUsdBlue: liveFx != null ? +liveFx : null,
+      netDeposited: liveNet != null
+        ? +liveNet
+        : (filaDeHoy?.netDeposited ?? points[points.length - 1]?.netDeposited ?? +liveValue),
+      fxToUsdBlue: liveFx != null ? +liveFx : (filaDeHoy?.fxToUsdBlue ?? null),
     })
   }
 
   if (days != null && days > 0 && points.length > 0) {
-    const cutoff = Date.now() - days * 86400000
-    const filtered = points.filter(p => new Date(p.date).getTime() >= cutoff)
+    // La ventana se corta por DÍA CALENDARIO, con la misma función que usa el
+    // chip (`rendimientoDelRango`). Antes se cortaba con `Date.now()` contra la
+    // fecha leída como medianoche UTC, y desde las 21:00 ART la curva perdía un
+    // día: el chip y la curva abrían en fechas distintas.
+    const inicio = inicioDeVentana(days)
+    const filtered = points.filter(p => p.date >= inicio)
 
     // AUDIT FOLLOW-UP (2026-05-31): siempre PREPEND el último snapshot
     // ANTES del cutoff como ancla del período. Sin este anchor, si el user
@@ -257,7 +280,7 @@ export function buildPortfolioValueSeries(snapshots, days = null, liveValue = nu
     // (que sí ancla en el primer día calendar del mes). Resultado: 3
     // números distintos para "rendimiento del mes" en distintas pantallas.
     // Con el anchor, chart y KPI convergen al mismo número.
-    const beforeCutoff = points.filter(p => new Date(p.date).getTime() < cutoff)
+    const beforeCutoff = points.filter(p => p.date < inicio)
     const anchor = beforeCutoff.length > 0 ? beforeCutoff[beforeCutoff.length - 1] : null
 
     if (filtered.length >= 2) {
@@ -466,7 +489,8 @@ export function retornoTotal({ totalValue = 0, netDeposited = 0, capitalMaximo =
  *   reciente ANTERIOR a esta fecha (ej: cierre del mes pasado para month-to-date).
  *   Si empezaste DENTRO del período (no hay snapshot previo) cae al más antiguo.
  *   Sin sinceDate → modo diario: referencia = cierre más reciente anterior a hoy.
- * @returns {null | { usd:number, pct:number, prevDate:string, dayDiff:number }}
+ * @returns {null | { usd, pct, prevDate, dayDiff, valorInicio, aportes }} — ver
+ *   `deltaDesde`: con sinceDate el % es Dietz; en modo diario, sobre el valor base.
  */
 export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposited = null, sinceDate = null } = {}) {
   if (!snapshots?.length) return null
@@ -551,11 +575,40 @@ export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposit
   // cuando lo cierto es que no hay con qué medirlo.
   if (liveValue == null && prev === desc[0]) return null
 
-  const usd = (todayValue - todayNetDep) - ((prev.total_value || 0) - netDepositedOf(prev))
-  const prevValue = prev.total_value || 0
-  const pct = prevValue > 0 ? usd / prevValue : 0
-  const dayDiff = Math.max(1, Math.round((new Date(today) - new Date(prev.date)) / 86_400_000))
-  return { usd, pct, prevDate: prev.date, dayDiff }
+  // El modo diario divide por el valor base; un período, con Dietz (ver deltaDesde).
+  return deltaDesde(prev, todayValue, todayNetDep, today, { dietz: sinceDate != null })
+}
+
+/**
+ * deltaDesde — la cuenta, UNA vez: Δ(valor − aportado) entre una fila base y hoy.
+ *
+ * Lo usan `computeReturnDelta` ("Hoy", "Este mes") y `rendimientoDelRango` (el
+ * chip de la curva, "Últimos 30 días"). Cada uno elige su base con su regla; la
+ * cuenta y sus guards son éstos y no se copian.
+ *
+ * ⚠️ EL PORCENTAJE DE UN PERÍODO VA CON DIETZ: `usd / (valorInicio + ½·aportes)`.
+ * Dividir por el valor inicial solo infla el % con la plata que entró en el medio:
+ * medido en el audit del 2026-09-25, alguien que empezó con US$ 1.000 y aporta
+ * US$ 500 por mes veía "+22,4 %" en 1 año (Dietz: 13,1 %) y "+111,2 %" en todo el
+ * período al lado de "Ganancia total +11,1 %". Es el mismo denominador que usan
+ * Reportes (`reporting/builder.py`) y el YTD (`main.py::_ytd_delta`).
+ * El modo DIARIO ("Hoy") sigue dividiendo por el valor de ayer: en un día el
+ * resultado casi no cambia y `evolution.test.js` fija ese contrato.
+ *
+ * Devuelve null —no "0 %"— cuando la base o el denominador no son positivos.
+ * `valorInicio` y `aportes` van en la respuesta porque la IA explica el mismo
+ * número y necesita sus dos partes.
+ */
+function deltaDesde(base, todayValue, todayNetDep, today, { dietz = true } = {}) {
+  if (!base || !(base.total_value > 0)) return null
+  const valorInicio = +base.total_value
+  const aportadoBase = netDepositedOf(base)
+  const aportes = todayNetDep - aportadoBase
+  const usd = (todayValue - todayNetDep) - (valorInicio - aportadoBase)
+  const denominador = dietz ? valorInicio + 0.5 * aportes : valorInicio
+  if (!(denominador > 0)) return null
+  const dayDiff = Math.max(1, Math.round((new Date(today) - new Date(base.date)) / 86_400_000))
+  return { usd, pct: usd / denominador, prevDate: base.date, dayDiff, valorInicio, aportes }
 }
 
 /**
@@ -565,6 +618,100 @@ export function computeReturnDelta(snapshots, { liveValue = null, liveNetDeposit
  */
 export function computeDailyPnl(snapshots, opts = {}) {
   return computeReturnDelta(snapshots, { ...opts, sinceDate: null })
+}
+
+/**
+ * inicioDeVentana — el primer día calendario ADENTRO de una ventana de N días
+ * que termina hoy. 1 → hoy; 7 → hace 6 días; 30 → hace 29 días. El cierre que
+ * abre la ventana es el último ANTERIOR a esta fecha.
+ *
+ * Es la única definición de "dónde empieza el rango" para la curva y para el
+ * chip: si cada uno la calculara por su lado, volverían a abrir en días
+ * distintos (ver `buildPortfolioValueSeries`).
+ */
+export function inicioDeVentana(dias) {
+  const d = new Date()
+  // Mediodía: restar días desde la medianoche puede caer en el día anterior
+  // cuando en el medio hay un cambio de horario.
+  d.setHours(12, 0, 0, 0)
+  d.setDate(d.getDate() - (dias - 1))
+  return fechaISO(d)
+}
+
+/**
+ * rendimientoDelRango — el chip "±USD X · ±Y% en <rango>" de la curva de
+ * evolución (Dashboard) y el "Últimos 30 días" del home mobile.
+ *
+ * ⚠️ NO SE CALCULA RESTANDO LAS PUNTAS DE LA CURVA. Así nació una SEGUNDA copia
+ * de "Δ(valor − aportado) en un período" al lado de `computeReturnDelta`, que es
+ * la de "Hoy" y "Este mes", y la copia no tenía ninguno de sus guards:
+ *
+ *   · terminaba en la fila guardada de hoy (la foto de la primera visita) y no
+ *     en el valor vivo. En la demo pública esa fila valía un solo broker y la
+ *     pantalla publicó "−US$ 26.791,78 · −64,9 % en el mes" al lado de
+ *     "Ganancia total +US$ 5.916,82". A un usuario real le pasaba desde la
+ *     segunda visita del día: el chip medía contra la foto de la mañana.
+ *   · abría el período en el último punto anterior al corte POR VIEJO QUE FUERA:
+ *     41 días de mercado rotulados "en el mes".
+ *   · aceptaba de base una foto de media rueda (`clase='intradia'`).
+ *   · con base ≤ 0 publicaba "0,0 %", que se lee como "no se movió".
+ *
+ * LA BASE (sólo cierres medidos, `esApto`, anteriores a hoy):
+ *   · 1D: exactamente la card "Hoy" (`computeDailyPnl`): el último cierre antes
+ *     de hoy, y `dayDiff` dice cuántos días mide.
+ *   · Un rango de N días: el último cierre ANTES de `inicioDeVentana(N)` si está
+ *     a ≤ 5 días (`esBordeFresco`) → rótulo del rango ("en el mes").
+ *     Si no hay uno así, el cierre MÁS CERCANO al arranque, antes o después, y
+ *     `desde` trae su fecha para que el rótulo diga "desde el DD/MM".
+ *     ⚠️ NO DEVUELVE NULL POR ESO, y es a propósito. La primera versión seguía la
+ *     regla de "Este mes" (sin borde fresco no hay número) y el audit midió lo
+ *     que costaba en un rango móvil: quien importó historia con un cierre por
+ *     fin de mes veía el chip de 6M sólo del 27 al 30 de cada mes, y quien
+ *     importó hace poco veía "Sin rendimiento medible en el mes" debajo de
+ *     "Este mes +1,11 %". Y cuando el cierre estaba ADENTRO del rango, la
+ *     versión anterior medía 46 días con el rótulo "en 1 año". El número se
+ *     publica; lo que no se permite es un rótulo que no sea el período medido.
+ *   · MAX (`dias` null): no es este motor. "Todo el período" es la "Ganancia
+ *     total" del título, y el chip la muestra tal cual (`gananciaTotal`) para que
+ *     la misma pantalla no tenga dos respuestas a la misma pregunta.
+ *
+ * @returns {null | { usd, pct, prevDate, dayDiff, valorInicio, aportes, desde }}
+ *   `desde` = fecha del cierre base cuando el rótulo tiene que decirla (null si
+ *   el rótulo del rango es exacto). `null` = no hay ningún cierre medido.
+ */
+export function rendimientoDelRango(snapshots, { dias = null, liveValue = null, liveNetDeposited = null, gananciaTotal = null } = {}) {
+  if (!(dias > 0)) {
+    return gananciaTotal
+      ? { usd: gananciaTotal.usd, pct: gananciaTotal.pct, prevDate: null, dayDiff: null, desde: null }
+      : null
+  }
+  if (liveValue == null) return null
+  if (dias === 1) {
+    const r = computeDailyPnl(snapshots, { liveValue, liveNetDeposited })
+    return r && { ...r, desde: null }
+  }
+  const hoy = hoyISO()
+  const inicio = inicioDeVentana(dias)
+  const cierres = (snapshots || [])
+    .filter(s => s && s.date && s.date < hoy && esApto(s))
+    .sort((a, b) => (a.date < b.date ? -1 : 1))
+  if (!cierres.length) return null
+  const antes = cierres.filter(s => s.date < inicio).pop() || null
+  const adentro = cierres.find(s => s.date >= inicio) || null
+
+  let base
+  let desde = null
+  if (antes && esBordeFresco(antes.date, inicio)) {
+    base = antes
+  } else {
+    const distancia = s => Math.abs(Date.parse(`${inicio}T00:00:00Z`) - Date.parse(`${s.date}T00:00:00Z`))
+    // Empate → el de ANTES (cubre el rango entero). `sort` es estable.
+    base = [antes, adentro].filter(Boolean).sort((a, b) => distancia(a) - distancia(b))[0]
+    desde = base.date
+  }
+  const aportadoHoy = liveNetDeposited != null ? +liveNetDeposited : netDepositedOf(cierres[cierres.length - 1])
+  const r = deltaDesde(base, +liveValue, aportadoHoy, hoy)
+  return r && { ...r, desde }
 }
 
 

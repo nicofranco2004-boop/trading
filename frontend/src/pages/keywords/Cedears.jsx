@@ -1,6 +1,7 @@
 // /cedears — keyword landing para "tracker CEDEARs", "FIFO CEDEARs"
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
+import { PASO_CREAR_CUENTA } from '../../data/prueba'
 
 const FEATURES = [
   {
@@ -30,7 +31,10 @@ const FEATURES = [
 ]
 
 const HOW_STEPS = [
-  { n: 1, title: 'Creá tu cuenta gratis', desc: 'Sin tarjeta. Plan Free suficiente para empezar a trackear tus CEDEARs.' },
+  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
+  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
+  // para quien se registra.
+  { n: 1, ...PASO_CREAR_CUENTA },
   { n: 2, title: 'Cargá tus CEDEARs', desc: 'Manualmente o importá el CSV de tu broker (Cocos, IOL, Balanz). Rendi reconoce CEDEARs por el sufijo .BA automáticamente.' },
   { n: 3, title: 'Rendi calcula valor + P&L en USD', desc: 'Para cada CEDEAR, levantamos el precio del subyacente USA y aplicamos el ratio. Tu P&L queda en dólares reales — no en pesos nominales.' },
   { n: 4, title: 'Vendé con FIFO y declarás a AFIP', desc: 'Al vender, FIFO se aplica automático. El consolidado anual está listo para exportar a CSV y darle a tu contador.' },

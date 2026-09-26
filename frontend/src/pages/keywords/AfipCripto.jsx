@@ -1,6 +1,7 @@
 // /afip-cripto — keyword landing para "declarar cripto AFIP", "FIFO cripto"
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
+import { PASO_CREAR_CUENTA } from '../../data/prueba'
 
 const FEATURES = [
   {
@@ -30,7 +31,10 @@ const FEATURES = [
 ]
 
 const HOW_STEPS = [
-  { n: 1, title: 'Creá tu cuenta gratis', desc: 'Free incluye 1 broker (alcanza para Binance). Sin tarjeta requerida para empezar.' },
+  // El paso 1 es el mismo en las seis landings y sale de `data/prueba.js`:
+  // decía que el plan Free alcanzaba para empezar, y el Free ya no existe
+  // para quien se registra.
+  { n: 1, ...PASO_CREAR_CUENTA },
   { n: 2, title: 'Cargá tu historial de operaciones', desc: 'Exportás el CSV de Binance (Wallet → Transaction History) o cargás manualmente. Rendi reconoce los pares y los precia al dólar del día.' },
   { n: 3, title: 'Rendi aplica FIFO automático', desc: 'Cuando vendés (o convertís) un token, Rendi descuenta del lote más viejo primero y calcula el cost basis al precio de adquisición original.' },
   { n: 4, title: 'Exportás el consolidado anual', desc: 'En diciembre / al cierre fiscal, descargás el CSV con todas tus operaciones, FIFO aplicado, ganancia neta declarable. Tu contador lo lee directo.' },

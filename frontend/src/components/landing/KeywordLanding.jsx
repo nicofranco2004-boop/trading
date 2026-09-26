@@ -31,6 +31,10 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, Check, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import PageMeta from '../PageMeta'
+// Los botones dicen la prueba, no "gratis" a secas: con el paso de abajo, que
+// decía "el plan Free te alcanza", le prometían al visitante un plan gratis
+// que ya no existe para quien se registra.
+import { CTA_PRUEBA, PRUEBA_EN_UNA_LINEA } from '../../data/prueba'
 
 export default function KeywordLanding({
   kicker,
@@ -94,7 +98,7 @@ export default function KeywordLanding({
               className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 transition-colors text-xs font-medium"
             >
               <Sparkles size={12} strokeWidth={2} />
-              Empezar gratis
+              Probar gratis
             </Link>
           </nav>
         </div>
@@ -118,7 +122,7 @@ export default function KeywordLanding({
               className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all"
             >
               <Sparkles size={14} strokeWidth={2} />
-              Crear cuenta gratis
+              {CTA_PRUEBA}
               <ArrowRight size={14} strokeWidth={2} className="group-hover:translate-x-0.5 transition-transform" />
             </Link>
             <Link
@@ -179,17 +183,17 @@ export default function KeywordLanding({
         {/* CTA final */}
         <section className="mb-16 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg p-6 text-center">
           <h2 className="text-xl md:text-2xl font-semibold mb-2 text-ink-0">
-            Probalo gratis ahora
+            Probalo con tu propia cartera
           </h2>
           <p className="text-sm text-ink-2 mb-5 max-w-md mx-auto">
-            Sin tarjeta, sin compromiso. Cargá tu primera operación en 2 minutos.
+            {PRUEBA_EN_UNA_LINEA}
           </p>
           <Link
             to="/login?mode=register"
             className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-colors"
           >
             <Sparkles size={14} strokeWidth={2} />
-            Crear cuenta gratis
+            {CTA_PRUEBA}
             <ArrowRight size={14} strokeWidth={2} />
           </Link>
         </section>

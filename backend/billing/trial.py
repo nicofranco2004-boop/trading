@@ -1,30 +1,38 @@
-"""Free trial de 15 días — 7 de Pro y 8 de Plus, encadenados.
+"""La prueba gratis — TRIAL_PRO_DAYS de Pro y TRIAL_PLUS_DAYS de Plus, encadenados.
+
+(Hoy 10 + 10 = 20 días. Nació como 7 + 8 = 15, cuando era un extra encima del
+plan gratis; los números viven SÓLO en las constantes de abajo.)
 
 Por qué encadenado y no "elegí un plan": pedirle a alguien que elija entre Pro
 y Plus lo obliga a entender la tabla de precios ANTES de usar el producto, y el
 que elige Plus nunca ve Pro (así que nunca lo desea). Encadenado, la pérdida es
-gradual y hay DOS momentos de venta: el día 8 pierde Pro y el día 16 pierde Plus
+gradual y hay DOS momentos de venta: cuando pierde Pro y cuando pierde Plus
 —y ahí Plus se siente barato, porque ya sabe lo que es tenerlo.
 
-    día 1-7   → pro    (el techo: chat libre, 60 análisis/semana)
-    día 8-15  → plus   (pierde lo premium, sigue cómodo)
-    día 16 →    free   (1 análisis/semana)
+    días 1 a TRIAL_PRO_DAYS         → pro    (el techo: chat libre, 60 análisis/semana)
+    los TRIAL_PLUS_DAYS siguientes  → plus   (pierde lo premium, sigue cómodo)
+    después                         → free, o EN PAUSA si nació sin plan gratis
+                                      (`users.requires_plan`, desde el 22/09/2026:
+                                      no tiene un Free al que volver y el muro le
+                                      pide elegir un plan — ver main.cuenta_en_pausa)
 
 Se apoya ENTERO en el modelo de crédito que ya existía para "Regalar Pro":
 
-  · Al activar: users.tier='pro' + credit_active_until = arranque + 15 días
-    (TODO el trial de una) + trial_started_at + trial_used_at.
-  · Día 8: el cron diario cambia tier a 'plus'. NO toca credit_active_until.
-  · Día 16: vence el crédito y get_tier() devuelve 'free' solo — el mismo
-    mecanismo que ya corta los regalos, en tiempo real y sin depender del cron.
+  · Al activar: users.tier='pro' + credit_active_until = arranque +
+    TRIAL_TOTAL_DAYS (TODO el trial de una) + trial_started_at + trial_used_at.
+  · Al cumplir TRIAL_PRO_DAYS: el cron diario cambia tier a 'plus'. NO toca
+    credit_active_until.
+  · Al cumplir TRIAL_TOTAL_DAYS: vence el crédito y get_tier() devuelve 'free'
+    solo — el mismo mecanismo que ya corta los regalos, en tiempo real y sin
+    depender del cron. Para quien nació sin plan gratis, ese 'free' ES la pausa.
 
-El vencimiento se graba a 15 días DESDE EL ARRANQUE a propósito: si el cron
+El vencimiento se graba al total DESDE EL ARRANQUE a propósito: si el cron
 fallara, el usuario se queda en Pro de más en vez de quedarse sin acceso. El
 error cae siempre a favor del usuario, nunca en cortarle el servicio.
 
-Los 7 días de Pro tampoco son arbitrarios: la cuota de Pro se mide en ventanas
-de 7 días, así que el trial consume EXACTAMENTE UNA ventana. El costo queda
-acotado por diseño (~USD 1,50 en el peor caso absoluto), no por confianza.
+La cuota de Pro se mide en ventanas móviles de 7 días. Con 7 días de Pro el
+trial consumía exactamente una; con 10 puede tocar dos (lo gastado el día 1 se
+libera el día 8), así que el peor caso absoluto es ~2 cuotas semanales de Pro.
 """
 
 from __future__ import annotations

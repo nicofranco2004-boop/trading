@@ -21484,8 +21484,10 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
                                for t in tanda],
             }
 
-        pro_days = getattr(_trial, "TRIAL_PRO_DAYS", 7)
-        plus_days = getattr(_trial, "TRIAL_PLUS_DAYS", 8)
+        # Sin respaldo: 7 y 8 eran los días de la prueba vieja, y billing/trial.py
+        # es la única fuente de estos números.
+        pro_days = _trial.TRIAL_PRO_DAYS
+        plus_days = _trial.TRIAL_PLUS_DAYS
         enviados, fallados = [], []
         for t in tanda:
             marca = _dt.utcnow().isoformat()
@@ -22080,6 +22082,10 @@ def admin_billing_grant_comp(
         )
         _notify_plan_change(conn, target_uid, before_tier, plan, "admin_grant")
         # Avisar al USUARIO que le regalaron el plan (best-effort, no rompe el grant).
+        from billing import trial as _grant_trial
+        # Al vencer el regalo, quien nació sin plan gratis queda en pausa: no
+        # tiene un Free al que volver. Lo dicen el mail y el aviso al admin.
+        requiere_plan = _grant_trial._requiere_plan(conn, target_uid)
         try:
             from billing import emails as _grant_emails
             _grant_emails.send_gifted_plan(
@@ -22088,6 +22094,7 @@ def admin_billing_grant_comp(
                 plan=plan,
                 days=days,
                 active_until=after_iso,
+                requiere_plan=requiere_plan,
             )
         except Exception as _gift_ex:
             log.warning("gifted-plan email falló para %s: %s", urow["email"], _gift_ex)
@@ -22101,7 +22108,10 @@ def admin_billing_grant_comp(
             "credit_active_until": after_iso,
             "detail": (
                 f"{plan.upper()} comp de {days} días otorgado a {urow['email']}. "
-                f"Vence {after_iso[:10]} y vuelve a Free solo (cron diario)."
+                + (f"Vence {after_iso[:10]} y la cuenta queda en pausa (se registró "
+                   f"sin plan gratis) hasta que elija un plan."
+                   if requiere_plan else
+                   f"Vence {after_iso[:10]} y vuelve a Free solo (cron diario).")
             ),
         }
     finally:
@@ -30088,8 +30098,10 @@ def _iso_today() -> str:
 def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
     """Email de cancelación. Idempotente vía cancellation_email_sent_at."""
     from billing import emails
+    from billing import trial as _trial
     row = conn.execute(
-        """SELECT s.cancellation_email_sent_at, s.current_period_end, u.email, u.name
+        """SELECT s.cancellation_email_sent_at, s.current_period_end, u.email, u.name,
+                  u.id AS uid
            FROM subscriptions s JOIN users u ON u.id = s.user_id
            WHERE s.mp_subscription_id = ?""",
         (preapproval_id,),
@@ -30102,6 +30114,9 @@ def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
             to=row["email"],
             user_name=(row["name"] or row["email"].split("@")[0]),
             valid_until=valid_until,
+            # Quien nació sin plan gratis no "vuelve a Free": queda en pausa.
+            # `_requiere_plan` tolera una base sin la columna (responde False).
+            requiere_plan=_trial._requiere_plan(conn, row["uid"]),
         )
         with conn:
             conn.execute(
