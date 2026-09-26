@@ -17,7 +17,10 @@
 //   2. Copiá el Pixel ID (numérico, ~15 dígitos).
 //   3. Pegalo abajo en META_PIXEL_ID y hacé deploy.
 // Mientras esté vacío, todo este módulo es no-op: la app funciona igual y no
-// carga nada de Meta.
+// carga nada de Meta. Lo mismo fuera de rendi.finance (ver utils/medicion.js):
+// una prueba en el servidor local no es un visitante ni un registro.
+
+import { seMideAca } from './medicion'
 
 const META_PIXEL_ID = '1281911210681122' // ← Pixel "Rendi" del ad account (Events Manager).
 // Antes apuntaba a 1313319913641013, que NO existía en esta cuenta publicitaria →
@@ -33,10 +36,10 @@ let initialized = false
  */
 export function initMetaPixel() {
   if (initialized) return
-  if (!META_PIXEL_ID || typeof window === 'undefined') {
+  if (!META_PIXEL_ID || !seMideAca()) {
     if (DEBUG) {
       // eslint-disable-next-line no-console
-      console.log('[meta-pixel] META_PIXEL_ID no seteado — pixel deshabilitado')
+      console.log('[meta-pixel] no es rendi.finance — el pixel no se carga')
     }
     return
   }
@@ -88,7 +91,7 @@ export function initMetaPixel() {
  * @param {object} params opcional. NO mandar PII (email, nombre, montos).
  */
 export function trackMetaEvent(name, params = {}) {
-  if (typeof window === 'undefined' || !window.fbq) {
+  if (!seMideAca() || !window.fbq) {
     if (DEBUG) {
       // eslint-disable-next-line no-console
       console.log('[meta-pixel] (noop)', name, params)
