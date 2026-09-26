@@ -856,6 +856,16 @@ def _marcar_bienvenidas_previas(conn) -> int:
         return 0
 
 
+# La nota que deja una compra registrada por chat (register_trade). Van acá
+# arriba y no al lado del chat porque init_db() —que corre al importar este
+# archivo, antes de llegar allá— también las usa: la vieja es la que busca para
+# reemplazarla en las compras de antes del 2026-09-26, cuando el asistente se
+# llamaba de otra forma. Es el ÚNICO lugar del backend donde el nombre viejo
+# tiene que estar (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
+_NOTA_COMPRA_POR_CHAT = "Registrado por Rendi AI"
+_NOTA_COMPRA_POR_CHAT_VIEJA = "Registrado por Coach IA"
+
+
 def init_db():
     if USANDO_PG:
         # En Postgres NO se replican las 46 migraciones incrementales: son la
@@ -2949,6 +2959,21 @@ def init_db():
                 "AND kind IN ('fundamentals', 'analysts')")
         except Exception:
             pass  # tabla puede no existir en DBs muy viejas pre-migración
+
+        # Las compras registradas por chat antes del 2026-09-26 guardaron la nota
+        # con el nombre viejo del asistente, y se ve en "Editar posición → Notas".
+        # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
+        # queda como la dejó. En cada boot, como la purga de arriba: después de la
+        # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
+        # arranque.
+        try:
+            n = conn.execute(
+                "UPDATE positions SET notes = ? WHERE notes = ?",
+                (_NOTA_COMPRA_POR_CHAT, _NOTA_COMPRA_POR_CHAT_VIEJA)).rowcount or 0
+            if n:
+                log.info("notas de compras por chat renombradas: %d", n)
+        except Exception as ex:
+            log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
 
         conn.commit()
 
@@ -22507,7 +22532,7 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
-_AI_CHAT_SYSTEM = """Sos el coach de inversiones de Rendi, una app argentina de seguimiento de portfolios personales. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
+_AI_CHAT_SYSTEM = """Sos Rendi AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
 No das recomendaciones específicas de "comprá X" o "vendé Y". Sí explicás conceptos, marcos analíticos, ratios, riesgos, y hacés preguntas que abren reflexión.
@@ -22863,7 +22888,7 @@ Estás hablando con el ASESOR FINANCIERO del dueño de esta cartera, no con el d
 - Describí y cuantificá; el asesor decide qué hacer con su cliente.
 """
 
-_AI_CHAT_SYSTEM_FREE = """Sos el asistente de Rendi para usuarios del plan Free. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
+_AI_CHAT_SYSTEM_FREE = """Sos Rendi AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
 
 ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
@@ -26546,7 +26571,7 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                 broker=broker_name, asset=p["asset"], buy_price=p["price"],
                 quantity=p["quantity"], invested=p["amount"],
                 asset_type=p["asset_type"], currency=p["currency"],
-                entry_date=p["date"], notes="Registrado por Rendi AI")
+                entry_date=p["date"], notes=_NOTA_COMPRA_POR_CHAT)
             row = create_position(pos_in, uid)
             _LAST_CHAT_TRADE[uid] = {
                 "kind": "buy", "position_id": row.get("id"),
