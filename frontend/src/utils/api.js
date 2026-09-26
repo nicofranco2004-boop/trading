@@ -96,6 +96,15 @@ async function req(method, path, body, opts) {
       }
       return mock
     }
+    // ⚠️ EN DEMO NADA SALE AL BACKEND REAL. Antes, un GET que el demo no conocía
+    // caía al `fetch` de abajo CON LA COOKIE del navegador: a un visitante sin
+    // sesión le volvía un 401 ("Unauthorized" en Movimientos) y a uno con su
+    // cuenta abierta en el mismo navegador le volvían SUS datos, mezclados con
+    // los del demo (sus plazos fijos sumados al total). Sin simulación, no hay
+    // dato: la pantalla lo trata como cualquier otro error.
+    const err = new Error('Esta sección no está disponible en modo demo.')
+    err.demoBlocked = true
+    throw err
   }
 
   const headers = { 'Content-Type': 'application/json' }

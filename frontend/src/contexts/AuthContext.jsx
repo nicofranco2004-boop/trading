@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { api, clearClientContext, EVENTO_PLAN_REQUERIDO } from '../utils/api'
 import { setBrokersRegistry } from '../utils/valuation'
-import { isDemoMode, enableDemoMode, disableDemoMode } from '../utils/demo'
+import { isDemoMode, enableDemoMode, disableDemoMode, vencerDemoSiCorresponde } from '../utils/demo'
 import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
@@ -90,6 +90,9 @@ export function AuthProvider({ children }) {
           const cleanUrl = window.location.pathname + window.location.hash
           window.history.replaceState({}, '', cleanUrl)
         } catch {}
+      } else {
+        // Sin `?demo=1` en la URL: una marca vieja no te deja atrapado en el demo.
+        vencerDemoSiCorresponde()
       }
       if (isDemoMode()) return DEMO_USER
     }

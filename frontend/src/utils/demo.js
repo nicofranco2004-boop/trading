@@ -75,7 +75,37 @@ export function isDemoMode() {
   // respuesta correcta cuando no se puede saber: es lo que pasa siempre salvo
   // que alguien haya entrado por el link de la demo.
   try {
-    return localStorage.getItem(DEMO_FLAG_KEY) === '1'
+    // La marca guarda CUÁNDO se activó (ver `demoVencido`); el `'1'` viejo también
+    // cuenta hasta que `vencerDemoSiCorresponde` lo limpie al abrir la app.
+    return !!localStorage.getItem(DEMO_FLAG_KEY)
+  } catch {
+    return false
+  }
+}
+
+// ⚠️ EL MODO DEMO VENCE. Antes la marca quedaba para siempre: quien probó el
+// demo y volvía otro día a rendi.finance no veía la portada ni podía iniciar
+// sesión — veía el demo otra vez, y la única salida era "Crear cuenta"
+// (verificado en producción el 2026-09-25). Ahora la marca guarda CUÁNDO se
+// activó y se evalúa UNA vez, al abrir la app (`AuthContext`): así nunca se
+// corta en medio de una visita.
+export const DEMO_DURA_MS = 12 * 60 * 60 * 1000
+
+/** ¿La marca de demo guardada es vieja? `'1'` es el formato anterior, sin fecha. */
+export function demoVencido(valor, ahora = Date.now()) {
+  if (!valor) return false
+  const desde = Number(valor)
+  return !(desde > 1) || ahora - desde > DEMO_DURA_MS
+}
+
+/** Al abrir la app: si la marca venció, se sale del demo. Devuelve si salió. */
+export function vencerDemoSiCorresponde() {
+  if (typeof window === 'undefined') return false
+  try {
+    if (!demoVencido(localStorage.getItem(DEMO_FLAG_KEY))) return false
+    localStorage.removeItem(DEMO_FLAG_KEY)
+    clearDemoOverlay()
+    return true
   } catch {
     return false
   }
@@ -83,7 +113,7 @@ export function isDemoMode() {
 
 export function enableDemoMode() {
   if (typeof window === 'undefined') return
-  localStorage.setItem(DEMO_FLAG_KEY, '1')
+  localStorage.setItem(DEMO_FLAG_KEY, String(Date.now()))
   // Limpiamos cualquier overlay residual al activar — siempre arranca limpio.
   clearDemoOverlay()
 }
@@ -3132,6 +3162,24 @@ export function handleDemoRequest(method, path, body) {
     // que todavía no tiene cuenta, y le estábamos diciendo que no podemos medir.
     // El año se arma con `buildDemoPeriodReport`, que ya existía para la pestaña
     // Año — no hay un segundo generador.
+    // ⚠️ ESTOS ONCE SE ESCAPABAN AL BACKEND REAL (medido 2026-09-25 recorriendo
+    // todas las pantallas del demo). A un visitante sin sesión le volvía un 401:
+    // Movimientos mostraba "Unauthorized" y Alertas "No pudimos leer tu
+    // configuración". A uno CON sesión real le volvían SUS datos: sus
+    // movimientos y sus plazos fijos sumados al total del demo. Ahora el demo
+    // contesta todo y `api.js` no deja salir nada que no conozca.
+    if (basePath === '/movements')              return _demoMovimientos()
+    if (basePath === '/plazos-fijos')           return []
+    if (basePath === '/futures')                return []
+    if (basePath === '/bonds/cashflow/skips')   return []
+    if (basePath === '/positions/split-check')  return { suggestions: [] }
+    if (basePath === '/sections/archived')      return { archived: [] }
+    if (basePath === '/market-brief/prefs')     return { enabled: false }
+    if (basePath === '/me/advisor')             return { advisors: [], requests: [] }
+    if (basePath === '/wallbit/status')         return { connected: false }
+    if (basePath === '/advisor/alerts')         return { history: [] }
+    if (basePath === '/fx-rates')               return _demoFxRates()
+
     if (basePath === '/reports/years') {
       const años = [...new Set(REPORTS_TIMELINE.map(r => parseInt(r.period_key.slice(0, 4), 10)))]
         .sort((a, b) => b - a)
@@ -3196,6 +3244,16 @@ export function handleDemoRequest(method, path, body) {
   //   - posiciones (agregar manual)
   // El resto devuelve { __demoBlocked: true } para que api.js lance un Error
   // con mensaje claro y el componente lo muestre como toast/error inline.
+
+  // ⚠️ LO QUE EL VISITANTE GUARDA A MANO SE BLOQUEA, NO SE "APRUEBA" EN SILENCIO.
+  // El `{ ok: true }` del final contestaba "listo" a 95 escrituras: registrar un
+  // depósito, crear una alerta, un objetivo o un plazo fijo, conectar Wallbit…
+  // La pantalla decía "Listo" y al recargar no había nada. Y "Suscribirme" en
+  // Planes terminaba en "No pudimos generar el checkout". Se bloquea con el
+  // mismo mensaje que ya usan vender o importar: "creá una cuenta".
+  // Quedan en silencio sólo las escrituras de FONDO, que nadie pidió a mano
+  // (la foto del día, el no realizado, la telemetría, "marcar visto").
+  if (_esEscrituraDelVisitante(method, basePath)) return blocked()
 
   // ── Snapshots: silenciar (no falla pero tampoco persistimos)
   if (method === 'POST' && basePath === '/snapshots') return { ok: true }
@@ -3385,6 +3443,81 @@ export function handleDemoRequest(method, path, body) {
 
   // Default: 200 ok silencioso para no romper handlers no mapeados
   return { ok: true }
+}
+
+// ─── Escrituras del visitante (se bloquean) ──────────────────────────────────
+// Las de FONDO siguen en silencio: nadie las pidió a mano y un error ahí sólo
+// sería ruido (la foto diaria, el no realizado del mes, telemetría, "visto").
+const _ESCRITURAS_DE_FONDO = new Set([
+  'POST /snapshots',
+  'POST /monthly/sync-unrealized',
+  'POST /plan/track',
+  'POST /alerts/events/seen',
+  'POST /advisor/alerts/events/seen',
+  'POST /auth/logout',
+  'POST /feedback/recommendation',
+])
+const _BASES_DEL_VISITANTE = [
+  '/cash', '/monthly', '/positions/group', '/conversions', '/bonds/cashflow',
+  '/goals', '/wallbit', '/plazos-fijos', '/futures', '/alerts', '/movements',
+  '/me', '/market-brief', '/assets', '/sections', '/billing', '/iol',
+  '/advisor', '/admin', '/push', '/auth/investor-profile', '/ai/voz',
+]
+function _esEscrituraDelVisitante(method, path) {
+  if (method === 'GET') return false
+  if (_ESCRITURAS_DE_FONDO.has(`${method} ${path}`)) return false
+  if (/^\/positions\/[^/]+\/adjust-ratio$/.test(path)) return true
+  return _BASES_DEL_VISITANTE.some(b => path === b || path.startsWith(b + '/'))
+}
+
+// ─── /movements del demo ─────────────────────────────────────────────────────
+// Misma forma que `_build_movements` del backend (main.py): aportes, compras de
+// las posiciones abiertas y ventas cerradas con su P&L. Sale de los MISMOS
+// fixtures que el resto de las pantallas, así que Movimientos cuenta la misma
+// historia que el Dashboard.
+function _demoMovimientos() {
+  const pad = (n) => String(n).padStart(2, '0')
+  const blueEn = (fecha) => BENCHMARKS.dolar_blue?.[String(fecha).slice(0, 7)] || _DEMO_TC_BLUE
+  const base = { kind: 'movement', fees_usd: 0, notes: '', source: 'manual' }
+  const filas = []
+  const globals = MONTHLY.filter(m => m.broker === 'global')
+  globals.forEach((m, i) => {
+    const fecha = `${m.year}-${pad(m.month)}-01`
+    if (i === 0 && m.capital_inicio > 0) {
+      filas.push({ ...base, id: 'demo-dep-inicial', date: fecha, type: 'DEPOSIT', broker: 'Schwab', asset: '',
+        quantity: null, unit_price: null, amount_usd: m.capital_inicio, currency: 'USD', notes: 'Capital inicial' })
+    }
+    if ((m.deposits || 0) > 0) {
+      filas.push({ ...base, id: `demo-dep-${m.year}-${m.month}`, date: fecha, type: 'DEPOSIT', broker: 'Schwab', asset: '',
+        quantity: null, unit_price: null, amount_usd: m.deposits, currency: 'USD', notes: 'Aporte' })
+    }
+  })
+  for (const p of POSITIONS) {
+    if (p.is_cash || !p.entry_date) continue
+    const enPesos = p.broker === 'Cocos'
+    filas.push({ ...base, id: `demo-pos-${p.id}`, date: p.entry_date, type: 'BUY', broker: p.broker, asset: p.asset,
+      quantity: p.quantity, unit_price: p.buy_price, currency: enPesos ? 'ARS' : 'USD',
+      amount_usd: enPesos ? p.invested / (p.tc_compra || blueEn(p.entry_date)) : p.invested })
+  }
+  for (const o of OPERATIONS) {
+    const enPesos = o.broker === 'Cocos'
+    const bruto = o.exit_price * o.quantity
+    filas.push({ ...base, id: `demo-op-${o.id}`, date: o.date, type: 'SELL', broker: o.broker, asset: o.asset,
+      quantity: o.quantity, unit_price: o.exit_price, currency: enPesos ? 'ARS' : 'USD',
+      amount_usd: enPesos ? bruto / blueEn(o.date) : bruto, pnl_usd: o.pnl_usd })
+  }
+  return filas.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+}
+
+// ─── /fx-rates del demo ──────────────────────────────────────────────────────
+// La historia del dólar que usa la vista en pesos para convertir cada fecha con
+// SU cotización. Sale de la misma serie blue de los benchmarks del demo.
+function _demoFxRates() {
+  const mepSobreBlue = (DOLAR.mep.venta || 1424) / (DOLAR.blue.venta || 1415)
+  const filas = Object.entries(BENCHMARKS.dolar_blue || {})
+    .map(([mes, blue]) => ({ date: `${mes}-01`, blue, mep: Math.round(blue * mepSobreBlue) }))
+  filas.push({ date: hoyISO(), blue: DOLAR.blue.venta, mep: DOLAR.mep.venta })
+  return filas.sort((a, b) => (a.date < b.date ? -1 : 1))
 }
 
 // ─── Heatmap mock builder ────────────────────────────────────────────────────

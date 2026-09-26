@@ -84,7 +84,7 @@ export { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES }
 export default function Planes({ embedded = false }) {
   const navigate = useNavigate()
   const { tier, loading, trial } = usePlanFeatures()
-  const { user } = useAuth()
+  const { user, exitDemo } = useAuth()
   const [billingPeriod, setBillingPeriod] = useState('monthly')  // 'monthly' | 'annual'
   const [subscribing, setSubscribing] = useState(false)
   const [tcValuacion, setTcValuacion] = useState(1415)  // fallback
@@ -178,7 +178,18 @@ export default function Planes({ embedded = false }) {
     return subPeriod === cardPeriod
   }
 
+  // ⚠️ DESDE EL DEMO, PAGAR ES CREAR LA CUENTA. El usuario del demo es ficticio:
+  // "Suscribirme" le pegaba a /billing/subscribe, el demo contestaba sin link de
+  // pago y el visitante veía "No pudimos generar el checkout" justo cuando
+  // quería pagar. Lo mismo que el botón "Crear cuenta" de la barra del demo.
+  function desdeElDemoACrearCuenta() {
+    track('demo_plan_cta', { source: 'planes_page' })
+    exitDemo()
+    navigate('/login?mode=register')
+  }
+
   async function onSubscribeClick(planId) {
+    if (user?.demo) return desdeElDemoACrearCuenta()
     if (subscribing) return
     const targetPeriod = planId === 'plus' ? billingPeriod : billingPeriod
     track('upgrade_subscribe_clicked', {
@@ -233,6 +244,7 @@ export default function Planes({ embedded = false }) {
   // mostrar al user cuántos días le van a quedar con el plan nuevo antes
   // de confirmar.
   async function onChangePlanClick(planId, period) {
+    if (user?.demo) return desdeElDemoACrearCuenta()
     if (subscribing) return
     track('upgrade_subscribe_clicked', {
       from_tier: tier,
@@ -465,6 +477,7 @@ export default function Planes({ embedded = false }) {
                 subscribing,
                 hasCredit,
                 isCancelledMode,
+                esDemo: !!user?.demo,
               })
               // Pricing ARS hardcoded (2026-05-31): cobramos pesos fijos.
               // No hay conversión a USD ni dependencia del blue para el display.
@@ -483,7 +496,7 @@ export default function Planes({ embedded = false }) {
                     : 'por mes'}
                   priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PLUS_FEATURES}
-                  isCurrent={plusIsCurrent || isPlus}
+                  isCurrent={!user?.demo && (plusIsCurrent || isPlus)}
                   ctaLabel={plusCtaInfo.label}
                   ctaDisabled={plusCtaInfo.disabled}
                   ctaLoading={subscribing}
@@ -510,6 +523,7 @@ export default function Planes({ embedded = false }) {
                 subscribing,
                 hasCredit,
                 isCancelledMode,
+                esDemo: !!user?.demo,
               })
               const arsMonthly = billingPeriod === 'annual'
                 ? fmtArs(PRO_PRICE_ARS_ANNUAL_MONTHLY_EQ)
@@ -527,7 +541,7 @@ export default function Planes({ embedded = false }) {
                   priceFootnote="Sin sorpresas. Pago mensual en pesos."
                   features={PRO_FEATURES}
                   badge="Más completo"
-                  isCurrent={proIsCurrent || hasProTier}
+                  isCurrent={!user?.demo && (proIsCurrent || hasProTier)}
                   ctaLabel={proCtaInfo.label}
                   ctaDisabled={proCtaInfo.disabled}
                   ctaLoading={subscribing}
@@ -635,7 +649,12 @@ export default function Planes({ embedded = false }) {
 //     re-suscribirse a cualquier plan. Su plan anchor muestra "Reactivar"
 //     y los otros "Suscribirme". Conceptualmente la sub está terminada;
 //     el acceso restante viene del período ya pagado.
-function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit, isCancelledMode }) {
+function ctaForPlan({ cardPlan, cardPeriod, isCurrent, otherTier, canChangePlan, subscribing, hasCredit, isCancelledMode, esDemo = false }) {
+  // ⚠️ EL VISITANTE DEL DEMO NO TIENE PLAN. El usuario ficticio del demo es Pro
+  // (para mostrar todas las funciones), y Planes le decía "Tu plan actual" y
+  // "Ya tenés Pro" a alguien sin cuenta: ningún botón para suscribirse. El botón
+  // lo lleva a crear la cuenta (ver desdeElDemoACrearCuenta).
+  if (esDemo) return { label: 'Crear cuenta para suscribirme', disabled: false, action: 'subscribe' }
   if (subscribing) {
     return { label: 'Redirigiendo…', disabled: true, action: 'none' }
   }
