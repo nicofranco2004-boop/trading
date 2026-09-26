@@ -30,7 +30,8 @@ import FAQ from '../components/landing/FAQ'
 // El botón de la prueba es el MISMO texto en la home, las landings de SEO, el
 // blog y la guía. Acá estaba escrito a mano ("Probar 20 días gratis") en tres
 // lugares, al lado de la constante que ya se importaba para la sección de precios.
-import { CTA_PRUEBA } from '../data/prueba'
+import { CTA_PRUEBA, cupoDe } from '../data/prueba'
+import { PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 
@@ -504,8 +505,8 @@ function HowItWorks() {
       Icon: MessageSquare,
       meta: 'IA · CHAT CONVERSACIONAL',
       title: 'Le preguntás lo que necesites',
-      body: 'En todos los planes accedés al Coach IA con 12 preguntas guiadas (9 consultas por semana en Plus). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.',
-      chips: ['12 guiadas · 9/sem (Plus)', 'Chat libre · 40/sem (Pro)', 'Memoria persistente'],
+      body: `En todos los planes accedés al Coach IA con 12 preguntas guiadas (${cupoDe(PLUS_FEATURES, 'Chat Rendi AI / sem')} consultas por semana en Plus). Con Pro desbloqueás chat libre: preguntá lo que quieras — "¿cuánto realmente gané en NVDA?", "¿por qué bajó AMD esta semana?", "recordá que el AL30 lo tengo en IOL". Memoria persistente: los hechos que le aclarás los respeta entre sesiones.`,
+      chips: [`12 guiadas · ${cupoDe(PLUS_FEATURES, 'Chat Rendi AI / sem')}/sem (Plus)`, `Chat libre · ${cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')}/sem (Pro)`, 'Memoria persistente'],
       Visual: MockChat,
       cta: { label: 'Ver plan Pro', to: '/planes' },
     },

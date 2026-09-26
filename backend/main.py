@@ -28738,9 +28738,8 @@ def plan_features(
     Shape (estable):
       tier: 'free' | 'plus' | 'pro' | 'advisor' | 'admin'
       limits.brokers_max / brokers_current / brokers_can_create / brokers_grandfather
-      limits.insights_diagnostic_visible
       limits.behavioral_tags_visible
-      access.<feature_id>: bool
+      access.<feature_id>: bool — sólo los de ai.plan.FEATURE_IDS
       planes: [{tier, limits}] — los topes de los planes en venta, del más
               barato al más caro (para decir qué plan destraba qué)
       client_ctx: bool — True si el asesor está mirando la cuenta de un cliente

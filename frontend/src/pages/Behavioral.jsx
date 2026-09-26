@@ -26,6 +26,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { cuantosSeVen, planQueDestraba } from '../utils/planes'
 import { pctTxt } from '../utils/format'
 import { SERIES_COLORS } from '../utils/chartTheme'
 
@@ -649,18 +650,20 @@ function EvidenceRow({ label, value, count, mono }) {
   )
 }
 
-// ─── BehavioralCards — grid de cards con gate Free/Pro ──────────────────────
-// • Pro/Admin: muestra todas las cards con su análisis personalizado.
-// • Free (3) / Plus (6): muestra las cards visibles + el resto como "preview
-//   educativo" — explican QUÉ detecta cada sesgo (definición abstracta)
-//   sin exponer la data personal del user. Cada preview tiene CTA a Plus/Pro.
+// ─── BehavioralCards — grid de cards con gate por plan ──────────────────────
+// • Pro/Admin (y el plan cuyo tope es `null`, sin tope): todas las cards con su
+//   análisis personalizado.
+// • Con tope (`behavioral_tags_visible` del backend): las cards visibles + el
+//   resto como "preview educativo" — explican QUÉ detecta cada sesgo
+//   (definición abstracta) sin exponer la data personal del user. Cada preview
+//   dice qué plan la destraba, leído de `features.planes` — nunca escrito acá.
 //
 // Rationale: el patrón anterior (un solo "Desbloqueá 11 análisis más con
 // Pro") no comunicaba valor — el user no sabía qué sesgos se estaban
 // analizando. Con preview educativo, el user puede juzgar si los sesgos
 // son útiles para su caso antes de upgradear.
 function BehavioralCards({ cards, onCardClick }) {
-  const { limit, hasFullAccess, loading } = usePlanFeatures()
+  const { limit, hasFullAccess, loading, features } = usePlanFeatures()
 
   // Fail-CLOSED durante loading: en el primer page load sin cache, en lugar
   // de mostrar todas las cards (flash que un Free podría capturar) mostramos
@@ -684,15 +687,19 @@ function BehavioralCards({ cards, onCardClick }) {
     )
   }
 
-  // Loading (sin cache) o Free/Plus — mostramos split visible + preview educativo
-  const visibleCount = limit('behavioral_tags_visible') || 1
+  // Loading (sin cache) o un plan con tope — split visible + preview educativo.
+  // `null` es SIN tope (todas): antes `|| 1` lo leía como una sola card, y el
+  // 15/10 el Plus pasa a no tener tope (ver utils/planes.js).
+  const visibleCount = cuantosSeVen(limit('behavioral_tags_visible'), cards.length)
   const visible = cards.slice(0, visibleCount)
   const locked = cards.slice(visibleCount)
 
-  // Cuántas cards puede ver Plus (debe coincidir con plan.py PLUS limits).
-  // Free ve 3, Plus ve 6, Pro ve todas. Para Free, las cards en posiciones
-  // 3-5 (las que ve Plus que él no) tienen CTA "Plus"; las 6-11 son Pro-only.
-  const PLUS_VISIBLE_COUNT = 6
+  // Qué plan destraba cada card bloqueada: el más barato cuyo tope la muestra,
+  // según los topes que manda el backend. Antes era `PLUS_VISIBLE_COUNT = 6`
+  // escrito acá. Sin `planes` (un cache de antes de este cambio) se dice Pro:
+  // puede no ser el más barato, pero nunca promete algo que no da.
+  const planes = features?.planes
+  const destraba = (idx) => planQueDestraba(planes, 'behavioral_tags_visible', idx) || 'pro'
 
   return (
     <div className="space-y-3">
@@ -708,13 +715,10 @@ function BehavioralCards({ cards, onCardClick }) {
             <BehavioralCard card={card} onClick={() => onCardClick(card)} />
           </AskAIAbout>
         ))}
-        {/* Preview educativo de los sesgos bloqueados.
-            Para Free: posiciones 1-3 son visibles en Plus (targetTier='plus'),
-            4-11 son solo Pro (targetTier='pro'). Para Plus: todas las
-            bloqueadas son Pro. */}
+        {/* Preview educativo de los sesgos bloqueados. Cada una con el plan
+            que la destraba (ver `destraba` arriba). */}
         {locked.map((card, i) => {
-          const absoluteIdx = visibleCount + i
-          const targetTier = absoluteIdx < PLUS_VISIBLE_COUNT ? 'plus' : 'pro'
+          const targetTier = destraba(visibleCount + i)
           return (
             <BehavioralCardLockedPreview
               key={`locked-${card.code}`}
@@ -727,7 +731,8 @@ function BehavioralCards({ cards, onCardClick }) {
 
       {/* CTA general al final — track distinto al de cada card */}
       {locked.length > 0 && (
-        <LockedCtaFooter hiddenCount={locked.length} totalCount={cards.length} />
+        <LockedCtaFooter hiddenCount={locked.length} totalCount={cards.length}
+                         targetTier={destraba(cards.length - 1)} />
       )}
     </div>
   )
@@ -813,7 +818,9 @@ function BehavioralCardLockedPreview({ card, targetTier = 'pro' }) {
 // ─── LockedCtaFooter ────────────────────────────────────────────────────────
 // CTA grande al final del grid de previews. Resumen visual + botón único
 // para upgradear. Track distinto al click-per-card para distinguir intenciones.
-function LockedCtaFooter({ hiddenCount, totalCount }) {
+// `targetTier` = el plan que muestra TODAS las cards (decía "Rendi Pro" fijo, y
+// el 15/10 el Plus también las muestra todas).
+function LockedCtaFooter({ hiddenCount, totalCount, targetTier = 'pro' }) {
   const navigate = useNavigate()
   const go = () => {
     track('feature_blocked_clicked', { feature: 'comportamiento.full', source: 'behavioral_grid_footer' })
@@ -828,7 +835,7 @@ function LockedCtaFooter({ hiddenCount, totalCount }) {
         </p>
       </div>
       <p className="text-xs text-ink-2 mb-3 max-w-md mx-auto">
-        Rendi Pro detecta {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica y recomendaciones del Coach IA.
+        Rendi {targetTier === 'plus' ? 'Plus' : 'Pro'} te muestra los {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica.
       </p>
       <button
         type="button"

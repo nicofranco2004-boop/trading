@@ -7,8 +7,11 @@
 //   const { tier, limits, loading, can, isFree, isPro, isAdmin } = usePlanFeatures()
 //
 // Helpers:
-//   can('insights.distribucion_activo')  → bool
-//   limit('insights_diagnostic_visible') → number | null (null = sin tope)
+//   can('export.csv')                    → bool
+//   limit('behavioral_tags_visible')     → number | null (null = sin tope)
+//   features.planes                      → topes de los planes en venta, para
+//                                          decir qué plan destraba qué
+//                                          (ver utils/planes.js)
 //
 // Cache: el hook usa useRef compartido por modulo + invalidate via versión
 // global incrementada. Esto evita refetch en cada montaje de componente y

@@ -126,10 +126,10 @@ _ACCESOS = {
 
 # Lo que ya se prometió y no es cierto para NINGÚN plan. Cada uno con su porqué.
 _NO_SE_PROMETE = {
-    "observaciones": "el tope de puntos del diagnóstico (`insights_diagnostic_visible`) "
-                     "no lo aplica ninguna pantalla: todos ven el diagnóstico entero",
-    "Distribución por activo": "`insights.distribucion_activo` no lo aplica ninguna "
-                               "pantalla: la distribución se abrió para todos",
+    "observaciones": "el diagnóstico completo es de todos los planes (decisión del "
+                     "2026-09-26): un tope de puntos no es algo que un plan dé",
+    "Distribución por activo": "la distribución por activo es de todos los planes "
+                               "(decisión del 2026-09-26): no la da el plan pago",
     "análisis de comportamiento": "son DETECTORES; «análisis» es el cupo de IA, y "
                                   "mezclarlos es cómo el mail dijo 4 donde eran 6",
 }

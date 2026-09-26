@@ -309,10 +309,14 @@ export default function RendiMate() {
         {sinCupo && (
           <div className="rounded-lg border border-rendi-accent/30 bg-rendi-accent/[0.07] px-3 py-2">
             <p className="m-0 text-[12px] text-ink-1 leading-snug">{sinCupo.message}</p>
+            {/* "Escuchar todas las que quieras" prometía audio sin límite, y
+                ningún plan lo da: en los pagos cada audio usa una consulta de
+                la semana (quota.reserve_listen). Lo que da cada plan lo dice
+                el cartel de /planes. */}
             {sinCupo.upgrade?.available && (
               <Link to="/planes" onClick={() => setOpen(false)}
                 className="mt-1.5 inline-flex items-center gap-1 text-[12px] font-semibold text-rendi-accent hover:underline underline-offset-2">
-                Escuchar todas las que quieras <ArrowUpRight size={12} aria-hidden="true" />
+                Escuchar más respuestas <ArrowUpRight size={12} aria-hidden="true" />
               </Link>
             )}
           </div>

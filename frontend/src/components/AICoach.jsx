@@ -29,6 +29,8 @@ import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
+import { PRO_FEATURES } from '../data/planCatalog'
+import { cupoDe } from '../data/prueba'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
 // Insights genera dinámicamente preguntas data-driven basadas en el
@@ -603,7 +605,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         <div className="border-t border-line/70 dark:border-line/40 px-3 py-2 bg-data-violet/5 flex items-center gap-2">
           <Lock size={11} className="text-data-violet flex-shrink-0" />
           <p className="text-[10px] text-ink-2 leading-snug flex-1">
-            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro (40 consultas/sem).
+            {/* El cupo sale del catálogo (vigilado contra el backend): el 40 estaba escrito. */}
+            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro ({cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')} consultas/sem).
           </p>
           <a
             href="/planes"

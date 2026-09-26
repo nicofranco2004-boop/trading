@@ -50,7 +50,6 @@ export const PLUS_FEATURES = {
     { label: 'Personalizá el diagnóstico sin límite', sub: '“No me interesa” ilimitado (Free: 2/semana)' },
     { label: '6 detectores de comportamiento visibles (de 12 disponibles)' },
     { label: 'Métricas de riesgo desbloqueadas', sub: 'Sharpe, Sortino, beta, alfa, Information Ratio y Calmar (en Free se ven bloqueadas; CAGR y volatilidad ya vienen gratis)' },
-    { label: 'Distribución por activo desbloqueada' },
     { label: 'Reportes históricos completos (todos los meses)' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
     { label: '9× más Chat Rendi AI que Free', sub: '9 consultas/semana vs 1 en Free' },

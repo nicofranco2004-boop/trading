@@ -38,6 +38,18 @@ export function cupoDe(plan, etiqueta) {
   return plan?.quotas?.find(q => q.label === etiqueta)?.value
 }
 
+/** Cuántas veces el cupo de `plan` le gana al de `otro` ("60" contra "1" → 60),
+ *  sólo si la cuenta es EXACTA y mayor que 1; si no, null y el texto dice los
+ *  números sin múltiplo. Configuración le decía "10× más análisis IA" a un Free,
+ *  que tiene 1 (son 60×): el múltiplo estaba escrito, no calculado. La misma
+ *  regla del lado del backend es `plan_textos._veces`. */
+export function vecesMas(plan, otro, etiqueta) {
+  const a = Number(cupoDe(plan, etiqueta))
+  const b = Number(cupoDe(otro, etiqueta))
+  if (!Number.isInteger(a) || !Number.isInteger(b) || b <= 0 || a % b !== 0) return null
+  return a / b > 1 ? a / b : null
+}
+
 /** Qué le pasa a la cuenta cuando se le termina lo que tenía: la prueba, un
  *  plan cancelado o un regalo. Depende de UNA sola cosa, `user.requires_plan`:
  *    · nació sin plan gratis → no hay Free al que volver: queda en pausa;

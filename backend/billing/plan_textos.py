@@ -23,15 +23,13 @@ detectores, alertas y accesos)— y se lee al armar el texto, no al importar el
 módulo. El 2026-10-15 se revierte `78f43739` (Plus: 2 análisis, los 12
 detectores, alertas sin tope) y los mails acompañan solos.
 
-LO QUE NO SE PROMETE, A PROPÓSITO. Dos entradas de PLAN_LIMITS están declaradas
-pero ninguna pantalla las aplica, y prometerlas es mentir igual que con un
-número viejo:
-  · `insights_diagnostic_visible`: todos ven el diagnóstico entero. Lo que se
-    limita es el "No me interesa" (`diag_dismiss_per_week`), y eso sí se dice.
-  · `insights.distribucion_activo`: la distribución de activos se abrió para
-    todos (ver el comentario en `pages/Insights.jsx`: "era 'Por activo' en
-    Distribución, gateada Pro"). Un Free no la pierde.
-Si alguno de los dos vuelve a aplicarse, se suma acá.
+LO QUE ES DE TODOS NO SE VENDE. El diagnóstico completo y la distribución por
+activo son de todos los planes (decisión de producto del 2026-09-26): estaban
+declarados como topes (`insights_diagnostic_visible`,
+`insights.distribucion_activo`) que ninguna pantalla aplicaba, y los mails
+viejos los prometían como si fueran del plan pago. Se sacaron de la tabla (ver
+`ai/plan.py`); lo que sí se limita del diagnóstico es el "No me interesa"
+(`diag_dismiss_per_week`), y eso sí se dice.
 
 Lo que no es un número (el chat libre, las respuestas con causalidad, el panel
 del asesor) no está en esas tablas: el chat libre y el modo research-note se

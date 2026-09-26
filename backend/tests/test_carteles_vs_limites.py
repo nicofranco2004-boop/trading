@@ -53,7 +53,7 @@ if BACKEND not in sys.path:
 
 import main  # noqa: E402
 from ai import tts  # noqa: E402
-from ai.plan import PLAN_LIMITS, PLANES_EN_VENTA  # noqa: E402
+from ai.plan import FEATURE_IDS, PLAN_LIMITS, PLANES_EN_VENTA  # noqa: E402
 from ai.prompts import is_descriptive_tier  # noqa: E402
 from ai.quota import LIMITS  # noqa: E402
 from billing import plan_textos  # noqa: E402
@@ -140,12 +140,12 @@ _CONTESTA = {
 
 # Lo que se prometió y no es cierto para NINGÚN plan. Cada uno con su porqué.
 _NO_SE_PROMETE = {
-    "Distribución por activo": "`insights.distribucion_activo` no lo aplica ninguna "
-                               "pantalla: la distribución se abrió para todos",
-    "observaciones": "el tope de puntos del diagnóstico (`insights_diagnostic_visible`) "
-                     "no lo aplica ninguna pantalla",
-    "Diagnóstico completo": "todos ven el diagnóstico entero; lo que se limita es "
-                            "personalizarlo (`diag_dismiss_per_week`)",
+    "Distribución por activo": "es de todos los planes (decisión del 2026-09-26): "
+                               "no la da el plan pago",
+    "observaciones": "el diagnóstico completo es de todos los planes (decisión del "
+                     "2026-09-26): un tope de puntos no es algo que un plan dé",
+    "Diagnóstico completo": "es de todos los planes (decisión del 2026-09-26); lo que "
+                            "se limita es personalizarlo (`diag_dismiss_per_week`)",
     "AI Hub": "no existe: es roadmap, y el roadmap no va mezclado con lo que se vende",
     "análisis de comportamiento": "son DETECTORES; «análisis» es el cupo de IA",
 }
@@ -522,6 +522,96 @@ class PorElCaminoDeProduccion(_PorElCamino):
         self.assertEqual(d["error"], "chat_quota_exceeded")
         self._cartel_dice_lo_que_da(d["upgrade"], "chat", "429 voz de un Plus",
                                     usage=d["usage"])
+
+
+# ─── Lo que es de todos ─────────────────────────────────────────────────────
+# Decisión de producto del 2026-09-26: el diagnóstico completo y la
+# distribución por activo son de TODOS los planes. Estaban declarados como topes
+# que ninguna pantalla aplicaba, y los textos los prometían como si fueran del
+# plan pago (los mails viejos, los carteles, el catálogo).
+
+_DE_TODOS = ("insights_diagnostic_visible", "insights.distribucion_activo")
+
+# Las dos líneas que quedan en el bloque del Plus de `ai/plan.py`: están pegadas a
+# las que reescribe `git revert 78f43739` y borrarlas antes hace que el revert
+# frene con un conflicto en los topes nuevos del Plus (probado el 2026-09-26).
+_SE_BORRAN_EL_15_10 = {("plus", "insights_diagnostic_visible"),
+                       ("plus", "insights.distribucion_activo")}
+
+REPO = os.path.dirname(BACKEND)
+# Los únicos archivos que pueden nombrarlas: la tabla (con el aviso de arriba) y
+# el módulo de textos, que explica por qué no se venden. Nadie más las lee.
+_PUEDEN_NOMBRARLAS = {os.path.join("backend", "ai", "plan.py"),
+                      os.path.join("backend", "billing", "plan_textos.py")}
+
+
+def _declaraciones() -> set:
+    """(plan, clave) cada vez que la tabla declara algo de lo que es de todos."""
+    return {(plan, clave) for plan, lim in PLAN_LIMITS.items() for clave in _DE_TODOS
+            if clave in lim or clave in lim["can_access"]}
+
+
+def _archivos_de_codigo():
+    for raiz, ext in ((os.path.join(REPO, "backend"), (".py",)),
+                      (os.path.join(REPO, "frontend", "src"), (".js", ".jsx"))):
+        for d, subdirs, archivos in os.walk(raiz):
+            subdirs[:] = [x for x in subdirs if x not in ("node_modules", "tests", "__pycache__")]
+            for a in archivos:
+                if a.endswith(ext) and ".test." not in a:
+                    yield os.path.join(d, a)
+
+
+class LoQueEsDeTodos(_PorElCamino):
+
+    def test_la_excepcion_del_plus_vence_con_el_revert_del_15_10(self):
+        """Hasta el 15/10 la tabla las declara SÓLO en el bloque del Plus. El
+        revert del 15/10 reescribe ese bloque (le da los 12 detectores:
+        `comportamiento.full` pasa a True); desde ahí ya no hay por qué
+        esperar, y este test lo exige."""
+        if PLAN_LIMITS["plus"]["can_access"].get("comportamiento.full"):
+            self.assertEqual(
+                _declaraciones(), set(),
+                "Ya se hizo el revert del 15/10: borrá del bloque del Plus en "
+                "backend/ai/plan.py las líneas «insights_diagnostic_visible» e "
+                "«insights.distribucion_activo», y después _SE_BORRAN_EL_15_10 de "
+                "este test y el aviso ⚠️ de arriba de PLAN_LIMITS.")
+        else:
+            # Antes del revert la excepción tiene que decir exactamente lo que
+            # hay: si alguien ya borró las líneas, que borre también esto.
+            self.assertEqual(_declaraciones(), _SE_BORRAN_EL_15_10)
+
+    def test_no_es_una_feature_que_se_pueda_pedir(self):
+        """Fuera de FEATURE_IDS, `can_access` no la da: nadie puede volver a
+        gatearla sin declararla (y declararla pone rojo el test de arriba)."""
+        self.assertNotIn("insights.distribucion_activo", FEATURE_IDS)
+
+    def test_la_pantalla_no_la_recibe_de_ningun_plan(self):
+        for tier in ("free", "plus", "pro"):
+            with self.subTest(tier=tier):
+                uid, h = _mk_user(tier)
+                f = self.client.get("/api/plan/features", headers=h).json()
+                for clave in _DE_TODOS:
+                    self.assertNotIn(clave, f["limits"])
+                    self.assertNotIn(clave, f["access"])
+                    for p in f["planes"]:
+                        self.assertNotIn(clave, p["limits"])
+
+    def test_ninguna_linea_de_codigo_las_nombra(self):
+        """Backend y frontend: fuera de la tabla y del módulo de textos, nadie
+        las lee ni las escribe (el mock del demo y los ejemplos del hook
+        también las tenían)."""
+        encontradas = []
+        for ruta in _archivos_de_codigo():
+            rel = os.path.relpath(ruta, REPO)
+            if rel in _PUEDEN_NOMBRARLAS:
+                continue
+            texto = open(ruta, encoding="utf-8").read()
+            for clave in _DE_TODOS:
+                if clave in texto:
+                    encontradas.append(f"{rel}: {clave}")
+        self.assertEqual(encontradas, [], "estas líneas leen o prometen algo que es de todos")
+        # Contra el falso verde: que el recorrido haya mirado algo.
+        self.assertGreater(sum(1 for _ in _archivos_de_codigo()), 50)
 
 
 class LosPlanesQueVeLaPantalla(_PorElCamino):
