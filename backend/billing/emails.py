@@ -29,6 +29,7 @@ Estilo:
 
 from __future__ import annotations
 from money_fmt import fmt_num
+from billing import plan_textos
 import os
 import sys
 import html
@@ -254,7 +255,34 @@ def _wrap_html(body: str) -> str:
 </body></html>"""
 
 
-# ─── Plan helpers (Plus / Pro) ─────────────────────────────────────────────
+# ─── Plan helpers (Plus / Pro / Asesor) ────────────────────────────────────
+
+# El nombre de cada plan, UNA vez. Lo leen `_plan_label` (los mails al usuario,
+# que nunca hablan de Free) y `_tier_label` (el aviso de cambio de plan al
+# admin, donde Free sí existe). Cada una tenía su propio diccionario, y
+# 'advisor' se agregó en uno solo: en el aviso al admin el Asesor se leía
+# "Free", un alta "Free → Asesor" quedaba "Free → Free" y no se mandaba.
+_NOMBRES_DE_PLAN = {"plus": "Plus", "pro": "Pro", "advisor": "Asesor"}
+
+
+def _plan_del_mail(plan: str) -> str:
+    """El plan que el mail nombra y describe: 'plus' y 'advisor' son ellos
+    mismos, cualquier otra cosa se trata como 'pro'.
+
+    La misma regla para el NOMBRE (`_plan_label`) y para las LISTAS
+    (`_plan_features_*`, `_plan_loss_*`). Cuando cada una tenía su propio `if`,
+    'advisor' se arregló en el nombre y en la lista de bienvenida y siguió
+    cayendo en el `else` de la lista de pérdida: el aviso de vencimiento del
+    asesor decía "Tu plan Asesor vence" y le listaba lo que pierde un Pro.
+
+    Un valor que no es un plan pago ('free', None, 'admin') se trata como Pro
+    —el default histórico de estos mails— pero queda en el log: si llega, el
+    que llama le está pasando un dato que no corresponde."""
+    if plan in _NOMBRES_DE_PLAN:
+        return plan
+    log.warning("mail de plan con plan=%r: se describe como Pro", plan)
+    return "pro"
+
 
 def _plan_label(plan: str) -> str:
     """'plus' → 'Plus', 'advisor' → 'Asesor', cualquier otra cosa → 'Pro'.
@@ -263,85 +291,39 @@ def _plan_label(plan: str) -> str:
     el `else` y el mail que recibía el asesor decía "Te activamos Rendi Pro" con
     la lista de features de Pro. Se le regala un plan y se le nombra otro.
     """
-    if plan == "plus":
-        return "Plus"
-    if plan == "advisor":
-        return "Asesor"
-    return "Pro"
+    return _NOMBRES_DE_PLAN[_plan_del_mail(plan)]
 
 
-def _plan_features_html(plan: str) -> str:
-    """Bulleted list HTML de features incluidas en cada plan."""
-    if plan == "advisor":
-        # El Plan Asesor no es "un Pro más grande": es otra app (el libro, los
-        # clientes, la operación grupal). Sin esta rama el mail le prometía las
-        # features de Pro, que no son las que va a ver al entrar.
-        return """
-        <li><b>Tus clientes</b>, cada uno con su cartera, y el total que administrás</li>
-        <li>Entrás a la cuenta de cada cliente <b>con visión Pro</b> (aunque él esté en Free)</li>
-        <li><b>Grupos</b> que se arman solos (por activo o por tamaño de cartera)</li>
-        <li><b>Operación grupal</b>: una compra para todo un grupo, con deshacer</li>
-        <li><b>Informes del período con tu marca</b> + brief diario de tu libro</li>
-        <li><b>Rendi AI sobre todo tu libro</b>: "¿a quiénes les pega esta noticia?"</li>
-        """
-    if plan == "plus":
-        return """
-        <li>Hasta <b>3 brokers</b></li>
-        <li><b>Insights diagnóstico completo</b> (6 observaciones)</li>
-        <li><b>4 análisis de comportamiento</b></li>
-        <li><b>Distribución por activo</b></li>
-        <li><b>Reportes históricos completos</b> (todos los meses)</li>
-        <li>Export CSV consolidado para tu contador</li>
-        """
-    return """
-        <li><b>60 análisis IA por semana</b> (10× más que Free)</li>
-        <li>Respuestas con causalidad y comparaciones</li>
-        <li>Follow-ups y AI Hub (próximamente)</li>
-        <li>Brokers ilimitados</li>
-        <li>Comportamiento + Reportes históricos completos</li>
-        <li>Export CSV consolidado para tu contador</li>
-    """
+# Las cuatro listas de abajo NO tienen números escritos: los arma
+# `billing/plan_textos.py` con los límites que el producto aplica
+# (`ai.quota.LIMITS`, `ai.plan.PLAN_LIMITS`). Estaban escritas a mano y mentían:
+# "10× más que Free" (son 60×), "4 análisis de comportamiento" (son 6
+# detectores), "vas a quedar en 6" al vencer un Pro (queda 1). El guard es
+# `tests/test_mails_vs_limites.py`.
+#
+# `cupos`: los de la PERSONA (`plan_textos.cupos_del_usuario`), que le pasa
+# quien manda el mail. Sin ellos, los del plan. Desde el 15/10 difieren para
+# los que ya pagaban Plus (se les respeta el cupo viejo de análisis).
+
+def _plan_features_html(plan: str, cupos: Optional[dict] = None) -> str:
+    """Lo que incluye el plan, como <li> (mails de bienvenida y de regalo)."""
+    return plan_textos.a_html(plan_textos.incluye(_plan_del_mail(plan), cupos))
 
 
-def _plan_features_text(plan: str) -> str:
-    """Versión text plano de las features (para el cuerpo plain-text del email)."""
-    if plan == "advisor":
-        return ("tus clientes con visión Pro en cada cuenta, grupos dinámicos, "
-                "operación grupal con deshacer, informes con tu marca, brief "
-                "diario y Rendi AI sobre todo tu libro")
-    if plan == "plus":
-        return ("hasta 3 brokers, insights completo, 4 análisis de comportamiento, "
-                "distribución por activo, reportes históricos y export CSV")
-    return ("60 análisis IA por semana, brokers ilimitados, comportamiento + "
-            "reportes completos, export CSV y más")
+def _plan_features_text(plan: str, cupos: Optional[dict] = None) -> str:
+    """Lo mismo que `_plan_features_html`, en texto plano: un renglón por item."""
+    return plan_textos.a_texto(plan_textos.incluye(_plan_del_mail(plan), cupos))
 
 
-def _plan_loss_html(plan: str) -> str:
-    """Lista HTML de features que se pierden al expirar/cancelar el plan."""
-    if plan == "plus":
-        return """
-        <li>3 brokers (vas a quedar con 1)</li>
-        <li>Insights diagnóstico completo (vas a quedar con 3 observaciones)</li>
-        <li>4 análisis de comportamiento (vas a quedar con 1)</li>
-        <li>Distribución por activo</li>
-        <li>Reportes históricos completos</li>
-        <li>Export CSV consolidado</li>
-        """
-    return """
-        <li>60 análisis IA por semana (vas a quedar en 6)</li>
-        <li>Follow-ups + AI Hub</li>
-        <li>Brokers múltiples (vas a quedar con 1)</li>
-        <li>Reportes históricos completos</li>
-        <li>Export CSV consolidado</li>
-    """
+def _plan_loss_html(plan: str, cupos: Optional[dict] = None) -> str:
+    """Lo que se pierde al volver a Free, como <li> (aviso de vencimiento). A
+    quien nació sin plan gratis no se le manda: ver `send_expiration_reminder`."""
+    return plan_textos.a_html(plan_textos.se_pierde(_plan_del_mail(plan), cupos))
 
 
-def _plan_loss_text(plan: str) -> str:
-    if plan == "plus":
-        return ("3 brokers (queda 1), insights (queda 3 obs), comportamiento (queda 1), "
-                "distribución por activo, reportes históricos, export CSV")
-    return ("60 análisis IA/sem (vs 6), follow-ups, brokers ilimitados, "
-            "reportes históricos, export CSV")
+def _plan_loss_text(plan: str, cupos: Optional[dict] = None) -> str:
+    """Lo mismo que `_plan_loss_html`, en texto plano: un renglón por item."""
+    return plan_textos.a_texto(plan_textos.se_pierde(_plan_del_mail(plan), cupos))
 
 
 def _al_terminar(requiere_plan: bool) -> str:
@@ -366,7 +348,7 @@ def _al_terminar(requiere_plan: bool) -> str:
 
 def send_welcome_pro(*, to: str, user_name: str, period: str,
                     amount_ars: int, next_charge_date: Optional[str],
-                    plan: str = "pro") -> bool:
+                    plan: str = "pro", cupos: Optional[dict] = None) -> bool:
     """Email de bienvenida al activarse Plus o Pro.
 
     El nombre histórico es `send_welcome_pro` por back-compat con callers
@@ -409,7 +391,7 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
         Tu suscripción <b>{period_label}</b> está activa. Ya tenés acceso a:
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        {_plan_features_html(plan)}
+        {_plan_features_html(plan, cupos)}
       </ul>
       {detalle_html}
       <p style="font-size:14px;color:#374151;line-height:1.6;">
@@ -420,7 +402,7 @@ def send_welcome_pro(*, to: str, user_name: str, period: str,
         f"¡Bienvenido a Rendi {plan_label}, {user_name}!\n\n"
         f"Tu suscripción {period_label} está activa.\n\n"
         f"{detalle_text}\n\n"
-        f"Acceso a {_plan_features_text(plan)}.\n\n"
+        f"Ya tenés acceso a:\n{_plan_features_text(plan, cupos)}\n\n"
         f"Podés cancelar cuando quieras desde Configuración → Mi plan.\n\n"
         f"— Rendi"
     )
@@ -548,13 +530,14 @@ def send_cancellation(*, to: str, user_name: str, valid_until: str,
 
 def send_expiration_reminder(*, to: str, user_name: str,
                              days_left: int, expires_at: str,
-                             plan: str = "pro", requiere_plan: bool = False) -> bool:
+                             plan: str = "pro", requiere_plan: bool = False,
+                             cupos: Optional[dict] = None) -> bool:
     """3 días antes de que se termine un plan cancelado (o su crédito).
 
-    La lista de "lo que vas a perder" describe la caída a Free ("vas a quedar
-    con 1 broker"). Para quien nació sin plan gratis (`requiere_plan`) eso es
-    falso: no queda en Free, su cuenta queda EN PAUSA. A esa persona se le dice
-    eso, en lugar de la lista. Ver `_al_terminar`."""
+    La lista de "lo que vas a perder" describe la caída a Free ("N análisis
+    IA por semana (vas a quedar con M)"). Para quien nació sin plan gratis
+    (`requiere_plan`) eso es falso: no queda en Free, su cuenta queda EN PAUSA.
+    A esa persona se le dice eso, en lugar de la lista. Ver `_al_terminar`."""
     plan_label = _plan_label(plan)
     if requiere_plan:
         _perdida_html = f"""
@@ -568,9 +551,9 @@ def send_expiration_reminder(*, to: str, user_name: str,
         Después de esa fecha, vas a perder acceso a:
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        {_plan_loss_html(plan)}
+        {_plan_loss_html(plan, cupos)}
       </ul>"""
-        _perdida_txt = f"Después vas a perder: {_plan_loss_text(plan)}."
+        _perdida_txt = f"Después de esa fecha, vas a perder acceso a:\n{_plan_loss_text(plan, cupos)}"
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Tu plan {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
@@ -581,7 +564,7 @@ def send_expiration_reminder(*, to: str, user_name: str,
       </p>
     """
     text = (
-        f"Tu plan Rendi {plan_label} vence en {days_left} días\n\n"
+        f"Tu plan Rendi {plan_label} vence en {days_left} {'día' if days_left == 1 else 'días'}\n\n"
         f"Hola {user_name}, tu suscripción expira el {_fmt_date(expires_at)}.\n\n"
         f"{_perdida_txt}\n\n"
         f"Para renovar: andá a rendi.finance/planes\n\n"
@@ -1013,15 +996,27 @@ TRIAL_INVITE_VARIANTS = ("directo", "cartera")
 # catálogo: cuatro cosas concretas convencen más que catorce, y la lista larga
 # ya está en /planes. Salen de PRO_FEATURES (frontend/src/data/planCatalog.js)
 # — si se agrega algo grande al plan, conviene revisar acá también.
-_PRO_GANCHOS = (
-    "Chat libre con Rendi AI: preguntale lo que quieras sobre tu cartera, con "
-    "tus números adelante (en Free son 12 preguntas guiadas).",
-    "60 análisis por semana en vez de 1: podés pedirle que mire cada gráfico y "
-    "cada sección sin estar cuidando la cuota.",
-    "Todos tus brokers en una sola cartera, sin límite de cuántos conectes.",
-    "Se acuerda de lo que le aclarás entre sesiones, así no le repetís tu "
-    "situación cada vez.",
-)
+#
+# Es una función y no una tupla porque los cupos se leen de los límites
+# (`ai.quota.LIMITS`, `ai.plan.PLAN_LIMITS`) al armar el mail: estaban escritos
+# a mano ("60 análisis por semana en vez de 1"), y el día que cambie un plan
+# la campaña seguiría prometiendo el número de antes.
+def _pro_ganchos() -> tuple:
+    from ai.quota import LIMITS
+    from ai.plan import PLAN_LIMITS
+    pro, free = LIMITS["pro"]["analyses_per_week"], LIMITS["free"]["analyses_per_week"]
+    brokers = PLAN_LIMITS["pro"]["brokers_max"]
+    return (
+        "Chat libre con Rendi AI: preguntale lo que quieras sobre tu cartera, con "
+        "tus números adelante (en Free son 12 preguntas guiadas).",
+        f"{pro} análisis por semana en vez de {free}: podés pedirle que mire cada "
+        "gráfico y cada sección sin estar cuidando la cuota.",
+        ("Todos tus brokers en una sola cartera, sin límite de cuántos conectes."
+         if brokers is None else
+         f"Hasta {brokers} {'broker' if brokers == 1 else 'brokers'} en una sola cartera."),
+        "Se acuerda de lo que le aclarás entre sesiones, así no le repetís tu "
+        "situación cada vez.",
+    )
 
 
 def send_trial_invite(*, to: str, user_name: str = "", variant: str = "directo",
@@ -1059,9 +1054,10 @@ def send_trial_invite(*, to: str, user_name: str = "", variant: str = "directo",
     ap_html, ap_text = f"{hi_html} {ap}", f"{hi_text} {ap}"
 
     # ── 2-4. el cuerpo, igual para las dos ─────────────────────────────────
+    ganchos = _pro_ganchos()
     ganchos_html = "".join(
-        f'<li style="margin:0 0 7px;">{g}</li>' for g in _PRO_GANCHOS)
-    ganchos_text = "\n".join(f"  · {g}" for g in _PRO_GANCHOS)
+        f'<li style="margin:0 0 7px;">{g}</li>' for g in ganchos)
+    ganchos_text = "\n".join(f"  · {g}" for g in ganchos)
     plazo = (f"Son {total_days} días: los primeros {pro_days} con todo Pro y los "
              f"{plus_days} siguientes con Plus. No pedimos tarjeta y no se renueva "
              "sola — cuando termina, tu cuenta vuelve a Free y no se te cobra nada.")
@@ -1140,13 +1136,14 @@ def send_new_signup_admin(*, to: str, new_user_email: str,
 # ─── Email interno: alerta al admin por cada CAMBIO DE PLAN ──────────────────
 
 def _tier_label(tier: Optional[str]) -> str:
-    """Normaliza el tier a una etiqueta legible. NULL / '' / 'free' / cualquier
-    valor desconocido → 'Free' (es el estado por defecto del usuario).
+    """Normaliza el tier a una etiqueta legible: plus/pro/advisor por su nombre
+    (`_NOMBRES_DE_PLAN`); NULL / '' / 'free' / cualquier valor desconocido →
+    'Free' (es el estado por defecto del usuario).
 
     OJO: distinto de _plan_label (más arriba), que asume plus/pro y devuelve
     'Pro' por defecto. Acá necesitamos manejar 'free'/None → 'Free'."""
     t = (tier or "").strip().lower()
-    return {"plus": "Plus", "pro": "Pro"}.get(t, "Free")
+    return _NOMBRES_DE_PLAN.get(t, "Free")
 
 
 # Etiqueta legible del origen del cambio (lo que disparó la transición).
@@ -1164,7 +1161,7 @@ def send_plan_change_admin(*, user_email: str, old_plan: Optional[str],
                            new_plan: Optional[str], source: str,
                            user_name: Optional[str] = None,
                            amount_usd: Optional[float] = None) -> bool:
-    """Aviso INTERNO al admin cuando un usuario CAMBIA de plan (free/plus/pro).
+    """Aviso INTERNO al admin cuando un usuario CAMBIA de plan (free/plus/pro/asesor).
 
     Cubre todas las transiciones: pago de Plus/Pro (free→pago), upgrade/downgrade
     plus↔pro, baja a Free (vencimiento de crédito o fin de período por
@@ -1423,7 +1420,8 @@ def send_orphan_subscription_admin(*, sub_id: str, user_email: str, error: str) 
 
 def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
                      days: int, active_until: Optional[str],
-                     requiere_plan: bool = False) -> bool:
+                     requiere_plan: bool = False,
+                     cupos: Optional[dict] = None) -> bool:
     """Email al USUARIO cuando un admin le REGALA Plus/Pro (grant-comp).
 
     No es un pago: es un acceso de cortesía por N días que se termina solo al
@@ -1442,7 +1440,7 @@ def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
         Te dimos acceso a <b>Rendi {plan_label}</b> sin costo por <b>{days} días</b>. Ya lo tenés activo en tu cuenta.
       </p>
       <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
-        {_plan_features_html(plan)}
+        {_plan_features_html(plan, cupos)}
       </ul>
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:16px;margin:20px 0;">
         <p style="font-size:13px;color:#6b7280;margin:0 0 4px;">Tu acceso de cortesía</p>
@@ -1462,7 +1460,7 @@ def send_gifted_plan(*, to: str, user_name: Optional[str], plan: str,
         f"Plan {plan_label} activo hasta {until_label}.\n"
         f"Cuando llegue esa fecha, {despues}, sin ningún cobro.\n\n"
         f"Entrá a {APP_URL} y aprovechá el acceso.\n\n"
-        f"Incluye: {_plan_features_text(plan)}.\n\n"
+        f"Incluye:\n{_plan_features_text(plan, cupos)}\n\n"
         f"— Rendi"
     )
     return _send(to, f"Te activamos Rendi {plan_label} de regalo",
@@ -2124,13 +2122,17 @@ def send_trial_ending_soon(*, to: str, user_name: str, days_left: int,
             "deja de actualizarse hasta que elijas un plan."
         )
     else:
+        # El cupo de Free se LEE (estaba escrito "1 análisis"): mismo motivo que
+        # en `send_trial_pro_ending` y en `billing/plan_textos.py`.
+        from ai.quota import LIMITS as _L
+        _free_sem = _L["free"]["analyses_per_week"]
         _que_pasa = (
-            f"Hola {user_name}, en {dias} tu cuenta vuelve a Free: 1 análisis por "
-            "semana y el chat con preguntas fijas."
+            f"Hola {user_name}, en {dias} tu cuenta vuelve a Free: {_free_sem} "
+            "análisis por semana y el chat con preguntas fijas."
         )
         _que_pasa_txt = (
-            f"Hola {user_name}, después tu cuenta vuelve a Free: 1 análisis por "
-            "semana y el chat con preguntas fijas."
+            f"Hola {user_name}, después tu cuenta vuelve a Free: {_free_sem} "
+            "análisis por semana y el chat con preguntas fijas."
         )
     body_html = f"""
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Te {_queda} {dias} de prueba</h1>

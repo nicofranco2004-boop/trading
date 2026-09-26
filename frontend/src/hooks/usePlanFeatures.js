@@ -146,12 +146,13 @@ export function usePlanFeatures() {
     // Plan Asesor: true cuando el asesor está mirando la cuenta de un cliente
     // (el backend resolvió el header y devolvió el lente Pro sobre ella).
     clientCtx: features?.client_ctx === true,
-    // Convenience flags — 'advisor' cuenta como pago y con acceso full: para
-    // su PROPIA cuenta el asesor tiene features nivel Pro (paga 4-8× un Pro).
+    // Convenience flags — 'advisor' cuenta como pago: para su PROPIA cuenta el
+    // asesor tiene features nivel Pro (paga 4-8× un Pro).
     isPaid: tier === 'plus' || tier === 'pro' || tier === 'advisor' || tier === 'admin',
-    // hasFullAccess es Pro/Advisor/Admin — Plus tiene features parciales (sin
-    // IA avanzada). Componentes que gateaban con `hasFullAccess` siguen
-    // bloqueando Plus en features Pro-only (ai.followup, ai.hub).
-    hasFullAccess: tier === 'pro' || tier === 'advisor' || tier === 'admin',
+    // ⚠️ No hay un "acceso completo" por nombre de plan, a propósito: cada gate
+    // le pregunta a SU dato (`can(...)`, `limit(...)`). Había `hasFullAccess`
+    // (Pro/Asesor/Admin) y su único usuario, Comportamiento, le iba a mostrar
+    // 1 detector de 12 al Plus el 2026-10-15, cuando la tabla lo pasa a "sin
+    // tope" (ver utils/detectoresVisibles.js).
   }
 }

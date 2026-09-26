@@ -26,6 +26,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { detectoresVisibles } from '../utils/detectoresVisibles'
 import { pctTxt } from '../utils/format'
 import { SERIES_COLORS } from '../utils/chartTheme'
 
@@ -649,9 +650,11 @@ function EvidenceRow({ label, value, count, mono }) {
   )
 }
 
-// ─── BehavioralCards — grid de cards con gate Free/Pro ──────────────────────
-// • Pro/Admin: muestra todas las cards con su análisis personalizado.
-// • Free (3) / Plus (6): muestra las cards visibles + el resto como "preview
+// ─── BehavioralCards — grid de cards con gate por plan ──────────────────────
+// Cuántas se ven lo dice `limits.behavioral_tags_visible` (la tabla de planes
+// del backend), no el nombre del plan — ver utils/detectoresVisibles.js:
+// • sin tope: todas las cards con su análisis personalizado;
+// • con tope (hoy Free 3 / Plus 6): las visibles + el resto como "preview
 //   educativo" — explican QUÉ detecta cada sesgo (definición abstracta)
 //   sin exponer la data personal del user. Cada preview tiene CTA a Plus/Pro.
 //
@@ -659,14 +662,15 @@ function EvidenceRow({ label, value, count, mono }) {
 // Pro") no comunicaba valor — el user no sabía qué sesgos se estaban
 // analizando. Con preview educativo, el user puede juzgar si los sesgos
 // son útiles para su caso antes de upgradear.
-function BehavioralCards({ cards, onCardClick }) {
-  const { limit, hasFullAccess, loading } = usePlanFeatures()
+export function BehavioralCards({ cards, onCardClick }) {
+  const { limit } = usePlanFeatures()
 
-  // Fail-CLOSED durante loading: en el primer page load sin cache, en lugar
-  // de mostrar todas las cards (flash que un Free podría capturar) mostramos
-  // la versión gateada. Si el user es Pro, dura ~100-300ms hasta que el
-  // fetch resuelve. Cubierto por localStorage cache → casi siempre instant.
-  if (hasFullAccess) {
+  // Fail-CLOSED durante loading: en el primer page load sin cache los features
+  // todavía no llegaron (undefined) y se muestra UNA carta, no todas (flash que
+  // un Free podría capturar). Dura ~100-300ms hasta que el fetch resuelve.
+  // Cubierto por localStorage cache → casi siempre instant.
+  const visibleCount = detectoresVisibles(limit('behavioral_tags_visible'))
+  if (visibleCount === Infinity) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {cards.map(card => (
@@ -684,8 +688,7 @@ function BehavioralCards({ cards, onCardClick }) {
     )
   }
 
-  // Loading (sin cache) o Free/Plus — mostramos split visible + preview educativo
-  const visibleCount = limit('behavioral_tags_visible') || 1
+  // Loading (sin cache) o plan con tope — split visible + preview educativo
   const visible = cards.slice(0, visibleCount)
   const locked = cards.slice(visibleCount)
 
