@@ -3189,6 +3189,32 @@ def cuenta_en_pausa(conn, uid: int) -> bool:
         return False
 
 
+def motivo_de_pausa(conn, uid: int) -> Optional[str]:
+    """POR QUÉ está en pausa una cuenta que `cuenta_en_pausa` dio por pausada.
+
+    Son dos situaciones distintas y decir la equivocada es mentir:
+      · 'prueba_terminada' → hizo sus 20 días y se le acabaron.
+      · 'prueba_usada'     → la prueba NUNCA arrancó en esta cuenta porque esa
+        casilla de mail ya la había usado antes (`trial_consumed` sobrevive al
+        borrado de la cuenta, y `normalizar_email` trata al +alias y a los
+        puntos de Gmail como la misma bandeja). A esa persona el muro le decía
+        "terminaron tus 20 días" el día que se registró, sin haber tenido
+        ninguno acá.
+    Se distingue por `trial_started_at`: si nunca arrancó, es NULL.
+
+    Lo usan el muro (`/api/auth/me`) y el panel de admin, para que los dos
+    digan lo mismo. None si no se pudo leer.
+    """
+    try:
+        arrancó = conn.execute(
+            "SELECT trial_started_at FROM users WHERE id=?", (uid,)
+        ).fetchone()["trial_started_at"]
+        return "prueba_terminada" if arrancó else "prueba_usada"
+    except Exception as ex:
+        log.warning("pausa_motivo falló uid=%s: %s", uid, ex)
+        return None
+
+
 def get_effective_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -4053,25 +4079,9 @@ def me(uid: int = Depends(get_effective_user)):
         from billing import trial as _trial
         d["requires_plan"] = _trial._requiere_plan(conn, uid)
         d["cuenta_en_pausa"] = cuenta_en_pausa(conn, uid)
-        # POR QUÉ está en pausa. Son dos situaciones distintas y decirle la
-        # equivocada es mentirle en la cara:
-        #   · 'prueba_terminada' → hizo sus 20 días y se le acabaron.
-        #   · 'prueba_usada'     → la prueba NUNCA arrancó en esta cuenta porque
-        #     esa casilla de mail ya la había usado antes (`trial_consumed`
-        #     sobrevive al borrado de la cuenta, y `normalizar_email` trata al
-        #     +alias y a los puntos de Gmail como la misma bandeja). A esa
-        #     persona el muro le decía "terminaron tus 20 días" el día que se
-        #     registró, sin haber tenido ninguno acá.
-        # Se distingue por `trial_started_at`: si nunca arrancó, es NULL.
-        d["pausa_motivo"] = None
-        if d["cuenta_en_pausa"]:
-            try:
-                arrancó = conn.execute(
-                    "SELECT trial_started_at FROM users WHERE id=?", (uid,)
-                ).fetchone()["trial_started_at"]
-                d["pausa_motivo"] = "prueba_terminada" if arrancó else "prueba_usada"
-            except Exception as ex:
-                log.warning("pausa_motivo falló uid=%s: %s", uid, ex)
+        # POR QUÉ está en pausa ('prueba_terminada' | 'prueba_usada'). La regla
+        # vive en `motivo_de_pausa`, compartida con el panel de admin.
+        d["pausa_motivo"] = motivo_de_pausa(conn, uid) if d["cuenta_en_pausa"] else None
         # Con la cuenta en pausa, ESTE es el dato que convence: "tus 4 brokers y
         # 312 movimientos quedaron guardados" dice que no se perdió nada mucho
         # mejor que la palabra "guardado". Va acá porque /api/auth/me es uno de
@@ -21019,7 +21029,7 @@ def admin_plan_conversion(uid: int = Depends(get_admin_user)):
 _ADMIN_USERS_SELECT = """
     SELECT
         u.id, u.email, u.name, u.is_admin, u.approved, u.created_at, u.last_login_at,
-        u.tier, u.credit_active_until, u.credit_anchor_plan,
+        u.tier, u.credit_active_until, u.credit_anchor_plan, u.email_verified,
         (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS positions_count,
         (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS operations_count,
         (SELECT COUNT(*) FROM brokers b WHERE b.user_id = u.id) AS brokers_count,
@@ -21070,7 +21080,47 @@ def _shape_admin_user_row(r, now_iso: str) -> dict:
     d["billing_affected"] = bool(
         credit_active and anchor in ("plus", "pro") and d["plan"] == "free"
     )
+    d["email_verified"] = bool(d.get("email_verified"))
     return d
+
+
+def _completar_estado_admin(conn, filas: list) -> list:
+    """Le pone a cada fila del panel el `estado` que el plan solo no cuenta.
+
+    `plan` dice qué tier tiene la cuenta, y para la cohorte que nace SIN plan
+    gratis (`users.requires_plan`, desde el 2026-09-22) 'free' no es un estado
+    posible: el panel los mostraba en "free" y parecía que la prueba no les
+    había arrancado. Lo que de verdad les pasa es una de estas dos:
+
+      · 'sin_confirmar' → se registró y nunca confirmó el mail. No puede
+        entrar (el login lo frena), y la prueba no arrancó porque arranca
+        recién al confirmar (`verify_email`). Vale también para las cuentas
+        viejas: sin confirmar, tampoco usan el plan gratis.
+      · 'en_pausa'      → la MISMA regla que el muro (`cuenta_en_pausa`), con
+        el motivo que ve la persona (`motivo_de_pausa`).
+
+    `requires_plan` NO va en `_ADMIN_USERS_SELECT`: una base Postgres creada
+    antes de esa columna haría fallar toda la lista. Se pide aparte, en una
+    sola consulta, y si falla el panel queda como antes (sin 'en_pausa').
+    """
+    try:
+        con_marca = {r["id"] for r in conn.execute(
+            "SELECT id FROM users WHERE requires_plan = 1").fetchall()}
+    except Exception as ex:
+        log.warning("panel admin: no se pudo leer requires_plan: %s", ex)
+        con_marca = set()
+    for d in filas:
+        d["requires_plan"] = d["id"] in con_marca
+        d["estado"] = None
+        d["pausa_motivo"] = None
+        if d["is_admin"]:
+            continue
+        if not d["email_verified"] and d["plan"] == "free":
+            d["estado"] = "sin_confirmar"
+        elif d["requires_plan"] and d["email_verified"] and cuenta_en_pausa(conn, d["id"]):
+            d["estado"] = "en_pausa"
+            d["pausa_motivo"] = motivo_de_pausa(conn, d["id"])
+    return filas
 
 
 @app.get("/api/admin/users")
@@ -21086,10 +21136,10 @@ def admin_users(uid: int = Depends(get_admin_user)):
         cron. El panel los resalta con un botón "Restaurar" que pega a
         /api/admin/billing/restore-tier (no recobra, solo realinea tier)."""
     from datetime import datetime as _dt
+    now_iso = _dt.utcnow().isoformat()
     with db_abierta() as conn:
         rows = conn.execute(_ADMIN_USERS_SELECT + " ORDER BY u.created_at DESC").fetchall()
-    now_iso = _dt.utcnow().isoformat()
-    return [_shape_admin_user_row(r, now_iso) for r in rows]
+        return _completar_estado_admin(conn, [_shape_admin_user_row(r, now_iso) for r in rows])
 
 
 @app.get("/api/admin/users/search")
@@ -21132,8 +21182,8 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
             " ORDER BY (u.id = ?) DESC, u.created_at DESC LIMIT ?",
             (*params, as_id, limit),
         ).fetchall()
-    now_iso = _dt.utcnow().isoformat()
-    return [_shape_admin_user_row(r, now_iso) for r in rows]
+        now_iso = _dt.utcnow().isoformat()
+        return _completar_estado_admin(conn, [_shape_admin_user_row(r, now_iso) for r in rows])
 
 
 class ReengagementEmailIn(BaseModel):

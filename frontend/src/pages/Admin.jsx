@@ -437,7 +437,7 @@ export default function Admin() {
                     {!u.approved && <span className="ml-2 text-[12px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 font-semibold"><Clock size={10} className="inline -mt-0.5" /> Pendiente</span>}
                   </td>
                   <td className="px-3 py-2 text-ink-2">{u.name || '—'}</td>
-                  <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} daysRemaining={u.days_remaining} /></td>
+                  <td className="px-3 py-2"><PlanBadge plan={u.plan} affected={u.billing_affected} creditActive={u.credit_active} daysRemaining={u.days_remaining} estado={u.estado} pausaMotivo={u.pausa_motivo} requiresPlan={u.requires_plan} /></td>
                   <td className="px-3 py-2 text-ink-3 text-xs">{u.created_at?.slice(0, 16) || '—'}</td>
                   <td className="px-3 py-2 text-ink-3 text-xs">{u.last_login_at?.slice(0, 16) || '—'}</td>
                   <td className="px-3 py-2 text-ink-2">{u.positions_count}</td>
@@ -1185,7 +1185,18 @@ function GiftPlanPanel({ toast }) {
 
 // Badge de plan en la tabla de usuarios. `affected` = pagó pero quedó en free
 // (mostramos "afectado" en ámbar). Caso contrario, color por plan.
-function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
+//
+// `estado` (backend: `_completar_estado_admin`) corrige lo que el tier solo no
+// cuenta. Sin él, quien se registró y nunca confirmó el mail salía "free", y en
+// la cohorte que nace sin plan gratis eso parecía una prueba que no arrancó:
+// la prueba arranca recién al confirmar. Y al que se le terminó la prueba y no
+// pagó también le decía "free", cuando lo que ve es la pantalla de elegir plan.
+const TEXTO_PAUSA = {
+  prueba_terminada: 'Terminó sus 20 días de prueba y no eligió plan: ve la pantalla de elegir plan y no puede usar Rendi.',
+  prueba_usada: 'Esa casilla de mail ya había usado la prueba en otra cuenta, así que acá no arrancó: ve la pantalla de elegir plan.',
+}
+
+function PlanBadge({ plan, affected, creditActive, daysRemaining, estado, pausaMotivo, requiresPlan }) {
   if (affected) {
     return (
       <span
@@ -1193,6 +1204,31 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
         title="Tiene crédito vigente pero el tier quedó en free — restaurable"
       >
         <AlertTriangle size={10} /> afectado
+      </span>
+    )
+  }
+  if (estado === 'sin_confirmar') {
+    return (
+      <span
+        className="inline-flex items-center text-[12px] px-1.5 py-0.5 rounded font-semibold bg-bg-2 text-ink-3 dark:bg-bg-2/60 italic"
+        title={requiresPlan
+          ? 'Se registró pero nunca confirmó el mail, así que no puede entrar. La prueba de 20 días arranca sola el día que lo confirme.'
+          : 'Se registró pero nunca confirmó el mail, así que no puede entrar.'}
+      >
+        sin confirmar
+      </span>
+    )
+  }
+  if (estado === 'en_pausa') {
+    return (
+      <span
+        className="inline-flex items-center text-[12px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-400"
+        title={TEXTO_PAUSA[pausaMotivo] || 'No tiene plan y ve la pantalla de elegir plan.'}
+      >
+        en pausa
+        {pausaMotivo === 'prueba_usada' && (
+          <span className="ml-1 font-medium opacity-70">· sin prueba</span>
+        )}
       </span>
     )
   }
@@ -1215,7 +1251,7 @@ function PlanBadge({ plan, affected, creditActive, daysRemaining }) {
       {showDays ? (
         <span
           className={`ml-1 normal-case font-medium ${lowDays ? 'text-amber-700 dark:text-amber-400' : 'opacity-70'}`}
-          title={`Le ${daysRemaining === 1 ? 'queda' : 'quedan'} ${daysRemaining} ${daysRemaining === 1 ? 'día' : 'días'} de crédito antes de volver a Free`}
+          title={`Le ${daysRemaining === 1 ? 'queda' : 'quedan'} ${daysRemaining} ${daysRemaining === 1 ? 'día' : 'días'} de crédito antes de ${requiresPlan ? 'quedar en pausa (no tiene plan gratis)' : 'volver a Free'}`}
         >
           · {daysRemaining}d
         </span>
