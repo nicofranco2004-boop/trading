@@ -30692,6 +30692,106 @@ def _sanitize_assistant_blocks(content) -> list:
     return out
 
 
+# ─── Registrar por chat PIDIENDO la herramienta, no obligando ───────────────
+# Hasta Sonnet 5, el turno de registro ("compré 10 GGAL a 5000") mandaba
+# tool_choice={"type": "tool"}: la API OBLIGABA al modelo a llamar
+# register_trade antes de escribir, porque Haiku tendía a charlar y el borrador
+# nunca se armaba. Sonnet 5.5 RECHAZA esa orden con un 400 (Anthropic la sacó en
+# sus modelos nuevos): con el tool_choice viejo, registrar por chat daba
+# "Hubo un problema procesando tu consulta" SIEMPRE.
+#
+# Ahora se le PIDE: una nota al final del mensaje del usuario (no un mensaje de
+# sistema — Sonnet 5 los rechaza, y esto tiene que andar con cualquier modelo
+# para que volver atrás sea cambiar una constante). Y como pedir no garantiza,
+# si igual contesta sin llamarla se le pide UNA vez más (_falto_el_registro).
+# Los dos caminos del chat (streaming y JSON) usan estas mismas tres piezas.
+def _pedido_de_registro(tool: str) -> str:
+    return (f"[Nota de Rendi, no la escribió el usuario] Este mensaje es para "
+            f"registrar una operación: llamá a {tool} ahora con los datos que haya "
+            f"— el server te dice qué falta. No contestes antes de llamarla.")
+
+
+def _con_pedido_de_registro(messages_loop: list, tool: str) -> None:
+    """Agrega el pedido al ÚLTIMO mensaje del usuario. Reemplaza el dict en la
+    lista (no lo muta): el que vino del navegador queda como estaba."""
+    for i in range(len(messages_loop) - 1, -1, -1):
+        m = messages_loop[i]
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            bloques = list(c)
+        else:
+            # Un bloque de texto vacío es un 400 de la API: si no hay texto, no va.
+            bloques = [{"type": "text", "text": str(c)}] if c else []
+        bloques.append({"type": "text", "text": _pedido_de_registro(tool)})
+        messages_loop[i] = {**m, "content": bloques}
+        return
+
+
+def _falto_el_registro(resp, tool: str) -> bool:
+    """¿Terminó el turno contestando en texto SIN llamar a la herramienta?
+    Si llamó OTRA (p.ej. precios para 'compré hoy a mercado'), no falta nada
+    todavía: el loop sigue y el pedido sigue a la vista del modelo."""
+    if getattr(resp, "stop_reason", None) != "end_turn":
+        return False
+    return not any(getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == tool
+                   for b in (getattr(resp, "content", None) or []))
+
+
+def _repedir_el_registro(messages_loop: list, resp, tool: str) -> None:
+    """Deja en la conversación lo que contestó y el segundo pedido."""
+    _asist = _sanitize_assistant_blocks(resp.content)
+    if _asist:
+        messages_loop.append({"role": "assistant", "content": _asist})
+    messages_loop.append({"role": "user", "content": [{"type": "text", "text": (
+        f"[Nota de Rendi, no la escribió el usuario] Todavía no llamaste a {tool}. "
+        f"Llamala ahora con los datos que haya; si falta algo, el server lo pide.")}]})
+
+
+# ─── Cuando el modelo se niega a contestar ───────────────────────────────────
+# Sonnet 5.5 puede declinar una consulta: la API responde normal (200) pero con
+# stop_reason='refusal' y sin texto útil. Una de sus categorías es amplia y
+# Anthropic avisa que puede frenar pedidos inofensivos. Sin esto, el usuario
+# veía una burbuja vacía y se le descontaba la consulta. Ahora ve un mensaje y
+# la consulta se le devuelve. El costo SÍ se anota: Anthropic puede cobrarla.
+_TEXTO_NEGATIVA = ("No pude responder esa consulta. Si es sobre tu cartera, probá "
+                   "preguntarla de otra forma. No se te descontó de tus consultas.")
+
+
+def _es_negativa(resp) -> bool:
+    return getattr(resp, "stop_reason", None) == "refusal"
+
+
+def _cerrar_por_negativa(resp, *, tier: str, uid: int, stage: str, model: str,
+                         devolver) -> None:
+    """Log con la categoría + costo + devolver la consulta. `devolver` es None en
+    los turnos gratis del registro (no reservaron nada: no hay qué devolver)."""
+    sd = getattr(resp, "stop_details", None)
+    log.warning("ai_chat NEGATIVA del modelo tier=%s uid=%s stage=%s categoria=%s explicacion=%s",
+                tier, uid, stage, getattr(sd, "category", None),
+                str(getattr(sd, "explanation", "") or "")[:200])
+    _record_chat_quota(uid, _log_and_estimate_chat_cost(
+        getattr(resp, "usage", None), tier, uid, "negativa_" + stage, model=model))
+    if devolver is not None:
+        devolver()
+
+
+def _frames_de_negativa(tier: str, turn_flags: set, con_reset: bool) -> list:
+    """Los frames SSE que cierran un turno negado. `con_reset` borra lo que
+    alcanzó a escribir antes de negarse (una negativa a mitad de respuesta)."""
+    frames = []
+    if con_reset:
+        frames.append("data: " + json.dumps({"t": "reset"}) + "\n\n")
+    frames.append("data: " + json.dumps({"t": "delta", "d": _TEXTO_NEGATIVA},
+                                        ensure_ascii=False) + "\n\n")
+    _done = {"t": "done", "tier": tier}
+    if turn_flags & {"trade_registered", "undo_ok"}:
+        _done["portfolio_changed"] = True
+    frames.append("data: " + json.dumps(_done, ensure_ascii=False) + "\n\n")
+    return frames
+
+
 # ─── Qué está haciendo Rendi, en castellano ──────────────────────────────────
 # El usuario espera 10-20 segundos mirando "Pensando…", que no dice nada. Y no
 # es lo mismo esperar sin saber que esperar viendo que algo pasa: la misma
@@ -30827,6 +30927,10 @@ def _auth_uid_de(request, uid: int) -> int:
 # `low` también arranca rápido pero razona menos; Nico eligió el escalón de
 # arriba. Si algún día se sube a `high`, medí PRIMERO el tiempo al primer
 # token — es lo que el usuario siente.
+# Con Sonnet 5.5 los niveles cambiaron de calibración (Anthropic): se volvió a
+# medir. `low` NO acortó la espera (1ra palabra 3,9s de mediana contra 2,9s en
+# `medium`, corrido en otro momento que los demás, así que es una señal débil)
+# y no mejoró nada más. Queda `medium`.
 _CHAT_EFFORT = {"effort": "medium"}
 
 
@@ -31531,6 +31635,19 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # Costo: la consulta pasa de US$0,0066 a US$0,0140. Sobre uso real (~40% de
     # la cuota) son +US$0,51 por mes en un Pro de US$6,99 — el margen baja de
     # 93% a 86%.
+    #
+    # SONNET 5.5 (2026-09-28). Mismo precio que Sonnet 5 y cuenta el texto
+    # igual. MEDIDO por este endpoint, con la API real, los dos modelos en
+    # paralelo y el mismo usuario (24 preguntas cada uno + 4 registros):
+    #   · sin herramientas: 1ra palabra 1,1s (antes 2,7s), completa 6,3s (9,6s)
+    #   · con herramientas: 1ra palabra 8,1s (antes 5,9s) — piensa antes de
+    #     escribir la síntesis — pero completa en 8,2s (antes 11,0s)
+    #   · tarjetas 20/24 (antes 22/24): casi toda la diferencia es "¿a cuánto
+    #     está el dólar?", que no lee como "análisis" y a veces manda sólo la voz
+    #   · voz 24/24 los dos · costo ~US$0,017 los dos · 0 negativas en 52 turnos
+    #   · registro por chat 8/8 con el pedido nuevo (_con_pedido_de_registro)
+    # Para volver a Sonnet 5: llm.MODEL_SONNET = llm.MODEL_SONNET_5. El resto
+    # del código anda con los dos.
     from ai import llm as _llm
     chat_model = _llm.MODEL_SONNET
 
@@ -32021,6 +32138,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
              or (_flow_open and _draft0.get("status") == "confirming"
                  and any(c.isdigit() for c in (last_user_msg or ""))))
     )
+    # "Forzar" ya no es obligar (tool_choice da 400 en Sonnet 5.5): es pedirlo
+    # en el mensaje y, si no lo hace, re-pedirlo una vez. Ver _con_pedido_de_registro.
+    if _force_register:
+        _con_pedido_de_registro(messages_loop, _forced_tool)
 
     # ── STREAMING (opt-in vía data.stream) ────────────────────────────────────
     # Devuelve SSE: el texto de la respuesta FINAL se emite token por token
@@ -32065,20 +32186,17 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             # borra de la pantalla. Con la marca, ese texto ya no se mira.
             voz_adelantada = {"ya": False, "desde": 0}
             try:
-                # +1 iteración cuando la 1ra va FORZADA a register_trade: esa
-                # vuelta no puede combinar tools (p.ej. get_current_prices para
-                # 'compré hoy a mercado') — sin el extra, el flujo se quedaba
-                # sin presupuesto y el modelo "prometía" sin armar el draft.
+                # +1 iteración en los turnos de registro: alcanza para el
+                # segundo pedido si la 1ra vuelta contestó sin llamar la
+                # herramienta (ver _falto_el_registro) — sin el extra, el flujo
+                # se quedaba sin presupuesto y el modelo "prometía" sin armar
+                # el draft.
                 for _turn in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
-                    # FORZAR register_trade en la 1ra iteración de un turno con
-                    # intención de registro o draft abierto: Haiku tiende a
-                    # CHARLAR en vez de llamar la tool → el draft nunca se creaba
-                    # y la confirmación era imposible. Con tool_choice forzado, el
-                    # server SIEMPRE ve la operación estructurada; la iteración
-                    # siguiente (libre) produce el texto para el usuario.
-                    _extra = {}
-                    if _turn == 0 and _force_register:
-                        _extra["tool_choice"] = {"type": "tool", "name": _forced_tool}
+                    # La 1ra vuelta de un turno de registro puede terminar
+                    # descartada (si no llamó la herramienta se le vuelve a
+                    # pedir): su voz NO se adelanta, o Rendi arrancaría a
+                    # hablar de un texto que después se borra de la pantalla.
+                    _puede_adelantar_voz = not (_turn == 0 and _force_register)
                     with client.messages.stream(
                         model=chat_model,
                         max_tokens=max_tokens,
@@ -32086,7 +32204,6 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         system=_bloques_de_sistema(system_text, _quiere_voz),
                         tools=chat_tools,
                         messages=messages_loop,
-                        **_extra,
                     ) as stream:
                         for chunk in stream.text_stream:
                             if chunk:
@@ -32097,7 +32214,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                 # firmado — sin esperar a que el modelo termine
                                 # de escribir las tarjetas. Son los ~5 segundos
                                 # de silencio que medimos (ver _voz_temprana).
-                                if not voz_adelantada["ya"]:
+                                if _puede_adelantar_voz and not voz_adelantada["ya"]:
                                     _vt = _voz_temprana(state["synth_text"][voz_adelantada["desde"]:])
                                     if _vt:
                                         voz_adelantada["ya"] = True
@@ -32105,6 +32222,24 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                             {"t": "voz", "voz": {"text": _vt, "sig": tts.sign(_vt)}},
                                             ensure_ascii=False) + "\n\n")
                         resp = stream.get_final_message()
+                    if _es_negativa(resp):
+                        _cerrar_por_negativa(resp, tier=tier, uid=uid, stage="stream",
+                                             model=chat_model,
+                                             devolver=None if _free_continuation else _devolver_la_ficha)
+                        state["settled"] = True
+                        for _f in _frames_de_negativa(tier, _turn_flags, bool(state["synth_deltas"])):
+                            yield _f
+                        return
+                    if _turn == 0 and _force_register and _falto_el_registro(resp, _forced_tool):
+                        log.info("ai_chat registro: contestó sin llamar %s → segundo pedido "
+                                 "(tier=%s uid=%s)", _forced_tool, tier, uid)
+                        # Lo que escribió no era la respuesta: se borra de la
+                        # pantalla, igual que el preámbulo de una vuelta con tools.
+                        yield "data: " + json.dumps({"t": "reset"}) + "\n\n"
+                        state["synth_deltas"] = 0
+                        voz_adelantada["desde"] = len(state["synth_text"])
+                        _repedir_el_registro(messages_loop, resp, _forced_tool)
+                        continue
                     if resp.stop_reason != "tool_use":
                         # Garantía de visibilidad: si quedó un pendiente y el
                         # modelo no mostró sus números, anexar el resumen.
@@ -32187,6 +32322,14 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                             state["synth_text"] += chunk
                             yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
                     resp = stream.get_final_message()
+                if _es_negativa(resp):
+                    _cerrar_por_negativa(resp, tier=tier, uid=uid, stage="stream_fallback",
+                                         model=chat_model,
+                                         devolver=None if _free_continuation else _devolver_la_ficha)
+                    state["settled"] = True
+                    for _f in _frames_de_negativa(tier, _turn_flags, bool(state["synth_deltas"])):
+                        yield _f
+                    return
                 _ep = _pending_summary_epilogue(uid, state["synth_text"])
                 if _ep:
                     yield "data: " + json.dumps({"t": "delta", "d": _ep}, ensure_ascii=False) + "\n\n"
@@ -32253,9 +32396,6 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
 
     try:
         for _loop_i in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
-            _extra_j = {}
-            if _loop_i == 0 and _force_register:
-                _extra_j["tool_choice"] = {"type": "tool", "name": _forced_tool}
             response = client.messages.create(
                 model=chat_model,
                 max_tokens=max_tokens,
@@ -32263,9 +32403,20 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 system=_bloques_de_sistema(system_text, _quiere_voz),
                 tools=chat_tools,
                 messages=messages_loop,
-                **_extra_j,
             )
             last_response = response
+
+            if _es_negativa(response):
+                _cerrar_por_negativa(response, tier=tier, uid=uid, stage="json",
+                                     model=chat_model,
+                                     devolver=None if _free_continuation else _devolver_la_ficha)
+                return _respuesta_json(_TEXTO_NEGATIVA, tier, _turn_flags,
+                                       pregunta=last_user_msg if data.analisis else None)
+            if _loop_i == 0 and _force_register and _falto_el_registro(response, _forced_tool):
+                log.info("ai_chat registro: contestó sin llamar %s → segundo pedido "
+                         "(tier=%s uid=%s)", _forced_tool, tier, uid)
+                _repedir_el_registro(messages_loop, response, _forced_tool)
+                continue
 
             if response.stop_reason != "tool_use":
                 # Respuesta final en texto
@@ -32344,6 +32495,12 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             tool_choice={"type": "none"},
             messages=messages_loop,
         )
+        if _es_negativa(response):
+            _cerrar_por_negativa(response, tier=tier, uid=uid, stage="json_fallback",
+                                 model=chat_model,
+                                 devolver=None if _free_continuation else _devolver_la_ficha)
+            return _respuesta_json(_TEXTO_NEGATIVA, tier, _turn_flags,
+                                   pregunta=last_user_msg if data.analisis else None)
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
         usage_obj = getattr(response, "usage", None)
         _warn_if_truncated(response, tier, uid, "json_fallback")

@@ -2,11 +2,10 @@
 ═══════════════════════════════════════════════════════════════════════════
 Encapsula las llamadas al modelo. Convenciones:
 
-  • Modelo por tier:
-      Free  → claude-haiku-4-5    ($1 input / $5 output por 1M)
-      Pro   → claude-sonnet-4-6   ($3 input / $15 output por 1M)
-    Calidad de Haiku alcanza para narrar packets pre-calculados; Sonnet
-    solo para "análisis profundos" (Insights, Wrapped) en Pro tier.
+  • Modelo por superficie (NO por tier):
+      Chat (/api/ai/chat, todos los tiers) → MODEL_SONNET, lo elige main.ai_chat
+      analyze() (análisis ✦ de pantalla, resumen de fundamentals) → Haiku
+    Los precios de cada uno están en _PRICING_USD_PER_M, más abajo.
 
   • Prompt caching (TTL 1h, beta extended-cache-ttl-2025-04-11):
       System prompt va con cache_control={"type": "ephemeral", "ttl": "1h"}.
@@ -27,9 +26,6 @@ Encapsula las llamadas al modelo. Convenciones:
       Devolvemos LLMResult con input/output tokens + cost_cents para
       auditar costos por user en ai_usage_daily.
 
-Modelos:
-  claude-haiku-4-5  — default
-  claude-sonnet-4-6 — Pro tier (no existe Sonnet 4.7, error mío del plan)
 """
 
 from __future__ import annotations
@@ -43,17 +39,22 @@ log = logging.getLogger("ai.llm")
 
 # Modelo IDs canónicos del catálogo (no inventar — son los exactos)
 MODEL_HAIKU = "claude-haiku-4-5"
-# Sonnet 5, no el 4-6 que estaba acá: es MEJOR y además un tercio más barato
-# (US$2/$10 contra US$3/$15). El 4-6 quedó como referencia de precio para
-# cualquier código viejo que todavía lo nombre.
-MODEL_SONNET = "claude-sonnet-5"
+# Sonnet 5.5: mismo precio que Sonnet 5 (US$2/$10) y cuenta el texto igual, así
+# que la consulta cuesta lo mismo; es la versión nueva. Los anteriores quedan
+# como referencia de precio para cualquier código viejo que todavía los nombre.
+# OJO al cambiar de modelo: el que va acá TIENE que estar en la tabla de abajo.
+# Un modelo que falta se cobra al más caro que conocemos (main._precio_por_millon)
+# y el costo que se guarda en ai_usage_daily sale inflado sin que nada avise.
+MODEL_SONNET = "claude-sonnet-5-5"
+MODEL_SONNET_5 = "claude-sonnet-5"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 
-# Tarifas por modelo en USD por 1M tokens (catálogo al 2026-09-12).
+# Tarifas por modelo en USD por 1M tokens (catálogo al 2026-09-25).
 # Cache reads ≈ 10% del input price. Cache writes ≈ 125% del input price.
 _PRICING_USD_PER_M = {
     MODEL_HAIKU:     {"input": 1.00,  "output": 5.00},
     MODEL_SONNET:    {"input": 2.00,  "output": 10.00},
+    MODEL_SONNET_5:  {"input": 2.00,  "output": 10.00},
     MODEL_SONNET_46: {"input": 3.00,  "output": 15.00},
 }
 
@@ -155,7 +156,7 @@ def analyze(
         system_prompt: prompt estable cacheado (sin timestamps/UUIDs).
         packet: dict con los números pre-calculados de la pantalla.
         output_model: subclass de pydantic.BaseModel (ej. AnalysisResult).
-        model: 'claude-haiku-4-5' (default) o 'claude-sonnet-4-6' (Pro).
+        model: MODEL_HAIKU por default (el chat NO pasa por acá: ver main.ai_chat).
         max_tokens: cap de output (narrativa breve, no necesita >2K).
         max_retries: si el LLM rompe el schema, reintentar N veces.
         followup_question: si viene, el LLM responde la pregunta puntual

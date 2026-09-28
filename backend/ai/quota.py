@@ -7,14 +7,14 @@ Estrategia de monetización dual (paywall agresivo para sostener Free a escala):
       degustación mínima; empuja fuerte a Plus/Pro).
     - 0 queries del AI Hub (Hub es feature exclusiva Pro).
     - 0 follow-ups (también exclusivo Pro).
-    - Modelo: claude-haiku-4-5.
+    - Modelo del chat: ai.llm.MODEL_SONNET (no se decide por tier).
     - System prompt: SIMPLE / DESCRIPTIVO (resume métricas sin profundizar).
 
   Pro ($7 USD/mes — sustentable a 3k+ usuarios):
     - 60 análisis por semana (10× más que Free).
     - 60 queries del AI Hub por semana.
     - 1 follow-up por análisis (preguntas libres de profundización).
-    - Modelo: claude-haiku-4-5 (mismo motor que Free).
+    - Modelo del chat: el mismo que Free (ai.llm.MODEL_SONNET).
     - System prompt: PREMIUM / RESEARCH NOTE (interpretación, causalidad,
       comparación, insights memorables).
     El diferencial es CANTIDAD (10×) + CALIDAD (causalidad vs descripción)
