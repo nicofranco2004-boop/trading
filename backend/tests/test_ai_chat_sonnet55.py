@@ -44,9 +44,15 @@ class _Tool:
 
 
 class _Resp:
-    def __init__(self, content, stop="end_turn", stop_details=None):
-        self.content, self.stop_reason, self.usage = content, stop, None
+    def __init__(self, content, stop="end_turn", stop_details=None, usage=None):
+        self.content, self.stop_reason, self.usage = content, stop, usage
         self.stop_details = stop_details
+
+
+class _Usage:
+    def __init__(self, inp=0, out=0, cw=0, cr=0):
+        self.input_tokens, self.output_tokens = inp, out
+        self.cache_creation_input_tokens, self.cache_read_input_tokens = cw, cr
 
 
 class _Detalle:
@@ -266,6 +272,70 @@ class TestNegativa(_Base):
             r = self._json("¿a cuánto está el dólar?", resp)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["reply"], main._TEXTO_NEGATIVA)
+        self.assertEqual(self._count(), 0)
+
+
+def _usd(u):
+    p = llm._PRICING_USD_PER_M[llm.MODEL_SONNET]
+    return (u.input_tokens * p["input"] + u.cache_creation_input_tokens * p["input"] * 1.25
+            + u.cache_read_input_tokens * p["input"] * 0.10
+            + u.output_tokens * p["output"]) / 1e6
+
+
+class TestCostoDelTurnoEntero(_Base):
+    """Un turno con herramienta son DOS llamados al modelo. Lo que se guarda en
+    ai_usage_daily tiene que ser la suma — antes era sólo el último, y medido
+    contra la API real eso dejaba afuera el 26% del gasto."""
+
+    U1 = _Usage(inp=1000, out=500, cr=30000)    # la vuelta que pide la herramienta
+    U2 = _Usage(out=1000, cr=31000)             # la respuesta
+
+    def _costo_guardado(self):
+        return self.conn.execute(
+            "SELECT COALESCE(SUM(cost_usd_cents),0) FROM ai_usage_daily WHERE user_id=?",
+            (self.uid,)).fetchone()[0]
+
+    def _tool_falsa(self):
+        return patch.object(main, "_ai_chat_exec_tools",
+                            side_effect=lambda content, uid, tier, tc, mx, **k: (
+                                [{"type": "tool_result", "tool_use_id": content[0].id,
+                                  "content": "{}"}], tc + 1))
+
+    def _esperado(self, *us):
+        return round(sum(_usd(u) for u in us) * 100)
+
+    def test_json_guarda_la_suma_de_los_dos_llamados(self):
+        def resp(kw, n):
+            if n == 1:
+                return _Resp([_Tool("get_fx_rates", {})], stop="tool_use", usage=self.U1)
+            return _Resp([_Txt("El MEP está a 1.550.")], usage=self.U2)
+        with self._tool_falsa():
+            r = self._json("¿a cuánto está el dólar?", resp)
+        self.assertEqual(r.status_code, 200, r.text)
+        # Los números están elegidos para que "sólo el último" dé OTRO resultado.
+        self.assertNotEqual(self._esperado(self.U1, self.U2), self._esperado(self.U2))
+        self.assertEqual(self._costo_guardado(), self._esperado(self.U1, self.U2))
+
+    def test_stream_guarda_la_suma_de_los_dos_llamados(self):
+        def resp(kw, n):
+            if n == 1:
+                return [], _Resp([_Tool("get_fx_rates", {})], stop="tool_use", usage=self.U1)
+            return ["El MEP está a 1.550."], _Resp([_Txt("El MEP está a 1.550.")], usage=self.U2)
+        with self._tool_falsa():
+            frames = self._stream("¿a cuánto está el dólar?", resp)
+        self.assertEqual(frames[-1].get("t"), "done", frames)
+        self.assertEqual(self._costo_guardado(), self._esperado(self.U1, self.U2))
+
+    def test_negativa_despues_de_la_herramienta_anota_todo_y_devuelve(self):
+        def resp(kw, n):
+            if n == 1:
+                return _Resp([_Tool("get_fx_rates", {})], stop="tool_use", usage=self.U1)
+            return _Resp([], stop="refusal", stop_details=_Detalle("general_harms"),
+                         usage=self.U2)
+        with self._tool_falsa():
+            r = self._json("¿a cuánto está el dólar?", resp)
+        self.assertEqual(r.json()["reply"], main._TEXTO_NEGATIVA)
+        self.assertEqual(self._costo_guardado(), self._esperado(self.U1, self.U2))
         self.assertEqual(self._count(), 0)
 
 

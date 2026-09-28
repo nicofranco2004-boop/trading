@@ -30635,9 +30635,43 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str,
     duplica el costo y solo nos enteramos por la factura mensual.
     `model`: el modelo REAL del request — book-mode corre Sonnet (3×/5× el
     precio de Haiku); sin esto el costo del modo más caro se subreportaba 3×.
+
+    OJO: es el costo de UN llamado. El chat hace varios por turno cuando usa
+    herramientas; lo que se guarda es la suma (ver _CostoDelTurno).
     """
+    # Convertir a centésimos (1 USD = 100 cents). Round mínimo 0 — si la
+    # llamada fue gratis (todo cache_read y resultó <0.5 cent), no perdemos
+    # el log pero tampoco contaminamos la DB con ceros engañosos.
+    return max(0, round(_log_chat_usage_usd(usage_obj, tier, uid, stage, model) * 100))
+
+
+class _CostoDelTurno:
+    """El costo de TODOS los llamados al modelo de un turno del chat.
+
+    Antes se guardaba sólo el del ÚLTIMO llamado: en un turno que usa
+    herramientas (precios, dólar, noticias) hay 2-3 llamados y los anteriores
+    no se anotaban. MEDIDO el 2026-09-28 sobre 56 turnos contra la API real: el
+    61% tuvo más de un llamado y ai_usage_daily se quedaba con el 74% de lo que
+    de verdad se gastó. Se suma en dólares y se redondea UNA vez al final
+    (redondear cada llamado a centavos enteros tiraba la mitad de uno de US$0,006).
+    """
+    def __init__(self, tier: str, uid: int, model: str):
+        self.tier, self.uid, self.model = tier, uid, model
+        self.usd = 0.0
+
+    def sumar(self, resp, stage: str) -> None:
+        self.usd += _log_chat_usage_usd(getattr(resp, "usage", None), self.tier,
+                                        self.uid, stage, self.model)
+
+    def centavos(self) -> int:
+        return max(0, round(self.usd * 100))
+
+
+def _log_chat_usage_usd(usage_obj, tier: str, uid: int, stage: str,
+                        model: str = None) -> float:
+    """Costo en USD de UN llamado + el log de caché. 0.0 si no hay usage."""
     if usage_obj is None:
-        return 0
+        return 0.0
     try:
         # SDK Anthropic v0.34+: usage tiene input_tokens, output_tokens,
         # cache_creation_input_tokens, cache_read_input_tokens.
@@ -30663,13 +30697,10 @@ def _log_and_estimate_chat_cost(usage_obj, tier: str, uid: int, stage: str,
             "output=%d cache_hit=%.1f%% cost_usd=%.5f",
             tier, uid, stage, model or "haiku", inp, cw, cr, out, cache_hit_pct, cost_usd,
         )
-        # Convertir a centésimos (1 USD = 100 cents). Round mínimo 0 — si la
-        # llamada fue gratis (todo cache_read y resultó <0.5 cent), no perdemos
-        # el log pero tampoco contaminamos la DB con ceros engañosos.
-        return max(0, round(cost_usd * 100))
+        return max(0.0, cost_usd)
     except Exception as ex:
         log.warning("ai_chat_usage logging failed: %s", ex)
-        return 0
+        return 0.0
 
 
 def _sanitize_assistant_blocks(content) -> list:
@@ -30763,16 +30794,16 @@ def _es_negativa(resp) -> bool:
     return getattr(resp, "stop_reason", None) == "refusal"
 
 
-def _cerrar_por_negativa(resp, *, tier: str, uid: int, stage: str, model: str,
+def _cerrar_por_negativa(resp, *, tier: str, uid: int, stage: str, costo,
                          devolver) -> None:
-    """Log con la categoría + costo + devolver la consulta. `devolver` es None en
-    los turnos gratis del registro (no reservaron nada: no hay qué devolver)."""
+    """Log con la categoría + costo del turno + devolver la consulta. `costo` es
+    el _CostoDelTurno (ya sumó este llamado). `devolver` es None en los turnos
+    gratis del registro (no reservaron nada: no hay qué devolver)."""
     sd = getattr(resp, "stop_details", None)
     log.warning("ai_chat NEGATIVA del modelo tier=%s uid=%s stage=%s categoria=%s explicacion=%s",
                 tier, uid, stage, getattr(sd, "category", None),
                 str(getattr(sd, "explanation", "") or "")[:200])
-    _record_chat_quota(uid, _log_and_estimate_chat_cost(
-        getattr(resp, "usage", None), tier, uid, "negativa_" + stage, model=model))
+    _record_chat_quota(uid, costo.centavos())
     if devolver is not None:
         devolver()
 
@@ -32142,6 +32173,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
     # en el mensaje y, si no lo hace, re-pedirlo una vez. Ver _con_pedido_de_registro.
     if _force_register:
         _con_pedido_de_registro(messages_loop, _forced_tool)
+    # Lo que cuesta el turno sumando TODOS los llamados al modelo (_CostoDelTurno).
+    _costo = _CostoDelTurno(tier, uid, chat_model)
 
     # ── STREAMING (opt-in vía data.stream) ────────────────────────────────────
     # Devuelve SSE: el texto de la respuesta FINAL se emite token por token
@@ -32222,9 +32255,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                             {"t": "voz", "voz": {"text": _vt, "sig": tts.sign(_vt)}},
                                             ensure_ascii=False) + "\n\n")
                         resp = stream.get_final_message()
+                    _costo.sumar(resp, f"vuelta{_turn}")
                     if _es_negativa(resp):
                         _cerrar_por_negativa(resp, tier=tier, uid=uid, stage="stream",
-                                             model=chat_model,
+                                             costo=_costo,
                                              devolver=None if _free_continuation else _devolver_la_ficha)
                         state["settled"] = True
                         for _f in _frames_de_negativa(tier, _turn_flags, bool(state["synth_deltas"])):
@@ -32250,8 +32284,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         if _rb:
                             yield "data: " + json.dumps({"t": "delta", "d": _rb}, ensure_ascii=False) + "\n\n"
                         _warn_if_truncated(resp, tier, uid, "stream_final")
-                        cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "final", model=chat_model)
-                        _record_chat_quota(uid, cost_cents)
+                        _record_chat_quota(uid, _costo.centavos())
                         _maybe_refund_trade_turn(_turn_flags, _devolver_la_ficha,
                                                  reserved=not _free_continuation)
                         state["settled"] = True
@@ -32322,9 +32355,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                             state["synth_text"] += chunk
                             yield "data: " + json.dumps({"t": "delta", "d": chunk}, ensure_ascii=False) + "\n\n"
                     resp = stream.get_final_message()
+                _costo.sumar(resp, "sintesis")
                 if _es_negativa(resp):
                     _cerrar_por_negativa(resp, tier=tier, uid=uid, stage="stream_fallback",
-                                         model=chat_model,
+                                         costo=_costo,
                                          devolver=None if _free_continuation else _devolver_la_ficha)
                     state["settled"] = True
                     for _f in _frames_de_negativa(tier, _turn_flags, bool(state["synth_deltas"])):
@@ -32337,8 +32371,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 if _rb:
                     yield "data: " + json.dumps({"t": "delta", "d": _rb}, ensure_ascii=False) + "\n\n"
                 _warn_if_truncated(resp, tier, uid, "stream_fallback")
-                cost_cents = _log_and_estimate_chat_cost(getattr(resp, "usage", None), tier, uid, "fallback", model=chat_model)
-                _record_chat_quota(uid, cost_cents)
+                _record_chat_quota(uid, _costo.centavos())
                 _maybe_refund_trade_turn(_turn_flags, _devolver_la_ficha,
                                          reserved=not _free_continuation)
                 state["settled"] = True
@@ -32352,6 +32385,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             except Exception as ex:
                 ex_name = type(ex).__name__
                 log.warning("ai_chat stream exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
+                # Lo gastado antes del error Anthropic lo cobró igual: se anota.
+                _record_chat_quota(uid, _costo.centavos())
                 if ex_name in ("APITimeoutError", "APIConnectionError"):
                     code, msg = "ai_timeout", "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
                 elif ex_name in ("RateLimitError",):
@@ -32369,6 +32404,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 yield "data: " + json.dumps({"t": "error", "code": code, "message": msg}, ensure_ascii=False) + "\n\n"
             finally:
                 if not state["settled"]:
+                    _record_chat_quota(uid, _costo.centavos())   # lo ya gastado, se anota igual
                     # GeneratorExit (cliente cerró el tab / red móvil / proxy
                     # cortó) — el except Exception no lo atrapa. Con poca o
                     # ninguna síntesis emitida devolvemos el slot; con respuesta
@@ -32405,10 +32441,11 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 messages=messages_loop,
             )
             last_response = response
+            _costo.sumar(response, f"vuelta{_loop_i}")
 
             if _es_negativa(response):
                 _cerrar_por_negativa(response, tier=tier, uid=uid, stage="json",
-                                     model=chat_model,
+                                     costo=_costo,
                                      devolver=None if _free_continuation else _devolver_la_ficha)
                 return _respuesta_json(_TEXTO_NEGATIVA, tier, _turn_flags,
                                        pregunta=last_user_msg if data.analisis else None)
@@ -32430,16 +32467,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # nos enteramos por la factura mensual de Anthropic).
                 usage_obj = getattr(response, "usage", None)
                 _warn_if_truncated(response, tier, uid, "json_final")
-                cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "final", model=chat_model)
-                # Registrar consumo de cuota (solo en éxito — si falló no descontamos).
-                try:
-                    conn2 = get_db()
-                    try:
-                        quota.record_chat_cost(conn2, uid, cost_usd_cents=cost_cents)  # B-9: slot ya reservado
-                    finally:
-                        conn2.close()
-                except Exception as ex:
-                    log.warning("record_chat failed for uid=%s: %s", uid, ex)
+                # Registrar el costo del turno ENTERO (B-9: el slot ya estaba reservado).
+                _record_chat_quota(uid, _costo.centavos())
                 _maybe_refund_trade_turn(_turn_flags, _devolver_la_ficha,
                                          reserved=not _free_continuation)
                 # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
@@ -32495,24 +32524,17 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
             tool_choice={"type": "none"},
             messages=messages_loop,
         )
+        _costo.sumar(response, "sintesis")
         if _es_negativa(response):
             _cerrar_por_negativa(response, tier=tier, uid=uid, stage="json_fallback",
-                                 model=chat_model,
+                                 costo=_costo,
                                  devolver=None if _free_continuation else _devolver_la_ficha)
             return _respuesta_json(_TEXTO_NEGATIVA, tier, _turn_flags,
                                    pregunta=last_user_msg if data.analisis else None)
         text = next((b.text for b in response.content if hasattr(b, "text")), "")
         usage_obj = getattr(response, "usage", None)
         _warn_if_truncated(response, tier, uid, "json_fallback")
-        cost_cents = _log_and_estimate_chat_cost(usage_obj, tier, uid, "fallback", model=chat_model)
-        try:
-            conn2 = get_db()
-            try:
-                quota.record_chat_cost(conn2, uid, cost_usd_cents=cost_cents)  # B-9: slot ya reservado
-            finally:
-                conn2.close()
-        except Exception as ex:
-            log.warning("record_chat failed for uid=%s: %s", uid, ex)
+        _record_chat_quota(uid, _costo.centavos())   # el turno entero (B-9: slot ya reservado)
         _maybe_refund_trade_turn(_turn_flags, _devolver_la_ficha,
                                  reserved=not _free_continuation)
         # Garantía de visibilidad del pendiente (ver _pending_summary_epilogue)
@@ -32534,6 +32556,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
         # f"Error en el chat: {ex}" con texto técnico al user.
         ex_name = type(ex).__name__
         log.warning("ai_chat exception tier=%s uid=%s type=%s msg=%s", tier, uid, ex_name, str(ex)[:200])
+        # Lo gastado antes del error Anthropic lo cobró igual: se anota.
+        _record_chat_quota(uid, _costo.centavos())
         # B-9: fallo del LLM en el path JSON → devolver el slot reservado.
         # Turnos GRATIS (skip-reserve) no reservaron nada → no refundear
         # (devolvería un slot de un turno anterior ya cobrado — review L).
