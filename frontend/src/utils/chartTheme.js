@@ -143,13 +143,33 @@ export const SERIES_COLORS = Object.freeze([
 export const seriesColor = (i) => SERIES_COLORS[Math.min(i, SERIES_COLORS.length - 1)]
 
 /**
- * Rampa monocroma violeta, para proporciones de un mismo todo (la composición
- * del libro del asesor). Es otra cosa que `SERIES_COLORS`: ahí el color dice
- * QUIÉN es cada serie; acá dice CUÁNTO pesa cada parte, y por eso es un solo
- * tono en pasos. Se recorre al revés entre temas, igual que la rampa de
- * polaridad — en claro arranca clara y termina profunda.
+ * Rampa monocroma violeta, para proporciones de un mismo todo: TODA torta o
+ * barra de composición por activo, broker o cliente. Es otra cosa que
+ * `SERIES_COLORS`: ahí el color dice QUIÉN es cada serie; acá dice CUÁNTO pesa
+ * cada parte, y por eso es un solo tono en pasos.
+ *
+ * El paso 1 es SIEMPRE la porción más grande: en claro es el más profundo, en
+ * oscuro el más brillante (index.css recorre la rampa al revés entre temas,
+ * igual que la de polaridad). O sea: las porciones van ordenadas de mayor a
+ * menor antes de pintarlas.
+ *
+ * Por qué no `SERIES_COLORS` en una composición (2026-09-29): arranca con el
+ * VERDE de ganancia y termina con el ROJO de pérdida. En la barra del
+ * Dashboard el activo más grande salía verde y "Otros" rojo; en la torta de
+ * Rendi AI, Bitcoin verde e YPF rojo — se leía "este va bien, este va mal"
+ * cuando el color sólo decía cuál era cuál.
  */
 export const MONO_VIOLET = Object.freeze([
   v('mono-violet-1'), v('mono-violet-2'), v('mono-violet-3'),
   v('mono-violet-4'), v('mono-violet-5'),
 ])
+
+/** Lo que sobra después de las 5 porciones con color ("Otros", "Resto"):
+ *  gris que tiende al fondo pero se VE. `bg-3` casi no se distinguía de la
+ *  card (231 sobre 255 en claro) — la porción parecía un hueco. */
+export const PORCION_RESTO = v('line-3')
+
+/** Color de la porción número `i` de una composición YA ORDENADA de mayor a
+ *  menor: los 5 primeros de la rampa, del sexto en adelante el gris del resto.
+ *  Un solo lugar para esta regla — antes eran cinco copias con dos grises. */
+export const porcionColor = (i) => (i < MONO_VIOLET.length ? MONO_VIOLET[i] : PORCION_RESTO)

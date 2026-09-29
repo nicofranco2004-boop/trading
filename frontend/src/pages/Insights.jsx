@@ -6,7 +6,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
   ComposedChart,
 } from 'recharts'
-import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, areaFill, SERIES_COLORS } from '../utils/chartTheme'
+import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, areaFill, porcionColor } from '../utils/chartTheme'
 import { TrendingUp, TrendingDown, AlertTriangle, Info, Activity, Trophy, Target, Layers, Clock, Stethoscope, BarChart3, Scale, PiggyBank, Wallet, CircleDollarSign, Building2, BarChart2, UserRound, Droplets } from 'lucide-react'
 import StatCard from '../components/StatCard'
 import PageHeader from '../components/PageHeader'
@@ -101,7 +101,6 @@ const MONTH_NAMES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Se
 const monthName = (m) => MONTH_NAMES[(m - 1) % 12] || ''
 
 // Paleta v2: signal + data accents. Cero neón.
-const PIE_COLORS = SERIES_COLORS
 
 // Severity → badge styling para las tarjetas de Diagnóstico (audit pattern).
 // La severidad solo se codifica en el badge, no en todo el bloque, para
@@ -3500,8 +3499,12 @@ function InsightsDesktop({ _embeddedTab }) {
             </div>
             <ResponsiveContainer width="100%" height={260}>
               <PieChart>
-                <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
-                  {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                {/* Ordenada de mayor a menor: la rampa de composición le da el
+                    tono más fuerte a la porción más grande (ver MONO_VIOLET).
+                    Antes: paleta de series en el orden de la lista de brokers,
+                    con el verde de ganancia y el rojo de pérdida adentro. */}
+                <Pie data={[...pieData].sort((a, b) => b.value - a.value)} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
+                  {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={porcionColor(i)} />)}
                 </Pie>
                 <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
                 <Tooltip

@@ -19,14 +19,12 @@ import {
 } from 'lucide-react'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { parseNum } from '../../utils/format'
-import { SERIES_COLORS } from '../../utils/chartTheme'
+import { porcionColor, PORCION_RESTO } from '../../utils/chartTheme'
 
-// Paleta de composición (por índice; el último cae en gris).
-// Era una cuarta copia de la paleta de series, con los mismos seis tonos
-// desviados entre 10 y 27 puntos RGB de los canónicos — lo bastante cerca
-// como para que nadie notara que eran otros, y lo bastante lejos como para
-// que una torta de Análisis y una de la IA no combinaran.
-const ALLOC_COLORS = SERIES_COLORS
+// Composición: la rampa violeta de utils/chartTheme (porcionColor), la misma
+// de toda torta o barra de composición de la app. Hasta 2026-09-29 usaba la
+// paleta de series: Bitcoin salía con el verde de ganancia e YPF con el rojo
+// de pérdida — se leía "este va bien, este va mal".
 
 const TONE_TEXT = {
   pos: 'text-rendi-pos', warn: 'text-rendi-warn', neg: 'text-rendi-neg', neutral: 'text-ink-0',
@@ -117,16 +115,25 @@ function CompareBlock({ items, title }) {
 
 // ── 02 · Composición (donut + leyenda) ──────────────────────────────────────
 // r=15.9155 → circunferencia 100: los dasharray mapean 1:1 con los %.
+// "Otros"/"Resto" lo manda el modelo como una porción más, y puede ser la
+// MAYOR: en el demo salía primero, con el violeta más fuerte y de titular del
+// centro ("53% Otros"). Lo que sobra va al final y en gris, como en el
+// Dashboard y el libro del asesor; el centro lo lleva el activo más grande.
+const ES_RESTO = /^(otros|otras|resto|el resto|los dem[aá]s|dem[aá]s)\b/i
+
 function AllocBlock({ items, title }) {
   const total = items.reduce((s, it) => s + it.pct, 0) || 1
-  const sorted = [...items].sort((a, b) => b.pct - a.pct)
+  const porPeso = (a, b) => b.pct - a.pct
+  const reales = items.filter(it => !ES_RESTO.test(String(it.l).trim())).sort(porPeso)
+  const resto = items.filter(it => ES_RESTO.test(String(it.l).trim())).sort(porPeso)
   const segs = []
   let acc = 0
-  for (let i = 0; i < sorted.length; i++) {
-    const w = (sorted[i].pct / total) * 100
-    segs.push({ ...sorted[i], w, offset: 25 - acc, color: ALLOC_COLORS[Math.min(i, ALLOC_COLORS.length - 1)] })
+  ;[...reales, ...resto].forEach((it, i) => {
+    const w = (it.pct / total) * 100
+    const color = i < reales.length ? porcionColor(i) : PORCION_RESTO
+    segs.push({ ...it, w, offset: 25 - acc, color })
     acc += w
-  }
+  })
   const top = segs[0]
   return (
     <BlockCard title={title || 'Composición'}>

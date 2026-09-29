@@ -1,5 +1,5 @@
 import { pctTxt } from '../../utils/format'
-import { MONO_VIOLET } from '../../utils/chartTheme'
+import { MONO_VIOLET, PORCION_RESTO } from '../../utils/chartTheme'
 // ConcentrationDonut — donut CSS de concentración (top 3 tenencias vs cartera).
 // ═══════════════════════════════════════════════════════════════════════════
 // Body del módulo de concentración en el perfil: donut por conic-gradient
@@ -13,9 +13,9 @@ import { MONO_VIOLET } from '../../utils/chartTheme'
 // blanco, invisibles) y los dos últimos, azules casi negros (lo más pesado de
 // la pantalla, justo para las porciones que menos importan).
 const SLICE_COLORS = MONO_VIOLET
-// Lo que sobra tiende al fondo. `bg-3` vale exactamente #1B2230 en oscuro, o
-// sea el valor de siempre, y en claro es el gris de superficie.
-const REST_COLOR = 'rgb(var(--bg-3))'
+// Lo que sobra tiende al fondo: el gris de resto de TODAS las composiciones
+// (utils/chartTheme). Era `bg-3`, que en claro casi no se distingue de la card.
+const REST_COLOR = PORCION_RESTO
 
 export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
   if (!holdings?.length || top3Pct == null) return null

@@ -2,7 +2,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, trendArea, SERIES_COLORS } from '../utils/chartTheme'
+import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, trendArea, porcionColor, PORCION_RESTO } from '../utils/chartTheme'
 import { TrendingUp, TrendingDown, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { BrokerCard } from '../components/BrokerManager'
 import MonthlyTeaser from '../components/MonthlyTeaser'
@@ -1553,8 +1553,9 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
 // ─── Asset breakdown bar ─────────────────────────────────────────────────────
 // Barra horizontal de distribución del portfolio por activo. Top 5 + "otros".
 // Más operativa que un pie — densa, leíble, sin ocupar mucho vertical space.
-
-const ASSET_COLORS = SERIES_COLORS
+// Colores: la rampa de composición (porcionColor), no la de series — con la de
+// series el activo más grande salía VERDE y "Otros" ROJO, los colores de
+// ganancia y pérdida. Ver MONO_VIOLET en utils/chartTheme.js.
 
 function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacion = 1 }) {
   const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
@@ -1575,7 +1576,7 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacio
     const top = arr.slice(0, 5).map((x, i) => ({
       ...x,
       pct: (x.value / total) * 100,
-      color: ASSET_COLORS[i],
+      color: porcionColor(i),
     }))
     const restValue = arr.slice(5).reduce((s, x) => s + x.value, 0)
     if (restValue > 0) {
@@ -1583,7 +1584,7 @@ function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacio
         asset: `Otros (${arr.length - 5})`,
         value: restValue,
         pct: (restValue / total) * 100,
-        color: ASSET_COLORS[5],
+        color: PORCION_RESTO,
       })
     }
     return top

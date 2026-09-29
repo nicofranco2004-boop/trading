@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke, areaFill, MONO_VIOLET } from '../utils/chartTheme'
+import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke, areaFill, porcionColor, PORCION_RESTO } from '../utils/chartTheme'
 import { PhoneCall, Landmark, TrendingUp, TrendingDown, Users, ArrowRight, LineChart, FileText, ExternalLink } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import Skeleton from '../components/Skeleton'
@@ -281,10 +281,8 @@ function BookHero({ book }) {
 // no es ganancia) y su suma cierra EXACTO con el hero — misma regla de
 // comparabilidad que /advisor/book (solo clientes con foto en ambos cortes).
 
-// Rampa monocroma: el color dice CUÁNTO pesa cada parte, no quién es. Por eso
-// es un tono en pasos y no la paleta de series — y por eso se recorre al revés
-// en claro (la porción mayor es la más profunda, no la más brillante).
-const COMP_COLORS = MONO_VIOLET
+// Rampa monocroma (porcionColor): el color dice CUÁNTO pesa cada parte, no
+// quién es. La regla y el gris del resto viven en utils/chartTheme.
 const DETAIL_GRID = { display: 'grid', gridTemplateColumns: '1.5fr 0.9fr 1fr 1.35fr 1.25fr', gap: '12px', alignItems: 'center' }
 
 function BookDetailModal({ onClose }) {
@@ -308,9 +306,9 @@ function BookDetailModal({ onClose }) {
     const valued = cs.filter(c => c.value_usd != null).sort((a, b) => b.value_usd - a.value_usd)
     const top = valued.slice(0, 5)
     const restV = valued.slice(5).reduce((s, c) => s + c.value_usd, 0)
-    const comp = top.map((c, i) => ({ label: c.label, pct: c.share_pct ?? 0, color: COMP_COLORS[i] }))
+    const comp = top.map((c, i) => ({ label: c.label, pct: c.share_pct ?? 0, color: porcionColor(i) }))
     if (restV > 0 && data?.total_usd > 0) {
-      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: 'rgb(var(--line-3))' })
+      comp.push({ label: `Resto (${valued.length - 5})`, pct: Math.round((restV / data.total_usd) * 1000) / 10, color: PORCION_RESTO })
     }
     return {
       rows: sorted, edge, comp,

@@ -29,7 +29,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { detectoresVisibles } from '../utils/detectoresVisibles'
 import { planQueDestraba } from '../utils/planes'
 import { pctTxt } from '../utils/format'
-import { SERIES_COLORS } from '../utils/chartTheme'
+import { porcionColor } from '../utils/chartTheme'
 
 // Mapeo code → icono + tono visual + descripción educativa.
 // `what`: 1-2 frases que explican qué detecta el sesgo (en abstracto, sin
@@ -609,12 +609,13 @@ function ModalEvidence({ card }) {
               <div className="text-[12.5px] text-ink-2 mb-1 font-medium">Distribución</div>
               {/* Barra stacked */}
               <div className="flex h-2 rounded-sm overflow-hidden bg-bg-2 mb-2">
+                {/* Composición: la rampa, de la porción mayor a la menor
+                    (el breakdown ya viene ordenado). Ver MONO_VIOLET. */}
                 {ev.breakdown.slice(0, 6).map((b, i) => {
-                  const COLORS = SERIES_COLORS  // era la sexta copia de la paleta de series
                   return (
                     <div
                       key={i}
-                      style={{ width: `${b.pct}%`, background: COLORS[i % COLORS.length] }}
+                      style={{ width: `${b.pct}%`, background: porcionColor(i) }}
                       title={`${b.sector}: ${pctTxt(b.pct)}`}
                     />
                   )
