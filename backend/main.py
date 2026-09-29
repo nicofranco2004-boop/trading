@@ -31768,8 +31768,21 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # síntoma que llevó de 300 a 500 en julio). El costo del aire extra es
     # marginal: son tokens de SALIDA de Haiku, y sólo se gastan si el modelo
     # los usa.
-    max_tokens = 1350 if is_premium else 650
-    max_tokens_fallback = 950 if is_premium else 520
+    #
+    # 🔴 2026-09-29: ESOS NÚMEROS ERAN PARA HAIKU y el chat es Sonnet desde el
+    # 12/09 (1bce1a5d). Sonnet cambió dos cosas que se comen este mismo techo:
+    #   1. PIENSA antes de escribir (esfuerzo `medium`), y ese razonamiento sale
+    #      del MISMO max_tokens que la respuesta.
+    #   2. Cuenta el mismo texto en ~30% más tokens que Haiku.
+    # MEDIDO por el endpoint real con Sonnet 5 (código de producción), usuario
+    # Plus, las preguntas guiadas: "¿Qué activo es el que más riesgo me
+    # agrega?" salió CORTADA y sin tarjetas 2 de 2 veces (650/650), y las que
+    # no se cortaron usaron 517-616 de 650. En Pro con Sonnet 5.5, las comunes
+    # usaron 1150-1344 de 1350 y "explicame en detalle…" se cortó 2 de 2.
+    # Subir el techo no encarece nada que no se use: sólo se cobra lo que el
+    # modelo escribe. El largo lo controla el PROMPT; esto es sólo la red.
+    max_tokens = 3000 if is_premium else 2000
+    max_tokens_fallback = 2000 if is_premium else 1500
 
     # Modo del bloque de perfil: Pro/Admin → causal (infiere causas plausibles).
     # Free/Plus → descriptive (solo presenta el dato, no interpreta).
