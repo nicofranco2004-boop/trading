@@ -142,9 +142,12 @@ CRYPTO_META = {
 
 # Índices de referencia que muestra el strip superior del Home
 # (S&P 500 vía SPY ETF para tener un símbolo con datos consistentes en yfinance)
+# ^IXIC es el Nasdaq COMPUESTO (unas 3.000 empresas), no el Nasdaq 100 (^NDX,
+# las 100 más grandes): son dos índices distintos que no valen lo mismo. El
+# rótulo decía "Nasdaq 100" al lado del precio del compuesto.
 INDICES = [
     {"symbol": "^GSPC", "label": "S&P 500",    "kind": "index"},
-    {"symbol": "^IXIC", "label": "Nasdaq 100", "kind": "index"},
+    {"symbol": "^IXIC", "label": "Nasdaq",     "kind": "index"},
     {"symbol": "^MERV", "label": "Merval",     "kind": "index"},
     {"symbol": "BTC-USD", "label": "Bitcoin",  "kind": "crypto"},
     {"symbol": "ETH-USD", "label": "Ethereum", "kind": "crypto"},

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { labelVentanaMeses, parseNum, numToInput, pctTxt } from './format'
+import { labelVentanaMeses, parseNum, numToInput, pctTxt, pctVar, pctVarSign, fmtIndexPrice } from './format'
 describe('labelVentanaMeses — la card "Acumulado" tiene que decir su período', () => {
   it('12 meses (el default) se lee "1A"', () => {
     expect(labelVentanaMeses(12)).toBe('1A')
@@ -91,5 +91,50 @@ describe('pctTxt — el % que ya viene en escala de porcentaje', () => {
   it('sin dato, guión', () => {
     expect(pctTxt(null)).toBe('—')
     expect(pctTxt('')).toBe('—')
+  })
+})
+
+describe('pctVar — la variación del día, con signo y a la argentina', () => {
+  it('signo explícito y coma decimal', () => {
+    expect(pctVar(0.42)).toBe('+0,42%')
+    expect(pctVar(2.7)).toBe('+2,70%')
+    expect(pctVar(1.28, 1)).toBe('+1,3%')
+  })
+  it('el menos es el tipográfico (−), no el guion — el mismo de la barra del celular', () => {
+    // Las tarjetas del inicio escribían "-0,85%" y la barra "−0,85%": la misma
+    // caída con dos signos distintos según dónde se mirara.
+    expect(pctVar(-0.85)).toBe('\u22120,85%')
+    expect(pctVar(-0.85)).not.toContain('-')
+  })
+  it('lo que redondea a cero no tiene signo ni dirección', () => {
+    expect(pctVar(-0.001)).toBe('0,00%')
+    expect(pctVar(0)).toBe('0,00%')
+    expect(pctVarSign(-0.001)).toBe(0)
+    expect(pctVarSign(-0.005)).toBe(-1)
+    expect(pctVarSign(0.004)).toBe(0)
+  })
+  it('no multiplica por 100 — ya viene en porcentaje', () => {
+    expect(pctVar(12.5)).toBe('+12,50%')
+  })
+  it('sin dato, guión', () => {
+    expect(pctVar(null)).toBe('—')
+    expect(pctVar(undefined)).toBe('—')
+    expect(pctVar(NaN)).toBe('—')
+    expect(pctVarSign(null)).toBe(0)
+  })
+})
+
+describe('fmtIndexPrice — el precio de la cinta y de las tarjetas del inicio', () => {
+  it('índices con dos decimales, siempre dos', () => {
+    expect(fmtIndexPrice(5840.5, 'index')).toBe('5.840,50')
+    expect(fmtIndexPrice(2748.2, 'commodity')).toBe('2.748,20')
+  })
+  it('cripto y seis cifras sin decimales', () => {
+    expect(fmtIndexPrice(81595.37, 'crypto')).toBe('81.595')
+    expect(fmtIndexPrice(3320.4, 'crypto')).toBe('3.320')
+    expect(fmtIndexPrice(2150420.75, 'index')).toBe('2.150.421')
+  })
+  it('sin precio, guión', () => {
+    expect(fmtIndexPrice(null, 'index')).toBe('—')
   })
 })

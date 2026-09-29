@@ -767,13 +767,19 @@ body {
 .flash-up   { animation: flash-up   420ms ease-out; border-radius: 4px; }
 .flash-down { animation: flash-down 420ms ease-out; border-radius: 4px; }
 
-/* Ticker horizontal — para strip de brokers */
+/* Cinta horizontal — la de brokers de la landing y la de cotizaciones
+   (MarketTicker). Corre media pista: la pista son dos mitades iguales. */
 @keyframes ticker-scroll {
   0%   { transform: translateX(0); }
   100% { transform: translateX(-50%); }
 }
 .ticker-scroll { animation: ticker-scroll 30s linear infinite; }
-.ticker-scroll:hover { animation-play-state: paused; }
+/* Sólo con mouse. En un celular el :hover queda "pegado" después de tocar, y
+   la cinta se quedaba frenada hasta tocar otra cosa. Con el dedo, MarketTicker
+   la frena mientras está apoyado. */
+@media (hover: hover) {
+  .ticker-scroll:hover { animation-play-state: paused; }
+}
 
 /* Headline gradient sweep — Geist grande con barrido verde */
 @keyframes gradient-sweep {
@@ -796,6 +802,11 @@ body {
     animation: none !important;
   }
   .reveal-up { opacity: 1; }
+  /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
+     desliza con el dedo, como la barra de antes. */
+  .ticker-caja { overflow-x: auto; scrollbar-width: none; }
+  .ticker-caja::-webkit-scrollbar { display: none; }
+  .ticker-copia + .ticker-copia { display: none; }
   /* Sin transform feedback si el user pidió reduced motion */
   .press, .press-card {
     transition: none !important;

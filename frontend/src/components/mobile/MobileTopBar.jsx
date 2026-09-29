@@ -1,46 +1,25 @@
 // MobileTopBar — barra superior fija en mobile (Sprint M1, item 05).
 // ═══════════════════════════════════════════════════════════════════════════
-// Audit: ticker bar superior (mini-strip de cotizaciones) + logo a la izq +
-// search icon a la derecha. Sticky para que esté siempre accesible.
-// Por debajo, indicador de pull-to-refresh cuando el user tira hacia abajo.
-//
-// Ticker bar: scroll horizontal con 4-5 índices clave (S&P, Nasdaq, MERVAL,
-// Blue, BTC). Se actualiza con el mismo endpoint /indices del Home.
+// Logo a la izquierda; moneda, Rendi AI y búsqueda a la derecha; abajo, la
+// cinta de cotizaciones (MarketTicker, la misma que va arriba del contenido en
+// la compu). Sticky para que esté siempre accesible. Por debajo, indicador de
+// pull-to-refresh cuando el user tira hacia abajo: refresca también la cinta.
 
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Search, RefreshCcw, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import CurrencySwitcher from '../CurrencySwitcher'
-import { api } from '../../utils/api'
+import MarketTicker from '../MarketTicker'
+import { refreshMarketIndices } from '../../hooks/useMarketIndices'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 
-const TICKER_KEYS = ['^GSPC', '^IXIC', 'MERVAL', 'BLUE', 'BTC-USD']
-const TICKER_LABELS = {
-  '^GSPC': 'S&P',
-  '^IXIC': 'NDQ',
-  'MERVAL': 'MERVAL',
-  'BLUE': 'BLUE',
-  'BTC-USD': 'BTC',
-}
-
 export default function MobileTopBar({ onRefresh }) {
-  const [items, setItems] = useState([])
   const coachDrawer = useCoachDrawer()
-
-  useEffect(() => { loadTickers() }, [])
-
-  async function loadTickers() {
-    try {
-      const data = await api.get('/home/indices')
-      setItems(data?.items || [])
-    } catch { /* silent */ }
-  }
 
   const { isPulling, pullDistance, isRefreshing, threshold } = usePullToRefresh({
     onRefresh: async () => {
-      await loadTickers()
+      await refreshMarketIndices()
       if (typeof onRefresh === 'function') await onRefresh()
     },
   })
@@ -103,27 +82,8 @@ export default function MobileTopBar({ onRefresh }) {
           </div>
         </div>
 
-        {/* Ticker bar */}
-        {items.length > 0 && (
-          <div className="overflow-x-auto scrollbar-none border-t border-line/30">
-            <ul className="flex items-center gap-4 px-3 py-1.5 whitespace-nowrap">
-              {items.slice(0, 6).map((it, i) => {
-                const sym = it.symbol || it.key || i
-                const label = TICKER_LABELS[sym] || (it.label || sym)
-                const change = Number(it.change_pct ?? it.changePct ?? 0)
-                const positive = change >= 0
-                return (
-                  <li key={sym} className="flex items-center gap-1.5 text-[10px]">
-                    <span className="text-ink-3 font-medium font-mono">{label}</span>
-                    <span className={positive ? 'text-rendi-pos tabular' : 'text-rendi-neg tabular'}>
-                      {positive ? '+' : '−'}{Math.abs(change).toFixed(2).replace('.', ',')}%
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
-        )}
+        {/* Cinta de cotizaciones */}
+        <MarketTicker className="border-t border-line/30" />
       </header>
     </>
   )

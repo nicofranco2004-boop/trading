@@ -4,16 +4,11 @@
 import { useEffect, useState } from 'react'
 import { TrendingUp, TrendingDown } from 'lucide-react'
 import { api } from '../../utils/api'
+import { pctVar } from '../../utils/format'
 import AssetQuickView from './AssetQuickView'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2).replace('.', ',')}%`
-}
 
 function MoverList({ items, tone, icon: Icon, label, onSelect }) {
   return (
@@ -35,7 +30,7 @@ function MoverList({ items, tone, icon: Icon, label, onSelect }) {
               </DataRow.Cell>
               <DataRow.Cell align="right" width={70} mono tabular>
                 <span className={pos ? 'text-rendi-pos' : 'text-rendi-neg'}>
-                  {fmtPct(it.change_pct)}
+                  {pctVar(it.change_pct)}
                 </span>
               </DataRow.Cell>
             </DataRow>

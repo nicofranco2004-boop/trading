@@ -16,6 +16,7 @@ import Sidebar from './components/Sidebar'
 import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
+import MarketTicker from './components/MarketTicker'
 import DemoBanner from './components/DemoBanner'
 // Barra del free trial — en el shell, no en /planes: el aviso del día 8
 // ("mañana pasás a Plus") tiene que verlo el que está usando la app.
@@ -458,6 +459,10 @@ function Layout() {
         className="min-h-screen transition-[margin] duration-200 ease-out"
         style={{ marginLeft: 'var(--sidebar-w, 220px)' }}
       >
+        {/* La cinta de cotizaciones, la misma que en el celular va dentro de
+            MobileTopBar. Acá no es fija: se va con el scroll, para no tapar
+            los encabezados de las páginas que sí se quedan arriba. */}
+        <MarketTicker className="border-b border-line bg-bg-0" />
         <ClientContextBar />
         <DemoBanner />
         <TrialBanner />

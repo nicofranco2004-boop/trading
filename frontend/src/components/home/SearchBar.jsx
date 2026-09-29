@@ -43,12 +43,6 @@ export const FILTERS = [
   { id: 'etf',      label: 'ETFs'         },
 ]
 
-function fmtPct(p) {
-  if (p == null) return null
-  const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2).replace('.', ',')}%`
-}
-
 function fmtUsd(v) {
   if (v == null) return null
   return `$${v.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`

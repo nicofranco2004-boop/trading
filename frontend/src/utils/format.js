@@ -144,6 +144,41 @@ export const pctSigned = (n, decimals = 1) => {
   return `${sign}${nfmt(Math.abs(v), decimals)}%`
 }
 
+// Variación que YA viene en escala de porcentaje, con signo: 0.42 → "+0,42%",
+// −0.85 → "−0,85%". Es la del día de una cotización, que el backend manda como
+// `change_pct` (home/market.py). NO multiplica por 100: para fracciones están
+// pct/pctSigned.
+//
+// El signo sale del número REDONDEADO: −0,001 escribe "0,00%", no "−0,00%", y
+// pctVarSign dice 0 — la flecha y el color de una cinta no pueden decir "bajó"
+// al lado de un cero. El menos es el tipográfico (−), como en fmtMoney.
+//
+// Antes esto vivía copiado en 9 componentes del inicio, con el guion común (-)
+// en unos y el tipográfico en otros: la misma caída del Merval se escribía
+// "-0,85%" en la tarjeta de la compu y "−0,85%" en la barra del celular.
+export const pctVarSign = (n, decimals = 2) => {
+  if (n == null || n === '' || isNaN(n)) return 0
+  // `|| 0`: Math.sign de un −0,001 redondeado es −0, no 0.
+  return Math.sign(Number(Number(n).toFixed(decimals))) || 0
+}
+
+export const pctVar = (n, decimals = 2) => {
+  if (n == null || n === '' || isNaN(n)) return '—'
+  const s = pctVarSign(n, decimals)
+  const sign = s > 0 ? '+' : s < 0 ? '−' : ''
+  return `${sign}${nfmt(Math.abs(Number(n)), decimals)}%`
+}
+
+// Precio de un índice o activo de referencia (la cinta de arriba y las
+// tarjetas del inicio). Cripto y los números de seis cifras van sin decimales
+// —el Merval en pesos y el bitcoin no ganan nada con ",37" y en el celular no
+// entran—; el resto con dos, siempre dos: "5.840,50", no "5.840,5".
+export const fmtIndexPrice = (p, kind) => {
+  if (p == null || isNaN(p)) return '—'
+  if (kind === 'crypto' || Math.abs(p) >= 100000) return nfmt(p, 0)
+  return nfmt(p, 2)
+}
+
 // ── Entrada: leer lo que el usuario TIPEA ────────────────────────────────────
 //
 // La contracara de nfmt. Si Rendi MUESTRA "1.037,74", tiene que ACEPTAR que la

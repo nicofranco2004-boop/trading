@@ -1,38 +1,19 @@
 // IndicesStrip — strip horizontal de índices (clean pass 2026-07).
 // Cards con gap y aire: label sans + valor grande tabular + delta con flecha.
+//
+// Los datos y el formato son los MISMOS que los de la cinta de arriba
+// (MarketTicker): useMarketIndices es el único que pide /home/indices, y los
+// números salen de pctVar / fmtIndexPrice de utils/format. Antes cada uno pedía
+// y escribía por su cuenta, y la misma caída se leía "-0,85%" acá y "−0,85%"
+// en la barra del celular.
 
-import { useEffect, useState } from 'react'
-import { api } from '../../utils/api'
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2).replace('.', ',')}%`
-}
-
-function fmtPrice(p, kind) {
-  if (p == null) return '—'
-  if (kind === 'crypto') return p.toLocaleString('es-AR', { maximumFractionDigits: 0 })
-    // Con toFixed el oro salía "2748,20": coma bien, pero SIN el punto de miles.
-  if (kind === 'commodity') return p.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return p.toLocaleString('es-AR', { maximumFractionDigits: 2 })
-}
+import { useMarketIndices } from '../../hooks/useMarketIndices'
+import { pctVar, pctVarSign, fmtIndexPrice } from '../../utils/format'
 
 export default function IndicesStrip() {
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState(null)
+  const { items, loading, error: err } = useMarketIndices()
 
-  useEffect(() => {
-    let cancelled = false
-    api.get('/home/indices')
-      .then(d => { if (!cancelled) setItems(d.items || []) })
-      .catch(ex => { if (!cancelled) setErr(ex.message) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [])
-
-  if (loading) {
+  if (loading && items.length === 0) {
     return (
       <div className="rounded border border-line bg-bg-1">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-x divide-y sm:divide-y-0 divide-line">
@@ -46,7 +27,7 @@ export default function IndicesStrip() {
       </div>
     )
   }
-  if (err) {
+  if (err && items.length === 0) {
     return <div className="text-xs text-rendi-neg">No pudimos cargar los índices: {err}</div>
   }
 
@@ -55,15 +36,15 @@ export default function IndicesStrip() {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
       {items.map(it => {
-        const positive = (it.change_pct ?? 0) >= 0
+        const dir = pctVarSign(it.change_pct)
         return (
           <div key={it.symbol} className="rounded-xl border border-line bg-bg-1 px-4 py-3.5">
             <div className="text-[12.5px] text-ink-2 font-medium leading-tight">{it.label}</div>
             <div className="mt-2 text-[19px] font-semibold text-ink-0 num tabular leading-none">
-              {fmtPrice(it.price, it.kind)}
+              {fmtIndexPrice(it.price, it.kind)}
             </div>
-            <div className={`mt-1.5 text-[12.5px] font-semibold tabular num ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-              {positive ? '▲ ' : '▼ '}{fmtPct(it.change_pct)}
+            <div className={`mt-1.5 text-[12.5px] font-semibold tabular num ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-2'}`}>
+              {dir > 0 ? '▲ ' : dir < 0 ? '▼ ' : ''}{pctVar(it.change_pct)}
             </div>
           </div>
         )

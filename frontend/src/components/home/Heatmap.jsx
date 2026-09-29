@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
+import { pctVar } from '../../utils/format'
 import { polarityColor, CORTES_DIA } from '../../utils/polarityScale'
 import AssetQuickView from './AssetQuickView'
 
@@ -22,12 +23,6 @@ import AssetQuickView from './AssetQuickView'
 // seis restantes eran inalcanzables. La rampa nueva tiene esos 3 y nada más.
 //
 // Los cortes son los del DÍA (0,5 % y 1 %) porque esto mide una rueda.
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(1).replace('.', ',')}%`
-}
 
 // Tickers crypto del backend vienen como `BTC-USD`, `ETH-USD`. El endpoint
 // /api/prices/history valida con regex `[A-Z0-9]{1,10}(\.BA)?` y rechaza `-`.
@@ -265,7 +260,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
                     fontFamily="monospace"
                     style={{ pointerEvents: 'none', userSelect: 'none' }}
                   >
-                    {fmtPct(b.change_pct)}
+                    {pctVar(b.change_pct, 1)}
                   </text>
                 )}
               </g>

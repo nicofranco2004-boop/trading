@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
+import { pctVar } from '../../utils/format'
 
 const RANGES = [
   { key: '1w',  label: '1S' },
@@ -26,12 +27,6 @@ function fmtPrice(v) {
   if (v == null) return '—'
   if (v >= 1000) return v.toLocaleString('es-AR', { maximumFractionDigits: 0 })
   return v.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2).replace('.', ',')}%`
 }
 
 export default function AssetMiniChart({ symbol }) {
@@ -97,7 +92,7 @@ export default function AssetMiniChart({ symbol }) {
               <span className="mx-1">→</span>
               <span className="font-mono tabular text-ink-1">${fmtPrice(last)}</span>
               <span className={`ml-2 font-mono tabular ${positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                {fmtPct(delta)}
+                {pctVar(delta)}
               </span>
             </>
           )}

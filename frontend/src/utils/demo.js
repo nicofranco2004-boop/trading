@@ -1859,13 +1859,16 @@ const WATCHLIST_BASE = [
 // scaling de MONTHLY pueda computar el target POSITIONS × PRICES).
 
 // Strip de índices del Home — shape exacta del backend get_indices_strip()
+// Misma forma que `get_indices_strip()` de backend/home/market.py: los mismos
+// símbolos, rótulos y `kind`. Tenía otros (SPX, "NASDAQ 100", kind 'equity'),
+// así que el demo no mostraba lo que muestra la app de verdad.
 const INDICES_STRIP = [
-  { symbol: 'SPX',  label: 'S&P 500',    kind: 'equity', price: 5840.50, change_pct: 0.42 },
-  { symbol: 'IXIC', label: 'NASDAQ 100', kind: 'equity', price: 18925.30, change_pct: 1.28 },
-  { symbol: 'MERV', label: 'Merval',     kind: 'equity', price: 2150420, change_pct: -0.85 },
-  { symbol: 'BTC',  label: 'Bitcoin',    kind: 'crypto', price: 81595, change_pct: 2.7 },
-  { symbol: 'ETH',  label: 'Ethereum',   kind: 'crypto', price: 3320, change_pct: 1.7 },
-  { symbol: 'GOLD', label: 'Oro',        kind: 'commodity', price: 2748.20, change_pct: 0.15 },
+  { symbol: '^GSPC',   label: 'S&P 500',  kind: 'index', price: 5840.50, change_pct: 0.42 },
+  { symbol: '^IXIC',   label: 'Nasdaq',   kind: 'index', price: 18925.30, change_pct: 1.28 },
+  { symbol: '^MERV',   label: 'Merval',   kind: 'index', price: 2150420, change_pct: -0.85 },
+  { symbol: 'BTC-USD', label: 'Bitcoin',  kind: 'crypto', price: 81595, change_pct: 2.7 },
+  { symbol: 'ETH-USD', label: 'Ethereum', kind: 'crypto', price: 3320, change_pct: 1.7 },
+  { symbol: 'GC=F',    label: 'Oro',      kind: 'commodity', price: 2748.20, change_pct: 0.15 },
 ]
 
 // Movers — top gainers + losers por mercado

@@ -4,17 +4,12 @@
 import { useEffect, useState } from 'react'
 import { Star, X, TrendingUp, TrendingDown, Eye } from 'lucide-react'
 import { api } from '../../utils/api'
+import { pctVar } from '../../utils/format'
 import AssetQuickView from './AssetQuickView'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
 import { subscribeWatchlistChanged, notifyWatchlistChanged } from '../../utils/watchlistEvents'
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : ''
-  return `${sign}${p.toFixed(2).replace('.', ',')}%`
-}
 
 function fmtPrice(p) {
   if (p == null) return '—'
@@ -131,7 +126,7 @@ export default function Watchlist() {
                             {pos
                               ? <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />
                               : <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
-                            {fmtPct(it.change_pct)}
+                            {pctVar(it.change_pct)}
                           </span>
                         )}
                     </DataRow.Cell>
