@@ -164,3 +164,30 @@ describe('bloques de registro (form/confirm)', () => {
     expect(r.meta).not.toBe(null)
   })
 })
+
+// ── 2026-09-29: lo que se vio al dibujar respuestas REALES de Sonnet 5.5 ──
+describe('respuestas reales que se dibujaban mal', () => {
+  it('comilla doble al cerrar un texto ya no tira TODAS las tarjetas', () => {
+    // Tal cual salió: `…vendiste.""` — antes: meta null, cero tarjetas.
+    const t = `Perdiste poco.\n${RENDI_DELIM}{"voz":"Con MELI perdiste poco, ya vendiste."","verdict":"Pérdida chica","stats":[{"l":"Resultado","v":"−US$ 21,40","t":"neg"}]}`
+    const { meta } = parseStructured(t)
+    expect(meta?.verdict).toBe('Pérdida chica')
+    expect(meta.stats[0].v).toBe('−US$ 21,40')
+  })
+
+  it('un texto vacío legítimo ("") no se toca', () => {
+    const t = `x\n${RENDI_DELIM}{"voz":"a","sources":[""],"verdict":"Ok"}`
+    expect(parseStructured(t).meta?.verdict).toBe('Ok')
+  })
+
+  it('una celda larga se recorta en una palabra con "…", no a la mitad', () => {
+    const t = `x\n${RENDI_DELIM}{"verdict":"Ok","blocks":[{"type":"table","cols":["Métrica","Valor"],"rows":[["Valor justo según el consenso de 39 analistas","US$ 328,22"],["Valor justo (39 analistas)","US$ 328,22"]]}]}`
+    const [tabla] = parseStructured(t).meta.blocks
+    // Lo que antes salía "Valor justo (39 analista": entra entero.
+    expect(tabla.rows[1][0]).toBe('Valor justo (39 analistas)')
+    // Lo que no entra termina en palabra completa + "…".
+    expect(tabla.rows[0][0].endsWith('…')).toBe(true)
+    expect(tabla.rows[0][0]).not.toMatch(/\s…$/)
+    expect('Valor justo según el consenso de 39 analistas').toContain(tabla.rows[0][0].slice(0, -1))
+  })
+})

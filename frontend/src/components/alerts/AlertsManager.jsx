@@ -69,7 +69,15 @@ export default function AlertsManager({ plan, prefill }) {
   const [showForm, setShowForm] = useState(!!prefill)
   const [form, setForm] = useState(() =>
     prefill
-      ? { ...EMPTY_FORM, symbol: prefill.symbol || '', currency: prefill.currency || (String(prefill.symbol || '').endsWith('.BA') ? 'ARS' : 'USD') }
+      ? {
+          ...EMPTY_FORM, symbol: prefill.symbol || '', currency: prefill.currency || (String(prefill.symbol || '').endsWith('.BA') ? 'ARS' : 'USD'),
+          // "Crear alerta BTC −10%" desde Rendi AI → variación %, ya cargada.
+          // Si el plan no tiene alertas por variación, queda el formulario
+          // de siempre (el botón de ese tipo muestra su candado).
+          ...((prefill.downPct || prefill.upPct) && canPct
+            ? { kind: 'pct_move', down_pct: prefill.downPct ? String(prefill.downPct) : '', up_pct: prefill.upPct ? String(prefill.upPct) : '' }
+            : {}),
+        }
       : EMPTY_FORM
   )
   const [busy, setBusy] = useState(false)

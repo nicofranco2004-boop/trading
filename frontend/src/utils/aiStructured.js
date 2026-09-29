@@ -37,12 +37,39 @@ export function parseStructured(text) {
     const start = tail.indexOf('{')
     const end = tail.lastIndexOf('}')
     if (start !== -1 && end > start) {
-      meta = sanitizeMeta(JSON.parse(tail.slice(start, end + 1)))
+      meta = sanitizeMeta(parseTolerante(tail.slice(start, end + 1)))
     }
   } catch {
     meta = null
   }
   return { prose, meta }
+}
+
+// El modelo a veces cierra un texto con la comilla DOBLE: `…vendiste.""` — y
+// ese solo carácter hacía fallar el JSON entero: el usuario se quedaba sin
+// NINGUNA tarjeta. Medido 1 de ~100 respuestas (2026-09-29). La reparación es
+// estrecha a propósito: sólo `""` pegado a un carácter que NO puede abrir un
+// texto vacío (un `"v":""` legítimo tiene `:` antes), y seguido de `,` `}` `]`.
+// Si igual no parsea, lanza como antes y el caller cae a texto plano.
+function parseTolerante(json) {
+  try {
+    return JSON.parse(json)
+  } catch (e) {
+    const reparado = json.replace(/([^\\\s:,[{])""(\s*[,}\]])/g, '$1"$2')
+    if (reparado === json) throw e
+    return JSON.parse(reparado)
+  }
+}
+
+// Recorta un texto largo en el último espacio y le pone "…". Antes se cortaba
+// en seco al tope de caracteres, a mitad de palabra: en pantalla salía
+// "Valor justo (39 analista" — parecía un error, no un recorte.
+export function recortar(s, max) {
+  if (s.length <= max) return s
+  let cut = s.slice(0, max - 1)
+  const sp = cut.lastIndexOf(' ')
+  if (sp > max * 0.6) cut = cut.slice(0, sp)
+  return cut.replace(/[\s,;:·(–-]+$/, '') + '…'
 }
 
 // Durante el streaming el delimitador puede llegar por la mitad ("---REN"):
@@ -80,7 +107,7 @@ function sanitizeMeta(m) {
   // silencio (compare/alloc sin renderizar aunque el modelo los emitió).
   const str = (v, max) => {
     if (typeof v === 'number' && isFinite(v)) v = String(v)
-    return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null
+    return typeof v === 'string' && v.trim() ? recortar(v.trim(), max) : null
   }
   const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : null)
   const tone = TONES.has(m.tone) ? m.tone : 'neutral'
@@ -121,11 +148,14 @@ function sanitizeMeta(m) {
       } else if (b.type === 'scenario' && str(b.if, 60) && str(b.then, 60)) {
         blocks.push({ type: 'scenario', if: str(b.if, 60), then: str(b.then, 60), tone: TONES.has(b.tone) ? b.tone : 'neutral' })
       } else if (b.type === 'table' && Array.isArray(b.cols) && Array.isArray(b.rows)) {
-        const cols = b.cols.filter(c => typeof c === 'string').slice(0, 4).map(c => c.trim().slice(0, 20))
+        // Celdas hasta 40: la primera columna es un nombre ("Valor justo (39
+        // analistas)", "Rentabilidad sobre capital") y en el celular se parte
+        // en dos renglones sin problema; con 24 se cortaba a mitad de palabra.
+        const cols = b.cols.filter(c => typeof c === 'string').slice(0, 4).map(c => recortar(c.trim(), 24))
         const rows = b.rows
           .filter(r => Array.isArray(r))
           .slice(0, 5)
-          .map(r => r.slice(0, cols.length).map(c => String(c ?? '').slice(0, 24)))
+          .map(r => r.slice(0, cols.length).map(c => recortar(String(c ?? ''), 40)))
         if (cols.length >= 2 && rows.length >= 1) blocks.push(withTitle({ type: 'table', cols, rows }))
       } else if (b.type === 'actions' && Array.isArray(b.items)) {
         const items = b.items

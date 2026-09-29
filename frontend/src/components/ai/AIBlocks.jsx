@@ -164,16 +164,21 @@ function ScenarioBlock({ if: ifTxt, then, tone }) {
     : tone === 'warn' ? 'bg-rendi-warn/[0.08] border-rendi-warn/30'
     : tone === 'neg' ? 'bg-rendi-neg/[0.08] border-rendi-neg/30'
     : 'bg-bg-2 border-line'
+  // En el celular, uno arriba del otro: lado a lado, el resultado ("Tu
+  // cartera cae ~13% (unos US$ 1.480)") quedaba en una columna de ~130px y
+  // se partía en cuatro renglones. Desde sm, lado a lado como siempre.
   return (
-    <div className="grid items-stretch gap-2.5" style={{ gridTemplateColumns: '1fr auto 1fr' }}>
+    <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-stretch gap-1.5 sm:gap-2.5">
       <div className="bg-bg-1 border border-line rounded-xl px-4 py-3">
         <div className="text-[10.5px] text-ink-3 font-bold tracking-[0.08em] mb-1">ESCENARIO</div>
         <div className="text-[13.5px] font-semibold text-ink-0 leading-snug">{ifTxt}</div>
       </div>
-      <div className="grid place-items-center text-ink-3 text-[17px]" aria-hidden>→</div>
+      <div className="grid place-items-center text-ink-3 text-[15px] sm:text-[17px]" aria-hidden>
+        <span className="sm:hidden">↓</span><span className="hidden sm:inline">→</span>
+      </div>
       <div className={`border rounded-xl px-4 py-3 ${resBg}`}>
         <div className="text-[10.5px] text-ink-3 font-bold tracking-[0.08em] mb-1">TU CARTERA</div>
-        <div className={`text-[17px] font-bold num tabular leading-snug ${TONE_TEXT[tone] || TONE_TEXT.neutral}`}>{then}</div>
+        <div className={`text-[16px] sm:text-[17px] font-bold num tabular leading-snug ${TONE_TEXT[tone] || TONE_TEXT.neutral}`}>{then}</div>
       </div>
     </div>
   )
@@ -289,26 +294,27 @@ function iconForRoute(to) {
   return hit ? hit[1] : Sparkles
 }
 
-function ActionsBlock({ items, title }) {
+// Sin card ni título: son atajos, no un gráfico. Con card + título + botones
+// grandes ocupaban media pantalla del celular, y encima venían las
+// repreguntas debajo — seis botones por respuesta. Ahora es una fila de
+// pastillas con ícono (el ícono dice "te lleva a otra pantalla"; las
+// repreguntas de abajo, sin ícono, "le pregunto a Rendi").
+function ActionsBlock({ items }) {
   const navigate = useNavigate()
   return (
-    <BlockCard title={title || 'Siguientes pasos'}>
-      <div className="flex flex-wrap gap-2">
-        {items.map((it, i) => {
-          const Icon = iconForRoute(it.to)
-          return (
-            <button key={i} type="button" onClick={() => navigate(it.to)}
-              className="group inline-flex items-center gap-2.5 text-[13px] font-semibold text-ink-0 bg-bg-2 border border-data-violet/30 hover:bg-data-violet/10 hover:-translate-y-px rounded-xl px-3.5 py-2.5 transition-all">
-              <span className="w-6 h-6 rounded-lg bg-data-violet/10 text-data-violet grid place-items-center flex-none">
-                <Icon size={13} strokeWidth={1.75} aria-hidden="true" />
-              </span>
-              {it.label}
-              <ChevronRight size={13} strokeWidth={2} className="text-ink-3 group-hover:text-data-violet transition-colors" aria-hidden="true" />
-            </button>
-          )
-        })}
-      </div>
-    </BlockCard>
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((it, i) => {
+        const Icon = iconForRoute(it.to)
+        return (
+          <button key={i} type="button" onClick={() => navigate(it.to)}
+            className="group inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-ink-0 bg-bg-1 border border-line hover:border-data-violet/40 hover:bg-data-violet/[0.06] rounded-full pl-2 pr-2.5 py-1.5 transition-colors">
+            <Icon size={13} strokeWidth={1.75} className="text-data-violet flex-none" aria-hidden="true" />
+            {it.label}
+            <ChevronRight size={12} strokeWidth={2} className="text-ink-3 group-hover:text-data-violet transition-colors" aria-hidden="true" />
+          </button>
+        )
+      })}
+    </div>
   )
 }
 

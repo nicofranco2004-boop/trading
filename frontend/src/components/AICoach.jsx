@@ -359,8 +359,12 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
                     {meta.stats.map((s, k) => {
                       const t = STAT_TONE[s.t] || STAT_TONE.neutral
+                      // Con 3 tarjetas, en el celular (2 columnas) la tercera
+                      // quedaba sola en su fila con media pantalla vacía al
+                      // lado: ocupa el ancho entero. En sm+ son 3 columnas.
+                      const sola = meta.stats.length === 3 && k === 2
                       return (
-                        <div key={k} className={`relative overflow-hidden bg-bg-1 border border-line rounded-xl px-3.5 py-3 ${t.wash ? `bg-gradient-to-b ${t.wash} to-transparent` : ''}`}>
+                        <div key={k} className={`relative overflow-hidden bg-bg-1 border border-line rounded-xl px-3.5 py-3 ${sola ? 'col-span-2 sm:col-span-1' : ''} ${t.wash ? `bg-gradient-to-b ${t.wash} to-transparent` : ''}`}>
                           {t.bar && <span className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-r ${t.bar}`} aria-hidden />}
                           <div className="text-[11px] text-ink-2 font-semibold mb-1.5">{s.l}</div>
                           <div className={`text-[17px] font-bold num tabular leading-tight ${t.v}`}>{s.v}</div>
