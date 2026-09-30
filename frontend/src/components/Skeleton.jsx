@@ -1,5 +1,7 @@
 // Skeleton — placeholder animado que mantiene el shape del contenido real
-// mientras carga. Es la convención fintech moderna (Stripe, Linear, Robinhood)
+// mientras carga. El brillo que lo recorre es `.esqueleto` (index.css), la
+// misma clase que usan los esqueletos armados a mano en el resto de la app.
+// Es la convención fintech moderna (Stripe, Linear, Robinhood)
 // en lugar de mostrar 'Cargando…' que rompe la sensación de continuidad.
 //
 // Uso:
@@ -12,7 +14,7 @@
 export default function Skeleton({ className = '', ...rest }) {
   return (
     <div
-      className={`animate-pulse bg-bg-2 rounded motion-reduce:animate-none ${className}`}
+      className={`esqueleto bg-bg-2 rounded ${className}`}
       aria-hidden="true"
       {...rest}
     />

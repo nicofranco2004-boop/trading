@@ -64,7 +64,7 @@ export default function PersonalLayer() {
       <Eyebrow>Lo que te afecta</Eyebrow>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
         {loading && Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-24 rounded bg-bg-1 border border-line animate-pulse" />
+          <div key={i} className="h-24 rounded bg-bg-1 border border-line esqueleto" />
         ))}
         {cards.map((c, i) => {
           const Wrapper = c.cta_href ? Link : 'div'

@@ -105,8 +105,8 @@ export default function MoversRail({ market = "sp500" }) {
       </div>
       {!data && !err ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="h-48 rounded bg-bg-1 border border-line animate-pulse" />
-          <div className="h-48 rounded bg-bg-1 border border-line animate-pulse" />
+          <div className="h-48 rounded bg-bg-1 border border-line esqueleto" />
+          <div className="h-48 rounded bg-bg-1 border border-line esqueleto" />
         </div>
       ) : !data ? (
         <div className="text-xs text-rendi-neg">Sin movers: {err}</div>

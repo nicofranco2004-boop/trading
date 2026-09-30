@@ -59,8 +59,8 @@ export default function YearReturnLine({ modo = 'certero', className = '' }) {
     return (
       <div className={`h-full bg-bg-1 border border-line rounded-xl px-4 py-3.5 ${className}`}>
         <div className="text-[12px] text-ink-3 leading-none font-medium">Este año</div>
-        <div className="mt-2 h-[22px] w-24 rounded bg-bg-2 animate-pulse" />
-        <div className="mt-2.5 h-[20px] w-32 rounded-full bg-bg-2 animate-pulse" />
+        <div className="mt-2 h-[22px] w-24 rounded bg-bg-2 esqueleto" />
+        <div className="mt-2.5 h-[20px] w-32 rounded-full bg-bg-2 esqueleto" />
       </div>
     )
   }

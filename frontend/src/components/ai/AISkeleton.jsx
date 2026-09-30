@@ -5,7 +5,7 @@
 
 export default function AISkeleton() {
   return (
-    <div className="space-y-5 animate-pulse">
+    <div className="space-y-5 esqueleto">
       {/* TLDR */}
       <div className="space-y-1.5">
         <div className="h-4 bg-bg-2 rounded-sm w-11/12" />

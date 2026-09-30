@@ -117,7 +117,7 @@ export default function AssetMiniChart({ symbol }) {
       {/* Chart */}
       <div className="rounded-sm bg-bg-2/40 border border-line overflow-hidden" style={{ aspectRatio: `${WIDTH}/${HEIGHT}` }}>
         {loading || closes.length < 2 ? (
-          <div className="w-full h-full bg-bg-2/30 animate-pulse" />
+          <div className="w-full h-full bg-bg-2/30 esqueleto" />
         ) : (
           <svg
             viewBox={`0 0 ${WIDTH} ${HEIGHT}`}

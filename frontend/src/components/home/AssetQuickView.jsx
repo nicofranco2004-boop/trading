@@ -99,8 +99,8 @@ export default function AssetQuickView({ symbol, onClose }) {
         <div className="p-4 space-y-4">
           {loading && (
             <div className="space-y-2">
-              <div className="h-8 rounded-sm bg-bg-2 animate-pulse" />
-              <div className="h-4 rounded-sm bg-bg-2 animate-pulse w-1/2" />
+              <div className="h-8 rounded-sm bg-bg-2 esqueleto" />
+              <div className="h-4 rounded-sm bg-bg-2 esqueleto w-1/2" />
             </div>
           )}
 

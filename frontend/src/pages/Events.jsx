@@ -672,7 +672,7 @@ function EventTableSkeleton() {
       </div>
       <ul className="divide-y divide-line/40">
         {[1,2,3,4,5,6,7].map(i => (
-          <li key={i} className="grid grid-cols-[64px_1fr] md:grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-3 items-center animate-pulse">
+          <li key={i} className="grid grid-cols-[64px_1fr] md:grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-3 items-center esqueleto">
             <div className="h-4 w-12 bg-bg-3 rounded" />
             <div className="flex items-center gap-2.5">
               <div className="w-7 h-7 rounded-sm bg-bg-3" />

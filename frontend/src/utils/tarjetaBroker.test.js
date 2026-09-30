@@ -127,11 +127,13 @@ describe('la regla de qué entra en la tabla vive en un solo lugar', () => {
   it('las dos tablas de escritorio y el "Ver lotes" piden las filas a la misma función', () => {
     const src = readFileSync(join(SRC, 'pages/Positions.jsx'), 'utf8')
     const usos = src.match(/filasDeLaTarjeta\s*\(/g) || []
-    // Dos: el `bposRaw` que alimenta tabla + subtotal (uno solo, compartido por
-    // la tabla en pesos y la de dólares) y el `multiLote` que decide si se
-    // ofrece "Ver lotes". Si aparece un tercer lugar que arma las filas a mano,
-    // este número se queda igual y el test de arriba lo caza.
-    expect(usos.length).toBe(2)
+    // Tres: el `bposRaw` que alimenta tabla + subtotal (uno solo, compartido por
+    // la tabla en pesos y la de dólares), el `multiLote` que decide si se
+    // ofrece "Ver lotes", y la tarjeta COMPLETA (sin el buscador) que da el
+    // total del peso de cada fila (PesoEnCartera) — la misma función, sin el
+    // filtro de activo. Si aparece un lugar que arma las filas a mano, este
+    // número se queda igual y el test de arriba lo caza.
+    expect(usos.length).toBe(3)
   })
 
   it('la zona "Renta Fija" ya no existe y nadie la monta', () => {

@@ -90,7 +90,7 @@ export default function MarketTicker({ className = '' }) {
     if (!loading) return null
     return (
       <div aria-hidden="true" className={`h-7 md:h-8 flex items-center gap-6 px-4 overflow-hidden ${className}`}>
-        {[0, 1, 2, 3].map(i => <span key={i} className="h-2 w-24 shrink-0 rounded-sm bg-bg-3 animate-pulse" />)}
+        {[0, 1, 2, 3].map(i => <span key={i} className="h-2 w-24 shrink-0 rounded-sm bg-bg-3 esqueleto" />)}
       </div>
     )
   }

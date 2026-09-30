@@ -19,6 +19,9 @@
 // servidores que los guardan entre 1 minuto (cotizaciones sueltas) y 30
 // (movers): pedir más seguido no trae nada más nuevo, sólo carga.
 export const REFRESCO_MERCADO_MS = 5 * 60 * 1000
+// Los precios de Cartera (compu y celular): cada 90 s con la pantalla a la
+// vista. Es el ritmo que ya tenía la compu; el celular no refrescaba nunca.
+export const PRECIOS_CARTERA_MS = 90 * 1000
 // Con todas las ruedas de una lista cerradas los números no pueden cambiar, y
 // la watchlist es la que más cuida esto: cada pedido suyo puede bajar
 // cotizaciones de Yahoo POR USUARIO (el cache de una cotización dura 1 min), y

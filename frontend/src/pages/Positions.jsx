@@ -47,12 +47,13 @@ import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
 import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
+import PesoEnCartera from '../components/PesoEnCartera'
+import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { hoyISO } from '../utils/fecha'
 
-const REFRESH_MS = 90_000
 
 export const today = () => hoyISO()
 
@@ -421,18 +422,21 @@ function PositionsDesktop() {
 
   useEffect(() => {
     loadAll()
-    const id = setInterval(() => {
+    // Precios cada 90 s, sólo con la pestaña a la vista (relojVisible, el
+    // mismo reloj de la cinta y las secciones de mercado). Antes era un
+    // setInterval que seguía pidiendo con la pestaña oculta.
+    const apagarReloj = relojVisible(() => {
       const { pos, cfg, bkrs } = latestRef.current
       if (pos) fetchPrices(pos, cfg, bkrs)
       api.get('/dolar').then(setDolar).catch(() => {})
-    }, REFRESH_MS)
+    }, PRECIOS_CARTERA_MS)
     // El Coach IA registró/deshizo una operación (drawer sobre esta página):
     // recargar al instante — sin esto el usuario tenía que refrescar a mano
     // para ver la posición nueva.
     const onPortfolioChanged = () => loadAll()
     window.addEventListener('rendi:portfolio-changed', onPortfolioChanged)
     return () => {
-      clearInterval(id)
+      apagarReloj()
       window.removeEventListener('rendi:portfolio-changed', onPortfolioChanged)
     }
   }, [])
@@ -1615,6 +1619,7 @@ function PositionsDesktop() {
     return { value, invested, pnl, pct, byBroker }
   }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
+
   // Totales en modo 'today' (mode-independent) para el hero en display ARS: el peso
   // no tiene "dólar de compra", así que su Invertido/P&L no cambian con el toggle.
   // Se calcula a 'today' y se convierte ×tcValuacion → captura TODO el portfolio (incluidos
@@ -2064,30 +2069,39 @@ function PositionsDesktop() {
         // motor lo deja en 0 —o peor, en un parcial creíble cuando hay lotes
         // cargados en pesos— así que sumarlo daría un total en pesos plausible
         // y equivocado. Los pesos se derivan UNA vez, al final, del total en USD.
-        const rPorPata = section.patas.map(b => computeBrokerValue(
-          bposRaw.filter(p => p.broker === b.name),
-          prices, b, tcValuacion, tcCedear, tcCripto, costBasis))
-        // La pata pesos se recompone POR PATA: de una pata ARS se toma su peso
-        // NATIVO (lo que el usuario cargó, mode-independent) y de una pata USD se
-        // deriva ×tc, porque ahí el peso no está medido. Derivar TODO del total
-        // en USD haría que el "invertido en pesos" pase por `costBasisRate`, o
-        // sea el peso ruteado al tc_compra del lote y multiplicado por el dólar
-        // de hoy: un número que el usuario nunca aportó.
-        //
-        // Y NO se usa el `valueArs` de una pata USD aunque venga con algo: el
-        // motor lo llena sólo con los lotes cargados en pesos que vivan ahí, así
-        // que es un PARCIAL creíble. El `value` en USD sí está completo.
-        const _esArs = i => (section.patas[i]?.currency || '').toUpperCase() === 'ARS'
-        const _sumaArs = (campoArs, campoUsd) => rPorPata.reduce(
-          (acc, x, i) => acc + (_esArs(i) ? (x[campoArs] || 0) : (x[campoUsd] || 0) * tcValuacion), 0)
-        const r = section.patas.length === 1 ? rPorPata[0] : {
-          value: rPorPata.reduce((s, x) => s + (x.value || 0), 0),
-          invested: rPorPata.reduce((s, x) => s + (x.invested || 0), 0),
-          pnlUsd: rPorPata.reduce((s, x) => s + (x.pnlUsd || 0), 0),
-          valueArs: _sumaArs('valueArs', 'value'),
-          invArs: _sumaArs('invArs', 'invested'),
-          pnlArs: _sumaArs('pnlArs', 'pnlUsd'),
+        const sumarTarjeta = (pool) => {
+          const rPorPata = section.patas.map(b => computeBrokerValue(
+            pool.filter(p => p.broker === b.name),
+            prices, b, tcValuacion, tcCedear, tcCripto, costBasis))
+          // La pata pesos se recompone POR PATA: de una pata ARS se toma su peso
+          // NATIVO (lo que el usuario cargó, mode-independent) y de una pata USD se
+          // deriva ×tc, porque ahí el peso no está medido. Derivar TODO del total
+          // en USD haría que el "invertido en pesos" pase por `costBasisRate`, o
+          // sea el peso ruteado al tc_compra del lote y multiplicado por el dólar
+          // de hoy: un número que el usuario nunca aportó.
+          //
+          // Y NO se usa el `valueArs` de una pata USD aunque venga con algo: el
+          // motor lo llena sólo con los lotes cargados en pesos que vivan ahí, así
+          // que es un PARCIAL creíble. El `value` en USD sí está completo.
+          const _esArs = i => (section.patas[i]?.currency || '').toUpperCase() === 'ARS'
+          const _sumaArs = (campoArs, campoUsd) => rPorPata.reduce(
+            (acc, x, i) => acc + (_esArs(i) ? (x[campoArs] || 0) : (x[campoUsd] || 0) * tcValuacion), 0)
+          const r = section.patas.length === 1 ? rPorPata[0] : {
+            value: rPorPata.reduce((s, x) => s + (x.value || 0), 0),
+            invested: rPorPata.reduce((s, x) => s + (x.invested || 0), 0),
+            pnlUsd: rPorPata.reduce((s, x) => s + (x.pnlUsd || 0), 0),
+            valueArs: _sumaArs('valueArs', 'value'),
+            invArs: _sumaArs('invArs', 'invested'),
+            pnlArs: _sumaArs('pnlArs', 'pnlUsd'),
+          }
+          return r
         }
+        const r = sumarTarjeta(bposRaw)
+        // El peso de cada fila (PesoEnCartera) va sobre la tarjeta COMPLETA, no
+        // sobre lo que dejó el buscador: con "NVDA" en la búsqueda la tarjeta
+        // queda con esa sola fila y decía "Pesa 100 % de Schwab" (es 28,9 %).
+        // El encabezado sigue mostrando el subtotal filtrado, como siempre.
+        const rCompleta = assetFiltering ? sumarTarjeta(filasDeLaTarjeta(positions, section)) : r
 
         // Variación del día agregada del broker (suma de los Δ por posición con
         // cierre anterior disponible). En la moneda nativa del broker. `hasDay`
@@ -2156,6 +2170,11 @@ function PositionsDesktop() {
         // no se acumula (r.valueArs=0) → derivamos ×tcValuacion. El signo/color/% no
         // cambian con la conversión (tcValuacion > 0).
         const valueDisp = isArsDisp ? (arsMedido ? r.valueArs : r.value * tcValuacion) : r.value
+        // Lo mismo, de la tarjeta completa: el total del peso de cada fila, en
+        // la moneda que se está mostrando (mismo criterio que valueDisp).
+        const totalPesoDisp = isArsDisp
+          ? ((isARS && rCompleta.valueArs != null) ? rCompleta.valueArs : rCompleta.value * tcValuacion)
+          : rCompleta.value
         const investedDisp = isArsDisp ? (arsMedido ? r.invArs : r.invested * tcValuacion) : r.invested
         const pnlDisp = isArsDisp ? (arsMedido ? r.pnlArs : r.pnlUsd * tcValuacion) : r.pnlUsd
         // Pata de display del P&L para los COLORES del tfoot (el texto del monto/%
@@ -2494,7 +2513,7 @@ function PositionsDesktop() {
                           <td className={`${tdClass} text-ink-2 tabular`}>{isArsDisp
                             ? (avgPriceArs != null ? `ARS ${ars(avgPriceArs)}` : '—')
                             : (avgPriceUsdDisp != null ? `USD ${usd(avgPriceUsdDisp)}` : '—')}</td>
-                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.price}>{isArsDisp ? `ARS ${ars(c.priceArs)}` : `USD ${usd(c.priceArs / tcValuacion)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
+                          <td className={`${tdClass} text-ink-1 tabular`}>{c.priceArs != null ? <FlashValue value={c.priceArs}>{isArsDisp ? `ARS ${ars(c.priceArs)}` : `USD ${usd(c.priceArs / tcValuacion)}`}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                           {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp
                             /* `p.invested` está en la moneda del LOTE. En la fila que
                                fusiona las dos patas es null a propósito (sumar pesos con
@@ -2505,7 +2524,7 @@ function PositionsDesktop() {
                             : (c.invUsd != null ? fmtUsd(c.invUsd) : '—'))}</td>}
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
-                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (isArsDisp ? (c.valueArs != null ? <FlashValue value={c.value}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>) : (c.valueUsd != null ? <FlashValue value={c.value}>{fmtUsd(c.valueUsd)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>))}</td>
+                          <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (isArsDisp ? (c.valueArs != null ? <FlashValue value={c.valueArs}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>) : (c.valueUsd != null ? <FlashValue value={c.valueUsd}>{fmtUsd(c.valueUsd)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>))}{!isLot && <PesoEnCartera valor={isArsDisp ? c.valueArs : c.valueUsd} total={totalPesoDisp} nombre={section.label} />}</td>
                           <td className={`${tdClass} tabular`} title={pnlTooltip}>
                             <span className="inline-flex items-center gap-1.5">
                               <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>
@@ -2746,7 +2765,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} text-ink-2 tabular`}>{avgPrice != null ? (isArsDisp ? fmtArs(avgPrice * tcValuacion) : fmtUsd(avgPrice)) : '—'}</td>
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
-                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{isArsDisp ? fmtArs(c.value * tcValuacion) : fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}</td>
+                        <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{isArsDisp ? fmtArs(c.value * tcValuacion) : fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}{!isLot && <PesoEnCartera valor={c.value != null && isArsDisp ? c.value * tcValuacion : c.value} total={totalPesoDisp} nombre={section.label} />}</td>
                         <td className={`${tdClass} tabular`} title={pnlTooltip}>
                           <span className="inline-flex items-center gap-1.5">
                             <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>

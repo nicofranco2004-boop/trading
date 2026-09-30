@@ -19,8 +19,8 @@ export default function IndicesStrip() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 divide-x divide-y sm:divide-y-0 divide-line">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="h-16 p-3">
-              <div className="h-2 w-12 rounded-sm bg-bg-3 animate-pulse mb-2" />
-              <div className="h-4 w-20 rounded-sm bg-bg-3 animate-pulse" />
+              <div className="h-2 w-12 rounded-sm bg-bg-3 esqueleto mb-2" />
+              <div className="h-4 w-20 rounded-sm bg-bg-3 esqueleto" />
             </div>
           ))}
         </div>

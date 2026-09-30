@@ -89,7 +89,7 @@ describe('MarketTicker — la cinta de arriba', () => {
   it('mientras carga reserva el alto (no empuja la pantalla al aparecer)', () => {
     const html = renderToStaticMarkup(<MarketTicker />)
     expect(html).toContain('h-7')
-    expect(html).toContain('animate-pulse')
+    expect(html).toContain('esqueleto')   // el brillo de carga compartido
   })
 })
 

@@ -45,6 +45,8 @@ import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, compute
 import { buildDashboardInsight } from '../utils/insights'
 import { applyMtmToMonthly } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
+import { useAlVerse } from '../hooks/useAlVerse'
+import PuntaViva, { puntaEsDeAhora } from '../components/PuntaViva'
 import { fechaCorta } from '../utils/lineaDelBono'
 
 const REFRESH_MS = 90_000
@@ -666,6 +668,15 @@ function PersonalDashboard() {
     return Math.max(...evoSeriesDisplay.map(p => Math.max(p.valueUsd, p.netDeposited)))
   }, [evoSeriesDisplay])
 
+  // El gráfico se dibuja cuando llegás a él, no al cargar la página: montado
+  // antes, la línea se dibujaba fuera de la vista. `graficoVisto` remonta el
+  // AreaChart (key) para que recharts corra su animación de entrada entonces.
+  const [refGrafico, graficoVisto] = useAlVerse()
+  // La punta late sólo si ES el valor de ahora: con los precios cargados,
+  // buildPortfolioValueSeries reemplaza el último punto por el vivo, fechado
+  // hoy. Sin precios la punta es una foto guardada y no late.
+  const puntaViva = puntaEsDeAhora(evoSeriesDisplay, !!(lastUpdated && valorFotos > 0), hoyISO())
+
   // Chip del rango: Δ(Total Return) ajustado por flujos, con el MISMO motor que
   // "Hoy" y "Este mes" (ver rendimientoDelRango). Antes restaba las puntas de la
   // curva: terminaba en la foto guardada de hoy en vez del valor vivo y abría en
@@ -1231,9 +1242,13 @@ function PersonalDashboard() {
             const isProfit = totalReturnUsd >= 0
             const lineColor = trendStroke(isProfit)
             const fillId = isProfit ? 'grad-value-pos' : 'grad-value-neg'
+            const ultimo = evoSeriesDisplay.length - 1
+            // Margen derecho 16 (era 8): el anillo de la punta viva se abre
+            // hasta ~13 px y con 8 se cortaba contra el borde del gráfico.
             return (
+              <div ref={refGrafico} className={graficoVisto ? '' : 'opacity-0'}>
               <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={evoSeriesDisplay} margin={{ top: 10, right: 8, bottom: 0, left: 0 }}>
+                <AreaChart key={graficoVisto ? 'visto' : 'antes'} data={evoSeriesDisplay} margin={{ top: 10, right: 16, bottom: 0, left: 0 }}>
                   <defs>
                     <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
                       {/* La opacidad va adentro del color: sobre blanco la misma
@@ -1306,11 +1321,18 @@ function PersonalDashboard() {
                     stroke={lineColor}
                     strokeWidth={1.75}
                     fill={`url(#${fillId})`}
-                    dot={false}
+                    animationDuration={1100}
+                    animationEasing="ease-out"
+                    dot={puntaViva
+                      ? (props) => (props.index === ultimo
+                        ? <PuntaViva key={props.key ?? 'punta'} cx={props.cx} cy={props.cy} color={lineColor} />
+                        : null)
+                      : false}
                     activeDot={{ r: 4, fill: lineColor, stroke: 'rgb(var(--bg-1))', strokeWidth: 2 }}
                   />
                 </AreaChart>
               </ResponsiveContainer>
+              </div>
             )
           })()
         )}

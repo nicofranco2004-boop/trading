@@ -114,7 +114,7 @@ export default function Watchlist() {
       {loading ? (
         <div className="rounded border border-line bg-bg-1 p-3 space-y-2">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-8 rounded-sm bg-bg-2 animate-pulse" />
+            <div key={i} className="h-8 rounded-sm bg-bg-2 esqueleto" />
           ))}
         </div>
       ) : items.length === 0 ? (
@@ -150,12 +150,12 @@ export default function Watchlist() {
                     </DataRow.Cell>
                     <DataRow.Cell align="right" tabular className="flex-1">
                       {pending
-                        ? <span className="inline-block w-12 h-3 rounded-sm bg-bg-2 animate-pulse" aria-label="Cargando precio" />
+                        ? <span className="inline-block w-12 h-3 rounded-sm bg-bg-2 esqueleto" aria-label="Cargando precio" />
                         : `US$${fmtPrice(it.price)}`}
                     </DataRow.Cell>
                     <DataRow.Cell align="right" width={80} tabular>
                       {pending
-                        ? <span className="inline-block w-10 h-3 rounded-sm bg-bg-2 animate-pulse" />
+                        ? <span className="inline-block w-10 h-3 rounded-sm bg-bg-2 esqueleto" />
                         : (
                           <FlashValue value={it.change_pct} className={`flex items-center justify-end gap-1 font-medium ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-3'}`}>
                             {dir > 0 && <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />}

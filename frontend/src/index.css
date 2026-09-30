@@ -781,6 +781,62 @@ body {
   .ticker-scroll:hover { animation-play-state: paused; }
 }
 
+/* Esqueleto de carga con brillo — un reflejo que recorre el bloque gris de
+   izquierda a derecha mientras algo carga, en vez del parpadeo de
+   `animate-pulse`. Va en un ::after encima del bloque, así sirve igual para
+   un renglón suelto que para una tarjeta entera con renglones adentro.
+   `animate-pulse` sigue para lo que late A PROPÓSITO (el micrófono grabando,
+   "Rendi está hablando"): eso no es un esqueleto. */
+@keyframes brillo-esqueleto {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+/* `:where` deja la especificidad en cero: si el bloque ya viene `absolute`,
+   `fixed` o `sticky` (Tailwind), gana eso — sigue siendo contenedor del ::after
+   y no se lo saca de su lugar. */
+:where(.esqueleto) { position: relative; }
+.esqueleto { overflow: hidden; }
+.esqueleto::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transform: translateX(-100%);
+  /* Con tokens del tema, sin colores nuevos: en claro el reflejo es el blanco
+     de las tarjetas (bg-1) bien marcado, porque el gris del esqueleto ya es
+     casi blanco; en oscuro, el tono del texto (ink-0) apenas insinuado. */
+  background: linear-gradient(90deg, transparent, rgb(var(--bg-1) / 0.8), transparent);
+  animation: brillo-esqueleto 1.6s ease-in-out infinite;
+}
+.dark .esqueleto::after {
+  background: linear-gradient(90deg, transparent, rgb(var(--ink-0) / 0.07), transparent);
+}
+
+/* El anillo del punto "ahora" de un gráfico (PuntaViva): se abre y se apaga.
+   `transform-box: fill-box` hace que la escala sea desde el centro del punto
+   y no desde la esquina del SVG. */
+@keyframes anillo-vivo {
+  from { transform: scale(1);   opacity: 0.5; }
+  to   { transform: scale(3.2); opacity: 0; }
+}
+.anillo-vivo {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: anillo-vivo 2s ease-out infinite;
+}
+
+/* El peso de una fila en la cartera (PesoEnCartera): crece desde la derecha
+   al aparecer. Animación de transform y no de width, así corre sin JS al
+   montar; los cambios posteriores de ancho los acompaña `.barra-intensidad`. */
+@keyframes peso-crece {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+.peso-crece {
+  transform-origin: right;
+  animation: peso-crece 700ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
 /* Entrada escalonada — las filas y tarjetas de las secciones de mercado del
    inicio aparecen de a una cuando la sección entra en pantalla (useAlVerse).
    El orden va en la variable --i de cada fila.
@@ -830,6 +886,9 @@ body {
     animation: none !important;
   }
   .por-entrar { opacity: 1; }
+  .esqueleto::after { animation: none; display: none; }
+  .anillo-vivo { animation: none; opacity: 0; }
+  .peso-crece { animation: none; }
   .barra-intensidad { transition: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se

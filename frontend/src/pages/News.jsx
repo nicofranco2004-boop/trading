@@ -501,7 +501,7 @@ function NewsTile({ news, tab, onTagClick }) {
 
 function NewsTileSkeleton() {
   return (
-    <div className="bg-bg-1 border border-line rounded-xl p-3.5 animate-pulse">
+    <div className="bg-bg-1 border border-line rounded-xl p-3.5 esqueleto">
       <div className="h-3 w-20 bg-bg-3 rounded mb-3" />
       <div className="h-4 w-full bg-bg-3 rounded mb-2" />
       <div className="h-4 w-3/4 bg-bg-3 rounded mb-3" />

@@ -78,7 +78,7 @@ export default function EventsPreview() {
       {loading ? (
         <div className="p-3 space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-10 rounded-sm bg-bg-2 animate-pulse" />
+            <div key={i} className="h-10 rounded-sm bg-bg-2 esqueleto" />
           ))}
         </div>
       ) : events.length === 0 ? (

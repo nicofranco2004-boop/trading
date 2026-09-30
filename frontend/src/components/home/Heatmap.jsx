@@ -190,7 +190,7 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
         {Tabs}
       </div>
       {loading && (
-        <div className="rounded-sm bg-bg-2 animate-pulse" style={{ aspectRatio: `${WIDTH}/${HEIGHT}` }} />
+        <div className="rounded-sm bg-bg-2 esqueleto" style={{ aspectRatio: `${WIDTH}/${HEIGHT}` }} />
       )}
       {err && !loading && (
         <div className="text-xs text-rendi-neg p-4">Heatmap no disponible: {err}</div>

@@ -55,6 +55,10 @@ import { useFxHistory } from '../hooks/useFxHistory'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { getBondMeta } from '../utils/bondMeta'
 import { hoyISO } from '../utils/fecha'
+import PesoEnCartera from '../components/PesoEnCartera'
+import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
+import { useRelojVisible } from '../hooks/useRelojVisible'
+import { useUltimoPedido } from '../hooks/useUltimoPedido'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -237,6 +241,19 @@ export default function PositionsMobile() {
   const [groupCtx, setGroupCtx] = useState(null)
 
   useEffect(() => { loadAll() }, [])
+
+  // Precios cada 90 s con la pantalla a la vista — el mismo ritmo que la
+  // Cartera de la compu. Antes el celular pedía los precios UNA vez al abrir y
+  // la cartera quedaba congelada hasta salir y volver; sin refresco tampoco
+  // había destello posible en el valor de las filas.
+  const ultimosCargados = useRef({ pos: [], bkrs: [] })
+  const nuevoPedidoPrecios = useUltimoPedido()
+  useRelojVisible(() => {
+    const { pos, bkrs } = ultimosCargados.current
+    if (!pos.length) return
+    loadPrices(pos, bkrs)
+    api.get('/dolar').then(setDolar).catch(() => {})
+  }, PRECIOS_CARTERA_MS)
 
   // Handler reusable para abrir el flow de Nueva Posición. Usado por:
   //   1. El useEffect del query ?action=new (FAB del MobileTabBar)
@@ -737,6 +754,7 @@ export default function PositionsMobile() {
       ])
       setPositions(pos || [])
       setBrokers(bkrs || [])
+      ultimosCargados.current = { pos: pos || [], bkrs: bkrs || [] }
       // El registry de brokers ES un input de la valuación: sin él,
       // isArUsdBroker cae a un fallback por NOMBRE (/·\s*USD$/) y un
       // sub-broker AR renombrado se precia por su ADR US en vez del .BA local
@@ -772,9 +790,13 @@ export default function PositionsMobile() {
     // set alimenta /prices/prev-close → la Var. día del .BA compara .BA vs .BA.
     const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
-    try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch { /* silent */ }
+    // Con el refresco periódico puede haber dos cargas en vuelo (el reloj y una
+    // recarga tras editar): la respuesta vieja, con los símbolos de antes, no
+    // pisa a la nueva.
+    const vigente = nuevoPedidoPrecios()
+    try { const r = await api.get(`/prices?symbols=${all}`); if (vigente()) setPrices(r) } catch { /* silent */ }
     // Prev-close para "Var. día" — best-effort, no bloquea ni rompe si falla.
-    try { setPrevClose(await api.get(`/prices/prev-close?symbols=${all}`)) } catch { /* silent */ }
+    try { const r = await api.get(`/prices/prev-close?symbols=${all}`); if (vigente()) setPrevClose(r) } catch { /* silent */ }
   }
 
   async function addBroker(e) {
@@ -1268,6 +1290,15 @@ export default function PositionsMobile() {
       }
     }
 
+    // El total COMPLETO de cada tarjeta, sin el buscador: es el denominador del
+    // peso de cada fila (PesoEnCartera). Con "NVDA" en la búsqueda la tarjeta
+    // queda con esa sola fila y, sumando sólo lo visible, decía "100 %".
+    const completoPorSeccion = new Map()
+    for (const p of enriched) {
+      const key = seccionDe.get(p.broker) || p.broker
+      completoPorSeccion.set(key, (completoPorSeccion.get(key) || 0) + (p.valueUsd || 0))
+    }
+
     const map = new Map()
     for (const p of filteredByBroker) {
       // La renta fija NO se saltea: el bono es un activo más de la lista de su
@@ -1286,6 +1317,7 @@ export default function PositionsMobile() {
           puedeUnificarse: !!meta?.puedeUnificarse,
           monedasCuenta: meta?.monedasCuenta || [],
           positions: [], totalUsd: 0,
+          totalPesoUsd: completoPorSeccion.get(key) || 0,
         })
       }
       const g = map.get(key)
@@ -1303,7 +1335,7 @@ export default function PositionsMobile() {
     }
     groups.sort((a, b) => b.totalUsd - a.totalUsd)
     return groups
-  }, [filteredByBroker, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas])
+  }, [filteredByBroker, enriched, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas])
 
   // Lista plana cuando hay filtro de broker activo
   const flatList = useMemo(() => {
@@ -1333,6 +1365,22 @@ export default function PositionsMobile() {
   // Totales del pie para la vista filtrada (que es un solo broker). Mismo
   // filtro anti-doble-conteo que BrokerSection: la fila agregada Y sus lotes
   // conviven en la lista cuando el ticker está expandido.
+  // El total COMPLETO de la cuenta filtrada, sin el buscador: denominador del
+  // peso de cada fila (mismo criterio que `completoPorSeccion` en las tarjetas).
+  const totalPesoFiltro = useMemo(() => {
+    if (brokerFilter === ALL_FILTER) return null
+    const cuenta = groupBrokersIntoAccounts(brokers).find(a => a.key === brokerFilter)
+    const esDeLaCuenta = p => (cuenta ? cuenta.patasNames.has(p.broker) : p.broker === brokerFilter)
+    return enriched.reduce((s, p) => s + (esDeLaCuenta(p) ? (p.valueUsd || 0) : 0), 0)
+  }, [brokerFilter, brokers, enriched])
+
+  // Cómo se llama la cuenta filtrada, para el globo del peso de cada fila.
+  const nombreFiltro = useMemo(() => {
+    if (brokerFilter === ALL_FILTER) return null
+    const cuenta = groupBrokersIntoAccounts(brokers).find(a => a.key === brokerFilter)
+    return cuenta?.label || cuenta?.name || brokerFilter
+  }, [brokerFilter, brokers])
+
   const pieFiltrado = useMemo(() => {
     if (!flatList) return null
     const filas = flatList.filter(p => !p._isLot)
@@ -1403,11 +1451,11 @@ export default function PositionsMobile() {
     // un mensaje genérico que parpadea.
     return (
       <div className="px-4 py-6 space-y-3" aria-live="polite" aria-busy="true">
-        <div className="h-7 w-40 bg-bg-2 rounded-sm animate-pulse" />
-        <div className="h-9 w-full bg-bg-2 rounded-sm animate-pulse" />
+        <div className="h-7 w-40 bg-bg-2 rounded-sm esqueleto" />
+        <div className="h-9 w-full bg-bg-2 rounded-sm esqueleto" />
         <div className="space-y-2 pt-2">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-14 w-full bg-bg-1 rounded-sm animate-pulse" />
+            <div key={i} className="h-14 w-full bg-bg-1 rounded-sm esqueleto" />
           ))}
         </div>
       </div>
@@ -1575,6 +1623,7 @@ export default function PositionsMobile() {
                 onToggleUnificar={g.accountKey ? () => toggleCuentaSeparada(g.accountKey) : null}
                 positions={g.positions}
                 totalUsd={g.totalUsd}
+                totalPesoUsd={g.totalPesoUsd}
                 displayCurrency={currency}
                 tcValuacion={tcValuacion}
                 onEdit={() => setEditingBroker({ ...g.broker })}
@@ -1617,6 +1666,8 @@ export default function PositionsMobile() {
                 enCuentaUnificada={filtroEsCuentaUnificada}
                 displayCurrency={currency}
                 tcValuacion={tcValuacion}
+                totalCuenta={totalPesoFiltro}
+                nombreCuenta={nombreFiltro}
                 brokerDe={brokerDe}
                 onSell={openSell}
                 onBuy={openBuyForPosition}
@@ -2148,7 +2199,7 @@ function FilaToggle({ label, hint, active, onToggle }) {
 // Debajo, las positions del broker (cash siempre al final).
 
 const BrokerSection = memo(function BrokerSection({
-  broker, positions, totalUsd, displayCurrency = 'USD', tcValuacion = 1, conPista = false, onDeslizar,
+  broker, positions, totalUsd, totalPesoUsd = null, displayCurrency = 'USD', tcValuacion = 1, conPista = false, onDeslizar,
   label, unified = false, puedeUnificarse = false, monedasCuenta = [], onToggleUnificar,
   onEdit, onDelete, brokerDe,
   onSellPosition, onBuyPosition, onAlertPosition, onCashFlowPosition, onConvertPosition,
@@ -2269,6 +2320,8 @@ const BrokerSection = memo(function BrokerSection({
             enCuentaUnificada={unified}
             displayCurrency={displayCurrency}
             tcValuacion={tcValuacion}
+            totalCuenta={totalPesoUsd ?? totValorUsd}
+            nombreCuenta={label || broker?.name}
             brokerDe={brokerDe}
             onSell={onSellPosition}
             onBuy={onBuyPosition}
@@ -2526,7 +2579,7 @@ function PositionsTable({ children, pie = null, conPista = false, onDeslizar }) 
 const MS_PULSACION = 450
 const TOLERANCIA_PX = 8
 
-const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada = false, displayCurrency = 'USD', tcValuacion = 1,
+const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada = false, displayCurrency = 'USD', tcValuacion = 1, totalCuenta = null, nombreCuenta = null,
   onSell, onBuy, onAlert, onCashFlow, onConvert, onBondCashflow, onEditPos, onEditGroup, onDeletePos, onToggleTicker }) {
   // El broker de LA FILA, no el de la sección: en una cuenta unificada conviven
   // la pata en pesos y la pata en dólares, y de cuál sea depende si el efectivo
@@ -2592,7 +2645,10 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   const actions = buildPositionActions(p, {
     onAnalyze: () => {
       track('mobile_row_action', { code: 'analyze', asset: p.asset })
-      setAiOpen(true)
+      // Lo mismo que el ✦ de la fila en la compu (InlineAIButton). Llamaba a
+      // `setAiOpen`, que no existe desde que el análisis pasó a la burbuja de
+      // Rendi (fa024075): tocar "Analizar" en el celular no hacía nada.
+      analizar({ screen: 'position', params: { asset: p.asset, broker: p.broker } })
     },
     onBuy: onBuy && (pos => {
       track('mobile_row_action', { code: 'buy', asset: p.asset })
@@ -2777,6 +2833,10 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
         {!p.is_cash && !p.priceTrusted && (
           <div className={`${LINEA_2} text-ink-3`}>al costo</div>
         )}
+        {/* Peso dentro de su broker: fila ÷ el total COMPLETO de su tarjeta
+            (sin el buscador). No en las filas de lote: su fila agregada ya lo
+            muestra, y sumarlas contaría la misma plata dos veces. */}
+        {!p._isLot && <PesoEnCartera valor={p.valueUsd} total={totalCuenta} nombre={nombreCuenta} />}
       </Celda>
 
       {/* P&L — el monto y el % se colorean por SEPARADO. No es cosmético: para
