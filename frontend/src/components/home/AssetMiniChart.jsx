@@ -5,6 +5,12 @@
 //   - Muestra primer/último close + delta del período
 //   - Renderea ejes mínimos (high/low del período en esquinas)
 //   - Mantiene la estética del modal "quick view" (sin labels innecesarios)
+//   - Con el dedo o el mouse encima: línea vertical, punto y globo con la
+//     fecha, el precio y el cambio desde el inicio del período. Va en HTML
+//     encima del SVG: el SVG se estira (preserveAspectRatio "none") y un
+//     círculo dibujado adentro saldría ovalado.
+//   - Al cambiar de período la línea se redibuja de izquierda a derecha
+//     (`.traza-dibuja`, index.css).
 //
 // Backend: GET /api/prices/history?symbol=X&period=1m
 // Cache backend: 1h (las velas diarias no cambian intraday)
@@ -12,6 +18,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../utils/api'
 import { pctVar } from '../../utils/format'
+import { trendStroke } from '../../utils/chartTheme'
+import { diaMes } from '../../utils/fecha'
 
 const RANGES = [
   { key: '1w',  label: '1S' },
@@ -34,6 +42,12 @@ export default function AssetMiniChart({ symbol }) {
   const [points, setPoints] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
+  const [puntero, setPuntero] = useState(null)   // índice del punto bajo el dedo/mouse
+  // La línea ya dibujada de este activo y período. Terminada la animación se le
+  // saca `.traza-dibuja`: el trazo "destapado" depende de que el navegador
+  // respete pathLength junto con non-scaling-stroke, y si alguno no lo hace, la
+  // línea quedaría punteada para siempre. Sin la clase queda sólida en todos.
+  const [trazada, setTrazada] = useState(null)
 
   useEffect(() => {
     if (!symbol) return
@@ -68,8 +82,25 @@ export default function AssetMiniChart({ symbol }) {
   const areaPath = svgPoints.length >= 2
     ? `${path} L${WIDTH.toFixed(1)},${HEIGHT} L0,${HEIGHT} Z`
     : ''
-  const color = positive ? '#6FE3A3' : '#F17A7A'
+  // Tokens del tema (chartTheme): antes eran dos hex fijos pensados para fondo
+  // oscuro, que en claro se veían lavados.
+  const color = trendStroke(positive)
   const gradId = `assetchart-${positive ? 'p' : 'n'}`
+
+  // Dedo o mouse → índice del punto más cercano en X.
+  function moverPuntero(e) {
+    if (closes.length < 2) return
+    const r = e.currentTarget.getBoundingClientRect()
+    const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
+    setPuntero(Math.round(frac * (closes.length - 1)))
+  }
+  const pt = puntero != null && puntero < closes.length ? {
+    x: (puntero / Math.max(closes.length - 1, 1)) * 100,
+    y: (svgPoints[puntero][1] / HEIGHT) * 100,
+    close: closes[puntero],
+    date: points[puntero]?.date,
+    pct: first ? (closes[puntero] / first - 1) * 100 : null,
+  } : null
 
   return (
     <div className="space-y-2">
@@ -115,7 +146,13 @@ export default function AssetMiniChart({ symbol }) {
       </div>
 
       {/* Chart */}
-      <div className="rounded-sm bg-bg-2/40 border border-line overflow-hidden" style={{ aspectRatio: `${WIDTH}/${HEIGHT}` }}>
+      <div
+        className="relative rounded-sm bg-bg-2/40 border border-line overflow-hidden"
+        style={{ aspectRatio: `${WIDTH}/${HEIGHT}`, touchAction: 'pan-y' }}
+        onPointerMove={moverPuntero}
+        onPointerDown={moverPuntero}
+        onPointerLeave={() => setPuntero(null)}
+      >
         {loading || closes.length < 2 ? (
           <div className="w-full h-full bg-bg-2/30 esqueleto" />
         ) : (
@@ -131,8 +168,12 @@ export default function AssetMiniChart({ symbol }) {
                 <stop offset="100%" stopColor={color} stopOpacity={0} />
               </linearGradient>
             </defs>
-            <path d={areaPath} fill={`url(#${gradId})`} />
+            <path key={`area-${symbol}-${range}`} className="area-aparece" d={areaPath} fill={`url(#${gradId})`} />
             <path
+              key={`linea-${symbol}-${range}`}
+              className={trazada === `${symbol}-${range}` ? undefined : 'traza-dibuja'}
+              onAnimationEnd={() => setTrazada(`${symbol}-${range}`)}
+              pathLength={1}
               d={path}
               stroke={color}
               strokeWidth={1.5}
@@ -142,6 +183,26 @@ export default function AssetMiniChart({ symbol }) {
               vectorEffect="non-scaling-stroke"
             />
           </svg>
+        )}
+        {pt && !loading && closes.length >= 2 && (
+          <>
+            <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/40" style={{ left: `${pt.x}%` }} />
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1 ${positive ? 'bg-rendi-pos-fill' : 'bg-rendi-neg-fill'}`}
+              style={{ left: `${pt.x}%`, top: `${pt.y}%` }}
+            />
+            <div
+              className="pointer-events-none absolute top-1 rounded border border-line-2 bg-bg-raised px-2 py-1 text-[11px] leading-tight whitespace-nowrap shadow-sm tabular"
+              style={{ left: `${Math.min(80, Math.max(20, pt.x))}%`, transform: 'translateX(-50%)' }}
+            >
+              <span className="text-ink-3">{diaMes(pt.date)}{pt.date ? `/${pt.date.slice(2, 4)}` : ''}</span>
+              <span className="mx-1 text-ink-0 font-medium">${fmtPrice(pt.close)}</span>
+              {pt.pct != null && (
+                <span className={pt.pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}>{pctVar(pt.pct)}</span>
+              )}
+            </div>
+          </>
         )}
       </div>
 

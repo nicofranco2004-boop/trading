@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Calendar, Landmark, BarChart3, Coins, Banknote, CalendarClock } from 'lucide-react'
 import { api } from '../../utils/api'
-import { useAlVerse } from '../../hooks/useAlVerse'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
@@ -90,7 +90,7 @@ export default function EventsPreview() {
             const when = du === 0 ? 'hoy' : du === 1 ? 'mañana' : du > 0 ? `en ${du}d` : fmtDate(e.event_date)
             const { Icon, className: iconClass } = TYPE_ICON[e.event_type] || FALLBACK_ICON
             return (
-              <DataRow key={i} density="default" className={visto ? 'entra' : 'por-entrar'} style={{ '--i': i }}>
+              <DataRow key={i} density="default" {...entrada(visto, i)}>
                 <span className="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-sm bg-bg-2" aria-hidden="true">
                   <Icon size={13} strokeWidth={1.75} className={iconClass} />
                 </span>

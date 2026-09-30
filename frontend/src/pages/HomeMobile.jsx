@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, TrendingUp, TrendingDown, Eye, EyeOff } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
 import FlashValue from '../components/FlashValue'
+import AnimatedNumber from '../components/AnimatedNumber'
 import Skeleton from '../components/Skeleton'
 import Panel from '../components/Panel'
 import YearReturnLine from '../components/YearReturnLine'
@@ -360,9 +361,12 @@ export default function HomeMobile() {
           {hidden
             ? <span className="opacity-40 tracking-[0.2em] select-none">••••••</span>
             : <FlashValue value={totals.totalValue + pf.valueUsd}>
-                {currency === 'ARS'
-                  ? `$${fmtNumber((totals.totalValue + pf.valueUsd) * tcValuacion)}`
-                  : `$${fmtNumber(totals.totalValue + pf.valueUsd)}`}
+                {/* Cuenta de un valor al otro al cambiar de moneda (y al llegar
+                    precios nuevos), con el mismo formato de siempre. */}
+                <AnimatedNumber
+                  value={currency === 'ARS' ? (totals.totalValue + pf.valueUsd) * tcValuacion : totals.totalValue + pf.valueUsd}
+                  format={n => `$${fmtNumber(n)}`}
+                />
               </FlashValue>}
           <button
             onClick={toggleCurrency}

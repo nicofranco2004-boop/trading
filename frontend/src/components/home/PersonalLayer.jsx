@@ -12,7 +12,7 @@ import { Link } from 'react-router-dom'
 import { TrendingUp, TrendingDown, BarChart3, Coins, Bell } from 'lucide-react'
 import { api } from '../../utils/api'
 import { pctVar } from '../../utils/format'
-import { useAlVerse } from '../../hooks/useAlVerse'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
 import AnimatedNumber from '../AnimatedNumber'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
@@ -75,8 +75,7 @@ export default function PersonalLayer() {
             <Wrapper
               key={`${c.kind}-${i}`}
               {...wrapperProps}
-              className={`block ${visto ? 'entra' : 'por-entrar'}`}
-              style={{ '--i': i }}
+              {...entrada(visto, i, 'block')}
             >
               <Panel padding="sm" hoverable={!!c.cta_href} className="h-full">
                 <div className="flex items-center gap-2 mb-1">

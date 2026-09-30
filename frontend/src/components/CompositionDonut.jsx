@@ -9,7 +9,12 @@
 // (P&L Dashboard ≠ Cartera). Un componente + un agregador = no puede divergir.
 //
 // Interacción:
-//   • hover sobre una porción → tooltip con label, monto y %;
+//   • al entrar en pantalla la torta se arma girando, UNA vez (ver `animar`
+//     abajo: recharts vuelve a animar cada vez que cambian los datos, y los
+//     datos se recalculan con cada refresco de precios — girar sola cada 90 s
+//     sería ruido);
+//   • hover sobre una porción → la porción se agranda hacia afuera, el centro
+//     dice su nombre y su %, y el tooltip trae label, monto y %;
 //   • hover sobre una fila de la leyenda → resalta la porción;
 //   • CLICK en la fila (o en la porción) → despliega qué activos la componen.
 //     Un "18% en Semiconductores" no dice nada hasta que ves que son NVDA y
@@ -22,7 +27,9 @@
 // (ThemeContext.LIGHT_MODE_LOCKED), así que usamos los tokens V2 planos.
 
 import { useState, useMemo } from 'react'
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
+import { PieChart, Pie, Cell, Sector, Tooltip, ResponsiveContainer } from 'recharts'
+import { useAlVerse } from '../hooks/useAlVerse'
+import { prefiereSinMovimiento } from '../utils/movimiento'
 import { ChevronRight } from 'lucide-react'
 import InfoTooltip from './InfoTooltip'
 import { withAlpha } from '../utils/chartTheme'
@@ -49,6 +56,21 @@ const toneOf = (v) => (v >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
 // canónico del catálogo), no algo que el usuario reconozca.
 const displayTicker = (t) => String(t || '').replace(/^FCI:/, '')
 
+// La porción con el mouse encima sale un poco hacia afuera (+6 px de radio).
+function PorcionActiva(props) {
+  const { cx, cy, innerRadius, outerRadius, startAngle, endAngle, fill } = props
+  return (
+    <Sector
+      cx={cx} cy={cy}
+      innerRadius={innerRadius}
+      outerRadius={outerRadius + 6}
+      startAngle={startAngle}
+      endAngle={endAngle}
+      fill={fill}
+    />
+  )
+}
+
 export default function CompositionDonut({
   title,
   subtitle = null,
@@ -68,6 +90,11 @@ export default function CompositionDonut({
 }) {
   const [active, setActive] = useState(null)
   const [open, setOpen] = useState(() => new Set())
+  const [refTorta, tortaVista] = useAlVerse()
+  // Gira una sola vez, al verse: después la animación queda apagada. Nunca
+  // para quien pidió menos movimiento: el giro lo hace recharts en JavaScript
+  // y el bloque de prefers-reduced-motion de index.css no lo alcanza.
+  const [animar, setAnimar] = useState(() => !prefiereSinMovimiento())
 
   const toggle = (key) => setOpen(prev => {
     const next = new Set(prev)
@@ -152,9 +179,14 @@ export default function CompositionDonut({
         <p className="text-ink-3 text-sm text-center py-10">{emptyLabel}</p>
       ) : (
         <>
-          <div style={{ height }} onMouseLeave={() => setActive(null)}>
+          <div
+            ref={refTorta}
+            className={`relative ${tortaVista ? '' : 'opacity-0'}`}
+            style={{ height }}
+            onMouseLeave={() => setActive(null)}
+          >
             <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
+              <PieChart key={tortaVista ? 'vista' : 'antes'}>
                 <Pie
                   data={slices}
                   dataKey="value"
@@ -165,7 +197,13 @@ export default function CompositionDonut({
                   outerRadius="92%"
                   paddingAngle={2}
                   stroke="none"
-                  isAnimationActive={false}
+                  isAnimationActive={tortaVista && animar}
+                  animationBegin={0}
+                  animationDuration={900}
+                  animationEasing="ease-out"
+                  onAnimationEnd={() => setAnimar(false)}
+                  activeIndex={active ?? undefined}
+                  activeShape={PorcionActiva}
                   onMouseEnter={(_, i) => setActive(i)}
                   onClick={(_, i) => slices[i]?.detail?.length && toggle(slices[i].key)}
                   className={slices.some(s => s.detail?.length) ? 'cursor-pointer' : ''}
@@ -185,6 +223,15 @@ export default function CompositionDonut({
                 />
               </PieChart>
             </ResponsiveContainer>
+            {/* El centro de la torta dice qué porción está resaltada. */}
+            {active != null && slices[active] && (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+                <span className="text-[18px] font-semibold text-ink-0 tabular leading-none">
+                  {slices[active].pct.toFixed(1).replace('.', ',')}%
+                </span>
+                <span className="mt-1 max-w-[40%] truncate text-[11px] text-ink-2">{slices[active].label}</span>
+              </div>
+            )}
           </div>
 
           <div className="mt-3">

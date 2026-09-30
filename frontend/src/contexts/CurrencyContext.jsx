@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useMemo } from 'react'
 import { api } from '../utils/api'
+import { enfocarCambios } from '../utils/enfocarCambios'
 
 // Fase A — Toggle global ARS/USD (2026-05-31).
 // El user elige en qué moneda ver TODOS los números del Dashboard / Home /
@@ -143,14 +144,20 @@ export function CurrencyProvider({ children }) {
     return () => { cancelled = true; clearInterval(id) }
   }, [valuationDollar])
 
+  // Al cambiar de moneda o de dólar, los números que cambiaron hacen foco (de
+  // borrosos a nítidos, utils/enfocarCambios.js). Arranca ANTES del setState:
+  // lo que mira son las reescrituras del render que viene. Los números grandes
+  // de cada pantalla además cuentan (AnimatedNumber).
   function setCurrency(next) {
     const norm = next === 'ARS' ? 'ARS' : 'USD'
+    if (norm !== currency) enfocarCambios()
     setCurrencyRaw(norm)
     try { localStorage.setItem(STORAGE_KEY, norm) } catch {}
   }
 
   function setValuationDollar(next) {
     const norm = next === 'ccl' ? 'ccl' : 'mep'
+    if (norm !== valuationDollar) enfocarCambios()
     setValuationDollarRaw(norm)
     try { localStorage.setItem(VAL_STORAGE_KEY, norm) } catch {}
   }

@@ -10,11 +10,7 @@
 // cada frame — así el hook no sabe nada de formato.
 
 import { useEffect, useRef, useState } from 'react'
-
-function prefersReducedMotion() {
-  if (typeof window === 'undefined' || !window.matchMedia) return false
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
+import { prefiereSinMovimiento } from '../utils/movimiento'
 
 export function useCountUp(target, { duration = 600 } = {}) {
   const numericTarget = Number(target)
@@ -29,7 +25,7 @@ export function useCountUp(target, { duration = 600 } = {}) {
 
   useEffect(() => {
     // Sin animación: reduced-motion o valor no numérico → salto directo.
-    if (prefersReducedMotion() || !Number.isFinite(numericTarget)) {
+    if (prefiereSinMovimiento() || !Number.isFinite(numericTarget)) {
       fromRef.current = safeTarget
       latestRef.current = safeTarget
       setValue(safeTarget)

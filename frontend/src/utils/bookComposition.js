@@ -13,11 +13,14 @@
 //
 // ── Lo único que este módulo agrega de verdad: la torta POR ACTIVO ─────────
 // Las de tipo y sector salen tal cual de computeClassBreakdown /
-// computeSectorBreakdown. La de activo no existe en retail: ahí el corte por
-// activo es una BARRA top-5 (AssetBreakdownBar), y la razón es la cola larga.
-// En una cartera de ~30 activos un donut funciona; un libro de 100 clientes
-// toca ~486 tickers distintos, así que casi todos caen bajo el 1,5% que
-// CompositionDonut manda a "Otros" y el "Otros" se come la torta.
+// computeSectorBreakdown. La de activo la arma `assetSlicesFromRows`, y desde
+// el 2026-09-30 la usan DOS pantallas: este libro y "Distribución de activos"
+// de Análisis (retail, que antes eran barras). Una sola función para las dos:
+// si el corte por activo cambia, cambia en los dos lados a la vez.
+// El problema que resuelve es la cola larga: un libro de 100 clientes toca
+// ~486 tickers distintos, así que casi todos caen bajo el 1,5% que
+// CompositionDonut manda a "Otros" y el "Otros" se come la torta. En una
+// cartera de ~30 activos pasa menos, pero el mismo corte no le hace daño.
 //
 // La respuesta acá es explícita en vez de emergente: top-N por valor como
 // porciones reales, y TODO el resto en una sola porción "Resto (N activos)"
@@ -25,7 +28,7 @@
 // son y se abre no es el mismo objeto que un "Otros" del 60% sin explicación.
 
 import {
-  normalizeTicker, riskGroupOf, RISK_GROUP_META, RISK_GROUP_ORDER,
+  normalizeTicker, riskGroupOf, RISK_GROUP_META, RISK_GROUP_ORDER, ASSET_CLASS_META,
 } from './assetClass'
 import { fciLabel } from './valuation'
 import { toDistributionAiParams } from './distributionAi'
@@ -145,6 +148,25 @@ export function assetSlicesFromRows(rows = [], extraSlices = [], topN = DEFAULT_
 
   // No hay "sin clasificar" en el eje activo: un ticker es un ticker.
   return { items, total, unclassified: { value: 0, pct: 0, assets: [] } }
+}
+
+/**
+ * assetSlicesFromPositions — la misma torta para UNA cartera ("Distribución de
+ * activos" en Análisis). Lo único distinto del libro: el efectivo. Las
+ * posiciones de caja vienen una por moneda y por broker (USD en Schwab, ARS en
+ * Balanz, USDT…), y como porción cada una es ruido: van juntas en "Efectivo",
+ * con el gris de la torta por tipo que está al lado, para que el mismo
+ * efectivo se vea igual en las dos.
+ */
+export function assetSlicesFromPositions(positions = [], topN = DEFAULT_TOP_ASSETS) {
+  const efectivo = positions
+    .filter(p => p?.is_cash && p.value_usd > 0)
+    .reduce((s, p) => s + p.value_usd, 0)
+  return assetSlicesFromRows(
+    positions.filter(p => p && !p.is_cash),
+    efectivo > 0 ? [{ key: 'efectivo', label: ASSET_CLASS_META.cash.label, value: efectivo, color: ASSET_CLASS_META.cash.color }] : [],
+    topN,
+  )
 }
 
 /**

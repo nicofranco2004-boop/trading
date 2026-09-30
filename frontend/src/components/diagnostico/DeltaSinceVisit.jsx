@@ -1,5 +1,5 @@
 import { pctVar } from '../../utils/format'
-import { useAlVerse } from '../../hooks/useAlVerse'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
 import AnimatedNumber from '../AnimatedNumber'
 // DeltaSinceVisit — chips "Desde tu última visita".
 // ═══════════════════════════════════════════════════════════════════════════
@@ -31,7 +31,7 @@ export default function DeltaSinceVisit({ delta }) {
   const nNew = newFindingIds.length
   // inline-block: en un <span> común el desplazamiento de la entrada no se
   // aplica (los elementos en línea no se pueden mover con transform).
-  const entra = i => ({ className: `inline-block ${visto ? 'entra' : 'por-entrar'}`, style: { '--i': i } })
+  const entra = i => entrada(visto, i, 'inline-block')
 
   return (
     <div ref={ref} className="flex flex-wrap gap-2">

@@ -1,8 +1,8 @@
 // CompositionByRisk — el corte grueso de una cartera: variable / fija / efectivo.
 // ═══════════════════════════════════════════════════════════════════════════
-// Una barra horizontal por grupo, en el mismo estilo que CompositionByAsset
-// (diagnostico/) — violeta/ámbar/gris, texto en tokens ink, el color va SOLO
-// en la marca.
+// Una barra horizontal por grupo — violeta/ámbar/gris, texto en tokens ink,
+// el color va SOLO en la marca. (Copiaba el estilo de CompositionByAsset, las
+// barras por activo de Análisis, que el 2026-09-30 pasaron a ser una torta.)
 //
 // Por qué barras y no otra torta: la pregunta es de comparación entre dos o
 // tres magnitudes ("¿cuánto de esto se puede mover?"), y para comparar

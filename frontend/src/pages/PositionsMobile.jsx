@@ -56,6 +56,7 @@ import { useCerSeries } from '../hooks/useCerSeries'
 import { getBondMeta } from '../utils/bondMeta'
 import { hoyISO } from '../utils/fecha'
 import PesoEnCartera from '../components/PesoEnCartera'
+import AnimatedNumber from '../components/AnimatedNumber'
 import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useRelojVisible } from '../hooks/useRelojVisible'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
@@ -1434,8 +1435,9 @@ export default function PositionsMobile() {
   // El hero baja un escalón de tipografía cuando el número no entra: 48px sirve
   // para "$41.417" pero no para "$58.977.218". Se mide por largo del string, que
   // es lo que determina el ancho con dígitos tabulares.
-  const heroTexto = '$' + Math.round(currency === 'ARS' ? (total + pfValueUsd) * tcValuacion : (total + pfValueUsd))
-    .toLocaleString(LOCALE)
+  // Un solo formato para el texto que se mide y el que cuenta (AnimatedNumber).
+  const fmtHero = n => '$' + Math.round(n).toLocaleString(LOCALE)
+  const heroTexto = fmtHero(heroValor)
   const heroClass = heroTexto.length >= 13 ? 'text-3xl' : heroTexto.length >= 10 ? 'text-4xl' : 'text-5xl'
 
   function restablecerVista() {
@@ -1474,7 +1476,11 @@ export default function PositionsMobile() {
             dígitos y a 48px no entran en 375px. */}
         <div className="flex items-center gap-3 mb-2.5">
           <div className={`${heroClass} font-medium tabular text-ink-0 leading-none tracking-tight min-w-0 truncate`}>
-            <FlashValue value={total + pfValueUsd}>{heroTexto}</FlashValue>
+            {/* Cuenta de un valor al otro al cambiar de moneda o al llegar precios
+                nuevos; el texto final es el mismo `heroTexto` de siempre. */}
+            <FlashValue value={total + pfValueUsd}>
+              <AnimatedNumber value={heroValor} format={fmtHero} />
+            </FlashValue>
           </div>
           <div className="ml-auto flex items-center gap-2 flex-shrink-0">
             {pricesLoading && (

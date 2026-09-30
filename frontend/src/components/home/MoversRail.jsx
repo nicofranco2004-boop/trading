@@ -19,7 +19,7 @@ import { pctVar, pctVarSign } from '../../utils/format'
 import { refrescoSegunRueda } from '../../utils/relojVisible'
 import { useUltimoPedido } from '../../hooks/useUltimoPedido'
 import { useRelojVisible } from '../../hooks/useRelojVisible'
-import { useAlVerse } from '../../hooks/useAlVerse'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
 import AssetQuickView from './AssetQuickView'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
@@ -48,8 +48,7 @@ export function MoverList({ items, tone, icon: Icon, label, onSelect, visto }) {
               density="compact"
               hoverable
               onClick={() => onSelect(it)}
-              className={`relative isolate ${visto ? 'entra' : 'por-entrar'}`}
-              style={{ '--i': i }}
+              {...entrada(visto, i, 'relative isolate')}
             >
               <BarraIntensidad pct={it.change_pct} visto={visto} />
               <DataRow.Cell width={64} mono>

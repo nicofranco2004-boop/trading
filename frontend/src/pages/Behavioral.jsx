@@ -26,6 +26,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import LockedSection from '../components/plan/LockedSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import { detectoresVisibles } from '../utils/detectoresVisibles'
 import { planQueDestraba } from '../utils/planes'
 import { pctTxt } from '../utils/format'
@@ -667,6 +668,10 @@ function EvidenceRow({ label, value, count, mono }) {
 // son útiles para su caso antes de upgradear.
 export function BehavioralCards({ cards, onCardClick }) {
   const { limit, features } = usePlanFeatures()
+  // Las cartas entran de a una cuando la grilla aparece en pantalla
+  // (useAlVerse + `.entra`). Arriba de los returns: reglas de los hooks.
+  const [refGrilla, grillaVista] = useAlVerse()
+  const entraCarta = i => entrada(grillaVista, i, 'h-full')
 
   // Fail-CLOSED durante loading: en el primer page load sin cache los features
   // todavía no llegaron (undefined) y se muestra UNA carta, no todas (flash que
@@ -675,17 +680,18 @@ export function BehavioralCards({ cards, onCardClick }) {
   const visibleCount = detectoresVisibles(limit('behavioral_tags_visible'))
   if (visibleCount === Infinity) {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {cards.map(card => (
-          <AskAIAbout
-            key={card.code}
-            topic="behavioral.card"
-            params={{ code: card.code }}
-            subtitle={card.title || card.code}
-            className="h-full"
-          >
-            <BehavioralCard card={card} onClick={() => onCardClick(card)} />
-          </AskAIAbout>
+      <div ref={refGrilla} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {cards.map((card, i) => (
+          <div key={card.code} {...entraCarta(i)}>
+            <AskAIAbout
+              topic="behavioral.card"
+              params={{ code: card.code }}
+              subtitle={card.title || card.code}
+              className="h-full"
+            >
+              <BehavioralCard card={card} onClick={() => onCardClick(card)} />
+            </AskAIAbout>
+          </div>
         ))}
       </div>
     )
@@ -704,28 +710,30 @@ export function BehavioralCards({ cards, onCardClick }) {
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {visible.map(card => (
-          <AskAIAbout
-            key={card.code}
-            topic="behavioral.card"
-            params={{ code: card.code }}
-            subtitle={card.title || card.code}
-            className="h-full"
-          >
-            <BehavioralCard card={card} onClick={() => onCardClick(card)} />
-          </AskAIAbout>
+      <div ref={refGrilla} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {visible.map((card, i) => (
+          <div key={card.code} {...entraCarta(i)}>
+            <AskAIAbout
+              topic="behavioral.card"
+              params={{ code: card.code }}
+              subtitle={card.title || card.code}
+              className="h-full"
+            >
+              <BehavioralCard card={card} onClick={() => onCardClick(card)} />
+            </AskAIAbout>
+          </div>
         ))}
         {/* Preview educativo de los sesgos bloqueados. Cada una con el plan
             que la destraba (ver `destraba` arriba). */}
         {locked.map((card, i) => {
           const targetTier = destraba(visibleCount + i)
           return (
-            <BehavioralCardLockedPreview
-              key={`locked-${card.code}`}
-              card={card}
-              targetTier={targetTier}
-            />
+            <div key={`locked-${card.code}`} {...entraCarta(visible.length + i)}>
+              <BehavioralCardLockedPreview
+                card={card}
+                targetTier={targetTier}
+              />
+            </div>
           )
         })}
       </div>

@@ -16,7 +16,6 @@ import ProfileSummaryBlock from '../components/ai/ProfileSummaryBlock'
 import ProfileDashboard from '../components/profile/ProfileDashboard'
 import DiagnosticoSummaryBlock from '../components/diagnostico/DiagnosticoSummaryBlock'
 import DeltaSinceVisit from '../components/diagnostico/DeltaSinceVisit'
-import CompositionByAsset from '../components/diagnostico/CompositionByAsset'
 import { buildDiagnosticoLayout } from '../utils/diagnosticoTemplate'
 import { useLastVisit } from '../hooks/useLastVisit'
 import InsightsKpiStrip from '../components/InsightsKpiStrip'
@@ -25,6 +24,7 @@ import Card from '../components/Card'
 import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import { ChevronDown, ChevronUp, Sparkles, X, Lock } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
@@ -38,6 +38,7 @@ import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
 import { computeClassBreakdown } from '../utils/assetClass'
+import { assetSlicesFromPositions, DEFAULT_TOP_ASSETS } from '../utils/bookComposition'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -2608,32 +2609,14 @@ function InsightsDesktop({ _embeddedTab }) {
     },
   ]
 
-  // Composición POR ACTIVO (incluye cash) — % de cada activo sobre el total.
-  // Top 7 + cola agrupada en "Otros N activos". Estándar para todos.
-  const compositionRows = (() => {
-    const byAsset = {}
-    let total = 0
-    for (const p of positionsWithValue) {
-      const v = p.value_usd
-      if (v == null || v <= 0) continue
-      const name = p.is_cash ? 'Efectivo' : String(p.asset || '').toUpperCase()
-      if (!name) continue
-      if (!byAsset[name]) byAsset[name] = { value: 0, cash: !!p.is_cash }
-      byAsset[name].value += v
-      total += v
-    }
-    if (total <= 0) return []
-    const rows = Object.entries(byAsset)
-      .map(([name, o]) => ({ name, value: o.value, pct: Math.round((o.value / total) * 100), cash: o.cash }))
-      .sort((a, b) => b.value - a.value)
-    const TOP = 7
-    if (rows.length <= TOP) return rows.map(({ value, ...r }) => r)
-    // Cola: sumamos VALORES crudos y redondeamos una vez (sumar %-ya-redondeados
-    // daba 0% con muchas posiciones chicas → escondía cartera real).
-    const tailValue = rows.slice(TOP).reduce((s, r) => s + r.value, 0)
-    const tailPct = Math.round((tailValue / total) * 100)
-    return [...rows.slice(0, TOP).map(({ value, ...r }) => r), { name: `Otros ${rows.length - TOP} activos`, pct: tailPct, cash: false }]
-  })()
+  // Composición POR ACTIVO (incluye efectivo) — la torta "Distribución de
+  // activos". Antes eran barras, una fila por activo, y entraban 7 más "Otros";
+  // la torta muestra 12 y el resto se despliega. El agregador es EL MISMO de la
+  // torta por activo del libro del asesor (bookComposition.assetSlicesFromRows):
+  // consolida por ticker (AAPL como CEDEAR y en Schwab es una sola exposición),
+  // 12 porciones propias y "Resto (N activos)". El efectivo va en UNA porción,
+  // con el gris de "Efectivo" de la torta por tipo (assetSlicesFromPositions).
+  const assetBreakdown = assetSlicesFromPositions(positionsWithValue)
 
   const hasVerdicts = verdictItems.some(v => v.pct != null)
 
@@ -2665,7 +2648,7 @@ function InsightsDesktop({ _embeddedTab }) {
     hasFeatured: diagnosisPool.some(d => d.severity === 'urgent' || d.severity === 'warn'),
     hasVerdicts,
     hasContributors: topContribPos.length + topContribNeg.length > 0,
-    hasComposition: compositionRows.length > 0,
+    hasComposition: assetBreakdown.items.length > 0,
     hasDrawdown: drawdownSeries.length >= 2,
     isFirstVisit: !!visitDelta?.isFirstVisit,
   })
@@ -2876,35 +2859,57 @@ function InsightsDesktop({ _embeddedTab }) {
         <DiagnosisSection diagnosis={diagnosisPool} plan={plan} userKey={`diag:${(user?.email || 'anon').toLowerCase()}`} aiParams={paramsCaidaIA} />
       )}
 
-      {/* ── Distribución de activos — estándar, incluye cash. Movida arriba
-          (era "Por activo" en Distribución, gateada Pro). El cruce por CLASE
-          de activo vive ahora en el Perfil del inversor. ──────────────────── */}
-      {compositionRows.length > 0 && (
-        <section className="bg-bg-1 border border-line rounded-xl p-4 sm:p-5">
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <p className="eyebrow">Distribución de activos</p>
-            <span className="text-xs text-ink-2">
-              Cash: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1).replace('.', ',')}%</span>
-            </span>
-          </div>
-          <CompositionByAsset rows={compositionRows} />
-        </section>
-      )}
-
-      {/* ── Los otros dos ejes de la misma cartera ──────────────────────────
-          Arriba está "en qué activos estoy"; acá "en qué clase de instrumento"
-          y "a qué parte de la economía". Mismo componente y mismos agregadores
-          que el Dashboard: si divergen los números, divergen en los dos lados
-          a la vez. ────────────────────────────────────────────────────────── */}
-      {classBreakdown.items.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* ── Los tres ejes de la misma cartera ───────────────────────────────
+          "En qué activos estoy", "en qué clase de instrumento" y "a qué parte
+          de la economía": tres tortas con el mismo componente. Tres en fila
+          SÓLO desde xl (1280 px): más angosto cada tarjeta queda en ~220 px y
+          la leyenda corta los nombres a una letra (medido en 1024 px). En el
+          medio, la de activos va arriba a lo ancho —donde estaban las barras—
+          y tipo y sector de a dos, como antes. Tipo y sector usan los mismos
+          agregadores que el Dashboard: si divergen los números, divergen en
+          los dos lados a la vez. ──────────────────────────────────────────── */}
+      {(assetBreakdown.items.length > 0 || classBreakdown.items.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {assetBreakdown.items.length > 0 && (
+          <CompositionDonut
+            className="md:col-span-2 xl:col-span-1 h-full"
+            title="Distribución de activos"
+            subtitle={
+              <>Efectivo: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1).replace('.', ',')}%</span></>
+            }
+            items={assetBreakdown.items}
+            fmt={amt}
+            height={230}
+            // El agregador ya cortó en top 12 + "Resto": el donut no vuelve a
+            // agrupar (el mismo trato que la torta por activo del asesor).
+            maxSlices={assetBreakdown.items.length}
+            minSlicePct={0}
+            info={
+              <>
+                <p className="font-semibold text-ink-0">Cómo se calcula</p>
+                <p>
+                  Cuánto pesa cada activo sobre todo tu patrimonio, incluido el
+                  efectivo. Un mismo activo en dos brokers (AAPL como CEDEAR y
+                  como acción) es una sola porción.
+                </p>
+                <p className="text-ink-3">
+                  Los {DEFAULT_TOP_ASSETS} más grandes van con su porción; el resto se
+                  junta en “Resto”, que se despliega para ver qué hay adentro.
+                </p>
+              </>
+            }
+          />
+          )}
+          {classBreakdown.items.length > 0 && (<>
           <AskAIAbout
             topic="portfolio.distribution_type"
             params={toDistributionAiParams(classBreakdown)}
             subtitle="Distribución por tipo de activo"
             rounded={false}
+            className="h-full"
           >
           <CompositionDonut
+            className="h-full"
             title="Distribución por tipo de activo"
             items={classBreakdown.items}
             fmt={amt}
@@ -2930,8 +2935,10 @@ function InsightsDesktop({ _embeddedTab }) {
             params={toDistributionAiParams(sectorBreakdown)}
             subtitle="Distribución por sector"
             rounded={false}
+            className="h-full"
           >
           <CompositionDonut
+            className="h-full"
             title="Distribución por sector"
             items={sectorBreakdown.items}
             fmt={amt}
@@ -2953,6 +2960,7 @@ function InsightsDesktop({ _embeddedTab }) {
             footnote={<UnclassifiedNote data={sectorBreakdown.unclassified} kind="sector" />}
           />
           </AskAIAbout>
+          </>)}
         </div>
       )}
 
@@ -3827,6 +3835,18 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
   const [upsell, setUpsell] = useState(null)
   const inflightRef = useRef(new Set())  // ids con un POST de dismiss en vuelo (anti doble-click)
   const isFree = !!plan.isFree
+  // Las tarjetas entran de a una cuando la grilla aparece en pantalla, como
+  // las de Comportamiento (useAlVerse + entrada). Arriba del return temprano.
+  const [refGrilla, grillaVista] = useAlVerse()
+  // La escalera es para la primera vez. Pasada, la tarjeta que llega por "No me
+  // interesa" entra en el acto: con su turno (hasta 8 × 70 ms) quedaba el
+  // casillero vacío medio segundo.
+  const [escaleraHecha, setEscaleraHecha] = useState(false)
+  useEffect(() => {
+    if (!grillaVista) return
+    const t = setTimeout(() => setEscaleraHecha(true), 1200)
+    return () => clearTimeout(t)
+  }, [grillaVista])
 
   // Free: traer el uso una vez al montar para mostrar el contador restante.
   useEffect(() => {
@@ -3943,7 +3963,7 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
           </span>
         </button>
         {!collapsed && (
-          <div className="px-4 pb-4 space-y-4">
+          <div ref={refGrilla} className="px-4 pb-4 space-y-4">
             {/* Hint de cuota (solo Free): cuántas personalizaciones usó esta
                 semana + gancho a Plus. Solo si hay algún tier rotable (botón). */}
             {isFree && ddUsage?.diag_dismiss_limit != null && tierRows.some(r => r.canRotate) && (
@@ -3952,15 +3972,19 @@ function DiagnosisSection({ diagnosis, plan, userKey = 'anon', aiParams }) {
                 <Link to="/planes" className="text-rendi-accent hover:underline">Con Plus, sin límite.</Link>
               </p>
             )}
-            {tierRows.map(row => (
+            {/* La escalera sigue de una fila a la otra (0…8). Una tarjeta que
+                llega por "No me interesa" es un elemento nuevo: entra sola, en
+                su lugar y sin esperar turno (escaleraHecha). */}
+            {tierRows.map((row, fila) => (
               <div key={row.key} className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {row.shown.map(d => (
-                  <DiagnosisCard
-                    key={d.id}
-                    d={d}
-                    aiParams={aiParams}
-                    onDismiss={row.canRotate ? () => dismiss(row.key, d.id) : undefined}
-                  />
+                {row.shown.map((d, col) => (
+                  <div key={d.id} {...entrada(grillaVista, escaleraHecha ? 0 : fila * 3 + col, 'h-full')}>
+                    <DiagnosisCard
+                      d={d}
+                      aiParams={aiParams}
+                      onDismiss={row.canRotate ? () => dismiss(row.key, d.id) : undefined}
+                    />
+                  </div>
                 ))}
               </div>
             ))}

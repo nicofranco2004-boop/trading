@@ -4,13 +4,18 @@
 //   - size proporcional al market_cap
 //   - color por change_pct (escala verde/rojo)
 //   - click → abre AssetQuickView (modal mini-ficha)
+//   - con el mouse encima: borde resaltado + globo con nombre, precio y
+//     variación (en el celular el toque ya abre la ficha, no hay "encima")
+//   - al entrar en pantalla los cuadros aparecen en ola, de arriba a la
+//     izquierda hacia abajo a la derecha (`.celda-entra`, index.css)
 //
 // V1: solo S&P 500 (50 nombres). V1.5 agrega Merval + cripto.
 // V2: real-time prices con polling 60s.
 
 import { useEffect, useState } from 'react'
+import { useAlVerse } from '../../hooks/useAlVerse'
 import { api } from '../../utils/api'
-import { pctVar } from '../../utils/format'
+import { pctVar, pctVarSign, nfmt } from '../../utils/format'
 import { polarityColor, CORTES_DIA } from '../../utils/polarityScale'
 import AssetQuickView from './AssetQuickView'
 
@@ -142,12 +147,52 @@ const MARKETS = [
   { key: 'crypto', label: 'Cripto' },
 ]
 
+// El globo del cuadro con el mouse encima: ticker, nombre, precio y variación
+// del día. Posición en % del mapa (el SVG se estira con preserveAspectRatio
+// "none", así que el globo va en HTML encima y no se deforma). Arriba del
+// cuadro; si el cuadro está pegado al borde de arriba, abajo.
+// De costado: centrado sobre el cuadro, salvo cerca de un borde del mapa, donde
+// se alinea con el borde del cuadro — así no se sale del mapa sea cual sea su
+// ancho (un tope fijo en % sólo alcanzaba con el mapa ancho).
+export function GloboCelda({ b, market }) {
+  if (!b) return null
+  const cx = ((b.x + b.w / 2) / WIDTH) * 100
+  const [left, dx] = cx < 25 ? [(b.x / WIDTH) * 100, '0%']
+    : cx > 75 ? [((b.x + b.w) / WIDTH) * 100, '-100%']
+    : [cx, '-50%']
+  const arriba = b.y / HEIGHT > 0.18
+  const top = ((arriba ? b.y : b.y + b.h) / HEIGHT) * 100
+  const dir = pctVarSign(b.change_pct)
+  const moneda = market === 'merval' ? '$' : 'US$'
+  return (
+    <div
+      className="pointer-events-none absolute z-10 rounded-lg border border-line-2 bg-bg-raised px-2.5 py-1.5 text-[12px] whitespace-nowrap shadow-lg"
+      style={{
+        left: `${left}%`,
+        top: `${top}%`,
+        transform: `translate(${dx}, ${arriba ? 'calc(-100% - 6px)' : '6px'})`,
+      }}
+    >
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-semibold text-ink-0">{cleanSymbol(b.symbol)}</span>
+        {b.name && <span className="text-ink-3 max-w-[140px] truncate">{b.name}</span>}
+      </div>
+      <div className="flex items-baseline gap-2 tabular">
+        {b.price != null && <span className="text-ink-1">{moneda} {nfmt(b.price, b.price >= 1000 ? 0 : 2)}</span>}
+        <span className={`font-semibold ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-2'}`}>{pctVar(b.change_pct)}</span>
+      </div>
+    </div>
+  )
+}
+
 export default function Heatmap({ defaultMarket = "sp500" }) {
   const [market, setMarket] = useState(defaultMarket)
   const [blocks, setBlocks] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [selected, setSelected] = useState(null)
+  const [encima, setEncima] = useState(null)   // símbolo con el mouse encima
+  const [refMapa, mapaVisto] = useAlVerse()
 
   useEffect(() => {
     let cancelled = false
@@ -180,6 +225,8 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
   )
 
   const laid = loading || err || blocks.length === 0 ? [] : squarify(blocks, WIDTH, HEIGHT)
+  // El cuadro con el mouse encima: su borde va arriba de todos y lleva el globo.
+  const resaltado = encima ? laid.find(x => x.symbol === encima) : null
 
   return (
     <>
@@ -200,13 +247,15 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
       )}
       {!loading && !err && blocks.length > 0 && (
       <div
-        className="relative rounded-sm overflow-hidden border border-line"
+        ref={refMapa}
+        className="relative rounded-sm border border-line"
         style={{ width: "100%", aspectRatio: `${WIDTH}/${HEIGHT}` }}
+        onPointerLeave={() => setEncima(null)}
       >
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           preserveAspectRatio="none"
-          className="absolute inset-0 w-full h-full"
+          className="absolute inset-0 w-full h-full rounded-sm overflow-hidden"
         >
           {laid.map(b => {
             // Texto si la celda es razonable. Para celdas muy chicas mostramos
@@ -228,7 +277,11 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
               <g
                 key={b.symbol}
                 onClick={() => setSelected({ ...b, symbol: cleanSymbol(b.symbol) })}
-                style={{ cursor: 'pointer' }}
+                onPointerEnter={e => { if (e.pointerType === 'mouse') setEncima(b.symbol) }}
+                className={mapaVisto ? 'celda-entra' : 'celda-antes'}
+                // La ola: cada cuadro arranca según qué tan lejos está de la
+                // esquina de arriba a la izquierda.
+                style={{ cursor: 'pointer', '--d': `${Math.round(((b.x + b.w / 2) / WIDTH + (b.y + b.h / 2) / HEIGHT) * 350)}ms` }}
               >
                 <rect
                   x={b.x} y={b.y} width={b.w} height={b.h}
@@ -266,7 +319,18 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
               </g>
             )
           })}
+          {/* El borde del cuadro con el mouse encima va al FINAL, arriba de
+              todos: dibujado en su lugar, los vecinos le tapaban medio borde. */}
+          {resaltado && (
+            <rect
+              x={resaltado.x + 1} y={resaltado.y + 1}
+              width={Math.max(0, resaltado.w - 2)} height={Math.max(0, resaltado.h - 2)}
+              fill="none" stroke="rgb(var(--ink-0))" strokeWidth="2"
+              vectorEffect="non-scaling-stroke" pointerEvents="none"
+            />
+          )}
         </svg>
+        <GloboCelda b={resaltado} market={market} />
       </div>
       )}
       {selected && (

@@ -23,6 +23,7 @@ import { Link } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 import { fechaEnPalabras } from '../YearReturnLine'
+import { useAlVerse } from '../../hooks/useAlVerse'
 
 function monthNum(period_key) {
   if (!period_key) return null
@@ -46,6 +47,9 @@ const ALTO_MAX_PCT = 92
 
 function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
   const [encima, setEncima] = useState(null)
+  // Las barras crecen desde la línea del medio, mes por mes, cuando el año
+  // entra en pantalla (`.crece-arriba` / `.crece-abajo`, index.css).
+  const [refTira, tiraVista] = useAlVerse()
 
   const meses = cells.map(({ month }) => {
     const m = month?.metrics
@@ -123,7 +127,7 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
         </div>
       )}
 
-      <div className="flex items-stretch gap-[3px] h-[72px] relative">
+      <div ref={refTira} className="flex items-stretch gap-[3px] h-[72px] relative">
         <div className="absolute inset-x-0 top-1/2 h-px bg-line-2 pointer-events-none" />
         {meses.map((m, i) => (
           <div
@@ -144,10 +148,11 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
             {m ? (
               <div
                 className={`absolute left-[14%] right-[14%] rounded-xs transition-colors ${
+                  !tiraVista ? 'por-crecer' : m.pct >= 0 ? 'crece-arriba' : 'crece-abajo'} ${
                   m.pct >= 0
                     ? `bottom-1/2 ${encima === i ? 'bg-[rgb(var(--bar-hover-up))]' : 'bg-rendi-pos-fill'}`
                     : `top-1/2 ${encima === i ? 'bg-[rgb(var(--bar-hover-down))]' : 'bg-rendi-neg-fill'}`}`}
-                style={{ height: `${Math.max(2, (Math.abs(m.pct) / max) * ALTO_MAX_PCT / 2)}%` }}
+                style={{ height: `${Math.max(2, (Math.abs(m.pct) / max) * ALTO_MAX_PCT / 2)}%`, '--i': i }}
               />
             ) : (
               // ⚠️ UN MES SIN MEDIR NO ES UN MES QUE DIO CERO. Una barra de altura

@@ -25,7 +25,7 @@ import { safeExternalUrl } from '../../utils/safeUrl'
 import { haceCuanto, fechaISO, diaMes } from '../../utils/fecha'
 import { REFRESCO_MERCADO_MS } from '../../utils/relojVisible'
 import { useRelojVisible } from '../../hooks/useRelojVisible'
-import { useAlVerse } from '../../hooks/useAlVerse'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
 import { useUltimoPedido } from '../../hooks/useUltimoPedido'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
@@ -65,11 +65,7 @@ export const Cable = forwardRef(function Cable({ news, nuevas = new Set(), visto
         const nueva = nuevas.has(n.url)
         const ultima = i === news.length - 1
         return (
-          <li
-            key={n.url || i}
-            className={visto ? 'entra' : 'por-entrar'}
-            style={{ '--i': i }}
-          >
+          <li key={n.url || i} {...entrada(visto, i)}>
             {/* El destello va en el renglón y no en el <li>: el <li> ya
                 tiene la animación de entrada, y dos animaciones en el mismo
                 elemento se pisan — la segunda regla borra la primera. */}

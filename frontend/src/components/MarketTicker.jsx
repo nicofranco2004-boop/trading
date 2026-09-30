@@ -17,6 +17,9 @@
 // compu la lista sola es más angosta que la ventana, y con una sola copia por
 // mitad se vería un hueco vacío antes de volver a empezar.
 //
+// Cuando el refresco periódico (useMarketIndices, cada 5 min) trae otra
+// variación, ese porcentaje destella verde o rojo (FlashValue), como Movers.
+//
 // La velocidad es fija en píxeles por segundo, no en duración: con duración
 // fija, una pantalla ancha (más copias por mitad) correría más rápido que un
 // celular.
@@ -28,6 +31,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMarketIndices, conDato } from '../hooks/useMarketIndices'
 import { pctVar, pctVarSign, fmtIndexPrice } from '../utils/format'
+import FlashValue from './FlashValue'
 
 const PX_POR_SEGUNDO = 36
 
@@ -46,12 +50,14 @@ function Cotizacion({ it }) {
       <span className="flex items-baseline gap-1.5 px-3.5 md:px-4">
         <span className="text-ink-2 font-medium">{it.label}</span>
         <span className="text-ink-0 tabular">{fmtIndexPrice(it.price, it.kind)}</span>
-        <span className={`font-semibold tabular ${tono}`}>
+        {/* Destella verde o rojo cuando un refresco (cada 5 min,
+            useMarketIndices) trae otra variación — la misma pieza que Movers. */}
+        <FlashValue value={it.change_pct} className={`font-semibold tabular px-0.5 ${tono}`}>
           {dir !== 0 && (
             <span aria-hidden="true" className="mr-0.5 text-[0.7em]">{dir > 0 ? '▲' : '▼'}</span>
           )}
           {pctVar(it.change_pct)}
-        </span>
+        </FlashValue>
       </span>
     </li>
   )

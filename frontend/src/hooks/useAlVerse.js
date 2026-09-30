@@ -32,3 +32,17 @@ export function useAlVerse({ threshold = 0.15, rootMargin = '0px 0px -40px 0px' 
 
   return [setNodo, visto]
 }
+
+// Las props de un elemento que entra en escalera: `.entra` cuando la sección ya
+// se vio (`.por-entrar` —escondido— mientras no), y su lugar en la fila en
+// --i, que index.css convierte en la demora. `clases` son las que el elemento
+// ya tenía. Una sola definición para todas las listas y grillas que entran de a
+// una (movers, watchlist, noticias, eventos, tarjetas del inicio, diagnóstico,
+// comportamiento, chips de "desde tu última visita").
+//   <div key={x.id} {...entrada(visto, i, 'h-full')}>
+export function entrada(visto, i, clases = '') {
+  return {
+    className: `${clases} ${visto ? 'entra' : 'por-entrar'}`.trim(),
+    style: { '--i': i },
+  }
+}

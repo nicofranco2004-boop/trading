@@ -19,7 +19,7 @@ import { subscribeWatchlistChanged, notifyWatchlistChanged } from '../../utils/w
 import { refrescoSegunRueda } from '../../utils/relojVisible'
 import { useUltimoPedido } from '../../hooks/useUltimoPedido'
 import { useRelojVisible } from '../../hooks/useRelojVisible'
-import { useAlVerse } from '../../hooks/useAlVerse'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
 import EnVivo from '../EnVivo'
 import BarraIntensidad from '../BarraIntensidad'
 import FlashValue from '../FlashValue'
@@ -134,8 +134,7 @@ export default function Watchlist() {
               return (
                 <div
                   key={it.symbol}
-                  className={`flex items-center group ${visto ? 'entra' : 'por-entrar'}`}
-                  style={{ '--i': i }}
+                  {...entrada(visto, i, 'flex items-center group')}
                 >
                   <DataRow
                     density="default"
