@@ -447,15 +447,50 @@ del FUTURO ("la Fed decide el miércoles").
 seis con relleno. No escribas "no hubo novedades sobre X".
 4. Nada de pronósticos, recomendaciones ni consejos: ni "conviene", ni "es buen \
 momento", ni "se espera que". Contás lo que pasó, no lo que va a pasar.
-5. Si varios titulares se contradicen, decilo ("hay lecturas opuestas sobre la \
-próxima decisión de tasas") en vez de elegir uno.
+5. Si varios titulares se contradicen, decilo ("las noticias no coinciden sobre \
+si la Fed va a subir la tasa") en vez de elegir uno.
+6. Contá el HECHO del titular, no lo que "significa". Nada de "lo que sugiere \
+que", "es una señal de", "el mercado ve", "vuelve al radar", "está en el foco", \
+"potencial catalizador", "en esta incertidumbre". Esas frases no dicen nada que \
+haya pasado. Si un titular es una pregunta o una opinión ("¿está barata la \
+acción?", "cinco acciones para mirar hoy"), no trae ningún hecho: no lo uses. \
+Lo único que podés agregar es CÓMO FUNCIONA algo ("cuando los bonos pagan más, \
+las acciones pierden atractivo"), nunca una conclusión sobre lo que piensa el \
+mercado.
+7. Leé dos veces la DIRECCIÓN antes de escribirla. "Máximo de tres años" es un \
+máximo, no un mínimo; "por debajo de lo esperado" es menos, no más. Dar vuelta \
+un "sube" por un "baja" es el peor error que puede tener este mail.
 
 CÓMO ESCRIBIR
 - Castellano rioplatense, vos y no tú. Para alguien que invierte pero no opera \
 todo el día y no vive de esto.
-- Sin jerga sin explicar. Si un término técnico es inevitable, explicalo en la \
-misma oración: "el riesgo país (lo que el mercado cobra de más por prestarle a \
-la Argentina) subió".
+- ⚠️ LAS PALABRAS DE LOS TITULARES NO SON LAS TUYAS. Muchos vienen traducidos \
+por máquina del inglés ("los precios giran a la baja tras las informaciones \
+sobre el suministro") o escritos para gente que opera todo el día ("la guía de \
+resultados, en el punto de mira"). Copiar esas frases es lo que vuelve ilegible \
+el mail. Entendé el hecho y contalo como se lo contarías a un amigo que no es \
+del mercado. Si no lo dirías así en voz alta, reescribilo.
+  Lo que más aparece, y cómo se dice:
+  · "gira a la baja" → baja. "Tras informaciones sobre el suministro" → por \
+noticias sobre cuánto petróleo se produce.
+  · "guía de resultados" → lo que la empresa dijo que espera ganar.
+  · "margen" → cuánto le queda de cada venta después de pagar los costos.
+  · "precio objetivo" → el precio al que un analista cree que puede llegar.
+  · "rentabilizar la inversión en IA" → ganar plata con lo que gastó en \
+inteligencia artificial.
+  · "inversores institucionales" → fondos grandes. Si el titular nombra a un \
+inversor, nombralo con una aclaración ("un inversor conocido").
+  · "moderó su suba", "hizo una tregua" → subió menos, dejó de subir.
+  · "máximo de ocho semanas" → lo más alto en dos meses.
+  · "rally" → suba fuerte. "Sell-off" → venta fuerte.
+  · "PCE" → la medida de inflación que más mira la Fed.
+  · El código de un producto (un chip, un modelo de IA) → decí qué es \
+("memorias para inteligencia artificial") o no lo nombres.
+- Estos términos SÍ van, explicados en la misma oración la primera vez: el \
+riesgo país (lo que el mercado cobra de más por prestarle a la Argentina), el \
+rendimiento del bono del Tesoro (lo que paga Estados Unidos por endeudarse), la \
+Fed (el banco central de Estados Unidos), el Merval (el índice de las acciones \
+argentinas).
 - Sin signos de exclamación, sin metáforas de guerra, de deporte ni de altura \
 ("tasas al cielo", "se derrumbó"), sin "los mercados amanecieron nerviosos". \
 Literal: "la tasa subió", "el índice cayó".
@@ -472,9 +507,9 @@ valen por lo que van a ganar dentro de muchos años."
 
 Así NO:
   "El rendimiento superó el 5%, alcanzando su nivel más alto desde 2007, lo que \
-genera presión sobre las valoraciones de empresas de crecimiento como las \
-tecnológicas, reflejando una combinación de inflación persistente y expectativas \
-de que la Fed podría subir tasas esta semana."
+hace que el dinero salga de las acciones hacia los bonos, golpeando sobre todo a \
+las tecnológicas, en un contexto de inflación que no baja y de dudas sobre si \
+la Fed volverá a subir la tasa esta semana."
 
 Las dos dicen lo mismo. La primera lo dice en cuatro oraciones y se entiende de \
 una; la segunda encadena todo con comas, "lo que" y gerundios, y hay que leerla \
@@ -482,9 +517,10 @@ dos veces. Escribí siempre como la primera: cuando sientas que la oración sigu
 poné el punto.
 
 EL FORMATO, Y LA FRONTERA ENTRE LAS DOS PARTES
-- titular: UNA oración, máximo 12 palabras, con lo que mandó. Sin dos puntos.
+- titular: UNA oración corta, máximo 10 palabras, con lo que mandó. Sin dos \
+puntos. Es también el asunto del mail: se lee en la notificación del teléfono.
 
-- mercado: 2 párrafos de 2 a 3 oraciones. El CONTEXTO: tasas, inflación, dólar, \
+- mercado: 2 o 3 párrafos de 2 a 3 oraciones. El CONTEXTO: tasas, inflación, dólar, \
 petróleo, riesgo país, conflictos. ⚠️ NO nombres acá ningún activo de la persona, \
 ni siquiera de paso. Su lugar es el bloque de abajo, y decirlo dos veces hace un \
 mail el doble de largo que no dice nada nuevo.
@@ -498,6 +534,8 @@ está en esa lista, no tenés noticias suyas: no digas que subió, que cayó, qu
 beneficia ni que sufre, ni siquiera deduciéndolo del contexto. Esa deducción suena \
 razonable y es exactamente cómo se afirma un hecho falso. Si la lista viene vacía, \
 devolvé lista vacía y listo — no rellenes con generalidades del mercado.
+  No sabés cuánto pesa cada activo en su cartera ni si le fue bien o mal: nunca \
+escribas "donde concentrás tu cartera", "tu mayor posición" ni nada parecido.
   ⚠️ NO repitas acá lo que ya explicaste en "mercado": si la tasa ya quedó contada \
 arriba, acá se da por sabida.
 
@@ -574,6 +612,16 @@ def _packet_para_narrar(contexto: list, news: list, tickers: list,
             c["client_uid"] for cs in holders.values() for c in cs})
     return packet
 
+
+# El mensaje que acompaña a los titulares. ⚠️ TIENE que ir: sin él, `llm.analyze`
+# pone el del análisis ✦ de pantalla —"INTERPRETAR, no describir… un insight
+# memorable… lenguaje probabilístico ('sugiere')"— que es exactamente lo contrario
+# de las reglas de arriba. El modelo obedecía a las dos y escribía jerga de
+# analista. Medido el 2026-09-30 sobre los titulares reales del día, 8 mails por
+# versión: las afirmaciones que ningún titular decía pasaron de 10 a 3,8 por mail
+# sólo con cambiar este mensaje.
+_INSTRUCCION = ("Estos son los titulares de hoy. Escribí el resumen siguiendo "
+                "las reglas.")
 
 # Lo que se le agrega al prompt en el segundo intento, cuando el primero trajo
 # una cifra que no estaba en ningún titular.
@@ -712,9 +760,25 @@ def narrate(contexto: list, news: list, tickers: list, holders: dict = None):
             res = llm.analyze(
                 system_prompt=sistema if intento == 1 else sistema + _AVISO_NUMEROS,
                 packet=packet,
+                instruction=_INSTRUCCION,
                 output_model=MarketNarrative,
-                model=llm.MODEL_HAIKU,   # resumir es donde Haiku empata con Sonnet
-                max_tokens=1200,
+                # ⚠️ SONNET Y NO HAIKU, elegido por Nico el 2026-09-30 mirando
+                # los dos mails lado a lado. Medido sobre titulares reales, 16
+                # mails por modelo y con las mismas reglas: Haiku seguía usando
+                # las palabras que la regla le prohíbe POR NOMBRE ("en el foco",
+                # "guía de resultados": 3,1 y 1,1 por mail; Sonnet 0 y 0) y en 2
+                # de 16 escribió "la inflación llegó a su nivel más bajo en tres
+                # años" con un titular que decía MÁXIMO. Sonnet: 0 de 32.
+                # `effort="low"`: de fábrica razona ~2.000 tokens por mail y
+                # cuesta ~US$0,04; en "low" ~600 y ~US$0,010, con las mismas 0
+                # palabras prohibidas y 0 datos dados vuelta (un lector de
+                # prueba le marcó ~5-7 frases raras por mail contra ~4-5 de
+                # fábrica). Haiku costaba ~US$0,006.
+                model=llm.MODEL_SONNET,
+                effort="low",
+                # 1.200 alcanzaba para Haiku; Sonnet cuenta lo que razona dentro
+                # de este mismo tope, y quedarse corto es un mail que no sale.
+                max_tokens=3000,
             )
             if not res:
                 return None

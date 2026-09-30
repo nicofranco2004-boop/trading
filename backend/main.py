@@ -7607,6 +7607,31 @@ def _is_market_relevant(item):
     return bool(_STRONG_MACRO_REGEX.search(haystack))
 
 
+# El código de un contrato de opciones: ticker + vencimiento AAMMDD + C/P +
+# precio de ejercicio en 8 dígitos. "INTC260923P00124000" es un put de Intel
+# que vence el 23/09/2026 a US$124.
+_OPCION_CODIGO_REGEX = _re_news.compile(r'\b[A-Z]{1,6}\d{6}[CP]\d{8}\b')
+
+
+def _es_noticia(item) -> bool:
+    """False si el "titular" es una página de cotización y no una noticia.
+
+    ⚠️ Google News devuelve, para la búsqueda "INTC acciones", las páginas de
+    Yahoo de CADA contrato de opciones: "Gráfico interactivo de acciones de INTC
+    Sep 2026 132.000 call (INTC260923C00132000)". Medido el 2026-09-30: 46 de
+    105 titulares de cartera eran eso, y los 15 de Intel sin excepción. No dicen
+    nada que haya pasado, pero entraban a Novedades como si fueran notas y al
+    resumen por mail como material: Intel figuraba "con noticias" y la IA
+    escribía "Intel tiene movimientos en opciones… Galicia tiene puts activos
+    en octubre", o directamente que estaba "bajo presión".
+
+    Se decide por el código del contrato en el título, que es inequívoco, y no
+    por las frases de Yahoo ("Gráfico interactivo…", "Datos y precios
+    históricos…"), que cambian con el idioma y el día.
+    """
+    return not _OPCION_CODIGO_REGEX.search(item.get('title') or '')
+
+
 # ─── News tagging ─────────────────────────────────────────────────────────────
 #
 # Cada noticia recibe 0-N tags por keyword-match. Permite filtrar el feed por
@@ -7878,6 +7903,10 @@ def _persist_news_items(conn, items, source_id: str, category: str, query_source
     """
     if not items:
         return 0
+    # Páginas de cotización que Google News devuelve como si fueran notas. Para
+    # TODAS las categorías: es acá, y no en cada lector, porque por acá entra
+    # todo lo que después leen Novedades, el resumen por mail y el chat.
+    items = [it for it in items if _es_noticia(it)]
     # Filtro de relevancia — sólo market/macro. La DB acumula histórico, así
     # que aunque cada refresh quede con menos items, el endpoint sigue
     # devolviendo los últimos N por published_at DESC.

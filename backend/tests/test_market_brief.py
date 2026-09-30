@@ -41,6 +41,10 @@ from billing import emails       # noqa: E402
 
 TOKEN = "tok-market-brief-test"
 
+# La narración DE VERDAD, guardada antes de que `setUp` la reemplace. La usan los
+# tests que tienen que mirar lo que sale hacia el modelo.
+_NARRATE_REAL = market_brief.narrate
+
 
 class _NarracionFake:
     """Lo que devolvería el modelo. Misma forma que MarketNarrative."""
@@ -868,6 +872,148 @@ class MarketBriefTest(unittest.TestCase):
         self.assertIn("9", bueno)
         self.assertIn("0 de 11", malo)
         self.assertIn("NO corrió", roto)
+
+    # ── lo que recibe el modelo, entrando por el cron ────────────────────────
+
+    def test_el_modelo_no_recibe_la_orden_del_analisis_de_pantalla(self):
+        """🔴 La causa de las palabras raras del mail (medido el 2026-09-30).
+
+        `llm.analyze` arma el mensaje que acompaña a los datos. Si quien llama
+        no trae el suyo, pone el del análisis ✦ de pantalla: "INTERPRETAR, no
+        describir… un insight memorable… lenguaje probabilístico ('sugiere')".
+        Es lo contrario de lo que pide el prompt del resumen, y el modelo
+        obedecía a los dos: "apuestas de catalista más que de valuación",
+        "flujos de atención concentrados", "sugiriendo una tregua temporal".
+
+        Entra por el cron, con `narrate` y `llm.analyze` DE VERDAD: sólo el
+        cliente de Anthropic es de mentira. Así el test mira el mensaje que
+        sale por el cable, no uno armado para el test.
+        """
+        from ai import llm
+        from ai.schemas_market_brief import MarketNarrative
+
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia presenta un chip nuevo")
+        self._suscribir()
+
+        enviados = []
+
+        class _Resp:
+            parsed_output = MarketNarrative(
+                titular="Nvidia presentó un chip",
+                mercado=["Nvidia presentó un chip nuevo."], tu_cartera=[])
+            content = []
+            stop_reason = "end_turn"
+
+            class usage:
+                input_tokens = output_tokens = 1
+                cache_creation_input_tokens = cache_read_input_tokens = 0
+
+        class _Cliente:
+            class messages:
+                @staticmethod
+                def parse(**kw):
+                    enviados.append(kw)
+                    return _Resp()
+
+        with patch.object(market_brief, "narrate", _NARRATE_REAL), \
+             patch.object(llm, "_get_anthropic_client", lambda: _Cliente()):
+            _, mails, _ = self._correr_cron()
+
+        self.assertEqual(len(mails), 1, "el mail no salió")
+        self.assertEqual(len(enviados), 1)
+        mensaje = enviados[0]["messages"][0]["content"]
+        self.assertIn("Nvidia presenta un chip nuevo", mensaje,
+                      "los titulares no llegaron al modelo")
+        for orden_ajena in ("INTERPRETAR", "insight memorable", "sugiere"):
+            self.assertNotIn(orden_ajena, mensaje,
+                             f"el resumen recibió la orden del análisis de "
+                             f"pantalla ({orden_ajena!r})")
+
+    def test_las_paginas_de_opciones_no_son_noticias(self):
+        """Google News devuelve, para "INTC acciones", la página de Yahoo de
+        cada contrato de opciones: "Gráfico interactivo de acciones de INTC Sep
+        2026 132.000 call (INTC260923C00132000)". Medido el 2026-09-30: 46 de
+        105 titulares de cartera eran eso, y los 15 de Intel sin excepción.
+
+        Con Intel "con noticias", el modelo la nombraba igual: "Intel y Tesla
+        tienen movimientos en opciones… Galicia tiene puts activos en octubre",
+        o que "está bajo presión". Es el mismo agujero que el de los siete
+        activos, entrando por otro lado: un activo sin ninguna noticia real
+        llegaba al modelo.
+
+        Entra por el cron con el fetch real (`_refresh_news_for` →
+        `_ensure_news_batch_parallel` → `_persist_news_items`); sólo la red es
+        de mentira. Se mira lo que llega a `narrate`.
+        """
+        self._pos("INTC")
+        self._pos("NVDA")
+        self._suscribir()
+        pub = datetime.utcnow().isoformat()
+        rss = {
+            "INTC acciones": [
+                "Gráfico interactivo de acciones de INTC Sep 2026 132.000 call "
+                "(INTC260923C00132000) - es-us.finanzas.yahoo.com",
+                "Precio de acciones, noticias, cotización e historial de INTC "
+                "Oct 2026 145.000 put (INTC261005P00145000) - Yahoo",
+            ],
+            "NVDA acciones": [
+                "Nvidia presenta un chip nuevo - Infobae",
+                "Datos y precios históricos de acciones de NVDA Oct 2026 "
+                "180.000 call (NVDA261009C00180000) - Yahoo",
+            ],
+        }
+
+        def _fake_rss(query, lang="es", limit=15):
+            return [{"external_id": f"{query}-{i}", "title": t, "summary": "",
+                     "url": f"https://x.co/{i}", "published_at": pub}
+                    for i, t in enumerate(rss.get(query, []))]
+
+        vistos = []
+
+        def _narrate_espia(contexto, news, tickers, holders=None):
+            vistos.append(news)
+            return _NarracionFake()
+
+        main._news_fetched_at.clear()          # sin TTL de otra corrida
+        enviados = []
+        # ⚠️ Acá NO sirve `_ThreadSincrono`: el fetch de verdad reparte las
+        # búsquedas en un pool de hilos, y reemplazar `threading.Thread` le
+        # rompe el pool ("_worker() missing 4 required positional arguments").
+        # Se deja correr el hilo real del cron y se lo espera.
+        hilos = []
+        _Real = threading.Thread
+
+        class _HiloQueSeEspera(_Real):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                hilos.append(self)
+
+        with patch.object(main.threading, "Thread", _HiloQueSeEspera), \
+             patch.object(main, "_fetch_google_news_rss", _fake_rss), \
+             patch.object(market_brief, "narrate", _narrate_espia), \
+             patch.object(emails, "send_market_brief",
+                          lambda **kw: enviados.append(kw) or True), \
+             patch.object(emails, "send_market_brief_run_admin",
+                          lambda **kw: True), \
+             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+            self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
+            hilos[0].join(timeout=30)          # el primero es el del cron
+
+        self.assertEqual(len(vistos), 1, "no se llegó a redactar")
+        self.assertEqual([n["title"] for n in vistos[0]],
+                         ["Nvidia presenta un chip nuevo - Infobae"])
+        self.assertNotIn("INTC", {n["ticker"] for n in vistos[0]},
+                         "Intel sólo tenía páginas de opciones y llegó al "
+                         "modelo como si tuviera noticias")
+        # Y no quedaron en la base: Novedades lee la misma tabla.
+        conn = main.get_db()
+        try:
+            n = conn.execute("SELECT COUNT(*) c FROM news WHERE title LIKE "
+                             "'%call (%' OR title LIKE '%put (%'").fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(n, 0, "las páginas de opciones quedaron guardadas")
 
 
 class BriefDelAsesorTest(unittest.TestCase):

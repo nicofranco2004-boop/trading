@@ -5,6 +5,8 @@ Encapsula las llamadas al modelo. Convenciones:
   • Modelo por superficie (NO por tier):
       Chat (/api/ai/chat, todos los tiers) → MODEL_SONNET, lo elige main.ai_chat
       analyze() (análisis ✦ de pantalla, resumen de fundamentals) → Haiku
+      analyze() del resumen del mercado por mail → MODEL_SONNET, effort
+        "low" (lo elige market_brief.narrate; ahí está el porqué medido)
     Los precios de cada uno están en _PRICING_USD_PER_M, más abajo.
 
   • Prompt caching (TTL 1h, beta extended-cache-ttl-2025-04-11):
@@ -149,6 +151,8 @@ def analyze(
     max_retries: int = 1,
     followup_question: Optional[str] = None,
     descriptive: bool = False,
+    instruction: Optional[str] = None,
+    effort: Optional[str] = None,
 ) -> Optional[LLMResult]:
     """Manda el packet a Claude y devuelve output validado contra `output_model`.
 
@@ -163,6 +167,15 @@ def analyze(
             usando el mismo packet en lugar de generar el análisis general.
         descriptive: True para tiers Free/Plus (DESCRIBIR, no interpretar) —
             debe coincidir con el system prompt (ai.prompts.is_descriptive_tier).
+        instruction: la orden del mensaje del usuario, para quien NO es el
+            análisis ✦ de pantalla. Si no viene, el mensaje es el del análisis
+            (interpretar, insight memorable, "sugiere") — ver abajo por qué
+            eso no le sirve a nadie más.
+        effort: cuánto razona el modelo antes de escribir ("low", "medium",
+            "high"). Sólo para los modelos que lo aceptan (Sonnet 5.x); si no
+            viene, el del modelo. En un resumen el razonamiento es casi todo el
+            costo: Sonnet 5.5 en su nivel de fábrica gastaba ~2.500 tokens de
+            salida por mail, de los que el texto eran ~500.
 
     Returns:
         LLMResult con .output validado, o None si AI no está configurada.
@@ -176,7 +189,23 @@ def analyze(
 
     # Mensaje del user — si hay followup_question, el LLM responde la
     # pregunta puntual en lugar de generar análisis general.
-    if followup_question:
+    #
+    # ⚠️ LOS DOS MENSAJES DE ABAJO (descriptivo e interpretativo) SON DEL
+    # ANÁLISIS ✦ DE PANTALLA, no de "cualquier llamada". El resumen del mercado
+    # por mail pasaba por acá sin `instruction` y recibía, debajo de su propio
+    # prompt que dice "contás lo que pasó, nada de pronósticos", la orden
+    # opuesta: "INTERPRETAR, no describir… un insight memorable… lenguaje
+    # probabilístico ('sugiere')… densidad". El modelo obedecía a las dos y
+    # salía jerga de analista: "apuestas de catalista más que de valuación",
+    # "flujos de atención concentrados", "sugiriendo una tregua temporal".
+    # Medido el 2026-09-30 sobre los titulares reales del día — ver
+    # market_brief.narrate. Quien no sea el análisis de pantalla trae su orden.
+    if instruction:
+        user_msg = (
+            f"{instruction}\n\n"
+            f"```json\n{json.dumps(packet, sort_keys=True, ensure_ascii=False)}\n```"
+        )
+    elif followup_question:
         user_msg = (
             "El usuario ya leyó un análisis previo del mismo packet y ahora "
             "te pregunta puntualmente:\n\n"
@@ -256,6 +285,7 @@ def analyze(
                 messages=[{"role": "user", "content": user_msg}],
                 output_format=output_model,
                 extra_headers={"anthropic-beta": "extended-cache-ttl-2025-04-11"},
+                **({"output_config": {"effort": effort}} if effort else {}),
             )
             # Capturar raw output ANTES de parsed_output — si parse falla, lo
             # necesitamos para diagnosticar.

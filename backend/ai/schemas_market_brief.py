@@ -23,15 +23,23 @@ class MarketNarrative(BaseModel):
     datos propios de la persona (qué cobra hoy, qué balance sale) los arma el
     código y viajan aparte."""
 
+    # ⚠️ 110 y no 90: con Sonnet los titulares de 12 palabras llegaban a 83-95
+    # letras, y uno que se pasa dos veces es un mail que NO sale (el reintento
+    # de `llm.analyze` no le dice al modelo qué falló). El largo se pide en el
+    # prompt; este tope es la red, no la regla.
     titular: str = Field(
         ...,
-        max_length=90,
-        description="Una oración con lo que mandó hoy. Máximo 12 palabras.",
+        max_length=110,
+        description="Una oración con lo que mandó hoy. Máximo 10 palabras.",
     )
+    # ⚠️ 4 y no 3, por lo mismo que el titular: con Sonnet y las reglas de
+    # explicar cada término, 5 de 16 respuestas vinieron con 4 párrafos y una
+    # se pasó en los dos intentos → ese mail no salía. El largo total era el de
+    # siempre (~260 palabras): lo que cambiaba era dónde ponía el punto y aparte.
     mercado: List[str] = Field(
         ...,
         min_length=1,
-        max_length=3,
+        max_length=4,
         description="2-3 párrafos: qué pasó afuera y en Argentina.",
     )
     tu_cartera: List[str] = Field(
