@@ -56,7 +56,22 @@ export function useCountUp(target, { duration = 600 } = {}) {
     }
     rafRef.current = requestAnimationFrame(tick)
 
+    // Garantía de llegada: el número TERMINA en su valor aunque el navegador
+    // no dibuje. Con la pestaña de fondo, en ahorro de energía o en un visor
+    // que no está a la vista, requestAnimationFrame se frena o se para, y el
+    // conteo quedaba clavado a mitad de camino — medido: todos los movers al
+    // 48,5 % de su valor. En una pantalla de plata eso es un número mal
+    // mostrado, aunque dure un instante. Los relojes siguen corriendo cuando
+    // los cuadros no: al vencer la duración, se escribe el valor final.
+    const llegada = setTimeout(() => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      fromRef.current = to
+      latestRef.current = to
+      setValue(to)
+    }, duration + 100)
+
     return () => {
+      clearTimeout(llegada)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       // Si el efecto se reejecuta a mitad de animación, la próxima arranca
       // desde el último frame renderizado (continuidad sin saltos).

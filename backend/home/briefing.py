@@ -33,6 +33,9 @@ class PersonalCard:
     context: Optional[str] = None   # subtexto chico
     cta_label: Optional[str] = None # ej: "Ver posición →"
     cta_href: Optional[str] = None  # ruta interna
+    # El número de `value` sin formatear, para que el frontend lo anime (cuenta
+    # hasta el valor al aparecer). `value` sigue siendo lo que se lee.
+    value_num: Optional[float] = None
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -66,6 +69,22 @@ def _holdings_with_quotes(holdings: List[Dict[str, Any]],
 
 # ─── Detectores de PersonalCard ──────────────────────────────────────────────
 
+def _cuando(h: Dict[str, Any]) -> str:
+    """"hoy" sólo si el porcentaje ES de la rueda de hoy (`is_today`, que estampa
+    home.market._stamp_session). Si no, la fecha de la rueda que midió.
+
+    Decía "subió hoy" siempre: un sábado, o a las 10 de la mañana antes de que
+    abra Nueva York, la tarjeta contaba el movimiento del día anterior como de
+    hoy — el mismo error que mandó las alertas del 15/09 con el lunes fechado
+    como "hoy"."""
+    if h.get("is_today"):
+        return "hoy"
+    as_of = h.get("as_of") or ""
+    if len(as_of) == 10:
+        return f"el {as_of[8:10]}/{as_of[5:7]}"
+    return "en la última rueda"
+
+
 def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6) -> List[PersonalCard]:
     """Holdings con movimiento ≥1.5% en el día — los más fuertes primero,
     cap top_n. El threshold es estricto en valor absoluto, así que tanto
@@ -79,8 +98,9 @@ def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6
         out.append(PersonalCard(
             kind="holding_move",
             icon="🚀" if positive else "📉",
-            headline=f"{h['asset']} {'subió' if positive else 'bajó'} hoy",
+            headline=f"{h['asset']} {'subió' if positive else 'bajó'} {_cuando(h)}",
             value=f"{'+' if positive else ''}{fmt_num(pct, 1)}%",
+            value_num=round(pct, 1),
             value_tone="positive" if positive else "negative",
             context=f"US${fmt_num(h['price'], 2)}",
             cta_label="Ver posición →",

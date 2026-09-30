@@ -781,6 +781,34 @@ body {
   .ticker-scroll:hover { animation-play-state: paused; }
 }
 
+/* Entrada escalonada — las filas y tarjetas de las secciones de mercado del
+   inicio aparecen de a una cuando la sección entra en pantalla (useAlVerse).
+   El orden va en la variable --i de cada fila.
+   `backwards` y NO `both`: con `both` el último cuadro (transform: none) se
+   queda pegado después de la animación y le gana al `transform` del `.press`
+   de DataRow — las filas dejaban de "hundirse" al tocarlas. */
+@keyframes entra {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.entra {
+  animation: entra 460ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+.por-entrar { opacity: 0; }
+
+/* Noticia que llegó mientras mirabas (NewsPreview): un destello violeta que
+   se apaga solo. La primera carga no destella: "nueva" es "llegó recién". */
+@keyframes destello-nueva {
+  from { background-color: rgb(var(--data-violet) / 0.14); }
+  to   { background-color: rgb(var(--data-violet) / 0); }
+}
+.destello-nueva { animation: destello-nueva 2400ms ease-out; }
+
+/* Barra de intensidad (BarraIntensidad): crece desde cero al aparecer y se
+   acomoda sola cuando el dato se refresca. */
+.barra-intensidad { transition: width 700ms cubic-bezier(0.16, 1, 0.3, 1); }
+
 /* Headline gradient sweep — Geist grande con barrido verde */
 @keyframes gradient-sweep {
   0%, 100% { background-position: 0% 50%; }
@@ -798,9 +826,11 @@ body {
 /* Respeta reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .grid-bg, .spotlight-pulse, .value-pulse, .ticker-scroll, .headline-sweep,
-  .terminal-cursor, .flash-up, .flash-down {
+  .terminal-cursor, .flash-up, .flash-down, .entra, .live-dot, .destello-nueva {
     animation: none !important;
   }
+  .por-entrar { opacity: 1; }
+  .barra-intensidad { transition: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
      desliza con el dedo, como la barra de antes. */

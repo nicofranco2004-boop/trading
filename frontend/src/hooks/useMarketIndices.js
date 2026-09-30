@@ -25,14 +25,15 @@
 import { useSyncExternalStore } from 'react'
 import { api } from '../utils/api'
 import { isDemoMode } from '../utils/demo'
+import { relojVisible, REFRESCO_MERCADO_MS } from '../utils/relojVisible'
 
-export const REFRESH_MS = 5 * 60 * 1000
+export const REFRESH_MS = REFRESCO_MERCADO_MS
 
 const INICIAL = { items: [], loading: true, error: null, fetchedAt: 0, demo: null }
 
 let _state = INICIAL
 let _inflight = null
-let _timer = null
+let _apagarReloj = null
 const _subs = new Set()
 
 function _set(patch) {
@@ -64,28 +65,20 @@ function _ensureFresh() {
   if (Date.now() - _state.fetchedAt >= REFRESH_MS) refreshMarketIndices()
 }
 
-function _onVisibility() {
-  if (document.visibilityState === 'visible') _ensureFresh()
-}
-
 // Exportado para los tests; los componentes usan el hook.
 export function subscribeMarketIndices(fn) {
   _subs.add(fn)
   if (_subs.size === 1) {
-    // El reloj pide sin mirar la edad del dato: si mirara, un pedido que tardó
-    // 300 ms quedaría "300 ms más joven" que el plazo y se salteaba una vuelta.
-    _timer = setInterval(() => {
-      if (document.visibilityState !== 'hidden') refreshMarketIndices()
-    }, REFRESH_MS)
-    document.addEventListener('visibilitychange', _onVisibility)
+    // Al volver a la pestaña no alcanza con la edad del reloj: se mira la del
+    // DATO y si cambió el modo demo (_ensureFresh).
+    _apagarReloj = relojVisible(refreshMarketIndices, REFRESH_MS, { alVolver: _ensureFresh })
   }
   _ensureFresh()
   return () => {
     _subs.delete(fn)
-    if (_subs.size === 0) {
-      clearInterval(_timer)
-      _timer = null
-      document.removeEventListener('visibilitychange', _onVisibility)
+    if (_subs.size === 0 && _apagarReloj) {
+      _apagarReloj()
+      _apagarReloj = null
     }
   }
 }
@@ -107,8 +100,8 @@ export function conDato(items) {
 
 // Sólo para tests: vuelve el módulo a cero.
 export function _resetMarketIndices() {
-  clearInterval(_timer)
-  _timer = null
+  if (_apagarReloj) _apagarReloj()
+  _apagarReloj = null
   _inflight = null
   _subs.clear()
   _state = INICIAL

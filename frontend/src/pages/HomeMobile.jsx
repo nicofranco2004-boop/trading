@@ -504,11 +504,8 @@ export default function HomeMobile() {
         <Heatmap defaultMarket="sp500" />
       </section>
 
-      {/* ── 5. Movers del día ──────────────────────────────────────── */}
+      {/* ── 5. Movers del día (el título lo pone MoversRail) ───────── */}
       <section className="px-4 mb-5">
-        <h2 className="text-[12.5px] text-ink-2 mb-2 font-medium">
-          Movers del día
-        </h2>
         <MoversRail market="sp500" />
       </section>
 

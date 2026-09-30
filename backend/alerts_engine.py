@@ -149,6 +149,48 @@ def _sesion_hoy(sym) -> str:
         return hoy_art()
 
 
+_AVISO_SIN_ZONEINFO = False
+
+
+def rueda_en_horario(mercado: str, now) -> bool:
+    """¿La rueda de `mercado` está en horario ahora? `mercado` es 'us'
+    (NYSE/Nasdaq), 'byma' o 'cripto' (24/7). Es LA definición del horario de
+    Rendi: la usan estas alertas y el indicador "Abierto / Cerrado" de las
+    secciones de mercado del inicio (home.market.estado_de_rueda). No hay
+    feriados acá: eso lo cubre quien la llama mirando la FECHA de la rueda.
+
+    Las horas se preguntan a la base de zonas horarias en vez de escribirse como
+    un offset fijo, porque Estados Unidos sí tiene horario de verano y la ventana
+    en UTC se corre una hora dos veces al año. Esto NO es un segundo calendario:
+    contesta "¿hay rueda?", no "¿qué día es?" — esa sigue siendo de `fechas.py`."""
+    if mercado == "cripto":
+        return True
+    from datetime import timezone
+    ahora = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+    try:
+        from zoneinfo import ZoneInfo
+        if mercado == "byma":
+            return _en_rueda(ahora.astimezone(ZoneInfo("America/Argentina/Buenos_Aires")), *_SESION_BYMA)
+        return _en_rueda(ahora.astimezone(ZoneInfo("America/New_York")), *_SESION_US)
+    except Exception as ex:
+        # Sin base de zonas horarias (imagen sin tzdata): ventana fija en UTC.
+        # BYMA es exacta (la Argentina no cambia de hora: 11–17 ART = 14–20 UTC).
+        # NY es ANCHA pero nunca empieza antes que su apertura más temprana real
+        # (13:30 UTC, en verano) — no puede repetir el bug de las 13:01.
+        # El aviso sale UNA vez por proceso: esta función corre por mercado y
+        # por pedido, y sin tzdata cada llamada lo repetía en el log.
+        global _AVISO_SIN_ZONEINFO
+        if not _AVISO_SIN_ZONEINFO:
+            _AVISO_SIN_ZONEINFO = True
+            log.warning("rueda_en_horario sin zoneinfo (%s): ventana fija UTC", ex)
+        if ahora.weekday() >= 5:
+            return False
+        minutos = ahora.hour * 60 + ahora.minute
+        if mercado == "byma":
+            return (14 * 60) <= minutos < (20 * 60)
+        return (13 * 60 + 30) <= minutos < (21 * 60)
+
+
 def _market_open_now(now) -> bool:
     """¿Hay alguna rueda abierta ahora? Es la unión de las dos que nos importan:
     NYSE/Nasdaq y BYMA. Las alertas de acciones/CEDEARs/bonos SOLO disparan acá
@@ -159,28 +201,8 @@ def _market_open_now(now) -> bool:
     Nueva York abre 13:30 UTC en horario de verano y BYMA 14:00 UTC, así que a
     las 13:01 NO había rueda abierta en ningún lado y el `change_pct` que traía
     el proveedor era todavía el del día anterior. Cuatro mails con el movimiento
-    del lunes fechados como "hoy".
-
-    Las horas se preguntan a la base de zonas horarias en vez de escribirse como
-    un offset fijo, porque Estados Unidos sí tiene horario de verano y la ventana
-    en UTC se corre una hora dos veces al año. Esto NO es un segundo calendario:
-    contesta "¿hay rueda?", no "¿qué día es?" — esa sigue siendo de `fechas.py`."""
-    from datetime import timezone
-    ahora = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
-    try:
-        from zoneinfo import ZoneInfo
-        return (_en_rueda(ahora.astimezone(ZoneInfo("America/New_York")), *_SESION_US)
-                or _en_rueda(ahora.astimezone(ZoneInfo("America/Argentina/Buenos_Aires")),
-                             *_SESION_BYMA))
-    except Exception as ex:
-        # Sin base de zonas horarias (imagen sin tzdata): ventana fija ANCHA pero
-        # que nunca empieza antes que la apertura más temprana real (13:30 UTC,
-        # NY en verano) — no puede repetir el bug de las 13:01. El guard fino de
-        # pct_move no depende de esta función: mira la FECHA de la rueda.
-        log.warning("alerts _market_open_now sin zoneinfo (%s): ventana fija UTC", ex)
-        if ahora.weekday() >= 5:
-            return False
-        return (13 * 60 + 30) <= (ahora.hour * 60 + ahora.minute) < (21 * 60)
+    del lunes fechados como "hoy"."""
+    return rueda_en_horario("us", now) or rueda_en_horario("byma", now)
 
 
 # ─── Lógica de condición ──────────────────────────────────────────────────────

@@ -1934,6 +1934,10 @@ const _INFLACION_MES_ANTERIOR = (() => {
 })()
 
 // Noticias del mercado — mock con shape del backend
+// `tags` con los IDs del servidor (NEWS_TAG_KEYWORDS de main.py: earnings,
+// m_and_a, rates, inflation, forex, dividend, regulatory, debt). Tenían
+// palabras sueltas ('fed', 'tasas'…) que ningún distintivo reconoce: en el
+// demo las noticias no mostraban tema nunca.
 const NEWS_MARKET = [
   {
     // Antes de la reunión, no después: la agenda del demo tiene la decisión de
@@ -1945,7 +1949,7 @@ const NEWS_MARKET = [
     query_source: 'Federal Reserve interest rates',
     category: 'macro',
     source: 'reuters_es',
-    tags: ['fed', 'tasas', 'usa', 'macro'],
+    tags: ['rates'],
   },
   {
     title: 'NVIDIA cierra arriba 4.4% en una rotación favorable hacia semiconductores',
@@ -1955,7 +1959,7 @@ const NEWS_MARKET = [
     query_source: 'S&P 500 stocks today',
     category: 'market',
     source: 'investing_com',
-    tags: ['nvda', 'semiconductores', 'mercado'],
+    tags: [],
   },
   {
     // El mes que ya se publicó (el anterior) y con el dato de la serie del demo;
@@ -1967,7 +1971,7 @@ const NEWS_MARKET = [
     query_source: 'inflación Argentina INDEC',
     category: 'macro',
     source: 'investing_com',
-    tags: ['inflacion', 'indec', 'argentina'],
+    tags: ['inflation'],
   },
   {
     title: 'El Merval cae 0.85% afectado por toma de ganancias en bancos',
@@ -1977,7 +1981,7 @@ const NEWS_MARKET = [
     query_source: 'Merval acciones Argentina',
     category: 'market',
     source: 'investing_com',
-    tags: ['merval', 'argentina', 'bancos'],
+    tags: [],
   },
   {
     title: 'Bitcoin supera los US$81.000 con flujos institucionales fuertes',
@@ -1987,11 +1991,12 @@ const NEWS_MARKET = [
     query_source: 'BTC bitcoin price',
     category: 'market',
     source: 'investing_com',
-    tags: ['btc', 'crypto', 'etf'],
+    tags: [],
   },
 ]
 
 // Noticias del portfolio — relevantes para tickers del fixture
+// `tags` con los IDs del servidor, como NEWS_MARKET.
 const NEWS_PORTFOLIO = [
   {
     title: 'NVIDIA: 8 razones detrás del repunte del 4.4% en la última jornada',
@@ -2001,7 +2006,7 @@ const NEWS_PORTFOLIO = [
     query_source: 'NVDA acciones',
     category: 'portfolio',
     source: 'reuters_es',
-    tags: ['nvda'],
+    tags: [],
   },
   {
     title: 'GGAL reporta resultados trimestrales por encima de lo esperado',
@@ -2011,7 +2016,7 @@ const NEWS_PORTFOLIO = [
     query_source: 'GGAL acciones',
     category: 'portfolio',
     source: 'investing_com',
-    tags: ['ggal'],
+    tags: ['earnings'],
   },
 ]
 
@@ -2020,6 +2025,33 @@ const _todayPlus = (days) => {
   const d = new Date()
   d.setDate(d.getDate() + days)
   return fechaISO(d)
+}
+
+// El estado de la rueda del demo, con la misma forma que devuelve el servidor
+// (home.market.estado_de_rueda + `actualizado`): abierto en el horario de
+// Nueva York de lunes a viernes; si no, cerrado con la fecha del último día
+// hábil. Los números del demo son simulados, pero el indicador se comporta
+// como el de verdad — un "Abierto" que late un domingo enseñaría lo contrario
+// de lo que hace la app.
+export function _ruedaDemo(ahora = new Date(), total = 1) {
+  const partes = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  }).formatToParts(ahora).map(p => [p.type, p.value]))
+  const habil = !['Sat', 'Sun'].includes(partes.weekday)
+  const min = Number(partes.hour) * 60 + Number(partes.minute)
+  const abierto = habil && min >= 9 * 60 + 30 && min < 16 * 60
+  const d = new Date(ahora)
+  // Antes de la campana de un día hábil, la última rueda es la del día anterior.
+  if (habil && min < 9 * 60 + 30) d.setDate(d.getDate() - 1)
+  while ([0, 6].includes(d.getDay())) d.setDate(d.getDate() - 1)
+  return {
+    abierto,
+    en_rueda: abierto ? total : 0,
+    total,
+    en_horario: abierto,
+    rueda: fechaISO(d),
+    actualizado: new Date(ahora.getTime() - 3 * 60000).toISOString(),
+  }
 }
 
 const EVENTS_PORTFOLIO = [
@@ -2827,7 +2859,7 @@ export function handleDemoRequest(method, path, body) {
       // Si el user nunca tocó la watchlist, devolvemos la base. Una vez que la
       // tocó (agregó o quitó algo), el overlay reemplaza a la base entera.
       const items = overlay.watchlist != null ? overlay.watchlist : WATCHLIST_BASE
-      return { items }
+      return { items, ..._ruedaDemo(new Date(), items.length) }
     }
     if (basePath === '/dolar')       return DOLAR
     if (basePath === '/benchmarks')  return BENCHMARKS
@@ -2891,8 +2923,8 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/config')      return { tc_mep: 1424, tc_blue: 1415 }
     if (basePath === '/home/personal') {
       return { cards: [
-        { kind: 'holding_move', value_tone: 'positive', headline: 'NVDA subió hoy', value: '+4,4 %', context: 'US$ 178,50', cta_label: 'Ver posición →', cta_href: '/posiciones' },
-        { kind: 'holding_move', value_tone: 'negative', headline: 'TSLA bajó hoy', value: '−2,1 %', context: 'US$ 248,10', cta_label: 'Ver posición →', cta_href: '/posiciones' },
+        { kind: 'holding_move', value_tone: 'positive', headline: 'NVDA subió hoy', value: '+4,4 %', value_num: 4.4, context: 'US$ 178,50', cta_label: 'Ver posición →', cta_href: '/posiciones' },
+        { kind: 'holding_move', value_tone: 'negative', headline: 'TSLA bajó hoy', value: '−2,1 %', value_num: -2.1, context: 'US$ 248,10', cta_label: 'Ver posición →', cta_href: '/posiciones' },
         { kind: 'earnings_soon', value_tone: 'neutral', headline: 'Earnings de NVDA', value: 'en 5 días', context: _todayPlus(5), cta_label: 'Ver detalle →', cta_href: '/novedades?tab=eventos' },
       ] }
     }
@@ -2903,7 +2935,17 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/home/indices') return { items: INDICES_STRIP }
     if (basePath.startsWith('/home/movers')) {
       const market = (query || '').match(/market=([^&]+)/)?.[1] || 'sp500'
-      return MOVERS[market] || { gainers: [], losers: [] }
+      // Con la forma del servidor (home/market.py `_build_movers`): el nombre
+      // viene en `name` y las listas ordenadas de la más fuerte a la más
+      // suave. El fixture usaba `label` y el orden de carga: en el demo los
+      // movers salían sin el nombre de la empresa y con CSCO (+13,4 %) cuarto.
+      const m = MOVERS[market] || { gainers: [], losers: [] }
+      const conNombre = l => l.map(({ label, ...it }) => ({ ...it, name: label, as_of: _ruedaDemo().rueda }))
+      return {
+        gainers: conNombre(m.gainers).sort((a, b) => b.change_pct - a.change_pct),
+        losers: conNombre(m.losers).sort((a, b) => a.change_pct - b.change_pct),
+        ..._ruedaDemo(new Date(), m.gainers.length + m.losers.length),
+      }
     }
     if (basePath === '/events/portfolio') return { events: EVENTS_PORTFOLIO }
     if (basePath === '/events/popular')   return { events: EVENTS_POPULAR }
@@ -2930,7 +2972,12 @@ export function handleDemoRequest(method, path, body) {
       }
     }
     if (basePath === '/news/portfolio')   return { news: NEWS_PORTFOLIO, count: NEWS_PORTFOLIO.length }
-    if (basePath === '/news/market')      return { news: NEWS_MARKET, count: NEWS_MARKET.length }
+    if (basePath === '/news/market') {
+      // Respeta `limit`, como el servidor: el inicio pide 4.
+      const lim = Number((query || '').match(/limit=(\d+)/)?.[1]) || NEWS_MARKET.length
+      const news = NEWS_MARKET.slice(0, lim)
+      return { news, count: news.length }
+    }
     if (basePath === '/prices') {
       // Devolver subset de PRICES según query symbols=A,B,C
       const symbols = (query || '').match(/symbols=([^&]+)/)?.[1]?.split(',') || []

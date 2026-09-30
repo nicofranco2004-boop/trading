@@ -59,13 +59,9 @@ export default function Home() {
         {/* 3. Lo que te afecta — condicional */}
         <PersonalLayer />
 
-        {/* 4. Movers del día */}
-        <section>
-          <Eyebrow>Movers del día</Eyebrow>
-          <div className="mt-2">
-            <MoversRail market="sp500" />
-          </div>
-        </section>
+        {/* 4. Movers del día — el título lo pone MoversRail, al lado de su
+            indicador en vivo */}
+        <MoversRail market="sp500" />
 
         {/* 5. Watchlist */}
         <Watchlist />

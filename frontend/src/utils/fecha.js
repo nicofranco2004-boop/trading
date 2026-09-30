@@ -41,3 +41,26 @@ export function fechaISO(d) {
   const dia = String(d.getDate()).padStart(2, '0')
   return `${d.getFullYear()}-${mes}-${dia}`
 }
+
+/**
+ * Cuánto pasó desde un instante: "ahora", "hace 5m", "hace 2h", "hace 3d".
+ * Para las noticias del inicio y el "actualizado hace…" del indicador en vivo
+ * de las secciones de mercado. Vivía copiado adentro de NewsPreview.
+ */
+export function haceCuanto(iso, ahora = new Date()) {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const min = Math.floor((ahora.getTime() - t) / 60000)
+  if (min < 1) return 'ahora'
+  if (min < 60) return `hace ${min}m`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `hace ${h}h`
+  return `hace ${Math.floor(h / 24)}d`
+}
+
+/** `'YYYY-MM-DD'` → `'26/09'`. Para decir de qué rueda es un número. */
+export function diaMes(iso) {
+  if (!iso || iso.length < 10) return ''
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+}

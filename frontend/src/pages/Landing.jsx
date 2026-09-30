@@ -2,7 +2,7 @@
 // Estética: terminal futurista. Grid de fondo, spotlight verde, hero con
 // cursor blink, mock dashboard "live", reveal on scroll en features.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight, Sparkles, RefreshCw, LineChart, Layers, Coins,
@@ -31,41 +31,22 @@ import FAQ from '../components/landing/FAQ'
 // blog y la guía. Acá estaba escrito a mano ("Probar 20 días gratis") en tres
 // lugares, al lado de la constante que ya se importaba para la sección de precios.
 import { CTA_PRUEBA, cupoDe } from '../data/prueba'
+import { useAlVerse } from '../hooks/useAlVerse'
+import { useCountUp } from '../hooks/useCountUp'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 
+// Aparecer al entrar en pantalla y contar hasta un número: las piezas son las
+// COMPARTIDAS del resto de la app (hooks/useAlVerse, hooks/useCountUp). Acá
+// vivían copias propias; la de "aparecer" no tenía salida para un navegador sin
+// IntersectionObserver, y ahí las secciones `.reveal-up` quedaban invisibles
+// para siempre. La compartida arranca "vista" en ese caso.
 function useReveal() {
-  const ref = useRef(null)
-  useEffect(() => {
-    const el = ref.current
-    if (!el || typeof IntersectionObserver === 'undefined') return
-    const io = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { el.classList.add('in'); io.disconnect() } },
-      { threshold: 0.15, rootMargin: '0px 0px -60px 0px' }
-    )
-    io.observe(el)
-    return () => io.disconnect()
-  }, [])
+  const [alVerse, visto] = useAlVerse({ threshold: 0.15, rootMargin: '0px 0px -60px 0px' })
+  const nodo = useRef(null)
+  const ref = useCallback(el => { nodo.current = el; alVerse(el) }, [alVerse])
+  useEffect(() => { if (visto && nodo.current) nodo.current.classList.add('in') }, [visto])
   return ref
-}
-
-// Counter que sube de 0 al target en `ms` ms (easing cubic-out).
-function useCountUp(target, ms = 1200, start = false) {
-  const [v, setV] = useState(0)
-  useEffect(() => {
-    if (!start) return
-    let raf
-    const t0 = performance.now()
-    const tick = (t) => {
-      const p = Math.min(1, (t - t0) / ms)
-      const eased = 1 - Math.pow(1 - p, 3)
-      setV(target * eased)
-      if (p < 1) raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [target, ms, start])
-  return v
 }
 
 // ─── Componentes internos ────────────────────────────────────────────────────
@@ -180,19 +161,8 @@ function Hero() {
 
 function StatsStrip() {
   // Activamos counters cuando el strip entra en viewport.
-  const ref = useRef(null)
-  const [started, setStarted] = useState(false)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const io = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting) { setStarted(true); io.disconnect() }
-    }, { threshold: 0.3 })
-    io.observe(el)
-    return () => io.disconnect()
-  }, [])
-
-  const brokers = useCountUp(8, 900, started)
+  const [ref, started] = useAlVerse({ threshold: 0.3, rootMargin: '0px' })
+  const brokers = useCountUp(started ? 8 : 0, { duration: 900 })
 
   // Barra de confianza + deseo + fricción-cero — no specs internas. El '8+'
   // mantiene el count-up (es el ancla multi-broker); el resto comunica

@@ -287,6 +287,66 @@ def session_today(symbol: str) -> str:
     return hoy_art()
 
 
+def mercado_de(symbol: str) -> str:
+    """En qué rueda cotiza `symbol`: 'cripto' (24/7), 'byma' (los `.BA`) o 'us'."""
+    s = (symbol or "").upper()
+    if s in _CRYPTO_TICKERS or s.endswith("-USD"):
+        return "cripto"
+    if s.endswith(".BA"):
+        return "byma"
+    return "us"
+
+
+def _ahora_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def estado_de_rueda(items: List[Dict[str, Any]], now=None) -> Dict[str, Any]:
+    """El indicador de rueda de las secciones de mercado del inicio (EnVivo).
+
+    Un número cuenta como "en rueda" si cumple las dos cosas:
+      1. su rueda está en horario AHORA (alerts_engine.rueda_en_horario), y
+      2. el número ES de la rueda de hoy (`as_of` == session_today).
+    La 2 es la que importa: a primera hora, o con los movers guardados 30 min,
+    el horario ya dice "abierto" pero el porcentaje todavía es el de ayer — y un
+    punto que late al lado de números de ayer es el mismo "hoy" que mentía en
+    las alertas del 15/09. De paso cubre los feriados, que el horario no sabe.
+
+    Devuelve:
+      · `abierto`   — TODOS los números con fecha están en rueda. No "alguno":
+                      con "alguno", una sola cripto en la watchlist un sábado
+                      ponía la lista entera en "Abierto" al lado de acciones con
+                      el porcentaje del viernes.
+      · `en_rueda` / `total` — cuántos lo están, para el caso mezclado
+                      ("En rueda 1 de 3").
+      · `en_horario` — alguna rueda de la lista está en horario aunque sus
+                      números todavía no sean de hoy. Sin esto, durante la
+                      rueda de BYMA con la barra `.BA` en NaN (project_ba_nan_bar)
+                      el cartel decía "Cerrado" con el mercado abierto.
+      · `rueda`     — la fecha más nueva de los números, para decir DE CUÁNDO
+                      son ("rueda del 26/09").
+
+    Se calcula al SERVIR, no se guarda en ningún cache: el horario cambia solo.
+    """
+    from alerts_engine import rueda_en_horario
+    ahora = now or _dt.datetime.now(_dt.timezone.utc)
+    lista = items or []
+    horario = {m: rueda_en_horario(m, ahora) for m in {mercado_de(it.get("symbol")) for it in lista}}
+    con_fecha = [it for it in lista if it.get("as_of")]
+    en_rueda = [
+        it for it in con_fecha
+        if it["as_of"] == session_today(it.get("symbol"))
+        and horario[mercado_de(it.get("symbol"))]
+    ]
+    return {
+        "abierto": bool(con_fecha) and len(en_rueda) == len(con_fecha),
+        "en_rueda": len(en_rueda),
+        "total": len(con_fecha),
+        "en_horario": any(horario.values()),
+        "rueda": max(it["as_of"] for it in con_fecha) if con_fecha else None,
+    }
+
+
 def _bar_date(idx_value) -> Optional[str]:
     """Fecha de una barra diaria como ISO. Devuelve None si el índice no es una
     fecha (no queremos inventar una rueda que no sabemos cuál es)."""
@@ -491,6 +551,9 @@ def _build_movers(market_key: str) -> Dict[str, List[Dict[str, Any]]]:
             "name": cfg["meta"].get(sym, (sym, 0))[0],
             "price": q["price"],
             "change_pct": q["change_pct"],
+            # De qué rueda es el porcentaje: lo necesita estado_de_rueda para no
+            # decir "Abierto" al lado de los movers de AYER.
+            "as_of": q.get("as_of"),
         }
         for sym, q in quotes.items()
     ]
@@ -498,6 +561,11 @@ def _build_movers(market_key: str) -> Dict[str, List[Dict[str, Any]]]:
     return {
         "gainers": sorted_by_change[:5],
         "losers": sorted_by_change[-5:][::-1],
+        # Cuándo se le pidieron los datos al proveedor. Se escribe ACÁ adentro,
+        # no en el endpoint: esta función vive guardada hasta 30 min (`_cached`),
+        # y "actualizado hace X" tiene que contar desde el pedido, no desde que
+        # se sirvió la copia guardada.
+        "actualizado": _ahora_iso(),
     }
 
 

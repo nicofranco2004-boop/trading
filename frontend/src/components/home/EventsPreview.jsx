@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Calendar, Landmark, BarChart3, Coins, Banknote, CalendarClock } from 'lucide-react'
 import { api } from '../../utils/api'
+import { useAlVerse } from '../../hooks/useAlVerse'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
@@ -44,6 +45,8 @@ const TYPE_LABEL = {
 export default function EventsPreview() {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
+  // Los eventos aparecen de a uno al entrar en pantalla (`.entra`).
+  const [ref, visto] = useAlVerse()
 
   useEffect(() => {
     let cancelled = false
@@ -81,13 +84,13 @@ export default function EventsPreview() {
       ) : events.length === 0 ? (
         <div className="p-4 text-xs text-ink-3">Sin eventos en los próximos días.</div>
       ) : (
-        <div className="divide-y divide-line/30">
+        <div ref={ref} className="divide-y divide-line/30">
           {events.map((e, i) => {
             const du = daysUntil(e.event_date)
             const when = du === 0 ? 'hoy' : du === 1 ? 'mañana' : du > 0 ? `en ${du}d` : fmtDate(e.event_date)
             const { Icon, className: iconClass } = TYPE_ICON[e.event_type] || FALLBACK_ICON
             return (
-              <DataRow key={i} density="default">
+              <DataRow key={i} density="default" className={visto ? 'entra' : 'por-entrar'} style={{ '--i': i }}>
                 <span className="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-sm bg-bg-2" aria-hidden="true">
                   <Icon size={13} strokeWidth={1.75} className={iconClass} />
                 </span>
@@ -102,7 +105,7 @@ export default function EventsPreview() {
                     </div>
                   </div>
                 </DataRow.Cell>
-                <DataRow.Cell align="right" width={70} mono tabular muted className="text-[11px]">
+                <DataRow.Cell align="right" width={70} tabular muted className="text-[11px]">
                   {when}
                 </DataRow.Cell>
               </DataRow>

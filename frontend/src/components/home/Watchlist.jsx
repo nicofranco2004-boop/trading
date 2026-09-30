@@ -1,15 +1,29 @@
 // Watchlist — tickers seguidos sin holding (V2).
 // Panel denso + DataRow por ticker.
+//
+// Movimiento (2026-09-29), el mismo que Movers del día: filas que aparecen de a
+// una y porcentajes que cuentan al entrar en pantalla, barra de intensidad
+// detrás de cada fila, estado de la rueda arriba (EnVivo) y refresco solo cada
+// 5 min con destello en el número que cambió. Acá el destello se ve más
+// seguido que en los movers: cada cotización vive 1 min en el servidor.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Star, X, TrendingUp, TrendingDown, Eye } from 'lucide-react'
 import { api } from '../../utils/api'
-import { pctVar } from '../../utils/format'
+import { pctVar, pctVarSign } from '../../utils/format'
 import AssetQuickView from './AssetQuickView'
 import Panel from '../Panel'
 import Eyebrow from '../Eyebrow'
 import DataRow from '../DataRow'
 import { subscribeWatchlistChanged, notifyWatchlistChanged } from '../../utils/watchlistEvents'
+import { refrescoSegunRueda } from '../../utils/relojVisible'
+import { useUltimoPedido } from '../../hooks/useUltimoPedido'
+import { useRelojVisible } from '../../hooks/useRelojVisible'
+import { useAlVerse } from '../../hooks/useAlVerse'
+import EnVivo from '../EnVivo'
+import BarraIntensidad from '../BarraIntensidad'
+import FlashValue from '../FlashValue'
+import AnimatedNumber from '../AnimatedNumber'
 
 function fmtPrice(p) {
   if (p == null) return '—'
@@ -21,14 +35,33 @@ export default function Watchlist() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
   const [removingSym, setRemovingSym] = useState(null)
+  const [estado, setEstado] = useState(null)
+  const [ref, visto] = useAlVerse()
+  const nuevoPedido = useUltimoPedido()
 
   function load({ silent = false } = {}) {
     if (!silent) setLoading(true)
+    // Una respuesta que llega tarde (ya salió otro pedido) no pisa a la nueva.
+    const vigente = nuevoPedido()
     api.get('/watchlist')
-      .then(d => setItems(d.items || []))
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false))
+      .then(d => {
+        if (!vigente()) return
+        setItems(d.items || [])
+        const { items: _items, ...est } = d
+        setEstado(est)
+      })
+      // Un refresco silencioso que falla no vacía la lista que ya se ve.
+      .catch(() => { if (vigente() && !silent) setItems([]) })
+      .finally(() => { if (vigente()) setLoading(false) })
   }
+
+  // Cada 5 min con alguna rueda de la lista viva; con todas cerradas, a la
+  // próxima media hora en punto (cuando puede abrir alguna).
+  // Cada pedido de acá puede bajar cotizaciones de Yahoo para ESTE usuario.
+  // Una vez por respuesta: calculado en cada render, un plazo que depende de
+  // la hora reiniciaba el reloj con cualquier cambio de estado.
+  const plazo = useMemo(() => refrescoSegunRueda(estado), [estado])
+  useRelojVisible(() => load({ silent: true }), plazo)
 
   useEffect(() => {
     load()
@@ -66,29 +99,25 @@ export default function Watchlist() {
     }
   }
 
-  if (loading) {
-    return (
-      <section>
-        <Eyebrow>Watchlist</Eyebrow>
-        <div className="mt-2 rounded border border-line bg-bg-1 p-3 space-y-2">
+  return (
+    <section ref={ref}>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <h2><Eyebrow>Watchlist</Eyebrow></h2>
+        {!loading && items.length > 0 && (
+          <span className="flex items-center gap-3">
+            {estado && <EnVivo estado={estado} />}
+            <span className="text-[12px] text-ink-3">{items.length} tickers</span>
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="rounded border border-line bg-bg-1 p-3 space-y-2">
           {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="h-8 rounded-sm bg-bg-2 animate-pulse" />
           ))}
         </div>
-      </section>
-    )
-  }
-
-  return (
-    <section>
-      <div className="flex items-baseline justify-between mb-2">
-        <Eyebrow>Watchlist</Eyebrow>
-        {items.length > 0 && (
-          <span className="text-[12px] text-ink-3">{items.length} tickers</span>
-        )}
-      </div>
-
-      {items.length === 0 ? (
+      ) : items.length === 0 ? (
         <Panel padding="lg" className="text-center">
           <Eye size={18} className="mx-auto mb-2 text-ink-3" strokeWidth={1.5} aria-hidden="true" />
           <p className="text-xs text-ink-2">
@@ -98,36 +127,41 @@ export default function Watchlist() {
       ) : (
         <Panel padding="none" className="overflow-hidden">
           <div className="divide-y divide-line/30">
-            {items.map(it => {
-              const pos = (it.change_pct ?? 0) >= 0
+            {items.map((it, i) => {
+              // Del número redondeado; sin cotización, gris y sin flecha.
+              const dir = pctVarSign(it.change_pct)
               const pending = it._pending && it.price == null
               return (
-                <div key={it.symbol} className="flex items-center group">
+                <div
+                  key={it.symbol}
+                  className={`flex items-center group ${visto ? 'entra' : 'por-entrar'}`}
+                  style={{ '--i': i }}
+                >
                   <DataRow
                     density="default"
                     hoverable
                     onClick={() => setSelected(it.symbol)}
-                    className="flex-1"
+                    className="flex-1 relative isolate"
                   >
+                    {!pending && <BarraIntensidad pct={it.change_pct} visto={visto} />}
                     <Star size={11} className="text-rendi-warn flex-shrink-0" fill="currentColor" strokeWidth={1.5} aria-hidden="true" />
                     <DataRow.Cell width={80} mono>
                       <span className="text-ink-0 text-[13px]">{it.symbol}</span>
                     </DataRow.Cell>
-                    <DataRow.Cell align="right" mono tabular>
+                    <DataRow.Cell align="right" tabular className="flex-1">
                       {pending
                         ? <span className="inline-block w-12 h-3 rounded-sm bg-bg-2 animate-pulse" aria-label="Cargando precio" />
                         : `US$${fmtPrice(it.price)}`}
                     </DataRow.Cell>
-                    <DataRow.Cell align="right" width={80} mono tabular>
+                    <DataRow.Cell align="right" width={80} tabular>
                       {pending
                         ? <span className="inline-block w-10 h-3 rounded-sm bg-bg-2 animate-pulse" />
                         : (
-                          <span className={`flex items-center justify-end gap-1 ${pos ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                            {pos
-                              ? <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />
-                              : <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
-                            {pctVar(it.change_pct)}
-                          </span>
+                          <FlashValue value={it.change_pct} className={`flex items-center justify-end gap-1 font-medium ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-3'}`}>
+                            {dir > 0 && <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />}
+                            {dir < 0 && <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
+                            <AnimatedNumber value={visto ? it.change_pct : 0} format={pctVar} />
+                          </FlashValue>
                         )}
                     </DataRow.Cell>
                   </DataRow>
@@ -148,7 +182,10 @@ export default function Watchlist() {
       )}
 
       {selected && (
-        <AssetQuickView symbol={selected} onClose={() => { setSelected(null); load() }} />
+        // Silencioso: con load() a secas la lista pasaba por el esqueleto, las
+        // filas se volvían a montar y la entrada animada se repetía entera cada
+        // vez que alguien cerraba una ficha.
+        <AssetQuickView symbol={selected} onClose={() => { setSelected(null); load({ silent: true }) }} />
       )}
     </section>
   )

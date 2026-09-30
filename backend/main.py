@@ -7961,19 +7961,47 @@ def _cache_key_for(kind: str, category: str, identifier: str) -> str:
     return f"{kind}:{category}:{identifier}"
 
 
+_NEWS_REFRESH_LOCK = threading.Lock()
+_NEWS_REFRESH_EN_CURSO: set = set()
+_NEWS_REFRESH_ULTIMO: dict = {}
+_NEWS_REFRESH_PAUSA_S = 60
+
+
 def _refresh_news_in_background(specs, ttl_seconds):
     """Stale-while-revalidate: dispara el refresh batch en un daemon thread
     sin bloquear la response. El próximo request ya tiene data fresca.
 
     Si hay data en DB, los endpoints devuelven esa data inmediatamente y
     delegan el refresh acá — el user nunca espera 1-3s de yfinance.
+
+    Uno por lote a la vez, y no más de uno por minuto. El inicio pide las
+    noticias cada 5 min por pestaña abierta (NewsPreview): sin esto, cada pedido
+    abría su propio hilo, y al vencer el TTL N pestañas bajaban los MISMOS feeds
+    en paralelo — N veces las mismas consultas a Google News e Investing.
     """
-    import threading
+    clave = tuple(tuple(s) for s in specs)
+    ahora = time.time()
+    with _NEWS_REFRESH_LOCK:
+        if clave in _NEWS_REFRESH_EN_CURSO:
+            return
+        if ahora - _NEWS_REFRESH_ULTIMO.get(clave, 0) < _NEWS_REFRESH_PAUSA_S:
+            return
+        _NEWS_REFRESH_EN_CURSO.add(clave)
+        # Poda: cada cartera distinta es una clave nueva, y el proceso vive
+        # semanas. Lo que ya pasó la pausa no frena a nadie: se puede borrar.
+        if len(_NEWS_REFRESH_ULTIMO) > 200:
+            for k in [k for k, t in _NEWS_REFRESH_ULTIMO.items() if ahora - t >= _NEWS_REFRESH_PAUSA_S]:
+                del _NEWS_REFRESH_ULTIMO[k]
+        _NEWS_REFRESH_ULTIMO[clave] = ahora
+
     def worker():
         try:
             _ensure_news_batch_parallel(specs, ttl_seconds)
         except Exception as ex:
             logging.getLogger(__name__).warning("background news refresh failed: %s", ex)
+        finally:
+            with _NEWS_REFRESH_LOCK:
+                _NEWS_REFRESH_EN_CURSO.discard(clave)
     threading.Thread(target=worker, daemon=True).start()
 
 
@@ -38117,6 +38145,8 @@ from home.market import (
     get_heatmap,
     get_movers,
     _fetch_batch_quotes,
+    estado_de_rueda,
+    _ahora_iso,
     MARKETS,
 )
 from home.briefing import build_personal_cards
@@ -38138,10 +38168,14 @@ def home_heatmap(market: str = "sp500", uid: int = Depends(get_effective_user)):
 
 @app.get("/api/home/movers")
 def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
-    """Top 5 gainers + top 5 losers del día."""
+    """Top 5 gainers + top 5 losers del día, con el estado de la rueda
+    (`abierto`, `rueda`) y cuándo se pidieron los datos (`actualizado`)."""
     if market not in MARKETS:
         raise HTTPException(400, f"Mercado no soportado: {market}")
-    return get_movers(market)
+    data = get_movers(market)
+    # Copia: `data` es el objeto GUARDADO por `_cached`; escribirle el estado
+    # lo dejaría congelado para el próximo que pida.
+    return {**data, **estado_de_rueda((data.get("gainers") or []) + (data.get("losers") or []))}
 
 
 # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────────
@@ -38179,7 +38213,10 @@ def watchlist_list(uid: int = Depends(get_effective_user)):
             q = quotes.get(it["symbol"])
             it["price"] = q["price"] if q else None
             it["change_pct"] = q["change_pct"] if q else None
-        return {"items": items}
+            it["as_of"] = q.get("as_of") if q else None
+        # Cada cotización vive 60 s en el cache de _fetch_batch_quotes: "ahora"
+        # es la hora del dato con ese margen.
+        return {"items": items, **estado_de_rueda(items), "actualizado": _ahora_iso()}
     finally:
         conn.close()
 
