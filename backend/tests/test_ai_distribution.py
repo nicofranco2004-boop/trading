@@ -37,7 +37,8 @@ def _params(**over):
 # ── Los dos topics existen y renderean ─────────────────────────────────────
 
 @pytest.mark.parametrize("topic", ["portfolio.distribution_type",
-                                   "portfolio.distribution_sector"])
+                                   "portfolio.distribution_sector",
+                                   "portfolio.distribution_asset"])
 def test_topic_registrado_con_prompt(topic):
     assert topic in REGISTRY
     builder, render = REGISTRY[topic]
@@ -142,7 +143,8 @@ def test_concentracion():
 # ── El prompt tiene las guardas que importan ───────────────────────────────
 
 @pytest.mark.parametrize("render", [prompts.render_distribution_type_prompt,
-                                    prompts.render_distribution_sector_prompt])
+                                    prompts.render_distribution_sector_prompt,
+                                    prompts.render_distribution_asset_prompt])
 def test_el_prompt_prohibe_sumar_tasas(render):
     # Sumar % de resultado entre porciones es matemáticamente inválido (bases
     # distintas) y es el error más fácil de cometer con este packet.
@@ -175,8 +177,21 @@ def test_una_porcion_chica_pero_real_si_entra():
 
 
 @pytest.mark.parametrize("render", [prompts.render_distribution_type_prompt,
-                                    prompts.render_distribution_sector_prompt])
+                                    prompts.render_distribution_sector_prompt,
+                                    prompts.render_distribution_asset_prompt])
 def test_el_prompt_aclara_que_la_cola_no_es_perdida(render):
     # `menos_rinden` puede traer números positivos: en una cartera que anda
     # bien, la última del ranking igual ganó plata.
     assert "NO una lista de pérdidas" in render(tier="pro")
+
+
+def test_el_eje_por_activo_se_identifica_y_usa_los_numeros_de_la_pantalla():
+    # La torta por activo manda sus propias porciones: el packet repite los
+    # pesos tal cual, sin recalcularlos (IA = número de la pantalla).
+    from ai.builders.distribution import build_asset
+    a = build_asset(None, 1, **_params())
+    assert a["screen"] == "portfolio.distribution_asset"
+    assert a["eje"] == "activo"
+    t = build_type(None, 1, **_params())
+    assert [p["peso_pct"] for p in a["porciones"]] == [p["peso_pct"] for p in t["porciones"]]
+

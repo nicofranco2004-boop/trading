@@ -38,7 +38,8 @@ import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
 import { computeClassBreakdown } from '../utils/assetClass'
-import { assetSlicesFromPositions, DEFAULT_TOP_ASSETS } from '../utils/bookComposition'
+import { assetSlicesFromPositions } from '../utils/bookComposition'
+import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { pctCreible } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
@@ -1835,17 +1836,9 @@ function InsightsDesktop({ _embeddedTab }) {
     }
   }
 
-  // ── Cash ratio — % del portfolio en cash (todas las monedas convertidas a USD)
-  // Para ARS cash, computeBrokerValue ya hace la conversión vía tcValuacion.
-  const cashUsd = brokers.reduce((s, b) => {
-    const cashPositions = positions.filter(p => p.is_cash && p.broker === b.name)
-    if (b.currency === 'ARS') {
-      // ARS cash: invested está en pesos → dividir por tcValuacion para USD
-      return s + cashPositions.reduce((sum, p) => sum + (p.invested || 0) / tcValuacion, 0)
-    }
-    return s + cashPositions.reduce((sum, p) => sum + (p.invested || 0), 0)
-  }, 0)
-  const cashRatio = totalPortfolio > 0 ? (cashUsd / totalPortfolio) * 100 : 0
+  // (El "cash ratio" que se calculaba acá se fue con la tarjeta de barras: el %
+  // de efectivo ahora es la porción "Efectivo" de la torta por activo, sobre el
+  // mismo total que las otras dos tortas — DistribucionPorActivo.)
 
   // ── Insight 4: Top performing asset (legacy — solo operaciones cerradas) ──
   // Conservamos esta variable porque la consumen alertas y AICoach. La card
@@ -2609,14 +2602,13 @@ function InsightsDesktop({ _embeddedTab }) {
     },
   ]
 
-  // Composición POR ACTIVO (incluye efectivo) — la torta "Distribución de
-  // activos". Antes eran barras, una fila por activo, y entraban 7 más "Otros";
-  // la torta muestra 12 y el resto se despliega. El agregador es EL MISMO de la
-  // torta por activo del libro del asesor (bookComposition.assetSlicesFromRows):
-  // consolida por ticker (AAPL como CEDEAR y en Schwab es una sola exposición),
-  // 12 porciones propias y "Resto (N activos)". El efectivo va en UNA porción,
-  // con el gris de "Efectivo" de la torta por tipo (assetSlicesFromPositions).
-  const assetBreakdown = assetSlicesFromPositions(positionsWithValue)
+  // Composición POR ACTIVO — la torta "Distribución de activos"
+  // (DistribucionPorActivo, la MISMA tarjeta del Dashboard). Se alimenta con la
+  // misma lista y el mismo plazo fijo que las tortas por tipo y por sector de
+  // acá abajo (positionsForType, pfSliceUsd): así las tres suman el mismo total.
+  // Antes tomaba positionsWithValue y sin plazo fijo, y con plazos fijos sus %
+  // no cerraban con los de la torta de al lado.
+  const assetBreakdown = assetSlicesFromPositions(positionsForType, { plazoFijoUsd: pfSliceUsd })
 
   const hasVerdicts = verdictItems.some(v => v.pct != null)
 
@@ -2871,34 +2863,15 @@ function InsightsDesktop({ _embeddedTab }) {
       {(assetBreakdown.items.length > 0 || classBreakdown.items.length > 0) && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {assetBreakdown.items.length > 0 && (
-          <CompositionDonut
+          <AskAIAbout
+            topic="portfolio.distribution_asset"
+            params={toDistributionAiParams(assetBreakdown)}
+            subtitle="Distribución de activos"
+            rounded={false}
             className="md:col-span-2 xl:col-span-1 h-full"
-            title="Distribución de activos"
-            subtitle={
-              <>Efectivo: <span className={`font-semibold tabular ${cashRatio >= 30 ? 'text-rendi-warn' : 'text-ink-1'}`}>{cashRatio.toFixed(1).replace('.', ',')}%</span></>
-            }
-            items={assetBreakdown.items}
-            fmt={amt}
-            height={230}
-            // El agregador ya cortó en top 12 + "Resto": el donut no vuelve a
-            // agrupar (el mismo trato que la torta por activo del asesor).
-            maxSlices={assetBreakdown.items.length}
-            minSlicePct={0}
-            info={
-              <>
-                <p className="font-semibold text-ink-0">Cómo se calcula</p>
-                <p>
-                  Cuánto pesa cada activo sobre todo tu patrimonio, incluido el
-                  efectivo. Un mismo activo en dos brokers (AAPL como CEDEAR y
-                  como acción) es una sola porción.
-                </p>
-                <p className="text-ink-3">
-                  Los {DEFAULT_TOP_ASSETS} más grandes van con su porción; el resto se
-                  junta en “Resto”, que se despliega para ver qué hay adentro.
-                </p>
-              </>
-            }
-          />
+          >
+            <DistribucionPorActivo items={assetBreakdown.items} fmt={amt} className="h-full" />
+          </AskAIAbout>
           )}
           {classBreakdown.items.length > 0 && (<>
           <AskAIAbout

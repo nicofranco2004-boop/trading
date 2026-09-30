@@ -13,7 +13,8 @@
 // R6: las ramas se escriben `{isMobile && <A/>}` / `{!isMobile && <B/>}`, nunca
 // con ternario — el guard congela `fork_ternario` en 0. Modelo: Config.jsx:779.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useRecienLlegadas, paginaDeLaNueva } from '../hooks/useRecienLlegadas'
 import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -141,10 +142,20 @@ export default function Operations() {
       // en `pnl_usd_native`. Sin esto un cupón de $370.524 era el "Mejor trade
       // US$370.524" (medido, usuario real 2026-08).
       const rows = await api.get('/operations')
-      setOps((rows || []).map(o => ({ ...o, pnl_usd_native: o.pnl_usd, pnl_usd: opPnlUsd(o) })))
+      const filas = (rows || []).map(o => ({ ...o, pnl_usd_native: o.pnl_usd, pnl_usd: opPnlUsd(o) }))
+      setOps(filas)
+      return filas
     }
     finally { setLoadingOps(false) }
   }
+
+  // La operación que acabás de cargar destella al aparecer (useRecienLlegadas).
+  // `cambios` avisa a "Todos los movimientos" (MovementsView) que algo se guardó:
+  // esa pestaña pide su propia lista (/movements) y antes NO se enteraba — la
+  // operación nueva no aparecía ahí hasta recargar la página (medido 2026-09-30:
+  // después de guardar sólo se volvía a pedir /operations).
+  const [nuevas, marcarNuevas] = useRecienLlegadas()
+  const [cambios, setCambios] = useState({ n: 0, alta: false })
   function openAdd() {
     setForm({ ...EMPTY, broker: brokers[0]?.name ?? '' })
     setModal('add')
@@ -202,6 +213,8 @@ export default function Operations() {
     // y antes ese error moría sin manejar — el formulario quedaba abierto, sin
     // cartel, y "el botón no hacía nada" (reporte de un tester, 2026-09-20).
     // Con error el formulario NO se cierra: lo cargado no se pierde.
+    const esAlta = modal !== 'edit'
+    const antes = new Set(ops.map(o => o.id))
     try {
       if (modal === 'edit') await api.put(`/operations/${form.id}`, body)
       else {
@@ -217,7 +230,9 @@ export default function Operations() {
       return
     }
     setModal(null)
-    load()
+    setCambios(c => ({ n: c.n + 1, alta: esAlta }))
+    const filas = await load()
+    if (esAlta) marcarNuevas(antes, filas)
   }
 
   // Ofrece DESHACER de verdad. Cada borrado devuelve un `undo_token`; antes se
@@ -404,6 +419,13 @@ export default function Operations() {
     () => filteredOps.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE),
     [filteredOps, currentPage]
   )
+  // La operación recién cargada puede caer en otra página (fecha vieja): la
+  // lista salta ahí para que el destello se vea.
+  useEffect(() => {
+    const p = paginaDeLaNueva(filteredOps, nuevas, PAGE_SIZE)
+    if (p >= 0) setPage(p)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nuevas])
 
   // R6: dos ramas, nunca un ternario de JSX. Esto es un ternario de VALOR.
   const shellClass = isMobile ? 'pb-8' : 'page-shell-wide'
@@ -493,7 +515,7 @@ export default function Operations() {
       {/* `onChanged` llega en LAS DOS anchuras: borrar un movimiento recalcula
           las operaciones del tab "Solo P/L", cuyos datos viven acá. Antes el
           feed lo montaba sin el prop y borrar en el celular no refrescaba nada. */}
-      {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} />}
+      {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} cambios={cambios} />}
 
       {tab === 'trades' && (
       <>
@@ -678,6 +700,7 @@ export default function Operations() {
 
       {!isMobile && (
         <TradesTable
+          nuevas={nuevas}
           ops={ops}
           filteredOps={filteredOps}
           pagedOps={pagedOps}
@@ -722,7 +745,7 @@ export default function Operations() {
         </div>
       )}
       {isMobile && !loadingOps && groups.length > 0 && (
-        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} />
+        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} nuevas={nuevas} />
       )}
 
       {/* Sheet de filtros — sólo la rama angosta. */}
@@ -1078,7 +1101,7 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
 // tab 'Solo P/L', cuyos datos viven en el padre y se cargan una sola vez al montar:
 // sin avisarle, la operación borrada seguía visible ahí (y en sus KPIs) hasta recargar.
 // Desde la Fase 3 el prop llega en LAS DOS anchuras (el feed lo montaba sin él).
-function MovementsView({ onChanged, isMobile }) {
+function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } }) {
   // Fase B: formatter atado al toggle global ARS/USD. Lo bajamos a
   // computeMovementKpis y a los renderers vía props para evitar shadow.
   // Phase C audit fix H1: el HM (historical money) se usa en cada fila
@@ -1159,8 +1182,10 @@ function MovementsView({ onChanged, isMobile }) {
   async function load() {
     setLoading(true)
     try {
-      setMovements(await api.get('/movements') || [])
+      const filas = await api.get('/movements') || []
+      setMovements(filas)
       setError(null)
+      return filas
     } catch (ex) {
       setError(ex?.message || 'No pudimos cargar los movimientos.')
     } finally {
@@ -1169,6 +1194,25 @@ function MovementsView({ onChanged, isMobile }) {
   }
 
   useEffect(() => { load() }, [])
+
+  // Algo se guardó desde el formulario de la página (Operations → `cambios`):
+  // se vuelve a pedir la lista, y si fue un alta, la fila nueva destella. Los
+  // ids de ANTES salen de la lista que se estaba viendo (ref: el efecto corre
+  // una vez por cambio, no cada vez que `movements` cambia).
+  // Sólo los cambios guardados CON esta pestaña abierta: si la operación se
+  // cargó en "Solo P/L" y después se abre ésta, el contador ya viene > 0 y la
+  // lista de antes está vacía — sin este corte destellaban TODAS las filas
+  // (medido). Al abrirse, la carga normal de arriba ya trae la operación.
+  const [nuevas, marcarNuevas] = useRecienLlegadas()
+  const movsRef = useRef(movements)
+  movsRef.current = movements
+  const cambiosAlAbrir = useRef(cambios.n)
+  useEffect(() => {
+    if (cambios.n === cambiosAlAbrir.current) return
+    const antes = new Set(movsRef.current.map(m => m.id))
+    load().then(filas => { if (cambios.alta) marcarNuevas(antes, filas) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cambios.n])
 
   // Borrado de UN movimiento (cash-flows) con cascada backend. Confirma → borra →
   // refetch de /movements. Los KPIs de la página se recomputan solos; el gráfico
@@ -1315,6 +1359,12 @@ function MovementsView({ onChanged, isMobile }) {
   const pageRows = grouped
     ? filtered
     : filtered.slice(currentPage * MOV_PAGE_SIZE, (currentPage + 1) * MOV_PAGE_SIZE)
+  // La fila recién agregada puede caer en otra página: la lista salta ahí.
+  useEffect(() => {
+    const p = paginaDeLaNueva(filtered, nuevas, MOV_PAGE_SIZE)
+    if (p >= 0) setPage(p)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nuevas])
 
   if (loading) {
     return <div className="text-center py-10 text-ink-3 text-sm" aria-live="polite">Cargando movimientos…</div>
@@ -1395,6 +1445,7 @@ function MovementsView({ onChanged, isMobile }) {
 
       {!isMobile && (
         <MovementsTable
+          nuevas={nuevas}
           movements={movements}
           filtered={filtered}
           pageRows={pageRows}
@@ -1442,6 +1493,7 @@ function MovementsView({ onChanged, isMobile }) {
       )}
       {isMobile && groups.length > 0 && (
         <MovementsFeed
+          nuevas={nuevas}
           groups={groups}
           histMoney={histMoney}
           onDelete={handleDelete}

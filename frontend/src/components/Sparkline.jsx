@@ -10,6 +10,12 @@
 // • Gradient bajo curva más sutil (opacity 0.18 → 0)
 // • Stroke 1.5px en variant row/kpi, 1.25px en inline
 // • Soporta data como números puros o {value: number}
+// • Al aparecer, la línea se dibuja de izquierda a derecha y queda sólida
+//   (useTrazo); el área de abajo aparece con un fundido. Aparece cuando llegan
+//   sus datos: LazySparkline los pide recién cuando la fila entra en pantalla.
+//   Un re-render con los mismos datos no la redibuja.
+// • Colores del tema (trendStroke), no hex fijos: los dos de antes estaban
+//   pensados para fondo oscuro y en claro se veían lavados.
 //
 // API:
 //   data: Array<number|{value:number}>
@@ -17,6 +23,9 @@
 //   positive: bool (override del autodetect)
 //   className: extra clases
 //   width / height: override de variant (para casos especiales)
+
+import { useTrazo } from '../hooks/useTrazo'
+import { trendStroke } from '../utils/chartTheme'
 
 const VARIANTS = {
   inline: { w: 80,  h: 20, stroke: 1.25 },
@@ -32,6 +41,7 @@ export default function Sparkline({
   width,
   height,
 }) {
+  const trazo = useTrazo()   // arriba del return temprano: reglas de los hooks
   if (!Array.isArray(data) || data.length < 2) return null
   const values = data.map(d => typeof d === 'number' ? d : d.value)
   const cfg = VARIANTS[variant] || VARIANTS.row
@@ -59,7 +69,7 @@ export default function Sparkline({
 
   const areaPath = `${path} L${w.toFixed(1)},${h} L0,${h} Z`
 
-  const color = isPos ? '#21D07A' : '#FF5360'
+  const color = trendStroke(isPos)
   const gradId = `spark-${variant}-${isPos ? 'p' : 'n'}-${data.length}`
 
   return (
@@ -76,8 +86,9 @@ export default function Sparkline({
           <stop offset="100%" stopColor={color} stopOpacity={0} />
         </linearGradient>
       </defs>
-      <path d={areaPath} fill={`url(#${gradId})`} />
+      <path d={areaPath} fill={`url(#${gradId})`} className="area-aparece" />
       <path
+        {...trazo}
         d={path}
         stroke={color}
         strokeWidth={cfg.stroke}

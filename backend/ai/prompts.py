@@ -772,6 +772,39 @@ def render_distribution_sector_prompt(tier: str = "pro") -> str:
 
 
 
+
+def render_distribution_asset_prompt(tier: str = "pro") -> str:
+    view = "Distribución de activos (torta por activo del Dashboard / Análisis)"
+    pkt = (
+        "porciones por activo (los 12 más grandes, efectivo, plazo fijo y un "
+        "'Resto' con los demás) con peso % sobre todo el patrimonio y valor USD, "
+        "y la concentración (top 1 y top 3). Es una vista de PESO: por activo no "
+        "viene resultado, así que el rendimiento no medible es casi todo."
+    )
+    free = _maybe_free("portfolio.distribution_asset", view, pkt, tier)
+    if free:
+        return free
+    return SYSTEM_BASE_PRO + _topic_block_pro(
+        view_name=view,
+        packet_summary=pkt,
+        focus=[
+            "Concentración real: cuánto depende la cartera de uno, tres activos; un top 1 arriba de 25-30% es una apuesta a una sola empresa o moneda.",
+            "El efectivo y el plazo fijo como decisión: cuánta plata está sin exposición y qué costo de oportunidad tiene.",
+            "Qué hay dentro de 'Resto': muchas posiciones chicas suman diversificación sólo si no repiten el mismo riesgo que las grandes.",
+            "Que un mismo activo ya viene junto aunque esté en dos brokers o como CEDEAR y acción: el peso que ves es la exposición total a esa empresa.",
+        ],
+        insight_examples=[
+            "Que BTC y ETH sean dos porciones no las hace dos riesgos distintos: cripto se mueve en bloque, así que conviene leerlas juntas al hablar de concentración.",
+            "Un 'Resto' grande de posiciones chiquitas suele tranquilizar, pero si son del mismo sector que el top 3 no agrega diversificación.",
+        ],
+        pitfalls=[
+            "NUNCA sumar los porcentajes de resultado entre porciones: son tasas sobre bases distintas.",
+            "`menos_rinden` es la cola del ranking, NO una lista de pérdidas: si su resultado es positivo, decirlo como 'rinde menos que el resto', nunca como 'está perdiendo'.",
+            "Esta vista NO trae resultado por activo: no hablar de ganancias ni pérdidas de cada uno ni estimarlas. Los pesos son sobre TODO el patrimonio (efectivo y plazo fijo incluidos): usar los mismos % que la porción.",
+            "No recomendar vender ni comprar un activo concreto ni porcentajes objetivo. Describir la exposición, no prescribir la cartera.",
+        ],
+    )
+
 # ─── Libro del asesor: composición (primeros topics de asesor) ──────────────
 # El objeto medido NO es una cartera, es el libro entero. Los prompts del
 # retail hablan en segunda persona sobre "tu cartera" y "tus decisiones";

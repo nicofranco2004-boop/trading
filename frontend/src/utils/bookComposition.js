@@ -14,9 +14,10 @@
 // ── Lo único que este módulo agrega de verdad: la torta POR ACTIVO ─────────
 // Las de tipo y sector salen tal cual de computeClassBreakdown /
 // computeSectorBreakdown. La de activo la arma `assetSlicesFromRows`, y desde
-// el 2026-09-30 la usan DOS pantallas: este libro y "Distribución de activos"
-// de Análisis (retail, que antes eran barras). Una sola función para las dos:
-// si el corte por activo cambia, cambia en los dos lados a la vez.
+// el 2026-09-30 la usan TRES pantallas: este libro y "Distribución de activos"
+// del Dashboard y de Análisis (retail, que antes eran dos barras distintas:
+// top 5 sin efectivo y top 7 con efectivo). Una sola función: si el corte por
+// activo cambia, cambia en todos lados a la vez.
 // El problema que resuelve es la cola larga: un libro de 100 clientes toca
 // ~486 tickers distintos, así que casi todos caen bajo el 1,5% que
 // CompositionDonut manda a "Otros" y el "Otros" se come la torta. En una
@@ -152,21 +153,27 @@ export function assetSlicesFromRows(rows = [], extraSlices = [], topN = DEFAULT_
 
 /**
  * assetSlicesFromPositions — la misma torta para UNA cartera ("Distribución de
- * activos" en Análisis). Lo único distinto del libro: el efectivo. Las
- * posiciones de caja vienen una por moneda y por broker (USD en Schwab, ARS en
- * Balanz, USDT…), y como porción cada una es ruido: van juntas en "Efectivo",
- * con el gris de la torta por tipo que está al lado, para que el mismo
- * efectivo se vea igual en las dos.
+ * activos" del Dashboard y de Análisis, components/DistribucionPorActivo).
+ *
+ * Tiene que sumar LO MISMO que las tortas por tipo y por sector de su página:
+ * el llamador le pasa la misma lista de posiciones (tenencias + efectivo) y el
+ * mismo plazo fijo que les pasa a computeClassBreakdown / computeSectorBreakdown.
+ * Sin el plazo fijo, con plazos fijos cargados, los % de esta torta no
+ * cerraban con los de la torta de al lado.
+ *
+ * Lo distinto del libro: el efectivo. Las posiciones de caja vienen una por
+ * moneda y por broker (USD en Schwab, ARS en Balanz, USDT…), y como porción
+ * cada una es ruido: van juntas en "Efectivo". Efectivo y plazo fijo llevan el
+ * nombre y el color de la torta por tipo, para verse iguales en las dos.
  */
-export function assetSlicesFromPositions(positions = [], topN = DEFAULT_TOP_ASSETS) {
+export function assetSlicesFromPositions(positions = [], { plazoFijoUsd = 0, topN = DEFAULT_TOP_ASSETS } = {}) {
   const efectivo = positions
     .filter(p => p?.is_cash && p.value_usd > 0)
     .reduce((s, p) => s + p.value_usd, 0)
-  return assetSlicesFromRows(
-    positions.filter(p => p && !p.is_cash),
-    efectivo > 0 ? [{ key: 'efectivo', label: ASSET_CLASS_META.cash.label, value: efectivo, color: ASSET_CLASS_META.cash.color }] : [],
-    topN,
-  )
+  const extras = []
+  if (efectivo > 0) extras.push({ key: 'efectivo', label: ASSET_CLASS_META.cash.label, value: efectivo, color: ASSET_CLASS_META.cash.color })
+  if (plazoFijoUsd > 0) extras.push({ key: 'plazo_fijo', label: ASSET_CLASS_META.plazo_fijo.label, value: plazoFijoUsd, color: ASSET_CLASS_META.plazo_fijo.color })
+  return assetSlicesFromRows(positions.filter(p => p && !p.is_cash), extras, topN)
 }
 
 /**

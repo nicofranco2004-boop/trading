@@ -21,17 +21,20 @@ import { pctSigned, colorClass } from '../../utils/format'
 import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
 import { formatQty } from './shared'
 
-export default function TradesFeed({ groups, histMoney, onDelete }) {
+// `nuevas`: ids de las operaciones recién cargadas (Operations): esa tarjeta
+// destella al aparecer. Acá los grupos son por día y están siempre abiertos,
+// así que la nueva siempre queda a la vista.
+export default function TradesFeed({ groups, histMoney, onDelete, nuevas = new Set() }) {
   return (
     <ul>
       {groups.map(g => (
-        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} />
+        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} nuevas={nuevas} />
       ))}
     </ul>
   )
 }
 
-function DayGroup({ group, histMoney, onDelete }) {
+function DayGroup({ group, histMoney, onDelete, nuevas }) {
   // El subtotal del DÍA se arma convirtiendo CADA op con SU FX y sumando eso
   // (convert-then-sum) — así coincide con las filas que despliega.
   // Antes tomaba el `fx_to_usd` de la PRIMERA op con fx>0 y lo aplicaba a todo
@@ -57,21 +60,21 @@ function DayGroup({ group, histMoney, onDelete }) {
       </div>
       <ul>
         {ops.map(op => (
-          <OperationRow key={op.id} op={op} histMoney={histMoney} onDelete={onDelete} />
+          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} />
         ))}
       </ul>
     </li>
   )
 }
 
-function OperationRow({ op, histMoney, onDelete }) {
+function OperationRow({ op, nueva = false, histMoney, onDelete }) {
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const type = (op.op_type || '').toLowerCase()
   const isBuy = type.includes('compra') || type === 'buy'
 
   return (
-    <li className="flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0">
+    <li className={`flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0 ${nueva ? 'destello-nueva' : ''}`}>
       <AssetLogo asset={op.asset} size={28} />
 
       <div className="flex-1 min-w-0">

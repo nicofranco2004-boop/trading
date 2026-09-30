@@ -9,8 +9,8 @@
 //     fecha, el precio y el cambio desde el inicio del período. Va en HTML
 //     encima del SVG: el SVG se estira (preserveAspectRatio "none") y un
 //     círculo dibujado adentro saldría ovalado.
-//   - Al cambiar de período la línea se redibuja de izquierda a derecha
-//     (`.traza-dibuja`, index.css).
+//   - Al cambiar de período la línea se redibuja de izquierda a derecha y
+//     queda sólida (useTrazo, la misma pieza de las mini líneas).
 //
 // Backend: GET /api/prices/history?symbol=X&period=1m
 // Cache backend: 1h (las velas diarias no cambian intraday)
@@ -20,6 +20,7 @@ import { api } from '../../utils/api'
 import { pctVar } from '../../utils/format'
 import { trendStroke } from '../../utils/chartTheme'
 import { diaMes } from '../../utils/fecha'
+import { useTrazo } from '../../hooks/useTrazo'
 
 const RANGES = [
   { key: '1w',  label: '1S' },
@@ -43,11 +44,8 @@ export default function AssetMiniChart({ symbol }) {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(null)
   const [puntero, setPuntero] = useState(null)   // índice del punto bajo el dedo/mouse
-  // La línea ya dibujada de este activo y período. Terminada la animación se le
-  // saca `.traza-dibuja`: el trazo "destapado" depende de que el navegador
-  // respete pathLength junto con non-scaling-stroke, y si alguno no lo hace, la
-  // línea quedaría punteada para siempre. Sin la clase queda sólida en todos.
-  const [trazada, setTrazada] = useState(null)
+  // Se redibuja al cambiar de activo o de período y queda sólida (useTrazo).
+  const trazo = useTrazo(`${symbol}-${range}`)
 
   useEffect(() => {
     if (!symbol) return
@@ -171,9 +169,7 @@ export default function AssetMiniChart({ symbol }) {
             <path key={`area-${symbol}-${range}`} className="area-aparece" d={areaPath} fill={`url(#${gradId})`} />
             <path
               key={`linea-${symbol}-${range}`}
-              className={trazada === `${symbol}-${range}` ? undefined : 'traza-dibuja'}
-              onAnimationEnd={() => setTrazada(`${symbol}-${range}`)}
-              pathLength={1}
+              {...trazo}
               d={path}
               stroke={color}
               strokeWidth={1.5}

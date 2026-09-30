@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { assetSlicesFromPositions, DEFAULT_TOP_ASSETS } from './bookComposition.js'
-import { ASSET_CLASS_META } from './assetClass.js'
+import { ASSET_CLASS_META, computeClassBreakdown } from './assetClass.js'
 
 // "Distribución de activos" de Análisis: la torta por activo de UNA cartera.
 const pos = (asset, value, extra = {}) => ({ asset, value_usd: value, is_cash: false, ...extra })
@@ -33,6 +33,22 @@ describe('assetSlicesFromPositions', () => {
     expect(items.filter(i => !['__resto__', 'efectivo'].includes(i.key))).toHaveLength(DEFAULT_TOP_ASSETS)
     expect(resto.assets).toHaveLength(15 - DEFAULT_TOP_ASSETS)
     expect(items.reduce((s, i) => s + i.pct, 0)).toBeCloseTo(100)
+  })
+
+  it('con plazo fijo suma LO MISMO que la torta por tipo de al lado (misma lista, mismo plazo fijo)', () => {
+    // Así la alimentan el Dashboard y Análisis: tenencias + efectivo + el plazo
+    // fijo como porción aparte. Antes Análisis no pasaba el plazo fijo y los %
+    // de esta torta no cerraban con los de la torta por tipo.
+    const lista = [pos('AAPL', 500), pos('GGAL', 200, { asset_type: 'STOCK' }), pos('USD', 100, { is_cash: true })]
+    const activos = assetSlicesFromPositions(lista, { plazoFijoUsd: 200 })
+    const tipos = computeClassBreakdown(lista, [], [{ key: 'plazo_fijo', value: 200 }])
+    expect(activos.total).toBeCloseTo(tipos.total)
+    const pf = activos.items.find(i => i.key === 'plazo_fijo')
+    expect(pf).toMatchObject({ label: ASSET_CLASS_META.plazo_fijo.label, color: ASSET_CLASS_META.plazo_fijo.color, value: 200 })
+    expect(pf.pct).toBeCloseTo(20)
+    // El efectivo de la torta por activo es el mismo % que el de la torta por tipo.
+    const efTipo = tipos.items.find(i => i.key === 'cash')
+    expect(activos.items.find(i => i.key === 'efectivo').pct).toBeCloseTo(efTipo.pct)
   })
 
   it('sin posiciones con valor, nada', () => {

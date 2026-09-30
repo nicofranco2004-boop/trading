@@ -27,6 +27,7 @@ from .builders.dashboard_top_holdings import build as build_dashboard_top_holdin
 from .builders.dashboard_brokers import build as build_dashboard_brokers
 from .builders.distribution import build_type as build_distribution_type
 from .builders.distribution import build_sector as build_distribution_sector
+from .builders.distribution import build_asset as build_distribution_asset
 from .builders.book_composition import build_type as build_book_composition_type
 from .builders.book_composition import build_sector as build_book_composition_sector
 from .builders.dashboard_events import build as build_dashboard_events
@@ -70,6 +71,7 @@ REGISTRY: Dict[str, Tuple[Callable, Callable]] = {
     # lo manda el frontend — ver la cabecera de builders/distribution.py.
     "portfolio.distribution_type": (build_distribution_type, prompts.render_distribution_type_prompt),
     "portfolio.distribution_sector": (build_distribution_sector, prompts.render_distribution_sector_prompt),
+    "portfolio.distribution_asset": (build_distribution_asset, prompts.render_distribution_asset_prompt),
     "dashboard.upcoming_events": (build_dashboard_events, prompts.render_dashboard_events_prompt),
     "behavioral": (build_behavioral, prompts.render_behavioral_prompt),
     "behavioral.card": (build_behavioral_card, prompts.render_behavioral_card_prompt),

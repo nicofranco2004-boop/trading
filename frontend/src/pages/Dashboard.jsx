@@ -2,7 +2,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, trendArea, porcionColor, PORCION_RESTO } from '../utils/chartTheme'
+import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, trendArea } from '../utils/chartTheme'
 import { TrendingUp, TrendingDown, Upload, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { BrokerCard } from '../components/BrokerManager'
 import MonthlyTeaser from '../components/MonthlyTeaser'
@@ -38,6 +38,8 @@ import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import CompositionDonut, { UnclassifiedNote } from '../components/CompositionDonut'
 import { computeClassBreakdown } from '../utils/assetClass'
+import { assetSlicesFromPositions } from '../utils/bookComposition'
+import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
@@ -468,8 +470,17 @@ function PersonalDashboard() {
       pf.valueUsd > 0 ? [{ key: 'renta_fija', value: pf.valueUsd, pnl: { total: pf.pnlUsd, cost: pf.investedUsd } }] : [], operations),
     [positionsForComposition, brokers, pf.valueUsd, operations],
   )
+  // El tercer eje: por activo (DistribucionPorActivo, la MISMA tarjeta de
+  // Análisis). Misma lista y mismo plazo fijo que las dos de arriba → las tres
+  // tortas suman el patrimonio del hero. Reemplaza a la barra top 5, que
+  // repartía sólo las tenencias (sin efectivo ni plazo fijo) y daba otro %
+  // para el mismo activo que Análisis.
+  const assetBreakdown = useMemo(
+    () => assetSlicesFromPositions(positionsForComposition, { plazoFijoUsd: pf.valueUsd }),
+    [positionsForComposition, pf.valueUsd],
+  )
   // Los breakdowns siempre vienen en USD (moneda interna de la valuación); el
-  // formateo respeta el toggle global, igual que AssetBreakdownBar.
+  // formateo respeta el toggle global (USD / pesos al dólar de valuación).
   const compFmt = (v) => (currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v))
 
   // `capitalMaximo` va también acá: la frase de arriba del Dashboard y el chip
@@ -1357,17 +1368,17 @@ function PersonalDashboard() {
       {/* ── Distribución de activos + Top holdings ──────────────────────────── */}
       {positionsForInsight.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr] gap-4 mb-8">
+          {/* ✦ con los números de ESTA torta (portfolio.distribution_asset): antes
+              usaba dashboard.composition, que arma el servidor con su propia
+              valuación y un top 5, y la IA podía dar otro % que la porción. */}
           <AskAIAbout
-            topic="dashboard.composition"
+            topic="portfolio.distribution_asset"
+            params={toDistributionAiParams(assetBreakdown)}
             subtitle="Distribución de activos"
             rounded={false}
+            className="h-full"
           >
-            <AssetBreakdownBar
-              positions={positionsForInsight}
-              totalValue={totalValue}
-              currency={currency}
-              tcValuacion={tcValuacion}
-            />
+            <DistribucionPorActivo items={assetBreakdown.items} fmt={compFmt} className="h-full" />
           </AskAIAbout>
           <AskAIAbout
             topic="dashboard.top_holdings"
@@ -1384,11 +1395,11 @@ function PersonalDashboard() {
       )}
 
       {/* ── Distribución por tipo de activo y por sector ─────────────────────
-          Los dos ejes de la misma cartera. La barra de arriba responde "en qué
-          activos estoy"; estas dos responden "en qué clase de instrumento" y "a
-          qué parte de la economía". Incluyen efectivo y plazos fijos, así que
-          suman el patrimonio del hero — a diferencia de la barra, que es solo
-          tenencias.
+          Los otros dos ejes de la misma cartera. La torta de arriba responde
+          "en qué activos estoy"; estas dos responden "en qué clase de
+          instrumento" y "a qué parte de la economía". Las tres incluyen
+          efectivo y plazos fijos y salen de la misma lista
+          (positionsForComposition), así que suman el patrimonio del hero.
           El ✦ usa topics propios (`portfolio.distribution_*`) cuyo packet lo
           arma el frontend: el corte y el resultado se calculan acá, y
           recalcularlos en Python daría números distintos a los de la pantalla.
@@ -1568,81 +1579,6 @@ function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
       </div>
       <div className={`mt-2 font-semibold tabular num leading-none text-[19px] tracking-tight ${valueColor}`}>{value}</div>
       <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>
-    </div>
-  )
-}
-
-// ─── Asset breakdown bar ─────────────────────────────────────────────────────
-// Barra horizontal de distribución del portfolio por activo. Top 5 + "otros".
-// Más operativa que un pie — densa, leíble, sin ocupar mucho vertical space.
-// Colores: la rampa de composición (porcionColor), no la de series — con la de
-// series el activo más grande salía VERDE y "Otros" ROJO, los colores de
-// ganancia y pérdida. Ver MONO_VIOLET en utils/chartTheme.js.
-
-function AssetBreakdownBar({ positions, totalValue, currency = 'USD', tcValuacion = 1 }) {
-  const fmt = (v) => currency === 'ARS' ? fmtArs(v * tcValuacion) : fmtUsd(v)
-  const items = useMemo(() => {
-    // Consolidar por asset (sumar value_usd)
-    const byAsset = new Map()
-    for (const p of positions) {
-      if (!p.value_usd || p.value_usd <= 0) continue
-      const cur = byAsset.get(p.asset) || 0
-      byAsset.set(p.asset, cur + p.value_usd)
-    }
-    const arr = Array.from(byAsset.entries())
-      .map(([asset, value]) => ({ asset, value }))
-      .sort((a, b) => b.value - a.value)
-    if (arr.length === 0) return []
-    const total = arr.reduce((s, x) => s + x.value, 0) || totalValue || 1
-    // Top 5 + agrupar resto como "Otros"
-    const top = arr.slice(0, 5).map((x, i) => ({
-      ...x,
-      pct: (x.value / total) * 100,
-      color: porcionColor(i),
-    }))
-    const restValue = arr.slice(5).reduce((s, x) => s + x.value, 0)
-    if (restValue > 0) {
-      top.push({
-        asset: `Otros (${arr.length - 5})`,
-        value: restValue,
-        pct: (restValue / total) * 100,
-        color: PORCION_RESTO,
-      })
-    }
-    return top
-  }, [positions, totalValue])
-
-  if (items.length === 0) return null
-
-  return (
-    <div className="border border-line rounded-xl bg-bg-1 p-5">
-      <div className="mb-3.5">
-        <h3 className="text-[14.5px] font-semibold text-ink-0 leading-tight">Distribución de activos</h3>
-        <p className="text-xs text-ink-3 mt-0.5">{items.length} {items.length === 1 ? 'activo' : 'activos'} · por valor actual</p>
-      </div>
-      <div className="flex h-3 rounded-full overflow-hidden bg-bg-2 mb-4">
-        {items.map((it) => (
-          <div
-            key={it.asset}
-            style={{ width: `${it.pct}%`, background: it.color }}
-            title={`${it.asset}: ${it.pct.toFixed(1).replace('.', ',')}%`}
-          />
-        ))}
-      </div>
-      <div className="space-y-2">
-        {items.map((it) => (
-          <div key={it.asset} className="flex items-center justify-between gap-3 text-[12.5px]">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <span className="inline-block w-2.5 h-2.5 rounded flex-shrink-0" style={{ background: it.color }} />
-              <span className="text-ink-0 font-medium truncate">{it.asset}</span>
-            </div>
-            <div className="flex items-baseline gap-2.5 flex-shrink-0">
-              <span className="text-ink-3 tabular text-[11.5px]">{fmt(it.value)}</span>
-              <span className="text-ink-1 tabular font-semibold min-w-[46px] text-right">{it.pct.toFixed(1).replace('.', ',')}%</span>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }

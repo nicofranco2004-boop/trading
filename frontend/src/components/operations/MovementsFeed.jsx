@@ -15,7 +15,8 @@
 import { Trash2, RotateCcw, Repeat } from 'lucide-react'
 import { TYPE_META, DELETABLE_MOVEMENT_TYPES, amountClassFor } from './shared'
 
-export default function MovementsFeed({ groups, histMoney, onDelete, deletingId }) {
+// `nuevas`: ids de los movimientos recién agregados; esa tarjeta destella.
+export default function MovementsFeed({ groups, histMoney, onDelete, deletingId, nuevas = new Set() }) {
   return (
     <ul className="pt-1">
       {groups.map(g => (
@@ -28,6 +29,7 @@ export default function MovementsFeed({ groups, histMoney, onDelete, deletingId 
               <MovementRowMobile
                 key={m.id}
                 m={m}
+                nueva={nuevas.has(m.id)}
                 histMoney={histMoney}
                 onDelete={onDelete}
                 deleting={deletingId === m.id}
@@ -40,13 +42,13 @@ export default function MovementsFeed({ groups, histMoney, onDelete, deletingId 
   )
 }
 
-function MovementRowMobile({ m, histMoney, onDelete, deleting }) {
+function MovementRowMobile({ m, nueva = false, histMoney, onDelete, deleting }) {
   const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, tone: null }
   const { Icon } = meta
   const canDelete = DELETABLE_MOVEMENT_TYPES.includes(m.type)
   const amountClass = TYPE_META[m.type] ? amountClassFor(m.type) : 'text-ink-1'
   return (
-    <li className="flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0">
+    <li className={`flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0 ${nueva ? 'destello-nueva' : ''}`}>
       <span className={`flex-shrink-0 w-7 h-7 rounded-sm bg-bg-2 flex items-center justify-center ${amountClass}`}>
         <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
       </span>

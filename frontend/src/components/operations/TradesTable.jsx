@@ -21,7 +21,11 @@ import { prettyOpType, movPnl } from './shared'
 
 export const PAGE_SIZE = 50
 
+// `nuevas`: ids de las operaciones recién cargadas por el usuario (Operations
+// las calcula). Su fila destella al aparecer; si el grupo que la contiene está
+// cerrado, destella la fila del grupo — así se ve dónde quedó sin abrir nada.
 export default function TradesTable({
+  nuevas = new Set(),
   ops, filteredOps, pagedOps, groups, grouped, groupBy,
   histMoney, expandedGroups, onToggleGroup,
   onEdit, onDelete, onDeleteGroup, busyDel,
@@ -68,7 +72,7 @@ export default function TradesTable({
             )}
             {/* Modo lista plana ('none') — la tabla de siempre, paginada. */}
             {!grouped && pagedOps.map(op => (
-              <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} deleting={!!busyDel[`op-${op.id}`]} />
+              <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} deleting={!!busyDel[`op-${op.id}`]} />
             ))}
             {/* Modo agrupado (por activo / mes) — fila-resumen expandible. */}
             {grouped && groups.map(g => {
@@ -76,6 +80,7 @@ export default function TradesTable({
               return (
                 <Fragment key={g.key}>
                   <TradeGroupRow
+                    conNueva={!isOpen && g.rows.some(op => nuevas.has(op.id))}
                     group={g}
                     groupBy={groupBy}
                     isOpen={isOpen}
@@ -85,7 +90,7 @@ export default function TradesTable({
                     deleting={!!busyDel[`grp-${g.key}`]}
                   />
                   {isOpen && g.rows.map(op => (
-                    <TradeRow key={op.id} op={op} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={!!busyDel[`op-${op.id}`]} />
+                    <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={!!busyDel[`op-${op.id}`]} />
                   ))}
                 </Fragment>
               )
@@ -131,13 +136,13 @@ export default function TradesTable({
 // el detalle de un grupo (modo agrupado), donde va atenuada/indentada con "└" —
 // mismo recurso visual que MovementRow. Mantiene las acciones por-trade
 // (analizar/editar/eliminar) en todos los modos.
-function TradeRow({ op, histMoney, onEdit, onDelete, indent = false, deleting = false }) {
+function TradeRow({ op, nueva = false, histMoney, onEdit, onDelete, indent = false, deleting = false }) {
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const ArrowIcon = isWin ? ArrowUpRight : isLoss ? ArrowDownRight : null
   const arrowColor = isWin ? 'text-rendi-pos' : isLoss ? 'text-rendi-neg' : 'text-ink-3'
   return (
-    <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''}`}>
+    <tr className={`border-b border-line/30 hover:bg-bg-2/40 transition-colors ${indent ? 'bg-bg-2/15' : ''} ${nueva ? 'destello-nueva' : ''}`}>
       <td className={`px-4 py-2 text-xs font-mono tabular text-ink-2 ${indent ? 'pl-6 opacity-75' : ''}`}>
         {indent && <span className="text-ink-3 font-mono select-none mr-1" title="Detalle">└</span>}
         {op.date}
@@ -201,7 +206,7 @@ function TradeRow({ op, histMoney, onEdit, onDelete, indent = false, deleting = 
 // filas usan el FX de su fecha: un grupo de UN trade mostraba dos números
 // distintos (reporte real: header +$147.007 vs su única fila +$135.444, mismo
 // pnl_usd × dos dólares). El invariante que garantiza esto es `total === Σ filas`.
-function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
+function TradeGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
   const { label, count, brokers } = group
   // Signo, color y flecha salen del MISMO número que se imprime. Derivarlos del
   // USD crudo podía contradecir lo mostrado: un grupo con +100 USD de 2021 (fx 190)
@@ -219,7 +224,7 @@ function TradeGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGr
     : `${brokers.length} brokers`
   return (
     <tr
-      className="border-b border-line/40 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors"
+      className={`border-b border-line/40 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors ${conNueva ? 'destello-nueva' : ''}`}
       onClick={onToggle}
     >
       {/* Etiqueta del grupo + chevron — ocupa Fecha */}

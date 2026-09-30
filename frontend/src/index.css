@@ -914,8 +914,11 @@ body {
 }
 .por-entrar { opacity: 0; }
 
-/* Noticia que llegó mientras mirabas (NewsPreview): un destello violeta que
-   se apaga solo. La primera carga no destella: "nueva" es "llegó recién". */
+/* Algo que llegó recién: una noticia que apareció mientras mirabas
+   (NewsPreview) o la operación que acabás de cargar en Movimientos, en sus
+   dos pestañas (useRecienLlegadas, filas de TradesTable, TradesFeed,
+   MovementsTable y MovementsFeed). Un destello violeta que se apaga solo. La
+   primera carga no destella: "nueva" es "llegó recién", no "está en la lista". */
 @keyframes destello-nueva {
   from { background-color: rgb(var(--data-violet) / 0.14); }
   to   { background-color: rgb(var(--data-violet) / 0); }

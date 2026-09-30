@@ -66,6 +66,7 @@ PREGUNTAS: Dict[str, Union[str, Tuple[str, str]]] = {
     "dashboard.upcoming_events": "¿Qué se viene en los próximos días para lo que tengo?",
     "portfolio.distribution_type": "¿Cómo está repartida mi cartera por tipo de activo?",
     "portfolio.distribution_sector": "¿Cómo está repartida mi cartera por sector?",
+    "portfolio.distribution_asset": "¿Cuánto pesa cada activo en mi cartera? ¿Estoy muy concentrado?",
 
     # ── Rendimiento ──────────────────────────────────────────────────────
     "insights": "¿Cómo me está yendo de verdad?",

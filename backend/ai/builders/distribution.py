@@ -1,6 +1,7 @@
 """builders.distribution — packet de las tortas de distribución (tipo y sector).
 ═══════════════════════════════════════════════════════════════════════════
-Topics: portfolio.distribution_type · portfolio.distribution_sector
+Topics: portfolio.distribution_type · portfolio.distribution_sector ·
+        portfolio.distribution_asset
 
 ── Por qué este builder NO recalcula desde la DB ──────────────────────────
 Todos los demás builders leen `positions` y agregan server-side. Éste recibe
@@ -25,7 +26,7 @@ tiene rendimiento medible. El modelo recibe conclusiones ordenadas, no una
 tabla cruda para que las derive él.
 
 Params esperados (los manda AskAIAbout):
-    axis          — 'tipo' | 'sector' (lo fija el topic, no el cliente)
+    axis          — 'tipo' | 'sector' | 'activo' (lo fija el topic, no el cliente)
     total_usd     — total de la torta
     slices        — [{label, value_usd, weight_pct, pnl_usd, pnl_pct, assets}]
     unclassified_pct
@@ -167,3 +168,13 @@ def build_type(conn, user_id: int, **params) -> Dict[str, Any]:
 
 def build_sector(conn, user_id: int, **params) -> Dict[str, Any]:
     return _build("sector", "sector económico", **params)
+
+
+def build_asset(conn, user_id: int, **params) -> Dict[str, Any]:
+    # La torta "Distribución de activos" (Dashboard y Análisis): el mismo
+    # packet, con los números que dibuja la pantalla (12 activos + efectivo +
+    # plazo fijo + "Resto"). Antes el ✦ de esa tarjeta usaba
+    # dashboard.composition, que el servidor arma con su propia valuación y un
+    # top 5: la IA podía decir otro % que la porción que se estaba mirando.
+    return _build("asset", "activo", **params)
+

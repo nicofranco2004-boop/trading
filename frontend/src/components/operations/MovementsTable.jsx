@@ -20,7 +20,11 @@ import { TYPE_META, DELETABLE_MOVEMENT_TYPES, amountClassFor, movPnl } from './s
 
 export const MOV_PAGE_SIZE = 50
 
+// `nuevas`: ids de los movimientos recién agregados (useRecienLlegadas en
+// Operations). Su fila destella al aparecer; si su grupo está cerrado, destella
+// la fila del grupo — se ve dónde quedó sin abrir nada.
 export default function MovementsTable({
+  nuevas = new Set(),
   movements, filtered, pageRows, groups, grouped, groupBy,
   histMoney, currency, expandedGroups, onToggleGroup,
   onDelete, onDeleteGroup, deletingId, busyGroup,
@@ -52,13 +56,14 @@ export default function MovementsTable({
             </thead>
             <tbody>
               {!grouped && pageRows.map(m => (
-                <MovementRow key={m.id} m={m} histMoney={histMoney} onDelete={onDelete} deleting={deletingId === m.id} />
+                <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} onDelete={onDelete} deleting={deletingId === m.id} />
               ))}
               {grouped && groups.map(g => {
                 const isOpen = expandedGroups.has(g.key)
                 return (
                   <Fragment key={g.key}>
                     <MovementGroupRow
+                      conNueva={!isOpen && g.rows.some(m => nuevas.has(m.id))}
                       group={g}
                       groupBy={groupBy}
                       isOpen={isOpen}
@@ -68,7 +73,7 @@ export default function MovementsTable({
                       deleting={!!busyGroup[g.key]}
                     />
                     {isOpen && g.rows.map(m => (
-                      <MovementRow key={m.id} m={m} histMoney={histMoney} indent onDelete={onDelete} deleting={deletingId === m.id} />
+                      <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} indent onDelete={onDelete} deleting={deletingId === m.id} />
                     ))}
                   </Fragment>
                 )
@@ -107,7 +112,7 @@ export default function MovementsTable({
 // indent: cuando la fila es detalle de un grupo (modo agrupado), la atenuamos
 // e indentamos la primera celda con un marquito "└" — mismo recurso visual que
 // los lotes en Positions.
-function MovementRow({ m, histMoney, indent = false, onDelete, deleting = false }) {
+function MovementRow({ m, nueva = false, histMoney, indent = false, onDelete, deleting = false }) {
   // Phase C (audit fix H1): cada movimiento usa SU PROPIO FX histórico para
   // la conversión a ARS. m.fx_to_usd (si stampeado) > lookup por m.date >
   // tcValuacion actual. Esto evita que un retiro de $1000 USD en 2024 (blue era
@@ -128,7 +133,7 @@ function MovementRow({ m, histMoney, indent = false, onDelete, deleting = false 
   const { Icon } = meta
   const amountClass = TYPE_META[m.type] ? amountClassFor(m.type) : 'text-ink-1'
   return (
-    <tr className={`border-t border-line/60 hover:bg-bg-2/40 ${indent ? 'bg-bg-2/15' : ''}`}>
+    <tr className={`border-t border-line/60 hover:bg-bg-2/40 ${indent ? 'bg-bg-2/15' : ''} ${nueva ? 'destello-nueva' : ''}`}>
       <td className={`px-3 py-2 text-ink-2 tabular text-xs ${indent ? 'pl-6 opacity-75' : ''}`}>
         {indent && <span className="text-ink-3 font-mono select-none mr-1" title="Detalle">└</span>}
         {m.date || '—'}
@@ -185,7 +190,7 @@ function MovementRow({ m, histMoney, indent = false, onDelete, deleting = false 
 // ⚠️ CONVERT-THEN-SUM, igual que TradeGroupRow (ver el comentario largo allá):
 // cada fila se convierte con SU FX histórico y recién ahí se suma, para que el
 // total coincida con las filas que despliega.
-function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
+function MovementGroupRow({ conNueva = false, group, groupBy, isOpen, onToggle, histMoney, onDeleteGroup, deleting }) {
   const { label, count, brokers } = group
   // El tacho de "borrar todo el historial" solo aplica a un ACTIVO de verdad: no a
   // "Sin activo" (depósitos/retiros sueltos) ni a los grupos de puro efectivo, que no
@@ -205,7 +210,7 @@ function MovementGroupRow({ group, groupBy, isOpen, onToggle, histMoney, onDelet
     : `${brokers.length} brokers`
   return (
     <tr
-      className="border-t border-line/60 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors"
+      className={`border-t border-line/60 bg-bg-2/40 hover:bg-bg-2/60 cursor-pointer transition-colors ${conNueva ? 'destello-nueva' : ''}`}
       onClick={onToggle}
     >
       {/* Etiqueta del grupo + chevron — ocupa Fecha + Tipo */}
