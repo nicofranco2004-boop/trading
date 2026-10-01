@@ -249,6 +249,67 @@ class EventosAlDiaTest(unittest.TestCase):
         self.assertTrue(all(f.cancelled() for f in en_cola))
         self.assertFalse(corriendo.cancelled())   # lo que ya corría termina
 
+    def test_el_evento_de_hoy_no_se_borra_aunque_yahoo_ya_informe_el_siguiente(self):
+        """Revisión independiente 2 (2026-10-01): el mismo día del ex-dividendo
+        Yahoo puede ya informar el próximo (PSEC, dividendo mensual). Borrar el
+        de HOY lo sacaba del mail del día, de la agenda y del inicio."""
+        hoy = main._iso_today()
+        self._guardar("PSEC", "ex_dividend", hoy)
+        def el_proximo(ticker, fallas=None):
+            return [{"ticker": ticker, "event_type": "ex_dividend", "event_date": _en_dias(28),
+                     "details": {}, "confirmed": 1}]
+        with patch.object(main, "_fetch_yf_events", el_proximo):
+            main._refresh_events_for_tickers(["PSEC"], esperar_segundos=5)
+        self.assertIn(hoy, self._fechas("PSEC", "ex_dividend"))
+
+    def test_yahoo_caido_con_error_de_servidor_tambien_reintenta_pronto(self):
+        """Con un 5xx yfinance devuelve el calendario VACÍO sin error (esconde
+        la excepción) y sólo pedir el info revienta. Esperar a que fallaran los
+        dos dejaba la caída marcada "al día" 6 h (revisión independiente 2)."""
+        class Caido:
+            calendar = {}
+            @property
+            def info(self):
+                raise TypeError("'NoneType' object is not subscriptable")   # lo que tira yfinance con 503
+        with patch.object(main.yf, "Ticker", return_value=Caido()):
+            self.assertEqual(main._refresh_events_for_tickers(["AA"], esperar_segundos=5), 0)
+        falta = main.EVENTS_TTL - (time.time() - main._events_fetched_at["AA"])
+        self.assertAlmostEqual(falta, main.EVENTOS_REINTENTO_SEG, delta=5)
+
+    def test_un_ticker_que_yahoo_no_conoce_no_cuenta_como_caida(self):
+        """ALUA, TXAR: Yahoo contesta "no hay nada", sin error (medido con
+        Yahoo real). Quedan en las 6 h normales, no se reintentan cada 10 min."""
+        class Desconocido:
+            calendar = {}
+            info = {"trailingPegRatio": None}
+        with patch.object(main.yf, "Ticker", return_value=Desconocido()):
+            self.assertEqual(main._refresh_events_for_tickers(["ALUA"], esperar_segundos=5), 1)
+        falta = main.EVENTS_TTL - (time.time() - main._events_fetched_at["ALUA"])
+        self.assertGreater(falta, main.EVENTS_TTL - 5)
+
+    def test_las_noticias_sin_tope_no_se_cuelgan_al_apagar(self):
+        """`as_completed` no se entera de un futuro cancelado por el apagado:
+        el camino sin tope de _ensure_news_batch_parallel esperaba para
+        siempre (revisión independiente 2). Con una cola propia de la prueba."""
+        from concurrent.futures import ThreadPoolExecutor
+        cola = ThreadPoolExecutor(max_workers=1)
+        traba = threading.Event()
+        def noticias_lentas(conn, q, lang, cat):
+            traba.wait(5)
+        specs = [(f"apagado-{i}", "es", "prueba") for i in range(3)]
+        for q, _, cat in specs:
+            main._news_fetched_at.pop(main._cache_key_for("google_news", cat, q), None)
+        with patch.object(main, "_news_fetch_executor", cola), \
+             patch.object(main, "_refresh_news_query", noticias_lentas):
+            h = threading.Thread(target=main._ensure_news_batch_parallel,
+                                 args=(specs, 60), daemon=True)
+            h.start()
+            time.sleep(0.2)
+            cola.shutdown(wait=False, cancel_futures=True)   # lo que hace el apagado
+            traba.set()
+            h.join(5)
+        self.assertFalse(h.is_alive(), "se quedó esperando un futuro cancelado")
+
     def test_lo_buscado_hace_poco_no_se_vuelve_a_pedir(self):
         yahoo = _YahooLento(0.01)
         with patch.object(main, "_fetch_yf_events", yahoo):

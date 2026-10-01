@@ -7055,7 +7055,15 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
 
         # Ex-dividend date + dividend amount (próximo)
         try:
-            info = t.info  # cache interno de yfinance
+            try:
+                info = t.info  # cache interno de yfinance
+            except Exception:
+                # PEDIR el info falló: Yahoo no contestó. Es la señal confiable
+                # de caída — con un 5xx yfinance devuelve el calendario vacío
+                # SIN error (esconde la excepción) y sólo esto revienta.
+                if fallas is not None:
+                    fallas.append('info')
+                raise
             ex_div = info.get('exDividendDate')  # timestamp UNIX
             div_amount = info.get('lastDividendValue')
             # Fecha a la que corresponde `lastDividendValue`. NO siempre es `ex_div`:
@@ -7110,8 +7118,7 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
                         'confirmed': 1,
                     })
         except Exception:
-            if fallas is not None:
-                fallas.append('info')
+            pass
 
     except Exception:
         # ticker desconocido o yfinance error → vacío
@@ -7158,25 +7165,32 @@ def _buscar_y_guardar_eventos(ticker: str) -> bool:
                     # (04/10 y 17/11), y la tarjeta del inicio anunciando el que
                     # ya no existe. Sólo por tipo que Yahoo SÍ trajo: si un tipo
                     # no vino (su lectura falló en silencio en _fetch_yf_events)
-                    # lo guardado se respeta. Lo pasado no se toca (historia), y
-                    # lo cargado a mano (source != 'yfinance') tampoco.
+                    # lo guardado se respeta. Lo cargado a mano (source !=
+                    # 'yfinance') no se toca, y lo pasado TAMPOCO — incluido HOY
+                    # (`>` y no `>=`): el mismo día del ex-dividendo Yahoo puede
+                    # ya informar el siguiente, y borrar el de hoy lo sacaba del
+                    # mail del día ("Eventos de hoy"), de la agenda y del inicio.
                     hoy = _iso_today()
                     for tipo in {ev['event_type'] for ev in events}:
                         vigentes = [ev['event_date'] for ev in events if ev['event_type'] == tipo]
                         conn.execute(
                             f"""DELETE FROM financial_events
                                  WHERE ticker = ? AND event_type = ? AND source = 'yfinance'
-                                   AND event_date >= ?
+                                   AND event_date > ?
                                    AND event_date NOT IN ({','.join('?' * len(vigentes))})""",
                             (ticker, tipo, hoy, *vigentes),
                         )
             finally:
                 conn.close()
-        if 'ticker' in fallas or {'calendar', 'info'} <= set(fallas):
-            # Yahoo no contestó NINGÚN pedido (exceso de pedidos, caída, red):
-            # no es "no tiene eventos". Lo que haya llegado ya se guardó arriba;
-            # se reintenta en EVENTOS_REINTENTO_SEG, no en 6 h (antes quedaba
-            # marcado "al día" el TTL entero) ni en cada visita.
+        if 'ticker' in fallas or 'info' in fallas:
+            # Yahoo no contestó (exceso de pedidos, caída, red): no es "no tiene
+            # eventos". La señal es que PEDIR el info falló — con un 5xx el
+            # calendario vuelve vacío sin error, así que esperar a que fallen
+            # los dos dejaba pasar las caídas (revisión independiente,
+            # 2026-10-01). Un ticker que Yahoo no conoce (ALUA, TXAR) NO tira
+            # error: queda en las 6 h normales. Lo que haya llegado ya se
+            # guardó arriba; se reintenta en EVENTOS_REINTENTO_SEG, no en 6 h
+            # ni en cada visita.
             _events_fetched_at[ticker] = time.time() - EVENTS_TTL + EVENTOS_REINTENTO_SEG
             logging.getLogger(__name__).warning(
                 "events refresh %s: Yahoo no contestó (%s)", ticker, ",".join(fallas))
@@ -8225,8 +8239,11 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_wait_seconds=None):
             )
         return
 
-    # Path sin timeout — esperamos a TODOS los workers.
-    for fut in as_completed(futures):
+    # Path sin timeout — esperamos a TODOS los workers. Uno por uno con
+    # `result()` y NO con `as_completed`: al apagar, `_stop_scheduler` cancela
+    # lo encolado y `as_completed` no se entera de un cancelado — esperaba para
+    # siempre. `result()` de un cancelado vuelve al toque (CancelledError).
+    for fut in futures:
         try:
             fut.result()
         except Exception as e:
