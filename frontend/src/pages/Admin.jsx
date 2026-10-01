@@ -851,12 +851,13 @@ function FeedbackPruebaPanel({ toast }) {
   const [progreso, setProgreso] = useState(null) // { hechos, total } mientras manda en tandas
   const [result, setResult] = useState(null)
   const [verMail, setVerMail] = useState(false)
+  const [verReenvio, setVerReenvio] = useState(false)
   const [probando, setProbando] = useState(false)
 
-  async function pruebaAMi() {
+  async function pruebaAMi(grupo = 'nuevos') {
     setProbando(true)
     try {
-      const r = await api.post('/admin/email/feedback-prueba', { prueba_a_mi: true })
+      const r = await api.post('/admin/email/feedback-prueba', { prueba_a_mi: true, grupo })
       toast.push(
         r.sent
           ? `Te lo mandé a ${r.to}. Fijate si cayó en Principal y respondelo para ver que la respuesta te llegue.`
@@ -878,7 +879,8 @@ function FeedbackPruebaPanel({ toast }) {
   }
 
   async function send(grupo) {
-    const lista = (grupo === 'nuevos' ? preview?.nuevos : preview?.ya_recibieron) || []
+    const lista = ((grupo === 'nuevos' ? preview?.nuevos : preview?.ya_recibieron) || [])
+      .filter(t => !t.espera)
     const n = lista.length
     if (n === 0) return
     const quien = n === 1 ? '1 persona que' : `${n} personas que`
@@ -891,11 +893,11 @@ function FeedbackPruebaPanel({ toast }) {
     // proxy. Cada persona viaja con la fecha de envío que se VE en pantalla: si
     // ya le llegó por otro click, el backend no gana la marca y la saltea.
     const lote = preview?.lote || 20
-    const total = { sent_count: 0, failed_count: 0, skipped_count: 0, marcas_trabadas: [] }
+    const total = { sent_count: 0, failed_count: 0, skipped_count: 0, discarded_count: 0, marcas_trabadas: [] }
     setSending(grupo); setResult(null)
     try {
       for (let i = 0; i < n; i += lote) {
-        setProgreso({ hechos: i, total: n })
+        setProgreso({ desde: i + 1, hasta: Math.min(i + lote, n), total: n })
         const tanda = lista.slice(i, i + lote)
         const r = await api.post('/admin/email/feedback-prueba', {
           confirm: true, grupo, vistos: tanda.map(t => ({ id: t.id, sent_at: t.sent_at })),
@@ -903,6 +905,7 @@ function FeedbackPruebaPanel({ toast }) {
         total.sent_count += r.sent_count
         total.failed_count += r.failed_count
         total.skipped_count += r.skipped_count
+        total.discarded_count += r.discarded_count || 0
         total.marcas_trabadas.push(...(r.marcas_trabadas || []))
       }
       setResult(total)
@@ -928,8 +931,11 @@ function FeedbackPruebaPanel({ toast }) {
   const nuevos = preview?.nuevos || []
   const yaRecibieron = preview?.ya_recibieron || []
   const recien = preview?.recien_empezados || []
+  // Las filas con `espera` se ven pero no salen: el botón cuenta sólo las otras.
+  const nuevosListos = nuevos.filter(t => !t.espera)
+  const reenvioListos = yaRecibieron.filter(t => !t.espera)
   const enviandoTxt = progreso
-    ? `Enviando… ${progreso.hechos} de ${progreso.total}`
+    ? `Enviando ${progreso.desde}–${progreso.hasta} de ${progreso.total}…`
     : 'Enviando…'
 
   return (
@@ -952,15 +958,16 @@ function FeedbackPruebaPanel({ toast }) {
         Les pregunta qué les está pareciendo Rendi a los que están en la prueba gratis hoy (los mismos que
         cuenta «Pruebas · En curso»). Al que le llega, sale de esta lista. Al que se le termina la prueba o
         paga, deja de aparecer. Los que tienen menos de {preview?.min_dias ?? 3} días de prueba esperan: entran
-        solos cuando los cumplen. Las respuestas llegan a soporte@.
+        solos cuando los cumplen. Al que le llegó otro mail en las últimas {preview?.espera_horas ?? 24} h se lo
+        ve en gris y sale al día siguiente. Las respuestas llegan a soporte@.
       </p>
 
       {preview && (
         <>
           <div className="grid grid-cols-3 gap-3">
             <ConvCell label="En la prueba" value={preview.en_prueba} hint="hoy" />
-            <ConvCell label="Sin recibirlo" value={nuevos.length}
-                      hint={recien.length ? `+ ${recien.length} recién empezados` : 'se manda con el botón'} />
+            <ConvCell label="Sin recibirlo" value={nuevos.length + recien.length}
+                      hint={`${nuevosListos.length} se pueden mandar hoy`} />
             <ConvCell label="Ya lo recibieron" value={yaRecibieron.length} hint="siguen probando" />
           </div>
 
@@ -973,7 +980,7 @@ function FeedbackPruebaPanel({ toast }) {
                 {verMail ? 'Ocultar el mail' : 'Ver el mail que les llega'}
               </button>
               <button
-                onClick={pruebaAMi}
+                onClick={() => pruebaAMi('nuevos')}
                 disabled={probando}
                 className="text-xs text-data-violet hover:underline disabled:opacity-50"
               >
@@ -994,7 +1001,9 @@ function FeedbackPruebaPanel({ toast }) {
             <p className="text-sm text-ink-3">
               {preview.en_prueba === 0
                 ? 'No hay nadie en la prueba ahora.'
-                : 'Todos los que están en la prueba ya lo recibieron.'}
+                : recien.length > 0
+                  ? 'Los que todavía no lo recibieron son recién empezados (abajo): entran solos.'
+                  : 'Todos los que están en la prueba ya lo recibieron.'}
             </p>
           )}
 
@@ -1004,10 +1013,10 @@ function FeedbackPruebaPanel({ toast }) {
             </p>
             <button
               onClick={() => send('nuevos')}
-              disabled={sending !== null || nuevos.length === 0}
+              disabled={sending !== null || nuevosListos.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
-              <Send size={14} /> {sending === 'nuevos' ? enviandoTxt : `Enviar a ${nuevos.length}`}
+              <Send size={14} /> {sending === 'nuevos' ? enviandoTxt : `Enviar a ${nuevosListos.length}`}
             </button>
           </div>
 
@@ -1017,13 +1026,34 @@ function FeedbackPruebaPanel({ toast }) {
                 Ya lo recibieron y siguen en la prueba ({yaRecibieron.length})
               </h3>
               <FeedbackPruebaTabla filas={yaRecibieron} conFecha />
+              <div className="flex items-center gap-4 flex-wrap">
+                <button
+                  onClick={() => setVerReenvio(v => !v)}
+                  className="text-xs text-data-violet hover:underline"
+                >
+                  {verReenvio ? 'Ocultar el mail del reenvío' : 'Ver el mail del reenvío'}
+                </button>
+                <button
+                  onClick={() => pruebaAMi('ya_recibieron')}
+                  disabled={probando}
+                  className="text-xs text-data-violet hover:underline disabled:opacity-50"
+                >
+                  Mandarme la prueba del reenvío
+                </button>
+              </div>
+              {verReenvio && preview.mail_reenvio && (
+                <div className="border border-line/40 rounded-sm bg-bg-1/40 px-3 py-2.5 text-xs text-ink-1 space-y-2">
+                  <div><span className="text-ink-3">Asunto:</span> {preview.mail_reenvio.asunto}</div>
+                  <div className="whitespace-pre-line leading-relaxed">{preview.mail_reenvio.texto}</div>
+                </div>
+              )}
               <div className="flex justify-end">
                 <button
                   onClick={() => send('ya_recibieron')}
-                  disabled={sending !== null}
+                  disabled={sending !== null || reenvioListos.length === 0}
                   className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded border border-data-violet/60 text-data-violet font-medium hover:bg-data-violet/10 disabled:opacity-40 disabled:cursor-not-allowed press"
                 >
-                  <RotateCcw size={14} /> {sending === 'ya_recibieron' ? enviandoTxt : `Volver a mandar a ${yaRecibieron.length}`}
+                  <RotateCcw size={14} /> {sending === 'ya_recibieron' ? enviandoTxt : `Volver a mandar a ${reenvioListos.length}`}
                 </button>
               </div>
             </div>
@@ -1043,6 +1073,7 @@ function FeedbackPruebaPanel({ toast }) {
               Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
               {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
               {result.skipped_count > 0 && <> · {result.skipped_count} salteados (ya les había llegado)</>}
+              {result.discarded_count > 0 && <> · {result.discarded_count} ya no se podían mandar (dejaron la prueba o les llegó otro mail)</>}
               {result.cortado && <> · <b className="text-rendi-warn">se cortó antes de terminar</b></>}
               {result.marcas_trabadas?.length > 0 && (
                 <div className="mt-1 text-rendi-neg">
@@ -1089,14 +1120,10 @@ function FeedbackPruebaTabla({ filas, conFecha = false }) {
         </thead>
         <tbody>
           {filas.map(r => (
-            <tr key={r.id} className="border-b border-line/20">
+            <tr key={r.id} className={`border-b border-line/20 ${r.espera ? 'opacity-60' : ''}`}>
               <td className="px-2 py-1 text-ink-1">
                 {r.email}
-                {r.otro_mail_hace_horas != null && r.otro_mail_hace_horas < 24 && (
-                  <div className="text-[10px] text-rendi-warn">
-                    le llegó otro mail de la prueba hace {Math.max(1, Math.round(r.otro_mail_hace_horas))} h
-                  </div>
-                )}
+                {r.espera && <div className="text-[10px] text-rendi-warn">{r.espera}</div>}
               </td>
               <td className="px-2 py-1 text-ink-2 whitespace-nowrap" title={r.name ? `Nombre cargado: ${r.name}` : 'Sin nombre cargado'}>
                 {r.saludo ? `Hola ${r.saludo},` : <span className="text-ink-3">Hola, (sin nombre)</span>}

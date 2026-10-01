@@ -997,6 +997,9 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
 
 _TITULOS = frozenset({"dr", "dra", "lic", "ing", "cr", "cra", "cdor", "cdora",
                       "sr", "sra", "srta", "prof", "arq", "esc"})
+# Arranque de apellido compuesto ("de la Fuente"): saludar "Hola De," es peor
+# que no saludar por nombre.
+_PARTICULAS = frozenset({"de", "del", "la", "las", "los", "da", "di", "van", "von"})
 
 
 def nombre_de_pila(nombre) -> str:
@@ -1014,14 +1017,21 @@ def nombre_de_pila(nombre) -> str:
         "Lucia"). Si mezcla, la respeta: "McKenzie" no se toca.
       · Si parece un usuario o un email (lleva @, números o _), o es una sola
         letra, o no tiene letras, devuelve "": mejor sin nombre que con uno raro.
-      · Si arranca con un título ("Dr. Pérez", "Lic. Gómez") también devuelve
-        "": lo que sigue suele ser el apellido, y "Hola Dr," no es un saludo.
+      · Si arranca con un título ("Dr. Pérez", "Lic. Gómez") o con una
+        partícula de apellido ("de la Fuente") también devuelve "": lo que
+        sigue es el apellido, y "Hola Dr," no es un saludo.
+      · "Gómez, Lucía" (apellido, coma, nombre — como en un padrón) saluda a
+        Lucía: el nombre es lo que va después de la coma.
     """
     texto = " ".join(str(nombre or "").split())
+    if "," in texto:
+        _antes, _, despues = texto.partition(",")
+        if despues.strip():
+            texto = despues.strip()
     if not texto:
         return ""
     primera = texto.split(" ")[0].strip(".,;:")
-    if primera.lower() in _TITULOS:
+    if primera.lower() in _TITULOS or primera.lower() in _PARTICULAS:
         return ""
     if (len(primera) < 2 or len(primera) > 24
             or any(c.isdigit() or c in "@_" for c in primera)
@@ -1032,7 +1042,7 @@ def nombre_de_pila(nombre) -> str:
     return primera
 
 
-def feedback_prueba_contenido(user_name: str = "") -> tuple:
+def feedback_prueba_contenido(user_name: str = "", reenvio: bool = False) -> tuple:
     """(asunto, html, texto) del mail "¿qué te está pareciendo Rendi?".
 
     Separado del envío para que el panel de admin muestre EXACTAMENTE lo que va
@@ -1044,11 +1054,24 @@ def feedback_prueba_contenido(user_name: str = "") -> tuple:
     pedido de opinión que parece un mailing no lo contesta nadie.
 
     Firma personal (regla del brand kit): el mail pide una respuesta, y se
-    contesta a una persona, no a una marca."""
+    contesta a una persona, no a una marca.
+
+    `reenvio=True` es el de "Volver a mandar": misma pregunta, otra apertura. Un
+    mail idéntico al de hace unos días delata que salió de un botón —justo lo
+    contrario de "lo leo yo"— y el que no contestó la primera vez tampoco va a
+    contestar la copia. Mismo asunto a propósito: Gmail lo junta en la misma
+    conversación, debajo del primero, que es donde tiene sentido."""
     nombre = nombre_de_pila(user_name)
     saludo_html = f"Hola {html.escape(nombre)}," if nombre else "Hola,"
     saludo_txt = f"Hola {nombre}," if nombre else "Hola,"
     asunto = "¿Qué te está pareciendo Rendi?"
+    if reenvio:
+        apertura = ("te había escrito para preguntarte qué te estaba pareciendo "
+                    "Rendi. Ya lo venís usando un poco más, así que te vuelvo a "
+                    "preguntar: ¿cómo lo ves ahora?")
+    else:
+        apertura = ("estás probando Rendi estos días y quería preguntarte, sin "
+                    "vueltas: ¿qué te está pareciendo?")
     preguntas = (
         "¿Qué es lo que más te sirvió hasta ahora?",
         "¿Hubo algo que te confundió, que no funcionó o que buscaste y no encontraste?",
@@ -1057,8 +1080,7 @@ def feedback_prueba_contenido(user_name: str = "") -> tuple:
     body_html = (
         '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
         'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
-        f'<p style="margin:0 0 14px;">{saludo_html} estás probando Rendi estos días y '
-        'quería preguntarte, sin vueltas: ¿qué te está pareciendo?</p>'
+        f'<p style="margin:0 0 14px;">{saludo_html} {html.escape(apertura)}</p>'
         '<p style="margin:0 0 14px;">Rendi lo hacemos un equipo chico, y lo que nos '
         'cuentan los que lo están probando es lo que decide qué arreglamos y qué '
         'hacemos después. No hace falta que sea largo: con una línea alcanza. Si te '
@@ -1071,8 +1093,7 @@ def feedback_prueba_contenido(user_name: str = "") -> tuple:
         '</div>'
     )
     texto = (
-        f"{saludo_txt} estás probando Rendi estos días y quería preguntarte, sin "
-        "vueltas: ¿qué te está pareciendo?\n\n"
+        f"{saludo_txt} {apertura}\n\n"
         "Rendi lo hacemos un equipo chico, y lo que nos cuentan los que lo están "
         "probando es lo que decide qué arreglamos y qué hacemos después. No hace "
         "falta que sea largo: con una línea alcanza. Si te sirve de guía:\n\n"
@@ -1083,11 +1104,12 @@ def feedback_prueba_contenido(user_name: str = "") -> tuple:
     return asunto, body_html, texto
 
 
-def send_trial_feedback(*, to: str, user_name: str = "") -> bool:
+def send_trial_feedback(*, to: str, user_name: str = "", reenvio: bool = False) -> bool:
     """Le pregunta a alguien que está en la prueba gratis qué le está pareciendo
     Rendi. Lo dispara a mano el admin (/api/admin/email/feedback-prueba); no lo
-    manda ningún cron. Las respuestas van a soporte@."""
-    asunto, body_html, texto = feedback_prueba_contenido(user_name)
+    manda ningún cron. Las respuestas van a soporte@. `reenvio` = la versión de
+    "Volver a mandar" (ver feedback_prueba_contenido)."""
+    asunto, body_html, texto = feedback_prueba_contenido(user_name, reenvio=reenvio)
     return _send(to, asunto, body_html, texto, from_addr=_from_support(),
                  reply_to="soporte@rendi.finance")
 

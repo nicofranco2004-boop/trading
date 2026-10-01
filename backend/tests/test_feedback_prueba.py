@@ -101,6 +101,21 @@ class FeedbackDeLaPrueba(unittest.TestCase):
             "WHERE id=?",
             (f(r["trial_started_at"]), f(r["credit_active_until"]),
              f(r["trial_ends_at"]), uid))
+        # El mail automático de arranque sale el día que arranca: si se atrasa
+        # la prueba y no el mail, parece que le llegó "hace un rato".
+        for m in self.conn.execute(
+                "SELECT kind, sent_at FROM trial_email_log WHERE user_id=?", (uid,)).fetchall():
+            self.conn.execute(
+                "UPDATE trial_email_log SET sent_at=? WHERE user_id=? AND kind=?",
+                (f(m["sent_at"]), uid, m["kind"]))
+        self.conn.commit()
+
+    def _envejecer_marca(self, uid, horas):
+        """Corre hacia atrás la fecha en que le llegó ESTE mail."""
+        m = self._marca(uid)
+        self.conn.execute(
+            "UPDATE users SET trial_feedback_email_sent_at=? WHERE id=?",
+            ((datetime.fromisoformat(m) - timedelta(hours=horas)).isoformat(), uid))
         self.conn.commit()
 
     def _pagó(self, uid):
@@ -212,11 +227,13 @@ class FeedbackDeLaPrueba(unittest.TestCase):
     def test_volver_a_mandar_solo_a_los_que_ya_lo_recibieron(self):
         viejo = self._con_prueba(self._persona())
         self._mandar("nuevos")
+        self._envejecer_marca(viejo, 48)
         marca_1 = self._marca(viejo)
         recien = self._con_prueba(self._persona())   # arrancó después del primer envío
 
         res, spy = self._mandar("ya_recibieron")
         self.assertEqual(res["sent_count"], 1)
+        self.assertTrue(spy.call_args.kwargs["reenvio"], "el reenvío salió con el texto del primero")
         self.assertEqual([c.kwargs["to"] for c in spy.call_args_list],
                          [self.conn.execute("SELECT email FROM users WHERE id=?",
                                             (viejo,)).fetchone()["email"]])
@@ -248,6 +265,7 @@ class FeedbackDeLaPrueba(unittest.TestCase):
     def test_reenvio_fallido_deja_la_fecha_que_tenia(self):
         uid = self._con_prueba(self._persona())
         self._mandar("nuevos")
+        self._envejecer_marca(uid, 48)
         antes = self._marca(uid)
         res, _ = self._mandar("ya_recibieron", ok=False)
         self.assertEqual(res["failed_count"], 1)
@@ -268,7 +286,7 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         b = self._con_prueba(self._persona())
 
         # Mientras esta pestaña le manda a A, otra pestaña le gana a B.
-        def otra_pestaña_le_gana_a_b(*, to, user_name=""):
+        def otra_pestaña_le_gana_a_b(*, to, user_name="", reenvio=False):
             otra = main.get_db()
             otra.execute("UPDATE users SET trial_feedback_email_sent_at=? WHERE id=?",
                          (datetime.utcnow().isoformat(), b))
@@ -326,7 +344,7 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         mail_admin = self.conn.execute("SELECT email FROM users WHERE id=?",
                                        (self.admin,)).fetchone()["email"]
         self.assertEqual(r.json(), {"prueba": True, "to": mail_admin, "sent": True})
-        spy.assert_called_once_with(to=mail_admin, user_name="Nicolás")
+        spy.assert_called_once_with(to=mail_admin, user_name="Nicolás", reenvio=False)
         self.assertIsNone(self._marca(alguien))
         self.assertIsNone(self._marca(self.admin))
 
@@ -394,6 +412,8 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         a = self._con_prueba(self._persona())
         b = self._con_prueba(self._persona())
         self._mandar("nuevos")
+        for u in (a, b):
+            self._envejecer_marca(u, 48)
         en_pantalla = self._vistos("ya_recibieron")        # lo que ve el admin
 
         primero, spy1 = self._mandar("ya_recibieron", vistos=en_pantalla)
@@ -401,8 +421,31 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         self.assertEqual(primero["sent_count"], 2)
         self.assertEqual(spy1.call_count, 2)
         self.assertEqual(segundo["sent_count"], 0, "el segundo click volvió a mandar")
-        self.assertEqual(segundo["skipped_count"], 2)
         spy2.assert_not_called()
+
+    def test_reenvio_en_dos_pestañas_a_la_vez_no_duplica(self):
+        """Las dos pestañas arman su lista ANTES de que la otra marque: la espera
+        de 24 h no las frena, lo único que las frena es la marca comparada
+        contra lo que vio cada una."""
+        a = self._con_prueba(self._persona())
+        b = self._con_prueba(self._persona())
+        self._mandar("nuevos")
+        for u in (a, b):
+            self._envejecer_marca(u, 48)
+        en_pantalla = self._vistos("ya_recibieron")
+
+        def otra_pestaña_reenvia_a_b(*, to, user_name="", reenvio=False):
+            otra = main.get_db()
+            otra.execute("UPDATE users SET trial_feedback_email_sent_at=? WHERE id=?",
+                         (datetime.utcnow().isoformat(), b))
+            otra.commit()
+            otra.close()
+            return True
+
+        res, spy = self._mandar("ya_recibieron", vistos=en_pantalla,
+                                side_effect=otra_pestaña_reenvia_a_b)
+        self.assertEqual(spy.call_count, 1, "a B le llegó dos veces")
+        self.assertEqual({x["id"] for x in res["skipped"]}, {b})
 
     def test_los_recien_empezados_se_ven_pero_no_se_les_manda(self):
         hoy = self._con_prueba(self._persona(), arrancó_hace=0)
@@ -418,6 +461,7 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         colados = [{"id": hoy, "sent_at": None}, {"id": casi, "sent_at": None}]
         res, spy = self._mandar("nuevos", vistos=colados)
         self.assertEqual(res["sent_count"], 0)
+        self.assertEqual(res["discarded_count"], 2)
         spy.assert_not_called()
 
     def test_manda_de_a_tandas_y_exige_la_lista_vista(self):
@@ -462,6 +506,69 @@ class FeedbackDeLaPrueba(unittest.TestCase):
             res, _ = self._mandar("nuevos", vistos=vistos, ok=False)
         self.assertEqual(res["failed_count"], 1)
         self.assertEqual([t["id"] for t in res["marcas_trabadas"]], [uid])
+
+
+    # ── 9. segunda auditoría ────────────────────────────────────────────────
+
+    def test_otro_mail_hace_poco_espera_a_mañana_aunque_venga_en_la_lista(self):
+        hoy_aviso = self._con_prueba(self._persona())
+        tranquilo = self._con_prueba(self._persona())
+        self.conn.execute("INSERT OR REPLACE INTO trial_email_log (user_id, kind, sent_at) "
+                          "VALUES (?,?,?)", (hoy_aviso, tr.MAIL_PRO_ENDING,
+                                             (datetime.utcnow() - timedelta(hours=2)).isoformat()))
+        self.conn.commit()
+        v = self._vista()
+        espera = {f["id"]: f["espera"] for f in v["nuevos"]}
+        self.assertIn("hace 2 h", espera[hoy_aviso])
+        self.assertIsNone(espera[tranquilo])
+
+        # Aunque el pedido lo nombre, no sale; y se cuenta para que el total cierre.
+        res, spy = self._mandar("nuevos", vistos=self._vistos(vista=v))
+        self.assertEqual(res["sent_count"], 1)
+        self.assertEqual(res["discarded_count"], 1)
+        self.assertEqual([c.kwargs["to"] for c in spy.call_args_list],
+                         [self.conn.execute("SELECT email FROM users WHERE id=?",
+                                            (tranquilo,)).fetchone()["email"]])
+        self.assertIsNone(self._marca(hoy_aviso))
+
+    def test_recien_recibido_no_se_ofrece_para_reenviar(self):
+        uid = self._con_prueba(self._persona())
+        self._mandar("nuevos")
+        fila = self._vista()["ya_recibieron"][0]
+        self.assertEqual(fila["id"], uid)
+        self.assertIn("lo recibió hace", fila["espera"])
+        self._envejecer_marca(uid, 30)
+        self.assertIsNone(self._vista()["ya_recibieron"][0]["espera"])
+
+    def test_el_reenvio_no_es_el_mismo_mail(self):
+        asunto1, _h1, t1 = emails.feedback_prueba_contenido("Lucía")
+        asunto2, _h2, t2 = emails.feedback_prueba_contenido("Lucía", reenvio=True)
+        self.assertEqual(asunto1, asunto2)          # misma conversación en Gmail
+        self.assertNotEqual(t1.split("\n")[0], t2.split("\n")[0])
+        self.assertTrue(t2.startswith("Hola Lucía, te había escrito"))
+        v = self._vista()
+        self.assertEqual(v["mail_reenvio"]["texto"],
+                         emails.feedback_prueba_contenido("(nombre)", reenvio=True)[2])
+
+    def test_los_dias_se_cuentan_desde_que_arranco(self):
+        """Una prueba que no dura exactamente TRIAL_TOTAL_DAYS (vencimiento
+        movido): contando "total − lo que le queda" daba días negativos y la
+        persona quedaba para siempre en "recién empezados"."""
+        uid = self._con_prueba(self._persona(), arrancó_hace=5)
+        r = self.conn.execute("SELECT trial_ends_at FROM users WHERE id=?", (uid,)).fetchone()
+        mas_tarde = (datetime.fromisoformat(r["trial_ends_at"]) + timedelta(days=12)).isoformat()
+        self.conn.execute("UPDATE users SET trial_ends_at=?, credit_active_until=? WHERE id=?",
+                          (mas_tarde, mas_tarde, uid))
+        self.conn.commit()
+        v = self._vista()
+        self.assertEqual(self._ids(v["nuevos"]), {uid})
+        self.assertEqual(v["nuevos"][0]["dias_en_prueba"], 5)
+
+    def test_nombres_con_coma_y_particulas(self):
+        casos = {"Gómez, Lucía": "Lucía", "de la Fuente": "", "Del Valle": "",
+                 "Lucía,": "Lucía", "María José": "María"}
+        for nombre, esperado in casos.items():
+            self.assertEqual(emails.nombre_de_pila(nombre), esperado, nombre)
 
 
 if __name__ == "__main__":

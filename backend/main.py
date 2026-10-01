@@ -21281,6 +21281,10 @@ FEEDBACK_PRUEBA_LOTE = 20
 # que más te sirvió?" a alguien que se registró hace 10 minutos —y que ese
 # mismo rato recibió el mail automático de bienvenida— no tiene respuesta.
 FEEDBACK_PRUEBA_MIN_DIAS = 3
+# Horas que tiene que esperar alguien a quien le llegó OTRO mail (uno automático
+# de la prueba, o este mismo) antes de que se le pueda mandar: dos mails el
+# mismo día se leen como spam, y el segundo es el que no se abre.
+FEEDBACK_PRUEBA_ESPERA_HORAS = 24
 
 
 class VistoFeedback(BaseModel):
@@ -21746,7 +21750,13 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
     nada, y el panel lo tiene que decir en vez de esconderla en "ya lo recibió".
 
     Los que llevan menos de FEEDBACK_PRUEBA_MIN_DIAS días de prueba van en
-    `recien_empezados`: se ven, pero no se les manda.
+    `recien_empezados`: se ven, pero no se les manda. Y en cualquier lista, la
+    fila con `espera` (le llegó otro mail —automático o este mismo— hace menos
+    de FEEDBACK_PRUEBA_ESPERA_HORAS) se ve pero no sale: el panel no la cuenta
+    en el botón y el backend la descarta aunque venga en `vistos`.
+
+    El reenvío ('ya_recibieron') sale con otra apertura (`reenvio=True`): un
+    mail idéntico al de hace unos días delata que salió de un botón.
 
     `prueba_a_mi=True` manda UN mail al admin que aprieta el botón (a su propio
     mail, no a una dirección que se tipea) y no toca a nadie más: es la forma de
@@ -21769,24 +21779,27 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             if not yo or not (yo["email"] or "").strip():
                 raise HTTPException(400, "Tu cuenta no tiene un mail cargado.")
             try:
-                ok = emails.send_trial_feedback(to=yo["email"], user_name=(yo["name"] or ""))
+                ok = emails.send_trial_feedback(to=yo["email"], user_name=(yo["name"] or ""),
+                                                reenvio=(data.grupo == "ya_recibieron"))
             except Exception as ex:
                 log.error("feedback-prueba: la prueba al admin falló: %s", ex)
                 ok = False
             return {"prueba": True, "to": yo["email"], "sent": bool(ok)}
 
         vivos = _trial.activos(conn, limit=10 ** 6)["usuarios"]
-        marcas = {}
+        marcas, arranques = {}, {}
         if vivos:
             ph = ",".join("?" for _ in vivos)
             for r in conn.execute(
-                f"""SELECT id, trial_feedback_email_sent_at AS enviado FROM users
+                f"""SELECT id, trial_feedback_email_sent_at AS enviado,
+                           trial_started_at AS arranco FROM users
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
                        AND managed_by IS NULL
                        AND TRIM(COALESCE(email,'')) <> ''""",
                     tuple(int(v["id"]) for v in vivos)).fetchall():
                 marcas[int(r["id"])] = r["enviado"]
+                arranques[int(r["id"])] = r["arranco"]
 
         # El último mail AUTOMÁTICO de la prueba que le llegó a cada uno
         # (trial_email_log: arrancó / fin de Pro / quedan 3 días / terminó).
@@ -21810,30 +21823,47 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             except (TypeError, ValueError):
                 return None
 
+        def _h(x):
+            return max(1, round(x))
+
         nuevos, ya_recibieron, recien_empezados = [], [], []
         for v in vivos:   # ya vienen ordenados: primero a los que menos les queda
             vid = int(v["id"])
             if vid not in marcas:
                 continue
-            # Días COMPLETOS de prueba, por la misma definición de días que usa
-            # la barra de la app (`dias_restantes`, redondeo hacia arriba).
-            dias_en_prueba = max(0, _trial.TRIAL_TOTAL_DAYS - int(v["days_left"] or 0))
+            # Días COMPLETOS desde que arrancó. Se cuenta desde el arranque y no
+            # como "total − lo que le queda": eso daba mal para una prueba que no
+            # dure exactamente TRIAL_TOTAL_DAYS (otra versión de la prueba, o un
+            # vencimiento movido a mano).
+            horas_prueba = _horas_desde(arranques.get(vid))
+            dias_en_prueba = int((horas_prueba or 0) // 24)
+            otro = _horas_desde(ultimo_auto[vid]) if vid in ultimo_auto else None
+            propio = _horas_desde(marcas[vid]) if marcas[vid] else None
+            espera = None
+            if otro is not None and otro < FEEDBACK_PRUEBA_ESPERA_HORAS:
+                espera = f"le llegó otro mail de la prueba hace {_h(otro)} h · sale mañana"
+            elif propio is not None and propio < FEEDBACK_PRUEBA_ESPERA_HORAS:
+                espera = f"lo recibió hace {_h(propio)} h · se le puede volver a mandar mañana"
             fila = {"id": vid, "email": v["email"], "name": v.get("name"),
                     "saludo": emails.nombre_de_pila(v.get("name")),
                     "stage": v["stage"], "days_left": v["days_left"],
                     "dias_en_prueba": dias_en_prueba,
                     "sent_at": marcas[vid],
-                    "otro_mail_hace_horas": (_horas_desde(ultimo_auto[vid])
-                                             if vid in ultimo_auto else None)}
+                    "otro_mail_hace_horas": otro,
+                    "espera": espera}
             if fila["sent_at"]:
                 ya_recibieron.append(fila)
             elif dias_en_prueba < FEEDBACK_PRUEBA_MIN_DIAS:
+                fila["espera"] = (f"lleva {dias_en_prueba} "
+                                  f"{'día' if dias_en_prueba == 1 else 'días'} de prueba · "
+                                  f"entra con {FEEDBACK_PRUEBA_MIN_DIAS}")
                 recien_empezados.append(fila)
             else:
                 nuevos.append(fila)
 
         if not data.confirm:
             asunto, _html, texto = emails.feedback_prueba_contenido("(nombre)")
+            _a2, _h2, texto_reenvio = emails.feedback_prueba_contenido("(nombre)", reenvio=True)
             return {
                 "dry_run": True,
                 "en_prueba": len(nuevos) + len(ya_recibieron) + len(recien_empezados),
@@ -21842,14 +21872,22 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
                 "recien_empezados": recien_empezados,
                 "min_dias": FEEDBACK_PRUEBA_MIN_DIAS,
                 "lote": FEEDBACK_PRUEBA_LOTE,
+                "espera_horas": FEEDBACK_PRUEBA_ESPERA_HORAS,
                 "mail": {"asunto": asunto, "texto": texto},
+                "mail_reenvio": {"asunto": _a2, "texto": texto_reenvio},
             }
 
         if data.vistos is None:
             raise HTTPException(422, "Para mandar hace falta la lista que viste (vistos).")
         visto = {int(x.id): x.sent_at for x in data.vistos}
-        grupo = nuevos if data.grupo == "nuevos" else ya_recibieron
-        grupo = [t for t in grupo if t["id"] in visto]
+        reenvio = data.grupo == "ya_recibieron"
+        grupo = ya_recibieron if reenvio else nuevos
+        grupo = [t for t in grupo if t["id"] in visto and not t["espera"]]
+        # Los que el admin vio pero ya no se les puede mandar: dejaron la prueba,
+        # pagaron, o les llegó otro mail hace poco. Se cuentan para que el
+        # resultado cierre con lo que se confirmó.
+        ids_grupo = {t["id"] for t in grupo}
+        descartados = [{"id": i} for i in visto if i not in ids_grupo]
 
         def _deshacer():
             # En Postgres, después de un error la transacción queda abortada y
@@ -21894,7 +21932,8 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             intentos += 1
             ok = False
             try:
-                ok = emails.send_trial_feedback(to=t["email"], user_name=(t.get("name") or ""))
+                ok = emails.send_trial_feedback(to=t["email"], user_name=(t.get("name") or ""),
+                                                reenvio=reenvio)
             except Exception as ex:
                 log.error("feedback-prueba: envío falló para %s: %s", t["email"], ex)
                 ok = False
@@ -21931,6 +21970,7 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             "sent": enviados,
             "failed": fallados,
             "skipped": salteados,
+            "discarded_count": len(descartados),
             "marcas_trabadas": trabadas,
         }
     finally:
