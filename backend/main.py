@@ -6817,6 +6817,9 @@ EVENTS_TTL = 6 * 3600  # 6 horas
 _events_fetch_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="events-fetch")
 _events_en_vuelo = {}            # { ticker: Future } — lo que se está buscando ahora
 _events_en_vuelo_lock = threading.Lock()
+# Lo máximo que una pantalla espera a Yahoo cuando NO hay nada guardado para
+# mostrar. Lo que no llegó a tiempo se guarda igual y aparece en la próxima.
+EVENTOS_ESPERA_MAX_SEG = 8
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -7188,10 +7191,11 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
         mismo pedido (dos personas a la vez = una sola búsqueda);
       · `esperar_segundos=None` → no espera (refresco de fondo); un número →
         espera hasta ese tope y devuelve igual (lo que no llegó se guarda solo).
-    Devuelve cuántos tickers salió a buscar."""
+    Devuelve cuántas búsquedas TERMINARON antes de volver (0 si no espera): es
+    el `refreshed_tickers` de las respuestas, y una búsqueda lanzada que no
+    llegó a tiempo no renovó nada de lo que se está por mostrar."""
     ahora = time.time()
     futuros = []
-    nuevos = 0
     with _events_en_vuelo_lock:
         for t in dict.fromkeys(t for t in tickers if t):
             if ahora - _events_fetched_at.get(t, 0) < EVENTS_TTL:
@@ -7200,11 +7204,11 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
             if fut is None:
                 fut = _events_fetch_executor.submit(_buscar_y_guardar_eventos, t)
                 _events_en_vuelo[t] = fut
-                nuevos += 1
             futuros.append(fut)
-    if futuros and esperar_segundos is not None:
-        _esperar_futuros(futuros, timeout=esperar_segundos)
-    return nuevos
+    if not futuros or esperar_segundos is None:
+        return 0
+    terminados, _ = _esperar_futuros(futuros, timeout=esperar_segundos)
+    return len(terminados)
 
 
 def _eventos_al_dia(conn, tickers: list, days: int = 90) -> int:
@@ -7214,14 +7218,14 @@ def _eventos_al_dia(conn, tickers: list, days: int = 90) -> int:
     /events/popular no la tenía: por eso tardaba 10,7 s y la cartera 0,4 s.
       · Si ya hay eventos guardados en la ventana: se responde con eso YA y los
         vencidos se refrescan de fondo.
-      · Si no hay nada (base vacía): se espera la búsqueda, hasta 8 s.
-    Devuelve cuántos tickers se buscaron esperando."""
+      · Si no hay nada (base vacía): se espera la búsqueda, hasta
+        EVENTOS_ESPERA_MAX_SEG.
+    Devuelve cuántas búsquedas terminaron a tiempo para esta respuesta."""
     if not tickers:
         return 0
     if _has_events_for_tickers(conn, tickers, days=days):
-        _refresh_events_for_tickers(tickers)
-        return 0
-    return _refresh_events_for_tickers(tickers, esperar_segundos=8)
+        return _refresh_events_for_tickers(tickers)
+    return _refresh_events_for_tickers(tickers, esperar_segundos=EVENTOS_ESPERA_MAX_SEG)
 
 
 @app.get("/api/events/earnings-expectations")
@@ -7261,7 +7265,7 @@ def get_portfolio_events(
     Response:
       {
         events: [{ticker, event_type, event_date, details, confirmed, source}],
-        refreshed_tickers: number,  // cuántos tickers se refrescaron del cache
+        refreshed_tickers: number,  // búsquedas a Yahoo que terminaron a tiempo para esta respuesta
       }
     """
     if days <= 0 or days > 365:

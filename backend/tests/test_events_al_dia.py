@@ -137,7 +137,7 @@ class EventosAlDiaTest(unittest.TestCase):
         """Lo que pasaba después de cada publicación: memoria vacía, base con
         datos. Antes esperaba la búsqueda entera; ahora responde ya."""
         self._sembrar(POPULARES)
-        yahoo = _YahooLento(2.0)            # Yahoo lentísimo
+        yahoo = _YahooLento(1.0)            # Yahoo lento: de a una serían 20 s
         with patch.object(main, "_fetch_yf_events", yahoo):
             t0 = time.monotonic()
             r = self.client.get("/api/events/popular?days=90",
@@ -164,27 +164,58 @@ class EventosAlDiaTest(unittest.TestCase):
         tickers = {e["ticker"] for e in r.json()["events"] if e["event_type"] == "earnings"}
         self.assertTrue(set(POPULARES) <= tickers)
 
-    def test_la_cartera_usa_la_misma_regla(self):
-        """/events/portfolio responde con lo guardado aunque Yahoo tarde."""
+    def _usuario_con_nvda(self):
         conn = main.get_db()
         with conn:
             uid = conn.execute("INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
-                               (f"cartera-{time.time()}@rendi.test", "x")).lastrowid
+                               (f"cartera-{self.id()}-{time.time()}@rendi.test", "x")).lastrowid
             conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", (uid, "IBKR", "USDT"))
             conn.execute("""INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash, entry_date)
                             VALUES (?,?,?,?,?,0,?)""", (uid, "IBKR", "NVDA", 10, 1000, "2025-01-02"))
         conn.close()
+        return {"Authorization": f"Bearer {main.create_token(uid)}"}
+
+    def test_la_cartera_usa_la_misma_regla(self):
+        """/events/portfolio responde con lo guardado aunque Yahoo tarde."""
+        auth = self._usuario_con_nvda()
         self._sembrar(["NVDA"])
-        yahoo = _YahooLento(2.0)
+        yahoo = _YahooLento(1.0)
         with patch.object(main, "_fetch_yf_events", yahoo):
             t0 = time.monotonic()
-            r = self.client.get("/api/events/portfolio?days=90",
-                                headers={"Authorization": f"Bearer {main.create_token(uid)}"})
+            r = self.client.get("/api/events/portfolio?days=90", headers=auth)
             tardo = time.monotonic() - t0
             _esperar_fondo()
         self.assertEqual(r.status_code, 200)
-        self.assertLess(tardo, 1.0)
+        self.assertLess(tardo, 0.8)
         self.assertIn("NVDA", {e["ticker"] for e in r.json()["events"]})
+        self.assertEqual(r.json()["refreshed_tickers"], 0)   # no esperó a nadie
+        self.assertEqual(yahoo.pedidos, ["NVDA"])             # …pero renovó de fondo
+
+    def test_cartera_sin_nada_guardado_espera_y_cuenta_lo_que_llego(self):
+        auth = self._usuario_con_nvda()
+        yahoo = _YahooLento(0.1)
+        with patch.object(main, "_fetch_yf_events", yahoo):
+            r = self.client.get("/api/events/portfolio?days=90", headers=auth)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("NVDA", {e["ticker"] for e in r.json()["events"]})
+        self.assertEqual(r.json()["refreshed_tickers"], 1)
+
+    def test_nunca_espera_mas_que_el_tope(self):
+        """Yahoo colgado y nada guardado: la pantalla responde al tope, vacía y
+        diciendo que no renovó nada; lo que llega después se guarda igual."""
+        auth = self._usuario_con_nvda()
+        yahoo = _YahooLento(1.0)
+        with patch.object(main, "_fetch_yf_events", yahoo), \
+             patch.object(main, "EVENTOS_ESPERA_MAX_SEG", 0.2):
+            t0 = time.monotonic()
+            r = self.client.get("/api/events/portfolio?days=90", headers=auth)
+            tardo = time.monotonic() - t0
+            self.assertEqual(r.status_code, 200)
+            self.assertLess(tardo, 0.8, f"tardó {tardo:.2f} s: no respetó el tope")
+            self.assertEqual(r.json()["events"], [])
+            self.assertEqual(r.json()["refreshed_tickers"], 0)
+            _esperar_fondo()
+        self.assertEqual(self._filas(["NVDA"]), 1)   # llegó tarde, pero quedó guardado
 
 
 if __name__ == "__main__":
