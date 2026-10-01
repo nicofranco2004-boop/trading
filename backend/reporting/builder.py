@@ -513,6 +513,139 @@ def _basis_is_incomparable(start_is_mtm: bool, start_value: float,
     return (start_value / base_total) > _UNMEASURED_BASE_TOL
 
 
+def _capital_al_arrancar_el_mes(conn, uid: int, year: int, month: int) -> float:
+    """El capital de la cadena 'global' al ARRANCAR (year, month): al costo y CON
+    lo realizado que quedó adentro. Es el mismo `start` que usa el mes cuando no
+    tiene un cierre medido — `capital_inicio`, o el último cierre si el mes no
+    tiene fila — así día/semana le preguntan a `_basis_is_incomparable` lo mismo.
+
+    ⚠️ CAPITAL, NO LO APORTADO. Contar sólo lo aportado deja afuera la ganancia
+    que quedó adentro: una cuenta que aportó 10.000, cobró 20.000 de ganancia y
+    retiró 15.000 tiene lo aportado en −5.000 y el capital en 15.000. Con lo
+    aportado el guard no se prendía y la semana publicaba "+US$ 23.000" al lado
+    de un mes que decía "sin base".
+    """
+    row = conn.execute(
+        """SELECT capital_inicio FROM monthly_entries
+            WHERE user_id = ? AND broker = 'global' AND year = ? AND month = ?""",
+        (uid, year, month)).fetchone()
+    if row is not None and row["capital_inicio"] is not None:
+        return float(row["capital_inicio"])
+    py, pm = _mes_anterior(year, month)
+    cap = capital_vigente(conn, uid, ["global"], py, pm)
+    if cap is not None:
+        return cap
+    if row is not None:
+        # El mes tiene fila pero sin capital_inicio, y no hay meses antes: el
+        # capital de un mes POSTERIOR ya trae adentro los aportes de éste y los
+        # contaría dos veces.
+        return 0.0
+    # La cadena arranca DESPUÉS de este mes: su capital semilla es plata que la
+    # cuenta ya tenía cuando empezó a registrarse, no un aporte de ningún período.
+    row = conn.execute(
+        """SELECT capital_inicio FROM monthly_entries
+            WHERE user_id = ? AND broker = 'global'
+              AND (year > ? OR (year = ? AND month > ?))
+            ORDER BY year, month LIMIT 1""",
+        (uid, year, year, month)).fetchone()
+    return float(row["capital_inicio"] or 0) if row else 0.0
+
+
+def _flujos_de_la_cadena(conn, uid: int, period_start: str, period_end: str,
+                         es_actual: bool) -> Dict[str, float]:
+    """Aportes y retiros de la cadena 'global' en los meses que toca el período.
+
+    · `dep` / `ret`: todos los meses desde el del arranque hasta el del cierre.
+      Sirven para DECIDIR, igual que el mes compara `capital_inicio` contra los
+      flujos del mes entero.
+    · `dep_seguro` / `ret_seguro`: sólo los meses que caen ENTEROS adentro del
+      período. Son los que se pueden PUBLICAR: la cadena es mensual y no sabe qué
+      día entró la plata, así que un depósito del 5/9 no puede salir como
+      "aportaste en la semana del 28/9". En el período en curso el mes actual
+      cuenta como entero si arrancó adentro: lo que tiene, entró hasta hoy.
+
+    ⚠️ NO SALEN DE `snapshots.net_deposited`. El import estampa ahí los flujos
+    acumulados SIN el capital semilla (`persister._backfill_snapshots_from_monthly`)
+    y el cron CON él: restarlos publicaba el capital semilla entero como aporte
+    ("Aportaste US$ 201.250 en el período" donde fueron 131).
+    """
+    import calendar
+    y0, m0 = int(period_start[:4]), int(period_start[5:7])
+    y1, m1 = int(period_end[:4]), int(period_end[5:7])
+    rows = conn.execute(
+        """SELECT year, month, deposits, withdrawals FROM monthly_entries
+            WHERE user_id = ? AND broker = 'global'
+              AND (year * 12 + month) BETWEEN ? AND ?""",
+        (uid, y0 * 12 + m0, y1 * 12 + m1)).fetchall()
+    out = {"dep": 0.0, "ret": 0.0, "dep_seguro": 0.0, "ret_seguro": 0.0}
+    for r in rows:
+        y, m = int(r["year"]), int(r["month"])
+        dep, ret = float(r["deposits"] or 0), float(r["withdrawals"] or 0)
+        out["dep"] += dep
+        out["ret"] += ret
+        primero = f"{y:04d}-{m:02d}-01"
+        ultimo = f"{y:04d}-{m:02d}-{calendar.monthrange(y, m)[1]:02d}"
+        if primero >= period_start and (es_actual or ultimo <= period_end):
+            out["dep_seguro"] += dep
+            out["ret_seguro"] += ret
+    return out
+
+
+def _fila_fabricada_por_el_import(conn, uid: int, fila) -> bool:
+    """¿Esta fila la fabricó el import (`twr.SINTETICO_COSTO`)?
+
+    Con la clasificación OFICIAL, por serie (`_primer_cierre_aceptado`), y no
+    fila por fila: con `clasificar_fila` suelta los módulos decidían distinto
+    sobre la misma fila legacy. Pide la última fila sintética en o antes de su
+    fecha; si es ella misma, la fabricó el import.
+    """
+    if not fila or not fila.get("date"):
+        return False
+    from twr import SINTETICO_COSTO
+    dia = str(fila["date"])[:10]
+    sint = fetch_snapshot_at_or_before(conn, uid, dia, accept=(SINTETICO_COSTO,),
+                                       require_positive=False)
+    return bool(sint) and str(sint.get("date"))[:10] == dia
+
+
+def _misma_cuenta(a, b) -> bool:
+    """Dos anclas `(capital, flujos)` que dan la misma cuenta: mismo capital de
+    arranque y mismos flujos. Pasa cuando el mes del arranque no tuvo flujos ni
+    resultado, o sea cuando lo que hubo antes del lunes no cambia nada."""
+    return (abs(a[0] - b[0]) < 1 and abs(a[1]["dep"] - b[1]["dep"]) < 1
+            and abs(a[1]["ret"] - b[1]["ret"]) < 1)
+
+
+def _ancla_permite_publicar(capital: float, flujos: Dict[str, float],
+                            end_value: float) -> bool:
+    """¿Se puede publicar `end_value − capital − flujos` para día/semana sin
+    ninguna foto previa? Las MISMAS preguntas que el mes sin borde medido, con
+    las mismas funciones (importadas, no copiadas):
+
+    · `_basis_is_incomparable`: el capital sin medir no pesa más que la
+      tolerancia frente a la plata nueva.
+    · `twr.leg_dudoso`: la resta no es un dato roto.
+    · con arranque 0, la cota del mes para `v0 = 0`: tiene que haber flujos, y el
+      valor no puede superar `SALTO_MAX_VECES` lo aportado — si lo supera, la
+      plata apareció de un lugar que la contabilidad no registra.
+    · con arranque NEGATIVO, nunca: una cartera no vale menos que cero, así que
+      es una cadena rota y no un arranque. Usarlo publicaba el agujero como
+      ganancia, y apoyarse en 0 lo publicaba como pérdida.
+    """
+    import twr as _twr
+    if capital < 0:
+        return False
+    if _basis_is_incomparable(False, capital, flujos["dep"], flujos["ret"]):
+        return False
+    v0 = capital
+    flujo = flujos["dep"] - flujos["ret"]
+    if _twr.leg_dudoso(v0, end_value, flujo):
+        return False
+    if v0 <= 0 and (flujo <= 0 or end_value / flujo > _twr.SALTO_MAX_VECES):
+        return False
+    return True
+
+
 def _border_is_fresh(snap_date: Optional[str], period_start: str,
                      max_lag_days: int = _BORDER_MAX_LAG_DAYS) -> bool:
     """¿El cierre está lo bastante pegado al arranque del período para servirle
@@ -1833,13 +1966,28 @@ def compute_metrics_for_period(
         if snap_start and not _border_is_fresh(snap_start.get("date"), period_start,
                                                max_lag_days=_dw_lag):
             snap_start = None
+        _sin_medicion_previa = False
+        _arranque_fabricado = False   # la fila cruda la escribió el import
         if snap_start is None:
             # Sin borde medido: la fila cruda sirve para el net_deposited (es un
             # stamp de flujos, no una valuación), pero no para restarle el valor
             # de mercado de hoy.
             snap_start = fetch_snapshot_at_or_before(conn, uid, period_start)
+            _arranque_fabricado = _fila_fabricada_por_el_import(conn, uid, snap_start)
             if snap_start and float(snap_start.get("total_value") or 0) > 0:
                 basis_incomparable = True
+            elif snap_start:
+                # Fila cruda en 0 o menos: no prende el guard de arriba. Si la
+                # fabricó el import, su estampa es la de él (SIN capital semilla) y
+                # restarla tampoco mide nada. Medido: semilla de 10.000 retirada en
+                # julio (fila del 31/7 en 0, estampa −10.000), 20.000 nuevos en
+                # septiembre → "Semana: −US$ 9.500 · Aportaste US$ 30.000". Va por
+                # las anclas de la cadena, igual que sin ninguna fila. (Una foto
+                # del cron en 0 es una medición de una cuenta vacía, con su estampa
+                # bien: ésa sigue como estaba.)
+                _sin_medicion_previa = _arranque_fabricado
+            else:
+                _sin_medicion_previa = True
         snap_end = fetch_snapshot_at_or_before(conn, uid, period_end)
         start_value = float(snap_start["total_value"]) if snap_start else 0.0
         _dw_current = live_value is not None and is_period_current(
@@ -1862,8 +2010,142 @@ def compute_metrics_for_period(
             # AUDIT B12: net_deposited NULL → usar start_netdep (no 0, que daría
             # flows negativos falsos → ganancia fantasma).
             end_netdep = float(snap_end["net_deposited"]) if (snap_end and snap_end["net_deposited"] is not None) else start_netdep
+        # ⚠️ SIN NINGUNA FOTO ANTES DEL ARRANQUE, EL "0" DE ARRIBA NO ES UN DATO.
+        # El guard de D-1 de más arriba sólo se enciende si EXISTE una fila cruda
+        # antes del arranque. Cuando no hay ninguna, `start_value` y `start_netdep`
+        # quedan en 0 y todo el capital que la cuenta ya tenía entra como "aporte
+        # del período": la resta vuelve a ser costo-vs-mercado de la vida entera.
+        # Medido el 2026-10-01 con el caso real (cadena desde octubre, la única
+        # fila la fabricó el import el 30/9, adentro de la semana 28/9–4/10): el
+        # mes y el día decían "sin base" y la semana "Semana: −US$ 127.486", con
+        # US$ 201.250 de "aportes". Y no sólo el día 1: una cuenta cuyo capital de
+        # arranque del mes es de 10.000 al costo, que vale 12.000 y todavía no tiene
+        # ninguna foto, leía "Día: +US$ 2.000" y "Semana: +US$ 2.000".
+        # Mismo criterio y misma base que el mes (`_basis_is_incomparable` contra el
+        # capital de la cadena al arrancar el mes): tapa sólo si el capital previo
+        # sin medir pesa; una cuenta que entró con plata nueva dentro del período
+        # sigue midiendo igual que antes.
+        #
+        # ⚠️ EN EL PERÍODO EN CURSO HAY DOS ANCLAS: EL MES DEL ARRANQUE Y EL DE HOY.
+        # La cadena sabe el capital al arrancar cada mes, no el del lunes, y cada
+        # ancla sola se equivoca en un caso real de la semana que cruza de mes:
+        # · sólo el mes del lunes: 100.000 en septiembre, retiro de 95.000 el 10/9 y
+        #   100.000 nuevos el 2/10 → el lunes había 5.000, el mes y el día
+        #   publicaban y la semana decía "sin base" (miraba los 100.000 del 1/9);
+        # · sólo el mes de hoy: el que se registró el 29/9 con plata nueva veía su
+        #   primera semana "sin base" (el 1/10 esa plata ya figura como capital).
+        # Se publica si UNA ancla lo permite. Si las dos lo permiten, sólo si dan la
+        # misma cuenta (el mes del arranque no tuvo flujos ni resultado): si no,
+        # la diferencia es justo lo que pasó entre el 1 del mes y el lunes, o entre
+        # el lunes y fin de mes, y la cadena no sabe cuál de las dos. Medido: el que
+        # entró el 29/9 con 10.000, ganó 500 en septiembre y metió 200.000 el 2/10
+        # leía "+US$ 500 sobre un capital inicial de US$ 10.500" con la de hoy,
+        # cuando el lunes la cuenta no existía.
+        #
+        # ⚠️ Y SE MIDE DESDE EL CAPITAL QUE EL ANCLA VALIDÓ, NO DESDE LO APORTADO.
+        # El ancla decide con el capital (incluye la ganancia que quedó adentro);
+        # publicar `valor − lo aportado` metía esa ganancia histórica en la semana:
+        # septiembre con +50.000 realizados y un retiro de 145.000, 100.000 nuevos en
+        # octubre → "Semana: +US$ 51.000" y el mismo +51.000 en el día, al lado de
+        # un mes que decía +1.000. Es la misma cuenta que hace el mes sin borde
+        # medido: `valor − capital_inicio − flujos del mes`.
+        #
+        # ⚠️ UN PERÍODO PASADO SIN NINGUNA FOTO PREVIA NO SE PUBLICA. Es siempre UNA
+        # sola semana por cuenta: la de su primera foto (un día pasado no puede caer
+        # acá: sin foto en el arranque tampoco la hay en el cierre). Su cierre es
+        # una foto, y la cadena —mensual— no sabe qué flujos entraron antes o
+        # después de ella: medido, un aporte del 20/10 entraba en la semana del 28/9
+        # vista después ("Semana: +US$ 100.000"), y medir desde lo aportado
+        # devolvía la ganancia histórica ("+US$ 51.000 · Aportaste US$ 55.000" para
+        # una semana que, vista en curso, daba +1.000). Mientras está en curso sí se
+        # mide (los flujos de hoy no pueden ser posteriores al cierre).
+        #
+        # ⚠️ CON CAPITAL 0, LAS COTAS DEL MES; NEGATIVO, NUNCA (`_ancla_permite_publicar`).
+        # `_basis_is_incomparable` no tiene nada que medir ahí, y el mes se apoya en
+        # dos cotas más que día y semana no tenían: sin flujos no hay resultado, y
+        # un valor que supera `SALTO_MAX_VECES` lo aportado es plata que la
+        # contabilidad no registra. Sin ellas, el que cargó posiciones por 12.000
+        # sin registrar aportes leía "Semana: +US$ 12.100" — la cartera entera.
+        #
+        # LO QUE ESTO NO RESUELVE (es igual que antes del arreglo): un aporte del
+        # mismo mes pero ANTERIOR al período, sin ninguna foto que lo ubique, se
+        # trata como plata nueva del período. La cadena no tiene la fecha; para el
+        # que se registró esta semana eso es lo correcto, para el que importó tarde
+        # no, y desde acá no hay cómo distinguirlos.
         deposits = max(0.0, end_netdep - start_netdep)
         withdrawals = max(0.0, start_netdep - end_netdep)
+        _flujos_cadena = None
+        # (Menos de un dólar al cierre es una cartera vacía con polvo —restos de
+        # cripto de US$ 0,03—: va por la rama de la cartera en 0, con la misma
+        # tolerancia que el capital y los flujos de ahí abajo.)
+        if _sin_medicion_previa and end_value >= 1:
+            _flujos_cadena = _flujos_de_la_cadena(conn, uid, period_start, period_end,
+                                                  _dw_current)
+            _medible = None
+            if _dw_current:
+                from fechas import hoy_art_date
+                _anclas = [period_start[:7]]
+                _ym_hoy = min(period_end, (today or hoy_art_date()).isoformat())[:7]
+                if _ym_hoy != _anclas[0]:
+                    _anclas.insert(0, _ym_hoy)
+                _permiten = []
+                for _ym in _anclas:
+                    _desde = max(period_start, f"{_ym}-01")
+                    _f = (_flujos_cadena if _desde == period_start else
+                          _flujos_de_la_cadena(conn, uid, _desde, period_end, _dw_current))
+                    _cap = _capital_al_arrancar_el_mes(conn, uid, int(_ym[:4]),
+                                                       int(_ym[5:7]))
+                    if _ancla_permite_publicar(_cap, _f, end_value):
+                        _permiten.append((_cap, _f))
+                if len(_permiten) == 1 or (len(_permiten) == 2 and _misma_cuenta(*_permiten)):
+                    _medible = _permiten[0]
+            if _medible is None:
+                basis_incomparable = True
+            else:
+                # El arranque sigue sin medir: se publica el monto (con el error
+                # acotado por la tolerancia del guard) y no un %.
+                dw_incomplete = True
+                start_value = _medible[0]
+                deposits, withdrawals = _medible[1]["dep"], _medible[1]["ret"]
+        elif _sin_medicion_previa and (snap_start is not None or snap_end is not None
+                                       or _dw_current):
+            # Cartera en 0 al cierre sin medición de arranque: el `end_value > 0` de
+            # arriba la dejaba pasar a la resta de estampas, y la del import va SIN
+            # semilla. Medido: cuenta vaciada en julio que no se movió → "Semana:
+            # −US$ 10.000 · Aportaste US$ 10.000"; y con la PRIMERA fila de la
+            # cuenta adentro de la semana (la del import del 30/9 en 0, estampa
+            # −201.119) → "Semana: +US$ 201.119 · Retiraste US$ 201.119". Si la
+            # cadena no tiene capital ni flujos en el período, no pasó nada; si
+            # tiene, no se mide. Los flujos se miran del mes ENTERO —también los
+            # posteriores al período—, a propósito: un aporte del 20/9 hace que el
+            # 15/9 diga "sin base" en vez de "sin movimientos", el lado seguro.
+            # (Sin ninguna fila hasta el cierre y fuera del período en curso no
+            # entra: es un período anterior a la historia de la cuenta, y ahí no
+            # hay nada que decir.)
+            _f0 = _flujos_de_la_cadena(conn, uid, period_start, period_end, _dw_current)
+            _cap0 = _capital_al_arrancar_el_mes(conn, uid, int(period_start[:4]),
+                                                int(period_start[5:7]))
+            # Tolerancia de un dólar, como `_misma_cuenta`: un residuo de redondeo
+            # de la cadena (capital 0,004) no es capital.
+            if _cap0 < 1 and abs(_f0["dep"]) < 1 and abs(_f0["ret"]) < 1:
+                start_value, deposits, withdrawals = 0.0, 0.0, 0.0
+            else:
+                basis_incomparable = True
+                _flujos_cadena = _f0
+        if basis_incomparable and (snap_start is None or _arranque_fabricado):
+            # ⚠️ SIN BASE Y SIN UNA ESTAMPA DE ARRANQUE CREÍBLE, LOS FLUJOS SALEN DE
+            # LA CADENA. La resta de estampas sólo es un flujo cuando las dos las
+            # escribió el mismo escritor; acá el arranque es una fila del import
+            # (estampa SIN capital semilla) o no existe, y la diferencia publicaba
+            # el capital entero como "Aportaste US$ 201.250 en el período". Se
+            # publican los aportes y retiros que la cadena puede ubicar adentro del
+            # período, y ningún otro. Con una foto del cron vieja de arranque la
+            # resta sí vale (las dos estampas son del cron) y se deja como estaba.
+            if _flujos_cadena is None:
+                _flujos_cadena = _flujos_de_la_cadena(conn, uid, period_start,
+                                                      period_end, _dw_current)
+            deposits = _flujos_cadena["dep_seguro"]
+            withdrawals = _flujos_cadena["ret_seguro"]
         # AUDIT B4/B10: sin snapshot de inicio (start_value=0 con cartera real) el
         # retorno es inmedible → marcamos incompleto (delta_pct=None) en vez de un
         # % disparatado. Igual si la ventana entre bordes es demasiado grande.
