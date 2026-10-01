@@ -381,6 +381,57 @@ class VariacionesF4Test(unittest.TestCase):
                 self.assertEqual(rep.metrics.deposits, 0.0)
                 self.assertEqual(rep.metrics.withdrawals, 0.0)
 
+    def test_d1_primera_semana_del_usuario_nuevo_sigue_publicada_al_terminar(self):
+        """Se registró el 29/9 con 10.000 de plata nueva y el cron lo mide desde ese
+        día. Mientras la semana corría decía "+US$ 150"; terminada, decía "sin base"
+        (main publicaba el +250 correcto). El arranque es 0 de verdad (cuenta sin
+        historia que empieza el mes en 0) y la estampa del cierre es del cron: las
+        dos puntas son exactas. Los otros dos casos fijan el límite de la regla."""
+        from datetime import date
+        from importing.persister import _backfill_snapshots_from_monthly
+
+        def fotos(*filas):
+            for d, v, nd in filas:
+                self.conn.execute(
+                    "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                    "VALUES (?,?,?,?,?,'cron')", (self.uid, d, v, nd, nd))
+
+        with self.subTest(caso="cuenta nueva, cierre del cron"):
+            self._sembrar_cadena(2026, 9, 0, 10000, 10000)
+            self._sembrar_cadena(2026, 10, 10000, 0, 10000)
+            fotos(("2026-09-29", 10000, 10000), ("2026-09-30", 10100, 10000),
+                  ("2026-10-01", 10150, 10000), ("2026-10-04", 10250, 10000))
+            self.conn.commit()
+            en_curso = self._reporte("week", "2026-W40", 10150.0, date(2026, 10, 2))
+            self.assertFalse(en_curso.metrics.basis_incomparable)
+            self.assertAlmostEqual(en_curso.metrics.delta_usd, 150.0, delta=1)
+            for hoy in (date(2026, 10, 6), date(2026, 10, 20)):
+                rep = self._reporte("week", "2026-W40", None, hoy)
+                self.assertFalse(rep.metrics.basis_incomparable, hoy)
+                self.assertAlmostEqual(rep.metrics.delta_usd, 250.0, delta=1)
+                self.assertAlmostEqual(rep.metrics.deposits, 10000.0, delta=1)
+        with self.subTest(caso="cuenta nueva, pero el cierre lo escribió el import"):
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 9, 0, 10000, 10000)
+            _backfill_snapshots_from_monthly(self.conn, self.uid)
+            self.conn.commit()
+            rep = self._reporte("week", "2026-W40", None, date(2026, 10, 6))
+            self.assertTrue(rep.metrics.basis_incomparable)
+        with self.subTest(caso="arranca el mes en 0 pero con historia (ganancia retirada)"):
+            # Semilla 10.000, +2.000 realizados y retiro de 12.000 en julio: arranca
+            # septiembre en 0 pero lo aportado canónico es −2.000, y la estampa del
+            # cron lo arrastra → valor − estampa daba +2.100 por una semana de +100.
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 7, 10000, 0, 0, withdrawals=12000, pnl_realized=2000)
+            self._sembrar_cadena(2026, 9, 0, 5000, 5000)
+            fotos(("2026-09-29", 5000, 3000), ("2026-10-04", 5100, 3000))
+            self.conn.commit()
+            rep = self._reporte("week", "2026-W40", None, date(2026, 10, 6))
+            self.assertTrue(rep.metrics.basis_incomparable)
+            self.assertEqual(rep.metrics.delta_usd, 0.0)
+
     def test_d1_semana_pasada_no_mide_desde_lo_aportado(self):
         """La cuenta se registró el 7/10 (cron desde ese día): septiembre con
         +50.000 realizados y retiro de 145.000, 100.000 nuevos el 2/10. Vista en

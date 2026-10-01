@@ -646,6 +646,43 @@ def _ancla_permite_publicar(capital: float, flujos: Dict[str, float],
     return True
 
 
+def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_end,
+                                      end_value: float, end_netdep: float) -> bool:
+    """¿Se puede publicar un período PASADO sin ninguna foto previa? Sólo cuando
+    las dos puntas son exactas:
+
+    · el arranque: la cuenta no tiene historia antes del mes del arranque y lo
+      empieza en 0 (capital y semilla en 0), así que lo aportado al arrancar es
+      0 de verdad;
+    · el cierre: lo midió el cron, y su estampa de lo aportado es la canónica,
+      con resolución diaria (la del import va sin semilla; la del navegador, a
+      media rueda).
+
+    Y las mismas cotas que el mes para un arranque en 0 (`_ancla_permite_publicar`).
+    Es la primera semana de cada usuario nuevo: tapándola, el que se registró el
+    29/9 con plata nueva veía "+US$ 150" mientras la semana corría y "sin base"
+    desde el lunes siguiente.
+    """
+    if not snap_end or not snap_end.get("date"):
+        return False
+    y, m = int(period_start[:4]), int(period_start[5:7])
+    previa = conn.execute(
+        """SELECT 1 FROM monthly_entries
+            WHERE user_id = ? AND broker = 'global'
+              AND (year < ? OR (year = ? AND month < ?)) LIMIT 1""",
+        (uid, y, y, m)).fetchone()
+    if previa is not None or _capital_al_arrancar_el_mes(conn, uid, y, m) >= 1:
+        return False
+    from twr import MEDICION
+    dia = str(snap_end["date"])[:10]
+    medida = fetch_snapshot_at_or_before(conn, uid, dia, accept=(MEDICION,),
+                                         require_positive=False)
+    if not medida or str(medida.get("date"))[:10] != dia:
+        return False
+    return _ancla_permite_publicar(
+        0.0, {"dep": max(0.0, end_netdep), "ret": max(0.0, -end_netdep)}, end_value)
+
+
 def _border_is_fresh(snap_date: Optional[str], period_start: str,
                      max_lag_days: int = _BORDER_MAX_LAG_DAYS) -> bool:
     """¿El cierre está lo bastante pegado al arranque del período para servirle
@@ -2050,9 +2087,10 @@ def compute_metrics_for_period(
         # un mes que decía +1.000. Es la misma cuenta que hace el mes sin borde
         # medido: `valor − capital_inicio − flujos del mes`.
         #
-        # ⚠️ UN PERÍODO PASADO SIN NINGUNA FOTO PREVIA NO SE PUBLICA. Es siempre UNA
-        # sola semana por cuenta: la de su primera foto (un día pasado no puede caer
-        # acá: sin foto en el arranque tampoco la hay en el cierre). Su cierre es
+        # ⚠️ UN PERÍODO PASADO SIN NINGUNA FOTO PREVIA NO SE PUBLICA, SALVO LA CUENTA
+        # NUEVA (`_cuenta_nueva_con_cierre_del_cron`). Es siempre UNA sola semana por
+        # cuenta: la de su primera foto (un día pasado no puede caer acá: sin foto en
+        # el arranque tampoco la hay en el cierre). Su cierre es
         # una foto, y la cadena —mensual— no sabe qué flujos entraron antes o
         # después de ella: medido, un aporte del 20/10 entraba en la semana del 28/9
         # vista después ("Semana: +US$ 100.000"), y medir desde lo aportado
@@ -2099,6 +2137,14 @@ def compute_metrics_for_period(
                         _permiten.append((_cap, _f))
                 if len(_permiten) == 1 or (len(_permiten) == 2 and _misma_cuenta(*_permiten)):
                     _medible = _permiten[0]
+            elif _cuenta_nueva_con_cierre_del_cron(conn, uid, period_start, snap_end,
+                                                   end_value, end_netdep):
+                # Período pasado de una cuenta NUEVA: el arranque es 0 de verdad y
+                # la estampa del cierre la escribió el cron (exacta, diaria). Sin
+                # esto, la primera semana de cada usuario en prueba mostraba su
+                # número mientras corría y "sin base" desde el lunes siguiente.
+                # Se mide como antes: valor − lo aportado según la estampa.
+                _medible = (0.0, {"dep": deposits, "ret": withdrawals})
             if _medible is None:
                 basis_incomparable = True
             else:
