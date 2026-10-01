@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main  # noqa: E402
+from tests._ia_falsa import eventos  # noqa: E402
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 
@@ -167,10 +168,9 @@ class TestChatConLatido(unittest.TestCase):
             def __init__(s, kw): s.r = _Resp([_Txt("Bien.")])
             def __enter__(s): return s
             def __exit__(s, *a): return False
-            @property
-            def text_stream(s):
+            def __iter__(s):
                 time.sleep(3 * main._LATIDO_SSE_SEG + 0.2)    # pensando
-                yield "Bien."
+                yield from eventos(["Bien."])
             def get_final_message(s): return s.r
 
         mc = MagicMock()

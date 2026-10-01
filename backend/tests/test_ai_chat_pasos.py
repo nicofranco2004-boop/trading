@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main  # noqa: E402
+from tests._ia_falsa import eventos  # noqa: E402
 
 
 class _Txt:
@@ -38,7 +39,7 @@ class _Resp:
 
 class TestPasosDelChat(unittest.TestCase):
 
-    def _frames(self, con_herramienta):
+    def _frames(self, con_herramienta, pensar=False):
         conn = main.get_db()
         self.addCleanup(conn.close)
         for t in ("positions", "brokers", "users", "ai_usage_daily"):
@@ -60,7 +61,8 @@ class TestPasosDelChat(unittest.TestCase):
         class _Stream:
             def __init__(s, kw):
                 s.r = respuesta(kw)
-                s.text_stream = [b.text for b in s.r.content if b.type == "text"]
+                s.pedazos = [b.text for b in s.r.content if b.type == "text"]
+            def __iter__(s): return eventos(s.pedazos, pensar=pensar)
             def __enter__(s): return s
             def __exit__(s, *a): return False
             def get_final_message(s): return s.r
@@ -103,6 +105,34 @@ class TestPasosDelChat(unittest.TestCase):
         # "Armando…" se anuncia antes del texto de la respuesta, no después.
         ult_paso = max(i for i, t in enumerate(tipos) if t == "paso")
         self.assertLess(ult_paso, tipos.index("delta"))
+
+    def test_cuando_la_ia_piensa_se_anuncia_antes_del_texto(self):
+        """MEDIDO el 2026-10-01: 4 s pensando sin ningún paso nuevo — la lista
+        se quedaba en «Leyendo tu cartera» y parecía trabada. Anthropic avisa
+        cuándo empieza a pensar: ese aviso es el paso."""
+        frames = self._frames(con_herramienta=False, pensar=True)
+        pasos = [f["d"] for f in frames if f.get("t") == "paso"]
+        self.assertEqual(pasos, [main._PASO_LEYENDO, main._PASO_PENSANDO])
+        tipos = [f.get("t") for f in frames]
+        ult_paso = max(i for i, t in enumerate(tipos) if t == "paso")
+        self.assertLess(ult_paso, tipos.index("delta"))
+        # Leer los eventos uno por uno no duplica el texto: el SDK manda
+        # también un evento `text` por cada pedazo, y ése se ignora.
+        texto = "".join(f["d"] for f in frames if f.get("t") == "delta")
+        self.assertEqual(texto.split("\n---RENDI---")[0], "Bien.")
+
+    def test_sin_pensar_no_se_inventa_el_paso(self):
+        frames = self._frames(con_herramienta=False, pensar=False)
+        pasos = [f["d"] for f in frames if f.get("t") == "paso"]
+        self.assertNotIn(main._PASO_PENSANDO, pasos)
+
+    def test_con_herramienta_piensa_una_sola_vez(self):
+        """La vuelta que arma la respuesta también piensa, pero eso ya lo dice
+        «Armando la respuesta con lo que encontré»: no se repite."""
+        frames = self._frames(con_herramienta=True, pensar=True)
+        pasos = [f["d"] for f in frames if f.get("t") == "paso"]
+        self.assertEqual(pasos, [main._PASO_LEYENDO, main._PASO_PENSANDO,
+                                 "Mirando el dólar", main._PASO_ARMANDO])
 
 
 if __name__ == "__main__":
