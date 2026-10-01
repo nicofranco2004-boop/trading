@@ -30917,6 +30917,21 @@ _PASOS_HUMANOS = {
 }
 
 
+# Las dos etapas que recorre TODA respuesta, además de las herramientas: la IA
+# lee la cartera y la pregunta (el primer llamado al modelo, que tarda lo que
+# tarda en leer el contexto), y — si salió a buscar datos — vuelve a escribir
+# con lo que encontró. Se anuncian en el momento en que empiezan, no antes:
+# hasta el 2026-09-30 sólo se anunciaban las herramientas, así que una pregunta
+# que se contestaba con la cartera no mostraba ningún paso.
+_PASO_LEYENDO = "Leyendo tu cartera"
+_PASO_LEYENDO_LIBRO = "Leyendo las carteras de tus clientes"
+_PASO_ARMANDO = "Armando la respuesta con lo que encontré"
+
+
+def _paso_frame(texto: str) -> str:
+    return "data: " + json.dumps({"t": "paso", "d": texto}, ensure_ascii=False) + "\n\n"
+
+
 def _paso_humano(nombres) -> str:
     """La frase que se le muestra al usuario para un turno de herramientas.
 
@@ -32302,7 +32317,15 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # herramienta (ver _falto_el_registro) — sin el extra, el flujo
                 # se quedaba sin presupuesto y el modelo "prometía" sin armar
                 # el draft.
+                yield _paso_frame(_PASO_LEYENDO_LIBRO if book_mode else _PASO_LEYENDO)
+                # ¿La vuelta anterior ejecutó herramientas? Sólo entonces el
+                # llamado siguiente es "armar la respuesta con lo que encontré"
+                # (un reintento del registro vuelve a llamar sin haber buscado).
+                _busco_algo = False
                 for _turn in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
+                    if _busco_algo:
+                        yield _paso_frame(_PASO_ARMANDO)
+                        _busco_algo = False
                     # La 1ra vuelta de un turno de registro puede terminar
                     # descartada (si no llamó la herramienta se le vuelve a
                     # pedir): su voz NO se adelanta, o Rendi arrancaría a
@@ -32417,7 +32440,10 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         break
                     messages_loop.append({"role": "assistant", "content": _sanitize_assistant_blocks(resp.content)})
                     messages_loop.append({"role": "user", "content": tool_results})
+                    _busco_algo = True
                 # Fallback: forzar síntesis sin tools (mismo criterio que el path JSON).
+                if _busco_algo:
+                    yield _paso_frame(_PASO_ARMANDO)
                 with client.messages.stream(
                     model=chat_model,
                     max_tokens=max_tokens_fallback,

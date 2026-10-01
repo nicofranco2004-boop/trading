@@ -1,0 +1,109 @@
+"""Los pasos que Rendi AI muestra mientras piensa salen de etapas REALES.
+
+Hasta el 2026-09-30 el servidor sólo anunciaba las herramientas: una pregunta
+que se contestaba con la cartera no mostraba ningún paso (lo reportó Nico:
+"no muestra la lista de las cosas que está haciendo"). Ahora anuncia también
+las dos etapas que recorre toda respuesta — leer la cartera, y armar la
+respuesta con lo que encontró si salió a buscar datos — en el momento en que
+empiezan. Este test pasa por el endpoint real con un modelo de mentira y lee
+los frames del stream en orden.
+"""
+import json
+import os
+import sys
+import unittest
+from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import main  # noqa: E402
+
+
+class _Txt:
+    type = "text"
+    def __init__(self, t): self.text = t
+    def model_dump(self): return {"type": "text", "text": self.text}
+
+
+class _Tool:
+    type = "tool_use"
+    def __init__(self, n): self.name, self.input, self.id = n, {}, "tu1"
+    def model_dump(self): return {"type": "tool_use", "id": self.id, "name": self.name, "input": {}}
+
+
+class _Resp:
+    def __init__(self, content, stop="end_turn"):
+        self.content, self.stop_reason, self.usage = content, stop, None
+
+
+class TestPasosDelChat(unittest.TestCase):
+
+    def _frames(self, con_herramienta):
+        conn = main.get_db()
+        self.addCleanup(conn.close)
+        for t in ("positions", "brokers", "users", "ai_usage_daily"):
+            conn.execute(f"DELETE FROM {t}")
+        uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,?)",
+            ("pasos@rendi.test", "x", "pro")).lastrowid
+        conn.commit()
+        token = main.create_token(uid)
+        llamados = []
+
+        def respuesta(kw):
+            llamados.append(1)
+            # 1ª vuelta: sale a buscar el dólar; 2ª: contesta.
+            if con_herramienta and len(llamados) == 1:
+                return _Resp([_Tool("get_fx_rates")], stop="tool_use")
+            return _Resp([_Txt("Bien.")])
+
+        class _Stream:
+            def __init__(s, kw):
+                s.r = respuesta(kw)
+                s.text_stream = [b.text for b in s.r.content if b.type == "text"]
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+            def get_final_message(s): return s.r
+
+        mc = MagicMock()
+        mc.messages.create.side_effect = lambda **kw: respuesta(kw)
+        mc.messages.stream.side_effect = lambda **kw: _Stream(kw)
+        from fastapi.testclient import TestClient
+        tool_fake = lambda content, uid, tier, tc, mx, **k: (
+            [{"type": "tool_result", "tool_use_id": "tu1", "content": "{}"}], tc + 1)
+        with patch.object(main, "_get_anthropic_client", return_value=mc), \
+             patch.object(main, "_kick_bench_refresh", lambda: None), \
+             patch.object(main, "_ai_chat_exec_tools", side_effect=tool_fake):
+            r = TestClient(main.app).post(
+                "/api/ai/chat", headers={"Authorization": f"Bearer {token}"},
+                json={"messages": [{"role": "user", "content": "¿Cómo está mi portfolio en general?"}],
+                      "snapshot": {"summary": {}, "positions": [], "operations": [],
+                                   "monthly": [], "brokers": []},
+                      "stream": True})
+        self.assertEqual(r.status_code, 200, r.text)
+        frames = []
+        for linea in r.text.splitlines():
+            if linea.startswith("data:"):
+                frames.append(json.loads(linea[5:].strip()))
+        return frames
+
+    def test_sin_herramientas_igual_muestra_que_lee_la_cartera(self):
+        frames = self._frames(con_herramienta=False)
+        pasos = [f["d"] for f in frames if f.get("t") == "paso"]
+        self.assertEqual(pasos, [main._PASO_LEYENDO])
+        # Y llega ANTES que el texto: es lo que se ve mientras espera.
+        tipos = [f.get("t") for f in frames]
+        self.assertLess(tipos.index("paso"), tipos.index("delta"))
+
+    def test_con_herramienta_lee_busca_y_arma_en_ese_orden(self):
+        frames = self._frames(con_herramienta=True)
+        pasos = [f["d"] for f in frames if f.get("t") == "paso"]
+        self.assertEqual(pasos, [main._PASO_LEYENDO, "Mirando el dólar", main._PASO_ARMANDO])
+        tipos = [f.get("t") for f in frames]
+        # "Armando…" se anuncia antes del texto de la respuesta, no después.
+        ult_paso = max(i for i, t in enumerate(tipos) if t == "paso")
+        self.assertLess(ult_paso, tipos.index("delta"))
+
+
+if __name__ == "__main__":
+    unittest.main()
