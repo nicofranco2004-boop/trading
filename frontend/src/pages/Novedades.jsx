@@ -69,7 +69,7 @@ function PersonalNovedades() {
       <PageHeader
         title="Novedades"
         subtitle="Eventos financieros y noticias del mercado — todo en un solo lugar."
-        meta="Live · Google News + yfinance"
+        meta="Google News + yfinance"
       />
 
       {/* Tabs outer — section selector con border-b prominente. Más grandes

@@ -776,6 +776,14 @@ export function sumarPaso(lista, p) {
   if (!p) return lista
   return lista[lista.length - 1] === p ? lista : [...lista, p]
 }
+// ¿Qué mensaje se está escribiendo AHORA? El último, de Rendi, con el turno en
+// curso y el texto ya llegando (`loading` se apaga con la primera letra). -1 si
+// ninguno: antes de la primera letra se ven los pasos, no un cursor.
+export function escribiendoEn(thread, sending, loading) {
+  if (!sending || loading || !thread?.length) return -1
+  const i = thread.length - 1
+  return thread[i]?.role === 'assistant' ? i : -1
+}
 export function esRecienLlegada(m, ahora = Date.now()) {
   return !!m?.llego && ahora - m.llego < RECIEN_LLEGADA_MS
 }

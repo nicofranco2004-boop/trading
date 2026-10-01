@@ -18,13 +18,15 @@ import { useState, useRef, useEffect } from 'react'
 import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity, Volume2, Pause, Loader2, Check } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
+import { puedeChatLibre } from '../utils/chatLibre'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard, { kindDeCuota } from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
-import { useVoz, esRecienLlegada } from '../contexts/VozContext'
+import { useVoz, esRecienLlegada, escribiendoEn } from '../contexts/VozContext'
+import CursorEscribiendo from './ai/CursorEscribiendo'
 import { entrada } from '../hooks/useAlVerse'
 import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
@@ -87,6 +89,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           sending, loading, pasos, askError: error,
           upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError,
           motivoSinVoz } = useVoz()
+  // La respuesta que se está escribiendo ahora lleva un cursor al final.
+  const iEscribiendo = escribiendoEn(messages, sending, loading)
   // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
   //
   // No alcanza con que coincida el texto: la respuesta se guarda como "actual"
@@ -101,7 +105,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // features — en contexto de cliente el lente es 'pro' y ahí el chat es el
   // normal de ESA cartera.
   const bookMode = user?.tier === 'advisor' && !clientCtx
-  const canChatFree = isPro || isAdmin || bookMode  // chat libre = Pro/Admin/asesor
+  const canChatFree = puedeChatLibre({ isPro, isAdmin, user, clientCtx })  // chat libre = Pro/Admin/asesor
   const SUGGESTED = bookMode
     ? ADVISOR_SUGGESTED
     : (suggested && suggested.length > 0) ? suggested.slice(0, 12) : DEFAULT_SUGGESTED
@@ -360,7 +364,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                     </div>
                   )
                 })()}
-                <div className="text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap">{prose}</div>
+                <div className="text-[14.5px] text-ink-1 leading-relaxed whitespace-pre-wrap">{prose}{i === iEscribiendo && <CursorEscribiendo />}</div>
                 {meta?.stats?.length > 0 && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
                     {meta.stats.map((s, k) => {

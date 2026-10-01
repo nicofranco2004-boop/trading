@@ -13,13 +13,16 @@
 //
 // La sección de la ruta activa se abre sola. Acordeón de a uno (abrir una cierra
 // las demás). Mobile: design aparte.
+//
+// QUÉ pantallas se ven (y la regla del asesor) sale de utils/navegacion.js, la
+// misma lista que usa el buscador ⌘K. Arriba, junto a la moneda, el botón
+// "Buscar… ⌘K" abre ese buscador (para quien no conoce el atajo).
 
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
-  Briefcase, List, Wallet, LineChart, Activity, Newspaper, Compass, TrendingUp,
-  Gauge, Bell, Upload, BookOpen, Settings, MessageCircle, Sparkles, Shield,
-  Sun, Moon, LogOut, Menu, ChevronRight, LayoutDashboard, UserRound, Users, CalendarDays,
+  MessageCircle, Sparkles,
+  Sun, Moon, LogOut, Menu, ChevronRight, Users, Search,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import CurrencySwitcher from './CurrencySwitcher'
@@ -29,52 +32,17 @@ import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { prefetchRoute } from '../utils/routePrefetch'
+import { menuVisible, GROUPS } from '../utils/navegacion'
+import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
 
 const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
 const LS_KEY = 'rendi_sidebar_collapsed'
 
-// ── 3 secciones acordeón ──────────────────────────────────────────────────
-// • Tu Cartera: lo que tenés y moviste (lo que navegás seguido).
-// • Mercado:    qué pasa afuera (el pulso del día + las noticias).
-// • Análisis:   entender e interpretar (performance + calidad de tenencias).
-// NOTA: el ítem "Rendimiento" (/analisis) se llamaba "Análisis"; se renombró
-// para no chocar con el nombre del grupo. Si preferís, volvé a "Análisis" o
-// "Diagnóstico".
-const GROUPS = [
-  {
-    id: 'cartera', label: 'Tu Cartera', icon: Wallet,
-    items: [
-      { to: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard },
-      { to: '/posiciones',  label: 'Cartera',      icon: Briefcase },
-      { to: '/operaciones', label: 'Movimientos',  icon: List },
-    ],
-  },
-  {
-    id: 'mercado', label: 'Mercado', icon: LineChart,
-    items: [
-      { to: '/',          label: 'Resumen',   icon: Activity },
-      { to: '/novedades', label: 'Novedades', icon: Newspaper },
-    ],
-  },
-  {
-    id: 'analisis', label: 'Análisis', icon: Compass,
-    items: [
-      { to: '/analisis',        label: 'Métricas',           icon: TrendingUp },
-      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge },
-      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
-    ],
-  },
-]
-
-// Sueltos — siempre visibles, fuera del acordeón (acciones a mano). El puntito
-// de "Alertas" ya NO es estático: se muestra sólo si hay eventos sin ver
-// (unseenCount), ver el render abajo.
-const LOOSE = [
-  { to: '/alertas', label: 'Alertas',  icon: Bell },
-  { to: '/imports', label: 'Importar', icon: Upload },
-]
+// Las listas de pantallas y quién ve cuáles viven en utils/navegacion.js: las
+// comparte el buscador rápido ⌘K (BuscadorRapido), así nunca ofrece un lugar
+// que este menú no muestra.
 
 // ¿La ruta actual cae dentro de este `to`? '/' es exacto; el resto por prefijo.
 function matchPath(pathname, to) {
@@ -89,22 +57,11 @@ export default function Sidebar() {
   const location = useLocation()
   const { unseenCount = 0 } = useAlertsContext()  // badge de alertas sin ver
   const { clientCtx } = useAdvisorContext()
-  // Ítem "Clientes": solo cuentas con el plan Asesor de verdad (mismo
-  // predicado que el gate de /clientes) — is_admin NO alcanza, se paga o se
-  // otorga por grant-comp, no es un bypass genérico de admin.
-  const isAdvisor = user?.tier === 'advisor'
-  // El asesor EN SU PROPIO NIVEL (sin haber entrado a la cuenta de un
-  // cliente) no tiene cartera propia — decisión de producto: si quiere
-  // invertir él, se agrega como su propio cliente, no mezcla cuenta de
-  // trabajo con personal. Tu Cartera/Mercado/Análisis + los sueltos
-  // (Alertas/Importar) asumen una cartera cargada → no aplican acá. Adentro
-  // de un cliente (clientCtx activo) es SU cartera → todo vuelve a mostrarse.
-  const atOwnLevel = isAdvisor && !clientCtx
-  const visibleGroups = atOwnLevel ? [] : GROUPS
+  // Qué ve cada uno (asesor en su nivel, adentro de un cliente, el resto):
+  // la regla vive en utils/navegacion.js, compartida con el buscador ⌘K.
+  const { atOwnLevel, groups: visibleGroups, loose: visibleLoose,
+          asesorPropio, clientesDesdeCliente, utilidades } = menuVisible({ user, clientCtx })
   const visibleLeaves = visibleGroups.flatMap(g => g.items)
-  // El asesor SÍ ve Alertas a su nivel (brief del libro + avisos de sus
-  // clientes); lo que no aplica es Importar (no tiene cartera propia).
-  const visibleLoose = atOwnLevel ? LOOSE.filter(i => i.to === '/alertas') : LOOSE
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
 
@@ -163,8 +120,20 @@ export default function Sidebar() {
           siempre en el mismo lugar y no adentro de la pantalla de turno.
           Antes vivía repartido (toolbar de Cartera, hero del Dashboard,
           /config) y en Métricas no estaba, aunque sus números sí la respetan. */}
-      <div className={`flex-shrink-0 border-b border-line ${collapsed ? 'px-2 py-2 flex justify-center' : 'px-2.5 py-2.5'}`}>
+      <div className={`flex-shrink-0 border-b border-line ${collapsed ? 'px-2 py-2 flex flex-col items-center' : 'px-2.5 py-2.5'}`}>
         <CurrencySwitcher variant={collapsed ? 'mini' : 'row'} />
+        {/* El buscador ⌘K, a la vista: quien no conoce el atajo lo descubre
+            acá (y el atajo está escrito al lado). */}
+        <button
+          type="button"
+          onClick={abrirBuscador}
+          title={collapsed ? `Buscar (${atajoBuscador()})` : undefined}
+          aria-label="Buscar en Rendi"
+          className={`mt-2 flex items-center gap-2 rounded border border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2 transition-colors ${collapsed ? 'p-1.5' : 'w-full px-2.5 py-1.5 text-[13px]'}`}
+        >
+          <Search size={14} strokeWidth={1.75} aria-hidden="true" />
+          {!collapsed && <><span className="flex-1 text-left">Buscar…</span><kbd className="text-[11px] text-ink-3">{atajoBuscador()}</kbd></>}
+        </button>
       </div>
 
       {/* Navegación */}
@@ -176,62 +145,23 @@ export default function Sidebar() {
             los dos al mismo tiempo. */}
         {atOwnLevel && (
           <div className="mb-4 space-y-1">
-            <NavLink to="/dashboard" title={collapsed ? 'Dashboard' : undefined}
-              onMouseEnter={() => prefetchRoute('/dashboard')} onFocus={() => prefetchRoute('/dashboard')}
-              className={rowCls}>
-              {({ isActive }) => (<>
-                {isActive && <ActiveBar />}
-                <LayoutDashboard size={18} strokeWidth={1.75} aria-hidden="true" />
-                {!collapsed && <span>Dashboard</span>}
-              </>)}
-            </NavLink>
-            <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
-              onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}
-              className={rowCls}>
-              {({ isActive }) => (<>
-                {isActive && <ActiveBar />}
-                <Users size={18} strokeWidth={1.75} aria-hidden="true" />
-                {!collapsed && <span>Clientes</span>}
-              </>)}
-            </NavLink>
-            <NavLink to="/novedades" title={collapsed ? 'Novedades' : undefined}
-              onMouseEnter={() => prefetchRoute('/novedades')} onFocus={() => prefetchRoute('/novedades')}
-              className={rowCls}>
-              {({ isActive }) => (<>
-                {isActive && <ActiveBar />}
-                <Newspaper size={18} strokeWidth={1.75} aria-hidden="true" />
-                {!collapsed && <span>Novedades</span>}
-              </>)}
-            </NavLink>
-            {/* Cobros: cupones y amortizaciones de los bonos de TODOS los
-                clientes, con quién cobra cuánto (pedido de un tester, 2026-09). */}
-            <NavLink to="/cobros" title={collapsed ? 'Cobros' : undefined}
-              onMouseEnter={() => prefetchRoute('/cobros')} onFocus={() => prefetchRoute('/cobros')}
-              className={rowCls}>
-              {({ isActive }) => (<>
-                {isActive && <ActiveBar />}
-                <CalendarDays size={18} strokeWidth={1.75} aria-hidden="true" />
-                {!collapsed && <span>Cobros</span>}
-              </>)}
-            </NavLink>
-            {/* Carga de historiales de varios clientes por tanda. Reemplaza, a
-                este nivel, al "Importar CSV" que se oculta (el asesor no tiene
-                cartera propia que importar). */}
-            <NavLink to="/importar-historiales" title={collapsed ? 'Importar historiales' : undefined}
-              onMouseEnter={() => prefetchRoute('/importar-historiales')} onFocus={() => prefetchRoute('/importar-historiales')}
-              className={rowCls}>
-              {({ isActive }) => (<>
-                {isActive && <ActiveBar />}
-                <Upload size={18} strokeWidth={1.75} aria-hidden="true" />
-                {!collapsed && <span>Importar historiales</span>}
-              </>)}
-            </NavLink>
+            {asesorPropio.map(({ to, label, icon: Icon }) => (
+              <NavLink key={to} to={to} title={collapsed ? label : undefined}
+                onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+                className={rowCls}>
+                {({ isActive }) => (<>
+                  {isActive && <ActiveBar />}
+                  <Icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                  {!collapsed && <span>{label}</span>}
+                </>)}
+              </NavLink>
+            ))}
           </div>
         )}
         {/* Dentro de un cliente, "Clientes" sigue accesible para volver al
             roster, pero SIN el Dashboard standalone de arriba (ese cliente
             ya tiene el suyo propio en la sección Tu Cartera de abajo). */}
-        {isAdvisor && !atOwnLevel && (
+        {clientesDesdeCliente && (
           <div className="mb-4">
             <NavLink to="/clientes" title={collapsed ? 'Clientes' : undefined}
               onMouseEnter={() => prefetchRoute('/clientes')} onFocus={() => prefetchRoute('/clientes')}
@@ -349,31 +279,24 @@ export default function Sidebar() {
 
         <div className="border-t border-line/40 my-2 mx-1" aria-hidden="true" />
 
-        {user?.is_admin && (
-          <NavLink to="/admin" title={collapsed ? 'Admin' : undefined} className={rowCls}>
-            {({ isActive }) => (<><Shield size={16} strokeWidth={1.75} aria-hidden="true" />{!collapsed && <span>Admin</span>}{isActive && <ActiveBar />}</>)}
+        {/* Admin, Guía y Configuración: la lista vive en utils/navegacion.js
+            (UTILIDADES), compartida con el buscador ⌘K. Admin conserva su
+            estilo de fila; las otras dos, el de utilidad. */}
+        {utilidades.map(({ to, label, icon: Icon, soloAdmin }) => soloAdmin ? (
+          <NavLink key={to} to={to} title={collapsed ? label : undefined} className={rowCls}>
+            {({ isActive }) => (<><Icon size={16} strokeWidth={1.75} aria-hidden="true" />{!collapsed && <span>{label}</span>}{isActive && <ActiveBar />}</>)}
           </NavLink>
-        )}
-
-        <NavLink to="/guia" title={collapsed ? 'Guía' : undefined}
-          onMouseEnter={() => prefetchRoute('/guia')} onFocus={() => prefetchRoute('/guia')}
-          className={({ isActive }) =>
-            `flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors ${
-              isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
-            }`}>
-          <BookOpen size={16} strokeWidth={1.75} aria-hidden="true" />
-          {!collapsed && <span>Guía</span>}
-        </NavLink>
-
-        <NavLink to="/config" title={collapsed ? 'Configuración' : undefined}
-          onMouseEnter={() => prefetchRoute('/config')} onFocus={() => prefetchRoute('/config')}
-          className={({ isActive }) =>
-            `flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors ${
-              isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
-            }`}>
-          <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
-          {!collapsed && <span>Configuración</span>}
-        </NavLink>
+        ) : (
+          <NavLink key={to} to={to} title={collapsed ? label : undefined}
+            onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
+            className={({ isActive }) =>
+              `flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors ${
+                isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-3 hover:text-ink-1 hover:bg-bg-1'
+              }`}>
+            <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
+            {!collapsed && <span>{label}</span>}
+          </NavLink>
+        ))}
 
         <button type="button" onClick={() => setRecomOpen(true)}
           title={collapsed ? 'Recomendaciones' : 'Mandanos una recomendación'}

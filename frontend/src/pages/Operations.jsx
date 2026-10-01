@@ -14,6 +14,7 @@
 // con ternario — el guard congela `fork_ternario` en 0. Modelo: Config.jsx:779.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useRecienLlegadas, paginaDeLaNueva } from '../hooks/useRecienLlegadas'
 import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
@@ -129,9 +130,12 @@ export default function Operations() {
     })
   }
 
+  // `brokersListos`: la lista ya llegó (aunque venga vacía). Lo espera el
+  // "Cargar una operación" del buscador ⌘K para abrir el formulario.
+  const [brokersListos, setBrokersListos] = useState(false)
   useEffect(() => {
     load()
-    api.get('/brokers').then(b => setBrokers(b))
+    api.get('/brokers').then(b => setBrokers(b)).finally(() => setBrokersListos(true))
   }, [])
 
   async function load() {
@@ -160,6 +164,15 @@ export default function Operations() {
     setForm({ ...EMPTY, broker: brokers[0]?.name ?? '' })
     setModal('add')
   }
+  // /operaciones?nueva=1 abre el formulario de una operación nueva: así llega
+  // el "Cargar una operación" del buscador ⌘K desde cualquier pantalla. Se saca
+  // el parámetro al abrir, para que volver atrás o recargar no lo reabra.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('nueva') !== '1' || !brokersListos) return
+    openAdd()
+    setSearchParams(prev => { const sp = new URLSearchParams(prev); sp.delete('nueva'); return sp }, { replace: true })
+  }, [searchParams, brokersListos]) // eslint-disable-line react-hooks/exhaustive-deps
   function openEdit(op) {
     // pnl_usd: si la op vino con null, lo mostramos como '' (no como "null"
     // string). Si es 0 deliberado, queda 0 visible en el input.

@@ -8,11 +8,15 @@
 //   title       → string (requerido)
 //   subtitle    → string opcional
 //   action      → ReactNode a la derecha
-//   meta        → string (timestamp / contexto live)
+//   meta        → string (contexto) o un nodo que se dibuja tal cual — los
+//                 precios van con <PreciosEnVivo>, que decide si su punto late
 //   bordered    → bool (divider abajo)
 
 export default function PageHeader({ title, subtitle, action, meta, bordered = false, eyebrow }) {
-  const isLive = meta && /precios|live|actualizado/i.test(meta)
+  // El punto que late lo decide quien SABE si el dato se mueve (un nodo como
+  // <PreciosEnVivo>), nunca un texto fijo. Hasta el 2026-10-01 bastaba la
+  // palabra "precios" o "live": Cartera, Dashboard y Novedades latían siempre,
+  // con el mercado cerrado y con datos que nadie volvía a pedir.
 
   return (
     <div
@@ -38,9 +42,9 @@ export default function PageHeader({ title, subtitle, action, meta, bordered = f
         )}
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
-        {meta && (
+        {meta && typeof meta !== 'string' && meta}
+        {meta && typeof meta === 'string' && (
           <span className="inline-flex items-center gap-2 text-[12px] text-ink-2 font-medium">
-            {isLive && <span className="live-dot" aria-hidden />}
             {meta}
           </span>
         )}
