@@ -31745,7 +31745,13 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     # TEMPORAL (diagnóstico): ver _diag_cliente_con_reloj.
     _registro_api = None
     if request.query_params.get("reloj") == "1" and _diag_es_admin(request, uid):
-        client, _registro_api = _diag_cliente_con_reloj()
+        try:
+            client, _registro_api = _diag_cliente_con_reloj()
+        except Exception as ex:   # que el diagnóstico no tumbe el chat: sigue con el cliente normal
+            log.exception("diag reloj: no se pudo armar el cliente con reloj")
+            _registro_api = [(time.monotonic(), 0, {
+                f"FALLO_{type(ex).__name__}": 1,
+                str(ex)[:200].replace(" ", "_").replace(",", ";").replace("\n", "_"): 1})]
 
     from ai import quota
 
