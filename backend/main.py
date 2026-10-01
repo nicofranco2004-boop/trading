@@ -46,6 +46,7 @@ except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
+from eventos_guardados import eventos_guardados
 import yfinance as yf
 import requests
 import logging
@@ -6962,32 +6963,10 @@ def get_popular_events(
         except Exception:
             pass
 
-        placeholders = ','.join('?' for _ in popular)
-        rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed, source
-                FROM financial_events
-                WHERE ticker IN ({placeholders})
-                  AND event_date >= ?
-                  AND event_date <= ?
-                ORDER BY event_date ASC""",
-            (*popular, today, end_date),
-        ).fetchall()
-
-        ticker_events = []
-        for r in rows:
-            try:
-                details = json.loads(r['details']) if r['details'] else {}
-            except Exception:
-                details = {}
-            ticker_events.append({
-                'ticker': r['ticker'],
-                'event_type': r['event_type'],
-                'event_date': r['event_date'],
-                'details': details,
-                'confirmed': bool(r['confirmed']),
-                'source': r['source'],
-                'in_portfolio': r['ticker'] in user_tickers,
-            })
+        ticker_events = [
+            {**ev, 'in_portfolio': ev['ticker'] in user_tickers}
+            for ev in eventos_guardados(conn, popular, days)
+        ]
 
         # Combinamos y ordenamos por fecha
         all_events = macro_events + ticker_events
@@ -7131,18 +7110,9 @@ def _fetch_yf_events(ticker: str) -> list:
 
 
 def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
-    """Quick check: ¿hay eventos en DB para alguno de esos tickers en ventana?"""
-    if not tickers:
-        return False
-    today = _iso_today()
-    end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
-    placeholders = ','.join('?' for _ in tickers)
-    row = conn.execute(
-        f"SELECT 1 FROM financial_events WHERE ticker IN ({placeholders}) "
-        f"AND event_date >= ? AND event_date <= ? LIMIT 1",
-        (*tickers, today, end_date),
-    ).fetchone()
-    return row is not None
+    """¿Hay eventos guardados para alguno de esos tickers en la ventana? La
+    MISMA ventana que después se muestra (eventos_guardados)."""
+    return bool(eventos_guardados(conn, tickers, days, limite=1))
 
 
 def _buscar_y_guardar_eventos(ticker: str):
@@ -7292,40 +7262,10 @@ def get_portfolio_events(
         except Exception:
             refreshed = 0
 
-        # Query: eventos próximos para los tickers del portfolio
-        today = _iso_today()
-        end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
         if not stock_tickers:
             return {'events': [], 'refreshed_tickers': 0}
-
-        placeholders = ','.join('?' for _ in stock_tickers)
-        rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed, source
-                FROM financial_events
-                WHERE ticker IN ({placeholders})
-                  AND event_date >= ?
-                  AND event_date <= ?
-                ORDER BY event_date ASC""",
-            (*stock_tickers, today, end_date),
-        ).fetchall()
-
-        events = []
-        for r in rows:
-            details = {}
-            try:
-                details = json.loads(r['details']) if r['details'] else {}
-            except Exception:
-                pass
-            events.append({
-                'ticker': r['ticker'],
-                'event_type': r['event_type'],
-                'event_date': r['event_date'],
-                'details': details,
-                'confirmed': bool(r['confirmed']),
-                'source': r['source'],
-            })
-
-        return {'events': events, 'refreshed_tickers': refreshed}
+        return {'events': eventos_guardados(conn, stock_tickers, days),
+                'refreshed_tickers': refreshed}
     finally:
         conn.close()
 
@@ -40270,11 +40210,19 @@ def home_personal(uid: int = Depends(get_effective_user)):
 
 
 def _get_portfolio_events_cached(uid: int) -> list:
-    """Helper que reusa la lógica de /api/events/portfolio sin re-pegar al fetcher.
-    Por simplicidad consultamos directo a la tabla `events` con los tickers del user."""
+    """Los eventos YA GUARDADOS (financial_events) de los activos del user en
+    los próximos 14 días: las tarjetas "Earnings de X" / "Dividendo de X" de
+    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Rendi AI
+    (ai/builders/home.py). Sólo LEE — el inicio no puede esperar a Yahoo; los
+    renueva /api/events/portfolio (_eventos_al_dia).
+
+    🔴 Hasta 2026-10-01 leía la tabla `events`, que NO EXISTE: cada llamada
+    moría con "no such table", los dos llamadores lo tragaban y esas tarjetas
+    no aparecieron nunca desde que se crearon (2026-05-16). Las pruebas de las
+    tarjetas les pasaban los eventos a mano, sin atravesar esta lectura.
+    Prueba por el camino real: tests/test_home.py::TarjetasDeEventosPorElEndpointTest."""
     conn = get_db()
     try:
-        # Tickers del user
         rows = conn.execute(
             """SELECT DISTINCT asset FROM positions
                 WHERE user_id = ? AND is_cash = 0 AND quantity > 0""",
@@ -40283,20 +40231,7 @@ def _get_portfolio_events_cached(uid: int) -> list:
         tickers = [r["asset"] for r in rows if r["asset"]]
         if not tickers:
             return []
-        # Buscar eventos en próximos 14 días para esos tickers
-        from datetime import date as _date, timedelta as _td
-        today = _date.today().isoformat()
-        cutoff = (_date.today() + _td(days=14)).isoformat()
-        placeholders = ",".join("?" * len(tickers))
-        events = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed
-                  FROM events
-                 WHERE ticker IN ({placeholders})
-                   AND event_date >= ? AND event_date <= ?
-                 ORDER BY event_date ASC""",
-            (*tickers, today, cutoff),
-        ).fetchall()
-        return [dict(e) for e in events]
+        return eventos_guardados(conn, tickers, 14)
     finally:
         conn.close()
 
@@ -41388,34 +41323,8 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
         except Exception:
             refreshed = 0
 
-        today = _iso_today()
-        end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
-        placeholders = ','.join('?' for _ in stock_tickers)
-        rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed, source
-                FROM financial_events
-                WHERE ticker IN ({placeholders})
-                  AND event_date >= ? AND event_date <= ?
-                ORDER BY event_date ASC""",
-            (*stock_tickers, today, end_date),
-        ).fetchall()
-
-        events = []
-        for r in rows:
-            details = {}
-            try:
-                details = json.loads(r['details']) if r['details'] else {}
-            except Exception:
-                pass
-            events.append({
-                'ticker': r['ticker'],
-                'event_type': r['event_type'],
-                'event_date': r['event_date'],
-                'details': details,
-                'confirmed': bool(r['confirmed']),
-                'source': r['source'],
-                'clients': holders.get(r['ticker'], []),
-            })
+        events = [{**ev, 'clients': holders.get(ev['ticker'], [])}
+                  for ev in eventos_guardados(conn, stock_tickers, days)]
         return {"events": events, "refreshed_tickers": refreshed, "dropped_tickers": dropped}
     finally:
         conn.close()

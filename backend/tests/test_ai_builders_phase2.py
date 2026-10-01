@@ -533,7 +533,9 @@ def _phase3_db():
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS financial_events (
             id INTEGER PRIMARY KEY,
-            ticker TEXT, event_type TEXT, event_date TEXT, details TEXT
+            ticker TEXT, event_type TEXT, event_date TEXT, details TEXT,
+            -- Las columnas de la tabla real (main.py) que lee eventos_guardados.
+            confirmed INTEGER DEFAULT 0, source TEXT
         );
         CREATE TABLE IF NOT EXISTS news (
             id INTEGER PRIMARY KEY,

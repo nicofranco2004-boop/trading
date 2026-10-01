@@ -300,3 +300,73 @@ class PriceHistoryEndpointTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ─── "Lo que te afecta" por el camino de producción ─────────────────────────
+
+class TarjetasDeEventosPorElEndpointTest(unittest.TestCase):
+    """Las tarjetas "Earnings de X" / "Dividendo de X" atravesando /api/home/personal
+    con los eventos GUARDADOS, no pasados a mano.
+
+    🔴 Hasta 2026-10-01 `_get_portfolio_events_cached` leía la tabla `events`,
+    que no existe: moría con "no such table", el endpoint lo tragaba y estas
+    tarjetas no aparecieron nunca desde que se crearon (2026-05-16). Las pruebas
+    de BriefingTest les pasan `portfolio_events` a mano y daban verde igual.
+    """
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        from fechas import hoy_art_date
+        from datetime import timedelta
+        self.client = TestClient(main.app)
+        self.hoy = hoy_art_date()
+        self.timedelta = timedelta
+        conn = main.get_db()
+        with conn:
+            self.uid = _new_user(conn)
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'IBKR', 'USDT')", (self.uid,))
+            for asset in ("NVDA", "KO"):
+                conn.execute(
+                    """INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested)
+                       VALUES (?, 'IBKR', ?, 0, 10, 1000)""", (self.uid, asset))
+            conn.execute("DELETE FROM financial_events WHERE ticker IN ('NVDA','KO')")
+            for ticker, tipo, dias in (("NVDA", "earnings", 3), ("KO", "ex_dividend", 2)):
+                conn.execute(
+                    """INSERT INTO financial_events (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                       VALUES (?, ?, ?, '{}', 1, 'yfinance', 'x')""",
+                    (ticker, tipo, (self.hoy + timedelta(days=dias)).isoformat()))
+        conn.close()
+        self.auth = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+
+    def tearDown(self):
+        conn = main.get_db()
+        with conn:
+            conn.execute("DELETE FROM financial_events WHERE ticker IN ('NVDA','KO')")
+        conn.close()
+
+    def test_aparecen_las_tarjetas_de_resultados_y_dividendos(self):
+        from unittest.mock import patch
+        with patch.object(main, "_fetch_batch_quotes", lambda *_a, **_k: {}):
+            r = self.client.get("/api/home/personal", headers=self.auth)
+        self.assertEqual(r.status_code, 200)
+        por_tipo = {c["kind"]: c for c in r.json()["cards"]}
+        self.assertIn("earnings_soon", por_tipo)
+        self.assertEqual(por_tipo["earnings_soon"]["headline"], "Earnings de NVDA")
+        self.assertEqual(por_tipo["earnings_soon"]["value"], "en 3 días")
+        self.assertIn("dividend_soon", por_tipo)
+        self.assertEqual(por_tipo["dividend_soon"]["headline"], "Dividendo de KO")
+
+    def test_hoy_es_el_dia_argentino(self):
+        """El reloj del servidor está en UTC: de 21 a 24 h de Argentina ya es
+        "mañana". La tarjeta cuenta los días desde el hoy ARGENTINO."""
+        from datetime import date
+        from unittest.mock import patch
+        dia = date(2030, 1, 10)   # lejos de hoy: con el reloj del servidor no entraría
+        ev = [{"event_type": "earnings", "ticker": "NVDA", "event_date": dia.isoformat()}]
+        conn = main.get_db()
+        try:
+            with patch.object(briefing, "hoy_art_date", lambda: dia):
+                cards = briefing.build_personal_cards(conn, self.uid, all_quotes={}, portfolio_events=ev)
+        finally:
+            conn.close()
+        self.assertEqual([(c["kind"], c["value"]) for c in cards], [("earnings_soon", "hoy")])

@@ -18,6 +18,9 @@ from money_fmt import fmt_num
 import logging
 from dataclasses import dataclass, field, asdict
 from datetime import date as date_cls, timedelta
+# El "hoy" de Rendi es el argentino (fechas.py). Con `date.today()` el
+# servidor (UTC) ya está en "mañana" de 21 a 24 h de Buenos Aires.
+from fechas import hoy_art_date
 from typing import List, Dict, Any, Optional
 
 log = logging.getLogger("home.briefing")
@@ -113,7 +116,7 @@ def detect_earnings_soon(events: List[Dict[str, Any]],
                           holdings_assets: set) -> List[PersonalCard]:
     """Earnings de holdings en ≤7 días."""
     out: List[PersonalCard] = []
-    today = date_cls.today()
+    today = hoy_art_date()
     cutoff = today + timedelta(days=7)
     for ev in events:
         if ev.get("event_type") != "earnings":
@@ -148,7 +151,7 @@ def detect_dividends_soon(events: List[Dict[str, Any]],
                            holdings_assets: set) -> List[PersonalCard]:
     """Dividendos de holdings en ≤7 días (ex_dividend)."""
     out: List[PersonalCard] = []
-    today = date_cls.today()
+    today = hoy_art_date()
     cutoff = today + timedelta(days=7)
     for ev in events:
         if ev.get("event_type") != "ex_dividend":
