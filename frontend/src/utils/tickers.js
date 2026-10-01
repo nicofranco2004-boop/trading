@@ -296,6 +296,12 @@ export const ARG_GENERAL = [
   { s: 'SAMI', n: 'San Miguel' }, { s: 'SEMI', n: 'Molinos Juan Semino' },
   { s: 'TGLT', n: 'TGLT' },
   { s: 'ECOG', n: 'Ecogas' }, { s: 'A3', n: 'A3 Mercados' },
+  // Estaban en la lista del análisis de Rendi AI (servidor) y no acá; cotizan en
+  // BYMA (verificado contra data912 el 2026-10-01). Esta lista es LA de acciones
+  // argentinas: el servidor la copia en ai/trade_tickers.AR_STOCK_TICKERS
+  // (backend/tests/test_lista_acciones_ar.py las compara).
+  { s: 'GARO', n: 'Garovaglio y Zorraquín' }, { s: 'GCDI', n: 'GCDI (ex TGLT)' },
+  { s: 'MOLI', n: 'Molinos Río de la Plata' },
 ]
 
 // Acciones argentinas (panel líder + general) en el shape del buscador. Símbolo

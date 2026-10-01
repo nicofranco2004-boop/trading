@@ -101,7 +101,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from datetime import date
 
-from behavioral import _native_ccy, _trust_mkt_value_usd
+from behavioral import _native_ccy, _trust_mkt_value_usd, es_accion_argentina
 import realized_pnl as _realized_pnl
 import twr as _twr
 
@@ -110,26 +110,12 @@ from . import caida_medida
 
 _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
 
-# Panel local AR — acciones argentinas (Merval). Lo que esté en un broker AR
-# pero NO en esta lista lo tratamos como exposure US (CEDEAR). El criterio:
-# para análisis de IA, un CEDEAR de MSFT es exposure US, no AR — el CEDEAR
-# es solo el wrapper local.
-_AR_LOCAL_TICKERS = {
-    # Bancos y financieras
-    "BMA", "GGAL", "BBAR", "BHIP", "SUPV", "VALO",
-    # Energía / utilities
-    "YPFD", "YPF", "TGSU2", "TGNO4", "CEPU", "EDN", "PAMP", "TRAN",
-    "METR", "DGCU2", "DGCE", "COME", "AGRO",
-    # Materiales / industrial / consumo
-    "ALUA", "TXAR", "MIRG", "CRES", "CGPA2", "MOLI", "MOLA", "LOMA",
-    "HARG", "GCDI", "GCLA", "SAMI", "FIPL", "GARO", "OEST",
-    # Telecom / tech AR
-    "TECO2", "BYMA", "GBAN", "AUSO",
-    # Real estate / agropecuario
-    "IRSA", "IRS", "MIRG", "CTIO", "INVJ", "MORI", "FERR",
-    # Aerolíneas / transporte
-    "TRAN", "TGN0", "AUSO",
-}
+# Acciones argentinas: la MISMA regla que el diagnóstico de sesgo local
+# (behavioral.es_accion_argentina: panel local + ADRs, con o sin .BA). Lo que
+# esté en un broker AR y no lo sea es exposure US (CEDEAR): para análisis de IA,
+# un CEDEAR de MSFT es exposure US, no AR — el CEDEAR es sólo el wrapper local.
+# Acá había una tercera lista (con "TGN0" por TGNO4 y sin los ADRs: PAM en
+# Schwab salía "us", GGAL.BA en Cocos también).
 
 # Bonos soberanos AR — prefijos (AL, GD, AE, etc.)
 _AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX", "TO", "T2X")
@@ -169,7 +155,7 @@ def _classify_geography(asset: str, broker: str) -> str:
     b = (broker or "").lower().strip()
     if a in _CRYPTO_HINT or b == "binance":
         return "crypto"
-    if a in _AR_LOCAL_TICKERS or a.startswith(_AR_BOND_PREFIXES):
+    if es_accion_argentina(a) or a.startswith(_AR_BOND_PREFIXES):
         return "ar"
     # CEDEARs en broker AR + acciones US en broker US → US exposure
     return "us"

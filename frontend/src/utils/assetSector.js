@@ -94,7 +94,7 @@ const SECTOR_MAP = new Map([
   ]),
   ...M('consumo_bas', [
     'WMT', 'COST', 'KO', 'PEP', 'PG', 'MDLZ', 'ABEV', 'XLP',
-    'HAVA', 'PATA', 'MORI', 'SAMI', 'MOLA', 'SEMI', 'LEDE', 'INVJ',
+    'HAVA', 'PATA', 'MORI', 'SAMI', 'MOLA', 'MOLI', 'SEMI', 'LEDE', 'INVJ',
   ]),
   ...M('salud', [
     'LLY', 'UNH', 'JNJ', 'ABBV', 'MRK', 'PFE', 'TMO', 'ABT', 'AMGN', 'GILD',
@@ -121,7 +121,7 @@ const SECTOR_MAP = new Map([
   ]),
   ...M('industria', [
     'BA', 'CAT', 'GE', 'LMT', 'RTX', 'NOC', 'GD', 'RKLB', 'ASTS', 'XLI',
-    'AUSO', 'OEST', 'CARC', 'DYCA', 'POLL', 'FERR', 'AGRO', 'COME',
+    'AUSO', 'OEST', 'CARC', 'DYCA', 'POLL', 'FERR', 'AGRO', 'COME', 'GARO',
     'AAL', 'DE', 'HON', 'KEEL', 'MMM', 'SATL', 'SPCE', 'SPCX',
   ]),
   ...M('materiales', [
@@ -129,7 +129,7 @@ const SECTOR_MAP = new Map([
     'BAK', 'BIOX', 'COPX', 'DOW', 'HMY', 'LAC', 'LAR', 'MP', 'MUX', 'RIO', 'SID',
   ]),
   ...M('inmobiliario', [
-    'XLRE', 'IRSA', 'IRCP', 'IRS', 'CRES', 'CRESY', 'CTIO', 'TGLT', 'CADO',
+    'XLRE', 'IRSA', 'IRCP', 'IRS', 'CRES', 'CRESY', 'CTIO', 'TGLT', 'GCDI', 'CADO',
     'O',
   ]),
   ...M('commodities', ['GLD', 'IAU', 'SLV', 'DBC']),

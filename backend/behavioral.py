@@ -118,13 +118,14 @@ _AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "ppi", "inverti
 # Prefijos de bonos soberanos AR. Pattern: 2 letras + dígito al menos.
 _AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX")
 
-# Acciones AR del Merval/panel local (NO CEDEARs). Lista curada — si aparece
-# un ticker AR poco común, cae al fallback más abajo.
-_AR_LOCAL_STOCKS = frozenset({
-    "GGAL", "YPFD", "BMA", "PAMP", "TEN", "CRES", "COME", "ALUA", "ERAR",
-    "MIRG", "CEPU", "EDN", "TGSU2", "TGNO4", "BBAR", "TRAN", "SUPV", "BYMA",
-    "VALO", "TXAR", "LOMA", "AGRO", "HARG", "CVH",
-})
+# Acciones AR del panel local (NO CEDEARs): la MISMA lista que la pantalla
+# (frontend/src/utils/tickers.js), que el servidor tiene en
+# ai/trade_tickers.AR_STOCK_TICKERS. Esto tenía su propia copia de 24 y se
+# desvió: le faltaban 42 (TECO2 entre ellas: una cartera 100 % Telecom salía
+# "Casi sin exposición a Argentina") y contaba como argentinas a TEN (Tsakos,
+# una naviera griega) y ERAR (el ticker viejo de TXAR, que ya no cotiza).
+from ai.trade_tickers import AR_STOCK_TICKERS as _LISTA_ACCIONES_AR
+_AR_LOCAL_STOCKS = frozenset(_LISTA_ACCIONES_AR)
 
 # ADRs de empresas argentinas que cotizan en NYSE con ticker propio (NO .BA).
 # Son exposición económica AR (riesgo-país argentino) aunque coticen en USD y
@@ -134,6 +135,16 @@ _AR_ADRS = frozenset({
     "YPF", "PAM", "BBAR", "CRESY", "SUPV", "EDN", "CEPU", "LOMA", "IRS",
     "TEO", "TGS", "BMA", "GGAL", "DESP",
 })
+
+
+def es_accion_argentina(asset: Optional[str]) -> bool:
+    """¿Es una acción de una empresa argentina? Del panel local (GGAL, TECO2) o
+    su ADR en Nueva York (YPF, PAM), con o sin ".BA". UNA regla para el
+    diagnóstico de sesgo local, los sectores y el análisis de Rendi AI por país:
+    cada uno tenía su lista y no coincidían."""
+    a = (asset or "").upper().strip()
+    base = a[:-3] if a.endswith(".BA") else a
+    return base in _AR_LOCAL_STOCKS or base in _AR_ADRS
 
 
 def _is_ars_broker(broker: Optional[str]) -> bool:
@@ -314,7 +325,7 @@ def _is_cedear(asset: str) -> bool:
     base = a[:-3]
     if _is_ar_bond(base):
         return False
-    if base in _AR_LOCAL_STOCKS or base in _AR_ADRS:
+    if es_accion_argentina(base):
         return False
     return True
 
@@ -340,11 +351,8 @@ def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
         return True
     if _is_ar_bond(a):
         return True
-    if a in _AR_LOCAL_STOCKS:
-        return True
-    # ADR de empresa AR (ticker propio en NYSE, sin .BA) → exposición económica AR.
-    base = a[:-3] if a.endswith(".BA") else a
-    if base in _AR_ADRS:
+    # Acción del panel local o ADR de empresa AR, con o sin .BA → exposición AR.
+    if es_accion_argentina(a):
         return True
     if _is_cedear(a):
         # CEDEAR es internacional aunque esté en Cocos
@@ -1670,7 +1678,7 @@ _SECTOR_MAP = {
     'YPFD': 'AR · Energy', 'PAMP': 'AR · Energy', 'CEPU': 'AR · Energy',
     'EDN': 'AR · Energy', 'TGSU2': 'AR · Energy', 'TGNO4': 'AR · Energy',
     'TRAN': 'AR · Energy',
-    'TEN': 'AR · Materials', 'ALUA': 'AR · Materials', 'ERAR': 'AR · Materials',
+    'ALUA': 'AR · Materials',
     'TXAR': 'AR · Materials', 'LOMA': 'AR · Materials',
     'CRES': 'AR · Consumer', 'COME': 'AR · Consumer', 'MIRG': 'AR · Consumer',
     # Bonos AR
@@ -1690,6 +1698,11 @@ def _sector_for(asset: str) -> str:
     a = asset.upper()
     if a in _SECTOR_MAP:
         return _SECTOR_MAP[a]
+    # Una acción argentina (con o sin .BA) NO es un CEDEAR: su sector, o el
+    # genérico. Antes GGAL.BA salía "AR · CEDEAR (…)" y TECO2 "Otros".
+    if es_accion_argentina(a):
+        base = a[:-3] if a.endswith(".BA") else a
+        return _SECTOR_MAP.get(base, "AR · Acciones")
     # CEDEARs: stripear .BA y buscar
     if a.endswith(".BA"):
         base = a[:-3]

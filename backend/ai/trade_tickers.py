@@ -65,8 +65,14 @@ AR_STOCK_TICKERS = {
     'GCLA', 'GGAL', 'GRIM', 'HARG', 'HAVA', 'INAG', 'INVJ', 'IRCP', 'IRSA', 'LEDE',
     'LOMA', 'LONG', 'METR', 'MIRG', 'MOLA', 'MORI', 'OEST', 'PAMP', 'PATA', 'PCAR',
     'POLL', 'RICH', 'ROSE', 'SAMI', 'SEMI', 'SUPV', 'TECO2', 'TGLT', 'TGNO4', 'TGSU2',
-    'TRAN', 'TXAR', 'VALO', 'YPFD'
+    'TRAN', 'TXAR', 'VALO', 'YPFD',
+    'GARO', 'GCDI', 'MOLI',
 }
+# ☝️ Es LA lista de acciones argentinas del servidor: la usan también el
+# diagnóstico de sesgo local y los sectores (behavioral.es_accion_argentina) y
+# el análisis de Rendi AI por país (ai/builders/insights). Copia de
+# frontend/src/utils/tickers.js (ARG_LIDER + ARG_GENERAL): la prueba
+# tests/test_lista_acciones_ar.py se pone en rojo si se separan.
 
 # Nombre común → ticker ("AMAZON" → AMZN). Ayuda de resolución; el guard real
 # son los sets de arriba.
