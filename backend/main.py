@@ -32523,7 +32523,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                  state["synth_deltas"], uid)
 
         return StreamingResponse(
-            _sse(),
+            _diag_reloj(_sse()) if request.query_params.get("reloj") == "1" else _sse(),
             media_type="text/event-stream",
             headers={
                 # Anti-buffering: sin esto el proxy (Railway/Vercel/nginx) puede
@@ -39566,6 +39566,29 @@ async def diag_goteo(n: int = 10, ms: int = 300):
         "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
     })
+
+
+# TEMPORAL (diagnóstico, junto con /api/diag-goteo): con /api/ai/chat?reloj=1
+# cada aviso del chat sale precedido por un comentario SSE (que el navegador
+# ignora) con dos horas del servidor: `pedido` = cuándo el servidor pidió el
+# aviso siguiente, `listo` = cuándo lo tuvo. listo−pedido es lo que tardó en
+# fabricarlo (la IA, las herramientas); pedido−listo_anterior es lo que tardó
+# el servidor en volver a pedir (mandar + conseguir un hilo libre). Comparado
+# con la hora de llegada al navegador, dice qué eslabón junta los avisos.
+def _diag_reloj(gen):
+    t0 = time.monotonic()
+    try:
+        while True:
+            pedido = time.monotonic() - t0
+            try:
+                frame = next(gen)
+            except StopIteration:
+                return
+            listo = time.monotonic() - t0
+            yield (f": reloj pedido={pedido:.3f} listo={listo:.3f} "
+                   f"hilos={threading.active_count()}\n\n" + frame)
+    finally:
+        gen.close()
 
 
 @app.get("/api/health")
