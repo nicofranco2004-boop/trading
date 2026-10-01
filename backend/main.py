@@ -31742,16 +31742,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     client = _get_anthropic_client()
     if client is None:
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
-    # TEMPORAL (diagnóstico): ver _diag_cliente_con_reloj.
-    _registro_api = None
-    if request.query_params.get("reloj") == "1" and _diag_es_admin(request, uid):
-        try:
-            client, _registro_api = _diag_cliente_con_reloj()
-        except Exception as ex:   # que el diagnóstico no tumbe el chat: sigue con el cliente normal
-            log.exception("diag reloj: no se pudo armar el cliente con reloj")
-            _registro_api = [(time.monotonic(), 0, {
-                f"FALLO_{type(ex).__name__}": 1,
-                str(ex)[:200].replace(" ", "_").replace(",", ";").replace("\n", "_"): 1})]
+    # TEMPORAL (diagnóstico): ver _diag_espiar_eventos.
+    _registro_api = [] if request.query_params.get("reloj") == "1" else None
 
     from ai import quota
 
@@ -32426,6 +32418,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         tools=chat_tools,
                         messages=messages_loop,
                     ) as stream:
+                        if _registro_api is not None:
+                            _diag_espiar_eventos(stream, _registro_api)
                         for chunk in stream.text_stream:
                             if chunk:
                                 state["synth_deltas"] += 1
@@ -32540,6 +32534,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     tool_choice={"type": "none"},
                     messages=messages_loop,
                 ) as stream:
+                    if _registro_api is not None:
+                        _diag_espiar_eventos(stream, _registro_api)
                     for chunk in stream.text_stream:
                         if chunk:
                             state["synth_deltas"] += 1
@@ -39648,73 +39644,27 @@ def _diag_reloj(gen, registro=None):
         gen.close()
 
 
-# TEMPORAL (diagnóstico 2026-10-01, sólo admin con ?reloj=1): ¿qué hace la IA
-# en los ~13 s en que no llega nada? Un cliente de Anthropic aparte, cuyo
-# transporte anota cuándo llega cada pedazo de bytes desde Anthropic y qué
-# eventos trae (pensamiento, texto, ping…). El chat normal no lo usa.
-def _diag_es_admin(request, uid) -> bool:
+# TEMPORAL (diagnóstico 2026-10-01, con ?reloj=1): ¿qué hace la IA en los
+# ~13 s en que no llega nada? Se intercala en los eventos que el SDK de
+# Anthropic ya está leyendo (pensamiento, texto, ping…) y anota cuándo llega
+# cada uno. Sólo tipos y horas, nada del contenido. El chat normal no lo usa.
+def _diag_espiar_eventos(stream, registro):
     try:
-        with db_abierta() as conn:
-            row = conn.execute("SELECT is_admin FROM users WHERE id=?",
-                               (_auth_uid_de(request, uid),)).fetchone()
-        return bool(row and row["is_admin"])
-    except Exception:
-        return False
+        orig = stream._iterator
 
+        def _espia():
+            for ev in orig:
+                t = getattr(ev, "type", "?")
+                if t == "content_block_delta":
+                    t = getattr(getattr(ev, "delta", None), "type", t)
+                elif t == "content_block_start":
+                    t = "abre_" + str(getattr(getattr(ev, "content_block", None), "type", "?"))
+                registro.append((time.monotonic(), 0, {t: 1}))
+                yield ev
 
-def _diag_cliente_con_reloj():
-    import httpx
-    from anthropic import Anthropic
-
-    registro = []
-
-    class _Bytes(httpx.SyncByteStream):
-        def __init__(s, inner):
-            s.inner, s.resto = inner, ""
-
-        def __iter__(s):
-            for chunk in s.inner:
-                tipos = {}
-                lineas = (s.resto + chunk.decode("utf-8", "ignore")).split("\n")
-                s.resto = lineas.pop()          # la última puede venir cortada
-                for l in lineas:
-                    if not l.startswith("data:"):
-                        continue
-                    try:
-                        ev = json.loads(l[5:])
-                    except Exception:
-                        tipos["?"] = tipos.get("?", 0) + 1
-                        continue
-                    t = ev.get("type", "?")
-                    if t == "content_block_delta":
-                        t = (ev.get("delta") or {}).get("type", t)
-                    elif t == "content_block_start":
-                        t = "abre_" + (ev.get("content_block") or {}).get("type", "?")
-                    tipos[t] = tipos.get(t, 0) + 1
-                registro.append((time.monotonic(), len(chunk), tipos))
-                yield chunk
-
-        def close(s):
-            s.inner.close()
-
-    class _Transporte(httpx.BaseTransport):
-        def __init__(s):
-            s.inner = httpx.HTTPTransport()
-
-        def handle_request(s, request):
-            registro.append((time.monotonic(), 0, {"pide": 1}))
-            r = s.inner.handle_request(request)
-            registro.append((time.monotonic(), 0, {
-                "responde": 1, "enc_" + r.headers.get("content-encoding", "ninguna"): 1}))
-            r.stream = _Bytes(r.stream)
-            return r
-
-        def close(s):
-            s.inner.close()
-
-    cli = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=25.0,
-                    http_client=httpx.Client(transport=_Transporte(), timeout=25.0))
-    return cli, registro
+        stream._iterator = _espia()
+    except Exception as ex:
+        registro.append((time.monotonic(), 0, {"espia_fallo_" + type(ex).__name__: 1}))
 
 
 @app.get("/api/health")
