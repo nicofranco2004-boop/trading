@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search } from 'lucide-react'
+import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare } from 'lucide-react'
 import { api } from '../utils/api'
 import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
 import StatCard from '../components/StatCard'
@@ -343,6 +343,9 @@ export default function Admin() {
 
       {/* ── Re-engagement: mail a usuarios que no importaron su historial ── */}
       <ReengagementPanel toast={toast} />
+
+      {/* ── Feedback: "¿qué te está pareciendo Rendi?" a los que están en la prueba ── */}
+      <FeedbackPruebaPanel toast={toast} />
 
       {/* ── Campaña regalo Pro: avisar que les regalamos un mes + cargá historial ── */}
       <TrialInvitePanel toast={toast} />
@@ -831,6 +834,201 @@ function ReengagementPanel({ toast }) {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// ─── FeedbackPruebaPanel — "¿qué te está pareciendo Rendi?" a quien está probando ─
+// Dos listas, siempre entre los que siguen en la prueba HOY: los que todavía no
+// lo recibieron (botón principal) y los que ya (botón aparte, para volver a
+// preguntarles). Al que se le termina la prueba o paga, el backend deja de
+// traerlo. Cada envío manda los ids que se ven en pantalla: el que arrancó la
+// prueba después de "Ver destinatarios" no recibe nada hasta que recalcules.
+function FeedbackPruebaPanel({ toast }) {
+  const [preview, setPreview] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(null)   // null | 'nuevos' | 'ya_recibieron'
+  const [result, setResult] = useState(null)
+  const [verMail, setVerMail] = useState(false)
+
+  async function loadPreview() {
+    setLoading(true)
+    try {
+      setPreview(await api.post('/admin/email/feedback-prueba', { confirm: false }))
+    } catch (e) {
+      toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
+    } finally { setLoading(false) }
+  }
+
+  async function send(grupo) {
+    const lista = (grupo === 'nuevos' ? preview?.nuevos : preview?.ya_recibieron) || []
+    const n = lista.length
+    if (n === 0) return
+    const quien = n === 1 ? '1 persona que' : `${n} personas que`
+    const recibio = n === 1 ? 'lo recibió' : 'lo recibieron'
+    const msg = grupo === 'nuevos'
+      ? `¿Mandar el mail de feedback a ${quien} todavía no ${recibio}?`
+      : `¿Volver a mandar el mail de feedback a ${quien} YA ${recibio}?`
+    if (!confirm(msg)) return
+    setSending(grupo); setResult(null)
+    try {
+      const r = await api.post('/admin/email/feedback-prueba', {
+        confirm: true, grupo, ids: lista.map(t => t.id),
+      })
+      setResult(r)
+      toast.push(
+        `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
+        { type: r.failed_count ? 'warn' : 'success' }
+      )
+      await loadPreview()
+    } catch (e) {
+      toast.push('Error al enviar: ' + e.message, { type: 'error' })
+    } finally { setSending(null) }
+  }
+
+  const nuevos = preview?.nuevos || []
+  const yaRecibieron = preview?.ya_recibieron || []
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <MessageSquare size={16} className="text-data-violet" />
+          <h2 className="font-semibold text-ink-0">Feedback de la prueba · ¿qué te está pareciendo?</h2>
+        </div>
+        <button
+          onClick={loadPreview}
+          disabled={loading}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Recalcular' : 'Ver destinatarios'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        Les pregunta qué les está pareciendo Rendi a los que están en la prueba gratis hoy (los mismos que
+        cuenta «Pruebas · En curso»). Al que le llega, sale de esta lista. Al que se le termina la prueba o
+        paga, deja de aparecer en las dos. Las respuestas llegan a soporte@.
+      </p>
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ConvCell label="En la prueba" value={preview.en_prueba} hint="hoy" />
+            <ConvCell label="Sin recibirlo" value={nuevos.length} hint="se manda con el botón" />
+            <ConvCell label="Ya lo recibieron" value={yaRecibieron.length} hint="siguen probando" />
+          </div>
+
+          <div>
+            <button
+              onClick={() => setVerMail(v => !v)}
+              className="text-xs text-data-violet hover:underline"
+            >
+              {verMail ? 'Ocultar el mail' : 'Ver el mail que les llega'}
+            </button>
+            {verMail && preview.mail && (
+              <div className="mt-2 border border-line/40 rounded-sm bg-bg-1/40 px-3 py-2.5 text-xs text-ink-1 space-y-2">
+                <div><span className="text-ink-3">Asunto:</span> {preview.mail.asunto}</div>
+                <div className="whitespace-pre-line leading-relaxed">{preview.mail.texto}</div>
+              </div>
+            )}
+          </div>
+
+          {nuevos.length > 0 ? (
+            <FeedbackPruebaTabla filas={nuevos} />
+          ) : (
+            <p className="text-sm text-ink-3">
+              {preview.en_prueba === 0
+                ? 'No hay nadie en la prueba ahora.'
+                : 'Todos los que están en la prueba ya lo recibieron.'}
+            </p>
+          )}
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
+            <p className="text-[11px] text-ink-3 max-w-md">
+              Envía vía Resend. Si un envío falla, esa persona sigue en esta lista para la próxima.
+            </p>
+            <button
+              onClick={() => send('nuevos')}
+              disabled={sending !== null || nuevos.length === 0}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
+            >
+              <Send size={14} /> {sending === 'nuevos' ? 'Enviando…' : `Enviar a ${nuevos.length}`}
+            </button>
+          </div>
+
+          {yaRecibieron.length > 0 && (
+            <div className="space-y-2 pt-3 border-t border-line/30">
+              <h3 className="text-sm font-medium text-ink-1">
+                Ya lo recibieron y siguen en la prueba ({yaRecibieron.length})
+              </h3>
+              <FeedbackPruebaTabla filas={yaRecibieron} conFecha />
+              <div className="flex justify-end">
+                <button
+                  onClick={() => send('ya_recibieron')}
+                  disabled={sending !== null}
+                  className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded border border-data-violet/60 text-data-violet font-medium hover:bg-data-violet/10 disabled:opacity-40 disabled:cursor-not-allowed press"
+                >
+                  <RotateCcw size={14} /> {sending === 'ya_recibieron' ? 'Enviando…' : `Volver a mandar a ${yaRecibieron.length}`}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {result && (
+            <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
+              Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
+              {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
+              {result.skipped_count > 0 && <> · {result.skipped_count} salteados (ya les había llegado)</>}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// Fecha corta en horario argentino. El backend guarda la marca en UTC sin la
+// "Z", y sin ella el navegador la leería como hora local.
+function fechaCortaAR(iso) {
+  if (!iso) return '—'
+  const s = String(iso)
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z')
+  if (isNaN(d)) return '—'
+  return d.toLocaleDateString('es-AR', {
+    day: 'numeric', month: 'numeric', timeZone: 'America/Argentina/Buenos_Aires',
+  })
+}
+
+function FeedbackPruebaTabla({ filas, conFecha = false }) {
+  return (
+    <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+            <th className="text-left px-2 py-1">Email</th>
+            <th className="text-left px-2 py-1">Nombre</th>
+            <th className="text-left px-2 py-1">Etapa</th>
+            <th className="text-right px-2 py-1">Le quedan</th>
+            {conFecha && <th className="text-right px-2 py-1">Lo recibió</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map(r => (
+            <tr key={r.id} className="border-b border-line/20">
+              <td className="px-2 py-1 text-ink-1">{r.email}</td>
+              <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
+              <td className="px-2 py-1 text-ink-2">{PLAN_LABEL[r.stage] || '—'}</td>
+              <td className="px-2 py-1 text-right tabular text-ink-2">
+                {r.days_left} {r.days_left === 1 ? 'día' : 'días'}
+              </td>
+              {conFecha && (
+                <td className="px-2 py-1 text-right tabular text-ink-2">{fechaCortaAR(r.sent_at)}</td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

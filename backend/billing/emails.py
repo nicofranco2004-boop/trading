@@ -985,6 +985,68 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
     return _send(to, subject, body_html, text, from_addr=_from_support())
 
 
+# ─── Campaña: pedirle opinión a quien está en la prueba ─────────────────────
+
+def feedback_prueba_contenido(user_name: str = "") -> tuple:
+    """(asunto, html, texto) del mail "¿qué te está pareciendo Rendi?".
+
+    Separado del envío para que el panel de admin muestre EXACTAMENTE lo que va
+    a llegar: si la vista previa tuviera su propia copia del texto, alcanzaría
+    con corregir una para que el panel muestre un mail y se mande otro.
+
+    Formato PLANO, igual que send_reengagement: sin header con logo ni botón de
+    color, para caer en la pestaña Principal de Gmail y no en Promociones. Un
+    pedido de opinión que parece un mailing no lo contesta nadie.
+
+    Firma personal (regla del brand kit): el mail pide una respuesta, y se
+    contesta a una persona, no a una marca."""
+    nombre = (user_name or "").strip()
+    saludo_html = f"Hola {html.escape(nombre)}," if nombre else "Hola,"
+    saludo_txt = f"Hola {nombre}," if nombre else "Hola,"
+    asunto = "¿Qué te está pareciendo Rendi?"
+    preguntas = (
+        "¿Qué es lo que más te sirvió hasta ahora?",
+        "¿Hubo algo que te confundió, que no funcionó o que buscaste y no encontraste?",
+        "¿Qué le falta a Rendi para que te sirva de verdad?",
+    )
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        f'<p style="margin:0 0 14px;">{saludo_html} estás probando Rendi estos días y '
+        'quería preguntarte, sin vueltas: ¿qué te está pareciendo?</p>'
+        '<p style="margin:0 0 14px;">Rendi lo hacemos un equipo chico, y lo que nos '
+        'cuentan los que lo están probando es lo que decide qué arreglamos y qué '
+        'hacemos después. No hace falta que sea largo: con una línea alcanza. Si te '
+        'sirve de guía:</p>'
+        '<ul style="margin:0 0 14px;padding-left:20px;">'
+        + "".join(f'<li style="margin:0 0 6px;">{html.escape(p)}</li>' for p in preguntas)
+        + '</ul>'
+        '<p style="margin:0 0 14px;">Respondé este mail y lo leo yo.</p>'
+        '<p style="margin:18px 0 0;">Nicolás — Rendi</p>'
+        '</div>'
+    )
+    texto = (
+        f"{saludo_txt} estás probando Rendi estos días y quería preguntarte, sin "
+        "vueltas: ¿qué te está pareciendo?\n\n"
+        "Rendi lo hacemos un equipo chico, y lo que nos cuentan los que lo están "
+        "probando es lo que decide qué arreglamos y qué hacemos después. No hace "
+        "falta que sea largo: con una línea alcanza. Si te sirve de guía:\n\n"
+        + "\n".join(f"- {p}" for p in preguntas)
+        + "\n\nRespondé este mail y lo leo yo.\n\n"
+        "Nicolás — Rendi"
+    )
+    return asunto, body_html, texto
+
+
+def send_trial_feedback(*, to: str, user_name: str = "") -> bool:
+    """Le pregunta a alguien que está en la prueba gratis qué le está pareciendo
+    Rendi. Lo dispara a mano el admin (/api/admin/email/feedback-prueba); no lo
+    manda ningún cron. Las respuestas van a soporte@."""
+    asunto, body_html, texto = feedback_prueba_contenido(user_name)
+    return _send(to, asunto, body_html, texto, from_addr=_from_support(),
+                 reply_to="soporte@rendi.finance")
+
+
 # ─── Campaña: avisar que la prueba gratis está disponible ───────────────────
 
 # Tres textos para la MISMA campaña. Se manda de a tandas de 50, así que se

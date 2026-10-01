@@ -1796,6 +1796,7 @@ CREATE TABLE IF NOT EXISTS users (
   reengagement_email_sent_at text,
   gift_plan_email_sent_at text,
   trial_invite_email_sent_at text,
+  trial_feedback_email_sent_at text,
   pro_trial_until text,
   pro_trial_used_at text,
   managed_by bigint,
@@ -1840,6 +1841,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS reengagement_email_sent_at text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gift_plan_email_sent_at text;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_invite_email_sent_at text;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_feedback_email_sent_at text;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pro_trial_until text;
 

@@ -990,6 +990,13 @@ def init_db():
             # hace que la segunda tanda no repita gente de la primera. Sin índice
             # encima (la tabla es chica y el filtro va con el resto del WHERE).
             conn.execute("ALTER TABLE users ADD COLUMN trial_invite_email_sent_at TEXT")
+        if user_cols and 'trial_feedback_email_sent_at' not in user_cols:
+            # Timestamp ISO del ÚLTIMO mail "¿qué te está pareciendo Rendi?" que
+            # se le mandó durante su prueba. NULL = nunca. Lo usa
+            # /api/admin/email/feedback-prueba para separar a los que todavía no
+            # lo recibieron de los que sí (a esos se les puede volver a mandar,
+            # pero sólo con el botón aparte). Sin índice encima.
+            conn.execute("ALTER TABLE users ADD COLUMN trial_feedback_email_sent_at TEXT")
         if user_cols and 'pro_trial_until' not in user_cols:
             # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
             # está perdiendo). Es una marca aparte a propósito: si se hiciera
@@ -21263,6 +21270,12 @@ class TrialInviteEmailIn(BaseModel):
     variant: str = "directo"              # 'directo' | 'cartera'
 
 
+class TrialFeedbackEmailIn(BaseModel):
+    confirm: bool = False                 # False = DRY RUN (las dos listas, no manda nada)
+    grupo: str = "nuevos"                 # 'nuevos' (nunca lo recibieron) | 'ya_recibieron'
+    ids: Optional[List[int]] = Field(None, max_length=5000)  # los que el admin vio en la vista previa
+
+
 class BroadcastEmailIn(BaseModel):
     subject: str = Field(..., min_length=1, max_length=200)
     body: str = Field(..., min_length=1, max_length=20000)   # texto plano; {nombre} se reemplaza
@@ -21673,6 +21686,139 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
             "ya_avisados": ya_avisados + len(enviados),
             "sent": enviados,
             "failed": fallados,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/email/feedback-prueba")
+def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(get_admin_user)):
+    """Mail "¿qué te está pareciendo Rendi?" a quienes están EN LA PRUEBA GRATIS.
+
+    Dos grupos, siempre entre los que siguen probando hoy:
+      • 'nuevos'        → nunca lo recibieron. Es el botón principal.
+      • 'ya_recibieron' → ya les llegó antes y siguen en la prueba. Se les
+        vuelve a mandar SÓLO con su botón aparte, nunca de rebote.
+    Al que se le terminó la prueba (o pagó) no aparece en ninguno de los dos.
+
+    ⭐ "Está en la prueba" lo decide `trial.activos()` —por adentro
+    `prueba_viva`—, la misma pregunta que se hace la app para mostrar la barra
+    de "estás probando Rendi Pro" y que cuenta el panel de pruebas activas. Con
+    un criterio propio acá (p. ej. "tier pro/plus" o "trial_ends_at futuro") se
+    colaría el que pagó a mitad de la prueba, que conserva su trial_ends_at.
+
+    `confirm=False` (default) es DRY RUN: devuelve las dos listas y el texto del
+    mail, sin mandar nada.
+
+    `ids` = los que el admin vio en la vista previa. Si viene, sólo se manda a
+    esos (y siempre que sigan calificando): el que arrancó la prueba entre la
+    vista previa y el click no recibe un mail que nadie vio salir.
+
+    Se marca ANTES de mandar y con la marca tal como se la leyó: un doble click
+    o una segunda pestaña no le manda dos veces a nadie (la segunda no gana la
+    marca y lo saltea). Si el envío falla, la marca vuelve a como estaba — el
+    mail no llegó, así que decir que sí sería mentira."""
+    from billing import emails
+    from billing import trial as _trial
+    from datetime import datetime as _dt
+
+    if data.grupo not in ("nuevos", "ya_recibieron"):
+        raise HTTPException(422, "grupo debe ser 'nuevos' o 'ya_recibieron'")
+    conn = get_db()
+    try:
+        vivos = _trial.activos(conn, limit=10 ** 6)["usuarios"]
+        marcas = {}
+        if vivos:
+            ph = ",".join("?" for _ in vivos)
+            for r in conn.execute(
+                f"""SELECT id, trial_feedback_email_sent_at AS enviado FROM users
+                     WHERE id IN ({ph})
+                       AND COALESCE(is_admin,0) = 0
+                       AND managed_by IS NULL
+                       AND TRIM(COALESCE(email,'')) <> ''""",
+                    tuple(int(v["id"]) for v in vivos)).fetchall():
+                marcas[int(r["id"])] = r["enviado"]
+
+        nuevos, ya_recibieron = [], []
+        for v in vivos:   # ya vienen ordenados: primero a los que menos les queda
+            vid = int(v["id"])
+            if vid not in marcas:
+                continue
+            fila = {"id": vid, "email": v["email"], "name": v.get("name"),
+                    "stage": v["stage"], "days_left": v["days_left"],
+                    "sent_at": marcas[vid]}
+            (ya_recibieron if fila["sent_at"] else nuevos).append(fila)
+
+        if not data.confirm:
+            asunto, _html, texto = emails.feedback_prueba_contenido("(nombre)")
+            return {
+                "dry_run": True,
+                "en_prueba": len(nuevos) + len(ya_recibieron),
+                "nuevos": nuevos,
+                "ya_recibieron": ya_recibieron,
+                "mail": {"asunto": asunto, "texto": texto},
+            }
+
+        grupo = nuevos if data.grupo == "nuevos" else ya_recibieron
+        if data.ids is not None:
+            vistos = {int(i) for i in data.ids}
+            grupo = [t for t in grupo if t["id"] in vistos]
+
+        enviados, fallados, salteados = [], [], []
+        for t in grupo:
+            anterior = t["sent_at"]
+            marca = _dt.utcnow().isoformat()
+            try:
+                if anterior is None:
+                    cur = conn.execute(
+                        "UPDATE users SET trial_feedback_email_sent_at=? "
+                        "WHERE id=? AND trial_feedback_email_sent_at IS NULL",
+                        (marca, t["id"]))
+                else:
+                    cur = conn.execute(
+                        "UPDATE users SET trial_feedback_email_sent_at=? "
+                        "WHERE id=? AND trial_feedback_email_sent_at=?",
+                        (marca, t["id"], anterior))
+                gano = (cur.rowcount or 0) > 0
+                conn.commit()
+            except Exception as ex:
+                log.error("feedback-prueba: no se pudo marcar uid=%s: %s", t["id"], ex)
+                fallados.append({"id": t["id"], "email": t["email"]})
+                continue
+            if not gano:
+                # Otra pestaña (o un doble click) se lo mandó recién.
+                salteados.append({"id": t["id"], "email": t["email"]})
+                continue
+            ok = False
+            try:
+                ok = emails.send_trial_feedback(to=t["email"], user_name=(t.get("name") or ""))
+            except Exception as ex:
+                log.error("feedback-prueba: envío falló para %s: %s", t["email"], ex)
+                ok = False
+            if ok:
+                enviados.append({"id": t["id"], "email": t["email"]})
+                continue
+            try:
+                conn.execute(
+                    "UPDATE users SET trial_feedback_email_sent_at=? "
+                    "WHERE id=? AND trial_feedback_email_sent_at=?",
+                    (anterior, t["id"], marca))
+                conn.commit()
+            except Exception as ex:
+                log.error("feedback-prueba: no se pudo desmarcar uid=%s: %s", t["id"], ex)
+            fallados.append({"id": t["id"], "email": t["email"]})
+
+        log.info("feedback-prueba: grupo=%s enviados=%d fallados=%d salteados=%d",
+                 data.grupo, len(enviados), len(fallados), len(salteados))
+        return {
+            "dry_run": False,
+            "grupo": data.grupo,
+            "sent_count": len(enviados),
+            "failed_count": len(fallados),
+            "skipped_count": len(salteados),
+            "sent": enviados,
+            "failed": fallados,
+            "skipped": salteados,
         }
     finally:
         conn.close()
