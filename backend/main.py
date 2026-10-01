@@ -39549,19 +39549,49 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
 # aviso cada `ms`, con las MISMAS cabeceras que el chat, para medir el camino
 # por rendi.finance (Vercel) y directo a Railway. Público y sin datos: sólo
 # cuenta. Topes para que no sirva para cargar el servidor. SE SACA después.
-@app.get("/api/diag-goteo")
-async def diag_goteo(n: int = 10, ms: int = 300):
+@app.api_route("/api/diag-goteo", methods=["GET", "POST"])
+async def diag_goteo(n: int = 10, ms: int = 300, patron: str = "cuenta", hilo: int = 0):
+    # patron=chat imita el RITMO del chat: dos avisos pegados y después un
+    # silencio largo (como «Leyendo tu cartera» mientras piensa la IA), una
+    # tanda de pedazos cada 40 ms, otros dos pegados, silencio, otra tanda.
+    # Cada aviso trae `s` = segundos desde que arrancó, según el servidor.
+    # hilo=1 lo fabrica como el chat (generador común, en un hilo aparte).
     import asyncio
     n = max(1, min(int(n), 30))
     ms = max(20, min(int(ms), 1000))
+    if patron == "chat":
+        guion = ([("aviso", 0)] + [("pausa", 3.0)] + [("pedazo", 0.04)] * 20
+                 + [("aviso", 0), ("aviso", 0), ("pausa", 2.0), ("aviso", 0), ("pausa", 3.0)]
+                 + [("pedazo", 0.04)] * 30 + [("fin", 0)])
+    else:
+        guion = [("pausa", ms / 1000), ("aviso", 0)] * n
 
-    async def _gen():
+    def _frame(i, tipo, t0):
+        return "data: " + json.dumps({"t": tipo, "i": i, "s": round(time.monotonic() - t0, 3)}) + "\n\n"
+
+    async def _gen_async():
+        t0 = time.monotonic()
         yield ": ok\n\n"
-        for i in range(1, n + 1):
-            await asyncio.sleep(ms / 1000)
-            yield "data: " + json.dumps({"t": "goteo", "i": i}) + "\n\n"
+        for i, (tipo, seg) in enumerate(guion, 1):
+            if tipo == "pausa":
+                await asyncio.sleep(seg)
+                continue
+            yield _frame(i, tipo, t0)
+            if seg:
+                await asyncio.sleep(seg)
 
-    return StreamingResponse(_gen(), media_type="text/event-stream", headers={
+    def _gen_hilo():
+        t0 = time.monotonic()
+        yield ": ok\n\n"
+        for i, (tipo, seg) in enumerate(guion, 1):
+            if tipo == "pausa":
+                time.sleep(seg)
+                continue
+            yield _frame(i, tipo, t0)
+            if seg:
+                time.sleep(seg)
+
+    return StreamingResponse(_gen_hilo() if hilo else _gen_async(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
