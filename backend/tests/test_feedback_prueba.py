@@ -642,6 +642,17 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
         self.assertIsNone(fila["espera"])
 
+    def test_espera_al_aviso_que_resend_rechazo_y_el_cron_reintenta(self):
+        """"Quedan pocos días" tendría que haber salido hace 30 h y no está en
+        el registro: Resend lo rechazó y el cron lo reintenta esta noche (su
+        ventana sigue abierta). Con la regla vieja ("hace más de un día no lo
+        manda nadie") el panel dejaba mandar el feedback y llegaban dos mails
+        de Rendi en pocas horas."""
+        uid = self._con_prueba(self._persona(), arrancó_hace=(
+            tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 1.25))
+        fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
+        self.assertIn("quedan pocos días", fila["espera"] or "")
+
     def test_fechas_con_zona_horaria_tambien_cuentan(self):
         uid = self._con_prueba(self._persona())
         self.conn.execute(
@@ -657,12 +668,12 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         manda tiene que ser exactamente lo que ventanas_de_aviso dice que
         corresponde. Si alguien cambia una condición del cron y no la función,
         este test se pone rojo."""
-        # Los bordes de cada ventana: antes y después de que abra, y antes y
-        # después de que cierre (fin de Pro cierra dos días después de abrir).
-        edades = (tr.TRIAL_PRO_DAYS - 1.1, tr.TRIAL_PRO_DAYS - 0.9,
-                  tr.TRIAL_PRO_DAYS + 0.9, tr.TRIAL_PRO_DAYS + 1.1,
-                  tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES - 0.1,
-                  tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 0.1)
+        # Los bordes de las TRES ventanas: antes y después de que abra, y antes
+        # y después de que cierre.
+        P, T = tr.TRIAL_PRO_DAYS, tr.TRIAL_TOTAL_DAYS
+        A, F = tr.MAIL_AVISO_DIAS_ANTES, tr.MAIL_FIN_VENTANA_DIAS
+        edades = (P - 1.6, P - 1.1, P - 0.9, P - 0.4, P + 0.4, P + 0.9, P + 1.1,
+                  T - A - 0.1, T - A + 0.1, T - 0.1, T + 0.1, T + F - 0.1, T + F + 0.1)
         uids = []
         for e in edades:
             uid = self._con_prueba(self._persona(), arrancó_hace=0)
@@ -671,6 +682,9 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         with patch.object(emails, "send_trial_pro_ending", return_value=True), \
              patch.object(emails, "send_trial_ending_soon", return_value=True), \
              patch.object(emails, "send_trial_ended", return_value=True):
+            # En el orden del job de producción: primero el paso a Plus, después
+            # los avisos (el "fin de Pro" sale sólo a quien sigue en Pro).
+            tr.step_down_due_trials(self.conn)
             tr.send_due_trial_emails(self.conn)
         ahora = datetime.utcnow()
         for uid in uids:
@@ -678,9 +692,8 @@ class FeedbackDeLaPrueba(unittest.TestCase):
                                   "WHERE id=?", (uid,)).fetchone()
             mandados = {x["kind"] for x in self.conn.execute(
                 "SELECT kind FROM trial_email_log WHERE user_id=?", (uid,))}
-            for kind in (tr.MAIL_PRO_ENDING, tr.MAIL_ENDING_SOON):
-                desde, hasta = tr.ventanas_de_aviso(r["trial_started_at"],
-                                                    r["trial_ends_at"])[kind]
+            for kind, (desde, hasta) in tr.ventanas_de_aviso(
+                    r["trial_started_at"], r["trial_ends_at"]).items():
                 debia = desde <= ahora < hasta
                 self.assertEqual(kind in mandados, debia, f"uid={uid} {kind}")
 

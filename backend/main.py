@@ -21321,11 +21321,6 @@ ENVIO_MASIVO_LOTE = 20
 # se turnan y cada uno espera un poco más): si igual se corta, el panel espera y
 # recarga, y la marca impide el doble envío.
 ENVIO_MASIVO_PRESUPUESTO_SEG = 18
-# Mails seguidos sin confirmación de Resend (no contestó, o dio 5xx) después de
-# los cuales se frena el envío: con Resend caído, cada uno queda marcado sin
-# saber si salió, y seguir quemaba la campaña entera. Es el freno de
-# `emails.Tanda`, el mismo de los avisos automáticos.
-from billing.emails import INCIERTOS_PARA_FRENAR as ENVIO_MASIVO_INCIERTOS_SEGUIDOS  # noqa: E402
 # Horas que tienen que pasar para "reenviar" el MISMO mail a alguien que ya lo
 # recibió (re-engagement y regalo de plan). Sin esto, si un reenvío se cortaba a
 # la mitad y el admin volvía a apretar, a los de las primeras tandas les llegaba
@@ -21530,7 +21525,7 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
       4. Si Resend no contestó a tiempo o dio un 5xx, el mail PUDO haber salido
          (INCIERTO): la marca se deja y la persona va en `inciertos`.
          Devolverla la ponía otra vez como pendiente, y el click siguiente le
-         mandaba un segundo mail. Con ENVIO_MASIVO_INCIERTOS_SEGUIDOS seguidos
+         mandaba un segundo mail. Con `emails.INCIERTOS_PARA_FRENAR` seguidos
          (Resend caído) se frena: el resto vuelve sin marca en `pendientes` y
          `frenado` le dice al panel que no siga. La cuenta sigue entre pedidos
          (`inciertos_previos`, que el panel devuelve de `inciertos_seguidos`):
@@ -22204,14 +22199,17 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             propio = _horas_desde(_fecha_utc(d["enviado"]))
             # El próximo aviso automático que todavía no le llegó: si le toca
             # en las próximas horas, este mail espera a que salga aquel.
-            # Sólo cuenta el que le toca dentro de la ventana —o le tocó hace
-            # menos de eso y el cron todavía no pasó—. Uno que tendría que haber
-            # salido hace más de un día y no salió no lo está mandando nadie
-            # (cron caído, cuenta vieja): esperarlo dejaría a la persona
-            # esperando para siempre.
-            pendientes = {k: m for k, (m, _hasta) in _trial.ventanas_de_aviso(
+            # Cuenta mientras su ventana siga abierta (`ventanas_de_aviso`):
+            # uno que ya tendría que haber salido y no salió es, casi siempre,
+            # uno que Resend rechazó y el cron reintenta esta noche — con la
+            # regla vieja ("hace más de un día no lo manda nadie") el panel
+            # dejaba mandar este mail y el aviso llegaba horas después. Las
+            # ventanas cierran (a lo sumo MAIL_FIN_VENTANA_DIAS después del
+            # final), así que nadie espera para siempre por un cron caído o
+            # una cuenta vieja.
+            pendientes = {k: m for k, (m, hasta) in _trial.ventanas_de_aviso(
                               d["trial_started_at"], d["trial_ends_at"]).items()
-                          if k not in avisos_enviados[vid] and m > ahora - ventana}
+                          if k not in avisos_enviados[vid] and ahora < hasta}
             proximo = min(pendientes.items(), key=lambda kv: kv[1]) if pendientes else None
             espera = None
             if otro is not None and otro < FEEDBACK_PRUEBA_ESPERA_HORAS:
@@ -36795,15 +36793,34 @@ def iol_lab_probe(data: IolLabProbeIn, request: Request, uid: int = Depends(get_
             raise HTTPException(409, "Ya hay una prueba corriendo. Esperá a que termine.")
     keep = bool(data.keep_token)
     username = data.username.strip()
+    # Con la bandera de las renovaciones: el token nuevo que se guarda acá no
+    # puede quedar pisado por una renovación del cron que arrancó con el viejo.
+    if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
+        del data
+        raise HTTPException(409, "Se está renovando la medición ahora mismo. Probá en unos segundos.")
     try:
-        tokens = _iol.login(username, data.password)
-    except _iol.IolError as e:
-        hint = (" ¿Pediste la activación de APIs por Mensajes en IOL y aceptaste los TyC en "
-                "Mi Cuenta › Personalización › APIs?" if e.status in (400, 401, 403) else "")
-        raise HTTPException(400, f"IOL rechazó el login (HTTP {e.status}).{hint}")
+        try:
+            tokens = _iol.login(username, data.password)
+        except _iol.IolError as e:
+            hint = (" ¿Pediste la activación de APIs por Mensajes en IOL y aceptaste los TyC en "
+                    "Mi Cuenta › Personalización › APIs?" if e.status in (400, 401, 403) else "")
+            raise HTTPException(400, f"IOL rechazó el login (HTTP {e.status}).{hint}")
+        finally:
+            del data   # la contraseña no sigue viva en este frame
+        access, rt = tokens.get("access_token"), tokens.get("refresh_token")
+        run_id = _iol_lab_guardar_probe(uid, keep, rt, tokens)
     finally:
-        del data   # la contraseña no sigue viva en este frame
-    access, rt = tokens.get("access_token"), tokens.get("refresh_token")
+        _soltar_corrida("iol_lab")
+    with _iol_lab_runs_lock:
+        _iol_lab_running.add(uid)
+    threading.Thread(target=_iol_lab_run_bg, args=(run_id, uid, email, access), daemon=True).start()
+    return {"ok": True, "run_id": run_id, "status": "started",
+            "expires_in": tokens.get("expires_in"), "watch": bool(keep and rt)}
+
+
+def _iol_lab_guardar_probe(uid: int, keep: bool, rt, tokens) -> int:
+    """Guarda el token de un login de la prueba (si el tester lo dejó) y abre la
+    corrida. Devuelve su id."""
     conn = get_db()
     try:
         with conn:
@@ -36817,27 +36834,30 @@ def iol_lab_probe(data: IolLabProbeIn, request: Request, uid: int = Depends(get_
                 conn.execute("DELETE FROM iol_lab_token_log WHERE user_id=?", (uid,))
                 _iol_lab_log(conn, uid, True, f"login expires_in={tokens.get('expires_in')}")
             cur = conn.execute("INSERT INTO iol_lab_runs (user_id, status) VALUES (?, 'running')", (uid,))
-            run_id = cur.lastrowid
+            return cur.lastrowid
     finally:
         conn.close()
-    with _iol_lab_runs_lock:
-        _iol_lab_running.add(uid)
-    threading.Thread(target=_iol_lab_run_bg, args=(run_id, uid, email, access), daemon=True).start()
-    return {"ok": True, "run_id": run_id, "status": "started",
-            "expires_in": tokens.get("expires_in"), "watch": bool(keep and rt)}
 
 
 @app.post("/api/iol/lab/refresh")
 def iol_lab_refresh(request: Request, uid: int = Depends(get_current_user)):
-    """Renovar el token AHORA (además del cron). Sirve para ver que la medición está viva."""
+    """Renovar el token AHORA (además del cron). Sirve para ver que la medición está viva.
+    Con la bandera de las renovaciones (`_iol_lab_refresh_all`): si el cron está
+    renovando el mismo token en ese segundo, IOL anula el viejo al rotarlo y uno
+    de los dos lo daba por muerto y borraba la credencial."""
     _iol_lab_gate(uid)
     _check_rate_limit(request, max_calls=10, window_seconds=600, suffix=f"iol_lab_refresh:{uid}")
-    conn = get_db()
+    if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
+        raise HTTPException(409, "Se está renovando ahora mismo. Probá en unos segundos.")
     try:
-        res = _iol_lab_refresh_one(conn, uid)
-        return {"ok": True, **res, "watch": _iol_lab_watch_info(conn, uid)}
+        conn = get_db()
+        try:
+            res = _iol_lab_refresh_one(conn, uid)
+            return {"ok": True, **res, "watch": _iol_lab_watch_info(conn, uid)}
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        _soltar_corrida("iol_lab")
 
 
 @app.delete("/api/iol/lab/disconnect")
@@ -36877,27 +36897,32 @@ def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
     Una corrida a la vez entre las tres puertas (`_tomar_corrida("iol_lab")`):
     dos renovando el MISMO token a la vez, si IOL anula el viejo al rotarlo, la
     segunda recibe un rechazo y borra la credencial como si estuviera muerta."""
-    if not _tomar_corrida("iol_lab"):
+    # Esperando un poco: la otra puerta suele ser la renovación de UN tester
+    # (botón o /status, ~1 s); saltear la corrida dejaba a todos sin renovar
+    # hasta la hora siguiente.
+    if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
         return {"ok": True, "status": "already_running",
                 "checked": 0, "renewed": 0, "dead": 0, "transient": 0}
-    conn = get_db()
     try:
-        rows = conn.execute(
-            "SELECT user_id FROM user_broker_credentials WHERE broker='iol_lab' "
-            "AND (last_sync_at IS NULL OR last_sync_at <= datetime('now', ?))",
-            (f"-{int(min_age_minutes)} minutes",)).fetchall()
-        out = {"ok": True, "checked": len(rows), "renewed": 0, "dead": 0, "transient": 0}
-        for r in rows:
-            res = _iol_lab_refresh_one(conn, r["user_id"])
-            if res.get("ok"):
-                out["renewed"] += 1
-            elif res.get("dead"):
-                out["dead"] += 1
-            elif res.get("transient"):
-                out["transient"] += 1
-        return out
+        conn = get_db()       # adentro: si abrir la base falla, la bandera igual se suelta
+        try:
+            rows = conn.execute(
+                "SELECT user_id FROM user_broker_credentials WHERE broker='iol_lab' "
+                "AND (last_sync_at IS NULL OR last_sync_at <= datetime('now', ?))",
+                (f"-{int(min_age_minutes)} minutes",)).fetchall()
+            out = {"ok": True, "checked": len(rows), "renewed": 0, "dead": 0, "transient": 0}
+            for r in rows:
+                res = _iol_lab_refresh_one(conn, r["user_id"])
+                if res.get("ok"):
+                    out["renewed"] += 1
+                elif res.get("dead"):
+                    out["dead"] += 1
+                elif res.get("transient"):
+                    out["transient"] += 1
+            return out
+        finally:
+            conn.close()
     finally:
-        conn.close()
         _soltar_corrida("iol_lab")
 
 
@@ -37415,6 +37440,39 @@ def _tomar_corrida(nombre: str) -> bool:
 def _soltar_corrida(nombre: str) -> None:
     with _corridas_lock:
         _corridas_en_curso.pop(nombre, None)
+
+
+CORRIDAS_ESPERA_AL_APAGAR_SEG = 20
+# Cuánto espera una puerta del lab de IOL a que termine la renovación que está
+# corriendo (la de un tester dura ~1 s) antes de contestar que no.
+IOL_LAB_ESPERA_SEG = 5
+
+
+def _esperar_corridas(segundos: float) -> bool:
+    """Espera, con tope, a que no quede ninguna corrida en curso. True si se
+    vaciaron."""
+    fin = time.monotonic() + segundos
+    while True:
+        with _corridas_lock:
+            quedan = list(_corridas_en_curso)
+        if not quedan:
+            return True
+        if time.monotonic() >= fin:
+            log.warning("apagado: quedan corridas sin terminar: %s", ", ".join(quedan))
+            return False
+        time.sleep(0.2)
+
+
+def _tomar_corrida_esperando(nombre: str, segundos: float) -> bool:
+    """Para un botón que aprieta una persona: si la corrida de turno es corta
+    (p. ej. las renovaciones del lab de IOL, ~1 s), esperar a que termine en vez
+    de contestarle que no."""
+    fin = time.monotonic() + segundos
+    while not _tomar_corrida(nombre):
+        if time.monotonic() >= fin:
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def _correr_si_esta_libre(nombre: str, fn) -> bool:
@@ -38085,6 +38143,11 @@ def _stop_scheduler():
             log.info("shutdown: bajé %d últimos-precios pendientes", n)
     except Exception:
         pass
+    # Las corridas en segundo plano (alertas, avisos de la prueba, briefs…)
+    # marcan cada aviso ANTES de mandarlo: si el deploy las mata a mitad, lo que
+    # faltaba no sale. Darles un rato para terminar — va DESPUÉS de bajar los
+    # precios, que es lo que no se puede perder si el apagado se corta antes.
+    _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
 
 
 # ─── Admin endpoints ────────────────────────────────────────────────────────
@@ -39460,6 +39523,13 @@ def _evaluar_alertas_job() -> dict:
         except Exception as _ex:
             log.error("alertas de precio en el cron: %s", _ex)
             result = {"error_precio": str(_ex)}
+            # Lo que quedó a medias no puede confirmarse con el primer commit
+            # de las alertas del libro, que usan esta misma conexión: alertas
+            # 'once' apagadas y disparos registrados que nunca se entregaron.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
@@ -40272,6 +40342,11 @@ def _send_push_to_user(uid: int, payload: dict) -> int:
                         )
                 else:
                     log.warning(f"push send fallo (sub {r['id']}, status {status}): {ex}")
+            except Exception as ex:
+                # El tope de tiempo (`timeout`) sale como error de `requests`, no
+                # como WebPushException: sin esto, un dispositivo lento cortaba
+                # el aviso a los demás dispositivos de la persona.
+                log.warning(f"push send fallo (sub {r['id']}): {ex}")
         return sent
     finally:
         conn.close()

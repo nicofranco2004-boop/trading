@@ -395,10 +395,10 @@ class EnvioMasivo(unittest.TestCase):
             vistos = self._vistos(campaña)
             res, spy = self._mandar_por_resend(campaña, vistos, 503)
             self.assertTrue(res["frenado"])
-            self.assertEqual(spy.call_count, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-            self.assertEqual(len(res["inciertos"]), main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(spy.call_count, emails.INCIERTOS_PARA_FRENAR)
+            self.assertEqual(len(res["inciertos"]), emails.INCIERTOS_PARA_FRENAR)
             quedan = {p["id"] for p in res["pendientes"]}
-            self.assertEqual(len(quedan), 6 - main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(len(quedan), 6 - emails.INCIERTOS_PARA_FRENAR)
             for uid in quedan:
                 self.assertIsNone(self._marca(campaña, uid))
             # Y siguen en la lista para cuando Resend vuelva.
@@ -427,9 +427,9 @@ class EnvioMasivo(unittest.TestCase):
                     quedan = {p["id"] for p in res["pendientes"]}
                     cola = [v for v in cola if v["id"] in quedan]
             self.assertTrue(res["frenado"], "con Resend lento el freno no saltó")
-            self.assertEqual(inciertos, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-            self.assertEqual(pedidos, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-            self.assertEqual(len(self._vistos(campaña)), 6 - main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(inciertos, emails.INCIERTOS_PARA_FRENAR)
+            self.assertEqual(pedidos, emails.INCIERTOS_PARA_FRENAR)
+            self.assertEqual(len(self._vistos(campaña)), 6 - emails.INCIERTOS_PARA_FRENAR)
 
     def test_el_tope_de_tiempo_cuenta_desde_que_llega_el_pedido(self):
         """Armar la lista también gasta tiempo del pedido (eligibility, el plan

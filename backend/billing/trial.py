@@ -471,7 +471,8 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int) -> dict:
     # cron (ver MAIL_BIENVENIDA_REINTENTO_DIAS): antes quedaba marcado y no
     # llegaba nunca.
     try:
-        row = conn.execute("SELECT email, name FROM users WHERE id=?", (user_id,)).fetchone()
+        row = conn.execute("SELECT email, name, requires_plan FROM users WHERE id=?",
+                           (user_id,)).fetchone()
         if row and row["email"]:
             _avisar_una_vez(conn, user_id, MAIL_STARTED, _bienvenida(row))
     except Exception as ex:
@@ -648,8 +649,10 @@ MAIL_ENDED = "ended"
 # convierte y 48 horas es poco margen para decidir un gasto mensual.
 MAIL_AVISO_DIAS_ANTES = 3
 # Días durante los cuales el cron reintenta la bienvenida que Resend rechazó al
-# activar la prueba (ver `send_due_trial_emails`).
-MAIL_BIENVENIDA_REINTENTO_DIAS = 2
+# activar la prueba (ver `send_due_trial_emails`). Uno: la corrida de esa misma
+# noche. El mail dice "durante los próximos N días tenés todo Pro"; más tarde,
+# la cuenta ya no da.
+MAIL_BIENVENIDA_REINTENTO_DIAS = 1
 
 
 # Días después del final en que el cron todavía manda "terminó tu prueba".
@@ -664,8 +667,9 @@ def ventanas_de_aviso(trial_started_at, trial_ends_at) -> dict:
 
     Son las MISMAS condiciones que las consultas del cron, escritas como fechas
     en vez de como SQL:
-      · fin de Pro        → ahora − (TRIAL_PRO_DAYS + 1) d < trial_started_at
-                                                    <= ahora − (TRIAL_PRO_DAYS − 1) d
+      · fin de Pro        → el día (UTC) TRIAL_PRO_DAYS − 1 desde el día en que
+                            arrancó, hasta que `step_down_due_trials` lo pasa a
+                            Plus (la primera corrida del día TRIAL_PRO_DAYS)
       · quedan pocos días → ahora < trial_ends_at <= ahora + MAIL_AVISO_DIAS_ANTES d
       · terminó           → ahora − MAIL_FIN_VENTANA_DIAS d < trial_ends_at <= ahora
     Existe para que otro mail (el de feedback que manda el admin) pueda ver
@@ -682,8 +686,9 @@ def ventanas_de_aviso(trial_started_at, trial_ends_at) -> dict:
     ini, fin = _f(trial_started_at), _f(trial_ends_at)
     out = {}
     if ini:
-        out[MAIL_PRO_ENDING] = (ini + timedelta(days=TRIAL_PRO_DAYS - 1),
-                                ini + timedelta(days=TRIAL_PRO_DAYS + 1))
+        dia = datetime.combine(ini.date(), datetime.min.time())
+        out[MAIL_PRO_ENDING] = (dia + timedelta(days=TRIAL_PRO_DAYS - 1),
+                                dia + timedelta(days=TRIAL_PRO_DAYS))
     if fin:
         out[MAIL_ENDING_SOON] = (fin - timedelta(days=MAIL_AVISO_DIAS_ANTES), fin)
         out[MAIL_ENDED] = (fin, fin + timedelta(days=MAIL_FIN_VENTANA_DIAS))
@@ -719,11 +724,15 @@ def _mark_sent(conn, user_id: int, kind: str) -> Optional[str]:
 
 
 def _bienvenida(row):
-    """El mail de bienvenida de la prueba para esta fila de `users`."""
+    """El mail de bienvenida de la prueba para esta fila de `users` (con email,
+    name y requires_plan). `requiere_plan` como en los otros avisos: sin él, a
+    quien nació sin plan gratis le prometía "cuando se termina, tu cuenta vuelve
+    a Free sola"."""
     from billing import emails
     return lambda: emails.send_trial_started(
         to=row["email"], user_name=(row["name"] or row["email"].split("@")[0]),
-        pro_days=TRIAL_PRO_DAYS, total_days=TRIAL_TOTAL_DAYS)
+        pro_days=TRIAL_PRO_DAYS, total_days=TRIAL_TOTAL_DAYS,
+        requiere_plan=bool(row["requires_plan"]))
 
 
 def _avisar_una_vez(conn, user_id: int, kind: str, mandar, tanda=None) -> bool:
@@ -836,7 +845,7 @@ def send_due_trial_emails(conn, tanda=None) -> int:
     # hacé esto hoy" una semana tarde no es una bienvenida.
     try:
         rows = conn.execute(
-            """SELECT u.id, u.email, u.name FROM users u
+            """SELECT u.id, u.email, u.name, u.requires_plan FROM users u
                 WHERE u.trial_started_at IS NOT NULL AND u.trial_started_at > ?
                   AND u.trial_ends_at IS NOT NULL
                   AND u.credit_active_until = u.trial_ends_at
@@ -856,21 +865,26 @@ def send_due_trial_emails(conn, tanda=None) -> int:
     # ── la víspera del paso a Plus (solo a quien SIGUE en la etapa Pro) ────
     try:
         rows = conn.execute(
-            # SIN filtro por tier y con dos corridas de margen: con una ventana
-            # de 24h exactas, un cron atrasado (o el step-down corriendo antes)
-            # hacía que este aviso —el que más convierte— no saliera NUNCA para
-            # esa cohorte (audit 2026-08-10). Pero CON borde: desde que un
-            # rechazo de Resend se reintenta, sin borde el "mañana termina tu
-            # Pro" podía llegar días después del paso a Plus.
+            # Por DÍA, como el paso a Plus (`step_down_due_trials`), y sólo a
+            # quien SIGUE en Pro. Medía por instante ("arrancó hace 9 días
+            # exactos") mientras el paso a Plus mide por fecha: a quien arrancó
+            # después de la hora del cron (casi todos: el cron corre a las 00:30
+            # de Argentina) el aviso le salía en la corrida que ya lo había
+            # pasado a Plus — "mañana terminan tus días de Pro, hoy todavía
+            # tenés todo Pro", ya sin Pro. Y desde que un rechazo de Resend se
+            # reintenta, podía llegar días después. Ahora sale el día anterior
+            # al paso a Plus, en cualquier corrida de ese día; el reintento vale
+            # mientras siga en Pro. El job baja a Plus ANTES de mandar avisos,
+            # así que el tier lo decide.
             """SELECT id, email, name FROM users
-                WHERE trial_ends_at IS NOT NULL
+                WHERE tier = 'pro'
+                  AND trial_ends_at IS NOT NULL
                   AND credit_active_until = trial_ends_at
                   AND trial_ends_at > ?
-                  AND trial_started_at <= ?
-                  AND trial_started_at > ?""",
+                  AND trial_started_at IS NOT NULL
+                  AND date(replace(trial_started_at,'T',' ')) <= ?""",
             (now.isoformat(),
-             (now - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat(),
-             (now - timedelta(days=TRIAL_PRO_DAYS + 1)).isoformat()),
+             (now.date() - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat()),
         ).fetchall()
     except Exception as ex:
         log.error("trial mails (pro_ending) falló: %s", ex)

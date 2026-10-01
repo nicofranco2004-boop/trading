@@ -127,9 +127,9 @@ class Tanda:
     `inciertos_seguidos` arranca en lo que traiga el que llama: el panel manda
     en varios pedidos y la cuenta tiene que seguir entre uno y otro."""
 
-    def __init__(self, inciertos_seguidos: int = 0, limite: int = INCIERTOS_PARA_FRENAR):
-        self.limite = limite
-        self.inciertos_seguidos = min(max(int(inciertos_seguidos or 0), 0), limite)
+    def __init__(self, inciertos_seguidos: int = 0):
+        self.inciertos_seguidos = min(max(int(inciertos_seguidos or 0), 0),
+                                      INCIERTOS_PARA_FRENAR)
         self.frenado = False
 
     def mandar(self, marca, mandar, desmarcar, *, que: str) -> str:
@@ -149,7 +149,7 @@ class Tanda:
             return ENVIADO
         if estado == INCIERTO:
             self.inciertos_seguidos += 1
-            if self.inciertos_seguidos >= self.limite:
+            if self.inciertos_seguidos >= INCIERTOS_PARA_FRENAR:
                 self.frenado = True
             log.error("%s: no se sabe si llegó; queda marcado para no mandarlo dos "
                       "veces%s", que, " — se frena la tanda" if self.frenado else "")

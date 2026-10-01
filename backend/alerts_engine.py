@@ -572,7 +572,9 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
 
 def evaluate_alerts(conn, only_user: int = None) -> dict:
     """Evalúa TODAS las alertas activas (o las de un user). Idempotente y seguro
-    para correr cada N minutos desde un cron externo. Commit al final."""
+    para correr cada N minutos desde un cron externo. Confirma lo que disparó
+    ANTES de entregar y cada entrega por separado (ver `_entregar_pendientes`):
+    la entrega es red y no puede llevar el lock de escritura."""
     now = datetime.utcnow()
     q = "SELECT * FROM alerts WHERE active=1"
     params: tuple = ()

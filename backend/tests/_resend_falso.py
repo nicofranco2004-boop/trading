@@ -45,6 +45,7 @@ class Resend:
         self.reloj = reloj
         self.demora = demora            # lo que tarda en contestar (reloj de mentira)
         self.pedidos = []               # [(hora, to)]
+        self.mails = []                 # [(to, asunto, texto)]
         self.respuestas = {}            # to -> [200 | 429 | Exception, ...]
         self._lock = threading.Lock()
 
@@ -54,6 +55,7 @@ class Resend:
         with self._lock:
             hora = self.reloj.ahora if self.reloj else time.monotonic()
             self.pedidos.append((hora, to))
+            self.mails.append((to, json.get("subject", ""), json.get("text", "")))
             if self.reloj:
                 self.reloj.ahora += self.demora
             cola = self.respuestas.get(to) or []

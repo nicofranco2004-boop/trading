@@ -28,6 +28,17 @@ from datetime import datetime, timedelta
 log = logging.getLogger("billing.subscriptions")
 
 
+def _dias_que_quedan(fin) -> int:
+    """Los días enteros que faltan, pero nunca 0 mientras no venció: con los
+    reintentos (un aviso que Resend rechazó sale en la corrida siguiente), el
+    redondeo para abajo llegaba a decir "vence en 0 días" con horas por
+    delante."""
+    resto = fin - datetime.utcnow()
+    if resto.total_seconds() <= 0:
+        return 0
+    return max(1, resto.days)
+
+
 def _ahora_db() -> str:
     """La hora UTC en el formato de `datetime('now')` de SQLite, que es como se
     escribían estas marcas. Se arma en Python para saber QUÉ marca se puso y
@@ -52,6 +63,7 @@ def run_lifecycle_job(conn) -> dict:
         "trials_stepped_down": 0,
         "trial_emails_sent": 0,
         "unverified_accounts_deleted": 0,
+        "avisos_frenados": False,
         "errors": 0,
     }
     # Source of truth = users.credit_active_until (modelo de crédito tiempo-based).
@@ -103,6 +115,12 @@ def run_lifecycle_job(conn) -> dict:
     except Exception as ex:
         log.error("Unverified accounts cleanup failed: %s", ex)
         result["errors"] += 1
+    # Resend no confirmó los envíos y la tanda se frenó: lo que faltaba queda
+    # sin marca para la corrida siguiente. Que se vea en el resultado del job.
+    result["avisos_frenados"] = tanda.frenado
+    if tanda.frenado:
+        log.error("ciclo de vida: Resend no confirma los envíos; se frenaron los avisos "
+                  "y lo que faltaba queda para la próxima corrida")
     return result
 
 
@@ -319,7 +337,7 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3, tanda=None) -> i
                 period_end = datetime.fromisoformat(
                     r["credit_active_until"].replace("Z", "").split(".")[0]
                 )
-                days_left = max(0, (period_end - datetime.utcnow()).days)
+                days_left = _dias_que_quedan(period_end)
             except Exception:
                 days_left = days_before
 
@@ -476,7 +494,7 @@ def _send_expiration_reminders(conn, days_before: int = 3, tanda=None) -> int:
                 period_end = datetime.fromisoformat(
                     r["current_period_end"].replace("Z", "").split(".")[0]
                 )
-                days_left = max(0, (period_end - datetime.utcnow()).days)
+                days_left = _dias_que_quedan(period_end)
             except Exception:
                 days_left = days_before
 
