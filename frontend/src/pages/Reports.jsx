@@ -29,6 +29,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
+import { pctVar, pctColor } from '../utils/format'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -460,7 +461,8 @@ function MonthDisclosure({ items, loading, broker, expandedKey, onToggle }) {
   )
 }
 
-function PeriodRow({ period, expanded, onToggle }) {
+// Exportada para el test de la fila (Reports.periodRow.render.test.jsx).
+export function PeriodRow({ period, expanded, onToggle }) {
   const empty = !period.is_relevant && !period.is_current
   // AUDIT D-1: sin base comparable el backend no publica el resultado del
   // período (start salía de la cadena contable y end del mercado). Ni el % ni
@@ -468,9 +470,9 @@ function PeriodRow({ period, expanded, onToggle }) {
   const noBasis = period?.metrics?.basis_incomparable === true
   const pct = noBasis ? null : period?.metrics?.delta_pct
   const usd = noBasis ? null : period?.metrics?.delta_usd
-  const pctColor = pct == null
-    ? 'text-ink-3'
-    : pct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+  // Uno o dos decimales según el tamaño, y el color del número que se ve.
+  const decs = pct != null && Math.abs(pct) >= 10 ? 1 : 2
+  const tono = pct == null ? 'text-ink-3' : pctColor(pct, decs)
 
   return (
     <div className={`border rounded bg-bg-1/60 overflow-hidden transition-colors ${
@@ -503,12 +505,12 @@ function PeriodRow({ period, expanded, onToggle }) {
 
         <div className="flex items-center gap-4 flex-shrink-0">
           {pct != null && (
-            <span className={`text-sm font-mono font-semibold tabular ${pctColor}`}>
-              {pct >= 0 ? '+' : ''}{pct.toFixed(pct >= 10 || pct <= -10 ? 1 : 2)}%
+            <span className={`text-sm font-mono font-semibold tabular ${tono}`}>
+              {pctVar(pct, decs)}
             </span>
           )}
           {usd != null && (
-            <span className={`text-xs font-mono tabular ${pctColor} hidden sm:inline`}>
+            <span className={`text-xs font-mono tabular ${tono} hidden sm:inline`}>
               {usd >= 0 ? '+' : '−'}US$ {Math.abs(usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
             </span>
           )}

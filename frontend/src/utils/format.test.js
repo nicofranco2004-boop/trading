@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { labelVentanaMeses, parseNum, numToInput, pctTxt, pctVar, pctVarSign, fmtIndexPrice } from './format'
+import { labelVentanaMeses, parseNum, numToInput, pctTxt, pctVar, pctVarSign, pctColor, fmtIndexPrice } from './format'
 describe('labelVentanaMeses — la card "Acumulado" tiene que decir su período', () => {
   it('12 meses (el default) se lee "1A"', () => {
     expect(labelVentanaMeses(12)).toBe('1A')
@@ -75,6 +75,74 @@ describe('numToInput ↔ parseNum — lo que el sistema escribe, se vuelve a lee
     expect(numToInput(null)).toBe('')
     expect(numToInput(NaN)).toBe('')
     expect(numToInput(undefined)).toBe('')
+  })
+})
+
+describe('pctTxt con decimales — un porcentaje que no es variación', () => {
+  it('decimales fijos, coma, y sin "+"', () => {
+    expect(pctTxt(35, 1)).toBe('35,0%')
+    expect(pctTxt(0.4, 2)).toBe('0,40%')
+    expect(pctTxt(62.46, 0)).toBe('62%')
+  })
+  it('negativo con el menos tipográfico; lo que redondea a cero, sin signo', () => {
+    expect(pctTxt(-12.34, 1)).toBe('−12,3%')
+    expect(pctTxt(-0.04, 1)).toBe('0,0%')
+  })
+  it('no multiplica por 100', () => {
+    expect(pctTxt(12.5, 1)).toBe('12,5%')
+  })
+  it('sin dato, guión — también NaN y texto sin número', () => {
+    expect(pctTxt(null, 1)).toBe('—')
+    expect(pctTxt(NaN, 1)).toBe('—')
+    expect(pctTxt('abc', 1)).toBe('—')
+  })
+  it('sin `decimals` sigue igual que antes: no redondea', () => {
+    expect(pctTxt(23.4)).toBe('23,4%')
+    expect(pctTxt(35)).toBe('35%')
+  })
+})
+
+describe('redondeo de los porcentajes — el mismo que el servidor', () => {
+  // Valores donde toFixed y toLocaleString discrepan en la última cifra. Lo que
+  // se espera es lo que escribe el backend: Python `fmt_num(19.95, 1)` → "19,9"
+  // (medido 2026-10-01). Con el redondeo de nfmt, el insight decía "+19,9%" en
+  // el texto del servidor y "+20,0%" en la evidencia de la pantalla.
+  it('pctVar redondea como el backend', () => {
+    expect(pctVar(19.95, 1)).toBe('+19,9%')
+    expect(pctVar(2.15, 1)).toBe('+2,1%')
+    expect(pctVar(-1.45, 1)).toBe('\u22121,4%')
+  })
+  it('pctTxt con decimales, igual', () => {
+    expect(pctTxt(19.95, 1)).toBe('19,9%')
+    expect(pctTxt(2.15, 1)).toBe('2,1%')
+  })
+  it('lo que ya viene con los decimales que se muestran no se toca', () => {
+    expect(pctVar(3.25, 2)).toBe('+3,25%')
+    expect(pctVar(-0.85)).toBe('\u22120,85%')
+  })
+  it('infinito no es un porcentaje que se pueda mostrar', () => {
+    expect(pctVar(Infinity)).toBe('—')
+    expect(pctVarSign(-Infinity)).toBe(0)
+  })
+})
+
+describe('pctColor — el color es el del número que se ve', () => {
+  it('positivo verde, negativo rojo', () => {
+    expect(pctColor(1.2, 1)).toBe('text-rendi-pos')
+    expect(pctColor(-1.2, 1)).toBe('text-rendi-neg')
+  })
+  it('lo que se escribe "0,0%" va neutro aunque el crudo sea negativo', () => {
+    // Una acción comprada hoy: −0,02 % se escribe "0,0%". Roja, el texto dice
+    // "no se movió" y el color "perdiste".
+    expect(pctVar(-0.02, 1)).toBe('0,0%')
+    expect(pctColor(-0.02, 1)).toBe('text-ink-2')
+    expect(pctColor(0)).toBe('text-ink-2')
+  })
+  it('usa los MISMOS decimales que el texto', () => {
+    expect(pctColor(-0.02, 2)).toBe('text-rendi-neg')   // "−0,02%"
+  })
+  it('sin dato, neutro', () => {
+    expect(pctColor(null)).toBe('text-ink-2')
   })
 })
 

@@ -1,6 +1,7 @@
 // /blog/comparativa-brokers-argentina
 
 import BlogPost from '../../../components/blog/BlogPost'
+import { SoloVisitantes } from '../../../components/CabeceraPublica'
 import { CTA_PRUEBA } from '../../../data/prueba'
 
 const RELATED = [
@@ -165,7 +166,7 @@ export default function ComparativaBrokersArgentina() {
       </p>
 
       <p>
-        <a href="/login?mode=register">{CTA_PRUEBA}</a> · <a href="/planes">Ver planes</a>
+        <SoloVisitantes><a href="/login?mode=register">{CTA_PRUEBA}</a> · </SoloVisitantes><a href="/planes">Ver planes</a>
       </p>
     </BlogPost>
   )

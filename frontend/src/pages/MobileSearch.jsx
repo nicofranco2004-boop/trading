@@ -16,7 +16,7 @@
 // Sin auto-complete fancy: filtro substring sobre symbol + name.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, X, Search as SearchIcon, Star, ChevronRight, Plus, Check } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
 import AssetTypeBadge from '../components/AssetTypeBadge'
@@ -24,6 +24,10 @@ import { api } from '../utils/api'
 import { useToast } from '../components/Toast'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
+import { menuVisible, nombreDelCliente } from '../utils/navegacion'
+import { destinoDeTicker } from '../utils/buscadorRapido'
 
 // Reusamos los tickers populares + helpers del SearchBar desktop para no
 // duplicar el universo. Import statement nombrado — agregamos los exports en
@@ -31,9 +35,26 @@ import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { POPULAR_TICKERS, FILTERS, inferType } from '../components/home/SearchBar'
 import { CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH } from '../utils/tickers'
 
+
 export default function MobileSearch() {
   const navigate = useNavigate()
   const toast = useToast()
+  // El asesor en su nivel no tiene cartera ni watchlist propias (mismo criterio
+  // que le saca el "+" de la barra de abajo): ni "En tu portfolio" ni estrella.
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  const { atOwnLevel } = menuVisible({ user, clientCtx })
+  // A dónde lleva cada fila: la MISMA regla que el ⌘K de la compu
+  // (destinoDeTicker, utils/buscadorRapido.js). Iba a `/posiciones#X` y
+  // `/posiciones?search=X`, que la Cartera del celular no lee: quedabas arriba
+  // de tu lista sin nada abierto. null = no hay pantalla para ese ticker (un
+  // bono, una cripto) o es el asesor en su nivel, que no tiene "Calidad de
+  // cartera" en su menú: la fila no lleva a ningún lado y queda sólo la estrella.
+  const destinoDe = (t) => (atOwnLevel && !t.fromUser) ? null
+    : destinoDeTicker(t.symbol, { tuyo: t.fromUser, tipo: t.type })
+  const puedeSeguir = !atOwnLevel   // la estrella de watchlist (cuenta propia)
+  // Adentro de un cliente, lo que "tenés" es de él.
+  const deQuien = clientCtx ? `la cartera de ${nombreDelCliente(clientCtx)}` : 'tu portfolio'
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState('all')
   const [userHoldings, setUserHoldings] = useState([])
@@ -51,6 +72,7 @@ export default function MobileSearch() {
 
   // Cargar holdings + watchlist
   useEffect(() => {
+    if (atOwnLevel) { setUserHoldings([]); return }
     api.get('/positions')
       .then(d => {
         const map = new Map()
@@ -65,16 +87,17 @@ export default function MobileSearch() {
         setUserHoldings(Array.from(map.values()))
       })
       .catch(() => setUserHoldings([]))
-  }, [])
+  }, [atOwnLevel])
 
   useEffect(() => {
+    if (atOwnLevel) { setWatchlist([]); return }
     api.get('/watchlist')
       .then(d => {
         const items = Array.isArray(d) ? d : (d?.items || [])
         setWatchlist(items.map(w => (w.symbol || '').toUpperCase()))
       })
       .catch(() => setWatchlist([]))
-  }, [])
+  }, [atOwnLevel])
 
   // Búsqueda y filtros
   const qUpper = q.trim().toUpperCase()
@@ -105,22 +128,14 @@ export default function MobileSearch() {
     const holdingsSyms = new Set(holdingsMatch.map(t => t.symbol))
     const popularMatch = allPopular
       .filter(t => !holdingsSyms.has(t.symbol) && matchesQuery(t) && matchesFilter(t))
+      // Una fila que no lleva a ningún lado y no tiene estrella no sirve.
+      .filter(t => puedeSeguir || destinoDe(t))
       .slice(0, 30)
     return { holdingsMatch, popularMatch, total: holdingsMatch.length + popularMatch.length }
-  }, [qUpper, tokens, userHoldings, filter])
+  }, [qUpper, tokens, userHoldings, filter, atOwnLevel])
 
   function back() { navigate(-1) }
 
-  async function pickTicker(t) {
-    track('mobile_search_pick', { symbol: t.symbol })
-    if (t.fromUser) {
-      navigate(`/posiciones#${t.symbol}`)
-    } else {
-      // Navegar al home para ver detalle? por ahora, navega a posiciones
-      // con el ticker como query — futura QuickView mobile en M3
-      navigate(`/posiciones?search=${encodeURIComponent(t.symbol)}`)
-    }
-  }
 
   async function addToWatchlist(t) {
     setAdding(t.symbol)
@@ -218,14 +233,15 @@ export default function MobileSearch() {
           <>
             {matches.holdingsMatch.length > 0 && (
               <section>
-                <SectionHeader label="En tu portfolio" count={matches.holdingsMatch.length} />
+                <SectionHeader label={`En ${deQuien}`} count={matches.holdingsMatch.length} />
                 {matches.holdingsMatch.map(t => (
                   <SearchRow
                     key={t.symbol}
                     ticker={t}
                     highlight
-                    onPick={() => pickTicker(t)}
-                    onAdd={() => addToWatchlist(t)}
+                    destino={destinoDe(t)}
+                    tuya={clientCtx ? 'En cartera' : 'Tuya'}
+                    onAdd={puedeSeguir ? () => addToWatchlist(t) : null}
                     adding={adding === t.symbol}
                     inWatchlist={watchlist.includes(t.symbol)}
                   />
@@ -239,8 +255,9 @@ export default function MobileSearch() {
                   <SearchRow
                     key={t.symbol}
                     ticker={t}
-                    onPick={() => pickTicker(t)}
-                    onAdd={() => addToWatchlist(t)}
+                    destino={destinoDe(t)}
+                    tuya={clientCtx ? 'En cartera' : 'Tuya'}
+                    onAdd={puedeSeguir ? () => addToWatchlist(t) : null}
                     adding={adding === t.symbol}
                     inWatchlist={watchlist.includes(t.symbol)}
                   />
@@ -269,14 +286,19 @@ function SectionHeader({ label, count }) {
   )
 }
 
-function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
+function SearchRow({ ticker, highlight, destino, tuya, onAdd, adding, inWatchlist }) {
+  // Un enlace de verdad (no un botón que navega): se ve a dónde lleva, y una
+  // fila sin pantalla para ese ticker no promete nada.
+  const Principal = destino ? Link : 'div'
+  const alElegir = () => track('mobile_search_pick', { symbol: ticker.symbol })
   return (
     <div
-      className={`flex items-center gap-3 px-3 py-2.5 border-t border-line/30 hover:bg-bg-2/30 active:bg-bg-3 transition-colors ${
+      // Sin destino no se ilumina al tocarla: no va a abrir nada (sólo la estrella).
+      className={`flex items-center gap-3 px-3 py-2.5 border-t border-line/30 transition-colors ${destino ? 'hover:bg-bg-2/30 active:bg-bg-3' : ''} ${
         highlight ? 'bg-rendi-pos/[0.02]' : ''
       }`}
     >
-      <button onClick={onPick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+      <Principal {...(destino ? { to: destino, onClick: alElegir } : {})} className="flex items-center gap-3 flex-1 min-w-0 text-left">
         <AssetLogo asset={ticker.symbol} size={28} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
@@ -284,7 +306,7 @@ function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
             <AssetTypeBadge type={ticker.type} />
             {ticker.fromUser && (
               <span className="text-[12.5px] text-rendi-pos font-medium">
-                Tuya
+                {tuya}
               </span>
             )}
           </div>
@@ -292,9 +314,9 @@ function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
             {ticker.name} {ticker.exchange ? `· ${ticker.exchange}` : ''}
           </div>
         </div>
-      </button>
+      </Principal>
 
-      {!ticker.fromUser && (
+      {!ticker.fromUser && onAdd && (
         <button
           onClick={onAdd}
           disabled={inWatchlist || adding}
@@ -309,9 +331,11 @@ function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
         </button>
       )}
 
-      <button onClick={onPick} className="text-ink-3 hover:text-ink-0 p-1 flex-shrink-0">
-        <ChevronRight size={14} strokeWidth={1.75} />
-      </button>
+      {destino && (
+        <Link to={destino} onClick={alElegir} aria-hidden="true" tabIndex={-1} className="text-ink-3 hover:text-ink-0 p-1 flex-shrink-0">
+          <ChevronRight size={14} strokeWidth={1.75} />
+        </Link>
+      )}
     </div>
   )
 }

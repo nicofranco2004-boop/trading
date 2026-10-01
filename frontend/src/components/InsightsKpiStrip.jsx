@@ -7,7 +7,7 @@
 //   4) Rendimiento acum.    → TWRR vs benchmark si está
 //   5) Win rate · trades    → ratio de operaciones cerradas
 
-import { labelVentanaMeses } from '../utils/format'
+import { labelVentanaMeses, pctTxt, pctVar, pctVarSign } from '../utils/format'
 
 const SEV_LABEL = { urgent: 'HI', warn: 'MED', positive: 'POS', info: 'LO' }
 const SEV_TONE = {
@@ -20,12 +20,6 @@ const SEV_TONE = {
 function fmtFechaCorta(iso) {
   const s = String(iso || '')
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : s
-}
-
-function fmtPctShort(p, opts = {}) {
-  if (p == null || Number.isNaN(p)) return '—'
-  const sign = p >= 0 && opts.showPlus ? '+' : ''
-  return `${sign}${p.toFixed(opts.decimals ?? 1)}`
 }
 
 export default function InsightsKpiStrip({
@@ -70,7 +64,9 @@ export default function InsightsKpiStrip({
   const ddTone = ddCurrent == null ? null : (ddCurrent < -5 ? 'neg' : (ddCurrent < -1 ? 'warn' : null))
 
   // ── 4) Rendimiento acumulado vs benchmark ──────────────────────────────────
-  const rendTone = cumulativeReturnPct == null ? null : (cumulativeReturnPct >= 0 ? 'pos' : 'neg')
+  // El tono es el del número que se ve (1 decimal): un −0,03 se escribe "0,0%" y va neutro.
+  const rendSign = pctVarSign(cumulativeReturnPct, 1)
+  const rendTone = rendSign > 0 ? 'pos' : rendSign < 0 ? 'neg' : null
 
   // ── 5) Win rate ────────────────────────────────────────────────────────────
   const wr = winRate?.pct ?? null
@@ -95,15 +91,15 @@ export default function InsightsKpiStrip({
       />
       <KpiCell
         label={topAsset ? `Concentración · ${topAsset.name}` : 'Concentración'}
-        value={topAsset ? `${fmtPctShort(topAsset.pct, { decimals: 0 })}%` : '—'}
+        value={topAsset ? pctTxt(topAsset.pct, 0) : '—'}
         tone={concentrationTone}
         sub={topAsset ? 'de la cartera total' : 'sin posiciones'}
       />
       <KpiCell
         label="Drawdown actual"
-        value={ddCurrent != null ? `${fmtPctShort(ddCurrent, { decimals: 1 })}%` : '—'}
+        value={ddCurrent != null ? pctTxt(ddCurrent, 1) : '—'}
         tone={ddTone}
-        sub={ddMax != null ? `peak histórico ${fmtPctShort(ddMax, { decimals: 1 })}%` : 'TWRR'}
+        sub={ddMax != null ? `peak histórico ${pctTxt(ddMax, 1)}` : 'TWRR'}
       />
       {/* La ventana va EN EL TÍTULO, no en el subtítulo: "Acumulado" a secas se
           lee como "desde siempre" y en realidad es el rango visible del gráfico
@@ -120,7 +116,7 @@ export default function InsightsKpiStrip({
           del corte sería la Fase 1 otra vez—, así que se declara desde cuándo. */}
       <KpiCell
         label={`Acumulado ${ventanaLabel} · ${currency}${acumuladoEstimado ? ' · recreado' : ''}`}
-        value={cumulativeReturnPct != null ? `${fmtPctShort(cumulativeReturnPct, { decimals: 1, showPlus: true })}%` : '—'}
+        value={cumulativeReturnPct != null ? pctVar(cumulativeReturnPct, 1) : '—'}
         tone={rendTone}
         sub={
           acumuladoEstimado
@@ -136,13 +132,13 @@ export default function InsightsKpiStrip({
                     ? `contable hasta ${fmtFechaCorta(acumuladoEstimado.medidoDesde)} · medido después`
                     : 'de tu contabilidad · sólo se mueve cuando vendés'))
             : benchmarkReturnPct != null
-            ? `vs ${benchmarkLabel}: ${fmtPctShort(benchmarkReturnPct, { decimals: 1, showPlus: true })}% · mismo período`
+            ? `vs ${benchmarkLabel}: ${pctVar(benchmarkReturnPct, 1)} · mismo período`
             : 'TWRR ajustado · sin anualizar'
         }
       />
       <KpiCell
         label="Win rate"
-        value={wr != null ? `${fmtPctShort(wr, { decimals: 0 })}%` : '—'}
+        value={wr != null ? pctTxt(wr, 0) : '—'}
         sub={wrTotal > 0 ? `${wrTotal} ${wrTotal === 1 ? 'op cerrada' : 'ops cerradas'}` : 'sin operaciones'}
       />
     </div>

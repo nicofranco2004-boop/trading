@@ -311,7 +311,7 @@ export default function FirstInsight() {
           </li>
           <li className="flex items-baseline gap-2">
             <span className="text-rendi-pos">›</span>
-            En <strong className="text-ink-1">Insights</strong>, análisis de concentración, drawdown y atribución del crecimiento.
+            En <strong className="text-ink-1">Métricas</strong>, análisis de concentración, drawdown y atribución del crecimiento.
           </li>
           <li className="flex items-baseline gap-2">
             <span className="text-rendi-pos">›</span>

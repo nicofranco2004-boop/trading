@@ -10,7 +10,7 @@ export default function CarteraYOperaciones() {
       title="Cartera y operaciones"
       intro="Cómo funcionan las posiciones, FIFO al vender, bonos AR, CEDEARs, crypto y el resumen mensual."
       prev={{ to: '/guia/empezar', label: 'Empezar' }}
-      next={{ to: '/guia/insights-y-reportes', label: 'Insights y reportes' }}
+      next={{ to: '/guia/insights-y-reportes', label: 'Métricas y reportes' }}
       metaTitle="Cartera y operaciones — Guía Rendi"
       metaDescription="Cómo gestionar posiciones, vender con FIFO, registrar bonos AR (AL30, GD30, TX26), CEDEARs y crypto en Rendi."
       canonicalPath="/guia/cartera-y-operaciones"

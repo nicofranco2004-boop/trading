@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizar, puntaje, resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, MAXIMO_RESULTADOS,
+  destinoDeTicker,
 } from './buscadorRapido'
 import { menuVisible, pantallasVisibles, GROUPS, LOOSE } from './navegacion'
 
@@ -123,6 +124,7 @@ describe('Rendi AI según el plan', () => {
 import { esAtajoBuscador, urlNuevaOperacion, claveDeActivos } from './buscadorRapido'
 import { hayPrecios } from './preciosEnVivo'
 import { UTILIDADES } from './navegacion'
+import { POPULAR_TICKERS, CEDEARS_DE_ETF } from './tickers'
 
 describe('arreglos de la vuelta 1 de auditoría', () => {
   const k = (o) => ({ key: 'k', metaKey: false, ctrlKey: false, altKey: false, ...o })
@@ -158,5 +160,82 @@ describe('arreglos de la vuelta 1 de auditoría', () => {
     expect(comun).toContain('/config')
     expect(comun).not.toContain('/admin')
     expect(pantallasVisibles({ user: { tier: 'pro', is_admin: true } }).map(p => p.to)).toContain('/admin')
+  })
+})
+
+describe('destinoDeTicker: a dónde lleva un ticker en los dos buscadores (⌘K y la lupa del celular)', () => {
+  it('lo tuyo va a tu posición, sea lo que sea', () => {
+    expect(destinoDeTicker('al30', { tuyo: true, tipo: 'bond' })).toBe('/activo/AL30')
+    expect(destinoDeTicker('BRK.B', { tuyo: true })).toBe('/activo/BRK.B')
+  })
+  it('una acción de EE.UU. que no tenés: la empresa en Calidad de cartera', () => {
+    expect(destinoDeTicker('AAPL', { tipo: 'stock_us' })).toBe('/fundamentals?ticker=AAPL')
+  })
+  it('un CEDEAR se abre por su acción de EE.UU. (en pesos no hay puntaje)', () => {
+    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=KO')
+  })
+  it('bonos, cripto y ETFs no tienen ficha de empresa: no llevan a ningún lado', () => {
+    for (const tipo of ['bond', 'crypto', 'etf']) expect(destinoDeTicker('X', { tipo }), tipo).toBe(null)
+    // Una acción argentina sí: si tiene ADR con el mismo ticker, la empresa abre.
+    expect(destinoDeTicker('GGAL', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=GGAL')
+  })
+  it('el ⌘K no ofrece "Ver la empresa" de lo que no tiene ficha', () => {
+    const r = opcionesDeEmpresas([
+      { symbol: 'AAPL', name: 'Apple', type: 'stock_us' }, { symbol: 'AL30', name: 'Bonar', type: 'bond' },
+      { symbol: 'MELI.BA', name: 'MercadoLibre', type: 'cedear' },
+    ])
+    expect(r.map(o => o.ir)).toEqual(['/fundamentals?ticker=AAPL', '/fundamentals?ticker=MELI'])
+  })
+  it('al asesor en su nivel el ⌘K no le ofrece empresas (no tiene Calidad de cartera en su menú)', () => {
+    const universo = [{ symbol: 'AAPL', name: 'Apple', type: 'stock_us' }]
+    expect(opcionesDeEmpresas(universo, { asesorEnSuNivel: true })).toEqual([])
+    expect(opcionesDeEmpresas(universo)).toHaveLength(1)
+  })
+})
+
+describe('destinoDeTicker: la empresa correcta, o ninguna', () => {
+  // Buscar el ticker tal cual abría OTRA empresa (verificado contra yfinance):
+  // TEN era una naviera griega, AGRO Adecoagro, BOLT/CELU/PCAR/HAVA otras.
+  it('una acción argentina va por su ADR; sin ADR, a ningún lado', () => {
+    expect(destinoDeTicker('YPFD', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=YPF')
+    expect(destinoDeTicker('TECO2', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=TEO')
+    for (const s of ['TEN', 'AGRO', 'BOLT', 'CELU', 'PCAR', 'HAVA', 'TXAR']) {
+      expect(destinoDeTicker(s, { tipo: 'stock_ar' }), s).toBe(null)
+    }
+  })
+  it('un CEDEAR con ticker distinto en EE.UU. va por el de allá; uno de un ETF, a ningún lado', () => {
+    expect(destinoDeTicker('DISN.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=DIS')
+    expect(destinoDeTicker('BRKB.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=BRK-B')
+    expect(destinoDeTicker('NOKA.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=NOK')
+    expect(destinoDeTicker('SPY.BA', { tipo: 'cedear' })).toBe(null)
+  })
+  it('el ⌘K no repite la misma empresa (AAPL y su CEDEAR AAPL.BA)', () => {
+    const r = opcionesDeEmpresas([
+      { symbol: 'AAPL', name: 'Apple', type: 'stock_us' }, { symbol: 'AAPL.BA', name: 'Apple (CEDEAR)', type: 'cedear' },
+    ])
+    expect(r.map(o => o.ir)).toEqual(['/fundamentals?ticker=AAPL'])
+  })
+  it('la lista de sugeridos ya no tiene "TEN" como Ternium Argentina', () => {
+    const ternium = POPULAR_TICKERS.find(t => /Ternium Argentina/.test(t.name))
+    expect(ternium.symbol).toBe('TXAR')
+  })
+})
+
+describe('⌘K adentro de un cliente', () => {
+  it('sus activos dicen de quién son, no "Tu posición"', () => {
+    expect(opcionesDeActivos([{ asset: 'GGAL' }], () => null, { cliente: 'Ana' })[0].detalle).toBe('Posición de Ana')
+    expect(opcionesDeActivos([{ asset: 'GGAL' }])[0].detalle).toBe('Tu posición')
+  })
+})
+
+describe('CEDEARs de ETFs: ninguno lleva a "no tenemos fundamentales"', () => {
+  it('todos los marcados como ETF en la lista de CEDEARs (no sólo SPY)', () => {
+    expect(CEDEARS_DE_ETF.size).toBeGreaterThanOrEqual(17)
+    for (const s of ['URA', 'COPX', 'FXI', 'ACWI', 'EWY', 'ETHA', 'GLD', 'IBIT']) {
+      expect(CEDEARS_DE_ETF.has(s), s).toBe(true)
+      expect(destinoDeTicker(`${s}.BA`, { tipo: 'cedear' }), s).toBe(null)
+    }
+    // Una acción con CEDEAR sí abre su empresa.
+    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=KO')
   })
 })

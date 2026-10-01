@@ -22,7 +22,7 @@ const FEATURES = [
   },
   {
     title: 'Allocation real: % de tu cartera en CEDEARs',
-    desc: 'En Insights ves cuánto de tu portfolio total está en CEDEARs vs acciones AR vs bonos vs cripto. Diversificación medida en USD, no pesos.',
+    desc: 'En Métricas ves cuánto de tu portfolio total está en CEDEARs vs acciones AR vs bonos vs cripto. Diversificación medida en USD, no pesos.',
   },
   {
     title: 'Rendi AI: preguntale por tus CEDEARs',

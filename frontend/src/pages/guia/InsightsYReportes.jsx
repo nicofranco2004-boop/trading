@@ -8,12 +8,12 @@ export default function InsightsYReportes() {
   return (
     <GuidePage
       n={3}
-      title="Insights y reportes"
+      title="Métricas y reportes"
       intro="Las 5 cards de análisis automático, el timeline histórico de 12 meses, los detectores de comportamiento y cómo exportar el CSV para tu contador."
       prev={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
       next={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
-      metaTitle="Insights y reportes — Guía Rendi"
-      metaDescription="Las 5 cards de Insights, timeline histórico, los 12 detectores de comportamiento y el export CSV consolidado para AFIP en Rendi."
+      metaTitle="Métricas y reportes — Guía Rendi"
+      metaDescription="Las 5 cards de Métricas, timeline histórico, los 12 detectores de comportamiento y el export CSV consolidado para AFIP en Rendi."
       canonicalPath="/guia/insights-y-reportes"
     >
       <AdvisorNote>
@@ -41,9 +41,9 @@ export default function InsightsYReportes() {
         </ul>
       </AdvisorNote>
 
-      <h2>Las 5 cards de Insights</h2>
+      <h2>Las 5 cards de Métricas</h2>
       <p>
-        En <strong>Insights</strong> tenés 5 análisis automáticos de tu cartera:
+        En <strong>Métricas</strong>, pestaña Diagnóstico, tenés 5 análisis automáticos de tu cartera:
       </p>
 
       <h3>1. Distribución por activo</h3>

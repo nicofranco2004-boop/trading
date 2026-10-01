@@ -23,7 +23,7 @@ import {
   holdingHasReliableFundamentals,
 } from '../../utils/valuation'
 import { businessQuality, priceRead, AXIS_PILL } from './axes'
-import { pctTxt } from '../../utils/format'
+import { pctTxt, pctVar, pctColor } from '../../utils/format'
 
 const baseTicker = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 
@@ -33,8 +33,6 @@ function isEquityLike(p) {
   return t === 'stock_us' || t === 'cedear'
 }
 const symHasFund = (s) => { const t = inferType(s); return t === 'stock_us' || t === 'cedear' }
-
-const fmtPct = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(1).replace('.', ',') + '%')
 
 export default function CarteraList({ onOpenTicker, watchlist }) {
   const { valuationDollar } = useCurrency()
@@ -160,7 +158,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
     const cats = data && data.available ? (data.score?.categories || []) : null
     const neg = cats ? businessQuality(cats) : null
     const prc = cats ? priceRead(cats) : null
-    const pnlColor = pnlPct == null ? 'text-ink-2' : pnlPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'
+    const pnlColor = pctColor(pnlPct, 1)
     return (
       <button
         type="button"
@@ -189,7 +187,7 @@ export default function CarteraList({ onOpenTicker, watchlist }) {
         </div>
 
         <div className="flex items-center justify-end gap-2">
-          <span className={`hidden sm:block text-sm tabular ${pnlColor}`}>{pnlPct == null ? '' : fmtPct(pnlPct)}</span>
+          <span className={`hidden sm:block text-sm tabular ${pnlColor}`}>{pnlPct == null ? '' : pctVar(pnlPct, 1)}</span>
           <ChevronRight size={15} className="text-ink-3 flex-shrink-0" />
         </div>
       </button>

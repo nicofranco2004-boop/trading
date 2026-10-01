@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { selectDiagnostics, DIAGNOSTIC_GENERATORS, dayOfYearKey, hashString } from './diagnostics.js'
+import { computeOpenPositionExtremes } from './insightsModel.js'
 
 // Helper: encontrar un generador por id
 const findGen = (id) => DIAGNOSTIC_GENERATORS.find(g => g.id === id)
@@ -640,5 +641,36 @@ describe('generadores de drawdown (leen drawdown.max, no .maxPct)', () => {
   it('ambos toleran drawdown null sin fires', () => {
     expect(findGen('at_highs').generate({ drawdown: null })).toBeNull()
     expect(findGen('drawdown_recovery').generate({ drawdown: null })).toBeNull()
+  })
+})
+
+// ─── Posiciones abiertas: el % se escribe a la argentina ─────────────────────
+// Hasta 2026-09-29 este diagnóstico tenía su propio formateador, que usaba
+// toFixed sin pasar la coma: el usuario leía "acumula **+45.3%** de ganancia no
+// realizada" con PUNTO decimal, en la misma pantalla donde todo lo demás lleva
+// coma. Se arma igual que en Análisis: posiciones → extremos → selectDiagnostics.
+describe('posiciones abiertas — el porcentaje con coma, como el resto de Rendi', () => {
+  const posiciones = [
+    // pnl_pct en escala de PORCENTAJE (×100), como lo arma Insights.aiByAsset.
+    { asset: 'NVDA', value_usd: 14530, pnl_usd: 4530, pnl_pct: 45.28 },
+    { asset: 'GGAL', value_usd: 10660, pnl_usd: -1500, pnl_pct: -12.34 },
+  ]
+  const salida = () => selectDiagnostics({
+    openExtremes: computeOpenPositionExtremes(posiciones),
+    totalPortfolio: 20000,
+  }, 50)
+
+  it('la ganancia no realizada dice "+45,3%", no "+45.3%"', () => {
+    const d = salida().find(x => x.id === 'open_winner_strong')
+    expect(d).toBeTruthy()
+    expect(d.text).toContain('**+45,3%**')
+    expect(d.text).not.toContain('45.3')
+  })
+
+  it('la pérdida no realizada, con el menos tipográfico y la coma', () => {
+    const d = salida().find(x => x.id === 'open_loss_significant')
+    expect(d).toBeTruthy()
+    expect(d.text).toContain('(−12,3%)')
+    expect(d.text).not.toContain('12.3')
   })
 })

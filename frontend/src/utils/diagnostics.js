@@ -1,4 +1,4 @@
-import { pctTxt } from './format'
+import { pctTxt, pctVar } from './format'
 // diagnostics.js
 // ──────────────
 // Motor de diagnóstico del portfolio. La idea es que existan MUCHOS
@@ -26,11 +26,6 @@ import { pctTxt } from './format'
 const fmtUsd = (n) => {
   if (n == null || !isFinite(n)) return '—'
   return `${n >= 0 ? '+' : '−'}USD ${Math.abs(n).toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-}
-
-const fmtPct = (n, decimals = 1) => {
-  if (n == null || !isFinite(n)) return '—'
-  return `${n >= 0 ? '+' : ''}${n.toFixed(decimals)}%`
 }
 
 // Hash determinístico de un string → entero. Usado para tie-break diario
@@ -424,8 +419,9 @@ export const DIAGNOSTIC_GENERATORS = [
       if (!openExtremes || !openExtremes.worst || openExtremes.worst.pnl_usd >= 0) return null
       const lossPct = (Math.abs(openExtremes.worst.pnl_usd) / (totalPortfolio || 1)) * 100
       if (lossPct < 3) return null
-      const pctTxt = openExtremes.worst.pnl_pct != null ? ` (${openExtremes.worst.pnl_pct.toFixed(1).replace('.', ',')}%)` : ''
-      return `**${openExtremes.worst.asset}** acumula la mayor pérdida no realizada: **${fmtUsd(openExtremes.worst.pnl_usd)}**${pctTxt}. Revisá si la tesis original sigue vigente o si conviene reasignar capital.`
+      // pnl_pct viene en escala de porcentaje (Insights.aiByAsset lo arma ×100).
+      const pctPerdida = openExtremes.worst.pnl_pct != null ? ` (${pctVar(openExtremes.worst.pnl_pct, 1)})` : ''
+      return `**${openExtremes.worst.asset}** acumula la mayor pérdida no realizada: **${fmtUsd(openExtremes.worst.pnl_usd)}**${pctPerdida}. Revisá si la tesis original sigue vigente o si conviene reasignar capital.`
     },
   },
   {
@@ -439,7 +435,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ openExtremes }) => {
       if (!openExtremes || !openExtremes.best || openExtremes.best.pnl_usd <= 0) return null
       if (openExtremes.best.pnl_pct == null || openExtremes.best.pnl_pct < 30) return null
-      return `**${openExtremes.best.asset}** acumula **${fmtPct(openExtremes.best.pnl_pct)}** de ganancia no realizada. Una corrección del mercado podría reducir o eliminar esta ganancia hasta que la posición se cierre — las ganancias no realizadas se materializan solo al vender.`
+      return `**${openExtremes.best.asset}** acumula **${pctVar(openExtremes.best.pnl_pct, 1)}** de ganancia no realizada. Una corrección del mercado podría reducir o eliminar esta ganancia hasta que la posición se cierre — las ganancias no realizadas se materializan solo al vender.`
     },
   },
 

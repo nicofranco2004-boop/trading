@@ -13,7 +13,7 @@
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Calendar, Sparkles } from 'lucide-react'
 import { Helmet } from 'react-helmet-async'
-import RendiLogo from '../RendiLogo'
+import CabeceraPublica, { SoloVisitantes } from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
 import { CTA_PRUEBA, PRUEBA_EN_UNA_LINEA } from '../../data/prueba'
 
@@ -99,26 +99,18 @@ export default function BlogPost({
         <script type="application/ld+json">{JSON.stringify(breadcrumbSchema)}</script>
       </Helmet>
 
-      {/* Header minimal */}
-      <header className="border-b border-line">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
-            <Link to="/blog" className="text-ink-2 hover:text-ink-0">Blog</Link>
-            <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
-            <Link
-              to="/login?mode=register"
-              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 text-xs font-medium"
-            >
-              <Sparkles size={12} strokeWidth={2} />
-              Probar gratis
-            </Link>
-          </nav>
-        </div>
-      </header>
+      {/* Header minimal (sólo sin sesión) */}
+      <CabeceraPublica>
+        <Link to="/blog" className="text-ink-2 hover:text-ink-0">Blog</Link>
+        <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
+        <Link
+          to="/login?mode=register"
+          className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 text-xs font-medium"
+        >
+          <Sparkles size={12} strokeWidth={2} />
+          Probar gratis
+        </Link>
+      </CabeceraPublica>
 
       <article className="max-w-3xl mx-auto px-6 py-12 md:py-16">
         <Link to="/blog" className="inline-flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink-1 mb-6">
@@ -153,7 +145,8 @@ export default function BlogPost({
           {children}
         </div>
 
-        {/* CTA al final del post */}
+        {/* CTA al final del post (sólo sin sesión) */}
+        <SoloVisitantes>
         <section className="mt-16 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg p-6 text-center">
           <h2 className="text-xl font-semibold text-ink-0 mb-2">Probá Rendi con tu cartera</h2>
           <p className="text-sm text-ink-2 mb-5 max-w-md mx-auto">
@@ -167,6 +160,7 @@ export default function BlogPost({
             {CTA_PRUEBA}
           </Link>
         </section>
+        </SoloVisitantes>
 
         {/* Posts relacionados */}
         {related && related.length > 0 && (

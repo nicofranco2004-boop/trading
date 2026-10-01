@@ -9,10 +9,9 @@ import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
 import DateField from './DateField'
 import { hoyISO } from '../utils/fecha'
-import { parseNum, numToInput } from '../utils/format'
+import { parseNum, numToInput, pct } from '../utils/format'
 
 const today = () => hoyISO()
-const pct = (x) => (x * 100).toFixed(2).replace('.', ',') + '%'
 
 // Aritmética de fechas local (sin shift de timezone).
 function addDays(dateStr, days) {

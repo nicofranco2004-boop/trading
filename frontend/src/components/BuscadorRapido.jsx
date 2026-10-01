@@ -25,7 +25,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { puedeChatLibre } from '../utils/chatLibre'
 import { muroTapaLaPantalla } from '../utils/muroDePlan'
 import { api } from '../utils/api'
-import { pantallasVisibles, menuVisible } from '../utils/navegacion'
+import { pantallasVisibles, menuVisible, nombreDelCliente } from '../utils/navegacion'
 import { tickerName, POPULAR_TICKERS } from '../utils/tickers'
 import {
   resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, esAtajoBuscador, esMac, urlNuevaOperacion, claveDeActivos,
@@ -76,9 +76,12 @@ const DE_ENTRADA = new Set(['/dashboard', '/posiciones', '/operaciones', '/', '/
 // brokers). Un asesor adentro de un cliente ve los del cliente.
 const _activos = new Map()   // `${usuario}:${cuenta}` → lista
 
-export default function BuscadorRapido() {
-  const [abierto, setAbierto] = useState(false)
-  const [consulta, setConsulta] = useState('')
+// `abiertoAlInicio` / `consultaInicial`: para dibujarlo abierto y con algo
+// escrito en las pruebas (en la app arranca cerrado y vacío). Sin esto nunca se
+// dibujaba lo que ofrece, y deshacer una regla de qué ofrece pasaba en verde.
+export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicial = '' } = {}) {
+  const [abierto, setAbierto] = useState(abiertoAlInicio)
+  const [consulta, setConsulta] = useState(consultaInicial)
   const [sel, setSel] = useState(0)
   const [posiciones, setPosiciones] = useState([])
   const inputRef = useRef(null)
@@ -179,7 +182,7 @@ export default function BuscadorRapido() {
   // Las empresas que no tenés: la MISMA lista que ofrece el buscador propio de
   // Calidad de cartera (components/fundamentals/TickerSearch), que es la
   // pantalla que las abre. Otra lista ofrecería tickers que esa pantalla no.
-  const universo = useMemo(() => opcionesDeEmpresas(POPULAR_TICKERS), [])
+  const universo = useMemo(() => opcionesDeEmpresas(POPULAR_TICKERS, { asesorEnSuNivel: atOwnLevel }), [atOwnLevel])
 
   const opciones = useMemo(() => {
     const pantallas = pantallasVisibles({ user, clientCtx }).map(p => ({
@@ -213,7 +216,7 @@ export default function BuscadorRapido() {
         claves: ['privacidad', 'ocultar', 'mostrar', 'montos'], icon: hidden ? Eye : EyeOff, hacer: cambiarPrivacidad,
       },
     ]
-    const activos = opcionesDeActivos(posiciones, tickerName).map(o => ({ ...o, icon: TrendingUp }))
+    const activos = opcionesDeActivos(posiciones, tickerName, { cliente: nombreDelCliente(clientCtx) }).map(o => ({ ...o, icon: TrendingUp }))
     const empresas = universo.map(o => ({ ...o, icon: Building2 }))
     return [...activos, ...acciones.filter(a => a.deEntrada), ...pantallas, ...extra, ...acciones.filter(a => !a.deEntrada), ...empresas]
   }, [user, clientCtx, atOwnLevel, posiciones, universo, currency, dark, hidden, setCurrency, cambiarTema, cambiarPrivacidad, coach, navigate, pathname, search])

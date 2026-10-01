@@ -18,6 +18,7 @@ import PageHeader from '../components/PageHeader'
 import ShareCardModal from '../components/ShareCardModal'
 import { api } from '../utils/api'
 import { track } from '../utils/track'
+import { pctSigned } from '../utils/format'
 
 const TONE_BG = {
   positive: 'from-green-400/15 via-green-300/[0.04] to-bg-0',
@@ -379,7 +380,6 @@ function VsLayout({ slide, tone, accentHex }) {
   const bars = slide.bars || []
   // Normalizar a fracciones. Calcular escala: max abs + algo de aire
   const maxAbs = Math.max(0.001, ...bars.map(b => Math.abs(Number(b.value) || 0)))
-  const fmtPct = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(2).replace('.', ',')}%`
 
   return (
     <>
@@ -412,7 +412,7 @@ function VsLayout({ slide, tone, accentHex }) {
                   <span className={`text-sm font-medium tabular ${
                     isHighlight ? 'text-ink-0' : 'text-ink-2'
                   }`}>
-                    {fmtPct(v)}
+                    {pctSigned(v, 2)}
                   </span>
                 </div>
                 <div className="h-3 bg-bg-2 rounded-sm overflow-hidden">

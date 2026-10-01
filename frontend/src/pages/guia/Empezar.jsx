@@ -1,6 +1,7 @@
 // /guia/empezar — sección 1 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import { SoloVisitantes } from '../../components/CabeceraPublica'
 import AdvisorNote from '../../components/guide/AdvisorNote'
 // La prueba y los brokers por plan salen del catálogo: la guía decía "Crear
 // cuenta gratis" y "Plan Free permite 1 broker", y quien se registra hoy no
@@ -59,16 +60,21 @@ export default function Empezar() {
 
       <h2>1. Crear tu cuenta</h2>
       <p>
-        Andá a <a href="/login?mode=register">Crear cuenta</a>. Te pedimos
+        {/* Con la sesión abierta el enlace te dejaba en el Inicio: queda el nombre. */}
+        Andá a <SoloVisitantes sino={<strong>Crear cuenta</strong>}><a href="/login?mode=register">Crear cuenta</a></SoloVisitantes>. Te pedimos
         email + contraseña. Te llega un código de 6 dígitos al mail para verificar
         que sos vos (revisá Spam si no aparece en 2 minutos). Listo: al verificar
         el mail arranca tu prueba de {TRIAL_TOTAL_DAYS} días gratis. {PRUEBA_EN_UNA_LINEA}
       </p>
+      {/* Con la sesión abierta, entrar a la demo te cambia TU cuenta por la del
+          inversor ficticio (hasta 12 h): sólo para quien todavía no entró. */}
+      <SoloVisitantes>
       <p>
         Antes de cargar tu data real, podés <a href="/?demo=1">probar la demo</a>{' '}
         — es Rendi con datos de un inversor ficticio. Vez todo sin riesgo de
         ensuciar tu cuenta.
       </p>
+      </SoloVisitantes>
 
       <h2>2. Agregar tu primer broker</h2>
       <p>
@@ -122,7 +128,7 @@ export default function Empezar() {
       <p>
         En <strong>Perfil de inversor</strong> respondés 7-8 preguntas sobre tu
         horizonte, tolerancia al drawdown y objetivos. <em>No es obligatorio</em>,
-        pero si lo llenás, Insights compara tu cartera real contra lo que vos declaraste
+        pero si lo llenás, Métricas compara tu cartera real contra lo que vos declaraste
         y te marca incoherencias (ej. "decís perfil conservador pero tenés 70% en
         crypto").
       </p>
@@ -133,7 +139,7 @@ export default function Empezar() {
       </p>
       <ul>
         <li><strong>Dashboard</strong>: tu portfolio total en USD, P&amp;L del mes, evolución.</li>
-        <li><strong>Insights</strong>: 5 cards de análisis automático.</li>
+        <li><strong>Métricas</strong>: 5 cards de análisis automático.</li>
         <li><strong>Rendi AI</strong>: 12 preguntas guiadas (Plus) o chat libre (Pro).</li>
       </ul>
     </GuidePage>

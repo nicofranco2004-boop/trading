@@ -2541,7 +2541,7 @@ function InsightsDesktop({ _embeddedTab }) {
       <div className="page-shell space-y-6">
         <PageHeader
           eyebrow="Análisis"
-          title="Insights"
+          title="Diagnóstico"
           subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         />
         <div className="border border-line rounded-xl bg-bg-1 px-6 py-12 text-center max-w-2xl mx-auto">
@@ -2689,7 +2689,9 @@ function InsightsDesktop({ _embeddedTab }) {
     <div className="page-shell space-y-8">
       <PageHeader
         eyebrow="Análisis"
-        title="Insights"
+        // Se ve como la pestaña "Diagnóstico" de Métricas: el título es el de
+        // la pestaña (decía "Insights", un nombre que ningún menú usa ya).
+        title="Diagnóstico"
         subtitle="Análisis profundo de tu performance, riesgo y comportamiento como inversor."
         action={
           <div className="flex items-center gap-2 flex-wrap">

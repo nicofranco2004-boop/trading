@@ -4,7 +4,7 @@
 // can_start. Nada de recalcular elegibilidad en el front — así es como se
 // terminan mostrando botones que fallan al apretarlos.
 import { describe, it, expect } from 'vitest'
-import { canOfferTrial, trialNotice, trialDaysLabel, trialProStageLabel,
+import { canOfferTrial, trialNotice, trialDaysLabel, trialProStageLabel, avisoDeLaPrueba,
          DIAS_PARA_APURAR } from './TrialCta'
 
 describe('canOfferTrial — cuándo se muestra el botón', () => {
@@ -134,5 +134,17 @@ describe('trialProStageLabel — lo que queda de la etapa Pro', () => {
   it('sin dato no inventa nada', () => {
     expect(trialProStageLabel(null)).toBe('')
     expect(trialProStageLabel(undefined)).toBe('')
+  })
+})
+
+describe('avisoDeLaPrueba — el último día y no repetir los días', () => {
+  it('el último día no dice "0 días": la cuenta todavía anda', () => {
+    expect(trialNotice({ active: true, stage: 'plus', days_left: 0 })).toBe('Te queda menos de un día de prueba.')
+    expect(trialNotice({ active: true, stage: 'plus', days_left: 0 }, true)).toMatch(/^Te queda menos de un día: elegí un plan/)
+  })
+  it('dice si ya trae los días, para que la barra no los repita al lado', () => {
+    expect(avisoDeLaPrueba({ active: true, stage: 'plus', days_left: 2 }).conDias).toBe(true)
+    expect(avisoDeLaPrueba({ active: true, stage: 'pro', days_left: 12, days_to_switch: 1 }).conDias).toBe(false)
+    expect(avisoDeLaPrueba({ active: true, stage: 'plus', days_left: 9 })).toEqual({ texto: null, conDias: false })
   })
 })

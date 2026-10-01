@@ -11,7 +11,7 @@ import {
   ArrowRight, BookOpen, Users,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import RendiLogo from '../components/RendiLogo'
+import CabeceraPublica, { SoloVisitantes } from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
 // Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
@@ -48,7 +48,7 @@ const SECTIONS = [
     n: 3,
     to: '/guia/insights-y-reportes',
     icon: Compass,
-    title: 'Insights y reportes',
+    title: 'Métricas y reportes',
     desc: 'Las 5 cards de análisis, timeline histórico, detectores de comportamiento y export CSV.',
     descAsesor: 'El análisis de cada cliente con lente Pro: qué mirar antes de llamarlo y qué mandarle en el informe.',
   },
@@ -73,8 +73,8 @@ const SECTIONS = [
     to: '/guia/cuenta-y-planes',
     icon: UserCog,
     title: 'Cuenta y planes',
-    desc: 'Configuración, planes Free/Plus/Pro, cambio de plan, cancelación y push notifications.',
-    descAsesor: 'Tus datos, seguridad, moneda de valuación y notificaciones. Los planes Free/Plus/Pro no son los tuyos.',
+    desc: 'Configuración, planes Plus y Pro, cambio de plan, cancelación y push notifications.',
+    descAsesor: 'Tus datos, seguridad, moneda de valuación y notificaciones. Los planes Plus y Pro no son los tuyos.',
   },
 ]
 
@@ -93,18 +93,10 @@ export default function Guia() {
         canonical="/guia"
       />
 
-      <header className="border-b border-line">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
-            <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
-            <Link to="/login" className="text-ink-2 hover:text-ink-0">Iniciar sesión</Link>
-          </nav>
-        </div>
-      </header>
+      <CabeceraPublica ancho="max-w-4xl">
+        <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
+        <Link to="/login" className="text-ink-2 hover:text-ink-0">Iniciar sesión</Link>
+      </CabeceraPublica>
 
       <main className="max-w-4xl mx-auto px-6 py-12 md:py-16">
 
@@ -175,6 +167,10 @@ export default function Guia() {
             Recursos rápidos
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Con sesión, "Probar demo" te cambiaba tu cuenta por la de la demo
+                (hasta 12 h) y "Preguntas frecuentes" caía en el Inicio de la app:
+                las preguntas viven en la portada pública. */}
+            <SoloVisitantes>
             <a
               href="/?demo=1"
               className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors"
@@ -189,6 +185,7 @@ export default function Guia() {
               <div className="text-sm font-medium text-ink-1 mb-0.5">Preguntas frecuentes</div>
               <div className="text-xs text-ink-3">Lo que más nos consultan.</div>
             </Link>
+            </SoloVisitantes>
             <Link
               to="/planes"
               className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors"
@@ -196,10 +193,11 @@ export default function Guia() {
               <div className="text-sm font-medium text-ink-1 mb-0.5">
                 {esAsesor ? 'Tu Plan Asesor' : 'Planes y precios'}
               </div>
-              {/* Free/Plus/Pro son los planes INDIVIDUALES: al asesor no le aplican
+              {/* Plus/Pro son los planes INDIVIDUALES (el Free ya no se ofrece desde
+                  el 22/09): al asesor no le aplican
                   (la pantalla /planes ya se lo dice, ver Planes.jsx). */}
               <div className="text-xs text-ink-3">
-                {esAsesor ? 'Free, Plus y Pro no son el tuyo.' : 'Free, Plus y Pro.'}
+                {esAsesor ? 'Plus y Pro no son los tuyos.' : 'Plus y Pro.'}
               </div>
             </Link>
           </div>

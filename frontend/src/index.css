@@ -508,8 +508,11 @@ body {
   .advisor-note a {
     @apply text-data-violet underline decoration-dotted underline-offset-2 hover:text-data-violet/80;
   }
+  /* Una tabla más ancha que el celular (la comparativa de 5 brokers mide
+     448 px) corría la página entera de costado. Con display:block la tabla
+     se desplaza dentro de su propio recuadro y la página queda quieta. */
   .blog-prose table {
-    @apply w-full text-sm my-6;
+    @apply block w-full max-w-full overflow-x-auto text-sm my-6;
   }
   .blog-prose thead {
     @apply border-b border-line/60;
