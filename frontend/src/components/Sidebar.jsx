@@ -15,8 +15,9 @@
 // las demás). Mobile: design aparte.
 //
 // QUÉ pantallas se ven (y la regla del asesor) sale de utils/navegacion.js, la
-// misma lista que usa el buscador ⌘K. Arriba, junto a la moneda, el botón
-// "Buscar… ⌘K" abre ese buscador (para quien no conoce el atajo).
+// misma lista que usa el buscador ⌘K. Una lupa abre ese buscador (para quien no
+// conoce el atajo): desplegado, en el encabezado al lado de las tres rayas;
+// plegado, debajo de la moneda.
 
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
@@ -105,6 +106,19 @@ export default function Sidebar() {
           <RendiLogo size={40} />
           {!collapsed && <span className="font-semibold text-xl tracking-tight text-ink-0">rendi</span>}
         </NavLink>
+        {/* La lupa del buscador ⌘K, al lado de las tres rayas (pedido de Nico,
+            2026-10-01). Plegado no entra acá (56 px): va debajo de la moneda. */}
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={abrirBuscador}
+            className="p-1.5 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+            title={`Buscar (${atajoBuscador()})`}
+            aria-label="Buscar en Rendi"
+          >
+            <Search size={15} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        )}
         <button
           onClick={() => setCollapsed(c => !c)}
           className="p-1.5 rounded-sm text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
@@ -122,18 +136,19 @@ export default function Sidebar() {
           /config) y en Métricas no estaba, aunque sus números sí la respetan. */}
       <div className={`flex-shrink-0 border-b border-line ${collapsed ? 'px-2 py-2 flex flex-col items-center' : 'px-2.5 py-2.5'}`}>
         <CurrencySwitcher variant={collapsed ? 'mini' : 'row'} />
-        {/* El buscador ⌘K, a la vista: quien no conoce el atajo lo descubre
-            acá (y el atajo está escrito al lado). */}
-        <button
-          type="button"
-          onClick={abrirBuscador}
-          title={collapsed ? `Buscar (${atajoBuscador()})` : undefined}
-          aria-label="Buscar en Rendi"
-          className={`mt-2 flex items-center gap-2 rounded border border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2 transition-colors ${collapsed ? 'p-1.5' : 'w-full px-2.5 py-1.5 text-[13px]'}`}
-        >
-          <Search size={14} strokeWidth={1.75} aria-hidden="true" />
-          {!collapsed && <><span className="flex-1 text-left">Buscar…</span><kbd className="text-[11px] text-ink-3">{atajoBuscador()}</kbd></>}
-        </button>
+        {/* Plegado, la lupa del buscador ⌘K va acá: en el encabezado (56 px)
+            sólo entran las tres rayas. Desplegado está arriba, al lado. */}
+        {collapsed && (
+          <button
+            type="button"
+            onClick={abrirBuscador}
+            title={`Buscar (${atajoBuscador()})`}
+            aria-label="Buscar en Rendi"
+            className="mt-2 p-1.5 rounded border border-line text-ink-3 hover:text-ink-1 hover:bg-bg-2 transition-colors"
+          >
+            <Search size={14} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {/* Navegación */}

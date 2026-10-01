@@ -55,6 +55,10 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
     expect(comun).not.toContain('/admin')
     expect(rutas(dibujar({ tier: 'pro', is_admin: true }))).toContain('/admin')
   })
+  it('la lupa del buscador: una sola, con el atajo en su cartel', () => {
+    const html = dibujar({ tier: 'pro' })
+    expect(html.match(/aria-label="Buscar en Rendi"/g)).toHaveLength(1)
+  })
   it('tiene el botón "Buscar" con el atajo escrito', () => {
     const html = dibujar({ tier: 'pro' })
     expect(html).toContain('aria-label="Buscar en Rendi"')
