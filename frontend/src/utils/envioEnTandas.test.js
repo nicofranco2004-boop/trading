@@ -5,7 +5,7 @@
 // saliendo), que cada persona viaje con lo que se vio en pantalla, y que si un
 // pedido falla el panel se entere de lo que YA salió en vez de perderlo.
 import { describe, it, expect, vi } from 'vitest'
-import { enviarEnTandas, textoDeProgreso, LOTE_POR_DEFECTO } from './envioEnTandas'
+import { enviarEnTandas, textoDeProgreso, tomarEnvio, soltarEnvio, LOTE_POR_DEFECTO } from './envioEnTandas'
 
 const personas = n => Array.from({ length: n }, (_, i) => ({ id: i + 1, sent_at: null }))
 
@@ -101,14 +101,33 @@ describe('enviarEnTandas', () => {
     expect(r.cortado).toBe(true)
   })
 
-  it('si el panel se fue, no manda la tanda siguiente', async () => {
-    let vivo = true
-    const post = vi.fn(async (_u, body) => { vivo = false; return { sent_count: body.vistos.length } })
-    const r = await enviarEnTandas({ post, url: '/x', vistos: personas(45), lote: 20,
-                                     seguir: () => vivo })
+  it('si Resend no confirma (frenado), corta y no manda la tanda siguiente', async () => {
+    const post = vi.fn(async () => ({ sent_count: 3, inciertos: [{ id: 4 }, { id: 5 }],
+                                      pendientes: [], frenado: true }))
+    const r = await enviarEnTandas({ post, url: '/x', vistos: personas(45), lote: 20 })
     expect(post).toHaveBeenCalledTimes(1)
-    expect(r.sent_count).toBe(20)
-    expect(r.cortado).toBe(true)
+    expect(r).toMatchObject({ cortado: true, frenado: true, contesto: true, sent_count: 3 })
+    expect(r.inciertos).toHaveLength(2)
+  })
+
+  it('distingue si el servidor contestó el error o se cortó en el camino', async () => {
+    const conCodigo = status => vi.fn(async () => {
+      const e = new Error('x'); if (status) e.status = status; throw e
+    })
+    for (const [status, contesto] of [[422, true], [500, true], [504, false], [502, false], [null, false]]) {
+      const r = await enviarEnTandas({ post: conCodigo(status), url: '/x', vistos: personas(3), lote: 20 })
+      expect(r.cortado).toBe(true)
+      expect(r.contesto).toBe(contesto)
+    }
+  })
+
+  it('no deja lanzar dos envíos del mismo mail a la vez', () => {
+    expect(tomarEnvio('/admin/email/x')).toBe(true)
+    expect(tomarEnvio('/admin/email/x')).toBe(false)
+    expect(tomarEnvio('/admin/email/y')).toBe(true)     // otro mail, sí
+    soltarEnvio('/admin/email/x')
+    expect(tomarEnvio('/admin/email/x')).toBe(true)
+    soltarEnvio('/admin/email/x'); soltarEnvio('/admin/email/y')
   })
 
   it('dice qué está haciendo después de la última tanda', () => {

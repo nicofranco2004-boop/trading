@@ -211,8 +211,6 @@ class EnvioMasivo(unittest.TestCase):
     def test_la_pausa_es_la_del_servicio_de_mail(self):
         # Una sola constante para todos los envíos, al lado de `_send`.
         self.assertGreater(emails.PAUSA_ENTRE_ENVIOS, 0)
-        import market_brief
-        self.assertEqual(market_brief.SEND_GAP_SECONDS, emails.PAUSA_ENTRE_ENVIOS)
 
     # ── 2. tandas y lista vista ─────────────────────────────────────────────
 
@@ -368,17 +366,72 @@ class EnvioMasivo(unittest.TestCase):
             spy.assert_not_called()
             self.assertEqual(otra["sent_count"], 0)
 
-    def test_un_5xx_de_resend_tambien_es_incierto(self):
-        uid = self._personas(1)[0]
-        res, _ = self._mandar_por_resend("broadcast", self._vistos("broadcast"), 503)
-        self.assertEqual([t["id"] for t in res["inciertos"]], [uid])
-        self.assertIsNotNone(self._marca("broadcast", uid))
+    def test_un_5xx_o_la_respuesta_cortada_tambien_son_inciertos(self):
+        import httpx
+        for respuesta in (503, httpx.ReadError("se cortó"), httpx.RemoteProtocolError("rota")):
+            with self.subTest(respuesta=repr(respuesta)):
+                self.setUp()
+                uid = self._personas(1)[0]
+                res, _ = self._mandar_por_resend("broadcast", self._vistos("broadcast"), respuesta)
+                self.assertEqual([t["id"] for t in res["inciertos"]], [uid])
+                self.assertIsNotNone(self._marca("broadcast", uid))
+
+    def test_con_resend_caido_se_frena_y_no_quema_la_campaña(self):
+        """Resend contesta 503 a todo. Sin freno, cada persona quedaba marcada
+        "por las dudas" y la campaña entera se quemaba sin mandar nada (lo
+        reprodujo la auditoría 2: 25 de 25). Con el freno, a los dos primeros
+        no se sabe; al resto no se lo toca y el panel corta."""
+        for campaña in self._cada_campaña():
+            ids = self._personas(6)
+            vistos = self._vistos(campaña)
+            res, spy = self._mandar_por_resend(campaña, vistos, 503)
+            self.assertTrue(res["frenado"])
+            self.assertEqual(spy.call_count, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(len(res["inciertos"]), main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            quedan = {p["id"] for p in res["pendientes"]}
+            self.assertEqual(len(quedan), 6 - main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            for uid in quedan:
+                self.assertIsNone(self._marca(campaña, uid))
+            # Y siguen en la lista para cuando Resend vuelva.
+            self.assertTrue(quedan <= {v["id"] for v in self._vistos(campaña)})
+            self.assertEqual(set(ids), quedan | {t["id"] for t in res["inciertos"]})
+
+    def test_un_incierto_suelto_no_frena(self):
+        import httpx
+        a, b, c = self._personas(3)
+        respuestas = [httpx.ReadTimeout("lento"), 200, 200]
+
+        class _R:
+            status_code, text = 200, "ok"
+
+        def _post(*a_, **k):
+            r = respuestas.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return _R()
+
+        with patch.object(emails, "_running_under_pytest", return_value=False), \
+             patch.object(emails, "_is_test_address", return_value=False), \
+             patch.object(emails, "_is_configured", return_value=True), \
+             patch.object(emails, "_api_key", return_value="re_test"), \
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0), \
+             patch.object(httpx, "post", side_effect=_post):
+            res = self._post("broadcast", self._vistos("broadcast")).json()
+        self.assertFalse(res["frenado"])
+        self.assertEqual(len(res["inciertos"]), 1)
+        self.assertEqual(res["sent_count"], 2)
 
     def test_si_resend_lo_rechaza_seguro_se_devuelve_la_marca(self):
-        """429 (muy rápido) o sin conexión: el mail no salió, la persona vuelve
-        a la lista para el próximo intento."""
+        """429 (muy rápido), sin conexión, o un error que pasa ANTES de que el
+        pedido salga del servidor (la clave con un carácter raro, un proxy mal
+        configurado, un pedido que no se terminó de escribir): el mail no salió
+        y la persona vuelve a la lista. Tratarlos como "pudo haber salido"
+        marcaba a todos sin mandar nada (auditoría 2)."""
         import httpx
-        for respuesta in (429, 422, httpx.ConnectError("sin red")):
+        for respuesta in (429, 422, httpx.ConnectError("sin red"),
+                          httpx.LocalProtocolError("encabezado inválido"),
+                          httpx.ProxyError("proxy"), httpx.WriteTimeout("a medio escribir"),
+                          UnicodeEncodeError("ascii", "’", 0, 1, "clave rara")):
             for campaña in self._cada_campaña():
                 with self.subTest(respuesta=repr(respuesta)):
                     uid = self._personas(1)[0]

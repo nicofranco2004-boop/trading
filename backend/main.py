@@ -21264,12 +21264,19 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 # admin veía un error mientras los mails seguían saliendo — y volvía a apretar.
 # El panel parte la lista en tandas de este tamaño solo.
 ENVIO_MASIVO_LOTE = 20
-# Segundos después de los cuales un pedido no EMPIEZA otro mail: los que quedan
-# vuelven al panel en `pendientes` y salen en el pedido siguiente. El lote de 20
-# supone ~0,3 s por mail; si Resend se pone lento (`_send` espera hasta 10 s),
-# 20 mails volvían a pasar el corte de 30 s. Con 18: el último mail que arranca
-# termina, en el peor caso, en 18 + 0,6 de pausa + 10 de espera < 30.
+# Segundos, contados desde que llegó el pedido, después de los cuales no se
+# EMPIEZA otro mail: los que quedan vuelven al panel en `pendientes` y salen en
+# el pedido siguiente. El lote de 20 supone ~0,3 s por mail; si Resend se pone
+# lento (`_send` espera hasta 10 s), 20 mails volvían a pasar el corte de 30 s.
+# Con 18, el caso normal de un mail lento termina en 18 + 0,6 + 10 < 30. No es
+# una garantía (httpx cuenta los 10 s por fase, y una base trabada demora la
+# marca): si igual se corta, el panel espera y recarga, y la marca impide el
+# doble envío.
 ENVIO_MASIVO_PRESUPUESTO_SEG = 18
+# Mails seguidos sin confirmación de Resend (no contestó, o dio 5xx) después de
+# los cuales se frena el envío: con Resend caído, cada uno queda marcado sin
+# saber si salió, y seguir quemaba la campaña entera.
+ENVIO_MASIVO_INCIERTOS_SEGUIDOS = 2
 # Horas que tienen que pasar para "reenviar" el MISMO mail a alguien que ya lo
 # recibió (re-engagement y regalo de plan). Sin esto, si un reenvío se cortaba a
 # la mitad y el admin volvía a apretar, a los de las primeras tandas les llegaba
@@ -21426,7 +21433,8 @@ def _marca_en_columna(conn, columna):
     return marcar, desmarcar
 
 
-def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña):
+def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
+                  inicio=None):
     """Manda un mail a cada destinatario, de a uno. Es el motor de los cinco
     envíos masivos del panel de admin.
 
@@ -21450,9 +21458,12 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
       4. Si Resend no contestó a tiempo o dio un 5xx, el mail PUDO haber salido
          (`emails.resultado_del_ultimo_envio()` == INCIERTO): la marca se deja
          y la persona va en `inciertos`. Devolverla la ponía otra vez como
-         pendiente, y el click siguiente le mandaba un segundo mail.
-      5. Si seguro no salió, `desmarcar(t, marca)` la deja como estaba (dos
-         intentos, con un rollback en el medio). Si ni así, va en
+         pendiente, y el click siguiente le mandaba un segundo mail. Con
+         ENVIO_MASIVO_INCIERTOS_SEGUIDOS seguidos (Resend caído) se frena: el
+         resto vuelve sin marca en `pendientes` y `frenado` le dice al panel
+         que no siga.
+      5. Si no salió (o ni se intentó), `desmarcar(t, marca)` la deja como
+         estaba (dos intentos, con un rollback en el medio). Si ni así, va en
          `marcas_trabadas`: quedó marcada sin haber recibido nada, y el panel
          lo tiene que decir.
 
@@ -21463,17 +21474,21 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     "Email sent" de después. Con la marca después, a alguien le llegaría dos
     veces.
 
-    Pasados ENVIO_MASIVO_PRESUPUESTO_SEG no se empieza otro mail: los que
-    faltan vuelven en `pendientes` (sin tocar) y el panel los manda en el
-    pedido siguiente. Siempre se intenta al menos uno, así que cada pedido
+    Pasados ENVIO_MASIVO_PRESUPUESTO_SEG desde `inicio` (cuando llegó el
+    pedido: el endpoint ya gastó tiempo armando la lista) no se empieza otro:
+    los que faltan vuelven en `pendientes` (sin tocar) y el panel los manda en
+    el pedido siguiente. Siempre se procesa al menos uno, así que cada pedido
     avanza."""
     from billing import emails
 
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     intentos = 0
-    inicio = time.monotonic()
+    inciertos_seguidos = 0
+    frenado = False
+    if inicio is None:
+        inicio = time.monotonic()
     for i, t in enumerate(destinatarios):
-        if intentos and time.monotonic() - inicio > ENVIO_MASIVO_PRESUPUESTO_SEG:
+        if i and time.monotonic() - inicio > ENVIO_MASIVO_PRESUPUESTO_SEG:
             pendientes = [{"id": x["id"]} for x in destinatarios[i:]]
             break
         quien = {"id": t["id"], "email": t["email"]}
@@ -21492,7 +21507,9 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
             time.sleep(emails.PAUSA_ENTRE_ENVIOS)
         intentos += 1
         log.info("%s: marcado uid=%s, mandando", campaña, t["id"])
-        emails.olvidar_resultado_del_envio()
+        # Si `mandar` falla antes de llegar a `_send`, que no quede lo del mail
+        # anterior: un INCIERTO viejo dejaría marcado a alguien sin intentarlo.
+        emails._anotar(emails.NO_INTENTADO)
         try:
             ok = bool(mandar(t))
         except Exception as ex:
@@ -21500,11 +21517,21 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
             ok = False
         if ok:
             enviados.append(quien)
+            inciertos_seguidos = 0
             continue
-        if emails.resultado_del_ultimo_envio() == emails.ENVIO_INCIERTO:
+        if emails.resultado_del_ultimo_envio() == emails.INCIERTO:
             log.warning("%s: no se sabe si le llegó a uid=%s; queda marcado", campaña, t["id"])
             inciertos.append(quien)
+            inciertos_seguidos += 1
+            if inciertos_seguidos >= ENVIO_MASIVO_INCIERTOS_SEGUIDOS:
+                # Aunque sea el último de la tanda: el panel tiene que cortar
+                # y no seguir con la próxima.
+                frenado = True
+                pendientes = [{"id": x["id"]} for x in destinatarios[i + 1:]]
+                break
             continue
+        # Resend contestó (aunque sea que no): no está caído.
+        inciertos_seguidos = 0
         devuelta = False
         for _ in range(2):
             try:
@@ -21522,8 +21549,9 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     ids = {t["id"] for t in destinatarios}
     descartados = [{"id": i} for i in vistos if i not in ids]
     log.info("%s: enviados=%d fallados=%d salteados=%d descartados=%d trabadas=%d "
-             "inciertos=%d pendientes=%d", campaña, len(enviados), len(fallados),
-             len(salteados), len(descartados), len(trabadas), len(inciertos), len(pendientes))
+             "inciertos=%d pendientes=%d frenado=%s", campaña, len(enviados), len(fallados),
+             len(salteados), len(descartados), len(trabadas), len(inciertos), len(pendientes),
+             frenado)
     return {
         "dry_run": False,
         "sent_count": len(enviados),
@@ -21538,8 +21566,10 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         # vuelve a mandar) y el panel dice a quiénes mirar en Resend.
         "inciertos": inciertos,
         # No se llegaron a intentar (se acabó el tiempo del pedido): sin marca,
-        # el panel los vuelve a mandar en el pedido siguiente.
+        # el panel los vuelve a mandar en el pedido siguiente — salvo con
+        # `frenado` (Resend no confirma): ahí el panel corta.
         "pendientes": pendientes,
+        "frenado": frenado,
     }
 
 
@@ -21634,6 +21664,7 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
     Nota: en local sin RESEND_API_KEY, send_reengagement loguea y devuelve
     False, así que en dev todos caen en `failed` (no se manda nada de verdad).
     El envío real ocurre en prod, donde está la API key + los users reales."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
 
     threshold = max(0, int(data.threshold))
@@ -21672,7 +21703,7 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_reengagement(
                 to=t["email"], user_name=(t.get("name") or "")),
-            campaña="re-engagement")
+            campaña="re-engagement", inicio=t0)
         res["threshold"] = threshold
         return res
     finally:
@@ -21791,6 +21822,7 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
 
     En local sin RESEND_API_KEY el envío loguea y devuelve False (no manda nada
     de verdad); el envío real ocurre en prod."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
 
     threshold = max(0, int(data.threshold))
@@ -21835,7 +21867,7 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_gift_plan_history(
                 to=t["email"], user_name=(t.get("name") or ""), plan_label=plan_label),
-            campaña="gift-plan")
+            campaña="gift-plan", inicio=t0)
         res["threshold"] = threshold
         return res
     finally:
@@ -21899,6 +21931,7 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
     proceso se cae a la mitad, el peor caso es que alguien quede sin invitar,
     nunca que le llegue dos veces.
     """
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
     from billing import trial as _trial
     import random as _random
@@ -21940,7 +21973,7 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
                 to=t["email"], user_name=(t.get("name") or ""), variant=variant,
                 pro_days=pro_days, plus_days=plus_days,
                 total_days=pro_days + plus_days),
-            campaña="trial-invite")
+            campaña="trial-invite", inicio=t0)
         res["variant"] = variant
         return res
     finally:
@@ -21999,6 +22032,7 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
     Cada fila trae `saludo` (el nombre con que la va a saludar, "" = "Hola," a
     secas) y `otro_mail_hace_horas`: si a esa persona le llegó uno de los mails
     automáticos de la prueba hace poco, para no mandarle dos el mismo día."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
     from billing import trial as _trial
     from datetime import datetime as _dt, timedelta as _td
@@ -22178,7 +22212,7 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_trial_feedback(
                 to=t["email"], user_name=(t.get("name") or ""), reenvio=reenvio),
-            campaña=f"feedback-prueba ({data.grupo})")
+            campaña=f"feedback-prueba ({data.grupo})", inicio=t0)
         res["grupo"] = data.grupo
         return res
     finally:
@@ -22252,6 +22286,7 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
     texto arranca de cero. (Antes se anotaba DESPUÉS de mandar: dos pedidos a la
     vez leían "no lo recibió" y le mandaban los dos.) En dev sin RESEND_API_KEY
     sólo loguea."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     import re
     from billing import emails
 
@@ -22325,7 +22360,7 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
             mandar=lambda t: emails.send_custom(
                 to=t["email"], user_name=(t.get("name") or ""),
                 subject=subject, body=body, branded=data.branded),
-            campaña="broadcast")
+            campaña="broadcast", inicio=t0)
         log.info("Admin %s broadcast: %d enviados, %d fallidos, %d ya-enviados (subject=%r)",
                  uid, res["sent_count"], res["failed_count"], res["skipped_count"], subject)
         return res

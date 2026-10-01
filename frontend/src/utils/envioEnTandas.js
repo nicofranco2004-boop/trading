@@ -16,7 +16,16 @@
 //     no gana la marca y la saltea. Por eso un doble click no le manda dos
 //     veces a nadie.
 //   · Si un pedido falla se corta ahí, y se devuelve lo que ya se sumó marcado
-//     `cortado`: lo que salió, salió, y el panel lo tiene que decir.
+//     `cortado`: lo que salió, salió, y el panel lo tiene que decir. Con
+//     `contesto` se distingue si el servidor llegó a contestar (un error suyo:
+//     no quedó nada saliendo) o no (la red, o el proxy que corta a los 30 s:
+//     la tanda puede seguir saliendo en el servidor).
+//   · Si Resend no confirma mails seguidos (caído), el backend devuelve
+//     `frenado` y acá se corta: seguir marcaba a todos sin mandar nada.
+//   · El envío sigue aunque el panel se desmonte (se navegó a otra pantalla, o
+//     la página recargó sus datos): antes era un solo pedido y el servidor
+//     terminaba la lista igual. `tomarEnvio` evita que, al volver, se lance
+//     otro envío del MISMO mail en paralelo.
 
 export const LOTE_POR_DEFECTO = 20
 
@@ -28,14 +37,30 @@ export const ESPERA_TRAS_CORTE_MS = 30000
 
 export const esperar = ms => new Promise(listo => setTimeout(listo, ms))
 
+// Los envíos en curso, por mail (url). Vive fuera de los componentes para
+// sobrevivir a que el panel se desmonte y se vuelva a montar.
+const enCursoPorUrl = new Set()
+
+export function tomarEnvio(url) {
+  if (enCursoPorUrl.has(url)) return false
+  enCursoPorUrl.add(url)
+  return true
+}
+
+export function soltarEnvio(url) {
+  enCursoPorUrl.delete(url)
+}
+
+// Códigos con los que el que contesta es el proxy, no el servidor: el pedido
+// puede seguir corriendo detrás.
+const DEL_PROXY = [502, 503, 504]
+
 export function totalVacio() {
   return { sent_count: 0, failed_count: 0, skipped_count: 0, discarded_count: 0,
            marcas_trabadas: [], inciertos: [] }
 }
 
-// `seguir()` en false (el panel se desmontó) frena antes de la tanda siguiente.
-export async function enviarEnTandas({ post, url, cuerpo = {}, vistos, lote, alAvanzar = () => {},
-                                       seguir = () => true }) {
+export async function enviarEnTandas({ post, url, cuerpo = {}, vistos, lote, alAvanzar = () => {} }) {
   const total = totalVacio()
   const n = vistos.length
   const tam = Math.max(1, Math.floor(Number(lote)) || LOTE_POR_DEFECTO)
@@ -43,7 +68,6 @@ export async function enviarEnTandas({ post, url, cuerpo = {}, vistos, lote, alA
   let hechos = 0
   try {
     while (cola.length) {
-      if (!seguir()) throw new Error('se salió de la pantalla')
       const tanda = cola.splice(0, tam)
       alAvanzar({ desde: hechos + 1, hasta: hechos + tanda.length, total: n })
       const r = await post(url, { ...cuerpo, confirm: true, vistos: tanda })
@@ -53,18 +77,24 @@ export async function enviarEnTandas({ post, url, cuerpo = {}, vistos, lote, alA
       total.discarded_count += r?.discarded_count || 0
       total.marcas_trabadas.push(...(r?.marcas_trabadas || []))
       total.inciertos.push(...(r?.inciertos || []))
+      if (r?.frenado) {
+        return { ...total, cortado: true, frenado: true, contesto: true,
+                 error: 'Resend no está confirmando los envíos' }
+      }
       const quedan = new Set((r?.pendientes || []).map(p => p.id))
       const devueltos = tanda.filter(v => quedan.has(v.id))
       // El backend siempre intenta al menos uno: si devuelve la tanda entera,
       // algo anda mal, y seguir sería un loop sin fin.
       if (devueltos.length && devueltos.length === tanda.length) {
-        throw new Error('el servidor no llegó a mandar ninguno')
+        return { ...total, cortado: true, contesto: true,
+                 error: 'el servidor no llegó a mandar ninguno' }
       }
       cola.unshift(...devueltos)
       hechos += tanda.length - devueltos.length
     }
   } catch (e) {
-    return { ...total, cortado: true, error: e?.message || String(e) }
+    const contesto = Boolean(e?.status) && !DEL_PROXY.includes(e.status)
+    return { ...total, cortado: true, contesto, error: e?.message || String(e) }
   }
   return total
 }

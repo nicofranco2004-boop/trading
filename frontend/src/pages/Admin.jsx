@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare } from 'lucide-react'
 import { api } from '../utils/api'
 import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
-import { enviarEnTandas, textoDeProgreso, esperar, ESPERA_TRAS_CORTE_MS } from '../utils/envioEnTandas'
+import { enviarEnTandas, textoDeProgreso, esperar, ESPERA_TRAS_CORTE_MS, tomarEnvio, soltarEnvio } from '../utils/envioEnTandas'
 import StatCard from '../components/StatCard'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
@@ -229,7 +229,10 @@ export default function Admin() {
     )
   }
 
-  if (loading) return <PageSkeleton />
+  // Sólo la PRIMERA carga: "Actualizar" (o aprobar, borrar, regalar un plan,
+  // que recargan la lista) no puede desarmar la página, porque con ella se
+  // desarman los paneles de mails a mitad de un envío.
+  if (loading && !stats) return <PageSkeleton />
 
   const affected = users.filter(u => u.billing_affected)
   const searchActive = query.trim().length > 0
@@ -545,31 +548,34 @@ function Row({ label, children }) {
 // previa: con la lista vieja en pantalla el próximo click se armaría con datos
 // que ya no son ciertos.
 //
-// `pregunta` es el "¿Seguro?" del panel: va acá adentro, detrás del freno, para
-// que un doble click no abra un segundo cartel y lance otro envío en paralelo
-// (el backend no duplicaría mails, pero el resultado en pantalla se pisaba).
+// `pregunta` es el "¿Seguro?" del panel: va acá adentro, detrás del freno
+// (`tomarEnvio`, uno por mail), para que un doble click no abra un segundo
+// cartel y lance otro envío en paralelo.
 //
 // El botón vuelve recién con la lista ya recargada: si volviera antes, durante
 // unos segundos ofrecería "Enviar a 45" con la lista vieja, justo cuando el
 // admin cree que falló y vuelve a apretar. Mientras manda, el panel apaga
 // "Recalcular" y los filtros (`enviando`).
+//
+// Si el panel se desmonta a mitad de camino (se navegó a otra pantalla), el
+// envío SIGUE —como cuando era un solo pedido— y el resultado llega por el
+// cartel de avisos, que vive en la raíz de la app. Al volver, el freno no deja
+// lanzar el mismo mail otra vez hasta que termine.
 function useEnvioEnTandas({ url, toast, recargar }) {
   const [enviando, setEnviando] = useState(null)   // null | qué botón está mandando
   const [progreso, setProgreso] = useState(null)   // { desde, hasta, total } | { fase }
   const [resultado, setResultado] = useState(null)
-  const enCurso = useRef(false)
   // La recarga del ÚLTIMO render, no la del momento del click: con aquella la
   // lista volvía con el texto o los filtros que había al apretar.
   const recargarActual = useRef(recargar)
   recargarActual.current = recargar
-  // Si el panel se desmonta (se navegó a otra pantalla), no se mandan más tandas.
   const montado = useRef(true)
   useEffect(() => {
     montado.current = true
     return () => { montado.current = false }
   }, [])
-  // Cerrar o recargar la pestaña a mitad de camino frena las tandas que faltan:
-  // el navegador pregunta antes.
+  // Cerrar o recargar la PESTAÑA sí frena las tandas que faltan: el navegador
+  // pregunta antes.
   useEffect(() => {
     if (!enviando) return undefined
     const avisar = e => { e.preventDefault(); e.returnValue = '' }
@@ -577,40 +583,56 @@ function useEnvioEnTandas({ url, toast, recargar }) {
     return () => window.removeEventListener('beforeunload', avisar)
   }, [enviando])
 
+  const siSigue = fn => { if (montado.current) fn() }
+
   async function enviar({ clave = 'enviar', pregunta, cuerpo, vistos, lote }) {
-    if (enCurso.current || !vistos.length) return
-    if (pregunta && !window.confirm(pregunta)) return
-    enCurso.current = true
-    setEnviando(clave); setResultado(null)
+    if (!vistos.length) return
+    if (!tomarEnvio(url)) {
+      toast.push('Este mail todavía se está mandando. Esperá a que termine.', { type: 'warn' })
+      return
+    }
     try {
+      if (pregunta && !window.confirm(pregunta)) return
+      setEnviando(clave); setResultado(null)
       const r = await enviarEnTandas({
-        post: (u, b) => api.post(u, b), url, cuerpo, vistos, lote, alAvanzar: setProgreso,
-        seguir: () => montado.current,
+        post: (u, b) => api.post(u, b), url, cuerpo, vistos, lote,
+        alAvanzar: p => siSigue(() => setProgreso(p)),
       })
-      if (!montado.current) return
-      setResultado(r)
-      if (r.cortado) {
+      siSigue(() => setResultado(r))
+      const dudosos = (r.inciertos?.length || 0) + (r.marcas_trabadas?.length || 0)
+      if (r.frenado) {
         toast.push(
-          'Se cortó a mitad de camino (' + r.error + '). Cuando termine la tanda que estaba ' +
-          'saliendo se recalcula la lista: a los que ya les llegó no se les vuelve a mandar.',
+          `Se frenó el envío: Resend no está confirmando los mails. Salieron ${r.sent_count}; ` +
+          'al resto no se le mandó nada. Probá de nuevo más tarde.',
           { type: 'error' }
         )
-        // La tanda cortada puede seguir saliendo en el servidor: se espera a
-        // que termine antes de recargar (ver ESPERA_TRAS_CORTE_MS).
-        setProgreso({ fase: 'esperando' })
-        await esperar(ESPERA_TRAS_CORTE_MS)
-        if (!montado.current) return
+      } else if (r.cortado) {
+        toast.push(
+          'Se cortó a mitad de camino (' + r.error + '). Se recalcula la lista: ' +
+          'a los que ya les llegó no se les vuelve a mandar.',
+          { type: 'error' }
+        )
       } else {
         toast.push(
-          `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
-          { type: r.failed_count ? 'warn' : 'success' }
+          `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}` +
+          (dudosos ? ` · ${dudosos} para revisar` : ''),
+          { type: r.failed_count || dudosos ? 'warn' : 'success' }
         )
       }
-      setProgreso({ fase: 'recargando' })
-      await recargarActual.current()
+      // Si el pedido se cortó en el camino (la red, el proxy), la tanda puede
+      // seguir saliendo en el servidor: se espera a que termine antes de
+      // recargar, y el freno sigue puesto (ver ESPERA_TRAS_CORTE_MS).
+      if (r.cortado && !r.contesto) {
+        siSigue(() => setProgreso({ fase: 'esperando' }))
+        await esperar(ESPERA_TRAS_CORTE_MS)
+      }
+      if (montado.current) {
+        setProgreso({ fase: 'recargando' })
+        await recargarActual.current()
+      }
     } finally {
-      enCurso.current = false
-      if (montado.current) { setEnviando(null); setProgreso(null) }
+      soltarEnvio(url)
+      siSigue(() => { setEnviando(null); setProgreso(null) })
     }
   }
 
@@ -628,8 +650,11 @@ function ResultadoEnvio({ r, descartados = 'ya no se podían mandar', trabadas =
       {r.failed_count > 0 && <> · <b className="text-red-500">{r.failed_count} fallados</b></>}
       {r.skipped_count > 0 && <> · {r.skipped_count} salteados (ya les llegó, o se los estaba mandando otro click)</>}
       {r.discarded_count > 0 && <> · {r.discarded_count} {descartados}</>}
-      {r.cortado && <> · <b className="text-rendi-warn">se cortó antes de terminar</b> (estos números
-        no cuentan la tanda que se cortó, que pudo haber salido igual: la lista ya lo muestra)</>}
+      {r.frenado && <> · <b className="text-rendi-warn">se frenó: Resend no confirmaba los envíos</b>
+        {' '}(al resto no se le mandó nada; probá más tarde)</>}
+      {r.cortado && !r.frenado && <> · <b className="text-rendi-warn">se cortó antes de terminar</b>
+        {!r.contesto && <> (estos números no cuentan la tanda que se cortó, que pudo haber salido
+        igual: la lista recargada lo muestra)</>}</>}
       {r.inciertos?.length > 0 && (
         <div className="mt-1 text-rendi-warn">
           Resend no confirmó el envío a {r.inciertos.map(t => t.email).join(', ')}: pudo haberles
@@ -674,7 +699,7 @@ function BroadcastPanel({ toast }) {
     if (!ready) { toast.push('Escribí asunto y cuerpo primero.', { type: 'warn' }); return }
     setLoading(true)
     try { setPreview(await api.post('/admin/email/broadcast', { ...base(), confirm: false })) }
-    catch (e) { toast.push('Error al previsualizar: ' + e.message, { type: 'error' }) }
+    catch (e) { setPreview(null); toast.push('Error al previsualizar: ' + e.message, { type: 'error' }) }
     finally { setLoading(false) }
   }
 
@@ -824,6 +849,7 @@ function ReengagementPanel({ toast }) {
     try {
       setPreview(await api.post('/admin/email/re-engagement', { confirm: false }))
     } catch (e) {
+      setPreview(null)   // sin lista fresca no se ofrece mandar con la vieja
       toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
     } finally { setLoading(false) }
   }
@@ -935,12 +961,12 @@ function ReengagementPanel({ toast }) {
               <Send size={14} /> {envio.enviando ? envio.textoEnviando : `Enviar a ${toSend.length}`}
             </button>
           </div>
-
-          <ResultadoEnvio r={envio.resultado}
-            descartados="ya no se podían mandar (cargaron operaciones, se desverificaron o lo recibieron hace poco)"
-            trabadas="Figura como «enviado»: a partir de mañana se lo podés mandar con «Reenviar»." />
         </>
       )}
+
+      <ResultadoEnvio r={envio.resultado}
+        descartados="ya no se podían mandar (cargaron operaciones, se desverificaron o lo recibieron hace poco)"
+        trabadas="Figura como «enviado»: a partir de mañana se lo podés mandar con «Reenviar»." />
     </div>
   )
 }
@@ -981,6 +1007,7 @@ function FeedbackPruebaPanel({ toast }) {
     try {
       setPreview(await api.post('/admin/email/feedback-prueba', { confirm: false }))
     } catch (e) {
+      setPreview(null)   // sin lista fresca no se ofrece mandar con la vieja
       toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
     } finally { setLoading(false) }
   }
@@ -1139,12 +1166,12 @@ function FeedbackPruebaPanel({ toast }) {
               <FeedbackPruebaTabla filas={recien} />
             </div>
           )}
-
-          <ResultadoEnvio r={envio.resultado}
-            descartados="ya no se podían mandar (dejaron la prueba o les llegó otro mail)"
-            trabadas="Aparece en «Ya lo recibieron»: a partir de mañana se lo podés mandar con «Volver a mandar»." />
         </>
       )}
+
+      <ResultadoEnvio r={envio.resultado}
+        descartados="ya no se podían mandar (dejaron la prueba o les llegó otro mail)"
+        trabadas="Aparece en «Ya lo recibieron»: a partir de mañana se lo podés mandar con «Volver a mandar»." />
     </div>
   )
 }
@@ -1276,6 +1303,7 @@ function TrialInvitePanel({ toast }) {
     try {
       setPreview(await api.post('/admin/email/trial-invite', { confirm: false, limit, variant }))
     } catch (e) {
+      setPreview(null)   // sin lista fresca no se ofrece mandar con la vieja
       toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
     } finally { setLoading(false) }
   }
@@ -1406,6 +1434,7 @@ function GiftPlanPanel({ toast }) {
     try {
       setPreview(await api.post('/admin/email/gift-plan', { confirm: false, only_gifted: onlyGifted }))
     } catch (e) {
+      setPreview(null)   // sin lista fresca no se ofrece mandar con la vieja
       toast.push('Error al previsualizar: ' + e.message, { type: 'error' })
     } finally { setLoading(false) }
   }
@@ -1527,12 +1556,12 @@ function GiftPlanPanel({ toast }) {
               <Send size={14} /> {envio.enviando ? envio.textoEnviando : `Enviar a ${toSend.length}`}
             </button>
           </div>
-
-          <ResultadoEnvio r={envio.resultado}
-            descartados="ya no se podían mandar (cargaron operaciones, arrancaron la prueba, perdieron el regalo o lo recibieron hace poco)"
-            trabadas="Figura como «enviado»: a partir de mañana se lo podés mandar con «Reenviar»." />
         </>
       )}
+
+      <ResultadoEnvio r={envio.resultado}
+        descartados="ya no se podían mandar (cargaron operaciones, arrancaron la prueba, perdieron el regalo o lo recibieron hace poco)"
+        trabadas="Figura como «enviado»: a partir de mañana se lo podés mandar con «Reenviar»." />
     </div>
   )
 }

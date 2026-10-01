@@ -34,7 +34,7 @@ import os
 import sys
 import html
 import logging
-import contextvars
+import threading
 from typing import Optional
 
 log = logging.getLogger("billing.emails")
@@ -47,24 +47,30 @@ log = logging.getLogger("billing.emails")
 # de mercado la tenía como constante propia y la campaña nueva la habría copiado.
 PAUSA_ENTRE_ENVIOS = 0.6
 
-# Cómo terminó el último `_send` de este pedido. `_send` devuelve True/False
-# para no tocar a sus ~30 llamadores, pero False junta dos cosas distintas:
-#   · NO_SALIO: seguro que no se mandó (Resend lo rechazó con 4xx —incluido el
-#     429 por ir muy rápido—, no hubo conexión, o no hay proveedor/es un test);
-#   · INCIERTO: Resend no contestó a tiempo o dio un 5xx — el mail pudo haber
-#     salido igual.
-# Un envío masivo que en el caso INCIERTO devuelve la marca deja a la persona
-# como pendiente, y el siguiente click le manda un segundo mail.
-ENVIO_OK, ENVIO_NO_SALIO, ENVIO_INCIERTO = "ok", "no_salio", "incierto"
-_resultado_envio = contextvars.ContextVar("resultado_envio", default=None)
 
 
-def resultado_del_ultimo_envio() -> Optional[str]:
-    return _resultado_envio.get()
+# ─── Qué pasó con el último envío ────────────────────────────────────────────
+# `_send` devuelve un bool, y un False mezcla casos que piden cosas opuestas: un
+# mail que Resend RECHAZÓ hay que reintentarlo; uno que Resend quizás aceptó (se
+# cortó la conexión esperando la respuesta) NO, porque reintentarlo es mandarlo
+# dos veces. `_send` anota acá cuál fue, por hilo, para quien tenga que decidir
+# (ver `_envio_masivo` en main.py).
+ENVIADO = "enviado"
+NO_SALIO = "no_salio"            # seguro que no llegó: Resend dijo que no (4xx) o el pedido no salió
+INCIERTO = "incierto"            # no sabemos: Resend no contestó a tiempo, o falló de su lado (5xx)
+NO_INTENTADO = "no_intentado"    # ni se probó: tests, dirección de prueba o sin proveedor
+
+_resultado = threading.local()
 
 
-def olvidar_resultado_del_envio() -> None:
-    _resultado_envio.set(None)
+def _anotar(estado: str) -> None:
+    _resultado.estado = estado
+
+
+def resultado_del_ultimo_envio() -> str:
+    """Qué pasó con el último `_send` de ESTE hilo: ENVIADO, NO_SALIO, INCIERTO
+    o NO_INTENTADO."""
+    return getattr(_resultado, "estado", NO_INTENTADO)
 
 
 def _api_key() -> Optional[str]:
@@ -162,13 +168,13 @@ def _send(to: str, subject: str, html: str, text: str,
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
+    _anotar(NO_INTENTADO)
     # Guarda dura: nunca enviar de verdad bajo pytest ni a direcciones de dominio
     # reservado (.test/.example/etc). Evita que la suite spamee el inbox real
     # cuando RESEND_API_KEY está cargada desde backend/.env.
     # Mismo predicado que can_deliver() — el motivo 1 de los tres de arriba.
     if _running_under_pytest() or _is_test_address(to):
         log.info("EMAIL skip (test): to=%s subject=%s", to, subject)
-        _resultado_envio.set(ENVIO_NO_SALIO)
         return False
     sender = from_addr or _from_address()
     if append_footer:
@@ -186,7 +192,6 @@ def _send(to: str, subject: str, html: str, text: str,
         log.info("  SUBJECT:  %s", subject)
         log.info("  TEXT:     %s", text[:400] + ("..." if len(text) > 400 else ""))
         log.info("================================================")
-        _resultado_envio.set(ENVIO_NO_SALIO)
         return False
 
     import httpx
@@ -210,19 +215,27 @@ def _send(to: str, subject: str, html: str, text: str,
             timeout=10.0,
         )
         if r.status_code >= 400:
+            # 4xx: Resend lo recibió y dijo que no (429 = pasamos su tope por
+            # segundo) → seguro que no salió. 5xx: falló de su lado y no
+            # sabemos si alcanzó a mandarlo.
+            _anotar(NO_SALIO if r.status_code < 500 else INCIERTO)
             log.error("Resend send failed %s for %s: %s", r.status_code, to, r.text)
-            _resultado_envio.set(ENVIO_INCIERTO if r.status_code >= 500 else ENVIO_NO_SALIO)
             return False
+        _anotar(ENVIADO)
         log.info("Email sent to %s: %s", to, subject)
-        _resultado_envio.set(ENVIO_OK)
         return True
     except Exception as ex:
+        # Sólo es "no sabemos" si el pedido LLEGÓ a Resend y se cortó esperando
+        # la respuesta (o la respuesta vino rota). Todo lo demás —sin conexión,
+        # un pedido que no se terminó de escribir, la clave con un carácter
+        # raro, un proxy o certificado mal configurado— falla antes de salir
+        # del servidor y se repite igual con cada persona: tratarlo como "pudo
+        # haber salido" dejaba marcada una campaña entera sin mandar nada.
+        _anotar(INCIERTO if isinstance(ex, (httpx.ReadTimeout, httpx.ReadError,
+                                            httpx.RemoteProtocolError,
+                                            httpx.DecodingError))
+                else NO_SALIO)
         log.error("Resend send error for %s: %s", to, ex)
-        # Sin conexión, el pedido no llegó a Resend. Cualquier otra cosa (sobre
-        # todo no contestar en 10 s) puede haber pasado DESPUÉS de que Resend
-        # lo recibiera y lo mandara.
-        no_llego = isinstance(ex, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
-        _resultado_envio.set(ENVIO_NO_SALIO if no_llego else ENVIO_INCIERTO)
         return False
 
 
