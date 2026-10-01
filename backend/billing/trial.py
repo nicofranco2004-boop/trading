@@ -463,21 +463,17 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int) -> dict:
                 log.warning("trial ledger insert falló uid=%s: %s", user_id, ex)
     log.info("trial started uid=%s until=%s", user_id, until)
     # Mail de bienvenida en el momento: el primer día es el que decide si el
-    # trial se usa o se quema. No puede esperar al cron de mañana.
+    # trial se usa o se quema. No puede esperar al cron de mañana. Sale por el
+    # mismo camino que los otros avisos (`_avisar_una_vez`): marca ANTES, en su
+    # propia transacción, y el envío va FUERA de toda transacción (httpx tarda
+    # hasta 10 s y no puede tener tomado el lock de escritura de SQLite, audit
+    # 2026-08-10). Si Resend lo rechaza, la marca se devuelve y lo manda el
+    # cron (ver MAIL_BIENVENIDA_REINTENTO_DIAS): antes quedaba marcado y no
+    # llegaba nunca.
     try:
-        from billing import emails
         row = conn.execute("SELECT email, name FROM users WHERE id=?", (user_id,)).fetchone()
-        _gano = False
         if row and row["email"]:
-            with conn:      # transacción propia: sin esto la marca se perdía al
-                _gano = _mark_sent(conn, user_id, MAIL_STARTED)   # cerrar la conexión
-        # El envío va FUERA de toda transacción: httpx tarda hasta 10s y no
-        # puede tener tomado el lock de escritura de SQLite (audit 2026-08-10).
-        if _gano:
-            emails.send_trial_started(
-                to=row["email"],
-                user_name=(row["name"] or row["email"].split("@")[0]),
-                pro_days=TRIAL_PRO_DAYS, total_days=TRIAL_TOTAL_DAYS)
+            _avisar_una_vez(conn, user_id, MAIL_STARTED, _bienvenida(row))
     except Exception as ex:
         log.warning("mail de bienvenida del trial falló uid=%s: %s", user_id, ex)
     return {"ok": True, **status(conn, user_id)}
@@ -651,18 +647,27 @@ MAIL_ENDED = "ended"
 # archivos distintos). Con la prueba de 20 días pasa a 3: es el mail que más
 # convierte y 48 horas es poco margen para decidir un gasto mensual.
 MAIL_AVISO_DIAS_ANTES = 3
+# Días durante los cuales el cron reintenta la bienvenida que Resend rechazó al
+# activar la prueba (ver `send_due_trial_emails`).
+MAIL_BIENVENIDA_REINTENTO_DIAS = 2
 
 
-def momentos_de_aviso(trial_started_at, trial_ends_at) -> dict:
-    """Desde qué momento le corresponde a esta prueba cada aviso automático
-    {kind: datetime}. El cron (`send_due_trial_emails`) lo manda en su primera
-    corrida a partir de ese momento, si todavía no salió.
+# Días después del final en que el cron todavía manda "terminó tu prueba".
+MAIL_FIN_VENTANA_DIAS = 7
+
+
+def ventanas_de_aviso(trial_started_at, trial_ends_at) -> dict:
+    """Entre qué momentos le corresponde a esta prueba cada aviso automático
+    {kind: (desde, hasta)}. El cron (`send_due_trial_emails`) lo manda en su
+    primera corrida a partir de `desde`, si todavía no salió, y lo reintenta
+    (si Resend lo rechazó) mientras no llegue `hasta`.
 
     Son las MISMAS condiciones que las consultas del cron, escritas como fechas
     en vez de como SQL:
-      · fin de Pro        → trial_started_at <= ahora − (TRIAL_PRO_DAYS − 1) días
-      · quedan pocos días → trial_ends_at    <= ahora + MAIL_AVISO_DIAS_ANTES días
-      · terminó           → trial_ends_at    <= ahora
+      · fin de Pro        → ahora − (TRIAL_PRO_DAYS + 1) d < trial_started_at
+                                                    <= ahora − (TRIAL_PRO_DAYS − 1) d
+      · quedan pocos días → ahora < trial_ends_at <= ahora + MAIL_AVISO_DIAS_ANTES d
+      · terminó           → ahora − MAIL_FIN_VENTANA_DIAS d < trial_ends_at <= ahora
     Existe para que otro mail (el de feedback que manda el admin) pueda ver
     que mañana a esa persona le llega uno de estos y esperar. Si cambia una
     condición del cron hay que cambiarla acá: test_feedback_prueba corre el
@@ -677,10 +682,11 @@ def momentos_de_aviso(trial_started_at, trial_ends_at) -> dict:
     ini, fin = _f(trial_started_at), _f(trial_ends_at)
     out = {}
     if ini:
-        out[MAIL_PRO_ENDING] = ini + timedelta(days=TRIAL_PRO_DAYS - 1)
+        out[MAIL_PRO_ENDING] = (ini + timedelta(days=TRIAL_PRO_DAYS - 1),
+                                ini + timedelta(days=TRIAL_PRO_DAYS + 1))
     if fin:
-        out[MAIL_ENDING_SOON] = fin - timedelta(days=MAIL_AVISO_DIAS_ANTES)
-        out[MAIL_ENDED] = fin
+        out[MAIL_ENDING_SOON] = (fin - timedelta(days=MAIL_AVISO_DIAS_ANTES), fin)
+        out[MAIL_ENDED] = (fin, fin + timedelta(days=MAIL_FIN_VENTANA_DIAS))
     return out
 
 
@@ -712,7 +718,15 @@ def _mark_sent(conn, user_id: int, kind: str) -> Optional[str]:
         return None
 
 
-def _avisar_una_vez(conn, user_id: int, kind: str, mandar) -> bool:
+def _bienvenida(row):
+    """El mail de bienvenida de la prueba para esta fila de `users`."""
+    from billing import emails
+    return lambda: emails.send_trial_started(
+        to=row["email"], user_name=(row["name"] or row["email"].split("@")[0]),
+        pro_days=TRIAL_PRO_DAYS, total_days=TRIAL_TOTAL_DAYS)
+
+
+def _avisar_una_vez(conn, user_id: int, kind: str, mandar, tanda=None) -> bool:
     """Manda UN aviso automático de la prueba, a lo sumo una vez por persona.
     Devuelve si salió.
 
@@ -720,10 +734,11 @@ def _avisar_una_vez(conn, user_id: int, kind: str, mandar) -> bool:
     no pueden mandarlo las dos) y, si el mail no salió, la marca se devuelve
     para que lo reintente la corrida de mañana. Antes la marca quedaba siempre:
     `send_*` devuelve False cuando Resend rechaza —no tira excepción—, el loop
-    lo contaba como enviado y ese aviso no le llegaba nunca. El detalle de
-    cuándo se devuelve y cuándo no, en `emails.enviar_con_marca`."""
+    lo contaba como enviado y ese aviso no le llegaba nunca. Cuándo se devuelve,
+    cuándo no y cuándo se frena la corrida (Resend caído): `emails.Tanda`."""
     from billing import emails
-    if _already_sent(conn, user_id, kind):
+    tanda = tanda or emails.Tanda()
+    if tanda.frenado or _already_sent(conn, user_id, kind):
         return False
 
     def marcar():
@@ -737,8 +752,8 @@ def _avisar_una_vez(conn, user_id: int, kind: str, mandar) -> bool:
                 "DELETE FROM trial_email_log WHERE user_id=? AND kind=? AND sent_at=?",
                 (user_id, kind, marca))
 
-    res = emails.enviar_con_marca(marcar, mandar, desmarcar,
-                                  que=f"aviso de prueba {kind} uid={user_id}")
+    res = tanda.enviar(marcar, mandar, desmarcar,
+                       que=f"aviso de prueba {kind} uid={user_id}")
     return res == emails.ENVIADO
 
 
@@ -799,34 +814,63 @@ def _trial_stats(conn, user_id: int) -> dict:
     return out
 
 
-def send_due_trial_emails(conn) -> int:
+def send_due_trial_emails(conn, tanda=None) -> int:
     """Paso del cron: manda los avisos que correspondan hoy. Devuelve cuántos
     mails salieron. Cada uno se marca ANTES de enviarse (`_avisar_una_vez`): si
     Resend lo rechaza, la marca se devuelve y lo reintenta la corrida de
     mañana; si no se sabe si llegó, queda marcado (preferimos perder un aviso
-    antes que repetirlo). La pausa entre un mail y el siguiente la pone
+    antes que repetirlo); con Resend caído la `tanda` se frena y lo que falta
+    queda para mañana. La pausa entre un mail y el siguiente la pone
     `emails._send`."""
     from billing import emails
+    tanda = tanda or emails.Tanda()
     now = datetime.utcnow()
     sent = 0
 
     def _name(r):
         return (r["name"] or (r["email"] or "").split("@")[0] or "Hola")
 
+    # ── la bienvenida que no salió al activar (Resend la rechazó) ──────────
+    # Sale al activar la prueba (`start`); si Resend la rechazó, la marca se
+    # devolvió y la manda esta corrida. Sólo los primeros días: "ya tenés Pro,
+    # hacé esto hoy" una semana tarde no es una bienvenida.
+    try:
+        rows = conn.execute(
+            """SELECT u.id, u.email, u.name FROM users u
+                WHERE u.trial_started_at IS NOT NULL AND u.trial_started_at > ?
+                  AND u.trial_ends_at IS NOT NULL
+                  AND u.credit_active_until = u.trial_ends_at
+                  AND u.trial_ends_at > ?
+                  AND NOT EXISTS (SELECT 1 FROM trial_email_log l
+                                   WHERE l.user_id = u.id AND l.kind = ?)""",
+            ((now - timedelta(days=MAIL_BIENVENIDA_REINTENTO_DIAS)).isoformat(),
+             now.isoformat(), MAIL_STARTED),
+        ).fetchall()
+    except Exception as ex:
+        log.error("trial mails (started) falló: %s", ex)
+        rows = []
+    for r in rows:
+        if r["email"] and _avisar_una_vez(conn, r["id"], MAIL_STARTED, _bienvenida(r), tanda):
+            sent += 1
+
     # ── la víspera del paso a Plus (solo a quien SIGUE en la etapa Pro) ────
     try:
         rows = conn.execute(
-            # SIN borde inferior ni filtro por tier: la idempotencia ya la da
-            # trial_email_log. Con una ventana de 24h exactas, un cron atrasado
-            # (o el step-down corriendo antes) hacía que este aviso —el que más
-            # convierte— no saliera NUNCA para esa cohorte (audit 2026-08-10).
+            # SIN filtro por tier y con dos corridas de margen: con una ventana
+            # de 24h exactas, un cron atrasado (o el step-down corriendo antes)
+            # hacía que este aviso —el que más convierte— no saliera NUNCA para
+            # esa cohorte (audit 2026-08-10). Pero CON borde: desde que un
+            # rechazo de Resend se reintenta, sin borde el "mañana termina tu
+            # Pro" podía llegar días después del paso a Plus.
             """SELECT id, email, name FROM users
                 WHERE trial_ends_at IS NOT NULL
                   AND credit_active_until = trial_ends_at
                   AND trial_ends_at > ?
-                  AND trial_started_at <= ?""",
+                  AND trial_started_at <= ?
+                  AND trial_started_at > ?""",
             (now.isoformat(),
-             (now - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat()),
+             (now - timedelta(days=TRIAL_PRO_DAYS - 1)).isoformat(),
+             (now - timedelta(days=TRIAL_PRO_DAYS + 1)).isoformat()),
         ).fetchall()
     except Exception as ex:
         log.error("trial mails (pro_ending) falló: %s", ex)
@@ -835,7 +879,8 @@ def send_due_trial_emails(conn) -> int:
         if _avisar_una_vez(conn, r["id"], MAIL_PRO_ENDING, lambda r=r:
                            emails.send_trial_pro_ending(to=r["email"], user_name=_name(r),
                                                         plus_days=TRIAL_PLUS_DAYS,
-                                                        pro_days=TRIAL_PRO_DAYS)):
+                                                        pro_days=TRIAL_PRO_DAYS),
+                           tanda):
             sent += 1
 
     # ── el aviso de MAIL_AVISO_DIAS_ANTES días antes del final ─────────────
@@ -859,7 +904,8 @@ def send_due_trial_emails(conn) -> int:
                            emails.send_trial_ending_soon(
                                to=r["email"], user_name=_name(r),
                                days_left=dias_restantes(r["trial_ends_at"], now),
-                               requiere_plan=bool(r["requires_plan"]))):
+                               requiere_plan=bool(r["requires_plan"])),
+                           tanda):
             sent += 1
 
     # ── terminó (el crédito ya venció; el tier lo bajó el otro paso) ───────
@@ -877,7 +923,8 @@ def send_due_trial_emails(conn) -> int:
                        OR credit_active_until = trial_ends_at)
                   AND NOT EXISTS (SELECT 1 FROM subscriptions s
                                    WHERE s.user_id = users.id AND s.status='authorized')""",
-            (now.isoformat(), (now - timedelta(days=7)).isoformat(), now.isoformat()),
+            (now.isoformat(), (now - timedelta(days=MAIL_FIN_VENTANA_DIAS)).isoformat(),
+             now.isoformat()),
         ).fetchall()
     except Exception as ex:
         log.error("trial mails (ended) falló: %s", ex)
@@ -887,11 +934,15 @@ def send_due_trial_emails(conn) -> int:
                            emails.send_trial_ended(to=r["email"], user_name=_name(r),
                                                    stats=_trial_stats(conn, r["id"]),
                                                    total_days=TRIAL_TOTAL_DAYS,
-                                                   requiere_plan=bool(r["requires_plan"]))):
+                                                   requiere_plan=bool(r["requires_plan"])),
+                           tanda):
             sent += 1
 
     if sent:
         log.info("avisos de trial enviados: %d", sent)
+    if tanda.frenado:
+        log.error("avisos de trial: Resend no confirma los envíos; se frenó la corrida "
+                  "y lo que faltaba queda para la próxima")
     return sent
 
 

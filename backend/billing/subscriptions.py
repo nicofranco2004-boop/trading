@@ -38,6 +38,10 @@ def _ahora_db() -> str:
 def run_lifecycle_job(conn) -> dict:
     """Corre el job completo del ciclo de vida. Devuelve dict con counts
     de cada operación para que el caller pueda loguear / monitorear."""
+    from billing import emails
+    # UNA tanda para todos los avisos de la corrida: si Resend se cae a mitad de
+    # los de la prueba, los de vencimiento no siguen quemando gente.
+    tanda = emails.Tanda()
     result = {
         "credit_expired_downgraded": 0,
         "downgraded": 0,
@@ -70,12 +74,12 @@ def run_lifecycle_job(conn) -> dict:
     # cuando se decide qué mail corresponde.
     try:
         from billing import trial as _trial
-        result["trial_emails_sent"] = _trial.send_due_trial_emails(conn)
+        result["trial_emails_sent"] = _trial.send_due_trial_emails(conn, tanda)
     except Exception as ex:
         log.error("trial emails failed: %s", ex)
         result["errors"] += 1
     try:
-        result["credit_expiring_reminders_sent"] = _send_credit_expiring_reminders(conn)
+        result["credit_expiring_reminders_sent"] = _send_credit_expiring_reminders(conn, tanda=tanda)
     except Exception as ex:
         log.error("credit expiring reminders failed: %s", ex)
         result["errors"] += 1
@@ -90,7 +94,7 @@ def run_lifecycle_job(conn) -> dict:
         log.error("stale pending cleanup failed: %s", ex)
         result["errors"] += 1
     try:
-        result["expiration_reminders_sent"] = _send_expiration_reminders(conn)
+        result["expiration_reminders_sent"] = _send_expiration_reminders(conn, tanda=tanda)
     except Exception as ex:
         log.error("Expiration reminders failed: %s", ex)
         result["errors"] += 1
@@ -247,7 +251,7 @@ def _downgrade_expired_credit(conn) -> int:
     return count
 
 
-def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
+def _send_credit_expiring_reminders(conn, days_before: int = 3, tanda=None) -> int:
     """Email "tu crédito se acaba en N días" a users sin sub autorizada.
 
     Idempotente: reusamos expiration_reminder_sent_at en la subscription más
@@ -258,6 +262,7 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
     se puede agregar una col `credit_reminder_sent_at` en users.
     """
     from billing import emails
+    tanda = tanda or emails.Tanda()
     today = datetime.utcnow().date()
     target_str = (datetime.utcnow() + timedelta(days=days_before)).isoformat()
     today_str = datetime.utcnow().isoformat()
@@ -286,6 +291,8 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
 
     sent = 0
     for r in rows:
+        if tanda.frenado:      # Resend no confirma: lo que falta, mañana
+            break
         try:
             # Idempotencia: chequear si la última subscription cancelled ya recibió
             # el reminder para este window.
@@ -347,10 +354,14 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
                            ORDER BY created_at DESC LIMIT 1""", (uid,)).fetchone()
                     if not sub:
                         return None
+                    # `IS NULL` sobre la fila que se marca, además del NOT
+                    # EXISTS: en Postgres la segunda de dos corridas a la vez
+                    # re-chequea la fila al destrabarse, pero el NOT EXISTS lo
+                    # ve con la foto de antes y las dos ganaban.
                     cur = conn.execute(
                         """UPDATE subscriptions
                            SET expiration_reminder_sent_at = ?
-                           WHERE id = ?
+                           WHERE id = ? AND expiration_reminder_sent_at IS NULL
                              AND NOT EXISTS (SELECT 1 FROM subscriptions
                                              WHERE user_id = ?
                                                AND expiration_reminder_sent_at IS NOT NULL)""",
@@ -367,7 +378,7 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3) -> int:
                         (sub_id, marca),
                     )
 
-            res = emails.enviar_con_marca(
+            res = tanda.enviar(
                 marcar, lambda: emails.send_expiration_reminder(**datos), desmarcar,
                 que=f"aviso de fin de crédito uid={r['user_id']}")
             if res == emails.ENVIADO:
@@ -428,7 +439,7 @@ def _delete_unverified_accounts(conn, stale_days: int = 7) -> int:
     return deleted
 
 
-def _send_expiration_reminders(conn, days_before: int = 3) -> int:
+def _send_expiration_reminders(conn, days_before: int = 3, tanda=None) -> int:
     """Manda recordatorio a users cuya sub cancelada está por expirar en N días.
 
     Solo afecta a subs `cancelled` (no a `authorized` activas — esas se renuevan
@@ -439,6 +450,7 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
     _send_credit_expiring_reminders.
     """
     from billing import emails
+    tanda = tanda or emails.Tanda()
     rows = conn.execute(
         """SELECT s.id, s.mp_subscription_id, s.current_period_end,
                   u.email, u.name, u.tier, u.id AS user_id
@@ -456,6 +468,8 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
 
     sent_count = 0
     for r in rows:
+        if tanda.frenado:      # Resend no confirma: lo que falta, mañana
+            break
         try:
             from datetime import datetime
             try:
@@ -489,8 +503,8 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
             )
 
             # Marca ANTES de mandar, condicional, y se devuelve si el mail no
-            # salió (ver `emails.enviar_con_marca`). Antes se anotaba después
-            # sin mirar el resultado: un rechazo de Resend quedaba como enviado.
+            # salió (ver `emails.Tanda`). Antes se anotaba después sin mirar el
+            # resultado: un rechazo de Resend quedaba como enviado.
             def marcar(sub_id=r["id"]):
                 marca = _ahora_db()
                 with conn:
@@ -509,7 +523,7 @@ def _send_expiration_reminders(conn, days_before: int = 3) -> int:
                         (sub_id, marca),
                     )
 
-            res = emails.enviar_con_marca(
+            res = tanda.enviar(
                 marcar, lambda: emails.send_expiration_reminder(**datos), desmarcar,
                 que=f"aviso de vencimiento sub={r['mp_subscription_id']}")
             if res == emails.ENVIADO:

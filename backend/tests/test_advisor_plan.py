@@ -4173,6 +4173,51 @@ class AdvisorAlertsAgrupadasTest(AdvisorAlertsAuditTest):
         finally:
             conn.close()
 
+    def test_el_rearmado_no_deja_la_base_tomada_durante_la_entrega(self):
+        """Un cliente que disparó otro día y hoy volvió a la banda se re-arma
+        (una escritura). Si otro cliente dispara, la entrega —red, y el mail
+        esperando su turno en `emails._send`— salía con esa escritura abierta:
+        el resto de la app no podía escribir."""
+        import sqlite3
+        import advisor_alerts as aa, advisor_brief
+        from billing import emails as _emails
+
+        def puede_escribir():
+            otra = sqlite3.connect(main.DB_PATH, timeout=0.5)
+            try:
+                otra.execute("BEGIN IMMEDIATE")
+                otra.rollback()
+                return True
+            except sqlite3.OperationalError:
+                return False
+            finally:
+                otra.close()
+
+        self._base_snapshot(nd=0)
+        otro = self._segundo_cliente()
+        pudo = []
+        conn = main.get_db()
+        try:
+            aa.set_config(conn, self.advisor, up_pct=5, down_pct=5, active=True)
+            conn.execute("DELETE FROM advisor_alert_state WHERE advisor_uid=?", (self.advisor,))
+            conn.execute("INSERT INTO advisor_alert_state (advisor_uid, client_uid, armed, "
+                         "last_fired_date) VALUES (?,?,0,'2000-01-01')", (self.advisor, otro))
+            conn.commit()
+            _l0, _p0, _e0 = (advisor_brief.live_book_values,
+                             main._send_push_to_user, _emails.send_alert_email)
+            advisor_brief.live_book_values = lambda c, i, p: {self.client_uid: 11000, otro: 10000}
+            main._send_push_to_user = lambda uid, payload: (pudo.append(puede_escribir()), 1)[1]
+            _emails.send_alert_email = lambda **kw: (pudo.append(puede_escribir()), True)[1]
+            try:
+                res = aa.evaluate(conn, market_open=True, only_uid=self.advisor)
+            finally:
+                (advisor_brief.live_book_values, main._send_push_to_user,
+                 _emails.send_alert_email) = _l0, _p0, _e0
+        finally:
+            conn.close()
+        self.assertEqual(res["fired"], 1)
+        self.assertEqual(pudo, [True, True])     # durante el push y durante el mail
+
     def test_un_solo_cliente_manda_el_mail_de_siempre(self):
         """El agrupado no puede cambiarle el mail al asesor con un solo aviso."""
         self._base_snapshot(nd=0)

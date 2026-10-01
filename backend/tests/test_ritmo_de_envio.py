@@ -291,26 +291,164 @@ def test_si_el_mail_explota_al_armarse_se_reintenta(conn):
     assert len(resend.a(beto)) == 1
 
 
-def test_dos_corridas_a_la_vez_no_duplican_ni_con_reintentos(conn):
-    """Dos crons a la vez, cada uno con su conexión: a cada persona le llega
-    UN aviso. La marca se gana antes de mandar con un INSERT OR IGNORE."""
-    nombres = ["ana", "beto", "caro", "dani"]
-    for n in nombres:
-        _en_prueba_hace(conn, _usuario(conn, n), tr.TRIAL_PRO_DAYS - 1)
-    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0.01):
-        def corrida():
-            c = main.get_db()
-            try:
-                tr.send_due_trial_emails(c)
-            finally:
-                c.close()
-        hilos = [threading.Thread(target=corrida) for _ in range(2)]
+def _dos_corridas_a_la_vez(corrida, cruzar_en, objeto):
+    """Corre `corrida(conn)` en dos hilos, cada uno con su conexión, y los hace
+    pasar JUNTOS por `objeto.cruzar_en` (una barrera): las dos llegan a querer
+    la marca al mismo tiempo, que es el cruce contra el que existe la condición
+    de la marca. Sin forzarlo, casi siempre la segunda ya ve la marca de la
+    primera y el test pasaba aunque la condición no estuviera."""
+    barrera = threading.Barrier(2, timeout=5)
+    real = getattr(objeto, cruzar_en)
+
+    def con_barrera(*a, **kw):
+        r = real(*a, **kw)
+        try:
+            barrera.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return r
+
+    def hilo():
+        c = main.get_db()
+        try:
+            corrida(c)
+        finally:
+            c.close()
+
+    with patch.object(objeto, cruzar_en, con_barrera):
+        hilos = [threading.Thread(target=hilo) for _ in range(2)]
         for h in hilos:
             h.start()
         for h in hilos:
             h.join(30)
+
+
+def test_dos_corridas_que_llegan_juntas_a_la_marca_no_duplican(conn):
+    """Las dos pasan el chequeo de "ya lo mandé" antes de que ninguna marque:
+    el INSERT OR IGNORE de la marca es lo único que las separa."""
+    nombres = ["ana", "beto"]
+    for n in nombres:
+        _en_prueba_hace(conn, _usuario(conn, n), tr.TRIAL_PRO_DAYS - 1)
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
+        _dos_corridas_a_la_vez(tr.send_due_trial_emails, "_already_sent", tr)
     for n in nombres:
         assert len(resend.a(f"{n}@{DOMINIO}")) == 1, n
+
+
+def test_un_mail_que_explota_no_hereda_el_enviado_del_anterior(conn):
+    """A Ana le sale su aviso; al de Beto le explota el armado. Sin limpiar el
+    resultado del envío anterior, Beto heredaba el "enviado" de Ana: quedaba
+    marcado y no le llegaba nunca."""
+    a = _usuario(conn, "ana")
+    b = _usuario(conn, "beto")
+    for u in (a, b):
+        _en_prueba_hace(conn, u, tr.TRIAL_TOTAL_DAYS + 1)
+    real = tr._trial_stats
+
+    def stats(c, u):
+        if u == b:
+            raise RuntimeError("se cayó armando")
+        return real(c, u)
+
+    with _red_de_mentira(_Reloj()) as resend, patch.object(tr, "_trial_stats", stats):
+        tr.send_due_trial_emails(conn)
+    assert len(resend.a(f"ana@{DOMINIO}")) == 1
+    assert _marcados(conn, tr.MAIL_ENDED) == {a}
+
+
+def test_con_resend_caido_el_cron_se_frena_y_no_quema_a_todos(conn):
+    """Resend no contesta: cada aviso queda "no se sabe si llegó" y marcado.
+    Antes seguía con TODA la gente del día — todos marcados, ninguno con su
+    mail, y sin reintento. Ahora frena a los INCIERTOS_PARA_FRENAR, y los
+    demás quedan sin marca para la corrida siguiente. Una sola tanda para toda
+    la corrida: tampoco siguen los avisos de vencimiento."""
+    nombres = ["ana", "beto", "caro", "dani", "eli"]
+    uids = {n: _usuario(conn, n) for n in nombres}
+    for u in uids.values():
+        _en_prueba_hace(conn, u, tr.TRIAL_PRO_DAYS - 1)
+    vence = _con_credito_por_vencer(conn)
+    caido = httpx.ReadTimeout("Resend no contesta")
+    with _red_de_mentira(_Reloj()) as resend:
+        for n in nombres + ["vera"]:
+            resend.respuestas[f"{n}@{DOMINIO}"] = [caido]
+        r1 = subs.run_lifecycle_job(conn)
+        intentados = [to for _, to in resend.pedidos]
+        assert len(intentados) == emails.INCIERTOS_PARA_FRENAR
+        assert r1["trial_emails_sent"] == 0
+        assert r1["credit_expiring_reminders_sent"] == 0
+        assert len(_marcados(conn, tr.MAIL_PRO_ENDING)) == emails.INCIERTOS_PARA_FRENAR
+        assert conn.execute(
+            "SELECT COUNT(*) n FROM subscriptions WHERE user_id=? AND "
+            "expiration_reminder_sent_at IS NOT NULL", (vence,)).fetchone()["n"] == 0
+
+        resend.respuestas.clear()                  # al día siguiente Resend anda
+        r2 = subs.run_lifecycle_job(conn)
+    assert r2["trial_emails_sent"] == len(nombres) - emails.INCIERTOS_PARA_FRENAR
+    assert r2["credit_expiring_reminders_sent"] == 1
+    for n in nombres:                              # nadie dos veces
+        assert len(resend.a(f"{n}@{DOMINIO}")) == 1, n
+
+
+def test_la_bienvenida_rechazada_al_activar_la_manda_el_cron(conn):
+    """El mail de bienvenida sale al activar la prueba. Antes se marcaba sin
+    mirar si salió: si Resend lo rechazaba, no llegaba nunca."""
+    uid = _usuario(conn, "ana")
+    ana = f"ana@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[ana] = [429]
+        assert tr.start(conn, uid)["ok"]
+        assert len(resend.a(ana)) == 1
+        assert uid not in _marcados(conn, tr.MAIL_STARTED)
+        assert tr.send_due_trial_emails(conn) == 1         # la corrida de esa noche
+        assert uid in _marcados(conn, tr.MAIL_STARTED)
+        tr.send_due_trial_emails(conn)                     # y nunca más
+    assert len(resend.a(ana)) == 2
+
+
+def test_la_bienvenida_no_se_reintenta_pasados_los_primeros_dias(conn):
+    uid = _usuario(conn, "ana")
+    ana = f"ana@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[ana] = [429]
+        assert tr.start(conn, uid)["ok"]
+    row = conn.execute("SELECT trial_started_at FROM users WHERE id=?", (uid,)).fetchone()
+    conn.execute("UPDATE users SET trial_started_at=? WHERE id=?",
+                 ((datetime.fromisoformat(row["trial_started_at"])
+                   - timedelta(days=tr.MAIL_BIENVENIDA_REINTENTO_DIAS, hours=1)).isoformat(),
+                  uid))
+    conn.commit()
+    with _red_de_mentira(_Reloj()) as resend:
+        tr.send_due_trial_emails(conn)
+    assert resend.a(ana) == []
+
+
+def test_mañana_termina_tu_pro_no_se_reintenta_ya_en_plus(conn):
+    """Rechazado la víspera, se reintenta en la corrida siguiente — pero no
+    días después del paso a Plus, cuando "mañana termina tu Pro" ya es falso."""
+    uid = _usuario(conn, "ana")
+    _en_prueba_hace(conn, uid, tr.TRIAL_PRO_DAYS - 1)
+    ana = f"ana@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[ana] = [429, 429, 429]
+        tr.send_due_trial_emails(conn)
+    _en_prueba_hace_mas(conn, uid, 2.5)
+    with _red_de_mentira(_Reloj()) as resend2:
+        tr.send_due_trial_emails(conn)
+    assert len(resend.a(ana)) == 1
+    assert [to for _, to in resend2.pedidos if to == ana] == []
+
+
+def _en_prueba_hace_mas(conn, uid, dias):
+    d = timedelta(days=dias)
+    row = conn.execute("SELECT trial_started_at, credit_active_until, trial_ends_at "
+                       "FROM users WHERE id=?", (uid,)).fetchone()
+    conn.execute(
+        "UPDATE users SET trial_started_at=?, credit_active_until=?, trial_ends_at=? "
+        "WHERE id=?",
+        ((datetime.fromisoformat(row["trial_started_at"]) - d).isoformat(),
+         (datetime.fromisoformat(row["credit_active_until"]) - d).isoformat(),
+         (datetime.fromisoformat(row["trial_ends_at"]) - d).isoformat(), uid))
+    conn.commit()
 
 
 # ─── 2 bis. Los avisos de vencimiento, con el cron entero ────────────────────
@@ -365,6 +503,23 @@ def test_el_aviso_de_vencimiento_rechazado_sale_en_la_corrida_siguiente(conn, pr
     assert len(resend.a(vera)) == 2          # el rechazado y el que salió; nunca un tercero
 
 
+@pytest.mark.parametrize("preparar,paso", [
+    pytest.param(_con_credito_por_vencer, "_send_credit_expiring_reminders",
+                 id="fin-de-credito"),
+    pytest.param(_con_suscripcion_cancelada_por_vencer, "_send_expiration_reminders",
+                 id="suscripcion-cancelada"),
+])
+def test_dos_corridas_que_llegan_juntas_al_aviso_de_vencimiento_no_duplican(
+        conn, preparar, paso):
+    from billing import plan_textos
+    preparar(conn)
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
+        # Las dos terminan de armar el mail (y pasaron los chequeos) juntas,
+        # justo antes de pedir la marca.
+        _dos_corridas_a_la_vez(getattr(subs, paso), "cupos_del_usuario", plan_textos)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1
+
+
 def test_los_avisos_al_admin_de_las_bajas_salen_con_pausa():
     reloj = _Reloj()
     with _red_de_mentira(reloj) as resend:
@@ -376,6 +531,15 @@ def test_los_avisos_al_admin_de_las_bajas_salen_con_pausa():
 
 
 # ─── 4. Alertas en segundo plano; una corrida a la vez ───────────────────────
+
+def _esperar(condicion, segundos=5):
+    fin = time.time() + segundos
+    while time.time() < fin:
+        if condicion():
+            return True
+        time.sleep(0.01)
+    return condicion()
+
 
 def _esperar_que_termine(nombre, segundos=5):
     fin = time.time() + segundos
@@ -409,6 +573,7 @@ def test_el_cron_de_alertas_contesta_al_instante_y_no_se_encima(monkeypatch):
         # tarda, el pedido no volvía (en producción, el proxy lo corta a ~30 s).
         assert respuestas, "el pedido se quedó esperando a que terminen las alertas"
         assert respuestas[0].json()["status"] == "started"
+        assert _esperar(lambda: corridas == [1]), corridas   # el hilo arrancó
         # Un segundo ping mientras corre no encima otra corrida.
         assert http.get("/api/alerts/evaluate?token=tok-alertas").json()["status"] \
             == "already_running"
@@ -514,6 +679,61 @@ def test_las_alertas_se_entregan_sin_tener_tomada_la_base(conn, monkeypatch):
     assert [e["delivered_email"] for e in ev] == [1]
 
 
+def _alerta(conn, uid, sym):
+    conn.execute(
+        "INSERT INTO alerts (user_id,kind,symbol,scope,direction,threshold,currency,"
+        "baseline,channel,repeat,cooldown_min,armed,active) "
+        "VALUES (?,'price_target',?,'ticker','above',200,'USD','prev_close',"
+        "'email','once',360,1,1)", (uid, sym))
+    conn.commit()
+
+
+def test_entre_una_entrega_de_alertas_y_la_siguiente_la_base_queda_libre(conn, monkeypatch):
+    """Con una sola alerta alcanza el commit de antes de entregar; con dos, la
+    segunda se entregaba con la anotación de la primera abierta."""
+    for n, sym in (("ana", "AAPL"), ("beto", "MSFT")):
+        _alerta(conn, _usuario(conn, n, tier="plus"), sym)
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {s: 210.0 for s in syms})
+    monkeypatch.setattr(ae, "_market_open_now", lambda now: True)
+    pudo = []
+    monkeypatch.setattr(emails, "send_alert_email",
+                        lambda **kw: (pudo.append(_escribir_desde_otra_conexion()), True)[1])
+    assert ae.evaluate_alerts(conn)["fired"] == 2
+    assert pudo == [True, True]
+
+
+def test_si_no_se_puede_anotar_una_entrega_las_demas_alertas_salen_igual(conn, monkeypatch):
+    """Otro escritor de la app (un import largo) tiene la base tomada más que
+    el busy_timeout justo cuando se anota la primera entrega. Antes el error
+    cortaba la entrega de las que faltaban — ya registradas como disparadas,
+    no se reintentan nunca."""
+    uids = [_usuario(conn, n, tier="plus") for n in ("ana", "beto")]
+    for u, sym in zip(uids, ("AAPL", "MSFT")):
+        _alerta(conn, u, sym)
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {s: 210.0 for s in syms})
+    monkeypatch.setattr(ae, "_market_open_now", lambda now: True)
+    conn.execute("PRAGMA busy_timeout=300")   # en producción son 15 s
+    otro = {}
+    mandados = []
+
+    def mail(**kw):
+        mandados.append(kw["to"])
+        if "c" not in otro:
+            otro["c"] = sqlite3.connect(main.DB_PATH, timeout=1)
+            otro["c"].execute("BEGIN IMMEDIATE")       # toma la base y no la suelta…
+        else:
+            otro["c"].rollback()                       # …hasta el segundo mail
+        return True
+
+    monkeypatch.setattr(emails, "send_alert_email", mail)
+    try:
+        assert ae.evaluate_alerts(conn)["fired"] == 2
+    finally:
+        if "c" in otro:
+            otro["c"].close()
+    assert sorted(mandados) == sorted(f"{n}@{DOMINIO}" for n in ("ana", "beto"))
+
+
 def test_el_brief_del_asesor_se_manda_sin_tener_tomada_la_base(conn, monkeypatch):
     """Armar el brief persiste los precios que trajo (`persist_last_prices`):
     la transacción quedaba abierta durante el envío."""
@@ -535,3 +755,128 @@ def test_el_brief_del_asesor_se_manda_sin_tener_tomada_la_base(conn, monkeypatch
     res = advisor_brief.run_briefs("close", main.get_db, only_uid=uid)
     assert res["sent"] == 1
     assert pudo == [True]
+
+
+def test_un_brief_salteado_no_deja_la_base_tomada_para_el_siguiente(conn, monkeypatch):
+    """Armar persiste precios. Si ese asesor se salteaba (brief vacío), la
+    escritura quedaba abierta mientras se armaba el siguiente, que sale a
+    internet a buscar precios."""
+    from snapshots_job import persist_last_prices
+    u1 = _usuario(conn, "asesora1", tier="advisor")
+    u2 = _usuario(conn, "asesora2", tier="advisor")
+    pudo = []
+
+    def armar(c, u, kind, price_cache=None, market_ctx=None):
+        if u == u2:
+            pudo.append(_escribir_desde_otra_conexion())
+        persist_last_prices(c, {"GGAL.BA": 6500.0})
+        return {} if u == u1 else {"sections": [{"title": "x", "items": []}]}
+
+    monkeypatch.setattr(advisor_brief, "advisor_uids", lambda c: [u1, u2])
+    monkeypatch.setattr(advisor_brief, "build_brief", armar)
+    monkeypatch.setattr(emails, "send_advisor_brief", lambda **kw: True)
+    res = advisor_brief.run_briefs("close", main.get_db)
+    assert res["sent"] == 1 and res["skipped"] == 1
+    assert pudo == [True]
+
+
+# ─── 6. La bandera de "ya está corriendo", en todas las puertas ──────────────
+
+def test_si_el_trabajo_explota_la_bandera_se_suelta():
+    """Si no, un solo error dejaba el trabajo contestando "ya está corriendo"
+    hasta el próximo reinicio, sin que nadie se enterara."""
+    def explota():
+        raise RuntimeError("boom")
+    assert main._correr_en_fondo("prueba_explota", explota)["status"] == "started"
+    assert _esperar_que_termine("prueba_explota")
+    assert main._correr_si_esta_libre("prueba_explota", lambda: None) is True
+    with pytest.raises(RuntimeError):
+        main._correr_si_esta_libre("prueba_explota", explota)
+    assert "prueba_explota" not in main._corridas_en_curso
+
+
+def test_una_corrida_colgada_se_avisa(caplog):
+    main._corridas_en_curso["prueba_colgada"] = time.monotonic() - 31 * 60
+    try:
+        with caplog.at_level("ERROR"):
+            assert main._tomar_corrida("prueba_colgada") is False
+        assert any("probablemente colgada" in r.getMessage() for r in caplog.records)
+    finally:
+        main._soltar_corrida("prueba_colgada")
+
+
+def _puertas():
+    """(bandera, cómo pegarle a cada puerta → lo que contesta, el trabajo a
+    reemplazar por uno que se queda esperando)."""
+    from fastapi.testclient import TestClient
+    import market_brief
+    http = TestClient(main.app)
+    admin_hdr = {}
+
+    def admin():
+        if not admin_hdr:
+            c = main.get_db()
+            try:
+                cur = c.execute(
+                    "INSERT INTO users (email, password_hash, approved, email_verified, is_admin)"
+                    " VALUES (?, 'x', 1, 1, 1)", (f"admin-{time.time_ns()}@rendi.test",))
+                c.commit()
+                admin_hdr["Authorization"] = f"Bearer {main.create_token(cur.lastrowid)}"
+            finally:
+                c.close()
+        return admin_hdr
+
+    return [
+        ("brief_open", lambda: http.get("/api/advisor/brief/run-cron?kind=open&token=tok").json(),
+         (advisor_brief, "run_briefs")),
+        ("resumen_mercado", lambda: http.get("/api/market-brief/run-cron?token=tok").json(),
+         (market_brief, "run_briefs")),
+        ("snapshot_diario", lambda: http.post("/api/admin/snapshots/run-now",
+                                              headers=admin()).json(),
+         (main, "run_daily_snapshot")),
+        ("iol_lab", lambda: main._iol_lab_refresh_all(), None),
+    ]
+
+
+@pytest.mark.parametrize("bandera", ["brief_open", "resumen_mercado", "snapshot_diario",
+                                     "iol_lab"])
+def test_con_una_corrida_en_curso_ninguna_puerta_corre_otra(monkeypatch, bandera):
+    for var in ("ADVISOR_BRIEF_TOKEN", "MARKET_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN"):
+        monkeypatch.setenv(var, "tok")
+    monkeypatch.setattr(emails, "send_market_brief_run_admin", lambda **kw: True)
+    puerta, trabajo = {b: (p, t) for b, p, t in _puertas()}[bandera]
+    corridas = []
+    if trabajo:
+        monkeypatch.setattr(*trabajo, lambda *a, **kw: corridas.append(1) or {})
+    assert main._tomar_corrida(bandera)          # otra puerta la está corriendo
+    try:
+        assert puerta()["status"] == "already_running"
+        assert corridas == []
+    finally:
+        main._soltar_corrida(bandera)
+    r = puerta()                                 # libre: corre
+    assert r.get("status") != "already_running"
+    if trabajo:
+        assert _esperar(lambda: corridas == [1]), corridas
+    assert _esperar(lambda: bandera not in main._corridas_en_curso)
+
+
+def test_el_push_tiene_tiempo_limite(monkeypatch):
+    """Sin tope, un servidor de push que no contesta colgaba la corrida de
+    alertas para siempre (y quedaba "ya está corriendo" hasta el deploy)."""
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", "pub")
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", "priv")
+    c = main.get_db()
+    try:
+        uid = c.execute("INSERT INTO users (email, password_hash) VALUES (?, 'x')",
+                        (f"push-{time.time_ns()}@{DOMINIO}",)).lastrowid
+        c.execute("INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) "
+                  "VALUES (?, 'https://push.example/x', 'k', 'a')", (uid,))
+        c.commit()
+    finally:
+        c.close()
+    llamadas = []
+    import pywebpush                     # `_send_push_to_user` lo importa adentro
+    monkeypatch.setattr(pywebpush, "webpush", lambda **kw: llamadas.append(kw))
+    assert main._send_push_to_user(uid, {"title": "t", "body": "b"}) == 1
+    assert llamadas and llamadas[0].get("timeout")

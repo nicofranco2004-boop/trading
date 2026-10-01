@@ -479,13 +479,17 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         from tests._resend_falso import Reloj, red_de_mentira, separaciones
         for _ in range(3):
             self._con_prueba(self._persona())
-        with red_de_mentira(Reloj(), direcciones_de_prueba=True) as resend:
+        with red_de_mentira(Reloj(), direcciones_de_prueba=True,
+                            todo_sleep_en_el_reloj=True) as resend:
             r = self.client.post(URL, json={"confirm": True, "vistos": self._vistos()},
                                  headers=self.headers)
         self.assertEqual(r.json()["sent_count"], 3)
         self.assertEqual(len(resend.pedidos), 3)
-        self.assertTrue(all(x >= emails.PAUSA_ENTRE_ENVIOS - 1e-9
-                            for x in separaciones(resend.horas())), resend.pedidos)
+        # EXACTAMENTE la pausa (Resend de mentira tarda 0,3 s, menos que ella):
+        # menos es sin pausa, más es una pausa de más (p. ej. un sleep propio del
+        # loop además del de `_send`, que alargaba cada tanda).
+        self.assertEqual([round(x, 6) for x in separaciones(resend.horas())],
+                         [emails.PAUSA_ENTRE_ENVIOS] * 2, resend.pedidos)
 
     def test_si_no_se_puede_devolver_la_marca_se_informa(self):
         uid = self._con_prueba(self._persona())
@@ -648,12 +652,15 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
         self.assertIn("hace 2 h", fila["espera"] or "")
 
-    def test_momentos_de_aviso_coincide_con_el_cron(self):
+    def test_ventanas_de_aviso_coinciden_con_el_cron(self):
         """Diferencial contra el canónico: se corre el cron de verdad y lo que
-        manda tiene que ser exactamente lo que momentos_de_aviso dice que ya
+        manda tiene que ser exactamente lo que ventanas_de_aviso dice que
         corresponde. Si alguien cambia una condición del cron y no la función,
         este test se pone rojo."""
+        # Los bordes de cada ventana: antes y después de que abra, y antes y
+        # después de que cierre (fin de Pro cierra dos días después de abrir).
         edades = (tr.TRIAL_PRO_DAYS - 1.1, tr.TRIAL_PRO_DAYS - 0.9,
+                  tr.TRIAL_PRO_DAYS + 0.9, tr.TRIAL_PRO_DAYS + 1.1,
                   tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES - 0.1,
                   tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 0.1)
         uids = []
@@ -672,7 +679,9 @@ class FeedbackDeLaPrueba(unittest.TestCase):
             mandados = {x["kind"] for x in self.conn.execute(
                 "SELECT kind FROM trial_email_log WHERE user_id=?", (uid,))}
             for kind in (tr.MAIL_PRO_ENDING, tr.MAIL_ENDING_SOON):
-                debia = tr.momentos_de_aviso(r["trial_started_at"], r["trial_ends_at"])[kind] <= ahora
+                desde, hasta = tr.ventanas_de_aviso(r["trial_started_at"],
+                                                    r["trial_ends_at"])[kind]
+                debia = desde <= ahora < hasta
                 self.assertEqual(kind in mandados, debia, f"uid={uid} {kind}")
 
 

@@ -206,12 +206,16 @@ class EnvioMasivo(unittest.TestCase):
         for campaña in self._cada_campaña():
             self._personas(3)
             vistos = self._vistos(campaña)
-            with red_de_mentira(Reloj(), direcciones_de_prueba=True) as resend:
+            with red_de_mentira(Reloj(), direcciones_de_prueba=True,
+                                todo_sleep_en_el_reloj=True) as resend:
                 r = self._post(campaña, vistos)
             self.assertEqual(r.json()["sent_count"], 3)
             self.assertEqual(len(resend.pedidos), 3)
-            self.assertTrue(all(x >= emails.PAUSA_ENTRE_ENVIOS - 1e-9
-                                for x in separaciones(resend.horas())), resend.pedidos)
+            # EXACTAMENTE la pausa (Resend de mentira tarda 0,3 s, menos que ella):
+            # menos es sin pausa, más es una pausa de más (p. ej. un sleep propio del
+            # loop además del de `_send`, que alargaba cada tanda).
+            self.assertEqual([round(x, 6) for x in separaciones(resend.horas())],
+                             [emails.PAUSA_ENTRE_ENVIOS] * 2, resend.pedidos)
 
     def test_la_pausa_es_la_del_servicio_de_mail(self):
         # Una sola constante para todos los envíos, al lado de `_send`.

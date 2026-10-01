@@ -71,9 +71,15 @@ class Resend:
 
 
 @contextmanager
-def red_de_mentira(reloj=None, demora=0.3, direcciones_de_prueba=False):
+def red_de_mentira(reloj=None, demora=0.3, direcciones_de_prueba=False,
+                   todo_sleep_en_el_reloj=False):
     """`direcciones_de_prueba=True` deja pedir también para las @rendi.test
-    (los tests del panel de admin crean así a sus usuarios)."""
+    (los tests del panel de admin crean así a sus usuarios).
+
+    `todo_sleep_en_el_reloj=True`: CUALQUIER `time.sleep` (no sólo el de
+    `emails`) avanza el reloj de mentira. Sirve para ver una pausa de más que
+    alguien agregue afuera de `_send`: si no, dormiría de verdad y el reloj no
+    se enteraría."""
     resend = Resend(reloj, demora)
     with ExitStack() as st:
         st.enter_context(patch.object(emails, "_running_under_pytest", lambda: False))
@@ -86,6 +92,8 @@ def red_de_mentira(reloj=None, demora=0.3, direcciones_de_prueba=False):
         st.enter_context(patch("httpx.post", resend.post))
         if reloj is not None:
             st.enter_context(patch.object(emails, "time", reloj, create=True))
+            if todo_sleep_en_el_reloj:
+                st.enter_context(patch("time.sleep", reloj.sleep))
         yield resend
 
 

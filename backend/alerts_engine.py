@@ -547,10 +547,23 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
         except Exception as ex:
             log.warning("alerts entrega de la alerta %s falló: %s", alert["id"], ex)
             continue
-        conn.executemany(
-            "UPDATE alert_events SET delivered_push=?, delivered_email=? WHERE id=?",
-            [(1 if push_ok else 0, 1 if email_ok else 0, it["event_id"]) for it in items])
-        conn.commit()    # no llevar el lock de escritura a la entrega que sigue
+        # Anotar la entrega va en su propio try: si la base está trabada (un
+        # import largo la tiene tomada más que el busy_timeout), el UPDATE
+        # falla — y afuera del try cortaba la entrega de TODAS las alertas que
+        # faltaban, que ya estaban registradas como disparadas y no se
+        # reintentan. Mejor un "entregado" sin anotar que un aviso sin mandar.
+        try:
+            conn.executemany(
+                "UPDATE alert_events SET delivered_push=?, delivered_email=? WHERE id=?",
+                [(1 if push_ok else 0, 1 if email_ok else 0, it["event_id"]) for it in items])
+            conn.commit()    # no llevar el lock de escritura a la entrega que sigue
+        except Exception as ex:
+            log.warning("alerts: no se pudo anotar la entrega de la alerta %s: %s",
+                        alert["id"], ex)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         log.info("alert %s entregada (%s aviso/s, push=%s email=%s)",
                  alert["id"], len(items), push_ok, email_ok)
 

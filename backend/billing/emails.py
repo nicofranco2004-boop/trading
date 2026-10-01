@@ -77,13 +77,12 @@ def _esperar_turno() -> None:
 # mail que Resend RECHAZÓ hay que reintentarlo; uno que Resend quizás aceptó (se
 # cortó la conexión esperando la respuesta) NO, porque reintentarlo es mandarlo
 # dos veces. `_send` anota acá cuál fue, por hilo, para quien tenga que decidir
-# (`enviar_con_marca` para los avisos automáticos, `_envio_masivo` en main.py
-# para los envíos del panel).
+# (`Tanda`, que usan los avisos automáticos y los envíos del panel).
 ENVIADO = "enviado"
 NO_SALIO = "no_salio"            # seguro que no llegó: Resend dijo que no (4xx) o el pedido no salió
 INCIERTO = "incierto"            # no sabemos: Resend no contestó a tiempo, o falló de su lado (5xx)
 NO_INTENTADO = "no_intentado"    # ni se probó: tests, dirección de prueba o sin proveedor
-SALTEADO = "salteado"            # (enviar_con_marca) la marca ya la tenía otra corrida
+SALTEADO = "salteado"            # (Tanda) la marca ya la tenía otra corrida
 
 _resultado = threading.local()
 
@@ -98,55 +97,85 @@ def resultado_del_ultimo_envio() -> str:
     return getattr(_resultado, "estado", NO_INTENTADO)
 
 
-def enviar_con_marca(marcar, mandar, desmarcar, *, que: str) -> str:
-    """Manda un aviso que se anota ANTES de salir, y devuelve la marca si el
-    mail no salió. Es el paso de los avisos automáticos que no pueden repetirse
-    (los de la prueba, los de vencimiento).
+# Mails seguidos sin confirmación de Resend (no contestó, o dio 5xx) después de
+# los cuales se frena una tanda: con Resend caído, cada aviso queda marcado sin
+# saber si salió, y seguir quemaba a toda la gente del día.
+INCIERTOS_PARA_FRENAR = 2
 
-      1. `marcar()` se queda con el aviso y devuelve la marca, o algo falso si
-         ya la tiene otra corrida (dos crons a la vez) → SALTEADO. Tiene que
-         ser condicional (INSERT OR IGNORE, UPDATE ... IS NULL) y confirmarse
-         antes de volver: es lo que impide que dos corridas manden las dos.
-      2. `mandar()` → True si salió.
-      3. Si Resend lo rechazó, o el mail ni llegó a pedirse porque el armado
-         falló, `desmarcar(marca)` lo deja como estaba y la próxima corrida lo
-         reintenta. Antes la marca quedaba igual y el aviso se perdía para
-         siempre: el día de muchos envíos, Resend rechazaba los que pasaban su
-         tope por segundo y a esa gente no le llegaba nunca más.
-      4. Si no se sabe si llegó (INCIERTO), la marca QUEDA: reintentar podría
-         mandarlo dos veces, y un aviso repetido es peor que uno perdido. Lo
-         mismo con NO_INTENTADO (bajo tests o sin proveedor): ahí no hay nada
-         que reintentar.
+TRABADA = "trabada"              # (Tanda) no salió y no se pudo devolver la marca
+FRENADO = "frenado"              # (Tanda) no se intentó: la tanda está frenada
 
-    Devuelve ENVIADO, SALTEADO, NO_SALIO, INCIERTO o NO_INTENTADO."""
-    marca = marcar()
-    if not marca:
-        return SALTEADO
-    _anotar(NO_INTENTADO)
-    try:
-        if mandar():
-            return ENVIADO
-        estado = resultado_del_ultimo_envio()
-    except Exception as ex:
-        estado = resultado_del_ultimo_envio()
-        if estado == NO_INTENTADO:
-            # Se cayó armando el mail, antes de pedírselo a Resend.
-            estado = NO_SALIO
-        log.warning("%s: el envío falló (%s): %s", que, estado, ex)
-    if estado == ENVIADO:
-        return ENVIADO
-    if estado == NO_SALIO:
+
+class Tanda:
+    """Una corrida que manda avisos marcados de a uno: los automáticos de la
+    prueba y de vencimiento (`run_lifecycle_job`) y los envíos masivos del
+    panel (`main._envio_masivo`). Es UNA sola regla para todos de cuándo se
+    devuelve la marca y cuándo se frena; antes había dos motores con dos
+    reglas, y el de los crons no tenía freno.
+
+    Por cada aviso, ya marcado (`mandar`), o marcándolo acá (`enviar`):
+      · Salió → ENVIADO.
+      · Resend no contestó o dio 5xx: el mail PUDO haber salido → la marca
+        QUEDA (devolverla lo mandaría dos veces) → INCIERTO. Con
+        INCIERTOS_PARA_FRENAR seguidos (Resend caído), `frenado`: la tanda no
+        intenta más y lo que falta queda SIN marca para la próxima.
+      · Cualquier otra cosa (Resend dijo que no, el pedido no salió, el mail
+        explotó al armarse, o ni se intentó: dirección de prueba o sin
+        proveedor) → seguro que no llegó: la marca se devuelve (dos intentos)
+        → NO_SALIO, o TRABADA si no se pudo.
+
+    `inciertos_seguidos` arranca en lo que traiga el que llama: el panel manda
+    en varios pedidos y la cuenta tiene que seguir entre uno y otro."""
+
+    def __init__(self, inciertos_seguidos: int = 0, limite: int = INCIERTOS_PARA_FRENAR):
+        self.limite = limite
+        self.inciertos_seguidos = min(max(int(inciertos_seguidos or 0), 0), limite)
+        self.frenado = False
+
+    def mandar(self, marca, mandar, desmarcar, *, que: str) -> str:
+        """El aviso ya está marcado con `marca`. `mandar()` → True si salió;
+        `desmarcar(marca)` lo deja como estaba (y confirma)."""
+        # Que no quede el resultado del mail anterior: si `mandar` falla antes
+        # de llegar a `_send`, un ENVIADO o INCIERTO viejo decidiría por éste.
+        _anotar(NO_INTENTADO)
         try:
-            desmarcar(marca)
-            log.warning("%s: no salió; queda para la próxima corrida", que)
+            ok = bool(mandar())
         except Exception as ex:
-            log.error("%s: no salió y no se pudo devolver la marca — este aviso "
-                      "no se va a reintentar: %s", que, ex)
-    elif estado == INCIERTO:
-        log.error("%s: no se sabe si llegó; no se reintenta para no mandarlo "
-                  "dos veces", que)
-    return estado
+            log.error("%s: el envío falló: %s", que, ex)
+            ok = False
+        estado = ENVIADO if ok else resultado_del_ultimo_envio()
+        if estado == ENVIADO:
+            self.inciertos_seguidos = 0
+            return ENVIADO
+        if estado == INCIERTO:
+            self.inciertos_seguidos += 1
+            if self.inciertos_seguidos >= self.limite:
+                self.frenado = True
+            log.error("%s: no se sabe si llegó; queda marcado para no mandarlo dos "
+                      "veces%s", que, " — se frena la tanda" if self.frenado else "")
+            return INCIERTO
+        # Resend contestó (aunque sea que no), o ni se le preguntó: no está caído.
+        self.inciertos_seguidos = 0
+        for _ in range(2):
+            try:
+                desmarcar(marca)
+                log.warning("%s: no salió; queda para la próxima", que)
+                return NO_SALIO
+            except Exception as ex:
+                log.error("%s: no se pudo devolver la marca: %s", que, ex)
+        return TRABADA
 
+    def enviar(self, marcar, mandar, desmarcar, *, que: str) -> str:
+        """Marca y manda. `marcar()` se queda con el aviso y devuelve la marca,
+        o algo falso si ya la tiene otra corrida → SALTEADO. Tiene que ser
+        condicional (INSERT OR IGNORE, UPDATE ... IS NULL) y confirmarse antes
+        de volver: es lo que impide que dos corridas manden las dos."""
+        if self.frenado:
+            return FRENADO
+        marca = marcar()
+        if not marca:
+            return SALTEADO
+        return self.mandar(marca, mandar, desmarcar, que=que)
 
 
 def _api_key() -> Optional[str]:

@@ -582,6 +582,14 @@ def run_briefs(kind: str, get_db, only_uid: int = None) -> dict:
                     skipped += 1
                     continue
                 data = build_brief(conn, uid, kind, price_cache, market_ctx)
+                # Armar el brief PERSISTE los precios que trajo (live_book_values)
+                # y deja abierta una transacción de escritura. Se cierra acá, en
+                # todos los caminos (también cuando este asesor se saltea): lo
+                # que sigue es el envío —Resend tarda, y `_send` puede esperar su
+                # turno (PAUSA_ENTRE_ENVIOS)— o el armado del siguiente, que sale
+                # a internet a buscar precios. Con el lock tomado, toda la app
+                # come 'database is locked' mientras tanto.
+                conn.commit()
                 if not data:
                     skipped += 1
                     continue
@@ -589,12 +597,6 @@ def run_briefs(kind: str, get_db, only_uid: int = None) -> dict:
                 if not row or not row["email"]:
                     skipped += 1
                     continue
-                # Armar el brief PERSISTE los precios que trajo (live_book_values)
-                # y deja abierta una transacción de escritura. Se cierra antes del
-                # envío: Resend tarda, y `_send` además puede esperar su turno
-                # (PAUSA_ENTRE_ENVIOS); con el lock tomado, toda la app come
-                # 'database is locked' mientras tanto.
-                conn.commit()
                 from billing import emails
                 ok = emails.send_advisor_brief(to=row["email"], user_name=(row["name"] or ""),
                                                brief=data)
@@ -607,6 +609,10 @@ def run_briefs(kind: str, get_db, only_uid: int = None) -> dict:
             except Exception as ex:
                 failed += 1
                 log.error("brief %s uid=%s falló: %s", kind, uid, ex)
+                try:
+                    conn.rollback()      # no arrastrar una escritura a medias al siguiente
+                except Exception:
+                    pass
         return {"kind": kind, "date": day, "sent": sent, "skipped": skipped, "failed": failed}
     finally:
         conn.close()
