@@ -39542,6 +39542,32 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
 
 # ─── Health check (público) ─────────────────────────────────────────────────
 
+# ─── DIAGNÓSTICO TEMPORAL (2026-10-01): ¿quién retiene el stream? ───────────
+# Rendi AI manda cada pedazo de la respuesta apenas lo escribe el modelo, pero
+# en producción llegan todos juntos al final (medido: 5.800 letras en 0,05 s).
+# En local el mismo servidor los manda a tiempo. Esto cuenta del 1 al n, un
+# aviso cada `ms`, con las MISMAS cabeceras que el chat, para medir el camino
+# por rendi.finance (Vercel) y directo a Railway. Público y sin datos: sólo
+# cuenta. Topes para que no sirva para cargar el servidor. SE SACA después.
+@app.get("/api/diag-goteo")
+async def diag_goteo(n: int = 10, ms: int = 300):
+    import asyncio
+    n = max(1, min(int(n), 30))
+    ms = max(20, min(int(ms), 1000))
+
+    async def _gen():
+        yield ": ok\n\n"
+        for i in range(1, n + 1):
+            await asyncio.sleep(ms / 1000)
+            yield "data: " + json.dumps({"t": "goteo", "i": i}) + "\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    })
+
+
 @app.get("/api/health")
 def health_check():
     """Endpoint público sin auth — sirve para:
