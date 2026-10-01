@@ -1,6 +1,7 @@
 // /guia/empezar — sección 1 del manual
 
 import GuidePage from '../../components/guide/GuidePage'
+import { SoloVisitantes } from '../../components/CabeceraPublica'
 import AdvisorNote from '../../components/guide/AdvisorNote'
 // La prueba y los brokers por plan salen del catálogo: la guía decía "Crear
 // cuenta gratis" y "Plan Free permite 1 broker", y quien se registra hoy no
@@ -64,11 +65,15 @@ export default function Empezar() {
         que sos vos (revisá Spam si no aparece en 2 minutos). Listo: al verificar
         el mail arranca tu prueba de {TRIAL_TOTAL_DAYS} días gratis. {PRUEBA_EN_UNA_LINEA}
       </p>
+      {/* Con la sesión abierta, entrar a la demo te cambia TU cuenta por la del
+          inversor ficticio (hasta 12 h): sólo para quien todavía no entró. */}
+      <SoloVisitantes>
       <p>
         Antes de cargar tu data real, podés <a href="/?demo=1">probar la demo</a>{' '}
         — es Rendi con datos de un inversor ficticio. Vez todo sin riesgo de
         ensuciar tu cuenta.
       </p>
+      </SoloVisitantes>
 
       <h2>2. Agregar tu primer broker</h2>
       <p>

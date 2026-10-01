@@ -13,8 +13,7 @@
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Calendar, Sparkles } from 'lucide-react'
 import { Helmet } from 'react-helmet-async'
-import CabeceraPublica from '../CabeceraPublica'
-import { useAuth } from '../../contexts/AuthContext'
+import CabeceraPublica, { SoloVisitantes } from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
 import { CTA_PRUEBA, PRUEBA_EN_UNA_LINEA } from '../../data/prueba'
 
@@ -30,9 +29,6 @@ export default function BlogPost({
   children,       // contenido del artículo
   related,        // [{ to, label, desc }] otros posts del blog
 }) {
-  // Con la sesión abierta, el post se lee adentro de la app: no se le ofrece
-  // la prueba gratis a quien ya entró (mismo criterio que CabeceraPublica).
-  const { user } = useAuth()
   const canonicalPath = `/blog/${slug}`
   const canonicalUrl = `${BASE_URL}${canonicalPath}`
 
@@ -150,7 +146,7 @@ export default function BlogPost({
         </div>
 
         {/* CTA al final del post (sólo sin sesión) */}
-        {!user && (
+        <SoloVisitantes>
         <section className="mt-16 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg p-6 text-center">
           <h2 className="text-xl font-semibold text-ink-0 mb-2">Probá Rendi con tu cartera</h2>
           <p className="text-sm text-ink-2 mb-5 max-w-md mx-auto">
@@ -164,7 +160,7 @@ export default function BlogPost({
             {CTA_PRUEBA}
           </Link>
         </section>
-        )}
+        </SoloVisitantes>
 
         {/* Posts relacionados */}
         {related && related.length > 0 && (

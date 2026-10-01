@@ -35,18 +35,22 @@ export default function ClientContextBar({ enLaBarra = false }) {
   return (
     <div className={`${enLaBarra ? 'border-t' : 'sticky top-0 z-20 border-b'} border-data-violet/30 flex items-center gap-2.5 px-4 py-2 bg-data-violet/[0.12] backdrop-blur-sm`}>
       <Eye size={14} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
+      {/* En el celular, corto: a 360-375 px "Estás viendo la cuenta de" más
+          "Volver a mis clientes" no dejaban lugar y el NOMBRE del cliente —lo
+          único que importa— quedaba cortado. */}
       <p className="flex-1 min-w-0 text-[13px] text-ink-1 truncate">
-        Estás viendo la cuenta de{' '}
+        {enLaBarra ? 'Cuenta de' : 'Estás viendo la cuenta de'}{' '}
         <span className="font-semibold text-ink-0">{clientCtx.label || `Cliente ${clientCtx.id}`}</span>
-        <span className="hidden sm:inline text-ink-3"> · visión Pro (tu plan Asesor)</span>
+        {!enLaBarra && <span className="hidden sm:inline text-ink-3"> · visión Pro (tu plan Asesor)</span>}
       </p>
       <button
         type="button"
         onClick={onExit}
+        aria-label="Volver a mis clientes"
         className="inline-flex items-center gap-1.5 text-xs font-medium text-data-violet hover:text-ink-0 bg-data-violet/10 hover:bg-data-violet/25 border border-data-violet/40 rounded-md px-2.5 py-1.5 transition-colors flex-shrink-0"
       >
         <ArrowLeft size={12} strokeWidth={2} aria-hidden="true" />
-        Volver a mis clientes
+        {enLaBarra ? 'Volver' : 'Volver a mis clientes'}
       </button>
     </div>
   )

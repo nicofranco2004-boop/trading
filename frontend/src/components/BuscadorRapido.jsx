@@ -179,7 +179,7 @@ export default function BuscadorRapido() {
   // Las empresas que no tenés: la MISMA lista que ofrece el buscador propio de
   // Calidad de cartera (components/fundamentals/TickerSearch), que es la
   // pantalla que las abre. Otra lista ofrecería tickers que esa pantalla no.
-  const universo = useMemo(() => opcionesDeEmpresas(POPULAR_TICKERS), [])
+  const universo = useMemo(() => opcionesDeEmpresas(POPULAR_TICKERS, { asesorEnSuNivel: atOwnLevel }), [atOwnLevel])
 
   const opciones = useMemo(() => {
     const pantallas = pantallasVisibles({ user, clientCtx }).map(p => ({

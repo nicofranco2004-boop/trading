@@ -27,6 +27,7 @@ afterAll(() => { vi.unstubAllGlobals() })
 let usuario = { tier: 'pro' }
 let cliente = null
 let sinVer = 0
+let push = { supported: false }
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: usuario, logout: () => {} }) }))
 vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: cliente }) }))
 vi.mock('../contexts/AlertsContext', () => ({ useAlertsContext: () => ({ unseenCount: sinVer, markSeen: () => {} }) }))
@@ -35,13 +36,13 @@ vi.mock('../contexts/CoachDrawerContext', () => ({ useCoachDrawer: () => ({ open
 vi.mock('../components/CurrencySwitcher', () => ({ default: () => null }))
 vi.mock('../components/RecommendationsModal', () => ({ default: () => null }))
 vi.mock('../components/Toast', () => ({ useToast: () => null }))
-vi.mock('../hooks/usePushNotifications', () => ({
-  usePushNotifications: () => ({ supported: false }),
-}))
+vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => push }))
 
 import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
-import MobileTabBar from '../components/mobile/MobileTabBar'
+import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
+import fuenteDeApp from '../App.jsx?raw'
+import fuenteDeCarteraCelular from './PositionsMobile.jsx?raw'
 
 const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
 const dibujar = (Componente, u, c) => {
@@ -128,6 +129,13 @@ describe('"Más": cómo se agrupa', () => {
     expect(html).toContain('la cartera de Ana')          // Rendi AI trabaja sobre la de Ana
   })
 
+  it('la compu dice lo mismo: adentro de un cliente su grupo es "Cartera de Ana", no "Tu Cartera"', () => {
+    const { html } = menuCompu({ tier: 'advisor' }, CLIENTE)
+    expect(html).toContain('Cartera de Ana')
+    expect(html).not.toContain('>Tu Cartera<')
+    expect(menuCompu({ tier: 'pro' }, null).html).toContain('>Tu Cartera<')
+  })
+
   it('usuario común: las secciones de la compu, ninguna de relleno', () => {
     const t = titulos(menuMas({ tier: 'pro' }, null).html)
     for (const s of ['Tu portfolio', 'Mercado', 'Análisis']) expect(t).toContain(s)
@@ -168,6 +176,11 @@ describe('la barra de abajo del celular', () => {
       for (const d of destinos(u, c)) expect(menu, d).toContain(d)
     })
   }
+  it('la pantalla de análisis se llama igual que en los menús: "Métricas"', () => {
+    const barra = dibujar(MobileTabBar, { tier: 'pro' }, null)
+    expect(barra).toMatch(/href="\/analisis\?tab=diagnostico"[^>]*>[\s\S]*?Métricas/)
+    expect(barra).not.toContain('Insights')
+  })
   it('el "+" (cargar compras) sólo con una cartera a la vista', () => {
     const conMas = (u, c) => dibujar(MobileTabBar, u, c).includes('Abrir acciones rápidas')
     expect(conMas({ tier: 'pro' }, null)).toBe(true)
@@ -202,4 +215,38 @@ describe('seccionesDelMenuMas', () => {
     expect(s.map(x => x.label)).toEqual(['Plan Asesor'])
     expect(s[0].items.map(i => i.to)).toEqual(['/dashboard', '/clientes', '/cobros', '/alertas'])
   })
+})
+
+describe('"+" de la barra de abajo: cada acción va a una pantalla que la entiende', () => {
+  // "Agregar a watchlist" iba a `/?action=watchlist`: la ruta existía, pero
+  // ninguna pantalla leía esa acción y quedabas en el Inicio sin nada abierto.
+  const rutasDeApp = new Set([...fuenteDeApp.matchAll(/path="([^"]+)"/g)].map(m => m[1]))
+  for (const a of QUICK_ACTIONS) {
+    it(a.label, () => {
+      const [ruta, consulta = ''] = a.to.split('?')
+      expect(rutasDeApp, ruta).toContain(ruta)
+      const accion = new URLSearchParams(consulta).get('action')
+      if (!accion) return
+      // Hoy la única pantalla que lee `?action=` es la Cartera del celular.
+      expect(ruta).toBe('/posiciones')
+      expect(fuenteDeCarteraCelular).toContain(`action === '${accion}'`)
+    })
+  }
+})
+
+describe('notificaciones push: el texto dice lo que de verdad se manda', () => {
+  // Prometían "earnings, drawdowns y nuevos sesgos": sólo salen los avisos de
+  // precio/variación (alerts_engine) y, al asesor, los movimientos de sus
+  // clientes (advisor_alerts).
+  afterAll(() => { push = { supported: false } })
+  for (const subscribed of [false, true]) {
+    it(subscribed ? 'activadas' : 'sin activar', () => {
+      push = { supported: true, permission: 'default', subscribed, loading: false }
+      const comun = menuMas({ tier: 'pro' }, null).html
+      const asesor = menuMas({ tier: 'advisor' }, null).html
+      expect(comun).toContain('avisos de precio y de variación')
+      expect(asesor).toContain('movimientos de tus clientes')
+      for (const html of [comun, asesor]) expect(html).not.toMatch(/earnings|drawdowns|sesgos/)
+    })
+  }
 })

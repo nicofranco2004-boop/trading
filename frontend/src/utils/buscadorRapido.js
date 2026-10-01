@@ -93,6 +93,28 @@ export function opcionRendiAI(texto, chatLibre = true) {
   return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Rendi AI: «${texto}»`, detalle: 'Rendi AI', pregunta: texto }
 }
 
+// A dónde lleva un ticker en CUALQUIER buscador de la app (este ⌘K y la lupa
+// del celular, pages/MobileSearch). Una sola regla: la lupa tenía la suya y
+// llevaba a /posiciones#X, que nadie lee.
+//   • Si lo tenés: a tu posición (la ficha del activo).
+//   • Si no: a la empresa en "Calidad de cartera", que sólo arma el puntaje de
+//     acciones en dólares. Un CEDEAR (AAPL.BA) se abre por su acción de EE.UU.
+//     (AAPL): en pesos el servidor no lo arma y él mismo sugiere ese ticker
+//     (main.py, scorecard). Bonos, cripto, ETFs y fondos no tienen ficha de
+//     empresa —el servidor contesta "no aplica" por tipo—, así que no hay a
+//     dónde llevar: null. Antes terminaban en un cartel que decía que ahí no
+//     había nada. Las acciones argentinas van igual: el servidor busca el ticker
+//     tal cual y las que tienen ADR con el mismo nombre (GGAL, BMA) sí abren.
+const SIN_FICHA_DE_EMPRESA = new Set(['bond', 'crypto', 'etf', 'fci'])
+export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
+  const s = (simbolo || '').toUpperCase()
+  if (!s) return null
+  if (tuyo) return `/activo/${encodeURIComponent(s)}`
+  if (SIN_FICHA_DE_EMPRESA.has(tipo)) return null
+  const empresa = tipo === 'cedear' ? s.replace(/\.BA$/, '') : s
+  return `/fundamentals?ticker=${encodeURIComponent(empresa)}`
+}
+
 // Tus activos, uno por ticker (los lotes y los brokers se juntan), sin el
 // efectivo. `nombreDe` pone "NVIDIA" al lado de "NVDA" cuando se conoce.
 export function opcionesDeActivos(posiciones, nombreDe = () => null) {
@@ -108,26 +130,34 @@ export function opcionesDeActivos(posiciones, nombreDe = () => null) {
       titulo: nombre ? `${s} · ${nombre}` : s,
       detalle: 'Tu posición',
       claves: nombre ? [nombre] : [],
-      ir: `/activo/${encodeURIComponent(s)}`,
+      ir: destinoDeTicker(s, { tuyo: true }),
     })
   }
   return out
 }
 
 // Tickers que no tenés: los abre "Calidad de cartera" (/fundamentals?ticker=X).
-export function opcionesDeEmpresas(universo) {
+// Los que no tienen ficha de empresa (bonos, cripto…) no se ofrecen como
+// "Ver la empresa": llevarían a una pantalla vacía. Y al asesor en su nivel,
+// ninguna: no tiene "Calidad de cartera" en su menú (no tiene cartera propia),
+// y el buscador no lleva a un lugar que el menú no muestra. Adentro de un
+// cliente sí (es la cartera de ese cliente).
+export function opcionesDeEmpresas(universo, { asesorEnSuNivel = false } = {}) {
+  if (asesorEnSuNivel) return []
   const vistos = new Set()
   const out = []
   for (const u of universo || []) {
     const s = (u?.symbol || '').toUpperCase()
     if (!s || vistos.has(s)) continue
     vistos.add(s)
+    const ir = destinoDeTicker(s, { tipo: u.type })
+    if (!ir) continue
     out.push({
       clase: 'empresa', id: `empresa:${s}`, simbolo: s,
       titulo: u.name ? `${s} · ${u.name}` : s,
       detalle: 'Ver la empresa',
       claves: u.name ? [u.name] : [],
-      ir: `/fundamentals?ticker=${encodeURIComponent(s)}`,
+      ir,
     })
   }
   return out

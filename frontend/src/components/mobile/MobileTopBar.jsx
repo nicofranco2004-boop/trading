@@ -6,6 +6,7 @@
 // de…". Sticky para que esté siempre accesible. Por debajo, indicador de
 // pull-to-refresh cuando el user tira hacia abajo: refresca también la cinta.
 
+import { useLayoutEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { Search, RefreshCcw, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
@@ -15,9 +16,40 @@ import ClientContextBar from '../advisor/ClientContextBar'
 import { refreshMarketIndices } from '../../hooks/useMarketIndices'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
+import { useAuth } from '../../contexts/AuthContext'
+import { useAdvisorContext } from '../../contexts/AdvisorContext'
+import { menuVisible } from '../../utils/navegacion'
+
+// El alto de esta barra (logo, cinta y, con un cliente abierto, la franja)
+// queda anotado en la variable CSS --alto-barra-celular, y lo leen los que se
+// acomodan debajo: las cabeceras que se quedan fijas al bajar (Cartera,
+// Movimientos) y la burbuja de Rendi. Antes cada uno tenía escrito a mano
+// 88 px; cuando la barra creció (la cinta, la franja del cliente, el notch de
+// un iPhone con la app instalada) quedaban tapados detrás. Mismo mecanismo que
+// --sidebar-w en la compu.
+function useAnotarAlto(ref) {
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const raiz = document.documentElement
+    const anotar = () => raiz.style.setProperty('--alto-barra-celular', `${Math.round(el.getBoundingClientRect().height)}px`)
+    anotar()
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(anotar)
+    ro?.observe(el)
+    // Al pasar al armado de compu la barra se desarma: sin barra no hay alto.
+    return () => { ro?.disconnect(); raiz.style.removeProperty('--alto-barra-celular') }
+  }, [ref])
+}
 
 export default function MobileTopBar({ onRefresh }) {
   const coachDrawer = useCoachDrawer()
+  const barraRef = useRef(null)
+  useAnotarAlto(barraRef)
+  // La lupa busca activos para TU cartera (ficha, empresa, watchlist): el
+  // asesor en su nivel no tiene cartera propia, así que no la ve (como el "+").
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  const { atOwnLevel } = menuVisible({ user, clientCtx })
 
   const { isPulling, pullDistance, isRefreshing, threshold } = usePullToRefresh({
     onRefresh: async () => {
@@ -51,6 +83,7 @@ export default function MobileTopBar({ onRefresh }) {
       )}
 
       <header
+        ref={barraRef}
         className="sticky top-0 z-30 bg-bg-0/95 backdrop-blur-md border-b border-line"
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
@@ -74,13 +107,13 @@ export default function MobileTopBar({ onRefresh }) {
             >
               <Sparkles size={16} strokeWidth={1.75} />
             </button>
-            <Link
+            {!atOwnLevel && <Link
               to="/buscar"
               aria-label="Buscar"
               className="p-2 rounded-sm text-ink-2 hover:text-ink-0 hover:bg-bg-2/60 transition-colors"
             >
               <Search size={16} strokeWidth={1.75} />
-            </Link>
+            </Link>}
           </div>
         </div>
 

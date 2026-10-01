@@ -161,7 +161,7 @@ export default function RendiMate() {
         onPointerUp={manija.onPointerUp}
         onPointerCancel={manija.onPointerCancel}
         onClickCapture={manija.onClickCapture}
-        className="fixed top-[88px] right-4 z-40 flex items-center gap-1 rounded-full
+        className="fixed top-[calc(var(--alto-barra-celular,80px)_+_8px)] right-4 z-40 flex items-center gap-1 rounded-full
                    bg-bg-raised border border-line-3 shadow-lg pl-2 pr-1 py-1 cursor-grab active:cursor-grabbing">
         <button
           type="button"
@@ -201,7 +201,7 @@ export default function RendiMate() {
     <section
       className="fixed z-40 flex flex-col overflow-hidden rounded-xl border border-line-3
                  bg-bg-raised shadow-2xl
-                 top-[88px] left-3 right-3 sm:left-auto sm:right-4 sm:w-[340px]"
+                 top-[calc(var(--alto-barra-celular,80px)_+_8px)] left-3 right-3 sm:left-auto sm:right-4 sm:w-[340px]"
       aria-label="Rendi, tu acompañante"
       ref={islaRef}
       style={islaEstilo}

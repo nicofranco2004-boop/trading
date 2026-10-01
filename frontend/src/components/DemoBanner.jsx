@@ -23,7 +23,9 @@ export default function DemoBanner() {
 
   return (
     <div
-      className="sticky top-0 z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm"
+      // Debajo de la barra de arriba del celular (--alto-barra-celular, de
+      // MobileTopBar; en la compu vale 0): con top-0 la tapaba al bajar.
+      className="sticky top-[var(--alto-barra-celular,0px)] z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm"
       style={{ borderTopWidth: '1px', borderTopColor: 'rgb(var(--data-violet) / 0.3)' }}
     >
       <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">

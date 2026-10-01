@@ -35,8 +35,9 @@ const TABS = [
   // [+] FAB ocupa el slot 3 — no es NavLink
   // Directo a donde llevaba /insights (que redirige): con /insights la pestaña
   // nunca quedaba marcada (la dirección ya no decía /insights al llegar) y lo
-  // que se precargaba era la página vieja de Insights, no la que se abre.
-  { to: '/analisis?tab=diagnostico', label: 'Insights', icon: Compass },
+  // que se precargaba era la página vieja de Insights, no la que se abre. Se
+  // llama "Métricas", como la pantalla en el menú de la compu y en "Más".
+  { to: '/analisis?tab=diagnostico', label: 'Métricas', icon: Compass },
   { to: '/mas',          label: 'Más',        icon: MoreHorizontal },
 ]
 
@@ -169,7 +170,9 @@ function TabItem({ to, label, icon: Icon }) {
 // Versión inicial M1 (sheet simple). En M2 va a usar el BottomSheet
 // formal con drag handle + sticky footer.
 
-const QUICK_ACTIONS = [
+// Exportadas para la prueba que exige que cada una vaya a una pantalla que la
+// entienda ("Agregar a watchlist" iba a `/?action=watchlist`, que nadie leía).
+export const QUICK_ACTIONS = [
   // Compra y venta separadas, igual que desktop. La compra es el alta de la
   // posición (?action=new); la venta abre el flow FIFO (?action=sell) — si hay 1
   // sola tenencia la vende directo, si hay varias lleva a elegir de la lista.

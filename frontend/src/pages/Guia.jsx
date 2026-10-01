@@ -11,7 +11,7 @@ import {
   ArrowRight, BookOpen, Users,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import CabeceraPublica from '../components/CabeceraPublica'
+import CabeceraPublica, { SoloVisitantes } from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
 // Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
@@ -167,6 +167,10 @@ export default function Guia() {
             Recursos rápidos
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Con sesión, "Probar demo" te cambiaba tu cuenta por la de la demo
+                (hasta 12 h) y "Preguntas frecuentes" caía en el Inicio de la app:
+                las preguntas viven en la portada pública. */}
+            <SoloVisitantes>
             <a
               href="/?demo=1"
               className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors"
@@ -181,6 +185,7 @@ export default function Guia() {
               <div className="text-sm font-medium text-ink-1 mb-0.5">Preguntas frecuentes</div>
               <div className="text-xs text-ink-3">Lo que más nos consultan.</div>
             </Link>
+            </SoloVisitantes>
             <Link
               to="/planes"
               className="block border border-line/60 hover:border-line-3 rounded-sm px-4 py-3 transition-colors"
@@ -188,10 +193,11 @@ export default function Guia() {
               <div className="text-sm font-medium text-ink-1 mb-0.5">
                 {esAsesor ? 'Tu Plan Asesor' : 'Planes y precios'}
               </div>
-              {/* Free/Plus/Pro son los planes INDIVIDUALES: al asesor no le aplican
+              {/* Plus/Pro son los planes INDIVIDUALES (el Free ya no se ofrece desde
+                  el 22/09): al asesor no le aplican
                   (la pantalla /planes ya se lo dice, ver Planes.jsx). */}
               <div className="text-xs text-ink-3">
-                {esAsesor ? 'Free, Plus y Pro no son el tuyo.' : 'Free, Plus y Pro.'}
+                {esAsesor ? 'Plus y Pro no son el tuyo.' : 'Plus y Pro.'}
               </div>
             </Link>
           </div>

@@ -45,7 +45,7 @@ const SECCION_DE_GRUPO = { 'Tu Cartera': TU_PORTFOLIO }
 // está mirando la cartera de OTRO.
 const EN_EL_CELULAR = {
   '/dashboard':       { sub: 'Evolución, distribución y de dónde sale la ganancia' },
-  '/posiciones':      { sub: 'Tenencias y brokers' },
+  '/posiciones':      { sub: 'Tenencias, brokers y objetivos' },
   '/operaciones':     { sub: 'Compras, ventas, depósitos y dividendos' },
   '/imports':         { label: 'Importar CSV', sub: 'Los archivos que bajás de cada broker' },
   '/alertas':         { sub: 'Resumen diario del mercado y avisos de precio' },

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizar, puntaje, resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, MAXIMO_RESULTADOS,
+  destinoDeTicker,
 } from './buscadorRapido'
 import { menuVisible, pantallasVisibles, GROUPS, LOOSE } from './navegacion'
 
@@ -158,5 +159,35 @@ describe('arreglos de la vuelta 1 de auditoría', () => {
     expect(comun).toContain('/config')
     expect(comun).not.toContain('/admin')
     expect(pantallasVisibles({ user: { tier: 'pro', is_admin: true } }).map(p => p.to)).toContain('/admin')
+  })
+})
+
+describe('destinoDeTicker: a dónde lleva un ticker en los dos buscadores (⌘K y la lupa del celular)', () => {
+  it('lo tuyo va a tu posición, sea lo que sea', () => {
+    expect(destinoDeTicker('al30', { tuyo: true, tipo: 'bond' })).toBe('/activo/AL30')
+    expect(destinoDeTicker('BRK.B', { tuyo: true })).toBe('/activo/BRK.B')
+  })
+  it('una acción de EE.UU. que no tenés: la empresa en Calidad de cartera', () => {
+    expect(destinoDeTicker('AAPL', { tipo: 'stock_us' })).toBe('/fundamentals?ticker=AAPL')
+  })
+  it('un CEDEAR se abre por su acción de EE.UU. (en pesos no hay puntaje)', () => {
+    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=KO')
+  })
+  it('bonos, cripto y ETFs no tienen ficha de empresa: no llevan a ningún lado', () => {
+    for (const tipo of ['bond', 'crypto', 'etf']) expect(destinoDeTicker('X', { tipo }), tipo).toBe(null)
+    // Una acción argentina sí: si tiene ADR con el mismo ticker, la empresa abre.
+    expect(destinoDeTicker('GGAL', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=GGAL')
+  })
+  it('el ⌘K no ofrece "Ver la empresa" de lo que no tiene ficha', () => {
+    const r = opcionesDeEmpresas([
+      { symbol: 'AAPL', name: 'Apple', type: 'stock_us' }, { symbol: 'AL30', name: 'Bonar', type: 'bond' },
+      { symbol: 'MELI.BA', name: 'MercadoLibre', type: 'cedear' },
+    ])
+    expect(r.map(o => o.ir)).toEqual(['/fundamentals?ticker=AAPL', '/fundamentals?ticker=MELI'])
+  })
+  it('al asesor en su nivel el ⌘K no le ofrece empresas (no tiene Calidad de cartera en su menú)', () => {
+    const universo = [{ symbol: 'AAPL', name: 'Apple', type: 'stock_us' }]
+    expect(opcionesDeEmpresas(universo, { asesorEnSuNivel: true })).toEqual([])
+    expect(opcionesDeEmpresas(universo)).toHaveLength(1)
   })
 })

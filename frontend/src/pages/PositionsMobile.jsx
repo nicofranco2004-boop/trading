@@ -1483,7 +1483,9 @@ export default function PositionsMobile() {
   return (
     <div className="pb-8">
       {/* Header con total + sort */}
-      <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 py-3">
+      {/* Se pega justo debajo de la barra de arriba: su alto lo anota
+          MobileTopBar en --alto-barra-celular (con un cliente abierto mide más). */}
+      <header className="sticky top-[var(--alto-barra-celular,93px)] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 py-3">
         {/* Fila 1 — el número por el que se entra a la pantalla, con su toggle al
             lado. Estaba en text-xl (el tamaño de un título de sección) y el
             toggle era el código de moneda en text-ink-3, sin borde: el dueño lo

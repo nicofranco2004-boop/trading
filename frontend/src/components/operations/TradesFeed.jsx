@@ -12,8 +12,8 @@
 //     `useHistoricalMoney()` cada uno: con 400 trades eso construía el índice FX
 //     ~800 veces en un solo render.
 //
-// El `sticky top-[88px]` del header NO vive acá: está calibrado a la altura del
-// MobileTopBar y se queda en la página.
+// El `sticky` del header NO vive acá: se pega debajo de la barra de arriba
+// (--alto-barra-celular, que anota MobileTopBar) y se queda en la página.
 
 import { TrendingUp, TrendingDown, Calendar, Trash2 } from 'lucide-react'
 import AssetLogo from '../AssetLogo'

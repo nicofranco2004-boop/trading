@@ -237,7 +237,11 @@ export default function Sidebar() {
                   >
                     <GroupIcon size={18} strokeWidth={1.75} aria-hidden="true"
                       className={isOpen ? 'text-data-violet' : 'text-ink-2'} />
-                    <span className="flex-1 text-left">{group.label}</span>
+                    {/* Adentro de un cliente, la cartera es la de él (el celular
+                        dice lo mismo en "Más"). */}
+                    <span className="flex-1 text-left">
+                      {group.id === 'cartera' && clientCtx ? `Cartera de ${clientCtx.label || `Cliente ${clientCtx.id}`}` : group.label}
+                    </span>
                     <ChevronRight size={16} strokeWidth={2}
                       className={`text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
                   </button>

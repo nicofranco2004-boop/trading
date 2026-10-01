@@ -572,10 +572,11 @@ export default function Operations() {
         </div>
       )}
 
-      {/* Header sticky con KPIs + filtros. El `top-[88px]` está calibrado a la
-          altura del MobileTopBar, por eso vive acá y no adentro del feed. */}
+      {/* Header sticky con KPIs + filtros. Se pega justo debajo de la barra de
+          arriba: su alto lo anota MobileTopBar en --alto-barra-celular (con un
+          cliente abierto mide más). Vive acá y no adentro del feed. */}
       {isMobile && !loadingOps && (
-        <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-3">
+        <header className="sticky top-[var(--alto-barra-celular,93px)] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 pt-3 pb-3">
           <div className="flex items-baseline justify-between mb-3">
             <div>
               <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">

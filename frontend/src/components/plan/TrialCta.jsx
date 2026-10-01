@@ -419,7 +419,7 @@ export function TrialBanner({ onSeePlans }) {
   if (!trial?.active && up?.active) {
     const d = up.days_left
     return (
-      <div className="sticky top-0 z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm">
+      <div className="sticky top-[var(--alto-barra-celular,0px)] z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm">
         <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
           <div className="flex items-center gap-2 min-w-0">
             <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
@@ -467,7 +467,10 @@ export function TrialBanner({ onSeePlans }) {
   }
 
   return (
-    <div className={`sticky top-0 z-40 border-b backdrop-blur-sm ${
+    // Pegada debajo de la barra de arriba del celular (--alto-barra-celular, que
+    // anota MobileTopBar; en la compu vale 0). Con top-0 se montaba ENCIMA de la
+    // barra al bajar y tapaba el logo, la moneda, Rendi AI y la lupa.
+    <div className={`sticky top-[var(--alto-barra-celular,0px)] z-40 border-b backdrop-blur-sm ${
       apura ? 'border-rendi-warn/30 bg-rendi-warn/[0.07]' : 'border-data-violet/30 bg-bg-1/95'}`}>
       <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
         <div className="flex items-center gap-2 min-w-0">
