@@ -156,18 +156,37 @@ export const pctSigned = (n, decimals = 1) => {
 // Antes esto vivía copiado en 9 componentes del inicio, con el guion común (-)
 // en unos y el tipográfico en otros: la misma caída del Merval se escribía
 // "-0,85%" en la tarjeta de la compu y "−0,85%" en la barra del celular.
+//
+// ⚠️ EL REDONDEO ES UNO SOLO, y es el de toFixed — no el de nfmt. Las dos
+// maneras discrepan en la última cifra en 4 de cada 100 valores (19,95 con un
+// decimal: toFixed da 19,9; toLocaleString da 20,0). toFixed es como redondea
+// el backend (`fmt_num`, money_fmt.py) y como redondeaban las copias que esto
+// reemplazó, así que un insight dice "+19,9%" en el texto que escribe el
+// servidor y "+19,9%" en la evidencia que dibuja la pantalla. Con nfmt la
+// tarjeta de abajo decía "+20,0%". El signo, el texto y el color (pctColor)
+// salen todos de ESTE mismo número redondeado.
+const redondearPct = (n, decimals) => Number(Number(n).toFixed(decimals))
+const esPct = (n) => n != null && n !== '' && Number.isFinite(Number(n))
+
 export const pctVarSign = (n, decimals = 2) => {
-  if (n == null || n === '' || isNaN(n)) return 0
+  if (!esPct(n)) return 0
   // `|| 0`: Math.sign de un −0,001 redondeado es −0, no 0.
-  return Math.sign(Number(Number(n).toFixed(decimals))) || 0
+  return Math.sign(redondearPct(n, decimals)) || 0
 }
 
 export const pctVar = (n, decimals = 2) => {
-  if (n == null || n === '' || isNaN(n)) return '—'
-  const s = pctVarSign(n, decimals)
+  if (!esPct(n)) return '—'
+  const v = redondearPct(n, decimals)
+  const s = Math.sign(v) || 0
   const sign = s > 0 ? '+' : s < 0 ? '−' : ''
-  return `${sign}${nfmt(Math.abs(Number(n)), decimals)}%`
+  return `${sign}${nfmt(Math.abs(v), decimals)}%`
 }
+
+// El color de un porcentaje es el del número QUE SE VE, no el del crudo: una
+// acción comprada hoy rinde −0,02 % y se escribe "0,0%"; pintada de rojo, el
+// texto dice "no se movió" y el color dice "perdiste". Lo que redondea a cero
+// va neutro, como en colorClass y en la cinta. Mismos `decimals` que el texto.
+export const pctColor = (n, decimals = 2) => colorClass(pctVarSign(n, decimals))
 
 // Precio de un índice o activo de referencia (la cinta de arriba y las
 // tarjetas del inicio). Cripto y los números de seis cifras van sin decimales
@@ -268,8 +287,21 @@ export const parseNumOrNull = (v) => {
 // signo: `{a.pct}%`. El backend manda `round(v, 1)`, así que un 23,4 llegaba
 // como 23.4 y se leía "23.4%". No redondea ni cambia la escala: lo único que
 // hace es escribir el separador como corresponde.
-export const pctTxt = (n) => {
+//
+// Con `decimals` SÍ redondea, y a decimales fijos: pctTxt(35, 1) → "35,0%",
+// pctTxt(0.4, 2) → "0,40%". Es para un porcentaje que no es una variación —el
+// peso de un activo, el efectivo sobre la cartera, un rendimiento por
+// dividendo— y por eso no lleva "+". Si es negativo va el menos tipográfico.
+// Redondea igual que pctVar (toFixed, ver arriba), y el signo sale del número
+// ya redondeado.
+export const pctTxt = (n, decimals) => {
   if (n == null || n === '') return '—'
+  if (decimals != null) {
+    const crudo = typeof n === 'string' ? parseNum(n) : Number(n)
+    if (!Number.isFinite(crudo)) return '—'
+    const v = redondearPct(crudo, decimals)
+    return `${v < 0 ? '−' : ''}${nfmt(Math.abs(v), decimals)}%`
+  }
   if (typeof n === 'string') {
     // Algunos call sites ya traen el texto armado ("18,0"). `isNaN("18,0")` es
     // true, así que un chequeo numérico a secas los convertía en un guión — un

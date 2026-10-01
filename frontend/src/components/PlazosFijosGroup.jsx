@@ -10,8 +10,8 @@ import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
 import { hoyISO } from '../utils/fecha'
+import { pct } from '../utils/format'
 
-const pct = (x) => (x * 100).toFixed(2).replace('.', ',') + '%'
 const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
 

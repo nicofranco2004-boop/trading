@@ -58,13 +58,16 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
 
   const fmtPlata = (v) => fmtMoney(v, { signed: true })
   const frac = fraccionArriba(escala)
-  const topCero = `${(frac * 100).toFixed(2).replace('.', ',')}%`
-  const altoAbajo = `${((1 - frac) * 100).toFixed(2).replace('.', ',')}%`
+  // ⚠️ Estas tres son medidas de CSS (`top`/`bottom`), no texto: van con PUNTO.
+  // Con coma ("42,50%") el navegador descarta la declaración sin avisar y la
+  // línea del cero se iba arriba de todo. La coma es para lo que lee una persona.
+  const topCero = `${(frac * 100).toFixed(2)}%`
+  const altoAbajo = `${((1 - frac) * 100).toFixed(2)}%`
   // La marca de "sin medición" va CENTRADA en la línea del cero, pero la línea
   // puede quedar pegada a un borde (una serie toda positiva la manda al 100%) y
   // entonces la marca se salía de la caja y caía encima de las fechas. Se acota
   // su posición sin tocar la línea: lo que se corrige es el adorno, no la escala.
-  const topMarca = `${Math.min(86, Math.max(0, frac * 100 - 7)).toFixed(2).replace('.', ',')}%`
+  const topMarca = `${Math.min(86, Math.max(0, frac * 100 - 7)).toFixed(2)}%`
 
   // La elegida por defecto es la última: la semana más reciente es la que el
   // usuario viene a mirar. El recorte por índice cubre el caso de que cambien

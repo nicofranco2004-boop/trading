@@ -10,7 +10,7 @@ import StatCard from '../components/StatCard'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
-import { pctTxt } from '../utils/format'
+import { pctTxt, pctVar } from '../utils/format'
 import { Link } from 'react-router-dom'
 
 // Nombre de cada plan, en un solo lugar. Estaba escrito inline en tres sitios
@@ -2409,8 +2409,6 @@ function MtmAuditPanel({ toast }) {
     } finally { setBusy(false) }
   }
 
-  const pct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2).replace('.', ',')}%`)
-
   async function verMes(m) {
     setMes(m); setBusy(true); setGap(null)
     try {
@@ -2450,8 +2448,8 @@ function MtmAuditPanel({ toast }) {
       {data && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatCard label="Acumulado a COSTO" value={pct(data.acumulado_costo_pct)} />
-            <StatCard label="Acumulado a MERCADO" value={pct(data.acumulado_mercado_pct)} />
+            <StatCard label="Acumulado a COSTO" value={pctVar(data.acumulado_costo_pct, 2)} />
+            <StatCard label="Acumulado a MERCADO" value={pctVar(data.acumulado_mercado_pct, 2)} />
             <StatCard label="Meses" value={`${data.meses}`} />
             <StatCard label="Meses con snapshot" value={`${data.snapshots_por_mes}`} />
           </div>
@@ -2664,9 +2662,9 @@ function MtmAuditPanel({ toast }) {
                     </td>
                     <td className="py-1.5 pr-3 text-ink-3">{o.modo}</td>
                     <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.costo.ci} → {o.costo.cf}</td>
-                    <td className="py-1.5 pr-3 text-right tabular">{pct(o.costo.r_pct)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular">{pctVar(o.costo.r_pct, 2)}</td>
                     <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.mercado.ci} → {o.mercado.cf}</td>
-                    <td className="py-1.5 pr-3 text-right tabular">{pct(o.mercado.r_pct)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular">{pctVar(o.mercado.r_pct, 2)}</td>
                     <td className="py-1.5 pr-3 text-right tabular text-ink-3">{o.net_flow}</td>
                     <td className={`py-1.5 pr-3 text-right tabular ${
                       o.delta_G_pct == null ? 'text-ink-3'

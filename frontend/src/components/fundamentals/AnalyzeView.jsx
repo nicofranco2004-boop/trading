@@ -18,6 +18,7 @@ import EmptyState from '../EmptyState'
 import Skeleton from '../Skeleton'
 import AssetLogo from '../AssetLogo'
 import { cashAssetLabel } from '../../utils/valuation'
+import { pctTxt } from '../../utils/format'
 import { api } from '../../utils/api'
 import { inferType } from '../../utils/tickers'
 import { track } from '../../utils/track'
@@ -55,11 +56,6 @@ function fmtMultiple(n) {
   return `${n.toFixed(2).replace('.', ',')}x`
 }
 
-function fmtPct(n) {
-  if (n == null || Number.isNaN(n)) return '—'
-  return `${n.toFixed(2).replace('.', ',')}%`
-}
-
 function fmtBeta(n) {
   if (n == null || Number.isNaN(n)) return '—'
   return n.toFixed(2).replace('.', ',')
@@ -71,7 +67,7 @@ function FooterStrip({ metrics }) {
   const cells = [
     { label: 'Market Cap', value: fmtMarketCap(m.market_cap_usd) },
     { label: 'P/E', value: fmtMultiple(m.trailing_pe) },
-    { label: 'Div Yield', value: fmtPct(m.dividend_yield_pct) },
+    { label: 'Div Yield', value: pctTxt(m.dividend_yield_pct, 2) },
     { label: 'Beta', value: fmtBeta(m.beta) },
   ]
   return (

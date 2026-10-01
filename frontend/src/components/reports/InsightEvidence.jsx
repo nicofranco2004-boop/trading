@@ -11,12 +11,13 @@
 // para data histórica (Fase C trackeará TC por fecha).
 
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
+import { pctTxt, pctVar, pctColor } from '../../utils/format'
 
-function fmtPct(p, withSign = true) {
-  if (p == null) return '—'
-  const sign = withSign ? (p >= 0 ? '+' : '−') : (p < 0 ? '−' : '')
-  return `${sign}${Math.abs(p).toFixed(1).replace('.', ',')}%`
-}
+// Todos los % de la evidencia vienen del backend en escala de PORCENTAJE
+// (35,2 = 35,2 %; reporting/detectors.py) y acá se muestran con un decimal.
+// Las variaciones (cartera, S&P, diferencia, mes anterior/actual) llevan
+// signo → pctVar; las porciones (peso de un activo, efectivo sobre la
+// cartera) no → pctTxt.
 
 // ─── Renderers por código de insight ────────────────────────────────────────
 
@@ -25,7 +26,7 @@ function ConcentrationRiskEvidence({ ev }) {
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between text-[11px]">
         <span className="text-ink-2 font-mono">{ev.asset}</span>
-        <span className="text-ink-1 font-mono tabular">{fmtPct(ev.pct, false)}</span>
+        <span className="text-ink-1 font-mono tabular">{pctTxt(ev.pct, 1)}</span>
       </div>
       <div className="h-1.5 rounded-full bg-bg-3 overflow-hidden">
         <div
@@ -63,17 +64,17 @@ function VsBenchmarkEvidence({ ev }) {
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[11px]">
         <span className="text-ink-2">Cartera</span>
-        <span className={`font-mono tabular ${portfolio >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {fmtPct(portfolio)}
+        <span className={`font-mono tabular ${pctColor(portfolio, 1)}`}>
+          {pctVar(portfolio, 1)}
         </span>
       </div>
       <div className="flex items-center justify-between text-[11px]">
         <span className="text-ink-2">S&P 500</span>
-        <span className="font-mono tabular text-ink-1">{fmtPct(benchmark)}</span>
+        <span className="font-mono tabular text-ink-1">{pctVar(benchmark, 1)}</span>
       </div>
       <div className="text-[10px] text-ink-3 pt-1 border-t border-line/40">
         Diferencia: <span className={`font-mono tabular ${portfolioWon ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {fmtPct(portfolio - benchmark)} puntos
+          {pctVar(portfolio - benchmark, 1)} puntos
         </span>
       </div>
     </div>
@@ -138,7 +139,7 @@ function CashDragEvidence({ ev, fmtUsd }) {
         <div className="h-full bg-ink-2/50" style={{ width: `${Math.min(100, ev.cash_pct)}%` }} aria-hidden="true" />
       </div>
       <p className="text-[10px] text-ink-3">
-        {fmtPct(ev.cash_pct, false)} de la cartera total.
+        {pctTxt(ev.cash_pct, 1)} de la cartera total.
       </p>
     </div>
   )
@@ -184,15 +185,15 @@ function ReversalEvidence({ ev }) {
     <div className="flex items-center justify-around text-[11px]">
       <div className="text-center">
         <div className="text-ink-3 text-[12.5px] font-medium">Mes anterior</div>
-        <div className={`font-mono tabular text-base ${ev.prior_delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {fmtPct(ev.prior_delta)}
+        <div className={`font-mono tabular text-base ${pctColor(ev.prior_delta, 1)}`}>
+          {pctVar(ev.prior_delta, 1)}
         </div>
       </div>
       <span className="text-ink-3 text-base" aria-hidden="true">→</span>
       <div className="text-center">
         <div className="text-ink-3 text-[12.5px] font-medium">Este mes</div>
-        <div className={`font-mono tabular text-base ${ev.current_delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-          {fmtPct(ev.current_delta)}
+        <div className={`font-mono tabular text-base ${pctColor(ev.current_delta, 1)}`}>
+          {pctVar(ev.current_delta, 1)}
         </div>
       </div>
     </div>

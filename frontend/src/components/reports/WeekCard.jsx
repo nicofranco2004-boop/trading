@@ -9,12 +9,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import InsightChip from './InsightChip'
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : '−'
-  return `${sign}${Math.abs(p).toFixed(2).replace('.', ',')}%`
-}
+import { pctVar, pctColor } from '../../utils/format'
 
 export default function WeekCard({ week }) {
   const [open, setOpen] = useState(false)
@@ -26,9 +21,10 @@ export default function WeekCard({ week }) {
   const noBasis = week.metrics.basis_incomparable === true
   const deltaPct = noBasis ? null : week.metrics.delta_pct
   const deltaUsd = noBasis ? null : week.metrics.delta_usd
-  const positive = deltaPct != null
-    ? deltaPct >= 0
-    : (deltaUsd ?? 0) >= 0
+  // Con % el color es el del número que se ve (lo que redondea a cero, neutro).
+  const tono = deltaPct != null
+    ? pctColor(deltaPct, 2)
+    : ((deltaUsd ?? 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
   // Fase B: delta_usd y realized_pnl respetan el toggle global ARS/USD.
   const money = useMoneyFormat()
   const fmtUsd = (v) => money.fmtMoney(v, { signed: true })
@@ -52,9 +48,9 @@ export default function WeekCard({ week }) {
       >
         <span className="text-xs font-mono text-ink-2 min-w-[80px]">{week.period_label}</span>
         <span className={`text-xs font-semibold tabular min-w-[64px] ${
-          noBasis ? 'text-ink-3' : (positive ? 'text-rendi-pos' : 'text-rendi-neg')
+          noBasis ? 'text-ink-3' : tono
         }`}>
-          {fmtPct(deltaPct)}
+          {pctVar(deltaPct, 2)}
         </span>
         <span className="text-xs text-ink-2 flex-1 truncate" title={week.headline}>
           {week.headline}
