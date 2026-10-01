@@ -195,17 +195,17 @@ describe('seccionesDelMenuMas', () => {
   const donde = (secciones, to) => secciones.find(s => s.items.some(i => i.to === to))?.label
 
   it('una pantalla nueva sin renglón propio en el celular aparece igual, en su grupo', () => {
-    const s = seccionesDelMenuMas([p('/posiciones', { grupo: 'Tu Cartera' }), p('/nueva', { grupo: 'Mercado', label: 'Nueva' })])
+    const s = seccionesDelMenuMas([p('/posiciones', { grupoId: 'cartera', grupo: 'Tu Cartera' }), p('/nueva', { grupoId: 'mercado', grupo: 'Mercado', label: 'Nueva' })])
     expect(s.find(x => x.label === 'Mercado').items.map(i => [i.to, i.label, i.sub])).toEqual([['/nueva', 'Nueva', undefined]])
   })
   it('una pantalla nueva del grupo "Tu Cartera" va a "Tu portfolio", no a una sección aparte', () => {
-    const s = seccionesDelMenuMas([p('/posiciones', { grupo: 'Tu Cartera' }), p('/watchlist', { grupo: 'Tu Cartera' })])
+    const s = seccionesDelMenuMas([p('/posiciones', { grupoId: 'cartera', grupo: 'Tu Cartera' }), p('/watchlist', { grupoId: 'cartera', grupo: 'Tu Cartera' })])
     expect(s.map(x => x.label)).toEqual(['Tu portfolio'])
   })
   it('adentro de un cliente, lo del asesor que no es de la cartera va con "Clientes"', () => {
     // Si mañana navegacion.js deja "Cobros" adentro de un cliente (sin grupo,
     // como "Clientes"), tiene que ir en "Plan Asesor" y no en una sección suelta.
-    const s = seccionesDelMenuMas([p('/clientes'), p('/cobros'), p('/dashboard', { grupo: 'Tu Cartera' })], { cliente: 'Ana' })
+    const s = seccionesDelMenuMas([p('/clientes'), p('/cobros'), p('/dashboard', { grupoId: 'cartera', grupo: 'Cartera de Ana' })], { cliente: 'Ana' })
     expect(donde(s, '/clientes')).toBe('Plan Asesor')
     expect(donde(s, '/cobros')).toBe('Plan Asesor')
     expect(donde(s, '/dashboard')).toBe('Cartera de Ana')

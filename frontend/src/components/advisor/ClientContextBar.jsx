@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom'
 import { Eye, ArrowLeft } from 'lucide-react'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { ubicacionDeAviso } from '../mobile/avisos'
+import { nombreDelCliente } from '../../utils/navegacion'
 
 export default function ClientContextBar({ enLaBarra = false }) {
   const { clientCtx, exitClient } = useAdvisorContext()
@@ -36,7 +37,7 @@ export default function ClientContextBar({ enLaBarra = false }) {
           único que importa— quedaba cortado. */}
       <p className="flex-1 min-w-0 text-[13px] text-ink-1 truncate">
         {enLaBarra ? 'Cuenta de' : 'Estás viendo la cuenta de'}{' '}
-        <span className="font-semibold text-ink-0">{clientCtx.label || `Cliente ${clientCtx.id}`}</span>
+        <span className="font-semibold text-ink-0">{nombreDelCliente(clientCtx)}</span>
         {!enLaBarra && <span className="hidden sm:inline text-ink-3"> · visión Pro (tu plan Asesor)</span>}
       </p>
       <button

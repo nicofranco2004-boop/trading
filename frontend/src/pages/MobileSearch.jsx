@@ -26,7 +26,7 @@ import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { menuVisible } from '../utils/navegacion'
+import { menuVisible, nombreDelCliente } from '../utils/navegacion'
 import { destinoDeTicker } from '../utils/buscadorRapido'
 
 // Reusamos los tickers populares + helpers del SearchBar desktop para no
@@ -54,7 +54,7 @@ export default function MobileSearch() {
     : destinoDeTicker(t.symbol, { tuyo: t.fromUser, tipo: t.type })
   const puedeSeguir = !atOwnLevel   // la estrella de watchlist (cuenta propia)
   // Adentro de un cliente, lo que "tenés" es de él.
-  const deQuien = clientCtx ? `la cartera de ${clientCtx.label || 'tu cliente'}` : 'tu portfolio'
+  const deQuien = clientCtx ? `la cartera de ${nombreDelCliente(clientCtx)}` : 'tu portfolio'
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState('all')
   const [userHoldings, setUserHoldings] = useState([])

@@ -421,10 +421,10 @@ export function TrialBanner({ onSeePlans, enLaBarra = false }) {
     const d = up.days_left
     return (
       <div className={`${ubicacionDeAviso(enLaBarra)} border-data-violet/30 bg-bg-1/95 backdrop-blur-sm`}>
-        <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
+        <div className={`flex items-center justify-between gap-3 px-4 ${enLaBarra ? 'py-1.5' : 'py-2'} max-w-7xl mx-auto`}>
           <div className="flex items-center gap-2 min-w-0">
             <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
-            <p className="text-xs text-ink-1 min-w-0">
+            <p className={`text-xs text-ink-1 min-w-0 ${enLaBarra ? 'truncate' : ''}`}>
               <span className="font-medium text-ink-0">Estás probando Rendi Pro.</span>
               {d != null && (
                 <span className="text-ink-3">
@@ -472,16 +472,30 @@ export function TrialBanner({ onSeePlans, enLaBarra = false }) {
     // pegada por su cuenta tapaba el logo, y debajo, el total de Cartera.
     <div className={`${ubicacionDeAviso(enLaBarra)} backdrop-blur-sm ${
       apura ? 'border-rendi-warn/30 bg-rendi-warn/[0.07]' : 'border-data-violet/30 bg-bg-1/95'}`}>
-      <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
+      <div className={`flex items-center justify-between gap-3 px-4 ${enLaBarra ? 'py-1.5' : 'py-2'} max-w-7xl mx-auto`}>
         <div className="flex items-center gap-2 min-w-0">
           <Sparkles size={13} strokeWidth={1.75}
             className={`flex-shrink-0 ${apura ? 'text-rendi-warn' : 'text-data-violet'}`}
             aria-hidden="true" />
-          <p className="text-xs text-ink-1 min-w-0">
-            <span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
-            {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}
-            {aviso && <span className="text-ink-2">{' '}{aviso}</span>}
-          </p>
+          {/* En la barra del celular, UN renglón: con el texto entero la barra
+              llegaba a 158-174 px y en un celular chico la lista quedaba en
+              menos de la mitad de la pantalla durante toda la prueba. Si hay un
+              aviso de etapa ("Mañana pasás a Plus…", "elegí un plan…"), va ESE:
+              es la mitad del mecanismo de la prueba, y arranca por lo esencial. */}
+          {enLaBarra ? (
+            <p className="text-xs text-ink-1 min-w-0 truncate">
+              {aviso
+                ? <span className={apura ? 'font-medium text-ink-0' : 'text-ink-1'}>{aviso}</span>
+                : <><span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
+                    {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}</>}
+            </p>
+          ) : (
+            <p className="text-xs text-ink-1 min-w-0">
+              <span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
+              {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}
+              {aviso && <span className="text-ink-2">{' '}{aviso}</span>}
+            </p>
+          )}
         </div>
         {!enPlanes && (
           <button

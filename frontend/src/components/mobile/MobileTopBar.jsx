@@ -19,7 +19,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { menuVisible } from '../../utils/navegacion'
 
-// El alto de esta barra (logo, cinta y, con un cliente abierto, la franja)
+// El alto de esta barra (logo, cinta y los avisos: cliente abierto, demo, prueba)
 // queda anotado en la variable CSS --alto-barra-celular, y lo leen los que se
 // acomodan debajo: las cabeceras que se quedan fijas al bajar (Cartera,
 // Movimientos) y la burbuja de Rendi. Antes cada uno tenía escrito a mano

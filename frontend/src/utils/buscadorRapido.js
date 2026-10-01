@@ -12,7 +12,7 @@
 // Y siempre al final, con algo escrito: preguntárselo a Rendi AI — o, si tu
 // plan no tiene chat libre, ir a ver las preguntas que sí le podés hacer.
 
-import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS } from './tickers'
+import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF } from './tickers'
 
 const PRIORIDAD = { activo: 0, pantalla: 1, accion: 2, empresa: 3 }
 
@@ -80,9 +80,11 @@ export function resultadosDelBuscador(opciones, consulta, { maximo = MAXIMO_RESU
     .filter(x => x.p > 0)
     .sort((a, b) => b.p - a.p || PRIORIDAD[a.o.clase] - PRIORIDAD[b.o.clase] || a.i - b.i)
     .map(x => x.o)
-  // Un ticker que tenés no se repite como "empresa".
-  const tuyos = new Set(encontrados.filter(o => o.clase === 'activo').map(o => o.simbolo))
-  const sinRepetir = encontrados.filter(o => o.clase !== 'empresa' || !tuyos.has(o.simbolo))
+  // Un ticker que tenés no se repite como "empresa" — tampoco su CEDEAR: si
+  // tenés BABA (guardado sin .BA) no aparece además "BABA.BA · Ver la empresa".
+  const base = (s) => (s || '').replace(/\.BA$/, '')
+  const tuyos = new Set(encontrados.filter(o => o.clase === 'activo').map(o => base(o.simbolo)))
+  const sinRepetir = encontrados.filter(o => o.clase !== 'empresa' || !tuyos.has(base(o.simbolo)))
   return [...sinRepetir.slice(0, maximo - 1), opcionRendiAI(texto, chatLibre)]
 }
 
@@ -108,8 +110,8 @@ export function opcionRendiAI(texto, chatLibre = true) {
 //   • null = no hay a dónde llevar. Antes terminaban en un cartel que decía que
 //     ahí no había nada, o en OTRA empresa con el mismo ticker (TEN, AGRO).
 const SIN_FICHA_DE_EMPRESA = new Set(['bond', 'crypto', 'etf', 'fci'])
-// Hay CEDEARs de ETFs (SPY, QQQ…): tampoco tienen ficha de empresa.
-const ES_ETF = new Set(ETFS.map(e => e.s))
+// Hay CEDEARs de ETFs (SPY, QQQ, URA…): tampoco tienen ficha de empresa.
+const ES_ETF = new Set([...ETFS.map(e => e.s), ...CEDEARS_DE_ETF])
 export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
   const s = (simbolo || '').toUpperCase()
   if (!s) return null

@@ -33,7 +33,7 @@ import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { prefetchRoute } from '../utils/routePrefetch'
-import { menuVisible, GROUPS } from '../utils/navegacion'
+import { menuVisible, GROUPS, etiquetaDeGrupo } from '../utils/navegacion'
 import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
 
@@ -243,7 +243,7 @@ export default function Sidebar() {
                         un mail, empujaba la flecha fuera del menú): se recorta,
                         y entero al pasar el mouse. */}
                     {(() => {
-                      const titulo = group.id === 'cartera' && clientCtx ? `Cartera de ${clientCtx.label || `Cliente ${clientCtx.id}`}` : group.label
+                      const titulo = etiquetaDeGrupo(group, clientCtx)
                       return <span className="flex-1 min-w-0 truncate text-left" title={titulo}>{titulo}</span>
                     })()}
                     <ChevronRight size={16} strokeWidth={2}

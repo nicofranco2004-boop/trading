@@ -28,7 +28,7 @@ export default function DemoBanner({ enLaBarra = false }) {
       className={`${ubicacionDeAviso(enLaBarra)} border-data-violet/30 bg-bg-1/95 backdrop-blur-sm`}
       style={{ borderTopWidth: '1px', borderTopColor: 'rgb(var(--data-violet) / 0.3)' }}
     >
-      <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
+      <div className={`flex items-center justify-between gap-3 px-4 ${enLaBarra ? 'py-1.5' : 'py-2'} max-w-7xl mx-auto`}>
         <div className="flex items-center gap-2 min-w-0">
           <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
           <p className="text-xs text-ink-1 truncate">

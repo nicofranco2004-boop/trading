@@ -19,7 +19,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
-import { menuVisible, pantallasVisibles, ASESOR_PROPIO } from '../utils/navegacion'
+import { menuVisible, pantallasVisibles, ASESOR_PROPIO, nombreDelCliente } from '../utils/navegacion'
 import Panel from '../components/Panel'
 
 // QUÉ pantallas se ven NO se decide acá: sale de utils/navegacion.js, la misma
@@ -37,9 +37,10 @@ import Panel from '../components/Panel'
 const PLAN_ASESOR = 'Plan Asesor'
 const TU_PORTFOLIO = 'Tu portfolio'
 const SECCIONES = [PLAN_ASESOR, TU_PORTFOLIO, 'Mercado', 'Análisis']
-// Grupo de la compu → sección del celular, cuando se llaman distinto. Lo que
-// en la compu va suelto (Alertas, Importar) acá va con la cartera.
-const SECCION_DE_GRUPO = { 'Tu Cartera': TU_PORTFOLIO }
+// Grupo de la compu → sección del celular, cuando se llaman distinto (por el id
+// del grupo: su nombre cambia adentro de un cliente). Lo que en la compu va
+// suelto (Alertas, Importar) acá va con la cartera.
+const SECCION_DE_GRUPO = { cartera: TU_PORTFOLIO }
 
 // Los renglones de ayuda no dicen "tu"/"tus": el asesor adentro de un cliente
 // está mirando la cartera de OTRO.
@@ -97,7 +98,7 @@ export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = n
     const presentacion = delAsesor ? DEL_ASESOR : EN_EL_CELULAR
     const extra = presentacion[p.to] || {}
     const seccion = delAsesor ? PLAN_ASESOR
-      : p.grupo ? (SECCION_DE_GRUPO[p.grupo] || p.grupo)
+      : p.grupo ? (SECCION_DE_GRUPO[p.grupoId] || p.grupo)
       : TU_PORTFOLIO
     if (!secciones.has(seccion)) secciones.set(seccion, [])
     secciones.get(seccion).push({
@@ -116,7 +117,7 @@ export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = n
 // El renglón de ayuda de Rendi AI: sobre qué trabaja la IA en cada caso.
 function ayudaDeRendiAI({ atOwnLevel, clientCtx }) {
   if (atOwnLevel) return 'Asistente con contexto de tu libro de clientes'
-  if (clientCtx) return `Asistente con contexto de la cartera de ${clientCtx.label || 'tu cliente'}`
+  if (clientCtx) return `Asistente con contexto de la cartera de ${nombreDelCliente(clientCtx)}`
   return 'Asistente con contexto de tu portfolio'
 }
 
@@ -137,7 +138,7 @@ export default function More() {
   const allGroups = [
     ...seccionesDelMenuMas(
       pantallasVisibles({ user, clientCtx }).filter(p => !delPie.has(p.to)),
-      { atOwnLevel, cliente: clientCtx ? (clientCtx.label || `Cliente ${clientCtx.id}`) : null }),
+      { atOwnLevel, cliente: nombreDelCliente(clientCtx) }),
     ...(admin.length > 0 ? [{ label: 'Admin', items: admin }] : []),
   ]
 
