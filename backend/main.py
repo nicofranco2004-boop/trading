@@ -2,12 +2,13 @@ from money_fmt import fmt_num
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List
-import sqlite3, os, secrets, time, hashlib, hmac, json, threading
+import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
 from contextlib import contextmanager
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
@@ -31474,6 +31475,84 @@ def _voz_payload(text: str) -> Optional[dict]:
     return {"text": voz, "sig": tts.sign(voz)}
 
 
+# ── El aviso que Vercel se guarda ────────────────────────────────────────────
+# MEDIDO el 2026-10-01 (dirección de prueba temporal que imitaba el ritmo del
+# chat, 3 repeticiones por caso): cuando dos avisos salen pegados y después hay
+# silencio, Vercel (el que pasa rendi.finance → Railway) se queda con el
+# SEGUNDO hasta que llega algo más. «Leyendo tu
+# cartera» sale pegado al primer aviso y después la IA piensa ~8 s: llegaba
+# junto con la respuesta, 8,7 s tarde. Directo contra Railway no pasa; tampoco
+# depende de GET/POST ni de HTTP/1.1 o 2. Agrandar los avisos no lo arregla
+# (2 de 3 fallaron con 4 KB). Lo que sí: mandar algo más. Un comentario SSE
+# vacío (el navegador lo ignora) cada `_LATIDO_SSE_SEG` de silencio suelta el
+# aviso retenido: la peor demora medida bajó de 3 s a 0,25 s.
+_LATIDO_SSE_SEG = 0.25
+_LATIDO_SSE = ": \n\n"
+
+
+async def _con_latido(frames, cada: float = _LATIDO_SSE_SEG):
+    """Recorre un generador SSE común (en un hilo, como StreamingResponse) y
+    manda un latido por cada `cada` segundos sin avisos. El pedido del aviso
+    siguiente NO se corta al latir: sigue esperando en su hilo.
+
+    Al terminar —también si el navegador se fue a mitad— cierra el generador,
+    así su `finally` (el cobro o la devolución de la consulta) corre apenas se
+    puede y no cuando pase el recolector de basura."""
+    it = iterate_in_threadpool(frames)
+    siguiente = asyncio.ensure_future(it.__anext__())
+
+    def _cerrar():
+        try:
+            frames.close()
+        except Exception as ex:   # el finally de adentro ya loguea lo suyo
+            log.warning("sse: cerrar el generador falló: %s", str(ex)[:200])
+
+    try:
+        while True:
+            listo, _ = await asyncio.wait({siguiente}, timeout=cada)
+            if not listo:
+                yield _LATIDO_SSE
+                continue
+            try:
+                frame = siguiente.result()
+            except StopAsyncIteration:
+                return
+            yield frame
+            siguiente = asyncio.ensure_future(it.__anext__())
+    finally:
+        # Si un hilo todavía está adentro del generador (esperando a la IA),
+        # no se lo puede cerrar mientras corre: se cierra apenas devuelva. NO
+        # se cancela el pedido — cancelar suelta la espera pero el hilo sigue
+        # adentro, y el cierre falla con "generator already executing"
+        # (medido). El cierre corre el `finally` de adentro, que toca la base:
+        # va a un hilo para no frenar al resto del servidor.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:      # sin loop (apagado): queda para el recolector
+            loop = None
+        if loop is not None:
+            def _cerrar_despues(t):
+                if not t.cancelled():
+                    t.exception()     # que asyncio no la reporte como "nunca vista"
+                loop.run_in_executor(None, _cerrar)
+            siguiente.add_done_callback(_cerrar_despues)
+
+
+def _respuesta_sse(frames) -> StreamingResponse:
+    """La ÚNICA forma de devolver avisos SSE: latido + cabeceras anti-buffer."""
+    return StreamingResponse(
+        _con_latido(frames),
+        media_type="text/event-stream",
+        headers={
+            # Anti-buffering: sin esto el proxy (Railway/Vercel/nginx) puede
+            # acumular todo el body antes de reenviarlo y el typewriter no se ve.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 def _chat_direct_reply(stream: bool, text: str, tier: str,
                        portfolio_changed: bool = False, uid=None):
     """Respuesta del chat SIN llamar al LLM (short-circuit de confirmación de
@@ -31494,9 +31573,7 @@ def _chat_direct_reply(stream: bool, text: str, tier: str,
             if portfolio_changed:
                 _done["portfolio_changed"] = True
             yield "data: " + json.dumps(_done) + "\n\n"
-        return StreamingResponse(_sse(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache, no-transform",
-                                          "X-Accel-Buffering": "no"})
+        return _respuesta_sse(_sse())
     out = {"reply": text, "tier": tier}
     if portfolio_changed:
         out["portfolio_changed"] = True
@@ -32522,17 +32599,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         log.info("ai_chat stream interrumpido con respuesta parcial (deltas=%d) uid=%s → se cobra",
                                  state["synth_deltas"], uid)
 
-        return StreamingResponse(
-            _diag_reloj(_sse()) if request.query_params.get("reloj") == "1" else _sse(),
-            media_type="text/event-stream",
-            headers={
-                # Anti-buffering: sin esto el proxy (Railway/Vercel/nginx) puede
-                # acumular todo el body antes de reenviarlo y el typewriter no se ve.
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                "Connection": "keep-alive",
-            },
-        )
+        return _respuesta_sse(
+            _diag_reloj(_sse()) if request.query_params.get("reloj") == "1" else _sse())
 
     try:
         for _loop_i in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
@@ -39542,78 +39610,7 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
 
 # ─── Health check (público) ─────────────────────────────────────────────────
 
-# ─── DIAGNÓSTICO TEMPORAL (2026-10-01): ¿quién retiene el stream? ───────────
-# Rendi AI manda cada pedazo de la respuesta apenas lo escribe el modelo, pero
-# en producción llegan todos juntos al final (medido: 5.800 letras en 0,05 s).
-# En local el mismo servidor los manda a tiempo. Esto cuenta del 1 al n, un
-# aviso cada `ms`, con las MISMAS cabeceras que el chat, para medir el camino
-# por rendi.finance (Vercel) y directo a Railway. Público y sin datos: sólo
-# cuenta. Topes para que no sirva para cargar el servidor. SE SACA después.
-@app.api_route("/api/diag-goteo", methods=["GET", "POST"])
-async def diag_goteo(n: int = 10, ms: int = 300, patron: str = "cuenta", hilo: int = 0,
-                     latido: int = 0, relleno: int = 0):
-    # patron=chat imita el RITMO del chat: dos avisos pegados y después un
-    # silencio largo (como «Leyendo tu cartera» mientras piensa la IA), una
-    # tanda de pedazos cada 40 ms, otros dos pegados, silencio, otra tanda.
-    # Cada aviso trae `s` = segundos desde que arrancó, según el servidor.
-    # hilo=1 lo fabrica como el chat (generador común, en un hilo aparte).
-    # Remedios a probar: latido=N manda un comentario vacío cada N ms de
-    # silencio; relleno=N agranda cada aviso hasta N letras con un comentario.
-    import asyncio
-    n = max(1, min(int(n), 30))
-    ms = max(20, min(int(ms), 1000))
-    latido = max(0, min(int(latido), 2000)) / 1000
-    relleno = max(0, min(int(relleno), 16384))
-    if patron == "chat":
-        guion = ([("aviso", 0)] + [("pausa", 3.0)] + [("pedazo", 0.04)] * 20
-                 + [("aviso", 0), ("aviso", 0), ("pausa", 2.0), ("aviso", 0), ("pausa", 3.0)]
-                 + [("pedazo", 0.04)] * 30 + [("fin", 0)])
-    else:
-        guion = [("pausa", ms / 1000), ("aviso", 0)] * n
-
-    def _frame(i, tipo, t0):
-        f = "data: " + json.dumps({"t": tipo, "i": i, "s": round(time.monotonic() - t0, 3)}) + "\n\n"
-        if relleno > len(f):
-            f = ": " + "." * (relleno - len(f) - 3) + "\n" + f
-        return f
-
-    def _trozos(seg):
-        # La pausa en pedazos de `latido` (si está prendido), con un latido entre uno y otro.
-        if not latido or seg <= latido:
-            return [seg]
-        k = int(seg // latido)
-        return [latido] * k + ([seg - k * latido] if seg - k * latido > 1e-6 else [])
-
-    async def _gen_async():
-        t0 = time.monotonic()
-        yield ": ok\n\n"
-        for i, (tipo, seg) in enumerate(guion, 1):
-            if tipo != "pausa":
-                yield _frame(i, tipo, t0)
-            for j, tr in enumerate(_trozos(seg) if seg else []):
-                await asyncio.sleep(tr)
-                if latido and seg > latido:
-                    yield ": \n\n"
-
-    def _gen_hilo():
-        t0 = time.monotonic()
-        yield ": ok\n\n"
-        for i, (tipo, seg) in enumerate(guion, 1):
-            if tipo != "pausa":
-                yield _frame(i, tipo, t0)
-            for j, tr in enumerate(_trozos(seg) if seg else []):
-                time.sleep(tr)
-                if latido and seg > latido:
-                    yield ": \n\n"
-
-    return StreamingResponse(_gen_hilo() if hilo else _gen_async(), media_type="text/event-stream", headers={
-        "Cache-Control": "no-cache, no-transform",
-        "X-Accel-Buffering": "no",
-        "Connection": "keep-alive",
-    })
-
-
-# TEMPORAL (diagnóstico, junto con /api/diag-goteo): con /api/ai/chat?reloj=1
+# TEMPORAL (diagnóstico 2026-10-01, se saca al verificar el latido): con /api/ai/chat?reloj=1
 # cada aviso del chat sale precedido por un comentario SSE (que el navegador
 # ignora) con dos horas del servidor: `pedido` = cuándo el servidor pidió el
 # aviso siguiente, `listo` = cuándo lo tuvo. listo−pedido es lo que tardó en
