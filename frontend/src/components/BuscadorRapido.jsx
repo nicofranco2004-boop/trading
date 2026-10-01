@@ -25,7 +25,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { puedeChatLibre } from '../utils/chatLibre'
 import { muroTapaLaPantalla } from '../utils/muroDePlan'
 import { api } from '../utils/api'
-import { pantallasVisibles, menuVisible } from '../utils/navegacion'
+import { pantallasVisibles, menuVisible, nombreDelCliente } from '../utils/navegacion'
 import { tickerName, POPULAR_TICKERS } from '../utils/tickers'
 import {
   resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, esAtajoBuscador, esMac, urlNuevaOperacion, claveDeActivos,
@@ -216,7 +216,7 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
         claves: ['privacidad', 'ocultar', 'mostrar', 'montos'], icon: hidden ? Eye : EyeOff, hacer: cambiarPrivacidad,
       },
     ]
-    const activos = opcionesDeActivos(posiciones, tickerName).map(o => ({ ...o, icon: TrendingUp }))
+    const activos = opcionesDeActivos(posiciones, tickerName, { cliente: nombreDelCliente(clientCtx) }).map(o => ({ ...o, icon: TrendingUp }))
     const empresas = universo.map(o => ({ ...o, icon: Building2 }))
     return [...activos, ...acciones.filter(a => a.deEntrada), ...pantallas, ...extra, ...acciones.filter(a => !a.deEntrada), ...empresas]
   }, [user, clientCtx, atOwnLevel, posiciones, universo, currency, dark, hidden, setCurrency, cambiarTema, cambiarPrivacidad, coach, navigate, pathname, search])

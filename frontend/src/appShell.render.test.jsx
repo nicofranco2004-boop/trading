@@ -25,7 +25,8 @@ vi.mock('./hooks/usePlanFeatures', async (original) => {
     ...real,
     usePlanFeatures: () => {
       const r = real.usePlanFeatures()
-      return enPrueba ? { ...r, trial: { active: true, stage: 'pro', days_left: 12 } } : r
+      // `enPrueba`: true = día 12 de la etapa Pro; o la prueba entera que se quiera.
+      return enPrueba ? { ...r, trial: enPrueba === true ? { active: true, stage: 'pro', days_left: 12 } : enPrueba } : r
     },
   }
 })
@@ -86,9 +87,10 @@ describe('los avisos de arriba de todo (demo, prueba gratis), en la app entera',
   }
   const dentroDeLaBarra = (html, texto) => html.slice(html.indexOf('<header'), html.indexOf('</header>')).includes(texto)
   it('prueba gratis: celular, una vez y en la barra; compu, una vez', () => {
+    // En el celular, el renglón corto ("Prueba Pro · te quedan N días").
     const cel = conAviso(true, { prueba: true })
-    expect(veces(cel, 'Estás probando Rendi')).toBe(1)
-    expect(dentroDeLaBarra(cel, 'Estás probando Rendi')).toBe(true)
+    expect(veces(cel, 'Prueba Pro')).toBe(1)
+    expect(dentroDeLaBarra(cel, 'Prueba Pro')).toBe(true)
     expect(veces(conAviso(false, { prueba: true }), 'Estás probando Rendi')).toBe(1)
   })
   it('demo: celular, una vez y en la barra; compu, una vez', () => {
@@ -96,5 +98,61 @@ describe('los avisos de arriba de todo (demo, prueba gratis), en la app entera',
     expect(veces(cel, 'Modo demo activo.')).toBe(1)
     expect(dentroDeLaBarra(cel, 'Modo demo activo.')).toBe(true)
     expect(veces(conAviso(false, { demo: true }), 'Modo demo activo.')).toBe(1)
+  })
+})
+
+describe('qué VERSIÓN de cada aviso pide cada armado', () => {
+  // App.jsx decide, pasando `enLaBarra`. Contar cuántos hay no alcanza: con la
+  // versión equivocada, en el celular vuelve la franja larga (a 360-375 px no
+  // deja ver el nombre del cliente) y en la compu los avisos dejan de quedar
+  // fijos arriba (al bajar se van el contador de la prueba y "Crear cuenta").
+  it('celular: la franja es la corta de la barra ("Cuenta de" + "Volver")', () => {
+    const html = dibujar(true, { id: 7, label: 'Ana' })
+    const barra = html.slice(html.indexOf('<header'), html.indexOf('</header>'))
+    expect(barra).toMatch(/Cuenta de\s*<span[^>]*>Ana<\/span>/)
+    expect(barra).not.toContain('Estás viendo la cuenta de')
+  })
+  it('compu: la prueba gratis y la demo quedan fijas arriba del contenido', () => {
+    // La etiqueta que envuelve la fila de cada aviso.
+    const contenedorDe = (h, texto) => {
+      const fila = h.lastIndexOf('<div class="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl', h.indexOf(texto))
+      return h.slice(Math.max(0, fila - 400), fila)
+    }
+    for (const [demo, prueba, texto] of [[true, false, 'Modo demo activo.'], [false, true, 'Estás probando Rendi']]) {
+      usuario = { tier: 'pro', name: 'U' }; enDemo = demo; enPrueba = prueba
+      try {
+        expect(contenedorDe(dibujar(false, null), texto), texto).toMatch(/<div class="sticky top-0 z-40[^"]*"[^>]*>$/)
+      } finally { usuario = { tier: 'advisor', name: 'Asesor' }; enDemo = false; enPrueba = false }
+    }
+  })
+  it('celular: la prueba gratis en UN renglón, con los días a la vista (primero el dato)', () => {
+    usuario = { tier: 'pro', name: 'U' }; enPrueba = true
+    try {
+      const html = dibujar(true, null)
+      const barra = html.slice(html.indexOf('<header'), html.indexOf('</header>'))
+      expect(barra).toMatch(/<p class="[^"]*\btruncate\b[^"]*"><span[^>]*>Prueba Pro<\/span><span[^>]*> · te quedan 12 días<\/span>/)
+    } finally { usuario = { tier: 'advisor', name: 'Asesor' }; enPrueba = false }
+  })
+})
+
+describe('la barra de la prueba, cerca del final', () => {
+  it('compu: el aviso ya dice los días, no se repiten al lado', () => {
+    usuario = { tier: 'plus', name: 'U', requires_plan: true }
+    enPrueba = { active: true, stage: 'plus', days_left: 2 }
+    try {
+      const html = dibujar(false, null)
+      expect(veces(html, 'quedan 2 días')).toBe(1)
+      expect(html).toContain('Te quedan 2 días: elegí un plan')
+    } finally { usuario = { tier: 'advisor', name: 'Asesor' }; enPrueba = false }
+  })
+  it('celular: el último día no dice "0 días" y el aviso va primero', () => {
+    usuario = { tier: 'plus', name: 'U', requires_plan: true }
+    enPrueba = { active: true, stage: 'plus', days_left: 0 }
+    try {
+      const html = dibujar(true, null)
+      const barra = html.slice(html.indexOf('<header'), html.indexOf('</header>'))
+      expect(barra).toContain('Te queda menos de un día: elegí un plan')
+      expect(html).not.toMatch(/0 días/)
+    } finally { usuario = { tier: 'advisor', name: 'Asesor' }; enPrueba = false }
   })
 })

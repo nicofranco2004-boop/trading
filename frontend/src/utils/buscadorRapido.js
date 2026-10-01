@@ -127,7 +127,9 @@ export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
 
 // Tus activos, uno por ticker (los lotes y los brokers se juntan), sin el
 // efectivo. `nombreDe` pone "NVIDIA" al lado de "NVDA" cuando se conoce.
-export function opcionesDeActivos(posiciones, nombreDe = () => null) {
+// `cliente`: el asesor adentro de la cuenta de un cliente — no es "tu"
+// posición, es la de él (el menú y la lupa dicen lo mismo).
+export function opcionesDeActivos(posiciones, nombreDe = () => null, { cliente = null } = {}) {
   const vistos = new Set()
   const out = []
   for (const p of posiciones || []) {
@@ -138,7 +140,7 @@ export function opcionesDeActivos(posiciones, nombreDe = () => null) {
     out.push({
       clase: 'activo', id: `activo:${s}`, simbolo: s,
       titulo: nombre ? `${s} · ${nombre}` : s,
-      detalle: 'Tu posición',
+      detalle: cliente ? `Posición de ${cliente}` : 'Tu posición',
       claves: nombre ? [nombre] : [],
       ir: destinoDeTicker(s, { tuyo: true }),
     })

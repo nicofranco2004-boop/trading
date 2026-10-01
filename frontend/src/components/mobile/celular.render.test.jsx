@@ -96,15 +96,17 @@ describe('la barra anota su alto, y lo que se pega debajo lo lee', () => {
   })
 })
 
-// El árbol entero: cada elemento que se pega arriba (`sticky` con `top-…`). Se
-// recorren las clases, no el archivo (un comentario que nombra la variable no
-// cuenta), y se reconocen todas las formas de escribir un alto fijo.
+// El árbol entero: cada elemento que se queda arriba (`sticky` o `fixed` con
+// `top-…`). Se recorren las clases —también las partidas en varios renglones o
+// dentro de una condición—, no el archivo (un comentario que nombra la variable
+// no cuenta), y se reconocen todas las formas de escribir un alto fijo.
 describe('nada se pega arriba con un alto escrito a mano', () => {
   const fuentes = import.meta.glob(['/src/**/*.{js,jsx}', '!/src/**/*.test.{js,jsx}'], { query: '?raw', import: 'default', eager: true })
   // Los que pueden pegarse con un número, y por qué. Un archivo nuevo que se
   // pegue arriba tiene que leer la variable o anotarse acá con su motivo.
   const PERMITIDOS = {
-    'components/mobile/MobileTopBar.jsx': 'es la barra',
+    'components/mobile/MobileTopBar.jsx': 'es la barra (y su indicador de tirar para actualizar)',
+    'components/Sidebar.jsx': 'el menú lateral de la compu: no se dibuja en el celular',
     'components/mobile/avisos.js': 'los avisos en la compu (en el celular van dentro de la barra)',
     'components/import/ImportWizard.jsx': 'encabezado de una tabla con su propio scroll',
     'components/import/TenenciaUpload.jsx': 'encabezado de una tabla con su propio scroll',
@@ -113,10 +115,21 @@ describe('nada se pega arriba con un alto escrito a mano', () => {
     'pages/Positions.jsx': 'encabezado de la tabla de la compu',
     'pages/Landing.jsx': 'portada pública: no tiene la barra de la app',
   }
+  // Las clases de verdad: className="…" y className={`…`} (aunque ocupen varios
+  // renglones) y las cadenas sueltas que arman clases ('sticky top-0 …', como
+  // en avisos.js o en una condición). Buscar "lo que está entre comillas" en
+  // todo el archivo se desfasaba con una comilla suelta de un comentario.
+  const clasesDe = (src) => [
+    ...[...src.matchAll(/className="([^"]*)"/g)].map(m => m[1]),
+    ...[...src.matchAll(/className=\{`([^`]*)`\}/g)].map(m => m[1]),
+    ...[...src.matchAll(/'([^'\n]*)'/g)].map(m => m[1]),
+  ]
   const pegadosArriba = (src) => {
     const out = []
-    for (const m of src.matchAll(/["'`]([^"'`\n]*\bsticky\b[^"'`\n]*)["'`]/g)) {
-      for (const t of m[1].matchAll(/(?:^|\s)((?:[a-z]+:)?top-\S+)/g)) out.push(t[1])
+    for (const clase of clasesDe(src)) {
+      if (!/\b(sticky|fixed)\b/.test(clase)) continue
+      if (/\binset-0\b/.test(clase)) continue   // pantalla completa (un modal, un velo)
+      for (const t of clase.matchAll(/(?:^|\s)((?:[a-z-]+:)?top-[[\d]\S*)/g)) out.push(t[1])
     }
     return out
   }
@@ -134,7 +147,7 @@ describe('nada se pega arriba con un alto escrito a mano', () => {
       const corta = ruta.replace('/src/', '')
       if (PERMITIDOS[corta]) continue
       for (const top of pegadosArriba(src)) {
-        if (top.startsWith('md:') || top.startsWith('lg:')) continue   // sólo compu
+        if (/^(sm|md|lg|xl):/.test(top)) continue   // sólo pantallas grandes
         if (!top.includes(VARIABLE_ALTO_BARRA)) malos.push(`${corta}: ${top}`)
       }
     }
@@ -145,7 +158,10 @@ describe('nada se pega arriba con un alto escrito a mano', () => {
       const src = fuentes[`/src/${nombre}`]
       expect(pegadosArriba(src).some(t => t.includes(VARIABLE_ALTO_BARRA)), nombre).toBe(true)
     }
-    expect(fuentes['/src/components/voz/RendiMate.jsx']).toMatch(/className="fixed top-\[calc\(var\(--alto-barra-celular/)
+    // La burbuja de Rendi, cerrada Y abierta (el panel tapaba "Volver" o "Ver planes").
+    const rendi = pegadosArriba(fuentes['/src/components/voz/RendiMate.jsx'])
+    expect(rendi.length).toBe(2)
+    for (const t of rendi) expect(t).toContain(VARIABLE_ALTO_BARRA)
   })
 })
 
@@ -189,6 +205,11 @@ describe('páginas públicas con la sesión abierta', () => {
       expect(dibujar(Pagina, { u: null, c: null })).toMatch(cabecera)
     })
   }
+  it('con sesión, la Guía no queda con una frase cortada ("Andá a . Te pedimos…")', () => {
+    const adentro = dibujar(modulos[archivoDe['GuiaEmpezar']], { u: { tier: 'pro' }, c: null })
+    expect(adentro).toMatch(/Andá a <strong>Crear cuenta<\/strong>\. Te pedimos/)
+    expect(dibujar(modulos[archivoDe['GuiaEmpezar']], { u: null, c: null })).toMatch(/Andá a <a href="\/login\?mode=register">Crear cuenta<\/a>/)
+  })
   it('al visitante no se le esconde nada de más', () => {
     const afuera = (n) => dibujar(modulos[archivoDe[n]], { u: null, c: null })
     // Guía: el encabezado con "Iniciar sesión" y la tarjeta de la demo.
@@ -220,8 +241,17 @@ describe('la lupa del celular (/buscar)', () => {
     const html = dibujar(MobileSearch, { u: { tier: 'pro' }, c: null })
     expect(html).toContain('>COME<')
     expect(rutas(html).filter(x => x.includes('COME'))).toEqual([])
-    const fila = html.slice(html.lastIndexOf('<div class="flex items-center gap-3 px-3', html.indexOf('>COME<')), html.indexOf('>COME<'))
-    expect(fila).not.toContain('active:bg-bg-3')
+    // La fila es el elemento con `border-t` más cercano antes del ticker; se mira
+    // su clase entera, sin depender del orden de las clases.
+    const antes = html.slice(0, html.indexOf('>COME<'))
+    const filas = [...antes.matchAll(/<div class="([^"]*\bborder-t\b[^"]*)"/g)]
+    const claseDeLaFila = filas[filas.length - 1][1]
+    expect(claseDeLaFila).not.toMatch(/\bactive:/)
+    expect(claseDeLaFila).not.toMatch(/\bhover:bg/)
+    // Y una fila CON destino sí se ilumina (si no, esta prueba no mira nada).
+    const conDestino = html.slice(0, html.indexOf('>AAPL<'))
+    const filasA = [...conDestino.matchAll(/<div class="([^"]*\bborder-t\b[^"]*)"/g)]
+    expect(filasA[filasA.length - 1][1]).toMatch(/\bactive:/)
   })
   it('al asesor en su nivel no le ofrece cartera, watchlist ni empresas; adentro de un cliente, sí', () => {
     const estrella = 'aria-label="Agregar a watchlist"'

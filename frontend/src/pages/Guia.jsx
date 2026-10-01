@@ -197,7 +197,7 @@ export default function Guia() {
                   el 22/09): al asesor no le aplican
                   (la pantalla /planes ya se lo dice, ver Planes.jsx). */}
               <div className="text-xs text-ink-3">
-                {esAsesor ? 'Plus y Pro no son el tuyo.' : 'Plus y Pro.'}
+                {esAsesor ? 'Plus y Pro no son los tuyos.' : 'Plus y Pro.'}
               </div>
             </Link>
           </div>

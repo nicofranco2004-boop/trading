@@ -57,23 +57,37 @@ export function canOfferTrial(trial) {
 // mientras la app no le muestra nada.
 export const DIAS_PARA_APURAR = 3
 
-export function trialNotice(trial, requierePlan = false) {
-  if (!trial?.active) return null
+// El aviso de la barra y si ya dice cuántos días quedan (`conDias`): en ese
+// caso la barra no repite los días al lado ("Te quedan 2 días. Te quedan 2
+// días: elegí…"). Una sola función decide las dos cosas.
+export function avisoDeLaPrueba(trial, requierePlan = false) {
+  if (!trial?.active) return { texto: null, conDias: false }
   const { stage, days_left: left, days_to_switch: toSwitch } = trial
   if (stage === 'pro' && toSwitch != null && toSwitch <= 1) {
-    return 'Mañana pasás a Plus: aprovechá hoy el chat libre y los análisis.'
+    return { texto: 'Mañana pasás a Plus: aprovechá hoy el chat libre y los análisis.', conDias: false }
   }
   if (left != null && left <= DIAS_PARA_APURAR) {
-    const cuanto = left === 1 ? 'queda 1 día' : `quedan ${left} días`
+    // El último día la cuenta todavía anda: no son "0 días" (ver trialDaysLabel).
+    const cuanto = left <= 0 ? 'queda menos de un día' : left === 1 ? 'queda 1 día' : `quedan ${left} días`
     // Para quien no tiene plan gratis al que caer, el dato no es cuánto le
     // queda: es que tiene que hacer algo. Decirle sólo "te quedan 2 días de
     // prueba" le oculta justamente la parte que lo obliga a decidir.
-    return requierePlan
-      ? `Te ${cuanto}: elegí un plan para no perder el acceso.`
-      : `Te ${cuanto} de prueba.`
+    return {
+      texto: requierePlan
+        ? `Te ${cuanto}: elegí un plan para no perder el acceso.`
+        : `Te ${cuanto} de prueba.`,
+      conDias: true,
+    }
   }
-  return null
+  return { texto: null, conDias: false }
 }
+
+export function trialNotice(trial, requierePlan = false) {
+  return avisoDeLaPrueba(trial, requierePlan).texto
+}
+
+// "Te quedan 12 días." → "te quedan 12 días", para ir después de "Prueba Pro ·".
+const enMinuscula = (frase) => frase ? frase[0].toLowerCase() + frase.slice(1).replace(/\.$/, '') : frase
 
 /** Cuánto le queda de la etapa Pro, como frase. '' si no hay dato.
  *  Vive acá, al lado de trialNotice, para que /config y la barra no puedan
@@ -424,15 +438,24 @@ export function TrialBanner({ onSeePlans, enLaBarra = false }) {
         <div className={`flex items-center justify-between gap-3 px-4 ${enLaBarra ? 'py-1.5' : 'py-2'} max-w-7xl mx-auto`}>
           <div className="flex items-center gap-2 min-w-0">
             <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
-            <p className={`text-xs text-ink-1 min-w-0 ${enLaBarra ? 'truncate' : ''}`}>
-              <span className="font-medium text-ink-0">Estás probando Rendi Pro.</span>
-              {d != null && (
-                <span className="text-ink-3">
-                  {' '}{d === 1 ? 'Te queda 1 día' : `Te quedan ${d} días`} y después
-                  volvés a tu Plus.
-                </span>
-              )}
-            </p>
+            {/* En la barra del celular, un renglón con el dato primero (ver la
+                barra de la prueba, abajo). */}
+            {enLaBarra ? (
+              <p className="text-xs text-ink-1 min-w-0 truncate">
+                <span className="font-medium text-ink-0">Prueba Pro</span>
+                {d != null && <span className="text-ink-3"> · {enMinuscula(trialDaysLabel(d))}</span>}
+              </p>
+            ) : (
+              <p className="text-xs text-ink-1 min-w-0">
+                <span className="font-medium text-ink-0">Estás probando Rendi Pro.</span>
+                {d != null && (
+                  <span className="text-ink-3">
+                    {' '}{enMinuscula(trialDaysLabel(d)).replace(/^./, c => c.toUpperCase())} y después
+                    volvés a tu Plus.
+                  </span>
+                )}
+              </p>
+            )}
           </div>
           {pathname !== '/planes' && (
             <button
@@ -453,7 +476,7 @@ export function TrialBanner({ onSeePlans, enLaBarra = false }) {
 
   const { stage, days_left: left } = trial
   const plan = stage === 'plus' ? 'Plus' : 'Pro'
-  const aviso = trialNotice(trial, requierePlan)
+  const { texto: aviso, conDias } = avisoDeLaPrueba(trial, requierePlan)
   const diasLabel = trialDaysLabel(left)
   // Ámbar sólo cuando de verdad aprieta y hay algo que decidir. Antes de eso,
   // apurar a alguien que está probando la app sólo molesta.
@@ -479,20 +502,23 @@ export function TrialBanner({ onSeePlans, enLaBarra = false }) {
             aria-hidden="true" />
           {/* En la barra del celular, UN renglón: con el texto entero la barra
               llegaba a 158-174 px y en un celular chico la lista quedaba en
-              menos de la mitad de la pantalla durante toda la prueba. Si hay un
-              aviso de etapa ("Mañana pasás a Plus…", "elegí un plan…"), va ESE:
-              es la mitad del mecanismo de la prueba, y arranca por lo esencial. */}
+              menos de la mitad de la pantalla durante toda la prueba. El DATO
+              primero ("Prueba Pro · te quedan 12 días": con "Estás probando
+              Rendi Pro." adelante, los días quedaban cortados). Si hay un aviso
+              de etapa ("Mañana pasás a Plus…", "elegí un plan…"), va ESE: es la
+              mitad del mecanismo de la prueba, y arranca por lo esencial. */}
           {enLaBarra ? (
             <p className="text-xs text-ink-1 min-w-0 truncate">
               {aviso
                 ? <span className={apura ? 'font-medium text-ink-0' : 'text-ink-1'}>{aviso}</span>
-                : <><span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
-                    {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}</>}
+                : <><span className="font-medium text-ink-0">Prueba {plan}</span>
+                    {diasLabel && <span className="text-ink-3"> · {enMinuscula(diasLabel)}</span>}</>}
             </p>
           ) : (
             <p className="text-xs text-ink-1 min-w-0">
               <span className="font-medium text-ink-0">Estás probando Rendi {plan}.</span>
-              {diasLabel && <span className="text-ink-3">{' '}{diasLabel}</span>}
+              {/* Si el aviso ya dice cuántos días quedan, no se repiten. */}
+              {diasLabel && !conDias && <span className="text-ink-3">{' '}{diasLabel}</span>}
               {aviso && <span className="text-ink-2">{' '}{aviso}</span>}
             </p>
           )}

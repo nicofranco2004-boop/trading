@@ -42,7 +42,7 @@ import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
 import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
 import fuenteDeApp from '../App.jsx?raw'
-import { ACCION_POR_DIRECCION } from './PositionsMobile'
+import { accionDelPedido } from './PositionsMobile'
 
 const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
 const dibujar = (Componente, u, c) => {
@@ -217,20 +217,27 @@ describe('seccionesDelMenuMas', () => {
   })
 })
 
-describe('"+" de la barra de abajo: cada acción va a una pantalla que la entiende', () => {
+describe('"+" de la barra de abajo: cada acción hace lo que dice', () => {
   // "Agregar a watchlist" iba a `/?action=watchlist`: la ruta existía, pero
   // ninguna pantalla leía esa acción y quedabas en el Inicio sin nada abierto.
+  // Se corre la MISMA función con la que la Cartera lee el pedido.
   const rutasDeApp = new Set([...fuenteDeApp.matchAll(/path="([^"]+)"/g)].map(m => m[1]))
+  const ESPERADO = { new_position: 'comprar', sell_position: 'vender', watchlist: null, search: null }
+  it('todas las acciones del "+" están en la tabla (una nueva tiene que anotarse)', () => {
+    expect(QUICK_ACTIONS.map(a => a.code).sort()).toEqual(Object.keys(ESPERADO).sort())
+  })
   for (const a of QUICK_ACTIONS) {
     it(a.label, () => {
       const [ruta, consulta = ''] = a.to.split('?')
       expect(rutasDeApp, ruta).toContain(ruta)
-      const accion = new URLSearchParams(consulta).get('action')
-      if (!accion) return
-      // Hoy la única pantalla que lee `?action=` es la Cartera del celular, y
-      // declara cuáles entiende (la misma lista que usa para abrir el flujo).
-      expect(ruta).toBe('/posiciones')
-      expect(Object.values(ACCION_POR_DIRECCION)).toContain(accion)
+      const esperado = ESPERADO[a.code]
+      if (esperado) {
+        // Comprar abre la compra y vender la venta, en la Cartera.
+        expect(ruta).toBe('/posiciones')
+        expect(accionDelPedido(`?${consulta}`)).toBe(esperado)
+      } else {
+        expect(consulta).not.toMatch(/action=/)
+      }
     })
   }
 })

@@ -17,3 +17,11 @@ describe('muroTapaLaPantalla', () => {
     expect(muroTapaLaPantalla(pausa, '/billing/success')).toBe(false)
   })
 })
+
+describe('muroTapaLaPantalla: lo que /planes dice que aceptás', () => {
+  it('Términos, Reembolso y Privacidad se pueden leer con la cuenta en pausa', () => {
+    for (const r of ['/terminos', '/reembolso', '/privacidad']) {
+      expect(muroTapaLaPantalla({ cuenta_en_pausa: true }, r), r).toBe(false)
+    }
+  })
+})

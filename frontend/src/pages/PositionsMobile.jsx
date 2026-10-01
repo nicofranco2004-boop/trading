@@ -118,8 +118,16 @@ function yaDescubrioElScrollLateral() {
 // Lo que esta pantalla entiende por la dirección (`/posiciones?action=…`): el
 // "+" de la barra de abajo manda acá. Una acción que no esté en esta lista cae
 // en la Cartera sin abrir nada (le pasó a "Agregar a watchlist", que iba a
-// `/?action=watchlist`). La prueba del "+" lee esta misma lista.
+// `/?action=watchlist`).
 export const ACCION_POR_DIRECCION = { comprar: 'new', vender: 'sell' }
+
+// Qué pide la dirección: 'comprar', 'vender' o null. Es lo que usa la pantalla
+// para abrir el flujo, y lo que la prueba del "+" corre con la dirección de cada
+// acción (el nombre del parámetro, y qué valor abre qué, viven acá).
+export function accionDelPedido(search) {
+  const valor = new URLSearchParams(search || '').get('action')
+  return Object.keys(ACCION_POR_DIRECCION).find(k => ACCION_POR_DIRECCION[k] === valor) || null
+}
 
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
@@ -732,12 +740,11 @@ export default function PositionsMobile() {
   // ?action=new / ?action=sell (FAB) → abrir el flow automáticamente. Limpiamos
   // el query param para que un reload posterior no re-abra el modal.
   useEffect(() => {
-    const params = new URLSearchParams(location.search)
-    const action = params.get('action')
-    if (action === ACCION_POR_DIRECCION.comprar) {
+    const action = accionDelPedido(location.search)
+    if (action === 'comprar') {
       openNewPositionFlow('mobile_fab')
       navigate('/posiciones', { replace: true })
-    } else if (action === ACCION_POR_DIRECCION.vender) {
+    } else if (action === 'vender') {
       navigate('/posiciones', { replace: true })
       // La venta necesita la lista de posiciones (carga async): si ya cargó la
       // disparamos directo; si no, queda pendiente y la dispara el effect de abajo.

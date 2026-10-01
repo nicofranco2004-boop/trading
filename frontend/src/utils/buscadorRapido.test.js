@@ -124,7 +124,7 @@ describe('Rendi AI según el plan', () => {
 import { esAtajoBuscador, urlNuevaOperacion, claveDeActivos } from './buscadorRapido'
 import { hayPrecios } from './preciosEnVivo'
 import { UTILIDADES } from './navegacion'
-import { POPULAR_TICKERS } from './tickers'
+import { POPULAR_TICKERS, CEDEARS_DE_ETF } from './tickers'
 
 describe('arreglos de la vuelta 1 de auditoría', () => {
   const k = (o) => ({ key: 'k', metaKey: false, ctrlKey: false, altKey: false, ...o })
@@ -218,5 +218,24 @@ describe('destinoDeTicker: la empresa correcta, o ninguna', () => {
   it('la lista de sugeridos ya no tiene "TEN" como Ternium Argentina', () => {
     const ternium = POPULAR_TICKERS.find(t => /Ternium Argentina/.test(t.name))
     expect(ternium.symbol).toBe('TXAR')
+  })
+})
+
+describe('⌘K adentro de un cliente', () => {
+  it('sus activos dicen de quién son, no "Tu posición"', () => {
+    expect(opcionesDeActivos([{ asset: 'GGAL' }], () => null, { cliente: 'Ana' })[0].detalle).toBe('Posición de Ana')
+    expect(opcionesDeActivos([{ asset: 'GGAL' }])[0].detalle).toBe('Tu posición')
+  })
+})
+
+describe('CEDEARs de ETFs: ninguno lleva a "no tenemos fundamentales"', () => {
+  it('todos los marcados como ETF en la lista de CEDEARs (no sólo SPY)', () => {
+    expect(CEDEARS_DE_ETF.size).toBeGreaterThanOrEqual(17)
+    for (const s of ['URA', 'COPX', 'FXI', 'ACWI', 'EWY', 'ETHA', 'GLD', 'IBIT']) {
+      expect(CEDEARS_DE_ETF.has(s), s).toBe(true)
+      expect(destinoDeTicker(`${s}.BA`, { tipo: 'cedear' }), s).toBe(null)
+    }
+    // Una acción con CEDEAR sí abre su empresa.
+    expect(destinoDeTicker('KO.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=KO')
   })
 })
