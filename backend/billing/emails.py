@@ -996,7 +996,13 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
 # ─── Campaña: pedirle opinión a quien está en la prueba ─────────────────────
 
 _TITULOS = frozenset({"dr", "dra", "lic", "ing", "cr", "cra", "cdor", "cdora",
-                      "sr", "sra", "srta", "prof", "arq", "esc"})
+                      "sr", "sra", "srta", "prof", "arq", "esc",
+                      "doctor", "doctora", "licenciado", "licenciada", "ingeniero",
+                      "ingeniera", "contador", "contadora", "abogado", "abogada",
+                      "arquitecto", "arquitecta", "profesor", "profesora",
+                      "señor", "señora", "señorita"})
+# Signos que la gente pone alrededor del nombre ("(Nico)", "Fede!", "«Ana»").
+_SIGNOS_BORDE = ".,;:!?¡¿()[]{}\"'«»“”‘’"
 # Arranque de apellido compuesto ("de la Fuente"): saludar "Hola De," es peor
 # que no saludar por nombre.
 _PARTICULAS = frozenset({"de", "del", "la", "las", "los", "da", "di", "van", "von"})
@@ -1020,21 +1026,33 @@ def nombre_de_pila(nombre) -> str:
       · Si arranca con un título ("Dr. Pérez", "Lic. Gómez") o con una
         partícula de apellido ("de la Fuente") también devuelve "": lo que
         sigue es el apellido, y "Hola Dr," no es un saludo.
-      · "Gómez, Lucía" (apellido, coma, nombre — como en un padrón) saluda a
-        Lucía: el nombre es lo que va después de la coma.
+      · Con una coma entre dos partes ("Gómez, Lucía" o "Lucía, Gómez") no
+        se sabe cuál es el nombre: devuelve "". Llamar a alguien por el
+        apellido es peor que no nombrarlo.
+      · Una abreviatura con punto seguida de otra palabra ("Ma. Laura"), "Mª"
+        o un usuario con punto ("nico.pussetto") también devuelven "".
     """
     texto = " ".join(str(nombre or "").split())
     if "," in texto:
-        _antes, _, despues = texto.partition(",")
-        if despues.strip():
-            texto = despues.strip()
+        antes, _, despues = texto.partition(",")
+        if antes.strip() and despues.strip():
+            return ""
+        texto = (antes.strip() or despues.strip())
     if not texto:
         return ""
-    primera = texto.split(" ")[0].strip(".,;:")
+    palabras = texto.split(" ")
+    cruda = palabras[0]
+    primera = cruda.strip(_SIGNOS_BORDE)
     if primera.lower() in _TITULOS or primera.lower() in _PARTICULAS:
         return ""
+    # Abreviatura con punto ANTES de otra palabra ("Ma. Laura", "Jo. Pérez"):
+    # "Hola Ma," es peor que "Hola,". Sola ("Ana.") es un nombre con un punto
+    # de más.
+    if cruda.rstrip(_SIGNOS_BORDE.replace(".", "")).endswith(".") \
+            and len(primera) <= 3 and len(palabras) > 1:
+        return ""
     if (len(primera) < 2 or len(primera) > 24
-            or any(c.isdigit() or c in "@_" for c in primera)
+            or any(c.isdigit() or c in "@_.ªº" for c in primera)
             or not any(c.isalpha() for c in primera)):
         return ""
     if primera.islower() or primera.isupper():
@@ -1042,7 +1060,8 @@ def nombre_de_pila(nombre) -> str:
     return primera
 
 
-def feedback_prueba_contenido(user_name: str = "", reenvio: bool = False) -> tuple:
+def feedback_prueba_contenido(user_name: str = "", reenvio: bool = False,
+                              nombre_literal: Optional[str] = None) -> tuple:
     """(asunto, html, texto) del mail "¿qué te está pareciendo Rendi?".
 
     Separado del envío para que el panel de admin muestre EXACTAMENTE lo que va
@@ -1060,15 +1079,20 @@ def feedback_prueba_contenido(user_name: str = "", reenvio: bool = False) -> tup
     mail idéntico al de hace unos días delata que salió de un botón —justo lo
     contrario de "lo leo yo"— y el que no contestó la primera vez tampoco va a
     contestar la copia. Mismo asunto a propósito: Gmail lo junta en la misma
-    conversación, debajo del primero, que es donde tiene sentido."""
-    nombre = nombre_de_pila(user_name)
+    conversación, debajo del primero, que es donde tiene sentido. La apertura
+    NO afirma "te escribí": si un envío anterior quedó marcado sin salir (un
+    reinicio a mitad de camino), esa frase sería mentira.
+
+    `nombre_literal` es sólo para la vista previa del panel: pone "(nombre)"
+    tal cual, sin pasarlo por nombre_de_pila."""
+    nombre = nombre_literal if nombre_literal is not None else nombre_de_pila(user_name)
     saludo_html = f"Hola {html.escape(nombre)}," if nombre else "Hola,"
     saludo_txt = f"Hola {nombre}," if nombre else "Hola,"
     asunto = "¿Qué te está pareciendo Rendi?"
     if reenvio:
-        apertura = ("te había escrito para preguntarte qué te estaba pareciendo "
-                    "Rendi. Ya lo venís usando un poco más, así que te vuelvo a "
-                    "preguntar: ¿cómo lo ves ahora?")
+        apertura = ("ya llevás un tiempo usando Rendi y quería saber cómo lo "
+                    "estás viendo ahora, con más días encima: ¿qué te está "
+                    "pareciendo?")
     else:
         apertura = ("estás probando Rendi estos días y quería preguntarte, sin "
                     "vueltas: ¿qué te está pareciendo?")

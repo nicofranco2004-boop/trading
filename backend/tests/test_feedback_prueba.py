@@ -545,10 +545,14 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         asunto2, _h2, t2 = emails.feedback_prueba_contenido("Lucía", reenvio=True)
         self.assertEqual(asunto1, asunto2)          # misma conversación en Gmail
         self.assertNotEqual(t1.split("\n")[0], t2.split("\n")[0])
-        self.assertTrue(t2.startswith("Hola Lucía, te había escrito"))
+        self.assertTrue(t2.startswith("Hola Lucía, ya llevás un tiempo"))
+        # No afirma un mail anterior: si una marca quedó sin envío, sería mentira.
+        self.assertNotIn("te escrib", t2.lower())
+        self.assertNotIn("te había", t2.lower())
         v = self._vista()
         self.assertEqual(v["mail_reenvio"]["texto"],
-                         emails.feedback_prueba_contenido("(nombre)", reenvio=True)[2])
+                         emails.feedback_prueba_contenido(nombre_literal="(nombre)",
+                                                          reenvio=True)[2])
 
     def test_los_dias_se_cuentan_desde_que_arranco(self):
         """Una prueba que no dura exactamente TRIAL_TOTAL_DAYS (vencimiento
@@ -565,10 +569,108 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         self.assertEqual(v["nuevos"][0]["dias_en_prueba"], 5)
 
     def test_nombres_con_coma_y_particulas(self):
-        casos = {"Gómez, Lucía": "Lucía", "de la Fuente": "", "Del Valle": "",
-                 "Lucía,": "Lucía", "María José": "María"}
+        casos = {"Gómez, Lucía": "", "Lucía, Gómez": "", "de la Fuente": "",
+                 "Del Valle": "", "Lucía,": "Lucía", "María José": "María",
+                 "Ma. Laura": "", "Nico.": "Nico", "Jo. Pérez": "", "Ana.": "Ana",
+                 "nico.pussetto": "", "Ma.José": "", "Mª José": "", "(Nico)": "Nico",
+                 "Fede!": "Fede", "Contador Pérez": "", "O'Brien": "O'Brien"}
         for nombre, esperado in casos.items():
             self.assertEqual(emails.nombre_de_pila(nombre), esperado, nombre)
+
+
+    # ── 10. tercera auditoría ───────────────────────────────────────────────
+
+    def test_doble_click_de_reenvio_lo_frena_la_fecha_vista_aunque_no_haya_espera(self):
+        """La espera de 24 h también frena el segundo click; con ella prendida,
+        este test pasaba aunque se rompiera la comparación contra la fecha vista
+        (lo comprobó el revisor). Con la espera en 0 queda sólo la comparación."""
+        a = self._con_prueba(self._persona())
+        b = self._con_prueba(self._persona())
+        self._mandar("nuevos")
+        for u in (a, b):
+            self._envejecer_marca(u, 48)
+        with patch.object(main, "FEEDBACK_PRUEBA_ESPERA_HORAS", 0):
+            en_pantalla = self._vistos("ya_recibieron")
+            primero, spy1 = self._mandar("ya_recibieron", vistos=en_pantalla)
+            segundo, spy2 = self._mandar("ya_recibieron", vistos=en_pantalla)
+        self.assertEqual(primero["sent_count"], 2)
+        self.assertEqual(segundo["sent_count"], 0, "el segundo click volvió a mandar")
+        self.assertEqual(segundo["skipped_count"], 2)
+        spy2.assert_not_called()
+
+    def test_los_otros_mails_del_panel_tambien_hacen_esperar(self):
+        reeng = self._con_prueba(self._persona())
+        libre = self._con_prueba(self._persona())
+        tranquilo = self._con_prueba(self._persona())
+        hace10 = (datetime.utcnow() - timedelta(minutes=10)).isoformat()
+        self.conn.execute("UPDATE users SET reengagement_email_sent_at=? WHERE id=?",
+                          (hace10, reeng))
+        # El mail libre guarda con el formato de SQLite (espacio, sin 'T').
+        mail = self.conn.execute("SELECT email FROM users WHERE id=?", (libre,)).fetchone()["email"]
+        self.conn.execute("INSERT INTO broadcast_send_log (content_hash, email, sent_at) "
+                          "VALUES ('abc', ?, ?)",
+                          (mail.upper(), (datetime.utcnow() - timedelta(hours=3))
+                           .strftime("%Y-%m-%d %H:%M:%S")))
+        self.conn.commit()
+        espera = {f["id"]: f["espera"] for f in self._vista()["nuevos"]}
+        self.assertIn("otro mail de Rendi hace un rato", espera[reeng])
+        self.assertIn("hace 3 h", espera[libre])
+        self.assertIsNone(espera[tranquilo])
+
+    def test_espera_al_aviso_automatico_que_sale_mañana(self):
+        # Fin de Pro le toca a los TRIAL_PRO_DAYS - 1 días: le faltan 12 h.
+        mañana = self._con_prueba(self._persona(), arrancó_hace=0)
+        self._atrasar(mañana, tr.TRIAL_PRO_DAYS - 1.5)
+        lejos = self._con_prueba(self._persona(), arrancó_hace=4)
+        espera = {f["id"]: f["espera"] for f in self._vista()["nuevos"]}
+        self.assertIn("mañana termina Pro", espera[mañana])
+        self.assertIsNone(espera[lejos])
+
+    def test_un_aviso_que_nunca_salio_no_deja_esperando_para_siempre(self):
+        """Si el cron no mandó el fin de Pro (caído, cuenta vieja), la persona
+        no puede quedar esperando un mail que no va a llegar."""
+        uid = self._con_prueba(self._persona(), arrancó_hace=tr.TRIAL_PRO_DAYS + 3)
+        self.assertNotIn(tr.MAIL_PRO_ENDING, {r["kind"] for r in self.conn.execute(
+            "SELECT kind FROM trial_email_log WHERE user_id=?", (uid,))})
+        fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
+        self.assertIsNone(fila["espera"])
+
+    def test_fechas_con_zona_horaria_tambien_cuentan(self):
+        uid = self._con_prueba(self._persona())
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+            (uid, tr.MAIL_PRO_ENDING,
+             (datetime.utcnow() - timedelta(hours=2)).isoformat() + "+00:00"))
+        self.conn.commit()
+        fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
+        self.assertIn("hace 2 h", fila["espera"] or "")
+
+    def test_momentos_de_aviso_coincide_con_el_cron(self):
+        """Diferencial contra el canónico: se corre el cron de verdad y lo que
+        manda tiene que ser exactamente lo que momentos_de_aviso dice que ya
+        corresponde. Si alguien cambia una condición del cron y no la función,
+        este test se pone rojo."""
+        edades = (tr.TRIAL_PRO_DAYS - 1.1, tr.TRIAL_PRO_DAYS - 0.9,
+                  tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES - 0.1,
+                  tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 0.1)
+        uids = []
+        for e in edades:
+            uid = self._con_prueba(self._persona(), arrancó_hace=0)
+            self._atrasar(uid, e)
+            uids.append(uid)
+        with patch.object(emails, "send_trial_pro_ending", return_value=True), \
+             patch.object(emails, "send_trial_ending_soon", return_value=True), \
+             patch.object(emails, "send_trial_ended", return_value=True):
+            tr.send_due_trial_emails(self.conn)
+        ahora = datetime.utcnow()
+        for uid in uids:
+            r = self.conn.execute("SELECT trial_started_at, trial_ends_at FROM users "
+                                  "WHERE id=?", (uid,)).fetchone()
+            mandados = {x["kind"] for x in self.conn.execute(
+                "SELECT kind FROM trial_email_log WHERE user_id=?", (uid,))}
+            for kind in (tr.MAIL_PRO_ENDING, tr.MAIL_ENDING_SOON):
+                debia = tr.momentos_de_aviso(r["trial_started_at"], r["trial_ends_at"])[kind] <= ahora
+                self.assertEqual(kind in mandados, debia, f"uid={uid} {kind}")
 
 
 if __name__ == "__main__":

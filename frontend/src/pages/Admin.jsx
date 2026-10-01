@@ -955,11 +955,13 @@ function FeedbackPruebaPanel({ toast }) {
       </div>
 
       <p className="text-xs text-ink-3 leading-relaxed">
-        Les pregunta qué les está pareciendo Rendi a los que están en la prueba gratis hoy (los mismos que
-        cuenta «Pruebas · En curso»). Al que le llega, sale de esta lista. Al que se le termina la prueba o
-        paga, deja de aparecer. Los que tienen menos de {preview?.min_dias ?? 3} días de prueba esperan: entran
-        solos cuando los cumplen. Al que le llegó otro mail en las últimas {preview?.espera_horas ?? 24} h se lo
-        ve en gris y sale al día siguiente. Las respuestas llegan a soporte@.
+        Les pregunta qué les está pareciendo Rendi a los que están en la prueba gratis hoy (la misma regla que
+        «Pruebas · En curso», sin las cuentas de admin). Al que le llega, sale de esta lista. Al que se le
+        termina la prueba o paga, deja de aparecer. Los que tienen menos de {preview?.min_dias ?? 3} días de
+        prueba pasan a esta lista cuando los cumplen. En gris: a quien le llegó otro mail de Rendi en las
+        últimas {preview?.espera_horas ?? 24} h, o le toca un aviso automático de la prueba en las{' '}
+        próximas {preview?.espera_horas ?? 24} h — se le puede mandar después, pero nada sale solo: hay que
+        volver a apretar. Las respuestas llegan a soporte@.
       </p>
 
       {preview && (
@@ -1078,8 +1080,8 @@ function FeedbackPruebaPanel({ toast }) {
               {result.marcas_trabadas?.length > 0 && (
                 <div className="mt-1 text-rendi-neg">
                   A {result.marcas_trabadas.map(t => t.email).join(', ')} no le llegó el mail, pero quedó
-                  marcado como que sí (la base no dejó corregirlo). Aparece en «Ya lo recibieron»: mandale con
-                  «Volver a mandar».
+                  marcado como que sí (la base no dejó corregirlo). Aparece en «Ya lo recibieron»: a partir de
+                  mañana se lo podés mandar con «Volver a mandar».
                 </div>
               )}
             </div>

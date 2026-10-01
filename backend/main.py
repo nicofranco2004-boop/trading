@@ -21768,7 +21768,7 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
     automáticos de la prueba hace poco, para no mandarle dos el mismo día."""
     from billing import emails
     from billing import trial as _trial
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
     if data.grupo not in ("nuevos", "ya_recibieron"):
         raise HTTPException(422, "grupo debe ser 'nuevos' o 'ya_recibieron'")
@@ -21787,68 +21787,145 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             return {"prueba": True, "to": yo["email"], "sent": bool(ok)}
 
         vivos = _trial.activos(conn, limit=10 ** 6)["usuarios"]
-        marcas, arranques = {}, {}
+        ahora = _dt.utcnow()
+
+        def _fecha(valor):
+            """Cualquier fecha de la base como datetime UTC sin zona, o None.
+            Las fuentes escriben en formatos distintos ('2026-10-01T14:00:00.1'
+            de Python, '2026-10-01 14:00:00' de SQLite); comparadas como texto
+            el espacio y la 'T' cambian cuál parece más nueva."""
+            if not valor:
+                return None
+            try:
+                d = _dt.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return None
+            if d.tzinfo is not None:
+                d = d.astimezone(_tz.utc).replace(tzinfo=None)
+            return d
+
+        def _horas_desde(d):
+            return round((ahora - d).total_seconds() / 3600, 1) if d else None
+
+        def _hace(horas):
+            return "hace un rato" if horas < 1 else f"hace {round(horas)} h"
+
+        # Una fila por persona con todo lo que hace falta para decidir:
+        # la marca de ESTE mail, cuándo arrancó la prueba y las marcas de los
+        # otros mails que se mandan a mano desde este mismo panel.
+        datos = {}
         if vivos:
             ph = ",".join("?" for _ in vivos)
             for r in conn.execute(
-                f"""SELECT id, trial_feedback_email_sent_at AS enviado,
-                           trial_started_at AS arranco FROM users
+                f"""SELECT id, email, trial_feedback_email_sent_at AS enviado,
+                           trial_started_at, trial_ends_at,
+                           reengagement_email_sent_at, gift_plan_email_sent_at,
+                           trial_invite_email_sent_at
+                      FROM users
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
                        AND managed_by IS NULL
                        AND TRIM(COALESCE(email,'')) <> ''""",
                     tuple(int(v["id"]) for v in vivos)).fetchall():
-                marcas[int(r["id"])] = r["enviado"]
-                arranques[int(r["id"])] = r["arranco"]
+                datos[int(r["id"])] = dict(r)
 
-        # El último mail AUTOMÁTICO de la prueba que le llegó a cada uno
-        # (trial_email_log: arrancó / fin de Pro / quedan 3 días / terminó).
-        ultimo_auto = {}
-        if marcas:
-            ph = ",".join("?" for _ in marcas)
+        def _deshacer():
+            # En Postgres, después de un error la transacción queda abortada y
+            # TODO lo que sigue falla hasta un rollback; sin esto, una sola
+            # falla arrastraba a todos los que venían detrás.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Todos los mails que Rendi le mandó por iniciativa propia, como fechas:
+        #   · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
+        #   · los otros mails a mano de este panel (re-engagement, regalo,
+        #     invitación: columnas de users; el mail libre: broadcast_send_log).
+        # Sin los segundos, alguien que recibió el re-engagement hace un minuto
+        # recibía este también: dos mails en el mismo minuto.
+        otros_mails = {uid: [] for uid in datos}
+        avisos_enviados = {uid: set() for uid in datos}
+        for uid, d in datos.items():
+            for col in ("reengagement_email_sent_at", "gift_plan_email_sent_at",
+                        "trial_invite_email_sent_at"):
+                f = _fecha(d.get(col))
+                if f:
+                    otros_mails[uid].append(f)
+        if datos:
+            ph = ",".join("?" for _ in datos)
             try:
                 for r in conn.execute(
-                    f"""SELECT user_id, MAX(sent_at) AS t FROM trial_email_log
-                         WHERE user_id IN ({ph}) GROUP BY user_id""",
-                        tuple(marcas)).fetchall():
-                    ultimo_auto[int(r["user_id"])] = r["t"]
+                    f"""SELECT user_id, kind, sent_at FROM trial_email_log
+                         WHERE user_id IN ({ph})""", tuple(datos)).fetchall():
+                    uid = int(r["user_id"])
+                    avisos_enviados[uid].add(r["kind"])
+                    f = _fecha(r["sent_at"])
+                    if f:
+                        otros_mails[uid].append(f)
             except Exception as ex:
                 log.warning("feedback-prueba: no se pudo leer trial_email_log: %s", ex)
-        ahora = _dt.utcnow()
-
-        def _horas_desde(iso):
+                _deshacer()
+            por_mail = {(d["email"] or "").strip().lower(): uid for uid, d in datos.items()}
+            ph = ",".join("?" for _ in por_mail)
             try:
-                d = ahora - _dt.fromisoformat(str(iso).replace("Z", ""))
-                return round(d.total_seconds() / 3600, 1)
-            except (TypeError, ValueError):
-                return None
+                for r in conn.execute(
+                    f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
+                         WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
+                    f = _fecha(r["sent_at"])
+                    if f and r["e"] in por_mail:
+                        otros_mails[por_mail[r["e"]]].append(f)
+            except Exception as ex:
+                log.warning("feedback-prueba: no se pudo leer broadcast_send_log: %s", ex)
+                _deshacer()
 
-        def _h(x):
-            return max(1, round(x))
-
+        ventana = _td(hours=FEEDBACK_PRUEBA_ESPERA_HORAS)
+        # Cómo se llama en el panel cada aviso automático de la prueba.
+        avisos = {_trial.MAIL_PRO_ENDING: "mañana termina Pro",
+                  _trial.MAIL_ENDING_SOON: "quedan pocos días",
+                  _trial.MAIL_ENDED: "terminó tu prueba"}
         nuevos, ya_recibieron, recien_empezados = [], [], []
         for v in vivos:   # ya vienen ordenados: primero a los que menos les queda
             vid = int(v["id"])
-            if vid not in marcas:
+            if vid not in datos:
                 continue
+            d = datos[vid]
             # Días COMPLETOS desde que arrancó. Se cuenta desde el arranque y no
             # como "total − lo que le queda": eso daba mal para una prueba que no
             # dure exactamente TRIAL_TOTAL_DAYS (otra versión de la prueba, o un
             # vencimiento movido a mano).
-            horas_prueba = _horas_desde(arranques.get(vid))
-            dias_en_prueba = int((horas_prueba or 0) // 24)
-            otro = _horas_desde(ultimo_auto[vid]) if vid in ultimo_auto else None
-            propio = _horas_desde(marcas[vid]) if marcas[vid] else None
+            arranco = _fecha(d["trial_started_at"])
+            dias_en_prueba = int((_horas_desde(arranco) or 0) // 24)
+            ultimo_otro = max(otros_mails[vid]) if otros_mails[vid] else None
+            otro = _horas_desde(ultimo_otro)
+            propio = _horas_desde(_fecha(d["enviado"]))
+            # El próximo aviso automático que todavía no le llegó: si le toca
+            # en las próximas horas, este mail espera a que salga aquel.
+            # Sólo cuenta el que le toca dentro de la ventana —o le tocó hace
+            # menos de eso y el cron todavía no pasó—. Uno que tendría que haber
+            # salido hace más de un día y no salió no lo está mandando nadie
+            # (cron caído, cuenta vieja): esperarlo dejaría a la persona
+            # esperando para siempre.
+            pendientes = {k: m for k, m in _trial.momentos_de_aviso(
+                              d["trial_started_at"], d["trial_ends_at"]).items()
+                          if k not in avisos_enviados[vid] and m > ahora - ventana}
+            proximo = min(pendientes.items(), key=lambda kv: kv[1]) if pendientes else None
             espera = None
             if otro is not None and otro < FEEDBACK_PRUEBA_ESPERA_HORAS:
-                espera = f"le llegó otro mail de la prueba hace {_h(otro)} h · sale mañana"
+                espera = (f"le llegó otro mail de Rendi {_hace(otro)} · "
+                          "se le puede mandar a partir de mañana")
+            elif proximo and proximo[1] <= ahora + ventana:
+                espera = (f"en las próximas {FEEDBACK_PRUEBA_ESPERA_HORAS} h le llega el aviso "
+                          f"automático «{avisos.get(proximo[0], proximo[0])}» · "
+                          "se le puede mandar después")
             elif propio is not None and propio < FEEDBACK_PRUEBA_ESPERA_HORAS:
-                espera = f"lo recibió hace {_h(propio)} h · se le puede volver a mandar mañana"
+                espera = (f"lo recibió {_hace(propio)} · "
+                          "se le puede volver a mandar a partir de mañana")
             fila = {"id": vid, "email": v["email"], "name": v.get("name"),
                     "saludo": emails.nombre_de_pila(v.get("name")),
                     "stage": v["stage"], "days_left": v["days_left"],
                     "dias_en_prueba": dias_en_prueba,
-                    "sent_at": marcas[vid],
+                    "sent_at": d["enviado"],
                     "otro_mail_hace_horas": otro,
                     "espera": espera}
             if fila["sent_at"]:
@@ -21862,8 +21939,9 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
                 nuevos.append(fila)
 
         if not data.confirm:
-            asunto, _html, texto = emails.feedback_prueba_contenido("(nombre)")
-            _a2, _h2, texto_reenvio = emails.feedback_prueba_contenido("(nombre)", reenvio=True)
+            asunto, _html, texto = emails.feedback_prueba_contenido(nombre_literal="(nombre)")
+            _a2, _h2, texto_reenvio = emails.feedback_prueba_contenido(
+                nombre_literal="(nombre)", reenvio=True)
             return {
                 "dry_run": True,
                 "en_prueba": len(nuevos) + len(ya_recibieron) + len(recien_empezados),
@@ -21888,15 +21966,6 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
         # resultado cierre con lo que se confirmó.
         ids_grupo = {t["id"] for t in grupo}
         descartados = [{"id": i} for i in visto if i not in ids_grupo]
-
-        def _deshacer():
-            # En Postgres, después de un error la transacción queda abortada y
-            # TODO lo que sigue falla hasta un rollback; sin esto, una sola
-            # falla arrastraba a todos los que venían detrás.
-            try:
-                conn.rollback()
-            except Exception:
-                pass
 
         enviados, fallados, salteados, trabadas = [], [], [], []
         intentos = 0
