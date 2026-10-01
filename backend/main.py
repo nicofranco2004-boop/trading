@@ -39550,15 +39550,20 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
 # por rendi.finance (Vercel) y directo a Railway. Público y sin datos: sólo
 # cuenta. Topes para que no sirva para cargar el servidor. SE SACA después.
 @app.api_route("/api/diag-goteo", methods=["GET", "POST"])
-async def diag_goteo(n: int = 10, ms: int = 300, patron: str = "cuenta", hilo: int = 0):
+async def diag_goteo(n: int = 10, ms: int = 300, patron: str = "cuenta", hilo: int = 0,
+                     latido: int = 0, relleno: int = 0):
     # patron=chat imita el RITMO del chat: dos avisos pegados y después un
     # silencio largo (como «Leyendo tu cartera» mientras piensa la IA), una
     # tanda de pedazos cada 40 ms, otros dos pegados, silencio, otra tanda.
     # Cada aviso trae `s` = segundos desde que arrancó, según el servidor.
     # hilo=1 lo fabrica como el chat (generador común, en un hilo aparte).
+    # Remedios a probar: latido=N manda un comentario vacío cada N ms de
+    # silencio; relleno=N agranda cada aviso hasta N letras con un comentario.
     import asyncio
     n = max(1, min(int(n), 30))
     ms = max(20, min(int(ms), 1000))
+    latido = max(0, min(int(latido), 2000)) / 1000
+    relleno = max(0, min(int(relleno), 16384))
     if patron == "chat":
         guion = ([("aviso", 0)] + [("pausa", 3.0)] + [("pedazo", 0.04)] * 20
                  + [("aviso", 0), ("aviso", 0), ("pausa", 2.0), ("aviso", 0), ("pausa", 3.0)]
@@ -39567,29 +39572,39 @@ async def diag_goteo(n: int = 10, ms: int = 300, patron: str = "cuenta", hilo: i
         guion = [("pausa", ms / 1000), ("aviso", 0)] * n
 
     def _frame(i, tipo, t0):
-        return "data: " + json.dumps({"t": tipo, "i": i, "s": round(time.monotonic() - t0, 3)}) + "\n\n"
+        f = "data: " + json.dumps({"t": tipo, "i": i, "s": round(time.monotonic() - t0, 3)}) + "\n\n"
+        if relleno > len(f):
+            f = ": " + "." * (relleno - len(f) - 3) + "\n" + f
+        return f
+
+    def _trozos(seg):
+        # La pausa en pedazos de `latido` (si está prendido), con un latido entre uno y otro.
+        if not latido or seg <= latido:
+            return [seg]
+        k = int(seg // latido)
+        return [latido] * k + ([seg - k * latido] if seg - k * latido > 1e-6 else [])
 
     async def _gen_async():
         t0 = time.monotonic()
         yield ": ok\n\n"
         for i, (tipo, seg) in enumerate(guion, 1):
-            if tipo == "pausa":
-                await asyncio.sleep(seg)
-                continue
-            yield _frame(i, tipo, t0)
-            if seg:
-                await asyncio.sleep(seg)
+            if tipo != "pausa":
+                yield _frame(i, tipo, t0)
+            for j, tr in enumerate(_trozos(seg) if seg else []):
+                await asyncio.sleep(tr)
+                if latido and seg > latido:
+                    yield ": \n\n"
 
     def _gen_hilo():
         t0 = time.monotonic()
         yield ": ok\n\n"
         for i, (tipo, seg) in enumerate(guion, 1):
-            if tipo == "pausa":
-                time.sleep(seg)
-                continue
-            yield _frame(i, tipo, t0)
-            if seg:
-                time.sleep(seg)
+            if tipo != "pausa":
+                yield _frame(i, tipo, t0)
+            for j, tr in enumerate(_trozos(seg) if seg else []):
+                time.sleep(tr)
+                if latido and seg > latido:
+                    yield ": \n\n"
 
     return StreamingResponse(_gen_hilo() if hilo else _gen_async(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache, no-transform",
