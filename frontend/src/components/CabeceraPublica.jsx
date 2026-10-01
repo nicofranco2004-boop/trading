@@ -17,9 +17,11 @@ import { Link } from 'react-router-dom'
 import RendiLogo from './RendiLogo'
 import { useAuth } from '../contexts/AuthContext'
 
-export function SoloVisitantes({ children }) {
+// `sino`: lo que ve quien YA entró en su lugar (p.ej. el nombre de un botón
+// sin el enlace), para que una frase no quede cortada.
+export function SoloVisitantes({ children, sino = null }) {
   const { user } = useAuth()
-  return user ? null : children
+  return user ? sino : children
 }
 
 export default function CabeceraPublica({ ancho = 'max-w-3xl', children }) {

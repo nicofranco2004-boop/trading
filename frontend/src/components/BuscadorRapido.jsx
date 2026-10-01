@@ -76,9 +76,12 @@ const DE_ENTRADA = new Set(['/dashboard', '/posiciones', '/operaciones', '/', '/
 // brokers). Un asesor adentro de un cliente ve los del cliente.
 const _activos = new Map()   // `${usuario}:${cuenta}` → lista
 
-export default function BuscadorRapido() {
-  const [abierto, setAbierto] = useState(false)
-  const [consulta, setConsulta] = useState('')
+// `abiertoAlInicio` / `consultaInicial`: para dibujarlo abierto y con algo
+// escrito en las pruebas (en la app arranca cerrado y vacío). Sin esto nunca se
+// dibujaba lo que ofrece, y deshacer una regla de qué ofrece pasaba en verde.
+export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicial = '' } = {}) {
+  const [abierto, setAbierto] = useState(abiertoAlInicio)
+  const [consulta, setConsulta] = useState(consultaInicial)
   const [sel, setSel] = useState(0)
   const [posiciones, setPosiciones] = useState([])
   const inputRef = useRef(null)

@@ -60,7 +60,8 @@ export default function Empezar() {
 
       <h2>1. Crear tu cuenta</h2>
       <p>
-        Andá a <a href="/login?mode=register">Crear cuenta</a>. Te pedimos
+        {/* Con la sesión abierta el enlace te dejaba en el Inicio: queda el nombre. */}
+        Andá a <SoloVisitantes sino={<strong>Crear cuenta</strong>}><a href="/login?mode=register">Crear cuenta</a></SoloVisitantes>. Te pedimos
         email + contraseña. Te llega un código de 6 dígitos al mail para verificar
         que sos vos (revisá Spam si no aparece en 2 minutos). Listo: al verificar
         el mail arranca tu prueba de {TRIAL_TOTAL_DAYS} días gratis. {PRUEBA_EN_UNA_LINEA}

@@ -239,9 +239,13 @@ export default function Sidebar() {
                       className={isOpen ? 'text-data-violet' : 'text-ink-2'} />
                     {/* Adentro de un cliente, la cartera es la de él (el celular
                         dice lo mismo en "Más"). */}
-                    <span className="flex-1 text-left">
-                      {group.id === 'cartera' && clientCtx ? `Cartera de ${clientCtx.label || `Cliente ${clientCtx.id}`}` : group.label}
-                    </span>
+                    {/* Un nombre largo ocupaba 4 renglones (y uno sin espacios, como
+                        un mail, empujaba la flecha fuera del menú): se recorta,
+                        y entero al pasar el mouse. */}
+                    {(() => {
+                      const titulo = group.id === 'cartera' && clientCtx ? `Cartera de ${clientCtx.label || `Cliente ${clientCtx.id}`}` : group.label
+                      return <span className="flex-1 min-w-0 truncate text-left" title={titulo}>{titulo}</span>
+                    })()}
                     <ChevronRight size={16} strokeWidth={2}
                       className={`text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
                   </button>

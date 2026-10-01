@@ -10,11 +10,25 @@ import { HelmetProvider } from 'react-helmet-async'
 // sesión, el cliente abierto y el ancho de la pantalla.
 let esCelular = true
 let cliente = { id: 7, label: 'Ana' }
-const usuario = { tier: 'advisor', name: 'Asesor' }
+let usuario = { tier: 'advisor', name: 'Asesor' }
+let enDemo = false
+let enPrueba = false
 vi.mock('./contexts/AuthContext', () => ({
   AuthProvider: ({ children }) => children,
-  useAuth: () => ({ user: usuario, logout: () => {}, loading: false }),
+  useAuth: () => ({ user: usuario, logout: () => {}, loading: false, isDemo: enDemo, exitDemo: () => {} }),
 }))
+// La prueba gratis llega del servidor; acá se la prende a mano (el resto del
+// hook queda el de verdad).
+vi.mock('./hooks/usePlanFeatures', async (original) => {
+  const real = await original()
+  return {
+    ...real,
+    usePlanFeatures: () => {
+      const r = real.usePlanFeatures()
+      return enPrueba ? { ...r, trial: { active: true, stage: 'pro', days_left: 12 } } : r
+    },
+  }
+})
 vi.mock('./contexts/AdvisorContext', () => ({
   AdvisorProvider: ({ children }) => children,
   useAdvisorContext: () => ({ clientCtx: cliente, enterClient: () => {}, exitClient: () => {} }),
@@ -60,5 +74,27 @@ describe('el armado del celular', () => {
     expect(html).toContain('href="/mas"')
     // Las pantallas se cargan aparte (lazy): el dibujo no llega a ellas, la ruta se mira en App.jsx.
     expect(fuenteDeApp).toMatch(/<Route path="\/mas" element={<More \/>} \/>/)
+  })
+})
+
+describe('los avisos de arriba de todo (demo, prueba gratis), en la app entera', () => {
+  // En el celular van ADENTRO de la barra: pegados por su cuenta, la barra de la
+  // prueba se montaba sobre el logo y, después, tapaba el total de Cartera.
+  const conAviso = (celular, { demo = false, prueba = false } = {}) => {
+    usuario = { tier: 'pro', name: 'Usuario' }; enDemo = demo; enPrueba = prueba
+    try { return dibujar(celular, null) } finally { usuario = { tier: 'advisor', name: 'Asesor' }; enDemo = false; enPrueba = false }
+  }
+  const dentroDeLaBarra = (html, texto) => html.slice(html.indexOf('<header'), html.indexOf('</header>')).includes(texto)
+  it('prueba gratis: celular, una vez y en la barra; compu, una vez', () => {
+    const cel = conAviso(true, { prueba: true })
+    expect(veces(cel, 'Estás probando Rendi')).toBe(1)
+    expect(dentroDeLaBarra(cel, 'Estás probando Rendi')).toBe(true)
+    expect(veces(conAviso(false, { prueba: true }), 'Estás probando Rendi')).toBe(1)
+  })
+  it('demo: celular, una vez y en la barra; compu, una vez', () => {
+    const cel = conAviso(true, { demo: true })
+    expect(veces(cel, 'Modo demo activo.')).toBe(1)
+    expect(dentroDeLaBarra(cel, 'Modo demo activo.')).toBe(true)
+    expect(veces(conAviso(false, { demo: true }), 'Modo demo activo.')).toBe(1)
   })
 })

@@ -3,29 +3,30 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { HelmetProvider } from 'react-helmet-async'
 
-// Lo que rodea al menú "Más" en el celular, DIBUJADO: la franja del cliente
-// abierto, el encabezado de las páginas públicas con la sesión abierta, y a
-// dónde lleva la lupa. Cada caso es un hallazgo de auditoría que se veía en
-// pantalla.
+// Lo que rodea al menú "Más" en el celular, DIBUJADO: la barra de arriba y
+// sus avisos, lo que se pega debajo al bajar, las páginas públicas con la
+// sesión abierta y a dónde lleva la lupa. Cada caso es un hallazgo de auditoría
+// que se veía en pantalla. (Dónde pone App.jsx cada aviso, en cada armado, lo
+// prueba appShell.render.test.jsx dibujando la app entera.)
 let usuario = { tier: 'pro' }
 let cliente = null
-let esCelular = true
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: usuario, logout: () => {} }) }))
 vi.mock('../../contexts/AdvisorContext', () => ({
   useAdvisorContext: () => ({ clientCtx: cliente, enterClient: () => {}, exitClient: () => {} }),
 }))
 vi.mock('../../contexts/CoachDrawerContext', () => ({ useCoachDrawer: () => ({ open: () => {} }) }))
-vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => esCelular, MOBILE_BREAKPOINT_PX: 768 }))
 vi.mock('../CurrencySwitcher', () => ({ default: () => null }))
 vi.mock('../Toast', () => ({ useToast: () => null }))
 
-import MobileTopBar from './MobileTopBar'
+import MobileTopBar, { anotarAltoDeLaBarra, VARIABLE_ALTO_BARRA } from './MobileTopBar'
+import fuenteBarra from './MobileTopBar.jsx?raw'
 import ClientContextBar from '../advisor/ClientContextBar'
 import MobileSearch from '../../pages/MobileSearch'
+import fuenteDeApp from '../../App.jsx?raw'
 import { CTA_PRUEBA } from '../../data/prueba'
 
-const dibujar = (Componente, { u = usuario, c = cliente, celular = esCelular, props = {} } = {}) => {
-  usuario = u; cliente = c; esCelular = celular
+const dibujar = (Componente, { u = usuario, c = cliente, props = {} } = {}) => {
+  usuario = u; cliente = c
   // HelmetProvider: las páginas públicas ponen su <title> como en producción (main.jsx).
   return renderToStaticMarkup(<HelmetProvider context={{}}><MemoryRouter><Componente {...props} /></MemoryRouter></HelmetProvider>)
 }
@@ -34,28 +35,24 @@ const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].repl
 const cabeceraDelCelular = (html) => html.slice(html.indexOf('<header'), html.indexOf('</header>') + 9)
 
 describe('la barra de arriba del celular', () => {
-  // La franja iba en el contenido, pegada a 64 px del borde, que era el alto
-  // de la barra hasta que se le sumó la cinta: al bajar quedaba escondida.
-  it('la franja del cliente va adentro, con el nombre a la vista', () => {
-    const barra = dibujar(MobileTopBar, { u: { tier: 'advisor' }, c: ANA, celular: true })
-    const header = cabeceraDelCelular(barra)
-    expect(header).toMatch(/Cuenta de\s*<span[^>]*>Ana<\/span>/)
-    expect(header).toContain('aria-label="Volver a mis clientes"')
-    // La copia del contenido no se dibuja en el celular (si no, saldría dos veces).
-    expect(dibujar(ClientContextBar, { celular: true })).toBe('')
-  })
-  it('la barra se queda fija arriba al bajar (si no, la franja se iría con el scroll)', () => {
-    const header = cabeceraDelCelular(dibujar(MobileTopBar, { u: { tier: 'advisor' }, c: ANA, celular: true }))
+  it('lo que le pasa App.jsx (los avisos) va ADENTRO de la barra, que se queda fija al bajar', () => {
+    const html = dibujar(MobileTopBar, { props: { children: <p>AVISO-DE-PRUEBA</p> } })
+    const header = cabeceraDelCelular(html)
+    expect(header).toContain('AVISO-DE-PRUEBA')
     expect(header).toMatch(/^<header[^>]*class="[^"]*\bsticky top-0\b/)
   })
-  it('en la compu la franja sigue en el contenido, pegada arriba, y no en la barra', () => {
-    const contenido = dibujar(ClientContextBar, { u: { tier: 'advisor' }, c: ANA, celular: false })
+  it('la franja del cliente, dentro de la barra: corta, con el nombre a la vista', () => {
+    // A 360-375 px "Estás viendo la cuenta de" + "Volver a mis clientes" no
+    // dejaban lugar y el nombre del cliente quedaba cortado.
+    const enLaBarra = dibujar(ClientContextBar, { u: { tier: 'advisor' }, c: ANA, props: { enLaBarra: true } })
+    expect(enLaBarra).toMatch(/Cuenta de\s*<span[^>]*>Ana<\/span>/)
+    expect(enLaBarra).toContain('aria-label="Volver a mis clientes"')
+    expect(enLaBarra).not.toMatch(/\bsticky\b/)   // la que se queda fija es la barra
+  })
+  it('en la compu la franja va en el contenido, pegada arriba', () => {
+    const contenido = dibujar(ClientContextBar, { u: { tier: 'advisor' }, c: ANA })
     expect(contenido).toContain('Estás viendo la cuenta de')
     expect(contenido).toMatch(/class="[^"]*\bsticky top-0\b/)
-    expect(dibujar(ClientContextBar, { celular: false, props: { enLaBarra: true } })).toBe('')
-  })
-  it('sin cliente abierto no aparece en ningún lado', () => {
-    expect(dibujar(MobileTopBar, { u: { tier: 'advisor' }, c: null, celular: true })).not.toContain('Cuenta de')
   })
   it('la lupa no aparece para el asesor en su nivel (busca para una cartera propia, que no tiene)', () => {
     expect(rutas(dibujar(MobileTopBar, { u: { tier: 'pro' }, c: null }))).toContain('/buscar')
@@ -64,83 +61,167 @@ describe('la barra de arriba del celular', () => {
   })
 })
 
-// Lo que se pega arriba al bajar se ubica debajo de la barra del celular, cuyo
-// alto anota MobileTopBar en --alto-barra-celular. Con un número escrito a
-// mano (88 px, top-0) quedaban tapados — o tapaban la barra — cada vez que la
-// barra cambió de alto. Esto se pone en rojo si alguien vuelve a escribirlo.
-describe('nadie tiene escrito a mano el alto de la barra de arriba', () => {
-  const fuentes = import.meta.glob(['../../**/*.jsx', '!../../**/*.test.jsx'], { query: '?raw', import: 'default', eager: true })
-  it('no hay `top-[88px]`, `top-16` ni `top-[64px]` en lo que se dibuja', () => {
-    expect(Object.keys(fuentes).length).toBeGreaterThan(200)
-    const conAlto = Object.entries(fuentes)
-      .filter(([, src]) => /\btop-\[(88|64|93)px\]|(^|[\s"'`])top-16\b/.test(src))
-      .map(([ruta]) => ruta)
-    expect(conAlto).toEqual([])
+describe('la barra anota su alto, y lo que se pega debajo lo lee', () => {
+  // Las cabeceras de Cartera y Movimientos, la burbuja de Rendi, la ficha de
+  // una tenencia y el Onboarding se pegan DEBAJO de la barra al bajar. Cuando
+  // cada una tenía el alto escrito a mano (88 px, 0) quedaban tapadas, o
+  // tapaban la barra, cada vez que la barra cambió de alto.
+  const raizFalsa = () => {
+    const vars = {}
+    return { vars, style: { setProperty: (k, v) => { vars[k] = v }, removeProperty: (k) => { delete vars[k] } } }
+  }
+  it('mide, vuelve a medir cuando la barra cambia y se borra al desarmarse', () => {
+    let alto = 140.4
+    const el = { getBoundingClientRect: () => ({ height: alto }) }
+    let avisar = null, observado = null, desconectado = false
+    class Observador { constructor(cb) { avisar = cb } observe(x) { observado = x } disconnect() { desconectado = true } }
+    const raiz = raizFalsa()
+    const deshacer = anotarAltoDeLaBarra(el, raiz, Observador)
+    expect(raiz.vars[VARIABLE_ALTO_BARRA]).toBe('140px')
+    expect(observado).toBe(el)
+    alto = 93; avisar()                              // se cerró el cliente: la barra achicó
+    expect(raiz.vars[VARIABLE_ALTO_BARRA]).toBe('93px')
+    deshacer()                                       // se pasó al armado de compu
+    expect(VARIABLE_ALTO_BARRA in raiz.vars).toBe(false)
+    expect(desconectado).toBe(true)
   })
-  it('lo que se pega arriba en el contenido del celular lee la variable, en CADA lugar', () => {
-    const deben = Object.entries(fuentes).filter(([ruta]) => /\/(PositionsMobile|Operations|TrialCta|DemoBanner|RendiMate)\.jsx$/.test(ruta))
-    expect(deben).toHaveLength(5)
-    for (const [ruta, src] of deben) {
-      expect(src, ruta).toContain('--alto-barra-celular')
-      // Con `sticky top-0` se monta encima de la barra al bajar (TrialCta tiene dos).
-      expect(src, ruta).not.toMatch(/\bsticky top-0\b/)
-    }
+  it('sin ResizeObserver (Safari viejo) igual mide una vez', () => {
+    const raiz = raizFalsa()
+    anotarAltoDeLaBarra({ getBoundingClientRect: () => ({ height: 93 }) }, raiz, undefined)
+    expect(raiz.vars[VARIABLE_ALTO_BARRA]).toBe('93px')
+  })
+  it('lo que mide es la barra ENTERA (el <header>), no una parte', () => {
+    expect(fuenteBarra).toMatch(/<header\s+ref={barraRef}/)
+    expect(fuenteBarra).toMatch(/useAnotarAlto\(barraRef\)/)
   })
 })
 
-describe('páginas públicas con la sesión abierta (Guía, Blog, landings de búsqueda)', () => {
+// El árbol entero: cada elemento que se pega arriba (`sticky` con `top-…`). Se
+// recorren las clases, no el archivo (un comentario que nombra la variable no
+// cuenta), y se reconocen todas las formas de escribir un alto fijo.
+describe('nada se pega arriba con un alto escrito a mano', () => {
+  const fuentes = import.meta.glob(['/src/**/*.{js,jsx}', '!/src/**/*.test.{js,jsx}'], { query: '?raw', import: 'default', eager: true })
+  // Los que pueden pegarse con un número, y por qué. Un archivo nuevo que se
+  // pegue arriba tiene que leer la variable o anotarse acá con su motivo.
+  const PERMITIDOS = {
+    'components/mobile/MobileTopBar.jsx': 'es la barra',
+    'components/mobile/avisos.js': 'los avisos en la compu (en el celular van dentro de la barra)',
+    'components/import/ImportWizard.jsx': 'encabezado de una tabla con su propio scroll',
+    'components/import/TenenciaUpload.jsx': 'encabezado de una tabla con su propio scroll',
+    'pages/Admin.jsx': 'encabezados de tablas con su propio scroll',
+    'pages/AdminPruebas.jsx': 'encabezados de tablas con su propio scroll',
+    'pages/Positions.jsx': 'encabezado de la tabla de la compu',
+    'pages/Landing.jsx': 'portada pública: no tiene la barra de la app',
+  }
+  const pegadosArriba = (src) => {
+    const out = []
+    for (const m of src.matchAll(/["'`]([^"'`\n]*\bsticky\b[^"'`\n]*)["'`]/g)) {
+      for (const t of m[1].matchAll(/(?:^|\s)((?:[a-z]+:)?top-\S+)/g)) out.push(t[1])
+    }
+    return out
+  }
+  it('recorre la app entera', () => {
+    expect(Object.keys(fuentes).length).toBeGreaterThan(200)
+  })
+  it('la barra anota el MISMO nombre que leen los demás', () => {
+    // Si la barra cambia el nombre y los que lo leen no, todos caen a su valor
+    // de respaldo (93 px) y la regresión vuelve sin que nada falle.
+    expect(VARIABLE_ALTO_BARRA).toBe('--alto-barra-celular')
+  })
+  it('todo `sticky` con `top-…` lee --alto-barra-celular (o está en la lista, con su motivo)', () => {
+    const malos = []
+    for (const [ruta, src] of Object.entries(fuentes)) {
+      const corta = ruta.replace('/src/', '')
+      if (PERMITIDOS[corta]) continue
+      for (const top of pegadosArriba(src)) {
+        if (top.startsWith('md:') || top.startsWith('lg:')) continue   // sólo compu
+        if (!top.includes(VARIABLE_ALTO_BARRA)) malos.push(`${corta}: ${top}`)
+      }
+    }
+    expect(malos).toEqual([])
+  })
+  it('y los que tienen que leerla, la leen en la CLASE (no en un comentario)', () => {
+    for (const nombre of ['pages/PositionsMobile.jsx', 'pages/Operations.jsx', 'pages/PositionDetailMobile.jsx', 'pages/Onboarding.jsx']) {
+      const src = fuentes[`/src/${nombre}`]
+      expect(pegadosArriba(src).some(t => t.includes(VARIABLE_ALTO_BARRA)), nombre).toBe(true)
+    }
+    expect(fuentes['/src/components/voz/RendiMate.jsx']).toMatch(/className="fixed top-\[calc\(var\(--alto-barra-celular/)
+  })
+})
+
+describe('páginas públicas con la sesión abierta', () => {
   // Se dibujan adentro de la app. El encabezado público le ofrecía "Iniciar
   // sesión" a quien ya estaba adentro, "Probar demo" le cambiaba la cuenta por
   // la de la demo, y "Probar 20 días gratis" aparecía al final de las notas.
-  // Se recorre la carpeta: una página nueva entra sola.
-  const paginas = {
-    ...import.meta.glob(['../../pages/guia/*.jsx', '../../pages/blog/articles/*.jsx', '../../pages/keywords/*.jsx'], { import: 'default', eager: true }),
-    ...import.meta.glob(['../../pages/Guia.jsx', '../../pages/Blog.jsx'], { import: 'default', eager: true }),
-  }
-  const OFERTAS_DE_VISITANTE = [/>\s*Iniciar sesión\s*</, /Probar gratis/, new RegExp(CTA_PRUEBA), /Probar demo/, /\?demo=1/, /Probá Rendi con tu cartera/, /Probalo con tu propia cartera/]
+  // Se toman de las RUTAS que App.jsx registra para el que ya entró (AppRoutes):
+  // una página nueva entra sola. Cuentan las que tienen algo para visitantes.
+  const modulos = import.meta.glob(['/src/pages/**/*.jsx', '!/src/pages/**/*.test.jsx'], { import: 'default', eager: true })
+  const fuentes = import.meta.glob(['/src/pages/**/*.jsx', '!/src/pages/**/*.test.jsx'], { query: '?raw', import: 'default', eager: true })
+  const desde = fuenteDeApp.indexOf('function AppRoutes()')
+  const rutasDeAdentro = fuenteDeApp.slice(desde, fuenteDeApp.indexOf('</Routes>', desde))
+  const componentes = new Set([...rutasDeAdentro.matchAll(/element={<([A-Z]\w*)/g)].map(m => m[1]))
+  const archivoDe = Object.fromEntries([
+    ...fuenteDeApp.matchAll(/const (\w+) = lazy\(\(\) => import\('\.\/(pages\/[^']+)'\)\)/g),
+    ...fuenteDeApp.matchAll(/import (\w+) from '\.\/(pages\/[^']+)'/g),
+  ].map(m => [m[1], `/src/${m[2].replace(/\.jsx$/, '')}.jsx`]))
+  // Una página "pública" es la que tiene algo para visitantes: el encabezado
+  // público (directo o por su plantilla: GuidePage, BlogPost, KeywordLanding),
+  // la demo, o un encabezado con el logo copiado a mano (justo lo que no tiene
+  // que volver).
+  const esPublica = (src) => /CabeceraPublica|SoloVisitantes|GuidePage|BlogPost|KeywordLanding|\?demo=1/.test(src)
+    || (/<header/.test(src) && /RendiLogo/.test(src) && /to="\/(planes|login)/.test(src))
+  const paginas = [...componentes].map(c => [c, archivoDe[c]]).filter(([, f]) => f && fuentes[f] && esPublica(fuentes[f]))
+
+  const OFERTAS = [/>\s*Iniciar sesión\s*</, /Probar gratis/, new RegExp(CTA_PRUEBA), /Probar demo/, /Probá Rendi con tu cartera/, /Probalo con tu propia cartera/]
   const cabecera = /<header class="border-b border-line">/
 
-  it('son por lo menos las 18 que hay hoy', () => {
-    expect(Object.keys(paginas).length).toBeGreaterThanOrEqual(18)
+  it('son por lo menos las 21 de hoy (Guía, Blog, landings de búsqueda, legales)', () => {
+    expect(paginas.length).toBeGreaterThanOrEqual(21)
   })
-  for (const [ruta, Pagina] of Object.entries(paginas)) {
-    const cual = ruta.replace('../../pages/', '')
-    it(`${cual}: con sesión, nada para visitantes; sin sesión, el encabezado con "Iniciar sesión" o "Probar gratis"`, () => {
+  for (const [nombre, archivo] of paginas) {
+    it(`${nombre}: con sesión, nada para visitantes; sin sesión, su encabezado`, () => {
+      const Pagina = modulos[archivo]
       const adentro = dibujar(Pagina, { u: { tier: 'pro' }, c: null })
       expect(adentro).not.toMatch(cabecera)
-      for (const oferta of OFERTAS_DE_VISITANTE) expect(adentro, String(oferta)).not.toMatch(oferta)
-      const afuera = dibujar(Pagina, { u: null, c: null })
-      expect(afuera).toMatch(cabecera)
-      const desde = afuera.search(cabecera)
-      expect(afuera.slice(desde, afuera.indexOf('</header>', desde))).toMatch(/Iniciar sesión|Probar gratis/)
+      for (const oferta of OFERTAS) expect(adentro, String(oferta)).not.toMatch(oferta)
+      // Por destino, no sólo por texto: un "Crear mi cuenta" también cuenta.
+      expect(rutas(adentro).filter(r => r.startsWith('/login') || r.includes('demo=1'))).toEqual([])
+      expect(dibujar(Pagina, { u: null, c: null })).toMatch(cabecera)
     })
   }
-  it('al visitante, el Blog le sigue ofreciendo la prueba al final de cada nota', () => {
-    const notas = Object.entries(paginas).filter(([r]) => r.includes('/blog/articles/'))
-    expect(notas.length).toBeGreaterThan(0)
-    for (const [ruta, Nota] of notas) expect(dibujar(Nota, { u: null, c: null }), ruta).toContain('Probá Rendi con tu cartera')
+  it('al visitante no se le esconde nada de más', () => {
+    const afuera = (n) => dibujar(modulos[archivoDe[n]], { u: null, c: null })
+    // Guía: el encabezado con "Iniciar sesión" y la tarjeta de la demo.
+    expect(afuera('Guia')).toMatch(/>\s*Iniciar sesión\s*</)
+    expect(rutas(afuera('Guia'))).toContain('/?demo=1')
+    // Landing de búsqueda: el "Probar gratis" de arriba, el botón grande y el
+    // del final — los tres llevan a registrarse (se mira a dónde, no el texto).
+    const cedears = afuera('LandingCedears')
+    expect(rutas(cedears).filter(r => r === '/login?mode=register').length).toBeGreaterThanOrEqual(3)
+    expect(cedears).toContain('Probalo con tu propia cartera')
+    // Nota del Blog: el recuadro del final.
+    expect(afuera('BlogFifoCedears')).toContain('Probá Rendi con tu cartera')
   })
 })
 
 describe('la lupa del celular (/buscar)', () => {
   // Cada fila es un enlace: se ve en el dibujo a dónde lleva. Sin nada escrito
-  // ofrece los activos populares (los tuyos llegan después, del servidor).
+  // ofrece los activos populares (los tuyos llegan después, del servidor). La
+  // regla de cada tipo (CEDEAR, bono, ADR) la prueba utils/buscadorRapido.test.js.
   const destinos = (u, c) => rutas(dibujar(MobileSearch, { u, c }))
-  it('lleva a donde lleva el ⌘K: la empresa, y un CEDEAR por su acción de EE.UU.', () => {
+  it('lleva a donde lleva el ⌘K, nunca al destino viejo que nadie leía', () => {
     const r = destinos({ tier: 'pro' }, null)
     expect(r).toContain('/fundamentals?ticker=AAPL')
-    expect(r.filter(x => x.includes('.BA'))).toEqual([])            // ningún CEDEAR en pesos
-    expect(r.some(x => x.startsWith('/posiciones'))).toBe(false)    // el destino viejo que nadie leía
+    expect(r).toContain('/fundamentals?ticker=YPF')                // YPFD → su ADR
+    expect(r.filter(x => x.includes('.BA'))).toEqual([])
+    expect(r.some(x => x.startsWith('/posiciones'))).toBe(false)
   })
-  it('cada fila usa la regla compartida (destinoDeTicker): una fila sin destino no es enlace', () => {
-    // Sin escribir nada, la lupa muestra acciones (con destino). Bonos y cripto
-    // (sin destino) recién aparecen al buscar; su regla la prueba
-    // utils/buscadorRapido.test.js. Acá: que la fila respete lo que diga la regla.
+  it('una acción argentina sin ADR se ofrece pero no lleva a ningún lado ni se ilumina al tocarla', () => {
     const html = dibujar(MobileSearch, { u: { tier: 'pro' }, c: null })
-    const filas = (html.match(/aria-label="Agregar a watchlist"/g) || []).length
-    expect(filas).toBeGreaterThan(10)
-    expect(rutas(html).filter(x => x.startsWith('/fundamentals')).length).toBe(filas * 2) // la fila y su flecha
-    expect(rutas(html)).toContain('/fundamentals?ticker=GGAL')     // acción argentina con ADR
+    expect(html).toContain('>COME<')
+    expect(rutas(html).filter(x => x.includes('COME'))).toEqual([])
+    const fila = html.slice(html.lastIndexOf('<div class="flex items-center gap-3 px-3', html.indexOf('>COME<')), html.indexOf('>COME<'))
+    expect(fila).not.toContain('active:bg-bg-3')
   })
   it('al asesor en su nivel no le ofrece cartera, watchlist ni empresas; adentro de un cliente, sí', () => {
     const estrella = 'aria-label="Agregar a watchlist"'

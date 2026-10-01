@@ -124,6 +124,7 @@ describe('Rendi AI según el plan', () => {
 import { esAtajoBuscador, urlNuevaOperacion, claveDeActivos } from './buscadorRapido'
 import { hayPrecios } from './preciosEnVivo'
 import { UTILIDADES } from './navegacion'
+import { POPULAR_TICKERS } from './tickers'
 
 describe('arreglos de la vuelta 1 de auditoría', () => {
   const k = (o) => ({ key: 'k', metaKey: false, ctrlKey: false, altKey: false, ...o })
@@ -189,5 +190,33 @@ describe('destinoDeTicker: a dónde lleva un ticker en los dos buscadores (⌘K 
     const universo = [{ symbol: 'AAPL', name: 'Apple', type: 'stock_us' }]
     expect(opcionesDeEmpresas(universo, { asesorEnSuNivel: true })).toEqual([])
     expect(opcionesDeEmpresas(universo)).toHaveLength(1)
+  })
+})
+
+describe('destinoDeTicker: la empresa correcta, o ninguna', () => {
+  // Buscar el ticker tal cual abría OTRA empresa (verificado contra yfinance):
+  // TEN era una naviera griega, AGRO Adecoagro, BOLT/CELU/PCAR/HAVA otras.
+  it('una acción argentina va por su ADR; sin ADR, a ningún lado', () => {
+    expect(destinoDeTicker('YPFD', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=YPF')
+    expect(destinoDeTicker('TECO2', { tipo: 'stock_ar' })).toBe('/fundamentals?ticker=TEO')
+    for (const s of ['TEN', 'AGRO', 'BOLT', 'CELU', 'PCAR', 'HAVA', 'TXAR']) {
+      expect(destinoDeTicker(s, { tipo: 'stock_ar' }), s).toBe(null)
+    }
+  })
+  it('un CEDEAR con ticker distinto en EE.UU. va por el de allá; uno de un ETF, a ningún lado', () => {
+    expect(destinoDeTicker('DISN.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=DIS')
+    expect(destinoDeTicker('BRKB.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=BRK-B')
+    expect(destinoDeTicker('NOKA.BA', { tipo: 'cedear' })).toBe('/fundamentals?ticker=NOK')
+    expect(destinoDeTicker('SPY.BA', { tipo: 'cedear' })).toBe(null)
+  })
+  it('el ⌘K no repite la misma empresa (AAPL y su CEDEAR AAPL.BA)', () => {
+    const r = opcionesDeEmpresas([
+      { symbol: 'AAPL', name: 'Apple', type: 'stock_us' }, { symbol: 'AAPL.BA', name: 'Apple (CEDEAR)', type: 'cedear' },
+    ])
+    expect(r.map(o => o.ir)).toEqual(['/fundamentals?ticker=AAPL'])
+  })
+  it('la lista de sugeridos ya no tiene "TEN" como Ternium Argentina', () => {
+    const ternium = POPULAR_TICKERS.find(t => /Ternium Argentina/.test(t.name))
+    expect(ternium.symbol).toBe('TXAR')
   })
 })

@@ -293,7 +293,8 @@ function SearchRow({ ticker, highlight, destino, tuya, onAdd, adding, inWatchlis
   const alElegir = () => track('mobile_search_pick', { symbol: ticker.symbol })
   return (
     <div
-      className={`flex items-center gap-3 px-3 py-2.5 border-t border-line/30 hover:bg-bg-2/30 active:bg-bg-3 transition-colors ${
+      // Sin destino no se ilumina al tocarla: no va a abrir nada (sólo la estrella).
+      className={`flex items-center gap-3 px-3 py-2.5 border-t border-line/30 transition-colors ${destino ? 'hover:bg-bg-2/30 active:bg-bg-3' : ''} ${
         highlight ? 'bg-rendi-pos/[0.02]' : ''
       }`}
     >

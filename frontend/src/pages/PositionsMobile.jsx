@@ -115,6 +115,12 @@ function yaDescubrioElScrollLateral() {
   }
 }
 
+// Lo que esta pantalla entiende por la dirección (`/posiciones?action=…`): el
+// "+" de la barra de abajo manda acá. Una acción que no esté en esta lista cae
+// en la Cartera sin abrir nada (le pasó a "Agregar a watchlist", que iba a
+// `/?action=watchlist`). La prueba del "+" lee esta misma lista.
+export const ACCION_POR_DIRECCION = { comprar: 'new', vender: 'sell' }
+
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
   const { currency, toggle: toggleCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
@@ -728,10 +734,10 @@ export default function PositionsMobile() {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const action = params.get('action')
-    if (action === 'new') {
+    if (action === ACCION_POR_DIRECCION.comprar) {
       openNewPositionFlow('mobile_fab')
       navigate('/posiciones', { replace: true })
-    } else if (action === 'sell') {
+    } else if (action === ACCION_POR_DIRECCION.vender) {
       navigate('/posiciones', { replace: true })
       // La venta necesita la lista de posiciones (carga async): si ya cargó la
       // disparamos directo; si no, queda pendiente y la dispara el effect de abajo.

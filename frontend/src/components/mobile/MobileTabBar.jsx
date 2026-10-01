@@ -205,7 +205,8 @@ export const QUICK_ACTIONS = [
   {
     code: 'search',
     label: 'Buscar activo',
-    sub: 'Ver precio, info, agregar',
+    // La lupa no muestra precios: abre tu ficha, la empresa, o lo seguís.
+    sub: 'Tu ficha, la empresa o seguirlo',
     icon: Search,
     tone: 'info',
     to: '/buscar',

@@ -21,6 +21,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { track } from '../../utils/track'
 import { useToast } from '../Toast'
 import { alTerminar } from '../../data/prueba'
+import { ubicacionDeAviso } from '../mobile/avisos'
 // Los días de la prueba viven en `data/planCatalog.js`, que el backend compara
 // contra `billing/trial.py`. Acá había una SEGUNDA copia con los de la prueba
 // vieja (15 y 7), y la pantalla de "importación completada" la leía para
@@ -402,7 +403,7 @@ export function TrialConfirmModal({ kind, dias, pro, plus, total, busy, onConfir
  *  ("mañana pasás a Plus") no lo veía prácticamente ninguno. El aviso in-app
  *  del cambio de etapa es la mitad del mecanismo del trial encadenado; si no
  *  se ve, el usuario pierde Pro sin enterarse de que lo tenía. */
-export function TrialBanner({ onSeePlans }) {
+export function TrialBanner({ onSeePlans, enLaBarra = false }) {
   const { trial, features } = usePlanFeatures()
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -419,7 +420,7 @@ export function TrialBanner({ onSeePlans }) {
   if (!trial?.active && up?.active) {
     const d = up.days_left
     return (
-      <div className="sticky top-[var(--alto-barra-celular,0px)] z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm">
+      <div className={`${ubicacionDeAviso(enLaBarra)} border-data-violet/30 bg-bg-1/95 backdrop-blur-sm`}>
         <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
           <div className="flex items-center gap-2 min-w-0">
             <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
@@ -467,10 +468,9 @@ export function TrialBanner({ onSeePlans }) {
   }
 
   return (
-    // Pegada debajo de la barra de arriba del celular (--alto-barra-celular, que
-    // anota MobileTopBar; en la compu vale 0). Con top-0 se montaba ENCIMA de la
-    // barra al bajar y tapaba el logo, la moneda, Rendi AI y la lupa.
-    <div className={`sticky top-[var(--alto-barra-celular,0px)] z-40 border-b backdrop-blur-sm ${
+    // En el celular va adentro de la barra de arriba (ver mobile/avisos.js):
+    // pegada por su cuenta tapaba el logo, y debajo, el total de Cartera.
+    <div className={`${ubicacionDeAviso(enLaBarra)} backdrop-blur-sm ${
       apura ? 'border-rendi-warn/30 bg-rendi-warn/[0.07]' : 'border-data-violet/30 bg-bg-1/95'}`}>
       <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
         <div className="flex items-center gap-2 min-w-0">

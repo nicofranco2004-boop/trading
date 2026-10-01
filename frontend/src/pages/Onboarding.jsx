@@ -127,7 +127,10 @@ export default function Onboarding() {
       />
 
       {/* Header minimal — solo logo + opción skip */}
-      <header className="border-b border-line/40 sticky top-0 bg-bg-0/95 backdrop-blur-sm z-10">
+      {/* Debajo de la barra de arriba del celular (--alto-barra-celular; en la
+          compu vale 0). Con top-0 quedaba DETRÁS de la barra al bajar y
+          "Saltar onboarding" no se veía. */}
+      <header className="border-b border-line/40 sticky top-[var(--alto-barra-celular,0px)] bg-bg-0/95 backdrop-blur-sm z-10">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <RendiLogo size={28} />

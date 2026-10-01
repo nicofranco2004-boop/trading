@@ -12,6 +12,8 @@
 // Y siempre al final, con algo escrito: preguntárselo a Rendi AI — o, si tu
 // plan no tiene chat libre, ir a ver las preguntas que sí le podés hacer.
 
+import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS } from './tickers'
+
 const PRIORIDAD = { activo: 0, pantalla: 1, accion: 2, empresa: 3 }
 
 // ¿Es el atajo del buscador? ⌘K en Mac, Ctrl+K en el resto. En Mac NO Ctrl+K:
@@ -98,21 +100,27 @@ export function opcionRendiAI(texto, chatLibre = true) {
 // llevaba a /posiciones#X, que nadie lee.
 //   • Si lo tenés: a tu posición (la ficha del activo).
 //   • Si no: a la empresa en "Calidad de cartera", que sólo arma el puntaje de
-//     acciones en dólares. Un CEDEAR (AAPL.BA) se abre por su acción de EE.UU.
-//     (AAPL): en pesos el servidor no lo arma y él mismo sugiere ese ticker
-//     (main.py, scorecard). Bonos, cripto, ETFs y fondos no tienen ficha de
-//     empresa —el servidor contesta "no aplica" por tipo—, así que no hay a
-//     dónde llevar: null. Antes terminaban en un cartel que decía que ahí no
-//     había nada. Las acciones argentinas van igual: el servidor busca el ticker
-//     tal cual y las que tienen ADR con el mismo nombre (GGAL, BMA) sí abren.
+//     acciones que cotizan en dólares en EE.UU. Un CEDEAR (AAPL.BA) se abre por
+//     esa acción (AAPL; DISN → DIS: CEDEAR_EN_EEUU): en pesos el servidor no lo
+//     arma y él mismo sugiere ese ticker. Una acción argentina, por su ADR
+//     (YPFD → YPF: ADR_DE_ACCION_AR); si no tiene, no hay ficha. Bonos, cripto,
+//     ETFs y fondos tampoco —el servidor contesta "no aplica" por tipo—.
+//   • null = no hay a dónde llevar. Antes terminaban en un cartel que decía que
+//     ahí no había nada, o en OTRA empresa con el mismo ticker (TEN, AGRO).
 const SIN_FICHA_DE_EMPRESA = new Set(['bond', 'crypto', 'etf', 'fci'])
+// Hay CEDEARs de ETFs (SPY, QQQ…): tampoco tienen ficha de empresa.
+const ES_ETF = new Set(ETFS.map(e => e.s))
 export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
   const s = (simbolo || '').toUpperCase()
   if (!s) return null
   if (tuyo) return `/activo/${encodeURIComponent(s)}`
   if (SIN_FICHA_DE_EMPRESA.has(tipo)) return null
-  const empresa = tipo === 'cedear' ? s.replace(/\.BA$/, '') : s
-  return `/fundamentals?ticker=${encodeURIComponent(empresa)}`
+  const local = s.replace(/\.BA$/, '')
+  if (tipo === 'cedear' && ES_ETF.has(local)) return null
+  const empresa = tipo === 'cedear' ? (CEDEAR_EN_EEUU[local] || local)
+    : tipo === 'stock_ar' ? ADR_DE_ACCION_AR[local]
+    : s
+  return empresa ? `/fundamentals?ticker=${encodeURIComponent(empresa)}` : null
 }
 
 // Tus activos, uno por ticker (los lotes y los brokers se juntan), sin el
@@ -145,13 +153,16 @@ export function opcionesDeActivos(posiciones, nombreDe = () => null) {
 export function opcionesDeEmpresas(universo, { asesorEnSuNivel = false } = {}) {
   if (asesorEnSuNivel) return []
   const vistos = new Set()
+  const destinos = new Set()
   const out = []
   for (const u of universo || []) {
     const s = (u?.symbol || '').toUpperCase()
     if (!s || vistos.has(s)) continue
     vistos.add(s)
     const ir = destinoDeTicker(s, { tipo: u.type })
-    if (!ir) continue
+    // Sin ficha, o la misma empresa que otra fila (AAPL y su CEDEAR AAPL.BA).
+    if (!ir || destinos.has(ir)) continue
+    destinos.add(ir)
     out.push({
       clase: 'empresa', id: `empresa:${s}`, simbolo: s,
       titulo: u.name ? `${s} · ${u.name}` : s,

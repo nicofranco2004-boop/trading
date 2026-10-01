@@ -2,8 +2,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Logo a la izquierda; moneda, Rendi AI y búsqueda a la derecha; abajo, la
 // cinta de cotizaciones (MarketTicker, la misma que va arriba del contenido en
-// la compu) y, si el asesor abrió un cliente, la franja "Estás viendo la cuenta
-// de…". Sticky para que esté siempre accesible. Por debajo, indicador de
+// la compu) y, abajo de todo, los avisos que le pasa App.jsx (cliente abierto,
+// demo, prueba gratis). Sticky para que esté siempre accesible. Por debajo, indicador de
 // pull-to-refresh cuando el user tira hacia abajo: refresca también la cinta.
 
 import { useLayoutEffect, useRef } from 'react'
@@ -12,7 +12,6 @@ import { Search, RefreshCcw, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import CurrencySwitcher from '../CurrencySwitcher'
 import MarketTicker from '../MarketTicker'
-import ClientContextBar from '../advisor/ClientContextBar'
 import { refreshMarketIndices } from '../../hooks/useMarketIndices'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
@@ -27,21 +26,29 @@ import { menuVisible } from '../../utils/navegacion'
 // 88 px; cuando la barra creció (la cinta, la franja del cliente, el notch de
 // un iPhone con la app instalada) quedaban tapados detrás. Mismo mecanismo que
 // --sidebar-w en la compu.
+export const VARIABLE_ALTO_BARRA = '--alto-barra-celular'
+
+// Mide la barra ENTERA (el <header>, con la cinta y los avisos) y lo anota.
+// Devuelve cómo deshacerlo: al pasar al armado de compu la barra se desarma, y
+// sin barra no hay alto. Separada del hook para poder probarla sin navegador.
+export function anotarAltoDeLaBarra(el, raiz, Observador = globalThis.ResizeObserver) {
+  const anotar = () => raiz.style.setProperty(VARIABLE_ALTO_BARRA, `${Math.round(el.getBoundingClientRect().height)}px`)
+  anotar()
+  // Vuelve a medir cuando la barra cambia de alto: aparece la cinta, se abre o
+  // se cierra un cliente, llega la barra de la prueba.
+  const ro = typeof Observador === 'function' ? new Observador(anotar) : null
+  ro?.observe(el)
+  return () => { ro?.disconnect(); raiz.style.removeProperty(VARIABLE_ALTO_BARRA) }
+}
+
 function useAnotarAlto(ref) {
   useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const raiz = document.documentElement
-    const anotar = () => raiz.style.setProperty('--alto-barra-celular', `${Math.round(el.getBoundingClientRect().height)}px`)
-    anotar()
-    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(anotar)
-    ro?.observe(el)
-    // Al pasar al armado de compu la barra se desarma: sin barra no hay alto.
-    return () => { ro?.disconnect(); raiz.style.removeProperty('--alto-barra-celular') }
+    if (!ref.current) return
+    return anotarAltoDeLaBarra(ref.current, document.documentElement)
   }, [ref])
 }
 
-export default function MobileTopBar({ onRefresh }) {
+export default function MobileTopBar({ onRefresh, children }) {
   const coachDrawer = useCoachDrawer()
   const barraRef = useRef(null)
   useAnotarAlto(barraRef)
@@ -120,10 +127,10 @@ export default function MobileTopBar({ onRefresh }) {
         {/* Cinta de cotizaciones */}
         <MarketTicker className="border-t border-line/30" />
 
-        {/* "Estás viendo la cuenta de…" (sólo con un cliente abierto): acá
-            adentro queda siempre a la vista, debajo de la cinta, mida lo que
-            mida la barra. */}
-        <ClientContextBar enLaBarra />
+        {/* Los avisos de arriba de todo (cliente abierto, demo, prueba gratis):
+            App.jsx los pasa acá para que su alto entre en lo que la barra mide
+            (ver components/mobile/avisos.js). */}
+        {children}
       </header>
     </>
   )

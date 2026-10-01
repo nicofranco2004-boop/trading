@@ -7,8 +7,9 @@
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Sparkles, ArrowRight } from 'lucide-react'
+import { ubicacionDeAviso } from './mobile/avisos'
 
-export default function DemoBanner() {
+export default function DemoBanner({ enLaBarra = false }) {
   const { isDemo, exitDemo } = useAuth()
   const navigate = useNavigate()
   if (!isDemo) return null
@@ -23,9 +24,8 @@ export default function DemoBanner() {
 
   return (
     <div
-      // Debajo de la barra de arriba del celular (--alto-barra-celular, de
-      // MobileTopBar; en la compu vale 0): con top-0 la tapaba al bajar.
-      className="sticky top-[var(--alto-barra-celular,0px)] z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm"
+      // En el celular va adentro de la barra de arriba (ver mobile/avisos.js).
+      className={`${ubicacionDeAviso(enLaBarra)} border-data-violet/30 bg-bg-1/95 backdrop-blur-sm`}
       style={{ borderTopWidth: '1px', borderTopColor: 'rgb(var(--data-violet) / 0.3)' }}
     >
       <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">

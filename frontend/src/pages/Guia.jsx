@@ -73,8 +73,8 @@ const SECTIONS = [
     to: '/guia/cuenta-y-planes',
     icon: UserCog,
     title: 'Cuenta y planes',
-    desc: 'Configuración, planes Free/Plus/Pro, cambio de plan, cancelación y push notifications.',
-    descAsesor: 'Tus datos, seguridad, moneda de valuación y notificaciones. Los planes Free/Plus/Pro no son los tuyos.',
+    desc: 'Configuración, planes Plus y Pro, cambio de plan, cancelación y push notifications.',
+    descAsesor: 'Tus datos, seguridad, moneda de valuación y notificaciones. Los planes Plus y Pro no son los tuyos.',
   },
 ]
 

@@ -42,7 +42,7 @@ import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
 import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
 import fuenteDeApp from '../App.jsx?raw'
-import fuenteDeCarteraCelular from './PositionsMobile.jsx?raw'
+import { ACCION_POR_DIRECCION } from './PositionsMobile'
 
 const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
 const dibujar = (Componente, u, c) => {
@@ -227,9 +227,10 @@ describe('"+" de la barra de abajo: cada acción va a una pantalla que la entien
       expect(rutasDeApp, ruta).toContain(ruta)
       const accion = new URLSearchParams(consulta).get('action')
       if (!accion) return
-      // Hoy la única pantalla que lee `?action=` es la Cartera del celular.
+      // Hoy la única pantalla que lee `?action=` es la Cartera del celular, y
+      // declara cuáles entiende (la misma lista que usa para abrir el flujo).
       expect(ruta).toBe('/posiciones')
-      expect(fuenteDeCarteraCelular).toContain(`action === '${accion}'`)
+      expect(Object.values(ACCION_POR_DIRECCION)).toContain(accion)
     })
   }
 })
