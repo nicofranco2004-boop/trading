@@ -13,6 +13,9 @@ import { AlertsProvider } from './contexts/AlertsContext'
 import { AdvisorProvider, useAdvisorContext } from './contexts/AdvisorContext'
 import ClientContextBar from './components/advisor/ClientContextBar'
 import Sidebar from './components/Sidebar'
+import TransicionDePantalla from './components/TransicionDePantalla'
+import BuscadorRapido from './components/BuscadorRapido'
+import { muroTapaLaPantalla } from './utils/muroDePlan'
 import { PageSkeleton } from './components/Skeleton'
 import MobileTabBar from './components/mobile/MobileTabBar'
 import MobileTopBar from './components/mobile/MobileTopBar'
@@ -334,12 +337,9 @@ function MuroDePlanGate() {
   const { pathname } = useLocation()
   const [anual, setAnual] = useState(false)
 
-  if (!user?.cuenta_en_pausa) return null
-  // ⚠️ El muro NO puede taparle las páginas por las que sale de la pausa. Sus
-  // propios botones llevan a /planes: si se tapara ahí, el muro sería una
-  // puerta cerrada con la llave adentro (el mismo agujero que tuvo el backend
-  // con /api/billing/subscribe).
-  if (pathname.startsWith('/planes') || pathname.startsWith('/billing')) return null
+  // Cuenta en pausa, salvo /planes y /billing (por donde sale de la pausa): la
+  // regla vive en utils/muroDePlan.js, compartida con el buscador ⌘K.
+  if (!muroTapaLaPantalla(user, pathname)) return null
 
   return (
     <MuroElegirPlan
@@ -433,9 +433,11 @@ function Layout() {
               y no veía ni el contador ni el aviso del día 8 — que es la mitad
               del mecanismo del trial encadenado. */}
           <TrialBanner />
-          <Suspense fallback={<PageFallback />}>
-            <AppRoutes />
-          </Suspense>
+          <TransicionDePantalla>
+            <Suspense fallback={<PageFallback />}>
+              <AppRoutes />
+            </Suspense>
+          </TransicionDePantalla>
         </main>
         <MobileTabBar />
         <SupportWhatsAppFab />
@@ -466,11 +468,16 @@ function Layout() {
         <ClientContextBar />
         <DemoBanner />
         <TrialBanner />
-        <Suspense fallback={<PageFallback />}>
-          <AppRoutes />
-        </Suspense>
+        <TransicionDePantalla>
+          <Suspense fallback={<PageFallback />}>
+            <AppRoutes />
+          </Suspense>
+        </TransicionDePantalla>
       </main>
       <SupportWhatsAppFab />
+      {/* ⌘K / Ctrl+K: buscar una pantalla, un activo, una acción, o
+          preguntarle a Rendi AI. Sólo compu (en el celular está /buscar). */}
+      <BuscadorRapido />
     </AdvisorProvider>
     </AlertsProvider>
   )

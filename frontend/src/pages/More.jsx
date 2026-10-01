@@ -7,8 +7,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  LayoutDashboard, Bell, BarChart3, Brain, List, Upload, Gauge,
-  Target, Sparkles, Settings, Shield, ChevronRight, LogOut, BellRing, BellOff, Send, UserRound, MessageCircle,
+  Sparkles, ChevronRight, LogOut, Bell, BellRing, BellOff, Send, MessageCircle,
   Sun, Moon,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -19,32 +18,83 @@ import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
+import { menuVisible, pantallasVisibles } from '../utils/navegacion'
 import Panel from '../components/Panel'
 
-// Restructure 2026-05-27: 7 items en 3 grupos, espejado del sidebar desktop.
-// Las URLs viejas (/dashboard, /insights, etc.) redirigen al wrapper consolidado
-// con el tab correspondiente (ver App.jsx).
-const GROUPS = [
-  {
-    label: 'Tu portfolio',
-    items: [
-      { to: '/dashboard',   label: 'Dashboard',    icon: LayoutDashboard, sub: 'Evolución, composición y heatmap' },
-      { to: '/posiciones',  label: 'Cartera',      icon: List,   sub: 'Tus tenencias y objetivos' },
-      { to: '/operaciones', label: 'Movimientos',  icon: List,   sub: 'Trades + depósitos + dividendos' },
-      { to: '/imports',     label: 'Importar CSV', icon: Upload, sub: 'Subí CSVs de tus brokers' },
-      { to: '/alertas',     label: 'Alertas',      icon: BellRing, sub: 'Avisos de precio y variación' },
-    ],
-  },
-  {
-    label: 'Análisis',
-    items: [
-      { to: '/analisis',        label: 'Métricas',           icon: Brain,     sub: 'Diagnóstico, comportamiento, reportes' },
-      { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge,     sub: 'Calidad de tus tenencias + buscador' },
-      { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound, sub: 'Tu perfil declarado vs. tu cartera' },
-      { to: '/novedades',       label: 'Novedades',          icon: Bell,      sub: 'Noticias + eventos' },
-    ],
-  },
-]
+// QUÉ pantallas se ven NO se decide acá: sale de utils/navegacion.js, la misma
+// lista y la misma regla del asesor que usan el menú lateral de la compu y el
+// buscador ⌘K. Este archivo tenía su propia copia y se desvió: el asesor tenía
+// "Cobros" en la compu y en el celular no (ningún otro enlace del celular
+// llevaba ahí).
+//
+// Lo de abajo es sólo CÓMO se presenta en el celular: en qué sección cae cada
+// pantalla, en qué orden, el renglón de ayuda y, si acá se llama distinto, su
+// nombre. Una pantalla de la lista compartida que acá no tenga renglón
+// aparece igual (en la sección de la compu, con su nombre y sin ayuda): nunca
+// desaparece del celular por falta de una línea en este archivo.
+const PLAN_ASESOR = 'Plan Asesor'
+const SECCIONES = [PLAN_ASESOR, 'Tu portfolio', 'Análisis']
+
+const EN_EL_CELULAR = {
+  // En el celular "/" es la pestaña Home: arriba tu saldo, abajo el mercado.
+  '/':               { seccion: 'Tu portfolio', sub: 'Tu saldo de hoy y el pulso del mercado' },
+  '/dashboard':      { seccion: 'Tu portfolio', sub: 'Evolución, composición y heatmap' },
+  '/posiciones':     { seccion: 'Tu portfolio', sub: 'Tus tenencias y objetivos' },
+  '/operaciones':    { seccion: 'Tu portfolio', sub: 'Trades + depósitos + dividendos' },
+  '/imports':        { seccion: 'Tu portfolio', label: 'Importar CSV', sub: 'Subí CSVs de tus brokers' },
+  '/alertas':        { seccion: 'Tu portfolio', sub: 'Avisos de precio y variación' },
+  '/analisis':       { seccion: 'Análisis', sub: 'Diagnóstico, comportamiento, reportes' },
+  '/fundamentals':   { seccion: 'Análisis', sub: 'Calidad de tus tenencias + buscador' },
+  '/perfil-inversor': { seccion: 'Análisis', sub: 'Tu perfil declarado vs. tu cartera' },
+  '/novedades':      { seccion: 'Análisis', sub: 'Noticias + eventos' },
+}
+
+// El asesor en SU nivel (sin haber entrado a un cliente): todo va en "Plan
+// Asesor" y la ayuda habla de sus clientes — Dashboard acá es el del libro,
+// no el de una cartera. Adentro de un cliente queda sólo "Clientes", para
+// volver a la lista; el resto es la cartera de ESE cliente.
+const DEL_ASESOR = {
+  '/dashboard':            { sub: 'Total administrado, quién necesita atención y qué activos mandan' },
+  '/clientes':             { sub: 'Tus clientes y el resumen de sus carteras' },
+  '/novedades':            { sub: 'Eventos y noticias de los activos de tus clientes' },
+  '/cobros':               { sub: 'Cupones y amortizaciones de los bonos de tus clientes' },
+  '/alertas':              { sub: 'Brief del libro y avisos de tus clientes' },
+  '/importar-historiales': { sub: 'Cargá los archivos de varios clientes en una sola tanda' },
+}
+
+// El pie del menú de la compu (`utilidades`: Admin, Guía, Configuración). En
+// el celular Admin va en su propia sección y las otras dos en "Cuenta", junto
+// a los botones que no son pantallas (Recomendaciones, tema, cerrar sesión).
+const DEL_PIE = {
+  '/config': { sub: 'Brokers · workspace · contraseña' },
+  '/guia':   { sub: 'Cómo se usa Rendi, paso a paso' },
+  '/admin':  { sub: 'Panel administrativo' },
+}
+
+// Lugar de una pantalla en el orden del celular; las que no figuran, al final.
+const posicion = (presentacion, to) =>
+  to in presentacion ? Object.keys(presentacion).indexOf(to) : Infinity
+
+// Reparte en secciones las pantallas que este usuario ve en la compu
+// (`pantallasVisibles`, sin el pie). Exportada para la prueba de la pantalla
+// sin renglón.
+export function seccionesDelMenuMas(pantallas, { atOwnLevel = false } = {}) {
+  const secciones = new Map(SECCIONES.map(s => [s, []]))
+  for (const p of pantallas) {
+    const delAsesor = atOwnLevel || p.to === '/clientes'
+    const presentacion = delAsesor ? DEL_ASESOR : EN_EL_CELULAR
+    const extra = presentacion[p.to] || {}
+    const seccion = delAsesor ? PLAN_ASESOR : (extra.seccion || p.grupo || 'Otras secciones')
+    if (!secciones.has(seccion)) secciones.set(seccion, [])
+    secciones.get(seccion).push({
+      to: p.to, icon: p.icon, label: extra.label || p.label, sub: extra.sub,
+      orden: posicion(presentacion, p.to),
+    })
+  }
+  return [...secciones]
+    .filter(([, items]) => items.length > 0)
+    .map(([label, items]) => ({ label, items: items.sort((a, b) => a.orden - b.orden) }))
+}
 
 export default function More() {
   const { user, logout } = useAuth()
@@ -53,37 +103,16 @@ export default function More() {
   const { clientCtx } = useAdvisorContext()
   const [recomOpen, setRecomOpen] = useState(false)
 
-  // El asesor en su propio nivel (sin haber entrado a un cliente) no tiene
-  // cartera propia — "Tu portfolio"/"Análisis" no aplican, mismo criterio
-  // que el sidebar desktop. Adentro de un cliente (clientCtx) es SU cartera.
-  const atOwnLevel = user?.tier === 'advisor' && !clientCtx
-
+  const { atOwnLevel, utilidades } = menuVisible({ user, clientCtx })
+  const delPie = new Set(utilidades.map(u => u.to))
+  const conAyuda = (u) => ({ ...u, sub: DEL_PIE[u.to]?.sub })
+  const admin = utilidades.filter(u => u.soloAdmin).map(conAyuda)
+  const deCuenta = utilidades.filter(u => !u.soloAdmin).map(conAyuda)
+    .sort((a, b) => posicion(DEL_PIE, a.to) - posicion(DEL_PIE, b.to))
   const allGroups = [
-    // Plan Asesor: el roster es SU home — sin esta entrada, en mobile no había
-    // forma de volver a /clientes navegando (solo tipeando la URL). Dashboard
-    // (el libro) solo tiene sentido en su propio nivel — adentro de un
-    // cliente, "Dashboard" ya aparece más abajo como el de ESE cliente.
-    ...(user?.tier === 'advisor' ? [{
-      label: 'Plan Asesor',
-      items: [
-        ...(atOwnLevel ? [{ to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, sub: 'Total administrado, quién necesita atención y qué activos mandan' }] : []),
-        { to: '/clientes', label: 'Clientes', icon: UserRound, sub: 'Tus clientes y el resumen de sus carteras' },
-        ...(atOwnLevel ? [{ to: '/novedades', label: 'Novedades', icon: Bell, sub: 'Eventos y noticias de los activos de tus clientes' }] : []),
-        ...(atOwnLevel ? [{ to: '/alertas', label: 'Alertas', icon: BellRing, sub: 'Brief del libro y avisos de tus clientes' }] : []),
-        ...(atOwnLevel ? [{ to: '/importar-historiales', label: 'Importar historiales', icon: Upload, sub: 'Cargá los archivos de varios clientes en una sola tanda' }] : []),
-      ],
-    }] : []),
-    // Filtra items adminOnly (ej. Fundamentals) para los que no son admin.
-    ...(atOwnLevel ? [] : GROUPS.map(g => ({
-      ...g,
-      items: g.items.filter(it => !it.adminOnly || user?.is_admin),
-    }))),
-    ...(user?.is_admin
-      ? [{
-          label: 'Admin',
-          items: [{ to: '/admin', label: 'Admin', icon: Shield, sub: 'Panel administrativo' }],
-        }]
-      : []),
+    ...seccionesDelMenuMas(
+      pantallasVisibles({ user, clientCtx }).filter(p => !delPie.has(p.to)), { atOwnLevel }),
+    ...(admin.length > 0 ? [{ label: 'Admin', items: admin }] : []),
   ]
 
   return (
@@ -134,7 +163,9 @@ export default function More() {
                   <Icon size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-ink-0 leading-tight">{item.label}</div>
-                    <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{item.sub}</div>
+                    {item.sub && (
+                      <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{item.sub}</div>
+                    )}
                   </div>
                   <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
                 </Link>
@@ -153,17 +184,25 @@ export default function More() {
           Cuenta
         </h2>
         <Panel padding="none" className="overflow-hidden">
-          <Link
-            to="/config"
-            className="flex items-center gap-3 px-4 py-3 hover:bg-bg-2/60 active:bg-bg-3 transition-colors"
-          >
-            <Settings size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-ink-0 leading-tight">Configuración</div>
-              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Brokers · workspace · contraseña</div>
-            </div>
-            <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3" />
-          </Link>
+          {/* Configuración y Guía salen del pie del menú de la compu: antes
+              Configuración estaba escrita a mano acá y la Guía no estaba (en el
+              celular ningún enlace llevaba a ella). */}
+          {deCuenta.map(({ to, label, icon: Icon, sub }, i) => (
+            <Link
+              key={to}
+              to={to}
+              className={`flex items-center gap-3 px-4 py-3 hover:bg-bg-2/60 active:bg-bg-3 transition-colors ${
+                i > 0 ? 'border-t border-line/40' : ''
+              }`}
+            >
+              <Icon size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-ink-0 leading-tight">{label}</div>
+                {sub && <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{sub}</div>}
+              </div>
+              <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3" />
+            </Link>
+          ))}
           <button
             type="button"
             onClick={() => setRecomOpen(true)}

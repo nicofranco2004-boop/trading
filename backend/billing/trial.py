@@ -652,6 +652,37 @@ MAIL_ENDED = "ended"
 MAIL_AVISO_DIAS_ANTES = 3
 
 
+def momentos_de_aviso(trial_started_at, trial_ends_at) -> dict:
+    """Desde qué momento le corresponde a esta prueba cada aviso automático
+    {kind: datetime}. El cron (`send_due_trial_emails`) lo manda en su primera
+    corrida a partir de ese momento, si todavía no salió.
+
+    Son las MISMAS condiciones que las consultas del cron, escritas como fechas
+    en vez de como SQL:
+      · fin de Pro        → trial_started_at <= ahora − (TRIAL_PRO_DAYS − 1) días
+      · quedan pocos días → trial_ends_at    <= ahora + MAIL_AVISO_DIAS_ANTES días
+      · terminó           → trial_ends_at    <= ahora
+    Existe para que otro mail (el de feedback que manda el admin) pueda ver
+    que mañana a esa persona le llega uno de estos y esperar. Si cambia una
+    condición del cron hay que cambiarla acá: test_feedback_prueba corre el
+    cron de verdad y compara contra esta función."""
+    def _f(x):
+        if not x:
+            return None
+        try:
+            return datetime.fromisoformat(str(x).replace("Z", ""))
+        except (TypeError, ValueError):
+            return None
+    ini, fin = _f(trial_started_at), _f(trial_ends_at)
+    out = {}
+    if ini:
+        out[MAIL_PRO_ENDING] = ini + timedelta(days=TRIAL_PRO_DAYS - 1)
+    if fin:
+        out[MAIL_ENDING_SOON] = fin - timedelta(days=MAIL_AVISO_DIAS_ANTES)
+        out[MAIL_ENDED] = fin
+    return out
+
+
 def _already_sent(conn, user_id: int, kind: str) -> bool:
     try:
         return conn.execute(

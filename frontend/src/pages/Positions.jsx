@@ -47,6 +47,9 @@ import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
 import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
+import PreciosEnVivo from '../components/PreciosEnVivo'
+import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
+import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import PesoEnCartera from '../components/PesoEnCartera'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import PositionsMobile from './PositionsMobile'
@@ -149,6 +152,14 @@ function PositionsDesktop() {
     date: today(),
   })
   const [lastUpdated, setLastUpdated] = useState(null)
+  // ¿El último refresco movió algún precio? Decide si late el punto del
+  // cartel de precios (PreciosEnVivo). Con el mercado cerrado, no.
+  const [preciosSeMueven, setPreciosSeMueven] = useState(false)
+  const preciosAntesRef = useRef(null)
+  // El reloj de 90 s y la recarga tras editar pueden dejar dos pedidos de
+  // precios en vuelo: gana el último (el mismo resguardo que ya tenía el
+  // celular). Sin él, una respuesta vieja llegaba después y pisaba la nueva.
+  const nuevoPedidoPrecios = useUltimoPedido()
   // Per-broker "show detail" state. Default = collapsed (clean view).
   // Stored as a Set of broker names; flipping a name toggles its detail mode.
   const [detailBrokers, setDetailBrokers] = useState(() => new Set())
@@ -578,16 +589,21 @@ function PositionsDesktop() {
     // → caía a costo). Ver buildPriceSymbols en utils/valuation.
     const all = buildPriceSymbols(pos, bkrs).join(',')
     if (!all) return
+    const vigente = nuevoPedidoPrecios()
     try {
       const data = await api.get(`/prices?symbols=${all}`)
-      setPrices(data)
-      setLastUpdated(new Date())
+      if (vigente()) {
+        setPreciosSeMueven(preciosQueCambiaron(preciosAntesRef.current, data) > 0)
+        preciosAntesRef.current = data
+        setPrices(data)
+        if (hayPrecios(data)) setLastUpdated(new Date())
+      }
     } catch {}
     // Prev-close para la variación diaria por posición. Endpoint aparte y
     // best-effort: si falla, las celdas "Var. día" muestran '—' sin romper nada.
     try {
       const prev = await api.get(`/prices/prev-close?symbols=${all}`)
-      setPrevClose(prev)
+      if (vigente()) setPrevClose(prev)
     } catch {}
   }
 
@@ -1719,7 +1735,11 @@ function PositionsDesktop() {
   // ya viven en el render principal (no early-return, para no duplicar el flow).
   const hasAnyPosition = positions.some(p => !p.is_cash)
 
-  const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
+  // Cartera SÍ vuelve a pedir los precios solos (relojVisible, cada
+  // PRECIOS_CARTERA_MS con la pestaña a la vista): puede prometerlo.
+  const meta = lastUpdated
+    ? <PreciosEnVivo actualizado={lastUpdated} seActualizanSolos seMueven={preciosSeMueven} />
+    : null
 
   // ─── Estado derivado de los filtros ──────────────────────────────────────
   // assetFiltering: hay texto de búsqueda. matchesAsset(p): la posición matchea
@@ -2259,7 +2279,9 @@ function PositionsDesktop() {
               <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2">
                 <span className="text-ink-3">Valor</span>
                 <span className="font-semibold text-ink-0">
-                  {hidden ? '••••••' : (isArsDisp ? fmtArs(valueDisp) : fmtUsd(valueDisp))}
+                  {/* Cuenta hasta el valor nuevo cuando llegan precios (y al
+                      cambiar de moneda), como el total de arriba. */}
+                  {hidden ? '••••••' : <AnimatedNumber value={valueDisp} format={isArsDisp ? fmtArs : fmtUsd} />}
                 </span>
               </span>
               <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">

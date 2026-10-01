@@ -16,6 +16,8 @@ import { track } from '../utils/track'
 import CarteraList from '../components/fundamentals/CarteraList'
 import AnalyzeView from '../components/fundamentals/AnalyzeView'
 import SearchOverlay from '../components/fundamentals/SearchOverlay'
+import { buscadorAbierto } from '../components/BuscadorRapido'
+import { esAtajoBuscador, esMac } from '../utils/buscadorRapido'
 import useWatchlist from '../components/fundamentals/useWatchlist'
 
 const CompareView = lazy(() => import('../components/fundamentals/CompareView'))
@@ -43,16 +45,20 @@ export default function Fundamentals() {
 
   useEffect(() => { track('calidad_cartera_view', { mode }) }, [mode])
 
-  // ⌘K / Ctrl+K abre el buscador.
+  // ⌘K (Ctrl+K fuera de Mac) abre el buscador de EMPRESAS de esta pantalla. Va
+  // en la fase de captura y marca preventDefault: así se atiende antes que el
+  // buscador general de la app (BuscadorRapido), que respeta esa marca y no se
+  // abre. Con el buscador general YA abierto, cede: ese ⌘K es para cerrarlo.
   useEffect(() => {
+    const mac = esMac()
     const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      if (esAtajoBuscador(e, mac) && !buscadorAbierto()) {
         e.preventDefault()
         setSearchOpen(true)
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
   // Abrir la ficha de un activo (desde la lista, seguidas, comparar o el buscador).

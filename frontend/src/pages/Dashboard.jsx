@@ -9,6 +9,8 @@ import MonthlyTeaser from '../components/MonthlyTeaser'
 import UpcomingEventsCard from '../components/UpcomingEventsCard'
 import TopNewsCard from '../components/TopNewsCard'
 import PageHeader from '../components/PageHeader'
+import PreciosEnVivo from '../components/PreciosEnVivo'
+import { hayPrecios } from '../utils/preciosEnVivo'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import AIDiscoveryBanner from '../components/ai/AIDiscoveryBanner'
@@ -776,7 +778,12 @@ function PersonalDashboard() {
 
   if (loading) return <DashboardSkeleton />
 
-  const meta = lastUpdated ? `Precios · ${lastUpdated.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}` : null
+  // El Dashboard pide los precios UNA vez, al abrir: el cartel dice de cuándo
+  // son y no promete que se actualizan, y su punto no late (antes latía
+  // siempre, al lado de un dato que nadie volvía a pedir).
+  // Sin ningún precio en la respuesta (proveedor caído) no hay "Precios de
+  // hace…": la misma regla que Cartera (hayPrecios).
+  const meta = lastUpdated && hayPrecios(prices) ? <PreciosEnVivo actualizado={lastUpdated} /> : null
 
   // Helper: convierte USD → moneda activa para mostrar.
   // Para ARS multiplica por tcValuacion actual (snapshot). No es histórico — los

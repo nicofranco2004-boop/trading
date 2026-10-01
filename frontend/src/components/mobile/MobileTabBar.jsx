@@ -26,6 +26,7 @@ import { track } from '../../utils/track'
 import { prefetchRoute } from '../../utils/routePrefetch'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
+import { menuVisible } from '../../utils/navegacion'
 
 const TABS = [
   { to: '/',             label: 'Home',       icon: Home },
@@ -50,7 +51,9 @@ export default function MobileTabBar() {
   const [fabOpen, setFabOpen] = useState(false)
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
-  const atOwnLevel = user?.tier === 'advisor' && !clientCtx
+  // La regla del asesor es la del menú lateral y del menú "Más"
+  // (utils/navegacion.js): una sola, para que las tres no se desvíen.
+  const { atOwnLevel } = menuVisible({ user, clientCtx })
 
   if (atOwnLevel) {
     return (

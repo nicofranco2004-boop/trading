@@ -990,6 +990,13 @@ def init_db():
             # hace que la segunda tanda no repita gente de la primera. Sin índice
             # encima (la tabla es chica y el filtro va con el resto del WHERE).
             conn.execute("ALTER TABLE users ADD COLUMN trial_invite_email_sent_at TEXT")
+        if user_cols and 'trial_feedback_email_sent_at' not in user_cols:
+            # Timestamp ISO del ÚLTIMO mail "¿qué te está pareciendo Rendi?" que
+            # se le mandó durante su prueba. NULL = nunca. Lo usa
+            # /api/admin/email/feedback-prueba para separar a los que todavía no
+            # lo recibieron de los que sí (a esos se les puede volver a mandar,
+            # pero sólo con el botón aparte). Sin índice encima.
+            conn.execute("ALTER TABLE users ADD COLUMN trial_feedback_email_sent_at TEXT")
         if user_cols and 'pro_trial_until' not in user_cols:
             # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
             # está perdiendo). Es una marca aparte a propósito: si se hiciera
@@ -21244,12 +21251,57 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
         return _completar_estado_admin(conn, [_shape_admin_user_row(r, now_iso) for r in rows])
 
 
+# ─── Envíos masivos del panel de admin ────────────────────────────────────────
+# Los cinco mails que el admin le manda a mucha gente desde el panel
+# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba y
+# el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
+# su loop y cada arreglo quedaba en uno solo: el de feedback tenía pausa, tandas
+# y freno al doble click, y los otros cuatro mandaban todo de un tirón.
+#
+# LOTE: cuántos mails manda cada pedido. Con la pausa entre envíos (0,6 s) más lo
+# que tarda Resend (~0,3 s), 20 mails son ~18 s: por debajo del corte de ~30 s
+# del proxy de Vercel. Con todo en un solo pedido, a partir de ~30 personas el
+# admin veía un error mientras los mails seguían saliendo — y volvía a apretar.
+# El panel parte la lista en tandas de este tamaño solo.
+ENVIO_MASIVO_LOTE = 20
+# Segundos, contados desde que llegó el pedido, después de los cuales no se
+# EMPIEZA otro mail: los que quedan vuelven al panel en `pendientes` y salen en
+# el pedido siguiente. El lote de 20 supone ~0,3 s por mail; si Resend se pone
+# lento (`_send` espera hasta 10 s), 20 mails volvían a pasar el corte de 30 s.
+# Con 18, el caso normal de un mail lento termina en 18 + 0,6 + 10 < 30. No es
+# una garantía (httpx cuenta los 10 s por fase, y una base trabada demora la
+# marca): si igual se corta, el panel espera y recarga, y la marca impide el
+# doble envío.
+ENVIO_MASIVO_PRESUPUESTO_SEG = 18
+# Mails seguidos sin confirmación de Resend (no contestó, o dio 5xx) después de
+# los cuales se frena el envío: con Resend caído, cada uno queda marcado sin
+# saber si salió, y seguir quemaba la campaña entera.
+ENVIO_MASIVO_INCIERTOS_SEGUIDOS = 2
+# Horas que tienen que pasar para "reenviar" el MISMO mail a alguien que ya lo
+# recibió (re-engagement y regalo de plan). Sin esto, si un reenvío se cortaba a
+# la mitad y el admin volvía a apretar, a los de las primeras tandas les llegaba
+# dos veces en el mismo rato: con "reenviar" tildado, haberlo recibido no los
+# saca de la lista.
+REENVIO_ESPERA_HORAS = 24
+
+
+class VistoEnvio(BaseModel):
+    id: int
+    sent_at: Optional[str] = None         # la fecha de envío que el admin VIO (None = nunca)
+
+
 class ReengagementEmailIn(BaseModel):
     confirm: bool = False        # False = DRY RUN (lista, no envía nada)
     threshold: int = 1           # actividad máx (ops + posiciones no-cash) para targetear
     only_verified: bool = True   # solo usuarios con email verificado
     resend: bool = False         # re-mailear aunque ya se les haya mandado
-    limit: int = 0               # cap de destinatarios (0 = sin límite; sirve para tandas)
+    limit: int = 0               # cap de la vista previa (0 = sin límite)
+    # Lo que vio el admin, de a ENVIO_MASIVO_LOTE: obligatorio para mandar.
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    # Inciertos seguidos con que terminó el pedido anterior de este envío (el
+    # panel lo devuelve): sin esto el freno contra Resend caído arrancaba de 0
+    # en cada pedido y nunca saltaba si cada uno alcanzaba a hacer uno solo.
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
 
 
 class GiftPlanEmailIn(ReengagementEmailIn):
@@ -21259,8 +21311,29 @@ class GiftPlanEmailIn(ReengagementEmailIn):
 
 class TrialInviteEmailIn(BaseModel):
     confirm: bool = False                 # False = DRY RUN (muestra a quién, no manda)
-    limit: int = Field(50, ge=1, le=200)  # tamaño de la tanda
+    limit: int = Field(50, ge=1, le=200)  # cuántos sortea la vista previa
     variant: str = "directo"              # 'directo' | 'cartera'
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+
+
+# Campaña "¿qué te está pareciendo Rendi?" (/api/admin/email/feedback-prueba).
+# Días de prueba cumplidos antes de entrar en la lista. Preguntarle "¿qué es lo
+# que más te sirvió?" a alguien que se registró hace 10 minutos —y que ese
+# mismo rato recibió el mail automático de bienvenida— no tiene respuesta.
+FEEDBACK_PRUEBA_MIN_DIAS = 3
+# Horas que tiene que esperar alguien a quien le llegó OTRO mail (uno automático
+# de la prueba, o este mismo) antes de que se le pueda mandar: dos mails el
+# mismo día se leen como spam, y el segundo es el que no se abre.
+FEEDBACK_PRUEBA_ESPERA_HORAS = 24
+
+
+class TrialFeedbackEmailIn(BaseModel):
+    confirm: bool = False                 # False = DRY RUN (las listas, no manda nada)
+    grupo: str = "nuevos"                 # 'nuevos' (nunca lo recibieron) | 'ya_recibieron'
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+    prueba_a_mi: bool = False             # manda UNO al mail del admin logueado y no toca a nadie
 
 
 class BroadcastEmailIn(BaseModel):
@@ -21269,9 +21342,332 @@ class BroadcastEmailIn(BaseModel):
     confirm: bool = False        # False = DRY RUN (lista de destinatarios, no envía)
     only_verified: bool = True   # solo usuarios con email verificado
     plan: Optional[str] = None   # None=todos · 'free' · 'plus' · 'pro'
-    limit: int = 0               # cap de destinatarios (0 = sin límite; sirve para tandas)
+    limit: int = 0               # cap de la vista previa (0 = sin límite)
     branded: bool = True         # envolver en el template Rendi (header+footer)
     test_to: Optional[str] = Field(None, max_length=200)  # manda UN mail de prueba acá y NO toca users
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+
+
+def _deshacer_transaccion(conn):
+    """En Postgres, después de un error la transacción queda abortada y TODO lo
+    que sigue falla hasta un rollback; sin esto, una sola falla en un envío
+    masivo arrastraba a todos los que venían detrás."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _fecha_utc(valor):
+    """Cualquier fecha de la base como datetime UTC sin zona, o None.
+    Las fuentes escriben en formatos distintos ('2026-10-01T14:00:00.1' de
+    Python, '2026-10-01 14:00:00' de SQLite); comparadas como texto el espacio y
+    la 'T' cambian cuál parece más nueva."""
+    from datetime import timezone
+    if not valor:
+        return None
+    try:
+        d = datetime.fromisoformat(str(valor).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d
+
+
+def _hace_txt(horas):
+    return "hace un rato" if horas < 1 else f"hace {round(horas)} h"
+
+
+def _espera_reenvio(enviado, ahora=None):
+    """Si a esta persona le llegó ESTE mail hace menos de REENVIO_ESPERA_HORAS,
+    el texto que lo explica en el panel; si no, None."""
+    f = _fecha_utc(enviado)
+    if f is None:
+        return None
+    horas = ((ahora or datetime.utcnow()) - f).total_seconds() / 3600
+    if horas >= REENVIO_ESPERA_HORAS:
+        return None
+    return f"lo recibió {_hace_txt(horas)} · se le puede reenviar a partir de mañana"
+
+
+def _filtro_ids(columna, ids):
+    """`AND columna IN (...)` para que una consulta traiga sólo a los que vio el
+    admin. Vacío con `ids=None` (todos); con una lista vacía no trae a nadie."""
+    if ids is None:
+        return "", ()
+    ids = [int(i) for i in ids]
+    if not ids:
+        return " AND 1=0", ()
+    return f" AND {columna} IN ({','.join('?' for _ in ids)})", tuple(ids)
+
+
+# Lo que devuelve `marcar` cuando la persona ya no existe (borró la cuenta
+# entre que se armó la lista y el envío): se cuenta como descartada, no como
+# "salteada", y no se le manda nada.
+_YA_NO_ESTA = object()
+
+
+def _sigue_existiendo(conn, uid):
+    return conn.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone() is not None
+
+
+# Columnas de `users` donde un envío masivo anota a quién ya le mandó. Lista
+# cerrada: el nombre va pegado al SQL.
+_MARCAS_DE_ENVIO = ("reengagement_email_sent_at", "gift_plan_email_sent_at",
+                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at")
+
+
+def _marca_en_columna(conn, columna):
+    """`marcar` y `desmarcar` para `_envio_masivo` cuando el envío se anota en
+    una columna de `users`.
+
+    La marca se gana sólo si la columna sigue valiendo lo que VIO el admin
+    (`t["visto"]`), no lo que leyó este pedido. Comparar contra lo leído en el
+    pedido dejaba que el segundo click de "volver a mandar" la ganara de nuevo:
+    la persona seguía en la lista después del primer envío. Reproducido en el
+    mail de feedback: dos clicks, 2 + 2 mails."""
+    if columna not in _MARCAS_DE_ENVIO:
+        raise ValueError(f"columna de marca desconocida: {columna}")
+
+    def marcar(t):
+        marca = datetime.utcnow().isoformat()
+        if t["visto"] is None:
+            cur = conn.execute(
+                f"UPDATE users SET {columna}=? WHERE id=? AND {columna} IS NULL",
+                (marca, t["id"]))
+        else:
+            cur = conn.execute(
+                f"UPDATE users SET {columna}=? WHERE id=? AND {columna}=?",
+                (marca, t["id"], t["visto"]))
+        if (cur.rowcount or 0) > 0:
+            return marca
+        return None if _sigue_existiendo(conn, t["id"]) else _YA_NO_ESTA
+
+    def desmarcar(t, marca):
+        conn.execute(f"UPDATE users SET {columna}=? WHERE id=? AND {columna}=?",
+                     (t["visto"], t["id"], marca))
+
+    return marcar, desmarcar
+
+
+def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
+                  inicio=None, inciertos_previos=0):
+    """Manda un mail a cada destinatario, de a uno. Es el motor de los cinco
+    envíos masivos del panel de admin.
+
+    `destinatarios`: los que el admin vio y que HOY siguen calificando (cada
+    endpoint los vuelve a filtrar con su propio criterio). `vistos`: los ids que
+    mandó el panel; los que no llegaron a `destinatarios` se informan como
+    descartados (borraron la cuenta, o cambió su situación entre la vista
+    previa y el click).
+
+    Por cada uno:
+      1. `marcar(t)` se queda con la persona ANTES de mandar. Devuelve la marca,
+         o None si ya la tiene otro pedido (doble click, otra pestaña) → se
+         saltea. Se gana con un UPDATE/INSERT condicional: dos pedidos a la vez
+         no la pueden ganar los dos. Ojo: "salteado" quiere decir que otro
+         pedido se la estaba mandando, no que le llegó — si a ese otro le
+         falla, la persona vuelve a la lista.
+      2. Pausa de `emails.PAUSA_ENTRE_ENVIOS` entre un envío y el siguiente.
+         Resend rechaza lo que pasa de su tope de pedidos por segundo, y un
+         rechazo es un mail que no llega.
+      3. `mandar(t)` → True si salió.
+      4. Si Resend no contestó a tiempo o dio un 5xx, el mail PUDO haber salido
+         (`emails.resultado_del_ultimo_envio()` == INCIERTO): la marca se deja
+         y la persona va en `inciertos`. Devolverla la ponía otra vez como
+         pendiente, y el click siguiente le mandaba un segundo mail. Con
+         ENVIO_MASIVO_INCIERTOS_SEGUIDOS seguidos (Resend caído) se frena: el
+         resto vuelve sin marca en `pendientes` y `frenado` le dice al panel
+         que no siga. La cuenta sigue entre pedidos (`inciertos_previos`, que
+         el panel devuelve de `inciertos_seguidos`): con Resend lento, cada
+         pedido podía hacer uno solo y cortar por tiempo, y el freno nunca
+         saltaba.
+      5. Si no salió (o ni se intentó), `desmarcar(t, marca)` la deja como
+         estaba (dos intentos, con un rollback en el medio). Si ni así, va en
+         `marcas_trabadas`: quedó marcada sin haber recibido nada, y el panel
+         lo tiene que decir.
+
+    Se marca antes y no después porque cambia el peor caso: si el proceso se
+    cae entre la marca y el envío (un deploy a mitad de una tanda), a esa
+    persona no le llega y queda marcada como que sí — el panel no lo puede
+    distinguir; en el log del servidor queda su "marcado … mandando" sin el
+    "Email sent" de después. Con la marca después, a alguien le llegaría dos
+    veces.
+
+    Pasados ENVIO_MASIVO_PRESUPUESTO_SEG desde `inicio` (cuando llegó el
+    pedido: el endpoint ya gastó tiempo armando la lista) no se empieza otro:
+    los que faltan vuelven en `pendientes` (sin tocar) y el panel los manda en
+    el pedido siguiente. Siempre se procesa al menos uno, así que cada pedido
+    avanza."""
+    from billing import emails
+
+    enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
+    ya_no_estan = []
+    intentos = 0
+    inciertos_seguidos = min(max(int(inciertos_previos or 0), 0), ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+    frenado = False
+    if inicio is None:
+        inicio = time.monotonic()
+    for i, t in enumerate(destinatarios):
+        if i and time.monotonic() - inicio > ENVIO_MASIVO_PRESUPUESTO_SEG:
+            pendientes = [{"id": x["id"]} for x in destinatarios[i:]]
+            break
+        quien = {"id": t["id"], "email": t["email"]}
+        try:
+            marca = marcar(t)
+            conn.commit()
+        except Exception as ex:
+            log.error("%s: no se pudo marcar uid=%s: %s", campaña, t["id"], ex)
+            _deshacer_transaccion(conn)
+            fallados.append(quien)
+            continue
+        if marca is _YA_NO_ESTA:
+            ya_no_estan.append({"id": t["id"]})
+            continue
+        if marca is None:
+            salteados.append(quien)
+            continue
+        if intentos:
+            time.sleep(emails.PAUSA_ENTRE_ENVIOS)
+        intentos += 1
+        log.info("%s: marcado uid=%s, mandando", campaña, t["id"])
+        # Si `mandar` falla antes de llegar a `_send`, que no quede lo del mail
+        # anterior: un INCIERTO viejo dejaría marcado a alguien sin intentarlo.
+        emails._anotar(emails.NO_INTENTADO)
+        try:
+            ok = bool(mandar(t))
+        except Exception as ex:
+            log.error("%s: envío falló para %s: %s", campaña, t["email"], ex)
+            ok = False
+        if ok:
+            enviados.append(quien)
+            inciertos_seguidos = 0
+            continue
+        if emails.resultado_del_ultimo_envio() == emails.INCIERTO:
+            log.warning("%s: no se sabe si le llegó a uid=%s; queda marcado", campaña, t["id"])
+            inciertos.append(quien)
+            inciertos_seguidos += 1
+            if inciertos_seguidos >= ENVIO_MASIVO_INCIERTOS_SEGUIDOS:
+                # Aunque sea el último de la tanda: el panel tiene que cortar
+                # y no seguir con la próxima.
+                frenado = True
+                pendientes = [{"id": x["id"]} for x in destinatarios[i + 1:]]
+                break
+            continue
+        # Resend contestó (aunque sea que no): no está caído.
+        inciertos_seguidos = 0
+        devuelta = False
+        for _ in range(2):
+            try:
+                desmarcar(t, marca)
+                conn.commit()
+                devuelta = True
+                break
+            except Exception as ex:
+                log.error("%s: no se pudo desmarcar uid=%s: %s", campaña, t["id"], ex)
+                _deshacer_transaccion(conn)
+        fallados.append(quien)
+        if not devuelta:
+            trabadas.append(quien)
+
+    ids = {t["id"] for t in destinatarios}
+    descartados = [{"id": i} for i in vistos if i not in ids] + ya_no_estan
+    log.info("%s: enviados=%d fallados=%d salteados=%d descartados=%d trabadas=%d "
+             "inciertos=%d pendientes=%d frenado=%s", campaña, len(enviados), len(fallados),
+             len(salteados), len(descartados), len(trabadas), len(inciertos), len(pendientes),
+             frenado)
+    return {
+        "dry_run": False,
+        "sent_count": len(enviados),
+        "failed_count": len(fallados),
+        "skipped_count": len(salteados),
+        "discarded_count": len(descartados),
+        "sent": enviados,
+        "failed": fallados,
+        "skipped": salteados,
+        "marcas_trabadas": trabadas,
+        # Resend no confirmó: pudo haberles llegado. Quedan marcados (no se les
+        # vuelve a mandar) y el panel dice a quiénes mirar en Resend.
+        "inciertos": inciertos,
+        # No se llegaron a intentar (se acabó el tiempo del pedido): sin marca,
+        # el panel los vuelve a mandar en el pedido siguiente — salvo con
+        # `frenado` (Resend no confirma): ahí el panel corta.
+        "pendientes": pendientes,
+        "frenado": frenado,
+        "inciertos_seguidos": inciertos_seguidos,
+    }
+
+
+def _vistos_o_422(vistos):
+    """{id: fecha de envío que vio el admin}. Sin la lista no se manda: el
+    pedido que manda tiene que decir a quién vio, de a ENVIO_MASIVO_LOTE."""
+    if vistos is None:
+        raise HTTPException(422, "Para mandar hace falta la lista que viste (vistos).")
+    return {int(x.id): x.sent_at for x in vistos}
+
+
+def _grupo_con_reenvio(candidatos, visto, columna, resend):
+    """De los candidatos que vio el admin, a quiénes se les manda en un envío
+    que se puede "reenviar" (re-engagement, regalo de plan).
+
+      • Lo vio sin recibirlo → va; si en el medio le llegó por otro click, la
+        marca no se gana y se saltea.
+      • Lo vio ya recibido → va sólo con `resend`, y no si lo recibió hace
+        menos de REENVIO_ESPERA_HORAS: es el freno para el que vuelve a apretar
+        después de un reenvío cortado a la mitad."""
+    grupo = []
+    for t in candidatos:
+        anterior = visto[t["id"]]
+        if anterior is not None:
+            if not resend:
+                continue
+            if t[columna] == anterior and t["espera"]:
+                continue
+        t["visto"] = anterior
+        grupo.append(t)
+    return grupo
+
+
+def _reengagement_candidatos(conn, data, ids=None):
+    """Los que hoy califican para el re-engagement: con mail, verificados (si se
+    pide) y con actividad (operaciones + posiciones no-cash) ≤ `threshold`.
+    Primero los que nunca lo recibieron, después por antigüedad. `ids` = sólo
+    esos (los que vio el admin)."""
+    threshold = max(0, int(data.threshold))
+    filtro, params = _filtro_ids("u.id", ids)
+    rows = conn.execute(f"""
+        SELECT u.id, u.email, u.name, u.created_at, u.email_verified,
+               u.reengagement_email_sent_at,
+               (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
+               (SELECT COUNT(*) FROM positions p
+                  WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
+        FROM users u
+        WHERE COALESCE(u.is_admin,0) = 0
+          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          {filtro}
+        ORDER BY u.created_at ASC
+    """, params).fetchall()
+
+    ahora = datetime.utcnow()
+    targets = []
+    for r in rows:
+        d = dict(r)
+        if data.only_verified and not d.get("email_verified"):
+            continue
+        if not (d.get("email") or "").strip():
+            continue
+        activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
+        if activity > threshold:
+            continue
+        d["activity"] = activity
+        d["espera"] = _espera_reenvio(d.get("reengagement_email_sent_at"), ahora)
+        targets.append(d)
+
+    targets.sort(key=lambda x: (x.get("reengagement_email_sent_at") is not None,
+                                x.get("created_at") or ""))
+    return targets
 
 
 @app.post("/api/admin/email/re-engagement")
@@ -21283,107 +21679,151 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
       • Solo admin.
       • confirm=False (DEFAULT) → DRY RUN: devuelve la lista exacta de
         destinatarios SIN enviar nada. Siempre revisá esto primero.
-      • confirm=True → envía vía Resend (emails.send_reengagement), stampea
-        users.reengagement_email_sent_at y NO re-mailea a quien ya recibió
-        (salvo resend=True). Los envíos que fallan NO se stampean → se
-        reintentan solos en la próxima corrida (idempotente y self-healing).
-      • limit>0 → cap de destinatarios para mandar en tandas.
+      • confirm=True + `vistos` → manda a los que vio el admin (de a
+        ENVIO_MASIVO_LOTE por pedido; el panel parte la lista solo) y que hoy
+        siguen calificando. Sale por `_envio_masivo`: marca
+        users.reengagement_email_sent_at ANTES de mandar, contra la fecha que
+        vio el admin (un doble click no duplica), pausa entre envíos, y si el
+        envío falla la marca vuelve a como estaba (se reintenta la próxima vez).
+      • A quien ya lo recibió se lo saltea, salvo resend=True — y ni así si lo
+        recibió hace menos de REENVIO_ESPERA_HORAS.
 
     Nota: en local sin RESEND_API_KEY, send_reengagement loguea y devuelve
     False, así que en dev todos caen en `failed` (no se manda nada de verdad).
     El envío real ocurre en prod, donde está la API key + los users reales."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
-    from datetime import datetime as _dt
 
     threshold = max(0, int(data.threshold))
     conn = get_db()
     try:
-        rows = conn.execute("""
-            SELECT u.id, u.email, u.name, u.created_at, u.email_verified,
-                   u.reengagement_email_sent_at,
-                   (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
-                   (SELECT COUNT(*) FROM positions p
-                      WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
-            FROM users u
-            WHERE COALESCE(u.is_admin,0) = 0
-              AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
-            ORDER BY u.created_at ASC
-        """).fetchall()
-
-        targets = []
-        for r in rows:
-            d = dict(r)
-            if data.only_verified and not d.get("email_verified"):
-                continue
-            if not (d.get("email") or "").strip():
-                continue
-            activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
-            if activity > threshold:
-                continue
-            d["activity"] = activity
-            targets.append(d)
-
-        # Primero los que nunca recibieron el mail, después por antigüedad.
-        targets.sort(key=lambda x: (x.get("reengagement_email_sent_at") is not None,
-                                    x.get("created_at") or ""))
-        if data.limit and data.limit > 0:
-            targets = targets[: data.limit]
-
         # ── DRY RUN: mostrar a quién le caería, sin enviar ──
         if not data.confirm:
-            conn.close()
+            targets = _reengagement_candidatos(conn, data)
+            if data.limit and data.limit > 0:
+                targets = targets[: data.limit]
             return {
                 "dry_run": True,
                 "threshold": threshold,
                 "only_verified": data.only_verified,
+                "lote": ENVIO_MASIVO_LOTE,
+                "espera_horas": REENVIO_ESPERA_HORAS,
                 "total_candidates": len(targets),
                 "already_sent": sum(1 for t in targets if t.get("reengagement_email_sent_at")),
                 "recipients": [
                     {"id": t["id"], "email": t["email"], "name": t.get("name"),
                      "activity": t["activity"], "ops": int(t.get("ops") or 0),
                      "pos": int(t.get("pos") or 0), "created_at": t.get("created_at"),
-                     "already_sent_at": t.get("reengagement_email_sent_at")}
+                     "already_sent_at": t.get("reengagement_email_sent_at"),
+                     "espera": t["espera"]}
                     for t in targets
                 ],
             }
 
-        # ── ENVÍO REAL ──
-        sent, failed, skipped = [], [], []
-        for t in targets:
-            if t.get("reengagement_email_sent_at") and not data.resend:
-                skipped.append({"id": t["id"], "email": t["email"]})
-                continue
-            ok = False
-            try:
-                ok = emails.send_reengagement(to=t["email"], user_name=(t.get("name") or ""))
-            except Exception as ex:
-                log.error("re-engagement send error for %s: %s", t["email"], ex)
-                ok = False
-            if ok:
-                try:
-                    conn.execute(
-                        "UPDATE users SET reengagement_email_sent_at=? WHERE id=?",
-                        (_dt.utcnow().isoformat(), t["id"]),
-                    )
-                    conn.commit()
-                except Exception as ex:
-                    log.error("re-engagement stamp failed for %s: %s", t["email"], ex)
-                sent.append({"id": t["id"], "email": t["email"]})
-            else:
-                failed.append({"id": t["id"], "email": t["email"]})
-        conn.close()
-        return {
-            "dry_run": False,
-            "threshold": threshold,
-            "sent_count": len(sent),
-            "failed_count": len(failed),
-            "skipped_count": len(skipped),
-            "sent": sent,
-            "failed": failed,
-            "skipped": skipped,
-        }
+        # ── ENVÍO REAL: a los que vio el admin ──
+        visto = _vistos_o_422(data.vistos)
+        grupo = _grupo_con_reenvio(
+            _reengagement_candidatos(conn, data, ids=list(visto)), visto,
+            "reengagement_email_sent_at", data.resend)
+        marcar, desmarcar = _marca_en_columna(conn, "reengagement_email_sent_at")
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_reengagement(
+                to=t["email"], user_name=(t.get("name") or "")),
+            campaña="re-engagement", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["threshold"] = threshold
+        return res
     finally:
         conn.close()
+
+
+def _gift_plan_candidatos(conn, data, ids=None):
+    """Los que hoy califican para el mail de regalo de plan, y cuántos quedaron
+    afuera por estar en su prueba gratis: (candidatos, en_trial). `ids` = sólo
+    esos (los que vio el admin)."""
+    from billing import trial as billing_trial
+
+    threshold = max(0, int(data.threshold))
+    now = datetime.utcnow()
+    filtro, params = _filtro_ids("u.id", ids)
+    rows = conn.execute(f"""
+        SELECT u.id, u.email, u.name, u.created_at, u.email_verified, u.tier,
+               u.credit_active_until, u.credit_anchor_amount_usd,
+               u.credit_anchor_plan, u.trial_ends_at,
+               u.gift_plan_email_sent_at,
+               (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
+               (SELECT COUNT(*) FROM positions p
+                  WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
+        FROM users u
+        WHERE COALESCE(u.is_admin,0) = 0
+          AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          {filtro}
+        ORDER BY u.created_at ASC
+    """, params).fetchall()
+
+    def _credito_vigente(d) -> bool:
+        cau = d.get("credit_active_until")
+        if not cau:
+            return False
+        try:
+            return datetime.fromisoformat(str(cau).replace("Z", "")) > now
+        except (ValueError, TypeError):
+            return False
+
+    def _en_trial(d):
+        """¿Está en la mitad de su prueba gratis de 15 días?"""
+        return _credito_vigente(d) and billing_trial.credit_is_trial(
+            d.get("credit_active_until"), d.get("trial_ends_at"))
+
+    def _has_gift(d):
+        if (d.get("tier") or "free") not in ("plus", "pro"):
+            return False
+        if not _credito_vigente(d):
+            return False
+        # El trial NO es un regalo. Su anchor queda en NULL a propósito
+        # (ponerle precio a los 15 días gratis los convertía en plata real),
+        # y NULL pasaba el test de "comp" por la ventana de atrás:
+        # float(None or 0) == 0 daba True. Resultado: al que estaba en la
+        # mitad de su prueba le entraba un mail ofreciéndole de REGALO
+        # exactamente lo que ya estaba usando gratis.
+        #
+        # Sin anchor no hay plan pago detrás que regalar: todo lo que otorga
+        # crédito de verdad (pago, comp, cambio de plan) lo deja escrito.
+        if d.get("credit_anchor_plan") is None:
+            return False
+        # comp = sin costo (amount 0); evita marcar a quien paga su plan
+        return float(d.get("credit_anchor_amount_usd") or 0) == 0
+
+    targets = []
+    en_trial = 0
+    for r in rows:
+        d = dict(r)
+        if data.only_verified and not d.get("email_verified"):
+            continue
+        if not (d.get("email") or "").strip():
+            continue
+        activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
+        if activity > threshold:
+            continue
+        # Fuera de la campaña MIENTRAS dure la prueba, mande o no mande el
+        # filtro only_gifted: el mail promete un regalo que se pisa con lo
+        # que ya tiene, y el trial trae su propia secuencia de 4 avisos
+        # haciendo este mismo trabajo. Cuando la prueba termine vuelve a ser
+        # candidato — ahí el regalo sí es un regalo.
+        if _en_trial(d):
+            en_trial += 1
+            continue
+        d["activity"] = activity
+        d["has_gift"] = _has_gift(d)
+        if data.only_gifted and not d["has_gift"]:
+            continue
+        d["espera"] = _espera_reenvio(d.get("gift_plan_email_sent_at"), now)
+        targets.append(d)
+
+    targets.sort(key=lambda x: (x.get("gift_plan_email_sent_at") is not None,
+                                x.get("created_at") or ""))
+    return targets, en_trial
 
 
 @app.post("/api/admin/email/gift-plan")
@@ -21397,110 +21837,37 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
       • confirm=False (DEFAULT) → DRY RUN: lista de destinatarios SIN enviar.
         Surface tier + credit_active_until + has_gift para que verifiques que el
         regalo ya cayó antes de mandar.
-      • confirm=True → envía (emails.send_gift_plan_history), stampea
-        users.gift_plan_email_sent_at, NO re-mailea a quien ya recibió (salvo
-        resend=True). Los fallidos no se stampean → se reintentan solos.
+      • confirm=True + `vistos` → manda por `_envio_masivo` a los que vio el
+        admin y siguen calificando, marcando users.gift_plan_email_sent_at
+        antes de mandar contra la fecha que vio (un doble click no duplica). A
+        quien ya lo recibió lo saltea, salvo resend=True (y ni así si lo
+        recibió hace menos de REENVIO_ESPERA_HORAS). Los fallidos vuelven a
+        como estaban → se reintentan solos.
       • only_gifted=True → solo a quienes tienen un comp Plus/Pro activo (evita
         prometer un regalo a alguien que no lo recibió).
       • Los que están en su prueba gratis quedan SIEMPRE afuera (se cuentan en
         excluded_in_trial): el mail les ofrecería de regalo lo que ya tienen.
-      • limit>0 → cap para mandar en tandas.
 
     En local sin RESEND_API_KEY el envío loguea y devuelve False (no manda nada
     de verdad); el envío real ocurre en prod."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
-    from billing import trial as billing_trial
-    from datetime import datetime as _dt
 
     threshold = max(0, int(data.threshold))
-    now = _dt.utcnow()
     conn = get_db()
     try:
-        rows = conn.execute("""
-            SELECT u.id, u.email, u.name, u.created_at, u.email_verified, u.tier,
-                   u.credit_active_until, u.credit_anchor_amount_usd,
-                   u.credit_anchor_plan, u.trial_ends_at,
-                   u.gift_plan_email_sent_at,
-                   (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS ops,
-                   (SELECT COUNT(*) FROM positions p
-                      WHERE p.user_id = u.id AND COALESCE(p.is_cash,0) = 0) AS pos
-            FROM users u
-            WHERE COALESCE(u.is_admin,0) = 0
-              AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
-            ORDER BY u.created_at ASC
-        """).fetchall()
-
-        def _credito_vigente(d) -> bool:
-            cau = d.get("credit_active_until")
-            if not cau:
-                return False
-            try:
-                return _dt.fromisoformat(str(cau).replace("Z", "")) > now
-            except (ValueError, TypeError):
-                return False
-
-        def _en_trial(d):
-            """¿Está en la mitad de su prueba gratis de 15 días?"""
-            return _credito_vigente(d) and billing_trial.credit_is_trial(
-                d.get("credit_active_until"), d.get("trial_ends_at"))
-
-        def _has_gift(d):
-            if (d.get("tier") or "free") not in ("plus", "pro"):
-                return False
-            if not _credito_vigente(d):
-                return False
-            # El trial NO es un regalo. Su anchor queda en NULL a propósito
-            # (ponerle precio a los 15 días gratis los convertía en plata real),
-            # y NULL pasaba el test de "comp" por la ventana de atrás:
-            # float(None or 0) == 0 daba True. Resultado: al que estaba en la
-            # mitad de su prueba le entraba un mail ofreciéndole de REGALO
-            # exactamente lo que ya estaba usando gratis.
-            #
-            # Sin anchor no hay plan pago detrás que regalar: todo lo que otorga
-            # crédito de verdad (pago, comp, cambio de plan) lo deja escrito.
-            if d.get("credit_anchor_plan") is None:
-                return False
-            # comp = sin costo (amount 0); evita marcar a quien paga su plan
-            return float(d.get("credit_anchor_amount_usd") or 0) == 0
-
-        targets = []
-        en_trial = 0
-        for r in rows:
-            d = dict(r)
-            if data.only_verified and not d.get("email_verified"):
-                continue
-            if not (d.get("email") or "").strip():
-                continue
-            activity = int(d.get("ops") or 0) + int(d.get("pos") or 0)
-            if activity > threshold:
-                continue
-            # Fuera de la campaña MIENTRAS dure la prueba, mande o no mande el
-            # filtro only_gifted: el mail promete un regalo que se pisa con lo
-            # que ya tiene, y el trial trae su propia secuencia de 4 avisos
-            # haciendo este mismo trabajo. Cuando la prueba termine vuelve a ser
-            # candidato — ahí el regalo sí es un regalo.
-            if _en_trial(d):
-                en_trial += 1
-                continue
-            d["activity"] = activity
-            d["has_gift"] = _has_gift(d)
-            if data.only_gifted and not d["has_gift"]:
-                continue
-            targets.append(d)
-
-        targets.sort(key=lambda x: (x.get("gift_plan_email_sent_at") is not None,
-                                    x.get("created_at") or ""))
-        if data.limit and data.limit > 0:
-            targets = targets[: data.limit]
-
         if not data.confirm:
-            conn.close()
+            targets, en_trial = _gift_plan_candidatos(conn, data)
+            if data.limit and data.limit > 0:
+                targets = targets[: data.limit]
             return {
                 "dry_run": True,
                 "threshold": threshold,
                 "only_verified": data.only_verified,
                 "only_gifted": data.only_gifted,
                 "plan_label": data.plan_label,
+                "lote": ENVIO_MASIVO_LOTE,
+                "espera_horas": REENVIO_ESPERA_HORAS,
                 "total_candidates": len(targets),
                 "with_gift": sum(1 for t in targets if t.get("has_gift")),
                 # Se informa para que el número no desaparezca en silencio: son
@@ -21512,61 +21879,72 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
                      "activity": t["activity"], "tier": t.get("tier"),
                      "has_gift": t.get("has_gift"),
                      "credit_active_until": t.get("credit_active_until"),
-                     "already_sent_at": t.get("gift_plan_email_sent_at")}
+                     "already_sent_at": t.get("gift_plan_email_sent_at"),
+                     "espera": t["espera"]}
                     for t in targets
                 ],
             }
 
-        sent, failed, skipped = [], [], []
-        for t in targets:
-            if t.get("gift_plan_email_sent_at") and not data.resend:
-                skipped.append({"id": t["id"], "email": t["email"]})
-                continue
-            ok = False
-            try:
-                ok = emails.send_gift_plan_history(
-                    to=t["email"], user_name=(t.get("name") or ""),
-                    plan_label=(data.plan_label or "Pro"),
-                )
-            except Exception as ex:
-                log.error("gift-plus send error for %s: %s", t["email"], ex)
-                ok = False
-            if ok:
-                try:
-                    conn.execute(
-                        "UPDATE users SET gift_plan_email_sent_at=? WHERE id=?",
-                        (_dt.utcnow().isoformat(), t["id"]),
-                    )
-                    conn.commit()
-                except Exception as ex:
-                    log.error("gift-plus stamp failed for %s: %s", t["email"], ex)
-                sent.append({"id": t["id"], "email": t["email"]})
-            else:
-                failed.append({"id": t["id"], "email": t["email"]})
-        conn.close()
-        return {
-            "dry_run": False,
-            "threshold": threshold,
-            "sent_count": len(sent),
-            "failed_count": len(failed),
-            "skipped_count": len(skipped),
-            "excluded_in_trial": en_trial,
-            "sent": sent,
-            "failed": failed,
-            "skipped": skipped,
-        }
+        visto = _vistos_o_422(data.vistos)
+        candidatos, _ = _gift_plan_candidatos(conn, data, ids=list(visto))
+        grupo = _grupo_con_reenvio(candidatos, visto, "gift_plan_email_sent_at",
+                                   data.resend)
+        marcar, desmarcar = _marca_en_columna(conn, "gift_plan_email_sent_at")
+        plan_label = data.plan_label or "Pro"
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_gift_plan_history(
+                to=t["email"], user_name=(t.get("name") or ""), plan_label=plan_label),
+            campaña="gift-plan", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["threshold"] = threshold
+        return res
     finally:
         conn.close()
+
+
+def _trial_invite_elegibles(conn, ids=None):
+    """Los que hoy pueden activar la prueba según `trial.eligibility()`.
+
+    Sin `ids` (la vista previa): sólo los que todavía no recibieron el aviso.
+    Con `ids` (el envío) la marca no se filtra acá: la decide `marcar`, y así
+    un doble click se informa como "ya le había llegado" y no como "ya no
+    califica"."""
+    from billing import trial as _trial
+
+    if ids is None:
+        filtro, params = " AND trial_invite_email_sent_at IS NULL", ()
+    else:
+        filtro, params = _filtro_ids("id", ids)
+    # Pre-filtro barato en SQL; la palabra final la tiene eligibility().
+    rows = conn.execute(
+        f"""SELECT id, email, name FROM users
+             WHERE COALESCE(is_admin,0) = 0
+               AND managed_by IS NULL
+               AND COALESCE(email_verified,0) = 1
+               AND TRIM(COALESCE(email,'')) <> ''{filtro}""", params).fetchall()
+
+    elegibles = []
+    for r in rows:
+        try:
+            if _trial.eligibility(conn, r["id"]).get("can_start"):
+                elegibles.append(dict(r))
+        except Exception as ex:
+            log.warning("trial-invite: eligibility falló uid=%s: %s", r["id"], ex)
+            _deshacer_transaccion(conn)
+    return elegibles
 
 
 @app.post("/api/admin/email/trial-invite")
 def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_admin_user)):
     """Campaña por TANDAS: avisar que la prueba gratis ya está disponible.
 
-    Cada corrida sortea `limit` usuarios (50 por defecto) entre los que TODAVÍA
-    no recibieron el aviso, les manda el mail y los marca. La tanda siguiente ya
-    no los tiene en el bolillero, así que nadie recibe el mismo aviso dos veces
-    y la lista se va vaciando sola.
+    La vista previa sortea `limit` usuarios (50 por defecto) entre los que
+    TODAVÍA no recibieron el aviso. El envío les manda a ESOS — los que vio el
+    admin, en `vistos` — y los marca. La tanda siguiente ya no los tiene en el
+    bolillero, así que nadie recibe el mismo aviso dos veces y la lista se va
+    vaciando sola. (Antes el envío volvía a sortear: el admin veía una lista y
+    le llegaba a otra.)
 
     ⭐ El filtro que importa es `trial.eligibility()`, el MISMO que decide si el
     botón aparece. Cualquier otro criterio (tier='free', sin suscripción…) se
@@ -21577,45 +21955,30 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
     `confirm=False` (default) es DRY RUN: devuelve a quiénes les tocaría y
     cuántos quedan, sin mandar nada.
 
-    Marcamos ANTES de mandar y desmarcamos si el envío falla: si el proceso se
-    cae a la mitad, el peor caso es que alguien quede sin invitar (se lo agarra
-    la próxima tanda), nunca que le llegue dos veces.
+    El envío sale por `_envio_masivo`: marca ANTES de mandar (sólo si la marca
+    sigue vacía: un doble click no duplica) y desmarca si el envío falla. Si el
+    proceso se cae a la mitad, el peor caso es que alguien quede sin invitar,
+    nunca que le llegue dos veces.
     """
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
     from billing import trial as _trial
-    from datetime import datetime as _dt
     import random as _random
 
     variant = data.variant if data.variant in emails.TRIAL_INVITE_VARIANTS else "directo"
     conn = get_db()
     try:
-        # Pre-filtro barato en SQL; la palabra final la tiene eligibility().
-        rows = conn.execute(
-            """SELECT id, email, name FROM users
-                WHERE COALESCE(is_admin,0) = 0
-                  AND managed_by IS NULL
-                  AND COALESCE(email_verified,0) = 1
-                  AND TRIM(COALESCE(email,'')) <> ''
-                  AND trial_invite_email_sent_at IS NULL""").fetchall()
-
-        elegibles = []
-        for r in rows:
-            try:
-                if _trial.eligibility(conn, r["id"]).get("can_start"):
-                    elegibles.append(dict(r))
-            except Exception as ex:
-                log.warning("trial-invite: eligibility falló uid=%s: %s", r["id"], ex)
-
-        _random.shuffle(elegibles)
-        tanda = elegibles[: data.limit]
-        ya_avisados = conn.execute(
-            "SELECT COUNT(*) c FROM users WHERE trial_invite_email_sent_at IS NOT NULL"
-        ).fetchone()["c"]
-
         if not data.confirm:
+            elegibles = _trial_invite_elegibles(conn)
+            _random.shuffle(elegibles)
+            tanda = elegibles[: data.limit]
+            ya_avisados = conn.execute(
+                "SELECT COUNT(*) c FROM users WHERE trial_invite_email_sent_at IS NOT NULL"
+            ).fetchone()["c"]
             return {
                 "dry_run": True,
                 "variant": variant,
+                "lote": ENVIO_MASIVO_LOTE,
                 "elegibles": len(elegibles),
                 "en_esta_tanda": len(tanda),
                 "quedan_despues": max(0, len(elegibles) - len(tanda)),
@@ -21624,58 +21987,312 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
                                for t in tanda],
             }
 
+        visto = _vistos_o_422(data.vistos)
+        grupo = _trial_invite_elegibles(conn, ids=list(visto))
+        for t in grupo:
+            t["visto"] = None          # el aviso se manda una sola vez
         # Sin respaldo: 7 y 8 eran los días de la prueba vieja, y billing/trial.py
         # es la única fuente de estos números.
         pro_days = _trial.TRIAL_PRO_DAYS
         plus_days = _trial.TRIAL_PLUS_DAYS
-        enviados, fallados = [], []
-        for t in tanda:
-            marca = _dt.utcnow().isoformat()
-            try:
-                conn.execute("UPDATE users SET trial_invite_email_sent_at=? WHERE id=?",
-                             (marca, t["id"]))
-                conn.commit()
-            except Exception as ex:
-                log.error("trial-invite: no se pudo marcar uid=%s: %s", t["id"], ex)
-                fallados.append({"id": t["id"], "email": t["email"]})
-                continue
-            ok = False
-            try:
-                ok = emails.send_trial_invite(
-                    to=t["email"], user_name=(t.get("name") or ""), variant=variant,
-                    pro_days=pro_days, plus_days=plus_days,
-                    total_days=pro_days + plus_days)
-            except Exception as ex:
-                log.error("trial-invite: envío falló para %s: %s", t["email"], ex)
-                ok = False
-            if ok:
-                enviados.append({"id": t["id"], "email": t["email"]})
-            else:
-                # Se destraba para que entre de nuevo al bolillero: el aviso no
-                # llegó, así que la marca sería mentira.
-                try:
-                    conn.execute(
-                        "UPDATE users SET trial_invite_email_sent_at=NULL WHERE id=?",
-                        (t["id"],))
-                    conn.commit()
-                except Exception as ex:
-                    log.error("trial-invite: no se pudo desmarcar uid=%s: %s", t["id"], ex)
-                fallados.append({"id": t["id"], "email": t["email"]})
-
-        log.info("trial-invite: variante=%s enviados=%d fallados=%d", variant,
-                 len(enviados), len(fallados))
-        return {
-            "dry_run": False,
-            "variant": variant,
-            "sent_count": len(enviados),
-            "failed_count": len(fallados),
-            "quedan_despues": max(0, len(elegibles) - len(enviados)),
-            "ya_avisados": ya_avisados + len(enviados),
-            "sent": enviados,
-            "failed": fallados,
-        }
+        marcar, desmarcar = _marca_en_columna(conn, "trial_invite_email_sent_at")
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_trial_invite(
+                to=t["email"], user_name=(t.get("name") or ""), variant=variant,
+                pro_days=pro_days, plus_days=plus_days,
+                total_days=pro_days + plus_days),
+            campaña="trial-invite", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["variant"] = variant
+        return res
     finally:
         conn.close()
+
+
+@app.post("/api/admin/email/feedback-prueba")
+def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(get_admin_user)):
+    """Mail "¿qué te está pareciendo Rendi?" a quienes están EN LA PRUEBA GRATIS.
+
+    Dos grupos, siempre entre los que siguen probando hoy:
+      • 'nuevos'        → nunca lo recibieron. Es el botón principal.
+      • 'ya_recibieron' → ya les llegó antes y siguen en la prueba. Se les
+        vuelve a mandar SÓLO con su botón aparte, nunca de rebote.
+    Al que se le terminó la prueba (o pagó) no aparece en ninguno de los dos.
+
+    ⭐ "Está en la prueba" lo decide `trial.activos()` —por adentro
+    `prueba_viva`—, la misma pregunta que se hace la app para mostrar la barra
+    de "estás probando Rendi Pro" y que cuenta el panel de pruebas activas. Con
+    un criterio propio acá (p. ej. "tier pro/plus" o "trial_ends_at futuro") se
+    colaría el que pagó a mitad de la prueba, que conserva su trial_ends_at.
+
+    `confirm=False` (default) es DRY RUN: devuelve las dos listas y el texto del
+    mail, sin mandar nada.
+
+    `vistos` = cada persona que el admin vio en la vista previa, CON la fecha de
+    envío que vio (obligatorio para mandar, de a ENVIO_MASIVO_LOTE). Sólo se
+    manda a esos, y sólo si siguen calificando: el que arrancó la prueba entre
+    la vista previa y el click no recibe un mail que nadie vio salir.
+
+    Se marca ANTES de mandar, y la marca se gana sólo si sigue siendo la que vio
+    el admin. Por eso un doble click o una segunda pestaña no le mandan dos
+    veces a nadie — tampoco en "volver a mandar": ahí la persona sigue en el
+    mismo grupo después del primer envío, y comparar contra lo que el servidor
+    leyó en ESE pedido (como hacía la primera versión) dejaba que el segundo
+    click la volviera a ganar. Reproducido: dos clicks, 2 + 2 mails.
+
+    Si el envío falla, la marca vuelve a la que tenía. Si ni eso se puede (base
+    trabada), se informa en `marcas_trabadas`: quedó marcada sin haber recibido
+    nada, y el panel lo tiene que decir en vez de esconderla en "ya lo recibió".
+
+    Los que llevan menos de FEEDBACK_PRUEBA_MIN_DIAS días de prueba van en
+    `recien_empezados`: se ven, pero no se les manda. Y en cualquier lista, la
+    fila con `espera` (le llegó otro mail —automático o este mismo— hace menos
+    de FEEDBACK_PRUEBA_ESPERA_HORAS) se ve pero no sale: el panel no la cuenta
+    en el botón y el backend la descarta aunque venga en `vistos`.
+
+    El reenvío ('ya_recibieron') sale con otra apertura (`reenvio=True`): un
+    mail idéntico al de hace unos días delata que salió de un botón.
+
+    `prueba_a_mi=True` manda UN mail al admin que aprieta el botón (a su propio
+    mail, no a una dirección que se tipea) y no toca a nadie más: es la forma de
+    ver el mail real en la bandeja —pestaña Principal o Promociones— y de
+    probar que la respuesta llega a soporte@ antes de mandárselo a la gente.
+
+    Cada fila trae `saludo` (el nombre con que la va a saludar, "" = "Hola," a
+    secas) y `otro_mail_hace_horas`: si a esa persona le llegó uno de los mails
+    automáticos de la prueba hace poco, para no mandarle dos el mismo día."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
+    from billing import emails
+    from billing import trial as _trial
+    from datetime import datetime as _dt, timedelta as _td
+
+    if data.grupo not in ("nuevos", "ya_recibieron"):
+        raise HTTPException(422, "grupo debe ser 'nuevos' o 'ya_recibieron'")
+    conn = get_db()
+    try:
+        if data.prueba_a_mi:
+            yo = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
+            if not yo or not (yo["email"] or "").strip():
+                raise HTTPException(400, "Tu cuenta no tiene un mail cargado.")
+            try:
+                ok = emails.send_trial_feedback(to=yo["email"], user_name=(yo["name"] or ""),
+                                                reenvio=(data.grupo == "ya_recibieron"))
+            except Exception as ex:
+                log.error("feedback-prueba: la prueba al admin falló: %s", ex)
+                ok = False
+            return {"prueba": True, "to": yo["email"], "sent": bool(ok)}
+
+        vivos = _trial.activos(conn, limit=10 ** 6)["usuarios"]
+        ahora = _dt.utcnow()
+
+        def _horas_desde(d):
+            return round((ahora - d).total_seconds() / 3600, 1) if d else None
+
+        # Una fila por persona con todo lo que hace falta para decidir:
+        # la marca de ESTE mail, cuándo arrancó la prueba y las marcas de los
+        # otros mails que se mandan a mano desde este mismo panel.
+        datos = {}
+        if vivos:
+            ph = ",".join("?" for _ in vivos)
+            for r in conn.execute(
+                f"""SELECT id, email, trial_feedback_email_sent_at AS enviado,
+                           trial_started_at, trial_ends_at,
+                           reengagement_email_sent_at, gift_plan_email_sent_at,
+                           trial_invite_email_sent_at
+                      FROM users
+                     WHERE id IN ({ph})
+                       AND COALESCE(is_admin,0) = 0
+                       AND managed_by IS NULL
+                       AND TRIM(COALESCE(email,'')) <> ''""",
+                    tuple(int(v["id"]) for v in vivos)).fetchall():
+                datos[int(r["id"])] = dict(r)
+
+        # Todos los mails que Rendi le mandó por iniciativa propia, como fechas:
+        #   · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
+        #   · los otros mails a mano de este panel (re-engagement, regalo,
+        #     invitación: columnas de users; el mail libre: broadcast_send_log).
+        # Sin los segundos, alguien que recibió el re-engagement hace un minuto
+        # recibía este también: dos mails en el mismo minuto.
+        otros_mails = {uid: [] for uid in datos}
+        avisos_enviados = {uid: set() for uid in datos}
+        for uid, d in datos.items():
+            for col in ("reengagement_email_sent_at", "gift_plan_email_sent_at",
+                        "trial_invite_email_sent_at"):
+                f = _fecha_utc(d.get(col))
+                if f:
+                    otros_mails[uid].append(f)
+        if datos:
+            ph = ",".join("?" for _ in datos)
+            try:
+                for r in conn.execute(
+                    f"""SELECT user_id, kind, sent_at FROM trial_email_log
+                         WHERE user_id IN ({ph})""", tuple(datos)).fetchall():
+                    uid = int(r["user_id"])
+                    avisos_enviados[uid].add(r["kind"])
+                    f = _fecha_utc(r["sent_at"])
+                    if f:
+                        otros_mails[uid].append(f)
+            except Exception as ex:
+                log.warning("feedback-prueba: no se pudo leer trial_email_log: %s", ex)
+                _deshacer_transaccion(conn)
+            por_mail = {(d["email"] or "").strip().lower(): uid for uid, d in datos.items()}
+            ph = ",".join("?" for _ in por_mail)
+            try:
+                for r in conn.execute(
+                    f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
+                         WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
+                    f = _fecha_utc(r["sent_at"])
+                    if f and r["e"] in por_mail:
+                        otros_mails[por_mail[r["e"]]].append(f)
+            except Exception as ex:
+                log.warning("feedback-prueba: no se pudo leer broadcast_send_log: %s", ex)
+                _deshacer_transaccion(conn)
+
+        ventana = _td(hours=FEEDBACK_PRUEBA_ESPERA_HORAS)
+        # Cómo se llama en el panel cada aviso automático de la prueba.
+        avisos = {_trial.MAIL_PRO_ENDING: "mañana termina Pro",
+                  _trial.MAIL_ENDING_SOON: "quedan pocos días",
+                  _trial.MAIL_ENDED: "terminó tu prueba"}
+        nuevos, ya_recibieron, recien_empezados = [], [], []
+        for v in vivos:   # ya vienen ordenados: primero a los que menos les queda
+            vid = int(v["id"])
+            if vid not in datos:
+                continue
+            d = datos[vid]
+            # Días COMPLETOS desde que arrancó. Se cuenta desde el arranque y no
+            # como "total − lo que le queda": eso daba mal para una prueba que no
+            # dure exactamente TRIAL_TOTAL_DAYS (otra versión de la prueba, o un
+            # vencimiento movido a mano).
+            arranco = _fecha_utc(d["trial_started_at"])
+            dias_en_prueba = int((_horas_desde(arranco) or 0) // 24)
+            ultimo_otro = max(otros_mails[vid]) if otros_mails[vid] else None
+            otro = _horas_desde(ultimo_otro)
+            propio = _horas_desde(_fecha_utc(d["enviado"]))
+            # El próximo aviso automático que todavía no le llegó: si le toca
+            # en las próximas horas, este mail espera a que salga aquel.
+            # Sólo cuenta el que le toca dentro de la ventana —o le tocó hace
+            # menos de eso y el cron todavía no pasó—. Uno que tendría que haber
+            # salido hace más de un día y no salió no lo está mandando nadie
+            # (cron caído, cuenta vieja): esperarlo dejaría a la persona
+            # esperando para siempre.
+            pendientes = {k: m for k, m in _trial.momentos_de_aviso(
+                              d["trial_started_at"], d["trial_ends_at"]).items()
+                          if k not in avisos_enviados[vid] and m > ahora - ventana}
+            proximo = min(pendientes.items(), key=lambda kv: kv[1]) if pendientes else None
+            espera = None
+            if otro is not None and otro < FEEDBACK_PRUEBA_ESPERA_HORAS:
+                espera = (f"le llegó otro mail de Rendi {_hace_txt(otro)} · "
+                          "se le puede mandar a partir de mañana")
+            elif proximo and proximo[1] <= ahora + ventana:
+                espera = (f"en las próximas {FEEDBACK_PRUEBA_ESPERA_HORAS} h le llega el aviso "
+                          f"automático «{avisos.get(proximo[0], proximo[0])}» · "
+                          "se le puede mandar después")
+            elif propio is not None and propio < FEEDBACK_PRUEBA_ESPERA_HORAS:
+                espera = (f"lo recibió {_hace_txt(propio)} · "
+                          "se le puede volver a mandar a partir de mañana")
+            fila = {"id": vid, "email": v["email"], "name": v.get("name"),
+                    "saludo": emails.nombre_de_pila(v.get("name")),
+                    "stage": v["stage"], "days_left": v["days_left"],
+                    "dias_en_prueba": dias_en_prueba,
+                    "sent_at": d["enviado"],
+                    "otro_mail_hace_horas": otro,
+                    "espera": espera}
+            if fila["sent_at"]:
+                ya_recibieron.append(fila)
+            elif dias_en_prueba < FEEDBACK_PRUEBA_MIN_DIAS:
+                fila["espera"] = (f"lleva {dias_en_prueba} "
+                                  f"{'día' if dias_en_prueba == 1 else 'días'} de prueba · "
+                                  f"entra con {FEEDBACK_PRUEBA_MIN_DIAS}")
+                recien_empezados.append(fila)
+            else:
+                nuevos.append(fila)
+
+        if not data.confirm:
+            asunto, _html, texto = emails.feedback_prueba_contenido(nombre_literal="(nombre)")
+            _a2, _h2, texto_reenvio = emails.feedback_prueba_contenido(
+                nombre_literal="(nombre)", reenvio=True)
+            return {
+                "dry_run": True,
+                "en_prueba": len(nuevos) + len(ya_recibieron) + len(recien_empezados),
+                "nuevos": nuevos,
+                "ya_recibieron": ya_recibieron,
+                "recien_empezados": recien_empezados,
+                "min_dias": FEEDBACK_PRUEBA_MIN_DIAS,
+                "lote": ENVIO_MASIVO_LOTE,
+                "espera_horas": FEEDBACK_PRUEBA_ESPERA_HORAS,
+                "mail": {"asunto": asunto, "texto": texto},
+                "mail_reenvio": {"asunto": _a2, "texto": texto_reenvio},
+            }
+
+        visto = _vistos_o_422(data.vistos)
+        reenvio = data.grupo == "ya_recibieron"
+        grupo = ya_recibieron if reenvio else nuevos
+        # Los que el admin vio pero ya no se les puede mandar (dejaron la
+        # prueba, pagaron, o les llegó otro mail hace poco) quedan afuera y
+        # `_envio_masivo` los cuenta como descartados, para que el resultado
+        # cierre con lo que se confirmó.
+        grupo = [t for t in grupo if t["id"] in visto and not t["espera"]]
+        for t in grupo:
+            # La marca que se compara es la que VIO el admin, no la que leyó
+            # este pedido (ver el docstring: el doble click de "volver a mandar").
+            t["visto"] = visto[t["id"]]
+        marcar, desmarcar = _marca_en_columna(conn, "trial_feedback_email_sent_at")
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_trial_feedback(
+                to=t["email"], user_name=(t.get("name") or ""), reenvio=reenvio),
+            campaña=f"feedback-prueba ({data.grupo})", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["grupo"] = data.grupo
+        return res
+    finally:
+        conn.close()
+
+
+def _broadcast_hash(subject, body, branded):
+    """Identifica ESTE mail (asunto + cuerpo + branded) en broadcast_send_log:
+    el mismo texto no se le vuelve a mandar a quien ya lo recibió, y uno con
+    otro texto arranca de cero."""
+    return hashlib.sha256(
+        f"{subject}\x1f{body}\x1f{int(bool(branded))}".encode("utf-8")
+    ).hexdigest()
+
+
+def _broadcast_destinatarios(conn, data, plan, ids=None):
+    """A quiénes les cae el mail libre según el targeting (verificados, plan).
+    `ids` = sólo esos (los que vio el admin)."""
+    from ai import quota
+
+    filtro, params = _filtro_ids("id", ids)
+    rows = conn.execute(
+        "SELECT id, email, name, email_verified, tier "
+        "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL"  # sin shadows del Plan Asesor
+        + filtro + " ORDER BY created_at ASC", params
+    ).fetchall()
+    targets = []
+    for r in rows:
+        d = dict(r)
+        if not (d.get("email") or "").strip():
+            continue
+        if data.only_verified and not d.get("email_verified"):
+            continue
+        # Tier EFECTIVO (mismo resolver que el resto de la app): un user stampeado
+        # 'pro'/'plus' con el crédito ya vencido cuenta como 'free' hasta que el cron
+        # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
+        # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
+        eff = quota.get_tier(conn, d["id"])
+        # 'advisor' va en la lista aunque no sea un segmento elegible: si no
+        # está, un ASESOR colapsa a "free" y entra en los envíos apuntados a
+        # free — que son los de upsell. Le llegaría un "pasate a Plus" a
+        # alguien que paga 4-8× un Pro. Así queda fuera de los tres
+        # segmentos, que es lo correcto: no es ninguno de ellos.
+        eff = eff if eff in ("plus", "pro", "advisor") else "free"
+        if plan and eff != plan:
+            continue
+        d["plan"] = eff
+        targets.append(d)
+    return targets
 
 
 @app.post("/api/admin/email/broadcast")
@@ -21685,15 +22302,24 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
     Flujo (mismo patrón que re-engagement, con salvaguardas para un broadcast):
       • test_to → manda UN mail de prueba a esa dirección (tu propio mail) y NO toca a
         nadie más. Usalo SIEMPRE antes del envío real para ver cómo queda.
-      • confirm=False (DEFAULT) → DRY RUN: devuelve la lista de destinatarios sin enviar.
-      • confirm=True → envía a TODOS los targeteados vía Resend (emails.send_custom).
-    Targeting: only_verified (default True), plan (None/free/plus/pro), limit (tandas).
+      • confirm=False (DEFAULT) → DRY RUN: devuelve la lista de destinatarios sin
+        enviar, y quiénes ya recibieron ESTE mismo mail (`ya_recibio`).
+      • confirm=True + `vistos` → manda a los que vio el admin (de a
+        ENVIO_MASIVO_LOTE; el panel parte la lista solo) por `_envio_masivo`.
+    Targeting: only_verified (default True), plan (None/free/plus/pro), limit (vista previa).
     `{nombre}` en el asunto/cuerpo se reemplaza por el nombre de cada user.
-    NO hay stamp de idempotencia (cada broadcast es contenido distinto) → no aprietes
-    "Enviar" dos veces o se manda dos veces. En dev sin RESEND_API_KEY sólo loguea."""
+
+    Idempotente por contenido: antes de mandarle a cada uno se anota
+    (hash del contenido, email) en broadcast_send_log. Si ya estaba anotado
+    —lo recibió, o se lo está mandando otro click u otra pestaña— se lo
+    saltea; si el envío falla, la anotación se borra. Así un doble click o un
+    reintento del MISMO mail no le llega dos veces a nadie, y un mail con otro
+    texto arranca de cero. (Antes se anotaba DESPUÉS de mandar: dos pedidos a la
+    vez leían "no lo recibió" y le mandaban los dos.) En dev sin RESEND_API_KEY
+    sólo loguea."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     import re
     from billing import emails
-    from ai import quota
 
     subject = (data.subject or "").strip()
     body = (data.body or "").strip()
@@ -21719,99 +22345,63 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
     plan = (data.plan or "").strip().lower() or None
     if plan and plan not in ("free", "plus", "pro"):
         raise HTTPException(400, "plan inválido (usá free/plus/pro o vacío para todos).")
+    content_hash = _broadcast_hash(subject, body, data.branded)
     conn = get_db()
     try:
-        rows = conn.execute(
-            "SELECT id, email, name, email_verified, tier "
-            "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL "  # sin shadows del Plan Asesor
-            "ORDER BY created_at ASC"
-        ).fetchall()
-        targets = []
-        for r in rows:
-            d = dict(r)
-            if not (d.get("email") or "").strip():
-                continue
-            if data.only_verified and not d.get("email_verified"):
-                continue
-            # Tier EFECTIVO (mismo resolver que el resto de la app): un user stampeado
-            # 'pro'/'plus' con el crédito ya vencido cuenta como 'free' hasta que el cron
-            # reescriba la columna. Leer users.tier crudo mal-targetearía esa ventana.
-            # Los admins ya están excluidos en el SQL → get_tier acá es plus/pro/free.
-            eff = quota.get_tier(conn, d["id"])
-            # 'advisor' va en la lista aunque no sea un segmento elegible: si no
-            # está, un ASESOR colapsa a "free" y entra en los envíos apuntados a
-            # free — que son los de upsell. Le llegaría un "pasate a Plus" a
-            # alguien que paga 4-8× un Pro. Así queda fuera de los tres
-            # segmentos, que es lo correcto: no es ninguno de ellos.
-            eff = eff if eff in ("plus", "pro", "advisor") else "free"
-            if plan and eff != plan:
-                continue
-            d["plan"] = eff
-            targets.append(d)
-        if data.limit and data.limit > 0:
-            targets = targets[: data.limit]
-
         # ── DRY RUN: mostrar a quién le caería, sin enviar ──
         if not data.confirm:
-            conn.close()
+            targets = _broadcast_destinatarios(conn, data, plan)
+            if data.limit and data.limit > 0:
+                targets = targets[: data.limit]
+            ya = {r["email"] for r in conn.execute(
+                "SELECT email FROM broadcast_send_log WHERE content_hash=?",
+                (content_hash,)).fetchall()}
             return {
                 "dry_run": True,
                 "subject": subject,
                 "only_verified": data.only_verified,
                 "plan": plan,
+                "lote": ENVIO_MASIVO_LOTE,
                 "total_recipients": len(targets),
+                "ya_recibieron": sum(1 for t in targets if t["email"] in ya),
+                # Todos, sin recortar: el panel manda de esta lista, de a tandas.
                 "recipients": [
-                    {"id": t["id"], "email": t["email"], "name": t.get("name"), "plan": t["plan"]}
-                    for t in targets[:500]
+                    {"id": t["id"], "email": t["email"], "name": t.get("name"),
+                     "plan": t["plan"], "ya_recibio": t["email"] in ya}
+                    for t in targets
                 ],
-                "truncated": len(targets) > 500,
             }
 
-        # ── ENVÍO REAL (idempotente por contenido) ──
-        # content_hash identifica ESTE mail (asunto+cuerpo+branded). Antes de mandar a
-        # cada uno miramos broadcast_send_log: si ya recibió este mismo contenido, se
-        # saltea. Commiteamos por envío → si el request muere a mitad (timeout de
-        # gateway, cold-start), re-correr el MISMO broadcast retoma donde quedó en vez
-        # de re-mailear a todos. Un mail con distinto texto tiene otro hash y arranca
-        # de cero, como se espera.
-        content_hash = hashlib.sha256(
-            f"{subject}\x1f{body}\x1f{int(bool(data.branded))}".encode("utf-8")
-        ).hexdigest()
-        sent, failed, skipped = [], [], []
-        for t in targets:
-            email_addr = t["email"]
-            already = conn.execute(
-                "SELECT 1 FROM broadcast_send_log WHERE content_hash=? AND email=?",
-                (content_hash, email_addr),
-            ).fetchone()
-            if already:
-                skipped.append({"id": t["id"], "email": email_addr})
-                continue
-            ok = False
-            try:
-                ok = emails.send_custom(to=email_addr, user_name=(t.get("name") or ""),
-                                        subject=subject, body=body, branded=data.branded)
-            except Exception as ex:
-                log.error("broadcast send error for %s: %s", email_addr, ex)
-                ok = False
-            if ok:
-                try:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) VALUES (?, ?)",
-                        (content_hash, email_addr),
-                    )
-                    conn.commit()
-                except Exception as ex:
-                    log.error("broadcast send-log write failed for %s: %s", email_addr, ex)
-                sent.append({"id": t["id"], "email": email_addr})
-            else:
-                failed.append({"id": t["id"], "email": email_addr})
-        conn.close()
+        # ── ENVÍO REAL: a los que vio el admin ──
+        visto = _vistos_o_422(data.vistos)
+        grupo = _broadcast_destinatarios(conn, data, plan, ids=list(visto))
+
+        def marcar(t):
+            # Desde `users` y no con el mail que se leyó al armar la lista: si la
+            # cuenta se borró en el medio, no se anota su dirección (borrar la
+            # cuenta la saca de todas las tablas) ni se le manda nada.
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) "
+                "SELECT ?, email FROM users WHERE id=? AND email=?",
+                (content_hash, t["id"], t["email"]))
+            if (cur.rowcount or 0) > 0:
+                return content_hash
+            return None if _sigue_existiendo(conn, t["id"]) else _YA_NO_ESTA
+
+        def desmarcar(t, _marca):
+            conn.execute("DELETE FROM broadcast_send_log WHERE content_hash=? AND email=?",
+                         (content_hash, t["email"]))
+
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_custom(
+                to=t["email"], user_name=(t.get("name") or ""),
+                subject=subject, body=body, branded=data.branded),
+            campaña="broadcast", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
         log.info("Admin %s broadcast: %d enviados, %d fallidos, %d ya-enviados (subject=%r)",
-                 uid, len(sent), len(failed), len(skipped), subject)
-        return {"dry_run": False, "sent_count": len(sent), "failed_count": len(failed),
-                "skipped_count": len(skipped), "sent": sent, "failed": failed,
-                "skipped": skipped}
+                 uid, res["sent_count"], res["failed_count"], res["skipped_count"], subject)
+        return res
     finally:
         conn.close()
 
@@ -31513,12 +32103,21 @@ def _voz_payload(text: str) -> Optional[dict]:
 # aviso retenido: la peor demora medida bajó de 3 s a 0,25 s.
 _LATIDO_SSE_SEG = 0.25
 _LATIDO_SSE = ": \n\n"
+# Y lo que sale PEGADO viaja en un solo envío, así Vercel no tiene un "segundo"
+# que guardarse. MEDIDO el 2026-10-01 (4 preguntas reales): la apertura y
+# «Leyendo tu cartera» salían en dos envíos seguidos y el paso llegaba 0,25 s
+# tarde en 3 de 4 — hasta que lo soltaba el latido. Lo mismo el «reset» y el
+# paso de la herramienta. Se espera hasta `_JUNTAR_SSE_SEG` por el aviso
+# siguiente, y un envío nunca acumula más de `_JUNTAR_SSE_TOPE_SEG`.
+_JUNTAR_SSE_SEG = 0.01
+_JUNTAR_SSE_TOPE_SEG = 0.05
 
 
 async def _con_latido(frames, cada: float = _LATIDO_SSE_SEG):
     """Recorre un generador SSE común (en un hilo, como StreamingResponse) y
     manda un latido por cada `cada` segundos sin avisos. El pedido del aviso
-    siguiente NO se corta al latir: sigue esperando en su hilo.
+    siguiente NO se corta al latir: sigue esperando en su hilo. Los avisos que
+    salen pegados (a menos de `_JUNTAR_SSE_SEG`) viajan en un solo envío.
 
     Al terminar —también si el navegador se fue a mitad— cierra el generador,
     así su `finally` (el cobro o la devolución de la consulta) corre apenas se
@@ -31539,11 +32138,31 @@ async def _con_latido(frames, cada: float = _LATIDO_SSE_SEG):
                 yield _LATIDO_SSE
                 continue
             try:
-                frame = siguiente.result()
+                lote = siguiente.result()
             except StopAsyncIteration:
                 return
-            yield frame
-            siguiente = asyncio.ensure_future(it.__anext__())
+            desde, termino = time.monotonic(), False
+            while True:
+                siguiente = asyncio.ensure_future(it.__anext__())
+                resto = _JUNTAR_SSE_TOPE_SEG - (time.monotonic() - desde)
+                if resto <= 0:
+                    break
+                listo, _ = await asyncio.wait({siguiente}, timeout=min(_JUNTAR_SSE_SEG, resto))
+                if not listo:
+                    break
+                try:
+                    lote += siguiente.result()
+                except StopAsyncIteration:
+                    termino = True
+                    break
+                except Exception:
+                    # El aviso siguiente reventó: lo ya juntado sale igual y el
+                    # error sigue su camino, como antes de juntar.
+                    yield lote
+                    raise
+            yield lote
+            if termino:
+                return
     finally:
         # Si un hilo todavía está adentro del generador (esperando a la IA),
         # no se lo puede cerrar mientras corre: se cierra apenas devuelva. NO
@@ -36798,6 +37417,23 @@ def _backfill_fx_rates_on_boot():
             log.warning(f"fx_rates backfill background falló: {e}")
     t = threading.Thread(target=worker, daemon=True, name="fx-backfill")
     t.start()
+
+
+@app.on_event("startup")
+def _precalentar_cliente_ia():
+    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI después de cada
+    arranque (cada publicación, cada reinicio) pagaba 0,58 s cargando la
+    librería de Anthropic, porque el cliente se creaba recién ahí. Se crea al
+    arrancar, en un hilo aparte para no demorar el arranque."""
+    import threading
+
+    def worker():
+        try:
+            _get_anthropic_client()
+        except Exception as ex:
+            log.warning("precalentar cliente IA falló (se crea en la 1ra pregunta): %s", ex)
+
+    threading.Thread(target=worker, daemon=True, name="precalentar-ia").start()
 
 
 @app.on_event("startup")

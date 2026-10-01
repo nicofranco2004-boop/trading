@@ -57,6 +57,8 @@ import { getBondMeta } from '../utils/bondMeta'
 import { hoyISO } from '../utils/fecha'
 import PesoEnCartera from '../components/PesoEnCartera'
 import AnimatedNumber from '../components/AnimatedNumber'
+import PreciosEnVivo from '../components/PreciosEnVivo'
+import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useRelojVisible } from '../hooks/useRelojVisible'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
@@ -133,10 +135,16 @@ export default function PositionsMobile() {
   const [loading, setLoading] = useState(true)
   // Loading separado para precios live — la página se muestra apenas
   // tenemos positions/brokers (con cost basis), pero los precios cargan en
-  // background. pricesLoading=true muestra un indicador chiquito mientras
-  // yfinance responde, así el user sabe que los % y valores se van a
+  // background. Mientras no hay ninguno, el cartel de precios (PreciosEnVivo)
+  // dice "Buscando precios…", así el user sabe que los % y valores se van a
   // actualizar en segundos.
   const [pricesLoading, setPricesLoading] = useState(false)
+  // Cuándo llegaron los últimos precios y si movieron algo: el cartel
+  // "Precios de hace 40 s · se actualizan solos" (PreciosEnVivo), el mismo
+  // de la compu. Antes el celular no decía de cuándo eran los precios.
+  const [preciosEn, setPreciosEn] = useState(null)
+  const [preciosSeMueven, setPreciosSeMueven] = useState(false)
+  const preciosAntesRef = useRef(null)
   const [sortBy, setSortBy] = useState('value')
   const [query, setQuery] = useState('')
   const [brokerFilter, setBrokerFilter] = useState(ALL_FILTER)
@@ -795,7 +803,15 @@ export default function PositionsMobile() {
     // recarga tras editar): la respuesta vieja, con los símbolos de antes, no
     // pisa a la nueva.
     const vigente = nuevoPedidoPrecios()
-    try { const r = await api.get(`/prices?symbols=${all}`); if (vigente()) setPrices(r) } catch { /* silent */ }
+    try {
+      const r = await api.get(`/prices?symbols=${all}`)
+      if (vigente()) {
+        setPreciosSeMueven(preciosQueCambiaron(preciosAntesRef.current, r) > 0)
+        preciosAntesRef.current = r
+        setPrices(r)
+        if (hayPrecios(r)) setPreciosEn(new Date())
+      }
+    } catch { /* silent */ }
     // Prev-close para "Var. día" — best-effort, no bloquea ni rompe si falla.
     try { const r = await api.get(`/prices/prev-close?symbols=${all}`); if (vigente()) setPrevClose(r) } catch { /* silent */ }
   }
@@ -1483,13 +1499,6 @@ export default function PositionsMobile() {
             </FlashValue>
           </div>
           <div className="ml-auto flex items-center gap-2 flex-shrink-0">
-            {pricesLoading && (
-              <span
-                className="w-1.5 h-1.5 rounded-full bg-data-violet animate-pulse"
-                title="Actualizando precios live"
-                aria-label="Actualizando precios"
-              />
-            )}
             <div className="inline-flex bg-bg-2 border border-line/60 rounded p-0.5" role="group" aria-label="Moneda">
               {['USD', 'ARS'].map(c => (
                 <button
@@ -1527,6 +1536,11 @@ export default function PositionsMobile() {
           <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 bg-bg-2 text-ink-2 tabular">
             <span className="text-ink-3">Invertido</span>{montoCard(heroInvertido, currency)}
           </span>
+        </div>
+        {/* De cuándo son los precios y si se están moviendo. Reemplaza el
+            puntito violeta que sólo decía "cargando". */}
+        <div className="-mt-1 mb-2.5">
+          <PreciosEnVivo actualizado={preciosEn} actualizando={pricesLoading} seActualizanSolos seMueven={preciosSeMueven} />
         </div>
 
         {/* Fila 2 — búsqueda + los dos accesos. "Ver y ordenar" abre el sheet con
@@ -2283,7 +2297,8 @@ const BrokerSection = memo(function BrokerSection({
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
-            {montoCard(displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd, displayCurrency)}
+            {/* Cuenta hasta el valor nuevo cuando llegan precios, como el total de arriba. */}
+            <AnimatedNumber value={displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd} format={(n) => montoCard(n, displayCurrency)} />
           </span>
           <button
             type="button"

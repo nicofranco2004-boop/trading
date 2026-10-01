@@ -73,7 +73,9 @@ MAX_CONTEXT_PER_TOPIC = 2
 # Pausa entre envíos. El servicio de mail acepta un número acotado de pedidos
 # por segundo y a partir de ahí rechaza. El brief del asesor manda uno tras
 # otro sin pausa porque son decenas; este va a todos los que lo prendan.
-SEND_GAP_SECONDS = 0.6
+# El valor vive en billing/emails.py (una sola vez para todas las campañas);
+# el nombre local queda porque los tests lo apagan con patch.object.
+from billing.emails import PAUSA_ENTRE_ENVIOS as SEND_GAP_SECONDS
 
 
 def _today_art() -> str:

@@ -34,9 +34,43 @@ import os
 import sys
 import html
 import logging
+import threading
 from typing import Optional
 
 log = logging.getLogger("billing.emails")
+
+
+# Pausa entre un envío y el siguiente cuando se manda a mucha gente. El servicio
+# de mail (Resend) acepta un número acotado de pedidos por segundo y a partir de
+# ahí los rechaza; un rechazo cuenta como envío fallido. Vive acá, al lado de
+# `_send`, porque es una propiedad del servicio y no de cada campaña: el resumen
+# de mercado la tenía como constante propia y la campaña nueva la habría copiado.
+PAUSA_ENTRE_ENVIOS = 0.6
+
+
+
+# ─── Qué pasó con el último envío ────────────────────────────────────────────
+# `_send` devuelve un bool, y un False mezcla casos que piden cosas opuestas: un
+# mail que Resend RECHAZÓ hay que reintentarlo; uno que Resend quizás aceptó (se
+# cortó la conexión esperando la respuesta) NO, porque reintentarlo es mandarlo
+# dos veces. `_send` anota acá cuál fue, por hilo, para quien tenga que decidir
+# (ver `_envio_masivo` en main.py).
+ENVIADO = "enviado"
+NO_SALIO = "no_salio"            # seguro que no llegó: Resend dijo que no (4xx) o el pedido no salió
+INCIERTO = "incierto"            # no sabemos: Resend no contestó a tiempo, o falló de su lado (5xx)
+NO_INTENTADO = "no_intentado"    # ni se probó: tests, dirección de prueba o sin proveedor
+
+_resultado = threading.local()
+
+
+def _anotar(estado: str) -> None:
+    _resultado.estado = estado
+
+
+def resultado_del_ultimo_envio() -> str:
+    """Qué pasó con el último `_send` de ESTE hilo: ENVIADO, NO_SALIO, INCIERTO
+    o NO_INTENTADO."""
+    return getattr(_resultado, "estado", NO_INTENTADO)
 
 
 def _api_key() -> Optional[str]:
@@ -134,6 +168,7 @@ def _send(to: str, subject: str, html: str, text: str,
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
+    _anotar(NO_INTENTADO)
     # Guarda dura: nunca enviar de verdad bajo pytest ni a direcciones de dominio
     # reservado (.test/.example/etc). Evita que la suite spamee el inbox real
     # cuando RESEND_API_KEY está cargada desde backend/.env.
@@ -180,11 +215,26 @@ def _send(to: str, subject: str, html: str, text: str,
             timeout=10.0,
         )
         if r.status_code >= 400:
+            # 4xx: Resend lo recibió y dijo que no (429 = pasamos su tope por
+            # segundo) → seguro que no salió. 5xx: falló de su lado y no
+            # sabemos si alcanzó a mandarlo.
+            _anotar(NO_SALIO if r.status_code < 500 else INCIERTO)
             log.error("Resend send failed %s for %s: %s", r.status_code, to, r.text)
             return False
+        _anotar(ENVIADO)
         log.info("Email sent to %s: %s", to, subject)
         return True
     except Exception as ex:
+        # Sólo es "no sabemos" si el pedido LLEGÓ a Resend y se cortó esperando
+        # la respuesta (o la respuesta vino rota). Todo lo demás —sin conexión,
+        # un pedido que no se terminó de escribir, la clave con un carácter
+        # raro, un proxy o certificado mal configurado— falla antes de salir
+        # del servidor y se repite igual con cada persona: tratarlo como "pudo
+        # haber salido" dejaba marcada una campaña entera sin mandar nada.
+        _anotar(INCIERTO if isinstance(ex, (httpx.ReadTimeout, httpx.ReadError,
+                                            httpx.RemoteProtocolError,
+                                            httpx.DecodingError))
+                else NO_SALIO)
         log.error("Resend send error for %s: %s", to, ex)
         return False
 
@@ -983,6 +1033,151 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
         "— Rendi"
     )
     return _send(to, subject, body_html, text, from_addr=_from_support())
+
+
+# ─── Campaña: pedirle opinión a quien está en la prueba ─────────────────────
+
+_TITULOS = frozenset({"dr", "dra", "lic", "ing", "cr", "cra", "cdor", "cdora",
+                      "sr", "sra", "srta", "prof", "arq", "esc",
+                      "doctor", "doctora", "licenciado", "licenciada", "ingeniero",
+                      "ingeniera", "contador", "contadora", "abogado", "abogada",
+                      "arquitecto", "arquitecta", "profesor", "profesora",
+                      "señor", "señora", "señorita"})
+# Signos que la gente pone alrededor del nombre ("(Nico)", "Fede!", "«Ana»").
+_SIGNOS_BORDE = ".,;:!?¡¿()[]{}\"'«»“”‘’"
+# Arranque de apellido compuesto ("de la Fuente"): saludar "Hola De," es peor
+# que no saludar por nombre.
+_PARTICULAS = frozenset({"de", "del", "la", "las", "los", "da", "di", "van", "von"})
+
+
+def nombre_de_pila(nombre) -> str:
+    """El nombre con el que se saluda a alguien en un mail personal, o "" si lo
+    que escribió no sirve para saludar (y entonces el mail dice "Hola," a secas).
+
+    `users.name` es texto libre del registro: "Lucía", "Lucía Gómez", "lucia",
+    "LUCIA GOMEZ", "nico_2004", un email entero. Un mail firmado por una persona
+    que arranca "Hola Lucía Gómez," o "Hola nico_2004," se lee como una planilla,
+    que es justo lo que el mail no quiere parecer.
+
+      · Se queda con la PRIMERA palabra. "Juan Pablo" queda "Juan": es el costo
+        aceptado, porque desde afuera no se distingue de "Juan Pérez".
+      · Si viene todo en minúscula o todo en mayúscula, la acomoda ("lucia" →
+        "Lucia"). Si mezcla, la respeta: "McKenzie" no se toca.
+      · Si parece un usuario o un email (lleva @, números o _), o es una sola
+        letra, o no tiene letras, devuelve "": mejor sin nombre que con uno raro.
+      · Si arranca con un título ("Dr. Pérez", "Lic. Gómez") o con una
+        partícula de apellido ("de la Fuente") también devuelve "": lo que
+        sigue es el apellido, y "Hola Dr," no es un saludo.
+      · Con una coma entre dos partes ("Gómez, Lucía" o "Lucía, Gómez") no
+        se sabe cuál es el nombre: devuelve "". Llamar a alguien por el
+        apellido es peor que no nombrarlo.
+      · Una abreviatura con punto seguida de otra palabra ("Ma. Laura"), "Mª"
+        o un usuario con punto ("nico.pussetto") también devuelven "".
+    """
+    texto = " ".join(str(nombre or "").split())
+    if "," in texto:
+        antes, _, despues = texto.partition(",")
+        if antes.strip() and despues.strip():
+            return ""
+        texto = (antes.strip() or despues.strip())
+    if not texto:
+        return ""
+    palabras = texto.split(" ")
+    cruda = palabras[0]
+    primera = cruda.strip(_SIGNOS_BORDE)
+    if primera.lower() in _TITULOS or primera.lower() in _PARTICULAS:
+        return ""
+    # Abreviatura con punto ANTES de otra palabra ("Ma. Laura", "Jo. Pérez"):
+    # "Hola Ma," es peor que "Hola,". Sola ("Ana.") es un nombre con un punto
+    # de más.
+    if cruda.rstrip(_SIGNOS_BORDE.replace(".", "")).endswith(".") \
+            and len(primera) <= 3 and len(palabras) > 1:
+        return ""
+    if (len(primera) < 2 or len(primera) > 24
+            or any(c.isdigit() or c in "@_.ªº" for c in primera)
+            or not any(c.isalpha() for c in primera)):
+        return ""
+    if primera.islower() or primera.isupper():
+        primera = "-".join(p[:1].upper() + p[1:].lower() for p in primera.split("-"))
+    return primera
+
+
+def feedback_prueba_contenido(user_name: str = "", reenvio: bool = False,
+                              nombre_literal: Optional[str] = None) -> tuple:
+    """(asunto, html, texto) del mail "¿qué te está pareciendo Rendi?".
+
+    Separado del envío para que el panel de admin muestre EXACTAMENTE lo que va
+    a llegar: si la vista previa tuviera su propia copia del texto, alcanzaría
+    con corregir una para que el panel muestre un mail y se mande otro.
+
+    Formato PLANO, igual que send_reengagement: sin header con logo ni botón de
+    color, para caer en la pestaña Principal de Gmail y no en Promociones. Un
+    pedido de opinión que parece un mailing no lo contesta nadie.
+
+    Firma personal (regla del brand kit): el mail pide una respuesta, y se
+    contesta a una persona, no a una marca.
+
+    `reenvio=True` es el de "Volver a mandar": misma pregunta, otra apertura. Un
+    mail idéntico al de hace unos días delata que salió de un botón —justo lo
+    contrario de "lo leo yo"— y el que no contestó la primera vez tampoco va a
+    contestar la copia. Mismo asunto a propósito: Gmail lo junta en la misma
+    conversación, debajo del primero, que es donde tiene sentido. La apertura
+    NO afirma "te escribí": si un envío anterior quedó marcado sin salir (un
+    reinicio a mitad de camino), esa frase sería mentira.
+
+    `nombre_literal` es sólo para la vista previa del panel: pone "(nombre)"
+    tal cual, sin pasarlo por nombre_de_pila."""
+    nombre = nombre_literal if nombre_literal is not None else nombre_de_pila(user_name)
+    saludo_html = f"Hola {html.escape(nombre)}," if nombre else "Hola,"
+    saludo_txt = f"Hola {nombre}," if nombre else "Hola,"
+    asunto = "¿Qué te está pareciendo Rendi?"
+    if reenvio:
+        apertura = ("ya llevás un tiempo usando Rendi y quería saber cómo lo "
+                    "estás viendo ahora, con más días encima: ¿qué te está "
+                    "pareciendo?")
+    else:
+        apertura = ("estás probando Rendi estos días y quería preguntarte, sin "
+                    "vueltas: ¿qué te está pareciendo?")
+    preguntas = (
+        "¿Qué es lo que más te sirvió hasta ahora?",
+        "¿Hubo algo que te confundió, que no funcionó o que buscaste y no encontraste?",
+        "¿Qué le falta a Rendi para que te sirva de verdad?",
+    )
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        f'<p style="margin:0 0 14px;">{saludo_html} {html.escape(apertura)}</p>'
+        '<p style="margin:0 0 14px;">Rendi lo hacemos un equipo chico, y lo que nos '
+        'cuentan los que lo están probando es lo que decide qué arreglamos y qué '
+        'hacemos después. No hace falta que sea largo: con una línea alcanza. Si te '
+        'sirve de guía:</p>'
+        '<ul style="margin:0 0 14px;padding-left:20px;">'
+        + "".join(f'<li style="margin:0 0 6px;">{html.escape(p)}</li>' for p in preguntas)
+        + '</ul>'
+        '<p style="margin:0 0 14px;">Respondé este mail y lo leo yo.</p>'
+        '<p style="margin:18px 0 0;">Nicolás — Rendi</p>'
+        '</div>'
+    )
+    texto = (
+        f"{saludo_txt} {apertura}\n\n"
+        "Rendi lo hacemos un equipo chico, y lo que nos cuentan los que lo están "
+        "probando es lo que decide qué arreglamos y qué hacemos después. No hace "
+        "falta que sea largo: con una línea alcanza. Si te sirve de guía:\n\n"
+        + "\n".join(f"- {p}" for p in preguntas)
+        + "\n\nRespondé este mail y lo leo yo.\n\n"
+        "Nicolás — Rendi"
+    )
+    return asunto, body_html, texto
+
+
+def send_trial_feedback(*, to: str, user_name: str = "", reenvio: bool = False) -> bool:
+    """Le pregunta a alguien que está en la prueba gratis qué le está pareciendo
+    Rendi. Lo dispara a mano el admin (/api/admin/email/feedback-prueba); no lo
+    manda ningún cron. Las respuestas van a soporte@. `reenvio` = la versión de
+    "Volver a mandar" (ver feedback_prueba_contenido)."""
+    asunto, body_html, texto = feedback_prueba_contenido(user_name, reenvio=reenvio)
+    return _send(to, asunto, body_html, texto, from_addr=_from_support(),
+                 reply_to="soporte@rendi.finance")
 
 
 # ─── Campaña: avisar que la prueba gratis está disponible ───────────────────

@@ -720,7 +720,8 @@ body {
    Landing — animaciones para hero/futuristic intro
    ════════════════════════════════════════════════════════════════════════ */
 
-/* Cursor de terminal blink — para hero typewriter */
+/* Cursor que parpadea. Lo usa CursorEscribiendo: Rendi AI mientras escribe
+   la respuesta (nació para un typewriter del hero que ya no existe). */
 @keyframes terminal-cursor {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0; }

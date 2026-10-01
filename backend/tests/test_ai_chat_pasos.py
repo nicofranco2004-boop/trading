@@ -9,6 +9,7 @@ empiezan. Este test pasa por el endpoint real con un modelo de mentira y lee
 los frames del stream en orden.
 """
 import json
+import time
 import os
 import sys
 import unittest
@@ -71,11 +72,24 @@ class TestPasosDelChat(unittest.TestCase):
         mc.messages.create.side_effect = lambda **kw: respuesta(kw)
         mc.messages.stream.side_effect = lambda **kw: _Stream(kw)
         from fastapi.testclient import TestClient
-        tool_fake = lambda content, uid, tier, tc, mx, **k: (
-            [{"type": "tool_result", "tool_use_id": "tu1", "content": "{}"}], tc + 1)
+        def tool_fake(content, uid, tier, tc, mx, **k):
+            time.sleep(0.05)            # buscar el dólar tarda algo
+            return [{"type": "tool_result", "tool_use_id": "tu1", "content": "{}"}], tc + 1
+
+        # Qué viaja en cada ENVÍO (no sólo en qué orden): se espía el mismo
+        # `_con_latido` que usa producción, adentro de `_respuesta_sse`.
+        self.escrituras = []
+        real = main._con_latido
+
+        async def espia(frames, cada=main._LATIDO_SSE_SEG):
+            async for x in real(frames, cada):
+                self.escrituras.append(x)
+                yield x
+
         with patch.object(main, "_get_anthropic_client", return_value=mc), \
              patch.object(main, "_kick_bench_refresh", lambda: None), \
-             patch.object(main, "_ai_chat_exec_tools", side_effect=tool_fake):
+             patch.object(main, "_ai_chat_exec_tools", side_effect=tool_fake), \
+             patch.object(main, "_con_latido", espia):
             r = TestClient(main.app).post(
                 "/api/ai/chat", headers={"Authorization": f"Bearer {token}"},
                 json={"messages": [{"role": "user", "content": "¿Cómo está mi portfolio en general?"}],
@@ -125,6 +139,23 @@ class TestPasosDelChat(unittest.TestCase):
         frames = self._frames(con_herramienta=False, pensar=False)
         pasos = [f["d"] for f in frames if f.get("t") == "paso"]
         self.assertNotIn(main._PASO_PENSANDO, pasos)
+
+    def test_la_apertura_y_leyendo_viajan_en_el_mismo_envio(self):
+        """MEDIDO el 2026-10-01: salían en dos envíos seguidos y Vercel se
+        guardaba el segundo hasta el latido — «Leyendo tu cartera» 0,25 s tarde
+        en 3 de 4 preguntas."""
+        self._frames(con_herramienta=False)
+        primero = self.escrituras[0]
+        self.assertTrue(primero.startswith(": ok"), primero)
+        self.assertIn(f'"d": "{main._PASO_LEYENDO}"', primero)
+
+    def test_el_reset_y_la_herramienta_viajan_juntos(self):
+        self._frames(con_herramienta=True)
+        juntos = [e for e in self.escrituras if '"t": "reset"' in e]
+        self.assertEqual(len(juntos), 1, self.escrituras)
+        self.assertIn("Mirando el dólar", juntos[0])
+        # «Armando…» sale DESPUÉS de buscar el dólar: otro envío.
+        self.assertNotIn(main._PASO_ARMANDO, juntos[0])
 
     def test_con_herramienta_piensa_una_sola_vez(self):
         """La vuelta que arma la respuesta también piensa, pero eso ya lo dice

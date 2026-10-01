@@ -18,7 +18,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX, X, Play, Pause, Send, Loader2, ArrowUpRight } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import { useMicrofono } from './BotonMicrofono'
-import { useVoz, RATES, esRecienLlegada } from '../../contexts/VozContext'
+import { useVoz, RATES, esRecienLlegada, escribiendoEn } from '../../contexts/VozContext'
+import CursorEscribiendo from '../ai/CursorEscribiendo'
 import { entrada } from '../../hooks/useAlVerse'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 import { useArrastrable } from '../../hooks/useArrastrable'
@@ -51,9 +52,11 @@ export default function RendiMate() {
     status, progress, current,
     escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, paso, askError, sinCupo, ask, motivoSinVoz, modoLibro,
+    thread, sending, loading, paso, askError, sinCupo, ask, motivoSinVoz, modoLibro,
   } = useVoz()
   const [texto, setTexto] = useState('')
+  // La respuesta que se está escribiendo ahora lleva un cursor al final.
+  const iEscribiendo = escribiendoEn(thread, sending, loading)
 
   const hablando = status === 'playing'
   const preparando = status === 'preparing'
@@ -190,6 +193,7 @@ export default function RendiMate() {
   const pills = (ultimo?.meta?.stats || []).slice(0, 2)
   const estado = preparando ? 'preparando el audio…'
     : hablando ? 'hablando'
+    : iEscribiendo !== -1 ? 'escribiendo…'
     : sending ? (paso ? paso.toLowerCase() + '…' : 'pensando…')
     : ''
 
@@ -261,14 +265,17 @@ export default function RendiMate() {
               {m.content}
             </p>
           ) : (
-            <p key={i} className="m-0 text-[13px] text-ink-1 whitespace-pre-wrap">{m.content}</p>
+            <p key={i} className="m-0 text-[13px] text-ink-1 whitespace-pre-wrap">{m.content}{i === iEscribiendo && <CursorEscribiendo />}</p>
           )
         ))}
 
         {/* Qué está HACIENDO, no un "pensando" mudo. El backend manda la frase
             (ver _PASOS_HUMANOS en main.py) cuando sale a buscar datos. La misma
-            espera se hace corta cuando se entiende en qué se está yendo. */}
-        {sending && (
+            espera se hace corta cuando se entiende en qué se está yendo. Se
+            apaga cuando empieza a llegar el texto: desde ahí lo dice el cursor
+            (antes seguía girando "pensando…" debajo de la respuesta escrita).
+            Si lo que llega no tiene texto para mostrar todavía, sigue. */}
+        {sending && iEscribiendo === -1 && (
           // key = el paso: cada paso nuevo que manda el servidor entra en vez de
           // reemplazar el texto de golpe.
           <span key={paso || 'mirando'} className="entra inline-flex items-center gap-1.5 text-[12px] text-ink-3">

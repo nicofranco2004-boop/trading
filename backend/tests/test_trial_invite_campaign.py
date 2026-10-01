@@ -1,6 +1,7 @@
 """Campaña por tandas: avisar que la prueba gratis está disponible.
 
-Se manda de a 50 al azar. Lo que estos tests protegen, en orden:
+La vista previa sortea 50 al azar y el envío les manda a ESOS (los que vio el
+admin), de a tandas como el panel. Lo que estos tests protegen, en orden:
 
   1. Que la SEGUNDA tanda no repita a nadie de la primera — es la razón de ser
      de la campaña. Si se repite, el mismo usuario recibe el mismo aviso dos
@@ -31,6 +32,8 @@ os.environ["DB_PATH"] = TMP_DB.name
 
 import main
 from billing import trial as tr
+
+URL = "/api/admin/email/trial-invite"
 
 
 class CampanaDeInvitacion(unittest.TestCase):
@@ -72,13 +75,33 @@ class CampanaDeInvitacion(unittest.TestCase):
         self.conn.commit()
         return ids
 
+    def _vista(self, limit=50):
+        r = self.client.post(URL, json={"confirm": False, "limit": limit},
+                             headers=self.headers)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def _mandar(self, vista, ok=True):
+        """Como el panel: les manda a los que sorteó la vista previa, de a
+        `lote` por pedido, con sus ids. Devuelve los totales sumados."""
+        ids = [{"id": x["id"]} for x in vista["recipients"]]
+        total = {"sent_count": 0, "failed_count": 0, "skipped_count": 0, "discarded_count": 0}
+        with patch("billing.emails.send_trial_invite", return_value=ok) as spy, \
+             patch("billing.emails.PAUSA_ENTRE_ENVIOS", 0):
+            for i in range(0, len(ids), vista["lote"]):
+                r = self.client.post(URL, json={"confirm": True, "vistos": ids[i:i + vista["lote"]]},
+                                     headers=self.headers)
+                self.assertEqual(r.status_code, 200, r.text)
+                for k in total:
+                    total[k] += r.json()[k]
+        return total, spy
+
     def _correr(self, confirm=True, limit=50, ok=True):
         with patch("billing.emails.send_trial_invite", return_value=ok) as spy:
-            r = self.client.post("/api/admin/email/trial-invite",
-                                 json={"confirm": confirm, "limit": limit},
-                                 headers=self.headers)
-        self.assertEqual(r.status_code, 200, r.text)
-        return r.json(), spy
+            vista = self._vista(limit)
+        if not confirm:
+            return vista, spy
+        return self._mandar(vista, ok=ok)
 
     def _avisados(self):
         return {r["id"] for r in self.conn.execute(
@@ -104,7 +127,9 @@ class CampanaDeInvitacion(unittest.TestCase):
         self._correr(limit=50)
         ultima, _ = self._correr(limit=50)
         self.assertEqual(ultima["sent_count"], 10)
-        self.assertEqual(ultima["quedan_despues"], 0)
+        despues = self._vista()
+        self.assertEqual(despues["elegibles"], 0)
+        self.assertEqual(despues["quedan_despues"], 0)
         vacia, spy = self._correr(limit=50)
         self.assertEqual(vacia["sent_count"], 0)
         spy.assert_not_called()
@@ -140,13 +165,18 @@ class CampanaDeInvitacion(unittest.TestCase):
 
     def test_si_el_trial_esta_apagado_no_invita_a_nadie(self):
         # Prometer algo que el server no va a habilitar es el peor mail posible.
+        # Se apaga ENTRE la vista previa y el click: el envío vuelve a preguntar.
         self._users(10)
+        vista = self._vista(limit=50)
+        self.assertEqual(vista["en_esta_tanda"], 10)
         os.environ["TRIALS_ENABLED"] = "false"
         try:
-            res, spy = self._correr(limit=50)
+            res, spy = self._mandar(vista)
+            self.assertEqual(self._vista()["en_esta_tanda"], 0)
         finally:
             os.environ.pop("TRIALS_ENABLED", None)
         self.assertEqual(res["sent_count"], 0)
+        self.assertEqual(res["discarded_count"], 10)
         spy.assert_not_called()
 
     # ── el dry run no toca nada ─────────────────────────────────────────────
