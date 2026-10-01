@@ -32,6 +32,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from datetime import datetime, timedelta
@@ -323,7 +324,7 @@ class EnvioMasivo(unittest.TestCase):
             otra, _ = self._mandar(campaña)
             self.assertEqual(otra["sent_count"], 2)
 
-    def _mandar_por_resend(self, campaña, vistos, respuesta):
+    def _mandar_por_resend(self, campaña, vistos, respuesta, **extra):
         """El envío de verdad hasta la llamada a Resend: `respuesta` es lo que
         devuelve (un código) o lo que tira (una excepción) `httpx.post`."""
         import httpx
@@ -343,7 +344,7 @@ class EnvioMasivo(unittest.TestCase):
              patch.object(emails, "_api_key", return_value="re_test"), \
              patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0), \
              patch.object(httpx, "post", side_effect=_post) as spy:
-            r = self._post(campaña, vistos)
+            r = self._post(campaña, vistos, **extra)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json(), spy
 
@@ -395,6 +396,82 @@ class EnvioMasivo(unittest.TestCase):
             # Y siguen en la lista para cuando Resend vuelva.
             self.assertTrue(quedan <= {v["id"] for v in self._vistos(campaña)})
             self.assertEqual(set(ids), quedan | {t["id"] for t in res["inciertos"]})
+
+    def test_el_freno_cuenta_a_lo_largo_de_todo_el_envio(self):
+        """Resend tan lento que cada pedido alcanza a hacer UN mail y corta por
+        tiempo. Con la cuenta reiniciada en cada pedido el freno nunca saltaba
+        y la campaña entera quedaba marcada sin saber si salió (auditoría 3:
+        8 de 8). El panel devuelve `inciertos_seguidos` y el freno salta igual."""
+        import httpx
+        for campaña in self._cada_campaña():
+            self._personas(6)
+            cola = self._vistos(campaña)
+            seguidos, inciertos, pedidos, res = 0, 0, 0, None
+            with patch.object(main, "ENVIO_MASIVO_PRESUPUESTO_SEG", -1):
+                while cola:
+                    res, _ = self._mandar_por_resend(campaña, cola, httpx.ReadTimeout("lento"),
+                                                     inciertos_seguidos=seguidos)
+                    pedidos += 1
+                    inciertos += len(res["inciertos"])
+                    seguidos = res["inciertos_seguidos"]
+                    if res["frenado"]:
+                        break
+                    quedan = {p["id"] for p in res["pendientes"]}
+                    cola = [v for v in cola if v["id"] in quedan]
+            self.assertTrue(res["frenado"], "con Resend lento el freno no saltó")
+            self.assertEqual(inciertos, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(pedidos, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(len(self._vistos(campaña)), 6 - main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+
+    def test_el_tope_de_tiempo_cuenta_desde_que_llega_el_pedido(self):
+        """Armar la lista también gasta tiempo del pedido (eligibility, el plan
+        de cada uno): el tope corre desde que llega, no desde el primer mail."""
+        lentos = {"re-engagement": "_reengagement_candidatos", "gift-plan": "_gift_plan_candidatos",
+                  "trial-invite": "_trial_invite_elegibles", "broadcast": "_broadcast_destinatarios"}
+        for campaña in self._cada_campaña():
+            self._personas(3)
+            vistos = self._vistos(campaña)
+            real = getattr(main, lentos[campaña])
+
+            def lento(*a, **k):
+                time.sleep(0.3)
+                return real(*a, **k)
+
+            with patch.object(main, lentos[campaña], side_effect=lento), \
+                 patch.object(main, "ENVIO_MASIVO_PRESUPUESTO_SEG", 0.2):
+                res, _ = self._mandar(campaña, vistos)
+            self.assertEqual(res["sent_count"], 1, "el tope no contó lo que tardó armar la lista")
+            self.assertEqual(len(res["pendientes"]), 2)
+
+    def test_si_borra_la_cuenta_en_el_medio_no_se_le_manda_ni_queda_su_mail(self):
+        """La lista se armó con la persona adentro y, antes de marcarla, borró
+        la cuenta. Borrar la cuenta saca su mail de todas las tablas: el envío
+        no lo puede volver a anotar (en el mail libre lo anotaba en el log) ni
+        mandarle nada."""
+        listas = {"re-engagement": "_reengagement_candidatos", "gift-plan": "_gift_plan_candidatos",
+                  "trial-invite": "_trial_invite_elegibles", "broadcast": "_broadcast_destinatarios"}
+        for campaña in self._cada_campaña():
+            sigue, se_va = self._personas(2)
+            email_se_va = self._email(se_va)
+            vistos = self._vistos(campaña)
+            real = getattr(main, listas[campaña])
+
+            def y_se_borra(*a, **k):
+                lista = real(*a, **k)
+                otra = main.get_db()
+                otra.execute("DELETE FROM users WHERE id=?", (se_va,))
+                otra.commit()
+                otra.close()
+                return lista
+
+            with patch.object(main, listas[campaña], side_effect=y_se_borra):
+                res, spy = self._mandar(campaña, vistos)
+            self.assertEqual({x["id"] for x in res["sent"]}, {sigue})
+            self.assertEqual(res["discarded_count"], 1)
+            self.assertNotIn(email_se_va, [c.kwargs["to"] for c in spy.call_args_list])
+            hay = self.conn.execute("SELECT COUNT(*) c FROM broadcast_send_log WHERE email=?",
+                                    (email_se_va,)).fetchone()["c"]
+            self.assertEqual(hay, 0, "quedó guardado el mail de una cuenta borrada")
 
     def test_un_incierto_suelto_no_frena(self):
         import httpx

@@ -2,18 +2,26 @@
 //
 // Lo que se protege acá: que ningún pedido lleve más de `lote` personas (el
 // proxy de Vercel corta a ~30 s y el admin veía un error con los mails todavía
-// saliendo), que cada persona viaje con lo que se vio en pantalla, y que si un
-// pedido falla el panel se entere de lo que YA salió en vez de perderlo.
-import { describe, it, expect, vi } from 'vitest'
-import { enviarEnTandas, textoDeProgreso, tomarEnvio, soltarEnvio, LOTE_POR_DEFECTO } from './envioEnTandas'
+// saliendo), que cada persona viaje con lo que se vio en pantalla, que si un
+// pedido falla el panel se entere de lo que YA salió en vez de perderlo, que
+// contra el servidor de antes (unos minutos en cada deploy) no se mande nada
+// de más, y que el estado del envío sobreviva a que el panel se desmonte.
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import {
+  enviarEnTandas, textoDeProgreso, tomarEnvio, soltarEnvio, avanceEnvio, estadoEnvio,
+  ultimoResultado, suscribirEnvios, LOTE_POR_DEFECTO,
+} from './envioEnTandas'
 
 const personas = n => Array.from({ length: n }, (_, i) => ({ id: i + 1, sent_at: null }))
 
+// Lo que contesta el servidor de esta versión: siempre trae `frenado`.
+const respuesta = (extra = {}) => ({
+  sent_count: 0, failed_count: 0, skipped_count: 0, discarded_count: 0,
+  marcas_trabadas: [], inciertos: [], pendientes: [], frenado: false, ...extra,
+})
+
 function servidorQueManda() {
-  return vi.fn(async (_url, body) => ({
-    sent_count: body.vistos.length, failed_count: 0, skipped_count: 0, discarded_count: 0,
-    marcas_trabadas: [],
-  }))
+  return vi.fn(async (_url, body) => respuesta({ sent_count: body.vistos.length }))
 }
 
 describe('enviarEnTandas', () => {
@@ -31,20 +39,33 @@ describe('enviarEnTandas', () => {
     const post = servidorQueManda()
     const vistos = [{ id: 7, sent_at: '2026-09-28T10:00:00' }]
     await enviarEnTandas({ post, url: '/admin/email/x', cuerpo: { resend: true }, vistos, lote: 20 })
-    expect(post).toHaveBeenCalledWith('/admin/email/x', { resend: true, confirm: true, vistos })
+    expect(post).toHaveBeenCalledWith('/admin/email/x',
+                                      { resend: true, confirm: true, vistos, inciertos_seguidos: 0 })
   })
 
-  it('sin lote del servidor usa el de siempre', async () => {
-    const post = servidorQueManda()
-    await enviarEnTandas({ post, url: '/x', vistos: personas(LOTE_POR_DEFECTO + 1) })
-    expect(post.mock.calls.map(c => c[1].vistos.length)).toEqual([LOTE_POR_DEFECTO, 1])
+  it('le devuelve al servidor los "no sabemos" seguidos del pedido anterior', async () => {
+    const respuestas = [respuesta({ sent_count: 19, inciertos: [{ id: 20 }], inciertos_seguidos: 1 }),
+                        respuesta({ sent_count: 5, inciertos_seguidos: 0 })]
+    const post = vi.fn(async () => respuestas.shift())
+    await enviarEnTandas({ post, url: '/x', vistos: personas(25), lote: 20 })
+    expect(post.mock.calls.map(c => c[1].inciertos_seguidos)).toEqual([0, 1])
+  })
+
+  it('con el servidor de antes del cambio no pide ni una tanda más', async () => {
+    // Durante un deploy la web nueva habla con el servidor viejo, que ignora
+    // `vistos` y manda a toda su lista en cada pedido (la invitación sorteaba
+    // 50 nuevos por tanda).
+    const viejo = vi.fn(async () => ({ dry_run: false, sent_count: 50, failed_count: 0 }))
+    const r = await enviarEnTandas({ post: viejo, url: '/x', vistos: personas(50), lote: 20 })
+    expect(viejo).toHaveBeenCalledTimes(1)
+    expect(r).toMatchObject({ cortado: true, contesto: true })
   })
 
   it('suma lo que devuelve cada tanda, incluidas las marcas trabadas', async () => {
     const respuestas = [
-      { sent_count: 18, failed_count: 1, skipped_count: 1, discarded_count: 0, marcas_trabadas: [] },
-      { sent_count: 3, failed_count: 0, skipped_count: 0, discarded_count: 2,
-        marcas_trabadas: [{ id: 30, email: 'a@b.c' }], inciertos: [{ id: 31, email: 'd@e.f' }] },
+      respuesta({ sent_count: 18, failed_count: 1, skipped_count: 1 }),
+      respuesta({ sent_count: 3, discarded_count: 2,
+                  marcas_trabadas: [{ id: 30, email: 'a@b.c' }], inciertos: [{ id: 31, email: 'd@e.f' }] }),
     ]
     const post = vi.fn(async () => respuestas.shift())
     const r = await enviarEnTandas({ post, url: '/x', vistos: personas(25), lote: 20 })
@@ -58,7 +79,7 @@ describe('enviarEnTandas', () => {
     const post = vi.fn(async (_u, body) => {
       llamada += 1
       if (llamada === 2) throw new Error('Gateway Timeout')
-      return { sent_count: body.vistos.length, failed_count: 0, skipped_count: 0, discarded_count: 0 }
+      return respuesta({ sent_count: body.vistos.length })
     })
     const r = await enviarEnTandas({ post, url: '/x', vistos: personas(60), lote: 20 })
     expect(post).toHaveBeenCalledTimes(2)          // la tercera no sale
@@ -78,10 +99,10 @@ describe('enviarEnTandas', () => {
   it('los que el servidor no llegó a intentar vuelven en el pedido siguiente', async () => {
     // Resend lento: al primer pedido se le acaba el tiempo después de 12.
     const respuestas = [
-      { sent_count: 12, pendientes: Array.from({ length: 8 }, (_, i) => ({ id: 13 + i })) },
+      respuesta({ sent_count: 12, pendientes: Array.from({ length: 8 }, (_, i) => ({ id: 13 + i })) }),
     ]
     const post = vi.fn(async (_u, body) =>
-      respuestas.shift() || { sent_count: body.vistos.length, pendientes: [] })
+      respuestas.shift() || respuesta({ sent_count: body.vistos.length }))
     const pasos = []
     const r = await enviarEnTandas({ post, url: '/x', vistos: personas(25), lote: 20,
                                      alAvanzar: p => pasos.push(textoDeProgreso(p)) })
@@ -95,15 +116,15 @@ describe('enviarEnTandas', () => {
   })
 
   it('si el servidor devuelve la tanda entera sin intentar, corta en vez de girar para siempre', async () => {
-    const post = vi.fn(async (_u, body) => ({ sent_count: 0, pendientes: body.vistos }))
+    const post = vi.fn(async (_u, body) => respuesta({ pendientes: body.vistos }))
     const r = await enviarEnTandas({ post, url: '/x', vistos: personas(5), lote: 20 })
     expect(post).toHaveBeenCalledTimes(1)
     expect(r.cortado).toBe(true)
   })
 
   it('si Resend no confirma (frenado), corta y no manda la tanda siguiente', async () => {
-    const post = vi.fn(async () => ({ sent_count: 3, inciertos: [{ id: 4 }, { id: 5 }],
-                                      pendientes: [], frenado: true }))
+    const post = vi.fn(async () => respuesta({ sent_count: 3, inciertos: [{ id: 4 }, { id: 5 }],
+                                               frenado: true }))
     const r = await enviarEnTandas({ post, url: '/x', vistos: personas(45), lote: 20 })
     expect(post).toHaveBeenCalledTimes(1)
     expect(r).toMatchObject({ cortado: true, frenado: true, contesto: true, sent_count: 3 })
@@ -114,20 +135,12 @@ describe('enviarEnTandas', () => {
     const conCodigo = status => vi.fn(async () => {
       const e = new Error('x'); if (status) e.status = status; throw e
     })
-    for (const [status, contesto] of [[422, true], [500, true], [504, false], [502, false], [null, false]]) {
+    for (const [status, contesto] of [[401, true], [422, true], [500, true], [504, false],
+                                      [502, false], [null, false]]) {
       const r = await enviarEnTandas({ post: conCodigo(status), url: '/x', vistos: personas(3), lote: 20 })
       expect(r.cortado).toBe(true)
       expect(r.contesto).toBe(contesto)
     }
-  })
-
-  it('no deja lanzar dos envíos del mismo mail a la vez', () => {
-    expect(tomarEnvio('/admin/email/x')).toBe(true)
-    expect(tomarEnvio('/admin/email/x')).toBe(false)
-    expect(tomarEnvio('/admin/email/y')).toBe(true)     // otro mail, sí
-    soltarEnvio('/admin/email/x')
-    expect(tomarEnvio('/admin/email/x')).toBe(true)
-    soltarEnvio('/admin/email/x'); soltarEnvio('/admin/email/y')
   })
 
   it('dice qué está haciendo después de la última tanda', () => {
@@ -140,5 +153,59 @@ describe('enviarEnTandas', () => {
     const r = await enviarEnTandas({ post, url: '/x', vistos: [], lote: 20 })
     expect(post).not.toHaveBeenCalled()
     expect(r.sent_count).toBe(0)
+  })
+})
+
+describe('el estado del envío vive fuera del panel', () => {
+  afterEach(() => { soltarEnvio('/admin/email/x'); soltarEnvio('/admin/email/y') })
+
+  it('no deja lanzar dos envíos del mismo mail a la vez', () => {
+    expect(tomarEnvio('/admin/email/x')).toBe(true)
+    expect(tomarEnvio('/admin/email/x')).toBe(false)
+    expect(tomarEnvio('/admin/email/y')).toBe(true)     // otro mail, sí
+    soltarEnvio('/admin/email/x')
+    expect(tomarEnvio('/admin/email/x')).toBe(true)
+  })
+
+  it('un panel que se vuelve a montar ve el avance y, al final, el resultado', () => {
+    const oyente = vi.fn()
+    const dejar = suscribirEnvios(oyente)
+    tomarEnvio('/admin/email/x', 'nuevos')
+    avanceEnvio('/admin/email/x', { desde: 21, hasta: 40, total: 45 })
+    expect(estadoEnvio('/admin/email/x')).toEqual(
+      { clave: 'nuevos', progreso: { desde: 21, hasta: 40, total: 45 } })
+    const antes = estadoEnvio('/admin/email/x')
+    avanceEnvio('/admin/email/x', { fase: 'recargando' })
+    expect(estadoEnvio('/admin/email/x')).not.toBe(antes)   // objeto nuevo: React lo ve
+    soltarEnvio('/admin/email/x', { sent_count: 45 })
+    expect(estadoEnvio('/admin/email/x')).toBeNull()
+    expect(ultimoResultado('/admin/email/x')).toEqual({ sent_count: 45 })
+    expect(oyente).toHaveBeenCalledTimes(4)
+    dejar()
+    tomarEnvio('/admin/email/x')
+    expect(oyente).toHaveBeenCalledTimes(4)                  // ya no escucha
+    expect(ultimoResultado('/admin/email/x')).toBeNull()    // un envío nuevo borra el anterior
+  })
+
+  it('pregunta antes de cerrar la pestaña sólo mientras hay un envío en curso', () => {
+    // Los tests corren sin navegador: una ventana que sólo anota.
+    const agregar = vi.fn()
+    const sacar = vi.fn()
+    vi.stubGlobal('window', { addEventListener: agregar, removeEventListener: sacar })
+    try {
+      tomarEnvio('/admin/email/x')
+      tomarEnvio('/admin/email/y')
+      expect(agregar.mock.calls.filter(c => c[0] === 'beforeunload')).toHaveLength(1)
+      soltarEnvio('/admin/email/x')
+      expect(sacar.mock.calls.filter(c => c[0] === 'beforeunload')).toHaveLength(0)
+      soltarEnvio('/admin/email/y')
+      expect(sacar.mock.calls.filter(c => c[0] === 'beforeunload')).toHaveLength(1)
+      // Lo que se registra es una función que hace preguntar al navegador.
+      const e = { preventDefault: vi.fn(), returnValue: undefined }
+      agregar.mock.calls[0][1](e)
+      expect(e.preventDefault).toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

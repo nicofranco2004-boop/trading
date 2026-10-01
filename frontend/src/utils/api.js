@@ -137,7 +137,7 @@ async function req(method, path, body, opts) {
     if (hadUser) {
       window.location.href = '/'
     }
-    throw new Error('Unauthorized')
+    throw errorDeSesion()
   }
 
   if (!res.ok) {
@@ -285,7 +285,7 @@ async function upload(path, formData, opts) {
   if (res.status === 401) {
     localStorage.removeItem('rendi_user')
     window.location.href = '/'
-    throw new Error('Unauthorized')
+    throw errorDeSesion()
   }
   if (!res.ok) {
     throw await buildHttpError(res, { write: !isPreview })
@@ -314,7 +314,7 @@ async function getBlob(path) {
   if (res.status === 401) {
     localStorage.removeItem('rendi_user')
     window.location.href = '/'
-    throw new Error('Unauthorized')
+    throw errorDeSesion()
   }
   if (!res.ok) {
     throw await buildHttpError(res, { write: false })
@@ -358,7 +358,7 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
     const hadUser = !!localStorage.getItem('rendi_user')
     localStorage.removeItem('rendi_user')
     if (hadUser) window.location.href = '/'
-    throw new Error('Unauthorized')
+    throw errorDeSesion()
   }
   if (!res.ok || !res.body) {
     throw await buildHttpError(res, { write: true })   // 429/403/500 → mismo shape que api.post
@@ -459,6 +459,15 @@ async function chatStream(body, { onDelta, onReset, onPaso, onPregunta, onVoz, s
     throw err
   }
   return { tier, portfolioChanged, voz }
+}
+
+// La sesión venció (401). Con su código, como los demás errores HTTP: sin él,
+// quien distingue "el servidor contestó" de "se cortó en el camino" (los
+// envíos masivos del panel admin) lo tomaba por un corte de red.
+function errorDeSesion() {
+  const err = new Error('Unauthorized')
+  err.status = 401
+  return err
 }
 
 export const api = {

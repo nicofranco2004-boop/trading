@@ -21298,6 +21298,10 @@ class ReengagementEmailIn(BaseModel):
     limit: int = 0               # cap de la vista previa (0 = sin límite)
     # Lo que vio el admin, de a ENVIO_MASIVO_LOTE: obligatorio para mandar.
     vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    # Inciertos seguidos con que terminó el pedido anterior de este envío (el
+    # panel lo devuelve): sin esto el freno contra Resend caído arrancaba de 0
+    # en cada pedido y nunca saltaba si cada uno alcanzaba a hacer uno solo.
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
 
 
 class GiftPlanEmailIn(ReengagementEmailIn):
@@ -21310,6 +21314,7 @@ class TrialInviteEmailIn(BaseModel):
     limit: int = Field(50, ge=1, le=200)  # cuántos sortea la vista previa
     variant: str = "directo"              # 'directo' | 'cartera'
     vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
 
 
 # Campaña "¿qué te está pareciendo Rendi?" (/api/admin/email/feedback-prueba).
@@ -21327,6 +21332,7 @@ class TrialFeedbackEmailIn(BaseModel):
     confirm: bool = False                 # False = DRY RUN (las listas, no manda nada)
     grupo: str = "nuevos"                 # 'nuevos' (nunca lo recibieron) | 'ya_recibieron'
     vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
     prueba_a_mi: bool = False             # manda UNO al mail del admin logueado y no toca a nadie
 
 
@@ -21340,6 +21346,7 @@ class BroadcastEmailIn(BaseModel):
     branded: bool = True         # envolver en el template Rendi (header+footer)
     test_to: Optional[str] = Field(None, max_length=200)  # manda UN mail de prueba acá y NO toca users
     vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
 
 
 def _deshacer_transaccion(conn):
@@ -21396,6 +21403,16 @@ def _filtro_ids(columna, ids):
     return f" AND {columna} IN ({','.join('?' for _ in ids)})", tuple(ids)
 
 
+# Lo que devuelve `marcar` cuando la persona ya no existe (borró la cuenta
+# entre que se armó la lista y el envío): se cuenta como descartada, no como
+# "salteada", y no se le manda nada.
+_YA_NO_ESTA = object()
+
+
+def _sigue_existiendo(conn, uid):
+    return conn.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone() is not None
+
+
 # Columnas de `users` donde un envío masivo anota a quién ya le mandó. Lista
 # cerrada: el nombre va pegado al SQL.
 _MARCAS_DE_ENVIO = ("reengagement_email_sent_at", "gift_plan_email_sent_at",
@@ -21424,7 +21441,9 @@ def _marca_en_columna(conn, columna):
             cur = conn.execute(
                 f"UPDATE users SET {columna}=? WHERE id=? AND {columna}=?",
                 (marca, t["id"], t["visto"]))
-        return marca if (cur.rowcount or 0) > 0 else None
+        if (cur.rowcount or 0) > 0:
+            return marca
+        return None if _sigue_existiendo(conn, t["id"]) else _YA_NO_ESTA
 
     def desmarcar(t, marca):
         conn.execute(f"UPDATE users SET {columna}=? WHERE id=? AND {columna}=?",
@@ -21434,7 +21453,7 @@ def _marca_en_columna(conn, columna):
 
 
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
-                  inicio=None):
+                  inicio=None, inciertos_previos=0):
     """Manda un mail a cada destinatario, de a uno. Es el motor de los cinco
     envíos masivos del panel de admin.
 
@@ -21461,7 +21480,10 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
          pendiente, y el click siguiente le mandaba un segundo mail. Con
          ENVIO_MASIVO_INCIERTOS_SEGUIDOS seguidos (Resend caído) se frena: el
          resto vuelve sin marca en `pendientes` y `frenado` le dice al panel
-         que no siga.
+         que no siga. La cuenta sigue entre pedidos (`inciertos_previos`, que
+         el panel devuelve de `inciertos_seguidos`): con Resend lento, cada
+         pedido podía hacer uno solo y cortar por tiempo, y el freno nunca
+         saltaba.
       5. Si no salió (o ni se intentó), `desmarcar(t, marca)` la deja como
          estaba (dos intentos, con un rollback en el medio). Si ni así, va en
          `marcas_trabadas`: quedó marcada sin haber recibido nada, y el panel
@@ -21482,8 +21504,9 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     from billing import emails
 
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
+    ya_no_estan = []
     intentos = 0
-    inciertos_seguidos = 0
+    inciertos_seguidos = min(max(int(inciertos_previos or 0), 0), ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
     frenado = False
     if inicio is None:
         inicio = time.monotonic()
@@ -21499,6 +21522,9 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
             log.error("%s: no se pudo marcar uid=%s: %s", campaña, t["id"], ex)
             _deshacer_transaccion(conn)
             fallados.append(quien)
+            continue
+        if marca is _YA_NO_ESTA:
+            ya_no_estan.append({"id": t["id"]})
             continue
         if marca is None:
             salteados.append(quien)
@@ -21547,7 +21573,7 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
             trabadas.append(quien)
 
     ids = {t["id"] for t in destinatarios}
-    descartados = [{"id": i} for i in vistos if i not in ids]
+    descartados = [{"id": i} for i in vistos if i not in ids] + ya_no_estan
     log.info("%s: enviados=%d fallados=%d salteados=%d descartados=%d trabadas=%d "
              "inciertos=%d pendientes=%d frenado=%s", campaña, len(enviados), len(fallados),
              len(salteados), len(descartados), len(trabadas), len(inciertos), len(pendientes),
@@ -21570,6 +21596,7 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         # `frenado` (Resend no confirma): ahí el panel corta.
         "pendientes": pendientes,
         "frenado": frenado,
+        "inciertos_seguidos": inciertos_seguidos,
     }
 
 
@@ -21703,7 +21730,8 @@ def admin_email_reengagement(data: ReengagementEmailIn, uid: int = Depends(get_a
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_reengagement(
                 to=t["email"], user_name=(t.get("name") or "")),
-            campaña="re-engagement", inicio=t0)
+            campaña="re-engagement", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
         res["threshold"] = threshold
         return res
     finally:
@@ -21867,7 +21895,8 @@ def admin_email_gift_plan(data: GiftPlanEmailIn, uid: int = Depends(get_admin_us
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_gift_plan_history(
                 to=t["email"], user_name=(t.get("name") or ""), plan_label=plan_label),
-            campaña="gift-plan", inicio=t0)
+            campaña="gift-plan", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
         res["threshold"] = threshold
         return res
     finally:
@@ -21973,7 +22002,8 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
                 to=t["email"], user_name=(t.get("name") or ""), variant=variant,
                 pro_days=pro_days, plus_days=plus_days,
                 total_days=pro_days + plus_days),
-            campaña="trial-invite", inicio=t0)
+            campaña="trial-invite", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
         res["variant"] = variant
         return res
     finally:
@@ -22212,7 +22242,8 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_trial_feedback(
                 to=t["email"], user_name=(t.get("name") or ""), reenvio=reenvio),
-            campaña=f"feedback-prueba ({data.grupo})", inicio=t0)
+            campaña=f"feedback-prueba ({data.grupo})", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
         res["grupo"] = data.grupo
         return res
     finally:
@@ -22346,10 +22377,16 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
         grupo = _broadcast_destinatarios(conn, data, plan, ids=list(visto))
 
         def marcar(t):
+            # Desde `users` y no con el mail que se leyó al armar la lista: si la
+            # cuenta se borró en el medio, no se anota su dirección (borrar la
+            # cuenta la saca de todas las tablas) ni se le manda nada.
             cur = conn.execute(
-                "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) VALUES (?, ?)",
-                (content_hash, t["email"]))
-            return content_hash if (cur.rowcount or 0) > 0 else None
+                "INSERT OR IGNORE INTO broadcast_send_log (content_hash, email) "
+                "SELECT ?, email FROM users WHERE id=? AND email=?",
+                (content_hash, t["id"], t["email"]))
+            if (cur.rowcount or 0) > 0:
+                return content_hash
+            return None if _sigue_existiendo(conn, t["id"]) else _YA_NO_ESTA
 
         def desmarcar(t, _marca):
             conn.execute("DELETE FROM broadcast_send_log WHERE content_hash=? AND email=?",
@@ -22360,7 +22397,8 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
             mandar=lambda t: emails.send_custom(
                 to=t["email"], user_name=(t.get("name") or ""),
                 subject=subject, body=body, branded=data.branded),
-            campaña="broadcast", inicio=t0)
+            campaña="broadcast", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
         log.info("Admin %s broadcast: %d enviados, %d fallidos, %d ya-enviados (subject=%r)",
                  uid, res["sent_count"], res["failed_count"], res["skipped_count"], subject)
         return res
