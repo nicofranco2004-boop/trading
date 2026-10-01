@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main  # noqa: E402
+from tests._ia_falsa import eventos  # noqa: E402
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 
@@ -68,7 +69,53 @@ class TestLatido(unittest.TestCase):
                 yield f"data: {i}\n\n"
         out = asyncio.run(_juntar(gen()))
         self.assertNotIn(main._LATIDO_SSE, out)
-        self.assertEqual(len(out), 20)
+        # Salen todos, en orden — y como salieron pegados, en menos envíos.
+        self.assertEqual("".join(out), "".join(f"data: {i}\n\n" for i in range(20)))
+        self.assertLess(len(out), 20)
+
+    def test_lo_que_sale_pegado_viaja_en_un_solo_envio(self):
+        """MEDIDO el 2026-10-01: la apertura y «Leyendo tu cartera» salían en
+        dos envíos seguidos y Vercel se guardaba el segundo hasta el latido
+        (0,25 s tarde en 3 de 4 preguntas)."""
+        def gen():
+            yield ": ok\n\n"
+            yield "data: leyendo\n\n"
+            time.sleep(0.3)             # la IA leyendo el contexto
+            yield "data: texto\n\n"
+        avisos = [f for f in asyncio.run(_juntar(gen())) if f != main._LATIDO_SSE]
+        self.assertEqual(avisos, [": ok\n\ndata: leyendo\n\n", "data: texto\n\n"])
+
+    def test_lo_separado_no_se_junta(self):
+        def gen():
+            yield "data: a\n\n"
+            time.sleep(0.05)            # más que _JUNTAR_SSE_SEG
+            yield "data: b\n\n"
+        avisos = [f for f in asyncio.run(_juntar(gen())) if f != main._LATIDO_SSE]
+        self.assertEqual(avisos, ["data: a\n\n", "data: b\n\n"])
+
+    def test_un_envio_no_espera_de_mas(self):
+        # Avisos cada 5 ms durante ~0,2 s: si se juntara todo lo pegado sin
+        # tope, saldría un solo envío al final y el texto no se vería escribir.
+        def gen():
+            for i in range(40):
+                yield f"data: {i}\n\n"
+                time.sleep(0.005)
+        out = [f for f in asyncio.run(_juntar(gen())) if f != main._LATIDO_SSE]
+        self.assertEqual("".join(out), "".join(f"data: {i}\n\n" for i in range(40)))
+        self.assertGreaterEqual(len(out), 3)
+
+    def test_si_el_siguiente_revienta_lo_juntado_sale_igual(self):
+        def gen():
+            yield "data: a\n\n"
+            raise RuntimeError("se cortó")
+
+        async def correr():
+            vistos = []
+            with self.assertRaises(RuntimeError):
+                async for f in main._con_latido(gen(), cada=0.1):
+                    vistos.append(f)
+            return vistos
+        self.assertEqual(asyncio.run(correr()), ["data: a\n\n"])
 
     def test_el_latido_es_un_comentario_que_el_navegador_ignora(self):
         # El lector del navegador (utils/api.js chatStream) separa por línea en
@@ -167,10 +214,9 @@ class TestChatConLatido(unittest.TestCase):
             def __init__(s, kw): s.r = _Resp([_Txt("Bien.")])
             def __enter__(s): return s
             def __exit__(s, *a): return False
-            @property
-            def text_stream(s):
+            def __iter__(s):
                 time.sleep(3 * main._LATIDO_SSE_SEG + 0.2)    # pensando
-                yield "Bien."
+                yield from eventos(["Bien."])
             def get_final_message(s): return s.r
 
         mc = MagicMock()
@@ -197,6 +243,25 @@ class TestChatConLatido(unittest.TestCase):
         self.assertLess(i_paso, i_delta)
         self.assertGreaterEqual(tipos[i_paso:i_delta].count("latido"), 2, tipos)
         self.assertEqual(tipos[-1], "done")
+
+
+class TestClienteIaAlArrancar(unittest.TestCase):
+
+    def test_el_cliente_de_la_ia_se_crea_al_arrancar(self):
+        """MEDIDO el 2026-10-01: la primera pregunta después de cada arranque
+        pagaba 0,58 s cargando la librería de Anthropic."""
+        self.assertIn(main._precalentar_cliente_ia, main.app.router.on_startup)
+        llamado = threading.Event()
+        with patch.object(main, "_get_anthropic_client", side_effect=lambda: llamado.set()):
+            main._precalentar_cliente_ia()
+            self.assertTrue(llamado.wait(2), "el arranque no creó el cliente de la IA")
+
+    def test_si_falla_el_servidor_arranca_igual(self):
+        def revienta():
+            raise RuntimeError("sin red")
+        with patch.object(main, "_get_anthropic_client", side_effect=revienta):
+            main._precalentar_cliente_ia()      # no levanta: corre en su hilo
+            time.sleep(0.1)
 
 
 class TestNingunStreamSeSalteaElLatido(unittest.TestCase):

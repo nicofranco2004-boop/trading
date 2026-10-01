@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main  # noqa: E402
+from tests._ia_falsa import eventos  # noqa: E402
 from ai import llm  # noqa: E402
 
 
@@ -142,7 +143,7 @@ class _Base(unittest.TestCase):
             def __init__(s, kw):
                 test.llamados.append(dict(kw, messages=copy.deepcopy(kw["messages"])))
                 s.pedazos, s.final = respuestas(kw, len(test.llamados))
-                s.text_stream = s.pedazos
+            def __iter__(s): return eventos(s.pedazos)
             def __enter__(s): return s
             def __exit__(s, *a): return False
             def get_final_message(s): return s.final

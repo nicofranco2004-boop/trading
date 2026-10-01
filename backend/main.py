@@ -31186,10 +31186,35 @@ _PASOS_HUMANOS = {
 _PASO_LEYENDO = "Leyendo tu cartera"
 _PASO_LEYENDO_LIBRO = "Leyendo las carteras de tus clientes"
 _PASO_ARMANDO = "Armando la respuesta con lo que encontré"
+# MEDIDO el 2026-10-01 en producción («¿Cómo está mi portfolio en general?»):
+# 4,2 s hasta que Anthropic empieza a responder (la IA lee el contexto), 4,1 s
+# PENSANDO, y recién ahí el texto. Anthropic avisa cuándo empieza a pensar
+# (abre un bloque `thinking`): ese aviso es esta etapa. Sin ella, la lista se
+# quedaba 8 s en «Leyendo tu cartera» y parecía trabada.
+_PASO_PENSANDO = "Pensando la respuesta"
 
 
 def _paso_frame(texto: str) -> str:
     return "data: " + json.dumps({"t": "paso", "d": texto}, ensure_ascii=False) + "\n\n"
+
+
+# Lo que el chat lee de la IA, en el orden en que llega: los pedazos de texto
+# (exactamente lo que daba `stream.text_stream`) y, en el momento en que pasa,
+# este marcador cuando la IA empieza a pensar. Recorre los eventos públicos del
+# SDK (`for ev in stream`); `text_stream` filtra el pensamiento y no deja verlo.
+_EMPIEZA_A_PENSAR = object()
+
+
+def _texto_y_etapas(stream):
+    for ev in stream:
+        tipo = getattr(ev, "type", None)
+        if tipo == "content_block_start":
+            if getattr(getattr(ev, "content_block", None), "type", None) == "thinking":
+                yield _EMPIEZA_A_PENSAR
+        elif tipo == "content_block_delta":
+            delta = getattr(ev, "delta", None)
+            if getattr(delta, "type", None) == "text_delta":
+                yield delta.text
 
 
 def _paso_humano(nombres) -> str:
@@ -31747,12 +31772,21 @@ def _voz_payload(text: str) -> Optional[dict]:
 # aviso retenido: la peor demora medida bajó de 3 s a 0,25 s.
 _LATIDO_SSE_SEG = 0.25
 _LATIDO_SSE = ": \n\n"
+# Y lo que sale PEGADO viaja en un solo envío, así Vercel no tiene un "segundo"
+# que guardarse. MEDIDO el 2026-10-01 (4 preguntas reales): la apertura y
+# «Leyendo tu cartera» salían en dos envíos seguidos y el paso llegaba 0,25 s
+# tarde en 3 de 4 — hasta que lo soltaba el latido. Lo mismo el «reset» y el
+# paso de la herramienta. Se espera hasta `_JUNTAR_SSE_SEG` por el aviso
+# siguiente, y un envío nunca acumula más de `_JUNTAR_SSE_TOPE_SEG`.
+_JUNTAR_SSE_SEG = 0.01
+_JUNTAR_SSE_TOPE_SEG = 0.05
 
 
 async def _con_latido(frames, cada: float = _LATIDO_SSE_SEG):
     """Recorre un generador SSE común (en un hilo, como StreamingResponse) y
     manda un latido por cada `cada` segundos sin avisos. El pedido del aviso
-    siguiente NO se corta al latir: sigue esperando en su hilo.
+    siguiente NO se corta al latir: sigue esperando en su hilo. Los avisos que
+    salen pegados (a menos de `_JUNTAR_SSE_SEG`) viajan en un solo envío.
 
     Al terminar —también si el navegador se fue a mitad— cierra el generador,
     así su `finally` (el cobro o la devolución de la consulta) corre apenas se
@@ -31773,11 +31807,31 @@ async def _con_latido(frames, cada: float = _LATIDO_SSE_SEG):
                 yield _LATIDO_SSE
                 continue
             try:
-                frame = siguiente.result()
+                lote = siguiente.result()
             except StopAsyncIteration:
                 return
-            yield frame
-            siguiente = asyncio.ensure_future(it.__anext__())
+            desde, termino = time.monotonic(), False
+            while True:
+                siguiente = asyncio.ensure_future(it.__anext__())
+                resto = _JUNTAR_SSE_TOPE_SEG - (time.monotonic() - desde)
+                if resto <= 0:
+                    break
+                listo, _ = await asyncio.wait({siguiente}, timeout=min(_JUNTAR_SSE_SEG, resto))
+                if not listo:
+                    break
+                try:
+                    lote += siguiente.result()
+                except StopAsyncIteration:
+                    termino = True
+                    break
+                except Exception:
+                    # El aviso siguiente reventó: lo ya juntado sale igual y el
+                    # error sigue su camino, como antes de juntar.
+                    yield lote
+                    raise
+            yield lote
+            if termino:
+                return
     finally:
         # Si un hilo todavía está adentro del generador (esperando a la IA),
         # no se lo puede cerrar mientras corre: se cierra apenas devuelva. NO
@@ -32001,8 +32055,6 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     client = _get_anthropic_client()
     if client is None:
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
-    # TEMPORAL (diagnóstico): ver _diag_espiar_eventos.
-    _registro_api = [] if request.query_params.get("reloj") == "1" else None
 
     from ai import quota
 
@@ -32677,9 +32729,13 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         tools=chat_tools,
                         messages=messages_loop,
                     ) as stream:
-                        if _registro_api is not None:
-                            _diag_espiar_eventos(stream, _registro_api)
-                        for chunk in stream.text_stream:
+                        for chunk in _texto_y_etapas(stream):
+                            if chunk is _EMPIEZA_A_PENSAR:
+                                # Sólo en la primera vuelta: después de buscar
+                                # datos, «Armando la respuesta…» ya lo dice.
+                                if _turn == 0:
+                                    yield _paso_frame(_PASO_PENSANDO)
+                                continue
                             if chunk:
                                 state["synth_deltas"] += 1
                                 state["synth_text"] += chunk
@@ -32793,9 +32849,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                     tool_choice={"type": "none"},
                     messages=messages_loop,
                 ) as stream:
-                    if _registro_api is not None:
-                        _diag_espiar_eventos(stream, _registro_api)
-                    for chunk in stream.text_stream:
+                    for chunk in _texto_y_etapas(stream):
+                        if chunk is _EMPIEZA_A_PENSAR:
+                            continue      # ya se anunció «Pensando…» o «Armando…»
                         if chunk:
                             state["synth_deltas"] += 1
                             state["synth_text"] += chunk
@@ -32864,8 +32920,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         log.info("ai_chat stream interrumpido con respuesta parcial (deltas=%d) uid=%s → se cobra",
                                  state["synth_deltas"], uid)
 
-        return _respuesta_sse(
-            _diag_reloj(_sse(), _registro_api) if request.query_params.get("reloj") == "1" else _sse())
+        return _respuesta_sse(_sse())
 
     try:
         for _loop_i in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
@@ -37034,6 +37089,23 @@ def _backfill_fx_rates_on_boot():
 
 
 @app.on_event("startup")
+def _precalentar_cliente_ia():
+    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI después de cada
+    arranque (cada publicación, cada reinicio) pagaba 0,58 s cargando la
+    librería de Anthropic, porque el cliente se creaba recién ahí. Se crea al
+    arrancar, en un hilo aparte para no demorar el arranque."""
+    import threading
+
+    def worker():
+        try:
+            _get_anthropic_client()
+        except Exception as ex:
+            log.warning("precalentar cliente IA falló (se crea en la 1ra pregunta): %s", ex)
+
+    threading.Thread(target=worker, daemon=True, name="precalentar-ia").start()
+
+
+@app.on_event("startup")
 def _validate_rebill_config():
     """Sanity check de la config de Rebill al arrancar.
 
@@ -39875,55 +39947,6 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
 
 # ─── Health check (público) ─────────────────────────────────────────────────
 
-# TEMPORAL (diagnóstico 2026-10-01, se saca al verificar el latido): con /api/ai/chat?reloj=1
-# cada aviso del chat sale precedido por un comentario SSE (que el navegador
-# ignora) con dos horas del servidor: `pedido` = cuándo el servidor pidió el
-# aviso siguiente, `listo` = cuándo lo tuvo. listo−pedido es lo que tardó en
-# fabricarlo (la IA, las herramientas); pedido−listo_anterior es lo que tardó
-# el servidor en volver a pedir (mandar + conseguir un hilo libre). Comparado
-# con la hora de llegada al navegador, dice qué eslabón junta los avisos.
-def _diag_reloj(gen, registro=None):
-    t0 = time.monotonic()
-    try:
-        while True:
-            pedido = time.monotonic() - t0
-            try:
-                frame = next(gen)
-            except StopIteration:
-                return
-            listo = time.monotonic() - t0
-            api = ""
-            while registro:
-                t, n, tipos = registro.pop(0)
-                api += (f": api t={t - t0:.3f} bytes={n} "
-                        + ",".join(f"{k}x{v}" for k, v in tipos.items()) + "\n")
-            yield (api + f": reloj pedido={pedido:.3f} listo={listo:.3f} "
-                   f"hilos={threading.active_count()}\n\n" + frame)
-    finally:
-        gen.close()
-
-
-# TEMPORAL (diagnóstico 2026-10-01, con ?reloj=1): ¿qué hace la IA en los
-# ~13 s en que no llega nada? Se intercala en los eventos que el SDK de
-# Anthropic ya está leyendo (pensamiento, texto, ping…) y anota cuándo llega
-# cada uno. Sólo tipos y horas, nada del contenido. El chat normal no lo usa.
-def _diag_espiar_eventos(stream, registro):
-    try:
-        orig = stream._iterator
-
-        def _espia():
-            for ev in orig:
-                t = getattr(ev, "type", "?")
-                if t == "content_block_delta":
-                    t = getattr(getattr(ev, "delta", None), "type", t)
-                elif t == "content_block_start":
-                    t = "abre_" + str(getattr(getattr(ev, "content_block", None), "type", "?"))
-                registro.append((time.monotonic(), 0, {t: 1}))
-                yield ev
-
-        stream._iterator = _espia()
-    except Exception as ex:
-        registro.append((time.monotonic(), 0, {"espia_fallo_" + type(ex).__name__: 1}))
 
 
 @app.get("/api/health")

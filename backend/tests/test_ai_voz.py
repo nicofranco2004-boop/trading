@@ -39,6 +39,7 @@ os.environ.setdefault("DB_PATH", _TMP.name)
 os.environ["VOZ_SIGNING_KEY"] = "clave-de-test-para-firmar-la-voz"
 
 import main            # noqa: E402
+from tests._ia_falsa import eventos  # noqa: E402
 from ai import quota   # noqa: E402
 from ai import tts     # noqa: E402
 
@@ -289,7 +290,7 @@ class ElFrameDeVozLlegaAntesQueElFinalTest(unittest.TestCase):
         """Corre un turno con el modelo simulado escupiendo `pedazos` y
         devuelve la lista de frames tal como los ve el navegador."""
         class _FakeStream:
-            text_stream = pedazos
+            def __iter__(s): return eventos(pedazos)
             def __enter__(s): return s
             def __exit__(s, *a): return False
             def get_final_message(s):

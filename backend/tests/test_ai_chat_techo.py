@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main  # noqa: E402
+from tests._ia_falsa import eventos  # noqa: E402
 
 # Lo que midió el uso real + margen para pensar. Ver el docstring.
 MINIMO = {"plus": 1500, "pro": 2500}
@@ -69,7 +70,8 @@ class TestTechoDelChat(unittest.TestCase):
             return _Resp([_Txt("Bien.")])
 
         class _Stream:
-            def __init__(s, kw): s.r = respuesta(kw); s.text_stream = []
+            def __init__(s, kw): s.r = respuesta(kw)
+            def __iter__(s): return eventos([])
             def __enter__(s): return s
             def __exit__(s, *a): return False
             def get_final_message(s): return s.r
