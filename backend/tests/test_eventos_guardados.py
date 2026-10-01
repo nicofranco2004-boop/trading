@@ -28,7 +28,9 @@ import eventos_guardados as eg
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DUENIO = "eventos_guardados.py"
 EXCLUIDAS = ("tests", "scripts", "backups", "__pycache__", "venv", ".venv")
-LECTURA_POR_RANGO = re.compile(r"FROM financial_events[^;]{0,300}?event_date\s*>=", re.S)
+# Una LECTURA (SELECT … FROM financial_events … event_date >=). El borrado de
+# fechas que Yahoo movió (_buscar_y_guardar_eventos) no es una lectura.
+LECTURA_POR_RANGO = re.compile(r"SELECT\b[^;]{0,300}?FROM financial_events[^;]{0,300}?event_date\s*>=", re.S)
 
 
 def _base():
@@ -75,6 +77,26 @@ class LecturaTest(unittest.TestCase):
                                                   hoy=date(2030, 1, 10), limite=1)), 1)
         self.assertEqual(eg.eventos_guardados(self.conn, [], 14), [])
         self.assertEqual(eg.eventos_guardados(self.conn, [None, ""], 14), [])
+
+
+class BotonDeUnEventoTest(unittest.TestCase):
+    """El ✦ de cada fila de Eventos (ai/builders/events_item): de 21 a 24 h
+    de Argentina un evento de HOY daba days_ahead = -1 ("ya pasó"). Hallado
+    por la revisión independiente — la copia del reloj que quedaba."""
+
+    def test_a_las_22_un_evento_de_hoy_es_de_hoy(self):
+        from ai.builders import events_item
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE positions (user_id, asset, broker, quantity, invested, is_cash)")
+        with patch("fechas.datetime") as dt:
+            dt.utcnow.return_value = datetime(2030, 1, 11, 1, 0)   # 22:00 ART del 10
+            try:
+                pkt = events_item.build(conn, 1, ticker="NVDA", event_type="earnings",
+                                        event_date="2030-01-10")
+            except Exception as e:   # el resto del packet puede pedir más tablas
+                self.fail(f"el builder falló: {e!r}")
+        self.assertEqual(pkt.get("days_ahead", pkt.get("event", {}).get("days_ahead")), 0)
 
 
 class NadieCopiaLaConsultaTest(unittest.TestCase):

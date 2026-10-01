@@ -21,6 +21,7 @@ from datetime import date as date_cls, timedelta
 # El "hoy" de Rendi es el argentino (fechas.py). Con `date.today()` el
 # servidor (UTC) ya está en "mañana" de 21 a 24 h de Buenos Aires.
 from fechas import hoy_art_date
+from reporting.builder import period_label
 from typing import List, Dict, Any, Optional
 
 log = logging.getLogger("home.briefing")
@@ -112,72 +113,71 @@ def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6
     return out
 
 
-def detect_earnings_soon(events: List[Dict[str, Any]],
-                          holdings_assets: set) -> List[PersonalCard]:
-    """Earnings de holdings en ≤7 días."""
+# Las tarjetas de eventos dicen lo MISMO que la fila de la agenda de Eventos,
+# que es adonde llevan (frontend/src/pages/Events.jsx: `Earnings de X`,
+# `Ex-dividendo de X`, "hoy" / "mañana" / "en N días"). Hasta 2026-10-01 la de
+# dividendos decía "Dividendo de X · en 2d" en verde — y nunca se vio, porque
+# la lectura de eventos apuntaba a una tabla que no existe (ver
+# eventos_guardados.py). El ex-dividendo NO es el pago: es el día de corte (hay
+# que tener la acción antes para cobrarlo; la plata llega después). Por eso va
+# en tono neutro, no verde como si entrara plata.
+_TARJETAS_DE_EVENTO = {
+    "earnings":    ("earnings_soon", "📊", "Earnings"),
+    "ex_dividend": ("dividend_soon", "💰", "Ex-dividendo"),
+}
+
+
+def _en_cuantos_dias(n: int) -> str:
+    return "hoy" if n == 0 else ("mañana" if n == 1 else f"en {n} días")
+
+
+def detect_events_soon(events: List[Dict[str, Any]], holdings_assets: set,
+                       event_type: str, dias: int = 7, maximo: int = 2) -> List[PersonalCard]:
+    """Eventos `event_type` de activos que el user tiene, en los próximos
+    `dias` (contados desde el hoy ARGENTINO)."""
+    kind, icon, rotulo = _TARJETAS_DE_EVENTO[event_type]
     out: List[PersonalCard] = []
     today = hoy_art_date()
-    cutoff = today + timedelta(days=7)
+    cutoff = today + timedelta(days=dias)
     for ev in events:
-        if ev.get("event_type") != "earnings":
+        if ev.get("event_type") != event_type:
             continue
         ticker = (ev.get("ticker") or "").upper()
         if ticker not in holdings_assets:
             continue
         try:
-            ev_date = date_cls.fromisoformat(ev["event_date"])
+            ev_date = date_cls.fromisoformat(str(ev["event_date"])[:10])
         except (KeyError, ValueError):
             continue
         if not (today <= ev_date <= cutoff):
             continue
-        days_until = (ev_date - today).days
-        when = "hoy" if days_until == 0 else (
-            "mañana" if days_until == 1 else f"en {days_until} días"
-        )
+        fecha = period_label("day", ev_date.isoformat(), ev_date.isoformat())
         out.append(PersonalCard(
-            kind="earnings_soon",
-            icon="📊",
-            headline=f"Earnings de {ticker}",
-            value=when,
+            kind=kind,
+            icon=icon,
+            headline=f"{rotulo} de {ticker}",
+            value=_en_cuantos_dias((ev_date - today).days),
             value_tone="neutral",
-            context=ev["event_date"],
+            # "Dom 4 oct", como los informes — no "2026-10-04". Si la empresa
+            # todavía no confirmó el día, Yahoo da una estimación (la agenda de
+            # Eventos le pone "· est."): la tarjeta no la presenta como un hecho.
+            context=fecha if ev.get("confirmed", True) else f"{fecha} · estimada",
             cta_label="Ver detalle →",
-            cta_href=f"/novedades?tab=eventos",
+            cta_href="/novedades?tab=eventos",
         ))
-    return out[:2]
+    return out[:maximo]
+
+
+def detect_earnings_soon(events: List[Dict[str, Any]],
+                          holdings_assets: set) -> List[PersonalCard]:
+    """Earnings de holdings en ≤7 días."""
+    return detect_events_soon(events, holdings_assets, "earnings")
 
 
 def detect_dividends_soon(events: List[Dict[str, Any]],
                            holdings_assets: set) -> List[PersonalCard]:
-    """Dividendos de holdings en ≤7 días (ex_dividend)."""
-    out: List[PersonalCard] = []
-    today = hoy_art_date()
-    cutoff = today + timedelta(days=7)
-    for ev in events:
-        if ev.get("event_type") != "ex_dividend":
-            continue
-        ticker = (ev.get("ticker") or "").upper()
-        if ticker not in holdings_assets:
-            continue
-        try:
-            ev_date = date_cls.fromisoformat(ev["event_date"])
-        except (KeyError, ValueError):
-            continue
-        if not (today <= ev_date <= cutoff):
-            continue
-        days_until = (ev_date - today).days
-        when = "hoy" if days_until == 0 else f"en {days_until}d"
-        out.append(PersonalCard(
-            kind="dividend_soon",
-            icon="💰",
-            headline=f"Dividendo de {ticker}",
-            value=when,
-            value_tone="positive",
-            context=ev["event_date"],
-            cta_label="Ver →",
-            cta_href=f"/novedades?tab=eventos",
-        ))
-    return out[:2]
+    """Ex-dividendos de holdings en ≤7 días."""
+    return detect_events_soon(events, holdings_assets, "ex_dividend")
 
 
 # ─── Orchestrator ────────────────────────────────────────────────────────────

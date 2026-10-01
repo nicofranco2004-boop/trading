@@ -353,11 +353,32 @@ class TarjetasDeEventosPorElEndpointTest(unittest.TestCase):
             r = self.client.get("/api/home/personal", headers=self.auth)
         self.assertEqual(r.status_code, 200)
         por_tipo = {c["kind"]: c for c in r.json()["cards"]}
-        self.assertIn("earnings_soon", por_tipo)
-        self.assertEqual(por_tipo["earnings_soon"]["headline"], "Earnings de NVDA")
-        self.assertEqual(por_tipo["earnings_soon"]["value"], "en 3 días")
-        self.assertIn("dividend_soon", por_tipo)
-        self.assertEqual(por_tipo["dividend_soon"]["headline"], "Dividendo de KO")
+        from reporting.builder import period_label
+        def dia(n):
+            d = (self.hoy + self.timedelta(days=n)).isoformat()
+            return period_label("day", d, d)
+        # Las mismas palabras que la agenda de Eventos ("Earnings de X",
+        # "Ex-dividendo de X"), el mismo formato de días en las dos, y la fecha
+        # en castellano ("Sáb 3 oct"), no "2026-10-03".
+        e, d = por_tipo["earnings_soon"], por_tipo["dividend_soon"]
+        self.assertEqual((e["headline"], e["value"], e["context"]),
+                         ("Earnings de NVDA", "en 3 días", dia(3)))
+        self.assertEqual((d["headline"], d["value"], d["context"]),
+                         ("Ex-dividendo de KO", "en 2 días", dia(2)))
+        # El ex-dividendo es el día de corte, no el pago: no va en verde.
+        self.assertEqual(d["value_tone"], "neutral")
+
+    def test_fecha_estimada_no_se_presenta_como_un_hecho(self):
+        """Si la empresa no confirmó el día, la agenda de Eventos dice "· est.";
+        la tarjeta también lo dice."""
+        conn = main.get_db()
+        try:
+            dia = (self.hoy + self.timedelta(days=4)).isoformat()
+            ev = [{"event_type": "earnings", "ticker": "NVDA", "event_date": dia, "confirmed": False}]
+            cards = briefing.build_personal_cards(conn, self.uid, all_quotes={}, portfolio_events=ev)
+        finally:
+            conn.close()
+        self.assertTrue(cards[0]["context"].endswith("· estimada"), cards[0]["context"])
 
     def test_hoy_es_el_dia_argentino(self):
         """El reloj del servidor está en UTC: de 21 a 24 h de Argentina ya es

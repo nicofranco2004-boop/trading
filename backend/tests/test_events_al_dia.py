@@ -44,7 +44,7 @@ class _YahooLento:
         self.pedidos = []
         self.lock = threading.Lock()
 
-    def __call__(self, ticker):
+    def __call__(self, ticker, fallas=None):
         with self.lock:
             self.pedidos.append(ticker)
         time.sleep(self.demora)
@@ -129,7 +129,7 @@ class EventosAlDiaTest(unittest.TestCase):
     def test_una_busqueda_que_falla_no_cuenta_como_renovada(self):
         """Si guardar falla, no se marca como buscado (se reintenta en el
         próximo pedido) y no suma en `refreshed_tickers`."""
-        def yahoo_roto(ticker):
+        def yahoo_roto(ticker, fallas=None):
             return [{"ticker": ticker}]          # sin fecha ni tipo: guardar revienta
         with patch.object(main, "_fetch_yf_events", yahoo_roto):
             renovadas = main._refresh_events_for_tickers(["AA", "BB"], esperar_segundos=5)
@@ -139,6 +139,115 @@ class EventosAlDiaTest(unittest.TestCase):
         with patch.object(main, "_fetch_yf_events", yahoo):
             self.assertEqual(main._refresh_events_for_tickers(["AA", "BB"], esperar_segundos=5), 2)
         self.assertEqual(sorted(yahoo.pedidos), ["AA", "BB"])
+
+    def _fechas(self, ticker, tipo):
+        conn = main.get_db()
+        try:
+            return sorted(r[0] for r in conn.execute(
+                "SELECT event_date FROM financial_events WHERE ticker=? AND event_type=?",
+                (ticker, tipo)).fetchall())
+        finally:
+            conn.close()
+
+    def _guardar(self, ticker, tipo, fecha, source="yfinance"):
+        conn = main.get_db()
+        with conn:
+            conn.execute("""INSERT INTO financial_events
+                (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                VALUES (?, ?, ?, '{}', 0, ?, 'x')""", (ticker, tipo, fecha, source))
+        conn.close()
+
+    def test_una_fecha_que_yahoo_movio_no_queda_duplicada(self):
+        """Visto el 2026-10-01: NVDA quedó con dos earnings (la estimada vieja y
+        la nueva) y la tarjeta del inicio anunciaba la que ya no existe. Por el
+        camino de la pantalla: /events/portfolio responde con lo guardado y la
+        búsqueda de fondo deja una sola fecha futura."""
+        auth = self._usuario_con_nvda()
+        self._guardar("NVDA", "earnings", _en_dias(3))      # la estimada vieja
+        self._guardar("NVDA", "earnings", _en_dias(-80))    # el trimestre pasado: historia
+        self._guardar("NVDA", "earnings", _en_dias(10), source="manual")  # cargado a mano
+        yahoo = _YahooLento(0.01)                            # Yahoo dice: dentro de 20 días
+        with patch.object(main, "_fetch_yf_events", yahoo):
+            self.client.get("/api/events/portfolio?days=90", headers=auth)
+            _esperar_fondo()
+        self.assertEqual(self._fechas("NVDA", "earnings"),
+                         sorted([_en_dias(-80), _en_dias(10), _en_dias(20)]))
+
+    def test_si_yahoo_no_trae_un_tipo_lo_guardado_se_respeta(self):
+        """La lectura de earnings de _fetch_yf_events puede fallar en silencio
+        y devolver sólo el dividendo: eso NO significa que el earnings se fue."""
+        self._guardar("KO", "earnings", _en_dias(5))
+        def solo_dividendo(ticker, fallas=None):
+            return [{"ticker": ticker, "event_type": "ex_dividend", "event_date": _en_dias(15),
+                     "details": {}, "confirmed": 1}]
+        with patch.object(main, "_fetch_yf_events", solo_dividendo):
+            main._refresh_events_for_tickers(["KO"], esperar_segundos=5)
+        self.assertEqual(self._fechas("KO", "earnings"), [_en_dias(5)])
+        self.assertEqual(self._fechas("KO", "ex_dividend"), [_en_dias(15)])
+
+    def test_yahoo_que_no_contesta_no_queda_al_dia_6_horas(self):
+        """Hallado por la revisión independiente (2026-10-01): con Yahoo
+        rechazando por exceso de pedidos, _fetch_yf_events devolvía [] igual
+        que "no tiene eventos" y el ticker quedaba "al día" 6 horas. Por la
+        función REAL de Yahoo, con yf.Ticker tirando el error."""
+        with patch.object(main.yf, "Ticker", side_effect=Exception("429 Too Many Requests")):
+            renovadas = main._refresh_events_for_tickers(["AA"], esperar_segundos=5)
+            self.assertEqual(renovadas, 0)
+            # No se reintenta en cada visita…
+            self.assertEqual(main._refresh_events_for_tickers(["AA"], esperar_segundos=5), 0)
+        falta = main.EVENTS_TTL - (time.time() - main._events_fetched_at["AA"])
+        # …sino a los EVENTOS_REINTENTO_SEG (10 min), no a las 6 h.
+        self.assertAlmostEqual(falta, main.EVENTOS_REINTENTO_SEG, delta=5)
+
+    def test_si_falla_un_solo_pedido_lo_que_llego_cuenta(self):
+        """El calendario falló pero el dividendo llegó: queda al día con lo que
+        hay (y el earnings guardado se respeta — ver el test de abajo)."""
+        class T:
+            @property
+            def calendar(self):
+                raise Exception("calendar caído")
+            info = {"exDividendDate": int(time.time()) + 15 * 86400, "lastDividendValue": 0.5}
+        with patch.object(main.yf, "Ticker", return_value=T()):
+            self.assertEqual(main._refresh_events_for_tickers(["KO"], esperar_segundos=5), 1)
+        self.assertEqual(len(self._fechas("KO", "ex_dividend")), 1)
+
+    def test_el_adelanto_del_inicio_no_espera_en_semanas_tranquilas(self):
+        """Lo guardado está a 30 días y el inicio pide 14: no es una base
+        vacía, es una semana tranquila. Hallado por la revisión independiente:
+        esperaba a Yahoo (3,0 s medidos); tiene que responder ya."""
+        conn = main.get_db()
+        with conn:
+            for t in POPULARES:
+                conn.execute("""INSERT INTO financial_events
+                    (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                    VALUES (?, 'earnings', ?, '{}', 1, 'yfinance', 'x')""", (t, _en_dias(30)))
+        conn.close()
+        yahoo = _YahooLento(1.0)
+        with patch.object(main, "_fetch_yf_events", yahoo):
+            t0 = time.monotonic()
+            r = self.client.get("/api/events/popular?days=14",
+                                headers={"Authorization": f"Bearer {self.token}"})
+            tardo = time.monotonic() - t0
+            _esperar_fondo()
+        self.assertEqual(r.status_code, 200)
+        self.assertLess(tardo, 0.5, f"tardó {tardo:.2f} s esperando a Yahoo")
+
+    def test_al_apagar_se_descarta_lo_que_no_arranco(self):
+        """Los hilos de las colas no son "daemon": sin cancelar, el proceso
+        viejo de cada deploy esperaba la cola entera antes de cerrarse. Con
+        colas propias de la prueba (las globales siguen sirviendo al resto)."""
+        from concurrent.futures import ThreadPoolExecutor
+        traba = threading.Event()
+        colas = [ThreadPoolExecutor(max_workers=1) for _ in range(3)]
+        corriendo = colas[0].submit(traba.wait, 5)
+        en_cola = [colas[0].submit(time.sleep, 0) for _ in range(5)]
+        with patch.object(main, "_events_fetch_executor", colas[0]), \
+             patch.object(main, "_yf_executor", colas[1]), \
+             patch.object(main, "_news_fetch_executor", colas[2]):
+            main._stop_scheduler()
+        traba.set()
+        self.assertTrue(all(f.cancelled() for f in en_cola))
+        self.assertFalse(corriendo.cancelled())   # lo que ya corría termina
 
     def test_lo_buscado_hace_poco_no_se_vuelve_a_pedir(self):
         yahoo = _YahooLento(0.01)
