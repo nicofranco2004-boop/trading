@@ -126,6 +126,20 @@ class EventosAlDiaTest(unittest.TestCase):
                 h.join()
         self.assertEqual(sorted(yahoo.pedidos), sorted(tickers))
 
+    def test_una_busqueda_que_falla_no_cuenta_como_renovada(self):
+        """Si guardar falla, no se marca como buscado (se reintenta en el
+        próximo pedido) y no suma en `refreshed_tickers`."""
+        def yahoo_roto(ticker):
+            return [{"ticker": ticker}]          # sin fecha ni tipo: guardar revienta
+        with patch.object(main, "_fetch_yf_events", yahoo_roto):
+            renovadas = main._refresh_events_for_tickers(["AA", "BB"], esperar_segundos=5)
+        self.assertEqual(renovadas, 0)
+        self.assertNotIn("AA", main._events_fetched_at)
+        yahoo = _YahooLento(0.01)
+        with patch.object(main, "_fetch_yf_events", yahoo):
+            self.assertEqual(main._refresh_events_for_tickers(["AA", "BB"], esperar_segundos=5), 2)
+        self.assertEqual(sorted(yahoo.pedidos), ["AA", "BB"])
+
     def test_lo_buscado_hace_poco_no_se_vuelve_a_pedir(self):
         yahoo = _YahooLento(0.01)
         with patch.object(main, "_fetch_yf_events", yahoo):

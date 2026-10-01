@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import main
 from home import briefing
+# Las tarjetas cuentan desde el hoy ARGENTINO: con date.today() estas pruebas
+# se ponían en rojo solas de 21 a 24 h en una máquina con reloj UTC.
+from fechas import hoy_art_date
 from home.market import MARKETS, SP500_TOP_50, MERVAL_TOP_25, CRYPTO_TOP_30
 
 
@@ -90,8 +93,8 @@ class BriefingTest(unittest.TestCase):
 
     def test_earnings_card_for_holding_ticker(self):
         # User tiene BTC; le metemos un earnings de BTC en 3 días
-        from datetime import date, timedelta
-        future = (date.today() + timedelta(days=3)).isoformat()
+        from datetime import timedelta
+        future = (hoy_art_date() + timedelta(days=3)).isoformat()
         events = [{"event_type": "earnings", "ticker": "BTC", "event_date": future}]
         cards = briefing.build_personal_cards(
             self.conn, self.uid,
@@ -104,8 +107,8 @@ class BriefingTest(unittest.TestCase):
         self.assertIn("3 días", cards[0]["value"])
 
     def test_earnings_skip_if_not_in_holdings(self):
-        from datetime import date, timedelta
-        future = (date.today() + timedelta(days=3)).isoformat()
+        from datetime import timedelta
+        future = (hoy_art_date() + timedelta(days=3)).isoformat()
         events = [{"event_type": "earnings", "ticker": "AAPL", "event_date": future}]
         cards = briefing.build_personal_cards(
             self.conn, self.uid,
@@ -124,8 +127,8 @@ class BriefingTest(unittest.TestCase):
                 (self.uid, asset),
             )
         self.conn.commit()
-        from datetime import date, timedelta
-        future = (date.today() + timedelta(days=2)).isoformat()
+        from datetime import timedelta
+        future = (hoy_art_date() + timedelta(days=2)).isoformat()
         cards = briefing.build_personal_cards(
             self.conn, self.uid,
             all_quotes={

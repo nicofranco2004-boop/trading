@@ -7115,9 +7115,10 @@ def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
     return bool(eventos_guardados(conn, tickers, days, limite=1))
 
 
-def _buscar_y_guardar_eventos(ticker: str):
+def _buscar_y_guardar_eventos(ticker: str) -> bool:
     """Un trabajador: trae los eventos de UN ticker de yfinance y los guarda en
-    su propia conexión (sqlite no comparte conexiones entre hilos)."""
+    su propia conexión (sqlite no comparte conexiones entre hilos). Devuelve
+    True si quedó al día (con o sin eventos), False si falló al guardar."""
     try:
         events = _fetch_yf_events(ticker)
         if events:
@@ -7141,8 +7142,10 @@ def _buscar_y_guardar_eventos(ticker: str):
                 conn.close()
         # Sin eventos también cuenta como buscado: no se reintenta en cada pedido.
         _events_fetched_at[ticker] = time.time()
+        return True
     except Exception as ex:
         logging.getLogger(__name__).warning("events refresh %s failed: %s", ticker, ex)
+        return False
     finally:
         with _events_en_vuelo_lock:
             _events_en_vuelo.pop(ticker, None)
@@ -7161,9 +7164,9 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
         mismo pedido (dos personas a la vez = una sola búsqueda);
       · `esperar_segundos=None` → no espera (refresco de fondo); un número →
         espera hasta ese tope y devuelve igual (lo que no llegó se guarda solo).
-    Devuelve cuántas búsquedas TERMINARON antes de volver (0 si no espera): es
-    el `refreshed_tickers` de las respuestas, y una búsqueda lanzada que no
-    llegó a tiempo no renovó nada de lo que se está por mostrar."""
+    Devuelve cuántas búsquedas TERMINARON BIEN antes de volver (0 si no
+    espera): es el `refreshed_tickers` de las respuestas, y una búsqueda que no
+    llegó a tiempo, o que falló, no renovó nada de lo que se está por mostrar."""
     ahora = time.time()
     futuros = []
     with _events_en_vuelo_lock:
@@ -7178,7 +7181,7 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     if not futuros or esperar_segundos is None:
         return 0
     terminados, _ = _esperar_futuros(futuros, timeout=esperar_segundos)
-    return len(terminados)
+    return sum(1 for f in terminados if f.result() is True)
 
 
 def _eventos_al_dia(conn, tickers: list, days: int = 90) -> int:
