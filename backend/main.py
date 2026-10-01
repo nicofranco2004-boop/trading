@@ -299,6 +299,9 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    # TEMPORAL (diagnóstico 2026-10-01): hora de llegada para _DiagMuestreo.
+    if request.url.path == "/api/ai/chat" and request.query_params.get("reloj") == "1":
+        request.state.diag_llega = time.monotonic()
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -31764,6 +31767,8 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
 
     Output sanitizado server-side (markdown strip) — red de seguridad.
     """
+    # TEMPORAL (diagnóstico 2026-10-01): ver _DiagMuestreo.
+    _diag_m = _DiagMuestreo() if request.query_params.get("reloj") == "1" else None
     client = _get_anthropic_client()
     if client is None:
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
@@ -32632,6 +32637,8 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                         log.info("ai_chat stream interrumpido con respuesta parcial (deltas=%d) uid=%s → se cobra",
                                  state["synth_deltas"], uid)
 
+        if _diag_m is not None:
+            return _respuesta_sse(_diag_con_prefijo(_diag_m.resumen(request), _sse()))
         return _respuesta_sse(_sse())
 
     try:
@@ -39638,6 +39645,70 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
         fetch_tc_mep=_get_mep_for_scheduler,
     )
     return result
+
+
+# TEMPORAL (diagnóstico 2026-10-01, con /api/ai/chat?reloj=1): ¿en qué se van
+# los ~2,2 s entre que llega la pregunta y sale «Leyendo tu cartera»? Un hilo
+# mira cada 20 ms qué renglón está ejecutando el pedido y, al empezar el stream,
+# manda el resumen como comentario SSE (el navegador lo ignora). Se apaga solo
+# a los 15 s aunque el pedido termine por otro lado. SE SACA después de medir.
+class _DiagMuestreo:
+    CADA = 0.02
+
+    def __init__(self):
+        import sys as _sys
+        self._sys = _sys
+        self.hilo = threading.get_ident()
+        self.t0 = time.monotonic()
+        self.base = os.path.dirname(os.path.abspath(__file__))
+        self.muestras = []
+        self.alto = threading.Event()
+        threading.Thread(target=self._correr, daemon=True).start()
+
+    def _correr(self):
+        while not self.alto.wait(self.CADA) and time.monotonic() - self.t0 < 15:
+            f = self._sys._current_frames().get(self.hilo)
+            pila = []
+            while f is not None:
+                co = f.f_code
+                pila.append((co.co_filename, co.co_name, f.f_lineno))
+                f = f.f_back
+            self.muestras.append(pila)        # de adentro hacia afuera
+
+    def resumen(self, request) -> str:
+        self.alto.set()
+        sale = time.monotonic()
+        llega = getattr(request.state, "diag_llega", None)
+        ms = lambda n: int(n * self.CADA * 1000)
+        propio = lambda fn: fn.startswith(self.base) and "site-packages" not in fn
+        en_chat, adentro, hoja = {}, {}, {}
+        for pila in self.muestras:
+            for fn, nom, ln in pila:
+                if nom == "ai_chat" and propio(fn):
+                    en_chat[ln] = en_chat.get(ln, 0) + 1
+                    break
+            for fn, nom, ln in pila:
+                if propio(fn) and nom not in ("_correr", "ai_chat"):
+                    k = f"{os.path.relpath(fn, self.base)}:{nom}:{ln}"
+                    adentro[k] = adentro.get(k, 0) + 1
+                    break
+            if pila:
+                fn, nom, ln = pila[0]
+                k = f"{os.path.basename(fn)}:{nom}"
+                hoja[k] = hoja.get(k, 0) + 1
+        top = lambda d, n: " ".join(f"{k}={ms(v)}ms" for k, v in sorted(d.items(), key=lambda kv: -kv[1])[:n])
+        lineas = [
+            f": prep llega_a_entra={(self.t0 - llega) if llega else -1:.3f} entra_a_sale={sale - self.t0:.3f} muestras={len(self.muestras)}",
+            f": prep chat {top({f'L{k}': v for k, v in en_chat.items()}, 10)}",
+            f": prep adentro {top(adentro, 10)}",
+            f": prep hoja {top(hoja, 8)}",
+        ]
+        return "\n".join(lineas) + "\n\n"
+
+
+def _diag_con_prefijo(texto, gen):
+    yield texto
+    yield from gen
 
 
 # ─── Health check (público) ─────────────────────────────────────────────────
