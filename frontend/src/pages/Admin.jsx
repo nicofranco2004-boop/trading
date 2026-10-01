@@ -848,8 +848,25 @@ function FeedbackPruebaPanel({ toast }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(null)   // null | 'nuevos' | 'ya_recibieron'
+  const [progreso, setProgreso] = useState(null) // { hechos, total } mientras manda en tandas
   const [result, setResult] = useState(null)
   const [verMail, setVerMail] = useState(false)
+  const [probando, setProbando] = useState(false)
+
+  async function pruebaAMi() {
+    setProbando(true)
+    try {
+      const r = await api.post('/admin/email/feedback-prueba', { prueba_a_mi: true })
+      toast.push(
+        r.sent
+          ? `Te lo mandé a ${r.to}. Fijate si cayó en Principal y respondelo para ver que la respuesta te llegue.`
+          : `No salió el mail de prueba a ${r.to}.`,
+        { type: r.sent ? 'success' : 'warn' }
+      )
+    } catch (e) {
+      toast.push('Error al mandar la prueba: ' + e.message, { type: 'error' })
+    } finally { setProbando(false) }
+  }
 
   async function loadPreview() {
     setLoading(true)
@@ -870,24 +887,50 @@ function FeedbackPruebaPanel({ toast }) {
       ? `¿Mandar el mail de feedback a ${quien} todavía no ${recibio}?`
       : `¿Volver a mandar el mail de feedback a ${quien} YA ${recibio}?`
     if (!confirm(msg)) return
+    // En tandas: cada pedido tiene que terminar antes del corte de ~30 s del
+    // proxy. Cada persona viaja con la fecha de envío que se VE en pantalla: si
+    // ya le llegó por otro click, el backend no gana la marca y la saltea.
+    const lote = preview?.lote || 20
+    const total = { sent_count: 0, failed_count: 0, skipped_count: 0, marcas_trabadas: [] }
     setSending(grupo); setResult(null)
     try {
-      const r = await api.post('/admin/email/feedback-prueba', {
-        confirm: true, grupo, ids: lista.map(t => t.id),
-      })
-      setResult(r)
+      for (let i = 0; i < n; i += lote) {
+        setProgreso({ hechos: i, total: n })
+        const tanda = lista.slice(i, i + lote)
+        const r = await api.post('/admin/email/feedback-prueba', {
+          confirm: true, grupo, vistos: tanda.map(t => ({ id: t.id, sent_at: t.sent_at })),
+        })
+        total.sent_count += r.sent_count
+        total.failed_count += r.failed_count
+        total.skipped_count += r.skipped_count
+        total.marcas_trabadas.push(...(r.marcas_trabadas || []))
+      }
+      setResult(total)
       toast.push(
-        `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
-        { type: r.failed_count ? 'warn' : 'success' }
+        `Enviados ${total.sent_count} · fallados ${total.failed_count} · salteados ${total.skipped_count}`,
+        { type: total.failed_count ? 'warn' : 'success' }
       )
-      await loadPreview()
     } catch (e) {
-      toast.push('Error al enviar: ' + e.message, { type: 'error' })
-    } finally { setSending(null) }
+      setResult({ ...total, cortado: true })
+      toast.push(
+        'Se cortó a mitad de camino (' + e.message + '). La lista se recalculó: ' +
+        'a los que ya les llegó no se les vuelve a mandar.',
+        { type: 'error' }
+      )
+    } finally {
+      setSending(null); setProgreso(null)
+      // Siempre, también después de un error: con la lista vieja en pantalla
+      // el próximo click se armaría con datos que ya no son ciertos.
+      await loadPreview()
+    }
   }
 
   const nuevos = preview?.nuevos || []
   const yaRecibieron = preview?.ya_recibieron || []
+  const recien = preview?.recien_empezados || []
+  const enviandoTxt = progreso
+    ? `Enviando… ${progreso.hechos} de ${progreso.total}`
+    : 'Enviando…'
 
   return (
     <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
@@ -908,24 +951,35 @@ function FeedbackPruebaPanel({ toast }) {
       <p className="text-xs text-ink-3 leading-relaxed">
         Les pregunta qué les está pareciendo Rendi a los que están en la prueba gratis hoy (los mismos que
         cuenta «Pruebas · En curso»). Al que le llega, sale de esta lista. Al que se le termina la prueba o
-        paga, deja de aparecer en las dos. Las respuestas llegan a soporte@.
+        paga, deja de aparecer. Los que tienen menos de {preview?.min_dias ?? 3} días de prueba esperan: entran
+        solos cuando los cumplen. Las respuestas llegan a soporte@.
       </p>
 
       {preview && (
         <>
           <div className="grid grid-cols-3 gap-3">
             <ConvCell label="En la prueba" value={preview.en_prueba} hint="hoy" />
-            <ConvCell label="Sin recibirlo" value={nuevos.length} hint="se manda con el botón" />
+            <ConvCell label="Sin recibirlo" value={nuevos.length}
+                      hint={recien.length ? `+ ${recien.length} recién empezados` : 'se manda con el botón'} />
             <ConvCell label="Ya lo recibieron" value={yaRecibieron.length} hint="siguen probando" />
           </div>
 
           <div>
-            <button
-              onClick={() => setVerMail(v => !v)}
-              className="text-xs text-data-violet hover:underline"
-            >
-              {verMail ? 'Ocultar el mail' : 'Ver el mail que les llega'}
-            </button>
+            <div className="flex items-center gap-4 flex-wrap">
+              <button
+                onClick={() => setVerMail(v => !v)}
+                className="text-xs text-data-violet hover:underline"
+              >
+                {verMail ? 'Ocultar el mail' : 'Ver el mail que les llega'}
+              </button>
+              <button
+                onClick={pruebaAMi}
+                disabled={probando}
+                className="text-xs text-data-violet hover:underline disabled:opacity-50"
+              >
+                {probando ? 'Mandando…' : 'Mandarme una prueba a mí'}
+              </button>
+            </div>
             {verMail && preview.mail && (
               <div className="mt-2 border border-line/40 rounded-sm bg-bg-1/40 px-3 py-2.5 text-xs text-ink-1 space-y-2">
                 <div><span className="text-ink-3">Asunto:</span> {preview.mail.asunto}</div>
@@ -953,7 +1007,7 @@ function FeedbackPruebaPanel({ toast }) {
               disabled={sending !== null || nuevos.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
-              <Send size={14} /> {sending === 'nuevos' ? 'Enviando…' : `Enviar a ${nuevos.length}`}
+              <Send size={14} /> {sending === 'nuevos' ? enviandoTxt : `Enviar a ${nuevos.length}`}
             </button>
           </div>
 
@@ -969,9 +1023,18 @@ function FeedbackPruebaPanel({ toast }) {
                   disabled={sending !== null}
                   className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded border border-data-violet/60 text-data-violet font-medium hover:bg-data-violet/10 disabled:opacity-40 disabled:cursor-not-allowed press"
                 >
-                  <RotateCcw size={14} /> {sending === 'ya_recibieron' ? 'Enviando…' : `Volver a mandar a ${yaRecibieron.length}`}
+                  <RotateCcw size={14} /> {sending === 'ya_recibieron' ? enviandoTxt : `Volver a mandar a ${yaRecibieron.length}`}
                 </button>
               </div>
+            </div>
+          )}
+
+          {recien.length > 0 && (
+            <div className="space-y-2 pt-3 border-t border-line/30">
+              <h3 className="text-sm font-medium text-ink-1">
+                Recién empezados ({recien.length}) · entran a la lista con {preview.min_dias} días de prueba
+              </h3>
+              <FeedbackPruebaTabla filas={recien} />
             </div>
           )}
 
@@ -980,6 +1043,14 @@ function FeedbackPruebaPanel({ toast }) {
               Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
               {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
               {result.skipped_count > 0 && <> · {result.skipped_count} salteados (ya les había llegado)</>}
+              {result.cortado && <> · <b className="text-rendi-warn">se cortó antes de terminar</b></>}
+              {result.marcas_trabadas?.length > 0 && (
+                <div className="mt-1 text-rendi-neg">
+                  A {result.marcas_trabadas.map(t => t.email).join(', ')} no le llegó el mail, pero quedó
+                  marcado como que sí (la base no dejó corregirlo). Aparece en «Ya lo recibieron»: mandale con
+                  «Volver a mandar».
+                </div>
+              )}
             </div>
           )}
         </>
@@ -988,26 +1059,29 @@ function FeedbackPruebaPanel({ toast }) {
   )
 }
 
-// Fecha corta en horario argentino. El backend guarda la marca en UTC sin la
-// "Z", y sin ella el navegador la leería como hora local.
+// Fecha y hora cortas en horario argentino ("1/10 14:32"). Con la hora: si se
+// reenvió el mismo día, sólo el día no deja ver a quién le llegó en cuál.
+// El backend guarda la marca en UTC sin la "Z", y sin ella el navegador la
+// leería como hora local.
 function fechaCortaAR(iso) {
   if (!iso) return '—'
   const s = String(iso)
   const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z')
   if (isNaN(d)) return '—'
-  return d.toLocaleDateString('es-AR', {
-    day: 'numeric', month: 'numeric', timeZone: 'America/Argentina/Buenos_Aires',
+  return d.toLocaleString('es-AR', {
+    day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZone: 'America/Argentina/Buenos_Aires',
   })
 }
 
 function FeedbackPruebaTabla({ filas, conFecha = false }) {
   return (
-    <div className="max-h-64 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
+    <div className="max-h-64 overflow-auto border border-line/40 rounded-sm bg-bg-1/40">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
             <th className="text-left px-2 py-1">Email</th>
-            <th className="text-left px-2 py-1">Nombre</th>
+            <th className="text-left px-2 py-1">Saludo</th>
             <th className="text-left px-2 py-1">Etapa</th>
             <th className="text-right px-2 py-1">Le quedan</th>
             {conFecha && <th className="text-right px-2 py-1">Lo recibió</th>}
@@ -1016,8 +1090,17 @@ function FeedbackPruebaTabla({ filas, conFecha = false }) {
         <tbody>
           {filas.map(r => (
             <tr key={r.id} className="border-b border-line/20">
-              <td className="px-2 py-1 text-ink-1">{r.email}</td>
-              <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
+              <td className="px-2 py-1 text-ink-1">
+                {r.email}
+                {r.otro_mail_hace_horas != null && r.otro_mail_hace_horas < 24 && (
+                  <div className="text-[10px] text-rendi-warn">
+                    le llegó otro mail de la prueba hace {Math.max(1, Math.round(r.otro_mail_hace_horas))} h
+                  </div>
+                )}
+              </td>
+              <td className="px-2 py-1 text-ink-2 whitespace-nowrap" title={r.name ? `Nombre cargado: ${r.name}` : 'Sin nombre cargado'}>
+                {r.saludo ? `Hola ${r.saludo},` : <span className="text-ink-3">Hola, (sin nombre)</span>}
+              </td>
               <td className="px-2 py-1 text-ink-2">{PLAN_LABEL[r.stage] || '—'}</td>
               <td className="px-2 py-1 text-right tabular text-ink-2">
                 {r.days_left} {r.days_left === 1 ? 'día' : 'días'}

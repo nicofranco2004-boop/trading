@@ -17,6 +17,7 @@ usa la app — no escribiendo fechas a mano.
 Corre con: cd backend && python3 -m pytest tests/test_feedback_prueba.py
 """
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -75,11 +76,16 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         self.conn.commit()
         return cur.lastrowid
 
-    def _con_prueba(self, uid, *, arrancó_hace=0):
+    def _con_prueba(self, uid, *, arrancó_hace=None):
         """Arranca la prueba con el alta real y después corre el reloj hacia
         atrás moviendo las TRES fechas juntas (si se mueve una sola, la persona
-        queda 'terminada' con la prueba viva)."""
+        queda 'terminada' con la prueba viva).
+
+        Por defecto la deja con los días justos para entrar en la lista
+        (FEEDBACK_PRUEBA_MIN_DIAS); con 0 queda "recién empezada"."""
         self.assertTrue(tr.start(self.conn, uid).get("ok"))
+        if arrancó_hace is None:
+            arrancó_hace = main.FEEDBACK_PRUEBA_MIN_DIAS
         if arrancó_hace:
             self._atrasar(uid, arrancó_hace)
         return uid
@@ -113,15 +119,28 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
-    def _mandar(self, grupo="nuevos", ids=None, ok=True, side_effect=None):
-        body = {"confirm": True, "grupo": grupo}
-        if ids is not None:
-            body["ids"] = list(ids)
+    def _vistos(self, grupo="nuevos", vista=None):
+        """Lo que manda el panel: cada fila del grupo con la fecha que se ve."""
+        filas = (vista or self._vista())[grupo]
+        return [{"id": f["id"], "sent_at": f["sent_at"]} for f in filas]
+
+    def _mandar(self, grupo="nuevos", vistos=None, ok=True, side_effect=None,
+                status=200):
+        """Como el panel: arma `vistos` de una vista previa recién pedida,
+        salvo que el test pase la suya (una vista VIEJA, para las carreras)."""
+        if vistos is None:
+            vistos = self._vistos(grupo)
+        body = {"confirm": True, "grupo": grupo, "vistos": vistos}
         kw = {"side_effect": side_effect} if side_effect else {"return_value": ok}
-        with patch("billing.emails.send_trial_feedback", **kw) as spy:
+        with patch("billing.emails.send_trial_feedback", **kw) as spy, \
+             patch("billing.emails.PAUSA_ENTRE_ENVIOS", 0):
             r = self.client.post(URL, json=body, headers=self.headers)
-        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.status_code, status, r.text)
         return r.json(), spy
+
+    @staticmethod
+    def _todas(v):
+        return v["nuevos"] + v["ya_recibieron"] + v["recien_empezados"]
 
     def _marca(self, uid):
         return self.conn.execute(
@@ -236,10 +255,10 @@ class FeedbackDeLaPrueba(unittest.TestCase):
 
     def test_solo_se_manda_a_los_que_se_vieron_en_la_vista_previa(self):
         visto = self._con_prueba(self._persona())
-        ids_vistos = self._ids(self._vista()["nuevos"])
+        vistos = self._vistos("nuevos")
         tarde = self._con_prueba(self._persona())   # arrancó después de mirar la lista
 
-        res, spy = self._mandar("nuevos", ids=ids_vistos)
+        res, spy = self._mandar("nuevos", vistos=vistos)
         self.assertEqual(res["sent_count"], 1)
         self.assertIsNotNone(self._marca(visto))
         self.assertIsNone(self._marca(tarde))
@@ -274,27 +293,175 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         r = self.client.post(URL, json={"confirm": False}, headers=h)
         self.assertIn(r.status_code, (401, 403))
 
+    # ── 5. el nombre con que saluda ─────────────────────────────────────────
+
+    def test_saluda_por_el_nombre_de_pila_y_sin_nombre_si_no_sirve(self):
+        casos = {"Lucía Gómez": "Lucía", "lucia": "Lucia", "MARTÍN RUIZ": "Martín",
+                 "nico_2004": "", "nico@gmail.com": "", "Dr. Pérez": "", "": "",
+                 "McKenzie": "McKenzie"}
+        ids = {}
+        for nombre in casos:
+            ids[self._con_prueba(self._persona(name=nombre or None))] = nombre
+        saludos = {f["id"]: f["saludo"] for f in self._vista()["nuevos"]}
+        for uid, nombre in ids.items():
+            self.assertEqual(saludos[uid], casos[nombre], f"nombre cargado: {nombre!r}")
+
+        # Y el mail que sale dice exactamente eso.
+        for nombre, esperado in (("lucia gomez", "Hola Lucia,"), ("nico_2004", "Hola,")):
+            _a, html, texto = emails.feedback_prueba_contenido(nombre)
+            self.assertTrue(texto.startswith(esperado + " "), texto[:30])
+            self.assertIn(esperado, html)
+            self.assertNotIn("nico_2004", html + texto)
+
+    # ── 6. la prueba que se manda el admin ──────────────────────────────────
+
+    def test_la_prueba_le_llega_solo_al_admin_y_no_marca_a_nadie(self):
+        alguien = self._con_prueba(self._persona())
+        self.conn.execute("UPDATE users SET name='Nicolás' WHERE id=?", (self.admin,))
+        self.conn.commit()
+        with patch("billing.emails.send_trial_feedback", return_value=True) as spy:
+            r = self.client.post(URL, json={"prueba_a_mi": True, "confirm": True},
+                                 headers=self.headers)
+        self.assertEqual(r.status_code, 200, r.text)
+        mail_admin = self.conn.execute("SELECT email FROM users WHERE id=?",
+                                       (self.admin,)).fetchone()["email"]
+        self.assertEqual(r.json(), {"prueba": True, "to": mail_admin, "sent": True})
+        spy.assert_called_once_with(to=mail_admin, user_name="Nicolás")
+        self.assertIsNone(self._marca(alguien))
+        self.assertIsNone(self._marca(self.admin))
+
+    # ── 7. no pisarse con los mails automáticos de la prueba ────────────────
+
+    def test_avisa_si_hace_poco_le_llego_otro_mail_de_la_prueba(self):
+        reciente = self._con_prueba(self._persona(), arrancó_hace=0)
+        viejo = self._con_prueba(self._persona(), arrancó_hace=5)
+        nada = self._con_prueba(self._persona(), arrancó_hace=0)
+        self.conn.execute("DELETE FROM trial_email_log")
+        hace = lambda h: (datetime.utcnow() - timedelta(hours=h)).isoformat()
+        self.conn.execute("INSERT INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+                          (reciente, tr.MAIL_STARTED, hace(3)))
+        self.conn.execute("INSERT INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+                          (viejo, tr.MAIL_STARTED, hace(5 * 24)))
+        self.conn.commit()
+        horas = {f["id"]: f["otro_mail_hace_horas"] for f in self._todas(self._vista())}
+        self.assertAlmostEqual(horas[reciente], 3, delta=0.2)
+        self.assertGreater(horas[viejo], 24)
+        self.assertIsNone(horas[nada])
+
     # ── 4. el mail que se ve es el que se manda ─────────────────────────────
 
     def test_el_mail_del_panel_es_el_que_sale(self):
-        self._con_prueba(self._persona(name="Lucía"))
+        """Atraviesa `_send` entero hasta el pedido HTTP a Resend (sólo se
+        reemplaza la red). Reemplazar `_send` se salteaba justo lo que le agrega
+        al mail —el pie de WhatsApp del texto plano— y el remitente real."""
+        self._con_prueba(self._persona(name="lucía gómez"))
         v = self._vista()
-        enviados = []
+        pedidos = []
 
-        def _send(to, subject, html, text, **kw):
-            enviados.append({"to": to, "subject": subject, "html": html,
-                             "text": text, **kw})
-            return True
+        class _Resp:
+            status_code = 200
+            text = "{}"
 
-        with patch.object(emails, "_send", side_effect=_send):
-            r = self.client.post(URL, json={"confirm": True}, headers=self.headers)
-        self.assertEqual(r.json()["sent_count"], 1)
-        m = enviados[0]
+        def _post(url, headers=None, json=None, timeout=None):
+            pedidos.append(json)
+            return _Resp()
+
+        with patch.object(emails, "_running_under_pytest", return_value=False), \
+             patch.object(emails, "_is_test_address", return_value=False), \
+             patch.object(emails, "_is_configured", return_value=True), \
+             patch.object(emails, "_api_key", return_value="re_test"), \
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0), \
+             patch("httpx.post", side_effect=_post):
+            r = self.client.post(URL, json={"confirm": True, "vistos": self._vistos(vista=v)},
+                                 headers=self.headers)
+        self.assertEqual(r.json()["sent_count"], 1, r.text)
+        m = pedidos[0]
         self.assertEqual(m["subject"], v["mail"]["asunto"])
-        self.assertEqual(m["text"], v["mail"]["texto"].replace("(nombre)", "Lucía"))
-        self.assertIn("Lucía", m["html"])
-        self.assertIn("Nicolás — Rendi", m["text"])
+        # El texto del panel, con el nombre de pila acomodado, y DESPUÉS el pie.
+        esperado = v["mail"]["texto"].replace("(nombre)", "Lucía")
+        self.assertTrue(m["text"].startswith(esperado), m["text"][:80])
+        self.assertIn("WhatsApp", m["text"][len(esperado):])
+        self.assertIn("Hola Lucía,", m["html"])
+        self.assertNotIn("WhatsApp", m["html"])
+        self.assertIn("soporte@rendi.finance", m["from"])
         self.assertEqual(m["reply_to"], "soporte@rendi.finance")
+
+    # ── 8. lo que encontró la auditoría ─────────────────────────────────────
+
+    def test_volver_a_mandar_dos_veces_con_la_misma_lista_no_duplica(self):
+        """El doble click de "volver a mandar": la persona SIGUE en el mismo
+        grupo después del primer envío. Reproducido antes del arreglo: 2 + 2."""
+        a = self._con_prueba(self._persona())
+        b = self._con_prueba(self._persona())
+        self._mandar("nuevos")
+        en_pantalla = self._vistos("ya_recibieron")        # lo que ve el admin
+
+        primero, spy1 = self._mandar("ya_recibieron", vistos=en_pantalla)
+        segundo, spy2 = self._mandar("ya_recibieron", vistos=en_pantalla)
+        self.assertEqual(primero["sent_count"], 2)
+        self.assertEqual(spy1.call_count, 2)
+        self.assertEqual(segundo["sent_count"], 0, "el segundo click volvió a mandar")
+        self.assertEqual(segundo["skipped_count"], 2)
+        spy2.assert_not_called()
+
+    def test_los_recien_empezados_se_ven_pero_no_se_les_manda(self):
+        hoy = self._con_prueba(self._persona(), arrancó_hace=0)
+        casi = self._con_prueba(self._persona(),
+                                arrancó_hace=main.FEEDBACK_PRUEBA_MIN_DIAS - 1)
+        listo = self._con_prueba(self._persona())
+        v = self._vista()
+        self.assertEqual(self._ids(v["recien_empezados"]), {hoy, casi})
+        self.assertEqual(self._ids(v["nuevos"]), {listo})
+        self.assertEqual(v["en_prueba"], 3)
+
+        # Aunque el pedido los nombre, no se les manda.
+        colados = [{"id": hoy, "sent_at": None}, {"id": casi, "sent_at": None}]
+        res, spy = self._mandar("nuevos", vistos=colados)
+        self.assertEqual(res["sent_count"], 0)
+        spy.assert_not_called()
+
+    def test_manda_de_a_tandas_y_exige_la_lista_vista(self):
+        lote = main.FEEDBACK_PRUEBA_LOTE
+        muchos = [{"id": i, "sent_at": None} for i in range(1, lote + 2)]
+        self._mandar("nuevos", vistos=muchos, status=422)
+        r = self.client.post(URL, json={"confirm": True, "grupo": "nuevos"},
+                             headers=self.headers)
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(self._vista()["lote"], lote)
+
+    def test_entre_mail_y_mail_hay_pausa(self):
+        for _ in range(3):
+            self._con_prueba(self._persona())
+        with patch("billing.emails.send_trial_feedback", return_value=True), \
+             patch("main.time.sleep") as dormir:
+            r = self.client.post(URL, json={"confirm": True, "vistos": self._vistos()},
+                                 headers=self.headers)
+        self.assertEqual(r.json()["sent_count"], 3)
+        self.assertEqual([c.args[0] for c in dormir.call_args_list],
+                         [emails.PAUSA_ENTRE_ENVIOS] * 2)   # entre 3 mails, 2 pausas
+
+    def test_si_no_se_puede_devolver_la_marca_se_informa(self):
+        uid = self._con_prueba(self._persona())
+        vistos = self._vistos()
+        real_get_db = main.get_db
+
+        class _ConnQueNoDeja:
+            """Deja marcar, pero no deja devolver la marca (base trabada)."""
+            def __init__(self):
+                self._c = real_get_db()
+            def execute(self, sql, params=()):
+                if "SET trial_feedback_email_sent_at" in sql and len(params) == 3 \
+                        and params[0] is None and params[2] is not None \
+                        and "IS NULL" not in sql and params[1] == uid:
+                    raise sqlite3.OperationalError("database is locked")
+                return self._c.execute(sql, params)
+            def __getattr__(self, n):
+                return getattr(self._c, n)
+
+        with patch("main.get_db", side_effect=lambda: _ConnQueNoDeja()):
+            res, _ = self._mandar("nuevos", vistos=vistos, ok=False)
+        self.assertEqual(res["failed_count"], 1)
+        self.assertEqual([t["id"] for t in res["marcas_trabadas"]], [uid])
 
 
 if __name__ == "__main__":

@@ -39,6 +39,14 @@ from typing import Optional
 log = logging.getLogger("billing.emails")
 
 
+# Pausa entre un envío y el siguiente cuando se manda a mucha gente. El servicio
+# de mail (Resend) acepta un número acotado de pedidos por segundo y a partir de
+# ahí los rechaza; un rechazo cuenta como envío fallido. Vive acá, al lado de
+# `_send`, porque es una propiedad del servicio y no de cada campaña: el resumen
+# de mercado la tenía como constante propia y la campaña nueva la habría copiado.
+PAUSA_ENTRE_ENVIOS = 0.6
+
+
 def _api_key() -> Optional[str]:
     return (os.environ.get("RESEND_API_KEY") or "").strip() or None
 
@@ -987,6 +995,43 @@ def send_gift_plan_history(*, to: str, user_name: str = "", plan_label: str = "P
 
 # ─── Campaña: pedirle opinión a quien está en la prueba ─────────────────────
 
+_TITULOS = frozenset({"dr", "dra", "lic", "ing", "cr", "cra", "cdor", "cdora",
+                      "sr", "sra", "srta", "prof", "arq", "esc"})
+
+
+def nombre_de_pila(nombre) -> str:
+    """El nombre con el que se saluda a alguien en un mail personal, o "" si lo
+    que escribió no sirve para saludar (y entonces el mail dice "Hola," a secas).
+
+    `users.name` es texto libre del registro: "Lucía", "Lucía Gómez", "lucia",
+    "LUCIA GOMEZ", "nico_2004", un email entero. Un mail firmado por una persona
+    que arranca "Hola Lucía Gómez," o "Hola nico_2004," se lee como una planilla,
+    que es justo lo que el mail no quiere parecer.
+
+      · Se queda con la PRIMERA palabra. "Juan Pablo" queda "Juan": es el costo
+        aceptado, porque desde afuera no se distingue de "Juan Pérez".
+      · Si viene todo en minúscula o todo en mayúscula, la acomoda ("lucia" →
+        "Lucia"). Si mezcla, la respeta: "McKenzie" no se toca.
+      · Si parece un usuario o un email (lleva @, números o _), o es una sola
+        letra, o no tiene letras, devuelve "": mejor sin nombre que con uno raro.
+      · Si arranca con un título ("Dr. Pérez", "Lic. Gómez") también devuelve
+        "": lo que sigue suele ser el apellido, y "Hola Dr," no es un saludo.
+    """
+    texto = " ".join(str(nombre or "").split())
+    if not texto:
+        return ""
+    primera = texto.split(" ")[0].strip(".,;:")
+    if primera.lower() in _TITULOS:
+        return ""
+    if (len(primera) < 2 or len(primera) > 24
+            or any(c.isdigit() or c in "@_" for c in primera)
+            or not any(c.isalpha() for c in primera)):
+        return ""
+    if primera.islower() or primera.isupper():
+        primera = "-".join(p[:1].upper() + p[1:].lower() for p in primera.split("-"))
+    return primera
+
+
 def feedback_prueba_contenido(user_name: str = "") -> tuple:
     """(asunto, html, texto) del mail "¿qué te está pareciendo Rendi?".
 
@@ -1000,7 +1045,7 @@ def feedback_prueba_contenido(user_name: str = "") -> tuple:
 
     Firma personal (regla del brand kit): el mail pide una respuesta, y se
     contesta a una persona, no a una marca."""
-    nombre = (user_name or "").strip()
+    nombre = nombre_de_pila(user_name)
     saludo_html = f"Hola {html.escape(nombre)}," if nombre else "Hola,"
     saludo_txt = f"Hola {nombre}," if nombre else "Hola,"
     asunto = "¿Qué te está pareciendo Rendi?"
