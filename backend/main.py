@@ -45,7 +45,7 @@ try:
 except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
 import yfinance as yf
 import requests
 import logging
@@ -6812,6 +6812,11 @@ def get_bond_index_series(
 
 _events_fetched_at = {}  # { ticker: timestamp último fetch }
 EVENTS_TTL = 6 * 3600  # 6 horas
+# Búsquedas de eventos en paralelo (ver _refresh_events_for_tickers). Global y
+# sin `with`: un fetch colgado no bloquea al que pidió (fix B1, _yf_executor).
+_events_fetch_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="events-fetch")
+_events_en_vuelo = {}            # { ticker: Future } — lo que se está buscando ahora
+_events_en_vuelo_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -6946,8 +6951,11 @@ def get_popular_events(
 
         # 2. Earnings de tickers populares — refresh + query
         popular = POPULAR_TICKERS_US + POPULAR_TICKERS_AR_ADR
+        # Antes: _refresh_events_for_tickers bloqueante y de a uno → 10,7 s la
+        # primera vez tras cada reinicio (medido 2026-10-01). Ahora la regla
+        # única: lo guardado al instante, lo vencido de fondo y en paralelo.
         try:
-            _refresh_events_for_tickers(conn, popular)
+            _eventos_al_dia(conn, popular, days=days)
         except Exception:
             pass
 
@@ -7119,20 +7127,6 @@ def _fetch_yf_events(ticker: str) -> list:
     return events
 
 
-def _refresh_events_in_background(tickers: list):
-    """Stale-while-revalidate para events: dispara refresh en daemon thread."""
-    import threading
-    def worker():
-        local_conn = get_db()
-        try:
-            _refresh_events_for_tickers(local_conn, tickers)
-        except Exception as ex:
-            logging.getLogger(__name__).warning("background events refresh failed: %s", ex)
-        finally:
-            local_conn.close()
-    threading.Thread(target=worker, daemon=True).start()
-
-
 def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
     """Quick check: ¿hay eventos en DB para alguno de esos tickers en ventana?"""
     if not tickers:
@@ -7148,35 +7142,86 @@ def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
     return row is not None
 
 
-def _refresh_events_for_tickers(conn, tickers: list):
-    """Refresca el cache de eventos para una lista de tickers. Idempotente:
-    si un ticker ya fue refrescado hace <TTL, lo skipea."""
-    now = time.time()
-    iso_now = datetime.utcnow().isoformat() + "Z"
-    for ticker in tickers:
-        if not ticker:
-            continue
-        if now - _events_fetched_at.get(ticker, 0) < EVENTS_TTL:
-            continue
+def _buscar_y_guardar_eventos(ticker: str):
+    """Un trabajador: trae los eventos de UN ticker de yfinance y los guarda en
+    su propia conexión (sqlite no comparte conexiones entre hilos)."""
+    try:
         events = _fetch_yf_events(ticker)
-        if not events:
-            # Marcamos como "fetched" igual para no retry constantemente
-            _events_fetched_at[ticker] = now
-            continue
-        with conn:
-            for ev in events:
-                conn.execute(
-                    """INSERT INTO financial_events
-                       (ticker, event_type, event_date, details, confirmed, source, fetched_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
-                           details = excluded.details,
-                           confirmed = excluded.confirmed,
-                           fetched_at = excluded.fetched_at""",
-                    (ev['ticker'], ev['event_type'], ev['event_date'],
-                     json.dumps(ev['details']), ev['confirmed'], 'yfinance', iso_now),
-                )
-        _events_fetched_at[ticker] = now
+        if events:
+            iso_now = datetime.utcnow().isoformat() + "Z"
+            conn = get_db()
+            try:
+                with conn:
+                    for ev in events:
+                        conn.execute(
+                            """INSERT INTO financial_events
+                               (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)
+                               ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
+                                   details = excluded.details,
+                                   confirmed = excluded.confirmed,
+                                   fetched_at = excluded.fetched_at""",
+                            (ev['ticker'], ev['event_type'], ev['event_date'],
+                             json.dumps(ev['details']), ev['confirmed'], 'yfinance', iso_now),
+                        )
+            finally:
+                conn.close()
+        # Sin eventos también cuenta como buscado: no se reintenta en cada pedido.
+        _events_fetched_at[ticker] = time.time()
+    except Exception as ex:
+        logging.getLogger(__name__).warning("events refresh %s failed: %s", ticker, ex)
+    finally:
+        with _events_en_vuelo_lock:
+            _events_en_vuelo.pop(ticker, None)
+
+
+def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
+    """Refresca los eventos de los tickers vencidos (más de EVENTS_TTL).
+
+    MEDIDO el 2026-10-01: los eventos del mercado (~20 empresas) se pedían a
+    yfinance DE A UNO, ~0,5 s cada uno: la primera persona después de cada
+    publicación (la memoria de "ya buscado" se borra al reiniciar) o cada 6 h
+    esperaba 10,7 s. Ahora:
+      · van en paralelo en `_events_fetch_executor` (8 a la vez, el mismo cap
+        que `_yf_executor`; global y sin `with`, ver el fix B1 más arriba);
+      · un ticker que ya se está buscando NO se vuelve a pedir: se espera ese
+        mismo pedido (dos personas a la vez = una sola búsqueda);
+      · `esperar_segundos=None` → no espera (refresco de fondo); un número →
+        espera hasta ese tope y devuelve igual (lo que no llegó se guarda solo).
+    Devuelve cuántos tickers salió a buscar."""
+    ahora = time.time()
+    futuros = []
+    nuevos = 0
+    with _events_en_vuelo_lock:
+        for t in dict.fromkeys(t for t in tickers if t):
+            if ahora - _events_fetched_at.get(t, 0) < EVENTS_TTL:
+                continue
+            fut = _events_en_vuelo.get(t)
+            if fut is None:
+                fut = _events_fetch_executor.submit(_buscar_y_guardar_eventos, t)
+                _events_en_vuelo[t] = fut
+                nuevos += 1
+            futuros.append(fut)
+    if futuros and esperar_segundos is not None:
+        _esperar_futuros(futuros, timeout=esperar_segundos)
+    return nuevos
+
+
+def _eventos_al_dia(conn, tickers: list, days: int = 90) -> int:
+    """La regla ÚNICA para tener los eventos al día antes de leerlos de la DB
+    (stale-while-revalidate). La usan /events/portfolio, /events/popular y el
+    radar del asesor — antes estaba copiada a mano en los dos primeros y
+    /events/popular no la tenía: por eso tardaba 10,7 s y la cartera 0,4 s.
+      · Si ya hay eventos guardados en la ventana: se responde con eso YA y los
+        vencidos se refrescan de fondo.
+      · Si no hay nada (base vacía): se espera la búsqueda, hasta 8 s.
+    Devuelve cuántos tickers se buscaron esperando."""
+    if not tickers:
+        return 0
+    if _has_events_for_tickers(conn, tickers, days=days):
+        _refresh_events_for_tickers(tickers)
+        return 0
+    return _refresh_events_for_tickers(tickers, esperar_segundos=8)
 
 
 @app.get("/api/events/earnings-expectations")
@@ -7236,20 +7281,12 @@ def get_portfolio_events(
         # Excluir bonos AR (los maneja frontend via bondSchedule)
         stock_tickers = [t for t in all_tickers if t not in AR_BONDS_DATA912 and t not in CRYPTO_SYMBOLS]
 
-        # SWR: si ya hay eventos en DB para algún ticker del portfolio en la
-        # ventana, devolvemos esa data al instante y refrescamos en background.
-        # Si NO hay nada (primer load), bloqueamos.
-        refreshed = 0
-        if _has_events_for_tickers(conn, stock_tickers, days=days):
-            _refresh_events_in_background(stock_tickers)
-        else:
-            try:
-                before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                _refresh_events_for_tickers(conn, stock_tickers)
-                after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                refreshed = after - before
-            except Exception:
-                pass
+        # Al día con la regla única (_eventos_al_dia): lo guardado al instante y
+        # lo vencido de fondo; si no hay nada guardado, se espera la búsqueda.
+        try:
+            refreshed = _eventos_al_dia(conn, stock_tickers, days=days)
+        except Exception:
+            refreshed = 0
 
         # Query: eventos próximos para los tickers del portfolio
         today = _iso_today()
@@ -41341,19 +41378,11 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
         if not stock_tickers:
             return {"events": [], "refreshed_tickers": 0, "dropped_tickers": 0}
 
-        # SWR idéntico a /events/portfolio: si hay algo cacheado devolvemos ya
-        # y refrescamos atrás; si el cache está frío bloqueamos una vez.
-        refreshed = 0
-        if _has_events_for_tickers(conn, stock_tickers, days=days):
-            _refresh_events_in_background(stock_tickers)
-        else:
-            try:
-                before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                _refresh_events_for_tickers(conn, stock_tickers)
-                after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                refreshed = after - before
-            except Exception:
-                pass
+        # La misma regla que /events/portfolio y /events/popular (_eventos_al_dia).
+        try:
+            refreshed = _eventos_al_dia(conn, stock_tickers, days=days)
+        except Exception:
+            refreshed = 0
 
         today = _iso_today()
         end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
