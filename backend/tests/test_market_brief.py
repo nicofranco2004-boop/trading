@@ -191,7 +191,7 @@ class MarketBriefTest(unittest.TestCase):
              patch.object(emails, "send_market_brief_run_admin", _fake_admin), \
              patch.object(market_brief, "_refresh_news_for",
                           return_value=refresh_ret) as m_refresh, \
-             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
             r = self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
         return r, enviados, m_refresh
 
@@ -268,7 +268,7 @@ class MarketBriefTest(unittest.TestCase):
         with patch.object(main.threading, "Thread", _ThreadSincrono), \
              patch.object(emails, "send_market_brief", _fake_send), \
              patch.object(market_brief, "_refresh_news_for", _fake_refresh), \
-             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
             self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
 
         self.assertEqual([p[0] for p in orden], ["fetch", "send"],
@@ -340,7 +340,7 @@ class MarketBriefTest(unittest.TestCase):
         with patch.object(main.threading, "Thread", _ThreadSincrono), \
              patch.object(emails, "send_market_brief", return_value=False), \
              patch.object(market_brief, "_refresh_news_for", return_value=0), \
-             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
             self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
 
         conn = main.get_db()
@@ -843,7 +843,7 @@ class MarketBriefTest(unittest.TestCase):
              patch.object(emails, "send_market_brief", _fake_send), \
              patch.object(emails, "send_market_brief_run_admin", _explota), \
              patch.object(market_brief, "_refresh_news_for", return_value=1), \
-             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
             r = self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
 
         self.assertEqual(r.status_code, 200)
@@ -996,7 +996,7 @@ class MarketBriefTest(unittest.TestCase):
                           lambda **kw: enviados.append(kw) or True), \
              patch.object(emails, "send_market_brief_run_admin",
                           lambda **kw: True), \
-             patch.object(market_brief, "SEND_GAP_SECONDS", 0):
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
             self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
             hilos[0].join(timeout=30)          # el primero es el del cron
 

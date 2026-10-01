@@ -589,6 +589,12 @@ def run_briefs(kind: str, get_db, only_uid: int = None) -> dict:
                 if not row or not row["email"]:
                     skipped += 1
                     continue
+                # Armar el brief PERSISTE los precios que trajo (live_book_values)
+                # y deja abierta una transacción de escritura. Se cierra antes del
+                # envío: Resend tarda, y `_send` además puede esperar su turno
+                # (PAUSA_ENTRE_ENVIOS); con el lock tomado, toda la app come
+                # 'database is locked' mientras tanto.
+                conn.commit()
                 from billing import emails
                 ok = emails.send_advisor_brief(to=row["email"], user_name=(row["name"] or ""),
                                                brief=data)

@@ -35,18 +35,41 @@ import sys
 import html
 import logging
 import threading
+import time
 from typing import Optional
 
 log = logging.getLogger("billing.emails")
 
 
-# Pausa entre un envío y el siguiente cuando se manda a mucha gente. El servicio
-# de mail (Resend) acepta un número acotado de pedidos por segundo y a partir de
-# ahí los rechaza; un rechazo cuenta como envío fallido. Vive acá, al lado de
-# `_send`, porque es una propiedad del servicio y no de cada campaña: el resumen
-# de mercado la tenía como constante propia y la campaña nueva la habría copiado.
+# Pausa mínima entre un pedido a Resend y el siguiente. El servicio de mail
+# acepta un número acotado de pedidos por segundo y a partir de ahí los rechaza;
+# un rechazo es un mail que no llega.
+#
+# La hace cumplir `_send` (ver `_esperar_turno`), para TODO el proceso, y no cada
+# loop por su cuenta. Antes la tenían dos loops (el resumen de mercado y el mail
+# de feedback) y los otros siete mandaban de un tirón: los avisos de la prueba,
+# los de vencimiento, las alertas, el brief del asesor... Y aunque cada loop
+# pausara, dos que corren a la vez —el cron de las alertas y el de la prueba, o
+# un cron y el código de verificación de alguien que se está registrando— se
+# suman en el mismo segundo: el tope es de la CUENTA de Resend, no de cada loop.
 PAUSA_ENTRE_ENVIOS = 0.6
 
+_turno = threading.Lock()
+_ultimo_pedido: Optional[float] = None    # time.monotonic() del último pedido
+
+
+def _esperar_turno() -> None:
+    """Deja pasar PAUSA_ENTRE_ENVIOS desde el último pedido a Resend de
+    cualquier hilo. Se cuenta desde que SALIÓ el anterior, así que un loop que
+    tarda en armar cada mail (el resumen de mercado narra con IA) no espera de
+    más, y un mail suelto que llega con todo tranquilo no espera nada."""
+    global _ultimo_pedido
+    with _turno:
+        if _ultimo_pedido is not None:
+            falta = PAUSA_ENTRE_ENVIOS - (time.monotonic() - _ultimo_pedido)
+            if falta > 0:
+                time.sleep(falta)
+        _ultimo_pedido = time.monotonic()
 
 
 # ─── Qué pasó con el último envío ────────────────────────────────────────────
@@ -54,11 +77,13 @@ PAUSA_ENTRE_ENVIOS = 0.6
 # mail que Resend RECHAZÓ hay que reintentarlo; uno que Resend quizás aceptó (se
 # cortó la conexión esperando la respuesta) NO, porque reintentarlo es mandarlo
 # dos veces. `_send` anota acá cuál fue, por hilo, para quien tenga que decidir
-# (ver `_envio_masivo` en main.py).
+# (`enviar_con_marca` para los avisos automáticos, `_envio_masivo` en main.py
+# para los envíos del panel).
 ENVIADO = "enviado"
 NO_SALIO = "no_salio"            # seguro que no llegó: Resend dijo que no (4xx) o el pedido no salió
 INCIERTO = "incierto"            # no sabemos: Resend no contestó a tiempo, o falló de su lado (5xx)
 NO_INTENTADO = "no_intentado"    # ni se probó: tests, dirección de prueba o sin proveedor
+SALTEADO = "salteado"            # (enviar_con_marca) la marca ya la tenía otra corrida
 
 _resultado = threading.local()
 
@@ -71,6 +96,57 @@ def resultado_del_ultimo_envio() -> str:
     """Qué pasó con el último `_send` de ESTE hilo: ENVIADO, NO_SALIO, INCIERTO
     o NO_INTENTADO."""
     return getattr(_resultado, "estado", NO_INTENTADO)
+
+
+def enviar_con_marca(marcar, mandar, desmarcar, *, que: str) -> str:
+    """Manda un aviso que se anota ANTES de salir, y devuelve la marca si el
+    mail no salió. Es el paso de los avisos automáticos que no pueden repetirse
+    (los de la prueba, los de vencimiento).
+
+      1. `marcar()` se queda con el aviso y devuelve la marca, o algo falso si
+         ya la tiene otra corrida (dos crons a la vez) → SALTEADO. Tiene que
+         ser condicional (INSERT OR IGNORE, UPDATE ... IS NULL) y confirmarse
+         antes de volver: es lo que impide que dos corridas manden las dos.
+      2. `mandar()` → True si salió.
+      3. Si Resend lo rechazó, o el mail ni llegó a pedirse porque el armado
+         falló, `desmarcar(marca)` lo deja como estaba y la próxima corrida lo
+         reintenta. Antes la marca quedaba igual y el aviso se perdía para
+         siempre: el día de muchos envíos, Resend rechazaba los que pasaban su
+         tope por segundo y a esa gente no le llegaba nunca más.
+      4. Si no se sabe si llegó (INCIERTO), la marca QUEDA: reintentar podría
+         mandarlo dos veces, y un aviso repetido es peor que uno perdido. Lo
+         mismo con NO_INTENTADO (bajo tests o sin proveedor): ahí no hay nada
+         que reintentar.
+
+    Devuelve ENVIADO, SALTEADO, NO_SALIO, INCIERTO o NO_INTENTADO."""
+    marca = marcar()
+    if not marca:
+        return SALTEADO
+    _anotar(NO_INTENTADO)
+    try:
+        if mandar():
+            return ENVIADO
+        estado = resultado_del_ultimo_envio()
+    except Exception as ex:
+        estado = resultado_del_ultimo_envio()
+        if estado == NO_INTENTADO:
+            # Se cayó armando el mail, antes de pedírselo a Resend.
+            estado = NO_SALIO
+        log.warning("%s: el envío falló (%s): %s", que, estado, ex)
+    if estado == ENVIADO:
+        return ENVIADO
+    if estado == NO_SALIO:
+        try:
+            desmarcar(marca)
+            log.warning("%s: no salió; queda para la próxima corrida", que)
+        except Exception as ex:
+            log.error("%s: no salió y no se pudo devolver la marca — este aviso "
+                      "no se va a reintentar: %s", que, ex)
+    elif estado == INCIERTO:
+        log.error("%s: no se sabe si llegó; no se reintenta para no mandarlo "
+                  "dos veces", que)
+    return estado
+
 
 
 def _api_key() -> Optional[str]:
@@ -133,7 +209,8 @@ def can_deliver(to: str) -> bool:
          (.test/.example/...) → no se intenta mandar NUNCA;
       2. no hay proveedor configurado → se loguea a consola y listo;
       3. se intentó mandar y falló de verdad.
-    Sólo el 3 es una falla que valga la pena mostrarle al usuario.
+    Sólo el 3 es una falla que valga la pena mostrarle al usuario. (Después de
+    mandar, cuál de los tres fue lo dice `resultado_del_ultimo_envio()`.)
 
     ⚠️ Preguntar por la API KEY sola contesta OTRA pregunta. `backend/.env`
     tiene RESEND_API_KEY, así que bajo pytest la key ESTÁ presente pero el
@@ -204,6 +281,7 @@ def _send(to: str, subject: str, html: str, text: str,
     }
     if reply_to:
         payload["reply_to"] = reply_to
+    _esperar_turno()
     try:
         r = httpx.post(
             "https://api.resend.com/emails",

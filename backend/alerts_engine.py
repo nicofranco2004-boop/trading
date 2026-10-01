@@ -550,6 +550,7 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
         conn.executemany(
             "UPDATE alert_events SET delivered_push=?, delivered_email=? WHERE id=?",
             [(1 if push_ok else 0, 1 if email_ok else 0, it["event_id"]) for it in items])
+        conn.commit()    # no llevar el lock de escritura a la entrega que sigue
         log.info("alert %s entregada (%s aviso/s, push=%s email=%s)",
                  alert["id"], len(items), push_ok, email_ok)
 
@@ -696,6 +697,16 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
     # cartera se sabe cuántos activos se movieron y puede salir un mail solo.
+    #
+    # Y DESPUÉS DE CONFIRMAR lo que disparó. El loop deja abierta una
+    # transacción de escritura (alert_events, armed, last_fired_*), y la entrega
+    # es red: un push y un mail por alerta, cada mail esperando su turno en
+    # `emails._send` (PAUSA_ENTRE_ENVIOS). Con el lock tomado durante todo eso,
+    # el resto de la app come 'database is locked'. Es el mismo criterio que
+    # `advisor_alerts.evaluate`: el aviso queda registrado UNA vez aunque la
+    # entrega falle — antes, si el proceso se caía a mitad de la entrega, se
+    # deshacía todo y el ciclo siguiente volvía a mandar las que ya habían salido.
+    conn.commit()
     _entregar_pendientes(conn, pendientes)
 
     conn.execute(

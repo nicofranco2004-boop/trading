@@ -37379,6 +37379,72 @@ def _get_mep_for_scheduler() -> float:
     raise RuntimeError("No se pudo obtener cotización del MEP")
 
 
+# ─── Una corrida a la vez, entre las DOS puertas ──────────────────────────────
+# Los trabajos largos se disparan por dos puertas: el scheduler de adentro del
+# proceso y un cron externo que pega un endpoint (para cuando Railway duerme).
+# Cada endpoint tenía su propia bandera de "ya está corriendo"... y el scheduler
+# no la miraba. El job de suscripciones de las 03:30 podía correr a la vez que
+# `/api/billing/run-cron` —dos corridas mandando los mismos avisos de la
+# prueba— y el de las fotos de las 02:59 a la vez que `/api/snapshots/run-cron`
+# (el cron externo lo pega ~03:00), las dos peleando el lock de escritura.
+#
+# Ahora la bandera es UNA por trabajo y la toman las dos puertas. Y las cinco
+# copias del mismo patrón (fotos, suscripciones, alertas, brief del asesor,
+# resumen de mercado) salen por acá: el arreglo de una no puede volver a quedar
+# en una sola.
+_corridas_lock = threading.Lock()
+_corridas_en_curso: set = set()
+
+
+def _tomar_corrida(nombre: str) -> bool:
+    with _corridas_lock:
+        if nombre in _corridas_en_curso:
+            return False
+        _corridas_en_curso.add(nombre)
+        return True
+
+
+def _soltar_corrida(nombre: str) -> None:
+    with _corridas_lock:
+        _corridas_en_curso.discard(nombre)
+
+
+def _correr_si_esta_libre(nombre: str, fn) -> bool:
+    """Puerta del scheduler: corre `fn` acá mismo, salvo que ya haya una
+    corrida de este trabajo en curso (la del cron externo)."""
+    if not _tomar_corrida(nombre):
+        log.info("%s: ya hay una corrida en curso; ésta se saltea", nombre)
+        return False
+    try:
+        fn()
+    finally:
+        _soltar_corrida(nombre)
+    return True
+
+
+def _correr_en_fondo(nombre: str, fn) -> dict:
+    """Puerta del cron externo: arranca `fn` en un hilo y contesta al instante
+    (el trabajo tarda más que el corte del proxy). Un 200 quiere decir
+    "arrancó", no "terminó bien": el resultado va al registro."""
+    if not _tomar_corrida(nombre):
+        return {"ok": True, "status": "already_running"}
+
+    def _bg():
+        try:
+            fn()
+        except Exception:
+            log.exception("%s: la corrida falló", nombre)
+        finally:
+            _soltar_corrida(nombre)
+
+    try:
+        threading.Thread(target=_bg, daemon=True, name=f"corrida-{nombre}").start()
+    except Exception:
+        _soltar_corrida(nombre)
+        raise
+    return {"ok": True, "status": "started"}
+
+
 def _run_daily_snapshot_job():
     """Wrapper que el scheduler invoca. Pasa la config + cierra logs."""
     try:
@@ -37435,6 +37501,16 @@ def _run_subscription_lifecycle_job():
             conn.close()
     except Exception as e:
         _sub_log.error(f"Subscription lifecycle job failed: {e}", exc_info=True)
+
+
+# Lo que corre el scheduler para los dos trabajos que TAMBIÉN tienen puerta
+# externa: pasan por la misma bandera que el endpoint (ver `_correr_si_esta_libre`).
+def _job_snapshot_programado():
+    _correr_si_esta_libre("snapshot_diario", _run_daily_snapshot_job)
+
+
+def _job_ciclo_de_vida_programado():
+    _correr_si_esta_libre("ciclo_de_vida", _run_subscription_lifecycle_job)
 
 
 # Scheduler in-process
@@ -37923,7 +37999,7 @@ def _start_scheduler():
     # establecidos. Crypto sigue moviéndose pero capturamos el snapshot del
     # último minuto del día ART.
     _scheduler.add_job(
-        _run_daily_snapshot_job,
+        _job_snapshot_programado,
         CronTrigger(hour=2, minute=59),
         id='daily_snapshot',
         replace_existing=True,
@@ -37940,7 +38016,7 @@ def _start_scheduler():
     # users con suscripción cancelada+vencida, limpiamos pendings stale,
     # syncronizamos con MP.
     _scheduler.add_job(
-        _run_subscription_lifecycle_job,
+        _job_ciclo_de_vida_programado,
         CronTrigger(hour=3, minute=30),
         id='subscription_lifecycle',
         replace_existing=True,
@@ -39362,20 +39438,8 @@ def alerts_events_seen(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
-@app.api_route("/api/alerts/evaluate", methods=["GET", "POST"])
-def alerts_evaluate(request: Request):
-    """Evalúa TODAS las alertas activas y dispara las que cruzaron. Lo pega un
-    cron externo cada ~10 min (cron-job.org / UptimeRobot) — el mismo ping
-    despierta la app en Railway. Acepta GET y POST (los crons simples pegan GET
-    por default). Auth: header X-Cron-Token o ?token= contra ALERTS_CRON_TOKEN
-    — sigue cerrado sin token. Sin token configurado → 503 (endpoint cerrado)."""
-    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+def _evaluar_alertas_job() -> dict:
+    """Una corrida de las alertas: las de precio y las del libro del asesor."""
     import alerts_engine as _ae
     from datetime import datetime as _dtmod
     conn = get_db()
@@ -39397,28 +39461,42 @@ def alerts_evaluate(request: Request):
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
             log.error("advisor alerts en el cron: %s", _ex)
-        return {"ok": True, **result}
+        log.info("alertas: %s", result)
+        return result
     finally:
         conn.close()
 
 
+@app.api_route("/api/alerts/evaluate", methods=["GET", "POST"])
+def alerts_evaluate(request: Request):
+    """Evalúa TODAS las alertas activas y dispara las que cruzaron. Lo pega un
+    cron externo cada ~10 min (cron-job.org / UptimeRobot) — el mismo ping
+    despierta la app en Railway. Acepta GET y POST (los crons simples pegan GET
+    por default). Auth: header X-Cron-Token o ?token= contra ALERTS_CRON_TOKEN
+    — sigue cerrado sin token. Sin token configurado → 503 (endpoint cerrado).
+
+    ⚠️ CORRE EN SEGUNDO PLANO Y CONTESTA AL INSTANTE, como sus hermanos (fotos,
+    suscripciones, briefs). Antes evaluaba y mandaba todo DENTRO del pedido:
+    un push y un mail por alerta disparada, y cada mail espera su turno en
+    `emails._send` (PAUSA_ENTRE_ENVIOS). Un día de mucho movimiento pasaba el
+    corte de ~30 s del proxy: el cron veía un error con los avisos saliendo, y
+    sin guarda un segundo ping podía encimar otra corrida. 200 = "arrancó"; el
+    resultado va al registro."""
+    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    return _correr_en_fondo("alertas", _evaluar_alertas_job)
+
+
 # Guarda anti-doble-corrida del snapshot por cron: el job itera TODOS los usuarios
 # (minutos), así que corre en un thread de fondo. Si llega otro ping mientras uno
-# está corriendo (retry del cron, doble disparo), lo saltamos en vez de encimar dos
-# corridas que contenderían por el lock de escritura.
-_snapshot_cron_lock = threading.Lock()
-_snapshot_cron_running = False
-
-
-def _run_daily_snapshot_bg():
-    global _snapshot_cron_running
-    try:
-        _run_daily_snapshot_job()   # wrapper existente: corre + loguea + captura errores
-    finally:
-        with _snapshot_cron_lock:
-            _snapshot_cron_running = False
-
-
+# está corriendo (retry del cron, doble disparo, o el scheduler de las 02:59), lo
+# saltamos en vez de encimar dos corridas que contenderían por el lock de
+# escritura. La bandera es la de `_correr_en_fondo`, compartida con el scheduler.
 @app.api_route("/api/snapshots/run-cron", methods=["GET", "POST"])
 def snapshots_run_cron(request: Request):
     """Dispara el snapshot diario de la cartera de TODOS los usuarios (valuación
@@ -39444,13 +39522,8 @@ def snapshots_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    global _snapshot_cron_running
-    with _snapshot_cron_lock:
-        if _snapshot_cron_running:
-            return {"ok": True, "status": "already_running"}
-        _snapshot_cron_running = True
-    threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
-    return {"ok": True, "status": "started"}
+    # El job es el wrapper existente: corre + loguea + captura errores.
+    return _correr_en_fondo("snapshot_diario", _run_daily_snapshot_job)
 
 
 # ─── Cron EXTERNO del ciclo de vida de las suscripciones ─────────────────────
@@ -39471,19 +39544,10 @@ def snapshots_run_cron(request: Request):
 #
 # (El MURO no depende de esto: lo decide `quota.get_tier` en tiempo real. Lo que
 # se pierde sin el cron son los avisos y la etapa, no el corte.)
-_lifecycle_cron_lock = threading.Lock()
-_lifecycle_cron_running = False
-
-
-def _run_lifecycle_bg():
-    global _lifecycle_cron_running
-    try:
-        _run_subscription_lifecycle_job()
-    finally:
-        with _lifecycle_cron_lock:
-            _lifecycle_cron_running = False
-
-
+#
+# La guarda anti-doble-corrida es la de `_correr_en_fondo`, y el scheduler de
+# las 03:30 toma LA MISMA: antes sólo la miraba este endpoint, así que las dos
+# puertas podían correr el job a la vez.
 @app.api_route("/api/billing/run-cron", methods=["GET", "POST"])
 def billing_run_cron(request: Request):
     """Dispara el ciclo de vida de suscripciones y los avisos de la prueba.
@@ -39493,8 +39557,10 @@ def billing_run_cron(request: Request):
 
     Corre en un thread de fondo y devuelve 200 al instante: el job manda mails
     (httpx, hasta 10s cada uno) y con muchos usuarios pasa el timeout del
-    gateway. Idempotente por diseño — cada aviso se marca en `trial_email_log`
-    ANTES de enviarse, así que re-correrlo no reenvía nada.
+    gateway. Idempotente por diseño — cada aviso se marca ANTES de enviarse
+    (`trial_email_log`, `expiration_reminder_sent_at`), así que re-correrlo no
+    reenvía nada; la marca sólo se devuelve si Resend rechazó el mail, y
+    entonces lo reintenta la corrida siguiente.
 
     Lo pega un cron externo (cron-job.org) 1×/día. Auth: header X-Cron-Token o
     ?token= contra BILLING_CRON_TOKEN. Sin token configurado → 503.
@@ -39509,19 +39575,7 @@ def billing_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    global _lifecycle_cron_running
-    with _lifecycle_cron_lock:
-        if _lifecycle_cron_running:
-            return {"ok": True, "status": "already_running"}
-        _lifecycle_cron_running = True
-    threading.Thread(target=_run_lifecycle_bg, daemon=True).start()
-    return {"ok": True, "status": "started"}
-
-
-# Guarda anti-doble-corrida del brief (mismo patrón que el cron de snapshots):
-# dos pings solapados mandaban el mail dos veces (el log es check-then-act).
-_brief_cron_lock = threading.Lock()
-_brief_cron_running: dict = {}
+    return _correr_en_fondo("ciclo_de_vida", _run_subscription_lifecycle_job)
 
 
 # ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────
@@ -39903,12 +39957,6 @@ def advisor_brief_run_cron(request: Request):
     if kind not in ("open", "close"):
         raise HTTPException(400, "kind debe ser 'open' o 'close'.")
 
-    global _brief_cron_running
-    with _brief_cron_lock:
-        if _brief_cron_running.get(kind):
-            return {"ok": True, "status": "already_running", "kind": kind}
-        _brief_cron_running[kind] = True
-
     def _bg():
         try:
             import advisor_brief
@@ -39916,12 +39964,10 @@ def advisor_brief_run_cron(request: Request):
             log.info("advisor brief %s: %s", kind, res)
         except Exception as ex:
             log.error("advisor brief %s falló: %s", kind, ex)
-        finally:
-            with _brief_cron_lock:
-                _brief_cron_running[kind] = False
 
-    threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "status": "started", "kind": kind}
+    # Guarda anti-doble-corrida, una por tipo: dos pings solapados mandaban el
+    # mail dos veces (el log es check-then-act).
+    return {**_correr_en_fondo(f"brief_{kind}", _bg), "kind": kind}
 
 
 @app.get("/api/advisor/brief/preview")
@@ -39990,10 +40036,6 @@ def advisor_brief_prefs_set(data: AdvisorBriefPrefsIn, uid: int = Depends(get_cu
 # Un mail por día hábil a las 11:00 ART con las noticias de SUS activos y los
 # eventos que le pasan hoy. Motor: backend/market_brief.py.
 
-_market_brief_lock = threading.Lock()
-_market_brief_running = {"v": False}
-
-
 def _avisar_admin(fn, **kw):
     """Manda el parte al admin sin que un fallo del mail tape lo que pasó.
 
@@ -40034,11 +40076,6 @@ def market_brief_run_cron(request: Request):
     if got != expected:
         raise HTTPException(401, "Token inválido.")
 
-    with _market_brief_lock:
-        if _market_brief_running["v"]:
-            return {"ok": True, "status": "already_running"}
-        _market_brief_running["v"] = True
-
     def _bg():
         # El parte de la corrida sale por DOS canales: el registro (para
         # diagnosticar) y un mail al admin (para enterarse sin diagnosticar).
@@ -40054,12 +40091,8 @@ def market_brief_run_cron(request: Request):
         except Exception as ex:
             log.error("market brief falló: %s", ex)
             _avisar_admin(emails.send_market_brief_run_admin, error=str(ex))
-        finally:
-            with _market_brief_lock:
-                _market_brief_running["v"] = False
 
-    threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "status": "started"}
+    return _correr_en_fondo("resumen_mercado", _bg)
 
 
 @app.get("/api/market-brief/prefs")
