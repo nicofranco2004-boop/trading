@@ -11,7 +11,7 @@ import {
   ArrowRight, BookOpen, Users,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import RendiLogo from '../components/RendiLogo'
+import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
 // Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
@@ -93,18 +93,10 @@ export default function Guia() {
         canonical="/guia"
       />
 
-      <header className="border-b border-line">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
-            <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
-            <Link to="/login" className="text-ink-2 hover:text-ink-0">Iniciar sesión</Link>
-          </nav>
-        </div>
-      </header>
+      <CabeceraPublica ancho="max-w-4xl">
+        <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
+        <Link to="/login" className="text-ink-2 hover:text-ink-0">Iniciar sesión</Link>
+      </CabeceraPublica>
 
       <main className="max-w-4xl mx-auto px-6 py-12 md:py-16">
 

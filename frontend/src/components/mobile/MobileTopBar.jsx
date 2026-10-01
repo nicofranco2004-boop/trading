@@ -2,7 +2,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Logo a la izquierda; moneda, Rendi AI y búsqueda a la derecha; abajo, la
 // cinta de cotizaciones (MarketTicker, la misma que va arriba del contenido en
-// la compu). Sticky para que esté siempre accesible. Por debajo, indicador de
+// la compu) y, si el asesor abrió un cliente, la franja "Estás viendo la cuenta
+// de…". Sticky para que esté siempre accesible. Por debajo, indicador de
 // pull-to-refresh cuando el user tira hacia abajo: refresca también la cinta.
 
 import { Link } from 'react-router-dom'
@@ -10,6 +11,7 @@ import { Search, RefreshCcw, Sparkles } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import CurrencySwitcher from '../CurrencySwitcher'
 import MarketTicker from '../MarketTicker'
+import ClientContextBar from '../advisor/ClientContextBar'
 import { refreshMarketIndices } from '../../hooks/useMarketIndices'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
@@ -84,6 +86,11 @@ export default function MobileTopBar({ onRefresh }) {
 
         {/* Cinta de cotizaciones */}
         <MarketTicker className="border-t border-line/30" />
+
+        {/* "Estás viendo la cuenta de…" (sólo con un cliente abierto): acá
+            adentro queda siempre a la vista, debajo de la cinta, mida lo que
+            mida la barra. */}
+        <ClientContextBar enLaBarra />
       </header>
     </>
   )

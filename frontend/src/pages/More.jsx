@@ -18,7 +18,8 @@ import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { menuVisible, pantallasVisibles } from '../utils/navegacion'
+import { useAlertsContext } from '../contexts/AlertsContext'
+import { menuVisible, pantallasVisibles, ASESOR_PROPIO } from '../utils/navegacion'
 import Panel from '../components/Panel'
 
 // QUÉ pantallas se ven NO se decide acá: sale de utils/navegacion.js, la misma
@@ -27,46 +28,54 @@ import Panel from '../components/Panel'
 // "Cobros" en la compu y en el celular no (ningún otro enlace del celular
 // llevaba ahí).
 //
-// Lo de abajo es sólo CÓMO se presenta en el celular: en qué sección cae cada
-// pantalla, en qué orden, el renglón de ayuda y, si acá se llama distinto, su
-// nombre. Una pantalla de la lista compartida que acá no tenga renglón
-// aparece igual (en la sección de la compu, con su nombre y sin ayuda): nunca
-// desaparece del celular por falta de una línea en este archivo.
+// Las secciones son los grupos del menú de la compu (con el nombre del
+// celular). Lo de abajo es sólo CÓMO se presenta cada pantalla acá: el orden,
+// el renglón de ayuda y, si acá se llama distinto, su nombre. Una pantalla de
+// la lista compartida que acá no tenga renglón aparece igual (en su grupo, con
+// su nombre y sin ayuda): nunca desaparece del celular por falta de una línea
+// en este archivo.
 const PLAN_ASESOR = 'Plan Asesor'
-const SECCIONES = [PLAN_ASESOR, 'Tu portfolio', 'Análisis']
+const TU_PORTFOLIO = 'Tu portfolio'
+const SECCIONES = [PLAN_ASESOR, TU_PORTFOLIO, 'Mercado', 'Análisis']
+// Grupo de la compu → sección del celular, cuando se llaman distinto. Lo que
+// en la compu va suelto (Alertas, Importar) acá va con la cartera.
+const SECCION_DE_GRUPO = { 'Tu Cartera': TU_PORTFOLIO }
 
+// Los renglones de ayuda no dicen "tu"/"tus": el asesor adentro de un cliente
+// está mirando la cartera de OTRO.
 const EN_EL_CELULAR = {
-  // En el celular "/" es la pestaña Home: arriba tu saldo, abajo el mercado.
-  '/':               { seccion: 'Tu portfolio', sub: 'Tu saldo de hoy y el pulso del mercado' },
-  '/dashboard':      { seccion: 'Tu portfolio', sub: 'Evolución, composición y heatmap' },
-  '/posiciones':     { seccion: 'Tu portfolio', sub: 'Tus tenencias y objetivos' },
-  '/operaciones':    { seccion: 'Tu portfolio', sub: 'Trades + depósitos + dividendos' },
-  '/imports':        { seccion: 'Tu portfolio', label: 'Importar CSV', sub: 'Subí CSVs de tus brokers' },
-  '/alertas':        { seccion: 'Tu portfolio', sub: 'Avisos de precio y variación' },
-  '/analisis':       { seccion: 'Análisis', sub: 'Diagnóstico, comportamiento, reportes' },
-  '/fundamentals':   { seccion: 'Análisis', sub: 'Calidad de tus tenencias + buscador' },
-  '/perfil-inversor': { seccion: 'Análisis', sub: 'Tu perfil declarado vs. tu cartera' },
-  '/novedades':      { seccion: 'Análisis', sub: 'Noticias + eventos' },
+  '/dashboard':       { sub: 'Evolución, distribución y de dónde sale la ganancia' },
+  '/posiciones':      { sub: 'Tenencias y brokers' },
+  '/operaciones':     { sub: 'Compras, ventas, depósitos y dividendos' },
+  '/imports':         { label: 'Importar CSV', sub: 'Los archivos que bajás de cada broker' },
+  '/alertas':         { sub: 'Resumen diario del mercado y avisos de precio' },
+  // En el celular "/" es la pestaña Home: arriba el saldo, abajo el mercado.
+  '/':                { sub: 'Saldo del día, mapa del mercado y noticias' },
+  '/novedades':       { sub: 'Noticias y eventos de los activos' },
+  '/analisis':        { sub: 'Diagnóstico, comportamiento, reportes' },
+  '/fundamentals':    { sub: 'Calidad de las tenencias + buscador de empresas' },
+  '/perfil-inversor': { sub: 'Perfil declarado vs. la cartera real' },
 }
 
 // El asesor en SU nivel (sin haber entrado a un cliente): todo va en "Plan
 // Asesor" y la ayuda habla de sus clientes — Dashboard acá es el del libro,
-// no el de una cartera. Adentro de un cliente queda sólo "Clientes", para
-// volver a la lista; el resto es la cartera de ESE cliente.
+// no el de una cartera. Adentro de un cliente queda en "Plan Asesor" sólo lo
+// que no es de la cartera de ese cliente (hoy, "Clientes", para volver).
 const DEL_ASESOR = {
   '/dashboard':            { sub: 'Total administrado, quién necesita atención y qué activos mandan' },
   '/clientes':             { sub: 'Tus clientes y el resumen de sus carteras' },
   '/novedades':            { sub: 'Eventos y noticias de los activos de tus clientes' },
   '/cobros':               { sub: 'Cupones y amortizaciones de los bonos de tus clientes' },
-  '/alertas':              { sub: 'Brief del libro y avisos de tus clientes' },
+  '/alertas':              { sub: 'Brief del libro y movimientos de tus clientes' },
   '/importar-historiales': { sub: 'Cargá los archivos de varios clientes en una sola tanda' },
 }
+const ES_DEL_ASESOR = new Set(ASESOR_PROPIO.map(i => i.to))
 
 // El pie del menú de la compu (`utilidades`: Admin, Guía, Configuración). En
 // el celular Admin va en su propia sección y las otras dos en "Cuenta", junto
 // a los botones que no son pantallas (Recomendaciones, tema, cerrar sesión).
 const DEL_PIE = {
-  '/config': { sub: 'Brokers · workspace · contraseña' },
+  '/config': { sub: 'Cuenta, plan, tipos de cambio y soporte' },
   '/guia':   { sub: 'Cómo se usa Rendi, paso a paso' },
   '/admin':  { sub: 'Panel administrativo' },
 }
@@ -76,15 +85,20 @@ const posicion = (presentacion, to) =>
   to in presentacion ? Object.keys(presentacion).indexOf(to) : Infinity
 
 // Reparte en secciones las pantallas que este usuario ve en la compu
-// (`pantallasVisibles`, sin el pie). Exportada para la prueba de la pantalla
-// sin renglón.
-export function seccionesDelMenuMas(pantallas, { atOwnLevel = false } = {}) {
+// (`pantallasVisibles`, sin el pie). `cliente`: el nombre del cliente cuya
+// cartera mira el asesor — la sección deja de llamarse "Tu portfolio".
+// Exportada para las pruebas.
+export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = null } = {}) {
   const secciones = new Map(SECCIONES.map(s => [s, []]))
   for (const p of pantallas) {
-    const delAsesor = atOwnLevel || p.to === '/clientes'
+    // En la compu, lo del asesor no tiene grupo (va arriba, suelto); lo que
+    // tiene grupo es de la cartera, aunque la misma ruta esté en su lista.
+    const delAsesor = atOwnLevel || (!p.grupo && ES_DEL_ASESOR.has(p.to))
     const presentacion = delAsesor ? DEL_ASESOR : EN_EL_CELULAR
     const extra = presentacion[p.to] || {}
-    const seccion = delAsesor ? PLAN_ASESOR : (extra.seccion || p.grupo || 'Otras secciones')
+    const seccion = delAsesor ? PLAN_ASESOR
+      : p.grupo ? (SECCION_DE_GRUPO[p.grupo] || p.grupo)
+      : TU_PORTFOLIO
     if (!secciones.has(seccion)) secciones.set(seccion, [])
     secciones.get(seccion).push({
       to: p.to, icon: p.icon, label: extra.label || p.label, sub: extra.sub,
@@ -93,7 +107,17 @@ export function seccionesDelMenuMas(pantallas, { atOwnLevel = false } = {}) {
   }
   return [...secciones]
     .filter(([, items]) => items.length > 0)
-    .map(([label, items]) => ({ label, items: items.sort((a, b) => a.orden - b.orden) }))
+    .map(([label, items]) => ({
+      label: label === TU_PORTFOLIO && cliente ? `Cartera de ${cliente}` : label,
+      items: items.sort((a, b) => a.orden - b.orden),
+    }))
+}
+
+// El renglón de ayuda de Rendi AI: sobre qué trabaja la IA en cada caso.
+function ayudaDeRendiAI({ atOwnLevel, clientCtx }) {
+  if (atOwnLevel) return 'Asistente con contexto de tu libro de clientes'
+  if (clientCtx) return `Asistente con contexto de la cartera de ${clientCtx.label || 'tu cliente'}`
+  return 'Asistente con contexto de tu portfolio'
 }
 
 export default function More() {
@@ -103,7 +127,8 @@ export default function More() {
   const { clientCtx } = useAdvisorContext()
   const [recomOpen, setRecomOpen] = useState(false)
 
-  const { atOwnLevel, utilidades } = menuVisible({ user, clientCtx })
+  const { unseenCount = 0 } = useAlertsContext()  // el puntito de alertas sin ver
+  const { atOwnLevel, isAdvisor, utilidades } = menuVisible({ user, clientCtx })
   const delPie = new Set(utilidades.map(u => u.to))
   const conAyuda = (u) => ({ ...u, sub: DEL_PIE[u.to]?.sub })
   const admin = utilidades.filter(u => u.soloAdmin).map(conAyuda)
@@ -111,7 +136,8 @@ export default function More() {
     .sort((a, b) => posicion(DEL_PIE, a.to) - posicion(DEL_PIE, b.to))
   const allGroups = [
     ...seccionesDelMenuMas(
-      pantallasVisibles({ user, clientCtx }).filter(p => !delPie.has(p.to)), { atOwnLevel }),
+      pantallasVisibles({ user, clientCtx }).filter(p => !delPie.has(p.to)),
+      { atOwnLevel, cliente: clientCtx ? (clientCtx.label || `Cliente ${clientCtx.id}`) : null }),
     ...(admin.length > 0 ? [{ label: 'Admin', items: admin }] : []),
   ]
 
@@ -137,7 +163,7 @@ export default function More() {
             <Sparkles size={16} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-ink-0 leading-tight">Rendi AI</div>
-              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Asistente con contexto de tu portfolio</div>
+              <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{ayudaDeRendiAI({ atOwnLevel, clientCtx })}</div>
             </div>
             <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
           </button>
@@ -162,7 +188,15 @@ export default function More() {
                 >
                   <Icon size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-ink-0 leading-tight">{item.label}</div>
+                    <div className="text-sm font-medium text-ink-0 leading-tight flex items-center gap-2">
+                      {item.label}
+                      {/* Lo mismo que el menú de la compu: el puntito sólo si
+                          hay alertas SIN VER (al entrar a /alertas se apaga). */}
+                      {item.to === '/alertas' && unseenCount > 0 && (
+                        <span title="Tenés alertas sin ver" className="w-2 h-2 rounded-full bg-data-violet"
+                          style={{ boxShadow: '0 0 0 3px rgb(var(--data-violet) / 0.12)' }} />
+                      )}
+                    </div>
                     {item.sub && (
                       <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{item.sub}</div>
                     )}
@@ -176,7 +210,7 @@ export default function More() {
       ))}
 
       {/* Notificaciones push */}
-      <PushNotificationsSection />
+      <PushNotificationsSection esAsesor={isAdvisor} />
 
       {/* Configuración + logout */}
       <section>
@@ -261,7 +295,7 @@ export default function More() {
 
 // ─── Push notifications section ─────────────────────────────────────────
 
-function PushNotificationsSection() {
+function PushNotificationsSection({ esAsesor = false }) {
   const toast = useToast()
   const {
     supported, permission, subscribed, loading, error,
@@ -348,11 +382,13 @@ function PushNotificationsSection() {
               </span>
             </div>
             <div className="text-[11px] text-ink-3 leading-tight mt-0.5">
-              {subscribed
-                ? 'Recibís alertas de earnings, drawdowns y nuevos sesgos.'
-                : permission === 'denied'
-                  ? 'Reactivá en los ajustes del navegador.'
-                  : 'Recibí alertas cuando algo importante pasa en tu cartera.'}
+              {/* Lo que de verdad sale por push: los avisos de precio y de
+                  variación (alerts_engine) y, al asesor, los movimientos de
+                  las carteras de sus clientes (advisor_alerts). */}
+              {permission === 'denied' && !subscribed
+                ? 'Reactivá en los ajustes del navegador.'
+                : `${subscribed ? 'Te llegan a este dispositivo' : 'Recibí en este dispositivo'} ${
+                    esAsesor ? 'los movimientos de tus clientes y tus avisos de precio.' : 'tus avisos de precio y de variación.'}`}
             </div>
           </div>
           <span className={`text-[12px] ${subscribed ? 'text-rendi-neg' : 'text-rendi-pos'} font-medium`}>

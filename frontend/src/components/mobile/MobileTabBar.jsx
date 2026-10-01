@@ -26,13 +26,17 @@ import { track } from '../../utils/track'
 import { prefetchRoute } from '../../utils/routePrefetch'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
+import { useAlertsContext } from '../../contexts/AlertsContext'
 import { menuVisible } from '../../utils/navegacion'
 
 const TABS = [
   { to: '/',             label: 'Home',       icon: Home },
   { to: '/posiciones',   label: 'Cartera',    icon: Briefcase },
   // [+] FAB ocupa el slot 3 — no es NavLink
-  { to: '/insights',     label: 'Insights',   icon: Compass },
+  // Directo a donde llevaba /insights (que redirige): con /insights la pestaña
+  // nunca quedaba marcada (la dirección ya no decía /insights al llegar) y lo
+  // que se precargaba era la página vieja de Insights, no la que se abre.
+  { to: '/analisis?tab=diagnostico', label: 'Insights', icon: Compass },
   { to: '/mas',          label: 'Más',        icon: MoreHorizontal },
 ]
 
@@ -119,12 +123,17 @@ export default function MobileTabBar() {
 // ─── Tab item ────────────────────────────────────────────────────────────
 
 function TabItem({ to, label, icon: Icon }) {
+  const ruta = to.split('?')[0]
+  // "Más" lleva el puntito de alertas sin ver, como "Alertas" en el menú de la
+  // compu: en el celular Alertas vive adentro de "Más".
+  const { unseenCount = 0 } = useAlertsContext()
+  const puntito = ruta === '/mas' && unseenCount > 0
   return (
     <NavLink
       to={to}
       end={to === '/'}
-      onTouchStart={() => prefetchRoute(to)}
-      onFocus={() => prefetchRoute(to)}
+      onTouchStart={() => prefetchRoute(ruta)}
+      onFocus={() => prefetchRoute(ruta)}
       className={({ isActive }) =>
         // BUG FIX (audit 2026-05-25): el `absolute top-1` del dot indicator
         // necesita `position: relative` en el padre, sino el dot se posiciona
@@ -136,7 +145,13 @@ function TabItem({ to, label, icon: Icon }) {
     >
       {({ isActive }) => (
         <>
-          <Icon size={18} strokeWidth={1.75} />
+          <span className="relative">
+            <Icon size={18} strokeWidth={1.75} />
+            {puntito && (
+              <span title="Tenés alertas sin ver"
+                className="absolute -top-0.5 -right-1 w-2 h-2 rounded-full bg-data-violet" />
+            )}
+          </span>
           <span className="text-[12px] font-medium">{label}</span>
           {isActive && (
             <span
@@ -180,7 +195,9 @@ const QUICK_ACTIONS = [
     sub: 'Seguir un ticker',
     icon: Star,
     tone: 'warn',
-    to: '/?action=watchlist',
+    // El buscador tiene la estrella para seguir un ticker. Iba a
+    // `/?action=watchlist`, que nadie lee: caía en Inicio sin abrir nada.
+    to: '/buscar',
   },
   {
     code: 'search',

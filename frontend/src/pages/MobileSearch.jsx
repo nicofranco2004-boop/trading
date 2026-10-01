@@ -24,6 +24,9 @@ import { api } from '../utils/api'
 import { useToast } from '../components/Toast'
 import { track } from '../utils/track'
 import { notifyWatchlistChanged } from '../utils/watchlistEvents'
+import { useAuth } from '../contexts/AuthContext'
+import { useAdvisorContext } from '../contexts/AdvisorContext'
+import { menuVisible } from '../utils/navegacion'
 
 // Reusamos los tickers populares + helpers del SearchBar desktop para no
 // duplicar el universo. Import statement nombrado — agregamos los exports en
@@ -31,9 +34,23 @@ import { notifyWatchlistChanged } from '../utils/watchlistEvents'
 import { POPULAR_TICKERS, FILTERS, inferType } from '../components/home/SearchBar'
 import { CEDEAR_SEARCH, AR_STOCK_SEARCH, US_SEARCH } from '../utils/tickers'
 
+// A dónde lleva cada resultado: lo MISMO que el buscador ⌘K de la compu
+// (utils/buscadorRapido.js). Iba a `/posiciones#X` y `/posiciones?search=X`,
+// que la Cartera del celular no lee: quedabas arriba de tu lista sin nada
+// abierto.
+export function destinoDelTicker(t) {
+  const s = encodeURIComponent(t.symbol)
+  return t.fromUser ? `/activo/${s}` : `/fundamentals?ticker=${s}`
+}
+
 export default function MobileSearch() {
   const navigate = useNavigate()
   const toast = useToast()
+  // El asesor en su nivel no tiene cartera ni watchlist propias (mismo criterio
+  // que le saca el "+" de la barra de abajo): ni "En tu portfolio" ni estrella.
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  const { atOwnLevel } = menuVisible({ user, clientCtx })
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState('all')
   const [userHoldings, setUserHoldings] = useState([])
@@ -51,6 +68,7 @@ export default function MobileSearch() {
 
   // Cargar holdings + watchlist
   useEffect(() => {
+    if (atOwnLevel) { setUserHoldings([]); return }
     api.get('/positions')
       .then(d => {
         const map = new Map()
@@ -65,16 +83,17 @@ export default function MobileSearch() {
         setUserHoldings(Array.from(map.values()))
       })
       .catch(() => setUserHoldings([]))
-  }, [])
+  }, [atOwnLevel])
 
   useEffect(() => {
+    if (atOwnLevel) { setWatchlist([]); return }
     api.get('/watchlist')
       .then(d => {
         const items = Array.isArray(d) ? d : (d?.items || [])
         setWatchlist(items.map(w => (w.symbol || '').toUpperCase()))
       })
       .catch(() => setWatchlist([]))
-  }, [])
+  }, [atOwnLevel])
 
   // Búsqueda y filtros
   const qUpper = q.trim().toUpperCase()
@@ -113,13 +132,7 @@ export default function MobileSearch() {
 
   async function pickTicker(t) {
     track('mobile_search_pick', { symbol: t.symbol })
-    if (t.fromUser) {
-      navigate(`/posiciones#${t.symbol}`)
-    } else {
-      // Navegar al home para ver detalle? por ahora, navega a posiciones
-      // con el ticker como query — futura QuickView mobile en M3
-      navigate(`/posiciones?search=${encodeURIComponent(t.symbol)}`)
-    }
+    navigate(destinoDelTicker(t))
   }
 
   async function addToWatchlist(t) {
@@ -225,7 +238,7 @@ export default function MobileSearch() {
                     ticker={t}
                     highlight
                     onPick={() => pickTicker(t)}
-                    onAdd={() => addToWatchlist(t)}
+                    onAdd={atOwnLevel ? null : () => addToWatchlist(t)}
                     adding={adding === t.symbol}
                     inWatchlist={watchlist.includes(t.symbol)}
                   />
@@ -240,7 +253,7 @@ export default function MobileSearch() {
                     key={t.symbol}
                     ticker={t}
                     onPick={() => pickTicker(t)}
-                    onAdd={() => addToWatchlist(t)}
+                    onAdd={atOwnLevel ? null : () => addToWatchlist(t)}
                     adding={adding === t.symbol}
                     inWatchlist={watchlist.includes(t.symbol)}
                   />
@@ -294,7 +307,7 @@ function SearchRow({ ticker, highlight, onPick, onAdd, adding, inWatchlist }) {
         </div>
       </button>
 
-      {!ticker.fromUser && (
+      {!ticker.fromUser && onAdd && (
         <button
           onClick={onAdd}
           disabled={inWatchlist || adding}
