@@ -2444,7 +2444,7 @@ function MtmAuditPanel({ toast }) {
         Compara, mes por mes, el retorno que sale de <b>monthly_entries</b> (a costo: los meses
         cerrados llevan <code>pnl_unrealized = 0</code>) contra el que sale de los <b>snapshots</b>
         {' '}(a mercado). Solo lee. Sirve para decidir cuál de las dos cadenas está mal cuando
-        Dashboard e Insights se contradicen.
+        Dashboard y Métricas se contradicen.
       </p>
 
       {data && (

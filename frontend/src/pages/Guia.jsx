@@ -48,7 +48,7 @@ const SECTIONS = [
     n: 3,
     to: '/guia/insights-y-reportes',
     icon: Compass,
-    title: 'Insights y reportes',
+    title: 'Métricas y reportes',
     desc: 'Las 5 cards de análisis, timeline histórico, detectores de comportamiento y export CSV.',
     descAsesor: 'El análisis de cada cliente con lente Pro: qué mirar antes de llamarlo y qué mandarle en el informe.',
   },

@@ -158,10 +158,14 @@ describe('nada se pega arriba con un alto escrito a mano', () => {
       const src = fuentes[`/src/${nombre}`]
       expect(pegadosArriba(src).some(t => t.includes(VARIABLE_ALTO_BARRA)), nombre).toBe(true)
     }
-    // La burbuja de Rendi, cerrada Y abierta (el panel tapaba "Volver" o "Ver planes").
-    const rendi = pegadosArriba(fuentes['/src/components/voz/RendiMate.jsx'])
+    // La burbuja de Rendi: abierta, debajo de la barra (el panel tapaba "Volver"
+    // o "Ver planes"); cerrada, en la compu también. En el celular, cerrada,
+    // arranca abajo a la izquierda (arriba tapaba el USD/Pesos de Cartera).
+    const rendiSrc = fuentes['/src/components/voz/RendiMate.jsx']
+    const rendi = pegadosArriba(rendiSrc)
     expect(rendi.length).toBe(2)
     for (const t of rendi) expect(t).toContain(VARIABLE_ALTO_BARRA)
+    expect(rendiSrc).toMatch(/className="fixed bottom-\[calc\(80px_\+_env\(safe-area-inset-bottom\)\)\] left-4 md:bottom-auto/)
   })
 })
 

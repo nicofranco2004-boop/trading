@@ -30,7 +30,9 @@ import { useAlertsContext } from '../../contexts/AlertsContext'
 import { menuVisible } from '../../utils/navegacion'
 
 const TABS = [
-  { to: '/',             label: 'Home',       icon: Home },
+  // "Inicio", igual que en "Más" (antes: "Home" acá y "Resumen" allá, para
+  // la misma pantalla).
+  { to: '/',             label: 'Inicio',     icon: Home },
   { to: '/posiciones',   label: 'Cartera',    icon: Briefcase },
   // [+] FAB ocupa el slot 3 — no es NavLink
   // Directo a donde llevaba /insights (que redirige): con /insights la pestaña
@@ -107,8 +109,10 @@ export default function MobileTabBar() {
             >
               <Plus size={20} strokeWidth={2} className="text-white" />
             </span>
+            {/* "Registrar": decía "Acciones", que se confundía con los filtros
+                "Acciones US / AR" de la lupa. */}
             <span className="absolute bottom-1 text-[12.5px] text-ink-3 font-medium">
-              Acciones
+              Registrar
             </span>
           </button>
 

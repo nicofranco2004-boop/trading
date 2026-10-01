@@ -42,7 +42,7 @@ import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
 import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
 import fuenteDeApp from '../App.jsx?raw'
-import { accionDelPedido } from './PositionsMobile'
+import { accionDelPedido, EncabezadoCompacto, encabezadoCompactoVisible } from './PositionsMobile'
 
 const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
 const dibujar = (Componente, u, c) => {
@@ -257,4 +257,31 @@ describe('notificaciones push: el texto dice lo que de verdad se manda', () => {
       for (const html of [comun, asesor]) expect(html).not.toMatch(/earnings|drawdowns|sesgos/)
     })
   }
+})
+
+describe('decisiones de producto (2026-10-01)', () => {
+  it('"/" se llama "Inicio" en la barra de abajo y en "Más" (era "Home" y "Resumen")', () => {
+    const barra = dibujar(MobileTabBar, { tier: 'pro' }, null)
+    expect(barra).toMatch(/href="\/"[^>]*>[\s\S]*?Inicio/)
+    expect(barra).not.toContain('>Home<')
+    const mas = menuMas({ tier: 'pro' }, null).html
+    expect(mas).toMatch(/href="\/"[^>]*>[\s\S]*?Inicio/)
+    expect(mas).not.toMatch(/>Resumen</)
+  })
+  it('el "+" dice "Registrar" (decía "Acciones", como los filtros de la lupa)', () => {
+    const barra = dibujar(MobileTabBar, { tier: 'pro' }, null)
+    expect(barra).toMatch(/Abrir acciones rápidas[\s\S]*?Registrar/)
+    expect(barra).not.toMatch(/>\s*Acciones\s*</)
+  })
+  it('Cartera, al bajar: una tira de un renglón con el total, la moneda y la lupa, debajo de la barra', () => {
+    const html = renderToStaticMarkup(<EncabezadoCompacto valor="$12.345" currency="USD" onMoneda={() => {}} onBuscar={() => {}} />)
+    expect(html).toMatch(/^<div class="fixed top-\[var\(--alto-barra-celular,93px\)\]/)
+    expect(html).toContain('$12.345')
+    expect(html).toMatch(/aria-pressed="true"[^>]*>USD</)
+    expect(html).toContain('aria-label="Buscar en tu cartera"')
+    // Aparece recién cuando el encabezado completo pasó por debajo de la barra.
+    expect(encabezadoCompactoVisible(300, 93)).toBe(false)
+    expect(encabezadoCompactoVisible(93, 93)).toBe(true)
+    expect(encabezadoCompactoVisible(40, 140)).toBe(true)
+  })
 })

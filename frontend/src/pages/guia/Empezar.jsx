@@ -128,7 +128,7 @@ export default function Empezar() {
       <p>
         En <strong>Perfil de inversor</strong> respondés 7-8 preguntas sobre tu
         horizonte, tolerancia al drawdown y objetivos. <em>No es obligatorio</em>,
-        pero si lo llenás, Insights compara tu cartera real contra lo que vos declaraste
+        pero si lo llenás, Métricas compara tu cartera real contra lo que vos declaraste
         y te marca incoherencias (ej. "decís perfil conservador pero tenés 70% en
         crypto").
       </p>
@@ -139,7 +139,7 @@ export default function Empezar() {
       </p>
       <ul>
         <li><strong>Dashboard</strong>: tu portfolio total en USD, P&amp;L del mes, evolución.</li>
-        <li><strong>Insights</strong>: 5 cards de análisis automático.</li>
+        <li><strong>Métricas</strong>: 5 cards de análisis automático.</li>
         <li><strong>Rendi AI</strong>: 12 preguntas guiadas (Plus) o chat libre (Pro).</li>
       </ul>
     </GuidePage>

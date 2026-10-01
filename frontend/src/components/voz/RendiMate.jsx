@@ -161,7 +161,12 @@ export default function RendiMate() {
         onPointerUp={manija.onPointerUp}
         onPointerCancel={manija.onPointerCancel}
         onClickCapture={manija.onClickCapture}
-        className="fixed top-[calc(var(--alto-barra-celular,80px)_+_8px)] right-4 z-40 flex items-center gap-1 rounded-full
+        // En el celular arranca ABAJO A LA IZQUIERDA, sobre la barra de abajo
+        // (80 px: la barra mide 56 y el "+" sobresale 16; a la derecha está
+        // WhatsApp). Arriba a la derecha tapaba lo que se pega debajo de la
+        // barra al bajar: el selector USD/Pesos de Cartera, el win rate de
+        // Movimientos. En la compu sigue arriba a la derecha.
+        className="fixed bottom-[calc(80px_+_env(safe-area-inset-bottom))] left-4 md:bottom-auto md:left-auto md:top-[calc(var(--alto-barra-celular,80px)_+_8px)] md:right-4 z-40 flex items-center gap-1 rounded-full
                    bg-bg-raised border border-line-3 shadow-lg pl-2 pr-1 py-1 cursor-grab active:cursor-grabbing">
         <button
           type="button"

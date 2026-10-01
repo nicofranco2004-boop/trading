@@ -50,8 +50,9 @@ const EN_EL_CELULAR = {
   '/operaciones':     { sub: 'Compras, ventas, depósitos y dividendos' },
   '/imports':         { label: 'Importar CSV', sub: 'Los archivos que bajás de cada broker' },
   '/alertas':         { sub: 'Resumen diario del mercado y avisos de precio' },
-  // En el celular "/" es la pestaña Home: arriba el saldo, abajo el mercado.
-  '/':                { sub: 'Saldo del día, mapa del mercado y noticias' },
+  // En el celular "/" es la pestaña Inicio (arriba el saldo, abajo el
+  // mercado): se llama igual acá. En la compu es "Resumen", otra pantalla.
+  '/':                { label: 'Inicio', sub: 'Saldo del día, mapa del mercado y noticias' },
   '/novedades':       { sub: 'Noticias y eventos de los activos' },
   '/analisis':        { sub: 'Diagnóstico, comportamiento, reportes' },
   '/fundamentals':    { sub: 'Calidad de las tenencias + buscador de empresas' },
