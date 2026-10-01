@@ -157,6 +157,14 @@ export function VozProvider({ children }) {
   // manda el backend cuando sale a buscar datos; sirve para que la espera no
   // sea un "pensando" mudo de 15 segundos.
   const [paso, setPaso] = useState(null)
+  // Los pasos de ESTE turno, en orden: la pantalla de Rendi AI los muestra en
+  // lista, con tilde los que ya quedaron atrás (la isla muestra sólo `paso`).
+  // Son los que manda el servidor: acá no se inventa ninguno.
+  const [pasos, setPasos] = useState([])
+  const marcarPaso = useCallback((p) => {
+    setPaso(p)
+    setPasos(l => sumarPaso(l, p))
+  }, [])
   const [askError, setAskError] = useState(null)
   // `loading` NO es lo mismo que `sending`: sending dura todo el turno, loading
   // se apaga en cuanto llega la primera letra. Es lo que decide si se ven los
@@ -417,6 +425,7 @@ export function VozProvider({ children }) {
     setSending(true)
     setLoading(true)
     setPaso(null)
+    setPasos([])
     setAskError(null)
     setUpgradeInfo(null)
     setMotivoSinVoz(null)
@@ -480,7 +489,11 @@ export function VozProvider({ children }) {
       }) }
       const onDelta = (c) => {
         acc += c
-        setLoading(false)          // ya hay texto: se apagan los puntitos
+        // ya hay texto: se apagan los puntitos — SÓLO si es de la pregunta en
+        // pantalla. Sin el control, el texto de una respuesta descartada (el
+        // stream viejo sigue llegando tras "Nueva conversación") apagaba el
+        // "pensando" de la pregunta nueva antes de que empezara (medido).
+        if (vigente()) setLoading(false)
         // Se pinta la PROSA, no el texto crudo: así el bloque de datos del
         // final no aparece medio escrito en pantalla mientras llega.
         const { prose } = parseStructured(stripMarkdown(acc))
@@ -543,18 +556,24 @@ export function VozProvider({ children }) {
         }
       }
       const res = await api.chatStream(
+        // Los pasos pasan por `vigente()` igual que el texto: si vaciaron el chat
+        // a mitad de esta respuesta (el stream viejo sigue llegando a propósito),
+        // sus pasos no se cuelan en la lista de la pregunta nueva.
         // `voz: enabled` — si el parlante está apagado, el servidor le pide al
         // modelo que NO escriba el resumen hablado. Son ~130 tokens de salida
         // por respuesta que se pagaban aunque nadie los fuera a escuchar.
         { messages, snapshot: snapRef.current, voz: enabled,
           ...(analisis ? { analisis } : {}) },
-        { onDelta, onReset, onPaso: setPaso, onPregunta, onVoz: arrancarAudio },
+        { onDelta, onReset, onPaso: p => { if (vigente()) marcarPaso(p) }, onPregunta, onVoz: arrancarAudio },
       )
       const { prose, meta } = parseStructured(stripMarkdown(acc))
       if (!vigente()) return          // vaciaron el chat mientras llegaba
       setThread(t => {
         const copia = t.slice()
-        const final = { role: 'assistant', content: prose || '…', voz: res?.voz || null, meta }
+        // `llego`: cuándo llegó, para que las pantallas animen SÓLO la respuesta
+        // recién llegada (esRecienLlegada). No se guarda en la sesión
+        // (chatSession conserva voz y meta) ni viaja al modelo (role/content).
+        const final = { role: 'assistant', content: prose || '…', voz: res?.voz || null, meta, llego: Date.now() }
         if (agregado && copia.length && copia[copia.length - 1].role === 'assistant') {
           copia[copia.length - 1] = final
           return copia
@@ -596,9 +615,10 @@ export function VozProvider({ children }) {
         setSending(false)
         setLoading(false)
         setPaso(null)
+        setPasos([])
       }
     }
-  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro])
+  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -612,6 +632,7 @@ export function VozProvider({ children }) {
     setSending(false)
     setLoading(false)
     setPaso(null)
+    setPasos([])
     clearChatSession()
     setThread([])
     setAskError(null)
@@ -709,12 +730,12 @@ export function VozProvider({ children }) {
     status, progress, current,
     speak, escuchar, toggle, stop,
     open, setOpen,
-    thread, sending, loading, paso, askError, upgradeInfo, usageDelError,
+    thread, sending, loading, paso, pasos, askError, upgradeInfo, usageDelError,
     kindDeCuotaDelError, codigoDelError, motivoSinVoz,
     modoLibro,
     sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
-       speak, escuchar, toggle, stop, open, thread, sending, loading, paso, askError,
+       speak, escuchar, toggle, stop, open, thread, sending, loading, paso, pasos, askError,
        upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError, sinCupo,
        motivoSinVoz, modoLibro,
        ask, analizar, limpiar])
@@ -737,8 +758,24 @@ const INERTE = {
   status: 'idle', progress: { t: 0, d: 0 }, current: null,
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
-  thread: [], sending: false, paso: null, askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, kindDeCuotaDelError: null, codigoDelError: null, motivoSinVoz: null, modoLibro: false,
+  thread: [], sending: false, paso: null, pasos: [], askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, kindDeCuotaDelError: null, codigoDelError: null, motivoSinVoz: null, modoLibro: false,
   ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 
 export const useVoz = () => useContext(VozContext) || INERTE
+
+// ¿La respuesta acaba de llegar? Las pantallas la arman en escalera (veredicto,
+// cifras, gráficos) sólo en ese caso: una conversación que se vuelve a abrir, o
+// la misma respuesta al volver a la pantalla un rato después, aparece quieta.
+export const RECIEN_LLEGADA_MS = 4000
+
+// La lista de pasos del turno con el paso que acaba de mandar el servidor: se
+// agrega al final, salvo que sea vacío o el mismo de recién (el servidor puede
+// repetir el aviso mientras sigue en la misma tarea). Pura, para las pruebas.
+export function sumarPaso(lista, p) {
+  if (!p) return lista
+  return lista[lista.length - 1] === p ? lista : [...lista, p]
+}
+export function esRecienLlegada(m, ahora = Date.now()) {
+  return !!m?.llego && ahora - m.llego < RECIEN_LLEGADA_MS
+}

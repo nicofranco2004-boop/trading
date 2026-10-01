@@ -18,7 +18,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Volume2, VolumeX, X, Play, Pause, Send, Loader2, ArrowUpRight } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import { useMicrofono } from './BotonMicrofono'
-import { useVoz, RATES } from '../../contexts/VozContext'
+import { useVoz, RATES, esRecienLlegada } from '../../contexts/VozContext'
+import { entrada } from '../../hooks/useAlVerse'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 import { useArrastrable } from '../../hooks/useArrastrable'
 import { paraLaIsla } from '../ai/preguntasSugeridas'
@@ -268,7 +269,9 @@ export default function RendiMate() {
             (ver _PASOS_HUMANOS en main.py) cuando sale a buscar datos. La misma
             espera se hace corta cuando se entiende en qué se está yendo. */}
         {sending && (
-          <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-3">
+          // key = el paso: cada paso nuevo que manda el servidor entra en vez de
+          // reemplazar el texto de golpe.
+          <span key={paso || 'mirando'} className="entra inline-flex items-center gap-1.5 text-[12px] text-ink-3">
             <Loader2 size={12} className="animate-spin" aria-hidden="true" />
             {paso || 'Mirando tu cartera'}…
           </span>
@@ -280,7 +283,9 @@ export default function RendiMate() {
         {pills.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {pills.map((s, k) => (
-              <span key={k} className="rounded-lg border border-line-2 bg-bg-1 px-2 py-1 text-[11.5px] text-ink-2">
+              <span key={k} {...(esRecienLlegada(ultimo)
+                ? entrada(true, k, 'rounded-lg border border-line-2 bg-bg-1 px-2 py-1 text-[11.5px] text-ink-2')
+                : { className: 'rounded-lg border border-line-2 bg-bg-1 px-2 py-1 text-[11.5px] text-ink-2' })}>
                 {s.l}{' '}
                 <b className={`font-semibold tabular ${
                   s.t === 'pos' ? 'text-rendi-pos' : s.t === 'neg' ? 'text-rendi-neg'

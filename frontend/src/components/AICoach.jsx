@@ -15,7 +15,7 @@
 // el tono research-note.
 
 import { useState, useRef, useEffect } from 'react'
-import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity, Volume2, Pause, Loader2 } from 'lucide-react'
+import { Sparkles, AlertCircle, RotateCcw, Send, Lock, TrendingUp, TrendingDown, AlertTriangle, Activity, Volume2, Pause, Loader2, Check } from 'lucide-react'
 import { api } from '../utils/api'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAuth } from '../contexts/AuthContext'
@@ -24,7 +24,8 @@ import { trackEvent } from '../utils/analytics'
 import { markAIDiscovered } from './ai/AIDiscoveryBanner'
 import UpgradePromoCard, { kindDeCuota } from './ai/UpgradePromoCard'
 import { Link } from 'react-router-dom'
-import { useVoz } from '../contexts/VozContext'
+import { useVoz, esRecienLlegada } from '../contexts/VozContext'
+import { entrada } from '../hooks/useAlVerse'
 import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
@@ -83,7 +84,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   const { escuchar: vozEscuchar, toggle: vozToggle, stop: vozStop,
           status: vozStatus, current: vozCurrent,
           thread: messages, ask, limpiar,
-          sending, loading, paso, askError: error,
+          sending, loading, pasos, askError: error,
           upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError,
           motivoSinVoz } = useVoz()
   // ¿El audio de ESTE mensaje está CARGADO en el reproductor?
@@ -330,6 +331,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           const meta = m.meta || parseado?.meta
           const prose = m.meta ? m.content : parseado?.prose
           const isLastMsg = i === messages.length - 1
+          // La respuesta que ACABA de llegar se arma en escalera: veredicto,
+          // cifras y gráficos (esRecienLlegada, VozContext). Una conversación
+          // que se vuelve a abrir aparece quieta.
+          const recien = esRecienLlegada(m)
+          const anim = (k, clases) => (recien ? entrada(true, k, clases) : { className: clases })
           return (
             <div key={i} className="flex items-start gap-3">
               <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
@@ -339,7 +345,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                   const band = VERDICT_BAND[meta.tone] || VERDICT_BAND.neutral
                   const BandIcon = band.Icon
                   return (
-                    <div className={`flex items-center gap-3 rounded-xl border border-line px-3.5 py-2.5 mb-3 bg-gradient-to-r ${band.wash} to-transparent`}>
+                    <div {...anim(0, `flex items-center gap-3 rounded-xl border border-line px-3.5 py-2.5 mb-3 bg-gradient-to-r ${band.wash} to-transparent`)}>
                       <span className={`w-8 h-8 rounded-lg grid place-items-center flex-none ${band.ic}`}>
                         <BandIcon size={16} strokeWidth={1.75} aria-hidden="true" />
                       </span>
@@ -364,7 +370,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                       // lado: ocupa el ancho entero. En sm+ son 3 columnas.
                       const sola = meta.stats.length === 3 && k === 2
                       return (
-                        <div key={k} className={`relative overflow-hidden bg-bg-1 border border-line rounded-xl px-3.5 py-3 ${sola ? 'col-span-2 sm:col-span-1' : ''} ${t.wash ? `bg-gradient-to-b ${t.wash} to-transparent` : ''}`}>
+                        <div key={k} {...anim(1 + k, `relative overflow-hidden bg-bg-1 border border-line rounded-xl px-3.5 py-3 ${sola ? 'col-span-2 sm:col-span-1' : ''} ${t.wash ? `bg-gradient-to-b ${t.wash} to-transparent` : ''}`)}>
                           {t.bar && <span className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-r ${t.bar}`} aria-hidden />}
                           <div className="text-[11px] text-ink-2 font-semibold mb-1.5">{s.l}</div>
                           <div className={`text-[17px] font-bold num tabular leading-tight ${t.v}`}>{s.v}</div>
@@ -378,6 +384,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                     blocks={meta.blocks}
                     onSendMessage={send}
                     interactive={isLastMsg && !loading && !sending}
+                    animarDesde={recien ? 1 + (meta?.stats?.length || 0) : null}
                   />
                 )}
                 {/* ESCUCHAR. Va acá, debajo de la respuesta, porque es donde el
@@ -438,7 +445,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             y la misma espera se hace corta cuando se entiende en qué se va el
             tiempo. La frase la manda el backend (_PASOS_HUMANOS en main.py). */}
         {loading && (
-          <div className="flex justify-start items-center gap-2.5">
+          <div className="flex justify-start items-start gap-2.5">
             <div className="bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-4 py-2.5">
               <div className="flex gap-1.5">
                 <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -446,7 +453,22 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                 <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
             </div>
-            {paso && <span className="text-[12.5px] text-ink-3">{paso}…</span>}
+            {/* Los pasos de este turno, en orden: cada uno entra al llegar y
+                los que quedaron atrás llevan tilde. Son los que manda el
+                servidor (VozContext.pasos): ninguno inventado. */}
+            {pasos.length > 0 && (
+              <div className="flex flex-col gap-0.5 pt-2" aria-live="polite">
+                {pasos.map((p, k) => {
+                  const actual = k === pasos.length - 1
+                  return (
+                    <span key={k} className={`entra inline-flex items-center gap-1.5 text-[12.5px] ${actual ? 'text-ink-2' : 'text-ink-3'}`}>
+                      {!actual && <Check size={12} strokeWidth={2.25} className="text-rendi-pos flex-none" aria-hidden="true" />}
+                      {p}{actual ? '…' : ''}
+                    </span>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 

@@ -4,6 +4,9 @@
 // lugar de a la tabla administrativa /imports. Es el primer momento de
 // dopamina: "Acá está tu portfolio. Esto vale tu plata. Esto es lo que
 // movió la aguja". Después, CTA al Dashboard.
+// El valor de la cartera cuenta hasta su número (AnimatedNumber) y los tres
+// paneles entran de a uno: es la primera vez que esta persona ve su plata en
+// Rendi. Con "reducir movimiento", todo aparece quieto.
 //
 // Trigger: localStorage flag `rendi_first_import_done` se setea acá la
 // primera vez y nunca más vuelve. Si el user importa de nuevo no aparece.
@@ -18,6 +21,8 @@ import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
 import { track } from '../utils/track'
 import Panel from '../components/Panel'
+import AnimatedNumber from '../components/AnimatedNumber'
+import { entrada } from '../hooks/useAlVerse'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -217,8 +222,11 @@ export default function FirstInsight() {
       {/* Valor del portfolio */}
       <div className="border border-line rounded-xl bg-bg-1 px-6 py-8 mb-4">
         <div className="text-xs text-ink-3 mb-1">Valor de tu cartera</div>
+        {/* Cuenta hasta el valor: es el primer número que ve alguien que
+            acaba de importar. Real y ya calculado (esta pantalla espera los
+            precios antes de mostrarse), así que no salta después. */}
         <div className="text-5xl font-medium tabular num text-ink-0 tracking-tight">
-          {fmtUsd(stats.value)}
+          <AnimatedNumber value={stats.value} format={fmtUsd} />
         </div>
         <div className="mt-3 flex items-center gap-3 flex-wrap">
           <span className={`inline-flex items-center gap-1 text-sm font-medium ${isPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
@@ -234,9 +242,9 @@ export default function FirstInsight() {
         </div>
       </div>
 
-      {/* 3 stats simples */}
+      {/* 3 stats simples — entran de a uno mientras el total cuenta. */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-        <Panel padding="md">
+        <Panel padding="md" {...entrada(true, 2)}>
           <div className="text-xs text-ink-3 mb-1">Posiciones</div>
           <div className="text-2xl font-medium tabular text-ink-0">{stats.positionCount}</div>
           <div className="text-[11px] text-ink-3 mt-0.5">
@@ -245,26 +253,28 @@ export default function FirstInsight() {
         </Panel>
 
         {stats.best && stats.best.pnl_usd > 0 && (
-          <Panel padding="md">
+          <Panel padding="md" {...entrada(true, 3)}>
             <div className="text-xs text-ink-3 mb-1">Mejor activo</div>
             <div className="flex items-center gap-2">
               <AssetLogo asset={stats.best.asset} size={20} />
               <span className="text-base font-medium text-ink-0">{stats.best.asset}</span>
             </div>
-            <div className="text-[11px] text-rendi-pos tabular mt-0.5 font-mono">
+            <div className="text-[11px] text-rendi-pos tabular mt-0.5">
               +{usd(stats.best.pnl_usd)} USD
             </div>
           </Panel>
         )}
 
         {stats.worst && stats.worst.pnl_usd < 0 && (
-          <Panel padding="md">
+          // Su turno depende de si hubo "Mejor activo": sin él, entra justo
+          // después de "Posiciones" en vez de dejar un hueco en la escalera.
+          <Panel padding="md" {...entrada(true, stats.best && stats.best.pnl_usd > 0 ? 4 : 3)}>
             <div className="text-xs text-ink-3 mb-1">Peor activo</div>
             <div className="flex items-center gap-2">
               <AssetLogo asset={stats.worst.asset} size={20} />
               <span className="text-base font-medium text-ink-0">{stats.worst.asset}</span>
             </div>
-            <div className="text-[11px] text-rendi-neg tabular mt-0.5 font-mono">
+            <div className="text-[11px] text-rendi-neg tabular mt-0.5">
               −{usd(Math.abs(stats.worst.pnl_usd))} USD
             </div>
           </Panel>

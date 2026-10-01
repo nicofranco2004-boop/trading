@@ -20,6 +20,7 @@ import {
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { parseNum } from '../../utils/format'
 import { porcionColor, PORCION_RESTO } from '../../utils/chartTheme'
+import { entrada } from '../../hooks/useAlVerse'
 
 // Composición: la rampa violeta de utils/chartTheme (porcionColor), la misma
 // de toda torta o barra de composición de la app. Hasta 2026-09-29 usaba la
@@ -33,23 +34,52 @@ const TONE_TEXT = {
 // onSendMessage(text): manda un mensaje al chat como si el usuario lo tipeara
 // (submit del form de registro / botón Confirmar). interactive: solo el ÚLTIMO
 // mensaje del hilo tiene controles vivos — forms de turnos viejos se congelan.
-export default function AIBlocks({ blocks, onSendMessage = null, interactive = false }) {
+// animarDesde: null = quieto (una respuesta vieja, o una conversación que se
+// vuelve a abrir). Un número = la respuesta ACABA de llegar (esRecienLlegada,
+// VozContext): cada bloque entra en escalera empezando en ese turno (lo que va
+// antes —veredicto y cifras— ya usó los primeros), y adentro las barras
+// crecen y la torta de "Composición" aparece por porciones.
+export default function AIBlocks({ blocks, onSendMessage = null, interactive = false, animarDesde = null }) {
   if (!blocks?.length) return null
+  const animar = animarDesde != null
   return (
     <div className="space-y-3 mt-3">
       {blocks.map((b, i) => {
+        let bloque
         switch (b.type) {
-          case 'compare':  return <CompareBlock key={i} {...b} />
-          case 'alloc':    return <AllocBlock key={i} {...b} />
-          case 'scenario': return <ScenarioBlock key={i} {...b} />
-          case 'table':    return <TableBlock key={i} {...b} />
-          case 'actions':  return <ActionsBlock key={i} {...b} />
-          case 'form':     return <FormBlock key={i} {...b} onSendMessage={onSendMessage} interactive={interactive} />
-          case 'confirm':  return <ConfirmBlock key={i} {...b} onSendMessage={onSendMessage} interactive={interactive} />
-          case 'client_list': return <ClientListBlock key={i} {...b} />
+          case 'compare':  bloque = <CompareBlock {...b} animar={animar} />; break
+          case 'alloc':    bloque = <AllocBlock {...b} animar={animar} />; break
+          case 'scenario': bloque = <ScenarioBlock {...b} />; break
+          case 'table':    bloque = <TableBlock {...b} />; break
+          case 'actions':  bloque = <ActionsBlock {...b} />; break
+          case 'form':     bloque = <FormBlock {...b} onSendMessage={onSendMessage} interactive={interactive} />; break
+          case 'confirm':  bloque = <ConfirmBlock {...b} onSendMessage={onSendMessage} interactive={interactive} />; break
+          case 'client_list': bloque = <ClientListBlock {...b} animar={animar} />; break
           default:         return null
         }
+        return <div key={i} {...(animar ? entrada(true, animarDesde + i) : {})}>{bloque}</div>
       })}
+    </div>
+  )
+}
+
+// La barra de un bloque de barras ("Comparación" y "Tus clientes"): el mismo
+// dibujo en los dos, antes copiado. La primera fila va con el color propio del
+// bloque; las demás en gris. Con `animar` crece desde la izquierda
+// (.crece-ancho), una detrás de otra: la transición de ancho que tenía nunca
+// se veía, porque la barra nacía ya con su ancho final.
+function BarraDeBloque({ n, max, i, colorPrimera, animar }) {
+  return (
+    <div className="h-[20px] rounded-lg bg-bg-2 overflow-hidden">
+      <div
+        className={`h-full rounded-lg transition-[width] duration-500 ${animar ? 'crece-ancho' : ''}`}
+        style={{
+          '--fila': i,   // --i lo hereda del bloque (su turno de entrada)
+          width: `${Math.max(5, Math.min(100, (n / max) * 100))}%`,
+          background: i === 0 ? colorPrimera : 'rgb(var(--ink-3))',
+          opacity: i === 0 ? 1 : 0.55,
+        }}
+      />
     </div>
   )
 }
@@ -84,7 +114,7 @@ function BlockCard({ title, children }) {
 // pct opcional (0-100). Si falta, se deriva del número parseado de `v`
 // normalizado contra el máximo (best-effort — el modelo debería mandarlo).
 // Primer item = el usuario → barra con gradiente violeta→cyan.
-function CompareBlock({ items, title }) {
+function CompareBlock({ items, title, animar = false }) {
   const parsed = items.map(it => ({ ...it, n: it.pct ?? parseMoneyish(it.v) }))
   const max = Math.max(...parsed.map(p => p.n), 1)
   return (
@@ -93,18 +123,8 @@ function CompareBlock({ items, title }) {
         {parsed.map((it, i) => (
           <div key={i} className="grid items-center gap-3" style={{ gridTemplateColumns: '104px 1fr 74px' }}>
             <span className={`text-[12.5px] truncate font-medium ${i === 0 ? 'text-ink-0' : 'text-ink-2'}`}>{it.l}</span>
-            <div className="h-[20px] rounded-lg bg-bg-2 overflow-hidden">
-              <div
-                className="h-full rounded-lg transition-[width] duration-500"
-                style={{
-                  width: `${Math.max(5, Math.min(100, (it.n / max) * 100))}%`,
-                  background: i === 0
-                    ? 'linear-gradient(90deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))'
-                    : 'rgb(var(--ink-3))',
-                  opacity: i === 0 ? 1 : 0.55,
-                }}
-              />
-            </div>
+            <BarraDeBloque n={it.n} max={max} i={i} animar={animar}
+              colorPrimera="linear-gradient(90deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))" />
             <span className={`text-[13px] font-bold num tabular text-right ${i === 0 ? 'text-data-violet' : 'text-ink-2'}`}>{it.v}</span>
           </div>
         ))}
@@ -121,7 +141,7 @@ function CompareBlock({ items, title }) {
 // Dashboard y el libro del asesor; el centro lo lleva el activo más grande.
 const ES_RESTO = /^(otros|otras|resto|el resto|los dem[aá]s|dem[aá]s)\b/i
 
-function AllocBlock({ items, title }) {
+function AllocBlock({ items, title, animar = false }) {
   const total = items.reduce((s, it) => s + it.pct, 0) || 1
   const porPeso = (a, b) => b.pct - a.pct
   const reales = items.filter(it => !ES_RESTO.test(String(it.l).trim())).sort(porPeso)
@@ -142,7 +162,8 @@ function AllocBlock({ items, title }) {
           <circle cx="21" cy="21" r="15.9155" fill="none" stroke="currentColor" className="text-bg-2" strokeWidth="6" />
           {segs.map((s, i) => (
             <circle key={i} cx="21" cy="21" r="15.9155" fill="none" stroke={s.color} strokeWidth="6"
-              strokeDasharray={`${s.w} ${100 - s.w}`} strokeDashoffset={s.offset} />
+              strokeDasharray={`${s.w} ${100 - s.w}`} strokeDashoffset={s.offset}
+              className={animar ? 'porcion-aparece' : undefined} style={animar ? { '--fila': i } : undefined} />
           ))}
           <text x="21" y="20.2" textAnchor="middle" className="fill-ink-0" style={{ fontSize: 7, fontWeight: 700 }}>
             {Math.round(top.pct)}%
@@ -240,7 +261,7 @@ function TableCell({ cell, first }) {
 // aprobado por Nico). "Entrar" setea el contexto de cliente y navega a SU
 // dashboard, igual que la card del roster. Solo si el item trae `id` (y un
 // id inventado no filtra nada: el resolver valida el vínculo en cada request).
-function ClientListBlock({ items, title }) {
+function ClientListBlock({ items, title, animar = false }) {
   const navigate = useNavigate()
   const { enterClient } = useAdvisorContext()
   const parsed = items.map(it => ({ ...it, n: it.pct ?? parseMoneyish(it.v) }))
@@ -255,18 +276,8 @@ function ClientListBlock({ items, title }) {
         {parsed.map((it, i) => (
           <div key={i} className="grid items-center gap-3" style={{ gridTemplateColumns: '92px 1fr auto' }}>
             <span className={`text-[12.5px] truncate font-medium ${i === 0 ? 'text-ink-0' : 'text-ink-2'}`}>{it.l}</span>
-            <div className="h-[20px] rounded-lg bg-bg-2 overflow-hidden">
-              <div
-                className="h-full rounded-lg transition-[width] duration-500"
-                style={{
-                  width: `${Math.max(5, Math.min(100, (it.n / max) * 100))}%`,
-                  background: i === 0
-                    ? 'linear-gradient(90deg, rgb(var(--rendi-violet-hover)), rgb(var(--data-violet)))'
-                    : 'rgb(var(--ink-3))',
-                  opacity: i === 0 ? 1 : 0.55,
-                }}
-              />
-            </div>
+            <BarraDeBloque n={it.n} max={max} i={i} animar={animar}
+              colorPrimera="linear-gradient(90deg, rgb(var(--rendi-violet-hover)), rgb(var(--data-violet)))" />
             <div className="flex items-center gap-2.5 justify-end">
               <span className="text-right num tabular">
                 <span className={`block text-[13px] font-bold ${i === 0 ? 'text-data-violet' : 'text-ink-1'}`}>{it.v}</span>
