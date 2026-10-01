@@ -33,7 +33,6 @@ import sqlite3
 import sys
 import threading
 import time
-from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -52,73 +51,9 @@ PAUSA = emails.PAUSA_ENTRE_ENVIOS
 DOMINIO = "buzon-de-prueba.com"   # NO reservado: `_send` sólo pide para direcciones reales
 
 
-# ─── Resend y reloj de mentira ───────────────────────────────────────────────
-
-class _Reloj:
-    """El `time` que ve `billing.emails`: `sleep` avanza el reloj en vez de
-    esperar, y anota cuánto se pidió dormir."""
-
-    def __init__(self):
-        self.ahora = 1000.0
-        self.siestas = []
-
-    def monotonic(self):
-        return self.ahora
-
-    def sleep(self, s):
-        self.siestas.append(s)
-        self.ahora += s
-
-
-class _Resend:
-    """Hace de Resend: anota cada pedido (hora, destinatario) y contesta lo que
-    el test haya encolado para ese destinatario — un código HTTP o una
-    excepción de httpx —, o 200."""
-
-    def __init__(self, reloj=None, demora=0.3):
-        self.reloj = reloj
-        self.demora = demora            # lo que tarda en contestar (reloj de mentira)
-        self.pedidos = []               # [(hora, to)]
-        self.respuestas = {}            # to -> [200 | 429 | Exception, ...]
-        self._lock = threading.Lock()
-
-    def post(self, url, headers=None, json=None, timeout=None):
-        assert url == "https://api.resend.com/emails"
-        to = json["to"][0]
-        with self._lock:
-            hora = self.reloj.ahora if self.reloj else time.monotonic()
-            self.pedidos.append((hora, to))
-            if self.reloj:
-                self.reloj.ahora += self.demora
-            cola = self.respuestas.get(to) or []
-            r = cola.pop(0) if cola else 200
-        if isinstance(r, Exception):
-            raise r
-        return httpx.Response(r, json={"id": "re_x"},
-                              request=httpx.Request("POST", url))
-
-    def a(self, to):
-        return [h for h, t in self.pedidos if t == to]
-
-
-@contextmanager
-def _red_de_mentira(reloj=None, demora=0.3):
-    resend = _Resend(reloj, demora)
-    with ExitStack() as st:
-        st.enter_context(patch.object(emails, "_running_under_pytest", lambda: False))
-        st.enter_context(patch.object(emails, "_api_key", lambda: "re_de_mentira"))
-        # `create=True`: así el archivo corre ENTERO contra el código de antes
-        # de la pausa central y falla por lo que mide, no por un nombre que falta.
-        st.enter_context(patch.object(emails, "_ultimo_pedido", None, create=True))
-        st.enter_context(patch("httpx.post", resend.post))
-        if reloj is not None:
-            st.enter_context(patch.object(emails, "time", reloj, create=True))
-        yield resend
-
-
-def _separaciones(horas):
-    horas = sorted(horas)
-    return [b - a for a, b in zip(horas, horas[1:])]
+# ─── Resend y reloj de mentira (tests/_resend_falso.py) ──────────────────────
+from tests._resend_falso import (                               # noqa: E402
+    Reloj as _Reloj, red_de_mentira as _red_de_mentira, separaciones as _separaciones)
 
 
 # ─── La base ─────────────────────────────────────────────────────────────────

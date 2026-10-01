@@ -474,15 +474,18 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         self.assertEqual(self._vista()["lote"], lote)
 
     def test_entre_mail_y_mail_hay_pausa(self):
+        """La pausa la pone `emails._send` (ver test_ritmo_de_envio.py): se mide
+        en los pedidos que le llegan a Resend, con el mail de verdad."""
+        from tests._resend_falso import Reloj, red_de_mentira, separaciones
         for _ in range(3):
             self._con_prueba(self._persona())
-        with patch("billing.emails.send_trial_feedback", return_value=True), \
-             patch("main.time.sleep") as dormir:
+        with red_de_mentira(Reloj(), direcciones_de_prueba=True) as resend:
             r = self.client.post(URL, json={"confirm": True, "vistos": self._vistos()},
                                  headers=self.headers)
         self.assertEqual(r.json()["sent_count"], 3)
-        self.assertEqual([c.args[0] for c in dormir.call_args_list],
-                         [emails.PAUSA_ENTRE_ENVIOS] * 2)   # entre 3 mails, 2 pausas
+        self.assertEqual(len(resend.pedidos), 3)
+        self.assertTrue(all(x >= emails.PAUSA_ENTRE_ENVIOS - 1e-9
+                            for x in separaciones(resend.horas())), resend.pedidos)
 
     def test_si_no_se_puede_devolver_la_marca_se_informa(self):
         uid = self._con_prueba(self._persona())

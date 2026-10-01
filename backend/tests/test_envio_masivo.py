@@ -199,15 +199,19 @@ class EnvioMasivo(unittest.TestCase):
     # ── 1. pausa ────────────────────────────────────────────────────────────
 
     def test_entre_mail_y_mail_hay_pausa(self):
+        """La pausa la pone `emails._send`, para todo el proceso (ver
+        test_ritmo_de_envio.py). Se mide donde importa: en los pedidos que le
+        llegan a Resend, con el mail de verdad de cada campaña."""
+        from tests._resend_falso import Reloj, red_de_mentira, separaciones
         for campaña in self._cada_campaña():
             self._personas(3)
             vistos = self._vistos(campaña)
-            with patch(f"billing.emails.{CAMPAÑAS[campaña]['manda']}", return_value=True), \
-                 patch("main.time.sleep") as dormir:
+            with red_de_mentira(Reloj(), direcciones_de_prueba=True) as resend:
                 r = self._post(campaña, vistos)
             self.assertEqual(r.json()["sent_count"], 3)
-            self.assertEqual([c.args[0] for c in dormir.call_args_list],
-                             [emails.PAUSA_ENTRE_ENVIOS] * 2)   # entre 3 mails, 2 pausas
+            self.assertEqual(len(resend.pedidos), 3)
+            self.assertTrue(all(x >= emails.PAUSA_ENTRE_ENVIOS - 1e-9
+                                for x in separaciones(resend.horas())), resend.pedidos)
 
     def test_la_pausa_es_la_del_servicio_de_mail(self):
         # Una sola constante para todos los envíos, al lado de `_send`.

@@ -21304,9 +21304,10 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 # su loop y cada arreglo quedaba en uno solo: el de feedback tenía pausa, tandas
 # y freno al doble click, y los otros cuatro mandaban todo de un tirón.
 #
-# LOTE: cuántos mails manda cada pedido. Con la pausa entre envíos (0,6 s) más lo
-# que tarda Resend (~0,3 s), 20 mails son ~18 s: por debajo del corte de ~30 s
-# del proxy de Vercel. Con todo en un solo pedido, a partir de ~30 personas el
+# LOTE: cuántos mails manda cada pedido. Con la pausa entre envíos (0,6 s entre
+# un pedido a Resend y el siguiente, ver `emails._esperar_turno`), 20 mails son
+# ~12 s; con Resend lento, el tope de abajo: por debajo del corte de ~30 s del
+# proxy de Vercel. Con todo en un solo pedido, a partir de ~30 personas el
 # admin veía un error mientras los mails seguían saliendo — y volvía a apretar.
 # El panel parte la lista en tandas de este tamaño solo.
 ENVIO_MASIVO_LOTE = 20
@@ -21516,9 +21517,11 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
          no la pueden ganar los dos. Ojo: "salteado" quiere decir que otro
          pedido se la estaba mandando, no que le llegó — si a ese otro le
          falla, la persona vuelve a la lista.
-      2. Pausa de `emails.PAUSA_ENTRE_ENVIOS` entre un envío y el siguiente.
-         Resend rechaza lo que pasa de su tope de pedidos por segundo, y un
-         rechazo es un mail que no llega.
+      2. Entre un envío y el siguiente pasan `emails.PAUSA_ENTRE_ENVIOS`: la
+         pausa la pone `emails._send` para todo el proceso (si al mismo
+         tiempo corre un cron que manda mails, se turnan). Resend rechaza lo
+         que pasa de su tope de pedidos por segundo, y un rechazo es un mail
+         que no llega.
       3. `mandar(t)` → True si salió.
       4. Si Resend no contestó a tiempo o dio un 5xx, el mail PUDO haber salido
          (`emails.resultado_del_ultimo_envio()` == INCIERTO): la marca se deja
@@ -21551,7 +21554,6 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
 
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     ya_no_estan = []
-    intentos = 0
     inciertos_seguidos = min(max(int(inciertos_previos or 0), 0), ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
     frenado = False
     if inicio is None:
@@ -21575,9 +21577,6 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         if marca is None:
             salteados.append(quien)
             continue
-        if intentos:
-            time.sleep(emails.PAUSA_ENTRE_ENVIOS)
-        intentos += 1
         log.info("%s: marcado uid=%s, mandando", campaña, t["id"])
         # Si `mandar` falla antes de llegar a `_send`, que no quede lo del mail
         # anterior: un INCIERTO viejo dejaría marcado a alguien sin intentarlo.
