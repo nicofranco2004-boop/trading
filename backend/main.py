@@ -21264,6 +21264,12 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 # admin veía un error mientras los mails seguían saliendo — y volvía a apretar.
 # El panel parte la lista en tandas de este tamaño solo.
 ENVIO_MASIVO_LOTE = 20
+# Segundos después de los cuales un pedido no EMPIEZA otro mail: los que quedan
+# vuelven al panel en `pendientes` y salen en el pedido siguiente. El lote de 20
+# supone ~0,3 s por mail; si Resend se pone lento (`_send` espera hasta 10 s),
+# 20 mails volvían a pasar el corte de 30 s. Con 18: el último mail que arranca
+# termina, en el peor caso, en 18 + 0,6 de pausa + 10 de espera < 30.
+ENVIO_MASIVO_PRESUPUESTO_SEG = 18
 # Horas que tienen que pasar para "reenviar" el MISMO mail a alguien que ya lo
 # recibió (re-engagement y regalo de plan). Sin esto, si un reenvío se cortaba a
 # la mitad y el admin volvía a apretar, a los de las primeras tandas les llegaba
@@ -21434,23 +21440,42 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
       1. `marcar(t)` se queda con la persona ANTES de mandar. Devuelve la marca,
          o None si ya la tiene otro pedido (doble click, otra pestaña) → se
          saltea. Se gana con un UPDATE/INSERT condicional: dos pedidos a la vez
-         no la pueden ganar los dos.
+         no la pueden ganar los dos. Ojo: "salteado" quiere decir que otro
+         pedido se la estaba mandando, no que le llegó — si a ese otro le
+         falla, la persona vuelve a la lista.
       2. Pausa de `emails.PAUSA_ENTRE_ENVIOS` entre un envío y el siguiente.
          Resend rechaza lo que pasa de su tope de pedidos por segundo, y un
          rechazo es un mail que no llega.
       3. `mandar(t)` → True si salió.
-      4. Si no salió, `desmarcar(t, marca)` la deja como estaba (dos intentos,
-         con un rollback en el medio). Si ni así, va en `marcas_trabadas`:
-         quedó marcada sin haber recibido nada, y el panel lo tiene que decir.
+      4. Si Resend no contestó a tiempo o dio un 5xx, el mail PUDO haber salido
+         (`emails.resultado_del_ultimo_envio()` == INCIERTO): la marca se deja
+         y la persona va en `inciertos`. Devolverla la ponía otra vez como
+         pendiente, y el click siguiente le mandaba un segundo mail.
+      5. Si seguro no salió, `desmarcar(t, marca)` la deja como estaba (dos
+         intentos, con un rollback en el medio). Si ni así, va en
+         `marcas_trabadas`: quedó marcada sin haber recibido nada, y el panel
+         lo tiene que decir.
 
     Se marca antes y no después porque cambia el peor caso: si el proceso se
-    cae entre la marca y el envío, a alguien no le llega (y se ve); con la
-    marca después, a alguien le llega dos veces."""
+    cae entre la marca y el envío (un deploy a mitad de una tanda), a esa
+    persona no le llega y queda marcada como que sí — el panel no lo puede
+    distinguir; en el log del servidor queda su "marcado … mandando" sin el
+    "Email sent" de después. Con la marca después, a alguien le llegaría dos
+    veces.
+
+    Pasados ENVIO_MASIVO_PRESUPUESTO_SEG no se empieza otro mail: los que
+    faltan vuelven en `pendientes` (sin tocar) y el panel los manda en el
+    pedido siguiente. Siempre se intenta al menos uno, así que cada pedido
+    avanza."""
     from billing import emails
 
-    enviados, fallados, salteados, trabadas = [], [], [], []
+    enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     intentos = 0
-    for t in destinatarios:
+    inicio = time.monotonic()
+    for i, t in enumerate(destinatarios):
+        if intentos and time.monotonic() - inicio > ENVIO_MASIVO_PRESUPUESTO_SEG:
+            pendientes = [{"id": x["id"]} for x in destinatarios[i:]]
+            break
         quien = {"id": t["id"], "email": t["email"]}
         try:
             marca = marcar(t)
@@ -21466,6 +21491,8 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         if intentos:
             time.sleep(emails.PAUSA_ENTRE_ENVIOS)
         intentos += 1
+        log.info("%s: marcado uid=%s, mandando", campaña, t["id"])
+        emails.olvidar_resultado_del_envio()
         try:
             ok = bool(mandar(t))
         except Exception as ex:
@@ -21473,6 +21500,10 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
             ok = False
         if ok:
             enviados.append(quien)
+            continue
+        if emails.resultado_del_ultimo_envio() == emails.ENVIO_INCIERTO:
+            log.warning("%s: no se sabe si le llegó a uid=%s; queda marcado", campaña, t["id"])
+            inciertos.append(quien)
             continue
         devuelta = False
         for _ in range(2):
@@ -21490,9 +21521,9 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
 
     ids = {t["id"] for t in destinatarios}
     descartados = [{"id": i} for i in vistos if i not in ids]
-    log.info("%s: enviados=%d fallados=%d salteados=%d descartados=%d trabadas=%d",
-             campaña, len(enviados), len(fallados), len(salteados), len(descartados),
-             len(trabadas))
+    log.info("%s: enviados=%d fallados=%d salteados=%d descartados=%d trabadas=%d "
+             "inciertos=%d pendientes=%d", campaña, len(enviados), len(fallados),
+             len(salteados), len(descartados), len(trabadas), len(inciertos), len(pendientes))
     return {
         "dry_run": False,
         "sent_count": len(enviados),
@@ -21503,6 +21534,12 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         "failed": fallados,
         "skipped": salteados,
         "marcas_trabadas": trabadas,
+        # Resend no confirmó: pudo haberles llegado. Quedan marcados (no se les
+        # vuelve a mandar) y el panel dice a quiénes mirar en Resend.
+        "inciertos": inciertos,
+        # No se llegaron a intentar (se acabó el tiempo del pedido): sin marca,
+        # el panel los vuelve a mandar en el pedido siguiente.
+        "pendientes": pendientes,
     }
 
 

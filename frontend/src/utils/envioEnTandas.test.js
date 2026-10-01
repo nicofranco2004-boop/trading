@@ -44,12 +44,13 @@ describe('enviarEnTandas', () => {
     const respuestas = [
       { sent_count: 18, failed_count: 1, skipped_count: 1, discarded_count: 0, marcas_trabadas: [] },
       { sent_count: 3, failed_count: 0, skipped_count: 0, discarded_count: 2,
-        marcas_trabadas: [{ id: 30, email: 'a@b.c' }] },
+        marcas_trabadas: [{ id: 30, email: 'a@b.c' }], inciertos: [{ id: 31, email: 'd@e.f' }] },
     ]
     const post = vi.fn(async () => respuestas.shift())
     const r = await enviarEnTandas({ post, url: '/x', vistos: personas(25), lote: 20 })
     expect(r).toMatchObject({ sent_count: 21, failed_count: 1, skipped_count: 1, discarded_count: 2 })
     expect(r.marcas_trabadas).toEqual([{ id: 30, email: 'a@b.c' }])
+    expect(r.inciertos).toEqual([{ id: 31, email: 'd@e.f' }])
   })
 
   it('si una tanda falla, corta ahí y devuelve lo que ya salió', async () => {
@@ -72,6 +73,47 @@ describe('enviarEnTandas', () => {
                            alAvanzar: p => pasos.push(textoDeProgreso(p)) })
     expect(pasos).toEqual(['Enviando 1–20 de 25…', 'Enviando 21–25 de 25…'])
     expect(textoDeProgreso(null)).toBe('Enviando…')
+  })
+
+  it('los que el servidor no llegó a intentar vuelven en el pedido siguiente', async () => {
+    // Resend lento: al primer pedido se le acaba el tiempo después de 12.
+    const respuestas = [
+      { sent_count: 12, pendientes: Array.from({ length: 8 }, (_, i) => ({ id: 13 + i })) },
+    ]
+    const post = vi.fn(async (_u, body) =>
+      respuestas.shift() || { sent_count: body.vistos.length, pendientes: [] })
+    const pasos = []
+    const r = await enviarEnTandas({ post, url: '/x', vistos: personas(25), lote: 20,
+                                     alAvanzar: p => pasos.push(textoDeProgreso(p)) })
+    const ids = post.mock.calls.map(c => c[1].vistos.map(v => v.id))
+    expect(ids[0]).toEqual(personas(20).map(p => p.id))
+    expect(ids[1]).toEqual([13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25])  // 8 devueltos + 5
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(r.sent_count).toBe(25)
+    expect(r.cortado).toBeUndefined()
+    expect(pasos).toEqual(['Enviando 1–20 de 25…', 'Enviando 13–25 de 25…'])
+  })
+
+  it('si el servidor devuelve la tanda entera sin intentar, corta en vez de girar para siempre', async () => {
+    const post = vi.fn(async (_u, body) => ({ sent_count: 0, pendientes: body.vistos }))
+    const r = await enviarEnTandas({ post, url: '/x', vistos: personas(5), lote: 20 })
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(r.cortado).toBe(true)
+  })
+
+  it('si el panel se fue, no manda la tanda siguiente', async () => {
+    let vivo = true
+    const post = vi.fn(async (_u, body) => { vivo = false; return { sent_count: body.vistos.length } })
+    const r = await enviarEnTandas({ post, url: '/x', vistos: personas(45), lote: 20,
+                                     seguir: () => vivo })
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(r.sent_count).toBe(20)
+    expect(r.cortado).toBe(true)
+  })
+
+  it('dice qué está haciendo después de la última tanda', () => {
+    expect(textoDeProgreso({ fase: 'esperando' })).toBe('Esperando que termine la tanda cortada…')
+    expect(textoDeProgreso({ fase: 'recargando' })).toBe('Actualizando la lista…')
   })
 
   it('con la lista vacía no pide nada', async () => {

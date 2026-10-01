@@ -230,6 +230,29 @@ class EnvioMasivo(unittest.TestCase):
                 self.assertEqual(sin_lista.status_code, 422)
             spy.assert_not_called()
 
+    def test_si_se_acaba_el_tiempo_del_pedido_devuelve_los_que_faltan_sin_marcar(self):
+        """Resend lento: el pedido no empieza otro mail pasado el presupuesto, y
+        los que no intentó vuelven sin marca para el pedido siguiente. Con
+        presupuesto vencido desde el arranque, cada pedido manda UNO (siempre
+        avanza) y el panel, reenviando los pendientes, termina con todos."""
+        for campaña in self._cada_campaña():
+            ids = self._personas(3)
+            cola = self._vistos(campaña)
+            pedidos, enviados = 0, []
+            with patch.object(main, "ENVIO_MASIVO_PRESUPUESTO_SEG", -1):
+                while cola:
+                    res, spy = self._mandar(campaña, cola)
+                    pedidos += 1
+                    self.assertEqual(spy.call_count, 1)
+                    enviados += [x["id"] for x in res["sent"]]
+                    quedan = {p["id"] for p in res["pendientes"]}
+                    for uid in quedan:
+                        self.assertIsNone(self._marca(campaña, uid),
+                                          "quedó marcado alguien que no se intentó")
+                    cola = [v for v in cola if v["id"] in quedan]
+            self.assertEqual(pedidos, 3)
+            self.assertEqual(sorted(enviados), sorted(ids))
+
     def test_solo_les_llega_a_los_que_vio_el_admin(self):
         for campaña in self._cada_campaña():
             ids = self._personas(5)
@@ -301,6 +324,68 @@ class EnvioMasivo(unittest.TestCase):
             self.assertEqual({v["id"] for v in self._vistos(campaña)}, set(ids))
             otra, _ = self._mandar(campaña)
             self.assertEqual(otra["sent_count"], 2)
+
+    def _mandar_por_resend(self, campaña, vistos, respuesta):
+        """El envío de verdad hasta la llamada a Resend: `respuesta` es lo que
+        devuelve (un código) o lo que tira (una excepción) `httpx.post`."""
+        import httpx
+
+        class _R:
+            def __init__(self, code):
+                self.status_code, self.text = code, "x"
+
+        def _post(*a, **k):
+            if isinstance(respuesta, Exception):
+                raise respuesta
+            return _R(respuesta)
+
+        with patch.object(emails, "_running_under_pytest", return_value=False), \
+             patch.object(emails, "_is_test_address", return_value=False), \
+             patch.object(emails, "_is_configured", return_value=True), \
+             patch.object(emails, "_api_key", return_value="re_test"), \
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0), \
+             patch.object(httpx, "post", side_effect=_post) as spy:
+            r = self._post(campaña, vistos)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json(), spy
+
+    def test_si_resend_no_contesta_a_tiempo_queda_marcado_y_no_se_le_vuelve_a_mandar(self):
+        """Resend recibe el pedido, manda el mail y su respuesta no llega en
+        10 s. Devolver la marca lo ponía otra vez como pendiente y el click
+        siguiente le mandaba un segundo mail (lo reprodujo la auditoría)."""
+        import httpx
+        for campaña in self._cada_campaña():
+            uid = self._personas(1)[0]
+            vistos = self._vistos(campaña)
+            res, _ = self._mandar_por_resend(campaña, vistos, httpx.ReadTimeout("lento"))
+            self.assertEqual([t["id"] for t in res["inciertos"]], [uid])
+            self.assertEqual(res["sent_count"], 0)
+            self.assertEqual(res["failed_count"], 0)
+            self.assertIsNotNone(self._marca(campaña, uid), "se devolvió la marca")
+            # Ni la vista previa lo ofrece, ni un pedido con la lista vieja lo manda.
+            self.assertNotIn(uid, {v["id"] for v in self._vistos(campaña)})
+            otra, spy = self._mandar_por_resend(campaña, vistos, 200)
+            spy.assert_not_called()
+            self.assertEqual(otra["sent_count"], 0)
+
+    def test_un_5xx_de_resend_tambien_es_incierto(self):
+        uid = self._personas(1)[0]
+        res, _ = self._mandar_por_resend("broadcast", self._vistos("broadcast"), 503)
+        self.assertEqual([t["id"] for t in res["inciertos"]], [uid])
+        self.assertIsNotNone(self._marca("broadcast", uid))
+
+    def test_si_resend_lo_rechaza_seguro_se_devuelve_la_marca(self):
+        """429 (muy rápido) o sin conexión: el mail no salió, la persona vuelve
+        a la lista para el próximo intento."""
+        import httpx
+        for respuesta in (429, 422, httpx.ConnectError("sin red")):
+            for campaña in self._cada_campaña():
+                with self.subTest(respuesta=repr(respuesta)):
+                    uid = self._personas(1)[0]
+                    res, _ = self._mandar_por_resend(campaña, self._vistos(campaña), respuesta)
+                    self.assertEqual(res["failed_count"], 1)
+                    self.assertEqual(res["inciertos"], [])
+                    self.assertIsNone(self._marca(campaña, uid))
 
     def test_si_no_se_puede_borrar_la_anotacion_del_mail_libre_se_informa(self):
         uid = self._personas(1)[0]
