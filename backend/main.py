@@ -31742,6 +31742,10 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
     client = _get_anthropic_client()
     if client is None:
         raise HTTPException(503, "AI no configurada (falta ANTHROPIC_API_KEY)")
+    # TEMPORAL (diagnóstico): ver _diag_cliente_con_reloj.
+    _registro_api = None
+    if request.query_params.get("reloj") == "1" and _diag_es_admin(request, uid):
+        client, _registro_api = _diag_cliente_con_reloj()
 
     from ai import quota
 
@@ -32600,7 +32604,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                                  state["synth_deltas"], uid)
 
         return _respuesta_sse(
-            _diag_reloj(_sse()) if request.query_params.get("reloj") == "1" else _sse())
+            _diag_reloj(_sse(), _registro_api) if request.query_params.get("reloj") == "1" else _sse())
 
     try:
         for _loop_i in range(MAX_TOOL_LOOPS + (2 if _force_register else 1)):
@@ -39617,7 +39621,7 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
 # fabricarlo (la IA, las herramientas); pedido−listo_anterior es lo que tardó
 # el servidor en volver a pedir (mandar + conseguir un hilo libre). Comparado
 # con la hora de llegada al navegador, dice qué eslabón junta los avisos.
-def _diag_reloj(gen):
+def _diag_reloj(gen, registro=None):
     t0 = time.monotonic()
     try:
         while True:
@@ -39627,10 +39631,84 @@ def _diag_reloj(gen):
             except StopIteration:
                 return
             listo = time.monotonic() - t0
-            yield (f": reloj pedido={pedido:.3f} listo={listo:.3f} "
+            api = ""
+            while registro:
+                t, n, tipos = registro.pop(0)
+                api += (f": api t={t - t0:.3f} bytes={n} "
+                        + ",".join(f"{k}x{v}" for k, v in tipos.items()) + "\n")
+            yield (api + f": reloj pedido={pedido:.3f} listo={listo:.3f} "
                    f"hilos={threading.active_count()}\n\n" + frame)
     finally:
         gen.close()
+
+
+# TEMPORAL (diagnóstico 2026-10-01, sólo admin con ?reloj=1): ¿qué hace la IA
+# en los ~13 s en que no llega nada? Un cliente de Anthropic aparte, cuyo
+# transporte anota cuándo llega cada pedazo de bytes desde Anthropic y qué
+# eventos trae (pensamiento, texto, ping…). El chat normal no lo usa.
+def _diag_es_admin(request, uid) -> bool:
+    try:
+        with db_abierta() as conn:
+            row = conn.execute("SELECT is_admin FROM users WHERE id=?",
+                               (_auth_uid_de(request, uid),)).fetchone()
+        return bool(row and row["is_admin"])
+    except Exception:
+        return False
+
+
+def _diag_cliente_con_reloj():
+    import httpx
+    from anthropic import Anthropic
+
+    registro = []
+
+    class _Bytes(httpx.SyncByteStream):
+        def __init__(s, inner):
+            s.inner, s.resto = inner, ""
+
+        def __iter__(s):
+            for chunk in s.inner:
+                tipos = {}
+                lineas = (s.resto + chunk.decode("utf-8", "ignore")).split("\n")
+                s.resto = lineas.pop()          # la última puede venir cortada
+                for l in lineas:
+                    if not l.startswith("data:"):
+                        continue
+                    try:
+                        ev = json.loads(l[5:])
+                    except Exception:
+                        tipos["?"] = tipos.get("?", 0) + 1
+                        continue
+                    t = ev.get("type", "?")
+                    if t == "content_block_delta":
+                        t = (ev.get("delta") or {}).get("type", t)
+                    elif t == "content_block_start":
+                        t = "abre_" + (ev.get("content_block") or {}).get("type", "?")
+                    tipos[t] = tipos.get(t, 0) + 1
+                registro.append((time.monotonic(), len(chunk), tipos))
+                yield chunk
+
+        def close(s):
+            s.inner.close()
+
+    class _Transporte(httpx.BaseTransport):
+        def __init__(s):
+            s.inner = httpx.HTTPTransport()
+
+        def handle_request(s, request):
+            registro.append((time.monotonic(), 0, {"pide": 1}))
+            r = s.inner.handle_request(request)
+            registro.append((time.monotonic(), 0, {
+                "responde": 1, "enc_" + r.headers.get("content-encoding", "ninguna"): 1}))
+            r.stream = _Bytes(r.stream)
+            return r
+
+        def close(s):
+            s.inner.close()
+
+    cli = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=25.0,
+                    http_client=httpx.Client(transport=_Transporte(), timeout=25.0))
+    return cli, registro
 
 
 @app.get("/api/health")
