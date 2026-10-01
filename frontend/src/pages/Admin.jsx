@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Shield, Users, Activity, Database, Trash2, RefreshCw, Check, Clock, Sparkles, TrendingUp, RotateCcw, AlertTriangle, Mail, Send, Gift, Search, MessageSquare } from 'lucide-react'
 import { api } from '../utils/api'
 import { filtrarFilas, contarCaen, contarFrenadas } from '../utils/fxPanel'
+import { enviarEnTandas, textoDeProgreso } from '../utils/envioEnTandas'
 import StatCard from '../components/StatCard'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
@@ -537,11 +538,74 @@ function Row({ label, children }) {
   )
 }
 
+// ─── Envíos masivos: de a tandas, con lo que se vio ──────────────────────────
+// Los cinco mails masivos de este panel mandan con este hook (y el backend con
+// `_envio_masivo`): la lista de la pantalla parte en tandas (utils/envioEnTandas),
+// se ve el avance, y al terminar —también si se corta— se recarga la vista
+// previa: con la lista vieja en pantalla el próximo click se armaría con datos
+// que ya no son ciertos.
+function useEnvioEnTandas({ url, toast, recargar }) {
+  const [enviando, setEnviando] = useState(null)   // null | qué botón está mandando
+  const [progreso, setProgreso] = useState(null)   // { desde, hasta, total }
+  const [resultado, setResultado] = useState(null)
+
+  async function enviar({ clave = 'enviar', cuerpo, vistos, lote }) {
+    if (!vistos.length) return
+    setEnviando(clave); setResultado(null)
+    try {
+      const r = await enviarEnTandas({
+        post: (u, b) => api.post(u, b), url, cuerpo, vistos, lote, alAvanzar: setProgreso,
+      })
+      setResultado(r)
+      if (r.cortado) {
+        toast.push(
+          'Se cortó a mitad de camino (' + r.error + '). La lista se recalculó: ' +
+          'a los que ya les llegó no se les vuelve a mandar.',
+          { type: 'error' }
+        )
+      } else {
+        toast.push(
+          `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
+          { type: r.failed_count ? 'warn' : 'success' }
+        )
+      }
+    } finally {
+      setEnviando(null); setProgreso(null)
+      await recargar()
+    }
+  }
+
+  return { enviando, resultado, enviar, textoEnviando: textoDeProgreso(progreso) }
+}
+
+// El resultado de un envío masivo. `descartados` y `trabadas` cambian según el
+// mail: qué quiere decir "ya no se le podía mandar" y dónde aparece el que quedó
+// marcado sin haberlo recibido.
+function ResultadoEnvio({ r, descartados = 'ya no se podían mandar', trabadas = '' }) {
+  if (!r) return null
+  return (
+    <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
+      Resultado: <b className="text-emerald-600 dark:text-emerald-400">{r.sent_count} enviados</b>
+      {r.failed_count > 0 && <> · <b className="text-red-500">{r.failed_count} fallados</b></>}
+      {r.skipped_count > 0 && <> · {r.skipped_count} salteados (ya les había llegado)</>}
+      {r.discarded_count > 0 && <> · {r.discarded_count} {descartados}</>}
+      {r.cortado && <> · <b className="text-rendi-warn">se cortó antes de terminar</b></>}
+      {r.marcas_trabadas?.length > 0 && (
+        <div className="mt-1 text-rendi-neg">
+          A {r.marcas_trabadas.map(t => t.email).join(', ')} no le llegó el mail, pero quedó
+          marcado como que sí (la base no dejó corregirlo). {trabadas}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── BroadcastPanel — mail CUSTOM que el admin escribe, a los usuarios ────────
 // Escribís asunto + cuerpo (texto plano; {nombre} se reemplaza). "Enviar prueba"
 // te lo manda a vos primero. "Ver destinatarios" (dry-run) lista a quién le caería
-// según el targeting. "Enviar" (confirm:true) manda a todos vía Resend. OJO: sin
-// protección de duplicado — apretá "Enviar" una sola vez.
+// según el targeting y quién ya recibió ESTE mismo mail. "Enviar" manda, de a
+// tandas, a los que todavía no lo recibieron: reintentar el mismo mail (o un
+// doble click) no le llega dos veces a nadie; cambiarle el texto lo hace otro mail.
 function BroadcastPanel({ toast }) {
   const { user } = useAuth()
   const [subject, setSubject] = useState('')
@@ -552,16 +616,15 @@ function BroadcastPanel({ toast }) {
   const [testTo, setTestTo] = useState('')
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [result, setResult] = useState(null)
+  const envio = useEnvioEnTandas({ url: '/admin/email/broadcast', toast, recargar: loadPreview })
 
   const base = () => ({ subject, body, only_verified: onlyVerified, plan: plan || null, branded })
   const ready = subject.trim() && body.trim()
 
   async function loadPreview() {
     if (!ready) { toast.push('Escribí asunto y cuerpo primero.', { type: 'warn' }); return }
-    setLoading(true); setResult(null)
+    setLoading(true)
     try { setPreview(await api.post('/admin/email/broadcast', { ...base(), confirm: false })) }
     catch (e) { toast.push('Error al previsualizar: ' + e.message, { type: 'error' }) }
     finally { setLoading(false) }
@@ -580,23 +643,18 @@ function BroadcastPanel({ toast }) {
     finally { setTesting(false) }
   }
 
+  const recipients = preview?.recipients || []
+  const pendientes = recipients.filter(r => !r.ya_recibio)
+
   async function send() {
-    const n = preview?.total_recipients || 0
+    const n = pendientes.length
     if (n === 0) return
-    if (!confirm(`¿Enviar este mail a ${n} usuario${n > 1 ? 's' : ''}?\n\nReintentar el MISMO mail no duplica (los ya-enviados se saltean). Cambiarle el texto lo manda de nuevo.`)) return
-    setSending(true)
-    try {
-      const r = await api.post('/admin/email/broadcast', { ...base(), confirm: true })
-      setResult(r); setPreview(null)
-      toast.push(`Enviados ${r.sent_count}`
-        + (r.failed_count ? ` · ${r.failed_count} fallados` : '')
-        + (r.skipped_count ? ` · ${r.skipped_count} ya-enviados` : ''),
-        { type: r.failed_count ? 'warn' : 'success' })
-    } catch (e) { toast.push('Error al enviar: ' + e.message, { type: 'error' }) }
-    finally { setSending(false) }
+    if (!confirm(`¿Enviar este mail a ${n} usuario${n > 1 ? 's' : ''}?\n\nReintentar el MISMO mail no duplica (los que ya lo recibieron se saltean). Cambiarle el texto lo manda de nuevo.`)) return
+    await envio.enviar({
+      cuerpo: base(), vistos: pendientes.map(r => ({ id: r.id })), lote: preview?.lote,
+    })
   }
 
-  const recipients = preview?.recipients || []
   const inputCls = 'w-full text-sm px-3 py-2 rounded-md bg-bg-2 dark:bg-bg-2/40 border border-line/60 focus:border-data-violet/60 outline-none text-ink-1 placeholder:text-ink-3'
 
   return (
@@ -630,7 +688,7 @@ function BroadcastPanel({ toast }) {
           Solo verificados
         </label>
         <label className="flex items-center gap-1.5 cursor-pointer">
-          <input type="checkbox" checked={branded} onChange={e => setBranded(e.target.checked)} className="accent-data-violet" />
+          <input type="checkbox" checked={branded} onChange={e => { setBranded(e.target.checked); setPreview(null) }} className="accent-data-violet" />
           Con diseño Rendi (header/footer)
         </label>
       </div>
@@ -654,40 +712,46 @@ function BroadcastPanel({ toast }) {
           <p className="text-sm text-ink-1">
             Le caería a <b className="text-data-violet">{preview.total_recipients}</b> usuario{preview.total_recipients === 1 ? '' : 's'}
             {preview.plan ? ` (plan ${preview.plan})` : ''}{preview.only_verified ? ' · verificados' : ''}.
+            {preview.ya_recibieron > 0 && <> {preview.ya_recibieron} ya recibieron este mismo mail y se saltean.</>}
           </p>
           {recipients.length > 0 && (
             <div className="max-h-56 overflow-y-auto border border-line/40 rounded-sm bg-bg-1/40">
               <table className="w-full text-xs">
                 <thead><tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
-                  <th className="text-left px-2 py-1">Email</th><th className="text-left px-2 py-1">Nombre</th><th className="text-left px-2 py-1">Plan</th>
+                  <th className="text-left px-2 py-1">Email</th><th className="text-left px-2 py-1">Nombre</th><th className="text-left px-2 py-1">Plan</th><th className="text-left px-2 py-1">Estado</th>
                 </tr></thead>
-                <tbody>{recipients.map(r => (
+                {/* Se dibujan hasta 500 filas; se le manda a toda la lista. */}
+                <tbody>{recipients.slice(0, 500).map(r => (
                   <tr key={r.id} className="border-b border-line/20">
                     <td className="px-2 py-1 text-ink-1">{r.email}</td>
                     <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
                     <td className="px-2 py-1 text-ink-3">{r.plan}</td>
+                    <td className="px-2 py-1">
+                      {r.ya_recibio
+                        ? <span className="text-emerald-600 dark:text-emerald-400">ya lo recibió</span>
+                        : <span className="text-ink-3">pendiente</span>}
+                    </td>
                   </tr>
                 ))}</tbody>
               </table>
             </div>
           )}
-          {preview.truncated && <p className="text-[11px] text-ink-3">Mostrando los primeros 500 · se envía a todos.</p>}
-          <div className="flex justify-end">
-            <button onClick={send} disabled={sending || preview.total_recipients === 0}
+          {recipients.length > 500 && <p className="text-[11px] text-ink-3">Mostrando los primeros 500 · se envía a todos.</p>}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-[11px] text-ink-3 max-w-md">
+              Sale de a {preview.lote ?? 20} por vez, con una pausa entre mail y mail.
+            </p>
+            <button onClick={send} disabled={envio.enviando !== null || pendientes.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 press">
-              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${preview.total_recipients}`}
+              <Send size={14} /> {envio.enviando ? envio.textoEnviando : `Enviar a ${pendientes.length}`}
             </button>
           </div>
         </div>
       )}
 
-      {result && (
-        <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
-          <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
-          {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
-          {result.skipped_count > 0 && <> · <b className="text-ink-3">{result.skipped_count} ya-enviados (dedup)</b></>}
-        </div>
-      )}
+      <ResultadoEnvio r={envio.resultado}
+        descartados="ya no están en la lista (cambiaron de plan, se desverificaron o borraron la cuenta)"
+        trabadas="Si mandás este mismo mail otra vez, a esa persona se la saltea." />
     </div>
   )
 }
@@ -695,18 +759,18 @@ function BroadcastPanel({ toast }) {
 
 // ─── ReengagementPanel — mail a usuarios que se registraron pero no importaron ─
 // Preview (confirm:false) → muestra la lista exacta de destinatarios sin mandar
-// nada. Recién al apretar "Enviar" (confirm:true) el backend mailea por Resend,
-// stampea reengagement_email_sent_at y saltea a quien ya recibió. Idempotente:
-// re-correr no duplica; los fallidos se reintentan en la próxima corrida.
+// nada. "Enviar" les manda, de a tandas, a los que se ven: el backend marca
+// reengagement_email_sent_at antes de mandar contra la fecha que se vio, así que
+// re-correr o un doble click no duplican; los fallidos se reintentan la próxima.
+// "Reenviar" incluye a los que ya lo recibieron, menos a los de las últimas 24 h.
 function ReengagementPanel({ toast }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [result, setResult] = useState(null)
   const [resend, setResend] = useState(false)
+  const envio = useEnvioEnTandas({ url: '/admin/email/re-engagement', toast, recargar: loadPreview })
 
   async function loadPreview() {
-    setLoading(true); setResult(null)
+    setLoading(true)
     try {
       setPreview(await api.post('/admin/email/re-engagement', { confirm: false }))
     } catch (e) {
@@ -714,31 +778,23 @@ function ReengagementPanel({ toast }) {
     } finally { setLoading(false) }
   }
 
+  const recipients = preview?.recipients || []
+  const pending = recipients.filter(r => !r.already_sent_at)
+  // Las filas con `espera` (lo recibieron hace poco) se ven pero no se reenvían.
+  const toSend = resend ? recipients.filter(r => !r.espera) : pending
+
   async function send() {
-    const all = preview?.recipients || []
-    const n = resend ? all.length : all.filter(r => !r.already_sent_at).length
+    const n = toSend.length
     if (n === 0) return
     const msg = resend
       ? `¿Reenviar el mail a los ${n} destinatarios? Incluye a los que ya lo recibieron (re-test).`
       : `¿Mandar el mail de re-engagement a ${n} usuario${n > 1 ? 's' : ''}? Los que ya lo recibieron se saltean.`
     if (!confirm(msg)) return
-    setSending(true)
-    try {
-      const r = await api.post('/admin/email/re-engagement', { confirm: true, resend })
-      setResult(r)
-      toast.push(
-        `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
-        { type: r.failed_count ? 'warn' : 'success' }
-      )
-      await loadPreview()
-    } catch (e) {
-      toast.push('Error al enviar: ' + e.message, { type: 'error' })
-    } finally { setSending(false) }
+    await envio.enviar({
+      cuerpo: { resend }, lote: preview?.lote,
+      vistos: toSend.map(r => ({ id: r.id, sent_at: r.already_sent_at })),
+    })
   }
-
-  const recipients = preview?.recipients || []
-  const pending = recipients.filter(r => !r.already_sent_at)
-  const toSend = resend ? recipients : pending
 
   return (
     <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
@@ -784,7 +840,10 @@ function ReengagementPanel({ toast }) {
                 <tbody>
                   {recipients.map(r => (
                     <tr key={r.id} className="border-b border-line/20">
-                      <td className="px-2 py-1 text-ink-1">{r.email}</td>
+                      <td className="px-2 py-1 text-ink-1">
+                        {r.email}
+                        {r.espera && <div className="text-[10px] text-rendi-warn">{r.espera}</div>}
+                      </td>
                       <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-2">{r.activity}</td>
                       <td className="px-2 py-1">
@@ -804,7 +863,8 @@ function ReengagementPanel({ toast }) {
           <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
             <div className="space-y-1.5">
               <p className="text-[11px] text-ink-3 max-w-md">
-                Envía vía Resend. Los que fallan no se marcan como enviados → se reintentan solos la próxima vez.
+                Envía vía Resend, de a {preview.lote ?? 20} por vez y con una pausa entre mail y mail. Los que
+                fallan no se marcan como enviados → se reintentan solos la próxima vez.
               </p>
               <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
                 <input
@@ -813,25 +873,22 @@ function ReengagementPanel({ toast }) {
                   onChange={e => setResend(e.target.checked)}
                   className="accent-data-violet"
                 />
-                Reenviar a los que ya recibieron (para re-testear el email)
+                Reenviar a los que ya recibieron (para re-testear el email) · no a los de
+                las últimas {preview.espera_horas ?? 24} h
               </label>
             </div>
             <button
               onClick={send}
-              disabled={sending || toSend.length === 0}
+              disabled={envio.enviando !== null || toSend.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
-              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${toSend.length}`}
+              <Send size={14} /> {envio.enviando ? envio.textoEnviando : `Enviar a ${toSend.length}`}
             </button>
           </div>
 
-          {result && (
-            <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
-              Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
-              {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
-              {result.skipped_count > 0 && <> · {result.skipped_count} salteados</>}
-            </div>
-          )}
+          <ResultadoEnvio r={envio.resultado}
+            descartados="ya no se podían mandar (cargaron operaciones, se desverificaron o lo recibieron hace poco)"
+            trabadas="Figura como «enviado»: a partir de mañana se lo podés mandar con «Reenviar»." />
         </>
       )}
     </div>
@@ -847,9 +904,8 @@ function ReengagementPanel({ toast }) {
 function FeedbackPruebaPanel({ toast }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(null)   // null | 'nuevos' | 'ya_recibieron'
-  const [progreso, setProgreso] = useState(null) // { hechos, total } mientras manda en tandas
-  const [result, setResult] = useState(null)
+  // envio.enviando: null | 'nuevos' | 'ya_recibieron' (qué botón está mandando)
+  const envio = useEnvioEnTandas({ url: '/admin/email/feedback-prueba', toast, recargar: loadPreview })
   const [verMail, setVerMail] = useState(false)
   const [verReenvio, setVerReenvio] = useState(false)
   const [probando, setProbando] = useState(false)
@@ -889,43 +945,10 @@ function FeedbackPruebaPanel({ toast }) {
       ? `¿Mandar el mail de feedback a ${quien} todavía no ${recibio}?`
       : `¿Volver a mandar el mail de feedback a ${quien} YA ${recibio}?`
     if (!confirm(msg)) return
-    // En tandas: cada pedido tiene que terminar antes del corte de ~30 s del
-    // proxy. Cada persona viaja con la fecha de envío que se VE en pantalla: si
-    // ya le llegó por otro click, el backend no gana la marca y la saltea.
-    const lote = preview?.lote || 20
-    const total = { sent_count: 0, failed_count: 0, skipped_count: 0, discarded_count: 0, marcas_trabadas: [] }
-    setSending(grupo); setResult(null)
-    try {
-      for (let i = 0; i < n; i += lote) {
-        setProgreso({ desde: i + 1, hasta: Math.min(i + lote, n), total: n })
-        const tanda = lista.slice(i, i + lote)
-        const r = await api.post('/admin/email/feedback-prueba', {
-          confirm: true, grupo, vistos: tanda.map(t => ({ id: t.id, sent_at: t.sent_at })),
-        })
-        total.sent_count += r.sent_count
-        total.failed_count += r.failed_count
-        total.skipped_count += r.skipped_count
-        total.discarded_count += r.discarded_count || 0
-        total.marcas_trabadas.push(...(r.marcas_trabadas || []))
-      }
-      setResult(total)
-      toast.push(
-        `Enviados ${total.sent_count} · fallados ${total.failed_count} · salteados ${total.skipped_count}`,
-        { type: total.failed_count ? 'warn' : 'success' }
-      )
-    } catch (e) {
-      setResult({ ...total, cortado: true })
-      toast.push(
-        'Se cortó a mitad de camino (' + e.message + '). La lista se recalculó: ' +
-        'a los que ya les llegó no se les vuelve a mandar.',
-        { type: 'error' }
-      )
-    } finally {
-      setSending(null); setProgreso(null)
-      // Siempre, también después de un error: con la lista vieja en pantalla
-      // el próximo click se armaría con datos que ya no son ciertos.
-      await loadPreview()
-    }
+    await envio.enviar({
+      clave: grupo, cuerpo: { grupo }, lote: preview?.lote,
+      vistos: lista.map(t => ({ id: t.id, sent_at: t.sent_at })),
+    })
   }
 
   const nuevos = preview?.nuevos || []
@@ -934,9 +957,6 @@ function FeedbackPruebaPanel({ toast }) {
   // Las filas con `espera` se ven pero no salen: el botón cuenta sólo las otras.
   const nuevosListos = nuevos.filter(t => !t.espera)
   const reenvioListos = yaRecibieron.filter(t => !t.espera)
-  const enviandoTxt = progreso
-    ? `Enviando ${progreso.desde}–${progreso.hasta} de ${progreso.total}…`
-    : 'Enviando…'
 
   return (
     <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
@@ -1015,10 +1035,10 @@ function FeedbackPruebaPanel({ toast }) {
             </p>
             <button
               onClick={() => send('nuevos')}
-              disabled={sending !== null || nuevosListos.length === 0}
+              disabled={envio.enviando !== null || nuevosListos.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
-              <Send size={14} /> {sending === 'nuevos' ? enviandoTxt : `Enviar a ${nuevosListos.length}`}
+              <Send size={14} /> {envio.enviando === 'nuevos' ? envio.textoEnviando : `Enviar a ${nuevosListos.length}`}
             </button>
           </div>
 
@@ -1052,10 +1072,10 @@ function FeedbackPruebaPanel({ toast }) {
               <div className="flex justify-end">
                 <button
                   onClick={() => send('ya_recibieron')}
-                  disabled={sending !== null || reenvioListos.length === 0}
+                  disabled={envio.enviando !== null || reenvioListos.length === 0}
                   className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded border border-data-violet/60 text-data-violet font-medium hover:bg-data-violet/10 disabled:opacity-40 disabled:cursor-not-allowed press"
                 >
-                  <RotateCcw size={14} /> {sending === 'ya_recibieron' ? enviandoTxt : `Volver a mandar a ${reenvioListos.length}`}
+                  <RotateCcw size={14} /> {envio.enviando === 'ya_recibieron' ? envio.textoEnviando : `Volver a mandar a ${reenvioListos.length}`}
                 </button>
               </div>
             </div>
@@ -1070,22 +1090,9 @@ function FeedbackPruebaPanel({ toast }) {
             </div>
           )}
 
-          {result && (
-            <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
-              Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
-              {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
-              {result.skipped_count > 0 && <> · {result.skipped_count} salteados (ya les había llegado)</>}
-              {result.discarded_count > 0 && <> · {result.discarded_count} ya no se podían mandar (dejaron la prueba o les llegó otro mail)</>}
-              {result.cortado && <> · <b className="text-rendi-warn">se cortó antes de terminar</b></>}
-              {result.marcas_trabadas?.length > 0 && (
-                <div className="mt-1 text-rendi-neg">
-                  A {result.marcas_trabadas.map(t => t.email).join(', ')} no le llegó el mail, pero quedó
-                  marcado como que sí (la base no dejó corregirlo). Aparece en «Ya lo recibieron»: a partir de
-                  mañana se lo podés mandar con «Volver a mandar».
-                </div>
-              )}
-            </div>
-          )}
+          <ResultadoEnvio r={envio.resultado}
+            descartados="ya no se podían mandar (dejaron la prueba o les llegó otro mail)"
+            trabadas="Aparece en «Ya lo recibieron»: a partir de mañana se lo podés mandar con «Volver a mandar»." />
         </>
       )}
     </div>
@@ -1209,13 +1216,12 @@ const TRIAL_VARIANTES = [
 function TrialInvitePanel({ toast }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [result, setResult] = useState(null)
   const [limit, setLimit] = useState(50)
   const [variant, setVariant] = useState('directo')
+  const envio = useEnvioEnTandas({ url: '/admin/email/trial-invite', toast, recargar: loadPreview })
 
   async function loadPreview() {
-    setLoading(true); setResult(null)
+    setLoading(true)
     try {
       setPreview(await api.post('/admin/email/trial-invite', { confirm: false, limit, variant }))
     } catch (e) {
@@ -1223,21 +1229,16 @@ function TrialInvitePanel({ toast }) {
     } finally { setLoading(false) }
   }
 
+  // Se les manda a los que sorteó la vista previa (los que se ven), no a otro sorteo.
   async function send() {
-    const n = preview?.en_esta_tanda || 0
+    const lista = preview?.recipients || []
+    const n = lista.length
     if (!n) return
     if (!confirm(`¿Mandar el aviso de la prueba gratis a ${n} persona${n > 1 ? 's' : ''}? `
                  + 'Quedan marcadas y no vuelven a salir sorteadas.')) return
-    setSending(true)
-    try {
-      const r = await api.post('/admin/email/trial-invite', { confirm: true, limit, variant })
-      setResult(r)
-      toast.push(`Enviados ${r.sent_count}${r.failed_count ? ` · fallaron ${r.failed_count}` : ''} · quedan ${r.quedan_despues}`,
-                 { type: r.failed_count ? 'warn' : 'success' })
-      await loadPreview()
-    } catch (e) {
-      toast.push('Error al enviar: ' + e.message, { type: 'error' })
-    } finally { setSending(false) }
+    await envio.enviar({
+      cuerpo: { variant }, lote: preview?.lote, vistos: lista.map(r => ({ id: r.id })),
+    })
   }
 
   return (
@@ -1257,7 +1258,8 @@ function TrialInvitePanel({ toast }) {
       </div>
 
       <p className="text-xs text-ink-3 leading-relaxed">
-        Sortea <b>{limit}</b> personas entre las que todavía no recibieron el aviso, les manda el mail y las marca.
+        Sortea <b>{limit}</b> personas entre las que todavía no recibieron el aviso; al confirmar, les manda el mail
+        a esas mismas (de a {preview?.lote ?? 20} por vez, con una pausa entre mail y mail) y las marca.
         La próxima tanda sortea sólo entre las que faltan, así que <b>nadie lo recibe dos veces</b>. Sólo entran
         quienes hoy <b>pueden activar la prueba</b> (mismo chequeo que el botón), así que nadie recibe una invitación
         que después no puede aceptar. Un envío que falla no deja la marca: vuelve al bolillero.
@@ -1309,23 +1311,19 @@ function TrialInvitePanel({ toast }) {
 
           <button
             onClick={send}
-            disabled={sending || !preview.en_esta_tanda}
+            disabled={envio.enviando !== null || !preview.en_esta_tanda}
             className="w-full text-sm font-medium bg-data-violet hover:bg-data-violet/90 text-white rounded-md py-2 disabled:opacity-50 transition-colors"
           >
-            {sending ? 'Enviando…'
+            {envio.enviando ? envio.textoEnviando
               : preview.en_esta_tanda ? `Mandar el aviso a ${preview.en_esta_tanda}`
               : 'No queda nadie por avisar'}
           </button>
         </>
       )}
 
-      {result && (
-        <p className="text-xs text-ink-2">
-          Enviados <b className="text-rendi-pos">{result.sent_count}</b>
-          {result.failed_count ? <> · fallaron <b className="text-rendi-neg">{result.failed_count}</b></> : null}
-          {' '}· quedan <b>{result.quedan_despues}</b> por avisar.
-        </p>
-      )}
+      <ResultadoEnvio r={envio.resultado}
+        descartados="ya no se podían mandar (activaron la prueba o dejaron de poder activarla)"
+        trabadas="No vuelve a salir en el sorteo: el aviso hay que mandárselo por otro lado." />
     </div>
   )
 }
@@ -1334,8 +1332,10 @@ function TrialInvitePanel({ toast }) {
 // ─── GiftPlanPanel — mail "te regalamos un mes de Pro, cargá tu historial" ────
 // Para usuarios con ≤1 operación a los que YA se les regaló un mes de Pro (vía
 // grant-comp). Preview (confirm:false) muestra la lista + su tier/regalo sin
-// mandar nada; "Enviar" (confirm:true) mailea por Resend, stampea
-// gift_plan_email_sent_at y saltea a quien ya recibió. Idempotente.
+// mandar nada; "Enviar" les manda, de a tandas, a los que se ven: el backend
+// marca gift_plan_email_sent_at antes de mandar contra la fecha que se vio, así
+// que re-correr o un doble click no duplican. "Reenviar" no incluye a los que lo
+// recibieron en las últimas 24 h.
 //   • only_gifted: solo a quienes tienen un comp Pro/Plus activo (no promete un
 //     regalo a quien no lo recibió). Default ON por seguridad.
 //   • El backend excluye SIEMPRE a los que están en su prueba gratis y los
@@ -1344,13 +1344,12 @@ function TrialInvitePanel({ toast }) {
 function GiftPlanPanel({ toast }) {
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [result, setResult] = useState(null)
   const [resend, setResend] = useState(false)
   const [onlyGifted, setOnlyGifted] = useState(true)
+  const envio = useEnvioEnTandas({ url: '/admin/email/gift-plan', toast, recargar: loadPreview })
 
   async function loadPreview() {
-    setLoading(true); setResult(null)
+    setLoading(true)
     try {
       setPreview(await api.post('/admin/email/gift-plan', { confirm: false, only_gifted: onlyGifted }))
     } catch (e) {
@@ -1358,31 +1357,23 @@ function GiftPlanPanel({ toast }) {
     } finally { setLoading(false) }
   }
 
+  const recipients = preview?.recipients || []
+  const pending = recipients.filter(r => !r.already_sent_at)
+  // Las filas con `espera` (lo recibieron hace poco) se ven pero no se reenvían.
+  const toSend = resend ? recipients.filter(r => !r.espera) : pending
+
   async function send() {
-    const all = preview?.recipients || []
-    const n = resend ? all.length : all.filter(r => !r.already_sent_at).length
+    const n = toSend.length
     if (n === 0) return
     const msg = resend
       ? `¿Reenviar el mail de regalo Pro a los ${n} destinatarios? Incluye a los que ya lo recibieron.`
       : `¿Mandar el mail "te regalamos un mes de Pro" a ${n} usuario${n > 1 ? 's' : ''}? Los que ya lo recibieron se saltean.`
     if (!confirm(msg)) return
-    setSending(true)
-    try {
-      const r = await api.post('/admin/email/gift-plan', { confirm: true, resend, only_gifted: onlyGifted })
-      setResult(r)
-      toast.push(
-        `Enviados ${r.sent_count} · fallados ${r.failed_count} · salteados ${r.skipped_count}`,
-        { type: r.failed_count ? 'warn' : 'success' }
-      )
-      await loadPreview()
-    } catch (e) {
-      toast.push('Error al enviar: ' + e.message, { type: 'error' })
-    } finally { setSending(false) }
+    await envio.enviar({
+      cuerpo: { resend, only_gifted: onlyGifted }, lote: preview?.lote,
+      vistos: toSend.map(r => ({ id: r.id, sent_at: r.already_sent_at })),
+    })
   }
-
-  const recipients = preview?.recipients || []
-  const pending = recipients.filter(r => !r.already_sent_at)
-  const toSend = resend ? recipients : pending
 
   return (
     <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
@@ -1409,7 +1400,7 @@ function GiftPlanPanel({ toast }) {
       </p>
 
       <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
-        <input type="checkbox" checked={onlyGifted} onChange={e => setOnlyGifted(e.target.checked)} className="accent-emerald-500" />
+        <input type="checkbox" checked={onlyGifted} onChange={e => { setOnlyGifted(e.target.checked); setPreview(null) }} className="accent-emerald-500" />
         Solo a quienes tienen el regalo (Pro/Plus) activo
       </label>
 
@@ -1439,7 +1430,10 @@ function GiftPlanPanel({ toast }) {
                 <tbody>
                   {recipients.map(r => (
                     <tr key={r.id} className="border-b border-line/20">
-                      <td className="px-2 py-1 text-ink-1">{r.email}</td>
+                      <td className="px-2 py-1 text-ink-1">
+                        {r.email}
+                        {r.espera && <div className="text-[10px] text-rendi-warn">{r.espera}</div>}
+                      </td>
                       <td className="px-2 py-1 text-ink-2">{r.name || '—'}</td>
                       <td className="px-2 py-1 text-right tabular text-ink-2">{r.activity}</td>
                       <td className="px-2 py-1">
@@ -1464,29 +1458,27 @@ function GiftPlanPanel({ toast }) {
           <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
             <div className="space-y-1.5">
               <p className="text-[11px] text-ink-3 max-w-md">
-                Envía vía Resend. Los que fallan no se marcan como enviados → se reintentan solos la próxima vez.
+                Envía vía Resend, de a {preview.lote ?? 20} por vez y con una pausa entre mail y mail. Los que
+                fallan no se marcan como enviados → se reintentan solos la próxima vez.
               </p>
               <label className="flex items-center gap-1.5 text-[11px] text-ink-3 cursor-pointer select-none">
                 <input type="checkbox" checked={resend} onChange={e => setResend(e.target.checked)} className="accent-emerald-500" />
-                Reenviar a los que ya recibieron (para re-testear el email)
+                Reenviar a los que ya recibieron (para re-testear el email) · no a los de
+                las últimas {preview.espera_horas ?? 24} h
               </label>
             </div>
             <button
               onClick={send}
-              disabled={sending || toSend.length === 0}
+              disabled={envio.enviando !== null || toSend.length === 0}
               className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-md bg-emerald-500 text-white font-medium hover:bg-emerald-500/90 disabled:opacity-40 disabled:cursor-not-allowed press"
             >
-              <Send size={14} /> {sending ? 'Enviando…' : `Enviar a ${toSend.length}`}
+              <Send size={14} /> {envio.enviando ? envio.textoEnviando : `Enviar a ${toSend.length}`}
             </button>
           </div>
 
-          {result && (
-            <div className="text-xs text-ink-2 bg-bg-1/40 border border-line/40 rounded-sm px-3 py-2">
-              Resultado: <b className="text-emerald-600 dark:text-emerald-400">{result.sent_count} enviados</b>
-              {result.failed_count > 0 && <> · <b className="text-red-500">{result.failed_count} fallados</b></>}
-              {result.skipped_count > 0 && <> · {result.skipped_count} salteados</>}
-            </div>
-          )}
+          <ResultadoEnvio r={envio.resultado}
+            descartados="ya no se podían mandar (cargaron operaciones, arrancaron la prueba, perdieron el regalo o lo recibieron hace poco)"
+            trabadas="Figura como «enviado»: a partir de mañana se lo podés mandar con «Reenviar»." />
         </>
       )}
     </div>

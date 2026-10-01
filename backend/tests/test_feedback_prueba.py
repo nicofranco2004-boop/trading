@@ -465,7 +465,7 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         spy.assert_not_called()
 
     def test_manda_de_a_tandas_y_exige_la_lista_vista(self):
-        lote = main.FEEDBACK_PRUEBA_LOTE
+        lote = main.ENVIO_MASIVO_LOTE
         muchos = [{"id": i, "sent_at": None} for i in range(1, lote + 2)]
         self._mandar("nuevos", vistos=muchos, status=422)
         r = self.client.post(URL, json={"confirm": True, "grupo": "nuevos"},

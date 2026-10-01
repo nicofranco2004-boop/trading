@@ -144,19 +144,28 @@ class NoLleganMailsTrasBorrar(unittest.TestCase):
                 alerts_engine._deliver(self.conn, alerta, items)
         self._assert_solo_testigo(spy, "alerta de precio")
 
+    # Los envíos masivos del panel mandan a los ids que el admin VIO en la vista
+    # previa. El caso real es ése: vio la lista con la persona adentro, la
+    # persona borró la cuenta, y después el admin apretó "Enviar".
+    def _vistos(self):
+        return [main.VistoEnvio(id=self.victima), main.VistoEnvio(id=self.testigo)]
+
     def test_reengagement_no_incluye_a_la_cuenta_borrada(self):
         self._borrar_victima()
-        with mock.patch.object(_emails, "_send", return_value=True) as spy:
+        with mock.patch.object(_emails, "_send", return_value=True) as spy, \
+             mock.patch.object(_emails, "PAUSA_ENTRE_ENVIOS", 0):
             main.admin_email_reengagement(
-                main.ReengagementEmailIn(confirm=True, threshold=99), uid=self.admin)
+                main.ReengagementEmailIn(confirm=True, threshold=99, vistos=self._vistos()),
+                uid=self.admin)
         self._assert_solo_testigo(spy, "re-engagement")
 
     def test_broadcast_no_incluye_a_la_cuenta_borrada(self):
         self._borrar_victima()
-        with mock.patch.object(_emails, "_send", return_value=True) as spy:
+        with mock.patch.object(_emails, "_send", return_value=True) as spy, \
+             mock.patch.object(_emails, "PAUSA_ENTRE_ENVIOS", 0):
             main.admin_email_broadcast(
                 main.BroadcastEmailIn(subject="Novedades", body="Hola {nombre}",
-                                      confirm=True), uid=self.admin)
+                                      confirm=True, vistos=self._vistos()), uid=self.admin)
         self._assert_solo_testigo(spy, "broadcast")
 
     def _assert_solo_testigo(self, spy, motor):

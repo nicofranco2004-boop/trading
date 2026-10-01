@@ -62,6 +62,19 @@ class BroadcastEndpointTest(unittest.TestCase):
     def _post(self, **body):
         return self.client.post("/api/admin/email/broadcast", json=body, headers=self.h)
 
+    def _mandar(self, **body):
+        """Como el panel: pide la vista previa y manda a los que todavía no lo
+        recibieron, de a tandas, con sus ids. Devuelve los totales sumados."""
+        prev = self._post(**body).json()
+        pendientes = [{"id": r["id"]} for r in prev["recipients"] if not r["ya_recibio"]]
+        total = {"sent": [], "skipped": [], "failed": []}
+        for i in range(0, len(pendientes), prev["lote"]):
+            r = self._post(**body, confirm=True, vistos=pendientes[i:i + prev["lote"]])
+            self.assertEqual(r.status_code, 200, r.text)
+            for k in total:
+                total[k] += r.json()[k]
+        return total
+
     def _mine(self, recipients):
         return [r for r in recipients if r["email"].endswith(f"-{self.tag}@rendi.test")]
 
@@ -96,9 +109,8 @@ class BroadcastEndpointTest(unittest.TestCase):
 
     def test_confirm_sends_to_targets(self):
         with patch.object(emails, "send_custom", return_value=True) as m:
-            r = self._post(subject="S", body="B", confirm=True, plan="pro").json()
-        self.assertFalse(r["dry_run"])
-        self.assertGreaterEqual(r["sent_count"], 1)
+            r = self._mandar(subject="S", body=f"B {self.tag}", plan="pro")
+        self.assertGreaterEqual(len(r["sent"]), 1)
         tos = [c.kwargs["to"] for c in m.call_args_list]
         self.assertIn(f"pro-{self.tag}@rendi.test", tos)
 
@@ -127,22 +139,27 @@ class BroadcastEndpointTest(unittest.TestCase):
     def test_dedup_skips_already_sent_on_resend(self):
         # Reintentar el MISMO contenido no re-mailea a quien ya recibió (send-log).
         body = f"cuerpo unico {self.tag}"   # contenido fresco → content_hash nuevo
+        mio = f"pro-{self.tag}@rendi.test"
         with patch.object(emails, "send_custom", return_value=True):
-            r1 = self._post(subject="S", body=body, confirm=True, plan="pro").json()
-        self.assertIn(f"pro-{self.tag}@rendi.test", {x["email"] for x in r1["sent"]})
-        # 2do envío idéntico → mi user ya está logueado → skipped, NO se re-llama send_custom
+            r1 = self._mandar(subject="S", body=body, plan="pro")
+        self.assertIn(mio, {x["email"] for x in r1["sent"]})
+        # La vista previa ya lo muestra como recibido: el panel no lo vuelve a mandar.
+        prev = self._post(subject="S", body=body, plan="pro").json()
+        fila = next(r for r in prev["recipients"] if r["email"] == mio)
+        self.assertTrue(fila["ya_recibio"])
+        # Y aunque un pedido viejo lo vuelva a nombrar → skipped, NO se re-llama send_custom
         with patch.object(emails, "send_custom", return_value=True) as m2:
-            r2 = self._post(subject="S", body=body, confirm=True, plan="pro").json()
-        self.assertNotIn(f"pro-{self.tag}@rendi.test",
-                         [c.kwargs["to"] for c in m2.call_args_list])
-        self.assertIn(f"pro-{self.tag}@rendi.test", {x["email"] for x in r2["skipped"]})
+            r2 = self._post(subject="S", body=body, plan="pro", confirm=True,
+                            vistos=[{"id": fila["id"]}]).json()
+        m2.assert_not_called()
+        self.assertIn(mio, {x["email"] for x in r2["skipped"]})
 
     def test_dedup_different_content_resends(self):
         # Cambiar el texto = otro content_hash = se manda de nuevo (no lo bloquea el log).
         with patch.object(emails, "send_custom", return_value=True):
-            self._post(subject="S", body=f"v1 {self.tag}", confirm=True, plan="pro").json()
+            self._mandar(subject="S", body=f"v1 {self.tag}", plan="pro")
         with patch.object(emails, "send_custom", return_value=True) as m2:
-            r2 = self._post(subject="S", body=f"v2 {self.tag}", confirm=True, plan="pro").json()
+            r2 = self._mandar(subject="S", body=f"v2 {self.tag}", plan="pro")
         self.assertIn(f"pro-{self.tag}@rendi.test", {x["email"] for x in r2["sent"]})
         self.assertIn(f"pro-{self.tag}@rendi.test", [c.kwargs["to"] for c in m2.call_args_list])
 
