@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from datetime import datetime, timedelta
 from typing import NamedTuple, Optional
 
@@ -69,13 +68,6 @@ MAX_CONTEXT_NEWS = 24
 # notas sobre tasas y el petróleo, la inflación argentina y el dólar quedan
 # afuera justo el día que más pasa. Ver `market_context`.
 MAX_CONTEXT_PER_TOPIC = 2
-
-# Pausa entre envíos. El servicio de mail acepta un número acotado de pedidos
-# por segundo y a partir de ahí rechaza. El brief del asesor manda uno tras
-# otro sin pausa porque son decenas; este va a todos los que lo prendan.
-# El valor vive en billing/emails.py (una sola vez para todas las campañas);
-# el nombre local queda porque los tests lo apagan con patch.object.
-from billing.emails import PAUSA_ENTRE_ENVIOS as SEND_GAP_SECONDS
 
 
 def _today_art() -> str:
@@ -983,7 +975,7 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
 
         # 4) Recién ahora se narra y se manda.
         from billing import emails
-        for i, uid in enumerate(pending):
+        for uid in pending:
             try:
                 armado = build_brief(conn, uid, day, contexto=contexto)
                 if not armado.brief:
@@ -999,8 +991,7 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
                     motivos[SIN_EMAIL] += 1
                     continue
 
-                if i:
-                    time.sleep(SEND_GAP_SECONDS)
+                # La pausa entre un mail y el siguiente la pone `emails._send`.
                 ok = emails.send_market_brief(to=row["email"],
                                               user_name=(row["name"] or ""),
                                               brief=data)

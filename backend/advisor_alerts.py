@@ -259,6 +259,10 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
             ids = list(labels)
 
             import advisor_brief
+            # El re-armado de los que quedaron afuera del grupo (arriba) deja
+            # una escritura abierta, y lo que sigue sale a internet a buscar
+            # precios: se cierra antes.
+            conn.commit()
             live = advisor_brief.live_book_values(conn, ids, price_cache)
             # live_book_values PERSISTE los precios que trajo → deja abierta una
             # transacción de escritura. Se cierra ACÁ: lo que sigue hace red
@@ -375,6 +379,11 @@ def evaluate(conn, market_open: bool, only_uid: int = None) -> dict:
                 })
                 fired += 1
             if pendientes:
+                # Un re-armado (`_set_state(..., 1)` de un cliente que volvió a
+                # la banda) queda sin confirmar: cerrarlo antes de la entrega,
+                # que es red y cuyo mail además espera su turno en
+                # `emails._send` — con el lock tomado, la app entera espera.
+                conn.commit()
                 p_ok, e_ok = _deliver(conn, uid, cfg["channel"] or "both",
                                       "Rendi · Movimiento en tu libro", pendientes)
                 conn.executemany(

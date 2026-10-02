@@ -199,15 +199,23 @@ class EnvioMasivo(unittest.TestCase):
     # ── 1. pausa ────────────────────────────────────────────────────────────
 
     def test_entre_mail_y_mail_hay_pausa(self):
+        """La pausa la pone `emails._send`, para todo el proceso (ver
+        test_ritmo_de_envio.py). Se mide donde importa: en los pedidos que le
+        llegan a Resend, con el mail de verdad de cada campaña."""
+        from tests._resend_falso import Reloj, red_de_mentira, separaciones
         for campaña in self._cada_campaña():
             self._personas(3)
             vistos = self._vistos(campaña)
-            with patch(f"billing.emails.{CAMPAÑAS[campaña]['manda']}", return_value=True), \
-                 patch("main.time.sleep") as dormir:
+            with red_de_mentira(Reloj(), direcciones_de_prueba=True,
+                                todo_sleep_en_el_reloj=True) as resend:
                 r = self._post(campaña, vistos)
             self.assertEqual(r.json()["sent_count"], 3)
-            self.assertEqual([c.args[0] for c in dormir.call_args_list],
-                             [emails.PAUSA_ENTRE_ENVIOS] * 2)   # entre 3 mails, 2 pausas
+            self.assertEqual(len(resend.pedidos), 3)
+            # EXACTAMENTE la pausa (Resend de mentira tarda 0,3 s, menos que ella):
+            # menos es sin pausa, más es una pausa de más (p. ej. un sleep propio del
+            # loop además del de `_send`, que alargaba cada tanda).
+            self.assertEqual([round(x, 6) for x in separaciones(resend.horas())],
+                             [emails.PAUSA_ENTRE_ENVIOS] * 2, resend.pedidos)
 
     def test_la_pausa_es_la_del_servicio_de_mail(self):
         # Una sola constante para todos los envíos, al lado de `_send`.
@@ -387,10 +395,10 @@ class EnvioMasivo(unittest.TestCase):
             vistos = self._vistos(campaña)
             res, spy = self._mandar_por_resend(campaña, vistos, 503)
             self.assertTrue(res["frenado"])
-            self.assertEqual(spy.call_count, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-            self.assertEqual(len(res["inciertos"]), main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(spy.call_count, emails.INCIERTOS_PARA_FRENAR)
+            self.assertEqual(len(res["inciertos"]), emails.INCIERTOS_PARA_FRENAR)
             quedan = {p["id"] for p in res["pendientes"]}
-            self.assertEqual(len(quedan), 6 - main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(len(quedan), 6 - emails.INCIERTOS_PARA_FRENAR)
             for uid in quedan:
                 self.assertIsNone(self._marca(campaña, uid))
             # Y siguen en la lista para cuando Resend vuelva.
@@ -419,9 +427,9 @@ class EnvioMasivo(unittest.TestCase):
                     quedan = {p["id"] for p in res["pendientes"]}
                     cola = [v for v in cola if v["id"] in quedan]
             self.assertTrue(res["frenado"], "con Resend lento el freno no saltó")
-            self.assertEqual(inciertos, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-            self.assertEqual(pedidos, main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-            self.assertEqual(len(self._vistos(campaña)), 6 - main.ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
+            self.assertEqual(inciertos, emails.INCIERTOS_PARA_FRENAR)
+            self.assertEqual(pedidos, emails.INCIERTOS_PARA_FRENAR)
+            self.assertEqual(len(self._vistos(campaña)), 6 - emails.INCIERTOS_PARA_FRENAR)
 
     def test_el_tope_de_tiempo_cuenta_desde_que_llega_el_pedido(self):
         """Armar la lista también gasta tiempo del pedido (eligibility, el plan

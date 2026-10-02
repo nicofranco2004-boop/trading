@@ -547,9 +547,23 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
         except Exception as ex:
             log.warning("alerts entrega de la alerta %s falló: %s", alert["id"], ex)
             continue
-        conn.executemany(
-            "UPDATE alert_events SET delivered_push=?, delivered_email=? WHERE id=?",
-            [(1 if push_ok else 0, 1 if email_ok else 0, it["event_id"]) for it in items])
+        # Anotar la entrega va en su propio try: si la base está trabada (un
+        # import largo la tiene tomada más que el busy_timeout), el UPDATE
+        # falla — y afuera del try cortaba la entrega de TODAS las alertas que
+        # faltaban, que ya estaban registradas como disparadas y no se
+        # reintentan. Mejor un "entregado" sin anotar que un aviso sin mandar.
+        try:
+            conn.executemany(
+                "UPDATE alert_events SET delivered_push=?, delivered_email=? WHERE id=?",
+                [(1 if push_ok else 0, 1 if email_ok else 0, it["event_id"]) for it in items])
+            conn.commit()    # no llevar el lock de escritura a la entrega que sigue
+        except Exception as ex:
+            log.warning("alerts: no se pudo anotar la entrega de la alerta %s: %s",
+                        alert["id"], ex)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         log.info("alert %s entregada (%s aviso/s, push=%s email=%s)",
                  alert["id"], len(items), push_ok, email_ok)
 
@@ -558,7 +572,9 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
 
 def evaluate_alerts(conn, only_user: int = None) -> dict:
     """Evalúa TODAS las alertas activas (o las de un user). Idempotente y seguro
-    para correr cada N minutos desde un cron externo. Commit al final."""
+    para correr cada N minutos desde un cron externo. Confirma lo que disparó
+    ANTES de entregar y cada entrega por separado (ver `_entregar_pendientes`):
+    la entrega es red y no puede llevar el lock de escritura."""
     now = datetime.utcnow()
     q = "SELECT * FROM alerts WHERE active=1"
     params: tuple = ()
@@ -696,6 +712,16 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
     # cartera se sabe cuántos activos se movieron y puede salir un mail solo.
+    #
+    # Y DESPUÉS DE CONFIRMAR lo que disparó. El loop deja abierta una
+    # transacción de escritura (alert_events, armed, last_fired_*), y la entrega
+    # es red: un push y un mail por alerta, cada mail esperando su turno en
+    # `emails._send` (PAUSA_ENTRE_ENVIOS). Con el lock tomado durante todo eso,
+    # el resto de la app come 'database is locked'. Es el mismo criterio que
+    # `advisor_alerts.evaluate`: el aviso queda registrado UNA vez aunque la
+    # entrega falle — antes, si el proceso se caía a mitad de la entrega, se
+    # deshacía todo y el ciclo siguiente volvía a mandar las que ya habían salido.
+    conn.commit()
     _entregar_pendientes(conn, pendientes)
 
     conn.execute(

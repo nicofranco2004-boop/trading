@@ -495,6 +495,38 @@ def fetch_latest_measured_snapshot(conn, uid: int,
 _UNMEASURED_BASE_TOL = 0.10
 
 
+def _capital_roto(capital: Optional[float]) -> bool:
+    """¿Este capital de la cadena contable es una cadena ROTA y no un arranque?
+
+    UNA cartera no vale menos que cero. Un `capital_inicio` (o el último
+    `capital_final`, que es lo mismo un mes después) NEGATIVO no es un punto de
+    partida: es la marca de una carga rota — el caso conocido es el broker
+    argentino marcado en dólares, cuyos pesos entraron a la cadena como si fueran
+    dólares (~12 cuentas en producción). Medir desde ahí publica el agujero:
+        arranque −5.000, aporte 1.000, cartera hoy 12.000 → "Mes: +US$ 16.000"
+        arranque −10.000, sin flujos, cartera vacía        → "Mes: +US$ 10.000"
+    y apoyarse en 0 lo publica como pérdida. Lo único honesto es no medir.
+
+    ES LA ÚNICA DEFINICIÓN de la regla: la preguntan el cruce mercado-contra-
+    cadena (`_basis_is_incomparable`), las puntas contables del mes y el año, y
+    cada mes de la composición del año. Si cambia el criterio, cambia acá.
+
+    Tolerancia de un dólar: un residuo de redondeo de la cadena (−0,004) es una
+    cuenta vacía, no una rota.
+    """
+    try:
+        return capital is not None and float(capital) <= -1.0
+    except (TypeError, ValueError):
+        return False
+
+
+_MOTIVO_ARRANQUE_NEGATIVO = (
+    "Tu contabilidad tiene un capital negativo como punto de partida, y una cartera "
+    "no puede valer menos que cero: es un error de la carga, no un arranque. Medido "
+    "desde ahí, ese agujero saldría como ganancia: no se publica."
+)
+
+
 def _basis_is_incomparable(start_is_mtm: bool, start_value: float,
                            deposits: float, withdrawals: float) -> bool:
     """¿La resta `end(mercado) − start` mide el período, o mide la brecha entre
@@ -504,8 +536,17 @@ def _basis_is_incomparable(start_is_mtm: bool, start_value: float,
     suficiente como para torcer el resultado. En el caso que originó esto,
     start=201.119 contra 131 de aportes: el 99,9% de la base era contabilidad
     sin medir, y la resta publicó −63,37% con cero operaciones cerradas.
+
+    ⚠️ Y SIEMPRE que `start` sea una cadena ROTA (`_capital_roto`). Antes un
+    arranque ≤ 0 contaba como "no hay capital previo, no hay mezcla", y para el 0
+    es cierto; para el negativo no: hay capital previo, roto, y la resta contra el
+    mercado de hoy lo publicaba como ganancia ("Mes: +US$ 16.000").
     """
-    if start_is_mtm or start_value <= 0:
+    if start_is_mtm:
+        return False
+    if _capital_roto(start_value):
+        return True
+    if start_value <= 0:
         return False
     base_total = start_value + max(0.0, deposits - withdrawals)
     if base_total <= 0:
@@ -1419,6 +1460,7 @@ def compute_metrics_for_period(
     _motor_nego_texto = None
     _motor_publico = False
     _mes_dudoso = False     # algún mes de la composición contable no es creíble
+    _mes_negativo = False   # …porque arranca con la cadena rota (`_capital_roto`)
     _pct_puntas_ars = None  # el % punta-a-punta ya convertido a pesos, si aplica
     month_twr_pct = None
     month_twr_usd = None
@@ -1480,7 +1522,11 @@ def compute_metrics_for_period(
                 _bs_prev = brokers_del_filtro(conn, uid, broker_filter)
                 py, pm = _mes_anterior(y, m)
                 prev_cap = capital_vigente(conn, uid, _bs_prev, py, pm)
-                if prev_cap is not None and prev_cap > 0:
+                # El negativo TAMBIÉN se hereda, para que el guard de abajo lo vea.
+                # Filtrarlo dejaba el arranque en 0 y el mes decía "Mes sin
+                # grandes movimientos" —afirma que no pasó nada— mientras el mismo
+                # capital, con fila del mes, ya decía "sin base".
+                if prev_cap is not None and (prev_cap > 0 or _capital_roto(prev_cap)):
                     start_value = prev_cap
             # AUDIT C-2 (patch pre-C1): el mes EN CURSO cierra con end MtM (live),
             # pero capital_inicio viene de la cadena monthly A COSTO → costo-vs-
@@ -1516,10 +1562,15 @@ def compute_metrics_for_period(
             # mercado vivo. Ese par produjo "−63,37% / −US$127.486" con CERO
             # operaciones cerradas y un no-realizado de −US$2.233: la resta no era
             # la pérdida del mes, era la brecha costo-vs-mercado de toda la cuenta.
-            # Con start_value <= 0 no hay mezcla posible (no hay capital previo al
-            # costo) y el caso ya lo cubre el guard de abajo.
+            # Con start_value en 0 no hay mezcla posible (no hay capital previo al
+            # costo) y el caso ya lo cubre el guard de abajo. Con start_value
+            # NEGATIVO sí: es una cadena rota, y el guard la tapa (`_capital_roto`).
             if _basis_is_incomparable(_start_is_mtm, start_value, deposits, withdrawals):
                 basis_incomparable = True
+                if _capital_roto(start_value):
+                    # La causa real, no la genérica: acá no falta un cierre a
+                    # mercado, sobra un capital que no puede existir.
+                    _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
             # Sin NINGUNA base medible NI flows (usuario sin historia ni aportes
             # registrados): período incompleto (patrón B4/B10) — delta 0 honesto
             # en vez de "+toda la cartera (+0.0% sobre capital inicial US$ 0)".
@@ -1529,7 +1580,10 @@ def compute_metrics_for_period(
             # Pisar start=end con flows vivos fabricaba delta = −deposits
             # (depositás 5.000, vale 5.200 → "−US$5.000, −100%") en pleno
             # onboarding. (Cazado por el review adversarial de F4.)
-            if start_value <= 0 and end_value > 0 and (deposits - withdrawals) <= 0:
+            # (Con la cadena rota no: ya quedó "sin base", y pisar el arranque con
+            # el valor de hoy escondería el capital que lo explica.)
+            if (start_value <= 0 and not _capital_roto(start_value)
+                    and end_value > 0 and (deposits - withdrawals) <= 0):
                 dw_incomplete = True
                 start_value = end_value
         elif _period_is_current:
@@ -1707,9 +1761,12 @@ def compute_metrics_for_period(
                     # `delta_pct` de puntas realmente cubre.
                     _ventana_puntas = (str(_snap_y["date"])[:10], _hoy_iso())
             # AUDIT D-1: mismo cruce que el mes — sin cierre medido de borde, el
-            # año resta cadena contra mercado.
+            # año resta cadena contra mercado. (Y con la cadena rota, igual que el
+            # mes: medido, enero en −5.000 publicaba "Año: +US$ 16.000".)
             if _basis_is_incomparable(_start_is_mtm, start_value, deposits, withdrawals):
                 basis_incomparable = True
+                if _capital_roto(start_value):
+                    _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
         else:
             # Año CERRADO: mismas dos puntas medidas que pide el mes.
             _b = bordes_mercado_periodo(conn, uid, period_start, period_end,
@@ -1900,9 +1957,22 @@ def compute_metrics_for_period(
                     # un año cuyo propio borde SÍ estaba medido — se perdía un
                     # delta_usd real punta a punta sólo porque el cron se cortó
                     # dentro del mes en curso.
-                    if not _ci_is_mtm and ci > 0:
+                    # Con el arranque del mes ROTO, lo mismo: tampoco es un cierre
+                    # medido, y componerlo contra el valor de hoy metía el agujero
+                    # en el año (o lo salteaba callado como un 0 %).
+                    if not _ci_is_mtm and (ci > 0 or _capital_roto(ci)):
                         _live_month_unmeasured = True
                         continue
+                elif _capital_roto(ci):
+                    # ⚠️ UN MES CERRADO QUE ARRANCA EN NEGATIVO ES UN MES ROTO. Su
+                    # Dietz da None (denominador ≤ 0) y el bucle lo salteaba callado
+                    # —contaba como 0 %— o, con aportes grandes, daba un % sobre
+                    # una base que no existe. `leg_dudoso` no lo ve: sólo mide
+                    # saltos desde un arranque positivo. Es la misma regla que las
+                    # puntas del mes (`_capital_roto`), y el mes malo tumba el
+                    # producto entero igual que cualquier otro mes dudoso.
+                    _mes_dudoso = True
+                    _mes_negativo = True
                 _flujo_mes = float(r["deposits"] or 0) - float(r["withdrawals"] or 0)
                 # ⚠️ LA COMPOSICIÓN CONTABLE HEREDA LA COTA DE CORDURA DEL MOTOR.
                 #
@@ -1945,7 +2015,8 @@ def compute_metrics_for_period(
                 # Pisa por lo mismo que el guard de las puntas, más abajo: un
                 # motivo de falta de datos no debe tapar a uno de datos rotos.
                 _motor_nego = "medicion_dudosa"
-                _motor_nego_texto = _MOTIVO_MES_DUDOSO
+                _motor_nego_texto = (_MOTIVO_ARRANQUE_NEGATIVO if _mes_negativo
+                                     else _MOTIVO_MES_DUDOSO)
             if (have_comp and year_twr_pct is None and _basis != "mercado"
                     and _motor_nego not in MOTIVOS_DATO_ROTO and not _mes_dudoso):
                 _comp_pct = round((comp - 1) * 100, 2)
@@ -2333,8 +2404,13 @@ def compute_metrics_for_period(
     # por más de `SALTO_MAX_VECES`, el dinero apareció de un lugar que la
     # contabilidad no registra. Mismo umbral que el motor, importado de él y no
     # copiado, para que siga habiendo una sola cota.
-    if (delta_pct is not None and not _motor_publico
-            and period_type in ("month", "year") and _basis != "mercado"):
+    #
+    # ⚠️ Y CON v0 NEGATIVO NO HAY NADA QUE MEDIR (`_capital_roto`). Por eso la
+    # cota ya no exige un `delta_pct`: con arranque negativo el Dietz da None
+    # (denominador ≤ 0), esta cota se salteaba, y el MONTO salía igual. Medido en
+    # un mes cerrado: arranque −5.000, cierre −3.000 → "Mes: +US$ 2.000".
+    if (not _motor_publico and period_type in ("month", "year") and _basis != "mercado"
+            and (delta_pct is not None or _capital_roto(start_value))):
         try:
             import twr as _twr_p
             # `leg_dudoso` PRIMERO Y SIEMPRE, también con v0 = 0: su chequeo de
@@ -2343,7 +2419,8 @@ def compute_metrics_for_period(
             # el uid 176 publicaba **−199,28 %** — imposible como retorno, el piso
             # es −100 % — con v0 = 0, US$2.333.425 de depósitos y US$8.330 de valor
             # final. Saltearlo cuando v0 = 0 dejaba pasar toda esa familia.
-            _punta_dudosa = _twr_p.leg_dudoso(start_value, end_value, flows)
+            _punta_dudosa = ("arranque_negativo" if _capital_roto(start_value)
+                             else _twr_p.leg_dudoso(start_value, end_value, flows))
             if not _punta_dudosa and start_value <= 0 and end_value > 0:
                 # Y con v0 = 0 hace falta ADEMÁS el chequeo del salto, que
                 # `leg_dudoso` no puede hacer: sin capital de arranque no hay
@@ -2360,7 +2437,9 @@ def compute_metrics_for_period(
                 # motivo, más benigno. Datos ROTOS mandan sobre datos AUSENTES:
                 # el primero decide que no se publica.
                 _motor_nego = "medicion_dudosa"
-                _motor_nego_texto = _MOTIVO_PUNTAS_DUDOSAS
+                _motor_nego_texto = (_MOTIVO_ARRANQUE_NEGATIVO
+                                     if _punta_dudosa == "arranque_negativo"
+                                     else _MOTIVO_PUNTAS_DUDOSAS)
         except Exception:
             pass
     if (_motor_nego in MOTIVOS_DATO_ROTO) and not _motor_publico:

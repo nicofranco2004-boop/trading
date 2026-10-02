@@ -474,15 +474,22 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         self.assertEqual(self._vista()["lote"], lote)
 
     def test_entre_mail_y_mail_hay_pausa(self):
+        """La pausa la pone `emails._send` (ver test_ritmo_de_envio.py): se mide
+        en los pedidos que le llegan a Resend, con el mail de verdad."""
+        from tests._resend_falso import Reloj, red_de_mentira, separaciones
         for _ in range(3):
             self._con_prueba(self._persona())
-        with patch("billing.emails.send_trial_feedback", return_value=True), \
-             patch("main.time.sleep") as dormir:
+        with red_de_mentira(Reloj(), direcciones_de_prueba=True,
+                            todo_sleep_en_el_reloj=True) as resend:
             r = self.client.post(URL, json={"confirm": True, "vistos": self._vistos()},
                                  headers=self.headers)
         self.assertEqual(r.json()["sent_count"], 3)
-        self.assertEqual([c.args[0] for c in dormir.call_args_list],
-                         [emails.PAUSA_ENTRE_ENVIOS] * 2)   # entre 3 mails, 2 pausas
+        self.assertEqual(len(resend.pedidos), 3)
+        # EXACTAMENTE la pausa (Resend de mentira tarda 0,3 s, menos que ella):
+        # menos es sin pausa, más es una pausa de más (p. ej. un sleep propio del
+        # loop además del de `_send`, que alargaba cada tanda).
+        self.assertEqual([round(x, 6) for x in separaciones(resend.horas())],
+                         [emails.PAUSA_ENTRE_ENVIOS] * 2, resend.pedidos)
 
     def test_si_no_se_puede_devolver_la_marca_se_informa(self):
         uid = self._con_prueba(self._persona())
@@ -635,6 +642,17 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
         self.assertIsNone(fila["espera"])
 
+    def test_espera_al_aviso_que_resend_rechazo_y_el_cron_reintenta(self):
+        """"Quedan pocos días" tendría que haber salido hace 30 h y no está en
+        el registro: Resend lo rechazó y el cron lo reintenta esta noche (su
+        ventana sigue abierta). Con la regla vieja ("hace más de un día no lo
+        manda nadie") el panel dejaba mandar el feedback y llegaban dos mails
+        de Rendi en pocas horas."""
+        uid = self._con_prueba(self._persona(), arrancó_hace=(
+            tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 1.25))
+        fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
+        self.assertIn("quedan pocos días", fila["espera"] or "")
+
     def test_fechas_con_zona_horaria_tambien_cuentan(self):
         uid = self._con_prueba(self._persona())
         self.conn.execute(
@@ -645,14 +663,17 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         fila = [f for f in self._vista()["nuevos"] if f["id"] == uid][0]
         self.assertIn("hace 2 h", fila["espera"] or "")
 
-    def test_momentos_de_aviso_coincide_con_el_cron(self):
+    def test_ventanas_de_aviso_coinciden_con_el_cron(self):
         """Diferencial contra el canónico: se corre el cron de verdad y lo que
-        manda tiene que ser exactamente lo que momentos_de_aviso dice que ya
+        manda tiene que ser exactamente lo que ventanas_de_aviso dice que
         corresponde. Si alguien cambia una condición del cron y no la función,
         este test se pone rojo."""
-        edades = (tr.TRIAL_PRO_DAYS - 1.1, tr.TRIAL_PRO_DAYS - 0.9,
-                  tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES - 0.1,
-                  tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 0.1)
+        # Los bordes de las TRES ventanas: antes y después de que abra, y antes
+        # y después de que cierre.
+        P, T = tr.TRIAL_PRO_DAYS, tr.TRIAL_TOTAL_DAYS
+        A, F = tr.MAIL_AVISO_DIAS_ANTES, tr.MAIL_FIN_VENTANA_DIAS
+        edades = (P - 1.6, P - 1.1, P - 0.9, P - 0.4, P + 0.4, P + 0.9, P + 1.1,
+                  T - A - 0.1, T - A + 0.1, T - 0.1, T + 0.1, T + F - 0.1, T + F + 0.1)
         uids = []
         for e in edades:
             uid = self._con_prueba(self._persona(), arrancó_hace=0)
@@ -661,6 +682,9 @@ class FeedbackDeLaPrueba(unittest.TestCase):
         with patch.object(emails, "send_trial_pro_ending", return_value=True), \
              patch.object(emails, "send_trial_ending_soon", return_value=True), \
              patch.object(emails, "send_trial_ended", return_value=True):
+            # En el orden del job de producción: primero el paso a Plus, después
+            # los avisos (el "fin de Pro" sale sólo a quien sigue en Pro).
+            tr.step_down_due_trials(self.conn)
             tr.send_due_trial_emails(self.conn)
         ahora = datetime.utcnow()
         for uid in uids:
@@ -668,8 +692,9 @@ class FeedbackDeLaPrueba(unittest.TestCase):
                                   "WHERE id=?", (uid,)).fetchone()
             mandados = {x["kind"] for x in self.conn.execute(
                 "SELECT kind FROM trial_email_log WHERE user_id=?", (uid,))}
-            for kind in (tr.MAIL_PRO_ENDING, tr.MAIL_ENDING_SOON):
-                debia = tr.momentos_de_aviso(r["trial_started_at"], r["trial_ends_at"])[kind] <= ahora
+            for kind, (desde, hasta) in tr.ventanas_de_aviso(
+                    r["trial_started_at"], r["trial_ends_at"]).items():
+                debia = desde <= ahora < hasta
                 self.assertEqual(kind in mandados, debia, f"uid={uid} {kind}")
 
 

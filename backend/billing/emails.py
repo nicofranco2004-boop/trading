@@ -35,18 +35,41 @@ import sys
 import html
 import logging
 import threading
+import time
 from typing import Optional
 
 log = logging.getLogger("billing.emails")
 
 
-# Pausa entre un envío y el siguiente cuando se manda a mucha gente. El servicio
-# de mail (Resend) acepta un número acotado de pedidos por segundo y a partir de
-# ahí los rechaza; un rechazo cuenta como envío fallido. Vive acá, al lado de
-# `_send`, porque es una propiedad del servicio y no de cada campaña: el resumen
-# de mercado la tenía como constante propia y la campaña nueva la habría copiado.
+# Pausa mínima entre un pedido a Resend y el siguiente. El servicio de mail
+# acepta un número acotado de pedidos por segundo y a partir de ahí los rechaza;
+# un rechazo es un mail que no llega.
+#
+# La hace cumplir `_send` (ver `_esperar_turno`), para TODO el proceso, y no cada
+# loop por su cuenta. Antes la tenían dos loops (el resumen de mercado y el mail
+# de feedback) y los otros siete mandaban de un tirón: los avisos de la prueba,
+# los de vencimiento, las alertas, el brief del asesor... Y aunque cada loop
+# pausara, dos que corren a la vez —el cron de las alertas y el de la prueba, o
+# un cron y el código de verificación de alguien que se está registrando— se
+# suman en el mismo segundo: el tope es de la CUENTA de Resend, no de cada loop.
 PAUSA_ENTRE_ENVIOS = 0.6
 
+_turno = threading.Lock()
+_ultimo_pedido: Optional[float] = None    # time.monotonic() del último pedido
+
+
+def _esperar_turno() -> None:
+    """Deja pasar PAUSA_ENTRE_ENVIOS desde el último pedido a Resend de
+    cualquier hilo. Se cuenta desde que SALIÓ el anterior, así que un loop que
+    tarda en armar cada mail (el resumen de mercado narra con IA) no espera de
+    más, y un mail suelto que llega con todo tranquilo no espera nada."""
+    global _ultimo_pedido
+    with _turno:
+        if _ultimo_pedido is not None:
+            falta = PAUSA_ENTRE_ENVIOS - (time.monotonic() - _ultimo_pedido)
+            if falta > 0:
+                time.sleep(falta)
+        _ultimo_pedido = time.monotonic()
 
 
 # ─── Qué pasó con el último envío ────────────────────────────────────────────
@@ -54,11 +77,12 @@ PAUSA_ENTRE_ENVIOS = 0.6
 # mail que Resend RECHAZÓ hay que reintentarlo; uno que Resend quizás aceptó (se
 # cortó la conexión esperando la respuesta) NO, porque reintentarlo es mandarlo
 # dos veces. `_send` anota acá cuál fue, por hilo, para quien tenga que decidir
-# (ver `_envio_masivo` en main.py).
+# (`Tanda`, que usan los avisos automáticos y los envíos del panel).
 ENVIADO = "enviado"
 NO_SALIO = "no_salio"            # seguro que no llegó: Resend dijo que no (4xx) o el pedido no salió
 INCIERTO = "incierto"            # no sabemos: Resend no contestó a tiempo, o falló de su lado (5xx)
 NO_INTENTADO = "no_intentado"    # ni se probó: tests, dirección de prueba o sin proveedor
+SALTEADO = "salteado"            # (Tanda) la marca ya la tenía otra corrida
 
 _resultado = threading.local()
 
@@ -71,6 +95,87 @@ def resultado_del_ultimo_envio() -> str:
     """Qué pasó con el último `_send` de ESTE hilo: ENVIADO, NO_SALIO, INCIERTO
     o NO_INTENTADO."""
     return getattr(_resultado, "estado", NO_INTENTADO)
+
+
+# Mails seguidos sin confirmación de Resend (no contestó, o dio 5xx) después de
+# los cuales se frena una tanda: con Resend caído, cada aviso queda marcado sin
+# saber si salió, y seguir quemaba a toda la gente del día.
+INCIERTOS_PARA_FRENAR = 2
+
+TRABADA = "trabada"              # (Tanda) no salió y no se pudo devolver la marca
+FRENADO = "frenado"              # (Tanda) no se intentó: la tanda está frenada
+
+
+class Tanda:
+    """Una corrida que manda avisos marcados de a uno: los automáticos de la
+    prueba y de vencimiento (`run_lifecycle_job`) y los envíos masivos del
+    panel (`main._envio_masivo`). Es UNA sola regla para todos de cuándo se
+    devuelve la marca y cuándo se frena; antes había dos motores con dos
+    reglas, y el de los crons no tenía freno.
+
+    Por cada aviso, ya marcado (`mandar`), o marcándolo acá (`enviar`):
+      · Salió → ENVIADO.
+      · Resend no contestó o dio 5xx: el mail PUDO haber salido → la marca
+        QUEDA (devolverla lo mandaría dos veces) → INCIERTO. Con
+        INCIERTOS_PARA_FRENAR seguidos (Resend caído), `frenado`: la tanda no
+        intenta más y lo que falta queda SIN marca para la próxima.
+      · Cualquier otra cosa (Resend dijo que no, el pedido no salió, el mail
+        explotó al armarse, o ni se intentó: dirección de prueba o sin
+        proveedor) → seguro que no llegó: la marca se devuelve (dos intentos)
+        → NO_SALIO, o TRABADA si no se pudo.
+
+    `inciertos_seguidos` arranca en lo que traiga el que llama: el panel manda
+    en varios pedidos y la cuenta tiene que seguir entre uno y otro."""
+
+    def __init__(self, inciertos_seguidos: int = 0):
+        self.inciertos_seguidos = min(max(int(inciertos_seguidos or 0), 0),
+                                      INCIERTOS_PARA_FRENAR)
+        self.frenado = False
+
+    def mandar(self, marca, mandar, desmarcar, *, que: str) -> str:
+        """El aviso ya está marcado con `marca`. `mandar()` → True si salió;
+        `desmarcar(marca)` lo deja como estaba (y confirma)."""
+        # Que no quede el resultado del mail anterior: si `mandar` falla antes
+        # de llegar a `_send`, un ENVIADO o INCIERTO viejo decidiría por éste.
+        _anotar(NO_INTENTADO)
+        try:
+            ok = bool(mandar())
+        except Exception as ex:
+            log.error("%s: el envío falló: %s", que, ex)
+            ok = False
+        estado = ENVIADO if ok else resultado_del_ultimo_envio()
+        if estado == ENVIADO:
+            self.inciertos_seguidos = 0
+            return ENVIADO
+        if estado == INCIERTO:
+            self.inciertos_seguidos += 1
+            if self.inciertos_seguidos >= INCIERTOS_PARA_FRENAR:
+                self.frenado = True
+            log.error("%s: no se sabe si llegó; queda marcado para no mandarlo dos "
+                      "veces%s", que, " — se frena la tanda" if self.frenado else "")
+            return INCIERTO
+        # Resend contestó (aunque sea que no), o ni se le preguntó: no está caído.
+        self.inciertos_seguidos = 0
+        for _ in range(2):
+            try:
+                desmarcar(marca)
+                log.warning("%s: no salió; queda para la próxima", que)
+                return NO_SALIO
+            except Exception as ex:
+                log.error("%s: no se pudo devolver la marca: %s", que, ex)
+        return TRABADA
+
+    def enviar(self, marcar, mandar, desmarcar, *, que: str) -> str:
+        """Marca y manda. `marcar()` se queda con el aviso y devuelve la marca,
+        o algo falso si ya la tiene otra corrida → SALTEADO. Tiene que ser
+        condicional (INSERT OR IGNORE, UPDATE ... IS NULL) y confirmarse antes
+        de volver: es lo que impide que dos corridas manden las dos."""
+        if self.frenado:
+            return FRENADO
+        marca = marcar()
+        if not marca:
+            return SALTEADO
+        return self.mandar(marca, mandar, desmarcar, que=que)
 
 
 def _api_key() -> Optional[str]:
@@ -133,7 +238,8 @@ def can_deliver(to: str) -> bool:
          (.test/.example/...) → no se intenta mandar NUNCA;
       2. no hay proveedor configurado → se loguea a consola y listo;
       3. se intentó mandar y falló de verdad.
-    Sólo el 3 es una falla que valga la pena mostrarle al usuario.
+    Sólo el 3 es una falla que valga la pena mostrarle al usuario. (Después de
+    mandar, cuál de los tres fue lo dice `resultado_del_ultimo_envio()`.)
 
     ⚠️ Preguntar por la API KEY sola contesta OTRA pregunta. `backend/.env`
     tiene RESEND_API_KEY, así que bajo pytest la key ESTÁ presente pero el
@@ -204,6 +310,7 @@ def _send(to: str, subject: str, html: str, text: str,
     }
     if reply_to:
         payload["reply_to"] = reply_to
+    _esperar_turno()
     try:
         r = httpx.post(
             "https://api.resend.com/emails",
@@ -2198,6 +2305,8 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
     saca la urgencia de la única decisión que tiene que tomar.
     """
     plus_days = total_days - pro_days
+    # La comparación con el plan Free, sólo a quien lo tiene.
+    _sin_free = "" if requiere_plan else " — sin las 12 preguntas fijas del plan Free"
     if requiere_plan:
         _cierre_html = (
             "No te pedimos tarjeta y no se cobra nada solo: a los "
@@ -2224,7 +2333,7 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
         Tres cosas que te conviene hacer hoy:
       </p>
       <ol style="font-size:14px;line-height:1.9;color:#374151;padding-left:20px;margin:0 0 20px;">
-        <li><b>Preguntale lo que quieras al chat</b> — sin las 12 preguntas fijas del plan Free.</li>
+        <li><b>Preguntale lo que quieras al chat</b>{_sin_free}.</li>
         <li><b>Pedí un análisis de tu cartera</b> y mirá qué te dice sobre concentración y riesgo.</li>
         <li><b>Sumá tus otros brokers</b>: recién con todo junto los números cierran de verdad.</li>
       </ol>

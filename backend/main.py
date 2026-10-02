@@ -21304,9 +21304,10 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 # su loop y cada arreglo quedaba en uno solo: el de feedback tenía pausa, tandas
 # y freno al doble click, y los otros cuatro mandaban todo de un tirón.
 #
-# LOTE: cuántos mails manda cada pedido. Con la pausa entre envíos (0,6 s) más lo
-# que tarda Resend (~0,3 s), 20 mails son ~18 s: por debajo del corte de ~30 s
-# del proxy de Vercel. Con todo en un solo pedido, a partir de ~30 personas el
+# LOTE: cuántos mails manda cada pedido. Con la pausa entre envíos (0,6 s entre
+# un pedido a Resend y el siguiente, ver `emails._esperar_turno`), 20 mails son
+# ~12 s; con Resend lento, el tope de abajo: por debajo del corte de ~30 s del
+# proxy de Vercel. Con todo en un solo pedido, a partir de ~30 personas el
 # admin veía un error mientras los mails seguían saliendo — y volvía a apretar.
 # El panel parte la lista en tandas de este tamaño solo.
 ENVIO_MASIVO_LOTE = 20
@@ -21315,14 +21316,11 @@ ENVIO_MASIVO_LOTE = 20
 # el pedido siguiente. El lote de 20 supone ~0,3 s por mail; si Resend se pone
 # lento (`_send` espera hasta 10 s), 20 mails volvían a pasar el corte de 30 s.
 # Con 18, el caso normal de un mail lento termina en 18 + 0,6 + 10 < 30. No es
-# una garantía (httpx cuenta los 10 s por fase, y una base trabada demora la
-# marca): si igual se corta, el panel espera y recarga, y la marca impide el
-# doble envío.
+# una garantía (httpx cuenta los 10 s por fase, una base trabada demora la
+# marca, y la pausa de `_send` es de todo el proceso: si a la vez manda un cron,
+# se turnan y cada uno espera un poco más): si igual se corta, el panel espera y
+# recarga, y la marca impide el doble envío.
 ENVIO_MASIVO_PRESUPUESTO_SEG = 18
-# Mails seguidos sin confirmación de Resend (no contestó, o dio 5xx) después de
-# los cuales se frena el envío: con Resend caído, cada uno queda marcado sin
-# saber si salió, y seguir quemaba la campaña entera.
-ENVIO_MASIVO_INCIERTOS_SEGUIDOS = 2
 # Horas que tienen que pasar para "reenviar" el MISMO mail a alguien que ya lo
 # recibió (re-engagement y regalo de plan). Sin esto, si un reenvío se cortaba a
 # la mitad y el admin volvía a apretar, a los de las primeras tandas les llegaba
@@ -21516,20 +21514,23 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
          no la pueden ganar los dos. Ojo: "salteado" quiere decir que otro
          pedido se la estaba mandando, no que le llegó — si a ese otro le
          falla, la persona vuelve a la lista.
-      2. Pausa de `emails.PAUSA_ENTRE_ENVIOS` entre un envío y el siguiente.
-         Resend rechaza lo que pasa de su tope de pedidos por segundo, y un
-         rechazo es un mail que no llega.
-      3. `mandar(t)` → True si salió.
+      2. Entre un envío y el siguiente pasan `emails.PAUSA_ENTRE_ENVIOS`: la
+         pausa la pone `emails._send` para todo el proceso (si al mismo
+         tiempo corre un cron que manda mails, se turnan). Resend rechaza lo
+         que pasa de su tope de pedidos por segundo, y un rechazo es un mail
+         que no llega.
+      3. `mandar(t)` → True si salió. Qué se hace con la marca después, y
+         cuándo se frena, lo decide `emails.Tanda` — la MISMA regla que los
+         avisos automáticos de la prueba y de vencimiento:
       4. Si Resend no contestó a tiempo o dio un 5xx, el mail PUDO haber salido
-         (`emails.resultado_del_ultimo_envio()` == INCIERTO): la marca se deja
-         y la persona va en `inciertos`. Devolverla la ponía otra vez como
-         pendiente, y el click siguiente le mandaba un segundo mail. Con
-         ENVIO_MASIVO_INCIERTOS_SEGUIDOS seguidos (Resend caído) se frena: el
-         resto vuelve sin marca en `pendientes` y `frenado` le dice al panel
-         que no siga. La cuenta sigue entre pedidos (`inciertos_previos`, que
-         el panel devuelve de `inciertos_seguidos`): con Resend lento, cada
-         pedido podía hacer uno solo y cortar por tiempo, y el freno nunca
-         saltaba.
+         (INCIERTO): la marca se deja y la persona va en `inciertos`.
+         Devolverla la ponía otra vez como pendiente, y el click siguiente le
+         mandaba un segundo mail. Con `emails.INCIERTOS_PARA_FRENAR` seguidos
+         (Resend caído) se frena: el resto vuelve sin marca en `pendientes` y
+         `frenado` le dice al panel que no siga. La cuenta sigue entre pedidos
+         (`inciertos_previos`, que el panel devuelve de `inciertos_seguidos`):
+         con Resend lento, cada pedido podía hacer uno solo y cortar por
+         tiempo, y el freno nunca saltaba.
       5. Si no salió (o ni se intentó), `desmarcar(t, marca)` la deja como
          estaba (dos intentos, con un rollback en el medio). Si ni así, va en
          `marcas_trabadas`: quedó marcada sin haber recibido nada, y el panel
@@ -21551,9 +21552,7 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
 
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     ya_no_estan = []
-    intentos = 0
-    inciertos_seguidos = min(max(int(inciertos_previos or 0), 0), ENVIO_MASIVO_INCIERTOS_SEGUIDOS)
-    frenado = False
+    tanda = emails.Tanda(inciertos_seguidos=inciertos_previos)
     if inicio is None:
         inicio = time.monotonic()
     for i, t in enumerate(destinatarios):
@@ -21575,55 +21574,38 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         if marca is None:
             salteados.append(quien)
             continue
-        if intentos:
-            time.sleep(emails.PAUSA_ENTRE_ENVIOS)
-        intentos += 1
         log.info("%s: marcado uid=%s, mandando", campaña, t["id"])
-        # Si `mandar` falla antes de llegar a `_send`, que no quede lo del mail
-        # anterior: un INCIERTO viejo dejaría marcado a alguien sin intentarlo.
-        emails._anotar(emails.NO_INTENTADO)
-        try:
-            ok = bool(mandar(t))
-        except Exception as ex:
-            log.error("%s: envío falló para %s: %s", campaña, t["email"], ex)
-            ok = False
-        if ok:
+
+        def _devolver(m, t=t):
+            try:
+                desmarcar(t, m)
+                conn.commit()
+            except Exception:
+                _deshacer_transaccion(conn)
+                raise
+
+        estado = tanda.mandar(marca, lambda t=t: mandar(t), _devolver,
+                              que=f"{campaña} uid={t['id']}")
+        if estado == emails.ENVIADO:
             enviados.append(quien)
-            inciertos_seguidos = 0
-            continue
-        if emails.resultado_del_ultimo_envio() == emails.INCIERTO:
-            log.warning("%s: no se sabe si le llegó a uid=%s; queda marcado", campaña, t["id"])
+        elif estado == emails.INCIERTO:
             inciertos.append(quien)
-            inciertos_seguidos += 1
-            if inciertos_seguidos >= ENVIO_MASIVO_INCIERTOS_SEGUIDOS:
+            if tanda.frenado:
                 # Aunque sea el último de la tanda: el panel tiene que cortar
                 # y no seguir con la próxima.
-                frenado = True
                 pendientes = [{"id": x["id"]} for x in destinatarios[i + 1:]]
                 break
-            continue
-        # Resend contestó (aunque sea que no): no está caído.
-        inciertos_seguidos = 0
-        devuelta = False
-        for _ in range(2):
-            try:
-                desmarcar(t, marca)
-                conn.commit()
-                devuelta = True
-                break
-            except Exception as ex:
-                log.error("%s: no se pudo desmarcar uid=%s: %s", campaña, t["id"], ex)
-                _deshacer_transaccion(conn)
-        fallados.append(quien)
-        if not devuelta:
-            trabadas.append(quien)
+        else:
+            fallados.append(quien)
+            if estado == emails.TRABADA:
+                trabadas.append(quien)
 
     ids = {t["id"] for t in destinatarios}
     descartados = [{"id": i} for i in vistos if i not in ids] + ya_no_estan
     log.info("%s: enviados=%d fallados=%d salteados=%d descartados=%d trabadas=%d "
              "inciertos=%d pendientes=%d frenado=%s", campaña, len(enviados), len(fallados),
              len(salteados), len(descartados), len(trabadas), len(inciertos), len(pendientes),
-             frenado)
+             tanda.frenado)
     return {
         "dry_run": False,
         "sent_count": len(enviados),
@@ -21641,8 +21623,8 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
         # el panel los vuelve a mandar en el pedido siguiente — salvo con
         # `frenado` (Resend no confirma): ahí el panel corta.
         "pendientes": pendientes,
-        "frenado": frenado,
-        "inciertos_seguidos": inciertos_seguidos,
+        "frenado": tanda.frenado,
+        "inciertos_seguidos": tanda.inciertos_seguidos,
     }
 
 
@@ -22217,14 +22199,17 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             propio = _horas_desde(_fecha_utc(d["enviado"]))
             # El próximo aviso automático que todavía no le llegó: si le toca
             # en las próximas horas, este mail espera a que salga aquel.
-            # Sólo cuenta el que le toca dentro de la ventana —o le tocó hace
-            # menos de eso y el cron todavía no pasó—. Uno que tendría que haber
-            # salido hace más de un día y no salió no lo está mandando nadie
-            # (cron caído, cuenta vieja): esperarlo dejaría a la persona
-            # esperando para siempre.
-            pendientes = {k: m for k, m in _trial.momentos_de_aviso(
+            # Cuenta mientras su ventana siga abierta (`ventanas_de_aviso`):
+            # uno que ya tendría que haber salido y no salió es, casi siempre,
+            # uno que Resend rechazó y el cron reintenta esta noche — con la
+            # regla vieja ("hace más de un día no lo manda nadie") el panel
+            # dejaba mandar este mail y el aviso llegaba horas después. Las
+            # ventanas cierran (a lo sumo MAIL_FIN_VENTANA_DIAS después del
+            # final), así que nadie espera para siempre por un cron caído o
+            # una cuenta vieja.
+            pendientes = {k: m for k, (m, hasta) in _trial.ventanas_de_aviso(
                               d["trial_started_at"], d["trial_ends_at"]).items()
-                          if k not in avisos_enviados[vid] and m > ahora - ventana}
+                          if k not in avisos_enviados[vid] and ahora < hasta}
             proximo = min(pendientes.items(), key=lambda kv: kv[1]) if pendientes else None
             espera = None
             if otro is not None and otro < FEEDBACK_PRUEBA_ESPERA_HORAS:
@@ -36782,11 +36767,15 @@ def iol_lab_status(uid: int = Depends(get_current_user)):
         stale = conn.execute(
             "SELECT 1 FROM user_broker_credentials WHERE user_id=? AND broker='iol_lab' "
             "AND last_sync_at <= datetime('now', '-55 minutes')", (uid,)).fetchone()
-        if stale:
+        # Con la bandera de las renovaciones (`_iol_lab_refresh_all`): si el
+        # cron está renovando, no se renueva el mismo token dos veces a la vez.
+        if stale and _tomar_corrida("iol_lab"):
             try:
                 _iol_lab_refresh_one(conn, uid)
             except Exception as e:  # noqa
                 print(f"[iol_lab] refresh oportunista falló: {e}")
+            finally:
+                _soltar_corrida("iol_lab")
         with _iol_lab_runs_lock:
             running = uid in _iol_lab_running
         return {"enabled": True, "email": email, "running": running,
@@ -36813,6 +36802,27 @@ def iol_lab_probe(data: IolLabProbeIn, request: Request, uid: int = Depends(get_
     finally:
         del data   # la contraseña no sigue viva en este frame
     access, rt = tokens.get("access_token"), tokens.get("refresh_token")
+    # Guardar con la bandera de las renovaciones: si el cron está renovando,
+    # espera a que termine (así su escritura, con el token viejo, no pisa la
+    # nueva) y uno que arranque después ya lee el nuevo. Sólo el guardado: el
+    # login con IOL puede tardar hasta 30 s y, con la bandera tomada, la
+    # renovación de la hora salteaba a todos los testers.
+    if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
+        raise HTTPException(409, "Se está renovando la medición ahora mismo. Probá en unos segundos.")
+    try:
+        run_id = _iol_lab_guardar_probe(uid, keep, rt, tokens)
+    finally:
+        _soltar_corrida("iol_lab")
+    with _iol_lab_runs_lock:
+        _iol_lab_running.add(uid)
+    threading.Thread(target=_iol_lab_run_bg, args=(run_id, uid, email, access), daemon=True).start()
+    return {"ok": True, "run_id": run_id, "status": "started",
+            "expires_in": tokens.get("expires_in"), "watch": bool(keep and rt)}
+
+
+def _iol_lab_guardar_probe(uid: int, keep: bool, rt, tokens) -> int:
+    """Guarda el token de un login de la prueba (si el tester lo dejó) y abre la
+    corrida. Devuelve su id."""
     conn = get_db()
     try:
         with conn:
@@ -36826,27 +36836,30 @@ def iol_lab_probe(data: IolLabProbeIn, request: Request, uid: int = Depends(get_
                 conn.execute("DELETE FROM iol_lab_token_log WHERE user_id=?", (uid,))
                 _iol_lab_log(conn, uid, True, f"login expires_in={tokens.get('expires_in')}")
             cur = conn.execute("INSERT INTO iol_lab_runs (user_id, status) VALUES (?, 'running')", (uid,))
-            run_id = cur.lastrowid
+            return cur.lastrowid
     finally:
         conn.close()
-    with _iol_lab_runs_lock:
-        _iol_lab_running.add(uid)
-    threading.Thread(target=_iol_lab_run_bg, args=(run_id, uid, email, access), daemon=True).start()
-    return {"ok": True, "run_id": run_id, "status": "started",
-            "expires_in": tokens.get("expires_in"), "watch": bool(keep and rt)}
 
 
 @app.post("/api/iol/lab/refresh")
 def iol_lab_refresh(request: Request, uid: int = Depends(get_current_user)):
-    """Renovar el token AHORA (además del cron). Sirve para ver que la medición está viva."""
+    """Renovar el token AHORA (además del cron). Sirve para ver que la medición está viva.
+    Con la bandera de las renovaciones (`_iol_lab_refresh_all`): si el cron está
+    renovando el mismo token en ese segundo, IOL anula el viejo al rotarlo y uno
+    de los dos lo daba por muerto y borraba la credencial."""
     _iol_lab_gate(uid)
     _check_rate_limit(request, max_calls=10, window_seconds=600, suffix=f"iol_lab_refresh:{uid}")
-    conn = get_db()
+    if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
+        raise HTTPException(409, "Se está renovando ahora mismo. Probá en unos segundos.")
     try:
-        res = _iol_lab_refresh_one(conn, uid)
-        return {"ok": True, **res, "watch": _iol_lab_watch_info(conn, uid)}
+        conn = get_db()
+        try:
+            res = _iol_lab_refresh_one(conn, uid)
+            return {"ok": True, **res, "watch": _iol_lab_watch_info(conn, uid)}
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        _soltar_corrida("iol_lab")
 
 
 @app.delete("/api/iol/lab/disconnect")
@@ -36881,25 +36894,38 @@ def iol_lab_run_cron(request: Request):
 def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
     """Renueva el refresh token de todos los testers con medición activa. Lo llaman el
     cron externo, el scheduler in-process (cada hora) y, oportunistamente, /status.
-    min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse)."""
-    conn = get_db()
+    min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse).
+
+    Una corrida a la vez entre las tres puertas (`_tomar_corrida("iol_lab")`):
+    dos renovando el MISMO token a la vez, si IOL anula el viejo al rotarlo, la
+    segunda recibe un rechazo y borra la credencial como si estuviera muerta."""
+    # Esperando un poco: la otra puerta suele ser la renovación de UN tester
+    # (botón o /status, ~1 s); saltear la corrida dejaba a todos sin renovar
+    # hasta la hora siguiente.
+    if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
+        return {"ok": True, "status": "already_running",
+                "checked": 0, "renewed": 0, "dead": 0, "transient": 0}
     try:
-        rows = conn.execute(
-            "SELECT user_id FROM user_broker_credentials WHERE broker='iol_lab' "
-            "AND (last_sync_at IS NULL OR last_sync_at <= datetime('now', ?))",
-            (f"-{int(min_age_minutes)} minutes",)).fetchall()
-        out = {"ok": True, "checked": len(rows), "renewed": 0, "dead": 0, "transient": 0}
-        for r in rows:
-            res = _iol_lab_refresh_one(conn, r["user_id"])
-            if res.get("ok"):
-                out["renewed"] += 1
-            elif res.get("dead"):
-                out["dead"] += 1
-            elif res.get("transient"):
-                out["transient"] += 1
-        return out
+        conn = get_db()       # adentro: si abrir la base falla, la bandera igual se suelta
+        try:
+            rows = conn.execute(
+                "SELECT user_id FROM user_broker_credentials WHERE broker='iol_lab' "
+                "AND (last_sync_at IS NULL OR last_sync_at <= datetime('now', ?))",
+                (f"-{int(min_age_minutes)} minutes",)).fetchall()
+            out = {"ok": True, "checked": len(rows), "renewed": 0, "dead": 0, "transient": 0}
+            for r in rows:
+                res = _iol_lab_refresh_one(conn, r["user_id"])
+                if res.get("ok"):
+                    out["renewed"] += 1
+                elif res.get("dead"):
+                    out["dead"] += 1
+                elif res.get("transient"):
+                    out["transient"] += 1
+            return out
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        _soltar_corrida("iol_lab")
 
 
 def _iol_lab_refresh_job():
@@ -37379,6 +37405,114 @@ def _get_mep_for_scheduler() -> float:
     raise RuntimeError("No se pudo obtener cotización del MEP")
 
 
+# ─── Una corrida a la vez, entre las DOS puertas ──────────────────────────────
+# Los trabajos largos se disparan por dos puertas: el scheduler de adentro del
+# proceso y un cron externo que pega un endpoint (para cuando Railway duerme).
+# Cada endpoint tenía su propia bandera de "ya está corriendo"... y el scheduler
+# no la miraba. El job de suscripciones de las 03:30 podía correr a la vez que
+# `/api/billing/run-cron` —dos corridas mandando los mismos avisos de la
+# prueba— y el de las fotos de las 02:59 a la vez que `/api/snapshots/run-cron`
+# (el cron externo lo pega ~03:00), las dos peleando el lock de escritura.
+#
+# Ahora la bandera es UNA por trabajo y la toman todas sus puertas. Y todas las
+# copias del mismo patrón (fotos —también el botón del admin—, suscripciones,
+# alertas, brief del asesor, resumen de mercado y las renovaciones del lab de
+# IOL) salen por acá: el arreglo de una no puede volver a quedar en una sola.
+_corridas_lock = threading.Lock()
+_corridas_en_curso: dict = {}          # nombre → time.monotonic() de cuando arrancó
+# Minutos después de los cuales una corrida que sigue "en curso" se avisa como
+# probablemente colgada: la bandera no se puede robar (correrían dos), pero un
+# "ya está corriendo" eterno no puede ser silencioso.
+CORRIDA_SOSPECHOSA_MIN = 30
+
+
+def _tomar_corrida(nombre: str) -> bool:
+    with _corridas_lock:
+        if nombre in _corridas_en_curso:
+            minutos = (time.monotonic() - _corridas_en_curso[nombre]) / 60
+            if minutos > CORRIDA_SOSPECHOSA_MIN:
+                log.error("%s: hay una corrida 'en curso' desde hace %.0f min — "
+                          "probablemente colgada; las siguientes se saltean hasta el "
+                          "próximo reinicio", nombre, minutos)
+            return False
+        _corridas_en_curso[nombre] = time.monotonic()
+        return True
+
+
+def _soltar_corrida(nombre: str) -> None:
+    with _corridas_lock:
+        _corridas_en_curso.pop(nombre, None)
+
+
+CORRIDAS_ESPERA_AL_APAGAR_SEG = 20
+# Cuánto espera una puerta del lab de IOL a que termine la renovación que está
+# corriendo (la de un tester dura ~1 s) antes de contestar que no.
+IOL_LAB_ESPERA_SEG = 5
+
+
+def _esperar_corridas(segundos: float) -> bool:
+    """Espera, con tope, a que no quede ninguna corrida en curso. True si se
+    vaciaron."""
+    fin = time.monotonic() + segundos
+    while True:
+        with _corridas_lock:
+            quedan = list(_corridas_en_curso)
+        if not quedan:
+            return True
+        if time.monotonic() >= fin:
+            log.warning("apagado: quedan corridas sin terminar: %s", ", ".join(quedan))
+            return False
+        time.sleep(0.2)
+
+
+def _tomar_corrida_esperando(nombre: str, segundos: float) -> bool:
+    """Para un botón que aprieta una persona: si la corrida de turno es corta
+    (p. ej. las renovaciones del lab de IOL, ~1 s), esperar a que termine en vez
+    de contestarle que no."""
+    fin = time.monotonic() + segundos
+    while not _tomar_corrida(nombre):
+        if time.monotonic() >= fin:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def _correr_si_esta_libre(nombre: str, fn) -> bool:
+    """Puerta del scheduler: corre `fn` acá mismo, salvo que ya haya una
+    corrida de este trabajo en curso (la del cron externo)."""
+    if not _tomar_corrida(nombre):
+        log.info("%s: ya hay una corrida en curso; ésta se saltea", nombre)
+        return False
+    try:
+        fn()
+    finally:
+        _soltar_corrida(nombre)
+    return True
+
+
+def _correr_en_fondo(nombre: str, fn) -> dict:
+    """Puerta del cron externo: arranca `fn` en un hilo y contesta al instante
+    (el trabajo tarda más que el corte del proxy). Un 200 quiere decir
+    "arrancó", no "terminó bien": el resultado va al registro."""
+    if not _tomar_corrida(nombre):
+        return {"ok": True, "status": "already_running"}
+
+    def _bg():
+        try:
+            fn()
+        except Exception:
+            log.exception("%s: la corrida falló", nombre)
+        finally:
+            _soltar_corrida(nombre)
+
+    try:
+        threading.Thread(target=_bg, daemon=True, name=f"corrida-{nombre}").start()
+    except Exception:
+        _soltar_corrida(nombre)
+        raise
+    return {"ok": True, "status": "started"}
+
+
 def _run_daily_snapshot_job():
     """Wrapper que el scheduler invoca. Pasa la config + cierra logs."""
     try:
@@ -37435,6 +37569,16 @@ def _run_subscription_lifecycle_job():
             conn.close()
     except Exception as e:
         _sub_log.error(f"Subscription lifecycle job failed: {e}", exc_info=True)
+
+
+# Lo que corre el scheduler para los dos trabajos que TAMBIÉN tienen puerta
+# externa: pasan por la misma bandera que el endpoint (ver `_correr_si_esta_libre`).
+def _job_snapshot_programado():
+    _correr_si_esta_libre("snapshot_diario", _run_daily_snapshot_job)
+
+
+def _job_ciclo_de_vida_programado():
+    _correr_si_esta_libre("ciclo_de_vida", _run_subscription_lifecycle_job)
 
 
 # Scheduler in-process
@@ -37923,7 +38067,7 @@ def _start_scheduler():
     # establecidos. Crypto sigue moviéndose pero capturamos el snapshot del
     # último minuto del día ART.
     _scheduler.add_job(
-        _run_daily_snapshot_job,
+        _job_snapshot_programado,
         CronTrigger(hour=2, minute=59),
         id='daily_snapshot',
         replace_existing=True,
@@ -37940,9 +38084,20 @@ def _start_scheduler():
     # users con suscripción cancelada+vencida, limpiamos pendings stale,
     # syncronizamos con MP.
     _scheduler.add_job(
-        _run_subscription_lifecycle_job,
+        _job_ciclo_de_vida_programado,
         CronTrigger(hour=3, minute=30),
         id='subscription_lifecycle',
+        replace_existing=True,
+    )
+    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta del mismo job (misma bandera; cada
+    # paso es idempotente). Hay avisos que valen un solo día UTC —"mañana
+    # termina tu Pro" sale el día anterior al paso a Plus— o pocas horas —la
+    # bienvenida que Resend rechazó al activar—: con una sola corrida por día,
+    # un rechazo a las 03:30 no tenía reintento posible.
+    _scheduler.add_job(
+        _job_ciclo_de_vida_programado,
+        CronTrigger(hour=15, minute=0),
+        id='subscription_lifecycle_tarde',
         replace_existing=True,
     )
     # 03:45 UTC — backup diario de la SQLite. Después del snapshot + lifecycle
@@ -37999,6 +38154,16 @@ def _stop_scheduler():
         n = _flush_last_prices_si_toca(forzar=True)
         if n:
             log.info("shutdown: bajé %d últimos-precios pendientes", n)
+    except Exception:
+        pass
+    # Las corridas en segundo plano (alertas, avisos de la prueba, briefs…)
+    # marcan cada aviso ANTES de mandarlo: si el deploy las mata a mitad, lo que
+    # faltaba no sale. Darles un rato para terminar — va DESPUÉS de bajar los
+    # precios, que es lo que no se puede perder si el apagado se corta antes.
+    _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
+    # Y otra vez los precios: los que trajeron esas corridas mientras se esperaba.
+    try:
+        _flush_last_prices_si_toca(forzar=True)
     except Exception:
         pass
 
@@ -39362,20 +39527,8 @@ def alerts_events_seen(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
-@app.api_route("/api/alerts/evaluate", methods=["GET", "POST"])
-def alerts_evaluate(request: Request):
-    """Evalúa TODAS las alertas activas y dispara las que cruzaron. Lo pega un
-    cron externo cada ~10 min (cron-job.org / UptimeRobot) — el mismo ping
-    despierta la app en Railway. Acepta GET y POST (los crons simples pegan GET
-    por default). Auth: header X-Cron-Token o ?token= contra ALERTS_CRON_TOKEN
-    — sigue cerrado sin token. Sin token configurado → 503 (endpoint cerrado)."""
-    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+def _evaluar_alertas_job() -> dict:
+    """Una corrida de las alertas: las de precio y las del libro del asesor."""
     import alerts_engine as _ae
     from datetime import datetime as _dtmod
     conn = get_db()
@@ -39388,6 +39541,13 @@ def alerts_evaluate(request: Request):
         except Exception as _ex:
             log.error("alertas de precio en el cron: %s", _ex)
             result = {"error_precio": str(_ex)}
+            # Lo que quedó a medias no puede confirmarse con el primer commit
+            # de las alertas del libro, que usan esta misma conexión: alertas
+            # 'once' apagadas y disparos registrados que nunca se entregaron.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         # Mismo ciclo: las alertas del LIBRO del asesor (movimiento de la
         # cartera de un cliente) se evalúan acá → el asesor no tiene que dar
         # de alta ningún cron nuevo.
@@ -39397,28 +39557,42 @@ def alerts_evaluate(request: Request):
                 conn, market_open=_ae._market_open_now(_dtmod.utcnow()))
         except Exception as _ex:
             log.error("advisor alerts en el cron: %s", _ex)
-        return {"ok": True, **result}
+        log.info("alertas: %s", result)
+        return result
     finally:
         conn.close()
 
 
+@app.api_route("/api/alerts/evaluate", methods=["GET", "POST"])
+def alerts_evaluate(request: Request):
+    """Evalúa TODAS las alertas activas y dispara las que cruzaron. Lo pega un
+    cron externo cada ~10 min (cron-job.org / UptimeRobot) — el mismo ping
+    despierta la app en Railway. Acepta GET y POST (los crons simples pegan GET
+    por default). Auth: header X-Cron-Token o ?token= contra ALERTS_CRON_TOKEN
+    — sigue cerrado sin token. Sin token configurado → 503 (endpoint cerrado).
+
+    ⚠️ CORRE EN SEGUNDO PLANO Y CONTESTA AL INSTANTE, como sus hermanos (fotos,
+    suscripciones, briefs). Antes evaluaba y mandaba todo DENTRO del pedido:
+    un push y un mail por alerta disparada, y cada mail espera su turno en
+    `emails._send` (PAUSA_ENTRE_ENVIOS). Un día de mucho movimiento pasaba el
+    corte de ~30 s del proxy: el cron veía un error con los avisos saliendo, y
+    sin guarda un segundo ping podía encimar otra corrida. 200 = "arrancó"; el
+    resultado va al registro."""
+    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
+    got = (request.headers.get("x-cron-token")
+           or request.query_params.get("token") or "").strip()
+    if got != expected:
+        raise HTTPException(401, "Token inválido.")
+    return _correr_en_fondo("alertas", _evaluar_alertas_job)
+
+
 # Guarda anti-doble-corrida del snapshot por cron: el job itera TODOS los usuarios
 # (minutos), así que corre en un thread de fondo. Si llega otro ping mientras uno
-# está corriendo (retry del cron, doble disparo), lo saltamos en vez de encimar dos
-# corridas que contenderían por el lock de escritura.
-_snapshot_cron_lock = threading.Lock()
-_snapshot_cron_running = False
-
-
-def _run_daily_snapshot_bg():
-    global _snapshot_cron_running
-    try:
-        _run_daily_snapshot_job()   # wrapper existente: corre + loguea + captura errores
-    finally:
-        with _snapshot_cron_lock:
-            _snapshot_cron_running = False
-
-
+# está corriendo (retry del cron, doble disparo, o el scheduler de las 02:59), lo
+# saltamos en vez de encimar dos corridas que contenderían por el lock de
+# escritura. La bandera es la de `_correr_en_fondo`, compartida con el scheduler.
 @app.api_route("/api/snapshots/run-cron", methods=["GET", "POST"])
 def snapshots_run_cron(request: Request):
     """Dispara el snapshot diario de la cartera de TODOS los usuarios (valuación
@@ -39444,13 +39618,8 @@ def snapshots_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    global _snapshot_cron_running
-    with _snapshot_cron_lock:
-        if _snapshot_cron_running:
-            return {"ok": True, "status": "already_running"}
-        _snapshot_cron_running = True
-    threading.Thread(target=_run_daily_snapshot_bg, daemon=True).start()
-    return {"ok": True, "status": "started"}
+    # El job es el wrapper existente: corre + loguea + captura errores.
+    return _correr_en_fondo("snapshot_diario", _run_daily_snapshot_job)
 
 
 # ─── Cron EXTERNO del ciclo de vida de las suscripciones ─────────────────────
@@ -39471,19 +39640,10 @@ def snapshots_run_cron(request: Request):
 #
 # (El MURO no depende de esto: lo decide `quota.get_tier` en tiempo real. Lo que
 # se pierde sin el cron son los avisos y la etapa, no el corte.)
-_lifecycle_cron_lock = threading.Lock()
-_lifecycle_cron_running = False
-
-
-def _run_lifecycle_bg():
-    global _lifecycle_cron_running
-    try:
-        _run_subscription_lifecycle_job()
-    finally:
-        with _lifecycle_cron_lock:
-            _lifecycle_cron_running = False
-
-
+#
+# La guarda anti-doble-corrida es la de `_correr_en_fondo`, y el scheduler de
+# las 03:30 toma LA MISMA: antes sólo la miraba este endpoint, así que las dos
+# puertas podían correr el job a la vez.
 @app.api_route("/api/billing/run-cron", methods=["GET", "POST"])
 def billing_run_cron(request: Request):
     """Dispara el ciclo de vida de suscripciones y los avisos de la prueba.
@@ -39493,8 +39653,10 @@ def billing_run_cron(request: Request):
 
     Corre en un thread de fondo y devuelve 200 al instante: el job manda mails
     (httpx, hasta 10s cada uno) y con muchos usuarios pasa el timeout del
-    gateway. Idempotente por diseño — cada aviso se marca en `trial_email_log`
-    ANTES de enviarse, así que re-correrlo no reenvía nada.
+    gateway. Idempotente por diseño — cada aviso se marca ANTES de enviarse
+    (`trial_email_log`, `expiration_reminder_sent_at`), así que re-correrlo no
+    reenvía nada; la marca sólo se devuelve si Resend rechazó el mail, y
+    entonces lo reintenta la corrida siguiente.
 
     Lo pega un cron externo (cron-job.org) 1×/día. Auth: header X-Cron-Token o
     ?token= contra BILLING_CRON_TOKEN. Sin token configurado → 503.
@@ -39509,19 +39671,7 @@ def billing_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    global _lifecycle_cron_running
-    with _lifecycle_cron_lock:
-        if _lifecycle_cron_running:
-            return {"ok": True, "status": "already_running"}
-        _lifecycle_cron_running = True
-    threading.Thread(target=_run_lifecycle_bg, daemon=True).start()
-    return {"ok": True, "status": "started"}
-
-
-# Guarda anti-doble-corrida del brief (mismo patrón que el cron de snapshots):
-# dos pings solapados mandaban el mail dos veces (el log es check-then-act).
-_brief_cron_lock = threading.Lock()
-_brief_cron_running: dict = {}
+    return _correr_en_fondo("ciclo_de_vida", _run_subscription_lifecycle_job)
 
 
 # ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────
@@ -39903,12 +40053,6 @@ def advisor_brief_run_cron(request: Request):
     if kind not in ("open", "close"):
         raise HTTPException(400, "kind debe ser 'open' o 'close'.")
 
-    global _brief_cron_running
-    with _brief_cron_lock:
-        if _brief_cron_running.get(kind):
-            return {"ok": True, "status": "already_running", "kind": kind}
-        _brief_cron_running[kind] = True
-
     def _bg():
         try:
             import advisor_brief
@@ -39916,12 +40060,10 @@ def advisor_brief_run_cron(request: Request):
             log.info("advisor brief %s: %s", kind, res)
         except Exception as ex:
             log.error("advisor brief %s falló: %s", kind, ex)
-        finally:
-            with _brief_cron_lock:
-                _brief_cron_running[kind] = False
 
-    threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "status": "started", "kind": kind}
+    # Guarda anti-doble-corrida, una por tipo: dos pings solapados mandaban el
+    # mail dos veces (el log es check-then-act).
+    return {**_correr_en_fondo(f"brief_{kind}", _bg), "kind": kind}
 
 
 @app.get("/api/advisor/brief/preview")
@@ -39990,10 +40132,6 @@ def advisor_brief_prefs_set(data: AdvisorBriefPrefsIn, uid: int = Depends(get_cu
 # Un mail por día hábil a las 11:00 ART con las noticias de SUS activos y los
 # eventos que le pasan hoy. Motor: backend/market_brief.py.
 
-_market_brief_lock = threading.Lock()
-_market_brief_running = {"v": False}
-
-
 def _avisar_admin(fn, **kw):
     """Manda el parte al admin sin que un fallo del mail tape lo que pasó.
 
@@ -40034,11 +40172,6 @@ def market_brief_run_cron(request: Request):
     if got != expected:
         raise HTTPException(401, "Token inválido.")
 
-    with _market_brief_lock:
-        if _market_brief_running["v"]:
-            return {"ok": True, "status": "already_running"}
-        _market_brief_running["v"] = True
-
     def _bg():
         # El parte de la corrida sale por DOS canales: el registro (para
         # diagnosticar) y un mail al admin (para enterarse sin diagnosticar).
@@ -40054,12 +40187,8 @@ def market_brief_run_cron(request: Request):
         except Exception as ex:
             log.error("market brief falló: %s", ex)
             _avisar_admin(emails.send_market_brief_run_admin, error=str(ex))
-        finally:
-            with _market_brief_lock:
-                _market_brief_running["v"] = False
 
-    threading.Thread(target=_bg, daemon=True).start()
-    return {"ok": True, "status": "started"}
+    return _correr_en_fondo("resumen_mercado", _bg)
 
 
 @app.get("/api/market-brief/prefs")
@@ -40215,6 +40344,10 @@ def _send_push_to_user(uid: int, payload: dict) -> int:
                     vapid_private_key=priv,
                     vapid_claims={"sub": subject},
                     ttl=86400,  # 24h
+                    # Sin tope, un servidor de push que acepta la conexión y no
+                    # contesta colgaba el hilo para siempre — y con él la corrida
+                    # de alertas, que quedaba "ya está corriendo" hasta el deploy.
+                    timeout=10,
                 )
                 sent += 1
             except WebPushException as ex:
@@ -40227,6 +40360,11 @@ def _send_push_to_user(uid: int, payload: dict) -> int:
                         )
                 else:
                     log.warning(f"push send fallo (sub {r['id']}, status {status}): {ex}")
+            except Exception as ex:
+                # El tope de tiempo (`timeout`) sale como error de `requests`, no
+                # como WebPushException: sin esto, un dispositivo lento cortaba
+                # el aviso a los demás dispositivos de la persona.
+                log.warning(f"push send fallo (sub {r['id']}): {ex}")
         return sent
     finally:
         conn.close()
@@ -40317,15 +40455,21 @@ def admin_run_snapshot(uid: int = Depends(get_admin_user)):
     """Triggea el job manualmente — útil para testing y para forzar un
     snapshot fuera del horario programado.
 
-    Solo accesible por usuarios admin.
+    Solo accesible por usuarios admin. Respeta la bandera del job de las
+    fotos (`_tomar_corrida("snapshot_diario")`): no corre a la vez que el de
+    las 02:59 ni que el cron externo.
     """
-    result = run_daily_snapshot(
-        db_path=DB_PATH,
-        fetch_tc_blue=_get_blue_for_scheduler,
-        crypto_yf=CRYPTO_YF,
-        fetch_tc_mep=_get_mep_for_scheduler,
-    )
-    return result
+    if not _tomar_corrida("snapshot_diario"):
+        return {"ok": True, "status": "already_running"}
+    try:
+        return run_daily_snapshot(
+            db_path=DB_PATH,
+            fetch_tc_blue=_get_blue_for_scheduler,
+            crypto_yf=CRYPTO_YF,
+            fetch_tc_mep=_get_mep_for_scheduler,
+        )
+    finally:
+        _soltar_corrida("snapshot_diario")
 
 
 # ─── Health check (público) ─────────────────────────────────────────────────
