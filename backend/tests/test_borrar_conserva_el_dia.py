@@ -459,6 +459,61 @@ class BorrarConservaElDia(unittest.TestCase):
         self.assertEqual(cambio, [], "el botón del admin corrigió algo que el borrado "
                                      "acababa de dejar: dos escritores, dos cuentas")
 
+    # ── 8. el recorrido entero, en el orden en que lo haría una persona ──────
+    def test_recorrido_completo(self):
+        """Sellar los meses → borrar un dividendo viejo → borrar el historial de un
+        activo y deshacerlo → borrar una compra → la foto del cron de la noche
+        siguiente → el botón del admin → volver a sellar. En cada paso el aportado
+        del cron queda igual, y al final: el botón no tiene nada que corregir, la
+        pantalla sigue en 0 y ningún mes cerrado cambió de revisión."""
+        from unittest.mock import patch
+        import snapshots_job
+        sello = twr.sellar(self.conn, self.uid, "2026-03")
+        self.conn.commit()
+        self.assertGreater(sello["sellados"], 0, f"no selló ningún mes: {sello}")
+
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DIVIDEND', '2025-12-10')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("paso 1: borrar el dividendo viejo")
+
+        r = self.client.delete("/api/assets/history", params={"asset": "AAPL"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post(f"/api/assets/undo/{r.json()['undo_token']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("paso 2: borrar y deshacer el historial de AAPL")
+
+        r = self.client.delete(f"/api/movements/tx-{self._tx('BUY', '2025-12-04')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("paso 3: borrar la compra de MSFT")
+
+        # La noche siguiente: el cron escribe SU fecha y no toca las anteriores.
+        with patch.object(snapshots_job, "fetch_prices_for_symbols",
+                          side_effect=lambda syms, cy: {s: 150.0 for s in syms}):
+            with self.conn:
+                res = snapshots_job.take_snapshot_for_user(
+                    self.conn, self.uid, 1200, {}, "2026-04-01")
+        self.assertTrue(res.get("ok"), f"el cron no escribió: {res}")
+        self._assert_dia_conservado("paso 4: después de la foto del cron del 1-abr")
+        # Su valor depende del precio simulado, no de lo que se mide acá.
+        self.conn.execute("DELETE FROM snapshots WHERE user_id=? AND date='2026-04-01'",
+                          (self.uid,))
+        self.conn.commit()
+
+        main.app.dependency_overrides[main.get_admin_user] = lambda: self.uid
+        try:
+            r = self.client.post("/api/admin/recompute-snapshots-netdep")
+        finally:
+            main.app.dependency_overrides.pop(main.get_admin_user, None)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([d for d in r.json()["details"] if abs(d["delta"]) > 0.01], [],
+                         "paso 5: el botón del admin encontró algo que corregir")
+        self._assert_dia_conservado("paso 5: después del botón del admin")
+        self._assert_pantalla_en_cero("al final del recorrido")
+
+        resello = twr.sellar(self.conn, self.uid, "2026-03")
+        self.assertEqual(resello["revisados"], 0,
+                         f"un borrado que no tocó lo aportado cambió meses cerrados: {resello}")
+
     # ── 7. sin fecha de arranque no se re-estampa nada ───────────────────────
     def test_sin_fecha_de_arranque_no_reescribe_nada(self):
         """Cuatro cascadas pasan `since_date=None` cuando la fila no tiene fecha. Hoy
