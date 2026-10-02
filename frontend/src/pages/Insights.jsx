@@ -2687,6 +2687,10 @@ function InsightsDesktop({ _embeddedTab }) {
 
   return (
     <div className="page-shell space-y-8">
+      {/* En "Perfil de inversor" (/perfil-inversor) la página ya tiene su
+          encabezado: este decía "Diagnóstico — análisis profundo de tu
+          performance…", el de OTRA pantalla, dentro del Perfil (2026-10-02). */}
+      {_embeddedTab !== 'perfil' && (
       <PageHeader
         eyebrow="Análisis"
         // Se ve como la pestaña "Diagnóstico" de Métricas: el título es el de
@@ -2703,6 +2707,7 @@ function InsightsDesktop({ _embeddedTab }) {
           </div>
         }
       />
+      )}
 
       {/* ╔═══════════════════════════════════════════════════════════════════╗
           ║ BLOQUE DIAGNÓSTICO — visible en tab 'diagnostico' y standalone.   ║

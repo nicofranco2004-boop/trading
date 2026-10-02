@@ -1,4 +1,6 @@
 import { pctTxt } from '../../utils/format'
+import AnimatedNumber from '../AnimatedNumber'
+import { useVistoPerfil, formatoQueCuenta } from './vistoPerfil'
 // ObjectiveStat — % de la cartera alineado con el objetivo declarado.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de objetivo en Análisis › Perfil. Stat grande con el % que
@@ -7,12 +9,14 @@ import { pctTxt } from '../../utils/format'
 // cartera apunta para otro lado.
 
 export default function ObjectiveStat({ goalLabel, alignedPct, alignedLabel, misalignedPct }) {
+  // Al verse, el número cuenta hasta su valor.
+  const visto = useVistoPerfil()
   if (alignedPct == null) return null
 
   return (
     <div>
       <div className="flex items-baseline gap-3">
-        <span className="text-3xl font-semibold text-ink-0 tabular-nums">{pctTxt(alignedPct)}</span>
+        <span className="text-3xl font-semibold text-ink-0 tabular-nums"><AnimatedNumber value={visto ? alignedPct : 0} format={formatoQueCuenta(alignedPct)} /></span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           de la cartera alineado con tu objetivo ({alignedLabel})
         </span>
@@ -21,7 +25,7 @@ export default function ObjectiveStat({ goalLabel, alignedPct, alignedLabel, mis
       {/* Barra de progreso */}
       <div className="relative h-[6px] rounded-full bg-bg-2 mt-3 overflow-hidden">
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-data-violet"
+          className={`absolute inset-y-0 left-0 rounded-full bg-data-violet ${visto ? 'crece-ancho' : ''}`}
           style={{ width: `${alignedPct}%` }}
         />
       </div>

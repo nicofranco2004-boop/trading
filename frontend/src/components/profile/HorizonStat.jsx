@@ -1,4 +1,6 @@
 import { pctTxt } from '../../utils/format'
+import AnimatedNumber from '../AnimatedNumber'
+import { useVistoPerfil, formatoQueCuenta } from './vistoPerfil'
 // HorizonStat — % en activos de plazo largo vs horizonte declarado.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de horizonte en Análisis › Perfil. Stat grande con el % de
@@ -6,12 +8,14 @@ import { pctTxt } from '../../utils/format'
 // nota lo cruza contra el horizonte que el usuario declaró en el test.
 
 export default function HorizonStat({ longTermPct, horizonLabel, clashes }) {
+  // Al verse, el número cuenta hasta su valor.
+  const visto = useVistoPerfil()
   if (longTermPct == null) return null
 
   return (
     <div>
       <div className="flex items-baseline gap-3">
-        <span className="text-3xl font-semibold text-ink-0 tabular-nums">{pctTxt(longTermPct)}</span>
+        <span className="text-3xl font-semibold text-ink-0 tabular-nums"><AnimatedNumber value={visto ? longTermPct : 0} format={formatoQueCuenta(longTermPct)} /></span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           en activos de plazo largo (renta variable + alternativos)
         </span>

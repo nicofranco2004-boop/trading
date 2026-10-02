@@ -1,5 +1,7 @@
 import { pctTxt } from '../../utils/format'
 import { MONO_VIOLET, PORCION_RESTO } from '../../utils/chartTheme'
+import AnimatedNumber from '../AnimatedNumber'
+import { useVistoPerfil, formatoQueCuenta } from './vistoPerfil'
 // ConcentrationDonut — donut CSS de concentración (top 3 tenencias vs cartera).
 // ═══════════════════════════════════════════════════════════════════════════
 // Body del módulo de concentración en el perfil: donut por conic-gradient
@@ -18,6 +20,8 @@ const SLICE_COLORS = MONO_VIOLET
 const REST_COLOR = PORCION_RESTO
 
 export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
+  // Al verse, la torta se completa en una vuelta y el % del centro cuenta.
+  const visto = useVistoPerfil()
   if (!holdings?.length || top3Pct == null) return null
 
   // Slices acumulados para el conic-gradient; el resto (100 − Σ) va en gris.
@@ -51,11 +55,14 @@ export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
           role="img"
           aria-label={`Tus 3 mayores tenencias concentran el ${top3Pct}% de la cartera`}
           className="relative w-[110px] h-[110px] rounded-full flex-shrink-0"
-          style={{ background: `conic-gradient(${stops.join(', ')})` }}
         >
+          {/* La torta va en su propia capa para que la máscara que la "abre"
+              (dona-barre) no se lleve el número del centro. */}
+          <div className={`absolute inset-0 rounded-full ${visto ? 'dona-barre' : ''}`}
+            style={{ background: `conic-gradient(${stops.join(', ')})` }} aria-hidden="true" />
           <div className="absolute inset-[18px] rounded-full bg-bg-1 flex flex-col items-center justify-center">
             <div className="text-xl font-semibold text-ink-0 tabular-nums leading-none">
-              {pctTxt(top3Pct)}
+              <AnimatedNumber value={visto ? top3Pct : 0} format={formatoQueCuenta(top3Pct)} />
             </div>
             <div className="text-[12.5px] text-ink-2 mt-1 font-medium">
               Top 3
