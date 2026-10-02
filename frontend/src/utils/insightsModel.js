@@ -662,6 +662,28 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
   })
 }
 
+// ─── ¿Esta respuesta de Performance es de lo que se está mirando? ───────────
+/**
+ * perfEsDeLaVista
+ *
+ * La pantalla puede tener en la mano una respuesta de `/insights/performance`
+ * de OTRA vista: la de la moneda anterior mientras llega la nueva (dibujaba la
+ * curva en dólares con el eje en pesos), o la de otro benchmark (un S&P llegado
+ * tarde se rotulaba "Inflación", revisión del 2026-10-02). El backend estampa
+ * `moneda`, `benchmark_key` y `modo`; mientras no coincidan, no hay curva.
+ * Una respuesta sin la marca (vieja) no se rechaza.
+ *
+ * @param {Object|null} perf respuesta de /insights/performance
+ * @param {{ moneda: 'usd'|'ars', bench?: string, modo?: string }} vista
+ */
+export function perfEsDeLaVista(perf, { moneda, bench, modo } = {}) {
+  if (!perf) return false
+  if ((perf.moneda || 'usd') !== moneda) return false
+  if (perf.benchmark_key != null && bench != null && perf.benchmark_key !== bench) return false
+  if (perf.modo != null && modo != null && perf.modo !== modo) return false
+  return true
+}
+
 // ─── Drawdown desde el endpoint canónico ────────────────────────────────────
 /**
  * drawdownFromPerf

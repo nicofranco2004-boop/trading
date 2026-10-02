@@ -139,11 +139,28 @@ export function mesesDelHistorial(filas) {
 // Sin estas tres, los números de Diagnóstico y Perfil salen mal, no "de menos":
 // sin brokers, el efectivo en pesos se cuenta como dólares (×1.400) y no se
 // piden precios; sin posiciones, el Perfil dice "cargá tus posiciones" a quien
-// las tiene. Si una no volvió, la pantalla lo dice en vez de calcular.
+// las tiene. Si una no volvió, la pantalla lo dice en vez de calcular. En el
+// Perfil también el test: sin él, le decía "Completá tu test" a quien ya lo hizo.
 export const PIEZAS_IMPRESCINDIBLES = ['monthly', 'positions', 'brokers']
 
-export function faltaLoImprescindible(llego = {}) {
-  return PIEZAS_IMPRESCINDIBLES.some((p) => llego[p] === 'error')
+export function imprescindiblesDe({ perfil = false } = {}) {
+  return perfil ? [...PIEZAS_IMPRESCINDIBLES, 'profile'] : PIEZAS_IMPRESCINDIBLES
+}
+
+const NOMBRE_PIEZA = {
+  monthly: 'tu historial', positions: 'tus posiciones', brokers: 'tus brokers', profile: 'tu test de inversor',
+}
+
+// Lo imprescindible que no volvió, con el nombre que la persona reconoce
+// ("tus posiciones y tus brokers"). Vacío = se puede calcular.
+export function queFalta(llego = {}, piezas = PIEZAS_IMPRESCINDIBLES) {
+  return piezas.filter((p) => llego[p] === 'error').map((p) => NOMBRE_PIEZA[p] || p)
+}
+
+// "a", "a y b", "a, b y c".
+export function enumerar(cosas) {
+  if (cosas.length <= 1) return cosas.join('')
+  return `${cosas.slice(0, -1).join(', ')} y ${cosas[cosas.length - 1]}`
 }
 
 export function pasosDiagnostico(llego = {}, { perfilPrimero = false } = {}) {

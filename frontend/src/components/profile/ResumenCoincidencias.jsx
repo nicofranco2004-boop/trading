@@ -12,6 +12,7 @@
 
 import { Check, X } from 'lucide-react'
 import AnimatedNumber from '../AnimatedNumber'
+import { entrada } from '../../hooks/useAlVerse'
 
 export default function ResumenCoincidencias({ modulos = [], titulos = {}, visto = true }) {
   const medidos = modulos.filter((m) => m.veredicto != null)
@@ -20,7 +21,9 @@ export default function ResumenCoincidencias({ modulos = [], titulos = {}, visto
 
   return (
     <section className="border border-line/70 dark:border-line rounded-lg bg-bg-1/40 p-4 mb-4">
-      <p className="text-sm text-ink-1">
+      {/* La frase entera espera a verse (no sólo el número): asomada al pie
+          de la pantalla se leía "coincide con tu perfil en ␣ de 8". */}
+      <p {...entrada(visto, 0, 'text-sm text-ink-1')}>
         Tu cartera coincide con tu perfil en{' '}
         <span className="text-xl font-semibold text-data-violet tabular-nums">
           <AnimatedNumber value={coinciden} visto={visto} format={(n) => Math.round(n)} />

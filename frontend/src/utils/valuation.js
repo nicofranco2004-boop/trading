@@ -552,6 +552,20 @@ export function valuationPriceKey(p, isArsBroker) {
 }
 
 /**
+ * tienePrecio — ¿la valuación encuentra precio para este lote? Mira la MISMA
+ * key que lee (valuationPriceKey) o el precio puesto a mano. Sin precio, el
+ * lote se valúa al costo EN SILENCIO. Una sola definición para la cobertura
+ * del snapshot del Dashboard y para "faltan cotizaciones" de Métricas/Perfil
+ * (que antes miraba `prices[asset]` o `.BA`, otras keys: BRK.B en un broker
+ * USD se lee como BRK-B y figuraba "sin precio").
+ */
+export function tienePrecio(p, prices, isArsBroker) {
+  if (p.is_cash || p.price_override != null) return true
+  const k = valuationPriceKey(p, isArsBroker)
+  return k == null || prices?.[k] != null
+}
+
+/**
  * sellCurrency — en qué moneda se registra la venta de este lote.
  *
  * Manda la moneda del LOTE, no la del broker: el mismo ticker se puede tener

@@ -142,7 +142,7 @@ describe('pasosDiagnostico — los 10 pedidos y los precios, agrupados', () => {
   })
 })
 
-import { mesesDelHistorial, faltaLoImprescindible } from './cargaPorPasos'
+import { mesesDelHistorial, queFalta, imprescindiblesDe, enumerar } from './cargaPorPasos'
 
 describe('mesesDelHistorial — meses, no renglones de /monthly', () => {
   // La forma de /api/monthly: un renglón por broker y por mes, más el "global".
@@ -166,15 +166,23 @@ describe('mesesDelHistorial — meses, no renglones de /monthly', () => {
   })
 })
 
-describe('faltaLoImprescindible — sin historial, posiciones o brokers no se calcula', () => {
-  it('cualquiera de las tres caída: la pantalla lo dice', () => {
-    expect(faltaLoImprescindible({ brokers: 'error' })).toBe(true)
-    expect(faltaLoImprescindible({ positions: 'error' })).toBe(true)
-    expect(faltaLoImprescindible({ monthly: 'error' })).toBe(true)
+describe('queFalta — lo imprescindible que no volvió, con su nombre', () => {
+  it('cualquiera de las tres caída: la pantalla lo dice, con su nombre', () => {
+    expect(queFalta({ brokers: 'error' })).toEqual(['tus brokers'])
+    expect(queFalta({ positions: 'error', brokers: 'error' })).toEqual(['tus posiciones', 'tus brokers'])
+    expect(queFalta({ monthly: 'error' })).toEqual(['tu historial'])
   })
   it('las demás caídas no frenan la página (salen sin esa parte)', () => {
-    expect(faltaLoImprescindible({ snapshots: 'error', benchmarks: 'error', prices: 'error' })).toBe(false)
-    expect(faltaLoImprescindible({ positions: 9, brokers: 2, monthly: 12 })).toBe(false)
-    expect(faltaLoImprescindible({})).toBe(false)
+    expect(queFalta({ snapshots: 'error', benchmarks: 'error', prices: 'error', profile: 'error' })).toEqual([])
+    expect(queFalta({ positions: 9, brokers: 2, monthly: 12 })).toEqual([])
+  })
+  it('en el Perfil también el test (si no, decía "Completá tu test" a quien ya lo hizo)', () => {
+    expect(queFalta({ profile: 'error' }, imprescindiblesDe({ perfil: true }))).toEqual(['tu test de inversor'])
+    expect(queFalta({ profile: 'error' }, imprescindiblesDe({ perfil: false }))).toEqual([])
+  })
+  it('enumerar: "a", "a y b", "a, b y c"', () => {
+    expect(enumerar(['tus brokers'])).toBe('tus brokers')
+    expect(enumerar(['a', 'b'])).toBe('a y b')
+    expect(enumerar(['a', 'b', 'c'])).toBe('a, b y c')
   })
 })

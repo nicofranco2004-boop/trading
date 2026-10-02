@@ -34,7 +34,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, tienePrecio, setBrokersRegistry } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -505,8 +505,7 @@ function PersonalDashboard() {
     // Cobertura contra la MISMA key que la valuación lee (valuationPriceKey).
     // El check viejo (prices[asset] || prices[asset.BA]) daba por "priceado" un
     // lote cuya key real no llegó → el guard dejaba pasar snapshots subvaluados.
-    const hasPrice = (p) =>
-      p.price_override != null || prices[valuationPriceKey(p, arsBrokerNames.has(p.broker))] != null
+    const hasPrice = (p) => tienePrecio(p, prices, arsBrokerNames.has(p.broker))
     const costUsd = (p) => {
       const c = (p.invested || 0) + (p.commissions || 0)
       return arsBrokerNames.has(p.broker) ? c / tcValuacion : c

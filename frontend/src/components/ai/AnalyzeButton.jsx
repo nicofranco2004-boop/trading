@@ -23,6 +23,7 @@
 import { Sparkles } from 'lucide-react'
 import { useVoz } from '../../contexts/VozContext'
 import { track } from '../../utils/track'
+import { usePreciosPendientes, TEXTO_PRECIOS_PENDIENTES } from './preciosPendientes'
 
 export default function AnalyzeButton({
   screen,
@@ -37,8 +38,11 @@ export default function AnalyzeButton({
   className = '',
 }) {
   const { analizar } = useVoz()
+  // Sin las cotizaciones de hoy, la IA leería la cartera al costo (ver preciosPendientes).
+  const pendientes = usePreciosPendientes()
 
   function handleClick() {
+    if (pendientes) return
     track('ai_analyze_opened', { screen })
     analizar({ screen, params })
   }
@@ -47,9 +51,10 @@ export default function AnalyzeButton({
     return (
       <button
         onClick={handleClick}
+        disabled={pendientes}
         aria-label={label}
-        title={label}
-        className={`inline-flex items-center justify-center w-8 h-8 rounded-sm text-data-violet hover:bg-data-violet/10 transition-colors ${className}`}
+        title={pendientes ? TEXTO_PRECIOS_PENDIENTES : label}
+        className={`inline-flex items-center justify-center w-8 h-8 rounded-sm text-data-violet hover:bg-data-violet/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${className}`}
       >
         <Sparkles size={14} strokeWidth={1.75} />
       </button>
@@ -59,7 +64,9 @@ export default function AnalyzeButton({
   return (
     <button
       onClick={handleClick}
-      className={`inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors press ${className}`}
+      disabled={pendientes}
+      title={pendientes ? TEXTO_PRECIOS_PENDIENTES : undefined}
+      className={`inline-flex items-center gap-1.5 text-xs font-medium bg-data-violet/10 hover:bg-data-violet/15 text-data-violet border border-data-violet/30 px-3 py-1.5 rounded-sm transition-colors press disabled:opacity-40 disabled:cursor-not-allowed ${className}`}
     >
       <Sparkles size={12} strokeWidth={1.75} />
       {label}
