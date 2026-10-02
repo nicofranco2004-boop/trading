@@ -24,7 +24,7 @@ import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctTxt } from '../../utils/format'
+import { pctVar, pctTxt, pctVarSign } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
@@ -316,7 +316,8 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
     datos.push({ label: 'Meses en verde', valor: `${verdes} de ${mesesDelAnio}` })
     const mejor = Math.max(...pcts), peor = Math.min(...pcts)
     // pctVar: en un año con todos los meses en rojo, "Mejor mes" decía "+-1,2%".
-    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: mejor >= 0 ? 'pos' : 'neg' })
+    // El color, el del número que se ve: −0,04 se escribe "0,0%" y no va en rojo.
+    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: pctVarSign(mejor, 1) >= 0 ? 'pos' : 'neg' })
     if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1).replace('.', ',')}%`, tono: 'neg' })
   }
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es

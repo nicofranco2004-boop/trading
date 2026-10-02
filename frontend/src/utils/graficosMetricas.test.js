@@ -35,6 +35,10 @@ describe('etiquetasFinales — sólo si se leen igual que el KPI', () => {
     const e = etiquetasFinales({ filas: FILAS, clavesCartera: ['total'], claveBench: 'bench', kpiCartera: null, kpiBench: null })
     expect(e).toEqual({ cartera: null, bench: null })
   })
+  it('una fila sin lugar en el eje de tiempo (sin ts): sin etiqueta', () => {
+    const f = [{ key: '2026-09', total: 9.94 }]
+    expect(etiquetasFinales({ filas: f, clavesCartera: ['total'], kpiCartera: 9.94 }).cartera).toBe(null)
+  })
   it('una pérdida se escribe con el signo menos de verdad', () => {
     const f = [{ ts: 1, total: -3.04 }]
     expect(etiquetasFinales({ filas: f, clavesCartera: ['total'], kpiCartera: -3.0 }).cartera.texto).toBe('−3,0%')
@@ -60,5 +64,28 @@ describe('marcaPeorCaida — el punto más hondo, si es el "Máx histórico" que
   it('sin caídas (todo en 0) o sin serie: no hay marca', () => {
     expect(marcaPeorCaida([{ label: 'x', ddPct: 0 }], 0)).toBe(null)
     expect(marcaPeorCaida([], -1)).toBe(null)
+  })
+})
+
+import { ladoDeLaMarca } from './insightsModel'
+
+describe('ladoDeLaMarca — el texto de la peor caída va donde ENTRA, en píxeles', () => {
+  const texto = "Peor caída −12,3% · May '25"      // 27 letras ≈ 184 px
+  const textoCorto = '−12,3%'
+  it('en la compu (1000 px) entra entero, del lado con lugar', () => {
+    expect(ladoDeLaMarca({ posicion: 0.2, ancho: 1000, texto, textoCorto })).toEqual({ lado: 'derecha', texto, corto: false })
+    expect(ladoDeLaMarca({ posicion: 0.95, ancho: 1000, texto, textoCorto })).toEqual({ lado: 'izquierda', texto, corto: false })
+  })
+  it('en un celular (~345 px de gráfico) con el punto en el medio: sólo el número (antes se cortaba en "−1")', () => {
+    expect(ladoDeLaMarca({ posicion: 0.5, ancho: 345, texto, textoCorto })).toEqual({ lado: 'derecha', texto: textoCorto, corto: true })
+  })
+  it('pegado a la derecha en un celular: el texto entero entra a la izquierda', () => {
+    expect(ladoDeLaMarca({ posicion: 0.98, ancho: 345, texto, textoCorto })).toMatchObject({ lado: 'izquierda', corto: false })
+  })
+  it('muy angosto y pegado a la derecha: el número corto, a la izquierda', () => {
+    expect(ladoDeLaMarca({ posicion: 0.95, ancho: 230, texto, textoCorto })).toEqual({ lado: 'izquierda', texto: textoCorto, corto: true })
+  })
+  it('sin ancho medido todavía: lo seguro (el corto)', () => {
+    expect(ladoDeLaMarca({ posicion: 0.5, ancho: 0, texto, textoCorto })).toMatchObject({ corto: true })
   })
 })

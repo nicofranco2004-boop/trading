@@ -83,6 +83,7 @@ import {
   etiquetasFinales,
   marcaPeorCaida,
   ultimoConValor,
+  ladoDeLaMarca,
   benchPedido,
   BENCH_EN_CERO,
 } from '../utils/insightsModel'
@@ -172,7 +173,9 @@ function EtiquetaPunta({ viewBox, texto, color, arriba = true }) {
   const cx = viewBox.x + (viewBox.width || 0) / 2
   const cy = viewBox.y + (viewBox.height || 0) / 2
   return (
-    <text x={cx - 8} y={arriba ? cy - 9 : cy + 17} textAnchor="end" fill={color}
+    // Arriba, nunca por encima del borde del dibujo: una cartera en su máximo
+    // termina pegada al techo y la etiqueta quedaba cortada (y ≥ 14).
+    <text x={cx - 8} y={arriba ? Math.max(cy - 9, 14) : cy + 17} textAnchor="end" fill={color}
       className="etiqueta-punta tabular" fontSize={12.5} fontWeight={600}
       stroke="rgb(var(--bg-1))" strokeWidth={3} paintOrder="stroke" strokeLinejoin="round">
       {texto}
@@ -249,6 +252,9 @@ function InsightsDesktop({ _embeddedTab }) {
   const [refGraficoContable, graficoContableVisto] = useAlVerse()
   const [refTortaBrokers, tortaBrokersVista] = useAlVerse()
   const [refAtribucion, atribucionVista] = useAlVerse()
+  // El ancho del gráfico de caídas, para ubicar la marca de la peor caída donde
+  // ENTRA (ladoDeLaMarca). Lo informa su ResponsiveContainer.
+  const [anchoCaida, setAnchoCaida] = useState(0)
   const showPerfil      = !_embeddedTab || _embeddedTab === 'perfil'
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.
@@ -2977,6 +2983,9 @@ function InsightsDesktop({ _embeddedTab }) {
   // ── La curva de caídas: rótulo por fecha y la marca del punto más hondo ───
   const rotuloCaida = new Map(drawdownSeries.map(r => [r.key, r.label]))
   const marcaCaida = drawdown ? marcaPeorCaida(drawdownSeries, drawdown.max) : null
+  const ladoMarca = marcaCaida
+    ? ladoDeLaMarca({ posicion: marcaCaida.posicion, ancho: anchoCaida, texto: marcaCaida.texto, textoCorto: pctTxt(drawdown.max, 1) })
+    : null
 
   // ── Lo que se escribe sobre el gráfico de Rendimiento ─────────────────────
   const colorBench = currency === 'USD' ? 'rgb(var(--data-cyan))' : 'rgb(var(--data-violet))'
@@ -3555,7 +3564,9 @@ function InsightsDesktop({ _embeddedTab }) {
               <XAxis dataKey="ts" type="number" scale="time" domain={['dataMin', 'dataMax']}
                      tickFormatter={fmtMarcaEje}
                      tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${pctTxt(v)}`} width={44} />
+              {/* pctTxt sin decimales deja el guion; el eje lleva el signo menos
+                  de verdad, como las etiquetas de al lado. */}
+              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => `${v > 0 ? '+' : ''}${pctTxt(v).replace('-', '−')}`} width={44} />
               <ReferenceLine y={0} stroke={chartReferenceStroke} strokeOpacity={0.5} strokeDasharray="2 4" />
               <Tooltip
                 contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
@@ -3601,7 +3612,7 @@ function InsightsDesktop({ _embeddedTab }) {
                   punta fechada hoy (`valor_live`, que sale con los precios). */}
               {puntaHoy && (
                 <ReferenceDot x={puntaHoy.ts} y={puntaHoy.valor} r={4} ifOverflow="visible"
-                  shape={(p) => <PuntaViva cx={p.cx} cy={p.cy} color={trendStroke(true)} />} />
+                  shape={(p) => <g className="etiqueta-punta"><PuntaViva cx={p.cx} cy={p.cy} color={trendStroke(true)} /></g>} />
               )}
               {/* Dónde terminó cada línea, cuando la línea dibujada dice lo
                   mismo que el "Acumulado" de arriba (etiquetasFinales). Aparecen
@@ -3700,7 +3711,12 @@ function InsightsDesktop({ _embeddedTab }) {
               {/* pctTxt: el signo menos de verdad, como la tira de KPIs (decía
                   "-0,7%" con guion al lado de un "−0,7%"). Cuentan al verse. */}
               <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}><AnimatedNumber value={drawdown.current} visto={graficoCaidaVisto} format={n => pctTxt(n, 1)} /></span></span>
-              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg"><AnimatedNumber value={drawdown.max} visto={graficoCaidaVisto} format={n => pctTxt(n, 1)} /></span></span>
+              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg"><AnimatedNumber value={drawdown.max} visto={graficoCaidaVisto} format={n => pctTxt(n, 1)} /></span>
+                {/* Si en el gráfico sólo entra el número (celular), la fecha va acá. */}
+                {ladoMarca?.corto && (
+                  <span className={graficoCaidaVisto ? 'marca-aparece' : 'opacity-0'}> · {marcaCaida.label}</span>
+                )}
+              </span>
             </div>
           )}
         </div>
@@ -3709,7 +3725,7 @@ function InsightsDesktop({ _embeddedTab }) {
           <SinMediciones />
         ) : (
           <div ref={refGraficoCaida} className={graficoCaidaVisto ? 'caida-baja' : 'opacity-0'}>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={200} onResize={(w) => setAnchoCaida(w)}>
             {/* Se arma al verse: la zona baja desde el 0 % (.caida-baja,
                 index.css) y al final aparece la marca del punto más hondo. */}
             <AreaChart key={graficoCaidaVisto ? 'visto' : 'antes'} data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
@@ -3724,7 +3740,7 @@ function InsightsDesktop({ _embeddedTab }) {
                   con una serie diaria hay 30 "May '25", y la marca de la peor
                   caída caía en el primero en vez de en su día. */}
               <XAxis dataKey="key" tickFormatter={k => rotuloCaida.get(k) ?? ''} tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => `${pctTxt(v)}`} domain={['auto', 0]} width={44} />
+              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => pctTxt(v).replace('-', '−')} domain={['auto', 0]} width={44} />
               <ReferenceLine y={0} stroke={chartReferenceStroke} strokeOpacity={0.5} />
               <Tooltip
                 contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
@@ -3737,7 +3753,7 @@ function InsightsDesktop({ _embeddedTab }) {
               <Area isAnimationActive={false} type="monotone" dataKey="ddPct" stroke={trendStroke(false)} strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
               {marcaCaida && (
                 <ReferenceDot x={marcaCaida.key} y={marcaCaida.ddPct} r={4.5} ifOverflow="visible"
-                  shape={(p) => <MarcaPeorCaida cx={p.cx} cy={p.cy} texto={marcaCaida.texto} izquierda={marcaCaida.posicion > 0.6} />} />
+                  shape={(p) => <MarcaPeorCaida cx={p.cx} cy={p.cy} texto={ladoMarca.texto} izquierda={ladoMarca.lado === 'izquierda'} />} />
               )}
             </AreaChart>
           </ResponsiveContainer>

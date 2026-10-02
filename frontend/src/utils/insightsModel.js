@@ -680,7 +680,8 @@ const seLeeIgual = (a, b, dec) => typeof a === 'number' && typeof b === 'number'
 export function etiquetasFinales({ filas, clavesCartera, claveBench, kpiCartera, kpiBench, decimales = 1 }) {
   const u = ultimoConValor(filas, clavesCartera || [])
   const b = claveBench ? ultimoConValor(filas, [claveBench]) : null
-  const armar = (x, kpi) => (x && seLeeIgual(x.valor, kpi, decimales)
+  // Sin `ts` (la fila no tiene lugar en el eje de tiempo) no hay dónde ponerla.
+  const armar = (x, kpi) => (x && typeof x.fila.ts === 'number' && Number.isFinite(x.fila.ts) && seLeeIgual(x.valor, kpi, decimales)
     ? { ts: x.fila.ts, valor: x.valor, texto: pctVar(kpi, decimales), clave: x.clave }
     : null)
   return { cartera: armar(u, kpiCartera), bench: armar(b, kpiBench) }
@@ -704,6 +705,26 @@ export function marcaPeorCaida(serie, maxPct, decimales = 1) {
     // que tiene lugar.
     posicion: f.length > 1 ? iPeor / (f.length - 1) : 0,
   }
+}
+
+// De qué lado del punto va el texto de la marca, midiendo el lugar en PÍXELES
+// (no por la posición en el tiempo): en un celular el área de dibujo mide
+// ~300 px y "Peor caída −12,3% · May '25" ~180 — ubicado sólo por la posición
+// se cortaba, y podía leerse "−1" en vez de "−12,3%" (revisión del 2026-10-02).
+// Si el texto entero no entra de ningún lado, va el corto (el número) y la
+// fecha pasa al encabezado de la tarjeta.
+//   ancho: el del gráfico entero; izquierda: donde empieza el área (el eje Y).
+export function ladoDeLaMarca({ posicion, ancho, texto, textoCorto, izquierda = 44, margenDerecho = 10, anchoLetra = 6.8, separacion = 10 }) {
+  const corto = (lado) => ({ lado, texto: textoCorto, corto: true })
+  if (!(ancho > 0) || !Number.isFinite(posicion)) return corto('derecha')
+  const x0 = izquierda, x1 = ancho - margenDerecho
+  const cx = x0 + posicion * (x1 - x0)
+  const entra = (t, lado) => (lado === 'derecha'
+    ? cx + separacion + t.length * anchoLetra <= x1
+    : cx - separacion - t.length * anchoLetra >= x0)
+  if (entra(texto, 'derecha')) return { lado: 'derecha', texto, corto: false }
+  if (entra(texto, 'izquierda')) return { lado: 'izquierda', texto, corto: false }
+  return corto(entra(textoCorto, 'derecha') ? 'derecha' : 'izquierda')
 }
 
 // ─── Qué benchmark se le pide al servidor ───────────────────────────────────
