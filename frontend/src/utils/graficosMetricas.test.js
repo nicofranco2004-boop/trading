@@ -89,3 +89,31 @@ describe('ladoDeLaMarca — el texto de la peor caída va donde ENTRA, en píxel
     expect(ladoDeLaMarca({ posicion: 0.5, ancho: 0, texto, textoCorto })).toMatchObject({ corto: true })
   })
 })
+
+import { ubicarEtiquetas } from './insightsModel'
+
+describe('ubicarEtiquetas — las dos etiquetas de punta, dentro del dibujo y sin pisarse', () => {
+  const area = { top: 10, bottom: 290 }
+  it('la de arriba sobre su punto, la de abajo debajo', () => {
+    const [a, b] = ubicarEtiquetas([{ id: 'bench', y: 120 }, { id: 'cartera', y: 60 }], area)
+    expect([a.id, a.ty]).toEqual(['cartera', 51])
+    expect([b.id, b.ty]).toEqual(['bench', 137])
+  })
+  it('cartera en su máximo, pegada al techo: la etiqueta no se sale por arriba', () => {
+    const [a] = ubicarEtiquetas([{ y: 12 }], area)
+    expect(a.ty).toBe(23)                 // top + alto
+  })
+  it('"Pesos cash" en 0 % pegado al piso: su etiqueta no baja sobre las fechas', () => {
+    const [, b] = ubicarEtiquetas([{ id: 'cartera', y: 100 }, { id: 'bench', y: 290 }], area)
+    expect(b.ty).toBe(286)                // bottom − 4, no 307
+  })
+  it('dos puntas casi en el mismo lugar: se separan', () => {
+    const [a, b] = ubicarEtiquetas([{ y: 150 }, { y: 152 }], area)
+    expect(b.ty - a.ty).toBeGreaterThanOrEqual(15)
+  })
+  it('las dos pegadas al piso: se separan hacia arriba, sin salirse', () => {
+    const [a, b] = ubicarEtiquetas([{ y: 289 }, { y: 290 }], area)
+    expect(b.ty).toBe(286)
+    expect(a.ty).toBe(271)
+  })
+})

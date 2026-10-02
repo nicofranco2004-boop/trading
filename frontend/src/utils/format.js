@@ -182,6 +182,13 @@ export const pctVar = (n, decimals = 2) => {
   return `${sign}${nfmt(Math.abs(v), decimals)}%`
 }
 
+// Una variación al lado de un veredicto ("Le perdés", "por debajo del
+// benchmark"): si con `decimals` se redondearía a 0, se escribe con uno más,
+// así el número no dice "0,0%" junto a un "perdés" en rojo (−0,04 → "−0,04%").
+export const decimalesFinos = (n, decimals = 1) =>
+  (esPct(n) && pctVarSign(n, decimals) === 0 && Number(n) !== 0 ? decimals + 1 : decimals)
+export const pctVarFino = (n, decimals = 1) => (esPct(n) ? pctVar(n, decimalesFinos(n, decimals)) : '—')
+
 // El color de un porcentaje es el del número QUE SE VE, no el del crudo: una
 // acción comprada hoy rinde −0,02 % y se escribe "0,0%"; pintada de rojo, el
 // texto dice "no se movió" y el color dice "perdiste". Lo que redondea a cero

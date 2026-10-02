@@ -687,6 +687,26 @@ export function etiquetasFinales({ filas, clavesCartera, claveBench, kpiCartera,
   return { cartera: armar(u, kpiCartera), bench: armar(b, kpiBench) }
 }
 
+// Dónde va el texto de cada etiqueta de punta (en píxeles del gráfico): la
+// de la línea más alta, arriba de su punto; la otra, abajo. Ninguna se sale
+// del área de dibujo (arriba: el techo; abajo: las fechas del eje) y no se
+// pisan entre sí. Antes cada una se ubicaba sola: una cartera en su máximo
+// cortaba la suya contra el techo, y "Pesos cash" (0 % pegado al piso) ponía
+// la suya sobre las fechas (revisión del 2026-10-02).
+//   items: [{ y, ...lo que sea }] (y = el punto); area: { top, bottom }
+//   → los mismos items con `ty` (la línea base del texto), del más alto al más bajo.
+export function ubicarEtiquetas(items, { top, bottom }, { alto = 13, sobre = 9, bajo = 17, separacion = 15 } = {}) {
+  const lista = (items || []).filter(e => e && Number.isFinite(e.y)).sort((a, b) => a.y - b.y)
+  const min = top + alto, max = bottom - 4
+  const ubicados = lista.map((e, i) => ({ ...e, ty: i === 0 ? e.y - sobre : e.y + bajo }))
+  for (const e of ubicados) e.ty = Math.min(Math.max(e.ty, min), max)
+  if (ubicados.length === 2 && ubicados[1].ty - ubicados[0].ty < separacion) {
+    ubicados[1].ty = Math.min(ubicados[0].ty + separacion, max)
+    if (ubicados[1].ty - ubicados[0].ty < separacion) ubicados[0].ty = Math.max(ubicados[1].ty - separacion, min)
+  }
+  return ubicados
+}
+
 // La marca del punto más hondo de la curva de caídas, con su fecha — sólo si
 // ese punto DIBUJADO se lee igual que el "Máx histórico" que publica la
 // tarjeta (el del servidor). Si no coinciden, no hay marca.

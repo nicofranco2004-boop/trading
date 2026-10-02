@@ -317,7 +317,7 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
     const mejor = Math.max(...pcts), peor = Math.min(...pcts)
     // pctVar: en un año con todos los meses en rojo, "Mejor mes" decía "+-1,2%".
     // El color, el del número que se ve: −0,04 se escribe "0,0%" y no va en rojo.
-    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: pctVarSign(mejor, 1) >= 0 ? 'pos' : 'neg' })
+    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: pctVarSign(mejor, 1) > 0 ? 'pos' : pctVarSign(mejor, 1) < 0 ? 'neg' : undefined })
     if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1).replace('.', ',')}%`, tono: 'neg' })
   }
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es

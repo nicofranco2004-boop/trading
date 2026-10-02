@@ -21,7 +21,7 @@
 import { TrendingUp, TrendingDown } from 'lucide-react'
 import AnimatedNumber from './AnimatedNumber'
 import { useAlVerse } from '../hooks/useAlVerse'
-import { pctVar } from '../utils/format'
+import { pctVar, decimalesFinos } from '../utils/format'
 
 export default function ArAlternativesVerdict({ items }) {
   const [ref, visto] = useAlVerse()
@@ -53,7 +53,9 @@ export default function ArAlternativesVerdict({ items }) {
                 <span className="text-[14.5px] font-semibold">{win ? 'Le ganás' : 'Le perdés'}</span>
               </div>
               <span className={`block font-semibold text-[24px] leading-none tabular num mt-2 ${color}`}>
-                <AnimatedNumber value={it.pct} visto={visto} format={n => pctVar(n, 1)} />
+                {/* decimalesFinos: −0,04 se lee "−0,04%" al lado de "Le perdés", no
+                    "0,0%". Los mismos decimales mientras cuenta. */}
+                <AnimatedNumber value={it.pct} visto={visto} format={n => pctVar(n, decimalesFinos(it.pct, 1))} />
               </span>
               <div className="relative h-1.5 mt-3 rounded-full bg-bg-2" aria-hidden="true">
                 <div className="absolute left-1/2 -top-1 h-3.5 w-px bg-line" />

@@ -5,7 +5,7 @@ import EmptyState from '../components/EmptyState'
 import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
-  ComposedChart, ReferenceDot,
+  ComposedChart, ReferenceDot, Customized,
 } from 'recharts'
 import PuntaViva from '../components/PuntaViva'
 import { chartGrid, chartTick, chartTooltip, chartReferenceStroke, trendStroke, areaFill, porcionColor } from '../utils/chartTheme'
@@ -29,7 +29,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { ChevronDown, ChevronUp, Sparkles, X, Lock } from 'lucide-react'
-import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt, pctVar } from '../utils/format'
+import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt, pctVar, pctVarFino } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
@@ -84,6 +84,7 @@ import {
   marcaPeorCaida,
   ultimoConValor,
   ladoDeLaMarca,
+  ubicarEtiquetas,
   benchPedido,
   BENCH_EN_CERO,
 } from '../utils/insightsModel'
@@ -164,22 +165,140 @@ const MOTIVO_TOGGLE_ARS =
  * que sí midió. El resto de los puntos siguen sin dot (con cientos, el dot tapa la
  * línea); devolvemos r=0 en vez de null porque Recharts espera un elemento SVG.
  */
-// La etiqueta de la punta de una línea (ReferenceDot `label`): el número a la
-// izquierda del punto, arriba o abajo para no pisar a la otra. Aparece cuando
-// las líneas terminan de dibujarse (`.etiqueta-punta`, index.css). El halo del
-// color del fondo la hace legible sobre la grilla y el área.
-function EtiquetaPunta({ viewBox, texto, color, arriba = true }) {
-  if (!viewBox || !texto) return null
-  const cx = viewBox.x + (viewBox.width || 0) / 2
-  const cy = viewBox.y + (viewBox.height || 0) / 2
+// Las etiquetas de la punta de las líneas de Rendimiento, ubicadas JUNTAS con
+// las escalas y el área de dibujo del gráfico (recharts <Customized> le pasa
+// xAxisMap, yAxisMap y offset): ubicarEtiquetas las mantiene adentro y sin
+// pisarse. El número a la izquierda del punto. Aparecen cuando las líneas
+// terminaron de dibujarse (`.etiqueta-punta`); el halo del color del fondo las
+// hace legibles sobre la grilla y el área.
+function EtiquetasPuntas({ xAxisMap, yAxisMap, offset, etiquetas }) {
+  const xs = xAxisMap && Object.values(xAxisMap)[0]?.scale
+  const ys = yAxisMap && Object.values(yAxisMap)[0]?.scale
+  if (!xs || !ys || !offset) return null
+  const puntos = (etiquetas || []).filter(Boolean).map(e => ({ ...e, x: xs(e.ts), y: ys(e.valor) }))
+    .filter(e => Number.isFinite(e.x) && Number.isFinite(e.y))
+  const ubicadas = ubicarEtiquetas(puntos, { top: offset.top, bottom: offset.top + offset.height })
   return (
-    // Arriba, nunca por encima del borde del dibujo: una cartera en su máximo
-    // termina pegada al techo y la etiqueta quedaba cortada (y ≥ 14).
-    <text x={cx - 8} y={arriba ? Math.max(cy - 9, 14) : cy + 17} textAnchor="end" fill={color}
-      className="etiqueta-punta tabular" fontSize={12.5} fontWeight={600}
-      stroke="rgb(var(--bg-1))" strokeWidth={3} paintOrder="stroke" strokeLinejoin="round">
-      {texto}
-    </text>
+    <g aria-hidden="true">
+      {ubicadas.map(e => (
+        <text key={e.clave + e.texto} x={e.x - 8} y={e.ty} textAnchor="end" fill={e.color}
+          className="etiqueta-punta tabular" fontSize={12.5} fontWeight={600}
+          stroke="rgb(var(--bg-1))" strokeWidth={3} paintOrder="stroke" strokeLinejoin="round">
+          {e.texto}
+        </text>
+      ))}
+    </g>
+  )
+}
+
+// Un bloque que se arma cuando LLEGÁS, con su "ya se vio" PROPIO (useAlVerse).
+// Si el estado viviera en la página, cada bloque que entra en pantalla la
+// redibujaba entera, y recharts —al recibir sus datos de nuevo, en otro
+// arreglo igual— salteaba la animación de los gráficos que todavía se estaban
+// dibujando (revisión del 2026-10-02). `children(visto)`; escondido hasta
+// verse salvo `esconder={false}` (lo que tiene su propia entrada).
+function SeArmaAlVerse({ children, className = '', esconder = true }) {
+  const [ref, visto] = useAlVerse()
+  return (
+    <div ref={ref} className={`${className} ${esconder && !visto ? 'opacity-0' : ''}`.trim() || undefined}>
+      {children(visto)}
+    </div>
+  )
+}
+
+// La tarjeta de la curva de caídas. Componente propio para que lo que cambia
+// ADENTRO (si ya se vio, el ancho del gráfico) no redibuje la página entera:
+// con eso en la página, cada bloque que entraba en pantalla le pasaba a
+// recharts datos "nuevos" (otro arreglo, igual) y los gráficos que todavía se
+// estaban dibujando saltaban al final (revisión del 2026-10-02).
+//   chip / sinMediciones: elementos de la página (dependen de `perf`).
+function CurvaDeCaidas({ drawdown, serie, chip, sinMediciones }) {
+  const [ref, visto] = useAlVerse()
+  // El ancho del gráfico, para ubicar la marca de la peor caída donde ENTRA.
+  const [ancho, setAncho] = useState(0)
+  // El eje va por la clave (fecha) y muestra el rótulo; la marca, sólo si
+  // coincide con "Máx histórico"; su texto, del lado que tiene lugar.
+  const rotulo = new Map(serie.map(r => [r.key, r.label]))
+  const marca = drawdown ? marcaPeorCaida(serie, drawdown.max) : null
+  const lado = marca
+    ? ladoDeLaMarca({ posicion: marca.posicion, ancho, texto: marca.texto, textoCorto: pctTxt(drawdown.max, 1) })
+    : null
+  return (
+    <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
+      {/* pr-9: el ✦ de AskAIAbout (absolute top-2 right-2) tapaba el "%" de
+          "Máx histórico". Mismo lugar que deja ModuleShell en el Perfil. */}
+      <div className="flex items-start justify-between gap-2 mb-1 flex-wrap pr-9">
+        <div className="flex items-center gap-1.5">
+          <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
+          {/* Explica sólo cuando el de Performance no está — en pesos, donde éste
+              es el único chip de la pantalla. En USD son dos y la frase va arriba. */}
+          {chip}
+          <InfoTooltip>
+            <p className="font-semibold text-ink-0">Qué es</p>
+            <p>Cuánto bajaste desde tu mejor momento histórico. Si llegaste a +20% y ahora estás en +10%, tu drawdown es −10%.</p>
+            <div className="border-t border-line/60 my-1.5" />
+            <p className="font-semibold text-ink-0">Cómo leerlo</p>
+            <p><span className="text-ink-1">0%</span>: estás en tu máximo histórico.</p>
+            <p><span className="text-rendi-warn">−10%</span>: caíste 10% desde el pico.</p>
+            <p><span className="text-rendi-neg">&lt; −25%</span>: drawdown serio — recuperar +25% requiere +33% de retorno.</p>
+            <div className="border-t border-line/60 my-1.5" />
+            <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada de la cartera.</p>
+          </InfoTooltip>
+        </div>
+        {drawdown && (
+          <div className="flex gap-3 text-xs">
+            {/* pctTxt: el signo menos de verdad, como la tira de KPIs (decía
+                "-0,7%" con guion al lado de un "−0,7%"). Cuentan al verse. */}
+            <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}><AnimatedNumber value={drawdown.current} visto={visto} format={n => pctTxt(n, 1)} /></span></span>
+            <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg"><AnimatedNumber value={drawdown.max} visto={visto} format={n => pctTxt(n, 1)} /></span>
+              {/* Si en el gráfico sólo entra el número (celular), la fecha va acá. */}
+              {lado?.corto && (
+                <span className={visto ? 'marca-aparece' : 'opacity-0'}> · {marca.label}</span>
+              )}
+            </span>
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-ink-3 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
+      {serie.length < 2 ? (
+        {sinMediciones}
+      ) : (
+        <div ref={ref} className={visto ? 'caida-baja' : 'opacity-0'}>
+        <ResponsiveContainer width="100%" height={200} onResize={(w) => setAncho(w)}>
+          {/* Se arma al verse: la zona baja desde el 0 % (.caida-baja,
+              index.css) y al final aparece la marca del punto más hondo. */}
+          <AreaChart key={visto ? 'visto' : 'antes'} data={serie} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+            <defs>
+              <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"  stopColor={trendStroke(false)} stopOpacity={0} />
+                <stop offset="100%" stopColor={areaFill(trendStroke(false))} stopOpacity={1} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
+            {/* El eje va por la CLAVE (la fecha, única) y muestra el rótulo:
+                con una serie diaria hay 30 "May '25", y la marca de la peor
+                caída caía en el primero en vez de en su día. */}
+            <XAxis dataKey="key" tickFormatter={k => rotulo.get(k) ?? ''} tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
+            <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => pctTxt(v).replace('-', '−')} domain={['auto', 0]} width={44} />
+            <ReferenceLine y={0} stroke={chartReferenceStroke} strokeOpacity={0.5} />
+            <Tooltip
+              contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
+              labelStyle={chartTooltip.labelStyle}
+              labelFormatter={k => rotulo.get(k) ?? k}
+              formatter={(v) => [pctTxt(v, 2), 'Drawdown']}
+            />
+            {/* Sin la animación de recharts (dibuja de izquierda a derecha):
+                la zona BAJA desde el 0 % con .caida-baja. */}
+            <Area isAnimationActive={false} type="monotone" dataKey="ddPct" stroke={trendStroke(false)} strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
+            {marca && (
+              <ReferenceDot x={marca.key} y={marca.ddPct} r={4.5} ifOverflow="visible"
+                shape={(p) => <MarcaPeorCaida cx={p.cx} cy={p.cy} texto={lado.texto} izquierda={lado.lado === 'izquierda'} />} />
+            )}
+          </AreaChart>
+        </ResponsiveContainer>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -242,19 +361,10 @@ function InsightsDesktop({ _embeddedTab }) {
   // Los gráficos de recharts animaban aunque la persona pidiera "reducir
   // movimiento" (sólo la torta lo respetaba): la misma pregunta para todos.
   const animarGraficos = !prefiereSinMovimiento()
-  // Los gráficos se dibujan cuando LLEGÁS a ellos. recharts anima al montar, y
-  // estos viven más abajo: la animación terminaba antes de que nadie bajara y
-  // se veían quietos (2026-10-02). Escondidos hasta verse y con `key` que los
-  // remonta al verse, como el gráfico del Dashboard. Van arriba de los returns
-  // tempranos: son hooks.
-  const [refGraficoPerf, graficoPerfVisto] = useAlVerse()
-  const [refGraficoCaida, graficoCaidaVisto] = useAlVerse()
-  const [refGraficoContable, graficoContableVisto] = useAlVerse()
-  const [refTortaBrokers, tortaBrokersVista] = useAlVerse()
-  const [refAtribucion, atribucionVista] = useAlVerse()
-  // El ancho del gráfico de caídas, para ubicar la marca de la peor caída donde
-  // ENTRA (ladoDeLaMarca). Lo informa su ResponsiveContainer.
-  const [anchoCaida, setAnchoCaida] = useState(0)
+  // Los gráficos se dibujan cuando LLEGÁS a ellos (SeArmaAlVerse, CurvaDeCaidas):
+  // recharts anima al montar y viven más abajo — la animación terminaba antes
+  // de que nadie bajara y se veían quietos (2026-10-02). El "ya se vio" vive en
+  // cada bloque, no acá (ver SeArmaAlVerse).
   const showPerfil      = !_embeddedTab || _embeddedTab === 'perfil'
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.
@@ -2980,12 +3090,6 @@ function InsightsDesktop({ _embeddedTab }) {
   // La escala común de "Atribución por activo": el |P&L| más grande de las dos listas.
   const escalaAtribucion = Math.max(0, ...[...topContribPos, ...topContribNeg].map(it => Math.abs(it.pnl || 0)))
 
-  // ── La curva de caídas: rótulo por fecha y la marca del punto más hondo ───
-  const rotuloCaida = new Map(drawdownSeries.map(r => [r.key, r.label]))
-  const marcaCaida = drawdown ? marcaPeorCaida(drawdownSeries, drawdown.max) : null
-  const ladoMarca = marcaCaida
-    ? ladoDeLaMarca({ posicion: marcaCaida.posicion, ancho: anchoCaida, texto: marcaCaida.texto, textoCorto: pctTxt(drawdown.max, 1) })
-    : null
 
   // ── Lo que se escribe sobre el gráfico de Rendimiento ─────────────────────
   const colorBench = currency === 'USD' ? 'rgb(var(--data-cyan))' : 'rgb(var(--data-violet))'
@@ -3533,7 +3637,7 @@ function InsightsDesktop({ _embeddedTab }) {
             </div>
           )
         ) : (
-          <div ref={refGraficoPerf} className={graficoPerfVisto ? '' : 'opacity-0'}>
+          <SeArmaAlVerse>{(graficoPerfVisto) => (
           <ResponsiveContainer width="100%" height={320}>
             {/* Clean pass 2026-07: área con gradiente bajo la línea principal,
                 grilla suave solo horizontal, ejes sans, benchmark punteado,
@@ -3617,17 +3721,15 @@ function InsightsDesktop({ _embeddedTab }) {
               {/* Dónde terminó cada línea, cuando la línea dibujada dice lo
                   mismo que el "Acumulado" de arriba (etiquetasFinales). Aparecen
                   cuando las líneas terminan de dibujarse. */}
-              {etiquetasPerf.cartera && (
-                <ReferenceDot x={etiquetasPerf.cartera.ts} y={etiquetasPerf.cartera.valor} r={0} ifOverflow="visible"
-                  label={<EtiquetaPunta texto={etiquetasPerf.cartera.texto} color={trendStroke(true)} arriba={!etiquetasPerf.bench || etiquetasPerf.cartera.valor >= etiquetasPerf.bench.valor} />} />
-              )}
-              {etiquetasPerf.bench && (
-                <ReferenceDot x={etiquetasPerf.bench.ts} y={etiquetasPerf.bench.valor} r={0} ifOverflow="visible"
-                  label={<EtiquetaPunta texto={etiquetasPerf.bench.texto} color={colorBench} arriba={!etiquetasPerf.cartera || etiquetasPerf.bench.valor > etiquetasPerf.cartera.valor} />} />
+              {(etiquetasPerf.cartera || etiquetasPerf.bench) && (
+                <Customized component={<EtiquetasPuntas etiquetas={[
+                  etiquetasPerf.cartera && { ...etiquetasPerf.cartera, color: trendStroke(true) },
+                  etiquetasPerf.bench && { ...etiquetasPerf.bench, color: colorBench },
+                ]} />} />
               )}
             </ComposedChart>
           </ResponsiveContainer>
-          </div>
+          )}</SeArmaAlVerse>
         )}
       </div>
       </AskAIAbout>
@@ -3655,7 +3757,7 @@ function InsightsDesktop({ _embeddedTab }) {
             Los tramos de tu historia sin precio de mercado. Es contabilidad, no
             mercado — mirala como referencia, no como rendimiento.
           </p>
-          <div ref={refGraficoContable} className={graficoContableVisto ? '' : 'opacity-0'}>
+          <SeArmaAlVerse>{(graficoContableVisto) => (
           <ResponsiveContainer width="100%" height={160}>
             {/* Se dibuja al verse (`key`), como Rendimiento. */}
             <ComposedChart key={graficoContableVisto ? 'visto' : 'antes'} data={contableSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
@@ -3672,7 +3774,7 @@ function InsightsDesktop({ _embeddedTab }) {
                     stroke="rgb(var(--ink-2))" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
-          </div>
+          )}</SeArmaAlVerse>
         </div>
       )}
 
@@ -3685,81 +3787,8 @@ function InsightsDesktop({ _embeddedTab }) {
         params={paramsCaidaIA}
         subtitle="Drawdown de la cartera"
       >
-      <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
-        {/* pr-9: el ✦ de AskAIAbout (absolute top-2 right-2) tapaba el "%" de
-            "Máx histórico". Mismo lugar que deja ModuleShell en el Perfil. */}
-        <div className="flex items-start justify-between gap-2 mb-1 flex-wrap pr-9">
-          <div className="flex items-center gap-1.5">
-            <h2 className="font-semibold text-ink-0">Curva de drawdown</h2>
-            {/* Explica sólo cuando el de Performance no está — en pesos, donde éste
-                es el único chip de la pantalla. En USD son dos y la frase va arriba. */}
-            <ChipMedido explica={!chipPerfVisible} />
-            <InfoTooltip>
-              <p className="font-semibold text-ink-0">Qué es</p>
-              <p>Cuánto bajaste desde tu mejor momento histórico. Si llegaste a +20% y ahora estás en +10%, tu drawdown es −10%.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="font-semibold text-ink-0">Cómo leerlo</p>
-              <p><span className="text-ink-1">0%</span>: estás en tu máximo histórico.</p>
-              <p><span className="text-rendi-warn">−10%</span>: caíste 10% desde el pico.</p>
-              <p><span className="text-rendi-neg">&lt; −25%</span>: drawdown serio — recuperar +25% requiere +33% de retorno.</p>
-              <div className="border-t border-line/60 my-1.5" />
-              <p className="text-ink-3">Calculado sobre el rendimiento ajustado por flujos (TWRR) — depósitos y retiros no se cuentan como subida/bajada de la cartera.</p>
-            </InfoTooltip>
-          </div>
-          {drawdown && (
-            <div className="flex gap-3 text-xs">
-              {/* pctTxt: el signo menos de verdad, como la tira de KPIs (decía
-                  "-0,7%" con guion al lado de un "−0,7%"). Cuentan al verse. */}
-              <span className="text-ink-3">Actual: <span className={`font-semibold tabular ${drawdown.current < -5 ? 'text-rendi-neg' : 'text-rendi-pos'}`}><AnimatedNumber value={drawdown.current} visto={graficoCaidaVisto} format={n => pctTxt(n, 1)} /></span></span>
-              <span className="text-ink-3">Máx histórico: <span className="font-semibold tabular text-rendi-neg"><AnimatedNumber value={drawdown.max} visto={graficoCaidaVisto} format={n => pctTxt(n, 1)} /></span>
-                {/* Si en el gráfico sólo entra el número (celular), la fecha va acá. */}
-                {ladoMarca?.corto && (
-                  <span className={graficoCaidaVisto ? 'marca-aparece' : 'opacity-0'}> · {marcaCaida.label}</span>
-                )}
-              </span>
-            </div>
-          )}
-        </div>
-        <p className="text-xs text-ink-3 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
-        {drawdownSeries.length < 2 ? (
-          <SinMediciones />
-        ) : (
-          <div ref={refGraficoCaida} className={graficoCaidaVisto ? 'caida-baja' : 'opacity-0'}>
-          <ResponsiveContainer width="100%" height={200} onResize={(w) => setAnchoCaida(w)}>
-            {/* Se arma al verse: la zona baja desde el 0 % (.caida-baja,
-                index.css) y al final aparece la marca del punto más hondo. */}
-            <AreaChart key={graficoCaidaVisto ? 'visto' : 'antes'} data={drawdownSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"  stopColor={trendStroke(false)} stopOpacity={0} />
-                  <stop offset="100%" stopColor={areaFill(trendStroke(false))} stopOpacity={1} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
-              {/* El eje va por la CLAVE (la fecha, única) y muestra el rótulo:
-                  con una serie diaria hay 30 "May '25", y la marca de la peor
-                  caída caía en el primero en vez de en su día. */}
-              <XAxis dataKey="key" tickFormatter={k => rotuloCaida.get(k) ?? ''} tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
-              <YAxis tick={chartTick} axisLine={false} tickLine={false} tickFormatter={v => pctTxt(v).replace('-', '−')} domain={['auto', 0]} width={44} />
-              <ReferenceLine y={0} stroke={chartReferenceStroke} strokeOpacity={0.5} />
-              <Tooltip
-                contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
-                labelStyle={chartTooltip.labelStyle}
-                labelFormatter={k => rotuloCaida.get(k) ?? k}
-                formatter={(v) => [pctTxt(v, 2), 'Drawdown']}
-              />
-              {/* Sin la animación de recharts (dibuja de izquierda a derecha):
-                  la zona BAJA desde el 0 % con .caida-baja. */}
-              <Area isAnimationActive={false} type="monotone" dataKey="ddPct" stroke={trendStroke(false)} strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
-              {marcaCaida && (
-                <ReferenceDot x={marcaCaida.key} y={marcaCaida.ddPct} r={4.5} ifOverflow="visible"
-                  shape={(p) => <MarcaPeorCaida cx={p.cx} cy={p.cy} texto={ladoMarca.texto} izquierda={ladoMarca.lado === 'izquierda'} />} />
-              )}
-            </AreaChart>
-          </ResponsiveContainer>
-          </div>
-        )}
-      </div>
+      <CurvaDeCaidas drawdown={drawdown} serie={drawdownSeries}
+        chip={<ChipMedido explica={!chipPerfVisible} />} sinMediciones={<SinMediciones />} />
       </AskAIAbout>
       )}
 
@@ -3785,12 +3814,12 @@ function InsightsDesktop({ _embeddedTab }) {
           {/* Una sola escala para las dos listas (el más grande de todos = barra
               llena): se ve de un vistazo si un activo explica casi todo o está
               repartido. Entran en escalera al verse; "En contra" sigue a "A favor". */}
-          <div ref={refAtribucion} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <SeArmaAlVerse className="grid grid-cols-1 md:grid-cols-2 gap-4" esconder={false}>{(atribucionVista) => (<>
             <ContribList tone="positive" title="A favor" items={topContribPos} fmt={amt}
               visto={atribucionVista} escala={escalaAtribucion} desde={0} />
             <ContribList tone="negative" title="En contra" items={topContribNeg} fmt={amt}
               visto={atribucionVista} escala={escalaAtribucion} desde={topContribPos.length} />
-          </div>
+          </>)}</SeArmaAlVerse>
         </Section>
       )}
 
@@ -3807,7 +3836,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 </span>
               )}
             </div>
-            <div ref={refTortaBrokers} className={tortaBrokersVista ? '' : 'opacity-0'}>
+            <SeArmaAlVerse>{(tortaBrokersVista) => (
             <ResponsiveContainer width="100%" height={260}>
               {/* Gira al verse (`key`), como las otras tortas de la página
                   (CompositionDonut); antes giraba al cargar, fuera de vista. */}
@@ -3827,7 +3856,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 />
               </PieChart>
             </ResponsiveContainer>
-            </div>
+            )}</SeArmaAlVerse>
           </div>
         </Section>
       )}
@@ -3910,7 +3939,7 @@ function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmark
         {gano ? '+' : '−'}{amt(Math.abs(delta.delta))}
       </p>
       <p className={`text-xs tabular mt-0.5 ${accentText}`}>
-        {pctVar(delta.pct, 1)} {gano ? 'por encima' : 'por debajo'} del benchmark
+        {pctVarFino(delta.pct, 1)} {gano ? 'por encima' : 'por debajo'} del benchmark
       </p>
       <p className="text-[11px] text-ink-3 mt-3 leading-snug">
         {hint}: <span className="font-medium text-ink-1">{amt(benchmarkValue)}</span>

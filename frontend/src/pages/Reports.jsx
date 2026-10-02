@@ -29,7 +29,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
-import { pctVar, pctColor } from '../utils/format'
+import { pctVar, pctColor, pctVarSign } from '../utils/format'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -725,7 +725,8 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       label,
       value: `${pctVar(snap.ytd.pct, 2)}`,
       sub: `${snap.ytd.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(snap.ytd.usd))}`,
-      tone: snap.ytd.pct >= 0 ? 'pos' : 'neg',
+      // El color del número que se ve (pctVarSign): −0,004 se escribe "0,00%".
+      tone: pctVarSign(snap.ytd.pct, 2) > 0 ? 'pos' : pctVarSign(snap.ytd.pct, 2) < 0 ? 'neg' : null,
     })
   }
 
