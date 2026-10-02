@@ -7,7 +7,7 @@ import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
@@ -280,8 +280,16 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // En sub-brokers "· USD" todo es de BYMA → se pide el .BA (igual que Positions.jsx),
       // sino computeBrokerValue no encuentra precio local y cae a costo.
       const usdSyms = [...new Set(pos.filter(p => !arsBrokerSet.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-      const allSyms = [...arsSyms, ...usdSyms].join(',')
+      // + las keys que lee el motor (buildPriceSymbols → valuationPriceKey): esta
+      // lista no tenía el lote en pesos en cuenta en dólares ni la cripto de un
+      // "· USD", y esos lotes se valuaban al costo (P&L 0) sin aviso.
+      const allSyms = [...new Set([...buildPriceSymbols(pos, bkrs), ...arsSyms, ...usdSyms])].join(',')
       const pricesData = allSyms ? await api.get(`/prices?symbols=${allSyms}`).catch(() => ({})) : {}
+      // Se GUARDA sólo con los precios: la misma regla que el Dashboard, el otro
+      // escritor de este campo (coberturaDePrecios ≥ 95 % del costo). Sin esto,
+      // con /prices caído se guardaba P&L 0 en todos los brokers, y ganaba el
+      // último que guardara (revisión del 2026-10-02).
+      const conPrecios = coberturaDePrecios(pos, pricesData, bkrs, { tcValuacion: tc, tcCedear, tcCripto }) >= COBERTURA_MINIMA
 
       let globalPnlUsd = 0
       let liveTotal = 0
@@ -290,7 +298,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // el toggle MEP/CCL es sólo display LIVE). Si el user está en CCL, computamos el
       // liveTotal del banner (display) pero NO escribimos pnl CCL-flavored al backend;
       // se auto-corrige en la próxima sesión MEP. Default (MEP) → escribe igual que siempre.
-      const persistMep = valuationDollar === 'mep'
+      const persistMep = valuationDollar === 'mep' && conPrecios
       for (const b of bkrs) {
         const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcValuacion for ARS display);
