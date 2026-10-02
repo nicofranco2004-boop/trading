@@ -109,3 +109,31 @@ export function pasosNoticias({ cartera = null, mercado = null, fallo = {}, prim
     ns => cuantos(ns.length, 'noticia', 'noticias'), { error: fallo.mercado })
   return primero === 'market' ? [delMercado, deTuCartera] : [deTuCartera, delMercado]
 }
+
+// Diagnóstico y Perfil de inversor (pages/Insights.jsx): los 10 pedidos más los
+// precios, agrupados en lo que la persona reconoce. `llego[pieza]` es la cuenta
+// de lo que trajo (número), `true` si volvió sin cuenta, o 'error'. Un grupo se
+// tilda cuando volvieron TODAS sus piezas.
+const GRUPOS_DIAGNOSTICO = [
+  { id: 'historial', etiqueta: 'Tu historial mes a mes', piezas: ['monthly'], cuenta: ['mes', 'meses'] },
+  { id: 'cartera', etiqueta: 'Tus posiciones', piezas: ['positions', 'brokers'], cuenta: ['activo', 'activos'] },
+  { id: 'operaciones', etiqueta: 'Tus operaciones', piezas: ['operations', 'commissions'], cuenta: ['operación', 'operaciones'] },
+  { id: 'fotos', etiqueta: 'La foto diaria de tu cartera', piezas: ['snapshots'], cuenta: ['día', 'días'] },
+  { id: 'comparacion', etiqueta: 'Comparación con el S&P, el dólar y la inflación', piezas: ['benchmarks', 'performance', 'dolar'] },
+  { id: 'perfil', etiqueta: 'Tu test de inversor', piezas: ['profile'] },
+  { id: 'precios', etiqueta: 'Precios de hoy', piezas: ['prices'] },
+]
+
+export function pasosDiagnostico(llego = {}, { perfilPrimero = false } = {}) {
+  const grupos = perfilPrimero
+    ? [GRUPOS_DIAGNOSTICO.find((g) => g.id === 'perfil'), ...GRUPOS_DIAGNOSTICO.filter((g) => g.id !== 'perfil')]
+    : GRUPOS_DIAGNOSTICO
+  return grupos.map((g) => {
+    const estados = g.piezas.map((p) => llego[p])
+    if (estados.some((e) => e === 'error')) return paso(g.id, g.etiqueta, null, null, { error: true })
+    if (estados.some((e) => e == null)) return paso(g.id, g.etiqueta, null)
+    const n = llego[g.piezas[0]]
+    const detalle = g.cuenta && typeof n === 'number' ? cuantos(n, ...g.cuenta) : (g.id === 'precios' ? 'al día' : null)
+    return paso(g.id, g.etiqueta, true, detalle)
+  })
+}

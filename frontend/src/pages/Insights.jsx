@@ -25,6 +25,7 @@ import InfoTooltip from '../components/InfoTooltip'
 import CollapsibleSection from '../components/CollapsibleSection'
 import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlVerse, entrada } from '../hooks/useAlVerse'
+import AnimatedNumber from '../components/AnimatedNumber'
 import { ChevronDown, ChevronUp, Sparkles, X, Lock } from 'lucide-react'
 import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
@@ -47,6 +48,10 @@ import { toDistributionAiParams } from '../utils/distributionAi'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
+import CargaPorPasos from '../components/novedades/CargaPorPasos'
+import { useDemora } from '../hooks/useDemora'
+import { prefiereSinMovimiento } from '../utils/movimiento'
+import { pasosDiagnostico } from '../utils/cargaPorPasos'
 import {
   buildCumulativeReturnSeries,
   drawdownFromPerf,
@@ -188,6 +193,9 @@ function InsightsDesktop({ _embeddedTab }) {
   // En tab 'diagnostico' → todo menos "Perfil del inversor".
   // En tab 'perfil'      → solo la sección "Perfil del inversor".
   const showDiagnostico = !_embeddedTab || _embeddedTab === 'diagnostico'
+  // Los gráficos de recharts animaban aunque la persona pidiera "reducir
+  // movimiento" (sólo la torta lo respetaba): la misma pregunta para todos.
+  const animarGraficos = !prefiereSinMovimiento()
   const showPerfil      = !_embeddedTab || _embeddedTab === 'perfil'
   // Truncar y sanitizar para usarlo como dataKey de Recharts (un solo nombre, máx 12 chars).
   // Si el "name" es un email, agarrar la parte antes del @.
@@ -243,6 +251,10 @@ function InsightsDesktop({ _embeddedTab }) {
   }
   const setSelectedBench = (key) => currency === 'USD' ? setBenchUsd(key) : setBenchArs(key)
   const [loading, setLoading] = useState(true)
+  // Qué pedido ya volvió y con cuánto (el cargador con los pasos reales).
+  const [llego, setLlego] = useState({})
+  const vivoRef = useRef(true)
+  useEffect(() => () => { vivoRef.current = false }, [])
   // Investor profile — perfil del test (7 preguntas). Lo usamos para cruzarlo
   // contra la cartera real y mostrar match/objective coherence cards.
   // Si el user no completó el test, es {} (no null) — eso permite distinguir
@@ -367,48 +379,112 @@ function InsightsDesktop({ _embeddedTab }) {
     return () => { vivo = false }
   }, [selectedBench, modoPerf, liveKeyPerf, currency])
 
+  // El cargador sólo si la carga TARDA (va acá, antes del `if (loading)
+  // return`: es un hook).
+  const mostrarCargador = useDemora(loading)
+
+  // Cuánto más espera la página a los precios cuando todo lo demás ya llegó.
+  // Con Yahoo colgado (yf.download con dos descargas a la vez, ver
+  // backend pricing/yahoo.py) los precios podían no volver nunca y la página
+  // quedaba en "Cargando…" para siempre. Pasado el tope se muestra con el aviso
+  // de cotizaciones pendientes (hasMissingPrices) y se completa cuando llegan.
+  const TOPE_PRECIOS_MS = 8000
+
   async function loadAll() {
+    // Cada pedido avisa cuando vuelve (y con cuánto), para el cargador.
+    const marcar = (pieza, valor = true) => {
+      if (vivoRef.current) setLlego(l => ({ ...l, [pieza]: valor }))
+    }
+    const cuantosHay = (r) => (Array.isArray(r) ? r.length : true)
+    // `siFalla`: con qué seguir si el pedido no vuelve. Antes /monthly,
+    // /positions y /brokers no tenían: uno caído tiraba el Promise.all entero
+    // y la página quedaba sin nada de lo que SÍ había llegado.
+    const pedir = (pieza, url, siFalla, cuenta = cuantosHay) => api.get(url)
+      .then(r => { marcar(pieza, cuenta(r)); return r })
+      .catch(() => { marcar(pieza, 'error'); return siFalla })
     try {
+      const pPos = pedir('positions', '/positions', [],
+        r => new Set((r || []).filter(p => !p.is_cash).map(p => p.asset)).size)
+      const pBkrs = pedir('brokers', '/brokers', [])
+      // Los precios salen apenas están tus posiciones, a la par del resto
+      // (antes se pedían recién al final, cuando ya había llegado todo).
+      const pPrecios = Promise.all([pPos, pBkrs]).then(([pos, bkrs]) => {
+        const all = simbolosDePrecio(pos, bkrs)
+        if (!all) { marcar('prices'); return {} }
+        return api.get(`/prices?symbols=${all}`)
+          .then(r => { marcar('prices'); return r })
+          .catch(() => { marcar('prices', 'error'); return null })
+      })
       const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof, pf] = await Promise.all([
-        api.get('/monthly'),
-        api.get('/positions'),
-        api.get('/brokers'),
-        api.get('/benchmarks').catch(() => null),
+        pedir('monthly', '/monthly', []),
+        pPos,
+        pBkrs,
+        pedir('benchmarks', '/benchmarks', null),
         // Historia completa, no 30 días: los snapshots son la serie a valor de
         // MERCADO y ahora corrigen toda la cadena mensual (applyMtmToMonthly),
         // no solo el detalle diario del último mes.
-        api.get('/snapshots?days=3650').catch(() => []),
-        api.get('/dolar').catch(() => null),
-        api.get('/operations').catch(() => []),
-        api.get('/insights/commissions').catch(() => null),
-        api.get('/auth/investor-profile').catch(() => ({})),
-        api.get(`/insights/performance${currency === 'ARS' ? '?moneda=ars' : ''}`).catch(() => null),
+        pedir('snapshots', '/snapshots?days=3650', []),
+        pedir('dolar', '/dolar', null),
+        pedir('operations', '/operations', []),
+        pedir('commissions', '/insights/commissions', null),
+        pedir('profile', '/auth/investor-profile', {}),
+        pedir('performance', `/insights/performance${currency === 'ARS' ? '?moneda=ars' : ''}`, null),
       ])
-      setMonthly(mon); setPositions(pos); setBrokers(bkrs); setBench(b); setSnapshots(snaps); setDolar(dol); setOperations(ops); setCommissionsApi(comm); setInvestorProfile(prof || {}); setPerf(pf)
+      if (!vivoRef.current) return
+      setMonthly(mon || []); setPositions(pos || []); setBrokers(bkrs || []); setBench(b); setSnapshots(snaps || []); setDolar(dol); setOperations(ops || []); setCommissionsApi(comm); setInvestorProfile(prof || {}); setPerf(pf)
 
-      const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
-      // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
-      const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
-      const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
-      // En un sub-broker AR "· USD" todo es de BYMA (CEDEARs + acciones AR como
-      // PAMP/YPFD): se pide el símbolo local .BA. En un broker USD real (Schwab)
-      // se pide el ticker US pelado. priceSymbol(asset, true, …) fuerza el .BA.
-      const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
-        .map(p => isArUsdBroker(p.broker)
-          ? priceSymbol(p.asset, true, p.asset_type)
-          : priceSymbol(p.asset, false, p.asset_type)))]
-      const all = [...arsSyms, ...usdtSyms].join(',')
-      if (all) {
-        try { setPrices(await api.get(`/prices?symbols=${all}`)) } catch {}
+      const SIN_RESPUESTA = Symbol('sin respuesta')
+      const precios = await Promise.race([
+        pPrecios,
+        new Promise(r => setTimeout(() => r(SIN_RESPUESTA), TOPE_PRECIOS_MS)),
+      ])
+      if (!vivoRef.current) return
+      if (precios === SIN_RESPUESTA) {
+        // La página sale sin precios (el aviso de cotizaciones lo dice) y se
+        // completa cuando lleguen.
+        pPrecios.then(p => { if (p && vivoRef.current) setPrices(p) })
+      } else if (precios) {
+        setPrices(precios)
       }
     } catch (e) {
       console.error('Insights loadAll error:', e)
     } finally {
-      setLoading(false)
+      if (vivoRef.current) setLoading(false)
     }
   }
 
-  if (loading) return <div className="page-shell text-center text-ink-3" aria-live="polite">Cargando…</div>
+  // Los símbolos a cotizar de tu cartera (lo de abajo era el cuerpo de
+  // loadAll; se mudó acá para pedir los precios antes).
+  function simbolosDePrecio(pos = [], bkrs = []) {
+    pos = pos || []; bkrs = bkrs || []
+    const arsBrokers = new Set(bkrs.filter(x => x.currency === 'ARS').map(x => x.name))
+    // Todo lo que no sea ARS (USDT, USD) se valúa directo en USD sin conversión
+    const usdtBrokers = new Set(bkrs.filter(x => x.currency !== 'ARS').map(x => x.name))
+    const arsSyms = [...new Set(pos.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
+    // En un sub-broker AR "· USD" todo es de BYMA (CEDEARs + acciones AR como
+    // PAMP/YPFD): se pide el símbolo local .BA. En un broker USD real (Schwab)
+    // se pide el ticker US pelado. priceSymbol(asset, true, …) fuerza el .BA.
+    const usdtSyms = [...new Set(pos.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT')
+      .map(p => isArUsdBroker(p.broker)
+        ? priceSymbol(p.asset, true, p.asset_type)
+        : priceSymbol(p.asset, false, p.asset_type)))]
+    return [...arsSyms, ...usdtSyms].join(',')
+  }
+
+  // Cargando: los pedidos reales con su tilde (y lo que trajeron), sólo si
+  // tarda (useDemora). Antes: "Cargando…" sin más.
+  if (loading) {
+    return (
+      <div className="page-shell">
+        {mostrarCargador && (
+          <CargaPorPasos
+            titulo={_embeddedTab === 'perfil' ? 'Cargando tu perfil de inversor' : 'Cargando tu diagnóstico'}
+            pasos={pasosDiagnostico(llego, { perfilPrimero: _embeddedTab === 'perfil' })}
+          />
+        )}
+      </div>
+    )
+  }
 
   // ── Distribution ──
   // pieData    → por broker (gráfico de torta "Por broker", concentración por broker).
@@ -2508,6 +2584,17 @@ function InsightsDesktop({ _embeddedTab }) {
     .map(p => String(p.asset || '').toUpperCase())
     .filter(Boolean)
   const hasMissingPrices = missingPriceTickers.length > 0
+  // El aviso va en Diagnóstico Y en Perfil de inversor: los dos pasan la página
+  // sin precios cuando tardan más de TOPE_PRECIOS_MS (ver loadAll), y en los
+  // dos hay números que salen al costo hasta que llegan.
+  const avisoCotizaciones = hasMissingPrices && (
+    <div className="flex items-start gap-2.5 px-3 py-2 rounded-sm border border-rendi-warn/25 bg-rendi-warn/[0.08] text-rendi-warn text-xs">
+      <AlertTriangle size={14} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
+      <span>
+        <span className="font-semibold">Cargando cotizaciones de mercado.</span> Algunos cálculos pueden mostrar valores parciales hasta completar la sincronización.
+      </span>
+    </div>
+  )
 
   // Helper de moneda activa: convierte un monto USD al ARS actual cuando el
   // toggle global está en ARS. Las métricas son globales (no las podemos
@@ -2720,14 +2807,7 @@ function InsightsDesktop({ _embeddedTab }) {
       {/* Insight del día — solo en mobile, como hero por encima del análisis. */}
       {isMobile && <InsightDelDiaHero />}
 
-      {hasMissingPrices && (
-        <div className="flex items-start gap-2.5 px-3 py-2 rounded-sm border border-rendi-warn/25 bg-rendi-warn/[0.08] text-rendi-warn text-xs">
-          <AlertTriangle size={14} strokeWidth={1.75} className="flex-shrink-0 mt-0.5" />
-          <span>
-            <span className="font-semibold">Cargando cotizaciones de mercado.</span> Algunos cálculos pueden mostrar valores parciales hasta completar la sincronización.
-          </span>
-        </div>
-      )}
+      {avisoCotizaciones}
 
       {monthly.length < 2 && (
         <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-sm border border-data-cyan/25 bg-data-cyan/[0.06] text-xs">
@@ -3314,10 +3394,10 @@ function InsightsDesktop({ _embeddedTab }) {
                   es la punteada, que es lo único que las distingue a simple vista. */}
               <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12.5, paddingTop: 8 }}
                       formatter={(v) => v === `${userName} estimado` ? `${v} (línea punteada)` : v} />
-              <Area type="monotone" dataKey={claveCartera} stroke={trendStroke(true)} strokeWidth={2.5} fill="url(#portGrad)" dot={<DotSolo fill="#21D07A" />} activeDot={{ r: 4 }} />
+              <Area isAnimationActive={animarGraficos} type="monotone" dataKey={claveCartera} stroke={trendStroke(true)} strokeWidth={2.5} fill="url(#portGrad)" dot={<DotSolo fill="#21D07A" />} activeDot={{ r: 4 }} />
               {/* Lo NO medido: misma curva, punteada y en un tono apagado. Es lo
                   que comunica "esta parte es estimada" sin esconderla. */}
-              <Line type="monotone" dataKey={`${userName} estimado`} stroke={trendStroke(true)} strokeOpacity={0.55} strokeWidth={2} strokeDasharray="3 4" dot={<DotSolo fill="#21D07A" opacity={0.55} />} />
+              <Line isAnimationActive={animarGraficos} type="monotone" dataKey={`${userName} estimado`} stroke={trendStroke(true)} strokeOpacity={0.55} strokeWidth={2} strokeDasharray="3 4" dot={<DotSolo fill="#21D07A" opacity={0.55} />} />
               {/* ⚠️ EN ESTIMADO ESTA SEGUNDA LÍNEA SE OCULTA, y es la respuesta a
                   "¿sigue teniendo sentido o es redundante?".
                   En CERTERO las dos dicen cosas distintas: la verde es la cartera
@@ -3332,9 +3412,9 @@ function InsightsDesktop({ _embeddedTab }) {
                   no información sobre la plata del usuario. Dos curvas casi iguales
                   con nombres sinónimos confunden más de lo que aportan. */}
               {!_perfContable && (
-                <Line type="monotone" dataKey={`${userName} P/L realizado`} stroke="rgb(var(--data-amber))" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
+                <Line isAnimationActive={animarGraficos} type="monotone" dataKey={`${userName} P/L realizado`} stroke="rgb(var(--data-amber))" strokeWidth={1.5} strokeDasharray="2 5" dot={false} />
               )}
-              <Line type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? 'rgb(var(--data-cyan))' : 'rgb(var(--data-violet))'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
+              <Line isAnimationActive={animarGraficos} type="monotone" dataKey={benchmarkKey} stroke={currency === 'USD' ? 'rgb(var(--data-cyan))' : 'rgb(var(--data-violet))'} strokeWidth={1.75} strokeDasharray="5 5" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
         )}
@@ -3375,7 +3455,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 labelStyle={chartTooltip.labelStyle}
                 formatter={(v) => [`US$${Number(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`, 'Reconstrucción contable']}
               />
-              <Line type="monotone" dataKey="usd" name="Reconstrucción contable"
+              <Line isAnimationActive={animarGraficos} type="monotone" dataKey="usd" name="Reconstrucción contable"
                     stroke="rgb(var(--ink-2))" strokeWidth={1.75} strokeDasharray="4 4" dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
@@ -3438,7 +3518,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 labelStyle={chartTooltip.labelStyle}
                 formatter={(v) => [`${v.toFixed(2).replace('.', ',')}%`, 'Drawdown']}
               />
-              <Area type="monotone" dataKey="ddPct" stroke={trendStroke(false)} strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
+              <Area isAnimationActive={animarGraficos} type="monotone" dataKey="ddPct" stroke={trendStroke(false)} strokeWidth={2} fill="url(#ddGrad)" dot={false} activeDot={{ r: 4 }} />
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -3491,7 +3571,7 @@ function InsightsDesktop({ _embeddedTab }) {
                     tono más fuerte a la porción más grande (ver MONO_VIOLET).
                     Antes: paleta de series en el orden de la lista de brokers,
                     con el verde de ganancia y el rojo de pérdida adentro. */}
-                <Pie data={[...pieData].sort((a, b) => b.value - a.value)} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
+                <Pie isAnimationActive={animarGraficos} data={[...pieData].sort((a, b) => b.value - a.value)} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
                   {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={porcionColor(i)} />)}
                 </Pie>
                 <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
@@ -3528,6 +3608,8 @@ function InsightsDesktop({ _embeddedTab }) {
         title={_embeddedTab === 'perfil' ? 'Diagnóstico vs. perfil declarado' : 'Perfil de inversor'}
         subtitle="Cómo se alinea tu cartera real con lo que declaraste en el test."
       >
+        {/* En Diagnóstico el aviso ya va arriba de todo. */}
+        {_embeddedTab === 'perfil' && avisoCotizaciones}
         {/* Lectura IA holística — solo si hay test hecho (si no, la CTA a
             completar el test la muestra el propio ProfileInvestorBlock). */}
         {investorProfile && Object.keys(investorProfile).length > 0 && (
@@ -3624,6 +3706,10 @@ IPC acumulado en {inflation.monthsCounted} {inflation.monthsCounted === 1 ? 'mes
 //   pnl      = ganancia/pérdida real del mercado (no incluye flujos)
 //   total    = deposits + pnl (cambio total del portfolio)
 function PerformanceAttribution({ discipline, amt }) {
+  // Al verse, la barra se arma (primero los aportes, después el mercado) y los
+  // dos montos cuentan. Antes aparecía ya llena: la transición de 300 ms sólo
+  // corría si el dato cambiaba después. El hook va antes del `return null`.
+  const [ref, visto] = useAlVerse()
   const { deposits, pnl, total } = discipline
   const totalAbs = Math.abs(deposits) + Math.abs(pnl)
   if (totalAbs === 0) return null
@@ -3632,7 +3718,7 @@ function PerformanceAttribution({ discipline, amt }) {
   const pnlPositive = pnl >= 0
 
   return (
-    <div className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
+    <div ref={ref} className="bg-bg-1 border border-line rounded-xl p-5 mt-6">
       <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
         <div className="flex items-center gap-1.5">
           <h2 className="font-semibold text-ink-0">Atribución del crecimiento</h2>
@@ -3653,13 +3739,13 @@ function PerformanceAttribution({ discipline, amt }) {
       {/* Stacked bar */}
       <div className="h-3 bg-bg-2 dark:bg-bg-1/50 rounded-full overflow-hidden flex">
         <div
-          className="h-full bg-ink-3/70 dark:bg-bg-20/70 transition-[width] duration-300 ease-out motion-reduce:transition-none"
-          style={{ width: `${depShare}%` }}
+          className={`h-full bg-ink-3/70 dark:bg-bg-20/70 transition-[width] duration-300 ease-out motion-reduce:transition-none ${visto ? 'crece-ancho' : 'scale-x-0'}`}
+          style={{ width: `${depShare}%`, '--fila': 0 }}
           title="Aportes netos"
         />
         <div
-          className={`h-full transition-[width] duration-300 ease-out motion-reduce:transition-none ${pnlPositive ? 'bg-rendi-pos' : 'bg-rendi-neg'}`}
-          style={{ width: `${pnlShare}%` }}
+          className={`h-full transition-[width] duration-300 ease-out motion-reduce:transition-none ${pnlPositive ? 'bg-rendi-pos' : 'bg-rendi-neg'} ${visto ? 'crece-ancho' : 'scale-x-0'}`}
+          style={{ width: `${pnlShare}%`, '--fila': 2 }}
           title={pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}
         />
       </div>
@@ -3670,7 +3756,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <span className="mt-1 inline-block w-2 h-2 rounded-full bg-ink-3 flex-shrink-0" />
           <div>
             <p className="text-xs text-ink-3">Aportes netos</p>
-            <p className="text-lg font-semibold text-ink-1 tabular">{amt(deposits, { signed: true })}</p>
+            <p className="text-lg font-semibold text-ink-1 tabular"><AnimatedNumber value={visto ? deposits : 0} format={n => amt(n, { signed: true })} /></p>
             <p className="text-[11px] text-ink-3">{depShare.toFixed(0).replace('.', ',')}% del cambio</p>
           </div>
         </div>
@@ -3678,7 +3764,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <span className={`mt-1 inline-block w-2 h-2 rounded-full flex-shrink-0 ${pnlPositive ? 'bg-emerald-500' : 'bg-red-500'}`} />
           <div>
             <p className="text-xs text-ink-3">{pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}</p>
-            <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>{amt(pnl, { signed: true })}</p>
+            <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}><AnimatedNumber value={visto ? pnl : 0} format={n => amt(n, { signed: true })} /></p>
             <p className="text-[11px] text-ink-3">{pnlShare.toFixed(0).replace('.', ',')}% del cambio</p>
           </div>
         </div>

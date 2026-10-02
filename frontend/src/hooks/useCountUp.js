@@ -18,8 +18,13 @@ export function useCountUp(target, { duration = 600 } = {}) {
 
   // Arranca en 0 para que el hero "cuente" hacia el valor al montar (momento
   // dopamina). En updates posteriores anima desde el último valor (no desde 0).
-  const [value, setValue] = useState(0)
-  const fromRef = useRef(0)
+  // Sin navegador (un render a texto: las pruebas que leen lo que se ve) no hay
+  // cuadros que dibujar ni efectos que corran: el número sale en su valor
+  // final, que es lo que la persona termina viendo. Sin esto, cualquier número
+  // que cuenta se leía "0" en esas pruebas.
+  const sinNavegador = typeof window === 'undefined'
+  const [value, setValue] = useState(() => (sinNavegador ? safeTarget : 0))
+  const fromRef = useRef(sinNavegador ? safeTarget : 0)
   const rafRef = useRef(null)
   const latestRef = useRef(0) // último valor renderizado (para cleanup sin stale closure)
 

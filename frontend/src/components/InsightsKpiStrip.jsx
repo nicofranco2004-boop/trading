@@ -6,8 +6,14 @@
 //   3) Drawdown actual      → TWRR
 //   4) Rendimiento acum.    → TWRR vs benchmark si está
 //   5) Win rate · trades    → ratio de operaciones cerradas
+//
+// Al verse (useAlVerse), los cinco números cuentan hasta su valor y los
+// hallazgos por gravedad aterrizan de a uno (el total se arma con ellos). Si un
+// número cambia después (1A → 2A, otro comparativo), va del viejo al nuevo.
 
 import { labelVentanaMeses, pctTxt, pctVar, pctVarSign } from '../utils/format'
+import AnimatedNumber from './AnimatedNumber'
+import { useAlVerse } from '../hooks/useAlVerse'
 
 const SEV_LABEL = { urgent: 'HI', warn: 'MED', positive: 'POS', info: 'LO' }
 const SEV_TONE = {
@@ -34,6 +40,7 @@ export default function InsightsKpiStrip({
   ventanaMeses,
   currency = 'USD',
 }) {
+  const [ref, visto] = useAlVerse()
   const ventanaLabel = labelVentanaMeses(ventanaMeses)
 
   // ── 1) Findings buckets ────────────────────────────────────────────────────
@@ -72,32 +79,38 @@ export default function InsightsKpiStrip({
   const wr = winRate?.pct ?? null
   const wrTotal = winRate?.total ?? 0
 
+  // Un número que cuenta hasta su valor cuando la fila se ve; "—" si no hay.
+  const cuenta = (v, formato) =>
+    v == null ? '—' : <AnimatedNumber value={visto ? v : 0} format={formato} />
+  const gravedades = ['urgent', 'warn', 'positive', 'info'].filter(k => buckets[k] > 0)
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+    <div ref={ref} className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       <KpiCell
         label="Findings detectados"
-        value={totalFindings}
+        value={cuenta(totalFindings, n => Math.round(n))}
         hero
         sub={
           totalFindings > 0 ? (
             <span className="flex items-center gap-1.5">
-              {buckets.urgent > 0 && <span className={SEV_TONE.urgent}>{buckets.urgent} {SEV_LABEL.urgent}</span>}
-              {buckets.warn > 0 && <span className={SEV_TONE.warn}>{buckets.warn} {SEV_LABEL.warn}</span>}
-              {buckets.positive > 0 && <span className={SEV_TONE.positive}>{buckets.positive} {SEV_LABEL.positive}</span>}
-              {buckets.info > 0 && <span className={SEV_TONE.info}>{buckets.info} {SEV_LABEL.info}</span>}
+              {gravedades.map((k, i) => (
+                <span key={k} className={`${SEV_TONE[k]} ${visto ? 'tilde-entra' : 'por-entrar'}`} style={{ '--i': i }}>
+                  {buckets[k]} {SEV_LABEL[k]}
+                </span>
+              ))}
             </span>
           ) : 'sin observaciones'
         }
       />
       <KpiCell
         label={topAsset ? `Concentración · ${topAsset.name}` : 'Concentración'}
-        value={topAsset ? pctTxt(topAsset.pct, 0) : '—'}
+        value={cuenta(topAsset?.pct ?? null, n => pctTxt(n, 0))}
         tone={concentrationTone}
         sub={topAsset ? 'de la cartera total' : 'sin posiciones'}
       />
       <KpiCell
         label="Drawdown actual"
-        value={ddCurrent != null ? pctTxt(ddCurrent, 1) : '—'}
+        value={cuenta(ddCurrent, n => pctTxt(n, 1))}
         tone={ddTone}
         sub={ddMax != null ? `peak histórico ${pctTxt(ddMax, 1)}` : 'TWRR'}
       />
@@ -116,7 +129,7 @@ export default function InsightsKpiStrip({
           del corte sería la Fase 1 otra vez—, así que se declara desde cuándo. */}
       <KpiCell
         label={`Acumulado ${ventanaLabel} · ${currency}${acumuladoEstimado ? ' · recreado' : ''}`}
-        value={cumulativeReturnPct != null ? pctVar(cumulativeReturnPct, 1) : '—'}
+        value={cuenta(cumulativeReturnPct, n => pctVar(n, 1))}
         tone={rendTone}
         sub={
           acumuladoEstimado
@@ -138,7 +151,7 @@ export default function InsightsKpiStrip({
       />
       <KpiCell
         label="Win rate"
-        value={wr != null ? pctTxt(wr, 0) : '—'}
+        value={cuenta(wr, n => pctTxt(n, 0))}
         sub={wrTotal > 0 ? `${wrTotal} ${wrTotal === 1 ? 'op cerrada' : 'ops cerradas'}` : 'sin operaciones'}
       />
     </div>

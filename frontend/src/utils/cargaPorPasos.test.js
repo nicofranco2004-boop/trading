@@ -117,3 +117,27 @@ describe('CargaPorPasos — lo que se ve', () => {
     expect(sinChips).not.toContain('chip-')
   })
 })
+
+import { pasosDiagnostico } from './cargaPorPasos'
+
+describe('pasosDiagnostico — los 10 pedidos y los precios, agrupados', () => {
+  it('un grupo se tilda cuando volvieron TODAS sus piezas, con su cuenta', () => {
+    const pasos = pasosDiagnostico({ monthly: 12, positions: 9, brokers: 2, operations: 85 })
+    const por = Object.fromEntries(pasos.map(p => [p.id, p]))
+    expect(por.historial).toMatchObject({ estado: 'listo', detalle: '12 meses' })
+    expect(por.cartera).toMatchObject({ estado: 'listo', detalle: '9 activos' })
+    expect(por.operaciones.estado).toBe('cargando')        // falta commissions
+    expect(por.precios.estado).toBe('cargando')
+  })
+  it('un pedido caído lo dice', () => {
+    const p = pasosDiagnostico({ snapshots: 'error' }).find(x => x.id === 'fotos')
+    expect(p.estado).toBe('error')
+  })
+  it('en Perfil de inversor, el test va primero', () => {
+    expect(pasosDiagnostico({}, { perfilPrimero: true })[0].id).toBe('perfil')
+    expect(pasosDiagnostico({})[0].id).toBe('historial')
+  })
+  it('los precios dicen "al día" al llegar', () => {
+    expect(pasosDiagnostico({ prices: true }).find(x => x.id === 'precios').detalle).toBe('al día')
+  })
+})
