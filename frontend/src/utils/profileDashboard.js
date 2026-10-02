@@ -336,11 +336,10 @@ export function buildProfileDashboard({ cards = {}, positions = [] } = {}) {
     // consume de acá para que avail⇔renderizable sea un invariante real.
     buckets,
     availCount: modules.filter((m) => m.avail).length,
-    // "Tu cartera coincide con tu perfil en N de M": sólo los cruces que se
-    // pudieron medir (M), en el orden de las tarjetas.
-    coincidencias: {
-      coinciden: modules.filter((m) => m.veredicto === 'coincide').length,
-      medidos: modules.filter((m) => m.veredicto != null).length,
-    },
+    // "Tu cartera coincide con tu perfil en N de M" NO se cuenta acá: un
+    // módulo listo puede no tener con qué dibujarse (moduleBody devuelve null)
+    // y el resumen tiene que contar las MISMAS tarjetas que se ven. Lo cuenta
+    // ResumenCoincidencias sobre las que se dibujan. Hubo una cuenta acá que
+    // nadie mostraba y podía decir otra cosa.
   }
 }

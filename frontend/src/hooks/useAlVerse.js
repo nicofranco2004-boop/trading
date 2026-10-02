@@ -9,8 +9,17 @@
 // Sin IntersectionObserver (navegador viejo, o el render del servidor en los
 // tests) `visto` arranca en true: sin eso, lo que espera "a ser visto" para
 // aparecer no aparecería nunca.
+//
+// Con "reducir movimiento" también arranca en true: no hay entrada que guardar
+// para cuando llegues, así que no hay nada que esperar. index.css ya lo
+// decidía para lo suyo (.por-entrar a la vista); el hook no, y lo que dependía
+// de `visto` en JavaScript quedaba a medio camino: los números que cuentan
+// escritos en 0 hasta que bajabas (medido en Chrome el 2026-10-02: "coincide
+// con tu perfil en 0 de 8", "Win rate 0 %", "+USD 0,00"), el gráfico del
+// Dashboard escondido.
 
 import { useEffect, useState } from 'react'
+import { prefiereSinMovimiento } from '../utils/movimiento'
 
 // ¿Se ve lo suficiente como para arrancar? El `threshold` de un
 // IntersectionObserver es una fracción DEL ELEMENTO: en una lista alta (25
@@ -38,7 +47,7 @@ function escalones(fraccion) {
 // montar con el ref vacío y no volvía a correr nunca.
 export function useAlVerse({ threshold = 0.15, rootMargin = '0px 0px -40px 0px' } = {}) {
   const [nodo, setNodo] = useState(null)
-  const [visto, setVisto] = useState(() => typeof IntersectionObserver === 'undefined')
+  const [visto, setVisto] = useState(() => typeof IntersectionObserver === 'undefined' || prefiereSinMovimiento())
 
   useEffect(() => {
     if (visto || !nodo) return

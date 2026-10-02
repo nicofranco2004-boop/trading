@@ -496,7 +496,7 @@ export default function Events({ embedded = false }) {
         <EmptyState
           icon={<Calendar size={32} />}
           title="Sin eventos en este rango"
-          subtitle={tab === 'portfolio'
+          description={tab === 'portfolio'
             ? `No hay pagos, earnings ni dividendos del portfolio en los próximos ${windowDays} días.`
             : `No hay eventos macro ni earnings de tickers populares en los próximos ${windowDays} días.`}
         />

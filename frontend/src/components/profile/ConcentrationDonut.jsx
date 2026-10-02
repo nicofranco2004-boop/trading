@@ -62,7 +62,7 @@ export default function ConcentrationDonut({ holdings, top3Pct, comparison }) {
             style={{ background: `conic-gradient(${stops.join(', ')})` }} aria-hidden="true" />
           <div className="absolute inset-[18px] rounded-full bg-bg-1 flex flex-col items-center justify-center">
             <div className="text-xl font-semibold text-ink-0 tabular-nums leading-none">
-              <AnimatedNumber value={visto ? top3Pct : 0} format={formatoQueCuenta(top3Pct)} />
+              <AnimatedNumber value={top3Pct} visto={visto} format={formatoQueCuenta(top3Pct)} />
             </div>
             <div className="text-[12.5px] text-ink-2 mt-1 font-medium">
               Top 3

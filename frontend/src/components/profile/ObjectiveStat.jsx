@@ -16,7 +16,7 @@ export default function ObjectiveStat({ goalLabel, alignedPct, alignedLabel, mis
   return (
     <div>
       <div className="flex items-baseline gap-3">
-        <span className="text-3xl font-semibold text-ink-0 tabular-nums"><AnimatedNumber value={visto ? alignedPct : 0} format={formatoQueCuenta(alignedPct)} /></span>
+        <span className="text-3xl font-semibold text-ink-0 tabular-nums"><AnimatedNumber value={alignedPct} visto={visto} format={formatoQueCuenta(alignedPct)} /></span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           de la cartera alineado con tu objetivo ({alignedLabel})
         </span>

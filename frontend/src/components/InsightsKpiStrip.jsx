@@ -81,7 +81,7 @@ export default function InsightsKpiStrip({
 
   // Un número que cuenta hasta su valor cuando la fila se ve; "—" si no hay.
   const cuenta = (v, formato) =>
-    v == null ? '—' : <AnimatedNumber value={visto ? v : 0} format={formato} />
+    v == null ? '—' : <AnimatedNumber value={v} visto={visto} format={formato} />
   const gravedades = ['urgent', 'warn', 'positive', 'info'].filter(k => buckets[k] > 0)
 
   return (

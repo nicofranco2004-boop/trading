@@ -124,6 +124,28 @@ const GRUPOS_DIAGNOSTICO = [
   { id: 'precios', etiqueta: 'Precios de hoy', piezas: ['prices'] },
 ]
 
+// Los meses de historial que trajo /monthly. NO es el largo de la lista: el
+// servidor manda un renglón por broker y por mes, más el renglón "global" de
+// cada mes (el que usa Insights). Con 12 meses y 2 brokers son 36 renglones, y
+// el cargador decía "36 meses". Se cuentan los meses distintos del global (o de
+// todos, si no vino el global).
+export function mesesDelHistorial(filas) {
+  if (!Array.isArray(filas)) return 0
+  const globales = filas.filter((m) => m?.broker === 'global')
+  const base = globales.length ? globales : filas
+  return new Set(base.map((m) => `${m?.year}-${m?.month}`)).size
+}
+
+// Sin estas tres, los números de Diagnóstico y Perfil salen mal, no "de menos":
+// sin brokers, el efectivo en pesos se cuenta como dólares (×1.400) y no se
+// piden precios; sin posiciones, el Perfil dice "cargá tus posiciones" a quien
+// las tiene. Si una no volvió, la pantalla lo dice en vez de calcular.
+export const PIEZAS_IMPRESCINDIBLES = ['monthly', 'positions', 'brokers']
+
+export function faltaLoImprescindible(llego = {}) {
+  return PIEZAS_IMPRESCINDIBLES.some((p) => llego[p] === 'error')
+}
+
 export function pasosDiagnostico(llego = {}, { perfilPrimero = false } = {}) {
   const grupos = perfilPrimero
     ? [GRUPOS_DIAGNOSTICO.find((g) => g.id === 'perfil'), ...GRUPOS_DIAGNOSTICO.filter((g) => g.id !== 'perfil')]

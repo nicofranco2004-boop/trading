@@ -40,7 +40,7 @@ export default function DeltaSinceVisit({ delta }) {
           <Chip dot="bg-data-violet">
             Tu cartera:{' '}
             <b className="text-ink-0 tabular">
-              <AnimatedNumber value={visto ? valueDeltaPct : 0} format={n => pctVar(n, 1)} duration={900} />
+              <AnimatedNumber value={valueDeltaPct} visto={visto} format={n => pctVar(n, 1)} duration={900} />
             </b>
           </Chip>
         </span>

@@ -266,6 +266,7 @@ import { veredicto, horizonteChoca } from './profileDashboard'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement as h } from 'react'
 import ProfileDashboard from '../components/profile/ProfileDashboard'
+import { MemoryRouter } from 'react-router-dom'
 
 describe('veredicto — una regla por cruce, la misma que pinta cada tarjeta', () => {
   const buckets = READY_CARDS.allocation.actual.buckets
@@ -299,15 +300,24 @@ describe('veredicto — una regla por cruce, la misma que pinta cada tarjeta', (
   })
 })
 
-describe('coincidencias del tablero', () => {
+// La cuenta se lee de lo que se VE (el mismo camino que producción): las
+// tarjetas que se dibujan, no los módulos del motor.
+describe('coincidencias del tablero — "N de M" sobre las tarjetas que se ven', () => {
+  const resumen = (cards) => {
+    // MemoryRouter: un cruce bloqueado dibuja su candado con un link al test.
+    const html = renderToStaticMarkup(h(MemoryRouter, null, h(ProfileDashboard, { cards, positions: POSITIONS })))
+    const m = html.match(/coincide con tu perfil en\s*<span[^>]*>(\d+)<\/span>\s*de <span[^>]*>(\d+)<\/span>/)
+    return m && { coinciden: +m[1], medidos: +m[2], chips: (html.match(/: (no )?coincide</g) || []).length }
+  }
   it('cuenta sobre los cruces medidos (el radar no cuenta)', () => {
-    const dash = buildProfileDashboard({ cards: READY_CARDS, positions: POSITIONS })
-    expect(dash.coincidencias).toEqual({ coinciden: 3, medidos: 8 })
+    expect(resumen(READY_CARDS)).toEqual({ coinciden: 3, medidos: 8, chips: 8 })
   })
   it('un cruce bloqueado no entra en la cuenta', () => {
-    const cards = { ...READY_CARDS, style: { status: 'no_profile' } }
-    const dash = buildProfileDashboard({ cards, positions: POSITIONS })
-    expect(dash.coincidencias).toEqual({ coinciden: 3, medidos: 7 })
+    expect(resumen({ ...READY_CARDS, style: { status: 'no_profile' } })).toEqual({ coinciden: 3, medidos: 7, chips: 7 })
+  })
+  it('listo pero sin con qué dibujarse: no hay tarjeta, y tampoco cuenta ni tiene tilde', () => {
+    const style = { ...READY_CARDS.style, actual: { ...READY_CARDS.style.actual, tradesPerMonth: null } }
+    expect(resumen({ ...READY_CARDS, style })).toEqual({ coinciden: 3, medidos: 7, chips: 7 })
   })
 })
 

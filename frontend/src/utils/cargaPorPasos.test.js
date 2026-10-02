@@ -141,3 +141,40 @@ describe('pasosDiagnostico — los 10 pedidos y los precios, agrupados', () => {
     expect(pasosDiagnostico({ prices: true }).find(x => x.id === 'precios').detalle).toBe('al día')
   })
 })
+
+import { mesesDelHistorial, faltaLoImprescindible } from './cargaPorPasos'
+
+describe('mesesDelHistorial — meses, no renglones de /monthly', () => {
+  // La forma de /api/monthly: un renglón por broker y por mes, más el "global".
+  const fila = (broker, year, month) => ({ broker, year, month })
+  const doceMesesDosBrokers = []
+  for (let m = 1; m <= 12; m++) {
+    doceMesesDosBrokers.push(fila('Cocos', 2026, m), fila('Schwab', 2026, m), fila('global', 2026, m))
+  }
+  it('12 meses con 2 brokers son 12 meses (el cargador decía "36 meses")', () => {
+    expect(doceMesesDosBrokers).toHaveLength(36)
+    expect(mesesDelHistorial(doceMesesDosBrokers)).toBe(12)
+    const p = pasosDiagnostico({ monthly: mesesDelHistorial(doceMesesDosBrokers) }).find(x => x.id === 'historial')
+    expect(p.detalle).toBe('12 meses')
+  })
+  it('sin el renglón global, los meses distintos de todos', () => {
+    expect(mesesDelHistorial([fila('Cocos', 2025, 12), fila('Schwab', 2025, 12), fila('Cocos', 2026, 1)])).toBe(2)
+  })
+  it('nada o algo raro: 0', () => {
+    expect(mesesDelHistorial([])).toBe(0)
+    expect(mesesDelHistorial(null)).toBe(0)
+  })
+})
+
+describe('faltaLoImprescindible — sin historial, posiciones o brokers no se calcula', () => {
+  it('cualquiera de las tres caída: la pantalla lo dice', () => {
+    expect(faltaLoImprescindible({ brokers: 'error' })).toBe(true)
+    expect(faltaLoImprescindible({ positions: 'error' })).toBe(true)
+    expect(faltaLoImprescindible({ monthly: 'error' })).toBe(true)
+  })
+  it('las demás caídas no frenan la página (salen sin esa parte)', () => {
+    expect(faltaLoImprescindible({ snapshots: 'error', benchmarks: 'error', prices: 'error' })).toBe(false)
+    expect(faltaLoImprescindible({ positions: 9, brokers: 2, monthly: 12 })).toBe(false)
+    expect(faltaLoImprescindible({})).toBe(false)
+  })
+})

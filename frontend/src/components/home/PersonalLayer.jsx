@@ -84,7 +84,7 @@ export default function PersonalLayer() {
                   </span>
                   <span className={`text-sm font-medium num tabular ${TONE[c.value_tone] || TONE.neutral} flex-1 text-right`}>
                     {typeof c.value_num === 'number'
-                      ? <AnimatedNumber value={visto ? c.value_num : 0} format={n => pctVar(n, 1)} />
+                      ? <AnimatedNumber value={c.value_num} visto={visto} format={n => pctVar(n, 1)} />
                       : c.value}
                   </span>
                 </div>

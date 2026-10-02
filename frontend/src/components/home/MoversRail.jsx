@@ -59,7 +59,7 @@ export function MoverList({ items, tone, icon: Icon, label, onSelect, visto }) {
               </DataRow.Cell>
               <DataRow.Cell align="right" width={70} tabular>
                 <FlashValue value={it.change_pct} className={`font-medium ${tono}`}>
-                  <AnimatedNumber value={visto ? it.change_pct : 0} format={pctVar} />
+                  <AnimatedNumber value={it.change_pct} visto={visto} format={pctVar} />
                 </FlashValue>
               </DataRow.Cell>
             </DataRow>

@@ -290,7 +290,7 @@ export default function News({ embedded = false }) {
         <EmptyState
           icon={<Newspaper size={32} />}
           title="Sin noticias por ahora"
-          subtitle={tab === 'portfolio'
+          description={tab === 'portfolio'
             ? 'No hay noticias recientes de los activos de tu cartera.'
             : 'No se pudieron traer noticias macro. Reintentá más tarde.'}
         />

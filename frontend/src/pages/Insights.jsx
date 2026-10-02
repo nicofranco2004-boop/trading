@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
+import EmptyState from '../components/EmptyState'
 import {
   PieChart, Pie, Cell, Legend, Tooltip, LineChart, Line,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, ReferenceLine,
@@ -51,7 +52,7 @@ import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import CargaPorPasos from '../components/novedades/CargaPorPasos'
 import { useDemora } from '../hooks/useDemora'
 import { prefiereSinMovimiento } from '../utils/movimiento'
-import { pasosDiagnostico } from '../utils/cargaPorPasos'
+import { pasosDiagnostico, mesesDelHistorial, faltaLoImprescindible } from '../utils/cargaPorPasos'
 import {
   buildCumulativeReturnSeries,
   drawdownFromPerf,
@@ -251,10 +252,18 @@ function InsightsDesktop({ _embeddedTab }) {
   }
   const setSelectedBench = (key) => currency === 'USD' ? setBenchUsd(key) : setBenchArs(key)
   const [loading, setLoading] = useState(true)
+  // Los precios VOLVIERON (o no había nada que cotizar). No es lo mismo que
+  // "terminó de cargar": pasado TOPE_PRECIOS_MS la página sale sin ellos, y si
+  // el pedido falla no llegan nunca. Mientras tanto la cartera está valuada al
+  // costo, y lo que se MANDA o se GUARDA (el valor de hoy de la curva, la
+  // huella de "Desde tu última visita") espera a esto, no a `loading`.
+  const [preciosListos, setPreciosListos] = useState(false)
   // Qué pedido ya volvió y con cuánto (el cargador con los pasos reales).
   const [llego, setLlego] = useState({})
   const vivoRef = useRef(true)
-  useEffect(() => () => { vivoRef.current = false }, [])
+  // true al montar Y al re-montar (StrictMode / recarga en caliente montan dos
+  // veces): sin el `= true`, la segunda carga se descartaba entera.
+  useEffect(() => { vivoRef.current = true; return () => { vivoRef.current = false } }, [])
   // Investor profile — perfil del test (7 preguntas). Lo usamos para cruzarlo
   // contra la cartera real y mostrar match/objective coherence cards.
   // Si el user no completó el test, es {} (no null) — eso permite distinguir
@@ -344,11 +353,14 @@ function InsightsDesktop({ _embeddedTab }) {
         s + (computeBrokerValue(positions, prices, b, tb, tb, tcr, costBasis).value || 0), 0)
     } catch { return 0 }
   }, [brokers, positions, prices, dolar, valuationDollar, costBasis])
-  // ⚠️ RECIÉN CUANDO TERMINÓ DE CARGAR. Con `positions` ya en memoria y `prices`
-  // todavía vacío, la valuación cae al costo y mandaba un `valor_live` de otro
-  // orden (medido: 70.983 en una cartera de 16.595) durante un render, con su
-  // fetch y su curva mal cerrada hasta la respuesta siguiente.
-  const liveKeyPerf = loading ? 0 : Math.round(liveUsdPerf || 0)
+  // ⚠️ RECIÉN CUANDO LLEGARON LOS PRECIOS. Con `positions` ya en memoria y
+  // `prices` todavía vacío, la valuación cae al costo y mandaba un `valor_live`
+  // de otro orden (medido: 70.983 en una cartera de 16.595), y el servidor
+  // cerraba la curva con un "hoy" falso (salto en la punta, en el Acumulado y
+  // en la caída actual). Antes esperaba a `loading`, que terminaba DESPUÉS de
+  // los precios; desde que la página sale sin ellos (TOPE_PRECIOS_MS) eso ya
+  // no alcanza. Sin precios, la curva termina en la última foto: lo honesto.
+  const liveKeyPerf = preciosListos ? Math.round(liveUsdPerf || 0) : 0
   // Lo que el ✦ necesita para medir la caída IGUAL que esta pantalla: la moneda
   // del selector, el modo (en estimado la pantalla no muestra caída: "—") y el
   // valor de ahora con el que cierra la curva. El servidor usa el mismo motor y
@@ -396,19 +408,22 @@ function InsightsDesktop({ _embeddedTab }) {
       if (vivoRef.current) setLlego(l => ({ ...l, [pieza]: valor }))
     }
     const cuantosHay = (r) => (Array.isArray(r) ? r.length : true)
-    // `siFalla`: con qué seguir si el pedido no vuelve. Antes /monthly,
-    // /positions y /brokers no tenían: uno caído tiraba el Promise.all entero
-    // y la página quedaba sin nada de lo que SÍ había llegado.
+    // `siFalla`: con qué seguir si el pedido no vuelve, para que uno caído no
+    // tire el Promise.all entero. /monthly, /positions y /brokers son
+    // imprescindibles (PIEZAS_IMPRESCINDIBLES): si alguno falla la pantalla
+    // muestra el error en vez de calcular con un hueco.
     const pedir = (pieza, url, siFalla, cuenta = cuantosHay) => api.get(url)
       .then(r => { marcar(pieza, cuenta(r)); return r })
       .catch(() => { marcar(pieza, 'error'); return siFalla })
     try {
-      const pPos = pedir('positions', '/positions', [],
+      const pPos = pedir('positions', '/positions', null,
         r => new Set((r || []).filter(p => !p.is_cash).map(p => p.asset)).size)
-      const pBkrs = pedir('brokers', '/brokers', [])
+      const pBkrs = pedir('brokers', '/brokers', null)
       // Los precios salen apenas están tus posiciones, a la par del resto
       // (antes se pedían recién al final, cuando ya había llegado todo).
       const pPrecios = Promise.all([pPos, pBkrs]).then(([pos, bkrs]) => {
+        // Sin cartera no hay qué cotizar (y la pantalla muestra el error).
+        if (pos == null || bkrs == null) return null
         const all = simbolosDePrecio(pos, bkrs)
         if (!all) { marcar('prices'); return {} }
         return api.get(`/prices?symbols=${all}`)
@@ -416,7 +431,7 @@ function InsightsDesktop({ _embeddedTab }) {
           .catch(() => { marcar('prices', 'error'); return null })
       })
       const [mon, pos, bkrs, b, snaps, dol, ops, comm, prof, pf] = await Promise.all([
-        pedir('monthly', '/monthly', []),
+        pedir('monthly', '/monthly', [], mesesDelHistorial),
         pPos,
         pBkrs,
         pedir('benchmarks', '/benchmarks', null),
@@ -439,12 +454,15 @@ function InsightsDesktop({ _embeddedTab }) {
         new Promise(r => setTimeout(() => r(SIN_RESPUESTA), TOPE_PRECIOS_MS)),
       ])
       if (!vivoRef.current) return
+      // `null` = el pedido de precios falló: no llegan, y preciosListos queda
+      // en false (nada se manda ni se guarda valuado al costo).
+      const conPrecios = (p) => { if (p && vivoRef.current) { setPrices(p); setPreciosListos(true) } }
       if (precios === SIN_RESPUESTA) {
         // La página sale sin precios (el aviso de cotizaciones lo dice) y se
         // completa cuando lleguen.
-        pPrecios.then(p => { if (p && vivoRef.current) setPrices(p) })
-      } else if (precios) {
-        setPrices(precios)
+        pPrecios.then(conPrecios)
+      } else {
+        conPrecios(precios)
       }
     } catch (e) {
       console.error('Insights loadAll error:', e)
@@ -482,6 +500,31 @@ function InsightsDesktop({ _embeddedTab }) {
             pasos={pasosDiagnostico(llego, { perfilPrimero: _embeddedTab === 'perfil' })}
           />
         )}
+      </div>
+    )
+  }
+
+  // Sin tu historial, tus posiciones o tus brokers los números salen MAL (no
+  // "de menos"): se dice y se ofrece reintentar, con el cargador de nuevo.
+  if (faltaLoImprescindible(llego)) {
+    return (
+      <div className="page-shell">
+        <EmptyState
+          icon={<AlertTriangle size={20} strokeWidth={1.75} />}
+          tone="warn"
+          eyebrow="No respondió"
+          title="No pudimos traer tu cartera"
+          description="Sin tus posiciones, tus brokers y tu historial, los números de esta pantalla saldrían mal, así que no los mostramos. Probá de nuevo en un momento."
+          action={
+            <button
+              type="button"
+              onClick={() => { setLlego({}); setLoading(true); loadAll() }}
+              className="text-xs font-medium text-data-violet hover:underline"
+            >
+              Reintentar
+            </button>
+          }
+        />
       </div>
     )
   }
@@ -2712,7 +2755,9 @@ function InsightsDesktop({ _embeddedTab }) {
   // Delta "desde tu última visita" — record() computa y agenda persistencia.
   // Solo en la tab Diagnóstico (Métricas/Perfil son el mismo componente con
   // otro _embeddedTab; sin este guard pisarían la huella de "última visita").
-  const { delta: visitDelta } = showDiagnostico
+  // Y sólo con los precios: sin ellos `totalPortfolio` es el costo, y se
+  // mostraba un cambio falso y se GUARDABA para la próxima visita.
+  const { delta: visitDelta } = showDiagnostico && preciosListos
     ? lastVisit.record({ valueUsd: totalPortfolio, findingIds: diagnosisPool.map(d => d.id) })
     : { delta: null }
 
@@ -3756,7 +3801,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <span className="mt-1 inline-block w-2 h-2 rounded-full bg-ink-3 flex-shrink-0" />
           <div>
             <p className="text-xs text-ink-3">Aportes netos</p>
-            <p className="text-lg font-semibold text-ink-1 tabular"><AnimatedNumber value={visto ? deposits : 0} format={n => amt(n, { signed: true })} /></p>
+            <p className="text-lg font-semibold text-ink-1 tabular"><AnimatedNumber value={deposits} visto={visto} format={n => amt(n, { signed: true })} /></p>
             <p className="text-[11px] text-ink-3">{depShare.toFixed(0).replace('.', ',')}% del cambio</p>
           </div>
         </div>
@@ -3764,7 +3809,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <span className={`mt-1 inline-block w-2 h-2 rounded-full flex-shrink-0 ${pnlPositive ? 'bg-emerald-500' : 'bg-red-500'}`} />
           <div>
             <p className="text-xs text-ink-3">{pnlPositive ? 'Rendimiento del mercado' : 'Pérdida del mercado'}</p>
-            <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}><AnimatedNumber value={visto ? pnl : 0} format={n => amt(n, { signed: true })} /></p>
+            <p className={`text-lg font-semibold tabular ${pnlPositive ? 'text-rendi-pos' : 'text-rendi-neg'}`}><AnimatedNumber value={pnl} visto={visto} format={n => amt(n, { signed: true })} /></p>
             <p className="text-[11px] text-ink-3">{pnlShare.toFixed(0).replace('.', ',')}% del cambio</p>
           </div>
         </div>

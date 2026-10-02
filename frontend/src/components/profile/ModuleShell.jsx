@@ -29,8 +29,9 @@ export default function ModuleShell({ icon: Icon, title, rel, topPick = false, l
     >
       {/* pr-9: deja lugar al pill ✦ de AskAIAbout (absolute top-2 right-2)
           para que no tape la ★, sobre todo en mobile donde el pill es siempre
-          visible. */}
-      <header className="flex items-center justify-between gap-2 pr-9">
+          visible. flex-wrap: en un celular el título y la ★ no entran en una
+          línea, y el título salía cortado ("Retorno v…"); ahora la ★ baja. */}
+      <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 pr-9">
         <div className="flex items-center gap-2 min-w-0">
           {Icon && <Icon size={14} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" aria-hidden />}
           <h4 className="text-sm font-semibold text-ink-0 truncate">{title}</h4>

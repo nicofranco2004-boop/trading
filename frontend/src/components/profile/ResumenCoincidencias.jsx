@@ -23,7 +23,7 @@ export default function ResumenCoincidencias({ modulos = [], titulos = {}, visto
       <p className="text-sm text-ink-1">
         Tu cartera coincide con tu perfil en{' '}
         <span className="text-xl font-semibold text-data-violet tabular-nums">
-          <AnimatedNumber value={visto ? coinciden : 0} format={(n) => Math.round(n)} />
+          <AnimatedNumber value={coinciden} visto={visto} format={(n) => Math.round(n)} />
         </span>{' '}
         de <span className="tabular-nums">{medidos.length}</span>
       </p>

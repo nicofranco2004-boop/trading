@@ -15,7 +15,7 @@ export default function HorizonStat({ longTermPct, horizonLabel, clashes }) {
   return (
     <div>
       <div className="flex items-baseline gap-3">
-        <span className="text-3xl font-semibold text-ink-0 tabular-nums"><AnimatedNumber value={visto ? longTermPct : 0} format={formatoQueCuenta(longTermPct)} /></span>
+        <span className="text-3xl font-semibold text-ink-0 tabular-nums"><AnimatedNumber value={longTermPct} visto={visto} format={formatoQueCuenta(longTermPct)} /></span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           en activos de plazo largo (renta variable + alternativos)
         </span>

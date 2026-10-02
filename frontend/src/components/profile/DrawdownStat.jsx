@@ -20,7 +20,7 @@ export default function DrawdownStat({ behaviorLabel, toleranceLabel, drawdownPc
             comparison === 'above' ? 'text-rendi-warn' : 'text-ink-0'
           }`}
         >
-          -<AnimatedNumber value={visto ? drawdownPct : 0} format={formatoQueCuenta(drawdownPct)} />
+          -<AnimatedNumber value={drawdownPct} visto={visto} format={formatoQueCuenta(drawdownPct)} />
         </span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           tu peor caída del período

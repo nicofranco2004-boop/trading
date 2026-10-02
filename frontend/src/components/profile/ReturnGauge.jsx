@@ -86,7 +86,7 @@ export default function ReturnGauge({ realPct, floorPct, expectationLabel, compa
             className={`absolute bottom-full mb-1.5 -translate-x-1/2 font-mono text-[10px] tabular-nums whitespace-nowrap ${toneCls} ${visto ? 'viaja-desde' : ''}`}
             style={{ left: `${clampTag(real)}%`, '--desde': `${clampTag(zero)}%` }}
           >
-            real {sign(realPct)}<AnimatedNumber value={visto ? realPct : 0} format={formatoQueCuenta(realPct)} />
+            real {sign(realPct)}<AnimatedNumber value={realPct} visto={visto} format={formatoQueCuenta(realPct)} />
           </div>
         </div>
       </div>
