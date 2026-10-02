@@ -7145,13 +7145,18 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
                 fecha_ficha = None
             estimada = info.get('isEarningsDateEstimate') if info else None
             del_calendario = [e for e in events if e['event_type'] == 'earnings']
-            if not del_calendario and fecha_ficha:
+            # Sólo una fecha que todavía no pasó: una ficha vieja no puede
+            # inventar el "próximo" resultado (revisión independiente 3).
+            if not del_calendario and fecha_ficha and fecha_ficha >= _iso_today():
                 events.append({
                     'ticker': ticker,
                     'event_type': 'earnings',
                     'event_date': fecha_ficha,
                     'details': {},
                     'confirmed': 0 if estimada else 1,
+                    # Vino del respaldo: no alcanza para BORRAR otra fecha
+                    # guardada (ver _buscar_y_guardar_eventos).
+                    '_respaldo': True,
                 })
             elif fecha_ficha and isinstance(estimada, bool):
                 for e in del_calendario:
@@ -7186,13 +7191,19 @@ def _buscar_y_guardar_eventos(ticker: str) -> bool:
             conn = get_db()
             try:
                 with conn:
+                    # Un evento sin detalle (el respaldo de la ficha no trae
+                    # el EPS estimado) no borra el detalle ya guardado para esa
+                    # misma fecha (revisión independiente 3: las tarjetas
+                    # pasaban de "EPS est. $X" a "Resultados trimestrales").
                     for ev in events:
                         conn.execute(
                             """INSERT INTO financial_events
                                (ticker, event_type, event_date, details, confirmed, source, fetched_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?)
                                ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
-                                   details = excluded.details,
+                                   details = CASE WHEN excluded.details = '{}'
+                                                  THEN financial_events.details
+                                                  ELSE excluded.details END,
                                    confirmed = excluded.confirmed,
                                    fetched_at = excluded.fetched_at""",
                             (ev['ticker'], ev['event_type'], ev['event_date'],
@@ -7211,7 +7222,10 @@ def _buscar_y_guardar_eventos(ticker: str) -> bool:
                     # ya informar el siguiente, y borrar el de hoy lo sacaba del
                     # mail del día ("Eventos de hoy"), de la agenda y del inicio.
                     hoy = _iso_today()
-                    for tipo in {ev['event_type'] for ev in events}:
+                    # Lo que vino del respaldo de la ficha no alcanza para
+                    # borrar: si la ficha está desactualizada, se llevaría una
+                    # fecha buena del calendario (y volvería en la próxima).
+                    for tipo in {ev['event_type'] for ev in events if not ev.get('_respaldo')}:
                         vigentes = [ev['event_date'] for ev in events if ev['event_type'] == tipo]
                         conn.execute(
                             f"""DELETE FROM financial_events

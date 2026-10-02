@@ -54,6 +54,7 @@ import CargaPorPasos from '../components/novedades/CargaPorPasos'
 import {
   pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
 } from '../utils/cargaPorPasos'
+import { hayPrecios } from '../utils/preciosEnVivo'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -129,7 +130,7 @@ export default function Events({ embedded = false }) {
   // "Para ti" no espera al mercado. Hasta el 2026-10-02 era un Promise.all de
   // los seis pedidos más los precios: la pantalla esperaba al más lento.
   const [llego, setLlego] = useState({ base: false, cartera: false, mercado: false, precios: false })
-  const [fallo, setFallo] = useState({ cartera: false, mercado: false })
+  const [fallo, setFallo] = useState({ cartera: false, mercado: false, precios: false })
   const [error, setError] = useState(null)
   const navigate = useNavigate()
   const nuevoPedido = useUltimoPedido()
@@ -145,7 +146,7 @@ export default function Events({ embedded = false }) {
     const vigente = nuevoPedido()
     const marcar = (k) => { if (vigente()) setLlego(l => ({ ...l, [k]: true })) }
     setLlego({ base: false, cartera: false, mercado: false, precios: false })
-    setFallo({ cartera: false, mercado: false })
+    setFallo({ cartera: false, mercado: false, precios: false })
     setError(null)
 
     api.get(`/events/popular?days=${windowDays}`)
@@ -179,8 +180,10 @@ export default function Events({ embedded = false }) {
       // medido el 2026-10-02 con Yahoo frío, 3,1 s de eventos + 5,3 s de
       // precios EN FILA. Ahora tarda el más lento de los dos.
       const deLaCartera = collectPriceSymbols(pos || [], bkrs || [])
+      // null = el pedido falló (o volvió sin un solo precio): no es lo mismo
+      // que "no hay nada que cotizar".
       const pedirPrecios = (syms) => syms.length
-        ? api.get(`/prices?symbols=${syms.join(',')}`).then(p => p || {}).catch(() => ({}))
+        ? api.get(`/prices?symbols=${syms.join(',')}`).then(p => (hayPrecios(p) ? p : null)).catch(() => null)
         : Promise.resolve({})
       const [precios, eventosCartera] = await Promise.all([pedirPrecios(deLaCartera), pedidoCartera])
       if (!vigente()) return
@@ -197,8 +200,14 @@ export default function Events({ embedded = false }) {
       const preciosExtra = await pedirPrecios(extras)
       if (!vigente()) return
       // Todos juntos y de una vez: un cobro calculado con la mitad de los
-      // precios cambiaría solo un segundo después.
-      setPrices({ ...preciosExtra, ...precios })
+      // precios cambiaría solo un segundo después. Si los de tu cartera no
+      // llegaron, NO se pisan los que ya había (cambiar 90D → 30D no tiene por
+      // qué perderlos) y lo que depende de precios no se publica al costo.
+      if (precios == null) {
+        setFallo(f => ({ ...f, precios: true }))
+      } else {
+        setPrices({ ...(preciosExtra || {}), ...precios })
+      }
       marcar('precios')
     } catch (e) {
       if (vigente()) setError(e.message)
@@ -213,7 +222,9 @@ export default function Events({ embedded = false }) {
   // dice que se está buscando. No se publica un % provisorio que cambie solo.
   // "Populares" no usa precios.
   const listoParaTi = llego.base && llego.cartera
-  const preciosListos = llego.precios
+  // Con precios DE VERDAD: si el pedido falló y no había otros, el valor
+  // saldría al costo y el "% de tu cartera" sería inventado.
+  const preciosListos = llego.precios && hayPrecios(prices)
   const listoPopulares = llego.base && llego.mercado
   const loading = tab === 'portfolio' ? !listoParaTi : !listoPopulares
   // El cargador sólo si la carga TARDA (utils/cargaPorPasos.js).
@@ -380,7 +391,10 @@ export default function Events({ embedded = false }) {
 
       {/* KPI Strip — 3 celdas con divisores. Padding más chico en mobile. */}
       <div className="bg-bg-1 border border-line rounded-xl mb-4 grid grid-cols-3 divide-x divide-line">
-        <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} listo={!loading} />
+        {/* key por pestaña: "Confirmados 75%" y "En tu cartera 3" no son el
+            mismo número; al cambiar, cuentan desde cero en vez de pasar de uno
+            al otro. */}
+        <KpiStripCells key={tab} events={kpiEvents} tab={tab} windowDays={windowDays} listo={!loading} />
       </div>
 
       {/* Controles: ventana + filtro — compactos, una sola línea cuando hay espacio. */}
@@ -406,17 +420,24 @@ export default function Events({ embedded = false }) {
       </div>
 
       {/* Timeline strip — mini-viz de eventos por día. En "Para ti" la altura
-          de cada barra pondera el impacto en tu cartera, no solo el conteo. */}
-      {/* En "Para ti" la altura de cada barra pondera el impacto en tu cartera
-          (precios): aparece con ellos, no con alturas que después cambian. */}
-      {!loading && (tab !== 'portfolio' || preciosListos) && kpiEvents.length > 0 && (
-        <TimelineStrip
-          events={visibleEvents}
-          windowDays={windowDays}
-          tab={tab}
-          tickerValueUsd={tickerValueUsd}
-          portfolioTotalUsd={portfolioTotalUsd}
-        />
+          de cada barra pondera el impacto en tu cartera (precios). Mientras los
+          precios no llegan, su lugar —del mismo alto— dice que se están
+          buscando y muestra tus empresas con cuántos eventos trajo cada una:
+          cuando llegan, las barras aparecen AHÍ, sin correr la agenda. */}
+      {!loading && kpiEvents.length > 0 && (
+        tab === 'portfolio' && !llego.precios
+          ? <EsperandoPrecios
+              windowDays={windowDays}
+              eventos={visibleEvents.length}
+              chips={chipsDeEmpresas(empresas, portfolioEvents)}
+            />
+          : <TimelineStrip
+              events={visibleEvents}
+              windowDays={windowDays}
+              tab={tab}
+              tickerValueUsd={tickerValueUsd}
+              portfolioTotalUsd={portfolioTotalUsd}
+            />
       )}
 
       {/* Cargando: los pedidos reales con su tilde y tus empresas barriendo,
@@ -443,16 +464,16 @@ export default function Events({ embedded = false }) {
             : []}
         />
       )}
-      {!loading && tab === 'portfolio' && !preciosListos && (
-        <p role="status" className="flex items-center gap-2 mb-3 text-[12.5px] text-ink-3">
-          <Loader2 size={13} className="animate-spin motion-reduce:animate-none text-data-violet shrink-0" aria-hidden="true" />
-          Buscando precios para calcular cuánto te toca y el peso de cada evento en tu cartera…
+      {!loading && tab === 'portfolio' && llego.precios && fallo.precios && !preciosListos && (
+        <p className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-rendi-warn/10 text-rendi-warn text-[12.5px]">
+          <AlertCircle size={14} className="shrink-0" />
+          No pudimos traer los precios: por ahora no se muestra cuánto te toca ni el peso de cada evento en tu cartera.
         </p>
       )}
       {!loading && tab === 'portfolio' && fallo.cartera && (
         <p className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-rendi-warn/10 text-rendi-warn text-[12.5px]">
           <AlertCircle size={14} className="shrink-0" />
-          No pudimos traer los earnings y dividendos de tus acciones. Abajo está lo que se calcula sin ellos (los pagos de tus bonos). Probá de nuevo en un rato.
+          No pudimos traer los earnings y dividendos de tus acciones.{visibleEvents.length > 0 ? ' Abajo están los pagos de tus bonos.' : ''} Probá de nuevo en un rato.
         </p>
       )}
       {!loading && tab === 'popular' && fallo.mercado && (
@@ -466,7 +487,9 @@ export default function Events({ embedded = false }) {
           <AlertCircle size={14} /> {error}
         </div>
       )}
-      {!loading && !error && visibleEvents.length === 0 && (
+      {/* "Sin eventos" sólo si se pudo medir: con el pedido caído, el aviso
+          de arriba ya dice qué pasó (y esto afirmaría algo que no sabemos). */}
+      {!loading && !error && !(tab === 'portfolio' ? fallo.cartera : fallo.mercado) && visibleEvents.length === 0 && (
         <EmptyState
           icon={<Calendar size={32} />}
           title="Sin eventos en este rango"
@@ -680,6 +703,42 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
           <span>+{Math.round(windowDays / 2)}d</span>
           <span>+{windowDays}d</span>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// El lugar de la Distribución mientras faltan los precios: el MISMO recuadro y
+// el mismo alto que TimelineStrip (encabezado, franja de h-12/h-14, rótulos),
+// así cuando llegan las barras nada se corre. Muestra lo que ya se sabe: tus
+// empresas, cada una con cuántos eventos trajo (aterrizan al llegar).
+function EsperandoPrecios({ windowDays, eventos, chips }) {
+  return (
+    <div className="bg-bg-1 border border-line rounded-xl mb-4 p-3 sm:p-4" role="status">
+      <div className="flex items-center justify-between mb-2 gap-3">
+        <p className="kpi-label shrink-0">Distribución · por impacto</p>
+        {/* Un renglón siempre (recortado en el celular): con dos, el recuadro
+            sería más alto que las barras y la agenda saltaría al llegar. */}
+        <p className="text-[12px] text-ink-3 font-medium flex items-center gap-1.5 min-w-0">
+          <Loader2 size={12} className="shrink-0 animate-spin motion-reduce:animate-none text-data-violet" aria-hidden="true" />
+          <span className="truncate">Buscando precios para calcular cuánto te toca…</span>
+        </p>
+      </div>
+      <div className="h-12 sm:h-14 flex items-center gap-1.5 overflow-hidden" aria-hidden="true">
+        {chips.map((c, i) => (
+          <span
+            key={c.simbolo}
+            style={{ '--i': i }}
+            className={`chip-listo shrink-0 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] font-semibold ${
+              c.cuenta > 0 ? 'bg-data-violet/10 border-data-violet/40 text-ink-0' : 'bg-bg-2 border-line text-ink-3'}`}
+          >
+            {c.simbolo}
+            <span className="tabular font-medium">{c.cuenta > 0 ? c.cuenta : '–'}</span>
+          </span>
+        ))}
+      </div>
+      <div className="flex justify-between mt-1 text-[12.5px] text-ink-3 font-medium">
+        <span>{windowDays} días · {eventos} {eventos === 1 ? 'evento' : 'eventos'}</span>
       </div>
     </div>
   )
