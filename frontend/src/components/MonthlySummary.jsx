@@ -120,7 +120,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // doble I/O.
 
     // Pasamos brokers + tcValuacion + tcCedear ya fetcheados — evita re-fetch redundante.
-    await syncUnrealizedForAll({ brokers: bkrs, tcValuacion: tc, tcCedear, tcCripto })
+    // El TC del MEP para lo que se GUARDA (ver syncUnrealizedForAll).
+    const tcMep = pickFinancialRate(dol, 'mep') || cfg?.tc_blue || 1415
+    await syncUnrealizedForAll({ brokers: bkrs, tcValuacion: tc, tcCedear, tcCripto, tcMep })
 
     setEntries(await api.get('/monthly'))
   }
@@ -256,12 +258,13 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // Ahorro: ~400ms al montar /mensual.
     // Save flow (línea ~300) llama sin prefetched → re-fetcha como antes.
     try {
-      let pos, bkrs, tc, tcCedear, tcCripto
+      let pos, bkrs, tc, tcCedear, tcCripto, tcMep
       if (prefetched && prefetched.brokers && prefetched.tcValuacion) {
         bkrs = prefetched.brokers
         tc = prefetched.tcValuacion
         tcCedear = prefetched.tcCedear || tc
         tcCripto = prefetched.tcCripto
+        tcMep = prefetched.tcMep || tc
         pos = await api.get('/positions')
       } else {
         const r = await Promise.all([api.get('/positions'), api.get('/brokers')])
@@ -274,6 +277,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         tcCedear = pickFinancialRate(dol, valuationDollar) || tc
         // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
         tcCripto = dol?.cripto?.venta
+        tcMep = pickFinancialRate(dol, 'mep') || cfg?.tc_blue || tcValuacion
       }
 
       const arsBrokerSet = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -290,20 +294,22 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // el otro escritor de este campo (guardarPnlNoRealizado). Sin esto, con
       // /prices caído se guardaba P&L 0 en todos los brokers, y ganaba el último
       // que guardara (revisión del 2026-10-02).
-      const cobertura = coberturaDePrecios(pos, pricesData, bkrs, { tcValuacion: tc, tcCedear, tcCripto })
+      const cobertura = coberturaDePrecios(pos, pricesData, bkrs, { tcValuacion: tcMep, tcCedear: tcMep, tcCripto })
 
       let globalPnlUsd = 0
       let liveTotal = 0
       const filas = []
       // El pnl_unrealized_usd que persistimos en monthly_entries vive en MEP (scope:
-      // el toggle MEP/CCL es sólo display LIVE). Si el user está en CCL, computamos el
-      // liveTotal del banner (display) pero NO escribimos pnl CCL-flavored al backend;
-      // se auto-corrige en la próxima sesión MEP. Default (MEP) → escribe igual que siempre.
+      // el toggle MEP/CCL es sólo display LIVE). Lo que se GUARDA se calcula al MEP
+      // mires el dólar que mires; el liveTotal del banner, al dólar elegido. Antes,
+      // en CCL no se guardaba nada, y como ningún proceso del servidor escribe este
+      // campo, quien mira siempre en CCL quedaba con el mes al costo.
       for (const b of bkrs) {
         const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
+        const alMep = (tc === tcMep && tcCedear === tcMep) ? result : computeBrokerValue(pos, pricesData, b, tcMep, tcMep, tcCripto)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcValuacion for ARS display);
         //               USD stores pnlUsd directly.
-        const pnlForBroker = b.currency === 'ARS' ? result.pnlArs / tc : result.pnlUsd
+        const pnlForBroker = b.currency === 'ARS' ? alMep.pnlArs / tcMep : alMep.pnlUsd
         // El GLOBAL suma lo mismo que se persiste por broker. Antes sumaba `pnlUsd`
         // (costo en USD), que es OTRA convención: el Dashboard —el otro escritor de
         // este mismo campo— agrega FX-neutral (P&L en pesos ÷ blue de hoy), así que los
