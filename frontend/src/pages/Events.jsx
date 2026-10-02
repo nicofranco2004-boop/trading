@@ -229,6 +229,9 @@ export default function Events({ embedded = false }) {
   const loading = tab === 'portfolio' ? !listoParaTi : !listoPopulares
   // El cargador sólo si la carga TARDA (utils/cargaPorPasos.js).
   const mostrarCargador = useDemora(loading)
+  // Precios que no vuelven en 15 s: se deja de prometer "ya llegan" (siguen
+  // pedidos; si llegan, el gráfico y los montos se completan igual).
+  const preciosDemorados = useDemora(tab === 'portfolio' && !loading && !llego.precios, 15000)
   const empresas = useMemo(() => empresasDeLaCartera(positions), [positions])
 
   // Valor total del portfolio en USD (para impact %)
@@ -419,25 +422,25 @@ export default function Events({ embedded = false }) {
         </ControlGroup>
       </div>
 
-      {/* Timeline strip — mini-viz de eventos por día. En "Para ti" la altura
-          de cada barra pondera el impacto en tu cartera (precios). Mientras los
-          precios no llegan, su lugar —del mismo alto— dice que se están
-          buscando y muestra tus empresas con cuántos eventos trajo cada una:
-          cuando llegan, las barras aparecen AHÍ, sin correr la agenda. */}
+      {/* Timeline strip — mini-viz de eventos por día. SIEMPRE que haya
+          eventos: por cantidad, y en "Para ti", cuando llegan los precios, por
+          impacto en tu cartera (el título lo dice y las barras se acomodan).
+          Hasta el 2026-10-02 esperaba a los precios para aparecer: con Yahoo
+          colgado (yf.download con dos descargas a la vez, ver
+          pricing/yahoo.py) el gráfico no aparecía nunca. Un dato que puede no
+          llegar no tapa lo que se puede mostrar sin él. */}
       {!loading && kpiEvents.length > 0 && (
-        tab === 'portfolio' && !llego.precios
-          ? <EsperandoPrecios
-              windowDays={windowDays}
-              eventos={visibleEvents.length}
-              chips={chipsDeEmpresas(empresas, portfolioEvents)}
-            />
-          : <TimelineStrip
-              events={visibleEvents}
-              windowDays={windowDays}
-              tab={tab}
-              tickerValueUsd={tickerValueUsd}
-              portfolioTotalUsd={portfolioTotalUsd}
-            />
+        <TimelineStrip
+          events={visibleEvents}
+          windowDays={windowDays}
+          tab={tab}
+          tickerValueUsd={tickerValueUsd}
+          portfolioTotalUsd={portfolioTotalUsd}
+          precios={tab !== 'portfolio' ? null
+            : preciosListos ? 'listos'
+            : llego.precios ? 'sin'
+            : preciosDemorados ? 'demorados' : 'buscando'}
+        />
       )}
 
       {/* Cargando: los pedidos reales con su tilde y tus empresas barriendo,
@@ -634,7 +637,15 @@ function ControlPill({ active, onClick, children }) {
 // a #eventos. Color: rendi-accent (bonos/portfolio), purple (earnings),
 // blue (dividendos), green/warn (macro). Hover muestra detalle.
 
-function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotalUsd }) {
+// `precios` (sólo "Para ti"): 'buscando' | 'demorados' | 'sin' | 'listos'. Mientras no
+// están, las barras son por cantidad y el título dice qué falta.
+const PRECIOS_TEXTO = {
+  buscando: 'el peso en tu cartera, cuando lleguen los precios',
+  demorados: 'los precios están tardando: por ahora, por cantidad',
+  sin: 'sin precios: por cantidad de eventos',
+}
+
+function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotalUsd, precios = null }) {
   const buckets = useMemo(
     () => buildDayBuckets(events, windowDays, tickerValueUsd, portfolioTotalUsd),
     [events, windowDays, tickerValueUsd, portfolioTotalUsd]
@@ -650,8 +661,19 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
   return (
     <div className="bg-bg-1 border border-line rounded-xl mb-4 p-3 sm:p-4">
       <div className="flex items-center justify-between mb-2">
-        <p className="kpi-label">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</p>
-        <p className="text-[12px] text-ink-3 font-medium">
+        <p className="kpi-label min-w-0 flex items-center gap-1.5">
+          <span className="shrink-0">{useImpact ? 'Distribución · por impacto' : 'Distribución'}</span>
+          {!useImpact && PRECIOS_TEXTO[precios] && (
+            <span className="truncate text-ink-3 font-normal inline-flex items-center gap-1">
+              ·
+              {precios === 'buscando' && (
+                <Loader2 size={11} className="shrink-0 animate-spin motion-reduce:animate-none text-data-violet" aria-hidden="true" />
+              )}
+              <span className="truncate">{PRECIOS_TEXTO[precios]}</span>
+            </span>
+          )}
+        </p>
+        <p className="text-[12px] text-ink-3 font-medium shrink-0">
           {windowDays} días · {events.length} {events.length === 1 ? 'evento' : 'eventos'}
         </p>
       </div>
@@ -689,8 +711,10 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
                     </div>
                   </div>
                 )}
+                {/* La altura se acomoda (no salta) cuando el gráfico pasa de
+                    cantidad a impacto al llegar los precios. */}
                 <div
-                  className={`w-full rounded-sm ${tone} transition-opacity opacity-80 group-hover:opacity-100`}
+                  className={`w-full rounded-sm ${tone} transition-[height,opacity] duration-700 ease-out motion-reduce:transition-none opacity-80 group-hover:opacity-100`}
                   style={{ height: `${h}%` }}
                 />
               </div>
@@ -703,42 +727,6 @@ function TimelineStrip({ events, windowDays, tab, tickerValueUsd, portfolioTotal
           <span>+{Math.round(windowDays / 2)}d</span>
           <span>+{windowDays}d</span>
         </div>
-      </div>
-    </div>
-  )
-}
-
-// El lugar de la Distribución mientras faltan los precios: el MISMO recuadro y
-// el mismo alto que TimelineStrip (encabezado, franja de h-12/h-14, rótulos),
-// así cuando llegan las barras nada se corre. Muestra lo que ya se sabe: tus
-// empresas, cada una con cuántos eventos trajo (aterrizan al llegar).
-function EsperandoPrecios({ windowDays, eventos, chips }) {
-  return (
-    <div className="bg-bg-1 border border-line rounded-xl mb-4 p-3 sm:p-4" role="status">
-      <div className="flex items-center justify-between mb-2 gap-3">
-        <p className="kpi-label shrink-0">Distribución · por impacto</p>
-        {/* Un renglón siempre (recortado en el celular): con dos, el recuadro
-            sería más alto que las barras y la agenda saltaría al llegar. */}
-        <p className="text-[12px] text-ink-3 font-medium flex items-center gap-1.5 min-w-0">
-          <Loader2 size={12} className="shrink-0 animate-spin motion-reduce:animate-none text-data-violet" aria-hidden="true" />
-          <span className="truncate">Buscando precios para calcular cuánto te toca…</span>
-        </p>
-      </div>
-      <div className="h-12 sm:h-14 flex items-center gap-1.5 overflow-hidden" aria-hidden="true">
-        {chips.map((c, i) => (
-          <span
-            key={c.simbolo}
-            style={{ '--i': i }}
-            className={`chip-listo shrink-0 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] font-semibold ${
-              c.cuenta > 0 ? 'bg-data-violet/10 border-data-violet/40 text-ink-0' : 'bg-bg-2 border-line text-ink-3'}`}
-          >
-            {c.simbolo}
-            <span className="tabular font-medium">{c.cuenta > 0 ? c.cuenta : '–'}</span>
-          </span>
-        ))}
-      </div>
-      <div className="flex justify-between mt-1 text-[12.5px] text-ink-3 font-medium">
-        <span>{windowDays} días · {eventos} {eventos === 1 ? 'evento' : 'eventos'}</span>
       </div>
     </div>
   )

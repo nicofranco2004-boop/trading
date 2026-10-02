@@ -419,6 +419,15 @@ class EventosAlDiaTest(unittest.TestCase):
             evs = main._fetch_yf_events("TSLA")
         self.assertEqual([e for e in evs if e["event_type"] == "earnings"], [])
 
+    def test_un_fondo_no_se_le_pide_a_yahoo(self):
+        """Un FCI del catálogo ("FCI:COCOS-RENDIMIENTO-A") no tiene earnings ni
+        dividendos en Yahoo: pedírselo era un error que se reintentaba cada 10 min."""
+        yahoo = _YahooLento(0.01)
+        with patch.object(main, "_fetch_yf_events", yahoo):
+            main._refresh_events_for_tickers(["FCI:COCOS-RENDIMIENTO-A", "FIMA PREMIUM", "NVDA", "BRK-B", "GGAL.BA"],
+                                             esperar_segundos=5)
+        self.assertEqual(sorted(yahoo.pedidos), ["BRK-B", "GGAL.BA", "NVDA"])
+
     def test_lo_buscado_hace_poco_no_se_vuelve_a_pedir(self):
         yahoo = _YahooLento(0.01)
         with patch.object(main, "_fetch_yf_events", yahoo):

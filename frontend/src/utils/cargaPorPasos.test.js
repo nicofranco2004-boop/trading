@@ -30,6 +30,8 @@ describe('empresasDeLaCartera — lo que tiene earnings y dividendos', () => {
     { asset: 'T30J6' },                               // bono que sólo conoce el servidor: lo agarra la forma del ticker
     { asset: 'PNDCO', asset_type: 'on' },             // ON marcada como tal
     { asset: 'FIMA PREMIUM', asset_type: 'fci' },     // fondo
+    { asset: 'FCI:COCOS-RENDIMIENTO-A' },            // fondo del catálogo (salía como chip en prod, 2026-10-02)
+    { asset: 'OTRO FONDO', asset_type: 'FUND' },      // fondo marcado FUND
   ]
   it('sin efectivo, cripto, bonos, ONs ni fondos, y sin repetir', () => {
     expect(empresasDeLaCartera(pos)).toEqual(['NVDA', 'KO'])

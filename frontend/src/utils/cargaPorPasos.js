@@ -15,6 +15,7 @@
 import { isCrypto } from './crypto'
 import { isBondTicker, inferType } from './tickers'
 import { getBondMeta } from './bondMeta'
+import { isFciSym } from './valuation'
 
 export const DEMORA_CARGADOR_MS = 250
 
@@ -33,7 +34,7 @@ export function paso(id, etiqueta, dato, detalleListo, { error = false } = {}) {
 }
 
 const NO_ES_EMPRESA = new Set(['USDT', 'USD', 'ARS'])
-const TIPOS_SIN_EVENTOS = new Set(['bond', 'bono', 'on', 'letra', 'fci', 'crypto', 'cash'])
+const TIPOS_SIN_EVENTOS = new Set(['bond', 'bono', 'on', 'letra', 'fci', 'fund', 'crypto', 'cash'])
 
 // Las empresas de tu cartera: lo que tiene earnings y dividendos. El mismo
 // recorte que hace el servidor en /events/portfolio (sin efectivo, bonos ni
@@ -46,6 +47,9 @@ export function empresasDeLaCartera(positions) {
     const a = (p?.asset || '').toUpperCase()
     if (!a || p.is_cash || NO_ES_EMPRESA.has(a) || vistas.has(a)) continue
     if (isCrypto(a) || isBondTicker(a) || getBondMeta(a) || inferType(a) === 'bond') continue
+    // Un fondo del catálogo ("FCI:COCOS-RENDIMIENTO-A") no es una empresa: salía
+    // como chip con "–" en producción (2026-10-02). El servidor tampoco lo busca.
+    if (isFciSym(a) || a.includes(' ')) continue
     if (TIPOS_SIN_EVENTOS.has(String(p.asset_type || '').toLowerCase())) continue
     vistas.add(a)
     out.push(a)

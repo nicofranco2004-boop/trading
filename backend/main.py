@@ -7279,7 +7279,10 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     ahora = time.time()
     futuros = []
     with _events_en_vuelo_lock:
-        for t in dict.fromkeys(t for t in tickers if t):
+        # Sólo lo que tiene forma de ticker (_SYMBOL_RE): un fondo del catálogo
+        # ("FCI:COCOS-RENDIMIENTO-A") no tiene earnings, y Yahoo contesta con
+        # error — se reintentaba cada EVENTOS_REINTENTO_SEG para siempre.
+        for t in dict.fromkeys(t for t in tickers if t and _SYMBOL_RE.match(t)):
             if ahora - _events_fetched_at.get(t, 0) < EVENTS_TTL:
                 continue
             fut = _events_en_vuelo.get(t)
