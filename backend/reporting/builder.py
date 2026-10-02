@@ -2198,6 +2198,12 @@ def compute_metrics_for_period(
             _medible = None
             _cadena_rota = _capital_roto(_capital_al_arrancar_el_mes(
                 conn, uid, int(period_start[:4]), int(period_start[5:7])))
+            if not _dw_current and period_end[:7] != period_start[:7]:
+                # Terminada, la semana que cruza de mes también mira el mes en que
+                # cierra: si no, explicaba "capital negativo" mientras corría y el
+                # texto genérico al terminar, con el mes de octubre diciendo lo otro.
+                _cadena_rota = _cadena_rota or _capital_roto(_capital_al_arrancar_el_mes(
+                    conn, uid, int(period_end[:4]), int(period_end[5:7])))
             if _dw_current:
                 from fechas import hoy_art_date
                 _anclas = [period_start[:7]]
@@ -2224,6 +2230,13 @@ def compute_metrics_for_period(
                 # número mientras corría y "sin base" desde el lunes siguiente.
                 # Se mide como antes: valor − lo aportado según la estampa.
                 _medible = (0.0, {"dep": deposits, "ret": withdrawals})
+            if _cadena_rota:
+                # Si la cadena está rota en CUALQUIERA de los meses que toca el
+                # período, no se mide, aunque la otra ancla lo permitiera: es la
+                # regla de `_capital_roto` ("lo único honesto es no medir"). Medido:
+                # octubre arrancando en −1,5 y septiembre midiendo → "Semana: +US$
+                # 2.000" al lado de un día y un mes de octubre "capital negativo".
+                _medible = None
             if _medible is None:
                 basis_incomparable = True
                 if _cadena_rota:

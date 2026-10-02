@@ -633,6 +633,36 @@ class VariacionesF4Test(unittest.TestCase):
             rep = self._reporte("week", "2026-W42", 12000.0, date(2026, 10, 15))
             self.assertTrue(rep.metrics.basis_incomparable)
             self.assertIn("capital negativo", rep.narrative or "")
+        with self.subTest(caso="semana que cruza de mes, rota en el mes del cierre"):
+            # Septiembre arranca en 0 y pierde 1,5; octubre arranca en −1,5. En
+            # curso la semana decía "capital negativo"; terminada, el genérico.
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 9, 0, 0, -1.5, pnl_realized=-1.5)
+            self._sembrar_cadena(2026, 10, -1.5, 0, -1.5)
+            for d in ("2026-10-03", "2026-10-04"):
+                self.conn.execute(
+                    "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                    "VALUES (?,?,12000,0,0,'cron')", (self.uid, d))
+            self.conn.commit()
+            for vivo, hoy in ((12000.0, date(2026, 10, 2)), (None, date(2026, 10, 15))):
+                rep = self._reporte("week", "2026-W40", vivo, hoy)
+                self.assertTrue(rep.metrics.basis_incomparable, hoy)
+                self.assertIn("capital negativo", rep.narrative or "", hoy)
+        with self.subTest(caso="rota en el mes de hoy aunque el del lunes deje medir"):
+            # Septiembre: 10.000 aportados y −10.001,5 realizados → octubre arranca
+            # en −1,5. El ancla de septiembre permitía y la semana publicaba "+US$
+            # 2.000" al lado de un día y un mes de octubre "capital negativo".
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 9, 0, 10000, -1.5, pnl_realized=-10001.5)
+            self._sembrar_cadena(2026, 10, -1.5, 0, -1.5)
+            self.conn.commit()
+            for pt, pk in (("week", "2026-W40"), ("day", "2026-10-02"), ("month", "2026-10")):
+                rep = self._reporte(pt, pk, 12000.0, date(2026, 10, 2))
+                self.assertTrue(rep.metrics.basis_incomparable, pt)
+                self.assertEqual(rep.metrics.delta_usd, 0.0)
+                self.assertIn("capital negativo", rep.narrative or "", pt)
         with self.subTest(caso="residuo de redondeo negativo con plata nueva"):
             self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
             self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
