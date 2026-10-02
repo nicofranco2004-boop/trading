@@ -36,6 +36,7 @@ import html
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from typing import Optional
 
 log = logging.getLogger("billing.emails")
@@ -54,22 +55,59 @@ log = logging.getLogger("billing.emails")
 # suman en el mismo segundo: el tope es de la CUENTA de Resend, no de cada loop.
 PAUSA_ENTRE_ENVIOS = 0.6
 
+# Lo más que espera su turno un mail SUELTO —el código de verificación, el
+# "olvidé mi contraseña", el aviso de un login nuevo—, que sale DENTRO del pedido
+# de una persona y ocupa uno de los hilos que atienden a toda la app. Si la fila
+# es más larga, sale igual (con un poco de riesgo de que Resend lo rechace por
+# ritmo, que es lo que pasaba siempre antes de la pausa). Sin este tope, una
+# ráfaga de pedidos (80 "reenviar código" a la vez) hacía fila de a 0,6 s y
+# dejaba a la app entera sin hilos libres: 24 s congelada, medido. Los envíos
+# masivos (`envio_masivo()`) sí hacen la fila completa.
+ESPERA_MAXIMA_SUELTO = 1.5
+
 _turno = threading.Lock()
-_ultimo_pedido: Optional[float] = None    # time.monotonic() del último pedido
+_ultimo_pedido: Optional[float] = None    # time.monotonic() del último turno dado
+_modo = threading.local()
+
+
+@contextmanager
+def envio_masivo():
+    """Los mails de este hilo, mientras dure el bloque, hacen la fila COMPLETA
+    de `_esperar_turno`. Lo usan los trabajos de fondo (`main._correr_en_fondo`,
+    `main._correr_si_esta_libre`: crons, alertas, briefs) y los envíos del panel
+    (`main._envio_masivo`). Todo lo demás —un mail dentro del pedido de una
+    persona— espera a lo sumo ESPERA_MAXIMA_SUELTO."""
+    previo = getattr(_modo, "masivo", False)
+    _modo.masivo = True
+    try:
+        yield
+    finally:
+        _modo.masivo = previo
 
 
 def _esperar_turno() -> None:
-    """Deja pasar PAUSA_ENTRE_ENVIOS desde el último pedido a Resend de
-    cualquier hilo. Se cuenta desde que SALIÓ el anterior, así que un loop que
-    tarda en armar cada mail (el resumen de mercado narra con IA) no espera de
-    más, y un mail suelto que llega con todo tranquilo no espera nada."""
+    """Deja PAUSA_ENTRE_ENVIOS entre un pedido a Resend y el siguiente, para
+    todos los hilos del proceso. Cada mail RESERVA su turno (el siguiente libre)
+    y espera afuera del candado: nadie duerme con la fila tomada, y los turnos
+    salen en el orden en que se pidieron. Se cuenta desde el turno anterior, así
+    que un loop que tarda en armar cada mail (el resumen de mercado narra con IA)
+    no espera de más, y un mail suelto con todo tranquilo no espera nada.
+
+    Un mail suelto (fuera de `envio_masivo()`) cuyo turno quede a más de
+    ESPERA_MAXIMA_SUELTO sale sin esperar y sin correr la fila."""
     global _ultimo_pedido
+    masivo = getattr(_modo, "masivo", False)
     with _turno:
+        ahora = time.monotonic()
+        turno = ahora
         if _ultimo_pedido is not None:
-            falta = PAUSA_ENTRE_ENVIOS - (time.monotonic() - _ultimo_pedido)
-            if falta > 0:
-                time.sleep(falta)
-        _ultimo_pedido = time.monotonic()
+            turno = max(ahora, _ultimo_pedido + PAUSA_ENTRE_ENVIOS)
+        if not masivo and turno - ahora > ESPERA_MAXIMA_SUELTO:
+            return
+        _ultimo_pedido = turno
+    falta = turno - time.monotonic()
+    if falta > 0:
+        time.sleep(falta)
 
 
 # ─── Qué pasó con el último envío ────────────────────────────────────────────

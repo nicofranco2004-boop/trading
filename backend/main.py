@@ -21569,7 +21569,7 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 ENVIO_MASIVO_LOTE = 20
 # Segundos, contados desde que llegó el pedido, después de los cuales no se
 # EMPIEZA otro mail: los que quedan vuelven al panel en `pendientes` y salen en
-# el pedido siguiente. El lote de 20 supone ~0,3 s por mail; si Resend se pone
+# el pedido siguiente. El lote de 20 supone ~0,6 s por mail; si Resend se pone
 # lento (`_send` espera hasta 10 s), 20 mails volvían a pasar el corte de 30 s.
 # Con 18, el caso normal de un mail lento termina en 18 + 0,6 + 10 < 30. No es
 # una garantía (httpx cuenta los 10 s por fase, una base trabada demora la
@@ -21806,6 +21806,15 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     avanza."""
     from billing import emails
 
+    with emails.envio_masivo():       # la fila completa de la pausa
+        return _envio_masivo_en_fila(conn, destinatarios, vistos, marcar=marcar,
+                                     mandar=mandar, desmarcar=desmarcar, campaña=campaña,
+                                     inicio=inicio, inciertos_previos=inciertos_previos)
+
+
+def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmarcar,
+                          campaña, inicio, inciertos_previos):
+    from billing import emails
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     ya_no_estan = []
     tanda = emails.Tanda(inciertos_seguidos=inciertos_previos)
@@ -37152,9 +37161,11 @@ def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
     cron externo, el scheduler in-process (cada hora) y, oportunistamente, /status.
     min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse).
 
-    Una corrida a la vez entre las tres puertas (`_tomar_corrida("iol_lab")`):
-    dos renovando el MISMO token a la vez, si IOL anula el viejo al rotarlo, la
-    segunda recibe un rechazo y borra la credencial como si estuviera muerta."""
+    Una renovación a la vez entre todas sus puertas (`_tomar_corrida("iol_lab")`:
+    este lote —cron externo y job horario—, el botón "renovar", la renovación
+    oportunista de /status y el guardado del login de prueba): dos renovando el
+    MISMO token a la vez, si IOL anula el viejo al rotarlo, la segunda recibe un
+    rechazo y borra la credencial como si estuviera muerta."""
     # Esperando un poco: la otra puerta suele ser la renovación de UN tester
     # (botón o /status, ~1 s); saltear la corrida dejaba a todos sin renovar
     # hasta la hora siguiente.
@@ -37675,7 +37686,8 @@ def _get_mep_for_scheduler() -> float:
 # alertas, brief del asesor, resumen de mercado y las renovaciones del lab de
 # IOL) salen por acá: el arreglo de una no puede volver a quedar en una sola.
 _corridas_lock = threading.Lock()
-_corridas_en_curso: dict = {}          # nombre → time.monotonic() de cuando arrancó
+_corridas_en_curso: dict = {}          # nombre → _reloj_corridas() de cuando arrancó
+_reloj_corridas = time.monotonic
 # Minutos después de los cuales una corrida que sigue "en curso" se avisa como
 # probablemente colgada: la bandera no se puede robar (correrían dos), pero un
 # "ya está corriendo" eterno no puede ser silencioso.
@@ -37685,13 +37697,13 @@ CORRIDA_SOSPECHOSA_MIN = 30
 def _tomar_corrida(nombre: str) -> bool:
     with _corridas_lock:
         if nombre in _corridas_en_curso:
-            minutos = (time.monotonic() - _corridas_en_curso[nombre]) / 60
+            minutos = (_reloj_corridas() - _corridas_en_curso[nombre]) / 60
             if minutos > CORRIDA_SOSPECHOSA_MIN:
                 log.error("%s: hay una corrida 'en curso' desde hace %.0f min — "
                           "probablemente colgada; las siguientes se saltean hasta el "
                           "próximo reinicio", nombre, minutos)
             return False
-        _corridas_en_curso[nombre] = time.monotonic()
+        _corridas_en_curso[nombre] = _reloj_corridas()
         return True
 
 
@@ -37735,12 +37747,15 @@ def _tomar_corrida_esperando(nombre: str, segundos: float) -> bool:
 
 def _correr_si_esta_libre(nombre: str, fn) -> bool:
     """Puerta del scheduler: corre `fn` acá mismo, salvo que ya haya una
-    corrida de este trabajo en curso (la del cron externo)."""
+    corrida de este trabajo en curso (la del cron externo). Sus mails hacen la
+    fila completa de la pausa (`emails.envio_masivo`)."""
+    from billing import emails
     if not _tomar_corrida(nombre):
         log.info("%s: ya hay una corrida en curso; ésta se saltea", nombre)
         return False
     try:
-        fn()
+        with emails.envio_masivo():
+            fn()
     finally:
         _soltar_corrida(nombre)
     return True
@@ -37754,8 +37769,10 @@ def _correr_en_fondo(nombre: str, fn) -> dict:
         return {"ok": True, "status": "already_running"}
 
     def _bg():
+        from billing import emails
         try:
-            fn()
+            with emails.envio_masivo():     # sus mails hacen la fila completa
+                fn()
         except Exception:
             log.exception("%s: la corrida falló", nombre)
         finally:
@@ -37808,18 +37825,20 @@ def _run_backup_db_job():
         _backup_log.error(f"Backup job falló: {e}", exc_info=True)
 
 
-def _run_subscription_lifecycle_job():
+def _run_subscription_lifecycle_job(solo_avisos: bool = False):
     """Cron diario que mantiene sano el estado de subscripciones:
       - downgrade post-cancelación cuando period_end pasó
       - cleanup de pending abandonadas (>7 días)
-      - sync con MP para detectar webhooks perdidos
+      - los avisos de la prueba y de vencimiento
+    `solo_avisos`: la vuelta de la tarde, sin bajas de plan (ver
+    `billing.subscriptions.run_lifecycle_job`).
     """
     from billing import subscriptions as billing_subs
     _sub_log = logging.getLogger("billing.subscriptions")
     try:
         conn = get_db()
         try:
-            result = billing_subs.run_lifecycle_job(conn)
+            result = billing_subs.run_lifecycle_job(conn, solo_avisos=solo_avisos)
             _sub_log.info(f"Subscription lifecycle result: {result}")
         finally:
             conn.close()
@@ -37835,6 +37854,12 @@ def _job_snapshot_programado():
 
 def _job_ciclo_de_vida_programado():
     _correr_si_esta_libre("ciclo_de_vida", _run_subscription_lifecycle_job)
+
+
+def _job_avisos_de_la_tarde_programado():
+    # Misma bandera que el ciclo completo: nunca corren a la vez.
+    _correr_si_esta_libre("ciclo_de_vida",
+                          lambda: _run_subscription_lifecycle_job(solo_avisos=True))
 
 
 # Scheduler in-process
@@ -38345,13 +38370,14 @@ def _start_scheduler():
         id='subscription_lifecycle',
         replace_existing=True,
     )
-    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta del mismo job (misma bandera; cada
-    # paso es idempotente). Hay avisos que valen un solo día UTC —"mañana
-    # termina tu Pro" sale el día anterior al paso a Plus— o pocas horas —la
-    # bienvenida que Resend rechazó al activar—: con una sola corrida por día,
-    # un rechazo a las 03:30 no tenía reintento posible.
+    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta, SÓLO de los avisos (misma
+    # bandera). Hay avisos que valen un solo día UTC —"mañana termina tu Pro"
+    # sale el día anterior al paso a Plus— o pocas horas —la bienvenida que
+    # Resend rechazó al activar—: con una sola corrida por día, un rechazo a las
+    # 03:30 no tenía reintento posible. Las bajas de plan NO van acá (ver
+    # `run_lifecycle_job`, solo_avisos).
     _scheduler.add_job(
-        _job_ciclo_de_vida_programado,
+        _job_avisos_de_la_tarde_programado,
         CronTrigger(hour=15, minute=0),
         id='subscription_lifecycle_tarde',
         replace_existing=True,
@@ -38381,7 +38407,8 @@ def _start_scheduler():
         logging.getLogger("pricing.fci").warning("FCI bootstrap no se pudo lanzar: %s", _fci_ex)
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
     _snapshot_log.info("FCI refresh scheduler iniciado (cron: 12:10 UTC) + bootstrap on boot")
-    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")
+    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC completo + "
+                       "15:00 UTC sólo avisos)")
     _snapshot_log.info("Backup DB scheduler iniciado (cron: 03:45 UTC)")
 
 
@@ -38400,12 +38427,19 @@ def _stop_scheduler():
             _pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
+    _cerrar_al_apagar()
+
+
+def _cerrar_al_apagar():
+    """Lo que el apagado hace con los precios y las corridas, aparte de los
+    ejecutores (que `_stop_scheduler` apaga para siempre y los tests no pueden
+    tocar)."""
     # Bajar lo que quedó encolado en el buffer de precios. Railway redeploya
     # seguido; sin esto, cada deploy tira hasta un minuto de últimos-precios y
     # los activos que hoy no cotizan vuelven a valuarse a cost basis (o sea,
     # muestran lo que pagaste como si fuera el precio de hoy) hasta que el
-    # mercado los cotice de nuevo. Es una sola transacción y es lo último que
-    # hace el proceso.
+    # mercado los cotice de nuevo. Va PRIMERO: es lo que no se puede perder si
+    # el apagado se corta antes de terminar.
     try:
         n = _flush_last_prices_si_toca(forzar=True)
         if n:
@@ -38414,10 +38448,10 @@ def _stop_scheduler():
         pass
     # Las corridas en segundo plano (alertas, avisos de la prueba, briefs…)
     # marcan cada aviso ANTES de mandarlo: si el deploy las mata a mitad, lo que
-    # faltaba no sale. Darles un rato para terminar — va DESPUÉS de bajar los
-    # precios, que es lo que no se puede perder si el apagado se corta antes.
+    # faltaba no sale. Darles un rato para terminar.
     _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
-    # Y otra vez los precios: los que trajeron esas corridas mientras se esperaba.
+    # Y otra vez los precios: los que trajeron esas corridas mientras se
+    # esperaba. Esto sí es lo último que hace el proceso.
     try:
         _flush_last_prices_si_toca(forzar=True)
     except Exception:
@@ -39918,8 +39952,11 @@ def billing_run_cron(request: Request):
     reenvía nada; la marca sólo se devuelve si Resend rechazó el mail, y
     entonces lo reintenta la corrida siguiente.
 
-    Lo pega un cron externo (cron-job.org) 1×/día. Auth: header X-Cron-Token o
-    ?token= contra BILLING_CRON_TOKEN. Sin token configurado → 503.
+    Lo pega un cron externo (cron-job.org) 1×/día. Con `?solo_avisos=1` corre
+    sólo los avisos, sin bajas de plan: es la vuelta de las 15:00 UTC, por si
+    el scheduler de adentro se la saltea (Railway frío o un deploy justo a esa
+    hora). Auth: header X-Cron-Token o ?token= contra BILLING_CRON_TOKEN. Sin
+    token configurado → 503.
 
     ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
     Railway. Es la misma limitación que el cron de snapshots.
@@ -39931,7 +39968,11 @@ def billing_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    return _correr_en_fondo("ciclo_de_vida", _run_subscription_lifecycle_job)
+    solo_avisos = (request.query_params.get("solo_avisos") or "").strip().lower() in (
+        "1", "true", "si", "sí")
+    return {**_correr_en_fondo(
+        "ciclo_de_vida", lambda: _run_subscription_lifecycle_job(solo_avisos=solo_avisos)),
+        "solo_avisos": solo_avisos}
 
 
 # ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────
