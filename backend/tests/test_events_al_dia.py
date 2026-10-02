@@ -341,6 +341,27 @@ class EventosAlDiaTest(unittest.TestCase):
             evs = main._fetch_yf_events("KO")
         self.assertEqual([e["event_date"] for e in evs if e["event_type"] == "earnings"], [cal])
 
+    def test_la_marca_de_estimada_es_la_de_la_ficha_aunque_la_fecha_venga_del_calendario(self):
+        """TSLA 21/10: el calendario da una sola fecha (la regla vieja decía
+        "confirmada") y la ficha dice estimada. Con dos fuentes la marca
+        saltaba entre renovaciones; manda el dato de Yahoo."""
+        en_25 = int(time.time()) + 25 * 86400
+        fecha = datetime.utcfromtimestamp(en_25).strftime("%Y-%m-%d")
+        class UnaSolaFechaPeroEstimada:
+            calendar = {"Earnings Date": [datetime.strptime(fecha, "%Y-%m-%d").date()]}
+            info = {"earningsTimestampStart": en_25, "isEarningsDateEstimate": True}
+        with patch.object(main.yf, "Ticker", return_value=UnaSolaFechaPeroEstimada()):
+            evs = main._fetch_yf_events("TSLA")
+        self.assertEqual([(e["event_date"], e["confirmed"]) for e in evs if e["event_type"] == "earnings"],
+                         [(fecha, 0)])
+        # Sin la marca en la ficha, queda la regla del calendario.
+        class SinMarca:
+            calendar = {"Earnings Date": [datetime.strptime(fecha, "%Y-%m-%d").date()]}
+            info = {}
+        with patch.object(main.yf, "Ticker", return_value=SinMarca()):
+            evs = main._fetch_yf_events("TSLA")
+        self.assertEqual([e["confirmed"] for e in evs if e["event_type"] == "earnings"], [1])
+
     def test_el_earnings_anterior_de_la_ficha_no_se_usa(self):
         """`earningsTimestamp` a veces es el resultado ANTERIOR (TSLA: 22/07 con
         el próximo el 21/10): sin earningsTimestampStart no se inventa nada."""

@@ -7130,19 +7130,33 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
         # `earningsTimestampStart` — verificado contra el calendario en NVDA,
         # TSLA, AMZN, KO, GGAL y MELI. NO `earningsTimestamp`: ése a veces es
         # el resultado ANTERIOR (TSLA: 22/07 con el próximo el 21/10).
+        #
+        # Y la marca de "estimada" es de la ficha (`isEarningsDateEstimate`, el
+        # dato de Yahoo) también cuando la fecha vino del calendario: la regla
+        # del calendario ("una sola fecha = confirmada") es una deducción, y con
+        # dos fuentes la misma fecha saltaba entre "confirmada" y "· est." según
+        # cuál respondiera en cada renovación (TSLA 21/10: el calendario da una
+        # sola fecha, la ficha dice estimada).
         try:
-            if info and not any(e['event_type'] == 'earnings' for e in events):
-                ts = info.get('earningsTimestampStart')
-                if isinstance(ts, (int, float)) and ts > 0:
-                    d = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
-                    if _DATE_RE.match(d):
-                        events.append({
-                            'ticker': ticker,
-                            'event_type': 'earnings',
-                            'event_date': d,
-                            'details': {},
-                            'confirmed': 0 if info.get('isEarningsDateEstimate') else 1,
-                        })
+            ts = info.get('earningsTimestampStart') if info else None
+            fecha_ficha = (datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+                           if isinstance(ts, (int, float)) and ts > 0 else None)
+            if fecha_ficha and not _DATE_RE.match(fecha_ficha):
+                fecha_ficha = None
+            estimada = info.get('isEarningsDateEstimate') if info else None
+            del_calendario = [e for e in events if e['event_type'] == 'earnings']
+            if not del_calendario and fecha_ficha:
+                events.append({
+                    'ticker': ticker,
+                    'event_type': 'earnings',
+                    'event_date': fecha_ficha,
+                    'details': {},
+                    'confirmed': 0 if estimada else 1,
+                })
+            elif fecha_ficha and isinstance(estimada, bool):
+                for e in del_calendario:
+                    if e['event_date'] == fecha_ficha:
+                        e['confirmed'] = 0 if estimada else 1
         except Exception:
             pass
 
