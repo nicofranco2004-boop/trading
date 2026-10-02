@@ -11,6 +11,7 @@ Params (el frontend pasa el evento tal cual):
 from __future__ import annotations
 from typing import Dict, Any
 from datetime import date
+from fechas import hoy_art_date
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -22,11 +23,13 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     if not event_type:
         raise ValueError("Falta param 'event_type' (earnings/dividend/etc.).")
 
-    # Días hasta el evento
+    # Días hasta el evento, desde el hoy ARGENTINO — el mismo de la fila de la
+    # pantalla y de los builders events/dashboard_events. Con `date.today()`
+    # (UTC en el servidor) de 21 a 24 h un evento de hoy daba -1: "ya pasó".
     days_ahead = None
     try:
         d = date.fromisoformat(event_date_str[:10])
-        days_ahead = (d - date.today()).days
+        days_ahead = (d - hoy_art_date()).days
     except (TypeError, ValueError):
         days_ahead = None
 

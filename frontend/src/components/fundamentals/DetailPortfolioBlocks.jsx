@@ -16,11 +16,11 @@ import { api } from '../../utils/api'
 import { costInPesos, costInUsd, valueEquityLot, isArUsdBroker, costBasisRate } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
 import { resolveCedearRatio } from '../../utils/cedearRatio'
+import { pctVar, pctColor } from '../../utils/format'
 
 const baseOf = (a) => (a || '').replace(/\.BA$/i, '').toUpperCase()
 const fmtUsd = (n) => (n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR'))
 const fmtUsd2 = (n) => (n == null ? '—' : '$' + n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
-const fmtPct = (n, sign = false) => (n == null ? '—' : (sign && n >= 0 ? '+' : '') + n.toFixed(1).replace('.', ',') + '%')
 
 // Costo USD de un lote (sin precio live): pesos→USD por el dólar financiero, USD
 // queda como está. Espeja la convención de valueLot/valueEquityLot para el COSTO.
@@ -218,7 +218,7 @@ export default function DetailPortfolioBlocks({ ticker, data }) {
               {' '}· costo prom <span className="font-medium">{fmtUsd2(owned.costOnAxis)}</span>
               {' '}· hoy <span className="font-medium">{fmtUsd2(price.current_usd)}</span>
               {owned.pnlPct != null && (
-                <span className={owned.pnlPct >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}> ({fmtPct(owned.pnlPct, true)})</span>
+                <span className={pctColor(owned.pnlPct, 1)}> ({pctVar(owned.pnlPct, 1)})</span>
               )}
             </>)}
           </p>

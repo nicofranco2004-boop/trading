@@ -95,6 +95,19 @@ export function menuVisible({ user, clientCtx } = {}) {
   }
 }
 
+// Cómo se llama el cliente cuya cuenta mira el asesor (o null). Y el grupo de
+// la cartera, adentro de un cliente, dice de quién es: "Cartera de Ana", no
+// "Tu Cartera". Antes cada pantalla lo armaba a mano (el menú lateral, "Más",
+// la lupa, la franja) con respaldos distintos, y el ⌘K seguía diciendo
+// "Tu Cartera".
+export function nombreDelCliente(clientCtx) {
+  if (!clientCtx) return null
+  return clientCtx.label || `Cliente ${clientCtx.id}`
+}
+export function etiquetaDeGrupo(grupo, clientCtx) {
+  return grupo.id === 'cartera' && clientCtx ? `Cartera de ${nombreDelCliente(clientCtx)}` : grupo.label
+}
+
 // Todas las pantallas que el usuario ve en el menú, en una lista plana y sin
 // repetidos (Dashboard aparece en dos grupos según el nivel). Para el buscador.
 export function pantallasVisibles({ user, clientCtx } = {}) {
@@ -102,7 +115,7 @@ export function pantallasVisibles({ user, clientCtx } = {}) {
   const lista = [
     ...m.asesorPropio,
     ...(m.clientesDesdeCliente ? [ASESOR_PROPIO.find(i => i.to === '/clientes')] : []),
-    ...m.groups.flatMap(g => g.items.map(i => ({ ...i, grupo: g.label }))),
+    ...m.groups.flatMap(g => g.items.map(i => ({ ...i, grupoId: g.id, grupo: etiquetaDeGrupo(g, clientCtx) }))),
     ...m.loose,
     ...m.utilidades,
   ]

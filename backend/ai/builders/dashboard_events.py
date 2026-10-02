@@ -11,7 +11,7 @@ Shape (~400 bytes):
   "window_days": 14,
   "events": [
     { "ticker": str, "type": str, "date": str, "days_ahead": int,
-      "weight_pct": float | null, "details": str | null }
+      "weight_pct": float | null, "details": dict }   # ya parseado (eventos_guardados)
   ],
   "total_events": int,
   "tickers_affected": int,
@@ -23,13 +23,15 @@ Shape (~400 bytes):
 
 from __future__ import annotations
 from typing import Dict, Any, List
-from datetime import date, timedelta
+from datetime import date
+from fechas import hoy_art_date
+from eventos_guardados import eventos_guardados
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     window_days = int(kwargs.get("window_days", 14))
-    today = date.today()
-    cutoff = today + timedelta(days=window_days)
+    # El "hoy" argentino, el mismo de la pantalla (ver eventos_guardados.py).
+    today = hoy_art_date()
 
     # Tickers del user (non-cash, qty > 0)
     rows = conn.execute(
@@ -55,16 +57,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "weight_at_risk_pct": 0,
         }
 
-    # Buscar eventos en la ventana (tabla `financial_events`)
-    placeholders = ",".join("?" * len(tickers))
-    events = conn.execute(
-        f"""SELECT ticker, event_type, event_date, details
-              FROM financial_events
-             WHERE ticker IN ({placeholders})
-               AND event_date >= ? AND event_date <= ?
-             ORDER BY event_date ASC""",
-        (*tickers, today.isoformat(), cutoff.isoformat()),
-    ).fetchall()
+    # Eventos guardados en la ventana — la lectura única (eventos_guardados).
+    events = eventos_guardados(conn, tickers, window_days, hoy=today)
 
     # Valor de cartera + por-ticker para weight_pct. Valuación canónica de
     # Análisis (MEP para holdings AR/.BA; CEDEAR en sub-broker '· USD' por su .BA,
@@ -132,7 +126,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             **({"dividend_scale_note":
                 "dividend_per_share es por ACCIÓN del mercado de origen, no por CEDEAR; "
                 "no estimes el cobro del usuario sin el ratio de conversión"}
-               if "dividend_per_share" in (ev["details"] or "") else {}),
+               if "dividend_per_share" in ev["details"] else {}),
         })
 
     return {

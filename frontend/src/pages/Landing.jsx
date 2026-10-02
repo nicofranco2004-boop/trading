@@ -460,7 +460,7 @@ function HowItWorks() {
       n: '03',
       Icon: BarChart3,
       meta: 'INSIGHTS · COMPORTAMIENTO',
-      title: 'Mirás tus Insights',
+      title: 'Mirás tus Métricas',
       body: 'Allocation por geografía (US, AR, cripto, cash), win rate, drawdown real, comparativa de tu perfil declarado vs tu cartera real, concentración top 3. Datos limpios sobre cómo decidís — no sobre cuánto te divierte mirar el gráfico.',
       chips: ['Allocation', 'Drawdown', 'Perfil vs cartera'],
       Visual: MockInsights,
@@ -470,7 +470,7 @@ function HowItWorks() {
       Icon: Bot,
       meta: 'IA · ANÁLISIS PROFUNDO',
       title: 'Analizás con IA cada pantalla',
-      body: 'En Dashboard, Insights, Operaciones, Reportes y más — un botón "Analizar" genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera, no respuestas en abstracto.',
+      body: 'En Dashboard, Métricas, Operaciones, Reportes y más — un botón "Analizar" genera un informe estructurado: qué funcionó, qué cambió, dónde hay riesgo, qué decisión podrías tomar. Usa el snapshot real de tu cartera, no respuestas en abstracto.',
       chips: ['Por pantalla', 'Estructurado', 'Con tus datos'],
       Visual: MockAnalyze,
     },
@@ -923,7 +923,7 @@ function MockAnalyze() {
           <div className="w-6 h-6 rounded bg-data-violet/20 border border-data-violet/40 flex items-center justify-center text-data-violet">
             <Sparkles size={11} strokeWidth={2} />
           </div>
-          <span className="text-xs font-medium text-ink-0">Análisis de Insights</span>
+          <span className="text-xs font-medium text-ink-0">Diagnóstico de la cartera</span>
           <span className="ml-auto text-[9px] font-mono uppercase tracking-caps text-ink-3">DRAWER</span>
         </div>
 

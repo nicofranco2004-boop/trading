@@ -7,8 +7,9 @@
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Sparkles, ArrowRight } from 'lucide-react'
+import { ubicacionDeAviso } from './mobile/avisos'
 
-export default function DemoBanner() {
+export default function DemoBanner({ enLaBarra = false }) {
   const { isDemo, exitDemo } = useAuth()
   const navigate = useNavigate()
   if (!isDemo) return null
@@ -23,10 +24,11 @@ export default function DemoBanner() {
 
   return (
     <div
-      className="sticky top-0 z-40 border-b border-data-violet/30 bg-bg-1/95 backdrop-blur-sm"
+      // En el celular va adentro de la barra de arriba (ver mobile/avisos.js).
+      className={`${ubicacionDeAviso(enLaBarra)} border-data-violet/30 bg-bg-1/95 backdrop-blur-sm`}
       style={{ borderTopWidth: '1px', borderTopColor: 'rgb(var(--data-violet) / 0.3)' }}
     >
-      <div className="flex items-center justify-between gap-3 px-4 py-2 max-w-7xl mx-auto">
+      <div className={`flex items-center justify-between gap-3 px-4 ${enLaBarra ? 'py-1.5' : 'py-2'} max-w-7xl mx-auto`}>
         <div className="flex items-center gap-2 min-w-0">
           <Sparkles size={13} strokeWidth={1.75} className="text-data-violet flex-shrink-0" aria-hidden="true" />
           <p className="text-xs text-ink-1 truncate">

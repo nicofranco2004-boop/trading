@@ -506,11 +506,14 @@ export const POPULAR_TICKERS = [
   { symbol: 'YPFD',  name: 'YPF',                       exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'BMA',   name: 'Banco Macro',               exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'PAMP',  name: 'Pampa Energía',             exchange: 'BCBA', type: 'stock_ar' },
-  { symbol: 'TEN',   name: 'Ternium Argentina',         exchange: 'BCBA', type: 'stock_ar' },
+  // Era 'TEN': ese ticker es Tsakos Energy Navigation (una naviera griega); el
+  // de Ternium Argentina en BYMA es TXAR (así figura también en ARG_LIDER).
+  { symbol: 'TXAR',  name: 'Ternium Argentina',         exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'CRES',  name: 'Cresud',                    exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'COME',  name: 'Sociedad Comercial del Plata', exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'ALUA',  name: 'Aluar',                     exchange: 'BCBA', type: 'stock_ar' },
-  { symbol: 'ERAR',  name: 'Ternium (Siderar)',         exchange: 'BCBA', type: 'stock_ar' },
+  // (Se sacó 'ERAR · Ternium (Siderar)': es el ticker viejo de Ternium
+  // Argentina, hoy TXAR, que ya está arriba. Ninguna fuente lo cotiza.)
   { symbol: 'MIRG',  name: 'Mirgor',                    exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'CEPU',  name: 'Central Puerto',            exchange: 'BCBA', type: 'stock_ar' },
   { symbol: 'EDN',   name: 'Edenor',                    exchange: 'BCBA', type: 'stock_ar' },
@@ -594,6 +597,27 @@ export const POPULAR_TICKERS = [
   { symbol: 'USDT',  name: 'Tether',                    exchange: 'CRYPTO', type: 'crypto' },
   { symbol: 'USDC',  name: 'USD Coin',                  exchange: 'CRYPTO', type: 'crypto' },
 ]
+
+// "Calidad de cartera" arma el puntaje con la acción que cotiza en dólares en
+// EE.UU. Estas dos tablas dicen cuál es, cuando el ticker de acá no sirve tal
+// cual (verificado contra yfinance, que es lo que usa el servidor, 2026-10-01):
+//   • CEDEARs cuyo ticker de BYMA no es el de EE.UU. (los demás coinciden).
+//   • Acciones argentinas con ADR. Las que no están acá no tienen: buscar el
+//     ticker tal cual abría OTRA empresa (TEN → una naviera griega, AGRO →
+//     Adecoagro) o un cartel de "no tenemos fundamentales".
+export const CEDEAR_EN_EEUU = { DISN: 'DIS', BRKB: 'BRK-B', NOKA: 'NOK' }
+// CEDEARs de ETFs: tampoco tienen ficha de empresa. La convención de
+// CEDEARS_LIST es que llevan "(CEDEAR)" en el nombre (ver "ETFs disponibles como
+// CEDEAR"); hoy son 17, de SPY a ACWI. No van a ETFS para no cambiar cómo se
+// clasifican en la torta.
+export const CEDEARS_DE_ETF = new Set(CEDEARS_LIST.filter(x => /\(CEDEAR\)/.test(x.n)).map(x => x.s))
+//   Es también LA lista de ADRs argentinos: assetClass.js (AR_ADR_SYMS) toma
+//   los de la derecha, en vez de tener su propia copia.
+export const ADR_DE_ACCION_AR = {
+  GGAL: 'GGAL', BMA: 'BMA', CEPU: 'CEPU', EDN: 'EDN', BBAR: 'BBAR', SUPV: 'SUPV',
+  YPFD: 'YPF', PAMP: 'PAM', TGSU2: 'TGS', CRES: 'CRESY', TECO2: 'TEO',
+  LOMA: 'LOMA', IRSA: 'IRS',
+}
 
 // Heurística para inferir tipo a partir del campo `asset` de una posición.
 export function inferType(asset) {

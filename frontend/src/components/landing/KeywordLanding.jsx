@@ -29,7 +29,7 @@
 
 import { Link } from 'react-router-dom'
 import { ArrowRight, Check, Sparkles } from 'lucide-react'
-import RendiLogo from '../RendiLogo'
+import CabeceraPublica, { SoloVisitantes } from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
 // Los botones dicen la prueba, no "gratis" a secas: con el paso de abajo, que
 // decía "el plan Free te alcanza", le prometían al visitante un plan gratis
@@ -83,26 +83,18 @@ export default function KeywordLanding({
         />
       )}
 
-      {/* Header simple — logo + nav a planes/login */}
-      <header className="border-b border-line">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
-            <Link to="/planes" className="text-ink-2 hover:text-ink-0 transition-colors">Planes</Link>
-            <Link to="/login" className="text-ink-2 hover:text-ink-0 transition-colors">Iniciar sesión</Link>
-            <Link
-              to="/login?mode=register"
-              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 transition-colors text-xs font-medium"
-            >
-              <Sparkles size={12} strokeWidth={2} />
-              Probar gratis
-            </Link>
-          </nav>
-        </div>
-      </header>
+      {/* Header simple — logo + nav a planes/login (sólo sin sesión) */}
+      <CabeceraPublica ancho="max-w-5xl">
+        <Link to="/planes" className="text-ink-2 hover:text-ink-0 transition-colors">Planes</Link>
+        <Link to="/login" className="text-ink-2 hover:text-ink-0 transition-colors">Iniciar sesión</Link>
+        <Link
+          to="/login?mode=register"
+          className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 transition-colors text-xs font-medium"
+        >
+          <Sparkles size={12} strokeWidth={2} />
+          Probar gratis
+        </Link>
+      </CabeceraPublica>
 
       <main className="max-w-3xl mx-auto px-6 py-16 md:py-24">
         {/* Hero — kicker + H1 + intro + CTAs */}
@@ -117,6 +109,7 @@ export default function KeywordLanding({
             {intro}
           </p>
           <div className="flex items-center gap-3 flex-wrap">
+            <SoloVisitantes>
             <Link
               to="/login?mode=register"
               className="group inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-5 py-2.5 transition-all"
@@ -125,6 +118,7 @@ export default function KeywordLanding({
               {CTA_PRUEBA}
               <ArrowRight size={14} strokeWidth={2} className="group-hover:translate-x-0.5 transition-transform" />
             </Link>
+            </SoloVisitantes>
             <Link
               to="/planes"
               className="inline-flex items-center gap-2 border border-line-3 hover:border-ink-2 hover:bg-bg-2/50 text-ink-0 font-medium rounded-sm px-5 py-2.5 transition-colors"
@@ -180,7 +174,8 @@ export default function KeywordLanding({
           </section>
         )}
 
-        {/* CTA final */}
+        {/* CTA final (sólo sin sesión) */}
+        <SoloVisitantes>
         <section className="mb-16 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg p-6 text-center">
           <h2 className="text-xl md:text-2xl font-semibold mb-2 text-ink-0">
             Probalo con tu propia cartera
@@ -197,6 +192,7 @@ export default function KeywordLanding({
             <ArrowRight size={14} strokeWidth={2} />
           </Link>
         </section>
+        </SoloVisitantes>
 
         {/* Internal links — relacionados (SEO: distribuir authority entre landings) */}
         {relatedLinks && relatedLinks.length > 0 && (

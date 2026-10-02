@@ -115,6 +115,50 @@ function yaDescubrioElScrollLateral() {
   }
 }
 
+// ¿Se muestra la tira de un renglón? Cuando el encabezado completo ya pasó por
+// debajo de la barra de arriba (su borde de abajo quedó tapado por ella).
+export function encabezadoCompactoVisible(bordeDeAbajoDelEncabezado, altoDeLaBarra) {
+  return bordeDeAbajoDelEncabezado <= altoDeLaBarra
+}
+
+// La tira de un renglón que reemplaza al encabezado al bajar: el total, la
+// moneda, y una lupa que sube y abre el buscador (que se fue con la página).
+export function EncabezadoCompacto({ valor, currency, onMoneda, onBuscar }) {
+  return (
+    <div className="fixed top-[var(--alto-barra-celular,93px)] left-0 right-0 z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 py-2 flex items-center gap-3">
+      <div className="text-lg font-medium tabular text-ink-0 leading-none min-w-0 truncate">{valor}</div>
+      <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+        <div className="inline-flex bg-bg-2 border border-line/60 rounded p-0.5" role="group" aria-label="Moneda">
+          {['USD', 'ARS'].map(c => (
+            <button key={c} type="button" onClick={() => onMoneda(c)} aria-pressed={currency === c}
+              className={`px-2 py-0.5 text-xs font-medium rounded transition-colors ${currency === c ? 'bg-bg-3 text-ink-0' : 'text-ink-3 hover:text-ink-1'}`}>
+              {c}
+            </button>
+          ))}
+        </div>
+        <button type="button" onClick={onBuscar} aria-label="Buscar en tu cartera"
+          className="inline-flex items-center justify-center w-8 h-8 rounded bg-bg-2 border border-line/60 text-ink-2 hover:text-ink-0">
+          <Search size={13} strokeWidth={1.75} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Lo que esta pantalla entiende por la dirección (`/posiciones?action=…`): el
+// "+" de la barra de abajo manda acá. Una acción que no esté en esta lista cae
+// en la Cartera sin abrir nada (le pasó a "Agregar a watchlist", que iba a
+// `/?action=watchlist`).
+export const ACCION_POR_DIRECCION = { comprar: 'new', vender: 'sell' }
+
+// Qué pide la dirección: 'comprar', 'vender' o null. Es lo que usa la pantalla
+// para abrir el flujo, y lo que la prueba del "+" corre con la dirección de cada
+// acción (el nombre del parámetro, y qué valor abre qué, viven acá).
+export function accionDelPedido(search) {
+  const valor = new URLSearchParams(search || '').get('action')
+  return Object.keys(ACCION_POR_DIRECCION).find(k => ACCION_POR_DIRECCION[k] === valor) || null
+}
+
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
   const { currency, toggle: toggleCurrency, setTcValuacion: publishTcValuacion, valuationDollar, costBasis } = useCurrency()
@@ -726,12 +770,11 @@ export default function PositionsMobile() {
   // ?action=new / ?action=sell (FAB) → abrir el flow automáticamente. Limpiamos
   // el query param para que un reload posterior no re-abra el modal.
   useEffect(() => {
-    const params = new URLSearchParams(location.search)
-    const action = params.get('action')
-    if (action === 'new') {
+    const action = accionDelPedido(location.search)
+    if (action === 'comprar') {
       openNewPositionFlow('mobile_fab')
       navigate('/posiciones', { replace: true })
-    } else if (action === 'sell') {
+    } else if (action === 'vender') {
       navigate('/posiciones', { replace: true })
       // La venta necesita la lista de posiciones (carga async): si ya cargó la
       // disparamos directo; si no, queda pendiente y la dispara el effect de abajo.
@@ -1456,6 +1499,33 @@ export default function PositionsMobile() {
   const heroTexto = fmtHero(heroValor)
   const heroClass = heroTexto.length >= 13 ? 'text-3xl' : heroTexto.length >= 10 ? 'text-4xl' : 'text-5xl'
 
+  // Al bajar, el encabezado completo (total, ganancia, precios, buscador: ~171 px,
+  // la cuarta parte de un celular chico) se va con la página y aparece, pegada
+  // debajo de la barra de arriba, una tira de UN renglón con el total y la
+  // moneda. Antes el encabezado entero quedaba fijo. No se achica el mismo
+  // encabezado: eso movería la lista de golpe al cruzar el umbral.
+  const encabezadoRef = useRef(null)
+  const buscarRef = useRef(null)
+  const [compacto, setCompacto] = useState(false)
+  useEffect(() => {
+    let cuadro = 0
+    const medir = () => {
+      cuadro = 0
+      const el = encabezadoRef.current
+      if (!el) return
+      const barra = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--alto-barra-celular')) || 93
+      setCompacto(encabezadoCompactoVisible(el.getBoundingClientRect().bottom, barra))
+    }
+    const alBajar = () => { if (!cuadro) cuadro = requestAnimationFrame(medir) }
+    window.addEventListener('scroll', alBajar, { passive: true })
+    medir()
+    return () => { window.removeEventListener('scroll', alBajar); if (cuadro) cancelAnimationFrame(cuadro) }
+  }, [loading])
+  function irABuscar() {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+    setTimeout(() => buscarRef.current?.focus(), 350)
+  }
+
   function restablecerVista() {
     setSortBy(VISTA_INICIAL.sortBy)
     setBrokerFilter(VISTA_INICIAL.brokerFilter)
@@ -1482,8 +1552,22 @@ export default function PositionsMobile() {
 
   return (
     <div className="pb-8">
-      {/* Header con total + sort */}
-      <header className="sticky top-[88px] z-20 bg-bg-0/95 backdrop-blur-md border-b border-line/40 px-4 py-3">
+      {/* Al bajar: la tira de un renglón (ver `compacto` arriba). Se pega justo
+          debajo de la barra de arriba: su alto lo anota MobileTopBar en
+          --alto-barra-celular (con un cliente abierto o la prueba mide más). */}
+      {compacto && (
+        <EncabezadoCompacto
+          // El total ya formateado, quieto: con AnimatedNumber contaba desde 0
+          // cada vez que la tira aparecía al bajar.
+          valor={heroTexto}
+          currency={currency}
+          onMoneda={(c) => { if (currency !== c) toggleCurrency() }}
+          onBuscar={irABuscar}
+        />
+      )}
+
+      {/* Header con total + sort (se va con la página al bajar) */}
+      <header ref={encabezadoRef} className="bg-bg-0 border-b border-line/40 px-4 py-3">
         {/* Fila 1 — el número por el que se entra a la pantalla, con su toggle al
             lado. Estaba en text-xl (el tamaño de un título de sección) y el
             toggle era el código de moneda en text-ink-3, sin borde: el dueño lo
@@ -1550,6 +1634,7 @@ export default function PositionsMobile() {
           <div className="relative flex-1 min-w-0">
             <Search size={13} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3" />
             <input
+              ref={buscarRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}

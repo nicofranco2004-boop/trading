@@ -45,7 +45,8 @@ try:
 except ImportError:
     # python-dotenv opcional — si no está, seguimos con env vars del sistema.
     pass
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
+from eventos_guardados import eventos_guardados
 import yfinance as yf
 import requests
 import logging
@@ -6812,6 +6813,16 @@ def get_bond_index_series(
 
 _events_fetched_at = {}  # { ticker: timestamp último fetch }
 EVENTS_TTL = 6 * 3600  # 6 horas
+# Búsquedas de eventos en paralelo (ver _refresh_events_for_tickers). Global y
+# sin `with`: un fetch colgado no bloquea al que pidió (fix B1, _yf_executor).
+_events_fetch_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="events-fetch")
+_events_en_vuelo = {}            # { ticker: Future } — lo que se está buscando ahora
+_events_en_vuelo_lock = threading.Lock()
+# Lo máximo que una pantalla espera a Yahoo cuando NO hay nada guardado para
+# mostrar. Lo que no llegó a tiempo se guarda igual y aparece en la próxima.
+EVENTOS_ESPERA_MAX_SEG = 8
+# Si Yahoo no contestó (exceso de pedidos, caída), cuándo se vuelve a probar.
+EVENTOS_REINTENTO_SEG = 10 * 60
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -6946,37 +6957,18 @@ def get_popular_events(
 
         # 2. Earnings de tickers populares — refresh + query
         popular = POPULAR_TICKERS_US + POPULAR_TICKERS_AR_ADR
+        # Antes: _refresh_events_for_tickers bloqueante y de a uno → 10,7 s la
+        # primera vez tras cada reinicio (medido 2026-10-01). Ahora la regla
+        # única: lo guardado al instante, lo vencido de fondo y en paralelo.
         try:
-            _refresh_events_for_tickers(conn, popular)
+            _eventos_al_dia(conn, popular)
         except Exception:
             pass
 
-        placeholders = ','.join('?' for _ in popular)
-        rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed, source
-                FROM financial_events
-                WHERE ticker IN ({placeholders})
-                  AND event_date >= ?
-                  AND event_date <= ?
-                ORDER BY event_date ASC""",
-            (*popular, today, end_date),
-        ).fetchall()
-
-        ticker_events = []
-        for r in rows:
-            try:
-                details = json.loads(r['details']) if r['details'] else {}
-            except Exception:
-                details = {}
-            ticker_events.append({
-                'ticker': r['ticker'],
-                'event_type': r['event_type'],
-                'event_date': r['event_date'],
-                'details': details,
-                'confirmed': bool(r['confirmed']),
-                'source': r['source'],
-                'in_portfolio': r['ticker'] in user_tickers,
-            })
+        ticker_events = [
+            {**ev, 'in_portfolio': ev['ticker'] in user_tickers}
+            for ev in eventos_guardados(conn, popular, days)
+        ]
 
         # Combinamos y ordenamos por fecha
         all_events = macro_events + ticker_events
@@ -6991,11 +6983,17 @@ def get_popular_events(
         conn.close()
 
 
-def _fetch_yf_events(ticker: str) -> list:
+def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
     """Trae earnings + ex-dividend + dividend payment dates de un ticker via yfinance.
 
     Returns: lista de eventos como dicts (sin guardar todavía).
     Falla gracefully — si yfinance no tiene data, devuelve [].
+
+    `fallas`: si se pasa una lista, se le agrega cada pedido a Yahoo que tiró
+    error ('ticker', 'calendar', 'info'). "Yahoo no tiene nada" y "Yahoo no
+    contestó" devuelven los dos [] — esto es lo que permite distinguirlos
+    (_buscar_y_guardar_eventos: un rechazo por exceso de pedidos no puede
+    quedar marcado como "al día" por 6 horas).
     """
     events = []
     try:
@@ -7052,11 +7050,20 @@ def _fetch_yf_events(ticker: str) -> list:
                             'confirmed': 1 if earnings_confirmed else 0,
                         })
         except Exception:
-            pass
+            if fallas is not None:
+                fallas.append('calendar')
 
         # Ex-dividend date + dividend amount (próximo)
         try:
-            info = t.info  # cache interno de yfinance
+            try:
+                info = t.info  # cache interno de yfinance
+            except Exception:
+                # PEDIR el info falló: Yahoo no contestó. Es la señal confiable
+                # de caída — con un 5xx yfinance devuelve el calendario vacío
+                # SIN error (esconde la excepción) y sólo esto revienta.
+                if fallas is not None:
+                    fallas.append('info')
+                raise
             ex_div = info.get('exDividendDate')  # timestamp UNIX
             div_amount = info.get('lastDividendValue')
             # Fecha a la que corresponde `lastDividendValue`. NO siempre es `ex_div`:
@@ -7115,68 +7122,142 @@ def _fetch_yf_events(ticker: str) -> list:
 
     except Exception:
         # ticker desconocido o yfinance error → vacío
-        pass
+        if fallas is not None:
+            fallas.append('ticker')
     return events
 
 
-def _refresh_events_in_background(tickers: list):
-    """Stale-while-revalidate para events: dispara refresh en daemon thread."""
-    import threading
-    def worker():
-        local_conn = get_db()
-        try:
-            _refresh_events_for_tickers(local_conn, tickers)
-        except Exception as ex:
-            logging.getLogger(__name__).warning("background events refresh failed: %s", ex)
-        finally:
-            local_conn.close()
-    threading.Thread(target=worker, daemon=True).start()
-
-
 def _has_events_for_tickers(conn, tickers: list, days: int = 90) -> bool:
-    """Quick check: ¿hay eventos en DB para alguno de esos tickers en ventana?"""
-    if not tickers:
+    """¿Hay eventos guardados para alguno de esos tickers en la ventana? La
+    MISMA ventana que después se muestra (eventos_guardados)."""
+    return bool(eventos_guardados(conn, tickers, days, limite=1))
+
+
+def _buscar_y_guardar_eventos(ticker: str) -> bool:
+    """Un trabajador: trae los eventos de UN ticker de yfinance y los guarda en
+    su propia conexión (sqlite no comparte conexiones entre hilos). Devuelve
+    True si quedó al día (con o sin eventos); False si Yahoo no contestó o si
+    falló al guardar."""
+    try:
+        fallas = []
+        events = _fetch_yf_events(ticker, fallas=fallas)
+        if events:
+            iso_now = datetime.utcnow().isoformat() + "Z"
+            conn = get_db()
+            try:
+                with conn:
+                    for ev in events:
+                        conn.execute(
+                            """INSERT INTO financial_events
+                               (ticker, event_type, event_date, details, confirmed, source, fetched_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)
+                               ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
+                                   details = excluded.details,
+                                   confirmed = excluded.confirmed,
+                                   fetched_at = excluded.fetched_at""",
+                            (ev['ticker'], ev['event_type'], ev['event_date'],
+                             json.dumps(ev['details']), ev['confirmed'], 'yfinance', iso_now),
+                        )
+                    # Una fecha FUTURA que Yahoo ya no informa es una fecha que
+                    # MOVIÓ (la estimada pasó a confirmada, o se corrió): la
+                    # fila vieja se borra. Sin esto quedaba para siempre al lado
+                    # de la nueva — visto el 2026-10-01: NVDA con dos earnings
+                    # (04/10 y 17/11), y la tarjeta del inicio anunciando el que
+                    # ya no existe. Sólo por tipo que Yahoo SÍ trajo: si un tipo
+                    # no vino (su lectura falló en silencio en _fetch_yf_events)
+                    # lo guardado se respeta. Lo cargado a mano (source !=
+                    # 'yfinance') no se toca, y lo pasado TAMPOCO — incluido HOY
+                    # (`>` y no `>=`): el mismo día del ex-dividendo Yahoo puede
+                    # ya informar el siguiente, y borrar el de hoy lo sacaba del
+                    # mail del día ("Eventos de hoy"), de la agenda y del inicio.
+                    hoy = _iso_today()
+                    for tipo in {ev['event_type'] for ev in events}:
+                        vigentes = [ev['event_date'] for ev in events if ev['event_type'] == tipo]
+                        conn.execute(
+                            f"""DELETE FROM financial_events
+                                 WHERE ticker = ? AND event_type = ? AND source = 'yfinance'
+                                   AND event_date > ?
+                                   AND event_date NOT IN ({','.join('?' * len(vigentes))})""",
+                            (ticker, tipo, hoy, *vigentes),
+                        )
+            finally:
+                conn.close()
+        if 'ticker' in fallas or 'info' in fallas:
+            # Yahoo no contestó (exceso de pedidos, caída, red): no es "no tiene
+            # eventos". La señal es que PEDIR el info falló — con un 5xx el
+            # calendario vuelve vacío sin error, así que esperar a que fallen
+            # los dos dejaba pasar las caídas (revisión independiente,
+            # 2026-10-01). Un ticker que Yahoo no conoce (ALUA, TXAR) NO tira
+            # error: queda en las 6 h normales. Lo que haya llegado ya se
+            # guardó arriba; se reintenta en EVENTOS_REINTENTO_SEG, no en 6 h
+            # ni en cada visita.
+            _events_fetched_at[ticker] = time.time() - EVENTS_TTL + EVENTOS_REINTENTO_SEG
+            logging.getLogger(__name__).warning(
+                "events refresh %s: Yahoo no contestó (%s)", ticker, ",".join(fallas))
+            return False
+        # Sin eventos también cuenta como buscado: no se reintenta en cada pedido.
+        _events_fetched_at[ticker] = time.time()
+        return True
+    except Exception as ex:
+        logging.getLogger(__name__).warning("events refresh %s failed: %s", ticker, ex)
         return False
-    today = _iso_today()
-    end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
-    placeholders = ','.join('?' for _ in tickers)
-    row = conn.execute(
-        f"SELECT 1 FROM financial_events WHERE ticker IN ({placeholders}) "
-        f"AND event_date >= ? AND event_date <= ? LIMIT 1",
-        (*tickers, today, end_date),
-    ).fetchone()
-    return row is not None
+    finally:
+        with _events_en_vuelo_lock:
+            _events_en_vuelo.pop(ticker, None)
 
 
-def _refresh_events_for_tickers(conn, tickers: list):
-    """Refresca el cache de eventos para una lista de tickers. Idempotente:
-    si un ticker ya fue refrescado hace <TTL, lo skipea."""
-    now = time.time()
-    iso_now = datetime.utcnow().isoformat() + "Z"
-    for ticker in tickers:
-        if not ticker:
-            continue
-        if now - _events_fetched_at.get(ticker, 0) < EVENTS_TTL:
-            continue
-        events = _fetch_yf_events(ticker)
-        if not events:
-            # Marcamos como "fetched" igual para no retry constantemente
-            _events_fetched_at[ticker] = now
-            continue
-        with conn:
-            for ev in events:
-                conn.execute(
-                    """INSERT INTO financial_events
-                       (ticker, event_type, event_date, details, confirmed, source, fetched_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
-                           details = excluded.details,
-                           confirmed = excluded.confirmed,
-                           fetched_at = excluded.fetched_at""",
-                    (ev['ticker'], ev['event_type'], ev['event_date'],
-                     json.dumps(ev['details']), ev['confirmed'], 'yfinance', iso_now),
-                )
-        _events_fetched_at[ticker] = now
+def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
+    """Refresca los eventos de los tickers vencidos (más de EVENTS_TTL).
+
+    MEDIDO el 2026-10-01: los eventos del mercado (~20 empresas) se pedían a
+    yfinance DE A UNO, ~0,5 s cada uno: la primera persona después de cada
+    publicación (la memoria de "ya buscado" se borra al reiniciar) o cada 6 h
+    esperaba 10,7 s. Ahora:
+      · van en paralelo en `_events_fetch_executor` (8 a la vez, el mismo cap
+        que `_yf_executor`; global y sin `with`, ver el fix B1 más arriba);
+      · un ticker que ya se está buscando NO se vuelve a pedir: se espera ese
+        mismo pedido (dos personas a la vez = una sola búsqueda);
+      · `esperar_segundos=None` → no espera (refresco de fondo); un número →
+        espera hasta ese tope y devuelve igual (lo que no llegó se guarda solo).
+    Devuelve cuántas búsquedas TERMINARON BIEN antes de volver (0 si no
+    espera): es el `refreshed_tickers` de las respuestas, y una búsqueda que no
+    llegó a tiempo, o que falló, no renovó nada de lo que se está por mostrar."""
+    ahora = time.time()
+    futuros = []
+    with _events_en_vuelo_lock:
+        for t in dict.fromkeys(t for t in tickers if t):
+            if ahora - _events_fetched_at.get(t, 0) < EVENTS_TTL:
+                continue
+            fut = _events_en_vuelo.get(t)
+            if fut is None:
+                fut = _events_fetch_executor.submit(_buscar_y_guardar_eventos, t)
+                _events_en_vuelo[t] = fut
+            futuros.append(fut)
+    if not futuros or esperar_segundos is None:
+        return 0
+    terminados, _ = _esperar_futuros(futuros, timeout=esperar_segundos)
+    return sum(1 for f in terminados if not f.cancelled() and f.result() is True)
+
+
+def _eventos_al_dia(conn, tickers: list) -> int:
+    """La regla ÚNICA para tener los eventos al día antes de leerlos de la DB
+    (stale-while-revalidate). La usan /events/portfolio, /events/popular y el
+    radar del asesor — antes estaba copiada a mano en los dos primeros y
+    /events/popular no la tenía: por eso tardaba 10,7 s y la cartera 0,4 s.
+      · Si ya hay algo POR VENIR guardado de estos tickers: se responde con eso
+        YA y los vencidos se refrescan de fondo.
+      · Si no hay nada (base vacía): se espera la búsqueda, hasta
+        EVENTOS_ESPERA_MAX_SEG.
+    La pregunta es "¿ya se buscaron alguna vez?", NO "¿hay algo en la ventana
+    que pidió la pantalla?": con la ventana, el adelanto de 14 días del inicio
+    esperaba a Yahoo en cada semana tranquila (medido: 3,0 s contra 0,01 s
+    con 90 días, por la misma base).
+    Devuelve cuántas búsquedas terminaron a tiempo para esta respuesta."""
+    if not tickers:
+        return 0
+    if _has_events_for_tickers(conn, tickers, days=366):
+        return _refresh_events_for_tickers(tickers)
+    return _refresh_events_for_tickers(tickers, esperar_segundos=EVENTOS_ESPERA_MAX_SEG)
 
 
 @app.get("/api/events/earnings-expectations")
@@ -7216,7 +7297,7 @@ def get_portfolio_events(
     Response:
       {
         events: [{ticker, event_type, event_date, details, confirmed, source}],
-        refreshed_tickers: number,  // cuántos tickers se refrescaron del cache
+        refreshed_tickers: number,  // búsquedas a Yahoo que terminaron a tiempo para esta respuesta
       }
     """
     if days <= 0 or days > 365:
@@ -7236,55 +7317,17 @@ def get_portfolio_events(
         # Excluir bonos AR (los maneja frontend via bondSchedule)
         stock_tickers = [t for t in all_tickers if t not in AR_BONDS_DATA912 and t not in CRYPTO_SYMBOLS]
 
-        # SWR: si ya hay eventos en DB para algún ticker del portfolio en la
-        # ventana, devolvemos esa data al instante y refrescamos en background.
-        # Si NO hay nada (primer load), bloqueamos.
-        refreshed = 0
-        if _has_events_for_tickers(conn, stock_tickers, days=days):
-            _refresh_events_in_background(stock_tickers)
-        else:
-            try:
-                before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                _refresh_events_for_tickers(conn, stock_tickers)
-                after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                refreshed = after - before
-            except Exception:
-                pass
+        # Al día con la regla única (_eventos_al_dia): lo guardado al instante y
+        # lo vencido de fondo; si no hay nada guardado, se espera la búsqueda.
+        try:
+            refreshed = _eventos_al_dia(conn, stock_tickers)
+        except Exception:
+            refreshed = 0
 
-        # Query: eventos próximos para los tickers del portfolio
-        today = _iso_today()
-        end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
         if not stock_tickers:
             return {'events': [], 'refreshed_tickers': 0}
-
-        placeholders = ','.join('?' for _ in stock_tickers)
-        rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed, source
-                FROM financial_events
-                WHERE ticker IN ({placeholders})
-                  AND event_date >= ?
-                  AND event_date <= ?
-                ORDER BY event_date ASC""",
-            (*stock_tickers, today, end_date),
-        ).fetchall()
-
-        events = []
-        for r in rows:
-            details = {}
-            try:
-                details = json.loads(r['details']) if r['details'] else {}
-            except Exception:
-                pass
-            events.append({
-                'ticker': r['ticker'],
-                'event_type': r['event_type'],
-                'event_date': r['event_date'],
-                'details': details,
-                'confirmed': bool(r['confirmed']),
-                'source': r['source'],
-            })
-
-        return {'events': events, 'refreshed_tickers': refreshed}
+        return {'events': eventos_guardados(conn, stock_tickers, days),
+                'refreshed_tickers': refreshed}
     finally:
         conn.close()
 
@@ -8196,8 +8239,11 @@ def _ensure_news_batch_parallel(specs, ttl_seconds, max_wait_seconds=None):
             )
         return
 
-    # Path sin timeout — esperamos a TODOS los workers.
-    for fut in as_completed(futures):
+    # Path sin timeout — esperamos a TODOS los workers. Uno por uno con
+    # `result()` y NO con `as_completed`: al apagar, `_stop_scheduler` cancela
+    # lo encolado y `as_completed` no se entera de un cancelado — esperaba para
+    # siempre. `result()` de un cancelado vuelve al toque (CancelledError).
+    for fut in futures:
         try:
             fut.result()
         except Exception as e:
@@ -37932,6 +37978,17 @@ def _start_scheduler():
 def _stop_scheduler():
     if _scheduler.running:
         _scheduler.shutdown(wait=False)
+    # Las búsquedas a Yahoo / Google News que todavía NO arrancaron se
+    # descartan. Los hilos de estas colas no son "daemon": al cerrar, Python
+    # esperaba la cola ENTERA (después de un deploy, decenas de tickers de
+    # eventos) antes de soltar el proceso viejo. Las que ya están corriendo
+    # terminan (son pocas y cortas); lo descartado se vuelve a pedir solo en el
+    # próximo arranque — nada se pierde, todo es caché.
+    for _pool in (_events_fetch_executor, _yf_executor, _news_fetch_executor):
+        try:
+            _pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
     # Bajar lo que quedó encolado en el buffer de precios. Railway redeploya
     # seguido; sin esto, cada deploy tira hasta un minuto de últimos-precios y
     # los activos que hoy no cotizan vuelven a valuarse a cost basis (o sea,
@@ -40229,11 +40286,19 @@ def home_personal(uid: int = Depends(get_effective_user)):
 
 
 def _get_portfolio_events_cached(uid: int) -> list:
-    """Helper que reusa la lógica de /api/events/portfolio sin re-pegar al fetcher.
-    Por simplicidad consultamos directo a la tabla `events` con los tickers del user."""
+    """Los eventos YA GUARDADOS (financial_events) de los activos del user en
+    los próximos 14 días: las tarjetas "Earnings de X" / "Dividendo de X" de
+    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Rendi AI
+    (ai/builders/home.py). Sólo LEE — el inicio no puede esperar a Yahoo; los
+    renueva /api/events/portfolio (_eventos_al_dia).
+
+    🔴 Hasta 2026-10-01 leía la tabla `events`, que NO EXISTE: cada llamada
+    moría con "no such table", los dos llamadores lo tragaban y esas tarjetas
+    no aparecieron nunca desde que se crearon (2026-05-16). Las pruebas de las
+    tarjetas les pasaban los eventos a mano, sin atravesar esta lectura.
+    Prueba por el camino real: tests/test_home.py::TarjetasDeEventosPorElEndpointTest."""
     conn = get_db()
     try:
-        # Tickers del user
         rows = conn.execute(
             """SELECT DISTINCT asset FROM positions
                 WHERE user_id = ? AND is_cash = 0 AND quantity > 0""",
@@ -40242,20 +40307,7 @@ def _get_portfolio_events_cached(uid: int) -> list:
         tickers = [r["asset"] for r in rows if r["asset"]]
         if not tickers:
             return []
-        # Buscar eventos en próximos 14 días para esos tickers
-        from datetime import date as _date, timedelta as _td
-        today = _date.today().isoformat()
-        cutoff = (_date.today() + _td(days=14)).isoformat()
-        placeholders = ",".join("?" * len(tickers))
-        events = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed
-                  FROM events
-                 WHERE ticker IN ({placeholders})
-                   AND event_date >= ? AND event_date <= ?
-                 ORDER BY event_date ASC""",
-            (*tickers, today, cutoff),
-        ).fetchall()
-        return [dict(e) for e in events]
+        return eventos_guardados(conn, tickers, 14)
     finally:
         conn.close()
 
@@ -41341,48 +41393,14 @@ def advisor_radar_events(days: int = 90, uid: int = Depends(get_current_user)):
         if not stock_tickers:
             return {"events": [], "refreshed_tickers": 0, "dropped_tickers": 0}
 
-        # SWR idéntico a /events/portfolio: si hay algo cacheado devolvemos ya
-        # y refrescamos atrás; si el cache está frío bloqueamos una vez.
-        refreshed = 0
-        if _has_events_for_tickers(conn, stock_tickers, days=days):
-            _refresh_events_in_background(stock_tickers)
-        else:
-            try:
-                before = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                _refresh_events_for_tickers(conn, stock_tickers)
-                after = sum(1 for t in stock_tickers if _events_fetched_at.get(t, 0) > 0)
-                refreshed = after - before
-            except Exception:
-                pass
+        # La misma regla que /events/portfolio y /events/popular (_eventos_al_dia).
+        try:
+            refreshed = _eventos_al_dia(conn, stock_tickers)
+        except Exception:
+            refreshed = 0
 
-        today = _iso_today()
-        end_date = (_hoy_art_date() + timedelta(days=days)).isoformat()
-        placeholders = ','.join('?' for _ in stock_tickers)
-        rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date, details, confirmed, source
-                FROM financial_events
-                WHERE ticker IN ({placeholders})
-                  AND event_date >= ? AND event_date <= ?
-                ORDER BY event_date ASC""",
-            (*stock_tickers, today, end_date),
-        ).fetchall()
-
-        events = []
-        for r in rows:
-            details = {}
-            try:
-                details = json.loads(r['details']) if r['details'] else {}
-            except Exception:
-                pass
-            events.append({
-                'ticker': r['ticker'],
-                'event_type': r['event_type'],
-                'event_date': r['event_date'],
-                'details': details,
-                'confirmed': bool(r['confirmed']),
-                'source': r['source'],
-                'clients': holders.get(r['ticker'], []),
-            })
+        events = [{**ev, 'clients': holders.get(ev['ticker'], [])}
+                  for ev in eventos_guardados(conn, stock_tickers, days)]
         return {"events": events, "refreshed_tickers": refreshed, "dropped_tickers": dropped}
     finally:
         conn.close()

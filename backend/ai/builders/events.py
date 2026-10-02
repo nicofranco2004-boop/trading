@@ -23,14 +23,16 @@ Shape (~900 bytes):
 """
 from __future__ import annotations
 from typing import Dict, Any
-from datetime import date, timedelta
+from datetime import date
+from fechas import hoy_art_date
+from eventos_guardados import eventos_guardados
 from collections import Counter
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     window_days = int(kwargs.get("window_days", 60))
-    today = date.today()
-    cutoff = today + timedelta(days=window_days)
+    # El "hoy" argentino, el mismo de la pantalla (ver eventos_guardados.py).
+    today = hoy_art_date()
 
     # Tickers del user
     rows = conn.execute(
@@ -54,14 +56,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "events": [],
         }
 
-    placeholders = ",".join("?" * len(tickers))
-    ev_rows = conn.execute(
-        f"""SELECT ticker, event_type, event_date FROM financial_events
-             WHERE ticker IN ({placeholders})
-               AND event_date >= ? AND event_date <= ?
-             ORDER BY event_date ASC""",
-        (*tickers, today.isoformat(), cutoff.isoformat()),
-    ).fetchall()
+    ev_rows = eventos_guardados(conn, tickers, window_days, hoy=today)
 
     # Weight por ticker — reusamos top_holdings
     weights: Dict[str, float] = {}

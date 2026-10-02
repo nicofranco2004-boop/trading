@@ -9,7 +9,7 @@ export default function CoachIA() {
       n={4}
       title="Rendi AI"
       intro="Cómo funciona el asistente IA: 12 preguntas guiadas, chat libre (Pro), registro de operaciones por chat, memoria persistente y cuotas semanales."
-      prev={{ to: '/guia/insights-y-reportes', label: 'Insights y reportes' }}
+      prev={{ to: '/guia/insights-y-reportes', label: 'Métricas y reportes' }}
       next={{ to: '/guia/novedades', label: 'Novedades y alertas' }}
       metaTitle="Rendi AI — Guía Rendi"
       metaDescription="Cómo usar Rendi AI: preguntas guiadas, chat libre Pro, registro de operaciones por chat, memoria persistente y cuotas semanales."

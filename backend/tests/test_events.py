@@ -99,7 +99,7 @@ class EventsPortfolioTest(unittest.TestCase):
                 # no nombra es justamente `id`: con INSERT OR REPLACE la fila se
                 # borraba y se reinsertaba, así que el id CAMBIABA; con DO UPDATE
                 # sobrevive. Se deja sobrevivir a propósito (es el comportamiento del
-                # upsert real de producción, el de `_refresh_events_for_tickers` en
+                # upsert real de producción, el de `_buscar_y_guardar_eventos` en
                 # main.py) y no rompe nada: ningún test lee el id, ni hay FK que
                 # apunte a financial_events(id).
                 # De todos modos hoy el DO UPDATE ni corre: setUp hace

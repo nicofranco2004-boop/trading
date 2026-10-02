@@ -12,7 +12,7 @@
 
 import { Link } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Sparkles } from 'lucide-react'
-import RendiLogo from '../RendiLogo'
+import CabeceraPublica from '../CabeceraPublica'
 import PageMeta from '../PageMeta'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -78,26 +78,18 @@ export default function GuidePage({
         />
       )}
 
-      {/* Header minimal: logo + nav a planes/login */}
-      <header className="border-b border-line">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
-            <Link to="/guia" className="text-ink-2 hover:text-ink-0">Guía</Link>
-            <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
-            <Link
-              to="/login?mode=register"
-              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 text-xs font-medium"
-            >
-              <Sparkles size={12} strokeWidth={2} />
-              Probar gratis
-            </Link>
-          </nav>
-        </div>
-      </header>
+      {/* Header minimal: logo + nav a planes/login (sólo sin sesión) */}
+      <CabeceraPublica>
+        <Link to="/guia" className="text-ink-2 hover:text-ink-0">Guía</Link>
+        <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
+        <Link
+          to="/login?mode=register"
+          className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white rounded-sm px-3 py-1.5 text-xs font-medium"
+        >
+          <Sparkles size={12} strokeWidth={2} />
+          Probar gratis
+        </Link>
+      </CabeceraPublica>
 
       <article className="max-w-3xl mx-auto px-6 py-12 md:py-16">
         <Link to="/guia" className="inline-flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink-1 mb-6">

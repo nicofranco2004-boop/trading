@@ -422,17 +422,21 @@ function Layout() {
       <AlertsProvider>
       <AdvisorProvider>
         <AdvisorLandingRedirect />
-        <MobileTopBar />
-        <main className="min-h-screen">
-          <ClientContextBar />
-          <DemoBanner />
+        {/* Los avisos de arriba de todo van ADENTRO de la barra: así su alto
+            entra en lo que la barra mide y nada de lo que se pega debajo
+            queda tapado (ver components/mobile/avisos.js). */}
+        <MobileTopBar>
+          <ClientContextBar enLaBarra />
+          <DemoBanner enLaBarra />
           {/* La barra del trial va en los DOS shells. Cuando se montó quedó
               solo en el de desktop (el reemplazo matcheó una sola indentación)
               y se verificó en viewport de escritorio, o sea justo la mitad que
               andaba: la mayoría de los usuarios de Rendi entra desde el celular
               y no veía ni el contador ni el aviso del día 8 — que es la mitad
               del mecanismo del trial encadenado. */}
-          <TrialBanner />
+          <TrialBanner enLaBarra />
+        </MobileTopBar>
+        <main className="min-h-screen">
           <TransicionDePantalla>
             <Suspense fallback={<PageFallback />}>
               <AppRoutes />

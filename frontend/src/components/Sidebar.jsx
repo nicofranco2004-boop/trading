@@ -33,7 +33,7 @@ import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { prefetchRoute } from '../utils/routePrefetch'
-import { menuVisible, GROUPS } from '../utils/navegacion'
+import { menuVisible, GROUPS, etiquetaDeGrupo } from '../utils/navegacion'
 import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
 
@@ -237,7 +237,15 @@ export default function Sidebar() {
                   >
                     <GroupIcon size={18} strokeWidth={1.75} aria-hidden="true"
                       className={isOpen ? 'text-data-violet' : 'text-ink-2'} />
-                    <span className="flex-1 text-left">{group.label}</span>
+                    {/* Adentro de un cliente, la cartera es la de él (el celular
+                        dice lo mismo en "Más"). */}
+                    {/* Un nombre largo ocupaba 4 renglones (y uno sin espacios, como
+                        un mail, empujaba la flecha fuera del menú): se recorta,
+                        y entero al pasar el mouse. */}
+                    {(() => {
+                      const titulo = etiquetaDeGrupo(group, clientCtx)
+                      return <span className="flex-1 min-w-0 truncate text-left" title={titulo}>{titulo}</span>
+                    })()}
                     <ChevronRight size={16} strokeWidth={2}
                       className={`text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
                   </button>

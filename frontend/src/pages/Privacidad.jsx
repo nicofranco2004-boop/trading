@@ -10,7 +10,7 @@
 // mejor versión que podemos sostener honestamente sobre cómo funciona Rendi hoy.
 
 import { Link } from 'react-router-dom'
-import RendiLogo from '../components/RendiLogo'
+import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
 export default function Privacidad() {
@@ -23,15 +23,11 @@ export default function Privacidad() {
       />
 
       {/* Header simple — logo + link a planes */}
-      <header className="border-b border-line">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <Link to="/planes" className="text-sm text-ink-2 hover:text-ink-0">Volver a planes →</Link>
-        </div>
-      </header>
+      {/* Encabezado público: sólo sin sesión (con sesión la página se ve
+          adentro de la app, con su menú). */}
+      <CabeceraPublica>
+        <Link to="/planes" className="text-sm text-ink-2 hover:text-ink-0">Volver a planes →</Link>
+      </CabeceraPublica>
 
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>

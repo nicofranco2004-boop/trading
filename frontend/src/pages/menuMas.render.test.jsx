@@ -10,116 +10,278 @@ import { Star } from 'lucide-react'
 // dos leen utils/navegacion.js; esto se pone en rojo si alguno vuelve a armar
 // su propia lista.
 //
-// El menú lateral recuerda si estaba plegado en localStorage; en estas pruebas
-// no hay navegador. Se pone y se saca: no puede quedar para las que siguen.
-beforeAll(() => { vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} }) })
+// Se comparan los dos dibujos enteros (no la lista compartida): un menú que
+// la lea bien y después se olvide de dibujar una parte tiene que dar rojo.
+
+// El menú lateral recuerda en localStorage si estaba plegado; se prueban las
+// dos formas, porque plegado dibuja otra lista (íconos sueltos, sin grupos).
+let plegado = false
+beforeAll(() => {
+  vi.stubGlobal('localStorage', {
+    getItem: (k) => (k === 'rendi_sidebar_collapsed' ? String(plegado) : null),
+    setItem: () => {}, removeItem: () => {},
+  })
+})
 afterAll(() => { vi.unstubAllGlobals() })
+
 let usuario = { tier: 'pro' }
 let cliente = null
+let sinVer = 0
+let push = { supported: false }
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: usuario, logout: () => {} }) }))
 vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: cliente }) }))
-vi.mock('../contexts/AlertsContext', () => ({ useAlertsContext: () => ({ unseenCount: 0 }) }))
+vi.mock('../contexts/AlertsContext', () => ({ useAlertsContext: () => ({ unseenCount: sinVer, markSeen: () => {} }) }))
 vi.mock('../contexts/ThemeContext', () => ({ useTheme: () => ({ dark: true, toggle: () => {} }) }))
 vi.mock('../contexts/CoachDrawerContext', () => ({ useCoachDrawer: () => ({ open: () => {} }) }))
 vi.mock('../components/CurrencySwitcher', () => ({ default: () => null }))
 vi.mock('../components/RecommendationsModal', () => ({ default: () => null }))
 vi.mock('../components/Toast', () => ({ useToast: () => null }))
-vi.mock('../hooks/usePushNotifications', () => ({
-  usePushNotifications: () => ({ supported: false }),
-}))
+vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => push }))
 
 import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
-import MobileTabBar from '../components/mobile/MobileTabBar'
+import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
+import fuenteDeApp from '../App.jsx?raw'
+import { accionDelPedido, EncabezadoCompacto, encabezadoCompactoVisible } from './PositionsMobile'
 
-const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1])
+const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
 const dibujar = (Componente, u, c) => {
   usuario = u; cliente = c
   return renderToStaticMarkup(<MemoryRouter initialEntries={['/mas']}><Componente /></MemoryRouter>)
 }
-// El logo de arriba del menú lateral lleva a "/" para todos (también al asesor,
-// que no tiene esa pantalla en su menú): es el logo, no una entrada del menú.
-// El menú empieza en <nav>.
+// Arriba del <nav> del menú lateral va el logo, que lleva a "/" para todos
+// (también al asesor, que no tiene esa pantalla en su menú): es el logo, no
+// una entrada del menú. Se exige que sea lo ÚNICO que hay ahí arriba: un
+// enlace nuevo en esa franja tiene que estar también en el celular.
 const menuCompu = (u, c) => {
   const html = dibujar(Sidebar, u, c)
-  return rutas(html.slice(html.indexOf('<nav')))
+  const corte = html.indexOf('<nav')
+  expect(corte, 'el menú lateral perdió su <nav>').toBeGreaterThan(0)
+  expect(rutas(html.slice(0, corte)), 'arriba del menú lateral sólo va el logo').toEqual(['/'])
+  return { html, rutas: rutas(html.slice(corte)) }
 }
-const menuMas = (u, c) => rutas(dibujar(More, u, c))
+const menuMas = (u, c) => {
+  const html = dibujar(More, u, c)
+  return { html, rutas: rutas(html) }
+}
+const titulos = (html) => [...html.matchAll(/<h2[^>]*>\s*([^<]*?)\s*<\/h2>/g)].map(m => m[1])
 const ordenadas = (r) => [...new Set(r)].sort()
+const sinRepetidos = (r) => expect(r).toHaveLength(new Set(r).size)
+// Los botones que no son pantallas y que el usuario tiene que encontrar en los
+// dos: el modo claro en el celular vivió una vez SÓLO en la compu.
+const ACCIONES = ['Rendi AI', 'data-tour="tema"', 'Recomendaciones', 'Cerrar sesión']
 
+const CLIENTE = { id: 7, label: 'Ana' }
 const CASOS = [
   ['usuario común', { tier: 'pro' }, null],
   ['asesor en su nivel', { tier: 'advisor' }, null],
-  ['asesor adentro de un cliente', { tier: 'advisor' }, { id: 7 }],
+  ['asesor adentro de un cliente', { tier: 'advisor' }, CLIENTE],
   ['admin sin plan asesor', { tier: 'pro', is_admin: true }, null],
+  ['admin con plan admin', { tier: 'admin', is_admin: true }, null],
+  ['asesor que además es admin, en su nivel', { tier: 'advisor', is_admin: true }, null],
+  ['asesor que además es admin, adentro de un cliente', { tier: 'advisor', is_admin: true }, CLIENTE],
 ]
 
-describe('"Más" (celular) y el menú lateral (compu) llevan a los mismos lugares', () => {
-  for (const [quien, u, c] of CASOS) {
-    it(quien, () => {
-      const compu = menuCompu(u, c)
-      const mas = menuMas(u, c)
-      // Contra el falso verde: si un dibujo sale vacío, "iguales" no prueba nada.
-      expect(compu.length).toBeGreaterThan(3)
-      expect(ordenadas(mas)).toEqual(ordenadas(compu))
-      // Y en "Más" cada lugar aparece una sola vez (Dashboard está en dos listas).
-      expect(mas).toHaveLength(new Set(mas).size)
-    })
-  }
+describe.each([['desplegado', false], ['plegado', true]])('menú de la compu %s', (_, estaPlegado) => {
+  beforeAll(() => { plegado = estaPlegado })
+  afterAll(() => { plegado = false })
 
-  it('el asesor en su nivel tiene "Cobros" en el celular, y no una cartera propia', () => {
-    const mas = menuMas({ tier: 'advisor' }, null)
-    expect(mas).toContain('/cobros')
-    expect(mas).toContain('/importar-historiales')
-    expect(mas).not.toContain('/posiciones')
-    expect(mas).not.toContain('/imports')
-  })
-
-  it('adentro de un cliente: la cartera del cliente y "Clientes" para volver, sin "Cobros"', () => {
-    const mas = menuMas({ tier: 'advisor' }, { id: 7 })
-    expect(mas).toContain('/posiciones')
-    expect(mas).toContain('/clientes')
-    expect(mas).not.toContain('/cobros')
-  })
-
-  it('ser admin no da "Clientes" (es del plan Asesor), sí el panel de Admin', () => {
-    const mas = menuMas({ tier: 'pro', is_admin: true }, null)
-    expect(mas).not.toContain('/clientes')
-    expect(mas).toContain('/admin')
-    expect(menuMas({ tier: 'pro' }, null)).not.toContain('/admin')
-  })
-
-  it('la Guía y Configuración están en el celular para todos', () => {
-    for (const [, u, c] of CASOS) {
-      expect(menuMas(u, c)).toContain('/guia')
-      expect(menuMas(u, c)).toContain('/config')
+  describe('"Más" (celular) y el menú lateral (compu) llevan a los mismos lugares', () => {
+    for (const [quien, u, c] of CASOS) {
+      it(quien, () => {
+        const compu = menuCompu(u, c)
+        const mas = menuMas(u, c)
+        // Contra el falso verde: si un dibujo sale vacío, "iguales" no prueba nada.
+        expect(compu.rutas.length).toBeGreaterThan(3)
+        expect(ordenadas(mas.rutas)).toEqual(ordenadas(compu.rutas))
+        // Cada lugar una sola vez en cada menú (Dashboard está en dos listas).
+        sinRepetidos(compu.rutas)
+        sinRepetidos(mas.rutas)
+        for (const a of ACCIONES) {
+          expect(compu.html, `compu: ${a}`).toContain(a)
+          expect(mas.html, `celular: ${a}`).toContain(a)
+        }
+      })
     }
   })
 })
 
-describe('la barra de abajo del celular usa la misma regla del asesor', () => {
-  const barra = (u, c) => rutas(dibujar(MobileTabBar, u, c))
-  it('asesor en su nivel: las pestañas de su mundo', () => {
-    expect(barra({ tier: 'advisor' }, null)).toEqual(['/dashboard', '/clientes', '/novedades', '/mas'])
+describe('"Más": cómo se agrupa', () => {
+  it('el asesor en su nivel: sólo "Plan Asesor", con el Dashboard del libro', () => {
+    const { html, rutas: r } = menuMas({ tier: 'advisor' }, null)
+    const t = titulos(html)
+    expect(t).toContain('Plan Asesor')
+    for (const no of ['Tu portfolio', 'Mercado', 'Análisis', 'Otras secciones']) expect(t).not.toContain(no)
+    expect(html).toContain('Total administrado')        // el Dashboard del libro
+    expect(html).not.toContain('de dónde sale la ganancia') // no el de una cartera
+    expect(r).toContain('/cobros')
+    expect(r).not.toContain('/posiciones')
   })
-  it('asesor adentro de un cliente y usuario común: las de una cartera', () => {
-    expect(barra({ tier: 'advisor' }, { id: 7 })).toEqual(['/', '/posiciones', '/insights', '/mas'])
-    expect(barra({ tier: 'pro' }, null)).toEqual(['/', '/posiciones', '/insights', '/mas'])
+
+  it('adentro de un cliente: su cartera se llama con su nombre, y "Clientes" para volver', () => {
+    const { html, rutas: r } = menuMas({ tier: 'advisor' }, CLIENTE)
+    const t = titulos(html)
+    expect(t).toContain('Cartera de Ana')
+    expect(t).not.toContain('Tu portfolio')
+    expect(t).toContain('Plan Asesor')
+    expect(r).toContain('/clientes')
+    expect(r).not.toContain('/cobros')
+    expect(html).toContain('la cartera de Ana')          // Rendi AI trabaja sobre la de Ana
+  })
+
+  it('la compu dice lo mismo: adentro de un cliente su grupo es "Cartera de Ana", no "Tu Cartera"', () => {
+    const { html } = menuCompu({ tier: 'advisor' }, CLIENTE)
+    expect(html).toContain('Cartera de Ana')
+    expect(html).not.toContain('>Tu Cartera<')
+    expect(menuCompu({ tier: 'pro' }, null).html).toContain('>Tu Cartera<')
+  })
+
+  it('usuario común: las secciones de la compu, ninguna de relleno', () => {
+    const t = titulos(menuMas({ tier: 'pro' }, null).html)
+    for (const s of ['Tu portfolio', 'Mercado', 'Análisis']) expect(t).toContain(s)
+    for (const no of ['Plan Asesor', 'Otras secciones']) expect(t).not.toContain(no)
+  })
+
+  it('ser admin no da "Clientes" (es del plan Asesor); sí el panel de Admin', () => {
+    expect(menuMas({ tier: 'pro', is_admin: true }, null).rutas).not.toContain('/clientes')
+    expect(menuMas({ tier: 'pro', is_admin: true }, null).rutas).toContain('/admin')
+    expect(menuMas({ tier: 'pro' }, null).rutas).not.toContain('/admin')
+  })
+})
+
+describe('el puntito de alertas sin ver', () => {
+  afterAll(() => { sinVer = 0 })
+  for (const [quien, u, c] of CASOS.slice(0, 3)) {
+    it(`${quien}: si la compu lo muestra, el celular también (en "Más" y en su pestaña)`, () => {
+      sinVer = 2
+      expect(menuCompu(u, c).html).toContain('Tenés alertas sin ver')
+      expect(menuMas(u, c).html).toContain('Tenés alertas sin ver')
+      expect(dibujar(MobileTabBar, u, c)).toContain('Tenés alertas sin ver')
+      sinVer = 0
+      expect(menuMas(u, c).html).not.toContain('Tenés alertas sin ver')
+      expect(dibujar(MobileTabBar, u, c)).not.toContain('Tenés alertas sin ver')
+    })
+  }
+})
+
+describe('la barra de abajo del celular', () => {
+  // Es una tercera lista (las pestañas fijas), escrita a mano a propósito:
+  // cuáles van abajo es una decisión de diseño. Lo que no puede pasar es que
+  // ofrezca un lugar que el menú de ese usuario no tiene.
+  const destinos = (u, c) => rutas(dibujar(MobileTabBar, u, c))
+    .filter(r => r !== '/mas').map(r => r.split('?')[0])
+  for (const [quien, u, c] of CASOS) {
+    it(`${quien}: cada pestaña está en su menú`, () => {
+      const menu = new Set(menuCompu(u, c).rutas)
+      for (const d of destinos(u, c)) expect(menu, d).toContain(d)
+    })
+  }
+  it('la pantalla de análisis se llama igual que en los menús: "Métricas"', () => {
+    const barra = dibujar(MobileTabBar, { tier: 'pro' }, null)
+    expect(barra).toMatch(/href="\/analisis\?tab=diagnostico"[^>]*>[\s\S]*?Métricas/)
+    expect(barra).not.toContain('Insights')
+  })
+  it('el "+" (cargar compras) sólo con una cartera a la vista', () => {
+    const conMas = (u, c) => dibujar(MobileTabBar, u, c).includes('Abrir acciones rápidas')
+    expect(conMas({ tier: 'pro' }, null)).toBe(true)
+    expect(conMas({ tier: 'advisor' }, CLIENTE)).toBe(true)
+    expect(conMas({ tier: 'pro', is_admin: true }, null)).toBe(true)
+    expect(conMas({ tier: 'advisor' }, null)).toBe(false)
   })
 })
 
 describe('seccionesDelMenuMas', () => {
-  it('una pantalla nueva sin renglón propio en el celular aparece igual', () => {
-    const nueva = { to: '/nueva', label: 'Pantalla nueva', icon: Star, grupo: 'Mercado' }
-    const secciones = seccionesDelMenuMas([{ to: '/posiciones', label: 'Cartera', icon: Star }, nueva])
-    const enMercado = secciones.find(s => s.label === 'Mercado')
-    expect(enMercado.items.map(i => [i.to, i.label, i.sub])).toEqual([['/nueva', 'Pantalla nueva', undefined]])
+  const p = (to, extra = {}) => ({ to, label: to, icon: Star, ...extra })
+  const donde = (secciones, to) => secciones.find(s => s.items.some(i => i.to === to))?.label
+
+  it('una pantalla nueva sin renglón propio en el celular aparece igual, en su grupo', () => {
+    const s = seccionesDelMenuMas([p('/posiciones', { grupoId: 'cartera', grupo: 'Tu Cartera' }), p('/nueva', { grupoId: 'mercado', grupo: 'Mercado', label: 'Nueva' })])
+    expect(s.find(x => x.label === 'Mercado').items.map(i => [i.to, i.label, i.sub])).toEqual([['/nueva', 'Nueva', undefined]])
+  })
+  it('una pantalla nueva del grupo "Tu Cartera" va a "Tu portfolio", no a una sección aparte', () => {
+    const s = seccionesDelMenuMas([p('/posiciones', { grupoId: 'cartera', grupo: 'Tu Cartera' }), p('/watchlist', { grupoId: 'cartera', grupo: 'Tu Cartera' })])
+    expect(s.map(x => x.label)).toEqual(['Tu portfolio'])
+  })
+  it('adentro de un cliente, lo del asesor que no es de la cartera va con "Clientes"', () => {
+    // Si mañana navegacion.js deja "Cobros" adentro de un cliente (sin grupo,
+    // como "Clientes"), tiene que ir en "Plan Asesor" y no en una sección suelta.
+    const s = seccionesDelMenuMas([p('/clientes'), p('/cobros'), p('/dashboard', { grupoId: 'cartera', grupo: 'Cartera de Ana' })], { cliente: 'Ana' })
+    expect(donde(s, '/clientes')).toBe('Plan Asesor')
+    expect(donde(s, '/cobros')).toBe('Plan Asesor')
+    expect(donde(s, '/dashboard')).toBe('Cartera de Ana')
   })
   it('el asesor en su nivel: todo en "Plan Asesor", en el orden del celular', () => {
-    const p = (to) => ({ to, label: to, icon: Star })
-    const secciones = seccionesDelMenuMas(
-      ['/alertas', '/cobros', '/dashboard', '/clientes'].map(p), { atOwnLevel: true })
-    expect(secciones.map(s => s.label)).toEqual(['Plan Asesor'])
-    expect(secciones[0].items.map(i => i.to)).toEqual(['/dashboard', '/clientes', '/cobros', '/alertas'])
+    const s = seccionesDelMenuMas(['/alertas', '/cobros', '/dashboard', '/clientes'].map(to => p(to)), { atOwnLevel: true })
+    expect(s.map(x => x.label)).toEqual(['Plan Asesor'])
+    expect(s[0].items.map(i => i.to)).toEqual(['/dashboard', '/clientes', '/cobros', '/alertas'])
+  })
+})
+
+describe('"+" de la barra de abajo: cada acción hace lo que dice', () => {
+  // "Agregar a watchlist" iba a `/?action=watchlist`: la ruta existía, pero
+  // ninguna pantalla leía esa acción y quedabas en el Inicio sin nada abierto.
+  // Se corre la MISMA función con la que la Cartera lee el pedido.
+  const rutasDeApp = new Set([...fuenteDeApp.matchAll(/path="([^"]+)"/g)].map(m => m[1]))
+  const ESPERADO = { new_position: 'comprar', sell_position: 'vender', watchlist: null, search: null }
+  it('todas las acciones del "+" están en la tabla (una nueva tiene que anotarse)', () => {
+    expect(QUICK_ACTIONS.map(a => a.code).sort()).toEqual(Object.keys(ESPERADO).sort())
+  })
+  for (const a of QUICK_ACTIONS) {
+    it(a.label, () => {
+      const [ruta, consulta = ''] = a.to.split('?')
+      expect(rutasDeApp, ruta).toContain(ruta)
+      const esperado = ESPERADO[a.code]
+      if (esperado) {
+        // Comprar abre la compra y vender la venta, en la Cartera.
+        expect(ruta).toBe('/posiciones')
+        expect(accionDelPedido(`?${consulta}`)).toBe(esperado)
+      } else {
+        expect(consulta).not.toMatch(/action=/)
+      }
+    })
+  }
+})
+
+describe('notificaciones push: el texto dice lo que de verdad se manda', () => {
+  // Prometían "earnings, drawdowns y nuevos sesgos": sólo salen los avisos de
+  // precio/variación (alerts_engine) y, al asesor, los movimientos de sus
+  // clientes (advisor_alerts).
+  afterAll(() => { push = { supported: false } })
+  for (const subscribed of [false, true]) {
+    it(subscribed ? 'activadas' : 'sin activar', () => {
+      push = { supported: true, permission: 'default', subscribed, loading: false }
+      const comun = menuMas({ tier: 'pro' }, null).html
+      const asesor = menuMas({ tier: 'advisor' }, null).html
+      expect(comun).toContain('avisos de precio y de variación')
+      expect(asesor).toContain('movimientos de tus clientes')
+      for (const html of [comun, asesor]) expect(html).not.toMatch(/earnings|drawdowns|sesgos/)
+    })
+  }
+})
+
+describe('decisiones de producto (2026-10-01)', () => {
+  it('"/" se llama "Inicio" en la barra de abajo y en "Más" (era "Home" y "Resumen")', () => {
+    const barra = dibujar(MobileTabBar, { tier: 'pro' }, null)
+    expect(barra).toMatch(/href="\/"[^>]*>[\s\S]*?Inicio/)
+    expect(barra).not.toContain('>Home<')
+    const mas = menuMas({ tier: 'pro' }, null).html
+    expect(mas).toMatch(/href="\/"[^>]*>[\s\S]*?Inicio/)
+    expect(mas).not.toMatch(/>Resumen</)
+  })
+  it('el "+" dice "Registrar" (decía "Acciones", como los filtros de la lupa)', () => {
+    const barra = dibujar(MobileTabBar, { tier: 'pro' }, null)
+    expect(barra).toMatch(/Abrir acciones rápidas[\s\S]*?Registrar/)
+    expect(barra).not.toMatch(/>\s*Acciones\s*</)
+  })
+  it('Cartera, al bajar: una tira de un renglón con el total, la moneda y la lupa, debajo de la barra', () => {
+    const html = renderToStaticMarkup(<EncabezadoCompacto valor="$12.345" currency="USD" onMoneda={() => {}} onBuscar={() => {}} />)
+    expect(html).toMatch(/^<div class="fixed top-\[var\(--alto-barra-celular,93px\)\]/)
+    expect(html).toContain('$12.345')
+    expect(html).toMatch(/aria-pressed="true"[^>]*>USD</)
+    expect(html).toContain('aria-label="Buscar en tu cartera"')
+    // Aparece recién cuando el encabezado completo pasó por debajo de la barra.
+    expect(encabezadoCompactoVisible(300, 93)).toBe(false)
+    expect(encabezadoCompactoVisible(93, 93)).toBe(true)
+    expect(encabezadoCompactoVisible(40, 140)).toBe(true)
   })
 })

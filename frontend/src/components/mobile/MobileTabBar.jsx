@@ -26,13 +26,20 @@ import { track } from '../../utils/track'
 import { prefetchRoute } from '../../utils/routePrefetch'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
+import { useAlertsContext } from '../../contexts/AlertsContext'
 import { menuVisible } from '../../utils/navegacion'
 
 const TABS = [
-  { to: '/',             label: 'Home',       icon: Home },
+  // "Inicio", igual que en "Más" (antes: "Home" acá y "Resumen" allá, para
+  // la misma pantalla).
+  { to: '/',             label: 'Inicio',     icon: Home },
   { to: '/posiciones',   label: 'Cartera',    icon: Briefcase },
   // [+] FAB ocupa el slot 3 — no es NavLink
-  { to: '/insights',     label: 'Insights',   icon: Compass },
+  // Directo a donde llevaba /insights (que redirige): con /insights la pestaña
+  // nunca quedaba marcada (la dirección ya no decía /insights al llegar) y lo
+  // que se precargaba era la página vieja de Insights, no la que se abre. Se
+  // llama "Métricas", como la pantalla en el menú de la compu y en "Más".
+  { to: '/analisis?tab=diagnostico', label: 'Métricas', icon: Compass },
   { to: '/mas',          label: 'Más',        icon: MoreHorizontal },
 ]
 
@@ -102,8 +109,10 @@ export default function MobileTabBar() {
             >
               <Plus size={20} strokeWidth={2} className="text-white" />
             </span>
+            {/* "Registrar": decía "Acciones", que se confundía con los filtros
+                "Acciones US / AR" de la lupa. */}
             <span className="absolute bottom-1 text-[12.5px] text-ink-3 font-medium">
-              Acciones
+              Registrar
             </span>
           </button>
 
@@ -119,12 +128,17 @@ export default function MobileTabBar() {
 // ─── Tab item ────────────────────────────────────────────────────────────
 
 function TabItem({ to, label, icon: Icon }) {
+  const ruta = to.split('?')[0]
+  // "Más" lleva el puntito de alertas sin ver, como "Alertas" en el menú de la
+  // compu: en el celular Alertas vive adentro de "Más".
+  const { unseenCount = 0 } = useAlertsContext()
+  const puntito = ruta === '/mas' && unseenCount > 0
   return (
     <NavLink
       to={to}
       end={to === '/'}
-      onTouchStart={() => prefetchRoute(to)}
-      onFocus={() => prefetchRoute(to)}
+      onTouchStart={() => prefetchRoute(ruta)}
+      onFocus={() => prefetchRoute(ruta)}
       className={({ isActive }) =>
         // BUG FIX (audit 2026-05-25): el `absolute top-1` del dot indicator
         // necesita `position: relative` en el padre, sino el dot se posiciona
@@ -136,7 +150,13 @@ function TabItem({ to, label, icon: Icon }) {
     >
       {({ isActive }) => (
         <>
-          <Icon size={18} strokeWidth={1.75} />
+          <span className="relative">
+            <Icon size={18} strokeWidth={1.75} />
+            {puntito && (
+              <span title="Tenés alertas sin ver"
+                className="absolute -top-0.5 -right-1 w-2 h-2 rounded-full bg-data-violet" />
+            )}
+          </span>
           <span className="text-[12px] font-medium">{label}</span>
           {isActive && (
             <span
@@ -154,7 +174,9 @@ function TabItem({ to, label, icon: Icon }) {
 // Versión inicial M1 (sheet simple). En M2 va a usar el BottomSheet
 // formal con drag handle + sticky footer.
 
-const QUICK_ACTIONS = [
+// Exportadas para la prueba que exige que cada una vaya a una pantalla que la
+// entienda ("Agregar a watchlist" iba a `/?action=watchlist`, que nadie leía).
+export const QUICK_ACTIONS = [
   // Compra y venta separadas, igual que desktop. La compra es el alta de la
   // posición (?action=new); la venta abre el flow FIFO (?action=sell) — si hay 1
   // sola tenencia la vende directo, si hay varias lleva a elegir de la lista.
@@ -180,12 +202,15 @@ const QUICK_ACTIONS = [
     sub: 'Seguir un ticker',
     icon: Star,
     tone: 'warn',
-    to: '/?action=watchlist',
+    // El buscador tiene la estrella para seguir un ticker. Iba a
+    // `/?action=watchlist`, que nadie lee: caía en Inicio sin abrir nada.
+    to: '/buscar',
   },
   {
     code: 'search',
     label: 'Buscar activo',
-    sub: 'Ver precio, info, agregar',
+    // La lupa no muestra precios: abre tu ficha, la empresa, o lo seguís.
+    sub: 'Tu ficha, la empresa o seguirlo',
     icon: Search,
     tone: 'info',
     to: '/buscar',

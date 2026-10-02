@@ -37,7 +37,7 @@
 import { isCrypto } from './crypto'
 import { isArUsdBroker, isFixedIncome } from './valuation'
 import {
-  CEDEARS_LIST, ARG_LIDER, ARG_GENERAL, STOCKS_US, ETFS, BOND_TICKERS,
+  CEDEARS_LIST, ARG_LIDER, ARG_GENERAL, STOCKS_US, ETFS, BOND_TICKERS, ADR_DE_ACCION_AR,
 } from './tickers'
 import { computePnlByKey, mergePnl } from './assetPnl'
 
@@ -65,10 +65,10 @@ const US_ETF_SYMS = syms(ETFS)
 // backend/behavioral.py:127 — misma lista, mismo criterio: son exposición
 // económica AR aunque coticen en USD en un broker del exterior. NO incluye
 // MELI ni GLOB (negocios globales, no riesgo-país AR).
-const AR_ADR_SYMS = new Set([
-  'YPF', 'PAM', 'BBAR', 'CRESY', 'SUPV', 'EDN', 'CEPU', 'LOMA', 'IRS',
-  'TEO', 'TGS', 'BMA', 'GGAL', 'DESP',
-])
+// Salen de la tabla de equivalencias de tickers.js (ADR_DE_ACCION_AR), la que
+// usa el buscador para abrir la empresa: una sola lista. DESP (Despegar) es
+// argentina pero no cotiza en BYMA, por eso va aparte.
+const AR_ADR_SYMS = new Set([...Object.values(ADR_DE_ACCION_AR), 'DESP'])
 
 // Stablecoins: son dólares, no una apuesta cripto. Van a Efectivo aunque la
 // posición no venga marcada is_cash (muchos exchanges no la marcan). Nótese

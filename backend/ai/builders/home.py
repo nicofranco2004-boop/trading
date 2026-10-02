@@ -40,7 +40,9 @@ Shape (~1KB):
 """
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
-from datetime import date, timedelta
+from datetime import date
+from fechas import hoy_art_date
+from eventos_guardados import eventos_guardados
 
 from . import rendimiento_pantalla
 
@@ -202,8 +204,10 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         personal_cards_count = 0
 
     # ── 4. Eventos próximos (14d) ────────────────────────────────────────────
-    today = date.today()
-    cutoff = today + timedelta(days=14)
+    # El "hoy" argentino y la lectura única (eventos_guardados): con
+    # `date.today()` el servidor (UTC) ya estaba en mañana de 21 a 24 h y la IA
+    # no veía el evento de hoy que la pantalla sí muestra.
+    today = hoy_art_date()
     portfolio_assets = [r["asset"] for r in conn.execute(
         """SELECT DISTINCT asset FROM positions
             WHERE user_id = ? AND is_cash = 0 AND quantity > 0""",
@@ -212,14 +216,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
     events_window = {"total": 0, "weight_at_risk_pct": 0.0, "next_event": None}
     if portfolio_assets:
-        placeholders = ",".join("?" * len(portfolio_assets))
-        ev_rows = conn.execute(
-            f"""SELECT ticker, event_type, event_date FROM financial_events
-                 WHERE ticker IN ({placeholders})
-                   AND event_date >= ? AND event_date <= ?
-                 ORDER BY event_date ASC""",
-            (*portfolio_assets, today.isoformat(), cutoff.isoformat()),
-        ).fetchall()
+        ev_rows = eventos_guardados(conn, portfolio_assets, 14, hoy=today)
         events_window["total"] = len(ev_rows)
         if ev_rows:
             first = ev_rows[0]

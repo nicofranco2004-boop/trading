@@ -32,12 +32,7 @@ import WeekCard from './WeekCard'
 import Pill from '../Pill'
 import AskAIAbout from '../ai/AskAIAbout'
 import { useMoneyFormat } from '../../contexts/CurrencyContext'
-
-function fmtPct(p) {
-  if (p == null) return '—'
-  const sign = p >= 0 ? '+' : '−'
-  return `${sign}${Math.abs(p).toFixed(2).replace('.', ',')}%`
-}
+import { pctVar, pctColor } from '../../utils/format'
 
 function daysUntilPeriodEnd(period_end_iso) {
   // UTC para consistencia con el backend (que usa _iso_today / utcnow).
@@ -66,7 +61,6 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
   const noBasis = p.metrics?.basis_incomparable === true
   const deltaPct = noBasis ? null : p.metrics?.delta_pct
   const deltaUsd = noBasis ? null : p.metrics?.delta_usd
-  const positive = (deltaPct ?? 0) >= 0
   // Fase B: el delta_usd / valores monetarios respetan el toggle global
   // ARS/USD. El backend siempre devuelve USD; la conversión a ARS usa
   // tcValuacion ACTUAL (limitación MVP — Fase C trackeará TC histórico).
@@ -113,9 +107,9 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
           </div>
           <div className="flex items-baseline gap-2 flex-shrink-0">
             <span className={`text-2xl font-semibold tabular ${
-              noBasis ? 'text-ink-3' : (positive ? 'text-rendi-pos' : 'text-rendi-neg')
+              noBasis ? 'text-ink-3' : pctColor(deltaPct, 2)
             }`}>
-              {fmtPct(deltaPct)}
+              {pctVar(deltaPct, 2)}
             </span>
             <span className="text-xs tabular text-ink-3">
               {noBasis ? null : money.fmtMoney(deltaUsd, { signed: true })}

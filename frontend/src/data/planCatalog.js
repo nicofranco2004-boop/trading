@@ -30,7 +30,7 @@ export const FREE_FEATURES = {
   essentials: [
     { label: 'Dashboard completo con 4 KPIs + curva de evolución' },
     { label: 'Posiciones, Operaciones, Wrapped anual y Objetivos' },
-    { label: 'Insights con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
+    { label: 'Métricas con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
     { label: 'Diagnóstico completo + 3 detectores de comportamiento', sub: 'Con CAGR y volatilidad; personalizalo 2×/sem con “No me interesa” (métricas ajustadas por riesgo con Plus)' },
     { label: 'Rendi AI con 12 preguntas guiadas (taster)' },
     { label: 'Reportes: vista previa del último mes' },

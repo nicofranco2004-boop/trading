@@ -11,7 +11,7 @@
 
 import { Link } from 'react-router-dom'
 import { ArrowRight, Calendar } from 'lucide-react'
-import RendiLogo from '../components/RendiLogo'
+import CabeceraPublica from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
 
 // Source of truth de los posts publicados. Mantener sincronizado con los
@@ -52,18 +52,10 @@ export default function Blog() {
         canonical="/blog"
       />
 
-      <header className="border-b border-line">
-        <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-            <RendiLogo size={28} />
-            <span className="font-semibold text-base tracking-tight">rendi</span>
-          </Link>
-          <nav className="flex items-center gap-5 text-sm">
-            <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
-            <Link to="/login" className="text-ink-2 hover:text-ink-0">Iniciar sesión</Link>
-          </nav>
-        </div>
-      </header>
+      <CabeceraPublica>
+        <Link to="/planes" className="text-ink-2 hover:text-ink-0">Planes</Link>
+        <Link to="/login" className="text-ink-2 hover:text-ink-0">Iniciar sesión</Link>
+      </CabeceraPublica>
 
       <main className="max-w-3xl mx-auto px-6 py-12 md:py-16">
         <section className="mb-12">
