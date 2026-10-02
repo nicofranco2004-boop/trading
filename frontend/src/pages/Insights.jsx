@@ -34,7 +34,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { track } from '../utils/track'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -363,14 +363,15 @@ function InsightsDesktop({ _embeddedTab }) {
   // curva terminaba en la foto de anoche y el S&P en el cierre de hoy: un día de
   // desfasaje sistemático en la punta. Va ANTES del `if (loading) return` porque
   // es un hook; se redondea para no refetchear por cada centavo que se mueve.
+  // ⚠️ AL MEP, no al dólar que estás mirando: la curva la arman las fotos
+  // guardadas, que viven al MEP. Mirando en CCL, la punta de "hoy" salía al CCL
+  // y la brecha CCL/MEP aparecía como ganancia del día. valorAlMep es la vara
+  // de todo lo que se COMPARA contra las fotos (utils/valuation).
   const liveUsdPerf = useMemo(() => {
     try {
-      const tb = pickFinancialRate(dolar, valuationDollar) || 1415
-      const tcr = dolar?.cripto?.venta
-      return (brokers || []).reduce((s, b) =>
-        s + (computeBrokerValue(positions, prices, b, tb, tb, tcr, costBasis).value || 0), 0)
+      return valorAlMep(positions, prices, brokers, pickFinancialRate(dolar, 'mep') || 1415, dolar?.cripto?.venta, costBasis)
     } catch { return 0 }
-  }, [brokers, positions, prices, dolar, valuationDollar, costBasis])
+  }, [brokers, positions, prices, dolar, costBasis])
   // ⚠️ RECIÉN CON LOS PRECIOS. Con `positions` ya en memoria y `prices`
   // todavía vacío, la valuación cae al costo y mandaba un `valor_live` de otro
   // orden (medido: 70.983 en una cartera de 16.595), y el servidor cerraba la
@@ -396,11 +397,11 @@ function InsightsDesktop({ _embeddedTab }) {
   // (coberturaDePrecios ≥ 95 % del costo): exigir TODOS apagaba el valor de hoy
   // y "Desde tu última visita" para siempre a quien tiene un activo que nunca
   // cotiza (un FCI fuera del catálogo, un bono sin fuente).
-  // Con los mismos TC que el valor de hoy (liveUsdPerf).
+  // Con los mismos TC que el valor de hoy (liveUsdPerf, al MEP).
   const cobertura = useMemo(() => {
-    const tb = pickFinancialRate(dolar, valuationDollar) || 1415
+    const tb = pickFinancialRate(dolar, 'mep') || 1415
     return coberturaDePrecios(positions, prices, brokers, { tcValuacion: tb, tcCedear: tb, tcCripto: dolar?.cripto?.venta })
-  }, [positions, prices, brokers, dolar, valuationDollar])
+  }, [positions, prices, brokers, dolar])
   const preciosCompletos = preciosListos && cobertura >= COBERTURA_MINIMA
   const liveKeyPerf = preciosCompletos ? Math.round(liveUsdPerf || 0) : 0
   // Lo que el ✦ necesita para medir la caída IGUAL que esta pantalla: la moneda

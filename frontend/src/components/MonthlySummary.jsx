@@ -8,6 +8,7 @@ import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput } from '../utils/format'
 import { api } from '../utils/api'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
+import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
@@ -285,20 +286,19 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // "· USD", y esos lotes se valuaban al costo (P&L 0) sin aviso.
       const allSyms = [...new Set([...buildPriceSymbols(pos, bkrs), ...arsSyms, ...usdSyms])].join(',')
       const pricesData = allSyms ? await api.get(`/prices?symbols=${allSyms}`).catch(() => ({})) : {}
-      // Se GUARDA sólo con los precios: la misma regla que el Dashboard, el otro
-      // escritor de este campo (coberturaDePrecios ≥ 95 % del costo). Sin esto,
-      // con /prices caído se guardaba P&L 0 en todos los brokers, y ganaba el
-      // último que guardara (revisión del 2026-10-02).
-      const conPrecios = coberturaDePrecios(pos, pricesData, bkrs, { tcValuacion: tc, tcCedear, tcCripto }) >= COBERTURA_MINIMA
+      // Se GUARDA sólo al MEP y con los precios: la misma regla que el Dashboard,
+      // el otro escritor de este campo (guardarPnlNoRealizado). Sin esto, con
+      // /prices caído se guardaba P&L 0 en todos los brokers, y ganaba el último
+      // que guardara (revisión del 2026-10-02).
+      const cobertura = coberturaDePrecios(pos, pricesData, bkrs, { tcValuacion: tc, tcCedear, tcCripto })
 
       let globalPnlUsd = 0
       let liveTotal = 0
-      const syncs = []
+      const filas = []
       // El pnl_unrealized_usd que persistimos en monthly_entries vive en MEP (scope:
       // el toggle MEP/CCL es sólo display LIVE). Si el user está en CCL, computamos el
       // liveTotal del banner (display) pero NO escribimos pnl CCL-flavored al backend;
       // se auto-corrige en la próxima sesión MEP. Default (MEP) → escribe igual que siempre.
-      const persistMep = valuationDollar === 'mep' && conPrecios
       for (const b of bkrs) {
         const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcValuacion for ARS display);
@@ -314,11 +314,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         // modo, así que esto también saca esa dependencia de lo que se guarda.
         globalPnlUsd += pnlForBroker
         liveTotal += result.value  // valor total en USD (incluye cash convertido)
-        if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {}))
+        filas.push({ broker: b.name, pnl: pnlForBroker })
       }
-      if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: +globalPnlUsd.toFixed(4) }).catch(() => {}))
-      await Promise.all(syncs)
-      setLivePortfolioTotal(liveTotal)
+      filas.push({ broker: 'global', pnl: globalPnlUsd })
+      await guardarPnlNoRealizado(api.post, filas, { cobertura, valuationDollar })
+      // El "Valor actual (live)" de la conciliación dice "con precios actuales de
+      // mercado": sin precios sería el costo, y al lado del mes guardado (que ya
+      // no se pisa) marcaba una "Diferencia" que culpaba al dólar. Sin precios,
+      // no se muestra hasta que lleguen.
+      setLivePortfolioTotal(cobertura >= COBERTURA_MINIMA ? liveTotal : null)
     } catch (e) {
       console.warn('syncUnrealizedForAll failed:', e)
     }

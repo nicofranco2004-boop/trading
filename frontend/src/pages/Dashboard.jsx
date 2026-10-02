@@ -34,7 +34,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
+import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -502,7 +503,6 @@ function PersonalDashboard() {
     [positions, prices, brokers, tcValuacion, tcCedear, tcCripto],
   )
 
-  const PRICE_COVERAGE_MIN = COBERTURA_MINIMA  // ≥95% del portfolio con precio real (alineado con el cron)
 
   // ── Snapshot 1×/day (solo con cobertura de precios alta) ────────────────────
   useEffect(() => {
@@ -511,9 +511,9 @@ function PersonalDashboard() {
     // MEP/CCL es sólo display LIVE). Si el user está viendo en CCL, NO persistimos
     // este total (sería CCL-flavored y mezclaría rates en la curva); el cron del
     // backend igual snapshotea en MEP. Default (MEP) → escribe igual que siempre.
-    if (valuationDollar !== 'mep') return
-    // Comparación robusta: NaN/no-finito NO pasa (NaN < x es false → escribiría).
-    if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // precios a medio cargar → no snapshotear
+    // Al MEP y con precios (≥ 95 % del costo): sePuedeGuardar (utils/guardarValuacion).
+    // Comparación robusta: NaN/no-finito NO pasa (NaN >= x es false → no escribe).
+    if (!sePuedeGuardar({ cobertura: priceCoverage, valuationDollar })) return
     const today = hoyISO()
     const key = 'rendi_snapshot_date'
     if (localStorage.getItem(key) === today) return
@@ -540,7 +540,11 @@ function PersonalDashboard() {
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValue <= 0) return
-    if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // mismo guard robusto: no sincronizar con precios a medio cargar
+    // La regla (al MEP y con precios) la aplica guardarPnlNoRealizado. El MEP no
+    // se chequeaba acá (sí en la foto y en el resumen mensual): mirando en CCL se
+    // guardaba un P&L al CCL en el mismo campo.
+    if (!sePuedeGuardar({ cobertura: priceCoverage, valuationDollar })) return
+    const filas = []
 
     let globalPnlUsd = 0
     brokers.forEach(b => {
@@ -629,9 +633,10 @@ function PersonalDashboard() {
       }
 
       globalPnlUsd += pnlForGlobal
-      api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {})
+      filas.push({ broker: b.name, pnl: pnlForBroker })
     })
-    api.post('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: +globalPnlUsd.toFixed(4) }).catch(() => {})
+    filas.push({ broker: 'global', pnl: globalPnlUsd })
+    guardarPnlNoRealizado(api.post, filas, { cobertura: priceCoverage, valuationDollar })
   }, [loading, lastUpdated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Portfolio evolution series (depends on range) ───────────────────────────
