@@ -1059,12 +1059,13 @@ class RadarTest(AdvisorBase):
 
     def setUp(self):
         super().setUp()
+        # `_refresh_events_for_tickers` es la ÚNICA puerta a yfinance de los
+        # eventos (también el refresco de fondo, desde 2026-10-01).
         self._saved = (
-            main._refresh_events_in_background, main._refresh_events_for_tickers,
+            main._refresh_events_for_tickers,
             main._refresh_news_in_background, main._ensure_news_batch_parallel,
         )
-        main._refresh_events_in_background = lambda *a, **k: None
-        main._refresh_events_for_tickers = lambda *a, **k: None
+        main._refresh_events_for_tickers = lambda *a, **k: 0
         main._refresh_news_in_background = lambda *a, **k: None
         main._ensure_news_batch_parallel = lambda *a, **k: None
         # Segundo cliente para probar la atribución ("lo tienen 2 clientes")
@@ -1077,7 +1078,7 @@ class RadarTest(AdvisorBase):
         conn.commit(); conn.close()
 
     def tearDown(self):
-        (main._refresh_events_in_background, main._refresh_events_for_tickers,
+        (main._refresh_events_for_tickers,
          main._refresh_news_in_background, main._ensure_news_batch_parallel) = self._saved
         super().tearDown()  # limpieza FK de AdvisorBase
 

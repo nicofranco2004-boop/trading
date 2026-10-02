@@ -2026,6 +2026,14 @@ const _todayPlus = (days) => {
   d.setDate(d.getDate() + days)
   return fechaISO(d)
 }
+// "Dom 4 oct" — el formato de `period_label('day', …)` del servidor.
+const _diaCorto = (days) => {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const DIA = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
+  const MES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+  return `${DIA[d.getDay()]} ${d.getDate()} ${MES[d.getMonth()]}`
+}
 
 // El estado de la rueda del demo, con la misma forma que devuelve el servidor
 // (home.market.estado_de_rueda + `actualizado`): abierto en el horario de
@@ -2925,7 +2933,9 @@ export function handleDemoRequest(method, path, body) {
       return { cards: [
         { kind: 'holding_move', value_tone: 'positive', headline: 'NVDA subió hoy', value: '+4,4 %', value_num: 4.4, context: 'US$ 178,50', cta_label: 'Ver posición →', cta_href: '/posiciones' },
         { kind: 'holding_move', value_tone: 'negative', headline: 'TSLA bajó hoy', value: '−2,1 %', value_num: -2.1, context: 'US$ 248,10', cta_label: 'Ver posición →', cta_href: '/posiciones' },
-        { kind: 'earnings_soon', value_tone: 'neutral', headline: 'Earnings de NVDA', value: 'en 5 días', context: _todayPlus(5), cta_label: 'Ver detalle →', cta_href: '/novedades?tab=eventos' },
+        // Como lo arma el servidor (home/briefing.py `detect_events_soon`): las
+        // palabras de la agenda de Eventos y la fecha como los informes.
+        { kind: 'earnings_soon', value_tone: 'neutral', headline: 'Earnings de NVDA', value: 'en 5 días', context: _diaCorto(5), cta_label: 'Ver detalle →', cta_href: '/novedades?tab=eventos' },
       ] }
     }
     if (basePath.startsWith('/home/heatmap')) {
