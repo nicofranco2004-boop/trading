@@ -61,3 +61,21 @@ describe('nadie guarda por fuera de la regla', () => {
     }
   })
 })
+
+import { coberturaDePrecios } from './valuation'
+
+describe('los dos escritores pesan la cobertura al MEP', () => {
+  it('Dashboard y resumen mensual: coberturaDePrecios con el TC del MEP (en CCL podían discrepar en el 95 %)', () => {
+    const dash = readFileSync(join(SRC, 'pages/Dashboard.jsx'), 'utf8')
+    const mensual = readFileSync(join(SRC, 'components/MonthlySummary.jsx'), 'utf8')
+    expect(dash).toMatch(/coberturaDePrecios\([^)]*tcValuacion: tcMep, tcCedear: tcMep/)
+    expect(mensual).toMatch(/coberturaDePrecios\([^)]*tcValuacion: tcMep, tcCedear: tcMep/)
+  })
+  it('el caso del límite: al MEP no alcanza aunque al CCL sí', () => {
+    const brokers = [{ name: 'Cocos', currency: 'ARS' }, { name: 'Schwab', currency: 'USD' }]
+    const pos = [{ asset: 'GGAL', broker: 'Cocos', invested: 64000 }, { asset: 'AAPL', broker: 'Schwab', invested: 1000 }]
+    const precios = { AAPL: 230 }
+    expect(coberturaDePrecios(pos, precios, brokers, { tcValuacion: 1200 })).toBeLessThan(0.95)
+    expect(coberturaDePrecios(pos, precios, brokers, { tcValuacion: 1240 })).toBeGreaterThan(0.95)
+  })
+})

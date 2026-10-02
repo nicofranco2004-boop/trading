@@ -498,9 +498,11 @@ function PersonalDashboard() {
   // variación diaria del día siguiente (parece una ganancia/pérdida falsa).
   // Un activo ilíquido chico (bono) no mueve la aguja; una caída masiva sí.
   // La regla es coberturaDePrecios (utils/valuation), la misma que usa Métricas.
+  // Al MEP, como todo lo que se guarda: mirando en CCL, pesar al CCL podía dar
+  // 95,1 % acá y 94,9 % en el resumen mensual para la misma cartera.
   const priceCoverage = useMemo(
-    () => coberturaDePrecios(positions, prices, brokers, { tcValuacion, tcCedear, tcCripto }),
-    [positions, prices, brokers, tcValuacion, tcCedear, tcCripto],
+    () => coberturaDePrecios(positions, prices, brokers, { tcValuacion: tcMep, tcCedear: tcMep, tcCripto }),
+    [positions, prices, brokers, tcMep, tcCripto],
   )
 
 
