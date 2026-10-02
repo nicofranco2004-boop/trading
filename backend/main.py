@@ -14858,15 +14858,26 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         # la de hoy. Borrada primero, el ancla pasa a ser la de ayer: con un depósito
         # cargado HOY, ese depósito se corría a días anteriores (medido: borrar un
         # depósito del 15 con otro de hoy dejaba del 15 al 19 con el de hoy adentro).
+        # Eso alcanza sólo si la foto de hoy YA VIO el depósito.
         #
-        # LÍMITE CONOCIDO (auditoría 2, H2): si el mes ya traía estampas VIEJAS (un
-        # import a mitad de mes que reescribió la contabilidad hacia atrás), re-anclar
-        # desde `since_date` corrige las fotos de esa fecha en adelante y deja viejas
-        # las de antes, así que el escalón falso del import se muda al día de lo
-        # borrado. No es peor que antes (la cuenta mensual reescribía las mismas
-        # fotos) y la curva anclada no se mueve. Lo que lo resolvería es aplicar sólo
-        # el CAMBIO que produjo el borrado (contabilidad de antes vs. de después),
-        # en vez de re-anclar el mes.
+        # LÍMITES CONOCIDOS — no empeoran lo de antes, pero tampoco se arreglan acá:
+        # · (auditoría 3) Un flujo que la última foto del mes NO vio cae al
+        #   principio del mes: un depósito cargado hoy DESPUÉS de la foto de hoy (el
+        #   Dashboard la saca una vez, al abrir), o sin foto de hoy, seguido de
+        #   cualquier borrado de algo más viejo, deja del 1 a ayer con el depósito
+        #   adentro. El corredor del anclado admite los depósitos del mes en
+        #   cualquier día que las estampas no contradigan.
+        # · (auditoría 2, H2) Si el mes ya traía estampas VIEJAS (un import a mitad
+        #   de mes que reescribió la contabilidad hacia atrás), re-anclar desde
+        #   `since_date` corrige las fotos de esa fecha en adelante y deja viejas las
+        #   de antes: el escalón falso del import se muda al día de lo borrado. La
+        #   curva anclada no se mueve.
+        # Lo que resolvería los dos es aplicar sólo el CAMBIO que produjo el borrado
+        # (contabilidad de antes vs. de después) en vez de re-anclar el mes. No va
+        # acá porque dos puertas (`_delete_manual_position_cascade`,
+        # `_undo_manual_delete`) tocan `monthly_entries` ANTES de llamar a esta
+        # cascada —el "antes" hay que tomarlo en cada puerta— y los depósitos
+        # manuales (`me-`) no guardan el día.
         _recompute_snapshots_netdep_for_user(conn, uid, desde=since_date)
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
@@ -17784,8 +17795,8 @@ def _repair_user_snapshots(conn, uid: int) -> dict:
 
     IDEMPOTENCIA: el "cambió" se mide comparando el ESTADO de los snapshots ANTES
     vs DESPUÉS de todo el repair, NO los reportes intermedios. Sin esto, _backfill
-    (que setea net_deposited desde el agregado 'global') y _recompute (que lo setea
-    desde los brokers individuales) se pisan en cada corrida cuando global ≠ Σbroker,
+    y _recompute se pisaban en cada corrida (escribían el aportado con cuentas
+    distintas; hoy los dos usan la del cron, `twr.netdep_canonico`),
     y el contador marcaba al usuario como "a reparar" para siempre aunque el estado
     final fuera estable. Comparar antes/después lo hace idempotente de verdad."""
     def _state():
