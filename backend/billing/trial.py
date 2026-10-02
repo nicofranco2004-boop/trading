@@ -833,11 +833,11 @@ def _trial_stats(conn, user_id: int) -> dict:
 def send_due_trial_emails(conn, tanda=None) -> int:
     """Paso del cron: manda los avisos que correspondan hoy. Devuelve cuántos
     mails salieron. Cada uno se marca ANTES de enviarse (`_avisar_una_vez`): si
-    Resend lo rechaza, la marca se devuelve y lo reintenta la corrida de
-    mañana; si no se sabe si llegó, queda marcado (preferimos perder un aviso
-    antes que repetirlo); con Resend caído la `tanda` se frena y lo que falta
-    queda para mañana. La pausa entre un mail y el siguiente la pone
-    `emails._send`."""
+    Resend lo rechaza, la marca se devuelve y lo reintenta la próxima vuelta
+    (hay dos por día; dentro de la ventana de cada aviso); si no se sabe si
+    llegó, queda marcado (preferimos perder un aviso antes que repetirlo); con
+    Resend caído la `tanda` se frena y lo que falta queda para la próxima
+    vuelta. La pausa entre un mail y el siguiente la pone `emails._send`."""
     from billing import emails
     tanda = tanda or emails.Tanda()
     now = datetime.utcnow()

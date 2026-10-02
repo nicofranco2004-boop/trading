@@ -125,36 +125,19 @@ class CancellationEmailTest(unittest.TestCase):
 class ExpirationReminderTest(unittest.TestCase):
 
     def _make_conn(self):
-        """Conn mínima — replicamos schema relevante."""
-        conn = sqlite3.connect(":memory:")
-        conn.row_factory = sqlite3.Row
-        conn.executescript("""
-            CREATE TABLE users (
-                id INTEGER PRIMARY KEY, email TEXT, name TEXT,
-                is_admin INTEGER DEFAULT 0, tier TEXT
-            );
-            CREATE TABLE subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                mp_subscription_id TEXT,
-                external_reference TEXT NOT NULL,
-                period TEXT NOT NULL,
-                status TEXT NOT NULL,
-                amount_ars INTEGER NOT NULL,
-                current_period_end TEXT,
-                expiration_reminder_sent_at TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
-                updated_at TEXT DEFAULT (datetime('now'))
-            );
-        """)
-        return conn
+        """El schema REAL (copiado de la base que arma `main.init_db()`), no uno
+        escrito a mano: el que había no tenía `credit_active_until` ni la marca
+        del aviso, y el test terminaba probando el fixture y no el cron (la
+        misma lección de tests/test_billing_lifecycle.py)."""
+        from tests.test_billing_lifecycle import _make_db
+        return _make_db()
 
     def test_no_avisa_que_vence_un_plan_que_ya_no_tiene(self):
         """Si el tier ya no es un plan pago (lo bajaron a mano, un reembolso),
         "tu plan Pro vence en 3 días" le anuncia algo que no tiene. Antes el
         plan faltante caía a "pro" y el aviso salía igual."""
         conn = self._make_conn()
-        conn.execute("INSERT INTO users (id, email, name) VALUES (1, 'a@x.com', 'Ana')")
+        conn.execute("INSERT INTO users (id, password_hash, email, name) VALUES (1, 'x', 'a@x.com', 'Ana')")
         period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
         conn.execute(
             """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
@@ -172,7 +155,7 @@ class ExpirationReminderTest(unittest.TestCase):
         conn = self._make_conn()
         # Con su plan puesto: al cancelar, el tier se mantiene hasta el fin del
         # período (lo baja el job al vencer), que es cuando sale este aviso.
-        conn.execute("INSERT INTO users (id, email, name, tier) VALUES (1, 'a@x.com', 'Ana', 'pro')")
+        conn.execute("INSERT INTO users (id, password_hash, email, name, tier) VALUES (1, 'x', 'a@x.com', 'Ana', 'pro')")
         period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
         conn.execute(
             """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
@@ -190,14 +173,15 @@ class ExpirationReminderTest(unittest.TestCase):
             self.assertIn("vence en", mock_send.call_args[0][1].lower())
 
     def test_reminder_not_resent_when_already_sent(self):
+        """Ya se le avisó ESTE vencimiento (la marca por persona tiene su día)."""
         conn = self._make_conn()
-        conn.execute("INSERT INTO users (id, email, name) VALUES (1, 'a@x.com', 'Ana')")
         period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
+        conn.execute("INSERT INTO users (id, password_hash, email, name, tier, aviso_vencimiento_de) "
+                     "VALUES (1, 'x', 'a@x.com', 'Ana', 'pro', ?)", (period_end,))
         conn.execute(
             """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
-                                          period, status, amount_ars, current_period_end,
-                                          expiration_reminder_sent_at)
-               VALUES (1, 'sub-x', 'rendi-1-monthly', 'monthly', 'cancelled', 12100, ?, datetime('now'))""",
+                                          period, status, amount_ars, current_period_end)
+               VALUES (1, 'sub-x', 'rendi-1-monthly', 'monthly', 'cancelled', 12100, ?)""",
             (period_end,),
         )
         conn.commit()
@@ -207,10 +191,30 @@ class ExpirationReminderTest(unittest.TestCase):
             self.assertEqual(count, 0)
             self.assertFalse(mock_send.called)
 
+    def test_un_aviso_de_la_marca_vieja_no_se_repite_despues_de_la_migracion(self):
+        """El día del deploy: a quien ya se le avisó con la marca vieja (en la
+        suscripción) se le pasa a la marca por persona, y no se le repite."""
+        conn = self._make_conn()
+        conn.execute("INSERT INTO users (id, password_hash, email, name, tier) VALUES (1, 'x', 'a@x.com', 'Ana', 'pro')")
+        period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
+        conn.execute(
+            """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,
+                                          period, status, amount_ars, current_period_end,
+                                          expiration_reminder_sent_at)
+               VALUES (1, 'sub-x', 'rendi-1-monthly', 'monthly', 'cancelled', 12100, ?, datetime('now'))""",
+            (period_end,),
+        )
+        conn.commit()
+        self.assertEqual(billing_subs._migrar_aviso_vencimiento(conn), 1)
+        with patch("billing.emails._send") as mock_send:
+            count = billing_subs._send_expiration_reminders(conn, days_before=3)
+            self.assertEqual(count, 0)
+            self.assertFalse(mock_send.called)
+
     def test_reminder_not_sent_for_authorized_sub(self):
         """Subs activas (no canceladas) NO necesitan reminder — se renuevan auto."""
         conn = self._make_conn()
-        conn.execute("INSERT INTO users (id, email, name) VALUES (1, 'a@x.com', 'Ana')")
+        conn.execute("INSERT INTO users (id, password_hash, email, name) VALUES (1, 'x', 'a@x.com', 'Ana')")
         period_end = (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")
         conn.execute(
             """INSERT INTO subscriptions (user_id, mp_subscription_id, external_reference,

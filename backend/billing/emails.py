@@ -34,6 +34,7 @@ import os
 import sys
 import html
 import logging
+import queue
 import threading
 import time
 from contextlib import contextmanager
@@ -55,15 +56,17 @@ log = logging.getLogger("billing.emails")
 # suman en el mismo segundo: el tope es de la CUENTA de Resend, no de cada loop.
 PAUSA_ENTRE_ENVIOS = 0.6
 
-# Lo más que espera su turno un mail SUELTO —el código de verificación, el
-# "olvidé mi contraseña", el aviso de un login nuevo—, que sale DENTRO del pedido
-# de una persona y ocupa uno de los hilos que atienden a toda la app. Si la fila
-# es más larga, sale igual (con un poco de riesgo de que Resend lo rechace por
-# ritmo, que es lo que pasaba siempre antes de la pausa). Sin este tope, una
-# ráfaga de pedidos (80 "reenviar código" a la vez) hacía fila de a 0,6 s y
-# dejaba a la app entera sin hilos libres: 24 s congelada, medido. Los envíos
-# masivos (`envio_masivo()`) sí hacen la fila completa.
-ESPERA_MAXIMA_SUELTO = 1.5
+# Lo más que el pedido de una persona espera a que el CARTERO mande su mail
+# SUELTO —el código de verificación, el "olvidé mi contraseña", el aviso de un
+# login nuevo—. El mail suelto no se manda desde el pedido: se lo deja al
+# cartero (`_cartero`), un único hilo que los manda de a uno EN SU TURNO de la
+# fila, y el pedido espera la respuesta hasta este tope. Con todo tranquilo la
+# respuesta llega enseguida y es la de siempre; en una ráfaga (80 "reenviar
+# código" a la vez) el pedido contesta igual a los 2 s y el mail sale en su
+# turno. Antes había dos malas: esperar la fila adentro del pedido dejaba a la
+# app sin hilos (24 s congelada, medido), y saltearla hacía que Resend rechazara
+# por ritmo (76 de 80 códigos, medido).
+ESPERA_RESULTADO_SUELTO = 2.0
 
 _turno = threading.Lock()
 _ultimo_pedido: Optional[float] = None    # time.monotonic() del último turno dado
@@ -72,11 +75,13 @@ _modo = threading.local()
 
 @contextmanager
 def envio_masivo():
-    """Los mails de este hilo, mientras dure el bloque, hacen la fila COMPLETA
-    de `_esperar_turno`. Lo usan los trabajos de fondo (`main._correr_en_fondo`,
-    `main._correr_si_esta_libre`: crons, alertas, briefs) y los envíos del panel
-    (`main._envio_masivo`). Todo lo demás —un mail dentro del pedido de una
-    persona— espera a lo sumo ESPERA_MAXIMA_SUELTO."""
+    """Los mails de este hilo, mientras dure el bloque, se mandan desde el
+    mismo hilo, haciendo su fila, y no por el cartero. Lo usan los trabajos de
+    fondo (`main._correr_en_fondo`, `main._correr_si_esta_libre`: crons,
+    alertas, briefs) y los envíos del panel (`main._envio_masivo`): esperar es
+    su trabajo, y necesitan la respuesta de cada mail para decidir (marcas,
+    freno). Todo lo demás —un mail dentro del pedido de una persona— va por el
+    cartero (ver ESPERA_RESULTADO_SUELTO)."""
     previo = getattr(_modo, "masivo", False)
     _modo.masivo = True
     try:
@@ -91,23 +96,73 @@ def _esperar_turno() -> None:
     y espera afuera del candado: nadie duerme con la fila tomada, y los turnos
     salen en el orden en que se pidieron. Se cuenta desde el turno anterior, así
     que un loop que tarda en armar cada mail (el resumen de mercado narra con IA)
-    no espera de más, y un mail suelto con todo tranquilo no espera nada.
-
-    Un mail suelto (fuera de `envio_masivo()`) cuyo turno quede a más de
-    ESPERA_MAXIMA_SUELTO sale sin esperar y sin correr la fila."""
+    no espera de más, y un mail con todo tranquilo no espera nada. Nadie se
+    saltea la fila: el que no puede esperar le deja el mail al cartero."""
     global _ultimo_pedido
-    masivo = getattr(_modo, "masivo", False)
     with _turno:
         ahora = time.monotonic()
         turno = ahora
         if _ultimo_pedido is not None:
             turno = max(ahora, _ultimo_pedido + PAUSA_ENTRE_ENVIOS)
-        if not masivo and turno - ahora > ESPERA_MAXIMA_SUELTO:
-            return
         _ultimo_pedido = turno
     falta = turno - time.monotonic()
     if falta > 0:
         time.sleep(falta)
+
+
+# ─── El cartero de los mails sueltos ─────────────────────────────────────────
+
+class _Encargo:
+    def __init__(self, payload, to, subject):
+        self.payload, self.to, self.subject = payload, to, subject
+        self.listo = threading.Event()
+        self.resultado = False
+        self.estado = NO_INTENTADO
+
+
+_cola_cartero: "queue.Queue[_Encargo]" = queue.Queue()
+_cartero_lock = threading.Lock()
+_cartero_hilo: Optional[threading.Thread] = None
+
+
+def _cartero():
+    """Manda, de a uno y en su turno, los mails que le dejan los pedidos."""
+    while True:
+        encargo = _cola_cartero.get()
+        try:
+            with envio_masivo():
+                encargo.resultado = _pedir_a_resend(encargo.payload, encargo.to,
+                                                    encargo.subject)
+                encargo.estado = resultado_del_ultimo_envio()
+        except Exception as ex:          # que un mail raro no mate al cartero
+            log.error("cartero: falló el mail a %s: %s", encargo.to, ex)
+            encargo.resultado, encargo.estado = False, NO_SALIO
+        finally:
+            encargo.listo.set()
+            _cola_cartero.task_done()
+
+
+def _dejar_al_cartero(encargo: "_Encargo") -> None:
+    global _cartero_hilo
+    with _cartero_lock:
+        if _cartero_hilo is None or not _cartero_hilo.is_alive():
+            _cartero_hilo = threading.Thread(target=_cartero, daemon=True,
+                                             name="cartero-de-mails")
+            _cartero_hilo.start()
+    _cola_cartero.put(encargo)
+
+
+def esperar_al_cartero(segundos: float) -> bool:
+    """Al apagar: espera, con tope, a que el cartero mande lo que tiene en la
+    cola. True si quedó vacía."""
+    fin = time.monotonic() + segundos
+    while _cola_cartero.unfinished_tasks:
+        if time.monotonic() >= fin:
+            log.warning("apagado: el cartero deja %d mails sin mandar",
+                        _cola_cartero.unfinished_tasks)
+            return False
+        time.sleep(0.1)
+    return True
 
 
 # ─── Qué pasó con el último envío ────────────────────────────────────────────
@@ -121,6 +176,7 @@ NO_SALIO = "no_salio"            # seguro que no llegó: Resend dijo que no (4xx
 INCIERTO = "incierto"            # no sabemos: Resend no contestó a tiempo, o falló de su lado (5xx)
 NO_INTENTADO = "no_intentado"    # ni se probó: tests, dirección de prueba o sin proveedor
 SALTEADO = "salteado"            # (Tanda) la marca ya la tenía otra corrida
+EN_COLA = "en_cola"              # el cartero lo tiene y todavía no le tocó: va a salir
 
 _resultado = threading.local()
 
@@ -338,7 +394,6 @@ def _send(to: str, subject: str, html: str, text: str,
         log.info("================================================")
         return False
 
-    import httpx
     payload = {
         "from": sender,
         "to": [to],
@@ -348,6 +403,31 @@ def _send(to: str, subject: str, html: str, text: str,
     }
     if reply_to:
         payload["reply_to"] = reply_to
+    if getattr(_modo, "masivo", False):
+        return _pedir_a_resend(payload, to, subject)
+    # Mail suelto: lo manda el cartero, en su turno. Se espera la respuesta
+    # hasta ESPERA_RESULTADO_SUELTO; si no llega, el mail ya está en la fila y
+    # va a salir (EN_COLA): se contesta True —"no salió" sería mentir—, así
+    # que quien marca antes de mandar (`Tanda`) deja la marca puesta.
+    encargo = _Encargo(payload, to, subject)
+    _dejar_al_cartero(encargo)
+    if encargo.listo.wait(ESPERA_RESULTADO_SUELTO):
+        _anotar(encargo.estado)
+        return encargo.resultado
+    _anotar(EN_COLA)
+    log.info("Email en cola para %s: %s", to, subject)
+    return True
+
+
+def _pedir_a_resend(payload: dict, to: str, subject: str) -> bool:
+    """El pedido a Resend, en su turno de la fila. Anota qué pasó."""
+    import httpx
+    # La misma guarda dura que `_send`, otra vez: el cartero llama acá desde su
+    # hilo, quizás DESPUÉS de que el que le dejó el mail ya no esté (un test que
+    # apagó la guarda y terminó, por ejemplo). Nunca un pedido real bajo pytest.
+    if _running_under_pytest() or _is_test_address(to):
+        _anotar(NO_INTENTADO)
+        return False
     _esperar_turno()
     try:
         r = httpx.post(

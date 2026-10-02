@@ -2564,6 +2564,18 @@ def init_db():
         # Se estampa a mano sobre los que ya pagaban; nadie nuevo la recibe.
         if user_cols_after and 'quota_plus_legacy' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN quota_plus_legacy INTEGER DEFAULT 0")
+        # Qué fecha de vencimiento ya se le avisó ("tu plan vence en N días"),
+        # 'YYYY-MM-DD'. UN aviso por persona y por vencimiento real: ver
+        # `billing.subscriptions._send_credit_expiring_reminders`. Sin índice
+        # (se lee y escribe por id de usuario).
+        if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
+            conn.commit()
+            try:
+                from billing import subscriptions as _subs
+                _subs._migrar_aviso_vencimiento(conn)
+            except Exception as _ex:
+                log.warning("migración aviso_vencimiento_de: %s", _ex)
         conn.commit()
 
         # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
@@ -37158,7 +37170,8 @@ def iol_lab_run_cron(request: Request):
 
 def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
     """Renueva el refresh token de todos los testers con medición activa. Lo llaman el
-    cron externo, el scheduler in-process (cada hora) y, oportunistamente, /status.
+    cron externo y el scheduler in-process (cada hora); /status y el botón renuevan
+    de a un tester con `_iol_lab_refresh_one`, bajo la misma bandera.
     min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse).
 
     Una renovación a la vez entre todas sus puertas (`_tomar_corrida("iol_lab")`:
@@ -37769,8 +37782,8 @@ def _correr_en_fondo(nombre: str, fn) -> dict:
         return {"ok": True, "status": "already_running"}
 
     def _bg():
-        from billing import emails
         try:
+            from billing import emails      # adentro del try: si fallara, la bandera se suelta igual
             with emails.envio_masivo():     # sus mails hacen la fila completa
                 fn()
         except Exception:
@@ -38448,8 +38461,15 @@ def _cerrar_al_apagar():
         pass
     # Las corridas en segundo plano (alertas, avisos de la prueba, briefs…)
     # marcan cada aviso ANTES de mandarlo: si el deploy las mata a mitad, lo que
-    # faltaba no sale. Darles un rato para terminar.
+    # faltaba no sale. Darles un rato para terminar — y al cartero, para que
+    # mande los mails sueltos que le quedaron en la fila (el mismo tope).
+    _fin = time.monotonic() + CORRIDAS_ESPERA_AL_APAGAR_SEG
     _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
+    try:
+        from billing import emails as _emails
+        _emails.esperar_al_cartero(max(0.0, _fin - time.monotonic()))
+    except Exception:
+        pass
     # Y otra vez los precios: los que trajeron esas corridas mientras se
     # esperaba. Esto sí es lo último que hace el proceso.
     try:
@@ -39948,7 +39968,7 @@ def billing_run_cron(request: Request):
     Corre en un thread de fondo y devuelve 200 al instante: el job manda mails
     (httpx, hasta 10s cada uno) y con muchos usuarios pasa el timeout del
     gateway. Idempotente por diseño — cada aviso se marca ANTES de enviarse
-    (`trial_email_log`, `expiration_reminder_sent_at`), así que re-correrlo no
+    (`trial_email_log`, `users.aviso_vencimiento_de`), así que re-correrlo no
     reenvía nada; la marca sólo se devuelve si Resend rechazó el mail, y
     entonces lo reintenta la corrida siguiente.
 

@@ -20,7 +20,7 @@ rechaza los que pasan. Lo que estos tests protegen:
 ⚠️ POR EL MISMO CAMINO QUE PRODUCCIÓN. Los crons corren de verdad
 (`run_lifecycle_job`, `evaluate_alerts`, `run_briefs`) y los mails pasan por
 los `send_*` y el `_send` reales. Lo único de mentira es Resend: `httpx.post`
-lo contesta `_Resend`, y el reloj de `emails` es `_Reloj` (su `sleep` avanza el
+lo contesta `Resend` de tests/_resend_falso.py, y el reloj de `emails` es `Reloj` (su `sleep` avanza el
 tiempo en vez de esperar), para medir la separación entre pedidos sin que la
 suite tarde. Para que `_send` llegue a pedir, se apaga su guarda de pytest; la
 clave es de mentira, así que aunque un pedido se escapara, Resend lo rechazaría.
@@ -181,7 +181,9 @@ def test_dos_loops_a_la_vez_tambien_se_turnan():
         for h in hilos:
             h.join(10)
     assert len(resend.pedidos) == 4
-    assert min(_separaciones(h for h, _ in resend.pedidos)) >= pausa * 0.6
+    # 0,9 y no 0,6: con la pausa real (0,6 s), el 60 % son tres mails en un
+    # segundo y Resend rechaza el tercero — el test tiene que verlo.
+    assert min(_separaciones(h for h, _ in resend.pedidos)) >= pausa * 0.9
 
 
 def test_solo_send_le_habla_a_resend():
@@ -206,7 +208,14 @@ def test_solo_send_le_habla_a_resend():
         for n in ast.walk(fn)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         and n.func.attr == "post" and getattr(n.func.value, "id", None) == "httpx"}
-    assert quien_postea == {"_send"}
+    assert quien_postea == {"_pedir_a_resend"}
+    # …y a `_pedir_a_resend` (que hace la fila) sólo lo llaman `_send` (los
+    # masivos, desde su hilo) y el cartero (los sueltos).
+    quien_pide = {
+        fn.name for fn in ast.walk(arbol) if isinstance(fn, ast.FunctionDef)
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_pedir_a_resend"}
+    assert quien_pide == {"_send", "_cartero"}
 
 
 # ─── 2 y 3. Los avisos de la prueba, con el cron entero ──────────────────────
@@ -387,7 +396,7 @@ def test_con_resend_caido_el_cron_se_frena_y_no_quema_a_todos(conn):
             "SELECT COUNT(*) n FROM subscriptions WHERE user_id=? AND "
             "expiration_reminder_sent_at IS NOT NULL", (vence,)).fetchone()["n"] == 0
 
-        resend.respuestas.clear()                  # al día siguiente Resend anda
+        resend.respuestas.clear()                  # en la vuelta siguiente Resend anda
         r2 = subs.run_lifecycle_job(conn)
     assert r2["trial_emails_sent"] == len(nombres) - emails.INCIERTOS_PARA_FRENAR
     assert r2["credit_expiring_reminders_sent"] == 1
@@ -531,9 +540,8 @@ def test_el_aviso_de_vencimiento_rechazado_sale_en_la_corrida_siguiente(conn, pr
     vera = f"vera@{DOMINIO}"
 
     def marcado():
-        return conn.execute(
-            "SELECT COUNT(*) n FROM subscriptions WHERE user_id=? "
-            "AND expiration_reminder_sent_at IS NOT NULL", (uid,)).fetchone()["n"]
+        return int(bool(conn.execute("SELECT aviso_vencimiento_de m FROM users WHERE id=?",
+                                     (uid,)).fetchone()["m"]))
 
     with _red_de_mentira(_Reloj()) as resend:
         resend.respuestas[vera] = [429]
@@ -1565,16 +1573,13 @@ def test_quien_recibio_un_aviso_hace_meses_recibe_el_del_vencimiento_nuevo(conn)
 
 def test_si_el_aviso_nuevo_no_sale_vuelve_la_marca_vieja(conn):
     uid = _con_credito_por_vencer(conn)
-    vieja = (datetime.utcnow() - timedelta(days=120)).strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute("UPDATE subscriptions SET expiration_reminder_sent_at=? WHERE user_id=?",
-                 (vieja, uid))
+    conn.execute("UPDATE users SET aviso_vencimiento_de='2026-01-15' WHERE id=?", (uid,))
     conn.commit()
     with _red_de_mentira(_Reloj()) as resend:
         resend.respuestas[f"vera@{DOMINIO}"] = [429]
         assert subs.run_lifecycle_job(conn)["credit_expiring_reminders_sent"] == 0
-    assert conn.execute("SELECT expiration_reminder_sent_at m FROM subscriptions "
-                        "WHERE user_id=?", (uid,)).fetchone()["m"] == vieja
-
+    assert conn.execute("SELECT aviso_vencimiento_de m FROM users WHERE id=?",
+                        (uid,)).fetchone()["m"] == "2026-01-15"
 
 def test_a_la_noche_la_app_no_dice_mañana_un_dia_antes(conn, monkeypatch):
     """De 21 a 24 de Argentina el día UTC ya es el siguiente: contando contra
@@ -1599,31 +1604,39 @@ def test_a_la_noche_la_app_no_dice_mañana_un_dia_antes(conn, monkeypatch):
 
 # ─── La fila de la pausa bajo carga (auditoría 4) ───────────────────────────
 
-def test_una_rafaga_de_mails_sueltos_no_congela_la_app():
-    """Cada mail suelto sale DENTRO del pedido de una persona y ocupa un hilo de
-    la app. Con la fila completa, 80 "reenviar código" a la vez hacían esperar
-    al último 48 s y dejaban la app sin hilos: 24 s congelada (medido). Un mail
-    suelto espera a lo sumo ESPERA_MAXIMA_SUELTO."""
+def _esperar_al_cartero(segundos=10):
+    assert emails.esperar_al_cartero(segundos), "el cartero no terminó"
+
+
+def test_una_rafaga_de_mails_sueltos_no_congela_la_app_ni_se_saltea_la_fila():
+    """Cada mail suelto sale del pedido de una persona, que ocupa un hilo de la
+    app. Esperar la fila ADENTRO del pedido dejaba la app sin hilos (80
+    "reenviar código": 24 s congelada); saltearla hacía que Resend rechazara
+    por ritmo (76 de 80). Con el cartero: cada pedido contesta a lo sumo en
+    ESPERA_RESULTADO_SUELTO y los mails salen todos, con su pausa."""
     tope = 0.25
+    pausa = 0.1
     tardanzas = []
-    with _red_de_mentira(demora=0), patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0.1), \
-         patch.object(emails, "ESPERA_MAXIMA_SUELTO", tope):
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", pausa), \
+         patch.object(emails, "ESPERA_RESULTADO_SUELTO", tope):
         def pedido(i):
             t0 = time.monotonic()
-            emails.send_alert_email(to=f"p{i}@{DOMINIO}", heading="h", detail="d")
+            assert emails.send_alert_email(to=f"p{i}@{DOMINIO}", heading="h", detail="d")
             tardanzas.append(time.monotonic() - t0)
         hilos = [threading.Thread(target=pedido, args=(i,)) for i in range(20)]
         for h in hilos:
             h.start()
         for h in hilos:
             h.join(10)
+        _esperar_al_cartero()
     assert len(tardanzas) == 20
     assert max(tardanzas) < tope + 0.2, sorted(tardanzas)[-3:]
+    assert len(resend.pedidos) == 20                          # salieron todos
+    assert min(_separaciones(resend.horas())) >= pausa * 0.9  # y ninguno se coló
 
 
 def test_los_envios_masivos_hacen_la_fila_completa():
-    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0.1), \
-         patch.object(emails, "ESPERA_MAXIMA_SUELTO", 0.05):
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0.1):
         def loop(i):
             with emails.envio_masivo():
                 emails.send_alert_email(to=f"m{i}@{DOMINIO}", heading="h", detail="d")
@@ -1633,19 +1646,41 @@ def test_los_envios_masivos_hacen_la_fila_completa():
         for h in hilos:
             h.join(10)
     assert len(resend.pedidos) == 6
-    assert min(_separaciones(resend.horas())) >= 0.1 * 0.6
+    assert min(_separaciones(resend.horas())) >= 0.1 * 0.9
 
 
-def test_un_mail_suelto_con_la_fila_larga_sale_sin_esperar():
-    reloj = _Reloj()
-    with _red_de_mentira(reloj) as resend:
-        emails._ultimo_pedido = reloj.ahora + 30        # la fila ya tiene 30 s reservados
-        emails.send_alert_email(to=f"suelto@{DOMINIO}", heading="h", detail="d")
-        assert reloj.siestas == [] and len(resend.pedidos) == 1
-        assert emails._ultimo_pedido == reloj.ahora - 0.3 + 30   # no corrió la fila
-        with emails.envio_masivo():                     # el masivo sí espera su turno
-            emails.send_alert_email(to=f"masivo@{DOMINIO}", heading="h", detail="d")
-    assert reloj.siestas and reloj.siestas[0] > 29
+def test_con_el_cartero_ocupado_el_pedido_contesta_y_el_mail_sale_despues():
+    """Si al cartero no le llega el turno dentro del tope, el pedido no espera
+    más: el mail ya está en la fila (EN_COLA, "va a salir") y sale después."""
+    libre = threading.Event()
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "ESPERA_RESULTADO_SUELTO", 0.2):
+        post = resend.post
+
+        def post_lento(url, **kw):
+            libre.wait(5)                       # Resend tarda en contestar
+            return post(url, **kw)
+
+        with patch("httpx.post", post_lento):
+            t0 = time.monotonic()
+            assert emails.send_alert_email(to=f"ana@{DOMINIO}", heading="h", detail="d") is True
+            assert time.monotonic() - t0 < 1
+            assert emails.resultado_del_ultimo_envio() == emails.EN_COLA
+            assert resend.pedidos == []
+            libre.set()
+            _esperar_al_cartero()
+    assert len(resend.a(f"ana@{DOMINIO}")) == 1
+
+
+def test_con_todo_tranquilo_el_pedido_recibe_la_respuesta_de_siempre():
+    """El cartero no cambia lo que ve quien necesita saber si salió (la
+    recomendación, la invitación del asesor): un rechazo sigue siendo un
+    rechazo."""
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[f"ana@{DOMINIO}"] = [429]
+        assert emails.send_alert_email(to=f"ana@{DOMINIO}", heading="h", detail="d") is False
+        assert emails.resultado_del_ultimo_envio() == emails.NO_SALIO
+        assert emails.send_alert_email(to=f"beto@{DOMINIO}", heading="h", detail="d") is True
+        assert emails.resultado_del_ultimo_envio() == emails.ENVIADO
 
 
 def test_nadie_duerme_con_la_fila_tomada():
@@ -1684,3 +1719,385 @@ def test_los_trabajos_de_fondo_y_el_panel_mandan_en_modo_masivo():
         c.close()
     mirar()                                             # y afuera, no
     assert vistos == [True, True, True, False]
+
+
+# ─── El aviso de vencimiento, uno por persona y con la fecha real (auditoría 5)
+
+def _suscriptora(conn, nombre="vera", *, credito_en_dias=None, tier="plus", **cols):
+    hasta = (datetime.utcnow() + timedelta(days=credito_en_dias)).isoformat() \
+        if credito_en_dias is not None else None
+    return _usuario(conn, nombre, tier=tier, credit_active_until=hasta, **cols)
+
+
+def _sub(conn, uid, estado, fin_en_dias=None, ref=None):
+    fin = (datetime.utcnow() + timedelta(days=fin_en_dias)).date().isoformat() \
+        if fin_en_dias is not None else None
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, current_period_end, created_at) VALUES (?, ?, ?, ?, 'monthly', "
+        "10000, ?, ?)",
+        (uid, ref or f"sub-{uid}-{estado}", estado, f"rendi-{uid}-{ref or estado}", fin,
+         datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+
+
+def test_quien_pago_en_la_prueba_y_cancela_recibe_un_aviso_con_su_fecha_real(conn):
+    """Pagó el día 3 de la prueba: su acceso dura los días de prueba que le
+    quedaban + el mes, pero Rebill cobra el mismo día del mes siguiente. El
+    aviso de la suscripción cancelada anunciaba la fecha de Rebill (17 días
+    antes) y, con el de fin de crédito, le llegaban dos."""
+    uid = _suscriptora(conn, credito_en_dias=19)
+    _sub(conn, uid, "cancelled", fin_en_dias=2)            # la fecha de Rebill
+    vera = f"vera@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+        assert resend.a(vera) == []                        # todavía no: le quedan 19 días
+        # Pasan los días: el crédito vence en 2 (la fecha de Rebill ya pasó).
+        nuevo = datetime.utcnow() + timedelta(days=2)
+        conn.execute("UPDATE users SET credit_active_until=? WHERE id=?", (nuevo.isoformat(), uid))
+        conn.execute("UPDATE subscriptions SET current_period_end=? WHERE user_id=?",
+                     ((datetime.utcnow() - timedelta(days=15)).date().isoformat(), uid))
+        conn.commit()
+        subs.run_lifecycle_job(conn)
+        subs.run_lifecycle_job(conn, solo_avisos=True)
+    (to, asunto, texto), = [m for m in resend.mails if m[0] == vera]
+    assert emails._fmt_date(nuevo.isoformat()) in texto, texto
+
+
+def test_reactivar_no_deja_un_aviso_de_vencimiento_falso(conn):
+    """"Reactivar" crea una suscripción nueva; la vieja queda cancelada con
+    su fecha. Le llegaba "vence en N días" a alguien que se renueva solo."""
+    uid = _suscriptora(conn, credito_en_dias=2)
+    _sub(conn, uid, "cancelled", fin_en_dias=2, ref="vieja")
+    _sub(conn, uid, "authorized", ref="nueva")
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    assert resend.a(f"vera@{DOMINIO}") == []
+
+
+def test_un_regalo_sin_suscripcion_recibe_su_aviso(conn):
+    """El que recibió un regalo no tiene fila en `subscriptions`: no había
+    dónde marcar, y el aviso se salteaba (51 de 57 regalos en la foto del 16/08)."""
+    _suscriptora(conn, credito_en_dias=2, tier="pro")
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+        subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1
+
+
+def test_a_quien_ya_perdio_el_acceso_no_le_llega_el_aviso_al_mediodia(conn):
+    """Canceló a la mañana de su último día: el acceso ya terminó y la baja
+    recién la hace la corrida de la madrugada. La vuelta de las 12:00 le
+    mandaba "vence en 0/1 días"."""
+    uid = _suscriptora(conn, credito_en_dias=-0.1)
+    _sub(conn, uid, "cancelled", fin_en_dias=0)
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert resend.a(f"vera@{DOMINIO}") == []
+
+
+def test_un_regalo_despues_de_vencer_tiene_su_propio_aviso(conn):
+    """Se le avisó un vencimiento, venció, y le regalaron 7 días: el
+    vencimiento nuevo se avisa (la guarda de 15 días lo tapaba)."""
+    uid = _suscriptora(conn, credito_en_dias=2)
+    hace = (datetime.utcnow() - timedelta(days=5)).date().isoformat()
+    conn.execute("UPDATE users SET aviso_vencimiento_de=? WHERE id=?", (hace, uid))
+    conn.commit()
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1
+
+
+def test_el_mismo_vencimiento_en_todas_las_vueltas_es_un_solo_aviso(conn):
+    uid = _suscriptora(conn, credito_en_dias=2.5)
+    _sub(conn, uid, "cancelled", fin_en_dias=2)
+    with _red_de_mentira(_Reloj()) as resend:
+        for _ in range(3):
+            subs.run_lifecycle_job(conn)
+            subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1
+
+
+def test_el_cartero_nunca_pide_de_verdad_bajo_pytest(monkeypatch):
+    """Un mail que quedó en la fila del cartero después de que un test sacara
+    sus parches no puede salir a Resend: `_pedir_a_resend` repite la guarda."""
+    pedidos = []
+    monkeypatch.setattr("httpx.post", lambda *a, **kw: pedidos.append(1))
+    monkeypatch.setattr(emails, "_api_key", lambda: "re_de_mentira")
+    assert emails._pedir_a_resend({"to": [f"x@{DOMINIO}"]}, f"x@{DOMINIO}", "s") is False
+    assert pedidos == []
+
+
+# ─── Auditoría 5 (los huecos de la suite que encontró la ronda 5) ───────────
+
+# ─── La pausa: después de un rato quieto, una ráfaga igual se separa ─────────
+
+def test_despues_de_un_rato_quieto_una_rafaga_igual_se_separa():
+    """La reserva arranca en `max(ahora, último + pausa)`. Sin el `max`, el
+    turno de después de un rato quieto queda EN EL PASADO y los mails que
+    siguen salen pegados (los tests de arriba arrancan siempre de cero o con un
+    solo mail después del rato quieto)."""
+    reloj = _Reloj()
+    with _red_de_mentira(reloj) as resend:
+        emails.send_alert_email(to=f"a@{DOMINIO}", heading="h", detail="d")
+        reloj.ahora += 60
+        for n in ("b", "c", "d"):
+            emails.send_alert_email(to=f"{n}@{DOMINIO}", heading="h", detail="d")
+    horas = resend.horas()[1:]
+    assert len(horas) == 3
+    assert all(s >= PAUSA - 1e-9 for s in _separaciones(horas)), _separaciones(horas)
+
+
+# ─── envio_masivo anidado ────────────────────────────────────────────────────
+
+def test_un_envio_masivo_anidado_no_apaga_el_de_afuera():
+    """Un trabajo de fondo (modo masivo) que adentro usa otro bloque masivo (el
+    panel, un helper): al salir del de adentro, el de afuera sigue en fila
+    completa; y al salir del de afuera, el hilo vuelve a suelto."""
+    with emails.envio_masivo():
+        with emails.envio_masivo():
+            pass
+        assert getattr(emails._modo, "masivo", False) is True
+    assert getattr(emails._modo, "masivo", False) is False
+
+
+# ─── Un solo aviso por vencimiento, A LO LARGO DE LOS DÍAS ───────────────────
+
+def test_los_dos_caminos_en_dias_distintos_mandan_un_solo_aviso(conn, monkeypatch):
+    """El aviso de la suscripción cancelada entra a su ventana por FECHA, y el
+    de fin de crédito por HORA: los dos caminos al mismo vencimiento caían en
+    corridas DISTINTAS. Acá se camina el reloj 5 días con las dos vueltas
+    diarias (03:30 completa, 15:00 sólo avisos): un solo aviso."""
+    ahora = datetime.utcnow()
+    vence = ahora + timedelta(days=5)
+    uid = _usuario(conn, "vera", tier="plus", credit_active_until=vence.isoformat())
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, current_period_end, created_at) VALUES (?, 'sub-vieja', "
+        "'cancelled', ?, 'monthly', 10000, ?, ?)",
+        (uid, f"rendi-{uid}-a", vence.isoformat(timespec="seconds"),
+         (ahora - timedelta(days=25)).strftime("%Y-%m-%d %H:%M:%S")))
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, created_at) VALUES (?, 'sub-nueva', 'pending', ?, 'monthly', "
+        "10000, ?)", (uid, f"rendi-{uid}-b", ahora.strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+
+    class _Reloj5(datetime):
+        T = ahora
+
+        @classmethod
+        def utcnow(cls):
+            return cls.T
+
+    monkeypatch.setattr(subs, "datetime", _Reloj5)
+    with _red_de_mentira(_Reloj()) as resend:
+        for paso in range(10):              # 03:30 completa, 15:00 sólo avisos, ...
+            subs.run_lifecycle_job(conn, solo_avisos=bool(paso % 2))
+            _Reloj5.T += timedelta(hours=11.5 if paso % 2 == 0 else 12.5)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1, resend.mails
+
+def test_la_vuelta_de_la_tarde_no_hace_ningun_paso_que_no_sea_un_aviso(conn):
+    """El test de la ronda 4 mira sólo la baja por crédito vencido. Acá, cada
+    uno de los otros cuatro pasos que NO son avisos, con un caso que la vuelta
+    completa sí toca (el control de abajo): la de la tarde no toca ninguno."""
+    hace8 = (datetime.utcnow() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+    # 1. suscripción cancelada y vencida, sin crédito → _downgrade_expired_cancellations
+    cancelada = _usuario(conn, "cancelada", tier="pro")
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, current_period_end) VALUES (?, 'sub-c', 'cancelled', ?, "
+        "'monthly', 10000, ?)",
+        (cancelada, f"rendi-{cancelada}-m",
+         (datetime.utcnow() - timedelta(hours=3)).isoformat(timespec="seconds")))
+    # 2. pago abierto hace 8 días → _cancel_stale_pending
+    pendiente = _usuario(conn, "pendiente")
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, created_at, updated_at) VALUES (?, 'sub-p', 'pending', ?, "
+        "'monthly', 10000, ?, ?)", (pendiente, f"rendi-{pendiente}-m", hace8, hace8))
+    # 3. cuenta sin verificar de hace 8 días → _delete_unverified_accounts
+    sin_verificar = _usuario(conn, "sinverificar", email_verified=0, created_at=hace8)
+    # 4. prueba que hoy pasa de Pro a Plus → step_down_due_trials
+    prueba = _usuario(conn, "prueba")
+    assert tr.start(conn, prueba)["ok"]
+    row = conn.execute("SELECT trial_started_at, credit_active_until, trial_ends_at "
+                       "FROM users WHERE id=?", (prueba,)).fetchone()
+    d = timedelta(days=tr.TRIAL_PRO_DAYS)
+    conn.execute("UPDATE users SET trial_started_at=?, credit_active_until=?, trial_ends_at=? "
+                 "WHERE id=?",
+                 ((datetime.fromisoformat(row["trial_started_at"]) - d).isoformat(),
+                  (datetime.fromisoformat(row["credit_active_until"]) - d).isoformat(),
+                  (datetime.fromisoformat(row["trial_ends_at"]) - d).isoformat(), prueba))
+    conn.commit()
+
+    def foto():
+        return (
+            conn.execute("SELECT tier FROM users WHERE id=?", (cancelada,)).fetchone()["tier"],
+            conn.execute("SELECT status FROM subscriptions WHERE mp_subscription_id='sub-p'"
+                         ).fetchone()["status"],
+            conn.execute("SELECT COUNT(*) c FROM users WHERE id=?", (sin_verificar,)
+                         ).fetchone()["c"],
+            conn.execute("SELECT tier FROM users WHERE id=?", (prueba,)).fetchone()["tier"],
+        )
+
+    antes = foto()
+    assert antes == ("pro", "pending", 1, "pro")
+    with _red_de_mentira(_Reloj()):
+        r = subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert foto() == antes, r
+    with _red_de_mentira(_Reloj()):
+        r = subs.run_lifecycle_job(conn)                        # control: la completa sí
+    despues = foto()
+    assert despues[0] != "pro" and despues[1] == "cancelled" and despues[2] == 0 \
+        and despues[3] == "plus", (despues, r)
+
+
+# ─── El cron externo: "0" / "false" no es "sí" ──────────────────────────────
+
+@pytest.mark.parametrize("valor,esperado", [("0", False), ("false", False), ("no", False),
+                                            ("", False), ("1", True), ("true", True)])
+def test_el_cron_externo_solo_avisos_lee_bien_el_valor(monkeypatch, valor, esperado):
+    """Quien arme el cron de las 03:30 con `solo_avisos=0` (para dejarlo
+    explícito) no puede apagar las bajas de plan."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("BILLING_CRON_TOKEN", "tok")
+    corridas = []
+    monkeypatch.setattr(main, "_run_subscription_lifecycle_job",
+                        lambda **kw: corridas.append(kw.get("solo_avisos", False)))
+    http = TestClient(main.app)
+    assert http.get(f"/api/billing/run-cron?token=tok&solo_avisos={valor}"
+                    ).json()["solo_avisos"] is esperado
+    fin = time.time() + 5
+    while not corridas and time.time() < fin:
+        time.sleep(0.01)
+    fin = time.time() + 5
+    while "ciclo_de_vida" in main._corridas_en_curso and time.time() < fin:
+        time.sleep(0.02)
+    assert corridas == [esperado]
+
+
+# ─── La vuelta de la tarde respeta la bandera del cron externo ───────────────
+
+def test_la_vuelta_de_la_tarde_no_corre_mientras_corre_el_cron_externo(monkeypatch):
+    """Mismo test que el de las 03:30 (`test_el_scheduler_no_corre_el_job_...`),
+    para el trabajo de las 15:00: el comentario dice "misma bandera: nunca
+    corren a la vez" y nada lo verificaba."""
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("BILLING_CRON_TOKEN", "tok-cron")
+    sigue = threading.Event()
+    corridas = []
+
+    def job_lento(**kw):
+        corridas.append(kw.get("solo_avisos", False))
+        sigue.wait(10)
+
+    monkeypatch.setattr(main, "_run_subscription_lifecycle_job", job_lento)
+    sched = _SchedulerQueAnota()
+    monkeypatch.setattr(main, "_scheduler", sched)
+    monkeypatch.setattr(main, "_fci_bootstrap_async", lambda: None)
+    main._start_scheduler()
+    tarde = sched.jobs["subscription_lifecycle_tarde"]
+    http = TestClient(main.app)
+    try:
+        assert http.get("/api/billing/run-cron?token=tok-cron").json()["status"] == "started"
+        fin = time.time() + 3
+        while not corridas and time.time() < fin:
+            time.sleep(0.01)
+        assert corridas == [False]
+        hilo = threading.Thread(target=tarde)
+        hilo.start()
+        hilo.join(2)
+        assert not hilo.is_alive(), "la vuelta de la tarde corrió en paralelo al cron externo"
+        assert corridas == [False]
+    finally:
+        sigue.set()
+    fin = time.time() + 5
+    while "ciclo_de_vida" in main._corridas_en_curso and time.time() < fin:
+        time.sleep(0.02)
+    tarde()
+    assert corridas == [False, True]
+
+
+# ─── "Reciente" no puede tapar el vencimiento del mes siguiente ──────────────
+
+def _credito_por_vencer_con_sub_cancelada(conn, marca_previa=None):
+    uid = _usuario(conn, "vera", tier="plus",
+                   credit_active_until=(datetime.utcnow() + timedelta(days=2)).isoformat())
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, status, external_reference, period, amount_ars, "
+        "created_at, expiration_reminder_sent_at) VALUES (?, 'cancelled', ?, 'monthly', 10000, ?, ?)",
+        (uid, f"rendi-{uid}-monthly", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+         marca_previa))
+    conn.commit()
+    return uid
+
+
+def test_quien_recibio_el_aviso_del_mes_pasado_recibe_el_de_este_mes(conn):
+    """El test de la ronda 4 usa un aviso de hace 120 días: una ventana de 100
+    (o de 60) lo pasa igual y le tapa el aviso a quien paga mes a mes con pagos
+    sueltos. El ciclo más corto es un mes: 28 días."""
+    hace28 = (datetime.utcnow() - timedelta(days=28)).strftime("%Y-%m-%d %H:%M:%S")
+    _credito_por_vencer_con_sub_cancelada(conn, hace28)
+    with _red_de_mentira(_Reloj()) as resend:
+        assert subs.run_lifecycle_job(conn)["credit_expiring_reminders_sent"] == 1
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1
+
+
+# ─── La vuelta de la tarde reintenta TODOS los avisos ────────────────────────
+
+def test_la_vuelta_de_la_tarde_reintenta_el_aviso_de_fin_de_credito(conn):
+    _credito_por_vencer_con_sub_cancelada(conn)
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[f"vera@{DOMINIO}"] = [429]
+        assert subs.run_lifecycle_job(conn)["credit_expiring_reminders_sent"] == 0
+        r = subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert r["credit_expiring_reminders_sent"] == 1
+
+
+def test_la_vuelta_de_la_tarde_reintenta_el_aviso_de_suscripcion_cancelada(conn):
+    uid = _usuario(conn, "vera", tier="pro")
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, current_period_end) VALUES (?, 'sub-vera', 'cancelled', ?, "
+        "'monthly', 10000, ?)",
+        (uid, f"rendi-{uid}-monthly", (datetime.utcnow() + timedelta(days=2)).date().isoformat()))
+    conn.commit()
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[f"vera@{DOMINIO}"] = [429]
+        assert subs.run_lifecycle_job(conn)["expiration_reminders_sent"] == 0
+        r = subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert r["expiration_reminders_sent"] == 1
+
+
+def test_una_bienvenida_que_quedo_en_la_fila_no_se_manda_dos_veces(conn):
+    """Activa la prueba durante una ráfaga: el pedido contesta antes de que el
+    cartero mande la bienvenida (EN_COLA). La marca queda —va a salir—, y el
+    reintento del cron no la manda otra vez."""
+    uid = _usuario(conn, "ana")
+    libre = threading.Event()
+    with _red_de_mentira(demora=0) as resend, \
+         patch.object(emails, "ESPERA_RESULTADO_SUELTO", 0.1):
+        post = resend.post
+        with patch("httpx.post", lambda url, **kw: (libre.wait(5), post(url, **kw))[1]):
+            assert tr.start(conn, uid)["ok"]
+            assert uid in _marcados(conn, tr.MAIL_STARTED)
+            libre.set()
+            _esperar_al_cartero()
+        tr.send_due_trial_emails(conn)
+    assert len(resend.a(f"ana@{DOMINIO}")) == 1
+
+
+def test_al_apagar_se_espera_al_cartero(monkeypatch):
+    """Los mails sueltos que el cartero tiene en la fila salen antes de que
+    el proceso termine (con el mismo tope que las corridas)."""
+    monkeypatch.setattr(main, "_flush_last_prices_si_toca", lambda forzar=False: 0)
+    libre = threading.Event()
+    with _red_de_mentira(demora=0) as resend, \
+         patch.object(emails, "ESPERA_RESULTADO_SUELTO", 0.05):
+        post = resend.post
+        with patch("httpx.post", lambda url, **kw: (libre.wait(5), post(url, **kw))[1]):
+            emails.send_alert_email(to=f"ana@{DOMINIO}", heading="h", detail="d")
+            threading.Timer(0.3, libre.set).start()
+            main._cerrar_al_apagar()
+            assert resend.a(f"ana@{DOMINIO}"), "el apagado no esperó al cartero"

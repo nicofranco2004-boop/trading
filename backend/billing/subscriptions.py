@@ -24,6 +24,7 @@ Job que corre diariamente y se encarga de:
 from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 log = logging.getLogger("billing.subscriptions")
 
@@ -37,28 +38,120 @@ def _dias_que_quedan(fin) -> int:
     return dias_restantes(fin)
 
 
-# Días durante los cuales un aviso de vencimiento a una persona —por cualquiera
-# de los dos caminos: fin de crédito o suscripción cancelada— bloquea otro. Los
-# dos se anotan en la misma columna (subscriptions.expiration_reminder_sent_at)
-# y cubren el MISMO vencimiento con ventanas de 3-4 días: sin esto le llegaban
-# dos "vence en N días" en la misma corrida (una sub cancelada y otra más nueva).
-# Y es "reciente", no "alguna vez": el de fin de crédito miraba si la persona
-# había recibido uno ALGUNA VEZ, así que a quien renovaba y volvía a vencer
-# meses después no le llegaba nunca más.
-AVISO_VENCIMIENTO_REPETIR_DIAS = 15
+def _dia(valor) -> Optional[str]:
+    """'YYYY-MM-DD' de una fecha de la base (con 'T' o con espacio), o None."""
+    if not valor:
+        return None
+    dia = str(valor).replace("T", " ")[:10]
+    return dia if len(dia) == 10 else None
 
 
-def _corte_aviso_reciente() -> str:
-    """Marcas desde acá (mismo formato que `_ahora_db`) cuentan como recientes."""
-    return (datetime.utcnow() - timedelta(days=AVISO_VENCIMIENTO_REPETIR_DIAS)
-            ).strftime("%Y-%m-%d %H:%M:%S")
+def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool:
+    """UN aviso de vencimiento por persona y por vencimiento REAL. Devuelve si
+    salió. `r`: la fila del usuario (user_id, email, name, tier y, si la hay,
+    credit_anchor_plan); `fin`: cuándo se le termina de verdad el acceso.
+
+    La marca es `users.aviso_vencimiento_de` = el día que se le avisó. Antes
+    eran dos caminos (fin de crédito y suscripción cancelada), cada uno con su
+    marca en una fila de `subscriptions` y su propia fecha: a quien pagó
+    durante la prueba le avisaban la de Rebill (el cobro del mes siguiente)
+    aunque su acceso durara hasta 19 días más; le podían llegar dos avisos; a
+    quien recibió un regalo (sin fila de suscripción) no le llegaba ninguno; y
+    a quien ya lo había recibido alguna vez, nunca más. Ahora: se avisa el día
+    en que se termina el acceso, una vez; si la fecha cambia (renovó, le
+    regalaron días) y vuelve a vencer, se avisa la fecha nueva."""
+    from billing import emails
+    from billing import trial as _trial
+    from billing import plan_textos as _plan_textos
+    dia = _dia(fin)
+    if not dia:
+        return False
+    try:
+        fin_dt = datetime.fromisoformat(str(fin).replace("Z", "").split(".")[0])
+        days_left = _dias_que_quedan(fin_dt)
+    except Exception:
+        days_left = days_before
+    keys = r.keys()
+    # El plan que vence es el del ancla del crédito; si falta, el que tiene
+    # puesto. Caía a "pro" y a un Plus sin ancla le avisaba que vencía su Pro.
+    plan = (r["credit_anchor_plan"] if "credit_anchor_plan" in keys else None) or r["tier"]
+    uid = r["user_id"]
+    datos = dict(
+        to=r["email"],
+        user_name=(r["name"] or r["email"].split("@")[0]),
+        days_left=days_left,
+        expires_at=fin,
+        plan=plan,
+        # Nació sin plan gratis → no "pierde" features: queda en pausa.
+        requiere_plan=_trial._requiere_plan(conn, uid),
+        # Los cupos de ESTA persona, no los del plan: ver cupos_del_usuario.
+        cupos=_plan_textos.cupos_del_usuario(conn, uid, plan),
+    )
+
+    # Marca ANTES de mandar, condicional (dos corridas a la vez no la ganan las
+    # dos), y si el mail no sale vuelve la que había (ver `emails.Tanda`).
+    def marcar():
+        with conn:
+            previa = conn.execute("SELECT aviso_vencimiento_de FROM users WHERE id = ?",
+                                  (uid,)).fetchone()
+            cur = conn.execute(
+                """UPDATE users SET aviso_vencimiento_de = ?
+                   WHERE id = ? AND (aviso_vencimiento_de IS NULL
+                                     OR aviso_vencimiento_de <> ?)""",
+                (dia, uid, dia))
+        if cur.rowcount <= 0:
+            return None
+        return (dia, previa["aviso_vencimiento_de"] if previa else None)
+
+    def desmarcar(m):
+        nueva, previa = m
+        with conn:
+            conn.execute("""UPDATE users SET aviso_vencimiento_de = ?
+                            WHERE id = ? AND aviso_vencimiento_de = ?""",
+                         (previa, uid, nueva))
+
+    res = tanda.enviar(marcar, lambda: emails.send_expiration_reminder(**datos), desmarcar,
+                       que=que)
+    if res == emails.ENVIADO:
+        log.info("aviso de vencimiento enviado uid=%s (vence %s, days_left=%s)",
+                 uid, dia, days_left)
+        return True
+    return False
 
 
-def _ahora_db() -> str:
-    """La hora UTC en el formato de `datetime('now')` de SQLite, que es como se
-    escribían estas marcas. Se arma en Python para saber QUÉ marca se puso y
-    poder devolver justo esa si el mail no sale."""
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+def _migrar_aviso_vencimiento(conn) -> int:
+    """Una vez, al crear `users.aviso_vencimiento_de`: a quien recibió un aviso
+    de vencimiento en los últimos 15 días (la marca vieja, en `subscriptions`)
+    se le anota el día que ya se le avisó, para que el código nuevo no se lo
+    repita. Si el aviso viejo salió por la suscripción cancelada, el día
+    anotado es el de esa suscripción (la fecha de Rebill): si su acceso dura
+    más, el aviso con la fecha real va a salir cuando corresponda."""
+    corte = (datetime.utcnow() - timedelta(days=15)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = conn.execute(
+        """SELECT u.id, u.credit_active_until,
+                  (SELECT s.current_period_end FROM subscriptions s
+                    WHERE s.user_id = u.id AND s.status = 'cancelled'
+                      AND s.current_period_end IS NOT NULL
+                      AND s.expiration_reminder_sent_at >= ?
+                    ORDER BY s.expiration_reminder_sent_at DESC LIMIT 1) AS fin_sub
+             FROM users u
+            WHERE u.aviso_vencimiento_de IS NULL
+              AND EXISTS (SELECT 1 FROM subscriptions s
+                           WHERE s.user_id = u.id
+                             AND s.expiration_reminder_sent_at >= ?)""",
+        (corte, corte)).fetchall()
+    n = 0
+    with conn:
+        for r in rows:
+            dia = _dia(r["fin_sub"] or r["credit_active_until"])
+            if dia:
+                n += conn.execute(
+                    """UPDATE users SET aviso_vencimiento_de = ?
+                       WHERE id = ? AND aviso_vencimiento_de IS NULL""",
+                    (dia, r["id"])).rowcount or 0
+    if n:
+        log.info("migración: %d avisos de vencimiento recientes pasados a users", n)
+    return n
 
 
 def run_lifecycle_job(conn, solo_avisos: bool = False) -> dict:
@@ -272,20 +365,13 @@ def _downgrade_expired_credit(conn) -> int:
 
 
 def _send_credit_expiring_reminders(conn, days_before: int = 3, tanda=None) -> int:
-    """Email "tu crédito se acaba en N días" a users sin sub autorizada.
-
-    Idempotente: reusamos expiration_reminder_sent_at en la subscription más
-    reciente del user, y no sale si la persona recibió un aviso de vencimiento
-    (por cualquiera de los dos caminos) en los últimos
-    AVISO_VENCIMIENTO_REPETIR_DIAS. Si el user nunca tuvo sub (caso raro), no
-    hay dónde marcar y se saltea.
-
-    NOTA: Si en el futuro queremos un canal separado por crédito vs cancel,
-    se puede agregar una col `credit_reminder_sent_at` en users.
-    """
+    """Email "tu plan vence en N días" a quien se le termina el acceso pago
+    (`users.credit_active_until`, la fuente de verdad del acceso) en los
+    próximos `days_before` días y no tiene una suscripción que lo renueve.
+    Incluye a quien recibió un regalo (no tiene fila en `subscriptions`). UN
+    aviso por vencimiento: ver `_avisar_vencimiento`."""
     from billing import emails
     tanda = tanda or emails.Tanda()
-    today = datetime.utcnow().date()
     target_str = (datetime.utcnow() + timedelta(days=days_before)).isoformat()
     today_str = datetime.utcnow().isoformat()
     rows = conn.execute(
@@ -295,124 +381,26 @@ def _send_credit_expiring_reminders(conn, days_before: int = 3, tanda=None) -> i
            WHERE u.tier IN ('pro', 'plus', 'advisor')
              AND u.credit_active_until IS NOT NULL
              AND u.credit_active_until BETWEEN ? AND ?
-             -- El trial NO entra acá: tiene su propia secuencia de avisos, y
-             -- este mail se apoya en la tabla subscriptions para no repetirse
-             -- (un usuario de trial no tiene fila ahí, así que le llegaba TODOS
-             -- los días de los últimos 4, y encima diciendo "tu plan Pro" —
-             -- audit). Se compara contra trial_ends_at: un ex-trial que después
-             -- pague sí tiene que recibir su aviso normal.
+             -- El trial NO entra acá: tiene su propia secuencia de avisos. Se
+             -- compara contra trial_ends_at: un ex-trial que después pague sí
+             -- tiene que recibir su aviso normal.
              AND (u.trial_ends_at IS NULL OR u.credit_active_until <> u.trial_ends_at)
+             -- Con una suscripción que cobra sola (incluida la nueva de quien
+             -- apretó "Reactivar"), el acceso no se termina.
              AND NOT EXISTS (
                 SELECT 1 FROM subscriptions s
                 WHERE s.user_id = u.id AND s.status = 'authorized'
              )""",
         (today_str, target_str),
     ).fetchall()
-    if not rows:
-        return 0
-
     sent = 0
     for r in rows:
         if tanda.frenado:      # Resend no confirma: lo que falta, la próxima vuelta
             break
         try:
-            # Ya recibió un aviso de vencimiento hace poco (éste, o el de la
-            # suscripción cancelada): es el mismo vencimiento.
-            corte = _corte_aviso_reciente()
-            existing_sent = conn.execute(
-                """SELECT id FROM subscriptions
-                   WHERE user_id = ? AND expiration_reminder_sent_at >= ?
-                   LIMIT 1""",
-                (r["user_id"], corte),
-            ).fetchone()
-            if existing_sent:
-                continue  # ya mandado
-            # Sin fila en subscriptions no hay dónde marcar que ya se envió, así
-            # que el mail saldría en CADA corrida. Preferimos no mandarlo antes
-            # que mandarlo cuatro veces (audit).
-            _has_sub = conn.execute(
-                "SELECT 1 FROM subscriptions WHERE user_id=? LIMIT 1", (r["user_id"],)
-            ).fetchone()
-            if not _has_sub:
-                log.info("credit expiring reminder salteado uid=%s: sin suscripción "
-                         "donde registrar el envío", r["user_id"])
-                continue
-
-            try:
-                period_end = datetime.fromisoformat(
-                    r["credit_active_until"].replace("Z", "").split(".")[0]
-                )
-                days_left = _dias_que_quedan(period_end)
-            except Exception:
-                days_left = days_before
-
-            from billing import trial as _trial
-            from billing import plan_textos as _plan_textos
-            # El plan que vence es el del ancla del crédito; si falta, el que
-            # tiene puesto (la consulta ya lo limita a pro/plus/advisor). Caía
-            # a "pro" y a un Plus sin ancla le avisaba que vencía su Pro.
-            plan = r["credit_anchor_plan"] or r["tier"]
-            datos = dict(
-                to=r["email"],
-                user_name=(r["name"] or r["email"].split("@")[0]),
-                days_left=days_left,
-                expires_at=r["credit_active_until"],
-                plan=plan,
-                # Nació sin plan gratis → no "pierde" features: queda en pausa.
-                requiere_plan=_trial._requiere_plan(conn, r["user_id"]),
-                # Los cupos de ESTA persona, no los del plan: ver cupos_del_usuario.
-                cupos=_plan_textos.cupos_del_usuario(conn, r["user_id"], plan),
-            )
-
-            # La marca va en la sub más reciente del user, ANTES de mandar y
-            # sólo si ninguna de sus subs tiene una reciente (el mismo chequeo
-            # de arriba, pero en el UPDATE: dos corridas a la vez no la ganan
-            # las dos). Antes se anotaba DESPUÉS y sin mirar si el mail había
-            # salido: un rechazo de Resend quedaba como enviado y el aviso no
-            # llegaba nunca. La marca vieja de esa fila (de otro vencimiento)
-            # se guarda para devolverla si el mail no sale.
-            def marcar(uid=r["user_id"], corte=corte):
-                marca = _ahora_db()
-                with conn:
-                    sub = conn.execute(
-                        """SELECT id, expiration_reminder_sent_at AS previa
-                             FROM subscriptions WHERE user_id = ?
-                           ORDER BY created_at DESC LIMIT 1""", (uid,)).fetchone()
-                    if not sub:
-                        return None
-                    # La condición sobre la fila que se marca, además del NOT
-                    # EXISTS: en Postgres la segunda de dos corridas a la vez
-                    # re-chequea la fila al destrabarse, pero el NOT EXISTS lo
-                    # ve con la foto de antes y las dos ganaban.
-                    cur = conn.execute(
-                        """UPDATE subscriptions
-                           SET expiration_reminder_sent_at = ?
-                           WHERE id = ?
-                             AND (expiration_reminder_sent_at IS NULL
-                                  OR expiration_reminder_sent_at < ?)
-                             AND NOT EXISTS (SELECT 1 FROM subscriptions
-                                             WHERE user_id = ?
-                                               AND expiration_reminder_sent_at >= ?)""",
-                        (marca, sub["id"], corte, uid, corte),
-                    )
-                return (sub["id"], marca, sub["previa"]) if cur.rowcount > 0 else None
-
-            def desmarcar(m):
-                sub_id, marca, previa = m
-                with conn:
-                    conn.execute(
-                        """UPDATE subscriptions SET expiration_reminder_sent_at = ?
-                           WHERE id = ? AND expiration_reminder_sent_at = ?""",
-                        (previa, sub_id, marca),
-                    )
-
-            res = tanda.enviar(
-                marcar, lambda: emails.send_expiration_reminder(**datos), desmarcar,
-                que=f"aviso de fin de crédito uid={r['user_id']}")
-            if res == emails.ENVIADO:
+            if _avisar_vencimiento(conn, tanda, r, r["credit_active_until"], days_before,
+                                   que=f"aviso de fin de crédito uid={r['user_id']}"):
                 sent += 1
-                log.info("Credit expiring reminder enviado a user %s (days_left=%s)",
-                         r["user_id"], days_left)
         except Exception as ex:
             log.error("Credit expiring reminder falló para user %s: %s", r["user_id"], ex)
     return sent
@@ -468,15 +456,15 @@ def _delete_unverified_accounts(conn, stale_days: int = 7) -> int:
 
 
 def _send_expiration_reminders(conn, days_before: int = 3, tanda=None) -> int:
-    """Manda recordatorio a users cuya sub cancelada está por expirar en N días.
+    """El mismo aviso que `_send_credit_expiring_reminders`, para el modelo
+    VIEJO: suscripciones canceladas de quien no tiene `credit_active_until`
+    (anteriores al modelo de crédito), donde el fin del acceso es el
+    `current_period_end` de la suscripción.
 
-    Solo afecta a subs `cancelled` (no a `authorized` activas — esas se renuevan
-    automáticamente). Idempotente vía expiration_reminder_sent_at.
-
-    Nota: 'superseded' subs (cambio de plan) NO entran acá porque su current_period_end
-    ya no es el source of truth — usamos users.credit_active_until en
-    _send_credit_expiring_reminders.
-    """
+    Antes corría para TODA suscripción cancelada y avisaba su fecha (la del
+    próximo cobro de Rebill) aunque el acceso real —el crédito— durara más: a
+    quien pagó durante la prueba le avisaba hasta 19 días antes, y con el otro
+    camino le llegaban dos avisos."""
     from billing import emails
     tanda = tanda or emails.Tanda()
     rows = conn.execute(
@@ -485,83 +473,27 @@ def _send_expiration_reminders(conn, days_before: int = 3, tanda=None) -> int:
            FROM subscriptions s
            JOIN users u ON u.id = s.user_id
            WHERE s.status = 'cancelled'
-             AND s.expiration_reminder_sent_at IS NULL
              AND s.current_period_end IS NOT NULL
+             AND u.credit_active_until IS NULL
              AND date(s.current_period_end) BETWEEN date('now')
-                                                AND date('now', ?)""",
+                                                AND date('now', ?)
+             AND NOT EXISTS (SELECT 1 FROM subscriptions s2
+                              WHERE s2.user_id = u.id AND s2.status = 'authorized')""",
         (f"+{days_before} days",),
     ).fetchall()
-    if not rows:
-        return 0
-
     sent_count = 0
     for r in rows:
         if tanda.frenado:      # Resend no confirma: lo que falta, la próxima vuelta
             break
         try:
-            from datetime import datetime
-            try:
-                period_end = datetime.fromisoformat(
-                    r["current_period_end"].replace("Z", "").split(".")[0]
-                )
-                days_left = _dias_que_quedan(period_end)
-            except Exception:
-                days_left = days_before
-
-            from billing import trial as _trial
-            from billing import plan_textos as _plan_textos
-            plan = r["tier"]
-            if plan not in ("plus", "pro", "advisor"):
+            if r["tier"] not in ("plus", "pro", "advisor"):
                 # Ya no tiene un plan pago (lo bajaron a mano, o un reembolso):
-                # "tu plan Pro vence en 3 días" le anunciaría algo que no tiene.
-                # Antes caía a "pro". No se marca: si el plan vuelve, el aviso sale.
+                # "tu plan vence en 3 días" le anunciaría algo que no tiene.
                 log.info("aviso de vencimiento salteado sub=%s: el tier es %r, "
-                         "no un plan pago", r["mp_subscription_id"], plan)
+                         "no un plan pago", r["mp_subscription_id"], r["tier"])
                 continue
-            datos = dict(
-                to=r["email"],
-                user_name=(r["name"] or r["email"].split("@")[0]),
-                days_left=days_left,
-                expires_at=r["current_period_end"],
-                plan=plan,
-                # Nació sin plan gratis → no "pierde" features: queda en pausa.
-                requiere_plan=_trial._requiere_plan(conn, r["user_id"]),
-                # Los cupos de ESTA persona, no los del plan: ver cupos_del_usuario.
-                cupos=_plan_textos.cupos_del_usuario(conn, r["user_id"], plan),
-            )
-
-            # Marca ANTES de mandar, condicional, y se devuelve si el mail no
-            # salió (ver `emails.Tanda`). Antes se anotaba después sin mirar el
-            # resultado: un rechazo de Resend quedaba como enviado. Y no sale si
-            # la persona ya recibió un aviso de vencimiento hace poco por el
-            # otro camino (fin de crédito, que marca su sub más nueva): es el
-            # mismo vencimiento, y le llegaban dos en la misma corrida.
-            def marcar(sub_id=r["id"], uid=r["user_id"]):
-                marca = _ahora_db()
-                corte = _corte_aviso_reciente()
-                with conn:
-                    cur = conn.execute(
-                        """UPDATE subscriptions SET expiration_reminder_sent_at = ?
-                           WHERE id = ? AND expiration_reminder_sent_at IS NULL
-                             AND NOT EXISTS (SELECT 1 FROM subscriptions
-                                             WHERE user_id = ?
-                                               AND expiration_reminder_sent_at >= ?)""",
-                        (marca, sub_id, uid, corte),
-                    )
-                return marca if cur.rowcount > 0 else None
-
-            def desmarcar(marca, sub_id=r["id"]):
-                with conn:
-                    conn.execute(
-                        """UPDATE subscriptions SET expiration_reminder_sent_at = NULL
-                           WHERE id = ? AND expiration_reminder_sent_at = ?""",
-                        (sub_id, marca),
-                    )
-
-            res = tanda.enviar(
-                marcar, lambda: emails.send_expiration_reminder(**datos), desmarcar,
-                que=f"aviso de vencimiento sub={r['mp_subscription_id']}")
-            if res == emails.ENVIADO:
+            if _avisar_vencimiento(conn, tanda, r, r["current_period_end"], days_before,
+                                   que=f"aviso de vencimiento sub={r['mp_subscription_id']}"):
                 sent_count += 1
         except Exception as ex:
             log.error("Expiration reminder failed for sub %s: %s",
