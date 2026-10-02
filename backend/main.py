@@ -7062,6 +7062,7 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
                 fallas.append('calendar')
 
         # Ex-dividend date + dividend amount (próximo)
+        info = None
         try:
             try:
                 info = t.info  # cache interno de yfinance
@@ -7128,6 +7129,50 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
         except Exception:
             pass
 
+        # Respaldo del earnings: el CALENDARIO puede volver vacío SIN error.
+        # Medido el 2026-10-02 con Yahoo frío y muchos pedidos a la vez (como
+        # después de cada publicación): Yahoo rechaza con 401 y yfinance, que
+        # esconde ese error, devuelve el calendario vacío. AAPL, MSFT, NVDA,
+        # META, AMZN y TSLA quedaron "sin earnings" y así se guardaban 6 h. La
+        # ficha (`info`, que ya se pidió arriba) trae la misma fecha en
+        # `earningsTimestampStart` — verificado contra el calendario en NVDA,
+        # TSLA, AMZN, KO, GGAL y MELI. NO `earningsTimestamp`: ése a veces es
+        # el resultado ANTERIOR (TSLA: 22/07 con el próximo el 21/10).
+        #
+        # Y la marca de "estimada" es de la ficha (`isEarningsDateEstimate`, el
+        # dato de Yahoo) también cuando la fecha vino del calendario: la regla
+        # del calendario ("una sola fecha = confirmada") es una deducción, y con
+        # dos fuentes la misma fecha saltaba entre "confirmada" y "· est." según
+        # cuál respondiera en cada renovación (TSLA 21/10: el calendario da una
+        # sola fecha, la ficha dice estimada).
+        try:
+            ts = info.get('earningsTimestampStart') if info else None
+            fecha_ficha = (datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+                           if isinstance(ts, (int, float)) and ts > 0 else None)
+            if fecha_ficha and not _DATE_RE.match(fecha_ficha):
+                fecha_ficha = None
+            estimada = info.get('isEarningsDateEstimate') if info else None
+            del_calendario = [e for e in events if e['event_type'] == 'earnings']
+            # Sólo una fecha que todavía no pasó: una ficha vieja no puede
+            # inventar el "próximo" resultado (revisión independiente 3).
+            if not del_calendario and fecha_ficha and fecha_ficha >= _iso_today():
+                events.append({
+                    'ticker': ticker,
+                    'event_type': 'earnings',
+                    'event_date': fecha_ficha,
+                    'details': {},
+                    'confirmed': 0 if estimada else 1,
+                    # Vino del respaldo: no alcanza para BORRAR otra fecha
+                    # guardada (ver _buscar_y_guardar_eventos).
+                    '_respaldo': True,
+                })
+            elif fecha_ficha and isinstance(estimada, bool):
+                for e in del_calendario:
+                    if e['event_date'] == fecha_ficha:
+                        e['confirmed'] = 0 if estimada else 1
+        except Exception:
+            pass
+
     except Exception:
         # ticker desconocido o yfinance error → vacío
         if fallas is not None:
@@ -7154,13 +7199,19 @@ def _buscar_y_guardar_eventos(ticker: str) -> bool:
             conn = get_db()
             try:
                 with conn:
+                    # Un evento sin detalle (el respaldo de la ficha no trae
+                    # el EPS estimado) no borra el detalle ya guardado para esa
+                    # misma fecha (revisión independiente 3: las tarjetas
+                    # pasaban de "EPS est. $X" a "Resultados trimestrales").
                     for ev in events:
                         conn.execute(
                             """INSERT INTO financial_events
                                (ticker, event_type, event_date, details, confirmed, source, fetched_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?)
                                ON CONFLICT(ticker, event_type, event_date) DO UPDATE SET
-                                   details = excluded.details,
+                                   details = CASE WHEN excluded.details = '{}'
+                                                  THEN financial_events.details
+                                                  ELSE excluded.details END,
                                    confirmed = excluded.confirmed,
                                    fetched_at = excluded.fetched_at""",
                             (ev['ticker'], ev['event_type'], ev['event_date'],
@@ -7179,7 +7230,10 @@ def _buscar_y_guardar_eventos(ticker: str) -> bool:
                     # ya informar el siguiente, y borrar el de hoy lo sacaba del
                     # mail del día ("Eventos de hoy"), de la agenda y del inicio.
                     hoy = _iso_today()
-                    for tipo in {ev['event_type'] for ev in events}:
+                    # Lo que vino del respaldo de la ficha no alcanza para
+                    # borrar: si la ficha está desactualizada, se llevaría una
+                    # fecha buena del calendario (y volvería en la próxima).
+                    for tipo in {ev['event_type'] for ev in events if not ev.get('_respaldo')}:
                         vigentes = [ev['event_date'] for ev in events if ev['event_type'] == tipo]
                         conn.execute(
                             f"""DELETE FROM financial_events
@@ -7233,7 +7287,10 @@ def _refresh_events_for_tickers(tickers: list, esperar_segundos=None) -> int:
     ahora = time.time()
     futuros = []
     with _events_en_vuelo_lock:
-        for t in dict.fromkeys(t for t in tickers if t):
+        # Sólo lo que tiene forma de ticker (_SYMBOL_RE): un fondo del catálogo
+        # ("FCI:COCOS-RENDIMIENTO-A") no tiene earnings, y Yahoo contesta con
+        # error — se reintentaba cada EVENTOS_REINTENTO_SEG para siempre.
+        for t in dict.fromkeys(t for t in tickers if t and _SYMBOL_RE.match(t)):
             if ahora - _events_fetched_at.get(t, 0) < EVENTS_TTL:
                 continue
             fut = _events_en_vuelo.get(t)

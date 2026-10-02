@@ -34,7 +34,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, valuationPriceKey, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
+import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -490,34 +491,20 @@ function PersonalDashboard() {
   // solo dejaba dos porcentajes distintos en la misma pantalla.
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, capitalMaximo, positions: positionsForInsight }), [totalValue, netDeposited, capitalMaximo, positionsForInsight])
 
-  // Cobertura de precios: fracción del cost basis (no-cash, ponderado en USD)
+  // Cobertura de precios: fracción del cost basis (lo que se cotiza, pesado en USD por el motor)
   // que tiene un precio real. Es el guard contra snapshots subvaluados: si
   // yfinance devolvió null para varias posiciones (caen a costo), la cobertura
   // baja y NO snapshoteamos — un snapshot con precios a medio cargar rompe la
   // variación diaria del día siguiente (parece una ganancia/pérdida falsa).
   // Un activo ilíquido chico (bono) no mueve la aguja; una caída masiva sí.
-  const priceCoverage = useMemo(() => {
-    const nonCash = positions.filter(p => !p.is_cash)
-    if (nonCash.length === 0) return 1
-    // Sin blue válido no podemos valuar posiciones ARS → cobertura 0 (bloquea).
-    const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
-    if (hasArs && !(tcValuacion > 0)) return 0
-    // Cobertura contra la MISMA key que la valuación lee (valuationPriceKey).
-    // El check viejo (prices[asset] || prices[asset.BA]) daba por "priceado" un
-    // lote cuya key real no llegó → el guard dejaba pasar snapshots subvaluados.
-    const hasPrice = (p) =>
-      p.price_override != null || prices[valuationPriceKey(p, arsBrokerNames.has(p.broker))] != null
-    const costUsd = (p) => {
-      const c = (p.invested || 0) + (p.commissions || 0)
-      return arsBrokerNames.has(p.broker) ? c / tcValuacion : c
-    }
-    const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
-    if (!(total > 0)) return 1
-    const priced = nonCash.reduce((s, p) => s + (hasPrice(p) ? costUsd(p) : 0), 0)
-    return priced / total
-  }, [positions, prices, arsBrokerNames, tcValuacion])
+  // La regla es coberturaDePrecios (utils/valuation), la misma que usa Métricas.
+  // Al MEP, como todo lo que se guarda: mirando en CCL, pesar al CCL podía dar
+  // 95,1 % acá y 94,9 % en el resumen mensual para la misma cartera.
+  const priceCoverage = useMemo(
+    () => coberturaDePrecios(positions, prices, brokers, { tcValuacion: tcMep, tcCedear: tcMep, tcCripto }),
+    [positions, prices, brokers, tcMep, tcCripto],
+  )
 
-  const PRICE_COVERAGE_MIN = 0.95  // ≥95% del portfolio con precio real (alineado con el cron)
 
   // ── Snapshot 1×/day (solo con cobertura de precios alta) ────────────────────
   useEffect(() => {
@@ -527,8 +514,9 @@ function PersonalDashboard() {
     // este total (sería CCL-flavored y mezclaría rates en la curva); el cron del
     // backend igual snapshotea en MEP. Default (MEP) → escribe igual que siempre.
     if (valuationDollar !== 'mep') return
-    // Comparación robusta: NaN/no-finito NO pasa (NaN < x es false → escribiría).
-    if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // precios a medio cargar → no snapshotear
+    // Con precios (≥ 95 % del costo): sePuedeGuardar (utils/guardarValuacion).
+    // Comparación robusta: NaN/no-finito NO pasa (NaN >= x es false → no escribe).
+    if (!sePuedeGuardar({ cobertura: priceCoverage })) return
     const today = hoyISO()
     const key = 'rendi_snapshot_date'
     if (localStorage.getItem(key) === today) return
@@ -555,7 +543,13 @@ function PersonalDashboard() {
   // ── Sync pnl_unrealized for current month ───────────────────────────────────
   useEffect(() => {
     if (loading || !lastUpdated || totalValue <= 0) return
-    if (!(priceCoverage >= PRICE_COVERAGE_MIN)) return  // mismo guard robusto: no sincronizar con precios a medio cargar
+    // Con precios (guardarPnlNoRealizado aplica la regla). Y AL MEP, mires el
+    // dólar que mires: el campo guardado vive al MEP y ningún proceso del
+    // servidor lo escribe — si se salteara en CCL, quien mira siempre en CCL
+    // quedaba con el mes al costo. Los TC de acá abajo son los del MEP.
+    if (!sePuedeGuardar({ cobertura: priceCoverage })) return
+    const tcValuacionMep = tcMep, tcCedearMep = tcMep
+    const filas = []
 
     let globalPnlUsd = 0
     brokers.forEach(b => {
@@ -575,7 +569,7 @@ function PersonalDashboard() {
           // trataba como pesos y /tcValuacion lo colapsaba → el pnl_unrealized (y el
           // capital_final del mes → el punto de la curva) quedaba mal.
           if (costInUsd(p)) {
-            const { investedUsd, valueUsd } = usdLotValue(p, prices, tcCedear)
+            const { investedUsd, valueUsd } = usdLotValue(p, prices, tcCedearMep)
             pnlUsdDirect += valueUsd - investedUsd
             continue
           }
@@ -588,20 +582,20 @@ function PersonalDashboard() {
           const mktArs = priceArs * (p.quantity || 0)
           const valArs = trustMktValue(mktArs, costArs, p.asset_type, p.price_override != null) ? mktArs : costArs
           pnlArs += valArs - costArs
-          // FX-phantom fix: ambos lados al blue actual → P&L USD == P&L ARS / tcValuacion
+          // FX-phantom fix: ambos lados al blue actual → P&L USD == P&L ARS / tcValuacionMep
           // Sin esto, los pesos quietos generaban "ganancia/pérdida fantasma" por
           // movimientos del blue aunque el activo no se hubiera movido.
         }
-        pnlForBroker = pnlArs / tcValuacion + pnlUsdDirect
+        pnlForBroker = pnlArs / tcValuacionMep + pnlUsdDirect
         pnlForGlobal = pnlForBroker
       } else {
         for (const p of bpos) {
           if (p.is_cash) continue
           // Lote en PESOS en cuenta USD: costo Y valor a USD por el dólar-MEP
-          // (.BA ÷ tcCedear). NO contar pesos como dólares. Sin precio,
+          // (.BA ÷ tcCedearMep). NO contar pesos como dólares. Sin precio,
           // pesoLotUsd da valueUsd=investedUsd → pnl 0 (igual que el continue US).
           if (costInPesos(p)) {
-            const { investedUsd, valueUsd } = pesoLotUsd(p, prices, tcCedear)
+            const { investedUsd, valueUsd } = pesoLotUsd(p, prices, tcCedearMep)
             // Guard anti-distorsión: mkt vs costo en USD (misma unidad); si no
             // confiamos, cae a costo → P&L 0.
             const v = trustMktValue(valueUsd, investedUsd, p.asset_type, p.price_override != null) ? valueUsd : investedUsd
@@ -616,7 +610,7 @@ function PersonalDashboard() {
             const priceArs = prices[priceSymbol(p.asset, true, p.asset_type)]
             const costUsd = (p.invested || 0) + (p.commissions || 0)
             if (priceArs != null) {
-              const mktUsd = (priceArs * (p.quantity || 0)) / tcCedear
+              const mktUsd = (priceArs * (p.quantity || 0)) / tcCedearMep
               const v = trustMktValue(mktUsd, costUsd, p.asset_type, false) ? mktUsd : costUsd
               pnlForBroker += v - costUsd
             }
@@ -630,7 +624,7 @@ function PersonalDashboard() {
           // Crypto en broker NO-exchange → escala valor Y costo al dólar cripto
           // (factor 1 si no es crypto / es exchange / tiene override / falta rate),
           // así el P&L queda honesto (ambos lados al mismo dólar).
-          const f = cryptoBrokerFactor(p.asset, b.is_exchange, p.price_override != null, tcCripto, tcCedear, b.currency)
+          const f = cryptoBrokerFactor(p.asset, b.is_exchange, p.price_override != null, tcCripto, tcCedearMep, b.currency)
           // Cost basis USD = invested + commissions
           const costUsd = (p.invested || 0) + (p.commissions || 0)
           // Guard anti-distorsión: mkt y costo escalados por el MISMO factor f
@@ -644,9 +638,10 @@ function PersonalDashboard() {
       }
 
       globalPnlUsd += pnlForGlobal
-      api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {})
+      filas.push({ broker: b.name, pnl: pnlForBroker })
     })
-    api.post('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: +globalPnlUsd.toFixed(4) }).catch(() => {})
+    filas.push({ broker: 'global', pnl: globalPnlUsd })
+    guardarPnlNoRealizado(api.post, filas, { cobertura: priceCoverage, valuationDollar })
   }, [loading, lastUpdated]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Portfolio evolution series (depends on range) ───────────────────────────

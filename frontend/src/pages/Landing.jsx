@@ -32,12 +32,12 @@ import FAQ from '../components/landing/FAQ'
 // lugares, al lado de la constante que ya se importaba para la sección de precios.
 import { CTA_PRUEBA, cupoDe } from '../data/prueba'
 import { useAlVerse } from '../hooks/useAlVerse'
-import { useCountUp } from '../hooks/useCountUp'
+import AnimatedNumber from '../components/AnimatedNumber'
 
 // ─── Hooks utilitarios ───────────────────────────────────────────────────────
 
 // Aparecer al entrar en pantalla y contar hasta un número: las piezas son las
-// COMPARTIDAS del resto de la app (hooks/useAlVerse, hooks/useCountUp). Acá
+// COMPARTIDAS del resto de la app (hooks/useAlVerse, components/AnimatedNumber). Acá
 // vivían copias propias; la de "aparecer" no tenía salida para un navegador sin
 // IntersectionObserver, y ahí las secciones `.reveal-up` quedaban invisibles
 // para siempre. La compartida arranca "vista" en ese caso.
@@ -162,14 +162,15 @@ function Hero() {
 function StatsStrip() {
   // Activamos counters cuando el strip entra en viewport.
   const [ref, started] = useAlVerse({ threshold: 0.3, rootMargin: '0px' })
-  const brokers = useCountUp(started ? 8 : 0, { duration: 900 })
 
   // Barra de confianza + deseo + fricción-cero — no specs internas. El '8+'
   // mantiene el count-up (es el ancla multi-broker); el resto comunica
   // seguridad ('0 claves'), el diferencial AR ('USD real') y cero fricción
   // ('20 días · sin tarjeta' — ya no hay plan gratis para quien se registra).
   const items = [
-    { v: brokers, label: 'brokers en una pantalla', suffix: '+' },
+    // Cuenta al verse; antes de verse, escondido (un "0+" asomado al pie
+    // de la pantalla era un número falso a la vista).
+    { v: 8, label: 'brokers en una pantalla', suffix: '+' },
     { text: '0',      label: 'claves de tu broker que pedimos' },
     { text: 'USD',    label: 'tu ganancia al dólar real' },
     { text: `${TRIAL_TOTAL_DAYS} días`, label: 'de prueba · sin tarjeta' },
@@ -181,7 +182,10 @@ function StatsStrip() {
         <div key={i} className="px-4 py-4">
           <div className="font-sans font-medium tabular text-ink-0 mb-1"
                style={{ fontSize: 'clamp(20px, 2.4vw, 28px)', letterSpacing: '-0.02em' }}>
-            {it.text != null ? it.text : `${Math.round(it.v).toLocaleString('es-AR')}${it.suffix || ''}`}
+            {it.text != null ? it.text : (
+              <AnimatedNumber value={it.v} visto={started} duration={900}
+                format={(n) => `${Math.round(n).toLocaleString('es-AR')}${it.suffix || ''}`} />
+            )}
           </div>
           <div className="text-[11px] font-mono uppercase tracking-label text-ink-2 leading-tight">
             {it.label}

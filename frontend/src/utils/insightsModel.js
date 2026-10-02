@@ -662,6 +662,48 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
   })
 }
 
+// ─── Qué benchmark se le pide al servidor ───────────────────────────────────
+// El selector usa nombres de producto; el backend, los de la fuente de datos.
+export const BENCH_API_KEY = {
+  sp500: 'sp500', tbill: 'shv', gold: 'gld',
+  inflation: 'inflation_ar', merval: 'merval', plazo_fijo: 'plazo_fijo',
+}
+
+// Los benchmarks que el servidor no tiene porque su línea es plana por
+// definición: "Pesos cash (blue)" mirado en pesos son pesos quietos medidos en
+// pesos, 0 %. La curva del usuario se pide igual (con el S&P, `benchPedido`) y
+// en el gráfico la línea de comparación va en 0 %, no la que vino.
+export const BENCH_EN_CERO = new Set(['pesos_cash'])
+
+// Qué `bench=` lleva el pedido de la curva. Hasta el 2026-10-02 una opción sin
+// clave (Pesos cash) no pedía NADA: sin curva, sin caída, sin acumulado. Y
+// antes, la curva le llegaba con el S&P y se dibujaba rotulada "Pesos cash".
+export function benchPedido(seleccion) {
+  return BENCH_API_KEY[seleccion] || 'sp500'
+}
+
+// ─── ¿Esta respuesta de Performance es de lo que se está mirando? ───────────
+/**
+ * perfEsDeLaVista
+ *
+ * La pantalla puede tener en la mano una respuesta de `/insights/performance`
+ * de OTRA vista: la de la moneda anterior mientras llega la nueva (dibujaba la
+ * curva en dólares con el eje en pesos), o la de otro benchmark (un S&P llegado
+ * tarde se rotulaba "Inflación", revisión del 2026-10-02). El backend estampa
+ * `moneda`, `benchmark_key` y `modo`; mientras no coincidan, no hay curva.
+ * Una respuesta sin la marca (vieja) no se rechaza.
+ *
+ * @param {Object|null} perf respuesta de /insights/performance
+ * @param {{ moneda: 'usd'|'ars', bench?: string, modo?: string }} vista
+ */
+export function perfEsDeLaVista(perf, { moneda, bench, modo } = {}) {
+  if (!perf) return false
+  if ((perf.moneda || 'usd') !== moneda) return false
+  if (perf.benchmark_key != null && bench != null && perf.benchmark_key !== bench) return false
+  if (perf.modo != null && modo != null && perf.modo !== modo) return false
+  return true
+}
+
 // ─── Drawdown desde el endpoint canónico ────────────────────────────────────
 /**
  * drawdownFromPerf

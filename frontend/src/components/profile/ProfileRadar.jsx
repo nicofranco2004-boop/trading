@@ -4,6 +4,8 @@
 // punteado = lo que declaraste en el test; área violeta = tu cartera real.
 // Renderiza solo el BODY del módulo — header/badge viven en el shell.
 
+import { useVistoPerfil } from './vistoPerfil'
+
 const CX = 118
 const CY = 100
 const R = 66
@@ -23,6 +25,9 @@ function polygon(axes, key) {
 }
 
 export default function ProfileRadar({ axes }) {
+  // Al verse: primero el contorno de lo declarado, después tu cartera crece
+  // desde el centro y al final se marcan los ejes donde te salís.
+  const visto = useVistoPerfil()
   if (!axes || axes.length < 3) return null
   const n = axes.length
   const gridPts = (pct) => axes.map((_, i) => point(i, n, (R * pct) / 100).join(',')).join(' ')
@@ -53,6 +58,7 @@ export default function ProfileRadar({ axes }) {
         </g>
         {/* Perfil declarado — contorno gris punteado */}
         <polygon
+          className={visto ? 'radar-contorno' : undefined}
           points={polygon(axes, 'declared')}
           fill="none"
           stroke="rgb(var(--ink-2))"
@@ -61,11 +67,23 @@ export default function ProfileRadar({ axes }) {
         />
         {/* Cartera real — área violeta */}
         <polygon
+          className={visto ? 'radar-crece' : undefined}
+          style={{ transformOrigin: `${CX}px ${CY}px` }}
           points={polygon(axes, 'actual')}
           fill="rgb(var(--data-violet) / .20)"
           stroke="rgb(var(--data-violet))"
           strokeWidth="2"
         />
+        {/* Donde tu cartera se sale de lo declarado (>15 pts, la misma vara
+            que la nota de abajo): un punto en el vértice. */}
+        {axes.map((a, i) => {
+          if (clamp(a.actual) - clamp(a.declared) <= 15) return null
+          const [x, y] = point(i, n, (R * clamp(a.actual)) / 100)
+          return (
+            <circle key={`m${i}`} className={visto ? 'radar-marca' : undefined}
+              cx={x} cy={y} r="3.5" fill="rgb(var(--rendi-warn))" aria-hidden="true" />
+          )
+        })}
         {/* Labels de eje, afuera de la grilla */}
         {axes.map((a, i) => {
           const [x, y] = point(i, n, R * 1.24)

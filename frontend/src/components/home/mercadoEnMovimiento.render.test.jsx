@@ -25,12 +25,15 @@ const dibujar = (visto) => renderToStaticMarkup(
 )
 
 describe('Movers del día con movimiento', () => {
-  it('antes de verse: filas escondidas, barras en cero y números en cero', () => {
+  it('antes de verse: filas escondidas, barras en cero y números escondidos', () => {
     const html = dibujar(false)
-    expect((html.match(/por-entrar/g) || []).length).toBe(2)
+    // 2 filas + los 2 números: el número espera escondido y escrito con su
+    // valor final (lo que lee un lector de pantalla), nunca con un 0 a la vista.
+    expect((html.match(/por-entrar/g) || []).length).toBe(4)
     expect(html).not.toMatch(/class="[^"]*\bentra\b/)
     expect(html).toContain('width:0%')
-    expect(html).not.toContain('3,91')
+    expect(html).toMatch(/<span class="por-entrar">\+3,91%<\/span>/)
+    expect(html).not.toMatch(/>\+?0,00%</)
   })
 
   it('al verse: entran de a una (el orden en --i), la barra crece y el número llega a su valor', () => {
@@ -38,8 +41,8 @@ describe('Movers del día con movimiento', () => {
     expect((html.match(/\bentra\b/g) || []).length).toBe(2)
     expect(html).toContain('--i:0')
     expect(html).toContain('--i:1')
-    // El número arranca en 0 y cuenta: en el render del servidor todavía es 0.
-    // Lo que importa acá es que la barra ya tiene su ancho final.
+    // En el navegador el número cuenta desde 0; en el render a texto sale en
+    // su valor final (useCountUp). Lo que importa acá es la barra con su ancho.
     expect(html).toContain(`width:${(3.91 / TOPE_BARRA_PCT) * 55}%`)
   })
 

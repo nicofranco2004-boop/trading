@@ -1,4 +1,5 @@
 import { pctTxt } from '../../utils/format'
+import { useVistoPerfil } from './vistoPerfil'
 // LiquidityBar — barra partida: qué % de la cartera es líquido/estable.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de liquidez en Análisis › Perfil. Verde = cash + renta fija
@@ -7,6 +8,8 @@ import { pctTxt } from '../../utils/format'
 // sobre cuándo necesita la plata (comparison viene del backend).
 
 export default function LiquidityBar({ safePct, volatilePct, needsLiquidity, comparison }) {
+  // Al verse, primero crece lo seguro y después lo volátil (--fila).
+  const visto = useVistoPerfil()
   if (safePct == null) return null
 
   const mismatch = comparison === 'mismatch_severe' || comparison === 'mismatch_risky'
@@ -19,16 +22,16 @@ export default function LiquidityBar({ safePct, volatilePct, needsLiquidity, com
         aria-label={`${safePct}% en cash y renta fija, ${volatilePct}% en renta variable y cripto`}
       >
         <div
-          className="bg-rendi-pos/80 flex items-center justify-center"
-          style={{ width: `${safePct}%` }}
+          className={`bg-rendi-pos/80 flex items-center justify-center ${visto ? 'crece-ancho' : ''}`}
+          style={{ width: `${safePct}%`, '--fila': 0 }}
         >
           {safePct >= 8 && (
             <span className="text-[11px] font-semibold text-bg-0 tabular-nums">{pctTxt(safePct)}</span>
           )}
         </div>
         <div
-          className="bg-rendi-warn/80 flex items-center justify-center"
-          style={{ width: `${volatilePct}%` }}
+          className={`bg-rendi-warn/80 flex items-center justify-center ${visto ? 'crece-ancho' : ''}`}
+          style={{ width: `${volatilePct}%`, '--fila': 1 }}
         >
           {volatilePct >= 8 && (
             <span className="text-[11px] font-semibold text-bg-0 tabular-nums">{pctTxt(volatilePct)}</span>

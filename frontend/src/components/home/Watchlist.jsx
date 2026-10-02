@@ -159,7 +159,7 @@ export default function Watchlist() {
                           <FlashValue value={it.change_pct} className={`flex items-center justify-end gap-1 font-medium ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-3'}`}>
                             {dir > 0 && <TrendingUp size={9} strokeWidth={1.75} aria-hidden="true" />}
                             {dir < 0 && <TrendingDown size={9} strokeWidth={1.75} aria-hidden="true" />}
-                            <AnimatedNumber value={visto ? it.change_pct : 0} format={pctVar} />
+                            <AnimatedNumber value={it.change_pct} visto={visto} format={pctVar} />
                           </FlashValue>
                         )}
                     </DataRow.Cell>

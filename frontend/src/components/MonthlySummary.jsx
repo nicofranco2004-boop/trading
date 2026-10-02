@@ -7,7 +7,8 @@ import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput } from '../utils/format'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
+import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
@@ -119,7 +120,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // doble I/O.
 
     // Pasamos brokers + tcValuacion + tcCedear ya fetcheados — evita re-fetch redundante.
-    await syncUnrealizedForAll({ brokers: bkrs, tcValuacion: tc, tcCedear, tcCripto })
+    // El TC del MEP para lo que se GUARDA (ver syncUnrealizedForAll).
+    const tcMep = pickFinancialRate(dol, 'mep') || cfg?.tc_blue || 1415
+    await syncUnrealizedForAll({ brokers: bkrs, tcValuacion: tc, tcCedear, tcCripto, tcMep })
 
     setEntries(await api.get('/monthly'))
   }
@@ -255,12 +258,13 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     // Ahorro: ~400ms al montar /mensual.
     // Save flow (línea ~300) llama sin prefetched → re-fetcha como antes.
     try {
-      let pos, bkrs, tc, tcCedear, tcCripto
+      let pos, bkrs, tc, tcCedear, tcCripto, tcMep
       if (prefetched && prefetched.brokers && prefetched.tcValuacion) {
         bkrs = prefetched.brokers
         tc = prefetched.tcValuacion
         tcCedear = prefetched.tcCedear || tc
         tcCripto = prefetched.tcCripto
+        tcMep = prefetched.tcMep || tc
         pos = await api.get('/positions')
       } else {
         const r = await Promise.all([api.get('/positions'), api.get('/brokers')])
@@ -273,6 +277,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         tcCedear = pickFinancialRate(dol, valuationDollar) || tc
         // dólar-cripto: la cripto de un broker AR se valúa al MEP (~5% sobre spot).
         tcCripto = dol?.cripto?.venta
+        tcMep = pickFinancialRate(dol, 'mep') || cfg?.tc_blue || tcValuacion
       }
 
       const arsBrokerSet = new Set(bkrs.filter(b => b.currency === 'ARS').map(b => b.name))
@@ -280,22 +285,31 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
       // En sub-brokers "· USD" todo es de BYMA → se pide el .BA (igual que Positions.jsx),
       // sino computeBrokerValue no encuentra precio local y cae a costo.
       const usdSyms = [...new Set(pos.filter(p => !arsBrokerSet.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-      const allSyms = [...arsSyms, ...usdSyms].join(',')
+      // + las keys que lee el motor (buildPriceSymbols → valuationPriceKey): esta
+      // lista no tenía el lote en pesos en cuenta en dólares ni la cripto de un
+      // "· USD", y esos lotes se valuaban al costo (P&L 0) sin aviso.
+      const allSyms = [...new Set([...buildPriceSymbols(pos, bkrs), ...arsSyms, ...usdSyms])].join(',')
       const pricesData = allSyms ? await api.get(`/prices?symbols=${allSyms}`).catch(() => ({})) : {}
+      // Se GUARDA sólo al MEP y con los precios: la misma regla que el Dashboard,
+      // el otro escritor de este campo (guardarPnlNoRealizado). Sin esto, con
+      // /prices caído se guardaba P&L 0 en todos los brokers, y ganaba el último
+      // que guardara (revisión del 2026-10-02).
+      const cobertura = coberturaDePrecios(pos, pricesData, bkrs, { tcValuacion: tcMep, tcCedear: tcMep, tcCripto })
 
       let globalPnlUsd = 0
       let liveTotal = 0
-      const syncs = []
+      const filas = []
       // El pnl_unrealized_usd que persistimos en monthly_entries vive en MEP (scope:
-      // el toggle MEP/CCL es sólo display LIVE). Si el user está en CCL, computamos el
-      // liveTotal del banner (display) pero NO escribimos pnl CCL-flavored al backend;
-      // se auto-corrige en la próxima sesión MEP. Default (MEP) → escribe igual que siempre.
-      const persistMep = valuationDollar === 'mep'
+      // el toggle MEP/CCL es sólo display LIVE). Lo que se GUARDA se calcula al MEP
+      // mires el dólar que mires; el liveTotal del banner, al dólar elegido. Antes,
+      // en CCL no se guardaba nada, y como ningún proceso del servidor escribe este
+      // campo, quien mira siempre en CCL quedaba con el mes al costo.
       for (const b of bkrs) {
         const result = computeBrokerValue(pos, pricesData, b, tc, tcCedear, tcCripto)
+        const alMep = (tc === tcMep && tcCedear === tcMep) ? result : computeBrokerValue(pos, pricesData, b, tcMep, tcMep, tcCripto)
         // Broker entry: ARS stores pnlArs/tc (USD-eq, multiplied back by tcValuacion for ARS display);
         //               USD stores pnlUsd directly.
-        const pnlForBroker = b.currency === 'ARS' ? result.pnlArs / tc : result.pnlUsd
+        const pnlForBroker = b.currency === 'ARS' ? alMep.pnlArs / tcMep : alMep.pnlUsd
         // El GLOBAL suma lo mismo que se persiste por broker. Antes sumaba `pnlUsd`
         // (costo en USD), que es OTRA convención: el Dashboard —el otro escritor de
         // este mismo campo— agrega FX-neutral (P&L en pesos ÷ blue de hoy), así que los
@@ -306,11 +320,15 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
         // modo, así que esto también saca esa dependencia de lo que se guarda.
         globalPnlUsd += pnlForBroker
         liveTotal += result.value  // valor total en USD (incluye cash convertido)
-        if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: b.name, pnl_unrealized_usd: +pnlForBroker.toFixed(4) }).catch(() => {}))
+        filas.push({ broker: b.name, pnl: pnlForBroker })
       }
-      if (persistMep) syncs.push(api.post('/monthly/sync-unrealized', { broker: 'global', pnl_unrealized_usd: +globalPnlUsd.toFixed(4) }).catch(() => {}))
-      await Promise.all(syncs)
-      setLivePortfolioTotal(liveTotal)
+      filas.push({ broker: 'global', pnl: globalPnlUsd })
+      await guardarPnlNoRealizado(api.post, filas, { cobertura, valuationDollar })
+      // El "Valor actual (live)" de la conciliación dice "con precios actuales de
+      // mercado": sin precios sería el costo, y al lado del mes guardado (que ya
+      // no se pisa) marcaba una "Diferencia" que culpaba al dólar. Sin precios,
+      // no se muestra hasta que lleguen.
+      setLivePortfolioTotal(cobertura >= COBERTURA_MINIMA ? liveTotal : null)
     } catch (e) {
       console.warn('syncUnrealizedForAll failed:', e)
     }

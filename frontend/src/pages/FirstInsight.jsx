@@ -15,7 +15,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
@@ -76,7 +76,9 @@ export default function FirstInsight() {
       // acción AR en broker USD extranjero (Schwab) → ADR NYSE (ticker pelado).
       const usdSyms = [...new Set((pos || []).filter(p => !arsBrokers.has(p.broker) && !p.is_cash).map(p => (isArUsdBroker(p.broker) || costInPesos(p)) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
       const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true)))]
-      const all = [...usdSyms, ...arsSyms].join(',')
+      // + las keys que lee el motor (buildPriceSymbols): esta lista pedía BTC.BA
+      // para la cripto de un "· USD" y el motor lee BTC (quedaba al costo).
+      const all = [...new Set([...buildPriceSymbols(pos || [], bkrs || []), ...usdSyms, ...arsSyms])].join(',')
       if (all) {
         try {
           const data = await api.get(`/prices?symbols=${all}`)

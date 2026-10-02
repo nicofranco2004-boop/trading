@@ -955,6 +955,68 @@ body {
 }
 .destello-nueva { animation: destello-nueva 2400ms ease-out; }
 
+/* El cargador de Novedades (CargaPorPasos): los chips de tus empresas barren
+   en ola mientras se buscan sus eventos (--i corre la ola chip por chip) y,
+   cuando llega la respuesta, cada uno aterriza con su cuenta. Es el pedido
+   real: si no hay un pedido en curso, no hay barrido. Con tokens del tema. */
+@keyframes chip-escaneo {
+  0%, 100% { background-color: rgb(var(--bg-2)); border-color: rgb(var(--line)); }
+  45%      { background-color: rgb(var(--data-violet) / 0.16); border-color: rgb(var(--data-violet) / 0.5); }
+}
+.chip-escaneando {
+  animation: chip-escaneo 1.6s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 110ms);
+}
+@keyframes chip-aterriza {
+  from { opacity: 0.4; transform: scale(0.88); }
+  to   { opacity: 1;   transform: none; }
+}
+.chip-listo {
+  animation: chip-aterriza 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 35ms);
+}
+
+/* Perfil de inversor (components/profile): cada tilde del resumen "coincide en
+   N de M" aterriza cuando entra SU tarjeta (--i = su lugar en el tablero, el
+   mismo 70 ms por escalón que .entra). */
+.tilde-entra {
+  animation: chip-aterriza 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms + 120ms);
+}
+/* El punto "real" viaja desde "lo que declaraste" (--desde) hasta su lugar
+   (StyleScale, ReturnGauge): sólo el `from`; el destino es su propio `left`. */
+@keyframes viaja-desde { from { left: var(--desde); } }
+.viaja-desde {
+  animation: viaja-desde 1000ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms + 300ms);
+}
+/* El radar: primero el contorno de lo declarado, después tu cartera crece
+   desde el centro, y al final se marcan los ejes donde te salís. */
+@keyframes aparece { from { opacity: 0; } }
+.radar-contorno { animation: aparece 450ms ease-out backwards; animation-delay: calc(var(--i, 0) * 70ms + 150ms); }
+@keyframes radar-crece { from { transform: scale(0); } }
+.radar-crece {
+  transform-box: view-box;
+  animation: radar-crece 1000ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms + 550ms);
+}
+.radar-marca {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chip-aterriza 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms + 1500ms);
+}
+/* La torta de concentración se completa en una vuelta (máscara cónica que
+   abre de 0 a 360°). Sin @property el navegador la muestra entera de una. */
+@property --barrido { syntax: '<angle>'; inherits: false; initial-value: 360deg; }
+@keyframes dona-barre { from { --barrido: 0deg; } }
+.dona-barre {
+  -webkit-mask: conic-gradient(#000 var(--barrido), transparent 0);
+  mask: conic-gradient(#000 var(--barrido), transparent 0);
+  animation: dona-barre 900ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms + 250ms);
+}
+
 /* Barra de intensidad (BarraIntensidad): crece desde cero al aparecer y se
    acomoda sola cuando el dato se refresca. */
 .barra-intensidad { transition: width 700ms cubic-bezier(0.16, 1, 0.3, 1); }
@@ -992,6 +1054,8 @@ body {
   .traza-dibuja { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; }
   .area-aparece { animation: none; }
   .barra-intensidad { transition: none; }
+  .chip-escaneando, .chip-listo { animation: none; }
+  .tilde-entra, .viaja-desde, .radar-contorno, .radar-crece, .radar-marca, .dona-barre { animation: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
      desliza con el dedo, como la barra de antes. */

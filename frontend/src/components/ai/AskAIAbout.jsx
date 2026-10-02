@@ -28,6 +28,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { track } from '../../utils/track'
 import { useVoz } from '../../contexts/VozContext'
 import { isAIDiscovered, markAIDiscovered } from './AIDiscoveryBanner'
+import { usePreciosPendientes, TEXTO_PRECIOS_PENDIENTES } from './preciosPendientes'
 
 export default function AskAIAbout({
   topic,
@@ -48,6 +49,8 @@ export default function AskAIAbout({
   // (con un pulse sutil) hasta el primer click. Después pasa a hover-only.
   const [discovered, setDiscovered] = useState(true)
   const isMobile = useIsMobile()
+  // Sin las cotizaciones de hoy, la IA leería la cartera al costo (ver preciosPendientes).
+  const pendientes = usePreciosPendientes()
 
   // Refresh discovered flag al montar — sigue al banner si el user lo cierra
   useEffect(() => {
@@ -62,6 +65,7 @@ export default function AskAIAbout({
   // Le pregunta a Rendi por esta sección. La respuesta cae en el acompañante
   // flotante: corta, se puede escuchar y se le puede repreguntar.
   function preguntarle(source) {
+    if (pendientes) return
     if (!discovered) {
       markAIDiscovered()
       setDiscovered(true)
@@ -100,9 +104,14 @@ export default function AskAIAbout({
           e.stopPropagation()
           preguntarle('hover_button')
         }}
+        disabled={pendientes}
         aria-label="Preguntarle a Rendi"
-        title="Preguntarle a Rendi"
+        title={pendientes ? TEXTO_PRECIOS_PENDIENTES : 'Preguntarle a Rendi'}
         className={[
+          // El atenuado de "faltan las cotizaciones" sólo donde el botón se ve:
+          // `disabled:opacity-40` le gana al `opacity-0` del hover (va después
+          // en la hoja) y ponía un ✦ a media luz en la esquina de cada tarjeta.
+          pendientes && (isMobile || !discovered || hovered) ? 'disabled:opacity-40 disabled:cursor-not-allowed' : '',
           'absolute z-10 inline-flex items-center justify-center',
           'top-2 right-2',
           'bg-bg-1/95 backdrop-blur-sm border text-data-violet',

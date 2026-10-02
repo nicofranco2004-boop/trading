@@ -1,4 +1,6 @@
 import { pctTxt } from '../../utils/format'
+import AnimatedNumber from '../AnimatedNumber'
+import { useVistoPerfil, formatoQueCuenta } from './vistoPerfil'
 // DrawdownStat — peor caída real del período vs tolerancia declarada.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body de la card de drawdown en Análisis › Perfil. Stat grande con la peor
@@ -6,6 +8,8 @@ import { pctTxt } from '../../utils/format'
 // tolerancia que el usuario declaró en el test (comparison === 'above').
 
 export default function DrawdownStat({ behaviorLabel, toleranceLabel, drawdownPct, comparison }) {
+  // Al verse, la caída cuenta hasta su valor.
+  const visto = useVistoPerfil()
   if (drawdownPct == null) return null
 
   return (
@@ -16,7 +20,7 @@ export default function DrawdownStat({ behaviorLabel, toleranceLabel, drawdownPc
             comparison === 'above' ? 'text-rendi-warn' : 'text-ink-0'
           }`}
         >
-          -{pctTxt(drawdownPct)}
+          -<AnimatedNumber value={drawdownPct} visto={visto} format={formatoQueCuenta(drawdownPct)} />
         </span>
         <span className="text-xs text-ink-2 max-w-[220px] leading-snug">
           tu peor caída del período

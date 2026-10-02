@@ -12,7 +12,7 @@ import { PageSkeleton } from '../components/Skeleton'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
 import { usd, fmtUsd, pctTxt, parseNum } from '../utils/format'
-import { priceSymbol, computeBrokerValue, isArUsdBroker } from '../utils/valuation'
+import { priceSymbol, computeBrokerValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -75,7 +75,9 @@ export default function Goals() {
       // reales piden el ticker US pelado. Espejo de fetchPrices() en Positions.jsx.
       const arsSyms = [...new Set(positions.filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
       const usdtSyms = [...new Set(positions.filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-      const all = [...arsSyms, ...usdtSyms].join(',')
+      // + las keys que lee el motor (buildPriceSymbols): esta lista no tenía el
+      // lote en pesos en cuenta en dólares ni la cripto de un "· USD".
+      const all = [...new Set([...buildPriceSymbols(positions, brokers), ...arsSyms, ...usdtSyms])].join(',')
       let pr = {}
       if (all) {
         try { pr = await api.get(`/prices?symbols=${all}`) } catch {}

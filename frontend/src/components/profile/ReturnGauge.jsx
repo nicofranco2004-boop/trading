@@ -1,4 +1,6 @@
 import { pctTxt } from '../../utils/format'
+import AnimatedNumber from '../AnimatedNumber'
+import { useVistoPerfil, formatoQueCuenta } from './vistoPerfil'
 // ReturnGauge — bullet chart del retorno real vs la meta del perfil.
 // ═══════════════════════════════════════════════════════════════════════════
 // Body del módulo de retorno en el perfil: barra horizontal (divs, sin libs)
@@ -7,6 +9,9 @@ import { pctTxt } from '../../utils/format'
 // Verde si real ≥ meta, amber si ≥ 0 pero abajo de la meta, rojo si negativo.
 
 export default function ReturnGauge({ realPct, floorPct, expectationLabel, comparison }) {
+  // Al verse, la barra sale del cero hacia tu retorno real y la marca "real"
+  // viaja desde el cero; el número cuenta con ella.
+  const visto = useVistoPerfil()
   if (realPct == null || floorPct == null || !Number.isFinite(realPct)) return null
 
   // Escala con aire a ambos lados para que los tags nunca queden pegados al borde.
@@ -45,8 +50,13 @@ export default function ReturnGauge({ realPct, floorPct, expectationLabel, compa
         >
           {/* Fill desde el cero hasta el retorno real */}
           <div
-            className={`absolute h-full rounded-full ${fillCls}`}
-            style={{ left: `${fillLeft}%`, width: `${fillWidth}%` }}
+            className={`absolute h-full rounded-full ${fillCls} ${visto ? 'crece-ancho' : ''}`}
+            style={{
+              left: `${fillLeft}%`, width: `${fillWidth}%`,
+              // Crece DESDE el cero: hacia la derecha si ganás, hacia la
+              // izquierda si perdés.
+              transformOrigin: real < zero ? 'right' : 'left',
+            }}
           />
 
           {/* Marcador de cero */}
@@ -69,14 +79,14 @@ export default function ReturnGauge({ realPct, floorPct, expectationLabel, compa
 
           {/* Real — línea del color del fill + tag arriba del track */}
           <div
-            className={`absolute w-0.5 h-[18px] top-1/2 -translate-y-1/2 ${fillCls}`}
-            style={{ left: `${real}%` }}
+            className={`absolute w-0.5 h-[18px] top-1/2 -translate-y-1/2 ${fillCls} ${visto ? 'viaja-desde' : ''}`}
+            style={{ left: `${real}%`, '--desde': `${zero}%` }}
           />
           <div
-            className={`absolute bottom-full mb-1.5 -translate-x-1/2 font-mono text-[10px] tabular-nums whitespace-nowrap ${toneCls}`}
-            style={{ left: `${clampTag(real)}%` }}
+            className={`absolute bottom-full mb-1.5 -translate-x-1/2 font-mono text-[10px] tabular-nums whitespace-nowrap ${toneCls} ${visto ? 'viaja-desde' : ''}`}
+            style={{ left: `${clampTag(real)}%`, '--desde': `${clampTag(zero)}%` }}
           >
-            real {sign(realPct)}{pctTxt(realPct)}
+            real {sign(realPct)}<AnimatedNumber value={realPct} visto={visto} format={formatoQueCuenta(realPct)} />
           </div>
         </div>
       </div>

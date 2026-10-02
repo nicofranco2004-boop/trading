@@ -16,7 +16,10 @@ import {
   ArrowLeftRight, Droplets, Clock, Target,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { buildProfileDashboard, tradesToActivityPos, STYLE_POS } from '../../utils/profileDashboard'
+import { buildProfileDashboard, tradesToActivityPos, STYLE_POS, horizonteChoca } from '../../utils/profileDashboard'
+import { useAlVerse, entrada } from '../../hooks/useAlVerse'
+import { VistoPerfil } from './vistoPerfil'
+import ResumenCoincidencias from './ResumenCoincidencias'
 import AskAIAbout from '../ai/AskAIAbout'
 import ModuleShell from './ModuleShell'
 import ProfileRadar from './ProfileRadar'
@@ -97,9 +100,8 @@ function moduleBody(id, cards, dash) {
       const buckets = dash.buckets
       if (!buckets || !card?.declared) return null
       const longTermPct = Math.min(100, (buckets.equity || 0) + (buckets.alternative || 0))
-      const clashes =
-        (card.declared.horizon === 'short' && longTermPct > 50) ||
-        (card.declared.horizon === 'medium' && longTermPct > 80)
+      // La misma regla que el veredicto del resumen (utils/profileDashboard).
+      const clashes = horizonteChoca(card.declared.horizon, longTermPct)
       return (
         <HorizonStat
           longTermPct={longTermPct}
@@ -161,6 +163,9 @@ function moduleBody(id, cards, dash) {
 
 export default function ProfileDashboard({ cards, positions = [], aiParams }) {
   const dash = buildProfileDashboard({ cards, positions })
+  // Las tarjetas entran en cascada (en el orden de relevancia) cuando el
+  // tablero se ve, y adentro de cada una lo suyo se arma al mismo tiempo.
+  const [ref, visto] = useAlVerse()
 
   // Sin ningún módulo disponible: el caso "sin test" lo corta antes el caller
   // (ProfileInvestorBlock, CTA al test). Si llegamos acá con todo bloqueado es
@@ -186,10 +191,19 @@ export default function ProfileDashboard({ cards, positions = [], aiParams }) {
 
   // ★ va al primer módulo DISPONIBLE (un candado con estrella confunde).
   const topPickId = dash.modules.find((m) => m.avail)?.id
+  // El lugar de cada tarjeta en la cascada (sólo las que se dibujan).
+  const dibujadas = dash.modules.filter((m) => MODULE_META[m.id] && (!m.avail || moduleBody(m.id, cards, dash)))
 
   return (
+    <VistoPerfil.Provider value={visto}>
+    <div ref={ref}>
+    <ResumenCoincidencias
+      modulos={dibujadas}
+      titulos={Object.fromEntries(Object.entries(MODULE_META).map(([k, v]) => [k, v.title]))}
+      visto={visto}
+    />
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 grid-flow-dense">
-      {dash.modules.map((m) => {
+      {dibujadas.map((m, i) => {
         const meta = MODULE_META[m.id]
         if (!meta) return null
 
@@ -211,10 +225,12 @@ export default function ProfileDashboard({ cards, positions = [], aiParams }) {
           </ModuleShell>
         )
 
+        const { className: claseEntrada, style: estiloEntrada } = entrada(visto, i, m.wide ? 'md:col-span-2' : '')
+
         // ✦ IA per-módulo solo donde el backend tiene el code (profile.card).
         if (m.avail && meta.aiCode) {
           return (
-            <div key={m.id} className={m.wide ? 'md:col-span-2' : ''}>
+            <div key={m.id} className={claseEntrada} style={estiloEntrada}>
               {/* `aiParams`: la moneda, el modo y el valor de ahora de la pantalla,
                   para que la caída real del ✦ sea la de la card (ver
                   backend/ai/builders/caida_medida.py). */}
@@ -224,8 +240,10 @@ export default function ProfileDashboard({ cards, positions = [], aiParams }) {
             </div>
           )
         }
-        return <div key={m.id} className={m.wide ? 'md:col-span-2' : ''}>{shell}</div>
+        return <div key={m.id} className={claseEntrada} style={estiloEntrada}>{shell}</div>
       })}
     </div>
+    </div>
+    </VistoPerfil.Provider>
   )
 }

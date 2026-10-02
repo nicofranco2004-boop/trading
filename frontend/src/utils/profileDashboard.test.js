@@ -260,3 +260,77 @@ describe('tradesToActivityPos', () => {
     expect(tradesToActivityPos(-1)).toBeNull()
   })
 })
+
+// ── "Tu cartera coincide con tu perfil en N de M" (2026-10-02) ───────────────
+import { veredicto, horizonteChoca } from './profileDashboard'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { createElement as h } from 'react'
+import ProfileDashboard from '../components/profile/ProfileDashboard'
+import { MemoryRouter } from 'react-router-dom'
+
+describe('veredicto — una regla por cruce, la misma que pinta cada tarjeta', () => {
+  const buckets = READY_CARDS.allocation.actual.buckets
+  const v = (id) => veredicto(id, READY_CARDS[id], buckets)
+  it('cada cruce del usuario de ejemplo', () => {
+    expect(v('allocation')).toBe('no_coincide')     // desvío 42 > 15
+    expect(v('objective')).toBe('coincide')         // 13% para otro lado ≤ 40
+    expect(v('horizon')).toBe('no_coincide')        // corto con 87% en activos de años
+    expect(v('drawdown')).toBe('coincide')          // dentro de lo tolerado
+    expect(v('concentration')).toBe('no_coincide')  // por encima de lo típico
+    expect(v('style')).toBe('no_coincide')          // más pasivo de lo declarado
+    expect(v('liquidity')).toBe('coincide')
+    expect(v('return_exp')).toBe('no_coincide')     // por debajo de la meta
+    expect(v('radar')).toBe(null)                   // es el resumen de los otros
+  })
+  it('menos riesgo del que tolerás está bien; en la meta también', () => {
+    expect(veredicto('concentration', { status: 'ready', comparison: 'below' })).toBe('coincide')
+    expect(veredicto('drawdown', { status: 'ready', comparison: 'below' })).toBe('coincide')
+    expect(veredicto('return_exp', { status: 'ready', comparison: 'in_line' })).toBe('coincide')
+  })
+  it('sin dato no suma ni resta', () => {
+    expect(veredicto('allocation', { status: 'no_profile' })).toBe(null)
+    expect(veredicto('style', undefined)).toBe(null)
+    expect(veredicto('horizon', READY_CARDS.horizon, null)).toBe(null)
+  })
+  it('horizonte: corto choca con más de la mitad en activos de años; mediano, con más de 80%', () => {
+    expect(horizonteChoca('short', 51)).toBe(true)
+    expect(horizonteChoca('short', 50)).toBe(false)
+    expect(horizonteChoca('medium', 81)).toBe(true)
+    expect(horizonteChoca('long', 100)).toBe(false)
+  })
+})
+
+// La cuenta se lee de lo que se VE (el mismo camino que producción): las
+// tarjetas que se dibujan, no los módulos del motor.
+describe('coincidencias del tablero — "N de M" sobre las tarjetas que se ven', () => {
+  const resumen = (cards) => {
+    // MemoryRouter: un cruce bloqueado dibuja su candado con un link al test.
+    const html = renderToStaticMarkup(h(MemoryRouter, null, h(ProfileDashboard, { cards, positions: POSITIONS })))
+    const m = html.match(/coincide con tu perfil en\s*<span[^>]*>(\d+)<\/span>\s*de <span[^>]*>(\d+)<\/span>/)
+    return m && { coinciden: +m[1], medidos: +m[2], chips: (html.match(/: (no )?coincide</g) || []).length }
+  }
+  it('cuenta sobre los cruces medidos (el radar no cuenta)', () => {
+    expect(resumen(READY_CARDS)).toEqual({ coinciden: 3, medidos: 8, chips: 8 })
+  })
+  it('un cruce bloqueado no entra en la cuenta', () => {
+    expect(resumen({ ...READY_CARDS, style: { status: 'no_profile' } })).toEqual({ coinciden: 3, medidos: 7, chips: 7 })
+  })
+  it('listo pero sin con qué dibujarse: no hay tarjeta, y tampoco cuenta ni tiene tilde', () => {
+    const style = { ...READY_CARDS.style, actual: { ...READY_CARDS.style.actual, tradesPerMonth: null } }
+    expect(resumen({ ...READY_CARDS, style })).toEqual({ coinciden: 3, medidos: 7, chips: 7 })
+  })
+})
+
+describe('ProfileDashboard — lo que se ve', () => {
+  const html = renderToStaticMarkup(h(ProfileDashboard, { cards: READY_CARDS, positions: POSITIONS }))
+  it('el resumen arriba, con un tilde por cruce medido', () => {
+    expect(html).toContain('Tu cartera coincide con tu perfil en')
+    expect(html).toMatch(/de <span[^>]*>8<\/span>/)
+    expect((html.match(/: coincide</g) || []).length).toBe(3)
+    expect((html.match(/: no coincide</g) || []).length).toBe(5)
+  })
+  it('ya no muestra el puntaje interno "rel N"', () => {
+    expect(html).not.toMatch(/>rel \d/)
+    expect(html).toContain('Lo más relevante')
+  })
+})

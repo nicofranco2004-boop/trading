@@ -36,7 +36,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../utils/api'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry, buildPriceSymbols } from '../utils/valuation'
 import { computeBestWorstClosedOp, monthlyReturnArs } from '../utils/insightsModel'
 import { esApto, esDibujable, baseIncomparable, esBordeFresco } from '../utils/evolution'
 
@@ -231,7 +231,9 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         const arsSyms = [...new Set((pos || []).filter(p => arsBrokers.has(p.broker) && !p.is_cash).map(p => priceSymbol(p.asset, true, p.asset_type)))]
         // Sub-brokers "· USD" piden el .BA (BYMA); brokers USD reales el ticker US pelado.
         const usdtSyms = [...new Set((pos || []).filter(p => usdtBrokers.has(p.broker) && !p.is_cash && p.asset !== 'USDT').map(p => isArUsdBroker(p.broker) ? priceSymbol(p.asset, true, p.asset_type) : priceSymbol(p.asset, false, p.asset_type)))]
-        const all = [...arsSyms, ...usdtSyms].join(',')
+        // + las keys que lee el motor (buildPriceSymbols): esta lista no tenía el
+        // lote en pesos en cuenta en dólares ni la cripto de un "· USD".
+        const all = [...new Set([...buildPriceSymbols(pos || [], bkrs || []), ...arsSyms, ...usdtSyms])].join(',')
         if (all) {
           try {
             const px = await api.get(`/prices?symbols=${all}`)

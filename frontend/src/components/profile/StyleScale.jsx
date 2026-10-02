@@ -5,6 +5,8 @@
 // no existir) y el violeta es lo que inferimos de sus trades/mes reales.
 // Los tags se clampean a [8, 92]% para que no se corten en los bordes.
 
+import { useVistoPerfil } from './vistoPerfil'
+
 export default function StyleScale({
   declaredPos,
   declaredLabel,
@@ -12,10 +14,15 @@ export default function StyleScale({
   tradesPerMonth,
   inferredLabel,
 }) {
+  const visto = useVistoPerfil()
   if (actualPos == null) return null
 
   // Los marcadores van donde corresponde; solo el TEXTO se clampea al borde.
   const clampTag = (x) => Math.min(92, Math.max(8, x))
+  // Al verse, el punto "real" (y su texto) sale de donde declaraste y viaja
+  // hasta lo que hacés: la brecha se ve como un recorrido.
+  const viaja = visto && declaredPos != null
+  const desde = (x) => (viaja ? { '--desde': `${x}%` } : {})
 
   return (
     <div>
@@ -36,12 +43,12 @@ export default function StyleScale({
           </>
         )}
         <span
-          className="absolute top-1/2 w-3 h-3 rounded-full bg-data-violet border-2 border-bg-1 -translate-x-1/2 -translate-y-1/2"
-          style={{ left: `${actualPos}%` }}
+          className={`absolute top-1/2 w-3 h-3 rounded-full bg-data-violet border-2 border-bg-1 -translate-x-1/2 -translate-y-1/2 ${viaja ? 'viaja-desde' : ''}`}
+          style={{ left: `${actualPos}%`, ...desde(declaredPos) }}
         />
         <span
-          className="absolute top-4 font-mono text-[10px] text-data-violet tabular-nums -translate-x-1/2 whitespace-nowrap"
-          style={{ left: `${clampTag(actualPos)}%` }}
+          className={`absolute top-4 font-mono text-[10px] text-data-violet tabular-nums -translate-x-1/2 whitespace-nowrap ${viaja ? 'viaja-desde' : ''}`}
+          style={{ left: `${clampTag(actualPos)}%`, ...desde(clampTag(declaredPos ?? actualPos)) }}
         >
           real ({tradesPerMonth}/mes)
         </span>

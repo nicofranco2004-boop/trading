@@ -1,11 +1,13 @@
 // ModuleShell — card contenedora de un módulo del Tablero del perfil.
 // ═══════════════════════════════════════════════════════════════════════════
-// Header (ícono + título + badge de relevancia) + body. Dos estados:
+// Header (ícono + título + ★ en la más relevante) + body. Dos estados:
 //   • avail  → children (la visualización del módulo).
 //   • locked → candado + mensaje de desbloqueo + CTA (test / posiciones),
 //              derivado del texto del lock (el motor manda el mensaje).
-// El badge: el PRIMER módulo disponible del grid lleva "★ Lo más relevante";
-// el resto muestra su score REL — así el orden deja de ser una caja negra.
+// El badge: el PRIMER módulo disponible del grid lleva "★ Lo más relevante".
+// El resto no lleva nada: hasta el 2026-10-02 mostraban "rel 57", el puntaje
+// interno con el que se ordenan — jerga que nadie entendía. El orden se sigue
+// viendo (las tarjetas entran en ese orden) y el puntaje sigue en `rel`.
 
 import { Lock } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -26,22 +28,19 @@ export default function ModuleShell({ icon: Icon, title, rel, topPick = false, l
       className={`border border-line/70 dark:border-line rounded-lg bg-bg-1/40 p-4 flex flex-col gap-3 ${wide ? 'md:col-span-2' : ''} ${locked ? 'opacity-80' : ''}`}
     >
       {/* pr-9: deja lugar al pill ✦ de AskAIAbout (absolute top-2 right-2)
-          para que no tape el badge REL/★, sobre todo en mobile donde el pill
-          es siempre visible. */}
-      <header className="flex items-center justify-between gap-2 pr-9">
+          para que no tape la ★, sobre todo en mobile donde el pill es siempre
+          visible. flex-wrap: en un celular el título y la ★ no entran en una
+          línea, y el título salía cortado ("Retorno v…"); ahora la ★ baja. */}
+      <header className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 pr-9">
         <div className="flex items-center gap-2 min-w-0">
           {Icon && <Icon size={14} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" aria-hidden />}
           <h4 className="text-sm font-semibold text-ink-0 truncate">{title}</h4>
         </div>
-        {topPick ? (
+        {topPick && (
           <span className="flex-shrink-0 text-[12.5px] font-semibold text-data-violet bg-data-violet/12 border border-data-violet/30 rounded-full px-2 py-1">
             ★ Lo más relevante
           </span>
-        ) : rel != null ? (
-          <span className="flex-shrink-0 text-[12.5px] text-ink-3 bg-bg-2/60 rounded-full px-2 py-1 font-medium">
-            rel {rel}
-          </span>
-        ) : null}
+        )}
       </header>
 
       {locked ? (

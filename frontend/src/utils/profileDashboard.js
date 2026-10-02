@@ -134,6 +134,51 @@ function severityBoost(id, card) {
   }
 }
 
+// ── ¿Coincide con lo que declaraste? (UNA regla por cruce) ──────────────────
+//
+// 'coincide' | 'no_coincide' | null (sin dato). La usan el resumen "Tu cartera
+// coincide con tu perfil en N de M", el conteo de desalineaciones que sube el
+// radar, y la nota de la tarjeta de Horizonte — antes cada uno tenía su copia
+// (la de Horizonte vivía adentro del dibujo de la tarjeta).
+// El radar no tiene veredicto propio: es el resumen de los otros.
+
+// Horizonte corto con más de la mitad en activos de años, o mediano con más de
+// 80%: "choca". (Largo: lo cubre Asignación, ver severityBoost.)
+export function horizonteChoca(horizon, longTermPct) {
+  if (longTermPct == null) return false
+  return (horizon === 'short' && longTermPct > 50) || (horizon === 'medium' && longTermPct > 80)
+}
+
+export function veredicto(id, card, buckets = null) {
+  if (!card || card.status !== 'ready') return null
+  const c = card.comparison
+  switch (id) {
+    case 'allocation':
+      return c?.driftPct == null ? null : (c.driftPct > 15 ? 'no_coincide' : 'coincide')
+    case 'style':
+    case 'liquidity':
+      return c == null ? null : (c === 'aligned' ? 'coincide' : 'no_coincide')
+    case 'concentration':
+    case 'drawdown':
+      // 'below' = menos riesgo del que tolerás: está bien, no es desalineación.
+      return c == null ? null : (c === 'above' ? 'no_coincide' : 'coincide')
+    case 'return_exp':
+      return c == null ? null : (c === 'below' ? 'no_coincide' : 'coincide')
+    case 'objective': {
+      // Más del 40% apuntando para otro lado: la misma vara que la tarjeta.
+      const mis = card.actual?.misalignedPct
+      return mis == null ? null : (mis > 40 ? 'no_coincide' : 'coincide')
+    }
+    case 'horizon': {
+      if (!buckets || !card.declared) return null
+      const largo = Math.min(100, (buckets.equity || 0) + (buckets.alternative || 0))
+      return horizonteChoca(card.declared.horizon, largo) ? 'no_coincide' : 'coincide'
+    }
+    default:
+      return null
+  }
+}
+
 // ── Radar: 5 ejes declarado-vs-real en 0-100 ────────────────────────────────
 
 const RISK_BY_CATEGORY = { conservador: 25, moderado: 55, agresivo: 85 }
@@ -242,17 +287,10 @@ export function buildProfileDashboard({ cards = {}, positions = [] } = {}) {
   const topHoldings = buildTopHoldings(positions)
 
   // Cuántos cruces "de cartas" están en mismatch — alimenta el boost del radar
-  // (el radar importa más cuanto más desalineado está el conjunto).
+  // (el radar importa más cuanto más desalineado está el conjunto). Misma
+  // regla que el resumen (`veredicto`).
   const mismatches = ['allocation', 'style', 'liquidity', 'concentration', 'drawdown']
-    .filter((id) => {
-      const card = cards[id]
-      if (!card || card.status !== 'ready') return false
-      if (id === 'allocation') return (card.comparison?.driftPct || 0) > 15
-      const c = card.comparison
-      // 'below' en drawdown/concentración es estado BUENO (menos riesgo del
-      // tolerado) — no cuenta como desalineación.
-      return c && c !== 'aligned' && c !== 'within' && c !== 'in_line' && c !== 'below'
-    }).length
+    .filter((id) => veredicto(id, cards[id], buckets) === 'no_coincide').length
 
   const modules = MODULE_ORDER.map((id) => {
     let rel = BASE_REL[id]
@@ -281,7 +319,10 @@ export function buildProfileDashboard({ cards = {}, positions = [] } = {}) {
       }
     }
 
-    return { id, rel: Math.round(Math.min(100, rel)), avail, lock, wide: WIDE.has(id) }
+    return {
+      id, rel: Math.round(Math.min(100, rel)), avail, lock, wide: WIDE.has(id),
+      veredicto: avail && id !== 'radar' ? veredicto(id, cards[id], buckets) : null,
+    }
   })
 
   // Orden: rel desc; empate → orden fijo de módulo (layout estable).
@@ -295,5 +336,10 @@ export function buildProfileDashboard({ cards = {}, positions = [] } = {}) {
     // consume de acá para que avail⇔renderizable sea un invariante real.
     buckets,
     availCount: modules.filter((m) => m.avail).length,
+    // "Tu cartera coincide con tu perfil en N de M" NO se cuenta acá: un
+    // módulo listo puede no tener con qué dibujarse (moduleBody devuelve null)
+    // y el resumen tiene que contar las MISMAS tarjetas que se ven. Lo cuenta
+    // ResumenCoincidencias sobre las que se dibujan. Hubo una cuenta acá que
+    // nadie mostraba y podía decir otra cosa.
   }
 }
