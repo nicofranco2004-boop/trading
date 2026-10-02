@@ -34,7 +34,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, tienePrecio, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA, setBrokersRegistry } from '../utils/valuation'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -496,27 +496,13 @@ function PersonalDashboard() {
   // baja y NO snapshoteamos — un snapshot con precios a medio cargar rompe la
   // variación diaria del día siguiente (parece una ganancia/pérdida falsa).
   // Un activo ilíquido chico (bono) no mueve la aguja; una caída masiva sí.
-  const priceCoverage = useMemo(() => {
-    const nonCash = positions.filter(p => !p.is_cash)
-    if (nonCash.length === 0) return 1
-    // Sin blue válido no podemos valuar posiciones ARS → cobertura 0 (bloquea).
-    const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
-    if (hasArs && !(tcValuacion > 0)) return 0
-    // Cobertura contra la MISMA key que la valuación lee (valuationPriceKey).
-    // El check viejo (prices[asset] || prices[asset.BA]) daba por "priceado" un
-    // lote cuya key real no llegó → el guard dejaba pasar snapshots subvaluados.
-    const hasPrice = (p) => tienePrecio(p, prices, arsBrokerNames.has(p.broker))
-    const costUsd = (p) => {
-      const c = (p.invested || 0) + (p.commissions || 0)
-      return arsBrokerNames.has(p.broker) ? c / tcValuacion : c
-    }
-    const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
-    if (!(total > 0)) return 1
-    const priced = nonCash.reduce((s, p) => s + (hasPrice(p) ? costUsd(p) : 0), 0)
-    return priced / total
-  }, [positions, prices, arsBrokerNames, tcValuacion])
+  // La regla es coberturaDePrecios (utils/valuation), la misma que usa Métricas.
+  const priceCoverage = useMemo(
+    () => coberturaDePrecios(positions, prices, arsBrokerNames, tcValuacion),
+    [positions, prices, arsBrokerNames, tcValuacion],
+  )
 
-  const PRICE_COVERAGE_MIN = 0.95  // ≥95% del portfolio con precio real (alineado con el cron)
+  const PRICE_COVERAGE_MIN = COBERTURA_MINIMA  // ≥95% del portfolio con precio real (alineado con el cron)
 
   // ── Snapshot 1×/day (solo con cobertura de precios alta) ────────────────────
   useEffect(() => {

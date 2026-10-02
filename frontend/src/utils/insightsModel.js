@@ -662,6 +662,26 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
   })
 }
 
+// ─── Qué benchmark se le pide al servidor ───────────────────────────────────
+// El selector usa nombres de producto; el backend, los de la fuente de datos.
+export const BENCH_API_KEY = {
+  sp500: 'sp500', tbill: 'shv', gold: 'gld',
+  inflation: 'inflation_ar', merval: 'merval', plazo_fijo: 'plazo_fijo',
+}
+
+// Los benchmarks que el servidor no tiene porque su línea es plana por
+// definición: "Pesos cash (blue)" mirado en pesos son pesos quietos medidos en
+// pesos, 0 %. La curva del usuario se pide igual (con el S&P, `benchPedido`) y
+// en el gráfico la línea de comparación va en 0 %, no la que vino.
+export const BENCH_EN_CERO = new Set(['pesos_cash'])
+
+// Qué `bench=` lleva el pedido de la curva. Hasta el 2026-10-02 una opción sin
+// clave (Pesos cash) no pedía NADA: sin curva, sin caída, sin acumulado. Y
+// antes, la curva le llegaba con el S&P y se dibujaba rotulada "Pesos cash".
+export function benchPedido(seleccion) {
+  return BENCH_API_KEY[seleccion] || 'sp500'
+}
+
 // ─── ¿Esta respuesta de Performance es de lo que se está mirando? ───────────
 /**
  * perfEsDeLaVista

@@ -147,3 +147,43 @@ describe('reintento — los precios en camino no se piden dos veces', () => {
     expect(pedidos.filter(u => u === '/positions')).toHaveLength(2)   // lo demás sí se pide de nuevo
   })
 })
+
+import { benchPedido, BENCH_EN_CERO } from './insightsModel'
+import { coberturaDePrecios, COBERTURA_MINIMA } from './valuation'
+
+describe('benchPedido — la curva se pide SIEMPRE, con un benchmark que el servidor tiene', () => {
+  it('cada opción del selector con su clave; Pesos cash (sin serie allá) con el S&P', () => {
+    expect(benchPedido('inflation')).toBe('inflation_ar')
+    expect(benchPedido('tbill')).toBe('shv')
+    expect(benchPedido('pesos_cash')).toBe('sp500')   // antes: undefined → no se pedía nada
+    expect(BENCH_EN_CERO.has('pesos_cash')).toBe(true)  // y su línea va en 0 %, no la del S&P
+  })
+  it('pasar de Inflación a Pesos cash: la respuesta de inflación ya no se acepta', () => {
+    const vista = { moneda: 'ars', bench: benchPedido('pesos_cash'), modo: 'certero' }
+    expect(perfEsDeLaVista({ moneda: 'ars', benchmark_key: 'inflation_ar', modo: 'certero' }, vista)).toBe(false)
+    expect(perfEsDeLaVista({ moneda: 'ars', benchmark_key: 'sp500', modo: 'certero' }, vista)).toBe(true)
+  })
+})
+
+describe('coberturaDePrecios — ¿alcanza para guardar o mandar un valor? (la regla del cron)', () => {
+  const ars = new Set(['Cocos'])
+  const pos = [
+    { asset: 'AAPL', broker: 'Schwab', invested: 9700 },
+    { asset: 'FCI:RARO', broker: 'Schwab', invested: 300 },        // nunca cotiza
+    { asset: 'USD', broker: 'Schwab', is_cash: 1, invested: 5000 },
+  ]
+  it('un activo chico que nunca cotiza no apaga nada (97 %)', () => {
+    const c = coberturaDePrecios(pos, { AAPL: 230 }, ars, 1400)
+    expect(c).toBeCloseTo(0.97, 5)
+    expect(c >= COBERTURA_MINIMA).toBe(true)
+  })
+  it('Yahoo caído para lo grande: no alcanza', () => {
+    expect(coberturaDePrecios(pos, {}, ars, 1400) >= COBERTURA_MINIMA).toBe(false)
+  })
+  it('sin dólar y con activos en pesos: 0 (no se puede valuar)', () => {
+    expect(coberturaDePrecios([{ asset: 'GGAL', broker: 'Cocos', invested: 1000 }], { 'GGAL.BA': 5000 }, ars, 0)).toBe(0)
+  })
+  it('sin activos: 1', () => {
+    expect(coberturaDePrecios([{ asset: 'USD', broker: 'Schwab', is_cash: 1 }], {}, ars, 1400)).toBe(1)
+  })
+})

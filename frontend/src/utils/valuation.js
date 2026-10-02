@@ -566,6 +566,36 @@ export function tienePrecio(p, prices, isArsBroker) {
 }
 
 /**
+ * coberturaDePrecios — qué parte del COSTO de la cartera (0..1, sin cash,
+ * ponderado en USD) tiene precio de mercado (tienePrecio). Es la respuesta a
+ * "¿puedo GUARDAR o MANDAR un valor de la cartera calculado con estos
+ * precios?": un activo chico sin precio (un bono ilíquido, un FCI fuera del
+ * catálogo) no mueve la aguja; Yahoo caído para media cartera, sí.
+ *
+ * Una sola regla para el snapshot del Dashboard y para el valor de hoy de la
+ * curva y "Desde tu última visita" de Métricas. Métricas exigía TODOS los
+ * precios: un activo que nunca cotiza le apagaba esas dos cosas para siempre
+ * (revisión del 2026-10-02). El umbral es el del cron (COBERTURA_MINIMA).
+ */
+export const COBERTURA_MINIMA = 0.95
+
+export function coberturaDePrecios(positions, prices, arsBrokerNames, tcValuacion) {
+  const nonCash = (positions || []).filter(p => !p.is_cash)
+  if (nonCash.length === 0) return 1
+  // Sin dólar válido no se pueden valuar las posiciones en pesos → 0 (bloquea).
+  const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
+  if (hasArs && !(tcValuacion > 0)) return 0
+  const costUsd = (p) => {
+    const c = (p.invested || 0) + (p.commissions || 0)
+    return arsBrokerNames.has(p.broker) ? c / tcValuacion : c
+  }
+  const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
+  if (!(total > 0)) return 1
+  const priced = nonCash.reduce((s, p) => s + (tienePrecio(p, prices, arsBrokerNames.has(p.broker)) ? costUsd(p) : 0), 0)
+  return priced / total
+}
+
+/**
  * sellCurrency — en qué moneda se registra la venta de este lote.
  *
  * Manda la moneda del LOTE, no la del broker: el mismo ticker se puede tener

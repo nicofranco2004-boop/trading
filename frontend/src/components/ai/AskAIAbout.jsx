@@ -108,7 +108,10 @@ export default function AskAIAbout({
         aria-label="Preguntarle a Rendi"
         title={pendientes ? TEXTO_PRECIOS_PENDIENTES : 'Preguntarle a Rendi'}
         className={[
-          'disabled:opacity-40 disabled:cursor-not-allowed',
+          // El atenuado de "faltan las cotizaciones" sólo donde el botón se ve:
+          // `disabled:opacity-40` le gana al `opacity-0` del hover (va después
+          // en la hoja) y ponía un ✦ a media luz en la esquina de cada tarjeta.
+          pendientes && (isMobile || !discovered || hovered) ? 'disabled:opacity-40 disabled:cursor-not-allowed' : '',
           'absolute z-10 inline-flex items-center justify-center',
           'top-2 right-2',
           'bg-bg-1/95 backdrop-blur-sm border text-data-violet',

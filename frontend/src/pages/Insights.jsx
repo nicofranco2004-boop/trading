@@ -34,7 +34,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { track } from '../utils/track'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -79,6 +79,8 @@ import {
   applyMtmToMonthly,
   acumuladoDeVentana,
   perfEsDeLaVista,
+  benchPedido,
+  BENCH_EN_CERO,
 } from '../utils/insightsModel'
 import {
   simulateSp500,
@@ -248,11 +250,9 @@ function InsightsDesktop({ _embeddedTab }) {
     try { localStorage.setItem('rendi_insights_bench_ars', benchArs) } catch {}
   }, [benchArs])
   const selectedBench = currency === 'USD' ? benchUsd : benchArs
-  // El selector usa nombres de producto; el backend, los de la fuente de datos.
-  const BENCH_API_KEY = {
-    sp500: 'sp500', tbill: 'shv', gold: 'gld',
-    inflation: 'inflation_ar', merval: 'merval', plazo_fijo: 'plazo_fijo',
-  }
+  // Qué `bench=` se le pide al servidor (BENCH_API_KEY / benchPedido en
+  // utils/insightsModel): siempre uno, aunque la opción no tenga serie allá.
+  const benchDelPedido = benchPedido(selectedBench)
   const setSelectedBench = (key) => currency === 'USD' ? setBenchUsd(key) : setBenchArs(key)
   const [loading, setLoading] = useState(true)
   // Los precios VOLVIERON (o no había nada que cotizar). No es lo mismo que
@@ -328,7 +328,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // "valuado a precio real vs valuado al costo".
   const [modoPerf, setModoPerf] = useState('certero')
   const _monedaVista = currency === 'ARS' ? 'ars' : 'usd'
-  const _perfEsDeLaVista = perfEsDeLaVista(perfRaw, { moneda: _monedaVista, bench: BENCH_API_KEY[selectedBench], modo: modoPerf })
+  const _perfEsDeLaVista = perfEsDeLaVista(perfRaw, { moneda: _monedaVista, bench: benchDelPedido, modo: modoPerf })
   const perf = _perfEsDeLaVista ? perfRaw : null
   // Cambió la moneda (o el benchmark, o el modo) y la respuesta nueva todavía no
   // llegó. No es "no hay datos": es "los que tengo son de otra vista", y el
@@ -371,15 +371,15 @@ function InsightsDesktop({ _embeddedTab }) {
         s + (computeBrokerValue(positions, prices, b, tb, tb, tcr, costBasis).value || 0), 0)
     } catch { return 0 }
   }, [brokers, positions, prices, dolar, valuationDollar, costBasis])
-  // ⚠️ RECIÉN CON TODOS LOS PRECIOS. Con `positions` ya en memoria y `prices`
+  // ⚠️ RECIÉN CON LOS PRECIOS. Con `positions` ya en memoria y `prices`
   // todavía vacío, la valuación cae al costo y mandaba un `valor_live` de otro
   // orden (medido: 70.983 en una cartera de 16.595), y el servidor cerraba la
   // curva con un "hoy" falso (salto en la punta, en el Acumulado y en la caída
   // actual). Antes esperaba a `loading`, que terminaba DESPUÉS de los precios;
   // desde que la página sale sin ellos (TOPE_PRECIOS_MS) eso ya no alcanza.
   // Y no alcanza con que el pedido vuelva: /prices contesta 200 con `null`
-  // para lo que Yahoo no resolvió, y eso también se valúa al costo. Sin todos
-  // los precios, la curva termina en la última foto: lo honesto.
+  // para lo que Yahoo no resolvió, y eso también se valúa al costo. Con menos
+  // del 95 % del costo con precio, la curva termina en la última foto: lo honesto.
   // Qué posiciones se valúan al costo por falta de precio, con la MISMA key que
   // lee la valuación (tienePrecio). Lo usan el aviso de cotizaciones, lo que
   // recibe la IA y este guard. Mismo recorte que buildPriceSymbols: sin cash,
@@ -392,7 +392,15 @@ function InsightsDesktop({ _embeddedTab }) {
       .map(p => String(p.asset || '').toUpperCase())
       .filter(Boolean))]
   }, [positions, prices, brokers])
-  const preciosCompletos = preciosListos && sinPrecio.length === 0
+  // "Completos" = la regla del snapshot del Dashboard y del cron
+  // (coberturaDePrecios ≥ 95 % del costo): exigir TODOS apagaba el valor de hoy
+  // y "Desde tu última visita" para siempre a quien tiene un activo que nunca
+  // cotiza (un FCI fuera del catálogo, un bono sin fuente).
+  const cobertura = useMemo(() => {
+    const ars = new Set((brokers || []).filter(b => b.currency === 'ARS').map(b => b.name))
+    return coberturaDePrecios(positions, prices, ars, pickFinancialRate(dolar, valuationDollar) || 1415)
+  }, [positions, prices, brokers, dolar, valuationDollar])
+  const preciosCompletos = preciosListos && cobertura >= COBERTURA_MINIMA
   const liveKeyPerf = preciosCompletos ? Math.round(liveUsdPerf || 0) : 0
   // Lo que el ✦ necesita para medir la caída IGUAL que esta pantalla: la moneda
   // del selector, el modo (en estimado la pantalla no muestra caída: "—") y el
@@ -413,12 +421,11 @@ function InsightsDesktop({ _embeddedTab }) {
   // después y pisaba ésta. La carga espera la PRIMERA respuesta de acá
   // (`primeraPerf`) y el cargador la tilda en "Comparación…".
   useEffect(() => {
-    const k = BENCH_API_KEY[selectedBench]
+    const k = benchDelPedido
     const avisar = (valor) => {
       primeraPerf.listo()
       if (vivoRef.current) setLlego(l => (l.performance != null ? l : { ...l, performance: valor }))
     }
-    if (!k) { avisar(true); return }
     let vivo = true
     const live = liveKeyPerf > 0 ? `&valor_live=${liveKeyPerf}` : ''
     // ⚠️ LA MONEDA VIAJA AL MOTOR. En pesos NO alcanza con dividir la curva de
@@ -430,7 +437,7 @@ function InsightsDesktop({ _embeddedTab }) {
       .then(r => { if (vivo) setPerf(r); avisar(true) })
       .catch(() => { avisar('error') })
     return () => { vivo = false }
-  }, [selectedBench, modoPerf, liveKeyPerf, currency])
+  }, [benchDelPedido, modoPerf, liveKeyPerf, currency])
 
   // El cargador sólo si la carga TARDA (va acá, antes del `if (loading)
   // return`: es un hook).
@@ -1827,7 +1834,10 @@ function InsightsDesktop({ _embeddedTab }) {
       // 348 usuarios con huecos en la cadena mensual veían el ancla en otro mes
       // ("S&P +35%" donde hizo +3,8%).
       if (!esCorte && (!isArs || usaPerfEnPesos) && !skeleton) {
-        benchPct = (typeof s.bench === 'number') ? +((s.bench - 1) * 100).toFixed(4) : null
+        // Pesos cash en pesos: 0 % por definición (BENCH_EN_CERO). La curva
+        // vino con el S&P (benchPedido), que NO es esta línea.
+        benchPct = BENCH_EN_CERO.has(selectedBench) ? 0
+          : (typeof s.bench === 'number') ? +((s.bench - 1) * 100).toFixed(4) : null
       } else if (!esCorte && shadowPctByMonth.size > 0) {
         const mk = monthKeyOf(s.key)
         if (shadowPctByMonth.has(mk)) {
@@ -2770,8 +2780,9 @@ function InsightsDesktop({ _embeddedTab }) {
   // Delta "desde tu última visita" — record() computa y agenda persistencia.
   // Solo en la tab Diagnóstico (Métricas/Perfil son el mismo componente con
   // otro _embeddedTab; sin este guard pisarían la huella de "última visita").
-  // Y sólo con TODOS los precios: sin ellos `totalPortfolio` lleva activos al
-  // costo, y se mostraba un cambio falso y se GUARDABA para la próxima visita.
+  // Y sólo con los precios (preciosCompletos, ≥ 95 % del costo): sin ellos
+  // `totalPortfolio` lleva activos al costo, y se mostraba un cambio falso y se
+  // GUARDABA para la próxima visita.
   const { delta: visitDelta } = showDiagnostico && preciosCompletos
     ? lastVisit.record({ valueUsd: totalPortfolio, findingIds: diagnosisPool.map(d => d.id) })
     : { delta: null }
