@@ -34,7 +34,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { track } from '../utils/track'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -381,14 +381,14 @@ function InsightsDesktop({ _embeddedTab }) {
   // para lo que Yahoo no resolvió, y eso también se valúa al costo. Con menos
   // del 95 % del costo con precio, la curva termina en la última foto: lo honesto.
   // Qué posiciones se valúan al costo por falta de precio, con la MISMA key que
-  // lee la valuación (tienePrecio). Lo usan el aviso de cotizaciones, lo que
-  // recibe la IA y este guard. Mismo recorte que buildPriceSymbols: sin cash,
-  // sin USDT y sin brokers desconocidos.
+  // lee la valuación (tienePrecio), sobre lo que se cotiza (seCotiza: el mismo
+  // recorte que buildPriceSymbols y la cobertura). Lo usan el aviso de
+  // cotizaciones y lo que recibe la IA.
   const sinPrecio = useMemo(() => {
     const ars = new Set((brokers || []).filter(b => b.currency === 'ARS').map(b => b.name))
     const conocidos = new Set((brokers || []).map(b => b.name))
     return [...new Set((positions || [])
-      .filter(p => !p.is_cash && p.asset !== 'USDT' && conocidos.has(p.broker) && !tienePrecio(p, prices, ars.has(p.broker)))
+      .filter(p => seCotiza(p, conocidos) && !tienePrecio(p, prices, ars.has(p.broker)))
       .map(p => String(p.asset || '').toUpperCase())
       .filter(Boolean))]
   }, [positions, prices, brokers])
@@ -396,9 +396,10 @@ function InsightsDesktop({ _embeddedTab }) {
   // (coberturaDePrecios ≥ 95 % del costo): exigir TODOS apagaba el valor de hoy
   // y "Desde tu última visita" para siempre a quien tiene un activo que nunca
   // cotiza (un FCI fuera del catálogo, un bono sin fuente).
+  // Con los mismos TC que el valor de hoy (liveUsdPerf).
   const cobertura = useMemo(() => {
-    const ars = new Set((brokers || []).filter(b => b.currency === 'ARS').map(b => b.name))
-    return coberturaDePrecios(positions, prices, ars, pickFinancialRate(dolar, valuationDollar) || 1415)
+    const tb = pickFinancialRate(dolar, valuationDollar) || 1415
+    return coberturaDePrecios(positions, prices, brokers, { tcValuacion: tb, tcCedear: tb, tcCripto: dolar?.cripto?.venta })
   }, [positions, prices, brokers, dolar, valuationDollar])
   const preciosCompletos = preciosListos && cobertura >= COBERTURA_MINIMA
   const liveKeyPerf = preciosCompletos ? Math.round(liveUsdPerf || 0) : 0

@@ -490,7 +490,7 @@ function PersonalDashboard() {
   // solo dejaba dos porcentajes distintos en la misma pantalla.
   const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, capitalMaximo, positions: positionsForInsight }), [totalValue, netDeposited, capitalMaximo, positionsForInsight])
 
-  // Cobertura de precios: fracción del cost basis (no-cash, ponderado en USD)
+  // Cobertura de precios: fracción del cost basis (lo que se cotiza, pesado en USD por el motor)
   // que tiene un precio real. Es el guard contra snapshots subvaluados: si
   // yfinance devolvió null para varias posiciones (caen a costo), la cobertura
   // baja y NO snapshoteamos — un snapshot con precios a medio cargar rompe la
@@ -498,8 +498,8 @@ function PersonalDashboard() {
   // Un activo ilíquido chico (bono) no mueve la aguja; una caída masiva sí.
   // La regla es coberturaDePrecios (utils/valuation), la misma que usa Métricas.
   const priceCoverage = useMemo(
-    () => coberturaDePrecios(positions, prices, arsBrokerNames, tcValuacion),
-    [positions, prices, arsBrokerNames, tcValuacion],
+    () => coberturaDePrecios(positions, prices, brokers, { tcValuacion, tcCedear, tcCripto }),
+    [positions, prices, brokers, tcValuacion, tcCedear, tcCripto],
   )
 
   const PRICE_COVERAGE_MIN = COBERTURA_MINIMA  // ≥95% del portfolio con precio real (alineado con el cron)

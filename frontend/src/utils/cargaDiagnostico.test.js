@@ -166,24 +166,52 @@ describe('benchPedido — la curva se pide SIEMPRE, con un benchmark que el serv
 })
 
 describe('coberturaDePrecios — ¿alcanza para guardar o mandar un valor? (la regla del cron)', () => {
-  const ars = new Set(['Cocos'])
+  const brokers = [{ name: 'Schwab', currency: 'USD' }, { name: 'Cocos', currency: 'ARS' }, { name: 'Binance', currency: 'USDT' }]
+  const tc = { tcValuacion: 1400 }
   const pos = [
     { asset: 'AAPL', broker: 'Schwab', invested: 9700 },
     { asset: 'FCI:RARO', broker: 'Schwab', invested: 300 },        // nunca cotiza
     { asset: 'USD', broker: 'Schwab', is_cash: 1, invested: 5000 },
   ]
   it('un activo chico que nunca cotiza no apaga nada (97 %)', () => {
-    const c = coberturaDePrecios(pos, { AAPL: 230 }, ars, 1400)
+    const c = coberturaDePrecios(pos, { AAPL: 230 }, brokers, tc)
     expect(c).toBeCloseTo(0.97, 5)
     expect(c >= COBERTURA_MINIMA).toBe(true)
   })
   it('Yahoo caído para lo grande: no alcanza', () => {
-    expect(coberturaDePrecios(pos, {}, ars, 1400) >= COBERTURA_MINIMA).toBe(false)
+    expect(coberturaDePrecios(pos, {}, brokers, tc) >= COBERTURA_MINIMA).toBe(false)
   })
-  it('sin dólar y con activos en pesos: 0 (no se puede valuar)', () => {
-    expect(coberturaDePrecios([{ asset: 'GGAL', broker: 'Cocos', invested: 1000 }], { 'GGAL.BA': 5000 }, ars, 0)).toBe(0)
+  // El peso es el costo en USD del LOTE (el motor), no según el broker: los
+  // dos casos cruzados que el cron ya había corregido (snapshots_job.py).
+  it('lote en PESOS en cuenta USD: pesa sus dólares, no sus pesos (decía 99,9 %; es 33 %)', () => {
+    const cruzado = [
+      { asset: 'GGAL', broker: 'Schwab', currency: 'ARS', invested: 14_000_000 },  // ~US$10.000, con precio
+      { asset: 'AAPL', broker: 'Schwab', invested: 20_000 },                        // sin precio
+    ]
+    const c = coberturaDePrecios(cruzado, { 'GGAL.BA': 7000 }, brokers, tc)
+    expect(c).toBeCloseTo(1 / 3, 2)
+    expect(c >= COBERTURA_MINIMA).toBe(false)
   })
-  it('sin activos: 1', () => {
-    expect(coberturaDePrecios([{ asset: 'USD', broker: 'Schwab', is_cash: 1 }], {}, ars, 1400)).toBe(1)
+  it('lote en DÓLARES en broker en pesos: pesa sus dólares, no ÷MEP (decía 97,9 %; es 3 %)', () => {
+    const cruzado = [
+      { asset: 'AL30', broker: 'Cocos', currency: 'USD', invested: 30_000 },        // sin precio
+      { asset: 'GGAL', broker: 'Cocos', invested: 1_400_000 },                      // ~US$1.000, con precio
+    ]
+    const c = coberturaDePrecios(cruzado, { 'GGAL.BA': 7000 }, brokers, tc)
+    expect(c).toBeCloseTo(1 / 31, 2)
+  })
+  it('lo que nunca se cotiza (USDT, broker desconocido) no cuenta en contra', () => {
+    const conUsdt = [
+      { asset: 'USDT', broker: 'Binance', invested: 2000 },
+      { asset: 'AAPL', broker: 'Schwab', invested: 8000 },
+      { asset: 'MSFT', broker: 'BrokerBorrado', invested: 5000 },
+    ]
+    expect(coberturaDePrecios(conUsdt, { AAPL: 230 }, brokers, tc)).toBe(1)   // decía 0,80
+  })
+  it('sin dólar y con algo en pesos: 0 (no se puede pesar)', () => {
+    expect(coberturaDePrecios([{ asset: 'GGAL', broker: 'Cocos', invested: 1000 }], { 'GGAL.BA': 5000 }, brokers, { tcValuacion: 0 })).toBe(0)
+  })
+  it('sin nada que cotizar: 1', () => {
+    expect(coberturaDePrecios([{ asset: 'USD', broker: 'Schwab', is_cash: 1 }], {}, brokers, tc)).toBe(1)
   })
 })

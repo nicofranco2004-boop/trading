@@ -566,33 +566,55 @@ export function tienePrecio(p, prices, isArsBroker) {
 }
 
 /**
- * coberturaDePrecios — qué parte del COSTO de la cartera (0..1, sin cash,
- * ponderado en USD) tiene precio de mercado (tienePrecio). Es la respuesta a
- * "¿puedo GUARDAR o MANDAR un valor de la cartera calculado con estos
- * precios?": un activo chico sin precio (un bono ilíquido, un FCI fuera del
- * catálogo) no mueve la aguja; Yahoo caído para media cartera, sí.
+ * seCotiza — ¿a esta posición se le pide precio? Fuera: el efectivo, el USDT
+ * (vale 1 dólar) y lo que vive en un broker que no está en /brokers (ninguna
+ * valuación lo suma). Una sola definición para PEDIR los símbolos
+ * (buildPriceSymbols), para "sin precio" (el aviso de Métricas) y para la
+ * cobertura. La cobertura contaba el USDT no-efectivo como "sin precio" sin que
+ * el aviso lo nombrara: a una cuenta con US$2.000 de USDT y US$8.000 de AAPL le
+ * daba 80 % y le apagaba funciones sin explicar por qué (revisión 2026-10-02).
+ */
+export function seCotiza(p, brokersConocidos) {
+  return !!p && !p.is_cash && p.asset !== 'USDT' && brokersConocidos.has(p.broker)
+}
+
+/**
+ * coberturaDePrecios — qué parte del COSTO de la cartera (0..1, en USD) tiene
+ * precio de mercado (tienePrecio), sobre lo que se cotiza (seCotiza). Es la
+ * respuesta a "¿puedo GUARDAR o MANDAR un valor de la cartera calculado con
+ * estos precios?": un activo chico sin precio (un bono ilíquido, un FCI fuera
+ * del catálogo) no mueve la aguja; Yahoo caído para media cartera, sí.
+ *
+ * El PESO de cada lote es su costo en USD según el motor (valuePositionLot),
+ * igual que el cron (backend/snapshots_job.py `position_cost_usd`): decide la
+ * moneda del LOTE, no la del broker. Pesar por el broker contaba un lote en
+ * pesos en una cuenta en dólares como si los pesos fueran dólares (×1.400) y
+ * dividía por el MEP un lote en dólares en un broker en pesos — el cron ya lo
+ * había corregido; esta copia, no.
  *
  * Una sola regla para el snapshot del Dashboard y para el valor de hoy de la
- * curva y "Desde tu última visita" de Métricas. Métricas exigía TODOS los
- * precios: un activo que nunca cotiza le apagaba esas dos cosas para siempre
- * (revisión del 2026-10-02). El umbral es el del cron (COBERTURA_MINIMA).
+ * curva y "Desde tu última visita" de Métricas, con el umbral del cron.
  */
 export const COBERTURA_MINIMA = 0.95
 
-export function coberturaDePrecios(positions, prices, arsBrokerNames, tcValuacion) {
-  const nonCash = (positions || []).filter(p => !p.is_cash)
-  if (nonCash.length === 0) return 1
-  // Sin dólar válido no se pueden valuar las posiciones en pesos → 0 (bloquea).
-  const hasArs = nonCash.some(p => arsBrokerNames.has(p.broker))
-  if (hasArs && !(tcValuacion > 0)) return 0
-  const costUsd = (p) => {
-    const c = (p.invested || 0) + (p.commissions || 0)
-    return arsBrokerNames.has(p.broker) ? c / tcValuacion : c
+export function coberturaDePrecios(positions, prices, brokers, { tcValuacion, tcCedear = tcValuacion, tcCripto = null } = {}) {
+  const porNombre = new Map((brokers || []).map(b => [b.name, b]))
+  const conocidos = new Set(porNombre.keys())
+  const lotes = (positions || []).filter(p => seCotiza(p, conocidos))
+  if (lotes.length === 0) return 1
+  // Sin dólar válido no se puede pesar lo que está en pesos → 0 (bloquea).
+  const enPesos = (p) => porNombre.get(p.broker)?.currency === 'ARS' || costInPesos(p)
+  if (lotes.some(enPesos) && !(tcValuacion > 0)) return 0
+  // `prices = {}`: el costo no lee precios en ninguna rama del motor.
+  const peso = (p) => valuePositionLot(p, { broker: porNombre.get(p.broker), prices: {}, tcValuacion, tcCedear, tcCripto }).investedUsd || 0
+  const isArs = (p) => porNombre.get(p.broker)?.currency === 'ARS'
+  let total = 0, conPrecio = 0
+  for (const p of lotes) {
+    const w = peso(p)
+    total += w
+    if (tienePrecio(p, prices, isArs(p))) conPrecio += w
   }
-  const total = nonCash.reduce((s, p) => s + costUsd(p), 0)
-  if (!(total > 0)) return 1
-  const priced = nonCash.reduce((s, p) => s + (tienePrecio(p, prices, arsBrokerNames.has(p.broker)) ? costUsd(p) : 0), 0)
-  return priced / total
+  return total > 0 ? conPrecio / total : 1
 }
 
 /**
@@ -689,7 +711,7 @@ export function buildPriceSymbols(positions, brokers) {
   const known = new Set((brokers || []).map(b => b.name))
   const syms = new Set()
   for (const p of positions || []) {
-    if (p.is_cash || p.asset === 'USDT' || !known.has(p.broker)) continue
+    if (!seCotiza(p, known)) continue
     const k = valuationPriceKey(p, arsBrokers.has(p.broker))
     if (k) syms.add(k)
   }
