@@ -233,7 +233,7 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'urgent',
     generate: ({ drawdown }) => {
       if (!drawdown || drawdown.current >= -20) return null
-      return `Drawdown profundo: **${drawdown.current.toFixed(1).replace('.', ',')}%** desde el máximo histórico. Mantené tu plan — las decisiones impulsivas en esta zona suelen consolidar pérdidas.`
+      return `Drawdown profundo: **${pctTxt(drawdown.current, 1)}** desde el máximo histórico. Mantené tu plan — las decisiones impulsivas en esta zona suelen consolidar pérdidas.`
     },
   },
   {
@@ -242,7 +242,7 @@ export const DIAGNOSTIC_GENERATORS = [
     severity: 'warn',
     generate: ({ drawdown }) => {
       if (!drawdown || drawdown.current >= -10 || drawdown.current < -20) return null
-      return `Drawdown del **${drawdown.current.toFixed(1).replace('.', ',')}%** desde el máximo histórico. Caída habitual del mercado — revisá si tu tesis de inversión sigue intacta.`
+      return `Drawdown del **${pctTxt(drawdown.current, 1)}** desde el máximo histórico. Caída habitual del mercado — revisá si tu tesis de inversión sigue intacta.`
     },
   },
   {
@@ -728,7 +728,7 @@ export const DIAGNOSTIC_GENERATORS = [
       if (drawdown.current < -3) return null
       const recovered = Math.abs(drawdown.max) - Math.abs(drawdown.current)
       if (recovered < 5) return null
-      return `Recuperaste **${recovered.toFixed(1).replace('.', ',')}** puntos de un drawdown que llegó a **${drawdown.max.toFixed(1).replace('.', ',')}%**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
+      return `Recuperaste **${recovered.toFixed(1).replace('.', ',')}** puntos de un drawdown que llegó a **${pctTxt(drawdown.max, 1)}**. Tu portfolio mostró resiliencia — el peor momento ya pasó y se sostuvo la disciplina.`
     },
   },
 
@@ -856,8 +856,7 @@ export const DIAGNOSTIC_GENERATORS = [
     generate: ({ proMetrics }) => {
       const c = proMetrics?.cagr
       if (!c || c.cagr == null || !isFinite(c.cagr) || (c.months || 0) < 2) return null
-      const pct = (c.cagr * 100).toFixed(1).replace('.', ',')
-      return `Tu CAGR anualizado es **${c.cagr >= 0 ? '+' : ''}${pctTxt(pct)}**. Es el ritmo de crecimiento compuesto de tu cartera proyectado a un año, sobre ${c.months} ${c.months === 1 ? 'mes' : 'meses'} de historial.`
+      return `Tu CAGR anualizado es **${pctVar(c.cagr * 100, 1)}**. Es el ritmo de crecimiento compuesto de tu cartera proyectado a un año, sobre ${c.months} ${c.months === 1 ? 'mes' : 'meses'} de historial.`
     },
   },
   {
@@ -929,8 +928,7 @@ export const DIAGNOSTIC_GENERATORS = [
       const ab = proMetrics?.alphaBeta
       if (!ab || ab.alphaAnnual == null || !isFinite(ab.alphaAnnual)) return null
       const pos = ab.alphaAnnual >= 0
-      const pct = (ab.alphaAnnual * 100).toFixed(1).replace('.', ',')
-      return `Tu alpha anualizado vs S&P 500 es **${pos ? '+' : ''}${pctTxt(pct)}**. Es el rendimiento ${pos ? 'por encima' : 'por debajo'} de lo que explicaría tu beta — ${pos ? 'el valor que agregaste vos' : 'quedaste corto vs el riesgo de mercado que tomaste'}.`
+      return `Tu alpha anualizado vs S&P 500 es **${pctVar(ab.alphaAnnual * 100, 1)}**. Es el rendimiento ${pos ? 'por encima' : 'por debajo'} de lo que explicaría tu beta — ${pos ? 'el valor que agregaste vos' : 'quedaste corto vs el riesgo de mercado que tomaste'}.`
     },
   },
   {

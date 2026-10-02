@@ -607,11 +607,13 @@ function KpiCell({ label, value, sub, tone = 'neutral' }) {
 // ─── Controls ───────────────────────────────────────────────────────────────
 
 function ControlGroup({ icon, label, children }) {
+  // flex-wrap: en el celular los 5 filtros de "Tipo" no entraban en una línea
+  // y la página se corría 14 px de costado.
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5 max-w-full">
       <span className="text-ink-3">{icon}</span>
       <span className="kpi-label">{label}</span>
-      <div className="flex items-center gap-1">{children}</div>
+      <div className="flex flex-wrap items-center gap-1">{children}</div>
     </div>
   )
 }
@@ -863,7 +865,10 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx 
         const rail = dayRail(g.date)
         const { className, style } = entrada(visto, Math.min(gi, MAXIMO_ESCALON), 'grid gap-4')
         return (
-          <div key={g.date} className={className} style={{ ...style, gridTemplateColumns: '72px 1fr' }}>
+          // minmax(0, 1fr): con `1fr` la columna medía lo que su texto más largo
+          // (el título no se cortaba con "…") y en el celular la agenda medía
+          // 823 px en una pantalla de 375 (medido el 2026-10-02).
+          <div key={g.date} className={className} style={{ ...style, gridTemplateColumns: '72px minmax(0, 1fr)' }}>
             <div className="text-right pt-4">
               <div className={`text-[12px] font-bold ${rail.today ? 'text-data-violet' : 'text-ink-0'}`}>{rail.top}</div>
               <div className="text-[11.5px] text-ink-3">{rail.sub}</div>

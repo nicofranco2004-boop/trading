@@ -12,6 +12,7 @@
 //    caller; ARS si la pasa así). Sin conversiones implícitas.
 
 import { classifyAsset, ASSET_CLASS_META } from './assetClass'
+import { pctVar, pctTxt } from './format'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -647,6 +648,62 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
     return { ...m, capital_inicio: snapPrev.value, capital_final: snapCur.value,
              capital_inicio_costo: m.capital_inicio, mtm: 'ambos' }
   })
+}
+
+// ─── Lo que se escribe AL LADO de un gráfico ────────────────────────────────
+// Un número escrito sobre un gráfico tiene que ser el MISMO que la pantalla
+// publica arriba. La punta de la línea de Rendimiento es la FORMA (encadena la
+// intradía) y el "Acumulado" de la tira es el índice PUBLICADO: medido, en 85 de
+// 655 cuentas no dicen lo mismo. Una etiqueta al final de la línea con otro
+// número que el KPI sería dos verdades en la misma pantalla, así que sólo se
+// escribe cuando las dos se LEEN igual (mismo texto con 1 decimal). Si no, la
+// línea termina sin etiqueta — que no afirma nada.
+
+// La última fila con número en alguna de las claves (en orden de preferencia).
+export function ultimoConValor(filas, claves) {
+  const f = Array.isArray(filas) ? filas : []
+  for (let i = f.length - 1; i >= 0; i--) {
+    const r = f[i]
+    if (!r) continue
+    for (const k of claves) {
+      if (typeof r[k] === 'number' && Number.isFinite(r[k])) return { fila: r, clave: k, valor: r[k] }
+    }
+  }
+  return null
+}
+
+const seLeeIgual = (a, b, dec) => typeof a === 'number' && typeof b === 'number'
+  && Number.isFinite(a) && Number.isFinite(b) && pctVar(a, dec) === pctVar(b, dec)
+
+// Etiquetas de la punta de cada línea del gráfico de Rendimiento.
+//   { cartera: { ts, valor, texto, clave } | null, bench: … | null }
+export function etiquetasFinales({ filas, clavesCartera, claveBench, kpiCartera, kpiBench, decimales = 1 }) {
+  const u = ultimoConValor(filas, clavesCartera || [])
+  const b = claveBench ? ultimoConValor(filas, [claveBench]) : null
+  const armar = (x, kpi) => (x && seLeeIgual(x.valor, kpi, decimales)
+    ? { ts: x.fila.ts, valor: x.valor, texto: pctVar(kpi, decimales), clave: x.clave }
+    : null)
+  return { cartera: armar(u, kpiCartera), bench: armar(b, kpiBench) }
+}
+
+// La marca del punto más hondo de la curva de caídas, con su fecha — sólo si
+// ese punto DIBUJADO se lee igual que el "Máx histórico" que publica la
+// tarjeta (el del servidor). Si no coinciden, no hay marca.
+//   { key, label, ddPct, texto, posicion } | null
+export function marcaPeorCaida(serie, maxPct, decimales = 1) {
+  const f = Array.isArray(serie) ? serie : []
+  let peor = null, iPeor = -1
+  f.forEach((r, i) => {
+    if (r && typeof r.ddPct === 'number' && Number.isFinite(r.ddPct) && (!peor || r.ddPct < peor.ddPct)) { peor = r; iPeor = i }
+  })
+  if (!peor || !(peor.ddPct < 0) || !seLeeIgual(peor.ddPct, maxPct, decimales)) return null
+  return {
+    key: peor.key, label: peor.label, ddPct: peor.ddPct,
+    texto: `Peor caída ${pctTxt(maxPct, decimales)} · ${peor.label}`,
+    // Dónde cae en el ancho (0 = izquierda, 1 = derecha): el texto va del lado
+    // que tiene lugar.
+    posicion: f.length > 1 ? iPeor / (f.length - 1) : 0,
+  }
 }
 
 // ─── Qué benchmark se le pide al servidor ───────────────────────────────────

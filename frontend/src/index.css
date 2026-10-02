@@ -1035,6 +1035,28 @@ body {
   animation: gradient-sweep 7s ease-in-out infinite;
 }
 
+/* Métricas (pages/Insights.jsx). La etiqueta de la punta de cada línea de
+   Rendimiento aparece cuando las líneas terminaron de dibujarse (tu línea
+   900 ms; la referencia arranca a los 450 ms). */
+.etiqueta-punta { animation: aparece 400ms ease-out 1350ms backwards; }
+/* La zona de la curva de caídas baja desde el 0 % (su borde de arriba) y, al
+   final, aparece la marca del punto más hondo. */
+@keyframes baja-desde-cero { from { transform: scaleY(0); } }
+.caida-baja .recharts-area {
+  transform-box: fill-box;
+  transform-origin: top;
+  animation: baja-desde-cero 900ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.marca-aparece { animation: aparece 400ms ease-out 950ms backwards; }
+/* Un bloque que aparece con la página ya a la vista ("Desde tu última visita"
+   cuando los precios llegan tarde) se despliega en vez de empujar todo de golpe. */
+@keyframes despliega {
+  from { grid-template-rows: 0fr; opacity: 0; }
+  to   { grid-template-rows: 1fr; opacity: 1; }
+}
+.despliega { display: grid; animation: despliega 450ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.despliega > * { min-height: 0; overflow: hidden; }
+
 /* Respeta reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .grid-bg, .spotlight-pulse, .value-pulse, .ticker-scroll, .headline-sweep,
@@ -1056,6 +1078,7 @@ body {
   .barra-intensidad { transition: none; }
   .chip-escaneando, .chip-listo { animation: none; }
   .tilde-entra, .viaja-desde, .radar-contorno, .radar-crece, .radar-marca, .dona-barre { animation: none; }
+  .etiqueta-punta, .caida-baja .recharts-area, .marca-aparece, .despliega { animation: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
      desliza con el dedo, como la barra de antes. */

@@ -41,7 +41,11 @@ export default function PageHeader({ title, subtitle, action, meta, bordered = f
           </p>
         )}
       </div>
-      <div className="flex items-center gap-3 flex-shrink-0">
+      {/* En el celular las acciones pueden partirse en dos renglones (max-w-full
+          + flex-wrap): con `flex-shrink-0` pelado medían lo que medía su
+          contenido y empujaban la página de costado — Reportes medía 555 px en
+          una pantalla de 375 (2026-10-02). Desde sm, como siempre. */}
+      <div className="flex flex-wrap items-center gap-3 max-w-full sm:flex-shrink-0">
         {meta && typeof meta !== 'string' && meta}
         {meta && typeof meta === 'string' && (
           <span className="inline-flex items-center gap-2 text-[12px] text-ink-2 font-medium">

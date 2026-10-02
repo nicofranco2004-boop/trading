@@ -24,6 +24,8 @@ import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
+import { pctVar, pctTxt } from '../../utils/format'
+import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
   if (!period_key) return null
@@ -291,7 +293,8 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
                  valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1).replace('.', ',')}%` })
   }
   if (resumen.inflation_pct != null) {
-    datos.push({ label: 'Inflación AR', valor: `+${resumen.inflation_pct.toFixed(1).replace('.', ',')}%` })
+    // pctVar: con deflación decía "+-0,3%".
+    datos.push({ label: 'Inflación AR', valor: pctVar(resumen.inflation_pct, 1) })
   }
   if (resumen.deposits > 0) {
     datos.push({ label: 'Aportaste', valor: money.fmtMoney(resumen.deposits) })
@@ -312,7 +315,8 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   if (pcts.length > 0) {
     datos.push({ label: 'Meses en verde', valor: `${verdes} de ${mesesDelAnio}` })
     const mejor = Math.max(...pcts), peor = Math.min(...pcts)
-    datos.push({ label: 'Mejor mes', valor: `+${mejor.toFixed(1).replace('.', ',')}%`, tono: 'pos' })
+    // pctVar: en un año con todos los meses en rojo, "Mejor mes" decía "+-1,2%".
+    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: mejor >= 0 ? 'pos' : 'neg' })
     if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1).replace('.', ',')}%`, tono: 'neg' })
   }
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
@@ -363,22 +367,24 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
   // están convertidos, y por lo tanto si hay que declarar a qué dólar.
   const { currency } = useCurrency()
   const enPesos = currency === 'ARS'
+  // Los números de la tira cuentan al verse (arriba del return: es un hook).
+  const [refKpis, kpisVistos] = useAlVerse()
   if (!kpis) return null
 
   return (
     <section className="mb-6 space-y-3">
       {/* ── KPI strip ── */}
-      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
+      <div ref={refKpis} className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
         <KpiCell
           first
           label="P&L Realizado · 12M"
-          value={money.fmtMoney(kpis.realizedSum, { signed: true })}
+          value={<AnimatedNumber value={kpis.realizedSum} visto={kpisVistos} format={n => money.fmtMoney(n, { signed: true })} />}
           tone={kpis.realizedSum >= 0 ? 'pos' : 'neg'}
           sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
         />
         <KpiCell
           label="Meses positivos"
-          value={`${kpis.positiveCount}/${kpis.totalCount}`}
+          value={<><AnimatedNumber value={kpis.positiveCount} visto={kpisVistos} format={n => Math.round(n)} />/{kpis.totalCount}</>}
           sub={
             kpis.totalCount > 0
               ? `${Math.round((kpis.positiveCount / kpis.totalCount) * 100)}% en verde`
@@ -387,7 +393,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
         />
         <KpiCell
           label="Trades · 12M"
-          value={kpis.trades.toLocaleString('es-AR')}
+          value={<AnimatedNumber value={kpis.trades} visto={kpisVistos} format={n => Math.round(n).toLocaleString('es-AR')} />}
           sub="operaciones cerradas"
         />
       </div>
@@ -505,7 +511,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   <Veredicto
                     nombre="inflación" articulo="la" pp={parcial ? null : resumen?.vs_inflation_pct}
                     detalle={!enPesos && resumen?.retorno_ars_pct != null
-                      ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2).replace('.', ',')} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1).replace('.', ',')} %`
+                      ? `Se compara en pesos: tu cartera hizo ${pctTxt(resumen.retorno_ars_pct, 2)} en pesos y la inflación ${pctTxt(resumen.inflation_pct, 1)}`
                       : null}
                   />
                 </div>

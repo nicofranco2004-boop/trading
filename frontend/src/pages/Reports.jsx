@@ -608,7 +608,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label: `P&L ${periodLabel}`,
       value: usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : '—',
-      sub: pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}%`
+      sub: pct != null ? `${pctVar(pct, 2)}`
         : noBasis ? 'falta el cierre del arranque' : null,
       tone: noBasis ? undefined : (isPos ? 'pos' : 'neg'),
     })
@@ -684,7 +684,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // % + fecha del snapshot anterior en el subtítulo.
   if (snap.delta_1d) {
     const d = snap.delta_1d
-    const pctStr = `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%`
+    const pctStr = `${pctVar(d.pct, 2)}`
     const fechaStr = d.prev_date ? ` · vs ${formatDateShort(d.prev_date)}` : ''
     kpis.push({
       label: 'Δ último cierre',
@@ -709,7 +709,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label,
       value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
-      sub: `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}%` + fechaStr,
+      sub: `${pctVar(d.pct, 2)}` + fechaStr,
       tone: d.pct >= 0 ? 'pos' : 'neg',
     })
   }
@@ -723,7 +723,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       : `YTD ${snap.ytd.since_year}`
     kpis.push({
       label,
-      value: `${snap.ytd.pct >= 0 ? '+' : ''}${snap.ytd.pct.toFixed(2).replace('.', ',')}%`,
+      value: `${pctVar(snap.ytd.pct, 2)}`,
       sub: `${snap.ytd.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(snap.ytd.usd))}`,
       tone: snap.ytd.pct >= 0 ? 'pos' : 'neg',
     })
@@ -755,7 +755,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     const vs = m.vs_sp500_pct
     kpis.push({
       label: 'vs S&P 500',
-      value: `${vs >= 0 ? '+' : ''}${vs.toFixed(1).replace('.', ',')}pp`,
+      value: `${vs >= 0 ? '+' : '−'}${Math.abs(vs).toFixed(1).replace('.', ',')}pp`,
       sub: vs >= 0 ? 'por encima' : 'por debajo',
       tone: vs >= 0 ? 'pos' : 'neg',
     })
@@ -819,7 +819,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
         {!isFlat && (
           <div className="flex items-baseline gap-2">
             <span className={`text-2xl font-mono font-semibold tabular ${colorClass}`}>
-              {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}%` : '—'}
+              {pct != null ? `${pctVar(pct, 2)}` : '—'}
             </span>
             <span className={`text-sm font-mono tabular ${colorClass}`}>
               {usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : ''}
@@ -894,13 +894,13 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
             {bestMover && (
               <KVRow label={bestMover.delta_usd >= 0 ? 'Mejor activo' : 'Menor caída'}
                 value={`${bestMover.asset} ${bestMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(bestMover.delta_usd))}`}
-                sub={bestMover.delta_pct != null ? `${bestMover.delta_pct >= 0 ? '+' : ''}${bestMover.delta_pct.toFixed(1).replace('.', ',')}%` : null}
+                sub={bestMover.delta_pct != null ? `${pctVar(bestMover.delta_pct, 1)}` : null}
                 tone={bestMover.delta_usd >= 0 ? 'pos' : 'neg'} />
             )}
             {worstMover && (
               <KVRow label={worstMover.delta_usd < 0 ? 'Peor pérdida' : 'Menor suba'}
                 value={`${worstMover.asset} ${worstMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(worstMover.delta_usd))}`}
-                sub={worstMover.delta_pct != null ? `${worstMover.delta_pct >= 0 ? '+' : ''}${worstMover.delta_pct.toFixed(1).replace('.', ',')}%` : null}
+                sub={worstMover.delta_pct != null ? `${pctVar(worstMover.delta_pct, 1)}` : null}
                 tone={worstMover.delta_usd < 0 ? 'neg' : 'pos'} />
             )}
             {!bestMover && !worstMover && !period.movers_available && (

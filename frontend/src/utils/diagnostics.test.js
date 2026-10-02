@@ -635,7 +635,8 @@ describe('generadores de drawdown (leen drawdown.max, no .maxPct)', () => {
     const out = findGen('drawdown_recovery').generate({ drawdown: { current: -2, max: -20 } })
     expect(out).toBeTruthy()
     expect(out).toMatch(/Recuperaste/)
-    expect(out).toMatch(/-20,0%/)
+    // Con el signo menos de verdad (pctTxt), como el resto de Métricas.
+    expect(out).toMatch(/−20,0%/)
   })
 
   it('ambos toleran drawdown null sin fires', () => {

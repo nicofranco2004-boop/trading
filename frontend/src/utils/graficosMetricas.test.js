@@ -1,0 +1,64 @@
+import { describe, it, expect } from 'vitest'
+import { ultimoConValor, etiquetasFinales, marcaPeorCaida } from './insightsModel'
+
+// Lo que se escribe AL LADO de un gráfico de Métricas tiene que decir lo mismo
+// que la pantalla publica arriba (el KPI "Acumulado", el "Máx histórico").
+
+const FILAS = [
+  { key: '2026-01-02', ts: 1, total: 0, bench: 0 },
+  { key: '2026-06-02', ts: 2, total: 4.2, bench: 5.0 },
+  { key: 'corte-2026-07-01', ts: 3, total: null, bench: null },   // el hueco de un corte
+  { key: '2026-09-30', ts: 4, total: 9.94, bench: 10.46 },
+  { key: 'today', ts: 5, total: null, estimado: 9.9, bench: null },
+]
+
+describe('ultimoConValor — la punta de una línea', () => {
+  it('la última fila con número, en el orden de claves pedido', () => {
+    expect(ultimoConValor(FILAS, ['total', 'estimado'])).toMatchObject({ clave: 'estimado', valor: 9.9 })
+    expect(ultimoConValor(FILAS, ['bench'])).toMatchObject({ valor: 10.46, fila: { ts: 4 } })
+    expect(ultimoConValor([], ['total'])).toBe(null)
+  })
+})
+
+describe('etiquetasFinales — sólo si se leen igual que el KPI', () => {
+  it('coinciden con 1 decimal: se escriben, con el texto del KPI', () => {
+    const e = etiquetasFinales({ filas: FILAS, clavesCartera: ['total', 'estimado'], claveBench: 'bench', kpiCartera: 9.94, kpiBench: 10.5 })
+    expect(e.cartera).toMatchObject({ ts: 5, texto: '+9,9%' })
+    expect(e.bench).toMatchObject({ ts: 4, texto: '+10,5%' })
+  })
+  it('la punta dibujada dice otra cosa que el KPI publicado: esa etiqueta no va (85 de 655 cuentas)', () => {
+    const e = etiquetasFinales({ filas: FILAS, clavesCartera: ['total', 'estimado'], claveBench: 'bench', kpiCartera: 9.6, kpiBench: 10.5 })
+    expect(e.cartera).toBe(null)
+    expect(e.bench).not.toBe(null)
+  })
+  it('sin KPI (serie partida, el servidor no publica): sin etiquetas', () => {
+    const e = etiquetasFinales({ filas: FILAS, clavesCartera: ['total'], claveBench: 'bench', kpiCartera: null, kpiBench: null })
+    expect(e).toEqual({ cartera: null, bench: null })
+  })
+  it('una pérdida se escribe con el signo menos de verdad', () => {
+    const f = [{ ts: 1, total: -3.04 }]
+    expect(etiquetasFinales({ filas: f, clavesCartera: ['total'], kpiCartera: -3.0 }).cartera.texto).toBe('−3,0%')
+  })
+})
+
+describe('marcaPeorCaida — el punto más hondo, si es el "Máx histórico" que se publica', () => {
+  // Los rótulos se repiten (una serie diaria tiene 30 "May '25"): la marca se
+  // ubica por la CLAVE (la fecha), que es única.
+  const serie = [
+    { key: '2025-01-02', label: "Ene '25", ddPct: 0 }, { key: '2025-05-02', label: "May '25", ddPct: -1.2 },
+    { key: '2025-05-19', label: "May '25", ddPct: -3.94 }, { key: 'hoy', label: 'Hoy', ddPct: -0.7 },
+    { key: 'corte-x', label: '', ddPct: null },
+  ]
+  it('coincide: la marca con su número, su fecha y su clave', () => {
+    expect(marcaPeorCaida(serie, -3.9)).toEqual({
+      key: '2025-05-19', label: "May '25", ddPct: -3.94, texto: "Peor caída −3,9% · May '25", posicion: 0.5,
+    })
+  })
+  it('no coincide con lo publicado: no hay marca', () => {
+    expect(marcaPeorCaida(serie, -5.2)).toBe(null)
+  })
+  it('sin caídas (todo en 0) o sin serie: no hay marca', () => {
+    expect(marcaPeorCaida([{ label: 'x', ddPct: 0 }], 0)).toBe(null)
+    expect(marcaPeorCaida([], -1)).toBe(null)
+  })
+})
