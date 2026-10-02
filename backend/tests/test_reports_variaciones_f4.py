@@ -663,6 +663,29 @@ class VariacionesF4Test(unittest.TestCase):
                 self.assertTrue(rep.metrics.basis_incomparable, pt)
                 self.assertEqual(rep.metrics.delta_usd, 0.0)
                 self.assertIn("capital negativo", rep.narrative or "", pt)
+        for variante, sept in (
+                # retiro de 10.000 sin aportes → octubre arranca en −10.000
+                ("retiro", dict(deposits=0, capital_final=-10000, withdrawals=10000)),
+                # sin flujos y −10.000 realizados: decía "sin grandes movimientos"
+                ("pérdida", dict(deposits=0, capital_final=-10000, pnl_realized=-10000))):
+            with self.subTest(caso=f"cartera en centavos, rota en el mes de hoy ({variante})"):
+                # La rama de la cartera en < US$ 1 miraba sólo el mes del arranque.
+                self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+                self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+                self._sembrar_cadena(2026, 9, 0, **sept)
+                self._sembrar_cadena(2026, 10, -10000, 0, -10000)
+                # Una foto del cron el 3/10 con la cartera en 0,50: es el cierre de
+                # la semana terminada (sin ninguna foto, una semana pasada no tiene
+                # nada que medir y no entra a esta rama, igual que en main).
+                nd = -sept.get("withdrawals", 0)
+                self.conn.execute(
+                    "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                    "VALUES (?,'2026-10-03',0.5,?,?,'cron')", (self.uid, nd, nd))
+                self.conn.commit()
+                for vivo, hoy in ((0.5, date(2026, 10, 2)), (None, date(2026, 10, 15))):
+                    rep = self._reporte("week", "2026-W40", vivo, hoy)
+                    self.assertTrue(rep.metrics.basis_incomparable, hoy)
+                    self.assertIn("capital negativo", rep.narrative or "", hoy)
         with self.subTest(caso="residuo de redondeo negativo con plata nueva"):
             self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
             self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))

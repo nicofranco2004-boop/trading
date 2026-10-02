@@ -657,6 +657,18 @@ def _misma_cuenta(a, b) -> bool:
             and abs(a[1]["ret"] - b[1]["ret"]) < 1)
 
 
+def _meses_que_toca(period_start: str, period_end: str, es_actual: bool,
+                    hoy_iso: str) -> List[Tuple[int, int]]:
+    """Los meses de la cadena que toca un día/semana: el del arranque y, si es
+    otro, el del cierre efectivo (en curso: hoy; si no: el fin del período).
+    El del cierre va PRIMERO: en curso es el ancla que usa la tarjeta del mes."""
+    fin = min(period_end, hoy_iso) if es_actual else period_end
+    meses = [(int(period_start[:4]), int(period_start[5:7]))]
+    if fin[:7] != period_start[:7]:
+        meses.insert(0, (int(fin[:4]), int(fin[5:7])))
+    return meses
+
+
 def _ancla_permite_publicar(capital: float, flujos: Dict[str, float],
                             end_value: float) -> bool:
     """¿Se puede publicar `end_value − capital − flujos` para día/semana sin
@@ -2189,6 +2201,18 @@ def compute_metrics_for_period(
         deposits = max(0.0, end_netdep - start_netdep)
         withdrawals = max(0.0, start_netdep - end_netdep)
         _flujos_cadena = None
+        # Los meses que toca el período y su capital al arrancar: UNA sola cuenta,
+        # que usan las dos ramas de abajo (la de las anclas y la de la cartera en 0).
+        # Con la cadena rota en CUALQUIERA de esos meses no se mide (`_capital_roto`):
+        # tenerlo en una sola rama dejaba a la otra diciendo "sin grandes
+        # movimientos" al lado de un día y un mes "capital negativo".
+        _meses, _caps, _cadena_rota = [], {}, False
+        if _sin_medicion_previa:
+            from fechas import hoy_art_date
+            _meses = _meses_que_toca(period_start, period_end, _dw_current,
+                                     (today or hoy_art_date()).isoformat())
+            _caps = {ym: _capital_al_arrancar_el_mes(conn, uid, *ym) for ym in _meses}
+            _cadena_rota = any(_capital_roto(c) for c in _caps.values())
         # (Menos de un dólar al cierre es una cartera vacía con polvo —restos de
         # cripto de US$ 0,03—: va por la rama de la cartera en 0, con la misma
         # tolerancia que el capital y los flujos de ahí abajo.)
@@ -2196,30 +2220,16 @@ def compute_metrics_for_period(
             _flujos_cadena = _flujos_de_la_cadena(conn, uid, period_start, period_end,
                                                   _dw_current)
             _medible = None
-            _cadena_rota = _capital_roto(_capital_al_arrancar_el_mes(
-                conn, uid, int(period_start[:4]), int(period_start[5:7])))
-            if not _dw_current and period_end[:7] != period_start[:7]:
-                # Terminada, la semana que cruza de mes también mira el mes en que
-                # cierra: si no, explicaba "capital negativo" mientras corría y el
-                # texto genérico al terminar, con el mes de octubre diciendo lo otro.
-                _cadena_rota = _cadena_rota or _capital_roto(_capital_al_arrancar_el_mes(
-                    conn, uid, int(period_end[:4]), int(period_end[5:7])))
             if _dw_current:
-                from fechas import hoy_art_date
-                _anclas = [period_start[:7]]
-                _ym_hoy = min(period_end, (today or hoy_art_date()).isoformat())[:7]
-                if _ym_hoy != _anclas[0]:
-                    _anclas.insert(0, _ym_hoy)
+                # En curso, cada mes que toca es un ancla (el de hoy primero).
                 _permiten = []
-                for _ym in _anclas:
-                    _desde = max(period_start, f"{_ym}-01")
+                for _y, _m in _meses:
+                    _desde = max(period_start, f"{_y:04d}-{_m:02d}-01")
                     _f = (_flujos_cadena if _desde == period_start else
                           _flujos_de_la_cadena(conn, uid, _desde, period_end, _dw_current))
-                    _cap = _capital_al_arrancar_el_mes(conn, uid, int(_ym[:4]),
-                                                       int(_ym[5:7]))
+                    _cap = _caps[(_y, _m)]
                     if _ancla_permite_publicar(_cap, _f, end_value):
                         _permiten.append((_cap, _f))
-                    _cadena_rota = _cadena_rota or _capital_roto(_cap)
                 if len(_permiten) == 1 or (len(_permiten) == 2 and _misma_cuenta(*_permiten)):
                     _medible = _permiten[0]
             elif _cuenta_nueva_con_cierre_del_cron(conn, uid, period_start, snap_end,
@@ -2265,20 +2275,19 @@ def compute_metrics_for_period(
             # entra: es un período anterior a la historia de la cuenta, y ahí no
             # hay nada que decir.)
             _f0 = _flujos_de_la_cadena(conn, uid, period_start, period_end, _dw_current)
-            _cap0 = _capital_al_arrancar_el_mes(conn, uid, int(period_start[:4]),
-                                                int(period_start[5:7]))
+            _cap0 = _caps[(int(period_start[:4]), int(period_start[5:7]))]
             # Tolerancia de un dólar, como `_misma_cuenta`: un residuo de redondeo
             # de la cadena (capital 0,004) no es capital.
-            # Y una cadena ROTA (`_capital_roto`) tampoco es "no pasó nada": no se
-            # sabe cuánto valía la cartera al arrancar, así que no se puede afirmar
-            # que no se movió (con −10.000 decía "sin grandes movimientos").
-            if (not _capital_roto(_cap0) and _cap0 < 1
+            # Y una cadena ROTA en cualquiera de los meses tampoco es "no pasó nada":
+            # no se sabe cuánto valía la cartera, así que no se puede afirmar que no
+            # se movió (con −10.000 decía "sin grandes movimientos").
+            if (not _cadena_rota and _cap0 < 1
                     and abs(_f0["dep"]) < 1 and abs(_f0["ret"]) < 1):
                 start_value, deposits, withdrawals = 0.0, 0.0, 0.0
             else:
                 basis_incomparable = True
                 _flujos_cadena = _f0
-                if _capital_roto(_cap0):
+                if _cadena_rota:
                     _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
         if basis_incomparable and (snap_start is None or _arranque_fabricado):
             # ⚠️ SIN BASE Y SIN UNA ESTAMPA DE ARRANQUE CREÍBLE, LOS FLUJOS SALEN DE
