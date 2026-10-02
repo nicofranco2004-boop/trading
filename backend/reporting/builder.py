@@ -669,15 +669,11 @@ def _ancla_permite_publicar(capital: float, flujos: Dict[str, float],
     · con arranque 0, la cota del mes para `v0 = 0`: tiene que haber flujos, y el
       valor no puede superar `SALTO_MAX_VECES` lo aportado — si lo supera, la
       plata apareció de un lugar que la contabilidad no registra.
-    · con arranque NEGATIVO (−1 dólar o menos), nunca: una cartera no vale menos
-      que cero, así que es una cadena rota y no un arranque. Usarlo publicaba el
-      agujero como ganancia, y apoyarse en 0 lo publicaba como pérdida. Un
-      residuo de redondeo (−0,004) no es una cadena rota: misma tolerancia de un
-      dólar que `_misma_cuenta` y que la rama de la cartera en 0.
+    · con arranque NEGATIVO, nunca: es una cadena rota, no un arranque. Lo decide
+      `_capital_roto` —la única definición, con su tolerancia de un dólar— a
+      través de `_basis_is_incomparable`, igual que para el mes.
     """
     import twr as _twr
-    if capital <= -1:
-        return False
     if _basis_is_incomparable(False, capital, flujos["dep"], flujos["ret"]):
         return False
     v0 = capital
@@ -699,7 +695,11 @@ def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_en
       0 de verdad;
     · el cierre: lo midió el cron, y su estampa de lo aportado es la canónica,
       con resolución diaria (la del import va sin semilla; la del navegador, a
-      media rueda).
+      media rueda). ⚠️ SALVO después de una cascada: borrar o editar un
+      movimiento (`main._cascade_after_movement_delete`) hoy re-estampa lo aportado
+      POR MES y mete aportes posteriores del mismo mes. Ese defecto es del
+      escritor —igual en main y en la rama medida de día/semana— y se arregla
+      ahí, no acá.
 
     Y las mismas cotas que el mes para un arranque en 0 (`_ancla_permite_publicar`).
     Es la primera semana de cada usuario nuevo: tapándola, el que se registró el
@@ -714,9 +714,10 @@ def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_en
             WHERE user_id = ? AND broker = 'global'
               AND (year < ? OR (year = ? AND month < ?)) LIMIT 1""",
         (uid, y, y, m)).fetchone()
-    # En módulo: una primera fila con capital NEGATIVO es una cadena rota, no una
-    # cuenta que arranca en 0 (y su semilla negativa entra en la estampa del cron).
-    if previa is not None or abs(_capital_al_arrancar_el_mes(conn, uid, y, m)) >= 1:
+    # Una primera fila con capital NEGATIVO es una cadena rota (`_capital_roto`), no
+    # una cuenta que arranca en 0 (y su semilla negativa entra en la estampa del cron).
+    _cap = _capital_al_arrancar_el_mes(conn, uid, y, m)
+    if previa is not None or _capital_roto(_cap) or _cap >= 1:
         return False
     from twr import MEDICION
     dia = str(snap_end["date"])[:10]
@@ -2195,6 +2196,8 @@ def compute_metrics_for_period(
             _flujos_cadena = _flujos_de_la_cadena(conn, uid, period_start, period_end,
                                                   _dw_current)
             _medible = None
+            _cadena_rota = _capital_roto(_capital_al_arrancar_el_mes(
+                conn, uid, int(period_start[:4]), int(period_start[5:7])))
             if _dw_current:
                 from fechas import hoy_art_date
                 _anclas = [period_start[:7]]
@@ -2210,6 +2213,7 @@ def compute_metrics_for_period(
                                                        int(_ym[5:7]))
                     if _ancla_permite_publicar(_cap, _f, end_value):
                         _permiten.append((_cap, _f))
+                    _cadena_rota = _cadena_rota or _capital_roto(_cap)
                 if len(_permiten) == 1 or (len(_permiten) == 2 and _misma_cuenta(*_permiten)):
                     _medible = _permiten[0]
             elif _cuenta_nueva_con_cierre_del_cron(conn, uid, period_start, snap_end,
@@ -2222,6 +2226,10 @@ def compute_metrics_for_period(
                 _medible = (0.0, {"dep": deposits, "ret": withdrawals})
             if _medible is None:
                 basis_incomparable = True
+                if _cadena_rota:
+                    # La causa real, como en el mes: no falta un cierre a mercado,
+                    # sobra un capital que no puede existir.
+                    _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
             else:
                 # El arranque sigue sin medir: se publica el monto (con el error
                 # acotado por la tolerancia del guard) y no un %.
@@ -2248,14 +2256,17 @@ def compute_metrics_for_period(
                                                 int(period_start[5:7]))
             # Tolerancia de un dólar, como `_misma_cuenta`: un residuo de redondeo
             # de la cadena (capital 0,004) no es capital.
-            # Y en módulo: una cadena NEGATIVA (rota) tampoco es "no pasó nada" —
-            # no se sabe cuánto valía la cartera al arrancar, así que no se puede
-            # afirmar que no se movió (con −10.000 decía "sin grandes movimientos").
-            if abs(_cap0) < 1 and abs(_f0["dep"]) < 1 and abs(_f0["ret"]) < 1:
+            # Y una cadena ROTA (`_capital_roto`) tampoco es "no pasó nada": no se
+            # sabe cuánto valía la cartera al arrancar, así que no se puede afirmar
+            # que no se movió (con −10.000 decía "sin grandes movimientos").
+            if (not _capital_roto(_cap0) and _cap0 < 1
+                    and abs(_f0["dep"]) < 1 and abs(_f0["ret"]) < 1):
                 start_value, deposits, withdrawals = 0.0, 0.0, 0.0
             else:
                 basis_incomparable = True
                 _flujos_cadena = _f0
+                if _capital_roto(_cap0):
+                    _motor_nego_texto = _MOTIVO_ARRANQUE_NEGATIVO
         if basis_incomparable and (snap_start is None or _arranque_fabricado):
             # ⚠️ SIN BASE Y SIN UNA ESTAMPA DE ARRANQUE CREÍBLE, LOS FLUJOS SALEN DE
             # LA CADENA. La resta de estampas sólo es un flujo cuando las dos las

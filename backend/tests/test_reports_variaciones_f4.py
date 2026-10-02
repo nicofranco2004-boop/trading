@@ -611,6 +611,8 @@ class VariacionesF4Test(unittest.TestCase):
                 rep = self._reporte(pt, pk, 0.0, date(2026, 10, 15))
                 self.assertTrue(rep.metrics.basis_incomparable, pt)
                 self.assertNotIn("sin grandes movimientos", rep.headline.lower())
+                # La causa real, con el MISMO texto que el mes (`_capital_roto`).
+                self.assertIn("capital negativo", rep.narrative or "")
         with self.subTest(caso="cuenta 'nueva' con primera fila negativa"):
             self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
             self._sembrar_cadena(2026, 9, -5000, 10000, 5000)
@@ -622,6 +624,15 @@ class VariacionesF4Test(unittest.TestCase):
             rep = self._reporte("week", "2026-W40", None, date(2026, 10, 6))
             self.assertTrue(rep.metrics.basis_incomparable)
             self.assertEqual(rep.metrics.delta_usd, 0.0)
+            self.assertIn("capital negativo", rep.narrative or "")
+        with self.subTest(caso="semana en curso con el mes arrancando en negativo"):
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 10, -5000, 1000, -4000)
+            self.conn.commit()
+            rep = self._reporte("week", "2026-W42", 12000.0, date(2026, 10, 15))
+            self.assertTrue(rep.metrics.basis_incomparable)
+            self.assertIn("capital negativo", rep.narrative or "")
         with self.subTest(caso="residuo de redondeo negativo con plata nueva"):
             self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
             self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
