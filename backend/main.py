@@ -2484,8 +2484,12 @@ def init_db():
         # subscriptions: columnas de idempotencia de emails (idempotent migration
         # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
         sub_cols = _table_cols(conn, 'subscriptions')
+        # `cancelacion_pedida_at`: cuándo la PERSONA apretó "Cancelar" en Rendi. Es
+        # lo único que separa su baja de la que hace Rebill por falta de pago o la
+        # limpieza de un alta que nunca se pagó (las tres quedan 'cancelled'), y
+        # el reintento del mail "Cancelación confirmada" mira sólo ésta.
         for col in ['welcome_email_sent_at', 'cancellation_email_sent_at',
-                    'expiration_reminder_sent_at']:
+                    'expiration_reminder_sent_at', 'cancelacion_pedida_at']:
             if sub_cols and col not in sub_cols:
                 conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
         # subscriptions: amount_usd para tracking del valor real cobrado (los planes
@@ -30744,6 +30748,7 @@ def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
                 conn.execute(
                     """UPDATE subscriptions
                        SET status = 'cancelled', cancelled_at = datetime('now'),
+                           cancelacion_pedida_at = datetime('now'),
                            current_period_end = COALESCE(?, current_period_end),
                            updated_at = datetime('now')
                        WHERE mp_subscription_id = ?""",
@@ -31030,9 +31035,29 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
         return
     if row["welcome_email_sent_at"]:
         return  # ya enviamos
+    # Marca ANTES de mandar, condicional (`emails.Tanda`): miraba, mandaba y
+    # recién después anotaba, y una re-entrega de `subscription.created` que
+    # llegaba mientras tanto mandaba una segunda bienvenida (medido en la
+    # auditoría). Si Resend lo rechaza, la marca vuelve.
+    def marcar():
+        marca = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            cur = conn.execute(
+                """UPDATE subscriptions SET welcome_email_sent_at = ?
+                   WHERE mp_subscription_id = ? AND welcome_email_sent_at IS NULL""",
+                (marca, preapproval_id))
+        return marca if cur.rowcount > 0 else None
+
+    def desmarcar(marca):
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions SET welcome_email_sent_at = NULL
+                   WHERE mp_subscription_id = ? AND welcome_email_sent_at = ?""",
+                (preapproval_id, marca))
+
     try:
         from billing import plan_textos as _plan_textos
-        sent = emails.send_welcome_pro(
+        datos = dict(
             to=row["email"],
             user_name=(row["name"] or row["email"].split("@")[0]),
             period=period,
@@ -31043,15 +31068,8 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
             # Plus se les respeta el cupo viejo): ver plan_textos.cupos_del_usuario.
             cupos=_plan_textos.cupos_del_usuario(conn, user_id, plan),
         )
-        if sent or not emails.can_deliver(row["email"]):
-            # Marcamos como enviado igual en modo "no configurado" (log-only)
-            # para no spamear el log con cada webhook.
-            with conn:
-                conn.execute(
-                    """UPDATE subscriptions SET welcome_email_sent_at = datetime('now')
-                       WHERE mp_subscription_id = ?""",
-                    (preapproval_id,),
-                )
+        emails.Tanda().enviar(marcar, lambda: emails.send_welcome_pro(**datos), desmarcar,
+                              que=f"bienvenida sub={preapproval_id}")
     except Exception as ex:
         log.error("Welcome email failed for sub %s: %s", preapproval_id, ex)
 
@@ -31182,34 +31200,12 @@ def _iso_today() -> str:
 
 
 def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
-    """Email de cancelación. Idempotente vía cancellation_email_sent_at."""
-    from billing import emails
-    from billing import trial as _trial
-    row = conn.execute(
-        """SELECT s.cancellation_email_sent_at, s.current_period_end, u.email, u.name,
-                  u.id AS uid
-           FROM subscriptions s JOIN users u ON u.id = s.user_id
-           WHERE s.mp_subscription_id = ?""",
-        (preapproval_id,),
-    ).fetchone()
-    if not row or row["cancellation_email_sent_at"]:
-        return
+    """Email "Cancelación confirmada": una sola regla, la de
+    `billing.subscriptions.enviar_mail_de_cancelacion` (marca antes, condicional,
+    y la devuelve si Resend lo rechaza: lo reintenta el ciclo de vida)."""
+    from billing import subscriptions as _subs
     try:
-        valid_until = row["current_period_end"] or _iso_today()
-        emails.send_cancellation(
-            to=row["email"],
-            user_name=(row["name"] or row["email"].split("@")[0]),
-            valid_until=valid_until,
-            # Quien nació sin plan gratis no "vuelve a Free": queda en pausa.
-            # `_requiere_plan` tolera una base sin la columna (responde False).
-            requiere_plan=_trial._requiere_plan(conn, row["uid"]),
-        )
-        with conn:
-            conn.execute(
-                """UPDATE subscriptions SET cancellation_email_sent_at = datetime('now')
-                   WHERE mp_subscription_id = ?""",
-                (preapproval_id,),
-            )
+        _subs.enviar_mail_de_cancelacion(conn, preapproval_id)
     except Exception as ex:
         log.error("Cancellation email failed for sub %s: %s", preapproval_id, ex)
 

@@ -1645,6 +1645,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   expiration_reminder_sent_at text,
   created_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
   updated_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'),
+  cancelacion_pedida_at text,
   amount_usd double precision
 );
 
@@ -1677,6 +1678,8 @@ ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS welcome_email_sent_at text;
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancellation_email_sent_at text;
 
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS expiration_reminder_sent_at text;
+
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancelacion_pedida_at text;
 
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
 

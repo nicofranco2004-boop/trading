@@ -66,6 +66,16 @@ def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool
     dia = _dia(fin)
     if not dia:
         return False
+    uid = r["user_id"]
+    # Si hace poco le llegó "Cancelación confirmada", ese mail ya le dijo hasta
+    # cuándo tiene acceso: no se le manda otro la misma mañana. (Sin marcar:
+    # si el vencimiento queda más lejos, el aviso sale cuando corresponda.)
+    corte = (datetime.utcnow() - timedelta(days=AVISO_TRAS_CANCELACION_DIAS)
+             ).strftime("%Y-%m-%d %H:%M:%S")
+    if conn.execute("""SELECT 1 FROM subscriptions WHERE user_id = ?
+                         AND cancellation_email_sent_at >= ? LIMIT 1""",
+                    (uid, corte)).fetchone():
+        return False
     try:
         fin_dt = datetime.fromisoformat(str(fin).replace("Z", "").split(".")[0])
         days_left = _dias_que_quedan(fin_dt)
@@ -75,7 +85,6 @@ def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool
     # El plan que vence es el del ancla del crédito; si falta, el que tiene
     # puesto. Caía a "pro" y a un Plus sin ancla le avisaba que vencía su Pro.
     plan = (r["credit_anchor_plan"] if "credit_anchor_plan" in keys else None) or r["tier"]
-    uid = r["user_id"]
     datos = dict(
         to=r["email"],
         user_name=(r["name"] or r["email"].split("@")[0]),
@@ -117,6 +126,112 @@ def _avisar_vencimiento(conn, tanda, r, fin, days_before: int, que: str) -> bool
                  uid, dia, days_left)
         return True
     return False
+
+
+# Días después de cancelar durante los cuales el ciclo de vida reintenta el
+# mail "Cancelación confirmada" si Resend lo rechazó (`_send_pending_cancellation_emails`).
+CANCELACION_REINTENTO_DIAS = 2
+# Días después del mail de cancelación durante los cuales NO sale el aviso
+# "vence en N días": el de cancelación ya le dijo hasta cuándo tiene acceso, y
+# llegaban los dos la misma mañana.
+AVISO_TRAS_CANCELACION_DIAS = 3
+
+
+def enviar_mail_de_cancelacion(conn, mp_subscription_id: str, tanda=None) -> bool:
+    """El mail "Cancelación confirmada", UNA vez por suscripción. Lo mandan el
+    botón de cancelar (`main._maybe_send_cancellation_email`) y, si Resend lo
+    rechazó, el ciclo de vida (`_send_pending_cancellation_emails`). Devuelve
+    si salió.
+
+    Antes se anotaba DESPUÉS y sin mirar si había salido —un rechazo quedaba
+    como enviado y el mail no llegaba nunca—; un doble click mandaba dos (los
+    dos pedidos llegaban al mail antes de que el primero anotara); y decía
+    siempre "Rendi Pro" (a quien cancelaba Plus) con la fecha del próximo cobro
+    de Rebill en lugar de la del fin real del acceso (`credit_active_until`)."""
+    from billing import emails
+    from billing import trial as _trial
+    tanda = tanda or emails.Tanda()
+    row = conn.execute(
+        """SELECT s.current_period_end, u.id AS uid, u.email, u.name, u.tier,
+                  u.credit_anchor_plan, u.credit_active_until
+             FROM subscriptions s JOIN users u ON u.id = s.user_id
+            WHERE s.mp_subscription_id = ?""", (mp_subscription_id,)).fetchone()
+    if not row or not row["email"]:
+        return False
+    # Hasta cuándo tiene acceso DE VERDAD: el crédito; la fecha de la
+    # suscripción sólo en el modelo viejo (sin crédito).
+    hasta = row["credit_active_until"] or row["current_period_end"]
+    if not hasta:
+        from fechas import hoy_art
+        hasta = hoy_art()
+    datos = dict(
+        to=row["email"],
+        user_name=(row["name"] or row["email"].split("@")[0]),
+        valid_until=hasta,
+        plan=row["credit_anchor_plan"] or row["tier"] or "pro",
+        # Quien nació sin plan gratis no "vuelve a Free": queda en pausa.
+        requiere_plan=_trial._requiere_plan(conn, row["uid"]),
+    )
+
+    def marcar():
+        marca = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            cur = conn.execute(
+                """UPDATE subscriptions SET cancellation_email_sent_at = ?
+                   WHERE mp_subscription_id = ? AND cancellation_email_sent_at IS NULL""",
+                (marca, mp_subscription_id))
+        return marca if cur.rowcount > 0 else None
+
+    def desmarcar(marca):
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions SET cancellation_email_sent_at = NULL
+                   WHERE mp_subscription_id = ? AND cancellation_email_sent_at = ?""",
+                (mp_subscription_id, marca))
+
+    res = tanda.enviar(marcar, lambda: emails.send_cancellation(**datos), desmarcar,
+                       que=f"mail de cancelación sub={mp_subscription_id}")
+    return res == emails.ENVIADO
+
+
+def _send_pending_cancellation_emails(conn, tanda=None) -> int:
+    """El reintento del mail "Cancelación confirmada" que Resend rechazó: bajas
+    que la PERSONA pidió con el botón (`cancelacion_pedida_at`) en los últimos
+    CANCELACION_REINTENTO_DIAS, sin el mail anotado, de quien todavía tiene
+    acceso y no se volvió a suscribir.
+
+    Sólo las del botón: 'cancelled' también lo ponen Rebill por falta de pago
+    ("defaulted") y la limpieza de un alta que nunca se pagó
+    (`_cancel_stale_pending`, a quien puede estar en la prueba con crédito), y
+    a ninguno de los dos se le puede decir "cancelaste, no te cobramos más".
+    Una baja hecha desde el portal de Rebill tampoco entra: no hay forma de
+    distinguirla de la de falta de pago."""
+    from billing import emails
+    tanda = tanda or emails.Tanda()
+    ahora = datetime.utcnow()
+    desde = (ahora - timedelta(days=CANCELACION_REINTENTO_DIAS)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = conn.execute(
+        """SELECT s.mp_subscription_id FROM subscriptions s JOIN users u ON u.id = s.user_id
+            WHERE s.status = 'cancelled' AND s.cancellation_email_sent_at IS NULL
+              AND s.mp_subscription_id IS NOT NULL AND s.mp_subscription_id <> ''
+              AND s.cancelacion_pedida_at IS NOT NULL
+              AND replace(s.cancelacion_pedida_at, 'T', ' ') >= ?
+              AND (u.credit_active_until > ?
+                   OR (u.credit_active_until IS NULL AND s.current_period_end > ?))
+              AND NOT EXISTS (SELECT 1 FROM subscriptions s2
+                               WHERE s2.user_id = s.user_id AND s2.status = 'authorized')""",
+        (desde, ahora.isoformat(), ahora.isoformat())).fetchall()
+    sent = 0
+    for r in rows:
+        if tanda.frenado:      # Resend no confirma: lo que falta, la próxima vuelta
+            break
+        try:
+            if enviar_mail_de_cancelacion(conn, r["mp_subscription_id"], tanda):
+                sent += 1
+        except Exception as ex:
+            log.error("reintento del mail de cancelación sub=%s falló: %s",
+                      r["mp_subscription_id"], ex)
+    return sent
 
 
 def _migrar_aviso_vencimiento(conn) -> int:
@@ -179,6 +294,7 @@ def run_lifecycle_job(conn, solo_avisos: bool = False) -> dict:
         "credit_expiring_reminders_sent": 0,
         "trials_stepped_down": 0,
         "trial_emails_sent": 0,
+        "cancellation_emails_sent": 0,
         "unverified_accounts_deleted": 0,
         "avisos_frenados": False,
         "solo_avisos": solo_avisos,
@@ -194,6 +310,9 @@ def run_lifecycle_job(conn, solo_avisos: bool = False) -> dict:
         # los avisos para que el mail del día salga con el plan correcto.
         ("trials_stepped_down", lambda: _trial.step_down_due_trials(conn), False),
         ("trial_emails_sent", lambda: _trial.send_due_trial_emails(conn, tanda), True),
+        # Antes que los de vencimiento: si sale "Cancelación confirmada", el
+        # "vence en N días" de esa persona no sale pegado.
+        ("cancellation_emails_sent", lambda: _send_pending_cancellation_emails(conn, tanda), True),
         ("credit_expiring_reminders_sent",
          lambda: _send_credit_expiring_reminders(conn, tanda=tanda), True),
         ("downgraded", lambda: _downgrade_expired_cancellations(conn), False),

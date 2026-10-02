@@ -2101,3 +2101,202 @@ def test_al_apagar_se_espera_al_cartero(monkeypatch):
             threading.Timer(0.3, libre.set).start()
             main._cerrar_al_apagar()
             assert resend.a(f"ana@{DOMINIO}"), "el apagado no esperó al cartero"
+
+
+# ─── El mail de cancelación y la bienvenida de suscripción ──────────────────
+
+def _con_plan_pago(conn, nombre="vera", *, plan="plus", dias=20):
+    uid = _usuario(conn, nombre, tier=plan, credit_anchor_plan=plan,
+                   credit_active_until=(datetime.utcnow() + timedelta(days=dias)).isoformat())
+    _sub(conn, uid, "authorized", ref=f"sub-{nombre}")
+    return uid
+
+
+def _cancelar(uid, proximo_cobro_en_dias=2, barrera=None):
+    """El botón "cancelar" de verdad (POST /api/billing/cancel), con Rebill
+    de mentira: contesta la fecha del próximo cobro, que es la que Rebill
+    devuelve y la que se guarda en current_period_end."""
+    from fastapi.testclient import TestClient
+    cobro = (datetime.utcnow() + timedelta(days=proximo_cobro_en_dias)).isoformat()
+
+    def rebill_cancela(sub_id):
+        if barrera:
+            try:
+                barrera.wait()
+            except threading.BrokenBarrierError:
+                pass
+        return {"id": sub_id, "status": "cancelled", "nextChargeDate": cobro}
+
+    with patch("billing.rebill.cancel_subscription", rebill_cancela):
+        return TestClient(main.app).post(
+            "/api/billing/cancel", headers={"Authorization": f"Bearer {main.create_token(uid)}"})
+
+
+def test_cancelar_manda_un_mail_con_el_plan_y_la_fecha_reales(conn):
+    """Decía siempre "Rendi Pro" (a quien cancelaba Plus) y la fecha del
+    próximo cobro de Rebill, no la del fin real del acceso (el crédito)."""
+    uid = _con_plan_pago(conn, plan="plus", dias=20)
+    hasta = conn.execute("SELECT credit_active_until c FROM users WHERE id=?", (uid,)).fetchone()["c"]
+    with _red_de_mentira(_Reloj()) as resend:
+        assert _cancelar(uid).status_code == 200
+    (to, asunto, texto), = [m for m in resend.mails if m[0] == f"vera@{DOMINIO}"]
+    assert "Plus" in asunto and "Pro" not in asunto, asunto
+    assert emails._fmt_date(hasta) in texto, texto
+
+
+def test_un_doble_click_en_cancelar_manda_un_solo_mail(conn):
+    """Los dos pedidos pasaban el "¿ya lo mandé?" antes de que el primero
+    anotara. La marca se gana ANTES de mandar, con condición."""
+    uid = _con_plan_pago(conn)
+    # Dos cruces forzados: los dos pedidos pasan juntos por Rebill (si no, el
+    # segundo ya ve la baja y contesta 409) y llegan juntos a mandar el mail
+    # (con el código de antes, los dos ya habían pasado el "¿ya lo mandé?").
+    en_rebill = threading.Barrier(2, timeout=5)
+    al_mandar = threading.Barrier(2, timeout=1)
+    real = emails.send_cancellation
+
+    def mandar_cruzados(**kw):
+        try:
+            al_mandar.wait()
+        except threading.BrokenBarrierError:
+            pass                                    # con el arreglo, llega uno solo
+        return real(**kw)
+
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0), \
+         patch.object(emails, "send_cancellation", mandar_cruzados):
+        hilos = [threading.Thread(target=_cancelar, args=(uid,), kwargs={"barrera": en_rebill})
+                 for _ in range(2)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(30)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1, resend.mails
+
+
+def test_una_cancelacion_rechazada_la_manda_el_ciclo_de_vida(conn):
+    """Se anotaba aunque Resend la rechazara: no llegaba nunca."""
+    uid = _con_plan_pago(conn)
+    vera = f"vera@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[vera] = [429]
+        assert _cancelar(uid).status_code == 200            # la baja sale igual
+        assert len(resend.a(vera)) == 1
+        r = subs.run_lifecycle_job(conn, solo_avisos=True)
+        assert r["cancellation_emails_sent"] == 1
+        subs.run_lifecycle_job(conn)                        # y nunca más
+    assert len(resend.a(vera)) == 2
+
+
+def test_una_baja_por_falta_de_pago_no_recibe_cancelacion_confirmada(conn):
+    """Rebill da de baja por cobro fallido ("defaulted"): "cancelaste, no te
+    cobramos más" sería falso, aunque le queden días de crédito."""
+    uid = _con_plan_pago(conn, dias=5)
+    main._rebill_cancel(conn, uid, "sub-vera", {"status": "defaulted"})
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    assert not any("Cancelación" in a for _, a, _ in resend.mails), resend.mails
+
+
+def test_un_alta_que_nunca_se_pago_no_recibe_cancelacion_confirmada(conn):
+    """Quien está en la prueba (con crédito) abrió el pago y no lo terminó: a
+    los 7 días la limpieza deja esa suscripción 'cancelled'. No canceló nada."""
+    uid = _usuario(conn, "vera", tier="pro", credit_anchor_plan="pro",
+                   credit_active_until=(datetime.utcnow() + timedelta(days=10)).isoformat())
+    _sub(conn, uid, "pending", ref="sub-vera")
+    with conn:
+        conn.execute("UPDATE subscriptions SET created_at=? WHERE mp_subscription_id='sub-vera'",
+                     ((datetime.utcnow() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S"),))
+    with _red_de_mentira(_Reloj()) as resend:
+        assert subs.run_lifecycle_job(conn)["stale_pending_cancelled"] == 1
+        subs.run_lifecycle_job(conn, solo_avisos=True)
+        subs.run_lifecycle_job(conn)
+    assert not any("Cancelación" in a for _, a, _ in resend.mails), resend.mails
+
+
+def test_una_baja_hecha_desde_rebill_no_recibe_la_confirmacion(conn):
+    """Decisión: desde Rebill llega igual una baja de la persona que una por
+    falta de pago; el reintento sólo cubre las del botón de Rendi."""
+    uid = _con_plan_pago(conn, dias=15)
+    main._rebill_cancel(conn, uid, "sub-vera", {"status": "cancelled"})
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    assert not any("Cancelación" in a for _, a, _ in resend.mails), resend.mails
+
+
+def test_la_cancelacion_rechazada_se_reintenta_solo_unos_dias(conn):
+    """Pasados CANCELACION_REINTENTO_DIAS el "Cancelación confirmada" llegaría
+    tarde y fuera de contexto: se deja de intentar."""
+    uid = _con_plan_pago(conn, dias=40)
+    vera = f"vera@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[vera] = [429]
+        assert _cancelar(uid).status_code == 200
+        hace = (datetime.utcnow() - timedelta(days=subs.CANCELACION_REINTENTO_DIAS, hours=1))
+        with conn:
+            conn.execute("UPDATE subscriptions SET cancelacion_pedida_at=? "
+                         "WHERE mp_subscription_id='sub-vera'", (hace.strftime("%Y-%m-%d %H:%M:%S"),))
+        subs.run_lifecycle_job(conn)
+    assert len(resend.a(vera)) == 1                     # sólo el rechazado
+
+
+def test_si_el_acceso_ya_termino_el_reintento_no_dice_mantenes_el_plan(conn):
+    """Canceló el último día y Resend rechazó el mail; para el reintento el
+    acceso ya terminó y "mantenés Plus hasta…" sería falso."""
+    uid = _con_plan_pago(conn, dias=1)
+    vera = f"vera@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[vera] = [429]
+        assert _cancelar(uid).status_code == 200
+        with conn:
+            conn.execute("UPDATE users SET credit_active_until=? WHERE id=?",
+                         ((datetime.utcnow() - timedelta(hours=1)).isoformat(), uid))
+        subs.run_lifecycle_job(conn, solo_avisos=True)
+    assert len(resend.a(vera)) == 1                     # sólo el rechazado
+
+
+def test_quien_cancelo_y_volvio_a_suscribirse_no_recibe_la_confirmacion(conn):
+    """Canceló y, antes del reintento, se volvió a suscribir: "cancelaste"
+    ya no es cierto."""
+    uid = _con_plan_pago(conn, dias=15)
+    vera = f"vera@{DOMINIO}"
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[vera] = [429]
+        assert _cancelar(uid).status_code == 200
+        _sub(conn, uid, "authorized", ref="sub-vera-2")
+        subs.run_lifecycle_job(conn)
+    assert len(resend.a(vera)) == 1                     # sólo el rechazado
+
+
+def test_el_vence_en_n_dias_no_sale_pegado_a_la_cancelacion(conn):
+    """Canceló con 2 días por delante: "Cancelación confirmada… hasta el X" y,
+    horas después, "vence en 2 días". Uno alcanza."""
+    uid = _con_plan_pago(conn, dias=2)
+    with _red_de_mentira(_Reloj()) as resend:
+        assert _cancelar(uid).status_code == 200
+        subs.run_lifecycle_job(conn)
+        subs.run_lifecycle_job(conn, solo_avisos=True)
+    asuntos = [a for to, a, _ in resend.mails if to == f"vera@{DOMINIO}"]
+    assert asuntos == ["Cancelación confirmada · Rendi Plus"], asuntos
+
+
+def test_la_bienvenida_de_suscripcion_re_entregada_sale_una_vez(conn):
+    """Rebill re-entrega `subscription.created`: dos entregas a la vez
+    pasaban el "¿ya la mandé?" y llegaban dos bienvenidas."""
+    from billing import plan_textos
+    uid = _con_plan_pago(conn)
+    with _red_de_mentira(demora=0) as resend, patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
+        def entrega(c):
+            main._maybe_send_welcome_email(c, "sub-vera", uid, "monthly", {}, plan="plus")
+        _dos_corridas_a_la_vez(entrega, "cupos_del_usuario", plan_textos)
+    assert len(resend.a(f"vera@{DOMINIO}")) == 1
+
+
+def test_una_bienvenida_rechazada_no_queda_anotada(conn):
+    uid = _con_plan_pago(conn)
+    with _red_de_mentira(_Reloj()) as resend:
+        resend.respuestas[f"vera@{DOMINIO}"] = [429]
+        main._maybe_send_welcome_email(conn, "sub-vera", uid, "monthly", {}, plan="plus")
+        main._maybe_send_welcome_email(conn, "sub-vera", uid, "monthly", {}, plan="plus")
+    assert len(resend.a(f"vera@{DOMINIO}")) == 2       # la re-entrega la manda
+    assert conn.execute("SELECT welcome_email_sent_at m FROM subscriptions WHERE "
+                        "mp_subscription_id='sub-vera'").fetchone()["m"]
