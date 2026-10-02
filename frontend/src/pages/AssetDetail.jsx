@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { inferType } from '../utils/tickers'
 import AskAIAbout from '../components/ai/AskAIAbout'
@@ -65,6 +65,12 @@ function valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBas
   // blue → la ficha del activo colapsaba (~1/MEP).
   if (costInUsd(p) && isAR) {
     const { investedUsd, valueUsd, priceUsd } = usdLotValue(p, prices, tcCedear)
+    return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
+  }
+  // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye): sin esto
+  // caía en la rama isAR de abajo y la ficha mostraba el costo ÷ dólar (~0).
+  if (cryptoCostInUsd(p) && isAR) {
+    const { investedUsd, valueUsd, priceUsd } = cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: !!broker?.is_exchange })
     return { valueUsd, investedUsd, pnlUsd: valueUsd - investedUsd, priceLocal: priceUsd }
   }
   if (isAR) {

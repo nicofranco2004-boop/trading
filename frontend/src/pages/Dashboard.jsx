@@ -34,7 +34,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
 import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -351,9 +351,17 @@ function PersonalDashboard() {
       const isARS = arsBrokerNames.has(p.broker)
       // Cost basis económico = invested + buy commissions (igual que valuation.js).
       const realCost = (p.invested || 0) + (p.commissions || 0)
+      // Cripto comprada en DÓLARES en una cuenta en pesos: costInUsd la excluye y
+      // caía en la rama isARS (costo USD ÷ dólar → ~0). Mismo helper que el motor.
+      const cripto = isARS && cryptoCostInUsd(p)
+        ? cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) })
+        : null
       let valueUsd = null
       let pnlUsd = null
-      if (isARS && costInUsd(p)) {
+      if (cripto) {
+        valueUsd = cripto.valueUsd
+        pnlUsd = valueUsd - cripto.investedUsd
+      } else if (isARS && costInUsd(p)) {
         // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
         // comprado en dólar-MEP → currency='USD') que vive en un broker ARS (Balanz).
         // El costo YA está en USD (sin ÷blue); el valor va por el tipo de instrumento
@@ -421,7 +429,7 @@ function PersonalDashboard() {
       // ÷blue, va antes que isARS (que sí divide por blue y colapsaría el denominador
       // del %). Gateado a broker ARS: una acción US genuina en broker USD cae al último
       // else → realCost * fForPct (fForPct=1 no-cripto) = realCost, ya en USD.
-      const invForPct = isARS && costInUsd(p) ? realCost : isARS ? realCost / tcValuacion : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
+      const invForPct = cripto ? cripto.investedUsd : isARS && costInUsd(p) ? realCost : isARS ? realCost / tcValuacion : costInPesos(p) ? realCost / tcCedear : realCost * fForPct
       const pnlPct = pnlUsd != null && invForPct > 0 ? pnlUsd / invForPct : null
       return {
         asset: p.asset, value_usd: valueUsd, pnl_usd: pnlUsd, pnl_pct: pnlPct,
@@ -570,6 +578,14 @@ function PersonalDashboard() {
           // capital_final del mes → el punto de la curva) quedaba mal.
           if (costInUsd(p)) {
             const { investedUsd, valueUsd } = usdLotValue(p, prices, tcCedearMep)
+            pnlUsdDirect += valueUsd - investedUsd
+            continue
+          }
+          // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye): su
+          // P&L ya está en dólares. Antes caía abajo, el guard descartaba el precio
+          // y el lote aportaba 0 al pnl_unrealized del mes.
+          if (cryptoCostInUsd(p)) {
+            const { investedUsd, valueUsd } = cryptoUsdLotValue(p, prices, { cedearRate: tcCedearMep, tcCripto, isExchange: b.is_exchange })
             pnlUsdDirect += valueUsd - investedUsd
             continue
           }

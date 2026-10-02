@@ -35,7 +35,7 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { computeBrokerValue, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
+import { computeBrokerValue, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { fechaCorta } from '../utils/lineaDelBono'
@@ -238,8 +238,16 @@ export default function HomeMobile() {
       // instrumento en un sub-broker '· USD' se valúa por su precio LOCAL .BA ÷ MEP,
       // NO por el ticker US. Antes usaba prices[p.asset] (Visa US ~$300 vs CEDEAR ~$19)
       // → valor inflado ~16× y P&L% disparado (V daba +160.658% en vez de +7%).
+      // Cripto comprada en DÓLARES en una cuenta en pesos: valor y costo salen del
+      // helper del motor. Antes caía al else, que lee el ticker pelado ('BTC') y el
+      // riel ARS pide 'BTC.BA' → sin precio → quedaba afuera del ranking.
+      const cripto = isAR && cryptoCostInUsd(p)
+        ? cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) })
+        : null
       let px
-      if (isAR && costInUsd(p)) {
+      if (cripto) {
+        px = cripto.priceUsd
+      } else if (isAR && costInUsd(p)) {
         // Espejo de costInPesos: lote de COSTO EN DÓLARES (bono/ON/FCI-USD, o CEDEAR
         // comprado en dólar-MEP → currency='USD') en un broker ARS (Balanz). El precio
         // por-unidad ya sale en USD de usdLotValue (CEDEAR/acción-AR por .BA÷MEP, resto
@@ -260,7 +268,7 @@ export default function HomeMobile() {
       // Cripto en broker AR (no exchange, sin override) se valúa al dólar cripto:
       // escalamos value e invested por el mismo factor → el % queda invariante.
       const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isAR ? 'ARS' : 'USD')
-      const mkt = px * (p.quantity || 0) * f
+      const mkt = cripto ? cripto.valueUsd : px * (p.quantity || 0) * f
       // Cost basis = invested + comisiones (igual que la Cartera). Sin las comisiones
       // el % se dispara cuando son parte grande del costo.
       const realCost = (p.invested || 0) + (p.commissions || 0)
@@ -271,7 +279,7 @@ export default function HomeMobile() {
       // costInUsd en broker ARS: costo YA en USD (sin ÷ ni factor). costInPesos: pesos
       // → USD por el MEP. Resto: escala por el factor cripto (1 para lo no-cripto-de-
       // broker) — la acción US en broker USD cae acá y realCost*1 ya está en USD.
-      const invested = isAR && costInUsd(p) ? realCost : costInPesos(p) ? realCost / tcCedear : realCost * f
+      const invested = cripto ? cripto.investedUsd : isAR && costInUsd(p) ? realCost : costInPesos(p) ? realCost / tcCedear : realCost * f
       if (!(invested > 0)) continue
       // Clamp anti-distorsión (igual que computeBrokerValue): un bono per-100 leído
       // como per-1 infla el valor ×100 → pct fantasma. mkt e invested quedan en las

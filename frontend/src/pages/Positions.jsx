@@ -35,7 +35,7 @@ import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput } from '../utils/format'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -1291,11 +1291,28 @@ function PositionsDesktop() {
   // prom." en vista dólares). La lógica vive en valuation.js para poder testearla
   // pura; acá solo inyectamos el modo activo. Ver avgCostUsdPerUnit.
   function routedAvgPriceUsd(p, rate, isArsBroker) {
-    return avgCostUsdPerUnit(p, rate, costBasis, isArsBroker)
+    return avgCostUsdPerUnit(p, rate, costBasis, isArsBroker,
+      { tcCripto, cedearRate: tcCedear, esExchange: (l) => exchangeBrokers.has(l.broker) })
+  }
+
+  // Cripto comprada en DÓLARES que vive en un broker EN PESOS → el MISMO helper
+  // que usa el motor (valuePositionLot rama 3b). Antes la fila caía en el camino
+  // de los pesos: costo USD ÷ dólar y precio en pesos contra costo en dólares.
+  function criptoUsdEnArs(p) {
+    return cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) })
   }
 
   function calcUSDT(p) {
     if (p.is_cash) return { value: p.invested, pnl: 0, pnlPct: 0, price: null, investedUsd: p.invested }
+    // La tabla de la cuenta unificada (padre ARS + "· USD") manda por acá los lotes
+    // EN DÓLARES del padre. Para la cripto, el broker real es en pesos: se valúa
+    // igual que en su total (calcARS / el motor), no como si viviera en el "· USD"
+    // — eso leía el ticker pelado que el riel en pesos no pide, y sin el factor.
+    if (cryptoCostInUsd(p) && _brokerDe(p.broker)?.currency === 'ARS') {
+      const c = criptoUsdEnArs(p)
+      const pnl = c.valueUsd - c.investedUsd
+      return { value: c.valueUsd, pnl, pnlPct: c.investedUsd > 0 ? pnl / c.investedUsd : 0, price: c.priceUsd, investedUsd: c.investedUsd }
+    }
     // Lote en PESOS (currency='ARS') en una cuenta USD → estilo-ARS por el MEP
     // (tcCedear): costo Y valor a USD por el mismo rate. Sin esto el costo en pesos
     // se contaba como dólares (P&L de la fila roto). investedUsd = realCost/tcCedear
@@ -1376,6 +1393,20 @@ function PositionsDesktop() {
         pnlPct: investedUsd > 0 ? pnlUsd / investedUsd : 0,
         priceArs: priceUsd != null ? priceUsd * tcCedear : null,
         invUsd: investedUsd,
+      }
+    }
+    // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye).
+    if (cryptoCostInUsd(p)) {
+      const c = criptoUsdEnArs(p)
+      const pnlUsd = c.valueUsd - c.investedUsd
+      return {
+        valueArs: c.valueUsd * tcCedear,
+        valueUsd: c.valueUsd,
+        pnlArs: pnlUsd * tcCedear,
+        pnlUsd,
+        pnlPct: c.investedUsd > 0 ? pnlUsd / c.investedUsd : 0,
+        priceArs: c.priceUsd != null ? c.priceUsd * tcCedear : null,
+        invUsd: c.investedUsd,
       }
     }
     const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
@@ -1586,10 +1617,13 @@ function PositionsDesktop() {
     const dv = dayVarOf(p, symKey, curPrice)
     if (!dv) return dv
     if (local) return { amount: dv.amount / tcCedear, pct: dv.pct }
-    // Cripto en broker AR no-exchange: el MONTO de Var. día escala por el premium
-    // dólar-cripto, igual que el valor de la fila (calcUSDT) y que mobile — sin
-    // esto el monto desktop quedaba ~2-5% distinto del mobile. El % es invariante.
-    const f = cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, isARS ? 'ARS' : 'USD')
+    // Factor cripto: SÓLO en el riel en dólares, donde el precio es el spot. En el
+    // riel en PESOS el '<c>.BA' ya trae el premium adentro (spot × dólar-cripto), y
+    // multiplicarlo de nuevo lo duplicaba: el monto salía ~4% más grande que el de
+    // mobile, que ya usaba `isAR ? 1 : …`. Hoy, en dólares, el factor vale 1 (la
+    // cuenta en dólares no lleva premium); queda por si cambia la regla. El % es
+    // invariante.
+    const f = isARS ? 1 : cryptoBrokerFactor(p.asset, exchangeBrokers.has(p.broker), p.price_override != null, tcCripto, tcCedear, 'USD')
     if (f !== 1) return { amount: dv.amount * f, pct: dv.pct }
     return dv
   }

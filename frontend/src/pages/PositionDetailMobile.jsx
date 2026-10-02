@@ -17,7 +17,7 @@ import AssetLogo from '../components/AssetLogo'
 import AssetMiniChart from '../components/home/AssetMiniChart'
 import { api } from '../utils/api'
 import { usd, pctSigned, colorClass, LOCALE } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey, cashAssetLabel } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey, cashAssetLabel } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -107,6 +107,13 @@ export default function PositionDetailMobile() {
   // sale de acá: pedir con una y leer con otra es el bug que congela el P&L.
   const priceKey = valuationPriceKey(p, isAR)
 
+  // Cripto comprada en DÓLARES en una cuenta en pesos: costInUsd la excluye, así
+  // que sin esto caía en la rama isAR (costo USD ÷ dólar → ~0). Mismo helper que
+  // el motor; se usa abajo para el valor Y para el costo que se muestra.
+  const criptoArs = !p.is_cash && isAR && cryptoCostInUsd(p)
+    ? cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: isExch })
+    : null
+
   // Compute current value + P/L
   let valueUsd = 0, priceLocal = null, pnlUsd = null, pnlPct = null
   if (p.is_cash) {
@@ -137,6 +144,11 @@ export default function PositionDetailMobile() {
     priceLocal = u.priceUsd
     pnlUsd = valueUsd - u.investedUsd
     pnlPct = u.investedUsd > 0 ? pnlUsd / u.investedUsd : 0
+  } else if (criptoArs) {
+    valueUsd = criptoArs.valueUsd
+    priceLocal = criptoArs.priceUsd
+    pnlUsd = valueUsd - criptoArs.investedUsd
+    pnlPct = criptoArs.investedUsd > 0 ? pnlUsd / criptoArs.investedUsd : 0
   } else if (isAR) {
     priceLocal = p.price_override ?? prices[priceKey]
     const investedUsd = invested / tcValuacion   // hoy
@@ -183,8 +195,11 @@ export default function PositionDetailMobile() {
   // promedio $21.530,00 USD" con pesos crudos (~1500× inflado). Convertimos
   // el costo con el mismo ruteo que el resto (tc_compra en modo 'purchase').
   const _costEnPesosEnCuentaUsd = !p.is_cash && !isAR && costInPesos(p)
+  // La cripto en dólares de una cuenta en pesos lleva el factor cripto/MEP en el
+  // costo (igual que en su P&L de arriba): sin él, "Invertido" y "P&L" no cierran.
   const investedDisp = _costEnPesosEnCuentaUsd
     ? invested / costBasisRate(p, tcCedear, costBasis)
+    : criptoArs ? invested * criptoArs.f
     : invested
   const avgPriceDisp = !p.is_cash && qty > 0 ? investedDisp / qty : null
 
@@ -194,7 +209,7 @@ export default function PositionDetailMobile() {
   // YA en USD (priceLocal = usdLotValue.priceUsd) → hay que rotularlos "USD", no "ARS"
   // (si no, se muestra un valor USD con label ARS, off por el MEP). Se decide por la
   // moneda del COSTO del lote, no solo por isAR.
-  const lotShowsUsd = !isAR || costInUsd(p)
+  const lotShowsUsd = !isAR || costInUsd(p) || cryptoCostInUsd(p)
 
   return (
     <div

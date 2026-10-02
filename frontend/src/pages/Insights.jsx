@@ -34,7 +34,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
 import UpgradeModal from '../components/plan/UpgradeModal'
 import { track } from '../utils/track'
-import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, tienePrecio, seCotiza, coberturaDePrecios, COBERTURA_MINIMA, valorAlMep } from '../utils/valuation'
 import { cedearEspecieBase } from '../utils/tickers'
 import { auditPositions, positionPct } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -586,6 +586,11 @@ function InsightsDesktop({ _embeddedTab }) {
     // (usdLotValue le armaría 'AAPL.BA', inexistente en un broker USD) → va al else.
     if (broker?.currency === 'ARS' && costInUsd(p)) {
       return usdLotValue(p, prices, tcCedear).valueUsd
+    }
+    // Lo mismo para la CRIPTO comprada en dólares en una cuenta en pesos (costInUsd
+    // la excluye): sin esto caía en la rama de abajo y valía ~costo÷MEP.
+    if (broker?.currency === 'ARS' && cryptoCostInUsd(p)) {
+      return cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) }).valueUsd
     }
     if (broker?.currency === 'ARS') {
       const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
@@ -2163,6 +2168,10 @@ function InsightsDesktop({ _embeddedTab }) {
       // a broker ARS para no pisar una acción US genuina en broker USD (esa cae al
       // else → realCost, sincronizada con holdingValueUsd que también va al else USD).
       investedUsd = realCost
+    } else if (isARS && cryptoCostInUsd(p)) {
+      // Cripto comprada en dólares en una cuenta en pesos: costo en USD × factor,
+      // el MISMO helper que valúa holdingValueUsd (sin ÷MEP).
+      investedUsd = cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) }).investedUsd
     } else if (isARS) {
       investedUsd = realCost / tcValuacion
     } else if (costInPesos(p)) {

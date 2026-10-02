@@ -417,6 +417,67 @@ export function usdLotValue(p, prices, cedearRate) {
 }
 
 /**
+ * cryptoCostInUsd — ¿es una CRIPTO cuyo costo está en DÓLARES (USD/USDT)? Es lo
+ * que `costInUsd` deja afuera a propósito: la cripto no se valúa por usdLotValue.
+ * Sin esta pregunta, una cripto comprada en dólares dentro de una cuenta EN PESOS
+ * caía en el camino de los pesos y su costo se dividía por el MEP (US$30.000 → US$21).
+ */
+export function cryptoCostInUsd(p) {
+  const c = (p?.currency || '').toUpperCase()
+  return (c === 'USD' || c === 'USDT') && isCrypto(p?.asset)
+}
+
+/**
+ * cryptoUsdLotValue — valuación USD de UNA cripto de costo en dólares
+ * (cryptoCostInUsd true) alojada en una cuenta EN PESOS. Espejo de la rama cripto
+ * de broker ARS del backend (snapshots_job.compute_broker_value_usd, 0f31bd88),
+ * que es la que escribe la foto diaria:
+ *   · costo  = (invested + comisiones) × factor cripto/MEP — el costo YA está en
+ *     dólares, NO se divide por el MEP; el factor va para que el P&L% no cambie.
+ *   · valor  = spot USD × cantidad × el MISMO factor (guard contra ese costo).
+ *   · precio manual: en la moneda del lote (dólares) y sin factor, como el backend.
+ *   · sin precio confiable → valor = costo (P&L 0).
+ *
+ * De dónde sale el spot: el riel ARS pide '<c>.BA' y el backend lo sirve en PESOS
+ * = spot × dólar-cripto (o × MEP si le faltaba el cripto). Dividir por ese mismo
+ * dólar devuelve el spot. En un broker que no es exchange da lo mismo que
+ * '.BA' ÷ MEP; en un exchange el factor es 1 y queda al spot, igual que el backend.
+ *
+ * Helper compartido (espejo de usdLotValue / pesoLotUsd): todo el que valúe un
+ * lote a mano lo llama a ESTE en vez de reescribir la cuenta.
+ *
+ * @param {object} p
+ * @param {object} prices
+ * @param {{ cedearRate: number, tcCripto?: number|null, isExchange?: boolean }} o
+ * @returns {{ investedUsd: number, valueUsd: number, priceUsd: number|null,
+ *            priceLocal: number|null, priceTrusted: boolean|null, f: number }}
+ */
+export function cryptoUsdLotValue(p, prices, { cedearRate, tcCripto = null, isExchange = false } = {}) {
+  const hasOverride = p.price_override != null
+  const f = cryptoBrokerFactor(p.asset, !!isExchange, hasOverride, tcCripto, cedearRate, 'ARS')
+  const investedUsd = ((p.invested || 0) + (p.commissions || 0)) * f
+  let priceLocal, spotUsd
+  if (hasOverride) {
+    priceLocal = p.price_override
+    spotUsd = p.price_override
+  } else {
+    priceLocal = (prices || {})[priceSymbol(p.asset, true, p.asset_type)] ?? null
+    const pesosPorDolar = tcCripto > 0 ? tcCripto : cedearRate
+    spotUsd = priceLocal != null && pesosPorDolar > 0 ? priceLocal / pesosPorDolar : null
+  }
+  const mktUsd = spotUsd != null ? spotUsd * (p.quantity || 0) * f : null
+  const trust = mktUsd != null && trustMktValue(mktUsd, investedUsd, p.asset_type, hasOverride)
+  return {
+    investedUsd,
+    valueUsd: trust ? mktUsd : investedUsd,
+    priceUsd: spotUsd != null ? spotUsd * f : null,
+    priceLocal,
+    priceTrusted: mktUsd != null ? trust : null,
+    f,
+  }
+}
+
+/**
  * valueEquityLot — valuación USD de UN lote de EQUITY o CEDEAR (no cripto, no cash).
  * Espeja las patas no-cripto de valueLot (pages/AssetDetail) para que la lista
  * holding-first de "Calidad de cartera" valúe IGUAL que la ficha del activo.
@@ -729,14 +790,17 @@ export function buildPriceSymbols(positions, brokers) {
  * (computeBrokerValue, valueEquityLot, AssetDetail.valueLot,
  * PositionDetailMobile y PositionsMobile) y ninguna era "la buena a la que
  * volver" — el desktop tampoco usa el motor canónico para sus filas, sólo para
- * tres totales. Esta es la que va a serlo. Todavía NO la consume nadie más:
- * migrar a los cinco lectores sólo es delta 0 después de alinear los
- * comportamientos que hoy difieren (comisiones, modo 'purchase').
+ * tres totales. Esta es la que va a serlo. Fuera de computeBrokerValue la
+ * consume sólo coberturaDePrecios (para el costo de cada lote): migrar a los
+ * cinco lectores sólo es delta 0 después de alinear los comportamientos que hoy
+ * difieren (comisiones, modo 'purchase'). Mientras tanto, cada caso cruzado
+ * tiene UN helper que todos llaman (pesoLotUsd, usdLotValue, cryptoUsdLotValue).
  *
  * EL ORDEN DE LAS RAMAS IMPORTA y es el de siempre:
  *   1. cash                       (las ramas 2 y 3 lo excluyen con !p.is_cash)
  *   2. costInPesos(p) && !isAR    — lote en pesos alojado en cuenta USD
  *   3. costInUsd(p) && isAR       — lote de costo USD alojado en broker ARS
+ *   3b. cryptoCostInUsd(p) && isAR — lo mismo para la CRIPTO (costInUsd la excluye)
  *   4. isAR nativo                — CEDEAR/acción AR/bono en broker ARS
  *   5. (CEDEAR || arUsd) en broker USD, sin cripto/FCI/override → .BA ÷ MEP
  *   6. else                       — USD nativo (+ factor cripto)
@@ -842,6 +906,26 @@ export function valuePositionLot(p, ctx = {}) {
       priceTrusted: mktUsd != null
         ? trustMktValue(mktUsd, investedUsd, p.asset_type, p.price_override != null)
         : null,
+    })
+  }
+
+  // ── 3b. Lo mismo para la CRIPTO comprada en dólares (currency USD/USDT) dentro
+  // de una cuenta EN PESOS. costInUsd la excluye, así que antes caía en la rama 4:
+  // el costo en dólares se dividía por el MEP como si fueran pesos, el guard
+  // comparaba el valor en pesos contra ese costo en dólares y descartaba el precio
+  // → US$30.000 de BTC en Cocos se veían como US$21. Costo y valor salen de
+  // cryptoUsdLotValue (espejo de la rama cripto-ARS del backend). El costo ya está
+  // en dólares: el modo 'purchase' no lo toca, igual que en la rama 3.
+  if (!p.is_cash && isAR && cryptoCostInUsd(p)) {
+    const c = cryptoUsdLotValue(p, prices, { cedearRate, tcCripto, isExchange: broker?.is_exchange })
+    return salida({
+      investedUsd: c.investedUsd,
+      valueUsd: c.valueUsd,
+      invArs: c.investedUsd * cedearRate,
+      valueArs: c.valueUsd * cedearRate,
+      guardCost: c.investedUsd,
+      priceLocal: c.priceLocal,
+      priceTrusted: c.priceTrusted,
     })
   }
 
@@ -1104,6 +1188,10 @@ export function computePf(pf, asOf) {
  *    el `tc_compra` del agregado: es el del PRIMER lote.
  *  · Un lote cuyo costo YA está en dólares no se divide (CEDEAR comprado a MEP o
  *    bono/FCI USD dentro de un broker ARS) — dividirlo lo colapsaba ~1500×.
+ *  · Tampoco la CRIPTO comprada en dólares dentro de un broker ARS: va con el
+ *    factor cripto/MEP del motor (cryptoUsdLotValue), así promedio × cantidad
+ *    sigue dando el "Invertido". Para eso hace falta `cripto` (abajo); sin él el
+ *    factor es 1, que es el lado que nunca infla.
  *  · SIN comisiones, igual que la columna en pesos, para que ambas vistas midan
  *    lo mismo. En modo 'today' el resultado es idéntico al cálculo previo.
  *
@@ -1111,9 +1199,11 @@ export function computePf(pf, asOf) {
  * @param rate         dólar de hoy del riel que corresponda (MEP/blue)
  * @param costBasis    'today' | 'purchase'
  * @param isArsBroker  ¿la posición vive en un broker en pesos?
+ * @param cripto       { tcCripto, cedearRate, esExchange(lote) } para el factor
+ *                     de la cripto comprada en dólares en un broker ARS.
  * @returns number|null — null si es cash, no hay cantidad o no hay costo.
  */
-export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = false) {
+export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = false, cripto = {}) {
   const qty = p?.quantity || 0
   if (!p || p.is_cash || qty <= 0) return null
   const lots = (p._lots && p._lots.length) ? p._lots : [p]
@@ -1121,6 +1211,15 @@ export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = fa
   for (const l of lots) {
     const inv = l?.invested || 0
     if (!inv) continue
+    if (isArsBroker && cryptoCostInUsd(l)) {
+      const { f } = cryptoUsdLotValue(l, {}, {
+        cedearRate: cripto.cedearRate ?? rate,
+        tcCripto: cripto.tcCripto ?? null,
+        isExchange: !!cripto.esExchange?.(l),
+      })
+      cost += inv * f
+      continue
+    }
     // Mismo criterio de "el costo está en pesos" que lotMissingPurchaseRate.
     const costIsPesos = isArsBroker ? !costInUsd(l) : costInPesos(l)
     cost += costIsPesos ? inv / costBasisRate(l, rate, costBasis) : inv

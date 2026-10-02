@@ -43,7 +43,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { isBondPosition } from '../utils/tickers'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -957,6 +957,9 @@ export default function PositionsMobile() {
     () => new Set((brokers || []).filter(b => b.is_exchange).map(b => b.name)),
     [brokers]
   )
+  // "Precio prom." de la cripto comprada en dólares en una cuenta en pesos: lleva
+  // el mismo factor cripto/MEP que su "Invertido" (ver avgCostUsdPerUnit).
+  const criptoProm = { tcCripto, cedearRate: tcCedear, esExchange: (l) => exchangeBrokerSet.has(l.broker) }
 
   // Enriquecemos cada posición con su valor USD y P&L %.
   // Para cash: NO computamos P/L (cash es cash, no tiene "variación").
@@ -981,7 +984,15 @@ export default function PositionsMobile() {
       // el % en pesos NO dependen del "dólar de compra"). El costo DISPLAY en USD del
       // modo 'purchase' se calcula aparte abajo (investedUsdDisplay), solo para las
       // figuras en dólares. Así el modo nunca toca el valor ni las cifras en pesos.
-      let investedUsd = isAR && costInUsd(p) ? invested
+      // Cripto comprada en DÓLARES en una cuenta en pesos: costInUsd la excluye, así
+      // que sin esto caía en la rama isAR — costo USD ÷ dólar y precio en pesos
+      // contra costo en dólares → la fila valía ~costo÷MEP. Valor, costo y precio
+      // salen del MISMO helper que usa el motor (valuePositionLot rama 3b).
+      const cripto = !p.is_cash && isAR && cryptoCostInUsd(p)
+        ? cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokerSet.has(p.broker) })
+        : null
+      let investedUsd = cripto ? cripto.investedUsd
+        : isAR && costInUsd(p) ? invested
         : isAR ? invested / tcValuacion
         : costInPesos(p) ? invested / tcCedear
         : invested
@@ -1023,6 +1034,12 @@ export default function PositionsMobile() {
         // Value del helper; costo = investedUsd local (que ahora YA incluye las
         // comisiones, igual que usdLotValue) → sin precio confiable, P&L exacto 0.
         valueUsd = priceTrusted ? u.valueUsd : investedUsd
+      } else if (cripto) {
+        // Precio en USD (spot × factor), como la rama de arriba. El factor ya viene
+        // aplicado a valor y costo: el `f` de abajo vale 1 en broker ARS.
+        priceLocal = cripto.priceUsd
+        priceTrusted = cripto.priceTrusted === true
+        valueUsd = cripto.valueUsd
       } else if (isAR) {
         priceLocal = p.price_override ?? prices[priceSymbol(p.asset, true)]
         // Guard anti-distorsión: un precio absurdo (p.ej. bono per-100 leído per-1
@@ -1088,6 +1105,7 @@ export default function PositionsMobile() {
       // "pérdida por devaluación" sobre algo que no cotiza. f escala igual que
       // investedUsd. En 'today' investedUsdDisplay === investedUsd (byte-idéntico).
       const investedUsdDisplay = !priceTrusted ? investedUsd
+        : cripto ? investedUsd   // costo ya en dólares: el modo no lo toca
         : (isAR && costInUsd(p)) ? invested * f
         : isAR ? (invested / costBasisRate(p, tcValuacion, costBasis)) * f
         : costInPesos(p) ? (invested / costBasisRate(p, tcCedear, costBasis)) * f
@@ -1129,12 +1147,16 @@ export default function PositionsMobile() {
         const prevRaw = prevClose[(isAR || cedearUsd) ? priceSymbol(p.asset, true, p.asset_type) : p.asset]
         // priceLocal del CEDEAR-USD (o del lote USD-en-broker-ARS priceado por .BA) ya
         // está en USD; el cierre previo viene en ARS (.BA) → lo pasamos a USD ÷MEP.
-        const prev = ((cedearUsd || usdSymBA) && prevRaw != null) ? prevRaw / tcCedear : prevRaw
+        // Cripto en dólares de una cuenta en pesos: el cierre previo llega como su
+        // '.BA' en pesos → se pasa a USD con la MISMA conversión que el precio de hoy.
+        const prev = (cripto && prevRaw != null)
+          ? (cripto.priceLocal > 0 ? prevRaw * (cripto.priceUsd / cripto.priceLocal) : null)
+          : ((cedearUsd || usdSymBA) && prevRaw != null) ? prevRaw / tcCedear : prevRaw
         if (prev != null && prev > 0) {
           const perUnit = priceLocal - prev
           // Mismo factor cripto que el valor: el monto absoluto de var. día queda
           // coherente con el valor mostrado. El % (perUnit/prev) es invariante.
-          if (usdInArBroker) {
+          if (usdInArBroker || cripto) {
             // Lote USD en broker ARS: perUnit ya está en USD (priceLocal y prev en USD).
             // dayVarUsd en USD; dayVarLocal en ARS al MISMO rate que la agregación
             // (curLocalValue = valueUsd × tcValuacion) → el % agregado cierra aunque tcValuacion y
@@ -1166,7 +1188,7 @@ export default function PositionsMobile() {
         // lote tiene el costo en pesos — ahí el promedio ya está en dólares y
         // rutearlo no cambia nada; con costo en pesos, en cambio, tomar
         // `buy_price` crudo lo inflaría ~1500×.
-        avgPriceUsd: avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis),
+        avgPriceUsd: avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis, criptoProm),
       }
     })
   }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcValuacion, tcCedear, tcCripto, costBasis])
@@ -1296,7 +1318,7 @@ export default function PositionsMobile() {
         // El promedio del AGREGADO se recalcula sobre todos los lotes. El
         // `...lots[0]` de arriba traía el del primer lote, que es el precio de
         // una sola compra y no el promedio del ticker.
-        avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcValuacion, tcCedear, costBasis),
+        avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcValuacion, tcCedear, costBasis, criptoProm),
       })
     }
     return [...out, ...cash]
@@ -3168,9 +3190,9 @@ function unidadDe(p) {
 // Vive a nivel de módulo porque lo necesitan DOS lugares con el mismo criterio:
 // el memo por-lote y la fila agregada por ticker (que promedia sobre `_lots`,
 // no sobre el primer lote).
-function avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis) {
+function avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis, cripto) {
   if (!p || p.is_cash || !(p.quantity > 0)) return null
-  if (isAR) return avgCostUsdPerUnit(p, tcValuacion, costBasis, true)
+  if (isAR) return avgCostUsdPerUnit(p, tcValuacion, costBasis, true, cripto)
   const lotes = (p._lots && p._lots.length) ? p._lots : [p]
   if (lotes.some(l => costInPesos(l))) return avgCostUsdPerUnit(p, tcCedear, costBasis, false)
   return p.buy_price ?? (p.invested ? p.invested / p.quantity : null)

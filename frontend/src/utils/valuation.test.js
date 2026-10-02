@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel, sellPriceSuggestion, buildPriceSymbols } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel, sellPriceSuggestion, buildPriceSymbols, coberturaDePrecios } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -579,6 +579,126 @@ describe('crypto premium — cuenta en pesos (MEP) vs cuenta en dólares (spot)'
   it('override en cripto → directo, sin premium', () => {
     const r = computeBrokerValue([btc('Cocos', { price_override: 60000 })], { BTC: SPOT }, cocos, BLUE, MEP, CRIPTO)
     expect(r.value).toBeCloseTo(QTY * 60000, 2)
+  })
+})
+
+// ─── Cripto comprada en DÓLARES dentro de una cuenta EN PESOS ────────────────
+// Bug (revisión independiente 2026-10-02): `costInUsd` excluye la cripto, así que
+// un BTC con currency='USD' en Cocos (ARS) caía en la rama ARS nativa: el costo en
+// dólares se dividía por el MEP como si fueran pesos (US$700 → US$0,47) y el guard
+// comparaba el valor en PESOS contra ese costo en DÓLARES (×1500) → descartaba el
+// precio y el valor también quedaba en ~0. El backend lo arregló en 0f31bd88
+// (`snapshots_job.compute_broker_value_usd`, rama cripto de broker ARS): costo
+// literal × factor cripto/MEP, valor al spot × el mismo factor.
+//
+// Los números esperados NO están deducidos acá: salen de correr el backend con
+// este mismo lote (compute_broker_value_usd y position_cost_usd, mismos dólares):
+//   con precio   → value 700.599389 · invested 725.683789
+//   sin precio   → value 725.683789 · invested 725.683789
+//   exchange     → value 675.803400 · invested 700.000000
+//   override     → value 684.000000 · invested 700.000000
+//   comisión 5   → value 700.599389 · invested 730.867245
+// El riel ARS pide '<c>.BA' = spot × dólar-cripto (en pesos): de ahí sale el spot.
+describe('cripto de costo en DÓLARES en una cuenta EN PESOS — paridad con el backend', () => {
+  const CRIPTO = 1554, MEP = 1499, BLUE = 1530, SPOT = 59281, QTY = 0.0114, COST = 700
+  const cocosArs = { name: 'Cocos', currency: 'ARS', is_exchange: 0 }
+  const ripioArs = { name: 'Ripio', currency: 'ARS', is_exchange: 1 }
+  const btcUsd = (extra) => pos({ broker: 'Cocos', asset: 'BTC', currency: 'USD', quantity: QTY, invested: COST, ...extra })
+  const precios = { 'BTC.BA': SPOT * CRIPTO }
+
+  it('con precio: valor y costo NO se dividen por el MEP (iguales al backend)', () => {
+    const r = computeBrokerValue([btcUsd()], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(700.599389, 4)
+    expect(r.invested).toBeCloseTo(725.683789, 4)
+  })
+
+  it("currency='USDT' se trata igual que 'USD'", () => {
+    const r = computeBrokerValue([btcUsd({ currency: 'USDT' })], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(700.599389, 4)
+    expect(r.invested).toBeCloseTo(725.683789, 4)
+  })
+
+  it('sin precio: valor = costo (P&L 0), y el costo NO colapsa', () => {
+    const r = computeBrokerValue([btcUsd()], {}, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(725.683789, 4)
+    expect(r.invested).toBeCloseTo(725.683789, 4)
+  })
+
+  it('exchange en pesos: factor 1 → spot, costo tal cual (backend)', () => {
+    const p = btcUsd({ broker: 'Ripio' })
+    const r = computeBrokerValue([p], precios, ripioArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(675.8034, 4)
+    expect(r.invested).toBeCloseTo(700, 4)
+  })
+
+  it('precio manual: en la moneda del lote (dólares), sin factor (backend)', () => {
+    const r = computeBrokerValue([btcUsd({ price_override: 60000 })], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(684, 4)
+    expect(r.invested).toBeCloseTo(700, 4)
+  })
+
+  it('las comisiones integran el costo, también con el factor', () => {
+    const r = computeBrokerValue([btcUsd({ commissions: 5 })], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(700.599389, 4)
+    expect(r.invested).toBeCloseTo(730.867245, 4)
+  })
+
+  it('el P&L% es el del spot: el premium no aparece como ganancia', () => {
+    const r = computeBrokerValue([btcUsd()], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.pnlUsd / r.invested).toBeCloseTo((QTY * SPOT - COST) / COST, 8)
+  })
+
+  it('invariante ARS: valueArs / MEP === value y invArs / MEP === invested', () => {
+    const r = computeBrokerValue([btcUsd()], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.valueArs / MEP).toBeCloseTo(r.value, 6)
+    expect(r.invArs / MEP).toBeCloseTo(r.invested, 6)
+  })
+
+  it('el caso del revisor: US$30.000 en Cocos ya no se ven como US$21', () => {
+    // MEP 1400, cripto 1456, BTC 62.000, 0,5 BTC. Backend: value 32.240 · invested 31.200.
+    const p = pos({ broker: 'Cocos', asset: 'BTC', currency: 'USD', quantity: 0.5, invested: 30000 })
+    const r = computeBrokerValue([p], { 'BTC.BA': 62000 * 1456 }, cocosArs, 1400, 1400, 1456)
+    expect(r.value).toBeCloseTo(32240, 2)
+    expect(r.invested).toBeCloseTo(31200, 2)
+  })
+
+  it('peso del guard de cobertura = position_cost_usd del backend (sin precios)', () => {
+    // Dashboard pondera la cobertura con el costo del motor y `prices: {}`, igual
+    // que backend `position_cost_usd`. Antes pesaba costo ÷ dólar ≈ 0,47.
+    const r = valuePositionLot(btcUsd(), {
+      broker: cocosArs, prices: {}, tcValuacion: MEP, tcCedear: MEP, tcCripto: CRIPTO, costBasis: 'today',
+    })
+    expect(r.investedUsd).toBeCloseTo(725.683789, 4)
+  })
+
+  it('coberturaDePrecios: el BTC en dólares pesa su costo real, no costo ÷ dólar', () => {
+    // Una cartera con el BTC (con precio) y un CEDEAR en pesos SIN precio que
+    // cuesta US$700 al MEP. Antes el BTC pesaba 0,47 y la cobertura daba ~0,07 %
+    // (no se guardaba la foto); ahora pesa 725,68 contra 700.
+    const cedear = pos({ broker: 'Cocos', asset: 'AAPL', asset_type: 'CEDEAR', currency: 'ARS', quantity: 10, invested: 700 * MEP })
+    const c = coberturaDePrecios([btcUsd(), cedear], precios, [cocosArs], { tcValuacion: MEP, tcCedear: MEP, tcCripto: CRIPTO })
+    expect(c).toBeCloseTo(725.683789 / (725.683789 + 700), 6)
+  })
+
+  it("'Precio prom.' en dólares: sin ÷dólar y con el MISMO factor que el costo", () => {
+    // avgCostUsdPerUnit no lleva comisiones: promedio × cantidad = invested × factor.
+    const cripto = { tcCripto: CRIPTO, cedearRate: MEP, esExchange: () => false }
+    const prom = avgCostUsdPerUnit(btcUsd(), MEP, 'purchase', true, cripto)
+    expect(prom * QTY).toBeCloseTo(COST * CRIPTO / MEP, 6)
+    // Exchange: factor 1. Sin datos del dólar cripto: factor 1 (nunca infla).
+    expect(avgCostUsdPerUnit(btcUsd(), MEP, 'today', true, { ...cripto, esExchange: () => true }) * QTY).toBeCloseTo(COST, 6)
+    expect(avgCostUsdPerUnit(btcUsd(), MEP, 'today', true) * QTY).toBeCloseTo(COST, 6)
+    // Antes: 700 / 0,0114 / 1499 ≈ 41 dólares por bitcoin.
+    expect(prom).toBeGreaterThan(10_000)
+  })
+
+  it('la cripto comprada en PESOS en la misma cuenta NO cambia', () => {
+    // Costo en pesos ÷ MEP, sin factor (el premium ya viene adentro de los pesos
+    // pagados). Es lo que hacía antes y lo que hace behavioral en el backend.
+    const p = btcUsd({ currency: 'ARS', invested: COST * MEP })
+    const r = computeBrokerValue([p], precios, cocosArs, BLUE, MEP, CRIPTO)
+    expect(r.value).toBeCloseTo(QTY * SPOT * CRIPTO / MEP, 6)
+    expect(r.invested).toBeCloseTo(COST, 6)
   })
 })
 

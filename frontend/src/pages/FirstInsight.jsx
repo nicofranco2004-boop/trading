@@ -15,7 +15,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
-import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
+import { computeBrokerValue, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { fmtUsd, usd, pctSigned } from '../utils/format'
 import AssetLogo from '../components/AssetLogo'
@@ -123,6 +123,12 @@ export default function FirstInsight() {
         const u = usdLotValue(p, prices, tcCedear)
         valueUsd = u.valueUsd
         pnlUsd = valueUsd - u.investedUsd
+      } else if (isARS && cryptoCostInUsd(p)) {
+        // Lo mismo para la CRIPTO comprada en dólares (costInUsd la excluye): sin
+        // esto caía abajo, su costo USD se dividía por el dólar y quedaba en ~0.
+        const c = cryptoUsdLotValue(p, prices, { cedearRate: tcCedear, tcCripto, isExchange: exchangeBrokers.has(p.broker) })
+        valueUsd = c.valueUsd
+        pnlUsd = valueUsd - c.investedUsd
       } else if (isARS) {
         const priceArs = p.price_override ?? prices[priceSymbol(p.asset, true)]
         if (priceArs != null) {
