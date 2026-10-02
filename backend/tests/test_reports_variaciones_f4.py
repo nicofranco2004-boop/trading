@@ -595,6 +595,42 @@ class VariacionesF4Test(unittest.TestCase):
                 self.assertAlmostEqual(rep.metrics.delta_usd, vivo, delta=0.01)
                 self.assertFalse(rep.is_relevant)
 
+    def test_d1_cadena_negativa_nunca_es_un_arranque_ni_un_cero(self):
+        """Una cadena con capital NEGATIVO es una cadena rota: no se sabe cuánto
+        valía la cartera al arrancar. Ninguna de las tres reglas de "sin foto
+        previa" puede publicar desde ahí (lo cazó la sesión del capital negativo):
+        · cartera en 0 y cadena en −10.000 → decía "sin grandes movimientos";
+        · semana pasada de una "cuenta nueva" cuya primera fila arranca en −5.000
+          → publicaba valor − estampa (la estampa arrastra la semilla negativa).
+        Y al revés: un residuo de redondeo (−0,004) NO es una cadena rota."""
+        from datetime import date
+        with self.subTest(caso="cartera en 0 con cadena negativa"):
+            self._sembrar_cadena(2026, 10, -10000, 0, -10000)
+            self.conn.commit()
+            for pt, pk in (("week", "2026-W42"), ("day", "2026-10-15")):
+                rep = self._reporte(pt, pk, 0.0, date(2026, 10, 15))
+                self.assertTrue(rep.metrics.basis_incomparable, pt)
+                self.assertNotIn("sin grandes movimientos", rep.headline.lower())
+        with self.subTest(caso="cuenta 'nueva' con primera fila negativa"):
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 9, -5000, 10000, 5000)
+            for d, v in (("2026-09-29", 5000), ("2026-10-04", 5100)):
+                self.conn.execute(
+                    "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, source) "
+                    "VALUES (?,?,?,5000,5000,'cron')", (self.uid, d, v))
+            self.conn.commit()
+            rep = self._reporte("week", "2026-W40", None, date(2026, 10, 6))
+            self.assertTrue(rep.metrics.basis_incomparable)
+            self.assertEqual(rep.metrics.delta_usd, 0.0)
+        with self.subTest(caso="residuo de redondeo negativo con plata nueva"):
+            self.conn.execute("DELETE FROM monthly_entries WHERE user_id = ?", (self.uid,))
+            self.conn.execute("DELETE FROM snapshots WHERE user_id = ?", (self.uid,))
+            self._sembrar_cadena(2026, 10, -0.004, 5000, 4999.996)
+            self.conn.commit()
+            rep = self._reporte("week", "2026-W40", 5200.0, date(2026, 10, 3))
+            self.assertFalse(rep.metrics.basis_incomparable)
+            self.assertAlmostEqual(rep.metrics.delta_usd, 200.0, delta=1)
+
     def test_d1_capital_inicio_vacio_no_toma_el_del_mes_siguiente(self):
         """Fila de septiembre con `capital_inicio` NULL y ningún mes antes: el de
         octubre ya trae adentro los 10.000 de septiembre, y usarlo como arranque de

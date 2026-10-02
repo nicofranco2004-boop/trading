@@ -628,12 +628,14 @@ def _ancla_permite_publicar(capital: float, flujos: Dict[str, float],
     · con arranque 0, la cota del mes para `v0 = 0`: tiene que haber flujos, y el
       valor no puede superar `SALTO_MAX_VECES` lo aportado — si lo supera, la
       plata apareció de un lugar que la contabilidad no registra.
-    · con arranque NEGATIVO, nunca: una cartera no vale menos que cero, así que
-      es una cadena rota y no un arranque. Usarlo publicaba el agujero como
-      ganancia, y apoyarse en 0 lo publicaba como pérdida.
+    · con arranque NEGATIVO (−1 dólar o menos), nunca: una cartera no vale menos
+      que cero, así que es una cadena rota y no un arranque. Usarlo publicaba el
+      agujero como ganancia, y apoyarse en 0 lo publicaba como pérdida. Un
+      residuo de redondeo (−0,004) no es una cadena rota: misma tolerancia de un
+      dólar que `_misma_cuenta` y que la rama de la cartera en 0.
     """
     import twr as _twr
-    if capital < 0:
+    if capital <= -1:
         return False
     if _basis_is_incomparable(False, capital, flujos["dep"], flujos["ret"]):
         return False
@@ -671,7 +673,9 @@ def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_en
             WHERE user_id = ? AND broker = 'global'
               AND (year < ? OR (year = ? AND month < ?)) LIMIT 1""",
         (uid, y, y, m)).fetchone()
-    if previa is not None or _capital_al_arrancar_el_mes(conn, uid, y, m) >= 1:
+    # En módulo: una primera fila con capital NEGATIVO es una cadena rota, no una
+    # cuenta que arranca en 0 (y su semilla negativa entra en la estampa del cron).
+    if previa is not None or abs(_capital_al_arrancar_el_mes(conn, uid, y, m)) >= 1:
         return False
     from twr import MEDICION
     dia = str(snap_end["date"])[:10]
@@ -2173,7 +2177,10 @@ def compute_metrics_for_period(
                                                 int(period_start[5:7]))
             # Tolerancia de un dólar, como `_misma_cuenta`: un residuo de redondeo
             # de la cadena (capital 0,004) no es capital.
-            if _cap0 < 1 and abs(_f0["dep"]) < 1 and abs(_f0["ret"]) < 1:
+            # Y en módulo: una cadena NEGATIVA (rota) tampoco es "no pasó nada" —
+            # no se sabe cuánto valía la cartera al arrancar, así que no se puede
+            # afirmar que no se movió (con −10.000 decía "sin grandes movimientos").
+            if abs(_cap0) < 1 and abs(_f0["dep"]) < 1 and abs(_f0["ret"]) < 1:
                 start_value, deposits, withdrawals = 0.0, 0.0, 0.0
             else:
                 basis_incomparable = True
