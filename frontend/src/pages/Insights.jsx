@@ -260,9 +260,7 @@ function CurvaDeCaidas({ drawdown, serie, chip, sinMediciones }) {
         )}
       </div>
       <p className="text-xs text-ink-3 mb-4">Profundidad y duración de las caídas. El área negativa representa los períodos por debajo del máximo histórico.</p>
-      {serie.length < 2 ? (
-        {sinMediciones}
-      ) : (
+      {serie.length < 2 ? sinMediciones : (
         <div ref={ref} className={visto ? 'caida-baja' : 'opacity-0'}>
         <ResponsiveContainer width="100%" height={200} onResize={(w) => setAncho(w)}>
           {/* Se arma al verse: la zona baja desde el 0 % (.caida-baja,
