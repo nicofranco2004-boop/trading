@@ -713,7 +713,8 @@ def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_en
       (`main._cascade_after_movement_delete`) ya no re-estampa POR MES: usa el
       aportado anclado y conserva el día. Sigue sin saber ubicar un flujo que la
       última foto del mes no vio (un depósito cargado hoy, después de la foto de
-      hoy): ése cae al principio del mes. Es del escritor y se arregla ahí.
+      hoy): ese mes queda plano en su valor de fin de mes, como antes. Es del
+      escritor y se arregla ahí.
 
     Y las mismas cotas que el mes para un arranque en 0 (`_ancla_permite_publicar`).
     Es la primera semana de cada usuario nuevo: tapándola, el que se registró el

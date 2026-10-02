@@ -14861,12 +14861,14 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         # Eso alcanza sólo si la foto de hoy YA VIO el depósito.
         #
         # LÍMITES CONOCIDOS — no empeoran lo de antes, pero tampoco se arreglan acá:
-        # · (auditoría 3) Un flujo que la última foto del mes NO vio cae al
-        #   principio del mes: un depósito cargado hoy DESPUÉS de la foto de hoy (el
-        #   Dashboard la saca una vez, al abrir), o sin foto de hoy, seguido de
-        #   cualquier borrado de algo más viejo, deja del 1 a ayer con el depósito
-        #   adentro. El corredor del anclado admite los depósitos del mes en
-        #   cualquier día que las estampas no contradigan.
+        # · (auditoría 3) Un flujo que la última foto del mes NO vio no se puede
+        #   ubicar: un depósito cargado hoy DESPUÉS de la foto de hoy (el Dashboard
+        #   la saca una vez, al abrir), o sin foto de hoy, seguido de cualquier
+        #   borrado de algo más viejo, deja ese mes plano en su valor de fin de mes
+        #   —como antes del arreglo—: el depósito figura desde el día 1, y si el mes
+        #   tuvo otro movimiento, también se pierde el día de ése. El corredor del
+        #   anclado admite los flujos del mes en cualquier día que las estampas no
+        #   contradigan.
         # · (auditoría 2, H2) Si el mes ya traía estampas VIEJAS (un import a mitad
         #   de mes que reescribió la contabilidad hacia atrás), re-anclar desde
         #   `since_date` corrige las fotos de esa fecha en adelante y deja viejas las
@@ -17591,7 +17593,10 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
     convención que estampa el cron— y el DÍA dentro del mes lo dice la estampa
     vieja, que es la única que lo sabe.
 
-    ⚠️ ES LA ÚNICA PUERTA PARA RE-ESTAMPAR FOTOS VIEJAS. La usan el borrado y el
+    ⚠️ ES LA ÚNICA PUERTA PARA RE-ESTAMPAR FOTOS MEDIDAS (cron / navegador) YA
+    ESCRITAS. (Las que se fabrican tienen su propio escritor: el backfill del
+    persister refresca sus sintéticas de fin de mes y `backfill_historical_mtm`
+    sus reconstruidas.) La usan el borrado y el
     deshacer (`_cascade_after_movement_delete`), el botón del admin, la reparación
     de historial y la migración del arranque. Si necesitás corregir el aportado de
     fotos existentes, llamá a esta función: `compute_net_deposited_db(as_of_date=…)`
@@ -17617,7 +17622,10 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
                       adelante; LEE todas igual, porque el anclado necesita el mes
                       entero. Es el alcance de un borrado: lo anterior a lo borrado
                       no es asunto suyo, y reescribirlo cambiaría meses ya cerrados
-                      que el usuario no tocó.
+                      que el usuario no tocó. (Ojo: la cascada corre después
+                      `_backfill_snapshots_from_monthly`, que refresca las
+                      sintéticas de fin de mes de TODOS los meses, no sólo desde
+                      acá.)
     """
     snaps = conn.execute(
         "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
