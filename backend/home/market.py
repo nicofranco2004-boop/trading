@@ -17,6 +17,8 @@ from typing import Dict, List, Optional, Any, Tuple
 
 import yfinance as yf
 
+from pricing import yahoo as _yahoo
+
 log = logging.getLogger("home.market")
 
 # Executor dedicado para refrescos SWR background. Tamaño chico — solo
@@ -219,8 +221,8 @@ def _fetch_daily_quote(symbol: str) -> Optional[Dict[str, Any]]:
     """Devuelve dict {price, change_pct, prev_close} con la última cotización
     del símbolo. Usa yfinance 2 días de history. None si falla."""
     try:
-        t = yf.Ticker(symbol)
-        hist = t.history(period="5d")
+        hist = _yahoo.con_tope(lambda: yf.Ticker(symbol).history(period="5d"),
+                               que=f"cotización {symbol}")
         if hist.empty or len(hist) < 2:
             return None
         prev_close = float(hist["Close"].iloc[-2])
@@ -375,7 +377,8 @@ _QUOTE_CACHE: Dict[str, Dict[str, Any]] = {}  # symbol → { ..., '_ts': float }
 _QUOTE_TTL_S = 60
 
 
-def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+def _fetch_batch_quotes(symbols: List[str],
+                        tope: float = _yahoo.TOPE_PANTALLA_SEG) -> Dict[str, Dict[str, Any]]:
     """Versión batched + cacheada — un solo download de yfinance para los
     símbolos que NO están cacheados (o cuyo TTL expiró).
 
@@ -401,12 +404,15 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     yf_for: Dict[str, str] = {s: _to_yf(s) for s in to_fetch}
     orig_for: Dict[str, str] = {v: k for k, v in yf_for.items()}
     yf_symbols = list(orig_for.keys())
+    # Un tope para la bajada en lote y el reintento de a uno, juntos. La cinta se
+    # pide al mismo tiempo que /api/prices: con yf.download las dos descargas se
+    # vaciaban el diccionario compartido y una podía quedar esperando para
+    # siempre (ver `pricing/yahoo.py`).
+    _plazo = time.monotonic() + tope
     try:
-        data = yf.download(
-            tickers=" ".join(yf_symbols), period="5d",
-            interval="1d", group_by="ticker", auto_adjust=False,
-            progress=False, threads=True,
-        )
+        data = _yahoo.descargar(yf_symbols, period="5d", interval="1d",
+                                group_by="ticker", auto_adjust=False,
+                                tope=tope, que="cotizaciones")
         for yf_sym, orig_sym in orig_for.items():
             try:
                 sub = data[yf_sym] if yf_sym in data else None
@@ -443,11 +449,15 @@ def _fetch_batch_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     missing = [s for s in to_fetch if s not in out]
     if missing:
         log.info(f"_fetch_batch_quotes retry individual: {len(missing)} símbolos faltantes")
+        # En paralelo y con lo que quede del tope (antes: de a uno y sin tope).
+        _hists, _ = _yahoo.varios(
+            lambda ys: yf.Ticker(ys).history(period="5d", auto_adjust=False),
+            [yf_for.get(o, o) for o in missing],
+            tope=max(0.0, _plazo - time.monotonic()), que="cotizaciones de a una")
         for orig_sym in missing:
             try:
                 yf_sym = yf_for.get(orig_sym, orig_sym)
-                t = yf.Ticker(yf_sym)
-                hist = t.history(period="5d", auto_adjust=False)
+                hist = _hists.get(yf_sym)
                 if hist is None or hist.empty:
                     continue
                 closes = hist["Close"].dropna()

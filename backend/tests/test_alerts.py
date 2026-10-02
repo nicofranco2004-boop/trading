@@ -451,7 +451,7 @@ def test_la_barra_del_dia_en_NaN_no_se_hace_pasar_por_hoy(monkeypatch):
     df = pd.concat(
         {"INTC.BA": pd.DataFrame({"Close": [32920.0, 31020.0, np.nan]}, index=fechas)},
         axis=1)
-    monkeypatch.setattr(hm.yf, "download", lambda *a, **k: df)
+    monkeypatch.setattr(hm._yahoo, "descargar", lambda *a, **k: df)
     hm._QUOTE_CACHE.clear()
     q = hm._fetch_batch_quotes(["INTC.BA"])["INTC.BA"]
     assert q["change_pct"] == -5.77                       # el número de AYER
@@ -562,7 +562,7 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
              for s, (v, l) in cierres.items()}, axis=1)
 
     # 13:01 UTC: la barra del día todavía no tiene datos.
-    monkeypatch.setattr(hm.yf, "download", lambda *a, **k: _barras(lambda s, l: np.nan))
+    monkeypatch.setattr(hm._yahoo, "descargar", lambda *a, **k: _barras(lambda s, l: np.nan))
     hm._QUOTE_CACHE.clear()
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
     assert _events(conn) == []
@@ -570,7 +570,7 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
     # Abre BYMA y llegan los precios de hoy: INTC apenas +1,3 % (no avisa) y
     # NFLX −3,2 % (sí). Es el día real: el martes INTC subió, no cayó 5,8 %.
     hoy_real = {"INTC.BA": 31420.0, "ADBE.BA": 9450.0, "NVDA.BA": 14140.0, "NFLX.BA": 2590.0}
-    monkeypatch.setattr(hm.yf, "download", lambda *a, **k: _barras(lambda s, l: hoy_real[s]))
+    monkeypatch.setattr(hm._yahoo, "descargar", lambda *a, **k: _barras(lambda s, l: hoy_real[s]))
     hm._QUOTE_CACHE.clear()
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
     assert _events(conn)[0]["symbol"] == "NFLX.BA"

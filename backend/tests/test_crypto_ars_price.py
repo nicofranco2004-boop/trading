@@ -83,7 +83,7 @@ class CryptoArsPriceTest(unittest.TestCase):
         patchea _current_cripto_rate / _current_cedear_rate (test hermético). Si no,
         usa la implementación real (lee _dolar_cache)."""
         with contextlib.ExitStack() as st:
-            st.enter_context(patch.object(main.yf, "download", return_value=pd.DataFrame()))
+            st.enter_context(patch.object(main._yahoo, "descargar", return_value=pd.DataFrame()))
             st.enter_context(patch.object(main, "_fetch_one", side_effect=_fake_fetch_one))
             st.enter_context(patch.object(main, "_prices_cache_get", side_effect=lambda syms: ({}, list(syms))))
             st.enter_context(patch.object(main, "_prices_cache_set"))

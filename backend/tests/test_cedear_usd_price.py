@@ -61,7 +61,7 @@ class CedearUsdPriceTest(unittest.TestCase):
         self.conn.close()
 
     def _get(self, symbols):
-        with patch.object(main.yf, "download", return_value=pd.DataFrame()), \
+        with patch.object(main._yahoo, "descargar", return_value=pd.DataFrame()), \
              patch.object(main, "_fetch_one", side_effect=_fake_fetch_one), \
              patch.object(main, "_prices_cache_get", side_effect=lambda syms: ({}, list(syms))), \
              patch.object(main, "_prices_cache_set"), \
@@ -114,26 +114,13 @@ class SnapshotsJobCedearTest(unittest.TestCase):
     def _fetch(self, symbols):
         import snapshots_job
 
-        class _FakeLast:
-            index = ["BAC", "AAPL.BA", "GGAL.BA"]
-            def __getitem__(self, k):
-                return {"BAC": 55.16, "AAPL.BA": 22050.0, "GGAL.BA": 8270.0}[k]
-
-        class _FakeClose:
-            empty = False
-            def dropna(self, how='all'):
-                return self
-            def __len__(self):
-                return 5
-            class _ILoc:
-                def __getitem__(self, i):
-                    return _FakeLast()
-            iloc = _ILoc()
-
-        class _FakeData:
-            empty = False
-            def get(self, k):
-                return _FakeClose() if k == "Close" else None
+        # La forma EXACTA que devuelve `pricing.yahoo.descargar` (la misma que
+        # devolvía yf.download): columnas (dato, ticker). Antes era un objeto que
+        # imitaba "la última fila" — justo la lectura que se cambió (con una
+        # cripto en el pedido, esa fila es la de hoy y las acciones venían NaN).
+        _tabla = pd.concat({"Close": pd.DataFrame(
+            {"BAC": [55.0, 55.16], "AAPL.BA": [22000.0, 22050.0], "GGAL.BA": [8200.0, 8270.0]},
+            index=pd.to_datetime(["2026-06-10", "2026-06-11"]))}, axis=1)
 
         # ⚠️ NO ALCANZA CON MOCKEAR yfinance. Después de yfinance,
         # `fetch_prices_for_symbols` PISA todo lo `.BA` con data912/BYMA
@@ -143,7 +130,7 @@ class SnapshotsJobCedearTest(unittest.TestCase):
         # 22050 para AAPL.BA y recibía 25160, y por eso el resultado dependía de que
         # hubiera internet. Se mockean los dos escritores POSTERIORES; lo que este
         # test mide es la conversión del cedear USD-cotizado, no BYMA.
-        with patch.object(snapshots_job.yf, "download", return_value=_FakeData()), \
+        with patch.object(snapshots_job._yahoo, "descargar", return_value=_tabla), \
              patch.object(main, "_resolve_ar_equity_price", return_value=None), \
              patch.object(main, "_resolve_ar_bond_price", return_value=None):
             return snapshots_job.fetch_prices_for_symbols(symbols, main.CRYPTO_YF)

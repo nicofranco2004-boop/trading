@@ -74,7 +74,7 @@ class BaNanBarTest(unittest.TestCase):
         self.conn.close()
 
     def _prices(self, symbols, byma=None):
-        with patch.object(main.yf, "download", side_effect=_fake_download), \
+        with patch.object(main._yahoo, "descargar", side_effect=_fake_download), \
              patch.object(main, "_fetch_one", side_effect=lambda t: _STALE.get(t)), \
              patch.object(main, "_prices_cache_get", side_effect=lambda s: ({}, list(s))), \
              patch.object(main, "_prices_cache_set"), \
@@ -103,7 +103,7 @@ class BaNanBarTest(unittest.TestCase):
         data912 primario para .BA lo resuelve igual. yfinance devuelve 10.416,
         data912 13.840 → gana data912."""
         frozen = pd.DataFrame({"DISN.BA": [10416.0, 10416.0, 10416.0]}, index=_FECHAS)
-        with patch.object(main.yf, "download",
+        with patch.object(main._yahoo, "descargar",
                           side_effect=lambda *a, **k: pd.concat({"Close": frozen}, axis=1)), \
              patch.object(main, "_fetch_one", side_effect=lambda t: 10416.0), \
              patch.object(main, "_prices_cache_get", side_effect=lambda s: ({}, list(s))), \
@@ -167,7 +167,7 @@ class BaNanBarTest(unittest.TestCase):
         del feed (25.660 / 1,0542 = 24.340,7), no de la serie de yfinance —que
         puede estar congelada—. Un símbolo que data912 NO cubre (TSLA acá) cae al
         cierre previo de yfinance (la rueda previa, 32.880)."""
-        with patch.object(main.yf, "download", side_effect=_fake_download), \
+        with patch.object(main._yahoo, "descargar", side_effect=_fake_download), \
              patch.object(main, "_prevclose_cache_get", side_effect=lambda s: ({}, list(s))), \
              patch.object(main, "_prevclose_cache_set", create=True), \
              patch.object(main, "_fetch_prev_close_one", return_value=None), \

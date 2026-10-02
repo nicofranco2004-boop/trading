@@ -391,7 +391,7 @@ class TestSnapshotEndToEnd(unittest.TestCase):
         # los haría skipear. El mock los vuelve estables y offline.
         self._price_patch = patch(
             'snapshots_job.fetch_prices_for_symbols',
-            side_effect=lambda syms, cy: {s: 60000.0 for s in syms},
+            side_effect=lambda syms, cy, **_: {s: 60000.0 for s in syms},
         )
         self._price_patch.start()
         self.addCleanup(self._price_patch.stop)
@@ -695,7 +695,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         """yfinance no devuelve ningún precio → cobertura 0% → NO escribe."""
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: None for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: None for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertFalse(r['ok'])
@@ -711,7 +711,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
             "VALUES (1, '2026-06-02', 12345.0, 9800.0, 9000.0)")
         conn.commit()
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: None for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: None for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertFalse(r['ok'])
@@ -735,7 +735,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         # cobertura queda en 98,9 % y la foto se escribe — ese es el test de
         # abajo.)
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: (None if s == 'AAPL' else 100.0) for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: (None if s == 'AAPL' else 100.0) for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         conn.close()
@@ -752,7 +752,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         # Sólo XYZ (US$100 de US$9.800) sin precio → 98,9 % → pasa el umbral.
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: (None if s == 'XYZ' else 100.0) for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: (None if s == 'XYZ' else 100.0) for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         conn.close()
@@ -763,7 +763,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         """Todos los símbolos con precio → escribe normal."""
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: 100.0 for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: 100.0 for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertTrue(r['ok'])
@@ -775,7 +775,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         # AAPL con precio, XYZ (100 de 9800 = 1%) sin precio → cobertura 98.9%
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: (150.0 if s == 'AAPL' else None) for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: (150.0 if s == 'AAPL' else None) for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertTrue(r['ok'])
@@ -791,7 +791,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         conn.execute("INSERT INTO asset_last_price VALUES ('XYZ', 50.0, '2026-06-01')")
         conn.commit()
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: None for s in syms}):  # yfinance caído hoy
+                   side_effect=lambda syms, cy, **_: {s: None for s in syms}):  # yfinance caído hoy
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertTrue(r['ok'])  # cobertura OK porque last-known completa
@@ -805,7 +805,7 @@ class TestSnapshotCoverageGate(unittest.TestCase):
         """Un fetch exitoso guarda el precio en asset_last_price para mañana."""
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: 175.0 for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: 175.0 for s in syms}):
             with conn:
                 take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         row = conn.execute("SELECT price FROM asset_last_price WHERE symbol='AAPL'").fetchone()
@@ -865,7 +865,7 @@ class TestSnapshotCedearValuationE2E(unittest.TestCase):
     def test_cedear_persisted_via_ba_and_mep_not_us_ticker(self):
         seen = {}
 
-        def fake_fetch(syms, cy):
+        def fake_fetch(syms, cy, **_):
             seen['syms'] = list(syms)
             # Devolvemos SOLO el .BA (14.000 ARS). Si el código pidiera el ticker US,
             # quedaría sin precio → cobertura 0% → no escribiría.
@@ -947,7 +947,7 @@ class TestSnapshotLoteEnPesosEnCuentaUsdE2E(unittest.TestCase):
     def test_persiste_por_el_ba_y_con_el_costo_a_mep(self):
         seen = {}
 
-        def fake_fetch(syms, cy):
+        def fake_fetch(syms, cy, **_):
             seen["syms"] = list(syms)
             # Los DOS precios existen — es justo lo que hace peligroso a A-2: el ADR
             # de GGAL cotiza en NYSE, así que pedir el ticker equivocado NO deja
@@ -1031,7 +1031,7 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
         self._sembrar_precio('XYZ', 50.0, '2026-03-01')
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: None for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: None for s in syms}):
             with conn:
                 r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertFalse(r['ok'], "una foto no se escribe con precios de hace 3 meses")
@@ -1049,7 +1049,7 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
             "VALUES (1, '2026-06-02', 12345.0, 9800.0, 9000.0)")
         conn.commit()
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: None for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: None for s in syms}):
             with conn:
                 take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
         self.assertEqual(conn.execute(
@@ -1073,7 +1073,7 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
                              (sym, px, estampa))
             conn.commit()
             with patch('snapshots_job.fetch_prices_for_symbols',
-                       side_effect=lambda syms, cy: {s: None for s in syms}):
+                       side_effect=lambda syms, cy, **_: {s: None for s in syms}):
                 with conn:
                     r = take_snapshot_for_user(conn, 1, 1500, {}, '2026-06-02')
             conn.close()
@@ -1133,7 +1133,7 @@ class TestPrecioViejoNoEntraALaHistoria(unittest.TestCase):
         self._sembrar_precio('XYZ', 50.0, '2026-03-01')
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: None for s in syms}):
+                   side_effect=lambda syms, cy, **_: {s: None for s in syms}):
             v = compute_live_portfolio_value(conn, 1, 1500, {})
         # AAPL 200×50 + XYZ 50×1 = 10050, con precios de marzo.
         self.assertIsNotNone(v, "la pantalla no se queda sin número por un precio viejo")
@@ -1204,7 +1204,7 @@ class FaltaEstructuralTest(unittest.TestCase):
     def _correr(self, universo, sin_precio_para=('TZX26',)):
         conn = sqlite3.connect(self.db_path); conn.row_factory = sqlite3.Row
         with patch('snapshots_job.fetch_prices_for_symbols',
-                   side_effect=lambda syms, cy: {s: (None if any(k in s for k in sin_precio_para) else 100.0)
+                   side_effect=lambda syms, cy, **_: {s: (None if any(k in s for k in sin_precio_para) else 100.0)
                                                  for s in syms}):
             with patch('main._fetch_data912_bonds', return_value=universo):
                 with conn:

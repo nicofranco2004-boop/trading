@@ -67,7 +67,9 @@ def _quotes_for(symbols: list) -> dict:
         return {}
     try:
         from home.market import _fetch_batch_quotes
-        return _fetch_batch_quotes(syms) or {}
+        from pricing import yahoo as _yahoo
+        # Corrida de fondo con TODOS los símbolos de las alertas: el tope largo.
+        return _fetch_batch_quotes(syms, tope=_yahoo.TOPE_FONDO_SEG) or {}
     except Exception as ex:
         log.warning("alerts _quotes_for falló: %s", ex)
         return {}

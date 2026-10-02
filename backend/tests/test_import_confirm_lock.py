@@ -92,7 +92,8 @@ def test_ninguna_llamada_de_red_adentro_de_una_transaccion():
     fn, lineas = _fn("import_confirm")
     txs = _transacciones(fn, lineas)
 
-    RED = ("_fetch_data912_bonds", "requests.get", "requests.post", "urlopen", "yf.download")
+    RED = ("_fetch_data912_bonds", "requests.get", "requests.post", "urlopen", "yf.download",
+           "_yahoo.")
     adentro = []
     for i in range(fn.lineno, (fn.end_lineno or fn.lineno) + 1):
         linea = lineas[i - 1]

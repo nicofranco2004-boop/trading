@@ -48,6 +48,7 @@ except ImportError:
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
 from eventos_guardados import eventos_guardados
 import yfinance as yf
+from pricing import yahoo as _yahoo   # toda llamada a Yahoo con alguien esperando
 import requests
 import logging
 import functools
@@ -6218,6 +6219,8 @@ BENCH_TTL = 3600  # 1 hour
 # Patrón módulo-level (no `with`) para evitar el bug de shutdown documentado
 # en el módulo (ver _YFThreadPoolExecutor más abajo).
 _bench_fetch_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bench-fetch")
+# Lo máximo que se esperan las diez series JUNTAS (lo que no llegó sale de la caché).
+BENCH_TOPE_SEG = 25
 
 
 def _benchmarks_fetch_and_cache():
@@ -6250,10 +6253,15 @@ def _benchmarks_fetch_and_cache():
     f_shv_d = _bench_fetch_executor.submit(_fetch_yf_daily, "SHV")
     f_gld_d = _bench_fetch_executor.submit(_fetch_yf_daily, "GLD")
 
+    # UN tope para las diez series juntas, no 25 s para cada una: se esperaban
+    # una detrás de otra, así que con Yahoo colgado la primera visita después
+    # de un deploy podía quedarse minutos (10 × 25 s) esperando las comparativas.
+    _plazo = time.monotonic() + BENCH_TOPE_SEG
+
     def _safe(future, key, default=None):
         """Resultado del future con fallback a stale cache si timeout/exception."""
         try:
-            return future.result(timeout=25)
+            return future.result(timeout=max(0.0, _plazo - time.monotonic()))
         except Exception:
             return (_bench_cache["data"] or {}).get(key, default if default is not None else {})
 
@@ -9057,8 +9065,49 @@ def _prevclose_cache_set(values: dict) -> None:
             _PREVCLOSE_CACHE[sym] = (now, v)
 
 
+# ─── Cuánto tarda cada etapa de /api/prices ─────────────────────────────────
+# MEDIDO 2026-10-02: el mismo pedido de 13 símbolos tardó 66 s UNA vez y 5,7-6,4 s
+# las otras cuatro. Sin saber qué etapa se llevó el tiempo, cada explicación era
+# una adivinanza. Desde ahora un pedido lento deja en el registro una línea con
+# cada etapa (data912, dólares, Yahoo en lote, Yahoo uno a uno, último conocido) y
+# los tickers que Yahoo no contestó. Los pedidos rápidos no escriben nada.
+PRECIOS_LENTO_SEG = 3.0
+# Lo máximo que /api/prices espera a Yahoo, sumando el lote y los pedidos de a uno.
+PRECIOS_TOPE_YAHOO_SEG = _yahoo.TOPE_PANTALLA_SEG
+
+
+class _Cronometro:
+    """Mide etapas consecutivas: cada `etapa()` cierra la que venía corriendo."""
+
+    def __init__(self):
+        self.t0 = self._desde = time.monotonic()
+        self.etapas = []   # [(nombre, segundos, detalle)]
+
+    def etapa(self, nombre: str, detalle: str = "") -> None:
+        ahora = time.monotonic()
+        self.etapas.append((nombre, ahora - self._desde, detalle))
+        self._desde = ahora
+
+    def total(self) -> float:
+        return time.monotonic() - self.t0
+
+    def texto(self) -> str:
+        return " · ".join(f"{n} {s:.1f} s" + (f" ({d})" if d else "")
+                          for n, s, d in self.etapas)
+
+
+def _log_etapas_precios(crono: "_Cronometro", pedidos: int, sin_cache: int) -> None:
+    total = crono.total()
+    if total < PRECIOS_LENTO_SEG:
+        return
+    log.log(logging.WARNING if total >= 10 else logging.INFO,
+            "precios: %d símbolos (%d sin caché) en %.1f s — %s",
+            pedidos, sin_cache, total, crono.texto())
+
+
 @app.get("/api/prices")
 def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
+    crono = _Cronometro()
     raw = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
     # FCI (fondos comunes): no pasan el _SYMBOL_RE de tickers yfinance — los
@@ -9110,13 +9159,14 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     result = dict(cached_results)
     for sym in uncached_symbols:
         result[sym] = None
+    crono.etapa("fondos y caché")
 
     # Procedencia (ver `_PRICE_META`): de qué fuente salió cada precio y de qué
     # rueda. Se declara ACÁ (antes del prefetch data912) porque el prefetch ya
-    # marca 'byma'. `px_as_of`/`newest_bar` los llena el batch de yfinance.
+    # marca 'byma'. `px_as_of`/`px_ref` los llena el lote de yfinance.
     px_as_of: dict = {}
     px_src: dict = {}
-    newest_bar = None
+    px_ref: dict = {}   # la vela más nueva del calendario de cada símbolo (ver abajo)
 
     # Phase 3F: prefetch via data912.com (precio live de BYMA), PRIMARIO para AR.
     #  1. Bonos/ONs AR: yfinance no los cubre.
@@ -9142,11 +9192,14 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
             result[sym] = ar_price
         else:
             yf_targets.append(sym)
+    crono.etapa("data912", f"{len(uncached_symbols) - len(yf_targets)} resueltos")
 
     if not yf_targets:
         # Solo había símbolos resolved por data912 — persistir y salir.
         _fill_last_known_prices(result)
         _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
+        crono.etapa("último conocido")
+        _log_etapas_precios(crono, len(sym_list), len(uncached_symbols))
         return {**result, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
 
     # Cripto en broker ARS: el frontend pide '<CRIPTO>.BA' (sufijo ARS, igual que
@@ -9193,80 +9246,95 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
             sym_to_yf[sym] = sym
 
     yf_tickers = list(set(sym_to_yf.values()))
+    crono.etapa("dólares")
 
+    # ─── Yahoo, con UN tope para todo lo de este pedido ─────────────────────
+    # MEDIDO 2026-10-02: este pedido tardó 66 s una vez. `yf.download` comparte un
+    # diccionario global con cualquier otra descarga del proceso (la cinta, la foto
+    # diaria, las alertas): si otra arranca en el medio, ésta espera un conteo que
+    # no llega — hasta que alguna otra descarga lo llene (ver `pricing/yahoo.py`).
+    # Ahora el lote baja cada ticker por separado, y entre el lote y los pedidos de
+    # a uno Yahoo tiene `PRECIOS_TOPE_YAHOO_SEG` en total. Lo que no llegó queda en
+    # None y lo completa el último precio conocido de más abajo (marcado como tal).
+    _plazo_yahoo = time.monotonic() + PRECIOS_TOPE_YAHOO_SEG
+
+    def _restante():
+        return max(0.0, _plazo_yahoo - time.monotonic())
+
+    cierres = {}
     try:
-        tickers_str = " ".join(yf_tickers)
         # period="1mo" es más confiable que "5d" — cubre findes y feriados
-        data = yf.download(tickers_str, period="1mo", progress=False, auto_adjust=True)
-
-        if not data.empty:
-            close = data.get("Close") if hasattr(data, 'get') else (data["Close"] if "Close" in data.columns else None)
-
-            if close is not None and not (hasattr(close, 'empty') and close.empty):
-                if hasattr(close, 'dropna'):
-                    _rows = close.dropna(how='all')
-                    last = _rows.iloc[-1] if len(_rows) > 0 else None
-                    # La rueda más nueva con dato de ALGÚN símbolo: la referencia
-                    # para saber cuál se quedó atrás.
-                    _newest = str(_rows.index[-1])[:10] if len(_rows) > 0 else None
-                else:
-                    last = None
-                    _newest = None
-
-                # Fecha del último cierre VÁLIDO de cada símbolo. Un símbolo cuya
-                # última barra es más vieja que `_newest` tiene un hueco: yfinance
-                # se salteó su rueda (barra en NaN) o directamente no la trae.
-                for sym, yf_t in sym_to_yf.items():
-                    try:
-                        if hasattr(close, 'columns') and yf_t in getattr(close, 'columns', []):
-                            _s = close[yf_t].dropna()
-                        elif not hasattr(close, 'columns'):
-                            _s = close.dropna()
-                        else:
-                            _s = None
-                        if _s is not None and len(_s) > 0:
-                            px_as_of[sym] = str(_s.index[-1])[:10]
-                    except Exception:
-                        pass
-                newest_bar = _newest
-
-                if last is not None:
-                    for sym, yf_t in sym_to_yf.items():
-                        try:
-                            if hasattr(last, '__getitem__'):
-                                val = float(last[yf_t]) if yf_t in last.index else float(last)
-                            else:
-                                val = float(last)
-                            if not math.isnan(val) and val > 0:
-                                result[sym] = val
-                                px_src[sym] = 'yf'
-                        except Exception:
-                            pass
+        data = _yahoo.descargar(yf_tickers, period="1mo", auto_adjust=True,
+                                tope=_restante(), que="/api/prices")
+        cierres = _yahoo.ultimos_cierres(data)
     except Exception:
         pass
+    # La vela más nueva de cada calendario en el lote (cripto aparte: opera los 7
+    # días). Un símbolo cuya última vela es más vieja que la de su calendario se
+    # salteó la rueda: yfinance devolvió esa vela en NaN o directamente no la trae.
+    referencias = _yahoo.ruedas_de_referencia(cierres)
+    _atrasados = set()
+    for sym, yf_t in sym_to_yf.items():
+        if yf_t not in cierres:
+            continue
+        precio, fecha = cierres[yf_t]
+        px_as_of[sym] = fecha
+        px_ref[sym] = _yahoo.rueda_de_referencia_para(yf_t, referencias)
+        if px_ref[sym] and fecha < px_ref[sym]:
+            _atrasados.add(sym)
+        else:
+            result[sym] = precio
+            px_src[sym] = 'yf'
+    crono.etapa("yahoo lote", f"{len(cierres)} de {len(yf_tickers)} tickers")
 
+    _pedir = []   # los que el lote no trajo: se le piden a Yahoo de a uno
     for sym in [s for s in yf_targets if result[s] is None]:
-        # ANTES de `_fetch_one`: si el batch no resolvió un .BA, la causa típica es
-        # que yfinance devolvió la barra del día ENTERA en NaN (ver
-        # `_fetch_data912_equities`). `_fetch_one` toma el último cierre no nulo, o
-        # sea un precio de ruedas anteriores, y lo devuelve como si fuera de hoy —
-        # sin marcar nada. El feed live de BYMA tiene el del día. Sólo entra acá,
+        # ANTES de servir un precio viejo: si el lote no resolvió un .BA, la causa
+        # típica es que yfinance devolvió la barra del día ENTERA en NaN (ver
+        # `_fetch_data912_equities`). El último cierre no nulo es de ruedas
+        # anteriores; el feed live de BYMA tiene el del día. Sólo entra acá,
         # cuando yfinance ya falló: para los símbolos que resuelve bien no cambia
         # nada.
         ar_eq = _resolve_ar_equity_price(sym)
         if ar_eq is not None:
             result[sym] = ar_eq
             px_src[sym] = 'byma'
-            continue
-        yf_t = sym_to_yf[sym]
-        price = _fetch_one(yf_t)
-        if price is None and not sym.endswith('.BA') and sym not in CRYPTO_YF:
-            price = _fetch_one(f"{sym}-USD")
-        result[sym] = price
-        if price is not None:
-            # `_fetch_one` devuelve el último cierre NO nulo: si la rueda de este
-            # símbolo se salteó, esto es de una rueda anterior. Queda marcado.
+        elif sym in _atrasados:
+            # Yahoo lo trajo, pero de una rueda anterior: se sirve igual (mejor
+            # viejo que ninguno) y queda marcado abajo. Pedirlo de nuevo de a uno
+            # devolvía el MISMO número (es la misma llamada a Yahoo).
+            result[sym] = cierres[sym_to_yf[sym]][0]
             px_src[sym] = 'yf'
+        else:
+            _pedir.append(sym)
+
+    # De a uno, en paralelo y con lo que quede del tope. Un ticker que no es de
+    # acá (.BA) ni cripto conocida puede ser una cripto que no está en CRYPTO_YF:
+    # si no apareció, se prueba '<SYM>-USD'.
+    _uno_a_uno, _sin_respuesta = [], []
+    if _pedir:
+        _uno_a_uno = [sym_to_yf[s] for s in _pedir]
+        _hechos, _no = _yahoo.varios(_fetch_one, _uno_a_uno, tope=_restante(),
+                                     que="/api/prices de a uno")
+        _sin_respuesta += _no
+        _con_usd = [s for s in _pedir if _hechos.get(sym_to_yf[s]) is None
+                    and sym_to_yf[s] not in _no
+                    and not s.endswith('.BA') and s not in CRYPTO_YF]
+        _hechos_usd = {}
+        if _con_usd:
+            _uno_a_uno += [f"{s}-USD" for s in _con_usd]
+            _hechos_usd, _no = _yahoo.varios(_fetch_one, [f"{s}-USD" for s in _con_usd],
+                                             tope=_restante(), que="/api/prices -USD")
+            _sin_respuesta += _no
+        for sym in _pedir:
+            price = _hechos.get(sym_to_yf[sym])
+            if price is None and sym in _con_usd:
+                price = _hechos_usd.get(f"{sym}-USD")
+            result[sym] = price
+            if price is not None:
+                px_src[sym] = 'yf'
+    crono.etapa("yahoo uno a uno", ", ".join(_uno_a_uno)
+                + (f" — sin respuesta: {', '.join(_sin_respuesta)}" if _sin_respuesta else ""))
 
     # Cripto-ARS: el precio fetcheado vino en USD (BTC-USD). Lo pasamos a pesos al
     # DÓLAR CRIPTO → prices['BTC.BA'] = spot×cripto (en ARS, coherente con los demás
@@ -9294,17 +9362,18 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         if result.get(sym) is not None and sym not in _before_last_known:
             px_src[sym] = 'last_known'
 
-    # Procedencia: un precio de una rueda anterior a la más nueva del lote —o
-    # completado con el último conocido— NO es el de hoy. Se marca para que la
-    # tabla lo pueda decir en vez de hacerlo pasar por actual.
+    # Procedencia: un precio de una rueda anterior a la más nueva de SU calendario
+    # en el lote —o completado con el último conocido— NO es el de hoy. Se marca
+    # para que la tabla lo pueda decir en vez de hacerlo pasar por actual.
     _meta = {}
     for sym in uncached_symbols:
         if result.get(sym) is None:
             continue
         src = px_src.get(sym)
         as_of = px_as_of.get(sym)
+        ref = px_ref.get(sym)
         stale = (src == 'last_known') or bool(
-            src == 'yf' and as_of and newest_bar and as_of < newest_bar)
+            src == 'yf' and as_of and ref and as_of < ref)
         if stale or src:
             _meta[sym] = {'src': src, 'as_of': as_of, 'stale': stale}
     _prices_meta_set(_meta)
@@ -9312,6 +9381,8 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     # Persistir todos los uncached que acabamos de fetchear (incluyendo None
     # para los que fallaron — evita retry storm si Yahoo está down).
     _prices_cache_set({sym: result[sym] for sym in uncached_symbols})
+    crono.etapa("último conocido")
+    _log_etapas_precios(crono, len(sym_list), len(uncached_symbols))
     # `__meta` no puede colisionar con un ticker y ningún caller itera el objeto
     # (todos hacen prices[sym]) — verificado antes de agregarlo.
     return {**result, **fci_prices, '__meta': {**_prices_meta_get(sym_list), **fci_meta}}
@@ -9413,9 +9484,16 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
         else:
             sym_to_yf[sym] = sym
     yf_tickers = list(set(sym_to_yf.values()))
+    # Mismo tope que /api/prices, sumando el lote y los pedidos de a uno, y la
+    # misma descarga sin diccionario compartido (ver `pricing/yahoo.py`).
+    _plazo_yahoo = time.monotonic() + PRECIOS_TOPE_YAHOO_SEG
+
+    def _restante():
+        return max(0.0, _plazo_yahoo - time.monotonic())
 
     try:
-        data = yf.download(" ".join(yf_tickers), period="1mo", progress=False, auto_adjust=True)
+        data = _yahoo.descargar(yf_tickers, period="1mo", auto_adjust=True,
+                                tope=_restante(), que="/api/prices/prev-close")
         if not data.empty:
             close = data.get("Close") if hasattr(data, 'get') else (data["Close"] if "Close" in data.columns else None)
             if close is not None and not (hasattr(close, 'empty') and close.empty):
@@ -9461,11 +9539,16 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
     # con <2 puntos — CEDEARs ilíquidos como COIN.BA/META.BA), probamos
     # fast_info.previous_close, que tiene el cierre anterior aunque la serie no.
     # Mismo patrón que el fallback _fetch_one de /api/prices. Acotado a
-    # MAX_SYMBOLS y sólo sobre cache misses → barato.
-    for sym in [s for s in uncached_symbols if result[s] is None]:
-        pc = _fetch_prev_close_one(sym_to_yf[sym])
-        if pc is not None:
-            result[sym] = pc
+    # MAX_SYMBOLS y sólo sobre cache misses → barato. En paralelo y con lo que
+    # quede del tope: de a uno y sin tope, 10 símbolos sin respuesta eran minutos.
+    _faltan = [s for s in uncached_symbols if result[s] is None]
+    if _faltan:
+        _hechos, _ = _yahoo.varios(_fetch_prev_close_one, [sym_to_yf[s] for s in _faltan],
+                                   tope=_restante(), que="/api/prices/prev-close de a uno")
+        for sym in _faltan:
+            pc = _hechos.get(sym_to_yf[sym])
+            if pc is not None:
+                result[sym] = pc
 
     # Cripto-ARS: el cierre previo vino en USD → a pesos al DÓLAR CRIPTO (spot×cripto),
     # igual que el precio actual, para que la variación diaria reconcilie.
@@ -9545,14 +9628,17 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
         # solo si no es un ticker conocido US.
         pass
 
-    points = []
-    try:
-        ticker = yf.Ticker(yf_sym)
-        hist = ticker.history(period=yf_period, interval=interval, auto_adjust=False)
+    def _bajar_serie():
+        hist = yf.Ticker(yf_sym).history(period=yf_period, interval=interval, auto_adjust=False)
         if hist.empty and yf_sym == sym and not sym.endswith(".BA") and "-" not in sym:
             # Retry con sufijo -USD para crypto desconocido
-            ticker = yf.Ticker(f"{sym}-USD")
-            hist = ticker.history(period=yf_period, interval=interval, auto_adjust=False)
+            hist = yf.Ticker(f"{sym}-USD").history(period=yf_period, interval=interval, auto_adjust=False)
+        return hist
+
+    points = []
+    yahoo_no_respondio = False
+    try:
+        hist = _yahoo.con_tope(_bajar_serie, que=f"mini-gráfico {sym}")
         if not hist.empty:
             for idx, row in hist.iterrows():
                 close = row.get("Close")
@@ -9562,6 +9648,8 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
                     "date": idx.strftime("%Y-%m-%d"),
                     "close": round(float(close), 4),
                 })
+    except _yahoo.YahooNoRespondio:
+        yahoo_no_respondio = True
     except Exception as ex:
         # No raise — devolvemos series vacía, el frontend muestra "sin chart"
         pass
@@ -9583,7 +9671,10 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
             points = []
 
     result = {"symbol": sym, "period": period, "points": points}
-    _history_cache[cache_key] = (now, result)
+    # Un Yahoo que no contestó no es "este activo no tiene gráfico": no se guarda
+    # por una hora, se vuelve a probar en la próxima apertura.
+    if not yahoo_no_respondio:
+        _history_cache[cache_key] = (now, result)
     return result
 
 
@@ -10153,29 +10244,74 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
 _splits_cache = {}  # { 'SYM.BA': (timestamp, [(ex_date, factor)]) }
 
 
+# Por símbolo: la lista de splits de una cartera se precalienta en paralelo
+# (`_precalentar_splits`), así que esto sólo lo paga quien pide UN símbolo.
+SPLITS_TOPE_SEG = 5.0
+
+
+def _splits_de_yahoo(ba_symbol: str):
+    return yf.Ticker(ba_symbol).splits
+
+
+def _parsear_splits(s) -> list:
+    """Serie de yfinance → [(ex_date 'YYYY-MM-DD', factor)]. Normaliza el índice
+    tz-aware (idx.date().isoformat()) para NUNCA comparar el timestamp crudo
+    contra entry_date."""
+    out = []
+    for idx, factor in s.items():
+        try:
+            d = idx.date().isoformat()
+        except Exception:
+            d = str(idx)[:10]
+        f = float(factor)
+        if f and f > 0:
+            out.append((d, f))
+    return out
+
+
+def _splits_fallaron(ba_symbol: str, now: float) -> list:
+    """Yahoo falló o no contestó: se sirve lo último que se supo (o nada) y se
+    vuelve a probar en `EVENTOS_REINTENTO_SEG`, no en 6 h — "Yahoo no contestó"
+    no es "este papel no tuvo splits"."""
+    cached = _splits_cache.get(ba_symbol)
+    out = cached[1] if cached else []
+    _splits_cache[ba_symbol] = (now - EVENTS_TTL + EVENTOS_REINTENTO_SEG, out)
+    return out
+
+
+def _precalentar_splits(ba_symbols) -> None:
+    """Trae a la caché los splits de varios `.BA` a la vez, con UN tope para
+    todos. /split-check los pedía de a uno dentro del bucle de posiciones, sin
+    tope: con Yahoo colgado, cada CEDEAR de la cartera sumaba hasta 30 s."""
+    import time as _t
+    now = _t.time()
+    faltan = [s for s in dict.fromkeys(ba_symbols)
+              if not (_splits_cache.get(s) and (now - _splits_cache[s][0]) < EVENTS_TTL)]
+    if not faltan:
+        return
+    hechos, _ = _yahoo.varios(_splits_de_yahoo, faltan, tope=_yahoo.TOPE_PANTALLA_SEG,
+                              que="splits de la cartera")
+    for sym in faltan:
+        try:
+            _splits_cache[sym] = (now, _parsear_splits(hechos[sym]))
+        except Exception as ex:   # no llegó, falló o vino ilegible
+            log.warning("fetch splits %s falló: %r", sym, ex)
+            _splits_fallaron(sym, now)
+
+
 def _fetch_ba_splits(ba_symbol: str):
-    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h).
-    Normaliza el índice tz-aware (idx.date().isoformat()) → 'YYYY-MM-DD' plano,
-    para NUNCA comparar el timestamp crudo contra entry_date."""
+    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h)."""
     import time as _t
     now = _t.time()
     cached = _splits_cache.get(ba_symbol)
     if cached and (now - cached[0]) < EVENTS_TTL:
         return cached[1]
-    out = []
     try:
-        s = yf.Ticker(ba_symbol).splits
-        for idx, factor in s.items():
-            try:
-                d = idx.date().isoformat()
-            except Exception:
-                d = str(idx)[:10]
-            f = float(factor)
-            if f and f > 0:
-                out.append((d, f))
+        out = _parsear_splits(_yahoo.con_tope(_splits_de_yahoo, ba_symbol, tope=SPLITS_TOPE_SEG,
+                                              que=f"splits {ba_symbol}"))
     except Exception as ex:
         log.warning("fetch splits %s falló: %s", ba_symbol, ex)
-        out = cached[1] if cached else []
+        return _splits_fallaron(ba_symbol, now)
     _splits_cache[ba_symbol] = (now, out)
     return out
 
@@ -10495,6 +10631,11 @@ def positions_split_check(uid: int = Depends(get_effective_user)):
         # post-split): también es watermark, con ventana de dedup (evento de split real).
         _corp_map = _corporate_split_watermarks(conn, uid)
         _pair_cache = {}
+        # Todos los splits de la cartera de una vez, con un tope para todos: el
+        # bucle de abajo los lee de la caché (`_applicable_splits` → `_fetch_ba_splits`).
+        _bases = [(r["asset"] or "").upper() for r in rows]
+        _precalentar_splits(f"{a[:-3] if a.endswith('.BA') else a}.BA" for a in _bases
+                            if a and a != ".BA")
         suggestions = []
         for r in rows:
             asset = (r["asset"] or "").upper()
@@ -24070,20 +24211,14 @@ def _yf_fetch_cached(ticker: str, kind: str, fetcher_fn) -> dict:
         # executor global, el thread hung queda en bg (lo dejamos morir
         # naturalmente cuando yfinance eventualmente responde o se hace GC).
         try:
-            from concurrent.futures import TimeoutError as FutureTimeout
             with _yf_fetch_semaphore:
-                future = _yf_executor.submit(fetcher_fn, yf_ticker)
-                try:
-                    new_payload = future.result(timeout=YF_FETCH_TIMEOUT_SECONDS)
-                except FutureTimeout:
-                    log.warning("yf fetcher TIMEOUT after %ds for %s/%s",
-                                YF_FETCH_TIMEOUT_SECONDS, yf_ticker, kind)
-                    # No esperamos al thread — lo dejamos morir en bg.
-                    # Intentamos cancelar (no garantía, fetcher_fn no es cancelable,
-                    # pero al menos libera el slot si todavía no arrancó).
-                    future.cancel()
-                    # Caemos al stale fallback abajo.
-                    raise TimeoutError(f"yfinance no respondió en {YF_FETCH_TIMEOUT_SECONDS}s")
+                # El mismo "esperar con tope sin esperar al hilo" que usa toda
+                # llamada a Yahoo (`pricing/yahoo.py`), en el pool de este caché.
+                # Si no contesta tira `YahooNoRespondio` (un TimeoutError) y caemos
+                # al stale fallback de abajo.
+                new_payload = _yahoo.con_tope(fetcher_fn, yf_ticker,
+                                              tope=YF_FETCH_TIMEOUT_SECONDS,
+                                              que=f"{yf_ticker}/{kind}", pool=_yf_executor)
             # Sanitizar: solo cacheamos si no devuelve "available: False" por
             # error transitorio. Si devuelve available=False por motivo
             # estructural (ej. "cripto no aplica scorecard"), sí cacheamos
@@ -25812,7 +25947,7 @@ def _valuate_positions_for_chat(conn, uid: int):
     if brokers and positions:
         try:
             syms = build_price_symbols(positions, brokers)
-            prices = fetch_prices_for_symbols(syms, CRYPTO_YF) if syms else {}
+            prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=_yahoo.TOPE_PANTALLA_SEG) if syms else {}
             if prices:
                 if len(_CHAT_PRECIOS) > 500:
                     _CHAT_PRECIOS.clear()
@@ -28306,10 +28441,12 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         if not valid:
             log.info("AI tool get_current_prices rejected — no valid symbols. Got: %r", raw_symbols[:10])
             return {"error": "No se proporcionaron símbolos válidos"}
-        result = {}
-        for sym in valid:
-            yf_t = CRYPTO_YF.get(sym, sym)
-            result[sym] = _fetch_one(yf_t)
+        # En paralelo y con UN tope para todos (antes: de a uno, sin tope — con
+        # Yahoo colgado, 10 símbolos dejaban a la IA esperando minutos).
+        _yf_de = {sym: CRYPTO_YF.get(sym, sym) for sym in valid}
+        _hechos, _ = _yahoo.varios(_fetch_one, list(_yf_de.values()),
+                                   que="IA get_current_prices")
+        result = {sym: _hechos.get(_yf_de[sym]) for sym in valid}
         # M10/B-8 (audit IA #2): fallback de bonos AR. yfinance no cotiza
         # soberanos/ONs argentinos (AL30/GD30/…) → quedaban en null, o el .BA
         # daba per-100 sin ÷100. Resolvemos por data912 (per-1) igual que
@@ -28496,7 +28633,8 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             if brokers and positions:
                 all_symbols = build_price_symbols(positions, brokers)
                 try:
-                    prices = fetch_prices_for_symbols(all_symbols, CRYPTO_YF) if all_symbols else {}
+                    prices = fetch_prices_for_symbols(all_symbols, CRYPTO_YF,
+                                                      tope=_yahoo.TOPE_PANTALLA_SEG) if all_symbols else {}
                 except Exception as ex:
                     log.warning("get_realized_vs_unrealized: fetch_prices failed: %s", ex)
                     prices = {}
@@ -29181,7 +29319,10 @@ def search_tickers(q: str, uid: int = Depends(get_effective_user)):
     out = []
     try:
         import yfinance as _yf
-        for x in (_yf.Search(query, max_results=12).quotes or []):
+        # Autocompletar: si Yahoo no contesta en 4 s, la persona ya siguió tipeando.
+        _quotes = _yahoo.con_tope(lambda: _yf.Search(query, max_results=12).quotes,
+                                  tope=4.0, que=f"búsqueda {query!r}")
+        for x in (_quotes or []):
             sym = (x.get("symbol") or "").strip().upper()
             if not sym or (x.get("quoteType") or "").upper() != "EQUITY":
                 continue
@@ -38166,6 +38307,10 @@ def _stop_scheduler():
         _flush_last_prices_si_toca(forzar=True)
     except Exception:
         pass
+    # El pool de Yahoo (`pricing/yahoo.py`) va DESPUÉS de esperar las corridas:
+    # las alertas y los briefs lo usan para los precios. Mismo criterio que las
+    # colas de arriba: lo que no arrancó se descarta.
+    _yahoo.apagar()
 
 
 # ─── Admin endpoints ────────────────────────────────────────────────────────

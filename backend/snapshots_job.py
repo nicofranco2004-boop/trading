@@ -28,7 +28,7 @@ from pathlib import Path
 from fechas import hoy_art, hoy_art_date
 from typing import Optional
 
-import yfinance as yf
+from pricing import yahoo as _yahoo
 
 log = logging.getLogger('snapshots_job')
 
@@ -595,10 +595,16 @@ def compute_net_deposited(monthly_entries: list) -> float:
 
 # ─── Fetch de precios (extrae lógica de get_prices) ─────────────────────────
 
-def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
+def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
+                             tope: float = _yahoo.TOPE_FONDO_SEG) -> dict:
     """Bulk fetch de precios via yfinance. Devuelve {symbol: price_or_None}.
     `crypto_yf` mapea {TICKER: 'TICKER-USD'} para criptos (mismo dict que
     main.py para no duplicar).
+
+    `tope`: lo máximo que se espera a Yahoo. El default es el de los trabajos de
+    fondo (la foto diaria baja cientos de tickers y NO puede cortarse antes: un
+    precio que falta deja la cuenta sin foto ese día). Quien la llama con una
+    persona esperando (Rendi AI) pasa `_yahoo.TOPE_PANTALLA_SEG`.
     """
     if not symbols:
         return {}
@@ -663,27 +669,18 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict) -> dict:
         return result
 
     try:
-        tickers_str = " ".join(yf_tickers)
-        data = yf.download(tickers_str, period="1mo", progress=False, auto_adjust=True)
-        if not data.empty:
-            close = data.get("Close") if hasattr(data, 'get') else (
-                data["Close"] if "Close" in data.columns else None
-            )
-            if close is not None and not (hasattr(close, 'empty') and close.empty):
-                last = close.dropna(how='all').iloc[-1] if len(close.dropna(how='all')) > 0 else None
-                if last is not None:
-                    for sym, yf_t in sym_to_yf.items():
-                        try:
-                            if hasattr(last, '__getitem__'):
-                                val = float(last[yf_t]) if yf_t in last.index else float(last)
-                            else:
-                                val = float(last)
-                            if not math.isnan(val) and val > 0:
-                                result[sym] = val
-                        except Exception:
-                            pass
+        # La misma descarga y la misma lectura que /api/prices (`pricing/yahoo.py`):
+        # sin el diccionario compartido de yf.download, y el último cierre VÁLIDO de
+        # cada ticker — no la última fila de la tabla, que con una cripto en el
+        # pedido es la de hoy y deja a todas las acciones sin precio.
+        data = _yahoo.descargar(yf_tickers, period="1mo", auto_adjust=True,
+                                tope=tope, que="fetch_prices_for_symbols")
+        cierres = _yahoo.ultimos_cierres(data, yf_tickers)
+        for sym, yf_t in sym_to_yf.items():
+            if yf_t in cierres:
+                result[sym] = cierres[yf_t][0]
     except Exception as e:
-        log.warning(f"yf.download failed for batch: {e}")
+        log.warning(f"descarga de Yahoo falló para el lote: {e}")
 
     # CEDEARs USD-cotizados: el precio fetcheado es el del subyacente US (USD) →
     # a pesos (× CCL ÷ ratio). Sin CCL los dejamos en None (no persistimos el
@@ -1225,6 +1222,7 @@ def compute_live_portfolio_value(
     tc_blue: float,
     crypto_yf: dict,
     precios: Optional[dict] = None,
+    tope: float = _yahoo.TOPE_PANTALLA_SEG,
 ) -> Optional[float]:
     """Calcula el total_value LIVE del portfolio sumando positions × precios
     actuales — sin persistir nada. Útil cuando se necesita "valor de hoy"
@@ -1238,8 +1236,13 @@ def compute_live_portfolio_value(
     idéntica, segundos más tarde, antes de empezar a responder). Si vienen, no
     se vuelven a pedir; las que falten se piden igual, y los guards de abajo
     —reintento, último precio conocido, cobertura— corren exactamente igual.
+
+    `tope`: lo máximo que se espera a Yahoo entre la bajada y el reintento. Es
+    el valor que ve una persona (el ✦ del inicio, Rendi AI): con Yahoo colgado,
+    los precios que no llegaron los completa el último conocido de abajo.
     """
     import time as _time
+    _plazo = _time.monotonic() + tope
     cache_key = (uid, tc_blue)
     cached = _LIVE_VALUE_CACHE.get(cache_key)
     if cached is not None:
@@ -1265,7 +1268,7 @@ def compute_live_portfolio_value(
         prices = {s: precios.get(s) for s in all_symbols}
     else:
         try:
-            prices = fetch_prices_for_symbols(all_symbols, crypto_yf)
+            prices = fetch_prices_for_symbols(all_symbols, crypto_yf, tope=tope)
         except Exception as e:
             log.warning(f"compute_live_portfolio_value: fetch_prices failed: {e}")
             return None
@@ -1278,7 +1281,8 @@ def compute_live_portfolio_value(
     missing = [s for s in all_symbols if prices.get(s) is None]
     if missing:
         try:
-            retry = fetch_prices_for_symbols(missing, crypto_yf)
+            retry = fetch_prices_for_symbols(missing, crypto_yf,
+                                             tope=max(0.0, _plazo - _time.monotonic()))
             for s, v in retry.items():
                 if v is not None:
                     prices[s] = v
