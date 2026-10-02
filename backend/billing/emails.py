@@ -2305,6 +2305,8 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
     saca la urgencia de la única decisión que tiene que tomar.
     """
     plus_days = total_days - pro_days
+    # La comparación con el plan Free, sólo a quien lo tiene.
+    _sin_free = "" if requiere_plan else " — sin las 12 preguntas fijas del plan Free"
     if requiere_plan:
         _cierre_html = (
             "No te pedimos tarjeta y no se cobra nada solo: a los "
@@ -2331,7 +2333,7 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
         Tres cosas que te conviene hacer hoy:
       </p>
       <ol style="font-size:14px;line-height:1.9;color:#374151;padding-left:20px;margin:0 0 20px;">
-        <li><b>Preguntale lo que quieras al chat</b> — sin las 12 preguntas fijas del plan Free.</li>
+        <li><b>Preguntale lo que quieras al chat</b>{_sin_free}.</li>
         <li><b>Pedí un análisis de tu cartera</b> y mirá qué te dice sobre concentración y riesgo.</li>
         <li><b>Sumá tus otros brokers</b>: recién con todo junto los números cierran de verdad.</li>
       </ol>

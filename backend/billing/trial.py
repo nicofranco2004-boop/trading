@@ -533,11 +533,14 @@ def status(conn, user_id: int) -> dict:
             out["stage"] = stage_by_calendar(started_dt, now)
         # Días completos que faltan para que se termine TODO el trial.
         out["days_left"] = dias_restantes(until_dt, now)
-        # Días que faltan para el cambio de Pro a Plus (None si ya pasó).
+        # Días que faltan para el cambio de Pro a Plus (None si ya pasó). Por
+        # DÍA UTC, como el corte que lo ejecuta (`step_down_due_trials`) y el
+        # mail "mañana termina tu Pro": contaba "10 días exactos desde la hora
+        # del botón", y el día que llegaba ese mail la app decía "2 días más"
+        # hasta la hora en que la persona había activado la prueba.
         if out["stage"] == "pro":
-            switch_at = started_dt + timedelta(days=TRIAL_PRO_DAYS)
-            d = switch_at - now
-            out["days_to_switch"] = max(0, d.days + (1 if d.seconds else 0))
+            cambio = started_dt.date() + timedelta(days=TRIAL_PRO_DAYS)
+            out["days_to_switch"] = max(0, (cambio - now.date()).days)
     return out
 
 
@@ -741,7 +744,8 @@ def _avisar_una_vez(conn, user_id: int, kind: str, mandar, tanda=None) -> bool:
 
     Se marca en trial_email_log ANTES de mandar (dos corridas del cron a la vez
     no pueden mandarlo las dos) y, si el mail no salió, la marca se devuelve
-    para que lo reintente la corrida de mañana. Antes la marca quedaba siempre:
+    para que lo reintente la corrida siguiente (el job corre dos veces por día:
+    ver `_start_scheduler`). Antes la marca quedaba siempre:
     `send_*` devuelve False cuando Resend rechaza —no tira excepción—, el loop
     lo contaba como enviado y ese aviso no le llegaba nunca. Cuándo se devuelve,
     cuándo no y cuándo se frena la corrida (Resend caído): `emails.Tanda`."""
@@ -956,7 +960,7 @@ def send_due_trial_emails(conn, tanda=None) -> int:
         log.info("avisos de trial enviados: %d", sent)
     if tanda.frenado:
         log.error("avisos de trial: Resend no confirma los envíos; se frenó la corrida "
-                  "y lo que faltaba queda para la próxima")
+                  "y lo que faltaba queda para la próxima (dentro de su ventana)")
     return sent
 
 

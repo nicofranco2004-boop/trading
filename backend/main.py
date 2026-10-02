@@ -36793,21 +36793,23 @@ def iol_lab_probe(data: IolLabProbeIn, request: Request, uid: int = Depends(get_
             raise HTTPException(409, "Ya hay una prueba corriendo. Esperá a que termine.")
     keep = bool(data.keep_token)
     username = data.username.strip()
-    # Con la bandera de las renovaciones: el token nuevo que se guarda acá no
-    # puede quedar pisado por una renovación del cron que arrancó con el viejo.
+    try:
+        tokens = _iol.login(username, data.password)
+    except _iol.IolError as e:
+        hint = (" ¿Pediste la activación de APIs por Mensajes en IOL y aceptaste los TyC en "
+                "Mi Cuenta › Personalización › APIs?" if e.status in (400, 401, 403) else "")
+        raise HTTPException(400, f"IOL rechazó el login (HTTP {e.status}).{hint}")
+    finally:
+        del data   # la contraseña no sigue viva en este frame
+    access, rt = tokens.get("access_token"), tokens.get("refresh_token")
+    # Guardar con la bandera de las renovaciones: si el cron está renovando,
+    # espera a que termine (así su escritura, con el token viejo, no pisa la
+    # nueva) y uno que arranque después ya lee el nuevo. Sólo el guardado: el
+    # login con IOL puede tardar hasta 30 s y, con la bandera tomada, la
+    # renovación de la hora salteaba a todos los testers.
     if not _tomar_corrida_esperando("iol_lab", IOL_LAB_ESPERA_SEG):
-        del data
         raise HTTPException(409, "Se está renovando la medición ahora mismo. Probá en unos segundos.")
     try:
-        try:
-            tokens = _iol.login(username, data.password)
-        except _iol.IolError as e:
-            hint = (" ¿Pediste la activación de APIs por Mensajes en IOL y aceptaste los TyC en "
-                    "Mi Cuenta › Personalización › APIs?" if e.status in (400, 401, 403) else "")
-            raise HTTPException(400, f"IOL rechazó el login (HTTP {e.status}).{hint}")
-        finally:
-            del data   # la contraseña no sigue viva en este frame
-        access, rt = tokens.get("access_token"), tokens.get("refresh_token")
         run_id = _iol_lab_guardar_probe(uid, keep, rt, tokens)
     finally:
         _soltar_corrida("iol_lab")
@@ -38087,6 +38089,17 @@ def _start_scheduler():
         id='subscription_lifecycle',
         replace_existing=True,
     )
+    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta del mismo job (misma bandera; cada
+    # paso es idempotente). Hay avisos que valen un solo día UTC —"mañana
+    # termina tu Pro" sale el día anterior al paso a Plus— o pocas horas —la
+    # bienvenida que Resend rechazó al activar—: con una sola corrida por día,
+    # un rechazo a las 03:30 no tenía reintento posible.
+    _scheduler.add_job(
+        _job_ciclo_de_vida_programado,
+        CronTrigger(hour=15, minute=0),
+        id='subscription_lifecycle_tarde',
+        replace_existing=True,
+    )
     # 03:45 UTC — backup diario de la SQLite. Después del snapshot + lifecycle
     # para no pisar transacciones. Va a `./backups/` local (Railway disk) +
     # opcionalmente sube a S3-compatible si están las env vars BACKUP_S3_*.
@@ -38148,6 +38161,11 @@ def _stop_scheduler():
     # faltaba no sale. Darles un rato para terminar — va DESPUÉS de bajar los
     # precios, que es lo que no se puede perder si el apagado se corta antes.
     _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
+    # Y otra vez los precios: los que trajeron esas corridas mientras se esperaba.
+    try:
+        _flush_last_prices_si_toca(forzar=True)
+    except Exception:
+        pass
 
 
 # ─── Admin endpoints ────────────────────────────────────────────────────────

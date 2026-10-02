@@ -29,14 +29,12 @@ log = logging.getLogger("billing.subscriptions")
 
 
 def _dias_que_quedan(fin) -> int:
-    """Los días enteros que faltan, pero nunca 0 mientras no venció: con los
-    reintentos (un aviso que Resend rechazó sale en la corrida siguiente), el
+    """Los días que faltan, con LA cuenta de la prueba (`trial.dias_restantes`:
+    redondea para arriba, como la app) — una sola para todos los mails. El
     redondeo para abajo llegaba a decir "vence en 0 días" con horas por
-    delante."""
-    resto = fin - datetime.utcnow()
-    if resto.total_seconds() <= 0:
-        return 0
-    return max(1, resto.days)
+    delante (con los reintentos, o al cancelar el día antes de renovar)."""
+    from billing.trial import dias_restantes
+    return dias_restantes(fin)
 
 
 def _ahora_db() -> str:
@@ -116,7 +114,8 @@ def run_lifecycle_job(conn) -> dict:
         log.error("Unverified accounts cleanup failed: %s", ex)
         result["errors"] += 1
     # Resend no confirmó los envíos y la tanda se frenó: lo que faltaba queda
-    # sin marca para la corrida siguiente. Que se vea en el resultado del job.
+    # sin marca para la corrida siguiente (dentro de la ventana de cada aviso;
+    # el job corre dos veces por día). Que se vea en el resultado del job.
     result["avisos_frenados"] = tanda.frenado
     if tanda.frenado:
         log.error("ciclo de vida: Resend no confirma los envíos; se frenaron los avisos "

@@ -242,7 +242,7 @@ def test_un_aviso_rechazado_sale_en_la_corrida_siguiente(conn, respuesta):
         assert uids["beto"] not in _marcados(conn, tr.MAIL_PRO_ENDING)
         assert len(resend.a(beto)) == 1
 
-        r2 = subs.run_lifecycle_job(conn)          # la corrida de mañana
+        r2 = subs.run_lifecycle_job(conn)          # la corrida siguiente (hay dos por día)
         assert r2["trial_emails_sent"] == 1
         assert len(resend.a(beto)) == 2
         assert uids["beto"] in _marcados(conn, tr.MAIL_PRO_ENDING)
@@ -474,8 +474,10 @@ def test_la_bienvenida_dice_lo_que_pasa_al_terminar_segun_el_plan(conn):
     uid = _usuario(conn, "ana", requires_plan=1)
     with _red_de_mentira(_Reloj()) as resend:
         assert tr.start(conn, uid)["ok"]
-    (_, _, texto), = resend.mails
+    (to, _, texto), = resend.mails
     assert "vuelve a Free" not in texto
+    # Ni la comparación con "el plan Free" que no tiene (versión con formato).
+    assert "Free" not in resend.htmls[to][0]
 
 
 def _en_prueba_hace_mas(conn, uid, dias):
@@ -1182,3 +1184,287 @@ def test_las_renovaciones_del_lab_esperan_a_la_de_un_tester(monkeypatch):
     r = main._iol_lab_refresh_all()
     assert r.get("status") != "already_running", r
     assert "iol_lab" not in main._corridas_en_curso
+
+
+# ─── Auditoría 3 ─────────────────────────────────────────────────────────────
+
+# ─── P05: el guard "el crédito vigente ES el de la prueba" del fin de Pro ────
+
+@pytest.mark.parametrize("como", ["pago", "regalo"])
+def test_fin_de_pro_no_le_llega_a_quien_tiene_pro_por_otra_via(conn, como):
+    """Arrancó la prueba y después pagó Pro (o se lo regalaron): el crédito ya
+    no es el de la prueba y el día 9 NO puede recibir "mañana terminan tus días
+    de Pro". La consulta nueva (por día + tier='pro') conserva el guard, pero
+    ningún test lo pinchaba: sacarlo pasaba en verde."""
+    uid = _usuario(conn, "ana")
+    _en_prueba_hace(conn, uid, tr.TRIAL_PRO_DAYS - 1)
+    conn.execute("UPDATE users SET credit_active_until=? WHERE id=?",
+                 ((datetime.utcnow() + timedelta(days=40)).isoformat(), uid))
+    if como == "pago":
+        conn.execute(
+            "INSERT INTO subscriptions (user_id, status, external_reference, period, "
+            "amount_ars, created_at) VALUES (?, 'authorized', ?, 'monthly', 10000, ?)",
+            (uid, f"rendi-{uid}-monthly", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    assert resend.a(f"ana@{DOMINIO}") == [], resend.mails
+    assert uid not in {r["user_id"] for r in conn.execute(
+        "SELECT user_id FROM trial_email_log WHERE kind=?", (tr.MAIL_PRO_ENDING,))}
+
+
+# ─── D04: "vence en 0 días" en el aviso de suscripción cancelada ─────────────
+
+def test_la_sub_cancelada_que_vence_mañana_no_dice_cero_dias(conn):
+    """Canceló el día antes de la renovación: `current_period_end` es una FECHA
+    (medianoche UTC de mañana), así que faltan menos de 24 h y el redondeo
+    para abajo decía «vence en 0 días» en el PRIMER envío, sin reintento de por
+    medio. El arreglo de HEAD (`_dias_que_quedan`) cubre este camino, pero el
+    único test (`..._no_dice_cero_dias`) mira el aviso de fin de crédito."""
+    uid = _usuario(conn, "vera", tier="pro")
+    mañana = (datetime.utcnow() + timedelta(days=1)).date().isoformat()
+    conn.execute(
+        "INSERT INTO subscriptions (user_id, mp_subscription_id, status, external_reference, "
+        "period, amount_ars, current_period_end) VALUES (?, 'sub-vera', 'cancelled', ?, "
+        "'monthly', 10000, ?)", (uid, f"rendi-{uid}-monthly", mañana))
+    conn.commit()
+    with _red_de_mentira(_Reloj()) as resend:
+        assert subs.run_lifecycle_job(conn)["expiration_reminders_sent"] == 1
+    (_, asunto, _), = [m for m in resend.mails if m[0] == f"vera@{DOMINIO}"]
+    assert "0 días" not in asunto and "1 día" in asunto, asunto
+
+
+# ─── P07 / V02 / V05: el "día" es el día UTC, a CUALQUIER hora ───────────────
+
+class _Fijo(datetime):
+    """El `datetime` que ve billing/trial.py, con la hora congelada."""
+    AHORA: datetime = None
+
+    @classmethod
+    def utcnow(cls):
+        return cls.AHORA
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.AHORA - timedelta(hours=3)
+
+
+@pytest.mark.parametrize("hora_utc", [1, 12, 23])
+def test_fin_de_pro_sale_el_dia_utc_anterior_al_paso_a_plus_a_cualquier_hora(
+        conn, monkeypatch, hora_utc):
+    """El diferencial de test_feedback_prueba arma las edades como "ahora −
+    N,x días": según la hora a la que corre la suite, los casos caen en un día
+    UTC u otro y el test pierde poder (a las 20:40 de Argentina no ve que la
+    ventana se mida por instante, ni que el desde se corra 12 h, ni que el cron
+    use el día de Argentina). Acá: hora congelada y arranques en los BORDES de
+    cada día (00:00:01 y 23:59:59), por el job entero."""
+    hoy = datetime.utcnow().date()
+    ahora = datetime.combine(hoy, datetime.min.time()) + timedelta(hours=hora_utc)
+    _Fijo.AHORA = ahora
+    monkeypatch.setattr(tr, "datetime", _Fijo)
+    casos = {}
+    for hace in (8, 9, 10):
+        for hh, mm, ss in ((0, 0, 1), (23, 59, 59)):
+            ini = datetime.combine(hoy - timedelta(days=hace), datetime.min.time()).replace(
+                hour=hh, minute=mm, second=ss)
+            fin = ini + timedelta(days=tr.TRIAL_TOTAL_DAYS)
+            uid = _usuario(conn, f"u{hace}{hh}", tier="pro",
+                           trial_started_at=ini.isoformat(), trial_used_at=ini.isoformat(),
+                           trial_ends_at=fin.isoformat(), credit_active_until=fin.isoformat())
+            casos[uid] = (hace, ini, fin)
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    for uid, (hace, ini, fin) in casos.items():
+        llego = bool(resend.a(f"u{hace}{ini.hour}@{DOMINIO}"))
+        desde, hasta = tr.ventanas_de_aviso(ini.isoformat(), fin.isoformat())[tr.MAIL_PRO_ENDING]
+        assert llego == (hace == tr.TRIAL_PRO_DAYS - 1), (hora_utc, hace, ini)
+        assert llego == (desde <= ahora < hasta), (hora_utc, hace, ini, desde, hasta)
+
+
+# ─── B02: la bienvenida a quien SÍ tiene plan gratis ────────────────────────
+
+@pytest.mark.parametrize("requires_plan,dice_free", [(0, True), (1, False)])
+def test_la_bienvenida_dice_free_solo_a_quien_tiene_free(conn, requires_plan, dice_free):
+    """El test de HEAD mira sólo requires_plan=1: forzar requiere_plan=True le
+    decía «queda en pausa» a una cuenta vieja que SÍ vuelve a Free."""
+    uid = _usuario(conn, "ana", requires_plan=requires_plan)
+    with _red_de_mentira(_Reloj()) as resend:
+        assert tr.start(conn, uid)["ok"]
+    (_, _, texto), = resend.mails
+    assert ("vuelve a Free" in texto) is dice_free, texto
+
+
+# ─── B09: el reintento de la bienvenida también frena con Resend caído ───────
+
+def test_con_resend_caido_las_bienvenidas_reintentadas_tambien_frenan(conn):
+    nombres = ["ana", "beto", "caro", "dani"]
+    for n in nombres:
+        uid = _usuario(conn, n)
+        with _red_de_mentira(_Reloj()) as resend:
+            resend.respuestas[f"{n}@{DOMINIO}"] = [429]      # la de la activación
+            assert tr.start(conn, uid)["ok"]
+    caido = httpx.ReadTimeout("Resend no contesta")
+    with _red_de_mentira(_Reloj()) as resend:
+        for n in nombres:
+            resend.respuestas[f"{n}@{DOMINIO}"] = [caido]
+        r = subs.run_lifecycle_job(conn)
+    assert r["avisos_frenados"] is True
+    assert len(resend.pedidos) == emails.INCIERTOS_PARA_FRENAR, resend.pedidos
+    # Los que no se intentaron quedan SIN marca: los manda la corrida siguiente.
+    marcados = {x["user_id"] for x in conn.execute(
+        "SELECT user_id FROM trial_email_log WHERE kind=?", (tr.MAIL_STARTED,))}
+    assert len(marcados) == emails.INCIERTOS_PARA_FRENAR
+
+
+# ─── F03: el panel no espera un aviso que YA salió ───────────────────────────
+
+def test_el_panel_no_espera_un_aviso_que_ya_salio(conn):
+    """"Quedan pocos días" salió hace 30 h y su ventana sigue abierta hasta el
+    final de la prueba. Si el panel no mirara `avisos_enviados` (nada lo
+    pinchaba), lo contaría como pendiente y dejaría a la persona esperando
+    hasta que se termine la prueba — o sea, sin el mail de feedback."""
+    from fastapi.testclient import TestClient
+    admin = conn.execute(
+        "INSERT INTO users (email, password_hash, approved, email_verified, is_admin) "
+        "VALUES (?, 'x', 1, 1, 1)", (f"admin-{time.time_ns()}@rendi.test",)).lastrowid
+    conn.commit()
+    uid = _usuario(conn, "ana", requires_plan=1)
+    _en_prueba_hace(conn, uid, tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 1.25)
+    conn.execute("DELETE FROM trial_email_log WHERE user_id=?", (uid,))
+    conn.execute("INSERT INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+                 (uid, tr.MAIL_ENDING_SOON,
+                  (datetime.utcnow() - timedelta(hours=30)).isoformat()))
+    conn.commit()
+    r = TestClient(main.app).post("/api/admin/email/feedback-prueba",
+                                  json={"confirm": False},
+                                  headers={"Authorization": f"Bearer {main.create_token(admin)}"})
+    assert r.status_code == 200, r.text
+    fila, = [f for f in r.json()["nuevos"] if f["id"] == uid]
+    assert fila["espera"] is None, fila["espera"]
+
+
+# ─── L01 / L03: el login de prueba del lab toma la bandera y guarda con ella ─
+
+def test_el_login_de_prueba_del_lab_guarda_el_token_con_la_bandera_tomada(monkeypatch):
+    """El token nuevo del login no puede quedar pisado por una renovación del
+    cron que arrancó con el viejo: el guardado va con la bandera (espera a
+    que la renovación termine). Ningún test la pinchaba."""
+    from fastapi.testclient import TestClient
+    import iol_api
+    durante = {}
+
+    def login(u, p):
+        durante["login"] = "iol_lab" in main._corridas_en_curso
+        return {"access_token": "AT", "refresh_token": "RT", "expires_in": 900}
+
+    def guardar(uid, keep, rt, tokens):
+        durante["guardar"] = "iol_lab" in main._corridas_en_curso
+        return 1
+
+    monkeypatch.setattr(main, "_iol_lab_gate", lambda uid: "x@y.z")
+    monkeypatch.setattr(main, "_check_rate_limit", lambda *a, **kw: None)
+    monkeypatch.setattr(iol_api, "login", login)
+    monkeypatch.setattr(main, "_iol_lab_guardar_probe", guardar)
+    monkeypatch.setattr(main, "_iol_lab_run_bg", lambda *a, **kw: None)
+    main.app.dependency_overrides[main.get_current_user] = lambda: 1
+    try:
+        r = TestClient(main.app).post("/api/iol/lab/probe",
+                                      json={"username": "u", "password": "p", "keep_token": True})
+    finally:
+        main.app.dependency_overrides.pop(main.get_current_user, None)
+        with main._iol_lab_runs_lock:
+            main._iol_lab_running.discard(1)
+    assert r.status_code == 200, r.text
+    # El login con IOL (hasta 30 s) va SIN la bandera —si no, la renovación de
+    # la hora salteaba a todos los testers—; el guardado, CON ella.
+    assert durante == {"login": False, "guardar": True}
+    assert "iol_lab" not in main._corridas_en_curso
+
+
+# ─── S03 / S04: el apagado espera CON tope y DESPUÉS de bajar los precios ────
+
+def test_al_apagar_la_espera_tiene_tope():
+    import threading
+    assert main._tomar_corrida("prueba_colgada_apagado")
+    try:
+        res = []
+        t = threading.Thread(target=lambda: res.append(main._esperar_corridas(0.3)),
+                             daemon=True)
+        t.start()
+        t.join(3)
+        assert not t.is_alive(), "el apagado espera para siempre a una corrida colgada"
+        assert res == [False]
+    finally:
+        main._soltar_corrida("prueba_colgada_apagado")
+
+
+def test_al_apagar_los_precios_se_bajan_antes_de_esperar(monkeypatch):
+    """Si el apagado se corta (SIGKILL), lo que no se puede perder son los
+    últimos precios: van ANTES de la espera a las corridas."""
+    import threading
+    import time as _t
+    orden = []
+    monkeypatch.setattr(main, "_flush_last_prices_si_toca",
+                        lambda forzar=False: orden.append(("precios", _t.monotonic())) or 0)
+    assert main._tomar_corrida("prueba_apagado_orden")
+    soltada = []
+
+    def soltar():
+        soltada.append(_t.monotonic())
+        main._soltar_corrida("prueba_apagado_orden")
+
+    threading.Timer(0.4, soltar).start()
+    main._stop_scheduler()
+    assert orden and soltada and orden[0][1] < soltada[0], (orden, soltada)
+
+
+def test_el_ciclo_de_vida_corre_dos_veces_por_dia():
+    """"Mañana termina tu Pro" vale un solo día UTC y la bienvenida rechazada,
+    pocas horas: con una sola corrida por día (03:30), un rechazo no tenía
+    reintento. La segunda vuelta usa el MISMO gancho (y la misma bandera)."""
+    sched = _SchedulerQueAnota()
+    with patch.object(main, "_scheduler", sched), \
+         patch.object(main, "_fci_bootstrap_async", lambda: None):
+        main._start_scheduler()
+    assert sched.jobs["subscription_lifecycle"] is main._job_ciclo_de_vida_programado
+    assert sched.jobs["subscription_lifecycle_tarde"] is main._job_ciclo_de_vida_programado
+
+
+def test_el_dia_del_mail_de_fin_de_pro_la_app_dice_mañana(conn, monkeypatch):
+    """El mail sale a las 00:30 ART del día anterior al paso a Plus; la app
+    contaba "10 días exactos desde la hora del botón" y ese día decía "2 días
+    más" hasta la hora en que la persona había activado."""
+    hoy = datetime.utcnow().date()
+    ini = datetime.combine(hoy - timedelta(days=tr.TRIAL_PRO_DAYS - 1),
+                           datetime.min.time()).replace(hour=15)        # 12:00 ART
+    fin = ini + timedelta(days=tr.TRIAL_TOTAL_DAYS)
+    uid = _usuario(conn, "ana", tier="pro", trial_started_at=ini.isoformat(),
+                   trial_used_at=ini.isoformat(), trial_ends_at=fin.isoformat(),
+                   credit_active_until=fin.isoformat())
+    monkeypatch.setattr(tr, "datetime", _Fijo)
+    _Fijo.AHORA = datetime.combine(hoy, datetime.min.time()).replace(hour=3, minute=30)
+    with _red_de_mentira(_Reloj()) as resend:
+        subs.run_lifecycle_job(conn)
+    assert len(resend.a(f"ana@{DOMINIO}")) == 1                         # el mail salió
+    for hora in (3, 10, 14, 16, 23):
+        _Fijo.AHORA = datetime.combine(hoy, datetime.min.time()).replace(hour=hora, minute=45)
+        st = tr.status(conn, uid)
+        assert (st["stage"], st["days_to_switch"]) == ("pro", 1), (hora, st)
+
+
+def test_al_apagar_se_vuelven_a_bajar_los_precios_despues_de_esperar(monkeypatch):
+    """Las corridas que terminan durante la espera traen precios: se bajan
+    otra vez al final."""
+    bajadas = []
+    monkeypatch.setattr(main, "_flush_last_prices_si_toca",
+                        lambda forzar=False: bajadas.append(time.monotonic()) or 0)
+    assert main._tomar_corrida("prueba_apagado_precios")
+    soltada = []
+
+    def soltar():
+        soltada.append(time.monotonic())
+        main._soltar_corrida("prueba_apagado_precios")
+
+    threading.Timer(0.3, soltar).start()
+    main._stop_scheduler()
+    assert len(bajadas) == 2 and bajadas[0] < soltada[0] < bajadas[1], (bajadas, soltada)
