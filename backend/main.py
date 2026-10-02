@@ -14786,14 +14786,7 @@ def _is_synthetic_seed_row(src) -> bool:
 
 
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
-    """El `_recompute_snapshots_netdep_for_user` de abajo re-estampa
-    `net_deposited`. Estuvo anotado como problema: usaba una fórmula truncada a MES
-    y pisaba con un valor único el dato diario que el cron había escrito bien.
-    Ahora usa `twr._aportado_por_punto`, que ancla el borde de mes al canónico y
-    conserva el día — corrige lo stale sin tirar la resolución. Fijado en
-    `tests/test_audit_ronda5.py::ReEstampadoPorMesEsInocuoTest`.
-
-    Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
+    """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
     autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
     refrescar snapshots desde la fecha afectada → re-backfill de month-ends. El
@@ -14818,10 +14811,16 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         real caía en esa red y se borraba igual (verificado con un probe). El
         backfill solo escribe FIN DE MES, así que exigimos también esa fecha:
         mismo beneficio, sin llevarse puestas las fotos de media de mes.
-      • REALES: se conservan. Solo se les recomputa `net_deposited` (el capital
-        aportado, que SÍ cambió) con la SSoT `compute_net_deposited_db`.
+      • REALES: se conservan. Solo se les corrige `net_deposited` (el capital
+        aportado, que SÍ puede haber cambiado) desde `since_date`, con
+        `_recompute_snapshots_netdep_for_user` — ver abajo por qué esa y no otra.
       • HOY: se borra siempre — la reescribe la próxima visita/cron con el estado
         vivo, que es justamente el que acaba de cambiar.
+
+    Corre en TODOS los borrados y en sus "deshacer": movimientos (`tx-`, `me-`),
+    operaciones, posiciones (importadas y manuales) e historial de un activo. Lo
+    que se rompa acá se rompe en todos. `tests/test_borrar_conserva_el_dia.py` los
+    recorre por HTTP.
     """
     for b in brokers_touched:
         if b:
@@ -14837,22 +14836,38 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
                   AND date = date(date, 'start of month', '+1 month', '-1 day')""",
             (uid, since_date),
         )
-        from snapshots_job import compute_net_deposited_db as _cnd
-        # La SSoT solo mira AÑO-MES (ignora el día: monthly_entries es mensual), así que
-        # todas las fotos de un mismo mes comparten valor. Calculamos una vez por MES y
-        # hacemos un UPDATE por mes: con 3 años de historia son ~36 cuentas en vez de
-        # ~1100, y el borrado no se queda con el lock de escritura recorriendo foto a
-        # foto. Exactamente equivalente, no es una aproximación.
-        for r in conn.execute(
-            "SELECT DISTINCT substr(date,1,7) AS ym FROM snapshots "
-            "WHERE user_id=? AND date >= ?", (uid, since_date),
-        ).fetchall():
-            conn.execute(
-                "UPDATE snapshots SET net_deposited=? "
-                " WHERE user_id=? AND date >= ? AND substr(date,1,7)=?",
-                (_cnd(conn, uid, as_of_date=r["ym"], broker_filter="global",
-                      include_baseline=True), uid, since_date, r["ym"]),
-            )
+        # ⚠️ EL APORTADO SE CORRIGE CON EL ANCLADO, NO CON UN VALOR POR MES.
+        # Acá se estampaba `compute_net_deposited_db(as_of_date=<AAAA-MM>)` en todas
+        # las fotos de cada mes desde `since_date`, incluidas las del cron. Esa
+        # fórmula sólo mira el mes, así que un depósito del día 20 pasaba a figurar
+        # desde el día 1: del 1 al 19 la pantalla publicaba una pérdida del tamaño
+        # del depósito y el 20 la "ganancia" de vuelta (+US$ 10.000 en el chip,
+        # −9,52 % de peor caída, con el mercado quieto). Y pasaba aunque lo borrado
+        # no tuviera nada que ver con depósitos: borrar una compra de hace dos años
+        # aplanaba todos los meses con flujos desde entonces. Medido en una cuenta
+        # de 3 años: 323 de 1.096 fotos reescritas por borrar un dividendo.
+        # El dato que se perdía no se puede volver a generar: la resolución diaria
+        # existe sólo porque el cron la anotó cada noche. El anclado usa la estampa
+        # VIEJA para saber en qué día cayó cada flujo y la contabilidad de hoy para
+        # cuánto, así que corrige lo que el borrado cambió sin tirar el día.
+        # `desde=since_date`: el mismo alcance de antes — lo anterior a lo borrado
+        # no se toca. Y va ANTES del backfill de abajo: necesita las estampas viejas.
+        #
+        # ⚠️ Y ANTES DE BORRAR LA FOTO DE HOY, NO DESPUÉS. El anclado toma la última
+        # foto del mes como la que sabe todos sus flujos; en el mes en curso ésa es
+        # la de hoy. Borrada primero, el ancla pasa a ser la de ayer: con un depósito
+        # cargado HOY, ese depósito se corría a días anteriores (medido: borrar un
+        # depósito del 15 con otro de hoy dejaba del 15 al 19 con el de hoy adentro).
+        #
+        # LÍMITE CONOCIDO (auditoría 2, H2): si el mes ya traía estampas VIEJAS (un
+        # import a mitad de mes que reescribió la contabilidad hacia atrás), re-anclar
+        # desde `since_date` corrige las fotos de esa fecha en adelante y deja viejas
+        # las de antes, así que el escalón falso del import se muda al día de lo
+        # borrado. No es peor que antes (la cuenta mensual reescribía las mismas
+        # fotos) y la curva anclada no se mueve. Lo que lo resolvería es aplicar sólo
+        # el CAMBIO que produjo el borrado (contabilidad de antes vs. de después),
+        # en vez de re-anclar el mes.
+        _recompute_snapshots_netdep_for_user(conn, uid, desde=since_date)
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
 
@@ -17557,13 +17572,21 @@ def _detect_and_remove_corrupt_snapshots(conn, uid: int) -> list:
     return corrupt_ids
 
 
-def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False) -> dict:
-    """Backfill `snapshots.net_deposited` para TODOS los snapshots del user
-    usando la fórmula canónica:
+def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False,
+                                         desde: Optional[str] = None) -> dict:
+    """Re-estampa `snapshots.net_deposited` de fotos YA ESCRITAS con el aportado
+    ANCLADO (`twr._aportado_por_punto`): el borde de cada mes sale de la
+    contabilidad de hoy —filas 'global' de `monthly_entries` + baseline, la misma
+    convención que estampa el cron— y el DÍA dentro del mes lo dice la estampa
+    vieja, que es la única que lo sabe.
 
-        net_deposited(D) = SUM(monthly_entries.deposits - withdrawals)
-                           WHERE broker <> 'global'
-                             AND midpoint del mes (día 15) <= D
+    ⚠️ ES LA ÚNICA PUERTA PARA RE-ESTAMPAR FOTOS VIEJAS. La usan el borrado y el
+    deshacer (`_cascade_after_movement_delete`), el botón del admin, la reparación
+    de historial y la migración del arranque. Si necesitás corregir el aportado de
+    fotos existentes, llamá a esta función: `compute_net_deposited_db(as_of_date=…)`
+    trunca la fecha a MES y aplana el día (la cascada lo hacía por su cuenta y
+    destruía la resolución diaria en cada borrado; ver
+    `tests/test_borrar_conserva_el_dia.py`).
 
     HISTORIA: el viejo `_recalc_pnl_realized_from_ops` (pre-commit 75d8634)
     zero-eaba los cash flows manuales de monthly_entries cuando se llamaba
@@ -17579,6 +17602,11 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         with_details: si True devuelve list de cada snapshot pre/post (para
                       debug manual desde endpoint admin). Default False
                       para no inflar logs cuando corre como migración.
+        desde:        'AAAA-MM-DD'. Si viene, sólo ESCRIBE las fotos de esa fecha en
+                      adelante; LEE todas igual, porque el anclado necesita el mes
+                      entero. Es el alcance de un borrado: lo anterior a lo borrado
+                      no es asunto suyo, y reescribirlo cambiaría meses ya cerrados
+                      que el usuario no tocó.
     """
     snaps = conn.execute(
         "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
@@ -17594,26 +17622,34 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
     # `twr._aportado_por_punto` ancla los bordes de mes al canónico —que es lo que
     # esta función viene a corregir— y usa la estampa VIEJA sólo para saber en qué
     # día del mes cayó el flujo. Misma corrección, sin tirar la resolución.
+    #
+    # ⚠️ Y SI EL ANCLADO FALLA, NO SE TOCA NADA. Acá había un fallback a
+    # `compute_net_deposited_db(as_of_date=<fecha>)`: el MISMO truncado a mes que el
+    # párrafo de arriba retiró, escondido en el camino de error y sin más aviso que
+    # un log. Con una falla del anclado, cada borrado, el botón del admin y la
+    # migración aplanaban el día igual que antes. Dejar la estampa como estaba es
+    # inofensivo para los lectores que anclan al leer (`twr.serie_medible`);
+    # aplanarla no tiene vuelta.
     try:
         import twr as _twr
-        _filas_tw = conn.execute(
-            "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
-            (uid,)).fetchall()
-        _fn = _twr._aportado_por_punto(conn, uid, _filas_tw)
-        _nuevo_por_fila = {r["id"]: _fn(r) for r in _filas_tw}
+        _fn = _twr._aportado_por_punto(conn, uid, snaps)
     except Exception:
-        log.exception("netdep recompute: no se pudo usar el aportado anclado uid=%s", uid)
-        from snapshots_job import compute_net_deposited_db as _cnd
-        _nuevo_por_fila = {
-            r["id"]: float(_cnd(conn, uid, as_of_date=r["date"],
-                                broker_filter='global', include_baseline=True) or 0)
-            for r in conn.execute(
-                "SELECT id, date FROM snapshots WHERE user_id=?", (uid,)).fetchall()}
+        log.exception("netdep recompute: no se pudo usar el aportado anclado uid=%s "
+                      "— NO se re-estampa nada", uid)
+        return {
+            "snapshots_count": len(snaps),
+            "snapshots_updated": 0,
+            "details": [] if with_details else None,
+            "anclado_fallo": True,
+        }
 
-    updated = 0
+    _desde = str(desde)[:10] if desde else None
+    cambios = []
     details = [] if with_details else None
     for snap in snaps:
         snap_date = snap["date"]
+        if _desde and str(snap_date)[:10] < _desde:
+            continue
         old_net = float(snap["net_deposited"] or 0)
 
         # AUDIT B1 (F4 variaciones, CRITICAL): estampar la convención CANÓNICA
@@ -17623,14 +17659,10 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         # PISABA los stamps canónicos → el lado prev de los Δ chips quedaba sin
         # baseline mientras el lado latest (H-7) lo incluye → Δ1d = −baseline
         # entero como "pérdida fantasma" tras cada deploy.
-        new_net = float(_nuevo_por_fila.get(snap["id"], 0.0) or 0)
+        new_net = float(_fn(snap) or 0)
 
         if abs(new_net - old_net) > 0.01:
-            conn.execute(
-                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
-                (round(new_net, 4), snap["id"], uid),
-            )
-            updated += 1
+            cambios.append((round(new_net, 4), snap["id"], uid))
 
         if details is not None:
             details.append({
@@ -17640,9 +17672,16 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
                 "delta": round(new_net - old_net, 2),
             })
 
+    # En UNA tanda: el borrado corre esto adentro de su transacción, con el lock de
+    # escritura tomado (9556fd5b agrupaba por mes justamente por eso). Borrar un
+    # depósito viejo cambia todas las fotos posteriores: ~1.100 en 3 años.
+    if cambios:
+        conn.executemany(
+            "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?", cambios)
+
     return {
         "snapshots_count": len(snaps),
-        "snapshots_updated": updated,
+        "snapshots_updated": len(cambios),
         "details": details,
     }
 

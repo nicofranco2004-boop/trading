@@ -501,12 +501,23 @@ class VariacionesF4Test(unittest.TestCase):
         fila = self.conn.execute(
             "SELECT total_value, net_deposited, source FROM snapshots "
             "WHERE user_id = ? AND date = '2026-07-31'", (self.uid,)).fetchone()
+        # El escritor ya estampa CON la semilla, como el cron: 10.000 − 10.000 = 0
+        # (`tests/test_borrar_conserva_el_dia.py`). Pero las filas que escribió
+        # antes siguen en las bases con −10.000 hasta que el backfill las refresque,
+        # así que el guard del reporte se sigue probando con una fila VIEJA plantada.
         self.assertEqual((fila["total_value"], fila["net_deposited"], fila["source"]),
-                         (0, -10000, "import"))
-        rep = self._reporte("week", "2026-W38", 20500.0, date(2026, 9, 16))
-        self.assertFalse(rep.metrics.basis_incomparable)
-        self.assertAlmostEqual(rep.metrics.delta_usd, 500.0, delta=1)
-        self.assertAlmostEqual(rep.metrics.deposits, 20000.0, delta=1)
+                         (0, 0, "import"))
+        for caso, estampa in (("escritor de hoy, con semilla", 0.0),
+                              ("fila vieja, SIN la semilla", -10000.0)):
+            with self.subTest(caso=caso):
+                self.conn.execute(
+                    "UPDATE snapshots SET net_deposited=?, total_invested=? "
+                    "WHERE user_id=? AND date='2026-07-31'", (estampa, estampa, self.uid))
+                self.conn.commit()
+                rep = self._reporte("week", "2026-W38", 20500.0, date(2026, 9, 16))
+                self.assertFalse(rep.metrics.basis_incomparable)
+                self.assertAlmostEqual(rep.metrics.delta_usd, 500.0, delta=1)
+                self.assertAlmostEqual(rep.metrics.deposits, 20000.0, delta=1)
 
     def test_d1_sin_base_por_foto_vieja_del_cron_conserva_sus_aportes(self):
         """Sin base porque la foto del cron de arranque es vieja (hueco del cron),
@@ -802,7 +813,11 @@ class VariacionesF4Test(unittest.TestCase):
             "SELECT net_deposited, source FROM snapshots WHERE user_id = ? AND date = '2026-09-30'",
             (self.uid,)).fetchone()
         self.assertEqual(fila["source"], "import")
-        self.assertEqual(fila["net_deposited"], 0)   # la estampa SIN el capital semilla
+        # El escritor ya estampa CON la semilla, como el cron
+        # (`tests/test_borrar_conserva_el_dia.py`). Las filas que escribió antes
+        # —SIN la semilla, en 0— siguen en las bases hasta que el backfill las
+        # refresque: el guard se prueba con las dos.
+        self.assertEqual(fila["net_deposited"], 201119)
         casos = (
             # (período, clave, hoy, aportes publicables)
             ("week", "2026-W40", date(2026, 10, 1), 131.0),   # sin fila antes del lunes
@@ -810,13 +825,19 @@ class VariacionesF4Test(unittest.TestCase):
             ("week", "2026-W41", date(2026, 10, 5), 0.0),     # fila cruda; octubre no
                                                               # entra entero en la semana
         )
-        for pt, pk, hoy, aportes in casos:
-            with self.subTest(period=pk):
-                rep = self._reporte(pt, pk, 73764.0, hoy)
-                self.assertTrue(rep.metrics.basis_incomparable)
-                self.assertAlmostEqual(rep.metrics.deposits, aportes, delta=1)
-                self.assertEqual(rep.metrics.withdrawals, 0.0)
-                self.assertNotIn("201", rep.narrative or "")
+        for caso, estampa in (("escritor de hoy, con semilla", 201119.0),
+                              ("fila vieja, SIN la semilla", 0.0)):
+            self.conn.execute(
+                "UPDATE snapshots SET net_deposited=?, total_invested=? "
+                "WHERE user_id=? AND date='2026-09-30'", (estampa, estampa, self.uid))
+            self.conn.commit()
+            for pt, pk, hoy, aportes in casos:
+                with self.subTest(caso=caso, period=pk):
+                    rep = self._reporte(pt, pk, 73764.0, hoy)
+                    self.assertTrue(rep.metrics.basis_incomparable)
+                    self.assertAlmostEqual(rep.metrics.deposits, aportes, delta=1)
+                    self.assertEqual(rep.metrics.withdrawals, 0.0)
+                    self.assertNotIn("201", rep.narrative or "")
 
     def test_d1_sin_base_la_foto_sin_aportado_no_inventa_un_retiro(self):
         """Semana pasada cuya única foto tiene lo aportado en 0 (el valor que la
