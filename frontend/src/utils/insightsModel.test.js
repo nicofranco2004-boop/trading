@@ -456,7 +456,7 @@ describe('classifyAssetType', () => {
   ]
 
   it('cash detection takes priority', () => {
-    expect(classifyAssetType({ asset: 'USDT', is_cash: true }, brokers)).toBe('Cash')
+    expect(classifyAssetType({ asset: 'USDT', is_cash: true }, brokers)).toBe('Efectivo')
   })
 
   it('crypto tickers', () => {
@@ -464,22 +464,27 @@ describe('classifyAssetType', () => {
     expect(classifyAssetType({ asset: 'eth', broker: 'Binance' }, brokers)).toBe('Cripto')
   })
 
-  it('ARS broker → CEDEAR/AR', () => {
-    expect(classifyAssetType({ asset: 'GGAL', broker: 'Cocos' }, brokers)).toBe('CEDEAR/AR')
+  // La clase de la torta (assetClass.js). Antes juntaba CEDEAR + acción AR +
+  // bono + FCI en "CEDEAR/AR" por la moneda del broker, y disparaba "100 % en
+  // una sola clase" con una cartera de tres clases.
+  it('broker en pesos: la acción argentina es "Acciones AR", no "CEDEAR/AR"', () => {
+    expect(classifyAssetType({ asset: 'GGAL', broker: 'Cocos' }, brokers)).toBe('Acciones AR')
+    expect(classifyAssetType({ asset: 'AL30', broker: 'Cocos' }, brokers)).toBe('Bonos y letras')
+    expect(classifyAssetType({ asset: 'AAPL', broker: 'Cocos' }, brokers)).toBe('CEDEARs')
   })
 
-  it('USD broker no-crypto → Acción/ETF', () => {
-    expect(classifyAssetType({ asset: 'AAPL', broker: 'Binance' }, brokers)).toBe('Acción/ETF')
+  it('broker del exterior: la acción de EE.UU.', () => {
+    expect(classifyAssetType({ asset: 'AAPL', broker: 'Binance' }, brokers)).toBe('Acciones US')
   })
 
-  it('CEDEAR en broker USD → CEDEAR/AR (por asset_type)', () => {
+  it('CEDEAR en broker USD → CEDEARs (por asset_type)', () => {
     const bk = [{ name: 'Cocos · USD', currency: 'USDT' }]
-    expect(classifyAssetType({ asset: 'MELI', asset_type: 'CEDEAR', broker: 'Cocos · USD' }, bk)).toBe('CEDEAR/AR')
+    expect(classifyAssetType({ asset: 'MELI', asset_type: 'CEDEAR', broker: 'Cocos · USD' }, bk)).toBe('CEDEARs')
   })
 
-  it('instrumento en sub-broker AR "· USD" → CEDEAR/AR (por nombre)', () => {
+  it('instrumento en sub-broker AR "· USD" → es BYMA: acción argentina (por nombre)', () => {
     const bk = [{ name: 'Cocos · USD', currency: 'USDT' }]
-    expect(classifyAssetType({ asset: 'PAMP', broker: 'Cocos · USD' }, bk)).toBe('CEDEAR/AR')
+    expect(classifyAssetType({ asset: 'PAMP', broker: 'Cocos · USD' }, bk)).toBe('Acciones AR')
   })
 })
 
@@ -501,7 +506,7 @@ describe('computeAssetTypeBreakdown', () => {
     expect(r[0].type).toBe('Cripto')
     expect(r[0].value).toBe(8000)
     expect(r[0].sharePct).toBe(80)
-    expect(r[1].type).toBe('CEDEAR/AR')
+    expect(r[1].type).toBe('Acciones AR')   // GGAL en Cocos (era el balde "CEDEAR/AR")
     expect(r[1].sharePct).toBe(20)
   })
 
@@ -979,5 +984,17 @@ describe('acumuladoPublicado', () => {
     ], B)
     expect(r.pct).toBeCloseTo(2.0, 2)
     expect(r.benchPct).toBeNull()
+  })
+})
+
+describe('classifyAssetType: el aviso "una sola clase" no junta clases distintas', () => {
+  it('AL30, TECO2 y AAPL en Cocos son tres clases, no "100 % CEDEAR/AR"', () => {
+    const bk = [{ name: 'Cocos', currency: 'ARS' }]
+    const r = computeAssetTypeBreakdown([
+      { asset: 'AL30', broker: 'Cocos', value_usd: 100 },
+      { asset: 'TECO2', broker: 'Cocos', value_usd: 100 },
+      { asset: 'AAPL', broker: 'Cocos', value_usd: 100 },
+    ], bk)
+    expect(r.map(x => x.type).sort()).toEqual(['Acciones AR', 'Bonos y letras', 'CEDEARs'])
   })
 })

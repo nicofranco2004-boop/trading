@@ -63,16 +63,20 @@ AR_STOCK_TICKERS = {
     'CADO', 'CAPU', 'CAPX', 'CARC', 'CECO2', 'CELU', 'CEPU', 'CGPA2', 'COME', 'CRES',
     'CTIO', 'CVH', 'DGCU2', 'DOME', 'DYCA', 'ECOG', 'EDN', 'FERR', 'FIPL', 'GBAN',
     'GCLA', 'GGAL', 'GRIM', 'HARG', 'HAVA', 'INAG', 'INVJ', 'IRCP', 'IRSA', 'LEDE',
-    'LOMA', 'LONG', 'METR', 'MIRG', 'MOLA', 'MORI', 'OEST', 'PAMP', 'PATA', 'PCAR',
+    'LOMA', 'LONG', 'METR', 'MIRG', 'MOLA', 'MORI', 'OEST', 'PAMP', 'PATA',
     'POLL', 'RICH', 'ROSE', 'SAMI', 'SEMI', 'SUPV', 'TECO2', 'TGLT', 'TGNO4', 'TGSU2',
     'TRAN', 'TXAR', 'VALO', 'YPFD',
     'GARO', 'GCDI', 'MOLI',
 }
 # ☝️ Es LA lista de acciones argentinas del servidor: la usan también el
-# diagnóstico de sesgo local y los sectores (behavioral.es_accion_argentina) y
-# el análisis de Rendi AI por país (ai/builders/insights). Copia de
-# frontend/src/utils/tickers.js (ARG_LIDER + ARG_GENERAL): la prueba
-# tests/test_lista_acciones_ar.py se pone en rojo si se separan.
+# diagnóstico de sesgo local y los sectores (behavioral.es_accion_argentina),
+# el análisis de Rendi AI por país (ai/builders/insights), los grupos del
+# asesor y el importador (la pata dólar GGALD → GGAL, importing/tickers_cd).
+# Copia de frontend/src/utils/tickers.js (ARG_LIDER + ARG_GENERAL): las pruebas
+# tests/test_lista_acciones_ar.py y frontend/src/utils/listaAccionesAr.test.js
+# se ponen en rojo si se separan. Cada acción nueva necesita además su sector
+# (behavioral._SECTOR_AR_PANTALLA y assetSector.js) y su nombre para la voz
+# (ai/asset_names.py).
 
 # Nombre común → ticker ("AMAZON" → AMZN). Ayuda de resolución; el guard real
 # son los sets de arriba.

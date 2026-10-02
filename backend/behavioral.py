@@ -116,7 +116,9 @@ def _position_size_usd(op: Dict[str, Any], tc_blue: float = 1415.0) -> float:
 _AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "ppi", "invertironline", "ieb")
 
 # Prefijos de bonos soberanos AR. Pattern: 2 letras + dígito al menos.
-_AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX")
+# (Siempre seguido de un número: ver _is_ar_bond. "TO" = Bonte TO26, "T2X" = los
+# CER T2X5; estaban sólo en la copia de Rendi AI, que se borró.)
+_AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX", "TO", "T2X")
 
 # Acciones AR del panel local (NO CEDEARs): la MISMA lista que la pantalla
 # (frontend/src/utils/tickers.js), que el servidor tiene en
@@ -137,14 +139,23 @@ _AR_ADRS = frozenset({
 })
 
 
-def es_accion_argentina(asset: Optional[str]) -> bool:
-    """¿Es una acción de una empresa argentina? Del panel local (GGAL, TECO2) o
-    su ADR en Nueva York (YPF, PAM), con o sin ".BA". UNA regla para el
-    diagnóstico de sesgo local, los sectores y el análisis de Rendi AI por país:
-    cada uno tenía su lista y no coincidían."""
+def es_accion_argentina(asset: Optional[str], en_byma: Optional[bool] = None) -> bool:
+    """¿Es una acción de una empresa argentina?
+
+    • Su ADR en Nueva York (YPF, PAM, GGAL): sí, en cualquier mercado.
+    • Un ticker del panel local (TECO2, PAMP): sí, pero SÓLO si la tenencia está
+      en la bolsa argentina (`en_byma`, ver _price_is_ars) o trae ".BA". Varios de
+      esos tickers son OTRA cosa afuera: en EE.UU. CELU es Celularity, BOLT es Bolt
+      Biotherapeutics, SEMI y HAVA otros; ROSE es también una cripto. Es la misma
+      regla que la torta de la pantalla (assetClass.js: mercado AR → panel local;
+      broker del exterior → sólo ADRs). `en_byma=None` (no se sabe) = panel local.
+    """
     a = (asset or "").upper().strip()
-    base = a[:-3] if a.endswith(".BA") else a
-    return base in _AR_LOCAL_STOCKS or base in _AR_ADRS
+    if a.endswith(".BA"):
+        a, en_byma = a[:-3], True
+    if a in _AR_ADRS:
+        return True
+    return a in _AR_LOCAL_STOCKS and en_byma is not False
 
 
 def _is_ars_broker(broker: Optional[str]) -> bool:
@@ -325,42 +336,103 @@ def _is_cedear(asset: str) -> bool:
     base = a[:-3]
     if _is_ar_bond(base):
         return False
-    if es_accion_argentina(base):
+    if es_accion_argentina(base, en_byma=True):
         return False
     return True
 
 
-def _is_ar_economic_exposure(asset: str, broker: Optional[str] = None) -> bool:
-    """Exposición económica AR — distinto de "registrado en broker AR".
+def es_renta_fija_argentina(p: Dict[str, Any], en_byma: Optional[bool] = None) -> bool:
+    """¿Es deuda argentina (bono, letra, ON, fondo común)? La MISMA regla que la
+    zona Renta Fija (importing/sections.position_section): letras por el formato
+    del ticker (S31E5, T13F6), bonos del catálogo argentino, lo que el importador
+    marcó BOND/ON/LETRA y los FCI. Antes había listas de prefijos ("AL", "GD",
+    "TX"…) copiadas en varios lugares: una cartera de LECAPs salía "Casi sin
+    exposición a Argentina", y en Rendi AI "TX"/"GD" sin número volvían argentinas
+    a Texas Instruments o a GDX. Lo marcado BOND/fondo sin ser del catálogo cuenta
+    como argentino sólo si está en el mercado argentino (un bono del Tesoro de
+    EE.UU. en Schwab no lo es)."""
+    a = (p.get("asset") or "").upper().strip()
+    if a.endswith(".BA"):
+        en_byma = True
+    categoria = _categoria_renta_fija(p)
+    if categoria is None:
+        return False
+    if categoria in ("FCI_AR", "SOBERANO_AR", "LETRA"):
+        return True
+    if en_byma is None:
+        en_byma = _en_bolsa_argentina(p)
+    return bool(en_byma)
+
+
+def es_bono_o_letra(p: Dict[str, Any]) -> bool:
+    """¿Es un bono, una letra o una ON, de cualquier mercado? Los fondos (FCI) no.
+    Es la porción "Bonos y letras" de la torta (frontend assetClass 'bono') y la
+    renta fija de la tarjeta de perfil: el perfil de Rendi AI tenía su propia
+    lista de prefijos, con lo que una cartera de LECAPs u ONs salía "100 %
+    renta variable" en Rendi AI y renta fija en la pantalla."""
+    return _categoria_renta_fija(p) in ("SOBERANO_AR", "LETRA", "BONO")
+
+
+def _categoria_renta_fija(p: Dict[str, Any]) -> Optional[str]:
+    """None si no es renta fija; si lo es: "FCI_AR" (símbolo FCI:…), "SOBERANO_AR"
+    (prefijo + número o catálogo argentino), "LETRA" (formato S31E5/T13F6),
+    "FCI" (tipo FUND) o "BONO" (lo que el importador marcó BOND/ON/LETRA)."""
+    a = (p.get("asset") or "").upper().strip()
+    if a.endswith(".BA"):
+        a = a[:-3]
+    if not a:
+        return None
+    if a.startswith("FCI:"):
+        return "FCI_AR"
+    if _is_ar_bond(a):
+        return "SOBERANO_AR"
+    try:
+        from importing.sections import position_section, CATEGORY_LETRA, CATEGORY_FCI
+        from ai.ar_bonds_metadata import is_known_ar_bond
+    except Exception:
+        return None
+    seccion = position_section(p.get("asset_type"), a, p.get("currency"))
+    if not seccion:
+        return None
+    if seccion[0] == CATEGORY_LETRA:
+        return "LETRA"
+    if seccion[0] == CATEGORY_FCI:
+        return "FCI"
+    return "SOBERANO_AR" if is_known_ar_bond(a) else "BONO"
+
+
+def _en_bolsa_argentina(p: Dict[str, Any]) -> bool:
+    """¿La tenencia está en la bolsa argentina? Es _price_is_ars (moneda del broker
+    y de su padre, sub-cuenta "· USD", tipo CEDEAR), salvo lo que el importador
+    marcó CRYPTO: ROSE comprada en un exchange en pesos es la cripto Oasis, no
+    el Instituto Rosenbusch. No se toca _price_is_ars porque decide el PRECIO
+    (y tiene su espejo en snapshots_job); acá sólo se decide qué es."""
+    if (p.get("asset_type") or "").strip().upper() == "CRYPTO":
+        return False
+    return _price_is_ars(p)
+
+
+def exposicion_argentina(p: Dict[str, Any]) -> bool:
+    """¿Esta tenencia es exposición económica argentina? UNA regla para el
+    diagnóstico de sesgo local, Rendi AI por país y los grupos del asesor.
 
     Un CEDEAR (AAPL.BA en Cocos) está REGISTRADO en un broker AR pero la
-    exposición económica es a Apple, no a Argentina. Para análisis de
-    home bias / riesgo país, lo que importa es la exposición económica.
-
-    Lo único que cuenta como AR:
-    - Bonos soberanos AR (AL30, GD30, etc.)
-    - Acciones del Merval locales (GGAL, YPFD, etc.)
-    - ADRs de empresas AR en NYSE (YPF, PAM, GGAL, etc.) — riesgo-país AR
-    - Cash ARS en cualquier broker (es exposición a peso)
+    exposición es a Apple: no cuenta. Cuentan: pesos, acciones argentinas y sus
+    ADRs (es_accion_argentina), y deuda argentina (es_renta_fija_argentina). El
+    mercado de la tenencia sale de _price_is_ars (moneda del broker y de su padre,
+    tipo de activo, moneda guardada; la cripto nunca está en BYMA), no del nombre
+    del broker: con el nombre, GGAL en Santander daba 0 %.
     """
+    asset = (p.get("asset") or "").upper().strip()
     if not asset:
         # Sin asset clarificable — si está en broker AR, asumimos cash ARS
-        return _is_ars_broker(broker)
-    a = asset.upper()
-    if a == "ARS":
+        return _is_ars_broker(p.get("broker"))
+    if asset == "ARS":
         return True
-    if _is_ar_bond(a):
-        return True
-    # Acción del panel local o ADR de empresa AR, con o sin .BA → exposición AR.
-    if es_accion_argentina(a):
-        return True
-    if _is_cedear(a):
-        # CEDEAR es internacional aunque esté en Cocos
+    if (p.get("asset_type") or "").strip().upper() == "CRYPTO":
         return False
-    # Para CEDEARs registrados sin .BA (raro pero posible), si está en broker AR
-    # y NO es bono/acción AR conocida, probablemente es algo internacional.
-    # Default: NO es AR.
-    return False
+    en_byma = _en_bolsa_argentina(p)
+    return es_accion_argentina(asset, en_byma) or es_renta_fija_argentina(p, en_byma)
 
 
 def _resolve_price(asset: str, broker: Optional[str], prices: Optional[Dict[str, float]],
@@ -1110,7 +1182,7 @@ def detect_home_bias(positions: List[Dict[str, Any]], prices: Optional[Dict[str,
         value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if value_usd <= 0:
             continue
-        if _is_ar_economic_exposure(asset, p.get("broker")):
+        if exposicion_argentina(p):
             ar_value += value_usd
         else:
             intl_value += value_usd
@@ -1672,15 +1744,7 @@ _SECTOR_MAP = {
     'XRP': 'Crypto', 'ADA': 'Crypto', 'DOGE': 'Crypto', 'AVAX': 'Crypto',
     'DOT': 'Crypto', 'MATIC': 'Crypto', 'LINK': 'Crypto', 'LTC': 'Crypto',
     'BCH': 'Crypto', 'TRX': 'Crypto', 'USDT': 'Stablecoin', 'USDC': 'Stablecoin',
-    # Argentina — acciones locales
-    'GGAL': 'AR · Financials', 'BMA': 'AR · Financials', 'BBAR': 'AR · Financials',
-    'SUPV': 'AR · Financials', 'BYMA': 'AR · Financials', 'VALO': 'AR · Financials',
-    'YPFD': 'AR · Energy', 'PAMP': 'AR · Energy', 'CEPU': 'AR · Energy',
-    'EDN': 'AR · Energy', 'TGSU2': 'AR · Energy', 'TGNO4': 'AR · Energy',
-    'TRAN': 'AR · Energy',
-    'ALUA': 'AR · Materials',
-    'TXAR': 'AR · Materials', 'LOMA': 'AR · Materials',
-    'CRES': 'AR · Consumer', 'COME': 'AR · Consumer', 'MIRG': 'AR · Consumer',
+    # Las acciones argentinas y sus ADRs están en _SECTOR_AR (abajo).
     # Bonos AR
     'AL29': 'AR · Bonos', 'AL30': 'AR · Bonos', 'AL35': 'AR · Bonos', 'AE38': 'AR · Bonos',
     'AL41': 'AR · Bonos', 'GD29': 'AR · Bonos', 'GD30': 'AR · Bonos', 'GD35': 'AR · Bonos',
@@ -1690,7 +1754,38 @@ _SECTOR_MAP = {
 }
 
 
-def _sector_for(asset: str) -> str:
+# Acciones argentinas y sus ADRs, por sector: el MISMO reparto que la torta por
+# sector de la pantalla (frontend/src/utils/assetSector.js), con sus claves.
+# Antes el servidor conocía ~20 y las demás caían en "AR · Acciones", que no es
+# un sector: una cartera de TECO2, IRSA, MOLI y LEDE salía "Concentración fuerte
+# en AR · Acciones 100 %" mientras la torta mostraba cuatro sectores, y YPF (en
+# Schwab) e YPFD (en Cocos) quedaban en sectores distintos.
+# tests/test_lista_acciones_ar.py compara este reparto con el de la pantalla.
+_SECTOR_AR_PANTALLA = {
+    "financiero":   ["A3", "BBAR", "BHIP", "BMA", "BPAT", "BYMA", "GGAL", "SUPV", "VALO"],
+    "energia":      ["CAPU", "CAPX", "PAMP", "YPFD", "YPF", "PAM"],
+    "utilities":    ["CECO2", "CEPU", "CGPA2", "DGCU2", "ECOG", "EDN", "GBAN", "METR",
+                     "TGNO4", "TGSU2", "TRAN", "TGS"],
+    "materiales":   ["ALUA", "CELU", "FIPL", "HARG", "INAG", "LOMA", "TXAR"],
+    "industria":    ["AGRO", "AUSO", "CARC", "COME", "DYCA", "FERR", "GARO", "OEST", "POLL"],
+    "inmobiliario": ["CADO", "CRES", "CTIO", "GCDI", "IRCP", "IRSA", "TGLT", "CRESY", "IRS"],
+    "consumo_bas":  ["HAVA", "INVJ", "LEDE", "MOLA", "MOLI", "MORI", "PATA", "SAMI", "SEMI"],
+    "consumo_disc": ["BOLT", "DOME", "GRIM", "LONG", "MIRG", "DESP"],
+    "comunicacion": ["CVH", "GCLA", "TECO2", "TEO"],
+    "salud":        ["RICH", "ROSE"],
+}
+_ETIQUETA_SECTOR_AR = {
+    "financiero": "AR · Financials", "energia": "AR · Energy",
+    "utilities": "AR · Utilities", "materiales": "AR · Materials",
+    "industria": "AR · Industrials", "inmobiliario": "AR · Real Estate",
+    "consumo_bas": "AR · Consumer", "consumo_disc": "AR · Consumer",
+    "comunicacion": "AR · Communication", "salud": "AR · Healthcare",
+}
+_SECTOR_AR = {t: _ETIQUETA_SECTOR_AR[clave]
+              for clave, tickers in _SECTOR_AR_PANTALLA.items() for t in tickers}
+
+
+def _sector_for(asset: str, en_byma: Optional[bool] = None) -> str:
     """Resuelve el sector de un ticker. CEDEARs (.BA) usan el sector de la
     contraparte US si está mapeada; sino caen en 'AR · CEDEAR'."""
     if not asset:
@@ -1698,11 +1793,11 @@ def _sector_for(asset: str) -> str:
     a = asset.upper()
     if a in _SECTOR_MAP:
         return _SECTOR_MAP[a]
-    # Una acción argentina (con o sin .BA) NO es un CEDEAR: su sector, o el
-    # genérico. Antes GGAL.BA salía "AR · CEDEAR (…)" y TECO2 "Otros".
-    if es_accion_argentina(a):
+    # Una acción argentina (con o sin .BA) o su ADR NO es un CEDEAR: su sector.
+    # Antes GGAL.BA salía "AR · CEDEAR (…)" y TECO2 "Otros".
+    if es_accion_argentina(a, en_byma):
         base = a[:-3] if a.endswith(".BA") else a
-        return _SECTOR_MAP.get(base, "AR · Acciones")
+        return _SECTOR_AR.get(base, "AR · Acciones")
     # CEDEARs: stripear .BA y buscar
     if a.endswith(".BA"):
         base = a[:-3]
@@ -1735,7 +1830,7 @@ def detect_sector_concentration(positions: List[Dict[str, Any]],
         value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if value_usd <= 0:
             continue
-        sector = _sector_for(asset)
+        sector = _sector_for(asset, _en_bolsa_argentina(p))
         if sector == "Otros":
             unmapped += 1
         by_sector[sector] = by_sector.get(sector, 0) + value_usd

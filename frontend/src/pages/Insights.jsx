@@ -2472,6 +2472,7 @@ function InsightsDesktop({ _embeddedTab }) {
     holdTime,
     openExtremes,
     positions,
+    positionsWithValue,   // con value_usd: lo que vale cada tenencia (concentración en Argentina)
     brokers,
     tcValuacion,
     // Variables nuevas para reglas de comportamiento, costos y consistencia.

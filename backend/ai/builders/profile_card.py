@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import Dict, Any
 import json
 
-from behavioral import _native_ccy
+from behavioral import _native_ccy, es_bono_o_letra
 
 
 def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = None) -> float:
@@ -249,32 +249,13 @@ def _build_card_data(
     # Política simplificada (no idéntica a profileMatch.js pero suficiente
     # para que el LLM razone — el LLM no necesita los %  exactos al decimal):
     #   • cripto             → alternative
-    #   • bonos AR (lista hardcodeada de prefijos reales) → fixed_income
+    #   • bonos, letras y ONs  → fixed_income (behavioral.es_bono_o_letra, la
+    #     misma regla que "Bonos y letras" de la torta; los FCI van a equity
+    #     como en la pantalla)
     #   • cash               → cash
     #   • el resto           → equity
     #
-    # Audit fix 2026-05-27: antes el prefix "S" matcheaba CUALQUIER ticker
-    # que empieza con S (SPY, SHOP, SHEL, SQ) y los marcaba como fixed_income,
-    # distorsionando los buckets. Ahora usamos una función de detección que
-    # exige que el sufijo tras el prefix sea dígitos (AL30, TX26, GD35D).
-    ar_bond_prefixes = ("AL", "GD", "AE", "TX", "T2X", "TZX")
     crypto_set = {"BTC", "ETH", "USDT", "USDC", "SOL", "ADA", "DOT", "MATIC", "AVAX", "BNB", "XRP", "DOGE", "LINK", "AAVE"}
-
-    def _is_ar_bond(ticker: str) -> bool:
-        """Detecta tickers de bonos AR soberanos (AL30, GD35D, TX26, TZX26, etc.)
-        de forma estricta: prefix conocido + dígitos al final (con opcional
-        sufijo `D` para MEP o `C` para CCL). Evita falsos positivos con
-        equities US que empiezan con esas letras."""
-        for prefix in ar_bond_prefixes:
-            if ticker.startswith(prefix):
-                rest = ticker[len(prefix):]
-                # Sacamos sufijo D o C opcional al final
-                if rest.endswith(("D", "C")):
-                    rest = rest[:-1]
-                # Lo que queda debe ser solo dígitos (vacío o "30", "35", etc.)
-                if rest and rest.isdigit():
-                    return True
-        return False
 
     bucket_totals = {"cash": 0, "fixed_income": 0, "equity": 0, "alternative": 0}
     for p in positions:
@@ -298,7 +279,7 @@ def _build_card_data(
             bucket_totals["cash"] += val
         elif ticker in crypto_set:
             bucket_totals["alternative"] += val
-        elif _is_ar_bond(ticker):
+        elif es_bono_o_letra(p):
             bucket_totals["fixed_income"] += val
         else:
             bucket_totals["equity"] += val

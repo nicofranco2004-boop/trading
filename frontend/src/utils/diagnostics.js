@@ -1,4 +1,5 @@
 import { pctTxt, pctVar } from './format'
+import { classifyAsset } from './assetClass'
 // diagnostics.js
 // ──────────────
 // Motor de diagnóstico del portfolio. La idea es que existan MUCHOS
@@ -689,21 +690,29 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'geographic_concentration_ar',
     category: 'Moneda',
     severity: 'warn',
-    generate: ({ positions, totalPortfolio, brokers, prices, tcValuacion }) => {
-      // Posiciones argentinas = activos en brokers ARS (cotizan en BCBA con sufijo .BA)
-      if (!positions || !brokers || !totalPortfolio || !tcValuacion) return null
-      const arsBrokers = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
-      const arValue = positions
-        .filter(p => arsBrokers.has(p.broker) && !p.is_cash)
-        .reduce((s, p) => {
-          // Aproximación: usamos invested ARS / tcValuacion. Si hay precio, igual sirve
-          // para estimar exposición geográfica (no es valor live exacto).
-          const arsAmt = (p.invested || 0) + (p.commissions || 0)
-          return s + arsAmt / tcValuacion
-        }, 0)
+    generate: ({ positionsWithValue, totalPortfolio, brokers }) => {
+      // Exposición argentina = pesos, acciones argentinas (y sus ADRs),
+      // bonos/letras y FCI: la misma regla que Comportamiento (el servidor,
+      // behavioral.detect_home_bias) con la clase de la torta (assetClass.js).
+      // Antes contaba TODO lo que estaba en un broker en pesos, CEDEARs
+      // incluidos, y por lo que COSTÓ: con Apple y Microsoft en Cocos esta
+      // pestaña decía "100 % en activos argentinos" y Comportamiento "Casi sin
+      // exposición a Argentina". Un CEDEAR es exposición a la empresa de afuera.
+      // Ahora suma lo que VALE cada tenencia (value_usd, la misma valuación de
+      // la torta), igual que el servidor.
+      if (!positionsWithValue || !brokers || !totalPortfolio) return null
+      const ARGENTINAS = new Set(['accion_ar', 'bono', 'fci'])
+      const enPesos = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
+      const DOLARES = new Set(['USD', 'USDT', 'USDC', 'DAI'])
+      const esArgentina = (p) => p.is_cash
+        ? enPesos.has(p.broker) && !DOLARES.has(String(p.asset || '').toUpperCase())
+        : ARGENTINAS.has(classifyAsset(p, brokers))
+      const arValue = positionsWithValue
+        .filter(esArgentina)
+        .reduce((s, p) => s + (p.value_usd || 0), 0)
       const sharePct = (arValue / totalPortfolio) * 100
       if (sharePct < 50) return null
-      return `**${sharePct.toFixed(0).replace('.', ',')}%** del portfolio está en activos argentinos (acciones BCBA, CEDEARs locales). Concentración geográfica alta — para diversificar considerá cuentas USD con ETFs internacionales (SPY, EEM, VEA).`
+      return `**${sharePct.toFixed(0).replace('.', ',')}%** del portfolio está en activos argentinos (pesos, acciones, bonos y fondos locales; los CEDEARs no cuentan: son empresas de afuera). Concentración geográfica alta — para diversificar considerá cuentas USD con ETFs internacionales (SPY, EEM, VEA).`
     },
   },
 

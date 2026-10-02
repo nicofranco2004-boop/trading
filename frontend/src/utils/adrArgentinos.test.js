@@ -16,7 +16,13 @@ const delServidor = () => {
   const py = readFileSync(resolve(AQUI, '../../../backend/behavioral.py'), 'utf-8')
   const bloque = py.match(/_AR_ADRS = frozenset\(\{([\s\S]*?)\}\)/)
   expect(bloque, 'no encontré _AR_ADRS en behavioral.py').toBeTruthy()
-  return [...bloque[1].matchAll(/"([A-Z]+)"/g)].map(m => m[1]).sort()
+  // Con cualquier comilla: con sólo las dobles, un 'VIST' agregado en el
+  // servidor pasaba en verde. Si queda una entrada sin leer, rojo.
+  const cuerpo = bloque[1].replace(/#[^\n]*/g, '')
+  const leidos = [...cuerpo.matchAll(/['"]([A-Z0-9.]+)['"]/g)].map(m => m[1])
+  const entradas = cuerpo.split(',').map(x => x.trim()).filter(Boolean)
+  expect(leidos.length, 'hay una entrada de _AR_ADRS que no se pudo leer').toBe(entradas.length)
+  return leidos.sort()
 }
 // DESP (Despegar) es argentina pero no cotiza en BYMA: va aparte en assetClass.
 const deLaPantalla = () => [...new Set([...Object.values(ADR_DE_ACCION_AR), 'DESP'])].sort()

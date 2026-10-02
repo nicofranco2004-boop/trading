@@ -9,6 +9,8 @@
 // inversión. Son orientativas, no normativas. El frontend muestra "asignación
 // de referencia para perfil X" — nunca "deberías tener X%".
 
+import { classifyAsset } from './assetClass'
+
 // ─── Derivación: 7 respuestas → categoría ──────────────────────────────────
 //
 // Scoring multi-dimensional con peso mayor a horizonte + drawdown (los dos
@@ -199,72 +201,15 @@ export const HORIZON_EXPECTATION = {
 
 
 // ─── Clasificación de activos extendida (con bonos AR) ──────────────────────
-//
-// La clasificación que ya existe en insightsModel.js tiene 4 buckets:
-//   Cash · Cripto · CEDEAR/AR · Acción/ETF
-//
-// Para el modelo de allocation necesitamos separar bonos (renta fija) de
-// acciones argentinas. Lo hacemos por pattern matching del ticker —
-// los bonos AR tienen prefijos canónicos.
-
-const BOND_PREFIXES_AR = [
-  // Bonos soberanos en USD
-  'AL',   // AL29, AL30, AL35, AL38, AL41
-  'GD',   // GD29, GD30, GD35, GD38, GD41
-  'AE',   // AE38
-  'AY',   // AY24 (legacy)
-  // Bonos en pesos / CER
-  'TX',   // TX24, TX26, TX28 (CER)
-  'TY',   // TY28 (CER)
-  'TC',   // TC25 (CER)
-  'TG',   // TG23 (USD link)
-  'TZ',   // TZX25 (CER)
-  // BONAR / BPO
-  'BONAR',
-  'BPO',
-  'BP',   // BPC28, BPO27
-  // LECAP / LEDES / LELIQ
-  'LECAP',
-  'LEDES',
-  'LELIQ',
-  'S',    // S31E5, S30J5 (LECAPs short tickers — heurística por longitud abajo)
-]
-
-// Tickers exactos que son LECAPs/LEDES — pattern de 4-5 chars con prefijo S/T
-// y formato fecha (S31E5 = vence 31 enero 2025). Detectamos por regex.
-const LECAP_REGEX = /^[ST]\d{1,2}[A-Z]\d{1,2}$/
-
-/**
- * isBondTicker
- *
- * Detecta si un ticker es un bono argentino por pattern del símbolo.
- * No es exhaustivo — cubre los más comunes (soberanos, CER, LECAPs).
- *
- * @param {string} ticker
- * @returns {boolean}
- */
-export function isBondTicker(ticker) {
-  if (!ticker) return false
-  const t = String(ticker).toUpperCase().trim()
-  // Detectar LECAP/LEDES por formato fecha (S31E5, T30D5, etc.)
-  if (LECAP_REGEX.test(t)) return true
-  // Detectar por prefijo conocido — pero excluir false-positives
-  // (ej: "AAPL" empieza con A pero no es bono — el regex de longitud ayuda)
-  for (const prefix of BOND_PREFIXES_AR) {
-    if (t.startsWith(prefix)) {
-      // Heurística: bonos AR tienen al menos un dígito en el ticker
-      if (/\d/.test(t)) return true
-    }
-  }
-  return false
-}
-
+// Bonos, letras y ONs salen de assetClass.js (la torta). Acá había una lista
+// propia de prefijos ("TG", "S", "BP"…) que volvía bonos a TGSU2 y TGNO4;
+// el servidor (behavioral.es_bono_o_letra) usa la misma regla que la torta.
 
 /**
  * classifyAssetBucket
  *
  * Versión ampliada de classifyAssetType (de insightsModel.js) que incluye
- * el bucket fixed_income (renta fija) detectado por ticker.
+ * el bucket fixed_income (renta fija): lo que la torta llama "Bonos y letras".
  *
  * Buckets devueltos: 'cash' | 'fixed_income' | 'equity' | 'alternative'
  * — alineados con SUGGESTED_ALLOCATIONS.
@@ -294,8 +239,11 @@ export function classifyAssetBucket(position, brokers = []) {
     return 'alternative'
   }
 
-  // 2. Bonos AR (fixed_income)
-  if (isBondTicker(ticker)) return 'fixed_income'
+  // 2. Renta fija = "Bonos y letras" de la torta (assetClass.js). Con la lista
+  //    de prefijos de abajo, "TG" volvía bonos a TGSU2 y TGNO4 (acciones de las
+  //    transportadoras de gas): la tarjeta decía 100 % renta fija, la torta
+  //    "Acciones AR" y Rendi AI renta variable.
+  if (classifyAsset(position, brokers) === 'bono') return 'fixed_income'
 
   // 3. Acciones (equity) — CEDEARs, ETFs, AR shares
   return 'equity'

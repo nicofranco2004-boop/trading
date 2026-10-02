@@ -101,7 +101,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from datetime import date
 
-from behavioral import _native_ccy, _trust_mkt_value_usd, es_accion_argentina
+from behavioral import _native_ccy, _trust_mkt_value_usd, exposicion_argentina
 import realized_pnl as _realized_pnl
 import twr as _twr
 
@@ -117,8 +117,6 @@ _CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOG
 # Acá había una tercera lista (con "TGN0" por TGNO4 y sin los ADRs: PAM en
 # Schwab salía "us", GGAL.BA en Cocos también).
 
-# Bonos soberanos AR — prefijos (AL, GD, AE, etc.)
-_AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX", "TO", "T2X")
 
 
 def _drawdown(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -141,21 +139,24 @@ def _drawdown(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     return out
 
 
-def _classify_geography(asset: str, broker: str) -> str:
+def _classify_geography(p: Dict[str, Any]) -> str:
     """ar | us | crypto — para exposure breakdown.
 
-    Lógica:
     - Crypto: ticker en hint list o broker = binance.
-    - AR real: ticker en panel local AR o bono soberano (AL, GD, etc.).
+    - AR: behavioral.exposicion_argentina — la MISMA regla que el diagnóstico de
+      sesgo local (acciones argentinas y sus ADRs según el mercado de la
+      tenencia, deuda argentina como la zona Renta Fija). Acá había otra: los
+      prefijos de bono sin exigir número ("TX", "GD", "TO") volvían argentinas a
+      Texas Instruments, General Dynamics o GDX.
     - US: el resto, INCLUYE los CEDEARs (asset US-listed en broker AR).
       Económicamente un CEDEAR de MSFT es exposure US, no AR — solo el
       wrapper es local. Esa es la lectura útil para el LLM.
     """
-    a = (asset or "").upper().strip()
-    b = (broker or "").lower().strip()
+    a = (p.get("asset") or "").upper().strip()
+    b = (p.get("broker") or "").lower().strip()
     if a in _CRYPTO_HINT or b == "binance":
         return "crypto"
-    if es_accion_argentina(a) or a.startswith(_AR_BOND_PREFIXES):
+    if exposicion_argentina(p):
         return "ar"
     # CEDEARs en broker AR + acciones US en broker US → US exposure
     return "us"
@@ -443,7 +444,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             mv *= cf
             if not cost_is_ars:
                 cost_usd *= cf
-        geo_value[_classify_geography(asset, broker_n)] += mv
+        geo_value[_classify_geography(p)] += mv
         if asset not in holdings_agg:
             holdings_agg[asset] = {
                 "market_value_usd": 0.0,

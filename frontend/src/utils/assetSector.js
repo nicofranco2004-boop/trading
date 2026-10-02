@@ -111,7 +111,7 @@ const SECTOR_MAP = new Map([
   ]),
   ...M('energia', [
     'XOM', 'CVX', 'COP', 'OXY', 'SLB', 'EOG', 'PSX', 'MPC', 'VIST', 'PBR',
-    'XLE', 'USO', 'UNG', 'YPF', 'YPFD', 'PAMP', 'PAM', 'CAPU', 'CAPX', 'PCAR',
+    'XLE', 'USO', 'UNG', 'YPF', 'YPFD', 'PAMP', 'PAM', 'CAPU', 'CAPX',
     'GPRK', 'URA',
   ]),
   ...M('utilities', [

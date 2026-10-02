@@ -362,7 +362,6 @@ ASSET_NAMES = {
     'PATA': 'Importadora Patagonia',
     'PATH': 'UiPath',
     'PBR': 'Petrobras',
-    'PCAR': 'Petrolera Pampa',
     'PDD': 'PDD Holdings',
     'PENDLE': 'Pendle',
     'PEP': 'PepsiCo',

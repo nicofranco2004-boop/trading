@@ -11,7 +11,7 @@
 //  • Los amounts vienen y salen en la moneda de origen (USD si la pasa el
 //    caller; ARS si la pasa así). Sin conversiones implícitas.
 
-import { isArUsdBroker } from './valuation'
+import { classifyAsset, ASSET_CLASS_META } from './assetClass'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -424,24 +424,15 @@ export function computeBrokerConcentration(brokerTotals = []) {
 }
 
 // ─── Distribución por tipo de activo ───────────────────────────────────────
-const CRYPTO_TICKERS = new Set([
-  'BTC','ETH','SOL','BNB','ADA','XRP','MATIC','DOT','AVAX','LINK','LTC','BCH',
-  'ATOM','UNI','USDT','USDC','DAI','DOGE','SHIB','TRX','XLM','VET','FIL','ICP',
-  'APT','NEAR','ARB','OP','SUI','TON','PEPE','WBTC','STETH','HYPE','BONK','WLD',
-])
 
 /**
  * classifyAssetType
  *
- * Heurística para clasificar un activo en una categoría de alto nivel.
- * No requiere campo `type` en el modelo de datos — usa el ticker y la
- * moneda del broker.
+ * La clase de un activo con el nombre que muestra la torta: es
+ * classifyAsset (assetClass.js) + la etiqueta de ASSET_CLASS_META.
  *
- * Categorías:
- *   • Cash      — posición marcada is_cash
- *   • Cripto    — ticker en lista de cripto conocidos
- *   • CEDEAR/AR — broker ARS (acción argentina o CEDEAR)
- *   • Acción/ETF — broker USD, ticker no cripto (fallback razonable)
+ * Categorías: CEDEARs · Acciones AR · Acciones US · ETFs · Bonos y letras ·
+ * FCI · Cripto · Efectivo · Sin clasificar.
  *
  * @param {Object} position  { asset, asset_type, broker, is_cash }
  * @param {Array}  brokers   [{ name, currency }]
@@ -449,15 +440,11 @@ const CRYPTO_TICKERS = new Set([
  */
 export function classifyAssetType(position, brokers = []) {
   if (!position) return 'Otro'
-  if (position.is_cash) return 'Cash'
-  const ticker = String(position.asset || '').toUpperCase()
-  if (CRYPTO_TICKERS.has(ticker)) return 'Cripto'
-  // CEDEAR (incluso en broker USD vía dólar-MEP) o instrumento de un sub-broker
-  // AR "· USD" → es BYMA, va a CEDEAR/AR aunque la moneda del broker sea USD.
-  if (position.asset_type === 'CEDEAR' || isArUsdBroker(position.broker)) return 'CEDEAR/AR'
-  const broker = brokers.find(b => b.name === position.broker)
-  if (broker?.currency === 'ARS') return 'CEDEAR/AR'
-  return 'Acción/ETF'
+  // La clase de la torta (assetClass.js, la fuente única). Acá había otra regla
+  // que juntaba CEDEAR + acción argentina + bono + FCI en "CEDEAR/AR" según la
+  // moneda del broker: AL30 + TECO2 + AAPL en Cocos, un tercio cada uno,
+  // disparaban "100 % en una sola clase de activo" con la torta mostrando tres.
+  return ASSET_CLASS_META[classifyAsset(position, brokers)]?.label || 'Otro'
 }
 
 /**

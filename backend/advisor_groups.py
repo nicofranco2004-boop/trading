@@ -37,9 +37,16 @@ CLASS_LABEL = {
 MAX_GROUPS = 30
 
 
-def classify(asset: str, asset_type: str = None) -> str:
+def classify(asset: str, asset_type: str = None, en_byma: bool = None) -> str:
     """Clase de un activo. El asset_type del importador manda cuando es
-    inequívoco; si no, se resuelve por los universos de tickers conocidos."""
+    inequívoco; si no, se resuelve por los universos de tickers conocidos.
+
+    "¿Acción argentina?" es la MISMA regla que el diagnóstico de sesgo local
+    (behavioral.es_accion_argentina): sus ADRs (YPF, PAM, TEO) cuentan en
+    cualquier broker —antes un cliente 100 % en ADRs en Schwab quedaba afuera
+    del grupo "acciones argentinas"— y un ticker del panel local, sólo si la
+    tenencia está en la bolsa argentina (`en_byma`): CELU o BOLT en Schwab son
+    empresas de EE.UU.; ROSE fuera de BYMA es una cripto."""
     a = (asset or "").upper().strip()
     if not a:
         return "otro"
@@ -55,14 +62,16 @@ def classify(asset: str, asset_type: str = None) -> str:
     if t == "CRYPTO":
         return "crypto"
     base = a[:-3] if a.endswith(".BA") else a
+    if a.endswith(".BA"):
+        en_byma = True
     try:
-        from ai.trade_tickers import (AR_STOCK_TICKERS, CEDEAR_TICKERS,
-                                      CRYPTO_TICKERS, US_TICKERS)
+        from ai.trade_tickers import (CEDEAR_TICKERS, CRYPTO_TICKERS, US_TICKERS)
+        from behavioral import es_accion_argentina
     except Exception:
         return "otro"
-    if base in CRYPTO_TICKERS:
+    if base in CRYPTO_TICKERS and en_byma is not True:
         return "crypto"
-    if base in AR_STOCK_TICKERS:
+    if es_accion_argentina(base, en_byma):
         return "ar_stock"
     if base in CEDEAR_TICKERS and a.endswith(".BA"):
         return "cedear"
@@ -221,7 +230,12 @@ def client_profiles(conn, uid: int, price_cache: dict = None) -> dict:
             val = cost / tc_mep if (r["bc"] == "ARS" and tc_mep) else cost
         p["holdings"] += val
         p["assets"].add(asset[:-3] if asset.endswith(".BA") else asset)
-        cls = classify(asset, r["asset_type"])
+        # En qué mercado está: la misma decisión que valúa la posición (moneda
+        # del broker, sub-cuenta "· USD" de un broker argentino, tipo CEDEAR).
+        from behavioral import _en_bolsa_argentina
+        en_byma = _en_bolsa_argentina({"asset": asset, "asset_type": r["asset_type"],
+                                       "broker": r["broker"], "currency": r["bc"]})
+        cls = classify(asset, r["asset_type"], en_byma)
         if cls in p["by_class"]:
             p["by_class"][cls] += val
 

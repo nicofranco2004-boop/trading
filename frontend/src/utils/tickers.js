@@ -291,7 +291,10 @@ export const ARG_GENERAL = [
   { s: 'LEDE', n: 'Ledesma' }, { s: 'LONG', n: 'Longvie' },
   { s: 'MOLA', n: 'Molinos Agro' }, { s: 'MORI', n: 'Morixe' },
   { s: 'OEST', n: 'Oeste Grupo Concesionario' }, { s: 'PATA', n: 'Importadora Patagonia' },
-  { s: 'PCAR', n: 'Petrolera Pampa' }, { s: 'POLL', n: 'Polledo' },
+  // (Se sacó 'PCAR · Petrolera Pampa': se fusionó con Pampa Energía y hoy PCAR
+  // en BYMA es el CEDEAR de PACCAR, camiones de EE.UU. — data912 lo lista entre
+  // los CEDEARs. Contado como acción argentina daba "home bias" falso.)
+  { s: 'POLL', n: 'Polledo' },
   { s: 'RICH', n: 'Laboratorios Richmond' }, { s: 'ROSE', n: 'Instituto Rosenbusch' },
   { s: 'SAMI', n: 'San Miguel' }, { s: 'SEMI', n: 'Molinos Juan Semino' },
   { s: 'TGLT', n: 'TGLT' },
@@ -625,11 +628,19 @@ export const ADR_DE_ACCION_AR = {
   LOMA: 'LOMA', IRSA: 'IRS',
 }
 
+// Las acciones del panel argentino (ARG_LIDER + ARG_GENERAL): la misma lista
+// que el servidor (ai/trade_tickers.AR_STOCK_TICKERS).
+const AR_STOCK_SET = new Set([...ARG_LIDER, ...ARG_GENERAL].map(x => x.s))
+
 // Heurística para inferir tipo a partir del campo `asset` de una posición.
 export function inferType(asset) {
   if (!asset) return 'stock_us'
   const a = asset.toUpperCase()
   if (['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'MATIC', 'LINK'].includes(a)) return 'crypto'
+  // Sólo conocía las 17 de POPULAR_TICKERS: las otras 50 caían a 'stock_us' y la
+  // ficha de AGRO (Agrometal) ofrecía la empresa de EE.UU. Adecoagro. Con o sin
+  // ".BA": GGAL.BA es la acción argentina, no un CEDEAR.
+  if (AR_STOCK_SET.has(a.endsWith('.BA') ? a.slice(0, -3) : a)) return 'stock_ar'
   if (a.endsWith('.BA')) return 'cedear'
   if (/^(AL\d|GD\d|AE\d|TX\d|TZ|T2X|S\d|T\d{2}|PARY|DICY|PAR|DIC)/.test(a)) return 'bond'
   const hit = POPULAR_TICKERS.find(t => t.symbol === a)

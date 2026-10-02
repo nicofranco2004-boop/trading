@@ -229,8 +229,11 @@ export function classifyAsset(position, brokers = []) {
   //    del importador (FUND) es confiable cuando viene.
   if (isFciLike(ticker, assetType)) return 'fci'
   // 3. Cripto por la lista que ya gobierna la valuación (110 símbolos,
-  //    con test de paridad contra el backend).
-  if (isCrypto(ticker)) return 'cripto'
+  //    con test de paridad contra el backend), o porque el importador la marcó
+  //    CRYPTO: ROSE comprada en un exchange en pesos es la cripto Oasis, no el
+  //    Instituto Rosenbusch del panel argentino (mismo criterio que el servidor,
+  //    behavioral._en_bolsa_argentina).
+  if (isCrypto(ticker) || (assetType || '').toUpperCase() === 'CRYPTO') return 'cripto'
   // 4. Renta fija: bonos soberanos, ONs, letras. Antes del split de mercado
   //    porque un bono es un bono en cualquier broker.
   if (isBondLike(ticker, assetType)) return 'bono'

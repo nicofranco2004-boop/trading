@@ -113,6 +113,39 @@ BR_DOLLAR_LEG = {
     "PETRD": "PETR3",
 }
 
+# ── Acciones ARGENTINAS cuya pata dólar no es "acción + D" ────────────────────
+# GGAL → GGALD, PAMP → PAMPD, YPFD → YPFDD siguen la regla genérica. Estas tres
+# no: BYMA reemplaza el número de clase por la D (verificado en data912). Con
+# la regla genérica TECOD quedaba "TECO", que no es ninguna acción: la compra
+# de Telecom en pesos y la venta en dólares caían en dos libros separados, y
+# la tenencia en dólares contaba como "internacional" en el diagnóstico.
+# Mapa exacto, mismo criterio que el brasileño.
+AR_DOLLAR_LEG = {
+    "TECOD": "TECO2",
+    "TGSUD": "TGSU2",
+    "TGN4D": "TGNO4",
+}
+
+
+def _pata_dolar_exacta(t: str, es_fondo_o_cripto: bool = False) -> str | None:
+    """Pata dólar/cable que se resuelve SIN mirar el tipo de activo: los dos mapas
+    de arriba y la acción argentina + D/C (GGALD → GGAL). Algunos importadores
+    (IEB) no dicen si una fila es acción: sin esto la pata dólar de una acción
+    argentina quedaba como otro activo (consolidate_cd sólo junta si el tipo
+    es BOND/STOCK/CEDEAR). La lista es la del panel argentino de la pantalla
+    (ai.trade_tickers.AR_STOCK_TICKERS); ninguna de sus acciones es otra + D/C.
+    Un fondo o una cripto no tienen pata dólar: para ellos sólo valen los mapas."""
+    if t in BR_DOLLAR_LEG:
+        return BR_DOLLAR_LEG[t]
+    if t in AR_DOLLAR_LEG:
+        return AR_DOLLAR_LEG[t]
+    if (not es_fondo_o_cripto and len(t) >= 4 and t[-1] in ("D", "C")
+            and t not in KNOWN_CD_TICKERS):
+        from ai.trade_tickers import AR_STOCK_TICKERS
+        if t not in AR_STOCK_TICKERS and t[:-1] in AR_STOCK_TICKERS:
+            return t[:-1]
+    return None
+
 
 def strip_cd_suffix(raw_ticker: str, is_fci: bool = False) -> str:
     """Devuelve el ticker base: le saca el sufijo de moneda y la D/C final.
@@ -129,11 +162,12 @@ def strip_cd_suffix(raw_ticker: str, is_fci: bool = False) -> str:
     if not t:
         return t
     t = re.sub(r"\s*(US\$|U\$S)$", "", t).strip()
-    # Pata dólar de un CEDEAR brasileño: lookup EXACTO, antes que cualquier regla.
-    # Va incluso para FCI y para tickers con punto: es un dict escrito a mano, sólo
-    # puede tocar los símbolos que alguien puso ahí.
-    if t in BR_DOLLAR_LEG:
-        return BR_DOLLAR_LEG[t]
+    # Pata dólar de un CEDEAR brasileño o de una acción argentina: lookup EXACTO,
+    # antes que cualquier regla. Va incluso para FCI y para tickers con punto:
+    # sólo puede tocar los símbolos de los mapas y del panel argentino.
+    exacta = _pata_dolar_exacta(t, es_fondo_o_cripto=is_fci)
+    if exacta:
+        return exacta
     if is_fci or "." in t:
         return t
     if len(t) >= 3 and t[-1] in ("D", "C") and t not in KNOWN_CD_TICKERS:
@@ -155,9 +189,12 @@ def consolidate_cd(raw_ticker: str, asset_type: str | None) -> str:
     # parsers rara vez clasifican estas filas (IOL manda asset_type vacío → el
     # normalizador cae a OTHER, que no está en CD_ASSET_TYPES). Sin esta línea el
     # mapa sería letra muerta justo para el broker que lo reportó.
-    _up = raw_ticker.strip().upper()
-    if _up in BR_DOLLAR_LEG:
-        return BR_DOLLAR_LEG[_up]
+    # Lo mismo para la pata dólar de una acción argentina (IEB manda tipo vacío).
+    exacta = _pata_dolar_exacta(
+        raw_ticker.strip().upper(),
+        es_fondo_o_cripto=(asset_type or "").upper() in ("FUND", "CRYPTO", "FIAT"))
+    if exacta:
+        return exacta
     if (asset_type or "").upper() not in CD_ASSET_TYPES:
         return raw_ticker
     return strip_cd_suffix(raw_ticker, is_fci=False)
