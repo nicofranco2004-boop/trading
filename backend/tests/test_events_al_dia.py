@@ -310,6 +310,47 @@ class EventosAlDiaTest(unittest.TestCase):
             h.join(5)
         self.assertFalse(h.is_alive(), "se quedó esperando un futuro cancelado")
 
+    def test_calendario_vacio_sin_error_usa_la_fecha_de_la_ficha(self):
+        """Medido el 2026-10-02: con Yahoo frío y muchos pedidos a la vez, el
+        calendario vuelve VACÍO sin error (yfinance esconde el 401) y AAPL,
+        MSFT, NVDA, META, AMZN y TSLA quedaban "sin earnings" 6 h. La ficha trae
+        la misma fecha en earningsTimestampStart. Por el camino real
+        (_refresh_events_for_tickers → _fetch_yf_events → base)."""
+        en_20 = int(time.time()) + 20 * 86400
+        class CalendarioVacio:
+            calendar = {}
+            info = {"earningsTimestampStart": en_20, "earningsTimestamp": en_20 - 90 * 86400,
+                    "isEarningsDateEstimate": True}
+        with patch.object(main.yf, "Ticker", return_value=CalendarioVacio()):
+            self.assertEqual(main._refresh_events_for_tickers(["NVDA"], esperar_segundos=5), 1)
+        fecha = datetime.utcfromtimestamp(en_20).strftime("%Y-%m-%d")
+        self.assertEqual(self._fechas("NVDA", "earnings"), [fecha])
+        conn = main.get_db()
+        try:
+            confirmado = conn.execute("SELECT confirmed FROM financial_events WHERE ticker='NVDA'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(confirmado, 0)   # Yahoo dice que es estimada
+
+    def test_con_calendario_la_ficha_no_agrega_otro_earnings(self):
+        cal = _en_dias(25)
+        class ConCalendario:
+            calendar = {"Earnings Date": [datetime.strptime(cal, "%Y-%m-%d").date()]}
+            info = {"earningsTimestampStart": int(time.time()) + 30 * 86400}
+        with patch.object(main.yf, "Ticker", return_value=ConCalendario()):
+            evs = main._fetch_yf_events("KO")
+        self.assertEqual([e["event_date"] for e in evs if e["event_type"] == "earnings"], [cal])
+
+    def test_el_earnings_anterior_de_la_ficha_no_se_usa(self):
+        """`earningsTimestamp` a veces es el resultado ANTERIOR (TSLA: 22/07 con
+        el próximo el 21/10): sin earningsTimestampStart no se inventa nada."""
+        class SoloElAnterior:
+            calendar = {}
+            info = {"earningsTimestamp": int(time.time()) - 70 * 86400}
+        with patch.object(main.yf, "Ticker", return_value=SoloElAnterior()):
+            evs = main._fetch_yf_events("TSLA")
+        self.assertEqual([e for e in evs if e["event_type"] == "earnings"], [])
+
     def test_lo_buscado_hace_poco_no_se_vuelve_a_pedir(self):
         yahoo = _YahooLento(0.01)
         with patch.object(main, "_fetch_yf_events", yahoo):

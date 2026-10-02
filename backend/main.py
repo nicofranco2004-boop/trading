@@ -7054,6 +7054,7 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
                 fallas.append('calendar')
 
         # Ex-dividend date + dividend amount (próximo)
+        info = None
         try:
             try:
                 info = t.info  # cache interno de yfinance
@@ -7117,6 +7118,31 @@ def _fetch_yf_events(ticker: str, fallas: list = None) -> list:
                         # viaja en details.dividend_amount_estimated.
                         'confirmed': 1,
                     })
+        except Exception:
+            pass
+
+        # Respaldo del earnings: el CALENDARIO puede volver vacío SIN error.
+        # Medido el 2026-10-02 con Yahoo frío y muchos pedidos a la vez (como
+        # después de cada publicación): Yahoo rechaza con 401 y yfinance, que
+        # esconde ese error, devuelve el calendario vacío. AAPL, MSFT, NVDA,
+        # META, AMZN y TSLA quedaron "sin earnings" y así se guardaban 6 h. La
+        # ficha (`info`, que ya se pidió arriba) trae la misma fecha en
+        # `earningsTimestampStart` — verificado contra el calendario en NVDA,
+        # TSLA, AMZN, KO, GGAL y MELI. NO `earningsTimestamp`: ése a veces es
+        # el resultado ANTERIOR (TSLA: 22/07 con el próximo el 21/10).
+        try:
+            if info and not any(e['event_type'] == 'earnings' for e in events):
+                ts = info.get('earningsTimestampStart')
+                if isinstance(ts, (int, float)) and ts > 0:
+                    d = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+                    if _DATE_RE.match(d):
+                        events.append({
+                            'ticker': ticker,
+                            'event_type': 'earnings',
+                            'event_date': d,
+                            'details': {},
+                            'confirmed': 0 if info.get('isEarningsDateEstimate') else 1,
+                        })
         except Exception:
             pass
 
