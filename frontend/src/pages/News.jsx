@@ -23,6 +23,11 @@ import { safeExternalUrl } from '../utils/safeUrl'
 import { sentimentMeta } from '../utils/sentiment'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import InlineAIButton from '../components/ai/InlineAIButton'
+import CargaPorPasos from '../components/novedades/CargaPorPasos'
+import { useUltimoPedido } from '../hooks/useUltimoPedido'
+import { useDemora } from '../hooks/useDemora'
+import { useAlVerse, entrada } from '../hooks/useAlVerse'
+import { pasosNoticias } from '../utils/cargaPorPasos'
 
 const TABS = [
   { value: 'portfolio', label: 'Para ti',  desc: 'Noticias de los activos de tu cartera' },
@@ -64,8 +69,12 @@ export default function News({ embedded = false }) {
 
   const [portfolioNews, setPortfolioNews] = useState([])
   const [marketNews, setMarketNews] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  // Cada pestaña se muestra cuando volvió LO SUYO. Hasta el 2026-10-02 era un
+  // Promise.all: "Mercado" esperaba a las noticias de tu cartera (Google News,
+  // una búsqueda por activo) aunque no las usara.
+  const [llego, setLlego] = useState({ cartera: false, mercado: false })
+  const [fallo, setFallo] = useState({ cartera: false, mercado: false })
+  const nuevoPedido = useUltimoPedido()
   const [tickerFilter, setTickerFilter] = useState(null)  // null = sin filtro
   const [tagFilter, setTagFilter] = useState(null)        // null = sin filtro
   const [sentimentFilter, setSentimentFilter] = useState(null)  // null | 'positive' | 'negative'
@@ -74,28 +83,25 @@ export default function News({ embedded = false }) {
     loadAll()
   }, [])
 
-  async function loadAll() {
-    setLoading(true)
-    setError(null)
-    try {
-      const [pn, mn] = await Promise.all([
-        api.get(`/news/portfolio?limit=${LIMIT}`).catch(e => {
-          console.warn('Portfolio news fetch failed:', e)
-          return { news: [] }
-        }),
-        api.get(`/news/market?limit=${LIMIT}`).catch(e => {
-          console.warn('Market news fetch failed:', e)
-          return { news: [] }
-        }),
-      ])
-      setPortfolioNews(pn?.news || [])
-      setMarketNews(mn?.news || [])
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
+  function loadAll() {
+    const vigente = nuevoPedido()
+    setLlego({ cartera: false, mercado: false })
+    setFallo({ cartera: false, mercado: false })
+    const pedir = (url, clave, guardar) => api.get(url)
+      .then(r => { if (vigente()) guardar(r?.news || []) })
+      .catch(e => {
+        console.warn(`News ${clave} fetch failed:`, e)
+        if (vigente()) { guardar([]); setFallo(f => ({ ...f, [clave]: true })) }
+      })
+      .finally(() => { if (vigente()) setLlego(l => ({ ...l, [clave]: true })) })
+    pedir(`/news/portfolio?limit=${LIMIT}`, 'cartera', setPortfolioNews)
+    pedir(`/news/market?limit=${LIMIT}`, 'mercado', setMarketNews)
   }
+
+  const loading = tab === 'portfolio' ? !llego.cartera : !llego.mercado
+  // El cargador sólo si la carga TARDA (utils/cargaPorPasos.js).
+  const mostrarCargador = useDemora(loading)
+  const fallaEstaPestana = tab === 'portfolio' ? fallo.cartera : fallo.mercado
 
   const rawNews = tab === 'portfolio' ? portfolioNews : marketNews
   const visibleNews = useMemo(() => {
@@ -263,17 +269,24 @@ export default function News({ embedded = false }) {
         ))}
       </div>
 
-      {loading && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {[1,2,3,4,5,6].map(i => <NewsTileSkeleton key={i} />)}
+      {/* Cargando: los dos pedidos con su tilde, sólo si tarda (useDemora). */}
+      {loading && mostrarCargador && (
+        <CargaPorPasos
+          titulo="Cargando las noticias"
+          pasos={pasosNoticias({
+            cartera: llego.cartera ? portfolioNews : null,
+            mercado: llego.mercado ? marketNews : null,
+            fallo,
+            primero: tab,
+          })}
+        />
+      )}
+      {!loading && fallaEstaPestana && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-rendi-warn/10 text-rendi-warn text-[12.5px] mb-3">
+          <AlertCircle size={14} className="shrink-0" /> No pudimos traer estas noticias. Probá de nuevo en un rato.
         </div>
       )}
-      {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-rendi-warn/10 text-rendi-warn text-sm">
-          <AlertCircle size={14} /> {error}
-        </div>
-      )}
-      {!loading && !error && visibleNews.length === 0 && (
+      {!loading && !fallaEstaPestana && visibleNews.length === 0 && (
         <EmptyState
           icon={<Newspaper size={32} />}
           title="Sin noticias por ahora"
@@ -296,16 +309,26 @@ export default function News({ embedded = false }) {
 
 // ─── Grid layout ────────────────────────────────────────────────────────────
 
+// Cuando llegan, las noticias entran en cascada (la destacada primero). La
+// demora se corta en la décima: con 25 noticias, la última no puede tardar
+// casi 2 s en aparecer.
+const MAXIMO_ESCALON = 10
+
 function NewsGrid({ news, tab, onTagClick }) {
+  const [ref, visto] = useAlVerse()
   if (news.length === 0) return null
   // Primera noticia = "featured" (más prominente). El resto se agrupa por
   // frescura (Hoy / Ayer / Esta semana / Antes) para dar ritmo al feed.
   const [featured, ...rest] = news
   const groups = groupByFreshness(rest)
+  let orden = 1
+  const escalon = () => Math.min(orden++, MAXIMO_ESCALON)
 
   return (
-    <div className="space-y-4">
-      <NewsFeatured news={featured} tab={tab} onTagClick={onTagClick} />
+    <div ref={ref} className="space-y-4">
+      <div {...entrada(visto, 0)}>
+        <NewsFeatured news={featured} tab={tab} onTagClick={onTagClick} />
+      </div>
       {groups.map(g => (
         <div key={g.label} className="space-y-2">
           <div className="flex items-center gap-2">
@@ -314,7 +337,9 @@ function NewsGrid({ news, tab, onTagClick }) {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {g.news.map(n => (
-              <NewsTile key={n.url} news={n} tab={tab} onTagClick={onTagClick} />
+              <div key={n.url} {...entrada(visto, escalon(), 'grid')}>
+                <NewsTile news={n} tab={tab} onTagClick={onTagClick} />
+              </div>
             ))}
           </div>
         </div>
@@ -495,17 +520,6 @@ function NewsTile({ news, tab, onTagClick }) {
           />
         </div>
       )}
-    </div>
-  )
-}
-
-function NewsTileSkeleton() {
-  return (
-    <div className="bg-bg-1 border border-line rounded-xl p-3.5 esqueleto">
-      <div className="h-3 w-20 bg-bg-3 rounded mb-3" />
-      <div className="h-4 w-full bg-bg-3 rounded mb-2" />
-      <div className="h-4 w-3/4 bg-bg-3 rounded mb-3" />
-      <div className="h-3 w-full bg-bg-3/60 rounded" />
     </div>
   )
 }

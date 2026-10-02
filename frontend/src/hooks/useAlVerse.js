@@ -12,6 +12,26 @@
 
 import { useEffect, useState } from 'react'
 
+// ¿Se ve lo suficiente como para arrancar? El `threshold` de un
+// IntersectionObserver es una fracción DEL ELEMENTO: en una lista alta (25
+// noticias, ~3.000 px) el 15 % no entra nunca en una pantalla de 860 px, y
+// `visto` no pasaba a true — las noticias de Novedades quedaron invisibles
+// (opacity 0 de .por-entrar) hasta que alguien bajara. Alcanza con ver esa
+// fracción del elemento O esa fracción de la pantalla, lo que pase primero.
+export function bastanteVisible(entry, fraccion) {
+  if (!entry?.isIntersecting) return false
+  if (entry.intersectionRatio >= fraccion) return true
+  const alto = entry.rootBounds?.height
+    || (typeof window !== 'undefined' ? window.innerHeight : 0) || 0
+  return alto > 0 && entry.intersectionRect.height >= alto * fraccion
+}
+
+// Escalones a los que el observador avisa: con uno solo (el 15 %), una lista
+// alta avisaría al entrar el primer pixel y nunca más.
+function escalones(fraccion) {
+  return [...new Set([0, 0.01, 0.025, 0.05, 0.1, fraccion])].sort((a, b) => a - b)
+}
+
 // El ref es una FUNCIÓN (callback ref) y no un useRef: así el observador se
 // engancha también cuando el elemento aparece recién después de cargar (una
 // lista que se arma cuando llegan los datos). Con useRef, el efecto corría al
@@ -23,8 +43,8 @@ export function useAlVerse({ threshold = 0.15, rootMargin = '0px 0px -40px 0px' 
   useEffect(() => {
     if (visto || !nodo) return
     const io = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setVisto(true); io.disconnect() } },
-      { threshold, rootMargin },
+      ([entry]) => { if (bastanteVisible(entry, threshold)) { setVisto(true); io.disconnect() } },
+      { threshold: escalones(threshold), rootMargin },
     )
     io.observe(nodo)
     return () => io.disconnect()

@@ -46,6 +46,14 @@ import {
 } from '../utils/upcomingEvents'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { getBondMeta } from '../utils/bondMeta'
+import { useUltimoPedido } from '../hooks/useUltimoPedido'
+import { useDemora } from '../hooks/useDemora'
+import { useAlVerse, entrada } from '../hooks/useAlVerse'
+import AnimatedNumber from '../components/AnimatedNumber'
+import CargaPorPasos from '../components/novedades/CargaPorPasos'
+import {
+  pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
+} from '../utils/cargaPorPasos'
 
 const WINDOW_OPTIONS = [
   { value: 30,  label: '30D' },
@@ -116,9 +124,15 @@ export default function Events({ embedded = false }) {
   const [dolar, setDolar] = useState(null)
   const [portfolioEvents, setPortfolioEvents] = useState([])
   const [popularEvents, setPopularEvents] = useState([])
-  const [loading, setLoading] = useState(true)
+  // Qué pedido ya volvió. Cada pestaña se muestra cuando volvió LO SUYO:
+  // "Populares" no espera a los precios ni a los eventos de tu cartera, y
+  // "Para ti" no espera al mercado. Hasta el 2026-10-02 era un Promise.all de
+  // los seis pedidos más los precios: la pantalla esperaba al más lento.
+  const [llego, setLlego] = useState({ base: false, cartera: false, mercado: false, precios: false })
+  const [fallo, setFallo] = useState({ cartera: false, mercado: false })
   const [error, setError] = useState(null)
   const navigate = useNavigate()
+  const nuevoPedido = useUltimoPedido()
 
   useEffect(() => {
     loadAll()
@@ -126,17 +140,31 @@ export default function Events({ embedded = false }) {
   }, [windowDays])
 
   async function loadAll() {
-    setLoading(true)
+    // Cambiar la ventana (30D → 90D) mientras volvía el pedido anterior: la
+    // respuesta vieja no pisa a la nueva.
+    const vigente = nuevoPedido()
+    const marcar = (k) => { if (vigente()) setLlego(l => ({ ...l, [k]: true })) }
+    setLlego({ base: false, cartera: false, mercado: false, precios: false })
+    setFallo({ cartera: false, mercado: false })
     setError(null)
+
+    api.get(`/events/popular?days=${windowDays}`)
+      .then(r => { if (vigente()) setPopularEvents(r?.events || []) })
+      .catch(() => { if (vigente()) { setPopularEvents([]); setFallo(f => ({ ...f, mercado: true })) } })
+      .finally(() => marcar('mercado'))
+    const pedidoCartera = api.get(`/events/portfolio?days=${windowDays}`)
+      .then(r => r?.events || [])
+      .catch(() => { if (vigente()) setFallo(f => ({ ...f, cartera: true })); return [] })
+      .then(evs => { if (vigente()) setPortfolioEvents(evs); marcar('cartera'); return evs })
+
     try {
-      const [pos, bkrs, cfg, dol, portEv, popEv] = await Promise.all([
+      const [pos, bkrs, cfg, dol] = await Promise.all([
         api.get('/positions'),
         api.get('/brokers'),
         api.get('/config'),
         api.get('/dolar').catch(() => null),
-        api.get(`/events/portfolio?days=${windowDays}`).catch(() => ({ events: [] })),
-        api.get(`/events/popular?days=${windowDays}`).catch(() => ({ events: [] })),
       ])
+      if (!vigente()) return
       setPositions(pos || [])
       setBrokers(bkrs || [])
       // El registro se vacía en cada login y esta pantalla no pasa por Posiciones:
@@ -145,47 +173,72 @@ export default function Events({ embedded = false }) {
       setBrokersRegistry(bkrs || [])
       setConfig(cfg || { tc_blue: 1415 })
       setDolar(dol)
-      setPortfolioEvents(portEv?.events || [])
-      setPopularEvents(popEv?.events || [])
-      // Al set normal de precios le sumamos el ticker PELADO de los activos con
-      // dividendo cuyo ratio no está en la tabla: sin la acción US al lado del
-      // .BA, deriveCedearRatio no tiene con qué derivar y el respaldo sería
+      marcar('base')
+      // Los precios de tu cartera salen YA, a la par de los eventos. Antes
+      // esperaban a que volvieran los eventos y después recién se pedían:
+      // medido el 2026-10-02 con Yahoo frío, 3,1 s de eventos + 5,3 s de
+      // precios EN FILA. Ahora tarda el más lento de los dos.
+      const deLaCartera = collectPriceSymbols(pos || [], bkrs || [])
+      const pedirPrecios = (syms) => syms.length
+        ? api.get(`/prices?symbols=${syms.join(',')}`).then(p => p || {}).catch(() => ({}))
+        : Promise.resolve({})
+      const [precios, eventosCartera] = await Promise.all([pedirPrecios(deLaCartera), pedidoCartera])
+      if (!vigente()) return
+      // Lo único que sí espera a los eventos: el ticker PELADO de los activos
+      // con dividendo cuyo ratio no está en la tabla. Sin la acción US al lado
+      // del .BA, deriveCedearRatio no tiene con qué derivar y el respaldo sería
       // letra muerta. Son pocos (la tabla cubre 162 símbolos) y sólo los que
       // efectivamente tienen un dividendo en la ventana.
-      const symList = [...new Set([
-        ...collectPriceSymbols(pos || [], bkrs || []),
-        ...(portEv?.events || [])
-          .filter(e => e.event_type === 'ex_dividend' && e.details?.dividend_per_share != null)
-          .map(e => cedearEspecieBase(e.ticker))
-          .filter(t => t && !cedearRatio(t)),
-      ])]
-      if (symList.length > 0) {
-        try {
-          const p = await api.get(`/prices?symbols=${symList.join(',')}`)
-          setPrices(p || {})
-        } catch {}
-      }
+      const yaPedidos = new Set(deLaCartera)
+      const extras = [...new Set(eventosCartera
+        .filter(e => e.event_type === 'ex_dividend' && e.details?.dividend_per_share != null)
+        .map(e => cedearEspecieBase(e.ticker))
+        .filter(t => t && !cedearRatio(t) && !yaPedidos.has(t)))]
+      const preciosExtra = await pedirPrecios(extras)
+      if (!vigente()) return
+      // Todos juntos y de una vez: un cobro calculado con la mitad de los
+      // precios cambiaría solo un segundo después.
+      setPrices({ ...preciosExtra, ...precios })
+      marcar('precios')
     } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
+      if (vigente()) setError(e.message)
+      marcar('base')
+      marcar('precios')
     }
   }
+
+  // "Para ti" se muestra apenas están tu cartera y tus eventos. Lo que sale de
+  // los PRECIOS (cuánto te toca de un dividendo, el peso de cada evento en tu
+  // cartera) aparece cuando llegan: hasta entonces no se muestra, y un aviso
+  // dice que se está buscando. No se publica un % provisorio que cambie solo.
+  // "Populares" no usa precios.
+  const listoParaTi = llego.base && llego.cartera
+  const preciosListos = llego.precios
+  const listoPopulares = llego.base && llego.mercado
+  const loading = tab === 'portfolio' ? !listoParaTi : !listoPopulares
+  // El cargador sólo si la carga TARDA (utils/cargaPorPasos.js).
+  const mostrarCargador = useDemora(loading)
+  const empresas = useMemo(() => empresasDeLaCartera(positions), [positions])
 
   // Valor total del portfolio en USD (para impact %)
   const tcValuacion = pickFinancialRate(dolar, valuationDollar) || config.tc_blue || 1415
   const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta
+  // Sin precios, el valor saldría al costo (computeBrokerValue cae al cost
+  // basis) y el "% de tu cartera" cambiaría solo al llegar los precios: hasta
+  // entonces no hay valor, y lo que depende de él no se muestra.
   const portfolioTotalUsd = useMemo(() => {
+    if (!preciosListos) return 0
     return brokers.reduce((sum, broker) => {
       const bpos = positions.filter(p => p.broker === broker.name)
       const v = computeBrokerValue(bpos, prices, broker, tcValuacion, tcCedear, tcCripto)
       return sum + (v.value || 0)
     }, 0)
-  }, [positions, brokers, prices, tcValuacion])
+  }, [positions, brokers, prices, tcValuacion, preciosListos])
 
   // Valor USD por ticker
   const tickerValueUsd = useMemo(() => {
+    if (!preciosListos) return null
     const map = new Map()
     for (const broker of brokers) {
       const bpos = positions.filter(p => p.broker === broker.name)
@@ -197,7 +250,7 @@ export default function Events({ embedded = false }) {
       }
     }
     return map
-  }, [positions, brokers, prices, tcValuacion])
+  }, [positions, brokers, prices, tcValuacion, preciosListos])
 
   // Acciones (cantidad) por ticker — para "tenés N acc → cobrás $X".
   const tickerShares = useMemo(() => {
@@ -213,9 +266,13 @@ export default function Events({ embedded = false }) {
   // necesita las POSICIONES (una por una: el CEDEAR de AVGO y la acción real de
   // AVGO no se pueden sumar) y, como respaldo, los precios para derivar el ratio
   // de lo que la tabla no cubre.
+  // Sin precios, el cobro de un dividendo se calcularía con la parte de la
+  // tenencia que la tabla sabe convertir y CRECERÍA al llegar los precios: sin
+  // las posiciones, dividendPayout publica sólo el monto por acción, y lo tuyo
+  // aparece cuando llegan. Los bonos no dependen de precios (tickerShares).
   const cobroCtx = useMemo(
-    () => ({ positions, prices, tc: tcCedear, tickerShares }),
-    [positions, prices, tcCedear, tickerShares])
+    () => ({ positions: preciosListos ? positions : null, prices, tc: tcCedear, tickerShares }),
+    [positions, prices, tcCedear, tickerShares, preciosListos])
 
   // Tickers que el user tiene (para flag en tab Popular)
   const userTickerSet = useMemo(() => {
@@ -311,19 +368,19 @@ export default function Events({ embedded = false }) {
       {/* Spotlight — el próximo evento que más te toca, con tu cobro/impacto
           ya calculado. Solo en "Para ti" (portfolio) y si hay evento próximo. */}
       {!loading && nextEvent && (
-        <SpotlightHero
+        <div className="entra"><SpotlightHero
           event={nextEvent}
           impactPct={(tickerValueUsd && portfolioTotalUsd > 0)
             ? (tickerValueUsd.get(nextEvent.ticker) || 0) / portfolioTotalUsd
             : null}
           cobro={eventCobro(nextEvent, cobroCtx)}
           onView={() => navigate(`/activo/${encodeURIComponent(nextEvent.ticker)}`)}
-        />
+        /></div>
       )}
 
       {/* KPI Strip — 3 celdas con divisores. Padding más chico en mobile. */}
       <div className="bg-bg-1 border border-line rounded-xl mb-4 grid grid-cols-3 divide-x divide-line">
-        <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} />
+        <KpiStripCells events={kpiEvents} tab={tab} windowDays={windowDays} listo={!loading} />
       </div>
 
       {/* Controles: ventana + filtro — compactos, una sola línea cuando hay espacio. */}
@@ -350,7 +407,9 @@ export default function Events({ embedded = false }) {
 
       {/* Timeline strip — mini-viz de eventos por día. En "Para ti" la altura
           de cada barra pondera el impacto en tu cartera, no solo el conteo. */}
-      {!loading && kpiEvents.length > 0 && (
+      {/* En "Para ti" la altura de cada barra pondera el impacto en tu cartera
+          (precios): aparece con ellos, no con alturas que después cambian. */}
+      {!loading && (tab !== 'portfolio' || preciosListos) && kpiEvents.length > 0 && (
         <TimelineStrip
           events={visibleEvents}
           windowDays={windowDays}
@@ -360,7 +419,48 @@ export default function Events({ embedded = false }) {
         />
       )}
 
-      {loading && <EventTableSkeleton />}
+      {/* Cargando: los pedidos reales con su tilde y tus empresas barriendo,
+          sólo si tarda (useDemora). Antes había un esqueleto de la TABLA vieja
+          (Fecha · Activo · Tipo · Monto · Impact) que la agenda reemplazó en
+          julio: dibujaba algo que ya no existía. */}
+      {loading && mostrarCargador && (
+        <CargaPorPasos
+          titulo={tab === 'portfolio' ? 'Cargando tus eventos' : 'Cargando los eventos del mercado'}
+          pasos={tab === 'portfolio'
+            ? pasosEventosParaTi({
+                positions: llego.base ? positions : null,
+                eventos: llego.cartera ? portfolioEvents : null,
+                precios: llego.precios ? true : null,
+                fallo,
+              })
+            : pasosEventosPopulares({
+                eventos: llego.mercado ? popularEvents : null,
+                positions: llego.base ? positions : null,
+                fallo,
+              })}
+          chips={tab === 'portfolio' && llego.base
+            ? chipsDeEmpresas(empresas, llego.cartera ? portfolioEvents : null)
+            : []}
+        />
+      )}
+      {!loading && tab === 'portfolio' && !preciosListos && (
+        <p role="status" className="flex items-center gap-2 mb-3 text-[12.5px] text-ink-3">
+          <Loader2 size={13} className="animate-spin motion-reduce:animate-none text-data-violet shrink-0" aria-hidden="true" />
+          Buscando precios para calcular cuánto te toca y el peso de cada evento en tu cartera…
+        </p>
+      )}
+      {!loading && tab === 'portfolio' && fallo.cartera && (
+        <p className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-rendi-warn/10 text-rendi-warn text-[12.5px]">
+          <AlertCircle size={14} className="shrink-0" />
+          No pudimos traer los earnings y dividendos de tus acciones. Abajo está lo que se calcula sin ellos (los pagos de tus bonos). Probá de nuevo en un rato.
+        </p>
+      )}
+      {!loading && tab === 'popular' && fallo.mercado && (
+        <p className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-rendi-warn/10 text-rendi-warn text-[12.5px]">
+          <AlertCircle size={14} className="shrink-0" />
+          No pudimos traer los eventos del mercado. Probá de nuevo en un rato.
+        </p>
+      )}
       {error && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-sm bg-rendi-warn/10 text-rendi-warn text-sm">
           <AlertCircle size={14} /> {error}
@@ -398,7 +498,7 @@ export default function Events({ embedded = false }) {
 
 // ─── KPI Strip ──────────────────────────────────────────────────────────────
 
-function KpiStripCells({ events, tab, windowDays }) {
+function KpiStripCells({ events, tab, windowDays, listo = true }) {
   const sorted = useMemo(
     () => [...events].sort((a, b) => (a.eventDate || '').localeCompare(b.eventDate || '')),
     [events]
@@ -427,31 +527,36 @@ function KpiStripCells({ events, tab, windowDays }) {
     ? events.filter(e => e.inPortfolio).length
     : null
 
+  // Mientras la pestaña no llegó, "—" (no un 0 que no se midió). Cuando llega,
+  // los números cuentan desde cero hasta su valor (AnimatedNumber).
+  const cuenta = (valor, formato = x => Math.round(x)) =>
+    listo ? <AnimatedNumber value={valor} format={formato} /> : '—'
+
   return (
     <>
       <KpiCell
         label="Próximo"
-        value={nextLabel}
-        sub={nextSubLabel}
-        tone={daysToNext === 0 || daysToNext === 1 ? 'accent' : 'neutral'}
+        value={listo ? nextLabel : '—'}
+        sub={listo ? nextSubLabel : null}
+        tone={listo && (daysToNext === 0 || daysToNext === 1) ? 'accent' : 'neutral'}
       />
       <KpiCell
         label={`Total ${windowDays}D`}
-        value={total}
-        sub={total === 1 ? 'evento' : 'eventos'}
+        value={cuenta(total)}
+        sub={listo ? (total === 1 ? 'evento' : 'eventos') : null}
       />
       {tab === 'popular' ? (
         <KpiCell
           label="En tu cartera"
-          value={inPortfolioCount}
-          sub={`de ${total}`}
-          tone={inPortfolioCount > 0 ? 'accent' : 'neutral'}
+          value={cuenta(inPortfolioCount)}
+          sub={listo ? `de ${total}` : null}
+          tone={listo && inPortfolioCount > 0 ? 'accent' : 'neutral'}
         />
       ) : (
         <KpiCell
           label="Confirmados"
-          value={`${Math.round(confirmedPct * 100)}%`}
-          sub={`${confirmedCount}/${total}`}
+          value={cuenta(confirmedPct * 100, x => `${Math.round(x)}%`)}
+          sub={listo ? `${confirmedCount}/${total}` : null}
         />
       )}
     </>
@@ -659,37 +764,6 @@ function formatBucketLabel(date, bucketSize) {
 
 // ─── Event Table ────────────────────────────────────────────────────────────
 
-function EventTableSkeleton() {
-  return (
-    <div className="bg-bg-1 border border-line rounded-xl overflow-hidden">
-      <div className="hidden md:grid grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-2 border-b border-line bg-bg-2/40">
-        <div className="kpi-label">Fecha</div>
-        <div className="kpi-label">Activo</div>
-        <div className="kpi-label">Tipo</div>
-        <div className="kpi-label">Detalle</div>
-        <div className="kpi-label text-right">Monto</div>
-        <div className="kpi-label text-right">Impact</div>
-      </div>
-      <ul className="divide-y divide-line/40">
-        {[1,2,3,4,5,6,7].map(i => (
-          <li key={i} className="grid grid-cols-[64px_1fr] md:grid-cols-[80px_180px_100px_1fr_140px_80px] gap-3 px-4 py-3 items-center esqueleto">
-            <div className="h-4 w-12 bg-bg-3 rounded" />
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-sm bg-bg-3" />
-              <div className="h-4 w-20 bg-bg-3 rounded" />
-            </div>
-            <div className="hidden md:block h-4 w-16 bg-bg-3 rounded" />
-            <div className="hidden md:block h-3 w-3/4 bg-bg-3/60 rounded" />
-            <div className="hidden md:block h-4 w-16 bg-bg-3 rounded ml-auto" />
-            <div className="hidden md:block h-3 w-8 bg-bg-3/60 rounded ml-auto" />
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-
 // ─── Agenda por día (clean pass 2026-07) ────────────────────────────────────
 // Reemplaza la tabla densa: eventos agrupados por FECHA con riel de días a la
 // izquierda y cards con aire. Earnings expandibles → expectativas del consenso
@@ -728,14 +802,21 @@ function eventIconMeta(eventType) {
   return { Icon: Calendar, cls: 'bg-bg-2 text-ink-2' }
 }
 
+// Cuando llega, la agenda entra en cascada: cada día (su riel y sus
+// tarjetas) aparece detrás del anterior. La demora se corta en el día 10: con
+// 60 eventos, el último no puede tardar 4 s en aparecer.
+const MAXIMO_ESCALON = 10
+
 function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx }) {
   const groups = useMemo(() => groupByDay(events), [events])
+  const [ref, visto] = useAlVerse()
   return (
-    <div>
-      {groups.map(g => {
+    <div ref={ref}>
+      {groups.map((g, gi) => {
         const rail = dayRail(g.date)
+        const { className, style } = entrada(visto, Math.min(gi, MAXIMO_ESCALON), 'grid gap-4')
         return (
-          <div key={g.date} className="grid gap-4" style={{ gridTemplateColumns: '72px 1fr' }}>
+          <div key={g.date} className={className} style={{ ...style, gridTemplateColumns: '72px 1fr' }}>
             <div className="text-right pt-4">
               <div className={`text-[12px] font-bold ${rail.today ? 'text-data-violet' : 'text-ink-0'}`}>{rail.top}</div>
               <div className="text-[11.5px] text-ink-3">{rail.sub}</div>
