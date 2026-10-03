@@ -29,7 +29,7 @@ export default function InlineAIButton({
   // que tocar los llamadores; la pregunta arriba de la respuesta los reemplaza.
   subtitle,                            // eslint-disable-line no-unused-vars
   title,                               // eslint-disable-line no-unused-vars
-  ariaLabel = 'Preguntarle a Rendi',
+  ariaLabel = 'Preguntarle a Mervall-E',
   label,
   size = 13,
   className = '',

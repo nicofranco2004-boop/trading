@@ -312,7 +312,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             </p>
             <p className="text-[13.5px] text-ink-2 max-w-md mx-auto">
               {bookMode ? 'Respondo mirando las carteras de todos tus clientes.' : 'Respondo mirando tus posiciones, tu historial y el mercado de hoy.'}
-              También puedo <b className="text-ink-1">registrar operaciones</b> si me las dictás.
+              {' '}También puedo <b className="text-ink-1">registrar operaciones</b> si me las dictás.
             </p>
           </div>
         )}
