@@ -237,13 +237,15 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
         with self.conn:
             self.conn.execute(
                 "UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
             main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))
             rb.rebuild_pair_asset(self.conn, self.uid, p["broker"], p["asset"],
                                   tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
-            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]})
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]},
+                antes=antes, journal=p)
         # Todo vuelve al estado sano previo.
         self.assertAlmostEqual(self._open_qty(), 0.0, places=6)
         self.assertAlmostEqual(self._global_pnl(), 500.0, places=2)
@@ -299,6 +301,7 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
         with self.conn:
             for tid in p["tx_ids"]:
                 self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
@@ -307,7 +310,8 @@ class DeleteCascade(unittest.TestCase):
             for pr in p["pairs"]:
                 rb.rebuild_pair_asset(self.conn, self.uid, pr[0], "AAPL",
                                       tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
-            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]),
+                antes=antes, journal=p)
         self.assertAlmostEqual(self._open_qty(), 6.0, places=6)
         self.assertAlmostEqual(self._global_pnl(), 200.0, places=2)
         self.assertAlmostEqual(self._cash(), -700.0, places=2)
@@ -362,6 +366,7 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
         with self.conn:
             for tid in p["tx_ids"]:
                 self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
@@ -388,7 +393,8 @@ class DeleteCascade(unittest.TestCase):
                     _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
                     main._update_monthly_pnl_realized(self.conn, self.uid, snap["broker"], _y, _m, _pnl)
                     main._update_monthly_pnl_realized(self.conn, self.uid, "global", _y, _m, _pnl)
-            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]))
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], set(p["brokers"]),
+                antes=antes, journal=p)
         self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
         self.assertAlmostEqual(self._cash(), -1450.0, places=2)
         self.assertAlmostEqual(self._global_pnl(), 50.0, places=2)
@@ -1041,12 +1047,14 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
         with self.conn:
             self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
             main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))
             rb.rebuild_pair_asset(self.conn, self.uid, p["broker"], p["asset"],
                                   tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
-            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]})
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]},
+                antes=antes, journal=p)
         self.assertAlmostEqual(self._open_qty(), 10.0, places=6)
         self.assertAlmostEqual(self._cash(), -1500.0, places=2)   # re-debitado
         self._probe()

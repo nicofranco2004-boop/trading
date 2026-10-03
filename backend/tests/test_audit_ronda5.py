@@ -121,8 +121,10 @@ class ReEstampadoPorMesEsInocuoTest(_Base):
     ⚠️ ESTOS TESTS LLAMAN A LA FUNCIÓN DIRECTO, Y ESO NO CUBRE EL BORRADO. Este
     docstring decía vigilar `_cascade_after_movement_delete`, pero la cascada no
     llamaba a esta función: tenía su propio bucle con un valor por MES, y siguió
-    aplanando el día en cada borrado mientras esto daba verde. El camino de
-    producción —borrar y deshacer por HTTP— está en
+    aplanando el día en cada borrado mientras esto daba verde. Hoy la cascada
+    tampoco la usa (aplica sólo el cambio del borrado, `main._cambio_de_aportado`):
+    esta función es la del botón del admin, la reparación y las migraciones. El
+    camino de producción —borrar y deshacer por HTTP— está en
     `tests/test_borrar_conserva_el_dia.py`."""
 
     def test_la_curva_no_cambia_aunque_se_re_estampe(self):

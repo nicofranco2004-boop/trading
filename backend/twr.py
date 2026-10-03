@@ -1363,6 +1363,47 @@ def _instrumentos_al_costo(row) -> list:
                    if isinstance(h, dict) and h.get("al_costo") and h.get("asset")})
 
 
+def flujos_brutos_por_mes(conn, uid: int) -> dict:
+    """'AAAA-MM' → (depósitos, retiros) BRUTOS del mes, de las mismas filas
+    'global' de `monthly_entries` que lee `netdep_canonico`.
+
+    Lo usan los dos que corrigen el aportado de fotos ya escritas: el anclado
+    (`_aportado_por_punto`) y el borrado (`main._cambio_de_aportado`). Una sola
+    lectura para que el corredor del mes sea el mismo en los dos."""
+    brutos = {}
+    for b in conn.execute(
+            "SELECT year, month, deposits, withdrawals FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (uid,)).fetchall():
+        k = f"{int(b['year']):04d}-{int(b['month']):02d}"
+        d0, w0 = brutos.get(k, (0.0, 0.0))
+        brutos[k] = (d0 + float(b["deposits"] or 0), w0 + float(b["withdrawals"] or 0))
+    return brutos
+
+
+def mes_anterior(ym: str) -> str:
+    """'2026-01' → '2025-12'."""
+    y, m = int(ym[:4]), int(ym[5:7])
+    return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+
+
+def corredor_del_mes(canon, brutos: dict, ym: str,
+                     sube: float = float("inf"), baja: float = float("inf")) -> tuple:
+    """(mínimo, máximo) que puede valer lo aportado en un día del mes `ym`.
+
+    Lo aportado dentro del mes arranca en canon(M−1) y termina en canon(M); en el
+    medio sólo puede bajar lo que se retiró en el mes y subir lo que se depositó.
+    `sube`/`baja` lo angostan a cuánto se movieron de verdad las estampas del mes
+    (ver `_aportado_por_punto`, que explica por qué los brutos solos no alcanzan
+    para ESE uso). Nunca más angosto que el corredor de dos puntas: el `min`/`max`
+    con c_prev y c_m cubre además un ajuste cargado con signo negativo."""
+    c_m = canon(f"{ym}-01")
+    c_prev = canon(f"{mes_anterior(ym)}-01")
+    dep, ret = brutos.get(ym, (0.0, 0.0))
+    lo = min(c_prev, c_m, c_prev - min(ret, baja))
+    hi = max(c_prev, c_m, c_prev + min(dep, sube))
+    return lo, hi
+
+
 def _aportado_por_punto(conn, uid: int, filas):
     """Devuelve fila → aportado acumulado, con el borde de mes ANCLADO al canónico
     y el día dentro del mes decidido por la estampa.
@@ -1437,13 +1478,7 @@ def _aportado_por_punto(conn, uid: int, filas):
         _ultima[ym] = st
 
     # Depósitos y retiros BRUTOS de cada mes, de las mismas filas que `canon`.
-    brutos = {}
-    for b in conn.execute(
-            "SELECT year, month, deposits, withdrawals FROM monthly_entries "
-            "WHERE user_id=? AND broker='global'", (uid,)).fetchall():
-        k = f"{int(b['year']):04d}-{int(b['month']):02d}"
-        d0, w0 = brutos.get(k, (0.0, 0.0))
-        brutos[k] = (d0 + float(b["deposits"] or 0), w0 + float(b["withdrawals"] or 0))
+    brutos = flujos_brutos_por_mes(conn, uid)
 
     ultimo_del_mes = {}
     for r in filas:
@@ -1452,24 +1487,15 @@ def _aportado_por_punto(conn, uid: int, filas):
         if prev is None or str(r["date"]) > str(prev["date"]):
             ultimo_del_mes[ym] = r
 
-    def _mes_anterior(ym):
-        y, m = int(ym[:4]), int(ym[5:7])
-        return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-
     def _en(r):
         ym = str(r["date"])[:7]
         c_m = canon(f"{ym}-01")
-        c_prev = canon(f"{_mes_anterior(ym)}-01")
         rn = ultimo_del_mes.get(ym)
         if rn is None:
             return c_m
         v = c_m - (float(rn["net_deposited"] or 0) - float(r["net_deposited"] or 0))
-        dep, ret = brutos.get(ym, (0.0, 0.0))
         sube, baja = movido.get(ym, (0.0, 0.0))
-        # Nunca más angosto que el corredor de dos puntas (el `min`/`max` con
-        # c_prev y c_m cubre además un ajuste cargado con signo negativo).
-        lo = min(c_prev, c_m, c_prev - min(ret, baja))
-        hi = max(c_prev, c_m, c_prev + min(dep, sube))
+        lo, hi = corredor_del_mes(canon, brutos, ym, sube, baja)
         return max(lo, min(hi, v))
     return _en
 

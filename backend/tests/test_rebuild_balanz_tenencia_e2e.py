@@ -454,13 +454,15 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
         p = _json.loads(j["payload_json"])
         self.assertAlmostEqual(float(p["cash_reversed"]), 0.0, places=6,
                                msg="un cierre a costo no acreditó cash: no hay nada que reversar")
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
         with self.conn:
             self.conn.execute(
                 "UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
             main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))
             rb.rebuild_pair_asset(self.conn, self.uid, p["broker"], p["asset"],
                                   tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
-            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]})
+            main._cascade_after_movement_delete(self.conn, self.uid, j["since_date"], {p["broker"]},
+                antes=antes, journal=p)
         self.assertAlmostEqual(self._held("GGAL"), 0.0, places=6)
         self.assertAlmostEqual(self._cash("Balanz"), cash_antes, places=2)
 

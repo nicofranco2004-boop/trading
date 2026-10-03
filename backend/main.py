@@ -14801,7 +14801,158 @@ def _is_synthetic_seed_row(src) -> bool:
             or notes.startswith("Tenencia — aporte inicial sintético"))
 
 
-def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
+def _foto_contable(conn, uid: int) -> dict:
+    """Lo que dicen HOY las cuentas de lo aportado: el canónico de cada mes
+    (`twr.netdep_canonico`, la convención que estampan el cron y el Dashboard) y
+    los depósitos y retiros brutos de cada mes.
+
+    Cada puerta de borrado/deshacer la saca AL ENTRAR, antes de tocar nada, y se la
+    pasa a la cascada: la diferencia con la de después del recálculo es exactamente
+    lo que el borrado cambió. Tiene que ser al entrar y no al empezar la cascada
+    porque hay puertas que tocan `monthly_entries` antes de llamarla
+    (`_delete_manual_position_cascade` y `_undo_manual_delete` revierten el
+    autodepósito ellas mismas): a esa altura el "antes" ya es el "después" y el
+    cambio se pierde."""
+    import twr as _twr
+    return {"canon": _twr.netdep_canonico(conn, uid),
+            "brutos": _twr.flujos_brutos_por_mes(conn, uid)}
+
+
+def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str,
+                        journal: Optional[dict] = None):
+    """Qué fotos YA ESCRITAS cambian de aportado por un borrado (o su deshacer), y
+    a cuánto. Devuelve (cambios, aplicado_desde): `cambios` = [(nuevo, id, uid)] y
+    `aplicado_desde` = la primera foto que recibió el cambio (None si ninguna).
+
+    ⚠️ SE APLICA SÓLO EL CAMBIO, NO SE RE-ANCLA EL MES. Cada foto anotó lo aportado
+    en el momento en que se sacó, junto con lo que valía la cartera en ese mismo
+    momento; esa pareja es la única fuente de la resolución diaria. Re-anclar el mes
+    (`twr._aportado_por_punto`) supone que la ÚLTIMA foto del mes sabe todos sus
+    flujos, y cuando no los sabe reescribe el mes entero mal y sin vuelta: un
+    depósito cargado hoy después de la foto de hoy, seguido de cualquier borrado,
+    dejaba marzo plano (19 fotos, US$ 59.000 en `test_borrar_conserva_el_dia`), y
+    un import a mitad de mes mudaba su escalón al día de lo borrado (US$ 100.000).
+    Acá a cada foto se le suma lo que el borrado cambió en su mes
+    (canon_después(M) − canon_antes(M)), y nada más: si el borrado no cambió ningún
+    depósito ni retiro —borrar una compra, una venta, un dividendo, el historial de
+    un activo— no se toca ninguna foto.
+
+    ⚠️ PERO SÓLO A LAS FOTOS QUE TENÍAN LO BORRADO. Un depósito del 25-feb que entró
+    recién con el import del 5-mar no está en las fotos del 25-feb al 4-mar; restarle
+    el depósito a esas fotos las hundía (8 fotos, US$ 44.000 en la sonda). La foto
+    misma dice desde cuándo lo tuvo: ese día su aportado SALTÓ exactamente el monto.
+      1. El primer mes cuya foto de cierre ya lo tenía: la que no lo tenía muestra
+         una diferencia con las cuentas de antes de al menos ese monto. Los meses
+         anteriores no se tocan. (Un duplicado: las cuentas tenían dos y las fotos
+         del mes uno → ese mes no tenía "lo borrado".)
+      2. Dentro de ese mes, desde la fecha de lo borrado, la primera foto cuyo
+         aportado saltó ese monto: desde ahí se aplica. Resuelve también el
+         depósito a mano (`me-`), que no guarda el día y arranca el 1 del mes.
+      3. Sin salto (dos depósitos el mismo día, varios `me-` del mes sumados en un
+         renglón): desde la fecha de lo borrado, como antes.
+    En todos los casos el resultado se recorta al corredor del mes de DESPUÉS
+    (`twr.corredor_del_mes`): un número fuera de ahí no lo puede tener ningún día.
+
+    DESHACER (`journal` = lo que anotó el borrado): el salto ya no existe —lo sacó
+    el borrado—, así que el borrado anota en su journal desde qué foto aplicó
+    (`aportado_desde`) y el deshacer aplica desde ahí. None = el borrado no le tocó
+    ninguna foto (no la tenía ninguna) → el deshacer tampoco. Un journal de antes
+    de este cambio no trae la clave → desde la fecha del borrado.
+    """
+    import twr as _twr
+    c0 = antes.get("canon") if antes else None
+    despues = _foto_contable(conn, uid)
+    c1, brutos1 = despues["canon"], despues["brutos"]
+    if c0 is None or c1 is None:
+        # Sin contabilidad de un lado no hay cambio que medir; lo estampado queda
+        # como está (los lectores que anclan al leer lo toleran; aplanarlo no).
+        return [], None
+    desde = str(desde)[:10]
+    fotos = [s for s in conn.execute(
+        "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
+        (uid,)).fetchall() if s["net_deposited"] is not None]
+    meses = sorted({str(s["date"])[:7] for s in fotos if str(s["date"])[:10] >= desde})
+    delta = {ym: c1(f"{ym}-01") - c0(f"{ym}-01") for ym in meses}
+    cambiados = [ym for ym in meses if abs(delta[ym]) > 0.01]
+    if not cambiados:
+        return [], None
+
+    if journal is not None:
+        if "aportado_desde" not in journal:
+            inicio = desde
+        elif journal["aportado_desde"] is None:
+            return [], None
+        else:
+            inicio = max(desde, str(journal["aportado_desde"])[:10])
+    else:
+        m0 = cambiados[0]
+        # Cuánto se movió el aportado de las fotos el día que lo borrado entró en
+        # ellas: +monto para un depósito, −monto para un retiro.
+        objetivo = -delta[m0]
+        tol = max(0.01, 0.005 * abs(objetivo))
+        cierre = {}
+        for s in fotos:
+            cierre[str(s["date"])[:7]] = s
+        # 1. El primer mes cuya foto de cierre ya tenía lo borrado.
+        m_visto = None
+        for ym in meses:
+            if ym < m0:
+                continue
+            falta = c0(f"{ym}-01") - float(cierre[ym]["net_deposited"])
+            no_lo_tenia = (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
+            if not no_lo_tenia:
+                m_visto = ym
+                break
+        # 2. Dentro de ese mes, la foto donde el aportado saltó ese monto.
+        ini = max(desde, f"{m_visto}-01") if m_visto else desde
+        fin = str(cierre[m_visto]["date"])[:10] if m_visto else "9999-12-31"
+        salto, prev = None, None
+        for s in fotos:
+            d = str(s["date"])[:10]
+            nd = float(s["net_deposited"])
+            if prev is not None and ini <= d <= fin and abs((nd - prev) - objetivo) <= tol:
+                salto = d
+                break
+            prev = nd
+        if salto:
+            inicio = salto
+        elif m_visto:
+            inicio = ini        # 3. sin salto: desde lo borrado, como antes
+        else:
+            return [], None     # ninguna foto lo tenía: no hay nada que sacar
+
+    cambios = []
+    for s in fotos:
+        d = str(s["date"])[:10]
+        if d < inicio:
+            continue
+        dl = delta.get(d[:7], 0.0)
+        if abs(dl) <= 0.01:
+            continue
+        viejo = float(s["net_deposited"])
+        lo, hi = _twr.corredor_del_mes(c1, brutos1, d[:7])
+        nuevo = max(lo, min(hi, viejo + dl))
+        if abs(nuevo - viejo) > 0.01:
+            cambios.append((round(nuevo, 4), s["id"], uid))
+    return cambios, inicio
+
+
+def _anotar_aportado_en_journal(conn, uid: int, token: str, aportado_desde) -> None:
+    """Guarda en el journal del borrado desde qué foto se le sacó el aportado, para
+    que el deshacer lo devuelva a las MISMAS fotos (ver `_cambio_de_aportado`)."""
+    import json as _json
+    row = conn.execute("SELECT payload_json FROM deleted_ops_journal WHERE user_id=? AND token=?",
+                       (uid, token)).fetchone()
+    if not row:
+        return
+    p = _json.loads(row["payload_json"] or "{}")
+    p["aportado_desde"] = aportado_desde
+    conn.execute("UPDATE deleted_ops_journal SET payload_json=? WHERE user_id=? AND token=?",
+                 (_json.dumps(p), uid, token))
+
+
+def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, *,
+                                   antes: dict, journal: Optional[dict] = None) -> dict:
     """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
     autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
@@ -14828,8 +14979,9 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         backfill solo escribe FIN DE MES, así que exigimos también esa fecha:
         mismo beneficio, sin llevarse puestas las fotos de media de mes.
       • REALES: se conservan. Solo se les corrige `net_deposited` (el capital
-        aportado, que SÍ puede haber cambiado) desde `since_date`, con
-        `_recompute_snapshots_netdep_for_user` — ver abajo por qué esa y no otra.
+        aportado, que SÍ puede haber cambiado): a cada foto, lo que el borrado le
+        sacó (o el deshacer le devolvió), con `_cambio_de_aportado` — ver abajo
+        por qué ésa y no el anclado.
       • HOY: se borra siempre — la reescribe la próxima visita/cron con el estado
         vivo, que es justamente el que acaba de cambiar.
 
@@ -14837,6 +14989,12 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
     operaciones, posiciones (importadas y manuales) e historial de un activo. Lo
     que se rompa acá se rompe en todos. `tests/test_borrar_conserva_el_dia.py` los
     recorre por HTTP.
+
+    `antes` (obligatorio, sin valor por defecto a propósito): `_foto_contable`
+    sacada por la puerta AL ENTRAR, antes de tocar nada. Una puerta nueva que se
+    lo olvide revienta en su primer test en vez de borrar sin corregir lo aportado.
+    `journal`: sólo en los deshacer, lo que anotó el borrado que se deshace.
+    Devuelve {"aportado_desde": …} para que la puerta lo anote en su journal.
     """
     for b in brokers_touched:
         if b:
@@ -14852,53 +15010,45 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
                   AND date = date(date, 'start of month', '+1 month', '-1 day')""",
             (uid, since_date),
         )
-        # ⚠️ EL APORTADO SE CORRIGE CON EL ANCLADO, NO CON UN VALOR POR MES.
-        # Acá se estampaba `compute_net_deposited_db(as_of_date=<AAAA-MM>)` en todas
-        # las fotos de cada mes desde `since_date`, incluidas las del cron. Esa
-        # fórmula sólo mira el mes, así que un depósito del día 20 pasaba a figurar
-        # desde el día 1: del 1 al 19 la pantalla publicaba una pérdida del tamaño
-        # del depósito y el 20 la "ganancia" de vuelta (+US$ 10.000 en el chip,
-        # −9,52 % de peor caída, con el mercado quieto). Y pasaba aunque lo borrado
-        # no tuviera nada que ver con depósitos: borrar una compra de hace dos años
-        # aplanaba todos los meses con flujos desde entonces. Medido en una cuenta
-        # de 3 años: 323 de 1.096 fotos reescritas por borrar un dividendo.
-        # El dato que se perdía no se puede volver a generar: la resolución diaria
-        # existe sólo porque el cron la anotó cada noche. El anclado usa la estampa
-        # VIEJA para saber en qué día cayó cada flujo y la contabilidad de hoy para
-        # cuánto, así que corrige lo que el borrado cambió sin tirar el día.
-        # `desde=since_date`: el mismo alcance de antes — lo anterior a lo borrado
-        # no se toca. Y va ANTES del backfill de abajo: necesita las estampas viejas.
-        #
-        # ⚠️ Y ANTES DE BORRAR LA FOTO DE HOY, NO DESPUÉS. El anclado toma la última
-        # foto del mes como la que sabe todos sus flujos; en el mes en curso ésa es
-        # la de hoy. Borrada primero, el ancla pasa a ser la de ayer: con un depósito
-        # cargado HOY, ese depósito se corría a días anteriores (medido: borrar un
-        # depósito del 15 con otro de hoy dejaba del 15 al 19 con el de hoy adentro).
-        # Eso alcanza sólo si la foto de hoy YA VIO el depósito.
-        #
-        # LÍMITES CONOCIDOS — no empeoran lo de antes, pero tampoco se arreglan acá:
-        # · (auditoría 3) Un flujo que la última foto del mes NO vio no se puede
-        #   ubicar: un depósito cargado hoy DESPUÉS de la foto de hoy (el Dashboard
-        #   la saca una vez, al abrir), o sin foto de hoy, seguido de cualquier
-        #   borrado de algo más viejo, deja ese mes plano en su valor de fin de mes
-        #   —como antes del arreglo—: el depósito figura desde el día 1, y si el mes
-        #   tuvo otro movimiento, también se pierde el día de ése. El corredor del
-        #   anclado admite los flujos del mes en cualquier día que las estampas no
-        #   contradigan.
-        # · (auditoría 2, H2) Si el mes ya traía estampas VIEJAS (un import a mitad
-        #   de mes que reescribió la contabilidad hacia atrás), re-anclar desde
-        #   `since_date` corrige las fotos de esa fecha en adelante y deja viejas las
-        #   de antes: el escalón falso del import se muda al día de lo borrado. La
-        #   curva anclada no se mueve.
-        # Lo que resolvería los dos es aplicar sólo el CAMBIO que produjo el borrado
-        # (contabilidad de antes vs. de después) en vez de re-anclar el mes. No va
-        # acá porque dos puertas (`_delete_manual_position_cascade`,
-        # `_undo_manual_delete`) tocan `monthly_entries` ANTES de llamar a esta
-        # cascada —el "antes" hay que tomarlo en cada puerta— y los depósitos
-        # manuales (`me-`) no guardan el día.
-        _recompute_snapshots_netdep_for_user(conn, uid, desde=since_date)
+        # ⚠️ EL APORTADO: SÓLO EL CAMBIO QUE PRODUJO EL BORRADO, Y SÓLO EN LAS FOTOS
+        # QUE TENÍAN LO BORRADO (`_cambio_de_aportado`, donde está el porqué).
+        # Historia, para no volver atrás:
+        # · Se estampaba `compute_net_deposited_db(as_of_date=<AAAA-MM>)`: UN valor
+        #   por mes. El depósito del 20 pasaba al día 1 (+US$ 10.000 en el chip,
+        #   −9,52 % de peor caída con el mercado quieto) aunque lo borrado no fuera
+        #   un depósito; 323 de 1.096 fotos reescritas por borrar un dividendo.
+        # · Después, el ANCLADO (`_recompute_snapshots_netdep_for_user`): conserva
+        #   el día, pero re-ancla el mes a su última foto, y cuando esa foto no vio
+        #   algo (un depósito cargado hoy después de la foto de hoy, un import a
+        #   mitad de mes) reescribía el mes mal. Sigue siendo el de la reparación,
+        #   el botón del admin y las migraciones: corrigen estampas viejas en
+        #   general; un borrado sólo tiene que deshacer lo suyo.
+        # Va ANTES de borrar la foto de hoy: en el mes en curso es la que sabe hasta
+        # dónde llegó lo borrado. Y antes del backfill: necesita las estampas viejas.
+        # El resultado (desde qué foto se aplicó) vuelve al caller, que lo anota en
+        # su journal para que el deshacer lo devuelva a las mismas fotos.
+        try:
+            cambios, aplicado_desde = _cambio_de_aportado(
+                conn, uid, antes, since_date, journal=journal)
+        except Exception:
+            # Si el cálculo falla NO se toca ninguna foto. Una estampa que quedó
+            # con lo borrado adentro se nota y se repara (botón del admin); una
+            # reescrita mal no tiene vuelta. Y se anota "no se aplicó nada", así
+            # el deshacer —que devuelve lo borrado a las cuentas— no se lo suma
+            # otra vez a fotos que nunca lo perdieron.
+            log.exception("borrado: no se pudo calcular el cambio de aportado uid=%s "
+                          "— NO se toca ninguna foto", uid)
+            cambios, aplicado_desde = [], None
+        if cambios:
+            # En UNA tanda: corre dentro de la transacción del borrado, con el lock
+            # de escritura tomado; borrar un depósito viejo mueve ~1.100 fotos.
+            conn.executemany(
+                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?", cambios)
+    else:
+        aplicado_desde = None
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
+    return {"aportado_desde": aplicado_desde}
 
 
 def _delete_one_movement(conn, uid: int, mid: str):
@@ -15071,9 +15221,10 @@ def _route_tx_delete(conn, uid: int, mid: str):
         raise HTTPException(409,
             "Esta compra ya se vendió, así que no se puede borrar sola. Borrá primero "
             "la venta (en Solo P/L) o usá 'borrar todo el historial' del activo.")
-    # Cash-flow → reverso clásico + cascada.
+    # Cash-flow → reverso clásico + cascada. La foto contable ANTES del reverso.
+    antes = _foto_contable(conn, uid)
     since_date, brokers = _delete_one_movement(conn, uid, mid)
-    _cascade_after_movement_delete(conn, uid, since_date, brokers)
+    _cascade_after_movement_delete(conn, uid, since_date, brokers, antes=antes)
 
 
 @app.delete("/api/movements/{movement_id}")
@@ -15113,8 +15264,10 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
                     # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
                     out.update(_route_tx_delete(conn, uid, mid) or {})
                 else:
+                    antes = _foto_contable(conn, uid)
                     since_date, brokers = _delete_one_movement(conn, uid, mid)
-                    _cascade_after_movement_delete(conn, uid, since_date, brokers)
+                    _cascade_after_movement_delete(conn, uid, since_date, brokers,
+                                                   antes=antes)
         finally:
             conn.close()
 
@@ -16098,6 +16251,7 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
     Las filas viejas (sin la foto) se BLOQUEAN: su reverso no es derivable."""
     import json as _json
 
+    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
     op = conn.execute(
         "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
     if not op:
@@ -16283,7 +16437,8 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
            VALUES (?,?,?,?,?,?)""",
         (uid, token, "manual_op", _json.dumps(undo), since_date, broker))
 
-    _cascade_after_movement_delete(conn, uid, since_date, {broker})
+    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes)
+    _anotar_aportado_en_journal(conn, uid, token, _r["aportado_desde"])
     return {"ok": True, "undo_token": token, "broker": broker,
             "asset": op["asset"], "manual": True}
 
@@ -16295,6 +16450,9 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
     asesor encontró en el undo grupal, y acá se evita con la foto de `undo_meta_json`."""
     import json as _json
 
+    # ⚠️ AL ENTRAR: esta puerta revierte el autodepósito en `monthly_entries` ella
+    # misma, antes de la cascada. Sacada más tarde, la foto ya no vería el cambio.
+    antes = _foto_contable(conn, uid)
     pos = conn.execute(
         "SELECT * FROM positions WHERE id=? AND user_id=? AND is_cash=0",
         (pid, uid)).fetchone()
@@ -16392,7 +16550,8 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
          _json.dumps({"pos_row": pos_row, "credit": credit, "autodep": autodep}),
          since_date, broker))
 
-    _cascade_after_movement_delete(conn, uid, since_date, {broker})
+    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes)
+    _anotar_aportado_en_journal(conn, uid, token, _r["aportado_desde"])
     return {"ok": True, "undo_token": token, "broker": broker,
             "asset": pos["asset"], "manual": True}
 
@@ -16414,6 +16573,9 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
     referencia a una operación/posición manual por id salvo el propio journal."""
     import json as _json
 
+    # ⚠️ AL ENTRAR: abajo se vuelve a sumar el autodepósito a `monthly_entries`
+    # antes de la cascada (misma razón que en el borrado).
+    antes = _foto_contable(conn, uid)
     p = _json.loads(j["payload_json"])
     broker = j["broker"] or ""
 
@@ -16563,7 +16725,8 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
                 _update_monthly_flow(conn, uid, 'global', ay, am, 'deposit',
                                      float(ad["usd"]), is_manual=True)
 
-    _cascade_after_movement_delete(conn, uid, j["since_date"], {broker})
+    _cascade_after_movement_delete(conn, uid, j["since_date"], {broker},
+                                   antes=antes, journal=p)
 
 
 def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
@@ -16582,6 +16745,7 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     import json as _json
     import secrets as _secrets
 
+    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
     op = conn.execute(
         "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
     ).fetchone()
@@ -16714,7 +16878,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
 
     # 5) Cascada de agregados + snapshots — lo que el borrado viejo NO hacía.
-    _cascade_after_movement_delete(conn, uid, since_date, {broker})
+    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes)
+    _anotar_aportado_en_journal(conn, uid, token, _r["aportado_desde"])
 
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
 
@@ -16729,6 +16894,7 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     import json as _json
     import secrets as _secrets
 
+    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
     pos = conn.execute(
         "SELECT * FROM positions WHERE id=? AND user_id=? AND is_cash=0", (pos_id, uid),
     ).fetchone()
@@ -16836,7 +17002,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     # 4) Re-derivar el activo (el lote desaparece) + cascada.
     tc_blue = _config_tc_blue(conn, uid)
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
-    _cascade_after_movement_delete(conn, uid, since_date, {broker})
+    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes)
+    _anotar_aportado_en_journal(conn, uid, token, _r["aportado_desde"])
 
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
 
@@ -16889,6 +17056,7 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
                 return {"ok": True}
             if j["kind"] != "imported":
                 raise HTTPException(400, "Este borrado no se puede deshacer automáticamente")
+            antes = _foto_contable(conn, uid)   # antes de tocar nada
             p = _json.loads(j["payload_json"])
             # Guard (mismo que el delete): rebuild_pair_asset limpia TODO el activo y
             # re-deriva solo lo importado. Si desde el borrado el activo ganó data manual,
@@ -16926,7 +17094,8 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
                 _adjust_broker_cash(conn, uid, p["broker"], cash)
             tc_blue = _config_tc_blue(conn, uid)
             _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
-            _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
+            _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]},
+                                           antes=antes, journal=p)
             conn.commit()
         except HTTPException:
             conn.rollback()
@@ -16956,6 +17125,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     asset = (asset or "").strip()
     if not asset:
         raise HTTPException(400, "Activo inválido")
+    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
 
     rows = conn.execute(
         """SELECT n.* FROM import_normalized_tx n
@@ -17134,7 +17304,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     )
 
     # 5) Cascada de agregados + snapshots.
-    _cascade_after_movement_delete(conn, uid, since_date, brokers_touched)
+    _r = _cascade_after_movement_delete(conn, uid, since_date, brokers_touched, antes=antes)
+    _anotar_aportado_en_journal(conn, uid, token, _r["aportado_desde"])
 
     return {"ok": True, "undo_token": token, "asset": asset, "count": len(rows) + len(rf_ops)}
 
@@ -17173,6 +17344,7 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
             if not j:
                 raise HTTPException(404, "Nada para deshacer")
             import json as _json
+            antes = _foto_contable(conn, uid)   # antes de tocar nada
             p = _json.loads(j["payload_json"])
             asset, pairs = p["asset"], p["pairs"]
             _idset = set(p["tx_ids"])
@@ -17253,7 +17425,8 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                     _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
                     _update_monthly_pnl_realized(conn, uid, snap["broker"], _y, _m, _pnl)
                     _update_monthly_pnl_realized(conn, uid, "global", _y, _m, _pnl)
-            _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []))
+            _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []),
+                                           antes=antes, journal=p)
             conn.commit()
         except HTTPException:
             conn.rollback()
@@ -17601,24 +17774,29 @@ def _detect_and_remove_corrupt_snapshots(conn, uid: int) -> list:
     return corrupt_ids
 
 
-def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False,
-                                         desde: Optional[str] = None) -> dict:
+def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False) -> dict:
     """Re-estampa `snapshots.net_deposited` de fotos YA ESCRITAS con el aportado
     ANCLADO (`twr._aportado_por_punto`): el borde de cada mes sale de la
     contabilidad de hoy —filas 'global' de `monthly_entries` + baseline, la misma
     convención que estampa el cron— y el DÍA dentro del mes lo dice la estampa
     vieja, que es la única que lo sabe.
 
-    ⚠️ ES LA ÚNICA PUERTA PARA RE-ESTAMPAR FOTOS MEDIDAS (cron / navegador) YA
-    ESCRITAS. (Las que se fabrican tienen su propio escritor: el backfill del
-    persister refresca sus sintéticas de fin de mes y `backfill_historical_mtm`
-    sus reconstruidas.) La usan el borrado y el
-    deshacer (`_cascade_after_movement_delete`), el botón del admin, la reparación
-    de historial y la migración del arranque. Si necesitás corregir el aportado de
-    fotos existentes, llamá a esta función: `compute_net_deposited_db(as_of_date=…)`
-    trunca la fecha a MES y aplana el día (la cascada lo hacía por su cuenta y
-    destruía la resolución diaria en cada borrado; ver
-    `tests/test_borrar_conserva_el_dia.py`).
+    ⚠️ HAY DOS PUERTAS PARA RE-ESTAMPAR FOTOS MEDIDAS (cron / navegador) YA
+    ESCRITAS, y cada una tiene su trabajo. (Las que se fabrican tienen su propio
+    escritor: el backfill del persister refresca sus sintéticas de fin de mes y
+    `backfill_historical_mtm` sus reconstruidas.)
+      · Ésta, para corregir estampas viejas EN GENERAL: el botón del admin, la
+        reparación de historial y las migraciones. Re-ancla cada mes a su última
+        foto, así que supone que esa foto sabe todos los flujos del mes.
+      · `_cambio_de_aportado`, para un BORRADO o su deshacer
+        (`_cascade_after_movement_delete`): no re-ancla nada, le saca a cada foto
+        sólo lo que el borrado cambió. Esta función la usaba antes, y cuando la
+        última foto del mes no había visto algo (un depósito cargado hoy después
+        de la foto de hoy) reescribía el mes mal — ver ahí el porqué.
+    Si necesitás corregir el aportado de fotos existentes, usá una de las dos:
+    `compute_net_deposited_db(as_of_date=…)` trunca la fecha a MES y aplana el día
+    (la cascada lo hacía por su cuenta y destruía la resolución diaria en cada
+    borrado; ver `tests/test_borrar_conserva_el_dia.py`).
 
     HISTORIA: el viejo `_recalc_pnl_realized_from_ops` (pre-commit 75d8634)
     zero-eaba los cash flows manuales de monthly_entries cuando se llamaba
@@ -17634,14 +17812,6 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         with_details: si True devuelve list de cada snapshot pre/post (para
                       debug manual desde endpoint admin). Default False
                       para no inflar logs cuando corre como migración.
-        desde:        'AAAA-MM-DD'. Si viene, sólo ESCRIBE las fotos de esa fecha en
-                      adelante; LEE todas igual, porque el anclado necesita el mes
-                      entero. Es el alcance de un borrado: lo anterior a lo borrado
-                      no es asunto suyo, y reescribirlo cambiaría meses ya cerrados
-                      que el usuario no tocó. (Ojo: la cascada corre después
-                      `_backfill_snapshots_from_monthly`, que refresca las
-                      sintéticas de fin de mes de TODOS los meses, no sólo desde
-                      acá.)
     """
     snaps = conn.execute(
         "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
@@ -17678,13 +17848,10 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
             "anclado_fallo": True,
         }
 
-    _desde = str(desde)[:10] if desde else None
     cambios = []
     details = [] if with_details else None
     for snap in snaps:
         snap_date = snap["date"]
-        if _desde and str(snap_date)[:10] < _desde:
-            continue
         old_net = float(snap["net_deposited"] or 0)
 
         # AUDIT B1 (F4 variaciones, CRITICAL): estampar la convención CANÓNICA
@@ -17707,9 +17874,9 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
                 "delta": round(new_net - old_net, 2),
             })
 
-    # En UNA tanda: el borrado corre esto adentro de su transacción, con el lock de
-    # escritura tomado (9556fd5b agrupaba por mes justamente por eso). Borrar un
-    # depósito viejo cambia todas las fotos posteriores: ~1.100 en 3 años.
+    # En UNA tanda: la reparación y las migraciones corren esto adentro de una
+    # transacción, con el lock de escritura tomado (9556fd5b agrupaba por mes
+    # justamente por eso). Una cuenta de 3 años tiene ~1.100 fotos.
     if cambios:
         conn.executemany(
             "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?", cambios)
