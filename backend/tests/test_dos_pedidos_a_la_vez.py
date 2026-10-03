@@ -24,6 +24,7 @@ es el orden real de un doble click, forzado. Si el código no los deja coincidir
 Cada test pasa por el endpoint de verdad, con la base de verdad.
 """
 import io
+import sqlite3
 import threading
 import time
 import unittest
@@ -413,6 +414,49 @@ class ConfirmarYDeshacerUnaImportacion(_Base):
         self.assertEqual(sorted(x.status_code for x in rs), [200, 400], [x.text for x in rs])
         self.assertAlmostEqual(self.cash("Cocos"), 0, places=2,
                                msg="deshacer dos veces sacó el depósito dos veces")
+
+    def test_una_escritura_AJENA_en_el_medio_no_hace_perder_filas(self):
+        """No es un doble click. Otra parte de Rendi (los precios, la foto diaria,
+        otro usuario: la base es una sola) escribe mientras se confirma un archivo.
+
+        Antes, sin ninguna escritura previa, cada fila del archivo era su propia
+        transacción: leía, y si alguien commiteaba antes de que escribiera, SQLite
+        la rechazaba con "database is locked" y el importador la salteaba — la
+        confirmación respondía OK con una fila menos (la pantalla final la listaba
+        como fila con problema). Ahora el reclamo abre la transacción al empezar y
+        el otro espera su turno. Medido sin el arreglo: falla 10 de 10."""
+        sid = self._preview()
+        lee_caja = "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1"
+        escribio = threading.Event()
+        cruce = self.cruzar(lee_caja, y_despues={lee_caja: escribio})
+
+        def otro():
+            try:
+                cruce._barrera.wait()          # la fila ya leyó; ahora escribe otro
+            except threading.BrokenBarrierError:
+                pass
+            c = sqlite3.connect(main.DB_PATH, timeout=0.5)
+            try:
+                # Un cambio DE VERDAD: uno que deja todo igual no cuenta como
+                # escritura para SQLite y no dispara el choque.
+                c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                          (uuid.uuid4().hex, self.uid))
+                c.commit()
+            except sqlite3.OperationalError:
+                pass   # la importación tiene la base tomada: el otro espera, como corresponde
+            finally:
+                c.close()
+                escribio.set()
+        t = threading.Thread(target=otro)
+        t.start()
+        r = self._confirmar(sid)
+        t.join(timeout=30)
+
+        self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el cruce")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json().get("skipped_rows"), [], "se salteó una fila del archivo")
+        self.assertAlmostEqual(self.cash("Cocos"), 1_000_000, places=2,
+                               msg="el depósito del archivo no entró")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

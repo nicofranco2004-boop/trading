@@ -180,8 +180,8 @@ def persist_batch(
     # lote recién se marcaba confirmado al FINAL. Dos confirmaciones a la vez
     # (doble click, dos pestañas) pasaban las dos. Medido forzando el choque: las
     # dos respondían OK, y la segunda no duplicaba el archivo sólo porque sus
-    # filas chocaban con "database is locked" y se salteaban EN SILENCIO — una
-    # protección de casualidad, que depende de quién llega primero a escribir.
+    # filas chocaban con "database is locked" y se salteaban — una protección de
+    # casualidad, que depende de quién llega primero a escribir.
     #
     # La escritura no cambia nada (`status=status`): lo que importa es que toma la
     # base para escribir y vuelve a preguntar por el estado en ese instante. La
@@ -189,9 +189,17 @@ def persist_batch(
     # toca la fila. Vive ACÁ y no en cada endpoint para que la cubran los tres
     # caminos que confirman (archivo, Wallbit, simulador) sin depender de nadie.
     #
-    # De paso abre la transacción con una escritura de verdad: si lo primero que
-    # corriera fuera el SAVEPOINT de la fila 0, sqlite3 no abre transacción antes
-    # y cada RELEASE commitearía su fila por separado.
+    # Y abre la transacción con una escritura de verdad, que importa aunque nadie
+    # haga doble click. Sin ella, lo primero que corría era el SAVEPOINT de la
+    # fila 0, sqlite3 no abre transacción antes de un SAVEPOINT, y cada fila era
+    # su PROPIA transacción (medido: `in_transaction` daba False al arrancar la
+    # fila 0). Dos consecuencias: el lote no era atómico (un error fatal a mitad
+    # dejaba las filas anteriores ya guardadas), y si CUALQUIER otra parte de la
+    # base escribía entre la lectura y la escritura de una fila —precios, la foto
+    # diaria, otro usuario— SQLite la rechazaba con "database is locked" y la fila
+    # quedaba afuera con la confirmación respondiendo OK (test:
+    # test_una_escritura_AJENA_en_el_medio_no_hace_perder_filas). Ahora el lote
+    # tiene la base desde acá hasta el commit; medido, ~1 s para 2.000 filas.
     if conn.execute(
         "UPDATE import_batches SET status=status WHERE id=? AND user_id=? AND status='preview'",
         (batch_id, uid),
