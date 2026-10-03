@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Sparkles, ChevronRight, LogOut, Bell, BellRing, BellOff, Send, MessageCircle,
+  ChevronRight, LogOut, Bell, BellRing, BellOff, Send, MessageCircle,
   Sun, Moon,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -21,6 +21,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { menuVisible, pantallasVisibles, ASESOR_PROPIO, nombreDelCliente } from '../utils/navegacion'
 import Panel from '../components/Panel'
+import MervallE from '../components/ai/MervallE'
 
 // QUÉ pantallas se ven NO se decide acá: sale de utils/navegacion.js, la misma
 // lista y la misma regla del asesor que usan el menú lateral de la compu y el
@@ -162,7 +163,7 @@ export default function More() {
             onClick={() => coachDrawer.open()}
             className="w-full flex items-center gap-3 px-4 py-3 hover:bg-data-violet/[0.04] active:bg-data-violet/[0.08] transition-colors text-left"
           >
-            <Sparkles size={16} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
+            <MervallE size={30} forma="head" quieto />
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-ink-0 leading-tight">Rendi AI</div>
               <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{ayudaDeRendiAI({ atOwnLevel, clientCtx })}</div>

@@ -8,7 +8,7 @@
 
 import { useLayoutEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Search, RefreshCcw, Sparkles } from 'lucide-react'
+import { Search, RefreshCcw } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import CurrencySwitcher from '../CurrencySwitcher'
 import MarketTicker from '../MarketTicker'
@@ -18,6 +18,7 @@ import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { menuVisible } from '../../utils/navegacion'
+import MervallE from '../ai/MervallE'
 
 // El alto de esta barra (logo, cinta y los avisos: cliente abierto, demo, prueba)
 // queda anotado en la variable CSS --alto-barra-celular, y lo leen los que se
@@ -110,9 +111,9 @@ export default function MobileTopBar({ onRefresh, children }) {
               type="button"
               onClick={() => coachDrawer.open()}
               aria-label="Rendi AI"
-              className="p-2 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
+              className="p-1.5 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
             >
-              <Sparkles size={16} strokeWidth={1.75} />
+              <MervallE size={24} forma="head" quieto />
             </button>
             {!atOwnLevel && <Link
               to="/buscar"

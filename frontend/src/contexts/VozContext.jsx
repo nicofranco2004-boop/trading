@@ -28,6 +28,7 @@ import { api } from '../utils/api'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
+import { avisarPalabra } from '../components/ai/mervalle/motor'
 import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STORED } from '../utils/chatSession'
 import { useAuth } from './AuthContext'
 import { getClientContext } from '../utils/api'
@@ -494,6 +495,9 @@ export function VozProvider({ children }) {
         // stream viejo sigue llegando tras "Nueva conversación") apagaba el
         // "pensando" de la pregunta nueva antes de que empezara (medido).
         if (vigente()) setLoading(false)
+        // Las barras del pecho de Mervall-E laten con cada pedazo que llega.
+        // Va directo al motor (no por estado de React): son decenas por segundo.
+        if (vigente()) avisarPalabra()
         // Se pinta la PROSA, no el texto crudo: así el bloque de datos del
         // final no aparece medio escrito en pantalla mientras llega.
         const { prose } = parseStructured(stripMarkdown(acc))

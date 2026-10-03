@@ -24,6 +24,9 @@ import { entrada } from '../../hooks/useAlVerse'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 import { useArrastrable } from '../../hooks/useArrastrable'
 import { paraLaIsla } from '../ai/preguntasSugeridas'
+import MervallE from '../ai/MervallE'
+import { avisarTipeo, avisarMicrofono } from '../ai/mervalle/motor'
+import { useEstadoMervallE } from '../ai/mervalle/estadoDelChat'
 
 
 
@@ -33,18 +36,6 @@ const mmss = (s) => {
   return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 }
 
-/** El puntito que late mientras Rendi habla. */
-function Pulso({ hablando }) {
-  return (
-    <span
-      className={`w-6 h-6 rounded-lg grid place-items-center flex-none ${hablando ? 'animate-pulse' : ''}`}
-      style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}
-      aria-hidden="true"
-    >
-      <span className="w-1.5 h-1.5 rounded-full bg-bg-0/60" />
-    </span>
-  )
-}
 
 export default function RendiMate() {
   const {
@@ -144,6 +135,16 @@ export default function RendiMate() {
     if (!panelALaVista && micGrabando) micCancelar()
   }, [panelALaVista, micGrabando, micCancelar])
 
+  // La cara de Mervall-E en la burbuja y en la cabecera de la tarjeta. Antes
+  // era un cuadradito con un punto que latía mientras sonaba el audio; ahora
+  // es él, con la cara de lo que esté pasando (piensa, habla, reacciona,
+  // duerme sin cuota). Va ANTES de los return: es un hook.
+  const mervalle = useEstadoMervallE()
+  useEffect(() => {
+    avisarMicrofono(micGrabando)
+    return () => avisarMicrofono(false)
+  }, [micGrabando])
+
   if (enElChatGrande) return null
 
   if (!open) {
@@ -176,7 +177,7 @@ export default function RendiMate() {
                     : preparando ? 'Preparando el audio — abrir la conversación'
                     : 'Abrir la conversación con Rendi'}
         >
-          <Pulso hablando={hablando} />
+          <MervallE size={26} escucha estado={mervalle.estado} tono={mervalle.tono} />
           {hablando ? 'Rendi está hablando' : preparando ? 'Preparando…' : 'Preguntale a Rendi'}
         </button>
         {hayAudio && (
@@ -219,7 +220,7 @@ export default function RendiMate() {
       <header
         {...manija}
         className="flex items-center gap-2 px-3 py-2 border-b border-line-2 cursor-grab active:cursor-grabbing">
-        <Pulso hablando={hablando} />
+        <MervallE size={26} escucha estado={mervalle.estado} tono={mervalle.tono} />
         <span className="flex-1 min-w-0 text-[12.5px] font-semibold text-ink-0 leading-tight">
           Rendi
           {estado && <span className="block font-normal text-[11px] text-ink-3">{estado}</span>}
@@ -284,7 +285,7 @@ export default function RendiMate() {
           // key = el paso: cada paso nuevo que manda el servidor entra en vez de
           // reemplazar el texto de golpe.
           <span key={paso || 'mirando'} className="entra inline-flex items-center gap-1.5 text-[12px] text-ink-3">
-            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            <MervallE size={20} forma="visor" estado="cargando" />
             {paso || 'Mirando tu cartera'}…
           </span>
         )}
@@ -423,7 +424,7 @@ export default function RendiMate() {
             <input
               ref={inputRef}
               value={texto}
-              onChange={(e) => setTexto(e.target.value)}
+              onChange={(e) => { setTexto(e.target.value); avisarTipeo() }}
               placeholder="Escribile a Rendi…"
               aria-label="Escribile a Rendi"
               autoComplete="off"

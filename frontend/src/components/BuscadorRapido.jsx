@@ -30,6 +30,7 @@ import { tickerName, POPULAR_TICKERS } from '../utils/tickers'
 import {
   resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, esAtajoBuscador, esMac, urlNuevaOperacion, claveDeActivos,
 } from '../utils/buscadorRapido'
+import MervallE from './ai/MervallE'
 
 export const EVENTO_ABRIR_BUSCADOR = 'rendi:abrir-buscador'
 export function abrirBuscador() {
@@ -275,14 +276,18 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
         </div>
         <ul id="buscador-rapido-lista" role="listbox" className="max-h-[50vh] overflow-y-auto p-1.5">
           {resultados.map((o, i) => {
-            const Icono = o.clase === 'ia' ? Sparkles : (o.icon || Search)
+            // Las dos filas que son Mervall-E (abrir el chat y preguntarle la
+            // búsqueda) llevan su cara; el resto, el ícono de la pantalla.
+            const esMervallE = o.clase === 'ia' || o.id === 'pantalla:/ai'
+            const Icono = o.icon || Search
             return (
               <li key={o.id} id={`buscador-${i}`} role="option" aria-selected={i === actual}
                 onMouseMove={() => setSel(i)}
                 onClick={() => elegir(o)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-[14px] ${i === actual ? 'bg-bg-2 text-ink-0' : 'text-ink-1'}`}>
-                <Icono size={16} strokeWidth={1.75} aria-hidden="true"
-                  className={`flex-none ${o.clase === 'ia' ? 'text-data-violet' : 'text-ink-3'}`} />
+                {esMervallE
+                  ? <MervallE size={20} forma="visor" congelado />
+                  : <Icono size={16} strokeWidth={1.75} aria-hidden="true" className="flex-none text-ink-3" />}
                 <span className="flex-1 min-w-0 truncate">{o.titulo}</span>
                 <span className="text-[12px] text-ink-3 flex-none">{o.detalle}</span>
               </li>

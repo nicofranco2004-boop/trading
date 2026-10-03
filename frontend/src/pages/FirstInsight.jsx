@@ -25,6 +25,7 @@ import AnimatedNumber from '../components/AnimatedNumber'
 import { entrada } from '../hooks/useAlVerse'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import MervallE from '../components/ai/MervallE'
 
 export default function FirstInsight() {
   const navigate = useNavigate()
@@ -298,7 +299,7 @@ export default function FirstInsight() {
         className="w-full text-left mb-4 p-4 border border-data-violet/40 bg-data-violet/[0.04] hover:bg-data-violet/[0.08] rounded transition-colors group flex items-start gap-3"
       >
         <div className="w-9 h-9 rounded bg-bg-2 border border-line flex items-center justify-center text-data-violet flex-shrink-0 group-hover:border-data-violet/30 transition-colors">
-          <Sparkles size={16} strokeWidth={1.75} />
+          <MervallE size={28} forma="head" quieto radio={250} />
         </div>
         <div className="flex-1">
           <div className="text-sm font-medium text-ink-0 mb-0.5">Preguntale a Rendi AI sobre tu cartera</div>

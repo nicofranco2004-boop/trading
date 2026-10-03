@@ -32,6 +32,9 @@ import { useMicrofono } from './voz/BotonMicrofono'
 import { contadorCorto, restantesTexto, costoDeEscuchar, avisoDeCuota, fechaLegible } from '../utils/cuotaTexto'
 import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
+import MervallE from './ai/MervallE'
+import { avisarTipeo, avisarMicrofono } from './ai/mervalle/motor'
+import { useEstadoMervallE, useSaludoDelDia } from './ai/mervalle/estadoDelChat'
 import { PRO_FEATURES } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
 
@@ -202,6 +205,15 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       }, 0)
     },
   })
+  // Mientras graba, Mervall-E escucha (enciende los anillos y mira el cuadro).
+  useEffect(() => {
+    avisarMicrofono(mic.grabando)
+    return () => avisarMicrofono(false)
+  }, [mic.grabando])
+  // La portada del chat vacío: saluda una vez por día y, si no, pone la cara
+  // de lo que esté pasando (escuchando mientras tipeás, durmiendo sin cuota).
+  const saludando = useSaludoDelDia()
+  const mervalle = useEstadoMervallE()
 
   function handleFreeSubmit(e) {
     e.preventDefault()
@@ -289,9 +301,13 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         {/* Empty state — hero de bienvenida (clean pass 2026-07) */}
         {messages.length === 0 && !loading && (
           <div className="text-center pt-6 pb-2">
-            <div className="w-12 h-12 rounded-2xl mx-auto grid place-items-center text-white text-xl"
-              style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
-            <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-3 mb-1.5">
+            {/* Mervall-E de cuerpo entero: es la única vez que la pantalla del
+                chat lo tiene grande, así que acá es el que se mueve. La
+                cabecera de /ai lo acompaña quieto. */}
+            <MervallE size={112} forma="full" escucha
+              estado={saludando ? 'saludo' : mervalle.estado} tono={mervalle.tono}
+              className="mx-auto" />
+            <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-2 mb-1.5">
               ¿Qué querés saber de tu plata?
             </p>
             <p className="text-[13.5px] text-ink-2 max-w-md mx-auto">
@@ -342,8 +358,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           const anim = (k, clases) => (recien ? entrada(true, k, clases) : { className: clases })
           return (
             <div key={i} className="flex items-start gap-3">
-              <div className="w-7 h-7 rounded-lg grid place-items-center text-white text-[12px] flex-none mt-0.5"
-                style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
+              {/* Congelado: el que se mueve es el de la cabecera. Con uno vivo
+                  por mensaje, una conversación larga sería una pared de caras
+                  parpadeando. */}
+              <MervallE size={28} recuadro congelado className="mt-0.5" />
               <div className="flex-1 min-w-0 pt-0.5">
                 {(meta?.verdict || meta?.headline) && (() => {
                   const band = VERDICT_BAND[meta.tone] || VERDICT_BAND.neutral
@@ -450,12 +468,9 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             tiempo. La frase la manda el backend (_PASOS_HUMANOS en main.py). */}
         {loading && (
           <div className="flex justify-start items-start gap-2.5">
-            <div className="bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-4 py-2.5">
-              <div className="flex gap-1.5">
-                <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-ink-3 dark:bg-bg-20 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
+            {/* El visor de Mervall-E barriendo: es la espera con su cara. */}
+            <div className="bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-3.5 py-2.5" role="status" aria-label="Mervall-E está pensando">
+              <MervallE size={22} forma="visor" estado="cargando" />
             </div>
             {/* Los pasos de este turno, en orden: cada uno entra al llegar y
                 los que quedaron atrás llevan tilde. Son los que manda el
@@ -593,7 +608,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                 type="text"
                 ref={freeInputRef}
                 value={freeText}
-                onChange={e => setFreeText(e.target.value)}
+                onChange={e => { setFreeText(e.target.value); avisarTipeo() }}
                 disabled={loading || sending}
                 placeholder={canChatFree
                   ? 'Preguntale a Rendi AI sobre tu cartera…'

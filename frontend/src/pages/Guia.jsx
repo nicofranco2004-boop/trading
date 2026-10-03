@@ -7,12 +7,13 @@
 
 import { Link } from 'react-router-dom'
 import {
-  Rocket, Briefcase, Compass, Sparkles as SparkIcon, Bell, UserCog,
+  Rocket, Briefcase, Compass, Bell, UserCog,
   ArrowRight, BookOpen, Users,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import CabeceraPublica, { SoloVisitantes } from '../components/CabeceraPublica'
 import PageMeta from '../components/PageMeta'
+import { MervallEIcono } from '../components/ai/MervallE'
 
 // Sección EXTRA para cuentas de asesor. No va en SECTIONS porque no se le muestra a
 // un usuario común: el índice la antepone solo si el tier es 'advisor'. Lo operativo
@@ -55,7 +56,7 @@ const SECTIONS = [
   {
     n: 4,
     to: '/guia/coach-ia',
-    icon: SparkIcon,
+    icon: MervallEIcono,
     title: 'Rendi AI',
     desc: '12 preguntas guiadas, chat libre (Pro), registrar operaciones por chat, memoria persistente y cuotas semanales.',
     descAsesor: 'A tu nivel responde sobre TODO tu libro ("¿a quiénes les pega esta noticia?"); adentro de un cliente, sobre su cartera.',

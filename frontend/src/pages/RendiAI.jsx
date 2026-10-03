@@ -19,6 +19,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { useVoz } from '../contexts/VozContext'
+import MervallE from '../components/ai/MervallE'
+import { useEstadoMervallE } from '../components/ai/mervalle/estadoDelChat'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -145,6 +147,10 @@ export default function RendiAI() {
   }
 
   const nPos = snapshot?.summary?.open_positions_count
+  // La cara de Mervall-E en la cabecera sigue la conversación: piensa, habla,
+  // reacciona al tono de la respuesta, duerme sin cuota. Quieto (no flota):
+  // en la portada del chat vacío ya hay uno grande moviéndose.
+  const mervalle = useEstadoMervallE()
   const nBrokers = snapshot?.brokers?.length
 
   return (
@@ -152,8 +158,7 @@ export default function RendiAI() {
       {/* Topbar de la página */}
       <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-3.5 border-b border-line/60 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl grid place-items-center text-white text-[15px] flex-none"
-            style={{ background: 'linear-gradient(135deg, rgb(var(--data-violet)), rgb(var(--data-cyan)))' }}>✦</div>
+          <MervallE size={38} recuadro quieto escucha estado={mervalle.estado} tono={mervalle.tono} />
           {/* QUÉ ESTÁ MIRANDO RENDI — va acá abajo del título y no como chip
               suelto a la derecha.
               El chip decía `hidden md:inline-flex`: aparecía según el ancho de
