@@ -117,3 +117,25 @@ describe('ubicarEtiquetas — las dos etiquetas de punta, dentro del dibujo y si
     expect(a.ty).toBe(271)
   })
 })
+
+import { mismasFilas } from './insightsModel'
+
+// La serie de un gráfico conserva su identidad mientras su contenido no cambie
+// (SeArmaAlVerse): un arreglo nuevo con lo mismo hacía que recharts dejara la
+// línea terminada en vez de seguir dibujándola.
+describe('mismasFilas — ¿cambió de verdad la serie?', () => {
+  const a = [{ ts: 1, total: 0, bench: 0 }, { ts: 2, total: 9.9, bench: 10.5 }]
+  it('otro arreglo con las mismas filas: es la misma serie', () => {
+    expect(mismasFilas(a, a.map(r => ({ ...r })))).toBe(true)
+  })
+  it('un número distinto, una fila de más o un campo de más: cambió', () => {
+    expect(mismasFilas(a, [a[0], { ...a[1], total: 9.8 }])).toBe(false)
+    expect(mismasFilas(a, [...a, { ts: 3, total: 10 }])).toBe(false)
+    expect(mismasFilas(a, [a[0], { ...a[1], hoy: true }])).toBe(false)
+  })
+  it('null, NaN y lo que no es una lista', () => {
+    expect(mismasFilas([{ v: NaN }], [{ v: NaN }])).toBe(true)
+    expect(mismasFilas([{ v: null }], [{ v: 0 }])).toBe(false)
+    expect(mismasFilas(null, [])).toBe(false)
+  })
+})

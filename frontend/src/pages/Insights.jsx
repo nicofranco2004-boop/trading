@@ -29,7 +29,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { ChevronDown, ChevronUp, Sparkles, X, Lock } from 'lucide-react'
-import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt, pctVar, pctVarFino } from '../utils/format'
+import { usd, fmtUsd, fmtArs, pctSigned, colorClass, MONTHS, pctTxt, pctVar } from '../utils/format'
 import InsightDelDiaHero from '../components/mobile/InsightDelDiaHero'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { api } from '../utils/api'
@@ -85,6 +85,7 @@ import {
   ultimoConValor,
   ladoDeLaMarca,
   ubicarEtiquetas,
+  mismasFilas,
   benchPedido,
   BENCH_EN_CERO,
 } from '../utils/insightsModel'
@@ -197,11 +198,20 @@ function EtiquetasPuntas({ xAxisMap, yAxisMap, offset, etiquetas }) {
 // arreglo igual— salteaba la animación de los gráficos que todavía se estaban
 // dibujando (revisión del 2026-10-02). `children(visto)`; escondido hasta
 // verse salvo `esconder={false}` (lo que tiene su propia entrada).
-function SeArmaAlVerse({ children, className = '', esconder = true }) {
+//
+// `datos` (opcional): la serie del gráfico, devuelta con la MISMA identidad
+// mientras su contenido no cambie (`children(visto, datosEstables)`). La página
+// arma sus series de nuevo en cada render —otro arreglo, igual— y recharts, al
+// recibir un arreglo nuevo, deja la línea terminada en vez de seguir
+// dibujándola: pasaba si el valor de hoy o un pedido volvía en el primer
+// segundo (revisión 3). Con datos que cambian de verdad, la línea se rearma.
+function SeArmaAlVerse({ children, className = '', esconder = true, datos }) {
   const [ref, visto] = useAlVerse()
+  const previos = useRef(datos)
+  if (datos !== previos.current && !mismasFilas(datos, previos.current)) previos.current = datos
   return (
     <div ref={ref} className={`${className} ${esconder && !visto ? 'opacity-0' : ''}`.trim() || undefined}>
-      {children(visto)}
+      {children(visto, previos.current)}
     </div>
   )
 }
@@ -3635,7 +3645,7 @@ function InsightsDesktop({ _embeddedTab }) {
             </div>
           )
         ) : (
-          <SeArmaAlVerse>{(graficoPerfVisto) => (
+          <SeArmaAlVerse datos={chartData}>{(graficoPerfVisto, filasPerf) => (
           <ResponsiveContainer width="100%" height={320}>
             {/* Clean pass 2026-07: área con gradiente bajo la línea principal,
                 grilla suave solo horizontal, ejes sans, benchmark punteado,
@@ -3644,7 +3654,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 referencia, la moneda o el modo — es otra curva. Tu línea
                 primero; la referencia arranca después (animationBegin). */}
             <ComposedChart key={`${graficoPerfVisto ? 'visto' : 'antes'}|${chartRange}|${benchDelPedido}|${currency}|${modoPerf}`}
-              data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+              data={filasPerf} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="portGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={areaFill(trendStroke(true))} stopOpacity={1} />
@@ -3755,10 +3765,10 @@ function InsightsDesktop({ _embeddedTab }) {
             Los tramos de tu historia sin precio de mercado. Es contabilidad, no
             mercado — mirala como referencia, no como rendimiento.
           </p>
-          <SeArmaAlVerse>{(graficoContableVisto) => (
+          <SeArmaAlVerse datos={contableSeries}>{(graficoContableVisto, filasContable) => (
           <ResponsiveContainer width="100%" height={160}>
             {/* Se dibuja al verse (`key`), como Rendimiento. */}
-            <ComposedChart key={graficoContableVisto ? 'visto' : 'antes'} data={contableSeries} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+            <ComposedChart key={graficoContableVisto ? 'visto' : 'antes'} data={filasContable} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
               <CartesianGrid {...chartGrid} strokeDasharray={undefined} />
               <XAxis dataKey="label" tick={chartTick} axisLine={false} tickLine={false} minTickGap={40} dy={4} />
               <YAxis tick={chartTick} axisLine={false} tickLine={false} width={56}
@@ -3834,7 +3844,7 @@ function InsightsDesktop({ _embeddedTab }) {
                 </span>
               )}
             </div>
-            <SeArmaAlVerse>{(tortaBrokersVista) => (
+            <SeArmaAlVerse datos={[...pieData].sort((a, b) => b.value - a.value)}>{(tortaBrokersVista, porciones) => (
             <ResponsiveContainer width="100%" height={260}>
               {/* Gira al verse (`key`), como las otras tortas de la página
                   (CompositionDonut); antes giraba al cargar, fuera de vista. */}
@@ -3843,7 +3853,7 @@ function InsightsDesktop({ _embeddedTab }) {
                     tono más fuerte a la porción más grande (ver MONO_VIOLET).
                     Antes: paleta de series en el orden de la lista de brokers,
                     con el verde de ganancia y el rojo de pérdida adentro. */}
-                <Pie isAnimationActive={animarGraficos} data={[...pieData].sort((a, b) => b.value - a.value)} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
+                <Pie isAnimationActive={animarGraficos} data={porciones} cx="50%" cy="50%" innerRadius={60} outerRadius={95} dataKey="value" paddingAngle={3}>
                   {pieData.map((_, i) => <Cell key={`pie-d-${i}`} fill={porcionColor(i)} />)}
                 </Pie>
                 <Legend formatter={(v) => <span className="text-ink-2 text-xs">{v}</span>} iconType="circle" iconSize={8} />
@@ -3912,62 +3922,6 @@ function InsightsDesktop({ _embeddedTab }) {
 
     </div>
     </PreciosPendientes.Provider>
-  )
-}
-
-function BenchmarkCard({ label, hint, disabled, disabledHint, myValue, benchmarkValue, delta, amt }) {
-  // Tarjeta de comparación contra un benchmark simulado.
-  // Muestra: valor del benchmark, delta vs mi portfolio (USD y %).
-  // Verde si gano al benchmark, rojo si pierdo.
-  if (disabled || benchmarkValue == null || delta == null) {
-    return (
-      <div className="bg-bg-1 border border-line rounded-xl p-5">
-        <p className="text-xs font-semibold text-ink-3">{label}</p>
-        <p className="text-sm text-ink-3 mt-2">{disabledHint || 'Datos insuficientes para calcular.'}</p>
-      </div>
-    )
-  }
-  const gano = delta.delta >= 0
-  const accentBorder = gano ? 'border-rendi-pos/40' : 'border-rendi-neg/40'
-  const accentText = gano ? 'text-rendi-pos' : 'text-rendi-neg'
-  return (
-    <div className={`bg-bg-2/60 border ${accentBorder} rounded-xl shadow-sm dark:shadow-none p-5`}>
-      <p className="text-xs font-semibold text-ink-3">{label}</p>
-      <p className={`text-2xl font-bold tabular mt-2 ${accentText}`}>
-        {gano ? '+' : '−'}{amt(Math.abs(delta.delta))}
-      </p>
-      <p className={`text-xs tabular mt-0.5 ${accentText}`}>
-        {pctVarFino(delta.pct, 1)} {gano ? 'por encima' : 'por debajo'} del benchmark
-      </p>
-      <p className="text-[11px] text-ink-3 mt-3 leading-snug">
-        {hint}: <span className="font-medium text-ink-1">{amt(benchmarkValue)}</span>
-      </p>
-    </div>
-  )
-}
-
-function InflationCard({ inflation }) {
-  // Card de contexto: inflación INDEC acumulada del período tracked.
-  // No es un benchmark simulado — muestra cuánto tenía que rendir el peso
-  // para mantener poder de compra.
-  if (!inflation) {
-    return (
-      <div className="bg-bg-1 border border-line rounded-xl p-5">
-        <p className="text-xs font-semibold text-ink-3">Inflación AR</p>
-        <p className="text-sm text-ink-3 mt-2">No hay datos de IPC suficientes para el período seleccionado.</p>
-      </div>
-    )
-  }
-  return (
-    <div className="bg-bg-1 border border-rendi-warn/30 rounded p-5">
-      <p className="text-xs font-semibold text-ink-3">Inflación AR (período)</p>
-      <p className="text-2xl font-bold tabular mt-2 text-rendi-warn">
-        {pctVar(inflation.cumPct, 1)}
-      </p>
-      <p className="text-[11px] text-ink-3 mt-3 leading-snug">
-IPC acumulado en {inflation.monthsCounted} {inflation.monthsCounted === 1 ? 'mes' : 'meses'}. Rendimiento mínimo necesario en pesos para preservar el poder adquisitivo.
-      </p>
-    </div>
   )
 }
 

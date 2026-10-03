@@ -1,4 +1,4 @@
-import { pctTxt, pctVar } from './format'
+import { pctTxt, pctVar, decimalesFinos } from './format'
 import { classifyAsset } from './assetClass'
 // diagnostics.js
 // ──────────────
@@ -222,7 +222,9 @@ export const DIAGNOSTIC_GENERATORS = [
       if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
       const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
       if (realPct >= 0) return null
-      return `Tu cartera en pesos rinde **${Math.abs(realPct).toFixed(1).replace('.', ',')}%** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
+      // decimalesFinos: el mismo número que la celda "Inflación" de las
+      // alternativas (−0,03 → "0,03%", no "0,0%").
+      return `Tu cartera en pesos rinde **${pctTxt(Math.abs(realPct), decimalesFinos(realPct, 1))}** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
     },
   },
 

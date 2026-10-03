@@ -24,7 +24,7 @@ import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctTxt, pctVarSign } from '../../utils/format'
+import { pctVar, pctTxt, pctVarSign, ppVarFino } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
@@ -240,12 +240,13 @@ function Veredicto({ nombre, articulo, pp, detalle }) {
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1).replace('.', ',')} puntos porcentuales`
+      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`
              + (detalle ? `. ${detalle}` : '')}
     >
       vs {nombre}
       <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1).replace('.', ',')} pp
+        {/* ppVarFino: −0,04 se escribe "−0,04 pp", no "−0,0 pp" en rojo. */}
+        {ppVarFino(pp, 1)}
       </b>
     </span>
   )
@@ -290,7 +291,7 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   const datos = []
   if (resumen.sp500_return_pct != null) {
     datos.push({ label: 'S&P 500 ese año',
-                 valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1).replace('.', ',')}%` })
+                 valor: pctVar(resumen.sp500_return_pct, 1) })
   }
   if (resumen.inflation_pct != null) {
     // pctVar: con deflación decía "+-0,3%".

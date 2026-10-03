@@ -707,6 +707,22 @@ export function ubicarEtiquetas(items, { top, bottom }, { alto = 13, sobre = 9, 
   return ubicados
 }
 
+// ¿Dos series con las mismas filas? Fila por fila, campo por campo (las filas
+// de los gráficos son objetos planos de números y textos).
+export function mismasFilas(a, b) {
+  if (a === b) return true
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i]
+    if (x === y) continue
+    if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false
+    const kx = Object.keys(x), ky = Object.keys(y)
+    if (kx.length !== ky.length) return false
+    for (const k of kx) if (!Object.is(x[k], y[k])) return false
+  }
+  return true
+}
+
 // La marca del punto más hondo de la curva de caídas, con su fecha — sólo si
 // ese punto DIBUJADO se lee igual que el "Máx histórico" que publica la
 // tarjeta (el del servidor). Si no coinciden, no hay marca.

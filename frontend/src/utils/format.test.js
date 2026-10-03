@@ -220,3 +220,16 @@ describe('pctVarFino — el número al lado de un veredicto no dice "0,0%"', () 
     expect(pctVarFino(null, 1)).toBe('—')
   })
 })
+
+import { ppVarFino } from './format'
+
+describe('decimalesFinos / ppVarFino — hasta dos decimales más, con signo', () => {
+  it('−0,004 ya no se escribe "0,00%"', () => {
+    expect(pctVarFino(-0.004, 1)).toBe('−0,004%')
+  })
+  it('en puntos porcentuales', () => {
+    expect(ppVarFino(1.24, 1)).toBe('+1,2 pp')
+    expect(ppVarFino(-0.04, 1)).toBe('−0,04 pp')
+    expect(ppVarFino(null, 1)).toBe('—')
+  })
+})

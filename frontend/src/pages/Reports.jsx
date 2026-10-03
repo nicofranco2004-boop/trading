@@ -29,7 +29,7 @@ import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
-import { pctVar, pctColor, pctVarSign } from '../utils/format'
+import { pctVar, pctColor, pctVarSign, ppVarFino } from '../utils/format'
 
 // ─── Helpers de fecha / keys ─────────────────────────────────────────────────
 
@@ -756,7 +756,8 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     const vs = m.vs_sp500_pct
     kpis.push({
       label: 'vs S&P 500',
-      value: `${vs >= 0 ? '+' : '−'}${Math.abs(vs).toFixed(1).replace('.', ',')}pp`,
+      // ppVarFino: −0,04 → "−0,04 pp" (antes "−0,0pp" junto a "por debajo").
+      value: ppVarFino(vs, 1),
       sub: vs >= 0 ? 'por encima' : 'por debajo',
       tone: vs >= 0 ? 'pos' : 'neg',
     })
