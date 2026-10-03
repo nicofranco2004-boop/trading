@@ -175,6 +175,30 @@ def persist_batch(
     del primer movimiento del CSV). Eso resuelve los casos de CSVs parciales
     donde faltaban aportes y posiciones previas.
     """
+    # RECLAMO DEL LOTE (2026-10-03), antes de aplicar una sola fila. El "¿está
+    # pendiente?" lo contesta `load_session_*` con una lectura sin bloqueo, y el
+    # lote recién se marcaba confirmado al FINAL. Dos confirmaciones a la vez
+    # (doble click, dos pestañas) pasaban las dos. Medido forzando el choque: las
+    # dos respondían OK, y la segunda no duplicaba el archivo sólo porque sus
+    # filas chocaban con "database is locked" y se salteaban EN SILENCIO — una
+    # protección de casualidad, que depende de quién llega primero a escribir.
+    #
+    # La escritura no cambia nada (`status=status`): lo que importa es que toma la
+    # base para escribir y vuelve a preguntar por el estado en ese instante. La
+    # segunda espera a que la primera termine, encuentra el lote confirmado y no
+    # toca la fila. Vive ACÁ y no en cada endpoint para que la cubran los tres
+    # caminos que confirman (archivo, Wallbit, simulador) sin depender de nadie.
+    #
+    # De paso abre la transacción con una escritura de verdad: si lo primero que
+    # corriera fuera el SAVEPOINT de la fila 0, sqlite3 no abre transacción antes
+    # y cada RELEASE commitearía su fila por separado.
+    if conn.execute(
+        "UPDATE import_batches SET status=status WHERE id=? AND user_id=? AND status='preview'",
+        (batch_id, uid),
+    ).rowcount != 1:
+        raise PersistError(None, "Esta importación ya se confirmó (¿se mandó dos veces?). "
+                                 "Recargá la página para ver cómo quedó.")
+
     # Si hay seed_state, generar txs sintéticas y persistirlas en raw_rows /
     # normalized_tx para que queden auditables y revertibles junto al batch.
     if seed_state:
@@ -1426,6 +1450,21 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         raise PersistError(0, "Batch no encontrado.")
     if batch["status"] != "confirmed":
         raise PersistError(0, f"Solo se pueden revertir batches confirmados (estado actual: {batch['status']}).")
+    # RECLAMO (2026-10-03): la misma carrera que en `persist_batch`, al revés. El
+    # estado de arriba se leyó sin bloqueo y el lote se marca 'reverted' recién
+    # cerca del final, así que dos "Deshacer" a la vez corrían los dos. Medido
+    # forzando el choque: los dos respondían OK y el saldo quedaba bien sólo
+    # porque el segundo escribía el saldo con el MISMO número que el primero
+    # (calculado sobre el saldo viejo). Esta escritura no cambia nada, pero toma
+    # la base para escribir y vuelve a preguntar: el segundo espera, encuentra el
+    # lote revertido y sale sin tocar nada. Cubre los tres que revierten:
+    # deshacer, rehacer y la tanda del asesor.
+    if conn.execute(
+        "UPDATE import_batches SET status=status WHERE id=? AND user_id=? AND status='confirmed'",
+        (batch_id, uid),
+    ).rowcount != 1:
+        raise PersistError(None, "Esta importación ya se deshizo (¿se mandó dos veces?). "
+                                 "Recargá la página para ver cómo quedó.")
 
     # Pre-check 1: si el batch incluye SELL/FX/FUTURES_PNL y NO estamos en
     # modo nuclear, bloqueamos con mensaje claro. En nuclear seguimos.
