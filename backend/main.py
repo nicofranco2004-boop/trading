@@ -2484,8 +2484,12 @@ def init_db():
         # subscriptions: columnas de idempotencia de emails (idempotent migration
         # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
         sub_cols = _table_cols(conn, 'subscriptions')
+        # `cancelacion_pedida_at`: cuándo la PERSONA apretó "Cancelar" en Rendi. Es
+        # lo único que separa su baja de la que hace Rebill por falta de pago o la
+        # limpieza de un alta que nunca se pagó (las tres quedan 'cancelled'), y
+        # el reintento del mail "Cancelación confirmada" mira sólo ésta.
         for col in ['welcome_email_sent_at', 'cancellation_email_sent_at',
-                    'expiration_reminder_sent_at']:
+                    'expiration_reminder_sent_at', 'cancelacion_pedida_at']:
             if sub_cols and col not in sub_cols:
                 conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
         # subscriptions: amount_usd para tracking del valor real cobrado (los planes
@@ -2564,6 +2568,18 @@ def init_db():
         # Se estampa a mano sobre los que ya pagaban; nadie nuevo la recibe.
         if user_cols_after and 'quota_plus_legacy' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN quota_plus_legacy INTEGER DEFAULT 0")
+        # Qué fecha de vencimiento ya se le avisó ("tu plan vence en N días"),
+        # 'YYYY-MM-DD'. UN aviso por persona y por vencimiento real: ver
+        # `billing.subscriptions._send_credit_expiring_reminders`. Sin índice
+        # (se lee y escribe por id de usuario).
+        if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
+            conn.commit()
+            try:
+                from billing import subscriptions as _subs
+                _subs._migrar_aviso_vencimiento(conn)
+            except Exception as _ex:
+                log.warning("migración aviso_vencimiento_de: %s", _ex)
         conn.commit()
 
         # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
@@ -14786,14 +14802,7 @@ def _is_synthetic_seed_row(src) -> bool:
 
 
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
-    """El `_recompute_snapshots_netdep_for_user` de abajo re-estampa
-    `net_deposited`. Estuvo anotado como problema: usaba una fórmula truncada a MES
-    y pisaba con un valor único el dato diario que el cron había escrito bien.
-    Ahora usa `twr._aportado_por_punto`, que ancla el borde de mes al canónico y
-    conserva el día — corrige lo stale sin tirar la resolución. Fijado en
-    `tests/test_audit_ronda5.py::ReEstampadoPorMesEsInocuoTest`.
-
-    Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
+    """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
     autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
     refrescar snapshots desde la fecha afectada → re-backfill de month-ends. El
@@ -14818,10 +14827,16 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
         real caía en esa red y se borraba igual (verificado con un probe). El
         backfill solo escribe FIN DE MES, así que exigimos también esa fecha:
         mismo beneficio, sin llevarse puestas las fotos de media de mes.
-      • REALES: se conservan. Solo se les recomputa `net_deposited` (el capital
-        aportado, que SÍ cambió) con la SSoT `compute_net_deposited_db`.
+      • REALES: se conservan. Solo se les corrige `net_deposited` (el capital
+        aportado, que SÍ puede haber cambiado) desde `since_date`, con
+        `_recompute_snapshots_netdep_for_user` — ver abajo por qué esa y no otra.
       • HOY: se borra siempre — la reescribe la próxima visita/cron con el estado
         vivo, que es justamente el que acaba de cambiar.
+
+    Corre en TODOS los borrados y en sus "deshacer": movimientos (`tx-`, `me-`),
+    operaciones, posiciones (importadas y manuales) e historial de un activo. Lo
+    que se rompa acá se rompe en todos. `tests/test_borrar_conserva_el_dia.py` los
+    recorre por HTTP.
     """
     for b in brokers_touched:
         if b:
@@ -14837,22 +14852,51 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) 
                   AND date = date(date, 'start of month', '+1 month', '-1 day')""",
             (uid, since_date),
         )
-        from snapshots_job import compute_net_deposited_db as _cnd
-        # La SSoT solo mira AÑO-MES (ignora el día: monthly_entries es mensual), así que
-        # todas las fotos de un mismo mes comparten valor. Calculamos una vez por MES y
-        # hacemos un UPDATE por mes: con 3 años de historia son ~36 cuentas en vez de
-        # ~1100, y el borrado no se queda con el lock de escritura recorriendo foto a
-        # foto. Exactamente equivalente, no es una aproximación.
-        for r in conn.execute(
-            "SELECT DISTINCT substr(date,1,7) AS ym FROM snapshots "
-            "WHERE user_id=? AND date >= ?", (uid, since_date),
-        ).fetchall():
-            conn.execute(
-                "UPDATE snapshots SET net_deposited=? "
-                " WHERE user_id=? AND date >= ? AND substr(date,1,7)=?",
-                (_cnd(conn, uid, as_of_date=r["ym"], broker_filter="global",
-                      include_baseline=True), uid, since_date, r["ym"]),
-            )
+        # ⚠️ EL APORTADO SE CORRIGE CON EL ANCLADO, NO CON UN VALOR POR MES.
+        # Acá se estampaba `compute_net_deposited_db(as_of_date=<AAAA-MM>)` en todas
+        # las fotos de cada mes desde `since_date`, incluidas las del cron. Esa
+        # fórmula sólo mira el mes, así que un depósito del día 20 pasaba a figurar
+        # desde el día 1: del 1 al 19 la pantalla publicaba una pérdida del tamaño
+        # del depósito y el 20 la "ganancia" de vuelta (+US$ 10.000 en el chip,
+        # −9,52 % de peor caída, con el mercado quieto). Y pasaba aunque lo borrado
+        # no tuviera nada que ver con depósitos: borrar una compra de hace dos años
+        # aplanaba todos los meses con flujos desde entonces. Medido en una cuenta
+        # de 3 años: 323 de 1.096 fotos reescritas por borrar un dividendo.
+        # El dato que se perdía no se puede volver a generar: la resolución diaria
+        # existe sólo porque el cron la anotó cada noche. El anclado usa la estampa
+        # VIEJA para saber en qué día cayó cada flujo y la contabilidad de hoy para
+        # cuánto, así que corrige lo que el borrado cambió sin tirar el día.
+        # `desde=since_date`: el mismo alcance de antes — lo anterior a lo borrado
+        # no se toca. Y va ANTES del backfill de abajo: necesita las estampas viejas.
+        #
+        # ⚠️ Y ANTES DE BORRAR LA FOTO DE HOY, NO DESPUÉS. El anclado toma la última
+        # foto del mes como la que sabe todos sus flujos; en el mes en curso ésa es
+        # la de hoy. Borrada primero, el ancla pasa a ser la de ayer: con un depósito
+        # cargado HOY, ese depósito se corría a días anteriores (medido: borrar un
+        # depósito del 15 con otro de hoy dejaba del 15 al 19 con el de hoy adentro).
+        # Eso alcanza sólo si la foto de hoy YA VIO el depósito.
+        #
+        # LÍMITES CONOCIDOS — no empeoran lo de antes, pero tampoco se arreglan acá:
+        # · (auditoría 3) Un flujo que la última foto del mes NO vio no se puede
+        #   ubicar: un depósito cargado hoy DESPUÉS de la foto de hoy (el Dashboard
+        #   la saca una vez, al abrir), o sin foto de hoy, seguido de cualquier
+        #   borrado de algo más viejo, deja ese mes plano en su valor de fin de mes
+        #   —como antes del arreglo—: el depósito figura desde el día 1, y si el mes
+        #   tuvo otro movimiento, también se pierde el día de ése. El corredor del
+        #   anclado admite los flujos del mes en cualquier día que las estampas no
+        #   contradigan.
+        # · (auditoría 2, H2) Si el mes ya traía estampas VIEJAS (un import a mitad
+        #   de mes que reescribió la contabilidad hacia atrás), re-anclar desde
+        #   `since_date` corrige las fotos de esa fecha en adelante y deja viejas las
+        #   de antes: el escalón falso del import se muda al día de lo borrado. La
+        #   curva anclada no se mueve.
+        # Lo que resolvería los dos es aplicar sólo el CAMBIO que produjo el borrado
+        # (contabilidad de antes vs. de después) en vez de re-anclar el mes. No va
+        # acá porque dos puertas (`_delete_manual_position_cascade`,
+        # `_undo_manual_delete`) tocan `monthly_entries` ANTES de llamar a esta
+        # cascada —el "antes" hay que tomarlo en cada puerta— y los depósitos
+        # manuales (`me-`) no guardan el día.
+        _recompute_snapshots_netdep_for_user(conn, uid, desde=since_date)
     conn.execute("DELETE FROM snapshots WHERE user_id=? AND date = ?", (uid, today))
     _import_persister._backfill_snapshots_from_monthly(conn, uid)
 
@@ -17557,13 +17601,24 @@ def _detect_and_remove_corrupt_snapshots(conn, uid: int) -> list:
     return corrupt_ids
 
 
-def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False) -> dict:
-    """Backfill `snapshots.net_deposited` para TODOS los snapshots del user
-    usando la fórmula canónica:
+def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool = False,
+                                         desde: Optional[str] = None) -> dict:
+    """Re-estampa `snapshots.net_deposited` de fotos YA ESCRITAS con el aportado
+    ANCLADO (`twr._aportado_por_punto`): el borde de cada mes sale de la
+    contabilidad de hoy —filas 'global' de `monthly_entries` + baseline, la misma
+    convención que estampa el cron— y el DÍA dentro del mes lo dice la estampa
+    vieja, que es la única que lo sabe.
 
-        net_deposited(D) = SUM(monthly_entries.deposits - withdrawals)
-                           WHERE broker <> 'global'
-                             AND midpoint del mes (día 15) <= D
+    ⚠️ ES LA ÚNICA PUERTA PARA RE-ESTAMPAR FOTOS MEDIDAS (cron / navegador) YA
+    ESCRITAS. (Las que se fabrican tienen su propio escritor: el backfill del
+    persister refresca sus sintéticas de fin de mes y `backfill_historical_mtm`
+    sus reconstruidas.) La usan el borrado y el
+    deshacer (`_cascade_after_movement_delete`), el botón del admin, la reparación
+    de historial y la migración del arranque. Si necesitás corregir el aportado de
+    fotos existentes, llamá a esta función: `compute_net_deposited_db(as_of_date=…)`
+    trunca la fecha a MES y aplana el día (la cascada lo hacía por su cuenta y
+    destruía la resolución diaria en cada borrado; ver
+    `tests/test_borrar_conserva_el_dia.py`).
 
     HISTORIA: el viejo `_recalc_pnl_realized_from_ops` (pre-commit 75d8634)
     zero-eaba los cash flows manuales de monthly_entries cuando se llamaba
@@ -17579,6 +17634,14 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         with_details: si True devuelve list de cada snapshot pre/post (para
                       debug manual desde endpoint admin). Default False
                       para no inflar logs cuando corre como migración.
+        desde:        'AAAA-MM-DD'. Si viene, sólo ESCRIBE las fotos de esa fecha en
+                      adelante; LEE todas igual, porque el anclado necesita el mes
+                      entero. Es el alcance de un borrado: lo anterior a lo borrado
+                      no es asunto suyo, y reescribirlo cambiaría meses ya cerrados
+                      que el usuario no tocó. (Ojo: la cascada corre después
+                      `_backfill_snapshots_from_monthly`, que refresca las
+                      sintéticas de fin de mes de TODOS los meses, no sólo desde
+                      acá.)
     """
     snaps = conn.execute(
         "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
@@ -17594,26 +17657,34 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
     # `twr._aportado_por_punto` ancla los bordes de mes al canónico —que es lo que
     # esta función viene a corregir— y usa la estampa VIEJA sólo para saber en qué
     # día del mes cayó el flujo. Misma corrección, sin tirar la resolución.
+    #
+    # ⚠️ Y SI EL ANCLADO FALLA, NO SE TOCA NADA. Acá había un fallback a
+    # `compute_net_deposited_db(as_of_date=<fecha>)`: el MISMO truncado a mes que el
+    # párrafo de arriba retiró, escondido en el camino de error y sin más aviso que
+    # un log. Con una falla del anclado, cada borrado, el botón del admin y la
+    # migración aplanaban el día igual que antes. Dejar la estampa como estaba es
+    # inofensivo para los lectores que anclan al leer (`twr.serie_medible`);
+    # aplanarla no tiene vuelta.
     try:
         import twr as _twr
-        _filas_tw = conn.execute(
-            "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
-            (uid,)).fetchall()
-        _fn = _twr._aportado_por_punto(conn, uid, _filas_tw)
-        _nuevo_por_fila = {r["id"]: _fn(r) for r in _filas_tw}
+        _fn = _twr._aportado_por_punto(conn, uid, snaps)
     except Exception:
-        log.exception("netdep recompute: no se pudo usar el aportado anclado uid=%s", uid)
-        from snapshots_job import compute_net_deposited_db as _cnd
-        _nuevo_por_fila = {
-            r["id"]: float(_cnd(conn, uid, as_of_date=r["date"],
-                                broker_filter='global', include_baseline=True) or 0)
-            for r in conn.execute(
-                "SELECT id, date FROM snapshots WHERE user_id=?", (uid,)).fetchall()}
+        log.exception("netdep recompute: no se pudo usar el aportado anclado uid=%s "
+                      "— NO se re-estampa nada", uid)
+        return {
+            "snapshots_count": len(snaps),
+            "snapshots_updated": 0,
+            "details": [] if with_details else None,
+            "anclado_fallo": True,
+        }
 
-    updated = 0
+    _desde = str(desde)[:10] if desde else None
+    cambios = []
     details = [] if with_details else None
     for snap in snaps:
         snap_date = snap["date"]
+        if _desde and str(snap_date)[:10] < _desde:
+            continue
         old_net = float(snap["net_deposited"] or 0)
 
         # AUDIT B1 (F4 variaciones, CRITICAL): estampar la convención CANÓNICA
@@ -17623,14 +17694,10 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
         # PISABA los stamps canónicos → el lado prev de los Δ chips quedaba sin
         # baseline mientras el lado latest (H-7) lo incluye → Δ1d = −baseline
         # entero como "pérdida fantasma" tras cada deploy.
-        new_net = float(_nuevo_por_fila.get(snap["id"], 0.0) or 0)
+        new_net = float(_fn(snap) or 0)
 
         if abs(new_net - old_net) > 0.01:
-            conn.execute(
-                "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?",
-                (round(new_net, 4), snap["id"], uid),
-            )
-            updated += 1
+            cambios.append((round(new_net, 4), snap["id"], uid))
 
         if details is not None:
             details.append({
@@ -17640,9 +17707,16 @@ def _recompute_snapshots_netdep_for_user(conn, uid: int, *, with_details: bool =
                 "delta": round(new_net - old_net, 2),
             })
 
+    # En UNA tanda: el borrado corre esto adentro de su transacción, con el lock de
+    # escritura tomado (9556fd5b agrupaba por mes justamente por eso). Borrar un
+    # depósito viejo cambia todas las fotos posteriores: ~1.100 en 3 años.
+    if cambios:
+        conn.executemany(
+            "UPDATE snapshots SET net_deposited=? WHERE id=? AND user_id=?", cambios)
+
     return {
         "snapshots_count": len(snaps),
-        "snapshots_updated": updated,
+        "snapshots_updated": len(cambios),
         "details": details,
     }
 
@@ -17745,8 +17819,8 @@ def _repair_user_snapshots(conn, uid: int) -> dict:
 
     IDEMPOTENCIA: el "cambió" se mide comparando el ESTADO de los snapshots ANTES
     vs DESPUÉS de todo el repair, NO los reportes intermedios. Sin esto, _backfill
-    (que setea net_deposited desde el agregado 'global') y _recompute (que lo setea
-    desde los brokers individuales) se pisan en cada corrida cuando global ≠ Σbroker,
+    y _recompute se pisaban en cada corrida (escribían el aportado con cuentas
+    distintas; hoy los dos usan la del cron, `twr.netdep_canonico`),
     y el contador marcaba al usuario como "a reparar" para siempre aunque el estado
     final fuera estable. Comparar antes/después lo hace idempotente de verdad."""
     def _state():
@@ -21511,7 +21585,7 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 ENVIO_MASIVO_LOTE = 20
 # Segundos, contados desde que llegó el pedido, después de los cuales no se
 # EMPIEZA otro mail: los que quedan vuelven al panel en `pendientes` y salen en
-# el pedido siguiente. El lote de 20 supone ~0,3 s por mail; si Resend se pone
+# el pedido siguiente. El lote de 20 supone ~0,6 s por mail; si Resend se pone
 # lento (`_send` espera hasta 10 s), 20 mails volvían a pasar el corte de 30 s.
 # Con 18, el caso normal de un mail lento termina en 18 + 0,6 + 10 < 30. No es
 # una garantía (httpx cuenta los 10 s por fase, una base trabada demora la
@@ -21748,6 +21822,15 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     avanza."""
     from billing import emails
 
+    with emails.envio_masivo():       # la fila completa de la pausa
+        return _envio_masivo_en_fila(conn, destinatarios, vistos, marcar=marcar,
+                                     mandar=mandar, desmarcar=desmarcar, campaña=campaña,
+                                     inicio=inicio, inciertos_previos=inciertos_previos)
+
+
+def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmarcar,
+                          campaña, inicio, inciertos_previos):
+    from billing import emails
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     ya_no_estan = []
     tanda = emails.Tanda(inciertos_seguidos=inciertos_previos)
@@ -30665,6 +30748,7 @@ def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
                 conn.execute(
                     """UPDATE subscriptions
                        SET status = 'cancelled', cancelled_at = datetime('now'),
+                           cancelacion_pedida_at = datetime('now'),
                            current_period_end = COALESCE(?, current_period_end),
                            updated_at = datetime('now')
                        WHERE mp_subscription_id = ?""",
@@ -30951,9 +31035,29 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
         return
     if row["welcome_email_sent_at"]:
         return  # ya enviamos
+    # Marca ANTES de mandar, condicional (`emails.Tanda`): miraba, mandaba y
+    # recién después anotaba, y una re-entrega de `subscription.created` que
+    # llegaba mientras tanto mandaba una segunda bienvenida (medido en la
+    # auditoría). Si Resend lo rechaza, la marca vuelve.
+    def marcar():
+        marca = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            cur = conn.execute(
+                """UPDATE subscriptions SET welcome_email_sent_at = ?
+                   WHERE mp_subscription_id = ? AND welcome_email_sent_at IS NULL""",
+                (marca, preapproval_id))
+        return marca if cur.rowcount > 0 else None
+
+    def desmarcar(marca):
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions SET welcome_email_sent_at = NULL
+                   WHERE mp_subscription_id = ? AND welcome_email_sent_at = ?""",
+                (preapproval_id, marca))
+
     try:
         from billing import plan_textos as _plan_textos
-        sent = emails.send_welcome_pro(
+        datos = dict(
             to=row["email"],
             user_name=(row["name"] or row["email"].split("@")[0]),
             period=period,
@@ -30964,15 +31068,8 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
             # Plus se les respeta el cupo viejo): ver plan_textos.cupos_del_usuario.
             cupos=_plan_textos.cupos_del_usuario(conn, user_id, plan),
         )
-        if sent or not emails.can_deliver(row["email"]):
-            # Marcamos como enviado igual en modo "no configurado" (log-only)
-            # para no spamear el log con cada webhook.
-            with conn:
-                conn.execute(
-                    """UPDATE subscriptions SET welcome_email_sent_at = datetime('now')
-                       WHERE mp_subscription_id = ?""",
-                    (preapproval_id,),
-                )
+        emails.Tanda().enviar(marcar, lambda: emails.send_welcome_pro(**datos), desmarcar,
+                              que=f"bienvenida sub={preapproval_id}")
     except Exception as ex:
         log.error("Welcome email failed for sub %s: %s", preapproval_id, ex)
 
@@ -31103,34 +31200,12 @@ def _iso_today() -> str:
 
 
 def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
-    """Email de cancelación. Idempotente vía cancellation_email_sent_at."""
-    from billing import emails
-    from billing import trial as _trial
-    row = conn.execute(
-        """SELECT s.cancellation_email_sent_at, s.current_period_end, u.email, u.name,
-                  u.id AS uid
-           FROM subscriptions s JOIN users u ON u.id = s.user_id
-           WHERE s.mp_subscription_id = ?""",
-        (preapproval_id,),
-    ).fetchone()
-    if not row or row["cancellation_email_sent_at"]:
-        return
+    """Email "Cancelación confirmada": una sola regla, la de
+    `billing.subscriptions.enviar_mail_de_cancelacion` (marca antes, condicional,
+    y la devuelve si Resend lo rechaza: lo reintenta el ciclo de vida)."""
+    from billing import subscriptions as _subs
     try:
-        valid_until = row["current_period_end"] or _iso_today()
-        emails.send_cancellation(
-            to=row["email"],
-            user_name=(row["name"] or row["email"].split("@")[0]),
-            valid_until=valid_until,
-            # Quien nació sin plan gratis no "vuelve a Free": queda en pausa.
-            # `_requiere_plan` tolera una base sin la columna (responde False).
-            requiere_plan=_trial._requiere_plan(conn, row["uid"]),
-        )
-        with conn:
-            conn.execute(
-                """UPDATE subscriptions SET cancellation_email_sent_at = datetime('now')
-                   WHERE mp_subscription_id = ?""",
-                (preapproval_id,),
-            )
+        _subs.enviar_mail_de_cancelacion(conn, preapproval_id)
     except Exception as ex:
         log.error("Cancellation email failed for sub %s: %s", preapproval_id, ex)
 
@@ -37091,12 +37166,15 @@ def iol_lab_run_cron(request: Request):
 
 def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
     """Renueva el refresh token de todos los testers con medición activa. Lo llaman el
-    cron externo, el scheduler in-process (cada hora) y, oportunistamente, /status.
+    cron externo y el scheduler in-process (cada hora); /status y el botón renuevan
+    de a un tester con `_iol_lab_refresh_one`, bajo la misma bandera.
     min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse).
 
-    Una corrida a la vez entre las tres puertas (`_tomar_corrida("iol_lab")`):
-    dos renovando el MISMO token a la vez, si IOL anula el viejo al rotarlo, la
-    segunda recibe un rechazo y borra la credencial como si estuviera muerta."""
+    Una renovación a la vez entre todas sus puertas (`_tomar_corrida("iol_lab")`:
+    este lote —cron externo y job horario—, el botón "renovar", la renovación
+    oportunista de /status y el guardado del login de prueba): dos renovando el
+    MISMO token a la vez, si IOL anula el viejo al rotarlo, la segunda recibe un
+    rechazo y borra la credencial como si estuviera muerta."""
     # Esperando un poco: la otra puerta suele ser la renovación de UN tester
     # (botón o /status, ~1 s); saltear la corrida dejaba a todos sin renovar
     # hasta la hora siguiente.
@@ -37617,7 +37695,8 @@ def _get_mep_for_scheduler() -> float:
 # alertas, brief del asesor, resumen de mercado y las renovaciones del lab de
 # IOL) salen por acá: el arreglo de una no puede volver a quedar en una sola.
 _corridas_lock = threading.Lock()
-_corridas_en_curso: dict = {}          # nombre → time.monotonic() de cuando arrancó
+_corridas_en_curso: dict = {}          # nombre → _reloj_corridas() de cuando arrancó
+_reloj_corridas = time.monotonic
 # Minutos después de los cuales una corrida que sigue "en curso" se avisa como
 # probablemente colgada: la bandera no se puede robar (correrían dos), pero un
 # "ya está corriendo" eterno no puede ser silencioso.
@@ -37627,13 +37706,13 @@ CORRIDA_SOSPECHOSA_MIN = 30
 def _tomar_corrida(nombre: str) -> bool:
     with _corridas_lock:
         if nombre in _corridas_en_curso:
-            minutos = (time.monotonic() - _corridas_en_curso[nombre]) / 60
+            minutos = (_reloj_corridas() - _corridas_en_curso[nombre]) / 60
             if minutos > CORRIDA_SOSPECHOSA_MIN:
                 log.error("%s: hay una corrida 'en curso' desde hace %.0f min — "
                           "probablemente colgada; las siguientes se saltean hasta el "
                           "próximo reinicio", nombre, minutos)
             return False
-        _corridas_en_curso[nombre] = time.monotonic()
+        _corridas_en_curso[nombre] = _reloj_corridas()
         return True
 
 
@@ -37677,12 +37756,15 @@ def _tomar_corrida_esperando(nombre: str, segundos: float) -> bool:
 
 def _correr_si_esta_libre(nombre: str, fn) -> bool:
     """Puerta del scheduler: corre `fn` acá mismo, salvo que ya haya una
-    corrida de este trabajo en curso (la del cron externo)."""
+    corrida de este trabajo en curso (la del cron externo). Sus mails hacen la
+    fila completa de la pausa (`emails.envio_masivo`)."""
+    from billing import emails
     if not _tomar_corrida(nombre):
         log.info("%s: ya hay una corrida en curso; ésta se saltea", nombre)
         return False
     try:
-        fn()
+        with emails.envio_masivo():
+            fn()
     finally:
         _soltar_corrida(nombre)
     return True
@@ -37697,7 +37779,9 @@ def _correr_en_fondo(nombre: str, fn) -> dict:
 
     def _bg():
         try:
-            fn()
+            from billing import emails      # adentro del try: si fallara, la bandera se suelta igual
+            with emails.envio_masivo():     # sus mails hacen la fila completa
+                fn()
         except Exception:
             log.exception("%s: la corrida falló", nombre)
         finally:
@@ -37750,18 +37834,20 @@ def _run_backup_db_job():
         _backup_log.error(f"Backup job falló: {e}", exc_info=True)
 
 
-def _run_subscription_lifecycle_job():
+def _run_subscription_lifecycle_job(solo_avisos: bool = False):
     """Cron diario que mantiene sano el estado de subscripciones:
       - downgrade post-cancelación cuando period_end pasó
       - cleanup de pending abandonadas (>7 días)
-      - sync con MP para detectar webhooks perdidos
+      - los avisos de la prueba y de vencimiento
+    `solo_avisos`: la vuelta de la tarde, sin bajas de plan (ver
+    `billing.subscriptions.run_lifecycle_job`).
     """
     from billing import subscriptions as billing_subs
     _sub_log = logging.getLogger("billing.subscriptions")
     try:
         conn = get_db()
         try:
-            result = billing_subs.run_lifecycle_job(conn)
+            result = billing_subs.run_lifecycle_job(conn, solo_avisos=solo_avisos)
             _sub_log.info(f"Subscription lifecycle result: {result}")
         finally:
             conn.close()
@@ -37777,6 +37863,12 @@ def _job_snapshot_programado():
 
 def _job_ciclo_de_vida_programado():
     _correr_si_esta_libre("ciclo_de_vida", _run_subscription_lifecycle_job)
+
+
+def _job_avisos_de_la_tarde_programado():
+    # Misma bandera que el ciclo completo: nunca corren a la vez.
+    _correr_si_esta_libre("ciclo_de_vida",
+                          lambda: _run_subscription_lifecycle_job(solo_avisos=True))
 
 
 # Scheduler in-process
@@ -38287,13 +38379,14 @@ def _start_scheduler():
         id='subscription_lifecycle',
         replace_existing=True,
     )
-    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta del mismo job (misma bandera; cada
-    # paso es idempotente). Hay avisos que valen un solo día UTC —"mañana
-    # termina tu Pro" sale el día anterior al paso a Plus— o pocas horas —la
-    # bienvenida que Resend rechazó al activar—: con una sola corrida por día,
-    # un rechazo a las 03:30 no tenía reintento posible.
+    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta, SÓLO de los avisos (misma
+    # bandera). Hay avisos que valen un solo día UTC —"mañana termina tu Pro"
+    # sale el día anterior al paso a Plus— o pocas horas —la bienvenida que
+    # Resend rechazó al activar—: con una sola corrida por día, un rechazo a las
+    # 03:30 no tenía reintento posible. Las bajas de plan NO van acá (ver
+    # `run_lifecycle_job`, solo_avisos).
     _scheduler.add_job(
-        _job_ciclo_de_vida_programado,
+        _job_avisos_de_la_tarde_programado,
         CronTrigger(hour=15, minute=0),
         id='subscription_lifecycle_tarde',
         replace_existing=True,
@@ -38323,7 +38416,8 @@ def _start_scheduler():
         logging.getLogger("pricing.fci").warning("FCI bootstrap no se pudo lanzar: %s", _fci_ex)
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
     _snapshot_log.info("FCI refresh scheduler iniciado (cron: 12:10 UTC) + bootstrap on boot")
-    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")
+    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC completo + "
+                       "15:00 UTC sólo avisos)")
     _snapshot_log.info("Backup DB scheduler iniciado (cron: 03:45 UTC)")
 
 
@@ -38342,12 +38436,19 @@ def _stop_scheduler():
             _pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
+    _cerrar_al_apagar()
+
+
+def _cerrar_al_apagar():
+    """Lo que el apagado hace con los precios y las corridas, aparte de los
+    ejecutores (que `_stop_scheduler` apaga para siempre y los tests no pueden
+    tocar)."""
     # Bajar lo que quedó encolado en el buffer de precios. Railway redeploya
     # seguido; sin esto, cada deploy tira hasta un minuto de últimos-precios y
     # los activos que hoy no cotizan vuelven a valuarse a cost basis (o sea,
     # muestran lo que pagaste como si fuera el precio de hoy) hasta que el
-    # mercado los cotice de nuevo. Es una sola transacción y es lo último que
-    # hace el proceso.
+    # mercado los cotice de nuevo. Va PRIMERO: es lo que no se puede perder si
+    # el apagado se corta antes de terminar.
     try:
         n = _flush_last_prices_si_toca(forzar=True)
         if n:
@@ -38356,10 +38457,17 @@ def _stop_scheduler():
         pass
     # Las corridas en segundo plano (alertas, avisos de la prueba, briefs…)
     # marcan cada aviso ANTES de mandarlo: si el deploy las mata a mitad, lo que
-    # faltaba no sale. Darles un rato para terminar — va DESPUÉS de bajar los
-    # precios, que es lo que no se puede perder si el apagado se corta antes.
+    # faltaba no sale. Darles un rato para terminar — y al cartero, para que
+    # mande los mails sueltos que le quedaron en la fila (el mismo tope).
+    _fin = time.monotonic() + CORRIDAS_ESPERA_AL_APAGAR_SEG
     _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
-    # Y otra vez los precios: los que trajeron esas corridas mientras se esperaba.
+    try:
+        from billing import emails as _emails
+        _emails.esperar_al_cartero(max(0.0, _fin - time.monotonic()))
+    except Exception:
+        pass
+    # Y otra vez los precios: los que trajeron esas corridas mientras se
+    # esperaba. Esto sí es lo último que hace el proceso.
     try:
         _flush_last_prices_si_toca(forzar=True)
     except Exception:
@@ -39856,12 +39964,15 @@ def billing_run_cron(request: Request):
     Corre en un thread de fondo y devuelve 200 al instante: el job manda mails
     (httpx, hasta 10s cada uno) y con muchos usuarios pasa el timeout del
     gateway. Idempotente por diseño — cada aviso se marca ANTES de enviarse
-    (`trial_email_log`, `expiration_reminder_sent_at`), así que re-correrlo no
+    (`trial_email_log`, `users.aviso_vencimiento_de`), así que re-correrlo no
     reenvía nada; la marca sólo se devuelve si Resend rechazó el mail, y
     entonces lo reintenta la corrida siguiente.
 
-    Lo pega un cron externo (cron-job.org) 1×/día. Auth: header X-Cron-Token o
-    ?token= contra BILLING_CRON_TOKEN. Sin token configurado → 503.
+    Lo pega un cron externo (cron-job.org) 1×/día. Con `?solo_avisos=1` corre
+    sólo los avisos, sin bajas de plan: es la vuelta de las 15:00 UTC, por si
+    el scheduler de adentro se la saltea (Railway frío o un deploy justo a esa
+    hora). Auth: header X-Cron-Token o ?token= contra BILLING_CRON_TOKEN. Sin
+    token configurado → 503.
 
     ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
     Railway. Es la misma limitación que el cron de snapshots.
@@ -39873,7 +39984,11 @@ def billing_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    return _correr_en_fondo("ciclo_de_vida", _run_subscription_lifecycle_job)
+    solo_avisos = (request.query_params.get("solo_avisos") or "").strip().lower() in (
+        "1", "true", "si", "sí")
+    return {**_correr_en_fondo(
+        "ciclo_de_vida", lambda: _run_subscription_lifecycle_job(solo_avisos=solo_avisos)),
+        "solo_avisos": solo_avisos}
 
 
 # ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────

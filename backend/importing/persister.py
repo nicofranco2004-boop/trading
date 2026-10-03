@@ -1254,7 +1254,8 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
     Convención:
       total_value     = capital_final del mes
       total_invested  = cumulative net_deposited (proxy razonable para el chart)
-      net_deposited   = Σ (deposits - withdrawals) acumulado hasta el mes
+      net_deposited   = baseline + Σ (deposits - withdrawals) acumulado hasta el mes,
+                        con `twr.netdep_canonico` — la convención del cron
     """
     rows = conn.execute(
         """SELECT year, month, deposits, withdrawals, capital_final
@@ -1266,8 +1267,17 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
     if not rows:
         return
 
-    cum_dep = 0.0
-    cum_wd = 0.0
+    # ⚠️ EL APORTADO SALE DE LA MISMA CUENTA QUE EL CRON, CON EL BASELINE.
+    # Acá se estampaba `Σ(deposits − withdrawals)` a secas, sin el `capital_inicio`
+    # del primer mes (la plata que ya estaba cuando arranca la contabilidad). El cron
+    # (`compute_net_deposited`), el aportado anclado y la reconstrucción MtM lo
+    # incluyen —`scripts/backfill_historical_mtm.py` ya había corregido esta misma
+    # cuenta ("MISMA CONVENCION QUE EL CRON") y el arreglo no llegó acá—. En una
+    # cuenta con historia parcial, cada borrado dejaba esta foto sin el baseline y
+    # el botón del admin se lo volvía a poner: dos escritores, dos cuentas, y la
+    # fila nunca quedaba quieta (`tests/test_borrar_conserva_el_dia.py`).
+    from twr import netdep_canonico as _netdep_canonico
+    _canon = _netdep_canonico(conn, uid)
     import calendar
     from datetime import date as _date, datetime as _dt
     hoy = _dt.utcnow().date()
@@ -1324,9 +1334,7 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
         log.warning("backfill snapshots: no se pudo clasificar (uid=%s): %s", uid, _ex)
 
     for r in rows:
-        cum_dep += r["deposits"] or 0
-        cum_wd += r["withdrawals"] or 0
-        net_dep = cum_dep - cum_wd
+        net_dep = float(_canon(f"{int(r['year']):04d}-{int(r['month']):02d}-01"))
         last_day = calendar.monthrange(r["year"], r["month"])[1]
         snap_date = _date(r["year"], r["month"], last_day).isoformat()
         if snap_date > hoy.isoformat():

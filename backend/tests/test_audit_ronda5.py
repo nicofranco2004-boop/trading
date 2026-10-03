@@ -109,14 +109,21 @@ class ImportAMitadDeMesTest(_Base):
 
 
 class ReEstampadoPorMesEsInocuoTest(_Base):
-    """B-3 · `_cascade_after_movement_delete` (main.py:12450) re-estampa
-    `net_deposited` al borrar un movimiento.
+    """B-3 · `_recompute_snapshots_netdep_for_user` re-estampa `net_deposited`
+    con el aportado anclado, sin tirar la resolución diaria.
 
     Estaba anotado como "inocuo" mientras la curva usaba el canónico puro. Dejó de
     serlo con el aportado anclado: la fórmula usa la estampa para saber en qué DÍA
     del mes cayó el flujo, y el re-estampado la aplanaba a un valor por mes — o sea
     destruía justo el dato que la curva necesita. Ahora el re-estampado usa el
-    MISMO aportado anclado, así que corrige lo stale sin tirar la resolución."""
+    MISMO aportado anclado, así que corrige lo stale sin tirar la resolución.
+
+    ⚠️ ESTOS TESTS LLAMAN A LA FUNCIÓN DIRECTO, Y ESO NO CUBRE EL BORRADO. Este
+    docstring decía vigilar `_cascade_after_movement_delete`, pero la cascada no
+    llamaba a esta función: tenía su propio bucle con un valor por MES, y siguió
+    aplanando el día en cada borrado mientras esto daba verde. El camino de
+    producción —borrar y deshacer por HTTP— está en
+    `tests/test_borrar_conserva_el_dia.py`."""
 
     def test_la_curva_no_cambia_aunque_se_re_estampe(self):
         # ⚠️ Este test pedía sólo que el número NO SE MOVIERA, y el fixture

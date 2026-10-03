@@ -20,7 +20,7 @@ import AssetLogo from '../AssetLogo'
 import { cashAssetLabel } from '../../utils/valuation'
 import { pctTxt } from '../../utils/format'
 import { api } from '../../utils/api'
-import { inferType } from '../../utils/tickers'
+import { empresaDeTenencias } from '../../utils/buscadorRapido'
 import { track } from '../../utils/track'
 import { useVoz } from '../../contexts/VozContext'
 
@@ -112,28 +112,40 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
   const [error, setError] = useState(null)
   const [positions, setPositions] = useState([])
 
-  // Chips "Tus posiciones" — solo equities US con fundamentals.
+  // Chips "Tus posiciones": la empresa de cada activo tuyo que tiene ficha,
+  // con la misma regla que la ficha del activo y el buscador
+  // (empresaDeTenencias, que mira en qué mercado está cada lote). Antes sólo
+  // salían las acciones de EE.UU. según el ticker: Telecom (TECO2 → TEO) o YPF
+  // (YPFD) no aparecían, y el CEDEAR de Disney abría "DISN" en vez de DIS.
+  // Con el buscador oculto (hoy: siempre, en "Calidad de cartera") los chips no
+  // se muestran y no se pide nada.
   useEffect(() => {
+    if (hideSearch) return
     let cancelled = false
-    api.get('/positions')
-      .then(list => {
+    Promise.all([api.get('/positions'), api.get('/brokers').catch(() => [])])
+      .then(([list, bkrs]) => {
         if (cancelled) return
         const arr = Array.isArray(list) ? list : (list?.items || [])
-        const seen = new Set()
-        const equities = []
+        const brokers = Array.isArray(bkrs) ? bkrs : (bkrs?.items || [])
+        const porActivo = new Map()
         for (const p of arr) {
           const asset = (p.asset || '').toUpperCase()
           if (!asset || p.is_cash) continue
-          if (inferType(asset) !== 'stock_us') continue
-          if (seen.has(asset)) continue
-          seen.add(asset)
-          equities.push({ asset, is_cash: p.is_cash })
+          porActivo.set(asset, [...(porActivo.get(asset) || []), p])
         }
-        setPositions(equities)
+        const vistas = new Set()
+        const empresas = []
+        for (const [asset, lotes] of porActivo) {
+          const empresa = empresaDeTenencias(lotes, brokers)
+          if (!empresa || vistas.has(empresa.ticker)) continue
+          vistas.add(empresa.ticker)
+          empresas.push({ asset: empresa.ticker, tuyo: asset, is_cash: false })
+        }
+        setPositions(empresas)
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [])
+  }, [hideSearch])
 
   // Cargar scorecard cuando cambia el ticker.
   useEffect(() => {
@@ -186,6 +198,9 @@ export default function AnalyzeView({ ticker, onSelect, watchlist, hideSearch = 
                 >
                   <AssetLogo asset={cashAssetLabel(p)} isCash={p.is_cash} size={20} />
                   <span className="font-mono text-xs font-medium">{p.asset}</span>
+                  {p.tuyo.replace(/\.BA$/, '') !== p.asset && (
+                    <span className="text-[11px] text-ink-3">tu {p.tuyo}</span>
+                  )}
                 </button>
               ))}
             </div>

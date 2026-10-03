@@ -25,7 +25,7 @@ import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { inferType } from '../utils/tickers'
+import { empresaDeTenencias } from '../utils/buscadorRapido'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -192,8 +192,10 @@ export default function AssetDetail() {
     }
   }, [positions, operations, brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis])
 
-  const type = inferType(asset)
-  const hasFundamentals = type === 'stock_us' || type === 'cedear'
+  // La empresa de este activo en "Calidad de cartera", con la misma regla que
+  // el buscador (empresaDeTenencias): mira en qué mercado está cada lote, no
+  // sólo el ticker. Sin lotes abiertos, deciden las operaciones (tienen broker).
+  const empresa = empresaDeTenencias(positions.length ? positions : operations, brokers)
   const name = fciLabel(asset)
 
   if (loading) {
@@ -376,15 +378,20 @@ export default function AssetDetail() {
         </AskAIAbout>
       )}
 
-      {/* Link a Calidad de cartera (fundamentals del activo). */}
-      {hasFundamentals && (
+      {/* Link a Calidad de cartera (fundamentals de la empresa). */}
+      {empresa && (
         <button
-          onClick={() => navigate(`/fundamentals?ticker=${encodeURIComponent(asset)}`)}
+          onClick={() => navigate(empresa.ir)}
           className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-bg-1 border border-line hover:border-data-violet/40 hover:bg-data-violet/[0.04] transition-colors group"
         >
-          <span className="flex items-center gap-2.5 text-sm text-ink-1">
-            <BarChart3 size={15} strokeWidth={1.75} className="text-data-violet" />
-            Ver fundamentals de {asset}
+          <span className="flex items-center gap-2.5 text-sm text-ink-1 text-left">
+            <BarChart3 size={15} strokeWidth={1.75} className="text-data-violet shrink-0" />
+            <span>
+              Ver fundamentals de {empresa.ticker}
+              {empresa.ticker !== asset.replace(/\.BA$/, '') && (
+                <span className="block text-xs text-ink-3">{asset} cotiza en EE.UU. como {empresa.ticker}</span>
+              )}
+            </span>
           </span>
           <span className="text-data-violet group-hover:translate-x-0.5 transition-transform">→</span>
         </button>

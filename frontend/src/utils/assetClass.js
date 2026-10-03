@@ -38,6 +38,7 @@ import { isCrypto } from './crypto'
 import { isArUsdBroker, isFixedIncome } from './valuation'
 import {
   CEDEARS_LIST, ARG_LIDER, ARG_GENERAL, STOCKS_US, ETFS, BOND_TICKERS, ADR_DE_ACCION_AR,
+  cedearEspecieBase,
 } from './tickers'
 import { computePnlByKey, mergePnl } from './assetPnl'
 
@@ -241,7 +242,9 @@ export function classifyAsset(position, brokers = []) {
   // 5. Recién acá el mercado decide qué significa el ticker.
   if (isArMarket(position, brokers)) {
     if (AR_STOCK_SYMS.has(ticker)) return 'accion_ar'
-    if (CEDEAR_SYMS.has(ticker)) return 'cedear'
+    // SI es la especie en pesos del CEDEAR de CSN (SID): sin el alias quedaba
+    // "Sin clasificar" (cedearEspecieBase, la misma regla de Calidad de cartera).
+    if (CEDEAR_SYMS.has(ticker) || CEDEAR_SYMS.has(cedearEspecieBase(ticker))) return 'cedear'
     if ((assetType || '').toUpperCase() === 'CEDEAR') return 'cedear'
     // ON con formato reconocible que no está en el allowlist (el universo de
     // ONs es mucho más grande que la lista curada).

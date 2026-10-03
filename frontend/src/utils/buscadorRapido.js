@@ -12,7 +12,8 @@
 // Y siempre al final, con algo escrito: preguntárselo a Rendi AI — o, si tu
 // plan no tiene chat libre, ir a ver las preguntas que sí le podés hacer.
 
-import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF } from './tickers'
+import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF, cedearEspecieBase } from './tickers'
+import { classifyAsset } from './assetClass'
 
 const PRIORIDAD = { activo: 0, pantalla: 1, accion: 2, empresa: 3 }
 
@@ -116,13 +117,51 @@ export function destinoDeTicker(simbolo, { tuyo = false, tipo = null } = {}) {
   const s = (simbolo || '').toUpperCase()
   if (!s) return null
   if (tuyo) return `/activo/${encodeURIComponent(s)}`
-  if (SIN_FICHA_DE_EMPRESA.has(tipo)) return null
-  const local = s.replace(/\.BA$/, '')
-  if (tipo === 'cedear' && ES_ETF.has(local)) return null
-  const empresa = tipo === 'cedear' ? (CEDEAR_EN_EEUU[local] || local)
-    : tipo === 'stock_ar' ? ADR_DE_ACCION_AR[local]
-    : s
-  return empresa ? `/fundamentals?ticker=${encodeURIComponent(empresa)}` : null
+  const empresa = tickerDeEmpresa(s, tipo)
+  return empresa ? urlDeEmpresa(empresa) : null
+}
+
+export const urlDeEmpresa = (ticker) => `/fundamentals?ticker=${encodeURIComponent(ticker)}`
+
+// El ticker con el que "Calidad de cartera" abre la empresa, o null. Lo usa
+// también su lista con puntaje (CarteraList) para los CEDEARs.
+export function tickerDeEmpresa(simbolo, tipo) {
+  const s = (simbolo || '').toUpperCase()
+  if (!s || SIN_FICHA_DE_EMPRESA.has(tipo)) return null
+  if (tipo === 'cedear') {
+    // SI es la especie en pesos del CEDEAR de CSN, cuyo ticker en EE.UU. es SID.
+    const local = cedearEspecieBase(s)
+    if (ES_ETF.has(local)) return null
+    return CEDEAR_EN_EEUU[local] || local
+  }
+  if (tipo === 'stock_ar') return ADR_DE_ACCION_AR[s.replace(/\.BA$/, '')] || null
+  return s
+}
+
+// La empresa de un activo TUYO: la ficha del activo y los botones "Tus
+// posiciones" de Calidad de cartera. Es la regla del buscador, pero el tipo
+// sale de la clase de la torta (assetClass.classifyAsset), que mira en qué
+// MERCADO está cada tenencia y no sólo el ticker. La ficha preguntaba sólo por
+// el ticker: TECO2 no llevaba a Telecom (TEO), DISN abría "DISN" y no Disney
+// (DIS), y AGRO (Agrometal) abría Adecoagro, otra empresa.
+//   • TECO2 en Cocos → TEO · YPFD → YPF · GGAL en Schwab → GGAL
+//   • DISN o AAPL en Cocos (CEDEAR) → DIS / AAPL · SPY en Cocos (CEDEAR de ETF) → null
+//   • AGRO en Cocos (sin ADR) → null · CELU en Schwab (Celularity) → CELU
+//   • Bonos, cripto, fondos, ETFs y lo que no se reconoce → null.
+// Si tus tenencias de ese ticker dan empresas distintas (CELU en Cocos y CELU
+// en Schwab son dos compañías), no se adivina: null.
+// Devuelve { ticker, ir } o null.
+const TIPO_DE_CLASE = { cedear: 'cedear', accion_ar: 'stock_ar', accion_us: 'stock_us' }
+export function empresaDeTenencias(tenencias, brokers = []) {
+  const empresas = new Set()
+  for (const p of tenencias || []) {
+    if (!p || p.is_cash) continue
+    const tipo = TIPO_DE_CLASE[classifyAsset(p, brokers)]
+    empresas.add(tipo ? tickerDeEmpresa(p.asset, tipo) : null)
+  }
+  if (empresas.size !== 1) return null
+  const [ticker] = empresas
+  return ticker ? { ticker, ir: urlDeEmpresa(ticker) } : null
 }
 
 // Tus activos, uno por ticker (los lotes y los brokers se juntan), sin el

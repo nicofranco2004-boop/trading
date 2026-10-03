@@ -52,3 +52,9 @@ def hoy_art() -> str:
 def hoy_art_date() -> date:
     """Igual que `hoy_art()` pero como objeto `date`, para hacer aritmética."""
     return ahora_art().date()
+
+
+def dia_art(instante_utc: datetime) -> date:
+    """El día argentino de un instante UTC (naive). Para quien ya tiene su
+    "ahora" en la mano (y los tests que lo congelan)."""
+    return (instante_utc - timedelta(hours=ART_OFFSET_HORAS)).date()

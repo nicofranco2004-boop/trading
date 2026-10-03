@@ -605,10 +605,12 @@ def _flujos_de_la_cadena(conn, uid: int, period_start: str, period_end: str,
       "aportaste en la semana del 28/9". En el período en curso el mes actual
       cuenta como entero si arrancó adentro: lo que tiene, entró hasta hoy.
 
-    ⚠️ NO SALEN DE `snapshots.net_deposited`. El import estampa ahí los flujos
+    ⚠️ NO SALEN DE `snapshots.net_deposited`. El import estampaba ahí los flujos
     acumulados SIN el capital semilla (`persister._backfill_snapshots_from_monthly`)
     y el cron CON él: restarlos publicaba el capital semilla entero como aporte
-    ("Aportaste US$ 201.250 en el período" donde fueron 131).
+    ("Aportaste US$ 201.250 en el período" donde fueron 131). El escritor ya
+    estampa con la semilla, pero las filas que escribió antes siguen en las bases
+    hasta que el backfill las refresque: este guard sigue haciendo falta.
     """
     import calendar
     y0, m0 = int(period_start[:4]), int(period_start[5:7])
@@ -706,12 +708,13 @@ def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_en
       empieza en 0 (capital y semilla en 0), así que lo aportado al arrancar es
       0 de verdad;
     · el cierre: lo midió el cron, y su estampa de lo aportado es la canónica,
-      con resolución diaria (la del import va sin semilla; la del navegador, a
-      media rueda). ⚠️ SALVO después de una cascada: borrar o editar un
-      movimiento (`main._cascade_after_movement_delete`) hoy re-estampa lo aportado
-      POR MES y mete aportes posteriores del mismo mes. Ese defecto es del
-      escritor —igual en main y en la rama medida de día/semana— y se arregla
-      ahí, no acá.
+      con resolución diaria (la del import es al costo —y las viejas, sin
+      semilla—; la del navegador, a media rueda). La cascada de borrado
+      (`main._cascade_after_movement_delete`) ya no re-estampa POR MES: usa el
+      aportado anclado y conserva el día. Sigue sin saber ubicar un flujo que la
+      última foto del mes no vio (un depósito cargado hoy, después de la foto de
+      hoy): ese mes queda plano en su valor de fin de mes, como antes. Es del
+      escritor y se arregla ahí.
 
     Y las mismas cotas que el mes para un arranque en 0 (`_ancla_permite_publicar`).
     Es la primera semana de cada usuario nuevo: tapándola, el que se registró el
