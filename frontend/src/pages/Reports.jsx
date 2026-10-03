@@ -758,8 +758,9 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
       label: 'vs S&P 500',
       // ppVarFino: −0,04 → "−0,04 pp" (antes "−0,0pp" junto a "por debajo").
       value: ppVarFino(vs, 1),
-      sub: vs >= 0 ? 'por encima' : 'por debajo',
-      tone: vs >= 0 ? 'pos' : 'neg',
+      // Un empate (0,0 pp) no es "por encima" en verde.
+      sub: vs > 0 ? 'por encima' : vs < 0 ? 'por debajo' : 'igual',
+      tone: vs > 0 ? 'pos' : vs < 0 ? 'neg' : null,
     })
   }
 

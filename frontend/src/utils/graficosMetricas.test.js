@@ -139,3 +139,22 @@ describe('mismasFilas — ¿cambió de verdad la serie?', () => {
     expect(mismasFilas(null, [])).toBe(false)
   })
 })
+
+import { rellenarTimestamps } from './insightsModel'
+
+// El camino de producción (revisión 4): la serie de Rendimiento pasa por
+// rellenarTimestamps, que a la fila "today" le pone un instante. Con Date.now()
+// en cada render, dos renders de la MISMA curva daban series "distintas".
+describe('rellenarTimestamps + mismasFilas — la misma curva es la misma serie', () => {
+  const filas = [{ key: '2026-09-30', total: 9.9 }, { key: 'today', total: 10.1 }]
+  it('con el instante de la curva (ahoraPerf): dos renders, la misma serie', () => {
+    const a = rellenarTimestamps(filas.map(r => ({ ...r })), 1_759_400_000_000)
+    const b = rellenarTimestamps(filas.map(r => ({ ...r })), 1_759_400_000_000)
+    expect(mismasFilas(a, b)).toBe(true)
+  })
+  it('sin el instante, "today" cambia de ts entre renders (la trampa)', () => {
+    const a = rellenarTimestamps(filas.map(r => ({ ...r })))
+    const b = rellenarTimestamps(filas.map(r => ({ ...r })), Date.now() + 5)
+    expect(mismasFilas(a, b)).toBe(false)
+  })
+})

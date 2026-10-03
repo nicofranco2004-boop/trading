@@ -24,7 +24,7 @@ import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
-import { pctVar, pctTxt, pctVarSign, ppVarFino } from '../../utils/format'
+import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
 import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
@@ -235,16 +235,20 @@ function KpiCell({ label, value, sub, tone, first }) {
 // más que el vacío.
 function Veredicto({ nombre, articulo, pp, detalle }) {
   if (pp == null) return null
-  const gana = pp >= 0
+  // El veredicto, el del número que se ve: 0,0 pp es un empate (neutro), no
+  // "por encima" en verde.
+  const signo = pctVarSign(pp, decimalesFinos(pp, 1))
+  const gana = signo > 0
   const de = articulo === 'el' ? 'del' : 'de la'
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`
+      title={signo === 0 ? `Igual que ${articulo} ${nombre}`
+        : `${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`
              + (detalle ? `. ${detalle}` : '')}
     >
       vs {nombre}
-      <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+      <b className={`font-semibold ${signo > 0 ? 'text-rendi-pos' : signo < 0 ? 'text-rendi-neg' : 'text-ink-1'}`}>
         {/* ppVarFino: −0,04 se escribe "−0,04 pp", no "−0,0 pp" en rojo. */}
         {ppVarFino(pp, 1)}
       </b>

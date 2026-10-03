@@ -501,6 +501,11 @@ function InsightsDesktop({ _embeddedTab }) {
   const _monedaVista = currency === 'ARS' ? 'ars' : 'usd'
   const _perfEsDeLaVista = perfEsDeLaVista(perfRaw, { moneda: _monedaVista, bench: benchDelPedido, modo: modoPerf })
   const perf = _perfEsDeLaVista ? perfRaw : null
+  // El instante del punto "hoy" de la curva: fijo mientras no cambie la curva.
+  // Con Date.now() en cada render, la fila "today" cambiaba de `ts` y la serie
+  // nunca era "la misma" (SeArmaAlVerse / mismasFilas): recharts cortaba el
+  // dibujo de la línea ante cualquier render (revisión 4). Va con los hooks.
+  const ahoraPerf = useMemo(() => Date.now(), [perfRaw])
   // Cambió la moneda (o el benchmark, o el modo) y la respuesta nueva todavía no
   // llegó. No es "no hay datos": es "los que tengo son de otra vista", y el
   // gráfico lo dice en vez de dibujar la serie vieja del motor de respaldo.
@@ -2086,7 +2091,7 @@ function InsightsDesktop({ _embeddedTab }) {
     // `rellenarTimestamps` va ANTES de partir: necesita la serie entera y en
     // orden para poder poner los cortes en el punto medio de sus vecinas.
     return partirMedidoYEstimado(
-      rellenarTimestamps(filas), claveCartera, `${userName} estimado`)
+      rellenarTimestamps(filas, ahoraPerf), claveCartera, `${userName} estimado`)
   })()
 
   // ── Insight: Mejor / Peor mes ──
