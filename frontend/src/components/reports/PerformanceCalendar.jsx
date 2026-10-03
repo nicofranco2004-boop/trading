@@ -233,7 +233,7 @@ function KpiCell({ label, value, sub, tone, first }) {
 // `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
 // del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
 // más que el vacío.
-function Veredicto({ nombre, articulo, pp, detalle }) {
+export function Veredicto({ nombre, articulo, pp, detalle }) {
   if (pp == null) return null
   // El veredicto, el del número que se ve: 0,0 pp es un empate (neutro), no
   // "por encima" en verde.
@@ -243,8 +243,10 @@ function Veredicto({ nombre, articulo, pp, detalle }) {
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={signo === 0 ? `Igual que ${articulo} ${nombre}`
-        : `${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`
+      // La aclaración (`detalle`) va en los TRES casos: sin los paréntesis el
+      // `+` se pegaba sólo al "por encima/por debajo" y el empate la perdía.
+      title={(signo === 0 ? `Igual que ${articulo} ${nombre}`
+        : `${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`)
              + (detalle ? `. ${detalle}` : '')}
     >
       vs {nombre}
