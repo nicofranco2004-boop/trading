@@ -1,4 +1,6 @@
-// La IA de Rendi se llama Rendi AI. "Coach IA" es el nombre viejo y no vuelve.
+// La IA de Rendi se llama Mervall-E AI. "Coach IA" y "Rendi AI" son los nombres
+// viejos y no vuelven ("Rendi AI" se sumó el 2026-10-03, cuando la IA pasó a
+// llamarse Mervall-E AI y a tener cara: components/ai/MervallE.jsx).
 //
 // POR QUÉ ESTE TEST
 // ─────────────────
@@ -35,6 +37,7 @@ const NOMBRE_VIEJO = [
   new RegExp(String.raw`coach${ENTRE}(de${ENTRE})?ia\b`, 'gi'),  // "Coach IA", "Coach de IA", "Coach <b>IA</b>"
   new RegExp(String.raw`\b(el|al|del)${ENTRE}coach\b`, 'gi'),      // "El Coach lee tu test", "Memoria del Coach"
   new RegExp(String.raw`\bai${ENTRE}coach\b`, 'gi'),               // "Tip: AI Coach" (la guía, de mayo a julio)
+  new RegExp(String.raw`\brendi${ENTRE}ai\b`, 'gi'),               // "Rendi AI" (de septiembre al 2026-10-03)
 ]
 
 const TODOS = archivosConTexto()
@@ -65,20 +68,23 @@ describe('el nombre viejo de la IA no vuelve', () => {
     // Partido por una etiqueta, por el `{' '}` del formateador o por un
     // espacio duro: en pantalla se lee igual.
     for (const partido of ['<p>Coach <strong>IA</strong></p>', "<p>Coach{' '}\n  IA</p>",
-      '<p>Coach&nbsp;IA</p>', "{'Coach\\u00a0IA'}", '<h2>Tip: AI Coach + Novedades</h2>']) {
+      '<p>Coach&nbsp;IA</p>', "{'Coach\\u00a0IA'}", '<h2>Tip: AI Coach + Novedades</h2>',
+      '<p>Preguntale a Rendi AI</p>', '<b>Rendi</b> AI', "'rendi AI'"]) {
       expect(vistos('a.jsx', partido), partido).not.toEqual([])
     }
     // HTML: su comentario no cuenta, el del JS de un <script> tampoco.
     const html = '<!-- Coach IA --><script>// el Coach IA\nvar a = 1</script><title>Rendi, con Coach IA</title>'
     expect(vistos('index.html', html)).toEqual(['Coach IA'])
     // Y no confunde la URL de la guía, que se queda como está: cambiarla
-    // rompería los links que ya indexó Google (no hay redirección).
+    // rompería los links que ya indexó Google (no hay redirección). Tampoco
+    // el nombre del componente de la página, que no se muestra.
     expect(vistos('a.jsx', "to: '/guia/coach-ia'")).toEqual([])
+    expect(vistos('a.jsx', "import RendiAI from './pages/RendiAI'")).toEqual([])
   })
 
-  it('ningún texto de la app, la home, el blog, la guía ni los legales dice "Coach IA"', () => {
+  it('ningún texto de la app, la home, el blog, la guía ni los legales dice "Coach IA" ni "Rendi AI"', () => {
     const encontrados = TODOS.flatMap((r) => hallazgos(r, NOMBRE_VIEJO))
-    expect(encontrados, 'la IA se llama Rendi AI').toEqual([])
+    expect(encontrados, 'la IA se llama Mervall-E AI').toEqual([])
   })
 })
 

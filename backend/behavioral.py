@@ -117,7 +117,7 @@ _AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "ppi", "inverti
 
 # Prefijos de bonos soberanos AR. Pattern: 2 letras + dígito al menos.
 # (Siempre seguido de un número: ver _is_ar_bond. "TO" = Bonte TO26, "T2X" = los
-# CER T2X5; estaban sólo en la copia de Rendi AI, que se borró.)
+# CER T2X5; estaban sólo en la copia de Mervall-E AI, que se borró.)
 _AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX", "TO", "T2X")
 
 # Acciones AR del panel local (NO CEDEARs): la MISMA lista que la pantalla
@@ -347,7 +347,7 @@ def es_renta_fija_argentina(p: Dict[str, Any], en_byma: Optional[bool] = None) -
     del ticker (S31E5, T13F6), bonos del catálogo argentino, lo que el importador
     marcó BOND/ON/LETRA y los FCI. Antes había listas de prefijos ("AL", "GD",
     "TX"…) copiadas en varios lugares: una cartera de LECAPs salía "Casi sin
-    exposición a Argentina", y en Rendi AI "TX"/"GD" sin número volvían argentinas
+    exposición a Argentina", y en Mervall-E AI "TX"/"GD" sin número volvían argentinas
     a Texas Instruments o a GDX. Lo marcado BOND/fondo sin ser del catálogo cuenta
     como argentino sólo si está en el mercado argentino (un bono del Tesoro de
     EE.UU. en Schwab no lo es)."""
@@ -367,9 +367,9 @@ def es_renta_fija_argentina(p: Dict[str, Any], en_byma: Optional[bool] = None) -
 def es_bono_o_letra(p: Dict[str, Any]) -> bool:
     """¿Es un bono, una letra o una ON, de cualquier mercado? Los fondos (FCI) no.
     Es la porción "Bonos y letras" de la torta (frontend assetClass 'bono') y la
-    renta fija de la tarjeta de perfil: el perfil de Rendi AI tenía su propia
+    renta fija de la tarjeta de perfil: el perfil de Mervall-E AI tenía su propia
     lista de prefijos, con lo que una cartera de LECAPs u ONs salía "100 %
-    renta variable" en Rendi AI y renta fija en la pantalla."""
+    renta variable" en Mervall-E AI y renta fija en la pantalla."""
     return _categoria_renta_fija(p) in ("SOBERANO_AR", "LETRA", "BONO")
 
 
@@ -414,7 +414,7 @@ def _en_bolsa_argentina(p: Dict[str, Any]) -> bool:
 
 def exposicion_argentina(p: Dict[str, Any]) -> bool:
     """¿Esta tenencia es exposición económica argentina? UNA regla para el
-    diagnóstico de sesgo local, Rendi AI por país y los grupos del asesor.
+    diagnóstico de sesgo local, Mervall-E AI por país y los grupos del asesor.
 
     Un CEDEAR (AAPL.BA en Cocos) está REGISTRADO en un broker AR pero la
     exposición es a Apple: no cuenta. Cuentan: pesos, acciones argentinas y sus

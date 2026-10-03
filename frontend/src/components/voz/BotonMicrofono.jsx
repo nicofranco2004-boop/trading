@@ -70,8 +70,8 @@ function Boton({ d, deshabilitado, compacto }) {
       onClick={d.grabar}
       data-tour="microfono"
       disabled={deshabilitado || ocupado}
-      aria-label={ocupado ? 'Pasando a texto…' : 'Hablarle a Rendi'}
-      title={ocupado ? 'Pasando a texto…' : 'Hablarle a Rendi'}
+      aria-label={ocupado ? 'Pasando a texto…' : 'Hablarle a Mervall-E'}
+      title={ocupado ? 'Pasando a texto…' : 'Hablarle a Mervall-E'}
       className={`${lado} relative rounded-full grid place-items-center flex-none border transition-colors
                   after:absolute after:content-[''] after:-inset-2 sm:after:inset-0
                   border-data-violet/40 bg-data-violet/[0.12] text-data-violet

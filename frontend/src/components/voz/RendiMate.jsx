@@ -173,12 +173,12 @@ export default function RendiMate() {
           type="button"
           onClick={() => setOpen(true)}
           className="inline-flex items-center gap-2 pr-1.5 text-[12.5px] text-ink-1 hover:text-ink-0 transition-colors"
-          aria-label={hablando ? 'Rendi está hablando — abrir la conversación'
+          aria-label={hablando ? 'Mervall-E está hablando — abrir la conversación'
                     : preparando ? 'Preparando el audio — abrir la conversación'
-                    : 'Abrir la conversación con Rendi'}
+                    : 'Abrir la conversación con Mervall-E'}
         >
           <MervallE size={26} escucha estado={mervalle.estado} tono={mervalle.tono} />
-          {hablando ? 'Rendi está hablando' : preparando ? 'Preparando…' : 'Preguntale a Rendi'}
+          {hablando ? 'Mervall-E está hablando' : preparando ? 'Preparando…' : 'Preguntale a Mervall-E'}
         </button>
         {hayAudio && (
           <button
@@ -208,7 +208,7 @@ export default function RendiMate() {
       className="fixed z-40 flex flex-col overflow-hidden rounded-xl border border-line-3
                  bg-bg-raised shadow-2xl
                  top-[calc(var(--alto-barra-celular,80px)_+_8px)] left-3 right-3 sm:left-auto sm:right-4 sm:w-[340px]"
-      aria-label="Rendi, tu acompañante"
+      aria-label="Mervall-E AI, tu acompañante"
       ref={islaRef}
       style={islaEstilo}
     >
@@ -222,7 +222,7 @@ export default function RendiMate() {
         className="flex items-center gap-2 px-3 py-2 border-b border-line-2 cursor-grab active:cursor-grabbing">
         <MervallE size={26} escucha estado={mervalle.estado} tono={mervalle.tono} />
         <span className="flex-1 min-w-0 text-[12.5px] font-semibold text-ink-0 leading-tight">
-          Rendi
+          Mervall-E AI
           {estado && <span className="block font-normal text-[11px] text-ink-3">{estado}</span>}
         </span>
 
@@ -425,8 +425,8 @@ export default function RendiMate() {
               ref={inputRef}
               value={texto}
               onChange={(e) => { setTexto(e.target.value); avisarTipeo() }}
-              placeholder="Escribile a Rendi…"
-              aria-label="Escribile a Rendi"
+              placeholder="Escribile a Mervall-E…"
+              aria-label="Escribile a Mervall-E"
               autoComplete="off"
               className="flex-1 min-w-0 rounded-full border border-line-2 bg-bg-1 px-3 py-1.5
                          text-[12.5px] text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-3"

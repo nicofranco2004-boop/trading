@@ -51,7 +51,7 @@ export default function CompleteStep({ skipped, position }) {
         />
         <ActionCard
           Icon={MervallEIcono}
-          title="Rendi AI"
+          title="Mervall-E AI"
           desc="Preguntale lo que quieras. Tiene contexto de tu cartera."
           onClick={openCoach}
         />

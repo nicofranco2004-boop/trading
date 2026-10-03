@@ -158,7 +158,7 @@ export function VozProvider({ children }) {
   // manda el backend cuando sale a buscar datos; sirve para que la espera no
   // sea un "pensando" mudo de 15 segundos.
   const [paso, setPaso] = useState(null)
-  // Los pasos de ESTE turno, en orden: la pantalla de Rendi AI los muestra en
+  // Los pasos de ESTE turno, en orden: la pantalla de Mervall-E AI los muestra en
   // lista, con tilde los que ya quedaron atrás (la isla muestra sólo `paso`).
   // Son los que manda el servidor: acá no se inventa ninguno.
   const [pasos, setPasos] = useState([])
@@ -205,7 +205,7 @@ export function VozProvider({ children }) {
   // solo, mirando quién pregunta, e ignora lo que mande el navegador.
   //
   // Por eso acá lo único que hay que hacer es NO pedirle su cartera personal,
-  // que está vacía. Mismo criterio que la pantalla de Rendi AI.
+  // que está vacía. Mismo criterio que la pantalla de Mervall-E AI.
   const { user } = useAuth()
   const modoLibro = user?.tier === 'advisor' && !getClientContext()
 
@@ -723,7 +723,7 @@ export function VozProvider({ children }) {
     try {
       navigator.mediaSession.metadata = new window.MediaMetadata({
         title: current.text.slice(0, 70),
-        artist: 'Rendi',
+        artist: 'Mervall-E AI',
       })
     } catch { /* idem */ }
   }, [current?.text])

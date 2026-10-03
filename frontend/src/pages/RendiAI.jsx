@@ -1,6 +1,6 @@
 // RendiAI — página de chat con la IA (/ai).
 // ═══════════════════════════════════════════════════════════════════════════
-// Reemplaza al drawer lateral (AICoachDrawer): tocar "Rendi AI" en el sidebar
+// Reemplaza al drawer lateral (AICoachDrawer): tocar "Mervall-E AI" en el sidebar
 // navega acá. Chat a pantalla completa estilo conversación centrada: topbar con
 // la marca + chip de contexto + "Nueva conversación", mensajes con aire, input
 // abajo. La lógica del chat (tiers, cuota, streaming, registrar operaciones)
@@ -169,7 +169,7 @@ export default function RendiAI() {
               Como subtítulo no puede pasar: es la misma línea que ya estaba
               ahí, y encima dice algo más útil que la frase fija de antes. */}
           <div className="min-w-0">
-            <div className="text-[15.5px] font-semibold text-ink-0 leading-tight">Rendi AI</div>
+            <div className="text-[15.5px] font-semibold text-ink-0 leading-tight">Mervall-E AI</div>
             <div className="flex items-center gap-1.5 text-[12px] text-ink-3 truncate">
               {(bookMode || snapshot) && (
                 <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos flex-none" aria-hidden />
@@ -196,7 +196,7 @@ export default function RendiAI() {
             data-tour="parlante"
             onClick={() => setVozEnabled(!vozEnabled)}
             aria-pressed={vozEnabled}
-            title={vozEnabled ? 'Rendi te lee las respuestas en voz alta' : 'Rendi te deja las respuestas sólo escritas'}
+            title={vozEnabled ? 'Mervall-E te lee las respuestas en voz alta' : 'Mervall-E te deja las respuestas sólo escritas'}
             className={`inline-flex items-center gap-1.5 text-[12.5px] font-semibold rounded-lg px-3 py-1.5
               border transition-colors ${(vozEnabled || vozHablando)
                 ? 'text-data-violet border-data-violet/45 bg-data-violet/[0.12] hover:bg-data-violet/[0.18]'
@@ -208,7 +208,7 @@ export default function RendiAI() {
                 sólo el interruptor y no si había audio. */}
             {/* En celular va SÓLO el ícono. Medido a 375px: con las dos
                 etiquetas, los botones de la derecha sumaban 320 de 375 y
-                aplastaban el título a ancho CERO — "Rendi AI" quedaba
+                aplastaban el título a ancho CERO — "Mervall-E AI" quedaba
                 escrito encima de este botón. El estado igual se entiende: el
                 ícono cambia y late cuando está hablando. */}
             {vozHablando

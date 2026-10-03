@@ -861,12 +861,13 @@ def _marcar_bienvenidas_previas(conn) -> int:
 
 # La nota que deja una compra registrada por chat (register_trade). Van acá
 # arriba y no al lado del chat porque init_db() —que corre al importar este
-# archivo, antes de llegar allá— también las usa: la vieja es la que busca para
-# reemplazarla en las compras de antes del 2026-09-26, cuando el asistente se
-# llamaba de otra forma. Es el ÚNICO lugar del backend donde el nombre viejo
-# tiene que estar (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
-_NOTA_COMPRA_POR_CHAT = "Registrado por Rendi AI"
-_NOTA_COMPRA_POR_CHAT_VIEJA = "Registrado por Coach IA"
+# archivo, antes de llegar allá— también las usa: las viejas son las que busca
+# para reemplazarlas en las compras registradas con los nombres anteriores del
+# asistente ("Coach IA" hasta el 2026-09-26, "Rendi AI" hasta el 2026-10-03).
+# Es el ÚNICO lugar del backend donde los nombres viejos tienen que estar
+# (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
+_NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
+_NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
 def init_db():
@@ -2986,16 +2987,17 @@ def init_db():
         except Exception:
             pass  # tabla puede no existir en DBs muy viejas pre-migración
 
-        # Las compras registradas por chat antes del 2026-09-26 guardaron la nota
-        # con el nombre viejo del asistente, y se ve en "Editar posición → Notas".
+        # Las compras registradas por chat guardaron la nota con el nombre que el
+        # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
+        # "Editar posición → Notas".
         # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
         # queda como la dejó. En cada boot, como la purga de arriba: después de la
         # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
         # arranque.
         try:
             n = conn.execute(
-                "UPDATE positions SET notes = ? WHERE notes = ?",
-                (_NOTA_COMPRA_POR_CHAT, _NOTA_COMPRA_POR_CHAT_VIEJA)).rowcount or 0
+                "UPDATE positions SET notes = ? WHERE notes IN (?, ?)",
+                (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
             if n:
                 log.info("notas de compras por chat renombradas: %d", n)
         except Exception as ex:
@@ -23542,7 +23544,7 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
-_AI_CHAT_SYSTEM = """Sos Rendi AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
+_AI_CHAT_SYSTEM = """Sos Mervall-E AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
 No das recomendaciones específicas de "comprá X" o "vendé Y". Sí explicás conceptos, marcos analíticos, ratios, riesgos, y hacés preguntas que abren reflexión.
@@ -23906,7 +23908,7 @@ Estás hablando con el ASESOR FINANCIERO del dueño de esta cartera, no con el d
 - Describí y cuantificá; el asesor decide qué hacer con su cliente.
 """
 
-_AI_CHAT_SYSTEM_FREE = """Sos Rendi AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
+_AI_CHAT_SYSTEM_FREE = """Sos Mervall-E AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
 
 ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
@@ -33525,9 +33527,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # Lo gastado antes del error Anthropic lo cobró igual: se anota.
                 _record_chat_quota(uid, _costo.centavos())
                 if ex_name in ("APITimeoutError", "APIConnectionError"):
-                    code, msg = "ai_timeout", "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
+                    code, msg = "ai_timeout", "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
                 elif ex_name in ("RateLimitError",):
-                    code, msg = "ai_rate_limit", "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
+                    code, msg = "ai_rate_limit", "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
                 else:
                     if ex_name in ("BadRequestError",):
                         log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
@@ -33695,7 +33697,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_timeout",
-                    "message": "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
+                    "message": "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
                 },
             )
         if ex_name in ("RateLimitError",):
@@ -33703,7 +33705,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_rate_limit",
-                    "message": "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
+                    "message": "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
                 },
             )
         if ex_name in ("BadRequestError",):
@@ -37901,7 +37903,7 @@ def _backfill_fx_rates_on_boot():
 
 @app.on_event("startup")
 def _precalentar_cliente_ia():
-    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI después de cada
+    """MEDIDO el 2026-10-01: la primera pregunta a Mervall-E AI después de cada
     arranque (cada publicación, cada reinicio) pagaba 0,58 s cargando la
     librería de Anthropic, porque el cliente se creaba recién ahí. Se crea al
     arrancar, en un hilo aparte para no demorar el arranque."""
@@ -40743,7 +40745,7 @@ def home_personal(uid: int = Depends(get_effective_user)):
 def _get_portfolio_events_cached(uid: int) -> list:
     """Los eventos YA GUARDADOS (financial_events) de los activos del user en
     los próximos 14 días: las tarjetas "Earnings de X" / "Dividendo de X" de
-    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Rendi AI
+    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Mervall-E AI
     (ai/builders/home.py). Sólo LEE — el inicio no puede esperar a Yahoo; los
     renueva /api/events/portfolio (_eventos_al_dia).
 

@@ -759,7 +759,7 @@ body {
    Landing — animaciones para hero/futuristic intro
    ════════════════════════════════════════════════════════════════════════ */
 
-/* Cursor que parpadea. Lo usa CursorEscribiendo: Rendi AI mientras escribe
+/* Cursor que parpadea. Lo usa CursorEscribiendo: Mervall-E AI mientras escribe
    la respuesta (nació para un typewriter del hero que ya no existe). */
 @keyframes terminal-cursor {
   0%, 49% { opacity: 1; }
@@ -892,7 +892,7 @@ body {
 }
 
 /* La misma barra creciendo desde la IZQUIERDA, una fila detrás de otra
-   (--fila): las barras de una respuesta de Rendi AI recién llegada (AIBlocks).
+   (--fila): las barras de una respuesta de Mervall-E AI recién llegada (AIBlocks).
    La demora suma la de SU tarjeta: --i lo hereda del bloque que entra en
    escalera (.entra, --i × 70 ms), así la barra crece cuando la tarjeta ya está
    apareciendo y no mientras sigue invisible. */
@@ -902,7 +902,7 @@ body {
   animation-delay: calc(var(--i, 0) * 70ms + 250ms + var(--fila, 0) * 120ms);
 }
 
-/* Las porciones de la torta de "Composición" de una respuesta de Rendi AI
+/* Las porciones de la torta de "Composición" de una respuesta de Mervall-E AI
    recién llegada aparecen de a una (--fila), después de que entra su tarjeta
    (--i heredado, como .crece-ancho). No se usa .traza-dibuja: cada porción YA
    es un stroke-dasharray, y ese truco lo pisaría. */

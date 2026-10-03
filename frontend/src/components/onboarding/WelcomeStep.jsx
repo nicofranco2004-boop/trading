@@ -38,7 +38,7 @@ export default function WelcomeStep({ userName, onNext, onSkip }) {
         />
         <FeatureMini
           Icon={MervallEIcono}
-          title="Rendi AI"
+          title="Mervall-E AI"
           desc="Hace análisis con tus datos, no en abstracto."
         />
       </div>

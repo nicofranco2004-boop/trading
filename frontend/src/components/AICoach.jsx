@@ -251,7 +251,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           </div>
           <div>
             <h2 className="font-semibold text-ink-0">
-              Rendi AI
+              Mervall-E AI
               {canChatFree && (
                 <span className="ml-2 text-[12.5px] text-data-violet border border-data-violet/40 bg-data-violet/5 px-1.5 py-0.5 rounded-sm align-middle font-medium">
                   Pro · libre
@@ -611,11 +611,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                 onChange={e => { setFreeText(e.target.value); avisarTipeo() }}
                 disabled={loading || sending}
                 placeholder={canChatFree
-                  ? 'Preguntale a Rendi AI sobre tu cartera…'
+                  ? 'Preguntale a Mervall-E AI sobre tu cartera…'
                   : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
                 className="flex-1 bg-transparent text-[14px] text-ink-0 placeholder:text-ink-3 py-2 focus:outline-none disabled:opacity-50"
                 maxLength={500}
-                aria-label={canChatFree ? 'Pregunta libre a Rendi AI' : 'Registrar una operación con Rendi AI'}
+                aria-label={canChatFree ? 'Pregunta libre a Mervall-E AI' : 'Registrar una operación con Mervall-E AI'}
               />
               <button
                 type="submit"
@@ -635,7 +635,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             se leía. Apilados entran en un renglón cada uno y ocupan menos. */}
         <div className="flex flex-col items-start gap-0.5 sm:flex-row sm:items-center sm:justify-between
                         mt-2 px-1 text-[11.5px] text-ink-3">
-          <span>Rendi AI puede equivocarse — no es asesoramiento financiero.</span>
+          <span>Mervall-E AI puede equivocarse — no es asesoramiento financiero.</span>
           {usage && usage.chat_limit > 0 && (
             <span className="tabular num" title={costoDeEscuchar(usage)}>
               {restantesTexto(usage)}
@@ -651,7 +651,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           <Lock size={11} className="text-data-violet flex-shrink-0" />
           <p className="text-[10px] text-ink-2 leading-snug flex-1">
             {/* El cupo sale del catálogo (vigilado contra el backend): el 40 estaba escrito. */}
-            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro ({cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')} consultas/sem).
+            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro ({cupoDe(PRO_FEATURES, 'Chat Mervall-E AI / sem')} consultas/sem).
           </p>
           <a
             href="/planes"

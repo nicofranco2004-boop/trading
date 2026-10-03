@@ -75,7 +75,7 @@ class LosCuposQuePrometeLaPantalla(unittest.TestCase):
     def test_el_chat_por_semana(self):
         for plan in ("free", "plus", "pro"):
             con_q = _quotas_del_catalogo(plan)
-            prometido = con_q.get("Chat Rendi AI / sem")
+            prometido = con_q.get("Chat Mervall-E AI / sem")
             real = LIMITS[plan]["chat_per_week"]
             self.assertEqual(
                 prometido, str(real),
@@ -356,16 +356,16 @@ class CadaNumeroDelCatalogo(unittest.TestCase):
              lambda m: [(int(m[1]), an("pro") // an("plus"))]),
             (("plus",), r"Hasta (\d+) alertas",
              lambda m: [(int(m[1]), P["plus"]["alerts_max"])]),
-            (("plus",), r"(\d+) consultas por semana a Rendi AI",
+            (("plus",), r"(\d+) consultas por semana a Mervall-E AI",
              lambda m: [(int(m[1]), ch("plus"))]),
             (("pro",), r"(\d+)× más que Free · (\d+)× que Plus",
              lambda m: [(int(m[1]), an("pro") // an("free")),
                         (int(m[2]), an("pro") // an("plus"))]),
             (("pro",), r"(\d+) consultas/sem\b", lambda m: [(int(m[1]), ch("pro"))]),
-            (("plus",), r"(\d+)× más Chat Rendi AI \((\d+) vs (\d+) /sem\)",
+            (("plus",), r"(\d+)× más Chat Mervall-E AI \((\d+) vs (\d+) /sem\)",
              lambda m: [(int(m[2]), ch("plus")), (int(m[3]), ch("free")),
                         (int(m[1]) * int(m[3]), int(m[2]))]),
-            (("plus",), r"(\d+)× más Chat Rendi AI que Free",
+            (("plus",), r"(\d+)× más Chat Mervall-E AI que Free",
              lambda m: [(int(m[1]) * ch("free"), ch("plus"))]),
             (("plus",), r"(\d+) consultas/semana vs (\d+) en Free",
              lambda m: [(int(m[1]), ch("plus")), (int(m[2]), ch("free"))]),

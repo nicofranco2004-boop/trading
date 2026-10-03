@@ -1,4 +1,4 @@
-// chatSession — persistencia client-side de la conversación de Rendi AI.
+// chatSession — persistencia client-side de la conversación de Mervall-E AI.
 // ═══════════════════════════════════════════════════════════════════════════
 // Pedido de Nico: hablar con la IA, ir al Dashboard, volver — y que el chat
 // SIGA ahí. La conversación solo se borra con "Nueva conversación" (o al

@@ -26,7 +26,7 @@ export default function Alertas() {
   // sidebar (idempotente: no-op en el backend si no hay nada sin ver).
   useEffect(() => { markSeen() }, [markSeen])
   // Prefill desde el menú de una posición: /alertas?new=MSFT.BA&ccy=ARS
-  // y desde los botones de Rendi AI: /alertas?new=BTC&down=10 ("Crear alerta
+  // y desde los botones de Mervall-E AI: /alertas?new=BTC&down=10 ("Crear alerta
   // BTC −10%"). Sin `down`/`up` el botón prometía el −10% y el formulario
   // abría "precio objetivo ≥ ___", vacío y en la dirección contraria.
   const newSym = searchParams.get('new')

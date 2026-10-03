@@ -26,8 +26,8 @@ const FEATURES = [
     desc: 'Categorizás cada operación. Importante para tu reporte AFIP: el staking tiene tratamiento distinto al trading spot.',
   },
   {
-    title: 'Rendi AI con contexto de tu cartera completa',
-    desc: `Chat IA con tu portfolio total. "¿Mi exposición a BTC vs equities es coherente con mi perfil de inversor?", "¿Qué cripto me hizo perder más este año?". Pro: ${cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')} consultas/sem + memoria.`,
+    title: 'Mervall-E AI con contexto de tu cartera completa',
+    desc: `Chat IA con tu portfolio total. "¿Mi exposición a BTC vs equities es coherente con mi perfil de inversor?", "¿Qué cripto me hizo perder más este año?". Pro: ${cupoDe(PRO_FEATURES, 'Chat Mervall-E AI / sem')} consultas/sem + memoria.`,
   },
 ]
 

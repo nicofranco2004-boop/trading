@@ -102,7 +102,7 @@ export default function UpgradePromoCard({
 
   const resetsOn = upgrade?.resets_on || usage?.resets_on
   const resetLabel = fmtReset(resetsOn)
-  const resourceLabel = isChat ? 'consultas a Rendi AI' : 'análisis'
+  const resourceLabel = isChat ? 'consultas a Mervall-E AI' : 'análisis'
   // La frase ENTERA, no sólo el sustantivo: "Tu próxima {análisis}" concuerda
   // mal en castellano, y así se le mostró a todo el que se quedó sin análisis.
   // El backend ya la arma completa (_chat_quota_429); acá estaba partida.

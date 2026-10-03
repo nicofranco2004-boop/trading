@@ -604,7 +604,7 @@ def fetch_prices_for_symbols(symbols: list, crypto_yf: dict,
     `tope`: lo máximo que se espera a Yahoo. El default es el de los trabajos de
     fondo (la foto diaria baja cientos de tickers y NO puede cortarse antes: un
     precio que falta deja la cuenta sin foto ese día). Quien la llama con una
-    persona esperando (Rendi AI) pasa `_yahoo.TOPE_PANTALLA_SEG`.
+    persona esperando (Mervall-E AI) pasa `_yahoo.TOPE_PANTALLA_SEG`.
     """
     if not symbols:
         return {}
@@ -1238,7 +1238,7 @@ def compute_live_portfolio_value(
     —reintento, último precio conocido, cobertura— corren exactamente igual.
 
     `tope`: lo máximo que se espera a Yahoo entre la bajada y el reintento. Es
-    el valor que ve una persona (el ✦ del inicio, Rendi AI): con Yahoo colgado,
+    el valor que ve una persona (el ✦ del inicio, Mervall-E AI): con Yahoo colgado,
     los precios que no llegaron los completa el último conocido de abajo.
     """
     import time as _time

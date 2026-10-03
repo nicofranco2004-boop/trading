@@ -7,17 +7,17 @@ export default function CoachIA() {
   return (
     <GuidePage
       n={4}
-      title="Rendi AI"
+      title="Mervall-E AI"
       intro="Cómo funciona el asistente IA: 12 preguntas guiadas, chat libre (Pro), registro de operaciones por chat, memoria persistente y cuotas semanales."
       prev={{ to: '/guia/insights-y-reportes', label: 'Métricas y reportes' }}
       next={{ to: '/guia/novedades', label: 'Novedades y alertas' }}
-      metaTitle="Rendi AI — Guía Rendi"
-      metaDescription="Cómo usar Rendi AI: preguntas guiadas, chat libre Pro, registro de operaciones por chat, memoria persistente y cuotas semanales."
+      metaTitle="Mervall-E AI — Guía Rendi"
+      metaDescription="Cómo usar Mervall-E AI: preguntas guiadas, chat libre Pro, registro de operaciones por chat, memoria persistente y cuotas semanales."
       canonicalPath="/guia/coach-ia"
     >
       <AdvisorNote>
         <p>
-          Tenés <strong>dos Rendi AI</strong>, y cuál te contesta depende de dónde estés
+          Tenés <strong>dos Mervall-E AI</strong>, y cuál te contesta depende de dónde estés
           parado cuando abrís el asistente:
         </p>
         <ul>
@@ -49,7 +49,7 @@ export default function CoachIA() {
         </p>
       </AdvisorNote>
 
-      <h2>Qué es Rendi AI</h2>
+      <h2>Qué es Mervall-E AI</h2>
       <p>
         Asistente conversacional con contexto completo de tu cartera. Usa{' '}
         <strong>Claude</strong>, de Anthropic, y recibe un snapshot de tus
@@ -59,7 +59,7 @@ export default function CoachIA() {
 
       <h2>Cómo abrirlo</h2>
       <p>
-        En el sidebar (desktop) o en cualquier página, botón "Rendi AI" con ícono de
+        En el sidebar (desktop) o en cualquier página, botón "Mervall-E AI" con ícono de
         chispas. Se abre un drawer lateral con el chat. También aparece como FAB en
         algunas pantallas (mobile).
       </p>
@@ -80,7 +80,7 @@ export default function CoachIA() {
 
       <h2>Registrar operaciones por chat</h2>
       <p>
-        Además de consultar, en el chat de Rendi AI podés{' '}
+        Además de consultar, en el chat de Mervall-E AI podés{' '}
         <strong>registrar o actualizar operaciones</strong> escribiéndolas en lenguaje
         natural. Reconoce compras y ventas, depósitos y retiros de cash, transferencias
         entre brokers y conversiones de pesos a dólares (y viceversa). Por ejemplo:
@@ -98,7 +98,7 @@ export default function CoachIA() {
         precio lo ponés vos. ¿Cargaste algo mal? Le decís que deshaga la última.
       </p>
       <p>
-        <strong>Importante</strong>: Rendi AI solo lo <strong>anota en tu tracker de
+        <strong>Importante</strong>: Mervall-E AI solo lo <strong>anota en tu tracker de
         Rendi</strong> — no opera tu cuenta real del broker. Está disponible en{' '}
         <strong>todos los planes</strong>: en Free y Plus el texto libre del chat sirve
         solo para registrar (el análisis con causalidad sigue siendo Pro); Pro hace las
@@ -138,7 +138,7 @@ export default function CoachIA() {
       </p>
       <p>
         Podés ver y gestionar tus hechos guardados desde{' '}
-        <strong>Config → Memoria de Rendi AI</strong>.
+        <strong>Config → Memoria de Mervall-E AI</strong>.
       </p>
 
       <h2>Cuotas semanales</h2>

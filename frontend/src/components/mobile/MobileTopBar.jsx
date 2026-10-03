@@ -1,6 +1,6 @@
 // MobileTopBar — barra superior fija en mobile (Sprint M1, item 05).
 // ═══════════════════════════════════════════════════════════════════════════
-// Logo a la izquierda; moneda, Rendi AI y búsqueda a la derecha; abajo, la
+// Logo a la izquierda; moneda, Mervall-E AI y búsqueda a la derecha; abajo, la
 // cinta de cotizaciones (MarketTicker, la misma que va arriba del contenido en
 // la compu) y, abajo de todo, los avisos que le pasa App.jsx (cliente abierto,
 // demo, prueba gratis). Sticky para que esté siempre accesible. Por debajo, indicador de
@@ -106,11 +106,11 @@ export default function MobileTopBar({ onRefresh, children }) {
                 estés, sin ir a buscarla a la pantalla que la tenga. Alineado a
                 la derecha para que el panel no se salga del viewport. */}
             <CurrencySwitcher variant="chip" align="right" className="mr-1" />
-            {/* Rendi AI — botón siempre visible para abrir el drawer global */}
+            {/* Mervall-E AI — botón siempre visible para abrir el drawer global */}
             <button
               type="button"
               onClick={() => coachDrawer.open()}
-              aria-label="Rendi AI"
+              aria-label="Mervall-E AI"
               className="p-1.5 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
             >
               <MervallE size={24} forma="head" quieto />

@@ -1,4 +1,4 @@
-// cuotaTexto — cómo se le cuenta al usuario lo que le queda de Rendi AI.
+// cuotaTexto — cómo se le cuenta al usuario lo que le queda de Mervall-E AI.
 // ═══════════════════════════════════════════════════════════════════════════
 // Existe porque el mismo dato se muestra en tres lugares (el contador chico del
 // encabezado, el pie del chat y el globo de ayuda del parlante) y tres textos

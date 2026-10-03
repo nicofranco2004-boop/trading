@@ -1,14 +1,14 @@
 """Una sola regla de "¿esto es argentino?", la misma en la pantalla y en el servidor.
 
 El servidor decidía "esto es argentino" en varios lugares, cada uno con su lista:
-el diagnóstico de sesgo local (behavioral, 24 tickers), el análisis de Rendi AI
+el diagnóstico de sesgo local (behavioral, 24 tickers), el análisis de Mervall-E AI
 por país (ai/builders/insights, 45), los sectores (behavioral), los grupos del
-asesor y el perfil de Rendi AI (su propia lista de prefijos de bonos). Ninguna
+asesor y el perfil de Mervall-E AI (su propia lista de prefijos de bonos). Ninguna
 coincidía con la de la pantalla (frontend/src/utils/tickers.js, 64):
   - una cartera 100 % Telecom (TECO2) en Cocos salía "Casi sin exposición a
     Argentina" (0 %), porque TECO2 no estaba en la lista del diagnóstico;
   - TEN (Tsakos, una naviera griega) contaba como 100 % argentina;
-  - Rendi AI clasificaba PAM en Schwab y GGAL.BA en Cocos como "us", y a Texas
+  - Mervall-E AI clasificaba PAM en Schwab y GGAL.BA en Cocos como "us", y a Texas
     Instruments o GDX como argentinas por las dos primeras letras.
 
 La primera versión del arreglo igualó la LISTA pero no la REGLA, y la auditoría
@@ -21,7 +21,7 @@ argentino sólo si la tenencia está en la bolsa argentina; sus ADRs (YPF, PAM,
 GGAL) en cualquier broker.
 
 Las pruebas pasan por las funciones de producción (detect_home_bias,
-_classify_geography, _sector_for, el perfil de Rendi AI y el importador), no
+_classify_geography, _sector_for, el perfil de Mervall-E AI y el importador), no
 por la lista suelta.
 """
 import os
@@ -257,7 +257,7 @@ class Sectores(unittest.TestCase):
 
 
 class PerfilDeRendiAI(unittest.TestCase):
-    """La renta fija del perfil de Rendi AI = "Bonos y letras" de la torta."""
+    """La renta fija del perfil de Mervall-E AI = "Bonos y letras" de la torta."""
 
     def _renta_fija(self, *posiciones):
         card = _build_card_data('allocation', {}, list(posiciones), [], [], None, 1,

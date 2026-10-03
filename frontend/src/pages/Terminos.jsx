@@ -60,7 +60,7 @@ export default function Terminos() {
             </li>
             <li>
               <strong className="text-ink-0">"Servicio"</strong> — el sitio, la aplicación
-              web, las funcionalidades, Rendi AI y todo lo que se accede en{' '}
+              web, las funcionalidades, Mervall-E AI y todo lo que se accede en{' '}
               <Code>rendi.finance</Code>.
             </li>
             <li>
@@ -74,7 +74,7 @@ export default function Terminos() {
               la prueba gratuita), con sus features y, si corresponde, su precio.
             </li>
             <li>
-              <strong className="text-ink-0">"Rendi AI"</strong> — el asistente
+              <strong className="text-ink-0">"Mervall-E AI"</strong> — el asistente
               conversacional de Rendi que responde preguntas sobre tu cartera apoyándose en
               modelos de Claude (Anthropic). También puede leerte sus respuestas en voz alta
               —viene activado y lo apagás con el botón del parlante— y tomarte las preguntas
@@ -136,7 +136,7 @@ export default function Terminos() {
             <li>Te muestra tus posiciones y operaciones agrupadas por broker.</li>
             <li>Calcula P&amp;L realizado y no realizado en USD con criterio FIFO.</li>
             <li>Te genera insights, reportes históricos y diagnósticos de tu cartera.</li>
-            <li>Te ofrece Rendi AI, un asistente basado en Claude (de Anthropic), para responder preguntas sobre tus datos.</li>
+            <li>Te ofrece Mervall-E AI, un asistente basado en Claude (de Anthropic), para responder preguntas sobre tus datos.</li>
           </ul>
           <p>
             Vos cargás la información <strong className="text-ink-0">manualmente o por archivo CSV</strong>.
@@ -153,7 +153,7 @@ export default function Terminos() {
               <strong className="text-ink-0">No es asesoramiento financiero.</strong> Rendi
               no está registrado ante la Comisión Nacional de Valores (CNV) ni ante ningún
               ente regulador como asesor de inversiones. Los análisis, scorecards y respuestas
-              de Rendi AI son herramientas meramente informativas. No constituyen una
+              de Mervall-E AI son herramientas meramente informativas. No constituyen una
               recomendación de comprar, vender o mantener ningún activo.
             </li>
             <li>
@@ -351,7 +351,7 @@ export default function Terminos() {
               delays, gaps o errores. No garantizamos su exactitud ni su disponibilidad.
             </li>
             <li>
-              <strong className="text-ink-0">Anthropic (Claude).</strong> Rendi AI se apoya
+              <strong className="text-ink-0">Anthropic (Claude).</strong> Mervall-E AI se apoya
               en modelos de Claude. Cuando le hacés una consulta, se envía a Anthropic un{' '}
               <em>snapshot</em> de tu cartera para que pueda responder con contexto. Según la
               política comercial de Anthropic, <em>esos datos no se usan para entrenar sus
@@ -364,7 +364,7 @@ export default function Terminos() {
                   corrigió el mismo día, también por decisión de Nico y sin aviso. Los
                   hechos son los de Privacidad §4 y §5. */}
               <strong className="text-ink-0">OpenAI (voz y dictado).</strong> La lectura en voz
-              alta de Rendi AI viene activada y la apagás con el botón del parlante. Cuando te
+              alta de Mervall-E AI viene activada y la apagás con el botón del parlante. Cuando te
               lee una respuesta, se envía a OpenAI un resumen hablado de esa respuesta —unas
               tres oraciones, con los montos de tu cartera redondeados— para convertirlo en
               audio. Si le dictás una pregunta, se envía la grabación —junto con los códigos y
@@ -400,7 +400,7 @@ export default function Terminos() {
             <li>
               <strong className="text-ink-0">Rendi no brinda asesoramiento financiero ni
               recomendaciones de inversión.</strong> Nada de lo que veas —ni los análisis, ni los
-              scorecards, ni Rendi AI— constituye un consejo para comprar, vender o mantener un
+              scorecards, ni Mervall-E AI— constituye un consejo para comprar, vender o mantener un
               activo. Las decisiones son tuyas y a tu propio riesgo.
             </li>
             <li>
@@ -416,7 +416,7 @@ export default function Terminos() {
               contador/a.
             </li>
             <li>
-              <strong className="text-ink-0">Rendi AI puede equivocarse.</strong> Es una
+              <strong className="text-ink-0">Mervall-E AI puede equivocarse.</strong> Es una
               herramienta probabilística: puede dar respuestas imprecisas o incompletas. Tomá sus
               salidas como un punto de partida, no como una verdad cerrada.
             </li>
@@ -432,7 +432,7 @@ export default function Terminos() {
             <li>Intentar acceder a datos o cuentas de otros usuarios.</li>
             <li>Hacer scraping masivo, ataques de denegación de servicio (DoS) o ingeniería inversa del sistema.</li>
             <li>Vulnerar, sortear o probar mecanismos de seguridad sin autorización.</li>
-            <li>Usar Rendi AI para generar contenido ilegal o que viole los términos de Anthropic o de OpenAI (contenido ilícito, deepfakes, spam, etc.).</li>
+            <li>Usar Mervall-E AI para generar contenido ilegal o que viole los términos de Anthropic o de OpenAI (contenido ilícito, deepfakes, spam, etc.).</li>
             <li>Cargar contenido ilegal, malicioso o que infrinja derechos de terceros.</li>
             <li>Usar el Servicio para cualquier fin contrario a la ley o a estos Términos.</li>
           </ul>

@@ -1,7 +1,7 @@
 // BuscadorRapido — ⌘K (Ctrl+K en Windows) desde cualquier pantalla de la compu:
 // una caja donde escribís "NVDA" y vas a tu posición, "dólar" y vas a Mercado,
 // "cargar" y se abre una operación nueva, o escribís una pregunta y se la lleva
-// a Rendi AI. Qué ofrece y en qué orden: utils/buscadorRapido.js. Las
+// a Mervall-E AI. Qué ofrece y en qué orden: utils/buscadorRapido.js. Las
 // pantallas son las MISMAS del menú lateral (utils/navegacion.js).
 //
 // Sólo compu: en el celular no hay teclado con ⌘ y el buscador es la pantalla
@@ -191,10 +191,10 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
       detalle: p.grupo || 'Pantalla', claves: CLAVES[p.to] || [], ir: p.to, icon: p.icon,
       deEntrada: DE_ENTRADA.has(p.to),
     }))
-    // Rendi AI no es una ruta del menú (el botón abre la página con
+    // Mervall-E AI no es una ruta del menú (el botón abre la página con
     // useCoachDrawer, que además marca la función como descubierta).
     const extra = [
-      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Rendi AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
+      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Mervall-E AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
     ]
     const acciones = [
       ...(atOwnLevel ? [] : [{

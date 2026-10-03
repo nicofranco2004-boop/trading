@@ -116,7 +116,7 @@ export function seccionesDelMenuMas(pantallas, { atOwnLevel = false, cliente = n
     }))
 }
 
-// El renglón de ayuda de Rendi AI: sobre qué trabaja la IA en cada caso.
+// El renglón de ayuda de Mervall-E AI: sobre qué trabaja la IA en cada caso.
 function ayudaDeRendiAI({ atOwnLevel, clientCtx }) {
   if (atOwnLevel) return 'Asistente con contexto de tu libro de clientes'
   if (clientCtx) return `Asistente con contexto de la cartera de ${nombreDelCliente(clientCtx)}`
@@ -152,7 +152,7 @@ export default function More() {
         subtitle="Todas las secciones de Rendi."
       />
 
-      {/* Asistente — Rendi AI abre el drawer global, no navega a una ruta */}
+      {/* Asistente — Mervall-E AI abre el drawer global, no navega a una ruta */}
       <section>
         <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Asistente
@@ -165,7 +165,7 @@ export default function More() {
           >
             <MervallE size={30} forma="head" quieto />
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-ink-0 leading-tight">Rendi AI</div>
+              <div className="text-sm font-medium text-ink-0 leading-tight">Mervall-E AI</div>
               <div className="text-[11px] text-ink-3 leading-tight mt-0.5">{ayudaDeRendiAI({ atOwnLevel, clientCtx })}</div>
             </div>
             <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />

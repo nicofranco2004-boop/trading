@@ -1,4 +1,4 @@
-// La torta de composición de Rendi AI: la rampa violeta de toda composición,
+// La torta de composición de Mervall-E AI: la rampa violeta de toda composición,
 // y "Otros" al final y en gris aunque sea la porción más grande.
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -15,7 +15,7 @@ const DEMO = [
   { l: 'AAPL', pct: 10 }, { l: 'Efectivo', pct: 5 },
 ]
 
-describe('torta de composición de Rendi AI', () => {
+describe('torta de composición de Mervall-E AI', () => {
   it('el titular del centro es el activo más grande, no "Otros"', () => {
     const h = html(DEMO)
     const centro = [...h.matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map(m => m[1])

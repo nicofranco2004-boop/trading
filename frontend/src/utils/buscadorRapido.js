@@ -9,7 +9,7 @@
 //              tapar los montos.
 //   empresa  → un ticker que NO tenés: "Calidad de cartera" lo muestra con sus
 //              números. La ficha de activo no sirve ahí (es de tus lotes).
-// Y siempre al final, con algo escrito: preguntárselo a Rendi AI — o, si tu
+// Y siempre al final, con algo escrito: preguntárselo a Mervall-E AI — o, si tu
 // plan no tiene chat libre, ir a ver las preguntas que sí le podés hacer.
 
 import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF, cedearEspecieBase } from './tickers'
@@ -68,7 +68,7 @@ export function urlNuevaOperacion(pathname, search = '') {
 }
 
 // Lo que se ve: sin nada escrito, los accesos de siempre (`deEntrada`); con
-// algo escrito, lo que coincide — y al final, preguntárselo a Rendi AI.
+// algo escrito, lo que coincide — y al final, preguntárselo a Mervall-E AI.
 // Las empresas que no tenés recién con 2 letras: con una sola, "A" traería
 // media bolsa de Nueva York arriba de tus cosas.
 export function resultadosDelBuscador(opciones, consulta, { maximo = MAXIMO_RESULTADOS, chatLibre = true } = {}) {
@@ -89,13 +89,13 @@ export function resultadosDelBuscador(opciones, consulta, { maximo = MAXIMO_RESU
   return [...sinRepetir.slice(0, maximo - 1), opcionRendiAI(texto, chatLibre)]
 }
 
-// Sin chat libre (Plus) mandar el texto rebotaría: se ofrece ir a Rendi AI a
+// Sin chat libre (Plus) mandar el texto rebotaría: se ofrece ir a Mervall-E AI a
 // elegir entre las preguntas sugeridas (`pregunta: null`).
 export function opcionRendiAI(texto, chatLibre = true) {
   if (!chatLibre) {
-    return { clase: 'ia', id: 'ia', titulo: 'Ver las preguntas que le podés hacer a Rendi AI', detalle: 'Rendi AI', pregunta: null }
+    return { clase: 'ia', id: 'ia', titulo: 'Ver las preguntas que le podés hacer a Mervall-E AI', detalle: 'Mervall-E AI', pregunta: null }
   }
-  return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Rendi AI: «${texto}»`, detalle: 'Rendi AI', pregunta: texto }
+  return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Mervall-E AI: «${texto}»`, detalle: 'Mervall-E AI', pregunta: texto }
 }
 
 // A dónde lleva un ticker en CUALQUIER buscador de la app (este ⌘K y la lupa

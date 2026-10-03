@@ -57,7 +57,7 @@ const SECTIONS = [
     n: 4,
     to: '/guia/coach-ia',
     icon: MervallEIcono,
-    title: 'Rendi AI',
+    title: 'Mervall-E AI',
     desc: '12 preguntas guiadas, chat libre (Pro), registrar operaciones por chat, memoria persistente y cuotas semanales.',
     descAsesor: 'A tu nivel responde sobre TODO tu libro ("¿a quiénes les pega esta noticia?"); adentro de un cliente, sobre su cartera.',
   },
@@ -90,7 +90,7 @@ export default function Guia() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Guía completa de Rendi — Manual de uso"
-        description="Cómo usar Rendi paso a paso: agregar operaciones, importar CSV, ver insights, usar Rendi AI, gestionar tu suscripción. Manual completo para inversores argentinos."
+        description="Cómo usar Rendi paso a paso: agregar operaciones, importar CSV, ver insights, usar Mervall-E AI, gestionar tu suscripción. Manual completo para inversores argentinos."
         canonical="/guia"
       />
 
@@ -115,7 +115,7 @@ export default function Guia() {
           <p className="text-base md:text-lg text-ink-2 max-w-2xl mx-auto leading-relaxed">
             {esAsesor
               ? `Empezá por la sección de asesores: tu libro, tus clientes y los grupos. El resto es igual que para cualquier usuario — cargar posiciones, vender, marcar depósitos — solo que lo hacés adentro de cada cliente. ${secciones.length} secciones, lectura de 5-10 min cada una.`
-              : `Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu primera operación hasta usar Rendi AI con memoria. ${SECTIONS.length} secciones, lectura de 5-10 min cada una.`}
+              : `Todo lo que necesitás saber para sacarle el jugo a Rendi. Desde cargar tu primera operación hasta usar Mervall-E AI con memoria. ${SECTIONS.length} secciones, lectura de 5-10 min cada una.`}
           </p>
         </section>
 

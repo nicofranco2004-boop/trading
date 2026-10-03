@@ -19,7 +19,7 @@ import { alTerminar, cupoDe } from '../../data/prueba'
 /** Lo que incluye un plan, tal cual lo publica /planes. */
 function LoQueIncluye({ plan }) {
   const brokers = cupoDe(plan, 'Brokers')
-  const chat = cupoDe(plan, 'Chat Rendi AI / sem')
+  const chat = cupoDe(plan, 'Chat Mervall-E AI / sem')
   return (
     <ul>
       {plan.essentials.map(f => (
@@ -27,7 +27,7 @@ function LoQueIncluye({ plan }) {
       ))}
       <li>
         {cupoDe(plan, 'Análisis IA / sem')} análisis IA y {chat}{' '}
-        {chat === '1' ? 'consulta' : 'consultas'} a Rendi AI por semana · brokers:{' '}
+        {chat === '1' ? 'consulta' : 'consultas'} a Mervall-E AI por semana · brokers:{' '}
         {brokers === '∞' ? 'ilimitados' : brokers}
       </li>
     </ul>
@@ -79,7 +79,7 @@ export default function CuentaYPlanes() {
         <li><strong>Cambiar contraseña</strong>: requiere tu password actual.</li>
         <li><strong>Importar datos</strong>: link al wizard CSV.</li>
         <li><strong>Tema</strong>: dark/light (default dark).</li>
-        <li><strong>Memoria de Rendi AI</strong>: ver/eliminar los hechos que el bot recuerda sobre vos (solo Pro).</li>
+        <li><strong>Memoria de Mervall-E AI</strong>: ver/eliminar los hechos que el bot recuerda sobre vos (solo Pro).</li>
       </ul>
 
       <h2>Push notifications</h2>

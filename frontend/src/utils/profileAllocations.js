@@ -242,7 +242,7 @@ export function classifyAssetBucket(position, brokers = []) {
   // 2. Renta fija = "Bonos y letras" de la torta (assetClass.js). Con la lista
   //    de prefijos de abajo, "TG" volvía bonos a TGSU2 y TGNO4 (acciones de las
   //    transportadoras de gas): la tarjeta decía 100 % renta fija, la torta
-  //    "Acciones AR" y Rendi AI renta variable.
+  //    "Acciones AR" y Mervall-E AI renta variable.
   if (classifyAsset(position, brokers) === 'bono') return 'fixed_income'
 
   // 3. Acciones (equity) — CEDEARs, ETFs, AR shares

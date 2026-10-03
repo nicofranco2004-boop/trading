@@ -11,7 +11,7 @@ export default function InsightsYReportes() {
       title="Métricas y reportes"
       intro="Las 5 cards de análisis automático, el timeline histórico de 12 meses, los detectores de comportamiento y cómo exportar el CSV para tu contador."
       prev={{ to: '/guia/cartera-y-operaciones', label: 'Cartera y operaciones' }}
-      next={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
+      next={{ to: '/guia/coach-ia', label: 'Mervall-E AI' }}
       metaTitle="Métricas y reportes — Guía Rendi"
       metaDescription="Las 5 cards de Métricas, timeline histórico, los 12 detectores de comportamiento y el export CSV consolidado para AFIP en Rendi."
       canonicalPath="/guia/insights-y-reportes"
