@@ -179,9 +179,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
   // pegar el audio, decidir el autoplay. Dos copias de la misma función es
   // como se desincronizaban las dos pantallas.
   //
-  // El `snapshot` se pasa porque en el modo LIBRO del asesor lo arma la página
-  // (la cuenta del asesor está vacía; el contexto es el libro de sus clientes).
-  // En el uso normal el proveedor lo resuelve solo.
+  // El `snapshot` es la foto que ya armó la página, para no pedirla dos veces.
+  // El proveedor la usa sólo si es de la cuenta a la que va la pregunta (si
+  // no, pide una nueva), y en el modo LIBRO del asesor no viaja: ese contexto
+  // lo arma el servidor. Ver fotoParaLaPregunta en VozContext.
   function send(text) {
     if (!snapshot) return          // la página todavía está armando la foto
     alFondo()          // pregunta nueva → volvemos a seguirla

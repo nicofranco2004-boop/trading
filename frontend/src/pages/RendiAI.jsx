@@ -1,6 +1,6 @@
 // RendiAI — página de chat con la IA (/ai).
 // ═══════════════════════════════════════════════════════════════════════════
-// Reemplaza al drawer lateral (AICoachDrawer): tocar "Mervall-E AI" en el sidebar
+// Reemplaza al drawer lateral (el viejo AICoachDrawer, ya borrado): tocar "Mervall-E AI" en el sidebar
 // navega acá. Chat a pantalla completa estilo conversación centrada: topbar con
 // la marca + chip de contexto + "Nueva conversación", mensajes con aire, input
 // abajo. La lógica del chat (tiers, cuota, streaming, registrar operaciones)
@@ -17,7 +17,7 @@ import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { fetchAiSnapshot } from '../utils/aiSnapshot'
+import { fetchAiSnapshot, esFotoDeLaCuentaActual } from '../utils/aiSnapshot'
 import { useVoz } from '../contexts/VozContext'
 import MervallE from '../components/ai/MervallE'
 import { useEstadoMervallE, enEscena, sinPensando, usePortadaConPersonaje, ANCHO_COMPANERO } from '../components/ai/mervalle/estadoDelChat'
@@ -41,7 +41,13 @@ export default function RendiAI() {
   // fetches fallan, y el chrome habla del libro, no de "tu cartera" (audit:
   // decía "Viendo tu cartera · 0 posiciones" en la superficie estrella).
   const bookMode = user?.tier === 'advisor' && !clientCtx
-  const [snapshot, setSnapshot] = useState(null)
+  const [fotoGuardada, setSnapshot] = useState(null)
+  // La que se muestra y se le pasa al chat es la guardada SÓLO si es de la
+  // cuenta abierta AHORA, y eso se decide al dibujar. El efecto de abajo la
+  // descarta igual, pero recién DESPUÉS de un dibujo: en ese dibujo, al cambiar
+  // de cliente, el chat recibía la foto del anterior y el subtítulo contaba
+  // sus posiciones (lo encontró la prueba que monta esta página).
+  const snapshot = fotoGuardada && esFotoDeLaCuentaActual(fotoGuardada) ? fotoGuardada : null
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const snapshotRef = useRef(null)
@@ -63,9 +69,20 @@ export default function RendiAI() {
 
   // Snapshot vivo de la cartera — mismo criterio que el drawer: primer fetch
   // con loader, refreshes en background sin tirar el chat.
+  //
+  // También cuando cambia el CLIENTE, no sólo al pasar del libro a un cliente:
+  // de Ana a Bruno `bookMode` sigue en false y la foto de Ana se quedaba (en el
+  // subtítulo y en lo que se manda). Desde esta página no se cambia de cliente
+  // sin salir de ella, pero sí desde otra pestaña. Y mientras llega la nueva no
+  // se muestra la de otra cuenta.
+  const clienteId = clientCtx?.id ?? null
   useEffect(() => {
     let cancelled = false
     if (bookMode) { setLoading(false); setError(null); return }
+    if (snapshotRef.current && !esFotoDeLaCuentaActual(snapshotRef.current)) {
+      snapshotRef.current = null
+      setSnapshot(null)
+    }
     if (!snapshotRef.current) setLoading(true)
     setError(null)
     fetchAiSnapshot()
@@ -81,7 +98,7 @@ export default function RendiAI() {
         setLoading(false)
       })
     return () => { cancelled = true }
-  }, [refreshTick, bookMode])
+  }, [refreshTick, bookMode, clienteId])
 
   // El chat registró/deshizo una operación → refrescar snapshot en background.
   useEffect(() => {
@@ -262,10 +279,13 @@ export default function RendiAI() {
           </div>
         )}
 
+        {/* La llave lleva el cliente: si cambia desde otra pestaña con esta
+            pantalla abierta, el chat se vuelve a montar y pide el cupo de la
+            cuenta nueva (el pie mostraba el del cliente anterior). */}
         {bookMode ? (
-          <AICoach key={convKey} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
+          <AICoach key={`${convKey}:${clienteId ?? 'libro'}`} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
         ) : snapshot && !loading && !error && (
-          <AICoach key={convKey} snapshot={snapshot} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
+          <AICoach key={`${convKey}:${clienteId ?? 'libro'}`} snapshot={snapshot} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
         )}
       </div>
     </div>

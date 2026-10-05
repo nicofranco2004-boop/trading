@@ -72,7 +72,6 @@ describe('el resumen se arma en UN solo lugar', () => {
   // `buildAiSummary` para el único módulo que puede llamarlo.
   const SUPERFICIES = [
     'src/pages/RendiAI.jsx',
-    'src/components/ai/AICoachDrawer.jsx',
     'src/contexts/VozContext.jsx',
   ]
 

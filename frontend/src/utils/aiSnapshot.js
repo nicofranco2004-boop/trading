@@ -25,12 +25,24 @@
 // desde tickers.js, o sea el MISMO catálogo, con un test que se pone rojo si
 // los dos se desincronizan.
 
-import { api } from './api'
+import { api, getClientContext } from './api'
 import { buildAiSummary } from './aiSummary'
 
 // Operaciones capeadas a las 100 más recientes: el backend corta el snapshot
 // en 200 KB y una cuenta con 500+ operaciones se caía sin esto.
 const MAX_OPERATIONS = 100
+
+// 🔴 DE QUÉ CUENTA ES CADA FOTO.
+// Los cuatro pedidos de abajo van a la cuenta que diga el contexto de cliente
+// en el momento de salir. Y el servidor usa la foto como la cartera de la
+// cuenta a la que va la PREGUNTA: las posiciones las vuelve a valuar él, pero
+// las operaciones cerradas, los meses y los brokers los toma como vienen. Una
+// foto del cliente A mandada con el cliente B abierto hacía que la IA
+// contestara sobre B con el historial de A.
+// Por eso cada foto queda anotada con la cuenta de la que salió, y quien la va
+// a mandar pregunta antes si sigue siendo la de ahora (esFotoDeLaCuentaActual).
+const cuentaDeLaFoto = new WeakMap()
+const cuentaActual = () => getClientContext()?.id ?? null
 
 /**
  * Trae el contexto de cartera que consume el chat.
@@ -38,6 +50,10 @@ const MAX_OPERATIONS = 100
  * son opcionales y un fallo ahí no tira el chat abajo.
  */
 export async function fetchAiSnapshot() {
+  // Se anota ANTES de pedir: los cuatro pedidos salen juntos, ya, con este
+  // contexto. Si el asesor cambia de cliente mientras llegan, la foto sigue
+  // siendo de la cuenta de antes, y así queda anotada.
+  const cuenta = cuentaActual()
   const [positions, monthly, brokers, operations] = await Promise.all([
     api.get('/positions'),
     api.get('/monthly'),
@@ -46,11 +62,22 @@ export async function fetchAiSnapshot() {
     // toda la sección abierto/cerrado queda vacía (audit #3, fix B3).
     api.get('/operations').catch(() => []),
   ])
-  return {
+  const foto = {
     summary: buildAiSummary(positions, monthly),
     positions: Array.isArray(positions) ? positions : [],
     operations: Array.isArray(operations) ? operations.slice(0, MAX_OPERATIONS) : [],
     monthly: monthly || [],
     brokers: brokers || [],
   }
+  cuentaDeLaFoto.set(foto, cuenta)
+  return foto
+}
+
+/**
+ * ¿Esta foto es de la cuenta a la que van a ir los pedidos AHORA?
+ * Una foto que no salió de fetchAiSnapshot (la del modo libro del asesor, `{}`)
+ * no es de ninguna cuenta: da false.
+ */
+export function esFotoDeLaCuentaActual(foto) {
+  return !!foto && cuentaDeLaFoto.has(foto) && cuentaDeLaFoto.get(foto) === cuentaActual()
 }

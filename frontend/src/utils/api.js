@@ -39,13 +39,31 @@ export function getClientContext() {
   return _clientCtx
 }
 
+// 🔴 CAMBIAR DE CUENTA SE AVISA. Acá se decide a qué cuenta va cada pedido,
+// pero lo que el navegador ya trajo de la cuenta anterior no se entera solo: la
+// foto de la cartera y la conversación con la IA (VozContext, que vive arriba
+// de todo y no se re-monta) siguieron siendo las del cliente A con la cuenta
+// del cliente B abierta — la IA contestaba sobre B con las operaciones, los
+// brokers y la charla de A (medido en el navegador, 2026-10-05).
+// Se avisa desde ACÁ y no desde AdvisorContext porque éste es el único lugar
+// por el que pasan todas las formas de cambiar de cliente: entrar, salir,
+// cerrar sesión adentro de uno y lo que haga otra pestaña. (Que cambie la
+// PERSONA logueada lo mira VozContext aparte: no pasa por acá.)
+export const EVENTO_CUENTA_CAMBIADA = 'rendi:cuenta-cambiada'
+function avisarSiCambioLaCuenta(antes) {
+  if ((antes?.id ?? null) === (_clientCtx?.id ?? null)) return
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(EVENTO_CUENTA_CAMBIADA))
+}
+
 export function setClientContext(ctx) {
   // ctx: { id: <client_uid>, label: <string> }
+  const antes = _clientCtx
   _clientCtx = ctx && typeof ctx.id === 'number' ? { id: ctx.id, label: ctx.label || '' } : null
   try {
     if (_clientCtx) localStorage.setItem(CLIENT_CTX_KEY, JSON.stringify(_clientCtx))
     else localStorage.removeItem(CLIENT_CTX_KEY)
   } catch { /* ignore */ }
+  avisarSiCambioLaCuenta(antes)
 }
 
 export function clearClientContext() {
@@ -59,10 +77,12 @@ export function clearClientContext() {
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key !== null && e.key !== CLIENT_CTX_KEY) return
+    const antes = _clientCtx
     try {
       const parsed = e.key === null ? null : (e.newValue ? JSON.parse(e.newValue) : null)
       _clientCtx = parsed && typeof parsed.id === 'number' ? parsed : null
     } catch { _clientCtx = null }
+    avisarSiCambioLaCuenta(antes)
   })
 }
 

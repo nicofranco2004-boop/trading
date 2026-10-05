@@ -4173,7 +4173,11 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
         row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
         if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
             conn.close()
-            raise HTTPException(401, "Contraseña actual incorrecta")
+            # 400 y no 401: el frontend toma CUALQUIER 401 como "la sesión
+            # venció" (utils/api.js) — borraba la sesión guardada, mandaba a la
+            # portada en vez de mostrar este mensaje, y recargaba todas las
+            # otras pestañas de la persona. La sesión está bien; el dato no.
+            raise HTTPException(400, "Contraseña actual incorrecta")
         new_hash = pwd_ctx.hash(data.new_password)
         conn.execute(
             "UPDATE users SET password_hash=?, password_changed_at=datetime('now') WHERE id=?",
@@ -25925,7 +25929,7 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     # texto libre controlado por el cliente; una key extra ("instructions",
     # "note", lo que sea) entraba VERBATIM al contexto del LLM = bypass de la
     # whitelist Free + superficie de prompt-injection. Solo pasan las keys que
-    # el frontend legítimo manda (AICoachDrawer). Lo demás se dropea y loggea.
+    # el frontend legítimo manda (utils/aiSnapshot.js). Lo demás se dropea y loggea.
     _ALLOWED_SNAPSHOT_KEYS = {"summary", "positions", "operations", "monthly", "brokers"}
     _dropped = [k for k in raw.keys() if k not in _ALLOWED_SNAPSHOT_KEYS]
     if _dropped:
