@@ -302,7 +302,7 @@ export default function FirstInsight() {
           <MervallE size={28} forma="head" quieto />
         </div>
         <div className="flex-1">
-          <div className="text-sm font-medium text-ink-0 mb-0.5">Preguntale a Mervall-E AI sobre tu cartera</div>
+          <div className="text-sm font-medium text-ink-0 mb-0.5">Preguntale a Mervall-E sobre tu cartera</div>
           <p className="text-xs text-ink-2 leading-relaxed">
             Empezá por “¿Mi nivel de concentración es elevado?” — lo analiza con tu data en segundos.
           </p>

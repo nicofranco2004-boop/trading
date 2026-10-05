@@ -841,7 +841,7 @@ body {
    `animate-pulse`. Va en un ::after encima del bloque, así sirve igual para
    un renglón suelto que para una tarjeta entera con renglones adentro.
    `animate-pulse` sigue para lo que late A PROPÓSITO (el micrófono grabando,
-   "Rendi está hablando"): eso no es un esqueleto. */
+   "Mervall-E está hablando"): eso no es un esqueleto. */
 @keyframes brillo-esqueleto {
   from { transform: translateX(-100%); }
   to   { transform: translateX(100%); }

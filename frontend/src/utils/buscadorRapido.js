@@ -95,7 +95,7 @@ export function opcionRendiAI(texto, chatLibre = true) {
   if (!chatLibre) {
     return { clase: 'ia', id: 'ia', titulo: 'Ver las preguntas que le podés hacer a Mervall-E AI', detalle: 'Mervall-E AI', pregunta: null }
   }
-  return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Mervall-E AI: «${texto}»`, detalle: 'Mervall-E AI', pregunta: texto }
+  return { clase: 'ia', id: 'ia', titulo: `Preguntarle a Mervall-E: «${texto}»`, detalle: 'Mervall-E AI', pregunta: texto }
 }
 
 // A dónde lleva un ticker en CUALQUIER buscador de la app (este ⌘K y la lupa

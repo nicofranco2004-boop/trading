@@ -1,4 +1,4 @@
-// RendiMate — el acompañante: la conversación con Rendi, chiquita, flotando
+// RendiMate — el acompañante: la conversación con Mervall-E, chiquita, flotando
 // sobre la pantalla que el usuario esté mirando.
 // ═══════════════════════════════════════════════════════════════════════════
 // NO es un reproductor de audio. Es el chat, compacto, con su caja de texto
@@ -6,12 +6,12 @@
 // franja más, y aparece sólo cuando hay algo que escuchar.
 //
 // Cerrado es una burbujita; abierto, una tarjeta arriba a la derecha. Cerrar
-// NO calla el audio: colapsa a la burbuja y Rendi sigue hablando (para callarla
+// NO calla el audio: colapsa a la burbuja y Mervall-E sigue hablando (para callarlo
 // está el parlante). El estado y el <audio> viven en VozContext, que está
 // montado en el shell — por eso esto sobrevive a cambiar de sección.
 //
 // LOS DOS BOTONES NO SE CONFUNDEN (y en esta etapa hay uno solo):
-//   · el parlante, arriba → si Rendi te LEE la respuesta o te la deja escrita.
+//   · el parlante, arriba → si Mervall-E te LEE la respuesta o te la deja escrita.
 //   · el micrófono, abajo → cómo le hablás vos. Es de la etapa 2; no está acá.
 
 import { useEffect, useRef, useState } from 'react'
@@ -150,8 +150,8 @@ export default function RendiMate() {
   if (!open) {
     // LA BURBUJA CERRADA. Antes decía sólo "Rendi" y no se entendía: ni que se
     // podía apretar, ni qué iba a pasar, ni que ahí adentro estaba el control
-    // del audio. Ahora dice en qué estado está y, si Rendi está hablando, trae
-    // el botón de pausa ENCIMA — no hay que abrir nada para callarla.
+    // del audio. Ahora dice en qué estado está y, si Mervall-E está hablando, trae
+    // el botón de pausa ENCIMA — no hay que abrir nada para callarlo.
     return (
       <div
         ref={islaRef}
@@ -175,7 +175,7 @@ export default function RendiMate() {
           className="inline-flex items-center gap-2 pr-1.5 text-[12.5px] text-ink-1 hover:text-ink-0 transition-colors"
           aria-label={hablando ? 'Mervall-E está hablando — abrir la conversación'
                     : preparando ? 'Preparando el audio — abrir la conversación'
-                    : 'Abrir la conversación con Mervall-E'}
+                    : 'Preguntale a Mervall-E — abrir la conversación'}
         >
           <MervallE size={26} escucha estado={mervalle.estado} />
           {hablando ? 'Mervall-E está hablando' : preparando ? 'Preparando…' : 'Preguntale a Mervall-E'}

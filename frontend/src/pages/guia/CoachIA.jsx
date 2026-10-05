@@ -109,7 +109,7 @@ export default function CoachIA() {
       <h2>Chat libre (solo Pro)</h2>
       <p>
         Plus y Free están limitados a las 12 preguntas guiadas. <strong>Pro</strong>{' '}
-        desbloquea chat libre — preguntás cualquier cosa en texto libre, el bot
+        desbloquea chat libre — preguntás cualquier cosa en texto libre, Mervall-E
         responde con causalidad ("por qué pasó X", no solo "qué pasó").
       </p>
       <p>
@@ -124,7 +124,7 @@ export default function CoachIA() {
 
       <h2>Follow-ups (solo Pro)</h2>
       <p>
-        En Pro, cada respuesta del bot tiene un input al pie para hacer una pregunta
+        En Pro, cada respuesta de Mervall-E tiene un input al pie para hacer una pregunta
         de seguimiento sin perder el contexto. Útil para profundizar un análisis:
         primera pregunta general, segunda pregunta sobre un detalle específico.
       </p>
@@ -158,7 +158,7 @@ export default function CoachIA() {
         momento.
       </p>
 
-      <h2>Qué puede hacer el bot</h2>
+      <h2>Qué puede hacer Mervall-E</h2>
       <p>
         El bot tiene <strong>tools</strong> que le permiten consultar datos en tiempo
         real más allá del snapshot de tu cartera:

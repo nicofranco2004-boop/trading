@@ -8,7 +8,7 @@
 // "Escuchando" no está acá: tipear y el micrófono son eventos de cada tecla y
 // llegan al motor directo (avisarTipeo / avisarMicrofono), sin pasar por React.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useVoz } from '../../../contexts/VozContext'
 import { kindDeCuota } from '../UpgradePromoCard'
 
@@ -77,6 +77,17 @@ export function reaccionVigente(tono, llego, ahora = Date.now()) {
   return restoDeReaccion(tono, llego, ahora) > 0 ? { tono, llego } : null
 }
 
+/** Desde cuándo se cuenta la reacción: desde que TERMINÓ el turno, si terminó
+ *  después de que llegó el texto; si no, desde que llegó. Después del texto la
+ *  app puede seguir "contestando" un rato (pide el audio, consulta el cupo de
+ *  escuchar), y "contestando" le gana a la reacción: contada desde la llegada,
+ *  si eso tardaba más de 3 s la cara de la buena o la mala noticia no se veía
+ *  nunca (auditoría final 2026-10-05). */
+export function inicioDeReaccion(llego, finDeTurno) {
+  if (!llego) return null
+  return finDeTurno && finDeTurno >= llego ? finDeTurno : llego
+}
+
 /** Cuánto le queda a la reacción de una respuesta que llegó en `llego` (ms,
  *  0 si ya pasó). Se cuenta desde que LLEGÓ, no desde que se montó la
  *  pantalla: volver a /ai a los 3 s no la repite entera. */
@@ -107,14 +118,23 @@ export function useEstadoMervallE() {
   // La reacción se CALCULA en cada render (reaccionVigente). El temporizador
   // sólo pide un render más cuando se le acaba el tiempo.
   const [, otraVuelta] = useState(0)
-  const reaccion = reaccionVigente(tono, llego)
+  // Cuándo terminó el último turno (sending pasó de true a false).
+  const [finDeTurno, setFinDeTurno] = useState(null)
+  const enviando = !!voz.sending
+  const enviandoAntes = useRef(enviando)
+  useEffect(() => {
+    if (enviandoAntes.current && !enviando) setFinDeTurno(Date.now())
+    enviandoAntes.current = enviando
+  }, [enviando])
+  const desde = inicioDeReaccion(llego, finDeTurno)
+  const reaccion = reaccionVigente(tono, desde)
 
   useEffect(() => {
-    const resto = restoDeReaccion(tono, llego)
+    const resto = restoDeReaccion(tono, desde)
     if (!resto) return undefined
     const id = setTimeout(() => otraVuelta((n) => n + 1), resto + 20)
     return () => clearTimeout(id)
-  }, [llego, tono])
+  }, [desde, tono])
 
   return estadoDelChat({ ...voz, reaccion })
 }

@@ -198,7 +198,7 @@ export default function RendiAI() {
           {/* SILENCIAR / DES-SILENCIAR, acá arriba del chat. El mismo
               interruptor está en la cabecera del acompañante flotante, pero
               esta es la pantalla donde el usuario pregunta: tener que
-              descubrir la burbujita para poder callarla es pedirle demasiado.
+              descubrir la burbujita para poder callarlo es pedirle demasiado.
               Los dos botones mueven el MISMO estado (VozContext), así que no
               se pueden contradecir. */}
           <button

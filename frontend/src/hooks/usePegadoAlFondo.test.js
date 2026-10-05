@@ -31,7 +31,10 @@ describe('seguir la respuesta sin arrastrar al que está leyendo', () => {
   it('con el chat vacío no se pega al fondo: la portada arranca ARRIBA (auditoría Mervall-E, ronda 2)', () => {
     // Pegada al fondo, una portada que no entra pierde lo de arriba: en un
     // iPhone con Safari no se veían ni la cara ni el título.
-    expect(fuente).toMatch(/if \(!activo\) \{\s*\n\s*el\.scrollTop = 0/)
+    expect(fuente).toMatch(/if \(!activo\) \{[\s\S]*?if \(activoAntesRef\.current\) el\.scrollTop = 0/)
+    // …SÓLO al quedar vacío: un `el.scrollTop = 0` incondicional corre en cada
+    // render (cada tecla) y no deja deslizar para leer la explicación.
+    expect(fuente).not.toMatch(/if \(!activo\) \{\s*\n\s*el\.scrollTop = 0/)
     // …y queda lista para pegarse apenas haya conversación.
     expect(fuente).toMatch(/if \(!activo\) \{[\s\S]*?pegadoRef\.current = true/)
     // El chat le dice cuándo hay algo que seguir; la isla, que nunca muestra

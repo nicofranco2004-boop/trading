@@ -1,4 +1,4 @@
-// El micrófono — hablarle a Rendi en vez de escribirle.
+// El micrófono — hablarle a Mervall-E en vez de escribirle.
 // ═══════════════════════════════════════════════════════════════════════════
 // UNO solo para las dos pantallas: el acompañante flotante y el chat grande de
 // /ai. La conversación ya es una sola (ver VozContext); el micrófono también.
@@ -25,7 +25,7 @@ const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart
 
 /**
  * @param onTexto         (texto) => void — lo dictado, para PONER EN EL CUADRO.
- * @param onAntesDeGrabar () => void — callar a Rendi antes de abrir el micrófono.
+ * @param onAntesDeGrabar () => void — callar a Mervall-E antes de abrir el micrófono.
  * @param deshabilitado   mientras hay una consulta en vuelo.
  * @param compacto        true en la isla (30px), false en el chat grande (34px).
  * @returns { boton, aviso, grabando, cancelar } — `grabando` sirve para

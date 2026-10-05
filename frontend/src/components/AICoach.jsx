@@ -674,7 +674,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
                 onChange={e => { setFreeText(e.target.value); avisarTipeo() }}
                 disabled={loading || sending}
                 placeholder={canChatFree
-                  ? 'Preguntale a Mervall-E AI sobre tu cartera…'
+                  ? 'Preguntale a Mervall-E sobre tu cartera…'
                   : 'Registrá: "compré 2000 USD de BTC" o "deposité 600.000 pesos en Balanz"'}
                 className="flex-1 bg-transparent text-[14px] text-ink-0 placeholder:text-ink-3 py-2 focus:outline-none disabled:opacity-50"
                 maxLength={500}

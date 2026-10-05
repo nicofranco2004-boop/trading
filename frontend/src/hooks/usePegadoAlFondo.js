@@ -60,6 +60,7 @@ export function usePegadoAlFondo({ activo = true } = {}) {
   // Dónde quedó la barra la última vez que la movimos NOSOTROS. -1 = todavía
   // nunca, así que el primer dibujo baja al fondo sin preguntar.
   const ultimoAutoRef = useRef(-1)
+  const activoAntesRef = useRef(activo)
 
   // useLayoutEffect y no useEffect: corre ANTES de que el navegador pinte, así
   // que el salto al fondo no se ve como un salto.
@@ -71,12 +72,18 @@ export function usePegadoAlFondo({ activo = true } = {}) {
     // la cara y el título. Pegado al fondo, en un iPhone con Safari no se veía
     // ni el personaje ni "¿Qué querés saber de tu plata?" (auditoría ronda 2).
     // Queda listo para pegarse apenas haya conversación.
+    // Vuelve arriba SÓLO al quedar vacío (venía con conversación): el efecto
+    // corre en cada render, y cada tecla es un render — mandarlo arriba siempre
+    // le arrancaba de las manos la explicación al que la estaba leyendo en un
+    // celular bajo (auditoría final 2026-10-05).
     if (!activo) {
-      el.scrollTop = 0
+      if (activoAntesRef.current) el.scrollTop = 0
+      activoAntesRef.current = false
       pegadoRef.current = true
       ultimoAutoRef.current = -1
       return
     }
+    activoAntesRef.current = true
     const seMovioSolo = ultimoAutoRef.current >= 0
       && Math.abs(el.scrollTop - ultimoAutoRef.current) > TOLERANCIA
     if (seMovioSolo) {

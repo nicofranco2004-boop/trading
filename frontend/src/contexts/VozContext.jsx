@@ -1,4 +1,4 @@
-// VozContext — la voz de Rendi y el acompañante que la sostiene.
+// VozContext — la voz de Mervall-E y el acompañante que la sostiene.
 // ═══════════════════════════════════════════════════════════════════════════
 // POR QUÉ ESTO VIVE EN EL SHELL Y NO ADENTRO DE UNA PANTALLA
 // ---------------------------------------------------------------------------
@@ -12,7 +12,7 @@
 // usa el selector de moneda del sidebar, que sobrevive a la navegación.
 //
 // QUÉ HAY ADENTRO
-//   · el parlante  — si Rendi LEE las respuestas o las deja sólo escritas.
+//   · el parlante  — si Mervall-E LEE las respuestas o las deja sólo escritas.
 //                    Es lo único que decide ese botón (no tiene nada que ver
 //                    con el micrófono, que es de otra etapa).
 //   · el reproductor — un solo <audio>, su estado y la perilla de velocidad.

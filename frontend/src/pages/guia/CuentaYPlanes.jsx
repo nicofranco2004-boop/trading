@@ -78,7 +78,7 @@ export default function CuentaYPlanes() {
         <li><strong>Cambiar contraseña</strong>: requiere tu password actual.</li>
         <li><strong>Importar datos</strong>: link al wizard CSV.</li>
         <li><strong>Tema</strong>: dark/light (default dark).</li>
-        <li><strong>Memoria de Mervall-E AI</strong>: ver/eliminar los hechos que el bot recuerda sobre vos (solo Pro).</li>
+        <li><strong>Memoria de Mervall-E AI</strong>: ver/eliminar los hechos que Mervall-E recuerda sobre vos (solo Pro).</li>
       </ul>
 
       <h2>Push notifications</h2>

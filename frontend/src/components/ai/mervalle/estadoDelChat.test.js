@@ -3,7 +3,7 @@
 // de la propuesta aprobada el 2026-10-03.
 import { describe, it, expect } from 'vitest'
 import {
-  estadoDelChat, ultimaRespuesta, tocaSaludar, restoDeReaccion, reaccionVigente, sinConsultasDeChat,
+  estadoDelChat, ultimaRespuesta, tocaSaludar, restoDeReaccion, reaccionVigente, sinConsultasDeChat, inicioDeReaccion,
   enEscena, sinPensando, formaDePortada, ALTO_TEXTO_PORTADA, REACCION_POR_TONO, DURACION_REACCION,
 } from './estadoDelChat'
 import { ESTADOS } from './motor'
@@ -126,6 +126,22 @@ describe('reaccionVigente — una cuenta, no algo que haya que apagar', () => {
   it('sin tono o con tono neutral: nada', () => {
     expect(reaccionVigente('neutral', 1000, 1000)).toBe(null)
     expect(reaccionVigente(null, 1000, 1000)).toBe(null)
+  })
+})
+
+describe('inicioDeReaccion — se cuenta desde que terminó el turno', () => {
+  it('si el turno terminó después de que llegó el texto (pidió el audio, el cupo), desde el fin', () => {
+    expect(inicioDeReaccion(1000, 5000)).toBe(5000)
+    // contada desde la llegada, a los 5 s ya no quedaba nada que mostrar:
+    expect(reaccionVigente('pos', inicioDeReaccion(1000, 5000), 5500)).toEqual({ tono: 'pos', llego: 5000 })
+    expect(reaccionVigente('pos', 1000, 5500)).toBe(null)
+  })
+  it('un fin de turno ANTERIOR a la respuesta (el de la pregunta pasada) no cuenta', () => {
+    expect(inicioDeReaccion(1000, 400)).toBe(1000)
+  })
+  it('sin respuesta, nada; sin fin de turno, desde la llegada', () => {
+    expect(inicioDeReaccion(null, 5000)).toBe(null)
+    expect(inicioDeReaccion(1000, null)).toBe(1000)
   })
 })
 
