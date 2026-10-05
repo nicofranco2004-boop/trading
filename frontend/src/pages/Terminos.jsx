@@ -20,7 +20,7 @@ export default function Terminos() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Términos y Condiciones — Rendi"
-        description="Términos y Condiciones de Rendi: definiciones, qué hacemos y qué no, la prueba gratuita y los planes Plus y Pro, pagos y renovación, reembolsos, datos, propiedad intelectual, responsabilidades, Defensa del Consumidor y jurisdicción argentina (CABA). Última actualización septiembre 2026."
+        description="Términos y Condiciones de Rendi: definiciones, qué hacemos y qué no, la prueba gratuita y los planes Plus y Pro, pagos y renovación, reembolsos, datos, propiedad intelectual, responsabilidades, Defensa del Consumidor y jurisdicción argentina (CABA). Última actualización octubre 2026."
         canonical="/terminos"
       />
       {/* Header simple — logo + link a home */}
@@ -33,7 +33,7 @@ export default function Terminos() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Términos y Condiciones</h1>
-        <p className="text-sm text-ink-3 mb-4">Última actualización: 26 de septiembre de 2026</p>
+        <p className="text-sm text-ink-3 mb-4">Última actualización: 4 de octubre de 2026</p>
 
         <p className="text-sm text-ink-1 leading-relaxed mb-10">
           Estos Términos y Condiciones (los "Términos") regulan el acceso y uso de

@@ -117,7 +117,7 @@ _AR_BROKER_HINTS = ("cocos", "iol", "bull", "balanz", "naranja", "ppi", "inverti
 
 # Prefijos de bonos soberanos AR. Pattern: 2 letras + dígito al menos.
 # (Siempre seguido de un número: ver _is_ar_bond. "TO" = Bonte TO26, "T2X" = los
-# CER T2X5; estaban sólo en la copia de Mervall-E AI, que se borró.)
+# CER T2X5; estaban sólo en la copia de Rendi AI, que se borró.)
 _AR_BOND_PREFIXES = ("AL", "GD", "AE", "TX", "TZ", "PARY", "DICY", "TZX", "TO", "T2X")
 
 # Acciones AR del panel local (NO CEDEARs): la MISMA lista que la pantalla

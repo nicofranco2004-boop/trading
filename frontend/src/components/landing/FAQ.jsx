@@ -29,11 +29,10 @@ import {
 // tres secciones más abajo, la FAQ (y Google) seguían ofreciendo el Free.
 import {
   PLUS_FEATURES, PRO_FEATURES,
-  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
-} from '../../data/planCatalog'
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS, CUPO_CHAT } from '../../data/planCatalog'
 import { alTerminar, cupoDe } from '../../data/prueba'
 
-const chatPorSemana = (plan) => cupoDe(plan, 'Chat Mervall-E AI / sem')
+const chatPorSemana = (plan) => cupoDe(plan, CUPO_CHAT)
 
 // Orden = secuencia de objeciones que frenan el signup (no orden SEO). La #1 de
 // un retail frío que va a cargar su cartera es la confianza/seguridad, así que
@@ -52,7 +51,7 @@ export const FAQS = [
     // Decía "no los compartimos con terceros" a secas, y Privacidad §5 lista a
     // quién sí le llegan (Anthropic, OpenAI, Rebill, Resend, el hosting): la
     // promesa verdadera es "con fines comerciales", la misma de Privacidad.
-    a: 'Tus datos son tuyos y los usamos solo para prestarte el servicio: no los vendemos ni los compartimos con terceros con fines comerciales. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, la IA de Mervall-E AI—, y están todos listados en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
+    a: 'Tus datos son tuyos y los usamos solo para prestarte el servicio: no los vendemos ni los compartimos con terceros con fines comerciales. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, el proveedor de IA que usa Mervall-E AI—, y están todos listados en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
   },
   {
     q: '¿Rendi funciona con Cocos Capital, IOL, Balanz, Schwab y Binance?',

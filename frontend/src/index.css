@@ -232,7 +232,8 @@
     --bg-raised           : 255 255 255    ;
 
     /* ── Mervall-E, el personaje de la IA ───────────────────────────────
-       Los usa sólo components/ai/mervalle/mervalle.css. El casco es blanco
+       Los usan components/ai/mervalle/mervalle.css (la pintura) y motor.js
+       (lo que cambia en vivo: el color del monitor del pecho). El casco es blanco
        en los dos temas; lo que cambia en claro es lo que lo separa del fondo
        lavanda: la sombra del casco, el borde y la sombra en el piso. El visor,
        los ojos y los colores del monitor del pecho son iguales en los dos

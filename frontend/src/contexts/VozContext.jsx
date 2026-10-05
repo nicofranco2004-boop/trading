@@ -168,8 +168,8 @@ export function VozProvider({ children }) {
   }, [])
   const [askError, setAskError] = useState(null)
   // `loading` NO es lo mismo que `sending`: sending dura todo el turno, loading
-  // se apaga en cuanto llega la primera letra. Es lo que decide si se ven los
-  // puntitos o la respuesta escribiéndose.
+  // se apaga en cuanto llega la primera letra. Es lo que decide si se ve la
+  // espera (Mervall-E pensando) o la respuesta escribiéndose.
   const [loading, setLoading] = useState(false)
   // El payload de "pasate a Pro" cuando el backend lo manda con un 429 o un
   // 403. Con esto la UI dibuja la card promocional en vez del cartel rojo.
@@ -490,7 +490,7 @@ export function VozProvider({ children }) {
       }) }
       const onDelta = (c) => {
         acc += c
-        // ya hay texto: se apagan los puntitos — SÓLO si es de la pregunta en
+        // ya hay texto: se apaga la espera (el visor de Mervall-E) — SÓLO si es de la pregunta en
         // pantalla. Sin el control, el texto de una respuesta descartada (el
         // stream viejo sigue llegando tras "Nueva conversación") apagaba el
         // "pensando" de la pregunta nueva antes de que empezara (medido).

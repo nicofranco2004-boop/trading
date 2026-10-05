@@ -35,7 +35,8 @@ import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
 import MervallE from './ai/MervallE'
 import { avisarTipeo, avisarMicrofono } from './ai/mervalle/motor'
 import { useEstadoMervallE, useSaludoDelDia } from './ai/mervalle/estadoDelChat'
-import { PRO_FEATURES } from '../data/planCatalog'
+import { useIsMobile } from '../hooks/useIsMobile'
+import { PRO_FEATURES, CUPO_CHAT } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
 
 // Preguntas por defecto — se usan si el caller no pasa `suggested`.
@@ -212,8 +213,15 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   }, [mic.grabando])
   // La portada del chat vacío: saluda una vez por día y, si no, pone la cara
   // de lo que esté pasando (escuchando mientras tipeás, durmiendo sin cuota).
-  const saludando = useSaludoDelDia()
   const mervalle = useEstadoMervallE()
+  const esCelular = useIsMobile()
+  // El saludo del día se gasta sólo si la portada se ve.
+  const saludando = useSaludoDelDia(messages.length === 0 && !loading)
+  // UNO SOLO EN ESCENA en /ai: con el chat vacío, la portada; en compu con la
+  // conversación andando, el que acompaña al cuadro de texto (es el único
+  // lugar donde se ve el monitor del pecho mientras piensa, habla y reacciona).
+  // En celular no hay lugar al costado: lo hace la cabecera.
+  const conCompanero = fullHeight && !esCelular && messages.length > 0
 
   function handleFreeSubmit(e) {
     e.preventDefault()
@@ -300,11 +308,13 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       >
         {/* Empty state — hero de bienvenida (clean pass 2026-07) */}
         {messages.length === 0 && !loading && (
-          <div className="text-center pt-6 pb-2">
-            {/* Mervall-E de cuerpo entero: es la única vez que la pantalla del
-                chat lo tiene grande, así que acá es el que se mueve. La
-                cabecera de /ai lo acompaña quieto. */}
-            <MervallE size={112} forma="full" escucha
+          <div className="text-center pt-1 sm:pt-6 pb-2">
+            {/* Mervall-E en escena: cuerpo entero en compu; en celular, la cabeza
+                sola. La portada es lo único que se achica con el chat vacío: el
+                cuerpo entero empujaba el título fuera de la pantalla, y el busto
+                (visto en un 375×812) quedaba con la cabeza cortada arriba. La
+                cabecera queda congelada mientras tanto. */}
+            <MervallE size={esCelular ? 50 : 112} forma={esCelular ? 'head' : 'full'} escucha
               estado={saludando ? 'saludo' : mervalle.estado} tono={mervalle.tono}
               className="mx-auto" />
             <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-2 mb-1.5">
@@ -317,7 +327,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           </div>
         )}
 
-        {/* Mensajes — user: burbuja violeta a la derecha; asistente: avatar ✦ +
+        {/* Mensajes — user: burbuja violeta a la derecha; asistente: la cara de Mervall-E (congelada) +
             respuesta ESTRUCTURADA (veredicto + titular + prosa + tarjetas +
             fuentes + repreguntas) cuando el modelo emite el bloque ---RENDI---;
             fallback transparente a texto plano si no viene (clean pass 2026-07). */}
@@ -462,16 +472,19 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           )
         })}
 
-        {/* Los puntitos, y al lado QUÉ está haciendo. Tres puntos rebotando
-            durante 15 segundos no dicen nada; "Buscando los precios de hoy" sí,
+        {/* La espera, y al lado QUÉ está haciendo. Un indicador que se mueve
+            durante 15 segundos no dice nada; "Buscando los precios de hoy" sí,
             y la misma espera se hace corta cuando se entiende en qué se va el
-            tiempo. La frase la manda el backend (_PASOS_HUMANOS en main.py). */}
+            tiempo. La frase la manda el backend (_PASOS_HUMANOS en main.py).
+            El visor barriendo va sólo si no hay un Mervall-E en escena al lado
+            del cuadro de texto: dos caras animándose a la vez es una de más. */}
         {loading && (
           <div className="flex justify-start items-start gap-2.5">
-            {/* El visor de Mervall-E barriendo: es la espera con su cara. */}
-            <div className="bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-3.5 py-2.5" role="status" aria-label="Mervall-E está pensando">
-              <MervallE size={22} forma="visor" estado="cargando" />
-            </div>
+            {!conCompanero && (
+              <div className="flex items-center bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-3.5 py-2.5">
+                <MervallE size={22} forma="visor" estado="cargando" />
+              </div>
+            )}
             {/* Los pasos de este turno, en orden: cada uno entra al llegar y
                 los que quedaron atrás llevan tilde. Son los que manda el
                 servidor (VozContext.pasos): ninguno inventado. */}
@@ -490,6 +503,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             )}
           </div>
         )}
+
+        {/* Para lectores de pantalla: una zona viva que SIEMPRE está y cambia
+            su texto (una que aparece de golpe con un dibujo oculto adentro no
+            se anuncia). */}
+        <p className="sr-only" aria-live="polite">{loading ? 'Mervall-E está pensando' : ''}</p>
 
         {/* Upgrade promo: cuando hubo 429 con upgrade.available=true,
             reemplaza el banner rojo con la card promocional. Tono explicativo
@@ -593,9 +611,20 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           )
         })()}
         {mic.aviso && <div className="mb-2">{mic.aviso}</div>}
+        <div className="flex items-end gap-3">
+        {/* EL COMPAÑERO, al costado del cuadro (sólo compu, con conversación):
+            mira lo que escribís, piensa con velas en el pecho, habla con las
+            barras de volumen y reacciona con el monitor en verde, ámbar o rojo.
+            Sin él, el monitor del pecho —lo que hace financiero al personaje—
+            sólo existía en la portada vacía y no se veía nunca en una
+            conversación (auditoría 2026-10-04). */}
+        {conCompanero && (
+          <MervallE size={60} forma="bust" escucha estado={mervalle.estado} tono={mervalle.tono}
+            className="mb-1" />
+        )}
         <form
           onSubmit={handleFreeSubmit}
-          className={`flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl py-1.5 transition-colors ${mic.grabando ? 'px-1.5' : 'pl-2 pr-2'}`}
+          className={`flex-1 min-w-0 flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl py-1.5 transition-colors ${mic.grabando ? 'px-1.5' : 'pl-2 pr-2'}`}
         >
           {mic.boton}
           {/* Mientras graba, el panel del micrófono OCUPA el pie: el cuadro de
@@ -629,6 +658,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             </>
           )}
         </form>
+        </div>
         {/* EN CELULAR VAN UNO ABAJO DEL OTRO. Medido a 375px: las dos frases
             son largas, así que al costado se partían en dos y tres renglones
             pegados sin un espacio en el medio — 52px de alto para algo que no
@@ -651,7 +681,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           <Lock size={11} className="text-data-violet flex-shrink-0" />
           <p className="text-[10px] text-ink-2 leading-snug flex-1">
             {/* El cupo sale del catálogo (vigilado contra el backend): el 40 estaba escrito. */}
-            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro ({cupoDe(PRO_FEATURES, 'Chat Mervall-E AI / sem')} consultas/sem).
+            Con tu plan podés registrar operaciones acá. ¿Análisis y preguntas libres? Eso es Pro ({cupoDe(PRO_FEATURES, CUPO_CHAT)} consultas/sem).
           </p>
           <a
             href="/planes"

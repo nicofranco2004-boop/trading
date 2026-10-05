@@ -37,7 +37,14 @@ const NOMBRE_VIEJO = [
   new RegExp(String.raw`coach${ENTRE}(de${ENTRE})?ia\b`, 'gi'),  // "Coach IA", "Coach de IA", "Coach <b>IA</b>"
   new RegExp(String.raw`\b(el|al|del)${ENTRE}coach\b`, 'gi'),      // "El Coach lee tu test", "Memoria del Coach"
   new RegExp(String.raw`\bai${ENTRE}coach\b`, 'gi'),               // "Tip: AI Coach" (la guía, de mayo a julio)
-  new RegExp(String.raw`\brendi${ENTRE}ai\b`, 'gi'),               // "Rendi AI" (de septiembre al 2026-10-03)
+  new RegExp(String.raw`\brendi(?:${ENTRE}|[-‐‑_·])(?:ai|ia)\b`, 'gi'), // "Rendi AI" (de septiembre al 2026-10-03), "Rendi IA", "Rendi-AI"
+  // La IA llamada "Rendi" a secas: el personaje habla, lee y escucha; la app,
+  // no. Son las frases que adb57b29 encontró mirando la app abierta y que el
+  // servidor todavía tenía ("La voz de Rendi no está disponible").
+  new RegExp(String.raw`\bpregunt[\wáéíóúñ]*${ENTRE}a${ENTRE}rendi\b`, 'gi'),        // "Preguntale a Rendi"
+  new RegExp(String.raw`\b(?:habl|escrib)[\wáéíóúñ]*le${ENTRE}a${ENTRE}rendi\b`, 'gi'), // "Hablarle a Rendi", "Escribile a Rendi"
+  new RegExp(String.raw`\brendi${ENTRE}(?:está|te)${ENTRE}(?:habl|lee|leé|escuch|contest)`, 'gi'), // "Rendi está hablando", "Rendi te lee"
+  new RegExp(String.raw`\bla${ENTRE}voz${ENTRE}de${ENTRE}rendi\b`, 'gi'),             // "La voz de Rendi"
 ]
 
 const TODOS = archivosConTexto()
@@ -69,7 +76,9 @@ describe('el nombre viejo de la IA no vuelve', () => {
     // espacio duro: en pantalla se lee igual.
     for (const partido of ['<p>Coach <strong>IA</strong></p>', "<p>Coach{' '}\n  IA</p>",
       '<p>Coach&nbsp;IA</p>', "{'Coach\\u00a0IA'}", '<h2>Tip: AI Coach + Novedades</h2>',
-      '<p>Preguntale a Rendi AI</p>', '<b>Rendi</b> AI', "'rendi AI'"]) {
+      '<p>Preguntale a Rendi AI</p>', '<b>Rendi</b> AI', "'rendi AI'", "'Rendi IA'", "'Rendi-AI'",
+      "'Preguntale a Rendi'", "'Hablarle a Rendi'", "'Rendi está hablando'", "'Rendi te lee la respuesta'",
+      "'La voz de Rendi no está'"]) {
       expect(vistos('a.jsx', partido), partido).not.toEqual([])
     }
     // HTML: su comentario no cuenta, el del JS de un <script> tampoco.
@@ -80,6 +89,11 @@ describe('el nombre viejo de la IA no vuelve', () => {
     // el nombre del componente de la página, que no se muestra.
     expect(vistos('a.jsx', "to: '/guia/coach-ia'")).toEqual([])
     expect(vistos('a.jsx', "import RendiAI from './pages/RendiAI'")).toEqual([])
+    // Y "Rendi" como la APP sigue permitido: no es el personaje.
+    for (const app of ["'Bienvenido a Rendi'", "'Decile a Rendi qué columna'", "'Pasate a Rendi Pro'",
+      "'Entrar a Rendi'", "'Qué analiza Rendi'", "'te invitó a Rendi'"]) {
+      expect(vistos('a.jsx', app), app).toEqual([])
+    }
   })
 
   it('ningún texto de la app, la home, el blog, la guía ni los legales dice "Coach IA" ni "Rendi AI"', () => {

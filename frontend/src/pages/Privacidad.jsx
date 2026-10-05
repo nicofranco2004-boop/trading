@@ -18,7 +18,7 @@ export default function Privacidad() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Política de Privacidad — Rendi"
-        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización septiembre 2026."
+        description="Cómo Rendi maneja tus datos personales: qué recolectamos, para qué, con quién compartimos, transferencias internacionales, cookies, seguridad, conservación y tus derechos como titular. Compliance Ley 25.326 (Argentina). Última actualización octubre 2026."
         canonical="/privacidad"
       />
 
@@ -32,7 +32,7 @@ export default function Privacidad() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 26 de septiembre de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 4 de octubre de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">

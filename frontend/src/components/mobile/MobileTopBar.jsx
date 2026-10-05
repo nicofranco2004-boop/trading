@@ -106,12 +106,12 @@ export default function MobileTopBar({ onRefresh, children }) {
                 estés, sin ir a buscarla a la pantalla que la tenga. Alineado a
                 la derecha para que el panel no se salga del viewport. */}
             <CurrencySwitcher variant="chip" align="right" className="mr-1" />
-            {/* Mervall-E AI — botón siempre visible para abrir el drawer global */}
+            {/* Mervall-E AI — botón siempre visible que abre la pantalla del chat */}
             <button
               type="button"
               onClick={() => coachDrawer.open()}
               aria-label="Mervall-E AI"
-              className="p-1.5 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
+              className="p-1.5 inline-flex items-center justify-center rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
             >
               <MervallE size={24} forma="head" quieto />
             </button>

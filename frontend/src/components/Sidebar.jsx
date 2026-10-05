@@ -204,8 +204,10 @@ export default function Sidebar() {
             title={collapsed ? 'Mervall-E AI' : undefined}
             className={`relative w-full flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[14.5px] font-medium transition-colors text-data-violet hover:bg-data-violet/10`}
           >
-            {/* Quieto: parpadea y mira el cursor sólo si pasa cerca (250 px). */}
-            <MervallE size={26} forma="head" quieto radio={250} className="-my-1" />
+            {/* Quieto: parpadea y mira el cursor sólo si pasa cerca (250 px).
+                Dibuja 26 px pero ocupa 18 (-mx-1): el texto queda alineado con
+                el de las otras secciones, que llevan íconos de 18. */}
+            <MervallE size={26} forma="head" quieto className="-my-1 -mx-1" />
             {!collapsed && <span>Mervall-E AI</span>}
           </button>
         </div>

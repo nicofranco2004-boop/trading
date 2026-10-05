@@ -15,10 +15,13 @@
 // hasta 48 la cabeza, hasta 110 el busto, más el cuerpo entero.
 //
 // Reglas de uso (propuesta aprobada 2026-10-03):
-//   · Uno solo en movimiento por pantalla. Los avatares de mensajes viejos
-//     van `congelado`; los accesos van `quieto` (parpadean y miran de cerca).
+//   · Uno solo en movimiento por pantalla. Los avatares de mensajes viejos y
+//     la cabecera mientras otro está en escena van `congelado`; los accesos
+//     van `quieto`: no flotan, parpadean y miran al cursor SÓLO si pasa a
+//     menos de 250 px (es el default de `quieto`; `radio` lo cambia).
 //   · Al lado de un número, `quieto`: no flota.
-//   · `tono` sólo cuando está diciendo un número con signo.
+//   · `tono` sólo cuando está diciendo un número con signo, y sólo se ve en
+//     las formas con pecho (busto y cuerpo entero).
 //
 // Es decorativo (aria-hidden): el nombre "Mervall-E AI" lo dice el texto de
 // al lado, que es lo que leen los lectores de pantalla.
@@ -26,6 +29,10 @@
 import { useEffect, useRef } from 'react'
 import { crearMervallE, formaPara, proporcion } from './mervalle/motor'
 import './mervalle/mervalle.css'
+
+/** Un acceso quieto mira al cursor sólo de cerca: con el radio infinito, en
+ *  el celular cada toque en cualquier parte giraba las cabecitas. */
+const RADIO_DE_ACCESO = 250
 
 export default function MervallE({
   size = 24,
@@ -49,7 +56,7 @@ export default function MervallE({
   useEffect(() => {
     const m = crearMervallE(host.current, {
       forma: f, state: estado, tone: tono, still: quieto, track: sigue,
-      trackRadius: radio, frozen: congelado, escucha,
+      trackRadius: radio ?? (quieto ? RADIO_DE_ACCESO : undefined), frozen: congelado, escucha,
     })
     inst.current = m
     return () => { m.destroy(); inst.current = null }
@@ -69,12 +76,15 @@ export default function MervallE({
       style={{ width: recuadro ? '78%' : size, aspectRatio: `1 / ${proporcion(f)}` }}
     />
   )
-  if (!recuadro) return <span className={`inline-flex flex-none ${className}`} style={{ width: size }}>{dibujo}</span>
+  // `align-middle`: un inline-flex se apoya en el renglón como una letra y deja
+  // abajo el lugar de la "g" o la "p"; adentro de un botón la cara quedaba 3 px
+  // corrida hacia arriba.
+  if (!recuadro) return <span className={`inline-flex flex-none align-middle ${className}`} style={{ width: size }}>{dibujo}</span>
   // El recuadro lo ancla al resto de los íconos de la interfaz: el personaje
   // suelto al lado de un título se ve pegado con cinta.
   return (
     <span
-      className={`inline-grid place-items-center flex-none rounded-xl bg-data-violet/10 border border-data-violet/20 ${className}`}
+      className={`inline-grid place-items-center flex-none align-middle rounded-xl bg-data-violet/10 border border-data-violet/20 ${className}`}
       style={{ width: size, height: size }}
     >
       {dibujo}
@@ -89,5 +99,5 @@ export default function MervallE({
  * personaje en escena. Mira al cursor sólo si pasa cerca.
  */
 export function MervallEIcono({ size = 16, className = '' }) {
-  return <MervallE size={Math.round(size * 1.6)} forma="head" quieto radio={250} className={className} />
+  return <MervallE size={Math.round(size * 1.6)} forma="head" quieto className={className} />
 }

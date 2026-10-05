@@ -21,6 +21,7 @@ import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { useVoz } from '../contexts/VozContext'
 import MervallE from '../components/ai/MervallE'
 import { useEstadoMervallE } from '../components/ai/mervalle/estadoDelChat'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -32,7 +33,7 @@ export default function RendiAI() {
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
   const { enabled: vozEnabled, setEnabled: setVozEnabled, status: vozStatus,
-          limpiar: limpiarConversacion } = useVoz()
+          limpiar: limpiarConversacion, thread: hilo } = useVoz()
   const vozHablando = vozStatus === 'playing' || vozStatus === 'preparing'
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
   // backend arma el contexto server-side e IGNORA el snapshot personal.
@@ -147,10 +148,15 @@ export default function RendiAI() {
   }
 
   const nPos = snapshot?.summary?.open_positions_count
-  // La cara de Mervall-E en la cabecera sigue la conversación: piensa, habla,
-  // reacciona al tono de la respuesta, duerme sin cuota. Quieto (no flota):
-  // en la portada del chat vacío ya hay uno grande moviéndose.
+  // La cara de Mervall-E en la cabecera. UNO SOLO EN ESCENA por pantalla: con
+  // el chat vacío está la portada, y en compu con conversación, el que
+  // acompaña al cuadro de texto (AICoach). Ahí la cabecera va CONGELADA. Sólo
+  // en celular con conversación es ella la que sigue el chat (habla,
+  // reacciona, duerme sin cuota); "pensando" lo dice la burbuja de la espera,
+  // así que la cabecera se queda en reposo mientras tanto. No sigue al cursor.
   const mervalle = useEstadoMervallE()
+  const esCelular = useIsMobile()
+  const cabeceraEnEscena = esCelular && hilo.length > 0
   const nBrokers = snapshot?.brokers?.length
 
   return (
@@ -158,7 +164,8 @@ export default function RendiAI() {
       {/* Topbar de la página */}
       <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-3.5 border-b border-line/60 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <MervallE size={38} recuadro quieto escucha estado={mervalle.estado} tono={mervalle.tono} />
+          <MervallE size={38} recuadro quieto sigue={false} escucha congelado={!cabeceraEnEscena}
+            estado={mervalle.estado === 'pensando' ? 'reposo' : mervalle.estado} />
           {/* QUÉ ESTÁ MIRANDO RENDI — va acá abajo del título y no como chip
               suelto a la derecha.
               El chip decía `hidden md:inline-flex`: aparecía según el ancho de
@@ -169,7 +176,9 @@ export default function RendiAI() {
               Como subtítulo no puede pasar: es la misma línea que ya estaba
               ahí, y encima dice algo más útil que la frase fija de antes. */}
           <div className="min-w-0">
-            <div className="text-[15.5px] font-semibold text-ink-0 leading-tight">Mervall-E AI</div>
+            {/* Sin cortar: el guion de "Mervall-E" es un lugar donde el
+                navegador puede partir el renglón ("Mervall-" / "E AI"). */}
+            <div className="text-[15.5px] font-semibold text-ink-0 leading-tight whitespace-nowrap">Mervall-E AI</div>
             <div className="flex items-center gap-1.5 text-[12px] text-ink-3 truncate">
               {(bookMode || snapshot) && (
                 <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos flex-none" aria-hidden />
@@ -208,8 +217,9 @@ export default function RendiAI() {
                 sólo el interruptor y no si había audio. */}
             {/* En celular va SÓLO el ícono. Medido a 375px: con las dos
                 etiquetas, los botones de la derecha sumaban 320 de 375 y
-                aplastaban el título a ancho CERO — "Mervall-E AI" quedaba
-                escrito encima de este botón. El estado igual se entiende: el
+                aplastaban el título a ancho CERO — el nombre (entonces "Rendi
+                AI", más corto que "Mervall-E AI") quedaba escrito encima de
+                este botón. El estado igual se entiende: el
                 ícono cambia y late cuando está hablando. */}
             {vozHablando
               ? <><Volume2 size={13} strokeWidth={2.2} aria-hidden="true" className="animate-pulse" /> <span className="hidden sm:inline">Hablando…</span></>

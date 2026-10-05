@@ -4,7 +4,7 @@ Por qué existe: la voz y el dictado de Mervall-E AI le mandan datos a OpenAI �
 resumen hablado de una respuesta para leerla en voz alta, y la grabación de lo
 que el usuario dicta, con los códigos y nombres de sus activos y brokers—. La
 Política de Privacidad lo declaraba; los Términos no lo nombraron nunca, ni en
-la definición de Mervall-E AI ni entre los Terceros, y nadie se enteró: un proveedor
+la definición de Rendi AI (hoy Mervall-E AI) ni entre los Terceros, y nadie se enteró: un proveedor
 que falta en un texto legal no rompe nada ni tira ningún error. Se agregó el
 2026-09-26 (y ese mismo día se corrigió que la voz viene PRENDIDA, no a pedido:
 eso lo vigila `frontend/src/pages/Privacidad.test.js`).

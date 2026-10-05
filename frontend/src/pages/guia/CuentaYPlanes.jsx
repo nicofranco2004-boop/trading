@@ -9,8 +9,7 @@ import AdvisorNote from '../../components/guide/AdvisorNote'
 // ya no eran. Nada de eso daba error; sólo lo leía el que estaba decidiendo.
 import {
   FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES,
-  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
-} from '../../data/planCatalog'
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS, CUPO_CHAT } from '../../data/planCatalog'
 import {
   fmtArs, PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY, ANNUAL_DISCOUNT_BADGE_PCT,
 } from '../../data/pricing'
@@ -19,7 +18,7 @@ import { alTerminar, cupoDe } from '../../data/prueba'
 /** Lo que incluye un plan, tal cual lo publica /planes. */
 function LoQueIncluye({ plan }) {
   const brokers = cupoDe(plan, 'Brokers')
-  const chat = cupoDe(plan, 'Chat Mervall-E AI / sem')
+  const chat = cupoDe(plan, CUPO_CHAT)
   return (
     <ul>
       {plan.essentials.map(f => (

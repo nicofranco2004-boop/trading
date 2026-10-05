@@ -2,7 +2,7 @@
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
 import { PASO_CREAR_CUENTA, cupoDe } from '../../data/prueba'
-import { PRO_FEATURES } from '../../data/planCatalog'
+import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
 
 const FEATURES = [
   {
@@ -27,7 +27,7 @@ const FEATURES = [
   },
   {
     title: 'Mervall-E AI con contexto de tu cartera completa',
-    desc: `Chat IA con tu portfolio total. "¿Mi exposición a BTC vs equities es coherente con mi perfil de inversor?", "¿Qué cripto me hizo perder más este año?". Pro: ${cupoDe(PRO_FEATURES, 'Chat Mervall-E AI / sem')} consultas/sem + memoria.`,
+    desc: `Chat IA con tu portfolio total. "¿Mi exposición a BTC vs equities es coherente con mi perfil de inversor?", "¿Qué cripto me hizo perder más este año?". Pro: ${cupoDe(PRO_FEATURES, CUPO_CHAT)} consultas/sem + memoria.`,
   },
 ]
 

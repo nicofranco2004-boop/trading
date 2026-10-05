@@ -194,7 +194,7 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
     // Mervall-E AI no es una ruta del menú (el botón abre la página con
     // useCoachDrawer, que además marca la función como descubierta).
     const extra = [
-      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Mervall-E AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
+      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Mervall-E AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach', 'mervall', 'mervalle', 'rendi'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
     ]
     const acciones = [
       ...(atOwnLevel ? [] : [{
@@ -286,7 +286,9 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
                 onClick={() => elegir(o)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-[14px] ${i === actual ? 'bg-bg-2 text-ink-0' : 'text-ink-1'}`}>
                 {esMervallE
-                  ? <MervallE size={20} forma="visor" congelado />
+                  // 20 px de dibujo en un lugar de 16, como los íconos: si no,
+                  // el texto de estas filas arrancaba 4 px corrido.
+                  ? <span className="w-4 flex-none flex justify-center"><MervallE size={20} forma="visor" congelado /></span>
                   : <Icono size={16} strokeWidth={1.75} aria-hidden="true" className="flex-none text-ink-3" />}
                 <span className="flex-1 min-w-0 truncate">{o.titulo}</span>
                 <span className="text-[12px] text-ink-3 flex-none">{o.detalle}</span>

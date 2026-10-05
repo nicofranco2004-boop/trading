@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { HelmetProvider } from 'react-helmet-async'
 import Landing from './Landing.jsx'
-import { PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import { PLUS_FEATURES, PRO_FEATURES, CUPO_CHAT } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
 
 // La home como la lee un visitante: se renderiza de verdad y se lee el texto,
@@ -19,8 +19,8 @@ const texto = renderToStaticMarkup(
 const dice = (patron) => texto.match(patron)?.[1]
 
 describe('la home dice los cupos del chat que da el plan', () => {
-  const plus = cupoDe(PLUS_FEATURES, 'Chat Mervall-E AI / sem')
-  const pro = cupoDe(PRO_FEATURES, 'Chat Mervall-E AI / sem')
+  const plus = cupoDe(PLUS_FEATURES, CUPO_CHAT)
+  const pro = cupoDe(PRO_FEATURES, CUPO_CHAT)
 
   it('el catálogo tiene los dos cupos (si no, la página diría "undefined")', () => {
     // Contra el falso verde: si alguien renombra la etiqueta del catálogo, la

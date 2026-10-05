@@ -17,8 +17,8 @@ export default function CoachIA() {
     >
       <AdvisorNote>
         <p>
-          Tenés <strong>dos Mervall-E AI</strong>, y cuál te contesta depende de dónde estés
-          parado cuando abrís el asistente:
+          <strong>Mervall-E AI</strong> te contesta de dos formas, según dónde estés
+          parado cuando lo abrís:
         </p>
         <ul>
           <li>
@@ -59,9 +59,10 @@ export default function CoachIA() {
 
       <h2>Cómo abrirlo</h2>
       <p>
-        En el sidebar (desktop) o en cualquier página, botón "Mervall-E AI" con ícono de
-        chispas. Se abre un drawer lateral con el chat. También aparece como FAB en
-        algunas pantallas (mobile).
+        En la barra lateral (compu) o arriba a la derecha (celular), el botón con la
+        cara de Mervall-E: te lleva a la pantalla del chat. Y en cualquier sección
+        tenés la burbuja flotante, "Preguntale a Mervall-E", para preguntarle sin
+        dejar lo que estabas mirando.
       </p>
 
       <h2>12 preguntas guiadas (todos los planes)</h2>

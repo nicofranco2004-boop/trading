@@ -21,8 +21,7 @@ import {
 } from '../data/pricing'
 import {
   PLUS_FEATURES, PRO_FEATURES,
-  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
-} from '../data/planCatalog'
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS, CUPO_CHAT } from '../data/planCatalog'
 import { api } from '../utils/api'
 import { whatsappUrl } from '../utils/support'
 import SupportWhatsAppFab, { WhatsAppIcon } from '../components/SupportWhatsAppFab'
@@ -31,6 +30,7 @@ import FAQ from '../components/landing/FAQ'
 // blog y la guía. Acá estaba escrito a mano ("Probar 20 días gratis") en tres
 // lugares, al lado de la constante que ya se importaba para la sección de precios.
 import { CTA_PRUEBA, cupoDe } from '../data/prueba'
+import MervallE from '../components/ai/MervallE'
 import { useAlVerse } from '../hooks/useAlVerse'
 import AnimatedNumber from '../components/AnimatedNumber'
 
@@ -439,8 +439,8 @@ function HowItWorks() {
   // Los cupos del chat salen del catálogo, como en la FAQ. Escritos a mano se
   // quedan viejos solos: el paso 5 del HowTo de `index.html`, que repite este
   // paso para Google, decía 6 consultas cuando el Plus da 9.
-  const chatPlus = cupoDe(PLUS_FEATURES, 'Chat Mervall-E AI / sem')
-  const chatPro = cupoDe(PRO_FEATURES, 'Chat Mervall-E AI / sem')
+  const chatPlus = cupoDe(PLUS_FEATURES, CUPO_CHAT)
+  const chatPro = cupoDe(PRO_FEATURES, CUPO_CHAT)
   const steps = [
     {
       n: '01',
@@ -970,9 +970,9 @@ function MockChat() {
         <div className="flex justify-start">
           <div className="max-w-[90%] bg-bg-2/40 border border-line/60 rounded-lg px-3 py-2">
             <div className="flex items-center gap-1.5 mb-1.5">
-              <div className="w-4 h-4 rounded bg-data-violet/20 border border-data-violet/40 flex items-center justify-center text-data-violet">
-                <Sparkles size={8} strokeWidth={2.5} />
-              </div>
+              {/* La misma cara que adentro de la app: el visitante ve la
+                  identidad que después encuentra al entrar. */}
+              <MervallE size={18} forma="visor" congelado />
               <span className="text-[9px] font-mono uppercase tracking-caps text-ink-3">Mervall-E AI</span>
             </div>
             <p className="text-[12px] text-ink-1 leading-snug">

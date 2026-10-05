@@ -74,6 +74,23 @@ const SHAPES = {
 const CANDLES = [[172, 169, 167, 174], [169, 170.5, 167.5, 172], [170.5, 167, 165, 171.5], [167, 168, 164.5, 170], [168, 165, 163, 169], [165, 162.5, 161, 166.5]]
 const nz = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x) - 0.5 }
 
+/* Escribir un atributo SÓLO si cambió. En reposo, 8 o 9 de cada 10 escrituras
+   de un cuadro repetían el valor que ya estaba (auditoría 2026-10-04: ~6.000
+   por segundo en /ai). Cada elemento guarda lo último que se le escribió. */
+function setA(el, nombre, valor) {
+  const v = el.__mvv || (el.__mvv = {})
+  if (v[nombre] === valor) return
+  v[nombre] = valor
+  el.setAttribute(nombre, valor)
+}
+function setS(el, prop, valor) {
+  const v = el.__mvv || (el.__mvv = {})
+  const k = 's:' + prop
+  if (v[k] === valor) return
+  v[k] = valor
+  el.style[prop] = valor
+}
+
 // Colores en vivo. Escritos enteros a propósito: el test de tokens busca el
 // literal `var(--mv-pantalla-pos` y un nombre armado por pedazos no lo ve.
 const COLOR_OJO = 'rgb(var(--mv-ojo))'
@@ -254,12 +271,17 @@ function cuadro(ms) {
   let dt = (ms - ultimo) / 1000
   ultimo = ms
   if (!(dt > 0) || dt > 0.1) dt = 0.016
-  const act = INST.filter((m) => m.vis && !m.opt.frozen && m.host.isConnected)
-  const looks = act.map(lookFor)                     // primero se lee todo…
-  act.forEach((m, i) => m.update(t, dt, looks[i], false)) // …después se escribe
-  // Los congelados no necesitan cuadros: si sólo quedan ellos, el bucle se apaga.
+  // Los congelados no necesitan cuadros: si sólo quedan ellos, el bucle se
+  // apaga. El próximo cuadro se pide ANTES de mover a nadie: si un personaje
+  // revienta, el bucle sigue para los demás (antes quedaban todos congelados
+  // hasta recargar, con `corriendo` en true y nadie que lo volviera a prender).
   if (INST.some((m) => !m.opt.frozen)) requestAnimationFrame(cuadro)
-  else corriendo = false
+  else { corriendo = false; return }
+  const act = INST.filter((m) => m.vis && !m.opt.frozen && m.host.isConnected)
+  const looks = act.map((m) => { try { return lookFor(m) } catch { return null } }) // primero se lee todo…
+  act.forEach((m, i) => {                                                            // …después se escribe
+    try { m.update(t, dt, looks[i], false) } catch (e) { m.romper(e) }
+  })
 }
 function arrancar() {
   if (corriendo || typeof requestAnimationFrame === 'undefined') return
@@ -306,22 +328,36 @@ class Personaje {
     this.tAmp = 0
     this.vistas = senal.palabras
     this.ultimaPalabra = -9
-    this.tone = opt.tone || null
+    this.tone = COLOR_TONO[opt.tone] ? opt.tone : null
     this.flashT = -9
     this.seed = rand(0, 60)
     this.lookEl = null
     this.vis = true
     this._col = ''
     host.__mv = this
-    this.setState(opt.state || 'reposo')
+    // Un estado que no existe (un typo, un estado nuevo de la propuesta que
+    // todavía no está acá) cae a reposo en vez de reventar el primer dibujo.
+    this.setState(ESTADOS[opt.state] ? opt.state : 'reposo')
+    this.update(ahora(), 0.016, null, true)
+    // Recién dibujado se anota en el bucle: si el primer dibujo falla, no queda
+    // un personaje roto en la lista para siempre.
     INST.push(this)
     if (io) io.observe(host)
-    this.update(ahora(), 0.016, null, true)
     if (!this.opt.frozen) arrancar()
   }
 
+  /** Un error en el cuadro a cuadro: este personaje se baja del bucle y queda
+   *  como está; el resto sigue. Se avisa una vez en la consola. */
+  romper(e) {
+    const i = INST.indexOf(this)
+    if (i !== -1) INST.splice(i, 1)
+    if (io) io.unobserve(this.host)
+    if (typeof console !== 'undefined') console.error('[Mervall-E] un personaje falló y se quedó quieto:', e)
+  }
+
   setState(nombre) {
-    if (!ESTADOS[nombre] || nombre === this.state) return
+    if (!ESTADOS[nombre]) nombre = 'reposo'
+    if (nombre === this.state) return
     this.state = nombre
     this.S = ESTADOS[nombre]
     this.stateT = ahora()
@@ -350,7 +386,9 @@ class Personaje {
     this.escuchandoAhora = o.escucha && this.state === 'reposo' && (t - senal.tipeoT < 1.2 || senal.mic)
     const S = this.escuchandoAhora ? ESTADOS.escuchando : this.S
     const snap = instant || red
-    const calm = red || o.still
+    // Congelado también: su único dibujo no puede salir mirando para un costado
+    // al azar (una de cada tres caritas del chat miraba para otro lado).
+    const calm = red || o.still || o.frozen
     const k = snap ? 1 : 1 - Math.exp(-dt * 10)
     const kl = snap ? 1 : 1 - Math.exp(-dt * 5.5)
     const ka = snap ? 1 : 1 - Math.exp(-dt * 11)
@@ -374,8 +412,8 @@ class Personaje {
       gx = this.wd.x; gy = this.wd.y
     }
     P.lx += (gx - P.lx) * kl; P.ly += (gy - P.ly) * kl
-    P.tilt += ((S.tilt || 0) - P.tilt) * k * 0.8
-    P.sink += ((S.sink || 0) - P.sink) * k * 0.6
+    P.tilt += ((S.tilt || 0) - P.tilt) * (snap ? 1 : k * 0.8)
+    P.sink += ((S.sink || 0) - P.sink) * (snap ? 1 : k * 0.6)
     P.dim += ((S.dim == null ? 1 : S.dim) - P.dim) * k
     P.circ += ((S.circ || 0) - P.circ) * (snap ? 1 : k * 0.6)
     let dT = S.disc || 0
@@ -424,54 +462,54 @@ class Personaje {
 
     /* 6. Escribir en el dibujo */
     const lx = P.lx, ly = P.ly
-    if (E2.float) E2.float.setAttribute('transform', `translate(0 ${f(y)})`)
+    if (E2.float) setA(E2.float, 'transform', `translate(0 ${f(y)})`)
     if (E2.shadow) {
-      E2.shadow.setAttribute('rx', f(34 * clamp(1 + y / 45, 0.6, 1.25)))
-      E2.shadow.setAttribute('opacity', f(clamp(0.85 + y / 40, 0.35, 1)))
+      setA(E2.shadow, 'rx', f(34 * clamp(1 + y / 45, 0.6, 1.25)))
+      setA(E2.shadow, 'opacity', f(clamp(0.85 + y / 40, 0.35, 1)))
     }
     if (E2.body) {
-      E2.body.setAttribute('transform', `rotate(${f(lx * 3)} 100 190) translate(${f(lx * 1.5)} 0)`)
-      E2.armL.setAttribute('transform', `translate(50 152) rotate(${f(P.al)})`)
-      E2.armR.setAttribute('transform', `translate(150 152) scale(-1 1) rotate(${f(P.ar)})`)
+      setA(E2.body, 'transform', `rotate(${f(lx * 3)} 100 190) translate(${f(lx * 1.5)} 0)`)
+      setA(E2.armL, 'transform', `translate(50 152) rotate(${f(P.al)})`)
+      setA(E2.armR, 'transform', `translate(150 152) scale(-1 1) rotate(${f(P.ar)})`)
     }
-    if (E2.head) E2.head.setAttribute('transform', `translate(${f(lx * 3.5)} ${f(ly * 2.5 + lag)}) rotate(${f(P.tilt + lx * 3)} 100 84)`)
+    if (E2.head) setA(E2.head, 'transform', `translate(${f(lx * 3.5)} ${f(ly * 2.5 + lag)}) rotate(${f(P.tilt + lx * 3)} 100 84)`)
     const vs = this.forma === 'visor' ? 1.5 : 4.5
-    if (E2.visor) E2.visor.setAttribute('transform', `translate(${f(lx * vs)} ${f(ly * vs * 0.7)})`)
+    if (E2.visor) setA(E2.visor, 'transform', `translate(${f(lx * vs)} ${f(ly * vs * 0.7)})`)
     if (E2.eyeL) {
       const es = this.forma === 'visor' ? 0.8 : 1
       const fL = 1 + (lx > 0 ? 0.05 : 0.12) * lx, fR = 1 - (lx > 0 ? 0.12 : 0.05) * lx
       const tw = 1 - 0.04 * P.talk, th = 1 + 0.16 * P.talk
-      E2.eyeL.setAttribute('d', eyePath(P.eL, false, bk, fL * tw, th))
-      E2.eyeR.setAttribute('d', eyePath(P.eR, true, bk, fR * tw, th))
-      E2.eyeL.setAttribute('transform', `translate(${f(79 + lx * 6 * es + scan)} ${f(89 + ly * 4.5 * es)}) rotate(${f(P.eL.r)})`)
-      E2.eyeR.setAttribute('transform', `translate(${f(121 + lx * 6 * es + scan)} ${f(89 + ly * 4.5 * es)}) rotate(${f(-P.eR.r)})`)
-      E2.eyes.setAttribute('opacity', f(P.dim))
+      setA(E2.eyeL, 'd', eyePath(P.eL, false, bk, fL * tw, th))
+      setA(E2.eyeR, 'd', eyePath(P.eR, true, bk, fR * tw, th))
+      setA(E2.eyeL, 'transform', `translate(${f(79 + lx * 6 * es + scan)} ${f(89 + ly * 4.5 * es)}) rotate(${f(P.eL.r)})`)
+      setA(E2.eyeR, 'transform', `translate(${f(121 + lx * 6 * es + scan)} ${f(89 + ly * 4.5 * es)}) rotate(${f(-P.eR.r)})`)
+      setA(E2.eyes, 'opacity', f(P.dim))
     }
     if (E2.circ) {
-      E2.circ.setAttribute('opacity', f(P.circ))
-      if (S.circFull || red) E2.circ.style.strokeDasharray = 'none'
+      setA(E2.circ, 'opacity', f(P.circ))
+      if (S.circFull || red) setS(E2.circ, 'strokeDasharray', 'none')
       else {
-        E2.circ.style.strokeDasharray = `16 ${f(this.circLen)}`
-        E2.circ.style.strokeDashoffset = f(16 - ((age * 34) % (this.circLen + 16)))
+        setS(E2.circ, 'strokeDasharray', `16 ${f(this.circLen)}`)
+        setS(E2.circ, 'strokeDashoffset', f(16 - ((age * 34) % (this.circLen + 16))))
       }
     }
     if (E2.discL) {
       const rl = clamp(4.5 + lx * 3, 1.2, 7.5), rr = clamp(4.5 - lx * 3, 1.2, 7.5)
-      E2.discL.setAttribute('rx', f(rl)); E2.discR.setAttribute('rx', f(rr))
-      E2.dlL.setAttribute('rx', f(rl)); E2.dlR.setAttribute('rx', f(rr))
+      setA(E2.discL, 'rx', f(rl)); setA(E2.discR, 'rx', f(rr))
+      setA(E2.dlL, 'rx', f(rl)); setA(E2.dlR, 'rx', f(rr))
       const dop = f(P.disc * (red ? 1 : 0.65 + 0.35 * Math.sin(t * 6)))
-      E2.dlL.setAttribute('opacity', dop); E2.dlR.setAttribute('opacity', dop)
+      setA(E2.dlL, 'opacity', dop); setA(E2.dlR, 'opacity', dop)
     }
     if (E2.sh) {
-      E2.sh.setAttribute('cx', f(0.4 - lx * 0.1)); E2.sh.setAttribute('fx', f(0.4 - lx * 0.1))
-      E2.sh.setAttribute('cy', f(0.3 - ly * 0.06))
+      setA(E2.sh, 'cx', f(0.4 - lx * 0.1)); setA(E2.sh, 'fx', f(0.4 - lx * 0.1))
+      setA(E2.sh, 'cy', f(0.3 - ly * 0.06))
     }
     if (E2.scr) this.monitor(t, age, S, red)
     for (let s = 0; s < E2.sparks.length; s++) {
       const sp = SPARKS[s]
       let sc = 0, rot = 0
-      if (S.sparks) { const pp = (age * 1.2 + s * 0.29) % 1; sc = red ? 0.8 : Math.sin(pp * Math.PI) * 1.15; rot = pp * 120 }
-      E2.sparks[s].setAttribute('transform', `translate(${sp[0]} ${sp[1]}) rotate(${f(rot)}) scale(${f(sc)})`)
+      if (S.sparks) { const pp = (age * 1.2 + s * 0.29) % 1; sc = red ? 0.8 : Math.sin(pp * Math.PI) * 1.15; rot = red ? 0 : pp * 120 }
+      setA(E2.sparks[s], 'transform', `translate(${sp[0]} ${sp[1]}) rotate(${f(rot)}) scale(${f(sc)})`)
     }
   }
 
@@ -492,7 +530,7 @@ class Personaje {
         g.lastChild.style.fill = alcista ? col : FONDO_VELA_BAJISTA
       })
     }
-    E2.scr.setAttribute('opacity', f(0.4 + 0.6 * P.dim))
+    setA(E2.scr, 'opacity', f(0.4 + 0.6 * P.dim))
     const mode = S.scr || 'idle'
     let ld = '', sdx = SX1, sdy = SMID, dop = 1, dr = 1.7, thO = 0, thY = 165
     if (mode === 'idle' || mode === 'gap') {
@@ -530,10 +568,10 @@ class Personaje {
     } else {
       dop = 0
     }
-    E2.sLine.setAttribute('d', ld)
-    E2.sDot.setAttribute('cx', f(sdx)); E2.sDot.setAttribute('cy', f(sdy))
-    E2.sDot.setAttribute('r', f(dr)); E2.sDot.setAttribute('opacity', f(dop))
-    E2.sTh.setAttribute('d', `M82 ${thY}H118`); E2.sTh.setAttribute('opacity', thO)
+    setA(E2.sLine, 'd', ld)
+    setA(E2.sDot, 'cx', f(sdx)); setA(E2.sDot, 'cy', f(sdy))
+    setA(E2.sDot, 'r', f(dr)); setA(E2.sDot, 'opacity', f(dop))
+    setA(E2.sTh, 'd', `M82 ${thY}H118`); setA(E2.sTh, 'opacity', thO)
     for (let bi = 0; bi < E2.bars.length; bi++) {
       let bh = 0, bo = 0
       if (mode === 'talk') {
@@ -545,12 +583,12 @@ class Personaje {
         bh = 3 + bi * 1.7
         bo = (bi === lit || bi === lit - 1) ? 1 : 0.28
       }
-      E2.bars[bi].setAttribute('y', f(177 - bh))
-      E2.bars[bi].setAttribute('height', f(Math.max(bh, 0.1)))
-      E2.bars[bi].setAttribute('opacity', bo)
+      setA(E2.bars[bi], 'y', f(177 - bh))
+      setA(E2.bars[bi], 'height', f(Math.max(bh, 0.1)))
+      setA(E2.bars[bi], 'opacity', bo)
     }
     const nc = mode === 'think' ? (red ? 6 : Math.min(6, Math.floor((age % 3.2) * 2.4))) : 0
-    for (let c = 0; c < E2.cds.length; c++) E2.cds[c].setAttribute('opacity', c < nc ? 1 : 0)
+    for (let c = 0; c < E2.cds.length; c++) setA(E2.cds[c], 'opacity', c < nc ? 1 : 0)
   }
 }
 

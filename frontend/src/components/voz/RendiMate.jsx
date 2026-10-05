@@ -177,7 +177,7 @@ export default function RendiMate() {
                     : preparando ? 'Preparando el audio — abrir la conversación'
                     : 'Abrir la conversación con Mervall-E'}
         >
-          <MervallE size={26} escucha estado={mervalle.estado} tono={mervalle.tono} />
+          <MervallE size={26} escucha estado={mervalle.estado} />
           {hablando ? 'Mervall-E está hablando' : preparando ? 'Preparando…' : 'Preguntale a Mervall-E'}
         </button>
         {hayAudio && (
@@ -220,7 +220,10 @@ export default function RendiMate() {
       <header
         {...manija}
         className="flex items-center gap-2 px-3 py-2 border-b border-line-2 cursor-grab active:cursor-grabbing">
-        <MervallE size={26} escucha estado={mervalle.estado} tono={mervalle.tono} />
+        {/* Con la tarjeta abierta, "pensando" lo dice el visor barriendo de la
+            línea de espera de abajo: la cabecera se queda en reposo mientras
+            tanto, para que no haya dos caras animándose a la vez. */}
+        <MervallE size={26} escucha estado={mervalle.estado === 'pensando' ? 'reposo' : mervalle.estado} />
         <span className="flex-1 min-w-0 text-[12.5px] font-semibold text-ink-0 leading-tight">
           Mervall-E AI
           {estado && <span className="block font-normal text-[11px] text-ink-3">{estado}</span>}

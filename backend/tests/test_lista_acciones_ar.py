@@ -8,7 +8,7 @@ coincidía con la de la pantalla (frontend/src/utils/tickers.js, 64):
   - una cartera 100 % Telecom (TECO2) en Cocos salía "Casi sin exposición a
     Argentina" (0 %), porque TECO2 no estaba en la lista del diagnóstico;
   - TEN (Tsakos, una naviera griega) contaba como 100 % argentina;
-  - Mervall-E AI clasificaba PAM en Schwab y GGAL.BA en Cocos como "us", y a Texas
+  - Rendi AI (hoy Mervall-E AI) clasificaba PAM en Schwab y GGAL.BA en Cocos como "us", y a Texas
     Instruments o GDX como argentinas por las dos primeras letras.
 
 La primera versión del arreglo igualó la LISTA pero no la REGLA, y la auditoría

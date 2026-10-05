@@ -30,7 +30,7 @@ export const PASO_CREAR_CUENTA = {
   desc: PRUEBA_EN_UNA_LINEA,
 }
 
-/** Un cupo de un plan (`'Chat Mervall-E AI / sem'`, `'Brokers'`…) tal como lo
+/** Un cupo de un plan (`CUPO_CHAT` de planCatalog, `'Brokers'`…) tal como lo
  *  publica el catálogo, que `test_promesas_vs_producto.py` compara contra el
  *  límite que aplica el backend. Para que un texto diga "9 consultas" sin
  *  escribir el 9: escrito a mano, se queda viejo el día que cambia el cupo. */

@@ -10,7 +10,7 @@
 Por qué existe (2026-10-01): eran siete copias de la misma consulta.
   · Una leía la tabla `events`, que no existe: las tarjetas "Earnings de X" /
     "Dividendo de X" del inicio no aparecieron nunca desde que se crearon.
-  · Las tres de Mervall-E AI contaban "hoy" con `date.today()`, que en el servidor
+  · Las tres de Rendi AI (hoy Mervall-E AI) contaban "hoy" con `date.today()`, que en el servidor
     (UTC) ya es mañana de 21 a 24 h de Buenos Aires: la pantalla mostraba el
     evento de hoy y la IA no lo veía (ver la memoria "IA = número de la pantalla").
 

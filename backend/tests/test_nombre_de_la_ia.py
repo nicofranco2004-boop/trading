@@ -40,12 +40,17 @@ import main  # noqa: E402
 
 # Entre dos palabras puede haber más que un espacio y en un mail se lee igual:
 # un espacio duro (`&nbsp;`) o una etiqueta (`Coach <b>IA</b>`).
-_ENTRE = r"(?:\s|&nbsp;|&#160;|<[^<>]*>)+"
+_ENTRE = r"(?:\s|&nbsp;|&#160;|&#xa0;|<[^<>]*>)+"
 NOMBRE_VIEJO = re.compile(
     rf"coach{_ENTRE}(de{_ENTRE})?ia\b"        # "Coach IA", "coach de IA"
     rf"|\b(el|al|del){_ENTRE}coach\b"         # "Memoria del Coach", "Sos el coach…"
     rf"|\bai{_ENTRE}coach\b"                 # "AI Coach"
-    rf"|\brendi{_ENTRE}ai\b", re.I)          # "Rendi AI" (hasta el 2026-10-03)
+    rf"|\brendi(?:{_ENTRE}|[-‐‑_·])(?:ai|ia)\b"   # "Rendi AI" (hasta el 2026-10-03), "Rendi IA", "Rendi-AI"
+    # La IA llamada "Rendi" a secas (el personaje habla, lee, escucha; la app no):
+    rf"|\bpregunt[\wáéíóúñ]*{_ENTRE}a{_ENTRE}rendi\b"            # "Preguntale a Rendi"
+    rf"|\b(?:habl|escrib)[\wáéíóúñ]*le{_ENTRE}a{_ENTRE}rendi\b"   # "Hablarle a Rendi"
+    rf"|\brendi{_ENTRE}(?:está|te){_ENTRE}(?:habl|lee|leé|escuch|contest)"  # "Rendi te lee"
+    rf"|\bla{_ENTRE}voz{_ENTRE}de{_ENTRE}rendi\b", re.I)          # "La voz de Rendi"
 # Los tests citan el texto viejo a propósito; los scripts no llegan a nadie.
 NO_SE_LEEN = {"tests", "scripts", "__pycache__", "node_modules", "venv"}
 # El único lugar donde los nombres viejos TIENEN que estar: los valores que
@@ -146,8 +151,19 @@ class ElNombreViejoNoVuelve(unittest.TestCase):
                        'x = "Tip: AI Coach"',
                        'x = """--- CONTEXTO ---\n-- lo dice el Coach IA\n"""',
                        'x = "Chat libre con Rendi AI"',
-                       'x = "Rendi&nbsp;AI está tardando"'):
+                       'x = "Rendi&nbsp;AI está tardando"',
+                       'x = "Rendi&#xa0;AI"',
+                       'x = "Rendi IA"',
+                       'x = "La voz de Rendi no está disponible"',
+                       'x = "Preguntale a Rendi"',
+                       'x = "Rendi te lee la respuesta"'):
             self.assertTrue(_vistos(fuente), fuente)
+
+    def test_rendi_como_la_app_no_es_el_nombre_viejo(self):
+        """"Rendi" a secas es la APP y queda: sólo el personaje cambió de nombre."""
+        for fuente in ('x = "¡Bienvenido a Rendi Pro!"', 'x = "Entrar a Rendi"',
+                       'x = "Tu asesor te invitó a Rendi"', 'x = "¿Qué te diría Rendi si viera toda tu cartera?"'):
+            self.assertEqual(_vistos(fuente), [], fuente)
 
     def test_la_excepcion_es_una_sola_y_con_nombre(self):
         """Las notas viejas se pueden nombrar en SU constante de main.py; la

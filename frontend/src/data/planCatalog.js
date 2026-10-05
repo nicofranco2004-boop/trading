@@ -22,6 +22,17 @@
 // queda al cuidado de nadie: lo compara `backend/tests/test_promesas_vs_producto.py`.
 // Si alguien cambia la prueba de 20 a 14 días y se olvida de la landing, ese
 // test se pone rojo. Sin eso, la home seguiría ofreciendo 20 días para siempre.
+
+/** El nombre del cupo de chat. Es lo que se ve en la tabla de planes Y la llave
+ *  con la que nueve pantallas buscan el número (`cupoDe(plan, CUPO_CHAT)`): si
+ *  cada una lo escribía a mano y la etiqueta cambiaba —como al renombrar la IA—,
+ *  `cupoDe` no encontraba nada y la página decía "undefined consultas/sem". */
+// En la tabla de abajo la etiqueta va ESCRITA, no como `CUPO_CHAT`: el test del
+// servidor (tests/test_promesas_vs_producto.py) lee este archivo como texto
+// para comparar cada número con el límite que aplica el backend. Que las dos
+// digan lo mismo lo vigila data/cupoDe.etiquetas.test.js.
+export const CUPO_CHAT = 'Chat Mervall-E AI / sem'
+
 export const TRIAL_TOTAL_DAYS = 20
 export const TRIAL_PRO_DAYS = 10
 export const TRIAL_PLUS_DAYS = 10

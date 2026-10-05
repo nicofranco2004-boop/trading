@@ -2,10 +2,13 @@
 // decisión de producto (ver estadoDelChat.js): cada caso de acá es una frase
 // de la propuesta aprobada el 2026-10-03.
 import { describe, it, expect } from 'vitest'
-import { estadoDelChat, ultimaRespuesta, tocaSaludar, REACCION_POR_TONO } from './estadoDelChat'
+import { estadoDelChat, ultimaRespuesta, tocaSaludar, restoDeReaccion, sinConsultasDeChat, REACCION_POR_TONO, DURACION_REACCION } from './estadoDelChat'
 import { ESTADOS } from './motor'
 
-const base = { sending: false, loading: false, status: 'idle', askError: null, upgradeInfo: null, sinCupo: null, reaccion: null }
+const base = { sending: false, loading: false, status: 'idle', askError: null, upgradeInfo: null, sinCupo: null,
+  codigoDelError: null, kindDeCuotaDelError: null, usageDelError: null, reaccion: null }
+// Se quedó sin consultas de CHAT (el 429 del chat).
+const sinChat = { upgradeInfo: { available: true }, askError: 'Llegaste al límite', kindDeCuotaDelError: 'chat' }
 const e = (cambios) => estadoDelChat({ ...base, ...cambios })
 
 describe('estadoDelChat — la cara según lo que pasa', () => {
@@ -40,10 +43,36 @@ describe('estadoDelChat — la cara según lo que pasa', () => {
     expect(e({ askError: 'No pude conectarme' }).estado).toBe('confundido')
   })
 
-  it('sin consultas gana a todo → durmiendo, sin color', () => {
-    expect(e({ upgradeInfo: { available: true }, askError: 'cuota', reaccion: { tono: 'pos' } }))
-      .toEqual({ estado: 'durmiendo', tono: null })
-    expect(e({ sinCupo: { resets_on: '2026-10-06' } }).estado).toBe('durmiendo')
+  it('sin consultas de chat → durmiendo, sin color, aunque también haya un error', () => {
+    expect(e(sinChat)).toEqual({ estado: 'durmiendo', tono: null })
+  })
+
+  it('sin AUDIOS no duerme: sigue preguntando por escrito (auditoría 2026-10-04)', () => {
+    // `sinCupo` es el cupo de escuchar. Sólo se apaga al pedir otro audio, así
+    // que si lo durmiera, dormiría todas las respuestas siguientes.
+    expect(e({ sinCupo: { resets_on: '2026-10-06' } }).estado).toBe('reposo')
+    expect(e({ sinCupo: { resets_on: '2026-10-06' }, sending: true, loading: true }).estado).toBe('pensando')
+    expect(e({ sinCupo: { resets_on: '2026-10-06' }, sending: true }).estado).toBe('hablando')
+  })
+
+  it('la tarjeta de "pasate de plan" que NO es cuota de chat no lo duerme', () => {
+    // Un Free escribió una pregunta libre: le queda elegir una guiada.
+    expect(e({ upgradeInfo: { available: true }, askError: 'Eso es Pro', codigoDelError: 'free_chat_not_allowed' }).estado)
+      .toBe('confundido')
+    // Se le acabaron los ✦ Analizar: el chat sigue andando.
+    expect(e({ upgradeInfo: { available: true }, askError: 'Sin análisis', kindDeCuotaDelError: 'analyses' }).estado)
+      .toBe('confundido')
+    expect(sinConsultasDeChat({ upgradeInfo: { available: true }, kindDeCuotaDelError: 'analyses' })).toBe(false)
+    expect(sinConsultasDeChat({ upgradeInfo: null, kindDeCuotaDelError: 'chat' })).toBe(false)
+  })
+
+  it('si está contestando, eso gana a cualquier cartel que haya quedado', () => {
+    expect(e({ ...sinChat, sending: true, loading: true }).estado).toBe('pensando')
+    expect(e({ ...sinChat, sending: true }).estado).toBe('hablando')
+  })
+
+  it('re-escuchar el último audio sin consultas: habla, no duerme (la isla dice "está hablando")', () => {
+    expect(e({ ...sinChat, status: 'playing' }).estado).toBe('hablando')
   })
 
   it('una pregunta nueva le gana a la reacción de la anterior', () => {
@@ -57,6 +86,20 @@ describe('estadoDelChat — la cara según lo que pasa', () => {
   it('cada estado que puede devolver existe en el motor', () => {
     const posibles = ['reposo', 'pensando', 'hablando', 'confundido', 'durmiendo', ...Object.values(REACCION_POR_TONO)]
     for (const p of posibles) expect(ESTADOS[p], p).toBeTruthy()
+  })
+})
+
+describe('restoDeReaccion — se cuenta desde que llegó la respuesta', () => {
+  it('recién llegada: la reacción entera', () => {
+    expect(restoDeReaccion('pos', 1000, 1000)).toBe(DURACION_REACCION.contento)
+  })
+  it('volver a /ai a los 3 s no la repite entera: dura lo que le faltaba', () => {
+    expect(restoDeReaccion('warn', 1000, 4000)).toBe(DURACION_REACCION.atento - 3000)
+  })
+  it('vencida, sin tono o sin hora: nada', () => {
+    expect(restoDeReaccion('neg', 1000, 1000 + DURACION_REACCION.serio + 1)).toBe(0)
+    expect(restoDeReaccion('neutral', 1000, 1000)).toBe(0)
+    expect(restoDeReaccion('pos', null, 1000)).toBe(0)
   })
 })
 
