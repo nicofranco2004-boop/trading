@@ -50,8 +50,10 @@ export const TOPE_MS = 30 * 1000
 // preguntaba a la IA con— la cartera del anterior (auditoría 2026-10-05).
 // En minúsculas y sin espacios: al iniciar sesión el email provisorio es el
 // que se tipeó ("Ana@X.com") y después llega el de /auth/me ("ana@x.com").
-export const claveDePersona = (user, clienteId) =>
-  `${String(user?.email ?? '').trim().toLowerCase()}|${clienteId ?? ''}`
+// `quienEs` (null sin sesión) es también con lo que VozContext firma la
+// conversación guardada: una sola regla de "quién es".
+export const quienEs = (user) => String(user?.email ?? '').trim().toLowerCase() || null
+export const claveDePersona = (user, clienteId) => `${quienEs(user) ?? ''}|${clienteId ?? ''}`
 
 // Un error con el texto que ve la persona: el chat muestra `detail` tal cual
 // (utils/errorChat.traducirErrorDeChat). NO es un AbortError: ése el chat lo
@@ -191,8 +193,10 @@ export function crearLecturaDeCartera({
     throw error
   }
 
-  function invalidar() {
-    cambioEn = ahora()
+  // `pausa: false` cuando no es una escritura (cambió el cliente): ahí no
+  // viene una ráfaga y la primera pregunta no tiene por qué esperar.
+  function invalidar({ pausa = true } = {}) {
+    if (pausa) cambioEn = ahora()
     soltar()
     snap = null
     publicar(ultima ? { estado: 'vieja', snap: anterior(deQuien()) } : null)

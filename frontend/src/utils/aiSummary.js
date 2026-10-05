@@ -10,9 +10,10 @@
 //
 // `Dashboard.jsx` ya filtra `m.broker === 'global'` para el MISMO número que
 // muestra en pantalla. El filtro va acá para que el chat y la pantalla no puedan
-// volver a divergir: esta función es la única que arma el resumen, y la llaman
-// las dos superficies del chat de entonces (`RendiAI` y el drawer, ya borrado), que hasta ahora
-// tenían una copia idéntica cada una — el bug estaba escrito dos veces.
+// volver a divergir: esta función es la única que arma el resumen, y la llama
+// sólo utils/aiSnapshot.js, que es lo que usan todas las superficies del chat.
+// Antes cada pantalla (`RendiAI` y el viejo drawer, ya borrado) tenía una copia
+// idéntica — el bug estaba escrito dos veces.
 //
 // `months_tracked` cuenta las filas globales, no todas: con 4 brokers y 12 meses
 // el modelo leía "48 meses de historia".

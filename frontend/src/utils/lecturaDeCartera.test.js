@@ -3,7 +3,7 @@ import { crearLecturaDeCartera, VIGENCIA_MS, VUELTAS, claveDePersona, CAMBIO_DE_
 import { mapMeToUser } from '../contexts/AuthContext'
 import { fetchAiSnapshot, resumenDeCartera } from './aiSnapshot'
 import { pasosContextoIA } from './cargaPorPasos'
-import { api, EVENTO_ESCRITURA, EVENTO_CLIENTE, escrituraTocaLaCartera, setClientContext } from './api'
+import { api, EVENTO_ESCRITURA, escrituraTocaLaCartera } from './api'
 
 // La lectura de tu cartera que muestra la isla ("Viendo tu cartera · 12
 // posiciones · 3 brokers") y que viaja con cada pregunta. Lo que se prueba acá
@@ -421,27 +421,8 @@ describe('escrituraTocaLaCartera — qué escrituras dejan vieja la lectura', ()
   })
 })
 
-describe('setClientContext avisa cuando el asesor cambia de cliente', () => {
-  let avisos
-  beforeEach(() => {
-    globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} }
-    globalThis.window = new EventTarget()
-    avisos = 0
-    window.addEventListener(EVENTO_CLIENTE, () => { avisos++ })
-  })
-  afterEach(() => {
-    setClientContext(null)
-    delete globalThis.localStorage
-    delete globalThis.window
-  })
-  it('entrar a un cliente, pasar a otro y salir: tres avisos; repetir el mismo, ninguno', () => {
-    setClientContext({ id: 101, label: 'Ana' })
-    setClientContext({ id: 101, label: 'Ana' })
-    setClientContext({ id: 202, label: 'Beto' })
-    setClientContext(null)
-    expect(avisos).toBe(3)
-  })
-})
+// (El aviso de "cambió el cliente" lo prueba contexts/fotoDeOtraCuenta.test.js:
+// es EVENTO_CUENTA_CAMBIADA de utils/api, el mismo que sigue esta lectura.)
 
 // ─── De quién es la lectura: con lo que de verdad trae el usuario ────────────
 // La auditoría lo encontró: la clave se armaba con `user.id`, que la app no

@@ -49,7 +49,7 @@ describe('/ai: el cargador son los pedidos de verdad', () => {
     expect(pagina).not.toMatch(/fetchAiSnapshot/)
   })
   it('al pasar a otro cliente se vuelve a leer (antes seguía con la del anterior)', () => {
-    expect(pagina).toMatch(/\[bookMode, clientCtx\?\.id, persona, leerCartera\]/)
+    expect(pagina).toMatch(/\[bookMode, clienteId, persona, leerCartera\]/)
     // Y relee por la identidad del aviso, no por un sí/no que puede no cambiar.
     expect(pagina).toMatch(/\[bookMode, cartera, leerCartera\]/)
   })
@@ -85,23 +85,25 @@ describe('VozContext: la pregunta usa la MISMA lectura que muestra la isla', () 
   it('nada pide la cartera por fuera de lecturaDeCartera (ni /ai)', () => {
     expect((voz.match(/fetchAiSnapshot\(/g) || []).length).toBe(1)
     expect(voz).toMatch(/leer: \(alLlegar, signal\) => fetchAiSnapshot\(\{ alLlegar, signal \}\)/)
-    expect(voz).toMatch(/await lectura\.paraPreguntar\(\)/)
+    expect(voz).toMatch(/traer: \(\) => lectura\.paraPreguntar\(\)/)
   })
   it('se tira cuando cambia algo: el chat, el importador, una escritura o el cliente', () => {
-    expect(voz).toMatch(/addEventListener\('rendi:portfolio-changed', invalidar\)/)
-    expect(voz).toMatch(/addEventListener\(EVENTO_ESCRITURA, invalidar\)/)
-    expect(voz).toMatch(/addEventListener\(EVENTO_CLIENTE, cambioDeCliente\)/)
+    expect(voz).toMatch(/addEventListener\('rendi:portfolio-changed', trasEscribir\)/)
+    expect(voz).toMatch(/addEventListener\(EVENTO_ESCRITURA, trasEscribir\)/)
+    // El cambio de cliente, junto con la conversación (cambiarDeCuenta), sin pausa.
+    const cambiar = voz.slice(voz.indexOf('const cambiarDeCuenta = useCallback'))
+    expect(cambiar.slice(0, 1500)).toMatch(/lectura\.invalidar\(\{ pausa: false \}\)/)
+    expect(voz).toMatch(/addEventListener\(EVENTO_CUENTA_CAMBIADA, alCambiar\)/)
   })
   it('al cambiar de persona se olvida la lectura ANTES de que la isla pida la nueva', () => {
     // useLayoutEffect corre antes que los efectos de los hijos; con useEffect,
     // el olvido llegaba después y tiraba la lectura recién pedida.
-    expect(voz).toMatch(/useLayoutEffect\(\(\) => \{\s*if \(quienEraRef\.current !== quienEs\) lectura\.olvidar\(\)/)
+    expect(voz).toMatch(/useLayoutEffect\(\(\) => \{\s*if \(quienLeiaRef\.current !== quienLee\) lectura\.olvidar\(\)/)
   })
   it('el modo libro se decide al preguntar y al leer, no con el valor del último dibujo', () => {
     // VozProvider vive arriba de AdvisorProvider: `modoLibro` puede ser de
     // antes de entrar a un cliente, y la IA recibía `{}` sobre el cliente.
     const ask = voz.slice(voz.indexOf('const ask = useCallback'))
-    expect(ask.slice(0, ask.indexOf('const res = await api.chatStream'))).toMatch(/esModoLibro\(\) \?/)
-    expect(ask.slice(0, ask.indexOf('const res = await api.chatStream'))).not.toMatch(/modoLibro \?/)
+    expect(ask.slice(0, ask.indexOf('const res = await api.chatStream'))).toMatch(/libro: esModoLibro\(\)/)
   })
 })

@@ -39,16 +39,20 @@ export function getClientContext() {
   return _clientCtx
 }
 
-// Cambió el cliente que mira el asesor (o salió al libro). Lo oye quien vive
-// ARRIBA de AdvisorProvider y no se redibuja con él: VozContext, que guarda la
-// lectura de la cartera para la IA y decide el "modo libro". Sin el aviso, la
-// isla seguía mostrando —y la pregunta mandando— lo del cliente anterior.
-export const EVENTO_CLIENTE = 'rendi:cliente'
-function avisarCliente(antes) {
+// 🔴 CAMBIAR DE CUENTA SE AVISA. Acá se decide a qué cuenta va cada pedido,
+// pero lo que el navegador ya trajo de la cuenta anterior no se entera solo: la
+// foto de la cartera y la conversación con la IA (VozContext, que vive arriba
+// de todo y no se re-monta) siguieron siendo las del cliente A con la cuenta
+// del cliente B abierta — la IA contestaba sobre B con las operaciones, los
+// brokers y la charla de A (medido en el navegador, 2026-10-05).
+// Se avisa desde ACÁ y no desde AdvisorContext porque éste es el único lugar
+// por el que pasan todas las formas de cambiar de cliente: entrar, salir,
+// cerrar sesión adentro de uno y lo que haga otra pestaña. (Que cambie la
+// PERSONA logueada lo mira VozContext aparte: no pasa por acá.)
+export const EVENTO_CUENTA_CAMBIADA = 'rendi:cuenta-cambiada'
+function avisarSiCambioLaCuenta(antes) {
   if ((antes?.id ?? null) === (_clientCtx?.id ?? null)) return
-  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-    window.dispatchEvent(new Event(EVENTO_CLIENTE))
-  }
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(EVENTO_CUENTA_CAMBIADA))
 }
 
 export function setClientContext(ctx) {
@@ -59,7 +63,7 @@ export function setClientContext(ctx) {
     if (_clientCtx) localStorage.setItem(CLIENT_CTX_KEY, JSON.stringify(_clientCtx))
     else localStorage.removeItem(CLIENT_CTX_KEY)
   } catch { /* ignore */ }
-  avisarCliente(antes)
+  avisarSiCambioLaCuenta(antes)
 }
 
 export function clearClientContext() {
@@ -78,7 +82,7 @@ if (typeof window !== 'undefined') {
       const parsed = e.key === null ? null : (e.newValue ? JSON.parse(e.newValue) : null)
       _clientCtx = parsed && typeof parsed.id === 'number' ? parsed : null
     } catch { _clientCtx = null }
-    avisarCliente(antes)
+    avisarSiCambioLaCuenta(antes)
   })
 }
 

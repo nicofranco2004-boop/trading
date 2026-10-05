@@ -1,6 +1,6 @@
 // RendiAI — página de chat con la IA (/ai).
 // ═══════════════════════════════════════════════════════════════════════════
-// Reemplaza al drawer lateral (AICoachDrawer): tocar "Mervall-E AI" en el sidebar
+// Reemplaza al drawer lateral (el viejo AICoachDrawer, ya borrado): tocar "Mervall-E AI" en el sidebar
 // navega acá. Chat a pantalla completa estilo conversación centrada: topbar con
 // la marca + chip de contexto + "Nueva conversación", mensajes con aire, input
 // abajo. La lógica del chat (tiers, cuota, streaming, registrar operaciones)
@@ -17,7 +17,7 @@ import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { resumenDeCartera } from '../utils/aiSnapshot'
+import { resumenDeCartera, esFotoDeLaCuentaActual } from '../utils/aiSnapshot'
 import { pasosContextoIA } from '../utils/cargaPorPasos'
 import { useDemora } from '../hooks/useDemora'
 import CargaPorPasos from '../components/novedades/CargaPorPasos'
@@ -71,13 +71,20 @@ export default function RendiAI() {
   //   · Cambió la persona o el cliente: se lee la de ahora (`persona`).
   // Se relee por la IDENTIDAD de `cartera`, no por "¿está vieja?" (sí/no):
   // vieja → vieja otra vez (otro cliente, otra escritura) no cambiaba el sí/no.
+  const clienteId = clientCtx?.id ?? null
   useEffect(() => {
     if (!bookMode) leerCartera()
-  }, [bookMode, clientCtx?.id, persona, leerCartera])
+  }, [bookMode, clienteId, persona, leerCartera])
   useEffect(() => {
     if (!bookMode && (cartera == null || cartera.estado === 'vieja')) leerCartera()
   }, [bookMode, cartera, leerCartera])
-  const snapshot = bookMode ? null : (cartera?.snap ?? null)
+  // Y SÓLO si es de la cuenta abierta AHORA, decidido al dibujar (lo trajo
+  // la sesión que arregló la foto de otra cuenta, 2026-10-05): en el dibujo en
+  // que cambia el cliente, el chat no puede recibir la foto del anterior ni el
+  // subtítulo contar sus posiciones. La lectura ya es por persona y cliente;
+  // esto es la segunda llave, por si un dibujo llega antes que el aviso.
+  const fotoLeida = bookMode ? null : (cartera?.snap ?? null)
+  const snapshot = fotoLeida && esFotoDeLaCuentaActual(fotoLeida) ? fotoLeida : null
   const loading = !bookMode && !snapshot && cartera?.estado !== 'error'
   const error = !bookMode && !snapshot && cartera?.estado === 'error'
     ? (cartera.mensaje || 'No pudimos cargar el contexto de tu cartera.') : null
@@ -262,10 +269,13 @@ export default function RendiAI() {
           </div>
         )}
 
+        {/* La llave lleva el cliente: si cambia desde otra pestaña con esta
+            pantalla abierta, el chat se vuelve a montar y pide el cupo de la
+            cuenta nueva (el pie mostraba el del cliente anterior). */}
         {bookMode ? (
-          <AICoach key={convKey} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
+          <AICoach key={`${convKey}:${clienteId ?? 'libro'}`} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
         ) : snapshot && !loading && !error && (
-          <AICoach key={convKey} snapshot={snapshot} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
+          <AICoach key={`${convKey}:${clienteId ?? 'libro'}`} snapshot={snapshot} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
         )}
       </div>
     </div>
