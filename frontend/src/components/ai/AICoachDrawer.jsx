@@ -84,13 +84,13 @@ export default function AICoachDrawer() {
       className="fixed inset-0 z-50 flex justify-end"
       role="dialog"
       aria-modal="true"
-      aria-label="Rendi AI"
+      aria-label="Mervall-E AI"
     >
       {/* backdrop oscuro — click cierra */}
       <button
         type="button"
         onClick={close}
-        aria-label="Cerrar Rendi AI"
+        aria-label="Cerrar Mervall-E AI"
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
       />
 
@@ -99,7 +99,7 @@ export default function AICoachDrawer() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-bg-2/40">
           <div>
-            <div className="text-[12px] text-data-violet font-medium">Rendi AI</div>
+            <div className="text-[12px] text-data-violet font-medium">Mervall-E AI</div>
             <div className="text-sm font-medium text-ink-0">Preguntas con contexto de tu cartera</div>
           </div>
           <button

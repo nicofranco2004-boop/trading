@@ -22,6 +22,17 @@
 // queda al cuidado de nadie: lo compara `backend/tests/test_promesas_vs_producto.py`.
 // Si alguien cambia la prueba de 20 a 14 días y se olvida de la landing, ese
 // test se pone rojo. Sin eso, la home seguiría ofreciendo 20 días para siempre.
+
+/** El nombre del cupo de chat. Es lo que se ve en la tabla de planes Y la llave
+ *  con la que nueve pantallas buscan el número (`cupoDe(plan, CUPO_CHAT)`): si
+ *  cada una lo escribía a mano y la etiqueta cambiaba —como al renombrar la IA—,
+ *  `cupoDe` no encontraba nada y la página decía "undefined consultas/sem". */
+// En la tabla de abajo la etiqueta va ESCRITA, no como `CUPO_CHAT`: el test del
+// servidor (tests/test_promesas_vs_producto.py) lee este archivo como texto
+// para comparar cada número con el límite que aplica el backend. Que las dos
+// digan lo mismo lo vigila data/cupoDe.etiquetas.test.js.
+export const CUPO_CHAT = 'Chat Mervall-E AI / sem'
+
 export const TRIAL_TOTAL_DAYS = 20
 export const TRIAL_PRO_DAYS = 10
 export const TRIAL_PLUS_DAYS = 10
@@ -32,14 +43,14 @@ export const FREE_FEATURES = {
     { label: 'Posiciones, Operaciones, Wrapped anual y Objetivos' },
     { label: 'Métricas con TWR, benchmarks (S&P, inflación AR, dólar) y drawdown' },
     { label: 'Diagnóstico completo + 3 detectores de comportamiento', sub: 'Con CAGR y volatilidad; personalizalo 2×/sem con “No me interesa” (métricas ajustadas por riesgo con Plus)' },
-    { label: 'Rendi AI con 12 preguntas guiadas (taster)' },
+    { label: 'Mervall-E AI con 12 preguntas guiadas (taster)' },
     { label: 'Reportes: vista previa del último mes' },
   ],
   // Free no tiene "diff" — es el baseline.
   diff: null,
   quotas: [
     { label: 'Análisis IA / sem', value: '1' },
-    { label: 'Chat Rendi AI / sem', value: '1' },
+    { label: 'Chat Mervall-E AI / sem', value: '1' },
     { label: 'Brokers', value: '1' },
   ],
 }
@@ -70,12 +81,12 @@ export const PLUS_FEATURES = {
       'Métricas de riesgo (Sharpe, Sortino, alfa, Calmar…)',
       'Hasta 25 alertas, de precio objetivo y de variación %',
       'Reportes históricos + Export CSV',
-      '9 consultas por semana a Rendi AI, con preguntas guiadas',
+      '9 consultas por semana a Mervall-E AI, con preguntas guiadas',
     ],
   },
   quotas: [
     { label: 'Análisis IA / sem', value: '6' },
-    { label: 'Chat Rendi AI / sem', value: '9' },
+    { label: 'Chat Mervall-E AI / sem', value: '9' },
     { label: 'Brokers', value: '3' },
   ],
 }
@@ -84,10 +95,10 @@ export const PRO_FEATURES = {
   essentials: [
     { label: 'Todo lo del Plus' },
     { label: '60 análisis IA / semana', sub: '10× más que Plus' },
-    { label: 'Chat libre con Rendi AI', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
+    { label: 'Chat libre con Mervall-E AI', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
     { label: 'Respuestas con causalidad y comparaciones', sub: 'Modo research-note: no solo describe, infiere por qué' },
     { label: 'Follow-ups: profundizá cualquier análisis con preguntas libres' },
-    { label: 'Memoria persistente de Rendi AI', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
+    { label: 'Memoria persistente de Mervall-E AI', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
     { label: 'Brokers ilimitados' },
     { label: '12 detectores de comportamiento completos' },
   ],
@@ -95,14 +106,14 @@ export const PRO_FEATURES = {
     title: 'Vs Plus',
     items: [
       '10× más análisis IA (60/sem vs 6/sem)',
-      'Chat libre con Rendi AI (vs 12 preguntas guiadas)',
+      'Chat libre con Mervall-E AI (vs 12 preguntas guiadas)',
       'IA con causalidad y memoria persistente',
       'Comportamiento completo (12 vs 6) + brokers ilimitados',
     ],
   },
   quotas: [
     { label: 'Análisis IA / sem', value: '60' },
-    { label: 'Chat Rendi AI / sem', value: '40' },
+    { label: 'Chat Mervall-E AI / sem', value: '40' },
     { label: 'Brokers', value: '∞' },
   ],
   // Roadmap visible — features prometidas que están en construcción.

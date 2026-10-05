@@ -90,7 +90,7 @@ describe('ningún texto del frontend repite un cupo de plan a mano', () => {
     // Si alguien afloja un patrón, esto se pone rojo antes de que vuelva la copia.
     const viejas = [
       '10× más análisis IA (60/sem vs 6/sem)',
-      '3× más Chat Rendi AI (9 consultas/sem vs 3)',
+      '3× más Chat Mervall-E AI (9 consultas/sem vs 3)',
       'Hasta 3 brokers (vs 1 en Free)',
       'Eso es Pro (40 consultas/sem).',
       'Diagnóstico completo + 4 detectores de comportamiento',

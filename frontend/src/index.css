@@ -230,6 +230,28 @@
        Ahora `bg-2` se queda con hover y relleno sutil, y lo que flota usa
        esto. En oscuro vale lo mismo que `bg-2` valía — cero cambio. */
     --bg-raised           : 255 255 255    ;
+
+    /* ── Mervall-E, el personaje de la IA ───────────────────────────────
+       Los usan components/ai/mervalle/mervalle.css (la pintura) y motor.js
+       (lo que cambia en vivo: el color del monitor del pecho). El casco es blanco
+       en los dos temas; lo que cambia en claro es lo que lo separa del fondo
+       lavanda: la sombra del casco, el borde y la sombra en el piso. El visor,
+       los ojos y los colores del monitor del pecho son iguales en los dos
+       temas porque viven sobre vidrio oscuro: el verde/rojo/ámbar de TEXTO
+       del tema claro (oscurecidos para papel) ahí se perderían. */
+    --mv-casco-luz        : 255 255 255    ;
+    --mv-casco            : 236 233 247    ;
+    --mv-casco-sombra     : 162 155 201    ;
+    --mv-borde            : 150 142 190    ;
+    --mv-visor-luz        : 37 32 63       ;
+    --mv-visor            : 4 4 7          ;
+    --mv-ojo              : 139 125 255    ;
+    --mv-ojo-luz          : 233 230 255    ;
+    --mv-circuito         : 192 186 219    ;
+    --mv-sombra           : 90 78 160      ;
+    --mv-pantalla-pos     : 33 208 122     ;
+    --mv-pantalla-neg     : 255 83 96      ;
+    --mv-pantalla-warn    : 232 177 74     ;
   }
 
   .dark {
@@ -378,6 +400,21 @@
        Ahora `bg-2` se queda con hover y relleno sutil, y lo que flota usa
        esto. En oscuro vale lo mismo que `bg-2` valía — cero cambio. */
     --bg-raised           : 20 25 35       ;
+
+    /* ── Mervall-E, el personaje de la IA ─── (ver el bloque claro) */
+    --mv-casco-luz        : 255 255 255    ;
+    --mv-casco            : 232 229 244    ;
+    --mv-casco-sombra     : 152 144 190    ;
+    --mv-borde            : 152 144 190    ;
+    --mv-visor-luz        : 37 32 63       ;
+    --mv-visor            : 4 4 7          ;
+    --mv-ojo              : 139 125 255    ;
+    --mv-ojo-luz          : 233 230 255    ;
+    --mv-circuito         : 199 194 222    ;
+    --mv-sombra           : 0 0 0          ;
+    --mv-pantalla-pos     : 33 208 122     ;
+    --mv-pantalla-neg     : 255 83 96      ;
+    --mv-pantalla-warn    : 232 177 74     ;
   }
 }
 
@@ -723,7 +760,7 @@ body {
    Landing — animaciones para hero/futuristic intro
    ════════════════════════════════════════════════════════════════════════ */
 
-/* Cursor que parpadea. Lo usa CursorEscribiendo: Rendi AI mientras escribe
+/* Cursor que parpadea. Lo usa CursorEscribiendo: Mervall-E AI mientras escribe
    la respuesta (nació para un typewriter del hero que ya no existe). */
 @keyframes terminal-cursor {
   0%, 49% { opacity: 1; }
@@ -804,7 +841,7 @@ body {
    `animate-pulse`. Va en un ::after encima del bloque, así sirve igual para
    un renglón suelto que para una tarjeta entera con renglones adentro.
    `animate-pulse` sigue para lo que late A PROPÓSITO (el micrófono grabando,
-   "Rendi está hablando"): eso no es un esqueleto. */
+   "Mervall-E está hablando"): eso no es un esqueleto. */
 @keyframes brillo-esqueleto {
   from { transform: translateX(-100%); }
   to   { transform: translateX(100%); }
@@ -856,7 +893,7 @@ body {
 }
 
 /* La misma barra creciendo desde la IZQUIERDA, una fila detrás de otra
-   (--fila): las barras de una respuesta de Rendi AI recién llegada (AIBlocks).
+   (--fila): las barras de una respuesta de Mervall-E AI recién llegada (AIBlocks).
    La demora suma la de SU tarjeta: --i lo hereda del bloque que entra en
    escalera (.entra, --i × 70 ms), así la barra crece cuando la tarjeta ya está
    apareciendo y no mientras sigue invisible. */
@@ -866,7 +903,7 @@ body {
   animation-delay: calc(var(--i, 0) * 70ms + 250ms + var(--fila, 0) * 120ms);
 }
 
-/* Las porciones de la torta de "Composición" de una respuesta de Rendi AI
+/* Las porciones de la torta de "Composición" de una respuesta de Mervall-E AI
    recién llegada aparecen de a una (--fila), después de que entra su tarjeta
    (--i heredado, como .crece-ancho). No se usa .traza-dibuja: cada porción YA
    es un stroke-dasharray, y ese truco lo pisaría. */

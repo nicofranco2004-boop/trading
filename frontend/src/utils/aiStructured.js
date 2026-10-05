@@ -1,4 +1,4 @@
-// aiStructured — parser del bloque estructurado de las respuestas de Rendi AI.
+// aiStructured — parser del bloque estructurado de las respuestas de Mervall-E AI.
 // ═══════════════════════════════════════════════════════════════════════════
 // El modelo agrega al FINAL de las respuestas de análisis una línea
 // `---RENDI---` + UNA línea de JSON minificado con:

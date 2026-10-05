@@ -1,10 +1,10 @@
 """Los legales dicen a qué proveedor de IA le llegan datos, y QUÉ le llega.
 
-Por qué existe: la voz y el dictado de Rendi AI le mandan datos a OpenAI —el
+Por qué existe: la voz y el dictado de Mervall-E AI le mandan datos a OpenAI —el
 resumen hablado de una respuesta para leerla en voz alta, y la grabación de lo
 que el usuario dicta, con los códigos y nombres de sus activos y brokers—. La
 Política de Privacidad lo declaraba; los Términos no lo nombraron nunca, ni en
-la definición de Rendi AI ni entre los Terceros, y nadie se enteró: un proveedor
+la definición de Rendi AI (hoy Mervall-E AI) ni entre los Terceros, y nadie se enteró: un proveedor
 que falta en un texto legal no rompe nada ni tira ningún error. Se agregó el
 2026-09-26 (y ese mismo día se corrigió que la voz viene PRENDIDA, no a pedido:
 eso lo vigila `frontend/src/pages/Privacidad.test.js`).
@@ -109,7 +109,7 @@ class LosLegalesNombranALaIA(unittest.TestCase):
         definiciones = self._seccion("Terminos.jsx", "Definiciones")
         terceros = self._seccion("Terminos.jsx", "Servicios y datos de terceros")
         for nombre in _usados():
-            self.assertIn(nombre, definiciones, f"Términos (qué es Rendi AI) no nombra a {nombre}")
+            self.assertIn(nombre, definiciones, f"Términos (qué es Mervall-E AI) no nombra a {nombre}")
             self.assertIn(nombre, terceros, f"Términos (Terceros) no nombra a {nombre}")
 
     def test_privacidad_los_nombra_entre_con_quien_compartimos(self):

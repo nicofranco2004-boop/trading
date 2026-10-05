@@ -39,11 +39,11 @@ describe('opcionesDeActivos', () => {
 })
 
 describe('resultadosDelBuscador', () => {
-  it('sin nada escrito: los accesos de siempre, sin Rendi AI', () => {
+  it('sin nada escrito: los accesos de siempre, sin Mervall-E AI', () => {
     const r = resultadosDelBuscador(todas, '')
     expect(r.map(o => o.id)).toEqual(['a:cargar', 'p:/dashboard', 'p:/'])
   })
-  it('"dolar" lleva a Mercado (por su clave) y al final, preguntarle a Rendi AI', () => {
+  it('"dolar" lleva a Mercado (por su clave) y al final, preguntarle a Mervall-E AI', () => {
     const r = resultadosDelBuscador(todas, 'dolar')
     expect(r[0].ir).toBe('/')
     expect(r[r.length - 1].clase).toBe('ia')
@@ -62,7 +62,7 @@ describe('resultadosDelBuscador', () => {
     const r = resultadosDelBuscador(todas, 'a')
     expect(r.some(o => o.clase === 'empresa')).toBe(false)
   })
-  it('una pregunta cualquiera siempre se puede mandar a Rendi AI', () => {
+  it('una pregunta cualquiera siempre se puede mandar a Mervall-E AI', () => {
     const r = resultadosDelBuscador(todas, '¿le gano a la inflación?')
     expect(r).toHaveLength(1)
     expect(r[0].clase).toBe('ia')
@@ -104,7 +104,7 @@ describe('menuVisible / pantallasVisibles', () => {
 import { puedeChatLibre } from './chatLibre'
 
 // Sin chat libre (Plus) mandar el texto rebotaría en el servidor.
-describe('Rendi AI según el plan', () => {
+describe('Mervall-E AI según el plan', () => {
   it('Pro, admin y asesor en su nivel pueden escribir libre; Plus no; el asesor adentro de un cliente va por el plan', () => {
     expect(puedeChatLibre({ isPro: true })).toBe(true)
     expect(puedeChatLibre({ isAdmin: true })).toBe(true)

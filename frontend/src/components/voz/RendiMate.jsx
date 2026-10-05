@@ -1,4 +1,4 @@
-// RendiMate — el acompañante: la conversación con Rendi, chiquita, flotando
+// RendiMate — el acompañante: la conversación con Mervall-E, chiquita, flotando
 // sobre la pantalla que el usuario esté mirando.
 // ═══════════════════════════════════════════════════════════════════════════
 // NO es un reproductor de audio. Es el chat, compacto, con su caja de texto
@@ -6,12 +6,12 @@
 // franja más, y aparece sólo cuando hay algo que escuchar.
 //
 // Cerrado es una burbujita; abierto, una tarjeta arriba a la derecha. Cerrar
-// NO calla el audio: colapsa a la burbuja y Rendi sigue hablando (para callarla
+// NO calla el audio: colapsa a la burbuja y Mervall-E sigue hablando (para callarlo
 // está el parlante). El estado y el <audio> viven en VozContext, que está
 // montado en el shell — por eso esto sobrevive a cambiar de sección.
 //
 // LOS DOS BOTONES NO SE CONFUNDEN (y en esta etapa hay uno solo):
-//   · el parlante, arriba → si Rendi te LEE la respuesta o te la deja escrita.
+//   · el parlante, arriba → si Mervall-E te LEE la respuesta o te la deja escrita.
 //   · el micrófono, abajo → cómo le hablás vos. Es de la etapa 2; no está acá.
 
 import { useEffect, useRef, useState } from 'react'
@@ -24,6 +24,9 @@ import { entrada } from '../../hooks/useAlVerse'
 import { usePegadoAlFondo } from '../../hooks/usePegadoAlFondo'
 import { useArrastrable } from '../../hooks/useArrastrable'
 import { paraLaIsla } from '../ai/preguntasSugeridas'
+import MervallE from '../ai/MervallE'
+import { avisarTipeo, avisarMicrofono } from '../ai/mervalle/motor'
+import { useEstadoMervallE, sinPensando } from '../ai/mervalle/estadoDelChat'
 
 
 
@@ -33,18 +36,6 @@ const mmss = (s) => {
   return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 }
 
-/** El puntito que late mientras Rendi habla. */
-function Pulso({ hablando }) {
-  return (
-    <span
-      className={`w-6 h-6 rounded-lg grid place-items-center flex-none ${hablando ? 'animate-pulse' : ''}`}
-      style={{ background: 'linear-gradient(135deg, #9d8cff, #4bd0e8)' }}
-      aria-hidden="true"
-    >
-      <span className="w-1.5 h-1.5 rounded-full bg-bg-0/60" />
-    </span>
-  )
-}
 
 export default function RendiMate() {
   const {
@@ -144,13 +135,23 @@ export default function RendiMate() {
     if (!panelALaVista && micGrabando) micCancelar()
   }, [panelALaVista, micGrabando, micCancelar])
 
+  // La cara de Mervall-E en la burbuja y en la cabecera de la tarjeta. Antes
+  // era un cuadradito con un punto que latía mientras sonaba el audio; ahora
+  // es él, con la cara de lo que esté pasando (piensa, habla, reacciona,
+  // duerme sin cuota). Va ANTES de los return: es un hook.
+  const mervalle = useEstadoMervallE()
+  useEffect(() => {
+    avisarMicrofono(micGrabando)
+    return () => avisarMicrofono(false)
+  }, [micGrabando])
+
   if (enElChatGrande) return null
 
   if (!open) {
     // LA BURBUJA CERRADA. Antes decía sólo "Rendi" y no se entendía: ni que se
     // podía apretar, ni qué iba a pasar, ni que ahí adentro estaba el control
-    // del audio. Ahora dice en qué estado está y, si Rendi está hablando, trae
-    // el botón de pausa ENCIMA — no hay que abrir nada para callarla.
+    // del audio. Ahora dice en qué estado está y, si Mervall-E está hablando, trae
+    // el botón de pausa ENCIMA — no hay que abrir nada para callarlo.
     return (
       <div
         ref={islaRef}
@@ -172,12 +173,16 @@ export default function RendiMate() {
           type="button"
           onClick={() => setOpen(true)}
           className="inline-flex items-center gap-2 pr-1.5 text-[12.5px] text-ink-1 hover:text-ink-0 transition-colors"
-          aria-label={hablando ? 'Rendi está hablando — abrir la conversación'
+          aria-label={hablando ? 'Mervall-E está hablando — abrir la conversación'
                     : preparando ? 'Preparando el audio — abrir la conversación'
-                    : 'Abrir la conversación con Rendi'}
+                    : 'Preguntale a Mervall-E — abrir la conversación'}
         >
-          <Pulso hablando={hablando} />
-          {hablando ? 'Rendi está hablando' : preparando ? 'Preparando…' : 'Preguntale a Rendi'}
+          {/* Quieta, como todo acceso: parpadea, mira de cerca y pone la cara
+              del chat, pero no "mira alrededor" sola — eso la redibujaba 60
+              veces por segundo en cada pantalla (medido: 2,6 % de procesador
+              en reposo en un celular, contra 0,6 % sin ella). */}
+          <MervallE size={26} quieto escucha estado={mervalle.estado} />
+          {hablando ? 'Mervall-E está hablando' : preparando ? 'Preparando…' : 'Preguntale a Mervall-E'}
         </button>
         {hayAudio && (
           <button
@@ -207,7 +212,7 @@ export default function RendiMate() {
       className="fixed z-40 flex flex-col overflow-hidden rounded-xl border border-line-3
                  bg-bg-raised shadow-2xl
                  top-[calc(var(--alto-barra-celular,80px)_+_8px)] left-3 right-3 sm:left-auto sm:right-4 sm:w-[340px]"
-      aria-label="Rendi, tu acompañante"
+      aria-label="Mervall-E AI, tu acompañante"
       ref={islaRef}
       style={islaEstilo}
     >
@@ -219,9 +224,13 @@ export default function RendiMate() {
       <header
         {...manija}
         className="flex items-center gap-2 px-3 py-2 border-b border-line-2 cursor-grab active:cursor-grabbing">
-        <Pulso hablando={hablando} />
+        {/* Con la tarjeta abierta, "pensando" lo dice el visor barriendo de la
+            línea de espera de abajo: la cabecera se queda en reposo y QUIETA
+            (sin flotar ni mirar alrededor) mientras tanto, para que no haya dos
+            caras animándose a la vez. */}
+        <MervallE size={26} quieto escucha estado={sinPensando(mervalle.estado)} />
         <span className="flex-1 min-w-0 text-[12.5px] font-semibold text-ink-0 leading-tight">
-          Rendi
+          Mervall-E AI
           {estado && <span className="block font-normal text-[11px] text-ink-3">{estado}</span>}
         </span>
 
@@ -280,11 +289,16 @@ export default function RendiMate() {
             apaga cuando empieza a llegar el texto: desde ahí lo dice el cursor
             (antes seguía girando "pensando…" debajo de la respuesta escrita).
             Si lo que llega no tiene texto para mostrar todavía, sigue. */}
+        {/* Para lectores de pantalla: una zona viva que existe siempre (la línea
+            de espera de abajo aparece de golpe y no se anuncia). */}
+        <p className="sr-only" aria-live="polite">
+          {sending && iEscribiendo === -1 ? `${paso || 'Mirando tu cartera'}…` : ''}
+        </p>
         {sending && iEscribiendo === -1 && (
           // key = el paso: cada paso nuevo que manda el servidor entra en vez de
           // reemplazar el texto de golpe.
           <span key={paso || 'mirando'} className="entra inline-flex items-center gap-1.5 text-[12px] text-ink-3">
-            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            <MervallE size={20} forma="visor" estado="cargando" />
             {paso || 'Mirando tu cartera'}…
           </span>
         )}
@@ -423,9 +437,9 @@ export default function RendiMate() {
             <input
               ref={inputRef}
               value={texto}
-              onChange={(e) => setTexto(e.target.value)}
-              placeholder="Escribile a Rendi…"
-              aria-label="Escribile a Rendi"
+              onChange={(e) => { setTexto(e.target.value); avisarTipeo() }}
+              placeholder="Escribile a Mervall-E…"
+              aria-label="Escribile a Mervall-E"
               autoComplete="off"
               className="flex-1 min-w-0 rounded-full border border-line-2 bg-bg-1 px-3 py-1.5
                          text-[12.5px] text-ink-0 placeholder:text-ink-3 focus:outline-none focus:border-ink-3"

@@ -850,7 +850,7 @@ function LockedCtaFooter({ hiddenCount, totalCount, targetTier = 'pro' }) {
         </p>
       </div>
       <p className="text-xs text-ink-2 mb-3 max-w-md mx-auto">
-        Rendi {targetTier === 'plus' ? 'Plus' : 'Pro'} te muestra los {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica y la lectura de Rendi AI.
+        Rendi {targetTier === 'plus' ? 'Plus' : 'Pro'} te muestra los {totalCount} sesgos comportamentales sobre tu historial real, con evidencia específica y la lectura de Mervall-E AI.
       </p>
       <button
         type="button"

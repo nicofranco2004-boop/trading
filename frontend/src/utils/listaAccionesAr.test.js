@@ -62,7 +62,7 @@ describe('acciones argentinas: una lista, la misma en la pantalla y en el servid
   })
 })
 
-describe('renta fija del perfil = "Bonos y letras" de la torta (igual que Rendi AI)', () => {
+describe('renta fija del perfil = "Bonos y letras" de la torta (igual que Mervall-E AI)', () => {
   it('letras, ONs y soberanos son renta fija; acciones y fondos no', () => {
     const rf = (p, b = COCOS) => classifyAssetBucket(p, b)
     expect(rf({ asset: 'S31E5', broker: 'Cocos' })).toBe('fixed_income')

@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Reestructura 2026-07: de links planos a 3 secciones ACORDEÓN que se despliegan
 // al tocarlas (menos ruido, más aire). Afuera del acordeón, siempre visibles:
-// Alertas e Importar (acciones a mano, no escondidas). Rendi AI arriba; utilidades
+// Alertas e Importar (acciones a mano, no escondidas). Mervall-E AI arriba; utilidades
 // (Guía / Config / Recomendaciones) + cuenta abajo.
 //
 // Espaciado GENEROSO a propósito (filas altas, texto grande): llena el alto y
@@ -22,7 +22,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
-  MessageCircle, Sparkles,
+  MessageCircle,
   Sun, Moon, LogOut, Menu, ChevronRight, Users, Search,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
@@ -36,6 +36,7 @@ import { prefetchRoute } from '../utils/routePrefetch'
 import { menuVisible, GROUPS, etiquetaDeGrupo } from '../utils/navegacion'
 import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
+import MervallE from './ai/MervallE'
 
 const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -190,7 +191,7 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* Rendi AI — botón especial que abre drawer (no navega). En contexto
+        {/* Mervall-E AI — botón especial que abre drawer (no navega). En contexto
             de cliente el coach opera sobre LA CUENTA DEL CLIENTE (la IA sigue
             al contexto — /api/ai no es prefijo exento). */}
         <div className="mb-6">
@@ -200,11 +201,14 @@ export default function Sidebar() {
           <button
             type="button"
             onClick={() => coachDrawer.open()}
-            title={collapsed ? 'Rendi AI' : undefined}
+            title={collapsed ? 'Mervall-E AI' : undefined}
             className={`relative w-full flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[14.5px] font-medium transition-colors text-data-violet hover:bg-data-violet/10`}
           >
-            <Sparkles size={18} strokeWidth={1.75} aria-hidden="true" />
-            {!collapsed && <span>Rendi AI</span>}
+            {/* Quieto: parpadea y mira el cursor sólo si pasa cerca (250 px).
+                Dibuja 26 px pero ocupa 18 (-mx-1): el texto queda alineado con
+                el de las otras secciones, que llevan íconos de 18. */}
+            <MervallE size={26} forma="head" quieto className="-my-1 -mx-1" />
+            {!collapsed && <span>Mervall-E AI</span>}
           </button>
         </div>
 

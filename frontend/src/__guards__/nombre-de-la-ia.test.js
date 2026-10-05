@@ -1,4 +1,6 @@
-// La IA de Rendi se llama Rendi AI. "Coach IA" es el nombre viejo y no vuelve.
+// La IA de Rendi se llama Mervall-E AI. "Coach IA" y "Rendi AI" son los nombres
+// viejos y no vuelven ("Rendi AI" se sumó el 2026-10-03, cuando la IA pasó a
+// llamarse Mervall-E AI y a tener cara: components/ai/MervallE.jsx).
 //
 // POR QUÉ ESTE TEST
 // ─────────────────
@@ -27,6 +29,7 @@
 // escribir eso, que se escriba de otra forma: en esta app "el Coach" fue el
 // nombre de la IA.
 import { describe, it, expect } from 'vitest'
+import fs from 'fs'
 import {
   ENTRE, archivosConTexto, esPublica, hallazgos, relativa, sinComentarios,
 } from '../../scripts/texto-visible.mjs'
@@ -35,7 +38,35 @@ const NOMBRE_VIEJO = [
   new RegExp(String.raw`coach${ENTRE}(de${ENTRE})?ia\b`, 'gi'),  // "Coach IA", "Coach de IA", "Coach <b>IA</b>"
   new RegExp(String.raw`\b(el|al|del)${ENTRE}coach\b`, 'gi'),      // "El Coach lee tu test", "Memoria del Coach"
   new RegExp(String.raw`\bai${ENTRE}coach\b`, 'gi'),               // "Tip: AI Coach" (la guía, de mayo a julio)
+  new RegExp(String.raw`\brendi(?:${ENTRE}|\s*[-‐‑–—_·]\s*)(?:ai|ia)\b`, 'gi'), // "Rendi AI" (de septiembre al 2026-10-03), "Rendi IA", "Rendi – AI"
+  // La IA llamada "Rendi" a secas: el personaje habla, lee y escucha; la app,
+  // no. Son las frases que adb57b29 encontró mirando la app abierta y que el
+  // servidor todavía tenía ("La voz de Rendi no está disponible").
+  new RegExp(String.raw`\bpreg[uú]nt[\wáéíóúñ]*${ENTRE}a${ENTRE}rendi\b`, 'gi'),     // "Preguntale a Rendi", "Pregúntale a Rendi"
+  new RegExp(String.raw`\b(?:habl|escrib)[\wáéíóúñ]*le${ENTRE}a${ENTRE}rendi\b`, 'gi'), // "Hablarle a Rendi", "Escribile a Rendi"
+  new RegExp(String.raw`\brendi${ENTRE}(?:está|te)${ENTRE}(?:habl|lee|leé|escuch|contest|piens|pens)`, 'gi'), // "Rendi está hablando", "Rendi está pensando"
+  new RegExp(String.raw`\bvoz${ENTRE}de${ENTRE}rendi\b`, 'gi'),                        // "La voz de Rendi", "voz de Rendi"
+  new RegExp(String.raw`\bescribi[oó]${ENTRE}rendi\b`, 'gi'),                         // "Ese texto no lo escribió Rendi"
 ]
+
+// LA ÚNICA EXCEPCIÓN, con nombre: la palabra con la que el buscador ⌘K encuentra
+// la pantalla de la IA a quien la sigue buscando por su nombre anterior. No se
+// muestra en ningún lado (es una de las `claves` de búsqueda). Se exceptúa ese
+// renglón exacto, no el archivo: un "Rendi AI" visible ahí sigue siendo un rojo.
+const EXCEPCIONES = [{ archivo: 'src/components/BuscadorRapido.jsx', literal: "'rendi ai'" }]
+const renglonesExceptuados = (ruta) => {
+  const ex = EXCEPCIONES.find((e) => relativa(ruta) === e.archivo)
+  if (!ex) return new Set()
+  const lineas = sinComentarios(ruta, fs.readFileSync(ruta, 'utf8')).split('\n')
+  return new Set(lineas.flatMap((l, i) => (l.includes(ex.literal) ? [i + 1] : [])))
+}
+const hallazgosSinExcepciones = (ruta, patrones) => {
+  const fuera = renglonesExceptuados(ruta)
+  return hallazgos(ruta, patrones).filter((h) => {
+    const m = h.match(/:(\d+) «(.*)»$/)
+    return !(m && fuera.has(+m[1]) && m[2].toLowerCase() === 'rendi ai')
+  })
+}
 
 const TODOS = archivosConTexto()
 const vistos = (ruta, texto) =>
@@ -65,20 +96,39 @@ describe('el nombre viejo de la IA no vuelve', () => {
     // Partido por una etiqueta, por el `{' '}` del formateador o por un
     // espacio duro: en pantalla se lee igual.
     for (const partido of ['<p>Coach <strong>IA</strong></p>', "<p>Coach{' '}\n  IA</p>",
-      '<p>Coach&nbsp;IA</p>', "{'Coach\\u00a0IA'}", '<h2>Tip: AI Coach + Novedades</h2>']) {
+      '<p>Coach&nbsp;IA</p>', "{'Coach\\u00a0IA'}", '<h2>Tip: AI Coach + Novedades</h2>',
+      '<p>Preguntale a Rendi AI</p>', '<b>Rendi</b> AI', "'rendi AI'", "'Rendi IA'", "'Rendi-AI'",
+      "'Preguntale a Rendi'", "'Hablarle a Rendi'", "'Rendi está hablando'", "'Rendi te lee la respuesta'",
+      "'La voz de Rendi no está'", "'Rendi está pensando'", "'Pregúntale a Rendi'", "'Rendi · AI'",
+      "'Rendi – AI'", "'la voz de Rendi'", "'Ese texto no lo escribió Rendi'"]) {
       expect(vistos('a.jsx', partido), partido).not.toEqual([])
     }
     // HTML: su comentario no cuenta, el del JS de un <script> tampoco.
     const html = '<!-- Coach IA --><script>// el Coach IA\nvar a = 1</script><title>Rendi, con Coach IA</title>'
     expect(vistos('index.html', html)).toEqual(['Coach IA'])
     // Y no confunde la URL de la guía, que se queda como está: cambiarla
-    // rompería los links que ya indexó Google (no hay redirección).
+    // rompería los links que ya indexó Google (no hay redirección). Tampoco
+    // el nombre del componente de la página, que no se muestra.
     expect(vistos('a.jsx', "to: '/guia/coach-ia'")).toEqual([])
+    expect(vistos('a.jsx', "import RendiAI from './pages/RendiAI'")).toEqual([])
+    // Y "Rendi" como la APP sigue permitido: no es el personaje.
+    for (const app of ["'Bienvenido a Rendi'", "'Decile a Rendi qué columna'", "'Pasate a Rendi Pro'",
+      "'Entrar a Rendi'", "'Qué analiza Rendi'", "'te invitó a Rendi'"]) {
+      expect(vistos('a.jsx', app), app).toEqual([])
+    }
   })
 
-  it('ningún texto de la app, la home, el blog, la guía ni los legales dice "Coach IA"', () => {
-    const encontrados = TODOS.flatMap((r) => hallazgos(r, NOMBRE_VIEJO))
-    expect(encontrados, 'la IA se llama Rendi AI').toEqual([])
+  it('ningún texto de la app, la home, el blog, la guía ni los legales dice "Coach IA" ni "Rendi AI"', () => {
+    const encontrados = TODOS.flatMap((r) => hallazgosSinExcepciones(r, NOMBRE_VIEJO))
+    expect(encontrados, 'la IA se llama Mervall-E AI').toEqual([])
+  })
+
+  it('la excepción del buscador existe y es una sola palabra de búsqueda', () => {
+    // Si la palabra se borra, la excepción sobra; si aparece en otro renglón
+    // del mismo archivo, ese renglón NO queda exceptuado salvo que sea el mismo literal.
+    const ruta = TODOS.find((r) => relativa(r) === EXCEPCIONES[0].archivo)
+    expect(ruta).toBeTruthy()
+    expect(renglonesExceptuados(ruta).size).toBe(1)
   })
 })
 

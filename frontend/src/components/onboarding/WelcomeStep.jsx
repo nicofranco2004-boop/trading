@@ -3,7 +3,8 @@
 // 10s. Welcome + valor prop concisa + CTA "Empezar". El user todavía no hizo
 // nada — solo verificó email. Acá le decimos qué viene y le damos el "start".
 
-import { Sparkles, ArrowRight, Briefcase, BarChart3, Bot } from 'lucide-react'
+import { Sparkles, ArrowRight, Briefcase, BarChart3 } from 'lucide-react'
+import { MervallEIcono } from '../ai/MervallE'
 
 export default function WelcomeStep({ userName, onNext, onSkip }) {
   return (
@@ -36,8 +37,8 @@ export default function WelcomeStep({ userName, onNext, onSkip }) {
           desc="Cargás CSV o manual. P&L en USD real."
         />
         <FeatureMini
-          Icon={Bot}
-          title="Rendi AI"
+          Icon={MervallEIcono}
+          title="Mervall-E AI"
           desc="Hace análisis con tus datos, no en abstracto."
         />
       </div>

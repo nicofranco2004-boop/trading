@@ -69,7 +69,7 @@ const ordenadas = (r) => [...new Set(r)].sort()
 const sinRepetidos = (r) => expect(r).toHaveLength(new Set(r).size)
 // Los botones que no son pantallas y que el usuario tiene que encontrar en los
 // dos: el modo claro en el celular vivió una vez SÓLO en la compu.
-const ACCIONES = ['Rendi AI', 'data-tour="tema"', 'Recomendaciones', 'Cerrar sesión']
+const ACCIONES = ['Mervall-E AI', 'data-tour="tema"', 'Recomendaciones', 'Cerrar sesión']
 
 const CLIENTE = { id: 7, label: 'Ana' }
 const CASOS = [
@@ -126,7 +126,7 @@ describe('"Más": cómo se agrupa', () => {
     expect(t).toContain('Plan Asesor')
     expect(r).toContain('/clientes')
     expect(r).not.toContain('/cobros')
-    expect(html).toContain('la cartera de Ana')          // Rendi AI trabaja sobre la de Ana
+    expect(html).toContain('la cartera de Ana')          // Mervall-E AI trabaja sobre la de Ana
   })
 
   it('la compu dice lo mismo: adentro de un cliente su grupo es "Cartera de Ana", no "Tu Cartera"', () => {

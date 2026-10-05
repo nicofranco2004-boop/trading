@@ -150,7 +150,7 @@ export default function BlogPost({
         <section className="mt-16 border border-data-violet/30 bg-data-violet/[0.04] rounded-lg p-6 text-center">
           <h2 className="text-xl font-semibold text-ink-0 mb-2">Probá Rendi con tu cartera</h2>
           <p className="text-sm text-ink-2 mb-5 max-w-md mx-auto">
-            El tracker multi-broker para Argentina, con Rendi AI. {PRUEBA_EN_UNA_LINEA}
+            El tracker multi-broker para Argentina, con Mervall-E AI. {PRUEBA_EN_UNA_LINEA}
           </p>
           <Link
             to="/login?mode=register"

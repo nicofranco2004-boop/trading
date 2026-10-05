@@ -8,8 +8,9 @@
 // CTA principal: "Ir a mi cartera" → /dashboard.
 
 import { Link, useNavigate } from 'react-router-dom'
-import { CheckCircle2, Sparkles, Bot, Brain, BarChart3, ArrowRight } from 'lucide-react'
+import { CheckCircle2, Sparkles, Brain, BarChart3, ArrowRight } from 'lucide-react'
 import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
+import { MervallEIcono } from '../ai/MervallE'
 
 export default function CompleteStep({ skipped, position }) {
   const navigate = useNavigate()
@@ -49,8 +50,8 @@ export default function CompleteStep({ skipped, position }) {
           highlight={!skipped}
         />
         <ActionCard
-          Icon={Bot}
-          title="Rendi AI"
+          Icon={MervallEIcono}
+          title="Mervall-E AI"
           desc="Preguntale lo que quieras. Tiene contexto de tu cartera."
           onClick={openCoach}
         />

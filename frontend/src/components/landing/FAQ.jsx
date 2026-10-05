@@ -29,11 +29,10 @@ import {
 // tres secciones más abajo, la FAQ (y Google) seguían ofreciendo el Free.
 import {
   PLUS_FEATURES, PRO_FEATURES,
-  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS,
-} from '../../data/planCatalog'
+  TRIAL_TOTAL_DAYS, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS, CUPO_CHAT } from '../../data/planCatalog'
 import { alTerminar, cupoDe } from '../../data/prueba'
 
-const chatPorSemana = (plan) => cupoDe(plan, 'Chat Rendi AI / sem')
+const chatPorSemana = (plan) => cupoDe(plan, CUPO_CHAT)
 
 // Orden = secuencia de objeciones que frenan el signup (no orden SEO). La #1 de
 // un retail frío que va a cargar su cartera es la confianza/seguridad, así que
@@ -52,7 +51,7 @@ export const FAQS = [
     // Decía "no los compartimos con terceros" a secas, y Privacidad §5 lista a
     // quién sí le llegan (Anthropic, OpenAI, Rebill, Resend, el hosting): la
     // promesa verdadera es "con fines comerciales", la misma de Privacidad.
-    a: 'Tus datos son tuyos y los usamos solo para prestarte el servicio: no los vendemos ni los compartimos con terceros con fines comerciales. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, la IA de Rendi AI—, y están todos listados en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
+    a: 'Tus datos son tuyos y los usamos solo para prestarte el servicio: no los vendemos ni los compartimos con terceros con fines comerciales. Para que Rendi funcione, algunos proveedores los procesan por cuenta nuestra —el servidor donde se guardan, el proveedor de IA que usa Mervall-E AI—, y están todos listados en la Política de Privacidad. Las posiciones y montos que cargás viajan encriptados (HTTPS). Podés pedir la baja de tu cuenta y el borrado de tus datos cuando quieras escribiéndonos a hola@rendi.finance.',
   },
   {
     q: '¿Rendi funciona con Cocos Capital, IOL, Balanz, Schwab y Binance?',
@@ -60,7 +59,7 @@ export const FAQS = [
   },
   {
     q: '¿Es gratis? ¿Cómo funciona la prueba?',
-    a: `${TRIAL_TOTAL_DAYS} días gratis y sin tarjeta. Los primeros ${TRIAL_PRO_DAYS} días usás Rendi Pro, con todo desbloqueado, incluido el chat libre con Rendi AI; los ${TRIAL_PLUS_DAYS} siguientes, Rendi Plus. Al terminar elegís uno de los dos planes para seguir: no hay un plan gratis permanente. Como no te pedimos tarjeta, nada se cobra solo. Si todavía no elegiste, ${alTerminar(true)}, y tus datos quedan guardados.`,
+    a: `${TRIAL_TOTAL_DAYS} días gratis y sin tarjeta. Los primeros ${TRIAL_PRO_DAYS} días usás Rendi Pro, con todo desbloqueado, incluido el chat libre con Mervall-E AI; los ${TRIAL_PLUS_DAYS} siguientes, Rendi Plus. Al terminar elegís uno de los dos planes para seguir: no hay un plan gratis permanente. Como no te pedimos tarjeta, nada se cobra solo. Si todavía no elegiste, ${alTerminar(true)}, y tus datos quedan guardados.`,
   },
   {
     q: '¿Cómo se calcula el P&L en dólares cuando opero en pesos?',
@@ -82,8 +81,8 @@ export const FAQS = [
     // Sin nombre de modelo a propósito: decía "Claude Haiku 4.5" y el chat usa
     // Sonnet 5 desde el 2026-09-12 (`main.py`, `chat_model`). Una versión escrita
     // en la FAQ es un dato que se vence solo.
-    q: '¿Qué hace Rendi AI y en qué planes está incluido?',
-    a: `Rendi AI es el asistente de Rendi: usa Claude, de Anthropic, y recibe el contexto completo de tu cartera (posiciones, operaciones, P&L histórico), así que te contesta con tus números y no con generalidades. En Plus tenés 12 preguntas guiadas y ${chatPorSemana(PLUS_FEATURES)} consultas por semana. En Pro el chat es libre, con ${chatPorSemana(PRO_FEATURES)} consultas por semana, repreguntas sobre cualquier análisis, memoria persistente (los hechos que le aclarás los respeta entre sesiones) y respuestas con causalidad ("por qué pasó X", no solo "qué pasó"). En la prueba usás los dos: ${TRIAL_PRO_DAYS} días Pro y ${TRIAL_PLUS_DAYS} días Plus.`,
+    q: '¿Qué hace Mervall-E AI y en qué planes está incluido?',
+    a: `Mervall-E AI es el asistente de Rendi: usa Claude, de Anthropic, y recibe el contexto completo de tu cartera (posiciones, operaciones, P&L histórico), así que te contesta con tus números y no con generalidades. En Plus tenés 12 preguntas guiadas y ${chatPorSemana(PLUS_FEATURES)} consultas por semana. En Pro el chat es libre, con ${chatPorSemana(PRO_FEATURES)} consultas por semana, repreguntas sobre cualquier análisis, memoria persistente (los hechos que le aclarás los respeta entre sesiones) y respuestas con causalidad ("por qué pasó X", no solo "qué pasó"). En la prueba usás los dos: ${TRIAL_PRO_DAYS} días Pro y ${TRIAL_PLUS_DAYS} días Plus.`,
   },
   {
     // "Vuelve a Free" era falso para todo el que llega por la home: nació sin

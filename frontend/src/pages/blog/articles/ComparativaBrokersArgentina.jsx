@@ -162,7 +162,7 @@ export default function ComparativaBrokersArgentina() {
       <p>
         Por eso construimos <a href="/">Rendi</a>: para que vos puedas usar Cocos + IOL + Balanz
         + Bull todos juntos y ver tu cartera consolidada en USD real, con FIFO automático y
-        Rendi AI con contexto completo. Sin necesidad de elegir un único broker.
+        Mervall-E AI con contexto completo. Sin necesidad de elegir un único broker.
       </p>
 
       <p>

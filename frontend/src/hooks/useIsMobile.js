@@ -33,3 +33,30 @@ export function useIsMobile() {
 
   return isMobile
 }
+
+
+/**
+ * ¿La ventana mide al menos `px` de ancho? Para lo que necesita más lugar que
+ * "no es celular" (por ejemplo, el compañero de Mervall-E al costado del
+ * cuadro de texto, que en una tablet le comía el ancho). SSR-safe.
+ */
+export function useAnchoMinimo(px) {
+  const consulta = `(min-width: ${px}px)`
+  const [cumple, setCumple] = useState(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return false
+    return window.matchMedia(consulta).matches
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mq = window.matchMedia(consulta)
+    const handler = (e) => setCumple(e.matches)
+    setCumple(mq.matches)
+    if (mq.addEventListener) {
+      mq.addEventListener('change', handler)
+      return () => mq.removeEventListener('change', handler)
+    }
+    mq.addListener(handler)
+    return () => mq.removeListener(handler)
+  }, [consulta])
+  return cumple
+}

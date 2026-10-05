@@ -6,7 +6,7 @@
 // broker, y así las filas de cada tarjeta suman 100 %.
 //
 // Por qué del broker y no del total (decisión de Nico, 2026-09-30): el peso
-// sobre toda la cartera ya está en el Dashboard y lo dice Rendi AI; el peso
+// sobre toda la cartera ya está en el Dashboard y lo dice Mervall-E AI; el peso
 // dentro de cada broker no estaba en ningún lado. Y se puede comprobar mirando:
 // el total está escrito en el encabezado de la misma tarjeta.
 //

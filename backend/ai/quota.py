@@ -71,7 +71,7 @@ LIMITS = {
     "free": {
         "analyses_per_week": 1,
         "hub_queries_per_week": 0,     # Hub es Pro-only — gate en endpoint
-        # chat_per_week: cuántas consultas a Rendi AI por ventana 7d.
+        # chat_per_week: cuántas consultas a Mervall-E AI por ventana 7d.
         # Free/Plus tienen acceso SOLO a las 12 preguntas pre-fijadas
         # (whitelist en el endpoint /api/ai/chat). No pueden tipear libre.
         # Free=1 (degustación mínima — empuja fuerte a upgrade), Plus=9 (9× Free).

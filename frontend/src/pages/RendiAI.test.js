@@ -14,6 +14,16 @@ const fuente = readFileSync(new URL('./RendiAI.jsx', import.meta.url), 'utf8')
 //
 // MEDIDO en pantalla antes del arreglo: la burbuja del usuario seguía ahí y lo
 // guardado pasaba de 1.826 a 1.925 bytes — crecía en vez de vaciarse.
+describe('la pregunta que llega de afuera (⌘K, ✦, onboarding) se manda UNA vez', () => {
+  // Quedaba guardada: "Nueva conversación" (que remonta el chat) o el paso del
+  // libro a un cliente la volvían a mandar solas, y a un Free le gastaban una
+  // consulta (auditoría final 2026-10-05).
+  it('el chat avisa que la usó y la página la borra', () => {
+    expect(fuente).toMatch(/const autoAskUsado = \(\) => \{ autoAskRef\.current = null \}/)
+    expect((fuente.match(/onAutoAskUsado=\{autoAskUsado\}/g) || []).length).toBe(2)
+  })
+})
+
 describe('el botón de nueva conversación', () => {
   it('le pide al DUEÑO del hilo que lo borre', () => {
     expect(fuente).toMatch(/limpiar: limpiarConversacion/)

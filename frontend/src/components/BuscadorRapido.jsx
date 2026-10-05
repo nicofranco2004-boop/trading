@@ -1,7 +1,7 @@
 // BuscadorRapido — ⌘K (Ctrl+K en Windows) desde cualquier pantalla de la compu:
 // una caja donde escribís "NVDA" y vas a tu posición, "dólar" y vas a Mercado,
 // "cargar" y se abre una operación nueva, o escribís una pregunta y se la lleva
-// a Rendi AI. Qué ofrece y en qué orden: utils/buscadorRapido.js. Las
+// a Mervall-E AI. Qué ofrece y en qué orden: utils/buscadorRapido.js. Las
 // pantallas son las MISMAS del menú lateral (utils/navegacion.js).
 //
 // Sólo compu: en el celular no hay teclado con ⌘ y el buscador es la pantalla
@@ -30,6 +30,7 @@ import { tickerName, POPULAR_TICKERS } from '../utils/tickers'
 import {
   resultadosDelBuscador, opcionesDeActivos, opcionesDeEmpresas, esAtajoBuscador, esMac, urlNuevaOperacion, claveDeActivos,
 } from '../utils/buscadorRapido'
+import MervallE from './ai/MervallE'
 
 export const EVENTO_ABRIR_BUSCADOR = 'rendi:abrir-buscador'
 export function abrirBuscador() {
@@ -190,10 +191,10 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
       detalle: p.grupo || 'Pantalla', claves: CLAVES[p.to] || [], ir: p.to, icon: p.icon,
       deEntrada: DE_ENTRADA.has(p.to),
     }))
-    // Rendi AI no es una ruta del menú (el botón abre la página con
+    // Mervall-E AI no es una ruta del menú (el botón abre la página con
     // useCoachDrawer, que además marca la función como descubierta).
     const extra = [
-      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Rendi AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
+      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Mervall-E AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach', 'mervall', 'mervalle', 'rendi', 'rendi ai'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
     ]
     const acciones = [
       ...(atOwnLevel ? [] : [{
@@ -275,14 +276,20 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
         </div>
         <ul id="buscador-rapido-lista" role="listbox" className="max-h-[50vh] overflow-y-auto p-1.5">
           {resultados.map((o, i) => {
-            const Icono = o.clase === 'ia' ? Sparkles : (o.icon || Search)
+            // Las dos filas que son Mervall-E (abrir el chat y preguntarle la
+            // búsqueda) llevan su cara; el resto, el ícono de la pantalla.
+            const esMervallE = o.clase === 'ia' || o.id === 'pantalla:/ai'
+            const Icono = o.icon || Search
             return (
               <li key={o.id} id={`buscador-${i}`} role="option" aria-selected={i === actual}
                 onMouseMove={() => setSel(i)}
                 onClick={() => elegir(o)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer text-[14px] ${i === actual ? 'bg-bg-2 text-ink-0' : 'text-ink-1'}`}>
-                <Icono size={16} strokeWidth={1.75} aria-hidden="true"
-                  className={`flex-none ${o.clase === 'ia' ? 'text-data-violet' : 'text-ink-3'}`} />
+                {esMervallE
+                  // 20 px de dibujo en un lugar de 16, como los íconos: si no,
+                  // el texto de estas filas arrancaba 4 px corrido.
+                  ? <span className="w-4 flex-none flex justify-center"><MervallE size={20} forma="visor" congelado /></span>
+                  : <Icono size={16} strokeWidth={1.75} aria-hidden="true" className="flex-none text-ink-3" />}
                 <span className="flex-1 min-w-0 truncate">{o.titulo}</span>
                 <span className="text-[12px] text-ink-3 flex-none">{o.detalle}</span>
               </li>

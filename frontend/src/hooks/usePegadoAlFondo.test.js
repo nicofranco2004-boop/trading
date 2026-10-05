@@ -29,13 +29,29 @@ describe('seguir la respuesta sin arrastrar al que está leyendo', () => {
     expect(fuente).toMatch(/el\.scrollTop = el\.scrollHeight\s*\n\s*ultimoAutoRef\.current = el\.scrollTop/)
   })
 
+  it('con el chat vacío no se pega al fondo: la portada arranca ARRIBA (auditoría Mervall-E, ronda 2)', () => {
+    // Pegada al fondo, una portada que no entra pierde lo de arriba: en un
+    // iPhone con Safari no se veían ni la cara ni el título.
+    expect(fuente).toMatch(/if \(!activo\) \{[\s\S]*?if \(activoAntesRef\.current\) el\.scrollTop = 0/)
+    // …SÓLO al quedar vacío: un `el.scrollTop = 0` incondicional corre en cada
+    // render (cada tecla) y no deja deslizar para leer la explicación.
+    expect(fuente).not.toMatch(/if \(!activo\) \{\s*\n\s*el\.scrollTop = 0/)
+    // …y queda lista para pegarse apenas haya conversación.
+    expect(fuente).toMatch(/if \(!activo\) \{[\s\S]*?pegadoRef\.current = true/)
+    // El chat le dice cuándo hay algo que seguir; la isla, que nunca muestra
+    // portada, lo usa siempre activo.
+    expect(chat).toMatch(/usePegadoAlFondo\(\{ activo: messages\.length > 0 \|\| loading \}\)/)
+  })
+
   it('corre antes de que se pinte, para que el salto no se vea', () => {
     expect(fuente).toMatch(/useLayoutEffect/)
   })
 
   it('las DOS pantallas usan el mismo, sin copia propia', () => {
     for (const [nombre, src] of [['la isla', isla], ['el chat grande', chat]]) {
-      expect(src, nombre).toMatch(/usePegadoAlFondo\(\)/)
+      // Con o sin opciones (el chat le pasa `{ activo }` para que la portada
+      // vacía arranque arriba): lo que importa es que sea ESTE hook.
+      expect(src, nombre).toMatch(/usePegadoAlFondo\((\{[^)]*\})?\)/)
       // Los restos de la versión copiada: si vuelve alguno, volvieron las dos
       // copias que se desincronizan.
       expect(src, nombre).not.toMatch(/onWheel=/)
@@ -131,8 +147,10 @@ function conversacionEnElCelular() {
 describe('la segunda respuesta en el celular se sigue hasta el final', () => {
   it('el hook corre exactamente esto después de cada dibujo, y alFondo es volverASeguir', () => {
     // Si el hook hiciera otra cosa, los tests de abajo certificarían una
-    // función que en producción no corre.
-    expect(fuente).toMatch(/useLayoutEffect\(\(\) => \{ seguir\(ref\.current, pegadoRef, ultimoAutoRef, cajaRef\) \}\)/)
+    // función que en producción no corre. Lo único que hace antes es lo del
+    // chat vacío (la portada arriba), que vigila su propio test.
+    expect(fuente).toMatch(/activoAntesRef\.current = true\s*\n\s*seguir\(el, pegadoRef, ultimoAutoRef, cajaRef\)\s*\n\s*\}\)/)
+    expect((fuente.match(/el\.scrollTop = el\.scrollHeight/g) || []).length).toBe(1)   // sólo en seguir()
     expect(fuente).toMatch(/const alFondo = useCallback\(\(\) => volverASeguir\(pegadoRef, ultimoAutoRef\), \[\]\)/)
   })
 

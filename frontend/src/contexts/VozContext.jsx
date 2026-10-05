@@ -1,4 +1,4 @@
-// VozContext — la voz de Rendi y el acompañante que la sostiene.
+// VozContext — la voz de Mervall-E y el acompañante que la sostiene.
 // ═══════════════════════════════════════════════════════════════════════════
 // POR QUÉ ESTO VIVE EN EL SHELL Y NO ADENTRO DE UNA PANTALLA
 // ---------------------------------------------------------------------------
@@ -12,7 +12,7 @@
 // usa el selector de moneda del sidebar, que sobrevive a la navegación.
 //
 // QUÉ HAY ADENTRO
-//   · el parlante  — si Rendi LEE las respuestas o las deja sólo escritas.
+//   · el parlante  — si Mervall-E LEE las respuestas o las deja sólo escritas.
 //                    Es lo único que decide ese botón (no tiene nada que ver
 //                    con el micrófono, que es de otra etapa).
 //   · el reproductor — un solo <audio>, su estado y la perilla de velocidad.
@@ -28,6 +28,7 @@ import { api } from '../utils/api'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
+import { avisarPalabra } from '../components/ai/mervalle/motor'
 import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STORED } from '../utils/chatSession'
 import { useAuth } from './AuthContext'
 import { getClientContext } from '../utils/api'
@@ -157,7 +158,7 @@ export function VozProvider({ children }) {
   // manda el backend cuando sale a buscar datos; sirve para que la espera no
   // sea un "pensando" mudo de 15 segundos.
   const [paso, setPaso] = useState(null)
-  // Los pasos de ESTE turno, en orden: la pantalla de Rendi AI los muestra en
+  // Los pasos de ESTE turno, en orden: la pantalla de Mervall-E AI los muestra en
   // lista, con tilde los que ya quedaron atrás (la isla muestra sólo `paso`).
   // Son los que manda el servidor: acá no se inventa ninguno.
   const [pasos, setPasos] = useState([])
@@ -167,8 +168,8 @@ export function VozProvider({ children }) {
   }, [])
   const [askError, setAskError] = useState(null)
   // `loading` NO es lo mismo que `sending`: sending dura todo el turno, loading
-  // se apaga en cuanto llega la primera letra. Es lo que decide si se ven los
-  // puntitos o la respuesta escribiéndose.
+  // se apaga en cuanto llega la primera letra. Es lo que decide si se ve la
+  // espera (Mervall-E pensando) o la respuesta escribiéndose.
   const [loading, setLoading] = useState(false)
   // El payload de "pasate a Pro" cuando el backend lo manda con un 429 o un
   // 403. Con esto la UI dibuja la card promocional en vez del cartel rojo.
@@ -185,6 +186,19 @@ export function VozProvider({ children }) {
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
   const [sinCupo, setSinCupo] = useState(null)
+  // Marca de "parar": la sube stop(), la mira speak() antes de sonar.
+  const vozGenRef = useRef(0)
+  // TODO lo que deja un error, en un solo lugar. Antes la pregunta nueva
+  // borraba el mensaje y la oferta de plan pero no el código, el tipo de cupo
+  // ni el uso: después de un "sin consultas", una pregunta que salía bien
+  // dejaba a Mervall-E dormido debajo de la respuesta (auditoría 2026-10-05).
+  const limpiarError = useCallback(() => {
+    setAskError(null)
+    setUpgradeInfo(null)
+    setUsageDelError(null)
+    setKindDeCuotaDelError(null)
+    setCodigoDelError(null)
+  }, [])
   // 🔴 POR QUÉ NO ARRANCÓ SOLA. Hasta acá, los CINCO motivos por los que Rendi
   // puede no ponerse a hablar se veían exactamente igual: un botón de play, sin
   // una palabra. El usuario no tenía cómo saber si el que decidió fue él (la
@@ -204,7 +218,7 @@ export function VozProvider({ children }) {
   // solo, mirando quién pregunta, e ignora lo que mande el navegador.
   //
   // Por eso acá lo único que hay que hacer es NO pedirle su cartera personal,
-  // que está vacía. Mismo criterio que la pantalla de Rendi AI.
+  // que está vacía. Mismo criterio que la pantalla de Mervall-E AI.
   const { user } = useAuth()
   const modoLibro = user?.tier === 'advisor' && !getClientContext()
 
@@ -302,11 +316,15 @@ export function VozProvider({ children }) {
   const speak = useCallback(async (voz) => {
     const a = audioRef.current
     if (!a || !voz?.text || !voz?.sig) return
+    const miVoz = vozGenRef.current
     setStatus('preparing')
     setAskError(null)
     setSinCupo(null)
     try {
       const { url } = await api.post('/ai/voz', { text: voz.text, sig: voz.sig })
+      // Si mientras se generaba alguien la paró (Nueva conversación, el
+      // micrófono), no suena.
+      if (miVoz !== vozGenRef.current) { setStatus('idle'); return }
       if (!url) throw new Error('sin url')
       setCurrent({ ...voz, url })
       a.src = url
@@ -387,6 +405,11 @@ export function VozProvider({ children }) {
   }, [aplicarRate, rate])
 
   const stop = useCallback(() => {
+    // Parar también cancela el audio que está EN CAMINO (pedido y todavía sin
+    // sonar): speak() mira esta marca antes de darle play. Sin esto, "Nueva
+    // conversación" justo al terminar el texto hacía sonar segundos después la
+    // respuesta recién borrada (auditoría final 2026-10-05).
+    vozGenRef.current += 1
     const a = audioRef.current
     if (!a) return
     a.pause()
@@ -426,8 +449,7 @@ export function VozProvider({ children }) {
     setLoading(true)
     setPaso(null)
     setPasos([])
-    setAskError(null)
-    setUpgradeInfo(null)
+    limpiarError()
     setMotivoSinVoz(null)
     const miTurno = turnoRef.current
     // ¿Esta conversación sigue siendo la que está en pantalla?
@@ -489,11 +511,14 @@ export function VozProvider({ children }) {
       }) }
       const onDelta = (c) => {
         acc += c
-        // ya hay texto: se apagan los puntitos — SÓLO si es de la pregunta en
+        // ya hay texto: se apaga la espera (el visor de Mervall-E) — SÓLO si es de la pregunta en
         // pantalla. Sin el control, el texto de una respuesta descartada (el
         // stream viejo sigue llegando tras "Nueva conversación") apagaba el
         // "pensando" de la pregunta nueva antes de que empezara (medido).
         if (vigente()) setLoading(false)
+        // Las barras del pecho de Mervall-E laten con cada pedazo que llega.
+        // Va directo al motor (no por estado de React): son decenas por segundo.
+        if (vigente()) avisarPalabra()
         // Se pinta la PROSA, no el texto crudo: así el bloque de datos del
         // final no aparece medio escrito en pantalla mientras llega.
         const { prose } = parseStructured(stripMarkdown(acc))
@@ -521,6 +546,8 @@ export function VozProvider({ children }) {
         // La cuota se pregunta ACÁ y no antes del turno: el turno ya descontó
         // su ficha y con una sola de saldo la respuesta cambia.
         const u = await api.get('/ai/usage').catch(() => null)
+        // Esa consulta tarda: si mientras tanto se vació el chat, no suena.
+        if (!vigente()) return
         if (!puedeArrancarSolo(u)) {
           setMotivoSinVoz(u?.listens_limit != null
             ? 'Tu plan tiene un audio por semana: lo arrancás vos'
@@ -618,7 +645,7 @@ export function VozProvider({ children }) {
         setPasos([])
       }
     }
-  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso])
+  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso, limpiarError])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -635,12 +662,10 @@ export function VozProvider({ children }) {
     setPasos([])
     clearChatSession()
     setThread([])
-    setAskError(null)
-    setUpgradeInfo(null)
-    setUsageDelError(null)
-    setKindDeCuotaDelError(null)
-    setCodigoDelError(null)
-  }, [])
+    limpiarError()
+    // Y la voz de la respuesta borrada se calla (también la que venía en camino).
+    stop()
+  }, [stop, limpiarError])
 
   /**
    * Lo que hace el botón ✦ Analizar de cualquier pantalla: abre el
@@ -719,7 +744,7 @@ export function VozProvider({ children }) {
     try {
       navigator.mediaSession.metadata = new window.MediaMetadata({
         title: current.text.slice(0, 70),
-        artist: 'Rendi',
+        artist: 'Mervall-E AI',
       })
     } catch { /* idem */ }
   }, [current?.text])

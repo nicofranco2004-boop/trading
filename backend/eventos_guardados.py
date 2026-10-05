@@ -5,12 +5,12 @@
   · main.py  /api/events/portfolio, /api/events/popular, el radar del asesor,
              `_has_events_for_tickers` y `_get_portfolio_events_cached` (las
              tarjetas "Lo que te afecta" del inicio).
-  · ai/builders/home.py, events.py, dashboard_events.py (lo que lee Rendi AI).
+  · ai/builders/home.py, events.py, dashboard_events.py (lo que lee Mervall-E AI).
 
 Por qué existe (2026-10-01): eran siete copias de la misma consulta.
   · Una leía la tabla `events`, que no existe: las tarjetas "Earnings de X" /
     "Dividendo de X" del inicio no aparecieron nunca desde que se crearon.
-  · Las tres de Rendi AI contaban "hoy" con `date.today()`, que en el servidor
+  · Las tres de Rendi AI (hoy Mervall-E AI) contaban "hoy" con `date.today()`, que en el servidor
     (UTC) ya es mañana de 21 a 24 h de Buenos Aires: la pantalla mostraba el
     evento de hoy y la IA no lo veía (ver la memoria "IA = número de la pantalla").
 

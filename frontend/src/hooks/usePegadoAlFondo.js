@@ -116,9 +116,10 @@ function devolverElAncla(el, ultimoAutoRef) {
 }
 
 /**
- * Lo que se hace después de CADA dibujo. Vive afuera del hook para que el test
- * corra exactamente esto contra una caja que se porta como la de Chrome — el
- * hook no hace otra cosa que llamarla.
+ * Lo que se hace después de CADA dibujo con conversación. Vive afuera del hook
+ * para que el test corra exactamente esto contra una caja que se porta como la
+ * de Chrome — con el chat activo, el hook no hace otra cosa que llamarla (con
+ * el chat vacío se queda arriba: ver `activo`).
  *
  * @param el             el contenedor que scrollea.
  * @param pegadoRef      { current: bool } ¿estamos siguiendo la respuesta?
@@ -165,23 +166,51 @@ export function volverASeguir(pegadoRef, ultimoAutoRef) {
 }
 
 /**
+ * @param {{ activo?: boolean }} [opciones]
+ *   activo — false mientras no haya nada que seguir (el chat vacío): el
+ *            contenedor se queda arriba de todo. Por defecto true.
  * @returns {{ ref, alFondo }}
  *   ref     — al contenedor que scrollea.
  *   alFondo — "volvé a seguir la respuesta". Se llama al mandar una pregunta
  *             nueva: ahí el usuario quiere ver lo que viene, esté donde esté.
  */
-export function usePegadoAlFondo() {
+export function usePegadoAlFondo({ activo = true } = {}) {
   const ref = useRef(null)
   const pegadoRef = useRef(true)
   // Dónde quedó la barra la última vez que la movimos NOSOTROS. -1 = todavía
   // nunca, así que el primer dibujo baja al fondo sin preguntar.
   const ultimoAutoRef = useRef(-1)
+  const activoAntesRef = useRef(activo)
   // La caja de la vez pasada: si cambia, la posición anotada no le sirve.
   const cajaRef = useRef(null)
 
   // useLayoutEffect y no useEffect: corre ANTES de que el navegador pinte, así
   // que el salto al fondo no se ve como un salto.
-  useLayoutEffect(() => { seguir(ref.current, pegadoRef, ultimoAutoRef, cajaRef) })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // Sin nada que seguir (el chat vacío) no se pega al fondo: si la portada no
+    // entra, lo que queda afuera tiene que ser lo de ABAJO (la explicación), no
+    // la cara y el título. Pegado al fondo, en un iPhone con Safari no se veía
+    // ni el personaje ni "¿Qué querés saber de tu plata?" (auditoría ronda 2).
+    // Queda listo para pegarse apenas haya conversación.
+    // Vuelve arriba SÓLO al quedar vacío (venía con conversación): el efecto
+    // corre en cada render, y cada tecla es un render — mandarlo arriba siempre
+    // le arrancaba de las manos la explicación al que la estaba leyendo en un
+    // celular bajo (auditoría final 2026-10-05).
+    if (!activo) {
+      if (activoAntesRef.current) el.scrollTop = 0
+      activoAntesRef.current = false
+      pegadoRef.current = true
+      ultimoAutoRef.current = -1
+      // Sin nada que seguir, el ancla es la de siempre del navegador: la
+      // portada se porta igual que antes de que se apagara para seguir.
+      if (el.style.overflowAnchor) el.style.overflowAnchor = ''
+      return
+    }
+    activoAntesRef.current = true
+    seguir(el, pegadoRef, ultimoAutoRef, cajaRef)
+  })
 
   const alFondo = useCallback(() => volverASeguir(pegadoRef, ultimoAutoRef), [])
 

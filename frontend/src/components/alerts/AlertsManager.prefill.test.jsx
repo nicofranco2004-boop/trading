@@ -1,4 +1,4 @@
-// "Crear alerta BTC −10%" desde Rendi AI tiene que abrir el formulario con la
+// "Crear alerta BTC −10%" desde Mervall-E AI tiene que abrir el formulario con la
 // variación ya cargada — antes abría "precio objetivo ≥ ___", vacío y al revés.
 // Se renderiza de verdad (misma técnica que UpgradePromoCard.render.test) y se
 // mira el formulario que ve el usuario.
@@ -22,7 +22,7 @@ const html = (p, prefill) => renderToStaticMarkup(
 // Los campos numéricos con su valor, tal como quedan en el HTML.
 const valores = (h) => [...h.matchAll(/<input[^>]*value="([^"]*)"/g)].map(m => m[1])
 
-describe('prefill desde un botón de Rendi AI', () => {
+describe('prefill desde un botón de Mervall-E AI', () => {
   it('con &down=10 abre la alerta de variación con el 10 cargado', () => {
     const h = html(plan(true), { symbol: 'BTC', downPct: 10 })
     expect(valores(h)).toContain('10')

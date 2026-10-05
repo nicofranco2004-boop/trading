@@ -861,12 +861,13 @@ def _marcar_bienvenidas_previas(conn) -> int:
 
 # La nota que deja una compra registrada por chat (register_trade). Van acá
 # arriba y no al lado del chat porque init_db() —que corre al importar este
-# archivo, antes de llegar allá— también las usa: la vieja es la que busca para
-# reemplazarla en las compras de antes del 2026-09-26, cuando el asistente se
-# llamaba de otra forma. Es el ÚNICO lugar del backend donde el nombre viejo
-# tiene que estar (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
-_NOTA_COMPRA_POR_CHAT = "Registrado por Rendi AI"
-_NOTA_COMPRA_POR_CHAT_VIEJA = "Registrado por Coach IA"
+# archivo, antes de llegar allá— también las usa: las viejas son las que busca
+# para reemplazarlas en las compras registradas con los nombres anteriores del
+# asistente ("Coach IA" hasta el 2026-09-26, "Rendi AI" hasta el 2026-10-03).
+# Es el ÚNICO lugar del backend donde los nombres viejos tienen que estar
+# (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
+_NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
+_NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
 def init_db():
@@ -2986,16 +2987,21 @@ def init_db():
         except Exception:
             pass  # tabla puede no existir en DBs muy viejas pre-migración
 
-        # Las compras registradas por chat antes del 2026-09-26 guardaron la nota
-        # con el nombre viejo del asistente, y se ve en "Editar posición → Notas".
+        # Las compras registradas por chat guardaron la nota con el nombre que el
+        # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
+        # "Editar posición → Notas".
         # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
         # queda como la dejó. En cada boot, como la purga de arriba: después de la
         # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
         # arranque.
         try:
+            # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
+            # tercero a la lista hacía fallar la consulta — y como el error se
+            # descarta (es cosmético), no se renombraba ninguna nota.
+            huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
             n = conn.execute(
-                "UPDATE positions SET notes = ? WHERE notes = ?",
-                (_NOTA_COMPRA_POR_CHAT, _NOTA_COMPRA_POR_CHAT_VIEJA)).rowcount or 0
+                f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
+                (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
             if n:
                 log.info("notas de compras por chat renombradas: %d", n)
         except Exception as ex:
@@ -23542,7 +23548,7 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
-_AI_CHAT_SYSTEM = """Sos Rendi AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
+_AI_CHAT_SYSTEM = """Sos Mervall-E AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
 No das recomendaciones específicas de "comprá X" o "vendé Y". Sí explicás conceptos, marcos analíticos, ratios, riesgos, y hacés preguntas que abren reflexión.
@@ -23906,7 +23912,7 @@ Estás hablando con el ASESOR FINANCIERO del dueño de esta cartera, no con el d
 - Describí y cuantificá; el asesor decide qué hacer con su cliente.
 """
 
-_AI_CHAT_SYSTEM_FREE = """Sos Rendi AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
+_AI_CHAT_SYSTEM_FREE = """Sos Mervall-E AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
 
 ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
@@ -32309,7 +32315,7 @@ def _extract_voz(text: str) -> Optional[str]:
 # que poder contradecir al manifiesto, y el contexto no manda sobre él.
 _SIN_VOZ = (
     "AJUSTE DE ESTE TURNO, y pisa lo que diga el manifiesto sobre el campo "
-    "\"voz\": el usuario tiene a Rendi SILENCIADA, así que esta respuesta NO se "
+    "\"voz\": el usuario tiene la voz SILENCIADA, así que esta respuesta NO se "
     "va a leer en voz alta. NO escribas el campo \"voz\" en el bloque ---RENDI---. "
     "Todo lo demás del bloque va igual que siempre (verdict, headline, stats, "
     "blocks, followups): lo único que se saca es \"voz\"."
@@ -32996,7 +33002,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días. Y los números se escriben a la argentina: "US$ 1.037,74", "+5,2%" — el punto para los miles y la coma para los decimales, aunque el dato te haya llegado como 1037.74.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: Rendi empieza a hablar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: la voz empieza a sonar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -33525,9 +33531,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # Lo gastado antes del error Anthropic lo cobró igual: se anota.
                 _record_chat_quota(uid, _costo.centavos())
                 if ex_name in ("APITimeoutError", "APIConnectionError"):
-                    code, msg = "ai_timeout", "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
+                    code, msg = "ai_timeout", "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
                 elif ex_name in ("RateLimitError",):
-                    code, msg = "ai_rate_limit", "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
+                    code, msg = "ai_rate_limit", "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
                 else:
                     if ex_name in ("BadRequestError",):
                         log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
@@ -33695,7 +33701,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_timeout",
-                    "message": "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
+                    "message": "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
                 },
             )
         if ex_name in ("RateLimitError",):
@@ -33703,7 +33709,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_rate_limit",
-                    "message": "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
+                    "message": "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
                 },
             )
         if ex_name in ("BadRequestError",):
@@ -33809,7 +33815,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
     if not tts.enabled():
         raise HTTPException(503, detail={
             "error": "voz_unavailable",
-            "message": "La voz de Rendi no está disponible en este momento.",
+            "message": "La voz de Mervall-E no está disponible en este momento.",
         })
 
     # 12/min por usuario: más que eso no es alguien escuchando respuestas.
@@ -33820,7 +33826,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
         log.warning("ai_voz: firma inválida uid=%s len=%d", uid, len(text))
         raise HTTPException(403, detail={
             "error": "voz_bad_signature",
-            "message": "Ese texto no lo escribió Rendi, así que no lo puede leer.",
+            "message": "Ese texto no lo escribió Mervall-E, así que no lo puede leer.",
         })
 
     key = tts.remember(text)
@@ -33879,7 +33885,7 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     if not tts.enabled():
         raise HTTPException(503, detail={
             "error": "voz_unavailable",
-            "message": "La voz de Rendi no está disponible en este momento.",
+            "message": "La voz de Mervall-E no está disponible en este momento.",
         })
     if not re.fullmatch(r"[0-9a-f]{64}", key or ""):
         raise HTTPException(404, "No encontrado")
@@ -37901,7 +37907,7 @@ def _backfill_fx_rates_on_boot():
 
 @app.on_event("startup")
 def _precalentar_cliente_ia():
-    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI después de cada
+    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI (hoy Mervall-E AI) después de cada
     arranque (cada publicación, cada reinicio) pagaba 0,58 s cargando la
     librería de Anthropic, porque el cliente se creaba recién ahí. Se crea al
     arrancar, en un hilo aparte para no demorar el arranque."""
@@ -40743,7 +40749,7 @@ def home_personal(uid: int = Depends(get_effective_user)):
 def _get_portfolio_events_cached(uid: int) -> list:
     """Los eventos YA GUARDADOS (financial_events) de los activos del user en
     los próximos 14 días: las tarjetas "Earnings de X" / "Dividendo de X" de
-    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Rendi AI
+    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Mervall-E AI
     (ai/builders/home.py). Sólo LEE — el inicio no puede esperar a Yahoo; los
     renueva /api/events/portfolio (_eventos_al_dia).
 

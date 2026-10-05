@@ -6,7 +6,7 @@
 
 import KeywordLanding from '../../components/landing/KeywordLanding'
 import { PASO_CREAR_CUENTA, cupoDe } from '../../data/prueba'
-import { PRO_FEATURES } from '../../data/planCatalog'
+import { PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
 
 const FEATURES = [
   {
@@ -30,8 +30,8 @@ const FEATURES = [
     desc: 'Bonos canje 2020 y CER con metadata de cupones y amortizaciones. Cocos muestra el precio; Rendi te dice qué porcentaje es capital y qué es renta.',
   },
   {
-    title: 'Rendi AI: preguntale por qué bajó tu cartera',
-    desc: `Chat IA con contexto completo de tu cartera. "¿Por qué bajó mi mes?", "¿Dónde estoy concentrado?", "¿Cuánto realmente gané en NVDA?". Pro: ${cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')} consultas/sem.`,
+    title: 'Mervall-E AI: preguntale por qué bajó tu cartera',
+    desc: `Chat IA con contexto completo de tu cartera. "¿Por qué bajó mi mes?", "¿Dónde estoy concentrado?", "¿Cuánto realmente gané en NVDA?". Pro: ${cupoDe(PRO_FEATURES, CUPO_CHAT)} consultas/sem.`,
   },
 ]
 
@@ -70,12 +70,12 @@ export default function Cocos() {
     <KeywordLanding
       kicker="Tracker para Cocos Capital"
       h1="Seguí tu cartera de Cocos en USD real, con FIFO automático"
-      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares blue, con FIFO automático para AFIP y Rendi AI con memoria."
+      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares blue, con FIFO automático para AFIP y Mervall-E AI con memoria."
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker Cocos Capital — Rendi | Cartera consolidada en USD"
-      metaDescription="Seguí tu cartera de Cocos Capital + otros brokers (IOL, Balanz, Schwab, Binance) en Rendi. P&L real en USD blue, FIFO automático, Rendi AI. Importás el CSV de Cocos en 30 segundos."
+      metaDescription="Seguí tu cartera de Cocos Capital + otros brokers (IOL, Balanz, Schwab, Binance) en Rendi. P&L real en USD blue, FIFO automático, Mervall-E AI. Importás el CSV de Cocos en 30 segundos."
       canonicalPath="/brokers/cocos"
     />
   )
