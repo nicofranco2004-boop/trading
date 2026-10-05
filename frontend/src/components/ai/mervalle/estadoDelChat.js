@@ -8,7 +8,7 @@
 // "Escuchando" no está acá: tipear y el micrófono son eventos de cada tecla y
 // llegan al motor directo (avisarTipeo / avisarMicrofono), sin pasar por React.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useVoz } from '../../../contexts/VozContext'
 import { kindDeCuota } from '../UpgradePromoCard'
 
@@ -32,7 +32,9 @@ export const DURACION_REACCION = { contento: 3200, atento: 4200, serio: 4200 }
  * aviso sólo se apaga al pedir otro audio, dormía al personaje en todas las
  * respuestas siguientes hasta recargar.
  */
-export function sinConsultasDeChat({ upgradeInfo, codigoDelError, kindDeCuotaDelError, usageDelError } = {}) {
+export function sinConsultasDeChat({ askError, upgradeInfo, codigoDelError, kindDeCuotaDelError, usageDelError } = {}) {
+  // Sólo mientras el error está a la vista: una pregunta nueva lo borra.
+  if (!askError) return false
   // El 429 de cuota trae `chat_quota_exceeded`, pero la tarjeta de "pasate de
   // plan" sólo se le ofrece a Free y Plus: un Pro o un asesor sin consultas
   // llega sin `upgradeInfo` y antes se quedaba con cara de confundido.
@@ -88,6 +90,15 @@ export function inicioDeReaccion(llego, finDeTurno) {
   return finDeTurno && finDeTurno >= llego ? finDeTurno : llego
 }
 
+/** El fin de un turno cuenta para la reacción SÓLO si ese turno trajo una
+ *  respuesta nueva. Un turno que falló (sin consultas, un corte) saca su
+ *  pregunta del hilo y la última respuesta vuelve a ser la VIEJA: contado su
+ *  fin, Mervall-E se ponía contento al lado del cartel "te quedaste sin
+ *  consultas" (auditoría final 2026-10-05). */
+export function finDeTurnoQueCuenta(llegoAlEmpezar, llegoAlTerminar, ahora = Date.now()) {
+  return llegoAlTerminar && llegoAlTerminar !== llegoAlEmpezar ? ahora : null
+}
+
 /** Cuánto le queda a la reacción de una respuesta que llegó en `llego` (ms,
  *  0 si ya pasó). Se cuenta desde que LLEGÓ, no desde que se montó la
  *  pantalla: volver a /ai a los 3 s no la repite entera. */
@@ -118,13 +129,17 @@ export function useEstadoMervallE() {
   // La reacción se CALCULA en cada render (reaccionVigente). El temporizador
   // sólo pide un render más cuando se le acaba el tiempo.
   const [, otraVuelta] = useState(0)
-  // Cuándo terminó el último turno (sending pasó de true a false).
+  // Cuándo terminó el último turno que TRAJO respuesta (sending pasó de true
+  // a false y la última respuesta es otra que al empezar).
   const [finDeTurno, setFinDeTurno] = useState(null)
   const enviando = !!voz.sending
   const enviandoAntes = useRef(enviando)
+  const llegoAlEmpezar = useRef(llego)
   useEffect(() => {
-    if (enviandoAntes.current && !enviando) setFinDeTurno(Date.now())
+    if (!enviandoAntes.current && enviando) llegoAlEmpezar.current = llego
+    if (enviandoAntes.current && !enviando) setFinDeTurno(finDeTurnoQueCuenta(llegoAlEmpezar.current, llego))
     enviandoAntes.current = enviando
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enviando])
   const desde = inicioDeReaccion(llego, finDeTurno)
   const reaccion = reaccionVigente(tono, desde)
@@ -155,9 +170,30 @@ export const ANCHO_COMPANERO = 1024
  *   · con conversación y lugar al costado → el compañero del cuadro de texto;
  *   · con conversación y sin lugar (celular, tablet) → la cabecera.
  */
-export function enEscena({ hayConversacion, hayLugarAlCostado }) {
-  if (!hayConversacion) return 'portada'
+export function enEscena({ hayConversacion, hayLugarAlCostado, hayPortada = true }) {
+  // Con el chat vacío está la portada… si ENTRÓ. Si no hay lugar para dibujar
+  // a nadie (iPhone SE, Safari con las barras, el celular acostado), la
+  // cabecera toma el turno: si no, no se movía ningún Mervall-E.
+  if (!hayConversacion) return hayPortada ? 'portada' : 'cabecera'
   return hayLugarAlCostado ? 'companero' : 'cabecera'
+}
+
+/* ¿La portada dibujó a su Mervall-E? Lo sabe AICoach (mide el lugar) y lo
+   necesita la cabecera de RendiAI, que es otro componente: un aviso chico,
+   sin pasar por el estado de toda la página. */
+let portadaConPersonaje = false
+const oyentesPortada = new Set()
+export function avisarPortada(dibujada) {
+  if (portadaConPersonaje === !!dibujada) return
+  portadaConPersonaje = !!dibujada
+  oyentesPortada.forEach((f) => f())
+}
+export function usePortadaConPersonaje() {
+  return useSyncExternalStore(
+    (f) => { oyentesPortada.add(f); return () => oyentesPortada.delete(f) },
+    () => portadaConPersonaje,
+    () => false,
+  )
 }
 
 /** Mientras espera, "pensando" lo dice el visor barriendo de la burbuja de la

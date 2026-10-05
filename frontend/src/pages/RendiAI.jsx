@@ -20,7 +20,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { useVoz } from '../contexts/VozContext'
 import MervallE from '../components/ai/MervallE'
-import { useEstadoMervallE, enEscena, sinPensando, ANCHO_COMPANERO } from '../components/ai/mervalle/estadoDelChat'
+import { useEstadoMervallE, enEscena, sinPensando, usePortadaConPersonaje, ANCHO_COMPANERO } from '../components/ai/mervalle/estadoDelChat'
 import { useAnchoMinimo } from '../hooks/useIsMobile'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
@@ -51,11 +51,15 @@ export default function RendiAI() {
   // remount, hay que BORRAR la persistida (sin eso el remount la restaura).
   const [convKey, setConvKey] = useState(0)
   // La pregunta inicial se consume UNA vez (sino un remount la re-enviaría).
+  // Se toma del contexto acá, y se BORRA cuando el chat avisa que la mandó:
+  // antes quedaba guardada y "Nueva conversación" (que remonta el chat) o el
+  // paso del libro a un cliente la volvían a mandar solas.
   const autoAskRef = useRef(null)
   if (initialQuestion && autoAskRef.current == null) {
     autoAskRef.current = initialQuestion
     consumeInitialQuestion?.()
   }
+  const autoAskUsado = () => { autoAskRef.current = null }
 
   // Snapshot vivo de la cartera — mismo criterio que el drawer: primer fetch
   // con loader, refreshes en background sin tirar el chat.
@@ -157,7 +161,8 @@ export default function RendiAI() {
   // No sigue al cursor.
   const mervalle = useEstadoMervallE()
   const hayLugarAlCostado = useAnchoMinimo(ANCHO_COMPANERO)
-  const cabeceraEnEscena = enEscena({ hayConversacion: hilo.length > 0, hayLugarAlCostado }) === 'cabecera'
+  const hayPortada = usePortadaConPersonaje()
+  const cabeceraEnEscena = enEscena({ hayConversacion: hilo.length > 0, hayLugarAlCostado, hayPortada }) === 'cabecera'
   const nBrokers = snapshot?.brokers?.length
 
   return (
@@ -258,9 +263,9 @@ export default function RendiAI() {
         )}
 
         {bookMode ? (
-          <AICoach key={convKey} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} fullHeight />
+          <AICoach key={convKey} snapshot={BOOK_SNAPSHOT} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
         ) : snapshot && !loading && !error && (
-          <AICoach key={convKey} snapshot={snapshot} autoAsk={autoAskRef.current} fullHeight />
+          <AICoach key={convKey} snapshot={snapshot} autoAsk={autoAskRef.current} onAutoAskUsado={autoAskUsado} fullHeight />
         )}
       </div>
     </div>

@@ -186,6 +186,19 @@ export function VozProvider({ children }) {
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
   const [sinCupo, setSinCupo] = useState(null)
+  // Marca de "parar": la sube stop(), la mira speak() antes de sonar.
+  const vozGenRef = useRef(0)
+  // TODO lo que deja un error, en un solo lugar. Antes la pregunta nueva
+  // borraba el mensaje y la oferta de plan pero no el código, el tipo de cupo
+  // ni el uso: después de un "sin consultas", una pregunta que salía bien
+  // dejaba a Mervall-E dormido debajo de la respuesta (auditoría 2026-10-05).
+  const limpiarError = useCallback(() => {
+    setAskError(null)
+    setUpgradeInfo(null)
+    setUsageDelError(null)
+    setKindDeCuotaDelError(null)
+    setCodigoDelError(null)
+  }, [])
   // 🔴 POR QUÉ NO ARRANCÓ SOLA. Hasta acá, los CINCO motivos por los que Rendi
   // puede no ponerse a hablar se veían exactamente igual: un botón de play, sin
   // una palabra. El usuario no tenía cómo saber si el que decidió fue él (la
@@ -303,11 +316,15 @@ export function VozProvider({ children }) {
   const speak = useCallback(async (voz) => {
     const a = audioRef.current
     if (!a || !voz?.text || !voz?.sig) return
+    const miVoz = vozGenRef.current
     setStatus('preparing')
     setAskError(null)
     setSinCupo(null)
     try {
       const { url } = await api.post('/ai/voz', { text: voz.text, sig: voz.sig })
+      // Si mientras se generaba alguien la paró (Nueva conversación, el
+      // micrófono), no suena.
+      if (miVoz !== vozGenRef.current) { setStatus('idle'); return }
       if (!url) throw new Error('sin url')
       setCurrent({ ...voz, url })
       a.src = url
@@ -388,6 +405,11 @@ export function VozProvider({ children }) {
   }, [aplicarRate, rate])
 
   const stop = useCallback(() => {
+    // Parar también cancela el audio que está EN CAMINO (pedido y todavía sin
+    // sonar): speak() mira esta marca antes de darle play. Sin esto, "Nueva
+    // conversación" justo al terminar el texto hacía sonar segundos después la
+    // respuesta recién borrada (auditoría final 2026-10-05).
+    vozGenRef.current += 1
     const a = audioRef.current
     if (!a) return
     a.pause()
@@ -427,8 +449,7 @@ export function VozProvider({ children }) {
     setLoading(true)
     setPaso(null)
     setPasos([])
-    setAskError(null)
-    setUpgradeInfo(null)
+    limpiarError()
     setMotivoSinVoz(null)
     const miTurno = turnoRef.current
     // ¿Esta conversación sigue siendo la que está en pantalla?
@@ -525,6 +546,8 @@ export function VozProvider({ children }) {
         // La cuota se pregunta ACÁ y no antes del turno: el turno ya descontó
         // su ficha y con una sola de saldo la respuesta cambia.
         const u = await api.get('/ai/usage').catch(() => null)
+        // Esa consulta tarda: si mientras tanto se vació el chat, no suena.
+        if (!vigente()) return
         if (!puedeArrancarSolo(u)) {
           setMotivoSinVoz(u?.listens_limit != null
             ? 'Tu plan tiene un audio por semana: lo arrancás vos'
@@ -622,7 +645,7 @@ export function VozProvider({ children }) {
         setPasos([])
       }
     }
-  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso])
+  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso, limpiarError])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -639,12 +662,10 @@ export function VozProvider({ children }) {
     setPasos([])
     clearChatSession()
     setThread([])
-    setAskError(null)
-    setUpgradeInfo(null)
-    setUsageDelError(null)
-    setKindDeCuotaDelError(null)
-    setCodigoDelError(null)
-  }, [])
+    limpiarError()
+    // Y la voz de la respuesta borrada se calla (también la que venía en camino).
+    stop()
+  }, [stop, limpiarError])
 
   /**
    * Lo que hace el botón ✦ Analizar de cualquier pantalla: abre el

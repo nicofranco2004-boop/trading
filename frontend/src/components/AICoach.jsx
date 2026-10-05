@@ -34,7 +34,7 @@ import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
 import MervallE from './ai/MervallE'
 import { avisarTipeo, avisarMicrofono } from './ai/mervalle/motor'
-import { useEstadoMervallE, useSaludoDelDia, enEscena, formaDePortada, ANCHO_COMPANERO } from './ai/mervalle/estadoDelChat'
+import { useEstadoMervallE, useSaludoDelDia, enEscena, formaDePortada, avisarPortada, ANCHO_COMPANERO } from './ai/mervalle/estadoDelChat'
 import { useIsMobile, useAnchoMinimo } from '../hooks/useIsMobile'
 import { PRO_FEATURES, CUPO_CHAT } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
@@ -79,7 +79,7 @@ const STAT_TONE = {
 
 // fullHeight: modo página (/ai) — sin card-shell ni header propio (la página
 // pone su chrome), mensajes flex-1 que llenan el alto disponible.
-export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = false }) {
+export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, fullHeight = false }) {
   const { isPro, isAdmin, tier, loading: tierLoading } = usePlanFeatures()
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
@@ -163,6 +163,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     if (autoAsk && snapshot && !autoAskedRef.current) {
       autoAskedRef.current = true
       send(autoAsk)
+      // Avisar que se usó: si no, cada vez que el chat se vuelve a montar
+      // ("Nueva conversación", el asesor que pasa del libro a un cliente) la
+      // misma pregunta salía sola otra vez — y a un Free le gastaba una consulta.
+      onAutoAskUsado?.()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoAsk, snapshot])
@@ -246,6 +250,13 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
     return () => ro.disconnect()
   }, [scrollRef])
   const portada = formaDePortada(altoZona, esCelular)
+  // La cabecera necesita saber si la portada dibujó a su Mervall-E: si no
+  // entró, el turno de moverse es de ella.
+  const portadaDibujada = fullHeight && messages.length === 0 && !loading && !!portada
+  useEffect(() => {
+    avisarPortada(portadaDibujada)
+    return () => avisarPortada(false)
+  }, [portadaDibujada])
   // El saludo del día se gasta sólo si la portada se ve CON su personaje.
   const saludando = useSaludoDelDia(messages.length === 0 && !loading && !!portada)
 

@@ -186,3 +186,28 @@ describe('la velocidad no puede impedir que arranque', () => {
     expect(fuente).toMatch(/rateRef\.current = rate/)
   })
 })
+
+
+// ─── "Nueva conversación" calla la voz, y el error se borra entero ──────────
+// Auditoría final 2026-10-05: tocar "Nueva conversación" justo al terminar el
+// texto hacía sonar segundos después la respuesta recién borrada (el audio
+// estaba en camino y "parar" no lo cancelaba). Y la pregunta nueva borraba el
+// mensaje de error pero no el código ni el tipo de cupo: después de un "sin
+// consultas", Mervall-E quedaba dormido debajo de una respuesta buena.
+describe('VozContext — lo que se borra, se borra entero', () => {
+  const src = readFileSync(new URL('./VozContext.jsx', import.meta.url), 'utf8')
+  it('parar cancela también el audio en camino', () => {
+    expect(src).toMatch(/const stop = useCallback\(\(\) => \{[\s\S]*?vozGenRef\.current \+= 1/)
+    expect(src).toMatch(/if \(miVoz !== vozGenRef\.current\)/)
+  })
+  it('"Nueva conversación" calla la voz', () => {
+    expect(src).toMatch(/const limpiar = useCallback\(\(\) => \{[\s\S]*?stop\(\)[\s\S]*?\}, \[stop, limpiarError\]\)/)
+  })
+  it('una sola función borra TODO el error, y la usan la pregunta nueva y "Nueva conversación"', () => {
+    const cuerpo = src.match(/const limpiarError = useCallback\(\(\) => \{([\s\S]*?)\}, \[\]\)/)[1]
+    for (const set of ['setAskError', 'setUpgradeInfo', 'setUsageDelError', 'setKindDeCuotaDelError', 'setCodigoDelError']) {
+      expect(cuerpo).toContain(set + '(null)')
+    }
+    expect((src.match(/limpiarError\(\)/g) || []).length).toBeGreaterThanOrEqual(2)
+  })
+})

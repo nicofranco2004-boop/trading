@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   estadoDelChat, ultimaRespuesta, tocaSaludar, restoDeReaccion, reaccionVigente, sinConsultasDeChat, inicioDeReaccion,
+  finDeTurnoQueCuenta,
   enEscena, sinPensando, formaDePortada, ALTO_TEXTO_PORTADA, REACCION_POR_TONO, DURACION_REACCION,
 } from './estadoDelChat'
 import { ESTADOS } from './motor'
@@ -82,6 +83,12 @@ describe('estadoDelChat — la cara según lo que pasa', () => {
       .toBe('confundido')
   })
 
+  it('DESPUÉS de un "sin consultas", una pregunta que sale bien no lo deja dormido (auditoría final)', () => {
+    // La pregunta nueva borra el mensaje de error; si el código viejo quedara
+    // colgado (VozContext ahora borra todo junto), igual no duerme.
+    expect(e({ codigoDelError: 'chat_quota_exceeded', kindDeCuotaDelError: 'chat', askError: null }).estado).toBe('reposo')
+  })
+
   it('re-escuchar el último audio sin consultas: habla, no duerme (la isla dice "está hablando")', () => {
     expect(e({ ...sinChat, status: 'playing' }).estado).toBe('hablando')
   })
@@ -145,6 +152,21 @@ describe('inicioDeReaccion — se cuenta desde que terminó el turno', () => {
   })
 })
 
+describe('finDeTurnoQueCuenta — sólo un turno que trajo respuesta', () => {
+  it('turno con respuesta nueva: cuenta desde que terminó', () => {
+    expect(finDeTurnoQueCuenta(1000, 2000, 5000)).toBe(5000)
+  })
+  it('LA REACCIÓN QUE VOLVÍA DESPUÉS DE UN ERROR: el turno falló, la última sigue siendo la vieja → no cuenta', () => {
+    // A llegó en 1000 con tono pos; diez minutos después falla una pregunta.
+    const fin = finDeTurnoQueCuenta(1000, 1000, 601000)
+    expect(fin).toBe(null)
+    expect(reaccionVigente('pos', inicioDeReaccion(1000, fin), 601100)).toBe(null)
+  })
+  it('primer turno de la conversación sin respuesta (error): nada', () => {
+    expect(finDeTurnoQueCuenta(null, null, 5000)).toBe(null)
+  })
+})
+
 describe('enEscena — uno solo se mueve en /ai', () => {
   it('chat vacío → la portada, haya o no lugar al costado', () => {
     expect(enEscena({ hayConversacion: false, hayLugarAlCostado: true })).toBe('portada')
@@ -153,6 +175,10 @@ describe('enEscena — uno solo se mueve en /ai', () => {
   it('con conversación: el compañero si hay lugar, la cabecera si no (celular, tablet)', () => {
     expect(enEscena({ hayConversacion: true, hayLugarAlCostado: true })).toBe('companero')
     expect(enEscena({ hayConversacion: true, hayLugarAlCostado: false })).toBe('cabecera')
+  })
+  it('chat vacío SIN lugar para la portada (iPhone SE, Safari con barras): la cabecera toma el turno', () => {
+    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: false, hayPortada: false })).toBe('cabecera')
+    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: true, hayPortada: false })).toBe('cabecera')
   })
   it('sinPensando deja todo igual menos "pensando"', () => {
     expect(sinPensando('pensando')).toBe('reposo')
