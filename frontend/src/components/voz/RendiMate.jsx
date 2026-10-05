@@ -177,7 +177,11 @@ export default function RendiMate() {
                     : preparando ? 'Preparando el audio — abrir la conversación'
                     : 'Preguntale a Mervall-E — abrir la conversación'}
         >
-          <MervallE size={26} escucha estado={mervalle.estado} />
+          {/* Quieta, como todo acceso: parpadea, mira de cerca y pone la cara
+              del chat, pero no "mira alrededor" sola — eso la redibujaba 60
+              veces por segundo en cada pantalla (medido: 2,6 % de procesador
+              en reposo en un celular, contra 0,6 % sin ella). */}
+          <MervallE size={26} quieto escucha estado={mervalle.estado} />
           {hablando ? 'Mervall-E está hablando' : preparando ? 'Preparando…' : 'Preguntale a Mervall-E'}
         </button>
         {hayAudio && (

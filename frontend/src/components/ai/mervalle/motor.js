@@ -77,10 +77,12 @@ const nz = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x
 /* Escribir un atributo SÓLO si cambió. En reposo, 8 o 9 de cada 10 escrituras
    de un cuadro repetían el valor que ya estaba (auditoría 2026-10-04: ~6.000
    por segundo en /ai). Cada elemento guarda lo último que se le escribió. */
+let escrituras = 0   // cuántas veces se tocó el dibujo: si un cuadro no tocó nada, el bucle descansa
 function setA(el, nombre, valor) {
   const v = el.__mvv || (el.__mvv = {})
   if (v[nombre] === valor) return
   v[nombre] = valor
+  escrituras++
   el.setAttribute(nombre, valor)
 }
 function setS(el, prop, valor) {
@@ -88,6 +90,7 @@ function setS(el, prop, valor) {
   const k = 's:' + prop
   if (v[k] === valor) return
   v[k] = valor
+  escrituras++
   el.style[prop] = valor
 }
 
@@ -223,16 +226,25 @@ export const ESTADOS = {
    re-renderizaría el chat entero en cada tecla. Llegan acá directo. */
 const senal = { tipeoT: -9, mic: false, palabras: 0 }
 /** Una tecla en el cuadro de la pregunta. Mervall-E pasa a "escuchando". */
-export function avisarTipeo() { senal.tipeoT = ahora() }
+export function avisarTipeo() { senal.tipeoT = ahora(); despertar() }
 /** El micrófono empezó o terminó de grabar. */
-export function avisarMicrofono(grabando) { senal.mic = !!grabando }
+export function avisarMicrofono(grabando) { senal.mic = !!grabando; despertar() }
 /** Llegó un pedazo de la respuesta: las barras del pecho laten con él. */
-export function avisarPalabra() { senal.palabras++ }
+export function avisarPalabra() { senal.palabras++; despertar() }
 
 /* ── El bucle compartido ────────────────────────────────────────────────── */
 const G = { reduced: false, track: true, ptr: { x: 0, y: 0, on: false, t: 0 } }
 const INST = []
 let uid = 0, corriendo = false, ultimo = 0, io = null, oyentes = false
+/* EL BUCLE DESCANSA. Medido el 2026-10-05 en Chrome, 10 s sin tocar nada en
+   el inicio de la app en un celular: 1,0 % de procesador sin el personaje y
+   6,8 % con él — redibujaba 60 veces por segundo cambios que no se ven (la
+   cabecita de la isla flotando un cuarto de píxel). Si varios cuadros
+   seguidos no cambian nada, el próximo se pide con pausa (~7 por segundo);
+   cualquier cambio (un parpadeo, el cursor, un estado nuevo) lo vuelve a 60. */
+const CUADROS_QUIETOS_PARA_DESCANSAR = 8
+const PAUSA_DESCANSO_MS = 140
+let quietos = 0, pausa = null
 
 function prepararGlobal() {
   if (oyentes || typeof window === 'undefined') return
@@ -240,7 +252,7 @@ function prepararGlobal() {
   const mq = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
   G.reduced = !!(mq && mq.matches)
   if (mq && mq.addEventListener) mq.addEventListener('change', (e) => { G.reduced = e.matches })
-  const setPtr = (e) => { G.ptr.x = e.clientX; G.ptr.y = e.clientY; G.ptr.on = true; G.ptr.t = ahora() }
+  const setPtr = (e) => { G.ptr.x = e.clientX; G.ptr.y = e.clientY; G.ptr.on = true; G.ptr.t = ahora(); despertar() }
   window.addEventListener('pointermove', setPtr, { passive: true })
   window.addEventListener('pointerdown', setPtr, { passive: true })
   document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) G.ptr.on = false })
@@ -252,6 +264,7 @@ function prepararGlobal() {
 function lookFor(m) {
   const r = m.svg.getBoundingClientRect()
   if (!r.width) return null
+  m.ancho = r.width
   const vb = m.vb
   const hx = r.left + (100 - vb[0]) / vb[2] * r.width
   const hy = r.top + ((m.forma === 'visor' ? 88 : 82) - vb[1]) / vb[3] * r.height
@@ -267,21 +280,38 @@ function lookFor(m) {
 }
 
 function cuadro(ms) {
+  pausa = null
   const t = ms / 1000
   let dt = (ms - ultimo) / 1000
   ultimo = ms
   if (!(dt > 0) || dt > 0.1) dt = 0.016
   // Los congelados no necesitan cuadros: si sólo quedan ellos, el bucle se
-  // apaga. El próximo cuadro se pide ANTES de mover a nadie: si un personaje
-  // revienta, el bucle sigue para los demás (antes quedaban todos congelados
-  // hasta recargar, con `corriendo` en true y nadie que lo volviera a prender).
-  if (INST.some((m) => !m.opt.frozen)) requestAnimationFrame(cuadro)
-  else { corriendo = false; return }
-  const act = INST.filter((m) => m.vis && !m.opt.frozen && m.host.isConnected)
-  const looks = act.map((m) => { try { return lookFor(m) } catch { return null } }) // primero se lee todo…
-  act.forEach((m, i) => {                                                            // …después se escribe
-    try { m.update(t, dt, looks[i], false) } catch (e) { m.romper(e) }
-  })
+  // apaga.
+  if (!INST.some((m) => !m.opt.frozen)) { corriendo = false; return }
+  const antes = escrituras
+  // Si un personaje revienta, el bucle sigue para los demás (antes quedaban
+  // todos congelados hasta recargar, con `corriendo` en true y nadie que lo
+  // volviera a prender): cada uno en su try, y el próximo cuadro en el finally.
+  try {
+    const act = INST.filter((m) => m.vis && !m.opt.frozen && m.host.isConnected)
+    const looks = act.map((m) => { try { return lookFor(m) } catch { return null } }) // primero se lee todo…
+    act.forEach((m, i) => {                                                            // …después se escribe
+      try { m.update(t, dt, looks[i], false) } catch (e) { m.romper(e) }
+    })
+  } finally {
+    quietos = escrituras === antes ? quietos + 1 : 0
+    if (quietos >= CUADROS_QUIETOS_PARA_DESCANSAR) {
+      pausa = setTimeout(() => { pausa = null; requestAnimationFrame(cuadro) }, PAUSA_DESCANSO_MS)
+    } else {
+      requestAnimationFrame(cuadro)
+    }
+  }
+}
+/** Sale del descanso ya (el cursor se movió, cambió un estado): sin esto la
+ *  primera reacción tardaría hasta una pausa entera. */
+function despertar() {
+  quietos = 0
+  if (pausa) { clearTimeout(pausa); pausa = null; requestAnimationFrame(cuadro) }
 }
 function arrancar() {
   if (corriendo || typeof requestAnimationFrame === 'undefined') return
@@ -361,14 +391,15 @@ class Personaje {
     this.state = nombre
     this.S = ESTADOS[nombre]
     this.stateT = ahora()
+    despertar()
     this.host.setAttribute('data-estado', nombre)
     if (this.opt.frozen && this.svg) this.update(ahora() + 0.3, 0.016, null, true)
   }
   /** Vuelve a arrancar el estado actual desde cero (un saludo que se repite). */
-  repetir() { this.stateT = ahora() }
-  setTone(tono) { this.tone = COLOR_TONO[tono] ? tono : null; if (this.opt.frozen) this.update(ahora() + 0.3, 0.016, null, true) }
+  repetir() { this.stateT = ahora(); despertar() }
+  setTone(tono) { this.tone = COLOR_TONO[tono] ? tono : null; despertar(); if (this.opt.frozen) this.update(ahora() + 0.3, 0.016, null, true) }
   /** Enciende los anillos una vez: "tengo algo nuevo". No insiste. */
-  flash() { this.flashT = ahora() }
+  flash() { this.flashT = ahora(); despertar() }
 
   destroy() {
     const i = INST.indexOf(this)
@@ -415,6 +446,11 @@ class Personaje {
       gx = this.wd.x; gy = this.wd.y
     }
     P.lx += (gx - P.lx) * kl; P.ly += (gy - P.ly) * kl
+    // Las aproximaciones se FRENAN de a poco y nunca terminan de llegar: la
+    // cola, invisible, seguía escribiendo en el dibujo y no dejaba descansar
+    // al bucle. Cerca del destino, se llega.
+    if (Math.abs(gx - P.lx) < 0.004) P.lx = gx
+    if (Math.abs(gy - P.ly) < 0.004) P.ly = gy
     P.tilt += ((S.tilt || 0) - P.tilt) * (snap ? 1 : k * 0.8)
     P.sink += ((S.sink || 0) - P.sink) * (snap ? 1 : k * 0.6)
     P.dim += ((S.dim == null ? 1 : S.dim) - P.dim) * k
@@ -423,13 +459,20 @@ class Personaje {
     const fp = (t - this.flashT) / 1.6
     if (fp >= 0 && fp < 1) dT = Math.max(dT, Math.sin(fp * Math.PI))
     P.disc += (dT - P.disc) * (snap ? 1 : k)
+    for (const [clave, meta] of [['tilt', S.tilt || 0], ['sink', S.sink || 0], ['dim', S.dim == null ? 1 : S.dim], ['circ', S.circ || 0], ['disc', dT]]) {
+      if (Math.abs(meta - P[clave]) < 0.003) P[clave] = meta
+    }
 
     /* 2. Brazos */
     const ev = (v) => (typeof v === 'function' ? v(red ? 0.17 : age) : v)
     P.al += (ev(S.arms[0]) - P.al) * ka; P.ar += (ev(S.arms[1]) - P.ar) * ka
 
     /* 3. Flotar, saltar, respingo */
-    const amp = calm ? 0 : 3.2 * (S.bob == null ? 1 : S.bob) * A
+    // Lo que en pantalla se movería menos de medio píxel no se mueve: no se ve
+    // y obliga a redibujar en cada cuadro (la cabecita de la isla, 26 px,
+    // flotaba 0,24 px).
+    const ampDibujo = calm ? 0 : 3.2 * (S.bob == null ? 1 : S.bob) * A
+    const amp = this.ancho && ampDibujo * this.ancho / this.vb[2] < 0.5 ? 0 : ampDibujo
     this.ph += dt * (S.slow ? 1.05 : 1.9)
     const bob = Math.sin(this.ph) * amp
     let hop = 0, jolt = 0
@@ -439,7 +482,7 @@ class Personaje {
     }
     if (!calm && S.jolt) jolt = -9 * Math.exp(-age * 3.2) * Math.sin(Math.min(age * 9, Math.PI))
     const y = bob + hop + (jolt + P.sink) * A
-    const lag = calm ? 0 : Math.sin(this.ph - 0.8) * amp * 0.4
+    const lag = calm || !amp ? 0 : Math.sin(this.ph - 0.8) * amp * 0.4
 
     /* 4. Habla: no tiene boca; laten los ojos y las barras del pecho. Si el
           texto está llegando, laten con cada pedazo; si no (la voz leyendo),
@@ -454,7 +497,11 @@ class Personaje {
 
     /* 5. Ojos y parpadeo */
     const ex = EX[S.eyes], tL = ex.L || ex, tR = ex.R || ex
-    for (const key of EK) { P.eL[key] += (tL[key] - P.eL[key]) * k; P.eR[key] += (tR[key] - P.eR[key]) * k }
+    for (const key of EK) {
+      P.eL[key] += (tL[key] - P.eL[key]) * k; P.eR[key] += (tR[key] - P.eR[key]) * k
+      if (Math.abs(tL[key] - P.eL[key]) < 0.005) P.eL[key] = tL[key]
+      if (Math.abs(tR[key] - P.eR[key]) < 0.005) P.eR[key] = tR[key]
+    }
     let bk = 1
     if (o.blink && S.blink !== 0 && !red) {
       if (t >= this.bAt) { this.bT = t; this.bAt = t + (Math.random() < 0.18 ? 0.32 : rand(2.6, 5.8)) }
@@ -490,7 +537,9 @@ class Personaje {
     }
     if (E2.circ) {
       setA(E2.circ, 'opacity', f(P.circ))
-      if (S.circFull || red) setS(E2.circ, 'strokeDasharray', 'none')
+      // Apagada no se anima: corría el trazo 60 veces por segundo sin verse.
+      if (P.circ < 0.01) { /* nada */ }
+      else if (S.circFull || red) setS(E2.circ, 'strokeDasharray', 'none')
       else {
         setS(E2.circ, 'strokeDasharray', `16 ${f(this.circLen)}`)
         setS(E2.circ, 'strokeDashoffset', f(16 - ((age * 34) % (this.circLen + 16))))
