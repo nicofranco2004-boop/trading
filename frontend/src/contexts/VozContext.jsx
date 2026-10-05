@@ -23,7 +23,7 @@
 // el mismo turno del chat y viene FIRMADO por el backend; acá se reenvía tal
 // cual. Cambiarle un espacio rompe la firma y el servidor lo rechaza.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, EVENTO_ESCRITURA, EVENTO_CLIENTE } from '../utils/api'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { crearLecturaDeCartera, claveDePersona } from '../utils/lecturaDeCartera'
@@ -236,7 +236,7 @@ export function VozProvider({ children }) {
   const lecturaRef = useRef(null)
   if (!lecturaRef.current) {
     lecturaRef.current = crearLecturaDeCartera({
-      leer: (alLlegar) => fetchAiSnapshot({ alLlegar }),
+      leer: (alLlegar, signal) => fetchAiSnapshot({ alLlegar, signal }),
       deQuien: () => claveDePersona(userRef.current, getClientContext()?.id),
       alCambiar: setCartera,
     })
@@ -245,12 +245,16 @@ export function VozProvider({ children }) {
   // Cerró sesión y entró otra persona en la misma pestaña (no se recarga):
   // no queda nada de la lectura de la anterior. `persona` también le avisa a
   // la isla que tiene que leer de nuevo (cambio de persona o de cliente).
+  // useLayoutEffect y no useEffect: los efectos de los hijos (la isla abierta
+  // pide leer) corren ANTES que los del padre, y un `olvidar` posterior tiraba
+  // la lectura recién pedida para la persona nueva — se leía dos veces.
   const persona = claveDePersona(user, getClientContext()?.id)
-  const emailRef = useRef(user?.email)
-  useEffect(() => {
-    if (emailRef.current !== user?.email) lectura.olvidar()
-    emailRef.current = user?.email
-  }, [user?.email, lectura])
+  const quienEs = claveDePersona(user, null)
+  const quienEraRef = useRef(quienEs)
+  useLayoutEffect(() => {
+    if (quienEraRef.current !== quienEs) lectura.olvidar()
+    quienEraRef.current = quienEs
+  }, [quienEs, lectura])
   // Leer si hace falta (la isla al abrirse, /ai al entrar). En modo LIBRO no
   // hay cartera personal que leer: el contexto lo arma el servidor. Se decide
   // AL LLAMAR, no con `modoLibro`: el cliente del asesor lo cambia

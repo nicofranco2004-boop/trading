@@ -19,6 +19,11 @@
 //     pestaña escriba nada (un plazo fijo que vence, un cupón, otra pestaña).
 //     /ai antes releía en cada entrada; ahora relee si pasó ese rato, con el
 //     chat ya a la vista (sigue con la anterior mientras llega).
+//   · Lo que quedó viejo SE CANCELA (los 4 pedidos), y la relectura espera
+//     PAUSA_TRAS_CAMBIO_MS: el cambio de mes guarda un PUT y un POST por broker,
+//     y con la isla abierta eran 11 lecturas completas por 10 escrituras.
+//   · Una lectura que no vuelve se corta a los TOPE_MS: compartida, una
+//     colgada colgaba también todas las preguntas siguientes.
 //
 // `alCambiar(estado)` recibe lo que se dibuja:
 //   null                              → nunca se leyó
@@ -35,22 +40,56 @@ import { resumenDeCartera } from './aiSnapshot'
 
 export const VIGENCIA_MS = 5 * 60 * 1000
 export const VUELTAS = 3
+export const PAUSA_TRAS_CAMBIO_MS = 400
+export const TOPE_MS = 30 * 1000
 
 // De quién es una lectura: la persona (su email) y el cliente que mira el
 // asesor. Con el EMAIL y no con `user.id`: el usuario de la app no trae `id`
 // (AuthContext.mapMeToUser no lo copia), así que con el id la clave era la
 // misma para todos y quien entraba después en la misma pestaña veía —y le
 // preguntaba a la IA con— la cartera del anterior (auditoría 2026-10-05).
-export const claveDePersona = (user, clienteId) => `${user?.email ?? ''}|${clienteId ?? ''}`
+// En minúsculas y sin espacios: al iniciar sesión el email provisorio es el
+// que se tipeó ("Ana@X.com") y después llega el de /auth/me ("ana@x.com").
+export const claveDePersona = (user, clienteId) =>
+  `${String(user?.email ?? '').trim().toLowerCase()}|${clienteId ?? ''}`
 
-export function crearLecturaDeCartera({ leer, deQuien, alCambiar = () => {}, ahora = () => Date.now() }) {
+// Un error con el texto que ve la persona: el chat muestra `detail` tal cual
+// (utils/errorChat.traducirErrorDeChat). NO es un AbortError: ése el chat lo
+// toma por "el usuario canceló" y no muestra nada.
+function errorParaMostrar(texto) {
+  const e = new Error(texto)
+  e.detail = texto
+  return e
+}
+export const CAMBIO_DE_PERSONA = 'Cambiaste de cliente mientras Mervall-E leía la cartera. Volvé a preguntar.'
+
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms))
+function programarConReloj(fn, ms) {
+  const t = setTimeout(fn, ms)
+  t?.unref?.()
+  return () => clearTimeout(t)
+}
+
+export function crearLecturaDeCartera({
+  leer, deQuien, alCambiar = () => {}, ahora = () => Date.now(),
+  pausaTrasCambio = PAUSA_TRAS_CAMBIO_MS, tope = TOPE_MS,
+  esperar = dormir, programar = programarConReloj,
+}) {
   let snap = null          // la lectura buena, si sigue valiendo
   let ultima = null        // { snap, de, en }: la última buena, aunque haya quedado vieja
   let enCurso = null
   let publicado = null     // lo último que se le pasó a alCambiar
+  let cambioEn = -Infinity // cuándo quedó vieja por última vez
 
   const anterior = (quien) => (ultima && ultima.de === quien ? ultima.snap : null)
   const publicar = (e) => { publicado = e; alCambiar(e) }
+  // La lectura en camino deja de valer: no se guarda al llegar y sus pedidos
+  // se cancelan.
+  function soltar() {
+    if (!enCurso) return
+    enCurso.control?.abort()
+    enCurso = null
+  }
 
   function traer() {
     const quien = deQuien()
@@ -58,41 +97,57 @@ export function crearLecturaDeCartera({ leer, deQuien, alCambiar = () => {}, aho
       // Volvió a una cartera que ya tenía leída (el asesor fue de A a B y
       // volvió a A): lo que estaba en camino es de OTRO y no se publica al
       // llegar, y lo que se ve tiene que ser ésta — no lo último publicado.
-      if (enCurso && enCurso.de !== quien) enCurso = null
+      if (enCurso && enCurso.de !== quien) soltar()
       if (publicado?.estado !== 'lista' || publicado.snap !== snap) {
         publicar({ estado: 'lista', snap, resumen: resumenDeCartera(snap) })
       }
       return Promise.resolve(snap)
     }
     if (enCurso?.de === quien) return enCurso.promesa
-    const lectura = { de: quien, llego: {} }
+    soltar()                                   // si había una, era de otra persona
+    const lectura = { de: quien, llego: {}, vencida: false,
+      control: typeof AbortController === 'function' ? new AbortController() : null }
     const vigente = () => enCurso === lectura
     enCurso = lectura
     publicar({ estado: 'leyendo', llego: {}, snap: anterior(quien) })
-    lectura.promesa = leer(({ pieza, dato, error }) => {
+    const alLlegar = ({ pieza, dato, error }) => {
       if (!vigente()) return
       lectura.llego = { ...lectura.llego, [pieza]: error ? 'error' : dato }
       publicar({ estado: 'leyendo', llego: lectura.llego, snap: anterior(quien) })
-    }).then(
-      (s) => {
-        // Si en el camino quedó vieja (se guardó algo, cambió el cliente), lo
-        // que trajo no se guarda ni se publica. La pregunta que la esperaba
-        // se da cuenta y vuelve a leer (paraPreguntar); la isla, por el aviso.
-        if (!vigente()) return s
-        enCurso = null
-        snap = s
-        ultima = { snap: s, de: quien, en: ahora() }
-        publicar({ estado: 'lista', snap: s, resumen: resumenDeCartera(s) })
-        return s
-      },
-      (e) => {
-        if (vigente()) {
+    }
+    const arrancar = () => {
+      // Otra escritura durante la pausa: ésta ni sale (la reemplaza la próxima).
+      if (!vigente()) return null
+      const cortar = programar(() => {
+        if (vigente()) { lectura.vencida = true; lectura.control?.abort() }
+      }, tope)
+      return leer(alLlegar, lectura.control?.signal).then(
+        (s) => {
+          cortar()
+          // Si en el camino quedó vieja (se guardó algo, cambió el cliente), lo
+          // que trajo no se guarda ni se publica. La pregunta que la esperaba
+          // se da cuenta y vuelve a leer (paraPreguntar); la isla, por el aviso.
+          if (!vigente()) return s
           enCurso = null
-          publicar({ estado: 'error', mensaje: e?.message || null, snap: anterior(quien) })
-        }
-        throw e
-      },
-    )
+          snap = s
+          ultima = { snap: s, de: quien, en: ahora() }
+          publicar({ estado: 'lista', snap: s, resumen: resumenDeCartera(s) })
+          return s
+        },
+        (e) => {
+          cortar()
+          if (!vigente()) throw e
+          enCurso = null
+          const falla = lectura.vencida
+            ? errorParaMostrar('Tu cartera tardó demasiado en llegar. Probá de nuevo en un rato.')
+            : e
+          publicar({ estado: 'error', mensaje: falla?.message || null, snap: anterior(quien) })
+          throw falla
+        },
+      )
+    }
+    const falta = cambioEn + pausaTrasCambio - ahora()
+    lectura.promesa = falta > 0 ? esperar(falta).then(arrancar) : arrancar()
     return lectura.promesa
   }
 
@@ -100,48 +155,55 @@ export function crearLecturaDeCartera({ leer, deQuien, alCambiar = () => {}, aho
   //   · la lectura que hay, aunque haya pasado su rato (el servidor valúa las
   //     posiciones de nuevo al contestar), sin esperar a releerla;
   //   · si quedó vieja por una escritura, la nueva — y si la que esperaba
-  //     también quedó vieja en el camino (o falló), otra vuelta;
+  //     también quedó vieja en el camino, otra vuelta;
   //   · como mucho VUELTAS lecturas: con escrituras seguidas (una importación
   //     por tanda) cada una tiraba la anterior y la pregunta no salía nunca.
   //     Después sale con la última que llegó;
-  //   · si nada llegó, la anterior de esta persona: antes /ai le pasaba su
-  //     foto y la pregunta salía igual; sin esto fallaba con un mensaje sobre
-  //     el bot que no era la causa;
-  //   · si en el medio cambió la persona (el asesor volvió al libro), no se
-  //     lee para la otra: sale con lo que haya de la que preguntó.
+  //   · si falló de verdad, no se reintenta (serían otra vez los reintentos de
+  //     la red) y sale con la anterior de esta persona: antes /ai le pasaba su
+  //     foto y la pregunta salía igual;
+  //   · si en el medio cambió la persona (el asesor pasó a otro cliente o
+  //     volvió al libro), SE CORTA: saldría con la cartera de uno y el
+  //     encabezado del otro (el cliente lo pone utils/api al mandar), y el
+  //     servidor mezclaría las dos.
   async function paraPreguntar() {
     const quien = deQuien()
     let llegada = null
     let error = null
     for (let vuelta = 0; vuelta < VUELTAS; vuelta++) {
+      if (deQuien() !== quien) break           // antes que nada: ver abajo
       if (snap && ultima?.de === quien) return snap
-      if (deQuien() !== quien) break
-      try { llegada = await traer(); error = null } catch (e) {
+      try {
+        const s = await traer()
+        if (s) llegada = s
+        error = null
+      } catch (e) {
         error = e
-        // Falló de verdad (no quedó vieja en el camino): otra vuelta sería
-        // esperar otra vez los reintentos de la red para nada.
         if (publicado?.estado === 'error') break
       }
     }
+    if (deQuien() !== quien) throw errorParaMostrar(CAMBIO_DE_PERSONA)
     if (snap && ultima?.de === quien) return snap
     if (llegada) return llegada
     const a = anterior(quien)
     if (a) return a
-    throw error || new Error('No pudimos leer tu cartera.')
+    if (!error || error.name === 'AbortError') throw errorParaMostrar('No pudimos leer tu cartera. Probá de nuevo en un rato.')
+    throw error
   }
 
   function invalidar() {
+    cambioEn = ahora()
+    soltar()
     snap = null
-    enCurso = null
     publicar(ultima ? { estado: 'vieja', snap: anterior(deQuien()) } : null)
   }
 
   // Cambió la persona (cerró sesión y entró otra): no queda nada de la
   // anterior, ni siquiera como "anterior".
   function olvidar() {
+    soltar()
     snap = null
     ultima = null
-    enCurso = null
     publicar(null)
   }
 

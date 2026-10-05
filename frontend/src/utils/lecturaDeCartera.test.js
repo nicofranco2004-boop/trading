@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { crearLecturaDeCartera, VIGENCIA_MS, VUELTAS, claveDePersona } from './lecturaDeCartera'
+import { crearLecturaDeCartera, VIGENCIA_MS, VUELTAS, claveDePersona, CAMBIO_DE_PERSONA, PAUSA_TRAS_CAMBIO_MS } from './lecturaDeCartera'
 import { mapMeToUser } from '../contexts/AuthContext'
 import { fetchAiSnapshot, resumenDeCartera } from './aiSnapshot'
 import { pasosContextoIA } from './cargaPorPasos'
@@ -24,12 +24,14 @@ function pedidoControlado() {
   return { leer, pendientes, avisos }
 }
 const sinSnap = (e) => e && { ...e, snap: e.snap ? e.snap.summary.open_positions_count : null }
+// Sin la pausa tras una escritura (se prueba aparte): la relectura sale en el acto.
+const RAPIDO = { pausaTrasCambio: 0 }
 
 describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta', () => {
   it('la isla la pide al abrirse y la pregunta que llega antes espera ESA lectura', async () => {
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)) })
     const deLaIsla = l.traer()
     const deLaPregunta = l.traer()
     expect(leer).toHaveBeenCalledTimes(1)           // no otros 4 pedidos
@@ -47,7 +49,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
   it('cada pedido que vuelve se anota para el cargador de /ai', async () => {
     const { leer, pendientes, avisos } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(e) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(e) })
     l.traer()
     avisos[0]({ pieza: 'brokers', dato: [1, 2, 3] })
     avisos[0]({ pieza: 'operations', error: true })
@@ -58,7 +60,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
   it('guardaste algo (invalidar): se vuelve a leer, y lo que venía en camino no se guarda', async () => {
     const { leer, pendientes, avisos } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)) })
     l.traer()
     l.invalidar()                                    // se cargó la operación 13 mientras leía
     expect(estados.at(-1)).toBe(null)
@@ -76,7 +78,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
   it('releyendo tras una escritura, /ai sigue con la anterior (no vuelve al cargador)', async () => {
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)) })
     const a = l.traer(); pendientes[0].ok(snapDe(12)); await a
     l.invalidar()
     expect(estados.at(-1)).toEqual({ estado: 'vieja', snap: 12 })
@@ -91,7 +93,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
     let cliente = 'u9|101'
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => cliente, alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => cliente, alCambiar: (e) => estados.push(sinSnap(e)) })
     const a = l.traer()
     pendientes[0].ok(snapDe(5))
     await a
@@ -107,7 +109,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
     let cliente = 'u9|101'
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => cliente, alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => cliente, alCambiar: (e) => estados.push(sinSnap(e)) })
     l.traer()
     cliente = 'u9|202'
     const b = l.traer()                              // otra lectura: es de otro
@@ -120,7 +122,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
   it('si falla sin nada antes, lo dice y la próxima vez lo vuelve a intentar', async () => {
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(e) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(e) })
     const p = l.traer()
     pendientes[0].mal(new Error('sin red'))
     await expect(p).rejects.toThrow('sin red')
@@ -133,7 +135,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
     let cliente = 'u9|A'
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => cliente, alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => cliente, alCambiar: (e) => estados.push(sinSnap(e)) })
     const a = l.traer(); pendientes[0].ok(snapDe(12)); await a
     cliente = 'u9|B'
     const b = l.traer()                              // la de B sale…
@@ -147,7 +149,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
 
   it('la pregunta que esperaba una lectura que quedó vieja recibe la nueva, no la de antes de guardar', async () => {
     const { leer, pendientes } = pedidoControlado()
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|' })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|' })
     const pregunta = l.paraPreguntar()
     l.invalidar()                                    // guardaste la operación 13 mientras leía
     pendientes[0].ok(snapDe(12))
@@ -159,7 +161,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
 
   it('si la relectura falla, la pregunta sale con la anterior (antes fallaba entera)', async () => {
     const { leer, pendientes } = pedidoControlado()
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|' })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|' })
     const a = l.traer(); pendientes[0].ok(snapDe(12)); await a
     l.invalidar()
     const pregunta = l.paraPreguntar()
@@ -169,7 +171,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
 
   it('sin anterior, el error de la lectura sí llega a la pregunta', async () => {
     const { leer, pendientes } = pedidoControlado()
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|' })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|' })
     const pregunta = l.paraPreguntar()
     pendientes[0].mal(new Error('500'))
     await expect(pregunta).rejects.toThrow('500')
@@ -177,7 +179,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
 
   it('escrituras que no paran (una importación por tanda): la pregunta sale igual, con la última que llegó', async () => {
     const { leer, pendientes } = pedidoControlado()
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|' })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|' })
     const pregunta = l.paraPreguntar()
     for (let k = 0; k < 10; k++) {                   // cada lectura queda vieja antes de llegar
       await Promise.resolve(); await Promise.resolve()
@@ -190,7 +192,7 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
 
   it('si la lectura falla de verdad, la pregunta no la reintenta tres veces: sale con la anterior', async () => {
     const { leer, pendientes } = pedidoControlado()
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|' })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|' })
     const a = l.traer(); pendientes[0].ok(snapDe(12)); await a
     l.invalidar()
     const pregunta = l.paraPreguntar()
@@ -200,23 +202,76 @@ describe('lecturaDeCartera — una sola lectura para la isla, /ai y la pregunta'
     expect(leer).toHaveBeenCalledTimes(2)            // una relectura, no tres
   })
 
-  it('el asesor vuelve al libro mientras la pregunta espera: no se lee la cartera de otra persona', async () => {
+  it('el asesor vuelve al libro mientras la pregunta espera: se corta, sin leer para el libro', async () => {
     let quien = 'a@x|101'
     const { leer, pendientes } = pedidoControlado()
-    const l = crearLecturaDeCartera({ leer, deQuien: () => quien })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => quien })
     const pregunta = l.paraPreguntar()
     quien = 'a@x|'                                   // volvió al libro
     l.invalidar()
     pendientes[0].ok(snapDe(7))
-    expect((await pregunta).summary.open_positions_count).toBe(7)
+    await expect(pregunta).rejects.toMatchObject({ detail: CAMBIO_DE_PERSONA })
     expect(leer).toHaveBeenCalledTimes(1)            // nada leído para el libro
+  })
+
+  it('el asesor pasa del cliente A al B mientras la pregunta espera: se corta (no sale la foto de A con el encabezado de B)', async () => {
+    let quien = 'a@x|101'
+    const { leer, pendientes } = pedidoControlado()
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => quien })
+    const pregunta = l.paraPreguntar()
+    quien = 'a@x|202'
+    pendientes[0].ok(snapDe(7))                      // la de A llega igual
+    await expect(pregunta).rejects.toMatchObject({ detail: CAMBIO_DE_PERSONA })
+  })
+
+  it('lo que queda viejo se cancela (sus 4 pedidos), no sólo se ignora', () => {
+    const señales = []
+    const leer = vi.fn((alLlegar, signal) => { señales.push(signal); return new Promise(() => {}) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|' })
+    l.traer()
+    expect(señales[0].aborted).toBe(false)
+    l.invalidar()
+    expect(señales[0].aborted).toBe(true)
+  })
+
+  it('escrituras seguidas: espera la pausa y lee UNA vez (antes, una lectura completa por escritura)', async () => {
+    let t = 0
+    const pausas = []
+    const { leer, pendientes } = pedidoControlado()
+    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', ahora: () => t,
+      esperar: (ms) => new Promise((r) => pausas.push({ ms, r })) })
+    const a = l.traer(); pendientes[0].ok(snapDe(12)); await a      // la primera, sin pausa
+    for (let k = 0; k < 10; k++) {                  // el cambio de mes: PUT + POST por broker
+      t += 50
+      l.invalidar()
+      l.traer()                                      // la isla, por el aviso
+    }
+    for (const p of pausas) p.r()
+    await Promise.resolve(); await Promise.resolve()
+    expect(pausas[0].ms).toBe(PAUSA_TRAS_CAMBIO_MS)
+    expect(leer).toHaveBeenCalledTimes(2)            // la primera + una sola relectura
+  })
+
+  it('una lectura que no vuelve se corta al tope y lo dice (antes colgaba todas las preguntas)', async () => {
+    let cortar
+    const { leer } = pedidoControlado()
+    const estados = []
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(e),
+      programar: (fn) => { cortar = fn; return () => {} } })
+    const leerDe = vi.fn((alLlegar, signal) => new Promise((ok, mal) => signal.addEventListener('abort', () => {
+      const e = new Error('abortado'); e.name = 'AbortError'; mal(e) })))
+    leer.mockImplementation(leerDe)
+    const pregunta = l.paraPreguntar()
+    cortar()                                         // pasaron TOPE_MS
+    await expect(pregunta).rejects.toMatchObject({ detail: expect.stringMatching(/tardó demasiado/) })
+    expect(estados.at(-1).estado).toBe('error')
   })
 
   it('vence a los 5 minutos: se relee (con la anterior a la vista), pero la pregunta no espera', async () => {
     let t = 0
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)), ahora: () => t })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => 'u1|', alCambiar: (e) => estados.push(sinSnap(e)), ahora: () => t })
     const a = l.traer(); pendientes[0].ok(snapDe(12)); await a
     t = VIGENCIA_MS - 1
     await l.traer()
@@ -400,11 +455,14 @@ describe('claveDePersona — con el usuario real de la app', () => {
     expect(claveDePersona(ana, null)).not.toBe(claveDePersona(beto, null))
     expect(claveDePersona(ana, 101)).not.toBe(claveDePersona(ana, 202))
   })
+  it('el email tipeado al entrar ("Ana@X.com ") y el de /auth/me son la misma persona', () => {
+    expect(claveDePersona({ email: ' Ana@X.com ' }, null)).toBe(claveDePersona(ana, null))
+  })
   it('Ana cierra sesión y entra Beto en la misma pestaña: Beto no ve la de Ana', async () => {
     let usuario = ana
     const { leer, pendientes } = pedidoControlado()
     const estados = []
-    const l = crearLecturaDeCartera({ leer, deQuien: () => claveDePersona(usuario, null), alCambiar: (e) => estados.push(sinSnap(e)) })
+    const l = crearLecturaDeCartera({ ...RAPIDO, leer, deQuien: () => claveDePersona(usuario, null), alCambiar: (e) => estados.push(sinSnap(e)) })
     const a = l.traer(); pendientes[0].ok(snapDe(12)); await a
     usuario = beto
     l.olvidar()                                      // VozContext lo hace al cambiar el email

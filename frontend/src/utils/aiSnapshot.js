@@ -41,9 +41,12 @@ export const MAX_OPERATIONS = 100
  * orden en que vuelven (salen los cuatro juntos): es lo que tilda cada renglón
  * del cargador de /ai. `pieza` es 'positions' | 'monthly' | 'brokers' |
  * 'operations'.
+ *
+ * `signal` cancela los cuatro (utils/lecturaDeCartera, cuando la lectura quedó
+ * vieja antes de volver).
  */
-export async function fetchAiSnapshot({ alLlegar } = {}) {
-  const pedir = (pieza, path) => api.get(path).then(
+export async function fetchAiSnapshot({ alLlegar, signal } = {}) {
+  const pedir = (pieza, path) => api.get(path, signal ? { signal } : undefined).then(
     (dato) => { alLlegar?.({ pieza, dato }); return dato },
     (e) => { alLlegar?.({ pieza, error: true }); throw e },
   )

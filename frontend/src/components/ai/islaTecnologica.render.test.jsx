@@ -84,13 +84,18 @@ describe('VozContext: la pregunta usa la MISMA lectura que muestra la isla', () 
   const voz = sinComentarios(leer('../../contexts/VozContext.jsx'))
   it('nada pide la cartera por fuera de lecturaDeCartera (ni /ai)', () => {
     expect((voz.match(/fetchAiSnapshot\(/g) || []).length).toBe(1)
-    expect(voz).toMatch(/leer: \(alLlegar\) => fetchAiSnapshot\(\{ alLlegar \}\)/)
+    expect(voz).toMatch(/leer: \(alLlegar, signal\) => fetchAiSnapshot\(\{ alLlegar, signal \}\)/)
     expect(voz).toMatch(/await lectura\.paraPreguntar\(\)/)
   })
   it('se tira cuando cambia algo: el chat, el importador, una escritura o el cliente', () => {
     expect(voz).toMatch(/addEventListener\('rendi:portfolio-changed', invalidar\)/)
     expect(voz).toMatch(/addEventListener\(EVENTO_ESCRITURA, invalidar\)/)
     expect(voz).toMatch(/addEventListener\(EVENTO_CLIENTE, cambioDeCliente\)/)
+  })
+  it('al cambiar de persona se olvida la lectura ANTES de que la isla pida la nueva', () => {
+    // useLayoutEffect corre antes que los efectos de los hijos; con useEffect,
+    // el olvido llegaba después y tiraba la lectura recién pedida.
+    expect(voz).toMatch(/useLayoutEffect\(\(\) => \{\s*if \(quienEraRef\.current !== quienEs\) lectura\.olvidar\(\)/)
   })
   it('el modo libro se decide al preguntar y al leer, no con el valor del último dibujo', () => {
     // VozProvider vive arriba de AdvisorProvider: `modoLibro` puede ser de
