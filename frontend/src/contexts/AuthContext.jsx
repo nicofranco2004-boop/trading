@@ -32,7 +32,7 @@ const DEMO_USER = {
 // EXACTAMENTE el mismo objeto — antes el mapeo vivía inline solo en el
 // bootstrap, así que cualquier refresh mid-sesión tenía que duplicarlo (o
 // no existía, que era el bug: el tier quedaba stale tras un pago).
-function mapMeToUser(me) {
+export function mapMeToUser(me) {
   return {
     name: me.name || me.email,
     email: me.email,

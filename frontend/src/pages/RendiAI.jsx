@@ -12,12 +12,16 @@
 // consumimos una sola vez y AICoach la auto-envía (autoAsk).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Loader2, AlertCircle, Plus, Volume2, VolumeX } from 'lucide-react'
+import { AlertCircle, Plus, Volume2, VolumeX } from 'lucide-react'
 import AICoach from '../components/AICoach'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
-import { fetchAiSnapshot } from '../utils/aiSnapshot'
+import { resumenDeCartera } from '../utils/aiSnapshot'
+import { pasosContextoIA } from '../utils/cargaPorPasos'
+import { useDemora } from '../hooks/useDemora'
+import CargaPorPasos from '../components/novedades/CargaPorPasos'
+import ViendoTuCartera from '../components/ai/ViendoTuCartera'
 import { useVoz } from '../contexts/VozContext'
 import MervallE from '../components/ai/MervallE'
 import { useEstadoMervallE, enEscena, sinPensando, usePortadaConPersonaje, ANCHO_COMPANERO } from '../components/ai/mervalle/estadoDelChat'
@@ -33,7 +37,7 @@ export default function RendiAI() {
   const { user } = useAuth()
   const { clientCtx } = useAdvisorContext()
   const { enabled: vozEnabled, setEnabled: setVozEnabled, status: vozStatus,
-          limpiar: limpiarConversacion, thread: hilo } = useVoz()
+          limpiar: limpiarConversacion, thread: hilo, cartera, leerCartera, persona } = useVoz()
   const vozHablando = vozStatus === 'playing' || vozStatus === 'preparing'
   // Book-mode: el asesor en su propio nivel chatea sobre EL LIBRO — el
   // backend arma el contexto server-side e IGNORA el snapshot personal.
@@ -41,11 +45,6 @@ export default function RendiAI() {
   // fetches fallan, y el chrome habla del libro, no de "tu cartera" (audit:
   // decía "Viendo tu cartera · 0 posiciones" en la superficie estrella).
   const bookMode = user?.tier === 'advisor' && !clientCtx
-  const [snapshot, setSnapshot] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const snapshotRef = useRef(null)
-  const [refreshTick, setRefreshTick] = useState(0)
   // Remount de AICoach = conversación nueva. La conversación PERSISTE al
   // navegar (sessionStorage, ver utils/chatSession) — por eso acá, además del
   // remount, hay que BORRAR la persistida (sin eso el remount la restaura).
@@ -61,34 +60,30 @@ export default function RendiAI() {
   }
   const autoAskUsado = () => { autoAskRef.current = null }
 
-  // Snapshot vivo de la cartera — mismo criterio que el drawer: primer fetch
-  // con loader, refreshes en background sin tirar el chat.
+  // LA CARTERA QUE LEE MERVALL-E es la MISMA lectura que usa la isla
+  // (VozContext → utils/lecturaDeCartera). Antes esta página leía la suya en
+  // cada entrada: dos lecturas iguales, y al pasar de un cliente a otro el
+  // asesor seguía viendo —y preguntando sobre— la cartera del anterior.
+  //   · Ya leída (por la isla, o en otra visita): el chat aparece sin cargador.
+  //   · Releyéndose porque registraste una operación o pasó su rato: el chat
+  //     sigue a la vista con la anterior (`cartera.snap`) mientras llega.
+  //   · Leyendo por primera vez: el cargador con los cuatro pedidos.
+  //   · Cambió la persona o el cliente: se lee la de ahora (`persona`).
+  // Se relee por la IDENTIDAD de `cartera`, no por "¿está vieja?" (sí/no):
+  // vieja → vieja otra vez (otro cliente, otra escritura) no cambiaba el sí/no.
   useEffect(() => {
-    let cancelled = false
-    if (bookMode) { setLoading(false); setError(null); return }
-    if (!snapshotRef.current) setLoading(true)
-    setError(null)
-    fetchAiSnapshot()
-      .then(snap => {
-        if (cancelled) return
-        snapshotRef.current = snap
-        setSnapshot(snap)
-        setLoading(false)
-      })
-      .catch(err => {
-        if (cancelled) return
-        if (!snapshotRef.current) setError(err?.message || 'No pudimos cargar el contexto de tu cartera.')
-        setLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [refreshTick, bookMode])
-
-  // El chat registró/deshizo una operación → refrescar snapshot en background.
+    if (!bookMode) leerCartera()
+  }, [bookMode, clientCtx?.id, persona, leerCartera])
   useEffect(() => {
-    const onPortfolioChanged = () => setRefreshTick(t => t + 1)
-    window.addEventListener('rendi:portfolio-changed', onPortfolioChanged)
-    return () => window.removeEventListener('rendi:portfolio-changed', onPortfolioChanged)
-  }, [])
+    if (!bookMode && (cartera == null || cartera.estado === 'vieja')) leerCartera()
+  }, [bookMode, cartera, leerCartera])
+  const snapshot = bookMode ? null : (cartera?.snap ?? null)
+  const loading = !bookMode && !snapshot && cartera?.estado !== 'error'
+  const error = !bookMode && !snapshot && cartera?.estado === 'error'
+    ? (cartera.mensaje || 'No pudimos cargar el contexto de tu cartera.') : null
+  // Qué trajo cada uno de los cuatro pedidos (o 'error'), para tildarlos en el
+  // cargador en el orden en que vuelven.
+  const llego = cartera?.estado === 'leyendo' ? cartera.llego : {}
 
   // 🔴 EL ALTO DE ESTA PÁGINA SE MIDE, NO SE ESCRIBE.
   //
@@ -151,7 +146,6 @@ export default function RendiAI() {
     setConvKey(k => k + 1)
   }
 
-  const nPos = snapshot?.summary?.open_positions_count
   // La cara de Mervall-E en la cabecera. UNO SOLO EN ESCENA por pantalla, con
   // la misma regla que AICoach (estadoDelChat.enEscena): con el chat vacío
   // está la portada, y con conversación y lugar al costado, el compañero del
@@ -163,15 +157,20 @@ export default function RendiAI() {
   const hayLugarAlCostado = useAnchoMinimo(ANCHO_COMPANERO)
   const hayPortada = usePortadaConPersonaje()
   const cabeceraEnEscena = enEscena({ hayConversacion: hilo.length > 0, hayLugarAlCostado, hayPortada }) === 'cabecera'
-  const nBrokers = snapshot?.brokers?.length
+  // El cargador aparece sólo si la lectura TARDA (useDemora): con la cartera
+  // en milisegundos, prenderlo y apagarlo en un parpadeo es ruido. Mientras se
+  // ve, el chat no está montado: la cabecera es el único Mervall-E en pantalla
+  // y pone la cara de "cargando".
+  const mostrarCargador = useDemora(loading)
+  const cargandoALaVista = loading && mostrarCargador
 
   return (
     <div ref={cajaRef} style={{ height: alto }} className="flex flex-col pb-16 sm:pb-0">
       {/* Topbar de la página */}
       <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-3.5 border-b border-line/60 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <MervallE size={38} recuadro quieto sigue={false} escucha congelado={!cabeceraEnEscena}
-            estado={cabeceraEnEscena ? sinPensando(mervalle.estado) : 'reposo'} />
+          <MervallE size={38} recuadro quieto sigue={false} escucha congelado={!cabeceraEnEscena && !cargandoALaVista}
+            estado={cargandoALaVista ? 'cargando' : cabeceraEnEscena ? sinPensando(mervalle.estado) : 'reposo'} />
           {/* QUÉ ESTÁ MIRANDO RENDI — va acá abajo del título y no como chip
               suelto a la derecha.
               El chip decía `hidden md:inline-flex`: aparecía según el ancho de
@@ -186,16 +185,15 @@ export default function RendiAI() {
                 navegador puede partir el renglón ("Mervall-" / "E AI"). */}
             <div className="text-[15.5px] font-semibold text-ink-0 leading-tight whitespace-nowrap">Mervall-E AI</div>
             <div className="flex items-center gap-1.5 text-[12px] text-ink-3 truncate">
-              {(bookMode || snapshot) && (
-                <span className="w-1.5 h-1.5 rounded-full bg-rendi-pos flex-none" aria-hidden />
-              )}
-              <span className="truncate">
-                {bookMode
-                  ? 'Viendo tu libro · todas las carteras de tus clientes'
-                  : snapshot
-                    ? `Viendo tu cartera${nPos != null ? ` · ${nPos} posiciones` : ''}${nBrokers ? ` · ${nBrokers} brokers` : ''}`
-                    : 'Conoce tu cartera en tiempo real'}
-              </span>
+              {/* El punto se prende cuando llegó la lectura (gris mientras
+                  tanto) y los números cuentan al llegar: ViendoTuCartera. */}
+              <span aria-hidden
+                className={`w-1.5 h-1.5 rounded-full flex-none transition-colors duration-500 ${
+                  (bookMode || snapshot) ? 'bg-rendi-pos' : 'bg-ink-3/40'}`} />
+              {bookMode
+                ? <span className="truncate">Viendo tu libro · todas las carteras de tus clientes</span>
+                : <ViendoTuCartera resumen={resumenDeCartera(snapshot)}
+                    sinLectura={<span className="truncate">Conoce tu cartera en tiempo real</span>} />}
             </div>
           </div>
         </div>
@@ -248,10 +246,12 @@ export default function RendiAI() {
 
       {/* Cuerpo — conversación centrada */}
       <div className="flex-1 min-h-0 w-full max-w-3xl mx-auto flex flex-col px-2 sm:px-4">
-        {loading && (
-          <div className="flex items-center gap-2 text-sm text-ink-3 py-16 justify-center">
-            <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-            Cargando el contexto de tu cartera…
+        {/* Los cuatro pedidos de verdad (utils/aiSnapshot), cada uno con su
+            tilde y lo que trajo cuando vuelve. Antes: una rueda y "Cargando el
+            contexto de tu cartera…". */}
+        {cargandoALaVista && (
+          <div className="w-full max-w-sm mx-auto px-2 py-10 sm:py-16">
+            <CargaPorPasos titulo="Leyendo tu cartera" pasos={pasosContextoIA(llego)} />
           </div>
         )}
 

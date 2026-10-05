@@ -30,21 +30,30 @@ import { buildAiSummary } from './aiSummary'
 
 // Operaciones capeadas a las 100 más recientes: el backend corta el snapshot
 // en 200 KB y una cuenta con 500+ operaciones se caía sin esto.
-const MAX_OPERATIONS = 100
+export const MAX_OPERATIONS = 100
 
 /**
  * Trae el contexto de cartera que consume el chat.
  * Rechaza si falla lo esencial (posiciones/mensual/brokers); las operaciones
  * son opcionales y un fallo ahí no tira el chat abajo.
+ *
+ * `alLlegar({ pieza, dato, error })` se llama apenas vuelve CADA pedido, en el
+ * orden en que vuelven (salen los cuatro juntos): es lo que tilda cada renglón
+ * del cargador de /ai. `pieza` es 'positions' | 'monthly' | 'brokers' |
+ * 'operations'.
  */
-export async function fetchAiSnapshot() {
+export async function fetchAiSnapshot({ alLlegar } = {}) {
+  const pedir = (pieza, path) => api.get(path).then(
+    (dato) => { alLlegar?.({ pieza, dato }); return dato },
+    (e) => { alLlegar?.({ pieza, error: true }); throw e },
+  )
   const [positions, monthly, brokers, operations] = await Promise.all([
-    api.get('/positions'),
-    api.get('/monthly'),
-    api.get('/brokers'),
+    pedir('positions', '/positions'),
+    pedir('monthly', '/monthly'),
+    pedir('brokers', '/brokers'),
     // Sin operations el prompt declara que existen pero llegan undefined, y
     // toda la sección abierto/cerrado queda vacía (audit #3, fix B3).
-    api.get('/operations').catch(() => []),
+    pedir('operations', '/operations').catch(() => []),
   ])
   return {
     summary: buildAiSummary(positions, monthly),
@@ -52,5 +61,18 @@ export async function fetchAiSnapshot() {
     operations: Array.isArray(operations) ? operations.slice(0, MAX_OPERATIONS) : [],
     monthly: monthly || [],
     brokers: brokers || [],
+  }
+}
+
+/**
+ * Lo que se lee en pantalla de un snapshot: "12 posiciones · 3 brokers". De acá
+ * lo toman la cabecera de /ai y la isla, así las dos dicen lo mismo.
+ */
+export function resumenDeCartera(snap) {
+  if (!snap) return null
+  const posiciones = snap.summary?.open_positions_count
+  return {
+    posiciones: Number.isFinite(posiciones) ? posiciones : null,
+    brokers: Array.isArray(snap.brokers) ? snap.brokers.length : null,
   }
 }

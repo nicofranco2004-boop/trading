@@ -24,8 +24,9 @@
 // cual. Cambiarle un espacio rompe la firma y el servidor lo rechaza.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from '../utils/api'
+import { api, EVENTO_ESCRITURA, EVENTO_CLIENTE } from '../utils/api'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
+import { crearLecturaDeCartera, claveDePersona } from '../utils/lecturaDeCartera'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
 import { avisarPalabra } from '../components/ai/mervalle/motor'
@@ -222,7 +223,44 @@ export function VozProvider({ children }) {
   const { user } = useAuth()
   const modoLibro = user?.tier === 'advisor' && !getClientContext()
 
-  const snapRef = useRef(null)
+  // LA LECTURA DE TU CARTERA que acompaña cada pregunta: se lee una vez y se
+  // reusa, de a una a la vez, y es de quien la leyó (usuario y cliente del
+  // asesor). Las reglas viven en utils/lecturaDeCartera. `cartera` es lo que
+  // dibujan la isla ("Viendo tu cartera · 12 posiciones · 3 brokers") y /ai
+  // (el cargador con los 4 pedidos, y el chat con `cartera.snap`).
+  const [cartera, setCartera] = useState(null)
+  const userRef = useRef(user)
+  userRef.current = user
+  const tierRef = useRef(user?.tier)
+  tierRef.current = user?.tier
+  const lecturaRef = useRef(null)
+  if (!lecturaRef.current) {
+    lecturaRef.current = crearLecturaDeCartera({
+      leer: (alLlegar) => fetchAiSnapshot({ alLlegar }),
+      deQuien: () => claveDePersona(userRef.current, getClientContext()?.id),
+      alCambiar: setCartera,
+    })
+  }
+  const lectura = lecturaRef.current
+  // Cerró sesión y entró otra persona en la misma pestaña (no se recarga):
+  // no queda nada de la lectura de la anterior. `persona` también le avisa a
+  // la isla que tiene que leer de nuevo (cambio de persona o de cliente).
+  const persona = claveDePersona(user, getClientContext()?.id)
+  const emailRef = useRef(user?.email)
+  useEffect(() => {
+    if (emailRef.current !== user?.email) lectura.olvidar()
+    emailRef.current = user?.email
+  }, [user?.email, lectura])
+  // Leer si hace falta (la isla al abrirse, /ai al entrar). En modo LIBRO no
+  // hay cartera personal que leer: el contexto lo arma el servidor. Se decide
+  // AL LLAMAR, no con `modoLibro`: el cliente del asesor lo cambia
+  // AdvisorContext, que vive más abajo y no redibuja este proveedor — /ai
+  // pedía leer al entrar a un cliente y esto todavía creía estar en el libro.
+  const esModoLibro = useCallback(() => tierRef.current === 'advisor' && !getClientContext(), [])
+  const leerCartera = useCallback(() => {
+    if (esModoLibro()) return
+    lectura.traer().catch(() => {})
+  }, [lectura, esModoLibro])
   const sendingRef = useRef(false)
   // 🔴 DE QUÉ CONVERSACIÓN ES LO QUE ESTÁ LLEGANDO.
   //
@@ -248,11 +286,25 @@ export function VozProvider({ children }) {
   // después de un F5.
   useEffect(() => { saveChatSession(thread) }, [thread])
 
+  // La lectura queda VIEJA cuando algo cambia en el servidor: el chat o el
+  // importador (`rendi:portfolio-changed`) o una escritura de esta pestaña que
+  // toca la cartera (EVENTO_ESCRITURA, utils/api). Y cuando el asesor cambia
+  // de cliente (EVENTO_CLIENTE): este proveedor vive ARRIBA de AdvisorProvider
+  // y no se redibuja con él, así que además se redibuja a mano — `modoLibro`
+  // (las sugeridas de la isla) se calcula al dibujar.
+  const [, setVersionCliente] = useState(0)
   useEffect(() => {
-    const invalidar = () => { snapRef.current = null }
+    const invalidar = lectura.invalidar
+    const cambioDeCliente = () => { lectura.invalidar(); setVersionCliente(v => v + 1) }
     window.addEventListener('rendi:portfolio-changed', invalidar)
-    return () => window.removeEventListener('rendi:portfolio-changed', invalidar)
-  }, [])
+    window.addEventListener(EVENTO_ESCRITURA, invalidar)
+    window.addEventListener(EVENTO_CLIENTE, cambioDeCliente)
+    return () => {
+      window.removeEventListener('rendi:portfolio-changed', invalidar)
+      window.removeEventListener(EVENTO_ESCRITURA, invalidar)
+      window.removeEventListener(EVENTO_CLIENTE, cambioDeCliente)
+    }
+  }, [lectura])
 
   const setEnabled = useCallback((v) => {
     setEnabledState(v)
@@ -476,12 +528,14 @@ export function VozProvider({ children }) {
       setThread(t => [...t, { role: 'user', content: q }].slice(-MAX_THREAD))
     }
     try {
-      if (snapDeAfuera) snapRef.current = snapDeAfuera
+      // La lectura es UNA para la isla y /ai (lecturaDeCartera): si se está
+      // releyendo porque guardaste algo, la pregunta espera la nueva (y si ésa
+      // falla, sale con la anterior). El modo libro se decide AHORA, no con
+      // `modoLibro` (ver esModoLibro).
       // En modo LIBRO no se pide la cartera personal del asesor: está vacía, y
-      // el contexto lo arma el servidor. Se manda un objeto vacío —el chat
-      // exige algo truthy para habilitar el envío— igual que hace /ai.
-      else if (modoLibro) snapRef.current = snapRef.current || {}
-      else if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
+      // el contexto lo arma el servidor. Se manda lo que mande /ai (un objeto
+      // vacío: el chat exige algo truthy para habilitar el envío).
+      const snapshot = esModoLibro() ? (snapDeAfuera || {}) : await lectura.paraPreguntar()
       let acc = ''
       // Al modelo van SOLO role y content: el hilo de acá guarda además el
       // audio firmado y las tarjetas, que no son parte de la conversación.
@@ -589,7 +643,7 @@ export function VozProvider({ children }) {
         // `voz: enabled` — si el parlante está apagado, el servidor le pide al
         // modelo que NO escriba el resumen hablado. Son ~130 tokens de salida
         // por respuesta que se pagaban aunque nadie los fuera a escuchar.
-        { messages, snapshot: snapRef.current, voz: enabled,
+        { messages, snapshot, voz: enabled,
           ...(analisis ? { analisis } : {}) },
         { onDelta, onReset, onPaso: p => { if (vigente()) marcarPaso(p) }, onPregunta, onVoz: arrancarAudio },
       )
@@ -645,7 +699,7 @@ export function VozProvider({ children }) {
         setPasos([])
       }
     }
-  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso, limpiarError])
+  }, [thread, enabled, speak, stop, desbloquearElSonido, esModoLibro, marcarPaso, limpiarError, lectura])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -757,12 +811,12 @@ export function VozProvider({ children }) {
     open, setOpen,
     thread, sending, loading, paso, pasos, askError, upgradeInfo, usageDelError,
     kindDeCuotaDelError, codigoDelError, motivoSinVoz,
-    modoLibro,
+    modoLibro, cartera, leerCartera, persona,
     sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
        speak, escuchar, toggle, stop, open, thread, sending, loading, paso, pasos, askError,
        upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError, sinCupo,
-       motivoSinVoz, modoLibro,
+       motivoSinVoz, modoLibro, cartera, leerCartera, persona,
        ask, analizar, limpiar])
 
   return (
@@ -784,6 +838,7 @@ const INERTE = {
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
   thread: [], sending: false, paso: null, pasos: [], askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, kindDeCuotaDelError: null, codigoDelError: null, motivoSinVoz: null, modoLibro: false,
+  cartera: null, leerCartera: () => {}, persona: '',
   ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 

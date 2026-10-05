@@ -39,13 +39,27 @@ export function getClientContext() {
   return _clientCtx
 }
 
+// Cambió el cliente que mira el asesor (o salió al libro). Lo oye quien vive
+// ARRIBA de AdvisorProvider y no se redibuja con él: VozContext, que guarda la
+// lectura de la cartera para la IA y decide el "modo libro". Sin el aviso, la
+// isla seguía mostrando —y la pregunta mandando— lo del cliente anterior.
+export const EVENTO_CLIENTE = 'rendi:cliente'
+function avisarCliente(antes) {
+  if ((antes?.id ?? null) === (_clientCtx?.id ?? null)) return
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new Event(EVENTO_CLIENTE))
+  }
+}
+
 export function setClientContext(ctx) {
   // ctx: { id: <client_uid>, label: <string> }
+  const antes = _clientCtx
   _clientCtx = ctx && typeof ctx.id === 'number' ? { id: ctx.id, label: ctx.label || '' } : null
   try {
     if (_clientCtx) localStorage.setItem(CLIENT_CTX_KEY, JSON.stringify(_clientCtx))
     else localStorage.removeItem(CLIENT_CTX_KEY)
   } catch { /* ignore */ }
+  avisarCliente(antes)
 }
 
 export function clearClientContext() {
@@ -59,10 +73,12 @@ export function clearClientContext() {
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key !== null && e.key !== CLIENT_CTX_KEY) return
+    const antes = _clientCtx
     try {
       const parsed = e.key === null ? null : (e.newValue ? JSON.parse(e.newValue) : null)
       _clientCtx = parsed && typeof parsed.id === 'number' ? parsed : null
     } catch { _clientCtx = null }
+    avisarCliente(antes)
   })
 }
 
@@ -94,6 +110,9 @@ async function req(method, path, body, opts) {
         err.payload = e.payload
         throw err
       }
+      // El demo también guarda (en memoria): "agregar una posición" tiene que
+      // dejar vieja la lectura igual que en una cuenta de verdad.
+      if (method !== 'GET') avisarEscritura(path)
       return mock
     }
     // ⚠️ EN DEMO NADA SALE AL BACKEND REAL. Antes, un GET que el demo no conocía
@@ -144,7 +163,48 @@ async function req(method, path, body, opts) {
     throw await buildHttpError(res, { write: method !== 'GET' })
   }
 
-  return res.json()
+  const datos = await res.json()
+  if (method !== 'GET') avisarEscritura(path)
+  return datos
+}
+
+// ¿Cambió la cartera en el servidor desde esta pestaña? Cada escritura que sale
+// bien (cargar, editar o borrar una operación, un broker, un movimiento de
+// caja…) lo avisa con este evento. Lo que guarda una lectura para reusarla la
+// tira al oírlo: la isla de Mervall-E muestra "12 posiciones" y, sin esto,
+// seguía diciendo 12 después de cargar la 13 a mano — `rendi:portfolio-changed`
+// lo emiten el importador y el chat, y las altas a mano son decenas de caminos
+// que no lo emiten.
+// No ve lo que se cambia desde otra pestaña u otro dispositivo.
+export const EVENTO_ESCRITURA = 'rendi:escritura'
+
+// Lo que se escribe y NO toca la cartera (posiciones, historial, brokers,
+// operaciones). Sin esta lista, cada respuesta HABLADA tiraba la lectura —pedir
+// el audio es un POST a /ai/voz— y volvían a salir los cuatro pedidos en cada
+// respuesta (auditoría 2026-10-05). Va por lo que NO toca, a propósito: una
+// escritura nueva que nadie clasificó avisa, y lo peor que pasa es una lectura
+// de más; al revés, una que cambia la cartera y no avisa deja números viejos a
+// la vista.
+// Ojo con los prefijos anchos: `/me/reset-data` ("Empezar de cero") BORRA la
+// cartera y `/sections/restore` devuelve posiciones archivadas — por eso va
+// `/me/advisor` y no `/me`, y `/sections` no está.
+// /monthly/sync-unrealized y /snapshots son la valuación a precio de hoy
+// que el Dashboard guarda cada 90 s (una vez por broker, más el total): no
+// cambian qué tenés, y el servidor vuelve a valuar al contestar. Con ellas
+// adentro, la isla abierta se ponía a releer cada 90 s. Van EXACTAS: `/monthly/7`
+// (editar un mes) sí avisa.
+const NO_TOCAN_LA_CARTERA = [
+  '/ai', '/fundamentals', '/market-brief', '/alerts', '/push', '/watchlist', '/goals',
+  '/diagnostics', '/feedback', '/auth', '/plan', '/billing', '/me/advisor',
+  '/monthly/sync-unrealized', '/snapshots',
+]
+export function escrituraTocaLaCartera(path) {
+  const p = String(path || '').split('?')[0]
+  return !NO_TOCAN_LA_CARTERA.some((pre) => p === pre || p.startsWith(pre + '/'))
+}
+function avisarEscritura(path) {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return
+  if (escrituraTocaLaCartera(path)) window.dispatchEvent(new Event(EVENTO_ESCRITURA))
 }
 
 // Parsea el body del error y arma un Error con mensaje legible. FastAPI puede
@@ -290,7 +350,9 @@ async function upload(path, formData, opts) {
   if (!res.ok) {
     throw await buildHttpError(res, { write: !isPreview })
   }
-  return res.json()
+  const datos = await res.json()
+  if (!isPreview) avisarEscritura(path)
+  return datos
 }
 
 // Variante para GETs que devuelven binarios (ej. CSV, PDF). Propaga errores

@@ -1094,6 +1094,18 @@ body {
 .despliega { display: grid; animation: despliega 450ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 .despliega > * { min-height: 0; overflow: hidden; }
 
+/* La isla de Mervall-E: al abrirla, la tarjeta crece desde la burbuja que
+   tocaste. RendiMate le pone el `transform-origin` donde estaba la burbuja
+   (en el celular, abajo: crece desde ahí hacia la tarjeta de arriba). Va en el
+   elemento de ADENTRO; el de afuera lo mueve el arrastre. `backwards`: al
+   terminar no queda ningún transform pegado. */
+@keyframes isla-despliega {
+  from { opacity: 0; transform: scale(0.12); }
+  55%  { opacity: 1; }
+  to   { opacity: 1; transform: none; }
+}
+.isla-despliega { animation: isla-despliega 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards; }
+
 /* Respeta reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .grid-bg, .spotlight-pulse, .value-pulse, .ticker-scroll, .headline-sweep,
@@ -1115,7 +1127,7 @@ body {
   .barra-intensidad { transition: none; }
   .chip-escaneando, .chip-listo { animation: none; }
   .tilde-entra, .viaja-desde, .radar-contorno, .radar-crece, .radar-marca, .dona-barre { animation: none; }
-  .etiqueta-punta, .caida-baja .recharts-area, .marca-aparece, .despliega { animation: none; }
+  .etiqueta-punta, .caida-baja .recharts-area, .marca-aparece, .despliega, .isla-despliega { animation: none; }
   .reveal-up { opacity: 1; }
   /* La cinta de cotizaciones no corre: queda UNA copia de la lista y se
      desliza con el dedo, como la barra de antes. */

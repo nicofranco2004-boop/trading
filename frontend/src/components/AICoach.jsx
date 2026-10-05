@@ -582,12 +582,15 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
               sugeridas ceden alto: son las que scrollean, y la portada de arriba
               es lo único que se achica si ellas no lo hacen. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[150px] [@media(min-height:820px)]:max-h-[240px] overflow-y-auto pr-1">
-            {availableQuestions.map(q => (
+            {/* En escalera al aparecer el chat vacío (y en cada "Nueva
+                conversación"): arrancan con la portada ya puesta, no encima. */}
+            {availableQuestions.map((q, k) => (
               <button
                 key={q}
                 onClick={() => send(q)}
                 disabled={loading || sending}
-                className="flex items-start gap-2.5 text-left bg-bg-1 hover:bg-bg-2 border border-line hover:border-data-violet/40 rounded-xl px-3.5 py-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ '--i': Math.min(k, 6) + 3 }}
+                className="entra flex items-start gap-2.5 text-left bg-bg-1 hover:bg-bg-2 border border-line hover:border-data-violet/40 rounded-xl px-3.5 py-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <span className="w-6 h-6 rounded-lg bg-data-violet/12 text-data-violet grid place-items-center flex-none text-[11px]">✦</span>
                 <span className="text-[13px] text-ink-1 font-medium leading-snug">{q}</span>
