@@ -336,7 +336,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         {messages.length === 0 && !loading && (
           <div className="text-center pt-1 sm:pt-6 pb-2">
             {/* Mervall-E en escena, del tamaño que ENTRA (formaDePortada): cuerpo
-                entero, busto o cabeza; en celular, como mucho la cabeza. Antes
+                entero, busto o cabeza; en celular, cuerpo grande o chico antes
+                que la cabeza sola. Antes
                 iba fijo y la zona, pegada al fondo, cortaba justo lo de arriba:
                 un robot sin cabeza en una notebook de 768 px, y sin cara ni
                 título en un iPhone con Safari. La cabecera queda congelada. */}

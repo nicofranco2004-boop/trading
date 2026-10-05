@@ -152,9 +152,11 @@ describe('formaDePortada — el Mervall-E que entra', () => {
     expect(formaDePortada(83 + T - 1, false)).toEqual({ forma: 'head', size: 50 })
     expect(formaDePortada(50 + T - 1, false)).toBe(null)
   })
-  it('en celular, como mucho la cabeza', () => {
-    expect(formaDePortada(900, true)).toEqual({ forma: 'head', size: 50 })
-    expect(formaDePortada(50 + T - 1, true)).toBe(null)
+  it('en celular, el cuerpo si entra: grande, chico, y recién después la cabeza', () => {
+    expect(formaDePortada(309, true)).toEqual({ forma: 'full', size: 112 })   // Pro Max (medido)
+    expect(formaDePortada(204, true)).toEqual({ forma: 'full', size: 56 })    // iPhone 14 pantalla completa
+    expect(formaDePortada(73 + T - 1, true)).toEqual({ forma: 'head', size: 50 })
+    expect(formaDePortada(117, true)).toBe(null)                              // iPhone SE: no entra ni el texto
   })
   it('sin medir todavía (0): nada, para no dibujar uno que después se corte', () => {
     expect(formaDePortada(0, false)).toBe(null)

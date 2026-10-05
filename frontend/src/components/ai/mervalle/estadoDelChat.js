@@ -152,15 +152,19 @@ export function sinPensando(estado) {
  * queda a esa zona (es lo único que se achica: las preguntas sugeridas y el
  * cuadro de texto no ceden). El título y la explicación ocupan ~120 px.
  * Si no entra ni la cabeza, no va: un personaje rebanado se ve peor que
- * ninguno, y la cabecera de /ai ya tiene su cara. En celular, nunca más que la
- * cabeza.
+ * ninguno, y la cabecera de /ai ya tiene su cara.
+ * En celular se prefiere el CUERPO (grande si entra, uno más chico si no) antes
+ * que la cabeza sola: medido el 2026-10-05, a un Pro Max o un Android grande le
+ * sobran 170-210 px (cuerpo entero), a un iPhone 14 75-84 px (cuerpo chico), y
+ * a un iPhone SE o con las barras de Safari abiertas, nada. Antes iba "como
+ * mucho la cabeza" en todos: era de cuando la portada se cortaba arriba.
  * @returns {{ forma: string, size: number } | null}
  */
 export const ALTO_TEXTO_PORTADA = 120
 export function formaDePortada(alto, esCelular) {
   if (!alto) return null
   const opciones = esCelular
-    ? [['head', 50, 50]]
+    ? [['full', 112, 147], ['full', 56, 73], ['head', 50, 50]]
     : [['full', 112, 147], ['bust', 76, 83], ['head', 50, 50]]
   for (const [forma, size, altoDibujo] of opciones) {
     if (alto >= altoDibujo + ALTO_TEXTO_PORTADA) return { forma, size }
