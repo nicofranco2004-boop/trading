@@ -20,8 +20,8 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { fetchAiSnapshot } from '../utils/aiSnapshot'
 import { useVoz } from '../contexts/VozContext'
 import MervallE from '../components/ai/MervallE'
-import { useEstadoMervallE } from '../components/ai/mervalle/estadoDelChat'
-import { useIsMobile } from '../hooks/useIsMobile'
+import { useEstadoMervallE, enEscena, sinPensando, ANCHO_COMPANERO } from '../components/ai/mervalle/estadoDelChat'
+import { useAnchoMinimo } from '../hooks/useIsMobile'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -148,15 +148,16 @@ export default function RendiAI() {
   }
 
   const nPos = snapshot?.summary?.open_positions_count
-  // La cara de Mervall-E en la cabecera. UNO SOLO EN ESCENA por pantalla: con
-  // el chat vacío está la portada, y en compu con conversación, el que
-  // acompaña al cuadro de texto (AICoach). Ahí la cabecera va CONGELADA. Sólo
-  // en celular con conversación es ella la que sigue el chat (habla,
-  // reacciona, duerme sin cuota); "pensando" lo dice la burbuja de la espera,
-  // así que la cabecera se queda en reposo mientras tanto. No sigue al cursor.
+  // La cara de Mervall-E en la cabecera. UNO SOLO EN ESCENA por pantalla, con
+  // la misma regla que AICoach (estadoDelChat.enEscena): con el chat vacío
+  // está la portada, y con conversación y lugar al costado, el compañero del
+  // cuadro de texto. Ahí la cabecera va CONGELADA y en reposo — no cambia de
+  // cara junto con él. Sólo cuando no hay lugar al costado (celular, tablet)
+  // es ella la que sigue el chat; "pensando" lo dice la burbuja de la espera.
+  // No sigue al cursor.
   const mervalle = useEstadoMervallE()
-  const esCelular = useIsMobile()
-  const cabeceraEnEscena = esCelular && hilo.length > 0
+  const hayLugarAlCostado = useAnchoMinimo(ANCHO_COMPANERO)
+  const cabeceraEnEscena = enEscena({ hayConversacion: hilo.length > 0, hayLugarAlCostado }) === 'cabecera'
   const nBrokers = snapshot?.brokers?.length
 
   return (
@@ -165,7 +166,7 @@ export default function RendiAI() {
       <div className="flex items-center justify-between gap-3 px-4 sm:px-7 py-3.5 border-b border-line/60 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <MervallE size={38} recuadro quieto sigue={false} escucha congelado={!cabeceraEnEscena}
-            estado={mervalle.estado === 'pensando' ? 'reposo' : mervalle.estado} />
+            estado={cabeceraEnEscena ? sinPensando(mervalle.estado) : 'reposo'} />
           {/* QUÉ ESTÁ MIRANDO RENDI — va acá abajo del título y no como chip
               suelto a la derecha.
               El chip decía `hidden md:inline-flex`: aparecía según el ancho de

@@ -383,7 +383,10 @@ class Personaje {
     const red = G.reduced, age = t - this.stateT
     // "Escuchando" se superpone al reposo mientras tipeás o hablás por el
     // micrófono: no cambia el estado de fondo, sólo la cara de este momento.
-    this.escuchandoAhora = o.escucha && this.state === 'reposo' && (t - senal.tipeoT < 1.2 || senal.mic)
+    // Un congelado no escucha: se redibuja sólo al cambiarle el estado, y si eso
+    // caía justo después de una tecla quedaba con cara de "escuchando" (y los
+    // anillos prendidos) hasta el próximo cambio (auditoría ronda 2).
+    this.escuchandoAhora = o.escucha && !o.frozen && this.state === 'reposo' && (t - senal.tipeoT < 1.2 || senal.mic)
     const S = this.escuchandoAhora ? ESTADOS.escuchando : this.S
     const snap = instant || red
     // Congelado también: su único dibujo no puede salir mirando para un costado

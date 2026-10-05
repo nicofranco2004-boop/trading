@@ -36,14 +36,20 @@ describe('cupoDe — las etiquetas que se piden existen', () => {
     }
   })
 
-  it('cada cupoDe(…, "etiqueta") escrito a mano pide una etiqueta del catálogo', () => {
+  it('cada cupoDe / vecesMas con una etiqueta escrita a mano pide una del catálogo', () => {
     const malas = []
     let vistas = 0
+    const LLAMADAS = [
+      /cupoDe\([^,()]+,\s*(['"`])([^'"`]+)\1\s*\)/g,                 // cupoDe(plan, 'etiqueta')
+      /vecesMas\([^,()]+,[^,()]+,\s*(['"`])([^'"`]+)\1\s*\)/g,       // vecesMas(plan, otro, 'etiqueta')
+    ]
     for (const archivo of fuentes()) {
       const texto = readFileSync(archivo, 'utf8')
-      for (const m of texto.matchAll(/cupoDe\([^,()]+,\s*(['"`])([^'"`]+)\1\s*\)/g)) {
-        vistas++
-        if (!ETIQUETAS.has(m[2])) malas.push(`${archivo.replace(SRC + '/', '')}: «${m[2]}»`)
+      for (const patron of LLAMADAS) {
+        for (const m of texto.matchAll(patron)) {
+          vistas++
+          if (!ETIQUETAS.has(m[2])) malas.push(`${archivo.replace(SRC + '/', '')}: «${m[2]}»`)
+        }
       }
     }
     expect(vistas, 'el recorrido no encontró ningún cupoDe con etiqueta: ¿cambió la forma de llamarlo?').toBeGreaterThan(0)
@@ -53,7 +59,10 @@ describe('cupoDe — las etiquetas que se piden existen', () => {
   it('la etiqueta del chat no vuelve a escribirse a mano fuera del catálogo', () => {
     const copias = fuentes()
       .filter((a) => !a.endsWith('planCatalog.js'))
-      .filter((a) => readFileSync(a, 'utf8').includes(`'${CUPO_CHAT}'`))
+      .filter((a) => {
+        const t = readFileSync(a, 'utf8')
+        return [`'${CUPO_CHAT}'`, `"${CUPO_CHAT}"`, `\`${CUPO_CHAT}\``].some((c) => t.includes(c))
+      })
       .map((a) => a.replace(SRC + '/', ''))
     expect(copias, 'usá CUPO_CHAT de data/planCatalog').toEqual([])
   })

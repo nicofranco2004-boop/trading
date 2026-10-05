@@ -1,9 +1,11 @@
 // MervallE — el personaje de la IA de Rendi (Mervall-E AI).
 // ═══════════════════════════════════════════════════════════════════════════
 // Es la cara de la IA en todos los lugares donde la IA es "alguien": la
-// cabecera de /ai, la portada del chat vacío, el avatar de cada respuesta, la
-// isla flotante y los accesos (barra lateral, barra del celular, Más,
-// buscador, onboarding). Los botones chicos de "✦ Analizar" NO son él: son
+// cabecera de /ai, la portada del chat vacío (del tamaño que entra), el
+// compañero al costado del cuadro de texto (compu, con conversación), el
+// avatar de cada respuesta, la espera, la isla flotante, la landing y los
+// accesos (barra lateral, barra del celular, Más, buscador, onboarding, guía).
+// Quién se mueve en /ai lo decide mervalle/estadoDelChat.enEscena. Los botones chicos de "✦ Analizar" NO son él: son
 // una función de la IA y se quedan con la estrellita.
 //
 // Este archivo es sólo el puente con React. El dibujo y el movimiento viven

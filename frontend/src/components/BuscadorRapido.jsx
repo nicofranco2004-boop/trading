@@ -194,7 +194,7 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
     // Mervall-E AI no es una ruta del menú (el botón abre la página con
     // useCoachDrawer, que además marca la función como descubierta).
     const extra = [
-      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Mervall-E AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach', 'mervall', 'mervalle', 'rendi'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
+      { clase: 'pantalla', id: 'pantalla:/ai', titulo: 'Mervall-E AI', detalle: 'Asistente', claves: ['ia', 'asistente', 'preguntar', 'coach', 'mervall', 'mervalle', 'rendi', 'rendi ai'], icon: Sparkles, deEntrada: true, hacer: () => coach.open() },
     ]
     const acciones = [
       ...(atOwnLevel ? [] : [{

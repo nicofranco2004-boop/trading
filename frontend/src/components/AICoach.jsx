@@ -34,8 +34,8 @@ import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
 import MervallE from './ai/MervallE'
 import { avisarTipeo, avisarMicrofono } from './ai/mervalle/motor'
-import { useEstadoMervallE, useSaludoDelDia } from './ai/mervalle/estadoDelChat'
-import { useIsMobile } from '../hooks/useIsMobile'
+import { useEstadoMervallE, useSaludoDelDia, enEscena, formaDePortada, ANCHO_COMPANERO } from './ai/mervalle/estadoDelChat'
+import { useIsMobile, useAnchoMinimo } from '../hooks/useIsMobile'
 import { PRO_FEATURES, CUPO_CHAT } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
 
@@ -125,7 +125,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // copiado igual que en la isla, y las dos copias fallaban igual: sólo
   // escuchaban la rueda y el dedo, así que arrastrar la barra, el teclado y la
   // INERCIA del dedo en el celular se seguían yendo al fondo solas.
-  const { ref: scrollRef, alFondo } = usePegadoAlFondo()
+  // Con el chat vacío no hay nada que seguir: la portada arranca arriba.
+  const { ref: scrollRef, alFondo } = usePegadoAlFondo({ activo: messages.length > 0 || loading })
   // Ya NO se aborta el stream al desmontar. Era justo el bug: irse a otra
   // sección en medio de una respuesta la CANCELABA —y la ficha se cobraba
   // igual—. Ahora el stream lo maneja el proveedor, que no se desmonta.
@@ -215,13 +216,38 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
   // de lo que esté pasando (escuchando mientras tipeás, durmiendo sin cuota).
   const mervalle = useEstadoMervallE()
   const esCelular = useIsMobile()
-  // El saludo del día se gasta sólo si la portada se ve.
-  const saludando = useSaludoDelDia(messages.length === 0 && !loading)
-  // UNO SOLO EN ESCENA en /ai: con el chat vacío, la portada; en compu con la
-  // conversación andando, el que acompaña al cuadro de texto (es el único
-  // lugar donde se ve el monitor del pecho mientras piensa, habla y reacciona).
-  // En celular no hay lugar al costado: lo hace la cabecera.
-  const conCompanero = fullHeight && !esCelular && messages.length > 0
+  // UNO SOLO EN ESCENA en /ai (la regla vive en estadoDelChat.enEscena y la
+  // lee también la cabecera de RendiAI): con el chat vacío, la portada; con
+  // conversación y lugar al costado, el compañero del cuadro de texto (el
+  // único lugar donde se ve el monitor del pecho reaccionar); sin lugar
+  // (celular, tablet), la cabecera.
+  const hayLugarAlCostado = useAnchoMinimo(ANCHO_COMPANERO)
+  const escena = enEscena({ hayConversacion: messages.length > 0, hayLugarAlCostado: fullHeight && hayLugarAlCostado })
+  const conCompanero = escena === 'companero'
+  // La portada: el Mervall-E que ENTRA (es lo único que se achica). Si no
+  // entra ni la cabeza, no va. El lugar disponible NO es el alto de la zona:
+  // con el chat vacío la zona mide lo que su contenido, así que sin personaje
+  // "no había lugar" para ponerlo nunca (visto a 1440×900). Es la zona MÁS el
+  // espacio libre de la columna — el que hoy se lleva el `mt-auto` del cuadro
+  // de texto.
+  const [altoZona, setAltoZona] = useState(0)
+  useEffect(() => {
+    const el = scrollRef.current
+    const columna = el?.parentElement
+    if (!el || !columna || typeof ResizeObserver === 'undefined') return undefined
+    const medir = () => {
+      const ocupado = [...columna.children].reduce((a, c) => a + c.getBoundingClientRect().height, 0)
+      const libre = Math.max(0, columna.getBoundingClientRect().height - ocupado)
+      setAltoZona(Math.round(el.getBoundingClientRect().height + libre))
+    }
+    const ro = new ResizeObserver(medir)
+    ro.observe(el)
+    ro.observe(columna)
+    return () => ro.disconnect()
+  }, [scrollRef])
+  const portada = formaDePortada(altoZona, esCelular)
+  // El saludo del día se gasta sólo si la portada se ve CON su personaje.
+  const saludando = useSaludoDelDia(messages.length === 0 && !loading && !!portada)
 
   function handleFreeSubmit(e) {
     e.preventDefault()
@@ -309,14 +335,16 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         {/* Empty state — hero de bienvenida (clean pass 2026-07) */}
         {messages.length === 0 && !loading && (
           <div className="text-center pt-1 sm:pt-6 pb-2">
-            {/* Mervall-E en escena: cuerpo entero en compu; en celular, la cabeza
-                sola. La portada es lo único que se achica con el chat vacío: el
-                cuerpo entero empujaba el título fuera de la pantalla, y el busto
-                (visto en un 375×812) quedaba con la cabeza cortada arriba. La
-                cabecera queda congelada mientras tanto. */}
-            <MervallE size={esCelular ? 50 : 112} forma={esCelular ? 'head' : 'full'} escucha
-              estado={saludando ? 'saludo' : mervalle.estado} tono={mervalle.tono}
-              className="mx-auto" />
+            {/* Mervall-E en escena, del tamaño que ENTRA (formaDePortada): cuerpo
+                entero, busto o cabeza; en celular, como mucho la cabeza. Antes
+                iba fijo y la zona, pegada al fondo, cortaba justo lo de arriba:
+                un robot sin cabeza en una notebook de 768 px, y sin cara ni
+                título en un iPhone con Safari. La cabecera queda congelada. */}
+            {portada && (
+              <MervallE size={portada.size} forma={portada.forma} escucha
+                estado={saludando ? 'saludo' : mervalle.estado} tono={mervalle.tono}
+                className="mx-auto" />
+            )}
             <p className="text-[22px] font-semibold text-ink-0 tracking-tight mt-2 mb-1.5">
               ¿Qué querés saber de tu plata?
             </p>
@@ -327,7 +355,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
           </div>
         )}
 
-        {/* Mensajes — user: burbuja violeta a la derecha; asistente: la cara de Mervall-E (congelada) +
+        {/* Mensajes — user: burbuja violeta a la derecha; asistente: la cara de Mervall-E (congelada: el que se mueve es el que está en escena) +
             respuesta ESTRUCTURADA (veredicto + titular + prosa + tarjetas +
             fuentes + repreguntas) cuando el modelo emite el bloque ---RENDI---;
             fallback transparente a texto plano si no viene (clean pass 2026-07). */}
@@ -476,20 +504,19 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             durante 15 segundos no dice nada; "Buscando los precios de hoy" sí,
             y la misma espera se hace corta cuando se entiende en qué se va el
             tiempo. La frase la manda el backend (_PASOS_HUMANOS en main.py).
-            El visor barriendo va sólo si no hay un Mervall-E en escena al lado
-            del cuadro de texto: dos caras animándose a la vez es una de más. */}
+            La burbuja va SIEMPRE, debajo de la pregunta, donde se mira: sin ella
+            la espera quedaba en blanco en compu. Con el compañero en escena, el
+            visor va congelado (dos caras animándose a la vez es una de más). */}
         {loading && (
           <div className="flex justify-start items-start gap-2.5">
-            {!conCompanero && (
-              <div className="flex items-center bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-3.5 py-2.5">
-                <MervallE size={22} forma="visor" estado="cargando" />
-              </div>
-            )}
+            <div className="flex items-center bg-bg-2 dark:bg-bg-2/50 rounded-2xl rounded-bl-sm px-3.5 py-2.5">
+              <MervallE size={22} forma="visor" estado="cargando" congelado={conCompanero} />
+            </div>
             {/* Los pasos de este turno, en orden: cada uno entra al llegar y
                 los que quedaron atrás llevan tilde. Son los que manda el
                 servidor (VozContext.pasos): ninguno inventado. */}
             {pasos.length > 0 && (
-              <div className="flex flex-col gap-0.5 pt-2" aria-live="polite">
+              <div className="flex flex-col gap-0.5 pt-2">
                 {pasos.map((p, k) => {
                   const actual = k === pasos.length - 1
                   return (
@@ -505,9 +532,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         )}
 
         {/* Para lectores de pantalla: una zona viva que SIEMPRE está y cambia
-            su texto (una que aparece de golpe con un dibujo oculto adentro no
-            se anuncia). */}
-        <p className="sr-only" aria-live="polite">{loading ? 'Mervall-E está pensando' : ''}</p>
+            su texto (una que aparece de golpe con el contenido adentro no se
+            anuncia). Dice el paso actual que manda el servidor, o "pensando". */}
+        <p className="sr-only" aria-live="polite">
+          {loading ? (pasos.length ? `${pasos[pasos.length - 1]}…` : 'Mervall-E está pensando') : ''}
+        </p>
 
         {/* Upgrade promo: cuando hubo 429 con upgrade.available=true,
             reemplaza el banner rojo con la card promocional. Tono explicativo
@@ -537,7 +566,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
       {availableQuestions.length > 0 && messages.length === 0 && (
         /* Estado inicial: chips como CARDS en grilla (clean pass 2026-07) */
         <div className="px-4 pb-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[240px] overflow-y-auto pr-1">
+          {/* En pantallas bajas (la mayoría de los iPhone, notebooks de 768) las
+              sugeridas ceden alto: son las que scrollean, y la portada de arriba
+              es lo único que se achica si ellas no lo hacen. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[150px] [@media(min-height:820px)]:max-h-[240px] overflow-y-auto pr-1">
             {availableQuestions.map(q => (
               <button
                 key={q}
@@ -612,19 +644,20 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
         })()}
         {mic.aviso && <div className="mb-2">{mic.aviso}</div>}
         <div className="flex items-end gap-3">
-        {/* EL COMPAÑERO, al costado del cuadro (sólo compu, con conversación):
-            mira lo que escribís, piensa con velas en el pecho, habla con las
-            barras de volumen y reacciona con el monitor en verde, ámbar o rojo.
-            Sin él, el monitor del pecho —lo que hace financiero al personaje—
-            sólo existía en la portada vacía y no se veía nunca en una
-            conversación (auditoría 2026-10-04). */}
+        {/* EL COMPAÑERO, al costado del cuadro (desde 1024 px, con conversación):
+            mira lo que escribís, piensa, habla y reacciona. A 60 px el monitor
+            del pecho se lee por el COLOR (verde, ámbar o rojo con el tono de la
+            respuesta), no por el dibujo: las velas y las barras son de 1 px.
+            Sin él, el pecho sólo existía en la portada vacía y no se veía nunca
+            en una conversación (auditoría 2026-10-04). */}
         {conCompanero && (
           <MervallE size={60} forma="bust" escucha estado={mervalle.estado} tono={mervalle.tono}
-            className="mb-1" />
+            className="mb-7" />
         )}
+        <div className="flex-1 min-w-0">
         <form
           onSubmit={handleFreeSubmit}
-          className={`flex-1 min-w-0 flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl py-1.5 transition-colors ${mic.grabando ? 'px-1.5' : 'pl-2 pr-2'}`}
+          className={`flex items-center gap-2.5 bg-bg-1 border border-line focus-within:border-data-violet/50 rounded-2xl py-1.5 transition-colors ${mic.grabando ? 'px-1.5' : 'pl-2 pr-2'}`}
         >
           {mic.boton}
           {/* Mientras graba, el panel del micrófono OCUPA el pie: el cuadro de
@@ -658,7 +691,6 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
             </>
           )}
         </form>
-        </div>
         {/* EN CELULAR VAN UNO ABAJO DEL OTRO. Medido a 375px: las dos frases
             son largas, así que al costado se partían en dos y tres renglones
             pegados sin un espacio en el medio — 52px de alto para algo que no
@@ -671,6 +703,8 @@ export default function AICoach({ snapshot, suggested, autoAsk, fullHeight = fal
               {restantesTexto(usage)}
             </span>
           )}
+        </div>
+        </div>
         </div>
       </div>
 

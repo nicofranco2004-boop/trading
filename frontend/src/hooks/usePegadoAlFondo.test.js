@@ -28,13 +28,26 @@ describe('seguir la respuesta sin arrastrar al que está leyendo', () => {
     expect(fuente).toMatch(/el\.scrollTop = el\.scrollHeight\s*\n\s*ultimoAutoRef\.current = el\.scrollTop/)
   })
 
+  it('con el chat vacío no se pega al fondo: la portada arranca ARRIBA (auditoría Mervall-E, ronda 2)', () => {
+    // Pegada al fondo, una portada que no entra pierde lo de arriba: en un
+    // iPhone con Safari no se veían ni la cara ni el título.
+    expect(fuente).toMatch(/if \(!activo\) \{\s*\n\s*el\.scrollTop = 0/)
+    // …y queda lista para pegarse apenas haya conversación.
+    expect(fuente).toMatch(/if \(!activo\) \{[\s\S]*?pegadoRef\.current = true/)
+    // El chat le dice cuándo hay algo que seguir; la isla, que nunca muestra
+    // portada, lo usa siempre activo.
+    expect(chat).toMatch(/usePegadoAlFondo\(\{ activo: messages\.length > 0 \|\| loading \}\)/)
+  })
+
   it('corre antes de que se pinte, para que el salto no se vea', () => {
     expect(fuente).toMatch(/useLayoutEffect/)
   })
 
   it('las DOS pantallas usan el mismo, sin copia propia', () => {
     for (const [nombre, src] of [['la isla', isla], ['el chat grande', chat]]) {
-      expect(src, nombre).toMatch(/usePegadoAlFondo\(\)/)
+      // Con o sin opciones (el chat le pasa `{ activo }` para que la portada
+      // vacía arranque arriba): lo que importa es que sea ESTE hook.
+      expect(src, nombre).toMatch(/usePegadoAlFondo\((\{[^)]*\})?\)/)
       // Los restos de la versión copiada: si vuelve alguno, volvieron las dos
       // copias que se desincronizan.
       expect(src, nombre).not.toMatch(/onWheel=/)

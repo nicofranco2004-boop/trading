@@ -46,12 +46,15 @@ const CERCA_DEL_FONDO = 80
 const TOLERANCIA = 2
 
 /**
+ * @param {{ activo?: boolean }} [opciones]
+ *   activo — false mientras no haya nada que seguir (el chat vacío): el
+ *            contenedor se queda arriba de todo. Por defecto true.
  * @returns {{ ref, alFondo }}
  *   ref     — al contenedor que scrollea.
  *   alFondo — "volvé a seguir la respuesta". Se llama al mandar una pregunta
  *             nueva: ahí el usuario quiere ver lo que viene, esté donde esté.
  */
-export function usePegadoAlFondo() {
+export function usePegadoAlFondo({ activo = true } = {}) {
   const ref = useRef(null)
   const pegadoRef = useRef(true)
   // Dónde quedó la barra la última vez que la movimos NOSOTROS. -1 = todavía
@@ -63,6 +66,17 @@ export function usePegadoAlFondo() {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    // Sin nada que seguir (el chat vacío) no se pega al fondo: si la portada no
+    // entra, lo que queda afuera tiene que ser lo de ABAJO (la explicación), no
+    // la cara y el título. Pegado al fondo, en un iPhone con Safari no se veía
+    // ni el personaje ni "¿Qué querés saber de tu plata?" (auditoría ronda 2).
+    // Queda listo para pegarse apenas haya conversación.
+    if (!activo) {
+      el.scrollTop = 0
+      pegadoRef.current = true
+      ultimoAutoRef.current = -1
+      return
+    }
     const seMovioSolo = ultimoAutoRef.current >= 0
       && Math.abs(el.scrollTop - ultimoAutoRef.current) > TOLERANCIA
     if (seMovioSolo) {

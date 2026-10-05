@@ -33,7 +33,10 @@ export const DURACION_REACCION = { contento: 3200, atento: 4200, serio: 4200 }
  * respuestas siguientes hasta recargar.
  */
 export function sinConsultasDeChat({ upgradeInfo, codigoDelError, kindDeCuotaDelError, usageDelError } = {}) {
-  if (!upgradeInfo) return false
+  // El 429 de cuota trae `chat_quota_exceeded`, pero la tarjeta de "pasate de
+  // plan" sólo se le ofrece a Free y Plus: un Pro o un asesor sin consultas
+  // llega sin `upgradeInfo` y antes se quedaba con cara de confundido.
+  if (!upgradeInfo && codigoDelError !== 'chat_quota_exceeded') return false
   if (codigoDelError === 'free_chat_not_allowed') return false
   return kindDeCuota(usageDelError, kindDeCuotaDelError) === 'chat'
 }
@@ -65,6 +68,15 @@ export function estadoDelChat(voz = {}) {
   return { estado: 'reposo', tono: null }
 }
 
+/** La reacción de la última respuesta, si todavía le queda tiempo; si no, null.
+ *  Es una cuenta, no un estado guardado: no hay nada que "apagar". La versión
+ *  con estado guardado se quedaba pegada dos veces (auditorías 1 y 2 del
+ *  2026-10-04): si llegaba otra respuesta en esos segundos, o si la nueva se
+ *  cortaba y volvía a quedar como última la anterior, nadie la apagaba. */
+export function reaccionVigente(tono, llego, ahora = Date.now()) {
+  return restoDeReaccion(tono, llego, ahora) > 0 ? { tono, llego } : null
+}
+
 /** Cuánto le queda a la reacción de una respuesta que llegó en `llego` (ms,
  *  0 si ya pasó). Se cuenta desde que LLEGÓ, no desde que se montó la
  *  pantalla: volver a /ai a los 3 s no la repite entera. */
@@ -92,22 +104,68 @@ export function useEstadoMervallE() {
   const ultima = ultimaRespuesta(voz.thread)
   const llego = ultima?.llego || null
   const tono = ultima?.meta?.tone || null
-  const [reaccion, setReaccion] = useState(null)
+  // La reacción se CALCULA en cada render (reaccionVigente). El temporizador
+  // sólo pide un render más cuando se le acaba el tiempo.
+  const [, otraVuelta] = useState(0)
+  const reaccion = reaccionVigente(tono, llego)
 
   useEffect(() => {
     const resto = restoDeReaccion(tono, llego)
     if (!resto) return undefined
-    setReaccion({ tono, llego })
-    const id = setTimeout(() => setReaccion(null), resto)
+    const id = setTimeout(() => otraVuelta((n) => n + 1), resto + 20)
     return () => clearTimeout(id)
   }, [llego, tono])
 
-  // La reacción vale SÓLO mientras siga siendo la de la última respuesta. Si
-  // en esos segundos llega otra (sin tono) o se vacía el chat, el efecto de
-  // arriba cancela el temporizador y nadie apagaba la cara: quedaba contento
-  // para siempre, con el pecho en verde (auditoría 2026-10-04).
-  const vigente = reaccion && reaccion.llego === llego ? reaccion : null
-  return estadoDelChat({ ...voz, reaccion: vigente })
+  return estadoDelChat({ ...voz, reaccion })
+}
+
+/* ── Quién está en escena ────────────────────────────────────────────────
+   Uno solo se mueve por pantalla en /ai. La regla vive ACÁ y la leen las
+   dos pantallas que la necesitan (AICoach y RendiAI): estaba copiada en las
+   dos, igual hoy pero libre de separarse mañana. */
+
+/** Desde este ancho hay lugar para el compañero al costado del cuadro de
+ *  texto. Más angosto (tablet con la barra lateral abierta) le comía el
+ *  cuadro: a 768 px quedaban 320 px para escribir. */
+export const ANCHO_COMPANERO = 1024
+
+/**
+ * @returns {'portada'|'companero'|'cabecera'} quién sigue el chat:
+ *   · chat vacío → la portada;
+ *   · con conversación y lugar al costado → el compañero del cuadro de texto;
+ *   · con conversación y sin lugar (celular, tablet) → la cabecera.
+ */
+export function enEscena({ hayConversacion, hayLugarAlCostado }) {
+  if (!hayConversacion) return 'portada'
+  return hayLugarAlCostado ? 'companero' : 'cabecera'
+}
+
+/** Mientras espera, "pensando" lo dice el visor barriendo de la burbuja de la
+ *  espera: quien la acompañe (la cabecera, la de la isla) queda en reposo, así
+ *  no hay dos caras animándose a la vez. */
+export function sinPensando(estado) {
+  return estado === 'pensando' ? 'reposo' : estado
+}
+
+/**
+ * Qué Mervall-E entra en la portada del chat vacío, según el alto que le
+ * queda a esa zona (es lo único que se achica: las preguntas sugeridas y el
+ * cuadro de texto no ceden). El título y la explicación ocupan ~120 px.
+ * Si no entra ni la cabeza, no va: un personaje rebanado se ve peor que
+ * ninguno, y la cabecera de /ai ya tiene su cara. En celular, nunca más que la
+ * cabeza.
+ * @returns {{ forma: string, size: number } | null}
+ */
+export const ALTO_TEXTO_PORTADA = 120
+export function formaDePortada(alto, esCelular) {
+  if (!alto) return null
+  const opciones = esCelular
+    ? [['head', 50, 50]]
+    : [['full', 112, 147], ['bust', 76, 83], ['head', 50, 50]]
+  for (const [forma, size, altoDibujo] of opciones) {
+    if (alto >= altoDibujo + ALTO_TEXTO_PORTADA) return { forma, size }
+  }
+  return null
 }
 
 const CLAVE_SALUDO = 'mervalle_saludo_dia'

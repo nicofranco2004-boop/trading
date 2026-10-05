@@ -26,7 +26,7 @@ import { useArrastrable } from '../../hooks/useArrastrable'
 import { paraLaIsla } from '../ai/preguntasSugeridas'
 import MervallE from '../ai/MervallE'
 import { avisarTipeo, avisarMicrofono } from '../ai/mervalle/motor'
-import { useEstadoMervallE } from '../ai/mervalle/estadoDelChat'
+import { useEstadoMervallE, sinPensando } from '../ai/mervalle/estadoDelChat'
 
 
 
@@ -221,9 +221,10 @@ export default function RendiMate() {
         {...manija}
         className="flex items-center gap-2 px-3 py-2 border-b border-line-2 cursor-grab active:cursor-grabbing">
         {/* Con la tarjeta abierta, "pensando" lo dice el visor barriendo de la
-            línea de espera de abajo: la cabecera se queda en reposo mientras
-            tanto, para que no haya dos caras animándose a la vez. */}
-        <MervallE size={26} escucha estado={mervalle.estado === 'pensando' ? 'reposo' : mervalle.estado} />
+            línea de espera de abajo: la cabecera se queda en reposo y QUIETA
+            (sin flotar ni mirar alrededor) mientras tanto, para que no haya dos
+            caras animándose a la vez. */}
+        <MervallE size={26} quieto escucha estado={sinPensando(mervalle.estado)} />
         <span className="flex-1 min-w-0 text-[12.5px] font-semibold text-ink-0 leading-tight">
           Mervall-E AI
           {estado && <span className="block font-normal text-[11px] text-ink-3">{estado}</span>}
@@ -284,6 +285,11 @@ export default function RendiMate() {
             apaga cuando empieza a llegar el texto: desde ahí lo dice el cursor
             (antes seguía girando "pensando…" debajo de la respuesta escrita).
             Si lo que llega no tiene texto para mostrar todavía, sigue. */}
+        {/* Para lectores de pantalla: una zona viva que existe siempre (la línea
+            de espera de abajo aparece de golpe y no se anuncia). */}
+        <p className="sr-only" aria-live="polite">
+          {sending && iEscribiendo === -1 ? `${paso || 'Mirando tu cartera'}…` : ''}
+        </p>
         {sending && iEscribiendo === -1 && (
           // key = el paso: cada paso nuevo que manda el servidor entra en vez de
           // reemplazar el texto de golpe.

@@ -2,7 +2,10 @@
 // decisión de producto (ver estadoDelChat.js): cada caso de acá es una frase
 // de la propuesta aprobada el 2026-10-03.
 import { describe, it, expect } from 'vitest'
-import { estadoDelChat, ultimaRespuesta, tocaSaludar, restoDeReaccion, sinConsultasDeChat, REACCION_POR_TONO, DURACION_REACCION } from './estadoDelChat'
+import {
+  estadoDelChat, ultimaRespuesta, tocaSaludar, restoDeReaccion, reaccionVigente, sinConsultasDeChat,
+  enEscena, sinPensando, formaDePortada, ALTO_TEXTO_PORTADA, REACCION_POR_TONO, DURACION_REACCION,
+} from './estadoDelChat'
 import { ESTADOS } from './motor'
 
 const base = { sending: false, loading: false, status: 'idle', askError: null, upgradeInfo: null, sinCupo: null,
@@ -71,6 +74,14 @@ describe('estadoDelChat — la cara según lo que pasa', () => {
     expect(e({ ...sinChat, sending: true }).estado).toBe('hablando')
   })
 
+  it('un Pro o un asesor sin consultas también duerme (a ellos no se les ofrece pasar de plan)', () => {
+    expect(e({ askError: 'Llegaste al máximo', codigoDelError: 'chat_quota_exceeded', kindDeCuotaDelError: 'chat' }).estado)
+      .toBe('durmiendo')
+    // …pero si lo agotado eran los ✦ Analizar, no.
+    expect(e({ askError: 'Llegaste al máximo', codigoDelError: 'chat_quota_exceeded', kindDeCuotaDelError: 'analyses' }).estado)
+      .toBe('confundido')
+  })
+
   it('re-escuchar el último audio sin consultas: habla, no duerme (la isla dice "está hablando")', () => {
     expect(e({ ...sinChat, status: 'playing' }).estado).toBe('hablando')
   })
@@ -100,6 +111,53 @@ describe('restoDeReaccion — se cuenta desde que llegó la respuesta', () => {
     expect(restoDeReaccion('neg', 1000, 1000 + DURACION_REACCION.serio + 1)).toBe(0)
     expect(restoDeReaccion('neutral', 1000, 1000)).toBe(0)
     expect(restoDeReaccion('pos', null, 1000)).toBe(0)
+  })
+})
+
+describe('reaccionVigente — una cuenta, no algo que haya que apagar', () => {
+  it('vale mientras le queda tiempo', () => {
+    expect(reaccionVigente('pos', 1000, 2000)).toEqual({ tono: 'pos', llego: 1000 })
+  })
+  it('LA REACCIÓN QUE RESUCITABA (ronda 2): la respuesta nueva se corta, vuelve a ser última la vieja, y ya pasó su tiempo → nada', () => {
+    // respuesta A llega en t=1000 con tono pos; el usuario repregunta, la
+    // respuesta B se corta a mitad y el chat la saca: A vuelve a ser la última.
+    expect(reaccionVigente('pos', 1000, 1000 + DURACION_REACCION.contento + 500)).toBe(null)
+  })
+  it('sin tono o con tono neutral: nada', () => {
+    expect(reaccionVigente('neutral', 1000, 1000)).toBe(null)
+    expect(reaccionVigente(null, 1000, 1000)).toBe(null)
+  })
+})
+
+describe('enEscena — uno solo se mueve en /ai', () => {
+  it('chat vacío → la portada, haya o no lugar al costado', () => {
+    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: true })).toBe('portada')
+    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: false })).toBe('portada')
+  })
+  it('con conversación: el compañero si hay lugar, la cabecera si no (celular, tablet)', () => {
+    expect(enEscena({ hayConversacion: true, hayLugarAlCostado: true })).toBe('companero')
+    expect(enEscena({ hayConversacion: true, hayLugarAlCostado: false })).toBe('cabecera')
+  })
+  it('sinPensando deja todo igual menos "pensando"', () => {
+    expect(sinPensando('pensando')).toBe('reposo')
+    expect(sinPensando('contento')).toBe('contento')
+  })
+})
+
+describe('formaDePortada — el Mervall-E que entra', () => {
+  const T = ALTO_TEXTO_PORTADA
+  it('en compu: cuerpo entero si entra; si no, busto; si no, cabeza; si no, nada', () => {
+    expect(formaDePortada(147 + T, false)).toEqual({ forma: 'full', size: 112 })
+    expect(formaDePortada(147 + T - 1, false)).toEqual({ forma: 'bust', size: 76 })
+    expect(formaDePortada(83 + T - 1, false)).toEqual({ forma: 'head', size: 50 })
+    expect(formaDePortada(50 + T - 1, false)).toBe(null)
+  })
+  it('en celular, como mucho la cabeza', () => {
+    expect(formaDePortada(900, true)).toEqual({ forma: 'head', size: 50 })
+    expect(formaDePortada(50 + T - 1, true)).toBe(null)
+  })
+  it('sin medir todavía (0): nada, para no dibujar uno que después se corte', () => {
+    expect(formaDePortada(0, false)).toBe(null)
   })
 })
 

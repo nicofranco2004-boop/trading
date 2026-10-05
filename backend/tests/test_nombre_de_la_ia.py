@@ -45,12 +45,13 @@ NOMBRE_VIEJO = re.compile(
     rf"coach{_ENTRE}(de{_ENTRE})?ia\b"        # "Coach IA", "coach de IA"
     rf"|\b(el|al|del){_ENTRE}coach\b"         # "Memoria del Coach", "Sos el coach…"
     rf"|\bai{_ENTRE}coach\b"                 # "AI Coach"
-    rf"|\brendi(?:{_ENTRE}|[-‐‑_·])(?:ai|ia)\b"   # "Rendi AI" (hasta el 2026-10-03), "Rendi IA", "Rendi-AI"
+    rf"|\brendi(?:{_ENTRE}|\s*[-‐‑–—_·]\s*)(?:ai|ia)\b"   # "Rendi AI" (hasta el 2026-10-03), "Rendi IA", "Rendi – AI"
     # La IA llamada "Rendi" a secas (el personaje habla, lee, escucha; la app no):
-    rf"|\bpregunt[\wáéíóúñ]*{_ENTRE}a{_ENTRE}rendi\b"            # "Preguntale a Rendi"
+    rf"|\bpreg[uú]nt[\wáéíóúñ]*{_ENTRE}a{_ENTRE}rendi\b"         # "Preguntale/Pregúntale a Rendi"
     rf"|\b(?:habl|escrib)[\wáéíóúñ]*le{_ENTRE}a{_ENTRE}rendi\b"   # "Hablarle a Rendi"
-    rf"|\brendi{_ENTRE}(?:está|te){_ENTRE}(?:habl|lee|leé|escuch|contest)"  # "Rendi te lee"
-    rf"|\bla{_ENTRE}voz{_ENTRE}de{_ENTRE}rendi\b", re.I)          # "La voz de Rendi"
+    rf"|\brendi{_ENTRE}(?:está|te){_ENTRE}(?:habl|lee|leé|escuch|contest|piens|pens)"  # "Rendi te lee", "Rendi está pensando"
+    rf"|\bvoz{_ENTRE}de{_ENTRE}rendi\b"                           # "La voz de Rendi"
+    rf"|\bescribi[oó]{_ENTRE}rendi\b", re.I)                    # "Ese texto no lo escribió Rendi"
 # Los tests citan el texto viejo a propósito; los scripts no llegan a nadie.
 NO_SE_LEEN = {"tests", "scripts", "__pycache__", "node_modules", "venv"}
 # El único lugar donde los nombres viejos TIENEN que estar: los valores que
@@ -156,7 +157,12 @@ class ElNombreViejoNoVuelve(unittest.TestCase):
                        'x = "Rendi IA"',
                        'x = "La voz de Rendi no está disponible"',
                        'x = "Preguntale a Rendi"',
-                       'x = "Rendi te lee la respuesta"'):
+                       'x = "Rendi te lee la respuesta"',
+                       'x = "Rendi está pensando"',
+                       'x = "Pregúntale a Rendi"',
+                       'x = "Rendi – AI"',
+                       'x = "voz de Rendi"',
+                       'x = "Ese texto no lo escribió Rendi"'):
             self.assertTrue(_vistos(fuente), fuente)
 
     def test_rendi_como_la_app_no_es_el_nombre_viejo(self):
