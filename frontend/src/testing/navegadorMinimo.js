@@ -91,6 +91,9 @@ class Nodo {
   blur() {}
   get value() { return this._valor !== undefined ? this._valor : (this.atributos.value ?? '') }
   set value(v) { this._valor = String(v) }
+  // Un <input> sin `type` es de texto, como en el navegador. React mira esto
+  // para decidir si a ese campo le corresponde el `onChange` de cada tecla.
+  get type() { return this.atributos.type ?? (this.nodeName === 'INPUT' ? 'text' : undefined) }
   get options() {
     const out = []
     const recorrer = (n) => {
@@ -151,6 +154,10 @@ export function instalarNavegadorMinimo() {
     activeElement: null,
     defaultView: win,
     capturas: new Map(),     // puntero → elemento que lo tiene agarrado
+    // React pregunta UNA vez, al cargarse, si este navegador tiene el evento
+    // `input` (`'oninput' in document`). Si no lo encuentra, cree que es un
+    // navegador viejo y escribir en un campo no dispara el `onChange`.
+    oninput: null,
   }
   doc.body = new Nodo('body', doc)
   doc.documentElement = new Nodo('html', doc)
@@ -348,4 +355,24 @@ export async function puntero(tipo, debajo, datos = {}) {
       }
     }
   })
+}
+
+// ── EL TECLADO ───────────────────────────────────────────────────────────────
+
+/**
+ * Escribir en un campo como el navegador: cambia el valor y avisa con el
+ * evento `input`, que es lo que React escucha para el `onChange`. El valor se
+ * pone por el setter ORIGINAL: React vigila el del campo para saber si cambió,
+ * y si lo pasáramos por ahí creería que no cambió nada.
+ */
+export async function escribir(campo, valor) {
+  await enActo(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(campo), 'value').set.call(campo, valor)
+    repartir('input', campo, {})
+  })
+}
+
+/** Apretar una tecla (`'Enter'`, `'Escape'`…) con el foco en `nodo`. */
+export async function tecla(nodo, key) {
+  await enActo(async () => { repartir('keydown', nodo, { key }) })
 }
