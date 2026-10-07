@@ -125,10 +125,10 @@ class _Db(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _batch(self, bid):
+    def _batch(self, bid, status="confirmed"):
         self.conn.execute(
             "INSERT INTO import_batches (id,user_id,broker,parser_format,file_hash,status) "
-            "VALUES (?,?,?,?,?,'confirmed')", (bid, self.uid, self.BROKER, "ieb", bid))
+            "VALUES (?,?,?,?,?,?)", (bid, self.uid, self.BROKER, "ieb", bid, status))
 
     def _raw(self, bid):
         return self.conn.execute(
@@ -147,7 +147,10 @@ class PersisterScaleGuardTest(_Db):
     (una tx construida a mano simula lo que el normalizer viejo dejaba pasar)."""
 
     def _persist(self, txs, bid="b-p"):
-        self._batch(bid)
+        # 'preview': es el estado en el que llega un lote a `persist_batch` en
+        # producción (los tres caminos que confirman lo exigen antes). El
+        # persister lo reclama al empezar y lo deja 'confirmed' al terminar.
+        self._batch(bid, status="preview")
         raw_ids = {t.row_index: self._raw(bid) for t in txs}
         with self.conn:
             ps.persist_batch(self.conn, uid=self.uid, batch_id=bid, txs=txs,

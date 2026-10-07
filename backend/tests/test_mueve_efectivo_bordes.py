@@ -281,6 +281,182 @@ class F_Concurrencia(unittest.TestCase):
         self.assertAlmostEqual(_cash(self.uid), 1200, places=2,
                                msg="dos PUT simultáneos acreditaron el resultado dos veces")
 
+    # ── El mismo choque, pero SIEMPRE ────────────────────────────────────────
+    # El test de arriba depende de que los hilos coincidan por casualidad: medido
+    # el 2026-10-03, falló 3 de 100 corridas. Y lo que sí veía era la punta: en
+    # la MITAD de las carreras los dos pedidos decidían acreditar, pero una
+    # segunda falla (el saldo se escribía como un número calculado en Python, y
+    # el segundo pisaba al primero) se comía una de las dos sumas y el saldo
+    # daba bien por accidente.
+    #
+    # Acá el choque se fuerza: los dos pedidos tienen que haber LEÍDO la foto de
+    # la operación antes de que cualquiera de los dos escriba. Es el orden real de
+    # un doble click en "Guardar", no uno inventado. Si el código no los deja
+    # coincidir (porque uno espera al otro), la barrera se vence sola y sigue.
+
+    def _juntar_los_primeros(self, nombre, partes=2):
+        """Los primeros `partes` pasos por `main.<nombre>` se esperan entre sí."""
+        original = getattr(main, nombre)
+        barrera = threading.Barrier(partes, timeout=3)
+        quedan = [partes]
+        candado = threading.Lock()
+
+        def esperando(*a, **k):
+            r = original(*a, **k)
+            with candado:
+                toca, quedan[0] = quedan[0] > 0, quedan[0] - 1
+            if toca:
+                try:
+                    barrera.wait()
+                except threading.BrokenBarrierError:
+                    pass
+            return r
+        setattr(main, nombre, esperando)
+        self.addCleanup(setattr, main, nombre, original)
+
+    def _contar_movimientos(self):
+        """Anota cada vez que se mueve plata de este usuario (sólo mira)."""
+        original = main._adjust_broker_cash
+        movidas = []
+
+        def contando(conn, uid, broker, delta):
+            if uid == self.uid and delta:
+                movidas.append(delta)
+            return original(conn, uid, broker, delta)
+        main._adjust_broker_cash = contando
+        self.addCleanup(setattr, main, "_adjust_broker_cash", original)
+        return movidas
+
+    def _dos_put_a_la_vez(self, oid, cuerpo):
+        respuestas, errores = [], []
+
+        def poner():
+            try:
+                respuestas.append(self.client.put(f"/api/operations/{oid}",
+                                                  headers=self.h, json=cuerpo))
+            except Exception as ex:      # pragma: no cover
+                errores.append(ex)
+        hilos = [threading.Thread(target=poner) for _ in range(2)]
+        [t.start() for t in hilos]
+        [t.join() for t in hilos]
+        self.assertFalse(errores, errores)
+        return respuestas
+
+    def test_doble_click_que_lee_la_misma_foto_mueve_la_plata_UNA_vez(self):
+        oid = self.client.post("/api/operations", headers=self.h,
+                               json=_op(mueve_efectivo=False)).json()["id"]
+        # `_meta_movio_efectivo` es lo primero que corre después de leer la foto
+        # guardada, y antes de cualquier escritura.
+        self._juntar_los_primeros("_meta_movio_efectivo")
+        movidas = self._contar_movimientos()
+
+        rs = self._dos_put_a_la_vez(oid, _op(mueve_efectivo=True))
+
+        self.assertEqual([r.status_code for r in rs], [200, 200], [r.text for r in rs])
+        self.assertEqual(movidas, [200], "los dos pedidos acreditaron el resultado")
+        self.assertAlmostEqual(_cash(self.uid), 1200, places=2,
+                               msg="el doble click dejó el saldo con el resultado dos veces")
+        m = _meta(oid)
+        self.assertTrue(m.get("cash_on"))
+        self.assertAlmostEqual(m.get("cash_native"), 200, places=2,
+                               msg="la foto no coincide con lo que se acreditó: el borrado devolvería otra cifra")
+
+    def test_doble_click_al_APAGAR_devuelve_la_plata_UNA_vez(self):
+        oid = self.client.post("/api/operations", headers=self.h,
+                               json=_op(mueve_efectivo=True)).json()["id"]
+        self.assertAlmostEqual(_cash(self.uid), 1200, places=2)
+        self._juntar_los_primeros("_meta_movio_efectivo")
+        movidas = self._contar_movimientos()
+
+        self._dos_put_a_la_vez(oid, _op(mueve_efectivo=False))
+
+        self.assertEqual(movidas, [-200], "los dos pedidos devolvieron la plata")
+        self.assertAlmostEqual(_cash(self.uid), 1000, places=2)
+
+    def test_y_despues_el_borrado_deja_el_saldo_donde_empezo(self):
+        """El recorrido completo: doble click y después borrar. Si la foto y el
+        saldo quedaron desparejos, acá aparece la plata fabricada."""
+        oid = self.client.post("/api/operations", headers=self.h,
+                               json=_op(mueve_efectivo=False)).json()["id"]
+        self._juntar_los_primeros("_meta_movio_efectivo")
+        self._dos_put_a_la_vez(oid, _op(mueve_efectivo=True))
+        r = self.client.delete(f"/api/operations/{oid}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertAlmostEqual(_cash(self.uid), 1000, places=2,
+                               msg="después del doble click y el borrado quedó plata inventada")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class H_DosSumasAlMismoSaldo(unittest.TestCase):
+    """`_adjust_broker_cash` es la ÚNICA puerta por la que se mueve el efectivo
+    (34 llamadores: altas, ediciones, borrados, deshacer, plazos fijos, bonos,
+    conversiones, el importador). Si dos movimientos del mismo broker se cruzan,
+    tienen que contar los dos.
+
+    Antes leía el saldo, sumaba en Python y escribía el resultado: el segundo en
+    escribir pisaba al primero con una cuenta hecha sobre el saldo viejo.
+
+    Se prueba la función y no un endpoint porque el hueco estaba ADENTRO de ella,
+    entre su lectura y su escritura: no hay ningún paso de por medio donde un
+    endpoint deje meter la espera. Las dos conexiones son reales y commitean de
+    verdad, como dos pedidos del threadpool."""
+
+    def setUp(self):
+        self.uid, _ = _usuario()
+
+    def test_dos_movimientos_que_se_cruzan_cuentan_los_dos(self):
+        barrera = threading.Barrier(2, timeout=3)
+
+        class _Leido:
+            def __init__(self, filas):
+                self._filas = filas
+
+            def fetchone(self):
+                return self._filas[0] if self._filas else None
+
+            def fetchall(self):
+                return list(self._filas)
+
+        class ConexionQueSeCruza:
+            """Igual que la conexión real; sólo que después de LEER el saldo de
+            efectivo espera a que la otra también lo haya leído."""
+            def __init__(self, conn):
+                self._c = conn
+
+            def execute(self, sql, params=()):
+                cur = self._c.execute(sql, params)
+                s = " ".join(sql.split()).upper()
+                if s.startswith("SELECT") and "FROM POSITIONS" in s and "IS_CASH=1" in s:
+                    filas = cur.fetchall()
+                    try:
+                        barrera.wait()
+                    except threading.BrokenBarrierError:
+                        pass
+                    return _Leido(filas)
+                return cur
+
+            def __getattr__(self, nombre):
+                return getattr(self._c, nombre)
+
+        errores = []
+
+        def mover(delta):
+            conn = main.get_db()
+            try:
+                main._adjust_broker_cash(ConexionQueSeCruza(conn), self.uid, "Schwab", delta)
+                conn.commit()
+            except Exception as ex:      # pragma: no cover
+                errores.append(ex)
+            finally:
+                conn.close()
+
+        hilos = [threading.Thread(target=mover, args=(d,)) for d in (200, 300)]
+        [t.start() for t in hilos]
+        [t.join() for t in hilos]
+        self.assertFalse(errores, errores)
+        self.assertAlmostEqual(_cash(self.uid), 1500, places=2,
+                               msg="dos movimientos simultáneos y uno se perdió")
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 class G_OperacionesQueNoSonMias(unittest.TestCase):

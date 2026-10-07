@@ -11009,6 +11009,7 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
         val = _pf_value(row)
         monto = round(val["valor_hoy"], 2)
         credited = None
+        br = None
         if data.broker:
             br = conn.execute(
                 "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
@@ -11023,6 +11024,19 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
             if not ok_match:
                 conn.close()
                 raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
+        # RECLAMO, antes de mover un peso (2026-10-03). El "¿sigue abierto?" de
+        # arriba se leyó sin bloqueo: con un doble click en "Cobrar" los dos
+        # pedidos lo veían abierto y los dos acreditaban capital + interés. El
+        # cierre se hacía al final y sin volver a preguntar. Ahora el cierre ES
+        # la pregunta: sólo uno puede pasar el plazo fijo de abierto a cerrado.
+        if conn.execute(
+            "UPDATE plazos_fijos SET closed_at=datetime('now') "
+            "WHERE id=? AND user_id=? AND closed_at IS NULL",
+            (pid, uid),
+        ).rowcount != 1:
+            conn.close()
+            raise HTTPException(409, "Ese plazo fijo ya se cobró.")
+        if br is not None:
             _adjust_broker_cash(conn, uid, data.broker, monto)
             credited = data.broker
         interes = round(val["interes_hoy"], 2)
@@ -11049,10 +11063,6 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
                 (uid, _fecha_op, data.broker or row["banco"],
                  row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
             )
-        conn.execute(
-            "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
-            (pid, uid),
-        )
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
@@ -11528,11 +11538,20 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
       generan un balance negativo visible (señal de que falta cargar el cash
       inicial / hacer un import del estado inicial).
     - Se permiten balances negativos — señal visible de overdraft / margen.
+
+    LA SUMA LA HACE LA BASE, no Python (2026-10-03). Antes se leía el saldo, se
+    sumaba acá y se escribía el RESULTADO. Con dos pedidos a la vez los dos leían
+    el mismo saldo y el segundo pisaba al primero: una de las dos sumas se perdía.
+    Medido con dos ediciones simultáneas: en 138 de 300 corridas una acreditación
+    desapareció así. Esa lectura corre FUERA de transacción (sqlite3 abre la
+    transacción recién en la primera escritura), así que nada la protegía.
+    `invested = invested + ?` se evalúa con la base ya tomada para escribir, sobre
+    el saldo vigente en ese instante — en SQLite y en Postgres.
     """
     if delta == 0:
         return
     cash = conn.execute(
-        "SELECT id, invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+        "SELECT id FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
         (uid, broker),
     ).fetchone()
     if not cash:
@@ -11552,10 +11571,25 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
             (uid, broker, asset_name, delta),
         )
         return
-    new_invested = (cash['invested'] or 0) + delta
     conn.execute(
-        "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-        (new_invested, cash['id'], uid),
+        "UPDATE positions SET invested=COALESCE(invested, 0) + ? WHERE id=? AND user_id=?",
+        (delta, cash['id'], uid),
+    )
+
+
+def _tomar_saldo(conn, uid: int, broker: str) -> None:
+    """Toma el saldo de efectivo del broker PARA ESCRIBIR, antes de leerlo.
+
+    Para los que no pueden delegarle la cuenta a la base (`_adjust_broker_cash`
+    sí puede): los que chequean "saldo insuficiente" o promedian el TC con el
+    saldo vigente. sqlite3 abre la transacción recién en la primera escritura, así
+    que un SELECT anterior lee sin bloqueo y otro pedido puede cambiar el saldo
+    antes de que éste escriba. Esta escritura no cambia nada, pero desde acá hasta
+    el commit nadie más puede tocar el saldo (en SQLite, la base entera; en
+    Postgres, la fila), y lo que se lea después es lo vigente."""
+    conn.execute(
+        "UPDATE positions SET invested=invested WHERE user_id=? AND broker=? AND is_cash=1",
+        (uid, broker),
     )
 
 
@@ -11865,10 +11899,24 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
 
             # 2. Update / create cash position con el target exacto
             if cash_pos:
-                conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                    (data.target_cash, cash_pos['id'], uid),
-                )
+                # RECLAMO (2026-10-03). La diferencia de arriba sale de un saldo
+                # leído sin bloqueo, y esa diferencia se anota como aporte o retiro
+                # en el capital aportado. Con un doble click los dos pedidos la
+                # anotaban: el saldo quedaba bien (se pisa con el mismo número) pero
+                # el capital aportado contaba el ajuste dos veces. El WHERE repite
+                # el saldo leído: si otro pedido lo cambió, no se toca nada.
+                if conn.execute(
+                    "UPDATE positions SET invested=? WHERE id=? AND user_id=? AND COALESCE(invested, 0)=?",
+                    (data.target_cash, cash_pos['id'], uid, current_cash),
+                ).rowcount != 1:
+                    ahora = conn.execute(
+                        "SELECT COALESCE(invested, 0) AS c FROM positions WHERE id=? AND user_id=?",
+                        (cash_pos['id'], uid)).fetchone()
+                    if ahora and abs(float(ahora["c"]) - data.target_cash) < 0.01:
+                        # El otro pedido ya lo dejó en este mismo número (doble click).
+                        return {"ok": True, "no_change": True, "current_cash": float(ahora["c"])}
+                    raise HTTPException(409, "El saldo cambió mientras lo ajustabas. "
+                                             "Recargá la página y probá de nuevo.")
             else:
                 asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
                 conn.execute(
@@ -11972,6 +12020,12 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 sign = 1 if data.direction == 'deposit' else -1
 
                 # 2. Actualizar posición cash
+                # Primero se TOMA el saldo para escribir y recién después se lee
+                # (2026-10-03). Abajo se escribe el saldo como un número calculado
+                # acá; leído sin bloqueo, dos movimientos a la vez leían el mismo
+                # saldo y el segundo pisaba al primero (y el "saldo insuficiente"
+                # se chequeaba contra un número viejo). Ver `_tomar_saldo`.
+                _tomar_saldo(conn, uid, data.broker_name)
                 cash_pos = conn.execute(
                     "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                     (uid, data.broker_name),
@@ -12665,7 +12719,12 @@ def _adjust_cash(conn, uid: int, broker_name: str, asset: str, delta: float, tc_
       new_tc = (existing_usd * existing_tc + delta_usd * tc_for_basis) / (existing_usd + delta_usd)
 
     Si `tc_for_basis` es None: comportamiento legacy, no toca tc_compra.
+
+    El saldo se toma para escribir ANTES de leerlo (ver `_tomar_saldo`): el
+    promedio del TC necesita el saldo vigente, así que no alcanza con que la base
+    haga la suma.
     """
+    _tomar_saldo(conn, uid, broker_name)
     cash = conn.execute(
         "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
         (uid, broker_name),
@@ -13233,9 +13292,20 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                             },
                         }), cur.lastrowid, uid))
 
-                    # Actualizar / eliminar la posición
+                    # Actualizar / eliminar la posición.
+                    #
+                    # RECLAMO DEL LOTE (2026-10-03). Los lotes se leyeron arriba sin
+                    # bloqueo, y el "¿alcanza la cantidad?" se contestó con esa foto.
+                    # Con un doble click en "Vender" los dos pedidos veían el lote
+                    # entero: el segundo borraba un lote que ya no estaba (0 filas, sin
+                    # que nadie lo mirara) y acreditaba la plata de la venta OTRA VEZ.
+                    # Ahora la escritura repite la cantidad leída y se cuenta: si el
+                    # lote cambió en el medio, se aborta la venta entera (el `with
+                    # conn:` deshace la operación ya insertada) y no se acredita nada.
                     if take >= pos_qty - 1e-9:
-                        conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))
+                        lote = conn.execute(
+                            "DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
+                            (p["id"], uid, p["quantity"]))
                     else:
                         # Partial sell — el lote remanente conserva su porción
                         # proporcional de invested y commissions (1 - ratio).
@@ -13243,10 +13313,14 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         remaining_ratio = 1 - ratio
                         new_invested = round((p["invested"] or 0) * remaining_ratio, 6) if p["invested"] is not None else None
                         new_commissions = round(pos_buy_commissions * remaining_ratio, 6)
-                        conn.execute(
-                            "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                            (new_qty, new_invested, new_commissions, p["id"], uid)
+                        lote = conn.execute(
+                            "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                            "WHERE id=? AND user_id=? AND quantity=?",
+                            (new_qty, new_invested, new_commissions, p["id"], uid, p["quantity"])
                         )
+                    if lote.rowcount != 1:
+                        raise HTTPException(409, "La tenencia cambió mientras vendías (¿se mandó "
+                                                 "dos veces?). Recargá la página para ver cómo quedó.")
                     remaining -= take
 
                 # ── Phase 2 — acreditar proceeds al cash del broker (moneda nativa) ──
@@ -15031,12 +15105,21 @@ def _delete_one_movement(conn, uid: int, mid: str):
             native = manual_usd * _config_tc_blue(conn, uid)
         else:
             native = manual_usd
+        # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
+        # Es también el RECLAMO (2026-10-03), y por eso va ANTES de tocar el saldo:
+        # el monto se leyó arriba sin bloqueo, y con un doble click en "Borrar" los
+        # dos pedidos devolvían el depósito entero. El WHERE repite lo leído: si
+        # otro pedido ya lo puso en cero —o cargó otro depósito en el mismo mes y
+        # el monto cambió— no toca la fila y no se mueve plata.
+        if conn.execute(
+            f"UPDATE monthly_entries SET {col}=0, {nat_col}=0 "
+            f"WHERE id=? AND user_id=? AND COALESCE({col}, 0)=? AND COALESCE({nat_col}, 0)=?",
+            (me_id, uid, manual_usd, stored_native),
+        ).rowcount != 1:
+            raise HTTPException(409, "Ese movimiento cambió mientras lo borrabas. "
+                                     "Recargá la página para ver cómo quedó.")
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
         _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
-        # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
-        conn.execute(
-            f"UPDATE monthly_entries SET {col}=0, {nat_col}=0 WHERE id=? AND user_id=?", (me_id, uid),
-        )
         since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
         return since, {broker}
 
@@ -15856,6 +15939,11 @@ def _meta_movio_efectivo(meta: dict) -> bool:
 # ofrece: sumarle éste sería contar la misma plata dos veces.
 _SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow')
 
+# Cuántas veces la edición vuelve a leer la operación si otro pedido la cambió
+# entre la lectura y la escritura (ver `update_operation`). Con un doble click
+# alcanza con una vuelta; las otras son margen para tres pedidos a la vez.
+_INTENTOS_DE_RECLAMO = 3
+
 
 def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
     """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
@@ -15988,77 +16076,106 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
     devuelve lo que se había acreditado. Mientras el backend decidía sólo por la
     foto guardada, el check del formulario en modo edición no hacía nada — se
     veía como una opción y era un adorno.
+
+    DOS PEDIDOS A LA VEZ (2026-10-03). Cuánta plata mover sale de la foto guardada
+    (`undo_meta_json`), y esa foto se lee ANTES de la primera escritura — o sea,
+    fuera de toda transacción y sin ningún bloqueo. Con un doble click en
+    "Guardar" los dos pedidos leían "todavía no movía plata", los dos acreditaban
+    el resultado, y el saldo quedaba con el doble. Medido: pasaba en la mitad de
+    las carreras.
+
+    El arreglo es el mismo "reclamo" que ya usa el borrado: la escritura de la
+    operación SÓLO entra si la foto sigue siendo la que se leyó, y la plata se
+    mueve DESPUÉS de ganar ese reclamo, dentro de la misma transacción. El que
+    pierde no movió nada; vuelve a leer la foto —que ya dice lo que hizo el
+    otro— y recalcula. En un doble click eso da "no hay nada que mover".
     """
     conn = get_db()
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
-        prev = conn.execute(
-            "SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
-            (oid, uid)).fetchone()
-        if not prev:
-            # Se corta ACÁ y no después del UPDATE. Abajo se mueve efectivo, y
-            # hacerlo por una operación que no existe —o que es de otro usuario—
-            # dependía de que nadie commiteara antes del 404 para no dejar plata
-            # inventada. Eso funcionaba, pero por omisión: cualquier commit que se
-            # agregue en el medio lo rompería en silencio.
+        for _intento in range(_INTENTOS_DE_RECLAMO):
+            prev = conn.execute(
+                "SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
+                (oid, uid)).fetchone()
+            if not prev:
+                # Se corta ACÁ, antes de mover un peso: hacerlo por una operación
+                # que no existe —o que es de otro usuario— dejaría plata inventada.
+                conn.close()
+                raise HTTPException(404, "Not found")
+            meta_prev = {}
+            if prev["undo_meta_json"]:
+                try:
+                    meta_prev = json.loads(prev["undo_meta_json"]) or {}
+                except (ValueError, TypeError):
+                    meta_prev = {}
+            movia_antes = _meta_movio_efectivo(meta_prev)
+            pedido = _pide_mover_efectivo(op)
+            # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
+            # ventas FIFO, cobros de bonos): su efectivo lo mueve otro mecanismo. El
+            # formulario ya no se los ofrece; acá se hace valer igual, porque un cliente
+            # viejo —o uno que reintente— puede mandarlo lo mismo.
+            importada = conn.execute(
+                "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
+            ).fetchone() is not None
+            if not _acepta_interruptor_de_efectivo(importada, meta_prev):
+                pedido = None
+            # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
+            mueve_ahora = movia_antes if pedido is None else pedido
+
+            undo_meta_nuevo = None
+            # Lo que hay que mover se DECIDE acá y se APLICA después del reclamo.
+            movimientos = []
+            if movia_antes or mueve_ahora:
+                broker_antes = meta_prev.get("cash_broker") or prev["broker"]
+                fecha_antes = prev["date"] or op.date
+                # Lo que se aplicó al saldo, en la moneda del broker (no en dólares:
+                # ver `_cash_nativo_de_meta`). Si se apaga, lo de ahora es cero.
+                nat_antes = (_cash_nativo_de_meta(conn, uid, meta_prev, broker_antes, fecha_antes)
+                             if movia_antes else 0.0)
+                cash_ahora = float(op.pnl_usd or 0) if mueve_ahora else 0.0
+                nat_ahora = (_pnl_en_moneda_del_broker(conn, uid, op.broker, cash_ahora, op.date)
+                             if cash_ahora else 0.0)
+                if broker_antes != op.broker:
+                    movimientos = [(broker_antes, -nat_antes), (op.broker, nat_ahora)]
+                elif nat_ahora != nat_antes:
+                    movimientos = [(op.broker, nat_ahora - nat_antes)]
+                # Se PISAN sólo las claves del efectivo. El resto de la foto se conserva
+                # —`futuro_id` sobre todo—: reescribirla entera la perdía, y sin ella
+                # borrar la operación ya no reabría la posición de futuros que la generó.
+                meta_nuevo = dict(meta_prev)
+                meta_nuevo.update({"src": "manual_futures", "cash": cash_ahora,
+                                   "cash_native": nat_ahora, "cash_broker": op.broker,
+                                   "cash_on": bool(mueve_ahora)})
+                undo_meta_nuevo = json.dumps(meta_nuevo)
+
+            # EL RECLAMO. El WHERE repite lo que se leyó y de lo que depende la
+            # cuenta de arriba (la foto, el broker y la fecha). Si otro pedido lo
+            # cambió en el medio, esto no toca ninguna fila y no se movió nada.
+            reclamo = conn.execute(
+                """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
+                   exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
+                   currency=?, fx_to_usd=?,
+                   undo_meta_json=COALESCE(?, undo_meta_json)
+                   WHERE id=? AND user_id=? AND broker=? AND date=?
+                     AND COALESCE(undo_meta_json, '')=?""",
+                (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
+                 op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
+                 currency, op.fx_to_usd, undo_meta_nuevo, oid, uid,
+                 prev["broker"], prev["date"], prev["undo_meta_json"] or ''),
+            )
+            if reclamo.rowcount == 1:
+                break
+            conn.rollback()
+        else:
             conn.close()
-            raise HTTPException(404, "Not found")
-        meta_prev = {}
-        if prev and prev["undo_meta_json"]:
-            try:
-                meta_prev = json.loads(prev["undo_meta_json"]) or {}
-            except (ValueError, TypeError):
-                meta_prev = {}
-        movia_antes = _meta_movio_efectivo(meta_prev)
-        pedido = _pide_mover_efectivo(op)
-        # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
-        # ventas FIFO, cobros de bonos): su efectivo lo mueve otro mecanismo. El
-        # formulario ya no se los ofrece; acá se hace valer igual, porque un cliente
-        # viejo —o uno que reintente— puede mandarlo lo mismo.
-        importada = conn.execute(
-            "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
-        ).fetchone() is not None
-        if not _acepta_interruptor_de_efectivo(importada, meta_prev):
-            pedido = None
-        # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
-        mueve_ahora = movia_antes if pedido is None else pedido
+            raise HTTPException(409, "La operación cambió mientras la guardabas. "
+                                     "Recargá la página para ver cómo quedó.")
 
-        undo_meta_nuevo = None
-        if movia_antes or mueve_ahora:
-            broker_antes = meta_prev.get("cash_broker") or prev["broker"]
-            fecha_antes = prev["date"] or op.date
-            # Lo que se aplicó al saldo, en la moneda del broker (no en dólares:
-            # ver `_cash_nativo_de_meta`). Si se apaga, lo de ahora es cero.
-            nat_antes = (_cash_nativo_de_meta(conn, uid, meta_prev, broker_antes, fecha_antes)
-                         if movia_antes else 0.0)
-            cash_ahora = float(op.pnl_usd or 0) if mueve_ahora else 0.0
-            nat_ahora = (_pnl_en_moneda_del_broker(conn, uid, op.broker, cash_ahora, op.date)
-                         if cash_ahora else 0.0)
-            if broker_antes != op.broker:
-                _adjust_broker_cash(conn, uid, broker_antes, -nat_antes)
-                _adjust_broker_cash(conn, uid, op.broker, nat_ahora)
-            elif nat_ahora != nat_antes:
-                _adjust_broker_cash(conn, uid, op.broker, nat_ahora - nat_antes)
-            # Se PISAN sólo las claves del efectivo. El resto de la foto se conserva
-            # —`futuro_id` sobre todo—: reescribirla entera la perdía, y sin ella
-            # borrar la operación ya no reabría la posición de futuros que la generó.
-            meta_nuevo = dict(meta_prev)
-            meta_nuevo.update({"src": "manual_futures", "cash": cash_ahora,
-                               "cash_native": nat_ahora, "cash_broker": op.broker,
-                               "cash_on": bool(mueve_ahora)})
-            undo_meta_nuevo = json.dumps(meta_nuevo)
-
-        conn.execute(
-            """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
-               exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
-               currency=?, fx_to_usd=?,
-               undo_meta_json=COALESCE(?, undo_meta_json)
-               WHERE id=? AND user_id=?""",
-            (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-             op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
-             currency, op.fx_to_usd, undo_meta_nuevo, oid, uid),
-        )
+        # Con el reclamo ganado la base ya está tomada para escribir: nadie más
+        # puede mover esta operación hasta el commit.
+        for broker_mov, delta in movimientos:
+            _adjust_broker_cash(conn, uid, broker_mov, delta)
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
         if not row:
@@ -16130,9 +16247,14 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
 
     # CLAIM ATÓMICO: borrar la fila ES el lock — dos requests concurrentes no pueden
     # reversar el cash dos veces (la 2da matchea 0 filas). Mismo patrón que el resto.
-    if conn.execute("DELETE FROM operations WHERE id=? AND user_id=?",
-                    (oid, uid)).rowcount != 1:
-        raise HTTPException(409, "Esa operación ya se está borrando.")
+    # Y repite lo que se leyó para decidir (2026-10-03): la foto, el broker y la
+    # fecha. Con sólo el id, una edición que entraba en el medio cambiaba cuánto
+    # había acreditado la operación y el borrado devolvía el monto VIEJO.
+    if conn.execute("DELETE FROM operations WHERE id=? AND user_id=? AND COALESCE(broker, '')=? "
+                    "AND COALESCE(date, '')=? AND COALESCE(undo_meta_json, '')=?",
+                    (oid, uid, op["broker"] or "", op["date"] or "", raw)).rowcount != 1:
+        raise HTTPException(409, "Esa operación cambió o ya se está borrando. "
+                                 "Recargá la página para ver cómo quedó.")
 
     if src == "fifo_sell":
         lot = meta.get("lot") or {}
@@ -16366,9 +16488,16 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
     pos_row = {k: pos[k] for k in pos.keys() if k != "id"}
 
     # CLAIM ATÓMICO: el DELETE es el lock (evita el doble crédito por doble-click).
-    if conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
-                    (pid, uid)).rowcount != 1:
-        raise HTTPException(409, "Esa posición ya se está borrando.")
+    # Y repite lo que se leyó para decidir (2026-10-03): antes miraba sólo el id, y
+    # una venta parcial que entraba en el medio dejaba el lote más chico pero el
+    # borrado devolvía el costo ENTERO —la venta ya había acreditado lo suyo: plata
+    # fabricada—. Si el lote cambió, no se borra ni se devuelve nada.
+    if conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND COALESCE(broker, '')=? "
+                    "AND COALESCE(quantity, 0)=? AND COALESCE(invested, 0)=?",
+                    (pid, uid, pos["broker"] or "", pos["quantity"] or 0,
+                     pos["invested"] or 0)).rowcount != 1:
+        raise HTTPException(409, "Esa posición cambió o ya se está borrando. "
+                                 "Recargá la página para ver cómo quedó.")
 
     # Crédito NETO = costo − autodepósito: el cash vuelve al nivel PREVIO al alta.
     credit = round(cost - autodep_native, 6)
@@ -28008,8 +28137,12 @@ def _undo_last_trade_handler(uid: int) -> dict:
             if abs(float(row["quantity"] or 0) - info["quantity"]) > 1e-9:
                 return {"error": ("La posición cambió desde que se registró "
                                   "(¿venta parcial?) — deshacela desde la app.")}
-            conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
-                         (info["position_id"], uid))
+            # RECLAMO (2026-10-03): borrar la fila ES el permiso para devolver la
+            # plata. Sin contar las filas, dos "deshacé" a la vez devolvían el
+            # costo dos veces (el segundo borraba 0 filas sin enterarse).
+            if conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
+                            (info["position_id"], uid, row["quantity"])).rowcount != 1:
+                return {"error": "Esa compra ya se está deshaciendo. Nada más para deshacer."}
             _adjust_broker_cash(conn, uid, br["name"], info["cash_debited"])
     finally:
         conn.close()
@@ -36205,6 +36338,8 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                     seed_state=data.seed_state,
                 )
             except _import_persister.PersistError as ex:
+                if ex.row_index is None:   # no es de una fila: el lote ya estaba confirmado
+                    raise HTTPException(409, ex.message)
                 raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
 
 
