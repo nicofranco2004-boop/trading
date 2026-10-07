@@ -110,7 +110,12 @@ class BorrarConservaElDia(unittest.TestCase):
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "USDT"))
         self.conn.commit()
-        self._import(_csv(
+        # Cada movimiento se importa EL DÍA QUE PASÓ (un import por fila, confirmado
+        # ese día): es lo que hace que la foto de esa noche sea la primera que lo
+        # tiene. Un solo import confirmado en diciembre sería un mundo imposible: el
+        # cron anota lo aportado del MES, así que un depósito de febrero ya cargado
+        # figuraría desde el 1-feb.
+        for fila in (
             "2025-12-02,DEPOSITO,IBKR,,,,100000,,,0,USD,",
             "2025-12-03,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,",
             # MSFT sin dividendos: la app no deja borrar de a una compra un activo
@@ -120,7 +125,8 @@ class BorrarConservaElDia(unittest.TestCase):
             "2026-02-20,DEPOSITO,IBKR,,,,10000,,,0,USD,",
             "2026-03-10,RETIRO,IBKR,,,,4000,,,0,USD,",
             "2026-03-15,DIVIDENDO,IBKR,AAPL,,,30,,,0,USD,",
-        ))
+        ):
+            self._import(_csv(fila))
         # Las fotos del cron, con el mismo UPSERT que `snapshots_job` (pisa la
         # sintética de fin de mes que el import dejó en esa fecha).
         for d, nd in APORTADO_DEL_DIA.items():
@@ -149,7 +155,8 @@ class BorrarConservaElDia(unittest.TestCase):
         self.conn.close()
 
     # ── infra ────────────────────────────────────────────────────────────────
-    def _import(self, csv_bytes: bytes, confirmado: str = None) -> None:
+    def _import(self, csv_bytes: bytes, confirmado: str = None,
+                confirmado_utc: str = None) -> None:
         """Importa por el mismo camino que la app y fecha la CONFIRMACIÓN del import:
         `confirmado` (día argentino), o el día del movimiento más viejo del archivo —
         "lo cargó el mismo día que pasó". En producción la escribe `persist_batch`
@@ -173,7 +180,7 @@ class BorrarConservaElDia(unittest.TestCase):
         with self.conn:
             # 12:00 en Argentina = 15:00 UTC, que es como lo guarda `datetime('now')`.
             self.conn.execute("UPDATE import_batches SET confirmed_at=? WHERE id=?",
-                              (f"{confirmado} 15:00:00", sid))
+                              (confirmado_utc or f"{confirmado} 15:00:00", sid))
 
     def _tx(self, op_type: str, fecha: str) -> int:
         r = self.conn.execute(
@@ -303,12 +310,14 @@ class BorrarConservaElDia(unittest.TestCase):
         self.conn.execute("UPDATE snapshots SET net_deposited=55555 "
                           "WHERE user_id=? AND date LIKE '2026-01-%'", (self.uid,))
         self.conn.commit()
-        r = self.client.delete(f"/api/movements/tx-{self._tx('DIVIDEND', '2026-03-15')}")
+        # Un depósito: borrar un dividendo ya no cambia ninguna foto, y el test no
+        # mediría el alcance.
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-20')}")
         self.assertEqual(r.status_code, 200, r.text)
         enero = {row["net_deposited"] for row in self.conn.execute(
             "SELECT net_deposited FROM snapshots WHERE user_id=? AND date LIKE '2026-01-%'",
             (self.uid,))}
-        self.assertEqual(enero, {55555.0}, "el borrado de marzo reescribió enero")
+        self.assertEqual(enero, {55555.0}, "el borrado de febrero reescribió enero")
 
     # ── 5. si el cálculo falla, no se toca ninguna foto ─────────────────────
     def test_si_el_calculo_falla_no_se_toca_ninguna_foto(self):
@@ -402,8 +411,8 @@ class BorrarConservaElDia(unittest.TestCase):
         hoy = "2026-03-20"
         self.conn.execute("DELETE FROM snapshots WHERE user_id=? AND date > ?",
                           (self.uid, hoy))
-        self._import(_csv("2026-03-15,DEPOSITO,IBKR,,,,10000,,,0,USD,",
-                          "2026-03-20,DEPOSITO,IBKR,,,,5000,,,0,USD,"))
+        self._import(_csv("2026-03-15,DEPOSITO,IBKR,,,,10000,,,0,USD,"))
+        self._import(_csv("2026-03-20,DEPOSITO,IBKR,,,,5000,,,0,USD,"))
         for d in _dias(2026, 3, 15, 19):
             self.conn.execute("UPDATE snapshots SET net_deposited=116000, total_value=116000 "
                               "WHERE user_id=? AND date=?", (self.uid, d))
@@ -857,6 +866,198 @@ class BorrarConservaElDia(unittest.TestCase):
         # Terminada la otra escritura, la lectura pasa.
         self.assertIsNotNone(main._foto_contable(self.conn, self.uid)["canon"])
         self.conn.rollback()
+
+    # ── 11. segunda auditoría ────────────────────────────────────────────────
+    def _gemelo(self, cual: str) -> int:
+        """El id del depósito de 7.000 del 12-mar importado con la nota `cual`."""
+        return self.conn.execute(
+            "SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
+            "JOIN import_raw_rows r ON r.id=n.raw_row_id WHERE b.user_id=? AND "
+            "n.date='2026-03-12' AND r.raw_json LIKE ?", (self.uid, f"%{cual}%")).fetchone()["id"]
+
+    def _triplicar(self, n: int) -> None:
+        """El depósito de 7.000 del 12-mar importado `n` veces: el 12, el 18 y el 25."""
+        for nota, dia in (("original", "2026-03-12"), ("copia-a", "2026-03-18"),
+                          ("copia-b", "2026-03-25"))[:n]:
+            self._import(_csv(f"2026-03-12,DEPOSITO,IBKR,,,,7000,,,0,USD,{nota}"), confirmado=dia)
+            self._subir(dia, "2026-03-31", 7000)
+
+    def test_duplicado_borrar_el_original_y_despues_la_copia(self):
+        """El depósito no existió: se borran las dos filas, primero el original. Cada
+        borrado se lleva una capa; no puede llevarse dos veces la misma."""
+        self._triplicar(2)
+        for cual in ("original", "copia-a"):
+            r = self.client.delete(f"/api/movements/tx-{self._gemelo(cual)}")
+            self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el original y después la copia")
+
+    def test_triplicado_borrar_dos_en_cualquier_orden(self):
+        """Tres filas iguales; se borran la del medio y la primera. Queda una, que las
+        fotos tienen desde el 12."""
+        self._triplicar(3)
+        for cual in ("copia-a", "original"):
+            r = self.client.delete(f"/api/movements/tx-{self._gemelo(cual)}")
+            self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("triplicado, borrar dos", self._con({"2026-03-12": 7000}))
+
+    def test_deposito_a_mano_con_un_resumen_importado_tarde_en_el_mismo_mes(self):
+        """Un depósito a mano del 25-feb y un depósito del 10-feb que entró con el
+        resumen importado el 5-mar. A la foto de cierre de febrero le "falta" el
+        importado, que no es lo borrado: no puede hacer creer que el a mano no estaba."""
+        self._depositar_a_mano("2026-02-25", 3000)
+        self._subir("2026-02-25", "2026-03-31", 3000)
+        self._import(_csv("2026-02-10,DEPOSITO,IBKR,,,,7000,,,0,USD,"), confirmado="2026-03-05")
+        self._subir("2026-03-05", "2026-03-31", 7000)
+        r = self.client.delete(f"/api/movements/{self._me_dep(2)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el a mano con un resumen tardío",
+                                    self._con({"2026-03-05": 7000}))
+
+    def test_deshacer_devuelve_exactamente_lo_que_saco_el_borrado(self):
+        """Dos posiciones a mano cargadas el mismo día: las fotos saltaron 4.000 juntas,
+        así que borrar una no encuentra un salto de 2.000 y recorta el mes. El
+        deshacer tiene que devolver, foto por foto, lo que el borrado sacó (antes
+        recortaba de nuevo con las cuentas de después y le sumaba 2.000 a fotos del
+        10 al 14 que nunca lo tuvieron)."""
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        for activo in ("KO", "PEP"):
+            r = self.client.post("/api/positions", json={
+                "broker": "MANUAL", "asset": activo, "buy_price": 50, "quantity": 40,
+                "invested": 2000, "entry_date": "2026-02-10"})
+            self.assertEqual(r.status_code, 200, r.text)
+        self._subir("2026-02-15", "2026-03-31", 4000)
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND broker='MANUAL' AND asset='KO'",
+            (self.uid,)).fetchone()["id"]
+        r = self.client.delete(f"/api/positions/{pid}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar una de las dos", self._con({"2026-02-15": 2000}))
+        r = self.client.post(f"/api/operations/undo/{r.json()['undo_token']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("deshacerlo", self._con({"2026-02-15": 4000}))
+
+    def test_un_movimiento_fechado_despues_de_su_import(self):
+        """Un retiro del 21-mar que se importó el 20 (una liquidación a 24 hs): el cron
+        anota lo aportado del MES, así que la foto del 20 ya lo tiene."""
+        self._import(_csv("2026-03-21,RETIRO,IBKR,,,,1000,,,0,USD,"), confirmado="2026-03-20")
+        self._subir("2026-03-20", "2026-03-31", -1000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('WITHDRAW', '2026-03-21')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el retiro fechado después de su import")
+
+    def test_un_movimiento_fechado_el_mes_siguiente_a_su_import(self):
+        """Un retiro del 2-abr importado el 27-mar: el cron anota la suma de TODO lo
+        cargado, sin mirar fechas, así que las fotos del 27 al 31 de marzo ya lo
+        tienen aunque las cuentas de marzo no lo incluyan. Borrado, lo pierden ésas."""
+        self._import(_csv("2026-04-02,RETIRO,IBKR,,,,6000,,,0,USD,"), confirmado="2026-03-27")
+        self._subir("2026-03-27", "2026-03-31", -6000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('WITHDRAW', '2026-04-02')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el retiro de abril importado en marzo")
+
+    def test_la_foto_de_hoy_no_cuenta_como_cierre_del_mes(self):
+        """Hoy es 20-mar. Un depósito a mano del 15 (las fotos lo tienen) y, hoy,
+        DESPUÉS de la foto de hoy, se importa un depósito de 7.000 del 2-mar. A la
+        foto de hoy le "falta" el importado; tomada como cierre de marzo, hacía
+        creer que el a mano tampoco estaba y no se tocaba ninguna foto."""
+        hoy = "2026-03-20"
+        self._hasta_hoy(hoy, con_foto_de_hoy=True)
+        self._depositar_a_mano("2026-03-15", 3000)
+        self._subir("2026-03-15", hoy, 3000)
+        self._import(_csv("2026-03-02,DEPOSITO,IBKR,,,,7000,,,0,USD,"), confirmado=hoy)
+        with mock.patch.object(main, "_iso_today", return_value=hoy):
+            r = self.client.delete(f"/api/movements/{self._me_dep(3)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el a mano con un import después de la foto de hoy",
+                                    self._con({}, hasta=hoy))
+
+    def test_un_import_con_un_deposito_y_un_retiro_que_se_compensan(self):
+        """El resumen de febrero, importado el 5-mar, trae un depósito y un retiro de
+        7.000: las fotos no se movieron nunca. Borrado el depósito, sólo las que
+        tenían el par (desde el 5-mar) quedan con el retiro solo. La foto de cierre
+        de febrero coincide con las cuentas de antes pero NO porque la hayan
+        re-estampado: lo que le faltaba suma cero."""
+        self._import(_csv("2026-02-10,DEPOSITO,IBKR,,,,7000,,,0,USD,",
+                          "2026-02-15,RETIRO,IBKR,,,,7000,,,0,USD,"), confirmado="2026-03-05")
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-10')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el depósito del par que se compensa",
+                                    self._con({"2026-03-05": -7000}))
+
+    def test_un_mes_re_estampado_despues_del_import_si_lo_tenia(self):
+        """Un depósito del 25-feb importado el 5-mar; después algo re-estampó febrero
+        (el botón del admin, una versión vieja de la app) y las fotos del 25 al 28
+        ya lo tienen en el aportado. Borrado, lo pierden también ésas."""
+        self._import(_csv("2026-02-25,DEPOSITO,IBKR,,,,7000,,,0,USD,"), confirmado="2026-03-05")
+        self._subir("2026-03-05", "2026-03-31", 7000)
+        self.conn.execute("UPDATE snapshots SET net_deposited=net_deposited+7000 WHERE "
+                          "user_id=? AND date BETWEEN '2026-02-25' AND '2026-02-28'", (self.uid,))
+        self.conn.commit()
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-25')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el depósito re-estampado en febrero")
+
+    def test_deposito_a_mano_con_fecha_vieja_cargado_meses_despues(self):
+        """Un depósito a mano con fecha 10-ene, cargado el 5-mar: las fotos de enero y
+        febrero nunca lo tuvieron. Borrarlo no las puede hundir."""
+        self._depositar_a_mano("2026-01-10", 3000)
+        self._subir("2026-03-05", "2026-03-31", 3000)
+        r = self.client.delete(f"/api/movements/{self._me_dep(1)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el a mano de enero cargado en marzo")
+
+    def test_un_import_confirmado_de_noche_cuenta_en_la_foto_de_ese_dia(self):
+        """Confirmado a las 22:30 del 4-mar en Argentina, que en la base queda
+        guardado como 01:30 del 5 (UTC). El cron saca la foto del 4 a las 23:59: ya
+        lo tiene."""
+        self._import(_csv("2026-02-25,DEPOSITO,IBKR,,,,7000,,,0,USD,"),
+                     confirmado_utc="2026-03-05 01:30:00")
+        self._subir("2026-03-04", "2026-03-31", 7000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-25')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el import confirmado de noche")
+
+    def test_la_foto_de_antes_ve_lo_que_otro_estaba_escribiendo(self):
+        """El ORDEN del turno: primero esperar, después leer. Otra conexión está
+        cambiando las cuentas sin confirmar; `_foto_contable` tiene que esperar a que
+        confirme y devolver las cuentas NUEVAS. Leyendo antes de tomar el turno
+        devolvía las viejas (la carrera de dos borrados)."""
+        if getattr(main, "USANDO_PG", False):
+            self.skipTest("el turno de SQLite; en Postgres es la fila del usuario")
+        import threading
+        import time
+        otro = main.get_db()
+        visto = {}
+
+        def _segunda_puerta():
+            # Su propia conexión: sqlite3 no deja usar una conexión de otro hilo.
+            espera = main.get_db()
+            try:
+                espera.execute("PRAGMA busy_timeout=10000")
+                visto["v"] = main._foto_contable(espera, self.uid)["canon"]("2026-03-01")
+            except Exception as ex:      # que el assert de abajo diga qué pasó
+                visto["error"] = repr(ex)
+            finally:
+                espera.rollback()
+                espera.close()
+        try:
+            antes = main._foto_contable(self.conn, self.uid)["canon"]("2026-03-01")
+            self.conn.rollback()
+            otro.execute("UPDATE monthly_entries SET deposits=deposits+1000 "
+                         "WHERE user_id=? AND broker='global' AND year=2026 AND month=3",
+                         (self.uid,))
+            hilo = threading.Thread(target=_segunda_puerta)
+            hilo.start()
+            time.sleep(0.5)
+            otro.commit()
+            hilo.join(15)
+            self.assertEqual(visto.get("v"), antes + 1000,
+                             f"leyó las cuentas antes de que la otra escritura confirmara: {visto}")
+        finally:
+            otro.rollback()
+            otro.close()
 
     # ── 7. sin fecha de arranque no se re-estampa nada ───────────────────────
     def test_sin_fecha_de_arranque_no_reescribe_nada(self):

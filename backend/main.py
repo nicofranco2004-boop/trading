@@ -699,6 +699,17 @@ def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
     return float(cobra["s"] or 0), float(paga["s"] or 0)
 
 
+# Cómo pasa a dólares un depósito/retiro importado: el monto en dólares sellado al
+# importarlo, o pesos ÷ el dólar de la config, o el monto tal cual. Es la regla de
+# `_import_flows_for_period` —de donde sale el capital aportado— y la usa también el
+# borrado para saber cuánto de lo aportado entró a las fotos en cada día
+# (`_flujos_importados_vigentes`). Toma dos parámetros: (tc_blue, tc_blue).
+_SQL_USD_DE_FLUJO_IMPORTADO = (
+    "CASE WHEN n.gross_amount_usd IS NOT NULL THEN n.gross_amount_usd "
+    "WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ? "
+    "ELSE n.gross_amount END")
+
+
 def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
                              month_str: str, tc_blue: float):
     """(imp_deposits_usd, imp_withdrawals_usd) — suma de DEPOSIT/WITHDRAW de batches
@@ -714,11 +725,7 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
     try:
         flow_rows = conn.execute(
             f"""SELECT n.operation_type AS op,
-                       COALESCE(SUM(
-                         CASE WHEN n.gross_amount_usd IS NOT NULL THEN n.gross_amount_usd
-                              WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ?
-                              ELSE n.gross_amount END
-                       ), 0) AS s_usd
+                       COALESCE(SUM({_SQL_USD_DE_FLUJO_IMPORTADO}), 0) AS s_usd
                 FROM import_normalized_tx n
                 JOIN import_batches b ON b.id = n.batch_id
                 WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
@@ -11243,15 +11250,9 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     brokers_touched: set = set()
     # TC blue para convertir DEPOSITs/WITHDRAWs en ARS a USD-equivalente
     # (consistente con _persist_cash_in/out)
-    tc_blue_row = conn.execute(
-        "SELECT value FROM config WHERE user_id=? AND key='tc_blue'", (uid,),
-    ).fetchone()
-    try:
-        tc_blue = float(tc_blue_row["value"]) if tc_blue_row else 1415.0
-        if tc_blue <= 0:
-            tc_blue = 1415.0
-    except (TypeError, ValueError):
-        tc_blue = 1415.0
+    # El mismo dólar que usa el borrado para medir cuánto de lo aportado entró a las
+    # fotos cada día (`_flujos_importados_vigentes`): una sola regla.
+    tc_blue = _config_tc_blue(conn, uid)
 
     for r in rows:
         broker, y, m = r["broker"], r["year"], r["month"]
@@ -14817,19 +14818,58 @@ def _foto_contable(conn, uid: int) -> dict:
     entra mientras otro borrado del mismo usuario está a mitad de su cascada lee
     las cuentas de ANTES de ese otro; después espera su turno, recalcula, y la
     diferencia le adjudica a su borrado el cambio ajeno (medido: borrar a la vez
-    un depósito y un retiro dejaba 22 fotos sin el retiro descontado). Con el turno
-    tomado, todo lo que escriba las cuentas —otro borrado, un import, un
-    depósito— terminó antes de esta lectura o espera a que esta puerta confirme.
-    En SQLite el turno es uno para toda la base; en Postgres, la fila del usuario."""
-    conn.execute("UPDATE users SET id=id WHERE id=?", (uid,))
+    un depósito y un retiro dejaba 22 fotos sin el retiro descontado). En SQLite
+    —producción— el turno es uno para toda la base: todo lo que escriba las
+    cuentas (otro borrado, un import, un depósito) terminó antes de esta lectura o
+    espera a que la puerta confirme. En Postgres sólo traba la fila del usuario:
+    pone en fila a las puertas de borrado entre sí (y al login de ese usuario por
+    esos milisegundos), pero un import o un depósito pasan igual; si Postgres se
+    prende, hace falta un turno por usuario que tomen todos los que escriben las
+    cuentas (`pg_advisory_xact_lock`). `tier` y no `id`: reescribir la clave
+    primaria hacía 14 chequeos de claves foráneas por borrado."""
+    conn.execute("UPDATE users SET tier=tier WHERE id=?", (uid,))
     import twr as _twr
     return {"canon": _twr.netdep_canonico(conn, uid)}
 
 
+def _primer_dia_en_las_fotos(fecha_mov, confirmado: Optional[str]) -> Optional[str]:
+    """Desde qué día las fotos tienen un movimiento importado (si nadie las
+    re-estampó después): desde el día en que se confirmó su import, AUNQUE ESTÉ
+    FECHADO DESPUÉS. El cron anota la suma de TODO lo cargado, sin mirar fechas
+    (`snapshots_job.compute_net_deposited` suma todas las filas 'global'), así que
+    un retiro fechado el 2-abr que se importó el 27-mar (una liquidación a 24 hs)
+    ya está en la foto del 27-mar. Una foto anterior al import no lo podía tener.
+    (`fecha_mov` queda en la firma para que quien lea el llamador vea que se pensó:
+    la fecha del movimiento NO decide.)"""
+    if not confirmado:
+        return None
+    return str(confirmado)[:10]
+
+
+def _dia_art_de_confirmacion(raw) -> Optional[str]:
+    """`import_batches.confirmed_at` → el día ARGENTINO. Lo escribe `datetime('now')`
+    en UTC: de 21 a 24 hs los dos relojes son días distintos (un import de las 22:30
+    del 4 queda guardado el 5). Acepta texto o `datetime`, con o sin zona."""
+    from datetime import datetime as _dt, timezone as _tz
+    from fechas import dia_art
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, _dt):
+        t = raw
+    else:
+        txt = str(raw).strip().replace("Z", "+00:00")
+        try:
+            t = _dt.fromisoformat(txt)
+        except ValueError:
+            return None
+    if t.tzinfo is not None:
+        t = t.astimezone(_tz.utc).replace(tzinfo=None)
+    return dia_art(t).isoformat()
+
+
 def _entrada_de_importado(conn, batch_id) -> Optional[str]:
-    """El día (argentino) desde el que las fotos pueden tener un movimiento
-    importado: el día en que se CONFIRMÓ su import. Una foto sacada antes no lo
-    tenía, diga lo que diga la fecha del movimiento. None si el lote no lo guarda."""
+    """El día (argentino) en que se CONFIRMÓ el import `batch_id`. None si el lote no
+    lo guarda."""
     if batch_id is None:
         return None
     row = conn.execute("SELECT confirmed_at FROM import_batches WHERE id=?",
@@ -14839,52 +14879,76 @@ def _entrada_de_importado(conn, batch_id) -> Optional[str]:
 
 def _entrada_de_movimiento_importado(conn, uid: int, tx) -> Optional[str]:
     """Desde qué día las fotos tienen el depósito/retiro importado `tx` que se está
-    borrando: el día en que se confirmó su import (`_entrada_de_importado`).
+    borrando (`_primer_dia_en_las_fotos` con el día en que se confirmó su import).
 
-    ⚠️ SI QUEDA UN GEMELO IDÉNTICO, desde que las fotos tenían LOS DOS. Un depósito
-    real importado dos veces (el original con su día y la copia de un resumen
-    posterior) es el motivo más común para borrar uno; el usuario borra cualquiera
-    de los dos renglones, que son iguales. Las fotos entre el original y la copia
-    estaban BIEN —el depósito existió y queda el otro—; lo que estaba mal es la
-    cuenta doble desde que entró el segundo. Restar desde el original las dejaba
-    sin un depósito que sí pasó."""
-    entrada = _entrada_de_importado(conn, tx["batch_id"])
-    if entrada is None:
+    ⚠️ SI TIENE GEMELOS IDÉNTICOS (mismo tipo, día, broker y monto), cuenta la
+    historia del grupo. Un depósito real importado dos veces —el original con su día
+    y la copia de un resumen posterior— es el motivo más común para borrar uno, y el
+    usuario borra cualquiera de los dos renglones, que son iguales. Las fotos entre
+    el original y la copia estaban BIEN; lo que estaba mal es la cuenta doble desde
+    que entró el segundo. Así que cada import del grupo le sumó a las fotos una
+    CAPA desde su día, cada gemelo borrado antes se llevó la más nueva que había, y
+    este borrado se lleva la más nueva que QUEDA. Restar siempre desde el propio
+    import dejaba un hueco donde el depósito sí existió; restar desde el gemelo vivo
+    más nuevo fallaba al borrar el segundo (la capa del medio quedaba para siempre)."""
+    row = conn.execute("SELECT confirmed_at FROM import_batches WHERE id=?",
+                       (tx["batch_id"],)).fetchone()
+    propia = _dia_art_de_confirmacion(row["confirmed_at"] if row else None)
+    if propia is None:
         return None
+    # (cuándo pasó, 0 = entró una capa / 1 = un borrado se llevó la más nueva, día de
+    # la capa). Los dos "cuándo" son UTC de `datetime('now')`: se ordenan como texto.
+    eventos = [(str(row["confirmed_at"]), 0, propia)]
     for g in conn.execute(
-            """SELECT ib.confirmed_at AS c FROM import_normalized_tx n
+            """SELECT ib.confirmed_at AS c, n.excluded_at AS x FROM import_normalized_tx n
                  JOIN import_batches ib ON ib.id = n.batch_id
-                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
-                  AND n.id != ? AND n.operation_type=? AND substr(n.date, 1, 10)=?
+                WHERE ib.user_id=? AND ib.status='confirmed' AND n.id != ?
+                  AND n.operation_type=? AND substr(n.date, 1, 10)=?
                   AND COALESCE(n.broker, '')=? AND ABS(COALESCE(n.gross_amount, 0) - ?) < 0.005""",
             (uid, tx["id"], tx["operation_type"], str(tx["date"] or "")[:10],
              tx["broker"] or "", float(tx["gross_amount"] or 0))).fetchall():
         e = _dia_art_de_confirmacion(g["c"])
         if e is None:
-            return None     # un gemelo sin fecha: no hay cómo saberlo
-        entrada = max(entrada, e)
-    return entrada
+            return None     # un gemelo sin fecha de confirmación: no hay cómo saberlo
+        eventos.append((str(g["c"]), 0, e))
+        if g["x"] is not None:
+            eventos.append((str(g["x"]), 1, None))
+    capas = []
+    for _, tipo, dia in sorted(eventos, key=lambda t: (t[0][:19].replace("T", " "), t[1])):
+        if tipo == 0:
+            capas.append(dia)
+        elif capas:
+            capas.remove(max(capas))
+    capa = max(capas) if capas else propia
+    return _primer_dia_en_las_fotos(tx["date"], capa)
 
 
-def _dia_art_de_confirmacion(raw) -> Optional[str]:
-    """`import_batches.confirmed_at` (UTC, lo escribe `datetime('now')`) → el día
-    argentino. De 21 a 24 hs los dos relojes son días distintos."""
-    raw = str(raw or "").strip()
-    if not raw:
-        return None
-    from datetime import datetime as _dt
-    from fechas import dia_art
-    try:
-        return dia_art(_dt.strptime(raw[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")).isoformat()
-    except ValueError:
-        return raw[:10] if len(raw) >= 10 else None
+def _flujos_importados_vigentes(conn, uid: int) -> list:
+    """Cada depósito/retiro importado que cuenta en lo aportado: (fecha, monto en
+    dólares con signo, día en que entró a las fotos). El monto sale de la MISMA regla
+    que el recálculo (`_SQL_USD_DE_FLUJO_IMPORTADO`), así suma lo mismo que las
+    cuentas."""
+    tcb = _config_tc_blue(conn, uid)
+    out = []
+    for r in conn.execute(
+            f"""SELECT n.date AS d, n.operation_type AS op, ib.confirmed_at AS c,
+                       {_SQL_USD_DE_FLUJO_IMPORTADO} AS usd
+                  FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id
+                 WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                   AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL""",
+            (tcb, tcb, uid)).fetchall():
+        entra = _primer_dia_en_las_fotos(r["d"], _dia_art_de_confirmacion(r["c"]))
+        signo = 1.0 if r["op"] == "DEPOSIT" else -1.0
+        out.append((str(r["d"])[:10], signo * float(r["usd"] or 0), entra or str(r["d"])[:10]))
+    return out
 
 
 def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
                         journal: Optional[dict] = None, entrada: Optional[str] = None):
     """Qué fotos YA ESCRITAS cambian de aportado por un borrado (o su deshacer), y
-    a cuánto. Devuelve (cambios, plan): `cambios` = [(nuevo, id, uid)]; `plan` =
-    a qué fotos se aplicó (lo anota el journal para el deshacer), None si a ninguna.
+    a cuánto. Devuelve (cambios, plan): `cambios` = [(nuevo, id, uid)]; `plan` = lo
+    que se le cambió a cada foto (lo anota el journal para el deshacer), None si a
+    ninguna.
 
     ⚠️ SE APLICA SÓLO EL CAMBIO, NO SE RE-ANCLA EL MES. Cada foto anotó lo aportado
     en el momento en que se sacó, junto con lo que valía la cartera en ese mismo
@@ -14903,23 +14967,27 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     recién con el import del 5-mar no está en las fotos del 25-feb al 4-mar:
     restárselo las hundía. Cómo se sabe desde qué foto lo tuvo:
 
-    A. MOVIMIENTO IMPORTADO (`entrada` = día en que se confirmó su import): desde
-       la primera foto de ese día o después (la de ese mismo día también: el cron
-       la saca a las 23:59). Si se confirmó después de la última foto,
-       ninguna lo tenía y no se toca nada — el caso más común: borrar el duplicado
-       que se acaba de importar. Buscar "el salto del monto" en vez de esto fallaba
-       justo ahí (enganchaba el salto del original y le restaba la plata a fotos
-       que tenían el otro) y con el que importa el resumen del mes, donde el salto
-       es la suma de todo lo que trajo el import.
-       Las fotos de meses anteriores sólo cuentan si su foto de cierre coincide
-       con las cuentas de antes del borrado: ésas las re-estampó algo después del
-       import (versiones viejas de la app re-anclaban o aplanaban todo) y ya lo
-       tienen; una foto de cierre a la que le falta plata es una que nunca lo vio.
+    A. MOVIMIENTO IMPORTADO (`entrada` = `_entrada_de_movimiento_importado`): desde
+       el día en que se confirmó su import (la foto de ese día también: el cron la
+       saca a las 23:59), aunque esté fechado después: el cron anota la suma de
+       todo lo cargado, sin mirar fechas (`_primer_dia_en_las_fotos`). Si eso es
+       posterior a la última foto, ninguna lo tenía y no se toca nada — el caso más
+       común: borrar el duplicado que se acaba de importar. Buscar "el salto del
+       monto" en vez de esto fallaba justo ahí (enganchaba el salto del original) y
+       con el que importa el resumen del mes, donde el salto es la suma de todo.
+       Un mes ANTERIOR a ese día cuenta sólo si su foto de cierre fue re-estampada
+       después del import: tiene lo que dicen las cuentas, y lo que entró después
+       de ella (con el import) suma algo distinto de cero, así que sin re-estampar
+       tendría otro número. Si las dos cosas dan igual —un import con un depósito y
+       un retiro que se compensan— no hay cómo saberlo y el mes no se toca.
     B. SIN ESE DATO (depósito a mano `me-`, que no guarda ni el día; posición a mano
-       con autodepósito; imports viejos sin fecha de confirmación): la foto lo dice.
-         1. El primer mes cuya foto de cierre ya lo tenía (a la que no lo tenía le
-            falta al menos ese monto contra las cuentas de antes). Si ningún cierre
-            lo tuvo, no se toca nada.
+       con autodepósito; imports sin fecha de confirmación): la foto lo dice.
+         1. El primer mes cuya foto de cierre ya lo tenía: a la que no lo tenía le
+            falta, contra las cuentas de antes, al menos ese monto — sin contar lo
+            importado que entró a las fotos DESPUÉS de ese cierre (un resumen
+            importado tarde también le "falta", y no es lo borrado). La foto de hoy
+            no cuenta como cierre: suele ser la del navegador sacada antes de un
+            import, y se borra igual. Si ningún cierre lo tuvo, no se toca nada.
          2. En ese mes, desde la fecha de lo borrado, la primera foto cuyo aportado
             saltó exactamente ese monto — salvo los saltos que explica un
             movimiento importado que entró a las fotos ese día.
@@ -14928,26 +14996,34 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
             corredor de después (`twr.corredor_del_mes`): ningún día puede quedar
             fuera de lo que el mes permite. Sólo ahí: con un punto de partida
             firme, el recorte arrastraría a las fotos de un import viejo.
-    C. DESHACER (`journal` = lo que anotó el borrado): el salto ya no existe —lo
-       sacó el borrado—, así que se usa el plan que anotó: mismas fotos, mismo
-       recorte. Plan None = el borrado no le tocó ninguna foto → el deshacer
-       tampoco. Un journal de antes de este cambio no lo trae → desde la fecha del
-       borrado, con el recorte de B.3.
+    C. DESHACER (`journal` = lo que anotó el borrado): el borrado anotó cuánto le
+       cambió a cada foto, y el deshacer le devuelve exactamente eso, foto por foto
+       (el salto ya no existe —lo sacó el borrado— y recalcular el recorte con las
+       cuentas de después no daba simétrico). Una foto sacada entre el borrado y el
+       deshacer no lo tenía y no lo recibe. Plan None = el borrado no le tocó
+       ninguna foto → el deshacer tampoco. Un journal de antes de este cambio no lo
+       trae → desde la fecha del borrado, con el recorte de B.3.
 
     Una foto con aportado 0 no midió el aportado (filas de antes de que existiera
     la columna, que nace en 0): no cuenta como prueba de nada y no se corrige.
 
     LÍMITES CONOCIDOS (medidos; ninguno peor que re-anclar):
-    · B.3: varios depósitos a mano del mismo mes viven sumados en un renglón y
-      `me-` los borra juntos; ninguna foto saltó el total, así que entre otro
-      flujo del mes y el último a mano no se sabe cuánto tenía cada foto
-      (`test_varios_depositos_a_mano_del_mes_en_un_renglon`).
-    · A: si una versión vieja de la app re-estampó las fotos DESPUÉS del import
-      (re-anclaba o aplanaba), las del mes del import anteriores a su
-      confirmación pueden tener lo borrado y se quedan con eso.
-    · El botón del admin, la reparación y la migración de dólar siguen
-      re-anclando (`_recompute_snapshots_netdep_for_user`); corridos con un
-      flujo que la última foto del mes no vio, ese mes vuelve a quedar plano.
+    · B: lo cargado a mano no guarda cuándo se cargó. Varios depósitos a mano del
+      mismo mes viven sumados en un renglón y `me-` los borra juntos: ninguna foto
+      saltó el total, así que entre otro flujo del mes y el último a mano no se
+      sabe cuánto tenía cada foto (`test_varios_depositos_a_mano_del_mes_en_un_
+      renglon`); dos cargas a mano del mismo monto en el mismo mes se confunden; y
+      otra carga a mano del mismo mes hecha DESPUÉS de su cierre le "falta" a esa
+      foto igual que lo borrado, así que el paso 1 puede creer que no lo tenía
+      (medido: 14 fotos y US$ 28.000 en un caso armado, contra 42.000 re-anclando).
+    · A: si algo re-estampó las fotos DESPUÉS del import, las del mes del import
+      anteriores a su confirmación pueden tener lo borrado y se quedan con eso. Hoy
+      re-estampan el botón del admin, la reparación de historial y la migración de
+      dólar que corre sola tras un import en cuentas viejas (v1); antes lo hacían
+      también cada borrado y cada deploy.
+    · Esos tres re-estampadores siguen re-anclando
+      (`_recompute_snapshots_netdep_for_user`): corridos con un flujo que la
+      última foto del mes no vio, ese mes vuelve a quedar plano.
     · `antes` se saca antes del recálculo: si `monthly_entries` venía desfasado
       de sus fuentes, ese desfasaje se aplica junto con lo borrado.
     """
@@ -14958,53 +15034,88 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
         # Sin contabilidad de un lado no hay cambio que medir; lo estampado queda
         # como está (los lectores que anclan al leer lo toleran; aplanarlo no).
         return [], None
-    desde = str(desde)[:10]
     fotos = [s for s in conn.execute(
         "SELECT id, date, net_deposited FROM snapshots WHERE user_id=? ORDER BY date",
         (uid,)).fetchall() if abs(float(s["net_deposited"] or 0)) > 0.005]
+
+    # C. Deshacer: lo contrario de lo que anotó el borrado, foto por foto.
+    if journal is not None and journal.get("aportado", "") is None:
+        return [], None
+    if journal is not None and isinstance(journal.get("aportado"), dict):
+        hechos = journal["aportado"].get("fotos") or {}
+        ahora = {str(s["id"]): float(s["net_deposited"]) for s in fotos}
+        cambios = [(round(ahora[i] - float(dl), 4), int(i), uid)
+                   for i, dl in hechos.items() if i in ahora and abs(float(dl)) > 0.01]
+        return cambios, None
+
+    desde = str(desde)[:10]
+    mes_de_lo_borrado = desde[:7]
+    if journal is None and entrada:
+        # A: uno fechado después de su import ya está en las fotos desde el import.
+        desde = min(desde, str(entrada)[:10])
     meses = sorted({str(s["date"])[:7] for s in fotos if str(s["date"])[:10] >= desde})
     delta = {ym: c1(f"{ym}-01") - c0(f"{ym}-01") for ym in meses}
+    # Las fotos de meses ANTERIORES al de lo borrado (sólo pasa con uno fechado
+    # después de su import) lo tenían igual —el cron suma todo lo cargado—, pero
+    # las cuentas de ese mes no cambian: les toca el cambio del mes de lo borrado.
+    _dl_borrado = c1(f"{mes_de_lo_borrado}-01") - c0(f"{mes_de_lo_borrado}-01")
+    for ym in meses:
+        if ym < mes_de_lo_borrado:
+            delta[ym] = _dl_borrado
     cambiados = [ym for ym in meses if abs(delta[ym]) > 0.01]
     if not cambiados:
         return [], None
     tol = max(0.01, 0.005 * max(abs(delta[ym]) for ym in cambiados))
-    cierre = {}
-    for s in fotos:
-        cierre[str(s["date"])[:7]] = s
 
-    def _salto(i):
-        return float(fotos[i]["net_deposited"]) - float(fotos[i - 1]["net_deposited"])
+    _flujos = []
+    def _entro_despues(dia_cierre, ym):
+        """Lo importado con fecha del mes `ym` o antes que entró a las fotos DESPUÉS
+        de `dia_cierre`: una foto de ese día no lo podía tener."""
+        if not _flujos:
+            _flujos.append(_flujos_importados_vigentes(conn, uid))
+        return sum(m for f, m, e in _flujos[0] if f[:7] <= ym and e > dia_cierre)
 
+    corredor_en = None
     if journal is not None:
-        if "aportado" not in journal:
-            plan = {"desde": desde, "meses_previos": [], "corredor_en": desde[:7]}
-        else:
-            plan = journal["aportado"]
-            if plan is None:
-                return [], None
+        inicio, previos, corredor_en = desde, set(), desde[:7]   # journal viejo, sin plan
     elif entrada:
-        # A. El día en que se confirmó el import.
+        # A. El día en que entró a las fotos.
         e = max(desde, str(entrada)[:10])
-        idx = [i for i, s in enumerate(fotos) if str(s["date"])[:10] >= e]
-        if not idx:
+        posteriores = [s for s in fotos if str(s["date"])[:10] >= e]
+        if not posteriores:
             return [], None
-        # La foto del mismo día del import ya lo tiene: el cron la saca a las 23:59
-        # y pisa la del navegador. (Se probó saltearla cuando "no se movió" —una
-        # foto del navegador sacada antes del import—, pero un traspaso entre
-        # brokers el mismo día tampoco la mueve y ahí la dejaba con lo borrado.)
-        d0 = str(fotos[idx[0]]["date"])[:10]
-        previos = [ym for ym in meses if ym < d0[:7]
-                   and abs(c0(f"{ym}-01") - float(cierre[ym]["net_deposited"])) <= tol]
-        plan = {"desde": d0, "meses_previos": previos, "corredor_en": None}
+        inicio = str(posteriores[0]["date"])[:10]
+        cierre = {}
+        for s in fotos:
+            if str(s["date"])[:10] < inicio:
+                cierre[str(s["date"])[:7]] = s
+        previos = set()
+        for ym in meses:
+            if ym >= inicio[:7] or ym not in cierre:
+                continue
+            dc = str(cierre[ym]["date"])[:10]
+            s_c = float(cierre[ym]["net_deposited"])
+            # Lo que entró después del cierre según las cuentas de ANTES (las de
+            # `c0`): lo borrado ya no figura entre lo vigente, y entró después.
+            pendiente = _entro_despues(dc, ym) - delta[ym]
+            if abs(c0(f"{ym}-01") - s_c) <= tol and abs(pendiente) > tol:
+                previos.add(ym)
     else:
         # B. La foto lo dice.
+        hoy = _iso_today()
+        cierre = {}
+        for s in fotos:
+            if str(s["date"])[:10] < hoy:
+                cierre[str(s["date"])[:7]] = s
         m0 = cambiados[0]
         objetivo = -delta[m0]   # cuánto se movió el aportado el día que lo borrado entró
         m_visto = None
         for ym in meses:
-            if ym < m0:
+            if ym < m0 or ym not in cierre:
                 continue
-            falta = c0(f"{ym}-01") - float(cierre[ym]["net_deposited"])
+            dc = str(cierre[ym]["date"])[:10]
+            falta = (c0(f"{ym}-01") - _entro_despues(dc, ym)
+                     - float(cierre[ym]["net_deposited"]))
             no_lo_tenia = (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
             if not no_lo_tenia:
                 m_visto = ym
@@ -15014,63 +15125,61 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
         ini = max(desde, f"{m_visto}-01")
         fin = str(cierre[m_visto]["date"])[:10]
         explicadas = _fotos_con_importado_que_entra(conn, uid, fotos)
-        salto = None
+        inicio = None
         for i in range(1, len(fotos)):
             d = str(fotos[i]["date"])[:10]
             if d < ini or d > fin or d in explicadas:
                 continue
-            if abs(_salto(i) - objetivo) <= tol:
-                salto = d
+            salto = float(fotos[i]["net_deposited"]) - float(fotos[i - 1]["net_deposited"])
+            if abs(salto - objetivo) <= tol:
+                inicio = d
                 break
-        plan = ({"desde": salto, "meses_previos": [], "corredor_en": None} if salto else
-                {"desde": ini, "meses_previos": [], "corredor_en": m_visto})
+        if inicio is None:
+            inicio, corredor_en = ini, m_visto
+        previos = set()
 
-    previos = set(plan.get("meses_previos") or [])
-    brutos1 = _twr.flujos_brutos_por_mes(conn, uid) if plan.get("corredor_en") else {}
-    cambios = []
+    brutos1 = _twr.flujos_brutos_por_mes(conn, uid) if corredor_en else {}
+    cambios, hechos = [], {}
     for s in fotos:
         d = str(s["date"])[:10]
         ym = d[:7]
-        if not (d >= plan["desde"] or (ym in previos and d >= desde)):
+        if not (d >= inicio or (ym in previos and d >= desde)):
             continue
         dl = delta.get(ym, 0.0)
         if abs(dl) <= 0.01:
             continue
         viejo = float(s["net_deposited"])
         nuevo = viejo + dl
-        if ym == plan.get("corredor_en"):
+        if ym == corredor_en:
             lo, hi = _twr.corredor_del_mes(c1, brutos1, ym)
             nuevo = max(lo, min(hi, nuevo))
         if abs(nuevo - viejo) > 0.01:
             cambios.append((round(nuevo, 4), s["id"], uid))
-    return cambios, plan
+            hechos[str(s["id"])] = round(nuevo - viejo, 4)
+    if not hechos:
+        return [], None
+    return cambios, {"desde": inicio, "fotos": hechos}
 
 
 def _fotos_con_importado_que_entra(conn, uid: int, fotos) -> set:
     """Fechas de las fotos en las que ENTRÓ un depósito o retiro importado que sigue
-    vigente: la primera foto desde el día en que se confirmó su import (o desde su
-    fecha, si es posterior). El salto de aportado de esas fotos lo explica ese
-    movimiento, así que no sirve para ubicar otro del mismo monto (un depósito a
-    mano de 3.000 y uno importado de 3.000 en el mismo mes)."""
+    vigente: la primera foto desde que entró (`_primer_dia_en_las_fotos`). El salto
+    de aportado de esas fotos lo explica ese movimiento, así que no sirve para ubicar
+    otro del mismo monto (un depósito a mano de 3.000 y uno importado de 3.000 en el
+    mismo mes)."""
+    import bisect
     fechas_fotos = [str(s["date"])[:10] for s in fotos]
     out = set()
-    import bisect
-    for r in conn.execute(
-            """SELECT n.date AS d, ib.confirmed_at AS c FROM import_normalized_tx n
-                 JOIN import_batches ib ON ib.id = n.batch_id
-                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
-                  AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL""",
-            (uid,)).fetchall():
-        e = max(str(r["d"])[:10], _dia_art_de_confirmacion(r["c"]) or "")
-        k = bisect.bisect_left(fechas_fotos, e)
+    for _f, _m, entra in _flujos_importados_vigentes(conn, uid):
+        k = bisect.bisect_left(fechas_fotos, entra)
         if k < len(fechas_fotos):
             out.add(fechas_fotos[k])
     return out
 
 
 def _anotar_aportado_en_journal(conn, uid: int, token: str, plan) -> None:
-    """Guarda en el journal del borrado a qué fotos se le sacó el aportado, para que
-    el deshacer lo devuelva a las MISMAS fotos (ver `_cambio_de_aportado`, C)."""
+    """Guarda en el journal del borrado cuánto se le cambió a cada foto, para que el
+    deshacer le devuelva exactamente eso (ver `_cambio_de_aportado`, C)."""
     import json as _json
     row = conn.execute("SELECT payload_json FROM deleted_ops_journal WHERE user_id=? AND token=?",
                        (uid, token)).fetchone()
@@ -15088,8 +15197,9 @@ def _anotar_aportado_en_journal(conn, uid: int, token: str, plan) -> None:
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, *,
                                    antes: dict, journal: Optional[dict] = None,
                                    entrada: Optional[str] = None) -> dict:
-    """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
-    revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
+    """Cola de cascada compartida tras borrar UN movimiento — nació espejando el
+    final de `revert_batch` (persister), que sigue BORRANDO las fotos reales desde
+    la fecha del lote (decisión de 2026-07-01); ésta no. ORDEN CRÍTICO: repair chain → recalc
     autoritativo (recompone monthly desde fuentes, excluyendo lo ya borrado) →
     refrescar snapshots desde la fecha afectada → re-backfill de month-ends. El
     caller ya borró la fila fuente y revirtió el cash ANTES de llamar esto. La
@@ -15164,10 +15274,16 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, 
         # dónde llegó lo borrado. Y antes del backfill: necesita las estampas viejas.
         # El resultado (a qué fotos se aplicó) vuelve al caller, que lo anota en su
         # journal para que el deshacer lo devuelva a las mismas fotos.
+        # Con un punto de guardado: en Postgres un error de SQL deja la transacción
+        # abortada y sin esto el `except` no salvaba el borrado (daba 500).
+        conn.execute("SAVEPOINT cambio_de_aportado")
         try:
             cambios, plan = _cambio_de_aportado(
                 conn, uid, antes, since_date, journal=journal, entrada=entrada)
+            conn.execute("RELEASE SAVEPOINT cambio_de_aportado")
         except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT cambio_de_aportado")
+            conn.execute("RELEASE SAVEPOINT cambio_de_aportado")
             # Si el cálculo falla NO se toca ninguna foto. Una estampa que quedó
             # con lo borrado adentro se nota y se repara (botón del admin); una
             # reescrita mal no tiene vuelta. Y se anota "no se aplicó nada", así
