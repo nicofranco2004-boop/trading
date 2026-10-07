@@ -95,10 +95,13 @@ def cruce_entre_brokers(conn, uid: int, asset: str, fecha: str,
     desde = (d - timedelta(days=DIAS_CRUCE)).isoformat()
     hasta = (d + timedelta(days=DIAS_CRUCE)).isoformat()
 
+    # `TX_VIVAS`: además de las borradas, deja afuera las de imports deshechos o
+    # en vista previa, que este cruce contaba como contraparte.
+    from importing.schema import TX_VIVAS
     filas = conn.execute(
-        """SELECT n.id, n.broker, n.date, n.quantity, n.operation_type
-           FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
-           WHERE b.user_id = ? AND n.excluded_at IS NULL
+        f"""SELECT n.id, n.broker, n.date, n.quantity, n.operation_type
+           FROM {TX_VIVAS}
+           WHERE b.user_id = ?
              AND UPPER(n.asset_symbol) = ? AND n.date BETWEEN ? AND ?
              AND n.broker != ?""",
         (uid, (asset or "").upper(), desde, hasta, broker or "")).fetchall()

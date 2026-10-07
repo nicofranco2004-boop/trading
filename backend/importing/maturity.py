@@ -40,7 +40,7 @@ import re
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from .schema import OP_BUY, OP_SELL
+from .schema import OP_BUY, OP_SELL, TX_VIVAS
 from .persister import broker_pair
 from .tenencia import TENENCIA_APERTURA_NOTE_PREFIX
 from pricing.bond_amortization import is_amortizing_bond, residual_factor
@@ -155,11 +155,9 @@ def _max_import_date(conn, uid: int) -> Optional[str]:
     Excluye las filas borradas: una tx tombstoneada ya no es data del usuario y no
     debería estirar la ventana más allá de lo que realmente importó."""
     row = conn.execute(
-        """SELECT MAX(n.date) AS d
-             FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id = ? AND b.status = 'confirmed'
-              AND n.excluded_at IS NULL""",
+        f"""SELECT MAX(n.date) AS d
+             FROM {TX_VIVAS}
+            WHERE b.user_id = ?""",
         (uid,),
     ).fetchone()
     return row["d"] if row and row["d"] else None
@@ -274,8 +272,8 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
     rows = conn.execute(
         f"""SELECT n.asset_symbol, n.asset_name, n.operation_type, n.quantity,
                    n.currency, n.date
-              FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
-             WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+              FROM {TX_VIVAS}
+             WHERE b.user_id=?
                AND n.broker IN ({_ph}) AND n.asset_symbol=?
                AND n.operation_type IN (?, ?)
                AND NOT (n.operation_type = ?
@@ -318,10 +316,12 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
     # EXIMIMOS de la amortización — su cantidad YA es el nominal residual real de HOY
     # (la foto es la tenencia del broker). Las identificamos por created_position_id
     # (el rebuild pierde el `notes` en la posición pero la tx normalizada lo conserva).
+    # Sólo fotos vivas (`TX_VIVAS`): la de un import deshecho o la que la persona
+    # borró ya no sembró nada, y su id de posición no puede eximir a otro lote.
     seed_pids = {
         r["cpid"] for r in conn.execute(
             f"""SELECT DISTINCT n.created_position_id AS cpid
-                 FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id
+                 FROM {TX_VIVAS}
                 WHERE b.user_id=? AND n.created_position_id IS NOT NULL
                   AND n.notes LIKE '{TENENCIA_APERTURA_NOTE_PREFIX}%'""",
             (uid,),

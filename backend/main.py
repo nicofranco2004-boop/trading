@@ -12,6 +12,10 @@ import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
 from contextlib import contextmanager
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
+# Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
+# `init_db()` corre al importar este módulo y su migración de flujos manuales ya
+# las lee, mucho antes del bloque de imports de `importing` más abajo.
+from importing.schema import TX_VIVAS, tx_vivas
 # CÓMO escribe Rendi — fuente ÚNICA del tono, compartida con ai/prompts.py.
 # Import top-level (no lazy como el resto de `ai`) porque los prompts de chat
 # se arman a nivel de módulo. `ai/voz.py` no importa nada, así que no hay
@@ -831,22 +835,20 @@ def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
     if broker == "global":
         return 0.0, 0.0
     _monto = "COALESCE(n.gross_amount_usd, ABS(n.quantity))"
-    _donde = ("""WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+    _donde = ("""WHERE b.user_id=?
                    AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
                    AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'
                    AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?""")
     try:
         paga = conn.execute(
             f"""SELECT COALESCE(SUM({_monto}), 0) AS s
-                  FROM import_normalized_tx n
-                  JOIN import_batches b ON b.id = n.batch_id
+                  FROM {TX_VIVAS}
                 {_donde} AND n.broker = ?""",
             (uid, year_str, month_str, broker),
         ).fetchone()
         cobra = conn.execute(
             f"""SELECT COALESCE(SUM({_monto}), 0) AS s
-                  FROM import_normalized_tx n
-                  JOIN import_batches b ON b.id = n.batch_id
+                  FROM {TX_VIVAS}
                   JOIN brokers bp ON bp.user_id = b.user_id AND bp.name = n.broker
                   JOIN brokers bc ON bc.user_id = b.user_id AND bc.name = ?
                    AND ((n.operation_type='FX_ARS_TO_USD'
@@ -881,9 +883,8 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
                               WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ?
                               ELSE n.gross_amount END
                        ), 0) AS s_usd
-                FROM import_normalized_tx n
-                JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                FROM {TX_VIVAS}
+                WHERE b.user_id=?
                   AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
                   AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?
                   {tx_broker_filter}
@@ -10176,8 +10177,8 @@ def _src_tx_for_position(conn, uid: int, pid: int):
     if not link:
         return None
     return conn.execute(
-        """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
         (link["batch_id"], link["raw_row_id"], uid),
     ).fetchone()
 
@@ -10702,11 +10703,13 @@ def _foto_split_watermarks(conn, uid: int) -> dict:
     significaría 'este activo tuvo split'). Read-time: sobrevive a un re-import (el
     rebuild borra columnas de la posición, no import_normalized_tx). Un split POSTERIOR
     a la foto (d > esta fecha) se sigue detectando."""
+    # `TX_VIVAS`: una foto que la persona borró ya no fija la cantidad del lote,
+    # así que tampoco puede declarar sus splits como ya aplicados.
     out = {}
     for r in conn.execute(
         "SELECT n.broker b, UPPER(n.asset_symbol) a, MAX(n.date) d "
-        "FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id "
-        "WHERE ib.user_id=? AND ib.status='confirmed' "
+        f"FROM {TX_VIVAS} "
+        "WHERE b.user_id=? "
         f"  AND n.notes LIKE '{_import_tenencia.TENENCIA_APERTURA_NOTE_PREFIX}%' AND COALESCE(n.asset_symbol,'') <> '' "
         "GROUP BY n.broker, UPPER(n.asset_symbol)",
         (uid,),
@@ -10736,12 +10739,14 @@ def _corporate_split_watermarks(conn, uid: int) -> dict:
         'corporate') → excluye 'dividendo en acciones/especie', 'rescate parcial', etc.,
         que también son corporate $0 pero NO son splits y no deben suprimir un ajuste.
     Solo cuenta batches confirmados (un movimiento en un batch revertido/preview no crea
-    watermark → un split legítimo se sigue ofreciendo)."""
+    watermark → un split legítimo se sigue ofreciendo) y filas vivas (`TX_VIVAS`): si la
+    persona BORRÓ el lote del split, la cantidad nueva ya no está en la posición y el
+    'Ajustar' tiene que volver a ofrecerse."""
     out = {}
     for r in conn.execute(
         "SELECT n.broker b, UPPER(n.asset_symbol) a, MAX(n.date) d "
-        "FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id "
-        "WHERE ib.user_id=? AND ib.status='confirmed' "
+        f"FROM {TX_VIVAS} "
+        "WHERE b.user_id=? "
         "  AND n.operation_type IN ('BUY','SELL') AND COALESCE(n.asset_symbol,'') <> '' "
         "  AND COALESCE(n.unit_price,0) = 0 AND COALESCE(n.gross_amount,0) = 0 "
         "  AND ( LOWER(COALESCE(n.notes,'')) LIKE 'split%' "
@@ -11388,10 +11393,10 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
             _seed.add(("global", r["y"], r["m"]))
     try:
         for r in conn.execute(
-            """SELECT DISTINCT n.broker AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
+            f"""SELECT DISTINCT n.broker AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
                       CAST(strftime('%m', n.date) AS INT) AS m
-                 FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id
-                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                 FROM {tx_vivas('n', 'ib')}
+                WHERE ib.user_id=?
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL
                   AND n.date LIKE '____-__-__%'""",  # ver el LIKE de arriba
             (uid,),
@@ -11407,10 +11412,9 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     # del broker receptor se perdería igual que antes del fix.
     try:
         for r in conn.execute(
-            """SELECT DISTINCT bx.name AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
+            f"""SELECT DISTINCT bx.name AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
                       CAST(strftime('%m', n.date) AS INT) AS m
-                 FROM import_normalized_tx n
-                 JOIN import_batches ib ON ib.id = n.batch_id
+                 FROM {tx_vivas('n', 'ib')}
                  JOIN brokers bp ON bp.user_id = ib.user_id AND bp.name = n.broker
                  JOIN brokers bx ON bx.user_id = ib.user_id
                   AND (bx.id = bp.id
@@ -11418,7 +11422,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                         AND bx.parent_broker_id = bp.id AND bx.currency='USDT')
                     OR (n.operation_type='FX_USD_TO_ARS'
                         AND bx.id = bp.parent_broker_id))
-                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                WHERE ib.user_id=?
                   AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
                   AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'""",
             (uid,),
@@ -14630,13 +14634,11 @@ def _build_movements(uid: int):
 
         # ── 2) Import normalized transactions ───────────────────────────────
         tx_rows = conn.execute(
-            """SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
+            f"""SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
                       t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
-                FROM import_normalized_tx t
-                JOIN import_batches b ON t.batch_id = b.id
-                WHERE b.user_id = ? AND b.status = 'confirmed'
-                  AND t.excluded_at IS NULL
+                FROM {tx_vivas('t')}
+                WHERE b.user_id = ?
                 ORDER BY t.date DESC""",
             (uid,),
         ).fetchall()
@@ -14708,7 +14710,7 @@ def _build_movements(uid: int):
         # Fase 4 (2026-05-30): preferir gross_amount_usd stamped (estable),
         # fallback a conversión runtime para rows legacy (NULL).
         imp_agg_rows = conn.execute(
-            """SELECT
+            f"""SELECT
                   t.broker AS broker,
                   CAST(strftime('%Y', t.date) AS INTEGER) AS y,
                   CAST(strftime('%m', t.date) AS INTEGER) AS m,
@@ -14724,10 +14726,8 @@ def _build_movements(uid: int):
                                      THEN t.gross_amount/?
                                      ELSE t.gross_amount END)
                            ELSE 0 END) AS wit_usd
-                FROM import_normalized_tx t
-                JOIN import_batches b ON t.batch_id = b.id
-                WHERE b.user_id = ? AND b.status = 'confirmed'
-                  AND t.excluded_at IS NULL
+                FROM {tx_vivas('t')}
+                WHERE b.user_id = ?
                   AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW')
                   -- Éste no tenía ni el filtro de nulos, y agrupa por y/m: una
                   -- sola fecha rota tiraba abajo el agregado completo. Ver el
@@ -15039,10 +15039,8 @@ def _delete_one_movement(conn, uid: int, mid: str):
         except ValueError:
             raise HTTPException(400, "id de movimiento inválido")
         tx = conn.execute(
-            """SELECT n.* FROM import_normalized_tx n
-                 JOIN import_batches b ON b.id = n.batch_id
-                WHERE n.id=? AND b.user_id=? AND b.status='confirmed'
-                  AND n.excluded_at IS NULL""",
+            f"""SELECT n.* FROM {TX_VIVAS}
+                WHERE n.id=? AND b.user_id=?""",
             (tx_id, uid),
         ).fetchone()
         if not tx:
@@ -15176,9 +15174,8 @@ def _route_tx_delete(conn, uid: int, mid: str):
     except ValueError:
         raise HTTPException(400, "id de movimiento inválido")
     tx = conn.execute(
-        """SELECT n.operation_type, n.batch_id, n.raw_row_id FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE n.id=? AND b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        f"""SELECT n.operation_type, n.batch_id, n.raw_row_id FROM {TX_VIVAS}
+            WHERE n.id=? AND b.user_id=?""",
         (tx_id, uid),
     ).fetchone()
     if not tx:
@@ -15529,13 +15526,11 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
     try:
         # ── 1) Imports normalizados (cubre todos los tipos) ──────────────────
         tx_rows = conn.execute(
-            """SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
+            f"""SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
                       t.currency, t.fees, t.notes
-               FROM import_normalized_tx t
-               JOIN import_batches b ON t.batch_id = b.id
-               WHERE b.user_id = ? AND b.status = 'confirmed'
-                 AND t.excluded_at IS NULL""",
+               FROM {tx_vivas('t')}
+               WHERE b.user_id = ?""",
             (uid,),
         ).fetchall()
         for r in tx_rows:
@@ -16775,10 +16770,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(
-        """SELECT n.* FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?
-              AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
         (batch_id, raw_row_id, uid),
     ).fetchone()
     if not src:
@@ -16921,10 +16914,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(
-        """SELECT n.* FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?
-              AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
         (batch_id, raw_row_id, uid),
     ).fetchone()
     if not src:
@@ -17134,9 +17125,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
         raise HTTPException(400, "Activo inválido")
 
     rows = conn.execute(
-        """SELECT n.* FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE b.user_id=?
               AND n.asset_symbol=? AND n.operation_type IN ('BUY','SELL')""",
         (uid, asset),
     ).fetchall()
@@ -17213,8 +17203,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
             "l_batch": o["l_batch"], "l_raw": o["l_raw"],
         })
         tx = conn.execute(
-            """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-                WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+            f"""SELECT n.* FROM {TX_VIVAS}
+                WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
             (o["l_batch"], o["l_raw"], uid),
         ).fetchone()
         if tx:
@@ -17370,9 +17360,8 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                 # fuera del set borrado, deshacer FUSIONARÍA viejo+nuevo → duplicaría.
                 _phg = ",".join("?" * len(pr))
                 fresh = conn.execute(
-                    f"""SELECT n.id FROM import_normalized_tx n
-                          JOIN import_batches b ON b.id = n.batch_id
-                         WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                    f"""SELECT n.id FROM {TX_VIVAS}
+                         WHERE b.user_id=?
                            AND n.broker IN ({_phg}) AND n.asset_symbol=?
                            AND n.operation_type IN ('BUY','SELL','DIVIDEND','INTEREST')""",
                     (uid, *pr, asset),
@@ -20705,14 +20694,12 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
         # ── BARRIDO: quién más tiene la firma ────────────────────────────────
         if user_id is None:
             rows = conn.execute(
-                """WITH f AS (
+                f"""WITH f AS (
                      SELECT b.user_id AS uid,
                             MAX(ABS(COALESCE(n.gross_amount_usd, n.gross_amount))) AS mayor,
                             COUNT(*) AS n_flujos
-                       FROM import_normalized_tx n
-                       JOIN import_batches b ON b.id = n.batch_id
-                      WHERE b.status='confirmed' AND n.excluded_at IS NULL
-                        AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                       FROM {TX_VIVAS}
+                      WHERE n.operation_type IN ('DEPOSIT','WITHDRAW')
                       GROUP BY b.user_id),
                    p AS (SELECT user_id AS uid, MAX(total_value) AS pico
                            FROM snapshots WHERE total_value > 0 GROUP BY user_id)
@@ -20766,16 +20753,15 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
         # ── Q1: los flujos, con el crudo del parser ──────────────────────────
         flujos = []
         for r in conn.execute(
-            """SELECT n.id, n.date, n.broker, n.operation_type, n.currency,
+            f"""SELECT n.id, n.date, n.broker, n.operation_type, n.currency,
                       n.gross_amount, n.gross_amount_usd, n.quantity, n.unit_price,
                       n.asset_symbol, n.notes, n.raw_row_id,
                       rr.row_index, rr.raw_json,
                       b.id AS batch_id, b.file_name, b.parser_format, b.created_at,
                       b.confirmed_at, b.route_by_currency
-                 FROM import_normalized_tx n
-                 JOIN import_batches b ON b.id = n.batch_id
+                 FROM {TX_VIVAS}
                  LEFT JOIN import_raw_rows rr ON rr.id = n.raw_row_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                WHERE b.user_id=?
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND substr(n.date,1,7)=?
                 ORDER BY ABS(COALESCE(n.gross_amount_usd, n.gross_amount)) DESC
@@ -20838,11 +20824,11 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
             })
 
         suma_imports = float(conn.execute(
-            """SELECT COALESCE(SUM(CASE WHEN n.operation_type='DEPOSIT'
+            f"""SELECT COALESCE(SUM(CASE WHEN n.operation_type='DEPOSIT'
                                         THEN COALESCE(n.gross_amount_usd, n.gross_amount)
                                         ELSE 0 END), 0) AS s
-                 FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                 FROM {TX_VIVAS}
+                WHERE b.user_id=?
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND substr(n.date,1,7)=?""",
             (user_id, ym)).fetchone()["s"] or 0)
@@ -35036,8 +35022,8 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     if gate_over:
         _import_tenencia.marcar_over(rec)
     mx = conn.execute(
-        f"SELECT MAX(n.date) d FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
-        f"WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL "
+        f"SELECT MAX(n.date) d FROM {TX_VIVAS} "
+        f"WHERE b.user_id=? "
         f"AND n.broker IN ({ph}) "
         f"AND n.operation_type IN ('BUY','SELL')",
         (uid, *pair_l)).fetchone()

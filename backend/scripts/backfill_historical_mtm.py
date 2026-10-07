@@ -306,9 +306,16 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
 def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     """[{broker, asset, asset_type, quantity, invested(costo)}] tenidas a date_iso.
-    qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida."""
+    qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida.
+
+    ⚠️ Lee de `TX_VIVAS`: sólo imports confirmados y SIN las filas que la persona
+    borró. Antes filtraba el lote confirmado pero no la lápida (`excluded_at`), y
+    una compra borrada seguía en la foto valuada a mercado: con MSFT de 100 a 150,
+    la curva publicaba +US$ 500 de una suba que la persona ya no tenía, mientras
+    `positions` (el rebuild sí filtra) mostraba bien la cartera."""
+    from importing.schema import TX_VIVAS
     rows = conn.execute(
-        """SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
+        f"""SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
                   MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
                            THEN UPPER(n.currency) END) AS currency,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
@@ -318,9 +325,8 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
                         THEN COALESCE(n.gross_amount, COALESCE(n.quantity,0)*COALESCE(n.unit_price,0))
                         ELSE 0 END) AS buy_amt,
                   SUM(CASE n.operation_type WHEN 'BUY' THEN COALESCE(n.quantity,0) ELSE 0 END) AS buy_qty
-             FROM import_normalized_tx n
-             JOIN import_batches b ON n.batch_id = b.id
-            WHERE b.user_id = ? AND b.status = 'confirmed'
+             FROM {TX_VIVAS}
+            WHERE b.user_id = ?
               AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
               AND n.operation_type IN ('BUY','SELL')
               AND n.date <= ?
@@ -833,10 +839,14 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     #   · aun leyendo valor y aportado juntos, la foto describe la contabilidad
     #     VIEJA y la base del libro del asesor (el mayor aportado) guardaba el
     #     depósito borrado: 12 % → 8 %.
+    #   · borrar una COMPRA en ese rato no toca la contabilidad, pero sí la
+    #     tenencia: los meses ya valuados la seguían teniendo a mercado
+    #     (tests/test_compra_borrada_fuera_de_la_curva.py).
     # No se escribe nada que describa una contabilidad que ya no existe.
-    # La huella COMPLETA, no sólo las filas 'global': una compra borrada o un
-    # promedio editado en Cartera a mitad de corrida no tocan esas filas (medido
-    # por la auditoría: marzo escrito en 10.000 cuando ya era 11.000).
+    # Por eso se compara la huella COMPLETA (`huella_de_entrada`: incluye las
+    # compras y ventas con su lápida), no sólo las filas 'global': una compra
+    # borrada o un promedio editado en Cartera a mitad de corrida no tocan esas
+    # filas (medido por la auditoría: marzo escrito en 10.000 cuando ya era 11.000).
     if (_huella_contable(conn, uid) != huella
             or huella_de_entrada(conn, uid, today) != entrada):
         if _pasada < _PASADAS:

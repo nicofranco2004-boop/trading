@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Optional, Tuple
 
-from .schema import NormalizedTx, OP_BUY, OP_SELL, OP_WITHDRAW
+from .schema import NormalizedTx, OP_BUY, OP_SELL, OP_WITHDRAW, TX_VIVAS
 from .tenencia import MARCA_APROBACION
 from .persister import broker_pair
 
@@ -85,11 +85,12 @@ def senales_de_salida(conn, uid: int) -> set:
     Es el freno principal: tener el mismo papel en dos brokers es de lo más
     normal, y sin esta señal no se toca nada."""
     out = set()
+    # Sólo filas vivas (`TX_VIVAS`): un gasto que la persona borró ya no es una
+    # señal. Es el freno principal, y contar de más acá afloja el freno.
     for r in conn.execute(
-        """SELECT DISTINCT n.broker, n.date, n.notes
-             FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id = ? AND b.status = 'confirmed'
+        f"""SELECT DISTINCT n.broker, n.date, n.notes
+             FROM {TX_VIVAS}
+            WHERE b.user_id = ?
               AND COALESCE(n.notes, '') <> '' AND n.operation_type IN ('FEE')""",
         (uid,),
     ).fetchall():
@@ -114,7 +115,10 @@ def traspasos_ya_cerrados(conn, uid: int) -> set:
     Sin esto el cruce no es idempotente: re-importar el archivo del broker de
     origen vuelve a proponer los mismos cierres y descuenta DE NUEVO lo que ya
     se había cerrado. Medido con un archivo real: Bull Market bajaba de 11
-    posiciones a 9 en la segunda importación del mismo archivo."""
+    posiciones a 9 en la segunda importación del mismo archivo.
+
+    ⚠️ Lee el LOG entero, lápidas incluidas, a propósito: si la persona borró un
+    cierre por traspaso, re-importar no se lo tiene que volver a proponer."""
     return {(r["broker"], r["asset_symbol"], (r["date"] or "")[:10])
             for r in conn.execute(
                 """SELECT n.broker, n.asset_symbol, n.date
@@ -134,13 +138,15 @@ def entradas_ya_confirmadas(conn, uid: int, brokers_del_lote: set) -> List[dict]
     Es la mitad que falta cuando el usuario importa primero el broker que RECIBE
     y después el que ENTREGA — el orden más natural, porque el broker nuevo es
     el que está usando. En ese caso la entrada no viene en el lote actual: ya
-    está en la base."""
+    está en la base.
+
+    Sólo entradas vivas (`TX_VIVAS`): una entrada que la persona borró no puede
+    proponer el cierre de una posición en el broker de origen."""
     filas = conn.execute(
-        """SELECT n.broker, n.date, n.asset_symbol, n.quantity, n.gross_amount,
+        f"""SELECT n.broker, n.date, n.asset_symbol, n.quantity, n.gross_amount,
                   n.currency
-             FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id = ? AND b.status = 'confirmed'
+             FROM {TX_VIVAS}
+            WHERE b.user_id = ?
               AND n.transfer_in = 1 AND COALESCE(n.asset_symbol, '') <> ''
               AND COALESCE(n.quantity, 0) > 0""",
         (uid,),
