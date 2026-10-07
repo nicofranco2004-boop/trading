@@ -198,5 +198,77 @@ class ElTipoDeCambioDeLosDolares(_Base):
         self.assertAlmostEqual(float(caja["tc_compra"]), 1000, places=4)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+class ElTipoDeCambioDeLosDolaresImportados(_Base):
+    """Lo mismo que la clase de arriba, pero cuando las conversiones llegan en un
+    ARCHIVO: el importador pasa por la misma puerta (`tc_compra=`), y hasta la
+    auditoría del 2026-10-07 ninguna prueba lo miraba — se podía sacar el promedio
+    del importador entero y la suite seguía en verde. Por el camino real: subir el
+    archivo y confirmarlo, que corre el persister y después el recálculo."""
+
+    HDR = ("fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,"
+           "comisiones,moneda,notas\n")
+    SUB = "Balanz · USD"
+
+    def _importar(self, filas):
+        csv = (self.HDR + filas).encode()
+        p = self.client.post("/api/imports/preview", headers=self.h,
+                             files=[("files", ("fx.csv", io.BytesIO(csv), "text/csv"))],
+                             data={"format": "rendi_generic", "broker": "Balanz"})
+        self.assertEqual(p.status_code, 200, p.text)
+        r = self.client.post("/api/imports/confirm", headers=self.h, json={
+            "session_id": p.json()["session_id"], "skip_row_indices": [], "aprobar_tickers": []})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json().get("skipped_rows"), [], r.text)
+
+    def _venta_importada(self):
+        conn = main.get_db()
+        fila = conn.execute(
+            "SELECT entry_price, pnl_usd FROM operations WHERE user_id=? AND "
+            "op_type LIKE 'CONVERSION IMPORT %USDT→ARS'", (self.uid,)).fetchone()
+        conn.close()
+        self.assertIsNotNone(fila, "no se anotó la venta de dólares del archivo")
+        return fila
+
+    def test_dos_compras_promedian_y_la_venta_gana_contra_el_promedio(self):
+        self.usuario([("Balanz", "ARS", None)])
+        self._importar(
+            "2026-01-05,DEPOSITO,Balanz,,,,1000000,,,,ARS,\n"
+            "2026-01-06,CONVERSION_ARS_USD,Balanz,,,,100000,100,1000,,,MEP\n"
+            "2026-02-06,CONVERSION_ARS_USD,Balanz,,,,200000,100,2000,,,MEP\n")
+        caja = self.cajas(self.SUB)
+        self.assertEqual(len(caja), 1, caja)
+        self.assertAlmostEqual(float(caja[0]["invested"]), 200, places=4)
+        self.assertAlmostEqual(float(caja[0]["tc_compra"]), 1500, places=4,
+                               msg="el importador no promedió el TC de los dólares comprados")
+
+        # Un segundo archivo vende 100 USD a 2000: costaron 150.000 (promedio
+        # 1500) y se cobran 200.000 → 50.000 ARS de ganancia = US$ 25.
+        self._importar(
+            "2026-03-06,CONVERSION_USD_ARS,Balanz · USD,,,,200000,100,2000,,,MEP\n")
+        venta = self._venta_importada()
+        self.assertAlmostEqual(float(venta["entry_price"]), 1500, places=4)
+        self.assertAlmostEqual(float(venta["pnl_usd"]), 25, places=2)
+        caja = self.cajas(self.SUB)[0]
+        self.assertAlmostEqual(float(caja["invested"]), 100, places=4)
+        self.assertAlmostEqual(float(caja["tc_compra"]), 1500, places=4,
+                               msg="vender no cambia el costo de los dólares que quedan")
+
+    def test_con_el_saldo_en_dolares_en_rojo_vale_el_tc_de_la_compra(self):
+        """Un archivo puede dejar la subcuenta en dólares en rojo (le faltan
+        compras viejas). El promedio viejo del importador pesaba ese rojo como si
+        fueran dólares: −100 a 500 y +200 a 1000 daba (−50.000 + 200.000) / 100 =
+        1500, más caro que cualquier dólar que se pagó."""
+        self.usuario([("Balanz", "ARS", None)])
+        self._importar(
+            "2026-01-05,DEPOSITO,Balanz,,,,1000000,,,,ARS,\n"
+            "2026-01-06,CONVERSION_ARS_USD,Balanz,,,,50000,100,500,,,MEP\n"
+            "2026-01-07,CONVERSION_USD_ARS,Balanz · USD,,,,100000,200,500,,,MEP\n"
+            "2026-02-06,CONVERSION_ARS_USD,Balanz,,,,200000,200,1000,,,MEP\n")
+        caja = self.cajas(self.SUB)[0]
+        self.assertAlmostEqual(float(caja["invested"]), 100, places=4)
+        self.assertAlmostEqual(float(caja["tc_compra"]), 1000, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
