@@ -188,5 +188,103 @@ class ConversionEnMovimientos(unittest.TestCase):
         self.assertAlmostEqual(manuales[0]["amount_usd"], 250.0, places=2)
 
 
+class ConversionEnElCsvDelContador(unittest.TestCase):
+    """transactions.csv y operations.csv son lo que el usuario le manda al
+    contador: una vez usados para una declaración, Rendi ya no los corrige.
+
+    Medido antes del arreglo, con un depósito importado, una conversión
+    importada, un depósito a mano y una compra de USD con el botón:
+      · la del botón salía "VENTA, ARS→USDT, cantidad 15400, monto 0";
+      · la importada con el tipo crudo "FX_ARS_TO_USD" y los pesos sin moneda;
+      · el depósito importado salía DOS veces (su fila + el "Total depósitos"
+        del mes, que lo incluye), y la conversión sumaba un depósito y un retiro
+        de US$1.000 que nadie hizo;
+      · operations.csv ("operaciones cerradas") listaba las dos compras de USD
+        con los pesos bajo "Cantidad"."""
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        conn = main.get_db()
+        # Admin: pasa el gate de exportación (es plan pago).
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified, is_admin) "
+            "VALUES (?, 'x', 1, 1, 1)",
+            (f"csvconv-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'IOL', 'ARS')",
+                     (self.uid,))
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        r = self.client.post(
+            "/api/imports/preview", headers=self.h,
+            files=[("files", ("fx.csv", io.BytesIO((HDR +
+                "2024-03-01,DEPOSITO,IOL,,,,2000000,,,,ARS,dep importado\n"
+                "2024-03-02,CONVERSION_ARS_USD,IOL,,,,1400000,1000,1400,,,conv importada\n"
+            ).encode("utf-8")), "text/csv"))],
+            data={"format": "rendi_generic", "broker": "IOL"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post("/api/imports/confirm", headers=self.h,
+                             json={"session_id": r.json()["session_id"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "IOL", "direction": "deposit", "amount": 140_000,
+            "tc_blue": 1400, "date": "2024-03-10"})
+        self.assertEqual(r.status_code, 200, r.text)
+        for direction, broker, ars, usd, tc in (
+                ("ars_to_usd", "IOL", 15_400, 10, 1539.65),
+                ("usd_to_ars", "IOL · USD", 6_400, 4, 1600)):
+            r = self.client.post("/api/conversions", headers=self.h, json={
+                "from_broker": broker, "direction": direction, "ars_amount": ars,
+                "usd_amount": usd, "tc": tc, "kind": "MEP", "date": "2024-03-05"})
+            self.assertEqual(r.status_code, 200, r.text)
+
+    def _csv(self, nombre):
+        import csv
+        r = self.client.get(f"/api/export/{nombre}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        return list(csv.DictReader(io.StringIO(r.text)))
+
+    def test_transactions_csv_lleva_cada_conversion_con_sus_dos_monedas(self):
+        filas = self._csv("transactions.csv")
+        conv = sorted((f for f in filas if f["Tipo"] in ("COMPRA USD", "VENTA USD")),
+                      key=lambda f: float(f["Cantidad"]))
+        self.assertEqual(len(conv), 3, filas)
+        venta, boton, imp = conv
+        # Cantidad = dólares, precio = TC, monto = pesos (y la moneda lo dice).
+        self.assertEqual((boton["Tipo"], boton["Activo"], boton["Moneda"]),
+                         ("COMPRA USD", "USD", "ARS"))
+        self.assertAlmostEqual(float(boton["Cantidad"]), 10.0, places=2)
+        self.assertAlmostEqual(float(boton["Monto"]), 15_400, places=2)
+        self.assertAlmostEqual(float(imp["Cantidad"]), 1000, places=2)
+        self.assertAlmostEqual(float(imp["Monto"]), 1_400_000, places=2)
+        self.assertEqual(venta["Tipo"], "VENTA USD")
+        self.assertAlmostEqual(float(venta["Cantidad"]), 4, places=2)
+        self.assertAlmostEqual(float(venta["Monto"]), 6_400, places=2)
+        # Nada con el tipo crudo del importador ni como trade de "ARS→USDT".
+        self.assertFalse([f for f in filas if f["Tipo"].startswith("FX_")
+                          or "→" in f["Activo"]], filas)
+
+    def test_transactions_csv_no_repite_depositos_ni_inventa_flujos(self):
+        filas = self._csv("transactions.csv")
+        dep = [f for f in filas if f["Tipo"] == "DEPÓSITO"]
+        ret = [f for f in filas if f["Tipo"] == "RETIRO"]
+        # El importado (en pesos, con su fecha) y el cargado a mano (140.000 a
+        # 1400 = US$100, agregado del mes). Ninguno dos veces.
+        self.assertEqual(sorted((f["Moneda"], round(float(f["Monto"]), 2)) for f in dep),
+                         [("ARS", 2_000_000.0), ("USD", 100.0)], dep)
+        self.assertEqual(ret, [], "una conversión no es un retiro")
+
+    def test_operations_csv_no_lista_la_compra_de_usd_como_operacion_cerrada(self):
+        filas = self._csv("operations.csv")
+        self.assertFalse([f for f in filas if "ARS→" in f["Tipo"] or "ARS→" in f["Activo"]],
+                         filas)
+        # La venta de USD sí cierra (con su ganancia cambiaria): queda, legible.
+        ventas = [f for f in filas if f["Tipo"] == "Venta de USD"]
+        self.assertEqual(len(ventas), 1, filas)
+        self.assertEqual(ventas[0]["Activo"], "USD")
+        self.assertAlmostEqual(float(ventas[0]["Cantidad"]), 4, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
