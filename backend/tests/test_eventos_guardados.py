@@ -3,7 +3,7 @@
 CONTEXTO (2026-10-01). "Los eventos de estos tickers de hoy a N días" estaba
 escrito siete veces. Una copia leía la tabla `events`, que no existe, y las
 tarjetas "Earnings de X" / "Dividendo de X" del inicio no aparecieron nunca. Las
-tres copias de Rendi AI contaban "hoy" con el reloj del servidor (UTC): de 21 a
+tres copias de Mervall-E AI contaban "hoy" con el reloj del servidor (UTC): de 21 a
 24 h de Buenos Aires la IA ya estaba en mañana y no veía el evento de hoy que la
 pantalla sí mostraba.
 

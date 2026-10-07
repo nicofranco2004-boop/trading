@@ -15,7 +15,7 @@ tardó 66 s UNA vez y 5,7-6,4 s las otras. Dos mecanismos, los dos reproducidos:
 Y uno más, que apareció al medir las etapas: con una cripto en el pedido, la
 "última fila" de la tabla es la de hoy (Bitcoin ya tiene vela) y las acciones
 venían vacías → 11 pedidos de más a Yahoo, aviso de "precio viejo" en falso en
-Cartera, y `fetch_prices_for_symbols` (Rendi AI, alertas) sin precio para ellas.
+Cartera, y `fetch_prices_for_symbols` (Mervall-E AI, alertas) sin precio para ellas.
 
 Acá yfinance se reemplaza SIEMPRE en `yfinance.Ticker` —el último eslabón antes
 de la red—, así que cada prueba atraviesa el camino entero de producción:
@@ -324,7 +324,7 @@ class CriptoEnElPedidoTest(unittest.TestCase):
         self.assertFalse(out["__meta"]["AAPL"]["stale"])
 
     def test_fetch_prices_for_symbols_trae_las_acciones(self):
-        """Rendi AI, las alertas y la foto diaria: antes AAPL y MSFT volvían None."""
+        """Mervall-E AI, las alertas y la foto diaria: antes AAPL y MSFT volvían None."""
         parches = _sin_data912() + [*_yahoo_es(_YahooDeMentira(self.VELAS))]
         for p in parches:
             p.start()

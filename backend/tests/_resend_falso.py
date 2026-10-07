@@ -98,7 +98,15 @@ def red_de_mentira(reloj=None, demora=0.3, direcciones_de_prueba=False,
             st.enter_context(patch.object(emails, "time", reloj, create=True))
             if todo_sleep_en_el_reloj:
                 st.enter_context(patch("time.sleep", reloj.sleep))
-        yield resend
+        try:
+            yield resend
+        finally:
+            # Lo que el cartero tenga en la fila sale ACÁ, con Resend de
+            # mentira. Si saliera después, ya sin los parches, lo frena la
+            # guarda de `_pedir_a_resend` — pero el test no lo vería.
+            esperar = getattr(emails, "esperar_al_cartero", None)
+            if esperar:
+                esperar(10)
 
 
 def separaciones(horas):

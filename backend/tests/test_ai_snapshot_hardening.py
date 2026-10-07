@@ -80,7 +80,7 @@ class TestDeepProjection(unittest.TestCase):
         self.assertEqual(p["_kind"], "open_position")
 
     def test_legit_full_snapshot_survives(self):
-        """El snapshot real de AICoachDrawer pasa entero (nada legítimo se pierde)."""
+        """El snapshot real (utils/aiSnapshot.js) pasa entero (nada legítimo se pierde)."""
         out = main._sanitize_chat_snapshot({
             "summary": {"total_invested_usd": 5000, "months_count": 6,
                          "total_positions": 3, "total_cash_positions": 1},

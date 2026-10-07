@@ -103,8 +103,8 @@ def _num(v):
 # poco: los patrones no se pisan entre sí.
 _FORMAS = (
     ("analisis", r"^(?:(\d+)× más|Más) análisis IA \((\d+)/sem vs (\d+)/sem\)$"),
-    ("chat", r"^(?:(\d+)× más|Más) consultas a Rendi AI \((\d+)/sem vs (\d+)/sem\)$"),
-    ("chat_libre_cupo", r"^Chat libre con Rendi AI \((\d+) consultas/sem vs (\d+) guiadas?\)$"),
+    ("chat", r"^(?:(\d+)× más|Más) consultas a Mervall-E AI \((\d+)/sem vs (\d+)/sem\)$"),
+    ("chat_libre_cupo", r"^Chat libre con Mervall-E AI \((\d+) consultas/sem vs (\d+) guiadas?\)$"),
     ("chat_cupo", r"^(\d+) consultas por semana sobre lo que quieras "
                   r"\(en (\w+): (\d+)(?:, eligiendo entre (\d+) preguntas guiadas)?\)$"),
     ("brokers", r"^(?:Hasta (\d+) brokers?|Brokers ilimitados) \(vs (\d+) en (\w+)\)$"),
@@ -121,7 +121,7 @@ _FORMAS = (
     ("reportes", r"^Reportes históricos completos \(todos los meses\)$"),
     ("export", r"^Export CSV consolidado para tu contador$"),
     ("reportes_export", r"^Reportes históricos \+ Export CSV$"),
-    ("chat_libre", r"^Chat libre con Rendi AI: preguntá lo que quieras$"),
+    ("chat_libre", r"^Chat libre con Mervall-E AI: preguntá lo que quieras$"),
     ("causalidad", r"^Respuestas con causalidad y (?:comparaciones|memoria persistente)$"),
 )
 
@@ -807,9 +807,9 @@ class ConLimitesInventados(_ConLimitesInventados, _PorElCamino):
                        ("Hasta 4 brokers (vs 2 en Free)",
                         "9 detectores de comportamiento (vs 5 en Free)")),
             "chat Free": (lambda: self._cartel_chat(FREE),
-                          ("Más consultas a Rendi AI (11/sem vs 3/sem)",)),
+                          ("Más consultas a Mervall-E AI (11/sem vs 3/sem)",)),
             "chat Plus": (lambda: self._cartel_chat("plus"),
-                          ("Chat libre con Rendi AI (29 consultas/sem vs 11 guiadas)",)),
+                          ("Chat libre con Mervall-E AI (29 consultas/sem vs 11 guiadas)",)),
             "diagnóstico": (lambda: self._cartel_diagnostico(FREE),
                             ("Personalizá tu diagnóstico sin límite (en Free, 4 veces por semana)",)),
             "voz": (lambda: self._cartel_voz(FREE),

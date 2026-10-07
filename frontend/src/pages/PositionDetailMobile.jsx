@@ -219,7 +219,7 @@ export default function PositionDetailMobile() {
       {/* Top bar */}
       {/* Debajo de la barra de arriba (su alto: --alto-barra-celular). Con
           top-0 y el mismo z-30 de la barra, al bajar se montaba ENCIMA de ella
-          y tapaba el logo, la moneda, Rendi AI y la lupa. */}
+          y tapaba el logo, la moneda, Mervall-E AI y la lupa. */}
       <header className="sticky top-[var(--alto-barra-celular,0px)] z-20 flex items-center gap-3 px-3 py-2.5 border-b border-line/40 bg-bg-0/95 backdrop-blur-md">
         <button
           onClick={() => navigate(-1)}

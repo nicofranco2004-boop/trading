@@ -140,7 +140,7 @@ export default function Empezar() {
       <ul>
         <li><strong>Dashboard</strong>: tu portfolio total en USD, P&amp;L del mes, evolución.</li>
         <li><strong>Métricas</strong>: 5 cards de análisis automático.</li>
-        <li><strong>Rendi AI</strong>: 12 preguntas guiadas (Plus) o chat libre (Pro).</li>
+        <li><strong>Mervall-E AI</strong>: 12 preguntas guiadas (Plus) o chat libre (Pro).</li>
       </ul>
     </GuidePage>
   )

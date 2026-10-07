@@ -167,7 +167,7 @@ def _frase(clave: str, v, plan: Optional[str] = None) -> Optional[str]:
     if clave == "chat":
         if not v:
             return None
-        cuantas = f"**{_n(v, 'consulta', 'consultas')} por semana** a Rendi AI"
+        cuantas = f"**{_n(v, 'consulta', 'consultas')} por semana** a Mervall-E AI"
         # Sin chat libre, esas consultas son sólo las preguntas guiadas: sin
         # aclararlo, "9 consultas" se lee como "preguntale lo que quieras".
         if plan is None or plan in _PREMIUM:
@@ -236,7 +236,7 @@ def _lo_que_queda(clave: str, v) -> Optional[str]:
 # compra, así que su lista es sólo esto.
 _SIN_NUMEROS = {
     "pro": (
-        "**Chat libre** con Rendi AI: preguntás lo que quieras, sin preguntas fijas",
+        "**Chat libre** con Mervall-E AI: preguntás lo que quieras, sin preguntas fijas",
         "**Respuestas con causalidad** y comparaciones",
     ),
     "advisor": (
@@ -245,7 +245,7 @@ _SIN_NUMEROS = {
         "**Grupos** que se arman solos (por activo o por tamaño de cartera)",
         "**Operación grupal**: una compra para todo un grupo, con deshacer",
         "**Informes del período con tu marca** + brief diario de tu libro",
-        '**Rendi AI sobre todo tu libro**: "¿a quiénes les pega esta noticia?"',
+        '**Mervall-E AI sobre todo tu libro**: "¿a quiénes les pega esta noticia?"',
     ),
 }
 
@@ -253,13 +253,13 @@ _SIN_NUMEROS = {
 # seis de arriba describen qué es, no qué se pierde.
 _SIN_NUMEROS_AL_PERDER = {
     "pro": (
-        "**Chat libre** con Rendi AI",
+        "**Chat libre** con Mervall-E AI",
         "**Respuestas con causalidad** y comparaciones",
     ),
     "advisor": (
         "**El panel de asesor**: tus clientes, los grupos, la operación grupal "
         "y los informes con tu marca",
-        "**Chat libre** con Rendi AI",
+        "**Chat libre** con Mervall-E AI",
         "**Respuestas con causalidad** y comparaciones",
     ),
 }
@@ -395,7 +395,7 @@ def _pasa_a_interpretar(origen: str, destino: str) -> bool:
 # Lo que no es un número, y por eso va escrito: sólo se dice cuando
 # `_pasa_a_interpretar` (el mismo criterio que `_SIN_NUMEROS` de los mails).
 _SIN_NUMEROS_CARTEL = {
-    "chat_libre": "Chat libre con Rendi AI: preguntá lo que quieras",
+    "chat_libre": "Chat libre con Mervall-E AI: preguntá lo que quieras",
     "causalidad": "Respuestas con causalidad y comparaciones",
     "causalidad_memoria": "Respuestas con causalidad y memoria persistente",
 }
@@ -431,8 +431,8 @@ def _mejora(clave: str, origen: str, destino: str, usage: Optional[dict] = None,
         return _mas_de("análisis IA", a, b)
     if clave == "chat":
         if _pasa_a_interpretar(origen, destino):
-            return f"Chat libre con Rendi AI ({a} consultas/sem vs {_n(b, 'guiada', 'guiadas')})"
-        return _mas_de("consultas a Rendi AI", a, b)
+            return f"Chat libre con Mervall-E AI ({a} consultas/sem vs {_n(b, 'guiada', 'guiadas')})"
+        return _mas_de("consultas a Mervall-E AI", a, b)
     if clave == "brokers":
         cuantos = "Brokers ilimitados" if a is None else f"Hasta {_n(a, 'broker', 'brokers')}"
         return f"{cuantos} (vs {b} en {de})"

@@ -480,7 +480,7 @@ function Layout() {
       </main>
       <SupportWhatsAppFab />
       {/* ⌘K / Ctrl+K: buscar una pantalla, un activo, una acción, o
-          preguntarle a Rendi AI. Sólo compu (en el celular está /buscar). */}
+          preguntarle a Mervall-E AI. Sólo compu (en el celular está /buscar). */}
       <BuscadorRapido />
     </AdvisorProvider>
     </AlertsProvider>
@@ -510,7 +510,7 @@ export default function App() {
                   justo lo que se pidió que no pasara. Mismo patrón que el
                   selector de moneda del sidebar. Ver contexts/VozContext.jsx. */}
               <VozGate />
-              {/* Rendi AI vive en /ai (página propia) — el drawer lateral se
+              {/* Mervall-E AI vive en /ai (página propia) — el drawer lateral se
                   retiró (clean pass 2026-07). useCoachDrawer().open() navega. */}
             </div>
           </VozProvider>

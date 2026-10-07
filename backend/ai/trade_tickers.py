@@ -70,7 +70,7 @@ AR_STOCK_TICKERS = {
 }
 # ☝️ Es LA lista de acciones argentinas del servidor: la usan también el
 # diagnóstico de sesgo local y los sectores (behavioral.es_accion_argentina),
-# el análisis de Rendi AI por país (ai/builders/insights), los grupos del
+# el análisis de Mervall-E AI por país (ai/builders/insights), los grupos del
 # asesor y el importador (la pata dólar GGALD → GGAL, importing/tickers_cd).
 # Copia de frontend/src/utils/tickers.js (ARG_LIDER + ARG_GENERAL): las pruebas
 # tests/test_lista_acciones_ar.py y frontend/src/utils/listaAccionesAr.test.js

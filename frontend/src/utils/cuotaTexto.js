@@ -1,4 +1,4 @@
-// cuotaTexto — cómo se le cuenta al usuario lo que le queda de Rendi AI.
+// cuotaTexto — cómo se le cuenta al usuario lo que le queda de Mervall-E AI.
 // ═══════════════════════════════════════════════════════════════════════════
 // Existe porque el mismo dato se muestra en tres lugares (el contador chico del
 // encabezado, el pie del chat y el globo de ayuda del parlante) y tres textos
@@ -61,15 +61,15 @@ export function contadorCorto(usage) {
 
 /** Qué cuesta escuchar, para el globo de ayuda del parlante. */
 export function costoDeEscuchar(usage) {
-  if (!usage) return 'Rendi te lee la respuesta en voz alta.'
+  if (!usage) return 'Mervall-E te lee la respuesta en voz alta.'
   if (tieneCupoDeEscuchas(usage)) {
     const escuchas = usage.listens_remaining != null
       ? usage.listens_remaining
       : Math.max(0, usage.listens_limit - (usage.listen_count || 0))
-    return `Rendi te lee la respuesta en voz alta. Tenés ${plural(escuchas, 'audio', 'audios')} `
+    return `Mervall-E te lee la respuesta en voz alta. Tenés ${plural(escuchas, 'audio', 'audios')} `
       + 'por semana, aparte de tus consultas. Volver a oír uno que ya escuchaste es gratis.'
   }
-  return 'Rendi te lee la respuesta en voz alta. Escuchar gasta 1 consulta más, '
+  return 'Mervall-E te lee la respuesta en voz alta. Escuchar gasta 1 consulta más, '
     + 'así que una respuesta hablada te sale 2. Volver a oír una que ya escuchaste es gratis.'
 }
 
@@ -121,7 +121,7 @@ export function avisoDeCuota(usage) {
       agotado: true,
       cta: CON_ADONDE_IR.has(usage.tier),
       texto: `Usaste los análisis de esta semana: los botones ✦ van a pedirte que esperes.`
-        + `${cuandoA} Preguntarle a Rendi por escrito sigue andando.`,
+        + `${cuandoA} Preguntarle a Mervall-E por escrito sigue andando.`,
     }
   }
 

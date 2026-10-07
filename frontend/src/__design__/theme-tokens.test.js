@@ -104,6 +104,17 @@ const GRAFICO_DARK = {
   'mono-violet-4': '#4C429E', 'mono-violet-5': '#3D357E',
 }
 
+// Mervall-E, el personaje de la IA. No pasa por Tailwind: lo pinta
+// components/ai/mervalle/mervalle.css. Se congela igual que el resto: el
+// personaje en oscuro es lo que van a ver todos los usuarios.
+const PERSONAJE_DARK = {
+  'mv-casco-luz': '#FFFFFF', 'mv-casco': '#E8E5F4', 'mv-casco-sombra': '#9890BE',
+  'mv-borde': '#9890BE', 'mv-visor-luz': '#25203F', 'mv-visor': '#040407',
+  'mv-ojo': '#8B7DFF', 'mv-ojo-luz': '#E9E6FF', 'mv-circuito': '#C7C2DE',
+  'mv-sombra': '#000000',
+  'mv-pantalla-pos': '#21D07A', 'mv-pantalla-neg': '#FF5360', 'mv-pantalla-warn': '#E8B14A',
+}
+
 // La tercera familia: variables que NO son colores. Son las dos cosas del
 // gráfico que cambian de forma y no de tono entre temas — cuánta transparencia
 // lleva el relleno bajo la línea, y si el globo de datos tiene sombra o no.
@@ -150,7 +161,7 @@ const TOKENS_DEL_CONFIG = [...CONFIG_SIN_COMENTARIOS.matchAll(/rgb\(var\(--([\w-
 describe('tokens de tema — el modo oscuro no cambió', () => {
   it('cada token oscuro vale exactamente lo de antes de F0', () => {
     const cambiados = []
-    for (const [token, hex] of Object.entries({ ...DARK_ANTES_DE_F0, ...RAMPA_DARK, ...GRAFICO_DARK })) {
+    for (const [token, hex] of Object.entries({ ...DARK_ANTES_DE_F0, ...RAMPA_DARK, ...GRAFICO_DARK, ...PERSONAJE_DARK })) {
       const esperado = hexACanales(hex)
       if (DARK[token] !== esperado) {
         cambiados.push(`--${token}: esperaba "${esperado}" (${hex}), encontré "${DARK[token]}"`)
@@ -163,8 +174,8 @@ describe('tokens de tema — el modo oscuro no cambió', () => {
   it('no sobra ningún token en el bloque oscuro sin pasar por la tabla', () => {
     const sobrantes = Object.keys(DARK)
       .filter(t => !NO_SON_COLORES.has(t))
-      .filter(t => !(t in DARK_ANTES_DE_F0) && !(t in RAMPA_DARK) && !(t in GRAFICO_DARK))
-    expect(sobrantes, `Tokens en .dark que nadie congeló. Agregalos con su hex a DARK_ANTES_DE_F0 (tema), RAMPA_DARK (polaridad) o GRAFICO_DARK (gráficos) — o a NO_SON_COLORES si no son un color: ${sobrantes.join(', ')}`)
+      .filter(t => !(t in DARK_ANTES_DE_F0) && !(t in RAMPA_DARK) && !(t in GRAFICO_DARK) && !(t in PERSONAJE_DARK))
+    expect(sobrantes, `Tokens en .dark que nadie congeló. Agregalos con su hex a DARK_ANTES_DE_F0 (tema), RAMPA_DARK (polaridad), GRAFICO_DARK (gráficos) o PERSONAJE_DARK (Mervall-E) — o a NO_SON_COLORES si no son un color: ${sobrantes.join(', ')}`)
       .toEqual([])
   })
 })

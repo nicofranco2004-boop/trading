@@ -42,7 +42,14 @@ describe('nadie guarda por fuera de la regla', () => {
   const todos = archivos(SRC)
   it('el P&L no realizado se escribe SÓLO por guardarPnlNoRealizado', () => {
     const escriben = todos.filter((f) => /['"`]\/monthly\/sync-unrealized['"`]/.test(readFileSync(f, 'utf8'))).map(corto)
-    expect(escriben).toEqual(['utils/guardarValuacion.js'])
+    // utils/api.js la NOMBRA sin escribirla: está en la lista de escrituras que
+    // no dejan vieja la lectura de la cartera de la IA (NO_TOCAN_LA_CARTERA).
+    // Sólo ahí: si aparece en otro lado de api.js, este guard vuelve a mirar.
+    const api = readFileSync(join(SRC, 'utils/api.js'), 'utf8')
+    const lista = api.slice(api.indexOf('const NO_TOCAN_LA_CARTERA = ['), api.indexOf(']', api.indexOf('const NO_TOCAN_LA_CARTERA = [')))
+    expect((api.match(/['"`]\/monthly\/sync-unrealized['"`]/g) || []).length).toBe(1)
+    expect(lista).toMatch(/['"`]\/monthly\/sync-unrealized['"`]/)
+    expect(escriben.filter((f) => f !== 'utils/api.js')).toEqual(['utils/guardarValuacion.js'])
   })
   it('y sus llamadores son los dos de siempre (si aparece otro, que use la función)', () => {
     const llaman = todos.filter((f) => /guardarPnlNoRealizado\(/.test(readFileSync(f, 'utf8'))).map(corto).filter((f) => f !== 'utils/guardarValuacion.js').sort()

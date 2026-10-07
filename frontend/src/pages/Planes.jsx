@@ -328,7 +328,7 @@ export default function Planes({ embedded = false }) {
         <>
           <PageMeta
             title={`Planes y precios — Rendi | Plus desde ARS ${fmtArs(PLUS_PRICE_ARS_MONTHLY)}/mes`}
-            description={`Probá Rendi ${TRIAL_TOTAL_DAYS} días gratis, sin tarjeta. Después elegís Plus, para multi-broker, o Pro, con Rendi AI libre y memoria. Precio fijo en pesos. Cancelás cuando quieras.`}
+            description={`Probá Rendi ${TRIAL_TOTAL_DAYS} días gratis, sin tarjeta. Después elegís Plus, para multi-broker, o Pro, con chat libre con Mervall-E AI y memoria. Precio fijo en pesos. Cancelás cuando quieras.`}
             canonical="/planes"
           />
           <PageHeader

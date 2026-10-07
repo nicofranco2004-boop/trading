@@ -1,4 +1,5 @@
-"""La IA de Rendi se llama Rendi AI: el nombre viejo ("Coach IA") no vuelve.
+"""La IA de Rendi se llama Mervall-E AI: los nombres viejos ("Coach IA" y
+"Rendi AI") no vuelven.
 
 Del lado del servidor salen textos que la persona lee tal cual: la lista de
 beneficios de la tarjeta de "llegaste al límite", los avisos de "está tardando
@@ -7,6 +8,9 @@ registrada por chat. Esos decían "Coach IA" cuando el producto ya se llamaba
 Rendi AI en el catálogo, la FAQ y la guía. Y las instrucciones del chat decían
 "Sos el coach de inversiones de Rendi": si alguien le preguntaba cómo se
 llamaba, el modelo no tenía de dónde sacar "Rendi AI".
+
+El 2026-10-03 la IA pasó a llamarse Mervall-E AI (y a tener cara: el personaje
+del frontend). "Rendi AI" se sumó a los nombres viejos que este guard caza.
 
 Se leen los STRINGS del código con `ast`, no el archivo como texto: así los
 comentarios y los docstrings —que sí pueden contar la historia— no cuentan, y
@@ -36,17 +40,24 @@ import main  # noqa: E402
 
 # Entre dos palabras puede haber más que un espacio y en un mail se lee igual:
 # un espacio duro (`&nbsp;`) o una etiqueta (`Coach <b>IA</b>`).
-_ENTRE = r"(?:\s|&nbsp;|&#160;|<[^<>]*>)+"
+_ENTRE = r"(?:\s|&nbsp;|&#160;|&#xa0;|<[^<>]*>)+"
 NOMBRE_VIEJO = re.compile(
     rf"coach{_ENTRE}(de{_ENTRE})?ia\b"        # "Coach IA", "coach de IA"
     rf"|\b(el|al|del){_ENTRE}coach\b"         # "Memoria del Coach", "Sos el coach…"
-    rf"|\bai{_ENTRE}coach\b", re.I)          # "AI Coach"
+    rf"|\bai{_ENTRE}coach\b"                 # "AI Coach"
+    rf"|\brendi(?:{_ENTRE}|\s*[-‐‑–—_·]\s*)(?:ai|ia)\b"   # "Rendi AI" (hasta el 2026-10-03), "Rendi IA", "Rendi – AI"
+    # La IA llamada "Rendi" a secas (el personaje habla, lee, escucha; la app no):
+    rf"|\bpreg[uú]nt[\wáéíóúñ]*{_ENTRE}a{_ENTRE}rendi\b"         # "Preguntale/Pregúntale a Rendi"
+    rf"|\b(?:habl|escrib)[\wáéíóúñ]*le{_ENTRE}a{_ENTRE}rendi\b"   # "Hablarle a Rendi"
+    rf"|\brendi{_ENTRE}(?:está|te){_ENTRE}(?:habl|lee|leé|escuch|contest|piens|pens)"  # "Rendi te lee", "Rendi está pensando"
+    rf"|\bvoz{_ENTRE}de{_ENTRE}rendi\b"                           # "La voz de Rendi"
+    rf"|\bescribi[oó]{_ENTRE}rendi\b", re.I)                    # "Ese texto no lo escribió Rendi"
 # Los tests citan el texto viejo a propósito; los scripts no llegan a nadie.
 NO_SE_LEEN = {"tests", "scripts", "__pycache__", "node_modules", "venv"}
-# El único lugar donde el nombre viejo TIENE que estar: el valor que init_db
-# busca para reemplazarlo en las notas viejas. Por nombre de constante, no por
-# renglón: si se mueve sigue exceptuado, y en cualquier otro lado es un rojo.
-EXCEPCIONES = {("main.py", "_NOTA_COMPRA_POR_CHAT_VIEJA")}
+# El único lugar donde los nombres viejos TIENEN que estar: los valores que
+# init_db busca para reemplazarlos en las notas viejas. Por nombre de constante,
+# no por renglón: si se mueve sigue exceptuada, y en cualquier otro lado es un rojo.
+EXCEPCIONES = {("main.py", "_NOTAS_COMPRA_POR_CHAT_VIEJAS")}
 
 _COMENTARIO_SQL = re.compile(r"^[ \t]*--.*$", re.M)
 _ES_SQL = re.compile(r"\b(CREATE|ALTER|INSERT|SELECT|UPDATE|DELETE|DROP)\b")
@@ -76,10 +87,13 @@ def _strings_que_se_usan(arbol, rel=""):
     ninguna pantalla— y las EXCEPCIONES. Las sumas de strings se leen enteras."""
     sueltos = {id(n.value) for n in ast.walk(arbol)
                if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
-    exceptuados = {id(n.value) for n in ast.walk(arbol)
+    # Todo lo que cuelga del valor asignado: la constante es una tupla con un
+    # string por nombre viejo, no un string solo.
+    exceptuados = {id(c) for n in ast.walk(arbol)
                    if isinstance(n, ast.Assign)
                    and any(isinstance(t, ast.Name) and (rel, t.id) in EXCEPCIONES
-                           for t in n.targets)}
+                           for t in n.targets)
+                   for c in ast.walk(n.value)}
     for n in ast.walk(arbol):
         if (isinstance(n, ast.Constant) and isinstance(n.value, str)
                 and id(n) not in sueltos and id(n) not in exceptuados):
@@ -136,16 +150,34 @@ class ElNombreViejoNoVuelve(unittest.TestCase):
                        'x = "<p>Coach&nbsp;IA</p>"',
                        'x = "<p>Coach <b>IA</b></p>"',
                        'x = "Tip: AI Coach"',
-                       'x = """--- CONTEXTO ---\n-- lo dice el Coach IA\n"""'):
+                       'x = """--- CONTEXTO ---\n-- lo dice el Coach IA\n"""',
+                       'x = "Chat libre con Rendi AI"',
+                       'x = "Rendi&nbsp;AI está tardando"',
+                       'x = "Rendi&#xa0;AI"',
+                       'x = "Rendi IA"',
+                       'x = "La voz de Rendi no está disponible"',
+                       'x = "Preguntale a Rendi"',
+                       'x = "Rendi te lee la respuesta"',
+                       'x = "Rendi está pensando"',
+                       'x = "Pregúntale a Rendi"',
+                       'x = "Rendi – AI"',
+                       'x = "voz de Rendi"',
+                       'x = "Ese texto no lo escribió Rendi"'):
             self.assertTrue(_vistos(fuente), fuente)
 
+    def test_rendi_como_la_app_no_es_el_nombre_viejo(self):
+        """"Rendi" a secas es la APP y queda: sólo el personaje cambió de nombre."""
+        for fuente in ('x = "¡Bienvenido a Rendi Pro!"', 'x = "Entrar a Rendi"',
+                       'x = "Tu asesor te invitó a Rendi"', 'x = "¿Qué te diría Rendi si viera toda tu cartera?"'):
+            self.assertEqual(_vistos(fuente), [], fuente)
+
     def test_la_excepcion_es_una_sola_y_con_nombre(self):
-        """La nota vieja se puede nombrar en SU constante de main.py; la misma
-        frase en cualquier otra constante, u otro archivo, es un rojo."""
-        fuente = ('_NOTA_COMPRA_POR_CHAT_VIEJA = "Registrado por Coach IA"\n'
-                  'OTRA = "Registrado por Coach IA"\n')
-        self.assertEqual(_vistos(fuente, "main.py"), ["Registrado por Coach IA"])
-        self.assertEqual(len(_vistos(fuente, "otro.py")), 2)
+        """Las notas viejas se pueden nombrar en SU constante de main.py; la
+        misma frase en cualquier otra constante, u otro archivo, es un rojo."""
+        fuente = ('_NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")\n'
+                  'OTRA = "Registrado por Rendi AI"\n')
+        self.assertEqual(_vistos(fuente, "main.py"), ["Registrado por Rendi AI"])
+        self.assertEqual(len(_vistos(fuente, "otro.py")), 3)
 
     def test_ningun_texto_del_servidor_dice_coach_ia(self):
         hallazgos = []
@@ -157,7 +189,7 @@ class ElNombreViejoNoVuelve(unittest.TestCase):
                 m = NOMBRE_VIEJO.search(_texto(s))
                 if m:
                     hallazgos.append(f"{rel}:{renglon} «{m.group(0)}»")
-        self.assertEqual(sorted(set(hallazgos)), [], "la IA se llama Rendi AI")
+        self.assertEqual(sorted(set(hallazgos)), [], "la IA se llama Mervall-E AI")
 
 
 class ElChatSabeComoSeLlama(unittest.TestCase):
@@ -168,17 +200,18 @@ class ElChatSabeComoSeLlama(unittest.TestCase):
     def test_los_dos_prompts_le_dicen_su_nombre(self):
         for nombre in ("_AI_CHAT_SYSTEM", "_AI_CHAT_SYSTEM_FREE"):
             primera = getattr(main, nombre).split("\n", 1)[0]
-            self.assertIn("Sos Rendi AI", primera,
+            self.assertIn("Sos Mervall-E AI", primera,
                           f"{nombre} no le dice al modelo cómo se llama")
-            self.assertIn("cómo te llamás, sos Rendi AI", primera, nombre)
+            self.assertIn("cómo te llamás, sos Mervall-E AI", primera, nombre)
 
 
 @unittest.skipIf(getattr(main, "USANDO_PG", False),
                  "Sólo SQLite: en Postgres init_db() aplica schema_pg.sql y no corre "
                  "las correcciones de datos (los datos llegan ya corregidos de SQLite).")
 class LasNotasDeLasComprasViejasPorChat(unittest.TestCase):
-    """Las compras registradas por chat antes del 2026-09-26 guardaron la nota
-    con el nombre viejo. init_db() —el camino que corre en cada arranque de
+    """Las compras registradas por chat guardaron la nota con el nombre que el
+    asistente tenía ese día ("Coach IA" hasta el 2026-09-26, "Rendi AI" hasta
+    el 2026-10-03). init_db() —el camino que corre en cada arranque de
     producción— la renombra una vez, y sólo cuando es la nota exacta del
     sistema: lo que alguien escribió a mano queda como lo dejó."""
 
@@ -188,9 +221,11 @@ class LasNotasDeLasComprasViejasPorChat(unittest.TestCase):
             "INSERT INTO users (email, password_hash, approved) VALUES (?, 'x', 1)",
             ("notas-chat@rendi.test",)).lastrowid
         ids = {}
+        coach, rendi = main._NOTAS_COMPRA_POR_CHAT_VIEJAS
         for clave, nota in (
-                ("del_sistema", main._NOTA_COMPRA_POR_CHAT_VIEJA),
-                ("a_mano", main._NOTA_COMPRA_POR_CHAT_VIEJA + " y la revisé"),
+                ("de_coach_ia", coach),
+                ("de_rendi_ai", rendi),
+                ("a_mano", rendi + " y la revisé"),
                 ("vacia", None)):
             ids[clave] = conn.execute(
                 "INSERT INTO positions (user_id, broker, asset, quantity, buy_price, "
@@ -208,8 +243,9 @@ class LasNotasDeLasComprasViejasPorChat(unittest.TestCase):
                                      (i,)).fetchone()[0] for k, i in ids.items()}
         finally:
             conn.close()
-        self.assertEqual(notas["del_sistema"], main._NOTA_COMPRA_POR_CHAT)
-        self.assertEqual(notas["a_mano"], main._NOTA_COMPRA_POR_CHAT_VIEJA + " y la revisé")
+        self.assertEqual(notas["de_coach_ia"], main._NOTA_COMPRA_POR_CHAT)
+        self.assertEqual(notas["de_rendi_ai"], main._NOTA_COMPRA_POR_CHAT)
+        self.assertEqual(notas["a_mano"], rendi + " y la revisé")
         self.assertIsNone(notas["vacia"])
 
 

@@ -1,0 +1,57 @@
+/* Mervall-E — la pintura del personaje de la IA.
+   ═══════════════════════════════════════════════════════════════════════════
+   El dibujo lo arma motor.js con clases; los colores salen de acá, y acá sólo
+   hay tokens: la familia --mv-* de index.css, con un valor para el tema claro
+   (:root) y otro para el oscuro (.dark). Nada escrito a mano (contrato R8).
+
+   El casco es blanco en los dos temas. En claro, sobre el fondo lavanda de la
+   app, lo separa --mv-borde: un trazo de 1 px DE PANTALLA (ver .mv-edge abajo).
+   En oscuro el borde vale lo mismo que la sombra del casco y no se nota. */
+
+.mv-svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* Casco, cuerpo y brazos */
+.mv-s-hi  { stop-color: rgb(var(--mv-casco-luz)); }
+.mv-s-mid { stop-color: rgb(var(--mv-casco)); }
+.mv-s-lo  { stop-color: rgb(var(--mv-casco-sombra)); }
+.mv-edge  { stroke: rgb(var(--mv-borde)); stroke-width: 1; }
+/* En claro el borde es lo único que separa el casco blanco del fondo, y un
+   trazo medido en unidades del dibujo se achica con él: a 24 px de cabeza
+   medía 0,15 px y el casco desaparecía (auditoría 2026-10-04, contraste
+   1,0-1,1 a 1). `non-scaling-stroke` lo deja en 1 px de pantalla a cualquier
+   tamaño. En oscuro no hace falta y no se toca. */
+html:not(.dark) .mv-edge { vector-effect: non-scaling-stroke; stroke-width: 1px; }
+.mv-gloss   { fill: none; stroke: rgb(var(--mv-casco-luz) / 0.16); stroke-width: 3; stroke-linecap: round; }
+.mv-gloss-b { fill: none; stroke: rgb(var(--mv-casco-luz) / 0.45); stroke-width: 2.5; stroke-linecap: round; }
+
+/* Sombra en el piso */
+.mv-d-in  { stop-color: rgb(var(--mv-sombra) / 0.55); }
+.mv-d-out { stop-color: rgb(var(--mv-sombra) / 0); }
+
+/* Visor y ojos de luz: siempre violeta, en los dos temas */
+.mv-v-hi { stop-color: rgb(var(--mv-visor-luz)); }
+.mv-v-lo { stop-color: rgb(var(--mv-visor)); }
+.mv-visor-rim { stroke: rgb(var(--mv-ojo) / 0.45); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+/* El visor solo (20-22 px: el buscador, las esperas) perdía el vidrio contra
+   el fondo oscuro y quedaban dos puntitos sueltos. El aro de 1 px de pantalla
+   lo dibuja entero en los dos temas. */
+.mv-f-eye { flood-color: rgb(var(--mv-ojo)); }
+.mv-eye { fill: rgb(var(--mv-ojo-luz)); stroke: rgb(var(--mv-ojo)); stroke-width: 1.5; stroke-linejoin: round; }
+
+/* Línea del Merval (frente) y anillos (costados) */
+.mv-circ     { fill: none; stroke: rgb(var(--mv-circuito)); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.mv-circ-lit { fill: none; stroke: rgb(var(--mv-ojo-luz)); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.mv-disc     { fill: rgb(var(--mv-visor-luz)); stroke: rgb(var(--mv-casco-luz)); stroke-width: 1.6; }
+.mv-disc-lit { fill: none; stroke: rgb(var(--mv-ojo-luz)); stroke-width: 1.8; }
+.mv-spark    { fill: rgb(var(--mv-ojo-luz)); }
+
+/* Monitor de cotizaciones del pecho. El color de la línea, las barras y las
+   velas lo pone motor.js en vivo: violeta, o el de --mv-pantalla-* con tono. */
+.mv-f-scr      { flood-color: rgb(var(--mv-ojo)); }
+.mv-scr-frame  { stroke: rgb(var(--mv-casco-sombra)); stroke-width: 1; }
+.mv-scr-grid   { fill: none; stroke: rgb(var(--mv-ojo) / 0.16); stroke-width: 0.6; }
+.mv-scr-th     { fill: none; stroke-width: 0.8; stroke-dasharray: 1.6 1.4; }
+.mv-scr-line   { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.mv-cd-w       { fill: none; stroke-width: 0.8; }
+.mv-cd-b       { stroke-width: 0.8; }
+.mv-scr-gloss  { fill: none; stroke: rgb(var(--mv-casco-luz) / 0.14); stroke-width: 1.2; stroke-linecap: round; }

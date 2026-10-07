@@ -105,8 +105,8 @@ export default function AskAIAbout({
           preguntarle('hover_button')
         }}
         disabled={pendientes}
-        aria-label="Preguntarle a Rendi"
-        title={pendientes ? TEXTO_PRECIOS_PENDIENTES : 'Preguntarle a Rendi'}
+        aria-label="Preguntarle a Mervall-E"
+        title={pendientes ? TEXTO_PRECIOS_PENDIENTES : 'Preguntarle a Mervall-E'}
         className={[
           // El atenuado de "faltan las cotizaciones" sólo donde el botón se ve:
           // `disabled:opacity-40` le gana al `opacity-0` del hover (va después

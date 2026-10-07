@@ -30,7 +30,7 @@ export default function CarteraYOperaciones() {
           <li>
             Si la <strong>misma compra</strong> va para varios clientes, no la cargues uno
             por uno: usá la <strong>operación grupal</strong> desde Clientes (o dictásela a
-            Rendi AI). Se anota en todos de una, y si te equivocaste se deshace entera.
+            Mervall-E AI). Se anota en todos de una, y si te equivocaste se deshace entera.
           </li>
           <li>
             Las <strong>ventas</strong> sí van cliente por cliente, desde la cuenta de cada

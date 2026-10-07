@@ -126,7 +126,7 @@ ningún test, y el código "se lee" correcto.
 
 El fix es el modificador important de Tailwind: `!border-data-violet/30`. Es el primer y único
 `!` del repo a propósito — no es un idioma para usar en cualquier lado, es la salida para
-*pisar un default que emite un átomo*. Único uso hoy: la tarjeta de Rendi AI en `More.jsx`.
+*pisar un default que emite un átomo*. Único uso hoy: la tarjeta de Mervall-E AI en `More.jsx`.
 
 **`Config.jsx:500` tiene HOY este bug sin arreglar**: pide `border-amber-500/30` y renderiza
 gris. `Config.jsx:554` (`border-rendi-neg/30`) zafa sólo porque `rendi-neg` va después de

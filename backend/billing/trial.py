@@ -534,13 +534,16 @@ def status(conn, user_id: int) -> dict:
         # Días completos que faltan para que se termine TODO el trial.
         out["days_left"] = dias_restantes(until_dt, now)
         # Días que faltan para el cambio de Pro a Plus (None si ya pasó). Por
-        # DÍA UTC, como el corte que lo ejecuta (`step_down_due_trials`) y el
-        # mail "mañana termina tu Pro": contaba "10 días exactos desde la hora
-        # del botón", y el día que llegaba ese mail la app decía "2 días más"
-        # hasta la hora en que la persona había activado la prueba.
+        # DÍA, como el corte que lo ejecuta y el mail "mañana termina tu Pro":
+        # contaba "10 días exactos desde la hora del botón", y el día que
+        # llegaba ese mail la app decía "2 días más". El corte lo hace la
+        # corrida de las 03:30 UTC del día UTC `cambio`, o sea las 00:30 de
+        # Argentina de ESE MISMO día: se cuenta contra el día ARGENTINO de hoy
+        # — contra el UTC, de 21 a 24 decía "mañana" un día antes.
         if out["stage"] == "pro":
+            from fechas import dia_art
             cambio = started_dt.date() + timedelta(days=TRIAL_PRO_DAYS)
-            out["days_to_switch"] = max(0, (cambio - now.date()).days)
+            out["days_to_switch"] = max(0, (cambio - dia_art(now)).days)
     return out
 
 
@@ -651,10 +654,10 @@ MAIL_ENDED = "ended"
 # archivos distintos). Con la prueba de 20 días pasa a 3: es el mail que más
 # convierte y 48 horas es poco margen para decidir un gasto mensual.
 MAIL_AVISO_DIAS_ANTES = 3
-# Días durante los cuales el cron reintenta la bienvenida que Resend rechazó al
-# activar la prueba (ver `send_due_trial_emails`). Uno: la corrida de esa misma
-# noche. El mail dice "durante los próximos N días tenés todo Pro"; más tarde,
-# la cuenta ya no da.
+# Días (desde la activación) durante los cuales el cron reintenta la bienvenida
+# que Resend rechazó al activar la prueba (ver `send_due_trial_emails`). Uno: la
+# próxima vuelta (hay dos por día: 03:30 completa y 15:00 sólo avisos). El mail
+# dice "durante los próximos N días tenés todo Pro"; más tarde, la cuenta ya no da.
 MAIL_BIENVENIDA_REINTENTO_DIAS = 1
 
 
@@ -830,11 +833,11 @@ def _trial_stats(conn, user_id: int) -> dict:
 def send_due_trial_emails(conn, tanda=None) -> int:
     """Paso del cron: manda los avisos que correspondan hoy. Devuelve cuántos
     mails salieron. Cada uno se marca ANTES de enviarse (`_avisar_una_vez`): si
-    Resend lo rechaza, la marca se devuelve y lo reintenta la corrida de
-    mañana; si no se sabe si llegó, queda marcado (preferimos perder un aviso
-    antes que repetirlo); con Resend caído la `tanda` se frena y lo que falta
-    queda para mañana. La pausa entre un mail y el siguiente la pone
-    `emails._send`."""
+    Resend lo rechaza, la marca se devuelve y lo reintenta la próxima vuelta
+    (hay dos por día; dentro de la ventana de cada aviso); si no se sabe si
+    llegó, queda marcado (preferimos perder un aviso antes que repetirlo); con
+    Resend caído la `tanda` se frena y lo que falta queda para la próxima
+    vuelta. La pausa entre un mail y el siguiente la pone `emails._send`."""
     from billing import emails
     tanda = tanda or emails.Tanda()
     now = datetime.utcnow()
@@ -845,8 +848,9 @@ def send_due_trial_emails(conn, tanda=None) -> int:
 
     # ── la bienvenida que no salió al activar (Resend la rechazó) ──────────
     # Sale al activar la prueba (`start`); si Resend la rechazó, la marca se
-    # devolvió y la manda esta corrida. Sólo los primeros días: "ya tenés Pro,
-    # hacé esto hoy" una semana tarde no es una bienvenida.
+    # devolvió y la manda esta corrida. Sólo dentro de
+    # MAIL_BIENVENIDA_REINTENTO_DIAS: "ya tenés Pro, hacé esto hoy" días más
+    # tarde no es una bienvenida.
     try:
         rows = conn.execute(
             """SELECT u.id, u.email, u.name, u.requires_plan FROM users u

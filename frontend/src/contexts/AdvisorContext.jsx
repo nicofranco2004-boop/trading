@@ -15,7 +15,7 @@
 // patrón que AlertsContext) — ningún componente explota si se monta suelto.
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
-import { getClientContext, setClientContext, clearClientContext } from '../utils/api'
+import { getClientContext, setClientContext, clearClientContext, EVENTO_CUENTA_CAMBIADA } from '../utils/api'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 
 const AdvisorContext = createContext(null)
@@ -29,10 +29,14 @@ export function AdvisorProvider({ children }) {
   // otra pestaña, api.js ya deja de mandar el header — sin esto el estado
   // React de ESTA pestaña seguía mostrando la banda del cliente sobre datos
   // del asesor (audit).
+  // Se sigue el AVISO de api.js y no el 'storage' por separado: acá se
+  // ignoraba el borrado total (otra pestaña que vacía todo, `key` null) que
+  // api.js sí atiende, y la banda decía "cliente Ana" mientras los pedidos —y
+  // la IA— ya iban sin cliente. Una sola fuente: la que decide los pedidos.
   useEffect(() => {
-    const onStorage = (e) => { if (e.key === 'rendi_client_ctx') setCtx(getClientContext()) }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    const alCambiar = () => setCtx(getClientContext())
+    window.addEventListener(EVENTO_CUENTA_CAMBIADA, alCambiar)
+    return () => window.removeEventListener(EVENTO_CUENTA_CAMBIADA, alCambiar)
   }, [])
 
   const enterClient = useCallback((client) => {

@@ -861,12 +861,13 @@ def _marcar_bienvenidas_previas(conn) -> int:
 
 # La nota que deja una compra registrada por chat (register_trade). Van acá
 # arriba y no al lado del chat porque init_db() —que corre al importar este
-# archivo, antes de llegar allá— también las usa: la vieja es la que busca para
-# reemplazarla en las compras de antes del 2026-09-26, cuando el asistente se
-# llamaba de otra forma. Es el ÚNICO lugar del backend donde el nombre viejo
-# tiene que estar (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
-_NOTA_COMPRA_POR_CHAT = "Registrado por Rendi AI"
-_NOTA_COMPRA_POR_CHAT_VIEJA = "Registrado por Coach IA"
+# archivo, antes de llegar allá— también las usa: las viejas son las que busca
+# para reemplazarlas en las compras registradas con los nombres anteriores del
+# asistente ("Coach IA" hasta el 2026-09-26, "Rendi AI" hasta el 2026-10-03).
+# Es el ÚNICO lugar del backend donde los nombres viejos tienen que estar
+# (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
+_NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
+_NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
 def init_db():
@@ -2484,8 +2485,12 @@ def init_db():
         # subscriptions: columnas de idempotencia de emails (idempotent migration
         # para tablas pre-existentes — las new tienen estas cols ya en el CREATE).
         sub_cols = _table_cols(conn, 'subscriptions')
+        # `cancelacion_pedida_at`: cuándo la PERSONA apretó "Cancelar" en Rendi. Es
+        # lo único que separa su baja de la que hace Rebill por falta de pago o la
+        # limpieza de un alta que nunca se pagó (las tres quedan 'cancelled'), y
+        # el reintento del mail "Cancelación confirmada" mira sólo ésta.
         for col in ['welcome_email_sent_at', 'cancellation_email_sent_at',
-                    'expiration_reminder_sent_at']:
+                    'expiration_reminder_sent_at', 'cancelacion_pedida_at']:
             if sub_cols and col not in sub_cols:
                 conn.execute(f"ALTER TABLE subscriptions ADD COLUMN {col} TEXT")
         # subscriptions: amount_usd para tracking del valor real cobrado (los planes
@@ -2564,6 +2569,18 @@ def init_db():
         # Se estampa a mano sobre los que ya pagaban; nadie nuevo la recibe.
         if user_cols_after and 'quota_plus_legacy' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN quota_plus_legacy INTEGER DEFAULT 0")
+        # Qué fecha de vencimiento ya se le avisó ("tu plan vence en N días"),
+        # 'YYYY-MM-DD'. UN aviso por persona y por vencimiento real: ver
+        # `billing.subscriptions._send_credit_expiring_reminders`. Sin índice
+        # (se lee y escribe por id de usuario).
+        if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
+            conn.commit()
+            try:
+                from billing import subscriptions as _subs
+                _subs._migrar_aviso_vencimiento(conn)
+            except Exception as _ex:
+                log.warning("migración aviso_vencimiento_de: %s", _ex)
         conn.commit()
 
         # Marca de "este email ya usó su trial", en su PROPIA tabla: borrar la
@@ -2970,16 +2987,21 @@ def init_db():
         except Exception:
             pass  # tabla puede no existir en DBs muy viejas pre-migración
 
-        # Las compras registradas por chat antes del 2026-09-26 guardaron la nota
-        # con el nombre viejo del asistente, y se ve en "Editar posición → Notas".
+        # Las compras registradas por chat guardaron la nota con el nombre que el
+        # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
+        # "Editar posición → Notas".
         # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
         # queda como la dejó. En cada boot, como la purga de arriba: después de la
         # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
         # arranque.
         try:
+            # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
+            # tercero a la lista hacía fallar la consulta — y como el error se
+            # descarta (es cosmético), no se renombraba ninguna nota.
+            huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
             n = conn.execute(
-                "UPDATE positions SET notes = ? WHERE notes = ?",
-                (_NOTA_COMPRA_POR_CHAT, _NOTA_COMPRA_POR_CHAT_VIEJA)).rowcount or 0
+                f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
+                (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
             if n:
                 log.info("notas de compras por chat renombradas: %d", n)
         except Exception as ex:
@@ -4151,7 +4173,11 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
         row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
         if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
             conn.close()
-            raise HTTPException(401, "Contraseña actual incorrecta")
+            # 400 y no 401: el frontend toma CUALQUIER 401 como "la sesión
+            # venció" (utils/api.js) — borraba la sesión guardada, mandaba a la
+            # portada en vez de mostrar este mensaje, y recargaba todas las
+            # otras pestañas de la persona. La sesión está bien; el dato no.
+            raise HTTPException(400, "Contraseña actual incorrecta")
         new_hash = pwd_ctx.hash(data.new_password)
         conn.execute(
             "UPDATE users SET password_hash=?, password_changed_at=datetime('now') WHERE id=?",
@@ -21569,7 +21595,7 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 ENVIO_MASIVO_LOTE = 20
 # Segundos, contados desde que llegó el pedido, después de los cuales no se
 # EMPIEZA otro mail: los que quedan vuelven al panel en `pendientes` y salen en
-# el pedido siguiente. El lote de 20 supone ~0,3 s por mail; si Resend se pone
+# el pedido siguiente. El lote de 20 supone ~0,6 s por mail; si Resend se pone
 # lento (`_send` espera hasta 10 s), 20 mails volvían a pasar el corte de 30 s.
 # Con 18, el caso normal de un mail lento termina en 18 + 0,6 + 10 < 30. No es
 # una garantía (httpx cuenta los 10 s por fase, una base trabada demora la
@@ -21806,6 +21832,15 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     avanza."""
     from billing import emails
 
+    with emails.envio_masivo():       # la fila completa de la pausa
+        return _envio_masivo_en_fila(conn, destinatarios, vistos, marcar=marcar,
+                                     mandar=mandar, desmarcar=desmarcar, campaña=campaña,
+                                     inicio=inicio, inciertos_previos=inciertos_previos)
+
+
+def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmarcar,
+                          campaña, inicio, inciertos_previos):
+    from billing import emails
     enviados, fallados, salteados, trabadas, inciertos, pendientes = [], [], [], [], [], []
     ya_no_estan = []
     tanda = emails.Tanda(inciertos_seguidos=inciertos_previos)
@@ -23517,7 +23552,7 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
-_AI_CHAT_SYSTEM = """Sos Rendi AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
+_AI_CHAT_SYSTEM = """Sos Mervall-E AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
 No das recomendaciones específicas de "comprá X" o "vendé Y". Sí explicás conceptos, marcos analíticos, ratios, riesgos, y hacés preguntas que abren reflexión.
@@ -23881,7 +23916,7 @@ Estás hablando con el ASESOR FINANCIERO del dueño de esta cartera, no con el d
 - Describí y cuantificá; el asesor decide qué hacer con su cliente.
 """
 
-_AI_CHAT_SYSTEM_FREE = """Sos Rendi AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
+_AI_CHAT_SYSTEM_FREE = """Sos Mervall-E AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
 
 ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
@@ -25894,7 +25929,7 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     # texto libre controlado por el cliente; una key extra ("instructions",
     # "note", lo que sea) entraba VERBATIM al contexto del LLM = bypass de la
     # whitelist Free + superficie de prompt-injection. Solo pasan las keys que
-    # el frontend legítimo manda (AICoachDrawer). Lo demás se dropea y loggea.
+    # el frontend legítimo manda (utils/aiSnapshot.js). Lo demás se dropea y loggea.
     _ALLOWED_SNAPSHOT_KEYS = {"summary", "positions", "operations", "monthly", "brokers"}
     _dropped = [k for k in raw.keys() if k not in _ALLOWED_SNAPSHOT_KEYS]
     if _dropped:
@@ -30723,6 +30758,7 @@ def billing_cancel(request: Request, uid: int = Depends(get_effective_user)):
                 conn.execute(
                     """UPDATE subscriptions
                        SET status = 'cancelled', cancelled_at = datetime('now'),
+                           cancelacion_pedida_at = datetime('now'),
                            current_period_end = COALESCE(?, current_period_end),
                            updated_at = datetime('now')
                        WHERE mp_subscription_id = ?""",
@@ -31009,9 +31045,29 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
         return
     if row["welcome_email_sent_at"]:
         return  # ya enviamos
+    # Marca ANTES de mandar, condicional (`emails.Tanda`): miraba, mandaba y
+    # recién después anotaba, y una re-entrega de `subscription.created` que
+    # llegaba mientras tanto mandaba una segunda bienvenida (medido en la
+    # auditoría). Si Resend lo rechaza, la marca vuelve.
+    def marcar():
+        marca = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            cur = conn.execute(
+                """UPDATE subscriptions SET welcome_email_sent_at = ?
+                   WHERE mp_subscription_id = ? AND welcome_email_sent_at IS NULL""",
+                (marca, preapproval_id))
+        return marca if cur.rowcount > 0 else None
+
+    def desmarcar(marca):
+        with conn:
+            conn.execute(
+                """UPDATE subscriptions SET welcome_email_sent_at = NULL
+                   WHERE mp_subscription_id = ? AND welcome_email_sent_at = ?""",
+                (preapproval_id, marca))
+
     try:
         from billing import plan_textos as _plan_textos
-        sent = emails.send_welcome_pro(
+        datos = dict(
             to=row["email"],
             user_name=(row["name"] or row["email"].split("@")[0]),
             period=period,
@@ -31022,15 +31078,8 @@ def _maybe_send_welcome_email(conn, preapproval_id, user_id, period, mp_state, p
             # Plus se les respeta el cupo viejo): ver plan_textos.cupos_del_usuario.
             cupos=_plan_textos.cupos_del_usuario(conn, user_id, plan),
         )
-        if sent or not emails.can_deliver(row["email"]):
-            # Marcamos como enviado igual en modo "no configurado" (log-only)
-            # para no spamear el log con cada webhook.
-            with conn:
-                conn.execute(
-                    """UPDATE subscriptions SET welcome_email_sent_at = datetime('now')
-                       WHERE mp_subscription_id = ?""",
-                    (preapproval_id,),
-                )
+        emails.Tanda().enviar(marcar, lambda: emails.send_welcome_pro(**datos), desmarcar,
+                              que=f"bienvenida sub={preapproval_id}")
     except Exception as ex:
         log.error("Welcome email failed for sub %s: %s", preapproval_id, ex)
 
@@ -31161,34 +31210,12 @@ def _iso_today() -> str:
 
 
 def _maybe_send_cancellation_email(conn, preapproval_id, user_id):
-    """Email de cancelación. Idempotente vía cancellation_email_sent_at."""
-    from billing import emails
-    from billing import trial as _trial
-    row = conn.execute(
-        """SELECT s.cancellation_email_sent_at, s.current_period_end, u.email, u.name,
-                  u.id AS uid
-           FROM subscriptions s JOIN users u ON u.id = s.user_id
-           WHERE s.mp_subscription_id = ?""",
-        (preapproval_id,),
-    ).fetchone()
-    if not row or row["cancellation_email_sent_at"]:
-        return
+    """Email "Cancelación confirmada": una sola regla, la de
+    `billing.subscriptions.enviar_mail_de_cancelacion` (marca antes, condicional,
+    y la devuelve si Resend lo rechaza: lo reintenta el ciclo de vida)."""
+    from billing import subscriptions as _subs
     try:
-        valid_until = row["current_period_end"] or _iso_today()
-        emails.send_cancellation(
-            to=row["email"],
-            user_name=(row["name"] or row["email"].split("@")[0]),
-            valid_until=valid_until,
-            # Quien nació sin plan gratis no "vuelve a Free": queda en pausa.
-            # `_requiere_plan` tolera una base sin la columna (responde False).
-            requiere_plan=_trial._requiere_plan(conn, row["uid"]),
-        )
-        with conn:
-            conn.execute(
-                """UPDATE subscriptions SET cancellation_email_sent_at = datetime('now')
-                   WHERE mp_subscription_id = ?""",
-                (preapproval_id,),
-            )
+        _subs.enviar_mail_de_cancelacion(conn, preapproval_id)
     except Exception as ex:
         log.error("Cancellation email failed for sub %s: %s", preapproval_id, ex)
 
@@ -32292,7 +32319,7 @@ def _extract_voz(text: str) -> Optional[str]:
 # que poder contradecir al manifiesto, y el contexto no manda sobre él.
 _SIN_VOZ = (
     "AJUSTE DE ESTE TURNO, y pisa lo que diga el manifiesto sobre el campo "
-    "\"voz\": el usuario tiene a Rendi SILENCIADA, así que esta respuesta NO se "
+    "\"voz\": el usuario tiene la voz SILENCIADA, así que esta respuesta NO se "
     "va a leer en voz alta. NO escribas el campo \"voz\" en el bloque ---RENDI---. "
     "Todo lo demás del bloque va igual que siempre (verdict, headline, stats, "
     "blocks, followups): lo único que se saca es \"voz\"."
@@ -32979,7 +33006,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días. Y los números se escriben a la argentina: "US$ 1.037,74", "+5,2%" — el punto para los miles y la coma para los decimales, aunque el dato te haya llegado como 1037.74.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: Rendi empieza a hablar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: la voz empieza a sonar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -33508,9 +33535,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # Lo gastado antes del error Anthropic lo cobró igual: se anota.
                 _record_chat_quota(uid, _costo.centavos())
                 if ex_name in ("APITimeoutError", "APIConnectionError"):
-                    code, msg = "ai_timeout", "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
+                    code, msg = "ai_timeout", "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
                 elif ex_name in ("RateLimitError",):
-                    code, msg = "ai_rate_limit", "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
+                    code, msg = "ai_rate_limit", "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
                 else:
                     if ex_name in ("BadRequestError",):
                         log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
@@ -33678,7 +33705,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_timeout",
-                    "message": "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
+                    "message": "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
                 },
             )
         if ex_name in ("RateLimitError",):
@@ -33686,7 +33713,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_rate_limit",
-                    "message": "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
+                    "message": "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
                 },
             )
         if ex_name in ("BadRequestError",):
@@ -33792,7 +33819,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
     if not tts.enabled():
         raise HTTPException(503, detail={
             "error": "voz_unavailable",
-            "message": "La voz de Rendi no está disponible en este momento.",
+            "message": "La voz de Mervall-E no está disponible en este momento.",
         })
 
     # 12/min por usuario: más que eso no es alguien escuchando respuestas.
@@ -33803,7 +33830,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
         log.warning("ai_voz: firma inválida uid=%s len=%d", uid, len(text))
         raise HTTPException(403, detail={
             "error": "voz_bad_signature",
-            "message": "Ese texto no lo escribió Rendi, así que no lo puede leer.",
+            "message": "Ese texto no lo escribió Mervall-E, así que no lo puede leer.",
         })
 
     key = tts.remember(text)
@@ -33862,7 +33889,7 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     if not tts.enabled():
         raise HTTPException(503, detail={
             "error": "voz_unavailable",
-            "message": "La voz de Rendi no está disponible en este momento.",
+            "message": "La voz de Mervall-E no está disponible en este momento.",
         })
     if not re.fullmatch(r"[0-9a-f]{64}", key or ""):
         raise HTTPException(404, "No encontrado")
@@ -37149,12 +37176,15 @@ def iol_lab_run_cron(request: Request):
 
 def _iol_lab_refresh_all(*, min_age_minutes: int = 0) -> dict:
     """Renueva el refresh token de todos los testers con medición activa. Lo llaman el
-    cron externo, el scheduler in-process (cada hora) y, oportunistamente, /status.
+    cron externo y el scheduler in-process (cada hora); /status y el botón renuevan
+    de a un tester con `_iol_lab_refresh_one`, bajo la misma bandera.
     min_age_minutes: saltea las cuentas renovadas hace menos de eso (evita pisarse).
 
-    Una corrida a la vez entre las tres puertas (`_tomar_corrida("iol_lab")`):
-    dos renovando el MISMO token a la vez, si IOL anula el viejo al rotarlo, la
-    segunda recibe un rechazo y borra la credencial como si estuviera muerta."""
+    Una renovación a la vez entre todas sus puertas (`_tomar_corrida("iol_lab")`:
+    este lote —cron externo y job horario—, el botón "renovar", la renovación
+    oportunista de /status y el guardado del login de prueba): dos renovando el
+    MISMO token a la vez, si IOL anula el viejo al rotarlo, la segunda recibe un
+    rechazo y borra la credencial como si estuviera muerta."""
     # Esperando un poco: la otra puerta suele ser la renovación de UN tester
     # (botón o /status, ~1 s); saltear la corrida dejaba a todos sin renovar
     # hasta la hora siguiente.
@@ -37675,7 +37705,8 @@ def _get_mep_for_scheduler() -> float:
 # alertas, brief del asesor, resumen de mercado y las renovaciones del lab de
 # IOL) salen por acá: el arreglo de una no puede volver a quedar en una sola.
 _corridas_lock = threading.Lock()
-_corridas_en_curso: dict = {}          # nombre → time.monotonic() de cuando arrancó
+_corridas_en_curso: dict = {}          # nombre → _reloj_corridas() de cuando arrancó
+_reloj_corridas = time.monotonic
 # Minutos después de los cuales una corrida que sigue "en curso" se avisa como
 # probablemente colgada: la bandera no se puede robar (correrían dos), pero un
 # "ya está corriendo" eterno no puede ser silencioso.
@@ -37685,13 +37716,13 @@ CORRIDA_SOSPECHOSA_MIN = 30
 def _tomar_corrida(nombre: str) -> bool:
     with _corridas_lock:
         if nombre in _corridas_en_curso:
-            minutos = (time.monotonic() - _corridas_en_curso[nombre]) / 60
+            minutos = (_reloj_corridas() - _corridas_en_curso[nombre]) / 60
             if minutos > CORRIDA_SOSPECHOSA_MIN:
                 log.error("%s: hay una corrida 'en curso' desde hace %.0f min — "
                           "probablemente colgada; las siguientes se saltean hasta el "
                           "próximo reinicio", nombre, minutos)
             return False
-        _corridas_en_curso[nombre] = time.monotonic()
+        _corridas_en_curso[nombre] = _reloj_corridas()
         return True
 
 
@@ -37735,12 +37766,15 @@ def _tomar_corrida_esperando(nombre: str, segundos: float) -> bool:
 
 def _correr_si_esta_libre(nombre: str, fn) -> bool:
     """Puerta del scheduler: corre `fn` acá mismo, salvo que ya haya una
-    corrida de este trabajo en curso (la del cron externo)."""
+    corrida de este trabajo en curso (la del cron externo). Sus mails hacen la
+    fila completa de la pausa (`emails.envio_masivo`)."""
+    from billing import emails
     if not _tomar_corrida(nombre):
         log.info("%s: ya hay una corrida en curso; ésta se saltea", nombre)
         return False
     try:
-        fn()
+        with emails.envio_masivo():
+            fn()
     finally:
         _soltar_corrida(nombre)
     return True
@@ -37755,7 +37789,9 @@ def _correr_en_fondo(nombre: str, fn) -> dict:
 
     def _bg():
         try:
-            fn()
+            from billing import emails      # adentro del try: si fallara, la bandera se suelta igual
+            with emails.envio_masivo():     # sus mails hacen la fila completa
+                fn()
         except Exception:
             log.exception("%s: la corrida falló", nombre)
         finally:
@@ -37808,18 +37844,20 @@ def _run_backup_db_job():
         _backup_log.error(f"Backup job falló: {e}", exc_info=True)
 
 
-def _run_subscription_lifecycle_job():
+def _run_subscription_lifecycle_job(solo_avisos: bool = False):
     """Cron diario que mantiene sano el estado de subscripciones:
       - downgrade post-cancelación cuando period_end pasó
       - cleanup de pending abandonadas (>7 días)
-      - sync con MP para detectar webhooks perdidos
+      - los avisos de la prueba y de vencimiento
+    `solo_avisos`: la vuelta de la tarde, sin bajas de plan (ver
+    `billing.subscriptions.run_lifecycle_job`).
     """
     from billing import subscriptions as billing_subs
     _sub_log = logging.getLogger("billing.subscriptions")
     try:
         conn = get_db()
         try:
-            result = billing_subs.run_lifecycle_job(conn)
+            result = billing_subs.run_lifecycle_job(conn, solo_avisos=solo_avisos)
             _sub_log.info(f"Subscription lifecycle result: {result}")
         finally:
             conn.close()
@@ -37835,6 +37873,12 @@ def _job_snapshot_programado():
 
 def _job_ciclo_de_vida_programado():
     _correr_si_esta_libre("ciclo_de_vida", _run_subscription_lifecycle_job)
+
+
+def _job_avisos_de_la_tarde_programado():
+    # Misma bandera que el ciclo completo: nunca corren a la vez.
+    _correr_si_esta_libre("ciclo_de_vida",
+                          lambda: _run_subscription_lifecycle_job(solo_avisos=True))
 
 
 # Scheduler in-process
@@ -37867,7 +37911,7 @@ def _backfill_fx_rates_on_boot():
 
 @app.on_event("startup")
 def _precalentar_cliente_ia():
-    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI después de cada
+    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI (hoy Mervall-E AI) después de cada
     arranque (cada publicación, cada reinicio) pagaba 0,58 s cargando la
     librería de Anthropic, porque el cliente se creaba recién ahí. Se crea al
     arrancar, en un hilo aparte para no demorar el arranque."""
@@ -38345,13 +38389,14 @@ def _start_scheduler():
         id='subscription_lifecycle',
         replace_existing=True,
     )
-    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta del mismo job (misma bandera; cada
-    # paso es idempotente). Hay avisos que valen un solo día UTC —"mañana
-    # termina tu Pro" sale el día anterior al paso a Plus— o pocas horas —la
-    # bienvenida que Resend rechazó al activar—: con una sola corrida por día,
-    # un rechazo a las 03:30 no tenía reintento posible.
+    # 15:00 UTC (12:00 ART) — SEGUNDA vuelta, SÓLO de los avisos (misma
+    # bandera). Hay avisos que valen un solo día UTC —"mañana termina tu Pro"
+    # sale el día anterior al paso a Plus— o pocas horas —la bienvenida que
+    # Resend rechazó al activar—: con una sola corrida por día, un rechazo a las
+    # 03:30 no tenía reintento posible. Las bajas de plan NO van acá (ver
+    # `run_lifecycle_job`, solo_avisos).
     _scheduler.add_job(
-        _job_ciclo_de_vida_programado,
+        _job_avisos_de_la_tarde_programado,
         CronTrigger(hour=15, minute=0),
         id='subscription_lifecycle_tarde',
         replace_existing=True,
@@ -38381,7 +38426,8 @@ def _start_scheduler():
         logging.getLogger("pricing.fci").warning("FCI bootstrap no se pudo lanzar: %s", _fci_ex)
     _snapshot_log.info("Daily snapshot scheduler iniciado (cron: 02:59 UTC = 23:59 ART)")
     _snapshot_log.info("FCI refresh scheduler iniciado (cron: 12:10 UTC) + bootstrap on boot")
-    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC)")
+    _snapshot_log.info("Subscription lifecycle scheduler iniciado (cron: 03:30 UTC completo + "
+                       "15:00 UTC sólo avisos)")
     _snapshot_log.info("Backup DB scheduler iniciado (cron: 03:45 UTC)")
 
 
@@ -38400,12 +38446,19 @@ def _stop_scheduler():
             _pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
+    _cerrar_al_apagar()
+
+
+def _cerrar_al_apagar():
+    """Lo que el apagado hace con los precios y las corridas, aparte de los
+    ejecutores (que `_stop_scheduler` apaga para siempre y los tests no pueden
+    tocar)."""
     # Bajar lo que quedó encolado en el buffer de precios. Railway redeploya
     # seguido; sin esto, cada deploy tira hasta un minuto de últimos-precios y
     # los activos que hoy no cotizan vuelven a valuarse a cost basis (o sea,
     # muestran lo que pagaste como si fuera el precio de hoy) hasta que el
-    # mercado los cotice de nuevo. Es una sola transacción y es lo último que
-    # hace el proceso.
+    # mercado los cotice de nuevo. Va PRIMERO: es lo que no se puede perder si
+    # el apagado se corta antes de terminar.
     try:
         n = _flush_last_prices_si_toca(forzar=True)
         if n:
@@ -38414,10 +38467,17 @@ def _stop_scheduler():
         pass
     # Las corridas en segundo plano (alertas, avisos de la prueba, briefs…)
     # marcan cada aviso ANTES de mandarlo: si el deploy las mata a mitad, lo que
-    # faltaba no sale. Darles un rato para terminar — va DESPUÉS de bajar los
-    # precios, que es lo que no se puede perder si el apagado se corta antes.
+    # faltaba no sale. Darles un rato para terminar — y al cartero, para que
+    # mande los mails sueltos que le quedaron en la fila (el mismo tope).
+    _fin = time.monotonic() + CORRIDAS_ESPERA_AL_APAGAR_SEG
     _esperar_corridas(CORRIDAS_ESPERA_AL_APAGAR_SEG)
-    # Y otra vez los precios: los que trajeron esas corridas mientras se esperaba.
+    try:
+        from billing import emails as _emails
+        _emails.esperar_al_cartero(max(0.0, _fin - time.monotonic()))
+    except Exception:
+        pass
+    # Y otra vez los precios: los que trajeron esas corridas mientras se
+    # esperaba. Esto sí es lo último que hace el proceso.
     try:
         _flush_last_prices_si_toca(forzar=True)
     except Exception:
@@ -39914,12 +39974,15 @@ def billing_run_cron(request: Request):
     Corre en un thread de fondo y devuelve 200 al instante: el job manda mails
     (httpx, hasta 10s cada uno) y con muchos usuarios pasa el timeout del
     gateway. Idempotente por diseño — cada aviso se marca ANTES de enviarse
-    (`trial_email_log`, `expiration_reminder_sent_at`), así que re-correrlo no
+    (`trial_email_log`, `users.aviso_vencimiento_de`), así que re-correrlo no
     reenvía nada; la marca sólo se devuelve si Resend rechazó el mail, y
     entonces lo reintenta la corrida siguiente.
 
-    Lo pega un cron externo (cron-job.org) 1×/día. Auth: header X-Cron-Token o
-    ?token= contra BILLING_CRON_TOKEN. Sin token configurado → 503.
+    Lo pega un cron externo (cron-job.org) 1×/día. Con `?solo_avisos=1` corre
+    sólo los avisos, sin bajas de plan: es la vuelta de las 15:00 UTC, por si
+    el scheduler de adentro se la saltea (Railway frío o un deploy justo a esa
+    hora). Auth: header X-Cron-Token o ?token= contra BILLING_CRON_TOKEN. Sin
+    token configurado → 503.
 
     ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
     Railway. Es la misma limitación que el cron de snapshots.
@@ -39931,7 +39994,11 @@ def billing_run_cron(request: Request):
            or request.query_params.get("token") or "").strip()
     if got != expected:
         raise HTTPException(401, "Token inválido.")
-    return _correr_en_fondo("ciclo_de_vida", _run_subscription_lifecycle_job)
+    solo_avisos = (request.query_params.get("solo_avisos") or "").strip().lower() in (
+        "1", "true", "si", "sí")
+    return {**_correr_en_fondo(
+        "ciclo_de_vida", lambda: _run_subscription_lifecycle_job(solo_avisos=solo_avisos)),
+        "solo_avisos": solo_avisos}
 
 
 # ─── Grupos de clientes (filtros guardados, dinámicos) ───────────────────────
@@ -40686,7 +40753,7 @@ def home_personal(uid: int = Depends(get_effective_user)):
 def _get_portfolio_events_cached(uid: int) -> list:
     """Los eventos YA GUARDADOS (financial_events) de los activos del user en
     los próximos 14 días: las tarjetas "Earnings de X" / "Dividendo de X" de
-    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Rendi AI
+    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Mervall-E AI
     (ai/builders/home.py). Sólo LEE — el inicio no puede esperar a Yahoo; los
     renueva /api/events/portfolio (_eventos_al_dia).
 

@@ -6,7 +6,7 @@ vi.mock('../../utils/api', () => ({ api: { get: vi.fn(() => new Promise(() => {}
 
 import AIBlocks from './AIBlocks'
 
-// Los gráficos de una respuesta de Rendi AI se arman sólo si la respuesta
+// Los gráficos de una respuesta de Mervall-E AI se arman sólo si la respuesta
 // ACABA de llegar (animarDesde != null); una vieja aparece quieta.
 const bloques = [
   { type: 'compare', title: 'Vos vs S&P', items: [{ l: 'Vos', v: '+8,8%', pct: 88 }, { l: 'S&P 500', v: '+8,0%', pct: 80 }] },

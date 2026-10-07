@@ -16,6 +16,8 @@ import { isCrypto } from './crypto'
 import { isBondTicker, inferType } from './tickers'
 import { getBondMeta } from './bondMeta'
 import { isFciSym } from './valuation'
+import { contarPosiciones } from './aiSummary'
+import { MAX_OPERATIONS } from './aiSnapshot'
 
 export const DEMORA_CARGADOR_MS = 250
 
@@ -175,4 +177,28 @@ export function pasosDiagnostico(llego = {}, { perfilPrimero = false } = {}) {
     const detalle = g.cuenta && typeof n === 'number' ? cuantos(n, ...g.cuenta) : (g.id === 'precios' ? 'al día' : null)
     return paso(g.id, g.etiqueta, true, detalle)
   })
+}
+
+// Mervall-E AI (/ai): los cuatro pedidos de utils/aiSnapshot, que salen juntos
+// y se tildan en el orden en que vuelven. `llego[pieza]` es lo que trajo, o
+// 'error'. Cada renglón dice lo que Mervall-E va a leer: de las operaciones le
+// llegan las MAX_OPERATIONS más recientes, no todas.
+export function pasosContextoIA(llego = {}) {
+  const de = (pieza) => (llego[pieza] === 'error' ? null : llego[pieza] ?? null)
+  const fallo = (pieza) => llego[pieza] === 'error'
+  const operaciones = paso('operations', 'Tus operaciones', de('operations'), (ops) => {
+    const n = Array.isArray(ops) ? ops.length : 0
+    return n > MAX_OPERATIONS ? `las ${MAX_OPERATIONS} más recientes` : cuantos(n, 'operación', 'operaciones')
+  }, { error: fallo('operations') })
+  return [
+    paso('positions', 'Tus posiciones', de('positions'),
+      (ps) => cuantos(contarPosiciones(ps), 'posición', 'posiciones'), { error: fallo('positions') }),
+    paso('monthly', 'Tu historial mes a mes', de('monthly'),
+      (filas) => cuantos(mesesDelHistorial(filas), 'mes', 'meses'), { error: fallo('monthly') }),
+    paso('brokers', 'Tus brokers', de('brokers'),
+      (bs) => cuantos(Array.isArray(bs) ? bs.length : 0, 'broker', 'brokers'), { error: fallo('brokers') }),
+    // Sin operaciones el chat sigue (aiSnapshot las da por vacías): el renglón
+    // lo dice en vez de quedarse girando o de sonar a que se rompió todo.
+    fallo('operations') ? { ...operaciones, detalle: 'no llegaron: sigo sin ellas' } : operaciones,
+  ]
 }

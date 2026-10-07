@@ -42,7 +42,7 @@ describe('la FAQ no ofrece un plan que ya no existe', () => {
 
   it('usa el nombre de hoy de la IA', () => {
     expect(todo).not.toMatch(/coach ia/i)
-    expect(todo).toMatch(/Rendi AI/)
+    expect(todo).toMatch(/Mervall-E AI/)
   })
 
   it('no ata la respuesta a una versión del modelo', () => {

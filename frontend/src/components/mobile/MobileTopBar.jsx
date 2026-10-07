@@ -1,6 +1,6 @@
 // MobileTopBar — barra superior fija en mobile (Sprint M1, item 05).
 // ═══════════════════════════════════════════════════════════════════════════
-// Logo a la izquierda; moneda, Rendi AI y búsqueda a la derecha; abajo, la
+// Logo a la izquierda; moneda, Mervall-E AI y búsqueda a la derecha; abajo, la
 // cinta de cotizaciones (MarketTicker, la misma que va arriba del contenido en
 // la compu) y, abajo de todo, los avisos que le pasa App.jsx (cliente abierto,
 // demo, prueba gratis). Sticky para que esté siempre accesible. Por debajo, indicador de
@@ -8,7 +8,7 @@
 
 import { useLayoutEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Search, RefreshCcw, Sparkles } from 'lucide-react'
+import { Search, RefreshCcw } from 'lucide-react'
 import RendiLogo from '../RendiLogo'
 import CurrencySwitcher from '../CurrencySwitcher'
 import MarketTicker from '../MarketTicker'
@@ -18,6 +18,7 @@ import { useCoachDrawer } from '../../contexts/CoachDrawerContext'
 import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { menuVisible } from '../../utils/navegacion'
+import MervallE from '../ai/MervallE'
 
 // El alto de esta barra (logo, cinta y los avisos: cliente abierto, demo, prueba)
 // queda anotado en la variable CSS --alto-barra-celular, y lo leen los que se
@@ -105,14 +106,14 @@ export default function MobileTopBar({ onRefresh, children }) {
                 estés, sin ir a buscarla a la pantalla que la tenga. Alineado a
                 la derecha para que el panel no se salga del viewport. */}
             <CurrencySwitcher variant="chip" align="right" className="mr-1" />
-            {/* Rendi AI — botón siempre visible para abrir el drawer global */}
+            {/* Mervall-E AI — botón siempre visible que abre la pantalla del chat */}
             <button
               type="button"
               onClick={() => coachDrawer.open()}
-              aria-label="Rendi AI"
-              className="p-2 rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
+              aria-label="Mervall-E AI"
+              className="p-1.5 inline-flex items-center justify-center rounded-sm text-data-violet hover:bg-data-violet/10 active:bg-data-violet/15 transition-colors"
             >
-              <Sparkles size={16} strokeWidth={1.75} />
+              <MervallE size={24} forma="head" quieto />
             </button>
             {!atOwnLevel && <Link
               to="/buscar"

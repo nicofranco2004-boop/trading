@@ -206,3 +206,30 @@ describe('fmtIndexPrice — el precio de la cinta y de las tarjetas del inicio',
     expect(fmtIndexPrice(null, 'index')).toBe('—')
   })
 })
+
+import { pctVarFino, decimalesFinos } from './format'
+
+describe('pctVarFino — el número al lado de un veredicto no dice "0,0%"', () => {
+  it('lo que redondea a cero se escribe con un decimal más (con su signo)', () => {
+    expect(pctVarFino(-0.04, 1)).toBe('−0,04%')
+    expect(decimalesFinos(-0.04, 1)).toBe(2)
+  })
+  it('lo demás, igual que pctVar', () => {
+    expect(pctVarFino(-1.84, 1)).toBe('−1,8%')
+    expect(pctVarFino(0, 1)).toBe('0,0%')
+    expect(pctVarFino(null, 1)).toBe('—')
+  })
+})
+
+import { ppVarFino } from './format'
+
+describe('decimalesFinos / ppVarFino — hasta dos decimales más, con signo', () => {
+  it('−0,004 ya no se escribe "0,00%"', () => {
+    expect(pctVarFino(-0.004, 1)).toBe('−0,004%')
+  })
+  it('en puntos porcentuales', () => {
+    expect(ppVarFino(1.24, 1)).toBe('+1,2 pp')
+    expect(ppVarFino(-0.04, 1)).toBe('−0,04 pp')
+    expect(ppVarFino(null, 1)).toBe('—')
+  })
+})

@@ -71,7 +71,7 @@ export default function AlertsManager({ plan, prefill }) {
     prefill
       ? {
           ...EMPTY_FORM, symbol: prefill.symbol || '', currency: prefill.currency || (String(prefill.symbol || '').endsWith('.BA') ? 'ARS' : 'USD'),
-          // "Crear alerta BTC −10%" desde Rendi AI → variación %, ya cargada.
+          // "Crear alerta BTC −10%" desde Mervall-E AI → variación %, ya cargada.
           // Si el plan no tiene alertas por variación, queda el formulario
           // de siempre (el botón de ese tipo muestra su candado).
           ...((prefill.downPct || prefill.upPct) && canPct

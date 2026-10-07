@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { esRecienLlegada, RECIEN_LLEGADA_MS } from './VozContext'
 
-// La respuesta de Rendi AI se arma en escalera SÓLO si acaba de llegar.
+// La respuesta de Mervall-E AI se arma en escalera SÓLO si acaba de llegar.
 describe('esRecienLlegada', () => {
   const ahora = 1_000_000
   it('la que llegó hace un instante, sí', () => {
@@ -18,7 +18,7 @@ describe('esRecienLlegada', () => {
 
 import { sumarPaso } from './VozContext'
 
-// Los pasos que manda el servidor mientras Rendi AI piensa.
+// Los pasos que manda el servidor mientras Mervall-E AI piensa.
 describe('sumarPaso', () => {
   it('agrega el paso nuevo al final', () => {
     expect(sumarPaso(['Leyendo tu cartera'], 'Buscando los precios de hoy')).toEqual(['Leyendo tu cartera', 'Buscando los precios de hoy'])

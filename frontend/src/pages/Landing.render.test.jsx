@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
 import { HelmetProvider } from 'react-helmet-async'
 import Landing from './Landing.jsx'
-import { PLUS_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import { PLUS_FEATURES, PRO_FEATURES, CUPO_CHAT } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
 
 // La home como la lee un visitante: se renderiza de verdad y se lee el texto,
@@ -19,14 +19,14 @@ const texto = renderToStaticMarkup(
 const dice = (patron) => texto.match(patron)?.[1]
 
 describe('la home dice los cupos del chat que da el plan', () => {
-  const plus = cupoDe(PLUS_FEATURES, 'Chat Rendi AI / sem')
-  const pro = cupoDe(PRO_FEATURES, 'Chat Rendi AI / sem')
+  const plus = cupoDe(PLUS_FEATURES, CUPO_CHAT)
+  const pro = cupoDe(PRO_FEATURES, CUPO_CHAT)
 
   it('el catálogo tiene los dos cupos (si no, la página diría "undefined")', () => {
     // Contra el falso verde: si alguien renombra la etiqueta del catálogo, la
     // página y este test leerían los dos `undefined` y coincidirían.
-    expect(plus, 'el catálogo ya no tiene «Chat Rendi AI / sem» en el Plus').toMatch(/^\d+$/)
-    expect(pro, 'el catálogo ya no tiene «Chat Rendi AI / sem» en el Pro').toMatch(/^\d+$/)
+    expect(plus, 'el catálogo ya no tiene «Chat Mervall-E AI / sem» en el Plus').toMatch(/^\d+$/)
+    expect(pro, 'el catálogo ya no tiene «Chat Mervall-E AI / sem» en el Pro').toMatch(/^\d+$/)
   })
 
   it('el paso 05 dice el cupo del Plus', () => {
@@ -40,7 +40,7 @@ describe('la home dice los cupos del chat que da el plan', () => {
   })
 
   it('nombra a la IA con su nombre de hoy', () => {
-    expect(texto).toContain('Rendi AI')
+    expect(texto).toContain('Mervall-E AI')
     const i = texto.search(/coach/i)
     expect(i === -1 ? null : texto.slice(Math.max(0, i - 60), i + 60),
       'la home dice "coach" acá').toBeNull()

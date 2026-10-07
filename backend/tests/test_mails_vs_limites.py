@@ -86,7 +86,7 @@ def _numero(v) -> str:
 _LO_QUE_DICE = {
     "analisis": (r"(\d+) análisis IA por semana", None,
                  lambda p: LIMITS[p]["analyses_per_week"]),
-    "chat": (r"(\d+) consultas? por semana a Rendi AI", None,
+    "chat": (r"(\d+) consultas? por semana a Mervall-E AI", None,
              lambda p: LIMITS[p]["chat_per_week"]),
     "brokers": (r"Hasta (\d+) brokers?\b", r"Brokers ilimitados",
                 lambda p: PLAN_LIMITS[p]["brokers_max"]),
@@ -106,7 +106,7 @@ _LO_QUE_QUEDA = {
     # tiene que caer acá con su número, no pasar por no reconocerlo.
     "analisis": (r"análisis IA por semana \(vas a quedar (?:con|en) (\d+)\)",
                  lambda: LIMITS[FREE]["analyses_per_week"]),
-    "chat": (r"por semana a Rendi AI(?: con preguntas guiadas)? \(vas a quedar con (\d+)\)",
+    "chat": (r"por semana a Mervall-E AI(?: con preguntas guiadas)? \(vas a quedar con (\d+)\)",
              lambda: LIMITS[FREE]["chat_per_week"]),
     "brokers": (r"(?:brokers?|Brokers ilimitados) \(en Free el tope es (\d+);",
                 lambda: PLAN_LIMITS[FREE]["brokers_max"]),
@@ -755,7 +755,7 @@ class ConLimitesInventados(_Comparador):
                       "Personalizar el diagnóstico 13 veces por semana "
                       "(vas a quedar con 4 veces por semana)",
                       "7 análisis IA por semana (vas a quedar con 2)",
-                      "11 consultas por semana a Rendi AI con preguntas guiadas (vas a quedar con 3)"):
+                      "11 consultas por semana a Mervall-E AI con preguntas guiadas (vas a quedar con 3)"):
             self.assertIn(frase, texto)
         self.assertIn("53 análisis IA por semana (vas a quedar con 2)",
                       _vencimiento("pro")["texto"])

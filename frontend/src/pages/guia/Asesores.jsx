@@ -76,7 +76,7 @@ export default function Asesores() {
 
       <h2>La IA de tu libro</h2>
       <p>
-        A tu nivel, <strong>Rendi AI responde mirando todas las carteras de tus clientes
+        A tu nivel, <strong>Mervall-E AI responde mirando todas las carteras de tus clientes
         juntas</strong>. Es la diferencia más grande contra la IA de un usuario, que solo
         ve una cartera.
       </p>

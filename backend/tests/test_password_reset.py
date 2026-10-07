@@ -180,6 +180,39 @@ class ResetPasswordTest(unittest.TestCase):
                             json={"token": self.token, "new_password": "short"})
         self.assertEqual(r.status_code, 422)
 
+class ChangePasswordTest(unittest.TestCase):
+    """Cambiar la contraseña desde Configuración, con la sesión abierta."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+        self.email = _unique_email("cambio")
+        _register_and_verify(self.client, self.email)
+        r = self.client.post("/api/auth/login",
+                             json={"email": self.email, "password": "Password123$"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_contrasena_actual_equivocada_no_parece_sesion_vencida(self):
+        """Antes respondía 401, que el frontend lee como "la sesión venció":
+        sacaba a la persona a la portada en vez de decirle que la contraseña
+        actual estaba mal, y recargaba todas sus otras pestañas."""
+        r = self.client.post("/api/auth/change-password",
+                             json={"current_password": "NoEsLaMia123$",
+                                   "new_password": "OtraNueva456$$"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["detail"], "Contraseña actual incorrecta")
+        # La sesión sigue viva.
+        self.assertEqual(self.client.get("/api/auth/me").status_code, 200)
+
+    def test_contrasena_actual_correcta_la_cambia(self):
+        r = self.client.post("/api/auth/change-password",
+                             json={"current_password": "Password123$",
+                                   "new_password": "OtraNueva456$$"})
+        self.assertEqual(r.status_code, 200)
+        r = self.client.post("/api/auth/login",
+                             json={"email": self.email, "password": "OtraNueva456$$"})
+        self.assertEqual(r.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
