@@ -1466,7 +1466,9 @@ def _aportado_por_punto(conn, uid: int, filas):
     → "aportado 6.000" del 1 al 14 con la cartera en 10.250, la curva en −37,5 % y
     −39 % de peor caída; cuenta VIEJA que deposita 5.000 el 1/9 y retira 4.000 el
     15/9 → −26,5 % de peor caída contra +US$ 70 reales. Y cada borrado escribía ese
-    número en las fotos (la cascada re-estampa con esta función): la tarjeta de la
+    número en las fotos (hasta 2026-10 la cascada de borrado re-estampaba con esta
+    función; hoy aplica sólo el cambio, `main._cambio_de_aportado`, y la usan el
+    botón del admin y la reparación): la tarjeta de la
     semana pasaba a "ganaste US$ 4.250 · Aportaste US$ 6.000".
     El paso de la última foto de M−1 a la primera de M es un movimiento de M (si
     vino de un flujo, el flujo es de M o la foto de M−1 no lo vio). Sigue acotado

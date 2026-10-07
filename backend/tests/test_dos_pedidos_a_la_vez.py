@@ -29,6 +29,7 @@ import threading
 import time
 import unittest
 import uuid
+from unittest import mock
 
 import main
 from fastapi.testclient import TestClient
@@ -152,6 +153,20 @@ class _Base(unittest.TestCase):
         conn.close()
         return float(r["c"] or 0)
 
+    def sin_turno(self):
+        """Los borrados toman el turno de escritura al entrar (`main._foto_contable`,
+        2026-10): en SQLite —producción— eso pone en fila a todos los que escriben,
+        así que dos pedidos ya no pueden leer a la par y los reclamos no llegan a
+        competir. En Postgres el turno sólo traba la fila del usuario y una edición,
+        una venta o un depósito pasan igual: ahí los reclamos son la única
+        protección. Esto saca el turno para que sigan probados."""
+        def _foto_sin_turno(conn, uid):
+            import twr as _twr
+            return {"canon": _twr.netdep_canonico(conn, uid)}
+        p = mock.patch.object(main, "_foto_contable", side_effect=_foto_sin_turno)
+        p.start()
+        self.addCleanup(p.stop)
+
     def cruzar(self, fragmento, y_despues=None, saltear=None):
         """A partir de acá, cada conexión que abra la app pasa por el cruce."""
         cruce = _Cruce(fragmento, y_despues=y_despues, saltear=saltear)
@@ -228,8 +243,8 @@ class BorrarDepositoManualDelMes(_Base):
         # necesita las cuentas de antes sin que otro las esté cambiando), así que el
         # segundo pedido espera en la puerta y, cuando entra, el depósito ya no está
         # (404). El cruce que este test forzaba —los dos leen 500 y el reclamo de
-        # `_delete_one_movement` frena al segundo con 409— no puede pasar por acá;
-        # el reclamo sigue en su lugar para cualquier camino que llegue sin turno.
+        # `_delete_one_movement` frena al segundo con 409— no puede pasar en SQLite;
+        # el reclamo lo prueba el test de abajo, sin turno (como en Postgres).
         self.assertFalse(cruce.se_juntaron,
                          "los dos pedidos leyeron el depósito a la vez: la puerta no "
                          "tomó el turno de escritura antes de leer")
@@ -237,6 +252,31 @@ class BorrarDepositoManualDelMes(_Base):
         self.assertEqual(codigos[0], 200, [x.text for x in rs])
         self.assertIn(codigos[1], (404, 409), [x.text for x in rs])
         self.assertAlmostEqual(self.cash(), 1000, places=2,
+                               msg="el doble click devolvió el depósito dos veces")
+
+    def test_sin_turno_el_reclamo_frena_el_segundo_borrado(self):
+        """Como en Postgres: sin el turno los dos leen 500, y el reclamo del
+        segundo (que repite lo leído en el WHERE) no toca la fila: 409, sin plata.
+        Con un retiro en el mismo mes, para que el renglón del mes SOBREVIVA al
+        borrado: si queda todo en cero el recálculo lo elimina y el segundo pedido
+        no lo encuentra con o sin reclamo (el test no distinguiría)."""
+        self.sin_turno()
+        self.usuario()
+        for direccion, monto in (("deposit", 500), ("withdraw", 100)):
+            r = self.client.post("/api/cash/flow", headers=self.h,
+                                 json={"broker_name": "Schwab", "direction": direccion,
+                                       "amount": monto})
+            self.assertEqual(r.status_code, 200, r.text)
+        conn = main.get_db()
+        me = conn.execute("SELECT id FROM monthly_entries WHERE user_id=? AND broker='Schwab' "
+                          "AND manual_deposits > 0", (self.uid,)).fetchone()["id"]
+        conn.close()
+        cruce = self.cruzar("SELECT * FROM monthly_entries WHERE id=? AND user_id=?")
+        rs = self.dos_a_la_vez(lambda: self.client.delete(
+            f"/api/movements/me-{me}-dep", headers=self.h))
+        self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el choque")
+        self.assertEqual(sorted(x.status_code for x in rs), [200, 409], [x.text for x in rs])
+        self.assertAlmostEqual(self.cash(), 900, places=2,
                                msg="el doble click devolvió el depósito dos veces")
 
 
@@ -296,7 +336,17 @@ class DosAccionesDistintasSobreLoMismo(_Base):
     devolvían lo que habían leído ANTES de que la otra acción lo cambiara.
 
     Se verifica el invariante y no un orden: gane quien gane, el saldo tiene que
-    cerrar con lo que quedó en la base."""
+    cerrar con lo que quedó en la base.
+
+    ⚠️ SIN EL TURNO (`sin_turno`). Con el turno que los borrados toman al entrar
+    (2026-10) el orden peligroso no puede pasar en SQLite: el borrado tiene la base
+    tomada y la otra acción no escribe hasta que termina (forzarlo trababa el test
+    20 s). Así que estos corren como en Postgres, donde los reclamos son la única
+    protección; `DosAccionesDistintasConElTurno` corre lo mismo como en producción."""
+
+    def setUp(self):
+        super().setUp()
+        self.sin_turno()
 
     def test_editar_y_borrar_la_misma_operacion_a_la_vez_no_fabrica_plata(self):
         self.usuario()
@@ -377,6 +427,62 @@ class DosAccionesDistintasSobreLoMismo(_Base):
         #   ganó la venta  → quedan 4 y la plata de la venta (9000 + 720)
         #   ganó el borrado → no hay lote ni venta, y volvió el costo (10000)
         estado = (round(self.cash(), 2), float(lote["quantity"]) if lote else None, ventas)
+        self.assertIn(estado, [(9720.0, 4.0, 1), (10000.0, None, 0)],
+                      f"saldo/lote/ventas incoherentes: {estado} ({[x.status_code for x in rs]})")
+
+
+class DosAccionesDistintasConElTurno(_Base):
+    """Las mismas dos acciones a la vez, como en producción (SQLite, con el turno que
+    el borrado toma al entrar). No se fuerza un orden: el que entra primero termina
+    y el otro escribe después. Se exige el invariante, como arriba."""
+
+    def _a_la_vez(self, primero, segundo):
+        hechos = iter([primero, segundo])
+        candado = threading.Lock()
+
+        def accion():
+            with candado:
+                f = next(hechos)
+            return f()
+        return self.dos_a_la_vez(accion)
+
+    def test_editar_y_borrar_la_misma_operacion(self):
+        self.usuario()
+        oid = self.client.post("/api/operations", headers=self.h, json={
+            "date": "2026-09-01", "broker": "Schwab", "asset": "AAPL", "op_type": "Venta",
+            "pnl_usd": 200, "mueve_efectivo": True}).json()["id"]
+        rs = self._a_la_vez(
+            lambda: self.client.put(f"/api/operations/{oid}", headers=self.h, json={
+                "date": "2026-09-01", "broker": "Schwab", "asset": "AAPL",
+                "op_type": "Venta", "pnl_usd": 300, "mueve_efectivo": True}),
+            lambda: self.client.delete(f"/api/operations/{oid}", headers=self.h))
+        conn = main.get_db()
+        fila = conn.execute("SELECT pnl_usd FROM operations WHERE id=?", (oid,)).fetchone()
+        conn.close()
+        sigue = float(fila["pnl_usd"]) if fila else 0.0
+        self.assertAlmostEqual(self.cash(), 1000 + sigue, places=2,
+                               msg=f"el saldo no cierra ({[x.status_code for x in rs]})")
+
+    def test_vender_parte_y_borrar_el_lote(self):
+        self.usuario([("Schwab", "USD", 10_000.0)])
+        r = self.client.post("/api/positions", headers=self.h, json={
+            "broker": "Schwab", "asset": "AAPL", "buy_price": 100, "quantity": 10,
+            "invested": 1000, "entry_date": "2026-08-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        pid = r.json()["id"]
+        rs = self._a_la_vez(
+            lambda: self.client.post("/api/positions/sell", headers=self.h, json={
+                "broker": "Schwab", "asset": "AAPL", "quantity": 6, "exit_price": 120,
+                "date": "2026-09-01", "currency": "USD"}),
+            lambda: self.client.delete(f"/api/positions/{pid}", headers=self.h))
+        conn = main.get_db()
+        lote = conn.execute("SELECT quantity FROM positions WHERE id=?", (pid,)).fetchone()
+        ventas = conn.execute("SELECT COUNT(*) c FROM operations WHERE user_id=? AND op_type='Venta'",
+                              (self.uid,)).fetchone()["c"]
+        conn.close()
+        estado = (round(self.cash(), 2), float(lote["quantity"]) if lote else None, ventas)
+        # Además de los dos finales de arriba, acá puede ganar el borrado DESPUÉS de
+        # la venta: el lote cambió y el borrado rebota (409) → queda la venta.
         self.assertIn(estado, [(9720.0, 4.0, 1), (10000.0, None, 0)],
                       f"saldo/lote/ventas incoherentes: {estado} ({[x.status_code for x in rs]})")
 

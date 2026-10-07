@@ -141,8 +141,8 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
     mano: la cascada la reconstruye desde las operaciones, se queda sin filas, el
     anclado no tiene nada que anclar y el test pasa sin medir nada (medido: cero
     fotos cambiadas porque no quedó contabilidad). Por eso la cuenta se arma
-    importando un archivo, como un usuario, y se re-estampa por las dos puertas que
-    lo hacen en producción: borrar un movimiento y el botón del admin.
+    importando un archivo, como un usuario, y se pasa por las dos puertas que tocan
+    fotos ya escritas en producción: borrar un movimiento y el botón del admin.
     (Recorrido completo y más casos: `tests/test_borrar_conserva_el_dia.py`.)
 
     ⚠️ DESDE 2026-10 BORRAR YA NO RE-ESTAMPA: aplica sólo el cambio que produjo lo
@@ -219,7 +219,8 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
         main.app.dependency_overrides[main.get_admin_user] = lambda: self.uid
         self.client = TestClient(main.app)
 
-    # Las dos puertas que re-estampan fotos ya escritas en producción.
+    # Las dos puertas que tocan fotos ya escritas en producción: el borrado (sólo lo
+    # suyo; un dividendo no cambia nada) y el botón del admin (re-ancla).
     def _borrar_el_dividendo(self):
         tx = self.conn.execute(
             "SELECT n.id FROM import_normalized_tx n JOIN import_batches b "
@@ -260,8 +261,9 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
     def test_a_un_usuario_sano_no_le_toca_NI_UNA_fila(self):
         """Antes la cascada reescribía 19 de 28 fotos de febrero con un único valor
         por mes, destruyendo la resolución diaria que el cron había escrito bien.
-        Ahora re-estampa con el mismo aportado anclado que la curva, así que en una
-        cuenta sana no tiene nada que corregir."""
+        Ahora el botón re-estampa con el mismo aportado anclado que la curva, y el
+        borrado aplica sólo lo suyo, así que en una cuenta sana ninguno de los dos
+        tiene nada que corregir."""
         for puerta in self.PUERTAS:
             with self.subTest(puerta=puerta):
                 self._armar()
