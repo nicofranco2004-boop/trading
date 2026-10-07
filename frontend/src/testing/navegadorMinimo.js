@@ -24,7 +24,7 @@ class Nodo {
     this.ownerDocument = doc
     this.parentNode = null
     this.childNodes = []
-    this.style = {}
+    this.style = estilo()
     this.atributos = {}
     this.escuchas = {}
   }
@@ -57,12 +57,40 @@ class Nodo {
   // Medidas: acá nada ocupa lugar (las pantallas que se miden, como /ai, no
   // explotan; el número no importa en estas pruebas).
   getBoundingClientRect() { return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 } }
+  // Lo que usan los formularios (pages/dobleClick.test.js): el foco de un
+  // `autoFocus`, el `value` de un <option> y la lista de opciones de un <select>.
+  focus() {}
+  blur() {}
+  get value() { return this._valor !== undefined ? this._valor : (this.atributos.value ?? '') }
+  set value(v) { this._valor = String(v) }
+  get options() {
+    const out = []
+    const recorrer = (n) => {
+      for (const h of n.childNodes || []) {
+        if (h.nodeName === 'OPTION') out.push(h)
+        else if (h.nodeName === 'OPTGROUP') recorrer(h)
+      }
+    }
+    recorrer(this)
+    return out
+  }
   // Lo que usa el <audio> de VozContext. `src` es el atributo, como en el DOM.
   get src() { return this.atributos.src || '' }
   set src(v) { this.atributos.src = String(v) }
   load() {}
   pause() { this.paused = true }
   play() { this.paused = false; return Promise.resolve() }
+}
+
+// `style` con lo que React usa para las variables CSS (`--x`).
+function estilo() {
+  const s = {}
+  Object.defineProperties(s, {
+    setProperty: { value(k, v) { this[k] = v } },
+    removeProperty: { value(k) { delete this[k] } },
+    getPropertyValue: { value(k) { return this[k] ?? '' } },
+  })
+  return s
 }
 
 function almacen(mapa) {
@@ -163,6 +191,42 @@ export function buscar(contenedor, etiqueta) {
     pila.push(...(n.childNodes || []))
   }
   return null
+}
+
+/** El texto visible de un nodo (lo que React escribió como texto o como hijos). */
+export function texto(nodo) {
+  if (!nodo) return ''
+  if (nodo.nodeType === 3) return nodo.nodeValue
+  if (!nodo.childNodes.length && typeof nodo.textContent === 'string') return nodo.textContent
+  return nodo.childNodes.map(texto).join('')
+}
+
+/** El primer botón cuyo texto contiene `parte`. */
+export function buscarBoton(contenedor, parte) {
+  const pila = [contenedor]
+  while (pila.length) {
+    const n = pila.shift()
+    if (n.nodeName === 'BUTTON' && texto(n).includes(parte)) return n
+    pila.push(...(n.childNodes || []))
+  }
+  return null
+}
+
+/**
+ * Un click como el del navegador: el evento entra por el escucha que React
+ * puso en la raíz —no se llama a `onClick` a mano—, así que un botón con
+ * `disabled` lo ignora igual que en la pantalla. Dos `clic` dentro del MISMO
+ * `enActo` son dos clicks del mismo turno: React no redibujó entre uno y otro,
+ * que es justo el doble click que el `disabled` solo no frena.
+ */
+export function clic(contenedor, nodo) {
+  const ev = {
+    type: 'click', target: nodo, bubbles: true, cancelable: true, button: 0,
+    defaultPrevented: false, timeStamp: Date.now(),
+    preventDefault() { this.defaultPrevented = true },
+    stopPropagation() {},
+  }
+  for (const fn of contenedor.escuchas.click || []) fn(ev)
 }
 
 /** Corre algo que cambia estado de React y espera a que se dibuje. */
