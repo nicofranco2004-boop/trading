@@ -6,8 +6,9 @@ Diseño:
   para que las ventas vean el stock creado por compras anteriores del mismo CSV.
 - Reusa los helpers de bajo nivel de main.py (que ya aceptan `conn` y no
   abren transacciones propias):
-    _adjust_broker_cash, _adjust_cash, _update_monthly_pnl_realized,
-    _update_monthly_flow, _repair_monthly_chain, _ensure_usd_sibling.
+    _adjust_broker_cash (la única puerta del efectivo, ver efectivo.py),
+    _update_monthly_pnl_realized, _update_monthly_flow, _repair_monthly_chain,
+    _ensure_usd_sibling.
 - _repair_monthly_chain se llama UNA SOLA VEZ por broker tocado al final,
   no por fila — evita O(n × meses) en imports grandes.
 
@@ -45,8 +46,10 @@ from . import seed as _seed
 log = logging.getLogger(__name__)
 try:
     from fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
+    from efectivo import asset_de_caja
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
     from ..fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
+    from ..efectivo import asset_de_caja
 
 
 def blue_for_date(conn, date_str, fallback):
@@ -328,9 +331,8 @@ def persist_batch(
                 sibling = helpers._ensure_usd_sibling(conn, uid, parent)
                 sibling_for[broker_name] = sibling["name"]
                 # Asegurar que existe cash position USD en el sibling (con 0 si
-                # no hay). Sin esto, los BUYs USD que aterrizan en un sibling
-                # recién creado no descuentan cash (silent no-op de
-                # _adjust_broker_cash) y el saldo queda inflado.
+                # no hay), así el resumen de saldos del import la muestra aunque
+                # ninguna fila la mueva. (Mover el saldo ya crea la caja si falta.)
                 cash_exists = conn.execute(
                     "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                     (uid, sibling["name"]),
@@ -339,7 +341,7 @@ def persist_batch(
                     conn.execute(
                         """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
                            VALUES (?,?,?,1,0)""",
-                        (uid, sibling["name"], "USDT"),
+                        (uid, sibling["name"], asset_de_caja(sibling["currency"])),
                     )
 
         # Aplicar routing per-row. Cuando muteamos tx.broker, también
@@ -1069,27 +1071,12 @@ def _apply_cash_flow(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers,
     if amount <= 0:
         raise PersistError(tx.row_index, "Monto debe ser positivo.")
 
-    cash_pos = conn.execute(
-        "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-        (uid, tx.broker),
-    ).fetchone()
-    if cash_pos:
-        new_invested = (cash_pos["invested"] or 0) + sign * amount
-        # Overdraft permitido: NO rechazamos saldos negativos en import.
-        conn.execute(
-            "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-            (new_invested, cash_pos["id"], uid),
-        )
-        cash_pos_id = cash_pos["id"]
-    else:
-        # Si no hay cash position, la creamos con el monto neto (puede ser negativo si es withdraw)
-        asset_name = "ARS" if currency == "ARS" else "USDT"
-        cur = conn.execute(
-            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
-               VALUES (?,?,?,1,?)""",
-            (uid, tx.broker, asset_name, sign * amount),
-        )
-        cash_pos_id = cur.lastrowid
+    # Por la puerta única, con saldo negativo permitido. Acá vivía una copia propia
+    # que creaba la caja 'USDT' para todo lo que no fuera pesos: un Schwab (USD)
+    # importado mostraba su efectivo como Tether, mientras el mismo broker cargado
+    # a mano tenía 'USD'. Ahora el nombre sale de la moneda del broker, igual que
+    # en todos lados (`efectivo.asset_de_caja`).
+    cash_pos_id = helpers._adjust_broker_cash(conn, uid, tx.broker, sign * amount)
 
     # Monthly flow: monthly_entries.deposits/withdrawals se almacenan en USD
     # (convención global del motor). Si el broker es ARS, convertimos usando
@@ -1118,40 +1105,6 @@ def _apply_cash_flow(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers,
     _link(conn, batch_id, raw_row_id, position_id=cash_pos_id)
 
 
-def _adjust_cash_permissive(conn, uid: int, broker_name: str, asset: str, delta: float,
-                             tc_for_basis: Optional[float] = None):
-    """Variante de _adjust_cash que NO rechaza saldos negativos. Permite que
-    el cash quede en overdraft tras una FX que descuenta más de lo disponible.
-    Resto del comportamiento (tc_compra ponderado, creación on-demand) idem.
-    """
-    cash = conn.execute(
-        "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-        (uid, broker_name),
-    ).fetchone()
-    if cash:
-        existing = cash["invested"] or 0
-        new_invested = existing + delta
-        # Overdraft permitido — NO clamp a 0.
-        if tc_for_basis is not None and delta > 0 and new_invested > 0:
-            existing_tc = cash["tc_compra"] or tc_for_basis
-            new_tc = (existing * existing_tc + delta * tc_for_basis) / new_invested
-            conn.execute(
-                "UPDATE positions SET invested=?, tc_compra=? WHERE id=? AND user_id=?",
-                (new_invested, new_tc, cash["id"], uid),
-            )
-        else:
-            conn.execute(
-                "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                (new_invested, cash["id"], uid),
-            )
-    else:
-        conn.execute(
-            """INSERT INTO positions (user_id, broker, asset, is_cash, invested, tc_compra)
-               VALUES (?,?,?,1,?,?)""",
-            (uid, broker_name, asset, delta, tc_for_basis),
-        )
-
-
 def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, direction: str,
                 tc_blue: float = 1415.0):
     """FX_ARS_TO_USD o FX_USD_TO_ARS. Después del normalizer:
@@ -1170,8 +1123,10 @@ def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, d
         if ars_broker["currency"] != "ARS":
             raise PersistError(tx.row_index, "Una conversión ARS→USD parte de un broker ARS.")
         usd_broker = helpers._ensure_usd_sibling(conn, uid, ars_broker)
-        _adjust_cash_permissive(conn, uid, ars_broker["name"], "ARS", -ars_amount)
-        _adjust_cash_permissive(conn, uid, usd_broker["name"], "USDT", usd_amount, tc_for_basis=tc)
+        # Saldo negativo permitido (el archivo puede no traer los aportes viejos);
+        # los dólares comprados promedian su TC con los que ya había.
+        helpers._adjust_broker_cash(conn, uid, ars_broker["name"], -ars_amount)
+        helpers._adjust_broker_cash(conn, uid, usd_broker["name"], usd_amount, tc_compra=tc)
         # El capital aportado de una conversión NO se escribe acá: lo recompone
         # `_fx_transfer_legs_for_period` (main.py) desde `import_normalized_tx`.
         #
@@ -1212,7 +1167,8 @@ def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, d
             (usd_broker["parent_broker_id"], uid),
         ).fetchone()
         cash_usd = conn.execute(
-            "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+            "SELECT tc_compra FROM positions WHERE user_id=? AND broker=? AND is_cash=1 "
+            "ORDER BY id LIMIT 1",
             (uid, usd_broker["name"]),
         ).fetchone()
         tc_avg = (cash_usd["tc_compra"] if cash_usd else None) or tc
@@ -1220,8 +1176,8 @@ def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, d
         pnl_ars = ars_amount - cost_basis_ars
         op_pnl_usd = pnl_ars / tc if tc > 0 else 0.0
         op_pnl_pct = (op_pnl_usd / usd_amount * 100) if usd_amount > 0 else None
-        _adjust_cash_permissive(conn, uid, usd_broker["name"], "USDT", -usd_amount)
-        _adjust_cash_permissive(conn, uid, ars_broker["name"], "ARS", ars_amount)
+        helpers._adjust_broker_cash(conn, uid, usd_broker["name"], -usd_amount)
+        helpers._adjust_broker_cash(conn, uid, ars_broker["name"], ars_amount)
         from_b, from_curr, to_curr = usd_broker["name"], "USDT", "ARS"
         entry_p, exit_p = tc_avg, tc
         op_qty = usd_amount
@@ -1612,16 +1568,7 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             # DIVIDEND) que no validan. Antes este check bloqueaba reverts
             # legítimos cuando ya se había gastado parte del depósito en BUYs
             # que se revertirán después en este mismo loop.
-            cash = conn.execute(
-                "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                (uid, tx["broker"]),
-            ).fetchone()
-            if cash:
-                new_inv = (cash["invested"] or 0) - amount
-                conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                    (new_inv, cash["id"], uid),
-                )
+            helpers._adjust_broker_cash(conn, uid, tx["broker"], -amount)
             # Bug C fix (2026-05-30): el revert de un DEPOSIT debe RESTAR de
             # `deposits`, no sumar a `withdrawals`. Antes inflaba withdrawals
             # con un movimiento que nunca ocurrió, contaminando el bruto
@@ -1641,15 +1588,7 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
             broker_currency = broker_row["currency"] if broker_row else ""
             amount_usd = (amount / tc_blue) if broker_currency == "ARS" else amount
             # Cash down
-            cash = conn.execute(
-                "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                (uid, tx["broker"]),
-            ).fetchone()
-            if cash:
-                conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                    ((cash["invested"] or 0) - amount, cash["id"], uid),
-                )
+            helpers._adjust_broker_cash(conn, uid, tx["broker"], -amount)
             # Bajar pnl_realized (revertir lo que sumó al persistir). SIMÉTRICO
             # con el persist: la amortización-capital-return NUNCA sumó → acá
             # tampoco resta (sin el guard, revertir dejaría pnl_realized en
@@ -1737,10 +1676,10 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                         (parent["id"], uid),
                     ).fetchone()
                     if usd_amount > 0 and sibling:
-                        _adjust_cash_permissive(conn, uid, sibling["name"], "USDT", -usd_amount)
+                        helpers._adjust_broker_cash(conn, uid, sibling["name"], -usd_amount)
                         brokers_touched.add(sibling["name"])
                     if ars_amount > 0:
-                        _adjust_cash_permissive(conn, uid, tx["broker"], "ARS", ars_amount)
+                        helpers._adjust_broker_cash(conn, uid, tx["broker"], ars_amount)
                 ars_broker_name = tx["broker"]
             else:  # FX_USD_TO_ARS
                 # tx.broker era el sibling USD. El padre ARS es el broker que recibió.
@@ -1753,9 +1692,9 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                         (sibling["parent_broker_id"], uid),
                     ).fetchone()
                     if usd_amount > 0:
-                        _adjust_cash_permissive(conn, uid, sibling["name"], "USDT", usd_amount)
+                        helpers._adjust_broker_cash(conn, uid, sibling["name"], usd_amount)
                     if ars_amount > 0 and parent:
-                        _adjust_cash_permissive(conn, uid, parent["name"], "ARS", -ars_amount)
+                        helpers._adjust_broker_cash(conn, uid, parent["name"], -ars_amount)
                         brokers_touched.add(parent["name"])
                         ars_broker_name = parent["name"]
             # Revertir monthly_pnl_realized para FX_USD_TO_ARS (el persist agrega pnl_usd)
