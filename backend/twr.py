@@ -1371,7 +1371,8 @@ def _aportado_por_punto(conn, uid: int, filas):
                              canon(M−1) − min(retiros(M),  bajadas(M)),
                              canon(M−1) + min(depósitos(M), subidas(M)) )
                              rn = última fila de M; bajadas/subidas = cuánto bajaron
-                             y subieron las estampas del mes, fila a fila
+                             y subieron las estampas del mes, fila a fila, desde la
+                             foto anterior aunque sea de M−1
 
     ⚠️ POR QUÉ ASÍ, DESPUÉS DE DOS INTENTOS FALLIDOS.
 
@@ -1414,6 +1415,42 @@ def _aportado_por_punto(conn, uid: int, filas):
     estampa vieja que sube 50.000 al re-estamparse no habilita bajar, y un
     traspaso el mismo día (estampa quieta) no habilita nada.
 
+    ⚠️ Y EL MOVIMIENTO SE CUENTA DESDE LA FOTO ANTERIOR, AUNQUE SEA DEL MES PASADO.
+    Hasta 2026-10 las subidas y bajadas se medían sólo entre fotos del MISMO mes,
+    así que la plata que entraba antes de la primera foto del mes no contaba como
+    movimiento: la estampa ya la traía puesta. Con un retiro más adelante en el
+    mismo mes, el corredor quedaba cerrado de ese lado y el anclado recortaba los
+    días previos al retiro al valor de fin de mes. Medido con el mercado quieto
+    salvo una ganancia chica: cuenta NUEVA, 10.000 el 1/9 y retiro de 4.000 el 15/9
+    → "aportado 6.000" del 1 al 14 con la cartera en 10.250, la curva en −37,5 % y
+    −39 % de peor caída; cuenta VIEJA que deposita 5.000 el 1/9 y retira 4.000 el
+    15/9 → −26,5 % de peor caída contra +US$ 70 reales. Y cada borrado escribía ese
+    número en las fotos (la cascada re-estampa con esta función): la tarjeta de la
+    semana pasaba a "ganaste US$ 4.250 · Aportaste US$ 6.000".
+    El paso de la última foto de M−1 a la primera de M es un movimiento de M (si
+    vino de un flujo, el flujo es de M o la foto de M−1 no lo vio). Sigue acotado
+    por los brutos de M: un mes sin flujos sigue colapsando, y un traspaso del
+    mismo monto sigue sin habilitar más que su monto.
+
+    ⚠️ SIEMPRE FOTO CONTRA FOTO, NUNCA FOTO CONTRA CONTABILIDAD. El primer intento
+    medía la primera foto de `filas` contra canon(M−1), y eso es exactamente la
+    resta de dos momentos que la ronda 4 prohibió: con una ventana (`desde=5/5`,
+    el chip de 30 días) la primera foto de la ventana era una estampa VIEJA de
+    antes de un import, el escalón contra la contabilidad de hoy abría el corredor
+    hacia abajo y el traspaso del mes dejaba pasar −27 % de caída inventada (lo
+    agarró `test_ia_caida_medida`, el de la 3ª auditoría). Por eso:
+      · los movimientos se miden sobre TODAS las fotos medidas de la cuenta, no
+        sobre las de la ventana — la foto anterior a la ventana existe y es la
+        referencia; así `?desde=` y la serie entera ven el mismo movimiento;
+      · la única foto sin anterior es la PRIMERA de la cuenta, y sólo se mide
+        contra canon(M−1) si la contabilidad ARRANCA en ese mes o después (una
+        cuenta nueva): no hay historia anterior que un import haya podido
+        reescribir, así que canon(M−1) es el baseline y no un número de otro
+        momento. Si hay historia anterior, esa foto no cuenta movimiento (como
+        antes): LÍMITE CONOCIDO — una cuenta con historia importada cuyo cron
+        arranca en un mes que ya tuvo un flujo antes de la primera foto y otro de
+        signo contrario después sigue recortada en esos días.
+
     (El ideal sigue siendo reconstruir el aportado desde las FECHAS REALES de los
     movimientos. Esto NO lo reemplaza — pero tampoco hacía falta esperar a eso.)
     """
@@ -1421,20 +1458,9 @@ def _aportado_por_punto(conn, uid: int, filas):
     if canon is None:                      # sin contabilidad: sólo queda la estampa
         return lambda r: float(r["net_deposited"] or 0)
 
-    # Cuánto SUBIERON y cuánto BAJARON las estampas dentro de cada mes, fila a
-    # fila en orden de fecha. Una estampa vacía no es un movimiento: se saltea.
-    movido = {}
-    _ultima = {}
-    for r in sorted(filas, key=lambda x: str(x["date"])):
-        if r["net_deposited"] is None:
-            continue
-        ym = str(r["date"])[:7]
-        st = float(r["net_deposited"])
-        if ym in _ultima:
-            dlt = st - _ultima[ym]
-            sube, baja = movido.get(ym, (0.0, 0.0))
-            movido[ym] = (sube + max(dlt, 0.0), baja + max(-dlt, 0.0))
-        _ultima[ym] = st
+    def _mes_anterior(ym):
+        y, m = int(ym[:4]), int(ym[5:7])
+        return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
 
     # Depósitos y retiros BRUTOS de cada mes, de las mismas filas que `canon`.
     brutos = {}
@@ -1445,16 +1471,42 @@ def _aportado_por_punto(conn, uid: int, filas):
         d0, w0 = brutos.get(k, (0.0, 0.0))
         brutos[k] = (d0 + float(b["deposits"] or 0), w0 + float(b["withdrawals"] or 0))
 
+    # Cuánto SUBIERON y cuánto BAJARON las estampas de cada mes, foto a foto en
+    # orden de fecha, contando el paso desde la foto anterior aunque sea de otro
+    # mes o quede fuera de la ventana (ver el docstring). Las fotos son las de
+    # `filas` más las medidas de la cuenta (`total_value > 0`, el filtro de
+    # `serie_medible`): sin ventana es lo mismo que `filas`; con ventana, la
+    # serie entera. Una estampa vacía no es un movimiento: se saltea.
+    _estampas = {str(r["date"])[:10]: r["net_deposited"] for r in conn.execute(
+        "SELECT date, net_deposited FROM snapshots WHERE user_id=? AND total_value > 0",
+        (uid,)).fetchall()}
+    for r in filas:
+        _estampas[str(r["date"])[:10]] = r["net_deposited"]
+    _primer_mes_contable = min(brutos) if brutos else None
+    movido = {}
+    _anterior = None
+    for d, st in sorted(_estampas.items()):
+        if st is None:
+            continue
+        ym = d[:7]
+        st = float(st)
+        if _anterior is not None:
+            ref = _anterior
+        elif _primer_mes_contable is not None and ym <= _primer_mes_contable:
+            ref = canon(f"{_mes_anterior(ym)}-01")      # cuenta nueva: el baseline
+        else:
+            ref = st                                     # historia previa: no se sabe
+        dlt = st - ref
+        sube, baja = movido.get(ym, (0.0, 0.0))
+        movido[ym] = (sube + max(dlt, 0.0), baja + max(-dlt, 0.0))
+        _anterior = st
+
     ultimo_del_mes = {}
     for r in filas:
         ym = str(r["date"])[:7]
         prev = ultimo_del_mes.get(ym)
         if prev is None or str(r["date"]) > str(prev["date"]):
             ultimo_del_mes[ym] = r
-
-    def _mes_anterior(ym):
-        y, m = int(ym[:4]), int(ym[5:7])
-        return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
 
     def _en(r):
         ym = str(r["date"])[:7]

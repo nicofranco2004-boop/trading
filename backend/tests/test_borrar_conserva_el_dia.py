@@ -533,5 +533,179 @@ class BorrarConservaElDia(unittest.TestCase):
         self.assertEqual(cambiadas, {})
 
 
+class LaSemanaDespuesDeBorrar(unittest.TestCase):
+    """La tarjeta de la SEMANA y la curva, antes y después de borrar una compra.
+
+    La semana resta las estampas de sus dos fotos tal cual (sin anclar), así que es
+    la pantalla que primero muestra un aportado mal re-estampado. Hallazgo del
+    2026-10-02 sobre una copia anterior al arreglo de la cascada: cuenta nueva con
+    10.000 el 1/9, aporte de 3.000 el 15/9, borra una compra del 2/9 → la foto del
+    6/9 pasaba a "aportado 13.000" y la semana 31/8–6/9 publicaba "perdiste US$
+    2.750 · Aportaste US$ 13.000" (real: +250). Con el arreglo de la cascada ese
+    caso ya daba bien — pero con un RETIRO en vez del aporte seguía publicando
+    "ganaste US$ 4.250 · Aportaste US$ 6.000", porque el anclado no veía como
+    movimiento la plata que entró antes de la primera foto del mes. Ese mismo
+    anclado lo usa la curva al LEER: sin borrar nada, la cuenta nueva con retiro
+    mostraba −37,5 % y −39 % de peor caída, y la vieja que deposita el 1 y retira el
+    15, −26,5 % de peor caída.
+
+    Mercado quieto salvo una ganancia chica desde el 2/9 (+250 la cuenta nueva,
+    +70 la vieja). Entra por las mismas puertas HTTP que la app; el benchmark se
+    apaga porque baja de internet y no es lo que se mide."""
+    BROKER = "IBKR"
+    SEMANA = "2026-W36"          # lunes 31/8 a domingo 6/9
+    _import = BorrarConservaElDia._import
+    _tx = BorrarConservaElDia._tx
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions", "monthly_entries",
+                  "snapshots", "deleted_ops_journal", "config", "brokers", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.conn.commit()
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            ("semana_borrar@rendi.test", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, self.BROKER, "USDT"))
+        self.conn.commit()
+        main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
+        self.client = TestClient(main.app)
+        self._sin_benchmark = [mock.patch.object(main, "_bench_para_reportes",
+                                                 return_value={}),
+                               mock.patch.object(main, "_benchmarks_fetch_and_cache",
+                                                 return_value={})]
+        for p in self._sin_benchmark:
+            p.start()
+
+    def tearDown(self):
+        for p in self._sin_benchmark:
+            p.stop()
+        main.app.dependency_overrides.pop(main.get_effective_user, None)
+        self.conn.close()
+
+    def _cuenta(self, filas_csv, aportado_del_dia, ganancia_desde_el_2):
+        """Importa el historial y escribe las fotos del cron: cada noche anota lo
+        aportado de ese día y la cartera vale eso más la ganancia desde el 2/9."""
+        self._import(_csv(*filas_csv))
+        for d, nd in aportado_del_dia.items():
+            v = nd + (ganancia_desde_el_2 if d >= "2026-09-02" else 0.0)
+            self.conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                       net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
+                   VALUES (?,?,?,?,?,1200,'[{"a":"AAPL"}]','cron','mercado',1)
+                   ON CONFLICT(user_id, date) DO UPDATE SET
+                       total_value=excluded.total_value,
+                       total_invested=excluded.total_invested,
+                       net_deposited=excluded.net_deposited,
+                       fx_to_usd_blue=excluded.fx_to_usd_blue,
+                       holdings_json=excluded.holdings_json,
+                       source='cron', base='mercado', apto=1""",
+                (self.uid, d, v, nd, nd))
+        self.conn.commit()
+
+    def _lo_que_publica(self) -> dict:
+        r = self.client.get(f"/api/reports/period/week/{self.SEMANA}")
+        self.assertEqual(r.status_code, 200, r.text)
+        m = r.json()["metrics"]
+        p = self.client.get("/api/insights/performance")
+        self.assertEqual(p.status_code, 200, p.text)
+        p = p.json()
+        # Con ventana, como el chip de 30 días: la ganancia fue el 2/9, así que
+        # desde el 10/9 no hay nada que publicar. La ventana arranca después del
+        # aporte del 1/9 y antes del retiro del 15/9: el movimiento de antes de la
+        # ventana tiene que seguir contando.
+        v = self.client.get("/api/insights/performance", params={"desde": "2026-09-10"})
+        self.assertEqual(v.status_code, 200, v.text)
+        v = v.json()
+        return {"semana": (round(m["delta_usd"] or 0, 2), round(m["deposits"] or 0, 2),
+                           round(m["withdrawals"] or 0, 2), bool(m["basis_incomparable"])),
+                "acumulado": round(p["twr"] or 0, 6),
+                "peor_caida": round(p["drawdown_maximo"] or 0, 6),
+                "desde_el_10": (round(v["twr"] or 0, 6), round(v["drawdown_maximo"] or 0, 6))}
+
+    def _assert_publica(self, esperado: dict, cuando: str):
+        self.assertEqual(self._lo_que_publica(), esperado,
+                         f"{cuando} — semana = (resultado, aportes, retiros, sin base)")
+
+    def _borrar_la_compra_del_2(self):
+        r = self.client.delete(
+            f"/api/movements/tx-{self._tx('BUY', '2026-09-02')}")
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def _caso(self, filas_csv, aportado_del_dia, ganancia, esperado):
+        self._cuenta(filas_csv, aportado_del_dia, ganancia)
+        antes = {r["date"]: r["net_deposited"] for r in self.conn.execute(
+            "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
+        self._assert_publica(esperado, "antes de borrar")
+        self._borrar_la_compra_del_2()
+        # Primero lo que ve el usuario; después la causa: una compra no cambia lo
+        # aportado, así que ni una foto del cron se puede haber movido.
+        self._assert_publica(esperado, "después de borrar la compra del 2/9")
+        despues = {r["date"]: r["net_deposited"] for r in self.conn.execute(
+            "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
+        movidas = {d: (antes[d], despues.get(d)) for d in aportado_del_dia
+                   if despues.get(d) != antes[d]}
+        self.assertEqual(movidas, {}, "fotos del cron con el aportado cambiado "
+                                      "(fecha: (antes, después))")
+
+    @staticmethod
+    def _septiembre(antes_del_15, desde_el_15):
+        return {d: (antes_del_15 if d < "2026-09-15" else desde_el_15)
+                for d in _dias(2026, 9, 1, 30)}
+
+    # ── cuenta NUEVA: no hay foto antes de la semana ─────────────────────────
+    def test_cuenta_nueva_con_aporte_el_15(self):
+        self._caso(["2026-09-01,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                    "2026-09-02,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,",
+                    "2026-09-15,DEPOSITO,IBKR,,,,3000,,,0,USD,"],
+                   self._septiembre(10000.0, 13000.0), 250.0,
+                   {"semana": (250.0, 10000.0, 0.0, False),
+                    "acumulado": 0.025, "peor_caida": 0.0,
+                    "desde_el_10": (0.0, 0.0)})
+
+    def test_cuenta_nueva_con_retiro_el_15(self):
+        self._caso(["2026-09-01,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                    "2026-09-02,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,",
+                    "2026-09-15,RETIRO,IBKR,,,,4000,,,0,USD,"],
+                   self._septiembre(10000.0, 6000.0), 250.0,
+                   {"semana": (250.0, 10000.0, 0.0, False),
+                    "acumulado": 0.025, "peor_caida": 0.0,
+                    "desde_el_10": (0.0, 0.0)})
+
+    # ── cuenta VIEJA: la semana arranca en una foto del cron (rama normal) ───
+    def _vieja(self, flujos_de_septiembre, antes_del_15, desde_el_15, esperado):
+        aportado = {d: 10000.0 for d in _dias(2026, 7, 1, 31) + _dias(2026, 8, 1, 31)}
+        aportado.update(self._septiembre(antes_del_15, desde_el_15))
+        self._caso(["2026-07-01,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                    "2026-09-02,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,"]
+                   + flujos_de_septiembre, aportado, 70.0, esperado)
+
+    def test_cuenta_vieja_con_aporte_el_15(self):
+        self._vieja(["2026-09-15,DEPOSITO,IBKR,,,,3000,,,0,USD,"], 10000.0, 13000.0,
+                    {"semana": (70.0, 0.0, 0.0, False),
+                     "acumulado": 0.007, "peor_caida": 0.0,
+                     "desde_el_10": (0.0, 0.0)})
+
+    def test_cuenta_vieja_con_retiro_el_15(self):
+        self._vieja(["2026-09-15,RETIRO,IBKR,,,,4000,,,0,USD,"], 10000.0, 6000.0,
+                    {"semana": (70.0, 0.0, 0.0, False),
+                     "acumulado": 0.007, "peor_caida": 0.0,
+                     "desde_el_10": (0.0, 0.0)})
+
+    def test_cuenta_vieja_que_aporta_el_1_y_retira_el_15(self):
+        """La plata del 1/9 ya está en la PRIMERA foto de septiembre: entre fotos del
+        mismo mes la estampa no se mueve. El anclado tiene que verla igual."""
+        self._vieja(["2026-09-01,DEPOSITO,IBKR,,,,5000,,,0,USD,",
+                     "2026-09-15,RETIRO,IBKR,,,,4000,,,0,USD,"], 15000.0, 11000.0,
+                    {"semana": (70.0, 5000.0, 0.0, False),
+                     "acumulado": round(70.0 / 15000.0, 6), "peor_caida": 0.0,
+                     "desde_el_10": (0.0, 0.0)})
+
+
 if __name__ == "__main__":
     unittest.main()
