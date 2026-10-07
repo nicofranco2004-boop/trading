@@ -94,6 +94,13 @@ def _p(prefix: str) -> str:
     return f"{prefix}." if prefix else ""
 
 
+def no_es_conversion_sql(prefix: str = "") -> str:
+    """WHERE que deja afuera las conversiones de moneda — `es_conversion` en SQL."""
+    p = _p(prefix)
+    return (f"{p}op_type NOT LIKE 'CONVERSION%' "
+            f"AND {p}op_type NOT LIKE 'Conversión%'")
+
+
 def closed_filter_sql(prefix: str = "") -> str:
     """WHERE de "operaciones cerradas". `prefix` es el alias de la tabla."""
     p = _p(prefix)
@@ -101,8 +108,7 @@ def closed_filter_sql(prefix: str = "") -> str:
     return (
         f"{p}pnl_usd IS NOT NULL "
         f"AND {p}op_type NOT IN ({quoted}) "
-        f"AND {p}op_type NOT LIKE 'CONVERSION%' "
-        f"AND {p}op_type NOT LIKE 'Conversión%'"
+        f"AND {no_es_conversion_sql(prefix)}"
     )
 
 

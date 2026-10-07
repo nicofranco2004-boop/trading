@@ -326,5 +326,58 @@ class ConversionEnElChatDeLaIA(unittest.TestCase):
         self.assertAlmostEqual(venta["fx_pnl_usd"], 0.15, places=2)
 
 
+class ConversionNoEsUnTrade(unittest.TestCase):
+    """Comprar o vender dólares no es una operación: no puede salir como "tu
+    mejor trade", como "el motor del período" ni como "última op cerrada".
+
+    Medido antes del arreglo con sólo dos conversiones (compra de US$10 y venta
+    de US$4 con US$0,15 de ganancia cambiaria): el Wrapped contaba "2
+    operaciones" y el reporte del mes listaba ARS→USDT y USDT→ARS como los
+    activos que movieron el resultado."""
+
+    def setUp(self):
+        self.client = TestClient(main.app)
+        conn = main.get_db()
+        self.uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified, is_admin) "
+            "VALUES (?, 'x', 1, 1, 1)", (f"notrade-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'IOL', 'ARS')",
+                     (self.uid,))
+        conn.commit()
+        conn.close()
+        self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
+        r = self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "IOL", "direction": "deposit", "amount": 100_000,
+            "tc_blue": 1400, "date": "2024-03-01"})
+        self.assertEqual(r.status_code, 200, r.text)
+        for direction, broker, ars, usd, tc in (
+                ("ars_to_usd", "IOL", 15_400, 10, 1540),
+                ("usd_to_ars", "IOL · USD", 6_400, 4, 1600)):
+            r = self.client.post("/api/conversions", headers=self.h, json={
+                "from_broker": broker, "direction": direction, "ars_amount": ars,
+                "usd_amount": usd, "tc": tc, "kind": "MEP", "date": "2024-03-05"})
+            self.assertEqual(r.status_code, 200, r.text)
+
+    def test_wrapped_no_las_cuenta_como_operaciones(self):
+        r = self.client.get("/api/wrapped/2024", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        texto = str(r.json())
+        self.assertNotIn("USDT", texto, "una conversión aparece en el Wrapped")
+        self.assertIn(r.json()["summary"].get("operations_count"), (None, 0), r.json()["summary"])
+        intro = next(s for s in r.json()["slides"] if s.get("kind") == "intro")
+        ops = [x for x in intro.get("stats") or [] if x.get("label") == "Operaciones"]
+        self.assertFalse([x for x in ops if x.get("value") not in ("0", "—")], intro)
+
+    def test_reporte_del_mes_no_las_lista_como_motor_ni_ultima_operacion(self):
+        r = self.client.get("/api/reports/period/month/2024-03", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        out = r.json()
+        self.assertFalse([d for d in out.get("drivers") or []
+                          if "→" in (d.get("asset") or "")], out.get("drivers"))
+        last = (out.get("portfolio_snapshot") or {}).get("last_op")
+        self.assertTrue(last is None or "→" not in (last.get("asset") or ""), last)
+
+
 if __name__ == "__main__":
     unittest.main()

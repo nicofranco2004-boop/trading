@@ -28,7 +28,7 @@ from money_fmt import fmt_num
 from typing import Dict, List, Optional, Tuple
 from collections import Counter
 
-from realized_pnl import realized_usd, pct_creible
+from realized_pnl import realized_usd, pct_creible, es_conversion
 import logging
 import twr as _twr
 
@@ -162,9 +162,16 @@ def _operations_for_year(operations: List[dict], year: int) -> List[dict]:
     de $125.000 en pesos le ganaba a cualquier operación real y salía como "tu
     mejor trade del año" — el número es enorme y convincente, y el usuario no
     tiene forma de dudarlo. Ver backend/realized_pnl.py.
+
+    Las conversiones de moneda (comprar/vender USD) se quedan afuera: no son
+    operaciones. Contaban en "N operaciones", podían salir como el activo "más
+    operado" (ARS→USDT) y una venta de dólares con ganancia cambiaria como "tu
+    mejor trade del año".
     """
     out = []
     for op in operations:
+        if es_conversion(op.get('op_type')):
+            continue
         date = str(op.get('date') or '')
         if len(date) >= 4 and date[:4].isdigit() and int(date[:4]) == year:
             out.append({**op, 'pnl_usd': realized_usd(op)}

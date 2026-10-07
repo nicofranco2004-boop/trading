@@ -20068,11 +20068,15 @@ def admin_ventas_legacy_debug(email: str = "", user_id: int = 0, limite: int = 2
                 "SELECT name, currency FROM brokers WHERE user_id=?", (au,)).fetchall():
             ccy_por_broker[b["name"]] = (b["currency"] or "").strip().upper()
 
+        # Sin conversiones de moneda: tampoco tienen moneda sellada, pero no son
+        # ventas — su `quantity` son pesos y su "precio" el TC. Listadas acá,
+        # una reparación armada sobre este informe las sellaría como ventas.
         filas = conn.execute(
-            """SELECT id, date, entry_date, broker, asset, op_type, entry_price,
+            f"""SELECT id, date, entry_date, broker, asset, op_type, entry_price,
                       exit_price, quantity, commissions, currency, fx_to_usd
                  FROM operations
                 WHERE user_id=?
+                  AND {realized_pnl.no_es_conversion_sql()}
                   AND (currency IS NULL OR TRIM(COALESCE(currency,''))=''
                        OR fx_to_usd IS NULL OR fx_to_usd<=0)
                 ORDER BY date""", (au,)).fetchall()
@@ -38991,11 +38995,14 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     # Última operación cerrada (fecha, asset, broker, pnl).
     # Convertido: si el último evento del usuario fue un cupón en pesos, la
     # tarjeta de Reportes decía "US$125.000" (ver backend/realized_pnl.py).
+    # Sin conversiones: comprar dólares no es una operación cerrada, y la
+    # tarjeta mostraba "ARS→USDT +US$ 0" como lo último que hizo el usuario.
     last_op_row = conn.execute(
         f"""SELECT date, broker, asset, op_type,
                    {realized_pnl.realized_usd_sql()} AS pnl_usd
               FROM operations
-             WHERE user_id = ? AND pnl_usd IS NOT NULL{br_clause}
+             WHERE user_id = ? AND pnl_usd IS NOT NULL
+               AND {realized_pnl.no_es_conversion_sql()}{br_clause}
              ORDER BY date DESC, id DESC LIMIT 1""",
         (uid, *br_args),
     ).fetchone()
@@ -42778,9 +42785,9 @@ def _advisor_report_payload(conn, advisor_uid: int, client_uid: int, label: str,
     _CASHLIKE = ("Dividendo", "Interés", "Interes", "Amortización", "Amortizacion", "Renta")
     movs_all = []
     for r in conn.execute(
-            """SELECT date, asset, op_type, quantity FROM operations
+            f"""SELECT date, asset, op_type, quantity FROM operations
                WHERE user_id=? AND date >= ? AND date <= ?
-                 AND (op_type IS NULL OR op_type NOT LIKE '%CONVERSION%')
+                 AND (op_type IS NULL OR {realized_pnl.no_es_conversion_sql()})
                ORDER BY date ASC""",
             (client_uid, start, end)).fetchall():
         qty = r["quantity"]
@@ -44699,7 +44706,7 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
         tipo = _strip_accents((r["op_type"] or "").upper())
         # Espejo de isRealAssetOp: las conversiones de moneda (ARS→USDT) no son
         # un activo y ensuciarían la porción "Sin clasificar".
-        if not asset or "\u2192" in asset or tipo.startswith("CONVERSION"):
+        if not asset or "\u2192" in asset or realized_pnl.es_conversion(r["op_type"]):
             continue
 
         ars_names, ar_usd_names = _broker_name_sets(brokers_by_uid.get(r["user_id"], []))
