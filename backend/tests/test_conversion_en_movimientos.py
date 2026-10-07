@@ -379,5 +379,83 @@ class ConversionNoEsUnTrade(unittest.TestCase):
         self.assertTrue(last is None or "→" not in (last.get("asset") or ""), last)
 
 
+class FlujosImportadosPorMes(unittest.TestCase):
+    """`_import_flows_por_mes` (todos los meses de una vez, lo que usan
+    Movimientos y el CSV) tiene que dar EXACTAMENTE lo mismo que
+    `_import_flows_for_period` (un mes por vez, lo que usa el recalc del capital
+    aportado) para cada broker y mes. Comparten los fragmentos de SQL; esto
+    cuida que la forma agrupada no se aparte de la filtrada.
+
+    Escenario armado por las puertas reales: dos brokers en pesos, depósitos y
+    retiros en las dos monedas, conversiones en los dos sentidos y en meses
+    distintos, un depósito borrado (tombstone) y una importación deshecha."""
+
+    def test_da_lo_mismo_que_el_helper_mes_por_mes(self):
+        client = TestClient(main.app)
+        conn = main.get_db()
+        uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) "
+            "VALUES (?, 'x', 1, 1)", (f"flujos-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        for b in ("IOL", "Cocos"):
+            conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,'ARS')",
+                         (uid, b))
+        conn.commit()
+        conn.close()
+        h = {"Authorization": f"Bearer {main.create_token(uid)}"}
+
+        def importar(broker, filas):
+            r = client.post(
+                "/api/imports/preview", headers=h,
+                files=[("files", ("x.csv", io.BytesIO((HDR + filas).encode("utf-8")), "text/csv"))],
+                data={"format": "rendi_generic", "broker": broker})
+            self.assertEqual(r.status_code, 200, r.text)
+            r = client.post("/api/imports/confirm", headers=h,
+                            json={"session_id": r.json()["session_id"]})
+            self.assertEqual(r.status_code, 200, r.text)
+
+        importar("IOL",
+                 "2024-01-10,DEPOSITO,IOL,,,,3000000,,,,ARS,dep ene\n"
+                 "2024-01-20,CONVERSION_ARS_USD,IOL,,,,1400000,1000,1400,,,MEP ene\n"
+                 "2024-02-03,DEPOSITO,IOL,,,,500000,,,,ARS,dep feb (se borra)\n"
+                 "2024-02-15,CONVERSION_ARS_USD,IOL,,,,700000,500,1400,,ARS,MEP feb\n"
+                 "2024-03-01,RETIRO,IOL,,,,100000,,,,ARS,ret mar\n")
+        importar("IOL · USD",
+                 "2024-03-10,CONVERSION_USD_ARS,IOL · USD,,,,450000,300,1500,,,venta mar\n"
+                 "2024-03-12,DEPOSITO,IOL · USD,,,,200,,,,USD,dep usd\n")
+        importar("Cocos", "2024-02-01,DEPOSITO,Cocos,,,,1000000,,,,ARS,se deshace\n")
+        conn = main.get_db()
+        deshacer = conn.execute(
+            "SELECT b.id FROM import_batches b JOIN import_normalized_tx n ON n.batch_id=b.id "
+            "WHERE b.user_id=? AND n.notes='se deshace'", (uid,)).fetchone()["id"]
+        borrar = conn.execute(
+            "SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
+            "WHERE b.user_id=? AND n.notes='dep feb (se borra)'", (uid,)).fetchone()["id"]
+        conn.close()
+        self.assertEqual(client.post(f"/api/imports/{deshacer}/revert", headers=h).status_code, 200)
+        self.assertEqual(client.delete(f"/api/movements/tx-{borrar}", headers=h).status_code, 200)
+
+        conn = main.get_db()
+        try:
+            tc = main._user_tc_blue(conn, uid)
+            todos = main._import_flows_por_mes(conn, uid, tc)
+            claves = set(todos) | {
+                (r["broker"], f"{int(r['year']):04d}", f"{int(r['month']):02d}")
+                for r in conn.execute(
+                    "SELECT broker, year, month FROM monthly_entries "
+                    "WHERE user_id=? AND broker<>'global'", (uid,)).fetchall()}
+            # Sanity: el escenario tiene que haber dejado flujos y patas de conversión.
+            self.assertIn(("IOL · USD", "2024", "01"), todos)
+            self.assertIn(("IOL · USD", "2024", "03"), todos)
+            for broker, y, m in sorted(claves):
+                uno = main._import_flows_for_period(conn, uid, broker, y, m, tc)
+                agrupado = todos.get((broker, y, m), (0.0, 0.0))
+                for a, b in zip(uno, agrupado):
+                    self.assertAlmostEqual(a, b, places=6,
+                                           msg=f"{broker} {y}-{m}: mes a mes {uno} ≠ agrupado {agrupado}")
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -619,6 +619,33 @@ def _table_cols(conn, table: str) -> set:
     return {r[1] for r in rows}
 
 
+# ── Qué cuenta como flujo IMPORTADO de un mes ───────────────────────────────
+# Fragmentos ÚNICOS de las queries. Los usan las dos formas de preguntar lo mismo:
+#   · `_fx_transfer_legs_for_period` / `_import_flows_for_period`: UN broker y UN
+#     mes (lo que llama el recalc del capital aportado, mes por mes);
+#   · `_import_flows_por_mes`: TODOS los brokers y meses de un usuario de una vez
+#     (lo que llaman Movimientos y transactions.csv para separar lo manual).
+# Si cambia qué cuenta, cambia acá y vale para las dos. `test_conversion_en_
+# movimientos.py::FlujosImportadosPorMes` compara una contra la otra.
+_FLUJO_IMPORT_USD_SQL = """CASE WHEN n.gross_amount_usd IS NOT NULL THEN n.gross_amount_usd
+                              WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ?
+                              ELSE n.gross_amount END"""   # 2 parámetros: tc_blue, tc_blue
+_FLUJO_IMPORT_DONDE_SQL = """b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')"""
+_FX_PATA_USD_SQL = "COALESCE(n.gross_amount_usd, ABS(n.quantity))"
+_FX_PATA_DONDE_SQL = """b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                   AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
+                   AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'"""
+# El broker que COBRA (`bc`) es la contraparte del que paga (`bp` = n.broker).
+_FX_COBRA_JOIN_SQL = """JOIN brokers bp ON bp.user_id = b.user_id AND bp.name = n.broker
+                  JOIN brokers bc ON bc.user_id = b.user_id
+                   AND ((n.operation_type='FX_ARS_TO_USD'
+                         AND bc.parent_broker_id = bp.id AND bc.currency='USDT')
+                     OR (n.operation_type='FX_USD_TO_ARS'
+                         AND bc.id = bp.parent_broker_id))"""
+_DEL_MES_SQL = "AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?"
+
+
 def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
                                  month_str: str):
     """(dep_usd, wit_usd) que aportan las CONVERSIONES de moneda al capital
@@ -668,31 +695,21 @@ def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
     # depende de que los dos lados sigan existiendo.
     if broker == "global":
         return 0.0, 0.0
-    _monto = "COALESCE(n.gross_amount_usd, ABS(n.quantity))"
-    _donde = ("""WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
-                   AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
-                   AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'
-                   AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?""")
     try:
         paga = conn.execute(
-            f"""SELECT COALESCE(SUM({_monto}), 0) AS s
+            f"""SELECT COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
                   FROM import_normalized_tx n
                   JOIN import_batches b ON b.id = n.batch_id
-                {_donde} AND n.broker = ?""",
+                WHERE {_FX_PATA_DONDE_SQL} {_DEL_MES_SQL} AND n.broker = ?""",
             (uid, year_str, month_str, broker),
         ).fetchone()
         cobra = conn.execute(
-            f"""SELECT COALESCE(SUM({_monto}), 0) AS s
+            f"""SELECT COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
                   FROM import_normalized_tx n
                   JOIN import_batches b ON b.id = n.batch_id
-                  JOIN brokers bp ON bp.user_id = b.user_id AND bp.name = n.broker
-                  JOIN brokers bc ON bc.user_id = b.user_id AND bc.name = ?
-                   AND ((n.operation_type='FX_ARS_TO_USD'
-                         AND bc.parent_broker_id = bp.id AND bc.currency='USDT')
-                     OR (n.operation_type='FX_USD_TO_ARS'
-                         AND bc.id = bp.parent_broker_id))
-                {_donde}""",
-            (broker, uid, year_str, month_str),
+                  {_FX_COBRA_JOIN_SQL}
+                WHERE {_FX_PATA_DONDE_SQL} {_DEL_MES_SQL} AND bc.name = ?""",
+            (uid, year_str, month_str, broker),
         ).fetchone()
     except ERR_OPERACIONAL:
         return 0.0, 0.0          # tablas de import aún no existen (DB fresca)
@@ -714,16 +731,10 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
     try:
         flow_rows = conn.execute(
             f"""SELECT n.operation_type AS op,
-                       COALESCE(SUM(
-                         CASE WHEN n.gross_amount_usd IS NOT NULL THEN n.gross_amount_usd
-                              WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ?
-                              ELSE n.gross_amount END
-                       ), 0) AS s_usd
+                       COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS s_usd
                 FROM import_normalized_tx n
                 JOIN import_batches b ON b.id = n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
-                  AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')
-                  AND strftime('%Y', n.date)=? AND strftime('%m', n.date)=?
+                WHERE {_FLUJO_IMPORT_DONDE_SQL} {_DEL_MES_SQL}
                   {tx_broker_filter}
                 GROUP BY n.operation_type""",
             (tc_blue, tc_blue, uid, year_str, month_str, *tx_broker_args),
@@ -743,6 +754,57 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
     # re-clasificaría como manuales y el recalc los sumaría DOS veces.
     fx_dep, fx_wit = _fx_transfer_legs_for_period(conn, uid, broker, year_str, month_str)
     return dep + fx_dep, wit + fx_wit
+
+
+def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
+    """`_import_flows_for_period` de TODOS los brokers y meses de un usuario, en
+    tres queries: {(broker, 'AAAA', 'MM'): (dep_usd, wit_usd)}. Sin 'global'.
+
+    Existe por velocidad, no por criterio: Movimientos y transactions.csv
+    necesitan el número de cada fila mensual, y llamar al helper por fila son
+    tres recorridos del historial importado POR MES (medido sobre el backup de
+    prod: la cuenta más pesada pasaba de 0,07 s a 0,31 s). Las queries son las
+    mismas —mismos fragmentos `_FLUJO_IMPORT_*` / `_FX_PATA_*`—, agrupadas en
+    vez de filtradas por período."""
+    out: dict = {}
+
+    def _sumar(broker, y, m, i, v):
+        if broker is None or y is None or m is None:
+            return          # fecha que strftime no lee: el helper tampoco la cuenta
+        par = out.setdefault((broker, y, m), [0.0, 0.0])
+        par[i] += float(v or 0)
+    try:
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, n.operation_type AS op,
+                          COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS s
+                     FROM import_normalized_tx n
+                     JOIN import_batches b ON b.id = n.batch_id
+                    WHERE {_FLUJO_IMPORT_DONDE_SQL}
+                    GROUP BY n.broker, y, m, n.operation_type""",
+                (tc_blue, tc_blue, uid)).fetchall():
+            _sumar(r["broker"], r["y"], r["m"], 0 if r["op"] == "DEPOSIT" else 1, r["s"])
+        # Patas de las conversiones: el que paga RETIRA, el que cobra DEPOSITA.
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
+                     FROM import_normalized_tx n
+                     JOIN import_batches b ON b.id = n.batch_id
+                    WHERE {_FX_PATA_DONDE_SQL}
+                    GROUP BY n.broker, y, m""", (uid,)).fetchall():
+            _sumar(r["broker"], r["y"], r["m"], 1, r["s"])
+        for r in conn.execute(
+                f"""SELECT bc.name AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
+                     FROM import_normalized_tx n
+                     JOIN import_batches b ON b.id = n.batch_id
+                     {_FX_COBRA_JOIN_SQL}
+                    WHERE {_FX_PATA_DONDE_SQL}
+                    GROUP BY bc.name, y, m""", (uid,)).fetchall():
+            _sumar(r["broker"], r["y"], r["m"], 0, r["s"])
+    except ERR_OPERACIONAL:
+        return {}           # tablas de import aún no existen (DB fresca)
+    return {k: (v[0], v[1]) for k, v in out.items()}
 
 
 def _backfill_manual_flows(conn) -> None:
@@ -14549,7 +14611,7 @@ def _fila_csv_de_conversion(conv: dict, *, fecha, broker, notas) -> dict:
     }
 
 
-def _flujos_manuales_del_mes(conn, uid: int, me_row, tc_blue: float):
+def _flujos_manuales_del_mes(me_row, importados: dict):
     """(depósitos, retiros) que el usuario cargó A MANO en una fila de
     `monthly_entries` (no-global), en USD.
 
@@ -14559,6 +14621,8 @@ def _flujos_manuales_del_mes(conn, uid: int, me_row, tc_blue: float):
     `_import_flows_for_period`, el MISMO helper con el que el recalc arma esa
     suma y con el que `_backfill_manual_flows` / `_derive_manual_flows` derivan
     la parte manual — por construcción no puede contar dos veces nada.
+    `importados` es ese helper para todos los meses de una vez
+    (`_import_flows_por_mes`), así una lista de 100 meses no son 300 queries.
 
     Lo usan Movimientos y transactions.csv. Antes cada uno tenía lo suyo:
     Movimientos una COPIA de la query de imports que no sabía de conversiones
@@ -14567,8 +14631,8 @@ def _flujos_manuales_del_mes(conn, uid: int, me_row, tc_blue: float):
     el total del mes, así que un depósito importado salía dos veces.
     """
     y, m = int(me_row["year"]), int(me_row["month"])
-    imp_dep, imp_wit = _import_flows_for_period(
-        conn, uid, me_row["broker"] or "", f"{y:04d}", f"{m:02d}", tc_blue)
+    imp_dep, imp_wit = importados.get(
+        (me_row["broker"] or "", f"{y:04d}", f"{m:02d}"), (0.0, 0.0))
     dep = max(0.0, float(me_row["deposits"] or 0) - imp_dep)
     wit = max(0.0, float(me_row["withdrawals"] or 0) - imp_wit)
     return dep, wit
@@ -14835,11 +14899,11 @@ def _build_movements(uid: int):
                 ORDER BY year DESC, month DESC""",
             (uid,),
         ).fetchall()
+        importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
         for r in me_rows:
             d = dict(r)
             y, m = int(d["year"]), int(d["month"])
-            deposits_manual, withdrawals_manual = _flujos_manuales_del_mes(
-                conn, uid, r, tc_blue)
+            deposits_manual, withdrawals_manual = _flujos_manuales_del_mes(r, importados)
 
             approx_date = f"{y:04d}-{m:02d}-15"
             if deposits_manual > 0.01:
@@ -15774,10 +15838,11 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                  AND (deposits > 0 OR withdrawals > 0)""",
             (uid,),
         ).fetchall()
+        importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
         for r in me_rows:
             # Usamos el día 15 del mes como aproximación (cash flows agregados)
             d = f"{r['year']:04d}-{r['month']:02d}-15"
-            dep_manual, wit_manual = _flujos_manuales_del_mes(conn, uid, r, tc_blue)
+            dep_manual, wit_manual = _flujos_manuales_del_mes(r, importados)
             if dep_manual > 0.01:
                 rows.append({
                     "fecha": d,
