@@ -83,8 +83,12 @@ export function prettyOpType(raw) {
   const s = String(raw).trim()
   // Todas las conversiones, no sólo las importadas: las del botón
   // ("CONVERSION MEP ARS→USDT", también CCL/USDT/Otro) salían con el código
-  // crudo. Mismo rótulo que en Movimientos (TYPE_META.FX_*).
-  if (esConversion(s)) return s.includes('ARS→') ? TYPE_META.FX_ARS_TO_USD.label : TYPE_META.FX_USD_TO_ARS.label
+  // crudo. "Conversión X→Y" y NO "Compra de USD" como en Movimientos: en esta
+  // tabla la columna Cant. es la `quantity` cruda, que en una conversión es la
+  // moneda que SALE (15.400 pesos en una compra de US$10). "Compra de USD ·
+  // 15400" se leía como quince mil dólares; "Conversión ARS→USD · 15400" dice
+  // lo que pasó. En Movimientos la cantidad ya viene en dólares.
+  if (esConversion(s)) return s.includes('ARS→') ? 'Conversión ARS→USD' : 'Conversión USD→ARS'
   return s
 }
 

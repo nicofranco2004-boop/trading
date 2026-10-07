@@ -36,7 +36,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
-import { computeTradeStats, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
+import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { opPnlUsd } from '../utils/assetPnl'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
@@ -515,7 +515,7 @@ export default function Operations() {
           )}
           <KpiCell
             label="Operaciones"
-            value={ops.length.toLocaleString('es-AR')}
+            value={ops.filter(o => !esConversion(o.op_type)).length.toLocaleString('es-AR')}
             sub="total cerradas"
           />
           <KpiCell

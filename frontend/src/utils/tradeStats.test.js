@@ -205,10 +205,13 @@ describe('una conversión de moneda no es un trade', () => {
       { key: 'win_streak', streak: 3 })
   })
 
-  it('en la tabla se llaman igual que en Movimientos', () => {
-    expect(prettyOpType(compraUsd.op_type)).toBe('Compra de USD')
-    expect(prettyOpType(ventaUsd.op_type)).toBe('Venta de USD')
-    expect(prettyOpType('CONVERSION IMPORT ARS→USDT')).toBe('Compra de USD')
+  it('en la tabla de "Solo P/L" todas se nombran por la moneda que sale', () => {
+    // La columna Cant. de esa tabla es la cantidad cruda: 15400 son PESOS. Con
+    // "Compra de USD" se leía como quince mil dólares comprados.
+    expect(prettyOpType(compraUsd.op_type)).toBe('Conversión ARS→USD')
+    expect(prettyOpType('CONVERSION CCL ARS→USDT')).toBe('Conversión ARS→USD')
+    expect(prettyOpType(ventaUsd.op_type)).toBe('Conversión USD→ARS')
+    expect(prettyOpType('CONVERSION IMPORT ARS→USDT')).toBe('Conversión ARS→USD')
     expect(prettyOpType('Venta')).toBe('Venta')
   })
 })
