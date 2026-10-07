@@ -25,6 +25,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { X, ArrowDownCircle, Layers as LayersIcon } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import AssetLogo from './AssetLogo'
 import { getBondMeta, formatBondType } from '../utils/bondMeta'
 import { nextPaymentForPosition, cerOptsFor } from '../utils/bondSchedule'
@@ -146,7 +147,10 @@ export default function BondCashflowModal({
   const crossCurrency = bondMeta && bondMeta.currency !== 'ARS' && brokerCurrency === 'ARS'
   const decrementSafeDefault = decrementApplies && !crossCurrency
   const [decrementQty, setDecrementQty] = useState(decrementSafeDefault)
-  const [saving, setSaving] = useState(false)
+  // Freno del doble click (ver hooks/useEnVuelo): el estado solo apagaba el
+  // botón en el dibujo siguiente; dos clicks del mismo turno pasaban los dos.
+  const enVuelo = useEnVuelo()
+  const saving = enVuelo.activo()
   const toast = useToast()
 
   // Si cambia la estimación (caso re-render por props), re-aplicar valores.
@@ -194,14 +198,16 @@ export default function BondCashflowModal({
   const title = isCoupon ? 'Registrar cupón cobrado' : 'Registrar amortización'
   const Icon = isCoupon ? ArrowDownCircle : LayersIcon
 
-  async function submit(e) {
+  function submit(e) {
     e.preventDefault()
+    return enVuelo.correr(registrar)
+  }
+  async function registrar() {
     const amt = parseNum(amount)
     if (!amt || amt <= 0) {
       toast.push('Ingresá un monto válido.', { type: 'warn' })
       return
     }
-    setSaving(true)
     try {
       // Phase 3F: si el user marcó decrement_quantity Y tenemos estimate del
       // schedule, mandamos `face_amortized` explícito (en VN) además del
@@ -244,7 +250,6 @@ export default function BondCashflowModal({
         toast.push(msg, { type: 'warn' })
         onSuccess?.()
         onClose()
-        setSaving(false)
         return
       }
       toast.push(msg, { type: 'success' })
@@ -252,8 +257,6 @@ export default function BondCashflowModal({
       onClose()
     } catch (err) {
       toast.push(`Error: ${err.message || 'No se pudo registrar el cashflow'}`, { type: 'error' })
-    } finally {
-      setSaving(false)
     }
   }
 
