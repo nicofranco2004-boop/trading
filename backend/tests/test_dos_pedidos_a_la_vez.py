@@ -244,7 +244,7 @@ class BorrarDepositoManualDelMes(_Base):
         # segundo pedido espera en la puerta y, cuando entra, el depósito ya no está
         # (404). El cruce que este test forzaba —los dos leen 500 y el reclamo de
         # `_delete_one_movement` frena al segundo con 409— no puede pasar en SQLite;
-        # el reclamo lo prueba el test de abajo, sin turno (como en Postgres).
+        # el reclamo lo prueba el test de abajo, sin turno (la segunda protección).
         self.assertFalse(cruce.se_juntaron,
                          "los dos pedidos leyeron el depósito a la vez: la puerta no "
                          "tomó el turno de escritura antes de leer")

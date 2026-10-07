@@ -1050,9 +1050,12 @@ class BorrarConservaElDia(unittest.TestCase):
         try:
             antes = main._foto_contable(self.conn, self.uid)["canon"]("2026-03-01")
             self.conn.rollback()
-            otro.execute("UPDATE monthly_entries SET deposits=deposits+1000 "
-                         "WHERE user_id=? AND broker='global' AND year=2026 AND month=3",
-                         (self.uid,))
+            # Una FUENTE de las cuentas (un depósito a mano en el renglón del broker),
+            # no la fila 'global' directo: la foto de antes recompone las cuentas
+            # desde sus fuentes, como lo hace la cascada.
+            otro.execute("UPDATE monthly_entries SET manual_deposits=COALESCE(manual_deposits, 0)"
+                         "+1000, deposits=deposits+1000 WHERE user_id=? AND broker=? "
+                         "AND year=2026 AND month=3", (self.uid, self.BROKER))
             hilo = threading.Thread(target=_segunda_puerta)
             hilo.start()
             time.sleep(0.5)
@@ -1396,6 +1399,189 @@ class BorrarConservaElDia(unittest.TestCase):
         r = self.client.delete(f"/api/movements/tx-{self._tx('DIVIDEND', '2025-12-10')}")
         self.assertEqual(r.status_code, 200, r.text)
         self._assert_dia_conservado("borrar un dividendo con la contabilidad desfasada")
+
+    # ── 14. quinta auditoría ─────────────────────────────────────────────────
+    def _me_dep_de(self, anio: int, mes: int) -> str:
+        me = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE user_id=? AND broker=? AND year=? "
+            "AND month=? AND manual_deposits > 0", (self.uid, self.BROKER, anio, mes)).fetchone()
+        self.assertIsNotNone(me, f"no hay depósito manual en {anio}-{mes}")
+        return f"me-{me['id']}-dep"
+
+    def test_a_mano_con_un_cierre_reconstruido_en_un_mes_sin_fotos_diarias(self):
+        """Diciembre no tiene fotos diarias: su cierre lo escribe la reconstrucción a
+        mercado. El 5-mar se carga a mano un depósito fechado el 15-dic; las fotos lo
+        tienen desde el 5. Un import posterior reescribe el cierre de diciembre con
+        él adentro. Borrado: lo pierden ese cierre y las fotos desde el 5-mar — no
+        enero ni febrero, que nunca lo tuvieron (antes: 63 fotos mal)."""
+        self._depositar_a_mano("2025-12-15", 3000)
+        self._subir("2026-03-05", "2026-03-31", 3000)
+        self._cierre_reconstruido("2025-12-31", 103000)
+        r = self.client.delete(f"/api/movements/{self._me_dep_de(2025, 12)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        dic = self.conn.execute("SELECT net_deposited FROM snapshots WHERE user_id=? "
+                                "AND date='2025-12-31'", (self.uid,)).fetchone()
+        self.assertAlmostEqual(dic["net_deposited"], 100000.0, places=2)
+        self._assert_dia_conservado("a mano de diciembre con cierre reconstruido")
+
+    def test_a_mano_con_un_cierre_reconstruido_en_un_mes_con_fotos_diarias(self):
+        """Febrero tiene fotos diarias salvo el cierre, reconstruido después de que se
+        cargó a mano (el 5-mar) un depósito fechado el 15-feb. La prueba es la última
+        foto DIARIA de febrero, que no lo tenía."""
+        self._depositar_a_mano("2026-02-15", 3000)
+        self._subir("2026-03-05", "2026-03-31", 3000)
+        self._cierre_reconstruido("2026-02-28", 113000)
+        r = self.client.delete(f"/api/movements/{self._me_dep_de(2026, 2)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        esperado = dict(APORTADO_DEL_DIA)
+        esperado["2026-02-28"] = 110000.0
+        self._assert_dia_conservado("a mano de febrero con cierre reconstruido", esperado)
+
+    def test_otro_import_al_dia_siguiente_con_el_cron_de_las_cero(self):
+        """El cron de las 00:00: el import A (5-mar) aparece en la foto del 6 y el B
+        (6-mar) en la del 7. La foto del 6 saltó lo de A: se empieza por ahí, aunque B
+        se haya confirmado ese día."""
+        self._import(_csv("2026-02-25,DEPOSITO,IBKR,,,,7000,,,0,USD,"), confirmado="2026-03-05")
+        self._subir("2026-03-06", "2026-03-31", 7000)
+        self._import(_csv("2026-03-06,DEPOSITO,IBKR,,,,1000,,,0,USD,"))
+        self._subir("2026-03-07", "2026-03-31", 1000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-25')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("otro import al día siguiente, cron 00:00",
+                                    self._con({"2026-03-07": 1000}))
+
+    def test_duplicado_con_fotos_previas_borrar_el_original_y_despues_la_copia(self):
+        """El original confirmado el 12-mar y la copia el 18, las fotos de esos días
+        sacadas antes de cada import. Se borran los dos (no existió). El segundo
+        borrado se lleva la capa del original, que ya figuraba borrado: las fotos
+        todavía la muestran y el salto de su import tiene que contarlo."""
+        self._import(_csv("2026-03-12,DEPOSITO,IBKR,,,,7000,,,0,USD,original"), confirmado="2026-03-12")
+        self._subir("2026-03-13", "2026-03-31", 7000)
+        self._import(_csv("2026-03-12,DEPOSITO,IBKR,,,,7000,,,0,USD,copia"), confirmado="2026-03-18")
+        self._subir("2026-03-19", "2026-03-31", 7000)
+        for cual in ("original", "copia"):
+            r = self.client.delete(f"/api/movements/tx-{self._gemelo(cual)}")
+            self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("duplicado con fotos previas, borrar los dos")
+
+    def test_un_resumen_con_compras_y_dividendos_y_la_foto_del_dia_previa(self):
+        """El salto del import cuenta sólo depósitos y retiros: una compra y un
+        dividendo del mismo archivo no mueven lo aportado."""
+        self._import(_csv("2026-02-25,DEPOSITO,IBKR,,,,7000,,,0,USD,",
+                          "2026-02-26,COMPRA,IBKR,MSFT,2,500,1000,,,0,USD,",
+                          "2026-02-27,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,"), confirmado="2026-03-05")
+        self._subir("2026-03-06", "2026-03-31", 7000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-25')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("resumen con compras, foto del día previa")
+
+    def test_dos_imports_confirmados_de_noche_el_mismo_dia(self):
+        """Los dos a las 22:30 y 22:45 del 5-mar (01:30 y 01:45 UTC del 6): son del 5
+        argentino, y la foto del 5 (00:00) no tiene ninguno."""
+        self._import(_csv("2026-02-25,DEPOSITO,IBKR,,,,7000,,,0,USD,"),
+                     confirmado_utc="2026-03-06 01:30:00")
+        self._import(_csv("2026-02-26,DEPOSITO,IBKR,,,,3000,,,0,USD,"),
+                     confirmado_utc="2026-03-06 01:45:00")
+        self._subir("2026-03-06", "2026-03-31", 10000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-25')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("dos imports de noche", self._con({"2026-03-06": 3000}))
+
+    def test_la_foto_del_dia_sacada_entre_dos_imports(self):
+        """El Dashboard sacó la foto del 5 entre el import A (que la foto tiene) y el B
+        (que aparece desde el 6). Borrado B, se empieza el 6."""
+        self._import(_csv("2026-02-25,DEPOSITO,IBKR,,,,7000,,,0,USD,"),
+                     confirmado_utc="2026-03-05 13:00:00")
+        self._subir("2026-03-05", "2026-03-31", 7000)
+        self._import(_csv("2026-02-26,DEPOSITO,IBKR,,,,3000,,,0,USD,"),
+                     confirmado_utc="2026-03-05 18:00:00")
+        self._subir("2026-03-06", "2026-03-31", 3000)
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DEPOSIT', '2026-02-26')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("foto entre dos imports", self._con({"2026-03-05": 7000}))
+
+    def test_deshacer_de_antes_de_este_cambio_en_una_cuenta_vacia(self):
+        """Dos posiciones a mano borradas (la cuenta queda vacía) con journals sin lo
+        anotado (de antes de este cambio). Deshacer la última: las cuentas de antes
+        están vacías, y eso es 0 (no "no sé"): PEP vuelve desde el 10-feb."""
+        import json as _json
+        esperado, pids = self._cuenta_solo_con_posiciones_a_mano()
+        tokens = []
+        for activo in ("KO", "PEP"):
+            r = self.client.delete(f"/api/positions/{pids[activo]}")
+            self.assertEqual(r.status_code, 200, r.text)
+            tokens.append(r.json()["undo_token"])
+        for t in tokens:
+            j = self.conn.execute("SELECT id, payload_json FROM deleted_ops_journal WHERE token=?",
+                                  (t,)).fetchone()
+            p = _json.loads(j["payload_json"])
+            p.pop("aportado", None)
+            self.conn.execute("UPDATE deleted_ops_journal SET payload_json=? WHERE id=?",
+                              (_json.dumps(p), j["id"]))
+        self.conn.commit()
+        r = self.client.post(f"/api/operations/undo/{tokens[-1]}")
+        self.assertEqual(r.status_code, 200, r.text)
+        servido = self._aportado_servido()
+        mal = {d: servido.get(d) for d in esperado
+               if d >= "2026-02-10" and abs((servido.get(d) or 0) - 3000.0) > 0.01}
+        self.assertEqual(mal, {}, "el deshacer viejo en una cuenta vacía no devolvió PEP")
+
+    def test_un_cero_firmado_por_el_navegador(self):
+        """Ceros con firma 'browser' (el Dashboard también mide): cuentan como los del
+        cron."""
+        self._import(_csv("2026-02-05,RETIRO,IBKR,,,,100000,,,0,USD,"))
+        self._subir("2026-02-05", "2026-03-31", -100000)
+        self.conn.execute("UPDATE snapshots SET source='browser' WHERE user_id=? "
+                          "AND net_deposited=0", (self.uid,))
+        self.conn.commit()
+        r = self.client.delete(f"/api/movements/tx-{self._tx('WITHDRAW', '2026-02-05')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el retiro con ceros del navegador")
+
+    def test_el_resumen_mensual_editado_a_mano_no_es_lo_borrado(self):
+        """Febrero editado a mano en el resumen mensual (pestaña Global): la fila dice
+        0 depósitos y lo importado dice 10.000. Borrar un dividendo de diciembre: el
+        recálculo de la cascada recompone febrero, y eso no es lo borrado — las cuentas
+        de antes se leen recompuestas igual (antes: 59 fotos con 10.000 de más)."""
+        r = self.conn.execute("SELECT id FROM monthly_entries WHERE user_id=? AND broker='global' "
+                              "AND year=2026 AND month=2", (self.uid,)).fetchone()
+        self.conn.execute("UPDATE monthly_entries SET deposits=0 WHERE id=?", (r["id"],))
+        self.conn.commit()
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DIVIDEND', '2025-12-10')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("dividendo con febrero editado a mano")
+
+    def test_si_no_se_pueden_recomponer_las_cuentas_de_antes(self):
+        """Si recomponer las cuentas de antes falla, se leen como están. Y si así
+        FALTAN (las filas 'global' borradas a mano), en un borrado eso no es "antes
+        había 0": no se toca ninguna foto (le adjudicaba al borrado de un dividendo
+        todo lo aportado)."""
+        self.conn.execute("DELETE FROM monthly_entries WHERE user_id=? AND broker='global'",
+                          (self.uid,))
+        self.conn.commit()
+        real = main._recalc_pnl_realized_from_ops
+        llamadas = []
+
+        def _falla_la_primera(conn, uid):
+            llamadas.append(1)
+            if len(llamadas) == 1:      # la de `_foto_contable`; la cascada recalcula bien
+                raise RuntimeError("simulado: no se pudieron recomponer las cuentas")
+            return real(conn, uid)
+        with mock.patch.object(main, "_recalc_pnl_realized_from_ops",
+                               side_effect=_falla_la_primera):
+            r = self.client.delete(f"/api/movements/tx-{self._tx('DIVIDEND', '2025-12-10')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertGreaterEqual(len(llamadas), 2, "la foto de antes no intentó recomponer")
+        self._assert_dia_conservado("sin poder recomponer, con las filas global faltantes")
+
+    def test_un_mes_del_resumen_borrado_a_mano_no_es_lo_borrado(self):
+        """Lo mismo con la fila 'global' de febrero borrada (el tacho del resumen)."""
+        self.conn.execute("DELETE FROM monthly_entries WHERE user_id=? AND broker='global' "
+                          "AND year=2026 AND month=2", (self.uid,))
+        self.conn.commit()
+        r = self.client.delete(f"/api/movements/tx-{self._tx('DIVIDEND', '2025-12-10')}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("dividendo con febrero borrado del resumen")
 
     # ── 7. sin fecha de arranque no se re-estampa nada ───────────────────────
     def test_sin_fecha_de_arranque_no_reescribe_nada(self):

@@ -14909,10 +14909,31 @@ def _foto_contable(conn, uid: int) -> dict:
     pone en fila a las puertas de borrado entre sí (y al login de ese usuario por
     esos milisegundos), pero un import o un depósito pasan igual; si Postgres se
     prende, hace falta un turno por usuario que tomen todos los que escriben las
-    cuentas (`pg_advisory_xact_lock`)."""
+    cuentas (`pg_advisory_xact_lock`).
+
+    ⚠️ Y SE LEE RECOMPUESTA DESDE SUS FUENTES, COMO LA VA A RECOMPONER LA CASCADA.
+    La de después sale del recálculo (`_recalc_pnl_realized_from_ops`); si la de
+    antes se leyera tal como está, cualquier desfase previo entre `monthly_entries`
+    y lo importado/cargado —un renglón del resumen mensual editado o borrado a mano
+    desde la pestaña Global— se le adjudicaba al borrado: borrar un dividendo
+    después de editar febrero le sumaba 10.000 a 59 fotos. Se recompone dentro de
+    un punto de guardado que se deshace enseguida: no queda escrito nada. Si el
+    recálculo falla, se lee como está (lo de antes)."""
     _tomar_turno(conn, uid)
     import twr as _twr
-    return {"canon": _twr.netdep_canonico(conn, uid)}
+    conn.execute("SAVEPOINT foto_contable")
+    try:
+        try:
+            _repair_monthly_chain(conn, uid, "global")
+            _recalc_pnl_realized_from_ops(conn, uid)
+        except Exception:
+            log.exception("foto contable: no se pudo recomponer uid=%s — se lee como está", uid)
+            conn.execute("ROLLBACK TO SAVEPOINT foto_contable")
+        canon = _twr.netdep_canonico(conn, uid)
+    finally:
+        conn.execute("ROLLBACK TO SAVEPOINT foto_contable")
+        conn.execute("RELEASE SAVEPOINT foto_contable")
+    return {"canon": canon}
 
 
 def _tomar_turno(conn, uid: int) -> None:
@@ -14973,13 +14994,17 @@ def _entrada_de_importado(conn, batch_id, fila=None) -> Optional[dict]:
 def _neto_de_imports(conn, uid: int, lotes, fila=None) -> float:
     """Cuánto le movieron a lo aportado los imports `lotes`, en dólares (depósitos
     menos retiros, con la misma conversión que el recálculo) — tal como lo muestran
-    HOY las fotos: lo vigente más `fila`, la que se está borrando ahora. Lo borrado
-    ANTES ya se le sacó a las fotos que lo tenían, así que contarlo daba un salto que
-    ninguna foto muestra (el segundo borrado del mismo resumen restaba de más)."""
+    HOY las fotos: lo vigente más `fila` (la que se está borrando ahora y sus
+    gemelos ya borrados, ver abajo). Lo borrado ANTES ya se le sacó a las fotos que
+    lo tenían, así que contarlo daba un salto que ninguna foto muestra (el segundo
+    borrado del mismo resumen restaba de más). Salvo un GEMELO borrado antes: se
+    llevó la capa de OTRO import del grupo (`_entrada_de_movimiento_importado`), y
+    las fotos todavía muestran la suya."""
     lotes = [l for l in (lotes or []) if l is not None]
     if not lotes:
         return 0.0
     tcb = _config_tc_blue(conn, uid)
+    filas = [f for f in (fila if isinstance(fila, (list, tuple)) else [fila]) if f is not None] or [-1]
     ph = ",".join("?" * len(lotes))
     r = conn.execute(
         f"""SELECT COALESCE(SUM(CASE WHEN n.operation_type='DEPOSIT' THEN 1 ELSE -1 END
@@ -14987,8 +15012,8 @@ def _neto_de_imports(conn, uid: int, lotes, fila=None) -> float:
               FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id
              WHERE ib.user_id=? AND n.batch_id IN ({ph})
                AND n.operation_type IN ('DEPOSIT','WITHDRAW')
-               AND (n.excluded_at IS NULL OR n.id=?)""",
-        (tcb, tcb, uid, *lotes, fila if fila is not None else -1)).fetchone()
+               AND (n.excluded_at IS NULL OR n.id IN ({",".join("?" * len(filas))}))""",
+        (tcb, tcb, uid, *lotes, *filas)).fetchone()
     return float(r["s"] or 0)
 
 
@@ -15014,8 +15039,9 @@ def _entrada_de_movimiento_importado(conn, uid: int, tx) -> Optional[dict]:
     import dejaba un hueco donde el depósito sí existió; restar desde el gemelo vivo
     más nuevo fallaba al borrar el segundo (la capa del medio quedaba para siempre).
 
-    Devuelve {"dia", "lote", "fila"}: el día de la capa, el import que la trajo y la
-    fila que se borra."""
+    Devuelve {"dia", "lote", "fila"}: el día de la capa, el import que la trajo y las
+    filas cuyo monto todavía muestran las fotos (la que se borra y sus gemelos ya
+    borrados, ver `_neto_de_imports`)."""
     row = conn.execute("SELECT confirmed_at FROM import_batches WHERE id=?",
                        (tx["batch_id"],)).fetchone()
     propia = _dia_art_de_confirmacion(row["confirmed_at"] if row else None)
@@ -15025,8 +15051,9 @@ def _entrada_de_movimiento_importado(conn, uid: int, tx) -> Optional[dict]:
     # = (día, lote)). Los dos "cuándo" son UTC de `datetime('now')`: se ordenan como
     # texto.
     eventos = [(str(row["confirmed_at"]), 0, (propia, tx["batch_id"]))]
+    borrados = []
     for g in conn.execute(
-            """SELECT ib.confirmed_at AS c, n.excluded_at AS x, n.batch_id AS b
+            """SELECT ib.confirmed_at AS c, n.excluded_at AS x, n.batch_id AS b, n.id AS i
                  FROM import_normalized_tx n
                  JOIN import_batches ib ON ib.id = n.batch_id
                 WHERE ib.user_id=? AND ib.status='confirmed' AND n.id != ?
@@ -15040,6 +15067,7 @@ def _entrada_de_movimiento_importado(conn, uid: int, tx) -> Optional[dict]:
         eventos.append((str(g["c"]), 0, (e, g["b"])))
         if g["x"] is not None:
             eventos.append((str(g["x"]), 1, None))
+            borrados.append(g["i"])
     capas = []
     for _, tipo, capa in sorted(eventos, key=lambda t: (t[0][:19].replace("T", " "), t[1])):
         if tipo == 0:
@@ -15047,7 +15075,8 @@ def _entrada_de_movimiento_importado(conn, uid: int, tx) -> Optional[dict]:
         elif capas:
             capas.remove(max(capas, key=lambda c: c[0]))
     dia, lote = max(capas, key=lambda c: c[0]) if capas else (propia, tx["batch_id"])
-    return {"dia": _primer_dia_en_las_fotos(tx["date"], dia), "lote": lote, "fila": tx["id"]}
+    return {"dia": _primer_dia_en_las_fotos(tx["date"], dia), "lote": lote,
+            "fila": [tx["id"], *borrados]}
 
 
 def _flujos_importados_vigentes(conn, uid: int) -> list:
@@ -15135,13 +15164,14 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
        ninguna foto → el deshacer tampoco. Un journal de antes de este cambio no lo
        trae → desde la fecha del borrado, con el recorte de B.3.
 
-    Una foto con aportado 0 no midió el aportado (filas de antes de que existiera
-    la columna, que nace en 0) — salvo que las cuentas de ese mes también den 0
-    (alguien que retiró todo lo que puso): las otras no cuentan como prueba de nada
-    y no se corrigen. Y unas cuentas VACÍAS valen 0, no "no sé": borrar lo único
+    Una foto con aportado 0 cuenta si tiene firma (`source`, desde agosto de 2026,
+    cuando el aportado ya se medía) o si las cuentas de ese mes también dan 0
+    (alguien que retiró todo lo que puso). Las otras —filas de antes de que
+    existiera la columna, que nace en 0— no midieron nada: no cuentan como prueba
+    de nada y no se corrigen. Y unas cuentas VACÍAS valen 0, no "no sé": borrar lo único
     que había le saca todo a las fotos que lo tenían.
 
-    LÍMITES CONOCIDOS (medidos; ninguno peor que re-anclar):
+    LÍMITES CONOCIDOS (medidos; salvo donde se dice, ninguno peor que re-anclar):
     · B: lo cargado a mano no guarda cuándo se cargó. Varios depósitos a mano del
       mismo mes viven sumados en un renglón y `me-` los borra juntos: ninguna foto
       saltó el total, así que entre otro flujo del mes y el último a mano no se
@@ -15158,12 +15188,11 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     · A: la foto del día del import sacada ANTES del import se reconoce porque no
       muestra el salto del import y la siguiente sí. Si al día siguiente entra
       además otro flujo que no es un import (un depósito a mano), la siguiente no
-      muestra el salto limpio y esa foto queda con lo borrado (1 foto).
+      muestra el salto limpio y esa foto queda con lo borrado (1 foto; re-anclar
+      daba 0 en ese caso puntual y 5 o más en el resto de los de esta regla).
     · Esos tres re-estampadores siguen re-anclando
       (`_recompute_snapshots_netdep_for_user`): corridos con un flujo que la
       última foto del mes no vio, ese mes vuelve a quedar plano.
-    · `antes` se saca antes del recálculo: si `monthly_entries` venía desfasado
-      de sus fuentes, ese desfasaje se aplica junto con lo borrado.
     """
     import twr as _twr
     todas = conn.execute(
@@ -15262,9 +15291,17 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
             def _lo_mostro(i, neto):
                 return abs(_salto_de(i) - neto) <= max(0.01, 0.005 * abs(neto))
             siguiente = str(fotos[idx[1]]["date"])[:10]
-            # Si el salto de la siguiente lo explica OTRO import que entró justo ahí
-            # (uno del día siguiente del mismo monto), no es éste.
-            if siguiente not in _fotos_con_importado_que_entra(conn, uid, fotos) and any(
+            # Si el salto de la siguiente lo explica lo que importaron OTROS imports
+            # confirmados después del día de éste y hasta esa foto (uno del día
+            # siguiente del mismo monto), no es éste. Por el monto del tramo y no por
+            # "entró alguno": con el cron de las 00:00, uno del día siguiente aparece
+            # recién en la foto de dos días después.
+            _otros = [r["id"] for r in conn.execute(
+                "SELECT id, confirmed_at FROM import_batches WHERE user_id=? AND status='confirmed'",
+                (uid,)).fetchall()
+                if str(dia_entrada)[:10] < (_dia_art_de_confirmacion(r["confirmed_at"]) or "") <= siguiente]
+            _neto_otros = _neto_de_imports(conn, uid, _otros)
+            if not (abs(_neto_otros) > 0.01 and _lo_mostro(idx[1], _neto_otros)) and any(
                     abs(n) > 0.01 and not _lo_mostro(idx[0], n) and _lo_mostro(idx[1], n)
                     for n in netos):
                 idx = idx[1:]
@@ -15291,23 +15328,40 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     else:
         # B. La foto lo dice.
         hoy = _iso_today()
-        cierre = {}
+        cierre, diario = {}, {}
         for s in fotos:
             if str(s["date"])[:10] < hoy:
                 cierre[str(s["date"])[:7]] = s
+                if (s["source"] or "") != "mtm_backfill":
+                    diario[str(s["date"])[:7]] = s
         m0 = cambiados[0]
         objetivo = -delta[m0]   # cuánto se movió el aportado el día que lo borrado entró
-        m_visto = None
+
+        def _no_lo_tenia(f, ym):
+            dc = str(f["date"])[:10]
+            falta = c0(f"{ym}-01") - _entro_despues(dc, ym) - float(f["net_deposited"])
+            return (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
+        # Un cierre RECONSTRUIDO (`mtm_backfill`) no prueba desde cuándo lo tenían las
+        # fotos diarias: cualquier import posterior lo reescribe con todo lo cargado
+        # (un depósito a mano de diciembre cargado en marzo hacía restar desde enero:
+        # 63 fotos). La prueba es la última foto diaria del mes; un cierre
+        # reconstruido que lo tiene se corrige sólo él (como en A). Sin ninguna foto
+        # diaria que lo tenga, se vuelve a la regla de siempre.
+        m_visto, reconstruidos = None, []
         for ym in meses:
             if ym < m0 or ym not in cierre:
                 continue
-            dc = str(cierre[ym]["date"])[:10]
-            falta = (c0(f"{ym}-01") - _entro_despues(dc, ym)
-                     - float(cierre[ym]["net_deposited"]))
-            no_lo_tenia = (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
-            if not no_lo_tenia:
-                m_visto = ym
-                break
+            if (cierre[ym]["source"] or "") == "mtm_backfill":
+                if not _no_lo_tenia(cierre[ym], ym):
+                    reconstruidos.append(ym)
+                if ym not in diario or _no_lo_tenia(diario[ym], ym):
+                    continue
+            elif _no_lo_tenia(cierre[ym], ym):
+                continue
+            m_visto = ym
+            break
+        if m_visto is None and reconstruidos:
+            m_visto, reconstruidos = reconstruidos[0], []
         if m_visto is None:
             return [], None
         ini = max(desde, f"{m_visto}-01")
@@ -15324,7 +15378,7 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
                 break
         if inicio is None:
             inicio, corredor_en = ini, m_visto
-        previos = set()
+        previos = {ym for ym in reconstruidos if ym < m_visto}
 
     brutos1 = _twr.flujos_brutos_por_mes(conn, uid) if corredor_en else {}
     cambios, hechos = [], {}
