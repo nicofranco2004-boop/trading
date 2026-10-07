@@ -220,7 +220,12 @@ def _es_fin_de_mes(fecha: str) -> bool:
 # deducción. La heurística de abajo queda sólo para las filas anteriores a esa
 # columna, que nunca la van a tener.
 _POR_SOURCE = {"cron": MEDICION, "browser": INTRADIA, "import": SINTETICO_COSTO,
-               "mtm_backfill": RECONSTRUIDO}
+               "mtm_backfill": RECONSTRUIDO,
+               # Una medición que dejó de describir la cuenta (se borró una compra o
+               # venta anterior y no se pudo corregir con su composición): no entra
+               # al certero. La escribe `main._corregir_mediciones`; el deshacer le
+               # devuelve su source original.
+               "medicion_vieja": INDETERMINADO}
 
 
 def clasificar_fila(row, tenia_posiciones: bool) -> str:

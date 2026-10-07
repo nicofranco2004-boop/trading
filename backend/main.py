@@ -15166,6 +15166,199 @@ def _is_synthetic_seed_row(src) -> bool:
             or notes.startswith("Tenencia — aporte inicial sintético"))
 
 
+# ─── Las fotos MEDIDAS después de una compra o venta borrada ──────────────────
+# Las fotos que el cron saca cada noche (y la del Dashboard) son mediciones: el
+# valor a mercado de lo que la persona tenía ESE día. Por regla no se recalculan
+# —no hay precios diarios para hacerlo—, y para un depósito o un dividendo
+# borrado está bien: la plata estuvo o no estuvo, y eso lo corrige el aportado.
+# Una COMPRA o VENTA borrada es otra cosa: la foto contó un activo que, según la
+# contabilidad de ahora, nunca estuvo (o le faltan acciones que nunca se
+# vendieron). Medido en una cuenta de laboratorio, borrar una compra de MSFT dejaba
+# las fotos medidas entre US$ 1.000 y 1.400 arriba: el certero de septiembre a
+# diciembre daba −9,8 % (real +0,5 %) y una caída máxima de −11,7 % que no existió.
+#
+# Decisión de Nico (2026-10-07, opción A): se corrigen con la composición que la
+# MISMA foto midió. Cada foto guarda el valor de cada activo ese día; si el día d
+# la persona tenía Q unidades de MSFT según la contabilidad de antes y Q' según la
+# de ahora, el valor de MSFT en la foto pasa a ser valor × Q'/Q (el precio sigue
+# siendo el que se midió ese día), y la plata que la operación borrada movió vuelve
+# al efectivo de esa foto. Cuando eso no se puede hacer con certeza, la foto sale
+# del certero (opción B) en vez de quedarse con un número inventado:
+#   · no tiene composición (las del Dashboard, las viejas sin detalle);
+#   · el activo vuelve a aparecer y la foto no tenía su precio (se borró la VENTA
+#     de algo que se había vendido entero);
+#   · el activo tiene lotes cargados a mano (la contabilidad importada no sabe
+#     cuántas unidades había);
+#   · un broker en pesos y la foto sin dólar del día.
+# Lo que se cambió queda en el journal del borrado y el deshacer lo revierte exacto.
+_MEDICION_VIEJA = "medicion_vieja"   # twr la clasifica INDETERMINADO: fuera del certero
+
+
+def _corregir_mediciones(conn, uid: int, eventos: list) -> list:
+    """Corrige las fotos medidas posteriores a operaciones que se sacan o vuelven.
+
+    `eventos`: [{fecha, broker, cash, asset, qty}] con lo que el cambio le hace a la
+    cuenta desde `fecha`: `cash` en la moneda del broker (+ si vuelve plata) y `qty`
+    en unidades de `asset` (− si se saca una compra). Tiene que llamarse con la
+    contabilidad YA cambiada (lápidas puestas o sacadas). Devuelve el registro para
+    `_deshacer_correccion_mediciones`."""
+    import json as _json
+    import twr as _twr
+    ev = [e for e in eventos if e.get("fecha") and (e.get("cash") or e.get("qty"))]
+    if not ev:
+        return []
+    t0 = min(str(e["fecha"])[:10] for e in ev)
+    filas = conn.execute(
+        "SELECT date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage, "
+        "base, apto FROM snapshots WHERE user_id=? ORDER BY date", (uid,)).fetchall()
+    if not filas:
+        return []
+    clases = _twr.clasificar_serie(filas, _twr.primera_fecha_con_posiciones(conn, uid))
+    monedas = {r["name"]: (r["currency"] or "USDT").upper() for r in conn.execute(
+        "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()}
+    activos = sorted({e["asset"] for e in ev if e.get("asset") and e.get("qty")})
+    # Unidades de AHORA de cada activo tocado, por fecha (todas las cuentas juntas,
+    # igual que la composición de la foto, que suma el activo entre brokers).
+    movs = {a: [] for a in activos}
+    manuales = set()
+    if activos:
+        _ph = ",".join("?" * len(activos))
+        for r in conn.execute(
+                f"SELECT n.asset_symbol AS a, substr(n.date,1,10) AS d, n.operation_type AS op, "
+                f"n.quantity AS q FROM {TX_VIVAS} WHERE b.user_id=? "
+                f"AND n.operation_type IN ('BUY','SELL') AND n.asset_symbol IN ({_ph})",
+                (uid, *activos)).fetchall():
+            movs[r["a"]].append((r["d"], (1.0 if r["op"] == "BUY" else -1.0) * float(r["q"] or 0)))
+        manuales = {r["asset"] for r in conn.execute(
+            f"""SELECT DISTINCT asset FROM positions
+                 WHERE user_id=? AND COALESCE(is_cash,0)=0 AND asset IN ({_ph})
+                   AND id NOT IN (SELECT position_id FROM import_op_links
+                                   WHERE position_id IS NOT NULL)""",
+            (uid, *activos)).fetchall()}
+
+    registro = []
+    for r, clase in zip(filas, clases):
+        d = str(r["date"])[:10]
+        if d < t0 or clase not in (_twr.MEDICION, _twr.INTRADIA):
+            continue
+        hasta = [e for e in ev if str(e["fecha"])[:10] <= d]
+        if not hasta:
+            continue
+        fx = r["fx_to_usd_blue"]
+        corregible = True
+        d_cash = 0.0
+        for e in hasta:
+            if not e.get("cash"):
+                continue
+            if monedas.get(e.get("broker") or "", "USDT") == "ARS":
+                if not fx:
+                    corregible = False
+                    break
+                d_cash += float(e["cash"]) / float(fx)
+            else:
+                d_cash += float(e["cash"])
+        dq = {}
+        for e in hasta:
+            if e.get("asset") and e.get("qty"):
+                dq[e["asset"]] = dq.get(e["asset"], 0.0) + float(e["qty"])
+        dq = {a: q for a, q in dq.items() if abs(q) > 1e-9}
+        try:
+            hold = _json.loads(r["holdings_json"]) if r["holdings_json"] else None
+        except (TypeError, ValueError):
+            hold = None
+        d_hold = {}
+        if corregible and dq:
+            if hold is None or set(dq) & manuales:
+                corregible = False
+            else:
+                valores = {h.get("asset"): float(h.get("value_usd") or 0) for h in hold}
+                for a, q in dq.items():
+                    ahora = sum(x for (fd, x) in movs.get(a, []) if fd <= d)
+                    antes = ahora - q
+                    v = valores.get(a)
+                    if antes > 1e-9 and v is not None:
+                        d_hold[a] = v * max(ahora, 0.0) / antes - v
+                    elif antes <= 1e-9 and ahora <= 1e-9:
+                        continue                      # ni lo tenía ni lo tiene
+                    else:
+                        corregible = False            # aparece sin precio medido
+                        break
+        if not corregible:
+            registro.append({"date": r["date"], "source": r["source"],
+                             "apto": r["apto"], "base": r["base"]})
+            conn.execute("UPDATE snapshots SET source=?, apto=0 WHERE user_id=? AND date=?",
+                         (_MEDICION_VIEJA, uid, r["date"]))
+            continue
+        d_total = sum(d_hold.values()) + d_cash
+        if abs(d_total) < 1e-9 and not d_hold:
+            continue
+        # La composición se reescribe sólo si cambió algún activo: `holdings_json`
+        # también decide la CLASE de la foto (con composición = medición del cron),
+        # así que tocarla por un cambio de pura plata podía sacarla de la línea.
+        holdings_nuevo = r["holdings_json"]
+        if d_hold:
+            nuevo = []
+            for h in hold:
+                a = h.get("asset")
+                v = round(float(h.get("value_usd") or 0) + d_hold.get(a, 0.0), 2)
+                if abs(v) > 0.005:
+                    nuevo.append({**h, "value_usd": v})
+            holdings_nuevo = _json.dumps(nuevo)        # "[]" si se fue todo: sigue medida
+        conn.execute(
+            "UPDATE snapshots SET total_value = total_value + ?, holdings_json = ? "
+            "WHERE user_id=? AND date=?",
+            (round(d_total, 2), holdings_nuevo, uid, r["date"]))
+        registro.append({"date": r["date"], "d_total": round(d_total, 2),
+                         "d_hold": {a: round(x, 2) for a, x in d_hold.items()}})
+    return registro
+
+
+def _guardar_correccion_mediciones(conn, uid: int, token: str, registro: list) -> None:
+    """Suma el registro de `_corregir_mediciones` al journal del borrado `token`."""
+    import json as _json
+    if not registro:
+        return
+    for j in conn.execute("SELECT id, payload_json FROM deleted_ops_journal "
+                          "WHERE user_id=? AND token=?", (uid, token)).fetchall():
+        p = _json.loads(j["payload_json"])
+        p["mediciones"] = (p.get("mediciones") or []) + registro
+        conn.execute("UPDATE deleted_ops_journal SET payload_json=? WHERE id=?",
+                     (_json.dumps(p), j["id"]))
+        return
+
+
+def _deshacer_correccion_mediciones(conn, uid: int, registro) -> None:
+    """Revierte lo que hizo `_corregir_mediciones` (el deshacer de un borrado)."""
+    import json as _json
+    for e in registro or []:
+        r = conn.execute("SELECT total_value, holdings_json FROM snapshots "
+                         "WHERE user_id=? AND date=?", (uid, e["date"])).fetchone()
+        if r is None:
+            continue
+        if "source" in e:
+            conn.execute("UPDATE snapshots SET source=?, apto=?, base=? WHERE user_id=? AND date=?",
+                         (e["source"], e.get("apto"), e.get("base"), uid, e["date"]))
+            continue
+        holdings_nuevo = r["holdings_json"]
+        d_hold = dict(e.get("d_hold") or {})
+        if d_hold:
+            try:
+                hold = _json.loads(r["holdings_json"]) if r["holdings_json"] else []
+            except (TypeError, ValueError):
+                hold = []
+            nuevo = []
+            for h in hold:
+                a = h.get("asset")
+                nuevo.append({**h, "value_usd": round(
+                    float(h.get("value_usd") or 0) - d_hold.pop(a, 0.0), 2)})
+            for a, x in d_hold.items():               # el activo se había ido entero
+                nuevo.append({"asset": a, "value_usd": round(-x, 2)})
+            holdings_nuevo = _json.dumps([h for h in nuevo if abs(h["value_usd"]) > 0.005])
+        conn.execute("UPDATE snapshots SET total_value = total_value - ?, holdings_json = ? "
+                     "WHERE user_id=? AND date=?",
+                     (e.get("d_total") or 0.0, holdings_nuevo, uid, e["date"]))
+
+
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
     """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
@@ -17161,6 +17354,13 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     tc_blue = _config_tc_blue(conn, uid)
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
 
+    # 4b) Las fotos medidas desde la venta: vuelven las acciones, sale la plata.
+    #     DESPUÉS del rebuild: antes, la posición del activo seguía sin su vínculo
+    #     al import y parecía cargada a mano (y esas no se corrigen).
+    _guardar_correccion_mediciones(conn, uid, token, _corregir_mediciones(conn, uid, [{
+        "fecha": src["date"], "broker": broker, "cash": -reversed_cash,
+        "asset": asset, "qty": float(src["quantity"] or 0)}]))
+
     # 5) Cascada de agregados + snapshots — lo que el borrado viejo NO hacía.
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
 
@@ -17282,6 +17482,11 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     # 4) Re-derivar el activo (el lote desaparece) + cascada.
     tc_blue = _config_tc_blue(conn, uid)
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
+    # Las fotos medidas desde la compra: sale el activo, vuelve la plata (después
+    # del rebuild, por la misma razón que en la venta).
+    _guardar_correccion_mediciones(conn, uid, token, _corregir_mediciones(conn, uid, [{
+        "fecha": src["date"], "broker": broker, "cash": cash_reversed,
+        "asset": asset, "qty": -float(src["quantity"] or 0)}]))
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
 
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
@@ -17370,6 +17575,7 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
             cash = float(p.get("cash_reversed") or 0)
             if cash:
                 _adjust_broker_cash(conn, uid, p["broker"], cash)
+            _deshacer_correccion_mediciones(conn, uid, p.get("mediciones"))
             tc_blue = _config_tc_blue(conn, uid)
             _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
             _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
@@ -17515,6 +17721,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     #    COMPRA debitó invested+fees, con invested=gross_amount o reconciled·qty si
     #    gross es NULL (persister:513). VENTA acreditó reconciled·qty−fees si >0.
     cash_by_broker: dict = {}
+    eventos: list = []          # lo mismo, fila por fila y con su fecha: fotos medidas
 
     def _rev(broker_name: str, delta: float) -> None:
         if delta and broker_name:
@@ -17538,11 +17745,16 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
                     r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"]) or 0) \
                     * float(r["quantity"] or 0)
             _rev(b, invested + float(r["fees"] or 0))
+            eventos.append({"fecha": r["date"], "broker": b, "cash": invested + float(r["fees"] or 0),
+                            "asset": r["asset_symbol"] or asset, "qty": -float(r["quantity"] or 0)})
         else:
             _ueff = _import_persister.reconciled_unit_price(
                 r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"])
             proceeds = float(_ueff or 0) * float(r["quantity"] or 0) - float(r["fees"] or 0)
             _rev(b, -proceeds if proceeds > 0 else 0.0)
+            eventos.append({"fecha": r["date"], "broker": b,
+                            "cash": -proceeds if proceeds > 0 else 0.0,
+                            "asset": r["asset_symbol"] or asset, "qty": float(r["quantity"] or 0)})
         conn.execute(
             "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
             (r["batch_id"], r["raw_row_id"]))
@@ -17552,6 +17764,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     #     re-deriva) + su link. El snapshot ya está guardado para el undo.
     for t in rf_tx_rows:
         _rev(t["broker"] or "", -float(t["gross_amount"] or 0))
+        eventos.append({"fecha": t["date"], "broker": t["broker"] or "",
+                        "cash": -float(t["gross_amount"] or 0)})
     for o in rf_ops:
         conn.execute(
             "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
@@ -17565,6 +17779,9 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     for pr in pairs:
         _import_rebuild.rebuild_pair_asset(conn, uid, pr[0], asset, tc_blue=tc_blue)
 
+    # 3b) Las fotos medidas desde la primera operación: sale el activo y su plata.
+    _mediciones = _corregir_mediciones(conn, uid, eventos)
+
     # 4) Journal para deshacer (con los snapshots de renta fija para recrearlas).
     token = _secrets.token_hex(8)
     conn.execute(
@@ -17574,7 +17791,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
         (uid, token, "imported_asset",
          _json.dumps({"tx_ids": all_tx_ids, "cash_by_broker": cash_by_broker, "asset": asset,
                       "pairs": pairs, "brokers": sorted(brokers_touched),
-                      "rf_ops": rf_op_snaps}),
+                      "rf_ops": rf_op_snaps, "mediciones": _mediciones}),
          since_date, (sorted(brokers_touched)[0] if brokers_touched else "")),
     )
 
@@ -17660,6 +17877,7 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
             for b, delta in (p.get("cash_by_broker") or {}).items():
                 if delta:
                     _adjust_broker_cash(conn, uid, b, -float(delta))   # reversar lo que aplicó el delete
+            _deshacer_correccion_mediciones(conn, uid, p.get("mediciones"))
             tc_blue = _config_tc_blue(conn, uid)
             for pr in pairs:
                 _import_rebuild.rebuild_pair_asset(conn, uid, pr[0], asset, tc_blue=tc_blue)

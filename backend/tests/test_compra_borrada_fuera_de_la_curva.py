@@ -152,5 +152,143 @@ class LaVentaBorrada(_ConDosActivos):
         self._cada_foto()
 
 
+# ─── El certero: las fotos MEDIDAS después de la operación borrada ───────────
+# Las fotos que el cron saca cada noche no se reconstruyen: son el valor a mercado
+# de ese día. Antes del arreglo, borrar la compra de MSFT las dejaba con MSFT
+# adentro: el certero de septiembre a diciembre daba −9,8 % (real +0,5 %) y una
+# caída máxima de −11,7 % que no existió. Ahora se corrigen con la composición que
+# la misma foto midió, y la que no se puede corregir sale del certero.
+# (Medido en esta misma cuenta, ventana del 1/9 al 31/12: −9,83 % antes, +0,48 % real.)
+MEDIDAS = ("2025-08-15", "2025-08-31", "2025-09-15", "2025-09-30",
+           "2025-10-15", "2025-10-31", "2025-11-15", "2025-11-30")
+
+
+class _ConFotosMedidas(_ConDosActivos):
+
+    def setUp(self):
+        super().setUp()
+        conn = main.get_db()
+        try:
+            for d in MEDIDAS:
+                v, n = esperado(d)                   # lo que había ese día, con MSFT
+                ym = d[:7]
+                aapl = 10 if d < "2025-07-10" else 5
+                hold = [{"asset": "AAPL", "value_usd": aapl * PRECIO["AAPL"][ym]},
+                        {"asset": "MSFT", "value_usd": 10 * PRECIO["MSFT"][ym]}]
+                conn.execute("DELETE FROM snapshots WHERE user_id=? AND date=?", (self.uid, d))
+                conn.execute(
+                    "INSERT INTO snapshots (user_id, date, total_value, total_invested, "
+                    "net_deposited, fx_to_usd_blue, holdings_json, source, base, apto) "
+                    "VALUES (?,?,?,0,?,1400.0,?,'cron','mercado',1)",
+                    (self.uid, d, v, n, json.dumps(hold)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _medidas(self):
+        conn = main.get_db()
+        try:
+            return {r["date"]: (r["total_value"], r["source"],
+                                {h["asset"]: h["value_usd"] for h in json.loads(r["holdings_json"] or "[]")})
+                    for r in conn.execute(
+                        f"SELECT date, total_value, source, holdings_json FROM snapshots "
+                        f"WHERE user_id=? AND date IN ({','.join('?' * len(MEDIDAS))})",
+                        (self.uid, *MEDIDAS)).fetchall()}
+        finally:
+            conn.close()
+
+    def _certero(self, desde=None, hasta=None):
+        import twr
+        conn = main.get_db()
+        try:
+            r = twr.curva_indexada(conn, self.uid, desde, hasta, modo="certero")
+            return (None if r["twr"] is None else round(r["twr"] * 100, 2),
+                    None if r["drawdown_maximo"] is None else round(r["drawdown_maximo"] * 100, 2))
+        finally:
+            conn.close()
+
+
+class ElCerteroSinLaCompraBorrada(_ConFotosMedidas):
+
+    def test_borrar_la_compra_corrige_cada_foto_medida(self):
+        self._pedir("delete", f"/api/movements/tx-{self._tx('BUY', '2025-03-05')}")
+        for d, (v, src, hold) in self._medidas().items():
+            self.assertEqual(v, esperado(d, sin_msft=True)[0], d)   # MSFT afuera, plata adentro
+            self.assertEqual(src, "cron", d)                         # sigue siendo medición
+            self.assertNotIn("MSFT", hold, d)
+        # De septiembre a diciembre: de la foto del 15/9 (10.500) a 10.550. Antes del
+        # arreglo, con MSFT adentro de las medidas: −9,83 %.
+        self.assertEqual(self._certero("2025-09-01", "2025-12-31")[0], 0.48)
+        self.assertEqual(self._certero()[1], 0.0)                   # sin caída inventada
+
+    def test_borrar_la_venta_corrige_cada_foto_medida(self):
+        # Sin la venta de julio, las 5 AAPL siguen (al precio que midió la foto) y la
+        # plata de la venta no entró.
+        self._pedir("delete", f"/api/movements/tx-{self._tx('SELL', '2025-07-10')}")
+        for d, (v, src, hold) in self._medidas().items():
+            self.assertEqual(v, esperado(d, sin_venta=True)[0], d)
+            self.assertEqual(hold["AAPL"], 10 * PRECIO["AAPL"][d[:7]], d)
+
+    def test_deshacer_devuelve_las_fotos_exactas(self):
+        antes = self._medidas()
+        r = self._pedir("delete",
+                        f"/api/positions/{self._link('BUY', '2025-03-05', 'position_id')}")
+        self.assertNotEqual(self._medidas(), antes)
+        self._pedir("post", f"/api/operations/undo/{r.json()['undo_token']}")
+        self.assertEqual(self._medidas(), antes)
+
+    def test_borrar_el_historial_y_deshacer(self):
+        antes = self._medidas()
+        r = self._pedir("delete", "/api/assets/history", params={"asset": "MSFT"})
+        for d, (v, src, hold) in self._medidas().items():
+            self.assertEqual(v, esperado(d, sin_msft=True)[0], d)
+        self._pedir("post", f"/api/assets/undo/{r.json()['undo_token']}")
+        self.assertEqual(self._medidas(), antes)
+
+    def test_una_foto_sin_composicion_sale_del_certero(self):
+        # La del Dashboard (o una vieja) no tiene el valor por activo: no hay con qué
+        # sacarle MSFT. Sale del certero en vez de quedarse con MSFT adentro; deshacer
+        # la devuelve.
+        self._sql("UPDATE snapshots SET holdings_json=NULL, source='browser' "
+                  "WHERE user_id=? AND date='2025-09-15'", self.uid)
+        r = self._pedir("delete",
+                        f"/api/positions/{self._link('BUY', '2025-03-05', 'position_id')}")
+        v, src, _ = self._medidas()["2025-09-15"]
+        self.assertEqual(src, main._MEDICION_VIEJA)
+        self.assertNotIn("2025-09-15", [f[0] for f in self._filas()])   # fuera de la línea
+        self._pedir("post", f"/api/operations/undo/{r.json()['undo_token']}")
+        self.assertEqual(self._medidas()["2025-09-15"][1], "browser")
+
+
+class ElCerteroSinLaVentaDeAlgoVendidoEntero(_ConDosActivos):
+    """Si se borra la venta de un activo que se había vendido ENTERO, las fotos
+    medidas después no tienen su precio: no se pueden corregir y salen del certero."""
+
+    def setUp(self):
+        super().setUp()
+        self._importar("2025-09-02,VENTA,IBKR,MSFT,10,360,3600,,,0,USD,")
+        conn = main.get_db()
+        try:
+            hold = [{"asset": "AAPL", "value_usd": 5 * PRECIO["AAPL"]["2025-10"]}]
+            conn.execute(
+                "INSERT INTO snapshots (user_id, date, total_value, total_invested, net_deposited, "
+                "fx_to_usd_blue, holdings_json, source, base, apto) "
+                "VALUES (?, '2025-10-15', 11650, 0, 10000, 1400.0, ?, 'cron', 'mercado', 1)",
+                (self.uid, json.dumps(hold)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_sale_del_certero(self):
+        self._pedir("delete", f"/api/movements/tx-{self._tx('SELL', '2025-09-02')}")
+        conn = main.get_db()
+        try:
+            r = conn.execute("SELECT source, apto FROM snapshots WHERE user_id=? "
+                             "AND date='2025-10-15'", (self.uid,)).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual((r["source"], r["apto"]), (main._MEDICION_VIEJA, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
