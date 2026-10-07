@@ -3078,14 +3078,21 @@ def init_db():
         # quedaron, con la misma regla (`asset_de_caja`). Sólo cambia el rótulo: la
         # valuación mira la moneda del broker. En cada boot, como el de arriba:
         # después de la primera vez no encuentra nada.
+        # El renglón va en WARNING y en CADA boot, a propósito: init_db corre antes
+        # del `logging.basicConfig(level=INFO)` de este archivo, así que un INFO acá
+        # se descarta en silencio (le pasó a la primera versión de esto, 2026-10-07:
+        # el renombre corrió y no quedó dicho cuántas). "quedan 0" es la confirmación.
+        _usdt_en_usd = ("is_cash=1 AND asset='USDT' AND EXISTS (SELECT 1 FROM brokers b "
+                        "WHERE b.user_id=positions.user_id AND b.name=positions.broker "
+                        "AND b.currency='USD')")
         try:
             n = conn.execute(
-                "UPDATE positions SET asset=? WHERE is_cash=1 AND asset='USDT' "
-                "AND EXISTS (SELECT 1 FROM brokers b WHERE b.user_id=positions.user_id "
-                "AND b.name=positions.broker AND b.currency='USD')",
+                f"UPDATE positions SET asset=? WHERE {_usdt_en_usd}",
                 (_efectivo.asset_de_caja('USD'),)).rowcount or 0
-            if n:
-                log.info("cajas de brokers en dólares renombradas de USDT a USD: %d", n)
+            quedan = conn.execute(
+                f"SELECT COUNT(*) c FROM positions WHERE {_usdt_en_usd}").fetchone()["c"]
+            log.warning("cajas USDT de brokers en dólares: %d renombradas a USD ahora, "
+                        "quedan %d", n, quedan)
         except Exception as ex:
             log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
 
