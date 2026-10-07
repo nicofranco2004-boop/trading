@@ -609,10 +609,12 @@ MOTIVO_TEXTO = {
     "medicion_dudosa": "Entre dos fotos seguidas el valor saltó más de lo que explican "
                        "tus aportes y retiros. Hasta que se revise esa foto, los tramos "
                        "de cada lado se miden solos y no se encadenan.",
-    "cadena_implausible": "Tu contabilidad reconstruida no coincide con la primera medición "
-                          "a precio real: difieren más de tres veces, y tus aportes no lo "
-                          "explican. Hasta que se revise, la parte contable no se encadena "
-                          "con la medida.",
+    "cadena_implausible": "Tu contabilidad reconstruida no coincide con lo que valía tu "
+                          "cartera a precio real, y tus aportes no lo explican. Hasta que se "
+                          "revise, esa parte contable no entra en el rendimiento.",
+    "capital_chico": "Al principio tu cuenta tenía menos de US$100. Sobre tan poco capital "
+                     "un porcentaje no describe nada, así que esos meses no entran en el "
+                     "rendimiento.",
 }
 
 
@@ -943,6 +945,69 @@ def leg_dudoso(v0: float, v1: float, flow: float):
         if ratio > SALTO_MAX_VECES or ratio < 1.0 / SALTO_MAX_VECES:
             return "salto"
     return None
+
+
+# ─── ¿Desde dónde puede arrancar la cadena contable? ──────────────────────────
+#
+# La cadena contable mide cada mes como realizado / capital AL COSTO. Desde un mes
+# en el que el costo ES lo que valía la cartera (la plata recién depositada) eso
+# telescopa: sin flujos, el producto es final / inicial y da el rendimiento de
+# verdad. Desde un mes en el que la cartera ya tenía ganancia sin vender, NO: esa
+# ganancia se cobra adentro de la ventana y cuenta como rendimiento de la ventana,
+# medida encima de un costo que no describe la plata que había. "Subestima por
+# diseño" (`excluye_no_realizado`) es cierto sólo en el primer caso.
+#
+# La copia de producción del 2026-08-16 lo mostró entero en el uid 826: una venta
+# de KO a −90 % que no existió hunde la contabilidad (9.200 → 2.217), la serie se
+# corta en ese salto y la ventana publicada ARRANCA del valor roto; después se
+# venden acciones argentinas compradas en 2020 (×6 en dólares) y cada venta suma
+# sobre ese costo hundido. Ningún mes es increíble por sí solo (`leg_dudoso` no
+# corta ninguno) y el final cierra contra la primera medición (27.745 contra
+# 29.627). Publicaba +1.240 %; la reconstrucción a precios de octubre de 2023 decía
+# que la cartera valía ≥15.477, no 2.217.
+#
+# La regla: la cadena no ARRANCA en un mes cuya reconstrucción a mercado
+# (`valor_reconstruido`, la foto que arma `scripts/backfill_historical_mtm.py`)
+# se separa del valor contable más de esta tolerancia. Sólo el arranque (ver el
+# porqué en `serie_medible`); donde no hay reconstrucción no hay con qué preguntar.
+#
+# ⚠️ 1,25 Y NO 3, Y EL NÚMERO SALIÓ DE MEDIR. Con la tolerancia del traspaso (×3)
+# la 826 seguía publicando +126 % desde nov-2024 — mes en que la contabilidad
+# decía 13.145 y la reconstrucción 33.746 (×2,6, "dentro" de ×3) — cuando la
+# cartera de ahí a hoy fue de ~33.700 a ~31.700. Cualquier ganancia acumulada
+# antes del arranque se cuela entera, así que la tolerancia es el sesgo que se
+# acepta. Sobre las 588 cuentas importadas de la copia:
+#     tolerancia      ventanas que arrancan desfasadas >25 %    ≥300 %    pierden número
+#     ×3                       55                                19             3
+#     ×1,5                     42                                18             4
+#     ×1,25                     5                                17             4
+#     ×1,1                      7                                15             4
+# Ninguna de las que pierden número tiene número certero (el estimado nunca
+# publica para menos gente que el certero).
+CONTABLE_VS_RECONSTRUIDO_MAX_VECES = 1.25
+# Sin reconstrucción en el mes de arranque no hay con qué preguntar. True = se
+# deja arrancar igual (no se puede afirmar que esté mal).
+ARRANQUE_SIN_RECONSTRUCCION = True
+
+
+def _desfase_contable(p) -> bool:
+    """True si la cadena contable NO puede arrancar en el punto `p`: su valor
+    contable se separa de su reconstrucción a mercado (`valor_reconstruido`) más
+    de `CONTABLE_VS_RECONSTRUIDO_MAX_VECES`.
+
+    El alta de la cuenta no se exime y no hace falta: con la plata recién
+    depositada, costo y mercado coinciden solos. La que sí tiene que frenar es la
+    cuenta que arranca con una foto de tenencia comprada hace años — ahí el costo
+    NO es lo que la cartera valía (medido: 46 ventanas así en la copia de prod)."""
+    rec = p.get("valor_reconstruido")
+    try:
+        v, rec = float(valor_para_dibujar(p)), float(rec or 0)
+    except (TypeError, ValueError, KeyError):
+        return False
+    if rec <= 0 or v <= 0:
+        return not ARRANQUE_SIN_RECONSTRUCCION
+    r = v / rec
+    return r > CONTABLE_VS_RECONSTRUIDO_MAX_VECES or r < 1.0 / CONTABLE_VS_RECONSTRUIDO_MAX_VECES
 
 
 def fx_usable(f):
@@ -1993,6 +2058,11 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                 "fx": _fx_p,
                 # La foto vieja, cuando el valor se tomó de la cadena (diagnóstico).
                 "valor_foto": _valor_foto,
+                # Lo que la reconstrucción a precios de ese mes estimó que valía la
+                # cartera (sólo en sus fotos). Contra esto se pregunta si la
+                # contabilidad describe la plata que había (ver `_desfase_contable`).
+                "valor_reconstruido": (float(r["total_value"])
+                                       if _col(r, "source") == "mtm_backfill" else None),
                 "net_deposited": _nd(r),
                 "clase": c, "apto": _apto, "cobertura": _cob,
                 # Con qué regla se valuó. `curva_indexada` NO encadena un segmento
@@ -2058,7 +2128,9 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # de DIBUJO no corta el tramo: parte el segmento, en `curva_indexada`.
     tramos, actual, ultimo_apto = [], [], None
     ultimo_costo = None            # última fila CONTABLE del tramo (cadena del estimado)
+    primer_costo = None            # la fila CONTABLE donde ARRANCA esa cadena
     cortes_dudosos = []
+    cortes_capital_chico = []      # cadena contable sobre menos de US$100 (no es un dato roto)
     for p in puntos:
         corta = False
         motivo_corte = None
@@ -2113,7 +2185,38 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             _v0, _v1, _flow = _leg_en_moneda(ultimo_costo, p,
                                              valor_para_dibujar(ultimo_costo),
                                              valor_para_dibujar(p))
-            motivo_corte = leg_dudoso(_v0, _v1, _flow)
+            # ⚠️ LOS DOS GUARDS DE ABAJO SON LOS QUE LA CADENA CONTABLE NO TENÍA.
+            # `leg_dudoso` mira un mes por vez, y una cadena puede multiplicarse
+            # por 13 con todos sus meses "creíbles". Medido en la copia de
+            # producción del 2026-08-16: el estimado publicaba ≥300 % en 31
+            # cuentas y ≥1.000 % en 8, y lo que había debajo eran bases de
+            # centavos y meses cuya contabilidad no describía la plata que había.
+            #
+            # · CAPITAL CHICO — el mismo piso que la composición contable ya
+            #   aplica (`contable_de_filas`, PISO_DENOMINADOR_USD): sobre menos de
+            #   US$100 un porcentaje no describe nada. uid 1008 arrancaba en
+            #   centavos y dos meses de "+100 %" sobre US$0,30 le ponían ×3 al
+            #   número de toda su historia.
+            if valor_para_dibujar(ultimo_costo) < PISO_DENOMINADOR_USD:
+                corta = True
+                cortes_capital_chico.append({
+                    "desde": ultimo_costo["date"], "hasta": p["date"],
+                    "v0": valor_para_dibujar(ultimo_costo), "v1": valor_para_dibujar(p)})
+                motivo_corte = None
+            # · ARRANQUE DESFASADO — la regla del traspaso (`cadena_implausible`)
+            #   aplicada a la otra punta de la cadena: donde ARRANCA, la
+            #   contabilidad tiene que parecerse a lo que valía la cartera (ver
+            #   `_desfase_contable`). ⚠️ SÓLO EN EL ARRANQUE, NO EN CADA MES. Una
+            #   cartera que se cuadruplica sin vender tiene la contabilidad ×4 por
+            #   debajo de la reconstrucción y eso es correcto: lo que se cobre
+            #   después cae adentro de la ventana, y sin flujos la cadena
+            #   telescopa a final/inicial — da el ×4 de verdad. Cortarla ahí
+            #   movía el arranque a un mes con la ganancia ya acumulada adentro,
+            #   que es exactamente el defecto que este guard viene a frenar.
+            elif ultimo_costo is primer_costo and _desfase_contable(ultimo_costo):
+                motivo_corte = "cadena_implausible"
+            else:
+                motivo_corte = leg_dudoso(_v0, _v1, _flow)
             if motivo_corte:
                 corta = True
                 cortes_dudosos.append({
@@ -2122,13 +2225,54 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                     "flujo": _flow, "cadena": "contable"})
         if corta:
             tramos.append(actual); actual = []; ultimo_apto = None; ultimo_costo = None
+            primer_costo = None
         actual.append(p)
         if p["apto"]:
             ultimo_apto = p
         if p["base"] == VALUADO_AL_COSTO:
             ultimo_costo = p
+            if primer_costo is None:
+                primer_costo = p
     if actual:
         tramos.append(actual)
+
+    # ⚠️ EL TECHO DE LA CADENA CONTABLE (sólo estimado). Es el mismo que la
+    # composición contable ya aplica (`contable_de_filas`: `MAX_PNL_PCT`, +1.000 %)
+    # y que F4 propagó a las otras siete superficies; ésta era la que faltaba.
+    # Una cadena contable que compone más que eso no es una cartera: es plata que
+    # el importador anotó como ganancia sin serlo (medido en la copia de
+    # producción: conversiones entre monedas de PPI cargadas como "interés", uid
+    # 1078 +3.531 %; montos en pesos anotados como dólares, uid 791 +25.688 %).
+    # No se arregla acá —eso es del importador— pero tampoco se publica: la parte
+    # contable de ese tramo queda VETADA (se dibuja, no mide) y, si el tramo sigue
+    # con mediciones a mercado, éstas quedan como un tramo propio que sí publica.
+    tramos_vetados = []
+    if modo == MODO_ESTIMADO:
+        from realized_pnl import MAX_PNL_PCT
+        _partidos = []
+        for t in tramos:
+            cont = [q for q in t if q["base"] == VALUADO_AL_COSTO]
+            fac = 1.0
+            for a, b in zip(cont, cont[1:]):
+                r = dietz(valor_para_dibujar(a), valor_para_dibujar(b),
+                          b["net_deposited"] - a["net_deposited"])
+                if r is not None:
+                    fac *= (1.0 + r)
+            if len(cont) >= 2 and (fac - 1.0) * 100 > MAX_PNL_PCT:
+                k = next((i for i, q in enumerate(t) if q["apto"]), len(t))
+                tramos_vetados.append(len(_partidos))
+                _partidos.append(t[:k])
+                if t[k:]:
+                    _partidos.append(t[k:])
+                cortes_dudosos.append({
+                    "desde": cont[0]["date"], "hasta": cont[-1]["date"],
+                    "motivo": "cadena_implausible",
+                    "v0": valor_para_dibujar(cont[0]), "v1": valor_para_dibujar(cont[-1]),
+                    "flujo": cont[-1]["net_deposited"] - cont[0]["net_deposited"],
+                    "cadena": "contable_techo", "factor": round(fac, 4)})
+            else:
+                _partidos.append(t)
+        tramos = _partidos
 
     aptos = [p for p in puntos if p["apto"]]
     total = len(filas)
@@ -2169,6 +2313,13 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         # Los legs que NO se encadenaron por no ser creíbles (`leg_dudoso`). Cada
         # uno parte la serie en dos tramos; la cola de revisión del admin los lee.
         "cortes_dudosos": cortes_dudosos,
+        # Los legs contables que no se encadenaron porque arrancaban con menos de
+        # US$100. Van aparte de `cortes_dudosos` porque NO son un dato roto: la
+        # cola de revisión del admin no tiene nada que mirar ahí.
+        "cortes_capital_chico": cortes_capital_chico,
+        # Índices (en `tramos`) cuya cadena contable superó el techo: se dibujan,
+        # pero en estimado no publican (ver el techo, arriba).
+        "tramos_vetados": tramos_vetados,
         # Filas contables fechadas en o después de la primera medición real, que
         # en estimado quedan fuera de la línea (siguen en `contable`).
         "contable_superado": contable_superado,
@@ -2270,7 +2421,11 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     # corte existe en el número y no en el dibujo, que es el bug de esta ronda.
     segmento = -1
 
-    for tramo in s["tramos"]:
+    _vetados = set(s.get("tramos_vetados") or [])
+    for _k_tramo, tramo in enumerate(s["tramos"]):
+        # Un tramo vetado por el techo contable se dibuja igual, pero su cadena
+        # NO entra al número del estimado (ver el techo en `serie_medible`).
+        _vetado = _k_tramo in _vetados
         # Los ids de segmento se asignan por BASE, más abajo. No hace falta abrir
         # uno acá: `seg_por_base` arranca vacío en cada tramo, así que un tramo
         # nuevo ya fuerza ids nuevos.
@@ -2430,7 +2585,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             # INDETERMINADO: son los dos que no se pueden afirmar ni siquiera como
             # punta contable —la intradía es media rueda, el indeterminado no se
             # sabe qué es—, y meterlos sería cambiar "aproximado" por "cualquiera".
-            if modo == MODO_ESTIMADO and (p["apto"] or _b == VALUADO_AL_COSTO):
+            if modo == MODO_ESTIMADO and not _vetado and (p["apto"] or _b == VALUADO_AL_COSTO):
                 _prev_est = ancla_est.get(_b)
                 if _prev_est is not None:
                     _v0e, _v1e, _fe = _leg_en_moneda(
@@ -2733,6 +2888,13 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
     est_con_legs = [t for t in tramos_info if (t.get("legs_est") or 0) > 0]
     est_con_legs = sorted(est_con_legs, key=lambda t: (t["hasta"] or ""))
     est_publicable = (modo == MODO_ESTIMADO and len(est_con_legs) >= 1)
+    # ⚠️ UNA VENTANA MÁS VIEJA NO REEMPLAZA A UNA VETADA. Si lo más reciente que
+    # vivió el usuario es una cadena contable sobre el techo, publicar un tramo
+    # anterior sería mostrarle un número de hace años como si fuera el suyo de
+    # hoy. Sin número, con el motivo.
+    if est_publicable and any((tramos_info[k]["hasta"] or "") > (est_con_legs[-1]["hasta"] or "")
+                              for k in _vetados if k < len(tramos_info)):
+        est_publicable = False
     if modo == MODO_ESTIMADO:
         if est_publicable:
             est_con_legs = [est_con_legs[-1]]      # la ventana continua más reciente
@@ -2766,12 +2928,24 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             cagr = idx ** (1.0 / años) - 1.0
 
     _motivo = s["motivo"]
+    if modo == MODO_ESTIMADO and not publicable:
+        # Sin número PORQUE la contabilidad no se pudo encadenar (techo, arranque
+        # desfasado o capital de menos de US$100): ése es el motivo, no "todavía no
+        # hay mediciones" — que es cierto, pero no es por qué falta el número.
+        if _vetados or any(c.get("motivo") == "cadena_implausible"
+                           and str(c.get("cadena", "")).startswith("contable")
+                           for c in (s.get("cortes_dudosos") or [])):
+            _motivo = "cadena_implausible"
+        elif s.get("cortes_capital_chico"):
+            _motivo = "capital_chico"
     if not _motivo:
         if partida and any(c.get("motivo") == "cadena_implausible"
                            for c in (s.get("cortes_dudosos") or [])):
             _motivo = "cadena_implausible"
         elif partida and s.get("cortes_dudosos"):
             _motivo = "medicion_dudosa"
+        elif partida and s.get("cortes_capital_chico"):
+            _motivo = "capital_chico"
         elif partida:
             _motivo = "serie_partida"
         elif legs == 0:

@@ -3614,6 +3614,7 @@ function InsightsDesktop({ _embeddedTab }) {
           const corteEnVentana = chartData.some(r => String(r?.key || '').startsWith('corte-'))
           const titular = perf.motivo === 'medicion_dudosa' ? 'Hay una foto que no cierra.'
             : perf.motivo === 'cadena_implausible' ? 'Tu contabilidad no coincide con lo medido.'
+            : perf.motivo === 'capital_chico' ? 'Al principio el capital era muy chico.'
             : 'La medición tiene un hueco.'
           return (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-line bg-bg-2/60 px-3 py-2">
