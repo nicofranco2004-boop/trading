@@ -66,6 +66,24 @@ from importing.recompute_backfill import _clone_db                 # noqa: E402
 
 # ─── Fetch de cierre mensual histórico por símbolo de precio ──────────────────
 _HIST_CACHE: dict = {}
+# Mes (AAAA-MM) en que se pidió cada serie. Una serie pedida en septiembre no
+# tiene el cierre de septiembre: si el proceso sigue vivo en octubre, ese mes —ya
+# cerrado— caía al costo en cada reconstrucción. Se vuelve a pedir al cambiar el
+# mes. (Una entrada sin fecha —las que arman las pruebas a mano— vale como de hoy.)
+_HIST_CACHE_MES: dict = {}
+
+# Activos cuya consulta a Yahoo FALLÓ (excepción: red, límite de pedidos, timeout)
+# en la corrida en curso de este hilo. No es lo mismo que "Yahoo no tiene datos"
+# (un ticker que no existe devuelve vacío, sin excepción — medido con yfinance
+# 1.2.0): eso es definitivo y se recuerda; una falla no.
+import threading as _threading           # noqa: E402
+_CORRIDA = _threading.local()
+
+
+def _fallas_yahoo() -> list:
+    if not hasattr(_CORRIDA, "fallas"):
+        _CORRIDA.fallas = []
+    return _CORRIDA.fallas
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
@@ -76,7 +94,8 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
     valúa por su subyacente — ver `_precio_por_subyacente`."""
     ck = (price_key, start_iso)
-    if ck in _HIST_CACHE:
+    _mes = _date.today().strftime("%Y-%m")
+    if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
         return _HIST_CACHE[ck]
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
@@ -106,8 +125,14 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
                     if c is not None and not (isinstance(c, float) and math.isnan(c)):
                         out[idx.strftime("%Y-%m")] = float(c)
         except Exception:
-            out = {}
+            # ⚠️ UNA FALLA NO SE GUARDA. Antes se guardaba `{}` como si Yahoo no
+            # tuviera datos, y el activo quedaba al costo en TODAS las corridas
+            # hasta el próximo reinicio: una caída de Yahoo justo después de un
+            # deploy pisaba al costo una historia que estaba bien a mercado.
+            _fallas_yahoo().append(price_key)
+            return {}
     _HIST_CACHE[ck] = out
+    _HIST_CACHE_MES[ck] = _mes
     return out
 
 
@@ -461,12 +486,61 @@ def _huella_contable(conn, uid: int) -> list:
                 "ORDER BY year, month", (uid,)).fetchall()]
 
 
+def huella_de_entrada(conn, uid: int, today: _date) -> str:
+    """Resumen de TODO lo que `backfill_user` lee para los meses cerrados.
+
+    Si no cambió, una reconstrucción nueva escribiría exactamente las mismas fotos
+    (con los mismos precios), así que no hace falta correrla. Existe porque el
+    Dashboard manda cada 90 s un aviso que pasa por `_repair_monthly_chain` aunque
+    no cambie nada: sin esta comparación, cada refresco de cada persona era una
+    reconstrucción entera —y después de un reinicio, una pasada por Yahoo—.
+
+    Lo que lee la reconstrucción, y entra acá: las filas 'global' de la
+    contabilidad, los lotes confirmados, las compras y ventas importadas (con su
+    lápida `excluded_at`), las posiciones y operaciones que mira
+    `_tenencia_no_vista`, los activos con split y los brokers. Lo del mes en curso
+    no entra (ese mes no se reconstruye). Afuera queda lo que no es de la cuenta:
+    precios y dólar histórico."""
+    import hashlib
+    hoy = _date(today.year, today.month, 1).isoformat()
+    ym_hoy = today.year * 100 + today.month
+    partes = []
+
+    def _filas(sql, *args):
+        try:
+            partes.append([tuple(r) for r in conn.execute(sql, args).fetchall()])
+        except Exception as ex:          # columna que no existe en una base vieja
+            partes.append(repr(type(ex)))
+
+    _filas("SELECT year, month, capital_inicio, deposits, withdrawals, pnl_realized "
+           "FROM monthly_entries WHERE user_id=? AND broker='global' "
+           "AND year*100+month < ? ORDER BY year, month", uid, ym_hoy)
+    _filas("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' ORDER BY id", uid)
+    _filas("SELECT n.id, n.date, n.broker, n.asset_symbol, n.asset_type, n.operation_type, "
+           "n.quantity, n.gross_amount, n.unit_price, n.currency, n.excluded_at IS NULL "
+           "FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+           "WHERE b.user_id=? AND b.status='confirmed' AND n.operation_type IN ('BUY','SELL') "
+           "AND n.date < ? ORDER BY n.id", uid, hoy)
+    _filas("SELECT id, broker, asset, quantity, invested, currency, entry_date "
+           "FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
+           "AND (entry_date IS NULL OR entry_date < ?) ORDER BY id", uid, hoy)
+    _filas("SELECT DISTINCT asset FROM positions WHERE user_id=? "
+           "AND split_adjusted_through IS NOT NULL ORDER BY asset", uid)
+    _filas("SELECT id, broker, asset, quantity, entry_price, fx_to_usd, currency, entry_date, date "
+           "FROM operations WHERE user_id=? AND (COALESCE(entry_date, date) < ? "
+           "OR COALESCE(date, entry_date) < ?) ORDER BY id", uid, hoy, hoy)
+    _filas("SELECT name, currency FROM brokers WHERE user_id=? ORDER BY name", uid)
+    return hashlib.sha256(repr(partes).encode()).hexdigest()
+
+
 def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
     cash_warning}. NO commitea (lo hace el caller). Idempotente."""
     import twr as _twr
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
            "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
+    if _pasada == 1:
+        _fallas_yahoo().clear()
 
     # Cuenta reconstruible solo si hay import confirmado.
     has_import = conn.execute(
@@ -682,24 +756,43 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     if _huella_contable(conn, uid) != huella:
         if _pasada < _PASADAS:
             return backfill_user(conn, uid, today, _pasada + 1)
-        res.update(skipped=True,
+        res.update(skipped=True, reintentar=True,
                    reason=f"la contabilidad cambió durante {_PASADAS} pasadas seguidas")
         return res
 
-    # ⚠️ LA FOTO DE UN MES QUE YA NO SE RECONSTRUYE SE BORRA.
-    # Sólo se arma foto para los meses con fila en la contabilidad. Si la persona
-    # borra el único movimiento de un mes (el dividendo de mayo, el retiro de
-    # septiembre), ese mes deja de producirse, y el UPSERT de abajo no lo toca: la
-    # foto quedaba para siempre con el valor de ANTES del borrado. Medido: borrar el
-    # retiro de septiembre dejaba la foto de septiembre con los US$ 1.000 adentro y
-    # la ganancia total en 703 (real 1.703). Sólo las que escribió este
-    # reconstructor y sólo de meses cerrados: una medición del cron no se toca.
+    # ⚠️ SI YAHOO FALLÓ, SE ESCRIBE IGUAL Y SE PIDE OTRA CORRIDA.
+    # Lo que falló cayó al costo, y la foto lo dice (su cobertura baja y deja de
+    # ser apta). No escribir dejaría la historia de ANTES, que con la contabilidad
+    # recién cambiada es justamente el error que esto vino a sacar (valor con el
+    # depósito borrado adentro y aportado sin él: +US$ 5.800 falsos). Con
+    # `reintentar`, quien llama anota la cuenta para volver a correrla en el
+    # próximo pedido de la persona —el Dashboard manda uno cada 90 s—, y como la
+    # falla no quedó en `_HIST_CACHE`, ahí se le vuelve a preguntar a Yahoo.
+    if _fallas_yahoo():
+        res["reintentar"] = True
+        res["yahoo_fallo"] = sorted(set(_fallas_yahoo()))
+
+    # ⚠️ LA FOTO DE UN MES QUE YA NO TIENE CONTABILIDAD SE BORRA.
+    # Si la persona borra el único movimiento de un mes (el dividendo de mayo, el
+    # retiro de septiembre) o el primero de todos, ese mes deja de tener fila y la
+    # reconstrucción ya no lo produce; el UPSERT de abajo no lo toca, y la foto
+    # quedaba para siempre con el valor de ANTES del borrado. Medido: borrar el
+    # retiro de septiembre dejaba esa foto con los US$ 1.000 adentro y la ganancia
+    # total en 703 (real 1.703).
+    # Tres condiciones, las tres: la escribió este reconstructor (una medición del
+    # cron no se toca), es de un mes cerrado, y su mes NO tiene fila 'global'. La
+    # tercera es a propósito: "no lo produje" solo no alcanza — si mañana alguien
+    # agrega un salteo al bucle de arriba, esto se volvería un borrado silencioso
+    # de fotos de meses que sí tienen contabilidad.
     _primero_mes_en_curso = _date(today.year, today.month, 1).isoformat()
     _vigentes = {info["date"] for info in por_mes.values()}
+    _con_fila = {f"{r['year']}-{r['month']:02d}" for r in conn.execute(
+        "SELECT year, month FROM monthly_entries WHERE user_id=? AND broker='global'",
+        (uid,)).fetchall()}
     for _r in conn.execute(
             "SELECT date FROM snapshots WHERE user_id=? AND source=? AND date < ?",
             (uid, MTM_SOURCE, _primero_mes_en_curso)).fetchall():
-        if _r["date"] not in _vigentes:
+        if _r["date"] not in _vigentes and _r["date"][:7] not in _con_fila:
             conn.execute("DELETE FROM snapshots WHERE user_id=? AND date=? AND source=?",
                          (uid, _r["date"], MTM_SOURCE))
             res["snapshots_borrados"] = res.get("snapshots_borrados", 0) + 1
@@ -716,7 +809,8 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
     panel de Admin. apply=False → sobre una COPIA del DB (la real NO se toca);
     apply=True → commitea por user. Espeja recompute_backfill.run_backfill/dry_run."""
     def _loop(conn):
-        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": []}
+        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": [],
+               "fotos_borradas": 0}
         for uid in users:
             try:
                 s = backfill_user(conn, uid, today)
@@ -727,6 +821,9 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
             if s["skipped"]:
                 out["skipped"] += 1
                 continue
+            # Fotos de meses que la contabilidad ya no tiene: el ensayo tiene que
+            # decir cuántas borraría el apply.
+            out["fotos_borradas"] += s.get("snapshots_borrados", 0)
             changed = [m for m in s["months"] if abs(m["after"] - m["before"]) > 0.01]
             if changed:
                 out["users_changed"] += 1

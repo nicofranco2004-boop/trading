@@ -332,10 +332,20 @@ async def add_security_headers(request: Request, call_next):
 # −5,6 % (real +13 %). La cascada del borrado corregía el aportado de la foto y no
 # su valor: la resta mezclaba los dos.
 #
-# UN SOLO LUGAR, no uno por puerta. El motor de contabilidad (`_recalc_pnl_realized_
-# from_ops` y `_repair_monthly_chain`, por donde pasan todas las puertas que la
-# cambian) anota a quién tocó; este middleware, cuando el pedido TERMINÓ, vuelve
-# a armar la historia de esas cuentas en segundo plano.
+# CÓMO: en cada pedido que guarda (no-GET) se toma la HUELLA de todo lo que lee la
+# reconstrucción (`backfill_historical_mtm.huella_de_entrada`) al empezar, y otra
+# al terminar. Si cambió, se rehace la historia de esa cuenta en segundo plano.
+#   · Al empezar: `get_effective_user` (el paso obligado de los endpoints de datos)
+#     y el motor de contabilidad (`_recalc_pnl_realized_from_ops`,
+#     `_repair_monthly_chain`), que es por donde pasan los pedidos que tocan OTRAS
+#     cuentas (la tanda del asesor, las herramientas del admin). No hay una lista
+#     de puertas que mantener: la primera versión anotaba sólo en el motor y la
+#     auditoría encontró tres que lo esquivan (editar el promedio o el ticker
+#     desde Cartera, la moneda de un broker, el ratio de un CEDEAR).
+#   · Comparar y no "anotar = reconstruir": el Dashboard manda cada 90 s un aviso
+#     que pasa por `_repair_monthly_chain` sin cambiar nada. Sin la comparación,
+#     cada refresco de cada persona era una reconstrucción entera, y después de
+#     cada deploy una pasada por Yahoo (medido: 3 refrescos → 6 corridas).
 #
 # ⚠️ AL TERMINAR EL PEDIDO, NO ADENTRO DE LA TRANSACCIÓN. Con los precios ya en
 # `_HIST_CACHE` la reconstrucción tarda una décima de segundo: lanzada desde el
@@ -348,8 +358,16 @@ async def add_security_headers(request: Request, call_next):
 # en `_MTM_PENDIENTE`: una ráfaga de borrados son dos corridas, no veinte.
 import contextvars as _contextvars  # noqa: E402
 
+# {uid: huella al empezar el pedido} — None fuera de un pedido que guarda.
 _CONTABILIDAD_TOCADA: _contextvars.ContextVar = _contextvars.ContextVar(
     "contabilidad_tocada", default=None)
+
+# Huella con la que quedó escrita la historia de cada cuenta en ESTE proceso
+# (`_reconstruir_mtm`). "fallida" si la última corrida no pudo escribir (Yahoo
+# caído, base ocupada): así el próximo pedido de esa persona la vuelve a pedir
+# aunque él no cambie nada — el Dashboard manda uno cada 90 s.
+_MTM_HUELLA_ESCRITA: dict = {}
+_MTM_FALLIDA = "fallida"
 
 # Hasta tantas cuentas por pedido, cada una arranca en su propio hilo (lo normal:
 # la persona o su asesor tocó UNA cuenta, y la quiere ver bien enseguida). Más que
@@ -359,12 +377,40 @@ _CONTABILIDAD_TOCADA: _contextvars.ContextVar = _contextvars.ContextVar(
 _RECONSTRUIR_MAX_CUENTAS = 5
 
 
+def _huella_reconstruccion(uid):
+    """La huella de lo que lee la reconstrucción de `uid`, en su propia conexión
+    (o sea: lo COMMITEADO). None si no se pudo leer — se trata como "cambió"."""
+    try:
+        from scripts.backfill_historical_mtm import huella_de_entrada
+        from datetime import datetime as _dt
+        with db_abierta() as _c:
+            return huella_de_entrada(_c, uid, _dt.utcnow().date())
+    except Exception:
+        log.exception("mtm-auto: no se pudo leer la huella de %s", uid)
+        return None
+
+
 def _contabilidad_tocada(uid) -> None:
-    """Anota que este pedido cambió la contabilidad de `uid`. Fuera de un pedido
-    HTTP (cron, hilos, scripts) no hace nada: no hay un "terminó" que esperar."""
+    """Anota que este pedido puede cambiar la contabilidad de `uid`, con la huella
+    de cómo estaba ANTES. Fuera de un pedido que guarda (GET, cron, hilos,
+    scripts) no hace nada."""
     tocadas = _CONTABILIDAD_TOCADA.get()
-    if tocadas is not None and uid is not None:
-        tocadas.add(uid)
+    if tocadas is not None and uid is not None and uid not in tocadas:
+        tocadas[uid] = _huella_reconstruccion(uid)
+
+
+def _cuentas_que_cambiaron(tocadas: dict) -> list:
+    """De las cuentas anotadas, las que hay que reconstruir: cambió lo que lee la
+    reconstrucción durante el pedido, o su historia quedó escrita con otra huella
+    (o no se pudo escribir) en una corrida anterior de este proceso."""
+    out = []
+    for uid, antes in sorted(tocadas.items()):
+        ahora = _huella_reconstruccion(uid)
+        escrita = _MTM_HUELLA_ESCRITA.get(uid)
+        if (ahora is None or antes is None or ahora != antes
+                or (escrita is not None and escrita != ahora)):
+            out.append(uid)
+    return out
 
 
 class _ReconstruirAlTerminar:
@@ -375,22 +421,37 @@ class _ReconstruirAlTerminar:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD", "OPTIONS"):
+        if (scope.get("type") != "http"
+                or scope.get("method") in ("GET", "HEAD", "OPTIONS")
+                or str(scope.get("path") or "").startswith("/api/admin/")):
+            # Las herramientas del admin no disparan: sus ensayos corren el motor
+            # sobre un CLON de la base (anotaban cuentas que en la real no
+            # cambiaron) y sus aplicaciones tocan cientos de cuentas a la vez
+            # (medido: ~588 con import, ~18.500 consultas a Yahoo, 3,5 h). Para la
+            # historia de esas cuentas está el botón de reconstrucción del admin.
             await self.app(scope, receive, send)
             return
-        tocadas: set = set()
+        tocadas: dict = {}
         token = _CONTABILIDAD_TOCADA.set(tocadas)
         try:
             await self.app(scope, receive, send)
         finally:
             _CONTABILIDAD_TOCADA.reset(token)
-            if 0 < len(tocadas) <= _RECONSTRUIR_MAX_CUENTAS:
-                for _uid in sorted(tocadas):
-                    _reconstruir_mtm_post_import(_uid)
-            elif tocadas:
-                log.info("mtm-auto: %s cuentas tocadas en un solo pedido — van a la "
-                         "fila de reconstrucción", len(tocadas))
-                _reconstruir_en_fila(sorted(tocadas))
+            if tocadas:
+                try:
+                    import asyncio
+                    cambiadas = await asyncio.get_running_loop().run_in_executor(
+                        None, _cuentas_que_cambiaron, dict(tocadas))
+                except Exception:
+                    log.exception("mtm-auto: no se pudo comparar la huella")
+                    cambiadas = sorted(tocadas)
+                if 0 < len(cambiadas) <= _RECONSTRUIR_MAX_CUENTAS:
+                    for _uid in cambiadas:
+                        _reconstruir_mtm_post_import(_uid)
+                elif cambiadas:
+                    log.info("mtm-auto: %s cuentas cambiaron en un solo pedido — van "
+                             "a la fila de reconstrucción", len(cambiadas))
+                    _reconstruir_en_fila(cambiadas)
 
 
 app.add_middleware(_ReconstruirAlTerminar)
@@ -3372,7 +3433,14 @@ def get_effective_user(
                 )
 
     client_uid = _resolve_client_context(request, uid)
-    return client_uid if client_uid is not None else uid
+    efectivo = client_uid if client_uid is not None else uid
+    # En un pedido que guarda (no-GET), la huella de lo que lee la reconstrucción
+    # se toma ACÁ, antes de que el endpoint toque nada: al terminar se compara y,
+    # si cambió, la historia se rehace (`_ReconstruirAlTerminar`). Va acá por la
+    # misma razón que el muro: es el paso obligado de todos los endpoints de datos,
+    # así que cubre también al que se agregue mañana sin acordarse de esto.
+    _contabilidad_tocada(efectivo)
+    return efectivo
 
 
 def _require_advisor(conn, uid: int) -> str:
@@ -11254,7 +11322,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
 
     Idempotente. Devuelve cantidad de rows actualizados.
     """
-    _contabilidad_tocada(uid)   # la historia reconstruida se rehace al terminar el pedido
+    _contabilidad_tocada(uid)   # huella de ANTES: al terminar el pedido, si cambió, se reconstruye
     # Los meses se descubren desde las FUENTES, no solo desde lo que quedó en
     # monthly_entries. Antes se iteraba únicamente sobre las filas existentes, y como la
     # GC de abajo borra las que quedan todo-en-cero, un mes cuyas ops se cancelaban entre
@@ -11534,7 +11602,7 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
     Idempotente. El caller es responsable del commit (funciona dentro o fuera
     de `with conn:`).
     """
-    _contabilidad_tocada(uid)   # la historia reconstruida se rehace al terminar el pedido
+    _contabilidad_tocada(uid)   # huella de ANTES: al terminar el pedido, si cambió, se reconstruye
     rows = conn.execute(
         """SELECT id, year, month, capital_inicio, capital_final, deposits, withdrawals,
                   pnl_realized, pnl_unrealized
@@ -36234,11 +36302,24 @@ def _reconstruir_mtm(uid: int) -> dict:
         # el camino de TODO import confirmado, de toda cuenta.
         # La mezcla de estampas se resuelve donde corresponde: `twr.serie_medible`
         # detecta cuándo la estampa dejó de coincidir con la contabilidad actual.
-        res = backfill_user(conn, uid, _dt.utcnow().date())
+        from scripts.backfill_historical_mtm import huella_de_entrada
+        _hoy = _dt.utcnow().date()
+        # La huella se toma ANTES de leer: si algo cambia durante la corrida, la
+        # escrita no coincide con la de ese momento y el pedido que lo cambió la
+        # vuelve a pedir (ver `_cuentas_que_cambiaron`).
+        _huella = huella_de_entrada(conn, uid, _hoy)
+        res = backfill_user(conn, uid, _hoy)
         if res.get("skipped"):
             conn.rollback()
+            # "Reintentar" (Yahoo falló, la contabilidad no paró de cambiar): la
+            # historia NO describe esta huella; el próximo pedido la vuelve a pedir.
+            # Lo demás (cuenta sin import) es definitivo para esta huella.
+            _MTM_HUELLA_ESCRITA[uid] = _MTM_FALLIDA if res.get("reintentar") else _huella
             return {"reconstruida": False, "motivo": res.get("reason")}
         conn.commit()
+        # Con Yahoo caído se escribió igual (lo que falló, al costo y declarado):
+        # que el próximo pedido la vuelva a correr para traer esos precios.
+        _MTM_HUELLA_ESCRITA[uid] = _MTM_FALLIDA if res.get("reintentar") else _huella
         meses = res.get("months") or []
         cobs = [m["coverage"] for m in meses if m.get("coverage") is not None]
         log.info("mtm-auto: cuenta %s reconstruida — %s fotos, cobertura media %s",
@@ -36254,6 +36335,9 @@ def _reconstruir_mtm(uid: int) -> dict:
         except Exception:
             pass
         log.exception("mtm-auto: falló la reconstrucción de %s — la cuenta queda igual", uid)
+        # (p. ej. la base ocupada más que el busy_timeout): que el próximo pedido
+        # de esta persona la vuelva a pedir.
+        _MTM_HUELLA_ESCRITA[uid] = _MTM_FALLIDA
         return {"reconstruida": False, "motivo": "error"}
     finally:
         conn.close()
@@ -36286,7 +36370,7 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
     # Lo que se toque DESPUÉS en el mismo pedido se vuelve a anotar.
     _tocadas = _CONTABILIDAD_TOCADA.get()
     if _tocadas is not None:
-        _tocadas.discard(uid)
+        _tocadas.pop(uid, None)
     try:
         import threading as _th
         # Un solo hilo de reconstrucción por usuario. NO serializa el hilo
@@ -36303,8 +36387,16 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
                 return {"reconstruida": "en_curso", "motivo": "ya_corriendo_se_repite"}
             _MTM_RUNNING.add(uid)
 
-        _th.Thread(target=_bucle_de_reconstruccion, args=(uid,), daemon=True,
-                   name=f"mtm-backfill-{uid}").start()
+        try:
+            _th.Thread(target=_bucle_de_reconstruccion, args=(uid,), daemon=True,
+                       name=f"mtm-backfill-{uid}").start()
+        except Exception:
+            # Sin esto la cuenta quedaba en `_MTM_RUNNING` para siempre y ninguna
+            # reconstrucción posterior volvía a correr hasta el próximo reinicio.
+            with _MTM_RUNNING_LOCK:
+                _MTM_RUNNING.discard(uid)
+                _MTM_PENDIENTE.discard(uid)
+            raise
         return {"reconstruida": "en_curso"}
     except Exception:
         log.exception("mtm-auto: no se pudo lanzar la reconstrucción de %s", uid)

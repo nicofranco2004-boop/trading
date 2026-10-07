@@ -328,6 +328,7 @@ def _db_por_modulo(request):
     # migración: acá cambia CÓMO se aísla la base, no qué se testea.
     if getattr(main, "USANDO_PG", False):
         _aislar_postgres(main, request.module.__name__)
+        getattr(main, "_MTM_HUELLA_ESCRITA", {}).clear()
         yield
         return
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -336,6 +337,9 @@ def _db_por_modulo(request):
     main.DB_PATH = tmp.name
     os.environ["DB_PATH"] = tmp.name
     main.init_db()
+    # Con qué huella quedó escrita la historia de cada cuenta: es estado DE LA BASE
+    # (los ids se repiten entre bases), así que se olvida junto con ella.
+    getattr(main, "_MTM_HUELLA_ESCRITA", {}).clear()
     yield
     main.DB_PATH = previo
     for p in (tmp.name, tmp.name + "-wal", tmp.name + "-shm"):
