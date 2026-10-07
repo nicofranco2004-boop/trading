@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { esTradeCerrado, computeTradeStats } from './tradeStats.js'
+import { esTradeCerrado, computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from './tradeStats.js'
+import { prettyOpType } from '../components/operations/shared.js'
 
 // ════════════════════════════════════════════════════════════════════════════
 // Congela la definición de win rate de la casa (backend/reporting/builder.py).
@@ -155,5 +156,59 @@ describe('computeTradeStats', () => {
     // Y que NO dé ninguna de las dos definiciones viejas del frontend.
     expect(Math.round(r.winRate * 100)).not.toBe(93)   // wins / ops.length
     expect(Math.round(r.winRate * 100)).not.toBe(100)  // wins / (wins + losses)
+  })
+})
+
+// ── Conversiones de moneda en la pestaña "Solo P/L" ──────────────────────────
+// Filas tal como las devuelve GET /api/operations después de "Comprar USD" y
+// "Vender USD" con el botón (medido 2026-10-07): op_type con el tipo del
+// formulario, asset con la flecha, quantity en la moneda que SALE.
+const compraUsd = { id: 1, op_type: 'CONVERSION MEP ARS→USDT', asset: 'ARS→USDT', broker: 'IOL',
+  date: '2024-03-05', quantity: 15400, entry_price: 1539.65, exit_price: null, pnl_usd: 0 }
+const ventaUsd = { id: 2, op_type: 'CONVERSION MEP USDT→ARS', asset: 'USDT→ARS', broker: 'IOL · USD',
+  date: '2024-03-06', quantity: 4, entry_price: 1540, exit_price: 1600, pnl_usd: 0.15 }
+const venta = (id, asset, pnl, date) => ({ id, op_type: 'Venta', asset, broker: 'IOL', date, quantity: 1, pnl_usd: pnl })
+const enUsd = o => o.pnl_usd
+
+describe('una conversión de moneda no es un trade', () => {
+  it('esConversion reconoce las del botón (cualquier tipo), las importadas y las viejas', () => {
+    for (const t of ['CONVERSION MEP ARS→USDT', 'CONVERSION CCL USDT→ARS', 'CONVERSION Otro ARS→USDT',
+                     'CONVERSION IMPORT ARS→USDT', 'Conversión ARS→USD']) {
+      expect(esConversion(t)).toBe(true)
+    }
+    for (const t of ['Venta', 'Compra', 'Dividendo', '', null, undefined]) {
+      expect(esConversion(t)).toBe(false)
+    }
+  })
+
+  it('"Mejor trade" no es una venta de USD con ganancia cambiaria', () => {
+    expect(mejorTrade([compraUsd, ventaUsd, venta(3, 'AAPL', -50, '2024-03-07')], enUsd)?.id).toBe(3)
+  })
+
+  it('con todo en pérdida, "Mejor trade" no es la compra de USD (P&L 0)', () => {
+    const ops = [compraUsd, venta(3, 'AAPL', -50, '2024-03-07'), venta(4, 'NVDA', -20, '2024-03-08')]
+    expect(mejorTrade(ops, enUsd)?.id).toBe(4)
+    expect(mejorTrade([compraUsd, ventaUsd], enUsd)).toBe(null)
+  })
+
+  it('no son "el activo más operado"', () => {
+    const conv = [1, 2, 3, 4].map(i => ({ ...compraUsd, id: 10 + i }))
+    const ops = [...conv, venta(3, 'AAPL', 5, '2024-01-01'), venta(4, 'AAPL', 5, '2024-01-02'), venta(5, 'AAPL', 5, '2024-01-03')]
+    expect(patronesDeOperaciones(ops).find(p => p.key === 'most_traded')).toEqual(
+      { key: 'most_traded', asset: 'AAPL', count: 3 })
+  })
+
+  it('una compra de USD (P&L 0) no corta la racha ganadora', () => {
+    const ops = [venta(3, 'AAPL', 5, '2024-03-01'), venta(4, 'NVDA', 5, '2024-03-02'),
+                 { ...compraUsd, date: '2024-03-03' }, venta(5, 'MSFT', 5, '2024-03-04')]
+    expect(patronesDeOperaciones(ops).find(p => p.key === 'win_streak')).toEqual(
+      { key: 'win_streak', streak: 3 })
+  })
+
+  it('en la tabla se llaman igual que en Movimientos', () => {
+    expect(prettyOpType(compraUsd.op_type)).toBe('Compra de USD')
+    expect(prettyOpType(ventaUsd.op_type)).toBe('Venta de USD')
+    expect(prettyOpType('CONVERSION IMPORT ARS→USDT')).toBe('Compra de USD')
+    expect(prettyOpType('Venta')).toBe('Venta')
   })
 })

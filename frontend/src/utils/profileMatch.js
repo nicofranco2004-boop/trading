@@ -23,6 +23,7 @@ import {
   classifyAssetBucket,
   computeAllocationBuckets,
 } from './profileAllocations'
+import { esConversion } from './tradeStats'
 
 
 // ─── Card 1: Match perfil vs cartera (allocation) ───────────────────────────
@@ -447,7 +448,7 @@ export function computeStyleCoherence(profile, operations, monthsWindow = 6) {
     const t = String(o.op_type || '').trim()
     if (!t || !o.date) return false
     if (t === 'Compra' || t === 'Dividendo' || t === 'Interés') return false
-    if (t.startsWith('CONVERSION') || t.startsWith('Conversión')) return false
+    if (esConversion(t)) return false
     return true
   })
 

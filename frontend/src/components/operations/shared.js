@@ -11,6 +11,7 @@ import {
   ArrowLeftRight, Coins, Receipt, SlidersHorizontal,
 } from 'lucide-react'
 import { LOCALE } from '../../utils/format'
+import { esConversion } from '../../utils/tradeStats'
 
 // ─── Tipos de movimiento ───────────────────────────────────────────────────
 // UN solo mapa. Antes eran dos (`TYPE_META` desktop / `MOVE_TYPE_META` mobile)
@@ -80,8 +81,10 @@ export const MESES_ES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago',
 export function prettyOpType(raw) {
   if (!raw) return '—'
   const s = String(raw).trim()
-  if (s.startsWith('CONVERSION IMPORT ARS→USDT') || s.startsWith('CONVERSION IMPORT ARS→USD')) return 'Conversión ARS→USD'
-  if (s.startsWith('CONVERSION IMPORT USDT→ARS') || s.startsWith('CONVERSION IMPORT USD→ARS')) return 'Conversión USD→ARS'
+  // Todas las conversiones, no sólo las importadas: las del botón
+  // ("CONVERSION MEP ARS→USDT", también CCL/USDT/Otro) salían con el código
+  // crudo. Mismo rótulo que en Movimientos (TYPE_META.FX_*).
+  if (esConversion(s)) return s.includes('ARS→') ? TYPE_META.FX_ARS_TO_USD.label : TYPE_META.FX_USD_TO_ARS.label
   return s
 }
 

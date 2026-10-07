@@ -88,13 +88,14 @@ export function opPnlUsd(op) {
 }
 
 import { normalizeTicker } from './assetClass'
+import { esConversion } from './tradeStats'
 
 // Operaciones que no son un activo: conversiones de moneda (ARS→USDT). Tienen
 // pnl 0, pero clasificarlas ensucia la porción "Sin clasificar".
 function isRealAssetOp(op) {
   const asset = String(op?.asset || '')
   if (!asset || asset.includes('→')) return false
-  if (String(op?.op_type || '').toUpperCase().startsWith('CONVERSION')) return false
+  if (esConversion(op?.op_type)) return false
   return true
 }
 
