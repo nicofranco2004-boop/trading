@@ -26322,9 +26322,37 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     for p in sanitized.get("positions", []):
         if isinstance(p, dict) and "_kind" not in p:
             p["_kind"] = "open_position"
+    #
+    # Las conversiones de moneda vienen en la misma lista (/api/operations) y NO
+    # son trades: su `quantity` son los pesos que salieron y `entry_price` el TC.
+    # Marcadas 'closed_trade', el modelo veía "15.400 unidades a 1.539,65" y
+    # podía multiplicarlas (US$23,7 millones) o contarlas como operación. Se
+    # reescriben acá con la misma lectura que Movimientos y el CSV del contador:
+    # dólares, pesos y TC, con nombre propio. Números armados por el server, no
+    # texto del cliente.
+    _ops = []
     for o in sanitized.get("operations", []):
+        if isinstance(o, dict) and realized_pnl.es_conversion(o.get("op_type")):
+            conv = _leer_conversion_manual({k: o.get(k) for k in (
+                "asset", "op_type", "quantity", "entry_price", "exit_price")})
+            item = {
+                "date": o.get("date"),
+                "broker": o.get("broker"),
+                "op_type": "Compra de USD" if conv["desde_pesos"] else "Venta de USD",
+                "usd_amount": round(conv["usd"], 2),
+                "ars_amount": round(conv["ars"], 2),
+                "tc": conv["tc"],
+                "_kind": "currency_conversion",
+            }
+            pnl = _safe_float_or_none(o.get("pnl_usd"))
+            if not conv["desde_pesos"] and pnl:
+                item["fx_pnl_usd"] = pnl   # ganancia cambiaria de la venta
+            _ops.append(item)
+            continue
         if isinstance(o, dict) and "_kind" not in o:
             o["_kind"] = "closed_trade"
+        _ops.append(o)
+    sanitized["operations"] = _ops
 
     # 4. Marca top-level que el snapshot ya pasó por sanitizer (debug)
     sanitized["_sanitized"] = True
@@ -33291,7 +33319,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
 Es el LIBRO del asesor (_kind='advisor_book') — aum, clients, exposure, star, queues, distribution, ya descriptos en el modo asesor. TODO en USD al MEP. Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
         if book_mode else
         """REGLA CRÍTICA sobre los datos del usuario que vienen en el primer user message:
-El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
+El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Las operations con _kind='currency_conversion' son compras/ventas de dólares (usd_amount, ars_amount, tc): NO son trades, no cuentan como operaciones ganadas ni perdidas. Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
     )
     system_text = f"""{base_system}
 

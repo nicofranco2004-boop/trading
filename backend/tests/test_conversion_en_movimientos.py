@@ -286,5 +286,45 @@ class ConversionEnElCsvDelContador(unittest.TestCase):
         self.assertAlmostEqual(float(ventas[0]["Cantidad"]), 4, places=2)
 
 
+class ConversionEnElChatDeLaIA(unittest.TestCase):
+    """El chat recibe las operaciones tal como las devuelve GET /api/operations
+    (utils/aiSnapshot.js las pasa sin tocar) y el server las limpia con
+    `_sanitize_chat_snapshot` antes del prompt. Antes una compra de USD llegaba
+    marcada `closed_trade` con quantity 15.400 y entry_price 1.539,65."""
+
+    def test_la_ia_ve_dolares_pesos_y_tc_no_un_trade(self):
+        client = TestClient(main.app)
+        conn = main.get_db()
+        uid = conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified) "
+            "VALUES (?, 'x', 1, 1)", (f"iaconv-{uuid.uuid4().hex[:10]}@rendi.test",),
+        ).lastrowid
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'IOL', 'ARS')",
+                     (uid,))
+        conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested) "
+                     "VALUES (?, 'IOL', 'ARS', 1, 100000)", (uid,))
+        conn.commit()
+        conn.close()
+        h = {"Authorization": f"Bearer {main.create_token(uid)}"}
+        for direction, broker, ars, usd, tc in (
+                ("ars_to_usd", "IOL", 15_400, 10, 1539.65),
+                ("usd_to_ars", "IOL · USD", 6_400, 4, 1600)):
+            r = client.post("/api/conversions", headers=h, json={
+                "from_broker": broker, "direction": direction, "ars_amount": ars,
+                "usd_amount": usd, "tc": tc, "kind": "MEP", "date": "2024-03-05"})
+            self.assertEqual(r.status_code, 200, r.text)
+        ops = client.get("/api/operations", headers=h).json()
+        out = main._sanitize_chat_snapshot({"operations": ops})["operations"]
+        conv = {o["op_type"]: o for o in out if o.get("_kind") == "currency_conversion"}
+        self.assertEqual(set(conv), {"Compra de USD", "Venta de USD"}, out)
+        self.assertFalse([o for o in out if o.get("_kind") == "closed_trade"], out)
+        compra, venta = conv["Compra de USD"], conv["Venta de USD"]
+        self.assertAlmostEqual(compra["usd_amount"], 10.0, places=2)
+        self.assertAlmostEqual(compra["ars_amount"], 15_400, places=2)
+        self.assertNotIn("quantity", compra)       # nada de "15.400 unidades"
+        self.assertAlmostEqual(venta["usd_amount"], 4, places=2)
+        self.assertAlmostEqual(venta["fx_pnl_usd"], 0.15, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
