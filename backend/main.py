@@ -14432,6 +14432,104 @@ def get_movements(uid: int = Depends(get_effective_user)):
     return _build_movements(uid)
 
 
+# ── Conversiones de moneda en Movimientos ────────────────────────────────────
+# Llegan por dos lados con formas distintas, y las dos se leían como otra cosa:
+#   · el botón Comprar/Vender USD (y la IA, que lo reusa) escribe en `operations`
+#     con `quantity` = lo que SALE (pesos en una compra) y `entry_price` = TC.
+#     Leída como venta: pesos × TC → comprar US$10 con $15.400 era "Venta
+#     US$23.710.610".
+#   · el importador escribe en `import_normalized_tx` con `gross_amount` =
+#     pesos, `quantity` = dólares, `unit_price` = TC y casi nunca `currency`.
+#     Sin moneda caía como dólares: comprar US$1.000 era "US$1.400.000".
+# Las dos salen por `_movimiento_de_conversion`, así se ven igual sin importar
+# por dónde entraron.
+_TIPOS_CONVERSION = ("FX_ARS_TO_USD", "FX_USD_TO_ARS")
+
+
+def _movimiento_de_conversion(*, id_, fecha, broker, desde_pesos, usd, tc,
+                              notas, source, ref_id, pnl_usd=None):
+    """Una conversión como fila de Movimientos.
+
+    `amount_usd` es la pata en DÓLARES de la operación: lo que el usuario
+    compró o vendió. Va con `currency='ARS'` y `fx_to_usd` = el TC de la propia
+    conversión, para que la vista en pesos (que multiplica `amount_usd` por el
+    TC sellado, useHistoricalMoney.js) muestre los pesos que se pagaron o
+    cobraron de verdad, no los de un dólar de referencia.
+
+    `type` es el mismo que ya traían las importadas, así el front tiene un solo
+    rótulo ("Compra de USD" / "Venta de USD") para las dos.
+    """
+    usd = abs(usd) if usd else 0.0
+    return {
+        "id": id_,
+        "kind": "movement",
+        "date": fecha,
+        "type": "FX_ARS_TO_USD" if desde_pesos else "FX_USD_TO_ARS",
+        "broker": broker or "",
+        "asset": "ARS→USD" if desde_pesos else "USD→ARS",
+        "quantity": usd or None,
+        "unit_price": tc,
+        "amount_usd": usd,
+        "currency": "ARS",
+        "fx_to_usd": tc,
+        "fees_usd": 0,
+        "pnl_usd": pnl_usd,
+        "notes": notas or "",
+        "source": source,
+        "ref_id": ref_id,
+    }
+
+
+def _movimiento_de_conversion_manual(d: dict) -> dict:
+    """Fila de `operations` que escribe `create_conversion` (botón y IA).
+
+    Compra de USD (`ARS→USDT`): quantity = pesos, entry_price = TC; los
+    dólares son pesos / TC. La fila no guarda los dólares exactos que se
+    acreditaron (el formulario los redondea a 2 decimales), así que el
+    cociente puede diferir en centavos: 15.400 / 1.539,65 = 10,0023.
+    Venta de USD (`USDT→ARS`): quantity = dólares, exit_price = TC de venta,
+    entry_price = TC promedio de compra; `pnl_usd` es la ganancia cambiaria,
+    que también suma al resultado del mes (create_conversion).
+    """
+    par = (d.get("asset") or d.get("op_type") or "").upper()
+    desde_pesos = par.startswith("ARS") or "ARS→" in par
+    qty = _safe_float_or_none(d.get("quantity")) or 0.0
+    entry_p = _safe_float_or_none(d.get("entry_price"))
+    exit_p = _safe_float_or_none(d.get("exit_price"))
+    if desde_pesos:
+        tc = entry_p
+        usd = qty / tc if (tc and tc > 0) else 0.0
+    else:
+        tc = exit_p or entry_p
+        usd = qty
+    return _movimiento_de_conversion(
+        id_=f"op-{d['id']}-fx", fecha=d.get("date"), broker=d.get("broker"),
+        desde_pesos=desde_pesos, usd=usd, tc=tc, notas=d.get("notes"),
+        source="manual", ref_id=d["id"],
+        pnl_usd=(realized_pnl.realized_usd(d) if d.get("pnl_usd") is not None else None),
+    )
+
+
+def _movimiento_de_conversion_importada(d: dict) -> dict:
+    """Fila de `import_normalized_tx` de tipo FX_*. Por contrato del normalizador
+    (bloque OP_FX_* de normalizer.py): gross_amount = pesos, quantity = dólares,
+    unit_price = TC. Los dólares son `quantity` — el mismo dato que
+    `stamp_tx_gross_usd` sella en `gross_amount_usd` y con el que
+    `_fx_transfer_legs_for_period` mueve el capital aportado."""
+    usd = _safe_float_or_none(d.get("quantity"))
+    if not usd:
+        usd = _safe_float_or_none(d.get("gross_amount_usd")) or 0.0
+    tc = _safe_float_or_none(d.get("unit_price"))
+    ars = _safe_float_or_none(d.get("gross_amount"))
+    if not (tc and tc > 0) and ars and usd:
+        tc = abs(ars / usd)
+    return _movimiento_de_conversion(
+        id_=f"tx-{d['id']}", fecha=d.get("date"), broker=d.get("broker"),
+        desde_pesos=(d.get("operation_type") or "").upper() == "FX_ARS_TO_USD",
+        usd=usd, tc=tc, notas=d.get("notes"), source="import", ref_id=d["id"],
+    )
+
+
 def _build_movements(uid: int):
     """Las filas de /api/movements, sin el decorador HTTP.
 
@@ -14475,6 +14573,12 @@ def _build_movements(uid: int):
         ).fetchall()
         for r in op_rows:
             d = dict(r)
+            # Una conversión de moneda no es un trade: no tiene pata de compra ni
+            # de venta, y sus columnas no significan lo mismo (ver
+            # `_movimiento_de_conversion`). Sale por su propia puerta.
+            if realized_pnl.es_conversion(d.get("op_type")):
+                movements.append(_movimiento_de_conversion_manual(d))
+                continue
             op_type = (d.get("op_type") or "").upper()
             qty = _safe_float_or_none(d.get("quantity"))
             entry_p = _safe_float_or_none(d.get("entry_price"))
@@ -14601,6 +14705,12 @@ def _build_movements(uid: int):
         for r in tx_rows:
             d = dict(r)
             op_type = (d.get("operation_type") or "").upper()
+            # La conversión importada casi nunca trae moneda (en el backup de prod
+            # del 2026-08-16, 533 de 534 sin `currency`): caía al `else` de abajo y
+            # mostraba los PESOS como dólares (comprar US$1.000 → "US$1.400.000").
+            if op_type in _TIPOS_CONVERSION:
+                movements.append(_movimiento_de_conversion_importada(d))
+                continue
             cur = (d.get("currency") or "USD").upper()
             amt = _safe_float_or_none(d.get("gross_amount")) or 0
             fees = _safe_float_or_none(d.get("fees")) or 0
@@ -14656,47 +14766,23 @@ def _build_movements(uid: int):
         # Si emitimos un movement por cada monthly_entry con el deposits/
         # withdrawals entero, los importados quedan DOUBLE-COUNTED.
         #
-        # Fix: agregamos los DEPOSIT/WITHDRAW de imports por (broker, year, month)
-        # y los RESTAMOS de monthly_entries.deposits/withdrawals. El residual
-        # es lo que el user agregó manualmente.
+        # Fix: a monthly_entries.deposits/withdrawals le RESTAMOS lo que vino de
+        # imports en ese (broker, año, mes). El residual es lo que el user agregó
+        # manualmente.
         #
         # ⚠ PRECONDICIÓN: _recalc_pnl_realized_from_ops NO debe sobreescribir
         # deposits/withdrawals (fix 2026-05-27). Antes lo hacía y borraba los
         # manuales del user.
-        # Fase 4 (2026-05-30): preferir gross_amount_usd stamped (estable),
-        # fallback a conversión runtime para rows legacy (NULL).
-        imp_agg_rows = conn.execute(
-            """SELECT
-                  t.broker AS broker,
-                  CAST(strftime('%Y', t.date) AS INTEGER) AS y,
-                  CAST(strftime('%m', t.date) AS INTEGER) AS m,
-                  SUM(CASE WHEN UPPER(t.operation_type)='DEPOSIT'
-                           THEN COALESCE(t.gross_amount_usd,
-                                CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
-                                     THEN t.gross_amount/?
-                                     ELSE t.gross_amount END)
-                           ELSE 0 END) AS dep_usd,
-                  SUM(CASE WHEN UPPER(t.operation_type)='WITHDRAW'
-                           THEN COALESCE(t.gross_amount_usd,
-                                CASE WHEN UPPER(t.currency)='ARS' AND ? > 0
-                                     THEN t.gross_amount/?
-                                     ELSE t.gross_amount END)
-                           ELSE 0 END) AS wit_usd
-                FROM import_normalized_tx t
-                JOIN import_batches b ON t.batch_id = b.id
-                WHERE b.user_id = ? AND b.status = 'confirmed'
-                  AND t.excluded_at IS NULL
-                  AND UPPER(t.operation_type) IN ('DEPOSIT', 'WITHDRAW')
-                  -- Éste no tenía ni el filtro de nulos, y agrupa por y/m: una
-                  -- sola fecha rota tiraba abajo el agregado completo. Ver el
-                  -- LIKE de _seed más arriba.
-                  AND t.date LIKE '____-__-__%'
-                GROUP BY t.broker, y, m""",
-            (tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, tc_blue or 1.0, uid),
-        ).fetchall()
-        imp_dep_map = {(r["broker"], r["y"], r["m"]): float(r["dep_usd"] or 0) for r in imp_agg_rows}
-        imp_wit_map = {(r["broker"], r["y"], r["m"]): float(r["wit_usd"] or 0) for r in imp_agg_rows}
-
+        #
+        # "Lo que vino de imports" lo dice `_import_flows_for_period`, el MISMO
+        # helper con el que el recalc arma deposits = imports + manual y con el
+        # que `_backfill_manual_flows` / `_derive_manual_flows` derivan la parte
+        # manual. Acá había una copia de esa query que sólo sumaba DEPOSIT/
+        # WITHDRAW: cuando el helper empezó a contar las CONVERSIONES importadas
+        # como transferencia interna (una pata en cada broker), la copia no se
+        # enteró, y cada mes con una conversión mostraba un "Depósito manual" en
+        # el broker en dólares y un "Retiro manual" en el de pesos que el usuario
+        # nunca hizo. Con el helper, el residual es manual por construcción.
         me_rows = conn.execute(
             """SELECT id, year, month, broker, deposits, withdrawals
                  FROM monthly_entries
@@ -14708,9 +14794,8 @@ def _build_movements(uid: int):
         for r in me_rows:
             d = dict(r)
             y, m = int(d["year"]), int(d["month"])
-            key = (d.get("broker") or "", y, m)
-            imp_dep = imp_dep_map.get(key, 0.0)
-            imp_wit = imp_wit_map.get(key, 0.0)
+            imp_dep, imp_wit = _import_flows_for_period(
+                conn, uid, d.get("broker") or "", f"{y:04d}", f"{m:02d}", tc_blue)
             deposits_total = float(d["deposits"] or 0)
             withdrawals_total = float(d["withdrawals"] or 0)
             deposits_manual = max(0.0, deposits_total - imp_dep)

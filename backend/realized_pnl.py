@@ -119,12 +119,27 @@ def realized_usd_sql(prefix: str = "") -> str:
     )
 
 
+def es_conversion(op_type) -> bool:
+    """¿La fila de `operations` es una conversión de moneda (pesos ↔ dólares)?
+
+    Una conversión NO es un trade aunque viva en la misma tabla y con las mismas
+    columnas: `quantity` guarda el monto de la moneda que SALE (pesos en una
+    compra de USD) y `entry_price`/`exit_price` el tipo de cambio. Quien la lea
+    como trade multiplica pesos por TC: comprar US$10 con $15.400 figuraba en
+    Movimientos como "Venta US$23.710.610".
+
+    Las escriben el botón Comprar/Vender USD (`CONVERSION <tipo> ARS→USDT`, con
+    tipo MEP/CCL/USDT/Otro) y el importador (`CONVERSION IMPORT ARS→USDT`).
+    'Conversión' cubre las filas de parsers viejos."""
+    return (op_type or "").strip().startswith(("CONVERSION", "Conversión"))
+
+
 def is_closed_op(op_type) -> bool:
     """Equivalente en Python de `closed_filter_sql` (sin el chequeo de NULL)."""
     t = (op_type or "").strip()
     if t in _NOT_A_TRADE:
         return False
-    return not t.startswith(("CONVERSION", "Conversión"))
+    return not es_conversion(t)
 
 
 def realized_usd(row) -> float:
