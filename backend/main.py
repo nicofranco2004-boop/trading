@@ -14906,8 +14906,9 @@ def _foto_contable(conn, uid: int) -> dict:
     —producción— el turno es uno para toda la base: todo lo que escriba las
     cuentas (otro borrado, un import, un depósito) terminó antes de esta lectura o
     espera a que la puerta confirme. En Postgres sólo traba la fila del usuario:
-    pone en fila a las puertas de borrado entre sí (y al login de ese usuario por
-    esos milisegundos), pero un import o un depósito pasan igual; si Postgres se
+    pone en fila a las puertas de borrado entre sí (y al login de ese usuario
+    mientras dura la puerta: de decenas de milisegundos a un par de segundos en una
+    cuenta con miles de imports), pero un import o un depósito pasan igual; si Postgres se
     prende, hace falta un turno por usuario que tomen todos los que escriben las
     cuentas (`pg_advisory_xact_lock`).
 
@@ -14918,9 +14919,14 @@ def _foto_contable(conn, uid: int) -> dict:
     desde la pestaña Global— se le adjudicaba al borrado: borrar un dividendo
     después de editar febrero le sumaba 10.000 a 59 fotos. Se recompone dentro de
     un punto de guardado que se deshace enseguida: no queda escrito nada. Si el
-    recálculo falla, se lee como está (lo de antes)."""
+    recálculo falla, se lee como está (lo de antes).
+
+    También devuelve las cuentas TAL CUAL (`tal_cual`): las fotos diarias del cron y
+    del Dashboard se estampan con ésas, así que para decidir si una foto diaria
+    tenía lo borrado hay que mirarlas también (`_cambio_de_aportado`, B.1)."""
     _tomar_turno(conn, uid)
     import twr as _twr
+    tal_cual = _twr.netdep_canonico(conn, uid)
     conn.execute("SAVEPOINT foto_contable")
     try:
         try:
@@ -14933,7 +14939,7 @@ def _foto_contable(conn, uid: int) -> dict:
     finally:
         conn.execute("ROLLBACK TO SAVEPOINT foto_contable")
         conn.execute("RELEASE SAVEPOINT foto_contable")
-    return {"canon": canon}
+    return {"canon": canon, "tal_cual": tal_cual}
 
 
 def _tomar_turno(conn, uid: int) -> None:
@@ -15147,7 +15153,11 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
             importado que entró a las fotos DESPUÉS de ese cierre (un resumen
             importado tarde también le "falta", y no es lo borrado). La foto de hoy
             no cuenta como cierre: suele ser la del navegador sacada antes de un
-            import, y se borra igual. Si ningún cierre lo tuvo, no se toca nada.
+            import, y se borra igual. Un cierre reconstruido no prueba nada de las
+            fotos diarias (lo reescribe cada import): la prueba es la última foto
+            diaria del mes, comparada con las cuentas recompuestas Y tal cual. Si
+            ningún cierre lo tuvo, no se toca nada; si sólo lo tuvo un cierre
+            reconstruido, se corrige sólo ése.
          2. En ese mes, desde la fecha de lo borrado, la primera foto cuyo aportado
             saltó exactamente ese monto — salvo los saltos que explica un
             movimiento importado que entró a las fotos ese día.
@@ -15190,6 +15200,10 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
       además otro flujo que no es un import (un depósito a mano), la siguiente no
       muestra el salto limpio y esa foto queda con lo borrado (1 foto; re-anclar
       daba 0 en ese caso puntual y 5 o más en el resto de los de esta regla).
+    · B: una fila 'global' agregada a mano en /mensual EL MISMO DÍA del borrado, con
+      depósitos de al menos lo borrado, hace parecer que las fotos diarias lo
+      tenían (medido: 15 fotos; re-anclar daba 4). Es el costo de mirar también
+      las cuentas tal cual, que resuelve el caso común de un /mensual editado antes.
     · Esos tres re-estampadores siguen re-anclando
       (`_recompute_snapshots_netdep_for_user`): corridos con un flujo que la
       última foto del mes no vio, ese mes vuelve a quedar plano.
@@ -15337,16 +15351,31 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
         m0 = cambiados[0]
         objetivo = -delta[m0]   # cuánto se movió el aportado el día que lo borrado entró
 
+        # Una foto DIARIA se estampó con las cuentas tal como estaban, que pueden
+        # diferir de las recompuestas (un renglón de /mensual editado a mano sin
+        # recalcular): "no lo tenía" si lo dice cualquiera de las dos lecturas. Un
+        # cierre reconstruido se estampa justo después de un recálculo: sólo con la
+        # recompuesta. (Con una sola, un desfase de US$ 20 hacía creer que un mes
+        # entero tenía lo borrado: 54 fotos.)
+        c_tal = (antes or {}).get("tal_cual") or c0
+
         def _no_lo_tenia(f, ym):
             dc = str(f["date"])[:10]
-            falta = c0(f"{ym}-01") - _entro_despues(dc, ym) - float(f["net_deposited"])
-            return (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
+
+            def _con(c):
+                falta = c(f"{ym}-01") - _entro_despues(dc, ym) - float(f["net_deposited"])
+                return (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
+            if (f["source"] or "") == "mtm_backfill":
+                return _con(c0)
+            return _con(c0) or _con(c_tal)
         # Un cierre RECONSTRUIDO (`mtm_backfill`) no prueba desde cuándo lo tenían las
         # fotos diarias: cualquier import posterior lo reescribe con todo lo cargado
         # (un depósito a mano de diciembre cargado en marzo hacía restar desde enero:
         # 63 fotos). La prueba es la última foto diaria del mes; un cierre
-        # reconstruido que lo tiene se corrige sólo él (como en A). Sin ninguna foto
-        # diaria que lo tenga, se vuelve a la regla de siempre.
+        # reconstruido que lo tiene se corrige sólo él (como en A). Y si NINGUNA foto
+        # diaria lo tuvo (cargado hoy y borrado enseguida, con un import en el medio
+        # que reescribió el cierre), se corrigen sólo esos cierres: tomar el primero
+        # como punto de partida le restaba lo borrado a 78 fotos diarias.
         m_visto, reconstruidos = None, []
         for ym in meses:
             if ym < m0 or ym not in cierre:
@@ -15360,8 +15389,9 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
                 continue
             m_visto = ym
             break
+        solo_cierres = None
         if m_visto is None and reconstruidos:
-            m_visto, reconstruidos = reconstruidos[0], []
+            solo_cierres, m_visto = set(reconstruidos), reconstruidos[0]
         if m_visto is None:
             return [], None
         ini = max(desde, f"{m_visto}-01")
@@ -15379,6 +15409,8 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
         if inicio is None:
             inicio, corredor_en = ini, m_visto
         previos = {ym for ym in reconstruidos if ym < m_visto}
+        if solo_cierres is not None:
+            inicio, corredor_en, previos = "9999-12-31", None, solo_cierres
 
     brutos1 = _twr.flujos_brutos_por_mes(conn, uid) if corredor_en else {}
     cambios, hechos = [], {}
@@ -17307,7 +17339,6 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     import json as _json
     import secrets as _secrets
 
-    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
     op = conn.execute(
         "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
     ).fetchone()
@@ -17320,8 +17351,13 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     ).fetchone()
     if not link:
         # Cargada a mano: la reversa sale de su propia foto (`undo_meta_json`), no del
-        # rebuild — el rebuild solo re-deriva lo importado.
+        # rebuild — el rebuild solo re-deriva lo importado. Esa puerta saca su
+        # propia foto de las cuentas al entrar.
         return _delete_manual_operation_cascade(conn, uid, oid)
+    # La foto de las cuentas, antes de tocar nada (hasta acá sólo se leyó). Recién
+    # acá y no al entrar: sacarla también para las manuales era un recálculo entero
+    # de más con el turno tomado (2,5 s en una cuenta con miles de imports).
+    antes = _foto_contable(conn, uid)
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(

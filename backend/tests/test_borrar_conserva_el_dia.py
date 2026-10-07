@@ -1583,6 +1583,135 @@ class BorrarConservaElDia(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self._assert_dia_conservado("dividendo con febrero borrado del resumen")
 
+    # ── 15. sexta auditoría ──────────────────────────────────────────────────
+    def _editar_mensual(self, broker: str, anio: int, mes: int, **cambios) -> None:
+        """Edita un renglón del resumen mensual por la puerta de la app (el lápiz de
+        /mensual): `PUT /api/monthly/{id}` escribe ese renglón y NO recalcula ni
+        propaga a 'global' — las cuentas quedan desfasadas de sus fuentes."""
+        fila = dict(self.conn.execute(
+            "SELECT * FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
+            (self.uid, broker, anio, mes)).fetchone())
+        body = {k: fila[k] or 0 for k in ("year", "month", "deposits", "withdrawals",
+                                          "pnl_realized", "pnl_unrealized", "capital_inicio",
+                                          "capital_final")}
+        body["broker"] = broker
+        body.update(cambios)
+        r = self.client.put(f"/api/monthly/{fila['id']}", json=body)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def _desfase_de(self, monto: float) -> None:
+        """Un depósito a mano de `monto` el 10-ene (las fotos lo tienen) que después se
+        saca desde /mensual: 'global' no se entera, así que las cuentas tal cual (y las
+        fotos) lo siguen teniendo y recompuestas no."""
+        self._depositar_a_mano("2026-01-10", monto)
+        self._subir("2026-01-10", "2026-03-31", monto)
+        self._editar_mensual(self.BROKER, 2026, 1, deposits=0)
+
+    def test_resumen_mensual_desfasado_y_borrar_algo_a_mano_con_fecha_vieja(self):
+        """Con /mensual desfasado en 500, se borra un depósito a mano fechado 15-dic y
+        cargado el 5-mar: lo pierden sólo las fotos desde el 5-mar. (Comparando las
+        fotos diarias sólo con las cuentas recompuestas, febrero entero "lo tenía":
+        54 fotos mal.)"""
+        self._desfase_de(500)
+        self._depositar_a_mano("2025-12-15", 3000)
+        self._subir("2026-03-05", "2026-03-31", 3000)
+        r = self.client.delete(f"/api/movements/{self._me_dep_de(2025, 12)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("desfase de 500 + borrar el a mano de diciembre",
+                                    self._con({"2026-01-10": 500}))
+
+    def test_un_desfase_de_centavos_y_una_posicion_a_mano_con_fecha_vieja(self):
+        """Un desfase de apenas US$ 20 alcanzaba. Posición a mano fechada 15-dic,
+        cargada el 5-mar: borrarla y deshacer."""
+        self._desfase_de(20)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        r = self.client.post("/api/positions", json={
+            "broker": "MANUAL", "asset": "KO", "buy_price": 50, "quantity": 40,
+            "invested": 2000, "entry_date": "2025-12-15"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._subir("2026-03-05", "2026-03-31", 2000)
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND broker='MANUAL' AND asset='KO'",
+            (self.uid,)).fetchone()["id"]
+        r = self.client.delete(f"/api/positions/{pid}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("desfase de 20 + borrar la posición",
+                                    self._con({"2026-01-10": 20}))
+        r = self.client.post(f"/api/operations/undo/{r.json()['undo_token']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("deshacerla", self._con({"2026-01-10": 20, "2026-03-05": 2000}))
+
+    def test_cargado_hoy_y_borrado_hoy_con_el_cierre_reescrito(self):
+        """Hoy 20-mar se carga a mano un depósito fechado 15-dic; un import de hoy
+        reescribe el cierre reconstruido de diciembre con él; se borra hoy mismo.
+        Ninguna foto diaria lo tuvo: sólo el cierre (antes: 78 fotos mal)."""
+        hoy = "2026-03-20"
+        self._hasta_hoy(hoy, con_foto_de_hoy=True)
+        self._depositar_a_mano("2025-12-15", 3000)
+        self._cierre_reconstruido("2025-12-31", 103000)
+        with mock.patch.object(main, "_iso_today", return_value=hoy):
+            r = self.client.delete(f"/api/movements/{self._me_dep_de(2025, 12)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        dic = self.conn.execute("SELECT net_deposited FROM snapshots WHERE user_id=? "
+                                "AND date='2025-12-31'", (self.uid,)).fetchone()
+        self.assertAlmostEqual(dic["net_deposited"], 100000.0, places=2)
+        self._assert_dia_conservado("cargado y borrado hoy", self._con({}, hasta=hoy))
+
+    def test_posicion_cargada_hoy_y_borrada_hoy_con_el_cierre_reescrito(self):
+        """Lo mismo con una posición a mano (el caso típico del alta de una cuenta), y
+        su deshacer devuelve exactamente lo que sacó."""
+        hoy = "2026-03-20"
+        self._hasta_hoy(hoy, con_foto_de_hoy=True)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        with mock.patch.object(main, "_iso_today", return_value=hoy):
+            r = self.client.post("/api/positions", json={
+                "broker": "MANUAL", "asset": "KO", "buy_price": 50, "quantity": 40,
+                "invested": 2000, "entry_date": "2025-12-15"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self._cierre_reconstruido("2025-12-31", 102000)
+            pid = self.conn.execute(
+                "SELECT id FROM positions WHERE user_id=? AND broker='MANUAL' AND asset='KO'",
+                (self.uid,)).fetchone()["id"]
+            r = self.client.delete(f"/api/positions/{pid}")
+            self.assertEqual(r.status_code, 200, r.text)
+            dic = self.conn.execute("SELECT net_deposited FROM snapshots WHERE user_id=? "
+                                    "AND date='2025-12-31'", (self.uid,)).fetchone()
+            self.assertAlmostEqual(dic["net_deposited"], 100000.0, places=2)
+            self._assert_dia_conservado("posición cargada y borrada hoy", self._con({}, hasta=hoy))
+            r = self.client.post(f"/api/operations/undo/{r.json()['undo_token']}")
+            self.assertEqual(r.status_code, 200, r.text)
+        dic = self.conn.execute("SELECT net_deposited FROM snapshots WHERE user_id=? "
+                                "AND date='2025-12-31'", (self.uid,)).fetchone()
+        self.assertAlmostEqual(dic["net_deposited"], 102000.0, places=2)
+        self._assert_dia_conservado("deshacerla", self._con({}, hasta=hoy))
+
+    def test_la_prueba_es_la_ultima_foto_diaria_del_mes(self):
+        """Depósito a mano fechado 10-feb y cargado el 22-feb (las fotos lo tienen desde
+        el 22), y el cierre de febrero reconstruido. La foto diaria que prueba si el
+        mes lo tenía es la ÚLTIMA (con la primera, del 1-feb, el mes "no lo tenía" y
+        del 22 al 27 se quedaban con lo borrado)."""
+        self._depositar_a_mano("2026-02-10", 3000)
+        self._subir("2026-02-22", "2026-03-31", 3000)
+        self._cierre_reconstruido("2026-02-28", 113000)
+        r = self.client.delete(f"/api/movements/{self._me_dep_de(2026, 2)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("a mano de febrero, cierre reconstruido")
+
+    def test_el_resumen_global_editado_y_despues_borrar_algo_a_mano(self):
+        """Febrero de la pestaña Global editado a mano (depósitos en 0): las fotos se
+        siguen sacando con esas cuentas. Después se borra un depósito a mano del
+        5-mar: lo pierden sólo las fotos desde el 5 (antes quedaban 27 con él)."""
+        self._editar_mensual("global", 2026, 2, deposits=0)
+        self._depositar_a_mano("2026-03-05", 3000)
+        self._subir("2026-03-05", "2026-03-31", 3000)
+        r = self.client.delete(f"/api/movements/{self._me_dep_de(2026, 3)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("global de febrero editado + borrar el a mano de marzo")
+
     # ── 7. sin fecha de arranque no se re-estampa nada ───────────────────────
     def test_sin_fecha_de_arranque_no_reescribe_nada(self):
         """Cuatro cascadas pasan `since_date=None` cuando la fila no tiene fecha. Hoy
