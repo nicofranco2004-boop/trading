@@ -8,9 +8,10 @@
 
 import {
   ArrowUpRight, ArrowDownRight, ArrowDownToLine, ArrowUpFromLine,
-  Coins, Receipt, SlidersHorizontal,
+  ArrowLeftRight, Coins, Receipt, SlidersHorizontal,
 } from 'lucide-react'
 import { LOCALE } from '../../utils/format'
+import { esConversion } from '../../utils/tradeStats'
 
 // ─── Tipos de movimiento ───────────────────────────────────────────────────
 // UN solo mapa. Antes eran dos (`TYPE_META` desktop / `MOVE_TYPE_META` mobile)
@@ -38,6 +39,13 @@ export const TYPE_META = {
   INTEREST: { label: 'Interés',    Icon: Coins,            color: 'text-rendi-pos',    tone: 'pos' },
   FEE:      { label: 'Comisión',   Icon: Receipt,          color: 'text-ink-3',        tone: 'neg' },
   IMPUESTO: { label: 'Impuesto',   Icon: Receipt,          color: 'text-ink-3',        tone: 'neg' },
+  // Conversiones de moneda. No son compra ni venta de un activo: el monto es la
+  // pata en DÓLARES y el backend las manda con su propio TC (`fx_to_usd`), así
+  // la vista en pesos muestra los pesos que se pagaron. Antes la del botón venía
+  // como SELL ("Venta … US$23.710.610") y la importada caía al rótulo crudo
+  // "FX_ARS_TO_USD". Ver `_movimiento_de_conversion` en main.py.
+  FX_ARS_TO_USD: { label: 'Compra de USD', Icon: ArrowLeftRight, color: 'text-ink-2', tone: null },
+  FX_USD_TO_ARS: { label: 'Venta de USD',  Icon: ArrowLeftRight, color: 'text-ink-2', tone: null },
 }
 
 // Clase del MONTO a partir del `tone`. Es lo que el desktop calculaba con
@@ -62,6 +70,8 @@ export const MOVEMENT_TYPES = [
   { id: 'DIVIDEND', label: 'Dividendos',   icon: Coins,             tone: 'pos' },
   { id: 'INTEREST', label: 'Intereses',    icon: Coins,             tone: 'pos' },
   { id: 'FEE',      label: 'Comisiones',   icon: Receipt,           tone: 'neg' },
+  { id: 'FX_ARS_TO_USD', label: 'Compras de USD', icon: ArrowLeftRight },
+  { id: 'FX_USD_TO_ARS', label: 'Ventas de USD',  icon: ArrowLeftRight },
 ]
 
 // ─── Etiquetas ─────────────────────────────────────────────────────────────
@@ -71,8 +81,14 @@ export const MESES_ES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago',
 export function prettyOpType(raw) {
   if (!raw) return '—'
   const s = String(raw).trim()
-  if (s.startsWith('CONVERSION IMPORT ARS→USDT') || s.startsWith('CONVERSION IMPORT ARS→USD')) return 'Conversión ARS→USD'
-  if (s.startsWith('CONVERSION IMPORT USDT→ARS') || s.startsWith('CONVERSION IMPORT USD→ARS')) return 'Conversión USD→ARS'
+  // Todas las conversiones, no sólo las importadas: las del botón
+  // ("CONVERSION MEP ARS→USDT", también CCL/USDT/Otro) salían con el código
+  // crudo. "Conversión X→Y" y NO "Compra de USD" como en Movimientos: en esta
+  // tabla la columna Cant. es la `quantity` cruda, que en una conversión es la
+  // moneda que SALE (15.400 pesos en una compra de US$10). "Compra de USD ·
+  // 15400" se leía como quince mil dólares; "Conversión ARS→USD · 15400" dice
+  // lo que pasó. En Movimientos la cantidad ya viene en dólares.
+  if (esConversion(s)) return s.includes('ARS→') ? 'Conversión ARS→USD' : 'Conversión USD→ARS'
   return s
 }
 

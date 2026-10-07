@@ -36,7 +36,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import AnalyzeButton from '../components/ai/AnalyzeButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
-import { computeTradeStats } from '../utils/tradeStats'
+import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { opPnlUsd } from '../utils/assetPnl'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
@@ -330,57 +330,16 @@ export default function Operations() {
   // incluidas), así que el mismo usuario veía 93% acá, 100% en mobile y 85% en
   // sus reportes. Ahora las tres dicen lo mismo.
   const { trades, wins, losses, winRate } = useMemo(() => computeTradeStats(ops), [ops])
-  // Mejor trade: guardamos la OP entera (no el escalar) para formatearla con SU FX
-  // histórico. El máximo se elige sobre el valor que se VA A MOSTRAR: en pesos el
-  // ranking puede diferir del ranking en USD (un trade viejo con dólar barato
-  // rinde menos pesos que uno nuevo con el mismo USD) → si eligiéramos por USD, el
-  // "Mejor trade" podía quedar por debajo de una fila visible de la tabla.
-  // El viejo `Math.max(..., o.pnl_usd || 0)` además mapeaba null→0 y con todas las
-  // ops en pérdida mostraba "$0" (un trade inexistente).
-  const bestTradeOp = useMemo(() => {
-    let best = null, bestVal = -Infinity
-    for (const o of ops) {
-      if (o.pnl_usd == null || !Number.isFinite(o.pnl_usd)) continue
-      const v = histMoney.convertedValue(o.pnl_usd, {
-        stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
-      })
-      if (v != null && v > bestVal) { bestVal = v; best = o }
-    }
-    return best
-  }, [ops, histMoney.currency, histMoney.fxKey])
-
-  // Patrones derivados de las operaciones — observaciones escaneables arriba de
-  // la tabla. Cálculo inline (diagnostics.js espera el objeto `data` completo
-  // del portfolio + rotación por severidad — overkill para 1-2 líneas fijas).
-  const patterns = useMemo(() => {
-    if (ops.length < 3) return []
-    const out = []
-
-    // (1) Activo más operado (cualquier op_type). Solo si hay líder claro.
-    const countByAsset = {}
-    for (const o of ops) {
-      const a = (o.asset || '').trim()
-      if (!a) continue
-      countByAsset[a] = (countByAsset[a] || 0) + 1
-    }
-    const ranked = Object.entries(countByAsset).sort((a, b) => b[1] - a[1])
-    if (ranked.length > 0 && ranked[0][1] >= 3 && (ranked.length === 1 || ranked[0][1] > ranked[1][1])) {
-      out.push({ key: 'most_traded', asset: ranked[0][0], count: ranked[0][1] })
-    }
-
-    // (2) Racha ganadora más larga (cronológica, pnl_usd > 0 consecutivos).
-    const chron = [...ops]
-      .filter(o => o.date && o.pnl_usd != null)
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-    let best = 0, cur = 0
-    for (const o of chron) {
-      if (o.pnl_usd > 0) { cur++; if (cur > best) best = cur }
-      else cur = 0
-    }
-    if (best >= 3) out.push({ key: 'win_streak', streak: best })
-
-    return out
-  }, [ops])
+  // Mejor trade y patrones: utils/tradeStats (`mejorTrade`, `patronesDeOperaciones`).
+  // El máximo se elige sobre el valor que se VA A MOSTRAR (cada trade con SU FX
+  // histórico): en pesos el ranking puede diferir del de USD.
+  const bestTradeOp = useMemo(
+    () => mejorTrade(ops, o => histMoney.convertedValue(o.pnl_usd, {
+      stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
+    })),
+    [ops, histMoney.currency, histMoney.fxKey],
+  )
+  const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
   const periodOptions = useMemo(() => buildPeriodOptions(ops), [ops])
 
   const filteredOps = useMemo(() => {
@@ -556,7 +515,7 @@ export default function Operations() {
           )}
           <KpiCell
             label="Operaciones"
-            value={ops.length.toLocaleString('es-AR')}
+            value={ops.filter(o => !esConversion(o.op_type)).length.toLocaleString('es-AR')}
             sub="total cerradas"
           />
           <KpiCell

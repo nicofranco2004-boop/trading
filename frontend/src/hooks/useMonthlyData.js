@@ -39,6 +39,7 @@ import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry, buildPriceSymbols } from '../utils/valuation'
 import { computeBestWorstClosedOp, monthlyReturnArs } from '../utils/insightsModel'
 import { esApto, esDibujable, baseIncomparable, esBordeFresco } from '../utils/evolution'
+import { esConversion } from '../utils/tradeStats'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -49,7 +50,7 @@ function isTradeOp(op) {
   const t = (op.op_type || '').trim()
   if (!t) return false
   if (t === 'Dividendo' || t === 'Interés' || t === 'Compra') return false
-  if (t.startsWith('CONVERSION') || t.startsWith('Conversión')) return false
+  if (esConversion(t)) return false
   return true
 }
 

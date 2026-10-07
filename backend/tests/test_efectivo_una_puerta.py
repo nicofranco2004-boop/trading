@@ -270,5 +270,126 @@ class ElTipoDeCambioDeLosDolaresImportados(_Base):
         self.assertAlmostEqual(float(caja["tc_compra"]), 1000, places=4)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+class ElEfectivoNoEsUnaPosicion(_Base):
+    """El saldo no se cambia por las rutas de las posiciones comunes. "Editar
+    posición" sobre la fila de efectivo escribía el número sin anotar el aporte:
+    de 1.000 a 5.000 aparecía como 4.000 de ganancia que no existe (verificado en
+    una base de prueba el 2026-10-07). Y "Eliminar" nunca funcionó: respondía un
+    error que no correspondía."""
+
+    def _caja_id(self, broker):
+        conn = main.get_db()
+        r = conn.execute("SELECT id FROM positions WHERE user_id=? AND broker=? AND is_cash=1",
+                         (self.uid, broker)).fetchone()
+        conn.close()
+        return r["id"]
+
+    def _aportado(self):
+        conn = main.get_db()
+        r = conn.execute("SELECT COALESCE(SUM(deposits),0) - COALESCE(SUM(withdrawals),0) a "
+                         "FROM monthly_entries WHERE user_id=? AND broker='global'",
+                         (self.uid,)).fetchone()
+        conn.close()
+        return float(r["a"] or 0)
+
+    def test_editar_el_saldo_como_posicion_rebota_y_no_toca_nada(self):
+        self.usuario([("Schwab", "USD", None)])
+        self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "Schwab", "direction": "deposit", "amount": 1000})
+        pid = self._caja_id("Schwab")
+        r = self.client.put(f"/api/positions/{pid}", headers=self.h, json={
+            "broker": "Schwab", "asset": "USD", "is_cash": True, "invested": 5000})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("Depositar o Retirar", r.text)
+        self.assertAlmostEqual(self.saldo("Schwab"), 1000, places=2)
+        self.assertAlmostEqual(self._aportado(), 1000, places=2)
+
+    def test_editar_ni_siquiera_con_el_tilde_de_efectivo_apagado(self):
+        """El que manda es lo que la fila ES en la base, no lo que dice el pedido."""
+        self.usuario([("Schwab", "USD", 1000.0)])
+        r = self.client.put(f"/api/positions/{self._caja_id('Schwab')}", headers=self.h,
+                            json={"broker": "Schwab", "asset": "USD", "is_cash": False,
+                                  "invested": 5000, "quantity": 1, "buy_price": 5000})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertAlmostEqual(self.saldo("Schwab"), 1000, places=2)
+
+    def test_un_lote_no_se_convierte_en_efectivo(self):
+        self.usuario([("Schwab", "USD", 0.0)])
+        conn = main.get_db()
+        pid = conn.execute("""INSERT INTO positions (user_id, broker, asset, is_cash, quantity,
+                                buy_price, invested) VALUES (?, 'Schwab', 'AAPL', 0, 10, 100, 1000)""",
+                           (self.uid,)).lastrowid
+        conn.commit()
+        conn.close()
+        r = self.client.put(f"/api/positions/{pid}", headers=self.h, json={
+            "broker": "Schwab", "asset": "AAPL", "is_cash": True, "invested": 1000})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(len(self.cajas("Schwab")), 1, "el lote pasó a ser una segunda caja")
+
+    def test_cargar_una_caja_como_posicion_rebota(self):
+        self.usuario([("Schwab", "USD", None)])
+        r = self.client.post("/api/positions", headers=self.h, json={
+            "broker": "Schwab", "asset": "USD", "is_cash": True, "invested": 500})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(self.cajas("Schwab"), [])
+        self.assertAlmostEqual(self._aportado(), 0, places=2)
+
+    def test_borrar_la_caja_rebota_con_un_mensaje_que_dice_que_hacer(self):
+        self.usuario([("Schwab", "USD", 1000.0)])
+        r = self.client.delete(f"/api/positions/{self._caja_id('Schwab')}", headers=self.h)
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("Retirar", r.text)
+        self.assertAlmostEqual(self.saldo("Schwab"), 1000, places=2)
+
+    def test_editar_y_borrar_una_tenencia_sigue_funcionando(self):
+        """El rechazo es sólo para el efectivo."""
+        self.usuario([("Schwab", "USD", 10_000.0)])
+        r = self.client.post("/api/positions", headers=self.h, json={
+            "broker": "Schwab", "asset": "AAPL", "quantity": 10, "buy_price": 100,
+            "invested": 1000, "entry_date": "2026-01-15"})
+        self.assertEqual(r.status_code, 200, r.text)
+        pid = r.json()["id"]
+        r = self.client.put(f"/api/positions/{pid}", headers=self.h, json={
+            "broker": "Schwab", "asset": "AAPL", "quantity": 10, "buy_price": 100,
+            "invested": 1000, "notes": "nota", "entry_date": "2026-01-15"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.delete(f"/api/positions/{pid}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertAlmostEqual(self.saldo("Schwab"), 10_000, places=2)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class LasCajasViejasSeRenombranAlArrancar(_Base):
+    """Las cajas 'USDT' que el importador creó para brokers en DÓLARES (35 en la
+    base de prod del 2026-08-16) se renombran a 'USD' en el arranque (init_db, el
+    mismo camino que corre producción al reiniciar). Sólo esas: un exchange y una
+    subcuenta en dólares de un broker en pesos siguen con 'USDT', y la plata no
+    se toca."""
+
+    def test_al_arrancar_quedan_USD_y_lo_demas_no_se_toca(self):
+        self.usuario([("Schwab", "USD", None), ("Binance", "USDT", None),
+                      ("Balanz", "ARS", 500_000.0)])
+        conn = main.get_db()
+        conn.execute("INSERT INTO brokers (user_id, name, currency, parent_broker_id) "
+                     "SELECT ?, 'Balanz · USD', 'USDT', id FROM brokers WHERE user_id=? "
+                     "AND name='Balanz'", (self.uid, self.uid))
+        for broker, saldo in (("Schwab", 1234.5), ("Binance", 300.0), ("Balanz · USD", 80.0)):
+            conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested) "
+                         "VALUES (?,?,'USDT',1,?)", (self.uid, broker, saldo))
+        conn.commit()
+        conn.close()
+
+        main.init_db()
+        main.init_db()      # idempotente: la segunda pasada no encuentra nada
+
+        self.assertEqual([(c["asset"], c["invested"]) for c in self.cajas("Schwab")],
+                         [("USD", 1234.5)])
+        self.assertEqual([c["asset"] for c in self.cajas("Binance")], ["USDT"])
+        self.assertEqual([c["asset"] for c in self.cajas("Balanz · USD")], ["USDT"])
+        self.assertEqual([(c["asset"], c["invested"]) for c in self.cajas("Balanz")],
+                         [("ARS", 500_000.0)])
+
+
 if __name__ == "__main__":
     unittest.main()

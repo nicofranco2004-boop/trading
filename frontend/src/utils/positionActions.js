@@ -101,6 +101,12 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
   }
 
   // ── Efectivo ───────────────────────────────────────────────────────────
+  // Sin "Editar posición" ni "Eliminar" (2026-10-07): editar escribía el saldo sin
+  // anotar el aporte —corregirlo de 1.000 a 5.000 aparecía como 4.000 de ganancia
+  // que no existe— y borrar nunca funcionó (respondía un error que no
+  // correspondía). El saldo se mueve con Depositar/Retirar, que lo anotan como
+  // aporte o retiro; el servidor rechaza las otras dos (main.py,
+  // _EFECTIVO_NO_SE_EDITA / _EFECTIVO_NO_SE_BORRA).
   if (p.is_cash) {
     const esCashArs = broker?.currency === 'ARS'
     const esCashUsdSubBroker = broker?.currency === 'USDT' && broker?.parent_broker_id != null
@@ -115,9 +121,6 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
         id: 'to-ars', label: 'Vender USD a ARS', icon: DollarSign, tone: 'accent',
         onClick: () => onConvert(p, 'usd_to_ars'),
       },
-      { divider: true },
-      onEdit   && { id: 'edit',   label: 'Editar posición', icon: Pencil, tone: 'accent', onClick: () => onEdit(p) },
-      onDelete && { id: 'delete', label: 'Eliminar',        icon: Trash2, tone: 'neg', danger: true, onClick: () => onDelete(p) },
     ])
   }
 

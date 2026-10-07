@@ -39,6 +39,7 @@ from typing import Dict, Any
 import json
 
 from behavioral import _native_ccy, es_bono_o_letra
+from realized_pnl import es_conversion
 
 
 def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = None) -> float:
@@ -93,9 +94,7 @@ def _is_trade_op(op_type) -> bool:
         return False
     if t in ("Compra", "Dividendo", "Interés"):
         return False
-    if t.startswith("CONVERSION") or t.startswith("Conversión"):
-        return False
-    return True
+    return not es_conversion(t)
 
 
 _CARD_TITLES = {
