@@ -16,7 +16,8 @@ import { Trash2, RotateCcw, Repeat } from 'lucide-react'
 import { TYPE_META, DELETABLE_MOVEMENT_TYPES, amountClassFor } from './shared'
 
 // `nuevas`: ids de los movimientos recién agregados; esa tarjeta destella.
-export default function MovementsFeed({ groups, histMoney, onDelete, deletingId, nuevas = new Set() }) {
+// `borrando(clave)`: ¿ese borrado está viajando? Apaga el tacho (Operations).
+export default function MovementsFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set() }) {
   return (
     <ul className="pt-1">
       {groups.map(g => (
@@ -32,7 +33,7 @@ export default function MovementsFeed({ groups, histMoney, onDelete, deletingId,
                 nueva={nuevas.has(m.id)}
                 histMoney={histMoney}
                 onDelete={onDelete}
-                deleting={deletingId === m.id}
+                deleting={borrando(`mov-${m.id}`)}
               />
             ))}
           </ul>

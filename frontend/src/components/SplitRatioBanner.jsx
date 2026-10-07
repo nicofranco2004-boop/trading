@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, Loader2, X } from 'lucide-react'
 import Modal from './Modal'
 import { api } from '../utils/api'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })
 const baseTicker = (a) => (a || '').replace(/\.BA$/i, '')
@@ -17,7 +18,10 @@ export default function SplitRatioBanner({ onAdjusted }) {
   const [suggestions, setSuggestions] = useState([])
   const [dismissed, setDismissed] = useState(false)
   const [active, setActive] = useState(null) // suggestion en confirmación
-  const [busy, setBusy] = useState(false)
+  // Freno del doble click, el mismo de todos los botones (hooks/useEnVuelo). El
+  // servidor ya ignora un segundo ajuste del mismo split; esto evita mandarlo.
+  const enVuelo = useEnVuelo()
+  const busy = enVuelo.activo()
   const [err, setErr] = useState(null)
 
   useEffect(() => {
@@ -30,9 +34,10 @@ export default function SplitRatioBanner({ onAdjusted }) {
 
   if (dismissed || suggestions.length === 0) return null
 
-  async function confirmAdjust() {
+  const confirmAdjust = () => enVuelo.correr(ajustar)
+  async function ajustar() {
     if (!active) return
-    setBusy(true); setErr(null)
+    setErr(null)
     try {
       // Sin body: el server re-deriva el split (no confía en factor/ex_date del cliente).
       await api.post(`/positions/${active.pid}/adjust-ratio`)
@@ -42,8 +47,6 @@ export default function SplitRatioBanner({ onAdjusted }) {
       onAdjusted?.()
     } catch (e) {
       setErr(e?.message || 'No pudimos ajustar la posición. Reintentá.')
-    } finally {
-      setBusy(false)
     }
   }
 

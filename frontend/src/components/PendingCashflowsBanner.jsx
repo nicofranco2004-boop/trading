@@ -25,7 +25,7 @@ export default function PendingCashflowsBanner({
   pending,           // resultado de detectPendingCashflows
   onConfirm,         // (item) => void — abre el modal pre-llenado ("Revisar")
   onConfirmDirect,   // (item) => void — registra directo el monto teórico
-  confirmingKey,     // key del item que se está registrando (spinner)
+  confirmando = () => false,  // (key) => bool — ¿ese item se está registrando? (spinner)
   onSkip,            // (item) => void — POST /skip
   brokers,
 }) {
@@ -69,7 +69,7 @@ export default function PendingCashflowsBanner({
             key={item.key}
             item={item}
             broker={brokers?.find(b => b.name === item.broker)}
-            confirming={confirmingKey === item.key}
+            confirming={confirmando(item.key)}
             onConfirm={() => onConfirm(item)}
             onConfirmDirect={onConfirmDirect ? () => onConfirmDirect(item) : null}
             onSkip={() => onSkip(item)}

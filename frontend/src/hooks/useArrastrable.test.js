@@ -59,9 +59,22 @@ describe('mover la isla con el dedo', () => {
     // faltaba algo que estaba ahí—. Un guard atado a un largo fijo vigila el
     // formato, no la decisión.
     const desde = fuente.indexOf('const alApretar')
-    const apretar = fuente.slice(desde, fuente.indexOf('const alMover', desde))
+    const apretar = fuente.slice(desde, fuente.indexOf('// Si la isla se desmonta', desde))
     expect(desde).toBeGreaterThan(0)
     expect(apretar).toMatch(/arrastroRef\.current = false/)
+  })
+
+  it('apretar NO agarra el puntero: si no, el clic del mouse no le llega al botón', () => {
+    // 🔴 2026-10-07: con el mouse la burbuja no abría (con el dedo sí). Agarrar
+    // el puntero al apretar manda el clic al contenedor y no al botón. El
+    // comportamiento se prueba montando la isla en
+    // components/voz/islaConMouse.test.js; esto sólo avisa rápido si alguien
+    // vuelve a poner la captura en `alApretar`.
+    const desde = fuente.indexOf('const alApretar')
+    const apretar = fuente.slice(desde, fuente.indexOf('// Si la isla se desmonta', desde))
+    expect(desde).toBeGreaterThan(0)
+    expect(apretar).not.toMatch(/setPointerCapture/)
+    expect(apretar).toMatch(/window\.addEventListener\('pointerup'/)
   })
 
   it('no se puede ir de la pantalla, ni al soltar ni al cambiar de tamaño', () => {
