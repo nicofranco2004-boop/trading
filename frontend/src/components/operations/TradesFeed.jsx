@@ -24,17 +24,18 @@ import { formatQty } from './shared'
 // `nuevas`: ids de las operaciones recién cargadas (Operations): esa tarjeta
 // destella al aparecer. Acá los grupos son por día y están siempre abiertos,
 // así que la nueva siempre queda a la vista.
-export default function TradesFeed({ groups, histMoney, onDelete, nuevas = new Set() }) {
+// `borrando(clave)`: ¿ese borrado está viajando? Apaga el tacho (Operations).
+export default function TradesFeed({ groups, histMoney, onDelete, borrando = () => false, nuevas = new Set() }) {
   return (
     <ul>
       {groups.map(g => (
-        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} nuevas={nuevas} />
+        <DayGroup key={g.key} group={g} histMoney={histMoney} onDelete={onDelete} borrando={borrando} nuevas={nuevas} />
       ))}
     </ul>
   )
 }
 
-function DayGroup({ group, histMoney, onDelete, nuevas }) {
+function DayGroup({ group, histMoney, onDelete, borrando, nuevas }) {
   // El subtotal del DÍA se arma convirtiendo CADA op con SU FX y sumando eso
   // (convert-then-sum) — así coincide con las filas que despliega.
   // Antes tomaba el `fx_to_usd` de la PRIMERA op con fx>0 y lo aplicaba a todo
@@ -60,14 +61,14 @@ function DayGroup({ group, histMoney, onDelete, nuevas }) {
       </div>
       <ul>
         {ops.map(op => (
-          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} />
+          <OperationRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} />
         ))}
       </ul>
     </li>
   )
 }
 
-function OperationRow({ op, nueva = false, histMoney, onDelete }) {
+function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false }) {
   const isWin = op.pnl_usd != null && op.pnl_usd > 0
   const isLoss = op.pnl_usd != null && op.pnl_usd < 0
   const type = (op.op_type || '').toLowerCase()
@@ -125,8 +126,9 @@ function OperationRow({ op, nueva = false, histMoney, onDelete }) {
         <button
           type="button"
           onClick={() => onDelete(op)}
+          disabled={deleting}
           aria-label="Eliminar operación"
-          className="flex-shrink-0 -mr-1 p-1.5 text-ink-3 hover:text-rendi-neg transition-colors"
+          className="flex-shrink-0 -mr-1 p-1.5 text-ink-3 hover:text-rendi-neg transition-colors disabled:opacity-40 disabled:pointer-events-none"
         >
           <Trash2 size={15} strokeWidth={1.75} />
         </button>

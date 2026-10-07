@@ -7,6 +7,7 @@ import EmptyState from './EmptyState'
 import ShareCardModal from './ShareCardModal'
 import { usd, ars, pct, pctSigned, colorClass, MONTHS, parseNum, numToInput } from '../utils/format'
 import { api } from '../utils/api'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { lookupHistoricalDolar } from '../utils/fx'
@@ -66,7 +67,11 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const [form, setForm] = useState(EMPTY)
   const [closingEntry, setClosingEntry] = useState(null)
   const [autoCalc, setAutoCalc] = useState(true)
-  const [saving, setSaving] = useState(false)
+  // Freno del doble click (ver hooks/useEnVuelo). `saving` lo dibuja; el freno
+  // de verdad es la referencia, que corta el segundo click del mismo turno.
+  // El borrado de un mes usa el mismo, con el id del mes como clave.
+  const enVuelo = useEnVuelo()
+  const saving = enVuelo.activo()
   const [tcValuacion, setTcValuacion] = useState(1415)
   const [bench, setBench] = useState(null)
   // Por default mostramos TODO el historial. Razón: tras un import grande,
@@ -334,60 +339,56 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     }
   }
 
-  async function save() {
-    setSaving(true)
-    try {
-      if (modal === 'edit') {
-        await api.put(`/monthly/${form.id}`, { ...form, ...numsDe(form) })
+  const save = () => enVuelo.correr(guardar)
+  async function guardar() {
+    if (modal === 'edit') {
+      await api.put(`/monthly/${form.id}`, { ...form, ...numsDe(form) })
 
-      } else if (modal === 'next') {
-        const allBrokerNames = ['global', ...brokers.map(b => b.name)]
-        for (const brokerName of allBrokerNames) {
-          const brokerEntries = entries
-            .filter(e => e.broker === brokerName)
-            .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
-          const lastEnt = brokerEntries[brokerEntries.length - 1]
-          if (!lastEnt) continue
+    } else if (modal === 'next') {
+      const allBrokerNames = ['global', ...brokers.map(b => b.name)]
+      for (const brokerName of allBrokerNames) {
+        const brokerEntries = entries
+          .filter(e => e.broker === brokerName)
+          .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
+        const lastEnt = brokerEntries[brokerEntries.length - 1]
+        if (!lastEnt) continue
 
-          const { year: nextYear, month: nextMonth } = nextMonthOf(lastEnt)
-          const nextExists = entries.some(
-            e => e.broker === brokerName && e.year === nextYear && e.month === nextMonth
-          )
+        const { year: nextYear, month: nextMonth } = nextMonthOf(lastEnt)
+        const nextExists = entries.some(
+          e => e.broker === brokerName && e.year === nextYear && e.month === nextMonth
+        )
 
-          const cleanCapFinal = (lastEnt.capital_inicio || 0)
-            + (lastEnt.deposits || 0) - (lastEnt.withdrawals || 0)
-            + (lastEnt.pnl_realized || 0)
-          if (lastEnt.pnl_unrealized !== 0 || Math.abs((lastEnt.capital_final || 0) - cleanCapFinal) > 1e-4) {
-            await api.put(`/monthly/${lastEnt.id}`, { ...lastEnt, pnl_unrealized: 0, capital_final: cleanCapFinal })
-          }
-
-          if (!nextExists) {
-            const newEntry = brokerName === tab
-              ? { ...form, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
-              : { ...EMPTY, broker: brokerName, year: nextYear, month: nextMonth, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
-            await api.post('/monthly', newEntry)
-          }
+        const cleanCapFinal = (lastEnt.capital_inicio || 0)
+          + (lastEnt.deposits || 0) - (lastEnt.withdrawals || 0)
+          + (lastEnt.pnl_realized || 0)
+        if (lastEnt.pnl_unrealized !== 0 || Math.abs((lastEnt.capital_final || 0) - cleanCapFinal) > 1e-4) {
+          await api.put(`/monthly/${lastEnt.id}`, { ...lastEnt, pnl_unrealized: 0, capital_final: cleanCapFinal })
         }
 
-        await syncUnrealizedForAll()
-
-      } else {
-        await api.post('/monthly', { ...form, ...numsDe(form) })
+        if (!nextExists) {
+          const newEntry = brokerName === tab
+            ? { ...form, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
+            : { ...EMPTY, broker: brokerName, year: nextYear, month: nextMonth, capital_inicio: cleanCapFinal, capital_final: cleanCapFinal }
+          await api.post('/monthly', newEntry)
+        }
       }
 
-      setModal(null)
-      setClosingEntry(null)
-      await load()
-    } finally {
-      setSaving(false)
+      await syncUnrealizedForAll()
+
+    } else {
+      await api.post('/monthly', { ...form, ...numsDe(form) })
     }
+
+    setModal(null)
+    setClosingEntry(null)
+    await load()
   }
 
-  async function del(id) {
+  const del = (id) => enVuelo.correr(async () => {
     if (!confirm('¿Eliminar este registro mensual? La acción no se puede deshacer.')) return
     await api.delete(`/monthly/${id}`)
-    load()
-  }
+    await load()
+  }, `del-${id}`)
 
   // Phase 5 — totals are computed in DISPLAY units (ARS for ARS tabs, USD otherwise),
   // pre-converting each row via valueAt() so per-row + totals stay consistent. retCompound
@@ -640,7 +641,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                         <button onClick={() => openEdit(m)} className="text-ink-3 hover:text-ink-1 dark:hover:text-ink-0" title="Editar">
                           <Pencil size={13} />
                         </button>
-                        <button onClick={() => del(m.id)} className="text-ink-3 hover:text-red-500" title="Eliminar">
+                        <button onClick={() => del(m.id)} disabled={enVuelo.activo(`del-${m.id}`)} className="text-ink-3 hover:text-red-500 disabled:opacity-40" title="Eliminar">
                           <Trash2 size={13} />
                         </button>
                         {isCurrent && (

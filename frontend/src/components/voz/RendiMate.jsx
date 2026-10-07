@@ -206,9 +206,6 @@ export default function RendiMate() {
         data-tour="isla"
         style={{ ...islaEstilo, ...manija.style }}
         onPointerDown={manija.onPointerDown}
-        onPointerMove={manija.onPointerMove}
-        onPointerUp={manija.onPointerUp}
-        onPointerCancel={manija.onPointerCancel}
         onClickCapture={manija.onClickCapture}
         // En el celular arranca ABAJO A LA IZQUIERDA, sobre la barra de abajo
         // (80 px: la barra mide 56 y el "+" sobresale 16; a la derecha está

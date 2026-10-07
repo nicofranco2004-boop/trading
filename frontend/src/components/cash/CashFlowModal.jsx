@@ -19,15 +19,24 @@
 // El wrapper `Modal` ya resuelve la anchura: en escritorio dibuja el modal
 // centrado y en celular delega en BottomSheet. Por eso este componente no
 // mira `useIsMobile()` — no tiene por qué.
+//
+// El freno del doble click vive ACÁ y no en quien lo abre. Antes era una prop
+// `saving` que ninguna de las dos pantallas pasaba: el botón tenía el
+// `disabled={saving}` escrito y nunca se apagaba, así que un doble click
+// registraba dos depósitos. Con el freno adentro, una pantalla nueva que monte
+// el modal no tiene nada que recordar.
 
 import Modal from '../Modal'
+import { useEnVuelo } from '../../hooks/useEnVuelo'
 import DateInput from '../DateInput'
 import { usd, ars, parseNum } from '../../utils/format'
 import { hoyISO } from '../../utils/fecha'
 
 const inputClass = 'w-full bg-bg-2 border border-line-2 rounded px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
-export default function CashFlowModal({ form, setForm, tcValuacion, fxHist, onClose, onConfirm, saving = false }) {
+export default function CashFlowModal({ form, setForm, tcValuacion, fxHist, onClose, onConfirm }) {
+  const enVuelo = useEnVuelo()
+  const saving = enVuelo.activo()
   const esDeposito = form.direction === 'deposit'
   const monto = parseNum(form.amount) || 0
 
@@ -102,7 +111,7 @@ export default function CashFlowModal({ form, setForm, tcValuacion, fxHist, onCl
           </button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => enVuelo.correr(onConfirm)}
             disabled={saving || !(monto > 0)}
             className={`px-4 py-2 text-sm rounded font-medium text-white disabled:opacity-40 disabled:cursor-not-allowed transition ${
               esDeposito

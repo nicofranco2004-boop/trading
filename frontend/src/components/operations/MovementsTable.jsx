@@ -27,7 +27,7 @@ export default function MovementsTable({
   nuevas = new Set(),
   movements, filtered, pageRows, groups, grouped, groupBy,
   histMoney, currency, expandedGroups, onToggleGroup,
-  onDelete, onDeleteGroup, deletingId, busyGroup,
+  onDelete, onDeleteGroup, borrando = () => false,
   page, totalPages, onPage,
 }) {
   return (
@@ -56,7 +56,7 @@ export default function MovementsTable({
             </thead>
             <tbody>
               {!grouped && pageRows.map(m => (
-                <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} onDelete={onDelete} deleting={deletingId === m.id} />
+                <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} onDelete={onDelete} deleting={borrando(`mov-${m.id}`)} />
               ))}
               {grouped && groups.map(g => {
                 const isOpen = expandedGroups.has(g.key)
@@ -70,10 +70,10 @@ export default function MovementsTable({
                       onToggle={() => onToggleGroup(g.key)}
                       histMoney={histMoney}
                       onDeleteGroup={groupBy === 'asset' ? onDeleteGroup : null}
-                      deleting={!!busyGroup[g.key]}
+                      deleting={borrando(`grp-${g.key}`)}
                     />
                     {isOpen && g.rows.map(m => (
-                      <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} indent onDelete={onDelete} deleting={deletingId === m.id} />
+                      <MovementRow key={m.id} m={m} nueva={nuevas.has(m.id)} histMoney={histMoney} indent onDelete={onDelete} deleting={borrando(`mov-${m.id}`)} />
                     ))}
                   </Fragment>
                 )

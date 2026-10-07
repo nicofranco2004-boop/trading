@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useRecienLlegadas, paginaDeLaNueva } from '../hooks/useRecienLlegadas'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -100,7 +101,8 @@ export default function Operations() {
   const toast = useToast()
   // Borrados en curso: deshabilita el tacho mientras corre. Sin esto el doble-click
   // mandaba dos DELETE y el 2do terminaba en un error después de un borrado exitoso.
-  const [busyDel, setBusyDel] = useState({})
+  // Clave por fila (`op-<id>`, `grp-<activo>`): borrar una no apaga las demás.
+  const borrando = useEnVuelo()
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [filterAsset, setFilterAsset] = useState(FILTROS_INICIALES.asset)
@@ -271,10 +273,12 @@ export default function Operations() {
 
   // Firma única de borrado en las dos ramas: recibe el OBJETO. La tabla
   // pasaba `op.id` y el feed `op`; al compartir renderer hubo que elegir una.
-  async function del(op) {
+  function del(op) {
     const id = op?.id ?? op
+    return borrando.correr(() => borrarOperacion(id), `op-${id}`)
+  }
+  async function borrarOperacion(id) {
     if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
-    setBusyDel(b => ({ ...b, [`op-${id}`]: true }))
     try {
       const res = await api.delete(`/operations/${id}`)
       await load()
@@ -283,8 +287,6 @@ export default function Operations() {
       // El backend bloquea con mensaje claro los casos que aún no soporta
       // (manuales, bonos, activos con data manual mezclada).
       toast.push(ex?.message || 'No se pudo borrar la operación.', { type: 'error', duration: 8000 })
-    } finally {
-      setBusyDel(b => { const n = { ...b }; delete n[`op-${id}`]; return n })
     }
   }
 
@@ -292,8 +294,10 @@ export default function Operations() {
   // brokers). Alto blast radius → confirmación explícita que nombra el activo.
   // NO promete un número: `g.count` sale del grupo FILTRADO y solo cuenta ventas, así
   // que mentía. El total real lo devuelve el backend y lo mostramos después.
-  async function delGroup(g) {
-    const asset = g.key
+  function delGroup(g) {
+    return borrando.correr(() => borrarActivo(g.key), `grp-${g.key}`)
+  }
+  async function borrarActivo(asset) {
     if (!confirm(
       `¿Borrar TODO el historial de ${asset}?\n\n` +
       `Se borran TODAS sus operaciones (compras, ventas y, si es un bono, sus cupones ` +
@@ -301,7 +305,6 @@ export default function Operations() {
       `${asset} deja de contar en tu P&L, rendimiento, métricas y la curva de evolución. ` +
       `Se recalcula todo. Vas a poder deshacerlo.`
     )) return
-    setBusyDel(b => ({ ...b, [`grp-${asset}`]: true }))
     try {
       const res = await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
       await load()
@@ -310,8 +313,6 @@ export default function Operations() {
         `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`)
     } catch (ex) {
       toast.push(ex?.message || 'No se pudo borrar el activo.', { type: 'error', duration: 8000 })
-    } finally {
-      setBusyDel(b => { const n = { ...b }; delete n[`grp-${asset}`]; return n })
     }
   }
 
@@ -727,7 +728,7 @@ export default function Operations() {
           onEdit={openEdit}
           onDelete={del}
           onDeleteGroup={delGroup}
-          busyDel={busyDel}
+          borrando={borrando.activo}
           onAdd={openAdd}
           page={currentPage}
           totalPages={totalPages}
@@ -759,7 +760,7 @@ export default function Operations() {
         </div>
       )}
       {isMobile && !loadingOps && groups.length > 0 && (
-        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} nuevas={nuevas} />
+        <TradesFeed groups={groups} histMoney={histMoney} onDelete={del} borrando={borrando.activo} nuevas={nuevas} />
       )}
 
       {/* Sheet de filtros — sólo la rama angosta. */}
@@ -897,7 +898,11 @@ function opMovioEfectivo(op) {
 
 // ─── Modal ───────────────────────────────────────────────────────────────────
 
-function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
+export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
+  // Freno del doble click: dos "Guardar" de un alta son, para el servidor, dos
+  // operaciones legítimas. Vive en el modal y no en la página para que quien lo
+  // monte no tenga que acordarse (ver hooks/useEnVuelo).
+  const enVuelo = useEnVuelo()
   const mueveEfectivo = !!form.mueve_efectivo
   // Hay operaciones a las que el interruptor no se les puede tocar: las
   // importadas (el borrado lo resuelve el rebuild del import, así que un efectivo
@@ -1087,8 +1092,12 @@ function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           <button onClick={onClose} className="text-[12.5px] text-ink-3 hover:text-ink-0 px-3 py-1.5 transition-colors font-medium">
             Cancelar
           </button>
-          <button onClick={onSave} className="text-[12.5px] bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors font-medium">
-            Guardar
+          <button
+            onClick={() => enVuelo.correr(onSave)}
+            disabled={enVuelo.activo()}
+            className="text-[12.5px] bg-rendi-pos/10 text-rendi-pos hover:bg-rendi-pos/15 border border-rendi-pos/30 px-3 py-1.5 rounded-sm transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {enVuelo.activo() ? 'Guardando…' : 'Guardar'}
           </button>
         </div>
       </div>
@@ -1148,13 +1157,16 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     })
   }
 
-  const [deletingId, setDeletingId] = useState(null)
-  const [busyGroup, setBusyGroup] = useState({})
+  // Borrados en curso, por fila (`mov-<id>`, `grp-<activo>`). Mismo freno que
+  // la pestaña "Solo P/L" (ver hooks/useEnVuelo).
+  const borrando = useEnVuelo()
   const toast = useToast()
   // Borrar TODO el historial de un activo desde acá, sin tener que entrar al activo.
   // Mismo endpoint (y misma cascada) que el tacho de grupo de "Solo P/L".
-  async function delGroup(g) {
-    const asset = g.key
+  function delGroup(g) {
+    return borrando.correr(() => borrarActivo(g.key), `grp-${g.key}`)
+  }
+  async function borrarActivo(asset) {
     if (!confirm(
       `¿Borrar TODO el historial de ${asset}?\n\n` +
       `Se borran TODAS sus operaciones (compras, ventas y, si es un bono, sus cupones ` +
@@ -1162,7 +1174,6 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       `${asset} deja de contar en tu P&L, rendimiento, métricas y la curva de evolución. ` +
       `Se recalcula todo. Vas a poder deshacerlo.`
     )) return
-    setBusyGroup(b => ({ ...b, [asset]: true }))
     try {
       const res = await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
       await load()
@@ -1188,8 +1199,6 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       }
     } catch (ex) {
       toast.push(ex?.message || 'No se pudo borrar el activo.', { type: 'error', duration: 8000 })
-    } finally {
-      setBusyGroup(b => { const n = { ...b }; delete n[asset]; return n })
     }
   }
 
@@ -1231,7 +1240,10 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   // Borrado de UN movimiento (cash-flows) con cascada backend. Confirma → borra →
   // refetch de /movements. Los KPIs de la página se recomputan solos; el gráfico
   // del dashboard/evolución se corrige al navegar/recargar (lo lee del backend).
-  async function handleDelete(m) {
+  function handleDelete(m) {
+    return borrando.correr(() => borrarMovimiento(m), `mov-${m.id}`)
+  }
+  async function borrarMovimiento(m) {
     const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta' }[m.type] || 'movimiento'
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
@@ -1263,7 +1275,6 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     const okMsg = m.transfer_out
       ? `${m.asset || 'La posición'} volvió a tu cartera.`
       : `Se borró la ${label}${asset}.`
-    setDeletingId(m.id)
     try {
       const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
       await load()
@@ -1294,8 +1305,6 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       toast.push(okMsg, { type: 'success' })
     } catch (ex) {
       toast.push(ex?.message || 'No se pudo borrar el movimiento.', { type: 'error', duration: 8000 })
-    } finally {
-      setDeletingId(null)
     }
   }
 
@@ -1472,8 +1481,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
           onToggleGroup={toggleGroup}
           onDelete={handleDelete}
           onDeleteGroup={delGroup}
-          deletingId={deletingId}
-          busyGroup={busyGroup}
+          borrando={borrando.activo}
           page={currentPage}
           totalPages={totalPages}
           onPage={setPage}
@@ -1511,7 +1519,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
           groups={groups}
           histMoney={histMoney}
           onDelete={handleDelete}
-          deletingId={deletingId}
+          borrando={borrando.activo}
         />
       )}
     </>

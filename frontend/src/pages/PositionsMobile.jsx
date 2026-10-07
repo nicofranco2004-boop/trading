@@ -62,6 +62,7 @@ import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useRelojVisible } from '../hooks/useRelojVisible'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -746,7 +747,11 @@ export default function PositionsMobile() {
     }
   }
 
-  async function deletePosition(p) {
+  // Freno: el mismo que escritorio (Positions.jsx `del`). Mientras el borrado
+  // viaja, volver a abrir el menú y borrar otra vez no manda un segundo DELETE.
+  const borrando = useEnVuelo()
+  const deletePosition = (p) => borrando.correr(() => borrarPosicion(p), p.id)
+  async function borrarPosicion(p) {
     // Fila que fusiona las dos patas de la cuenta: no hay UN broker al que
     // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
     // equivocado. Se abren los lotes — cada uno es su posición real, con su
