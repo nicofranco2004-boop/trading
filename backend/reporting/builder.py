@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from datetime import date as date_cls, datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
-from realized_pnl import realized_usd_sql, pct_creible
+from realized_pnl import realized_usd_sql, pct_creible, es_conversion
 
 log = logging.getLogger(__name__)
 
@@ -1423,6 +1423,17 @@ _MOTIVO_PUNTAS_DUDOSAS = (
 )
 
 
+def _es_trade(op) -> bool:
+    """¿La operación es un trade cerrado (Venta + Futuros)? Afuera dividendos,
+    intereses, compras y conversiones de moneda. Vivía copiado byte a byte en
+    `compute_metrics_for_period` (win rate) y `compute_highlights` (mejor/peor
+    operación); un solo lugar para que no diverjan."""
+    t = (op.get("op_type") or "").strip()
+    if t in ("Compra", "Dividendo", "Interés"):
+        return False
+    return not es_conversion(t)
+
+
 def compute_metrics_for_period(
     conn, uid: int, period_type: str, period_start: str, period_end: str,
     broker_filter: str, bench: Optional[Dict[str, Any]],
@@ -1442,15 +1453,7 @@ def compute_metrics_for_period(
     realized = sum(float(o.get("pnl_usd") or 0) for o in ops)
 
     # Trades cerrados (Venta + Futuros), excluyendo dividendos/intereses/compras/conversiones
-    def _is_trade(op):
-        t = (op.get("op_type") or "").strip()
-        if t in ("Compra", "Dividendo", "Interés"):
-            return False
-        if t.startswith("Conversión") or t.startswith("CONVERSION"):
-            return False
-        return True
-
-    trade_ops = [o for o in ops if _is_trade(o) and o.get("pnl_usd") is not None]
+    trade_ops = [o for o in ops if _es_trade(o) and o.get("pnl_usd") is not None]
     wins = [o for o in trade_ops if o["pnl_usd"] > 0]
     losses = [o for o in trade_ops if o["pnl_usd"] < 0]
     win_rate = (len(wins) / len(trade_ops) * 100) if trade_ops else None
@@ -2672,9 +2675,16 @@ def compute_metrics_for_period(
 # ─── Drivers (atribución por activo) ─────────────────────────────────────────
 
 def compute_drivers(ops: List[Dict[str, Any]], top_n: int = 5) -> List[AssetContribution]:
-    """Top activos por |pnl_usd|. Cada uno con su contribución %."""
+    """Top activos por |pnl_usd|. Cada uno con su contribución %.
+
+    Sin conversiones de moneda: no son un activo. La ganancia cambiaria de una
+    venta de USD salía como "USDT→ARS fue el motor del período" (y de ahí al
+    detector de Novedades y al resumen mensual de la IA), y una compra como
+    "ARS→USDT US$0" cuando el usuario tenía menos de 5 activos."""
     by_asset: Dict[str, float] = {}
     for o in ops:
+        if es_conversion(o.get("op_type")):
+            continue
         a = (o.get("asset") or "").upper().strip()
         if not a or a == "—":
             continue
@@ -2768,15 +2778,7 @@ def compute_highlights(ops: List[Dict[str, Any]]) -> List[Highlight]:
     if not ops:
         return out
 
-    def _is_trade(op):
-        t = (op.get("op_type") or "").strip()
-        if t in ("Compra", "Dividendo", "Interés"):
-            return False
-        if t.startswith("Conversión") or t.startswith("CONVERSION"):
-            return False
-        return True
-
-    trades = [o for o in ops if _is_trade(o) and o.get("pnl_usd") is not None]
+    trades = [o for o in ops if _es_trade(o) and o.get("pnl_usd") is not None]
     if trades:
         best = max(trades, key=lambda o: o["pnl_usd"])
         worst = min(trades, key=lambda o: o["pnl_usd"])

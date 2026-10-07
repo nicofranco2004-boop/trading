@@ -103,6 +103,7 @@ import {
 import { selectDiagnostics } from '../utils/diagnostics'
 import { resolveTierShown, computeDismiss } from '../utils/diagnosticsRotation'
 import { computeProMetrics } from '../utils/insightsMetrics'
+import { esConversion } from '../utils/tradeStats'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
@@ -2201,7 +2202,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const t = (op.op_type || '').trim()
     if (!t) return false
     if (t === 'Dividendo' || t === 'Interés' || t === 'Compra') return false
-    if (t.startsWith('CONVERSION') || t.startsWith('Conversión')) return false
+    if (esConversion(t)) return false
     return true
   }
   const tradeOps = operations.filter(isTradeOp)

@@ -33,7 +33,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from realized_pnl import realized_usd as _realized_usd
+from realized_pnl import realized_usd as _realized_usd, es_conversion as _es_conversion
 
 
 # ─── Helpers compartidos ─────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ def _is_trade(op: Dict[str, Any]) -> bool:
     op_type = (op.get("op_type") or "").strip()
     if op_type in ("Compra", "Dividendo", "Interés", ""):
         return False
-    if op_type.startswith("CONVERSION") or op_type.startswith("Conversión"):
+    if _es_conversion(op_type):
         return False
     return op.get("pnl_usd") is not None
 
