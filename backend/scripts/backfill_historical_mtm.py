@@ -97,6 +97,11 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     _mes = _date.today().strftime("%Y-%m")
     if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
         return _HIST_CACHE[ck]
+    if price_key in _fallas_yahoo():
+        # Ya falló en ESTA corrida: no se le vuelve a preguntar en cada mes. Sin
+        # esto, la cuenta más grande de la copia de prod hacía 1.537 consultas por
+        # corrida con Yahoo caído (159 activos), justo cuando Yahoo está limitando.
+        return {}
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
     # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
@@ -504,33 +509,60 @@ def huella_de_entrada(conn, uid: int, today: _date) -> str:
     import hashlib
     hoy = _date(today.year, today.month, 1).isoformat()
     ym_hoy = today.year * 100 + today.month
+    pg = bool(getattr(main, "USANDO_PG", False))
     partes = []
 
-    def _filas(sql, *args):
+    # ⚠️ EL TEXTO LO ARMA LA BASE, NO PYTHON. Convertir miles de filas en tuplas de
+    # Python retiene el turno del intérprete (GIL) fila por fila: medido por la
+    # auditoría con las 10 cuentas más grandes pidiendo a la vez, la mediana de un
+    # POST pasaba de 126 a 814 ms. Armado del lado de la base: 180 ms, y la misma
+    # sensibilidad. Una variante por motor: `group_concat` no existe en Postgres.
+    def _agregado(cols, desde, orden, *args):
+        texto = "||','||".join(f"COALESCE(CAST({c} AS TEXT), '~')" for c in cols)
+        if pg:
+            sql = f"SELECT count(*), string_agg({texto}, '|' ORDER BY {orden}) FROM {desde}"
+        else:
+            # El orden lo fija la consulta de adentro (SQLite < 3.44 no admite
+            # ORDER BY dentro de group_concat).
+            sql = (f"SELECT count(*), group_concat(t, '|') FROM "
+                   f"(SELECT {texto} AS t FROM {desde} ORDER BY {orden})")
         try:
-            partes.append([tuple(r) for r in conn.execute(sql, args).fetchall()])
+            r = conn.execute(sql, args).fetchone()
+            partes.append(f"{r[0]}:{r[1] or ''}")
         except Exception as ex:          # columna que no existe en una base vieja
             partes.append(repr(type(ex)))
+            if pg:                       # en Postgres el error aborta la transacción
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
-    _filas("SELECT year, month, capital_inicio, deposits, withdrawals, pnl_realized "
-           "FROM monthly_entries WHERE user_id=? AND broker='global' "
-           "AND year*100+month < ? ORDER BY year, month", uid, ym_hoy)
-    _filas("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' ORDER BY id", uid)
-    _filas("SELECT n.id, n.date, n.broker, n.asset_symbol, n.asset_type, n.operation_type, "
-           "n.quantity, n.gross_amount, n.unit_price, n.currency, n.excluded_at IS NULL "
-           "FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
-           "WHERE b.user_id=? AND b.status='confirmed' AND n.operation_type IN ('BUY','SELL') "
-           "AND n.date < ? ORDER BY n.id", uid, hoy)
-    _filas("SELECT id, broker, asset, quantity, invested, currency, entry_date "
-           "FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
-           "AND (entry_date IS NULL OR entry_date < ?) ORDER BY id", uid, hoy)
-    _filas("SELECT DISTINCT asset FROM positions WHERE user_id=? "
-           "AND split_adjusted_through IS NOT NULL ORDER BY asset", uid)
-    _filas("SELECT id, broker, asset, quantity, entry_price, fx_to_usd, currency, entry_date, date "
-           "FROM operations WHERE user_id=? AND (COALESCE(entry_date, date) < ? "
-           "OR COALESCE(date, entry_date) < ?) ORDER BY id", uid, hoy, hoy)
-    _filas("SELECT name, currency FROM brokers WHERE user_id=? ORDER BY name", uid)
-    return hashlib.sha256(repr(partes).encode()).hexdigest()
+    _agregado(("year", "month", "capital_inicio", "deposits", "withdrawals", "pnl_realized"),
+              "monthly_entries WHERE user_id=? AND broker='global' AND year*100+month < ?",
+              "year, month", uid, ym_hoy)
+    _agregado(("id",), "import_batches WHERE user_id=? AND status='confirmed'", "id", uid)
+    _agregado(("n.id", "n.date", "n.broker", "n.asset_symbol", "n.asset_type",
+               "n.operation_type", "n.quantity", "n.gross_amount", "n.unit_price",
+               "n.currency", "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+              "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+              "WHERE b.user_id=? AND b.status='confirmed' "
+              "AND n.operation_type IN ('BUY','SELL') AND n.date < ?",
+              "n.id", uid, hoy)
+    _agregado(("id", "broker", "asset", "quantity", "invested", "currency", "entry_date"),
+              "positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
+              "AND (entry_date IS NULL OR entry_date < ?)", "id", uid, hoy)
+    _agregado(("s.asset",),
+              "(SELECT DISTINCT asset FROM positions WHERE user_id=? "
+              "AND split_adjusted_through IS NOT NULL) s", "s.asset", uid)
+    # TODAS las operaciones, sin filtro de fecha: `_tenencia_no_vista` cuenta una
+    # operación sin `entry_date` en todos los meses cerrados anteriores a su cierre
+    # —aunque se haya cargado hoy—. Un filtro propio acá la dejaba afuera (medido
+    # por la auditoría: cobertura 1,0 guardada contra 0,40 real). La regla vive en
+    # un solo lugar: lo que mira la reconstrucción entra entero.
+    _agregado(("id", "broker", "asset", "quantity", "entry_price", "fx_to_usd", "currency",
+               "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
+    _agregado(("name", "currency"), "brokers WHERE user_id=?", "name", uid)
+    return hashlib.sha256("\n".join(partes).encode()).hexdigest()
 
 
 def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
@@ -541,12 +573,19 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
            "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
     if _pasada == 1:
         _fallas_yahoo().clear()
+    # Lo que describen las fotos de esta corrida; se compara al final.
+    res["huella"] = entrada = huella_de_entrada(conn, uid, today)
 
     # Cuenta reconstruible solo si hay import confirmado.
     has_import = conn.execute(
         "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed' LIMIT 1", (uid,),
     ).fetchone()
     if not has_import:
+        # Si ya no hay import (se revirtió el único), las fotos reconstruidas que
+        # quedaron —p. ej. de meses con movimientos cargados a mano antes del
+        # import, que el revert no borra— describen una cuenta que ya no existe.
+        res["snapshots_borrados"] = conn.execute(
+            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
         res.update(skipped=True, reason="sin import confirmado (cuenta manual)")
         return res
 
@@ -556,6 +595,8 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         "ORDER BY year, month", (uid,),
     ).fetchall()
     if not me_rows:
+        res["snapshots_borrados"] = conn.execute(
+            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
         res.update(skipped=True, reason="sin monthly_entries")
         return res
 
@@ -753,7 +794,11 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     #     VIEJA y la base del libro del asesor (el mayor aportado) guardaba el
     #     depósito borrado: 12 % → 8 %.
     # No se escribe nada que describa una contabilidad que ya no existe.
-    if _huella_contable(conn, uid) != huella:
+    # La huella COMPLETA, no sólo las filas 'global': una compra borrada o un
+    # promedio editado en Cartera a mitad de corrida no tocan esas filas (medido
+    # por la auditoría: marzo escrito en 10.000 cuando ya era 11.000).
+    if (_huella_contable(conn, uid) != huella
+            or huella_de_entrada(conn, uid, today) != entrada):
         if _pasada < _PASADAS:
             return backfill_user(conn, uid, today, _pasada + 1)
         res.update(skipped=True, reintentar=True,
@@ -818,12 +863,14 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
                 conn.rollback()
                 out["errors"].append({"uid": uid, "error": str(ex)})
                 continue
+            # Fotos de meses (o cuentas) que la contabilidad ya no tiene: el ensayo
+            # tiene que decir cuántas borraría el apply.
+            out["fotos_borradas"] += s.get("snapshots_borrados", 0)
             if s["skipped"]:
                 out["skipped"] += 1
+                if apply and s.get("snapshots_borrados"):
+                    conn.commit()
                 continue
-            # Fotos de meses que la contabilidad ya no tiene: el ensayo tiene que
-            # decir cuántas borraría el apply.
-            out["fotos_borradas"] += s.get("snapshots_borrados", 0)
             changed = [m for m in s["months"] if abs(m["after"] - m["before"]) > 0.01]
             if changed:
                 out["users_changed"] += 1

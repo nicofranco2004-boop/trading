@@ -126,6 +126,21 @@ class _Despues(_Cuenta):
             conn.close()
         return {i["date"]: (round(i["value"], 2), round(i["net_dep"], 2)) for i in capt.values()}
 
+    def _marca(self):
+        conn = main.get_db()
+        try:
+            return main._huella_escrita(conn, self.uid)
+        finally:
+            conn.close()
+
+    def _sql(self, sql, *args):
+        conn = main.get_db()
+        try:
+            conn.execute(sql, args)
+            conn.commit()
+        finally:
+            conn.close()
+
     def _libro(self, fecha):
         """El % del libro del asesor si la última foto fuera la de `fecha`."""
         conn = main.get_db()
@@ -303,39 +318,51 @@ class CuandoNoSeReconstruye(_Despues):
 
 
 class ElMiddleware(unittest.TestCase):
-    """Qué cuentas se reconstruyen al terminar un pedido: las que cambiaron. Pocas,
-    cada una en su hilo; muchas (revertir una tanda del asesor, herramientas del
-    admin), por una sola fila, de a una — decenas de hilos contra Yahoo no."""
+    """A quién se manda a reconstruir al terminar un pedido: las cuentas cuya
+    contabilidad ya no es la que describe su historia escrita. Pocas, cada una en
+    su hilo; muchas (revertir una tanda del asesor) o sin marca (todas, la primera
+    vez después del deploy), por una sola fila — decenas de hilos contra Yahoo no."""
 
-    def _correr(self, uids, cambian=True):
+    def _correr(self, anotadas, decision):
         import asyncio
-        vistas = {}
-
-        def huella(uid):                    # 1ra vez: antes; 2da: al terminar
-            vistas[uid] = vistas.get(uid, 0) + 1
-            return f"{uid}-{vistas[uid] if cambian else 1}"
+        vistas = []
 
         async def app(scope, receive, send):
-            for u in uids:
+            for u in anotadas:
                 main._contabilidad_tocada(u)
         mw = main._ReconstruirAlTerminar(app)
-        with mock.patch.object(main, "_huella_reconstruccion", side_effect=huella), \
-             mock.patch.dict(main._MTM_HUELLA_ESCRITA, {}, clear=True), \
+        with mock.patch.object(main, "_cuentas_que_cambiaron",
+                               side_effect=lambda uids: vistas.append(set(uids)) or decision), \
              mock.patch.object(main, "_reconstruir_mtm_post_import") as solas, \
              mock.patch.object(main, "_reconstruir_en_fila") as fila:
-            asyncio.run(mw({"type": "http", "method": "POST"}, None, None))
-        return (sorted(c.args[0] for c in solas.call_args_list),
+            asyncio.run(mw({"type": "http", "method": "POST", "path": "/api/x"}, None, None))
+        return (vistas, sorted(c.args[0] for c in solas.call_args_list),
                 [list(c.args[0]) for c in fila.call_args_list])
 
     def test_pocas_cuentas_cada_una_en_su_hilo(self):
-        self.assertEqual(self._correr([7, 3, 7]), ([3, 7], []))
+        self.assertEqual(self._correr([7, 3, 7], ([3, 7], [])), ([{3, 7}], [3, 7], []))
 
     def test_muchas_cuentas_van_a_la_fila(self):
         n = main._RECONSTRUIR_MAX_CUENTAS + 2
-        self.assertEqual(self._correr(range(n, 0, -1)), ([], [list(range(1, n + 1))]))
+        _, solas, fila = self._correr(range(1, n + 1), (list(range(1, n + 1)), []))
+        self.assertEqual((solas, fila), ([], [list(range(1, n + 1))]))
+
+    def test_las_cuentas_sin_marca_van_a_la_fila(self):
+        self.assertEqual(self._correr([3, 5], ([3], [5]))[1:], ([3], [[5]]))
 
     def test_si_no_cambio_nada_no_se_reconstruye(self):
-        self.assertEqual(self._correr([3, 7], cambian=False), ([], []))
+        self.assertEqual(self._correr([3, 7], ([], []))[1:], ([], []))
+
+    def test_las_rutas_del_admin_no_disparan(self):
+        import asyncio
+
+        async def app(scope, receive, send):
+            main._contabilidad_tocada(3)
+        with mock.patch.object(main, "_cuentas_que_cambiaron") as comparar:
+            asyncio.run(main._ReconstruirAlTerminar(app)(
+                {"type": "http", "method": "POST", "path": "/api/admin/backfill-recompute"},
+                None, None))
+        comparar.assert_not_called()
 
     def test_fuera_de_un_pedido_anotar_no_hace_nada(self):
         main._contabilidad_tocada(42)          # cron, hilos, scripts: no revienta
@@ -433,12 +460,106 @@ class LasHerramientasDelAdmin(_Despues):
         self.assertEqual(self._foto("2025-02-28"), 1.0)  # y el ensayo no la tocó
 
 
+class LoQueSeEscapaba(_Despues):
+    """Lo que encontró la segunda auditoría, cada caso reproducido por HTTP."""
+
+    def test_una_operacion_cargada_hoy_cambia_los_meses_cerrados(self):
+        # Sin fecha de apertura, la reconstrucción la cuenta como tenencia que no
+        # ve en todos los meses cerrados (baja la cobertura). La huella la filtraba
+        # por fecha y no se rehacía: quedaba "a mercado, apta" con cobertura 1,0.
+        self._importar(*IBKR)
+        conn = main.get_db()
+        try:
+            cob_antes = conn.execute("SELECT mtm_coverage FROM snapshots WHERE user_id=? "
+                                     "AND date='2025-07-31'", (self.uid,)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(cob_antes, 1.0)
+        self._pedir("post", "/api/operations", json={
+            "date": main._iso_today(), "broker": "IBKR", "asset": "TSLA", "op_type": "LONG",
+            "entry_price": 100, "exit_price": 130, "quantity": 10, "pnl_usd": 300,
+            "currency": "USD"})
+        conn = main.get_db()
+        try:
+            cob = conn.execute("SELECT mtm_coverage FROM snapshots WHERE user_id=? "
+                               "AND date='2025-07-31'", (self.uid,)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertLess(cob, 1.0)
+        self.assertEqual({d: (v, n) for d, v, n in self._filas()}, self._reconstruccion_nueva())
+
+    def test_la_cuenta_que_se_queda_sin_import_pierde_sus_fotos_reconstruidas(self):
+        # Un depósito cargado a mano ANTES del import: el revert borra las fotos
+        # desde la fecha del lote, pero la de enero (reconstruida) quedaba para
+        # siempre describiendo una cuenta que ya no existe.
+        self._pedir("post", "/api/cash/flow", json={
+            "broker_name": "IBKR", "direction": "deposit", "amount": 500, "date": "2025-01-10"})
+        self._importar(*IBKR)
+        self.assertIn("2025-01-31", [f[0] for f in self._filas()])
+        conn = main.get_db()
+        try:
+            lote = conn.execute("SELECT id FROM import_batches WHERE user_id=? "
+                                "AND status='confirmed'", (self.uid,)).fetchone()["id"]
+        finally:
+            conn.close()
+        self._pedir("post", f"/api/imports/{lote}/revert")
+        conn = main.get_db()
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM snapshots WHERE user_id=? AND source='mtm_backfill'",
+                (self.uid,)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_un_cambio_que_no_toca_la_contabilidad_mensual_a_mitad_de_corrida(self):
+        # Editar el costo de una compra mientras la reconstrucción consulta precios
+        # no toca las filas 'global'. Sólo con esas filas, la corrida no se enteraba
+        # y escribía el costo viejo (el admin "Aplicar" no tiene quien la repita).
+        self._importar(*IBKR)
+        consultas = []
+
+        def precios_y_edicion(price_key, start_iso):
+            consultas.append(price_key)
+            if len(consultas) == 1:
+                self._sql("UPDATE import_normalized_tx SET unit_price=150, gross_amount=3000 "
+                          "WHERE operation_type='BUY' AND batch_id IN "
+                          "(SELECT id FROM import_batches WHERE user_id=?)", self.uid)
+            return dict(PRECIOS)
+        bf._fetch_monthly_close = precios_y_edicion
+        bf._HIST_CACHE.clear()
+        conn = main.get_db()
+        try:
+            res = bf.backfill_user(conn, self.uid, date.today())
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertFalse(res["skipped"], res)
+        bf._fetch_monthly_close = lambda price_key, start_iso: dict(PRECIOS)
+        self.assertEqual({d: (v, n) for d, v, n in self._filas()}, self._reconstruccion_nueva())
+
+    def test_una_cuenta_sin_marca_se_pone_al_dia_en_su_proximo_pedido(self):
+        # Así quedan TODAS las cuentas el día del deploy: con fotos de antes y sin
+        # marca. Su próximo pedido (aunque no cambie nada) las manda a la fila.
+        self._importar(*IBKR)
+        self._sql("DELETE FROM mtm_huella WHERE user_id=?", self.uid)
+        self._sql("UPDATE snapshots SET total_value = total_value + 999 "
+                  "WHERE user_id=? AND source='mtm_backfill'", self.uid)   # fotos viejas
+        self._pedir("post", "/api/monthly/sync-unrealized",
+                    json={"broker": "IBKR", "pnl_unrealized_usd": 0.0})
+        limite = time.time() + 30
+        while time.time() < limite and (main._MTM_FILA_ACTIVA or main._MTM_RUNNING):
+            time.sleep(0.02)
+        self.assertEqual({d: (v, n) for d, v, n in self._filas()}, self._reconstruccion_nueva())
+        self.assertIsNotNone(self._marca())
+
+
 class _YahooDeMentira:
     """`yfinance.Ticker` reemplazado: así se usa el `_fetch_monthly_close` de
     verdad (con su memoria de precios). Caído, tira lo mismo que yfinance 1.2.0
     sin red (medido: TypeError); un ticker que no existe da vacío, sin error."""
     caido = False
     consultas = 0
+    consultas_caido = 0
 
     def __init__(self, sym):
         self.sym = sym
@@ -447,6 +568,7 @@ class _YahooDeMentira:
         import pandas as pd
         _YahooDeMentira.consultas += 1
         if _YahooDeMentira.caido:
+            _YahooDeMentira.consultas_caido += 1
             raise TypeError("'NoneType' object is not subscriptable")
         if self.sym != "AAPL":
             return pd.DataFrame()
@@ -460,7 +582,7 @@ class ConYahooCaido(_Despues):
         super().setUp()
         bf._fetch_monthly_close = self._fetch_orig          # el de verdad
         _YahooDeMentira.caido = False
-        _YahooDeMentira.consultas = 0
+        _YahooDeMentira.consultas = _YahooDeMentira.consultas_caido = 0
         p = mock.patch("yfinance.Ticker", _YahooDeMentira)
         p.start()
         self.addCleanup(p.stop)
@@ -478,16 +600,28 @@ class ConYahooCaido(_Despues):
         # (5.000 de cash + 4.000 de costo). Nunca la foto vieja con los 5.000 borrados.
         sep = {f["date"]: f for f in self._fotos()}["2025-09-30"]
         self.assertEqual((sep["total_value"], sep["net_deposited"]), (9000.0, 9000.0))
-        self.assertEqual(main._MTM_HUELLA_ESCRITA.get(self.uid), main._MTM_FALLIDA)
+        self.assertEqual(self._marca(), main._MTM_FALLIDA)      # en la base: sobrevive un deploy
         # La falla no quedó guardada como "sin datos": vuelve Yahoo y el próximo
         # pedido —uno que no cambia nada, como el refresco del Dashboard— la rehace.
         self.assertNotIn(("AAPL", "2025-03-01"), bf._HIST_CACHE)
+        # Una sola consulta por activo en la corrida caída, no una por mes (antes:
+        # la cuenta más grande de la copia de prod hacía 1.537 en vez de 159).
+        self.assertEqual(_YahooDeMentira.consultas_caido, 1)
         _YahooDeMentira.caido = False
+        # Recién fallada no se reintenta en cada refresco del Dashboard (cada 90 s)…
+        consultas = _YahooDeMentira.consultas
+        self._pedir("post", "/api/monthly/sync-unrealized",
+                    json={"broker": "IBKR", "pnl_unrealized_usd": 0.0})
+        self.assertEqual(_YahooDeMentira.consultas, consultas)
+        self.assertEqual(self._marca(), main._MTM_FALLIDA)
+        # …pero pasados los minutos de espera, el próximo pedido la rehace.
+        self._sql("UPDATE mtm_huella SET escrita_at = datetime('now', '-11 minutes') "
+                  "WHERE user_id=?", self.uid)
         self._pedir("post", "/api/monthly/sync-unrealized",
                     json={"broker": "IBKR", "pnl_unrealized_usd": 0.0})
         sep = {f["date"]: f for f in self._fotos()}["2025-09-30"]
         self.assertEqual((sep["total_value"], sep["net_deposited"]), (10200.0, 9000.0))
-        self.assertNotEqual(main._MTM_HUELLA_ESCRITA.get(self.uid), main._MTM_FALLIDA)
+        self.assertNotEqual(self._marca(), main._MTM_FALLIDA)
 
     def test_los_precios_guardados_se_vuelven_a_pedir_al_cambiar_el_mes(self):
         ck = ("AAPL", "2025-03-01")
