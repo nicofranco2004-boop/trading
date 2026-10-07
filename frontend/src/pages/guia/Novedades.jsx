@@ -9,7 +9,7 @@ export default function Novedades() {
       n={5}
       title="Novedades y alertas"
       intro="Eventos del mercado que afectan tus tickers + noticias filtradas por tu cartera + noticias macro generales, y alertas que te avisan cuando un activo llega a un precio o se mueve un % que vos definís."
-      prev={{ to: '/guia/coach-ia', label: 'Rendi AI' }}
+      prev={{ to: '/guia/coach-ia', label: 'Mervall-E AI' }}
       next={{ to: '/guia/cuenta-y-planes', label: 'Cuenta y planes' }}
       metaTitle="Novedades y alertas (Eventos + Noticias) — Guía Rendi"
       metaDescription="Cómo funcionan los eventos del mercado, las noticias filtradas por tu cartera y las alertas de precio y variación en Rendi."
@@ -140,9 +140,9 @@ export default function Novedades() {
         otro lado.
       </p>
 
-      <h2>Tip: Rendi AI + Novedades</h2>
+      <h2>Tip: Mervall-E AI + Novedades</h2>
       <p>
-        Si una noticia te preocupa, podés pasarla a Rendi AI para contexto:
+        Si una noticia te preocupa, podés pasarla a Mervall-E AI para contexto:
         "vi una noticia que dice X sobre NVDA. ¿cómo me afecta a mí?". El bot tiene
         herramienta <code>get_recent_news_for_assets</code> que busca news frescas
         para responderte con contexto.

@@ -156,7 +156,7 @@ export const seriesColor = (i) => SERIES_COLORS[Math.min(i, SERIES_COLORS.length
  * Por qué no `SERIES_COLORS` en una composición (2026-09-29): arranca con el
  * VERDE de ganancia y termina con el ROJO de pérdida. En la barra del
  * Dashboard el activo más grande salía verde y "Otros" rojo; en la torta de
- * Rendi AI, Bitcoin verde e YPF rojo — se leía "este va bien, este va mal"
+ * Mervall-E AI, Bitcoin verde e YPF rojo — se leía "este va bien, este va mal"
  * cuando el color sólo decía cuál era cuál.
  */
 export const MONO_VIOLET = Object.freeze([

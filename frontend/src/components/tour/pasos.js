@@ -24,7 +24,7 @@ export const PASOS = [
     id: 'isla',
     marca: 'isla',
     ruta: null,
-    titulo: 'Rendi te acompaña',
+    titulo: 'Mervall-E te acompaña',
     texto: 'Esta burbuja te sigue por toda la app. Tocala para preguntarle algo sin '
       + 'perder de vista lo que estabas mirando — y si te tapa algo, arrastrala a '
       + 'donde quieras.',
@@ -46,7 +46,7 @@ export const PASOS = [
     id: 'parlante',
     marca: 'parlante',
     ruta: '/ai',
-    titulo: 'Y Rendi te contesta hablando',
+    titulo: 'Y Mervall-E te contesta hablando',
     texto: 'Con esto prendido te lee la respuesta en voz alta, y sigue hablando aunque '
       + 'cambies de pantalla. Si preferís leer nomás, apagalo y listo.',
   },
@@ -55,7 +55,7 @@ export const PASOS = [
     marca: 'cuadro',
     ruta: '/ai',
     titulo: 'Contale lo que compraste',
-    texto: 'Escribí o dictá «compré 100 dólares a 1.450» y Rendi lo carga en tu cartera. '
+    texto: 'Escribí o dictá «compré 100 dólares a 1.450» y Mervall-E lo carga en tu cartera. '
       + 'Te muestra qué entendió antes de guardar nada.',
     // 🔴 EL ASESOR NO PUEDE REGISTRAR OPERACIONES PROPIAS y no es un olvido:
     // la herramienta está excluida a propósito de su juego (ver
@@ -65,7 +65,7 @@ export const PASOS = [
     libro: {
       titulo: 'Contale una compra de varios clientes',
       texto: 'Dictá «registrale a Juan 300.000 pesos y a Ana 400.000 del CEDEAR de Tesla '
-        + 'a 58.900» y Rendi lo anota para los dos. Te muestra qué entendió antes de '
+        + 'a 58.900» y Mervall-E lo anota para los dos. Te muestra qué entendió antes de '
         + 'guardar nada, y no toca los brokers: sólo lo registra en Rendi.',
     },
   },
@@ -90,7 +90,7 @@ export const PASOS = [
       + 'los tuyos sube o baja más de lo que vos digas. Te llega por mail y al teléfono.',
   },
   // Cierra el tutorial y no es del asistente: es de la app entera. Va último a
-  // propósito — los cinco anteriores cuentan una historia (Rendi te acompaña →
+  // propósito — los cinco anteriores cuentan una historia (Mervall-E te acompaña →
   // le hablás → te contesta → le registrás → te avisa) y meter el tema en el
   // medio la corta.
   //

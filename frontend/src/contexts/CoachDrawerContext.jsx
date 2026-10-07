@@ -1,7 +1,7 @@
-// Punto de entrada global a Rendi AI — desde cualquier componente (sidebar,
+// Punto de entrada global a Mervall-E AI — desde cualquier componente (sidebar,
 // checklist, ✦ botones, mobile) sin prop-drilling.
 //
-// Clean pass 2026-07: Rendi AI dejó de ser un drawer lateral y pasó a ser una
+// Clean pass 2026-07: Mervall-E AI dejó de ser un drawer lateral y pasó a ser una
 // PÁGINA (/ai). `open(question?)` ahora NAVEGA ahí; si viene una pregunta
 // inicial queda en el contexto y la página la consume una sola vez (autoAsk).
 // La API pública (useCoachDrawer().open) se mantiene para no tocar callers.
@@ -25,7 +25,7 @@ export function CoachDrawerProvider({ children }) {
   const [initialQuestion, setInitialQuestion] = useState(null)
 
   // markAIDiscovered en cada open(): el checklist de onboarding detecta que el
-  // user "ya probó" Rendi AI sin importar desde dónde entró.
+  // user "ya probó" Mervall-E AI sin importar desde dónde entró.
   const open = (question = null) => {
     setInitialQuestion(question || null)
     markAIDiscovered()

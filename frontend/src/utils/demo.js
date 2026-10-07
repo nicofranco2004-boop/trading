@@ -3643,7 +3643,7 @@ function _respuestaChatDemo() {
   const texto = `La cartera demo vale ${_usdDemo(h.valor)} y lleva ${_pctDemo(h.noRealizadoPct)} de ganancia no realizada sobre lo invertido. `
     + `La posición más grande es ${h.top.asset} (${h.top.peso.toFixed(0)} % de la cartera) y las tres principales suman ${h.top3.toFixed(0)} %. `
     + `La mejor operación cerrada fue ${h.mejor.asset} (${_pctDemo(h.mejor.pnl_pct, 0)}). El efectivo es el ${h.efectivo.toFixed(0)} % y la cripto el ${h.cripto.toFixed(0)} %.`
-    + '\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)'
+    + '\n\n(Modo demo: creá una cuenta para usar Mervall-E AI con tu cartera real.)'
   const bloques = [{ type: 'alloc', title: 'Composición de tu cartera', items: [
     ...h.top3Activos.map(a => ({ l: a.asset, pct: Math.round(a.peso) })),
     { l: 'Otros', pct: Math.max(0, Math.round(100 - h.top3 - h.efectivo)) },
@@ -3679,7 +3679,7 @@ function _respuestaRiesgoDemo() {
   const texto = `Tu mayor riesgo hoy es la concentración: ${h.top.asset} pesa el ${h.top.peso.toFixed(0)} % de la cartera y las tres principales, el ${h.top3.toFixed(0)} %. `
     + `Si ${h.top.asset} corrige 15 %, el golpe directo a la cartera es de ~${golpe} puntos. `
     + `La cripto suma el ${h.cripto.toFixed(0)} %: es la parte más volátil. El efectivo (${h.efectivo.toFixed(0)} %) amortigua poco.`
-    + '\n\n(Modo demo: creá una cuenta para usar Rendi AI con tu cartera real.)'
+    + '\n\n(Modo demo: creá una cuenta para usar Mervall-E AI con tu cartera real.)'
   const rendi = {
     verdict: h.top3 > 50 ? 'Concentrada' : 'Diversificada', tone: h.top3 > 50 ? 'warn' : 'neutral',
     headline: `${h.top.asset} es el ${h.top.peso.toFixed(0)} % de la cartera; las tres principales, el ${h.top3.toFixed(0)} %.`,

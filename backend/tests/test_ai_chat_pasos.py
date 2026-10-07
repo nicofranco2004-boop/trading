@@ -1,4 +1,4 @@
-"""Los pasos que Rendi AI muestra mientras piensa salen de etapas REALES.
+"""Los pasos que Mervall-E AI muestra mientras piensa salen de etapas REALES.
 
 Hasta el 2026-09-30 el servidor sólo anunciaba las herramientas: una pregunta
 que se contestaba con la cartera no mostraba ningún paso (lo reportó Nico:

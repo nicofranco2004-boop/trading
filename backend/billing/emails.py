@@ -1430,7 +1430,7 @@ def _pro_ganchos() -> tuple:
     pro, free = LIMITS["pro"]["analyses_per_week"], LIMITS["free"]["analyses_per_week"]
     brokers = PLAN_LIMITS["pro"]["brokers_max"]
     return (
-        "Chat libre con Rendi AI: preguntale lo que quieras sobre tu cartera, con "
+        "Chat libre con Mervall-E AI: preguntale lo que quieras sobre tu cartera, con "
         "tus números adelante (en Free son 12 preguntas guiadas).",
         f"{pro} análisis por semana en vez de {free}: podés pedirle que mire cada "
         "gráfico y cada sección sin estar cuidando la cuota.",

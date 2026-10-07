@@ -12,6 +12,7 @@
 //    caller; ARS si la pasa así). Sin conversiones implícitas.
 
 import { classifyAsset, ASSET_CLASS_META } from './assetClass'
+import { pctVar, pctTxt } from './format'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -647,6 +648,119 @@ export function applyMtmToMonthly(globalMonthly, snapshots, today = new Date(),
     return { ...m, capital_inicio: snapPrev.value, capital_final: snapCur.value,
              capital_inicio_costo: m.capital_inicio, mtm: 'ambos' }
   })
+}
+
+// ─── Lo que se escribe AL LADO de un gráfico ────────────────────────────────
+// Un número escrito sobre un gráfico tiene que ser el MISMO que la pantalla
+// publica arriba. La punta de la línea de Rendimiento es la FORMA (encadena la
+// intradía) y el "Acumulado" de la tira es el índice PUBLICADO: medido, en 85 de
+// 655 cuentas no dicen lo mismo. Una etiqueta al final de la línea con otro
+// número que el KPI sería dos verdades en la misma pantalla, así que sólo se
+// escribe cuando las dos se LEEN igual (mismo texto con 1 decimal). Si no, la
+// línea termina sin etiqueta — que no afirma nada.
+
+// La última fila con número en alguna de las claves (en orden de preferencia).
+export function ultimoConValor(filas, claves) {
+  const f = Array.isArray(filas) ? filas : []
+  for (let i = f.length - 1; i >= 0; i--) {
+    const r = f[i]
+    if (!r) continue
+    for (const k of claves) {
+      if (typeof r[k] === 'number' && Number.isFinite(r[k])) return { fila: r, clave: k, valor: r[k] }
+    }
+  }
+  return null
+}
+
+const seLeeIgual = (a, b, dec) => typeof a === 'number' && typeof b === 'number'
+  && Number.isFinite(a) && Number.isFinite(b) && pctVar(a, dec) === pctVar(b, dec)
+
+// Etiquetas de la punta de cada línea del gráfico de Rendimiento.
+//   { cartera: { ts, valor, texto, clave } | null, bench: … | null }
+export function etiquetasFinales({ filas, clavesCartera, claveBench, kpiCartera, kpiBench, decimales = 1 }) {
+  const u = ultimoConValor(filas, clavesCartera || [])
+  const b = claveBench ? ultimoConValor(filas, [claveBench]) : null
+  // Sin `ts` (la fila no tiene lugar en el eje de tiempo) no hay dónde ponerla.
+  const armar = (x, kpi) => (x && typeof x.fila.ts === 'number' && Number.isFinite(x.fila.ts) && seLeeIgual(x.valor, kpi, decimales)
+    ? { ts: x.fila.ts, valor: x.valor, texto: pctVar(kpi, decimales), clave: x.clave }
+    : null)
+  return { cartera: armar(u, kpiCartera), bench: armar(b, kpiBench) }
+}
+
+// Dónde va el texto de cada etiqueta de punta (en píxeles del gráfico): la
+// de la línea más alta, arriba de su punto; la otra, abajo. Ninguna se sale
+// del área de dibujo (arriba: el techo; abajo: las fechas del eje) y no se
+// pisan entre sí. Antes cada una se ubicaba sola: una cartera en su máximo
+// cortaba la suya contra el techo, y "Pesos cash" (0 % pegado al piso) ponía
+// la suya sobre las fechas (revisión del 2026-10-02).
+//   items: [{ y, ...lo que sea }] (y = el punto); area: { top, bottom }
+//   → los mismos items con `ty` (la línea base del texto), del más alto al más bajo.
+export function ubicarEtiquetas(items, { top, bottom }, { alto = 13, sobre = 9, bajo = 17, separacion = 15 } = {}) {
+  const lista = (items || []).filter(e => e && Number.isFinite(e.y)).sort((a, b) => a.y - b.y)
+  const min = top + alto, max = bottom - 4
+  const ubicados = lista.map((e, i) => ({ ...e, ty: i === 0 ? e.y - sobre : e.y + bajo }))
+  for (const e of ubicados) e.ty = Math.min(Math.max(e.ty, min), max)
+  if (ubicados.length === 2 && ubicados[1].ty - ubicados[0].ty < separacion) {
+    ubicados[1].ty = Math.min(ubicados[0].ty + separacion, max)
+    if (ubicados[1].ty - ubicados[0].ty < separacion) ubicados[0].ty = Math.max(ubicados[1].ty - separacion, min)
+  }
+  return ubicados
+}
+
+// ¿Dos series con las mismas filas? Fila por fila, campo por campo (las filas
+// de los gráficos son objetos planos de números y textos).
+export function mismasFilas(a, b) {
+  if (a === b) return true
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i]
+    if (x === y) continue
+    if (!x || !y || typeof x !== 'object' || typeof y !== 'object') return false
+    const kx = Object.keys(x), ky = Object.keys(y)
+    if (kx.length !== ky.length) return false
+    for (const k of kx) if (!Object.is(x[k], y[k])) return false
+  }
+  return true
+}
+
+// La marca del punto más hondo de la curva de caídas, con su fecha — sólo si
+// ese punto DIBUJADO se lee igual que el "Máx histórico" que publica la
+// tarjeta (el del servidor). Si no coinciden, no hay marca.
+//   { key, label, ddPct, texto, posicion } | null
+export function marcaPeorCaida(serie, maxPct, decimales = 1) {
+  const f = Array.isArray(serie) ? serie : []
+  let peor = null, iPeor = -1
+  f.forEach((r, i) => {
+    if (r && typeof r.ddPct === 'number' && Number.isFinite(r.ddPct) && (!peor || r.ddPct < peor.ddPct)) { peor = r; iPeor = i }
+  })
+  if (!peor || !(peor.ddPct < 0) || !seLeeIgual(peor.ddPct, maxPct, decimales)) return null
+  return {
+    key: peor.key, label: peor.label, ddPct: peor.ddPct,
+    texto: `Peor caída ${pctTxt(maxPct, decimales)} · ${peor.label}`,
+    // Dónde cae en el ancho (0 = izquierda, 1 = derecha): el texto va del lado
+    // que tiene lugar.
+    posicion: f.length > 1 ? iPeor / (f.length - 1) : 0,
+  }
+}
+
+// De qué lado del punto va el texto de la marca, midiendo el lugar en PÍXELES
+// (no por la posición en el tiempo): en un celular el área de dibujo mide
+// ~300 px y "Peor caída −12,3% · May '25" ~180 — ubicado sólo por la posición
+// se cortaba, y podía leerse "−1" en vez de "−12,3%" (revisión del 2026-10-02).
+// Si el texto entero no entra de ningún lado, va el corto (el número) y la
+// fecha pasa al encabezado de la tarjeta.
+//   ancho: el del gráfico entero; izquierda: donde empieza el área (el eje Y).
+export function ladoDeLaMarca({ posicion, ancho, texto, textoCorto, izquierda = 44, margenDerecho = 10, anchoLetra = 6.8, separacion = 10 }) {
+  const corto = (lado) => ({ lado, texto: textoCorto, corto: true })
+  if (!(ancho > 0) || !Number.isFinite(posicion)) return corto('derecha')
+  const x0 = izquierda, x1 = ancho - margenDerecho
+  const cx = x0 + posicion * (x1 - x0)
+  const entra = (t, lado) => (lado === 'derecha'
+    ? cx + separacion + t.length * anchoLetra <= x1
+    : cx - separacion - t.length * anchoLetra >= x0)
+  if (entra(texto, 'derecha')) return { lado: 'derecha', texto, corto: false }
+  if (entra(texto, 'izquierda')) return { lado: 'izquierda', texto, corto: false }
+  return corto(entra(textoCorto, 'derecha') ? 'derecha' : 'izquierda')
 }
 
 // ─── Qué benchmark se le pide al servidor ───────────────────────────────────

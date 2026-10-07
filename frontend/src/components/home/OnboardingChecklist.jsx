@@ -183,7 +183,7 @@ export default function OnboardingChecklist() {
       id: 'ai',
       done: state.hasAI,
       Icon: Bot,
-      title: 'Probá Rendi AI',
+      title: 'Probá Mervall-E AI',
       desc: 'Preguntale sobre tu cartera. Análisis con tus datos reales.',
       cta: 'Abrir',
       onClick: () => coachDrawer?.open?.(),

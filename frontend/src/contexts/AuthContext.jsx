@@ -32,7 +32,7 @@ const DEMO_USER = {
 // EXACTAMENTE el mismo objeto — antes el mapeo vivía inline solo en el
 // bootstrap, así que cualquier refresh mid-sesión tenía que duplicarlo (o
 // no existía, que era el bug: el tier quedaba stale tras un pago).
-function mapMeToUser(me) {
+export function mapMeToUser(me) {
   return {
     name: me.name || me.email,
     email: me.email,
@@ -121,8 +121,16 @@ export function AuthProvider({ children }) {
           access_mode: fresh.access_mode,
         })
       })
-      .catch(() => {
-        // 401 / network → no hay sesión válida. Limpiar y ofrecer login.
+      .catch((err) => {
+        // Sólo un 401 quiere decir "no hay sesión". Un corte de red o un error
+        // del servidor (un deploy, el celular sin señal) no: antes también
+        // borraba la sesión guardada y esta pestaña quedaba en el login con la
+        // cookie todavía válida. Y desde que las pestañas se avisan cuando
+        // cambia quién está logueado (ver abajo), además recargaba TODAS las
+        // otras pestañas de la misma persona. Con otro error se sigue con el
+        // usuario guardado; si la sesión de verdad venció, el primer pedido
+        // que reciba un 401 la cierra (api.js).
+        if (err?.status !== 401) return
         localStorage.removeItem('rendi_user')
         setUser(null)
         refreshPlanFeatures()
@@ -130,6 +138,39 @@ export function AuthProvider({ children }) {
       })
       .finally(() => setBootstrapped(true))
   }, [])
+
+  // 🔴 OTRA PESTAÑA CAMBIÓ QUIÉN ESTÁ LOGUEADO.
+  // La sesión es una cookie, y la cookie es UNA para todas las pestañas. Si en
+  // otra pestaña alguien cerró sesión y entró con otra cuenta, ésta seguía
+  // mostrando —y mandando— lo de la persona anterior, ahora con la sesión de la
+  // nueva: la IA, por ejemplo, preguntaba con la cartera y la conversación de
+  // una persona en la cuenta de otra. Se recarga la página, así todo lo que la
+  // pestaña tenía en memoria (no sólo el chat) se vuelve a pedir con la sesión
+  // de verdad. Si es la MISMA persona (un refresco del plan), no pasa nada.
+  //
+  // Se mira un instante DESPUÉS del aviso y no en el aviso mismo: hay cambios
+  // que llegan en dos pasos —el "limpiar" del cartel de error vacía todo y
+  // vuelve a poner la misma sesión— y en el medio parece que no hay nadie.
+  useEffect(() => {
+    if (isDemoMode()) return
+    const quien = (u) => (u?.email || '').toLowerCase()
+    let espera = null
+    const mirar = () => {
+      let ahora = null
+      try { ahora = JSON.parse(localStorage.getItem('rendi_user')) } catch { /* basura → nadie */ }
+      if (quien(ahora) !== quien(user)) window.location.reload()
+    }
+    const alCambiarEnOtraPestana = (e) => {
+      if (e.key !== null && e.key !== 'rendi_user') return
+      clearTimeout(espera)
+      espera = setTimeout(mirar, 300)
+    }
+    window.addEventListener('storage', alCambiarEnOtraPestana)
+    return () => {
+      clearTimeout(espera)
+      window.removeEventListener('storage', alCambiarEnOtraPestana)
+    }
+  }, [user?.email])
 
   // El 402 "elegí un plan" despierta el muro sin recargar.
   // ──────────────────────────────────────────────────────────────────────────

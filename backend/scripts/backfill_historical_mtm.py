@@ -368,27 +368,19 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
     if not por_mes:
         return 0
     import json as _json
-    from twr import clasificar_serie, MEDICION
+    from twr import clasificar_serie, MEDICION, netdep_canonico
 
-    # ⚠️ MISMA CONVENCION QUE EL CRON, o la resta entre dos fotos miente.
-    # El cron estampa `compute_net_deposited()` = BASELINE (`capital_inicio` de la
-    # primera fila) + flujos (snapshots_job.py:385-386). Acá se estampaba sólo el
-    # acumulado de flujos, SIN baseline. Como `bordes_mercado_periodo` y
-    # `curva_indexada` sacan el flujo de la ventana restando estas dos columnas,
-    # en cuanto un borde era del cron y el otro de acá la resta devolvía EL
-    # BASELINE ENTERO como si fuera un aporte de ese mes: un mes real de +US$2.000
-    # se publicaba como "Mes difícil −61,2% · Aportaste US$100.000 de capital
-    # nuevo". Y justo en la población que el backfill existe para servir (fotos
-    # reconstruidas viejas + cron nuevo).
-    filas_me = conn.execute(
-        "SELECT year, month, capital_inicio, deposits, withdrawals FROM monthly_entries "
-        "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)).fetchall()
-    baseline = float(filas_me[0]["capital_inicio"] or 0) if filas_me else 0.0
-    cum = 0.0
-    net_dep_por_mes: dict = {}
-    for r in filas_me:
-        cum += (r["deposits"] or 0) - (r["withdrawals"] or 0)
-        net_dep_por_mes[f"{r['year']}-{r['month']:02d}"] = baseline + cum
+    # ⚠️ EL APORTADO ES EL DE `twr.netdep_canonico` (baseline + flujos de las filas
+    # 'global'), la misma cuenta que estampa el cron y que ancla la curva. Acá
+    # vivía una TERCERA copia de esa cuenta (la del persister se unificó el
+    # 2026-10-02): primero sin el baseline —un mes real de +US$2.000 salía "Mes
+    # difícil −61,2% · Aportaste US$100.000 de capital nuevo"— y después con un
+    # `get(mes, 0.0)` que estampaba CERO cuando el mes ya no estaba en la
+    # contabilidad.
+    # Cada foto trae su `net_dep` de `backfill_user`, medido en el mismo instante
+    # que su valor (ver ahí por qué). El canónico de acá abajo es sólo para quien
+    # llama esta función con fotos armadas a mano.
+    _canon = None
 
     # ⚠️ El flag va POR FECHA, igual que en twr. Con "¿tiene posiciones HOY?" este
     # módulo y `twr` clasificaban distinto la misma fila: una foto REAL del cron de
@@ -413,7 +405,13 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
         d = info["date"]
         if existentes.get(d) == MEDICION:
             continue                      # foto real del cron: manda ella
-        net_dep = net_dep_por_mes.get(ym, 0.0)
+        net_dep = info.get("net_dep")
+        if net_dep is None:
+            if _canon is None:
+                # Sin ninguna fila en la contabilidad no hay aportado que afirmar:
+                # 0 es como la columna escribe "no lo tengo" (NOT NULL DEFAULT 0).
+                _canon = netdep_canonico(conn, uid) or (lambda _fecha: 0.0)
+            net_dep = _canon(d)
         # ⚠️ EL ESTAMPO SALE DE LA COBERTURA DE **ESTA** FOTO (ronda 11). El
         # reconstructor es el único que sabe qué fracción del valor de ESE mes se
         # pudo valuar a precio real, así que es el que tiene que decidir la base —
@@ -444,9 +442,29 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
 
 
 # ─── Backfill de un usuario ───────────────────────────────────────────────────
-def backfill_user(conn, uid: int, today: _date) -> dict:
+# Cuántas pasadas se intentan si la contabilidad cambia mientras se reconstruye.
+# La primera tarda (Yahoo); las siguientes reusan `_HIST_CACHE` y son de
+# milisegundos, así que tres cambios seguidos sólo pasan si algo la está
+# reescribiendo sin parar — y ahí no hay una contabilidad que describir.
+_PASADAS = 3
+
+
+def _huella_contable(conn, uid: int) -> list:
+    """Las filas 'global' de la contabilidad de las que salen el valor (costo) y el
+    aportado de cada foto. Si cambian durante la corrida, las fotos ya valuadas
+    describen otra contabilidad que la que se va a leer al escribir."""
+    return [(r["year"], r["month"], r["capital_inicio"], r["deposits"],
+             r["withdrawals"], r["pnl_realized"])
+            for r in conn.execute(
+                "SELECT year, month, capital_inicio, deposits, withdrawals, pnl_realized "
+                "FROM monthly_entries WHERE user_id=? AND broker='global' "
+                "ORDER BY year, month", (uid,)).fetchall()]
+
+
+def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
     cash_warning}. NO commitea (lo hace el caller). Idempotente."""
+    import twr as _twr
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
            "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
 
@@ -458,6 +476,7 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
         res.update(skipped=True, reason="sin import confirmado (cuenta manual)")
         return res
 
+    huella = _huella_contable(conn, uid)
     me_rows = conn.execute(
         "SELECT year, month FROM monthly_entries WHERE user_id=? AND broker='global' "
         "ORDER BY year, month", (uid,),
@@ -604,6 +623,11 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
             "SELECT broker, capital_inicio, deposits, withdrawals, pnl_realized, capital_final "
             "FROM monthly_entries WHERE user_id=? AND year=? AND month=? AND broker='global'",
             (uid, y, m)).fetchall()
+        # El aportado de la foto se lee ACÁ, pegado al costo de su valor, y no al
+        # escribir: así valor y aportado salen siempre de la misma contabilidad
+        # (ver la huella al final de esta función).
+        _canon = _twr.netdep_canonico(conn, uid)
+        net_dep = _canon(d) if _canon is not None else 0.0
         before_global = after_global = 0.0
         cost_global = 0.0
         for row in rows:
@@ -637,10 +661,30 @@ def backfill_user(conn, uid: int, today: _date) -> dict:
         res["months"].append({"ym": ym, "before": before_global, "after": after_global,
                               "coverage": _cob})
         por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
-                       "coverage": _cob,
+                       "net_dep": net_dep, "coverage": _cob,
                        "holdings": [{"asset": a, "value_usd": round(v, 2),
                                      "al_costo": a in assets_al_costo}
                                     for a, v in by_asset.items()]}
+
+    # ⚠️ SI LA CONTABILIDAD CAMBIÓ DURANTE LA CORRIDA, SE VUELVE A EMPEZAR.
+    # Entre la primera lectura y acá pasan minutos (Yahoo, 8 s de tope por activo),
+    # y es justo cuando la persona acaba de importar y mira lo que cargó: borrar un
+    # depósito repetido en ese rato es el uso normal, no un caso raro. Medido
+    # (tests/test_reconstruccion_aportado_canonico.py), escribiendo lo que había:
+    #   · el mes que desaparecía antes de valuarlo quedaba con una foto que VALÍA 0;
+    #   · el aportado se leía al final con la copia vieja, que estampaba 0 para el
+    #     mes que ya no estaba y, para el que seguía, el aportado de DESPUÉS sobre
+    #     el valor de ANTES: +US$ 5.800 y −4.600 en meses que ganaron 800 y 400;
+    #   · aun leyendo valor y aportado juntos, la foto describe la contabilidad
+    #     VIEJA y la base del libro del asesor (el mayor aportado) guardaba el
+    #     depósito borrado: 12 % → 8 %.
+    # No se escribe nada que describa una contabilidad que ya no existe.
+    if _huella_contable(conn, uid) != huella:
+        if _pasada < _PASADAS:
+            return backfill_user(conn, uid, today, _pasada + 1)
+        res.update(skipped=True,
+                   reason=f"la contabilidad cambió durante {_PASADAS} pasadas seguidas")
+        return res
 
     # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
     # como una fila 'import' derivada de la cadena contable.

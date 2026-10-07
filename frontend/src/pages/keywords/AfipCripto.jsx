@@ -25,8 +25,8 @@ const FEATURES = [
     desc: 'Cargás desde Binance (CSV directo) o manualmente desde otros exchanges. Stablecoins (USDT, USDC) tratadas como dólar; BTC/ETH/altcoins con precio live a USD.',
   },
   {
-    title: 'Rendi AI: preguntale por tu cripto',
-    desc: '"¿Cuánta ganancia realicé este año con BTC?", "¿Qué cripto me está costando más plata?". Rendi AI responde con tus operaciones reales. Lo impositivo lo define tu contador, con el CSV que exportás.',
+    title: 'Mervall-E AI: preguntale por tu cripto',
+    desc: '"¿Cuánta ganancia realicé este año con BTC?", "¿Qué cripto me está costando más plata?". Mervall-E AI responde con tus operaciones reales. Lo impositivo lo define tu contador, con el CSV que exportás.',
   },
 ]
 

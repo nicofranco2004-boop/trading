@@ -221,13 +221,13 @@ function MetricsGrid({ metrics: m, money }) {
       <Cell label="Trades" value={m.trades_count} />
       <Cell label="Win rate" value={m.win_rate != null ? `${m.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
       {m.vs_sp500_pct != null && (
-        <Cell label="vs S&P 500" value={`${m.vs_sp500_pct >= 0 ? '+' : ''}${m.vs_sp500_pct.toFixed(1).replace('.', ',')}%`} accent />
+        <Cell label="vs S&P 500" value={`${pctVar(m.vs_sp500_pct, 1)}`} accent />
       )}
       {m.vs_inflation_pct != null && (
-        <Cell label="vs Inflación AR" value={`${m.vs_inflation_pct >= 0 ? '+' : ''}${m.vs_inflation_pct.toFixed(1).replace('.', ',')}%`} accent />
+        <Cell label="vs Inflación AR" value={`${pctVar(m.vs_inflation_pct, 1)}`} accent />
       )}
       {m.delta_pct_over_contrib != null && (
-        <Cell label="Sobre aportado" value={`${m.delta_pct_over_contrib >= 0 ? '+' : ''}${m.delta_pct_over_contrib.toFixed(1).replace('.', ',')}%`} accent />
+        <Cell label="Sobre aportado" value={`${pctVar(m.delta_pct_over_contrib, 1)}`} accent />
       )}
     </div>
   )

@@ -10,8 +10,13 @@ import unittest
 
 os.environ.setdefault("DB_PATH", tempfile.NamedTemporaryFile(suffix=".db", delete=False).name)
 
+from fastapi.testclient import TestClient
+
 import main
 import twr
+from importing import pipeline as pl
+from importing import persister as ps
+from importing import rebuild as rb
 from reporting import builder
 
 
@@ -108,77 +113,183 @@ class ImportAMitadDeMesTest(_Base):
         self.assertEqual(len(set(julio)), 1, f"el aportado salta dentro de julio: {set(julio)}")
 
 
-class ReEstampadoPorMesEsInocuoTest(_Base):
-    """B-3 · `_recompute_snapshots_netdep_for_user` re-estampa `net_deposited`
-    con el aportado anclado, sin tirar la resolución diaria.
+_HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
+
+
+def _helpers():
+    h = main._ImportHelpers()
+    for n in ("_adjust_broker_cash", "_adjust_cash", "_update_monthly_pnl_realized",
+              "_update_monthly_flow", "_repair_monthly_chain", "_ensure_usd_sibling",
+              "_recalc_pnl_realized_from_ops"):
+        setattr(h, n, getattr(main, n))
+    return h
+
+
+class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
+    """B-3 · re-estampar `net_deposited` no puede tirar la resolución diaria.
 
     Estaba anotado como "inocuo" mientras la curva usaba el canónico puro. Dejó de
     serlo con el aportado anclado: la fórmula usa la estampa para saber en qué DÍA
     del mes cayó el flujo, y el re-estampado la aplanaba a un valor por mes — o sea
-    destruía justo el dato que la curva necesita. Ahora el re-estampado usa el
-    MISMO aportado anclado, así que corrige lo stale sin tirar la resolución.
+    destruía justo el dato que la curva necesita.
 
-    ⚠️ ESTOS TESTS LLAMAN A LA FUNCIÓN DIRECTO, Y ESO NO CUBRE EL BORRADO. Este
-    docstring decía vigilar `_cascade_after_movement_delete`, pero la cascada no
-    llamaba a esta función: tenía su propio bucle con un valor por MES, y siguió
-    aplanando el día en cada borrado mientras esto daba verde. Hoy la cascada
-    tampoco la usa (aplica sólo el cambio del borrado, `main._cambio_de_aportado`):
-    esta función es la del botón del admin, la reparación y las migraciones. El
-    camino de producción —borrar y deshacer por HTTP— está en
-    `tests/test_borrar_conserva_el_dia.py`."""
+    ⚠️ ESTOS TESTS ENTRAN POR LAS PUERTAS DE PRODUCCIÓN. Antes llamaban a
+    `_recompute_snapshots_netdep_for_user` directo y decían vigilar
+    `_cascade_after_movement_delete`, que no la llamaba: tenía su propio bucle con
+    un valor por MES y siguió aplanando el día en cada borrado mientras esto daba
+    verde. Tampoco alcanza con llamar a la cascada sobre una contabilidad escrita a
+    mano: la cascada la reconstruye desde las operaciones, se queda sin filas, el
+    anclado no tiene nada que anclar y el test pasa sin medir nada (medido: cero
+    fotos cambiadas porque no quedó contabilidad). Por eso la cuenta se arma
+    importando un archivo, como un usuario, y se re-estampa por las dos puertas que
+    lo hacen en producción: borrar un movimiento y el botón del admin.
+    (Recorrido completo y más casos: `tests/test_borrar_conserva_el_dia.py`.)
+
+    ⚠️ DESDE 2026-10 BORRAR YA NO RE-ESTAMPA: aplica sólo el cambio que produjo lo
+    borrado, y sólo a las fotos que lo tenían (`main._cambio_de_aportado`).
+    Re-anclar el mes desde un borrado suponía que la última foto del mes sabía
+    todos sus flujos, y cuando no —un depósito cargado hoy después de la foto de
+    hoy, un import a mitad de mes— reescribía meses enteros mal y sin vuelta. Así
+    que las dos puertas siguen en "la curva no cambia" y "a un usuario sano no le
+    toca ni una fila", pero corregir una estampa VIEJA es trabajo sólo del botón del
+    admin (y de la reparación); el borrado tiene el test contrario."""
+
+    BROKER = "IBKR"
+
+    def setUp(self):
+        self.conn = main.get_db()
+
+    def tearDown(self):
+        main.app.dependency_overrides.pop(main.get_effective_user, None)
+        main.app.dependency_overrides.pop(main.get_admin_user, None)
+        self.conn.close()
+
+    def _armar(self, estampa_de_febrero=None):
+        """Cuenta importada: 100.000 el 2/1, una compra y un dividendo en enero, y
+        10.000 el 20/2. Las fotos del cron anotan lo aportado de cada día y el
+        mercado está quieto (la cartera vale eso), así que la curva da 0."""
+        for t in ("import_op_links", "import_normalized_tx", "import_raw_rows",
+                  "import_batches", "operations", "positions", "monthly_entries",
+                  "snapshots", "deleted_ops_journal", "config", "brokers", "users"):
+            try:
+                self.conn.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        self.uid = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            (f"r5-cascada-{id(self)}@t", "x")).lastrowid
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, self.BROKER, "USDT"))
+        self.conn.commit()
+        csv = (_HDR + "2026-01-02,DEPOSITO,IBKR,,,,100000,,,0,USD,\n"
+                      "2026-01-05,COMPRA,IBKR,AAPL,10,150,1500,,,0,USD,\n"
+                      "2026-01-10,DIVIDENDO,IBKR,AAPL,,,50,,,0,USD,\n"
+                      "2026-02-20,DEPOSITO,IBKR,,,,10000,,,0,USD,\n").encode()
+        with self.conn:
+            p = pl.run_preview(self.conn, uid=self.uid, file_bytes=csv, file_name="x.csv",
+                               broker_hint=self.BROKER, parser_format="rendi_generic")
+        with self.conn:
+            txs, raw = pl.load_session_for_confirm(self.conn, uid=self.uid,
+                                                   session_id=p["session_id"])
+            ps.persist_batch(self.conn, uid=self.uid, batch_id=p["session_id"], txs=txs,
+                             raw_row_ids_by_index=raw, helpers=_helpers())
+            rb.rebuild_fifo_after_import(self.conn, self.uid, p["session_id"],
+                                         tc_blue=ps._read_tc_blue(self.conn, uid=self.uid))
+            main._recalc_pnl_realized_from_ops(self.conn, self.uid)
+        dias = ([f"2026-01-{d:02d}" for d in range(2, 32)]
+                + [f"2026-02-{d:02d}" for d in range(1, 29)])
+        for d in dias:
+            v = 110000.0 if d >= "2026-02-20" else 100000.0
+            st = (estampa_de_febrero if estampa_de_febrero is not None
+                  and d.startswith("2026-02") else v)
+            self.conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                       net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
+                   VALUES (?,?,?,?,?,1200,'[{"a":"AAPL"}]','cron','mercado',1)
+                   ON CONFLICT(user_id, date) DO UPDATE SET
+                       total_value=excluded.total_value,
+                       total_invested=excluded.total_invested,
+                       net_deposited=excluded.net_deposited,
+                       fx_to_usd_blue=excluded.fx_to_usd_blue,
+                       holdings_json=excluded.holdings_json,
+                       source='cron', base='mercado', apto=1""",
+                (self.uid, d, v, v, st))
+        self.conn.commit()
+        main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
+        main.app.dependency_overrides[main.get_admin_user] = lambda: self.uid
+        self.client = TestClient(main.app)
+
+    # Las dos puertas que re-estampan fotos ya escritas en producción.
+    def _borrar_el_dividendo(self):
+        tx = self.conn.execute(
+            "SELECT n.id FROM import_normalized_tx n JOIN import_batches b "
+            "ON b.id=n.batch_id WHERE b.user_id=? AND n.operation_type='DIVIDEND'",
+            (self.uid,)).fetchone()
+        r = self.client.delete(f"/api/movements/tx-{tx['id']}")
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def _boton_del_admin(self):
+        r = self.client.post("/api/admin/recompute-snapshots-netdep")
+        self.assertEqual(r.status_code, 200, r.text)
+
+    PUERTAS = ("_borrar_el_dividendo", "_boton_del_admin")
+    # Las que corrigen estampas viejas en general (ver el docstring de la clase).
+    PUERTAS_QUE_RE_ANCLAN = ("_boton_del_admin",)
+
+    def _estampas(self):
+        return {r["date"]: r["net_deposited"] for r in self.conn.execute(
+            "SELECT date, net_deposited FROM snapshots WHERE user_id=? AND source='cron'",
+            (self.uid,))}
 
     def test_la_curva_no_cambia_aunque_se_re_estampe(self):
         # ⚠️ Este test pedía sólo que el número NO SE MOVIERA, y el fixture
         # publicaba +10,00% inventado: verificaba que una mentira fuera estable.
         # Ahora exige primero que el número sea CORRECTO —mercado plano, un
         # depósito: 0,00%— y recién después que el re-estampado no lo mueva.
-        self.me(2026, 1, 100000.0, 100000.0)
-        for d in range(1, 32):
-            self.cron(f"2026-01-{d:02d}", 100000.0, 100000.0)
-        self.me(2026, 2, 100000.0, 110000.0, dep=10000.0)
-        for d in range(1, 29):
-            v = 100000.0 if d < 20 else 110000.0
-            self.cron(f"2026-02-{d:02d}", v, v)
-        antes = twr.curva_indexada(self.conn, self.uid)
-        self.assertAlmostEqual(antes["twr"], 0.0, places=6)
-        self.assertAlmostEqual(antes["drawdown_maximo"], 0.0, places=6)
-        main._recompute_snapshots_netdep_for_user(self.conn, self.uid)
-        self.conn.commit()
-        despues = twr.curva_indexada(self.conn, self.uid)
-        self.assertAlmostEqual(despues["twr"], 0.0, places=6)
-        self.assertEqual(antes["twr"], despues["twr"])
-        self.assertEqual(antes["drawdown_maximo"], despues["drawdown_maximo"])
+        for puerta in self.PUERTAS:
+            with self.subTest(puerta=puerta):
+                self._armar()
+                antes = twr.curva_indexada(self.conn, self.uid)
+                self.assertAlmostEqual(antes["twr"], 0.0, places=6)
+                self.assertAlmostEqual(antes["drawdown_maximo"], 0.0, places=6)
+                getattr(self, puerta)()
+                despues = twr.curva_indexada(self.conn, self.uid)
+                self.assertAlmostEqual(despues["twr"], 0.0, places=6)
+                self.assertAlmostEqual(despues["drawdown_maximo"], 0.0, places=6)
 
     def test_a_un_usuario_sano_no_le_toca_NI_UNA_fila(self):
-        """Antes reescribía 19 de 28 filas con un único valor por mes, destruyendo
-        la resolución diaria que el cron había escrito bien. Ahora el re-estampado
-        usa el mismo aportado anclado que la curva, así que en una cuenta sana no
-        tiene nada que corregir."""
-        self.me(2026, 2, 100000.0, 110000.0, dep=10000.0)
-        for d in range(1, 29):
-            v = 100000.0 if d < 20 else 110000.0
-            self.cron(f"2026-02-{d:02d}", v, v)
-        antes = {r["date"]: r["net_deposited"] for r in self.conn.execute(
-            "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
-        main._recompute_snapshots_netdep_for_user(self.conn, self.uid)
-        self.conn.commit()
-        despues = {r["date"]: r["net_deposited"] for r in self.conn.execute(
-            "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
-        self.assertEqual(antes, despues)
+        """Antes la cascada reescribía 19 de 28 fotos de febrero con un único valor
+        por mes, destruyendo la resolución diaria que el cron había escrito bien.
+        Ahora re-estampa con el mismo aportado anclado que la curva, así que en una
+        cuenta sana no tiene nada que corregir."""
+        for puerta in self.PUERTAS:
+            with self.subTest(puerta=puerta):
+                self._armar()
+                antes = self._estampas()
+                getattr(self, puerta)()
+                despues = self._estampas()
+                self.assertEqual({d: (antes[d], despues.get(d)) for d in antes
+                                  if despues.get(d) != antes[d]}, {})
 
     def test_pero_SI_corrige_una_estampa_stale(self):
-        """Lo que la función existe para hacer: si la contabilidad cambió, las
+        """Lo que el re-estampado existe para hacer: si la contabilidad cambió, las
         estampas viejas se corrigen — anclando el borde de mes, no aplanando el mes."""
-        self.me(2026, 2, 100000.0, 110000.0, dep=10000.0)
-        for d in range(1, 29):
-            v = 100000.0 if d < 20 else 110000.0
-            self.cron(f"2026-02-{d:02d}", v, 55555.0)      # estampa stale
-        main._recompute_snapshots_netdep_for_user(self.conn, self.uid)
-        self.conn.commit()
-        fin = self.conn.execute(
-            "SELECT net_deposited FROM snapshots WHERE user_id=? AND date='2026-02-28'",
-            (self.uid,)).fetchone()["net_deposited"]
-        self.assertAlmostEqual(fin, 110000.0, places=2)     # anclado al canónico
+        for puerta in self.PUERTAS_QUE_RE_ANCLAN:
+            with self.subTest(puerta=puerta):
+                self._armar(estampa_de_febrero=55555.0)
+                getattr(self, puerta)()
+                self.assertAlmostEqual(self._estampas()["2026-02-28"], 110000.0, places=2)
+
+    def test_borrar_un_dividendo_no_toca_una_estampa_stale(self):
+        """El contrario, a propósito: borrar un dividendo no cambia ningún depósito ni
+        retiro, así que no toca ninguna foto — ni siquiera una estampa vieja. Hasta
+        2026-10 este test corría también por esta puerta y pedía que la corrigiera:
+        era lo que hacía el borrado (re-anclaba el mes), y es justo lo que dejaba
+        meses enteros mal cuando la última foto del mes no sabía todos sus flujos."""
+        self._armar(estampa_de_febrero=55555.0)
+        antes = self._estampas()
+        self._borrar_el_dividendo()
+        self.assertEqual(self._estampas(), antes)
 
 
 class AportadoAncladoTest(_Base):
@@ -246,6 +357,41 @@ class AportadoAncladoTest(_Base):
         # Y adentro del mes, el flujo cae EL DÍA que entró.
         self.assertAlmostEqual(por_fecha["2026-02-19"], 100000.0, places=2)
         self.assertAlmostEqual(por_fecha["2026-02-20"], 110000.0, places=2)
+
+    def test_la_plata_de_antes_de_la_primera_foto_del_mes_tambien_se_movio(self):
+        """El corredor se abría sólo con lo que las estampas se movían ENTRE fotos
+        del mismo mes. Lo que entró antes de la primera foto del mes —el depósito
+        de apertura, o uno del día 1— no contaba, y con un retiro más adelante el
+        anclado recortaba esos días al valor de fin de mes: −39 % de peor caída en
+        una cuenta nueva, −26,5 % en una vieja, con el mercado quieto."""
+        casos = {
+            # cuenta nueva: 10.000 el 1/2, retira 4.000 el 15/2
+            "nueva": (None, [(1, 14, 10000.0), (15, 28, 6000.0)], 0.0, 6000.0, 10000.0, 4000.0),
+            # cuenta vieja: 10.000 en enero; +5.000 el 1/2, −4.000 el 15/2
+            "vieja": (10000.0, [(1, 14, 15000.0), (15, 28, 11000.0)], 10000.0, 11000.0,
+                      5000.0, 4000.0),
+        }
+        for nombre, (enero, tramos, ci, cf, dep, ret) in casos.items():
+            with self.subTest(cuenta=nombre):
+                self.conn.execute("DELETE FROM snapshots WHERE user_id=?", (self.uid,))
+                self.conn.execute("DELETE FROM monthly_entries WHERE user_id=?", (self.uid,))
+                self.conn.commit()
+                if enero is not None:
+                    self.me(2026, 1, enero, enero)
+                    for d in range(1, 32):
+                        self.cron(f"2026-01-{d:02d}", enero, enero)
+                self.conn.execute(
+                    "INSERT INTO monthly_entries (user_id, broker, year, month, "
+                    "capital_inicio, capital_final, deposits, withdrawals, pnl_realized, "
+                    "pnl_unrealized) VALUES (?,'global',2026,2,?,?,?,?,0,0)",
+                    (self.uid, ci, cf, dep, ret))
+                self.conn.commit()
+                for d0, d1, v in tramos:
+                    for d in range(d0, d1 + 1):
+                        self.cron(f"2026-02-{d:02d}", v, v)
+                c = twr.curva_indexada(self.conn, self.uid)
+                self.assertAlmostEqual(c["twr"], 0.0, places=6)
+                self.assertAlmostEqual(c["drawdown_maximo"], 0.0, places=6)
 
 
 class LaClasificacionNoEstaMaterializadaTest(unittest.TestCase):

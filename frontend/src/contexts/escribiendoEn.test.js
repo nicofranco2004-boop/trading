@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { escribiendoEn } from './VozContext'
 import CursorEscribiendo from '../components/ai/CursorEscribiendo'
 
-// El cursor de Rendi AI va SÓLO en la respuesta que se está escribiendo.
+// El cursor de Mervall-E AI va SÓLO en la respuesta que se está escribiendo.
 describe('escribiendoEn', () => {
   const hilo = [{ role: 'user', content: '¿Cómo voy?' }, { role: 'assistant', content: 'Tu cartera' }]
   it('turno en curso y el texto llegando → la última respuesta', () => {

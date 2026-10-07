@@ -1,5 +1,5 @@
 // AIBlocks — renderizadores de los bloques visuales de las respuestas de
-// Rendi AI (catálogo V1: compare / alloc / scenario / table / actions).
+// Mervall-E AI (catálogo V1: compare / alloc / scenario / table / actions).
 // ═══════════════════════════════════════════════════════════════════════════
 // El modelo elige el bloque y manda SOLO datos ({type, ...}) — acá vive el
 // componente de cada tipo. La sanitización (caps, tonos, whitelist de rutas)

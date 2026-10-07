@@ -24,6 +24,8 @@ import { Lock } from 'lucide-react'
 import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
+import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
+import AnimatedNumber from '../AnimatedNumber'
 
 function monthNum(period_key) {
   if (!period_key) return null
@@ -231,19 +233,26 @@ function KpiCell({ label, value, sub, tone, first }) {
 // `pp` es el EXCESO en puntos porcentuales (cartera − benchmark), no el retorno
 // del índice. Sin dato no se dibuja nada: un "—" por año ocupa lugar y no dice
 // más que el vacío.
-function Veredicto({ nombre, articulo, pp, detalle }) {
+export function Veredicto({ nombre, articulo, pp, detalle }) {
   if (pp == null) return null
-  const gana = pp >= 0
+  // El veredicto, el del número que se ve: 0,0 pp es un empate (neutro), no
+  // "por encima" en verde.
+  const signo = pctVarSign(pp, decimalesFinos(pp, 1))
+  const gana = signo > 0
   const de = articulo === 'el' ? 'del' : 'de la'
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[11px] text-ink-2 bg-bg-2 border border-line-2 rounded-full px-2.5 py-1 tabular whitespace-nowrap"
-      title={`${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${Math.abs(pp).toFixed(1).replace('.', ',')} puntos porcentuales`
+      // La aclaración (`detalle`) va en los TRES casos: sin los paréntesis el
+      // `+` se pegaba sólo al "por encima/por debajo" y el empate la perdía.
+      title={(signo === 0 ? `Igual que ${articulo} ${nombre}`
+        : `${gana ? 'Por encima' : 'Por debajo'} ${de} ${nombre} por ${ppVarFino(Math.abs(pp), 1).replace(/^\+/, '').replace(' pp', '')} puntos porcentuales`)
              + (detalle ? `. ${detalle}` : '')}
     >
       vs {nombre}
-      <b className={`font-semibold ${gana ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-        {gana ? '+' : '−'}{Math.abs(pp).toFixed(1).replace('.', ',')} pp
+      <b className={`font-semibold ${signo > 0 ? 'text-rendi-pos' : signo < 0 ? 'text-rendi-neg' : 'text-ink-1'}`}>
+        {/* ppVarFino: −0,04 se escribe "−0,04 pp", no "−0,0 pp" en rojo. */}
+        {ppVarFino(pp, 1)}
       </b>
     </span>
   )
@@ -288,10 +297,11 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   const datos = []
   if (resumen.sp500_return_pct != null) {
     datos.push({ label: 'S&P 500 ese año',
-                 valor: `${resumen.sp500_return_pct >= 0 ? '+' : '−'}${Math.abs(resumen.sp500_return_pct).toFixed(1).replace('.', ',')}%` })
+                 valor: pctVar(resumen.sp500_return_pct, 1) })
   }
   if (resumen.inflation_pct != null) {
-    datos.push({ label: 'Inflación AR', valor: `+${resumen.inflation_pct.toFixed(1).replace('.', ',')}%` })
+    // pctVar: con deflación decía "+-0,3%".
+    datos.push({ label: 'Inflación AR', valor: pctVar(resumen.inflation_pct, 1) })
   }
   if (resumen.deposits > 0) {
     datos.push({ label: 'Aportaste', valor: money.fmtMoney(resumen.deposits) })
@@ -312,8 +322,10 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   if (pcts.length > 0) {
     datos.push({ label: 'Meses en verde', valor: `${verdes} de ${mesesDelAnio}` })
     const mejor = Math.max(...pcts), peor = Math.min(...pcts)
-    datos.push({ label: 'Mejor mes', valor: `+${mejor.toFixed(1).replace('.', ',')}%`, tono: 'pos' })
-    if (peor < 0) datos.push({ label: 'Peor mes', valor: `−${Math.abs(peor).toFixed(1).replace('.', ',')}%`, tono: 'neg' })
+    // pctVar: en un año con todos los meses en rojo, "Mejor mes" decía "+-1,2%".
+    // El color, el del número que se ve: −0,04 se escribe "0,0%" y no va en rojo.
+    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: pctVarSign(mejor, 1) > 0 ? 'pos' : pctVarSign(mejor, 1) < 0 ? 'neg' : undefined })
+    if (pctVarSign(peor, 1) < 0) datos.push({ label: 'Peor mes', valor: pctVar(peor, 1), tono: 'neg' })
   }
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
   // ruido que el ojo tiene que descartar en cada pasada.
@@ -363,22 +375,24 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
   // están convertidos, y por lo tanto si hay que declarar a qué dólar.
   const { currency } = useCurrency()
   const enPesos = currency === 'ARS'
+  // Los números de la tira cuentan al verse (arriba del return: es un hook).
+  const [refKpis, kpisVistos] = useAlVerse()
   if (!kpis) return null
 
   return (
     <section className="mb-6 space-y-3">
       {/* ── KPI strip ── */}
-      <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
+      <div ref={refKpis} className="border border-line rounded-xl bg-bg-1 flex flex-wrap">
         <KpiCell
           first
           label="P&L Realizado · 12M"
-          value={money.fmtMoney(kpis.realizedSum, { signed: true })}
+          value={<AnimatedNumber value={kpis.realizedSum} visto={kpisVistos} format={n => money.fmtMoney(n, { signed: true })} />}
           tone={kpis.realizedSum >= 0 ? 'pos' : 'neg'}
           sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
         />
         <KpiCell
           label="Meses positivos"
-          value={`${kpis.positiveCount}/${kpis.totalCount}`}
+          value={<><AnimatedNumber value={kpis.positiveCount} visto={kpisVistos} format={n => Math.round(n)} />/{kpis.totalCount}</>}
           sub={
             kpis.totalCount > 0
               ? `${Math.round((kpis.positiveCount / kpis.totalCount) * 100)}% en verde`
@@ -387,7 +401,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
         />
         <KpiCell
           label="Trades · 12M"
-          value={kpis.trades.toLocaleString('es-AR')}
+          value={<AnimatedNumber value={kpis.trades} visto={kpisVistos} format={n => Math.round(n).toLocaleString('es-AR')} />}
           sub="operaciones cerradas"
         />
       </div>
@@ -505,7 +519,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   <Veredicto
                     nombre="inflación" articulo="la" pp={parcial ? null : resumen?.vs_inflation_pct}
                     detalle={!enPesos && resumen?.retorno_ars_pct != null
-                      ? `Se compara en pesos: tu cartera hizo ${resumen.retorno_ars_pct.toFixed(2).replace('.', ',')} % en pesos y la inflación ${resumen.inflation_pct?.toFixed(1).replace('.', ',')} %`
+                      ? `Se compara en pesos: tu cartera hizo ${pctTxt(resumen.retorno_ars_pct, 2)} en pesos y la inflación ${pctTxt(resumen.inflation_pct, 1)}`
                       : null}
                   />
                 </div>

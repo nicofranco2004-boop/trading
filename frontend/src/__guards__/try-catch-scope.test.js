@@ -36,7 +36,9 @@ describe('alcance try → catch/finally', () => {
               + `Movela ARRIBA del try.`)
       .join('\n')
     expect(fugas, detalle).toEqual([])
-  })
+  // Recorre y parsea TODO src/: con la suite en paralelo superaba los 5 s por
+  // defecto (5,7 s medido el 2026-10-02) y fallaba por tiempo, no por una fuga.
+  }, 30000)
 
   // ── Los casos vienen de AUDITAR el guard el mismo día que se escribió. ──
   // La primera versión fallaba en las dos direcciones: era ciega al

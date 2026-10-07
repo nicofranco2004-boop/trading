@@ -15,7 +15,7 @@ una vez y ~6 s las otras. Dos mecanismos de yfinance, los dos medidos:
        alguna otra descarga cualquiera llene el diccionario (cortada a los 75 s,
        seguía esperando).
    En producción corre UN solo proceso: la cinta de cotizaciones, /api/prices,
-   el cierre anterior, la foto diaria, las alertas y Rendi AI descargaban todos
+   el cierre anterior, la foto diaria, las alertas y Mervall-E AI descargaban todos
    en el mismo diccionario.
 
 2. Yahoo puede no contestar, y yfinance espera hasta 30 s por pedido: la cookie
@@ -243,7 +243,7 @@ def ultimos_cierres(tabla, tickers=None) -> dict:
     venían NaN. Pasaba todas las noches desde las 21:00 hasta que abre Wall
     Street, y los fines de semana enteros. `/api/prices` las volvía a bajar una
     por una (11 pedidos de más) y las marcaba como "precio de una rueda
-    anterior"; `fetch_prices_for_symbols` (Rendi AI, alertas) las devolvía SIN
+    anterior"; `fetch_prices_for_symbols` (Mervall-E AI, alertas) las devolvía SIN
     precio.
     """
     out = {}

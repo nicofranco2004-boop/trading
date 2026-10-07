@@ -22,7 +22,7 @@
 //    algo que ya no está en pantalla. Acá se mira; tocar viene después.
 //
 // La navegación entre pantallas la hace el tutorial (pedido de Nico): empieza
-// donde esté el usuario, y al pasar al micrófono lo lleva él mismo a Rendi AI.
+// donde esté el usuario, y al pasar al micrófono lo lleva él mismo a Mervall-E AI.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -32,7 +32,7 @@ import { useVoz } from '../../contexts/VozContext'
 // Cuánto aire se deja alrededor de lo iluminado.
 const AIRE = 8
 // Cuánto se espera a que aparezca el blanco antes de darlo por perdido. La
-// pantalla de Rendi AI pide la foto de la cartera antes de dibujar el chat.
+// pantalla de Mervall-E AI pide la foto de la cartera antes de dibujar el chat.
 const ESPERA_MAX = 2500
 const REINTENTO = 120
 // Lo que mide el cartel en pantalla grande.

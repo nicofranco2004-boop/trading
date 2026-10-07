@@ -1,4 +1,4 @@
-// VozContext — la voz de Rendi y el acompañante que la sostiene.
+// VozContext — la voz de Mervall-E y el acompañante que la sostiene.
 // ═══════════════════════════════════════════════════════════════════════════
 // POR QUÉ ESTO VIVE EN EL SHELL Y NO ADENTRO DE UNA PANTALLA
 // ---------------------------------------------------------------------------
@@ -12,7 +12,7 @@
 // usa el selector de moneda del sidebar, que sobrevive a la navegación.
 //
 // QUÉ HAY ADENTRO
-//   · el parlante  — si Rendi LEE las respuestas o las deja sólo escritas.
+//   · el parlante  — si Mervall-E LEE las respuestas o las deja sólo escritas.
 //                    Es lo único que decide ese botón (no tiene nada que ver
 //                    con el micrófono, que es de otra etapa).
 //   · el reproductor — un solo <audio>, su estado y la perilla de velocidad.
@@ -23,14 +23,17 @@
 // el mismo turno del chat y viene FIRMADO por el backend; acá se reenvía tal
 // cual. Cambiarle un espacio rompe la firma y el servidor lo rechaza.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from '../utils/api'
-import { fetchAiSnapshot } from '../utils/aiSnapshot'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { api, EVENTO_ESCRITURA } from '../utils/api'
+import { fetchAiSnapshot, esFotoDeLaCuentaActual } from '../utils/aiSnapshot'
+import { crearLecturaDeCartera, claveDePersona, quienEs } from '../utils/lecturaDeCartera'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
-import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STORED } from '../utils/chatSession'
+import { avisarPalabra } from '../components/ai/mervalle/motor'
+import { loadChatSession, saveChatSession, clearChatSession, sendWindow, MAX_STORED,
+         adoptarConversaciones, claveDeConversacion } from '../utils/chatSession'
 import { useAuth } from './AuthContext'
-import { getClientContext } from '../utils/api'
+import { getClientContext, EVENTO_CUENTA_CAMBIADA } from '../utils/api'
 import { traducirErrorDeChat, esCancelacion } from '../utils/errorChat'
 
 const LS_ON = 'rendi:voz:on'
@@ -74,6 +77,34 @@ export function puedeArrancarSolo(usage) {
   if (!usage) return true                       // sin dato, el comportamiento de antes
   if (usage.listens_limit != null) return false // Free: siempre a pedido
   return (usage.chat_remaining ?? 1) > 0
+}
+
+// Quién está logueado, para comparar: `quienEs` (utils/lecturaDeCartera) — el
+// email normalizado; null sin sesión. Es el mismo con el que se firma la
+// lectura de la cartera: una sola regla de "quién es".
+
+/**
+ * La foto de la cartera que viaja con UNA pregunta. ask() la usa tal cual.
+ *
+ *  · Modo LIBRO del asesor → `{}`. Su cartera personal está vacía y el
+ *    contexto (el libro) lo arma el servidor, que ignora lo que llegue; el
+ *    chat exige algo truthy para habilitar el envío, igual que /ai.
+ *  · Si no: la que traigan ya armada (`deAfuera`, `guardada`), la primera
+ *    que sea de la cuenta a la que va la pregunta. Si ninguna lo es, `traer`.
+ *    ask() pasa sólo `traer` = la lectura que comparten la isla y /ai
+ *    (lecturaDeCartera), que ya reusa la que hay si sigue valiendo.
+ *
+ * 🔴 Antes se usaba la que hubiera, sin preguntar de quién era. La guardada
+ * podía ser la del cliente anterior, o el `{}` del libro: el asesor preguntaba
+ * en su libro, entraba a un cliente y la IA contestaba sin las operaciones,
+ * los meses ni los brokers de ese cliente — o con los de otro.
+ */
+export async function fotoParaLaPregunta({ libro, deAfuera, guardada, traer = fetchAiSnapshot }) {
+  if (libro) return {}
+  for (const foto of [deAfuera, guardada]) {
+    if (esFotoDeLaCuentaActual(foto)) return foto
+  }
+  return traer()
 }
 
 // ─── Pedir permiso para sonar ANTES de tener qué decir ──────────────────────
@@ -151,13 +182,24 @@ export function VozProvider({ children }) {
   // arriba de todo y no se desmonta al navegar. Es exactamente la misma razón
   // por la que el audio no se corta al cambiar de pantalla.
   const [open, setOpen] = useState(false)
-  const [thread, setThread] = useState(() => loadChatSession())
+  // QUIÉN está, antes de levantar la conversación guardada: lo guardado en la
+  // pestaña se muestra sólo si es suyo (ver adoptarConversaciones). Y quién
+  // estaba la última vez que se miró — lo usan el guardado y el cambio de
+  // persona, más abajo.
+  const { user } = useAuth()
+  const quienRef = useRef(quienEs(user))
+  // Sin nadie (o sin email todavía) arranca vacío: cuando se sepa quién es,
+  // el efecto de cambio de persona carga lo suyo.
+  const [thread, setThread] = useState(() => {
+    const quien = quienEs(user)
+    return quien != null && adoptarConversaciones(quien) ? loadChatSession() : []
+  })
   const [sending, setSending] = useState(false)
   // Qué está haciendo Rendi ahora mismo ("Buscando los precios de hoy"). Lo
   // manda el backend cuando sale a buscar datos; sirve para que la espera no
   // sea un "pensando" mudo de 15 segundos.
   const [paso, setPaso] = useState(null)
-  // Los pasos de ESTE turno, en orden: la pantalla de Rendi AI los muestra en
+  // Los pasos de ESTE turno, en orden: la pantalla de Mervall-E AI los muestra en
   // lista, con tilde los que ya quedaron atrás (la isla muestra sólo `paso`).
   // Son los que manda el servidor: acá no se inventa ninguno.
   const [pasos, setPasos] = useState([])
@@ -167,8 +209,8 @@ export function VozProvider({ children }) {
   }, [])
   const [askError, setAskError] = useState(null)
   // `loading` NO es lo mismo que `sending`: sending dura todo el turno, loading
-  // se apaga en cuanto llega la primera letra. Es lo que decide si se ven los
-  // puntitos o la respuesta escribiéndose.
+  // se apaga en cuanto llega la primera letra. Es lo que decide si se ve la
+  // espera (Mervall-E pensando) o la respuesta escribiéndose.
   const [loading, setLoading] = useState(false)
   // El payload de "pasate a Pro" cuando el backend lo manda con un 429 o un
   // 403. Con esto la UI dibuja la card promocional en vez del cartel rojo.
@@ -185,6 +227,19 @@ export function VozProvider({ children }) {
   // Se acabó el cupo de escuchas: { message, upgrade }. Se dibuja como aviso
   // con su atajo a Planes, no como error.
   const [sinCupo, setSinCupo] = useState(null)
+  // Marca de "parar": la sube stop(), la mira speak() antes de sonar.
+  const vozGenRef = useRef(0)
+  // TODO lo que deja un error, en un solo lugar. Antes la pregunta nueva
+  // borraba el mensaje y la oferta de plan pero no el código, el tipo de cupo
+  // ni el uso: después de un "sin consultas", una pregunta que salía bien
+  // dejaba a Mervall-E dormido debajo de la respuesta (auditoría 2026-10-05).
+  const limpiarError = useCallback(() => {
+    setAskError(null)
+    setUpgradeInfo(null)
+    setUsageDelError(null)
+    setKindDeCuotaDelError(null)
+    setCodigoDelError(null)
+  }, [])
   // 🔴 POR QUÉ NO ARRANCÓ SOLA. Hasta acá, los CINCO motivos por los que Rendi
   // puede no ponerse a hablar se veían exactamente igual: un botón de play, sin
   // una palabra. El usuario no tenía cómo saber si el que decidió fue él (la
@@ -204,11 +259,51 @@ export function VozProvider({ children }) {
   // solo, mirando quién pregunta, e ignora lo que mande el navegador.
   //
   // Por eso acá lo único que hay que hacer es NO pedirle su cartera personal,
-  // que está vacía. Mismo criterio que la pantalla de Rendi AI.
-  const { user } = useAuth()
+  // que está vacía. Mismo criterio que la pantalla de Mervall-E AI.
   const modoLibro = user?.tier === 'advisor' && !getClientContext()
 
-  const snapRef = useRef(null)
+  // LA LECTURA DE TU CARTERA que acompaña cada pregunta: se lee una vez y se
+  // reusa, de a una a la vez, y es de quien la leyó (usuario y cliente del
+  // asesor). Las reglas viven en utils/lecturaDeCartera. `cartera` es lo que
+  // dibujan la isla ("Viendo tu cartera · 12 posiciones · 3 brokers") y /ai
+  // (el cargador con los 4 pedidos, y el chat con `cartera.snap`).
+  const [cartera, setCartera] = useState(null)
+  const userRef = useRef(user)
+  userRef.current = user
+  const tierRef = useRef(user?.tier)
+  tierRef.current = user?.tier
+  const lecturaRef = useRef(null)
+  if (!lecturaRef.current) {
+    lecturaRef.current = crearLecturaDeCartera({
+      leer: (alLlegar, signal) => fetchAiSnapshot({ alLlegar, signal }),
+      deQuien: () => claveDePersona(userRef.current, getClientContext()?.id),
+      alCambiar: setCartera,
+    })
+  }
+  const lectura = lecturaRef.current
+  // Cerró sesión y entró otra persona en la misma pestaña (no se recarga):
+  // no queda nada de la lectura de la anterior. `persona` también le avisa a
+  // la isla que tiene que leer de nuevo (cambio de persona o de cliente).
+  // useLayoutEffect y no useEffect: los efectos de los hijos (la isla abierta
+  // pide leer) corren ANTES que los del padre, y un `olvidar` posterior tiraba
+  // la lectura recién pedida para la persona nueva — se leía dos veces.
+  const persona = claveDePersona(user, getClientContext()?.id)
+  const quienLee = quienEs(user)
+  const quienLeiaRef = useRef(quienLee)
+  useLayoutEffect(() => {
+    if (quienLeiaRef.current !== quienLee) lectura.olvidar()
+    quienLeiaRef.current = quienLee
+  }, [quienLee, lectura])
+  // Leer si hace falta (la isla al abrirse, /ai al entrar). En modo LIBRO no
+  // hay cartera personal que leer: el contexto lo arma el servidor. Se decide
+  // AL LLAMAR, no con `modoLibro`: el cliente del asesor lo cambia
+  // AdvisorContext, que vive más abajo y no redibuja este proveedor — /ai
+  // pedía leer al entrar a un cliente y esto todavía creía estar en el libro.
+  const esModoLibro = useCallback(() => tierRef.current === 'advisor' && !getClientContext(), [])
+  const leerCartera = useCallback(() => {
+    if (esModoLibro()) return
+    lectura.traer().catch(() => {})
+  }, [lectura, esModoLibro])
   const sendingRef = useRef(false)
   // 🔴 DE QUÉ CONVERSACIÓN ES LO QUE ESTÁ LLEGANDO.
   //
@@ -224,6 +319,13 @@ export function VozProvider({ children }) {
   // turno: navegar no lo cambia (la respuesta sigue siendo tuya), vaciar sí
   // (esa conversación ya no existe) y lo que llegue tarde se descarta.
   const turnoRef = useRef(0)
+  // La pregunta EN CURSO: de qué conversación guardada es (su clave) y cómo
+  // estaba esa conversación antes de preguntar. Si se cambia de cliente en el
+  // medio, la respuesta se descarta y la conversación del cliente anterior
+  // vuelve a como estaba — si no, quedaba guardada una pregunta sin respuesta
+  // (o una respuesta cortada que parecía completa) y viajaba como historial
+  // la próxima vez que se le preguntara por ese cliente.
+  const turnoEnCursoRef = useRef(null)
 
   // Se guarda en cada cambio, incluidos los pedacitos del streaming. Escribir
   // en sessionStorage es SINCRÓNICO —bloquea la pantalla— así que la duda era
@@ -232,13 +334,35 @@ export function VozProvider({ children }) {
   // cada una, 11 ms las 200 juntas, repartidos en los diez segundos que tarda
   // la respuesta. No se nota. Y es lo que hace que la conversación siga ahí
   // después de un F5.
-  useEffect(() => { saveChatSession(thread) }, [thread])
-
+  //
+  // Sin sesión no se guarda nada, ni en el dibujo en que cambió la persona
+  // (hasta que el efecto de más abajo la registra en quienRef). Al cerrar
+  // sesión el aviso de api.js deja por un instante la conversación anterior,
+  // y sin este corte se volvía a escribir en el guardado que el logout acababa
+  // de borrar: la heredaba el que entraba después en la misma pestaña.
+  // Y cada guardado va firmado con quién lo escribió: aunque algo se escriba
+  // en un momento raro, al que entre después no le toca.
   useEffect(() => {
-    const invalidar = () => { snapRef.current = null }
-    window.addEventListener('rendi:portfolio-changed', invalidar)
-    return () => window.removeEventListener('rendi:portfolio-changed', invalidar)
-  }, [])
+    const quien = quienEs(user)
+    if (!quien || quienRef.current !== quien) return
+    adoptarConversaciones(quien)
+    saveChatSession(thread)
+  }, [thread])
+
+  // La lectura queda VIEJA cuando algo cambia en el servidor: el chat o el
+  // importador (`rendi:portfolio-changed`) o una escritura de esta pestaña que
+  // toca la cartera (EVENTO_ESCRITURA, utils/api). El cambio de CLIENTE la deja
+  // vieja también, pero junto con la conversación: ver EVENTO_CUENTA_CAMBIADA,
+  // más abajo.
+  useEffect(() => {
+    const trasEscribir = () => lectura.invalidar()
+    window.addEventListener('rendi:portfolio-changed', trasEscribir)
+    window.addEventListener(EVENTO_ESCRITURA, trasEscribir)
+    return () => {
+      window.removeEventListener('rendi:portfolio-changed', trasEscribir)
+      window.removeEventListener(EVENTO_ESCRITURA, trasEscribir)
+    }
+  }, [lectura])
 
   const setEnabled = useCallback((v) => {
     setEnabledState(v)
@@ -302,11 +426,15 @@ export function VozProvider({ children }) {
   const speak = useCallback(async (voz) => {
     const a = audioRef.current
     if (!a || !voz?.text || !voz?.sig) return
+    const miVoz = vozGenRef.current
     setStatus('preparing')
     setAskError(null)
     setSinCupo(null)
     try {
       const { url } = await api.post('/ai/voz', { text: voz.text, sig: voz.sig })
+      // Si mientras se generaba alguien la paró (Nueva conversación, el
+      // micrófono), no suena.
+      if (miVoz !== vozGenRef.current) { setStatus('idle'); return }
       if (!url) throw new Error('sin url')
       setCurrent({ ...voz, url })
       a.src = url
@@ -325,6 +453,11 @@ export function VozProvider({ children }) {
       await a.play()
       setStatus('playing')
     } catch (e) {
+      // Si lo pararon a propósito mientras arrancaba (cambio de cuenta, "Nueva
+      // conversación"), el navegador corta la reproducción pendiente con un
+      // error: no es una falla, y mostrarla dejaba "No pudimos generar el
+      // audio" en rojo en el chat de la cuenta nueva.
+      if (miVoz !== vozGenRef.current) return
       if (e?.name === 'NotAllowedError') {
         // El navegador exige que el usuario toque algo antes del primer
         // sonido (iPhone, sobre todo). No es un error: mostramos el botón de
@@ -387,6 +520,11 @@ export function VozProvider({ children }) {
   }, [aplicarRate, rate])
 
   const stop = useCallback(() => {
+    // Parar también cancela el audio que está EN CAMINO (pedido y todavía sin
+    // sonar): speak() mira esta marca antes de darle play. Sin esto, "Nueva
+    // conversación" justo al terminar el texto hacía sonar segundos después la
+    // respuesta recién borrada (auditoría final 2026-10-05).
+    vozGenRef.current += 1
     const a = audioRef.current
     if (!a) return
     a.pause()
@@ -410,8 +548,9 @@ export function VozProvider({ children }) {
    * pantalla. Cambia tres cosas: la pregunta la escribe el servidor, se
    * descuenta del cupo de análisis y no del de consultas, y llega de yapa el
    * dato calculado de esa pantalla.
-   * `snapshot`: sólo para el modo LIBRO del asesor, donde la foto la arma la
-   * página. En el uso normal se resuelve solo.
+   * `snapshot`: la foto que ya armó la pantalla (/ai arma la suya). Se usa
+   * sólo si es de la cuenta a la que va la pregunta; si no, o si no viene,
+   * se resuelve sola (ver fotoParaLaPregunta). En el modo libro no viaja.
    */
   const ask = useCallback(async (texto, { analisis, snapshot: snapDeAfuera } = {}) => {
     const content = (texto || '').trim()
@@ -426,13 +565,13 @@ export function VozProvider({ children }) {
     setLoading(true)
     setPaso(null)
     setPasos([])
-    setAskError(null)
-    setUpgradeInfo(null)
+    limpiarError()
     setMotivoSinVoz(null)
     const miTurno = turnoRef.current
     // ¿Esta conversación sigue siendo la que está en pantalla?
     const vigente = () => turnoRef.current === miTurno
     const previos = thread
+    turnoEnCursoRef.current = { clave: claveDeConversacion(), previos }
     // Con el botón ✦ todavía no sabemos qué se preguntó: la pregunta la
     // escribe el servidor y llega en el primer frame, antes que la respuesta.
     // Se espera ese pestañeo en vez de pintar una burbuja inventada que
@@ -454,12 +593,23 @@ export function VozProvider({ children }) {
       setThread(t => [...t, { role: 'user', content: q }].slice(-MAX_THREAD))
     }
     try {
-      if (snapDeAfuera) snapRef.current = snapDeAfuera
-      // En modo LIBRO no se pide la cartera personal del asesor: está vacía, y
-      // el contexto lo arma el servidor. Se manda un objeto vacío —el chat
-      // exige algo truthy para habilitar el envío— igual que hace /ai.
-      else if (modoLibro) snapRef.current = snapRef.current || {}
-      else if (!snapRef.current) snapRef.current = await fetchAiSnapshot()
+      // La foto que viaja es la de la cuenta a la que va ESTA pregunta (ver
+      // fotoParaLaPregunta). El modo libro se mira ahora, no con el
+      // `modoLibro` del último dibujo (esModoLibro).
+      // Sale de la lectura que comparten la isla y /ai (lecturaDeCartera): si
+      // se está releyendo porque guardaste algo, la pregunta espera la nueva
+      // (y si ésa falla, sale con la anterior). La que trae /ai (`snapshot`)
+      // es esa misma lectura —ya no arma una propia—, pero puede ser la
+      // ANTERIOR mientras se relee: por eso no se usa como "la de afuera".
+      const foto = await fotoParaLaPregunta({
+        libro: esModoLibro(),
+        traer: () => lectura.paraPreguntar(),
+      })
+      // Si mientras llegaba la foto cambió la cuenta (o vaciaron el chat), la
+      // pregunta ya no es de nadie: no se manda. Salía igual, con la cuenta
+      // NUEVA en el encabezado, y gastaba una consulta en una respuesta que
+      // se iba a tirar.
+      if (!vigente()) return
       let acc = ''
       // Al modelo van SOLO role y content: el hilo de acá guarda además el
       // audio firmado y las tarjetas, que no son parte de la conversación.
@@ -489,11 +639,14 @@ export function VozProvider({ children }) {
       }) }
       const onDelta = (c) => {
         acc += c
-        // ya hay texto: se apagan los puntitos — SÓLO si es de la pregunta en
+        // ya hay texto: se apaga la espera (el visor de Mervall-E) — SÓLO si es de la pregunta en
         // pantalla. Sin el control, el texto de una respuesta descartada (el
         // stream viejo sigue llegando tras "Nueva conversación") apagaba el
         // "pensando" de la pregunta nueva antes de que empezara (medido).
         if (vigente()) setLoading(false)
+        // Las barras del pecho de Mervall-E laten con cada pedazo que llega.
+        // Va directo al motor (no por estado de React): son decenas por segundo.
+        if (vigente()) avisarPalabra()
         // Se pinta la PROSA, no el texto crudo: así el bloque de datos del
         // final no aparece medio escrito en pantalla mientras llega.
         const { prose } = parseStructured(stripMarkdown(acc))
@@ -521,6 +674,8 @@ export function VozProvider({ children }) {
         // La cuota se pregunta ACÁ y no antes del turno: el turno ya descontó
         // su ficha y con una sola de saldo la respuesta cambia.
         const u = await api.get('/ai/usage').catch(() => null)
+        // Esa consulta tarda: si mientras tanto se vació el chat, no suena.
+        if (!vigente()) return
         if (!puedeArrancarSolo(u)) {
           setMotivoSinVoz(u?.listens_limit != null
             ? 'Tu plan tiene un audio por semana: lo arrancás vos'
@@ -562,7 +717,7 @@ export function VozProvider({ children }) {
         // `voz: enabled` — si el parlante está apagado, el servidor le pide al
         // modelo que NO escriba el resumen hablado. Son ~130 tokens de salida
         // por respuesta que se pagaban aunque nadie los fuera a escuchar.
-        { messages, snapshot: snapRef.current, voz: enabled,
+        { messages, snapshot: foto, voz: enabled,
           ...(analisis ? { analisis } : {}) },
         { onDelta, onReset, onPaso: p => { if (vigente()) marcarPaso(p) }, onPregunta, onVoz: arrancarAudio },
       )
@@ -580,6 +735,11 @@ export function VozProvider({ children }) {
         }
         return [...copia, final].slice(-MAX_THREAD)
       })
+      // La respuesta ya está entera en la conversación: si ahora se cambia de
+      // cliente (mientras se decide si leerla en voz alta, por ejemplo), no hay
+      // nada que deshacer. Antes esto se soltaba recién al final y el cambio de
+      // cliente borraba de lo guardado una respuesta completa y ya cobrada.
+      turnoEnCursoRef.current = null
       if (res?.portfolioChanged) window.dispatchEvent(new Event('rendi:portfolio-changed'))
       // Red de seguridad: si el resumen hablado no vino adelantado (un turno
       // donde el modelo lo escribió último igual, o el respaldo que lo saca
@@ -612,13 +772,14 @@ export function VozProvider({ children }) {
       // nuevo y se podrían encimar dos.
       if (vigente()) {
         sendingRef.current = false
+        turnoEnCursoRef.current = null
         setSending(false)
         setLoading(false)
         setPaso(null)
         setPasos([])
       }
     }
-  }, [thread, enabled, speak, stop, desbloquearElSonido, modoLibro, marcarPaso])
+  }, [thread, enabled, speak, stop, desbloquearElSonido, esModoLibro, marcarPaso, limpiarError, lectura])
 
   /** Empezar de cero. Lo toca "Nueva conversación" en /ai. */
   const limpiar = useCallback(() => {
@@ -629,18 +790,100 @@ export function VozProvider({ children }) {
     // preguntar hasta que ésa terminara — hasta veinte segundos mirando un
     // chat vacío que dice que está pensando algo que ya se descartó.
     sendingRef.current = false
+    turnoEnCursoRef.current = null
     setSending(false)
     setLoading(false)
     setPaso(null)
     setPasos([])
     clearChatSession()
     setThread([])
-    setAskError(null)
-    setUpgradeInfo(null)
-    setUsageDelError(null)
-    setKindDeCuotaDelError(null)
-    setCodigoDelError(null)
-  }, [])
+    limpiarError()
+    // Y la voz de la respuesta borrada se calla (también la que venía en camino).
+    stop()
+  }, [stop, limpiarError])
+
+  // 🔴 CAMBIÓ LA CUENTA: lo de la anterior no viaja con la nueva.
+  //
+  // La foto de la cartera (la lectura) y la conversación (thread) son de UNA
+  // cuenta, pero este proveedor vive más que cualquier cuenta: está montado
+  // arriba de todo para que la voz no se corte al navegar, y el asesor entra y
+  // sale de sus clientes —o en una compu compartida uno cierra sesión y entra
+  // otro— sin recargar la página. Nada le avisaba. Medido en el navegador
+  // (2026-10-05): con la cuenta de Bruno abierta, la pregunta salía con el
+  // broker, las operaciones cerradas y la conversación de Ana; y después de
+  // cerrar sesión, el que entraba veía en la isla la charla del anterior y su
+  // primera pregunta viajaba con los datos del otro.
+  //
+  // Es "Nueva conversación" con tres diferencias: la foto queda vieja (y lo
+  // que estaba en camino se cancela: lecturaDeCartera, que además la guarda
+  // por persona y cliente) y se olvida el botón para volver a oír la
+  // respuesta anterior; NO se borra lo guardado
+  // (cada cliente tiene su charla aparte en chatSession: al volver a Ana vuelve
+  // la de Ana); y el hilo no queda vacío sino con el de la cuenta NUEVA. Al
+  // cambiar de persona, lo guardado se muestra sólo si es de quien entra; si
+  // es de otro, se borra (ver el efecto de cambio de persona, más abajo).
+  const cambiarDeCuenta = useCallback((hiloNuevo) => {
+    turnoRef.current += 1
+    sendingRef.current = false
+    turnoEnCursoRef.current = null
+    // Sin la pausa de después de guardar: acá no viene una ráfaga de
+    // escrituras, y la primera pregunta al cliente nuevo no tiene por qué esperar.
+    lectura.invalidar({ pausa: false })
+    setSending(false)
+    setLoading(false)
+    setPaso(null)
+    setPasos([])
+    limpiarError()
+    setSinCupo(null)
+    setMotivoSinVoz(null)
+    stop()
+    // Pausarlo no alcanza: quedaba CARGADO, y el play de los auriculares, del
+    // teclado o de la pantalla bloqueada volvía a reproducir la respuesta de
+    // la cuenta anterior. Se descarga.
+    const a = audioRef.current
+    if (a) {
+      try { a.removeAttribute('src'); a.load() } catch { /* sin soporte */ }
+    }
+    setCurrent(null)
+    setThread(hiloNuevo)
+  }, [stop, limpiarError, lectura])
+
+  // Otro cliente (o ninguno): lo avisa api.js, que es por donde pasan todas
+  // las formas de cambiar — entrar, salir, cerrar sesión adentro de uno, otra
+  // pestaña. Cuando el aviso llega, el contexto ya es el nuevo: lo que se lee
+  // del guardado es la charla del cliente al que se entró. Antes, si había una
+  // pregunta en vuelo, la conversación del cliente anterior vuelve a como
+  // estaba antes de esa pregunta (ver turnoEnCursoRef).
+  useEffect(() => {
+    const alCambiar = () => {
+      const enCurso = turnoEnCursoRef.current
+      // Firmado, como todo lo que se guarda: si esto cayera justo después de
+      // que un cierre de sesión borró lo guardado, al que entre no le toca.
+      if (enCurso && quienRef.current) {
+        adoptarConversaciones(quienRef.current)
+        saveChatSession(enCurso.previos, enCurso.clave)
+      }
+      // Lo guardado se carga sólo si ya se sabe quién está (y entonces es
+      // suyo: se adoptó al entrar). Sin nadie todavía —el login que llega sin
+      // email, como el de "olvidé mi contraseña"— arranca vacío, igual que al
+      // cargar la página; el cambio de persona carga lo suyo cuando se sepa.
+      cambiarDeCuenta(quienRef.current ? loadChatSession() : [])
+    }
+    window.addEventListener(EVENTO_CUENTA_CAMBIADA, alCambiar)
+    return () => window.removeEventListener(EVENTO_CUENTA_CAMBIADA, alCambiar)
+  }, [cambiarDeCuenta])
+
+  // Otra persona: cerró sesión, o entró alguien. La carga de la página no
+  // cuenta (quienRef arranca con quien está). Si entró alguien, lo guardado se
+  // muestra sólo si es suyo —volver a entrar después de que la sesión venció
+  // le devuelve su charla—; si es de otro, se borra. Si salió, vacío.
+  useEffect(() => {
+    const quien = quienEs(user)
+    if (quien === quienRef.current) return
+    quienRef.current = quien
+    const suyo = quien != null && adoptarConversaciones(quien, { sinDuenoEsAjeno: true })
+    cambiarDeCuenta(suyo ? loadChatSession() : [])
+  }, [user?.email, cambiarDeCuenta])
 
   /**
    * Lo que hace el botón ✦ Analizar de cualquier pantalla: abre el
@@ -709,17 +952,30 @@ export function VozProvider({ children }) {
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     try {
-      navigator.mediaSession.setActionHandler('play', () => { audioRef.current?.play().catch(() => {}) })
+      // Sólo si hay algo cargado: sin audio (por ejemplo, después de cambiar
+      // de cuenta), play() no suena pero el navegador avisa "play" igual —medido
+      // en Chrome— y la pantalla quedaba diciendo "Hablando…" para siempre.
+      navigator.mediaSession.setActionHandler('play', () => {
+        const a = audioRef.current
+        if (a?.src) a.play().catch(() => {})
+      })
       navigator.mediaSession.setActionHandler('pause', () => { audioRef.current?.pause() })
     } catch { /* navegador sin soporte parcial */ }
   }, [])
 
   useEffect(() => {
-    if (!('mediaSession' in navigator) || !window.MediaMetadata || !current?.text) return
+    if (!('mediaSession' in navigator)) return
+    // Sin audio, sin título: si no, la pantalla bloqueada y los controles del
+    // sistema seguían mostrando la frase de la respuesta anterior —la de otra
+    // persona o de otro cliente, después de un cambio de cuenta—.
+    if (!current?.text || !window.MediaMetadata) {
+      try { navigator.mediaSession.metadata = null } catch { /* idem */ }
+      return
+    }
     try {
       navigator.mediaSession.metadata = new window.MediaMetadata({
         title: current.text.slice(0, 70),
-        artist: 'Rendi',
+        artist: 'Mervall-E AI',
       })
     } catch { /* idem */ }
   }, [current?.text])
@@ -732,12 +988,12 @@ export function VozProvider({ children }) {
     open, setOpen,
     thread, sending, loading, paso, pasos, askError, upgradeInfo, usageDelError,
     kindDeCuotaDelError, codigoDelError, motivoSinVoz,
-    modoLibro,
+    modoLibro, cartera, leerCartera, persona,
     sinCupo, ask, analizar, limpiar,
   }), [enabled, setEnabled, rate, setRate, status, progress, current,
        speak, escuchar, toggle, stop, open, thread, sending, loading, paso, pasos, askError,
        upgradeInfo, usageDelError, kindDeCuotaDelError, codigoDelError, sinCupo,
-       motivoSinVoz, modoLibro,
+       motivoSinVoz, modoLibro, cartera, leerCartera, persona,
        ask, analizar, limpiar])
 
   return (
@@ -759,6 +1015,7 @@ const INERTE = {
   speak: () => {}, escuchar: () => {}, toggle: () => {}, stop: () => {},
   open: false, setOpen: () => {},
   thread: [], sending: false, paso: null, pasos: [], askError: null, sinCupo: null, loading: false, upgradeInfo: null, usageDelError: null, kindDeCuotaDelError: null, codigoDelError: null, motivoSinVoz: null, modoLibro: false,
+  cartera: null, leerCartera: () => {}, persona: '',
   ask: () => {}, analizar: () => {}, limpiar: () => {},
 }
 

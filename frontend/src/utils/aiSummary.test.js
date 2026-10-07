@@ -70,11 +70,24 @@ describe('el resumen se arma en UN solo lugar', () => {
   // cualquier pantalla y hubiera sido una TERCERA copia del mismo fetch. Por
   // eso el guard ahora exige `fetchAiSnapshot` en las superficies y reserva
   // `buildAiSummary` para el único módulo que puede llamarlo.
+  //
+  // Desde 2026-10-05 la página /ai ya no lee por su cuenta: usa la MISMA
+  // lectura que la isla (VozContext → utils/lecturaDeCartera). Leía la suya en
+  // cada entrada —dos lecturas iguales— y al cambiar de cliente el asesor
+  // seguía con la del anterior. Para ella el guard es más estricto: ni
+  // rearmar ni volver a pedir.
+  // (El drawer viejo, components/ai/AICoachDrawer.jsx, era código muerto con
+  // su propia lectura: nadie lo importaba. Se borró el mismo día.)
   const SUPERFICIES = [
-    'src/pages/RendiAI.jsx',
-    'src/components/ai/AICoachDrawer.jsx',
     'src/contexts/VozContext.jsx',
   ]
+
+  it('src/pages/RendiAI.jsx usa la lectura compartida: ni la pide ni la rearma', () => {
+    const src = readFileSync('src/pages/RendiAI.jsx', 'utf8')
+    expect(src).not.toMatch(/fetchAiSnapshot|buildAiSummary|function\s+buildSummary\s*\(/)
+    expect(src).not.toMatch(/monthly\s*\.reduce\(/)
+    expect(src).toMatch(/cartera, leerCartera[^}]*\} = useVoz\(\)/)
+  })
 
   it.each(SUPERFICIES)('%s pide el snapshot en vez de rearmarlo', (ruta) => {
     const src = readFileSync(ruta, 'utf8')

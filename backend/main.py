@@ -868,12 +868,13 @@ def _marcar_bienvenidas_previas(conn) -> int:
 
 # La nota que deja una compra registrada por chat (register_trade). Van acá
 # arriba y no al lado del chat porque init_db() —que corre al importar este
-# archivo, antes de llegar allá— también las usa: la vieja es la que busca para
-# reemplazarla en las compras de antes del 2026-09-26, cuando el asistente se
-# llamaba de otra forma. Es el ÚNICO lugar del backend donde el nombre viejo
-# tiene que estar (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
-_NOTA_COMPRA_POR_CHAT = "Registrado por Rendi AI"
-_NOTA_COMPRA_POR_CHAT_VIEJA = "Registrado por Coach IA"
+# archivo, antes de llegar allá— también las usa: las viejas son las que busca
+# para reemplazarlas en las compras registradas con los nombres anteriores del
+# asistente ("Coach IA" hasta el 2026-09-26, "Rendi AI" hasta el 2026-10-03).
+# Es el ÚNICO lugar del backend donde los nombres viejos tienen que estar
+# (tests/test_nombre_de_la_ia.py lo exceptúa por su nombre).
+_NOTA_COMPRA_POR_CHAT = "Registrado por Mervall-E AI"
+_NOTAS_COMPRA_POR_CHAT_VIEJAS = ("Registrado por Coach IA", "Registrado por Rendi AI")
 
 
 def init_db():
@@ -2993,16 +2994,21 @@ def init_db():
         except Exception:
             pass  # tabla puede no existir en DBs muy viejas pre-migración
 
-        # Las compras registradas por chat antes del 2026-09-26 guardaron la nota
-        # con el nombre viejo del asistente, y se ve en "Editar posición → Notas".
+        # Las compras registradas por chat guardaron la nota con el nombre que el
+        # asistente tenía ese día ("Coach IA", después "Rendi AI"), y se ve en
+        # "Editar posición → Notas".
         # Sólo la nota EXACTA que escribía el sistema: si alguien la editó a mano,
         # queda como la dejó. En cada boot, como la purga de arriba: después de la
         # primera vez no encuentra nada. Es cosmético, así que no puede voltear el
         # arranque.
         try:
+            # Tantos `?` como nombres viejos: con dos escritos a mano, sumar un
+            # tercero a la lista hacía fallar la consulta — y como el error se
+            # descarta (es cosmético), no se renombraba ninguna nota.
+            huecos = ", ".join("?" * len(_NOTAS_COMPRA_POR_CHAT_VIEJAS))
             n = conn.execute(
-                "UPDATE positions SET notes = ? WHERE notes = ?",
-                (_NOTA_COMPRA_POR_CHAT, _NOTA_COMPRA_POR_CHAT_VIEJA)).rowcount or 0
+                f"UPDATE positions SET notes = ? WHERE notes IN ({huecos})",
+                (_NOTA_COMPRA_POR_CHAT, *_NOTAS_COMPRA_POR_CHAT_VIEJAS)).rowcount or 0
             if n:
                 log.info("notas de compras por chat renombradas: %d", n)
         except Exception as ex:
@@ -4174,7 +4180,11 @@ def change_password(data: ChangePasswordIn, response: Response, uid: int = Depen
         row = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
         if not row or not pwd_ctx.verify(data.current_password, row["password_hash"]):
             conn.close()
-            raise HTTPException(401, "Contraseña actual incorrecta")
+            # 400 y no 401: el frontend toma CUALQUIER 401 como "la sesión
+            # venció" (utils/api.js) — borraba la sesión guardada, mandaba a la
+            # portada en vez de mostrar este mensaje, y recargaba todas las
+            # otras pestañas de la persona. La sesión está bien; el dato no.
+            raise HTTPException(400, "Contraseña actual incorrecta")
         new_hash = pwd_ctx.hash(data.new_password)
         conn.execute(
             "UPDATE users SET password_hash=?, password_changed_at=datetime('now') WHERE id=?",
@@ -11006,6 +11016,7 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
         val = _pf_value(row)
         monto = round(val["valor_hoy"], 2)
         credited = None
+        br = None
         if data.broker:
             br = conn.execute(
                 "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
@@ -11020,6 +11031,19 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
             if not ok_match:
                 conn.close()
                 raise HTTPException(400, "La moneda del broker no coincide con la del plazo fijo")
+        # RECLAMO, antes de mover un peso (2026-10-03). El "¿sigue abierto?" de
+        # arriba se leyó sin bloqueo: con un doble click en "Cobrar" los dos
+        # pedidos lo veían abierto y los dos acreditaban capital + interés. El
+        # cierre se hacía al final y sin volver a preguntar. Ahora el cierre ES
+        # la pregunta: sólo uno puede pasar el plazo fijo de abierto a cerrado.
+        if conn.execute(
+            "UPDATE plazos_fijos SET closed_at=datetime('now') "
+            "WHERE id=? AND user_id=? AND closed_at IS NULL",
+            (pid, uid),
+        ).rowcount != 1:
+            conn.close()
+            raise HTTPException(409, "Ese plazo fijo ya se cobró.")
+        if br is not None:
             _adjust_broker_cash(conn, uid, data.broker, monto)
             credited = data.broker
         interes = round(val["interes_hoy"], 2)
@@ -11046,10 +11070,6 @@ def cobrar_plazo_fijo(pid: int, data: CobrarIn, uid: int = Depends(get_effective
                 (uid, _fecha_op, data.broker or row["banco"],
                  row["banco"], interes, moneda, fx, f"Interés plazo fijo · {row['banco']}"),
             )
-        conn.execute(
-            "UPDATE plazos_fijos SET closed_at=datetime('now') WHERE id=? AND user_id=?",
-            (pid, uid),
-        )
         conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
@@ -11519,11 +11539,20 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
       generan un balance negativo visible (señal de que falta cargar el cash
       inicial / hacer un import del estado inicial).
     - Se permiten balances negativos — señal visible de overdraft / margen.
+
+    LA SUMA LA HACE LA BASE, no Python (2026-10-03). Antes se leía el saldo, se
+    sumaba acá y se escribía el RESULTADO. Con dos pedidos a la vez los dos leían
+    el mismo saldo y el segundo pisaba al primero: una de las dos sumas se perdía.
+    Medido con dos ediciones simultáneas: en 138 de 300 corridas una acreditación
+    desapareció así. Esa lectura corre FUERA de transacción (sqlite3 abre la
+    transacción recién en la primera escritura), así que nada la protegía.
+    `invested = invested + ?` se evalúa con la base ya tomada para escribir, sobre
+    el saldo vigente en ese instante — en SQLite y en Postgres.
     """
     if delta == 0:
         return
     cash = conn.execute(
-        "SELECT id, invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
+        "SELECT id FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
         (uid, broker),
     ).fetchone()
     if not cash:
@@ -11543,10 +11572,25 @@ def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
             (uid, broker, asset_name, delta),
         )
         return
-    new_invested = (cash['invested'] or 0) + delta
     conn.execute(
-        "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-        (new_invested, cash['id'], uid),
+        "UPDATE positions SET invested=COALESCE(invested, 0) + ? WHERE id=? AND user_id=?",
+        (delta, cash['id'], uid),
+    )
+
+
+def _tomar_saldo(conn, uid: int, broker: str) -> None:
+    """Toma el saldo de efectivo del broker PARA ESCRIBIR, antes de leerlo.
+
+    Para los que no pueden delegarle la cuenta a la base (`_adjust_broker_cash`
+    sí puede): los que chequean "saldo insuficiente" o promedian el TC con el
+    saldo vigente. sqlite3 abre la transacción recién en la primera escritura, así
+    que un SELECT anterior lee sin bloqueo y otro pedido puede cambiar el saldo
+    antes de que éste escriba. Esta escritura no cambia nada, pero desde acá hasta
+    el commit nadie más puede tocar el saldo (en SQLite, la base entera; en
+    Postgres, la fila), y lo que se lea después es lo vigente."""
+    conn.execute(
+        "UPDATE positions SET invested=invested WHERE user_id=? AND broker=? AND is_cash=1",
+        (uid, broker),
     )
 
 
@@ -11856,10 +11900,24 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
 
             # 2. Update / create cash position con el target exacto
             if cash_pos:
-                conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                    (data.target_cash, cash_pos['id'], uid),
-                )
+                # RECLAMO (2026-10-03). La diferencia de arriba sale de un saldo
+                # leído sin bloqueo, y esa diferencia se anota como aporte o retiro
+                # en el capital aportado. Con un doble click los dos pedidos la
+                # anotaban: el saldo quedaba bien (se pisa con el mismo número) pero
+                # el capital aportado contaba el ajuste dos veces. El WHERE repite
+                # el saldo leído: si otro pedido lo cambió, no se toca nada.
+                if conn.execute(
+                    "UPDATE positions SET invested=? WHERE id=? AND user_id=? AND COALESCE(invested, 0)=?",
+                    (data.target_cash, cash_pos['id'], uid, current_cash),
+                ).rowcount != 1:
+                    ahora = conn.execute(
+                        "SELECT COALESCE(invested, 0) AS c FROM positions WHERE id=? AND user_id=?",
+                        (cash_pos['id'], uid)).fetchone()
+                    if ahora and abs(float(ahora["c"]) - data.target_cash) < 0.01:
+                        # El otro pedido ya lo dejó en este mismo número (doble click).
+                        return {"ok": True, "no_change": True, "current_cash": float(ahora["c"])}
+                    raise HTTPException(409, "El saldo cambió mientras lo ajustabas. "
+                                             "Recargá la página y probá de nuevo.")
             else:
                 asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
                 conn.execute(
@@ -11963,6 +12021,12 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 sign = 1 if data.direction == 'deposit' else -1
 
                 # 2. Actualizar posición cash
+                # Primero se TOMA el saldo para escribir y recién después se lee
+                # (2026-10-03). Abajo se escribe el saldo como un número calculado
+                # acá; leído sin bloqueo, dos movimientos a la vez leían el mismo
+                # saldo y el segundo pisaba al primero (y el "saldo insuficiente"
+                # se chequeaba contra un número viejo). Ver `_tomar_saldo`.
+                _tomar_saldo(conn, uid, data.broker_name)
                 cash_pos = conn.execute(
                     "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                     (uid, data.broker_name),
@@ -12656,7 +12720,12 @@ def _adjust_cash(conn, uid: int, broker_name: str, asset: str, delta: float, tc_
       new_tc = (existing_usd * existing_tc + delta_usd * tc_for_basis) / (existing_usd + delta_usd)
 
     Si `tc_for_basis` es None: comportamiento legacy, no toca tc_compra.
+
+    El saldo se toma para escribir ANTES de leerlo (ver `_tomar_saldo`): el
+    promedio del TC necesita el saldo vigente, así que no alcanza con que la base
+    haga la suma.
     """
+    _tomar_saldo(conn, uid, broker_name)
     cash = conn.execute(
         "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
         (uid, broker_name),
@@ -13224,9 +13293,20 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                             },
                         }), cur.lastrowid, uid))
 
-                    # Actualizar / eliminar la posición
+                    # Actualizar / eliminar la posición.
+                    #
+                    # RECLAMO DEL LOTE (2026-10-03). Los lotes se leyeron arriba sin
+                    # bloqueo, y el "¿alcanza la cantidad?" se contestó con esa foto.
+                    # Con un doble click en "Vender" los dos pedidos veían el lote
+                    # entero: el segundo borraba un lote que ya no estaba (0 filas, sin
+                    # que nadie lo mirara) y acreditaba la plata de la venta OTRA VEZ.
+                    # Ahora la escritura repite la cantidad leída y se cuenta: si el
+                    # lote cambió en el medio, se aborta la venta entera (el `with
+                    # conn:` deshace la operación ya insertada) y no se acredita nada.
                     if take >= pos_qty - 1e-9:
-                        conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (p["id"], uid))
+                        lote = conn.execute(
+                            "DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
+                            (p["id"], uid, p["quantity"]))
                     else:
                         # Partial sell — el lote remanente conserva su porción
                         # proporcional de invested y commissions (1 - ratio).
@@ -13234,10 +13314,14 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         remaining_ratio = 1 - ratio
                         new_invested = round((p["invested"] or 0) * remaining_ratio, 6) if p["invested"] is not None else None
                         new_commissions = round(pos_buy_commissions * remaining_ratio, 6)
-                        conn.execute(
-                            "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                            (new_qty, new_invested, new_commissions, p["id"], uid)
+                        lote = conn.execute(
+                            "UPDATE positions SET quantity=?, invested=?, commissions=? "
+                            "WHERE id=? AND user_id=? AND quantity=?",
+                            (new_qty, new_invested, new_commissions, p["id"], uid, p["quantity"])
                         )
+                    if lote.rowcount != 1:
+                        raise HTTPException(409, "La tenencia cambió mientras vendías (¿se mandó "
+                                                 "dos veces?). Recargá la página para ver cómo quedó.")
                     remaining -= take
 
                 # ── Phase 2 — acreditar proceeds al cash del broker (moneda nativa) ──
@@ -15425,12 +15509,21 @@ def _delete_one_movement(conn, uid: int, mid: str):
             native = manual_usd * _config_tc_blue(conn, uid)
         else:
             native = manual_usd
+        # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
+        # Es también el RECLAMO (2026-10-03), y por eso va ANTES de tocar el saldo:
+        # el monto se leyó arriba sin bloqueo, y con un doble click en "Borrar" los
+        # dos pedidos devolvían el depósito entero. El WHERE repite lo leído: si
+        # otro pedido ya lo puso en cero —o cargó otro depósito en el mismo mes y
+        # el monto cambió— no toca la fila y no se mueve plata.
+        if conn.execute(
+            f"UPDATE monthly_entries SET {col}=0, {nat_col}=0 "
+            f"WHERE id=? AND user_id=? AND COALESCE({col}, 0)=? AND COALESCE({nat_col}, 0)=?",
+            (me_id, uid, manual_usd, stored_native),
+        ).rowcount != 1:
+            raise HTTPException(409, "Ese movimiento cambió mientras lo borrabas. "
+                                     "Recargá la página para ver cómo quedó.")
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
         _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
-        # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
-        conn.execute(
-            f"UPDATE monthly_entries SET {col}=0, {nat_col}=0 WHERE id=? AND user_id=?", (me_id, uid),
-        )
         since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
         return since, {broker}, None   # no guarda ni el día ni cuándo se cargó
 
@@ -16254,6 +16347,11 @@ def _meta_movio_efectivo(meta: dict) -> bool:
 # ofrece: sumarle éste sería contar la misma plata dos veces.
 _SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow')
 
+# Cuántas veces la edición vuelve a leer la operación si otro pedido la cambió
+# entre la lectura y la escritura (ver `update_operation`). Con un doble click
+# alcanza con una vuelta; las otras son margen para tres pedidos a la vez.
+_INTENTOS_DE_RECLAMO = 3
+
 
 def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
     """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
@@ -16386,77 +16484,106 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
     devuelve lo que se había acreditado. Mientras el backend decidía sólo por la
     foto guardada, el check del formulario en modo edición no hacía nada — se
     veía como una opción y era un adorno.
+
+    DOS PEDIDOS A LA VEZ (2026-10-03). Cuánta plata mover sale de la foto guardada
+    (`undo_meta_json`), y esa foto se lee ANTES de la primera escritura — o sea,
+    fuera de toda transacción y sin ningún bloqueo. Con un doble click en
+    "Guardar" los dos pedidos leían "todavía no movía plata", los dos acreditaban
+    el resultado, y el saldo quedaba con el doble. Medido: pasaba en la mitad de
+    las carreras.
+
+    El arreglo es el mismo "reclamo" que ya usa el borrado: la escritura de la
+    operación SÓLO entra si la foto sigue siendo la que se leyó, y la plata se
+    mueve DESPUÉS de ganar ese reclamo, dentro de la misma transacción. El que
+    pierde no movió nada; vuelve a leer la foto —que ya dice lo que hizo el
+    otro— y recalcula. En un doble click eso da "no hay nada que mover".
     """
     conn = get_db()
     try:
         currency = _resolve_op_currency(conn, uid, op.broker, op.currency)
 
-        prev = conn.execute(
-            "SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
-            (oid, uid)).fetchone()
-        if not prev:
-            # Se corta ACÁ y no después del UPDATE. Abajo se mueve efectivo, y
-            # hacerlo por una operación que no existe —o que es de otro usuario—
-            # dependía de que nadie commiteara antes del 404 para no dejar plata
-            # inventada. Eso funcionaba, pero por omisión: cualquier commit que se
-            # agregue en el medio lo rompería en silencio.
+        for _intento in range(_INTENTOS_DE_RECLAMO):
+            prev = conn.execute(
+                "SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
+                (oid, uid)).fetchone()
+            if not prev:
+                # Se corta ACÁ, antes de mover un peso: hacerlo por una operación
+                # que no existe —o que es de otro usuario— dejaría plata inventada.
+                conn.close()
+                raise HTTPException(404, "Not found")
+            meta_prev = {}
+            if prev["undo_meta_json"]:
+                try:
+                    meta_prev = json.loads(prev["undo_meta_json"]) or {}
+                except (ValueError, TypeError):
+                    meta_prev = {}
+            movia_antes = _meta_movio_efectivo(meta_prev)
+            pedido = _pide_mover_efectivo(op)
+            # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
+            # ventas FIFO, cobros de bonos): su efectivo lo mueve otro mecanismo. El
+            # formulario ya no se los ofrece; acá se hace valer igual, porque un cliente
+            # viejo —o uno que reintente— puede mandarlo lo mismo.
+            importada = conn.execute(
+                "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
+            ).fetchone() is not None
+            if not _acepta_interruptor_de_efectivo(importada, meta_prev):
+                pedido = None
+            # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
+            mueve_ahora = movia_antes if pedido is None else pedido
+
+            undo_meta_nuevo = None
+            # Lo que hay que mover se DECIDE acá y se APLICA después del reclamo.
+            movimientos = []
+            if movia_antes or mueve_ahora:
+                broker_antes = meta_prev.get("cash_broker") or prev["broker"]
+                fecha_antes = prev["date"] or op.date
+                # Lo que se aplicó al saldo, en la moneda del broker (no en dólares:
+                # ver `_cash_nativo_de_meta`). Si se apaga, lo de ahora es cero.
+                nat_antes = (_cash_nativo_de_meta(conn, uid, meta_prev, broker_antes, fecha_antes)
+                             if movia_antes else 0.0)
+                cash_ahora = float(op.pnl_usd or 0) if mueve_ahora else 0.0
+                nat_ahora = (_pnl_en_moneda_del_broker(conn, uid, op.broker, cash_ahora, op.date)
+                             if cash_ahora else 0.0)
+                if broker_antes != op.broker:
+                    movimientos = [(broker_antes, -nat_antes), (op.broker, nat_ahora)]
+                elif nat_ahora != nat_antes:
+                    movimientos = [(op.broker, nat_ahora - nat_antes)]
+                # Se PISAN sólo las claves del efectivo. El resto de la foto se conserva
+                # —`futuro_id` sobre todo—: reescribirla entera la perdía, y sin ella
+                # borrar la operación ya no reabría la posición de futuros que la generó.
+                meta_nuevo = dict(meta_prev)
+                meta_nuevo.update({"src": "manual_futures", "cash": cash_ahora,
+                                   "cash_native": nat_ahora, "cash_broker": op.broker,
+                                   "cash_on": bool(mueve_ahora)})
+                undo_meta_nuevo = json.dumps(meta_nuevo)
+
+            # EL RECLAMO. El WHERE repite lo que se leyó y de lo que depende la
+            # cuenta de arriba (la foto, el broker y la fecha). Si otro pedido lo
+            # cambió en el medio, esto no toca ninguna fila y no se movió nada.
+            reclamo = conn.execute(
+                """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
+                   exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
+                   currency=?, fx_to_usd=?,
+                   undo_meta_json=COALESCE(?, undo_meta_json)
+                   WHERE id=? AND user_id=? AND broker=? AND date=?
+                     AND COALESCE(undo_meta_json, '')=?""",
+                (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
+                 op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
+                 currency, op.fx_to_usd, undo_meta_nuevo, oid, uid,
+                 prev["broker"], prev["date"], prev["undo_meta_json"] or ''),
+            )
+            if reclamo.rowcount == 1:
+                break
+            conn.rollback()
+        else:
             conn.close()
-            raise HTTPException(404, "Not found")
-        meta_prev = {}
-        if prev and prev["undo_meta_json"]:
-            try:
-                meta_prev = json.loads(prev["undo_meta_json"]) or {}
-            except (ValueError, TypeError):
-                meta_prev = {}
-        movia_antes = _meta_movio_efectivo(meta_prev)
-        pedido = _pide_mover_efectivo(op)
-        # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
-        # ventas FIFO, cobros de bonos): su efectivo lo mueve otro mecanismo. El
-        # formulario ya no se los ofrece; acá se hace valer igual, porque un cliente
-        # viejo —o uno que reintente— puede mandarlo lo mismo.
-        importada = conn.execute(
-            "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
-        ).fetchone() is not None
-        if not _acepta_interruptor_de_efectivo(importada, meta_prev):
-            pedido = None
-        # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
-        mueve_ahora = movia_antes if pedido is None else pedido
+            raise HTTPException(409, "La operación cambió mientras la guardabas. "
+                                     "Recargá la página para ver cómo quedó.")
 
-        undo_meta_nuevo = None
-        if movia_antes or mueve_ahora:
-            broker_antes = meta_prev.get("cash_broker") or prev["broker"]
-            fecha_antes = prev["date"] or op.date
-            # Lo que se aplicó al saldo, en la moneda del broker (no en dólares:
-            # ver `_cash_nativo_de_meta`). Si se apaga, lo de ahora es cero.
-            nat_antes = (_cash_nativo_de_meta(conn, uid, meta_prev, broker_antes, fecha_antes)
-                         if movia_antes else 0.0)
-            cash_ahora = float(op.pnl_usd or 0) if mueve_ahora else 0.0
-            nat_ahora = (_pnl_en_moneda_del_broker(conn, uid, op.broker, cash_ahora, op.date)
-                         if cash_ahora else 0.0)
-            if broker_antes != op.broker:
-                _adjust_broker_cash(conn, uid, broker_antes, -nat_antes)
-                _adjust_broker_cash(conn, uid, op.broker, nat_ahora)
-            elif nat_ahora != nat_antes:
-                _adjust_broker_cash(conn, uid, op.broker, nat_ahora - nat_antes)
-            # Se PISAN sólo las claves del efectivo. El resto de la foto se conserva
-            # —`futuro_id` sobre todo—: reescribirla entera la perdía, y sin ella
-            # borrar la operación ya no reabría la posición de futuros que la generó.
-            meta_nuevo = dict(meta_prev)
-            meta_nuevo.update({"src": "manual_futures", "cash": cash_ahora,
-                               "cash_native": nat_ahora, "cash_broker": op.broker,
-                               "cash_on": bool(mueve_ahora)})
-            undo_meta_nuevo = json.dumps(meta_nuevo)
-
-        conn.execute(
-            """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
-               exit_price=?, quantity=?, pnl_usd=?, pnl_pct=?, commissions=?,
-               currency=?, fx_to_usd=?,
-               undo_meta_json=COALESCE(?, undo_meta_json)
-               WHERE id=? AND user_id=?""",
-            (op.date, op.broker, op.asset, op.op_type, op.entry_price, op.exit_price,
-             op.quantity, op.pnl_usd, op.pnl_pct, op.commissions or 0,
-             currency, op.fx_to_usd, undo_meta_nuevo, oid, uid),
-        )
+        # Con el reclamo ganado la base ya está tomada para escribir: nadie más
+        # puede mover esta operación hasta el commit.
+        for broker_mov, delta in movimientos:
+            _adjust_broker_cash(conn, uid, broker_mov, delta)
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
         if not row:
@@ -16529,9 +16656,14 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
 
     # CLAIM ATÓMICO: borrar la fila ES el lock — dos requests concurrentes no pueden
     # reversar el cash dos veces (la 2da matchea 0 filas). Mismo patrón que el resto.
-    if conn.execute("DELETE FROM operations WHERE id=? AND user_id=?",
-                    (oid, uid)).rowcount != 1:
-        raise HTTPException(409, "Esa operación ya se está borrando.")
+    # Y repite lo que se leyó para decidir (2026-10-03): la foto, el broker y la
+    # fecha. Con sólo el id, una edición que entraba en el medio cambiaba cuánto
+    # había acreditado la operación y el borrado devolvía el monto VIEJO.
+    if conn.execute("DELETE FROM operations WHERE id=? AND user_id=? AND COALESCE(broker, '')=? "
+                    "AND COALESCE(date, '')=? AND COALESCE(undo_meta_json, '')=?",
+                    (oid, uid, op["broker"] or "", op["date"] or "", raw)).rowcount != 1:
+        raise HTTPException(409, "Esa operación cambió o ya se está borrando. "
+                                 "Recargá la página para ver cómo quedó.")
 
     if src == "fifo_sell":
         lot = meta.get("lot") or {}
@@ -16769,9 +16901,16 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
     pos_row = {k: pos[k] for k in pos.keys() if k != "id"}
 
     # CLAIM ATÓMICO: el DELETE es el lock (evita el doble crédito por doble-click).
-    if conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
-                    (pid, uid)).rowcount != 1:
-        raise HTTPException(409, "Esa posición ya se está borrando.")
+    # Y repite lo que se leyó para decidir (2026-10-03): antes miraba sólo el id, y
+    # una venta parcial que entraba en el medio dejaba el lote más chico pero el
+    # borrado devolvía el costo ENTERO —la venta ya había acreditado lo suyo: plata
+    # fabricada—. Si el lote cambió, no se borra ni se devuelve nada.
+    if conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND COALESCE(broker, '')=? "
+                    "AND COALESCE(quantity, 0)=? AND COALESCE(invested, 0)=?",
+                    (pid, uid, pos["broker"] or "", pos["quantity"] or 0,
+                     pos["invested"] or 0)).rowcount != 1:
+        raise HTTPException(409, "Esa posición cambió o ya se está borrando. "
+                                 "Recargá la página para ver cómo quedó.")
 
     # Crédito NETO = costo − autodepósito: el cash vuelve al nivel PREVIO al alta.
     credit = round(cost - autodep_native, 6)
@@ -23966,7 +24105,7 @@ def _get_anthropic_client():
 
 # ─── Chat conversacional con la IA ───────────────────────────────────────────
 
-_AI_CHAT_SYSTEM = """Sos Rendi AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
+_AI_CHAT_SYSTEM = """Sos Mervall-E AI, el asistente de inversiones de Rendi (una app argentina de seguimiento de portfolios personales), con rol de coach. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu usuario es un inversor retail argentino que opera cripto, acciones US, CEDEARs, ETFs e índices, en brokers locales (Cocos, IOL, Bull, Balanz, Lemon) y exchanges (Binance).
 
 ROL
 No das recomendaciones específicas de "comprá X" o "vendé Y". Sí explicás conceptos, marcos analíticos, ratios, riesgos, y hacés preguntas que abren reflexión.
@@ -24330,7 +24469,7 @@ Estás hablando con el ASESOR FINANCIERO del dueño de esta cartera, no con el d
 - Describí y cuantificá; el asesor decide qué hacer con su cliente.
 """
 
-_AI_CHAT_SYSTEM_FREE = """Sos Rendi AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Rendi AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
+_AI_CHAT_SYSTEM_FREE = """Sos Mervall-E AI, el asistente de Rendi, para usuarios del plan Free. Si te preguntan quién sos o cómo te llamás, sos Mervall-E AI. Tu rol es responder preguntas del usuario sobre su cartera con datos concretos del snapshot, en formato breve y descriptivo. No sos coach, no interpretás, no das contexto extendido.
 
 ROL
 - Respondés con DATOS, no con análisis. Si el snapshot tiene el número, lo decís. Si no, decís "no tengo ese dato" sin elaborar.
@@ -26343,7 +26482,7 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
     # texto libre controlado por el cliente; una key extra ("instructions",
     # "note", lo que sea) entraba VERBATIM al contexto del LLM = bypass de la
     # whitelist Free + superficie de prompt-injection. Solo pasan las keys que
-    # el frontend legítimo manda (AICoachDrawer). Lo demás se dropea y loggea.
+    # el frontend legítimo manda (utils/aiSnapshot.js). Lo demás se dropea y loggea.
     _ALLOWED_SNAPSHOT_KEYS = {"summary", "positions", "operations", "monthly", "brokers"}
     _dropped = [k for k in raw.keys() if k not in _ALLOWED_SNAPSHOT_KEYS]
     if _dropped:
@@ -28422,8 +28561,12 @@ def _undo_last_trade_handler(uid: int) -> dict:
             if abs(float(row["quantity"] or 0) - info["quantity"]) > 1e-9:
                 return {"error": ("La posición cambió desde que se registró "
                                   "(¿venta parcial?) — deshacela desde la app.")}
-            conn.execute("DELETE FROM positions WHERE id=? AND user_id=?",
-                         (info["position_id"], uid))
+            # RECLAMO (2026-10-03): borrar la fila ES el permiso para devolver la
+            # plata. Sin contar las filas, dos "deshacé" a la vez devolvían el
+            # costo dos veces (el segundo borraba 0 filas sin enterarse).
+            if conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
+                            (info["position_id"], uid, row["quantity"])).rowcount != 1:
+                return {"error": "Esa compra ya se está deshaciendo. Nada más para deshacer."}
             _adjust_broker_cash(conn, uid, br["name"], info["cash_debited"])
     finally:
         conn.close()
@@ -32733,7 +32876,7 @@ def _extract_voz(text: str) -> Optional[str]:
 # que poder contradecir al manifiesto, y el contexto no manda sobre él.
 _SIN_VOZ = (
     "AJUSTE DE ESTE TURNO, y pisa lo que diga el manifiesto sobre el campo "
-    "\"voz\": el usuario tiene a Rendi SILENCIADA, así que esta respuesta NO se "
+    "\"voz\": el usuario tiene la voz SILENCIADA, así que esta respuesta NO se "
     "va a leer en voz alta. NO escribas el campo \"voz\" en el bloque ---RENDI---. "
     "Todo lo demás del bloque va igual que siempre (verdict, headline, stats, "
     "blocks, followups): lo único que se saca es \"voz\"."
@@ -33420,7 +33563,7 @@ BENCHMARKS: si summary.benchmarks está presente, trae los retornos REALES (infl
 
 RECORDATORIO FINAL DE VOZ (esto es lo último que leés antes de escribir, y pisa cualquier costumbre): escribís en rioplatense —"tenés", "podés", "mirá", nunca "tienes"/"puedes"/"mira"— y SIN UNA SOLA PALABRA EN INGLÉS. Nada de: portfolio (es "cartera"), YTD (es "en lo que va del año"), exposure, hedge, timing, edge, sample, skill, scenario, rally, growth, outlier, momentum, drawdown, insight, bad for tech. Tampoco tecnicismos sin traducir en la misma oración: P/E, valuación, correlación, volatilidad, atribución, convicción, tesis. Y cero frases hechas ("mover la aguja", "un mes no es sistema" y su familia). Si dudás entre la palabra del mercado y la palabra de todos los días, siempre la de todos los días. Y los números se escriben a la argentina: "US$ 1.037,74", "+5,2%" — el punto para los miles y la coma para los decimales, aunque el dato te haya llegado como 1037.74.
 
-RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: Rendi empieza a hablar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
+RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (números del portfolio, comparaciones, diagnóstico, fundamentals, benchmarks) o una COTIZACIÓN (el dólar, el precio de un activo), tu output es: un RESUMEN de hasta 60 palabras —2 oraciones COMPLETAS, jamás cortadas a la mitad, ninguna de más de 25 palabras— y después, si tu plan tiene followups, UNA pregunta corta con el próximo paso (los otros caminos van en followups, no en el texto). Y DESPUÉS la línea ---RENDI--- con el JSON minificado en una línea, incluyendo 1-2 blocks visuales que carguen con los datos (tablas/comparaciones/composición — nunca enumerados en la prosa). Esa línea es un marcador técnico para la UI — no es markdown, el usuario no la ve como texto, y las reglas de estilo NO la prohíben. Si la respuesta te está quedando larga, recortá prosa — el bloque NUNCA se omite. Y antes de mandar hacé TRES chequeos. Primero: ¿algún número de la prosa está también en stats o en un block? Sacalo de la prosa y dejá lo que ese número significa — ahí está casi todo lo que sobra, medido. Segundo: ¿hay una oración que no contesta ESTA pregunta —otro tema, un dato puesto en lugar del que falta, una advertencia que nadie pidió, un número de las tarjetas dicho con palabras—? Borrala. Si preguntaron UN dato, ¿está con su número en la primera oración? Tercero: contá las palabras, y si pasás de 60 sacá un TEMA entero —nunca cortes una frase para entrar— y ofrecelo como uno de los followups. Con los followups cargados no se pierde nada: lo que sacaste queda a un botón de distancia y decide él. Omitilo entero SOLO en saludos de una línea y en todo el flujo de registro de operaciones (confirmaciones, resultado, undo). Y dentro del JSON va SIEMPRE el campo "voz" (el resumen para escuchar, 3 oraciones, nombres y no códigos), y va PRIMERO de todo, apenas abrís la llave: ---RENDI---{{"voz":"...","verdict":... El orden importa de verdad: la voz empieza a sonar apenas ese campo cierra, así que escribirlo último son cinco segundos de silencio con la respuesta ya escrita en pantalla. Se olvida fácil porque no se ve, pero si falta el usuario se queda sin audio. En una REPREGUNTA donde no hay nada visual que mostrar, mandá el bloque igual con sólo ese campo: ---RENDI---{{"voz":"..."}}. Una conversación hablada se habla entera; si la segunda respuesta no suena, el usuario se queda esperando una voz que nunca llega."""
 
     # ─── Context block dinámico — al PRIMER user message ─────────────────────
     # Esto SÍ cambia per-request (snapshot del cliente) pero entre tool_use
@@ -33949,9 +34092,9 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 # Lo gastado antes del error Anthropic lo cobró igual: se anota.
                 _record_chat_quota(uid, _costo.centavos())
                 if ex_name in ("APITimeoutError", "APIConnectionError"):
-                    code, msg = "ai_timeout", "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
+                    code, msg = "ai_timeout", "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos."
                 elif ex_name in ("RateLimitError",):
-                    code, msg = "ai_rate_limit", "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
+                    code, msg = "ai_rate_limit", "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos."
                 else:
                     if ex_name in ("BadRequestError",):
                         log.error("ai_chat stream BadRequest uid=%s detail=%s", uid, str(ex)[:500])
@@ -34119,7 +34262,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_timeout",
-                    "message": "Rendi AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
+                    "message": "Mervall-E AI está tardando más de lo normal. Intentá una pregunta más simple, o reintentá en unos segundos.",
                 },
             )
         if ex_name in ("RateLimitError",):
@@ -34127,7 +34270,7 @@ RECORDATORIO FINAL DE FORMATO (no lo saltees): si tu respuesta es de ANÁLISIS (
                 503,
                 detail={
                     "error": "ai_rate_limit",
-                    "message": "Rendi AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
+                    "message": "Mervall-E AI está procesando muchas consultas en este momento. Reintentá en 10-20 segundos.",
                 },
             )
         if ex_name in ("BadRequestError",):
@@ -34233,7 +34376,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
     if not tts.enabled():
         raise HTTPException(503, detail={
             "error": "voz_unavailable",
-            "message": "La voz de Rendi no está disponible en este momento.",
+            "message": "La voz de Mervall-E no está disponible en este momento.",
         })
 
     # 12/min por usuario: más que eso no es alguien escuchando respuestas.
@@ -34244,7 +34387,7 @@ def ai_voz_preparar(data: AIVozIn, request: Request, uid: int = Depends(get_effe
         log.warning("ai_voz: firma inválida uid=%s len=%d", uid, len(text))
         raise HTTPException(403, detail={
             "error": "voz_bad_signature",
-            "message": "Ese texto no lo escribió Rendi, así que no lo puede leer.",
+            "message": "Ese texto no lo escribió Mervall-E, así que no lo puede leer.",
         })
 
     key = tts.remember(text)
@@ -34303,7 +34446,7 @@ def ai_voz_audio(key: str, request: Request, uid: int = Depends(get_effective_us
     if not tts.enabled():
         raise HTTPException(503, detail={
             "error": "voz_unavailable",
-            "message": "La voz de Rendi no está disponible en este momento.",
+            "message": "La voz de Mervall-E no está disponible en este momento.",
         })
     if not re.fullmatch(r"[0-9a-f]{64}", key or ""):
         raise HTTPException(404, "No encontrado")
@@ -36619,6 +36762,8 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
                     seed_state=data.seed_state,
                 )
             except _import_persister.PersistError as ex:
+                if ex.row_index is None:   # no es de una fila: el lote ya estaba confirmado
+                    raise HTTPException(409, ex.message)
                 raise HTTPException(400, f"Error en fila {ex.row_index}: {ex.message}")
 
 
@@ -38325,7 +38470,7 @@ def _backfill_fx_rates_on_boot():
 
 @app.on_event("startup")
 def _precalentar_cliente_ia():
-    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI después de cada
+    """MEDIDO el 2026-10-01: la primera pregunta a Rendi AI (hoy Mervall-E AI) después de cada
     arranque (cada publicación, cada reinicio) pagaba 0,58 s cargando la
     librería de Anthropic, porque el cliente se creaba recién ahí. Se crea al
     arrancar, en un hilo aparte para no demorar el arranque."""
@@ -41167,7 +41312,7 @@ def home_personal(uid: int = Depends(get_effective_user)):
 def _get_portfolio_events_cached(uid: int) -> list:
     """Los eventos YA GUARDADOS (financial_events) de los activos del user en
     los próximos 14 días: las tarjetas "Earnings de X" / "Dividendo de X" de
-    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Rendi AI
+    "Lo que te afecta" (home/briefing.py) y el conteo que recibe Mervall-E AI
     (ai/builders/home.py). Sólo LEE — el inicio no puede esperar a Yahoo; los
     renueva /api/events/portfolio (_eventos_al_dia).
 
