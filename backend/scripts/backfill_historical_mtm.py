@@ -686,6 +686,24 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
                    reason=f"la contabilidad cambió durante {_PASADAS} pasadas seguidas")
         return res
 
+    # ⚠️ LA FOTO DE UN MES QUE YA NO SE RECONSTRUYE SE BORRA.
+    # Sólo se arma foto para los meses con fila en la contabilidad. Si la persona
+    # borra el único movimiento de un mes (el dividendo de mayo, el retiro de
+    # septiembre), ese mes deja de producirse, y el UPSERT de abajo no lo toca: la
+    # foto quedaba para siempre con el valor de ANTES del borrado. Medido: borrar el
+    # retiro de septiembre dejaba la foto de septiembre con los US$ 1.000 adentro y
+    # la ganancia total en 703 (real 1.703). Sólo las que escribió este
+    # reconstructor y sólo de meses cerrados: una medición del cron no se toca.
+    _primero_mes_en_curso = _date(today.year, today.month, 1).isoformat()
+    _vigentes = {info["date"] for info in por_mes.values()}
+    for _r in conn.execute(
+            "SELECT date FROM snapshots WHERE user_id=? AND source=? AND date < ?",
+            (uid, MTM_SOURCE, _primero_mes_en_curso)).fetchall():
+        if _r["date"] not in _vigentes:
+            conn.execute("DELETE FROM snapshots WHERE user_id=? AND date=? AND source=?",
+                         (uid, _r["date"], MTM_SOURCE))
+            res["snapshots_borrados"] = res.get("snapshots_borrados", 0) + 1
+
     # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
     # como una fila 'import' derivada de la cadena contable.
     res["snapshots_escritos"] = _persist_mtm_snapshots(conn, uid, por_mes)

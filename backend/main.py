@@ -320,6 +320,82 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+# ─── La historia reconstruida sigue a la contabilidad ────────────────────────
+# Las fotos que arma la reconstrucción a mercado (`source='mtm_backfill'`) llevan
+# el VALOR de la cartera de cada fin de mes, y ese valor sale de la contabilidad
+# de ese momento. Antes sólo se armaban al confirmar un import: todo lo que la
+# persona cambiaba DESPUÉS las dejaba describiendo una contabilidad que ya no
+# existía. Medido sobre una cuenta de laboratorio (ganancia real US$ 1.703), 17 de
+# 25 acciones las dejaban viejas: borrar un depósito → Dashboard US$ 6.703 y libro
+# del asesor 67 % (real 17 %); revertir un import o borrar un broker → historia
+# borrada hasta el próximo import; un depósito a mano con fecha pasada → curva
+# −5,6 % (real +13 %). La cascada del borrado corregía el aportado de la foto y no
+# su valor: la resta mezclaba los dos.
+#
+# UN SOLO LUGAR, no uno por puerta. El motor de contabilidad (`_recalc_pnl_realized_
+# from_ops` y `_repair_monthly_chain`, por donde pasan todas las puertas que la
+# cambian) anota a quién tocó; este middleware, cuando el pedido TERMINÓ, vuelve
+# a armar la historia de esas cuentas en segundo plano.
+#
+# ⚠️ AL TERMINAR EL PEDIDO, NO ADENTRO DE LA TRANSACCIÓN. Con los precios ya en
+# `_HIST_CACHE` la reconstrucción tarda una décima de segundo: lanzada desde el
+# motor leería la contabilidad de ANTES del commit, esperaría el lock y escribiría
+# la historia vieja encima. Al terminar el pedido el commit ya pasó (y en una
+# respuesta que se va mandando de a pedazos, como el chat, terminó el último).
+#
+# Si la contabilidad cambia mientras una reconstrucción corre, la que está
+# corriendo se reinicia sola (`_huella_contable`) y el pedido nuevo queda anotado
+# en `_MTM_PENDIENTE`: una ráfaga de borrados son dos corridas, no veinte.
+import contextvars as _contextvars  # noqa: E402
+
+_CONTABILIDAD_TOCADA: _contextvars.ContextVar = _contextvars.ContextVar(
+    "contabilidad_tocada", default=None)
+
+# Hasta tantas cuentas por pedido, cada una arranca en su propio hilo (lo normal:
+# la persona o su asesor tocó UNA cuenta, y la quiere ver bien enseguida). Más que
+# eso —revertir una tanda del asesor, las herramientas masivas del admin— van a
+# una fila de un solo hilo: decenas de reconstrucciones a la vez contra Yahoo
+# no.
+_RECONSTRUIR_MAX_CUENTAS = 5
+
+
+def _contabilidad_tocada(uid) -> None:
+    """Anota que este pedido cambió la contabilidad de `uid`. Fuera de un pedido
+    HTTP (cron, hilos, scripts) no hace nada: no hay un "terminó" que esperar."""
+    tocadas = _CONTABILIDAD_TOCADA.get()
+    if tocadas is not None and uid is not None:
+        tocadas.add(uid)
+
+
+class _ReconstruirAlTerminar:
+    """Middleware ASGI puro (no `@app.middleware`): vuelve cuando la respuesta se
+    mandó ENTERA, incluso la que se manda de a pedazos."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD", "OPTIONS"):
+            await self.app(scope, receive, send)
+            return
+        tocadas: set = set()
+        token = _CONTABILIDAD_TOCADA.set(tocadas)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _CONTABILIDAD_TOCADA.reset(token)
+            if 0 < len(tocadas) <= _RECONSTRUIR_MAX_CUENTAS:
+                for _uid in sorted(tocadas):
+                    _reconstruir_mtm_post_import(_uid)
+            elif tocadas:
+                log.info("mtm-auto: %s cuentas tocadas en un solo pedido — van a la "
+                         "fila de reconstrucción", len(tocadas))
+                _reconstruir_en_fila(sorted(tocadas))
+
+
+app.add_middleware(_ReconstruirAlTerminar)
+
+
 # ─── Modo mantenimiento ───────────────────────────────────────────────────────
 # Va ACÁ, después de todos los otros middlewares, **y el orden es el punto**: en
 # FastAPI el último registrado es el más EXTERNO, o sea el primero que ve el
@@ -11178,6 +11254,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
 
     Idempotente. Devuelve cantidad de rows actualizados.
     """
+    _contabilidad_tocada(uid)   # la historia reconstruida se rehace al terminar el pedido
     # Los meses se descubren desde las FUENTES, no solo desde lo que quedó en
     # monthly_entries. Antes se iteraba únicamente sobre las filas existentes, y como la
     # GC de abajo borra las que quedan todo-en-cero, un mes cuyas ops se cancelaban entre
@@ -11457,6 +11534,7 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
     Idempotente. El caller es responsable del commit (funciona dentro o fuera
     de `with conn:`).
     """
+    _contabilidad_tocada(uid)   # la historia reconstruida se rehace al terminar el pedido
     rows = conn.execute(
         """SELECT id, year, month, capital_inicio, capital_final, deposits, withdrawals,
                   pnl_realized, pnl_unrealized
@@ -36198,7 +36276,17 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
 
     La curva aparece sola cuando el thread termina: `/insights/performance` la lee
     de `snapshots` en el próximo render.
+
+    No es sólo "post import": la llama también `_ReconstruirAlTerminar` cuando
+    cualquier pedido cambió la contabilidad de la cuenta (borrar, deshacer,
+    revertir, cargar a mano). Se conserva el nombre por los que ya la llaman.
     """
+    # El que llama acá ya pidió la reconstrucción de este pedido (el confirm del
+    # import, con todo commiteado): que el middleware no pida otra al terminar.
+    # Lo que se toque DESPUÉS en el mismo pedido se vuelve a anotar.
+    _tocadas = _CONTABILIDAD_TOCADA.get()
+    if _tocadas is not None:
+        _tocadas.discard(uid)
     try:
         import threading as _th
         # Un solo hilo de reconstrucción por usuario. NO serializa el hilo
@@ -36215,27 +36303,83 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
                 return {"reconstruida": "en_curso", "motivo": "ya_corriendo_se_repite"}
             _MTM_RUNNING.add(uid)
 
-        def _run():
-            try:
-                while True:
-                    _reconstruir_mtm(uid)
-                    with _MTM_RUNNING_LOCK:
-                        if uid in _MTM_PENDIENTE:
-                            _MTM_PENDIENTE.discard(uid)
-                            continue
-                        _MTM_RUNNING.discard(uid)
-                        return
-            except Exception:
-                with _MTM_RUNNING_LOCK:
-                    _MTM_RUNNING.discard(uid)
-                    _MTM_PENDIENTE.discard(uid)
-                raise
-
-        _th.Thread(target=_run, daemon=True, name=f"mtm-backfill-{uid}").start()
+        _th.Thread(target=_bucle_de_reconstruccion, args=(uid,), daemon=True,
+                   name=f"mtm-backfill-{uid}").start()
         return {"reconstruida": "en_curso"}
     except Exception:
         log.exception("mtm-auto: no se pudo lanzar la reconstrucción de %s", uid)
         return {"reconstruida": False, "motivo": "error"}
+
+
+def _bucle_de_reconstruccion(uid: int) -> None:
+    """Reconstruye `uid`, que ya está en `_MTM_RUNNING`, y repite mientras alguien
+    lo haya pedido de nuevo en el medio (`_MTM_PENDIENTE`). Al salir, lo libera."""
+    try:
+        while True:
+            _reconstruir_mtm(uid)
+            with _MTM_RUNNING_LOCK:
+                if uid in _MTM_PENDIENTE:
+                    _MTM_PENDIENTE.discard(uid)
+                    continue
+                _MTM_RUNNING.discard(uid)
+                return
+    except Exception:
+        with _MTM_RUNNING_LOCK:
+            _MTM_RUNNING.discard(uid)
+            _MTM_PENDIENTE.discard(uid)
+        raise
+
+
+_MTM_FILA: list = []                 # cuentas esperando, en orden de llegada
+_MTM_FILA_ACTIVA = False             # hay un hilo vaciándola (se decide bajo el lock)
+
+
+def _reconstruir_en_fila(uids) -> None:
+    """Para los pedidos que tocan MUCHAS cuentas a la vez: revertir una tanda del
+    asesor (un revert por cliente, en un solo pedido), las herramientas masivas
+    del admin. Un hilo por cuenta serían decenas de reconstrucciones contra Yahoo
+    al mismo tiempo; sin reconstruir, el revert de la tanda les dejaba a esos
+    clientes la historia borrada. Acá van todas por UN solo hilo, una por vez, y
+    una cuenta que ya está esperando no se anota dos veces.
+
+    La que ya está corriendo por su cuenta (un borrado del propio usuario) no se
+    pisa: se le pide que repita al terminar, igual que en
+    `_reconstruir_mtm_post_import`."""
+    global _MTM_FILA_ACTIVA
+    import threading as _th
+    with _MTM_RUNNING_LOCK:
+        for u in uids:
+            if u not in _MTM_FILA:
+                _MTM_FILA.append(u)
+        # Bajo el lock y con una bandera, no con `is_alive()`: un hilo que ya
+        # decidió irse sigue "vivo" un instante, y lo que se anotara en ese
+        # instante quedaba en la fila sin nadie que la vacíe.
+        if _MTM_FILA_ACTIVA:
+            return
+        _MTM_FILA_ACTIVA = True
+
+        def _vaciar():
+            global _MTM_FILA_ACTIVA
+            while True:
+                with _MTM_RUNNING_LOCK:
+                    if not _MTM_FILA:
+                        _MTM_FILA_ACTIVA = False
+                        return
+                    u = _MTM_FILA.pop(0)
+                    if u in _MTM_RUNNING:
+                        _MTM_PENDIENTE.add(u)
+                        continue
+                    _MTM_RUNNING.add(u)
+                try:
+                    _bucle_de_reconstruccion(u)
+                except Exception:
+                    log.exception("mtm-auto: falló la reconstrucción en fila de %s", u)
+
+        try:
+            _th.Thread(target=_vaciar, daemon=True, name="mtm-backfill-fila").start()
+        except Exception:
+            _MTM_FILA_ACTIVA = False
+            log.exception("mtm-auto: no se pudo lanzar la fila de reconstrucción")
 
 
 @app.post("/api/imports/confirm")
