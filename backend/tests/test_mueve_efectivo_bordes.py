@@ -319,10 +319,10 @@ class F_Concurrencia(unittest.TestCase):
         original = main._adjust_broker_cash
         movidas = []
 
-        def contando(conn, uid, broker, delta):
+        def contando(conn, uid, broker, delta, **kw):
             if uid == self.uid and delta:
                 movidas.append(delta)
-            return original(conn, uid, broker, delta)
+            return original(conn, uid, broker, delta, **kw)
         main._adjust_broker_cash = contando
         self.addCleanup(setattr, main, "_adjust_broker_cash", original)
         return movidas

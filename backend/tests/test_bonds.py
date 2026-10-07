@@ -26,6 +26,7 @@ TMP_DB.close()
 os.environ["DB_PATH"] = TMP_DB.name
 
 import main  # noqa: E402
+import efectivo  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 
@@ -936,21 +937,23 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
 
 
 class CashAssetForCurrencyTest(unittest.TestCase):
-    """Helper puro: mapeo currency → asset name."""
+    """Helper puro: mapeo currency → asset name. Es la ÚNICA regla del nombre de la
+    caja (vivía como `main._cash_asset_for_currency` y copiada en cuatro lugares,
+    uno de los cuales —el importador— la tenía distinta)."""
 
     def test_ars_currency_maps_to_ars(self):
-        self.assertEqual(main._cash_asset_for_currency("ARS"), "ARS")
+        self.assertEqual(efectivo.asset_de_caja("ARS"), "ARS")
 
     def test_usd_currency_maps_to_usd(self):
-        self.assertEqual(main._cash_asset_for_currency("USD"), "USD")
+        self.assertEqual(efectivo.asset_de_caja("USD"), "USD")
 
     def test_usdt_currency_maps_to_usdt(self):
-        self.assertEqual(main._cash_asset_for_currency("USDT"), "USDT")
+        self.assertEqual(efectivo.asset_de_caja("USDT"), "USDT")
 
     def test_unknown_currency_falls_back_to_usdt(self):
         """Cualquier valor desconocido (legado, futuras monedas) → USDT por compat."""
-        self.assertEqual(main._cash_asset_for_currency("EUR"), "USDT")
-        self.assertEqual(main._cash_asset_for_currency(""), "USDT")
+        self.assertEqual(efectivo.asset_de_caja("EUR"), "USDT")
+        self.assertEqual(efectivo.asset_de_caja(""), "USDT")
 
 
 if __name__ == "__main__":

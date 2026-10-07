@@ -49,7 +49,6 @@ def _new_user(conn, email):
 def _helpers():
     h = main._ImportHelpers()
     h._adjust_broker_cash = main._adjust_broker_cash
-    h._adjust_cash = main._adjust_cash
     h._update_monthly_pnl_realized = main._update_monthly_pnl_realized
     h._update_monthly_flow = main._update_monthly_flow
     h._repair_monthly_chain = main._repair_monthly_chain
