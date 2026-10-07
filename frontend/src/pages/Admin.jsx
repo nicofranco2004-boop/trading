@@ -11,6 +11,8 @@ import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 import { pctTxt, pctVar } from '../utils/format'
+import { fechaISO, hoyISO } from '../utils/fecha'
+import DateInput from '../components/DateInput'
 import { Link } from 'react-router-dom'
 
 // Nombre de cada plan, en un solo lugar. Estaba escrito inline en tres sitios
@@ -278,7 +280,7 @@ export default function Admin() {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <StatCard label="Usuarios totales" value={stats.users_total} sub={`${stats.users_admin} admin · ${stats.users_last_7d} nuevos en 7 días`} />
             <StatCard label="Pendientes de aprobación" value={stats.users_pending ?? 0} sub={stats.users_pending > 0 ? 'Requieren acción' : 'Sin solicitudes pendientes'} />
-            <StatCard label="Activos (7 días)" value={stats.active_last_7d} sub="Inicio de sesión en los últimos 7 días" />
+            <StatCard label="Iniciaron sesión (7 días)" value={stats.active_last_7d} sub="Hoy y los 6 días anteriores · sin admins ni cuentas de prueba" />
             <StatCard label="Posiciones" value={stats.positions_total} sub={`${stats.brokers_total} brokers configurados`} />
             <StatCard label="Operaciones" value={stats.operations_total} sub={`${stats.monthly_total} registros mensuales`} />
           </div>
@@ -295,11 +297,16 @@ export default function Admin() {
                 </span>
               </Row>
               <Row label="Snapshots almacenados"><Database size={12} className="inline text-ink-3" /> {stats.snapshots_total}</Row>
-              <Row label="Tasa de actividad">
-                {stats.users_total > 0 ? `${((stats.active_last_7d / stats.users_total) * 100).toFixed(0).replace('.', ',')}%` : '—'}
+              <Row label="Tasa de actividad (7 días)">
+                {/* Sobre quienes PUEDEN entrar (mail confirmado, sin admins ni
+                    cuentas de prueba): antes dividía por "Usuarios totales", que
+                    suma cuentas sin confirmar y bajaba la tasa sin motivo. */}
+                {stats.active_base > 0 ? pctTxt((stats.active_last_7d / stats.active_base) * 100, 0) : '—'}
               </Row>
             </div>
           </div>
+
+          <IngresosPorPeriodo />
 
           {/* ── Embudo de activación ─────────────────────────────────────── */}
           {stats.activation && (
@@ -542,6 +549,151 @@ export default function Admin() {
           Eliminar una cuenta también borra sus posiciones, operaciones, snapshots y brokers. Las cuentas de administrador no se pueden eliminar desde este panel.
         </p>
       </div>
+    </div>
+  )
+}
+
+// ── Usuarios que iniciaron sesión, por período ─────────────────────────────
+// Los rangos se arman en días calendario del navegador (que en Argentina ES la
+// hora argentina, ver utils/fecha.js) y el backend corta cada día en hora
+// argentina: "Hoy" a las 22:00 no se mete en mañana.
+function rangoDe(clave) {
+  const hoy = new Date()
+  const hace = n => { const d = new Date(hoy); d.setDate(d.getDate() - n); return fechaISO(d) }
+  switch (clave) {
+    case 'hoy': return { desde: hoyISO(), hasta: hoyISO() }
+    case '7d': return { desde: hace(6), hasta: hoyISO() }
+    case '30d': return { desde: hace(29), hasta: hoyISO() }
+    case '90d': return { desde: hace(89), hasta: hoyISO() }
+    case 'mes': return { desde: fechaISO(new Date(hoy.getFullYear(), hoy.getMonth(), 1)), hasta: hoyISO() }
+    case 'mes_pasado': return {
+      desde: fechaISO(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1)),
+      hasta: fechaISO(new Date(hoy.getFullYear(), hoy.getMonth(), 0)),
+    }
+    default: return null
+  }
+}
+
+const PERIODOS = [
+  { clave: 'hoy', label: 'Hoy' },
+  { clave: '7d', label: '7 días' },
+  { clave: '30d', label: '30 días' },
+  { clave: '90d', label: '90 días' },
+  { clave: 'mes', label: 'Este mes' },
+  { clave: 'mes_pasado', label: 'Mes pasado' },
+  { clave: 'elegir', label: 'Elegir fechas' },
+]
+
+const ddmm = iso => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '')
+const entero = n => Number(n || 0).toLocaleString('es-AR')
+
+function IngresosPorPeriodo() {
+  const [periodo, setPeriodo] = useState('7d')
+  const [propio, setPropio] = useState(() => rangoDe('30d'))
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [cargando, setCargando] = useState(false)
+  const seq = useRef(0)
+
+  const rango = periodo === 'elegir' ? propio : rangoDe(periodo)
+  const rangoOk = rango?.desde && rango?.hasta && rango.desde <= rango.hasta
+
+  useEffect(() => {
+    if (!rangoOk) return
+    const n = ++seq.current
+    setCargando(true)
+    setError('')
+    api.get(`/admin/logins?desde=${rango.desde}&hasta=${rango.hasta}`)
+      .then(r => { if (n === seq.current) setData(r) })
+      .catch(e => { if (n === seq.current) { setData(null); setError(e?.message || 'no respondió') } })
+      .finally(() => { if (n === seq.current) setCargando(false) })
+  }, [rango?.desde, rango?.hasta, rangoOk])
+
+  // Mostrar sólo lo que corresponde al período elegido: mientras llega la
+  // respuesta nueva, el número viejo queda atenuado en vez de hacerse pasar
+  // por el del período nuevo.
+  const vigente = data && rangoOk && data.desde === rango.desde && data.hasta <= rango.hasta
+  const antesDeLosDatos = data?.datos_desde && rangoOk && rango.desde < data.datos_desde
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-1">
+        <Users size={16} className="text-ink-3" />
+        <h2 className="font-semibold text-ink-0">Usuarios que iniciaron sesión</h2>
+      </div>
+      <p className="text-xs text-ink-3 mb-4">
+        Personas distintas que entraron a su cuenta en el período (con contraseña, confirmando el mail o
+        restableciendo la contraseña). Sin admins ni cuentas de prueba.
+      </p>
+
+      <div className="flex flex-wrap gap-1.5 mb-4" role="group" aria-label="Período">
+        {PERIODOS.map(p => (
+          <button
+            key={p.clave}
+            type="button"
+            onClick={() => setPeriodo(p.clave)}
+            aria-pressed={periodo === p.clave}
+            className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+              periodo === p.clave
+                ? 'bg-data-violet/15 border-data-violet/40 text-ink-0 font-medium'
+                : 'bg-bg-1 border-line text-ink-2 hover:text-ink-0'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {periodo === 'elegir' && (
+        <div className="flex flex-wrap items-end gap-3 mb-4">
+          <label className="text-xs text-ink-3">
+            <span className="block mb-1">Desde</span>
+            <DateInput value={propio.desde} max={propio.hasta || hoyISO()}
+              onChange={v => setPropio(r => ({ ...r, desde: v }))} />
+          </label>
+          <label className="text-xs text-ink-3">
+            <span className="block mb-1">Hasta</span>
+            <DateInput value={propio.hasta} min={propio.desde} max={hoyISO()}
+              onChange={v => setPropio(r => ({ ...r, hasta: v }))} />
+          </label>
+          {!rangoOk && <p className="text-xs text-rendi-neg pb-2">«Desde» tiene que ser anterior o igual a «Hasta».</p>}
+        </div>
+      )}
+
+      {error ? (
+        <p className="text-sm text-rendi-neg">No se pudo cargar: {error}</p>
+      ) : !data ? (
+        <p className="text-sm text-ink-3">{cargando ? 'Cargando…' : '—'}</p>
+      ) : (
+        <div className={vigente && !cargando ? '' : 'opacity-50'}>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-3xl font-semibold text-ink-0 tabular">{entero(data.usuarios)}</span>
+            <span className="text-sm text-ink-2">
+              {data.usuarios === 1 ? 'usuario' : 'usuarios'} del {ddmm(data.desde)} al {ddmm(data.hasta)}
+              {data.base > 0 && (
+                <> · <span className="tabular">{pctTxt((data.usuarios / data.base) * 100, 0)}</span> de los{' '}
+                  <span className="tabular">{entero(data.base)}</span> que tenían cuenta</>
+              )}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-3 mt-4 text-sm">
+            <Row label="Primera vez"><span className="tabular">{entero(data.primera_vez)}</span></Row>
+            <Row label="Volvieron"><span className="tabular">{entero(data.volvieron)}</span></Row>
+            <Row label="Ingresos en total"><span className="tabular">{entero(data.ingresos)}</span></Row>
+          </div>
+          {periodo === 'hoy' && (
+            <p className="text-xs text-ink-3 mt-3">
+              Cuenta quién <b className="text-ink-2">inició sesión</b> hoy, no quién usó la app: la sesión dura 7 días,
+              así que quien ya estaba adentro y entró hoy sin volver a loguearse no aparece.
+            </p>
+          )}
+          {antesDeLosDatos && (
+            <p className="text-xs text-amber-500 mt-3">
+              Hay registro de ingresos desde el {ddmm(data.datos_desde)}: lo anterior a esa fecha no se puede contar.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

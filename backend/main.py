@@ -2521,6 +2521,23 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
         """)
 
+        # "Último login" atrasado: hasta que existió `_registrar_ingreso`, verificar
+        # el mail anotaba el ingreso en login_history pero NO en users.last_login_at,
+        # así que quien entró así figuraba "—" en /admin aunque hubiera entrado.
+        # Se completa desde el historial. Idempotente: sólo toca filas donde el
+        # historial tiene un ingreso MÁS NUEVO que la columna; corrida dos veces
+        # no cambia nada. DESPUÉS del CREATE de login_history, a propósito.
+        try:
+            conn.execute("""
+                UPDATE users SET last_login_at = (
+                    SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
+                 WHERE (SELECT MAX(h.created_at) FROM login_history h WHERE h.user_id = users.id)
+                       > COALESCE(last_login_at, '')
+            """)
+            conn.commit()
+        except Exception as _ex:
+            logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
+
         # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
         # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
         _ap_cols = [r[1] for r in conn.execute("PRAGMA table_info(advisor_profile)").fetchall()]
@@ -3566,16 +3583,37 @@ def _client_ip(request: Request) -> str:
     return "" if ip == "unknown" else ip
 
 
-def _record_login_and_maybe_alert(
+def _registrar_ingreso(
     conn,
     user_id: int,
     email: str,
     name: Optional[str],
     request: Request,
 ) -> None:
-    """Inserta el login en login_history. Si el dispositivo (ua_hash) no fue
-    visto antes para este user — y NO es el primer login ever — manda un
-    email de alerta. Nunca tira: si la alerta falla, el login sigue OK."""
+    """LA puerta única de "esta persona entró": la llama TODO camino que le
+    abre una sesión nueva a alguien (login con contraseña, verificar el mail,
+    restablecer la contraseña, reclamar la cuenta que creó el asesor).
+
+    Escribe las dos huellas que leen los paneles, juntas:
+      • `users.last_login_at` → la columna "Último login" de /admin.
+      • una fila en `login_history` → el conteo "Iniciaron sesión" por período
+        de /admin y la tira de entradas del panel de pruebas.
+
+    Antes cada camino escribía lo suyo: el login con contraseña escribía las
+    dos, verificar el mail sólo el historial, y restablecer la contraseña o
+    reclamar la cuenta ninguna. Resultado: los recién registrados (que entran
+    verificando el mail) y quien entra por "olvidé mi contraseña" no contaban
+    como activos, y el mismo usuario figuraba con login en un panel y "—" en
+    el otro.
+
+    Si el dispositivo (ua_hash) no fue visto antes para este user — y NO es el
+    primer ingreso — manda un mail de alerta. Nunca tira: si algo falla, la
+    persona entra igual."""
+    try:
+        conn.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (user_id,))
+        conn.commit()
+    except Exception as ex:
+        log.error("last_login_at update failed for uid=%s: %s", user_id, ex)
     try:
         ua = request.headers.get("user-agent", "")
         ip = _client_ip(request)
@@ -3773,6 +3811,7 @@ def register(data: RegisterIn, request: Request, response: Response,
                 }
 
             # Admin: bypass verificación + token directo (acceso interno)
+            _registrar_ingreso(conn, uid, data.email, data.name, request)
             pca_row = conn.execute("SELECT password_changed_at FROM users WHERE id=?", (uid,)).fetchone()
             token = create_token(uid, pca_row["password_changed_at"] if pca_row else None)
             set_auth_cookie(response, token)
@@ -3815,15 +3854,9 @@ def login(data: LoginIn, request: Request, response: Response):
         # Nota: el gate de aprobación manual del admin fue removido — el registro
         # es abierto. La columna `approved` se mantiene (todos en 1) por compat de
         # esquema, pero ya no bloquea el login.
-        # Update last_login
-        try:
-            conn.execute("UPDATE users SET last_login_at=datetime('now') WHERE id=?", (row["id"],))
-            conn.commit()
-        except Exception:
-            pass
-        # Registrar el login en login_history; si el dispositivo es nuevo (ua_hash
-        # no visto antes), dispara email de alerta. Nunca tira.
-        _record_login_and_maybe_alert(conn, row["id"], row["email"], row["name"], request)
+        # Último login + login_history (+ alerta si el dispositivo es nuevo).
+        # Nunca tira.
+        _registrar_ingreso(conn, row["id"], row["email"], row["name"], request)
     token = create_token(row["id"], row["password_changed_at"])
     set_auth_cookie(response, token)
     # Mantenemos `token` en el body por back-compat (clientes legacy / mobile).
@@ -3897,9 +3930,9 @@ def verify_email(data: VerifyEmailIn, request: Request, response: Response):
                     "UPDATE users SET email_verified = 1 WHERE id = ?",
                     (user["id"],),
                 )
-            # Verificar email = login implícito. Registramos en login_history
-            # también (igual no manda alerta porque es el primer login post-signup).
-            _record_login_and_maybe_alert(conn, user["id"], email_norm, user["name"], request)
+            # Verificar email = login implícito: cuenta como ingreso (igual no
+            # manda alerta porque es el primer login post-signup).
+            _registrar_ingreso(conn, user["id"], email_norm, user["name"], request)
             # Quien nace sin plan gratis arranca su prueba de 20 días ACÁ, sola.
             # Acá y no en el registro porque entre registrarse y verificar el mail
             # pueden pasar días, y arrancarla antes le quemaría la prueba sin que
@@ -4091,6 +4124,8 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
             "SELECT name, email, password_changed_at FROM users WHERE id = ?",
             (row["user_id"],),
         ).fetchone()
+        # Restablecer la contraseña deja a la persona adentro: es un ingreso.
+        _registrar_ingreso(conn, row["user_id"], user["email"], user["name"], request)
         token = create_token(row["user_id"], user["password_changed_at"])
         set_auth_cookie(response, token)
         return {
@@ -21477,6 +21512,91 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
     }
 
 
+# Usuarios REALES: verificados, no-admin, sin cuentas de test/internas — mismo
+# filtro que /api/stats/public para que los números cierren. Lo usan el embudo
+# de activación y el conteo de ingresos; si cambia, cambia para los dos.
+_SQL_USUARIO_REAL = ("email_verified=1 AND is_admin=0 "
+                     "AND email NOT LIKE '%@rendi.test' "
+                     "AND email NOT LIKE '%@rendi.finance' "
+                     "AND email NOT LIKE 'test@%' "
+                     "AND email NOT LIKE '%+test%'")
+
+
+def _contar_ingresos(conn, desde, hasta) -> dict:
+    """Cuántos usuarios reales iniciaron sesión entre dos días argentinos, los
+    dos incluidos. ÚNICA definición de "usuarios que entraron": la usan la
+    tarjeta de /admin/stats y el selector de período de /admin/logins.
+
+    Lee `login_history` (una fila por ingreso) y NO `users.last_login_at`:
+    esa columna guarda sólo el ÚLTIMO, así que quien entró el 10/9 y otra vez
+    el 5/10 desaparecía de septiembre. Con el historial cualquier período
+    pasado se puede contar.
+
+    ⚠️ Mide INGRESOS, no uso: la sesión dura TOKEN_DAYS (7) días sin
+    renovarse, así que quien entró el lunes y usa la app todo la semana cuenta
+    el lunes y nada más. En ventanas de 7 días o más es una buena aproximación
+    de "quién usó la app"; en "Hoy" se queda corto."""
+    from fechas import inicio_dia_art_en_utc
+    lo = inicio_dia_art_en_utc(desde)
+    hi = inicio_dia_art_en_utc(hasta + timedelta(days=1))
+    reales = f"SELECT id FROM users WHERE {_SQL_USUARIO_REAL}"
+    r = conn.execute(
+        f"""SELECT COUNT(DISTINCT user_id) AS usuarios, COUNT(*) AS ingresos
+              FROM login_history
+             WHERE created_at >= ? AND created_at < ? AND user_id IN ({reales})""",
+        (lo, hi)).fetchone()
+    # Primera vez = su ingreso más viejo de TODA la historia cae en el período.
+    primera_vez = conn.execute(
+        f"""SELECT COUNT(*) FROM (
+                SELECT user_id, MIN(created_at) AS primero FROM login_history
+                 WHERE user_id IN ({reales}) GROUP BY user_id) t
+             WHERE primero >= ? AND primero < ?""",
+        (lo, hi)).fetchone()[0]
+    # Denominador de la tasa: quienes ya tenían cuenta al terminar el período.
+    # Antes se dividía por "Usuarios totales", que suma cuentas que nunca
+    # confirmaron el mail (no pueden entrar) y a los admins.
+    base = conn.execute(
+        f"SELECT COUNT(*) FROM users WHERE {_SQL_USUARIO_REAL} AND created_at < ?",
+        (hi,)).fetchone()[0]
+    usuarios = int(r["usuarios"] or 0)
+    return {
+        "desde": desde.isoformat(),
+        "hasta": hasta.isoformat(),
+        "usuarios": usuarios,
+        "ingresos": int(r["ingresos"] or 0),
+        "primera_vez": int(primera_vez or 0),
+        "volvieron": usuarios - int(primera_vez or 0),
+        "base": int(base or 0),
+    }
+
+
+@app.get("/api/admin/logins")
+def admin_logins(desde: Optional[str] = None, hasta: Optional[str] = None,
+                 uid: int = Depends(get_admin_user)):
+    """Usuarios que iniciaron sesión en un período (días argentinos, los dos
+    incluidos). Sin parámetros: los últimos 7 días, igual que la tarjeta."""
+    from datetime import date as _date
+    hoy = _hoy_art_date()
+    try:
+        d_hasta = _date.fromisoformat(hasta) if hasta else hoy
+        d_desde = _date.fromisoformat(desde) if desde else d_hasta - timedelta(days=6)
+    except ValueError:
+        raise HTTPException(400, "Fechas inválidas: usá AAAA-MM-DD.")
+    if d_desde > d_hasta:
+        raise HTTPException(400, "«Desde» no puede ser posterior a «Hasta».")
+    if d_hasta > hoy:
+        d_hasta = hoy
+    with db_abierta() as conn:
+        out = _contar_ingresos(conn, d_desde, d_hasta)
+        primero = conn.execute("SELECT MIN(created_at) FROM login_history").fetchone()[0]
+    # Antes de esta fecha no hay registro de ingresos: un período que arranca
+    # antes cuenta de menos, y la pantalla lo tiene que decir.
+    from fechas import dia_art
+    out["datos_desde"] = (dia_art(datetime.fromisoformat(str(primero).replace("T", " ")[:19])).isoformat()
+                          if primero else None)
+    return out
+
+
 @app.get("/api/admin/stats")
 def admin_stats(uid: int = Depends(get_admin_user)):
     with db_abierta() as conn:
@@ -21492,9 +21612,11 @@ def admin_stats(uid: int = Depends(get_admin_user)):
         users_last_7d = conn.execute(
             f"SELECT COUNT(*) FROM users WHERE created_at >= datetime('now','-7 days') AND {NOTEST}"
         ).fetchone()[0]
-        active_last_7d = conn.execute(
-            f"SELECT COUNT(*) FROM users WHERE last_login_at >= datetime('now','-7 days') AND {NOTEST}"
-        ).fetchone()[0]
+        # Hoy y los 6 días argentinos anteriores, con la MISMA cuenta que el
+        # selector de período (/api/admin/logins sin parámetros da lo mismo).
+        _hoy = _hoy_art_date()
+        _ingresos_7d = _contar_ingresos(conn, _hoy - timedelta(days=6), _hoy)
+        active_last_7d = _ingresos_7d["usuarios"]
         positions_total = conn.execute(f"SELECT COUNT(*) FROM positions WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
         operations_total = conn.execute(f"SELECT COUNT(*) FROM operations WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
         monthly_total = conn.execute(f"SELECT COUNT(*) FROM monthly_entries WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
@@ -21507,11 +21629,7 @@ def admin_stats(uid: int = Depends(get_admin_user)):
         # — mismo filtro que /api/stats/public para que los números cierren). Mide
         # cuántos avanzan: verificó → creó broker → cargó posición → ≥1 operación →
         # ≥2 operaciones. Sirve para ver EN QUÉ ESCALÓN se cae la gente.
-        REAL = ("email_verified=1 AND is_admin=0 "
-                "AND email NOT LIKE '%@rendi.test' "
-                "AND email NOT LIKE '%@rendi.finance' "
-                "AND email NOT LIKE 'test@%' "
-                "AND email NOT LIKE '%+test%'")
+        REAL = _SQL_USUARIO_REAL
         act_verified = conn.execute(f"SELECT COUNT(*) FROM users WHERE {REAL}").fetchone()[0]
         act_broker = conn.execute(
             f"SELECT COUNT(*) FROM users u WHERE {REAL} AND EXISTS (SELECT 1 FROM brokers b WHERE b.user_id=u.id)"
@@ -21532,6 +21650,7 @@ def admin_stats(uid: int = Depends(get_admin_user)):
         "users_pending": users_pending,
         "users_last_7d": users_last_7d,
         "active_last_7d": active_last_7d,
+        "active_base": _ingresos_7d["base"],
         "positions_total": positions_total,
         "operations_total": operations_total,
         "monthly_total": monthly_total,
@@ -41161,12 +41280,7 @@ def public_stats():
         # (los tests crean usuarios @rendi.test; el staff usa @rendi.finance).
         # Mejor sub-contar que afirmar un número falso en una landing financiera.
         n = conn.execute(
-            """SELECT COUNT(*) FROM users
-                WHERE email_verified=1 AND is_admin=0
-                  AND email NOT LIKE '%@rendi.test'
-                  AND email NOT LIKE '%@rendi.finance'
-                  AND email NOT LIKE 'test@%'
-                  AND email NOT LIKE '%+test%'"""
+            f"SELECT COUNT(*) FROM users WHERE {_SQL_USUARIO_REAL}"
         ).fetchone()[0]
     finally:
         conn.close()
@@ -42009,6 +42123,8 @@ def claim_account(data: ClaimAccountIn, request: Request, response: Response):
                 (row["email"], new_hash, row["user_id"]))
         user = conn.execute("SELECT name, password_changed_at FROM users WHERE id=?",
                            (row["user_id"],)).fetchone()
+        # Reclamar la cuenta deja a la persona adentro: es su primer ingreso.
+        _registrar_ingreso(conn, row["user_id"], row["email"], user["name"], request)
         token = create_token(row["user_id"], user["password_changed_at"])
         set_auth_cookie(response, token)
         return {"token": token, "name": user["name"] or row["email"], "email": row["email"]}
