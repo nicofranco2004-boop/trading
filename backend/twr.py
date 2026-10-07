@@ -1925,15 +1925,34 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # de la cadena, el leg contable vuelve a ser exactamente
     # realizado_M / (capital_inicio_M + flujo_M/2): lo que "recreado de tu
     # contabilidad" promete. La foto vieja queda registrada como `valor_foto`.
-    _cf_mes = {}
+    #
+    # ⚠️ Y EL MES SIN FILA ARRASTRA LA DEL ÚLTIMO QUE TUVO. `monthly_entries` sólo
+    # tiene fila para los meses con flujos o ventas; en los demás la contabilidad
+    # no se movió (`_repair_monthly_chain` encadena por encima del hueco), así que
+    # su valor es el `capital_final` del último mes con fila — la misma regla con
+    # la que `netdep_canonico` arrastra el aportado. Buscándolo por mes exacto, la
+    # foto de un mes sin fila se quedaba con su valor crudo entre dos realineadas:
+    # medido en la copia de producción, uid 1085 con meses a 717 / 321 / 817 / 413
+    # —una reconstrucción a medio valuar entre dos saldos de la cadena— y el
+    # estimado pasaba de +5,9 % a −39,5 % por pérdidas que no existieron.
+    _cf_filas = []
     if modo == MODO_ESTIMADO:
         for m in conn.execute(
                 "SELECT year, month, capital_final FROM monthly_entries "
-                "WHERE user_id=? AND broker='global'", (uid,)):
+                "WHERE user_id=? AND broker='global' ORDER BY year, month", (uid,)):
             try:
-                _cf_mes[f"{int(m['year']):04d}-{int(m['month']):02d}"] = float(m["capital_final"] or 0)
+                _cf_filas.append((f"{int(m['year']):04d}-{int(m['month']):02d}",
+                                  float(m["capital_final"] or 0)))
             except (TypeError, ValueError):
                 pass
+
+    def _cf_del_mes(ym):
+        v = 0.0                      # antes de la primera fila no hay cadena
+        for k, cf in _cf_filas:
+            if k > ym:
+                break
+            v = cf
+        return v
     contable_realineado = 0
     puntos, contable, conteo = [], [], {c: 0 for c in CLASES}
     for r, c, _base, _apto in zip(filas, clases, bases, aptos):
@@ -1947,10 +1966,11 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
             contable_superado += 1
         _val = float(r["total_value"])
         _valor_foto = None
-        if (modo == MODO_ESTIMADO and c == SINTETICO_COSTO and _base == VALUADO_AL_COSTO
-                and _es_fin_de_mes(d) and _cf_mes.get(d[:7], 0) > 0
-                and abs(_cf_mes[d[:7]] - _val) > 1e-6):
-            _valor_foto, _val = _val, _cf_mes[d[:7]]
+        _cf = (_cf_del_mes(d[:7])
+               if (modo == MODO_ESTIMADO and c == SINTETICO_COSTO
+                   and _base == VALUADO_AL_COSTO and _es_fin_de_mes(d)) else 0.0)
+        if _cf > 0 and abs(_cf - _val) > 1e-6:
+            _valor_foto, _val = _val, _cf
             contable_realineado += 1
         if c in aceptar and not _superada:
             # TODO ENTRA A LA LÍNEA — el usuario ve su curva. Lo que se decide acá
@@ -2153,7 +2173,7 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         # en estimado quedan fuera de la línea (siguen en `contable`).
         "contable_superado": contable_superado,
         # Fotos contables cuyo valor se tomó de la cadena porque la foto estaba
-        # desactualizada (ver el comentario de `_cf_mes`).
+        # desactualizada (ver el comentario de `_cf_del_mes`).
         "contable_realineado": contable_realineado,
         "moneda": moneda,
         "riel_fx": _riel_fx,
@@ -2451,7 +2471,7 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                      # certero, para decir lo mismo que el chip.
                      "index_publicado": round(idx_est if modo == MODO_ESTIMADO else idx, 6),
                      # Diagnóstico: la foto vieja cuando el valor contable se
-                     # tomó de la cadena (ver `_cf_mes` en `serie_medible`).
+                     # tomó de la cadena (ver `_cf_del_mes` en `serie_medible`).
                      "valor_foto": p.get("valor_foto"),
                      # El TC del día (None en dólares).
                      "fx": p.get("fx"),

@@ -90,6 +90,7 @@ def _setup_yfinance_cache():
 
 _setup_yfinance_cache()
 import fx as _fx
+import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 # El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
 # abajo (constante + `_rate_pct` escritos a mano) y sólo los usaba el libro del
@@ -4957,7 +4958,7 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
             # depósito (el botón 'Depositar' vive dentro del menú de cada
             # posición). Con la cash position pre-creada, el menú aparece
             # inmediatamente con saldo $0.
-            cash_asset = 'ARS' if data.currency == 'ARS' else ('USD' if data.currency == 'USD' else 'USDT')
+            cash_asset = _efectivo.asset_de_caja(data.currency)
             conn.execute(
                 """INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity)
                    VALUES (?, ?, ?, 1, 0, 0)""",
@@ -11587,72 +11588,14 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
                 prev_cap_final = cur_cap_final
 
 
-def _adjust_broker_cash(conn, uid: int, broker: str, delta: float) -> None:
-    """Ajusta el saldo cash del broker en `delta` unidades (moneda nativa del broker).
-    Phase 2 — ledger automático en buy/sell.
-
-    Convención:
-    - Si el broker tiene una posición cash (is_cash=1), se actualiza su `invested`.
-    - Si NO hay cash position pero hay un movimiento (delta != 0), la creamos
-      automáticamente con el delta como balance inicial. Antes era opt-in (no-op
-      si no había cash), pero eso causaba que imports con BUYs sin DEPOSITs
-      previos quedaran con cash $0 en la pantalla — confuso. Ahora los BUYs
-      generan un balance negativo visible (señal de que falta cargar el cash
-      inicial / hacer un import del estado inicial).
-    - Se permiten balances negativos — señal visible de overdraft / margen.
-
-    LA SUMA LA HACE LA BASE, no Python (2026-10-03). Antes se leía el saldo, se
-    sumaba acá y se escribía el RESULTADO. Con dos pedidos a la vez los dos leían
-    el mismo saldo y el segundo pisaba al primero: una de las dos sumas se perdía.
-    Medido con dos ediciones simultáneas: en 138 de 300 corridas una acreditación
-    desapareció así. Esa lectura corre FUERA de transacción (sqlite3 abre la
-    transacción recién en la primera escritura), así que nada la protegía.
-    `invested = invested + ?` se evalúa con la base ya tomada para escribir, sobre
-    el saldo vigente en ese instante — en SQLite y en Postgres.
-    """
-    if delta == 0:
-        return
-    cash = conn.execute(
-        "SELECT id FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-        (uid, broker),
-    ).fetchone()
-    if not cash:
-        # Inferir el asset name según la moneda del broker. Si no hay broker
-        # row (caso raro), default a USDT.
-        broker_row = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
-            (uid, broker),
-        ).fetchone()
-        currency = broker_row["currency"] if broker_row else "USDT"
-        # ARS para brokers en pesos; USD para brokers tradicionales; USDT para
-        # exchanges crypto. Antes USD se forzaba a USDT — ahora es independiente.
-        asset_name = "ARS" if currency == "ARS" else ("USD" if currency == "USD" else "USDT")
-        conn.execute(
-            """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
-               VALUES (?,?,?,1,?)""",
-            (uid, broker, asset_name, delta),
-        )
-        return
-    conn.execute(
-        "UPDATE positions SET invested=COALESCE(invested, 0) + ? WHERE id=? AND user_id=?",
-        (delta, cash['id'], uid),
-    )
-
-
-def _tomar_saldo(conn, uid: int, broker: str) -> None:
-    """Toma el saldo de efectivo del broker PARA ESCRIBIR, antes de leerlo.
-
-    Para los que no pueden delegarle la cuenta a la base (`_adjust_broker_cash`
-    sí puede): los que chequean "saldo insuficiente" o promedian el TC con el
-    saldo vigente. sqlite3 abre la transacción recién en la primera escritura, así
-    que un SELECT anterior lee sin bloqueo y otro pedido puede cambiar el saldo
-    antes de que éste escriba. Esta escritura no cambia nada, pero desde acá hasta
-    el commit nadie más puede tocar el saldo (en SQLite, la base entera; en
-    Postgres, la fila), y lo que se lea después es lo vigente."""
-    conn.execute(
-        "UPDATE positions SET invested=invested WHERE user_id=? AND broker=? AND is_cash=1",
-        (uid, broker),
-    )
+# El saldo de efectivo de un broker se mueve SOLAMENTE por acá (ver efectivo.py,
+# donde está la regla y la historia de las cinco copias que había). El nombre
+# viejo se conserva porque lo usan ~35 llamadores, el importador (vía
+# `_import_helpers`) y los tests que cuentan los movimientos reemplazándolo.
+#   _adjust_broker_cash(conn, uid, broker, delta)                         motor: puede quedar negativo
+#   _adjust_broker_cash(conn, uid, broker, -x, permite_negativo=False)     a mano: "Saldo insuficiente"
+#   _adjust_broker_cash(conn, uid, broker, +usd, tc_compra=tc)            dólares comprados: promedia el TC
+_adjust_broker_cash = _efectivo.mover
 
 
 def _manual_flow_rate(conn, uid: int, date_iso, tc_hint: Optional[float] = None) -> float:
@@ -11719,10 +11662,12 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     bug que el audit del asesor encontró en el undo de la operación grupal)."""
     if not cost_native or cost_native <= 0:
         return 0.0
-    cash_row = conn.execute(
-        "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-        (uid, broker),
-    ).fetchone()
+    # El faltante se decide con el saldo VIGENTE (2026-10-07): leído sin tomarlo,
+    # dos altas a la vez (dos plazos fijos, o una compra a mano y un plazo fijo)
+    # veían el mismo saldo, ninguna autodepositaba lo que la otra ya había usado,
+    # y el efectivo quedaba en rojo — justo lo que esta función existe para evitar.
+    _efectivo.tomar_saldo(conn, uid, broker)
+    cash_row = _efectivo.caja(conn, uid, broker)
     current = float(cash_row["invested"] or 0) if cash_row else 0.0
     shortfall = round(cost_native - current, 6)
     if shortfall <= 0:
@@ -11948,44 +11893,26 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
                 raise HTTPException(404, f"Broker '{data.broker_name}' no encontrado")
             currency = broker_row['currency']
 
-            # 1. Cash actual del broker
-            cash_pos = conn.execute(
-                "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                (uid, data.broker_name),
-            ).fetchone()
+            # 1. Cash actual del broker — TOMADO antes de leerlo (2026-10-07). La
+            # diferencia se anota como aporte o retiro en el capital aportado: leída
+            # sin tomar, un doble click la anotaba dos veces. Antes esto se cubría
+            # con un reclamo (UPDATE con el saldo leído en el WHERE, y 409 si otro
+            # pedido lo había cambiado); tomándolo primero el segundo pedido espera,
+            # ve el saldo que dejó el primero y ajusta contra ESE — sin 409.
+            _efectivo.tomar_saldo(conn, uid, data.broker_name)
+            cash_pos = _efectivo.caja(conn, uid, data.broker_name)
             current_cash = float(cash_pos['invested'] or 0) if cash_pos else 0.0
             diff = round(data.target_cash - current_cash, 6)
 
             if abs(diff) < 0.01:
                 return {"ok": True, "no_change": True, "current_cash": current_cash}
 
-            # 2. Update / create cash position con el target exacto
-            if cash_pos:
-                # RECLAMO (2026-10-03). La diferencia de arriba sale de un saldo
-                # leído sin bloqueo, y esa diferencia se anota como aporte o retiro
-                # en el capital aportado. Con un doble click los dos pedidos la
-                # anotaban: el saldo quedaba bien (se pisa con el mismo número) pero
-                # el capital aportado contaba el ajuste dos veces. El WHERE repite
-                # el saldo leído: si otro pedido lo cambió, no se toca nada.
-                if conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=? AND COALESCE(invested, 0)=?",
-                    (data.target_cash, cash_pos['id'], uid, current_cash),
-                ).rowcount != 1:
-                    ahora = conn.execute(
-                        "SELECT COALESCE(invested, 0) AS c FROM positions WHERE id=? AND user_id=?",
-                        (cash_pos['id'], uid)).fetchone()
-                    if ahora and abs(float(ahora["c"]) - data.target_cash) < 0.01:
-                        # El otro pedido ya lo dejó en este mismo número (doble click).
-                        return {"ok": True, "no_change": True, "current_cash": float(ahora["c"])}
-                    raise HTTPException(409, "El saldo cambió mientras lo ajustabas. "
-                                             "Recargá la página y probá de nuevo.")
-            else:
-                asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
-                conn.execute(
-                    """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
-                       VALUES (?,?,?,1,?)""",
-                    (uid, data.broker_name, asset_name, data.target_cash),
-                )
+            # 2. Llevar el saldo al número que dijo el usuario: se mueve la diferencia
+            # por la puerta única (crea la caja si no había, con el nombre de siempre).
+            # La diferencia SIN redondear: la redondeada (`diff`) es para el umbral y
+            # para el capital aportado; movida al saldo, lo dejaba a una millonésima
+            # del número que tipeó el usuario.
+            _adjust_broker_cash(conn, uid, data.broker_name, data.target_cash - current_cash)
 
             # 3. Registrar diff en monthly_entries del mes más antiguo del broker
             # (preserva cronología — el ajuste representa historia pre-CSV).
@@ -12081,43 +12008,13 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 currency = broker_row['currency']   # 'USDT' or 'ARS'
                 sign = 1 if data.direction == 'deposit' else -1
 
-                # 2. Actualizar posición cash
-                # Primero se TOMA el saldo para escribir y recién después se lee
-                # (2026-10-03). Abajo se escribe el saldo como un número calculado
-                # acá; leído sin bloqueo, dos movimientos a la vez leían el mismo
-                # saldo y el segundo pisaba al primero (y el "saldo insuficiente"
-                # se chequeaba contra un número viejo). Ver `_tomar_saldo`.
-                _tomar_saldo(conn, uid, data.broker_name)
-                cash_pos = conn.execute(
-                    "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                    (uid, data.broker_name),
-                ).fetchone()
-
-                if cash_pos:
-                    new_invested = (cash_pos['invested'] or 0) + sign * data.amount
-                    # Solo bloqueamos cuando es un WITHDRAW que dejaría negativo.
-                    # Para DEPOSIT permitimos siempre (incluso si el resultado sigue
-                    # negativo porque la deuda era mayor al depósito — la idea es
-                    # ir reduciendo el overdraft progresivamente).
-                    if data.direction == 'withdraw' and new_invested < 0:
-                        raise HTTPException(
-                            400,
-                            f"Saldo insuficiente. Disponible: {fmt_num(cash_pos['invested'] or 0, 2)} {currency}"
-                        )
-                    conn.execute(
-                        "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                        (new_invested, cash_pos['id'], uid),
-                    )
-                else:
-                    if data.direction == 'withdraw':
-                        raise HTTPException(400, "No hay posición cash para este broker.")
-                    # Crear posición cash si no existe (solo en depósito)
-                    asset_name = 'ARS' if currency == 'ARS' else ('USD' if currency == 'USD' else 'USDT')
-                    conn.execute(
-                        """INSERT INTO positions (user_id, broker, asset, is_cash, invested)
-                           VALUES (?,?,?,1,?)""",
-                        (uid, data.broker_name, asset_name, data.amount),
-                    )
+                # 2. Mover el efectivo por la puerta única. Un RETIRO que deja el
+                # saldo bajo cero rebota con "Saldo insuficiente" (también si no
+                # había caja); un DEPÓSITO pasa siempre, aunque el saldo siga en rojo
+                # (la idea es ir achicando el descubierto). La puerta toma el saldo
+                # antes de leerlo: dos movimientos a la vez cuentan los dos.
+                _adjust_broker_cash(conn, uid, data.broker_name, sign * data.amount,
+                                    permite_negativo=False)
 
                 # 3 & 4. Ambas entradas (broker + global) se guardan en USD.
                 # Toda la tabla monthly_entries usa USD como unidad. La conversión ARS→USD
@@ -12300,7 +12197,7 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
     Hace 2-3 cosas atómicamente:
       1. INSERT en operations (op_type='Cupón' o 'Amortización') con
          currency + fx_to_usd stampados.
-      2. _adjust_cash del broker por el monto neto (amount - commissions).
+      2. Acredita el cash del broker por el monto neto (amount - commissions).
       3. Si decrement_quantity=True Y flow_type='amortization': reduce FIFO
          la quantity + invested de los lotes hasta cubrir el monto amortizado.
          Esto refleja que en un bono amortizante, cada amort te devuelve face
@@ -12383,6 +12280,12 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             invested_decremented = 0.0
             cross_currency_skipped = False
             if data.flow_type == 'amortization':
+                # Los lotes se toman ANTES de leerlos (2026-10-07): todo lo que
+                # sigue —el chequeo de cordura, el costo consumido y el descuento—
+                # sale de su cantidad, y leída sin tomar, dos amortizaciones a la
+                # vez descontaban sobre la misma foto: la segunda pisaba a la
+                # primera (cantidad absoluta) y una se perdía, con su plata cobrada.
+                _tomar_lotes(conn, uid, data.broker, data.asset.upper())
                 # Resolver la qty a decrementar. Si el frontend pasó
                 # `face_amortized` explícito (caso cross-currency, donde
                 # `amount` está en moneda del broker pero la qty está en VN
@@ -12453,7 +12356,9 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                                    "cross_currency_skipped": cross_currency_skipped})),
             )
             # 2. Acreditar cash del broker
-            _adjust_cash(conn, uid, data.broker, _cash_asset_for_currency(broker_currency), net_amount)
+            # (Un cobro pasa siempre, aunque el saldo esté en rojo: antes iba por la
+            # copia estricta de las conversiones y rebotaba con "Saldo insuficiente".)
+            _adjust_broker_cash(conn, uid, data.broker, net_amount)
 
         # Ganancia realizada del amort (sólo para diagnóstico / response):
         # cash recibido − cost basis consumido. Para cupones siempre = cash.
@@ -12486,6 +12391,17 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
         raise HTTPException(500, f"Error al registrar el cashflow del bono: {ex}")
     finally:
         conn.close()
+
+
+def _tomar_lotes(conn, uid: int, broker: str, asset: str) -> None:
+    """Toma los lotes de (broker, activo) PARA ESCRIBIR antes de leerlos — lo mismo
+    que `efectivo.tomar_saldo` hace con el saldo: la escritura no cambia nada, pero
+    desde acá hasta el commit nadie más los toca, y lo que se lea es lo vigente."""
+    conn.execute(
+        "UPDATE positions SET quantity=quantity "
+        "WHERE user_id=? AND broker=? AND asset=? AND is_cash=0",
+        (uid, broker, asset),
+    )
 
 
 def _bond_total_qty(conn, uid: int, broker: str, asset: str) -> float:
@@ -12558,7 +12474,12 @@ def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amoun
     canje 2020). Para bonos CER con face ajustado, la math sería distinta —
     pero esos bonos son bullet, no amortizantes, así que este código nunca
     se invoca con ellos.
+
+    Escribe la cantidad de cada lote como número calculado acá: por eso toma los
+    lotes antes de leerlos (`_tomar_lotes`; el que llama ya los tomó, pero esta
+    función no depende de que se acuerde).
     """
+    _tomar_lotes(conn, uid, broker, asset)
     lots = conn.execute(
         """SELECT * FROM positions
            WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
@@ -12613,15 +12534,6 @@ def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amoun
     if detail_out is not None:
         detail_out.extend(detail)
     return qty_to_take, round(total_invested_dec, 6)
-
-
-def _cash_asset_for_currency(currency: str) -> str:
-    """Mapea la currency del broker al asset name del cash position."""
-    if currency == 'ARS':
-        return 'ARS'
-    if currency == 'USD':
-        return 'USD'
-    return 'USDT'
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -12769,63 +12681,6 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     ).fetchone())
 
 
-def _adjust_cash(conn, uid: int, broker_name: str, asset: str, delta: float, tc_for_basis: Optional[float] = None):
-    """Suma `delta` (puede ser negativo) al cash del broker. Crea la posición
-    cash si no existe (solo si delta>0).
-
-    Cuando se llama con `tc_for_basis` (caso compra de USD para sub-broker), se
-    actualiza el `tc_compra` promedio ponderado del cash USD. Esto permite
-    después computar P&L cambiario al vender los USD a un TC distinto.
-
-    Average ponderado:
-      new_tc = (existing_usd * existing_tc + delta_usd * tc_for_basis) / (existing_usd + delta_usd)
-
-    Si `tc_for_basis` es None: comportamiento legacy, no toca tc_compra.
-
-    El saldo se toma para escribir ANTES de leerlo (ver `_tomar_saldo`): el
-    promedio del TC necesita el saldo vigente, así que no alcanza con que la base
-    haga la suma.
-    """
-    _tomar_saldo(conn, uid, broker_name)
-    cash = conn.execute(
-        "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-        (uid, broker_name),
-    ).fetchone()
-    if cash:
-        existing = cash['invested'] or 0
-        new_invested = existing + delta
-        if new_invested < -1e-6:
-            raise HTTPException(
-                400,
-                f"Saldo insuficiente en {broker_name}. Disponible: {fmt_num(existing, 2)}"
-            )
-        new_invested = max(0.0, new_invested)
-        # Actualizar tc_compra promedio ponderado solo en compras (delta>0) y si nos pasaron TC
-        if tc_for_basis is not None and delta > 0:
-            existing_tc = cash['tc_compra'] or tc_for_basis
-            if new_invested > 0:
-                new_tc = (existing * existing_tc + delta * tc_for_basis) / new_invested
-            else:
-                new_tc = tc_for_basis
-            conn.execute(
-                "UPDATE positions SET invested=?, tc_compra=? WHERE id=? AND user_id=?",
-                (new_invested, new_tc, cash['id'], uid),
-            )
-        else:
-            conn.execute(
-                "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                (new_invested, cash['id'], uid),
-            )
-    else:
-        if delta < 0:
-            raise HTTPException(400, f"No hay cash en {broker_name} para debitar.")
-        conn.execute(
-            """INSERT INTO positions (user_id, broker, asset, is_cash, invested, tc_compra)
-               VALUES (?,?,?,1,?,?)""",
-            (uid, broker_name, asset, delta, tc_for_basis),
-        )
-
-
 @app.post("/api/conversions")
 def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)):
     """Conversión interna entre cash ARS y cash USD dentro de un mismo broker.
@@ -12866,9 +12721,10 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                         raise HTTPException(400, "La compra de USD solo aplica a brokers ARS.")
                     usd_broker = _ensure_usd_sibling(conn, uid, ars_broker)
                     # Debitar ARS, acreditar USD (con cost basis = TC de la conversión)
-                    _adjust_cash(conn, uid, ars_broker['name'], 'ARS', -data.ars_amount)
-                    _adjust_cash(conn, uid, usd_broker['name'], 'USDT', data.usd_amount,
-                                 tc_for_basis=data.tc)
+                    _adjust_broker_cash(conn, uid, ars_broker['name'], -data.ars_amount,
+                                        permite_negativo=False)
+                    _adjust_broker_cash(conn, uid, usd_broker['name'], data.usd_amount,
+                                        tc_compra=data.tc)
                     from_b, to_b = ars_broker['name'], usd_broker['name']
                     from_curr, to_curr = 'ARS', 'USDT'
                 else:  # usd_to_ars
@@ -12891,10 +12747,13 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
 
                     # Computar P&L cambiario ANTES de modificar el cash:
                     # cost_basis_ars = usd_amount * tc_compra_promedio_actual
-                    cash_usd = conn.execute(
-                        "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                        (uid, usd_broker['name']),
-                    ).fetchone()
+                    # El TC promedio se lee con el saldo TOMADO (2026-10-07): leído
+                    # sin tomar, una compra de dólares simultánea cambiaba el promedio
+                    # entre esta lectura y el débito, y la venta calculaba su ganancia
+                    # con un costo que ya no era — el costo de los dólares que se
+                    # vendieron y el de los que quedaron no sumaban lo que se pagó.
+                    _efectivo.tomar_saldo(conn, uid, usd_broker['name'])
+                    cash_usd = _efectivo.caja(conn, uid, usd_broker['name'])
                     tc_avg = (cash_usd['tc_compra'] if cash_usd else None) or data.tc
                     cost_basis_ars = data.usd_amount * tc_avg
                     pnl_ars_realized = data.ars_amount - cost_basis_ars
@@ -12902,8 +12761,9 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     pnl_usd_realized = pnl_ars_realized / data.tc if data.tc > 0 else 0.0
 
                     # Debitar USD, acreditar ARS
-                    _adjust_cash(conn, uid, usd_broker['name'], 'USDT', -data.usd_amount)
-                    _adjust_cash(conn, uid, ars_broker['name'], 'ARS', data.ars_amount)
+                    _adjust_broker_cash(conn, uid, usd_broker['name'], -data.usd_amount,
+                                        permite_negativo=False)
+                    _adjust_broker_cash(conn, uid, ars_broker['name'], data.ars_amount)
                     from_b, to_b = usd_broker['name'], ars_broker['name']
                     from_curr, to_curr = 'USDT', 'ARS'
 
@@ -15218,16 +15078,11 @@ def _delete_one_movement(conn, uid: int, mid: str):
         # 2) Reverso del CASH (única cosa que _recalc no recompone). Espeja
         # revert_batch por op_type (persister.py:1142-1224): DEPOSIT/DIVIDEND/
         # INTEREST SUMARON cash → restamos; WITHDRAW/FEE/IMPUESTO RESTARON → devolvemos.
+        # Por la puerta única en los dos sentidos. (La resta escribía el saldo como
+        # un número calculado acá con una lectura previa: un movimiento simultáneo
+        # del mismo broker se perdía.)
         if op in ("DEPOSIT", "DIVIDEND", "INTEREST"):
-            cash = conn.execute(
-                "SELECT id, invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                (uid, broker),
-            ).fetchone()
-            if cash:
-                conn.execute(
-                    "UPDATE positions SET invested=? WHERE id=? AND user_id=?",
-                    ((cash["invested"] or 0) - amount, cash["id"], uid),
-                )
+            _adjust_broker_cash(conn, uid, broker, -amount)
         else:  # WITHDRAW / FEE / IMPUESTO
             _adjust_broker_cash(conn, uid, broker, amount)
         # DIVIDEND/INTEREST crearon una operation (P&L) → borrarla + su link, si no
@@ -27966,25 +27821,23 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
     broker_name = br["name"]
     try:
         if p["action"] == "buy":
-            # Autodepósito REAL: medido con el cash del MOMENTO del write (no el
-            # anticipado en fase 1, que puede quedar stale si el cash cambió
-            # entre turnos). Si hubo, el undo automático se bloquea (revertir
-            # posición + depósito a mano es más seguro).
-            _c = get_db()
-            try:
-                _cr = _c.execute(
-                    "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
-                    (uid, broker_name)).fetchone()
-                _cash_pre = float(_cr["invested"] or 0) if _cr else 0.0
-            finally:
-                _c.close()
-            real_auto = max(0.0, round(p["amount"] - _cash_pre, 2))
             pos_in = PositionIn(
                 broker=broker_name, asset=p["asset"], buy_price=p["price"],
                 quantity=p["quantity"], invested=p["amount"],
                 asset_type=p["asset_type"], currency=p["currency"],
                 entry_date=p["date"], notes=_NOTA_COMPRA_POR_CHAT)
             row = create_position(pos_in, uid)
+            # Autodepósito REAL: el que decidió el alta (`_autodeposit_if_overdraw`)
+            # y dejó anotado en la fila. Antes se recalculaba acá con el saldo leído
+            # en OTRA conexión justo antes del alta: una segunda copia de la cuenta,
+            # que con un movimiento en el medio podía no coincidir con lo que pasó.
+            # Si hubo, el undo automático se bloquea (revertir posición + depósito a
+            # mano es más seguro).
+            try:
+                _autodep = (json.loads(row.get("undo_meta_json") or "{}").get("autodep") or {})
+            except (TypeError, ValueError):
+                _autodep = {}
+            real_auto = round(float(_autodep.get("native") or 0), 2)
             _LAST_CHAT_TRADE[uid] = {
                 "kind": "buy", "position_id": row.get("id"),
                 "cash_debited": p["amount"], "autodeposit": real_auto,
@@ -35000,7 +34853,7 @@ def ai_delete_fact(
 # ─── CSV Importer ────────────────────────────────────────────────────────────
 # Pipeline: parse → normalize → validate → preview → (confirm) persist → batch.
 # La persistencia reusa los helpers de bajo nivel ya existentes
-# (_adjust_broker_cash, _adjust_cash, _update_monthly_pnl_realized,
+# (_adjust_broker_cash, _update_monthly_pnl_realized,
 # _update_monthly_flow, _repair_monthly_chain, _ensure_usd_sibling) para no
 # duplicar la contabilidad. Ver `backend/importing/persister.py`.
 
@@ -35023,7 +34876,6 @@ class _ImportHelpers:
     pass
 _import_helpers = _ImportHelpers()
 _import_helpers._adjust_broker_cash = _adjust_broker_cash
-_import_helpers._adjust_cash = _adjust_cash
 _import_helpers._update_monthly_pnl_realized = _update_monthly_pnl_realized
 _import_helpers._update_monthly_flow = _update_monthly_flow
 _import_helpers._repair_monthly_chain = _repair_monthly_chain
@@ -37017,8 +36869,8 @@ def _wallbit_ensure_broker(conn, uid: int, broker: str = "Wallbit"):
         "INSERT INTO brokers (user_id, name, currency, parent_broker_id) VALUES (?,?, 'USD', NULL)",
         (uid, broker))
     conn.execute(
-        "INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity) VALUES (?,?, 'USD', 1, 0, 0)",
-        (uid, broker))
+        "INSERT INTO positions (user_id, broker, asset, is_cash, invested, quantity) VALUES (?,?,?, 1, 0, 0)",
+        (uid, broker, _efectivo.asset_de_caja("USD")))
 
 
 def _wallbit_confirmed_fingerprints(conn, uid: int, broker: str = "Wallbit"):
@@ -37125,6 +36977,9 @@ def _wallbit_reconcile_positions(conn, uid: int, holdings, cash_usd):
         # Cash true-up: Wallbit ES USD → el efectivo vive en el broker Wallbit (no en
         # un sibling '· USD' como los brokers ARS). Lleva el cash al de la foto.
         cur_cash = 0.0
+        # Tomado antes de leerlo: con este saldo se calcula el ajuste (mismo caso
+        # que conciliar efectivo).
+        _efectivo.tomar_saldo(conn, uid, "Wallbit")
         _crow = conn.execute(
             "SELECT invested FROM positions WHERE user_id=? AND broker='Wallbit' AND is_cash=1 LIMIT 1",
             (uid,)).fetchone()
@@ -39134,7 +38989,7 @@ def _portfolio_snapshot_summary(conn, uid: int, broker_filter: str = "global",
     #
     # ⚠️ ÚNICO LECTOR QUE SE DEJA CON EL BROKER SOLO, Y ES A PROPÓSITO. Suma
     # `invested` de las filas de cash SIN convertir moneda: el cash del padre
-    # está en PESOS (`_persist_fx`/`_adjust_cash` escriben ars_amount tal cual)
+    # está en PESOS (las conversiones escriben ars_amount tal cual)
     # y el del sibling en USD. Hoy, en "IOL", ya devuelve pesos crudos rotulados
     # como dólares — un defecto PREEXISTENTE. Extenderlo al par le sumaría
     # encima los USD del sibling, o sea que sería el único sitio donde el par

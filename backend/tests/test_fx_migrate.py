@@ -41,7 +41,7 @@ HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,mo
 
 def _helpers():
     h = main._ImportHelpers()
-    for a in ("_adjust_broker_cash", "_adjust_cash", "_update_monthly_pnl_realized",
+    for a in ("_adjust_broker_cash", "_update_monthly_pnl_realized",
               "_update_monthly_flow", "_repair_monthly_chain", "_ensure_usd_sibling",
               "_recalc_pnl_realized_from_ops"):
         setattr(h, a, getattr(main, a))
