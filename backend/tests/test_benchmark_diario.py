@@ -198,11 +198,18 @@ class LegDudosoTest(_Base):
         self.assertIsNone(twr.leg_dudoso(1000.0, 520.0, -500.0))
 
     def test_estimado_la_cadena_contable_no_queda_en_menos_100(self):
-        """uid 193: 18,9 → 52,2 con un flujo de 327 → dietz = −1 → idx_est = 0."""
-        self.snap("2020-11-30", 18.9, source="import", nd=269.7)
-        self.snap("2020-12-31", 52.2, source="import", nd=596.7)
-        self.snap("2021-01-31", 55.0, source="import", nd=596.7)
-        self.snap("2021-02-28", 60.0, source="import", nd=596.7)
+        """uid 193: 18,9 → 52,2 con un flujo de 327 → dietz = −1 → idx_est = 0.
+
+        ⚠️ ×10. Los montos reales del uid 193 (US$18,9 a US$60) quedan debajo del
+        piso de US$100 que la cadena contable ahora respeta (el mismo de
+        `contable_de_filas`): con ellos no se publica ningún número — ver el test
+        de abajo —, así que este caso ya no podría probar el desborde. Escalados,
+        el leg sigue desbordando igual (dietz ≤ −1) y lo que se prueba es lo mismo.
+        """
+        self.snap("2020-11-30", 189.0, source="import", nd=2697.0)
+        self.snap("2020-12-31", 522.0, source="import", nd=5967.0)
+        self.snap("2021-01-31", 550.0, source="import", nd=5967.0)
+        self.snap("2021-02-28", 600.0, source="import", nd=5967.0)
         r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
         self.assertIsNotNone(r["twr"])
         self.assertGreater(r["twr"], -0.5)
@@ -210,6 +217,18 @@ class LegDudosoTest(_Base):
         self.assertEqual(r["cortes_dudosos"][0]["cadena"], "contable")
         # y la ventana publicada arranca DESPUÉS del corte
         self.assertGreaterEqual(r["ventana_desde"], "2020-12-31")
+
+    def test_estimado_con_menos_de_100_dolares_no_publica_ni_menos_100(self):
+        """Los montos reales del uid 193: debajo del piso no hay porcentaje que
+        afirmar. Ni el −100 % del cero absorbente ni el +14,9 % de US$52 a US$60:
+        sin número, y el motivo lo dice."""
+        self.snap("2020-11-30", 18.9, source="import", nd=269.7)
+        self.snap("2020-12-31", 52.2, source="import", nd=596.7)
+        self.snap("2021-01-31", 55.0, source="import", nd=596.7)
+        self.snap("2021-02-28", 60.0, source="import", nd=596.7)
+        r = perf.performance(self.conn, self.uid, {}, "sp500", modo=twr.MODO_ESTIMADO)
+        self.assertIsNone(r["twr"])
+        self.assertEqual(r["motivo"], "capital_chico")
 
     def test_certero_no_toca_la_cadena_contable(self):
         """En CERTERO las filas al costo no entran a la línea: el corte contable no aplica."""
