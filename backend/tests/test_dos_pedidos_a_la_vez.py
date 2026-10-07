@@ -154,16 +154,16 @@ class _Base(unittest.TestCase):
         return float(r["c"] or 0)
 
     def sin_turno(self):
-        """Los borrados toman el turno de escritura al entrar (`main._foto_contable`,
+        """Los borrados toman el turno de escritura al entrar (`main._tomar_turno`,
         2026-10): en SQLite —producción— eso pone en fila a todos los que escriben,
         así que dos pedidos ya no pueden leer a la par y los reclamos no llegan a
-        competir. En Postgres el turno sólo traba la fila del usuario y una edición,
-        una venta o un depósito pasan igual: ahí los reclamos son la única
-        protección. Esto saca el turno para que sigan probados."""
-        def _foto_sin_turno(conn, uid):
-            import twr as _twr
-            return {"canon": _twr.netdep_canonico(conn, uid)}
-        p = mock.patch.object(main, "_foto_contable", side_effect=_foto_sin_turno)
+        competir. Esto saca SÓLO el turno, para que los reclamos sigan probados:
+          · editar/vender contra borrar es lo que pasaría en Postgres, donde el
+            turno traba sólo la fila del usuario y la otra acción no la toma;
+          · dos borrados a la vez, en cambio, en Postgres también se ponen en fila
+            (los dos toman la fila): ahí el reclamo es la segunda protección, la
+            que queda si alguna vez una puerta llega sin turno."""
+        p = mock.patch.object(main, "_tomar_turno", side_effect=lambda conn, uid: None)
         p.start()
         self.addCleanup(p.stop)
 
@@ -255,8 +255,9 @@ class BorrarDepositoManualDelMes(_Base):
                                msg="el doble click devolvió el depósito dos veces")
 
     def test_sin_turno_el_reclamo_frena_el_segundo_borrado(self):
-        """Como en Postgres: sin el turno los dos leen 500, y el reclamo del
-        segundo (que repite lo leído en el WHERE) no toca la fila: 409, sin plata.
+        """Sin el turno (la segunda protección, ver `sin_turno`): los dos leen 500,
+        y el reclamo del segundo (que repite lo leído en el WHERE) no toca la fila:
+        409, sin plata.
         Con un retiro en el mismo mes, para que el renglón del mes SOBREVIVA al
         borrado: si queda todo en cero el recálculo lo elimina y el segundo pedido
         no lo encuentra con o sin reclamo (el test no distinguiría)."""
@@ -434,7 +435,12 @@ class DosAccionesDistintasSobreLoMismo(_Base):
 class DosAccionesDistintasConElTurno(_Base):
     """Las mismas dos acciones a la vez, como en producción (SQLite, con el turno que
     el borrado toma al entrar). No se fuerza un orden: el que entra primero termina
-    y el otro escribe después. Se exige el invariante, como arriba."""
+    y el otro escribe después. Se exige el invariante, como arriba.
+
+    ⚠️ ES UN TEST DE HUMO: que con el turno nada se trabe ni dé 500 y el saldo
+    cierre. No prueba ni el turno ni los reclamos (sin forzar el orden, casi siempre
+    pasa con cualquiera de los dos): ésos los prueban la clase de arriba y
+    `test_la_foto_de_antes_ve_lo_que_otro_estaba_escribiendo`."""
 
     def _a_la_vez(self, primero, segundo):
         hechos = iter([primero, segundo])
