@@ -109,12 +109,17 @@ class CashAutodepositTest(unittest.TestCase):
         self.assertAlmostEqual(self._global_deposits(), 100.0, places=2)
 
     def test_cash_position_itself_not_affected(self):
-        # Agregar una posición de CASH (is_cash) no debe disparar auto-deposit.
+        # Una fila de CASH no se carga como posición (2026-10-07). Antes entraba con
+        # su saldo y SIN aporte —500 que aparecían como ganancia— y este test sólo
+        # cuidaba que no disparara un autodepósito. Ahora se rechaza: el efectivo
+        # entra con Depositar, que sí lo anota como aporte.
         self._broker("Binance", "USDT")
         p = main.PositionIn(broker="Binance", asset="USDT", is_cash=True, invested=500.0,
                             entry_date="2026-01-15")
-        main.create_position(p, self.uid)
-        self.assertAlmostEqual(self._cash("Binance"), 500.0, places=2)
+        with self.assertRaises(main.HTTPException) as ctx:
+            main.create_position(p, self.uid)
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertAlmostEqual(self._cash("Binance"), 0.0, places=2)
         self.assertAlmostEqual(self._global_deposits(), 0.0, places=2)
 
     def test_plazo_fijo_funding_no_cash_floors_at_zero(self):

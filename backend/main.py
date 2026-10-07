@@ -3008,6 +3008,25 @@ def init_db():
         except Exception as ex:
             log.warning("no se pudieron renombrar las notas de compras por chat: %s", ex)
 
+        # Cajas de brokers en DÓLARES que se llaman 'USDT'. Hasta 2026-10-07 el
+        # importador tenía su propia copia de "sumar al saldo" y creaba 'USDT' para
+        # todo lo que no fuera pesos: el efectivo de un Schwab importado se veía como
+        # Tether (en la base de prod del 2026-08-16: 35 cajas, ninguna de un exchange).
+        # Desde la puerta única (efectivo.py) ya no se crean; acá se renombran las que
+        # quedaron, con la misma regla (`asset_de_caja`). Sólo cambia el rótulo: la
+        # valuación mira la moneda del broker. En cada boot, como el de arriba:
+        # después de la primera vez no encuentra nada.
+        try:
+            n = conn.execute(
+                "UPDATE positions SET asset=? WHERE is_cash=1 AND asset='USDT' "
+                "AND EXISTS (SELECT 1 FROM brokers b WHERE b.user_id=positions.user_id "
+                "AND b.name=positions.broker AND b.currency='USD')",
+                (_efectivo.asset_de_caja('USD'),)).rowcount or 0
+            if n:
+                log.info("cajas de brokers en dólares renombradas de USDT a USD: %d", n)
+        except Exception as ex:
+            log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
+
         conn.commit()
 
 
@@ -9844,11 +9863,26 @@ def _manual_position_cost(invested, buy_price, quantity, commissions) -> float:
     return (cost or 0) + (commissions or 0)
 
 
+# El saldo de efectivo (la fila is_cash=1) se mueve SÓLO por la puerta del efectivo
+# (efectivo.py): Depositar/Retirar, conversiones, compras, ventas, cobros. Por las
+# rutas de las posiciones comunes (alta, edición, borrado) se escribía el número
+# sin anotar nada en el capital aportado: corregir el saldo de 1.000 a 5.000 desde
+# "Editar posición" aparecía como 4.000 de GANANCIA que no existe (verificado
+# 2026-10-07). Se rechaza en el servidor, no sólo se esconde en la pantalla.
+_EFECTIVO_NO_SE_EDITA = (
+    "El saldo del efectivo se cambia con Depositar o Retirar: así queda anotado "
+    "como aporte o retiro y no aparece como una ganancia o una pérdida que no existe.")
+_EFECTIVO_NO_SE_BORRA = (
+    "El efectivo no se borra: para sacar la plata del broker usá Retirar.")
+
+
 def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None):
     """Cuerpo del alta manual de posición (insert + cash debit), extraído para
     reusarlo desde la operación grupal del Plan Asesor. NO abre transacción ni
     conexión: el caller decide el alcance del `with conn` (una posición suelta
     o un lote de N clientes). Devuelve la row insertada."""
+    if p.is_cash:
+        raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
     # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
     # una posición dada de alta a las 22:00 nacía fechada mañana.
     entry_date = p.entry_date or _iso_today()
@@ -10226,6 +10260,12 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
     # en silencio un tipo de cambio correcto (basta con que el input rechace la
     # coma decimal y mande null). Para setearlo hay que mandar un valor > 0.
     try:
+        # Ni editar una fila de efectivo, ni convertir un lote en efectivo (ver
+        # _EFECTIVO_NO_SE_EDITA).
+        _actual = conn.execute(
+            "SELECT is_cash FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+        if p.is_cash or (_actual and _actual["is_cash"]):
+            raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
         if (p.tc_compra is None and not p.is_cash
                 and (p.currency or "").upper() == "ARS" and p.entry_date):
             # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
@@ -10281,6 +10321,14 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
     """
     with db_abierta() as conn:
         try:
+            # La fila de efectivo no es una tenencia: borrarla tiraba la plata sin
+            # anotar un retiro. Antes caía en los caminos de abajo y respondía un
+            # error que no correspondía ("la cargaste a mano antes de…" o "no
+            # encontrada"); ahora dice qué hacer.
+            _fila = conn.execute(
+                "SELECT is_cash FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+            if _fila and _fila["is_cash"]:
+                raise HTTPException(400, _EFECTIVO_NO_SE_BORRA)
             link = conn.execute(
                 "SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
             ).fetchone()
