@@ -30,7 +30,7 @@ const tabla = props => renderToStaticMarkup(
     <TradesTable
       ops={[A, B]} filteredOps={[A, B]} pagedOps={[A, B]} groups={[]} grouped={false} groupBy="none"
       histMoney={histMoney} expandedGroups={new Set()} onToggleGroup={() => {}}
-      onEdit={() => {}} onDelete={() => {}} onDeleteGroup={() => {}} busyDel={{}}
+      onEdit={() => {}} onDelete={() => {}} onDeleteGroup={() => {}}
       onAdd={() => {}} page={1} totalPages={1} onPage={() => {}}
       {...props}
     />
@@ -86,7 +86,7 @@ const tablaMov = props => renderToStaticMarkup(
     <MovementsTable
       movements={[M1, M2]} filtered={[M1, M2]} pageRows={[M1, M2]} groups={[]} grouped={false} groupBy="none"
       histMoney={histMoney} currency="USD" expandedGroups={new Set()} onToggleGroup={() => {}}
-      onDelete={() => {}} onDeleteGroup={() => {}} deletingId={null} busyGroup={{}}
+      onDelete={() => {}} onDeleteGroup={() => {}}
       page={1} totalPages={1} onPage={() => {}}
       {...props}
     />
@@ -109,7 +109,7 @@ describe('todos los movimientos: el recién agregado destella', () => {
   })
   it('celular: sólo la tarjeta nueva', () => {
     const html = renderToStaticMarkup(
-      <MemoryRouter><MovementsFeed groups={[{ key: 'd', label: 'Hoy', rows: [M1, M2] }]} histMoney={histMoney} onDelete={() => {}} deletingId={null} nuevas={new Set(['m2'])} /></MemoryRouter>,
+      <MemoryRouter><MovementsFeed groups={[{ key: 'd', label: 'Hoy', rows: [M1, M2] }]} histMoney={histMoney} onDelete={() => {}} nuevas={new Set(['m2'])} /></MemoryRouter>,
     )
     expect(cuantas(html)).toBe(1)
   })

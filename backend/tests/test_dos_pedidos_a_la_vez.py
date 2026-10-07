@@ -34,6 +34,13 @@ import main
 from fastapi.testclient import TestClient
 
 
+# La lectura del saldo de efectivo (efectivo.caja). La puerta del efectivo toma el
+# saldo ANTES de leerlo, así que con el arreglo dos pedidos no pueden juntarse acá:
+# el segundo espera al primero, la espera del cruce se vence y el pedido sigue. Si
+# alguien saca esa toma, se juntan y el test lo caza por el resultado.
+LEE_CAJA = "FROM positions WHERE user_id=? AND broker=? AND is_cash=1 ORDER BY id LIMIT 1"
+
+
 # ── la herramienta: forzar que dos pedidos lean antes de que nadie escriba ────
 
 class _Leido:
@@ -426,9 +433,13 @@ class ConfirmarYDeshacerUnaImportacion(_Base):
         como fila con problema). Ahora el reclamo abre la transacción al empezar y
         el otro espera su turno. Medido sin el arreglo: falla 10 de 10."""
         sid = self._preview()
-        lee_caja = "SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1"
+        # La primera lectura de la fila (el broker del depósito), después de su
+        # SAVEPOINT y antes de su primera escritura. Hasta 2026-10-07 era la del
+        # saldo; ahora la puerta del efectivo toma el saldo antes de leerlo, así
+        # que esa lectura ya no queda antes de ninguna escritura.
+        lee_broker = "SELECT * FROM brokers WHERE user_id=? AND name=?"
         escribio = threading.Event()
-        cruce = self.cruzar(lee_caja, y_despues={lee_caja: escribio})
+        cruce = self.cruzar(lee_broker, y_despues={lee_broker: escribio})
 
         def otro():
             try:
@@ -464,12 +475,13 @@ class ConciliarElSaldo(_Base):
 
     def test_doble_click_anota_la_diferencia_en_el_capital_UNA_vez(self):
         self.usuario()
-        cruce = self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1")
+        self.cruzar(LEE_CAJA)
         rs = self.dos_a_la_vez(lambda: self.client.post(
             "/api/brokers/reconcile-cash", headers=self.h,
             json={"broker_name": "Schwab", "target_cash": 1500}))
-        self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el choque")
         self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
+        self.assertEqual(sum(1 for x in rs if x.json().get("no_change")), 1,
+                         "el segundo pedido tenía que encontrar el saldo ya ajustado")
         self.assertAlmostEqual(self.cash(), 1500, places=2)
         conn = main.get_db()
         dep = conn.execute("SELECT SUM(COALESCE(manual_deposits,0)) d FROM monthly_entries "
@@ -519,7 +531,7 @@ class DepositosYRetirosManuales(_Base):
 
     def test_dos_depositos_a_la_vez_cuentan_los_dos(self):
         self.usuario()
-        self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1")
+        self.cruzar(LEE_CAJA)
         hechos = iter([300, 200])
         candado = threading.Lock()
 
@@ -533,7 +545,7 @@ class DepositosYRetirosManuales(_Base):
 
     def test_dos_retiros_que_juntos_no_alcanzan_rebota_uno(self):
         self.usuario()
-        self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1")
+        self.cruzar(LEE_CAJA)
         rs = self.dos_a_la_vez(self._flujo("withdraw", 700))
         self.assertEqual(sorted(x.status_code for x in rs), [200, 400], [x.text for x in rs])
         self.assertAlmostEqual(self.cash(), 300, places=2)
@@ -549,12 +561,146 @@ class ComprarDolaresDentroDelBroker(_Base):
         # La primera, sola: crea la subcuenta en dólares (eso ya es una escritura).
         r = self.client.post("/api/conversions", headers=self.h, json=compra)
         self.assertEqual(r.status_code, 200, r.text)
-        self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1")
+        self.cruzar(LEE_CAJA)
         rs = self.dos_a_la_vez(lambda: self.client.post("/api/conversions", headers=self.h,
                                                         json=compra))
         self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
         self.assertAlmostEqual(self.cash("Balanz"), 1_700_000, places=2,
                                msg="una de las compras no descontó los pesos")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class PrimerDepositoSinCaja(_Base):
+    """El broker todavía no tiene fila de efectivo: la crea el primer movimiento.
+    Leído sin tomar, dos primeros movimientos a la vez veían "no hay caja" y la
+    creaban los dos — el broker quedaba con dos filas de efectivo, y como todos
+    leen "la primera", la plata de la otra no la movía nadie más."""
+
+    def test_dos_primeros_depositos_a_la_vez_crean_UNA_caja(self):
+        self.usuario([("Schwab", "USD", None)])
+        self.cruzar(LEE_CAJA)
+        hechos = iter([300, 200])
+        candado = threading.Lock()
+
+        def depositar():
+            with candado:
+                monto = next(hechos)
+            return self.client.post("/api/cash/flow", headers=self.h, json={
+                "broker_name": "Schwab", "direction": "deposit", "amount": monto})
+        rs = self.dos_a_la_vez(depositar)
+        self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
+        conn = main.get_db()
+        filas = conn.execute("SELECT asset, invested FROM positions WHERE user_id=? "
+                             "AND broker='Schwab' AND is_cash=1", (self.uid,)).fetchall()
+        conn.close()
+        self.assertEqual(len(filas), 1, f"quedaron dos cajas: {[dict(f) for f in filas]}")
+        self.assertEqual(filas[0]["asset"], "USD")
+        self.assertAlmostEqual(float(filas[0]["invested"]), 500, places=2)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class AltaDePlazoFijoConAutodeposito(_Base):
+    """Un alta a mano nunca deja el efectivo en rojo: si no alcanza, se autodeposita
+    el faltante (`_autodeposit_if_overdraw`). Esa decisión sale del saldo; leído sin
+    tomar, dos altas a la vez veían el mismo saldo y ninguna autodepositaba lo que
+    la otra ya había usado."""
+
+    def test_dos_plazos_fijos_a_la_vez_no_dejan_el_efectivo_en_rojo(self):
+        self.usuario([("Schwab", "USD", 1000.0)])
+        self.cruzar(LEE_CAJA)
+        alta = {"banco": "Galicia", "capital": 1000, "moneda": "USD", "tasa": 0.05,
+                "fecha_inicio": main._iso_today(), "plazo_dias": 30,
+                "source_broker": "Schwab"}
+        rs = self.dos_a_la_vez(lambda: self.client.post("/api/plazos-fijos",
+                                                        headers=self.h, json=alta))
+        self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
+        self.assertAlmostEqual(self.cash(), 0, places=2,
+                               msg="el efectivo quedó en rojo: ninguna de las dos altas "
+                                   "autodepositó lo que la otra ya había usado")
+        conn = main.get_db()
+        dep = conn.execute("SELECT SUM(COALESCE(manual_deposits,0)) d FROM monthly_entries "
+                           "WHERE user_id=? AND broker='Schwab'", (self.uid,)).fetchone()["d"]
+        conn.close()
+        self.assertAlmostEqual(float(dep or 0), 1000, places=2,
+                               msg="el faltante no quedó anotado como capital aportado")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class AmortizarUnBono(_Base):
+    """La amortización descuenta nominales de los lotes escribiendo la cantidad
+    como un número calculado con lo leído. Leídos sin tomar, dos cobros a la vez
+    descontaban sobre la misma foto: el segundo pisaba al primero y un descuento
+    se perdía, con su plata acreditada igual."""
+
+    def test_dos_amortizaciones_a_la_vez_descuentan_las_dos(self):
+        self.usuario([("Schwab", "USD", 0.0)])
+        conn = main.get_db()
+        conn.execute("""INSERT INTO positions (user_id, broker, asset, is_cash, quantity,
+                          buy_price, invested, entry_date) VALUES (?, 'Schwab', 'AL30', 0,
+                          1000, 0.6, 600, '2025-01-02')""", (self.uid,))
+        conn.commit()
+        conn.close()
+        cruce = self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND asset=? "
+                            "AND is_cash=0 AND quantity > 0")
+        cobro = {"broker": "Schwab", "asset": "AL30", "flow_type": "amortization",
+                 "amount": 100, "date": main._iso_today(), "decrement_quantity": True}
+        rs = self.dos_a_la_vez(lambda: self.client.post("/api/bonds/cashflow",
+                                                        headers=self.h, json=cobro))
+        self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
+        self.assertFalse(cruce.se_juntaron, "los dos cobros leyeron los lotes a la vez")
+        conn = main.get_db()
+        qty = conn.execute("SELECT SUM(quantity) q FROM positions WHERE user_id=? AND "
+                           "asset='AL30' AND is_cash=0", (self.uid,)).fetchone()["q"]
+        conn.close()
+        self.assertAlmostEqual(float(qty or 0), 800, places=4,
+                               msg="una de las dos amortizaciones no descontó sus nominales")
+        self.assertAlmostEqual(self.cash(), 200, places=2)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class VenderDolaresMientrasSeCompran(_Base):
+    """Vender dólares calcula la ganancia con el TC PROMEDIO de los que había. Leído
+    sin tomar el saldo, una compra simultánea cambiaba el promedio entre la lectura
+    y el débito: la venta usaba un costo viejo, y el costo de lo vendido más el de
+    lo que quedó ya no sumaba lo que se pagó por los dólares."""
+
+    def test_el_costo_de_lo_vendido_y_lo_que_queda_suma_lo_pagado(self):
+        self.usuario([("Balanz", "ARS", 2_000_000.0)])
+        r = self.client.post("/api/conversions", headers=self.h, json={
+            "from_broker": "Balanz", "direction": "ars_to_usd",
+            "ars_amount": 100_000, "usd_amount": 100, "tc": 1000})
+        self.assertEqual(r.status_code, 200, r.text)
+        sub = r.json()["to_broker"]
+        compra = {"from_broker": "Balanz", "direction": "ars_to_usd",
+                  "ars_amount": 200_000, "usd_amount": 100, "tc": 2000}
+        venta = {"from_broker": sub, "direction": "usd_to_ars",
+                 "ars_amount": 200_000, "usd_amount": 100, "tc": 2000}
+        self.cruzar(LEE_CAJA)
+        pedidos = iter([venta, compra])
+        candado = threading.Lock()
+
+        def convertir():
+            with candado:
+                cuerpo = next(pedidos)
+            return self.client.post("/api/conversions", headers=self.h, json=cuerpo)
+        rs = self.dos_a_la_vez(convertir)
+        self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
+
+        conn = main.get_db()
+        vendida = conn.execute("SELECT entry_price FROM operations WHERE user_id=? AND "
+                               "op_type LIKE 'CONVERSION %USDT→ARS'", (self.uid,)).fetchone()
+        caja = conn.execute("SELECT invested, tc_compra FROM positions WHERE user_id=? "
+                            "AND broker=? AND is_cash=1", (self.uid, sub)).fetchone()
+        conn.close()
+        self.assertAlmostEqual(float(caja["invested"]), 100, places=4)
+        pagado = 100_000 + 200_000
+        costo_vendido = float(vendida["entry_price"]) * 100
+        costo_que_queda = float(caja["invested"]) * float(caja["tc_compra"])
+        self.assertAlmostEqual(costo_vendido + costo_que_queda, pagado, places=2,
+                               msg=f"vendido a costo {costo_vendido:,.0f} + quedan a "
+                                   f"{costo_que_queda:,.0f} ≠ pagado {pagado:,.0f}: la venta "
+                                   f"usó un promedio que ya no era")
+        self.assertAlmostEqual(self.cash("Balanz"), 1_900_000, places=2)
 
 
 if __name__ == "__main__":

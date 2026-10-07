@@ -13,7 +13,11 @@ Medido con esta misma cuenta de laboratorio:
   · Recorrido normal: la copia y `twr.netdep_canonico` dan lo mismo en los 3
     meses con foto. Los meses sin depósitos ni retiros (abril, mayo, junio y
     agosto) no tienen fila en la contabilidad y el reconstructor tampoco les
-    arma foto, así que el `get(mes, 0.0)` de la copia no se alcanzaba nunca.
+    armaba foto, así que el `get(mes, 0.0)` de la copia no se alcanzaba nunca.
+    (Desde 2026-10-07 esos meses SÍ tienen foto —sin ella la curva se partía,
+    ver test_reconstruccion_meses_sin_fila.py— y su aportado es el canónico,
+    que arrastra el último valor: es la razón por la que la copia no podía
+    volver.)
   · Si la persona borra el depósito de julio MIENTRAS la reconstrucción corre,
     la fila de julio desaparece de la contabilidad entre las dos lecturas y la
     copia estampaba aportado **0** en la foto de julio: el servidor quedaba con
@@ -54,8 +58,10 @@ import scripts.backfill_historical_mtm as bf  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
-# AAPL a fin de cada mes de 2025: marzo 200, julio 240, septiembre 260.
-PRECIOS = {f"2025-{m:02d}": 200.0 + 10 * (m - 3) for m in range(1, 13)}
+# AAPL a fin de cada mes: marzo de 2025 200, julio 240, septiembre 260, y sigue
+# subiendo 10 por mes (así todo mes cerrado, también los de 2026, tiene precio).
+PRECIOS = {f"{2025 + (n - 1) // 12}-{(n - 1) % 12 + 1:02d}": 200.0 + 10 * (n - 3)
+           for n in range(1, 49)}
 # Lo que el Dashboard dibuja (frontend/src/utils/evolution.js, ACEPTA_LINEA).
 ACEPTA_LINEA = ("medicion", "reconstruido", "intradia")
 
@@ -158,6 +164,29 @@ class _Cuenta(unittest.TestCase):
         finally:
             conn.close()
 
+    def _invariantes(self, fotos):
+        """Lo que vale para TODA foto reconstruida, también las de 2026 que no se
+        escriben a mano: (a) su aportado es el canónico de su fecha, el de la
+        contabilidad que quedó, y nunca 0; (b) ninguna vale 0; y no falta ningún
+        mes entre la primera y la última cerrada (sin eso la curva se parte)."""
+        canon = self._canon()
+        for f in fotos:
+            self.assertEqual(f["net_deposited"], canon(f["date"]), f["date"])
+            self.assertGreater(f["net_deposited"], 0, f["date"])
+            self.assertGreater(f["total_value"], 0, f["date"])
+        meses = [f["date"][:7] for f in fotos]
+        y, m = int(meses[0][:4]), int(meses[0][5:])
+        seguidos = []
+        while f"{y}-{m:02d}" <= meses[-1]:
+            seguidos.append(f"{y}-{m:02d}")
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+        self.assertEqual(meses, seguidos)
+
+    @staticmethod
+    def _de_2025(fotos):
+        return [(f["date"], f["total_value"], f["net_deposited"])
+                for f in fotos if f["date"] < "2026"]
+
 
 class AportadoDeLaFotoReconstruida(_Cuenta):
 
@@ -171,27 +200,26 @@ class AportadoDeLaFotoReconstruida(_Cuenta):
             "2025-09-15,RETIRO,IBKR,,,,1000,,,0,USD,",
         )
         fotos = self._fotos()
-        canon = self._canon()
-        self.assertEqual([f["clase"] for f in fotos], ["reconstruido"] * 3)
-        # Lo que la persona puso a cada fin de mes, escrito a mano…
-        self.assertEqual([(f["date"], f["net_deposited"]) for f in fotos],
-                         [("2025-03-31", 10000.0), ("2025-07-31", 15000.0),
-                          ("2025-09-30", 14000.0)])
+        self.assertEqual({f["clase"] for f in fotos}, {"reconstruido"})
         # …y es exactamente la cuenta canónica, la del cron y la curva.
-        for f in fotos:
-            self.assertEqual(f["net_deposited"], canon(f["date"]), f["date"])
-
-        # Los meses que la contabilidad saltea NO reciben foto (así no hay dónde
-        # caer en el `0` de la copia vieja). Si alguna vez se reconstruyen, su
-        # aportado es el que se ARRASTRA del último mes, no cero:
-        self.assertEqual(canon("2025-05-31"), 10000.0)
-        self.assertEqual(canon("2025-08-31"), 15000.0)
+        self._invariantes(fotos)
+        # Lo que la persona puso a cada fin de mes, escrito a mano. Abril, mayo,
+        # junio y agosto no tienen fila en la contabilidad: su aportado es el que
+        # se ARRASTRA del último mes, no cero (la copia vieja estampaba 0).
+        # Efectivo 6.000 hasta junio, 11.000 en julio, 9.750 tras la compra de
+        # agosto y 8.750 desde el retiro; 20 AAPL hasta julio y 25 desde agosto.
+        self.assertEqual(self._de_2025(fotos), [
+            ("2025-03-31", 10000.0, 10000.0), ("2025-04-30", 10200.0, 10000.0),
+            ("2025-05-31", 10400.0, 10000.0), ("2025-06-30", 10600.0, 10000.0),
+            ("2025-07-31", 15800.0, 15000.0), ("2025-08-31", 16000.0, 15000.0),
+            ("2025-09-30", 15250.0, 14000.0), ("2025-10-31", 15500.0, 14000.0),
+            ("2025-11-30", 15750.0, 14000.0), ("2025-12-31", 16000.0, 14000.0)])
 
     def test_borrar_un_deposito_mientras_reconstruye_deja_la_contabilidad_final(self):
-        # Julio tiene DOS depósitos: borrar uno deja la fila de julio viva. Consultas
-        # de precios: marzo (1), julio (2), septiembre (3). El borrado llega en la 3,
-        # con julio ya valuado con los US$ 5.000 adentro.
-        self._borrar = (3, "DEPOSIT", "2025-07-10")
+        # Julio tiene DOS depósitos: borrar uno deja la fila de julio viva. Una
+        # consulta de precios por mes desde marzo: julio es la 5. El borrado
+        # llega en la 6, con julio ya valuado con los US$ 5.000 adentro.
+        self._borrar = (6, "DEPOSIT", "2025-07-10")
         self._importar(
             "2025-03-03,DEPOSITO,IBKR,,,,10000,,,0,USD,",
             "2025-03-04,COMPRA,IBKR,AAPL,20,200,4000,,,0,USD,",
@@ -200,19 +228,23 @@ class AportadoDeLaFotoReconstruida(_Cuenta):
             "2025-09-15,RETIRO,IBKR,,,,1000,,,0,USD,",
         )
         fotos = self._fotos()
-        canon = self._canon()
+        self._invariantes(fotos)
         # Cada foto describe la contabilidad DE DESPUÉS del borrado: cash + 20 AAPL.
         #   marzo:      6.000 + 20×200 = 10.000   aportado 10.000
         #   julio:      6.300 + 20×240 = 11.100   aportado 10.300
         #   septiembre: 5.300 + 20×260 = 10.500   aportado  9.300
-        self.assertEqual([(f["date"], f["total_value"], f["net_deposited"]) for f in fotos],
-                         [("2025-03-31", 10000.0, 10000.0), ("2025-07-31", 11100.0, 10300.0),
-                          ("2025-09-30", 10500.0, 9300.0)])
-        for f in fotos:
-            self.assertEqual(f["net_deposited"], canon(f["date"]), f["date"])
-        # Lo que ganó de verdad: 20 AAPL de 200 a 240 y de 240 a 260. Antes se
-        # publicaba +5.800 y −4.600 (valor de antes del borrado, aportado de después).
-        self.assertEqual([r[2] for r in self._resultados(fotos)], [800.0, 400.0])
+        self.assertEqual(self._de_2025(fotos), [
+            ("2025-03-31", 10000.0, 10000.0), ("2025-04-30", 10200.0, 10000.0),
+            ("2025-05-31", 10400.0, 10000.0), ("2025-06-30", 10600.0, 10000.0),
+            ("2025-07-31", 11100.0, 10300.0), ("2025-08-31", 11300.0, 10300.0),
+            ("2025-09-30", 10500.0, 9300.0), ("2025-10-31", 10700.0, 9300.0),
+            ("2025-11-30", 10900.0, 9300.0), ("2025-12-31", 11100.0, 9300.0)])
+        # (c) Lo que ganó de verdad: 20 AAPL que suben 10 por mes, +200 cada mes
+        # (de marzo a septiembre, +1.200). Antes se publicaba +5.800 y −4.600
+        # (valor de antes del borrado, aportado de después).
+        self.assertEqual({r[2] for r in self._resultados(fotos)}, {200.0})
+        self.assertEqual(sum(r[2] for r in self._resultados(fotos)
+                             if r[1] <= "2025-09-30"), 1200.0)
         # Y la base del libro del asesor (el mayor aportado de la historia) no
         # guarda el depósito borrado.
         conn = main.get_db()
@@ -231,22 +263,29 @@ class AportadoDeLaFotoReconstruida(_Cuenta):
             "2025-09-15,RETIRO,IBKR,,,,1000,,,0,USD,",
         )
         fotos = self._fotos()
-        canon = self._canon()
+        self._invariantes(fotos)
         # Ni foto que vale 0, ni aportado 0, ni la foto de julio con el depósito
-        # borrado adentro: julio queda como los meses que la cadena saltea.
-        self.assertEqual([(f["date"], f["total_value"], f["net_deposited"]) for f in fotos],
-                         [("2025-03-31", 10000.0, 10000.0), ("2025-09-30", 10200.0, 9000.0)])
-        for f in fotos:
-            self.assertEqual(f["net_deposited"], canon(f["date"]), f["date"])
-        self.assertEqual([r[2] for r in self._resultados(fotos)], [1200.0])   # 20 × (260 − 200)
+        # borrado adentro: julio queda como los meses que la cadena saltea, que
+        # arrastran la contabilidad de marzo (efectivo 6.000, aportado 10.000).
+        self.assertEqual(self._de_2025(fotos), [
+            ("2025-03-31", 10000.0, 10000.0), ("2025-04-30", 10200.0, 10000.0),
+            ("2025-05-31", 10400.0, 10000.0), ("2025-06-30", 10600.0, 10000.0),
+            ("2025-07-31", 10800.0, 10000.0), ("2025-08-31", 11000.0, 10000.0),
+            ("2025-09-30", 10200.0, 9000.0), ("2025-10-31", 10400.0, 9000.0),
+            ("2025-11-30", 10600.0, 9000.0), ("2025-12-31", 10800.0, 9000.0)])
+        # (c) +200 por mes; de marzo a septiembre, 20 × (260 − 200) = 1.200.
+        self.assertEqual({r[2] for r in self._resultados(fotos)}, {200.0})
+        self.assertEqual(sum(r[2] for r in self._resultados(fotos)
+                             if r[1] <= "2025-09-30"), 1200.0)
 
     def test_el_mes_desaparece_antes_de_valuarlo(self):
-        # Antes: foto de julio con valor 0 y aportado 0.
+        # Antes: foto de julio con valor 0 y aportado 0. (Una consulta de precios
+        # por mes desde marzo: julio es la 5; la 2 es abril.)
         self._borrar_el_unico_deposito_de_julio_en(2)
 
     def test_el_mes_desaparece_despues_de_valuarlo(self):
         # Antes: foto de julio con el valor de antes del borrado y aportado 0.
-        self._borrar_el_unico_deposito_de_julio_en(3)
+        self._borrar_el_unico_deposito_de_julio_en(6)
 
     def test_si_la_contabilidad_no_para_de_cambiar_no_escribe_nada(self):
         """Si cambia en cada pasada, no hay una contabilidad que describir: la

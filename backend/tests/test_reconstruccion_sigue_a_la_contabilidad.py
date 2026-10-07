@@ -68,8 +68,8 @@ def esperado(movs, fecha):
 
     ⚠️ Las pruebas comparan CADA foto contra esta cuenta y piden que estén los
     meses que importan, en vez de fijar la lista entera de fechas: qué meses
-    reciben foto es decisión de la reconstrucción (otra rama arma también los
-    meses sin movimientos), y lo que este archivo vigila es que ninguna foto
+    reciben foto es decisión de la reconstrucción (que desde `042d5507` arma
+    también los meses sin movimientos), y lo que este archivo vigila es que ninguna foto
     describa una contabilidad que ya no existe."""
     efectivo = sum(c for f, c, _ in movs if f <= fecha)
     aportado = sum(a for f, _, a in movs if f <= fecha)

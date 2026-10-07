@@ -18,6 +18,27 @@ from importing.persister import _backfill_snapshots_from_monthly
 
 
 
+def _precios(**por_mes):
+    """Yahoo de mentira con un cierre para CADA mes de 2024-08 a 2027-12, como el
+    real. La reconstrucción cubre todos los meses cerrados desde el primero de la
+    contabilidad, no sólo los que tienen fila: después de octubre la persona sigue
+    con sus 10 AAPL. Los meses que no se nombran repiten el cierre de octubre."""
+    out, y, m = {}, 2024, 8
+    while (y, m) <= (2027, 12):
+        out[f"{y}-{m:02d}"] = 275.0
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    out.update({k.replace("_", "-")[1:]: v for k, v in por_mes.items()})
+    return out
+
+
+PRECIOS = _precios(_2024_08=250.0, _2024_09=300.0, _2024_10=275.0)
+
+
+def _meses_cerrados_desde_agosto_2024(hoy):
+    """Cuántos meses van de agosto de 2024 al último cerrado antes de `hoy`."""
+    return (hoy.year - 2024) * 12 + (hoy.month - 8)
+
+
 def _todos(s):
     """Los puntos ACEPTADOS —medibles y no medibles— juntos y en orden.
 
@@ -85,34 +106,37 @@ class ReconstruccionE2ETest(unittest.TestCase):
 
         # ── PASO 2: la reconstrucción a precio de mercado histórico ────────────
         bf._HIST_CACHE.clear()
-        bf._fetch_monthly_close = lambda pk, si: {
-            "2024-08": 250.0, "2024-09": 300.0, "2024-10": 275.0}
+        bf._fetch_monthly_close = lambda pk, si: dict(PRECIOS)
         res = bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         self.conn.commit()
-        self.assertEqual(res["snapshots_escritos"], 3)
+        # Agosto de 2024 a mayo de 2026: las 3 fabricadas y los 19 meses de
+        # después, que la contabilidad no tiene porque no hubo flujos.
+        n = _meses_cerrados_desde_agosto_2024(date(2026, 6, 26))
+        self.assertEqual(n, 22)
+        self.assertEqual(res["snapshots_escritos"], n)
 
         filas = self.conn.execute(
             "SELECT date, total_value, source, mtm_coverage FROM snapshots "
             "WHERE user_id=? ORDER BY date", (self.uid,)).fetchall()
         # Pisó las fabricadas (el viejo ON CONFLICT DO NOTHING no lo hacía) y las
         # etiquetó con su propio source (no 'import').
-        self.assertEqual([r["source"] for r in filas], ["mtm_backfill"] * 3)
-        self.assertEqual([r["total_value"] for r in filas], [2500.0, 3000.0, 2750.0])
-        self.assertEqual([r["mtm_coverage"] for r in filas], [1.0] * 3)
+        self.assertEqual([r["source"] for r in filas], ["mtm_backfill"] * n)
+        self.assertEqual([r["total_value"] for r in filas],
+                         [2500.0, 3000.0, 2750.0] + [2750.0] * (n - 3))
+        self.assertEqual([r["mtm_coverage"] for r in filas], [1.0] * n)
 
         # ── PASO 3: ahora SÍ hay historia medible ─────────────────────────────
         cv = twr.curva_indexada(self.conn, self.uid)
-        self.assertEqual(len(_todos(cv)), 3)
+        self.assertEqual(len(_todos(cv)), n)
         self.assertEqual(cv["medido_desde"], "2024-08-31")
-        self.assertEqual(cv["por_clase"][twr.RECONSTRUIDO], 3)
+        self.assertEqual(cv["por_clase"][twr.RECONSTRUIDO], n)
         self.assertAlmostEqual(cv["twr"], 0.10, places=6)          # 2500 → 2750
         self.assertAlmostEqual(cv["drawdown_maximo"], -1 / 12, places=4)  # 3000 → 2750
         self.assertEqual(cv["contable"], [])       # ya no queda nada afuera
 
     def test_la_contabilidad_queda_intacta_y_sobrevive_al_repair(self):
         bf._HIST_CACHE.clear()
-        bf._fetch_monthly_close = lambda pk, si: {
-            "2024-08": 250.0, "2024-09": 300.0, "2024-10": 275.0}
+        bf._fetch_monthly_close = lambda pk, si: dict(PRECIOS)
         bf.backfill_user(self.conn, self.uid, date(2026, 6, 26))
         self.conn.commit()
         cf = [r["capital_final"] for r in self.conn.execute(
@@ -131,14 +155,16 @@ class ReconstruccionE2ETest(unittest.TestCase):
         """Hasta acá el reconstructor existía y no lo llamaba nadie más que
         POST /api/admin/backfill-mtm. Sin hook, el valor no llegaba nunca."""
         bf._HIST_CACHE.clear()
-        bf._fetch_monthly_close = lambda pk, si: {
-            "2024-08": 250.0, "2024-09": 300.0, "2024-10": 275.0}
+        bf._fetch_monthly_close = lambda pk, si: dict(PRECIOS)
         cf_antes = [r["capital_final"] for r in self.conn.execute(
             "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "
             "broker='global' ORDER BY year, month", (self.uid,))]
         r = main._reconstruir_mtm(self.uid)
         self.assertTrue(r["reconstruida"])
-        self.assertEqual(r["snapshots"], 3)
+        # El hilo usa el reloj de la app (UTC), igual que acá.
+        from datetime import datetime
+        self.assertEqual(r["snapshots"],
+                         _meses_cerrados_desde_agosto_2024(datetime.utcnow().date()))
         self.assertAlmostEqual(r["cobertura_media"], 1.0, places=3)
         cf_despues = [r2["capital_final"] for r2 in self.conn.execute(
             "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "

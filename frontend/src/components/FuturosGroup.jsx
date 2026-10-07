@@ -18,6 +18,7 @@ import { brokerCurrencyLabel } from '../utils/valuation'
 import { Plus, TrendingUp, TrendingDown, Trash2, X, ArrowLeft, Wallet } from 'lucide-react'
 import { api } from '../utils/api'
 import { useToast } from './Toast'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
 import { parseNum } from '../utils/format'
 
@@ -54,6 +55,8 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
   const [cargado, setCargado] = useState(false)
   const [formAbierto, setFormAbierto] = useState(false)
   const [cerrando, setCerrando] = useState(null)
+  // Borrado en curso, por posición: el tacho no tenía freno (ver hooks/useEnVuelo).
+  const borrando = useEnVuelo()
 
   async function cargar() {
     try {
@@ -70,12 +73,13 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
   }
   useEffect(() => { cargar() }, [reloadKey])
 
-  async function borrar(f) {
+  const borrar = (f) => borrando.correr(() => borrarFuturo(f), f.id)
+  async function borrarFuturo(f) {
     if (!confirm(`¿Borrar la posición ${f.symbol}? No mueve plata: una posición abierta nunca tocó tu efectivo.`)) return
     try {
       await api.delete(`/futures/${f.id}`)
       toast.push('Posición borrada')
-      cargar(); onChange?.()
+      await cargar(); onChange?.()
     } catch (ex) {
       toast.push(ex.message || 'No se pudo borrar', { type: 'error' })
     }
@@ -181,8 +185,8 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
                 className="text-[12px] px-2 py-1 rounded-sm border border-line text-ink-2 hover:text-ink-0 hover:border-line-2 transition-colors font-medium">
                 Cerrar
               </button>
-              <button onClick={() => borrar(f)} title="Borrar"
-                className="text-ink-3 hover:text-rendi-neg transition-colors">
+              <button onClick={() => borrar(f)} title="Borrar" disabled={borrando.activo(f.id)}
+                className="text-ink-3 hover:text-rendi-neg transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                 <Trash2 size={14} />
               </button>
             </div>
@@ -231,7 +235,10 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
     symbol: '', side: null, quantity: '', entry_price: '',
     leverage: '', margin_usd: '', opened_at: hoy(),
   })
-  const [guardando, setGuardando] = useState(false)
+  // Freno del doble click (ver hooks/useEnVuelo): el estado solo apagaba el
+  // botón en el dibujo siguiente; dos clicks del mismo turno pasaban los dos.
+  const enVuelo = useEnVuelo()
+  const guardando = enVuelo.activo()
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
@@ -242,12 +249,12 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
   const avanzar = () => setIdx(i => Math.min(i + 1, SEQ.length - 1))
   const volver = () => setIdx(i => Math.max(i - 1, 0))
 
-  async function guardar() {
+  const guardar = () => enVuelo.correr(guardarFuturo)
+  async function guardarFuturo() {
     if (!f.symbol.trim() || !f.quantity || !f.entry_price) {
       toast.push('Completá el par, la cantidad y el precio de entrada', { type: 'error' })
       return
     }
-    setGuardando(true)
     try {
       await api.post('/futures', {
         broker: f.broker, symbol: f.symbol.trim().toUpperCase(), side: f.side,
@@ -260,8 +267,6 @@ function FuturoFlow({ brokers, onClose, onSaved }) {
       onSaved()
     } catch (ex) {
       toast.push(ex.message || 'No se pudo guardar', { type: 'error' })
-    } finally {
-      setGuardando(false)
     }
   }
 
@@ -427,7 +432,10 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
   const [salida, setSalida] = useState(redondear(precio))
   const [comis, setComis] = useState('')
   const [fecha, setFecha] = useState(hoy())
-  const [cerrandoYa, setCerrandoYa] = useState(false)
+  // Freno del doble click (ver hooks/useEnVuelo): el estado solo apagaba el
+  // botón en el dibujo siguiente; dos clicks del mismo turno pasaban los dos.
+  const enVuelo = useEnVuelo()
+  const cerrandoYa = enVuelo.activo()
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
@@ -440,11 +448,11 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
     ? (parseNum(salida) - pos.entry_price) * pos.quantity * dir - (parseNum(comis) || 0)
     : null
 
-  async function cerrar() {
+  const cerrar = () => enVuelo.correr(cerrarFuturo)
+  async function cerrarFuturo() {
     if (salida === '' || !isFinite(parseNum(salida)) || parseNum(salida) <= 0) {
       toast.push('Poné el precio al que cerraste', { type: 'error' }); return
     }
-    setCerrandoYa(true)
     try {
       const r = await api.post(`/futures/${pos.id}/close`, {
         exit_price: parseNum(salida), closed_at: fecha, commissions: parseNum(comis) || 0,
@@ -453,8 +461,6 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
       onDone()
     } catch (ex) {
       toast.push(ex.message || 'No se pudo cerrar', { type: 'error' })
-    } finally {
-      setCerrandoYa(false)
     }
   }
 

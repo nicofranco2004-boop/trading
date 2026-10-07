@@ -4,11 +4,17 @@
 //   • reloadKey: cambia → refetch (cuando se agrega un PF desde afuera)
 //   • onAdd: abre el form de alta
 // Cada PF se valúa con computePf (devengado a hoy + valor + cuenta regresiva).
+//
+// Cobrar, retirar, renovar y borrar pasan por UN freno por plazo fijo
+// (hooks/useEnVuelo): mientras una de esas acciones viaja, los botones de ESE
+// plazo fijo quedan apagados. Antes nada lo impedía: un doble click en "Cobrar"
+// mandaba dos cobros, y "Cobrar en X" + "Retirar" podían salir juntos.
 import { useState, useEffect, Fragment } from 'react'
 import { Plus, Landmark, Trash2, Clock, RotateCcw } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
 import { pct } from '../utils/format'
 
@@ -19,7 +25,8 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   const toast = useToast()
   const [pfs, setPfs] = useState([])
   const [loaded, setLoaded] = useState(false)
-  const [cobrando, setCobrando] = useState(null)   // id del PF en proceso de cobro
+  const [cobrando, setCobrando] = useState(null)   // id del PF con el panel de cobro abierto
+  const enVuelo = useEnVuelo()                       // clave = pf.id (ver arriba)
 
   async function load() {
     try {
@@ -47,19 +54,23 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pfs])
 
-  async function del(pf) {
+  const del = (pf) => enVuelo.correr(() => borrar(pf), pf.id)
+  const renovar = (pf) => enVuelo.correr(() => renovarPf(pf), pf.id)
+  const cobrar = (pf, broker) => enVuelo.correr(() => cobrarPf(pf, broker), pf.id)
+
+  async function borrar(pf) {
     if (!confirm(`¿Eliminar el plazo fijo en ${pf.banco}? Esta acción no se puede deshacer.`)) return
-    try { await api.delete(`/plazos-fijos/${pf.id}`); load() }
+    try { await api.delete(`/plazos-fijos/${pf.id}`); await load() }
     catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
 
-  async function renovar(pf) {
+  async function renovarPf(pf) {
     if (!confirm(`¿Renovar el plazo fijo en ${pf.banco}? Arranca un período nuevo con capital + interés, mismo plazo y tasa.`)) return
-    try { await api.post(`/plazos-fijos/${pf.id}/renovar`); load() }
+    try { await api.post(`/plazos-fijos/${pf.id}/renovar`); await load() }
     catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
 
-  async function cobrar(pf, broker) {
+  async function cobrarPf(pf, broker) {
     if (!broker) {
       const monto = computePf(pf, todayStr()).valorHoy
       if (!confirm(`¿Retirar ${moneyOf(pf.moneda)(monto)}? La plata sale de tu cartera (no se trackea). El interés igual queda contabilizado como ganancia.`)) return
@@ -71,7 +82,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
         broker ? `Cobrado: ${moneyOf(pf.moneda)(res.monto)} acreditado en ${broker}.` : 'Plazo fijo cobrado y retirado.',
         { type: 'success' },
       )
-      load()
+      await load()
       if (broker) onChange && onChange()   // el cash del broker cambió → refrescar posiciones
     } catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
@@ -131,6 +142,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
               {pfs.map(pf => {
                 const v = computePf(pf, now)
                 const money = moneyOf(pf.moneda)
+                const ocupado = enVuelo.activo(pf.id)
                 return (
                   <Fragment key={pf.id}>
                     <tr className="border-b border-line/40 dark:border-line/30 hover:bg-bg-2 dark:hover:bg-bg-2/20">
@@ -157,17 +169,17 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
                       <td className="px-3 py-2">
                         {v.vencido ? (
                           <div className="flex items-center gap-1 justify-end">
-                            <button onClick={() => renovar(pf)} title="Renovar"
-                              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 transition">
+                            <button onClick={() => renovar(pf)} title="Renovar" disabled={ocupado}
+                              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-bg-2 hover:bg-bg-3 border border-line text-ink-1 transition disabled:opacity-50 disabled:cursor-not-allowed">
                               <RotateCcw size={11} /> Renovar
                             </button>
-                            <button onClick={() => setCobrando(cobrando === pf.id ? null : pf.id)}
-                              className="text-[11px] px-2 py-1 rounded bg-rendi-pos/15 text-rendi-pos hover:bg-rendi-pos/25 transition">
+                            <button onClick={() => setCobrando(cobrando === pf.id ? null : pf.id)} disabled={ocupado}
+                              className="text-[11px] px-2 py-1 rounded bg-rendi-pos/15 text-rendi-pos hover:bg-rendi-pos/25 transition disabled:opacity-50 disabled:cursor-not-allowed">
                               Cobrar
                             </button>
                           </div>
                         ) : (
-                          <button onClick={() => del(pf)} className="text-ink-3 hover:text-red-500 transition" title="Eliminar plazo fijo">
+                          <button onClick={() => del(pf)} disabled={ocupado} className="text-ink-3 hover:text-red-500 transition disabled:opacity-40 disabled:cursor-not-allowed" title="Eliminar plazo fijo">
                             <Trash2 size={13} />
                           </button>
                         )}
@@ -177,24 +189,26 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
                       <tr className="bg-bg-2/40">
                         <td colSpan={7} className="px-3 py-2.5">
                           <div className="flex items-center gap-2 flex-wrap text-xs">
-                            <span className="text-ink-2">Cobrás <span className="font-semibold text-ink-0">{money(v.valorHoy)}</span>.</span>
+                            <span className="text-ink-2" aria-live="polite">
+                              {ocupado ? 'Guardando…' : <>Cobrás <span className="font-semibold text-ink-0">{money(v.valorHoy)}</span>.</>}
+                            </span>
                             {matchingBrokers(pf).length > 0 && (
                               <>
                                 <span className="text-ink-3">Dejala como cash en:</span>
                                 {matchingBrokers(pf).map(b => (
-                                  <button key={b.id ?? b.name} onClick={() => cobrar(pf, b.name)}
-                                    className="px-2.5 py-1 rounded-md border border-line bg-bg-1 hover:border-rendi-accent/50 hover:bg-rendi-accent/5 text-ink-1 transition">
+                                  <button key={b.id ?? b.name} onClick={() => cobrar(pf, b.name)} disabled={ocupado}
+                                    className="px-2.5 py-1 rounded-md border border-line bg-bg-1 hover:border-rendi-accent/50 hover:bg-rendi-accent/5 text-ink-1 transition disabled:opacity-50 disabled:cursor-not-allowed">
                                     {b.name}
                                   </button>
                                 ))}
                                 <span className="text-ink-3">o</span>
                               </>
                             )}
-                            <button onClick={() => cobrar(pf, null)} title="La plata sale de tu cartera (la retirás a tu banco)"
-                              className="px-2.5 py-1 rounded-md border border-dashed border-line text-ink-2 hover:text-ink-0 transition">
+                            <button onClick={() => cobrar(pf, null)} disabled={ocupado} title="La plata sale de tu cartera (la retirás a tu banco)"
+                              className="px-2.5 py-1 rounded-md border border-dashed border-line text-ink-2 hover:text-ink-0 transition disabled:opacity-50 disabled:cursor-not-allowed">
                               Retirar
                             </button>
-                            <button onClick={() => setCobrando(null)} className="ml-auto text-ink-3 hover:text-ink-1">Cancelar</button>
+                            <button onClick={() => setCobrando(null)} disabled={ocupado} className="ml-auto text-ink-3 hover:text-ink-1 disabled:opacity-50">Cancelar</button>
                           </div>
                         </td>
                       </tr>

@@ -28,7 +28,7 @@ export default function TradesTable({
   nuevas = new Set(),
   ops, filteredOps, pagedOps, groups, grouped, groupBy,
   histMoney, expandedGroups, onToggleGroup,
-  onEdit, onDelete, onDeleteGroup, busyDel,
+  onEdit, onDelete, onDeleteGroup, borrando = () => false,
   onAdd, page, totalPages, onPage,
 }) {
   return (
@@ -72,7 +72,7 @@ export default function TradesTable({
             )}
             {/* Modo lista plana ('none') — la tabla de siempre, paginada. */}
             {!grouped && pagedOps.map(op => (
-              <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} deleting={!!busyDel[`op-${op.id}`]} />
+              <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} deleting={borrando(`op-${op.id}`)} />
             ))}
             {/* Modo agrupado (por activo / mes) — fila-resumen expandible. */}
             {grouped && groups.map(g => {
@@ -87,10 +87,10 @@ export default function TradesTable({
                     onToggle={() => onToggleGroup(g.key)}
                     histMoney={histMoney}
                     onDeleteGroup={groupBy === 'asset' ? onDeleteGroup : null}
-                    deleting={!!busyDel[`grp-${g.key}`]}
+                    deleting={borrando(`grp-${g.key}`)}
                   />
                   {isOpen && g.rows.map(op => (
-                    <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={!!busyDel[`op-${op.id}`]} />
+                    <TradeRow key={op.id} op={op} nueva={nuevas.has(op.id)} histMoney={histMoney} onEdit={onEdit} onDelete={onDelete} indent deleting={borrando(`op-${op.id}`)} />
                   ))}
                 </Fragment>
               )
