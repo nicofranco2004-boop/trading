@@ -122,6 +122,7 @@ describe('Mervall-E AI según el plan', () => {
 })
 
 import { esAtajoBuscador, urlNuevaOperacion, claveDeActivos } from './buscadorRapido'
+import { mapMeToUser, DEMO_USER } from '../contexts/AuthContext'
 import { hayPrecios } from './preciosEnVivo'
 import { UTILIDADES } from './navegacion'
 import { POPULAR_TICKERS, CEDEARS_DE_ETF } from './tickers'
@@ -136,12 +137,20 @@ describe('arreglos de la vuelta 1 de auditoría', () => {
     expect(esAtajoBuscador(k({ metaKey: true, altKey: true }), true)).toBe(false)
     expect(esAtajoBuscador({ key: 'j', metaKey: true }, true)).toBe(false)
   })
-  it('tus activos se guardan por USUARIO: el que entra después no ve los del anterior', () => {
-    expect(claveDeActivos({ id: 1 }, null)).not.toBe(claveDeActivos({ id: 2 }, null))
-    expect(claveDeActivos({ id: 1 }, { id: 7 })).not.toBe(claveDeActivos({ id: 1 }, null))
+  // El usuario sale de mapMeToUser, como en la app: armarlo a mano con `id`
+  // fue lo que tapó que en las cuentas de verdad la llave quedaba vacía (ver
+  // components/buscadorTusActivos.test.js, que lo prueba montado).
+  it('tus activos se guardan por PERSONA: el que entra después no ve los del anterior', () => {
+    const ana = mapMeToUser({ id: 1, email: 'ana@x.com', name: 'Ana', tier: 'pro' })
+    const beto = mapMeToUser({ id: 2, email: 'beto@x.com', name: 'Beto', tier: 'pro' })
+    expect(claveDeActivos(ana, null)).not.toBeNull()
+    expect(claveDeActivos(ana, null)).not.toBe(claveDeActivos(beto, null))
+    expect(claveDeActivos(ana, { id: 7 })).not.toBe(claveDeActivos(ana, null))
     expect(claveDeActivos(null, null)).toBeNull()
-    // el demo es el usuario 0: 0 es un usuario, no "ninguno"
-    expect(claveDeActivos({ id: 0 }, null)).not.toBeNull()
+    // Al iniciar sesión el email es el que se tipeó; después llega el del
+    // servidor. Es la misma persona: no se vuelven a pedir.
+    expect(claveDeActivos({ name: 'Ana', email: ' Ana@X.com' }, null)).toBe(claveDeActivos(ana, null))
+    expect(claveDeActivos(DEMO_USER, null)).not.toBeNull()
   })
   it('"Cargar una operación" estando en Movimientos conserva la pestaña', () => {
     expect(urlNuevaOperacion('/dashboard', '?x=1')).toBe('/operaciones?nueva=1')

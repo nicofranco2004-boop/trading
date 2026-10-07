@@ -26,7 +26,8 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, EVENTO_ESCRITURA } from '../utils/api'
 import { fetchAiSnapshot, esFotoDeLaCuentaActual } from '../utils/aiSnapshot'
-import { crearLecturaDeCartera, claveDePersona, quienEs } from '../utils/lecturaDeCartera'
+import { crearLecturaDeCartera, claveDePersona } from '../utils/lecturaDeCartera'
+import { quienEs } from '../utils/quienEs'
 import { stripMarkdown } from '../utils/stripMarkdown'
 import { parseStructured } from '../utils/aiStructured'
 import { avisarPalabra } from '../components/ai/mervalle/motor'
@@ -79,9 +80,9 @@ export function puedeArrancarSolo(usage) {
   return (usage.chat_remaining ?? 1) > 0
 }
 
-// Quién está logueado, para comparar: `quienEs` (utils/lecturaDeCartera) — el
-// email normalizado; null sin sesión. Es el mismo con el que se firma la
-// lectura de la cartera: una sola regla de "quién es".
+// Quién está logueado, para comparar: `quienEs` (utils/quienEs) — el email
+// normalizado; null sin sesión. Es el mismo con el que se firma la lectura de
+// la cartera: una sola regla de "quién es".
 
 /**
  * La foto de la cartera que viaja con UNA pregunta. ask() la usa tal cual.
