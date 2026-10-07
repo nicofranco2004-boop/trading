@@ -74,6 +74,18 @@ def _moneda(conn, uid: int, broker: str) -> Optional[str]:
     return row["currency"] if row else None
 
 
+def _moneda_para_mostrar(conn, uid: int, broker: str) -> str:
+    """'USDT' de un sub-broker '<Padre> · USD' son dólares, no Tether."""
+    row = conn.execute(
+        "SELECT currency, parent_broker_id FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+        (uid, broker)).fetchone()
+    if not row:
+        return ''
+    if row["currency"] == 'USDT' and row["parent_broker_id"]:
+        return 'USD'
+    return row["currency"] or ''
+
+
 def mover(conn, uid: int, broker: str, delta: float, *,
           permite_negativo: bool = True,
           tc_compra: Optional[float] = None) -> Optional[int]:
@@ -106,7 +118,7 @@ def mover(conn, uid: int, broker: str, delta: float, *,
 
     if delta < 0 and not permite_negativo:
         if actual + delta < -1e-6:
-            moneda = _moneda(conn, uid, broker) or ''
+            moneda = _moneda_para_mostrar(conn, uid, broker)
             raise HTTPException(
                 400, f"Saldo insuficiente en {broker}. Disponible: {fmt_num(actual, 2)} {moneda}".rstrip())
         if actual + delta < 0:

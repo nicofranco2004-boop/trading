@@ -331,9 +331,8 @@ def persist_batch(
                 sibling = helpers._ensure_usd_sibling(conn, uid, parent)
                 sibling_for[broker_name] = sibling["name"]
                 # Asegurar que existe cash position USD en el sibling (con 0 si
-                # no hay). Sin esto, los BUYs USD que aterrizan en un sibling
-                # recién creado no descuentan cash (silent no-op de
-                # _adjust_broker_cash) y el saldo queda inflado.
+                # no hay), así el resumen de saldos del import la muestra aunque
+                # ninguna fila la mueva. (Mover el saldo ya crea la caja si falta.)
                 cash_exists = conn.execute(
                     "SELECT 1 FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                     (uid, sibling["name"]),

@@ -11847,7 +11847,10 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
 
             # 2. Llevar el saldo al número que dijo el usuario: se mueve la diferencia
             # por la puerta única (crea la caja si no había, con el nombre de siempre).
-            _adjust_broker_cash(conn, uid, data.broker_name, diff)
+            # La diferencia SIN redondear: la redondeada (`diff`) es para el umbral y
+            # para el capital aportado; movida al saldo, lo dejaba a una millonésima
+            # del número que tipeó el usuario.
+            _adjust_broker_cash(conn, uid, data.broker_name, data.target_cash - current_cash)
 
             # 3. Registrar diff en monthly_entries del mes más antiguo del broker
             # (preserva cronología — el ajuste representa historia pre-CSV).
@@ -36713,6 +36716,9 @@ def _wallbit_reconcile_positions(conn, uid: int, holdings, cash_usd):
         # Cash true-up: Wallbit ES USD → el efectivo vive en el broker Wallbit (no en
         # un sibling '· USD' como los brokers ARS). Lleva el cash al de la foto.
         cur_cash = 0.0
+        # Tomado antes de leerlo: con este saldo se calcula el ajuste (mismo caso
+        # que conciliar efectivo).
+        _efectivo.tomar_saldo(conn, uid, "Wallbit")
         _crow = conn.execute(
             "SELECT invested FROM positions WHERE user_id=? AND broker='Wallbit' AND is_cash=1 LIMIT 1",
             (uid,)).fetchone()
