@@ -90,6 +90,22 @@ export function useArrastrable(clave) {
   // en cada movimiento.
   const posRef = useRef(pos)
   posRef.current = pos
+  // 🔴 DÓNDE LA DEJÓ EL USUARIO no es lo mismo que DÓNDE SE DIBUJA.
+  //
+  // Reportado por Nico (2026-10-07): "luego de cerrar la burbuja vuelve a una
+  // posición; debería dejarla donde la arrojó el usuario". MEDIDO a 375px:
+  // soltada en (166, 396), abierta, cerrada → aparecía en (20, 560).
+  //
+  // El mecanismo: al abrirse, la tarjeta es mucho más grande que la burbuja y
+  // hay que correrla para que entre en la pantalla (punto 3 de arriba). Esa
+  // corrección se guardaba ENCIMA de la posición elegida, así que al cerrar la
+  // burbuja volvía al lugar corregido y no al suyo. Lo mismo pasaba en la compu
+  // dejándola contra el borde izquierdo, y al rotar el teléfono ida y vuelta.
+  //
+  // Ahora son dos cosas: `pos` es dónde se DIBUJA (ya recortada contra los
+  // bordes), y `elegidaRef` es dónde la dejó el usuario. Sólo un arrastre
+  // cambia la elegida; el recorte siempre parte de ella y nunca la pisa.
+  const elegidaRef = useRef(pos)
   const arrastreRef = useRef(null)
   const arrastroRef = useRef(false)
 
@@ -113,7 +129,7 @@ export function useArrastrable(clave) {
 
   const acomodar = useCallback(() => {
     setPos((p) => {
-      const nueva = recortar(p.dx, p.dy)
+      const nueva = recortar(elegidaRef.current.dx, elegidaRef.current.dy)
       // Devolver el MISMO objeto cuando no cambió nada es lo que evita que
       // esto se llame a sí mismo para siempre: React no vuelve a dibujar.
       return (nueva.dx === p.dx && nueva.dy === p.dy) ? p : nueva
@@ -221,7 +237,10 @@ export function useArrastrable(clave) {
     arrastreRef.current = null
     soltarEscuchas.current()
     try { manijaRef.current?.releasePointerCapture(e.pointerId) } catch { /* ídem */ }
-    if (arrastroRef.current) guardar(posRef.current)
+    if (arrastroRef.current) {
+      elegidaRef.current = posRef.current
+      guardar(posRef.current)
+    }
   }, [guardar])
 
   const alApretar = useCallback((e) => {

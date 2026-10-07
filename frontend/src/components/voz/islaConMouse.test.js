@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createElement as h } from 'react'
-import { instalarNavegadorMinimo, montar, puntero } from '../../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, puntero, medidas } from '../../testing/navegadorMinimo'
 
 // 🔴 EL CLIC CON MOUSE NO ABRÍA LA ISLA (medido 2026-10-07 en Chrome).
 //
@@ -144,6 +144,61 @@ describe('la isla con el dedo (lo que ya andaba, sigue andando)', () => {
     const { m, burbuja, abierta } = await montarIsla()
     await gesto(burbuja(), 'touch', [[20, -10], [80, -100]])
     expect(abierta()).toBe(false)
+    await m.desmontar()
+  })
+})
+
+// 🔴 AL CERRARLA, LA BURBUJA VUELVE ADONDE LA DEJÓ EL USUARIO (2026-10-07).
+//
+// Nico: "luego de cerrar la burbuja vuelve a una posición; debería dejarla
+// donde la arrojó el usuario". MEDIDO en el navegador a 375px: soltada en
+// (166, 396), abierta, cerrada → aparecía en (20, 560). La tarjeta abierta es
+// mucho más grande y hay que correrla para que entre; esa corrección se
+// guardaba encima de la posición elegida.
+//
+// Acá la pantalla es la de un celular y cada pieza mide lo que mide en el
+// navegador: la burbuja nace abajo a la izquierda, la tarjeta arriba de borde
+// a borde.
+describe('la burbuja vuelve adonde la dejaste (celular, isla real)', () => {
+  beforeAll(() => {
+    window.innerWidth = 375
+    window.innerHeight = 812
+    medidas((n) => {
+      if (n.getAttribute('data-tour') === 'isla') return { left: 16, top: 696, width: 159, height: 34 }
+      if (n.tagName === 'SECTION') return { left: 12, top: 88, width: 351, height: 420 }
+      return null
+    })
+  })
+  afterAll(() => { medidas(null); window.innerWidth = 1280; window.innerHeight = 800 })
+
+  const desplazamiento = (nodo) => nodo.style.transform || 'ninguno'
+
+  it('soltar, abrir y cerrar: la burbuja queda donde la soltaste', async () => {
+    const { m, burbuja, abierta } = await montarIsla()
+    const isla = () => buscarPor(m.contenedor, n => n.getAttribute?.('data-tour') === 'isla')
+    await gesto(burbuja(), 'mouse', [[10, -10], [150, -300]])
+    const soltada = desplazamiento(isla())
+    expect(soltada).toBe('translate3d(150px, -300px, 0)')
+
+    await gesto(burbuja(), 'mouse')
+    expect(abierta()).toBe(true)
+    // Abierta, la corrió para que entre (si no, quedaba 212px arriba, afuera).
+    const tarjeta = buscarPor(m.contenedor, n => n.tagName === 'SECTION')
+    expect(tarjeta.getBoundingClientRect().top).toBeGreaterThanOrEqual(8)
+
+    await gesto(conEtiqueta(m.contenedor, /^Cerrar$/), 'mouse')
+    expect(abierta()).toBe(false)
+    expect(desplazamiento(isla())).toBe(soltada)
+    // Y lo guardado para la pestaña sigue siendo lo que eligió el usuario.
+    expect(JSON.parse(sesion.get('rendi:isla:pos'))).toEqual({ dx: 150, dy: -300 })
+    await m.desmontar()
+  })
+
+  it('la app abierta de nuevo (pestaña nueva) arranca en su lugar de siempre', async () => {
+    // sessionStorage vacío = pestaña nueva (beforeEach lo limpia).
+    const { m } = await montarIsla()
+    const isla = buscarPor(m.contenedor, n => n.getAttribute?.('data-tour') === 'isla')
+    expect(desplazamiento(isla)).toBe('ninguno')
     await m.desmontar()
   })
 })

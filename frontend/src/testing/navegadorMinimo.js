@@ -16,6 +16,15 @@
 
 import { vi } from 'vitest'
 
+let medidor = () => null
+
+/**
+ * Dónde está y cuánto mide cada elemento SIN desplazar: `fn(nodo)` devuelve
+ * { left, top, width, height } o null (= no ocupa lugar). Sin argumento,
+ * vuelve a que nada ocupe lugar.
+ */
+export function medidas(fn) { medidor = fn || (() => null) }
+
 class Nodo {
   constructor(tag, doc) {
     this.nodeName = this.tagName = tag.toUpperCase()
@@ -69,9 +78,17 @@ class Nodo {
   setPointerCapture(id) { this.ownerDocument.capturas.set(id, this) }
   releasePointerCapture(id) { if (this.ownerDocument.capturas.get(id) === this) this.ownerDocument.capturas.delete(id) }
   hasPointerCapture(id) { return this.ownerDocument.capturas.get(id) === this }
-  // Medidas: acá nada ocupa lugar (las pantallas que se miden, como /ai, no
-  // explotan; el número no importa en estas pruebas).
-  getBoundingClientRect() { return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 } }
+  // Medidas: por defecto nada ocupa lugar (las pantallas que se miden, como
+  // /ai, no explotan; el número no importa en esas pruebas). Una prueba que SÍ
+  // necesita tamaños los da con `medidas(fn)`; el desplazamiento de
+  // `transform: translate3d(...)` se suma encima, como en el navegador.
+  getBoundingClientRect() {
+    const m = medidor(this) || { left: 0, top: 0, width: 0, height: 0 }
+    const t = /translate3d\((-?[\d.]+)px, (-?[\d.]+)px/.exec(this.style.transform || '')
+    const left = m.left + (t ? Number(t[1]) : 0)
+    const top = m.top + (t ? Number(t[2]) : 0)
+    return { left, top, x: left, y: top, width: m.width, height: m.height, right: left + m.width, bottom: top + m.height }
+  }
   // Lo que usa el <audio> de VozContext. `src` es el atributo, como en el DOM.
   get src() { return this.atributos.src || '' }
   set src(v) { this.atributos.src = String(v) }
