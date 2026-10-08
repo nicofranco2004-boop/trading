@@ -31,6 +31,8 @@ MOTIVOS = {
     "sin_cierre": "no conseguimos el cierre anterior de este activo",
     "sin_precio": "no conseguimos su precio de hoy",
     "fci": "es un fondo común: su valor se publica una vez por día, no tiene variación en la rueda",
+    "precio_dudoso": "su precio de hoy y el cierre anterior no cuadran entre sí; preferimos no inventar el movimiento",
+    "comprado_hoy_sin_rueda": "lo compraste hoy y su mercado todavía no operó hoy",
 }
 
 
@@ -49,6 +51,13 @@ def dia_txt(rueda: Optional[str], hoy: str) -> str:
     if r == h - timedelta(days=1):
         return "ayer"
     return f"el {_DIAS[r.weekday()]} {r.day}/{r.month}"
+
+
+def _no_hoy(txt: str) -> str:
+    """Invariante: "hoy" se escribe SÓLO si es_hoy. Un número cuya rueda tiene
+    la fecha de hoy pero que su mercado no confirma como de hoy no se llama
+    "hoy"."""
+    return "sin fecha confirmada" if txt == "hoy" else txt
 
 
 def _usd_txt(v: float) -> str:
@@ -104,7 +113,9 @@ def armar(lotes: list, hoy: str, mercados: Optional[dict] = None,
         k = (l.get("asset"), rueda, es_hoy)
         e = medidos.setdefault(k, {"asset": l.get("asset"), "brokers": [],
                                    "mercado": l.get("mercado"), "rueda": rueda,
-                                   "es_hoy": es_hoy, "valor": 0.0, "valor_previo": 0.0})
+                                   "es_hoy": es_hoy, "valor": 0.0, "valor_previo": 0.0,
+                                   "comprado_hoy": False})
+        e["comprado_hoy"] = e["comprado_hoy"] or bool(l.get("comprado_hoy"))
         if l.get("broker") and l.get("broker") not in e["brokers"]:
             e["brokers"].append(l.get("broker"))
         e["valor"] += v
@@ -137,7 +148,7 @@ def armar(lotes: list, hoy: str, mercados: Optional[dict] = None,
         pct_medido = round(g["usd"] / g["valor_previo"] * 100, 2) if g["valor_previo"] > 0 else None
         movimiento.append({
             "rueda": g["rueda"],
-            "dia_txt": "hoy" if g["es_hoy"] else dia_txt(g["rueda"], hoy),
+            "dia_txt": "hoy" if g["es_hoy"] else _no_hoy(dia_txt(g["rueda"], hoy)),
             "es_hoy": g["es_hoy"],
             "mercados": sorted(g["mercados"]),
             "usd": usd,
@@ -160,13 +171,16 @@ def armar(lotes: list, hoy: str, mercados: Optional[dict] = None,
             "asset": e["asset"],
             "brokers": e["brokers"],
             "mercado": e["mercado"],
-            "dia_txt": "hoy" if e["es_hoy"] else dia_txt(e["rueda"], hoy),
+            "dia_txt": "hoy" if e["es_hoy"] else _no_hoy(dia_txt(e["rueda"], hoy)),
             "es_hoy": e["es_hoy"],
             "usd": round(usd, 2),
             "usd_txt": _usd_txt(round(usd, 2)),
             "pct": None if pct is None else round(pct, 2),
             "pct_txt": _pct_txt(None if pct is None else round(pct, 2)),
             "peso_en_la_cartera_pct": round(e["valor"] / total * 100, 1) if total > 0 else None,
+            # Lo compró HOY (todo o una parte): su movimiento se mide desde el
+            # precio de compra, no desde el cierre de ayer.
+            "comprado_hoy": e["comprado_hoy"],
         })
     filas.sort(key=lambda f: abs(f["usd"]), reverse=True)
 
