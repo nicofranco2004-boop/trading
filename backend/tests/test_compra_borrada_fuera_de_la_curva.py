@@ -167,6 +167,10 @@ class _ConFotosMedidas(_ConDosActivos):
 
     def setUp(self):
         super().setUp()
+        # El import, confirmado ANTES de las fotos: así existen en la vida real (una
+        # foto no ve un import confirmado después de su fecha).
+        self._sql("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                  "WHERE user_id=?", self.uid)
         conn = main.get_db()
         try:
             for d in MEDIDAS:
@@ -267,6 +271,8 @@ class ElCerteroSinLaVentaDeAlgoVendidoEntero(_ConDosActivos):
     def setUp(self):
         super().setUp()
         self._importar("2025-09-02,VENTA,IBKR,MSFT,10,360,3600,,,0,USD,")
+        self._sql("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                  "WHERE user_id=?", self.uid)
         conn = main.get_db()
         try:
             hold = [{"asset": "AAPL", "value_usd": 5 * PRECIO["AAPL"]["2025-10"]}]

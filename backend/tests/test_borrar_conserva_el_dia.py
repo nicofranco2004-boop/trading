@@ -115,6 +115,10 @@ class BorrarConservaElDia(unittest.TestCase):
             "2026-03-10,RETIRO,IBKR,,,,4000,,,0,USD,",
             "2026-03-15,DIVIDENDO,IBKR,AAPL,,,30,,,0,USD,",
         ))
+        # El import, confirmado ANTES de las fotos (así existen en la vida real: una
+        # foto no ve un import confirmado después de su fecha).
+        self.conn.execute("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                          "WHERE user_id=?", (self.uid,))
         # Las fotos del cron, con el mismo UPSERT que `snapshots_job` (pisa la
         # sintética de fin de mes que el import dejó en esa fecha). La composición
         # con el formato del cron (valor por activo): el mercado está quieto, así que
@@ -599,6 +603,8 @@ class LaSemanaDespuesDeBorrar(unittest.TestCase):
         """Importa el historial y escribe las fotos del cron: cada noche anota lo
         aportado de ese día y la cartera vale eso más la ganancia desde el 2/9."""
         self._import(_csv(*filas_csv))
+        self.conn.execute("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                          "WHERE user_id=?", (self.uid,))
         for d, nd in aportado_del_dia.items():
             v = nd + (ganancia_desde_el_2 if d >= "2026-09-02" else 0.0)
             # Composición con el formato del cron: desde el 2/9, las 10 AAPL valen lo

@@ -766,6 +766,7 @@ ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_ch
 CREATE TABLE IF NOT EXISTS medicion_original (
   user_id bigint NOT NULL,
   date text NOT NULL,
+  snapshot_id bigint,
   total_value double precision,
   holdings_json text,
   source text,

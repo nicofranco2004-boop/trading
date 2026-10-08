@@ -468,7 +468,14 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
                  source        = excluded.source,
                  mtm_coverage  = excluded.mtm_coverage,
                  base          = excluded.base,
-                 apto          = excluded.apto""",
+                 apto          = excluded.apto
+               -- Candado contra la carrera: la clase se leyó al empezar la corrida
+               -- (minutos antes, por Yahoo). Si en el medio un "deshacer" devolvió
+               -- la medición del cron a esta fecha, no se pisa (auditoría 4: la
+               -- medición se perdía para siempre).
+               WHERE COALESCE(snapshots.source, '') <> 'cron'
+                 AND NOT (snapshots.source IS NULL
+                          AND COALESCE(snapshots.holdings_json, '') <> '')""",
             (uid, d, info["value"], info["cost"], net_dep,
              _json.dumps(info["holdings"]) if info["holdings"] else None,
              MTM_SOURCE, info["coverage"], _base, _apto),

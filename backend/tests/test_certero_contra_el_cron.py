@@ -59,7 +59,10 @@ class _ContraElCron(_Despues):
     def _broker(self, name, ccy):
         self._sql("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)", self.uid, name, ccy)
 
-    def _imp(self, broker, *filas, route=False):
+    def _imp(self, broker, *filas, route=False, tardio=False):
+        """Importa por la app. Salvo `tardio`, el lote queda confirmado ANTES de las
+        fotos (así existen en la vida real: el cron midió una cuenta que ya tenía su
+        historia; una foto no ve un import confirmado después de su fecha)."""
         csv = (HDR + "".join(f + "\n" for f in filas)).encode()
         data = {"format": "rendi_generic", "broker": broker}
         if route:
@@ -74,6 +77,9 @@ class _ContraElCron(_Despues):
                            headers=self.h)
         self.assertEqual(c.status_code, 200, c.text)
         self._esperar()
+        if not tardio:
+            self._sql("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                      "WHERE user_id=?", self.uid)
 
     def _cron(self, fecha, persist=True):
         """El cron real. Devuelve (total, {activo: valor})."""
@@ -193,6 +199,21 @@ class Secuencias(_TresActivos):
         self.assertEqual(self._foto()[:2], self._referencia())
 
 
+class ElImportTardio(_TresActivos):
+    """Una compra con fecha vieja que entró DESPUÉS de la foto (un CSV superpuesto
+    que trajo un duplicado). La foto nunca la vio: borrarla no le cambia nada.
+    Antes, la foto correcta (como la mide el cron) pasaba a otra cosa y quedaba
+    certificada (auditoría 4: 10.600 → 10.733)."""
+
+    def test_borrar_lo_que_la_foto_no_vio(self):
+        self._imp("IBKR", "2025-03-06,COMPRA,IBKR,AAPL,5,200,1000,,,0,USD,", tardio=True)
+        antes = self._foto()
+        r = self._q("SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON "
+                    "b.id=n.batch_id WHERE b.user_id=? AND n.date='2025-03-06'", self.uid)
+        self._pedir("delete", f"/api/movements/tx-{r[0]['id']}")
+        self.assertEqual(self._foto(), antes)
+
+
 class LoQueNoSePuedeAfirmar(_ContraElCron):
 
     def test_el_mismo_ticker_en_dos_brokers(self):
@@ -242,13 +263,30 @@ class LoQueNoSePuedeAfirmar(_ContraElCron):
         self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
         self.assertFueraDelCertero()
 
+    def test_un_lote_que_la_foto_valua_lejos_de_lo_que_costo(self):
+        # La foto dice que las 10 MSFT valían US$ 4.000 y el import dice que costaron
+        # US$ 1.000 (4×): uno de los dos está mal (en prod: montos ×1.000 de pesos
+        # cargados como dólares). El salto total queda bajo el 50 %, así que sólo la
+        # banda por lote lo frena.
+        self._imp("IBKR", "2025-03-03,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                  "2025-03-04,COMPRA,IBKR,AAPL,10,200,2000,,,0,USD,",
+                  "2025-03-05,COMPRA,IBKR,MSFT,10,300,3000,,,0,USD,")
+        self._cron(D)
+        self._sql("UPDATE import_normalized_tx SET gross_amount=1000 WHERE operation_type='BUY' "
+                  "AND asset_symbol='MSFT' AND batch_id IN (SELECT id FROM import_batches "
+                  "WHERE user_id=?)", self.uid)
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        self.assertFueraDelCertero()
+
     def test_pesos_con_el_mep_del_dia(self):
-        # Con el MEP histórico de esa fecha (el que usa el cron para el efectivo en
-        # pesos) la corrección es exacta.
-        self._sql("DELETE FROM fx_rates_daily WHERE date=?", D)
-        self._sql("INSERT INTO fx_rates_daily (date, blue_venta, blue_compra, mep_venta, mep_compra) "
-                  "VALUES (?,?,?,?,?)", D, BLUE, BLUE, MEP, MEP)
-        self.addCleanup(self._sql, "DELETE FROM fx_rates_daily WHERE date=?", D)
+        # Con el MEP histórico (el del día de la foto, que usa el cron para el
+        # efectivo en pesos, y el del día de la compra, para el control del lote) la
+        # corrección es exacta.
+        for dia in (D, "2025-03-05"):
+            self._sql("DELETE FROM fx_rates_daily WHERE date=?", dia)
+            self._sql("INSERT INTO fx_rates_daily (date, blue_venta, blue_compra, mep_venta, "
+                      "mep_compra) VALUES (?,?,?,?,?)", dia, BLUE, BLUE, MEP, MEP)
+            self.addCleanup(self._sql, "DELETE FROM fx_rates_daily WHERE date=?", dia)
         self._broker("Balanz", "ARS")
         self._imp("Balanz", "2025-03-03,DEPOSITO,Balanz,,,,5000000,,,0,ARS,",
                   "2025-03-05,COMPRA,Balanz,KO,100,10000,1000000,,,0,ARS,")
@@ -294,6 +332,136 @@ class ElCedearPagadoEnDolares(_ContraElCron):
         self.assertEqual(self._efectivo("Balanz · USD"), dolares)
         self.assertEqual(self._efectivo("Balanz"), pesos)
         self.assertEqual(self._foto()[:2], self.foto0)
+
+
+class LaCuentaEnPesosYSuCuentaEnDolares(_ContraElCron):
+    """El dólar MEP: el CEDEAR se compra en pesos (cuenta padre) y se vende en
+    dólares (la "· USD"). Son UN broker, valuado igual en las dos. Contarlas como
+    dos sacaba del certero el 57 % de las fotos tras borrar una compra suelta
+    (auditoría 4, datos de prod)."""
+
+    def test_borrar_la_venta_en_dolares_se_corrige(self):
+        self._broker("Balanz", "ARS")
+        self._imp("Balanz", "2025-03-03,DEPOSITO,Balanz,,,,5000000,,,0,ARS,",
+                  "2025-03-06,COMPRA,Balanz,SPY,30,28000,840000,,,0,ARS,",
+                  "2025-04-10,VENTA,Balanz,SPY,10,20,200,,,0,USD,", route=True)
+        self._sql("UPDATE import_normalized_tx SET asset_type='CEDEAR' WHERE asset_symbol='SPY' "
+                  "AND batch_id IN (SELECT id FROM import_batches WHERE user_id=?)", self.uid)
+        conn = main.get_db()
+        try:
+            main._import_rebuild.rebuild_pair_asset(conn, self.uid, "Balanz", "SPY", tc_blue=BLUE)
+            conn.execute("UPDATE positions SET asset_type='CEDEAR' WHERE user_id=? AND asset='SPY'",
+                         (self.uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        brokers = {r["broker"] for r in self._q(
+            "SELECT DISTINCT n.broker FROM import_normalized_tx n JOIN import_batches b ON "
+            "b.id=n.batch_id WHERE b.user_id=? AND n.asset_symbol='SPY'", self.uid)}
+        self.assertEqual(brokers, {"Balanz", "Balanz · USD"})       # el caso de verdad
+        self._cron(D)
+        venta = self._q("SELECT l.operation_id AS x FROM import_op_links l JOIN "
+                        "import_normalized_tx n ON n.batch_id=l.batch_id AND "
+                        "n.raw_row_id=l.raw_row_id JOIN import_batches b ON b.id=n.batch_id "
+                        "WHERE b.user_id=? AND n.operation_type='SELL' "
+                        "AND l.operation_id IS NOT NULL", self.uid)[0]["x"]
+        self._pedir("delete", f"/api/operations/{venta}")
+        self.assertComoElCron()
+
+
+class LoQueQuedaDeAntes(_TresActivos):
+
+    def test_un_borrado_de_antes_de_este_cambio(self):
+        # Los journals viejos no guardaban `eventos`: se arman de sus filas. Sin eso,
+        # un borrado nuevo del mismo activo calculaba mal (US$ 8.000 vs 10.000).
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        conn = main.get_db()
+        try:
+            for j in conn.execute("SELECT id, payload_json FROM deleted_ops_journal "
+                                  "WHERE user_id=?", (self.uid,)).fetchall():
+                p = json.loads(j["payload_json"])
+                p.pop("eventos", None)
+                conn.execute("UPDATE deleted_ops_journal SET payload_json=? WHERE id=?",
+                             (json.dumps(p), j["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'AAPL')}")
+        self.assertComoElCron()
+
+
+
+class RevertirYReimportar(_ContraElCron):
+
+    def test_revertir_reimportar_y_borrar(self):
+        # Revertir borra las fotos; si el original guardado quedaba, el próximo
+        # borrado le devolvía a la cuenta re-importada la medición vieja como "cron"
+        # (auditoría 4: 13.600 donde el cron daba 21.800). (Sin ventas: la app no
+        # revierte un import con ventas.)
+        self._imp("IBKR", "2025-03-03,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                  "2025-03-04,COMPRA,IBKR,AAPL,10,200,2000,,,0,USD,",
+                  "2025-03-05,COMPRA,IBKR,MSFT,10,300,3000,,,0,USD,")
+        self._cron(D)
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        lote = self._q("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed'",
+                       self.uid)[0]["id"]
+        self._pedir("post", f"/api/imports/{lote}/revert")
+        self._imp("IBKR", "2025-03-03,DEPOSITO,IBKR,,,,20000,,,0,USD,",
+                  "2025-03-04,COMPRA,IBKR,AAPL,20,200,4000,,,0,USD,",
+                  "2025-03-05,COMPRA,IBKR,MSFT,10,300,3000,,,0,USD,")
+        self._cron(D)
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        self.assertComoElCron()
+
+
+class ElOriginalEsDeEsaFoto(_ContraElCron):
+    """Un original guardado pertenece a UNA fila de `snapshots`. Revertir el import
+    borra la foto; la reconstrucción vuelve a escribir ese fin de mes con otra fila.
+    El original viejo no puede volver encima de ella como "medición del cron"."""
+
+    def test_revertir_y_reimportar_no_resucita_la_medicion_vieja(self):
+        fin = "2025-09-30"
+        self._imp("IBKR", "2025-03-03,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                  "2025-03-04,COMPRA,IBKR,AAPL,10,200,2000,,,0,USD,",
+                  "2025-03-05,COMPRA,IBKR,MSFT,10,300,3000,,,0,USD,")
+        self._cron(fin)
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        lote = self._q("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed'",
+                       self.uid)[0]["id"]
+        self._pedir("post", f"/api/imports/{lote}/revert")
+        self._imp("IBKR", "2025-03-03,DEPOSITO,IBKR,,,,20000,,,0,USD,",
+                  "2025-03-04,COMPRA,IBKR,AAPL,20,200,4000,,,0,USD,",
+                  "2025-03-05,COMPRA,IBKR,NVDA,10,100,1000,,,0,USD,")
+        self.assertEqual(self._foto(fin)[2], "mtm_backfill")      # la reescribió la reconstrucción
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'NVDA')}")
+        self.assertEqual(self._foto(fin)[2], "mtm_backfill")
+        self.assertEqual(self._q("SELECT COUNT(*) AS n FROM medicion_original WHERE user_id=? "
+                                 "AND date=?", self.uid, fin)[0]["n"], 0)
+
+
+class LaReconstruccionNoPisaUnaMedicion(_ContraElCron):
+    """El candado de `_persist_mtm_snapshots`: la clase de cada fecha se lee al
+    empezar la corrida (minutos antes, por Yahoo). Si en el medio un "deshacer"
+    devolvió la medición del cron a esa fecha, la reconstrucción no la pisa."""
+
+    def test_el_candado(self):
+        self._imp("IBKR", "2025-03-03,DEPOSITO,IBKR,,,,10000,,,0,USD,",
+                  "2025-03-04,COMPRA,IBKR,AAPL,10,200,2000,,,0,USD,")
+        fin_de_mes = "2025-09-30"
+        self._cron(fin_de_mes)
+        medida = self._foto(fin_de_mes)
+        conn = main.get_db()
+        try:
+            # La corrida "leyó" la fecha cuando no era una medición:
+            with mock.patch("twr.clasificar_serie",
+                            side_effect=lambda filas, primera: ["reconstruido"] * len(filas)):
+                bf._persist_mtm_snapshots(conn, self.uid, {"2025-09": {
+                    "date": fin_de_mes, "value": 1.0, "cost": 1.0, "net_dep": 1.0,
+                    "coverage": 1.0, "holdings": []}})
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self._foto(fin_de_mes), medida)
 
 
 if __name__ == "__main__":

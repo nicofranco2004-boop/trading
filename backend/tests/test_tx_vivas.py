@@ -64,6 +64,10 @@ LEEN_EL_LOG = {
     ("main.py", "admin_diagnose_sell_fx"): "panel de diagnóstico del admin",
     ("main.py", "admin_fx_aportado_breakdown"): "panel de diagnóstico del admin",
     ("main.py", "admin_fx_migrate_candidates"): "panel de diagnóstico del admin",
+    # Las fotos medidas tras una compra/venta borrada: miran justamente lo BORRADO.
+    ("main.py", "_evento_de_fila"): "cuándo se confirmó el lote de la fila borrada",
+    ("main.py", "_eventos_de_journal_viejo"): "arma los eventos de un borrado viejo desde sus filas con lápida",
+    ("main.py", "_recalcular_mediciones"): "si la fila borrada sigue existiendo (o se revirtió su import)",
     # Scripts de reparación de una sola vez, sobre lotes puntuales.
     ("scripts/backfill_currency_fix.py", "correct_currency"): "script de reparación sobre lotes puntuales",
     ("scripts/escala_foto_bonos.py", "<módulo>"): "script de diagnóstico sobre lotes deshechos",
