@@ -79,6 +79,21 @@ def _dias(y, m, d0, d1):
 # Lo que la foto de cada noche habría anotado como aportado ese día.
 #   2025-12-02  depósito 100.000      2026-02-20  depósito 10.000
 #   2026-03-10  retiro 4.000
+def _sin_reconstruccion_de_fondo(test) -> None:
+    """Cada pedido que toca la contabilidad lanza, al terminar, la reconstrucción de
+    la historia a mercado en otro hilo (`main._ReconstruirAlTerminar`). Reescribe
+    sólo los CIERRES reconstruidos (nunca una foto del cron) con las cuentas de ese
+    momento — en producción, las de después del borrado. Acá corría a destiempo: la
+    del alta de una posición terminaba después del borrado y le devolvía la posición
+    al cierre que el borrado acababa de corregir, o pisaba los cierres plantados
+    por el test. Se apaga para medir la cascada sola; la reconstrucción tiene sus
+    tests (`test_reconstruccion_sigue_a_la_contabilidad.py`)."""
+    for nombre in ("_reconstruir_mtm_post_import", "_reconstruir_en_fila"):
+        p = mock.patch.object(main, nombre, side_effect=lambda *a, **k: None)
+        p.start()
+        test.addCleanup(p.stop)
+
+
 APORTADO_DEL_DIA = {}
 for _d in _dias(2026, 1, 1, 31):
     APORTADO_DEL_DIA[_d] = 100000.0
@@ -151,6 +166,7 @@ class BorrarConservaElDia(unittest.TestCase):
                 (self.uid, d, nd, nd, nd))
         self.conn.commit()
         main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
+        _sin_reconstruccion_de_fondo(self)
         self.client = TestClient(main.app)
         # Control del fixture: ANTES de borrar nada la cuenta ya publica 0. Si esto
         # falla, el rojo de abajo no diría nada sobre el borrado.
@@ -2156,6 +2172,7 @@ class LaSemanaDespuesDeBorrar(unittest.TestCase):
                           (self.uid, self.BROKER, "USDT"))
         self.conn.commit()
         main.app.dependency_overrides[main.get_effective_user] = lambda: self.uid
+        _sin_reconstruccion_de_fondo(self)
         self.client = TestClient(main.app)
         self._sin_benchmark = [mock.patch.object(main, "_bench_para_reportes",
                                                  return_value={}),
