@@ -1,4 +1,5 @@
 import { createContext, useContext, useState } from 'react'
+import { track } from '../utils/track'
 
 const PrivacyContext = createContext({ hidden: false, toggle: () => {} })
 
@@ -9,6 +10,7 @@ export function PrivacyProvider({ children }) {
     try { return localStorage.getItem(STORAGE_KEY) === '1' } catch { return false }
   })
   function toggle() {
+    track('montos_ocultos_cambiado')
     setHidden(h => {
       const next = !h
       try { localStorage.setItem(STORAGE_KEY, next ? '1' : '0') } catch {}

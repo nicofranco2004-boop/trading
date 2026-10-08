@@ -115,9 +115,9 @@ class IngresosEnElPanel(unittest.TestCase):
             params["desde"] = desde.isoformat()
         if hasta:
             params["hasta"] = hasta.isoformat()
-        r = self.client.get("/api/admin/logins", params=params, headers=self.h)
+        r = self.client.get("/api/admin/uso", params=params, headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
-        return r.json()
+        return r.json()["resumen"]
 
     def _ingresos_de(self, uid):
         conn = main.get_db()
@@ -211,10 +211,10 @@ class IngresosEnElPanel(unittest.TestCase):
         del nuevo
 
     def test_fechas_invalidas(self):
-        r = self.client.get("/api/admin/logins", params={"desde": "ayer"}, headers=self.h)
+        r = self.client.get("/api/admin/uso", params={"desde": "ayer"}, headers=self.h)
         self.assertEqual(r.status_code, 400)
         hoy = hoy_art_date()
-        r = self.client.get("/api/admin/logins",
+        r = self.client.get("/api/admin/uso",
                             params={"desde": hoy.isoformat(),
                                     "hasta": (hoy - timedelta(days=1)).isoformat()},
                             headers=self.h)
@@ -222,7 +222,7 @@ class IngresosEnElPanel(unittest.TestCase):
 
     def test_solo_admin(self):
         uid = self._registrar_y_confirmar(self._email("intruso"))
-        r = self.client.get("/api/admin/logins",
+        r = self.client.get("/api/admin/uso",
                             headers={"Authorization": f"Bearer {main.create_token(uid)}"})
         self.assertEqual(r.status_code, 403)
 

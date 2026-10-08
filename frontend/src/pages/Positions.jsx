@@ -1070,6 +1070,7 @@ function PositionsDesktop() {
         // cuando no hay cotización guardada de ese día.
         tc_blue: tcValuacion,
       })
+      track('efectivo_movido')
       setModal(null)
       loadAll()
     } catch (e) {

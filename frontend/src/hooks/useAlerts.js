@@ -4,6 +4,7 @@
 // (pct_move = Plus+); create() propaga el error 403 con payload {upgrade} para
 // que la UI muestre el upsell.
 import { useCallback, useEffect, useState } from 'react'
+import { track } from '../utils/track'
 import { api } from '../utils/api'
 
 export function useAlerts() {
@@ -30,6 +31,7 @@ export function useAlerts() {
 
   const create = useCallback(async (payload) => {
     const res = await api.post('/alerts', payload)  // throws en 403 (upsell)
+    track('alerta_creada')
     await refresh()
     return res
   }, [refresh])

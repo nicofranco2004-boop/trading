@@ -31,6 +31,7 @@
 // los params — solo IDs/categorías. user_id se setea como uid hasheado.
 
 import { seMideAca } from './medicion'
+import { registrarUsoGA } from './uso'
 
 // GA4 Measurement ID — hardcoded porque Vercel no inyectaba el env var
 // correctamente (problema con flag VITE_ exposed). El ID es público por
@@ -123,6 +124,8 @@ export function trackPageView(path, title) {
  * GA4 los puede mostrar en reportes Y los logueamos a console en dev.
  */
 export function trackEvent(name, params = {}) {
+  // Antes de mirar si GA está: el panel de uso cuenta aunque GA no cargue.
+  registrarUsoGA(name)
   if (!initialized || !window.gtag) {
     if (DEBUG) console.log('[analytics] (noop)', name, params)
     return

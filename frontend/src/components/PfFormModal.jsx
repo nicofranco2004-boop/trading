@@ -3,6 +3,7 @@
 //   2. Datos del PF (capital, tasa prefilleada, plazo…) + preview en vivo.
 // La tasa se prefilla con la TNA del banco elegido (cada vez que lo cambiás).
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { track } from '../utils/track'
 import { X, ArrowLeft, Search, Landmark, Pencil } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
@@ -208,6 +209,7 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
         pago_frecuencia_meses: form.modalidad === 'periodico' ? +form.pago_frecuencia_meses : null,
         source_broker: form.source_broker || null,
       })
+      track('plazo_fijo_agregado')
       toast.push('Plazo fijo agregado.', { type: 'success' })
       onSaved && onSaved()
       onClose()

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, useMemo } from 'react'
+import { track } from '../utils/track'
 import { api } from '../utils/api'
 import { enfocarCambios } from '../utils/enfocarCambios'
 
@@ -150,14 +151,14 @@ export function CurrencyProvider({ children }) {
   // de cada pantalla además cuentan (AnimatedNumber).
   function setCurrency(next) {
     const norm = next === 'ARS' ? 'ARS' : 'USD'
-    if (norm !== currency) enfocarCambios()
+    if (norm !== currency) { enfocarCambios(); track('moneda_cambiada') }
     setCurrencyRaw(norm)
     try { localStorage.setItem(STORAGE_KEY, norm) } catch {}
   }
 
   function setValuationDollar(next) {
     const norm = next === 'ccl' ? 'ccl' : 'mep'
-    if (norm !== valuationDollar) enfocarCambios()
+    if (norm !== valuationDollar) { enfocarCambios(); track('dolar_valuacion_cambiado') }
     setValuationDollarRaw(norm)
     try { localStorage.setItem(VAL_STORAGE_KEY, norm) } catch {}
   }

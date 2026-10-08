@@ -7,6 +7,7 @@ import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
 import { trackMetaEvent } from '../utils/metaPixel'
 import { quienEs } from '../utils/quienEs'
+import { activarUso } from '../utils/uso'
 
 const AuthContext = createContext(null)
 
@@ -205,6 +206,14 @@ export function AuthProvider({ children }) {
     window.addEventListener(EVENTO_PLAN_REQUERIDO, alPausar)
     return () => window.removeEventListener(EVENTO_PLAN_REQUERIDO, alPausar)
   }, [user])
+
+  // Panel de uso de /admin: se mide sólo con una sesión real. Cambio de
+  // persona = se corta lo pendiente de la anterior y arranca de nuevo.
+  useEffect(() => {
+    const quien = !user || isDemoMode() ? null : quienEs(user)
+    activarUso(false)
+    if (quien) activarUso(true)
+  }, [user ? quienEs(user) : null])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep-alive: pinga /api/health cada 4 min para que Railway no duerma el servicio.
   // Se activa solo cuando hay un usuario logueado (no en demo ni sin sesión).

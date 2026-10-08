@@ -9,6 +9,7 @@
 import { createContext, useContext, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { markAIDiscovered } from '../components/ai/AIDiscoveryBanner'
+import { track } from '../utils/track'
 
 const CoachDrawerContext = createContext({
   open: () => {},
@@ -29,6 +30,7 @@ export function CoachDrawerProvider({ children }) {
   const open = (question = null) => {
     setInitialQuestion(question || null)
     markAIDiscovered()
+    track('mervalle_abierto')
     navigate('/ai')
   }
 

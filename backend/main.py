@@ -148,6 +148,7 @@ if not SECRET_KEY:
 
 ALGORITHM = "HS256"
 TOKEN_DAYS = 7  # reduced from 30
+_USO_DIAS_GUARDADOS = 400  # uso_diario: ~13 meses de detalle por día
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "trading.db"))
 
@@ -2537,6 +2538,33 @@ def init_db():
             conn.commit()
         except Exception as _ex:
             logging.getLogger(__name__).warning("completar last_login_at desde login_history falló (no fatal): %s", _ex)
+
+        # ─── uso_diario: qué toca cada usuario, contado por día ────────────────────
+        # Un CONTADOR por (usuario, día argentino, evento), no una fila por clic:
+        # "Juan tocó Importar 3 veces el martes" es una fila. Los eventos son los
+        # `track()` del frontend (lista cerrada en utils/usoCatalogo.js) y las
+        # pantallas ('pantalla:/posiciones'). Que un usuario tenga CUALQUIER fila
+        # un día es la definición de "usó la app ese día". Lo llena
+        # POST /api/uso/eventos; lo lee /api/admin/uso.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS uso_diario (
+                user_id INTEGER NOT NULL,
+                dia TEXT NOT NULL,
+                evento TEXT NOT NULL,
+                cantidad INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, dia, evento)
+            );
+            CREATE INDEX IF NOT EXISTS idx_uso_diario_dia ON uso_diario(dia, evento);
+        """)
+        # Se guardan 13 meses (alcanza para comparar contra el mismo mes del año
+        # anterior). Corre en cada arranque; borrar lo que ya no está es idempotente.
+        try:
+            from fechas import hoy_art_date as _hoy_uso
+            conn.execute("DELETE FROM uso_diario WHERE dia < ?",
+                         ((_hoy_uso() - timedelta(days=_USO_DIAS_GUARDADOS)).isoformat(),))
+            conn.commit()
+        except Exception as _ex:
+            logging.getLogger(__name__).warning("poda de uso_diario falló (no fatal): %s", _ex)
 
         # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
         # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
@@ -21522,10 +21550,23 @@ _SQL_USUARIO_REAL = ("email_verified=1 AND is_admin=0 "
                      "AND email NOT LIKE '%+test%'")
 
 
-def _contar_ingresos(conn, desde, hasta) -> dict:
-    """Cuántos usuarios reales iniciaron sesión entre dos días argentinos, los
-    dos incluidos. ÚNICA definición de "usuarios que entraron": la usan la
-    tarjeta de /admin/stats y el selector de período de /admin/logins.
+def _sql_quienes_cuentan(internos: bool = False) -> str:
+    """El filtro de usuarios de los paneles de uso. Por defecto, los REALES.
+    Con `internos`, también los admins y las cuentas internas/de prueba (siempre
+    con el mail confirmado: sin confirmar no se puede entrar)."""
+    return "email_verified=1" if internos else _SQL_USUARIO_REAL
+
+
+def _rango_utc(desde, hasta):
+    """Los dos bordes en UTC de un período de días argentinos, los dos incluidos."""
+    from fechas import inicio_dia_art_en_utc
+    return inicio_dia_art_en_utc(desde), inicio_dia_art_en_utc(hasta + timedelta(days=1))
+
+
+def _contar_ingresos(conn, desde, hasta, internos: bool = False) -> dict:
+    """Cuántos usuarios iniciaron sesión entre dos días argentinos, los dos
+    incluidos. ÚNICA definición de "usuarios que iniciaron sesión": la usan la
+    tarjeta de /admin/stats y el panel de uso de /admin/uso.
 
     Lee `login_history` (una fila por ingreso) y NO `users.last_login_at`:
     esa columna guarda sólo el ÚLTIMO, así que quien entró el 10/9 y otra vez
@@ -21533,13 +21574,10 @@ def _contar_ingresos(conn, desde, hasta) -> dict:
     pasado se puede contar.
 
     ⚠️ Mide INGRESOS, no uso: la sesión dura TOKEN_DAYS (7) días sin
-    renovarse, así que quien entró el lunes y usa la app todo la semana cuenta
-    el lunes y nada más. En ventanas de 7 días o más es una buena aproximación
-    de "quién usó la app"; en "Hoy" se queda corto."""
-    from fechas import inicio_dia_art_en_utc
-    lo = inicio_dia_art_en_utc(desde)
-    hi = inicio_dia_art_en_utc(hasta + timedelta(days=1))
-    reales = f"SELECT id FROM users WHERE {_SQL_USUARIO_REAL}"
+    renovarse, así que quien entró el lunes y usa la app toda la semana cuenta
+    el lunes y nada más. "Usó la app" se cuenta aparte, con `uso_diario`."""
+    lo, hi = _rango_utc(desde, hasta)
+    reales = f"SELECT id FROM users WHERE {_sql_quienes_cuentan(internos)}"
     r = conn.execute(
         f"""SELECT COUNT(DISTINCT user_id) AS usuarios, COUNT(*) AS ingresos
               FROM login_history
@@ -21556,7 +21594,7 @@ def _contar_ingresos(conn, desde, hasta) -> dict:
     # Antes se dividía por "Usuarios totales", que suma cuentas que nunca
     # confirmaron el mail (no pueden entrar) y a los admins.
     base = conn.execute(
-        f"SELECT COUNT(*) FROM users WHERE {_SQL_USUARIO_REAL} AND created_at < ?",
+        f"SELECT COUNT(*) FROM users WHERE {_sql_quienes_cuentan(internos)} AND created_at < ?",
         (hi,)).fetchone()[0]
     usuarios = int(r["usuarios"] or 0)
     return {
@@ -21570,12 +21608,83 @@ def _contar_ingresos(conn, desde, hasta) -> dict:
     }
 
 
-@app.get("/api/admin/logins")
-def admin_logins(desde: Optional[str] = None, hasta: Optional[str] = None,
-                 uid: int = Depends(get_admin_user)):
-    """Usuarios que iniciaron sesión en un período (días argentinos, los dos
-    incluidos). Sin parámetros: los últimos 7 días, igual que la tarjeta."""
+# ─── Uso de la app: lo que manda el frontend ──────────────────────────────────
+# Nombre de evento: los `track()` del frontend ('position_add_completed') o una
+# pantalla ('pantalla:/posiciones'). La lista cerrada con el nombre legible vive
+# en frontend/src/utils/usoCatalogo.js; acá sólo se frena lo que no tiene forma
+# de evento, para que nadie llene la tabla de basura.
+_USO_EVENTO_RE = re.compile(r"^(?:[a-z][a-z0-9_]{1,47}|pantalla:/[a-z0-9_/-]{0,40})$")
+_USO_MAX_EVENTOS = 80      # nombres distintos por envío
+_USO_MAX_CANTIDAD = 500    # toques de un mismo evento por envío
+_USO_APP_ABIERTA = "app_abierta"
+
+
+class UsoEventosIn(BaseModel):
+    eventos: dict
+
+
+@app.post("/api/uso/eventos", status_code=204)
+def registrar_uso(data: UsoEventosIn, request: Request, uid: int = Depends(get_current_user)):
+    """Suma los toques que juntó el navegador (lo manda en tandas cada 30 s y
+    al cerrar la pestaña) al contador del día argentino de hoy.
+
+    Usa `get_current_user` y no `get_effective_user` a propósito: el uso es de
+    quien está sentado frente a la pantalla. Un asesor mirando la cartera de un
+    cliente suma al asesor, no al cliente, y el muro de "elegí un plan" no
+    frena la medición (quien lo ve también está usando la app)."""
+    _check_rate_limit(request, max_calls=30, window_seconds=60, suffix=f"uso:{uid}")
+    if not isinstance(data.eventos, dict) or len(data.eventos) > _USO_MAX_EVENTOS:
+        raise HTTPException(400, "Envío de uso inválido.")
+    filas = []
+    for ev, n in data.eventos.items():
+        if not isinstance(ev, str) or not _USO_EVENTO_RE.match(ev):
+            continue
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0:
+            continue
+        filas.append((ev, min(n, _USO_MAX_CANTIDAD)))
+    if not filas:
+        return Response(status_code=204)
+    from fechas import hoy_art
+    dia = hoy_art()
+    with db_abierta() as conn:
+        for ev, n in filas:
+            conn.execute(
+                """INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?,?,?,?)
+                   ON CONFLICT (user_id, dia, evento) DO UPDATE SET cantidad = uso_diario.cantidad + excluded.cantidad""",
+                (uid, dia, ev, n))
+        conn.commit()
+    return Response(status_code=204)
+
+
+def _mediana(valores):
+    if not valores:
+        return 0
+    v = sorted(valores)
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2
+
+
+_CARTERA_TRAMOS = [("0", 0, 0), ("1 a 5", 1, 5), ("6 a 20", 6, 20),
+                   ("21 a 100", 21, 100), ("más de 100", 101, None)]
+
+
+@app.get("/api/admin/uso")
+def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
+              internos: bool = False, uid: int = Depends(get_admin_user)):
+    """Todo el panel "Uso de Rendi" de un período (días argentinos, los dos
+    incluidos). Sin fechas: los últimos 7 días, igual que la tarjeta.
+
+    Dos medidas distintas, y las dos se muestran:
+      · iniciaron sesión → `login_history`, hay historia desde mayo 2026.
+      · usaron la app    → `uso_diario`, desde el día que se publicó la
+        medición. Es la que cuenta a quien entra con la sesión ya abierta.
+    "Activos" del período = cualquiera de las dos."""
     from datetime import date as _date
+    from fechas import dia_art
     hoy = _hoy_art_date()
     try:
         d_hasta = _date.fromisoformat(hasta) if hasta else hoy
@@ -21586,15 +21695,190 @@ def admin_logins(desde: Optional[str] = None, hasta: Optional[str] = None,
         raise HTTPException(400, "«Desde» no puede ser posterior a «Hasta».")
     if d_hasta > hoy:
         d_hasta = hoy
+    largo = (d_hasta - d_desde).days + 1
+    p_hasta = d_desde - timedelta(days=1)
+    p_desde = p_hasta - timedelta(days=largo - 1)
+    lo, hi = _rango_utc(d_desde, d_hasta)
+    filtro = _sql_quienes_cuentan(internos)
+    quienes = f"SELECT id FROM users WHERE {filtro}"
+    s_desde, s_hasta = d_desde.isoformat(), d_hasta.isoformat()
+
+    def _a_dia(ts):
+        return dia_art(datetime.fromisoformat(str(ts).replace("T", " ")[:19])).isoformat()
+
     with db_abierta() as conn:
-        out = _contar_ingresos(conn, d_desde, d_hasta)
-        primero = conn.execute("SELECT MIN(created_at) FROM login_history").fetchone()[0]
-    # Antes de esta fecha no hay registro de ingresos: un período que arranca
-    # antes cuenta de menos, y la pantalla lo tiene que decir.
-    from fechas import dia_art
-    out["datos_desde"] = (dia_art(datetime.fromisoformat(str(primero).replace("T", " ")[:19])).isoformat()
-                          if primero else None)
-    return out
+        ingresos = _contar_ingresos(conn, d_desde, d_hasta, internos)
+        ingresos_prev = _contar_ingresos(conn, p_desde, p_hasta, internos)
+        primero_login = conn.execute("SELECT MIN(created_at) FROM login_history").fetchone()[0]
+        uso_desde = conn.execute("SELECT MIN(dia) FROM uso_diario").fetchone()[0]
+
+        # ── Ingresos por usuario y por día (en hora argentina) ──
+        primer_ingreso = {r["user_id"]: _a_dia(r["p"]) for r in conn.execute(
+            f"SELECT user_id, MIN(created_at) AS p FROM login_history WHERE user_id IN ({quienes}) GROUP BY user_id")}
+        logins_por_usuario, ultimo_login, por_dia_login = {}, {}, {}
+        for r in conn.execute(
+                f"""SELECT user_id, created_at FROM login_history
+                     WHERE created_at >= ? AND created_at < ? AND user_id IN ({quienes})""", (lo, hi)):
+            u, ts = r["user_id"], str(r["created_at"])
+            logins_por_usuario[u] = logins_por_usuario.get(u, 0) + 1
+            if ts > ultimo_login.get(u, ""):
+                ultimo_login[u] = ts
+            por_dia_login.setdefault(_a_dia(ts), set()).add(u)
+
+        # ── Uso de la app (clics y pantallas) ──
+        dias_con_uso, toques, por_dia_uso, ultimo_uso = {}, {}, {}, {}
+        for r in conn.execute(
+                f"""SELECT user_id, dia, evento, cantidad FROM uso_diario
+                     WHERE dia >= ? AND dia <= ? AND user_id IN ({quienes})""", (s_desde, s_hasta)):
+            u, d = r["user_id"], r["dia"]
+            dias_con_uso.setdefault(u, set()).add(d)
+            por_dia_uso.setdefault(d, set()).add(u)
+            if d > ultimo_uso.get(u, ""):
+                ultimo_uso[u] = d
+            ev = r["evento"]
+            if not ev.startswith("pantalla:") and ev != _USO_APP_ABIERTA:
+                toques[u] = toques.get(u, 0) + int(r["cantidad"] or 0)
+
+        # ── IA: `ai_usage_daily.date` es el día del servidor (UTC) ──
+        ia_por_usuario = {}
+        for r in conn.execute(
+                f"""SELECT user_id, SUM(COALESCE(analyses_count,0) + COALESCE(chat_count,0)
+                                     + COALESCE(hub_queries_count,0) + COALESCE(listen_count,0)) AS n
+                      FROM ai_usage_daily
+                     WHERE date >= ? AND date <= ? AND user_id IN ({quienes})
+                     GROUP BY user_id""", (s_desde, s_hasta)):
+            if int(r["n"] or 0) > 0:
+                ia_por_usuario[r["user_id"]] = int(r["n"])
+
+        importaron = {r["user_id"] for r in conn.execute(
+            f"""SELECT DISTINCT user_id FROM import_batches
+                 WHERE status='confirmed' AND COALESCE(confirmed_at, created_at) >= ?
+                   AND COALESCE(confirmed_at, created_at) < ? AND user_id IN ({quienes})""", (lo, hi))}
+
+        activos = set(logins_por_usuario) | set(dias_con_uso)
+
+        # ── La lista: la MISMA fila que la tabla "Usuarios" del panel ──
+        from datetime import datetime as _dt
+        now_iso = _dt.utcnow().isoformat()
+        ids = sorted(activos)
+        filas = []
+        for i in range(0, len(ids), 400):
+            tanda = ids[i:i + 400]
+            ph = ",".join("?" * len(tanda))
+            filas += [_shape_admin_user_row(r, now_iso) for r in conn.execute(
+                _ADMIN_USERS_SELECT + f" WHERE u.id IN ({ph})", tuple(tanda))]
+        filas = _completar_estado_admin(conn, filas)
+
+        # ── Cartera: posiciones y operaciones de cada usuario que cuenta ──
+        pos = {r["user_id"]: int(r["n"]) for r in conn.execute(
+            f"SELECT user_id, COUNT(*) AS n FROM positions WHERE user_id IN ({quienes}) GROUP BY user_id")}
+        ops = {r["user_id"]: int(r["n"]) for r in conn.execute(
+            f"SELECT user_id, COUNT(*) AS n FROM operations WHERE user_id IN ({quienes}) GROUP BY user_id")}
+        con_cuenta = [r["id"] for r in conn.execute(
+            f"SELECT id FROM users WHERE {filtro} AND created_at < ?", (hi,))]
+
+        # ── Ranking de botones y pantallas, contra el período anterior ──
+        def _ranking(a, b):
+            out = {}
+            for r in conn.execute(
+                    f"""SELECT evento, COUNT(DISTINCT user_id) AS personas, SUM(cantidad) AS cantidad
+                          FROM uso_diario
+                         WHERE dia >= ? AND dia <= ? AND user_id IN ({quienes}) AND evento != ?
+                         GROUP BY evento""", (a.isoformat(), b.isoformat(), _USO_APP_ABIERTA)):
+                out[r["evento"]] = (int(r["personas"]), int(r["cantidad"] or 0))
+            return out
+        rk, rk_prev = _ranking(d_desde, d_hasta), _ranking(p_desde, p_hasta)
+
+    usuarios = []
+    for f in filas:
+        u = f["id"]
+        ult = max(ultimo_uso.get(u, ""), _a_dia(ultimo_login[u]) if u in ultimo_login else "")
+        usuarios.append({
+            "id": u, "email": f["email"], "name": f.get("name"),
+            "plan": f["plan"], "estado": f.get("estado"),
+            "credit_active": f.get("credit_active"), "days_remaining": f.get("days_remaining"),
+            "requires_plan": f.get("requires_plan"),
+            "ingresos": logins_por_usuario.get(u, 0),
+            "dias_con_uso": len(dias_con_uso.get(u, ())),
+            "ultimo": ult or None,
+            "primera_vez": primer_ingreso.get(u, "") >= s_desde and primer_ingreso.get(u, "") <= s_hasta,
+            "posiciones": pos.get(u, 0), "operaciones": ops.get(u, 0),
+            "brokers": int(f.get("brokers_count") or 0),
+            "ia": ia_por_usuario.get(u, 0),
+            "toques": toques.get(u) if u in dias_con_uso else None,
+        })
+
+    por_dia = []
+    d = d_desde
+    while d <= d_hasta:
+        k = d.isoformat()
+        logueados = por_dia_login.get(k, set())
+        por_dia.append({
+            "dia": k,
+            # activos = iniciaron sesión O usaron la app ese día (sin contar dos veces).
+            "activos": len(logueados | por_dia_uso.get(k, set())),
+            "ingresaron": len(logueados),
+            "primera_vez": sum(1 for u in logueados if primer_ingreso.get(u) == k),
+            "usaron_app": len(por_dia_uso.get(k, ())),
+        })
+        d += timedelta(days=1)
+
+    # Comparar contra el período anterior sólo si ese período ya estaba medido:
+    # si no, todo saldría "nuevo" y parecería que creció.
+    se_compara_uso = bool(uso_desde) and uso_desde <= p_desde.isoformat()
+    datos_desde = _a_dia(primero_login) if primero_login else None
+    se_compara_login = bool(datos_desde) and datos_desde <= p_desde.isoformat()
+
+    def _lista_ranking(es_pantalla):
+        out = []
+        for ev, (personas, cantidad) in rk.items():
+            if ev.startswith("pantalla:") != es_pantalla:
+                continue
+            out.append({"evento": ev, "personas": personas, "cantidad": cantidad,
+                        "personas_antes": rk_prev.get(ev, (0, 0))[0] if se_compara_uso else None})
+        out.sort(key=lambda x: (-x["personas"], -x["cantidad"], x["evento"]))
+        return out
+
+    inactivos = [u for u in con_cuenta if u not in activos]
+    activos_l = [u for u in con_cuenta if u in activos]
+
+    def _tramos(grupo):
+        cuenta = []
+        for nombre, mn, mx in _CARTERA_TRAMOS:
+            cuenta.append(sum(1 for u in grupo if pos.get(u, 0) >= mn and (mx is None or pos.get(u, 0) <= mx)))
+        return cuenta
+
+    t_act, t_inact = _tramos(activos_l), _tramos(inactivos)
+    medido_desde = uso_desde if uso_desde and uso_desde <= s_hasta else None
+    return {
+        "desde": s_desde, "hasta": s_hasta, "internos": internos,
+        "anterior": {"desde": p_desde.isoformat(), "hasta": p_hasta.isoformat()},
+        "datos_desde": datos_desde,
+        "uso_desde": uso_desde,
+        "resumen": {
+            **{k: ingresos[k] for k in ("usuarios", "ingresos", "primera_vez", "volvieron", "base")},
+            # None = el período anterior cae antes de que hubiera registro.
+            "usuarios_antes": ingresos_prev["usuarios"] if se_compara_login else None,
+            # None = el período termina antes de que empezara la medición.
+            "usaron_app": len({u for k, us in por_dia_uso.items() for u in us}) if medido_desde else None,
+            "activos": len(activos),
+            "usaron_ia": len(ia_por_usuario),
+            "importaron": len(importaron),
+        },
+        "por_dia": por_dia,
+        "usuarios": usuarios,
+        "ranking": {"botones": _lista_ranking(False), "pantallas": _lista_ranking(True)},
+        "cartera": {
+            "tramos": [{"rango": n, "activos": a, "inactivos": b}
+                       for (n, _, _), a, b in zip(_CARTERA_TRAMOS, t_act, t_inact)],
+            "activos": {"cuantos": len(activos_l),
+                        "posiciones": _mediana([pos.get(u, 0) for u in activos_l]),
+                        "operaciones": _mediana([ops.get(u, 0) for u in activos_l])},
+            "inactivos": {"cuantos": len(inactivos),
+                          "posiciones": _mediana([pos.get(u, 0) for u in inactivos]),
+                          "operaciones": _mediana([ops.get(u, 0) for u in inactivos])},
+        },
+    }
 
 
 @app.get("/api/admin/stats")
@@ -21613,7 +21897,7 @@ def admin_stats(uid: int = Depends(get_admin_user)):
             f"SELECT COUNT(*) FROM users WHERE created_at >= datetime('now','-7 days') AND {NOTEST}"
         ).fetchone()[0]
         # Hoy y los 6 días argentinos anteriores, con la MISMA cuenta que el
-        # selector de período (/api/admin/logins sin parámetros da lo mismo).
+        # panel de uso (/api/admin/uso sin parámetros da lo mismo).
         _hoy = _hoy_art_date()
         _ingresos_7d = _contar_ingresos(conn, _hoy - timedelta(days=6), _hoy)
         active_last_7d = _ingresos_7d["usuarios"]
