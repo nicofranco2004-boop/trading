@@ -305,11 +305,17 @@ class ElDolarDelCostoTest(unittest.TestCase):
         número — que es exactamente lo que pasaba."""
         import inspect, re
         import main
-        fuente = inspect.getsource(main._valuate_positions_for_chat)
-        self.assertIn("costo='compra'", fuente,
+        # La valuación del chat y el movimiento del día (get_portfolio_today)
+        # comparten la lectura y la valuación del lote: el guard vigila esas
+        # dos piezas Y que los dos caminos pasen por ellas.
+        for camino in (main._valuate_positions_for_chat, main._cartera_hoy_para_chat):
+            fuente = inspect.getsource(camino)
+            self.assertIn("_valuar_lote_chat(", fuente, camino.__name__)
+            self.assertIn("_chat_valuation_inputs(", fuente, camino.__name__)
+        self.assertIn("costo='compra'", inspect.getsource(main._valuar_lote_chat),
                       "el chat volvió a caer al dólar de hoy en silencio")
         # Y que la consulta traiga el dato: sin tc_compra no se puede.
-        self.assertIn('tc_compra', fuente,
+        self.assertIn('tc_compra', inspect.getsource(main._chat_valuation_inputs),
                       "sin tc_compra en la consulta, 'compra' no cambia nada")
 
     def test_los_OTROS_llamadores_no_cambian(self):
