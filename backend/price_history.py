@@ -89,7 +89,12 @@ def _fetch_yfinance(symbol: str, desde: str) -> dict:
     """Serie diaria de cierres. Aislado a propósito: los tests inyectan otro
     fetcher y no tocan la red."""
     import yfinance as yf
-    hist = yf.Ticker(symbol).history(start=desde, interval="1d", auto_adjust=True)
+    # La cripto llega pelada ('BTC', la clave de `position_price_key`) y en Yahoo
+    # el nombre pelado es OTRA cosa (medido 2026-10-08: 'BTC' es un fondo de NYSE,
+    # 'USDC' un instrumento de US$ 0,0012). Mismo nombre que la foto diaria.
+    from main import yahoo_de_cripto
+    hist = yf.Ticker(yahoo_de_cripto(symbol) or symbol).history(
+        start=desde, interval="1d", auto_adjust=True)
     out = {}
     for idx, row in hist.iterrows():
         cierre = row.get("Close")

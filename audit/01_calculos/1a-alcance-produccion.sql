@@ -432,11 +432,11 @@ WHERE UPPER(TRIM(COALESCE(o.asset, ''))) IN (
           'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BONK', 'BTC', 'CFX',
           'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
           'ENJ', 'EOS', 'ETC', 'ETH', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS',
-          'GALA', 'GMX', 'GRT', 'HBAR', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
+          'GALA', 'GMX', 'GRT', 'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
           'JTO', 'KAVA', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC', 'MKR',
           'NEAR', 'NEO', 'ONT', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'PYTH', 'QTUM',
           'RDNT', 'REN', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
-          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TRX', 'UNI', 'VET',
+          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'VET',
           'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
           'ZIL', 'ZRX'
       )
@@ -480,11 +480,11 @@ WHERE COALESCE(p.is_cash, 0) = 0
           'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BONK', 'BTC', 'CFX',
           'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
           'ENJ', 'EOS', 'ETC', 'ETH', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS',
-          'GALA', 'GMX', 'GRT', 'HBAR', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
+          'GALA', 'GMX', 'GRT', 'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
           'JTO', 'KAVA', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC', 'MKR',
           'NEAR', 'NEO', 'ONT', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'PYTH', 'QTUM',
           'RDNT', 'REN', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
-          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TRX', 'UNI', 'VET',
+          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'VET',
           'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
           'ZIL', 'ZRX'
       )
@@ -548,6 +548,50 @@ WHERE COALESCE(p.is_cash, 0) = 0
           'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',
           'crypto.com', 'fiwind', 'gemini', 'huobi', 'kraken',
           'kucoin', 'okx', 'ripio', 'satoshitango'
+      )
+;
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q13 · C-2 — Cripto que Yahoo cotizaba con otro nombre (o no cotizaba)
+-- ────────────────────────────────────────────────────────────────────────────
+-- Medido 2026-10-08: a Yahoo se le pedía cada cripto como '<SÍMBOLO>-USD', y para
+-- varias ese nombre es OTRA moneda: 'TON-USD' es "TON Token" (US$ 0,0045, no
+-- Toncoin US$ 1,36), 'ARB-USD' "ARbit" (US$ 0,0006, no Arbitrum US$ 0,17),
+-- 'CORE-USD' "cVault.finance" (US$ 5.924, no Core US$ 0,018), CYBER, ID; y 'USDC'
+-- pelado un instrumento de US$ 0,0012. Para otras el nombre no trae nada (UNI,
+-- SUI, PEPE, APT…): quedaban con el último precio conocido o al costo. ICP y USDT
+-- tenían precio pero no variación del día. Desde `CRYPTO_YF` con los nombres de
+-- Yahoo se valúan bien HACIA ADELANTE; las fotos diarias ya guardadas no cambian.
+-- Las listas de acá son las de `main._YAHOO_CRIPTO_DISTINTO` + ICP/USDT/USDC
+-- (tests/test_alcance_auditoria.py las compara).
+--
+-- PREOCUPANTE SI: precio_de_otra_moneda > 0. Esas tenencias cambian de valor el
+-- día que se publique el arreglo, y la curva de evolución va a mostrar ese salto.
+
+SELECT
+    COUNT(*)                                        AS tenencias_mal_cotizadas,
+    COUNT(DISTINCT p.user_id)                       AS usuarios_afectados,
+    SUM(CASE WHEN UPPER(TRIM(p.asset)) IN (
+            'TON', 'ARB', 'CORE', 'CYBER', 'ID', 'USDC'
+        ) THEN 1 ELSE 0 END)                        AS precio_de_otra_moneda,
+    COUNT(DISTINCT CASE WHEN UPPER(TRIM(p.asset)) IN (
+            'TON', 'ARB', 'CORE', 'CYBER', 'ID', 'USDC'
+        ) THEN p.user_id END)                       AS usuarios_con_otra_moneda,
+    SUM(CASE WHEN UPPER(TRIM(p.asset)) IN (
+            'ALT', 'APT', 'COMP', 'DEGEN', 'GMX', 'GRT', 'IMX',
+            'MATIC', 'PEPE', 'POL', 'STX', 'SUI', 'UNI'
+        ) THEN 1 ELSE 0 END)                        AS sin_precio_de_yahoo,
+    SUM(CASE WHEN UPPER(TRIM(p.asset)) IN ('ICP', 'USDT')
+        THEN 1 ELSE 0 END)                          AS sin_variacion_del_dia,
+    STRING_AGG(DISTINCT UPPER(TRIM(p.asset)), ',')                                           AS simbolos_en_uso
+FROM positions p
+WHERE COALESCE(p.is_cash, 0) = 0
+  AND COALESCE(p.quantity, 0) > 0
+  AND p.price_override IS NULL
+  AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
+          'ALT', 'APE', 'APT', 'ARB', 'COMP', 'CORE', 'CYBER', 'DEGEN', 'GMX', 'GRT',
+          'ICP', 'ID', 'IMX', 'MATIC', 'PEPE', 'POL', 'STRK', 'STX', 'SUI', 'TON',
+          'UNI', 'USDC', 'USDT'
       )
 ;
 
