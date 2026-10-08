@@ -22441,7 +22441,7 @@ def admin_repair_interes_pf(apply: bool = False, uid: int = Depends(get_admin_us
 def admin_alcance_auditoria(uid: int = Depends(get_admin_user)):
     """Cuánto muerde en producción cada hallazgo de la auditoría de cálculo.
 
-    SOLO LECTURA y SÓLO AGREGADOS: las 13 consultas están escritas para no
+    SOLO LECTURA y SÓLO AGREGADOS: las 14 consultas están escritas para no
     devolver un user_id, un email, un nombre de broker ni una fila individual —
     lo máximo que sale es un COUNT DISTINCT y una suma. `alcance_auditoria`
     verifica eso ANTES de ejecutar: si alguien mete un UPDATE en el .sql, se

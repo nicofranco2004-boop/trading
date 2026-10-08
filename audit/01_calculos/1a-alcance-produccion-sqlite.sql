@@ -644,6 +644,79 @@ WHERE COALESCE(p.is_cash, 0) = 0
 ;
 
 
+-- ────────────────────────────────────────────────────────────────────────────
+-- Q14 · C-3 — Cripto que el buscador ofrecía y la lista de cripto no conocía
+-- ────────────────────────────────────────────────────────────────────────────
+-- Medido 2026-10-08: el buscador y el chat dejaban cargar 22 criptos que no
+-- estaban en `main.CRYPTO_SYMBOLS`, así que para la valuación no eran cripto. En
+-- una cuenta en pesos se pedía '<X>.BA', que no cotiza en ningún lado. En dólares
+-- se pedía el código pelado, y para AR, ENS, FET y QNT el código pelado es una
+-- ACCIÓN de EE.UU. (Antero Resources, EnerSys, Forum Energy, Quantinuum): una
+-- tenencia de Fetch.ai valía lo que una acción de US$ 84, 394 veces más. JUP y
+-- ONE caían en OTRA moneda (Jupiter 1.100 veces menos, Harmony 4,5 veces menos).
+-- La foto diaria y la variación del día no tenían precio para ninguna.
+-- El arreglo mete 19 en la lista con su nombre de Yahoo (más RENDER, el código
+-- nuevo de Render); DASH (DoorDash), ROSE (Rosenbusch) y AGIX (Yahoo no tiene un
+-- precio confiable) quedan afuera y salen del buscador y del chat.
+-- Las listas de acá las compara tests/test_alcance_auditoria.py contra el código.
+--
+-- La columna que manda es el RIESGO del arreglo, no el daño de antes: AR, ENS,
+-- FET y QNT pasan a ser cripto POR EL CÓDIGO, sin mirar dónde está la tenencia.
+-- Una de esas que no está marcada cripto y no vive en un exchange puede ser la
+-- ACCIÓN, y el arreglo la valuaría como la moneda (Forum Energy pasaría de
+-- US$ 84 a US$ 0,21).
+--
+-- PREOCUPANTE SI: acciones_que_pasan_a_cripto > 0. Hay que mirarlas antes de
+-- publicar el arreglo. Al lado: cuántas tenencias entran a la lista (cambian de
+-- precio o lo empiezan a tener), cuántas de AR/ENS/FET/QNT eran cripto valuada
+-- como acción, cuántas estaban en pesos sin precio, y cuántas criptos quedan
+-- afuera (siguen sin cotizarse como cripto).
+
+WITH t AS (
+    SELECT
+        p.user_id                                   AS uid,
+        UPPER(TRIM(p.asset))                        AS sim,
+        CASE WHEN UPPER(TRIM(COALESCE(p.asset_type, ''))) = 'CRYPTO'
+               OR LOWER(TRIM(COALESCE(b.name, ''))) IN (
+                      'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',
+                      'crypto.com', 'fiwind', 'gemini', 'huobi', 'kraken',
+                      'kucoin', 'okx', 'ripio', 'satoshitango'
+                  )
+             THEN 1 ELSE 0 END                      AS es_cripto,
+        CASE WHEN UPPER(TRIM(COALESCE(b.currency, ''))) = 'ARS'
+             THEN 1 ELSE 0 END                      AS en_pesos
+    FROM positions p
+    LEFT JOIN brokers b
+      ON b.user_id = p.user_id
+     AND b.name    = p.broker
+    WHERE COALESCE(p.is_cash, 0) = 0
+      AND COALESCE(p.quantity, 0) > 0
+      AND p.price_override IS NULL
+      AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
+              'AGIX', 'ANKR', 'AR', 'BOME', 'CELO', 'DASH', 'ENA', 'ENS', 'FET',
+              'GMT', 'JASMY', 'JUP', 'KAS', 'KSM', 'MEW', 'MINA', 'OCEAN', 'ONE',
+              'POPCAT', 'QNT', 'RENDER', 'RNDR', 'ROSE'
+          )
+)
+SELECT
+    SUM(CASE WHEN sim IN ('AR', 'ENS', 'FET', 'QNT') AND es_cripto = 0
+        THEN 1 ELSE 0 END)                          AS acciones_que_pasan_a_cripto,
+    SUM(CASE WHEN sim NOT IN ('AGIX', 'DASH', 'ROSE')
+        THEN 1 ELSE 0 END)                          AS tenencias_que_entran,
+    COUNT(DISTINCT CASE WHEN sim NOT IN ('AGIX', 'DASH', 'ROSE')
+        THEN uid END)                               AS usuarios_afectados,
+    SUM(CASE WHEN sim IN ('AR', 'ENS', 'FET', 'QNT') AND es_cripto = 1
+        THEN 1 ELSE 0 END)                          AS cripto_valuada_como_accion,
+    SUM(CASE WHEN sim NOT IN ('AGIX', 'DASH', 'ROSE') AND en_pesos = 1
+        THEN 1 ELSE 0 END)                          AS cripto_en_pesos_sin_precio,
+    SUM(CASE WHEN sim IN ('AGIX', 'DASH', 'ROSE') AND es_cripto = 1
+        THEN 1 ELSE 0 END)                          AS criptos_que_quedan_afuera,
+    GROUP_CONCAT(DISTINCT CASE WHEN sim NOT IN ('AGIX', 'DASH', 'ROSE') OR es_cripto = 1
+        THEN sim END)                               AS simbolos_en_uso
+FROM t
+;
+
+
 -- ============================================================================
 -- CHEQUEO DE SEGURIDAD DEL ARCHIVO
 -- ============================================================================

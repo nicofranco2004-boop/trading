@@ -189,11 +189,22 @@ LECTURA = [
      "(300.000 veces más). Con el arreglo publicado esas tenencias pasan a su valor real "
      "de un día para el otro, y la curva de evolución muestra ese salto. Al lado: cuántas "
      "no tenían precio de Yahoo y cuántas no tenían variación del día."),
+    # ── Criptos del buscador fuera de la lista (2026-10-08, tests/test_cripto_sin_lista.py) ──
+    ("Q14", "acciones_que_pasan_a_cripto",
+     "¿Cuántas tenencias de AR, ENS, FET o QNT parecen la ACCIÓN y no la cripto?",
+     _mayor_a(0, _URGENTE),
+     "Esos cuatro códigos son una cripto (Arweave, ENS, Fetch.ai, Quant) y también una "
+     "acción de Estados Unidos (Antero, EnerSys, Forum Energy, Quantinuum). El arreglo los "
+     "pasa a cripto por el código: una tenencia que no está marcada cripto ni vive en un "
+     "exchange podría ser la acción, y pasaría a valer el precio de la moneda. Hay que "
+     "mirarlas ANTES de publicar el arreglo. Al lado: cuántas tenencias entran a la lista de "
+     "cripto, cuántas eran cripto valuada como acción (Fetch.ai 394 veces de más), cuántas "
+     "estaban en pesos sin precio y cuántas criptos quedan afuera (DASH, ROSE, AGIX)."),
 ]
 
 
 def informe(conn) -> dict:
-    """Corre las 13 consultas y devuelve el resultado ya traducido.
+    """Corre las 14 consultas y devuelve el resultado ya traducido.
 
     Shape:
       { "hallazgos": [ {pregunta, numero, veredicto, que_significa, detalle{}} ],

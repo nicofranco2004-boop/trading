@@ -32,8 +32,8 @@ class TestNoPuedeEscribir(unittest.TestCase):
         secs = alc.secciones()
         # El número exacto no importa por sí mismo; el candado es que agregar una
         # consulta obligue a mirar este archivo. 14 originales + 4 de cripto + 1
-        # de nombres de Yahoo (Q13).
-        self.assertEqual(len(secs), 19, "cambió la cantidad de consultas")
+        # de nombres de Yahoo (Q13) + 1 de las criptos del buscador (Q14).
+        self.assertEqual(len(secs), 20, "cambió la cantidad de consultas")
         alc._verificar_solo_lectura(secs)   # no tira
 
     def test_un_update_infiltrado_aborta_TODO(self):
@@ -257,10 +257,10 @@ class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
                          "Q11 y main.CRYPTO_BROKER_NAMES divergieron")
 
     def test_las_tres_consultas_que_filtran_exchanges_usan_LA_MISMA_lista(self):
-        """Q9, Q11 y Q12 filtran por exchange cada una por su lado. Si una queda
+        """Q9, Q11, Q12 y Q14 filtran por exchange cada una por su lado. Si una queda
         corta, mide de más o de menos sin avisar."""
         esperado = {b.lower() for b in main.CRYPTO_BROKER_NAMES}
-        for sid in ("Q9", "Q11", "Q12"):
+        for sid in ("Q9", "Q11", "Q12", "Q14"):
             self.assertEqual(self._listas_del_sql(sid)["brokers"], esperado, sid)
 
     def test_los_simbolos_ambiguos_de_Q12_son_cripto_de_verdad(self):
@@ -278,6 +278,16 @@ class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
         Si se agrega una a `_YAHOO_CRIPTO_DISTINTO`, la consulta tiene que medirla."""
         esperado = set(main._YAHOO_CRIPTO_DISTINTO) | {"ICP", "USDT", "USDC"}
         self.assertEqual(self._listas_del_sql("Q13")["simbolos"], esperado)
+
+    def test_Q14_mide_las_criptos_que_el_buscador_ofrecia_fuera_de_la_lista(self):
+        """Q14 cuenta las tenencias de las 22 criptos que el buscador y el chat
+        dejaban cargar sin que estuvieran en CRYPTO_SYMBOLS (medido 2026-10-08),
+        más RENDER, el código nuevo de Render. Es una foto de ese día: la lista
+        está escrita acá a propósito, no se deriva del código."""
+        tanda = {"AGIX", "ANKR", "AR", "BOME", "CELO", "DASH", "ENA", "ENS", "FET",
+                 "GMT", "JASMY", "JUP", "KAS", "KSM", "MEW", "MINA", "OCEAN", "ONE",
+                 "POPCAT", "QNT", "RNDR", "ROSE", "RENDER"}
+        self.assertEqual(self._listas_del_sql("Q14")["simbolos"], tanda)
 
     def test_Q9_filtra_por_simbolo_de_cripto_y_no_por_cualquier_venta(self):
         """Sin la lista de símbolos, Q9 contaría TODA venta a precio 0 con
