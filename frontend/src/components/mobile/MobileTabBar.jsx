@@ -228,7 +228,9 @@ function QuickActionsSheet({ onClose }) {
   const navigate = useNavigate()
 
   function handleAction(action) {
-    track('mobile_fab_action', { code: action.code })
+    // Sin evento propio: cada acción ya se mide donde llega (la pantalla, o
+    // «Empezó a agregar/vender»). Marcarla acá contaba el mismo toque dos veces
+    // en el panel de uso (auditoría 2026-10-08).
     onClose()
     navigate(action.to)
   }

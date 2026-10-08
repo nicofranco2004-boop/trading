@@ -10,6 +10,7 @@
 // /clientes — esta página es SOLO el libro.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { track } from '../utils/track'
 import { useNavigate } from 'react-router-dom'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { chartGrid, chartTickSm, chartTooltip, chartReferenceStroke, areaFill, porcionColor, PORCION_RESTO } from '../utils/chartTheme'
@@ -974,6 +975,7 @@ function ReportModal({ onClose }) {
         client_uids: allChecked ? null : [...checked],
       }
       const d = await api.post('/advisor/reports/generate', body)
+      track('informe_generado')
       setResults(d.reports || [])
       if (!(d.reports || []).length) toast.push('No se generó ningún informe — revisá que haya clientes con datos', { type: 'error' })
     } catch (e) {

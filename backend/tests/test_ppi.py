@@ -105,7 +105,11 @@ class PpiParserTest(unittest.TestCase):
         self.assertTrue(any(abs(float(r["monto"]) - 2.0) < 1e-6 for r in fees))  # -2 → FEE
 
     def test_manual_by_sign(self):
-        # Canje +158.34 → INTERES ; Compensación -9.4 → FEE (ambos USD)
+        # Lo que LEE el parser: Canje +158.34 → INTERES ; Compensación -9.4 → FEE.
+        # ⚠️ No es lo que se importa: son pases entre sub-cuentas y el pipeline los
+        # neutraliza (`importing/movimientos_internos.py`; acá vienen sueltos → el
+        # canje entra como DEPÓSITO y la compensación como RETIRO). Lo de punta a
+        # punta lo prueba `tests/test_movimientos_internos.py`.
         self.assertTrue(any(r["tipo"] == "INTERES" and abs(float(r["monto"]) - 158.34) < 1e-6
                             for r in self.rows))
         self.assertTrue(any(r["tipo"] == "FEE" and abs(float(r["monto"]) - 9.4) < 1e-6

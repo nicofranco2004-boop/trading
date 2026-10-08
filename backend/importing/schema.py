@@ -12,6 +12,42 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any
 
 
+# ─── La historia importada que CUENTA ────────────────────────────────────────
+# `import_normalized_tx` es el LOG de lo importado y guarda también lo que ya no
+# cuenta: filas de imports en vista previa o deshechos, y filas que la persona
+# BORRÓ. Borrar un movimiento importado no elimina la fila: le pone `excluded_at`
+# (la lápida), para poder deshacerlo y para que un re-import no lo resucite.
+#
+# Una fila cuenta sólo si su import está confirmado y no tiene lápida. Todo lector
+# que calcule qué TIENE o TUVO la persona, cuánta plata movió, o que decida algo a
+# partir de eso, lee de acá:
+#
+#     f"SELECT … FROM {TX_VIVAS} WHERE b.user_id = ? AND …"
+#     f"SELECT … FROM {tx_vivas('t', 'ib')} WHERE ib.user_id = ? AND …"
+#
+# (`tx_vivas` es lo mismo con otros alias, para no reescribir una consulta que ya
+# llamaba `t` a la fila o `ib` al lote.)
+#
+# Una copia del WHERE en cada consulta es como se perdió el filtro: el
+# reconstructor de la curva a mercado (`_holdings_asof`) lo escribió sin la
+# lápida y seguía valuando a mercado una compra borrada (medido en
+# tests/test_compra_borrada_fuera_de_la_curva.py).
+# Los que miran el log entero A PROPÓSITO (la huella que evita resucitar al
+# re-importar, el deshacer de un lote, los paneles de diagnóstico) leen la tabla
+# directa y figuran, cada uno con su motivo, en tests/test_tx_vivas.py: ese test
+# falla si aparece un lector nuevo sin decidir de qué lado está.
+#
+# Las condiciones van en el ON del JOIN (en un JOIN común es lo mismo que el
+# WHERE) para que el fragmento sea uno solo y cada consulta agregue lo suyo.
+def tx_vivas(n: str = "n", b: str = "b") -> str:
+    """El FROM de las filas importadas que cuentan, con los alias de la consulta."""
+    return (f"import_normalized_tx {n} JOIN import_batches {b} ON {b}.id = {n}.batch_id "
+            f"AND {b}.status = 'confirmed' AND {n}.excluded_at IS NULL")
+
+
+TX_VIVAS = tx_vivas()
+
+
 # ─── Enums (strings simples para serializar a SQLite) ────────────────────────
 
 OP_BUY = "BUY"

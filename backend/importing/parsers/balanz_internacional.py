@@ -379,8 +379,8 @@ class BalanzInternacionalParser(Parser):
                 _emit(base("DIVIDENDO" if cash_in else "IMPUESTO", monto=str(abs(importe))))
                 continue
             if kind == "manual":
-                if "conversion" in desc:
-                    continue
+                # Los pases entre sub-cuentas los resuelve el pipeline para todos los
+                # formatos (`importing/movimientos_internos.py`), no este parser.
                 if cash_in:
                     _emit(base("INTERES", monto=str(abs(importe))))
                 elif _is_tax(desc):
