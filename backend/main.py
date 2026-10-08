@@ -8800,6 +8800,33 @@ _data912_cache = {'data': None, 'ts': 0}
 DATA912_TTL = 300  # 5 minutos — los precios cambian frecuente pero no hace
                    # falta refrescar más rápido para tracking de cartera
 
+# Fuente de precios que no contestó: nombre → cuándo. Durante un minuto no se
+# le vuelve a preguntar y se sirve lo último que se tenga. Sin esto, con data912
+# o ArgentinaDatos caídos, cada símbolo repetía los pedidos: MEDIDO 2026-10-08,
+# un refresco del mapa del Merval (25 acciones) disparaba 125 pedidos, cada uno
+# de hasta 8 s. Pasaba en Posiciones y, desde que la variación del día de las
+# alertas, la watchlist y el inicio sale del mismo lugar, también ahí.
+#
+# Mientras dura la marca se devuelve LO MISMO que devolvió el intento fallido
+# (cada lector ya decidía qué devolver al fallar): la marca ahorra el pedido,
+# no cambia la respuesta.
+_FUENTE_CAIDA: dict = {}   # nombre → (cuándo, lo que se devolvió)
+_FUENTE_REINTENTO_S = 60
+
+
+def _fuente_caida(nombre: str):
+    """(True, la respuesta del intento fallido) si falló hace menos de un
+    minuto; (False, None) si hay que preguntarle."""
+    marca = _FUENTE_CAIDA.get(nombre)
+    if marca and time.time() - marca[0] < _FUENTE_REINTENTO_S:
+        return True, marca[1]
+    return False, None
+
+
+def _marcar_caida(nombre: str, respuesta):
+    _FUENTE_CAIDA[nombre] = (time.time(), respuesta)
+    return respuesta
+
 
 def _fetch_data912_bonds():
     """Fetch + cache de precios live de bonos AR. Devuelve dict {symbol: close}.
@@ -8811,9 +8838,13 @@ def _fetch_data912_bonds():
     cached = _data912_cache['data']
     if cached is not None and now - _data912_cache['ts'] < DATA912_TTL:
         return cached
+    caida, respuesta = _fuente_caida("data912_bonos")
+    if caida:
+        return respuesta
     try:
         result = {}
         pcts = {}
+        vols = {}
         for endpoint in ('arg_bonds', 'arg_corp'):
             r = requests.get(f"https://data912.com/live/{endpoint}", timeout=8)
             if r.status_code != 200:
@@ -8824,6 +8855,7 @@ def _fetch_data912_bonds():
                 if sym and close and close > 0:
                     result[sym] = close
                     pcts[sym] = item.get('pct_change')
+                    vols[sym] = item.get('v')
         if result:  # sólo actualizamos cache si hubo data nueva
             _data912_cache['data'] = result
             _data912_cache['ts'] = now
@@ -8833,14 +8865,22 @@ def _fetch_data912_bonds():
             _data912_bonds_pct.update(pcts)
             for _k in [k for k in _data912_bonds_pct if k not in pcts]:
                 _data912_bonds_pct.pop(_k, None)
+            _data912_bonds_vol.update(vols)
+            for _k in [k for k in _data912_bonds_vol if k not in vols]:
+                _data912_bonds_vol.pop(_k, None)
+        else:
+            _marcar_caida("data912_bonos", result)
         return result
     except Exception:
-        return cached or {}
+        return _marcar_caida("data912_bonos", cached or {})
 
 
 # {ticker data912: pct_change} de la última lectura de bonos. Aparte del dict de
 # precios porque una docena de lugares leen ese como {ticker: número}.
 _data912_bonds_pct: dict = {}
+# {ticker data912: volumen operado HOY} de la misma lectura (ver
+# `_byma_sin_operar_hoy`).
+_data912_bonds_vol: dict = {}
 
 
 def _data912_bond_pct(symbol):
@@ -8896,6 +8936,9 @@ def _fetch_data912_equities():
     cached = _data912_eq_cache['data']
     if cached is not None and now - _data912_eq_cache['ts'] < DATA912_TTL:
         return cached
+    caida, respuesta = _fuente_caida("data912_acciones")
+    if caida:
+        return respuesta
     try:
         result = {}
         for endpoint in ('arg_cedears', 'arg_stocks'):
@@ -8906,13 +8949,16 @@ def _fetch_data912_equities():
                 sym = item.get('symbol')
                 close = item.get('c')
                 if sym and close and close > 0:
-                    result[sym] = {'c': float(close), 'pct': item.get('pct_change')}
+                    result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
+                                   'v': item.get('v')}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
+        else:
+            _marcar_caida("data912_acciones", result)
         return result
     except Exception:
-        return cached or {}
+        return _marcar_caida("data912_acciones", cached or {})
 
 
 def _resolve_ar_equity_price(symbol):
@@ -8990,18 +9036,20 @@ def _fetch_argentinadatos_letras_raw():
     cached = _ad_letras_cache['data']
     if cached is not None and now - _ad_letras_cache['ts'] < AD_LETRAS_TTL:
         return cached
+    caida, respuesta = _fuente_caida("argentinadatos_letras")
+    if caida:
+        return respuesta
     try:
         r = requests.get("https://api.argentinadatos.com/v1/finanzas/letras", timeout=8)
-        if r.status_code != 200:
-            return cached or {}
-        out = _letras_mod.parse_letras_feed(r.json())
-        if out:
-            _ad_letras_cache['data'] = out
-            _ad_letras_cache['ts'] = now
-            return out
-        return cached or {}
+        if r.status_code == 200:
+            out = _letras_mod.parse_letras_feed(r.json())
+            if out:
+                _ad_letras_cache['data'] = out
+                _ad_letras_cache['ts'] = now
+                return out
     except Exception:
-        return cached or {}
+        pass
+    return _marcar_caida("argentinadatos_letras", cached or {})
 
 
 def _fetch_argentinadatos_letras():
@@ -9717,12 +9765,8 @@ RUEDA_BYMA = ("byma", None)
 # histórico pesa 620 KB y tardó 8 s en responder (medido 2026-10-08); AL30 y
 # SPY responden en ~1,5 s.
 _RUEDA_BYMA_REFS = (("bonds", "AL30"), ("cedears", "SPY"))
-_RUEDA_BYMA_HIST: dict = {"ts": 0.0, "ultimas": {}, "fallo": 0.0}
+_RUEDA_BYMA_HIST: dict = {"ts": 0.0, "ultimas": {}}
 _RUEDA_BYMA_HIST_TTL = 1800  # la vela histórica cambia una vez por día
-# Si el histórico no contestó, no se vuelve a preguntar hasta dentro de un
-# minuto: desde que la variación del día de las alertas, la watchlist y el
-# inicio sale de acá, cada pedido esperaría hasta 6 s a un servicio caído.
-_RUEDA_BYMA_REINTENTO = 60
 
 
 def _data912_ultima_vela(tipo: str, ticker: str):
@@ -9753,8 +9797,10 @@ def _rueda_byma(_hoy=None):
     hoy = _hoy or hoy_art()
     now = time.time()
     ultimas = _RUEDA_BYMA_HIST.get("ultimas") or {}
+    # Si el histórico no contestó, un minuto sin volver a preguntarle (ver
+    # `_FUENTE_CAIDA`): cada intento puede esperar hasta 6 s.
     if ((not ultimas or now - _RUEDA_BYMA_HIST.get("ts", 0) > _RUEDA_BYMA_HIST_TTL)
-            and now - _RUEDA_BYMA_HIST.get("fallo", 0) > _RUEDA_BYMA_REINTENTO):
+            and not _fuente_caida("data912_historico")[0]):
         nuevas = {}
         try:
             hechos, _ = _yahoo.varios(lambda ref: _data912_ultima_vela(*ref),
@@ -9770,7 +9816,7 @@ def _rueda_byma(_hoy=None):
             _RUEDA_BYMA_HIST["ultimas"] = ultimas = nuevas
             _RUEDA_BYMA_HIST["ts"] = now
         else:
-            _RUEDA_BYMA_HIST["fallo"] = now
+            _marcar_caida("data912_historico", None)
     live = dict(_fetch_data912_equities() or {})
     for _tipo, ticker in _RUEDA_BYMA_REFS:
         if _tipo == "bonds":
@@ -9806,6 +9852,48 @@ def _rueda_byma(_hoy=None):
             return hoy if puede_ser_hoy else None
         fechas_vistas.append(fecha)
     return max(fechas_vistas) if fechas_vistas else None
+
+
+def _byma_sin_operar_hoy(symbol) -> bool:
+    """¿La fila de data912 de `symbol` dice que HOY no operó (volumen 0)?
+
+    MEDIDO 2026-10-08 11:53, con la rueda abierta: 34 CEDEARs y acciones en
+    pesos y 50 bonos/ONs tenían volumen 0 y un porcentaje distinto de cero — el
+    de su última rueda. CX mostraba −3,48 %, idéntico a su vela del 7. Como la
+    rueda se fecha con dos papeles líquidos (`_rueda_byma`), esas filas salían
+    fechadas HOY: una alerta podía decir "CX cayó 3,5 % hoy" con lo de ayer.
+
+    False si no se sabe (la fila no trae volumen): no inventa nada."""
+    if not symbol:
+        return False
+    if symbol.endswith('.BA'):
+        fila = (_fetch_data912_equities() or {}).get(symbol[:-3])
+        clave = symbol[:-3]
+    else:
+        fila, clave = None, symbol + 'D'
+    if fila is not None:
+        v = fila.get('v')
+    else:
+        if not _fetch_data912_bonds():
+            return False
+        v = _data912_bonds_vol.get(clave)
+    try:
+        return v is not None and float(v) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _fecha_rueda_byma(symbol, fecha_byma, hoy=None):
+    """La fecha de la rueda de UN símbolo de BYMA: la del mercado
+    (`_rueda_byma`), salvo que sea la de hoy y el símbolo todavía no haya
+    operado — ahí su número es de una rueda anterior que no sabemos cuál es:
+    None ("no sé" ≠ "hoy")."""
+    if not fecha_byma:
+        return None
+    from fechas import hoy_art
+    if fecha_byma == (hoy or hoy_art()) and _byma_sin_operar_hoy(symbol):
+        return None
+    return fecha_byma
 
 
 def _prev_close_con_rueda(sym_list, uid):
@@ -10059,6 +10147,12 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
             result[_csym] = ultimos[_csym] = None
 
     _guardar = [s for s in uncached_symbols if s not in _de_data912]
+    if uid is None:
+        # Sin usuario (las alertas) el dólar sale del caché, que puede estar
+        # frío: el CEDEAR cotizado en USD o la cripto en pesos quedan sin
+        # cierre. Guardar ESE "no hay" lo servía 10 min a Posiciones, que con
+        # su usuario sí lo resuelve (BAC.BA mostraba "—").
+        _guardar = [s for s in _guardar if s not in cedear_usd and s not in crypto_ars]
     _prevclose_cache_set({sym: result[sym] for sym in _guardar})
     for sym in _guardar:
         _PREVCLOSE_RUEDA[sym] = ruedas[sym]
@@ -10119,7 +10213,7 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
             continue
         mercado, fecha = ruedas.get(s, (None, None))
         if mercado == "byma" and fecha is None:
-            fecha = fecha_byma
+            fecha = _fecha_rueda_byma(s, fecha_byma)
         out[s] = {
             "symbol": s,
             "price": round(last, 6),
@@ -27193,7 +27287,8 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
                     vp = None
                 mercado, fecha = ruedas.get(k, (None, None))
                 if mercado == "byma" and fecha is None:
-                    fecha = fecha_byma
+                    # Un papel que hoy no operó trae el % de una rueda anterior.
+                    fecha = _fecha_rueda_byma(k, fecha_byma, hoy)
                 # Cripto: su vela es un día UTC. Entre las 21:00 y la medianoche
                 # puede seguir siendo la del día argentino, que también es "hoy".
                 es_hoy = bool(fecha) and (fecha in (hoy_utc, hoy) if mercado == "cripto" else fecha == hoy)

@@ -54,22 +54,28 @@ A_LAS_14 = _dt.datetime(2026, 10, 8, 14, 0)
 
 # ─── El mundo, con la forma cruda de cada proveedor ─────────────────────────
 
-# Feed live de data912 a las 9:32 (medido): idéntico a las velas del 7.
+# Feed live de data912 a las 9:32 (medido): idéntico a las velas del 7. `v` es
+# el volumen operado HOY (todavía no abrió: 0).
 LIVE_0932 = {
-    "arg_cedears": [{"symbol": "AAPL", "c": 27100.0, "pct_change": 1.04, "px_bid": 27050.0},
-                    {"symbol": "SPY", "c": 20900.0, "pct_change": -0.19, "px_bid": 20880.0}],
-    "arg_stocks": [{"symbol": "GGAL", "c": 6000.0, "pct_change": -2.10, "px_bid": 5990.0}],
-    "arg_bonds": [{"symbol": "AL30", "c": 85800.0, "pct_change": -0.05},
-                  {"symbol": "AL30D", "c": 61.20, "pct_change": -0.12}],
+    "arg_cedears": [{"symbol": "AAPL", "c": 27100.0, "pct_change": 1.04, "px_bid": 27050.0, "v": 0.0, "q_op": 12.0},
+                    {"symbol": "SPY", "c": 20900.0, "pct_change": -0.19, "px_bid": 20880.0, "v": 0.0, "q_op": 30.0},
+                    {"symbol": "CX", "c": 15520.0, "pct_change": -3.48, "px_bid": 15500.0, "v": 0.0, "q_op": 8.0}],
+    "arg_stocks": [{"symbol": "GGAL", "c": 6000.0, "pct_change": -2.10, "px_bid": 5990.0, "v": 0.0, "q_op": 40.0}],
+    "arg_bonds": [{"symbol": "AL30", "c": 85800.0, "pct_change": -0.05, "v": 0.0},
+                  {"symbol": "AL30D", "c": 61.20, "pct_change": -0.12, "v": 0.0}],
     "arg_corp": [],
 }
-# La misma hora con la rueda del 8 ya abierta.
+# La misma hora con la rueda del 8 ya abierta. CX todavía no operó: trae el
+# precio y el % del 7, idénticos a su vela (MEDIDO 2026-10-08 11:53).
 LIVE_ABIERTA = {
-    "arg_cedears": [{"symbol": "AAPL", "c": 27300.0, "pct_change": 0.74, "px_bid": 27280.0},
-                    {"symbol": "SPY", "c": 20950.0, "pct_change": 0.24, "px_bid": 20940.0}],
-    "arg_stocks": [{"symbol": "GGAL", "c": 5850.0, "pct_change": -2.50, "px_bid": 5840.0}],
-    "arg_bonds": [{"symbol": "AL30", "c": 86200.0, "pct_change": 0.47},
-                  {"symbol": "AL30D", "c": 61.38, "pct_change": 0.30}],
+    "arg_cedears": [{"symbol": "AAPL", "c": 27300.0, "pct_change": 0.74, "px_bid": 27280.0, "v": 3.1e8, "q_op": 12.0},
+                    {"symbol": "SPY", "c": 20950.0, "pct_change": 0.24, "px_bid": 20940.0, "v": 9.5e8, "q_op": 30.0},
+                    {"symbol": "CX", "c": 15520.0, "pct_change": -3.48, "px_bid": 15500.0, "v": 0.0, "q_op": 8.0}],
+    "arg_stocks": [{"symbol": "GGAL", "c": 5850.0, "pct_change": -2.50, "px_bid": 5840.0, "v": 2.2e9, "q_op": 40.0}],
+    "arg_bonds": [{"symbol": "AL30", "c": 86200.0, "pct_change": 0.47, "v": 7.4e9},
+                  {"symbol": "AL30D", "c": 61.38, "pct_change": 0.30, "v": 1.1e6},
+                  {"symbol": "BAM27", "c": 1.02, "pct_change": -0.64, "v": 0.0},
+                  {"symbol": "BAM27D", "c": 1.01, "pct_change": -0.64, "v": 0.0}],
     "arg_corp": [],
 }
 # Última vela histórica de data912 de las referencias con que se fecha la rueda.
@@ -122,7 +128,7 @@ def _vaciar_caches():
     main._data912_cache.update({"data": None, "ts": 0})
     main._data912_bonds_pct.clear()
     main._ad_letras_cache.update({"data": None, "ts": 0})
-    main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}, "fallo": 0})
+    main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}})
     for c in (main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA, main._PREVCLOSE_ULTIMO,
               hm._QUOTE_CACHE):
         c.clear()
@@ -337,3 +343,100 @@ def test_con_el_historico_caido_no_se_le_pregunta_en_cada_pedido(conn):
             segundo = main._variacion_del_dia(["AAPL.BA"])["AAPL.BA"]
     assert primero["as_of"] is None and segundo["as_of"] is None
     assert len(pedidos) == 2              # AL30 y SPY, una sola vez
+
+
+def test_con_data912_y_argentinadatos_caidos_no_se_repite_el_pedido_por_cada_accion(conn):
+    """MEDIDO 2026-10-08: con las dos fuentes caídas, un refresco del mapa del
+    Merval (25 acciones) disparaba 125 pedidos de hasta 8 s cada uno — cada
+    símbolo volvía a preguntar. Ahora la caída queda anotada un minuto."""
+    pedidos = []
+
+    def caido(url, *a, **k):
+        pedidos.append(url)
+        return _Resp([], 503)
+
+    with mundo(yahoo=pd.DataFrame()), patch("requests.get", side_effect=caido):
+        hm._build_movers("merval")
+        hm._QUOTE_CACHE.clear()
+        hm._build_movers("merval")          # el segundo, dentro del minuto
+    assert len([u for u in pedidos if "data912.com/live/" in u]) == 4
+    assert len([u for u in pedidos if "argentinadatos" in u]) == 1
+
+
+def test_las_alertas_con_el_dolar_frio_no_le_dejan_un_hueco_a_posiciones(conn):
+    """Las alertas corren sin usuario: con el caché del dólar frío, BAC.BA (un
+    CEDEAR cotizado en USD) no tiene precio en pesos. Ese "no hay" se guardaba
+    en el caché que comparte Posiciones, y la columna mostraba "—" 10 minutos
+    aunque con su usuario sí lo resolvía."""
+    with mundo(), patch.object(main, "_current_ccl", return_value=None):
+        assert "BAC.BA" not in main._variacion_del_dia(["BAC.BA"])
+        with patch.object(main, "_display_ccl", return_value=1500.0):
+            cierre = main.get_prev_close("BAC.BA", 1)["BAC.BA"]
+    assert cierre == round(40.0 * 1500.0 / main.CEDEAR_USD_RATIOS["BAC"], 4)
+
+
+# ─── 6. Un papel que hoy no operó trae el número de su última rueda ─────────
+
+def test_el_cedear_que_hoy_no_opero_no_dice_hoy(conn):
+    """CX con la rueda abierta y volumen 0: −3,48 % es lo del 7. Con la fecha
+    del mercado (SPY ya operó: "hoy") salía como movimiento de hoy."""
+    with mundo():
+        q = hm._fetch_batch_quotes(["CX.BA", "AAPL.BA"])
+    assert q["CX.BA"]["change_pct"] == -3.48
+    assert (q["CX.BA"]["as_of"], q["CX.BA"]["is_today"]) == (None, False)
+    assert (q["AAPL.BA"]["as_of"], q["AAPL.BA"]["is_today"]) == (HOY, True)   # el control
+
+
+def test_la_on_que_hoy_no_opero_tampoco(conn):
+    with mundo():
+        q = main._variacion_del_dia(["BAM27", "AL30"])
+    assert q["BAM27"]["as_of"] is None
+    assert q["AL30"]["as_of"] == HOY
+
+
+def test_la_alerta_no_dispara_con_el_cedear_que_hoy_no_opero(conn):
+    """El motor entero: tenencia de CX en pesos, alerta de −3 % en la cartera.
+    Con la rueda abierta y CX sin operar, el −3,48 % de ayer no dispara."""
+    _posicion(conn, "IOL", "CX", "cedear", 50, 700_000, "ARS")
+    _alerta_de_cartera(conn, down_pct=3)
+    with patch.object(ae, "_deliver", lambda *a, **k: (True, False)), \
+         patch.object(ae, "_market_open_now", lambda now: True), mundo():
+        assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_antes_de_abrir_el_volumen_cero_no_cambia_nada(conn):
+    """A las 9:32 todo tiene volumen 0 y la rueda del mercado ya es la del 7:
+    el volumen sólo importa cuando la rueda es la de hoy."""
+    with mundo(live=LIVE_0932):
+        q = hm._fetch_batch_quotes(["AAPL.BA"])["AAPL.BA"]
+    assert (q["as_of"], q["is_today"]) == (AYER, False)
+
+
+def test_la_marca_de_caida_ahorra_el_pedido_pero_no_cambia_la_respuesta():
+    """Cada lector ya decidía qué devolver al fallar (con error del servidor:
+    nada, y Posiciones cae a Yahoo; con la conexión cortada: la última lectura).
+    Durante el minuto de la marca se devuelve exactamente eso."""
+    _vaciar_caches()
+    main._data912_eq_cache.update({"data": {"AAPL": {"c": 1.0, "pct": 0.0}}, "ts": 0})
+    pedidos = []
+
+    def error_del_servidor(url, *a, **k):
+        pedidos.append(url)
+        return _Resp([], 503)
+
+    with patch("requests.get", side_effect=error_del_servidor):
+        assert main._fetch_data912_equities() == {}
+        assert main._fetch_data912_equities() == {}
+    assert len(pedidos) == 2                 # los dos endpoints, una sola vez
+
+    main._FUENTE_CAIDA.clear()
+
+    def sin_conexion(url, *a, **k):
+        pedidos.append(url)
+        raise ConnectionError("sin red")
+
+    with patch("requests.get", side_effect=sin_conexion):
+        assert main._fetch_data912_equities() == {"AAPL": {"c": 1.0, "pct": 0.0}}
+        assert main._fetch_data912_equities() == {"AAPL": {"c": 1.0, "pct": 0.0}}
+    assert len(pedidos) == 3
+    _vaciar_caches()

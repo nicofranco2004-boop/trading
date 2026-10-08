@@ -570,7 +570,9 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
              "bonds/AL30": [{"date": lunes, "c": 85800.0, "dr": -0.0005}]}
 
     def _feed(cedears):
-        filas = [{"symbol": s, "c": c, "pct_change": p} for s, (c, p) in cedears.items()]
+        # `v`: volumen de hoy. Todos operan (si no, su % no sería de hoy).
+        filas = [{"symbol": s, "c": c, "pct_change": p, "v": 1e6}
+                 for s, (c, p) in cedears.items()]
         return {"arg_cedears": filas, "arg_stocks": [], "arg_corp": [],
                 "arg_bonds": [{"symbol": "AL30", "c": 85800.0, "pct_change": -0.05}]}
 
@@ -593,7 +595,7 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
     def _correr(live):
         main._data912_eq_cache.update({"data": None, "ts": 0})
         main._data912_cache.update({"data": None, "ts": 0})
-        main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}, "fallo": 0})
+        main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}})
         hm._QUOTE_CACHE.clear()
         monkeypatch.setattr(requests, "get", _servir(live))
         return ae.evaluate_alerts(conn, only_user=1)["fired"]
@@ -620,7 +622,7 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
     hm._QUOTE_CACHE.clear()
     main._data912_eq_cache.update({"data": None, "ts": 0})
     main._data912_cache.update({"data": None, "ts": 0})
-    main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}, "fallo": 0})
+    main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}})
 
 
 # ─── Un mail por alerta, no uno por activo ──────────────────────────────────
