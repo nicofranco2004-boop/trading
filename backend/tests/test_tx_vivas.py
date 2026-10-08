@@ -68,6 +68,10 @@ LEEN_EL_LOG = {
     ("main.py", "_evento_de_fila"): "cuándo se confirmó el lote de la fila borrada",
     ("main.py", "_eventos_de_journal_viejo"): "arma los eventos de un borrado viejo desde sus filas con lápida",
     ("main.py", "_recalcular_mediciones"): "si la fila borrada sigue existiendo (o se revirtió su import)",
+    # El aportado de las fotos tras borrar un depósito/retiro importado: las fotos
+    # todavía muestran la fila que se está borrando y sus gemelos borrados antes.
+    ("main.py", "_entrada_de_movimiento_importado"): "los gemelos YA borrados de la fila: cada uno se llevó una capa de las fotos",
+    ("main.py", "_neto_de_imports"): "el salto que muestran las fotos incluye la fila que se borra y sus gemelos borrados",
     # Scripts de reparación de una sola vez, sobre lotes puntuales.
     ("scripts/backfill_currency_fix.py", "correct_currency"): "script de reparación sobre lotes puntuales",
     ("scripts/escala_foto_bonos.py", "<módulo>"): "script de diagnóstico sobre lotes deshechos",

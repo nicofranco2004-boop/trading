@@ -655,9 +655,10 @@ class LaFila(_Despues):
             conn = main.get_db()
             try:
                 with conn:
-                    since, brokers = main._delete_one_movement(
+                    since, brokers, entrada, antes = main._delete_one_movement(
                         conn, c.uid, f"tx-{c._tx('DEPOSIT', '2025-07-10')}")
-                    main._cascade_after_movement_delete(conn, c.uid, since, brokers)
+                    main._cascade_after_movement_delete(conn, c.uid, since, brokers,
+                                                        antes=antes, entrada=entrada)
             finally:
                 conn.close()
             self.assertIn(("2025-09-30", 15200.0, 9000.0), c._filas())   # vieja
