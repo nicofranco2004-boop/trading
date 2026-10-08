@@ -25,6 +25,9 @@ export const CRYPTO_SYMBOLS = new Set([
   'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'FRAX', 'PENDLE', 'SSV',
   'WBTC', 'STETH',
   'TON', 'ICP',
+  'ANKR', 'AR', 'BOME', 'CELO', 'ENA', 'ENS', 'FET', 'GMT', 'JASMY', 'JUP',
+  'KAS', 'KSM', 'MEW', 'MINA', 'OCEAN', 'ONE', 'POPCAT', 'QNT', 'RNDR',
+  'RENDER',
 ])
 
 export function isCrypto(asset) {

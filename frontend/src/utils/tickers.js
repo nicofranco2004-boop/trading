@@ -2,6 +2,13 @@
 // Formato: { s: 'AAPL', n: 'Apple Inc.' }
 
 // === CRIPTOMONEDAS (top ~120 por market cap) ===
+// ⚠️ Sólo las que la app sabe valuar: cada una tiene que estar en CRYPTO_SYMBOLS
+// (utils/crypto.js, espejo de backend/main.py) o ser una moneda estable (USDT,
+// USDC). Hasta 2026-10-08 había 22 acá que no estaban allá y se valuaban como lo
+// que el código fuera en otro lado (FET = Forum Energy, 394 veces de más).
+// DASH (DoorDash), ROSE (Rosenbusch) y AGIX (sin precio confiable) no están a
+// propósito: ver la NOTA sobre CRYPTO_SYMBOLS en backend/main.py. Lo vigila
+// crypto.test.js; ai/trade_tickers.py y ai/asset_names.py se regeneran de acá.
 export const CRYPTO = [
   { s: 'BTC', n: 'Bitcoin' }, { s: 'ETH', n: 'Ethereum' }, { s: 'USDT', n: 'Tether' },
   { s: 'BNB', n: 'BNB' }, { s: 'SOL', n: 'Solana' }, { s: 'XRP', n: 'XRP' },
@@ -23,20 +30,20 @@ export const CRYPTO = [
   { s: 'TIA', n: 'Celestia' }, { s: 'INJ', n: 'Injective' }, { s: 'JTO', n: 'Jito' },
   { s: 'PYTH', n: 'Pyth Network' }, { s: 'STRK', n: 'Starknet' }, { s: 'WLD', n: 'Worldcoin' },
   { s: 'ORDI', n: 'ORDI' }, { s: 'RUNE', n: 'THORChain' }, { s: 'ZEC', n: 'Zcash' },
-  { s: 'DASH', n: 'Dash' }, { s: 'XMR', n: 'Monero' }, { s: 'SNX', n: 'Synthetix' },
+  { s: 'XMR', n: 'Monero' }, { s: 'SNX', n: 'Synthetix' },
   { s: 'YFI', n: 'yearn.finance' }, { s: '1INCH', n: '1inch' }, { s: 'DYDX', n: 'dYdX' },
   { s: 'GMX', n: 'GMX' }, { s: 'LDO', n: 'Lido DAO' }, { s: 'RPL', n: 'Rocket Pool' },
   { s: 'JUP', n: 'Jupiter' }, { s: 'ENA', n: 'Ethena' }, { s: 'PENDLE', n: 'Pendle' },
   { s: 'BLUR', n: 'Blur' }, { s: 'GMT', n: 'STEPN' }, { s: 'APE', n: 'ApeCoin' },
   { s: 'ENS', n: 'Ethereum Name Service' }, { s: 'CHZ', n: 'Chiliz' }, { s: 'ICP', n: 'Internet Computer' },
-  { s: 'KAS', n: 'Kaspa' }, { s: 'STX', n: 'Stacks' }, { s: 'ROSE', n: 'Oasis Network' },
+  { s: 'KAS', n: 'Kaspa' }, { s: 'STX', n: 'Stacks' },
   { s: 'KAVA', n: 'Kava' }, { s: 'ZIL', n: 'Zilliqa' }, { s: 'IOTA', n: 'IOTA' },
   { s: 'NEO', n: 'Neo' }, { s: 'WAVES', n: 'Waves' }, { s: 'BAT', n: 'Basic Attention Token' },
   { s: 'BAL', n: 'Balancer' }, { s: 'ZRX', n: '0x' }, { s: 'ANKR', n: 'Ankr' },
   { s: 'CELO', n: 'Celo' }, { s: 'ONE', n: 'Harmony' }, { s: 'QNT', n: 'Quant' },
   { s: 'GALA', n: 'Gala' }, { s: 'FLOW', n: 'Flow' }, { s: 'MINA', n: 'Mina' },
   { s: 'CFX', n: 'Conflux' }, { s: 'KSM', n: 'Kusama' }, { s: 'ENJ', n: 'Enjin Coin' },
-  { s: 'FET', n: 'Fetch.ai' }, { s: 'AGIX', n: 'SingularityNET' }, { s: 'OCEAN', n: 'Ocean Protocol' },
+  { s: 'FET', n: 'Fetch.ai' }, { s: 'OCEAN', n: 'Ocean Protocol' },
   { s: 'RNDR', n: 'Render' }, { s: 'AR', n: 'Arweave' }, { s: 'JASMY', n: 'JasmyCoin' },
   { s: 'BOME', n: 'BOOK OF MEME' }, { s: 'POPCAT', n: 'Popcat' }, { s: 'MEW', n: 'cat in a dogs world' },
 ]

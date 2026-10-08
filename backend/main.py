@@ -8888,6 +8888,16 @@ def _news_row_to_dict(row):
 # que los users SÍ tienen. El routing de /api/prices es por símbolo, así que
 # incluirlos los preciaría como la cripto (Chevron ~156× barato, incl. el CEDEAR
 # CVX.BA). Ver CORRECTNESS_AUDIT_2026-06-25.md (C3).
+# La regla, entonces: un código que es cripto Y otra cosa entra sólo si la otra
+# cosa NO está en el catálogo de Rendi (`frontend/src/utils/tickers.js`). STX es
+# también Seagate y AXS Axis Capital, y entran; lo que queda es medirlo (Q12 del
+# panel de alcance). Por la misma regla tampoco entran ROSE (Oasis Network: es
+# Rosenbusch, acción argentina del catálogo — en una cuenta en pesos se valuaría
+# la acción como la moneda) ni AGIX (SingularityNET: se fusionó en FET en 2024 y
+# Yahoo no tiene un precio confiable — US$ 0,59 un día, 0,09 el siguiente, contra
+# US$ 0,0007 en CoinGecko; el pelado es un ETF de US$ 48). Ninguna de las tres
+# está en el buscador de cripto ni en el chat: la app no ofrece lo que no sabe
+# valuar (tests/test_cripto_sin_lista.py).
 CRYPTO_SYMBOLS = {
     'BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'AVAX', 'DOGE', 'TRX', 'DOT',
     'MATIC', 'POL', 'LINK', 'LTC', 'BCH', 'NEAR', 'UNI', 'ATOM', 'XLM', 'ETC',
@@ -8905,6 +8915,17 @@ CRYPTO_SYMBOLS = {
     # 2026-10-08), así que Posiciones y la foto diaria no los reconocían como
     # cripto (en una cuenta en pesos pedían TON.BA, que no cotiza en ningún lado).
     'TON', 'ICP',
+    # El buscador y el chat las ofrecían como cripto y no estaban acá (hasta
+    # 2026-10-08): en pesos se pedía '<X>.BA', que no cotiza; en dólares el
+    # código pelado, que para AR, ENS, FET y QNT es una ACCIÓN de EE.UU. (Antero,
+    # EnerSys, Forum Energy, Quantinuum — Fetch.ai valía 394 veces de más). Esas
+    # cuatro acciones no están en el catálogo de Rendi: entran, igual que STX
+    # (Q12 y Q14 del panel de alcance miden las que no estén marcadas cripto).
+    'ANKR', 'AR', 'BOME', 'CELO', 'ENA', 'ENS', 'FET', 'GMT', 'JASMY', 'JUP',
+    'KAS', 'KSM', 'MEW', 'MINA', 'OCEAN', 'ONE', 'POPCAT', 'QNT', 'RNDR',
+    # Render cambió su código RNDR por RENDER (2024): los exchanges ya exportan
+    # RENDER, y Yahoo sólo cotiza 'RENDER-USD'.
+    'RENDER',
 }
 
 # Monedas estables: se cotizan como cripto (Yahoo '-USD', rueda 24/7) pero NO están
@@ -8966,7 +8987,12 @@ def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate
 #     "APEcoin.dev" — una tenencia valía lo que vale otra moneda;
 #   · el nombre limpio no trae nada: APT, GRT, IMX, PEPE, STX, SUI, UNI, COMP, GMX,
 #     DEGEN, ALT, MATIC y POL — quedaban con el último precio conocido o sin precio.
+#   · 2026-10-08, las que entraron desde el buscador: 'JUP-USD' es "Jupiter"
+#     (US$ 0,0003, no el Jupiter de Solana US$ 0,34), 'ONE-USD' "BigONE Token"
+#     (no Harmony); GMT, MEW y POPCAT con el nombre limpio no traen nada. Cada
+#     precio se cruzó con CoinGecko.
 # MATIC → POL: Polygon cambió MATIC por POL 1 a 1 y Yahoo sólo cotiza POL.
+# RNDR → RENDER: lo mismo con Render; 'RNDR-USD' no trae nada.
 # FTM y FXS no tienen serie en Yahoo con ningún nombre: quedan como estaban.
 # Si agregás una cripto: buscala en Yahoo y fijate el NOMBRE, no sólo que traiga
 # precio (tests/test_cripto_una_lista.py).
@@ -8979,6 +9005,9 @@ _YAHOO_CRIPTO_DISTINTO = {
     'UNI': 'UNI7083-USD', 'COMP': 'COMP5692-USD', 'GMX': 'GMX11857-USD',
     'DEGEN': 'DEGEN30096-USD', 'ALT': 'ALT29073-USD',
     'MATIC': 'POL28321-USD', 'POL': 'POL28321-USD',
+    'JUP': 'JUP29210-USD', 'ONE': 'ONE3945-USD',
+    'GMT': 'GMT18069-USD', 'MEW': 'MEW30126-USD', 'POPCAT': 'POPCAT28782-USD',
+    'RNDR': 'RENDER-USD', 'RENDER': 'RENDER-USD',
 }
 
 # ⭐ LA lista de cripto de la app → su nombre en Yahoo. Todo el que cotice una
@@ -9020,7 +9049,9 @@ import re
 #  - Tickers con clase con guión: BRK-B, BF-B (Berkshire B, Brown-Forman B)
 #  - Cripto USD: BTC-USD, ETH-USD (-USD se reconoce en path separado del normalize)
 # Audit Pack A v2 fix: antes el regex bloqueaba BRK-B y similares.
-_SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,10}([\.\-][A-Z0-9]{1,4})?$')
+# Hasta 12 antes del sufijo: el nombre de Yahoo de algunas cripto lleva un número
+# pegado ('POPCAT28782-USD', ver `_YAHOO_CRIPTO_DISTINTO`).
+_SYMBOL_RE = re.compile(r'^[A-Z0-9]{1,12}([\.\-][A-Z0-9]{1,4})?$')
 
 MAX_SYMBOLS = 60  # hard cap on number of symbols per request
 
@@ -30887,7 +30918,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         if not isinstance(raw_symbols, list):
             return {"error": "symbols debe ser lista"}
         # Cap defensivo de length (LLM puede alucinar strings largos) +
-        # uppercase + strip. _SYMBOL_RE valida formato: [A-Z0-9]{1,10}(.BA)?
+        # uppercase + strip. _SYMBOL_RE valida formato: [A-Z0-9]{1,12}(.BA)?
         symbols = [str(s).strip().upper()[:15] for s in raw_symbols][:10]
         valid = [s for s in symbols if _SYMBOL_RE.match(s)]
         if not valid:

@@ -177,7 +177,8 @@ LECTURA = [
     ("Q12", "tenencias_simbolo_ambiguo",
      "¿Cuántas tenencias usan un código que es cripto y acción a la vez?",
      _mayor_a(0),
-     "Doce códigos significan dos cosas distintas: STX es una moneda y también Seagate. "
+     "Dieciséis códigos significan dos cosas distintas: STX es una moneda y también "
+     "Seagate; FET es Fetch.ai y también Forum Energy. "
      "El precio se elige por el código, sin mirar dónde está la tenencia. No es prueba de "
      "daño: es la lista corta de casos a revisar a mano."),
     # ── Cripto con otro nombre en Yahoo (2026-10-08, tests/test_cripto_una_lista.py) ──
