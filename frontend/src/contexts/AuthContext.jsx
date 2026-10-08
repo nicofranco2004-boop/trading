@@ -7,7 +7,7 @@ import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
 import { trackMetaEvent } from '../utils/metaPixel'
 import { quienEs } from '../utils/quienEs'
-import { activarUso } from '../utils/uso'
+import { activarUso, mandar as mandarUso } from '../utils/uso'
 
 const AuthContext = createContext(null)
 
@@ -310,6 +310,9 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    // Lo que juntó el panel de uso sale ANTES de cortar la sesión: después ya
+    // no se le puede atribuir a nadie y se descarta.
+    mandarUso({ alCerrar: true })
     trackEvent('logout')
     setUserId(null)
     // Plan Asesor: el loop rendi_* de abajo borra la KEY rendi_client_ctx,

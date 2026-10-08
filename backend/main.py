@@ -149,6 +149,26 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 TOKEN_DAYS = 7  # reduced from 30
 _USO_DIAS_GUARDADOS = 400  # uso_diario: ~13 meses de detalle por día
+_USO_PODADO_EL = None      # día de la última poda en este proceso
+
+
+def _podar_uso(conn, siempre: bool = False) -> None:
+    """Borra el uso de más de 13 meses (alcanza para comparar contra el mismo
+    mes del año anterior). Idempotente. La llaman el arranque (SQLite) y el
+    primer envío de uso de cada día (en Postgres `init_db` no corre las
+    migraciones, así que si dependiera sólo del arranque no podaría nunca)."""
+    global _USO_PODADO_EL
+    try:
+        from fechas import hoy_art_date
+        hoy = hoy_art_date()
+        if _USO_PODADO_EL == hoy and not siempre:
+            return
+        conn.execute("DELETE FROM uso_diario WHERE dia < ?",
+                     ((hoy - timedelta(days=_USO_DIAS_GUARDADOS)).isoformat(),))
+        conn.commit()
+        _USO_PODADO_EL = hoy
+    except Exception as ex:
+        logging.getLogger(__name__).warning("poda de uso_diario falló (no fatal): %s", ex)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "trading.db"))
 
@@ -2552,19 +2572,13 @@ def init_db():
                 dia TEXT NOT NULL,
                 evento TEXT NOT NULL,
                 cantidad INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, dia, evento)
+                -- El día primero: todas las lecturas cortan por período, y con
+                -- esta clave no hace falta un índice aparte (medido con un año de
+                -- uso tamaño producción: ~25 MB/año menos, misma velocidad).
+                PRIMARY KEY (dia, user_id, evento)
             );
-            CREATE INDEX IF NOT EXISTS idx_uso_diario_dia ON uso_diario(dia, evento);
         """)
-        # Se guardan 13 meses (alcanza para comparar contra el mismo mes del año
-        # anterior). Corre en cada arranque; borrar lo que ya no está es idempotente.
-        try:
-            from fechas import hoy_art_date as _hoy_uso
-            conn.execute("DELETE FROM uso_diario WHERE dia < ?",
-                         ((_hoy_uso() - timedelta(days=_USO_DIAS_GUARDADOS)).isoformat(),))
-            conn.commit()
-        except Exception as _ex:
-            logging.getLogger(__name__).warning("poda de uso_diario falló (no fatal): %s", _ex)
+        _podar_uso(conn, siempre=True)
 
         # Migración de las prefs del brief — DESPUÉS del CREATE de advisor_profile
         # (una migración antes de su tabla es no-op en DB nueva y rompe en la vieja).
@@ -21606,6 +21620,8 @@ def _contar_ingresos(conn, desde, hasta, internos: bool = False) -> dict:
 _USO_EVENTO_RE = re.compile(r"^(?:(?:vista:)?[a-z][a-z0-9_]{1,47}|pantalla:/[a-z0-9_/-]{0,40})$")
 _USO_MAX_EVENTOS = 80      # nombres distintos por envío
 _USO_MAX_CANTIDAD = 500    # toques de un mismo evento por envío
+_USO_TOPE_DIA = 5000       # toques de un mismo evento por persona y día
+_USO_TOPE_NOMBRES_DIA = 300  # nombres distintos por persona y día (el catálogo tiene ~120)
 _USO_APP_ABIERTA = "app_abierta"
 # "Usó la IA" = algo que la persona PIDIÓ: le escribió a Mervall-E, tocó
 # «Analizar», pidió rehacerlo o repreguntó. NO sale de `ai_usage_daily`: ese
@@ -21659,11 +21675,22 @@ def registrar_uso(data: UsoEventosIn, request: Request, uid: int = Depends(get_c
     from fechas import hoy_art
     dia = hoy_art()
     with db_abierta() as conn:
+        _podar_uso(conn)
+        # Nadie puede llenar la tabla mandando nombres inventados: pasado el
+        # tope del día, sólo se suman los nombres que esa persona ya tenía.
+        ya = {r["evento"] for r in conn.execute(
+            "SELECT evento FROM uso_diario WHERE dia = ? AND user_id = ?", (dia, uid))}
+        lugar = _USO_TOPE_NOMBRES_DIA - len(ya)
         for ev, n in filas:
+            if ev not in ya:
+                if lugar <= 0:
+                    continue
+                lugar -= 1
             conn.execute(
-                """INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?,?,?,?)
-                   ON CONFLICT (user_id, dia, evento) DO UPDATE SET cantidad = uso_diario.cantidad + excluded.cantidad""",
-                (uid, dia, ev, n))
+                """INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?,?,?,MIN(?, ?))
+                   ON CONFLICT (dia, user_id, evento)
+                   DO UPDATE SET cantidad = MIN(uso_diario.cantidad + excluded.cantidad, ?)""",
+                (uid, dia, ev, n, _USO_TOPE_DIA, _USO_TOPE_DIA))
         conn.commit()
     return Response(status_code=204)
 

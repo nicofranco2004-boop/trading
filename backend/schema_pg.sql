@@ -1883,7 +1883,7 @@ CREATE TABLE IF NOT EXISTS uso_diario (
   dia text NOT NULL,
   evento text NOT NULL,
   cantidad bigint NOT NULL DEFAULT 0,
-  PRIMARY KEY (user_id, dia, evento)
+  PRIMARY KEY (dia, user_id, evento)
 );
 
 CREATE TABLE IF NOT EXISTS watchlist (
@@ -2036,7 +2036,6 @@ CREATE INDEX IF NOT EXISTS idx_import_raw_rows_batch ON import_raw_rows(batch_id
 CREATE INDEX IF NOT EXISTS idx_login_history_ua ON login_history(user_id, ua_hash);
 
 CREATE INDEX IF NOT EXISTS idx_login_history_user ON login_history(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_uso_diario_dia ON uso_diario(dia, evento);
 
 CREATE INDEX IF NOT EXISTS idx_monthly_user_period ON monthly_entries(user_id, year, month);
 

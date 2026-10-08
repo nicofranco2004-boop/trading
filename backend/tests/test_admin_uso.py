@@ -331,6 +331,30 @@ class ElPanel(Base):
         self.assertEqual(r.status_code, 403)
 
 
+class Topes(Base):
+    """Nadie puede inflar su uso ni llenar la tabla mandando nombres inventados."""
+
+    def test_un_evento_no_pasa_el_tope_del_dia(self):
+        uid = self._registrar_y_confirmar("inflar")
+        for _ in range(main._USO_TOPE_DIA // main._USO_MAX_CANTIDAD + 3):
+            self._mandar_uso(uid, {"moneda_cambiada": main._USO_MAX_CANTIDAD})
+        n = self._q("SELECT cantidad FROM uso_diario WHERE user_id=? AND evento='moneda_cambiada'", (uid,))[0][0]
+        self.assertEqual(n, main._USO_TOPE_DIA)
+
+    def test_nombres_inventados_tienen_tope_por_dia(self):
+        uid = self._registrar_y_confirmar("basura")
+        self._mandar_uso(uid, {"moneda_cambiada": 1})
+        tope = main._USO_TOPE_NOMBRES_DIA
+        for tanda in range(0, tope + 100, main._USO_MAX_EVENTOS):
+            self._mandar_uso(uid, {f"inventado_{i}": 1 for i in range(tanda, min(tanda + main._USO_MAX_EVENTOS, tope + 100))})
+        nombres = self._q("SELECT COUNT(*) FROM uso_diario WHERE user_id=?", (uid,))[0][0]
+        self.assertEqual(nombres, tope)
+        # Lo que ya tenía se sigue sumando aunque esté en el tope.
+        self._mandar_uso(uid, {"moneda_cambiada": 2})
+        n = self._q("SELECT cantidad FROM uso_diario WHERE user_id=? AND evento='moneda_cambiada'", (uid,))[0][0]
+        self.assertEqual(n, 3)
+
+
 class Poda(Base):
 
     def test_el_arranque_borra_lo_de_mas_de_13_meses(self):
@@ -343,6 +367,17 @@ class Poda(Base):
         main.init_db()
         dias = {r["dia"] for r in self._q("SELECT dia FROM uso_diario WHERE user_id=?", (uid,))}
         self.assertEqual(dias, {justo})
+
+    def test_tambien_poda_el_primer_envio_del_dia(self):
+        """En Postgres el arranque no corre las migraciones: la poda tiene que
+        pasar también por el camino que sí corre ahí, el envío de uso."""
+        uid = self._insert(f"poda2-{self.tag}@ejemplo.com")
+        viejo = (hoy_art_date() - timedelta(days=main._USO_DIAS_GUARDADOS + 5)).isoformat()
+        self._x("INSERT INTO uso_diario (user_id, dia, evento, cantidad) VALUES (?,?,'app_abierta',1)", (uid, viejo))
+        main._USO_PODADO_EL = None
+        self._mandar_uso(uid, {"app_abierta": 1})
+        self.assertEqual({r["dia"] for r in self._q("SELECT dia FROM uso_diario WHERE user_id=?", (uid,))},
+                         {hoy_art_date().isoformat()})
 
 
 if __name__ == "__main__":
