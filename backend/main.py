@@ -15204,9 +15204,13 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
       a mano hecha después de su cierre por MENOS que lo borrado engaña al paso 1
       en el otro sentido (cree que el cierre lo tenía). Medido en 1.000 escenarios
       al azar con el cron de cada noche (`sonda8_azar`): con montos distintos,
-      fotos mal 747 contra 19.202 re-anclando; con montos repetidos a propósito
-      (1.000/2.000/3.000/5.000), 2.338 contra 29.049. Peor que re-anclar en 17 de
-      904 escenarios.
+      fotos mal 725 contra 19.202 re-anclando (algún error en 66 de 354 cuentas,
+      contra 311); con montos repetidos a propósito (1.000/2.000/3.000/5.000),
+      2.320 contra 29.049 (169 de 550, contra 489). Peor que re-anclar en 17 de
+      904 escenarios. Lo que queda es casi todo lo que no se puede saber sin la
+      hora de carga de lo cargado a mano: dos cargas el mismo día, montos iguales,
+      y ediciones de la pestaña Global que un import posterior borró (las fotos
+      del medio las tienen y ninguna lectura de las cuentas las reproduce).
     · A: si algo re-estampó las fotos DESPUÉS del import, las del mes del import
       anteriores a su confirmación pueden tener lo borrado y se quedan con eso. Hoy
       re-estampan el botón del admin, la reparación de historial y la migración de
@@ -15386,11 +15390,19 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
         # mayor a lo borrado hacía creer que NINGUNA lo tenía: 32 fotos.)
         c_tal = (antes or {}).get("tal_cual") or c0
 
-        def _no_lo_tenia(f, ym):
+        def _falta_de(f, ym, c):
+            """Lo que le falta a la foto `f` contra las cuentas `c` de su mes, sin lo
+            importado que entró a las fotos después de ella. Un cierre reconstruido
+            se reescribe al terminar CADA import: ya tiene todo lo importado, aunque
+            su fecha sea anterior (descontárselo por fecha le "faltaba" el historial
+            entero importado al dar de alta la cuenta)."""
             dc = str(f["date"])[:10]
+            despues = 0.0 if (f["source"] or "") == "mtm_backfill" else _entro_despues(dc, ym)
+            return c(f"{ym}-01") - despues - float(f["net_deposited"])
 
+        def _no_lo_tenia(f, ym):
             def _falta(c):
-                return c(f"{ym}-01") - _entro_despues(dc, ym) - float(f["net_deposited"])
+                return _falta_de(f, ym, c)
 
             def _con(c):
                 falta = _falta(c)

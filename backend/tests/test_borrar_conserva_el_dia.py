@@ -1999,6 +1999,34 @@ class BorrarConservaElDia(unittest.TestCase):
         self._assert_dia_conservado("borrar el depósito del 1-feb",
                                     self._con({"2026-02-01": 1000}))
 
+    def test_el_cierre_reconstruido_ya_tiene_lo_importado_despues_de_su_fecha(self):
+        """El 15-ene se importa un depósito de 5.000 fechado 20-dic y la reconstrucción
+        reescribe el cierre de diciembre con él (105.000). Una posición a mano fechada
+        28-dic se carga el 10-feb y se borra. El cierre de diciembre no la tuvo: no
+        cambia. Juzgándolo como a una foto del 31-dic, "le faltaba" lo importado el
+        15-ene, parecía tenerla y se le restaba."""
+        self._import(_csv("2025-12-20,DEPOSITO,IBKR,,,,5000,,,0,USD,"), confirmado="2026-01-15")
+        self._subir("2026-01-15", "2026-03-31", 5000)
+        self._cierre_reconstruido("2025-12-31", 105000)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        r = self.client.post("/api/positions", json={
+            "broker": "MANUAL", "asset": "KO", "buy_price": 50, "quantity": 40,
+            "invested": 2000, "entry_date": "2025-12-28"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._subir("2026-02-10", "2026-03-31", 2000)
+        pid = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND broker='MANUAL' AND asset='KO'",
+            (self.uid,)).fetchone()["id"]
+        r = self.client.delete(f"/api/positions/{pid}")
+        self.assertEqual(r.status_code, 200, r.text)
+        dic = self.conn.execute("SELECT net_deposited FROM snapshots WHERE user_id=? "
+                                "AND date='2025-12-31'", (self.uid,)).fetchone()
+        self.assertAlmostEqual(dic["net_deposited"], 105000.0, places=2)
+        self._assert_dia_conservado("borrar la posición de diciembre",
+                                    self._con({"2026-01-15": 5000}))
+
     def test_cargado_y_borrado_hoy_con_otra_carga_igual_de_antes(self):
         """Hoy 20-mar se carga una posición a mano de 2.000 (después de la foto de hoy)
         y se borra enseguida. Ninguna foto la tuvo. Un depósito a mano de 2.000 del
