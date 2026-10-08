@@ -41,6 +41,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import main                      # noqa: E402  (conftest ya seteó DB_PATH temporal)
+main._fetch_prev_close_one_real = main._fetch_prev_close_one
 import alerts_engine as ae       # noqa: E402
 from home import market as hm    # noqa: E402
 
@@ -348,7 +349,7 @@ def test_con_el_historico_caido_no_se_le_pregunta_en_cada_pedido(conn):
 def test_con_data912_y_argentinadatos_caidos_no_se_repite_el_pedido_por_cada_accion(conn):
     """MEDIDO 2026-10-08: con las dos fuentes caídas, un refresco del mapa del
     Merval (25 acciones) disparaba 125 pedidos de hasta 8 s cada uno — cada
-    símbolo volvía a preguntar. Ahora la caída queda anotada un minuto."""
+    símbolo volvía a preguntar. Ahora la caída queda anotada 20 s."""
     pedidos = []
 
     def caido(url, *a, **k):
@@ -415,7 +416,7 @@ def test_antes_de_abrir_el_volumen_cero_no_cambia_nada(conn):
 def test_la_marca_de_caida_ahorra_el_pedido_pero_no_cambia_la_respuesta():
     """Cada lector ya decidía qué devolver al fallar (con error del servidor:
     nada, y Posiciones cae a Yahoo; con la conexión cortada: la última lectura).
-    Durante el minuto de la marca se devuelve exactamente eso."""
+    Mientras dura la marca se devuelve exactamente eso."""
     _vaciar_caches()
     main._data912_eq_cache.update({"data": {"AAPL": {"c": 1.0, "pct": 0.0}}, "ts": 0})
     pedidos = []
@@ -439,4 +440,67 @@ def test_la_marca_de_caida_ahorra_el_pedido_pero_no_cambia_la_respuesta():
         assert main._fetch_data912_equities() == {"AAPL": {"c": 1.0, "pct": 0.0}}
         assert main._fetch_data912_equities() == {"AAPL": {"c": 1.0, "pct": 0.0}}
     assert len(pedidos) == 3
+    _vaciar_caches()
+
+
+# ─── 7. Yahoo no devolvió una columna del lote ──────────────────────────────
+
+class _TickerFalso:
+    """`yf.Ticker` con la forma de yfinance: `.history()` → DataFrame con
+    "Close" por fecha; `.fast_info` con previous_close / last_price."""
+    def __init__(self, serie, prev=None, last=None):
+        self._serie = serie
+        self.fast_info = type("FI", (), {"previous_close": prev, "last_price": last})()
+
+    def history(self, **k):
+        return pd.DataFrame({"Close": list(self._serie.values())},
+                            index=pd.to_datetime(list(self._serie.keys())))
+
+
+def test_si_yahoo_no_devuelve_la_columna_la_cripto_sigue_teniendo_fecha(conn):
+    """MEDIDO 2026-10-08 12:05: en un lote mezclado Yahoo no devolvió BTC-USD y
+    el respaldo de a uno (fast_info) no trae fecha → "no es de hoy" → la alerta
+    de BTC no disparaba. El respaldo pide primero la serie, que sí la trae."""
+    tickers = {"BTC-USD": _TickerFalso({AYER: 83275.93, HOY: 82483.26})}
+    sin_btc = _tabla_yahoo({"MSFT": [580.0, 590.0, 600.0]}, [ANTEAYER, AYER, HOY])
+    with mundo(yahoo=sin_btc), \
+         patch.object(main, "_fetch_prev_close_one", main.__dict__["_fetch_prev_close_one_real"]), \
+         patch.object(main.yf, "Ticker", side_effect=lambda t: tickers[t]):
+        q = hm._fetch_batch_quotes(["BTC", "MSFT"])
+    assert q["BTC"]["change_pct"] == round((82483.26 / 83275.93 - 1) * 100, 2)
+    assert (q["BTC"]["mercado"], q["BTC"]["as_of"]) == ("cripto", HOY)
+    assert q["MSFT"]["as_of"] == HOY
+
+
+def test_el_cedear_iliquido_sin_serie_cae_a_fast_info_sin_fecha(conn):
+    """COIN.BA: la serie trae sólo la vela de hoy. fast_info tiene el cierre
+    anterior, pero no dice de qué día: el número sale, sin "hoy"."""
+    tickers = {"COIN.BA": _TickerFalso({HOY: 30000.0}, prev=29000.0, last=30000.0)}
+    with mundo(yahoo=pd.DataFrame()), \
+         patch.object(main, "_fetch_prev_close_one", main.__dict__["_fetch_prev_close_one_real"]), \
+         patch.object(main.yf, "Ticker", side_effect=lambda t: tickers[t]):
+        q = main._variacion_del_dia(["COIN.BA"])["COIN.BA"]
+    assert q["change_pct"] == round((30000 / 29000 - 1) * 100, 2)
+    assert q["as_of"] is None
+
+
+def test_pasado_el_freno_se_vuelve_a_probar_byma():
+    """El freno es corto: mientras dura, Posiciones también toma los `.BA` de
+    Yahoo. Pasado el plazo, el pedido siguiente vuelve a preguntarle a data912."""
+    _vaciar_caches()
+    pedidos = []
+
+    def caido(url, *a, **k):
+        pedidos.append(url)
+        return _Resp([], 503)
+
+    with patch("requests.get", side_effect=caido):
+        main._fetch_data912_equities()
+        main._fetch_data912_equities()
+        assert len(pedidos) == 2
+        cuando, resp = main._FUENTE_CAIDA["data912_acciones"]
+        main._FUENTE_CAIDA["data912_acciones"] = (cuando - main._FUENTE_REINTENTO_S - 1, resp)
+        main._fetch_data912_equities()
+    assert len(pedidos) == 4
+    assert main._FUENTE_REINTENTO_S <= 30
     _vaciar_caches()

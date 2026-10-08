@@ -8730,19 +8730,19 @@ def _fetch_one(yf_ticker: str):
 
 
 def _fetch_prev_close_one(yf_ticker: str):
-    """Fallback de cierre anterior para símbolos cuya serie .history() trae <2
-    puntos. Pasa con CEDEARs muy ilíquidos (ej. COIN.BA, META.BA): .history()
-    devuelve sólo la vela de hoy, así que iloc[-2] no existe — pero
-    fast_info.previous_close SÍ expone el cierre del día hábil anterior.
+    """Respaldo de a uno para lo que la bajada en lote no resolvió (Yahoo a
+    veces no devuelve una columna del lote). Devuelve (cierre anterior, último
+    precio | None, fecha de la vela del último | None), o None.
 
-    Para símbolos líquidos fast_info.previous_close coincide con iloc[-2]
-    (validado con GGAL.BA), así que usarlo como fallback no introduce
-    inconsistencia con el path principal del batch.
-
-    Devuelve (cierre anterior, último precio | None), o None si no hay cierre.
-    El último precio va con su cierre para que la variación del día
-    (`_variacion_del_dia`) salga de UNA lectura. fast_info no dice de qué rueda
-    es ninguno de los dos: quien lo use no puede llamarlo "de hoy"."""
+    1. La serie del activo (`.history`): sus dos últimas velas válidas, con la
+       fecha — lo mismo que la bajada en lote. Sin la fecha, la variación de ese
+       activo no podía decir "hoy": una falla parcial de Yahoo apagaba en
+       silencio las alertas de la cripto y de EEUU (antes de 2026-10-08 el
+       respaldo de las alertas era éste).
+    2. Si la serie trae menos de dos velas —CEDEARs muy ilíquidos (COIN.BA,
+       META.BA): sólo la de hoy—, `fast_info.previous_close` SÍ tiene el cierre
+       del día hábil anterior (para los líquidos coincide con la serie, validado
+       con GGAL.BA). fast_info no dice de qué rueda es: va sin fecha."""
     def _limpio(v):
         try:
             v = float(v) if v is not None else None
@@ -8750,9 +8750,17 @@ def _fetch_prev_close_one(yf_ticker: str):
             return None
         return v if v is not None and not math.isnan(v) and v > 0 else None
     try:
-        fi = yf.Ticker(yf_ticker).fast_info
+        tk = yf.Ticker(yf_ticker)
+        try:
+            serie = tk.history(period="1mo", auto_adjust=True)["Close"].dropna()
+            serie = serie[serie > 0]
+        except Exception:
+            serie = None
+        if serie is not None and len(serie) >= 2:
+            return (float(serie.iloc[-2]), float(serie.iloc[-1]), str(serie.index[-1])[:10])
+        fi = tk.fast_info
         pc = _limpio(getattr(fi, "previous_close", None))
-        return (pc, _limpio(getattr(fi, "last_price", None))) if pc is not None else None
+        return (pc, _limpio(getattr(fi, "last_price", None)), None) if pc is not None else None
     except Exception:
         return None
 
@@ -8800,8 +8808,8 @@ _data912_cache = {'data': None, 'ts': 0}
 DATA912_TTL = 300  # 5 minutos — los precios cambian frecuente pero no hace
                    # falta refrescar más rápido para tracking de cartera
 
-# Fuente de precios que no contestó: nombre → cuándo. Durante un minuto no se
-# le vuelve a preguntar y se sirve lo último que se tenga. Sin esto, con data912
+# Fuente de precios que no contestó: nombre → cuándo. Durante 20 s no se le
+# vuelve a preguntar. Sin esto, con data912
 # o ArgentinaDatos caídos, cada símbolo repetía los pedidos: MEDIDO 2026-10-08,
 # un refresco del mapa del Merval (25 acciones) disparaba 125 pedidos, cada uno
 # de hasta 8 s. Pasaba en Posiciones y, desde que la variación del día de las
@@ -8810,13 +8818,17 @@ DATA912_TTL = 300  # 5 minutos — los precios cambian frecuente pero no hace
 # Mientras dura la marca se devuelve LO MISMO que devolvió el intento fallido
 # (cada lector ya decidía qué devolver al fallar): la marca ahorra el pedido,
 # no cambia la respuesta.
+#
+# 20 s y no más: alcanza para que UN refresco (todos sus símbolos, unos
+# segundos) no repita el pedido, y es corto porque mientras dura Posiciones
+# también toma los `.BA` de Yahoo en vez de volver a probar BYMA.
 _FUENTE_CAIDA: dict = {}   # nombre → (cuándo, lo que se devolvió)
-_FUENTE_REINTENTO_S = 60
+_FUENTE_REINTENTO_S = 20
 
 
 def _fuente_caida(nombre: str):
-    """(True, la respuesta del intento fallido) si falló hace menos de un
-    minuto; (False, None) si hay que preguntarle."""
+    """(True, la respuesta del intento fallido) si falló hace menos de
+    `_FUENTE_REINTENTO_S`; (False, None) si hay que preguntarle."""
     marca = _FUENTE_CAIDA.get(nombre)
     if marca and time.time() - marca[0] < _FUENTE_REINTENTO_S:
         return True, marca[1]
@@ -9797,7 +9809,7 @@ def _rueda_byma(_hoy=None):
     hoy = _hoy or hoy_art()
     now = time.time()
     ultimas = _RUEDA_BYMA_HIST.get("ultimas") or {}
-    # Si el histórico no contestó, un minuto sin volver a preguntarle (ver
+    # Si el histórico no contestó, un rato sin volver a preguntarle (ver
     # `_FUENTE_CAIDA`): cada intento puede esperar hasta 6 s.
     if ((not ultimas or now - _RUEDA_BYMA_HIST.get("ts", 0) > _RUEDA_BYMA_HIST_TTL)
             and not _fuente_caida("data912_historico")[0]):
@@ -10039,6 +10051,13 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         else:
             sym_to_yf[sym] = sym
     yf_tickers = list(set(sym_to_yf.values()))
+
+    def _mercado(sym):
+        """En qué rueda se mide lo que trae Yahoo para `sym`."""
+        if _yahoo.es_cripto(sym_to_yf[sym]):
+            return "cripto"
+        return "byma" if sym.endswith('.BA') and sym not in cedear_usd else "eeuu"
+
     # Mismo tope que /api/prices, sumando el lote y los pedidos de a uno, y la
     # misma descarga sin diccionario compartido (ver `pricing/yahoo.py`).
     _plazo_yahoo = time.monotonic() + (PRECIOS_TOPE_YAHOO_SEG if tope is None else tope)
@@ -10093,10 +10112,7 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
                                 if _stale:
                                     ruedas[sym] = RUEDA_BYMA
                                 else:
-                                    ruedas[sym] = ("cripto" if _yahoo.es_cripto(yf_t) else
-                                                   ("byma" if sym.endswith('.BA') and sym not in cedear_usd
-                                                    else "eeuu"),
-                                                   str(ser.index[-1])[:10])
+                                    ruedas[sym] = (_mercado(sym), str(ser.index[-1])[:10])
                     except Exception:
                         pass
     except Exception:
@@ -10113,12 +10129,13 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         _hechos, _ = _yahoo.varios(_fetch_prev_close_one, [sym_to_yf[s] for s in _faltan],
                                    tope=_restante(), que="/api/prices/prev-close de a uno")
         for sym in _faltan:
-            par = _hechos.get(sym_to_yf[sym])
-            if par is not None:
-                result[sym], ultimos[sym] = par
-                # fast_info no dice de qué día es ese cierre: queda sin fecha
-                # ("no sé de qué rueda es" pesa igual que "es vieja").
-                ruedas[sym] = (None, None)
+            hecho = _hechos.get(sym_to_yf[sym])
+            if hecho is not None:
+                result[sym], ultimos[sym], _fecha = hecho
+                # Con la serie, la fecha de su vela (como el lote); con
+                # fast_info, sin fecha ("no sé de qué rueda es" pesa igual que
+                # "es vieja").
+                ruedas[sym] = (_mercado(sym), _fecha) if _fecha else (None, None)
 
     # Cripto-ARS: el cierre previo vino en USD → a pesos al DÓLAR CRIPTO (spot×cripto),
     # igual que el precio actual, para que la variación diaria reconcilie.

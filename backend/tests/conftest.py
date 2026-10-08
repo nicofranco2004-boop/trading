@@ -425,7 +425,7 @@ def pytest_sessionfinish(session, exitstatus):
 
 @pytest.fixture(autouse=True)
 def _fuentes_sin_marca_de_caida():
-    """`main._FUENTE_CAIDA` recuerda un minuto que data912 o ArgentinaDatos no
+    """`main._FUENTE_CAIDA` recuerda un rato que data912 o ArgentinaDatos no
     contestaron, para no repetirles el pedido. Entre tests eso contamina: un
     test que simula la caída dejaría al siguiente sin preguntar. Cada test
     arranca sin marcas."""
