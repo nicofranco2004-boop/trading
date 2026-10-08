@@ -436,22 +436,30 @@ def test_quote_sin_fecha_de_rueda_no_dispara(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
 
+def _sin_byma(monkeypatch):
+    """data912 no cubre el símbolo: la variación cae a yfinance."""
+    for c in (main._PREVCLOSE_CACHE, main._PREVCLOSE_RUEDA, main._PREVCLOSE_ULTIMO):
+        c.clear()
+    monkeypatch.setattr(main, "_fetch_data912_equities", lambda: {})
+    monkeypatch.setattr(main, "_resolve_ar_bond_price", lambda s: None)
+    monkeypatch.setattr(main, "_fetch_prev_close_one", lambda t: None)
+
+
 def test_la_barra_del_dia_en_NaN_no_se_hace_pasar_por_hoy(monkeypatch):
-    """Atraviesa el camino de producción: se le da a `_fetch_batch_quotes` la
-    forma EXACTA que devuelve yfinance cuando la barra de hoy viene con los OHLC
-    en NaN (pasa seguido con los `.BA`, ver project_ba_nan_bar). El `dropna()`
-    la descarta en silencio y quedan ayer y anteayer — el porcentaje sale igual,
-    pero ahora sale marcado."""
-    import numpy as np
+    """Atraviesa el camino de producción (`_fetch_batch_quotes` →
+    `main._variacion_del_dia`) con un `.BA` que el feed de BYMA NO cubre, así
+    que cae a yfinance. Se le da la forma EXACTA de `yf.download` cuando la
+    barra de hoy viene con los OHLC en NaN (ver project_ba_nan_bar): el
+    `dropna()` la descarta y quedan ayer y anteayer — el porcentaje sale igual,
+    pero sale marcado."""
     import pandas as pd
     from home import market as hm
 
+    _sin_byma(monkeypatch)
     hoy = date.fromisoformat(hm.session_today("INTC.BA"))
     fechas = pd.to_datetime([(hoy - timedelta(days=d)).isoformat() for d in (4, 1, 0)])
-    df = pd.concat(
-        {"INTC.BA": pd.DataFrame({"Close": [32920.0, 31020.0, np.nan]}, index=fechas)},
-        axis=1)
-    monkeypatch.setattr(hm._yahoo, "descargar", lambda *a, **k: df)
+    df = pd.DataFrame({("Close", "INTC.BA"): [32920.0, 31020.0, float("nan")]}, index=fechas)
+    monkeypatch.setattr(main._yahoo, "descargar", lambda *a, **k: df)
     hm._QUOTE_CACHE.clear()
     q = hm._fetch_batch_quotes(["INTC.BA"])["INTC.BA"]
     assert q["change_pct"] == -5.77                       # el número de AYER
@@ -530,16 +538,17 @@ def test_el_tope_diario_es_la_jornada_argentina_y_no_el_dia_utc(clean, monkeypat
 
 
 def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
-    """La prueba entera, sin mockear el quote: se le dan a yfinance las barras
-    con la forma que tenían el 15/09 a las 13:01 UTC —viernes, lunes, y la del
-    día sin datos— y corre el motor completo (`_quotes_for` →
-    `_fetch_batch_quotes` → `evaluate_alerts`).
+    """La prueba entera, sin mockear el quote: corre el motor completo
+    (`_quotes_for` → `_fetch_batch_quotes` → `main._variacion_del_dia` →
+    `evaluate_alerts`) contra el feed de BYMA servido con la forma de la API de
+    data912 (`symbol`, `c`, `pct_change`; velas con `date`, `c`, `dr`).
 
-    El mercado está declarado ABIERTO a propósito: la ráfaga no se frena por el
-    reloj, se frena porque el número no es de la rueda de hoy. Los porcentajes
-    son los reales, medidos contra BYMA: INTC −5,77 %, ADBE +4,11 %."""
-    import numpy as np
-    import pandas as pd
+    13:01 UTC (10:01 ART) del martes: BYMA no abrió y el feed todavía muestra
+    el cierre del LUNES — idéntico a la última vela histórica. El mercado está
+    declarado ABIERTO a propósito: la ráfaga no se frena por el reloj, se frena
+    porque el número no es de la rueda de hoy. Los porcentajes son los reales,
+    medidos contra BYMA: INTC −5,77 %, ADBE +4,11 %."""
+    import requests
     from home import market as hm
 
     conn = clean
@@ -548,34 +557,70 @@ def test_e2e_la_rafaga_del_15_09_no_vuelve_a_salir(clean, monkeypatch):
     monkeypatch.setattr(ae, "_holding_symbols",
                         lambda c, u: ["INTC.BA", "ADBE.BA", "NVDA.BA", "NFLX.BA"])
 
-    hoy = date.fromisoformat(hm.session_today("INTC.BA"))
-    fechas = pd.to_datetime([(hoy - timedelta(days=d)).isoformat() for d in (4, 1, 0)])
-    #                viernes    lunes
-    cierres = {"INTC.BA": (32920.0, 31020.0),     # −5,77 %
-               "ADBE.BA": (9240.0, 9620.0),       # +4,11 %
-               "NVDA.BA": (14580.0, 14080.0),     # −3,43 %
-               "NFLX.BA": (2587.5, 2675.0)}       # +3,38 %
+    # El martes real de la ráfaga, a las 14:00: el resultado no puede depender
+    # del día ni de la hora en que se corre el test (`_rueda_byma` no acepta
+    # "hoy" antes de las 11:00 ni un fin de semana). Lo que frena la ráfaga es
+    # el DATO: el feed igual a la vela del lunes.
+    import fechas
+    hoy = date(2026, 9, 15)
+    monkeypatch.setattr(fechas, "hoy_art", lambda: hoy.isoformat())
+    monkeypatch.setattr(fechas, "ahora_art", lambda: datetime(2026, 9, 15, 14, 0))
+    lunes = (hoy - timedelta(days=1)).isoformat()
+    velas = {"cedears/SPY": [{"date": lunes, "c": 20900.0, "dr": -0.0019}],
+             "bonds/AL30": [{"date": lunes, "c": 85800.0, "dr": -0.0005}]}
 
-    def _barras(hoy_close):
-        return pd.concat(
-            {s: pd.DataFrame({"Close": [v, l, hoy_close(s, l)]}, index=fechas)
-             for s, (v, l) in cierres.items()}, axis=1)
+    def _feed(cedears):
+        filas = [{"symbol": s, "c": c, "pct_change": p} for s, (c, p) in cedears.items()]
+        return {"arg_cedears": filas, "arg_stocks": [], "arg_corp": [],
+                "arg_bonds": [{"symbol": "AL30", "c": 85800.0, "pct_change": -0.05}]}
 
-    # 13:01 UTC: la barra del día todavía no tiene datos.
-    monkeypatch.setattr(hm._yahoo, "descargar", lambda *a, **k: _barras(lambda s, l: np.nan))
-    hm._QUOTE_CACHE.clear()
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    def _servir(live):
+        class R:
+            def __init__(self, cuerpo, st=200):
+                self.status_code, self._c = st, cuerpo
+
+            def json(self):
+                return self._c
+
+        def get(url, *a, **k):
+            if "data912.com/live/" in url:
+                return R(live.get(url.rsplit("/", 1)[1], []))
+            if "data912.com/historical/" in url:
+                return R(velas.get(url.split("/historical/", 1)[1], []))
+            return R([], 404)
+        return get
+
+    def _correr(live):
+        main._data912_eq_cache.update({"data": None, "ts": 0})
+        main._data912_cache.update({"data": None, "ts": 0})
+        main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}, "fallo": 0})
+        hm._QUOTE_CACHE.clear()
+        monkeypatch.setattr(requests, "get", _servir(live))
+        return ae.evaluate_alerts(conn, only_user=1)["fired"]
+
+    import pandas as pd
+    monkeypatch.setattr(main._yahoo, "descargar", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(main, "_fetch_prev_close_one", lambda t: None)
+
+    # 13:01 UTC: el feed sigue en el lunes.
+    lunes_feed = _feed({"INTC": (31020.0, -5.77), "ADBE": (9620.0, 4.11),
+                        "NVDA": (14080.0, -3.43), "NFLX": (2675.0, 3.38),
+                        "SPY": (20900.0, -0.19)})
+    assert _correr(lunes_feed) == 0
     assert _events(conn) == []
 
     # Abre BYMA y llegan los precios de hoy: INTC apenas +1,3 % (no avisa) y
     # NFLX −3,2 % (sí). Es el día real: el martes INTC subió, no cayó 5,8 %.
-    hoy_real = {"INTC.BA": 31420.0, "ADBE.BA": 9450.0, "NVDA.BA": 14140.0, "NFLX.BA": 2590.0}
-    monkeypatch.setattr(hm._yahoo, "descargar", lambda *a, **k: _barras(lambda s, l: hoy_real[s]))
-    hm._QUOTE_CACHE.clear()
-    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    martes_feed = _feed({"INTC": (31420.0, 1.29), "ADBE": (9450.0, -1.77),
+                         "NVDA": (14140.0, 0.43), "NFLX": (2590.0, -3.18),
+                         "SPY": (20950.0, 0.24)})
+    assert _correr(martes_feed) == 1
     assert _events(conn)[0]["symbol"] == "NFLX.BA"
     assert _events(conn)[0]["message"] == "NFLX cayó 3,2% hoy"
     hm._QUOTE_CACHE.clear()
+    main._data912_eq_cache.update({"data": None, "ts": 0})
+    main._data912_cache.update({"data": None, "ts": 0})
+    main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}, "fallo": 0})
 
 
 # ─── Un mail por alerta, no uno por activo ──────────────────────────────────

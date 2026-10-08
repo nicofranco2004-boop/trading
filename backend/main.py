@@ -8737,12 +8737,22 @@ def _fetch_prev_close_one(yf_ticker: str):
 
     Para símbolos líquidos fast_info.previous_close coincide con iloc[-2]
     (validado con GGAL.BA), así que usarlo como fallback no introduce
-    inconsistencia con el path principal del batch."""
+    inconsistencia con el path principal del batch.
+
+    Devuelve (cierre anterior, último precio | None), o None si no hay cierre.
+    El último precio va con su cierre para que la variación del día
+    (`_variacion_del_dia`) salga de UNA lectura. fast_info no dice de qué rueda
+    es ninguno de los dos: quien lo use no puede llamarlo "de hoy"."""
+    def _limpio(v):
+        try:
+            v = float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+        return v if v is not None and not math.isnan(v) and v > 0 else None
     try:
         fi = yf.Ticker(yf_ticker).fast_info
-        pc = getattr(fi, "previous_close", None)
-        pc = float(pc) if pc is not None else None
-        return pc if pc is not None and not math.isnan(pc) and pc > 0 else None
+        pc = _limpio(getattr(fi, "previous_close", None))
+        return (pc, _limpio(getattr(fi, "last_price", None))) if pc is not None else None
     except Exception:
         return None
 
@@ -9314,9 +9324,12 @@ def _proxima_apertura(mercado, ahora: float = None):
         return None
 
 
-def _prevclose_cache_get(symbols: list[str]) -> tuple[dict, list[str]]:
-    """Returns (cached_results, uncached_symbols). Cached incluye None values."""
+def _prevclose_cache_get(symbols: list[str], ttl: float = None) -> tuple[dict, list[str]]:
+    """Returns (cached_results, uncached_symbols). Cached incluye None values.
+    `ttl`: la variación del día (`_variacion_del_dia`) lo pide más corto, porque
+    junto al cierre guarda el ÚLTIMO precio, que sí cambia durante la rueda."""
     now = time.time()
+    ttl = _PREVCLOSE_CACHE_TTL_S if ttl is None else ttl
     cached: dict = {}
     uncached: list[str] = []
     with _PREVCLOSE_CACHE_LOCK:
@@ -9325,7 +9338,7 @@ def _prevclose_cache_get(symbols: list[str]) -> tuple[dict, list[str]]:
             vence = _PREVCLOSE_VENCE.get(sym)
             if vence is not None and now >= vence:
                 entry = None
-            if entry is not None and (now - entry[0]) < _PREVCLOSE_CACHE_TTL_S:
+            if entry is not None and (now - entry[0]) < ttl:
                 cached[sym] = entry[1]
             else:
                 uncached.append(sym)
@@ -9688,6 +9701,12 @@ def get_prev_close(symbols: str, uid: int = Depends(get_effective_user)):
 # escribe en la misma pasada, así un cierre cacheado nunca pierde su fecha.
 _PREVCLOSE_RUEDA: dict = {}
 
+# El precio de la MISMA lectura que cada cierre de `_PREVCLOSE_CACHE` (la vela
+# de la que sale la fecha de `_PREVCLOSE_RUEDA`): con los dos, la variación del
+# día (`_variacion_del_dia`) sale de una sola lectura. Se escribe en la misma
+# pasada que los otros dos.
+_PREVCLOSE_ULTIMO: dict = {}
+
 # Marca de "rueda de BYMA": el feed live de data912 no trae fecha. La resuelve
 # `_rueda_byma()` sólo quien la necesita (el chat), no la pantalla de Posiciones.
 RUEDA_BYMA = ("byma", None)
@@ -9698,8 +9717,12 @@ RUEDA_BYMA = ("byma", None)
 # histórico pesa 620 KB y tardó 8 s en responder (medido 2026-10-08); AL30 y
 # SPY responden en ~1,5 s.
 _RUEDA_BYMA_REFS = (("bonds", "AL30"), ("cedears", "SPY"))
-_RUEDA_BYMA_HIST: dict = {"ts": 0.0, "ultimas": {}}
+_RUEDA_BYMA_HIST: dict = {"ts": 0.0, "ultimas": {}, "fallo": 0.0}
 _RUEDA_BYMA_HIST_TTL = 1800  # la vela histórica cambia una vez por día
+# Si el histórico no contestó, no se vuelve a preguntar hasta dentro de un
+# minuto: desde que la variación del día de las alertas, la watchlist y el
+# inicio sale de acá, cada pedido esperaría hasta 6 s a un servicio caído.
+_RUEDA_BYMA_REINTENTO = 60
 
 
 def _data912_ultima_vela(tipo: str, ticker: str):
@@ -9730,7 +9753,8 @@ def _rueda_byma(_hoy=None):
     hoy = _hoy or hoy_art()
     now = time.time()
     ultimas = _RUEDA_BYMA_HIST.get("ultimas") or {}
-    if not ultimas or now - _RUEDA_BYMA_HIST.get("ts", 0) > _RUEDA_BYMA_HIST_TTL:
+    if ((not ultimas or now - _RUEDA_BYMA_HIST.get("ts", 0) > _RUEDA_BYMA_HIST_TTL)
+            and now - _RUEDA_BYMA_HIST.get("fallo", 0) > _RUEDA_BYMA_REINTENTO):
         nuevas = {}
         try:
             hechos, _ = _yahoo.varios(lambda ref: _data912_ultima_vela(*ref),
@@ -9745,6 +9769,8 @@ def _rueda_byma(_hoy=None):
         if nuevas:
             _RUEDA_BYMA_HIST["ultimas"] = ultimas = nuevas
             _RUEDA_BYMA_HIST["ts"] = now
+        else:
+            _RUEDA_BYMA_HIST["fallo"] = now
     live = dict(_fetch_data912_equities() or {})
     for _tipo, ticker in _RUEDA_BYMA_REFS:
         if _tipo == "bonds":
@@ -9795,15 +9821,38 @@ def _prev_close_con_rueda(sym_list, uid):
     no fechar como de hoy el movimiento de ayer (medido 2026-10-08 09:32: el
     feed de BYMA mostraba AAPL +1,04 %, que era la rueda del 7).
     """
-    cached_results, uncached_symbols = _prevclose_cache_get(sym_list)
+    cierres, ruedas, _ = _prev_close_y_ultimo(sym_list, uid)
+    return cierres, ruedas
+
+
+def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
+    """`_prev_close_con_rueda` + el ÚLTIMO precio de la misma lectura de cada
+    cierre: (cierres, ruedas, ultimos). Es el único lugar que lee el cierre
+    anterior; la variación del día (`_variacion_del_dia`) sale de acá.
+
+      · data912 (bonos, CEDEARs y acciones de BYMA): el último es `c`, la misma
+        fila de la que sale `pct_change`.
+      · yfinance: el último es la vela más nueva, la que fecha la rueda.
+      · fast_info (respaldo de a uno): su `last_price`, sin fecha.
+      · CEDEARs cotizados en USD y cripto en pesos: los dos pasan por el MISMO
+        dólar en la misma pasada, así que en la variación el dólar se cancela.
+
+    `uid=None` (las alertas, que corren para todos a la vez): el dólar sale del
+    caché en vez de la configuración de alguien. Sólo cambia el precio en
+    pesos, nunca el porcentaje. `ttl`/`tope`: ver `_prevclose_cache_get` y
+    `PRECIOS_TOPE_YAHOO_SEG`.
+    """
+    cached_results, uncached_symbols = _prevclose_cache_get(sym_list, ttl)
     ruedas = {s: _PREVCLOSE_RUEDA.get(s, (None, None)) for s in cached_results}
+    ultimos = {s: _PREVCLOSE_ULTIMO.get(s) for s in cached_results}
     if not uncached_symbols:
-        return cached_results, ruedas
+        return cached_results, ruedas, ultimos
 
     result = dict(cached_results)
     for sym in uncached_symbols:
         result[sym] = None
         ruedas[sym] = (None, None)
+        ultimos[sym] = None
     # Lo que sale de data912 NO se cachea: es gratis recalcularlo (el feed ya
     # está cacheado 5 min) y cachear el cierre 10 min hacía que, al abrir la
     # rueda, el precio nuevo se comparara con el cierre de ANTEAYER.
@@ -9820,6 +9869,7 @@ def _prev_close_con_rueda(sym_list, uid):
         if pctv is None or pctv <= -100:
             continue
         result[sym] = bp / (1.0 + pctv / 100.0)
+        ultimos[sym] = bp
         ruedas[sym] = RUEDA_BYMA
         _de_data912.add(sym)
 
@@ -9851,6 +9901,7 @@ def _prev_close_con_rueda(sym_list, uid):
         # ANTERIOR (medido 2026-10-08 09:32: AAPL +1,04 % = la rueda del 7). La
         # fecha de esa rueda la resuelve `_rueda_byma`.
         result[sym] = (float(c) / (1.0 + pctv / 100.0)) if pctv else float(c)
+        ultimos[sym] = float(c)
         ruedas[sym] = RUEDA_BYMA
         _de_data912.add(sym)
 
@@ -9868,7 +9919,8 @@ def _prev_close_con_rueda(sym_list, uid):
             # Dólar CRIPTO en pesos (no blue): prices['<c>.BA'] = spot×cripto. Al
             # dividir por el MEP en la valuación queda spot×(cripto/MEP) = el premium
             # cripto que muestra el broker AR. Fallback: MEP (→ spot, sin premium) → blue.
-            _cripto_ars = _current_cripto_rate() or _current_cedear_rate() or _display_blue(_cdb, uid)
+            _cripto_ars = (_current_cripto_rate() or _current_cedear_rate()
+                           or (_display_blue(_cdb, uid) if uid is not None else None))
         finally:
             _cdb.close()
 
@@ -9881,7 +9933,7 @@ def _prev_close_con_rueda(sym_list, uid):
     if cedear_usd:
         _cdb2 = get_db()
         try:
-            _ccl_ars = _display_ccl(_cdb2, uid)
+            _ccl_ars = _display_ccl(_cdb2, uid) if uid is not None else _current_ccl()
         finally:
             _cdb2.close()
 
@@ -9901,15 +9953,15 @@ def _prev_close_con_rueda(sym_list, uid):
     yf_tickers = list(set(sym_to_yf.values()))
     # Mismo tope que /api/prices, sumando el lote y los pedidos de a uno, y la
     # misma descarga sin diccionario compartido (ver `pricing/yahoo.py`).
-    _plazo_yahoo = time.monotonic() + PRECIOS_TOPE_YAHOO_SEG
+    _plazo_yahoo = time.monotonic() + (PRECIOS_TOPE_YAHOO_SEG if tope is None else tope)
 
     def _restante():
         return max(0.0, _plazo_yahoo - time.monotonic())
 
     try:
         data = _yahoo.descargar(yf_tickers, period="1mo", auto_adjust=True,
-                                tope=_restante(), que="/api/prices/prev-close")
-        if not data.empty:
+                                tope=_restante(), que="/api/prices/prev-close") if yf_tickers else None
+        if data is not None and not data.empty:
             close = data.get("Close") if hasattr(data, 'get') else (data["Close"] if "Close" in data.columns else None)
             if close is not None and not (hasattr(close, 'empty') and close.empty):
                 # Fechas de las ruedas con dato de ALGÚN símbolo — la referencia
@@ -9945,6 +9997,8 @@ def _prev_close_con_rueda(sym_list, uid):
                             prev = float(ser.iloc[-1] if _stale else ser.iloc[-2])
                             if not math.isnan(prev) and prev > 0:
                                 result[sym] = prev
+                                ultimos[sym] = (_resolve_ar_equity_price(sym) if _stale
+                                                else float(ser.iloc[-1]))
                                 # La rueda de esta variación = la fecha de la última
                                 # vela (cripto: día UTC). En el caso `_stale` el
                                 # precio de hoy lo pone el feed de BYMA.
@@ -9971,9 +10025,9 @@ def _prev_close_con_rueda(sym_list, uid):
         _hechos, _ = _yahoo.varios(_fetch_prev_close_one, [sym_to_yf[s] for s in _faltan],
                                    tope=_restante(), que="/api/prices/prev-close de a uno")
         for sym in _faltan:
-            pc = _hechos.get(sym_to_yf[sym])
-            if pc is not None:
-                result[sym] = pc
+            par = _hechos.get(sym_to_yf[sym])
+            if par is not None:
+                result[sym], ultimos[sym] = par
                 # fast_info no dice de qué día es ese cierre: queda sin fecha
                 # ("no sé de qué rueda es" pesa igual que "es vieja").
                 ruedas[sym] = (None, None)
@@ -9984,6 +10038,13 @@ def _prev_close_con_rueda(sym_list, uid):
         for _csym in crypto_ars:
             if result.get(_csym) is not None:
                 result[_csym] = round(result[_csym] * _cripto_ars, 6)
+                if ultimos.get(_csym) is not None:
+                    ultimos[_csym] = round(ultimos[_csym] * _cripto_ars, 6)
+    elif crypto_ars:
+        # Sin dólar no hay precio en pesos: el cierre en USD NO puede pasar por
+        # uno en pesos. El de la pantalla (con uid) siempre encuentra el blue.
+        for _csym in crypto_ars:
+            result[_csym] = ultimos[_csym] = None
 
     # CEDEARs USD-cotizados: cierre previo del subyacente US → pesos (× CCL ÷ ratio).
     if cedear_usd and _ccl_ars and _ccl_ars > 0:
@@ -9991,6 +10052,11 @@ def _prev_close_con_rueda(sym_list, uid):
             if result.get(_csym) is not None:
                 _ratio = CEDEAR_USD_RATIOS.get(_base) or 1
                 result[_csym] = round(result[_csym] * _ccl_ars / _ratio, 4)
+                if ultimos.get(_csym) is not None:
+                    ultimos[_csym] = round(ultimos[_csym] * _ccl_ars / _ratio, 4)
+    elif cedear_usd:
+        for _csym in cedear_usd:
+            result[_csym] = ultimos[_csym] = None
 
     _guardar = [s for s in uncached_symbols if s not in _de_data912]
     _prevclose_cache_set({sym: result[sym] for sym in _guardar})
@@ -10001,7 +10067,68 @@ def _prev_close_con_rueda(sym_list, uid):
             _PREVCLOSE_VENCE[sym] = _vence
         else:
             _PREVCLOSE_VENCE.pop(sym, None)
-    return result, ruedas
+        _PREVCLOSE_ULTIMO[sym] = ultimos[sym]
+    return result, ruedas, ultimos
+
+
+# Cuánto vive el último precio guardado junto al cierre cuando lo pide la
+# variación del día: lo mismo que vivía la cotización de `home.market` antes de
+# que saliera de acá (60 s). El cierre solo (la pantalla) sigue en 10 min.
+_VARIACION_TTL_S = 60
+
+
+def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
+    """LA variación del día de cada símbolo — una sola, para todas las pantallas.
+
+    {símbolo: {symbol, price, prev_close, change_pct, mercado, as_of}}
+
+    Sale del mismo lugar que la columna "Var. día" de Posiciones y que el chat
+    (`_prev_close_y_ultimo`, el núcleo de /api/prices/prev-close): para los `.BA`
+    y los bonos, data912 —el feed de BYMA, la MISMA fila que el precio— y para
+    EEUU y cripto, yfinance. Antes las alertas, «Lo que te afecta», la watchlist
+    y los mapas del inicio leían los `.BA` de yfinance por su cuenta, y yfinance
+    trae la vela del día de los `.BA` en NaN o el ticker congelado (ver
+    `_fetch_data912_equities`): la misma acción tenía dos variaciones según la
+    pantalla.
+
+    `as_of` es la fecha de la rueda que midió el porcentaje (None = no se sabe,
+    y "no sé" NO es "hoy"). Para BYMA la da `_rueda_byma`, preguntándole al dato
+    y no al reloj: antes de las 11:00 el feed manda la variación de la rueda
+    ANTERIOR (medido 2026-10-08 09:32, AAPL +1,04 % = la vela del 7). Si es o
+    no la de HOY lo decide quien sirve el número (`home.market._stamp_session`),
+    porque esto se guarda y puede cruzar la medianoche.
+
+    Un símbolo sin cierre anterior o sin el precio de esa misma lectura no está.
+    Los fondos (`FCI:`) no tienen variación en la rueda: no están.
+    """
+    syms = [s for s in dict.fromkeys(symbols or []) if s and not str(s).startswith("FCI:")]
+    if not syms:
+        return {}
+    cierres, ruedas, ultimos = _prev_close_y_ultimo(syms, uid, ttl=_VARIACION_TTL_S, tope=tope)
+    fecha_byma = None
+    if any(m == "byma" and f is None and cierres.get(s) and ultimos.get(s)
+           for s, (m, f) in ruedas.items()):
+        try:
+            fecha_byma = _rueda_byma()
+        except Exception as ex:
+            log.warning("_variacion_del_dia: rueda de BYMA falló: %s", ex)
+    out = {}
+    for s in syms:
+        prev, last = cierres.get(s), ultimos.get(s)
+        if not prev or not last or prev <= 0 or last <= 0:
+            continue
+        mercado, fecha = ruedas.get(s, (None, None))
+        if mercado == "byma" and fecha is None:
+            fecha = fecha_byma
+        out[s] = {
+            "symbol": s,
+            "price": round(last, 6),
+            "prev_close": round(prev, 6),
+            "change_pct": round((last / prev - 1.0) * 100.0, 2),
+            "mercado": mercado,
+            "as_of": fecha,
+        }
+    return out
 
 
 # ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
@@ -41728,19 +41855,7 @@ def home_personal(uid: int = Depends(get_effective_user)):
     """
     conn = get_db()
     try:
-        # Holdings del user → símbolos para fetchear quotes.
-        # Bumeamos el cap a 100 (antes 30) para no recortar arbitrariamente
-        # portfolios diversificados — el _fetch_batch_quotes es un solo download.
-        rows = conn.execute(
-            """SELECT DISTINCT asset FROM positions
-                WHERE user_id = ? AND is_cash = 0
-                  AND quantity > 0
-                  AND asset NOT LIKE '%-%'  -- excluir cash-like duplicates
-                LIMIT 100""",
-            (uid,),
-        ).fetchall()
-        symbols = [r["asset"] for r in rows if r["asset"]]
-        all_quotes = _fetch_batch_quotes(symbols) if symbols else {}
+        all_quotes = _cotizaciones_de_tenencias(conn, uid)
 
         # Eventos del portfolio (reuso de _get_portfolio_events si existe;
         # sino devolvemos lista vacía)
@@ -41757,6 +41872,44 @@ def home_personal(uid: int = Depends(get_effective_user)):
         return {"cards": cards}
     finally:
         conn.close()
+
+
+def _cotizaciones_de_tenencias(conn, uid: int) -> dict:
+    """{activo: cotización del día} de las tenencias de `uid`, pedida con el
+    MISMO símbolo con que se valúa cada tenencia (`position_price_key`: GGAL en
+    un broker en pesos es `GGAL.BA`, la de BYMA). La usan «Lo que te afecta»
+    (/api/home/personal) y Mervall-E AI en el inicio (ai/builders/home.py).
+
+    Pedían el nombre pelado del activo: GGAL comprada en pesos traía la
+    variación del ADR de Nueva York, un CEDEAR la de la acción de EEUU (sin el
+    movimiento del CCL) y las acciones que sólo cotizan en BYMA no traían nada.
+    Si el mismo activo está en dos cuentas con símbolos distintos (AAPL en Cocos
+    y en Schwab) se usa el de más tenencias, y a igualdad el primero.
+    """
+    from snapshots_job import _broker_name_sets, position_price_key
+    brokers = [dict(r) for r in conn.execute(
+        "SELECT * FROM brokers WHERE user_id = ?", (uid,)).fetchall()]
+    positions = [dict(r) for r in conn.execute(
+        """SELECT * FROM positions
+            WHERE user_id = ? AND is_cash = 0 AND quantity > 0""", (uid,)).fetchall()]
+    if not positions:
+        return {}
+    ars_names, ar_usd_names = _broker_name_sets(brokers)
+    claves: dict = {}
+    for p in positions:
+        a = p.get("asset")
+        if not a or a in ("USDT", "USD", "ARS"):
+            continue
+        k = position_price_key(p, ars_names, ar_usd_names)
+        if k and _SYMBOL_RE.match(k):
+            claves.setdefault(a, []).append(k)
+    clave_de = {}
+    for a, ks in claves.items():
+        clave_de[a] = sorted(set(ks), key=lambda k: (-ks.count(k), k))[0]
+    # Tope de 100 símbolos: es un solo pedido, pero no ilimitado.
+    pedir = sorted(set(clave_de.values()))[:100]
+    quotes = _fetch_batch_quotes(pedir) if pedir else {}
+    return {a: quotes[k] for a, k in clave_de.items() if k in quotes}
 
 
 def _get_portfolio_events_cached(uid: int) -> list:

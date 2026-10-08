@@ -12,8 +12,10 @@ Dos tipos de alerta (ver schema en main.init_db):
     armed (una alerta holdings tiene N símbolos, cada uno con su propio estado).
 
 Precios: reusa los MISMOS rieles que el snapshot diario (fetch_prices_for_symbols
-→ stocks/CEDEARs/cripto/FCI/bonos) para price_target, y _fetch_batch_quotes
-(change_pct vs cierre previo) para pct_move. NUNCA dispara con precio None/stale.
+→ stocks/CEDEARs/cripto/FCI/bonos) para price_target, y para pct_move la
+variación del día de `main._variacion_del_dia` (vía home.market._fetch_batch_quotes):
+la MISMA que la columna "Var. día" de Posiciones — data912 para BYMA y bonos,
+yfinance para EEUU y cripto. NUNCA dispara con precio None/stale.
 
 Y nunca dispara con un porcentaje que no sea el de la rueda de HOY: cada quote
 viaja con la fecha de la rueda que midió (`as_of`/`is_today`, ver home.market),
@@ -61,7 +63,8 @@ def _prices_for(symbols: list) -> dict:
 
 
 def _quotes_for(symbols: list) -> dict:
-    """{symbol: {price, prev_close, change_pct}} vía yfinance (para pct_move)."""
+    """{symbol: {price, prev_close, change_pct, as_of, is_today}} para pct_move:
+    la variación del día de Posiciones (`main._variacion_del_dia`)."""
     syms = [s for s in set(symbols) if s]
     if not syms:
         return {}

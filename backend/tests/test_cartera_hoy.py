@@ -117,7 +117,7 @@ class RuedaBymaTest(unittest.TestCase):
                                  main._RUEDA_BYMA_HIST.update(self._hist)))
 
     def _rueda(self, live, velas, ahora=A_LAS_932):
-        main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}})
+        main._RUEDA_BYMA_HIST.update({"ts": 0, "ultimas": {}, "fallo": 0})
         bonos = BONOS_PREAPERTURA if live else {}
         with patch.object(main, "_fetch_data912_equities", return_value=live), \
              patch.object(main, "_fetch_data912_bonds", return_value=bonos), \
@@ -229,7 +229,7 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self._hist = dict(main._RUEDA_BYMA_HIST)
         self.addCleanup(lambda: (main._RUEDA_BYMA_HIST.clear(),
                                  main._RUEDA_BYMA_HIST.update(self._hist)))
-        main._RUEDA_BYMA_HIST.update({"ts": 9e18, "ultimas": VELAS_DEL_7})
+        main._RUEDA_BYMA_HIST.update({"ts": 9e18, "ultimas": VELAS_DEL_7, "fallo": 0})
         self.conn = main.get_db()
         self.addCleanup(self.conn.close)
         for t in ("positions", "brokers", "users"):

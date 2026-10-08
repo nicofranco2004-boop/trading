@@ -89,6 +89,14 @@ def _cuando(h: Dict[str, Any]) -> str:
     return "en la última rueda"
 
 
+def _precio_txt(h: Dict[str, Any]) -> str:
+    """El precio en la moneda en que cotiza: `.BA` es BYMA, en pesos. Decía
+    "US$" siempre — un CEDEAR a $27.100 salía "US$27.100,00"."""
+    from money_fmt import fmt_money
+    ccy = "ARS" if str(h.get("symbol") or "").upper().endswith(".BA") else "USD"
+    return fmt_money(h["price"], ccy)
+
+
 def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6) -> List[PersonalCard]:
     """Holdings con movimiento ≥1.5% en el día — los más fuertes primero,
     cap top_n. El threshold es estricto en valor absoluto, así que tanto
@@ -106,7 +114,7 @@ def detect_holdings_movers(holdings_quoted: List[Dict[str, Any]], top_n: int = 6
             value=f"{'+' if positive else ''}{fmt_num(pct, 1)}%",
             value_num=round(pct, 1),
             value_tone="positive" if positive else "negative",
-            context=f"US${fmt_num(h['price'], 2)}",
+            context=_precio_txt(h),
             cta_label="Ver posición →",
             cta_href=f"/posiciones?asset={h['asset']}",
         ))

@@ -168,7 +168,7 @@ class BaNanBarTest(unittest.TestCase):
         puede estar congelada—. Un símbolo que data912 NO cubre (TSLA acá) cae al
         cierre previo de yfinance (la rueda previa, 32.880)."""
         with patch.object(main._yahoo, "descargar", side_effect=_fake_download), \
-             patch.object(main, "_prevclose_cache_get", side_effect=lambda s: ({}, list(s))), \
+             patch.object(main, "_prevclose_cache_get", side_effect=lambda s, ttl=None: ({}, list(s))), \
              patch.object(main, "_prevclose_cache_set", create=True), \
              patch.object(main, "_fetch_prev_close_one", return_value=None), \
              patch.object(main, "_fetch_data912_equities", return_value=_BYMA):
