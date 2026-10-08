@@ -710,11 +710,12 @@ def _cuenta_nueva_con_cierre_del_cron(conn, uid: int, period_start: str, snap_en
     · el cierre: lo midió el cron, y su estampa de lo aportado es la canónica,
       con resolución diaria (la del import es al costo —y las viejas, sin
       semilla—; la del navegador, a media rueda). La cascada de borrado
-      (`main._cascade_after_movement_delete`) ya no re-estampa POR MES: usa el
-      aportado anclado y conserva el día. Sigue sin saber ubicar un flujo que la
-      última foto del mes no vio (un depósito cargado hoy, después de la foto de
-      hoy): ese mes queda plano en su valor de fin de mes, como antes. Es del
-      escritor y se arregla ahí.
+      (`main._cascade_after_movement_delete`) ya no re-estampa el mes: le saca a
+      cada foto sólo lo que el borrado cambió, y sólo a las que lo tenían
+      (`main._cambio_de_aportado`), así que conserva el día — con los límites
+      que lista ahí (lo cargado a mano no guarda cuándo se cargó). El botón del
+      admin, la reparación y la migración de dólar siguen re-anclando: corridos
+      con un flujo que la última foto del mes no vio, ese mes queda plano.
 
     Y las mismas cotas que el mes para un arranque en 0 (`_ancla_permite_publicar`).
     Es la primera semana de cada usuario nuevo: tapándola, el que se registró el
