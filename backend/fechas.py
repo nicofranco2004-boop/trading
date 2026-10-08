@@ -58,3 +58,15 @@ def dia_art(instante_utc: datetime) -> date:
     """El día argentino de un instante UTC (naive). Para quien ya tiene su
     "ahora" en la mano (y los tests que lo congelan)."""
     return (instante_utc - timedelta(hours=ART_OFFSET_HORAS)).date()
+
+
+def inicio_dia_art_en_utc(d: date) -> str:
+    """El instante en que EMPIEZA el día argentino `d`, escrito en UTC con el
+    formato de las columnas `datetime('now')` (`'YYYY-MM-DD HH:MM:SS'`).
+
+    Para cortar por día argentino una columna que se guarda en UTC: el 7/10 de
+    Buenos Aires va de `'2026-10-07 03:00:00'` (incluido) a
+    `'2026-10-08 03:00:00'` (excluido). Cortar por `substr(col,1,10)` mete en el
+    día siguiente todo lo que pasa de 21:00 a medianoche."""
+    inicio = datetime(d.year, d.month, d.day) + timedelta(hours=ART_OFFSET_HORAS)
+    return inicio.strftime("%Y-%m-%d %H:%M:%S")
