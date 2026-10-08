@@ -12371,17 +12371,18 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     # Limpieza: borrar monthly_entries que quedaron TODAS en 0 después del recalc
     # (sin pnl, sin deposits, sin withdrawals, sin pnl_unrealized). Estas son
     # filas huérfanas de cycles previos que no tienen respaldo en ninguna fuente.
-    # Sin borrarlas, su `capital_inicio` heredado de cycles anteriores ensucia
-    # netDeposited del dashboard.
-    conn.execute(
-        """DELETE FROM monthly_entries
+    # Pasa por `_borrar_filas_de_la_cadena`: si la que se va es la PRIMERA de un
+    # broker, la que queda primera no puede quedarse con la plata que acaba de
+    # desaparecer como si fuera capital inicial (ver ahí).
+    _borrar_filas_de_la_cadena(conn, uid, [r["id"] for r in conn.execute(
+        """SELECT id FROM monthly_entries
             WHERE user_id=?
               AND COALESCE(deposits, 0) = 0
               AND COALESCE(withdrawals, 0) = 0
               AND COALESCE(pnl_realized, 0) = 0
               AND COALESCE(pnl_unrealized, 0) = 0""",
         (uid,),
-    )
+    ).fetchall()])
 
     # Si tras el recalc no quedan positions ni operations ni monthly_entries,
     # el user está en "estado limpio" — también borramos snapshots stale para
@@ -12415,10 +12416,14 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     # recalc que recompone desde operations/imports no tiene con qué recomputar un
     # dato que no está en ninguna de esas dos fuentes; lo correcto es no tocarlo.
     #
-    # El caso que el reset decía cubrir —una baseline stale heredada de un ciclo
-    # anterior cuya fila previa ya no existe— lo cubre el DELETE de filas
-    # todo-en-cero de acá arriba: una fila que sólo tiene capital_inicio no
-    # sobrevive a esa limpieza.
+    # El caso que el reset decía cubrir —una baseline stale heredada de un mes
+    # anterior que ya no existe— NO lo cubría la limpieza de filas todo-en-cero:
+    # era ELLA la que lo fabricaba. Borraba el primer mes sin pasarle su arranque
+    # al siguiente, y el siguiente se quedaba con el `capital_final` viejo del
+    # borrado (depósito incluido) como si fuera capital declarado. Medido
+    # (auditoría 2026-10-03, "03b"): borrar el único depósito de noviembre dejaba
+    # los 100.000 en diciembre, en la contabilidad y en 90 fotos. Lo arregla
+    # `_borrar_filas_de_la_cadena`, sin tocar el valor declarado.
     #
     # ⚠️ EFECTO ESPERADO (D-2 del plan de remediación). Al dejar de borrar la
     # baseline vuelve a verse la divergencia DIV-029: Dashboard y Reportes rotulan
@@ -12520,6 +12525,68 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
             else:
                 # Use whatever cap_final the row currently has (live, managed by sync)
                 prev_cap_final = cur_cap_final
+
+
+def _borrar_filas_de_la_cadena(conn, uid: int, ids) -> None:
+    """Borra filas de `monthly_entries` sin que su plata pase a ser capital inicial.
+
+    El `capital_inicio` de la PRIMERA fila de cada broker es el capital que la
+    persona ya tenía antes de empezar (lo puede declarar a mano en /mensual) y lo
+    leen como tal todos los cálculos de lo aportado: el cron
+    (`snapshots_job.compute_net_deposited`), `compute_net_deposited_db`,
+    `twr.netdep_canonico` (anclado de las fotos, reconstrucción, persister),
+    Reportes y el Dashboard. `_repair_monthly_chain` no lo toca nunca: sólo
+    encadena las filas siguientes (`capital_inicio[N] = capital_final[N−1]`).
+
+    Por eso borrar la primera fila sin más rompía la cuenta: la segunda pasaba a
+    ser la primera conservando el `capital_inicio` que había HEREDADO de la cadena
+    —el `capital_final` de la borrada, con su plata adentro— y desde ahí ese monto
+    se leía como capital declarado. Borrar el único depósito de noviembre dejaba
+    los 100.000 en diciembre: la contabilidad y cada foto seguían contándolos.
+    Borrar una fila del MEDIO nunca tuvo el problema: la reparación encadena la
+    siguiente con la anterior que queda y la plata del mes borrado se va.
+
+    Acá la primera fila se trata igual que una del medio. Si las filas que se van
+    son las primeras de un broker, la que queda primera arranca con lo que tenía
+    la cuenta ANTES de ellas: el `capital_inicio` del tramo borrado del que heredó
+    el suyo. "Heredó" se reconoce porque la cadena estaba enganchada (su
+    `capital_inicio` es el `capital_final` de la anterior); si no lo estaba, ese
+    arranque es propio —declarado— y no se toca. Eso es lo que protege el caso
+    en que un import inserta un mes vacío ANTES del declarado y la limpieza lo
+    borra en la misma pasada: el vacío no estaba enganchado y el declarado sigue.
+
+    El que llama repara la cadena después (los dos lo hacen): la primera fila
+    queda con el arranque correcto y la reparación propaga desde ella.
+    """
+    ids = {int(i) for i in ids}
+    if not ids:
+        return
+    EPS = 0.01                      # el mismo margen de `_repair_monthly_chain`
+    marcas = ",".join("?" * len(ids))
+    brokers = [r["broker"] for r in conn.execute(
+        f"SELECT DISTINCT broker FROM monthly_entries WHERE user_id=? AND id IN ({marcas})",
+        (uid, *ids)).fetchall()]
+    for broker in brokers:
+        filas = conn.execute(
+            """SELECT id, capital_inicio, capital_final FROM monthly_entries
+                WHERE user_id=? AND broker=? ORDER BY year, month""",
+            (uid, broker)).fetchall()
+        # La primera que sobrevive. Si es la primera de todas (no se borra ninguna de
+        # adelante) o no sobrevive ninguna, no hay arranque que mover.
+        s = next((i for i, f in enumerate(filas) if f["id"] not in ids), None)
+        if not s:
+            continue
+        # Hacia atrás mientras la cadena esté enganchada: de ese tramo salió su arranque.
+        k = s
+        while k > 0 and abs(float(filas[k]["capital_inicio"] or 0)
+                            - float(filas[k - 1]["capital_final"] or 0)) <= EPS:
+            k -= 1
+        if k == s:
+            continue
+        conn.execute("UPDATE monthly_entries SET capital_inicio=? WHERE id=?",
+                     (float(filas[k]["capital_inicio"] or 0), filas[s]["id"]))
+    conn.execute(f"DELETE FROM monthly_entries WHERE user_id=? AND id IN ({marcas})",
+                 (uid, *ids))
 
 
 # El saldo de efectivo de un broker se mueve SOLAMENTE por acá (ver efectivo.py,
@@ -12643,10 +12710,38 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     return shortfall
 
 
+def _capital_inicio_de_fila_nueva(conn, uid: int, broker: str, year: int, month: int) -> float:
+    """Con qué capital arranca una fila de `monthly_entries` que se crea ahora: el
+    `capital_final` del mes ESTRICTAMENTE anterior que tenga fila, o 0 si no hay.
+
+    Nunca el de un mes posterior. Si la fila nueva queda primera (un flujo o una
+    ganancia fechados antes de todo lo cargado), su `capital_inicio` es el que
+    todos los cálculos leen como capital que la persona ya tenía antes de empezar
+    (ver `_borrar_filas_de_la_cadena`), y `_repair_monthly_chain` no lo corrige
+    nunca. Heredar el de un mes FUTURO lo convertía en capital fantasma permanente
+    —la cuenta entera, contada dos veces como aportada—.
+
+    Las dos funciones que crean filas al mover plata la usan. Antes cada una tenía
+    su copia: `_update_monthly_flow` ya miraba sólo hacia atrás (review cash-chat,
+    repro real) pero `_update_monthly_pnl_realized` tomaba la ÚLTIMA fila del
+    broker. Medido por HTTP: cuenta con un depósito de 1.000 en febrero que importa
+    un dividendo de enero → aportado 2.000.
+    """
+    prev = conn.execute(
+        """SELECT capital_final FROM monthly_entries
+           WHERE user_id=? AND broker=?
+             AND (year < ? OR (year = ? AND month < ?))
+           ORDER BY year DESC, month DESC LIMIT 1""",
+        (uid, broker, year, year, month),
+    ).fetchone()
+    return float(prev['capital_final'] or 0) if prev else 0.0
+
+
 def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: int,
                                   pnl_amount: float) -> None:
     """Suma pnl_amount a pnl_realized del mes (año/mes exacto) y recalcula capital_final.
-    Si la fila no existe la crea con capital_inicio = capital_final del mes anterior."""
+    Si la fila no existe la crea con `_capital_inicio_de_fila_nueva` (el
+    capital_final del mes ANTERIOR), salvo que no haya nada que anotar."""
     row = conn.execute(
         "SELECT * FROM monthly_entries WHERE user_id=? AND broker=? AND year=? AND month=?",
         (uid, broker, year, month),
@@ -12669,13 +12764,16 @@ def _update_monthly_pnl_realized(conn, uid: int, broker: str, year: int, month: 
             (new_pnl_realized, new_cap_final, uid, broker, year, month),
         )
     else:
-        prev = conn.execute(
-            """SELECT capital_final FROM monthly_entries
-               WHERE user_id=? AND broker=? ORDER BY year DESC, month DESC LIMIT 1""",
-            (uid, broker),
-        ).fetchone()
-        cap_inicio = float(prev['capital_final']) if prev else 0.0
         pnl = round(pnl_amount, 4)
+        if pnl == 0:
+            # Nada que anotar (una venta al mismo precio, un cupón en cero). Crear la
+            # fila igual dejaba un mes vacío que la limpieza borra en el mismo pedido,
+            # pero que en el medio la cadena ya había enganchado: si quedaba ANTES del
+            # primer mes, su arranque en 0 le pisaba al siguiente el capital declarado
+            # a mano. Medido por HTTP: declarado 50.000 en febrero + importar una
+            # compraventa sin ganancia de enero → el capital inicial quedaba en 0.
+            return
+        cap_inicio = _capital_inicio_de_fila_nueva(conn, uid, broker, year, month)
         cap_final = round(cap_inicio + pnl, 4)
         conn.execute(
             """INSERT INTO monthly_entries
@@ -12746,19 +12844,7 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
         )
         return
 
-    # Crear fila del mes — capital_inicio = capital_final del mes ANTERIOR al
-    # target (estrictamente anterior: un flujo RETRO a un mes previo al primer
-    # registro heredaba el capital_final de un mes FUTURO → capital fantasma
-    # permanente en broker Y global que el repair no puede sanar porque nunca
-    # corrige la primera fila de la cadena — review cash-chat, repro real).
-    prev = conn.execute(
-        """SELECT capital_final FROM monthly_entries
-           WHERE user_id=? AND broker=?
-             AND (year < ? OR (year = ? AND month < ?))
-           ORDER BY year DESC, month DESC LIMIT 1""",
-        (uid, broker, year, year, month),
-    ).fetchone()
-    cap_inicio = float(prev['capital_final']) if prev else 0.0
+    cap_inicio = _capital_inicio_de_fila_nueva(conn, uid, broker, year, month)
     deposits = amount if direction == 'deposit' else 0.0
     withdrawals = 0.0 if direction == 'deposit' else amount
     man_dep = amount if (is_manual and direction == 'deposit') else 0.0
@@ -15033,7 +15119,9 @@ def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
             "SELECT broker, year, month FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)
         ).fetchone()
         with conn:  # tx: delete + repair atómico
-            conn.execute("DELETE FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid))
+            # Si es la primera fila del broker, su plata no puede quedar como capital
+            # inicial del mes siguiente (ver `_borrar_filas_de_la_cadena`).
+            _borrar_filas_de_la_cadena(conn, uid, [eid])
             if target:
                 # Las cargas a mano de ese renglón se fueron con él.
                 _anular_flujos_a_mano(conn, uid, "renglon_mensual_borrado",
@@ -23370,7 +23458,7 @@ def admin_repair_interes_pf(apply: bool = False, uid: int = Depends(get_admin_us
 def admin_alcance_auditoria(uid: int = Depends(get_admin_user)):
     """Cuánto muerde en producción cada hallazgo de la auditoría de cálculo.
 
-    SOLO LECTURA y SÓLO AGREGADOS: las 13 consultas están escritas para no
+    SOLO LECTURA y SÓLO AGREGADOS: las 14 consultas están escritas para no
     devolver un user_id, un email, un nombre de broker ni una fila individual —
     lo máximo que sale es un COUNT DISTINCT y una suma. `alcance_auditoria`
     verifica eso ANTES de ejecutar: si alguien mete un UPDATE en el .sql, se
