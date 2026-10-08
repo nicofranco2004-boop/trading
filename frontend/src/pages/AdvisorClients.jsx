@@ -16,6 +16,7 @@
 // ruta (el sidebar no la muestra y la página redirige a /).
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { track } from '../utils/track'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Users, Plus, Layers, StickyNote, MoreVertical, Trash2, ChevronRight,
@@ -450,6 +451,7 @@ function AddClientModal({ onClose, onCreated }) {
     setErr(null)
     try {
       await api.post('/advisor/clients', { label: label.trim(), name: name.trim() || null, phone: phone.trim() || null })
+      track('cliente_agregado')
       toast.push(`Cliente "${label.trim()}" creado — entrá y cargale su cartera`)
       onCreated()
     } catch (ex) {

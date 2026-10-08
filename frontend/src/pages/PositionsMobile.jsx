@@ -2777,7 +2777,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   //     de la fila.
   const actions = buildPositionActions(p, {
     onAnalyze: () => {
-      track('mobile_row_action', { code: 'analyze', asset: p.asset })
+      track('ai_analyze_opened', { source: 'mobile_row', asset: p.asset })
       // Lo mismo que el ✦ de la fila en la compu (InlineAIButton). Llamaba a
       // `setAiOpen`, que no existe desde que el análisis pasó a la burbuja de
       // Rendi (fa024075): tocar "Analizar" en el celular no hacía nada.
