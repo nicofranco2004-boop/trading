@@ -214,9 +214,64 @@ class ElPanel(Base):
         for f in data["ranking"]["botones"]:
             self.assertIsNone(f["personas_antes"], f["evento"])
 
+    def test_la_ia_es_lo_que_la_persona_pidio_no_el_cupo(self):
+        """El cupo de IA sube solo al abrir un ticker en Fundamentals (el
+        resumen se pide sin que nadie lo toque). Eso no es "usó la IA"."""
+        hoy = hoy_art_date()
+        solo_cupo = self._registrar_y_confirmar("cupo")
+        pidio = self._registrar_y_confirmar("pidio")
+        self._x("INSERT INTO ai_usage_daily (user_id, date, analyses_count) VALUES (?,?,3)", (solo_cupo, hoy.isoformat()))
+        self._mandar_uso(solo_cupo, {"app_abierta": 1, "vista:fundamentals_ai_summary_loaded": 1})
+        self._mandar_uso(pidio, {"ai_chat_sent": 2, "ai_analyze_opened": 1})
+        data = self._uso(desde=hoy, hasta=hoy)
+        self.assertEqual(self._fila(data, solo_cupo)["ia"], 0)
+        self.assertEqual(self._fila(data, pidio)["ia"], 3)
+        self.assertEqual(self._fila(data, solo_cupo)["toques"], 0, "lo que se mostró solo no es un toque")
+        avisos = {x["evento"] for x in data["ranking"]["avisos"]}
+        self.assertIn("vista:fundamentals_ai_summary_loaded", avisos)
+        self.assertNotIn("vista:fundamentals_ai_summary_loaded", {x["evento"] for x in data["ranking"]["botones"]})
+
+    def test_volvio_con_la_sesion_abierta_cuenta_como_volvio(self):
+        """Quien vuelve dentro de los 7 días de sesión no inicia sesión, pero volvió."""
+        hoy = hoy_art_date()
+        uid = self._registrar_y_confirmar("volvio")
+        self._ingresos_hace(uid, 3)
+        self._x("UPDATE users SET created_at=? WHERE id=?",
+                (inicio_dia_art_en_utc(hoy - timedelta(days=20)), uid))
+        antes = self._uso(desde=hoy, hasta=hoy)["resumen"]
+        self._mandar_uso(uid, {"app_abierta": 1})
+        r = self._uso(desde=hoy, hasta=hoy)["resumen"]
+        self.assertEqual(r["volvieron"], antes["volvieron"] + 1)
+        self.assertEqual(r["primera_vez"], antes["primera_vez"])
+
+    def test_importacion_deshecha_igual_cuenta_esa_semana(self):
+        hoy = hoy_art_date()
+        uid = self._registrar_y_confirmar("importo")
+        antes = self._uso(desde=hoy, hasta=hoy)["resumen"]["importaron"]
+        ahora = inicio_dia_art_en_utc(hoy).replace("03:00:00", "15:00:00")
+        self._x("INSERT INTO import_batches (id, user_id, broker, parser_format, file_hash, status, confirmed_at, reverted_at) "
+                "VALUES (?,?,?,?,?,?,?,?)", (f"b-{self.tag}", uid, "IOL", "x", "h", "reverted", ahora, ahora))
+        self._x("INSERT INTO import_batches (id, user_id, broker, parser_format, file_hash, status) "
+                "VALUES (?,?,?,?,?,?)", (f"p-{self.tag}", uid, "IOL", "x", "h2", "reverted"))
+        self.assertEqual(self._uso(desde=hoy, hasta=hoy)["resumen"]["importaron"], antes + 1)
+
+    def test_posiciones_sin_efectivo_ni_lotes_repetidos(self):
+        uid = self._registrar_y_confirmar("lotes")
+        for asset, is_cash, qty, broker in [("USD", 1, 100, "IOL"), ("GGAL", 0, 10, "IOL"), ("GGAL", 0, 5, "IOL"),
+                                            ("GGAL", 0, 3, "Balanz"), ("AL30", 0, 0, "IOL")]:
+            self._x("INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity) VALUES (?,?,?,?,1,?)",
+                    (uid, broker, asset, is_cash, qty))
+        fila = self._fila(self._uso(), uid)
+        # GGAL en IOL (2 lotes) + GGAL en Balanz. Sin la caja ni el AL30 en cero.
+        self.assertEqual(fila["posiciones"], 2)
+
     def test_la_fila_es_la_misma_que_la_de_la_tabla_usuarios(self):
         uid = self._registrar_y_confirmar("misma")
         self._x("INSERT INTO brokers (user_id, name) VALUES (?, 'IOL')", (uid,))
+        self._x("INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity) VALUES (?,?,?,1,1,0)",
+                (uid, "IOL", "ARS"))
+        self._x("INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity) VALUES (?,?,?,0,1,4)",
+                (uid, "IOL", "YPF"))
         data = self._uso()
         fila = self._fila(data, uid)
         r = self.client.get("/api/admin/users/search", params={"q": str(uid)}, headers=self.h)
@@ -240,6 +295,9 @@ class ElPanel(Base):
         uid = self._registrar_y_confirmar("dia")
         hoy = hoy_art_date()
         self._ingresos_hace(uid, 2)
+        # La cuenta se creó ese mismo día (primera vez = día de alta).
+        self._x("UPDATE users SET created_at=? WHERE id=?",
+                (inicio_dia_art_en_utc(hoy - timedelta(days=2)).replace("03:00:00", "17:00:00"), uid))
         data = self._uso(desde=hoy - timedelta(days=4), hasta=hoy)
         self.assertEqual(len(data["por_dia"]), 5)
         dia = [d for d in data["por_dia"] if d["dia"] == (hoy - timedelta(days=2)).isoformat()][0]
@@ -256,6 +314,15 @@ class ElPanel(Base):
         primero = data["uso_desde"]
         if primero and primero > viejo.isoformat():
             self.assertIsNone(data["resumen"]["usaron_app"])
+
+    def test_periodo_demasiado_largo(self):
+        hoy = hoy_art_date()
+        r = self.client.get("/api/admin/uso", headers=self.h, params={
+            "desde": (hoy - timedelta(days=main._USO_DIAS_GUARDADOS)).isoformat(), "hasta": hoy.isoformat()})
+        self.assertEqual(r.status_code, 400)
+        r = self.client.get("/api/admin/uso", headers=self.h, params={
+            "desde": (hoy - timedelta(days=main._USO_DIAS_GUARDADOS - 1)).isoformat(), "hasta": hoy.isoformat()})
+        self.assertEqual(r.status_code, 200, r.text)
 
     def test_solo_admin(self):
         uid = self._registrar_y_confirmar("intruso")

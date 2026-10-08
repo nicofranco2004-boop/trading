@@ -21583,27 +21583,17 @@ def _contar_ingresos(conn, desde, hasta, internos: bool = False) -> dict:
               FROM login_history
              WHERE created_at >= ? AND created_at < ? AND user_id IN ({reales})""",
         (lo, hi)).fetchone()
-    # Primera vez = su ingreso más viejo de TODA la historia cae en el período.
-    primera_vez = conn.execute(
-        f"""SELECT COUNT(*) FROM (
-                SELECT user_id, MIN(created_at) AS primero FROM login_history
-                 WHERE user_id IN ({reales}) GROUP BY user_id) t
-             WHERE primero >= ? AND primero < ?""",
-        (lo, hi)).fetchone()[0]
     # Denominador de la tasa: quienes ya tenían cuenta al terminar el período.
     # Antes se dividía por "Usuarios totales", que suma cuentas que nunca
     # confirmaron el mail (no pueden entrar) y a los admins.
     base = conn.execute(
         f"SELECT COUNT(*) FROM users WHERE {_sql_quienes_cuentan(internos)} AND created_at < ?",
         (hi,)).fetchone()[0]
-    usuarios = int(r["usuarios"] or 0)
     return {
         "desde": desde.isoformat(),
         "hasta": hasta.isoformat(),
-        "usuarios": usuarios,
+        "usuarios": int(r["usuarios"] or 0),
         "ingresos": int(r["ingresos"] or 0),
-        "primera_vez": int(primera_vez or 0),
-        "volvieron": usuarios - int(primera_vez or 0),
         "base": int(base or 0),
     }
 
@@ -21613,10 +21603,28 @@ def _contar_ingresos(conn, desde, hasta, internos: bool = False) -> dict:
 # pantalla ('pantalla:/posiciones'). La lista cerrada con el nombre legible vive
 # en frontend/src/utils/usoCatalogo.js; acá sólo se frena lo que no tiene forma
 # de evento, para que nadie llene la tabla de basura.
-_USO_EVENTO_RE = re.compile(r"^(?:[a-z][a-z0-9_]{1,47}|pantalla:/[a-z0-9_/-]{0,40})$")
+_USO_EVENTO_RE = re.compile(r"^(?:(?:vista:)?[a-z][a-z0-9_]{1,47}|pantalla:/[a-z0-9_/-]{0,40})$")
 _USO_MAX_EVENTOS = 80      # nombres distintos por envío
 _USO_MAX_CANTIDAD = 500    # toques de un mismo evento por envío
 _USO_APP_ABIERTA = "app_abierta"
+# "Usó la IA" = algo que la persona PIDIÓ: le escribió a Mervall-E, tocó
+# «Analizar», pidió rehacerlo o repreguntó. NO sale de `ai_usage_daily`: ese
+# contador es el cupo, sube solo al abrir un ticker en Fundamentals (el resumen
+# se pide sin que nadie lo toque), no sube si el análisis ya estaba guardado,
+# va por día UTC y se le anota a la cuenta mirada (el cliente del asesor).
+_USO_EVENTOS_IA = ("ai_chat_sent", "ai_benchmark_question", "ai_analyze_opened",
+                   "ai_analyze_refresh", "vista:ai_followup_loaded")
+# Posición = un activo con tenencia en un broker: sin las cajas de efectivo
+# (cada broker nace con una en $0) y sin las filas en cero. Cada compra es una
+# fila (un lote), así que se cuenta cada broker+activo una sola vez. Lo usan el
+# panel de uso, la tabla Usuarios y la tarjeta de /admin.
+_SQL_POSICION_ABIERTA = "COALESCE(is_cash, 0) = 0 AND COALESCE(quantity, 0) > 0"
+_SQL_CONTAR_POSICIONES = "COUNT(DISTINCT broker || '|' || asset)"
+
+
+def _es_toque(ev: str) -> bool:
+    """Un botón que alguien tocó: ni pantalla, ni algo que se mostró solo, ni la apertura."""
+    return not ev.startswith(("pantalla:", "vista:")) and ev != _USO_APP_ABIERTA
 
 
 class UsoEventosIn(BaseModel):
@@ -21696,6 +21704,10 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
     if d_hasta > hoy:
         d_hasta = hoy
     largo = (d_hasta - d_desde).days + 1
+    # Tope: el detalle de uso se guarda ~13 meses, y un período de años armaría
+    # miles de barras por día sin agregar nada que no se vea con 400.
+    if largo > _USO_DIAS_GUARDADOS:
+        raise HTTPException(400, f"El período puede ser de hasta {_USO_DIAS_GUARDADOS} días.")
     p_hasta = d_desde - timedelta(days=1)
     p_desde = p_hasta - timedelta(days=largo - 1)
     lo, hi = _rango_utc(d_desde, d_hasta)
@@ -21713,8 +21725,12 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
         uso_desde = conn.execute("SELECT MIN(dia) FROM uso_diario").fetchone()[0]
 
         # ── Ingresos por usuario y por día (en hora argentina) ──
-        primer_ingreso = {r["user_id"]: _a_dia(r["p"]) for r in conn.execute(
-            f"SELECT user_id, MIN(created_at) AS p FROM login_history WHERE user_id IN ({quienes}) GROUP BY user_id")}
+        # Primera vez = la CUENTA se creó en el período. No el primer ingreso
+        # registrado: antes de mayo 2026 no hay registro, y hasta el 07/10 entrar
+        # por "olvidé mi contraseña" no dejaba ninguno; un usuario de marzo
+        # salía "nuevo".
+        alta = {r["id"]: _a_dia(r["created_at"]) for r in conn.execute(
+            f"SELECT id, created_at FROM users WHERE {filtro} AND created_at >= ? AND created_at < ?", (lo, hi))}
         logins_por_usuario, ultimo_login, por_dia_login = {}, {}, {}
         for r in conn.execute(
                 f"""SELECT user_id, created_at FROM login_history
@@ -21726,7 +21742,7 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
             por_dia_login.setdefault(_a_dia(ts), set()).add(u)
 
         # ── Uso de la app (clics y pantallas) ──
-        dias_con_uso, toques, por_dia_uso, ultimo_uso = {}, {}, {}, {}
+        dias_con_uso, toques, por_dia_uso, ultimo_uso, ia_por_usuario = {}, {}, {}, {}, {}
         for r in conn.execute(
                 f"""SELECT user_id, dia, evento, cantidad FROM uso_diario
                      WHERE dia >= ? AND dia <= ? AND user_id IN ({quienes})""", (s_desde, s_hasta)):
@@ -21736,24 +21752,19 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
             if d > ultimo_uso.get(u, ""):
                 ultimo_uso[u] = d
             ev = r["evento"]
-            if not ev.startswith("pantalla:") and ev != _USO_APP_ABIERTA:
+            if _es_toque(ev):
                 toques[u] = toques.get(u, 0) + int(r["cantidad"] or 0)
+            if ev in _USO_EVENTOS_IA:
+                ia_por_usuario[u] = ia_por_usuario.get(u, 0) + int(r["cantidad"] or 0)
 
-        # ── IA: `ai_usage_daily.date` es el día del servidor (UTC) ──
-        ia_por_usuario = {}
-        for r in conn.execute(
-                f"""SELECT user_id, SUM(COALESCE(analyses_count,0) + COALESCE(chat_count,0)
-                                     + COALESCE(hub_queries_count,0) + COALESCE(listen_count,0)) AS n
-                      FROM ai_usage_daily
-                     WHERE date >= ? AND date <= ? AND user_id IN ({quienes})
-                     GROUP BY user_id""", (s_desde, s_hasta)):
-            if int(r["n"] or 0) > 0:
-                ia_por_usuario[r["user_id"]] = int(r["n"])
-
+        # Importaron = confirmaron una importación en el período, aunque después
+        # la hayan deshecho (empezar de cero, borrar el broker): esa semana importó.
         importaron = {r["user_id"] for r in conn.execute(
             f"""SELECT DISTINCT user_id FROM import_batches
-                 WHERE status='confirmed' AND COALESCE(confirmed_at, created_at) >= ?
-                   AND COALESCE(confirmed_at, created_at) < ? AND user_id IN ({quienes})""", (lo, hi))}
+                 WHERE status IN ('confirmed', 'reverted')
+                   AND COALESCE(confirmed_at, CASE WHEN status = 'confirmed' THEN created_at END) >= ?
+                   AND COALESCE(confirmed_at, CASE WHEN status = 'confirmed' THEN created_at END) < ?
+                   AND user_id IN ({quienes})""", (lo, hi))}
 
         activos = set(logins_por_usuario) | set(dias_con_uso)
 
@@ -21771,7 +21782,8 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
 
         # ── Cartera: posiciones y operaciones de cada usuario que cuenta ──
         pos = {r["user_id"]: int(r["n"]) for r in conn.execute(
-            f"SELECT user_id, COUNT(*) AS n FROM positions WHERE user_id IN ({quienes}) GROUP BY user_id")}
+            f"""SELECT user_id, {_SQL_CONTAR_POSICIONES} AS n FROM positions
+                 WHERE {_SQL_POSICION_ABIERTA} AND user_id IN ({quienes}) GROUP BY user_id""")}
         ops = {r["user_id"]: int(r["n"]) for r in conn.execute(
             f"SELECT user_id, COUNT(*) AS n FROM operations WHERE user_id IN ({quienes}) GROUP BY user_id")}
         con_cuenta = [r["id"] for r in conn.execute(
@@ -21801,11 +21813,13 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
             "ingresos": logins_por_usuario.get(u, 0),
             "dias_con_uso": len(dias_con_uso.get(u, ())),
             "ultimo": ult or None,
-            "primera_vez": primer_ingreso.get(u, "") >= s_desde and primer_ingreso.get(u, "") <= s_hasta,
+            "primera_vez": u in alta,
             "posiciones": pos.get(u, 0), "operaciones": ops.get(u, 0),
             "brokers": int(f.get("brokers_count") or 0),
-            "ia": ia_por_usuario.get(u, 0),
-            "toques": toques.get(u) if u in dias_con_uso else None,
+            "ia": ia_por_usuario.get(u, 0) if u in dias_con_uso else None,
+            # None = no hay medición de uso para esa persona en el período; 0 =
+            # usó la app (pantallas) pero no tocó ningún botón medido.
+            "toques": toques.get(u, 0) if u in dias_con_uso else None,
         })
 
     por_dia = []
@@ -21813,12 +21827,14 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
     while d <= d_hasta:
         k = d.isoformat()
         logueados = por_dia_login.get(k, set())
+        activos_d = logueados | por_dia_uso.get(k, set())
         por_dia.append({
             "dia": k,
             # activos = iniciaron sesión O usaron la app ese día (sin contar dos veces).
-            "activos": len(logueados | por_dia_uso.get(k, set())),
+            "activos": len(activos_d),
             "ingresaron": len(logueados),
-            "primera_vez": sum(1 for u in logueados if primer_ingreso.get(u) == k),
+            # de los activos de ese día, los que crearon la cuenta ese mismo día.
+            "primera_vez": sum(1 for u in activos_d if alta.get(u) == k),
             "usaron_app": len(por_dia_uso.get(k, ())),
         })
         d += timedelta(days=1)
@@ -21829,10 +21845,13 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
     datos_desde = _a_dia(primero_login) if primero_login else None
     se_compara_login = bool(datos_desde) and datos_desde <= p_desde.isoformat()
 
-    def _lista_ranking(es_pantalla):
+    def _grupo(ev):
+        return "pantallas" if ev.startswith("pantalla:") else "avisos" if ev.startswith("vista:") else "botones"
+
+    def _lista_ranking(grupo):
         out = []
         for ev, (personas, cantidad) in rk.items():
-            if ev.startswith("pantalla:") != es_pantalla:
+            if _grupo(ev) != grupo:
                 continue
             out.append({"evento": ev, "personas": personas, "cantidad": cantidad,
                         "personas_antes": rk_prev.get(ev, (0, 0))[0] if se_compara_uso else None})
@@ -21856,18 +21875,23 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
         "datos_desde": datos_desde,
         "uso_desde": uso_desde,
         "resumen": {
-            **{k: ingresos[k] for k in ("usuarios", "ingresos", "primera_vez", "volvieron", "base")},
+            **{k: ingresos[k] for k in ("usuarios", "ingresos", "base")},
+            # Sobre los ACTIVOS (iniciaron sesión o usaron la app): quien vuelve
+            # con la sesión abierta no inicia sesión y también volvió.
+            "primera_vez": len(activos & set(alta)),
+            "volvieron": len(activos - set(alta)),
             # None = el período anterior cae antes de que hubiera registro.
             "usuarios_antes": ingresos_prev["usuarios"] if se_compara_login else None,
             # None = el período termina antes de que empezara la medición.
             "usaron_app": len({u for k, us in por_dia_uso.items() for u in us}) if medido_desde else None,
             "activos": len(activos),
-            "usaron_ia": len(ia_por_usuario),
+            # Sale de la medición de uso: antes de que empezara, no se sabe.
+            "usaron_ia": len(ia_por_usuario) if medido_desde else None,
             "importaron": len(importaron),
         },
         "por_dia": por_dia,
         "usuarios": usuarios,
-        "ranking": {"botones": _lista_ranking(False), "pantallas": _lista_ranking(True)},
+        "ranking": {g: _lista_ranking(g) for g in ("botones", "pantallas", "avisos")},
         "cartera": {
             "tramos": [{"rango": n, "activos": a, "inactivos": b}
                        for (n, _, _), a, b in zip(_CARTERA_TRAMOS, t_act, t_inact)],
@@ -21901,7 +21925,9 @@ def admin_stats(uid: int = Depends(get_admin_user)):
         _hoy = _hoy_art_date()
         _ingresos_7d = _contar_ingresos(conn, _hoy - timedelta(days=6), _hoy)
         active_last_7d = _ingresos_7d["usuarios"]
-        positions_total = conn.execute(f"SELECT COUNT(*) FROM positions WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
+        positions_total = conn.execute(
+            f"""SELECT COUNT(*) FROM (SELECT DISTINCT user_id, broker, asset FROM positions
+                 WHERE {_SQL_POSICION_ABIERTA} AND user_id IN ({NOTEST_IDS})) t""").fetchone()[0]
         operations_total = conn.execute(f"SELECT COUNT(*) FROM operations WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
         monthly_total = conn.execute(f"SELECT COUNT(*) FROM monthly_entries WHERE user_id IN ({NOTEST_IDS})").fetchone()[0]
         snapshots_total = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
@@ -22098,14 +22124,14 @@ _ADMIN_USERS_SELECT = """
     SELECT
         u.id, u.email, u.name, u.is_admin, u.approved, u.created_at, u.last_login_at,
         u.tier, u.credit_active_until, u.credit_anchor_plan, u.email_verified,
-        (SELECT COUNT(*) FROM positions p WHERE p.user_id = u.id) AS positions_count,
+        (SELECT {cnt} FROM positions p WHERE p.user_id = u.id AND {abierta}) AS positions_count,
         (SELECT COUNT(*) FROM operations o WHERE o.user_id = u.id) AS operations_count,
         (SELECT COUNT(*) FROM brokers b WHERE b.user_id = u.id) AS brokers_count,
         (SELECT COUNT(*) FROM monthly_entries m WHERE m.user_id = u.id) AS monthly_count,
         (SELECT COUNT(*) FROM subscriptions s
           WHERE s.user_id = u.id AND s.status = 'authorized') AS authorized_subs
     FROM users u
-"""
+""".format(cnt=_SQL_CONTAR_POSICIONES, abierta=_SQL_POSICION_ABIERTA)
 
 
 def _shape_admin_user_row(r, now_iso: str) -> dict:

@@ -60,11 +60,16 @@ const PLAN = { free: 'Free', plus: 'Plus', pro: 'Pro', advisor: 'Asesor', admin:
 const ddmm = iso => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '')
 const entero = n => Number(n || 0).toLocaleString('es-AR')
 
-function haceDias(iso, hoy) {
+// Contra HOY, no contra el fin del período: en "Mes pasado", alguien visto el
+// 30/09 no es "hoy". Más de una semana atrás se muestra la fecha.
+function haceDias(iso, hoy = hoyISO()) {
   if (!iso) return '—'
   const d = Math.round((new Date(hoy + 'T12:00:00') - new Date(iso + 'T12:00:00')) / 864e5)
+  if (d > 7) return `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
   return d <= 0 ? 'hoy' : d === 1 ? 'ayer' : `hace ${d} d`
 }
+
+const desdeHasta = (a, b) => (a === b ? ddmm(a).slice(0, 5) : `${ddmm(a).slice(0, 5)} al ${ddmm(b).slice(0, 5)}`)
 
 function planDe(u) {
   if (u.estado === 'en_pausa') return 'En pausa'
@@ -150,7 +155,7 @@ export default function UsoDeRendi({ onElegirUsuario }) {
       ) : (
         <div className={`space-y-4 ${vigente && !cargando ? '' : 'opacity-50'}`}>
           <Avisos data={data} />
-          <Resumen r={data.resumen} usoDesde={data.uso_desde} />
+          <Resumen r={data.resumen} usoDesde={data.uso_desde} anterior={data.anterior} />
           <PorDia dias={data.por_dia} />
           <div className="flex gap-1 border-b border-line overflow-x-auto" role="tablist" aria-label="Detalle">
             {[['usuarios', `Usuarios (${entero(data.usuarios.length)})`], ['tocado', 'Lo más tocado'], ['cartera', 'Cartera de los que usan']].map(([k, l]) => (
@@ -160,7 +165,7 @@ export default function UsoDeRendi({ onElegirUsuario }) {
               </button>
             ))}
           </div>
-          {tab === 'usuarios' && <ListaUsuarios usuarios={data.usuarios} hasta={data.hasta} onElegir={onElegirUsuario} />}
+          {tab === 'usuarios' && <ListaUsuarios usuarios={data.usuarios} onElegir={onElegirUsuario} />}
           {tab === 'tocado' && <LoMasTocado ranking={data.ranking} usoDesde={data.uso_desde} />}
           {tab === 'cartera' && <Cartera c={data.cartera} />}
         </div>
@@ -198,20 +203,24 @@ function Kpi({ label, value, sub, extra }) {
   )
 }
 
-function Resumen({ r, usoDesde }) {
+function Resumen({ r, usoDesde, anterior }) {
   const delta = r.usuarios_antes == null ? null : r.usuarios - r.usuarios_antes
+  const sinMedir = usoDesde ? `se mide desde ${ddmm(usoDesde)}` : 'se mide desde que se publicó'
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 bg-bg-1 border border-line rounded-xl overflow-hidden">
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 bg-bg-1 border border-line rounded-xl overflow-hidden">
+      <Kpi label="Activos" value={entero(r.activos)}
+        sub={r.base > 0 ? `${pctTxt((r.activos / r.base) * 100, 0)} de ${entero(r.base)} · usaron la app o iniciaron sesión` : 'usaron la app o iniciaron sesión'} />
       <Kpi label="Usaron la app" value={r.usaron_app == null ? '—' : entero(r.usaron_app)}
-        sub={r.usaron_app == null ? (usoDesde ? `se mide desde ${ddmm(usoDesde)}` : 'se mide desde que se publicó') : 'abrieron Rendi, con o sin login'} />
+        sub={r.usaron_app == null ? sinMedir : 'abrieron Rendi y la tocaron, con o sin login'} />
       <Kpi label="Iniciaron sesión" value={entero(r.usuarios)}
-        sub={r.base > 0 ? `${pctTxt((r.usuarios / r.base) * 100, 0)} de ${entero(r.base)}` : null}
+        sub={`${entero(r.ingresos)} inicios en total`}
         extra={delta == null ? null : <p className={`text-xs tabular ${delta > 0 ? 'text-rendi-pos' : delta < 0 ? 'text-rendi-neg' : 'text-ink-3'}`}>
-          {delta > 0 ? '+' : ''}{entero(delta)} vs. período anterior</p>} />
-      <Kpi label="Primera vez" value={entero(r.primera_vez)} sub="nunca habían entrado" />
-      <Kpi label="Volvieron" value={entero(r.volvieron)} sub="ya habían entrado antes" />
-      <Kpi label="Usaron la IA" value={entero(r.usaron_ia)} sub="análisis, chat o escuchar" />
-      <Kpi label="Importaron" value={entero(r.importaron)} sub="al menos un archivo" />
+          {delta > 0 ? '+' : ''}{entero(delta)} vs. {desdeHasta(anterior.desde, anterior.hasta)}</p>} />
+      <Kpi label="Primera vez" value={entero(r.primera_vez)} sub="activos que crearon la cuenta en el período" />
+      <Kpi label="Volvieron" value={entero(r.volvieron)} sub="activos que ya tenían cuenta" />
+      <Kpi label="Usaron la IA" value={r.usaron_ia == null ? '—' : entero(r.usaron_ia)}
+        sub={r.usaron_ia == null ? sinMedir : 'le escribieron a Mervall-E o pidieron un análisis'} />
+      <Kpi label="Importaron" value={entero(r.importaron)} sub="confirmaron al menos un archivo" />
     </div>
   )
 }
@@ -229,7 +238,7 @@ function PorDia({ dias }) {
         <span>Usuarios distintos por día</span>
         <span className="flex gap-3">
           <span><i className="inline-block w-2.5 h-2.5 rounded-sm bg-data-violet/60 mr-1.5 align-[-1px]" />Activos</span>
-          <span><i className="inline-block w-2.5 h-2.5 rounded-sm bg-ink-3/50 mr-1.5 align-[-1px]" />De esos, primera vez</span>
+          <span><i className="inline-block w-2.5 h-2.5 rounded-sm bg-ink-3/50 mr-1.5 align-[-1px]" />De esos, cuentas nuevas</span>
         </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Usuarios activos por día">
@@ -248,7 +257,7 @@ function PorDia({ dias }) {
           return (
             <g key={d.dia}>
               <rect x={x} y={T + ih - h} width={w} height={h} rx="2" className="fill-data-violet/60">
-                <title>{`${ddmm(d.dia)}: ${d.activos} activos · ${d.ingresaron} iniciaron sesión · ${d.usaron_app} usaron la app · ${d.primera_vez} primera vez`}</title>
+                <title>{`${ddmm(d.dia)}: ${d.activos} activos · ${d.ingresaron} iniciaron sesión · ${d.usaron_app} usaron la app · ${d.primera_vez} cuentas nuevas`}</title>
               </rect>
               <rect x={x} y={T + ih - hn} width={w} height={hn} rx="2" className="fill-ink-3/50" pointerEvents="none" />
               {(i % cada === 0 || i === dias.length - 1) && (
@@ -272,7 +281,7 @@ const COLUMNAS = [
   ['toques', 'Toques'],
 ]
 
-function ListaUsuarios({ usuarios, hasta, onElegir }) {
+function ListaUsuarios({ usuarios, onElegir }) {
   const [q, setQ] = useState('')
   const [orden, setOrden] = useState('ultimo')
   const filas = useMemo(() => {
@@ -313,16 +322,16 @@ function ListaUsuarios({ usuarios, hasta, onElegir }) {
               <tr key={u.id} onClick={() => onElegir?.(u.email)} className="border-t border-line hover:bg-bg-2/60 cursor-pointer">
                 <td className="px-3 py-2">
                   <span className="text-ink-0 font-medium">{u.email}</span>
-                  {u.primera_vez && <span className="ml-2 text-[11px] px-1.5 py-0.5 rounded-full bg-data-violet/15 text-data-violet">primera vez</span>}
+                  {u.primera_vez && <span className="ml-2 text-[11px] px-1.5 py-0.5 rounded-full bg-data-violet/15 text-data-violet">cuenta nueva</span>}
                   {u.name && <span className="block text-xs text-ink-3">{u.name}</span>}
                 </td>
                 <td className="px-3 py-2 text-ink-2 whitespace-nowrap">{planDe(u)}</td>
                 <td className="px-3 py-2 text-right tabular">{entero(u.ingresos)}</td>
                 <td className="px-3 py-2 text-right tabular">{entero(u.dias_con_uso)}</td>
-                <td className="px-3 py-2 text-right tabular whitespace-nowrap">{haceDias(u.ultimo, hasta)}</td>
+                <td className="px-3 py-2 text-right tabular whitespace-nowrap">{haceDias(u.ultimo)}</td>
                 <td className="px-3 py-2 text-right tabular">{entero(u.posiciones)}</td>
                 <td className="px-3 py-2 text-right tabular">{entero(u.operaciones)}</td>
-                <td className="px-3 py-2 text-right tabular">{u.ia ? entero(u.ia) : '—'}</td>
+                <td className="px-3 py-2 text-right tabular">{u.ia == null ? '—' : entero(u.ia)}</td>
                 <td className="px-3 py-2 text-right tabular">{u.toques == null ? '—' : entero(u.toques)}</td>
               </tr>
             ))}
@@ -330,12 +339,15 @@ function ListaUsuarios({ usuarios, hasta, onElegir }) {
         </table>
       </div>
       <p className="text-xs text-ink-3">
-        “Último” es el último día que inició sesión o usó la app. “IA” son análisis, mensajes y audios (por día del servidor, que corta a las 21 h).
-        “Toques” son los botones medidos, sin contar pantallas.
+        “Último” es el último día del período en que inició sesión o usó la app. “IA” son los pedidos a la IA (mensajes a Mervall-E,
+        «Analizar», repreguntas). “Toques” son los botones medidos, sin pantallas ni lo que se muestra solo. “—” = sin datos de uso en el período.
+        Posiciones = activos con tenencia por broker, sin efectivo; operaciones incluye cupones y amortizaciones.
       </p>
     </div>
   )
 }
+
+const GRUPOS = [['botones', 'Botones'], ['pantallas', 'Pantallas'], ['avisos', 'Avisos y resultados']]
 
 function LoMasTocado({ ranking, usoDesde }) {
   const [modo, setModo] = useState('botones')
@@ -345,7 +357,7 @@ function LoMasTocado({ ranking, usoDesde }) {
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1.5" role="group" aria-label="Qué mostrar">
-          {[['botones', 'Botones'], ['pantallas', 'Pantallas']].map(([k, l]) => (
+          {GRUPOS.map(([k, l]) => (
             <button key={k} type="button" onClick={() => setModo(k)} aria-pressed={modo === k}
               className={`px-3 py-1.5 rounded-lg text-xs border ${modo === k ? 'bg-data-violet/15 border-data-violet/40 text-ink-0 font-medium' : 'bg-bg-1 border-line text-ink-2 hover:text-ink-0'}`}>
               {l}
@@ -361,10 +373,10 @@ function LoMasTocado({ ranking, usoDesde }) {
       ) : (
         <div className="space-y-2">
           <div className="grid grid-cols-[minmax(0,1fr)_64px_72px_64px] sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)_64px_72px_64px] gap-3 text-[11px] text-ink-3">
-            <span>{modo === 'botones' ? 'Botón' : 'Pantalla'}</span>
+            <span>{modo === 'botones' ? 'Botón' : modo === 'pantallas' ? 'Pantalla' : 'Qué apareció'}</span>
             <span className="hidden sm:block" />
             <span className="text-right">Personas</span>
-            <span className="text-right">{modo === 'botones' ? 'Toques' : 'Visitas'}</span>
+            <span className="text-right">{modo === 'botones' ? 'Toques' : 'Veces'}</span>
             <span className="text-right">vs. antes</span>
           </div>
           {filas.map(f => {
@@ -390,7 +402,8 @@ function LoMasTocado({ ranking, usoDesde }) {
           })}
         </div>
       )}
-      <p className="text-xs text-ink-3">“vs. antes” compara personas con el período anterior del mismo largo (“—” si ese período todavía no se medía). Se muestra en personas y no en porcentaje: con pocos usuarios, un “+200 %” puede ser pasar de 1 a 3.</p>
+      {modo === 'avisos' && <p className="text-xs text-ink-3">Lo que se mostró o terminó solo, sin que nadie lo tocara: una pantalla que abrió, un análisis que llegó, un error, el muro de planes.</p>}
+      <p className="text-xs text-ink-3">“vs. antes” compara personas con el período anterior del mismo largo, justo antes del elegido (“—” si ese período todavía no se medía). Se muestra en personas y no en porcentaje: con pocos usuarios, un “+200 %” puede ser pasar de 1 a 3.</p>
     </div>
   )
 }

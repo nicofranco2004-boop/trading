@@ -201,14 +201,24 @@ class IngresosEnElPanel(unittest.TestCase):
         nuevo = self._registrar_y_confirmar(self._email("primera"))
         viejo_email = self._email("vuelve")
         viejo = self._registrar_y_confirmar(viejo_email)
-        # `viejo` entró por primera vez hace 30 días y volvió hoy.
-        self._mover_ingresos(viejo, inicio_dia_art_en_utc(hoy - timedelta(days=30)))
+        # `viejo` creó la cuenta hace 30 días (el reloj) y volvió hoy.
+        hace_30 = inicio_dia_art_en_utc(hoy - timedelta(days=30))
+        self._mover_ingresos(viejo, hace_30)
+        conn = main.get_db()
+        try:
+            conn.execute("UPDATE users SET created_at=? WHERE id=?", (hace_30, viejo))
+            conn.commit()
+        finally:
+            conn.close()
         self._login(viejo_email)
-        r = self._ingresos(hoy, hoy)
-        self.assertGreaterEqual(r["primera_vez"], 1)
-        self.assertGreaterEqual(r["volvieron"], 1)
-        self.assertEqual(r["primera_vez"] + r["volvieron"], r["usuarios"])
-        del nuevo
+        data = self.client.get("/api/admin/uso", params={"desde": hoy.isoformat(), "hasta": hoy.isoformat()},
+                               headers=self.h).json()
+        r = data["resumen"]
+        filas = {u["id"]: u for u in data["usuarios"]}
+        # Primera vez = la cuenta se creó en el período; volvió = ya la tenía.
+        self.assertTrue(filas[nuevo]["primera_vez"])
+        self.assertFalse(filas[viejo]["primera_vez"])
+        self.assertEqual(r["primera_vez"] + r["volvieron"], r["activos"])
 
     def test_fechas_invalidas(self):
         r = self.client.get("/api/admin/uso", params={"desde": "ayer"}, headers=self.h)

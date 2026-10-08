@@ -613,6 +613,7 @@ function PositionsDesktop() {
     // preseleccionado (menú de un broker puntual), el flow saltea el paso de
     // broker; si no, lo elige el user en el paso 1. Por eso NO defaulteamos a
     // brokers[0] cuando no hay broker — dejamos vacío para que muestre el paso.
+    track('position_add_started', { source: 'desktop' })
     setForm({ ...EMPTY_POS, broker: broker || '', entry_date: today() })
     setModal('add-flow')
   }
@@ -624,6 +625,7 @@ function PositionsDesktop() {
   // flow normal (no tiene sentido "comprar más" de una posición de efectivo).
   function openBuyForPosition(p) {
     if (!p || p.is_cash) return openAdd(p?.broker)
+    track('position_add_started', { source: 'desktop_fila' })
     setForm({
       ...EMPTY_POS,
       broker: p.broker,
@@ -833,6 +835,7 @@ function PositionsDesktop() {
     )) return
     try {
       const res = await api.delete(`/positions/${id}`)
+      track('position_deleted', { source: 'desktop' })
       await loadAll()
       const token = res?.undo_token
       if (token) {
@@ -858,6 +861,7 @@ function PositionsDesktop() {
 
   function openSell(p) {
     if (p.is_cash) return
+    track('position_sell_started', { source: 'desktop' })
     // Una fila que fusiona las dos patas de la cuenta no tiene un broker al que
     // mandar la venta: mandarla igual la metería en el ledger FIFO equivocado.
     // En vez de cortar, se abre el MISMO selector que "Registrar venta" del
@@ -1070,7 +1074,7 @@ function PositionsDesktop() {
         // cuando no hay cotización guardada de ese día.
         tc_blue: tcValuacion,
       })
-      track('efectivo_movido')
+      track('cash_flow_recorded', { source: 'desktop', broker: cashFlowForm.broker, direction: cashFlowForm.direction })
       setModal(null)
       loadAll()
     } catch (e) {
