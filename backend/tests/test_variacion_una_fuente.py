@@ -504,3 +504,32 @@ def test_pasado_el_freno_se_vuelve_a_probar_byma():
     assert len(pedidos) == 4
     assert main._FUENTE_REINTENTO_S <= 30
     _vaciar_caches()
+
+
+# ─── 8. El caché que comparte con Posiciones ────────────────────────────────
+
+def test_un_refresco_sin_respuesta_de_yahoo_no_le_borra_el_cierre_a_posiciones(conn):
+    """Escenario medido por la revisión del 2026-10-08: Posiciones lee MSFT
+    (cierre 590). Pasa un minuto —para la variación del día el dato ya venció,
+    para la pantalla no— y el refresco del inicio no recibe respuesta de Yahoo.
+    Guardaba "no hay cierre" encima del bueno: Posiciones mostraba "—" hasta
+    10 minutos."""
+    with mundo():
+        assert main.get_prev_close("MSFT", 1)["MSFT"] == 590.0
+        ts, valor = main._PREVCLOSE_CACHE["MSFT"]
+        main._PREVCLOSE_CACHE["MSFT"] = (ts - 61, valor)
+        with patch.object(main._yahoo, "descargar", return_value=pd.DataFrame()):
+            assert "MSFT" not in main._variacion_del_dia(["MSFT"])
+            assert main.get_prev_close("MSFT", 1)["MSFT"] == 590.0
+
+
+def test_vencido_para_la_pantalla_el_no_hay_se_guarda_como_antes(conn):
+    """El arreglo de arriba no puede convertirse en reintentar en cada pedido un
+    símbolo que no tiene cierre: con el bueno vencido, el "no hay" se guarda."""
+    with mundo():
+        main.get_prev_close("MSFT", 1)
+        ts, valor = main._PREVCLOSE_CACHE["MSFT"]
+        main._PREVCLOSE_CACHE["MSFT"] = (ts - main._PREVCLOSE_CACHE_TTL_S - 1, valor)
+        with patch.object(main._yahoo, "descargar", return_value=pd.DataFrame()):
+            assert main.get_prev_close("MSFT", 1)["MSFT"] is None
+        assert main._PREVCLOSE_CACHE["MSFT"][1] is None

@@ -8875,10 +8875,10 @@ def _fetch_data912_bonds():
             # guarda en la misma pasada para que nunca mezcle dos lecturas.
             # Sin clear(): otro hilo leyendo en el medio vería el dict vacío.
             _data912_bonds_pct.update(pcts)
-            for _k in [k for k in _data912_bonds_pct if k not in pcts]:
+            for _k in [k for k in list(_data912_bonds_pct) if k not in pcts]:
                 _data912_bonds_pct.pop(_k, None)
             _data912_bonds_vol.update(vols)
-            for _k in [k for k in _data912_bonds_vol if k not in vols]:
+            for _k in [k for k in list(_data912_bonds_vol) if k not in vols]:
                 _data912_bonds_vol.pop(_k, None)
         else:
             _marcar_caida("data912_bonos", result)
@@ -9347,7 +9347,10 @@ def _fill_last_known_prices(result: dict) -> None:
 # cobertura (ej. bonos AR de data912, que yfinance no tiene).
 _PREVCLOSE_CACHE: dict = {}  # symbol → (timestamp_epoch, prevclose_or_None)
 _PREVCLOSE_CACHE_TTL_S = 600
-_PREVCLOSE_CACHE_LOCK = _threading_prices.Lock()
+# RLock: `_prev_close_y_ultimo` lee el cierre, su fecha y su último precio en
+# UN solo tramo con el candado tomado (y lo mismo al guardarlos), así un hilo
+# nunca combina el cierre de una lectura con el último precio de otra.
+_PREVCLOSE_CACHE_LOCK = _threading_prices.RLock()
 
 
 # símbolo → epoch en que el cierre cacheado deja de valer aunque no hayan pasado
@@ -9942,9 +9945,10 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
     pesos, nunca el porcentaje. `ttl`/`tope`: ver `_prevclose_cache_get` y
     `PRECIOS_TOPE_YAHOO_SEG`.
     """
-    cached_results, uncached_symbols = _prevclose_cache_get(sym_list, ttl)
-    ruedas = {s: _PREVCLOSE_RUEDA.get(s, (None, None)) for s in cached_results}
-    ultimos = {s: _PREVCLOSE_ULTIMO.get(s) for s in cached_results}
+    with _PREVCLOSE_CACHE_LOCK:
+        cached_results, uncached_symbols = _prevclose_cache_get(sym_list, ttl)
+        ruedas = {s: _PREVCLOSE_RUEDA.get(s, (None, None)) for s in cached_results}
+        ultimos = {s: _PREVCLOSE_ULTIMO.get(s) for s in cached_results}
     if not uncached_symbols:
         return cached_results, ruedas, ultimos
 
@@ -10170,15 +10174,33 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         # cierre. Guardar ESE "no hay" lo servía 10 min a Posiciones, que con
         # su usuario sí lo resuelve (BAC.BA mostraba "—").
         _guardar = [s for s in _guardar if s not in cedear_usd and s not in crypto_ars]
-    _prevclose_cache_set({sym: result[sym] for sym in _guardar})
-    for sym in _guardar:
-        _PREVCLOSE_RUEDA[sym] = ruedas[sym]
-        _vence = _proxima_apertura(ruedas[sym][0])
-        if _vence is not None:
-            _PREVCLOSE_VENCE[sym] = _vence
-        else:
-            _PREVCLOSE_VENCE.pop(sym, None)
-        _PREVCLOSE_ULTIMO[sym] = ultimos[sym]
+    with _PREVCLOSE_CACHE_LOCK:
+        # Un pedido que no consiguió el cierre (Yahoo no contestó a tiempo) no
+        # pisa uno bueno que la pantalla todavía da por vigente. La variación del
+        # día lo renueva cada minuto desde las alertas, la watchlist y el inicio:
+        # pisarlo con "no hay" dejaba "—" en Posiciones hasta 10 min (medido por
+        # la revisión del 2026-10-08). Vencido, se guarda el "no hay" como antes
+        # (para no reintentar en cada pedido un símbolo que no tiene cierre).
+        _ahora = time.time()
+
+        def _pisaria_uno_bueno(sym):
+            if result[sym] is not None:
+                return False
+            previo = _PREVCLOSE_CACHE.get(sym)
+            vence = _PREVCLOSE_VENCE.get(sym)
+            return (previo is not None and previo[1] is not None
+                    and _ahora - previo[0] < _PREVCLOSE_CACHE_TTL_S
+                    and (vence is None or _ahora < vence))
+        _guardar = [s for s in _guardar if not _pisaria_uno_bueno(s)]
+        _prevclose_cache_set({sym: result[sym] for sym in _guardar})
+        for sym in _guardar:
+            _PREVCLOSE_RUEDA[sym] = ruedas[sym]
+            _vence = _proxima_apertura(ruedas[sym][0])
+            if _vence is not None:
+                _PREVCLOSE_VENCE[sym] = _vence
+            else:
+                _PREVCLOSE_VENCE.pop(sym, None)
+            _PREVCLOSE_ULTIMO[sym] = ultimos[sym]
     return result, ruedas, ultimos
 
 
