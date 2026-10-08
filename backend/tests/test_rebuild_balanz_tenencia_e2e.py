@@ -454,7 +454,7 @@ class BalanzFotoOverrideE2E(unittest.TestCase):
         p = _json.loads(j["payload_json"])
         self.assertAlmostEqual(float(p["cash_reversed"]), 0.0, places=6,
                                msg="un cierre a costo no acreditó cash: no hay nada que reversar")
-        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de la primera escritura
         with self.conn:
             self.conn.execute(
                 "UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))

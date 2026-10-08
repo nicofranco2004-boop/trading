@@ -237,7 +237,7 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
-        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de la primera escritura
         with self.conn:
             self.conn.execute(
                 "UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
@@ -301,7 +301,7 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
-        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de la primera escritura
         with self.conn:
             for tid in p["tx_ids"]:
                 self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
@@ -366,7 +366,7 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
-        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de la primera escritura
         with self.conn:
             for tid in p["tx_ids"]:
                 self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (tid,))
@@ -1047,7 +1047,7 @@ class DeleteCascade(unittest.TestCase):
         j = self.conn.execute(
             "SELECT * FROM deleted_ops_journal WHERE token=?", (res["undo_token"],)).fetchone()
         p = json.loads(j["payload_json"])
-        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de tocar nada
+        antes = main._foto_contable(self.conn, self.uid)   # como la puerta: antes de la primera escritura
         with self.conn:
             self.conn.execute("UPDATE import_normalized_tx SET excluded_at=NULL WHERE id=?", (p["tx_id"],))
             main._adjust_broker_cash(self.conn, self.uid, p["broker"], float(p["cash_reversed"]))

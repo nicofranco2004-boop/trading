@@ -14890,13 +14890,14 @@ def _foto_contable(conn, uid: int) -> dict:
     """Lo que dicen HOY las cuentas de lo aportado: el canónico de cada mes
     (`twr.netdep_canonico`, la convención que estampan el cron y el Dashboard).
 
-    Cada puerta de borrado/deshacer la saca AL ENTRAR, antes de tocar nada, y se la
-    pasa a la cascada: la diferencia con la de después del recálculo es exactamente
-    lo que el borrado cambió. Tiene que ser al entrar y no al empezar la cascada
-    porque hay puertas que tocan `monthly_entries` antes de llamarla
-    (`_delete_manual_position_cascade` y `_undo_manual_delete` revierten el
+    Cada puerta de borrado/deshacer la saca después de sus validaciones y ANTES DE
+    SU PRIMERA ESCRITURA, y se la pasa a la cascada: la diferencia con la de después
+    del recálculo es exactamente lo que el borrado cambió. Tiene que ser ahí y no al
+    empezar la cascada porque hay puertas que tocan `monthly_entries` antes de
+    llamarla (`_delete_manual_position_cascade` y `_undo_manual_delete` revierten el
     autodepósito ellas mismas): a esa altura el "antes" ya es el "después" y el
-    cambio se pierde.
+    cambio se pierde. Y no antes de las validaciones: un pedido rechazado (no es
+    tuyo, ya estaba borrado, deshacer vencido) no paga el recálculo de abajo.
 
     ⚠️ Y TOMA EL TURNO DE ESCRITURA ANTES DE LEER. Leída sin él, una puerta que
     entra mientras otro borrado del mismo usuario está a mitad de su cascada lee
@@ -14919,7 +14920,11 @@ def _foto_contable(conn, uid: int) -> dict:
     desde la pestaña Global— se le adjudicaba al borrado: borrar un dividendo
     después de editar febrero le sumaba 10.000 a 59 fotos. Se recompone dentro de
     un punto de guardado que se deshace enseguida: no queda escrito nada. Si el
-    recálculo falla, se lee como está (lo de antes).
+    recálculo falla, se lee como está (lo de antes). Cuesta un recálculo más por
+    puerta, con el turno tomado: duplica lo que dura el borrado y lo que la base
+    queda esperando (medido: de 25 a 34 milisegundos en una cuenta común, de 0,8 a
+    1,65 segundos en una con miles de movimientos importados). Recomponer sólo si
+    las cuentas tal cual tienen un desfase lo ahorraría casi siempre.
 
     También devuelve las cuentas TAL CUAL (`tal_cual`): las fotos diarias del cron y
     del Dashboard se estampan con ésas, así que para decidir si una foto diaria
@@ -15200,10 +15205,16 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
       además otro flujo que no es un import (un depósito a mano), la siguiente no
       muestra el salto limpio y esa foto queda con lo borrado (1 foto; re-anclar
       daba 0 en ese caso puntual y 5 o más en el resto de los de esta regla).
-    · B: una fila 'global' agregada a mano en /mensual EL MISMO DÍA del borrado, con
-      depósitos de al menos lo borrado, hace parecer que las fotos diarias lo
-      tenían (medido: 15 fotos; re-anclar daba 4). Es el costo de mirar también
-      las cuentas tal cual, que resuelve el caso común de un /mensual editado antes.
+    · B: si la fila Global de /mensual se corrigió a mano EXACTAMENTE en lo borrado,
+      las dos lecturas cuadran con la foto y se contradicen (una dice que lo tenía,
+      la otra que no), y no hay con qué desempatar: el resumen no guarda cuándo se
+      editó. Queda "no lo tenía": acierta si la foto es de después de la corrección
+      y lo borrado se cargó más tarde; falla si la foto es de antes (medido: sumar
+      en Global lo mismo que una posición a mano y después borrarla deja 33 fotos
+      con ella; re-anclar dejaba 9). Es el único caso medido peor que re-anclar.
+    · B: un cierre reconstruido se juzga sólo con las cuentas recompuestas: si
+      /mensual se editó a mano DESPUÉS de la reconstrucción, ese cierre puede leerse
+      mal (es una foto por mes).
     · Esos tres re-estampadores siguen re-anclando
       (`_recompute_snapshots_netdep_for_user`): corridos con un flujo que la
       última foto del mes no vio, ese mes vuelve a quedar plano.
@@ -15353,20 +15364,32 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
 
         # Una foto DIARIA se estampó con las cuentas tal como estaban, que pueden
         # diferir de las recompuestas (un renglón de /mensual editado a mano sin
-        # recalcular): "no lo tenía" si lo dice cualquiera de las dos lecturas. Un
-        # cierre reconstruido se estampa justo después de un recálculo: sólo con la
-        # recompuesta. (Con una sola, un desfase de US$ 20 hacía creer que un mes
-        # entero tenía lo borrado: 54 fotos.)
+        # recalcular). Decide primero la lectura que cuadra EXACTO con la foto: si
+        # una dice "le falta 0" (lo tenía) y ninguna "le falta justo lo borrado", lo
+        # tenía; al revés, no lo tenía. Si las dos cuadran o ninguna, "no lo tenía"
+        # si lo dice cualquiera de las dos. Un cierre reconstruido se estampa justo
+        # después de un recálculo: sólo con la recompuesta. (Con una sola lectura,
+        # un desfase de US$ 20 hacía creer que un mes entero tenía lo borrado: 54
+        # fotos; con el "cualquiera" a secas, un ajuste de la fila Global igual o
+        # mayor a lo borrado hacía creer que NINGUNA lo tenía: 32 fotos.)
         c_tal = (antes or {}).get("tal_cual") or c0
 
         def _no_lo_tenia(f, ym):
             dc = str(f["date"])[:10]
 
+            def _falta(c):
+                return c(f"{ym}-01") - _entro_despues(dc, ym) - float(f["net_deposited"])
+
             def _con(c):
-                falta = c(f"{ym}-01") - _entro_despues(dc, ym) - float(f["net_deposited"])
+                falta = _falta(c)
                 return (falta >= objetivo - tol) if objetivo > 0 else (falta <= objetivo + tol)
             if (f["source"] or "") == "mtm_backfill":
                 return _con(c0)
+            faltas = [_falta(c) for c in (c0, c_tal)]
+            lo_tenia = any(abs(x) <= tol for x in faltas)
+            no_lo_tenia = any(abs(x - objetivo) <= tol for x in faltas)
+            if lo_tenia != no_lo_tenia:
+                return no_lo_tenia
             return _con(c0) or _con(c_tal)
         # Un cierre RECONSTRUIDO (`mtm_backfill`) no prueba desde cuándo lo tenían las
         # fotos diarias: cualquier import posterior lo reescribe con todo lo cargado
@@ -15517,8 +15540,10 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, 
     recorre por HTTP.
 
     `antes` (obligatorio, sin valor por defecto a propósito): `_foto_contable`
-    sacada por la puerta AL ENTRAR, antes de tocar nada. Una puerta nueva que se
-    lo olvide revienta en su primer test en vez de borrar sin corregir lo aportado.
+    sacada por la puerta después de validar y ANTES DE SU PRIMERA ESCRITURA (el
+    turno de escritura lo toma al entrar, con `_tomar_turno`, así lo que valida no
+    lo cambia otro pedido). Una puerta nueva que se lo olvide revienta en su primer
+    test en vez de borrar sin corregir lo aportado.
     `journal`: sólo en los deshacer, lo que anotó el borrado que se deshace.
     `entrada`: si lo borrado viene de un import, {"dia", "lote", "fila"} — desde qué
     día lo tienen las fotos (el de confirmación del import, o el de la capa si tiene
@@ -15590,10 +15615,13 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, 
 def _delete_one_movement(conn, uid: int, mid: str):
     """Parsea el id compuesto de /api/movements, revierte los side-effects (cash +
     operations linkeadas) y borra la fila fuente. Devuelve (since_date,
-    brokers_touched, entrada) para la cascada; `entrada` = desde qué día lo tienen
-    las fotos y qué import lo trajo (`_entrada_de_movimiento_importado`; None para
-    los manuales). Levanta
+    brokers_touched, entrada, antes) para la cascada; `entrada` = desde qué día lo
+    tienen las fotos y qué import lo trajo (`_entrada_de_movimiento_importado`; None
+    para los manuales); `antes` = las cuentas justo antes del reclamo
+    (`_foto_contable`: se saca acá adentro, después de validar y antes de la primera
+    escritura). Levanta
     HTTPException para tipos no soportados en v1 (compras/ventas/holdings)."""
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
     # ── tx-{n}: import_normalized_tx (movimiento importado) ──
     if mid.startswith("tx-"):
         try:
@@ -15616,6 +15644,7 @@ def _delete_one_movement(conn, uid: int, mid: str):
             raise HTTPException(400, _SEED_BLOCK_MSG)
         broker = tx["broker"] or ""
         amount = float(tx["gross_amount"] or 0)  # nativo del broker
+        antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
         # 1) TOMBSTONE + CLAIM ATÓMICO, ANTES de tocar el cash (mismo patrón que los
         #    trades). Es tombstone y no DELETE físico porque el dedup del import arma su
         #    set de fingerprints con las filas que SIGUEN en la tabla: borrada la fila, el
@@ -15658,7 +15687,7 @@ def _delete_one_movement(conn, uid: int, mid: str):
             (tx["batch_id"], tx["raw_row_id"]),
         )
         since = (tx["date"] or "")[:10] or None
-        return since, {broker}, _entrada_de_movimiento_importado(conn, uid, tx)
+        return since, {broker}, _entrada_de_movimiento_importado(conn, uid, tx), antes
 
     # ── me-{n}-dep / me-{n}-wit: depósito/retiro MANUAL agregado del mes ──
     if mid.startswith("me-"):
@@ -15709,6 +15738,7 @@ def _delete_one_movement(conn, uid: int, mid: str):
             native = manual_usd * _config_tc_blue(conn, uid)
         else:
             native = manual_usd
+        antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
         # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
         # Es también el RECLAMO (2026-10-03), y por eso va ANTES de tocar el saldo:
         # el monto se leyó arriba sin bloqueo, y con un doble click en "Borrar" los
@@ -15725,7 +15755,7 @@ def _delete_one_movement(conn, uid: int, mid: str):
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
         _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
         since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
-        return since, {broker}, None   # no guarda ni el día ni cuándo se cargó
+        return since, {broker}, None, antes   # no guarda ni el día ni cuándo se cargó
 
     # ── op-{n}-* (trade manual) / pos-{n} (holding abierto) → no soportado v1 ──
     if mid.startswith("op-") or mid.startswith("pos-"):
@@ -15768,9 +15798,8 @@ def _route_tx_delete(conn, uid: int, mid: str):
         raise HTTPException(409,
             "Esta compra ya se vendió, así que no se puede borrar sola. Borrá primero "
             "la venta (en Solo P/L) o usá 'borrar todo el historial' del activo.")
-    # Cash-flow → reverso clásico + cascada. La foto contable ANTES del reverso.
-    antes = _foto_contable(conn, uid)
-    since_date, brokers, entrada = _delete_one_movement(conn, uid, mid)
+    # Cash-flow → reverso clásico + cascada (la foto contable la saca adentro).
+    since_date, brokers, entrada, antes = _delete_one_movement(conn, uid, mid)
     _cascade_after_movement_delete(conn, uid, since_date, brokers, antes=antes,
                                    entrada=entrada)
 
@@ -15812,8 +15841,7 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
                     # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
                     out.update(_route_tx_delete(conn, uid, mid) or {})
                 else:
-                    antes = _foto_contable(conn, uid)
-                    since_date, brokers, entrada = _delete_one_movement(conn, uid, mid)
+                    since_date, brokers, entrada, antes = _delete_one_movement(conn, uid, mid)
                     _cascade_after_movement_delete(conn, uid, since_date, brokers,
                                                    antes=antes, entrada=entrada)
         finally:
@@ -16833,7 +16861,7 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
     Las filas viejas (sin la foto) se BLOQUEAN: su reverso no es derivable."""
     import json as _json
 
-    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
     op = conn.execute(
         "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
     if not op:
@@ -16854,6 +16882,7 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
     op_row = {k: op[k] for k in op.keys() if k != "id"}
     undo: dict = {"op_row": op_row}
 
+    antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     # CLAIM ATÓMICO: borrar la fila ES el lock — dos requests concurrentes no pueden
     # reversar el cash dos veces (la 2da matchea 0 filas). Mismo patrón que el resto.
     # Y repite lo que se leyó para decidir (2026-10-03): la foto, el broker y la
@@ -17037,9 +17066,7 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
     asesor encontró en el undo grupal, y acá se evita con la foto de `undo_meta_json`."""
     import json as _json
 
-    # ⚠️ AL ENTRAR: esta puerta revierte el autodepósito en `monthly_entries` ella
-    # misma, antes de la cascada. Sacada más tarde, la foto ya no vería el cambio.
-    antes = _foto_contable(conn, uid)
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
     pos = conn.execute(
         "SELECT * FROM positions WHERE id=? AND user_id=? AND is_cash=0",
         (pid, uid)).fetchone()
@@ -17100,6 +17127,10 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
     # Snapshot de la fila para poder re-crearla en el undo.
     pos_row = {k: pos[k] for k in pos.keys() if k != "id"}
 
+    # ⚠️ ANTES DE LA PRIMERA ESCRITURA: esta puerta revierte el autodepósito en
+    # `monthly_entries` ella misma, antes de la cascada. Sacada más tarde, la foto
+    # ya no vería el cambio.
+    antes = _foto_contable(conn, uid)
     # CLAIM ATÓMICO: el DELETE es el lock (evita el doble crédito por doble-click).
     # Y repite lo que se leyó para decidir (2026-10-03): antes miraba sólo el id, y
     # una venta parcial que entraba en el medio dejaba el lote más chico pero el
@@ -17167,9 +17198,7 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
     referencia a una operación/posición manual por id salvo el propio journal."""
     import json as _json
 
-    # ⚠️ AL ENTRAR: abajo se vuelve a sumar el autodepósito a `monthly_entries`
-    # antes de la cascada (misma razón que en el borrado).
-    antes = _foto_contable(conn, uid)
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
     p = _json.loads(j["payload_json"])
     broker = j["broker"] or ""
 
@@ -17209,6 +17238,9 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
         if _meta_lot is not None and abs(float(live["quantity"] or 0) - float(_meta_lot)) > 1e-6:
             raise HTTPException(409, _stale)
 
+    # ⚠️ ANTES DE LA PRIMERA ESCRITURA: abajo se vuelve a sumar el autodepósito a
+    # `monthly_entries` antes de la cascada (misma razón que en el borrado).
+    antes = _foto_contable(conn, uid)
     # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click no puede re-aplicar
     # el cash dos veces (la 2da matchea 0 filas → 409).
     if conn.execute(
@@ -17339,6 +17371,7 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     import json as _json
     import secrets as _secrets
 
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
     op = conn.execute(
         "SELECT * FROM operations WHERE id=? AND user_id=?", (oid, uid)
     ).fetchone()
@@ -17352,12 +17385,9 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     if not link:
         # Cargada a mano: la reversa sale de su propia foto (`undo_meta_json`), no del
         # rebuild — el rebuild solo re-deriva lo importado. Esa puerta saca su
-        # propia foto de las cuentas al entrar.
+        # propia foto de las cuentas (sacarla también acá era un recálculo entero de
+        # más con el turno tomado: 2,5 s en una cuenta con miles de imports).
         return _delete_manual_operation_cascade(conn, uid, oid)
-    # La foto de las cuentas, antes de tocar nada (hasta acá sólo se leyó). Recién
-    # acá y no al entrar: sacarla también para las manuales era un recálculo entero
-    # de más con el turno tomado (2,5 s en una cuenta con miles de imports).
-    antes = _foto_contable(conn, uid)
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(
@@ -17422,6 +17452,7 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
 
     since_date = (src["date"] or "")[:10] or None
 
+    antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     # 1) CLAIM ATÓMICO: el tombstone es el PRIMER paso y sirve de lock — dos requests
     #    concurrentes no pueden reversar el cash 2× (la 2da matchea 0 filas → 409).
     claimed = conn.execute(
@@ -17494,7 +17525,7 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     import json as _json
     import secrets as _secrets
 
-    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
     pos = conn.execute(
         "SELECT * FROM positions WHERE id=? AND user_id=? AND is_cash=0", (pos_id, uid),
     ).fetchone()
@@ -17563,6 +17594,7 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
 
     since_date = (src["date"] or "")[:10] or None
 
+    antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     # 1) CLAIM ATÓMICO: tombstone primero (lock anti-concurrencia).
     if conn.execute(
         "UPDATE import_normalized_tx SET excluded_at=datetime('now'), excluded_by=? "
@@ -17638,6 +17670,7 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
     tombstone + devuelve el cash + re-deriva + cascada (la venta reaparece)."""
     with db_abierta() as conn:
         try:
+            _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
             j = conn.execute(
                 "SELECT * FROM deleted_ops_journal "
                 "WHERE user_id=? AND token=? AND undone_at IS NULL",
@@ -17658,7 +17691,6 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
                 return {"ok": True}
             if j["kind"] != "imported":
                 raise HTTPException(400, "Este borrado no se puede deshacer automáticamente")
-            antes = _foto_contable(conn, uid)   # antes de tocar nada
             p = _json.loads(j["payload_json"])
             # Guard (mismo que el delete): rebuild_pair_asset limpia TODO el activo y
             # re-deriva solo lo importado. Si desde el borrado el activo ganó data manual,
@@ -17678,6 +17710,7 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
                 raise HTTPException(409,
                     "No se puede deshacer: desde que borraste, el activo tiene "
                     "operaciones cargadas a mano que se perderían al restaurar.")
+            antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
             # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click/retry no puede
             # re-acreditar el cash 2× (la 2da matchea 0 filas → 409). El rollback lo
             # revierte si algo falla después (todo en la misma tx).
@@ -17727,7 +17760,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     asset = (asset or "").strip()
     if not asset:
         raise HTTPException(400, "Activo inválido")
-    antes = _foto_contable(conn, uid)   # al entrar, antes de tocar nada
+    _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
 
     rows = conn.execute(
         """SELECT n.* FROM import_normalized_tx n
@@ -17827,6 +17860,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     brokers_touched = {(r["broker"] or "") for r in rows if r["broker"]}
     brokers_touched |= {(o["broker"] or "") for o in rf_ops if o["broker"]}
 
+    antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     # 1) CLAIM ATÓMICO PRIMERO (como Fase 1): tombstoneamos TODAS las filas importadas
     #    (trades + renta fija) de una. Si otra request concurrente ya tombstoneó alguna,
     #    matcheamos menos → 409, sin reversar el cash. Evita el doble-crédito.
@@ -17939,6 +17973,7 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
     cash y re-deriva cada par (el activo reaparece completo)."""
     with db_abierta() as conn:
         try:
+            _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
             j = conn.execute(
                 "SELECT * FROM deleted_ops_journal WHERE user_id=? AND token=? "
                 "AND undone_at IS NULL AND kind='imported_asset'", (uid, token),
@@ -17946,7 +17981,6 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
             if not j:
                 raise HTTPException(404, "Nada para deshacer")
             import json as _json
-            antes = _foto_contable(conn, uid)   # antes de tocar nada
             p = _json.loads(j["payload_json"])
             asset, pairs = p["asset"], p["pairs"]
             _idset = set(p["tx_ids"])
@@ -17979,6 +18013,7 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                     raise HTTPException(409,
                         "No se puede deshacer: volviste a importar este activo desde que "
                         "lo borraste.")
+            antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
             # CLAIM ATÓMICO (evita doble-undo → doble-crédito de cash).
             if conn.execute(
                 "UPDATE deleted_ops_journal SET undone_at=datetime('now') "
