@@ -15,7 +15,7 @@ import secrets
 from typing import Any, Dict, List, Optional, Tuple
 
 from .schema import (NormalizedTx, RawRow, RowError,
-                     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)
+                     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, TX_VIVAS)
 from .parsers.registry import get_parser, autodetect, list_parsers
 from . import traspasos as _traspasos
 from . import movimientos_internos as _movimientos_internos
@@ -259,10 +259,8 @@ def drop_saldo_anterior_ya_contado(conn, uid: int, txs: list) -> list:
         # de la misma cuenta, partido por moneda.
         like = f"{base} · %"
         previo = conn.execute(
-            """SELECT 1 FROM import_normalized_tx n
-                 JOIN import_batches b ON n.batch_id = b.id
-                WHERE b.user_id=? AND b.status='confirmed' AND b.reverted_at IS NULL
-                  AND n.excluded_at IS NULL AND n.date < ?
+            f"""SELECT 1 FROM {TX_VIVAS}
+                WHERE b.user_id=? AND b.reverted_at IS NULL AND n.date < ?
                   AND (n.broker = ? OR n.broker LIKE ?)
                 LIMIT 1""",
             (uid, t.date, base, like),

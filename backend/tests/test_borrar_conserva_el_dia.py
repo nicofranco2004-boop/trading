@@ -24,6 +24,7 @@ login (`dependency_overrides`), que no toca nada de lo que se mide.
 La cuenta de laboratorio tiene el mercado QUIETO: cada foto vale exactamente lo
 aportado ese día. Cualquier ganancia o pérdida que aparezca es inventada.
 """
+import json
 import os
 import sys
 import tempfile
@@ -114,13 +115,23 @@ class BorrarConservaElDia(unittest.TestCase):
             "2026-03-10,RETIRO,IBKR,,,,4000,,,0,USD,",
             "2026-03-15,DIVIDENDO,IBKR,AAPL,,,30,,,0,USD,",
         ))
+        # El import, confirmado ANTES de las fotos (así existen en la vida real: una
+        # foto no ve un import confirmado después de su fecha).
+        self.conn.execute("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                          "WHERE user_id=?", (self.uid,))
         # Las fotos del cron, con el mismo UPSERT que `snapshots_job` (pisa la
-        # sintética de fin de mes que el import dejó en esa fecha).
+        # sintética de fin de mes que el import dejó en esa fecha). La composición
+        # con el formato del cron (valor por activo): el mercado está quieto, así que
+        # AAPL vale lo que costó y MSFT también. Borrar una compra corrige la foto con
+        # esa composición (`_corregir_mediciones`): sale el activo, vuelve la plata,
+        # y a precio quieto el total queda igual.
+        _comp = json.dumps([{"asset": "AAPL", "value_usd": 1500.0},
+                            {"asset": "MSFT", "value_usd": 1500.0}])
         for d, nd in APORTADO_DEL_DIA.items():
             self.conn.execute(
-                """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                f"""INSERT INTO snapshots (user_id, date, total_value, total_invested,
                        net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
-                   VALUES (?,?,?,?,?,1200,'[{"a":"AAPL"}]','cron','mercado',1)
+                   VALUES (?,?,?,?,?,1200,'{_comp}','cron','mercado',1)
                    ON CONFLICT(user_id, date) DO UPDATE SET
                        total_value=excluded.total_value,
                        total_invested=excluded.total_invested,
@@ -592,12 +603,18 @@ class LaSemanaDespuesDeBorrar(unittest.TestCase):
         """Importa el historial y escribe las fotos del cron: cada noche anota lo
         aportado de ese día y la cartera vale eso más la ganancia desde el 2/9."""
         self._import(_csv(*filas_csv))
+        self.conn.execute("UPDATE import_batches SET confirmed_at='2025-01-01 00:00:00' "
+                          "WHERE user_id=?", (self.uid,))
         for d, nd in aportado_del_dia.items():
             v = nd + (ganancia_desde_el_2 if d >= "2026-09-02" else 0.0)
+            # Composición con el formato del cron: desde el 2/9, las 10 AAPL valen lo
+            # que costaron (1.500) más la ganancia; antes, todo efectivo.
+            comp = (json.dumps([{"asset": "AAPL", "value_usd": 1500.0 + ganancia_desde_el_2}])
+                    if d >= "2026-09-02" else "[]")
             self.conn.execute(
                 """INSERT INTO snapshots (user_id, date, total_value, total_invested,
                        net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
-                   VALUES (?,?,?,?,?,1200,'[{"a":"AAPL"}]','cron','mercado',1)
+                   VALUES (?,?,?,?,?,1200,?,'cron','mercado',1)
                    ON CONFLICT(user_id, date) DO UPDATE SET
                        total_value=excluded.total_value,
                        total_invested=excluded.total_invested,
@@ -605,7 +622,7 @@ class LaSemanaDespuesDeBorrar(unittest.TestCase):
                        fx_to_usd_blue=excluded.fx_to_usd_blue,
                        holdings_json=excluded.holdings_json,
                        source='cron', base='mercado', apto=1""",
-                (self.uid, d, v, nd, nd))
+                (self.uid, d, v, nd, nd, comp))
         self.conn.commit()
 
     def _lo_que_publica(self) -> dict:
@@ -643,9 +660,17 @@ class LaSemanaDespuesDeBorrar(unittest.TestCase):
             "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
         self._assert_publica(esperado, "antes de borrar")
         self._borrar_la_compra_del_2()
-        # Primero lo que ve el usuario; después la causa: una compra no cambia lo
-        # aportado, así que ni una foto del cron se puede haber movido.
-        self._assert_publica(esperado, "después de borrar la compra del 2/9")
+        # ⚠️ ESTO CAMBIÓ EL 2026-10-07, A PROPÓSITO. Antes este test pedía que después
+        # de borrar la compra del 2/9 se siguiera publicando la ganancia de esa compra
+        # (+250 / +70): era la regla "las fotos del cron no se tocan". Nico decidió
+        # que una compra o venta borrada SÍ sale de las fotos medidas (opción A de
+        # `main._corregir_mediciones`): con la composición de cada foto se saca AAPL
+        # y vuelve la plata de la compra, así que la ganancia que sólo existía por
+        # esa compra desaparece. Lo que sigue valiendo, y se verifica abajo: una
+        # compra no es un aporte, así que lo aportado de cada día no se mueve.
+        sin_la_compra = {"semana": (0.0,) + tuple(esperado["semana"][1:]),
+                         "acumulado": 0.0, "peor_caida": 0.0, "desde_el_10": (0.0, 0.0)}
+        self._assert_publica(sin_la_compra, "después de borrar la compra del 2/9")
         despues = {r["date"]: r["net_deposited"] for r in self.conn.execute(
             "SELECT date, net_deposited FROM snapshots WHERE user_id=?", (self.uid,))}
         movidas = {d: (antes[d], despues.get(d)) for d in aportado_del_dia

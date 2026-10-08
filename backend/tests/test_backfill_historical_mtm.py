@@ -61,6 +61,11 @@ class HistMtmTest(unittest.TestCase):
         self.conn.close()
 
     def _mock_prices(self, mapping):
+        # Se devuelve el de verdad al terminar: sin esto el reemplazo quedaba puesto
+        # para el resto de la corrida, y los archivos que vienen después y usan el
+        # `_fetch_monthly_close` real recibían estos precios.
+        _orig = bf._fetch_monthly_close
+        self.addCleanup(setattr, bf, "_fetch_monthly_close", _orig)
         bf._fetch_monthly_close = lambda pk, start: (mapping if pk == "AAPL" else {})
 
     def test_unrealized_added_to_capital_final(self):

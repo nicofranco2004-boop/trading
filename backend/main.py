@@ -12,6 +12,10 @@ import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
 from contextlib import contextmanager
 import dberrors
 from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
+# Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
+# `init_db()` corre al importar este módulo y su migración de flujos manuales ya
+# las lee, mucho antes del bloque de imports de `importing` más abajo.
+from importing.schema import TX_VIVAS, tx_vivas
 # CÓMO escribe Rendi — fuente ÚNICA del tono, compartida con ai/prompts.py.
 # Import top-level (no lazy como el resto de `ai`) porque los prompts de chat
 # se arman a nivel de módulo. `ai/voz.py` no importa nada, así que no hay
@@ -342,6 +346,167 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+# ─── La historia reconstruida sigue a la contabilidad ────────────────────────
+# Las fotos que arma la reconstrucción a mercado (`source='mtm_backfill'`) llevan
+# el VALOR de la cartera de cada fin de mes, y ese valor sale de la contabilidad
+# de ese momento. Antes sólo se armaban al confirmar un import: todo lo que la
+# persona cambiaba DESPUÉS las dejaba describiendo una contabilidad que ya no
+# existía. Medido sobre una cuenta de laboratorio (ganancia real US$ 1.703), 17 de
+# 25 acciones las dejaban viejas: borrar un depósito → Dashboard US$ 6.703 y libro
+# del asesor 67 % (real 17 %); revertir un import o borrar un broker → historia
+# borrada hasta el próximo import; un depósito a mano con fecha pasada → curva
+# −5,6 % (real +13 %). La cascada del borrado corregía el aportado de la foto y no
+# su valor: la resta mezclaba los dos.
+#
+# CÓMO: la historia escrita guarda la HUELLA de la contabilidad que describe
+# (`mtm_huella`, la escribe `_reconstruir_mtm` junto con las fotos). Al terminar
+# cada pedido que guarda (no-GET), para cada cuenta que el pedido pudo tocar se
+# compara la huella de ahora (`backfill_historical_mtm.huella_de_entrada`, todo lo
+# que lee la reconstrucción) con la escrita; si no coinciden, se rehace.
+#   · Qué cuentas: la del pedido (`get_effective_user`, el paso obligado de los
+#     endpoints de datos) y las que toca el motor de contabilidad
+#     (`_recalc_pnl_realized_from_ops`, `_repair_monthly_chain`) o el asesor sobre
+#     sus clientes. No hay lista de puertas que mantener: la primera versión
+#     anotaba sólo en el motor y la auditoría encontró tres que lo esquivan
+#     (editar el promedio o el ticker desde Cartera, la moneda de un broker, el
+#     ratio de un CEDEAR).
+#   · Contra la ESCRITA y no "antes vs. después del pedido": lo que se escapó por
+#     cualquier lado (un GET que crea filas, un deploy en el medio, Yahoo caído)
+#     se corrige en el próximo pedido de esa cuenta.
+#   · Comparar, y no "anotar = reconstruir": el Dashboard manda cada 90 s un aviso
+#     que pasa por `_repair_monthly_chain` sin cambiar nada. Sin la comparación,
+#     cada refresco de cada persona era una reconstrucción entera, y después de
+#     cada deploy una pasada por Yahoo (medido: 3 refrescos → 6 corridas).
+#
+# ⚠️ AL TERMINAR EL PEDIDO, NO ADENTRO DE LA TRANSACCIÓN. Con los precios ya en
+# `_HIST_CACHE` la reconstrucción tarda una décima de segundo: lanzada desde el
+# motor leería la contabilidad de ANTES del commit, esperaría el lock y escribiría
+# la historia vieja encima. Al terminar el pedido el commit ya pasó (y en una
+# respuesta que se va mandando de a pedazos, como el chat, terminó el último).
+#
+# Si la contabilidad cambia mientras una reconstrucción corre, la que está
+# corriendo se reinicia sola (`_huella_contable`) y el pedido nuevo queda anotado
+# en `_MTM_PENDIENTE`: una ráfaga de borrados son dos corridas, no veinte.
+import contextvars as _contextvars  # noqa: E402
+
+# Cuentas que este pedido puede haber cambiado — None fuera de un pedido que guarda.
+_CONTABILIDAD_TOCADA: _contextvars.ContextVar = _contextvars.ContextVar(
+    "contabilidad_tocada", default=None)
+
+# Marca de "la última corrida no pudo escribir todo": un pedido posterior la rehace,
+# pero no antes de `_MTM_REINTENTO_MIN` minutos — con Yahoo caído, reintentar en cada
+# refresco del Dashboard (cada 90 s) es pegarle justo cuando está limitando, y desde
+# la misma IP que trae los precios en vivo de todos.
+_MTM_FALLIDA = "fallida"
+_MTM_REINTENTO_MIN = 10
+
+# Hasta tantas cuentas por pedido, cada una arranca en su propio hilo (lo normal:
+# la persona o su asesor tocó UNA cuenta, y la quiere ver bien enseguida). Más que
+# eso —revertir una tanda del asesor— van a una fila de un solo hilo: decenas de
+# reconstrucciones a la vez contra Yahoo no.
+_RECONSTRUIR_MAX_CUENTAS = 5
+
+
+def _contabilidad_tocada(uid) -> None:
+    """Anota que este pedido puede haber cambiado lo que lee la reconstrucción de
+    `uid`. Fuera de un pedido que guarda (GET, cron, hilos, scripts) no hace nada."""
+    tocadas = _CONTABILIDAD_TOCADA.get()
+    if tocadas is not None and uid is not None:
+        tocadas.add(uid)
+
+
+def _huella_escrita(conn, uid):
+    r = conn.execute("SELECT huella FROM mtm_huella WHERE user_id=?", (uid,)).fetchone()
+    return r[0] if r else None
+
+
+def _fallida_hace_poco(conn, uid) -> bool:
+    from datetime import datetime as _dt, timedelta as _td
+    limite = (_dt.utcnow() - _td(minutes=_MTM_REINTENTO_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+    return conn.execute(
+        "SELECT 1 FROM mtm_huella WHERE user_id=? AND huella=? AND escrita_at > ?",
+        (uid, _MTM_FALLIDA, limite)).fetchone() is not None
+
+
+def _guardar_huella_escrita(conn, uid, huella) -> None:
+    """En la MISMA transacción que las fotos: o quedan las dos cosas o ninguna."""
+    conn.execute(
+        "INSERT INTO mtm_huella (user_id, huella, escrita_at) VALUES (?, ?, datetime('now')) "
+        "ON CONFLICT(user_id) DO UPDATE SET huella=excluded.huella, escrita_at=excluded.escrita_at",
+        (uid, huella))
+
+
+def _cuentas_que_cambiaron(uids) -> tuple:
+    """(propias, sin_marca): las cuentas anotadas cuya contabilidad de AHORA no es
+    la que describe su historia escrita. Las que nunca se reconstruyeron con esta
+    versión (`sin_marca`) van aparte: después del deploy son todas, y van a la fila
+    para no salir a Yahoo con todas a la vez."""
+    from scripts.backfill_historical_mtm import huella_de_entrada
+    from datetime import datetime as _dt
+    propias, sin_marca = [], []
+    with db_abierta() as conn:
+        for uid in sorted(uids):
+            try:
+                escrita = _huella_escrita(conn, uid)
+                if escrita is None:
+                    sin_marca.append(uid)
+                elif escrita == _MTM_FALLIDA:
+                    if not _fallida_hace_poco(conn, uid):
+                        propias.append(uid)
+                elif huella_de_entrada(conn, uid, _dt.utcnow().date()) != escrita:
+                    propias.append(uid)
+            except Exception:
+                log.exception("mtm-auto: no se pudo comparar la huella de %s", uid)
+                propias.append(uid)
+    return propias, sin_marca
+
+
+class _ReconstruirAlTerminar:
+    """Middleware ASGI puro (no `@app.middleware`): vuelve cuando la respuesta se
+    mandó ENTERA, incluso la que se manda de a pedazos."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope.get("type") != "http"
+                or scope.get("method") in ("GET", "HEAD", "OPTIONS")
+                or str(scope.get("path") or "").startswith("/api/admin/")):
+            # Las herramientas del admin no disparan: sus ensayos corren el motor
+            # sobre un CLON de la base (anotaban cuentas que en la real no
+            # cambiaron) y sus aplicaciones tocan cientos de cuentas a la vez
+            # (medido: ~588 con import, ~18.500 consultas a Yahoo, 3,5 h). Para la
+            # historia de esas cuentas está el botón de reconstrucción del admin; y
+            # si no se corre, cada cuenta se pone al día en su próximo pedido.
+            await self.app(scope, receive, send)
+            return
+        tocadas: set = set()
+        token = _CONTABILIDAD_TOCADA.set(tocadas)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _CONTABILIDAD_TOCADA.reset(token)
+            if tocadas:
+                try:
+                    import asyncio
+                    propias, sin_marca = await asyncio.get_running_loop().run_in_executor(
+                        None, _cuentas_que_cambiaron, set(tocadas))
+                except Exception:
+                    log.exception("mtm-auto: no se pudo comparar la huella")
+                    propias, sin_marca = sorted(tocadas), []
+                if len(propias) > _RECONSTRUIR_MAX_CUENTAS:
+                    log.info("mtm-auto: %s cuentas cambiaron en un solo pedido — van "
+                             "a la fila de reconstrucción", len(propias))
+                    sin_marca, propias = propias + sin_marca, []
+                for _uid in propias:
+                    _reconstruir_mtm_post_import(_uid)
+                if sin_marca:
+                    _reconstruir_en_fila(sin_marca)
+
+
+app.add_middleware(_ReconstruirAlTerminar)
+
+
 # ─── Modo mantenimiento ───────────────────────────────────────────────────────
 # Va ACÁ, después de todos los otros middlewares, **y el orden es el punto**: en
 # FastAPI el último registrado es el más EXTERNO, o sea el primero que ve el
@@ -649,13 +814,16 @@ def _table_cols(conn, table: str) -> set:
 #     (lo que llaman Movimientos y transactions.csv para separar lo manual).
 # Si cambia qué cuenta, cambia acá y vale para las dos. `test_conversion_en_
 # movimientos.py::FlujosImportadosPorMes` compara una contra la otra.
+# Qué filas cuentan (import confirmado y sin lápida) NO va en estos WHERE: lo pone
+# el `FROM {TX_VIVAS}` de cada consulta, el mismo fragmento que el resto de los
+# lectores (importing/schema.py; lo vigila tests/test_tx_vivas.py).
 _FLUJO_IMPORT_USD_SQL = """CASE WHEN n.gross_amount_usd IS NOT NULL THEN n.gross_amount_usd
                               WHEN UPPER(n.currency)='ARS' AND ? > 0 THEN n.gross_amount / ?
                               ELSE n.gross_amount END"""   # 2 parámetros: tc_blue, tc_blue
-_FLUJO_IMPORT_DONDE_SQL = """b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+_FLUJO_IMPORT_DONDE_SQL = """b.user_id=?
                   AND n.operation_type IN ('DEPOSIT', 'WITHDRAW')"""
 _FX_PATA_USD_SQL = "COALESCE(n.gross_amount_usd, ABS(n.quantity))"
-_FX_PATA_DONDE_SQL = """b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+_FX_PATA_DONDE_SQL = """b.user_id=?
                    AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
                    AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'"""
 # El broker que COBRA (`bc`) es la contraparte del que paga (`bp` = n.broker).
@@ -720,15 +888,13 @@ def _fx_transfer_legs_for_period(conn, uid: int, broker: str, year_str: str,
     try:
         paga = conn.execute(
             f"""SELECT COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
-                  FROM import_normalized_tx n
-                  JOIN import_batches b ON b.id = n.batch_id
+                  FROM {TX_VIVAS}
                 WHERE {_FX_PATA_DONDE_SQL} {_DEL_MES_SQL} AND n.broker = ?""",
             (uid, year_str, month_str, broker),
         ).fetchone()
         cobra = conn.execute(
             f"""SELECT COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
-                  FROM import_normalized_tx n
-                  JOIN import_batches b ON b.id = n.batch_id
+                  FROM {TX_VIVAS}
                   {_FX_COBRA_JOIN_SQL}
                 WHERE {_FX_PATA_DONDE_SQL} {_DEL_MES_SQL} AND bc.name = ?""",
             (uid, year_str, month_str, broker),
@@ -754,8 +920,7 @@ def _import_flows_for_period(conn, uid: int, broker: str, year_str: str,
         flow_rows = conn.execute(
             f"""SELECT n.operation_type AS op,
                        COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS s_usd
-                FROM import_normalized_tx n
-                JOIN import_batches b ON b.id = n.batch_id
+                FROM {TX_VIVAS}
                 WHERE {_FLUJO_IMPORT_DONDE_SQL} {_DEL_MES_SQL}
                   {tx_broker_filter}
                 GROUP BY n.operation_type""",
@@ -800,8 +965,7 @@ def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
                 f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
                           strftime('%m', n.date) AS m, n.operation_type AS op,
                           COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS s
-                     FROM import_normalized_tx n
-                     JOIN import_batches b ON b.id = n.batch_id
+                     FROM {TX_VIVAS}
                     WHERE {_FLUJO_IMPORT_DONDE_SQL}
                     GROUP BY n.broker, y, m, n.operation_type""",
                 (tc_blue, tc_blue, uid)).fetchall():
@@ -810,16 +974,14 @@ def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
         for r in conn.execute(
                 f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
                           strftime('%m', n.date) AS m, COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
-                     FROM import_normalized_tx n
-                     JOIN import_batches b ON b.id = n.batch_id
+                     FROM {TX_VIVAS}
                     WHERE {_FX_PATA_DONDE_SQL}
                     GROUP BY n.broker, y, m""", (uid,)).fetchall():
             _sumar(r["broker"], r["y"], r["m"], 1, r["s"])
         for r in conn.execute(
                 f"""SELECT bc.name AS broker, strftime('%Y', n.date) AS y,
                           strftime('%m', n.date) AS m, COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS s
-                     FROM import_normalized_tx n
-                     JOIN import_batches b ON b.id = n.batch_id
+                     FROM {TX_VIVAS}
                      {_FX_COBRA_JOIN_SQL}
                     WHERE {_FX_PATA_DONDE_SQL}
                     GROUP BY bc.name, y, m""", (uid,)).fetchall():
@@ -2936,6 +3098,44 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_deleted_ops_journal_tok
                 ON deleted_ops_journal(user_id, token);
 
+            -- Con qué contabilidad quedó escrita la historia reconstruida a
+            -- mercado de cada cuenta (`backfill_historical_mtm.huella_de_entrada`).
+            -- Si la huella de ahora es otra, las fotos 'mtm_backfill' describen una
+            -- contabilidad que ya no existe y hay que rehacerlas. En la base y no en
+            -- memoria: un deploy no tiene que olvidar qué quedó por rehacer.
+            -- 'fallida' = la última corrida no pudo traer todo (Yahoo caído).
+            -- La foto MEDIDA tal como la escribió el cron (o el Dashboard), antes de que
+            -- una compra o venta borrada la corrigiera (`main._recalcular_mediciones`).
+            -- Cada borrado o deshacer recalcula la foto desde acá; cuando no queda nada
+            -- vigente, vuelve tal cual y la fila se borra.
+            CREATE TABLE IF NOT EXISTS medicion_original (
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                -- la fila de `snapshots` exacta: si la foto se borró (revert,
+                -- broker) y otra ocupó la fecha, este original ya no es de ella
+                snapshot_id INTEGER,
+                total_value REAL,
+                holdings_json TEXT,
+                source TEXT,
+                apto INTEGER,
+                base TEXT,
+                mtm_coverage REAL,
+                -- qué borrados ya reflejaba esa medición (claves journal:índice)
+                eventos_base TEXT,
+                -- lo último que se escribió en la foto, y con qué borrados vigentes:
+                -- si la foto ya no dice eso, el cron la volvió a medir
+                escrito_total REAL,
+                escrito_holdings TEXT,
+                eventos_escritos TEXT,
+                PRIMARY KEY (user_id, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS mtm_huella (
+                user_id INTEGER PRIMARY KEY,
+                huella TEXT NOT NULL,
+                escrita_at TEXT DEFAULT (datetime('now'))
+            );
+
             -- Mapping auxiliar: una fila puede crear múltiples positions/operations
             -- (ej.: SELL FIFO genera N rows en operations). Acá guardamos todos los
             -- IDs para poder revertir.
@@ -3444,7 +3644,14 @@ def get_effective_user(
                 )
 
     client_uid = _resolve_client_context(request, uid)
-    return client_uid if client_uid is not None else uid
+    uid_efectivo = client_uid if client_uid is not None else uid
+    # En un pedido que guarda (no-GET), al terminar se compara la contabilidad de
+    # esta cuenta con la que describe su historia reconstruida y, si cambió, se
+    # rehace (`_ReconstruirAlTerminar`). Se anota ACÁ por la misma razón que el
+    # muro: es el paso obligado de todos los endpoints de datos, así que cubre
+    # también al que se agregue mañana sin acordarse de esto.
+    _contabilidad_tocada(uid_efectivo)
+    return uid_efectivo
 
 
 def _require_advisor(conn, uid: int) -> str:
@@ -4378,6 +4585,11 @@ _RESET_PORTFOLIO_TABLES = (
     "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
     "deleted_ops_journal", "bond_cashflow_skips",
     "ai_analyses_cache", "ai_user_facts",
+    # Agregadas 2026-10-08: la huella con que se reconstruyó la historia y las
+    # fotos medidas originales (antes de corregirlas por compras/ventas borradas).
+    # Sin borrarlas, un original huérfano volvía como "medición del cron" encima de
+    # la cuenta re-importada (auditoría 4: US$ 10.600 donde el cron daba 21.800).
+    "mtm_huella", "medicion_original",
     # Agregada 2026-09-09: `futures_positions` es CARTERA y nació DESPUÉS de que
     # se escribió este allowlist (feat 413996ad). Es exactamente el costo que el
     # allowlist explícito cobra —una tabla nueva no se resetea sola— y el motivo
@@ -10665,8 +10877,8 @@ def _src_tx_for_position(conn, uid: int, pid: int):
     if not link:
         return None
     return conn.execute(
-        """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
         (link["batch_id"], link["raw_row_id"], uid),
     ).fetchone()
 
@@ -11205,11 +11417,13 @@ def _foto_split_watermarks(conn, uid: int) -> dict:
     significaría 'este activo tuvo split'). Read-time: sobrevive a un re-import (el
     rebuild borra columnas de la posición, no import_normalized_tx). Un split POSTERIOR
     a la foto (d > esta fecha) se sigue detectando."""
+    # `TX_VIVAS`: una foto que la persona borró ya no fija la cantidad del lote,
+    # así que tampoco puede declarar sus splits como ya aplicados.
     out = {}
     for r in conn.execute(
         "SELECT n.broker b, UPPER(n.asset_symbol) a, MAX(n.date) d "
-        "FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id "
-        "WHERE ib.user_id=? AND ib.status='confirmed' "
+        f"FROM {TX_VIVAS} "
+        "WHERE b.user_id=? "
         f"  AND n.notes LIKE '{_import_tenencia.TENENCIA_APERTURA_NOTE_PREFIX}%' AND COALESCE(n.asset_symbol,'') <> '' "
         "GROUP BY n.broker, UPPER(n.asset_symbol)",
         (uid,),
@@ -11239,12 +11453,14 @@ def _corporate_split_watermarks(conn, uid: int) -> dict:
         'corporate') → excluye 'dividendo en acciones/especie', 'rescate parcial', etc.,
         que también son corporate $0 pero NO son splits y no deben suprimir un ajuste.
     Solo cuenta batches confirmados (un movimiento en un batch revertido/preview no crea
-    watermark → un split legítimo se sigue ofreciendo)."""
+    watermark → un split legítimo se sigue ofreciendo) y filas vivas (`TX_VIVAS`): si la
+    persona BORRÓ el lote del split, la cantidad nueva ya no está en la posición y el
+    'Ajustar' tiene que volver a ofrecerse."""
     out = {}
     for r in conn.execute(
         "SELECT n.broker b, UPPER(n.asset_symbol) a, MAX(n.date) d "
-        "FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id "
-        "WHERE ib.user_id=? AND ib.status='confirmed' "
+        f"FROM {TX_VIVAS} "
+        "WHERE b.user_id=? "
         "  AND n.operation_type IN ('BUY','SELL') AND COALESCE(n.asset_symbol,'') <> '' "
         "  AND COALESCE(n.unit_price,0) = 0 AND COALESCE(n.gross_amount,0) = 0 "
         "  AND ( LOWER(COALESCE(n.notes,'')) LIKE 'split%' "
@@ -11862,6 +12078,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
 
     Idempotente. Devuelve cantidad de rows actualizados.
     """
+    _contabilidad_tocada(uid)   # al terminar el pedido se compara la huella y, si cambió, se reconstruye
     # Los meses se descubren desde las FUENTES, no solo desde lo que quedó en
     # monthly_entries. Antes se iteraba únicamente sobre las filas existentes, y como la
     # GC de abajo borra las que quedan todo-en-cero, un mes cuyas ops se cancelaban entre
@@ -11890,10 +12107,10 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
             _seed.add(("global", r["y"], r["m"]))
     try:
         for r in conn.execute(
-            """SELECT DISTINCT n.broker AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
+            f"""SELECT DISTINCT n.broker AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
                       CAST(strftime('%m', n.date) AS INT) AS m
-                 FROM import_normalized_tx n JOIN import_batches ib ON ib.id = n.batch_id
-                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                 FROM {tx_vivas('n', 'ib')}
+                WHERE ib.user_id=?
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW') AND n.date IS NOT NULL
                   AND n.date LIKE '____-__-__%'""",  # ver el LIKE de arriba
             (uid,),
@@ -11909,10 +12126,9 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
     # del broker receptor se perdería igual que antes del fix.
     try:
         for r in conn.execute(
-            """SELECT DISTINCT bx.name AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
+            f"""SELECT DISTINCT bx.name AS b, CAST(strftime('%Y', n.date) AS INT) AS y,
                       CAST(strftime('%m', n.date) AS INT) AS m
-                 FROM import_normalized_tx n
-                 JOIN import_batches ib ON ib.id = n.batch_id
+                 FROM {tx_vivas('n', 'ib')}
                  JOIN brokers bp ON bp.user_id = ib.user_id AND bp.name = n.broker
                  JOIN brokers bx ON bx.user_id = ib.user_id
                   AND (bx.id = bp.id
@@ -11920,7 +12136,7 @@ def _recalc_pnl_realized_from_ops(conn, uid: int) -> int:
                         AND bx.parent_broker_id = bp.id AND bx.currency='USDT')
                     OR (n.operation_type='FX_USD_TO_ARS'
                         AND bx.id = bp.parent_broker_id))
-                WHERE ib.user_id=? AND ib.status='confirmed' AND n.excluded_at IS NULL
+                WHERE ib.user_id=?
                   AND n.operation_type IN ('FX_ARS_TO_USD','FX_USD_TO_ARS')
                   AND n.date IS NOT NULL AND n.date LIKE '____-__-__%'""",
             (uid,),
@@ -12141,6 +12357,7 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
     Idempotente. El caller es responsable del commit (funciona dentro o fuera
     de `with conn:`).
     """
+    _contabilidad_tocada(uid)   # al terminar el pedido se compara la huella y, si cambió, se reconstruye
     rows = conn.execute(
         """SELECT id, year, month, capital_inicio, capital_final, deposits, withdrawals,
                   pnl_realized, pnl_unrealized
@@ -15288,13 +15505,11 @@ def _build_movements(uid: int):
 
         # ── 2) Import normalized transactions ───────────────────────────────
         tx_rows = conn.execute(
-            """SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
+            f"""SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
                       t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
-                FROM import_normalized_tx t
-                JOIN import_batches b ON t.batch_id = b.id
-                WHERE b.user_id = ? AND b.status = 'confirmed'
-                  AND t.excluded_at IS NULL
+                FROM {tx_vivas('t')}
+                WHERE b.user_id = ?
                 ORDER BY t.date DESC""",
             (uid,),
         ).fetchall()
@@ -15555,6 +15770,452 @@ def _is_synthetic_seed_row(src) -> bool:
             or notes.startswith("Tenencia — aporte inicial sintético"))
 
 
+# ─── Las fotos MEDIDAS después de una compra o venta borrada ──────────────────
+# Las fotos que el cron saca cada noche (y la del Dashboard) son mediciones: el
+# valor a mercado de lo que la persona tenía ESE día, y no se recalculan —no hay
+# precios diarios para hacerlo—. Una COMPRA o VENTA borrada deja en ellas un activo
+# que, según la contabilidad de ahora, nunca estuvo (o le faltan acciones que nunca
+# se vendieron). Medido en una cuenta de laboratorio, borrar una compra de MSFT
+# dejaba las fotos medidas entre US$ 1.000 y 1.400 arriba: el certero de septiembre
+# a diciembre daba −9,8 % (real +0,5 %) y una caída máxima de −11,7 % que no existió.
+#
+# Decisión de Nico (2026-10-07, opción A): se corrigen con la composición que la
+# MISMA foto midió. Si el día d la persona tenía Q unidades de un activo según la
+# contabilidad de antes y Q' según la de ahora, el valor del activo en la foto pasa
+# a valor × Q'/Q (el precio sigue siendo el medido ese día) y la plata que la
+# operación movió vuelve al efectivo de la foto. Si no se puede hacer con certeza,
+# la foto sale del certero (opción B) en vez de quedarse con un número inventado.
+#
+# CÓMO, después de tres auditorías (2026-10-08):
+#   · La foto ORIGINAL se guarda intacta (`medicion_original`) la primera vez que se
+#     toca, y cada borrado o deshacer RECALCULA la foto desde ese original con los
+#     borrados que siguen vigentes (sus `eventos`, en el journal sin deshacer). La
+#     primera versión aplicaba y deshacía cambios de a uno: borrar A, borrar B y
+#     deshacer A devolvía como válida una foto con la compra de B adentro (+US$ 1.000),
+#     y deshacer sobre una foto que la reconstrucción había pisado la rotulaba
+#     "medida por el cron" con el valor de la reconstrucción, para siempre.
+#   · La plata va con la moneda de la OPERACIÓN, a la cuenta de la que salió
+#     (`cash_broker_for`, el CEDEAR pagado en dólares) y los pesos al MEP del día,
+#     el mismo dólar con que el cron valuó ese efectivo.
+#   · Frenos: el import trae montos malos (pesos cargados como dólares, filas
+#     triplicadas): medido sobre la copia de prod, 5 de 43 borrados dejaban fotos
+#     absurdas (−US$ 16 M sobre una cartera de US$ 35.000). La foto sale del certero
+#     si la corrección le deja efectivo negativo, total ≤ 0 o un salto de más de la
+#     mitad; si el activo vive en más de un broker (AAPL acción y AAPL CEDEAR no valen
+#     lo mismo por unidad: +US$ 2.358 en la prueba); si las unidades del historial no
+#     coinciden con las de la cartera de hoy (13 % de las compras borrables en prod);
+#     si tiene lotes cargados a mano; si no tiene composición; o si el activo
+#     reaparece sin precio medido (la venta borrada de algo vendido entero).
+_MEDICION_VIEJA = "medicion_vieja"   # twr la clasifica INDETERMINADO: fuera del certero
+_MEDICION_KINDS = ("imported", "imported_asset")
+_MEDICION_COLS = ("total_value", "holdings_json", "source", "apto", "base", "mtm_coverage")
+
+
+def _evento_de_fila(conn, uid: int, r, signo_qty: float, cash: float) -> dict:
+    """Lo que borrar (o deshacer) una fila importada le hace a la cuenta desde su
+    fecha: `qty` unidades del activo y `cash` en la moneda de la OPERACIÓN."""
+    mon = (r["currency"] or "").upper() if "currency" in r.keys() else ""
+    if not mon:
+        b = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
+                         (uid, r["broker"] or "")).fetchone()
+        mon = (b["currency"] if b else "") or ""
+    conf = conn.execute(
+        "SELECT b.confirmed_at FROM import_normalized_tx n JOIN import_batches b "
+        "ON b.id = n.batch_id WHERE n.id=?", (r["id"],)).fetchone() if "id" in r.keys() else None
+    return {"fecha": str(r["date"] or "")[:10], "asset": r["asset_symbol"] or "",
+            "broker": r["broker"] or "", "tx_id": r["id"] if "id" in r.keys() else None,
+            # Cuándo entró al sistema: una foto medida ANTES no la vio (import tardío).
+            "conf": (conf["confirmed_at"] if conf else None),
+            "qty": signo_qty * float(r["quantity"] or 0), "cash": float(cash or 0),
+            "moneda": "ARS" if mon.upper() == "ARS" else "USD"}
+
+
+def _plata_de_fila_importada(conn, uid: int, r) -> tuple:
+    """(cuenta, monto): lo que BORRAR esta fila importada le hace al efectivo (+
+    vuelve, − sale), espejo exacto de lo que hizo el persister al darla de alta.
+
+    UNA regla para los tres borrados (la venta, la compra y el historial del activo)
+    y para armar los eventos de los journals viejos. Antes vivía copiada en cada
+    uno, y sólo el del historial usaba `cash_broker_for`: el CEDEAR pagado en
+    dólares devolvía PESOS en la cuenta en pesos (auditoría 3).
+      · COMPRA: debitó invested + comisiones (invested = gross_amount, o precio
+        conciliado × cantidad si no hay monto) → vuelve.
+      · VENTA: acreditó precio conciliado × cantidad − comisiones, sólo si es > 0, y
+        nada si fue un traspaso de salida → sale.
+      · lo demás (cupón, amortización de renta fija): acreditó el monto → sale, en el
+        broker de la fila."""
+    op = (r["operation_type"] or "").upper()
+    keys = r.keys()
+    if op not in ("BUY", "SELL"):
+        return (r["broker"] or ""), -float(r["gross_amount"] or 0)
+    cuenta = _import_persister.cash_broker_for(
+        conn, uid, r["broker"] or "",
+        r["currency"] if "currency" in keys else None,
+        r["asset_type"] if "asset_type" in keys else None)
+    q = float(r["quantity"] or 0)
+    fees = float(r["fees"] or 0)
+    if op == "BUY":
+        if r["gross_amount"] is not None:
+            invested = float(r["gross_amount"])
+        else:
+            invested = float(_import_persister.reconciled_unit_price(
+                r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"]) or 0) * q
+        return cuenta, invested + fees
+    if "transfer_out" in keys and r["transfer_out"]:
+        return cuenta, 0.0            # el persister fuerza proceeds 0: no entró plata
+    proceeds = float(_import_persister.reconciled_unit_price(
+        r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"]) or 0) * q - fees
+    return cuenta, (-proceeds if proceeds > 0 else 0.0)
+
+
+def _eventos_de_journal_viejo(conn, uid: int, kind, payload: dict) -> list:
+    """Los `eventos` de un borrado hecho antes de que se guardaran: de sus filas,
+    que siguen en la base con la lápida."""
+    ids = [payload["tx_id"]] if payload.get("tx_id") else list(payload.get("tx_ids") or [])
+    if not ids:
+        return []
+    _ph = ",".join("?" * len(ids))
+    out = []
+    for r in conn.execute(
+            f"SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+            f"WHERE b.user_id=? AND n.id IN ({_ph})", (uid, *ids)).fetchall():
+        op = (r["operation_type"] or "").upper()
+        _cuenta, cash = _plata_de_fila_importada(conn, uid, r)
+        signo = -1.0 if op == "BUY" else (+1.0 if op == "SELL" else 0.0)
+        out.append(_evento_de_fila(conn, uid, r, signo, cash))
+    return out
+
+
+def _conocido_hasta(d: str) -> str:
+    """Hasta cuándo pudo saber algo la foto del día `d`: el cierre de ese día en
+    Argentina (03:00 UTC del día siguiente). `confirmed_at` y el journal están en UTC."""
+    from datetime import date as _d, timedelta as _td
+    try:
+        return (_d.fromisoformat(d[:10]) + _td(days=1)).isoformat() + " 03:00:00"
+    except ValueError:
+        return "9999-12-31 00:00:00"
+
+
+def _corregir_una_medicion(conn, uid, d, orig, eventos, ctx):
+    """(total, holdings_json) de la foto `d` corregida desde su original, o None si
+    no se puede afirmar."""
+    import json as _json
+    total = float(orig["total_value"] or 0)
+    try:
+        hold = _json.loads(orig["holdings_json"]) if orig["holdings_json"] else None
+    except (TypeError, ValueError):
+        hold = None
+    # Plata, en la moneda de cada operación; pesos al MEP del día (el del cron).
+    # `eventos`: [(evento, signo)] — +1 los borrados que la foto todavía no refleja,
+    # −1 los que reflejaba y ya se deshicieron.
+    d_cash = 0.0
+    for e, sg in eventos:
+        if not e.get("cash"):
+            continue
+        if e.get("moneda") == "ARS":
+            mep = ctx["mep"](d)
+            if not mep:
+                return None
+            d_cash += sg * e["cash"] / mep
+        else:
+            d_cash += sg * e["cash"]
+    dq = {}
+    for e, sg in eventos:
+        if e.get("asset") and e.get("qty"):
+            dq[e["asset"]] = dq.get(e["asset"], 0.0) + sg * e["qty"]
+    valores = {h.get("asset"): float(h.get("value_usd") or 0) for h in (hold or [])}
+    hasta = _conocido_hasta(d)
+    d_hold, antes_de = {}, {}
+    for a, q in dq.items():
+        # Las unidades que la foto PUDO ver: las vivas de ahora hasta su fecha, sin
+        # las que entraron después (un import tardío no estaba cuando se midió).
+        ahora = sum(x for (fd, x, conf) in ctx["movs"].get(a, [])
+                    if fd <= d and (not conf or conf <= hasta))
+        antes = ahora - q
+        antes_de[a] = antes
+        tol = 1e-6 * max(1.0, abs(antes), abs(ahora))
+        if abs(q) <= tol:
+            continue
+        if hold is None or a in ctx["no_corregibles"]:
+            return None
+        v = valores.get(a)
+        if antes > tol and v is not None:
+            d_hold[a] = v * max(ahora, 0.0) / antes - v
+        elif antes <= tol and ahora <= tol and not v:
+            continue                       # ni lo tenía ni lo tiene
+        else:
+            return None                    # aparece sin precio, o la foto lo tiene sin unidades
+    # Banda por lote: lo que la foto dice que valía cada lote contra lo que costó (al
+    # dólar del día de la operación). Afuera de [0,4×, 2,5×] el monto importado o la
+    # composición no son creíbles (filas triplicadas, pesos cargados como dólares).
+    for e, _sg in eventos:
+        a, q = e.get("asset"), abs(float(e.get("qty") or 0))
+        if not (a and q and e.get("cash")) or not antes_de.get(a) or antes_de[a] <= 0:
+            continue
+        v = valores.get(a)
+        if v is None:
+            continue
+        costo = abs(float(e["cash"]))
+        if e.get("moneda") == "ARS":
+            tc = ctx["mep"](e["fecha"])
+            if not tc:
+                return None
+            costo /= tc
+        if costo <= 0:
+            continue
+        if not (0.4 <= (v * q / antes_de[a]) / costo <= 2.5):
+            return None
+    nuevo_total = total + sum(d_hold.values()) + d_cash
+    # Frenos: lo que no puede ser una foto de verdad.
+    efectivo = total - sum(valores.values())
+    if hold is not None and efectivo + d_cash < -max(1.0, 0.01 * abs(total)):
+        return None
+    if nuevo_total <= 0 < total or abs(nuevo_total - total) > 0.5 * abs(total):
+        return None
+    holdings = orig["holdings_json"]
+    if d_hold:
+        nuevo = []
+        for h in hold:
+            v = round(float(h.get("value_usd") or 0) + d_hold.get(h.get("asset"), 0.0), 2)
+            if abs(v) > 0.005:
+                nuevo.append({**h, "value_usd": v})
+        holdings = _json.dumps(nuevo)
+    return round(nuevo_total, 2), holdings
+
+
+def _recalcular_mediciones(conn, uid: int) -> None:
+    """Deja cada foto medida describiendo la contabilidad de AHORA respecto de las
+    compras y ventas importadas borradas. Se llama al final de cada borrado y de cada
+    deshacer (con la contabilidad ya cambiada) y en cada reconstrucción de la cuenta.
+
+    Cada foto se calcula desde su ORIGINAL (`medicion_original`) aplicando los
+    borrados vigentes que esa medición no reflejaba (+1) y deshaciendo los que
+    reflejaba y ya no están (−1).
+
+    QUÉ REFLEJABA UNA MEDICIÓN se decide POR FECHA: el borrado que ya estaba hecho
+    (y no deshecho) cuando se cerró el día de la foto (`_conocido_hasta`), el cron lo
+    vio — midió la cartera sin esa compra. Uno posterior no. Es la misma regla que
+    para un import tardío, y es la que permite corregir los borrados de ANTES de este
+    cambio: la reconstrucción que corre en el primer pedido de cada cuenta después del
+    deploy los encuentra y corrige las fotos medidas antes de cada uno.
+    Si el cron volvió a medir la foto después de la última corrección (la foto de
+    hoy, a la noche), la medición nueva es el original y refleja lo que estaba
+    vigente cuando se escribió por última vez."""
+    import json as _json
+    import twr as _twr
+    import fx as _fx
+
+    # Los eventos de TODOS los borrados de compras/ventas (también los deshechos:
+    # para revertirlos en una foto que los reflejaba) y cuáles siguen vigentes.
+    eventos, vigentes, vigencia = {}, set(), {}
+    for j in conn.execute(
+            f"SELECT id, token, kind, created_at, undone_at, payload_json FROM deleted_ops_journal "
+            f"WHERE user_id=? AND kind IN ({','.join('?' * len(_MEDICION_KINDS))})",
+            (uid, *_MEDICION_KINDS)).fetchall():
+        try:
+            payload = _json.loads(j["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        # Los borrados de antes de este cambio no guardaban `eventos`: se arman de
+        # sus filas, que siguen en la base (sin esto, un borrado nuevo del mismo
+        # activo calculaba mal las unidades: US$ 8.000 donde el cron daba 10.000).
+        evs = payload.get("eventos")
+        if evs is None:
+            evs = _eventos_de_journal_viejo(conn, uid, j["kind"] if "kind" in j.keys() else None,
+                                            payload)
+        for i, e in enumerate(evs or []):
+            if not e.get("fecha"):
+                continue
+            k = f"{j['id']}:{i}"
+            eventos[k] = e
+            vigencia[k] = (j["created_at"] or "", j["undone_at"])
+            if j["undone_at"] is None:
+                vigentes.add(k)
+
+    def _vigentes_al(hasta):
+        """Los borrados hechos y no deshechos al cierre de ese día: los que vio el cron."""
+        return {k for k, (desde, hasta_que) in vigencia.items()
+                if k in eventos and desde <= hasta and (hasta_que is None or hasta_que > hasta)}
+    # Lo borrado que ya no existe (revertiste el import, borraste el broker): sus
+    # fotos se fueron con él; sus eventos no corrigen nada.
+    _tx = {e.get("tx_id") for e in eventos.values() if e.get("tx_id")}
+    if _tx:
+        _ph = ",".join("?" * len(_tx))
+        _existen = {r["id"] for r in conn.execute(
+            f"SELECT n.id FROM import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+            f"WHERE b.user_id=? AND b.status='confirmed' AND n.id IN ({_ph})",
+            (uid, *_tx)).fetchall()}
+        for k in [k for k, e in eventos.items() if e.get("tx_id") and e["tx_id"] not in _existen]:
+            eventos.pop(k)
+            vigentes.discard(k)
+    originales = {r["date"]: r for r in conn.execute(
+        "SELECT * FROM medicion_original WHERE user_id=?", (uid,)).fetchall()}
+    if not vigentes and not originales:
+        return
+
+    filas = conn.execute(
+        "SELECT id, date, total_value, fx_to_usd_blue, holdings_json, source, mtm_coverage, "
+        "base, apto FROM snapshots WHERE user_id=? ORDER BY date", (uid,)).fetchall()
+    actuales = {r["date"]: r for r in filas}
+    clases = dict(zip([r["date"] for r in filas],
+                      _twr.clasificar_serie(filas, _twr.primera_fecha_con_posiciones(conn, uid))))
+
+    activos = sorted({e["asset"] for e in eventos.values() if e.get("asset") and e.get("qty")})
+    movs, no_corregibles = {a: [] for a in activos}, set()
+    if activos:
+        _ph = ",".join("?" * len(activos))
+        # La cuenta en pesos y su "· USD" son UN broker (el dólar MEP: CEDEAR
+        # comprado en una y vendido en la otra, valuado igual en las dos). Contarlas
+        # como dos sacaba del certero el 57 % de las fotos tras borrar una compra.
+        _par_cache = {}
+
+        def _par(b):
+            if b not in _par_cache:
+                _par_cache[b] = min(_import_persister.broker_pair(conn, uid, b or "") or [b or ""])
+            return _par_cache[b]
+        brokers_de = {}
+        for e in eventos.values():                    # el broker de lo borrado también cuenta
+            if e.get("asset"):
+                brokers_de.setdefault(e["asset"], set()).add(_par(e.get("broker") or ""))
+        for r in conn.execute(
+                f"SELECT n.asset_symbol AS a, n.broker AS br, substr(n.date,1,10) AS d, "
+                f"n.operation_type AS op, n.quantity AS q, b.confirmed_at AS conf "
+                f"FROM {TX_VIVAS} WHERE b.user_id=? "
+                f"AND n.operation_type IN ('BUY','SELL') AND n.asset_symbol IN ({_ph})",
+                (uid, *activos)).fetchall():
+            movs[r["a"]].append((r["d"], (1.0 if r["op"] == "BUY" else -1.0) * float(r["q"] or 0),
+                                 r["conf"]))
+            brokers_de.setdefault(r["a"], set()).add(_par(r["br"] or ""))
+        cartera = {}
+        for r in conn.execute(
+                f"""SELECT asset, broker, quantity,
+                           id NOT IN (SELECT position_id FROM import_op_links
+                                       WHERE position_id IS NOT NULL) AS manual
+                      FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0
+                       AND asset IN ({_ph})""", (uid, *activos)).fetchall():
+            q, pares, manuales = cartera.get(r["asset"], (0.0, set(), 0))
+            cartera[r["asset"]] = (q + float(r["quantity"] or 0), pares | {_par(r["broker"])},
+                                   manuales + (1 if r["manual"] else 0))
+        for a in activos:
+            hoy = sum(x for _, x, _c in movs[a])
+            en_cartera, pares, manuales = cartera.get(a, (0.0, set(), 0))
+            if (len(brokers_de.get(a, set()) | pares) > 1 or manuales > 0
+                    or abs(hoy - en_cartera) > 1e-6 * max(1.0, abs(hoy), abs(en_cartera))):
+                no_corregibles.add(a)
+
+    _mep_cache = {}
+
+    def _mep(d):
+        # Sólo el MEP: `fx_for_date` cae al blue si falta, y el cron valuó el
+        # efectivo en pesos al MEP (con el blue quedaba un residuo de 1–3 %).
+        if d not in _mep_cache:
+            try:
+                tc, fuente = _fx.fx_for_date_detail(conn, d)
+                _mep_cache[d] = tc if fuente == _fx.RIEL_MEP else None
+            except Exception:
+                _mep_cache[d] = None
+        return _mep_cache[d]
+    ctx = {"movs": movs, "no_corregibles": no_corregibles, "mep": _mep}
+
+    def _guardar_original(d, snapshot_id, orig, base_ev, escrito):
+        _guardar_original_de_medicion(conn, uid, d, snapshot_id, orig, base_ev, escrito, vigentes)
+
+    t0 = min((e["fecha"] for e in eventos.values()), default=None)
+    fechas = set(originales)
+    if t0:
+        fechas |= {d for d, c in clases.items()
+                   if str(d)[:10] >= t0 and c in (_twr.MEDICION, _twr.INTRADIA)}
+    for d in sorted(fechas):
+        actual = actuales.get(d)
+        o = originales.get(d)
+        if o is not None and (actual is None or (o["snapshot_id"] is not None
+                                                 and o["snapshot_id"] != actual["id"])):
+            # La foto ya no existe (revert, broker, reset) o la que ocupa la fecha es
+            # OTRA (la reconstrucción la reescribió): este original no es de ella.
+            conn.execute("DELETE FROM medicion_original WHERE user_id=? AND date=?", (uid, d))
+            originales.pop(d, None)
+            o = None
+            if actual is None or clases.get(d) not in (_twr.MEDICION, _twr.INTRADIA):
+                continue
+        if actual is None:
+            continue
+        if o is not None and actual["source"] not in (_MEDICION_VIEJA, "mtm_backfill") and (
+                actual["total_value"] != o["escrito_total"]
+                or (actual["holdings_json"] or "") != (o["escrito_holdings"] or "")):
+            # El cron la volvió a medir después de la última corrección: esa medición
+            # es el original nuevo y ya refleja lo vigente cuando se escribió.
+            base_ev = set(_json.loads(o["eventos_escritos"] or "[]"))
+            o = None
+        elif o is not None:
+            base_ev = set(_json.loads(o["eventos_base"] or "[]"))
+        else:
+            base_ev = _vigentes_al(_conocido_hasta(str(d)[:10]))
+        orig = o if o is not None else actual
+        dia = str(d)[:10]
+        hasta = _conocido_hasta(dia)
+
+        def _la_vio(e):
+            # Una fila que entró DESPUÉS de la foto (import tardío) no estaba en lo
+            # que se midió: borrarla no le cambia nada (auditoría 4: 10.600 correctos
+            # pasaban a 10.733).
+            return e["fecha"] <= dia and (not e.get("conf") or e["conf"] <= hasta)
+        aplicar = [(eventos[k], +1) for k in vigentes - base_ev
+                   if k in eventos and _la_vio(eventos[k])]
+        aplicar += [(eventos[k], -1) for k in base_ev - vigentes
+                    if k in eventos and _la_vio(eventos[k])]
+        if not aplicar:
+            if o is not None or originales.get(d) is not None:
+                # Ya no hay nada que corregir: la foto vuelve a ser su original.
+                conn.execute(
+                    f"UPDATE snapshots SET {', '.join(c + '=?' for c in _MEDICION_COLS)} "
+                    "WHERE user_id=? AND date=?",
+                    (*[orig[c] for c in _MEDICION_COLS], uid, d))
+                if base_ev == _vigentes_al(hasta):
+                    # Lo que refleja se deduce de las fechas: no hace falta recordarlo.
+                    conn.execute("DELETE FROM medicion_original WHERE user_id=? AND date=?",
+                                 (uid, d))
+                else:
+                    # Una medición que vio borrados que la fecha sola no explica (el cron
+                    # la volvió a medir después): se recuerda qué reflejaba, o un
+                    # deshacer posterior ya no sabría que tiene que devolverle lo borrado.
+                    _guardar_original(d, actual["id"], orig, base_ev,
+                                      (orig["total_value"], orig["holdings_json"]))
+            continue
+        corregida = _corregir_una_medicion(conn, uid, dia, orig, aplicar, ctx)
+        if corregida is not None:
+            nuevo = (corregida[0], corregida[1], orig["source"], orig["apto"], orig["base"],
+                     orig["mtm_coverage"])
+        elif actual["source"] == "mtm_backfill" and o is not None:
+            # La reconstrucción ya puso su foto de fin de mes: describe lo de ahora.
+            nuevo = None
+        else:
+            nuevo = (orig["total_value"], orig["holdings_json"], _MEDICION_VIEJA, 0,
+                     orig["base"], orig["mtm_coverage"])
+        if nuevo is not None:
+            conn.execute(
+                "UPDATE snapshots SET total_value=?, holdings_json=?, source=?, apto=?, base=?, "
+                "mtm_coverage=? WHERE user_id=? AND date=?", (*nuevo, uid, d))
+        escrito = nuevo or (actual["total_value"], actual["holdings_json"])
+        _guardar_original(d, actual["id"], orig, base_ev, escrito)
+
+
+def _guardar_original_de_medicion(conn, uid, d, snapshot_id, orig, base_ev, escrito, vigentes):
+    import json as _json
+    conn.execute(
+            f"""INSERT INTO medicion_original
+                  (user_id, date, snapshot_id, {', '.join(_MEDICION_COLS)}, eventos_base,
+                   escrito_total, escrito_holdings, eventos_escritos)
+                VALUES (?, ?, ?, {', '.join('?' * len(_MEDICION_COLS))}, ?, ?, ?, ?)
+                ON CONFLICT(user_id, date) DO UPDATE SET
+                  snapshot_id=excluded.snapshot_id,
+                  {', '.join(f'{c}=excluded.{c}' for c in _MEDICION_COLS)},
+                  eventos_base=excluded.eventos_base, escrito_total=excluded.escrito_total,
+                  escrito_holdings=excluded.escrito_holdings,
+                  eventos_escritos=excluded.eventos_escritos""",
+            (uid, d, snapshot_id, *[orig[c] for c in _MEDICION_COLS],
+             _json.dumps(sorted(base_ev)), escrito[0], escrito[1], _json.dumps(sorted(vigentes))))
+
+
 def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched) -> None:
     """Cola de cascada compartida tras borrar UN movimiento — espeja el tail de
     revert_batch (persister.py:1360-1394). ORDEN CRÍTICO: repair chain → recalc
@@ -15667,10 +16328,8 @@ def _delete_one_movement(conn, uid: int, mid: str):
         except ValueError:
             raise HTTPException(400, "id de movimiento inválido")
         tx = conn.execute(
-            """SELECT n.* FROM import_normalized_tx n
-                 JOIN import_batches b ON b.id = n.batch_id
-                WHERE n.id=? AND b.user_id=? AND b.status='confirmed'
-                  AND n.excluded_at IS NULL""",
+            f"""SELECT n.* FROM {TX_VIVAS}
+                WHERE n.id=? AND b.user_id=?""",
             (tx_id, uid),
         ).fetchone()
         if not tx:
@@ -15804,9 +16463,8 @@ def _route_tx_delete(conn, uid: int, mid: str):
     except ValueError:
         raise HTTPException(400, "id de movimiento inválido")
     tx = conn.execute(
-        """SELECT n.operation_type, n.batch_id, n.raw_row_id FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE n.id=? AND b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        f"""SELECT n.operation_type, n.batch_id, n.raw_row_id FROM {TX_VIVAS}
+            WHERE n.id=? AND b.user_id=?""",
         (tx_id, uid),
     ).fetchone()
     if not tx:
@@ -16173,13 +16831,11 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
     try:
         # ── 1) Imports normalizados (cubre todos los tipos) ──────────────────
         tx_rows = conn.execute(
-            """SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
+            f"""SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
                       t.currency, t.fees, t.notes, t.gross_amount_usd
-               FROM import_normalized_tx t
-               JOIN import_batches b ON t.batch_id = b.id
-               WHERE b.user_id = ? AND b.status = 'confirmed'
-                 AND t.excluded_at IS NULL""",
+               FROM {tx_vivas('t')}
+               WHERE b.user_id = ?""",
             (uid,),
         ).fetchall()
         for r in tx_rows:
@@ -17443,10 +18099,8 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(
-        """SELECT n.* FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?
-              AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
         (batch_id, raw_row_id, uid),
     ).fetchone()
     if not src:
@@ -17525,15 +18179,14 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     #    débito. Hoy esas filas vienen con precio y monto 0 (el flag solo se aplica en
     #    ese caso), pero lo hacemos EXPLÍCITO para que siga siendo simétrico si alguna
     #    vez un parser marca transfer_out en una fila con precio.
-    if is_transfer_out:
-        reversed_cash = 0.0
-    else:
-        _ueff = _import_persister.reconciled_unit_price(
-            src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"])
-        proceeds_native = float(_ueff or 0) * float(src["quantity"] or 0) - float(src["fees"] or 0)
-        reversed_cash = proceeds_native if proceeds_native > 0 else 0.0
+    # La regla única (`_plata_de_fila_importada`): la plata sale de la cuenta en
+    # la que ENTRÓ —un CEDEAR vendido en dólares la acreditó en el sibling "· USD",
+    # no en la cuenta en pesos donde vive la tenencia—. Acá se usaba el broker de la
+    # fila: se sacaban PESOS de la cuenta en pesos y los dólares quedaban.
+    cash_broker, _delta = _plata_de_fila_importada(conn, uid, src)
+    reversed_cash = -_delta
     if reversed_cash:
-        _adjust_broker_cash(conn, uid, broker, -reversed_cash)
+        _adjust_broker_cash(conn, uid, cash_broker, -reversed_cash)
 
     # 3) Soltar los links + journal para deshacer (guardamos EXACTAMENTE el monto
     #    revertido para que el undo re-acredite lo mismo y quede simétrico).
@@ -17548,7 +18201,10 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
            VALUES (?,?,?,?,?,?)""",
         (uid, token, "imported",
          _json.dumps({"tx_id": src["id"], "batch_id": batch_id, "raw_row_id": raw_row_id,
-                      "cash_reversed": reversed_cash, "broker": broker, "asset": asset}),
+                      "cash_reversed": reversed_cash, "broker": broker, "asset": asset,
+                      "cash_broker": cash_broker,
+                      # Sin la venta: vuelven las acciones, sale la plata (fotos medidas).
+                      "eventos": [_evento_de_fila(conn, uid, src, +1.0, -reversed_cash)]}),
          since_date, broker),
     )
 
@@ -17556,6 +18212,10 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     #    tenencia, borra la venta). rebuild_pair_asset corre SIEMPRE (aun sin ventas).
     tc_blue = _config_tc_blue(conn, uid)
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
+
+    # 4b) Las fotos medidas desde la venta. DESPUÉS del rebuild: antes, la posición
+    #     seguía sin su vínculo al import y parecía cargada a mano.
+    _recalcular_mediciones(conn, uid)
 
     # 5) Cascada de agregados + snapshots — lo que el borrado viejo NO hacía.
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
@@ -17589,10 +18249,8 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(
-        """SELECT n.* FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?
-              AND b.status='confirmed' AND n.excluded_at IS NULL""",
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
         (batch_id, raw_row_id, uid),
     ).fetchone()
     if not src:
@@ -17650,15 +18308,11 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
 
     # 2) Reversar el cash que la compra DEBITÓ: invested+fees (invested=gross_amount
     #    o reconciled·qty si es NULL, persister:513). Devolvemos esa plata.
-    if src["gross_amount"] is not None:
-        invested = float(src["gross_amount"])
-    else:
-        invested = float(_import_persister.reconciled_unit_price(
-            src["unit_price"], src["quantity"], src["gross_amount"], src["asset_type"]) or 0) \
-            * float(src["quantity"] or 0)
-    cash_reversed = invested + float(src["fees"] or 0)
+    # A la cuenta de la que SALIÓ la plata (el CEDEAR pagado en dólares: el sibling
+    # "· USD"): la regla única, igual que la venta y el borrado del historial.
+    cash_broker, cash_reversed = _plata_de_fila_importada(conn, uid, src)
     if cash_reversed:
-        _adjust_broker_cash(conn, uid, broker, cash_reversed)
+        _adjust_broker_cash(conn, uid, cash_broker, cash_reversed)
 
     # 3) Soltar el link + journal para deshacer.
     conn.execute(
@@ -17673,13 +18327,18 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
          # DEVOLVIÓ +cash_reversed, así que el undo debe RE-DEBITAR → guardamos el negado
          # (la venta guarda +proceeds porque su delete restó; misma convención).
          _json.dumps({"tx_id": src["id"], "batch_id": batch_id, "raw_row_id": raw_row_id,
-                      "cash_reversed": -cash_reversed, "broker": broker, "asset": asset}),
+                      "cash_reversed": -cash_reversed, "broker": broker, "asset": asset,
+                      "cash_broker": cash_broker,
+                      # Sin la compra: sale el activo, vuelve la plata (fotos medidas).
+                      "eventos": [_evento_de_fila(conn, uid, src, -1.0, cash_reversed)]}),
          since_date, broker),
     )
 
     # 4) Re-derivar el activo (el lote desaparece) + cascada.
     tc_blue = _config_tc_blue(conn, uid)
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
+    # Las fotos medidas (después del rebuild, como en la venta).
+    _recalcular_mediciones(conn, uid)
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
 
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
@@ -17767,9 +18426,14 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
             )
             cash = float(p.get("cash_reversed") or 0)
             if cash:
-                _adjust_broker_cash(conn, uid, p["broker"], cash)
+                # La misma cuenta que movió el borrado (los journals anteriores a
+                # `cash_broker` usaban el broker de la fila).
+                _adjust_broker_cash(conn, uid, p.get("cash_broker") or p["broker"], cash)
             tc_blue = _config_tc_blue(conn, uid)
             _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
+            # El journal ya está deshecho: sus eventos dejan de valer y las fotos
+            # medidas vuelven a calcularse sin ellos.
+            _recalcular_mediciones(conn, uid)
             _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
             conn.commit()
         except HTTPException:
@@ -17802,9 +18466,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
         raise HTTPException(400, "Activo inválido")
 
     rows = conn.execute(
-        """SELECT n.* FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
-            WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+        f"""SELECT n.* FROM {TX_VIVAS}
+            WHERE b.user_id=?
               AND n.asset_symbol=? AND n.operation_type IN ('BUY','SELL')""",
         (uid, asset),
     ).fetchall()
@@ -17881,8 +18544,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
             "l_batch": o["l_batch"], "l_raw": o["l_raw"],
         })
         tx = conn.execute(
-            """SELECT n.* FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-                WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=? AND n.excluded_at IS NULL""",
+            f"""SELECT n.* FROM {TX_VIVAS}
+                WHERE n.batch_id=? AND n.raw_row_id=? AND b.user_id=?""",
             (o["l_batch"], o["l_raw"], uid),
         ).fetchone()
         if tx:
@@ -17914,6 +18577,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     #    COMPRA debitó invested+fees, con invested=gross_amount o reconciled·qty si
     #    gross es NULL (persister:513). VENTA acreditó reconciled·qty−fees si >0.
     cash_by_broker: dict = {}
+    eventos: list = []          # lo mismo, fila por fila y con su fecha: fotos medidas
 
     def _rev(broker_name: str, delta: float) -> None:
         if delta and broker_name:
@@ -17921,27 +18585,12 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
             cash_by_broker[broker_name] = cash_by_broker.get(broker_name, 0.0) + delta
 
     for r in rows:
-        # La plata vuelve a la cuenta de la que SALIÓ: para un CEDEAR pagado en
-        # dólares eso es el sibling USD aunque la tenencia viva en el padre
-        # (misma regla que el alta y el revert — audit 2026-08-10, si no se
-        # acreditaban pesos en la cuenta en pesos y los dólares se perdían).
-        b = _import_persister.cash_broker_for(
-            conn, uid, r["broker"] or "",
-            r["currency"] if "currency" in r.keys() else None,
-            r["asset_type"] if "asset_type" in r.keys() else None)
-        if (r["operation_type"] or "").upper() == "BUY":
-            if r["gross_amount"] is not None:
-                invested = float(r["gross_amount"])
-            else:
-                invested = float(_import_persister.reconciled_unit_price(
-                    r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"]) or 0) \
-                    * float(r["quantity"] or 0)
-            _rev(b, invested + float(r["fees"] or 0))
-        else:
-            _ueff = _import_persister.reconciled_unit_price(
-                r["unit_price"], r["quantity"], r["gross_amount"], r["asset_type"])
-            proceeds = float(_ueff or 0) * float(r["quantity"] or 0) - float(r["fees"] or 0)
-            _rev(b, -proceeds if proceeds > 0 else 0.0)
+        # La plata vuelve a la cuenta de la que SALIÓ (el CEDEAR pagado en dólares:
+        # el sibling USD aunque la tenencia viva en el padre) — la regla única.
+        b, delta = _plata_de_fila_importada(conn, uid, r)
+        _rev(b, delta)
+        eventos.append(_evento_de_fila(
+            conn, uid, r, -1.0 if (r["operation_type"] or "").upper() == "BUY" else +1.0, delta))
         conn.execute(
             "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
             (r["batch_id"], r["raw_row_id"]))
@@ -17951,6 +18600,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     #     re-deriva) + su link. El snapshot ya está guardado para el undo.
     for t in rf_tx_rows:
         _rev(t["broker"] or "", -float(t["gross_amount"] or 0))
+        eventos.append(_evento_de_fila(conn, uid, t, 0.0, -float(t["gross_amount"] or 0)))
     for o in rf_ops:
         conn.execute(
             "DELETE FROM import_op_links WHERE batch_id=? AND raw_row_id=?",
@@ -17973,9 +18623,12 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
         (uid, token, "imported_asset",
          _json.dumps({"tx_ids": all_tx_ids, "cash_by_broker": cash_by_broker, "asset": asset,
                       "pairs": pairs, "brokers": sorted(brokers_touched),
-                      "rf_ops": rf_op_snaps}),
+                      "rf_ops": rf_op_snaps, "eventos": eventos}),
          since_date, (sorted(brokers_touched)[0] if brokers_touched else "")),
     )
+
+    # 4b) Las fotos medidas desde la primera operación (lee los eventos del journal).
+    _recalcular_mediciones(conn, uid)
 
     # 5) Cascada de agregados + snapshots.
     _cascade_after_movement_delete(conn, uid, since_date, brokers_touched)
@@ -18038,9 +18691,8 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                 # fuera del set borrado, deshacer FUSIONARÍA viejo+nuevo → duplicaría.
                 _phg = ",".join("?" * len(pr))
                 fresh = conn.execute(
-                    f"""SELECT n.id FROM import_normalized_tx n
-                          JOIN import_batches b ON b.id = n.batch_id
-                         WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                    f"""SELECT n.id FROM {TX_VIVAS}
+                         WHERE b.user_id=?
                            AND n.broker IN ({_phg}) AND n.asset_symbol=?
                            AND n.operation_type IN ('BUY','SELL','DIVIDEND','INTEREST')""",
                     (uid, *pr, asset),
@@ -18097,6 +18749,8 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                     _y, _m = int(snap["date"][:4]), int(snap["date"][5:7])
                     _update_monthly_pnl_realized(conn, uid, snap["broker"], _y, _m, _pnl)
                     _update_monthly_pnl_realized(conn, uid, "global", _y, _m, _pnl)
+            # El journal ya está deshecho: las fotos medidas vuelven sin sus eventos.
+            _recalcular_mediciones(conn, uid)
             _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []))
             conn.commit()
         except HTTPException:
@@ -21377,14 +22031,12 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
         # ── BARRIDO: quién más tiene la firma ────────────────────────────────
         if user_id is None:
             rows = conn.execute(
-                """WITH f AS (
+                f"""WITH f AS (
                      SELECT b.user_id AS uid,
                             MAX(ABS(COALESCE(n.gross_amount_usd, n.gross_amount))) AS mayor,
                             COUNT(*) AS n_flujos
-                       FROM import_normalized_tx n
-                       JOIN import_batches b ON b.id = n.batch_id
-                      WHERE b.status='confirmed' AND n.excluded_at IS NULL
-                        AND n.operation_type IN ('DEPOSIT','WITHDRAW')
+                       FROM {TX_VIVAS}
+                      WHERE n.operation_type IN ('DEPOSIT','WITHDRAW')
                       GROUP BY b.user_id),
                    p AS (SELECT user_id AS uid, MAX(total_value) AS pico
                            FROM snapshots WHERE total_value > 0 GROUP BY user_id)
@@ -21438,16 +22090,15 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
         # ── Q1: los flujos, con el crudo del parser ──────────────────────────
         flujos = []
         for r in conn.execute(
-            """SELECT n.id, n.date, n.broker, n.operation_type, n.currency,
+            f"""SELECT n.id, n.date, n.broker, n.operation_type, n.currency,
                       n.gross_amount, n.gross_amount_usd, n.quantity, n.unit_price,
                       n.asset_symbol, n.notes, n.raw_row_id,
                       rr.row_index, rr.raw_json,
                       b.id AS batch_id, b.file_name, b.parser_format, b.created_at,
                       b.confirmed_at, b.route_by_currency
-                 FROM import_normalized_tx n
-                 JOIN import_batches b ON b.id = n.batch_id
+                 FROM {TX_VIVAS}
                  LEFT JOIN import_raw_rows rr ON rr.id = n.raw_row_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                WHERE b.user_id=?
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND substr(n.date,1,7)=?
                 ORDER BY ABS(COALESCE(n.gross_amount_usd, n.gross_amount)) DESC
@@ -21510,11 +22161,11 @@ def admin_diagnose_flujo_implausible(user_id: Optional[int] = None,
             })
 
         suma_imports = float(conn.execute(
-            """SELECT COALESCE(SUM(CASE WHEN n.operation_type='DEPOSIT'
+            f"""SELECT COALESCE(SUM(CASE WHEN n.operation_type='DEPOSIT'
                                         THEN COALESCE(n.gross_amount_usd, n.gross_amount)
                                         ELSE 0 END), 0) AS s
-                 FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-                WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL
+                 FROM {TX_VIVAS}
+                WHERE b.user_id=?
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND substr(n.date,1,7)=?""",
             (user_id, ym)).fetchone()["s"] or 0)
@@ -36468,8 +37119,8 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     if gate_over:
         _import_tenencia.marcar_over(rec)
     mx = conn.execute(
-        f"SELECT MAX(n.date) d FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id "
-        f"WHERE b.user_id=? AND b.status='confirmed' AND n.excluded_at IS NULL "
+        f"SELECT MAX(n.date) d FROM {TX_VIVAS} "
+        f"WHERE b.user_id=? "
         f"AND n.broker IN ({ph}) "
         f"AND n.operation_type IN ('BUY','SELL')",
         (uid, *pair_l)).fetchone()
@@ -37571,6 +38222,20 @@ def _auto_migrar_fx_post_import(uid: int) -> Optional[dict]:
     return {"migrada": True, "delta": out.get("delta")}
 
 
+def _recalcular_mediciones_sin_romper(conn, uid: int) -> None:
+    """Dentro de la transacción de la reconstrucción: si la corrección de las fotos
+    medidas falla, se pierde sólo ella (en un savepoint), no las fotos reconstruidas
+    ni la huella."""
+    conn.execute("SAVEPOINT mediciones")
+    try:
+        _recalcular_mediciones(conn, uid)
+        conn.execute("RELEASE SAVEPOINT mediciones")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT mediciones")
+        conn.execute("RELEASE SAVEPOINT mediciones")
+        log.exception("mtm-auto: no se pudieron recalcular las fotos medidas de %s", uid)
+
+
 def _reconstruir_mtm(uid: int) -> dict:
     """Reconstruye la historia importada a PRECIO DE MERCADO, después del import.
 
@@ -37622,11 +38287,32 @@ def _reconstruir_mtm(uid: int) -> dict:
         # el camino de TODO import confirmado, de toda cuenta.
         # La mezcla de estampas se resuelve donde corresponde: `twr.serie_medible`
         # detecta cuándo la estampa dejó de coincidir con la contabilidad actual.
-        res = backfill_user(conn, uid, _dt.utcnow().date())
-        if res.get("skipped"):
+        _hoy = _dt.utcnow().date()
+        res = backfill_user(conn, uid, _hoy)
+        # `res["huella"]`: la contabilidad que describen las fotos de esta corrida
+        # (`backfill_user` reinicia si cambió en el medio). Se guarda en la MISMA
+        # transacción que las fotos. "Reintentar" (Yahoo falló, la contabilidad no
+        # paró de cambiar) guarda la marca de fallida: el próximo pedido la rehace.
+        _marca = _MTM_FALLIDA if res.get("reintentar") else res.get("huella")
+        if res.get("skipped") and not res.get("snapshots_borrados"):
             conn.rollback()
+            if _marca:
+                _guardar_huella_escrita(conn, uid, _marca)
+            # Sin historia que reconstruir (todo FCI, sin import…) igual puede haber
+            # fotos medidas con una compra borrada adentro.
+            _recalcular_mediciones_sin_romper(conn, uid)
+            conn.commit()
             return {"reconstruida": False, "motivo": res.get("reason")}
+        if _marca:
+            _guardar_huella_escrita(conn, uid, _marca)
+        # Las fotos MEDIDAS respecto de las compras y ventas borradas, en la misma
+        # transacción. Acá alcanza también a los borrados de ANTES de este cambio:
+        # cada cuenta importada se reconstruye en su primer pedido después del deploy.
+        _recalcular_mediciones_sin_romper(conn, uid)
         conn.commit()
+        if res.get("skipped"):
+            return {"reconstruida": False, "motivo": res.get("reason"),
+                    "snapshots_borrados": res.get("snapshots_borrados", 0)}
         meses = res.get("months") or []
         cobs = [m["coverage"] for m in meses if m.get("coverage") is not None]
         log.info("mtm-auto: cuenta %s reconstruida — %s fotos, cobertura media %s",
@@ -37642,6 +38328,13 @@ def _reconstruir_mtm(uid: int) -> dict:
         except Exception:
             pass
         log.exception("mtm-auto: falló la reconstrucción de %s — la cuenta queda igual", uid)
+        # (p. ej. la base ocupada más que el busy_timeout): que el próximo pedido
+        # de esta persona la vuelva a pedir.
+        try:
+            _guardar_huella_escrita(conn, uid, _MTM_FALLIDA)
+            conn.commit()
+        except Exception:
+            pass
         return {"reconstruida": False, "motivo": "error"}
     finally:
         conn.close()
@@ -37664,7 +38357,17 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
 
     La curva aparece sola cuando el thread termina: `/insights/performance` la lee
     de `snapshots` en el próximo render.
+
+    No es sólo "post import": la llama también `_ReconstruirAlTerminar` cuando
+    cualquier pedido cambió la contabilidad de la cuenta (borrar, deshacer,
+    revertir, cargar a mano). Se conserva el nombre por los que ya la llaman.
     """
+    # El que llama acá ya pidió la reconstrucción de este pedido (el confirm del
+    # import, con todo commiteado): que el middleware no pida otra al terminar.
+    # Lo que se toque DESPUÉS en el mismo pedido se vuelve a anotar.
+    _tocadas = _CONTABILIDAD_TOCADA.get()
+    if _tocadas is not None:
+        _tocadas.discard(uid)
     try:
         import threading as _th
         # Un solo hilo de reconstrucción por usuario. NO serializa el hilo
@@ -37681,27 +38384,91 @@ def _reconstruir_mtm_post_import(uid: int) -> Optional[dict]:
                 return {"reconstruida": "en_curso", "motivo": "ya_corriendo_se_repite"}
             _MTM_RUNNING.add(uid)
 
-        def _run():
-            try:
-                while True:
-                    _reconstruir_mtm(uid)
-                    with _MTM_RUNNING_LOCK:
-                        if uid in _MTM_PENDIENTE:
-                            _MTM_PENDIENTE.discard(uid)
-                            continue
-                        _MTM_RUNNING.discard(uid)
-                        return
-            except Exception:
-                with _MTM_RUNNING_LOCK:
-                    _MTM_RUNNING.discard(uid)
-                    _MTM_PENDIENTE.discard(uid)
-                raise
-
-        _th.Thread(target=_run, daemon=True, name=f"mtm-backfill-{uid}").start()
+        try:
+            _th.Thread(target=_bucle_de_reconstruccion, args=(uid,), daemon=True,
+                       name=f"mtm-backfill-{uid}").start()
+        except Exception:
+            # Sin esto la cuenta quedaba en `_MTM_RUNNING` para siempre y ninguna
+            # reconstrucción posterior volvía a correr hasta el próximo reinicio.
+            with _MTM_RUNNING_LOCK:
+                _MTM_RUNNING.discard(uid)
+                _MTM_PENDIENTE.discard(uid)
+            raise
         return {"reconstruida": "en_curso"}
     except Exception:
         log.exception("mtm-auto: no se pudo lanzar la reconstrucción de %s", uid)
         return {"reconstruida": False, "motivo": "error"}
+
+
+def _bucle_de_reconstruccion(uid: int) -> None:
+    """Reconstruye `uid`, que ya está en `_MTM_RUNNING`, y repite mientras alguien
+    lo haya pedido de nuevo en el medio (`_MTM_PENDIENTE`). Al salir, lo libera."""
+    try:
+        while True:
+            _reconstruir_mtm(uid)
+            with _MTM_RUNNING_LOCK:
+                if uid in _MTM_PENDIENTE:
+                    _MTM_PENDIENTE.discard(uid)
+                    continue
+                _MTM_RUNNING.discard(uid)
+                return
+    except Exception:
+        with _MTM_RUNNING_LOCK:
+            _MTM_RUNNING.discard(uid)
+            _MTM_PENDIENTE.discard(uid)
+        raise
+
+
+_MTM_FILA: list = []                 # cuentas esperando, en orden de llegada
+_MTM_FILA_ACTIVA = False             # hay un hilo vaciándola (se decide bajo el lock)
+
+
+def _reconstruir_en_fila(uids) -> None:
+    """Para los pedidos que tocan MUCHAS cuentas a la vez: revertir una tanda del
+    asesor (un revert por cliente, en un solo pedido), las herramientas masivas
+    del admin. Un hilo por cuenta serían decenas de reconstrucciones contra Yahoo
+    al mismo tiempo; sin reconstruir, el revert de la tanda les dejaba a esos
+    clientes la historia borrada. Acá van todas por UN solo hilo, una por vez, y
+    una cuenta que ya está esperando no se anota dos veces.
+
+    La que ya está corriendo por su cuenta (un borrado del propio usuario) no se
+    pisa: se le pide que repita al terminar, igual que en
+    `_reconstruir_mtm_post_import`."""
+    global _MTM_FILA_ACTIVA
+    import threading as _th
+    with _MTM_RUNNING_LOCK:
+        for u in uids:
+            if u not in _MTM_FILA:
+                _MTM_FILA.append(u)
+        # Bajo el lock y con una bandera, no con `is_alive()`: un hilo que ya
+        # decidió irse sigue "vivo" un instante, y lo que se anotara en ese
+        # instante quedaba en la fila sin nadie que la vacíe.
+        if _MTM_FILA_ACTIVA:
+            return
+        _MTM_FILA_ACTIVA = True
+
+        def _vaciar():
+            global _MTM_FILA_ACTIVA
+            while True:
+                with _MTM_RUNNING_LOCK:
+                    if not _MTM_FILA:
+                        _MTM_FILA_ACTIVA = False
+                        return
+                    u = _MTM_FILA.pop(0)
+                    if u in _MTM_RUNNING:
+                        _MTM_PENDIENTE.add(u)
+                        continue
+                    _MTM_RUNNING.add(u)
+                try:
+                    _bucle_de_reconstruccion(u)
+                except Exception:
+                    log.exception("mtm-auto: falló la reconstrucción en fila de %s", u)
+
+        try:
+            _th.Thread(target=_vaciar, daemon=True, name="mtm-backfill-fila").start()
+        except Exception:
+            _MTM_FILA_ACTIVA = False
+            log.exception("mtm-auto: no se pudo lanzar la fila de reconstrucción")
 
 
 @app.post("/api/imports/confirm")
@@ -39511,6 +40278,29 @@ def _backfill_fx_rates_on_boot():
             log.warning(f"fx_rates backfill background falló: {e}")
     t = threading.Thread(target=worker, daemon=True, name="fx-backfill")
     t.start()
+
+
+@app.on_event("startup")
+def _corregir_borrados_de_antes():
+    """Las cuentas con compras o ventas importadas borradas ANTES de que existiera la
+    corrección de las fotos medidas (`_recalcular_mediciones`) y que todavía no se
+    reconstruyeron con esta versión (sin `mtm_huella`). Sin esto se corregían recién
+    en su próximo pedido que cambia algo: la cuenta que sólo mira seguía con una
+    compra borrada adentro de su certero. Van a la fila de reconstrucción (un hilo,
+    una cuenta por vez); la que ya tiene marca se reconstruyó con esta versión y ya
+    pasó por la corrección. Medido en la copia de prod del 16/08: 9 cuentas."""
+    try:
+        with db_abierta() as conn:
+            uids = [r[0] for r in conn.execute(
+                f"SELECT DISTINCT j.user_id FROM deleted_ops_journal j "
+                f"WHERE j.kind IN ({','.join('?' * len(_MEDICION_KINDS))}) "
+                f"AND NOT EXISTS (SELECT 1 FROM mtm_huella h WHERE h.user_id = j.user_id)",
+                _MEDICION_KINDS).fetchall()]
+        if uids:
+            log.info("mtm-auto: %s cuentas con borrados de antes van a la fila", len(uids))
+            _reconstruir_en_fila(uids)
+    except Exception:
+        log.exception("mtm-auto: no se pudieron anotar los borrados de antes")
 
 
 @app.on_event("startup")
@@ -44485,6 +45275,8 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
         ).fetchall()}
         # Brokers (con moneda) de TODOS los clientes del lote en una query
         row_cids = list({r["client_uid"] for r in rows})
+        for _cid in row_cids:       # la historia reconstruida de cada cliente se revisa al terminar
+            _contabilidad_tocada(_cid)
         ph = ",".join("?" * len(row_cids))
         broker_ccy = {(r["user_id"], r["name"]): (r["currency"] or "USD") for r in conn.execute(
             f"SELECT user_id, name, currency FROM brokers WHERE user_id IN ({ph})",
@@ -44901,6 +45693,7 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
         with conn:
             for it in items:
                 cid = it["client_uid"]
+                _contabilidad_tocada(cid)   # su historia reconstruida se revisa al terminar
                 if cid not in rw_links:
                     # Vínculo revocado/downgradeado: el item queda 'ok' y el
                     # lote NO se marca deshecho — si el asesor recupera el
