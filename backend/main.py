@@ -15452,29 +15452,33 @@ def _corregir_una_medicion(conn, uid, d, orig, eventos, ctx):
     return round(nuevo_total, 2), holdings
 
 
-def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
+def _recalcular_mediciones(conn, uid: int) -> None:
     """Deja cada foto medida describiendo la contabilidad de AHORA respecto de las
     compras y ventas importadas borradas. Se llama al final de cada borrado y de cada
-    deshacer, con la contabilidad ya cambiada.
-
-    `cambio` = (token, "nuevo" | "deshecho"): el journal que este pedido creó o
-    deshizo. Sirve para saber qué borrados reflejaba una foto que se toca por
-    primera vez: los que estaban vigentes ANTES de este pedido.
+    deshacer (con la contabilidad ya cambiada) y en cada reconstrucción de la cuenta.
 
     Cada foto se calcula desde su ORIGINAL (`medicion_original`) aplicando los
     borrados vigentes que esa medición no reflejaba (+1) y deshaciendo los que
-    reflejaba y ya no están (−1). Si el cron la volvió a medir después de la última
-    corrección (la foto de hoy, a la noche), la medición nueva pasa a ser el original
-    y refleja lo que estaba vigente cuando se escribió por última vez."""
+    reflejaba y ya no están (−1).
+
+    QUÉ REFLEJABA UNA MEDICIÓN se decide POR FECHA: el borrado que ya estaba hecho
+    (y no deshecho) cuando se cerró el día de la foto (`_conocido_hasta`), el cron lo
+    vio — midió la cartera sin esa compra. Uno posterior no. Es la misma regla que
+    para un import tardío, y es la que permite corregir los borrados de ANTES de este
+    cambio: la reconstrucción que corre en el primer pedido de cada cuenta después del
+    deploy los encuentra y corrige las fotos medidas antes de cada uno.
+    Si el cron volvió a medir la foto después de la última corrección (la foto de
+    hoy, a la noche), la medición nueva es el original y refleja lo que estaba
+    vigente cuando se escribió por última vez."""
     import json as _json
     import twr as _twr
     import fx as _fx
 
     # Los eventos de TODOS los borrados de compras/ventas (también los deshechos:
     # para revertirlos en una foto que los reflejaba) y cuáles siguen vigentes.
-    eventos, vigentes, del_cambio = {}, set(), set()
+    eventos, vigentes, vigencia = {}, set(), {}
     for j in conn.execute(
-            f"SELECT id, token, kind, undone_at, payload_json FROM deleted_ops_journal "
+            f"SELECT id, token, kind, created_at, undone_at, payload_json FROM deleted_ops_journal "
             f"WHERE user_id=? AND kind IN ({','.join('?' * len(_MEDICION_KINDS))})",
             (uid, *_MEDICION_KINDS)).fetchall():
         try:
@@ -15493,18 +15497,14 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
                 continue
             k = f"{j['id']}:{i}"
             eventos[k] = e
+            vigencia[k] = (j["created_at"] or "", j["undone_at"])
             if j["undone_at"] is None:
                 vigentes.add(k)
-            if cambio and j["token"] == cambio[0]:
-                del_cambio.add(k)
-    # Lo vigente ANTES de este pedido: lo que refleja una foto que se toca por
-    # primera vez (si no la tocó ningún borrado anterior, la midieron con eso).
-    if cambio and cambio[1] == "nuevo":
-        previos = vigentes - del_cambio
-    elif cambio:
-        previos = vigentes | del_cambio
-    else:
-        previos = set(vigentes)
+
+    def _vigentes_al(hasta):
+        """Los borrados hechos y no deshechos al cierre de ese día: los que vio el cron."""
+        return {k for k, (desde, hasta_que) in vigencia.items()
+                if k in eventos and desde <= hasta and (hasta_que is None or hasta_que > hasta)}
     # Lo borrado que ya no existe (revertiste el import, borraste el broker): sus
     # fotos se fueron con él; sus eventos no corrigen nada.
     _tx = {e.get("tx_id") for e in eventos.values() if e.get("tx_id")}
@@ -15517,7 +15517,6 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
         for k in [k for k, e in eventos.items() if e.get("tx_id") and e["tx_id"] not in _existen]:
             eventos.pop(k)
             vigentes.discard(k)
-            previos.discard(k)
     originales = {r["date"]: r for r in conn.execute(
         "SELECT * FROM medicion_original WHERE user_id=?", (uid,)).fetchall()}
     if not vigentes and not originales:
@@ -15587,6 +15586,9 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
         return _mep_cache[d]
     ctx = {"movs": movs, "no_corregibles": no_corregibles, "mep": _mep}
 
+    def _guardar_original(d, snapshot_id, orig, base_ev, escrito):
+        _guardar_original_de_medicion(conn, uid, d, snapshot_id, orig, base_ev, escrito, vigentes)
+
     t0 = min((e["fecha"] for e in eventos.values()), default=None)
     fechas = set(originales)
     if t0:
@@ -15616,7 +15618,7 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
         elif o is not None:
             base_ev = set(_json.loads(o["eventos_base"] or "[]"))
         else:
-            base_ev = set(previos)
+            base_ev = _vigentes_al(_conocido_hasta(str(d)[:10]))
         orig = o if o is not None else actual
         dia = str(d)[:10]
         hasta = _conocido_hasta(dia)
@@ -15637,7 +15639,16 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
                     f"UPDATE snapshots SET {', '.join(c + '=?' for c in _MEDICION_COLS)} "
                     "WHERE user_id=? AND date=?",
                     (*[orig[c] for c in _MEDICION_COLS], uid, d))
-                conn.execute("DELETE FROM medicion_original WHERE user_id=? AND date=?", (uid, d))
+                if base_ev == _vigentes_al(hasta):
+                    # Lo que refleja se deduce de las fechas: no hace falta recordarlo.
+                    conn.execute("DELETE FROM medicion_original WHERE user_id=? AND date=?",
+                                 (uid, d))
+                else:
+                    # Una medición que vio borrados que la fecha sola no explica (el cron
+                    # la volvió a medir después): se recuerda qué reflejaba, o un
+                    # deshacer posterior ya no sabría que tiene que devolverle lo borrado.
+                    _guardar_original(d, actual["id"], orig, base_ev,
+                                      (orig["total_value"], orig["holdings_json"]))
             continue
         corregida = _corregir_una_medicion(conn, uid, dia, orig, aplicar, ctx)
         if corregida is not None:
@@ -15654,7 +15665,12 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
                 "UPDATE snapshots SET total_value=?, holdings_json=?, source=?, apto=?, base=?, "
                 "mtm_coverage=? WHERE user_id=? AND date=?", (*nuevo, uid, d))
         escrito = nuevo or (actual["total_value"], actual["holdings_json"])
-        conn.execute(
+        _guardar_original(d, actual["id"], orig, base_ev, escrito)
+
+
+def _guardar_original_de_medicion(conn, uid, d, snapshot_id, orig, base_ev, escrito, vigentes):
+    import json as _json
+    conn.execute(
             f"""INSERT INTO medicion_original
                   (user_id, date, snapshot_id, {', '.join(_MEDICION_COLS)}, eventos_base,
                    escrito_total, escrito_holdings, eventos_escritos)
@@ -15665,7 +15681,7 @@ def _recalcular_mediciones(conn, uid: int, cambio: tuple = None) -> None:
                   eventos_base=excluded.eventos_base, escrito_total=excluded.escrito_total,
                   escrito_holdings=excluded.escrito_holdings,
                   eventos_escritos=excluded.eventos_escritos""",
-            (uid, d, actual["id"], *[orig[c] for c in _MEDICION_COLS],
+            (uid, d, snapshot_id, *[orig[c] for c in _MEDICION_COLS],
              _json.dumps(sorted(base_ev)), escrito[0], escrito[1], _json.dumps(sorted(vigentes))))
 
 
@@ -17668,7 +17684,7 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
 
     # 4b) Las fotos medidas desde la venta. DESPUÉS del rebuild: antes, la posición
     #     seguía sin su vínculo al import y parecía cargada a mano.
-    _recalcular_mediciones(conn, uid, (token, "nuevo"))
+    _recalcular_mediciones(conn, uid)
 
     # 5) Cascada de agregados + snapshots — lo que el borrado viejo NO hacía.
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
@@ -17791,7 +17807,7 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     tc_blue = _config_tc_blue(conn, uid)
     _import_rebuild.rebuild_pair_asset(conn, uid, broker, asset, tc_blue=tc_blue)
     # Las fotos medidas (después del rebuild, como en la venta).
-    _recalcular_mediciones(conn, uid, (token, "nuevo"))
+    _recalcular_mediciones(conn, uid)
     _cascade_after_movement_delete(conn, uid, since_date, {broker})
 
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
@@ -17886,7 +17902,7 @@ def undo_delete_operation(token: str, uid: int = Depends(get_effective_user)):
             _import_rebuild.rebuild_pair_asset(conn, uid, p["broker"], p["asset"], tc_blue=tc_blue)
             # El journal ya está deshecho: sus eventos dejan de valer y las fotos
             # medidas vuelven a calcularse sin ellos.
-            _recalcular_mediciones(conn, uid, (token, "deshecho"))
+            _recalcular_mediciones(conn, uid)
             _cascade_after_movement_delete(conn, uid, j["since_date"], {p["broker"]})
             conn.commit()
         except HTTPException:
@@ -18081,7 +18097,7 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     )
 
     # 4b) Las fotos medidas desde la primera operación (lee los eventos del journal).
-    _recalcular_mediciones(conn, uid, (token, "nuevo"))
+    _recalcular_mediciones(conn, uid)
 
     # 5) Cascada de agregados + snapshots.
     _cascade_after_movement_delete(conn, uid, since_date, brokers_touched)
@@ -18203,7 +18219,7 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
                     _update_monthly_pnl_realized(conn, uid, snap["broker"], _y, _m, _pnl)
                     _update_monthly_pnl_realized(conn, uid, "global", _y, _m, _pnl)
             # El journal ya está deshecho: las fotos medidas vuelven sin sus eventos.
-            _recalcular_mediciones(conn, uid, (token, "deshecho"))
+            _recalcular_mediciones(conn, uid)
             _cascade_after_movement_delete(conn, uid, j["since_date"], set(p.get("brokers") or []))
             conn.commit()
         except HTTPException:
@@ -37027,6 +37043,20 @@ def _auto_migrar_fx_post_import(uid: int) -> Optional[dict]:
     return {"migrada": True, "delta": out.get("delta")}
 
 
+def _recalcular_mediciones_sin_romper(conn, uid: int) -> None:
+    """Dentro de la transacción de la reconstrucción: si la corrección de las fotos
+    medidas falla, se pierde sólo ella (en un savepoint), no las fotos reconstruidas
+    ni la huella."""
+    conn.execute("SAVEPOINT mediciones")
+    try:
+        _recalcular_mediciones(conn, uid)
+        conn.execute("RELEASE SAVEPOINT mediciones")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT mediciones")
+        conn.execute("RELEASE SAVEPOINT mediciones")
+        log.exception("mtm-auto: no se pudieron recalcular las fotos medidas de %s", uid)
+
+
 def _reconstruir_mtm(uid: int) -> dict:
     """Reconstruye la historia importada a PRECIO DE MERCADO, después del import.
 
@@ -37089,10 +37119,17 @@ def _reconstruir_mtm(uid: int) -> dict:
             conn.rollback()
             if _marca:
                 _guardar_huella_escrita(conn, uid, _marca)
-                conn.commit()
+            # Sin historia que reconstruir (todo FCI, sin import…) igual puede haber
+            # fotos medidas con una compra borrada adentro.
+            _recalcular_mediciones_sin_romper(conn, uid)
+            conn.commit()
             return {"reconstruida": False, "motivo": res.get("reason")}
         if _marca:
             _guardar_huella_escrita(conn, uid, _marca)
+        # Las fotos MEDIDAS respecto de las compras y ventas borradas, en la misma
+        # transacción. Acá alcanza también a los borrados de ANTES de este cambio:
+        # cada cuenta importada se reconstruye en su primer pedido después del deploy.
+        _recalcular_mediciones_sin_romper(conn, uid)
         conn.commit()
         if res.get("skipped"):
             return {"reconstruida": False, "motivo": res.get("reason"),
@@ -39062,6 +39099,29 @@ def _backfill_fx_rates_on_boot():
             log.warning(f"fx_rates backfill background falló: {e}")
     t = threading.Thread(target=worker, daemon=True, name="fx-backfill")
     t.start()
+
+
+@app.on_event("startup")
+def _corregir_borrados_de_antes():
+    """Las cuentas con compras o ventas importadas borradas ANTES de que existiera la
+    corrección de las fotos medidas (`_recalcular_mediciones`) y que todavía no se
+    reconstruyeron con esta versión (sin `mtm_huella`). Sin esto se corregían recién
+    en su próximo pedido que cambia algo: la cuenta que sólo mira seguía con una
+    compra borrada adentro de su certero. Van a la fila de reconstrucción (un hilo,
+    una cuenta por vez); la que ya tiene marca se reconstruyó con esta versión y ya
+    pasó por la corrección. Medido en la copia de prod del 16/08: 9 cuentas."""
+    try:
+        with db_abierta() as conn:
+            uids = [r[0] for r in conn.execute(
+                f"SELECT DISTINCT j.user_id FROM deleted_ops_journal j "
+                f"WHERE j.kind IN ({','.join('?' * len(_MEDICION_KINDS))}) "
+                f"AND NOT EXISTS (SELECT 1 FROM mtm_huella h WHERE h.user_id = j.user_id)",
+                _MEDICION_KINDS).fetchall()]
+        if uids:
+            log.info("mtm-auto: %s cuentas con borrados de antes van a la fila", len(uids))
+            _reconstruir_en_fila(uids)
+    except Exception:
+        log.exception("mtm-auto: no se pudieron anotar los borrados de antes")
 
 
 @app.on_event("startup")

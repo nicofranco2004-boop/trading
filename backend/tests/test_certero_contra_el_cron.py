@@ -32,7 +32,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 import main  # noqa: E402
 import snapshots_job as sj  # noqa: E402
 import scripts.backfill_historical_mtm as bf  # noqa: E402
-from tests.test_reconstruccion_sigue_a_la_contabilidad import _Despues  # noqa: E402
+from tests.test_reconstruccion_sigue_a_la_contabilidad import _Despues, _YahooDeMentira  # noqa: E402
 from tests.test_reconstruccion_aportado_canonico import HDR  # noqa: E402
 
 D = "2025-09-15"
@@ -389,6 +389,91 @@ class LoQueQuedaDeAntes(_TresActivos):
         self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'AAPL')}")
         self.assertComoElCron()
 
+
+
+class LosBorradosDeAntesDelDeploy(_TresActivos):
+    """Un borrado hecho con la versión vieja: el journal existe, la foto medida antes
+    de él quedó como el cron la midió (con la compra adentro) y no hay copia del
+    original. La reconstrucción que corre en el primer pedido de la cuenta después
+    del deploy la corrige; la foto medida DESPUÉS del borrado ya lo reflejaba y no se
+    toca (corregirla otra vez restaría la compra dos veces)."""
+
+    def _como_la_version_vieja(self, borrado_el):
+        conn = main.get_db()
+        try:
+            for o in conn.execute("SELECT * FROM medicion_original WHERE user_id=?",
+                                  (self.uid,)).fetchall():
+                conn.execute(
+                    f"UPDATE snapshots SET {', '.join(c + '=?' for c in main._MEDICION_COLS)} "
+                    "WHERE user_id=? AND date=?",
+                    (*[o[c] for c in main._MEDICION_COLS], self.uid, o["date"]))
+            conn.execute("DELETE FROM medicion_original WHERE user_id=?", (self.uid,))
+            for j in conn.execute("SELECT id, payload_json FROM deleted_ops_journal "
+                                  "WHERE user_id=?", (self.uid,)).fetchall():
+                p = json.loads(j["payload_json"])
+                p.pop("eventos", None)
+                conn.execute("UPDATE deleted_ops_journal SET payload_json=?, created_at=? "
+                             "WHERE id=?", (json.dumps(p), borrado_el, j["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_la_foto_de_antes_del_borrado_se_corrige(self):
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        self._como_la_version_vieja("2025-09-20 15:00:00")
+        self.assertEqual(self._foto()[:2], self.foto0)            # la foto quedó vieja
+        despues = self._cron("2025-09-25")                         # ya sin MSFT
+        main._reconstruir_mtm(self.uid)
+        self.assertComoElCron()
+        self.assertEqual(self._foto("2025-09-25")[:2], despues)
+
+    def test_la_foto_que_ya_lo_reflejaba_no_se_toca(self):
+        # El borrado fue ANTES de la foto: el cron ya la midió sin MSFT.
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        self._como_la_version_vieja("2025-09-01 15:00:00")
+        sin_msft = self._cron(D)
+        main._reconstruir_mtm(self.uid)
+        self.assertEqual(self._foto()[:2], sin_msft)
+        self.assertComoElCron()
+
+    def test_con_yahoo_caido_igual_se_corrige(self):
+        # La corrección de las fotos medidas no necesita a Yahoo.
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        self._como_la_version_vieja("2025-09-20 15:00:00")
+        bf._fetch_monthly_close = self._fetch_orig            # el de verdad
+        bf._HIST_CACHE.clear()
+        _YahooDeMentira.caido = True
+        self.addCleanup(setattr, _YahooDeMentira, "caido", False)
+        with mock.patch("yfinance.Ticker", _YahooDeMentira):
+            main._reconstruir_mtm(self.uid)
+        self.assertEqual(self._q("SELECT huella FROM mtm_huella WHERE user_id=?",
+                                 self.uid)[0]["huella"], main._MTM_FALLIDA)
+        self.assertComoElCron()
+
+    def test_sin_historia_que_reconstruir_igual_se_corrige(self):
+        # La reconstrucción se saltea (no hay meses que rearmar) y antes salía por
+        # un camino que no corregía.
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        self._como_la_version_vieja("2025-09-20 15:00:00")
+        self._sql("DELETE FROM monthly_entries WHERE user_id=?", self.uid)
+        self._sql("DELETE FROM snapshots WHERE user_id=? AND source='mtm_backfill'", self.uid)
+        r = main._reconstruir_mtm(self.uid)
+        self.assertEqual((r.get("motivo"), r.get("snapshots_borrados")),
+                         ("sin monthly_entries", None), r)
+        self.assertComoElCron()
+
+    def test_al_arrancar_van_a_la_fila_las_que_no_se_reconstruyeron(self):
+        # La cuenta que sólo mira no hace ningún pedido que dispare la reconstrucción.
+        self._pedir("delete", f"/api/positions/{self._pos_id('IBKR', 'MSFT')}")
+        anotadas = []
+        with mock.patch.object(main, "_reconstruir_en_fila", anotadas.extend):
+            self._sql("DELETE FROM mtm_huella WHERE user_id=?", self.uid)
+            main._corregir_borrados_de_antes()
+            self.assertEqual(anotadas, [self.uid])
+            anotadas.clear()
+            main._reconstruir_mtm(self.uid)          # ya con marca: no se repite
+            main._corregir_borrados_de_antes()
+            self.assertEqual(anotadas, [])
 
 
 class RevertirYReimportar(_ContraElCron):
