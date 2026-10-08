@@ -15163,14 +15163,22 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
             diaria del mes, comparada con las cuentas recompuestas Y tal cual. Si
             ningún cierre lo tuvo, no se toca nada; si sólo lo tuvo un cierre
             reconstruido, se corrige sólo ése.
-         2. En ese mes, desde la fecha de lo borrado, la primera foto cuyo aportado
-            saltó exactamente ese monto — salvo los saltos que explica un
-            movimiento importado que entró a las fotos ese día.
-         3. Sin salto (varios `me-` del mes sumados en un renglón, dos cargas el
-            mismo día): desde la fecha de lo borrado, recortando ESE mes al
-            corredor de después (`twr.corredor_del_mes`): ningún día puede quedar
-            fuera de lo que el mes permite. Sólo ahí: con un punto de partida
-            firme, el recorte arrastraría a las fotos de un import viejo.
+         2. El día en que entró: entre dos fotos diarias seguidas, lo que saltó el
+            aportado MENOS lo importado que entró a las fotos entre una y otra es
+            lo cargado a mano ese día. Se busca el salto igual a lo borrado en todos
+            los meses desde el de lo borrado hasta ese primer cierre que lo tenía
+            (no sólo en el mes del cierre: otra carga a mano del mismo mes hecha
+            después de su cierre engaña al paso 1, que elige un mes tarde). Si hay
+            varios saltos iguales, el que cae entre el cierre anterior y ése.
+            Descontar lo importado en vez de saltear los días con import resuelve
+            una carga a mano el mismo día que un import; medir foto contra foto en
+            vez de contra las cuentas de cada mes evita los saltos falsos del día 1
+            (un retiro a mano del mes nuevo cargado más tarde "le falta" a todas).
+         3. Sin salto (varios `me-` del mes sumados en un renglón, dos cargas a
+            mano el mismo día): desde la fecha de lo borrado, recortando el mes
+            del paso 1 al corredor de después (`twr.corredor_del_mes`): ningún día
+            puede quedar fuera de lo que el mes permite. Sólo ahí: con un punto de
+            partida firme, el recorte arrastraría a las fotos de un import viejo.
     C. DESHACER (`journal` = lo que anotó el borrado): el borrado anotó cuánto le
        cambió a cada foto, y el deshacer le devuelve exactamente eso, foto por foto
        (el salto ya no existe —lo sacó el borrado— y recalcular el recorte con las
@@ -15191,10 +15199,14 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
       mismo mes viven sumados en un renglón y `me-` los borra juntos: ninguna foto
       saltó el total, así que entre otro flujo del mes y el último a mano no se
       sabe cuánto tenía cada foto (`test_varios_depositos_a_mano_del_mes_en_un_
-      renglon`); dos cargas a mano del mismo monto en el mismo mes se confunden; y
-      otra carga a mano del mismo mes hecha DESPUÉS de su cierre le "falta" a esa
-      foto igual que lo borrado, así que el paso 1 puede creer que no lo tenía
-      (medido: 14 fotos y US$ 28.000 en un caso armado, contra 42.000 re-anclando).
+      renglon`); dos cargas a mano del mismo monto se confunden (el paso 2 toma el
+      salto que cae entre los cierres, y si hay dos ahí, el primero); y una carga
+      a mano hecha después de su cierre por MENOS que lo borrado engaña al paso 1
+      en el otro sentido (cree que el cierre lo tenía). Medido en 1.000 escenarios
+      al azar con el cron de cada noche (`sonda8_azar`): con montos distintos,
+      fotos mal 747 contra 19.202 re-anclando; con montos repetidos a propósito
+      (1.000/2.000/3.000/5.000), 2.338 contra 29.049. Peor que re-anclar en 17 de
+      904 escenarios.
     · A: si algo re-estampó las fotos DESPUÉS del import, las del mes del import
       anteriores a su confirmación pueden tener lo borrado y se quedan con eso. Hoy
       re-estampan el botón del admin, la reparación de historial y la migración de
@@ -15412,28 +15424,59 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
                 continue
             m_visto = ym
             break
+        # 2. El día en que entró (sólo si alguna foto diaria lo tuvo: cargado y
+        # borrado sin que lo viera ninguna, un salto igual de otra carga no es él).
+        escalon = None
+        if m_visto is not None:
+            fin = str(cierre[m_visto]["date"])[:10]
+            if not _flujos:
+                _flujos.append(_flujos_importados_vigentes(conn, uid))
+            # Hasta hoy y no hasta ese cierre: el paso 1 también se equivoca para el
+            # otro lado (una carga posterior más chica lo hace parecer "con lo
+            # borrado" antes de tiempo) y el salto verdadero cae después. Cortando en
+            # el cierre, 2.200 fotos más quedaban mal en 1.000 escenarios al azar.
+            diarias = [s for s in fotos if (s["source"] or "") != "mtm_backfill"
+                       and str(s["date"])[:10] < hoy]
+            primera = next((i for i, s in enumerate(diarias)
+                            if str(s["date"])[:10] >= f"{desde[:7]}-01"), None)
+            serie = diarias[max(0, primera - 1):] if primera is not None else []
+            saltos = []
+            for a, b in zip(serie, serie[1:]):
+                da, db = str(a["date"])[:10], str(b["date"])[:10]
+                cargado = (float(b["net_deposited"]) - float(a["net_deposited"])
+                           - sum(m for _f, m, e in _flujos[0] if da < e <= db))
+                if abs(cargado - objetivo) <= tol:
+                    saltos.append(db)
+            antes_de_m = [ym for ym in cierre if ym < m_visto]
+            desde_cierre = str(cierre[max(antes_de_m)]["date"])[:10] if antes_de_m else ""
+            entre_cierres = [d for d in saltos if desde_cierre < d <= fin]
+            escalon = (entre_cierres or saltos or [None])[0]
         solo_cierres = None
         if m_visto is None and reconstruidos:
             solo_cierres, m_visto = set(reconstruidos), reconstruidos[0]
         if m_visto is None:
             return [], None
-        ini = max(desde, f"{m_visto}-01")
-        fin = str(cierre[m_visto]["date"])[:10]
-        explicadas = _fotos_con_importado_que_entra(conn, uid, fotos)
-        inicio = None
-        for i in range(1, len(fotos)):
-            d = str(fotos[i]["date"])[:10]
-            if d < ini or d > fin or d in explicadas:
-                continue
-            salto = float(fotos[i]["net_deposited"]) - float(fotos[i - 1]["net_deposited"])
-            if abs(salto - objetivo) <= tol:
-                inicio = d
-                break
-        if inicio is None:
-            inicio, corredor_en = ini, m_visto
-        previos = {ym for ym in reconstruidos if ym < m_visto}
-        if solo_cierres is not None:
-            inicio, corredor_en, previos = "9999-12-31", None, solo_cierres
+        if escalon is not None:
+            inicio = escalon
+            previos = {ym for ym in reconstruidos if ym < escalon[:7]}
+        else:
+            ini = max(desde, f"{m_visto}-01")
+            fin = str(cierre[m_visto]["date"])[:10]
+            explicadas = _fotos_con_importado_que_entra(conn, uid, fotos)
+            inicio = None
+            for i in range(1, len(fotos)):
+                d = str(fotos[i]["date"])[:10]
+                if d < ini or d > fin or d in explicadas:
+                    continue
+                salto = float(fotos[i]["net_deposited"]) - float(fotos[i - 1]["net_deposited"])
+                if abs(salto - objetivo) <= tol:
+                    inicio = d
+                    break
+            if inicio is None:
+                inicio, corredor_en = ini, m_visto
+            previos = {ym for ym in reconstruidos if ym < m_visto}
+            if solo_cierres is not None:
+                inicio, corredor_en, previos = "9999-12-31", None, solo_cierres
 
     brutos1 = _twr.flujos_brutos_por_mes(conn, uid) if corredor_en else {}
     cambios, hechos = [], {}

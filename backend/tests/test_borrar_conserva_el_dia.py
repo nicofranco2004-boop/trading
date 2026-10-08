@@ -1903,6 +1903,127 @@ class BorrarConservaElDia(unittest.TestCase):
         self._assert_dia_conservado("global en 0 + otro depósito cargado tarde",
                                     self._con({"2026-03-20": 300}))
 
+    # ── 17. octava auditoría (escenarios al azar) ────────────────────────────
+    def test_una_posicion_del_mismo_mes_cargada_despues_del_cierre(self):
+        """Depósito a mano de 5.492 fechado 10-ene y cargado el 24-ene; una posición a
+        mano de 8.701 fechada 8-ene (con autodepósito) cargada recién el 12-feb. Al
+        cierre de enero le falta la posición, y eso parecía "no tenía el depósito":
+        se elegía febrero, no había salto ahí y el recorte del mes subía las fotos
+        de febrero al número final (19 fotos mal). El salto del 24-ene lo dice."""
+        self._depositar_a_mano("2026-01-10", 5492)
+        self._subir("2026-01-24", "2026-03-31", 5492)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        r = self.client.post("/api/positions", json={
+            "broker": "MANUAL", "asset": "KO", "buy_price": 50, "quantity": 8701 / 50,
+            "invested": 8701, "entry_date": "2026-01-08"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._subir("2026-02-12", "2026-03-31", 8701)
+        r = self.client.delete(f"/api/movements/{self._me_dep(1)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el depósito con una posición cargada tarde",
+                                    self._con({"2026-02-12": 8701}))
+
+    def test_un_retiro_a_mano_cargado_el_mismo_dia_que_un_import(self):
+        """El 10-feb se importa un depósito de 1.000 y se carga a mano un retiro de
+        2.000 fechado 16-ene: la foto del 10 saltó −1.000 (los dos juntos) y no
+        mostraba el salto del retiro. Restándole lo importado que entró ese día, el
+        salto es −2.000: borrar el retiro se lo devuelve desde el 10 (antes se
+        aplicaba desde el 1-feb: 9 fotos mal)."""
+        self._import(_csv("2026-02-08,DEPOSITO,IBKR,,,,1000,,,0,USD,"), confirmado="2026-02-10")
+        r = self.client.post("/api/cash/flow", json={
+            "broker_name": self.BROKER, "direction": "withdraw", "amount": 2000,
+            "date": "2026-01-16"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._subir("2026-02-10", "2026-03-31", 1000 - 2000)
+        me = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE user_id=? AND broker=? AND year=2026 "
+            "AND month=1 AND manual_withdrawals > 0", (self.uid, self.BROKER)).fetchone()
+        r = self.client.delete(f"/api/movements/me-{me['id']}-wit")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el retiro cargado el día del import",
+                                    self._con({"2026-02-10": 1000}))
+
+    def test_un_retiro_cargado_despues_engana_al_cierre_para_el_otro_lado(self):
+        """Depósito a mano de 3.000 fechado 10-ene y cargado el 5-mar; un retiro a mano
+        de 1.000 fechado 20-ene y cargado el 15-mar. Al cierre de enero le "faltan"
+        sólo 2.000 (el retiro que tampoco vio lo compensa): parece que tenía el
+        depósito. El salto verdadero cae después de ese cierre, el 5-mar: buscando
+        sólo hasta el cierre, se aplicaba desde el 1-ene."""
+        self._depositar_a_mano("2026-01-10", 3000)
+        self._subir("2026-03-05", "2026-03-31", 3000)
+        r = self.client.post("/api/cash/flow", json={
+            "broker_name": self.BROKER, "direction": "withdraw", "amount": 1000,
+            "date": "2026-01-20"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._subir("2026-03-15", "2026-03-31", -1000)
+        r = self.client.delete(f"/api/movements/{self._me_dep(1)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("depósito con un retiro cargado después",
+                                    self._con({"2026-03-15": -1000}))
+
+    def test_dos_cargas_del_mismo_monto_gana_la_que_cae_entre_cierres(self):
+        """Tres cargas de 2.000: una posición a mano fechada 5-ene y cargada el 20-ene,
+        el depósito a mano fechado 10-ene y cargado el 15-feb (el que se borra) y otra
+        posición fechada 12-feb cargada el 25-feb. Los cierres dicen que el depósito
+        entró en febrero: de los saltos de 2.000, el primero que cae entre el cierre
+        de enero y el de febrero."""
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        for asset, entrada, cargada in (("KO", "2026-01-05", "2026-01-20"),
+                                        ("PEP", "2026-02-12", "2026-02-25")):
+            r = self.client.post("/api/positions", json={
+                "broker": "MANUAL", "asset": asset, "buy_price": 50, "quantity": 40,
+                "invested": 2000, "entry_date": entrada})
+            self.assertEqual(r.status_code, 200, r.text)
+            self._subir(cargada, "2026-03-31", 2000)
+        self._depositar_a_mano("2026-01-10", 2000)
+        self._subir("2026-02-15", "2026-03-31", 2000)
+        r = self.client.delete(f"/api/movements/{self._me_dep(1)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el depósito entre dos posiciones iguales",
+                                    self._con({"2026-01-20": 2000, "2026-02-25": 2000}))
+
+    def test_un_deposito_a_mano_cargado_el_primer_dia_del_mes(self):
+        """Depósito a mano de 3.000 fechado y cargado el 1-feb, el mismo día que se
+        importa un depósito de 1.000 del 31-ene: el salto está entre la foto del
+        31-ene y la del 1-feb, y mezclado con el import. La búsqueda arranca en la
+        foto ANTERIOR al mes de lo borrado; empezando en la del 1-feb no lo veía."""
+        self._import(_csv("2026-01-31,DEPOSITO,IBKR,,,,1000,,,0,USD,"), confirmado="2026-02-01")
+        self._depositar_a_mano("2026-02-01", 3000)
+        self._subir("2026-02-01", "2026-03-31", 4000)
+        r = self.client.delete(f"/api/movements/{self._me_dep(2)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el depósito del 1-feb",
+                                    self._con({"2026-02-01": 1000}))
+
+    def test_cargado_y_borrado_hoy_con_otra_carga_igual_de_antes(self):
+        """Hoy 20-mar se carga una posición a mano de 2.000 (después de la foto de hoy)
+        y se borra enseguida. Ninguna foto la tuvo. Un depósito a mano de 2.000 del
+        15-feb SÍ está en las fotos y su salto mide lo mismo: no es lo borrado, y no
+        se toca nada."""
+        hoy = "2026-03-20"
+        self._hasta_hoy(hoy, con_foto_de_hoy=True)
+        self._depositar_a_mano("2026-02-15", 2000)
+        self._subir("2026-02-15", hoy, 2000)
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "MANUAL", "USDT"))
+        self.conn.commit()
+        with mock.patch.object(main, "_iso_today", return_value=hoy):
+            r = self.client.post("/api/positions", json={
+                "broker": "MANUAL", "asset": "KO", "buy_price": 50, "quantity": 40,
+                "invested": 2000, "entry_date": "2026-01-22"})
+            self.assertEqual(r.status_code, 200, r.text)
+            pid = self.conn.execute(
+                "SELECT id FROM positions WHERE user_id=? AND broker='MANUAL' AND asset='KO'",
+                (self.uid,)).fetchone()["id"]
+            r = self.client.delete(f"/api/positions/{pid}")
+            self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("cargada y borrada hoy",
+                                    self._con({"2026-02-15": 2000}, hasta=hoy))
+
     def test_dos_borrados_a_la_vez_ninguno_se_lleva_lo_del_otro(self):
         """El borrado A (depósito importado del 20-feb) está a mitad de su cascada,
         sin confirmar, cuando entra B (depósito a mano de 3.000 del 5-mar) por la
