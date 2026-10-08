@@ -141,9 +141,18 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
     mano: la cascada la reconstruye desde las operaciones, se queda sin filas, el
     anclado no tiene nada que anclar y el test pasa sin medir nada (medido: cero
     fotos cambiadas porque no quedó contabilidad). Por eso la cuenta se arma
-    importando un archivo, como un usuario, y se re-estampa por las dos puertas que
-    lo hacen en producción: borrar un movimiento y el botón del admin.
-    (Recorrido completo y más casos: `tests/test_borrar_conserva_el_dia.py`.)"""
+    importando un archivo, como un usuario, y se pasa por las dos puertas que tocan
+    fotos ya escritas en producción: borrar un movimiento y el botón del admin.
+    (Recorrido completo y más casos: `tests/test_borrar_conserva_el_dia.py`.)
+
+    ⚠️ DESDE 2026-10 BORRAR YA NO RE-ESTAMPA: aplica sólo el cambio que produjo lo
+    borrado, y sólo a las fotos que lo tenían (`main._cambio_de_aportado`).
+    Re-anclar el mes desde un borrado suponía que la última foto del mes sabía
+    todos sus flujos, y cuando no —un depósito cargado hoy después de la foto de
+    hoy, un import a mitad de mes— reescribía meses enteros mal y sin vuelta. Así
+    que las dos puertas siguen en "la curva no cambia" y "a un usuario sano no le
+    toca ni una fila", pero corregir una estampa VIEJA es trabajo sólo del botón del
+    admin (y de la reparación); el borrado tiene el test contrario."""
 
     BROKER = "IBKR"
 
@@ -210,7 +219,8 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
         main.app.dependency_overrides[main.get_admin_user] = lambda: self.uid
         self.client = TestClient(main.app)
 
-    # Las dos puertas que re-estampan fotos ya escritas en producción.
+    # Las dos puertas que tocan fotos ya escritas en producción: el borrado (sólo lo
+    # suyo; un dividendo no cambia nada) y el botón del admin (re-ancla).
     def _borrar_el_dividendo(self):
         tx = self.conn.execute(
             "SELECT n.id FROM import_normalized_tx n JOIN import_batches b "
@@ -224,6 +234,8 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
 
     PUERTAS = ("_borrar_el_dividendo", "_boton_del_admin")
+    # Las que corrigen estampas viejas en general (ver el docstring de la clase).
+    PUERTAS_QUE_RE_ANCLAN = ("_boton_del_admin",)
 
     def _estampas(self):
         return {r["date"]: r["net_deposited"] for r in self.conn.execute(
@@ -249,8 +261,9 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
     def test_a_un_usuario_sano_no_le_toca_NI_UNA_fila(self):
         """Antes la cascada reescribía 19 de 28 fotos de febrero con un único valor
         por mes, destruyendo la resolución diaria que el cron había escrito bien.
-        Ahora re-estampa con el mismo aportado anclado que la curva, así que en una
-        cuenta sana no tiene nada que corregir."""
+        Ahora el botón re-estampa con el mismo aportado anclado que la curva, y el
+        borrado aplica sólo lo suyo, así que en una cuenta sana ninguno de los dos
+        tiene nada que corregir."""
         for puerta in self.PUERTAS:
             with self.subTest(puerta=puerta):
                 self._armar()
@@ -263,11 +276,22 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
     def test_pero_SI_corrige_una_estampa_stale(self):
         """Lo que el re-estampado existe para hacer: si la contabilidad cambió, las
         estampas viejas se corrigen — anclando el borde de mes, no aplanando el mes."""
-        for puerta in self.PUERTAS:
+        for puerta in self.PUERTAS_QUE_RE_ANCLAN:
             with self.subTest(puerta=puerta):
                 self._armar(estampa_de_febrero=55555.0)
                 getattr(self, puerta)()
                 self.assertAlmostEqual(self._estampas()["2026-02-28"], 110000.0, places=2)
+
+    def test_borrar_un_dividendo_no_toca_una_estampa_stale(self):
+        """El contrario, a propósito: borrar un dividendo no cambia ningún depósito ni
+        retiro, así que no toca ninguna foto — ni siquiera una estampa vieja. Hasta
+        2026-10 este test corría también por esta puerta y pedía que la corrigiera:
+        era lo que hacía el borrado (re-anclaba el mes), y es justo lo que dejaba
+        meses enteros mal cuando la última foto del mes no sabía todos sus flujos."""
+        self._armar(estampa_de_febrero=55555.0)
+        antes = self._estampas()
+        self._borrar_el_dividendo()
+        self.assertEqual(self._estampas(), antes)
 
 
 class AportadoAncladoTest(_Base):
