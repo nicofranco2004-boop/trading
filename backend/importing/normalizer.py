@@ -10,6 +10,7 @@ Reglas:
 """
 from __future__ import annotations
 from money_fmt import fmt_num
+from cripto import es_cripto
 import logging
 import re
 from typing import List, Optional, Tuple
@@ -210,8 +211,13 @@ def _coerce_op_type(s: str) -> Optional[str]:
 
 
 # Heurísticas de asset_type. Conservadoras: si no estamos seguros, OTHER.
-_CRYPTO_HINTS = {"BTC", "ETH", "USDT", "USDC", "SOL", "ADA", "BNB", "DOGE", "MATIC", "ARB",
-                 "AVAX", "DOT", "LINK", "LTC", "XRP", "ATOM", "NEAR", "OP", "TRX"}
+# Qué es cripto lo decide la lista de la app (`cripto.es_cripto`), la misma que
+# decide cómo se valúa. Hasta 2026-10-08 acá había una copia de 19 códigos: una
+# compra de PEPE, KAS o FET sin tipo en el archivo (Binance, Schwab, IEB, PPI,
+# Bull Market no lo mandan) se guardaba OTHER en la tenencia, y los que leen el
+# tipo (el cruce de MEP del rebuild, el ajuste de ratio, los grupos del asesor)
+# la trataban como una acción. Los códigos que también son acción del catálogo
+# (DASH, ROSE, CVX) no están en la lista: siguen OTHER si el archivo no dice.
 _FIAT_HINTS = {"USD", "ARS", "EUR", "BRL", "CLP", "MXN"}
 
 
@@ -229,7 +235,7 @@ def guess_asset_type(symbol: Optional[str]) -> str:
     if not symbol:
         return AT_OTHER
     s = symbol.strip().upper()
-    if s in _CRYPTO_HINTS or s.endswith("USDT"):
+    if es_cripto(s) or s.endswith("USDT"):
         return AT_CRYPTO
     if s in _FIAT_HINTS:
         return AT_FIAT

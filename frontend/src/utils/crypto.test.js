@@ -87,8 +87,8 @@ describe('el buscador sólo ofrece cripto que la app sabe valuar', () => {
 })
 
 describe('CRYPTO_SYMBOLS — paridad FE/BE', () => {
-  it('coincide EXACTO con backend/main.py CRYPTO_SYMBOLS (guard anti-drift)', () => {
-    const py = readFileSync(resolve(__dirname, '../../../backend/main.py'), 'utf8')
+  it('coincide EXACTO con backend/cripto.py CRYPTO_SYMBOLS (guard anti-drift)', () => {
+    const py = readFileSync(resolve(__dirname, '../../../backend/cripto.py'), 'utf8')
     const m = py.match(/CRYPTO_SYMBOLS = \{([\s\S]*?)\}/)
     expect(m).toBeTruthy()
     const beSet = new Set([...m[1].matchAll(/'([A-Z0-9]+)'/g)].map((x) => x[1]))

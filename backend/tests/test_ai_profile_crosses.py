@@ -40,10 +40,15 @@ def _conn(positions=(), operations=(), profile=_PROFILE, tc_blue="1450"):
     conn.execute("CREATE TABLE config (user_id INT, key TEXT, value TEXT)")
     conn.execute("INSERT INTO users VALUES (1, ?)", (json.dumps(profile) if profile else "{}",))
     conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (1,'Binance','USD')")
+    # El tipo, como lo anota el importador: CRYPTO lo que es cripto, nada lo
+    # demás. Antes todas las filas iban 'crypto' (también AAPL), y desde que la
+    # tarjeta lee el tipo como la torta (lo marcado CRYPTO es cripto), AAPL
+    # contaba como alternativo.
+    from cripto import es_cripto
     for asset, invested, is_cash in positions:
         conn.execute(
-            "INSERT INTO positions (user_id,asset,invested,broker,asset_type,is_cash,currency) VALUES (1,?,?,'Binance','crypto',?,'USD')",
-            (asset, invested, is_cash),
+            "INSERT INTO positions (user_id,asset,invested,broker,asset_type,is_cash,currency) VALUES (1,?,?,'Binance',?,?,'USD')",
+            (asset, invested, "CRYPTO" if es_cripto(asset) else None, is_cash),
         )
     for date, op_type in operations:
         conn.execute(

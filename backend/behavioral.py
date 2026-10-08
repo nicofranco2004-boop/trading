@@ -34,6 +34,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from realized_pnl import realized_usd as _realized_usd, es_conversion as _es_conversion
+from cripto import CRIPTO_ESTABLES, es_tenencia_cripto
 
 
 # ─── Helpers compartidos ─────────────────────────────────────────────────────
@@ -1739,11 +1740,8 @@ _SECTOR_MAP = {
     'IEMG': 'ETF / Diversified', 'XLK': 'ETF / Diversified', 'XLF': 'ETF / Diversified',
     'XLE': 'ETF / Diversified', 'ARKK': 'ETF / Diversified', 'AGG': 'ETF / Bonds',
     'BND': 'ETF / Bonds', 'GLD': 'Commodities', 'SLV': 'Commodities',
-    # Crypto
-    'BTC': 'Crypto', 'ETH': 'Crypto', 'SOL': 'Crypto', 'BNB': 'Crypto',
-    'XRP': 'Crypto', 'ADA': 'Crypto', 'DOGE': 'Crypto', 'AVAX': 'Crypto',
-    'DOT': 'Crypto', 'MATIC': 'Crypto', 'LINK': 'Crypto', 'LTC': 'Crypto',
-    'BCH': 'Crypto', 'TRX': 'Crypto', 'USDT': 'Stablecoin', 'USDC': 'Stablecoin',
+    # La cripto no va acá: la decide la lista de la app en _sector_for. Acá había
+    # 16 códigos sueltos (hasta 2026-10-08) y PEPE, KAS o FET salían "Otros".
     # Las acciones argentinas y sus ADRs están en _SECTOR_AR (abajo).
     # Bonos AR
     'AL29': 'AR · Bonos', 'AL30': 'AR · Bonos', 'AL35': 'AR · Bonos', 'AE38': 'AR · Bonos',
@@ -1785,14 +1783,21 @@ _SECTOR_AR = {t: _ETIQUETA_SECTOR_AR[clave]
               for clave, tickers in _SECTOR_AR_PANTALLA.items() for t in tickers}
 
 
-def _sector_for(asset: str, en_byma: Optional[bool] = None) -> str:
+def _sector_for(asset: str, en_byma: Optional[bool] = None,
+                asset_type: Optional[str] = None) -> str:
     """Resuelve el sector de un ticker. CEDEARs (.BA) usan el sector de la
-    contraparte US si está mapeada; sino caen en 'AR · CEDEAR'."""
+    contraparte US si está mapeada; sino caen en 'AR · CEDEAR'.
+
+    Cripto: la regla de la torta (`cripto.es_tenencia_cripto`: la lista de la
+    app, o lo que el importador marcó CRYPTO — ROSE comprada en un exchange es
+    la cripto, no Rosenbusch). Las monedas estables son su propio sector."""
     if not asset:
         return "Otros"
     a = asset.upper()
     if a in _SECTOR_MAP:
         return _SECTOR_MAP[a]
+    if es_tenencia_cripto({"asset": a, "asset_type": asset_type}):
+        return "Stablecoin" if a in CRIPTO_ESTABLES else "Crypto"
     # Una acción argentina (con o sin .BA) o su ADR NO es un CEDEAR: su sector.
     # Antes GGAL.BA salía "AR · CEDEAR (…)" y TECO2 "Otros".
     if es_accion_argentina(a, en_byma):
@@ -1830,7 +1835,7 @@ def detect_sector_concentration(positions: List[Dict[str, Any]],
         value_usd = _position_value_usd(p, prices, tc_blue, tc_cedear)
         if value_usd <= 0:
             continue
-        sector = _sector_for(asset, _en_bolsa_argentina(p))
+        sector = _sector_for(asset, _en_bolsa_argentina(p), p.get("asset_type"))
         if sector == "Otros":
             unmapped += 1
         by_sector[sector] = by_sector.get(sector, 0) + value_usd

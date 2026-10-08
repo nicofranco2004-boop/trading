@@ -1,13 +1,14 @@
 // Base de datos de tickers con nombre estilo TradingView.
 // Formato: { s: 'AAPL', n: 'Apple Inc.' }
+import { esCripto } from './crypto'
 
 // === CRIPTOMONEDAS (top ~120 por market cap) ===
 // ⚠️ Sólo las que la app sabe valuar: cada una tiene que estar en CRYPTO_SYMBOLS
-// (utils/crypto.js, espejo de backend/main.py) o ser una moneda estable (USDT,
+// (utils/crypto.js, espejo de backend/cripto.py) o ser una moneda estable (USDT,
 // USDC). Hasta 2026-10-08 había 22 acá que no estaban allá y se valuaban como lo
 // que el código fuera en otro lado (FET = Forum Energy, 394 veces de más).
 // DASH (DoorDash), ROSE (Rosenbusch) y AGIX (sin precio confiable) no están a
-// propósito: ver la NOTA sobre CRYPTO_SYMBOLS en backend/main.py. Lo vigila
+// propósito: ver la NOTA sobre CRYPTO_SYMBOLS en backend/cripto.py. Lo vigila
 // crypto.test.js; ai/trade_tickers.py y ai/asset_names.py se regeneran de acá.
 export const CRYPTO = [
   { s: 'BTC', n: 'Bitcoin' }, { s: 'ETH', n: 'Ethereum' }, { s: 'USDT', n: 'Tether' },
@@ -643,7 +644,10 @@ const AR_STOCK_SET = new Set([...ARG_LIDER, ...ARG_GENERAL].map(x => x.s))
 export function inferType(asset) {
   if (!asset) return 'stock_us'
   const a = asset.toUpperCase()
-  if (['BTC', 'ETH', 'SOL', 'USDT', 'USDC', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'MATIC', 'LINK'].includes(a)) return 'crypto'
+  // La lista de cripto de la app (crypto.js, paridad con el servidor). Hasta
+  // 2026-10-08 era una lista de 13: PEPE, KAS o FET entre tus activos del
+  // buscador salían «acción de EE.UU.» y Favoritos les pedía balances.
+  if (esCripto(a)) return 'crypto'
   // Sólo conocía las 17 de POPULAR_TICKERS: las otras 50 caían a 'stock_us' y la
   // ficha de AGRO (Agrometal) ofrecía la empresa de EE.UU. Adecoagro. Con o sin
   // ".BA": GGAL.BA es la acción argentina, no un CEDEAR.

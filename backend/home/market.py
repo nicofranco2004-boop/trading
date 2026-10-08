@@ -216,18 +216,14 @@ def _cached(key: str, ttl_s: int):
 
 # ─── Mercados ────────────────────────────────────────────────────────────────
 
-# Qué es cripto lo decide UNA lista: `main.CRYPTO_YF` (las criptos + las monedas
+# Qué es cripto lo decide UNA lista: `cripto.CRYPTO_YF` (las criptos + las monedas
 # estables, con su nombre en Yahoo). Hasta 2026-10-08 acá había una copia que no
 # coincidía (tenía TON, ICP, USDT y USDC; le faltaban ~55 de las de main): desde
 # que la cotización sale de `main._variacion_del_dia`, esas cuatro se le pedían a
 # Yahoo con el nombre pelado y se quedaban sin variación en «Lo que te afecta», la
-# watchlist y las alertas. Se lee al usarla (main importa este módulo al cargar).
-def _es_cripto(s: str) -> bool:
-    try:
-        import main as _main
-        return _main.yahoo_de_cripto(s) is not None
-    except Exception:
-        return False
+# watchlist y las alertas. `cripto.py` no depende de nada: se importa directo,
+# sin el rodeo por main (que antes, si fallaba, contestaba «no es cripto»).
+from cripto import es_cripto as _es_cripto  # noqa: E402
 
 
 # ─── ¿De qué RUEDA es este número? ───────────────────────────────────────────

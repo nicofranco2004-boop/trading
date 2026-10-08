@@ -46,7 +46,14 @@ def classify(asset: str, asset_type: str = None, en_byma: bool = None) -> str:
     cualquier broker —antes un cliente 100 % en ADRs en Schwab quedaba afuera
     del grupo "acciones argentinas"— y un ticker del panel local, sólo si la
     tenencia está en la bolsa argentina (`en_byma`): CELU o BOLT en Schwab son
-    empresas de EE.UU.; ROSE fuera de BYMA es una cripto."""
+    empresas de EE.UU.
+
+    "¿Cripto?" es la lista de la app (`cripto.es_cripto`, la que decide cómo se
+    valúa). Hasta 2026-10-08 era la lista del chat (ai.trade_tickers.CRYPTO_TICKERS),
+    a la que le faltan 21 que la app sí valúa como cripto (WBTC, stETH, EOS, ICX…):
+    caían en "otro" y no sumaban a ningún grupo. ROSE, DASH y CVX no están en la
+    lista (son acciones del catálogo): son cripto sólo si el importador las marcó
+    CRYPTO."""
     a = (asset or "").upper().strip()
     if not a:
         return "otro"
@@ -65,11 +72,12 @@ def classify(asset: str, asset_type: str = None, en_byma: bool = None) -> str:
     if a.endswith(".BA"):
         en_byma = True
     try:
-        from ai.trade_tickers import (CEDEAR_TICKERS, CRYPTO_TICKERS, US_TICKERS)
+        from ai.trade_tickers import (CEDEAR_TICKERS, US_TICKERS)
         from behavioral import es_accion_argentina
+        from cripto import es_cripto
     except Exception:
         return "otro"
-    if base in CRYPTO_TICKERS and en_byma is not True:
+    if es_cripto(base) and en_byma is not True:
         return "crypto"
     if es_accion_argentina(base, en_byma):
         return "ar_stock"

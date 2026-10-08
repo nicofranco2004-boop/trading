@@ -214,7 +214,7 @@ export const HORIZON_EXPECTATION = {
  * Buckets devueltos: 'cash' | 'fixed_income' | 'equity' | 'alternative'
  * — alineados con SUGGESTED_ALLOCATIONS.
  *
- * @param {Object} position  { asset, broker, is_cash }
+ * @param {Object} position  { asset, asset_type, broker, is_cash }
  * @param {Array}  brokers   [{ name, currency }]
  * @returns {'cash' | 'fixed_income' | 'equity' | 'alternative'}
  */
@@ -222,30 +222,25 @@ export function classifyAssetBucket(position, brokers = []) {
   if (!position) return 'equity'  // fallback razonable
   if (position.is_cash) return 'cash'
 
-  const ticker = String(position.asset || '').toUpperCase().trim()
-
-  // 1. Crypto (alternative)
-  // Reutilizamos la lista de insightsModel.js — repetida acá para no
-  // crear dependencia circular. Si el set cambia, mantener sincronizado.
-  const CRYPTO_TICKERS = new Set([
-    'BTC','ETH','SOL','BNB','ADA','XRP','MATIC','DOT','AVAX','LINK','LTC','BCH',
-    'ATOM','UNI','USDT','USDC','DAI','DOGE','SHIB','TRX','XLM','VET','FIL','ICP',
-    'APT','NEAR','ARB','OP','SUI','TON','PEPE','WBTC','STETH','HYPE','BONK','WLD',
-  ])
-  if (CRYPTO_TICKERS.has(ticker)) {
-    // Stablecoins se tratan como cash si la posición no se marca is_cash —
-    // muchos brokers crypto no marcan stables como cash explícitamente.
-    if (['USDT', 'USDC', 'DAI'].includes(ticker)) return 'cash'
-    return 'alternative'
-  }
-
-  // 2. Renta fija = "Bonos y letras" de la torta (assetClass.js). Con la lista
-  //    de prefijos de abajo, "TG" volvía bonos a TGSU2 y TGNO4 (acciones de las
+  // La clase de la torta (assetClass.js) decide las tres porciones que no son
+  // renta variable. Hasta 2026-10-08 la cripto salía de una lista suelta de 36
+  // códigos: KAS, FET o WBTC eran «equity» acá mientras la torta de al lado los
+  // mostraba como Cripto (y una con HYPE, que la app no sabe valuar, era
+  // «alternativo»). Mervall-E AI usa la misma regla (profile_card.py).
+  const klass = classifyAsset(position, brokers)
+  // 1. Stablecoins (y efectivo disfrazado) → cash: muchos brokers cripto no
+  //    marcan las stables como is_cash.
+  if (klass === 'cash') return 'cash'
+  // 2. Cripto (alternative): la lista de la app o lo que el importador marcó
+  //    CRYPTO.
+  if (klass === 'cripto') return 'alternative'
+  // 3. Renta fija = "Bonos y letras" de la torta. Con la lista de prefijos de
+  //    antes, "TG" volvía bonos a TGSU2 y TGNO4 (acciones de las
   //    transportadoras de gas): la tarjeta decía 100 % renta fija, la torta
   //    "Acciones AR" y Mervall-E AI renta variable.
-  if (classifyAsset(position, brokers) === 'bono') return 'fixed_income'
+  if (klass === 'bono') return 'fixed_income'
 
-  // 3. Acciones (equity) — CEDEARs, ETFs, AR shares
+  // 4. Acciones (equity) — CEDEARs, ETFs, AR shares (y los FCI, como la pantalla)
   return 'equity'
 }
 
