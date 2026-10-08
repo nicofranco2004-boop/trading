@@ -18,6 +18,7 @@ from .schema import (NormalizedTx, RawRow, RowError,
                      OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS)
 from .parsers.registry import get_parser, autodetect, list_parsers
 from . import traspasos as _traspasos
+from . import movimientos_internos as _movimientos_internos
 from .normalizer import normalize_rows
 from .fci_map import resolve_fci_by_name
 from .validator import validate
@@ -598,6 +599,13 @@ def run_preview(
         }
     if len(parse_result.raw_rows) > MAX_ROWS:
         return {"error": f"El archivo tiene más de {MAX_ROWS} filas. Dividilo en partes."}
+
+    # Plata que sólo cambió de sub-cuenta dentro del mismo broker ("Movimiento
+    # Manual / Renta CV 7.000 a Cable", "Compensación de monedas"…): no es ganancia
+    # ni retiro. Va ACÁ, sobre la salida de cualquier parser y antes de guardar las
+    # filas, para que el confirm —que vuelve a leer esas filas— vea lo mismo que el
+    # preview. Ver `importing/movimientos_internos.py`.
+    parse_result.raw_rows = _movimientos_internos.neutralizar(parse_result.raw_rows)
 
     # Normalizar
     normalized, norm_errors = normalize_rows(parse_result.raw_rows)
