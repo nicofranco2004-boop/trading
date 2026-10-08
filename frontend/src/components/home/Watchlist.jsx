@@ -30,6 +30,12 @@ function fmtPrice(p) {
   return p.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// La moneda sale del símbolo: `.BA` cotiza en BYMA, en pesos. Decía "US$" a
+// todo — GGAL.BA a 5.850 pesos salía "US$5.850,00".
+export function monedaDe(symbol) {
+  return String(symbol || '').toUpperCase().endsWith('.BA') ? '$' : 'US$'
+}
+
 export default function Watchlist() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -150,7 +156,7 @@ export default function Watchlist() {
                     <DataRow.Cell align="right" tabular className="flex-1">
                       {pending
                         ? <span className="inline-block w-12 h-3 rounded-sm bg-bg-2 esqueleto" aria-label="Cargando precio" />
-                        : `US$${fmtPrice(it.price)}`}
+                        : `${monedaDe(it.symbol)}${fmtPrice(it.price)}`}
                     </DataRow.Cell>
                     <DataRow.Cell align="right" width={80} tabular>
                       {pending
