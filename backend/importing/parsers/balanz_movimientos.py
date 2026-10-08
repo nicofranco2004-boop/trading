@@ -704,12 +704,12 @@ class BalanzMovimientosParser(Parser):
                 _emit(base("DIVIDENDO" if cash_in else "IMPUESTO", monto=str(abs(importe))))
                 continue
             if kind == "manual":
-                # "Conversión CV X a CV Y" = transferencia entre buckets de dólar
-                # (netea a 0: sale de 'Dólares C.V.' y entra a 'Dólares') → NO es fee
-                # ni ingreso; se omite (sin efecto en el USD total, evita $ fantasma
-                # de comisión + interés).
-                if "conversion" in desc:
-                    continue
+                # ⚠️ "Conversión CV X a CV Y", "Renta CV 7.000 a Cable" y demás pases
+                # entre sub-cuentas NO se deciden acá: salen por signo como el resto y
+                # `importing/movimientos_internos.py` (en el pipeline, para TODOS los
+                # formatos) descarta el par o, si vino una sola pata, la pasa a
+                # depósito/retiro. Acá se salteaba sólo "conversion", y "Renta CV a
+                # Cable" —la misma plata cambiando de bolsillo— entraba como interés.
                 if cash_in:
                     _emit(base("INTERES", monto=str(abs(importe))))
                 elif _is_tax(desc):

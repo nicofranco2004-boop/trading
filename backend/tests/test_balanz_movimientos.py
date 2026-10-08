@@ -422,6 +422,11 @@ class BalanzFeeTaxClassificationTest(unittest.TestCase):
     def setUp(self):
         csv = self.HDR2 + "\n" + "\n".join(self.ROWS2) + "\n"
         self.res = BalanzMovimientosParser().parse(csv)
+        # El par de "Conversión CV" lo descarta el pipeline para todos los formatos
+        # (`importing/movimientos_internos.py`), no este parser: se aplica acá igual
+        # que en `run_preview`, para mirar lo que de verdad llega a importarse.
+        from importing.movimientos_internos import neutralizar
+        self.res.raw_rows = neutralizar(self.res.raw_rows)
         self.tipos = [rr.data["tipo"] for rr in self.res.raw_rows]
 
     def test_no_parse_errors(self):
