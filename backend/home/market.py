@@ -1,6 +1,7 @@
 """Market data para el Home — índices del día, heatmap S&P, movers.
 
-Reusa yfinance vía la misma lógica que `/api/prices`. Cachea para no
+La variación del día de cada símbolo sale de `main._variacion_del_dia` (la de
+Posiciones): data912 para BYMA, yfinance para EEUU y cripto. Cachea para no
 martillar.
 
 V1: data del día (close anterior o mid-day si hay snapshot).
@@ -14,8 +15,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any, Tuple
-
-import yfinance as yf
 
 from pricing import yahoo as _yahoo
 
@@ -215,34 +214,12 @@ def _cached(key: str, ttl_s: int):
     return deco
 
 
-# ─── Fetchers ────────────────────────────────────────────────────────────────
+# ─── Mercados ────────────────────────────────────────────────────────────────
 
-def _fetch_daily_quote(symbol: str) -> Optional[Dict[str, Any]]:
-    """Devuelve dict {price, change_pct, prev_close} con la última cotización
-    del símbolo. Usa yfinance 2 días de history. None si falla."""
-    try:
-        hist = _yahoo.con_tope(lambda: yf.Ticker(symbol).history(period="5d"),
-                               que=f"cotización {symbol}")
-        if hist.empty or len(hist) < 2:
-            return None
-        prev_close = float(hist["Close"].iloc[-2])
-        last_close = float(hist["Close"].iloc[-1])
-        change_pct = ((last_close / prev_close) - 1) * 100 if prev_close > 0 else 0
-        return {
-            "symbol": symbol,
-            "price": round(last_close, 2),
-            "prev_close": round(prev_close, 2),
-            "change_pct": round(change_pct, 2),
-        }
-    except Exception as ex:
-        log.warning(f"_fetch_daily_quote falló para {symbol}: {ex}")
-        return None
-
-
-# Crypto tickers que yfinance espera con sufijo "-USD" (BTC, ETH, …).
-# Mantenemos la lista local para evitar dependencia circular con main.py.
-# El símbolo del user/holdings llega como "BTC" — lo mapeamos a "BTC-USD"
-# para el download y revertimos al construir la respuesta.
+# Cripto para decidir en qué rueda cotiza un símbolo (`mercado_de`: horario 24/7
+# y día UTC). ⚠️ Es una copia de la lista de main.py (CRYPTO_YF) y no coinciden:
+# acá están TON, ICP, USDT y USDC, allá no. La cotización ya no la usa (sale de
+# `main._variacion_del_dia`, con la lista de main).
 _CRYPTO_TICKERS = {
     'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT',
     'MATIC', 'LINK', 'USDT', 'USDC', 'TRX', 'LTC', 'BCH', 'ETC', 'XLM',
@@ -251,14 +228,6 @@ _CRYPTO_TICKERS = {
     'SAND', 'MANA', 'AXS', 'SHIB', 'PEPE', 'SUI', 'SEI', 'TIA', 'INJ',
     'WLD', 'ORDI', 'RUNE', 'STX', 'WBTC', 'STETH',
 }
-
-
-def _to_yf(sym: str) -> str:
-    """Convierte un símbolo de la app a su forma yfinance."""
-    s = (sym or "").upper()
-    if s in _CRYPTO_TICKERS:
-        return f"{s}-USD"
-    return s
 
 
 # ─── ¿De qué RUEDA es este número? ───────────────────────────────────────────
@@ -273,8 +242,8 @@ def _to_yf(sym: str) -> str:
 # nunca se propagó hasta acá, que es de donde comen las alertas y la IA.
 # Desde ahora cada quote viaja con `as_of` (la rueda que midió) e `is_today`.
 
-def session_today(symbol: str) -> str:
-    """Qué día es "hoy" para el mercado de `symbol`, en ISO.
+def hoy_de_mercado(mercado: Optional[str]) -> str:
+    """Qué día es "hoy" para una rueda, en ISO.
 
     · Cripto: las barras diarias de yfinance son días UTC (cortan a las 00:00
       UTC = 21:00 ART) y opera 24/7 → su día es el día UTC.
@@ -282,11 +251,15 @@ def session_today(symbol: str) -> str:
       enteras dentro del mismo día calendario argentino, que es el "hoy" de
       Rendi → se lo preguntamos al dueño del calendario, no lo recalculamos.
     """
-    s = (symbol or "").upper()
-    if s in _CRYPTO_TICKERS or s.endswith("-USD"):
+    if mercado == "cripto":
         return _dt.datetime.utcnow().date().isoformat()
     from fechas import hoy_art
     return hoy_art()
+
+
+def session_today(symbol: str) -> str:
+    """Qué día es "hoy" para el mercado de `symbol` (ver `hoy_de_mercado`)."""
+    return hoy_de_mercado(mercado_de(symbol))
 
 
 def mercado_de(symbol: str) -> str:
@@ -349,50 +322,53 @@ def estado_de_rueda(items: List[Dict[str, Any]], now=None) -> Dict[str, Any]:
     }
 
 
-def _bar_date(idx_value) -> Optional[str]:
-    """Fecha de una barra diaria como ISO. Devuelve None si el índice no es una
-    fecha (no queremos inventar una rueda que no sabemos cuál es)."""
-    try:
-        return idx_value.date().isoformat()
-    except Exception:
-        return None
-
-
 def _stamp_session(entry: Dict[str, Any], orig_sym: str) -> Dict[str, Any]:
     """Marca si el `change_pct` de este quote es el de la rueda de HOY.
 
     Se recalcula al SERVIR y no se guarda en el cache: el cache dura 60s y
     puede cruzar el cambio de día. Sin `as_of` → `is_today` False: "no sé de
-    qué rueda es" tiene que pesar lo mismo que "es vieja"."""
-    entry["is_today"] = bool(entry.get("as_of")) and entry["as_of"] == session_today(orig_sym)
+    qué rueda es" tiene que pesar lo mismo que "es vieja".
+
+    El "hoy" sale del mercado que MIDIÓ el número (`mercado`, lo pone
+    `main._variacion_del_dia`), no del símbolo: una cripto en un broker en
+    pesos (`BTC.BA`) se mide con la vela UTC de BTC-USD."""
+    hoy = (hoy_de_mercado(entry["mercado"]) if entry.get("mercado")
+           else session_today(orig_sym))
+    entry["is_today"] = bool(entry.get("as_of")) and entry["as_of"] == hoy
     return entry
 
 
 # ─── Quote cache per-symbol ──────────────────────────────────────────────────
 # Cada quote vive 60s. Antes el watchlist refetcheaba yfinance entero en cada
 # GET — 1-3s de latencia. Con cache, solo los símbolos nuevos/expirados se
-# fetchean; el resto sale instantáneo. Mismo wrapper para todos los callers
-# (watchlist, behavioral, goals, wrapped, dashboard, prices).
+# piden; el resto sale instantáneo. Mismo wrapper para todos los callers
+# (watchlist, alertas, «Lo que te afecta», mapas del inicio, IA).
 _QUOTE_CACHE: Dict[str, Dict[str, Any]] = {}  # symbol → { ..., '_ts': float }
 _QUOTE_TTL_S = 60
 
 
 def _fetch_batch_quotes(symbols: List[str],
                         tope: float = _yahoo.TOPE_PANTALLA_SEG) -> Dict[str, Dict[str, Any]]:
-    """Versión batched + cacheada — un solo download de yfinance para los
-    símbolos que NO están cacheados (o cuyo TTL expiró).
+    """{símbolo: {symbol, price, prev_close, change_pct, mercado, as_of,
+    is_today}} — la variación del día de cada símbolo, cacheada 60 s.
 
-    Mantiene un mapeo bidireccional para revertir el ticker yfinance al
-    símbolo original de la app (BTC-USD → BTC). Sin esto, los holdings de
-    cripto del user no resolvían quote y no aparecían en "Lo que te afecta".
+    ⭐ NO calcula nada: la variación sale de `main._variacion_del_dia`, la MISMA
+    que la columna "Var. día" de Posiciones y que el chat. Hasta 2026-10-08 esta
+    función bajaba de yfinance por su cuenta, también los `.BA`, y yfinance
+    trae la vela del día de los `.BA` en NaN o el ticker congelado: la misma
+    acción tenía una variación en Posiciones y otra en las alertas, en «Lo que
+    te afecta» y en la watchlist. Los bonos ni aparecían (yfinance no los
+    tiene). Ver tests/test_variacion_una_fuente.py.
+
+    `tope`: lo máximo que se espera a Yahoo (las alertas, que corren de fondo,
+    pasan el largo).
     """
     out: Dict[str, Dict[str, Any]] = {}
     if not symbols:
         return out
     now = time.time()
-    # Primer pass: lo que está cacheado y fresco sale directo.
     to_fetch: List[str] = []
-    for s in symbols:
+    for s in dict.fromkeys(symbols):
         cached = _QUOTE_CACHE.get(s)
         if cached and now - cached.get("_ts", 0) < _QUOTE_TTL_S:
             out[s] = _stamp_session({k: v for k, v in cached.items() if k != "_ts"}, s)
@@ -400,85 +376,15 @@ def _fetch_batch_quotes(symbols: List[str],
             to_fetch.append(s)
     if not to_fetch:
         return out
-    # Mapeo orig → yf, y reverse para encontrar el símbolo original al parsear.
-    yf_for: Dict[str, str] = {s: _to_yf(s) for s in to_fetch}
-    orig_for: Dict[str, str] = {v: k for k, v in yf_for.items()}
-    yf_symbols = list(orig_for.keys())
-    # Un tope para la bajada en lote y el reintento de a uno, juntos. La cinta se
-    # pide al mismo tiempo que /api/prices: con yf.download las dos descargas se
-    # vaciaban el diccionario compartido y una podía quedar esperando para
-    # siempre (ver `pricing/yahoo.py`).
-    _plazo = time.monotonic() + tope
     try:
-        data = _yahoo.descargar(yf_symbols, period="5d", interval="1d",
-                                group_by="ticker", auto_adjust=False,
-                                tope=tope, que="cotizaciones")
-        for yf_sym, orig_sym in orig_for.items():
-            try:
-                sub = data[yf_sym] if yf_sym in data else None
-                if sub is None or sub.empty:
-                    continue
-                closes = sub["Close"].dropna()
-                if len(closes) < 2:
-                    continue
-                prev = float(closes.iloc[-2])
-                last = float(closes.iloc[-1])
-                if prev <= 0:
-                    continue
-                entry = {
-                    "symbol": orig_sym,
-                    "price": round(last, 2),
-                    "prev_close": round(prev, 2),
-                    "change_pct": round(((last / prev) - 1) * 100, 2),
-                    # De qué DOS ruedas salió este porcentaje. Sin esto, "ayer
-                    # vs anteayer" y "hoy vs ayer" son el mismo número pelado.
-                    "as_of": _bar_date(closes.index[-1]),
-                    "prev_as_of": _bar_date(closes.index[-2]),
-                }
-                out[orig_sym] = _stamp_session(entry, orig_sym)
-                _QUOTE_CACHE[orig_sym] = {**entry, "_ts": now}
-            except Exception as ex:
-                log.warning(f"_fetch_batch_quotes parsing {yf_sym} (orig {orig_sym}): {ex}")
+        import main as _main
+        frescas = _main._variacion_del_dia(to_fetch, tope=tope)
     except Exception as ex:
-        log.error(f"_fetch_batch_quotes batch download falló: {ex}")
-
-    # Fallback individual: para símbolos que el batch NO devolvió,
-    # retry uno a uno con yf.Ticker.history. Más lento pero más confiable —
-    # cubre casos donde yfinance bulk falla parcialmente (típico con
-    # tickers .BA del Merval o cripto con sufijo -USD).
-    missing = [s for s in to_fetch if s not in out]
-    if missing:
-        log.info(f"_fetch_batch_quotes retry individual: {len(missing)} símbolos faltantes")
-        # En paralelo y con lo que quede del tope (antes: de a uno y sin tope).
-        _hists, _ = _yahoo.varios(
-            lambda ys: yf.Ticker(ys).history(period="5d", auto_adjust=False),
-            [yf_for.get(o, o) for o in missing],
-            tope=max(0.0, _plazo - time.monotonic()), que="cotizaciones de a una")
-        for orig_sym in missing:
-            try:
-                yf_sym = yf_for.get(orig_sym, orig_sym)
-                hist = _hists.get(yf_sym)
-                if hist is None or hist.empty:
-                    continue
-                closes = hist["Close"].dropna()
-                if len(closes) < 2:
-                    continue
-                prev = float(closes.iloc[-2])
-                last = float(closes.iloc[-1])
-                if prev <= 0:
-                    continue
-                entry = {
-                    "symbol": orig_sym,
-                    "price": round(last, 2),
-                    "prev_close": round(prev, 2),
-                    "change_pct": round(((last / prev) - 1) * 100, 2),
-                    "as_of": _bar_date(closes.index[-1]),
-                    "prev_as_of": _bar_date(closes.index[-2]),
-                }
-                out[orig_sym] = _stamp_session(entry, orig_sym)
-                _QUOTE_CACHE[orig_sym] = {**entry, "_ts": now}
-            except Exception as ex:
-                log.warning(f"_fetch_batch_quotes single-fallback {orig_sym} falló: {ex}")
+        log.error(f"_fetch_batch_quotes: la variación del día falló: {ex}")
+        return out
+    for s, q in frescas.items():
+        _QUOTE_CACHE[s] = {**q, "_ts": now}
+        out[s] = _stamp_session(dict(q), s)
     return out
 
 

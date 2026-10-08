@@ -296,6 +296,19 @@ class CaminoDeProduccionTest(unittest.TestCase):
         self.assertAlmostEqual(g["usd"], round(100.0 + self._var_dia_de_posiciones(27300, 0.74, 100), 2),
                                places=2)
 
+    def test_con_la_rueda_abierta_el_cedear_que_no_opero_no_es_hoy(self):
+        """MEDIDO 2026-10-08 11:53: con la rueda abierta, los papeles que todavía
+        no operaron (volumen 0) traen el precio y el % de su última rueda — CX
+        mostraba −3,48 %, idéntico a su vela del 7. La rueda del MERCADO es hoy
+        (SPY ya operó), pero el número de ESE papel no."""
+        live = {"AAPL": {"c": 27100.0, "pct": 1.04, "v": 0.0},
+                "SPY": {"c": 20950.0, "pct": 0.24, "v": 9.5e8}}
+        r = self._correr(live, ahora=A_LAS_15)
+        mov = {g["dia_txt"]: g for g in r["movimiento"]}
+        self.assertEqual(mov["hoy"]["mercados"], ["eeuu"])
+        self.assertIn("sin fecha confirmada", mov)
+        self.assertEqual(mov["sin fecha confirmada"]["mercados"], ["byma"])
+
     def _comprar_hoy(self, asset, broker, invested, qty, ccy, tipo):
         self.conn.execute(
             "INSERT INTO positions (user_id, broker, asset, asset_type, is_cash, invested, "
