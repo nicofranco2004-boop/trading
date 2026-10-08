@@ -3098,6 +3098,40 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_deleted_ops_journal_tok
                 ON deleted_ops_journal(user_id, token);
 
+            -- Un renglón por cada depósito o retiro CARGADO A MANO (botón de
+            -- efectivo, chat, autodepósito de una posición o un plazo fijo,
+            -- conciliación de saldo, edición de /mensual), con CUÁNDO se cargó.
+            -- `monthly_entries.manual_*` sigue siendo la suma del mes que usan todas
+            -- las cuentas; esto es el detalle de esa suma, para que un borrado sepa
+            -- desde qué foto estaba cada parte (las fotos del cron suman todo lo
+            -- cargado en el momento de sacarse, sin mirar la fecha del movimiento).
+            -- Lo escribe sólo `_registrar_flujo_a_mano` (y lo anula/revive
+            -- `_restar_flujo_a_mano` / `_revivir_flujo_a_mano`).
+            CREATE TABLE IF NOT EXISTS flujos_a_mano (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                broker TEXT NOT NULL,
+                -- el renglón de monthly_entries donde quedó sumado
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                direction TEXT NOT NULL,         -- 'deposit' | 'withdraw'
+                -- USD con signo: una edición de /mensual que baja el mes es negativa
+                monto_usd REAL NOT NULL,
+                monto_nativo REAL,               -- moneda del broker, si se conoce
+                -- el día del movimiento ('AAAA-MM-DD'); NULL si no tiene uno
+                -- (conciliación, edición de /mensual)
+                fecha TEXT,
+                -- CUÁNDO se cargó: UTC 'AAAA-MM-DD HH:MM:SS', el mismo reloj que
+                -- `import_batches.confirmed_at` (`_ahora_utc`)
+                cargado_at TEXT NOT NULL,
+                origen TEXT NOT NULL,            -- efectivo | autodeposito | plazo_fijo | conciliacion | mensual
+                ref TEXT,                        -- 'pos:<id>' / 'pf:<id>' si lo generó una carga
+                anulado_at TEXT,                 -- UTC; NULL = vigente
+                anulado_motivo TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_flujos_a_mano_mes
+                ON flujos_a_mano(user_id, broker, year, month);
+
             -- Con qué contabilidad quedó escrita la historia reconstruida a
             -- mercado de cada cuenta (`backfill_historical_mtm.huella_de_entrada`).
             -- Si la huella de ahora es otra, las fotos 'mtm_backfill' describen una
@@ -4595,6 +4629,10 @@ _RESET_PORTFOLIO_TABLES = (
     # allowlist explícito cobra —una tabla nueva no se resetea sola— y el motivo
     # por el que el reset dejaba futuros abiertos en una cuenta "vaciada".
     "futures_positions",
+    # Agregada 2026-10-08: el detalle (con hora de carga) de lo cargado a mano.
+    # Es parte de `monthly_entries`: un reset que borra la suma y deja el detalle
+    # dejaría renglones que no suman a nada.
+    "flujos_a_mano",
 )
 # Keys de config que son de CARTERA (se borran); el resto —onboarding,
 # welcome_email_sent_at, diag_*— son prefs de UX y sobreviven. Borrar fx_version
@@ -5307,6 +5345,9 @@ NAME_KEYED_TABLES = (
     "import_batches",
     "import_normalized_tx",
     "bond_cashflow_skips",
+    # El detalle de lo cargado a mano: sin esto, renombrar el broker dejaba cada
+    # carga apuntando a un nombre que ya no existe (2026-10-08).
+    "flujos_a_mano",
 )
 
 
@@ -5640,6 +5681,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
                 f"DELETE FROM monthly_entries WHERE user_id=? AND broker IN ({placeholders})",
                 (uid, *broker_names),
             )
+            _anular_flujos_a_mano(conn, uid, "broker_borrado", brokers=broker_names)
             conn.execute(
                 f"""UPDATE import_batches
                    SET status='reverted', reverted_at=datetime('now')
@@ -10825,7 +10867,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
             # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
             _adm: dict = {}
             _autodep = _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date,
-                                                meta_out=_adm)
+                                                meta_out=_adm, ref=f"pos:{new_id}")
             if meta_out is not None:
                 # El caller (op grupal) persiste esto para que el undo acredite
                 # EXACTO lo debitado y revierta el autodepósito si lo hubo.
@@ -11814,7 +11856,9 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
             # El cash del broker de origen no puede quedar negativo: si el PF supera
             # el cash disponible, auto-depositamos el faltante (sube cash + capital
             # aportado) antes de debitar. Mismo criterio que en altas de posición.
-            _autodeposit_if_overdraw(conn, uid, p.source_broker, float(p.capital), p.fecha_inicio)
+            _pf_adm: dict = {}
+            _autodeposit_if_overdraw(conn, uid, p.source_broker, float(p.capital), p.fecha_inicio,
+                                     meta_out=_pf_adm, origen="plazo_fijo")
             _adjust_broker_cash(conn, uid, p.source_broker, -float(p.capital))
         cur = conn.execute(
             """INSERT INTO plazos_fijos
@@ -11826,8 +11870,12 @@ def create_plazo_fijo(p: PlazoFijoIn, uid: int = Depends(get_effective_user)):
              p.fecha_inicio, p.plazo_dias, venc, 1 if p.renovacion_auto else 0, p.modalidad,
              (p.pago_frecuencia_meses if p.modalidad == 'periodico' else None), p.notes),
         )
-        conn.commit()
         pid = cur.lastrowid
+        if p.source_broker and _pf_adm.get("flujo_id"):
+            # El autodepósito se registró antes de que el plazo fijo tuviera id.
+            conn.execute("UPDATE flujos_a_mano SET ref=? WHERE id=? AND user_id=?",
+                         (f"pf:{pid}", _pf_adm["flujo_id"], uid))
+        conn.commit()
         conn.close()
         _ai_cache_invalidate(uid)
         return {"ok": True, "id": pid, "fecha_vencimiento": venc}
@@ -12524,7 +12572,8 @@ def _autodeposit_rate(conn, uid: int, date_iso) -> float:
 
 
 def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
-                             date_iso: str, meta_out: dict = None) -> float:
+                             date_iso: str, meta_out: dict = None, *,
+                             origen: str = "autodeposito", ref: Optional[str] = None) -> float:
     """En una acción MANUAL que debita cash (ej: agregar una posición sin haber
     cargado el depósito antes), el cash NUNCA debe quedar negativo. Si `cost_native`
     supera el cash actual del broker, auto-depositamos el faltante: subimos el cash
@@ -12542,10 +12591,12 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
 
     Llamar ANTES de debitar el costo. Devuelve el monto auto-depositado (nativo).
 
-    `meta_out` (opcional): se completa con {'native','usd','ym'} — lo que hace falta
-    para REVERTIR el autodepósito al borrar la carga manual que lo disparó. Sin esto,
-    borrarla devolvería el costo entero y dejaría capital aportado fantasma (el mismo
-    bug que el audit del asesor encontró en el undo de la operación grupal)."""
+    `meta_out` (opcional): se completa con {'native','usd','ym','flujo_id'} — lo que
+    hace falta para REVERTIR el autodepósito al borrar la carga manual que lo disparó.
+    Sin esto, borrarla devolvería el costo entero y dejaría capital aportado fantasma
+    (el mismo bug que el audit del asesor encontró en el undo de la operación grupal).
+    `flujo_id` es su renglón en `flujos_a_mano` (cuándo se cargó); `origen`/`ref`,
+    quién lo disparó."""
     if not cost_native or cost_native <= 0:
         return 0.0
     # El faltante se decide con el saldo VIGENTE (2026-10-07): leído sin tomarlo,
@@ -12581,13 +12632,14 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     except (ValueError, TypeError, IndexError):
         now = datetime.utcnow()
         y, m = now.year, now.month
-    _update_monthly_flow(conn, uid, broker, y, m, 'deposit', amount_usd, is_manual=True,
-                         native_amount=shortfall)
-    _update_monthly_flow(conn, uid, 'global', y, m, 'deposit', amount_usd, is_manual=True)
+    flujo_id = _registrar_flujo_a_mano(conn, uid, broker, y, m, 'deposit', amount_usd,
+                                       native_amount=shortfall, fecha=date_iso,
+                                       origen=origen, ref=ref)
     _repair_monthly_chain(conn, uid, broker)
     _repair_monthly_chain(conn, uid, 'global')
     if meta_out is not None:
-        meta_out.update({"native": shortfall, "usd": amount_usd, "ym": f"{y:04d}-{m:02d}"})
+        meta_out.update({"native": shortfall, "usd": amount_usd, "ym": f"{y:04d}-{m:02d}",
+                         "flujo_id": flujo_id})
     return shortfall
 
 
@@ -12731,6 +12783,148 @@ def _update_monthly_flow(conn, uid: int, broker: str, year: int, month: int,
     )
 
 
+# ─── Lo cargado a mano: la suma del mes Y el detalle con su hora ─────────────
+#
+# `monthly_entries.manual_*` es UNA suma por mes y broker: tres depósitos a mano de
+# marzo son un número. Las fotos diarias, en cambio, anotan lo aportado en el
+# momento en que se sacan, con todo lo cargado hasta ahí. Para que un borrado le
+# saque a cada foto sólo lo que esa foto tenía, hace falta saber CUÁNDO entró cada
+# parte de la suma: eso es `flujos_a_mano`, un renglón por carga.
+#
+# Las tres funciones de abajo son las ÚNICAS que mueven lo manual con
+# `_update_monthly_flow(is_manual=True)`, y por eso las únicas que escriben el
+# detalle: la suma y el detalle no se pueden separar porque viajan juntos
+# (`tests/test_flujos_a_mano.py` vigila que nadie vuelva a sumar por fuera).
+
+def _ahora_utc() -> str:
+    """AHORA en UTC, 'AAAA-MM-DD HH:MM:SS': el mismo reloj y el mismo formato que
+    `datetime('now')` de SQLite, que es como se guarda `import_batches.confirmed_at`
+    — una carga a mano y la confirmación de un import se comparan igual (las dos
+    pasan al día argentino con `_dia_art_de_confirmacion`). En Python y no en SQL
+    para que las pruebas puedan simular "lo cargó el 15 de enero a las 14"."""
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _registrar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
+                            direction: str, amount_usd: float, *,
+                            native_amount: Optional[float] = None,
+                            fecha: Optional[str] = None, origen: str,
+                            ref: Optional[str] = None) -> Optional[int]:
+    """LA puerta por la que entra un depósito o retiro cargado a mano: lo suma al
+    renglón del mes del broker y al de Global (lo de siempre) y anota la carga, con
+    su hora, en `flujos_a_mano`. Devuelve el id de esa carga (lo guarda quien la
+    tenga que deshacer: la posición en `undo_meta_json.autodep.flujo_id`, la
+    transferencia del chat para compensar).
+
+    `fecha` = el día del movimiento si tiene uno; `origen` = de dónde salió
+    (efectivo, autodeposito, plazo_fijo, conciliacion); `ref` = qué carga lo generó."""
+    _update_monthly_flow(conn, uid, broker, year, month, direction, amount_usd,
+                         is_manual=True, native_amount=native_amount)
+    _update_monthly_flow(conn, uid, 'global', year, month, direction, amount_usd,
+                         is_manual=True)
+    return _anotar_flujo_a_mano(conn, uid, broker, year, month, direction, amount_usd,
+                                native_amount=native_amount, fecha=fecha, origen=origen,
+                                ref=ref)
+
+
+def _anotar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
+                         direction: str, amount_usd: float, *,
+                         native_amount: Optional[float] = None,
+                         fecha: Optional[str] = None, origen: str,
+                         ref: Optional[str] = None) -> Optional[int]:
+    """Sólo el renglón del detalle, para quien ya movió la suma por su lado (la
+    edición de /mensual reescribe `manual_*` entera y anota la diferencia).
+    'global' no se anota: su `manual_*` es la suma de los brokers y el recálculo la
+    rearma de ahí (lo que se edita a mano en Global no sobrevive al recálculo)."""
+    if broker == 'global' or abs(float(amount_usd or 0)) < 0.005:
+        return None
+    cur = conn.execute(
+        """INSERT INTO flujos_a_mano
+             (user_id, broker, year, month, direction, monto_usd, monto_nativo,
+              fecha, cargado_at, origen, ref)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (uid, broker, int(year), int(month), direction, round(float(amount_usd), 6),
+         (round(float(native_amount), 6) if native_amount is not None else None),
+         (str(fecha)[:10] if fecha else None), _ahora_utc(), origen, ref))
+    return cur.lastrowid
+
+
+def _restar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
+                         direction: str, amount_usd: float, *,
+                         native_amount: Optional[float] = None,
+                         flujo_id: Optional[int] = None, motivo: str) -> None:
+    """Saca de la suma del mes (broker y Global) una carga a mano que se borra o se
+    compensa, y la marca anulada en el detalle. Montos POSITIVOS: acá se restan.
+    `native_amount` None = la columna en moneda del broker no se toca (así lo hacía
+    la compensación de la transferencia del chat; se conserva igual)."""
+    _update_monthly_flow(conn, uid, broker, year, month, direction, -amount_usd,
+                         is_manual=True,
+                         native_amount=(-native_amount if native_amount is not None else None))
+    _update_monthly_flow(conn, uid, 'global', year, month, direction, -amount_usd,
+                         is_manual=True)
+    if flujo_id:
+        _anular_flujos_a_mano(conn, uid, motivo, ids=[flujo_id])
+
+
+def _revivir_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
+                          direction: str, amount_usd: float, *,
+                          native_amount: Optional[float] = None,
+                          flujo_id: Optional[int] = None) -> None:
+    """El deshacer de `_restar_flujo_a_mano`: vuelve a sumar la carga y la revive en
+    el detalle CON SU HORA ORIGINAL (es la misma carga: las fotos la tenían desde
+    entonces, no desde el deshacer)."""
+    _update_monthly_flow(conn, uid, broker, year, month, direction, amount_usd,
+                         is_manual=True, native_amount=native_amount)
+    _update_monthly_flow(conn, uid, 'global', year, month, direction, amount_usd,
+                         is_manual=True)
+    if flujo_id:
+        conn.execute("UPDATE flujos_a_mano SET anulado_at=NULL, anulado_motivo=NULL "
+                     "WHERE id=? AND user_id=?", (flujo_id, uid))
+
+
+def _anular_flujos_a_mano(conn, uid: int, motivo: str, *, ids=None, brokers=None,
+                          year: Optional[int] = None, month: Optional[int] = None,
+                          direction: Optional[str] = None) -> int:
+    """Marca anuladas (no borra: el deshacer las revive con su hora) las cargas que
+    se fueron de la suma por otro camino: el borrado de un mes entero desde
+    Movimientos (`me-`), un renglón borrado en /mensual, un broker borrado o
+    vaciado. Por `ids`, o por broker(s) y —opcional— mes y sentido."""
+    where, args = ["user_id=?", "anulado_at IS NULL"], [uid]
+    if ids is not None:
+        ids = [i for i in ids if i]
+        if not ids:
+            return 0
+        where.append(f"id IN ({','.join('?' * len(ids))})")
+        args += ids
+    if brokers is not None:
+        brokers = list(brokers)
+        if not brokers:
+            return 0
+        where.append(f"broker IN ({','.join('?' * len(brokers))})")
+        args += brokers
+    if year is not None:
+        where += ["year=?", "month=?"]
+        args += [int(year), int(month)]
+    if direction is not None:
+        where.append("direction=?")
+        args.append(direction)
+    return conn.execute(
+        f"UPDATE flujos_a_mano SET anulado_at=?, anulado_motivo=? WHERE {' AND '.join(where)}",
+        (_ahora_utc(), motivo, *args)).rowcount
+
+
+def _anotar_ajuste_mensual(conn, uid: int, broker: str, year: int, month: int,
+                           antes: tuple, despues: tuple) -> None:
+    """/mensual reescribe `manual_*` de un renglón entero (`_derive_manual_flows`):
+    la diferencia con lo que había es una carga a mano más, con su hora."""
+    for direction, a, d in (("deposit", antes[0], despues[0]),
+                            ("withdraw", antes[1], despues[1])):
+        diff = float(d or 0) - float(a or 0)
+        if abs(diff) >= 0.005:
+            _anotar_flujo_a_mano(conn, uid, broker, year, month, direction, diff,
+                                 origen="mensual")
+
+
 class BrokerReconcileCashIn(BaseModel):
     """Reconcilia el cash de un broker con el balance real reportado por el
     broker externo (ej.: lo que ves cuando abrís Schwab en la app)."""
@@ -12853,10 +13047,11 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
             else:
                 amount_usd = magnitude
 
-            _update_monthly_flow(conn, uid, data.broker_name, target_year, target_month,
-                                 direction, amount_usd, is_manual=True, native_amount=magnitude)
-            _update_monthly_flow(conn, uid, 'global', target_year, target_month,
-                                 direction, amount_usd, is_manual=True)
+            # Sin `fecha`: la diferencia es plata de antes del CSV anotada en el mes
+            # más viejo por convención; no pasó ese día.
+            _registrar_flujo_a_mano(conn, uid, data.broker_name, target_year, target_month,
+                                    direction, amount_usd, native_amount=magnitude,
+                                    origen="conciliacion")
             _repair_monthly_chain(conn, uid, data.broker_name)
             _repair_monthly_chain(conn, uid, 'global')
 
@@ -12909,10 +13104,12 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 # chat); sin fecha → hoy (comportamiento histórico de la UI).
                 now = datetime.utcnow()
                 _fy, _fm = now.year, now.month
+                _fd_ok = False
                 if data.date:
                     try:
                         _fd = datetime.strptime(data.date, "%Y-%m-%d")
                         _fy, _fm = _fd.year, _fd.month
+                        _fd_ok = True
                     except ValueError:
                         pass
                 # Dólar de la FECHA del movimiento, resuelto en el SERVIDOR (ver
@@ -12926,11 +13123,13 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                     amount_usd = data.amount / _rate if _rate else data.amount
                 else:
                     amount_usd = data.amount
-                _update_monthly_flow(conn, uid, data.broker_name, _fy, _fm,
-                                     data.direction, amount_usd, is_manual=True,
-                                     native_amount=data.amount)
-                _update_monthly_flow(conn, uid, 'global', _fy, _fm,
-                                     data.direction, amount_usd, is_manual=True)
+                # El día del movimiento: el que eligió la persona, o hoy (argentino)
+                # si no mandó ninguno.
+                _flujo_id = _registrar_flujo_a_mano(
+                    conn, uid, data.broker_name, _fy, _fm, data.direction, amount_usd,
+                    native_amount=data.amount,
+                    fecha=(_fd.date().isoformat() if _fd_ok else _iso_today()),
+                    origen="efectivo")
                 # Phase 8 — repair chain for both touched brokers.
                 _repair_monthly_chain(conn, uid, data.broker_name)
                 _repair_monthly_chain(conn, uid, 'global')
@@ -12939,7 +13138,10 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
             # sobre esta cartera ya no vale. Era el único endpoint de movimientos
             # que no lo avisaba.
             _ai_cache_invalidate(uid)
-            return {"ok": True, "direction": data.direction, "amount": data.amount, "currency": currency}
+            # `flujo_id`: la carga en `flujos_a_mano`. Lo usa la transferencia del chat
+            # para compensar EXACTAMENTE esta carga si la otra pata falla.
+            return {"ok": True, "direction": data.direction, "amount": data.amount,
+                    "currency": currency, "flujo_id": _flujo_id}
         except HTTPException:
             raise
         except Exception as ex:
@@ -12947,7 +13149,8 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
 
 
 def _revert_cash_flow(uid: int, broker_name: str, direction: str,
-                      amount: float, tc_blue: float, date: str = None) -> None:
+                      amount: float, tc_blue: float, date: str = None,
+                      flujo_id: Optional[int] = None) -> None:
     """Deshace EXACTAMENTE un cash_flow previo (misma moneda/mes): repone el
     cash y RESTA de la MISMA columna (deposits/withdrawals) — no suma a la
     opuesta. Se usa para compensar la pata retiro de una transferencia cuyo
@@ -12971,11 +13174,9 @@ def _revert_cash_flow(uid: int, broker_name: str, direction: str,
                 except ValueError:
                     pass
             amount_usd = amount / tc_blue if currency == "ARS" else amount
-            # amount NEGATIVO con la MISMA direction = resta de esa columna
-            _update_monthly_flow(conn, uid, broker_name, _fy, _fm, direction,
-                                 -amount_usd, is_manual=True)
-            _update_monthly_flow(conn, uid, "global", _fy, _fm, direction,
-                                 -amount_usd, is_manual=True)
+            # Resta de la MISMA columna, y la carga queda anulada en el detalle.
+            _restar_flujo_a_mano(conn, uid, broker_name, _fy, _fm, direction, amount_usd,
+                                 flujo_id=flujo_id, motivo="transferencia_compensada")
             _repair_monthly_chain(conn, uid, broker_name)
             _repair_monthly_chain(conn, uid, "global")
     finally:
@@ -14776,6 +14977,8 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
                      man_dep, man_wit, e.pnl_realized, e.pnl_unrealized, e.capital_inicio, e.capital_final),
                 )
                 new_id = cur.lastrowid
+                _anotar_ajuste_mensual(conn, uid, e.broker, e.year, e.month,
+                                       (0.0, 0.0), (man_dep, man_wit))
                 _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
             row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (new_id, uid)).fetchone()
             _ai_cache_invalidate(uid)
@@ -14792,6 +14995,11 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user
         with conn:  # tx: update + repair atómico
             man_dep, man_wit = _derive_manual_flows(
                 conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
+            # Lo manual que había, para anotar la diferencia como una carga más. El
+            # renglón editado es el de la base (broker/año/mes no cambian con el PUT).
+            _prev = conn.execute(
+                "SELECT broker, year, month, manual_deposits, manual_withdrawals "
+                "FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
             conn.execute(
                 """UPDATE monthly_entries SET deposits=?, withdrawals=?,
                    manual_deposits=?, manual_withdrawals=?, pnl_realized=?,
@@ -14799,6 +15007,10 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user
                 (e.deposits, e.withdrawals, man_dep, man_wit, e.pnl_realized, e.pnl_unrealized,
                  e.capital_inicio, e.capital_final, eid, uid),
             )
+            if _prev:
+                _anotar_ajuste_mensual(
+                    conn, uid, _prev["broker"], _prev["year"], _prev["month"],
+                    (_prev["manual_deposits"], _prev["manual_withdrawals"]), (man_dep, man_wit))
             _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
@@ -14818,11 +15030,15 @@ def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
     # Capturar el broker ANTES del delete para poder repair la chain.
     try:
         target = conn.execute(
-            "SELECT broker FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)
+            "SELECT broker, year, month FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)
         ).fetchone()
         with conn:  # tx: delete + repair atómico
             conn.execute("DELETE FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid))
             if target:
+                # Las cargas a mano de ese renglón se fueron con él.
+                _anular_flujos_a_mano(conn, uid, "renglon_mensual_borrado",
+                                      brokers=[target['broker']],
+                                      year=target['year'], month=target['month'])
                 _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
         conn.close()
         _ai_cache_invalidate(uid)
@@ -17177,6 +17393,10 @@ def _delete_one_movement(conn, uid: int, mid: str):
         ).rowcount != 1:
             raise HTTPException(409, "Ese movimiento cambió mientras lo borrabas. "
                                      "Recargá la página para ver cómo quedó.")
+        # Todas las cargas a mano de ese mes y sentido se fueron con el renglón.
+        _anular_flujos_a_mano(conn, uid, "movimiento_borrado", brokers=[broker],
+                              year=int(row["year"]), month=int(row["month"]),
+                              direction="deposit" if direction == "dep" else "withdraw")
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
         _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
         since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
@@ -18617,15 +18837,13 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
         except (ValueError, IndexError):
             ay = am = None
         if ay:
-            # `native_amount` NEGATIVO también: el alta lo sumó a `manual_deposits_native`
+            # El NATIVO también se resta: el alta lo sumó a `manual_deposits_native`
             # y sin bajarlo acá cada ciclo borrar→deshacer inflaba esa columna (el undo sí
             # la sube). Después, borrar el depósito del mes debitaba el doble de cash,
             # porque esa columna es justamente la que se usa para el reverso exacto.
-            _update_monthly_flow(conn, uid, broker, ay, am, 'deposit',
-                                 -float(autodep["usd"]), is_manual=True,
-                                 native_amount=-autodep_native)
-            _update_monthly_flow(conn, uid, 'global', ay, am, 'deposit',
-                                 -float(autodep["usd"]), is_manual=True)
+            _restar_flujo_a_mano(conn, uid, broker, ay, am, 'deposit', float(autodep["usd"]),
+                                 native_amount=autodep_native,
+                                 flujo_id=autodep.get("flujo_id"), motivo="posicion_borrada")
 
     import secrets as _secrets
     token = _secrets.token_hex(8)
@@ -18807,11 +19025,10 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
             except (ValueError, IndexError):
                 ay = am = None
             if ay:
-                _update_monthly_flow(conn, uid, broker, ay, am, 'deposit',
-                                     float(ad["usd"]), is_manual=True,
-                                     native_amount=float(ad["native"]))
-                _update_monthly_flow(conn, uid, 'global', ay, am, 'deposit',
-                                     float(ad["usd"]), is_manual=True)
+                # La misma carga, revivida con su hora original.
+                _revivir_flujo_a_mano(conn, uid, broker, ay, am, 'deposit', float(ad["usd"]),
+                                      native_amount=float(ad["native"]),
+                                      flujo_id=ad.get("flujo_id"))
 
     _cascade_after_movement_delete(conn, uid, j["since_date"], {broker},
                                    antes=antes, journal=p)
@@ -26052,6 +26269,7 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
             (uid, *broker_names),
         )
         counts["monthly_entries_deleted"] = cur.rowcount
+        _anular_flujos_a_mano(conn, uid, "broker_vaciado", brokers=broker_names)
 
         cur = conn.execute(
             f"""UPDATE import_batches
@@ -30639,8 +30857,8 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
             if not to_row:
                 return {"error": "El broker destino ya no existe (¿lo borraron/renombraron?). Pedile al usuario que rearme el registro."}
             _date_arg = None if p.get("date_is_today") else p.get("date")
-            cash_flow(CashFlowIn(broker_name=broker_name, direction="withdraw",
-                                 amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
+            _ret = cash_flow(CashFlowIn(broker_name=broker_name, direction="withdraw",
+                                        amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
             try:
                 cash_flow(CashFlowIn(broker_name=to_row["name"], direction="deposit",
                                      amount=p["amount"], tc_blue=_tc, date=_date_arg), uid)
@@ -30651,7 +30869,8 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                     # de retiro): el mes queda como si nada hubiera pasado, no
                     # con retiro+depósito brutos inflando aportes
                     _revert_cash_flow(uid, broker_name, "withdraw", p["amount"],
-                                      _tc, _date_arg)
+                                      _tc, _date_arg,
+                                      flujo_id=(_ret or {}).get("flujo_id"))
                     return {"error": ("No se pudo acreditar en el destino — el retiro "
                                       "se revirtió, no cambió nada. Que lo cargue desde la app.")}
                 except Exception:
@@ -46507,16 +46726,18 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                     except (ValueError, IndexError):
                         _ay = _am = None
                     if _ay:
-                        # amount negativo = reversión (contrato documentado de
-                        # _update_monthly_flow)
-                        # `native_amount` negativo también: sin esto `manual_deposits_native`
+                        # El nativo también se resta: sin esto `manual_deposits_native`
                         # queda inflada y el próximo borrado del depósito del mes debita de
                         # más (misma corrección que en `_delete_manual_position_cascade`).
-                        _update_monthly_flow(conn, cid, pos["broker"], _ay, _am,
-                                             'deposit', -float(it["autodep_usd"]), is_manual=True,
-                                             native_amount=-autodep_n)
-                        _update_monthly_flow(conn, cid, 'global', _ay, _am,
-                                             'deposit', -float(it["autodep_usd"]), is_manual=True)
+                        # La carga del autodepósito la anotó el alta en la posición.
+                        try:
+                            _fid = ((json.loads(pos["undo_meta_json"] or "{}") or {})
+                                    .get("autodep") or {}).get("flujo_id")
+                        except (TypeError, ValueError):
+                            _fid = None
+                        _restar_flujo_a_mano(conn, cid, pos["broker"], _ay, _am, 'deposit',
+                                             float(it["autodep_usd"]), native_amount=autodep_n,
+                                             flujo_id=_fid, motivo="operacion_grupal_deshecha")
                         _repair_monthly_chain(conn, cid, pos["broker"])
                         _repair_monthly_chain(conn, cid, 'global')
                 conn.execute(
