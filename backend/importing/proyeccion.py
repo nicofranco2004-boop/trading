@@ -51,6 +51,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from .schema import TX_VIVAS
+
 log = logging.getLogger(__name__)
 
 # Motivos por los que un activo NO se puede proyectar con confianza. Enum cerrado:
@@ -100,9 +102,8 @@ def proyectar(conn, uid: int, *, pair: List[str], fecha: str,
     # después del corte no aparezca como discrepancia contra el broker.
     for r in conn.execute(
             f"""SELECT n.asset_symbol a, n.operation_type op, n.quantity q
-                  FROM import_normalized_tx n JOIN import_batches b ON b.id=n.batch_id
-                 WHERE b.user_id=? AND n.excluded_at IS NULL
-                   AND b.status='confirmed' AND n.broker IN ({ph})
+                  FROM {TX_VIVAS}
+                 WHERE b.user_id=? AND n.broker IN ({ph})
                    AND n.date > ? AND n.asset_symbol IS NOT NULL
                    AND n.operation_type IN ('BUY','SELL')""", (uid, *pair, D)):
         v = float(r["q"] or 0)

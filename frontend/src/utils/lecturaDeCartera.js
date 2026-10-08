@@ -37,22 +37,18 @@
 // cargador por una operación que registraste.
 
 import { resumenDeCartera } from './aiSnapshot'
+import { quienEs } from './quienEs'
 
 export const VIGENCIA_MS = 5 * 60 * 1000
 export const VUELTAS = 3
 export const PAUSA_TRAS_CAMBIO_MS = 400
 export const TOPE_MS = 30 * 1000
 
-// De quién es una lectura: la persona (su email) y el cliente que mira el
-// asesor. Con el EMAIL y no con `user.id`: el usuario de la app no trae `id`
-// (AuthContext.mapMeToUser no lo copia), así que con el id la clave era la
-// misma para todos y quien entraba después en la misma pestaña veía —y le
-// preguntaba a la IA con— la cartera del anterior (auditoría 2026-10-05).
-// En minúsculas y sin espacios: al iniciar sesión el email provisorio es el
-// que se tipeó ("Ana@X.com") y después llega el de /auth/me ("ana@x.com").
-// `quienEs` (null sin sesión) es también con lo que VozContext firma la
-// conversación guardada: una sola regla de "quién es".
-export const quienEs = (user) => String(user?.email ?? '').trim().toLowerCase() || null
+// De quién es una lectura: la persona y el cliente que mira el asesor. La
+// persona, con la regla única de "quién es" (utils/quienEs: el email, porque
+// el usuario de la app no trae `id` — con el id la clave era la misma para
+// todos y quien entraba después en la misma pestaña veía la cartera del
+// anterior, auditoría 2026-10-05).
 export const claveDePersona = (user, clienteId) => `${quienEs(user) ?? ''}|${clienteId ?? ''}`
 
 // Un error con el texto que ve la persona: el chat muestra `detail` tal cual

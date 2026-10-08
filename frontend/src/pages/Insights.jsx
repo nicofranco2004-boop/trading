@@ -103,6 +103,7 @@ import {
 import { selectDiagnostics } from '../utils/diagnostics'
 import { resolveTierShown, computeDismiss } from '../utils/diagnosticsRotation'
 import { computeProMetrics } from '../utils/insightsMetrics'
+import { esConversion } from '../utils/tradeStats'
 import AssetLogo from '../components/AssetLogo'
 import { useAuth } from '../contexts/AuthContext'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
@@ -2201,7 +2202,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const t = (op.op_type || '').trim()
     if (!t) return false
     if (t === 'Dividendo' || t === 'Interés' || t === 'Compra') return false
-    if (t.startsWith('CONVERSION') || t.startsWith('Conversión')) return false
+    if (esConversion(t)) return false
     return true
   }
   const tradeOps = operations.filter(isTradeOp)
@@ -3613,6 +3614,7 @@ function InsightsDesktop({ _embeddedTab }) {
           const corteEnVentana = chartData.some(r => String(r?.key || '').startsWith('corte-'))
           const titular = perf.motivo === 'medicion_dudosa' ? 'Hay una foto que no cierra.'
             : perf.motivo === 'cadena_implausible' ? 'Tu contabilidad no coincide con lo medido.'
+            : perf.motivo === 'capital_chico' ? 'Al principio el capital era muy chico.'
             : 'La medición tiene un hueco.'
           return (
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-line bg-bg-2/60 px-3 py-2">

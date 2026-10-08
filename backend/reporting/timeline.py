@@ -13,6 +13,8 @@ from __future__ import annotations
 from datetime import date as date_cls, timedelta
 from typing import List, Optional, Dict, Any
 
+from realized_pnl import es_conversion, no_es_conversion_sql
+
 from .builder import build_period_report
 from .detectors import run_detectors
 from .schema import PeriodReport
@@ -73,8 +75,7 @@ def _compute_user_historical_win_rate(conn, uid: int) -> Optional[float]:
     trades = [
         r for r in rows
         if (r["op_type"] or "") not in ("Compra", "Dividendo", "Interés")
-        and not (r["op_type"] or "").startswith("Conversión")
-        and not (r["op_type"] or "").startswith("CONVERSION")
+        and not es_conversion(r["op_type"])
     ]
     if not trades:
         return None
@@ -87,11 +88,10 @@ def _compute_avg_trades_per_month(conn, uid: int, lookback_months: int = 12) -> 
     today = date_cls.today()
     start = (today.replace(day=1) - timedelta(days=lookback_months * 30)).isoformat()
     row = conn.execute(
-        """SELECT COUNT(*) AS n FROM operations
+        f"""SELECT COUNT(*) AS n FROM operations
             WHERE user_id = ? AND date >= ?
               AND (op_type NOT IN ('Compra', 'Dividendo', 'Interés')
-                   AND op_type NOT LIKE 'Conversión%'
-                   AND op_type NOT LIKE 'CONVERSION%')""",
+                   AND {no_es_conversion_sql()})""",
         (uid, start),
     ).fetchone()
     n = (row["n"] if row else 0) or 0

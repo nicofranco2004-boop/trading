@@ -48,8 +48,12 @@ Taxonomía decodificada (verificada contra 2 exports reales de 2 usuarios):
 Follow-ups conocidos (no bloquean el cash; flaggeados o documentados):
   - SPOT (conducto dólar-MEP) — necesita un export real para mapear bien.
   - Instrumentos "Ingreso de Títulos" / "Canje" / "Traspaso" → se flaggean.
-  - Canjes internos USD↔USD caen como INTERÉS/FEE que netean (ruido de P&L menor,
-    igual que Balanz) — detectarlos y saltarlos es un follow-up.
+  - Canjes/compensaciones entre sub-cuentas ("Movimiento Manual / Compensación de
+    monedas", "Canje de monedas", "Débito/Crédito de Monedas"…) salen por signo
+    como INTERÉS/FEE y NO netean: el recalc descarta la comisión y el interés queda
+    como ganancia. Los resuelve el pipeline para todos los formatos
+    (`importing/movimientos_internos.py`): par → se descarta; pata suelta →
+    depósito/retiro.
   - Amortización baja el nominal del bono (acá solo cuenta como ingreso de caja).
   - asset_type no viene en el export → lo infiere la valuación/rebuild (como BM).
 """
@@ -369,7 +373,9 @@ class PpiParser(Parser):
                 _emit(base("FEE", monto=str(abs(importe))))
             elif kind in ("signed", "manual"):
                 # débito/crédito de monedas, canje, compensación, vencimiento
-                # Plazo Com. A, traspaso: por signo (igual que Balanz "manual").
+                # Plazo Com. A, traspaso: por signo (igual que Balanz "manual"). Los
+                # que son pases entre sub-cuentas los neutraliza después
+                # `importing/movimientos_internos.py` (en el pipeline).
                 _emit(base("INTERES" if cash_in else "FEE", monto=str(abs(importe))))
             else:
                 result.parse_errors.append(omitted_row_error(

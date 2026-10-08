@@ -36,6 +36,7 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from datetime import date
 import twr as _twr
+from realized_pnl import closed_filter_sql
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -105,12 +106,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     ), 2)
     # trades del año via operations (más confiable que monthly_entries)
     trades_year_row = conn.execute(
-        """SELECT COUNT(*) AS c FROM operations
+        f"""SELECT COUNT(*) AS c FROM operations
             WHERE user_id = ?
-              AND pnl_usd IS NOT NULL
-              AND op_type NOT IN ('Compra', 'Dividendo', 'Interés', '')
-              AND op_type NOT LIKE 'CONVERSION%'
-              AND op_type NOT LIKE 'Conversión%'
+              AND {closed_filter_sql()}
               AND substr(date, 1, 4) = ?""",
         (user_id, str(year)),
     ).fetchone()

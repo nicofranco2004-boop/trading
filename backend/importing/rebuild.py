@@ -57,7 +57,7 @@ from typing import Any, Dict, List, Optional
 
 from datetime import date as _date
 
-from .schema import OP_BUY, OP_SELL
+from .schema import OP_BUY, OP_SELL, TX_VIVAS
 from .persister import _link, broker_pair, reconciled_unit_price
 try:
     from fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
@@ -534,11 +534,8 @@ def _full_events(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[st
                   n.asset_name, n.operation_type, n.quantity, n.unit_price, n.gross_amount,
                   n.fees, n.currency, n.asset_type, n.transfer_out, n.created_position_id,
                   n.tc_compra
-             FROM import_normalized_tx n
-             JOIN import_batches b ON b.id = n.batch_id
+             FROM {TX_VIVAS}
             WHERE b.user_id = ?
-              AND b.status = 'confirmed'
-              AND n.excluded_at IS NULL
               AND n.broker IN ({_ph})
               AND n.asset_symbol = ?
               AND n.operation_type IN (?, ?)

@@ -59,7 +59,7 @@ CSV = (HDR +
 
 def _helpers():
     h = main._ImportHelpers()
-    for n in ("_adjust_broker_cash", "_adjust_cash", "_update_monthly_pnl_realized",
+    for n in ("_adjust_broker_cash", "_update_monthly_pnl_realized",
               "_update_monthly_flow", "_repair_monthly_chain", "_ensure_usd_sibling",
               "_recalc_pnl_realized_from_ops"):
         setattr(h, n, getattr(main, n))

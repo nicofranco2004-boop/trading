@@ -7,6 +7,7 @@ import {
   avanceEnvio, estadoEnvio, ultimoResultado, suscribirEnvios,
 } from '../utils/envioEnTandas'
 import StatCard from '../components/StatCard'
+import UsoDeRendi from '../components/admin/UsoDeRendi'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
@@ -278,7 +279,7 @@ export default function Admin() {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <StatCard label="Usuarios totales" value={stats.users_total} sub={`${stats.users_admin} admin · ${stats.users_last_7d} nuevos en 7 días`} />
             <StatCard label="Pendientes de aprobación" value={stats.users_pending ?? 0} sub={stats.users_pending > 0 ? 'Requieren acción' : 'Sin solicitudes pendientes'} />
-            <StatCard label="Activos (7 días)" value={stats.active_last_7d} sub="Inicio de sesión en los últimos 7 días" />
+            <StatCard label="Iniciaron sesión (7 días)" value={stats.active_last_7d} sub="Hoy y los 6 días anteriores · sin admins ni cuentas de prueba" />
             <StatCard label="Posiciones" value={stats.positions_total} sub={`${stats.brokers_total} brokers configurados`} />
             <StatCard label="Operaciones" value={stats.operations_total} sub={`${stats.monthly_total} registros mensuales`} />
           </div>
@@ -295,11 +296,19 @@ export default function Admin() {
                 </span>
               </Row>
               <Row label="Snapshots almacenados"><Database size={12} className="inline text-ink-3" /> {stats.snapshots_total}</Row>
-              <Row label="Tasa de actividad">
-                {stats.users_total > 0 ? `${((stats.active_last_7d / stats.users_total) * 100).toFixed(0).replace('.', ',')}%` : '—'}
+              <Row label="Tasa de actividad (7 días)">
+                {/* Sobre quienes PUEDEN entrar (mail confirmado, sin admins ni
+                    cuentas de prueba): antes dividía por "Usuarios totales", que
+                    suma cuentas sin confirmar y bajaba la tasa sin motivo. */}
+                {stats.active_base > 0 ? pctTxt((stats.active_last_7d / stats.active_base) * 100, 0) : '—'}
               </Row>
             </div>
           </div>
+
+          <UsoDeRendi onElegirUsuario={email => {
+            setQuery(email)
+            document.getElementById('tabla-usuarios')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }} />
 
           {/* ── Embudo de activación ─────────────────────────────────────── */}
           {stats.activation && (
@@ -408,7 +417,7 @@ export default function Admin() {
         </div>
       )}
 
-      <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden">
+      <div id="tabla-usuarios" className="bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden scroll-mt-4">
         <div className="px-5 py-3 border-b border-line/50 flex items-center gap-2 flex-wrap">
           <Users size={16} className="text-ink-3" />
           <h2 className="font-semibold text-ink-0">

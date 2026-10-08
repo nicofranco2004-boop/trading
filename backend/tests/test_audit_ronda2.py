@@ -457,7 +457,12 @@ class CoberturaInvariantesTest(_Base):
         self._orig = bf._fetch_monthly_close
         self.addCleanup(lambda: setattr(bf, "_fetch_monthly_close", self._orig))
         bf._HIST_CACHE.clear()
-        bf._fetch_monthly_close = ((lambda pk, si: {"2024-08": 150.0, "2024-09": 160.0})
+        # Un cierre para CADA mes, como Yahoo: la reconstrucción cubre todos los
+        # meses cerrados desde agosto de 2024, no sólo los dos que tienen fila.
+        _precios = {f"{2024 + (n - 1) // 12}-{(n - 1) % 12 + 1:02d}": 160.0
+                    for n in range(8, 49)}
+        _precios["2024-08"] = 150.0
+        bf._fetch_monthly_close = ((lambda pk, si: dict(_precios))
                                    if con_precio else (lambda pk, si: {}))
         bf.backfill_user(self.conn, self.uid, _d.date(2026, 6, 26))
         self.conn.commit()

@@ -182,16 +182,19 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     portfolio_today = _resultado_de_la_cartera(conn, user_id, kwargs)
 
     # ── 3. Personal cards count (lo que cambió hoy para el user) ─────────────
+    # Las cotizaciones de las tenencias, con el símbolo con que se valúa cada
+    # una: las MISMAS que «Lo que te afecta» (/api/home/personal). Sirven para
+    # contar sus tarjetas y para el pulso de las 3 más grandes (paso 5).
+    quotes: Dict[str, Dict[str, Any]] = {}
+    try:
+        import main as _m
+        quotes = _m._cotizaciones_de_tenencias(conn, user_id)
+    except Exception:
+        quotes = {}
+
     personal_cards_count = 0
     try:
         import main as _m
-        rows = conn.execute(
-            """SELECT DISTINCT asset FROM positions
-                WHERE user_id = ? AND is_cash = 0 AND quantity > 0""",
-            (user_id,),
-        ).fetchall()
-        symbols = [r["asset"] for r in rows if r["asset"]]
-        quotes = _m._fetch_batch_quotes(symbols) if symbols else {}
         try:
             events = _m._get_portfolio_events_cached(user_id)
         except Exception:
@@ -256,35 +259,21 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         top_packet = build_top(conn, user_id)
         top_list = top_packet.get("top_holdings") or []
 
-        # Map ticker → change_pct del día desde las quotes que ya fetcheamos
-        ticker_change: Dict[str, float] = {}
-        try:
-            import main as _m
-            symbols_for_change = set()
-            for h in top_list[:3]:
-                t = h.get("ticker")
-                if not t:
-                    continue
-                # broker AR → símbolo termina en .BA
-                broker_n = (h.get("broker") or "").lower()
-                if broker_n in {"cocos", "cocos capital", "iol", "bull", "balanz", "naranja", "pppi", "invertironline"}:
-                    symbols_for_change.add(f"{t}.BA")
-                else:
-                    symbols_for_change.add(t)
-            if symbols_for_change:
-                quotes = _m._fetch_batch_quotes(list(symbols_for_change))
-                for sym, q in (quotes or {}).items():
-                    # `change_pct_today` dice "today" en el nombre, así que sólo
-                    # se llena si el quote es de la rueda de HOY. Antes de que
-                    # abra el mercado el proveedor sirve el cierre a cierre de
-                    # AYER y la IA lo repetía como movimiento del día — el mismo
-                    # agujero que mandó cuatro mails de alerta con el
-                    # movimiento del lunes fechados como "hoy" (15/09/2026).
-                    if q and q.get("change_pct") is not None and q.get("is_today"):
-                        base = sym.replace(".BA", "")
-                        ticker_change[base] = round(float(q["change_pct"]), 2)
-        except Exception:
-            ticker_change = {}
+        # ticker → change_pct del día, de las cotizaciones del paso 3. Antes se
+        # pedían aparte, decidiendo el `.BA` por una lista de nombres de broker
+        # escrita a mano ("cocos", "iol"…): un broker en pesos con otro nombre
+        # pedía el ticker de EEUU.
+        #
+        # `change_pct_today` dice "today" en el nombre, así que sólo se llena si
+        # el quote es de la rueda de HOY. Antes de que abra el mercado el
+        # proveedor sirve el cierre a cierre de AYER y la IA lo repetía como
+        # movimiento del día — el mismo agujero que mandó cuatro mails de alerta
+        # con el movimiento del lunes fechados como "hoy" (15/09/2026).
+        ticker_change: Dict[str, float] = {
+            a: round(float(q["change_pct"]), 2)
+            for a, q in quotes.items()
+            if q and q.get("change_pct") is not None and q.get("is_today")
+        }
 
         for h in top_list[:3]:
             ticker = h.get("ticker")

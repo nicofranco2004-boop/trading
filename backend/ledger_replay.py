@@ -215,6 +215,7 @@ def valor_en(conn, uid: int, fecha: str) -> dict:
     una caida.
     """
     import price_history as ph
+    from importing.schema import TX_VIVAS
     from snapshots_job import (compute_broker_value_usd, position_price_key,
                                _broker_name_sets)
 
@@ -287,9 +288,11 @@ def valor_en(conn, uid: int, fecha: str) -> dict:
                                  "asset_type": tipos.get(asset)}, ars_names, ar_usd_names)
         if precios.get(sm) is None:
             # Sin precio no se sabe cuanto pesa: se usa el costo como piso.
+            # Sólo compras vivas (`TX_VIVAS`): sumaba también las de imports
+            # deshechos y las que la persona borró, y ese costo inflado pesaba
+            # en la cobertura de un activo que ya no tiene.
             c = conn.execute(
-                "SELECT SUM(gross_amount) g FROM import_normalized_tx n "
-                "JOIN import_batches b ON b.id=n.batch_id WHERE b.user_id=? "
+                f"SELECT SUM(n.gross_amount) g FROM {TX_VIVAS} WHERE b.user_id=? "
                 "AND UPPER(n.asset_symbol)=? AND n.operation_type='BUY'",
                 (uid, asset)).fetchone()
             costo = float((c["g"] if c else 0) or 0)

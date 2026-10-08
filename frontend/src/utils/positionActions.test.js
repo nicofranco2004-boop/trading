@@ -45,9 +45,7 @@ describe('buildPositionActions — qué ofrece cada tipo de fila', () => {
   it('el efectivo en pesos ofrece Comprar USD', () => {
     const a = buildPositionActions({ is_cash: true, broker: 'Cocos' }, TODOS,
       { broker: { currency: 'ARS' } })
-    expect(etiquetas(a)).toEqual([
-      'Depositar', 'Retirar', 'Comprar USD', 'Editar posición', 'Eliminar',
-    ])
+    expect(etiquetas(a)).toEqual(['Depositar', 'Retirar', 'Comprar USD'])
   })
 
   it('el efectivo en dólares de un sub-broker ofrece venderlos a pesos', () => {
@@ -59,7 +57,19 @@ describe('buildPositionActions — qué ofrece cada tipo de fila', () => {
   it('el efectivo de una cuenta en dólares NO ofrece conversiones', () => {
     const a = buildPositionActions({ is_cash: true, broker: 'Schwab' }, TODOS,
       { broker: { currency: 'USDT', parent_broker_id: null } })
-    expect(etiquetas(a)).toEqual(['Depositar', 'Retirar', 'Editar posición', 'Eliminar'])
+    expect(etiquetas(a)).toEqual(['Depositar', 'Retirar'])
+  })
+
+  it('el efectivo NO se edita ni se borra como una posición: se mueve con Depositar/Retirar', () => {
+    // Editar escribía el saldo sin anotar el aporte (aparecía como ganancia) y
+    // borrar nunca funcionó. El servidor también los rechaza.
+    for (const broker of [{ currency: 'ARS' }, { currency: 'USD' },
+                          { currency: 'USDT', parent_broker_id: 7 }]) {
+      const ids = buildPositionActions({ is_cash: true, broker: 'X' }, TODOS, { broker })
+        .filter(a => !a.divider).map(a => a.id)
+      expect(ids).not.toContain('edit')
+      expect(ids).not.toContain('delete')
+    }
   })
 
   it('la fila agregada edita el GRUPO y despliega los lotes', () => {

@@ -50,6 +50,7 @@ import AnimatedNumber from '../components/AnimatedNumber'
 import PreciosEnVivo from '../components/PreciosEnVivo'
 import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import PositionsMobile from './PositionsMobile'
@@ -346,9 +347,11 @@ function PositionsDesktop() {
   // SOLO cupones y sin cross-currency: el monto teórico está en la moneda del
   // bono; si el broker cobra en otra (bono USD en broker ARS) o hay que
   // decrementar VN (amortizaciones), el flujo cae al modal ("Revisar").
-  const [confirmingKey, setConfirmingKey] = useState(null)
-  async function confirmPendingDirect(item) {
-    setConfirmingKey(item.key)
+  // Freno por renglón: el cupón confirmado es un ALTA, y el servidor no
+  // distingue un doble click de dos cobros. Antes lo frenaba un estado, que
+  // apaga el botón recién en el dibujo siguiente; ver hooks/useEnVuelo.
+  const confirmando = useEnVuelo()
+  const confirmPendingDirect = (item) => confirmando.correr(async () => {
     try {
       await api.post('/bonds/cashflow', {
         broker: item.broker,
@@ -364,10 +367,8 @@ function PositionsDesktop() {
       await loadAll()
     } catch (e) {
       toast.push(`No se pudo registrar: ${e.message}`, { type: 'error' })
-    } finally {
-      setConfirmingKey(null)
     }
-  }
+  }, item.key)
 
   // Click "Revisar y confirmar" / "Ajustar" en un item del inbox → abre
   // BondCashflowModal con la posición Y el pago concreto que se está confirmando.
@@ -612,6 +613,7 @@ function PositionsDesktop() {
     // preseleccionado (menú de un broker puntual), el flow saltea el paso de
     // broker; si no, lo elige el user en el paso 1. Por eso NO defaulteamos a
     // brokers[0] cuando no hay broker — dejamos vacío para que muestre el paso.
+    track('position_add_started', { source: 'desktop' })
     setForm({ ...EMPTY_POS, broker: broker || '', entry_date: today() })
     setModal('add-flow')
   }
@@ -623,6 +625,7 @@ function PositionsDesktop() {
   // flow normal (no tiene sentido "comprar más" de una posición de efectivo).
   function openBuyForPosition(p) {
     if (!p || p.is_cash) return openAdd(p?.broker)
+    track('position_add_started', { source: 'desktop_fila' })
     setForm({
       ...EMPTY_POS,
       broker: p.broker,
@@ -821,7 +824,10 @@ function PositionsDesktop() {
   // devuelven token de deshacer. Puede bloquear con un mensaje claro (bono, compra ya
   // vendida en parte, lote de foto de tenencia) → hay que mostrarlo, antes el fallo
   // era silencioso porque no había try/catch.
-  async function del(id) {
+  // Freno: mientras el borrado viaja, volver a abrir el menú y borrar otra vez
+  // mandaba un segundo DELETE que terminaba en error después del éxito.
+  const borrando = useEnVuelo()
+  const del = (id) => borrando.correr(async () => {
     if (!confirm(
       '¿Eliminar esta posición?\n\n' +
       'Si vino de un import, se recalcula todo: efectivo, capital aportado, ' +
@@ -829,6 +835,7 @@ function PositionsDesktop() {
     )) return
     try {
       const res = await api.delete(`/positions/${id}`)
+      track('position_deleted', { source: 'desktop' })
       await loadAll()
       const token = res?.undo_token
       if (token) {
@@ -850,10 +857,11 @@ function PositionsDesktop() {
     } catch (ex) {
       toast.push(ex?.message || 'No se pudo borrar la posición.', { type: 'error', duration: 8000 })
     }
-  }
+  }, id)
 
   function openSell(p) {
     if (p.is_cash) return
+    track('position_sell_started', { source: 'desktop' })
     // Una fila que fusiona las dos patas de la cuenta no tiene un broker al que
     // mandar la venta: mandarla igual la metería en el ledger FIFO equivocado.
     // En vez de cortar, se abre el MISMO selector que "Registrar venta" del
@@ -1066,6 +1074,7 @@ function PositionsDesktop() {
         // cuando no hay cotización guardada de ese día.
         tc_blue: tcValuacion,
       })
+      track('cash_flow_recorded', { source: 'desktop', broker: cashFlowForm.broker, direction: cashFlowForm.direction })
       setModal(null)
       loadAll()
     } catch (e) {
@@ -1931,7 +1940,7 @@ function PositionsDesktop() {
         brokers={brokers}
         onConfirm={confirmPendingCashflow}
         onConfirmDirect={confirmPendingDirect}
-        confirmingKey={confirmingKey}
+        confirmando={confirmando.activo}
         onSkip={skipPendingCashflow}
       />
 
@@ -3233,6 +3242,9 @@ export function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm })
   //   1. Debita la moneda de origen
   //   2. Acredita la moneda de destino (auto-creando el sub-broker USD si es la primera conversión)
   //   3. Registra una operación tipo CONVERSION (auditoría)
+  // El freno del doble click vive en el modal: escritorio y celular lo montan
+  // los dos, y ninguno tiene que acordarse de pasarlo (ver hooks/useEnVuelo).
+  const enVuelo = useEnVuelo()
   const isArsToUsd = form.direction === 'ars_to_usd'
   const arsNum = parseNum(form.ars_amount) || 0
   const usdNum = parseNum(form.usd_amount) || 0
@@ -3423,11 +3435,11 @@ export function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm })
             Cancelar
           </button>
           <button
-            onClick={onConfirm}
-            disabled={!arsNum || !usdNum || !tcNum}
+            onClick={() => enVuelo.correr(onConfirm)}
+            disabled={!arsNum || !usdNum || !tcNum || enVuelo.activo()}
             className="px-4 py-2 text-sm rounded-md font-semibold text-white bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition"
           >
-            Confirmar conversión
+            {enVuelo.activo() ? 'Guardando…' : 'Confirmar conversión'}
           </button>
         </div>
       </div>
@@ -3482,7 +3494,8 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
   const [avg, setAvg] = useState('')
   const [tcMode, setTcMode] = useState('')          // '' | 'historical' | 'fixed'
   const [tcValue, setTcValue] = useState('')
-  const [saving, setSaving] = useState(false)
+  const enVuelo = useEnVuelo()
+  const saving = enVuelo.activo()
 
   const avgNum = parseNumOrNull(avg)
   const k = (avgNum && avgNow > 0) ? avgNum / avgNow : null
@@ -3611,17 +3624,12 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
           <button
             type="button"
             disabled={nothing || badAvg || badTc || saving}
-            onClick={async () => {
-              setSaving(true)
-              try {
-                await onSave({
-                  new_asset: renamed ? asset : undefined,
-                  avg_price: avgNum ?? undefined,
-                  tc_mode: tcMode || undefined,
-                  tc_value: tcMode === 'fixed' ? parseNum(tcValue) : undefined,
-                })
-              } finally { setSaving(false) }
-            }}
+            onClick={() => enVuelo.correr(() => onSave({
+              new_asset: renamed ? asset : undefined,
+              avg_price: avgNum ?? undefined,
+              tc_mode: tcMode || undefined,
+              tc_value: tcMode === 'fixed' ? parseNum(tcValue) : undefined,
+            }))}
             className="px-4 py-2 text-sm rounded-md font-semibold text-white bg-rendi-accent hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {saving ? 'Guardando…' : `Aplicar a ${lots.length} lotes`}
@@ -3677,6 +3685,10 @@ function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openS
 }
 
 export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClose, onConfirm }) {
+  // Freno del doble click: una venta repetida es, para el servidor, una
+  // segunda venta legítima si quedan nominales. Vive en el modal para que
+  // escritorio y celular lo tengan sin pasarlo (ver hooks/useEnVuelo).
+  const enVuelo = useEnVuelo()
   // Posiciones FIFO del par (broker, asset)
   const lots = positions
     .filter(p => p.broker === form.broker && p.asset === form.asset && !p.is_cash && (p.quantity || 0) > 0)
@@ -3898,11 +3910,11 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
             Cancelar
           </button>
           <button
-            onClick={onConfirm}
-            disabled={exceeds || !qtyNum || !priceNum}
+            onClick={() => enVuelo.correr(onConfirm)}
+            disabled={exceeds || !qtyNum || !priceNum || enVuelo.activo()}
             className="px-4 py-2 text-sm bg-rendi-accent text-white rounded-md font-semibold hover:bg-rendi-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Confirmar venta
+            {enVuelo.activo() ? 'Guardando…' : 'Confirmar venta'}
           </button>
         </div>
       </div>
@@ -3970,6 +3982,9 @@ function Field({ label, value, onChange, hint, type = 'text', autoFocus = false,
 //    directo en el campo principal.
 //  • Comisiones: campo opcional. Real cost = invertido + comisiones.
 export function PositionFormModal({ mode, form, setForm, brokers, selectedBrokerCurrency, tcValuacion, onClose, onSave, onChangeAsset }) {
+  // Freno del doble click. En el alta es lo único que lo frena: dos POST de la
+  // misma compra son, para el servidor, dos compras (ver hooks/useEnVuelo).
+  const enVuelo = useEnVuelo()
   const isARS = selectedBrokerCurrency === 'ARS'
   // UX mejorada (user feedback): el form pedía 3 valores (precio + cantidad +
   // invertido) pero matemáticamente solo necesita 2. Trackeamos el orden de
@@ -4324,7 +4339,13 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
 
         <div className="flex justify-end gap-2 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm text-ink-3 hover:text-ink-0">Cancelar</button>
-          <button onClick={onSave} className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition">Guardar</button>
+          <button
+            onClick={() => enVuelo.correr(onSave)}
+            disabled={enVuelo.activo()}
+            className="px-4 py-2 text-sm bg-rendi-accent hover:bg-rendi-accent/90 text-white rounded-md font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {enVuelo.activo() ? 'Guardando…' : 'Guardar'}
+          </button>
         </div>
       </div>
     </Modal>

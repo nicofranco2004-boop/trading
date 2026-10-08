@@ -6,12 +6,20 @@ import { track } from '../utils/track'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
 import { trackMetaEvent } from '../utils/metaPixel'
+import { quienEs } from '../utils/quienEs'
+import { activarUso, mandar as mandarUso } from '../utils/uso'
 
 const AuthContext = createContext(null)
 
 // User fake para modo demo. No tiene token real — todas las llamadas API
 // son interceptadas por handleDemoRequest en api.js.
-const DEMO_USER = {
+//
+// ⚠️ Tiene que tener los MISMOS campos que el usuario de verdad (mapMeToUser),
+// ni uno más salvo `demo` — lo vigila usuarioDemoComoElReal.test.js. Lo que se
+// prueba en el demo tiene que fallar en el demo si en las cuentas de verdad
+// falla: este objeto tenía `id: 0` y el real no tiene `id`, y el buscador ⌘K
+// andaba acá y en ninguna cuenta de verdad.
+export const DEMO_USER = {
   name: 'Inversor Demo',
   email: 'demo@rendi.finance',
   is_admin: false,
@@ -23,7 +31,6 @@ const DEMO_USER = {
   subscription_status: 'authorized',
   subscription_period: 'monthly',
   demo: true,
-  id: 0,
   created_at: '2024-04-01T00:00:00Z',
 }
 
@@ -38,6 +45,10 @@ export function mapMeToUser(me) {
     email: me.email,
     is_admin: !!me.is_admin,
     tier: me.tier || 'free',
+    // Cuándo se creó la cuenta: "Miembro desde" en Configuración. No se
+    // copiaba y en toda cuenta de verdad ahí decía "—" (en el demo, que lo
+    // tiene escrito a mano, se veía bien).
+    created_at: me.created_at || null,
     // Estado de la suscripción Rebill — usado por Config/Planes para
     // distinguir authorized (mostrar "Cancelar") de cancelled
     // (mostrar "Reactivar" + permitir re-suscribirse).
@@ -153,12 +164,11 @@ export function AuthProvider({ children }) {
   // vuelve a poner la misma sesión— y en el medio parece que no hay nadie.
   useEffect(() => {
     if (isDemoMode()) return
-    const quien = (u) => (u?.email || '').toLowerCase()
     let espera = null
     const mirar = () => {
       let ahora = null
       try { ahora = JSON.parse(localStorage.getItem('rendi_user')) } catch { /* basura → nadie */ }
-      if (quien(ahora) !== quien(user)) window.location.reload()
+      if (quienEs(ahora) !== quienEs(user)) window.location.reload()
     }
     const alCambiarEnOtraPestana = (e) => {
       if (e.key !== null && e.key !== 'rendi_user') return
@@ -196,6 +206,14 @@ export function AuthProvider({ children }) {
     window.addEventListener(EVENTO_PLAN_REQUERIDO, alPausar)
     return () => window.removeEventListener(EVENTO_PLAN_REQUERIDO, alPausar)
   }, [user])
+
+  // Panel de uso de /admin: se mide sólo con una sesión real. Cambio de
+  // persona = se corta lo pendiente de la anterior y arranca de nuevo.
+  useEffect(() => {
+    const quien = !user || isDemoMode() ? null : quienEs(user)
+    activarUso(false)
+    if (quien) activarUso(true)
+  }, [user ? quienEs(user) : null])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep-alive: pinga /api/health cada 4 min para que Railway no duerma el servicio.
   // Se activa solo cuando hay un usuario logueado (no en demo ni sin sesión).
@@ -292,6 +310,9 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
+    // Lo que juntó el panel de uso sale ANTES de cortar la sesión: después ya
+    // no se le puede atribuir a nadie y se descarta.
+    mandarUso({ alCerrar: true })
     trackEvent('logout')
     setUserId(null)
     // Plan Asesor: el loop rendi_* de abajo borra la KEY rendi_client_ctx,

@@ -16,6 +16,8 @@ import {
   PlusCircle, SkipForward,
 } from 'lucide-react'
 import { api } from '../../utils/api'
+import { track } from '../../utils/track'
+import { useEnVuelo } from '../../hooks/useEnVuelo'
 import { parseNum } from '../../utils/format'
 
 // Brokers comunes en AR + moneda default sugerida (mismo set que el viejo
@@ -156,7 +158,10 @@ function ManualForm({ onNext, onBack }) {
   const [asset, setAsset] = useState('')
   const [quantity, setQuantity] = useState('')
   const [buyPrice, setBuyPrice] = useState('')
-  const [saving, setSaving] = useState(false)
+  // Freno del doble click (ver hooks/useEnVuelo): el estado solo apagaba el
+  // botón en el dibujo siguiente; dos envíos del mismo turno pasaban los dos.
+  const enVuelo = useEnVuelo()
+  const saving = enVuelo.activo()
   const [error, setError] = useState('')
 
   function pickBroker(b) {
@@ -165,8 +170,11 @@ function ManualForm({ onNext, onBack }) {
     setError('')
   }
 
-  async function handleSubmit(e) {
+  function handleSubmit(e) {
     e?.preventDefault?.()
+    return enVuelo.correr(guardar)
+  }
+  async function guardar() {
     const cleanBroker = brokerName.trim()
     const cleanAsset = asset.trim().toUpperCase()
     const qty = parseNum(quantity)
@@ -187,7 +195,6 @@ function ManualForm({ onNext, onBack }) {
       setError('Precio de compra debe ser un número positivo.')
       return
     }
-    setSaving(true)
     setError('')
     // 1) Crear el broker (antes lo hacía BrokerStep). Si ya existe (409) seguimos.
     //    El backend NO auto-crea el broker desde POST /positions, así que sin
@@ -200,12 +207,10 @@ function ManualForm({ onNext, onBack }) {
       const dup = ex?.status === 409 || ex?.status === 400 || /existe|duplicate|UNIQUE/i.test(ex?.message || '')
       if (ex?.status === 403) {
         setError('Tu plan no permite más brokers. Importá por CSV o actualizá el plan.')
-        setSaving(false)
         return
       }
       if (!dup) {
         setError(ex?.message || 'No pudimos guardar el broker. Probá de nuevo.')
-        setSaving(false)
         return
       }
       // 409 → el broker ya existía, seguimos a crear la posición.
@@ -219,11 +224,10 @@ function ManualForm({ onNext, onBack }) {
         buy_price: price,
         invested: qty * price,
       })
+      track('position_add_completed', { source: 'onboarding', asset: cleanAsset, broker: cleanBroker })
       onNext({ position: { asset: cleanAsset, quantity: qty, buy_price: price } })
     } catch (ex) {
       setError(ex?.message || 'No pudimos guardar la posición. Probá de nuevo.')
-    } finally {
-      setSaving(false)
     }
   }
 

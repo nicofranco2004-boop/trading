@@ -14,6 +14,7 @@
 
 import { CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, ETFS, CEDEARS_DE_ETF, cedearEspecieBase } from './tickers'
 import { classifyAsset } from './assetClass'
+import { quienEs } from './quienEs'
 
 const PRIORIDAD = { activo: 0, pantalla: 1, accion: 2, empresa: 3 }
 
@@ -48,15 +49,18 @@ export function puntaje(opcion, consulta) {
 
 export const MAXIMO_RESULTADOS = 8
 
-// Bajo qué llave se guardan tus activos entre una apertura y otra: por USUARIO
+// Bajo qué llave se guardan tus activos entre una apertura y otra: por PERSONA
 // (cerrar sesión no recarga la página: en una compu compartida el siguiente no
 // puede ver los del anterior) y por cuenta (un asesor adentro de un cliente ve
-// los del cliente). Sin usuario no se guarda nada. OJO con el 0: el usuario del
-// modo demo es el id 0, y `!user.id` lo trataba como "sin usuario" (el
-// buscador no pedía sus activos — lo atrapó la prueba en el navegador).
+// los del cliente). Sin nadie logueado no se guarda nada — y tampoco se piden.
+// La persona es la de la regla única (utils/quienEs). Se armaba con `user.id`,
+// que el usuario de la app no trae: en toda cuenta de verdad la llave quedaba
+// vacía y el buscador NUNCA pedía tus activos ("nvda" + Enter iba a la
+// empresa). Andaba sólo en el demo, cuyo usuario tenía `id: 0` escrito a mano.
 export function claveDeActivos(user, clientCtx) {
-  if (user?.id == null) return null
-  return `${user.id}:${clientCtx?.id ? `cliente:${clientCtx.id}` : 'propia'}`
+  const quien = quienEs(user)
+  if (quien == null) return null
+  return `${quien}:${clientCtx?.id ? `cliente:${clientCtx.id}` : 'propia'}`
 }
 
 // "Cargar una operación" abre el formulario en Movimientos (?nueva=1). Si ya

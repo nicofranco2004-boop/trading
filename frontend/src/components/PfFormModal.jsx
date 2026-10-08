@@ -3,10 +3,12 @@
 //   2. Datos del PF (capital, tasa prefilleada, plazo…) + preview en vivo.
 // La tasa se prefilla con la TNA del banco elegido (cada vez que lo cambiás).
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { track } from '../utils/track'
 import { X, ArrowLeft, Search, Landmark, Pencil } from 'lucide-react'
 import { api } from '../utils/api'
 import { computePf } from '../utils/valuation'
 import { useToast } from './Toast'
+import { useEnVuelo } from '../hooks/useEnVuelo'
 import DateField from './DateField'
 import { hoyISO } from '../utils/fecha'
 import { parseNum, numToInput, pct } from '../utils/format'
@@ -138,7 +140,10 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
   const [step, setStep] = useState('bank')   // 'bank' | 'form'
   const [manual, setManual] = useState(false)  // banco fuera de la lista / carga a mano
   const [plazoMode, setPlazoMode] = useState('dias')  // 'dias' | 'fecha'
-  const [saving, setSaving] = useState(false)
+  // Freno del doble click (ver hooks/useEnVuelo): el estado solo apagaba el
+  // botón en el dibujo siguiente; dos clicks del mismo turno pasaban los dos.
+  const enVuelo = useEnVuelo()
+  const saving = enVuelo.activo()
   const [form, setForm] = useState({
     banco: '', logo: null, capital: '', moneda: 'ARS',
     tasa: '', rate_type: 'TNA', fecha_inicio: today(), plazo_dias: 30, renovacion_auto: false,
@@ -188,13 +193,13 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
   const money = (n) => sign + Math.round(n).toLocaleString('es-AR')
   const vencimiento = addDays(form.fecha_inicio, form.plazo_dias)
 
-  async function save() {
+  const save = () => enVuelo.correr(guardar)
+  async function guardar() {
     const capital = parseNum(form.capital), tasa = parseNum(form.tasa) / 100, plazo = parseNum(form.plazo_dias)
     if (!form.banco.trim()) { setStep('bank'); return toast.push('Elegí el banco.', { type: 'warn' }) }
     if (!(capital > 0)) return toast.push('Poné el capital.', { type: 'warn' })
     if (!(tasa > 0)) return toast.push('Poné la tasa anual.', { type: 'warn' })
     if (!(plazo > 0)) return toast.push('Poné el plazo en días.', { type: 'warn' })
-    setSaving(true)
     try {
       await api.post('/plazos-fijos', {
         banco: form.banco.trim(), capital, moneda: form.moneda, tasa,
@@ -204,13 +209,12 @@ export default function PfFormModal({ onClose, onSaved, brokers = [] }) {
         pago_frecuencia_meses: form.modalidad === 'periodico' ? +form.pago_frecuencia_meses : null,
         source_broker: form.source_broker || null,
       })
+      track('plazo_fijo_agregado')
       toast.push('Plazo fijo agregado.', { type: 'success' })
       onSaved && onSaved()
       onClose()
     } catch (e) {
       toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
-    } finally {
-      setSaving(false)
     }
   }
 

@@ -90,6 +90,22 @@ export function useArrastrable(clave) {
   // en cada movimiento.
   const posRef = useRef(pos)
   posRef.current = pos
+  // 🔴 DÓNDE LA DEJÓ EL USUARIO no es lo mismo que DÓNDE SE DIBUJA.
+  //
+  // Reportado por Nico (2026-10-07): "luego de cerrar la burbuja vuelve a una
+  // posición; debería dejarla donde la arrojó el usuario". MEDIDO a 375px:
+  // soltada en (166, 396), abierta, cerrada → aparecía en (20, 560).
+  //
+  // El mecanismo: al abrirse, la tarjeta es mucho más grande que la burbuja y
+  // hay que correrla para que entre en la pantalla (punto 3 de arriba). Esa
+  // corrección se guardaba ENCIMA de la posición elegida, así que al cerrar la
+  // burbuja volvía al lugar corregido y no al suyo. Lo mismo pasaba en la compu
+  // dejándola contra el borde izquierdo, y al rotar el teléfono ida y vuelta.
+  //
+  // Ahora son dos cosas: `pos` es dónde se DIBUJA (ya recortada contra los
+  // bordes), y `elegidaRef` es dónde la dejó el usuario. Sólo un arrastre
+  // cambia la elegida; el recorte siempre parte de ella y nunca la pisa.
+  const elegidaRef = useRef(pos)
   const arrastreRef = useRef(null)
   const arrastroRef = useRef(false)
 
@@ -113,7 +129,7 @@ export function useArrastrable(clave) {
 
   const acomodar = useCallback(() => {
     setPos((p) => {
-      const nueva = recortar(p.dx, p.dy)
+      const nueva = recortar(elegidaRef.current.dx, elegidaRef.current.dy)
       // Devolver el MISMO objeto cuando no cambió nada es lo que evita que
       // esto se llame a sí mismo para siempre: React no vuelve a dibujar.
       return (nueva.dx === p.dx && nueva.dy === p.dy) ? p : nueva
@@ -179,10 +195,60 @@ export function useArrastrable(clave) {
     }
   }, [acomodar])
 
+  // 🔴 EL PUNTERO SE AGARRA RECIÉN CUANDO YA ES UN ARRASTRE, NO AL APRETAR.
+  //
+  // MEDIDO 2026-10-07 en Chrome con un mouse de verdad: hacer clic en la
+  // burbuja NO abría la isla. Con el dedo sí, por eso pasó desapercibido.
+  //
+  // El mecanismo: al apretar se "agarraba" el puntero (setPointerCapture) con
+  // el contenedor. Agarrarlo hace que todo lo que siga —el soltar y el clic—
+  // vaya al contenedor y no al botón que está debajo del mouse. Registro del
+  // clic: pointerdown → BOTÓN, gotpointercapture → contenedor, pointerup →
+  // contenedor, click → contenedor. El `onClick` del botón de abrir no corría
+  // nunca; lo mismo la X y el parlante de la isla abierta. Con el dedo el
+  // navegador ya agarra el puntero con el elemento TOCADO (el botón), por eso
+  // ahí andaba.
+  //
+  // Ahora: al apretar sólo se anota dónde, y el movimiento se escucha desde la
+  // VENTANA (le llega aunque el puntero salga de la isla antes de pasar el
+  // umbral). Mientras sea un toque nadie agarra nada y el clic cae en el botón.
+  // Al pasar el umbral se agarra, para no perder el arrastre si el puntero se
+  // va de la ventana.
+  const manijaRef = useRef(null)
+  const soltarEscuchas = useRef(() => {})
+
+  const alMover = useCallback((e) => {
+    const a = arrastreRef.current
+    if (!a || e.pointerId !== a.id) return
+    const mx = e.clientX - a.x
+    const my = e.clientY - a.y
+    // Distancia de VERDAD, no la suma de los dos lados.
+    if (!arrastroRef.current && Math.hypot(mx, my) < a.umbral) return   // todavía es un toque
+    if (!arrastroRef.current) {
+      arrastroRef.current = true
+      try { manijaRef.current?.setPointerCapture(e.pointerId) } catch { /* el navegador no lo soporta */ }
+    }
+    setPos(recortar(a.dx + mx, a.dy + my))
+  }, [recortar])
+
+  const alSoltar = useCallback((e) => {
+    const a = arrastreRef.current
+    if (!a || e.pointerId !== a.id) return
+    arrastreRef.current = null
+    soltarEscuchas.current()
+    try { manijaRef.current?.releasePointerCapture(e.pointerId) } catch { /* ídem */ }
+    if (arrastroRef.current) {
+      elegidaRef.current = posRef.current
+      guardar(posRef.current)
+    }
+  }, [guardar])
+
   const alApretar = useCallback((e) => {
     // Sólo el botón principal del mouse; el derecho abre el menú del sistema.
     if (e.button != null && e.button !== 0) return
+    soltarEscuchas.current()            // un gesto anterior que no terminó bien
     arrastreRef.current = {
+      id: e.pointerId,
       x: e.clientX, y: e.clientY, dx: posRef.current.dx, dy: posRef.current.dy,
       // `mouse` es preciso; `touch` y `pen` no. Si el navegador no lo dice,
       // se asume dedo: equivocarse hacia el lado holgado sólo hace que el
@@ -190,26 +256,20 @@ export function useArrastrable(clave) {
       umbral: e.pointerType === 'mouse' ? UMBRAL_MOUSE : UMBRAL_DEDO,
     }
     arrastroRef.current = false
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* el navegador no lo soporta */ }
-  }, [])
+    manijaRef.current = e.currentTarget
+    window.addEventListener('pointermove', alMover)
+    window.addEventListener('pointerup', alSoltar)
+    window.addEventListener('pointercancel', alSoltar)
+    soltarEscuchas.current = () => {
+      window.removeEventListener('pointermove', alMover)
+      window.removeEventListener('pointerup', alSoltar)
+      window.removeEventListener('pointercancel', alSoltar)
+      soltarEscuchas.current = () => {}
+    }
+  }, [alMover, alSoltar])
 
-  const alMover = useCallback((e) => {
-    const a = arrastreRef.current
-    if (!a) return
-    const mx = e.clientX - a.x
-    const my = e.clientY - a.y
-    // Distancia de VERDAD, no la suma de los dos lados.
-    if (!arrastroRef.current && Math.hypot(mx, my) < a.umbral) return   // todavía es un toque
-    arrastroRef.current = true
-    setPos(recortar(a.dx + mx, a.dy + my))
-  }, [recortar])
-
-  const alSoltar = useCallback((e) => {
-    if (!arrastreRef.current) return
-    arrastreRef.current = null
-    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ídem */ }
-    if (arrastroRef.current) guardar(posRef.current)
-  }, [guardar])
+  // Si la isla se desmonta en medio de un gesto, no dejar escuchas colgadas.
+  useLayoutEffect(() => () => soltarEscuchas.current(), [])
 
   // El clic que viene después de un arrastre no cuenta: si no, soltar la isla
   // encima de su propio botón la abría o la cerraba.
@@ -226,9 +286,6 @@ export function useArrastrable(clave) {
     estilo: (pos.dx || pos.dy) ? { transform: `translate3d(${pos.dx}px, ${pos.dy}px, 0)` } : undefined,
     manija: {
       onPointerDown: alApretar,
-      onPointerMove: alMover,
-      onPointerUp: alSoltar,
-      onPointerCancel: alSoltar,
       onClickCapture: alHacerClic,
       // Sin esto el navegador se queda con el gesto para scrollear la página y
       // el arrastre no llega nunca en el celular.

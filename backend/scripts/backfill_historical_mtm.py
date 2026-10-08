@@ -66,6 +66,24 @@ from importing.recompute_backfill import _clone_db                 # noqa: E402
 
 # ─── Fetch de cierre mensual histórico por símbolo de precio ──────────────────
 _HIST_CACHE: dict = {}
+# Mes (AAAA-MM) en que se pidió cada serie. Una serie pedida en septiembre no
+# tiene el cierre de septiembre: si el proceso sigue vivo en octubre, ese mes —ya
+# cerrado— caía al costo en cada reconstrucción. Se vuelve a pedir al cambiar el
+# mes. (Una entrada sin fecha —las que arman las pruebas a mano— vale como de hoy.)
+_HIST_CACHE_MES: dict = {}
+
+# Activos cuya consulta a Yahoo FALLÓ (excepción: red, límite de pedidos, timeout)
+# en la corrida en curso de este hilo. No es lo mismo que "Yahoo no tiene datos"
+# (un ticker que no existe devuelve vacío, sin excepción — medido con yfinance
+# 1.2.0): eso es definitivo y se recuerda; una falla no.
+import threading as _threading           # noqa: E402
+_CORRIDA = _threading.local()
+
+
+def _fallas_yahoo() -> list:
+    if not hasattr(_CORRIDA, "fallas"):
+        _CORRIDA.fallas = []
+    return _CORRIDA.fallas
 
 def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     """{YYYY-MM: close} para un price_key ('AAPL', 'GGAL.BA', 'BTC'), desde start a
@@ -76,8 +94,14 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
     para AAPL.BA, KO.BA, MELI.BA, GGAL.BA e YPFD.BA. El que cotiza en dólares se
     valúa por su subyacente — ver `_precio_por_subyacente`."""
     ck = (price_key, start_iso)
-    if ck in _HIST_CACHE:
+    _mes = _date.today().strftime("%Y-%m")
+    if ck in _HIST_CACHE and _HIST_CACHE_MES.get(ck, _mes) == _mes:
         return _HIST_CACHE[ck]
+    if price_key in _fallas_yahoo():
+        # Ya falló en ESTA corrida: no se le vuelve a preguntar en cada mes. Sin
+        # esto, la cuenta más grande de la copia de prod hacía 1.537 consultas por
+        # corrida con Yahoo caído (159 activos), justo cuando Yahoo está limitando.
+        return {}
     base = price_key[:-3] if price_key.endswith(".BA") else price_key
     out: dict = {}
     # ⚠️ EL CEDEAR COTIZADO EN USD YA NO SE SALTEA.
@@ -106,8 +130,14 @@ def _fetch_monthly_close(price_key: str, start_iso: str) -> dict:
                     if c is not None and not (isinstance(c, float) and math.isnan(c)):
                         out[idx.strftime("%Y-%m")] = float(c)
         except Exception:
-            out = {}
+            # ⚠️ UNA FALLA NO SE GUARDA. Antes se guardaba `{}` como si Yahoo no
+            # tuviera datos, y el activo quedaba al costo en TODAS las corridas
+            # hasta el próximo reinicio: una caída de Yahoo justo después de un
+            # deploy pisaba al costo una historia que estaba bien a mercado.
+            _fallas_yahoo().append(price_key)
+            return {}
     _HIST_CACHE[ck] = out
+    _HIST_CACHE_MES[ck] = _mes
     return out
 
 
@@ -276,9 +306,16 @@ def _tenencia_no_vista(conn, uid: int, date_iso: str, vistos: dict):
 # ─── Tenencias a fin de mes (net BUY−SELL + costo promedio) ───────────────────
 def _holdings_asof(conn, uid: int, date_iso: str) -> list:
     """[{broker, asset, asset_type, quantity, invested(costo)}] tenidas a date_iso.
-    qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida."""
+    qty = Σ BUY − Σ SELL; costo = precio promedio de compra × qty tenida.
+
+    ⚠️ Lee de `TX_VIVAS`: sólo imports confirmados y SIN las filas que la persona
+    borró. Antes filtraba el lote confirmado pero no la lápida (`excluded_at`), y
+    una compra borrada seguía en la foto valuada a mercado: con MSFT de 100 a 150,
+    la curva publicaba +US$ 500 de una suba que la persona ya no tenía, mientras
+    `positions` (el rebuild sí filtra) mostraba bien la cartera."""
+    from importing.schema import TX_VIVAS
     rows = conn.execute(
-        """SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
+        f"""SELECT n.broker AS broker, n.asset_symbol AS asset, n.asset_type AS asset_type,
                   MAX(CASE WHEN n.operation_type='BUY' AND COALESCE(n.currency,'') <> ''
                            THEN UPPER(n.currency) END) AS currency,
                   SUM(CASE n.operation_type WHEN 'BUY'  THEN COALESCE(n.quantity,0)
@@ -288,9 +325,8 @@ def _holdings_asof(conn, uid: int, date_iso: str) -> list:
                         THEN COALESCE(n.gross_amount, COALESCE(n.quantity,0)*COALESCE(n.unit_price,0))
                         ELSE 0 END) AS buy_amt,
                   SUM(CASE n.operation_type WHEN 'BUY' THEN COALESCE(n.quantity,0) ELSE 0 END) AS buy_qty
-             FROM import_normalized_tx n
-             JOIN import_batches b ON n.batch_id = b.id
-            WHERE b.user_id = ? AND b.status = 'confirmed'
+             FROM {TX_VIVAS}
+            WHERE b.user_id = ?
               AND n.asset_symbol IS NOT NULL AND n.asset_symbol != ''
               AND n.operation_type IN ('BUY','SELL')
               AND n.date <= ?
@@ -432,7 +468,14 @@ def _persist_mtm_snapshots(conn, uid: int, por_mes: dict) -> int:
                  source        = excluded.source,
                  mtm_coverage  = excluded.mtm_coverage,
                  base          = excluded.base,
-                 apto          = excluded.apto""",
+                 apto          = excluded.apto
+               -- Candado contra la carrera: la clase se leyó al empezar la corrida
+               -- (minutos antes, por Yahoo). Si en el medio un "deshacer" devolvió
+               -- la medición del cron a esta fecha, no se pisa (auditoría 4: la
+               -- medición se perdía para siempre).
+               WHERE COALESCE(snapshots.source, '') <> 'cron'
+                 AND NOT (snapshots.source IS NULL
+                          AND COALESCE(snapshots.holdings_json, '') <> '')""",
             (uid, d, info["value"], info["cost"], net_dep,
              _json.dumps(info["holdings"]) if info["holdings"] else None,
              MTM_SOURCE, info["coverage"], _base, _apto),
@@ -461,29 +504,160 @@ def _huella_contable(conn, uid: int) -> list:
                 "ORDER BY year, month", (uid,)).fetchall()]
 
 
+def huella_de_entrada(conn, uid: int, today: _date) -> str:
+    """Resumen de TODO lo que `backfill_user` lee para los meses cerrados.
+
+    Si no cambió, una reconstrucción nueva escribiría exactamente las mismas fotos
+    (con los mismos precios), así que no hace falta correrla. Existe porque el
+    Dashboard manda cada 90 s un aviso que pasa por `_repair_monthly_chain` aunque
+    no cambie nada: sin esta comparación, cada refresco de cada persona era una
+    reconstrucción entera —y después de un reinicio, una pasada por Yahoo—.
+
+    Lo que lee la reconstrucción, y entra acá: las filas 'global' de la
+    contabilidad, los lotes confirmados, las compras y ventas importadas (con su
+    lápida `excluded_at`), las posiciones y operaciones que mira
+    `_tenencia_no_vista`, los activos con split y los brokers. Lo del mes en curso
+    no entra (ese mes no se reconstruye). Afuera queda lo que no es de la cuenta:
+    precios y dólar histórico."""
+    import hashlib
+    hoy = _date(today.year, today.month, 1).isoformat()
+    ym_hoy = today.year * 100 + today.month
+    pg = bool(getattr(main, "USANDO_PG", False))
+    partes = []
+
+    # ⚠️ EL TEXTO LO ARMA LA BASE, NO PYTHON. Convertir miles de filas en tuplas de
+    # Python retiene el turno del intérprete (GIL) fila por fila: medido por la
+    # auditoría con las 10 cuentas más grandes pidiendo a la vez, la mediana de un
+    # POST pasaba de 126 a 814 ms. Armado del lado de la base: 180 ms, y la misma
+    # sensibilidad. Una variante por motor: `group_concat` no existe en Postgres.
+    def _agregado(cols, desde, orden, *args):
+        texto = "||','||".join(f"COALESCE(CAST({c} AS TEXT), '~')" for c in cols)
+        if pg:
+            sql = f"SELECT count(*), string_agg({texto}, '|' ORDER BY {orden}) FROM {desde}"
+        else:
+            # El orden lo fija la consulta de adentro (SQLite < 3.44 no admite
+            # ORDER BY dentro de group_concat).
+            sql = (f"SELECT count(*), group_concat(t, '|') FROM "
+                   f"(SELECT {texto} AS t FROM {desde} ORDER BY {orden})")
+        try:
+            r = conn.execute(sql, args).fetchone()
+            partes.append(f"{r[0]}:{r[1] or ''}")
+        except Exception as ex:          # columna que no existe en una base vieja
+            partes.append(repr(type(ex)))
+            if pg:                       # en Postgres el error aborta la transacción
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+    _agregado(("year", "month", "capital_inicio", "deposits", "withdrawals", "pnl_realized"),
+              "monthly_entries WHERE user_id=? AND broker='global' AND year*100+month < ?",
+              "year, month", uid, ym_hoy)
+    _agregado(("id",), "import_batches WHERE user_id=? AND status='confirmed'", "id", uid)
+    _agregado(("n.id", "n.date", "n.broker", "n.asset_symbol", "n.asset_type",
+               "n.operation_type", "n.quantity", "n.gross_amount", "n.unit_price",
+               "n.currency", "CASE WHEN n.excluded_at IS NULL THEN 1 ELSE 0 END"),
+              "import_normalized_tx n JOIN import_batches b ON b.id = n.batch_id "
+              "WHERE b.user_id=? AND b.status='confirmed' "
+              "AND n.operation_type IN ('BUY','SELL') AND n.date < ?",
+              "n.id", uid, hoy)
+    _agregado(("id", "broker", "asset", "quantity", "invested", "currency", "entry_date"),
+              "positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
+              "AND (entry_date IS NULL OR entry_date < ?)", "id", uid, hoy)
+    _agregado(("s.asset",),
+              "(SELECT DISTINCT asset FROM positions WHERE user_id=? "
+              "AND split_adjusted_through IS NOT NULL) s", "s.asset", uid)
+    # TODAS las operaciones, sin filtro de fecha: `_tenencia_no_vista` cuenta una
+    # operación sin `entry_date` en todos los meses cerrados anteriores a su cierre
+    # —aunque se haya cargado hoy—. Un filtro propio acá la dejaba afuera (medido
+    # por la auditoría: cobertura 1,0 guardada contra 0,40 real). La regla vive en
+    # un solo lugar: lo que mira la reconstrucción entra entero.
+    _agregado(("id", "broker", "asset", "quantity", "entry_price", "fx_to_usd", "currency",
+               "entry_date", "date"), "operations WHERE user_id=?", "id", uid)
+    _agregado(("name", "currency"), "brokers WHERE user_id=?", "name", uid)
+    return hashlib.sha256("\n".join(partes).encode()).hexdigest()
+
+
+def _meses_a_reconstruir(huella: list, today: _date) -> list:
+    """[(year, month, fila, propia)]: TODOS los meses cerrados desde el primero de
+    la contabilidad, cada uno con la fila 'global' que lo rige — la suya
+    (`propia=True`) o, si no tiene, la del último mes que tuvo.
+
+    ⚠️ LA CONTABILIDAD NO TIENE FILA PARA TODOS LOS MESES, Y LA CURVA SÍ LA NECESITA.
+    `monthly_entries` sólo crea la fila del mes con depósitos, retiros o ventas
+    (`importing/rebuild.py::_ensure_monthly_rows` y los flujos). Un mes con sólo
+    compras, o sin nada, no la tiene. Antes se reconstruía únicamente sobre esas
+    filas, así que esos meses quedaban sin foto, y con un solo mes faltante dos
+    fotos quedaban a ~60 días: más que `twr.MAX_HUECO_DIAS` (45), la serie se
+    parte y el rendimiento desaparece (`serie_partida`). Medido: depósito de
+    10.000 + 40 AAPL en enero y 100 por mes hasta octubre → +16,95 %; sacando
+    sólo el depósito de junio → sin número. El inversor que compra y mantiene
+    —que no deposita todos los meses— era el que se quedaba sin curva.
+
+    El mes sin fila no es un mes sin contabilidad: es un mes en el que la
+    contabilidad NO SE MOVIÓ. `_repair_monthly_chain` encadena por encima del
+    hueco (`capital_inicio` del mes siguiente = `capital_final` del anterior que
+    tiene fila), así que su costo es exactamente el del último mes con fila, con
+    flujos y realizado en cero. Las tenencias sí cambian (compras) y salen de
+    `_holdings_asof` a su fecha, como en cualquier otro mes.
+
+    Llega hasta el último mes CERRADO y no hasta la última fila: después de su
+    último depósito la persona sigue teniendo la cartera, y la foto de ese último
+    mes con flujo quedaba a meses de la primera medición del cron — el mismo corte.
+    """
+    if not huella:
+        return []
+    por_ym = {(f[0], f[1]): f for f in huella}
+    y, m = huella[0][0], huella[0][1]
+    out, rige = [], None
+    while (y, m) < (today.year, today.month):
+        propia = (y, m) in por_ym
+        if propia:
+            rige = por_ym[(y, m)]
+        out.append((y, m, rige, propia))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
 def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     """Devuelve {uid, skipped, reason, months:[{ym, before, after}], cost_fallbacks,
     cash_warning}. NO commitea (lo hace el caller). Idempotente."""
     import twr as _twr
     res = {"uid": uid, "skipped": False, "reason": None, "months": [],
            "cost_fallbacks": 0, "cash_warning": False, "snapshots_escritos": 0}
+    if _pasada == 1:
+        _fallas_yahoo().clear()
+    # Lo que describen las fotos de esta corrida; se compara al final.
+    res["huella"] = entrada = huella_de_entrada(conn, uid, today)
 
     # Cuenta reconstruible solo si hay import confirmado.
     has_import = conn.execute(
         "SELECT 1 FROM import_batches WHERE user_id=? AND status='confirmed' LIMIT 1", (uid,),
     ).fetchone()
     if not has_import:
+        # Si ya no hay import (se revirtió el único), las fotos reconstruidas que
+        # quedaron —p. ej. de meses con movimientos cargados a mano antes del
+        # import, que el revert no borra— describen una cuenta que ya no existe.
+        res["snapshots_borrados"] = conn.execute(
+            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
         res.update(skipped=True, reason="sin import confirmado (cuenta manual)")
         return res
 
+    # Valor (costo) y aportado de cada foto salen de UNA lectura de la
+    # contabilidad, hecha acá: la huella de abajo verifica al final que siga
+    # siendo la misma.
     huella = _huella_contable(conn, uid)
-    me_rows = conn.execute(
-        "SELECT year, month FROM monthly_entries WHERE user_id=? AND broker='global' "
-        "ORDER BY year, month", (uid,),
-    ).fetchall()
-    if not me_rows:
+    if not huella:
+        # Sin contabilidad no hay nada que las fotos reconstruidas puedan describir.
+        res["snapshots_borrados"] = conn.execute(
+            "DELETE FROM snapshots WHERE user_id=? AND source=?", (uid, MTM_SOURCE)).rowcount
         res.update(skipped=True, reason="sin monthly_entries")
         return res
+    _canon = _twr.netdep_canonico(conn, uid)
+    # Sólo para el "antes" del resumen: lo que la cadena contable mostraba.
+    _cf_contable = {(r["year"], r["month"]): r["capital_final"] for r in conn.execute(
+        "SELECT year, month, capital_final FROM monthly_entries "
+        "WHERE user_id=? AND broker='global'", (uid,)).fetchall()}
 
     brokers = [dict(r) for r in conn.execute(
         "SELECT name, currency FROM brokers WHERE user_id=?", (uid,)).fetchall()]
@@ -501,13 +675,10 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         pass
 
     por_mes: dict = {}                         # {ym: foto reconstruida}
-    cur_ym = (today.year, today.month)         # mes en curso → NO tocar
-    start_iso = _month_end(me_rows[0]["year"], me_rows[0]["month"])[:8] + "01"
+    start_iso = f"{huella[0][0]:04d}-{huella[0][1]:02d}-01"
 
-    for me in me_rows:
-        y, m = me["year"], me["month"]
-        if (y, m) >= cur_ym:                   # mes en curso / futuro → skip
-            continue
+    # El mes en curso (y cualquier fila futura) no se toca: lo maneja el flujo live.
+    for y, m, fila, propia in _meses_a_reconstruir(huella, today):
         d = _month_end(y, m)
         ym = f"{y}-{m:02d}"
         hold = _holdings_asof(conn, uid, d)
@@ -619,47 +790,44 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
         # Valor de la foto = costo(recomputado de columnas estables) + unrealized.
         # Se calcula SOLO para el global y NO se escribe en monthly_entries: ver el
         # comentario de MTM_SOURCE — `_repair_monthly_chain` lo recomputaria al costo.
-        rows = conn.execute(
-            "SELECT broker, capital_inicio, deposits, withdrawals, pnl_realized, capital_final "
-            "FROM monthly_entries WHERE user_id=? AND year=? AND month=? AND broker='global'",
-            (uid, y, m)).fetchall()
-        # El aportado de la foto se lee ACÁ, pegado al costo de su valor, y no al
-        # escribir: así valor y aportado salen siempre de la misma contabilidad
-        # (ver la huella al final de esta función).
-        _canon = _twr.netdep_canonico(conn, uid)
+        # El mes sin fila toma la del último mes que tuvo (ver `_meses_a_reconstruir`):
+        # mismo costo, porque en ese mes no hubo flujos ni ventas.
+        _, _, ci, dep, wd, pnl = fila
+        cost = (ci or 0) + (dep or 0) - (wd or 0) + (pnl or 0)
+        # El aportado sale de la MISMA lectura que el costo (la del principio), y
+        # no al escribir: así valor y aportado describen siempre la misma
+        # contabilidad (ver la huella al final de esta función). En el mes sin
+        # fila el canónico ARRASTRA el último aportado; nunca da 0.
         net_dep = _canon(d) if _canon is not None else 0.0
-        before_global = after_global = 0.0
-        cost_global = 0.0
-        for row in rows:
-            b = row["broker"]
-            cost = ((row["capital_inicio"] or 0) + (row["deposits"] or 0)
-                    - (row["withdrawals"] or 0) + (row["pnl_realized"] or 0))
-            u = total_unreal if b == "global" else unreal_by_broker.get(b, 0.0)
-            new_cf = cost + u
-            # Clamp definitivo: el MTM NUNCA debe DEJAR un capital_final negativo por
-            # culpa de la valuación, ni EMPEORAR uno que ya venía negativo.
-            #   • costo sano (≥0) que el unrealized flipearía a negativo → al costo
-            #     (ej #417: 485 → -592k → 485; cross-currency / free lots mal valuados).
-            #   • costo YA negativo (corrupción vieja de pnl_realized, ej #725/#791): el
-            #     MTM no puede empeorarlo → nos quedamos en el MENOS negativo entre costo
-            #     y resultado (max). Si el unrealized lo MEJORA (lo acerca a 0 o lo cruza
-            #     a positivo), eso sí se respeta.
-            # Los corruptos siguen rotos: el costo en sí está mal → es otro fix.
-            if new_cf < 0:
-                new_cf = max(cost, new_cf)
-            if b == "global":
-                # "Antes" es lo que la curva MOSTRABA: la foto que ya estaba, y
-                # solo si no habia ninguna, la cadena contable.
-                prev_snap = conn.execute(
-                    "SELECT total_value FROM snapshots WHERE user_id=? AND date=?",
-                    (uid, d)).fetchone()
-                before_global = (prev_snap["total_value"] if prev_snap is not None
-                                 else (row["capital_final"] or 0))
-                after_global = new_cf
-                cost_global = cost
+        new_cf = cost + total_unreal
+        # Clamp definitivo: el MTM NUNCA debe DEJAR un capital_final negativo por
+        # culpa de la valuación, ni EMPEORAR uno que ya venía negativo.
+        #   • costo sano (≥0) que el unrealized flipearía a negativo → al costo
+        #     (ej #417: 485 → -592k → 485; cross-currency / free lots mal valuados).
+        #   • costo YA negativo (corrupción vieja de pnl_realized, ej #725/#791): el
+        #     MTM no puede empeorarlo → nos quedamos en el MENOS negativo entre costo
+        #     y resultado (max). Si el unrealized lo MEJORA (lo acerca a 0 o lo cruza
+        #     a positivo), eso sí se respeta.
+        # Los corruptos siguen rotos: el costo en sí está mal → es otro fix.
+        if new_cf < 0:
+            new_cf = max(cost, new_cf)
+        # "Antes" es lo que la curva MOSTRABA: la foto que ya estaba, y solo si no
+        # habia ninguna, la cadena contable (que en el mes sin fila es el costo
+        # arrastrado).
+        prev_snap = conn.execute(
+            "SELECT total_value FROM snapshots WHERE user_id=? AND date=?",
+            (uid, d)).fetchone()
+        if prev_snap is not None:
+            before_global = prev_snap["total_value"]
+        elif propia:
+            before_global = _cf_contable.get((y, m)) or 0
+        else:
+            before_global = cost
+        after_global = new_cf
+        cost_global = cost
         _cob = round(cobertura, 4) if cobertura is not None else None
         res["months"].append({"ym": ym, "before": before_global, "after": after_global,
-                              "coverage": _cob})
+                              "coverage": _cob, "sin_fila": not propia})
         por_mes[ym] = {"date": d, "value": after_global, "cost": cost_global,
                        "net_dep": net_dep, "coverage": _cob,
                        "holdings": [{"asset": a, "value_usd": round(v, 2),
@@ -678,13 +846,60 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     #   · aun leyendo valor y aportado juntos, la foto describe la contabilidad
     #     VIEJA y la base del libro del asesor (el mayor aportado) guardaba el
     #     depósito borrado: 12 % → 8 %.
+    #   · borrar una COMPRA en ese rato no toca la contabilidad, pero sí la
+    #     tenencia: los meses ya valuados la seguían teniendo a mercado
+    #     (tests/test_compra_borrada_fuera_de_la_curva.py).
     # No se escribe nada que describa una contabilidad que ya no existe.
-    if _huella_contable(conn, uid) != huella:
+    # Por eso se compara la huella COMPLETA (`huella_de_entrada`: incluye las
+    # compras y ventas con su lápida), no sólo las filas 'global': una compra
+    # borrada o un promedio editado en Cartera a mitad de corrida no tocan esas
+    # filas (medido por la auditoría: marzo escrito en 10.000 cuando ya era 11.000).
+    if (_huella_contable(conn, uid) != huella
+            or huella_de_entrada(conn, uid, today) != entrada):
         if _pasada < _PASADAS:
             return backfill_user(conn, uid, today, _pasada + 1)
-        res.update(skipped=True,
+        res.update(skipped=True, reintentar=True,
                    reason=f"la contabilidad cambió durante {_PASADAS} pasadas seguidas")
         return res
+
+    # ⚠️ SI YAHOO FALLÓ, SE ESCRIBE IGUAL Y SE PIDE OTRA CORRIDA.
+    # Lo que falló cayó al costo, y la foto lo dice (su cobertura baja y deja de
+    # ser apta). No escribir dejaría la historia de ANTES, que con la contabilidad
+    # recién cambiada es justamente el error que esto vino a sacar (valor con el
+    # depósito borrado adentro y aportado sin él: +US$ 5.800 falsos). Con
+    # `reintentar`, quien llama anota la cuenta para volver a correrla en el
+    # próximo pedido de la persona —el Dashboard manda uno cada 90 s—, y como la
+    # falla no quedó en `_HIST_CACHE`, ahí se le vuelve a preguntar a Yahoo.
+    if _fallas_yahoo():
+        res["reintentar"] = True
+        res["yahoo_fallo"] = sorted(set(_fallas_yahoo()))
+
+    # ⚠️ LA FOTO DE UN MES QUE YA NO TIENE CONTABILIDAD SE BORRA.
+    # La reconstrucción arma todos los meses cerrados desde la PRIMERA fila de la
+    # contabilidad (`_meses_a_reconstruir`). Si la persona borra el primer
+    # movimiento de todos (o revierte el import que traía los primeros meses), los
+    # meses anteriores a la nueva primera fila dejan de producirse; el UPSERT de
+    # abajo no los toca, y su foto quedaba para siempre con el valor de ANTES del
+    # borrado. (Antes de reconstruir los meses sin fila pasaba también con un mes
+    # del medio: medido, borrar el único retiro de septiembre dejaba esa foto con
+    # los US$ 1.000 adentro y la ganancia total en 703, real 1.703.)
+    # Tres condiciones, las tres: la escribió este reconstructor (una medición del
+    # cron no se toca), es de un mes cerrado, y su mes NO tiene fila 'global'. La
+    # tercera es a propósito: "no lo produje" solo no alcanza — si mañana alguien
+    # agrega un salteo al bucle de arriba, esto se volvería un borrado silencioso
+    # de fotos de meses que sí tienen contabilidad.
+    _primero_mes_en_curso = _date(today.year, today.month, 1).isoformat()
+    _vigentes = {info["date"] for info in por_mes.values()}
+    _con_fila = {f"{r['year']}-{r['month']:02d}" for r in conn.execute(
+        "SELECT year, month FROM monthly_entries WHERE user_id=? AND broker='global'",
+        (uid,)).fetchall()}
+    for _r in conn.execute(
+            "SELECT date FROM snapshots WHERE user_id=? AND source=? AND date < ?",
+            (uid, MTM_SOURCE, _primero_mes_en_curso)).fetchall():
+        if _r["date"] not in _vigentes and _r["date"][:7] not in _con_fila:
+            conn.execute("DELETE FROM snapshots WHERE user_id=? AND date=? AND source=?",
+                         (uid, _r["date"], MTM_SOURCE))
+            res["snapshots_borrados"] = res.get("snapshots_borrados", 0) + 1
 
     # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
     # como una fila 'import' derivada de la cadena contable.
@@ -698,7 +913,8 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
     panel de Admin. apply=False → sobre una COPIA del DB (la real NO se toca);
     apply=True → commitea por user. Espeja recompute_backfill.run_backfill/dry_run."""
     def _loop(conn):
-        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": []}
+        out = {"users_changed": 0, "skipped": 0, "changes": [], "errors": [],
+               "fotos_borradas": 0}
         for uid in users:
             try:
                 s = backfill_user(conn, uid, today)
@@ -706,8 +922,13 @@ def backfill_summary(real_conn, users, today, apply: bool) -> dict:
                 conn.rollback()
                 out["errors"].append({"uid": uid, "error": str(ex)})
                 continue
+            # Fotos de meses (o cuentas) que la contabilidad ya no tiene: el ensayo
+            # tiene que decir cuántas borraría el apply.
+            out["fotos_borradas"] += s.get("snapshots_borrados", 0)
             if s["skipped"]:
                 out["skipped"] += 1
+                if apply and s.get("snapshots_borrados"):
+                    conn.commit()
                 continue
             changed = [m for m in s["months"] if abs(m["after"] - m["before"]) > 0.01]
             if changed:
