@@ -338,6 +338,21 @@ class CaminoDeProduccionTest(unittest.TestCase):
         aapl = next(f for f in r["activos_que_mas_movieron"] if f["asset"] == "AAPL")
         self.assertEqual(aapl["pct"], 1.04)
 
+    def test_papel_sin_volumen_hoy_no_es_de_hoy(self):
+        """MEDIDO 11:53 con la rueda abierta: un papel con volumen 0 trae el %
+        de su ÚLTIMA rueda (CX −3,48 % = la vela del 7). No puede salir "hoy"."""
+        live = {"AAPL": {"c": 27100.0, "pct": 1.04, "v": 0},
+                "SPY": {"c": 20950.0, "pct": 0.24, "v": 5000}}
+        r = self._correr(live, ahora=A_LAS_15)
+        aapl = next(f for f in r["activos_que_mas_movieron"] if f["asset"] == "AAPL")
+        self.assertFalse(aapl["es_hoy"])
+        self.assertEqual(aapl["dia_txt"], "sin fecha confirmada")
+        # Con volumen, el mismo papel sí es de hoy.
+        live["AAPL"]["v"] = 1200
+        main._CARTERA_HOY_CACHE.clear()
+        r = self._correr(live, ahora=A_LAS_15)
+        self.assertTrue(next(f for f in r["activos_que_mas_movieron"] if f["asset"] == "AAPL")["es_hoy"])
+
     def test_el_valor_coincide_con_la_valuacion_del_snapshot(self):
         r = self._correr(LIVE_PREAPERTURA)
         with patch.object(main, "_user_tc_blue", return_value=1450.0), \

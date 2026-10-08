@@ -8804,6 +8804,7 @@ def _fetch_data912_bonds():
     try:
         result = {}
         pcts = {}
+        vols = {}
         for endpoint in ('arg_bonds', 'arg_corp'):
             r = requests.get(f"https://data912.com/live/{endpoint}", timeout=8)
             if r.status_code != 200:
@@ -8814,6 +8815,7 @@ def _fetch_data912_bonds():
                 if sym and close and close > 0:
                     result[sym] = close
                     pcts[sym] = item.get('pct_change')
+                    vols[sym] = item.get('v')
         if result:  # sólo actualizamos cache si hubo data nueva
             _data912_cache['data'] = result
             _data912_cache['ts'] = now
@@ -8821,8 +8823,11 @@ def _fetch_data912_bonds():
             # guarda en la misma pasada para que nunca mezcle dos lecturas.
             # Sin clear(): otro hilo leyendo en el medio vería el dict vacío.
             _data912_bonds_pct.update(pcts)
-            for _k in [k for k in _data912_bonds_pct if k not in pcts]:
+            for _k in [k for k in list(_data912_bonds_pct) if k not in pcts]:
                 _data912_bonds_pct.pop(_k, None)
+            _data912_bonds_vol.update(vols)
+            for _k in [k for k in list(_data912_bonds_vol) if k not in vols]:
+                _data912_bonds_vol.pop(_k, None)
         return result
     except Exception:
         return cached or {}
@@ -8831,6 +8836,9 @@ def _fetch_data912_bonds():
 # {ticker data912: pct_change} de la última lectura de bonos. Aparte del dict de
 # precios porque una docena de lugares leen ese como {ticker: número}.
 _data912_bonds_pct: dict = {}
+# {ticker data912: volumen operado HOY} de la misma lectura (ver
+# `_byma_sin_operar_hoy`).
+_data912_bonds_vol: dict = {}
 
 
 def _data912_bond_pct(symbol):
@@ -8896,7 +8904,8 @@ def _fetch_data912_equities():
                 sym = item.get('symbol')
                 close = item.get('c')
                 if sym and close and close > 0:
-                    result[sym] = {'c': float(close), 'pct': item.get('pct_change')}
+                    result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
+                                   'v': item.get('v')}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -9780,6 +9789,48 @@ def _rueda_byma(_hoy=None):
             return hoy if puede_ser_hoy else None
         fechas_vistas.append(fecha)
     return max(fechas_vistas) if fechas_vistas else None
+
+
+def _byma_sin_operar_hoy(symbol) -> bool:
+    """¿La fila de data912 de `symbol` dice que HOY no operó (volumen 0)?
+
+    MEDIDO 2026-10-08 11:53, con la rueda abierta: 34 CEDEARs y acciones en
+    pesos y 50 bonos/ONs tenían volumen 0 y un porcentaje distinto de cero — el
+    de su última rueda. CX mostraba −3,48 %, idéntico a su vela del 7. Como la
+    rueda se fecha con dos papeles líquidos (`_rueda_byma`), esas filas salían
+    fechadas HOY: una alerta podía decir "CX cayó 3,5 % hoy" con lo de ayer.
+
+    False si no se sabe (la fila no trae volumen): no inventa nada."""
+    if not symbol:
+        return False
+    if symbol.endswith('.BA'):
+        fila = (_fetch_data912_equities() or {}).get(symbol[:-3])
+        clave = symbol[:-3]
+    else:
+        fila, clave = None, symbol + 'D'
+    if fila is not None:
+        v = fila.get('v')
+    else:
+        if not _fetch_data912_bonds():
+            return False
+        v = _data912_bonds_vol.get(clave)
+    try:
+        return v is not None and float(v) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _fecha_rueda_byma(symbol, fecha_byma, hoy=None):
+    """La fecha de la rueda de UN símbolo de BYMA: la del mercado
+    (`_rueda_byma`), salvo que sea la de hoy y el símbolo todavía no haya
+    operado — ahí su número es de una rueda anterior que no sabemos cuál es:
+    None ("no sé" ≠ "hoy")."""
+    if not fecha_byma:
+        return None
+    from fechas import hoy_art
+    if fecha_byma == (hoy or hoy_art()) and _byma_sin_operar_hoy(symbol):
+        return None
+    return fecha_byma
 
 
 def _prev_close_con_rueda(sym_list, uid):
@@ -27066,7 +27117,8 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
                     vp = None
                 mercado, fecha = ruedas.get(k, (None, None))
                 if mercado == "byma" and fecha is None:
-                    fecha = fecha_byma
+                    # Un papel que hoy no operó trae el % de una rueda anterior.
+                    fecha = _fecha_rueda_byma(k, fecha_byma, hoy)
                 # Cripto: su vela es un día UTC. Entre las 21:00 y la medianoche
                 # puede seguir siendo la del día argentino, que también es "hoy".
                 es_hoy = bool(fecha) and (fecha in (hoy_utc, hoy) if mercado == "cripto" else fecha == hoy)
