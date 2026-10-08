@@ -763,6 +763,22 @@ ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS note text;
 
 ALTER TABLE credit_ledger ADD COLUMN IF NOT EXISTS created_at text DEFAULT to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS');
 
+CREATE TABLE IF NOT EXISTS medicion_original (
+  user_id bigint NOT NULL,
+  date text NOT NULL,
+  total_value double precision,
+  holdings_json text,
+  source text,
+  apto bigint,
+  base text,
+  mtm_coverage double precision,
+  eventos_base text,
+  escrito_total double precision,
+  escrito_holdings text,
+  eventos_escritos text,
+  PRIMARY KEY (user_id, date)
+);
+
 CREATE TABLE IF NOT EXISTS mtm_huella (
   user_id bigint PRIMARY KEY,
   huella text NOT NULL,
