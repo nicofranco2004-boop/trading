@@ -28,6 +28,7 @@ import MuroElegirPlan from './components/plan/MuroElegirPlan'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
+import { registrarPantalla } from './utils/uso'
 import { trackPageView } from './utils/analytics'
 import { trackMetaPageView } from './utils/metaPixel'
 import { useAutoUpdate } from './utils/autoUpdate'
@@ -163,6 +164,8 @@ function RouteTracker() {
   useEffect(() => {
     if (prev.current !== location.pathname) {
       trackRoute(prev.current, location.pathname)
+      // La pantalla inicial la cuenta activarUso (AuthContext), acá sólo los cambios.
+      registrarPantalla(location.pathname)
       trackPageView(location.pathname)
       trackMetaPageView()  // Meta Pixel — PageView en navegación SPA (retargeting)
       prev.current = location.pathname

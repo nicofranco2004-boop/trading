@@ -42,6 +42,8 @@
 //     pro_subscribed
 //     pro_canceled
 
+import { registrarUso } from './uso'
+
 const IS_DEV = typeof import.meta !== 'undefined' && import.meta?.env?.DEV
 
 // Buffer de últimos eventos en memoria — útil para debug y para mandar
@@ -67,6 +69,10 @@ export function track(event, props = {}) {
 
   RECENT_EVENTS.push(enriched)
   if (RECENT_EVENTS.length > MAX_BUFFER) RECENT_EVENTS.shift()
+
+  // Panel de uso de /admin: cuenta el evento si está en utils/usoCatalogo.js
+  // (sólo el nombre; los props no salen del navegador por este camino).
+  registrarUso(event)
 
   if (IS_DEV) {
     // En dev mostramos el event para debug.
