@@ -11,6 +11,7 @@
 // Una pantalla que tiene SU propio ⌘K (Calidad de cartera busca empresas) lo
 // atiende en la fase de captura y marca `preventDefault`: este lo respeta.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { track } from '../utils/track'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Search, Sparkles, Plus, Repeat, Sun, Moon, EyeOff, Eye, TrendingUp, Building2,
@@ -82,6 +83,8 @@ const _activos = new Map()   // `${usuario}:${cuenta}` → lista
 // dibujaba lo que ofrece, y deshacer una regla de qué ofrece pasaba en verde.
 export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicial = '' } = {}) {
   const [abierto, setAbierto] = useState(abiertoAlInicio)
+  // Panel de uso: se cuenta al ABRIRSE, venga del atajo ⌘K o del botón.
+  useEffect(() => { if (abierto) track('buscador_abierto') }, [abierto])
   const [consulta, setConsulta] = useState(consultaInicial)
   const [sel, setSel] = useState(0)
   const [posiciones, setPosiciones] = useState([])
@@ -227,6 +230,7 @@ export default function BuscadorRapido({ abiertoAlInicio = false, consultaInicia
 
   function elegir(o) {
     if (!o) return
+    track('buscador_elegido')
     cerrar()
     if (o.clase === 'ia') coach.open(o.pregunta || null)
     else if (o.hacer) o.hacer()

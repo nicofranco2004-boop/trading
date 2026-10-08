@@ -16,6 +16,7 @@ import {
   PlusCircle, SkipForward,
 } from 'lucide-react'
 import { api } from '../../utils/api'
+import { track } from '../../utils/track'
 import { useEnVuelo } from '../../hooks/useEnVuelo'
 import { parseNum } from '../../utils/format'
 
@@ -223,6 +224,7 @@ function ManualForm({ onNext, onBack }) {
         buy_price: price,
         invested: qty * price,
       })
+      track('position_add_completed', { source: 'onboarding', asset: cleanAsset, broker: cleanBroker })
       onNext({ position: { asset: cleanAsset, quantity: qty, buy_price: price } })
     } catch (ex) {
       setError(ex?.message || 'No pudimos guardar la posición. Probá de nuevo.')
