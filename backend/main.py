@@ -8901,7 +8901,18 @@ CRYPTO_SYMBOLS = {
     'ORDI', 'RUNE', 'FIL', 'STX', 'CORE', 'CFX', 'ID', 'ARKM', 'CYBER',
     'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'FRAX', 'PENDLE', 'SSV',
     'WBTC', 'STETH',
+    # Toncoin e Internet Computer: estaban sólo en la copia de `home.market` (hasta
+    # 2026-10-08), así que Posiciones y la foto diaria no los reconocían como
+    # cripto (en una cuenta en pesos pedían TON.BA, que no cotiza en ningún lado).
+    'TON', 'ICP',
 }
+
+# Monedas estables: se cotizan como cripto (Yahoo '-USD', rueda 24/7) pero NO están
+# en CRYPTO_SYMBOLS, porque el resto de la app las trata como dólares (efectivo,
+# cajas 'USDT', sin premium del dólar cripto). Antes vivían sólo en la copia de
+# `home.market` y el nombre pelado que se le pide a Yahoo no es la moneda:
+# medido 2026-10-08, 'USDT' no existe y 'USDC' es otro instrumento (US$ 0,0012).
+CRIPTO_ESTABLES = {'USDT', 'USDC'}
 
 
 def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate,
@@ -8944,7 +8955,50 @@ def crypto_broker_factor(asset, broker_name, has_override, cripto_rate, mep_rate
         return 1.0
     return float(cripto_rate) / float(mep_rate)
 
-CRYPTO_YF = {sym: f"{sym}-USD" for sym in CRYPTO_SYMBOLS}
+# Con qué nombre cotiza Yahoo cada cripto. Casi todas son '<SÍMBOLO>-USD', pero
+# cuando dos monedas comparten el símbolo Yahoo le pega un número a la conocida y
+# deja el nombre limpio para la OTRA. Medido el 2026-10-08 contra el buscador de
+# Yahoo (nombre + precio de cada una):
+#   · el nombre limpio es OTRA moneda: 'TON-USD' es "TON Token" (US$ 0,0045, no
+#     Toncoin US$ 1,36), 'ARB-USD' "ARbit" (US$ 0,0006 vs Arbitrum US$ 0,17),
+#     'CORE-USD' "cVault.finance" (US$ 5.924 vs Core US$ 0,018), 'CYBER-USD'
+#     "Cyberpunk City", 'ID-USD' "Everest", 'STRK-USD' "Strike", 'APE-USD'
+#     "APEcoin.dev" — una tenencia valía lo que vale otra moneda;
+#   · el nombre limpio no trae nada: APT, GRT, IMX, PEPE, STX, SUI, UNI, COMP, GMX,
+#     DEGEN, ALT, MATIC y POL — quedaban con el último precio conocido o sin precio.
+# MATIC → POL: Polygon cambió MATIC por POL 1 a 1 y Yahoo sólo cotiza POL.
+# FTM y FXS no tienen serie en Yahoo con ningún nombre: quedan como estaban.
+# Si agregás una cripto: buscala en Yahoo y fijate el NOMBRE, no sólo que traiga
+# precio (tests/test_cripto_una_lista.py).
+_YAHOO_CRIPTO_DISTINTO = {
+    'TON': 'TON11419-USD', 'ARB': 'ARB11841-USD', 'CORE': 'CORE23254-USD',
+    'CYBER': 'CYBER24781-USD', 'ID': 'ID21846-USD', 'STRK': 'STRK22691-USD',
+    'APE': 'APE18876-USD',
+    'APT': 'APT21794-USD', 'GRT': 'GRT6719-USD', 'IMX': 'IMX10603-USD',
+    'PEPE': 'PEPE24478-USD', 'STX': 'STX4847-USD', 'SUI': 'SUI20947-USD',
+    'UNI': 'UNI7083-USD', 'COMP': 'COMP5692-USD', 'GMX': 'GMX11857-USD',
+    'DEGEN': 'DEGEN30096-USD', 'ALT': 'ALT29073-USD',
+    'MATIC': 'POL28321-USD', 'POL': 'POL28321-USD',
+}
+
+# ⭐ LA lista de cripto de la app → su nombre en Yahoo. Todo el que cotice una
+# cripto (Posiciones, la variación del día, la foto diaria, las alertas, el chat,
+# el inicio) sale de acá; `home.market` la lee de acá en vez de tener su copia.
+CRYPTO_YF = {sym: _YAHOO_CRIPTO_DISTINTO.get(sym, f"{sym}-USD")
+             for sym in CRYPTO_SYMBOLS | CRIPTO_ESTABLES}
+
+
+def yahoo_de_cripto(symbol):
+    """El nombre con que Yahoo cotiza la cripto `symbol`, o None si no es una
+    cripto de la lista. Acepta el símbolo pelado ('TON') y también con '-USD'
+    pegado a mano ('TON-USD', como lo guardan el inicio y el chat): pegarle el
+    sufijo NO es el nombre de Yahoo — 'TON-USD' es otra moneda."""
+    s = (symbol or '').strip().upper()
+    if s in CRYPTO_YF:
+        return CRYPTO_YF[s]
+    if s.endswith('-USD') and s[:-4] in CRYPTO_YF:
+        return CRYPTO_YF[s[:-4]]
+    return None
 
 # CEDEARs que las fuentes de mercado (yfinance .BA y data912) cotizan en USD con
 # data poco confiable, en vez del precio en PESOS del cedear. Caso reportado:
@@ -9808,7 +9862,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
 
     # Cripto en broker ARS: el frontend pide '<CRIPTO>.BA' (sufijo ARS, igual que
     # un CEDEAR) pero la cripto NO cotiza en BYMA — cotiza en USD globalmente. La
-    # resolvemos como '<CRIPTO>-USD' y la devolvemos CONVERTIDA A PESOS con el
+    # resolvemos por su nombre en Yahoo (`CRYPTO_YF`) y la devolvemos CONVERTIDA A PESOS con el
     # tc_blue del user, así prices['BTC.BA'] queda en ARS como el resto de los
     # símbolos .BA y el frontend la valúa sin cambios (antes daba None → el activo
     # caía a cost basis y "no tomaba el valor actual en pesos").
@@ -9841,11 +9895,11 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
     sym_to_yf = {}
     for sym in yf_targets:
         if sym in crypto_ars:
-            sym_to_yf[sym] = f"{crypto_ars[sym]}-USD"
+            sym_to_yf[sym] = CRYPTO_YF[crypto_ars[sym]]
         elif sym in cedear_usd:
             sym_to_yf[sym] = cedear_usd[sym]  # ticker US (ej. BAC)
-        elif sym in CRYPTO_YF:
-            sym_to_yf[sym] = CRYPTO_YF[sym]
+        elif yahoo_de_cripto(sym):
+            sym_to_yf[sym] = yahoo_de_cripto(sym)
         else:
             sym_to_yf[sym] = sym
 
@@ -9923,7 +9977,7 @@ def get_prices(symbols: str, uid: int = Depends(get_effective_user)):
         _sin_respuesta += _no
         _con_usd = [s for s in _pedir if _hechos.get(sym_to_yf[s]) is None
                     and sym_to_yf[s] not in _no
-                    and not s.endswith('.BA') and s not in CRYPTO_YF]
+                    and not s.endswith('.BA') and not yahoo_de_cripto(s)]
         _hechos_usd = {}
         if _con_usd:
             _uno_a_uno += [f"{s}-USD" for s in _con_usd]
@@ -10264,7 +10318,7 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         _de_data912.add(sym)
 
     # Crypto-ARS ('BTC.BA'): mismo criterio que /api/prices — cotiza en USD,
-    # se resuelve como '<CRIPTO>-USD' y el cierre previo se devuelve en pesos
+    # se resuelve por su nombre en Yahoo (`CRYPTO_YF`) y el cierre previo se devuelve en pesos
     # (× blue del user), así la variación diaria reconcilia con el precio actual
     # (que también viene en pesos). Sin esto, la var. día de una cripto en broker
     # ARS quedaba en '—'.
@@ -10295,17 +10349,17 @@ def _prev_close_y_ultimo(sym_list, uid, *, ttl=None, tope=None):
         finally:
             _cdb2.close()
 
-    # Crypto mapea a su ticker yfinance (BTC → BTC-USD, etc), igual que /api/prices.
+    # Crypto mapea a su ticker yfinance (`yahoo_de_cripto`), igual que /api/prices.
     sym_to_yf = {}
     for sym in uncached_symbols:
         if sym in _de_data912:
             continue
         if sym in crypto_ars:
-            sym_to_yf[sym] = f"{crypto_ars[sym]}-USD"
+            sym_to_yf[sym] = CRYPTO_YF[crypto_ars[sym]]
         elif sym in cedear_usd:
             sym_to_yf[sym] = cedear_usd[sym]  # ticker US (ej. BAC)
-        elif sym in CRYPTO_YF:
-            sym_to_yf[sym] = CRYPTO_YF[sym]
+        elif yahoo_de_cripto(sym):
+            sym_to_yf[sym] = yahoo_de_cripto(sym)
         else:
             sym_to_yf[sym] = sym
     yf_tickers = list(set(sym_to_yf.values()))
@@ -10567,8 +10621,8 @@ def get_price_history(symbol: str, period: str = "1m", uid: int = Depends(get_ef
     # CEDEAR USD-cotizado (ej. BAC): la serie en pesos se computa del subyacente
     # US (cada punto × CCL ÷ ratio). Fetcheamos el ticker US, no el '.BA' roto.
     cedear_base = sym[:-3] if (sym.endswith(".BA") and sym[:-3] in CEDEAR_USD_RATIOS) else None
-    if sym in CRYPTO_YF:
-        yf_sym = CRYPTO_YF[sym]
+    if yahoo_de_cripto(sym):
+        yf_sym = yahoo_de_cripto(sym)
     elif cedear_base:
         yf_sym = cedear_base  # subyacente US
     elif sym.endswith(".BA"):
@@ -26861,17 +26915,15 @@ def _yf_normalize_ticker(ticker: str) -> str:
 
     Convenciones de Rendi → yfinance:
     - CEDEARs llegan con .BA — yfinance las soporta tal cual (TSLA.BA).
-    - Cripto: el frontend usa 'BTC', yfinance espera 'BTC-USD'. Mapeo via
-      CRYPTO_YF (ya existe global). Si no está en el map, lo dejamos como
-      vino (BTC-USD ya viene normalizado en algunos callers).
+    - Cripto: el frontend usa 'BTC', yfinance espera 'BTC-USD' — y no siempre
+      es pegarle '-USD' ('TON-USD' es otra moneda): `yahoo_de_cripto`, que
+      también traduce el que ya viene con '-USD'. Si no es cripto de la lista,
+      queda como vino.
     """
     if not ticker:
         return ""
     t = str(ticker).upper().strip()
-    # Si es cripto sin sufijo, mapear a -USD
-    if t in CRYPTO_YF:
-        return CRYPTO_YF[t]
-    return t
+    return yahoo_de_cripto(t) or t
 
 
 def _yf_cache_read(conn, ticker: str, kind: str) -> tuple:
@@ -31555,7 +31607,7 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
             return {"error": "No se proporcionaron símbolos válidos"}
         # En paralelo y con UN tope para todos (antes: de a uno, sin tope — con
         # Yahoo colgado, 10 símbolos dejaban a la IA esperando minutos).
-        _yf_de = {sym: CRYPTO_YF.get(sym, sym) for sym in valid}
+        _yf_de = {sym: yahoo_de_cripto(sym) or sym for sym in valid}
         _hechos, _ = _yahoo.varios(_fetch_one, list(_yf_de.values()),
                                    que="IA get_current_prices")
         result = {sym: _hechos.get(_yf_de[sym]) for sym in valid}

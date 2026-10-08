@@ -6,7 +6,7 @@
 // COSTO por igual → el P&L% queda invariante, solo suben ~5% los montos para
 // matchear el broker.
 //
-// CRYPTO_SYMBOLS está PORTADO de backend/main.py:4863. La paridad la garantiza
+// CRYPTO_SYMBOLS está PORTADO de backend/main.py (CRYPTO_SYMBOLS). La paridad la garantiza
 // crypto.test.js (si el back agrega un símbolo, el test falla hasta sincronizar).
 // `isCrypto` se usa además para que la cripto NUNCA se rutee a `.BA` (no existe
 // 'BTC.BA') aunque viva en un broker con nombre AR.
@@ -24,6 +24,7 @@ export const CRYPTO_SYMBOLS = new Set([
   'ORDI', 'RUNE', 'FIL', 'STX', 'CORE', 'CFX', 'ID', 'ARKM', 'CYBER',
   'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'FRAX', 'PENDLE', 'SSV',
   'WBTC', 'STETH',
+  'TON', 'ICP',
 ])
 
 export function isCrypto(asset) {

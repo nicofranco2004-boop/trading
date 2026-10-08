@@ -216,18 +216,18 @@ def _cached(key: str, ttl_s: int):
 
 # ─── Mercados ────────────────────────────────────────────────────────────────
 
-# Cripto para decidir en qué rueda cotiza un símbolo (`mercado_de`: horario 24/7
-# y día UTC). ⚠️ Es una copia de la lista de main.py (CRYPTO_YF) y no coinciden:
-# acá están TON, ICP, USDT y USDC, allá no. La cotización ya no la usa (sale de
-# `main._variacion_del_dia`, con la lista de main).
-_CRYPTO_TICKERS = {
-    'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT',
-    'MATIC', 'LINK', 'USDT', 'USDC', 'TRX', 'LTC', 'BCH', 'ETC', 'XLM',
-    'NEAR', 'ATOM', 'FIL', 'APT', 'ARB', 'OP', 'TON', 'HBAR', 'ICP',
-    'VET', 'ALGO', 'GRT', 'AAVE', 'UNI', 'MKR', 'SUSHI', 'COMP', 'CRV',
-    'SAND', 'MANA', 'AXS', 'SHIB', 'PEPE', 'SUI', 'SEI', 'TIA', 'INJ',
-    'WLD', 'ORDI', 'RUNE', 'STX', 'WBTC', 'STETH',
-}
+# Qué es cripto lo decide UNA lista: `main.CRYPTO_YF` (las criptos + las monedas
+# estables, con su nombre en Yahoo). Hasta 2026-10-08 acá había una copia que no
+# coincidía (tenía TON, ICP, USDT y USDC; le faltaban ~55 de las de main): desde
+# que la cotización sale de `main._variacion_del_dia`, esas cuatro se le pedían a
+# Yahoo con el nombre pelado y se quedaban sin variación en «Lo que te afecta», la
+# watchlist y las alertas. Se lee al usarla (main importa este módulo al cargar).
+def _es_cripto(s: str) -> bool:
+    try:
+        import main as _main
+        return _main.yahoo_de_cripto(s) is not None
+    except Exception:
+        return False
 
 
 # ─── ¿De qué RUEDA es este número? ───────────────────────────────────────────
@@ -265,7 +265,7 @@ def session_today(symbol: str) -> str:
 def mercado_de(symbol: str) -> str:
     """En qué rueda cotiza `symbol`: 'cripto' (24/7), 'byma' (los `.BA`) o 'us'."""
     s = (symbol or "").upper()
-    if s in _CRYPTO_TICKERS or s.endswith("-USD"):
+    if s.endswith("-USD") or _es_cripto(s):
         return "cripto"
     if s.endswith(".BA"):
         return "byma"

@@ -180,6 +180,15 @@ LECTURA = [
      "Doce códigos significan dos cosas distintas: STX es una moneda y también Seagate. "
      "El precio se elige por el código, sin mirar dónde está la tenencia. No es prueba de "
      "daño: es la lista corta de casos a revisar a mano."),
+    # ── Cripto con otro nombre en Yahoo (2026-10-08, tests/test_cripto_una_lista.py) ──
+    ("Q13", "precio_de_otra_moneda",
+     "¿Cuántas tenencias de cripto se valuaban con el precio de OTRA moneda?",
+     _mayor_a(0, _URGENTE),
+     "Yahoo usa el mismo código para dos monedas y se le pedía la equivocada: Toncoin "
+     "valía lo que vale \"TON Token\" (300 veces menos), Core lo que vale \"cVault\" "
+     "(300.000 veces más). Con el arreglo publicado esas tenencias pasan a su valor real "
+     "de un día para el otro, y la curva de evolución muestra ese salto. Al lado: cuántas "
+     "no tenían precio de Yahoo y cuántas no tenían variación del día."),
 ]
 
 

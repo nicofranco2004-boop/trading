@@ -31,8 +31,9 @@ class TestNoPuedeEscribir(unittest.TestCase):
     def test_todas_las_consultas_son_select(self):
         secs = alc.secciones()
         # El número exacto no importa por sí mismo; el candado es que agregar una
-        # consulta obligue a mirar este archivo. 14 originales + 4 de cripto.
-        self.assertEqual(len(secs), 18, "cambió la cantidad de consultas")
+        # consulta obligue a mirar este archivo. 14 originales + 4 de cripto + 1
+        # de nombres de Yahoo (Q13).
+        self.assertEqual(len(secs), 19, "cambió la cantidad de consultas")
         alc._verificar_solo_lectura(secs)   # no tira
 
     def test_un_update_infiltrado_aborta_TODO(self):
@@ -270,6 +271,13 @@ class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
         de_mas = ambiguos - {s.upper() for s in main.CRYPTO_SYMBOLS}
         self.assertEqual(de_mas, set(),
                          f"Q12 mide códigos que ya no son cripto: {de_mas}")
+
+    def test_Q13_mide_las_criptos_que_yahoo_cotiza_con_otro_nombre(self):
+        """Q13 cuenta las tenencias de las criptos cuyo nombre en Yahoo no es
+        '<SÍMBOLO>-USD', más ICP/USDT/USDC (estaban sólo en la copia del inicio).
+        Si se agrega una a `_YAHOO_CRIPTO_DISTINTO`, la consulta tiene que medirla."""
+        esperado = set(main._YAHOO_CRIPTO_DISTINTO) | {"ICP", "USDT", "USDC"}
+        self.assertEqual(self._listas_del_sql("Q13")["simbolos"], esperado)
 
     def test_Q9_filtra_por_simbolo_de_cripto_y_no_por_cualquier_venta(self):
         """Sin la lista de símbolos, Q9 contaría TODA venta a precio 0 con
