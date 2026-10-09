@@ -95,6 +95,7 @@ def _setup_yfinance_cache():
 _setup_yfinance_cache()
 import fx as _fx
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
+import dividendos as _dividendos   # bandeja de cobros de dividendos (Cartera)
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 # El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
 # abajo (constante + `_rate_pct` escritos a mano) y sólo los usaba el libro del
@@ -1767,6 +1768,11 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_bond_skips_user ON bond_cashflow_skips(user_id, broker, asset);
         """)
+        conn.commit()
+
+        # ─── Dividendos: lo que pagó cada empresa + los "No lo cobré" ──────────
+        # Ver backend/dividendos.py (la bandeja de cobros de Cartera).
+        _dividendos.crear_tablas(conn)
         conn.commit()
 
         # config
@@ -4571,6 +4577,8 @@ _RESET_PORTFOLIO_TABLES = (
     "brokers", "positions", "archived_positions", "operations",
     "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
     "deleted_ops_journal", "bond_cashflow_skips",
+    # Los "No lo cobré" de la bandeja de dividendos (2026-10-09).
+    "dividendos_salteados",
     "ai_analyses_cache", "ai_user_facts",
     # Agregadas 2026-10-08: la huella con que se reconstruyó la historia y las
     # fotos medidas originales (antes de corregirlas por compras/ventas borradas).
@@ -5294,6 +5302,7 @@ NAME_KEYED_TABLES = (
     "import_batches",
     "import_normalized_tx",
     "bond_cashflow_skips",
+    "dividendos_salteados",
 )
 
 
@@ -13533,6 +13542,151 @@ def unskip_bond_cashflow(
         conn.close()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Dividendos — la bandeja de cobros de Cartera (2026-10-09)
+# ═══════════════════════════════════════════════════════════════════════════
+# El frontend (utils/dividendosPendientes.js) cruza la tenencia del día de corte
+# con lo que pagó cada empresa y propone el cobro; el usuario lo confirma o lo
+# corrige. La lógica vive en backend/dividendos.py; acá sólo las puertas HTTP.
+
+_TOPE_HISTORIAL_DIVIDENDOS = 6.0   # segundos: la bandeja muestra el escaneo mientras tanto
+
+
+@app.get("/api/dividendos/historial")
+def dividendos_historial(tickers: str = "", uid: int = Depends(get_effective_user)):
+    """Lo que pagó cada empresa (por día de corte) + las reglas de descuento.
+
+    `tickers`: los símbolos de la acción en EE.UU. separados por coma (KO,PEP).
+    Lo que no está en caché o venció se pide a Yahoo con UN tope para todos; lo
+    que no llega a tiempo vuelve en `sin_respuesta` y se sirve lo que había."""
+    lista = []
+    for t in (tickers or "").split(","):
+        t = t.strip().upper()
+        if t and _SYMBOL_RE.match(t) and t not in lista:
+            lista.append(t)
+    lista = lista[:80]
+    conn = get_db()
+    try:
+        sin_respuesta = []
+        if lista:
+            try:
+                sin_respuesta = _dividendos.actualizar(conn, lista, tope=_TOPE_HISTORIAL_DIVIDENDOS)
+            except Exception as ex:   # Yahoo caído: se sirve la caché
+                log.warning("dividendos: no se pudo actualizar el historial: %s", ex)
+                sin_respuesta = lista
+        desde = (_hoy_art_date() - timedelta(
+            days=_dividendos.REGLAS["dias_hacia_atras"] + 5)).isoformat()
+        return {
+            "hoy": _iso_today(),
+            "reglas": _dividendos.REGLAS,
+            "tickers": _dividendos.historial(conn, lista, desde),
+            "sin_respuesta": sin_respuesta,
+        }
+    finally:
+        conn.close()
+
+
+class DividendoSalteadoIn(BaseModel):
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
+    ex_date: str = Field(..., max_length=10)
+
+    @field_validator('ex_date')
+    @classmethod
+    def valid_date(cls, v):
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+@app.get("/api/dividendos/salteados")
+def dividendos_salteados(uid: int = Depends(get_effective_user)):
+    """Los cobros que el usuario marcó "No lo cobré": no vuelven a la bandeja."""
+    conn = get_db()
+    try:
+        return _dividendos.salteados(conn, uid)
+    finally:
+        conn.close()
+
+
+@app.post("/api/dividendos/saltear")
+def dividendos_saltear(data: DividendoSalteadoIn, uid: int = Depends(get_effective_user)):
+    conn = get_db()
+    try:
+        if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?",
+                            (uid, data.broker)).fetchone():
+            raise HTTPException(404, f"Broker '{data.broker}' no encontrado")
+        with conn:
+            _dividendos.saltear(conn, uid, data.broker, data.asset, data.ex_date)
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/dividendos/saltear")
+def dividendos_quitar_salteado(broker: str, asset: str, ex_date: str,
+                               uid: int = Depends(get_effective_user)):
+    """El "Deshacer" de "No lo cobré": la tarjeta vuelve a la bandeja."""
+    if not _DATE_RE.match(ex_date):
+        raise HTTPException(422, f"Fecha inválida: {ex_date}")
+    conn = get_db()
+    try:
+        with conn:
+            n = _dividendos.quitar_salteado(conn, uid, broker, asset, ex_date)
+        return {"ok": True, "deleted": n}
+    finally:
+        conn.close()
+
+
+class DividendoCobroIn(BaseModel):
+    """Un dividendo cobrado, tal como lo confirmó (o corrigió) el usuario.
+    Montos en DÓLARES salvo `comision_pesos`."""
+    broker: str = Field(..., min_length=1, max_length=MAX_STR)   # donde está la tenencia
+    asset: str = Field(..., min_length=1, max_length=MAX_STR)
+    ex_date: str = Field(..., max_length=10)                     # día de corte
+    fecha: str = Field(..., max_length=10)                       # día del cobro
+    bruto: float = Field(..., ge=0, le=1e9)
+    impuesto: float = Field(0, ge=0, le=1e9)
+    otros: float = Field(0, ge=0, le=1e9)
+    comision_pesos: float = Field(0, ge=0, le=1e12)
+    cedears: Optional[float] = Field(None, ge=0, le=1e12)
+
+    @field_validator('ex_date', 'fecha')
+    @classmethod
+    def valid_date(cls, v):
+        if not _DATE_RE.match(v):
+            raise ValueError('Fecha inválida')
+        return v
+
+
+@app.post("/api/dividendos/cobro")
+@reintentar_si_trabada
+def dividendos_cobro(data: DividendoCobroIn, uid: int = Depends(get_effective_user)):
+    """Anota un dividendo cobrado: entra al efectivo del broker y cuenta como
+    ganancia REALIZADA (no como depósito). Ver dividendos.registrar_cobro."""
+    conn = get_db()
+    try:
+        with conn:
+            # El turno ANTES de mirar si ya está anotado: dos clicks a la vez no
+            # pueden pasar los dos el chequeo y anotarlo dos veces.
+            _tomar_turno(conn, uid)
+            out = _dividendos.registrar_cobro(
+                conn, uid, broker=data.broker, asset=data.asset, ex_date=data.ex_date,
+                fecha=data.fecha, bruto=data.bruto, impuesto=data.impuesto,
+                otros=data.otros, comision_pesos=data.comision_pesos, cedears=data.cedears)
+            # El mes del cobro tiene que existir antes del recálculo (que sólo
+            # recompone meses presentes; lo pisa con SUM(operations), así que no
+            # se cuenta dos veces). Mismo patrón que create_operation.
+            _y, _m = int(data.fecha[:4]), int(data.fecha[5:7])
+            _update_monthly_pnl_realized(conn, uid, out["cuenta"], _y, _m, out["ganancia_usd"])
+            _update_monthly_pnl_realized(conn, uid, 'global', _y, _m, out["ganancia_usd"])
+            _recalc_pnl_realized_from_ops(conn, uid)
+        _ai_cache_invalidate(uid)
+        return {"ok": True, **out}
+    finally:
+        conn.close()
+
+
 def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     """Devuelve el broker hijo USDT del broker ARS padre. Si no existe, lo crea.
 
@@ -15394,6 +15548,14 @@ def _flujos_manuales_del_mes(me_row, importados: dict):
     return dep, wit
 
 
+# op_type de un cobro cargado a mano → tipo de movimiento. Ver `_build_movements`.
+_TIPO_DE_COBRO_MANUAL = {
+    "Dividendo": "DIVIDEND",
+    "Cupón": "DIVIDEND", "Cupon": "DIVIDEND", "Renta": "DIVIDEND",
+    "Interés": "INTEREST", "Interes": "INTEREST",
+}
+
+
 def _build_movements(uid: int):
     """Las filas de /api/movements, sin el decorador HTTP.
 
@@ -15449,6 +15611,40 @@ def _build_movements(uid: int):
                     # suma al resultado del mes (create_conversion).
                     pnl_usd=(realized_pnl.realized_usd(d)
                              if d.get("pnl_usd") is not None else None)))
+                continue
+            # Un COBRO cargado a mano no es un trade: el dividendo confirmado desde
+            # la bandeja de Cartera, el cupón confirmado desde la de bonos, un
+            # interés. Hasta 2026-10-09 caían en la rama de abajo y Movimientos los
+            # mostraba como "Venta" del activo. Mismo tipo que tienen los
+            # importados (el importador los guarda como DIVIDEND / INTEREST).
+            _cobro = _TIPO_DE_COBRO_MANUAL.get((d.get("op_type") or "").strip())
+            if _cobro:
+                _ccy = (d.get("currency") or "").upper()
+                _fx_fila = _safe_float_or_none(d.get("fx_to_usd")) or 0
+                _div = _fx_fila if (_ccy == "ARS" and _fx_fila > 0) else 1.0
+                _cant = _safe_float_or_none(d.get("quantity"))
+                _pnl = (realized_pnl.realized_usd(d) if d.get("pnl_usd") is not None else 0)
+                movements.append({
+                    "id": f"op-{d['id']}-cobro",
+                    "kind": "movement",
+                    "date": d.get("date"),
+                    "type": _cobro,
+                    "broker": d.get("broker") or "",
+                    "asset": d.get("asset") or "",
+                    "quantity": None,
+                    "unit_price": None,
+                    # Lo que ENTRÓ a la cuenta (en dólares). Los cobros de la bandeja
+                    # de dividendos lo guardan en `quantity` (como el importador); los
+                    # de bonos no, y para ellos el neto es su `pnl_usd`.
+                    "amount_usd": (_cant / _div) if _cant else _pnl,
+                    "currency": _ccy or "USD",
+                    "fx_to_usd": d.get("fx_to_usd"),
+                    "fees_usd": (_safe_float_or_none(d.get("commissions")) or 0) / _div,
+                    "pnl_usd": _pnl,
+                    "notes": d.get("notes") or "",
+                    "source": "manual",
+                    "ref_id": d["id"],
+                })
                 continue
             op_type = (d.get("op_type") or "").upper()
             qty = _safe_float_or_none(d.get("quantity"))
@@ -18353,6 +18549,7 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
     # rebuild que la re-derive — eso solo existe para lo importado).
     op_row = {k: op[k] for k in op.keys() if k != "id"}
     undo: dict = {"op_row": op_row}
+    otros_brokers: set = set()   # cuentas además de la de la fila (la comisión en pesos)
 
     antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     # CLAIM ATÓMICO: borrar la fila ES el lock — dos requests concurrentes no pueden
@@ -18511,6 +18708,15 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
             undo["cash_native"] = -cash_nat
             undo["cash_broker"] = cash_broker
 
+    elif src == _dividendos.SRC:
+        # Un dividendo confirmado desde la bandeja de Cartera: acreditó lo que llegó
+        # en la cuenta en dólares y (si hubo) debitó la comisión en la cuenta en
+        # pesos. Se devuelven los dos. Misma función que usa el importador cuando
+        # trae el mismo dividendo (`dividendos.reemplazar_por_importado`).
+        hecho = _dividendos.deshacer_efectivo(conn, uid, meta)
+        undo["cash_moves"] = [{"broker": b, "native": n} for b, n in hecho]
+        otros_brokers.update(b for b, _ in hecho)
+
     elif src != "manual_form":
         raise HTTPException(400, _MANUAL_LEGACY_MSG)
 
@@ -18525,7 +18731,8 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
            VALUES (?,?,?,?,?,?)""",
         (uid, token, "manual_op", _json.dumps(undo), since_date, broker))
 
-    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes)
+    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker} | otros_brokers,
+                                        antes=antes)
     _anotar_aportado_en_journal(conn, uid, token, _r["aportado"])
     return {"ok": True, "undo_token": token, "broker": broker,
             "asset": op["asset"], "manual": True}
@@ -18759,6 +18966,10 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
         if _u_cash:
             _adjust_broker_cash(conn, uid, p.get("cash_broker") or broker,
                                 -float(_u_cash))
+        # Los cobros que movieron más de una cuenta (el dividendo de la bandeja:
+        # dólares en una, comisión en pesos en la otra) guardan cada movimiento.
+        for _mv in (p.get("cash_moves") or []):
+            _adjust_broker_cash(conn, uid, _mv["broker"], -float(_mv["native"]))
         # Re-invertir lo que el borrado le devolvió a CADA lote (las amortizaciones
         # restauran varios; el resto, uno solo).
         for _l in (p.get("lots") or []):
@@ -18823,7 +19034,8 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
                 _update_monthly_flow(conn, uid, 'global', ay, am, 'deposit',
                                      float(ad["usd"]), is_manual=True)
 
-    _cascade_after_movement_delete(conn, uid, j["since_date"], {broker},
+    _cascade_after_movement_delete(conn, uid, j["since_date"],
+                                   {broker} | {m["broker"] for m in (p.get("cash_moves") or [])},
                                    antes=antes, journal=p)
 
 

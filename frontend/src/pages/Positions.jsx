@@ -20,6 +20,7 @@ import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../ut
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
+import DividendosPorCobrar from '../components/DividendosPorCobrar'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition } from '../utils/tickers'
 import { buildPositionActions } from '../utils/positionActions'
@@ -1943,6 +1944,11 @@ function PositionsDesktop() {
         confirmando={confirmando.activo}
         onSkip={skipPendingCashflow}
       />
+
+      {/* Dividendos que las empresas ya pagaron y el usuario no anotó. Mismo
+          componente en Cartera de celular (R6): datos y acciones en
+          hooks/useDividendosPorCobrar. */}
+      <DividendosPorCobrar positions={positions} brokers={brokers} mep={tcMepStrict} onCambio={loadAll} className="mb-6" />
 
       {/* CEDEARs con cambio de ratio (split) sin ajustar → pérdida fantasma.
           Detecta y ofrece el ajuste de un clic. */}

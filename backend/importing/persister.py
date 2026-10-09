@@ -1013,12 +1013,23 @@ def _persist_dividend_or_interest(conn, uid, batch_id, raw_row_id, tx: Normalize
     if amount <= 0:
         raise PersistError(tx.row_index, "Monto debe ser positivo.")
 
-    # 1. Subir cash del broker (auto-crea posición si no existe)
-    helpers._adjust_broker_cash(conn, uid, tx.broker, amount)
-
     # ¿Amortización de bono sin cantidad? → devolución de capital, P&L-neutral.
     is_amort = _is_amort_capital_return(
         tx.operation_type, tx.asset_symbol, tx.asset_type, tx.notes)
+
+    # 0. Si el usuario ya había confirmado ESTE dividendo desde la bandeja de
+    #    Cartera, el dato del broker manda: el confirmado se borra (y se devuelve
+    #    su efectivo) antes de anotar el importado. Sin esto, importar el archivo
+    #    después de confirmar contaba el dividendo dos veces. Ver
+    #    dividendos.reemplazar_por_importado.
+    if tx.operation_type == OP_DIVIDEND and not is_amort:
+        from dividendos import reemplazar_por_importado
+        reemplazar_por_importado(
+            conn, uid, tx.broker, tx.asset_symbol, tx.date,
+            (amount / tc_blue) if currency == "ARS" else amount)
+
+    # 1. Subir cash del broker (auto-crea posición si no existe)
+    helpers._adjust_broker_cash(conn, uid, tx.broker, amount)
 
     # 2. Insertar fila en operations
     if is_amort:

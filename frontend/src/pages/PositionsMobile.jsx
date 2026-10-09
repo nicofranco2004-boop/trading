@@ -40,6 +40,7 @@ import { lineaDelBono } from '../utils/lineaDelBono'
 import { filaSinUnaPata } from '../utils/filaFusionada'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
+import DividendosPorCobrar from '../components/DividendosPorCobrar'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
@@ -1696,6 +1697,10 @@ export default function PositionsMobile() {
       {/* CEDEARs con cambio de ratio (split) sin ajustar → pérdida fantasma. */}
       <div className="px-4 pt-3">
         <SplitRatioBanner onAdjusted={loadAll} />
+        {/* Dividendos para confirmar: el MISMO componente que Cartera de
+            escritorio (R6), con su propio pedido de datos. */}
+        <DividendosPorCobrar positions={positions} brokers={brokers}
+          mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion} onCambio={loadAll} className="mt-3" />
       </div>
 
       {/* Los ajustes de vista viven en un sheet, así que la lista tiene que
