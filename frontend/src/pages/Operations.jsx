@@ -21,7 +21,7 @@ import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { fmtUsd as fmtUsdRaw, colorClass, parseNum, parseNumOrNull } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -1203,7 +1203,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return borrando.correr(() => borrarMovimiento(m), `mov-${m.id}`)
   }
   async function borrarMovimiento(m) {
-    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta' }[m.type] || 'movimiento'
+    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta', FX_ARS_TO_USD: 'compra de dólares', FX_USD_TO_ARS: 'venta de dólares' }[m.type] || 'movimiento'
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
     // Al FX de SU fecha, el MISMO que muestra la fila que se está por borrar. Si
@@ -1214,10 +1214,23 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     const monto = m.amount_usd
       ? ` (${histMoney.fmtMoneyAt(m.amount_usd, { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })})`
       : ''
-    // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
-    // posición con su costo original. Si le decimos "borrar" el usuario cree que
-    // pierde el activo — es exactamente al revés.
-    if (m.transfer_out) {
+    // El interés de un plazo fijo cobrado: borrarlo DESHACE EL COBRO entero (el
+    // plazo fijo vuelve abierto y sale lo que entró). Decidido así el 2026-10-09;
+    // la fila dice "venta de <banco>", así que sin este cartel nadie se lo espera.
+    const pf = m.deshace_cobro_pf
+    if (pf) {
+      const sale = pf.broker && pf.monto
+        ? `Salen ${fmtMoney(pf.monto, pf.moneda)} de ${pf.broker} (el capital más el interés que entraron al cobrarlo).`
+        : 'No sale plata de ninguna cuenta: cuando lo cobraste, la plata no entró a un broker.'
+      if (!window.confirm(
+        `¿Deshacer el cobro del plazo fijo de ${pf.banco}?\n\n` +
+        `El plazo fijo vuelve a Cartera, abierto. ${sale} ` +
+        `La ganancia del interés deja de contar.\n\nVas a poder deshacerlo.`
+      )) return
+    } else if (m.transfer_out) {
+      // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
+      // posición con su costo original. Si le decimos "borrar" el usuario cree que
+      // pierde el activo — es exactamente al revés.
       if (!window.confirm(
         `¿Reabrir ${m.asset || 'la posición'}?\n\n` +
         `Esta fila no es una venta tuya: la generó una foto de tenencia para cerrar ` +
@@ -1231,18 +1244,23 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
       if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     }
-    const okMsg = m.transfer_out
-      ? `${m.asset || 'La posición'} volvió a tu cartera.`
-      : `Se borró la ${label}${asset}.`
+    const okMsg = pf
+      ? `El plazo fijo de ${pf.banco} volvió a tu cartera.`
+      : m.transfer_out
+        ? `${m.asset || 'La posición'} volvió a tu cartera.`
+        : `Se borró la ${label}${asset}.`
     try {
       const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
       await load()
       onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
-      // todavía no: ahí solo confirmamos, sin prometer nada que no exista.
+      // todavía no: ahí solo confirmamos, sin prometer nada que no exista. Toda
+      // operación cargada a mano (`op-…`) se deshace por la misma puerta: también
+      // las conversiones, que no son ni compra ni venta.
       const token = res?.undo_token
       if (token) {
-        const base = m.type === 'BUY' || m.type === 'SELL' ? '/operations/undo' : null
+        const base = m.type === 'BUY' || m.type === 'SELL' || String(m.id).startsWith('op-')
+          ? '/operations/undo' : null
         if (base) {
           toast.push(okMsg, {
             type: 'success', duration: 12000, actionLabel: 'Deshacer',
@@ -1251,8 +1269,9 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
                 await api.post(`${base}/${token}`)
                 await load()
                 onChanged?.()
-                toast.push(m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
-                                          : 'Listo, lo restauramos.', { type: 'success' })
+                toast.push(pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.'
+                  : m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
+                    : 'Listo, lo restauramos.', { type: 'success' })
               } catch (ex) {
                 toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
               }

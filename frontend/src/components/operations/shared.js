@@ -61,6 +61,15 @@ export function amountClassFor(type) {
 // Estaba duplicada byte a byte en los dos archivos.
 export const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
 
+// ¿Esta fila ofrece el tacho? Por tipo, más las que el backend marca una por una
+// como `borrable`: las conversiones de moneda cargadas con su receta (desde
+// 2026-10-09 el borrado devuelve las dos monedas). Las conversiones viejas y las
+// importadas no la traen y siguen sin tacho. Una sola regla para la tabla y el
+// feed del celular.
+export function puedeBorrarMovimiento(m) {
+  return DELETABLE_MOVEMENT_TYPES.includes(m?.type) || m?.borrable === true
+}
+
 export const MOVEMENT_TYPES = [
   { id: 'all',      label: 'Todos',        icon: SlidersHorizontal },
   { id: 'BUY',      label: 'Compras',      icon: ArrowUpRight,      tone: 'pos' },
