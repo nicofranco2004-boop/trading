@@ -3127,7 +3127,11 @@ def init_db():
                 origen TEXT NOT NULL,            -- efectivo | autodeposito | plazo_fijo | conciliacion | mensual | mensual_sin_global
                 ref TEXT,                        -- 'pos:<id>' / 'pf:<id>' si lo generó una carga
                 anulado_at TEXT,                 -- UTC; NULL = vigente
-                anulado_motivo TEXT
+                anulado_motivo TEXT,
+                -- Tramos en que estuvo anulada y se revivió (borrar → deshacer):
+                -- JSON [[día desde, día hasta), ...] argentinos. Las fotos de esos días
+                -- no la tenían.
+                pausas TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_flujos_a_mano_mes
                 ON flujos_a_mano(user_id, broker, year, month);
@@ -3197,6 +3201,12 @@ def init_db():
             -- el esqueleto de carga, sin un solo error.
             CREATE INDEX IF NOT EXISTS idx_import_op_links_pos ON import_op_links(position_id);
         """)
+        # flujos_a_mano.pausas (2026-10-09): nació con la tabla; esto es para una base
+        # que tenga la tabla de antes de la columna. Sin índice (ver
+        # project_migration_index_order).
+        _fam_cols = _table_cols(conn, 'flujos_a_mano')
+        if _fam_cols and 'pausas' not in _fam_cols:
+            conn.execute("ALTER TABLE flujos_a_mano ADD COLUMN pausas TEXT")
 
         # Migración: ai_usage_daily.chat_count (agregada al introducir chat tiered).
         # DBs prod existentes no tienen esta columna — ADD COLUMN con default 0.
@@ -12949,7 +12959,8 @@ def _anotar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
 def _restar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
                          direction: str, amount_usd: float, *,
                          native_amount: Optional[float] = None,
-                         flujo_id: Optional[int] = None, motivo: str) -> bool:
+                         flujo_id: Optional[int] = None, motivo: str,
+                         solo_global: bool = False) -> bool:
     """Saca de la suma del mes (broker y Global) una carga a mano que se borra o se
     compensa, y la marca anulada en el detalle. Montos POSITIVOS: acá se restan.
     `native_amount` None = la columna en moneda del broker no se toca.
@@ -12960,9 +12971,10 @@ def _restar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
     False. Sin `flujo_id` (cargado antes del detalle) resta como siempre."""
     if flujo_id and _anular_flujos_a_mano(conn, uid, motivo, ids=[flujo_id]) != 1:
         return False
-    _update_monthly_flow(conn, uid, broker, year, month, direction, -amount_usd,
-                         is_manual=True,
-                         native_amount=(-native_amount if native_amount is not None else None))
+    if not solo_global:   # `solo_global`: el renglón del broker se borra entero aparte
+        _update_monthly_flow(conn, uid, broker, year, month, direction, -amount_usd,
+                             is_manual=True,
+                             native_amount=(-native_amount if native_amount is not None else None))
     _update_monthly_flow(conn, uid, 'global', year, month, direction, -amount_usd,
                          is_manual=True)
     return True
@@ -12980,8 +12992,24 @@ def _revivir_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
     _update_monthly_flow(conn, uid, 'global', year, month, direction, amount_usd,
                          is_manual=True)
     if flujo_id:
-        conn.execute("UPDATE flujos_a_mano SET anulado_at=NULL, anulado_motivo=NULL "
-                     "WHERE id=? AND user_id=?", (flujo_id, uid))
+        # El tramo en que estuvo borrada: las fotos de esos días no la tenían, y si se
+        # vuelve a borrar no se les puede restar (auditoría 2: borrar → deshacer →
+        # borrar se la sacaba también a esas).
+        r = conn.execute("SELECT anulado_at, pausas FROM flujos_a_mano WHERE id=? AND user_id=?",
+                         (flujo_id, uid)).fetchone()
+        pausas = []
+        if r is not None:
+            try:
+                pausas = json.loads(r["pausas"] or "[]") or []
+            except (TypeError, ValueError):
+                pausas = []
+            d0 = _dia_art_de_confirmacion(r["anulado_at"])
+            d1 = _dia_art_de_confirmacion(_ahora_utc())
+            if d0 and d1 and d0 < d1:
+                pausas.append([d0, d1])
+        conn.execute("UPDATE flujos_a_mano SET anulado_at=NULL, anulado_motivo=NULL, pausas=? "
+                     "WHERE id=? AND user_id=?",
+                     (json.dumps(pausas) if pausas else None, flujo_id, uid))
 
 
 def _anular_flujos_a_mano(conn, uid: int, motivo: str, *, ids=None, brokers=None,
@@ -13015,8 +13043,28 @@ def _anular_flujos_a_mano(conn, uid: int, motivo: str, *, ids=None, brokers=None
         (_ahora_utc(), motivo, *args)).rowcount
 
 
+def _global_al_dia(conn, uid: int, year: int, month: int) -> bool:
+    """¿Global tiene el renglón de ese mes y lo manual de Global es la suma de lo
+    manual de los brokers? Es lo normal: todas las cargas a mano suman en los dos y
+    el recálculo los vuelve a igualar. Si no, alguien editó Global a mano en /mensual
+    (antes de 2026-10-09 la app no avisaba a Global al editar un broker, y la gente
+    lo emparejaba ella): sumarle además lo del broker contaba la plata dos veces."""
+    g = conn.execute(
+        "SELECT manual_deposits AS d, manual_withdrawals AS w FROM monthly_entries "
+        "WHERE user_id=? AND broker='global' AND year=? AND month=?",
+        (uid, year, month)).fetchone()
+    if g is None:
+        return False
+    b = conn.execute(
+        "SELECT COALESCE(SUM(manual_deposits),0) AS d, COALESCE(SUM(manual_withdrawals),0) AS w "
+        "FROM monthly_entries WHERE user_id=? AND broker<>'global' AND year=? AND month=?",
+        (uid, year, month)).fetchone()
+    return (abs(float(g["d"] or 0) - float(b["d"] or 0)) <= 0.01
+            and abs(float(g["w"] or 0) - float(b["w"] or 0)) <= 0.01)
+
+
 def _anotar_ajuste_mensual(conn, uid: int, broker: str, year: int, month: int,
-                           antes: tuple, despues: tuple) -> None:
+                           antes: tuple, despues: tuple, *, global_al_dia: bool) -> None:
     """/mensual reescribe `manual_*` de un renglón entero (`_derive_manual_flows`):
     la diferencia con lo que había es una carga a mano más, con su hora.
 
@@ -13029,18 +13077,18 @@ def _anotar_ajuste_mensual(conn, uid: int, broker: str, year: int, month: int,
     Editar Global en sí no se anota: su `manual_*` es la suma de los brokers y el
     recálculo la rearma de ahí.
 
-    ⚠️ SÓLO SI GLOBAL YA TIENE EL RENGLÓN DE ESE MES (lo normal: editar un mes, o
-    "pasar al mes siguiente", que crea Global primero). Si no lo tiene, no se crea:
-    declarar el capital inicial es crear el renglón del broker y DESPUÉS el de Global
-    con su arranque, y crearlo acá con arranque 0 rompía ese segundo paso ("ya
-    existe"; `test_borrar_primer_deposito`). Esa carga queda como
-    'mensual_sin_global': el cron no la ve hasta un recálculo y no se sabe desde qué
-    foto la tienen (el borrado la deduce, B)."""
+    ⚠️ SÓLO SI GLOBAL ESTABA AL DÍA ANTES DE LA EDICIÓN (`global_al_dia`, medido por
+    quien llama ANTES de escribir): que tenga el renglón de ese mes —lo normal: editar
+    un mes, o "pasar al mes siguiente", que crea Global primero— y que nadie lo haya
+    editado a mano. Sin renglón no se crea: declarar el capital inicial es crear el
+    del broker y DESPUÉS el de Global con su arranque, y crearlo acá con arranque 0
+    rompía ese segundo paso ("ya existe"; `test_borrar_primer_deposito`). Editado a
+    mano, sumarle lo del broker contaba la plata dos veces (auditoría 2). En los dos
+    casos la carga queda como 'mensual_sin_global': el cron no la ve hasta un
+    recálculo y no se sabe desde qué foto la tienen (el borrado la deduce, B)."""
     if broker == 'global':
         return
-    hay_global = conn.execute(
-        "SELECT 1 FROM monthly_entries WHERE user_id=? AND broker='global' AND year=? AND month=?",
-        (uid, year, month)).fetchone() is not None
+    hay_global = global_al_dia
     for direction, a, d in (("deposit", antes[0], despues[0]),
                             ("withdraw", antes[1], despues[1])):
         diff = float(d or 0) - float(a or 0)
@@ -15117,8 +15165,10 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
                 raise HTTPException(400, f"Broker '{e.broker}' no existe. Agregalo en Config primero.")
         try:
             with conn:  # tx: insert + repair atómico
+                _tomar_turno(conn, uid)
                 man_dep, man_wit = _derive_manual_flows(
                     conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
+                _al_dia = _global_al_dia(conn, uid, e.year, e.month)
                 cur = conn.execute(
                     """INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals,
                        manual_deposits, manual_withdrawals,
@@ -15129,7 +15179,7 @@ def create_monthly(e: MonthlyIn, uid: int = Depends(get_effective_user)):
                 )
                 new_id = cur.lastrowid
                 _anotar_ajuste_mensual(conn, uid, e.broker, e.year, e.month,
-                                       (0.0, 0.0), (man_dep, man_wit))
+                                       (0.0, 0.0), (man_dep, man_wit), global_al_dia=_al_dia)
                 _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
             row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (new_id, uid)).fetchone()
             _ai_cache_invalidate(uid)
@@ -15155,6 +15205,7 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user
             _prev = conn.execute(
                 "SELECT broker, year, month, manual_deposits, manual_withdrawals "
                 "FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
+            _al_dia = bool(_prev) and _global_al_dia(conn, uid, _prev["year"], _prev["month"])
             conn.execute(
                 """UPDATE monthly_entries SET deposits=?, withdrawals=?,
                    manual_deposits=?, manual_withdrawals=?, pnl_realized=?,
@@ -15165,7 +15216,8 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user
             if _prev:
                 _anotar_ajuste_mensual(
                     conn, uid, _prev["broker"], _prev["year"], _prev["month"],
-                    (_prev["manual_deposits"], _prev["manual_withdrawals"]), (man_dep, man_wit))
+                    (_prev["manual_deposits"], _prev["manual_withdrawals"]), (man_dep, man_wit),
+                    global_al_dia=_al_dia)
             _repair_monthly_chain(conn, uid, e.broker)  # Phase 8
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
@@ -15184,16 +15236,27 @@ def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     # Capturar el broker ANTES del delete para poder repair la chain.
     try:
-        target = conn.execute(
-            "SELECT broker, year, month FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)
-        ).fetchone()
         with conn:  # tx: delete + repair atómico
+            _tomar_turno(conn, uid)
+            target = conn.execute(
+                "SELECT broker, year, month, manual_deposits, manual_withdrawals "
+                "FROM monthly_entries WHERE id=? AND user_id=?", (eid, uid)).fetchone()
+            # Lo manual del renglón que se va, también afuera de Global (como editarlo a
+            # 0): si no, el total seguía contándolo hasta el próximo recálculo.
+            if (target and target["broker"] != "global"
+                    and _global_al_dia(conn, uid, target["year"], target["month"])):
+                for _dir, _col in (("deposit", "manual_deposits"), ("withdraw", "manual_withdrawals")):
+                    if float(target[_col] or 0) > 0.005:
+                        _restar_flujo_a_mano(conn, uid, target["broker"], target["year"],
+                                             target["month"], _dir, float(target[_col]),
+                                             motivo="renglon_mensual_borrado", solo_global=True)
             # Si es la primera fila del broker, su plata no puede quedar como capital
             # inicial del mes siguiente (ver `_borrar_filas_de_la_cadena`).
             # Las cargas a mano de ese renglón se van con él (las anula ahí adentro).
             _borrar_filas_de_la_cadena(conn, uid, [eid], motivo="renglon_mensual_borrado")
             if target:
                 _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
+                _repair_monthly_chain(conn, uid, 'global')
         conn.close()
         _ai_cache_invalidate(uid)
         return {"ok": True}
@@ -17041,6 +17104,11 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     if journal is None and dia_entrada:
         # A: uno fechado después de su import ya está en las fotos desde el import.
         desde = min(desde, str(dia_entrada)[:10])
+    if journal is None and (entrada or {}).get("capas"):
+        # M: lo mismo con lo cargado a mano. Un depósito fechado en abril y cargado
+        # en marzo ya está en las fotos de marzo (el cron suma todo lo cargado); sin
+        # esto no había fotos "desde abril" y el borrado no corregía ninguna.
+        desde = min([desde] + [str(c["dia"])[:10] for c in entrada["capas"]])
     meses = sorted({str(s["date"])[:7] for s in fotos if str(s["date"])[:10] >= desde})
     delta = {ym: c1(f"{ym}-01") - c0(f"{ym}-01") for ym in meses}
     # Las fotos de meses ANTERIORES al de lo borrado (sólo pasa con uno fechado
@@ -17295,15 +17363,19 @@ def _capas_de_cargas(conn, uid: int, ids) -> list:
         return []
     out = []
     for r in conn.execute(
-            f"""SELECT id, year, month, direction, monto_usd, cargado_at, origen
+            f"""SELECT id, year, month, direction, monto_usd, cargado_at, origen, pausas
                   FROM flujos_a_mano WHERE user_id=? AND id IN ({','.join('?' * len(ids))})""",
             (uid, *ids)).fetchall():
         dia = _dia_art_de_confirmacion(r["cargado_at"])
         if dia is None:
             return []       # una sin hora legible: no hay cómo saber desde qué foto
+        try:
+            pausas = [tuple(p) for p in (json.loads(r["pausas"] or "[]") or [])]
+        except (TypeError, ValueError):
+            pausas = []
         out.append({"id": r["id"], "dia": dia, "ym": f"{int(r['year']):04d}-{int(r['month']):02d}",
                     "usd": (1.0 if r["direction"] == "deposit" else -1.0) * float(r["monto_usd"]),
-                    "origen": r["origen"]})
+                    "origen": r["origen"], "pausas": pausas})
     return out if len(out) == len(ids) else []
 
 
@@ -17349,11 +17421,14 @@ def _cambio_por_cargas_con_hora(conn, uid: int, fotos, capas, c0, c1):
     if not capas or any(c.get("origen") == "mensual_sin_global" for c in capas):
         return None
     tol = max(0.01, 0.005 * sum(abs(c["usd"]) for c in capas))
-    # 1. ¿Explican el cambio de las cuentas, mes por mes?
+    # 1. ¿Explican el cambio de las cuentas, mes por mes? AL CENTAVO: las dos cosas
+    # salen de los mismos montos. Con el margen de las fotos (0,5 %), 300 cargados
+    # antes del detalle dentro de un mes de 80.000 pasaban por acá, y esos 300 no se
+    # le sacaban a ninguna foto (auditoría 2: peor que deducirlo).
     meses = sorted({str(s["date"])[:7] for s in fotos} | {c["ym"] for c in capas})
     for ym in meses:
         esperado = -sum(c["usd"] for c in capas if c["ym"] <= ym)
-        if abs((c1(f"{ym}-01") - c0(f"{ym}-01")) - esperado) > tol:
+        if abs((c1(f"{ym}-01") - c0(f"{ym}-01")) - esperado) > 0.05:
             return None
     # 2. Desde qué foto diaria estaba cada una.
     entradas = defaultdict(float)     # día → lo que entró a las fotos ese día
@@ -17398,7 +17473,9 @@ def _cambio_por_cargas_con_hora(conn, uid: int, fotos, capas, c0, c1):
             if (total > 0 and falta >= total - tol) or (total < 0 and falta <= total + tol):
                 tenia = []
         else:
-            tenia = [c for c in capas if inicio[c["id"]] is not None and d >= inicio[c["id"]]]
+            # Desde su foto, salvo los días en que estuvo borrada (borrar → deshacer).
+            tenia = [c for c in capas if inicio[c["id"]] is not None and d >= inicio[c["id"]]
+                     and not any(p0 <= d < p1 for p0, p1 in c.get("pausas") or [])]
         dl = -sum(c["usd"] for c in tenia)
         if abs(dl) <= 0.01:
             continue

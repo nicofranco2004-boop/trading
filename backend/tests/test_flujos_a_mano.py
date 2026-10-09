@@ -566,6 +566,64 @@ class LoQueEncontroLaAuditoria1(FlujosAManoBase):
         self.assertEqual(self._flujos()[0]["ref"], f"pos:{nuevo}")
 
 
+class LoQueEncontroLaAuditoria2(FlujosAManoBase):
+    """/mensual y Global (auditoría 2026-10-09, segunda vuelta)."""
+
+    def _put(self, broker, y, m, **cambios):
+        row = self._renglon(broker, y, m)
+        body = {k: max(0.0, float(row[k] or 0)) for k in (
+            "deposits", "withdrawals", "pnl_realized", "capital_inicio", "capital_final")}
+        body.update({"year": y, "month": m, "broker": broker, "pnl_unrealized": 0.0})
+        body.update(cambios)
+        r = self.http.put(f"/api/monthly/{row['id']}", json=body)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def _aportado(self):
+        import snapshots_job
+        return round(snapshots_job.compute_net_deposited_db(self.conn, self.uid), 2)
+
+    def test_global_emparejado_a_mano_y_despues_el_broker_no_cuenta_dos_veces(self):
+        """Antes la app no avisaba a Global al editar un broker y la gente lo emparejaba
+        a mano: si edita Global primero y el broker después, sumarle lo del broker
+        contaba la plata dos veces."""
+        self._depositar(20000.0, fecha="2026-02-01")
+        self._put("global", 2026, 2, deposits=20500.0)
+        self._put(self.BROKER, 2026, 2, deposits=20500.0)
+        self.assertEqual(self._aportado(), 20500.0)
+        self.assertEqual([f["origen"] for f in self._flujos(origen="mensual_sin_global")],
+                         ["mensual_sin_global"])
+
+    def test_crear_global_y_despues_el_broker_con_la_misma_plata(self):
+        self._depositar(1000.0, fecha="2026-03-01")
+        for b in ("global", self.BROKER):
+            r = self.http.post("/api/monthly", json={"year": 2026, "month": 2, "broker": b,
+                                                     "deposits": 10000.0, "capital_final": 10000.0})
+            self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._aportado(), 11000.0)
+
+    def test_borrar_el_renglon_de_un_broker_lo_saca_del_total_en_el_momento(self):
+        self._depositar(20000.0, fecha="2026-02-01")
+        self._depositar(100.0, fecha="2026-03-01")
+        self._put(self.BROKER, 2026, 3, deposits=5100.0)
+        self.assertEqual(self._aportado(), 25100.0)
+        r = self.http.delete(f"/api/monthly/{self._renglon(self.BROKER, 2026, 3)['id']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._aportado(), 20000.0)
+        main._recalc_pnl_realized_from_ops(self.conn, self.uid)   # y el recálculo dice lo mismo
+        self.conn.commit()
+        self.assertEqual(self._aportado(), 20000.0)
+        self.assert_suma_es_sus_cargas()
+
+    def test_deshacer_anota_el_tramo_en_que_estuvo_borrada(self):
+        self.reloj.t = "2026-03-05 15:00:00"
+        pid = self._posicion(1000.0)
+        self.reloj.t = "2026-03-10 15:00:00"
+        r = self.http.delete(f"/api/positions/{pid}")
+        self.reloj.t = "2026-03-13 15:00:00"
+        self.assertEqual(self.http.post(f"/api/operations/undo/{r.json()['undo_token']}").status_code, 200)
+        self.assertEqual(json.loads(self._flujos()[0]["pausas"]), [["2026-03-10", "2026-03-13"]])
+
+
 class OperacionGrupalDelAsesor(FlujosAManoBase):
     """La operación grupal da de alta la misma posición en N clientes (autodepósito
     en los que no tienen saldo) y su deshacer la saca."""

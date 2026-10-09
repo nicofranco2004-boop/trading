@@ -2305,6 +2305,83 @@ class BorrarConservaElDia(unittest.TestCase):
         self.assertEqual(mal, {}, "enero nunca tuvo nada de lo borrado")
 
 
+    # ── auditoría 2 (2026-10-09) ──
+    def test_un_resto_chico_cargado_antes_del_detalle_no_pasa_por_la_hora(self):
+        """Febrero: 30 cargados antes del detalle (sin hora) y 8.000 después. `me-` se
+        lleva los dos; las cargas con hora explican 8.000 de 8.030. Con el margen de las
+        fotos (0,5 % = 40) pasaba por la hora y esos 30 no se le sacaban a ninguna
+        foto. Al centavo, decide la deducción: desde marzo pierden los dos."""
+        self._solo_con_detalle()
+        with mock.patch.object(main, "_anotar_flujo_a_mano", return_value=None):
+            self._depositar_a_mano("2026-02-02", 30)
+        self._subir("2026-02-02", "2026-03-31", 30)
+        self._depositar_a_mano("2026-02-12", 8000)
+        self._subir("2026-02-12", "2026-03-31", 8000)
+        r = self.client.delete(f"/api/movements/{self._me_dep(2)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        servido = self._aportado_servido()
+        mal = {d: (v, servido.get(d)) for d, v in APORTADO_DEL_DIA.items()
+               if d >= "2026-03-01" and servido.get(d) != v}
+        self.assertEqual(mal, {}, "desde marzo las fotos tienen que perder los 8.030")
+
+    def test_una_carga_fechada_en_un_mes_que_todavia_no_llego(self):
+        """Hoy 20-mar. El 12-mar se cargó un depósito fechado 6-abr: el cron suma todo lo
+        cargado, así que las fotos lo tienen desde el 12. Se borra abril: no hay fotos
+        de abril, y antes eso hacía que no se corrigiera ninguna."""
+        self._solo_con_detalle()
+        hoy = "2026-03-20"
+        self._hasta_hoy(hoy, con_foto_de_hoy=True)
+        self._depositar_a_mano("2026-04-06", 5000, cargado="2026-03-12")
+        self._subir("2026-03-12", hoy, 5000)
+        with mock.patch.object(main, "_iso_today", return_value=hoy):
+            r = self.client.delete(f"/api/movements/{self._me_dep_de(2026, 4)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("carga fechada en abril, borrada en marzo",
+                                    self._con({}, hasta=hoy))
+
+    def test_borrar_deshacer_y_volver_a_borrar_una_posicion(self):
+        """Posición cargada el 5-mar; borrada el 10; el cron del 11 y el 12 ya no la
+        tiene; deshecha el 13; las fotos del 14 al 17 la tienen; borrada otra vez el
+        18. Las del 10 al 12 nunca la tuvieron: no se les puede restar."""
+        self._solo_con_detalle()
+        self._hasta_hoy("2026-03-10", con_foto_de_hoy=False)
+        pid = self._posicion_cargada(1000, "2026-03-05", "2026-03-05")
+        self._subir("2026-03-05", "2026-03-09", 1000)
+
+        def _foto(d, monto):
+            self.conn.execute(
+                """INSERT INTO snapshots (user_id, date, total_value, total_invested,
+                       net_deposited, fx_to_usd_blue, holdings_json, source, base, apto)
+                   VALUES (?,?,?,?,?,1200,'[]','cron','mercado',1)
+                   ON CONFLICT(user_id, date) DO UPDATE SET net_deposited=excluded.net_deposited,
+                       total_value=excluded.total_value, source='cron'""",
+                (self.uid, d, monto, monto, monto))
+            self.conn.commit()
+
+        with mock.patch.object(main, "_iso_today", return_value="2026-03-10"), \
+                self._cargado("2026-03-10"):
+            r = self.client.delete(f"/api/positions/{pid}")
+        self.assertEqual(r.status_code, 200, r.text)
+        token = r.json()["undo_token"]
+        for d in ("2026-03-10", "2026-03-11", "2026-03-12"):
+            _foto(d, APORTADO_DEL_DIA[d])
+        with mock.patch.object(main, "_iso_today", return_value="2026-03-13"), \
+                self._cargado("2026-03-13"):
+            r = self.client.post(f"/api/operations/undo/{token}")
+        self.assertEqual(r.status_code, 200, r.text)
+        for d in ("2026-03-13", "2026-03-14", "2026-03-15", "2026-03-16", "2026-03-17"):
+            # Escritas DESPUÉS del deshacer (el cron de las 23:59 del 13 en adelante): la tienen.
+            _foto(d, APORTADO_DEL_DIA[d] + 1000)
+        nuevo = self.conn.execute("SELECT id FROM positions WHERE user_id=? AND broker='MANUAL' "
+                                  "AND is_cash=0", (self.uid,)).fetchone()["id"]
+        with mock.patch.object(main, "_iso_today", return_value="2026-03-18"), \
+                self._cargado("2026-03-18"):
+            r = self.client.delete(f"/api/positions/{nuevo}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar, deshacer y volver a borrar",
+                                    self._con({}, hasta="2026-03-18"))
+
+
 class BorrarConservaElDiaCargadoAntesDelDetalle(BorrarConservaElDia):
     """TODO lo de arriba con lo cargado a mano ANTES de que existiera el detalle
     (`flujos_a_mano`, 2026-10-09): ninguna carga sabe cuándo se cargó y el borrado lo
