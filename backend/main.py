@@ -16001,45 +16001,27 @@ def _build_movements(uid: int):
         importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
         for r in me_rows:
             d = dict(r)
-            y, m = int(d["year"]), int(d["month"])
             deposits_manual, withdrawals_manual = _flujos_manuales_del_mes(r, importados)
-
-            approx_date = f"{y:04d}-{m:02d}-15"
-            if deposits_manual > 0.01:
+            # Una fila por carga a mano con su día (`mf-`, se borra sola) y, si sobra,
+            # una "del mes" con lo que no tiene día (`mr-`). Lo arma la misma función
+            # que la exportación.
+            for f in _filas_a_mano_del_mes(conn, uid, r, deposits_manual, withdrawals_manual):
                 movements.append({
-                    "id": f"me-{d['id']}-dep",
+                    "id": f["id"],
                     "kind": "movement",
-                    "date": approx_date,
-                    "type": "DEPOSIT",
+                    "date": f["fecha"],
+                    "type": f["type"],
                     "broker": d.get("broker") or "",
                     "asset": "",
                     "quantity": None,
                     "unit_price": None,
-                    "amount_usd": deposits_manual,
+                    "amount_usd": f["usd"],
                     "currency": "USD",
                     "fees_usd": 0,
-                    "notes": f"Depósitos manuales {y}-{m:02d}",
+                    "notes": f["nota"],
                     "source": "monthly",
                     "ref_id": d["id"],
-                    "approx_date": True,
-                })
-            if withdrawals_manual > 0.01:
-                movements.append({
-                    "id": f"me-{d['id']}-wit",
-                    "kind": "movement",
-                    "date": approx_date,
-                    "type": "WITHDRAW",
-                    "broker": d.get("broker") or "",
-                    "asset": "",
-                    "quantity": None,
-                    "unit_price": None,
-                    "amount_usd": withdrawals_manual,
-                    "currency": "USD",
-                    "fees_usd": 0,
-                    "notes": f"Retiros manuales {y}-{m:02d}",
-                    "source": "monthly",
-                    "ref_id": d["id"],
-                    "approx_date": True,
+                    "approx_date": f["aprox"],
                 })
 
         # ── 4) Positions abiertas manuales (BUY sin SELL todavía) ───────────
@@ -16131,7 +16113,8 @@ _SEED_BLOCK_MSG = (
 )
 
 
-def _month_has_autodeposit(conn, uid: int, broker: str, year: int, month: int) -> bool:
+def _month_has_autodeposit(conn, uid: int, broker: str, year: int, month: int,
+                           sin_detalle: bool = False) -> bool:
     """True si alguna posición VIVA del broker se dio de alta en ese mes disparando un
     AUTODEPÓSITO (`_autodeposit_if_overdraw`: sin saldo, el alta sube el cash y lo
     registra como capital aportado).
@@ -16152,6 +16135,10 @@ def _month_has_autodeposit(conn, uid: int, broker: str, year: int, month: int) -
         except (ValueError, TypeError):
             continue
         if ad.get("ym") == ym and float(ad.get("native") or 0) > 0:
+            # `sin_detalle`: sólo los que no tienen su carga anotada (anteriores a
+            # `flujos_a_mano`); los nuevos tienen renglón propio en Movimientos.
+            if sin_detalle and ad.get("flujo_id"):
+                continue
             return True
     return False
 
@@ -17557,6 +17544,195 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, 
     return {"aportado": plan}
 
 
+def _cargas_sueltas(conn, uid: int, broker: str, year: int, month: int,
+                    direction: Optional[str] = None) -> list:
+    """Las cargas a mano vigentes que tienen su PROPIO renglón en Movimientos (y se
+    borran solas, `mf-`): las que la persona hizo como un movimiento —botón de
+    efectivo o chat, conciliación de saldo, el aporte automático de una compra o de un
+    plazo fijo—. Lo de /mensual no: es una corrección del total del mes y va con el
+    resto (`mr-`)."""
+    sql = ("SELECT * FROM flujos_a_mano WHERE user_id=? AND broker=? AND year=? AND month=? "
+           "AND anulado_at IS NULL AND monto_usd > 0 "
+           "AND origen IN ('efectivo', 'conciliacion', 'autodeposito', 'plazo_fijo')")
+    args = [uid, broker, int(year), int(month)]
+    if direction:
+        sql += " AND direction=?"
+        args.append(direction)
+    return conn.execute(sql + " ORDER BY COALESCE(fecha, ''), id", args).fetchall()
+
+
+_NOTA_DE_CARGA = {
+    ("efectivo", "deposit"): "Depósito a mano",
+    ("efectivo", "withdraw"): "Retiro a mano",
+    ("conciliacion", "deposit"): "Ajuste del saldo al del broker",
+    ("conciliacion", "withdraw"): "Ajuste del saldo al del broker",
+    ("autodeposito", "deposit"): "Aporte automático: compra cargada a mano sin saldo",
+    ("plazo_fijo", "deposit"): "Aporte automático: plazo fijo sin saldo en el broker",
+}
+
+
+def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: float) -> list:
+    """Los renglones de lo cargado a mano en un mes de un broker, como los muestran
+    Movimientos y la exportación (las dos lo arman con esto): una fila por carga suelta
+    (`mf-`, con su día) y, si sobra, una "del mes" con el resto (`mr-`: lo cargado
+    antes del detalle y lo de /mensual). `dep_resto`/`wit_resto` = lo manual del mes
+    (`_flujos_manuales_del_mes`). Cada fila: {id, type, fecha, aprox, usd, nota}."""
+    y, m = int(me_row["year"]), int(me_row["month"])
+    out = []
+    for direction, total, tipo, sufijo in (("deposit", dep_resto, "DEPOSIT", "dep"),
+                                           ("withdraw", wit_resto, "WITHDRAW", "wit")):
+        sueltas = _cargas_sueltas(conn, uid, me_row["broker"], y, m, direction)
+        for f in sueltas:
+            out.append({"id": f"mf-{f['id']}", "type": tipo,
+                        "fecha": f["fecha"] or f"{y:04d}-{m:02d}-15", "aprox": not f["fecha"],
+                        "usd": float(f["monto_usd"]),
+                        "nota": _NOTA_DE_CARGA.get((f["origen"], direction), "A mano")})
+        resto = total - sum(float(f["monto_usd"]) for f in sueltas)
+        if resto > 0.01:
+            out.append({"id": f"mr-{me_row['id']}-{sufijo}", "type": tipo,
+                        "fecha": f"{y:04d}-{m:02d}-15", "aprox": True, "usd": resto,
+                        "nota": (f"{'Depósitos' if sufijo == 'dep' else 'Retiros'} a mano de "
+                                 f"{y}-{m:02d} sin día registrado")})
+    return out
+
+
+def _borrar_una_carga_a_mano(conn, uid: int, mid: str):
+    """`mf-{id}`: borra UNA carga a mano (la que se ve en su renglón de Movimientos) y
+    nada más. Devuelve lo mismo que `_delete_one_movement`. La reclama primero (doble
+    click: el segundo pedido no mueve plata) y devuelve EXACTAMENTE lo que ella movió
+    (dólares y moneda del broker)."""
+    try:
+        fid = int(mid[3:])
+    except ValueError:
+        raise HTTPException(400, "id de movimiento inválido")
+    f = conn.execute("SELECT * FROM flujos_a_mano WHERE id=? AND user_id=? AND anulado_at IS NULL",
+                     (fid, uid)).fetchone()
+    if not f or f["origen"] not in ("efectivo", "conciliacion", "autodeposito", "plazo_fijo") \
+            or float(f["monto_usd"]) <= 0:
+        raise HTTPException(404, "Movimiento no encontrado")
+    if f["origen"] == "autodeposito":
+        raise HTTPException(409,
+            "Este aporte lo generó una compra que cargaste a mano sin saldo (Rendi lo "
+            "registra como plata aportada). Borrá esa compra desde Cartera y el aporte "
+            "se va con ella.")
+    broker = f["broker"]
+    if f["monto_nativo"] is not None:
+        native = float(f["monto_nativo"])
+    else:
+        br = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=?",
+                          (uid, broker)).fetchone()
+        native = (float(f["monto_usd"]) * _config_tc_blue(conn, uid)
+                  if ((br["currency"] if br else "USD") or "USD").upper() == "ARS"
+                  else float(f["monto_usd"]))
+    antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
+    if not _restar_flujo_a_mano(conn, uid, broker, int(f["year"]), int(f["month"]),
+                                f["direction"], float(f["monto_usd"]),
+                                native_amount=f["monto_nativo"], flujo_id=fid,
+                                motivo="movimiento_borrado"):
+        raise HTTPException(409, "Ese movimiento ya se está borrando.")
+    # depósito sumó efectivo → se resta; retiro restó → se devuelve.
+    _adjust_broker_cash(conn, uid, broker, -native if f["direction"] == "deposit" else native)
+    since = f["fecha"] or f"{int(f['year']):04d}-{int(f['month']):02d}-01"
+    return since, {broker}, {"capas": _capas_de_cargas(conn, uid, [fid])}, antes
+
+
+def _borrar_lo_manual_del_mes(conn, uid: int, mid: str):
+    """`me-{n}-dep|wit` (todo lo manual del mes) y `mr-{n}-dep|wit` (sólo el resto: lo
+    que no tiene renglón propio). Una sola función para los dos: es la misma cuenta.
+    Devuelve lo mismo que `_delete_one_movement`."""
+    solo_resto = mid.startswith("mr-")
+    parts = mid.split("-")
+    if len(parts) != 3 or parts[2] not in ("dep", "wit"):
+        raise HTTPException(400, "id de movimiento inválido")
+    try:
+        me_id = int(parts[1])
+    except ValueError:
+        raise HTTPException(400, "id de movimiento inválido")
+    row = conn.execute(
+        "SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (me_id, uid),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Movimiento no encontrado")
+    broker = row["broker"] or ""
+    direction = parts[2]
+    col = "manual_deposits" if direction == "dep" else "manual_withdrawals"
+    nat_col = "manual_deposits_native" if direction == "dep" else "manual_withdrawals_native"
+    manual_usd = float((row[col] if col in row.keys() else 0) or 0)
+    _dir = "deposit" if direction == "dep" else "withdraw"
+    # mr-: sólo lo que NO tiene renglón propio (las cargas sueltas se quedan).
+    sueltas = (_cargas_sueltas(conn, uid, broker, int(row["year"]), int(row["month"]), _dir)
+               if solo_resto else [])
+    s_usd = sum(float(f["monto_usd"]) for f in sueltas)
+    s_nat = sum(float(f["monto_nativo"] or 0) for f in sueltas)
+    resto_usd = manual_usd - s_usd
+    if resto_usd <= 0.01:
+        raise HTTPException(404, "No hay un movimiento manual para borrar en ese mes")
+    # 🔴 AUTODEPÓSITO: parte (o todo) este "depósito manual" puede haberlo generado el
+    # alta de una posición cargada a mano sin saldo — `_autodeposit_if_overdraw` sube
+    # el cash Y lo registra como aportado para que el P&L no mienta. Borrarlo suelto
+    # deja el cash NEGATIVO (justo lo que ese mecanismo existe para impedir) y el
+    # aportado en 0 con la tenencia viva → rendimiento infinito. Y por esta rama no
+    # hay "Deshacer". Bloqueamos y mandamos a borrar la posición, que sí sabe
+    # reversar las dos patas juntas. (Reproducido: cash −200, aportado 0.)
+    # (En mr- sólo cuentan los autodepósitos sin renglón propio: los de antes del
+    # detalle. Los nuevos tienen el suyo y no son parte de este resto.)
+    if direction == "dep" and _month_has_autodeposit(conn, uid, broker,
+                                                     int(row["year"]), int(row["month"]),
+                                                     sin_detalle=solo_resto):
+        raise HTTPException(409,
+            "Parte de este depósito lo generó el alta de una posición que cargaste a "
+            "mano (sin saldo, Rendi lo registra como aporte). Borrá primero esa "
+            "posición desde Cartera y el depósito se va con ella.")
+    broker_row = conn.execute(
+        "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, broker),
+    ).fetchone()
+    broker_ccy = ((broker_row["currency"] if broker_row else "USD") or "USD").upper()
+    # Reverso del cash (nativo del broker). Preferimos el NATIVO EXACTO guardado al
+    # crear (manual_*_native). Si la fila es vieja y no lo tiene, aproximamos por el
+    # blue de HOY (residual chico en el saldo). En ambos casos el capital APORTADO
+    # queda EXACTO porque abajo ponemos el manual del mes en 0.
+    stored_native = float((row[nat_col] if nat_col in row.keys() else 0) or 0)
+    if stored_native > 0 and stored_native - s_nat > 0:
+        native = stored_native - s_nat
+    elif broker_ccy == "ARS":
+        native = resto_usd * _config_tc_blue(conn, uid)
+    else:
+        native = resto_usd
+    antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
+    # Poner el manual del mes (USD + nativo) en 0 —en `mr-`, en lo de las cargas
+    # sueltas, que se quedan— → _recalc recompone deposits.
+    # Es también el RECLAMO (2026-10-03), y por eso va ANTES de tocar el saldo:
+    # el monto se leyó arriba sin bloqueo, y con un doble click en "Borrar" los
+    # dos pedidos devolvían el depósito entero. El WHERE repite lo leído: si
+    # otro pedido ya lo puso en cero —o cargó otro depósito en el mismo mes y
+    # el monto cambió— no toca la fila y no se mueve plata.
+    # (mr-: queda lo de las cargas sueltas.)
+    if conn.execute(
+        f"UPDATE monthly_entries SET {col}=?, {nat_col}=? "
+        f"WHERE id=? AND user_id=? AND COALESCE({col}, 0)=? AND COALESCE({nat_col}, 0)=?",
+        (round(s_usd, 6), round(s_nat, 6) if stored_native > 0 else stored_native,
+         me_id, uid, manual_usd, stored_native),
+    ).rowcount != 1:
+        raise HTTPException(409, "Ese movimiento cambió mientras lo borrabas. "
+                                 "Recargá la página para ver cómo quedó.")
+    # Todas las cargas a mano de ese mes y sentido se fueron con el renglón. Cada
+    # una sabe cuándo se cargó: la cascada se las saca a las fotos desde ahí
+    # (`_cambio_por_cargas_con_hora`). Si no explican todo lo borrado —una parte
+    # se cargó antes de que existiera el detalle—, la cascada lo deduce (B).
+    _sueltas = {f["id"] for f in sueltas}
+    _ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM flujos_a_mano WHERE user_id=? AND broker=? AND year=? AND month=? "
+        "AND direction=? AND anulado_at IS NULL",
+        (uid, broker, int(row["year"]), int(row["month"]), _dir)).fetchall()
+        if r["id"] not in _sueltas]
+    _anular_flujos_a_mano(conn, uid, "movimiento_borrado", ids=_ids)
+    _capas = _capas_de_cargas(conn, uid, _ids)
+    # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
+    _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
+    since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
+    return since, {broker}, ({"capas": _capas} if _capas else None), antes
+
+
 def _delete_one_movement(conn, uid: int, mid: str):
     """Parsea el id compuesto de /api/movements, revierte los side-effects (cash +
     operations linkeadas) y borra la fila fuente. Devuelve (since_date,
@@ -17628,85 +17804,17 @@ def _delete_one_movement(conn, uid: int, mid: str):
         since = (tx["date"] or "")[:10] or None
         return since, {broker}, _entrada_de_movimiento_importado(conn, uid, tx), antes
 
-    # ── me-{n}-dep / me-{n}-wit: depósito/retiro MANUAL agregado del mes ──
-    if mid.startswith("me-"):
-        parts = mid.split("-")
-        if len(parts) != 3 or parts[2] not in ("dep", "wit"):
-            raise HTTPException(400, "id de movimiento inválido")
-        try:
-            me_id = int(parts[1])
-        except ValueError:
-            raise HTTPException(400, "id de movimiento inválido")
-        row = conn.execute(
-            "SELECT * FROM monthly_entries WHERE id=? AND user_id=?", (me_id, uid),
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Movimiento no encontrado")
-        broker = row["broker"] or ""
-        direction = parts[2]
-        col = "manual_deposits" if direction == "dep" else "manual_withdrawals"
-        nat_col = "manual_deposits_native" if direction == "dep" else "manual_withdrawals_native"
-        manual_usd = float((row[col] if col in row.keys() else 0) or 0)
-        if manual_usd <= 0:
-            raise HTTPException(404, "No hay un movimiento manual para borrar en ese mes")
-        # 🔴 AUTODEPÓSITO: parte (o todo) este "depósito manual" puede haberlo generado el
-        # alta de una posición cargada a mano sin saldo — `_autodeposit_if_overdraw` sube
-        # el cash Y lo registra como aportado para que el P&L no mienta. Borrarlo suelto
-        # deja el cash NEGATIVO (justo lo que ese mecanismo existe para impedir) y el
-        # aportado en 0 con la tenencia viva → rendimiento infinito. Y por esta rama no
-        # hay "Deshacer". Bloqueamos y mandamos a borrar la posición, que sí sabe
-        # reversar las dos patas juntas. (Reproducido: cash −200, aportado 0.)
-        if direction == "dep" and _month_has_autodeposit(conn, uid, broker,
-                                                         int(row["year"]), int(row["month"])):
-            raise HTTPException(409,
-                "Parte de este depósito lo generó el alta de una posición que cargaste a "
-                "mano (sin saldo, Rendi lo registra como aporte). Borrá primero esa "
-                "posición desde Cartera y el depósito se va con ella.")
-        broker_row = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=?", (uid, broker),
-        ).fetchone()
-        broker_ccy = ((broker_row["currency"] if broker_row else "USD") or "USD").upper()
-        # Reverso del cash (nativo del broker). Preferimos el NATIVO EXACTO guardado al
-        # crear (manual_*_native). Si la fila es vieja y no lo tiene, aproximamos por el
-        # blue de HOY (residual chico en el saldo). En ambos casos el capital APORTADO
-        # queda EXACTO porque abajo ponemos el manual del mes en 0.
-        stored_native = float((row[nat_col] if nat_col in row.keys() else 0) or 0)
-        if stored_native > 0:
-            native = stored_native
-        elif broker_ccy == "ARS":
-            native = manual_usd * _config_tc_blue(conn, uid)
-        else:
-            native = manual_usd
-        antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
-        # Poner el manual del mes (USD + nativo) en 0 → _recalc recompone deposits.
-        # Es también el RECLAMO (2026-10-03), y por eso va ANTES de tocar el saldo:
-        # el monto se leyó arriba sin bloqueo, y con un doble click en "Borrar" los
-        # dos pedidos devolvían el depósito entero. El WHERE repite lo leído: si
-        # otro pedido ya lo puso en cero —o cargó otro depósito en el mismo mes y
-        # el monto cambió— no toca la fila y no se mueve plata.
-        if conn.execute(
-            f"UPDATE monthly_entries SET {col}=0, {nat_col}=0 "
-            f"WHERE id=? AND user_id=? AND COALESCE({col}, 0)=? AND COALESCE({nat_col}, 0)=?",
-            (me_id, uid, manual_usd, stored_native),
-        ).rowcount != 1:
-            raise HTTPException(409, "Ese movimiento cambió mientras lo borrabas. "
-                                     "Recargá la página para ver cómo quedó.")
-        # Todas las cargas a mano de ese mes y sentido se fueron con el renglón. Cada
-        # una sabe cuándo se cargó: la cascada se las saca a las fotos desde ahí
-        # (`_cambio_por_cargas_con_hora`). Si no explican todo lo borrado —una parte
-        # se cargó antes de que existiera el detalle—, la cascada lo deduce (B).
-        _dir = "deposit" if direction == "dep" else "withdraw"
-        _ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM flujos_a_mano WHERE user_id=? AND broker=? AND year=? AND month=? "
-            "AND direction=? AND anulado_at IS NULL",
-            (uid, broker, int(row["year"]), int(row["month"]), _dir)).fetchall()]
-        _anular_flujos_a_mano(conn, uid, "movimiento_borrado", brokers=[broker],
-                              year=int(row["year"]), month=int(row["month"]), direction=_dir)
-        _capas = _capas_de_cargas(conn, uid, _ids)
-        # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
-        _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
-        since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
-        return since, {broker}, ({"capas": _capas} if _capas else None), antes
+    # ── lo cargado a mano ──
+    #   mf-{id}         UNA carga (`flujos_a_mano`), con su día: cada depósito o retiro
+    #                   a mano tiene su renglón en Movimientos (desde 2026-10-09).
+    #   mr-{n}-dep/wit  el RESTO del mes: lo cargado antes del detalle y lo de
+    #                   /mensual, en un renglón "del mes".
+    #   me-{n}-dep/wit  TODO lo manual del mes (lo que mostraba Movimientos antes; queda
+    #                   por una pantalla vieja abierta y por los tests).
+    if mid.startswith("mf-"):
+        return _borrar_una_carga_a_mano(conn, uid, mid)
+    if mid.startswith("me-") or mid.startswith("mr-"):
+        return _borrar_lo_manual_del_mes(conn, uid, mid)
 
     # ── op-{n}-* (trade manual) / pos-{n} (holding abierto) → no soportado v1 ──
     if mid.startswith("op-") or mid.startswith("pos-"):
@@ -18227,7 +18335,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
         # y un retiro que nadie hizo. Es la misma cuenta que Movimientos.
         tc_blue = _user_tc_blue(conn, uid)
         me_rows = conn.execute(
-            """SELECT year, month, broker, deposits, withdrawals
+            """SELECT id, year, month, broker, deposits, withdrawals
                FROM monthly_entries
                WHERE user_id = ? AND broker != 'global'
                  AND (deposits > 0 OR withdrawals > 0)""",
@@ -18235,34 +18343,21 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
         ).fetchall()
         importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
         for r in me_rows:
-            # Usamos el día 15 del mes como aproximación (cash flows agregados)
-            d = f"{r['year']:04d}-{r['month']:02d}-15"
             dep_manual, wit_manual = _flujos_manuales_del_mes(r, importados)
-            if dep_manual > 0.01:
+            # Lo mismo que Movimientos: una fila por carga con su día, y el resto del
+            # mes (lo que no tiene día) en una con fecha aproximada al 15.
+            for f in _filas_a_mano_del_mes(conn, uid, r, dep_manual, wit_manual):
                 rows.append({
-                    "fecha": d,
-                    "tipo": "DEPÓSITO",
+                    "fecha": f["fecha"],
+                    "tipo": "DEPÓSITO" if f["type"] == "DEPOSIT" else "RETIRO",
                     "broker": r["broker"] or "",
                     "activo": "",
                     "cantidad": "",
                     "precio_unitario": "",
-                    "monto": round(dep_manual, 2),
+                    "monto": round(f["usd"], 2),
                     "moneda": "USD",
                     "comisiones": 0,
-                    "notas": f"Depósitos manuales {r['year']}-{r['month']:02d} (fecha aproximada al 15)",
-                })
-            if wit_manual > 0.01:
-                rows.append({
-                    "fecha": d,
-                    "tipo": "RETIRO",
-                    "broker": r["broker"] or "",
-                    "activo": "",
-                    "cantidad": "",
-                    "precio_unitario": "",
-                    "monto": round(wit_manual, 2),
-                    "moneda": "USD",
-                    "comisiones": 0,
-                    "notas": f"Retiros manuales {r['year']}-{r['month']:02d} (fecha aproximada al 15)",
+                    "notas": f["nota"] + (" (fecha aproximada al 15)" if f["aprox"] else ""),
                 })
     finally:
         conn.close()

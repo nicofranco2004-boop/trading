@@ -2382,6 +2382,62 @@ class BorrarConservaElDia(unittest.TestCase):
                                     self._con({}, hasta="2026-03-18"))
 
 
+    # ── borrar de a uno (2026-10-09) ──
+    def _id_de_carga(self, monto):
+        """El id de Movimientos de la carga a mano de ese monto (`mf-`)."""
+        movs = [m for m in self.client.get("/api/movements").json()
+                if m["id"].startswith("mf-") and m["amount_usd"] == monto]
+        self.assertEqual(len(movs), 1, movs)
+        return movs[0]["id"]
+
+    def test_borrar_uno_de_dos_depositos_del_mes(self):
+        """1.000 el 5-feb y 2.000 el 25-feb; se borra sólo el de 2.000: lo pierden las
+        fotos desde el 25 y nada más (el de 1.000 sigue en todas las suyas)."""
+        self._solo_con_detalle()
+        self._depositar_a_mano("2026-02-05", 1000)
+        self._subir("2026-02-05", "2026-03-31", 1000)
+        self._depositar_a_mano("2026-02-25", 2000)
+        self._subir("2026-02-25", "2026-03-31", 2000)
+        r = self.client.delete(f"/api/movements/{self._id_de_carga(2000)}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar uno de dos depósitos del mes",
+                                    self._con({"2026-02-05": 1000}))
+
+    def test_borrar_el_segundo_de_dos_depositos_iguales(self):
+        """2.000 el 5-feb y otros 2.000 el 25-feb; se borra el del 25: la foto saltó
+        2.000 dos veces y por saltos se elegía el primero. Con la hora, cada uno sabe
+        el suyo."""
+        self._solo_con_detalle()
+        self._depositar_a_mano("2026-02-05", 2000)
+        self._subir("2026-02-05", "2026-03-31", 2000)
+        self._depositar_a_mano("2026-02-25", 2000)
+        self._subir("2026-02-25", "2026-03-31", 2000)
+        segundo = [m for m in self.client.get("/api/movements").json()
+                   if m["id"].startswith("mf-") and m["date"] == "2026-02-25"][0]
+        r = self.client.delete(f"/api/movements/{segundo['id']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar el segundo de dos depósitos iguales",
+                                    self._con({"2026-02-05": 2000}))
+
+    def test_borrar_solo_lo_viejo_del_mes(self):
+        """Un depósito de antes del detalle (700, sin hora) y uno nuevo (300) en
+        febrero; se borra el renglón "del mes", que tiene sólo lo viejo: las fotos
+        conservan los 300 desde su día. (Lo viejo lo deduce B: con un solo movimiento
+        en el resto, encuentra su salto.)"""
+        self._solo_con_detalle()
+        with mock.patch.object(main, "_anotar_flujo_a_mano", return_value=None):
+            self._depositar_a_mano("2026-02-03", 700)
+        self._subir("2026-02-03", "2026-03-31", 700)
+        self._depositar_a_mano("2026-02-24", 300)
+        self._subir("2026-02-24", "2026-03-31", 300)
+        resto = [m for m in self.client.get("/api/movements").json() if m["id"].startswith("mr-")]
+        self.assertEqual(len(resto), 1, resto)
+        r = self.client.delete(f"/api/movements/{resto[0]['id']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self._assert_dia_conservado("borrar sólo lo viejo del mes",
+                                    self._con({"2026-02-24": 300}))
+
+
 class BorrarConservaElDiaCargadoAntesDelDetalle(BorrarConservaElDia):
     """TODO lo de arriba con lo cargado a mano ANTES de que existiera el detalle
     (`flujos_a_mano`, 2026-10-09): ninguna carga sabe cuándo se cargó y el borrado lo

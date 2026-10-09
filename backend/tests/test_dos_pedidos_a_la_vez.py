@@ -289,6 +289,42 @@ class BorrarDepositoManualDelMes(_Base):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+class BorrarUnaCargaAMano(_Base):
+    """Desde 2026-10-09 cada depósito a mano tiene su renglón en Movimientos (`mf-`)."""
+
+    LEE_CARGA = "SELECT * FROM flujos_a_mano WHERE id=? AND user_id=? AND anulado_at IS NULL"
+
+    def _carga(self):
+        self.usuario()
+        r = self.client.post("/api/cash/flow", headers=self.h,
+                             json={"broker_name": "Schwab", "direction": "deposit", "amount": 500})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["flujo_id"]
+
+    def test_doble_click_borra_la_carga_UNA_vez(self):
+        fid = self._carga()
+        cruce = self.cruzar(self.LEE_CARGA)
+        rs = self.dos_a_la_vez(lambda: self.client.delete(f"/api/movements/mf-{fid}", headers=self.h))
+        self.assertFalse(cruce.se_juntaron, "la puerta no tomó el turno antes de leer")
+        self.assertEqual(sorted(x.status_code for x in rs)[0], 200, [x.text for x in rs])
+        self.assertIn(sorted(x.status_code for x in rs)[1], (404, 409), [x.text for x in rs])
+        self.assertAlmostEqual(self.cash(), 1000, places=2,
+                               msg="el doble click devolvió el depósito dos veces")
+
+    def test_sin_turno_el_reclamo_de_la_carga_frena_el_segundo(self):
+        """Sin el turno: los dos leen la carga vigente; el segundo no la puede
+        reclamar (`_restar_flujo_a_mano`) → 409, sin plata."""
+        self.sin_turno()
+        fid = self._carga()
+        cruce = self.cruzar(self.LEE_CARGA)
+        rs = self.dos_a_la_vez(lambda: self.client.delete(f"/api/movements/mf-{fid}", headers=self.h))
+        self.assertTrue(cruce.se_juntaron, "el test no llegó a forzar el choque")
+        self.assertEqual(sorted(x.status_code for x in rs), [200, 409], [x.text for x in rs])
+        self.assertAlmostEqual(self.cash(), 1000, places=2,
+                               msg="el doble click devolvió el depósito dos veces")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 class VenderLaTenencia(_Base):
 
     def setUp(self):

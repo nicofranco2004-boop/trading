@@ -243,7 +243,9 @@ def ev_flujo_a_mano(w: Mundo, direccion: str):
     cid = w.nuevo_cid("mano")
     w.comps[cid] = {"usd": m if direccion == "deposit" else -m, "reflejado": True,
                     "vivo": True, "tipo": "mano", "ym": fecha[:7], "fecha": fecha,
-                    "dir": "dep" if direccion == "deposit" else "wit", "broker": BROKER}
+                    "dir": "dep" if direccion == "deposit" else "wit", "broker": BROKER,
+                    # su renglón propio en Movimientos (desde 2026-10-09), si lo tiene
+                    "flujo_id": (r.json() or {}).get("flujo_id")}
     w.eventos.append(f"{w.ahora:%m-%d %H:%M} a mano {direccion} {m} fechado {fecha}")
 
 
@@ -363,6 +365,10 @@ def _elegir_borrado(w: Mundo):
             (w.uid, BROKER, int(ym[:4]), int(ym[5:7]))).fetchone()
         if row:
             opciones.append((0.40, ("a mano (mes)", f"me-{row['id']}-{d}", ks)))
+    sueltas = [k for k, c in w.comps.items() if c["vivo"] and c.get("flujo_id")]
+    if sueltas:
+        k = w.rnd.choice(sueltas)
+        opciones.append((0.30, ("una carga a mano", f"mf-{w.comps[k]['flujo_id']}", [k])))
     vivas = [p for p, cid in w.posiciones.items() if w.comps[cid]["vivo"]]
     if vivas:
         p = w.rnd.choice(vivas)
@@ -535,7 +541,7 @@ def _resumen(res: list) -> str:
     cd = [r for r in medidos if "contabilidad_distinta" in r]
     lineas.append(f"  contabilidad distinta después del borrado (aparte, no se miden): {len(cd)}")
     medidos = [r for r in medidos if "contabilidad_distinta" not in r]
-    for tipo in ("importado", "a mano (mes)", "posición a mano", None):
+    for tipo in ("importado", "a mano (mes)", "una carga a mano", "posición a mano", None):
         rs = [r for r in medidos if tipo is None or r["tipo"] == tipo]
         if not rs:
             continue

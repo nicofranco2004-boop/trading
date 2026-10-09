@@ -624,6 +624,158 @@ class LoQueEncontroLaAuditoria2(FlujosAManoBase):
         self.assertEqual(json.loads(self._flujos()[0]["pausas"]), [["2026-03-10", "2026-03-13"]])
 
 
+class CadaCargaSeBorraSola(FlujosAManoBase):
+    """Lo que pidió Nico (2026-10-09): encontrar UN depósito en Movimientos y borrar
+    ese solo. Antes los depósitos a mano de un mes eran un renglón ("Depósitos
+    manuales 2026-03", fechado el 15) y borrarlo los borraba a todos."""
+
+    def _movs(self):
+        r = self.http.get("/api/movements")
+        self.assertEqual(r.status_code, 200, r.text)
+        return [m for m in r.json() if m["type"] in ("DEPOSIT", "WITHDRAW")]
+
+    def _caja(self, broker=None):
+        r = self.conn.execute("SELECT COALESCE(SUM(invested),0) v FROM positions "
+                              "WHERE user_id=? AND broker=? AND is_cash=1",
+                              (self.uid, broker or self.BROKER)).fetchone()
+        return round(float(r["v"] or 0), 2)
+
+    def test_cada_deposito_tiene_su_renglon_con_su_dia(self):
+        self._depositar(1000.0, fecha="2026-03-05")
+        self._depositar(250.0, fecha="2026-03-20")
+        self._depositar(80.0, fecha="2026-03-21", direction="withdraw")
+        movs = sorted((m["date"], m["type"], m["amount_usd"], m["approx_date"]) for m in self._movs())
+        self.assertEqual(movs, [("2026-03-05", "DEPOSIT", 1000.0, False),
+                                ("2026-03-20", "DEPOSIT", 250.0, False),
+                                ("2026-03-21", "WITHDRAW", 80.0, False)])
+        self.assertTrue(all(m["id"].startswith("mf-") for m in self._movs()))
+
+    def test_borrar_uno_borra_ese_solo(self):
+        self._depositar(1000.0, fecha="2026-03-05")
+        self._depositar(250.0, fecha="2026-03-20")
+        caja = self._caja()
+        uno = [m for m in self._movs() if m["amount_usd"] == 250.0][0]
+        r = self.http.delete(f"/api/movements/{uno['id']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([(m["date"], m["amount_usd"]) for m in self._movs()], [("2026-03-05", 1000.0)])
+        self.assertEqual(self._caja(), round(caja - 250.0, 2))
+        self.assertAlmostEqual(float(self._renglon(self.BROKER, 2026, 3)["manual_deposits"]), 1000.0)
+        self.assert_suma_es_sus_cargas()
+
+    def test_borrar_un_retiro_devuelve_la_plata(self):
+        self._depositar(1000.0, fecha="2026-03-05")
+        self._depositar(300.0, fecha="2026-03-06", direction="withdraw")
+        caja = self._caja()
+        ret = [m for m in self._movs() if m["type"] == "WITHDRAW"][0]
+        self.assertEqual(self.http.delete(f"/api/movements/{ret['id']}").status_code, 200)
+        self.assertEqual(self._caja(), round(caja + 300.0, 2))
+        self.assert_suma_es_sus_cargas()
+
+    def test_doble_click_borra_una_sola_vez(self):
+        self._depositar(1000.0, fecha="2026-03-05")
+        self._depositar(500.0, fecha="2026-03-06")
+        caja = self._caja()
+        uno = [m for m in self._movs() if m["amount_usd"] == 500.0][0]
+        self.assertEqual(self.http.delete(f"/api/movements/{uno['id']}").status_code, 200)
+        self.assertIn(self.http.delete(f"/api/movements/{uno['id']}").status_code, (404, 409))
+        self.assertEqual(self._caja(), round(caja - 500.0, 2))
+        self.assert_suma_es_sus_cargas()
+
+    def test_lo_cargado_antes_queda_en_un_renglon_del_mes_y_se_borra_solo_eso(self):
+        """Un depósito de antes del detalle (sin hora) y uno nuevo, el mismo mes: el
+        nuevo con su renglón, el viejo en uno "del mes" que borra sólo lo viejo."""
+        with mock.patch.object(main, "_anotar_flujo_a_mano", return_value=None):
+            self._depositar(700.0, fecha="2026-03-02")
+        self._depositar(300.0, fecha="2026-03-10")
+        movs = self._movs()
+        self.assertEqual(sorted((m["id"][:3], m["amount_usd"], m["approx_date"]) for m in movs),
+                         [("mf-", 300.0, False), ("mr-", 700.0, True)])
+        caja = self._caja()
+        resto = [m for m in movs if m["id"].startswith("mr-")][0]
+        self.assertEqual(self.http.delete(f"/api/movements/{resto['id']}").status_code, 200)
+        self.assertEqual([(m["id"][:3], m["amount_usd"]) for m in self._movs()], [("mf-", 300.0)])
+        self.assertEqual(self._caja(), round(caja - 700.0, 2))
+        self.assertAlmostEqual(float(self._renglon(self.BROKER, 2026, 3)["manual_deposits"]), 300.0)
+        self.assert_suma_es_sus_cargas()
+
+    def test_el_aporte_de_una_compra_se_ve_pero_se_borra_con_la_compra(self):
+        pid = self._posicion(2000.0, fecha="2026-03-05")
+        [ap] = self._movs()
+        self.assertEqual((ap["amount_usd"], ap["notes"]),
+                         (2000.0, "Aporte automático: compra cargada a mano sin saldo"))
+        self.assertEqual(self.http.delete(f"/api/movements/{ap['id']}").status_code, 409)
+        self.assertEqual(self.http.delete(f"/api/positions/{pid}").status_code, 200)
+        self.assertEqual(self._movs(), [])
+        self.assert_suma_es_sus_cargas()
+
+    def test_un_deposito_de_mensual_queda_en_el_renglon_del_mes(self):
+        """/mensual corrige el total del mes: no es un movimiento con día."""
+        self._depositar(1000.0, fecha="2026-03-01")
+        row = self._renglon(self.BROKER, 2026, 3)
+        body = {k: float(row[k] or 0) for k in ("deposits", "withdrawals", "pnl_realized",
+                                                "capital_inicio", "capital_final")}
+        body.update({"year": 2026, "month": 3, "broker": self.BROKER, "pnl_unrealized": 0.0,
+                     "deposits": body["deposits"] + 400.0})
+        self.assertEqual(self.http.put(f"/api/monthly/{row['id']}", json=body).status_code, 200)
+        self.assertEqual(sorted((m["id"][:3], m["amount_usd"]) for m in self._movs()),
+                         [("mf-", 1000.0), ("mr-", 400.0)])
+
+    def test_la_exportacion_para_el_contador_dice_lo_mismo(self):
+        self.conn.execute("UPDATE users SET tier='pro' WHERE id=?", (self.uid,))
+        self.conn.commit()
+        self._depositar(1000.0, fecha="2026-03-05")
+        self._depositar(250.0, fecha="2026-03-20")
+        r = self.http.get("/api/export/transactions.csv")
+        self.assertEqual(r.status_code, 200, r.text)
+        filas = [l for l in r.text.splitlines() if "DEPÓSITO" in l]
+        self.assertEqual(len(filas), 2, filas)
+        self.assertTrue(any("2026-03-05" in l and "1000" in l for l in filas), filas)
+        self.assertTrue(any("2026-03-20" in l and "250" in l for l in filas), filas)
+        self.assertFalse(any("aproximada" in l for l in filas), filas)
+
+    def test_en_pesos_devuelve_los_pesos_exactos(self):
+        """La carga guarda lo que movió en la moneda del broker: se devuelve eso, no
+        una conversión con el dólar de hoy."""
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "Cocos", "ARS"))
+        self.conn.commit()
+        for monto, fecha in ((1_000_000.0, "2026-03-02"), (350_000.0, "2026-03-09")):
+            with mock.patch.object(main, "_manual_flow_rate", return_value=1300.0):
+                r = self.http.post("/api/cash/flow", json={"broker_name": "Cocos", "direction": "deposit",
+                                                           "amount": monto, "date": fecha})
+            self.assertEqual(r.status_code, 200, r.text)
+        caja = self._caja("Cocos")
+        uno = [m for m in self._movs() if m["date"] == "2026-03-09"][0]
+        with mock.patch.object(main, "_config_tc_blue", return_value=1500.0):
+            self.assertEqual(self.http.delete(f"/api/movements/{uno['id']}").status_code, 200)
+        self.assertEqual(self._caja("Cocos"), round(caja - 350_000.0, 2))
+        self.assert_suma_es_sus_cargas()
+
+    def test_el_resto_se_borra_aunque_el_mes_tenga_una_compra_nueva(self):
+        """El renglón "del mes" tiene sólo lo viejo: el aporte de una compra nueva
+        tiene su propio renglón y no frena ese borrado."""
+        with mock.patch.object(main, "_anotar_flujo_a_mano", return_value=None):
+            self._depositar(700.0, fecha="2026-03-02", broker=self.VACIO)
+        self._posicion(1000.0, fecha="2026-03-05")      # 700 de saldo: aporte de 300
+        resto = [m for m in self._movs() if m["id"].startswith("mr-")]
+        self.assertEqual(len(resto), 1, self._movs())
+        r = self.http.delete(f"/api/movements/{resto[0]['id']}")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([m["notes"] for m in self._movs()],
+                         ["Aporte automático: compra cargada a mano sin saldo"])
+        self.assert_suma_es_sus_cargas()
+
+    def test_borrar_todo_el_mes_sigue_existiendo(self):
+        """`me-` (lo que mostraba Movimientos antes) borra todo lo manual del mes: una
+        pantalla vieja abierta lo puede pedir."""
+        self._depositar(1000.0, fecha="2026-03-05")
+        self._depositar(250.0, fecha="2026-03-20")
+        row = self._renglon(self.BROKER, 2026, 3)
+        self.assertEqual(self.http.delete(f"/api/movements/me-{row['id']}-dep").status_code, 200)
+        self.assertEqual(self._movs(), [])
+        self.assert_suma_es_sus_cargas()
+
+
 class OperacionGrupalDelAsesor(FlujosAManoBase):
     """La operación grupal da de alta la misma posición en N clientes (autodepósito
     en los que no tienen saldo) y su deshacer la saca."""
@@ -801,7 +953,8 @@ class NadieSumaLoManualPorFuera(unittest.TestCase):
                    "es anterior a ellas)",
         "_backfill_manual_flows": "migración vieja: corre una vez, al crear la columna",
         "_recalc_pnl_realized_from_ops": "sólo Global = suma de los brokers",
-        "_delete_one_movement": "me-: pone el mes en 0 y anula sus cargas",
+        "_borrar_lo_manual_del_mes": "me-/mr-: deja lo de las cargas sueltas (mr-) o 0 (me-) "
+                                     "y anula las demás cargas del mes",
         "create_monthly": "/mensual: anota la diferencia (_anotar_ajuste_mensual)",
         "update_monthly": "/mensual: anota la diferencia (_anotar_ajuste_mensual)",
         "_repair_caja_1415": "reparación de admin del dólar 1.415 (A-6, anterior al "
