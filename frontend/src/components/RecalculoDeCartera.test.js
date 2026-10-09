@@ -14,7 +14,7 @@ beforeAll(async () => {
   ;({ sesion } = instalarNavegadorMinimo())
   RecalculoDeCartera = (await import('./RecalculoDeCartera')).default
   ;({ useRecalculoDeCartera } = await import('../hooks/useRecalculoDeCartera'))
-  cambio = await import('../utils/cambioDeCobro')
+  cambio = await import('../utils/cambioDeMovimiento')
 })
 afterAll(() => { vi.unstubAllGlobals() })
 
@@ -57,15 +57,15 @@ describe('cobro anotado en Cartera', () => {
   })
 })
 
-describe('cobro borrado en Movimientos, visto al volver a Cartera', () => {
-  function Cartera({ total, listo }) {
-    const r = useRecalculoDeCartera({ total, moneda: 'USD', listo })
+describe('borrado en Movimientos, visto en la próxima pantalla con total', () => {
+  function Cartera({ total, listo, pantalla = 'cartera' }) {
+    const r = useRecalculoDeCartera({ total, moneda: 'USD', listo, pantalla })
     return h(RecalculoDeCartera, { cobro: r.cobro, recalculando: r.recalculando, total, formato })
   }
 
   it('cuenta del último total visto al nuevo, que es MENOR', async () => {
-    cambio.recordarTotalVisto(7997.25, 'USD')
-    cambio.anotarCambioDeCobro({ texto: 'dividendo de KO', monto: '−US$10,33', deshecho: true })
+    cambio.recordarTotalVisto(7997.25, 'USD', 'cartera')
+    cambio.anotarCambioDeMovimiento({ texto: 'dividendo de KO', monto: 'US$10,33', deshecho: true })
     // Al entrar todavía no llegaron posiciones ni precios.
     montado = await montar(h(Cartera, { total: 0, listo: false }))
     vi.useFakeTimers()
@@ -77,19 +77,19 @@ describe('cobro borrado en Movimientos, visto al volver a Cartera', () => {
     expect(t).toContain('sin el dividendo de KO')
     expect(t).toContain('US$ 7997.25 → ')
     expect(t).toContain('US$ 7986.92')
-    expect(t).toContain('−US$10,33 sacado')
+    expect(t).toContain('Borrado: US$10,33')
     // Y queda anotado el total nuevo para la próxima.
-    expect(JSON.parse(sesion.get('rendi:ultimo-total-cartera')).total).toBeCloseTo(7986.92, 2)
+    expect(JSON.parse(sesion.get('rendi:ultimo-total:cartera')).total).toBeCloseTo(7986.92, 2)
   })
 
   it('lo anotado se muestra una sola vez', async () => {
-    cambio.anotarCambioDeCobro({ texto: 'dividendo de KO', monto: '−US$10,33', deshecho: true })
-    expect(cambio.tomarCambioPendiente('USD')).not.toBeNull()
-    expect(cambio.tomarCambioPendiente('USD')).toBeNull()
+    cambio.anotarCambioDeMovimiento({ texto: 'dividendo de KO', monto: 'US$10,33', deshecho: true })
+    expect(cambio.tomarCambioPendiente('USD', 'cartera')).not.toBeNull()
+    expect(cambio.tomarCambioPendiente('USD', 'dashboard')).toBeNull()
   })
 
   it('sin un total visto antes, no inventa de dónde partió', async () => {
-    cambio.anotarCambioDeCobro({ texto: 'dividendo de KO', monto: '−US$10,33', deshecho: true })
+    cambio.anotarCambioDeMovimiento({ texto: 'dividendo de KO', monto: 'US$10,33', deshecho: true })
     montado = await montar(h(Cartera, { total: 0, listo: false }))
     vi.useFakeTimers()
     await montado.redibujar(h(Cartera, { total: 500, listo: true }))
@@ -97,5 +97,27 @@ describe('cobro borrado en Movimientos, visto al volver a Cartera', () => {
     const t = texto(montado.contenedor)
     expect(t).toContain('US$ 500.00')
     expect(t).not.toContain('→')
+  })
+
+  it('un depósito borrado se ve en el Dashboard desde el total que se vio AHÍ', async () => {
+    cambio.recordarTotalVisto(9000, 'USD', 'cartera')
+    cambio.recordarTotalVisto(8000, 'USD', 'dashboard')
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true })
+    montado = await montar(h(Cartera, { total: 0, listo: false, pantalla: 'dashboard' }))
+    vi.useFakeTimers()
+    await montado.redibujar(h(Cartera, { total: 7000, listo: true, pantalla: 'dashboard' }))
+    await pasaLaCuenta()
+    const t = texto(montado.contenedor)
+    expect(t).toContain('sin el depósito')
+    expect(t).toContain('US$ 8000.00 → ')
+    expect(t).toContain('US$ 7000.00')
+    expect(t).toContain('Borrado: US$1.000,00')
+  })
+
+  it('"la venta": el artículo viene con el cambio', async () => {
+    cambio.recordarTotalVisto(500, 'USD', 'cartera')
+    cambio.anotarCambioDeMovimiento({ texto: 'venta de AAPL', articulo: 'la', deshecho: true })
+    montado = await montar(h(Cartera, { total: 0, listo: false }))
+    expect(texto(montado.contenedor)).toContain('Sacando la venta de AAPL')
   })
 })

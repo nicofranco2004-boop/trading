@@ -1,5 +1,6 @@
 // RecalculoDeCartera — después de anotar un cobro (un dividendo, un cupón de
-// bono), muestra que la cartera se recalculó con esa plata adentro.
+// bono) o de borrar un movimiento (en Movimientos: un depósito, un dividendo,
+// una venta), muestra que el total se recalculó. Lo usan Cartera y Dashboard.
 // ════════════════════════════════════════════════════════════════════════════
 // Por qué existe (pedido de Nico, 2026-10-09): el total de Cartera ya cuenta y
 // destella cuando cambia, pero al confirmar un cobro el usuario está mirando la
@@ -25,8 +26,9 @@ const sinMovimiento = () => typeof window !== 'undefined'
 const VISIBLE_MS = 6000
 
 /**
- * @param {Object|null} cobro        { id, texto: 'dividendo de SPY', monto: '+US$ 2,65', deshecho? } — cada cobro trae id nuevo;
- *                                   `deshecho`: se sacó un cobro (el "Deshacer") en vez de sumarse
+ * @param {Object|null} cobro        { id, texto: 'dividendo de SPY', articulo?: 'el'|'la', monto: '+US$ 2,65', deshecho? }
+ *                                   — cada cambio trae id nuevo; `deshecho`: se BORRÓ (un cobro, un depósito,
+ *                                   una venta) en vez de sumarse; `monto` entonces va sin signo.
  * @param {boolean}     recalculando la página está recargando posiciones y precios
  * @param {number}      total        el total de Cartera, en la moneda que se está mostrando
  * @param {Function}    formato      cómo se escribe ese total
@@ -112,18 +114,19 @@ export default function RecalculoDeCartera({ cobro, recalculando, total, formato
             {fase === 'recalculando' ? (
               <>
                 <p className="text-[13.5px] font-semibold text-ink-0">Recalculando tu cartera…</p>
-                <p className="text-[12px] text-ink-3">{cobro.deshecho ? 'Sacando' : 'Sumando'} el {cobro.texto}</p>
+                <p className="text-[12px] text-ink-3">{cobro.deshecho ? 'Sacando' : 'Sumando'} {cobro.articulo || 'el'} {cobro.texto}</p>
               </>
             ) : (
               <>
-                <p className="text-[12px] text-ink-3">Tu cartera, {cobro.deshecho ? 'sin' : 'con'} el {cobro.texto}</p>
+                <p className="text-[12px] text-ink-3">Tu cartera, {cobro.deshecho ? 'sin' : 'con'} {cobro.articulo || 'el'} {cobro.texto}</p>
                 <p className="tabular text-[15px] font-semibold text-ink-0">
                   {antes.current != null && <span className="text-ink-3 font-normal">{monto(antes.current)} → </span>}
                   <span className={`rounded px-0.5 ${!oculto ? 'flash-up' : ''}`}>{monto(mostrado)}</span>
                 </p>
                 {cobro.monto && (
                   <p className={`tabular text-[12px] ${cobro.deshecho ? 'text-ink-2' : 'text-rendi-pos'}`}>
-                    {oculto ? (cobro.deshecho ? 'Sacado' : 'Anotado') : `${cobro.monto} ${cobro.deshecho ? 'sacado' : 'anotado'}`}
+                    {oculto ? (cobro.deshecho ? 'Borrado' : 'Anotado')
+                      : cobro.deshecho ? `Borrado: ${cobro.monto}` : `${cobro.monto} anotado`}
                   </p>
                 )}
               </>

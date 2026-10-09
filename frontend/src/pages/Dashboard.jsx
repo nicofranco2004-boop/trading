@@ -25,6 +25,8 @@ import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
+import RecalculoDeCartera from '../components/RecalculoDeCartera'
+import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import AnimatedNumber from '../components/AnimatedNumber'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -340,6 +342,13 @@ function PersonalDashboard() {
   const gapIsOutflow = accountingGap > 0
 
   const portfolioTotal = totalValue
+  // Si en Movimientos se borró algo (un depósito, un dividendo, una venta), la
+  // primera pantalla con total que se abre lo muestra recalculándose: desde el
+  // último total que se vio ACÁ al nuevo. Ver RecalculoDeCartera. El total va
+  // en dólares (como `portfolioTotal`); `fmt` lo escribe en la moneda elegida.
+  const recalculo = useRecalculoDeCartera({
+    total: portfolioTotal, moneda: 'USD', listo: !loading && !!lastUpdated, pantalla: 'dashboard',
+  })
 
   // Dynamic insight line — uses largest gainers/losers from open positions
   const arsBrokerNames = useMemo(() => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)), [brokers])
@@ -823,6 +832,8 @@ function PersonalDashboard() {
 
   return (
     <div className="page-shell">
+      <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
+        total={portfolioTotal} formato={fmt} oculto={hidden} />
       <PageHeader
         eyebrow="Dashboard"
         title="Estado de la cartera"

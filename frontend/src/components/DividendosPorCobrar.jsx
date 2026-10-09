@@ -310,7 +310,7 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
     try {
       await b.deshacerCobro(c)
       setAbierta(c.item.key); setAnimada(null)
-      onCambio?.({ texto: `dividendo de ${c.item.ticker}`, monto: `−${usd(c.resultado.neto)}`, deshecho: true })
+      onCambio?.({ texto: `dividendo de ${c.item.ticker}`, monto: usd(c.resultado.neto), deshecho: true })
     } catch (e) {
       toast.push(`No se pudo deshacer: ${e.message}`, { type: 'error' })
     }
