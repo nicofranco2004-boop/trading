@@ -271,6 +271,21 @@ class ImportarDespuesDeConfirmar(_Base):
         self.importar(_csv(f"2026-10-07,DIVIDENDO,Balanz,PEP,,,4.81,,,0,USD,"))
         self.assertEqual(sorted(d["asset"] for d in self.dividendos()), ["KO", "PEP"])
 
+    def test_borrar_importar_y_deshacer_no_lo_cobra_dos_veces(self):
+        """Lo encontró la prueba al azar: confirmado → borrado → llega el import →
+        "Deshacer" del borrado volvía a poner el confirmado al lado del importado."""
+        self.assertEqual(self.confirmar().status_code, 200)
+        mid = [m for m in self.movimientos()
+               if m.get("asset") == "KO" and m["type"] == "DIVIDEND"][0]["id"]
+        token = self.client.delete(f"/api/movements/{mid}").json()["undo_token"]
+        self.importar(_csv(f"2026-10-07,DIVIDENDO,Balanz,KO,,,10.40,,,0,USD,"))
+        r = self.client.post(f"/api/operations/undo/{token}")
+        self.assertEqual(r.status_code, 409, r.text)
+        divs = self.dividendos()
+        self.assertEqual(len(divs), 1, divs)
+        self.assertAlmostEqual(self.caja("Balanz · USD") + self.caja("Balanz") / TC
+                               - (1240.50 + 100000 / TC), 10.40, places=2)
+
     def test_con_el_importado_adentro_la_bandeja_ya_no_deja_confirmarlo(self):
         self.importar(_csv(f"2026-10-07,DIVIDENDO,Balanz,KO,,,10.40,,,0,USD,"))
         r = self.confirmar()

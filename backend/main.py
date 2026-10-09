@@ -19562,6 +19562,22 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
     if j["kind"] == "manual_op":
         row = dict(p["op_row"])
         row["user_id"] = uid
+        # Un dividendo de la bandeja que se borró y, mientras tanto, llegó por el
+        # import del broker: volver a ponerlo lo cobraría DOS veces (lo encontró
+        # la prueba al azar, test_dividendos_azar). El import ya manda.
+        _meta_div = {}
+        if row.get("op_type") == "Dividendo" and row.get("undo_meta_json"):
+            try:
+                _meta_div = json.loads(row["undo_meta_json"])
+            except (TypeError, ValueError):
+                _meta_div = {}
+        if _meta_div.get("src") == _dividendos.SRC and _dividendos.ya_registrado(
+                conn, uid, _meta_div.get("broker_tenencia") or row.get("broker") or "",
+                row.get("asset") or "", _meta_div.get("ex_date") or str(row.get("date"))[:10],
+                neto_usd=float(_meta_div.get("neto") or 0) or None):
+            raise HTTPException(409,
+                f"Ese dividendo de {row.get('asset')} ya está anotado (llegó con el archivo del "
+                "broker), así que no se vuelve a poner. Fijate en Movimientos.")
         _reinsert("operations", row)
         # Asegurar la fila del mes: al borrar, el mes pudo quedar en cero y el recalc
         # limpia las filas all-zero; después `_recalc` solo recompone meses que YA

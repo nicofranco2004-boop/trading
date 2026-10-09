@@ -263,6 +263,21 @@ def ya_registrado(conn, uid: int, broker: str, asset: str, ex_date: str,
     par = broker_pair(conn, uid, broker)
     ph = ",".join("?" * len(par))
     desde, hasta = _ventana(ex_date)
+    # Un confirmado desde la bandeja trae su día de corte: cuenta por eso, sin
+    # importar la fecha con que se anotó (la prueba al azar encontró dos
+    # confirmados del mismo corte cuando el primero tenía la fecha fuera de la
+    # ventana).
+    for f in conn.execute(
+            f"""SELECT id, date, asset, pnl_usd, undo_meta_json FROM operations
+                 WHERE user_id=? AND broker IN ({ph}) AND op_type='Dividendo'
+                   AND undo_meta_json LIKE ?""",
+            (uid, *par, f'%"src": "{SRC}"%')).fetchall():
+        try:
+            meta = json.loads(f["undo_meta_json"])
+        except (TypeError, ValueError):
+            continue
+        if meta.get("ex_date") == ex_date[:10] and (f["asset"] or "").upper() == asset.upper():
+            return f
     filas = conn.execute(
         f"""SELECT id, date, asset, pnl_usd FROM operations
              WHERE user_id=? AND broker IN ({ph}) AND op_type='Dividendo'
@@ -308,6 +323,12 @@ def registrar_cobro(conn, uid: int, *, broker: str, asset: str, ex_date: str,
         raise HTTPException(400, "La fecha del cobro no puede ser futura: se anota cuando ya llegó.")
     if ex_date[:10] > fecha:
         raise HTTPException(400, "El cobro no puede ser anterior al día de corte.")
+    # La misma ventana con que se reconoce un dividendo ya anotado (acá, en el
+    # import y en la bandeja): un cobro fechado fuera de ella no lo encontraría
+    # nadie y la tarjeta volvería a aparecer.
+    if fecha > _ventana(ex_date)[1]:
+        raise HTTPException(400, f"La fecha del cobro tiene que estar dentro de los "
+                                 f"{REGLAS['ventana_ya_registrado']} días del corte.")
     neto = round(bruto - impuesto - otros, 2)
     if neto <= 0:
         raise HTTPException(400, "Lo que te llega tiene que ser mayor a cero. "
