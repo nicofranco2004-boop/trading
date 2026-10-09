@@ -72,6 +72,11 @@ REGLAS = {
     # Hasta cuántos días atrás se buscan cortes. Más viejo que esto, el usuario
     # probablemente ya no tiene a mano con qué compararlo.
     "dias_hacia_atras": 120,
+    # Por empresa, sólo el ÚLTIMO pago ya acreditado (decisión de Nico,
+    # 2026-10-09): quien nunca anotó dividendos no ve tres o cuatro tarjetas de la
+    # misma empresa al entrar. Si ese último ya está anotado o lo marcó "No lo
+    # cobré", no se vuelve a uno más viejo.
+    "solo_ultimo_pago": True,
     # Un dividendo ya registrado (importado o confirmado) cuenta como ESTE cobro
     # si su fecha cae entre el corte y esta cantidad de días después.
     "ventana_ya_registrado": 45,

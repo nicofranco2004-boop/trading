@@ -19,7 +19,7 @@ const REGLAS = {
   impuesto_eeuu: 0.30, otros_accion: 0.05,
   comision_pesos: { balanz: 0.0042, iol: 0.0072 },
   dias_hasta_el_pago: 21, dias_hacia_atras: 120,
-  ventana_ya_registrado: 45, tolerancia_monto_sin_activo: 0.20,
+  ventana_ya_registrado: 45, tolerancia_monto_sin_activo: 0.20, solo_ultimo_pago: true,
   paises_con_regla: ['United States'],
 }
 const HOY = '2026-10-09'
@@ -126,6 +126,43 @@ describe('cuándo aparece y cuándo no', () => {
   it('"No lo cobré" lo saca de la bandeja', () => {
     const salteados = [{ broker: 'Balanz', asset: 'KO', ex_date: '2026-09-15' }]
     expect(detectar({ salteados }).paraConfirmar).toEqual([])
+  })
+})
+
+describe('sólo el último pago de cada empresa', () => {
+  const dosPagos = { ...KO, pagos: [{ ex_date: '2026-06-15', por_accion: 0.53 }, { ex_date: '2026-09-15', por_accion: 0.53 }] }
+
+  it('de dos pagos ya acreditados, propone sólo el más reciente', () => {
+    const r = detectar({ positions: [lote({ entry_date: '2026-05-01' })], historial: historial({ KO: dosPagos }) })
+    expect(r.paraConfirmar.map(i => i.exDate)).toEqual(['2026-09-15'])
+  })
+
+  it('si el último ya está anotado, no vuelve al anterior', () => {
+    const operaciones = [{ op_type: 'Dividendo', broker: 'Balanz · USD', asset: 'KO', date: '2026-10-06', pnl_usd: 10.33 }]
+    const r = detectar({ positions: [lote({ entry_date: '2026-05-01' })], historial: historial({ KO: dosPagos }), operaciones })
+    expect(r.paraConfirmar).toEqual([])
+  })
+
+  it('si el último lo marcó "No lo cobré", tampoco', () => {
+    const salteados = [{ broker: 'Balanz', asset: 'KO', ex_date: '2026-09-15' }]
+    const r = detectar({ positions: [lote({ entry_date: '2026-05-01' })], historial: historial({ KO: dosPagos }), salteados })
+    expect(r.paraConfirmar).toEqual([])
+  })
+
+  it('uno con corte pasado que todavía no llegó sigue como próximo, junto al último pagado', () => {
+    const tres = { ...KO, pagos: [...dosPagos.pagos, { ex_date: '2026-10-01', por_accion: 0.53 }] }
+    const r = detectar({ positions: [lote({ entry_date: '2026-05-01' })], historial: historial({ KO: tres }) })
+    expect(r.paraConfirmar.map(i => i.exDate)).toEqual(['2026-09-15'])
+    expect(r.proximos.map(i => i.exDate)).toEqual(['2026-10-01'])
+  })
+
+  it('cada empresa tiene su último pago (no se mezclan)', () => {
+    const PEP = { pais: 'United States', tipo: 'EQUITY', pagos: [{ ex_date: '2026-06-05', por_accion: 1.48 }, { ex_date: '2026-09-04', por_accion: 1.48 }] }
+    const r = detectar({
+      positions: [lote({ entry_date: '2026-05-01' }), lote({ asset: 'PEP', quantity: 90, entry_date: '2026-05-01' })],
+      historial: historial({ KO: dosPagos, PEP }),
+    })
+    expect(r.paraConfirmar.map(i => `${i.ticker} ${i.exDate}`).sort()).toEqual(['KO 2026-09-15', 'PEP 2026-09-04'])
   })
 })
 

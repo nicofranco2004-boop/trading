@@ -18,7 +18,8 @@
 // Y lo saca de la bandeja si:
 //   · ya está anotado (`yaRegistrado`: MISMA regla que el servidor usa para
 //     frenar un doble registro — si cambia una, cambia la otra);
-//   · el usuario dijo "No lo cobré".
+//   · el usuario dijo "No lo cobré";
+//   · no es el ÚLTIMO pago de la empresa (regla `solo_ultimo_pago`).
 //
 // Fuera de la primera etapa, a propósito (sin monto antes que un monto malo):
 // acciones argentinas (el dato de Yahoo es el del ADR), empresas que no son de
@@ -133,9 +134,19 @@ export function detectarDividendos({ positions, historial, operaciones, salteado
     const otrosPct = esEtf ? 0 : (reglas.otros_accion ?? 0)
     const familia = familiaDeBroker(g.broker, brokers)
 
-    for (const pago of emisor.pagos || []) {
+    // Con `solo_ultimo_pago` (regla del servidor): de los cortes cuyo pago ya
+    // tuvo que llegar, sólo el más reciente; los posteriores (todavía no
+    // acreditados) siguen apareciendo como "próximos".
+    const diasPago = reglas.dias_hasta_el_pago ?? 21
+    const enVentana = (emisor.pagos || []).filter(p => p.ex_date >= desde && p.ex_date <= hoy)
+    const yaPagados = enVentana.filter(p => sumarDias(p.ex_date, diasPago) <= hoy)
+    const ultimoPagado = yaPagados.reduce((m, p) => (!m || p.ex_date > m.ex_date ? p : m), null)
+    const aMirar = reglas.solo_ultimo_pago
+      ? enVentana.filter(p => p === ultimoPagado || sumarDias(p.ex_date, diasPago) > hoy)
+      : enVentana
+
+    for (const pago of aMirar) {
       const exDate = pago.ex_date
-      if (exDate < desde || exDate > hoy) continue
       // Lo que tenía el día de corte: los lotes comprados ANTES. Un lote sin
       // fecha cuenta como tenido (los cargados sin fecha son viejos).
       const lotes = g.lotes.filter(({ p }) => !p.entry_date || p.entry_date.slice(0, 10) < exDate)
