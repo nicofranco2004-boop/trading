@@ -9,12 +9,13 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest
 import { createElement as h, act } from 'react'
 import { instalarNavegadorMinimo, montar, texto } from '../testing/navegadorMinimo'
 
-let RecalculoDeCartera, useRecalculoDeCartera, cambio, sesion
+let RecalculoDeCartera, useRecalculoDeCartera, cambio, sesion, api
 beforeAll(async () => {
   ;({ sesion } = instalarNavegadorMinimo())
   RecalculoDeCartera = (await import('./RecalculoDeCartera')).default
   ;({ useRecalculoDeCartera } = await import('../hooks/useRecalculoDeCartera'))
   cambio = await import('../utils/cambioDeMovimiento')
+  api = await import('../utils/api')
 })
 afterAll(() => { vi.unstubAllGlobals() })
 
@@ -79,7 +80,7 @@ describe('borrado en Movimientos, visto en la próxima pantalla con total', () =
     expect(t).toContain('US$ 7986.92')
     expect(t).toContain('Borrado: US$10,33')
     // Y queda anotado el total nuevo para la próxima.
-    expect(JSON.parse(sesion.get('rendi:ultimo-total:cartera')).total).toBeCloseTo(7986.92, 2)
+    expect(JSON.parse(sesion.get('rendi_ultimo_total:propia:cartera')).total).toBeCloseTo(7986.92, 2)
   })
 
   it('lo anotado se muestra una sola vez', async () => {
@@ -119,5 +120,50 @@ describe('borrado en Movimientos, visto en la próxima pantalla con total', () =
     cambio.anotarCambioDeMovimiento({ texto: 'venta de AAPL', articulo: 'la', deshecho: true })
     montado = await montar(h(Cartera, { total: 0, listo: false }))
     expect(texto(montado.contenedor)).toContain('Sacando la venta de AAPL')
+  })
+
+  it('es de UNA cuenta: lo de un cliente del asesor no aparece en otro', async () => {
+    api.setClientContext({ id: 11, label: 'A' })
+    cambio.recordarTotalVisto(500000, 'USD', 'cartera')
+    api.setClientContext({ id: 22, label: 'B' })
+    cambio.recordarTotalVisto(21000, 'USD', 'cartera')
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true })
+    api.setClientContext({ id: 11, label: 'A' })
+    expect(cambio.tomarCambioPendiente('USD', 'cartera')).toBeNull()   // en A no se borró nada
+    api.setClientContext({ id: 22, label: 'B' })
+    const p = cambio.tomarCambioPendiente('USD', 'cartera')
+    expect(p.antes).toBe(21000)                                          // el de B, no los 500.000 de A
+    api.clearClientContext()
+  })
+
+  it('las claves empiezan con rendi_ (las borra el cierre de sesión)', () => {
+    cambio.recordarTotalVisto(1, 'USD', 'cartera')
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito' })
+    expect([...sesion.keys()].every(k => k.startsWith('rendi_'))).toBe(true)
+  })
+
+  it('varios cambios antes de volver: un resumen, sin el monto del último', () => {
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true })
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$500,00', deshecho: true })
+    const p = cambio.tomarCambioPendiente('USD', 'cartera')
+    expect(p.varios).toBe(true)
+    expect(p.texto).toBe('2 cambios en Movimientos')
+    expect(p.monto).toBeNull()
+  })
+
+  it('borrar y deshacer lo mismo se cancela: no hay aviso', () => {
+    cambio.anotarCambioDeMovimiento({ texto: 'venta de AAPL', articulo: 'la', deshecho: true })
+    cambio.anotarCambioDeMovimiento({ texto: 'venta de AAPL', articulo: 'la', deshecho: false })
+    expect(cambio.tomarCambioPendiente('USD', 'cartera')).toBeNull()
+  })
+
+  it('el aviso no se queda en "Recalculando…" para siempre', async () => {
+    cambio.anotarCambioDeMovimiento({ texto: 'depósito', monto: 'US$1.000,00', deshecho: true })
+    // El reloj simulado ANTES de montar: el tope se arma al entrar en "Recalculando".
+    vi.useFakeTimers()
+    montado = await montar(h(Cartera, { total: 0, listo: false }))
+    expect(texto(montado.contenedor)).toContain('Recalculando')
+    await act(async () => { vi.advanceTimersByTime(25000) })
+    expect(texto(montado.contenedor)).not.toContain('Recalculando')
   })
 })

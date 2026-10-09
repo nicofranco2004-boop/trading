@@ -83,6 +83,10 @@ function PersonalDashboard() {
   const [bench, setBench] = useState(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
+  // ¿El total que se ve ya tiene precios (o no los necesita)? Lo lee el aviso de
+  // recálculo: con `lastUpdated` solo, una cuenta sin nada que cotizar quedaba
+  // en "Recalculando…" para siempre (auditoría 2026-10-09).
+  const [totalListo, setTotalListo] = useState(false)
   const [range, setRange] = useState('1M')
   // Sólo para decidir si se ofrece el puente a la tira semanal de Reportes, que
   // es material de Plus/Pro. El hook cachea a nivel módulo y en localStorage: el
@@ -204,11 +208,14 @@ function PersonalDashboard() {
     // /snapshots persistía ese total → salto fantasma en la serie cuando el cron
     // lo pisaba a la noche. Ver buildPriceSymbols en utils/valuation.
     const all = buildPriceSymbols(pos, bkrs).join(',')
-    if (!all) return
+    // Sin nada que cotizar (sólo efectivo o plazos fijos), el total ya es el de
+    // verdad. `lastUpdated` no se toca acá: dice cuándo llegaron precios.
+    if (!all) { setTotalListo(true); return }
     try {
       const data = await api.get(`/prices?symbols=${all}`)
       setPrices(data)
       setLastUpdated(new Date())
+      setTotalListo(true)
     } catch {}
   }
 
@@ -347,7 +354,7 @@ function PersonalDashboard() {
   // último total que se vio ACÁ al nuevo. Ver RecalculoDeCartera. El total va
   // en dólares (como `portfolioTotal`); `fmt` lo escribe en la moneda elegida.
   const recalculo = useRecalculoDeCartera({
-    total: portfolioTotal, moneda: 'USD', listo: !loading && !!lastUpdated, pantalla: 'dashboard',
+    total: portfolioTotal, moneda: 'USD', listo: !loading && totalListo, pantalla: 'dashboard',
   })
 
   // Dynamic insight line — uses largest gainers/losers from open positions

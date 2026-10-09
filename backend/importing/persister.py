@@ -1026,7 +1026,7 @@ def _persist_dividend_or_interest(conn, uid, batch_id, raw_row_id, tx: Normalize
         from dividendos import reemplazar_por_importado
         reemplazar_por_importado(
             conn, uid, tx.broker, tx.asset_symbol, tx.date,
-            (amount / tc_blue) if currency == "ARS" else amount)
+            (amount / tc_blue) if currency == "ARS" else amount, batch_id=batch_id)
 
     # 1. Subir cash del broker (auto-crea posición si no existe)
     helpers._adjust_broker_cash(conn, uid, tx.broker, amount)
@@ -1765,6 +1765,13 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
         "UPDATE import_batches SET status='reverted', reverted_at=datetime('now') WHERE id=? AND user_id=?",
         (batch_id, uid),
     )
+
+    # Los dividendos confirmados desde la bandeja que ESTE import había
+    # reemplazado vuelven (con su efectivo): sin esto, revertir dejaba el
+    # dividendo sin anotar en ningún lado. Antes del recálculo de abajo, que
+    # los suma a la ganancia del mes. Ver dividendos.restaurar_reemplazados.
+    from dividendos import restaurar_reemplazados
+    restaurar_reemplazados(conn, uid, batch_id)
 
     # Repair chain (ya con el batch fuera de los flows confirmados)
     for b in brokers_touched:

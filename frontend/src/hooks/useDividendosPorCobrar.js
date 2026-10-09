@@ -77,7 +77,9 @@ export function useDividendosPorCobrar({ positions, brokers, mep }) {
       cedears: item.cedears,
     }
     const r = await api.post('/dividendos/cobro', cuerpo)
-    const antes = efectivoDe(r.cuenta)
+    // El saldo de antes lo da el servidor (leído en la misma transacción): la
+    // foto de la pantalla, con dos cobros seguidos, ya estaba vieja.
+    const antes = Number.isFinite(r.efectivo_antes) ? r.efectivo_antes : efectivoDe(r.cuenta)
     setConfirmados(prev => [...prev, {
       item: { ...item, ...montos, neto: r.neto },
       resultado: r,

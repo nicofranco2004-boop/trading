@@ -23,17 +23,26 @@
 //   · al confirmar, el comprobante entra renglón por renglón y el efectivo de la
 //     cuenta cuenta desde el saldo anterior hasta el nuevo.
 
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, CircleDollarSign, Info, Loader2 } from 'lucide-react'
 import AssetLogo from './AssetLogo'
 import { useToast } from './Toast'
 import { useDemora } from '../hooks/useDemora'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { useDividendosPorCobrar } from '../hooks/useDividendosPorCobrar'
+import { usePrivacy } from '../contexts/PrivacyContext'
 
 const num = (n, d = 2) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d })
 const usd = (n) => `US$ ${num(n)}`
 const ars = (n) => `$ ${num(n)}`
+// Modo privacidad: los montos de la bandeja se tapan como en el resto de Cartera
+// (auditoría 2026-10-09: mostraba el neto, el total y el saldo de la cuenta).
+const Oculto = createContext(false)
+const TAPADO = '••••••'
+function useMontos() {
+  const oculto = useContext(Oculto)
+  return { usd: (n) => (oculto ? TAPADO : usd(n)), ars: (n) => (oculto ? TAPADO : ars(n)) }
+}
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '')
 const parse = (s) => {
   const v = parseFloat(String(s ?? '').trim().replace(/\./g, '').replace(',', '.'))
@@ -63,18 +72,19 @@ function useCuenta(hasta, { desde = 0, demora = 0, ms = 900, activo = true } = {
 
 // ─── El cálculo (lo que Rendi propone) ───────────────────────────────────────
 function Calculo({ it, animar }) {
+  const m = useMontos()
   const neto = useCuenta(it.neto, { demora: 760, activo: animar })
   const renglones = [
     [`Tenías ${num(it.cedears, 0)} CEDEARs el día de corte (${ddmm(it.exDate)})`,
       `= ${num(it.acciones, it.acciones % 1 ? 2 : 0)} acciones (${num(it.ratio, 0)} CEDEARs por acción)`, null, false],
     [`La empresa pagó US$ ${num(it.porAccion, it.porAccion < 1 ? 2 : 3)} por acción`,
-      'Dato de la empresa, no estimado', usd(it.bruto), false],
-    ['Impuesto de EE.UU.', `Retención del ${num(it.impuestoPct * 100, 0)} % sobre dividendos`, `− ${usd(it.impuesto)}`, true],
+      'Dato de la empresa, no estimado', m.usd(it.bruto), false],
+    ['Impuesto de EE.UU.', `Retención del ${num(it.impuestoPct * 100, 0)} % sobre dividendos`, `− ${m.usd(it.impuesto)}`, true],
   ]
   if (it.otros > 0) {
     renglones.push(['Otros descuentos',
       `Lo que descuentan los brokers argentinos además del impuesto (~${num(it.otrosPct * 100, 0)} %)`,
-      `− ${usd(it.otros)}`, true])
+      `− ${m.usd(it.otros)}`, true])
   }
   const pct = (v) => (it.bruto > 0 ? (v / it.bruto) * 100 : 0)
   const n = renglones.length
@@ -97,7 +107,7 @@ function Calculo({ it, animar }) {
         className={`grid grid-cols-[16px_minmax(0,1fr)_auto] gap-2.5 items-baseline pt-3 border-t border-line-2 ${animar ? 'entra' : ''}`}>
         <Check size={14} strokeWidth={2.25} aria-hidden="true" className="text-rendi-pos self-center" />
         <span className="text-[13.5px] font-semibold text-ink-0">Te llega a {it.broker} · USD</span>
-        <span className="tabular text-[19px] font-semibold text-rendi-pos tracking-tight">{usd(neto)}</span>
+        <span className="tabular text-[19px] font-semibold text-rendi-pos tracking-tight">{m.usd(neto)}</span>
       </div>
       {it.comisionPesos > 0 && (
         <div style={{ '--i': n * 2 + 1 }}
@@ -105,12 +115,12 @@ function Calculo({ it, animar }) {
           <Check size={14} strokeWidth={2.25} aria-hidden="true" className="text-rendi-pos self-center" />
           <span className="text-[13px] text-ink-1">Comisión de {it.broker} en pesos
             <span className="block text-[12px] text-ink-3">Sale del efectivo en pesos, el mismo día</span></span>
-          <span className="tabular text-[13px] text-ink-2 whitespace-nowrap">− {ars(it.comisionPesos)}</span>
+          <span className="tabular text-[13px] text-ink-2 whitespace-nowrap">− {m.ars(it.comisionPesos)}</span>
         </div>
       )}
       <div className="space-y-1.5">
         <div className="flex h-2.5 rounded-full overflow-hidden bg-bg-3" role="img"
-          aria-label={`De ${usd(it.bruto)} te llegan ${usd(it.neto)}`}>
+          aria-label={`De ${m.usd(it.bruto)} te llegan ${m.usd(it.neto)}`}>
           <span className={`h-full bg-rendi-pos ${animar ? 'crece-ancho' : ''}`} style={{ width: `${pct(it.neto)}%`, '--i': 8 }} />
           <span className={`h-full bg-data-amber/70 ${animar ? 'crece-ancho' : ''}`} style={{ width: `${pct(it.impuesto)}%`, '--i': 8, '--fila': 2 }} />
           {it.otros > 0 && <span className={`h-full bg-ink-3/60 ${animar ? 'crece-ancho' : ''}`} style={{ width: `${pct(it.otros)}%`, '--i': 8, '--fila': 3 }} />}
@@ -175,17 +185,18 @@ function Edicion({ it, onGuardar, onCancelar, guardando }) {
 
 // ─── El comprobante (después de confirmar) ───────────────────────────────────
 function Comprobante({ c, onDeshacer, deshaciendo }) {
+  const m = useMontos()
   const r = c.resultado
   const efectivo = useCuenta(c.antes + r.efectivo, { desde: c.antes, demora: 250, ms: 800 })
-  const moneda = r.moneda === 'ARS' ? ars : usd
+  const moneda = r.moneda === 'ARS' ? m.ars : m.usd
   const filas = [
     [`Efectivo · ${r.cuenta}`, 'Entra lo que te llegó',
       <><span className="text-ink-3">{moneda(c.antes)} → </span>{moneda(efectivo)}</>, ''],
-    ['Ganancia realizada del mes', 'Un dividendo es ganancia de tu inversión', `+${usd(r.ganancia_usd)}`, 'text-rendi-pos font-semibold'],
+    ['Ganancia realizada del mes', 'Un dividendo es ganancia de tu inversión', `+${m.usd(r.ganancia_usd)}`, 'text-rendi-pos font-semibold'],
     ['Capital aportado', 'Sin cambios: no es plata que pusiste vos', 'sin cambios', 'text-ink-3'],
     [`Ganancia no realizada de ${c.item.ticker}`, 'Sin cambios: el dividendo ya es plata cobrada, no una suba de precio', 'sin cambios', 'text-ink-3'],
   ]
-  if (r.comision_pesos > 0) filas.push([`Efectivo · ${r.cuenta_pesos}`, 'Comisión del broker', `− ${ars(r.comision_pesos)}`, ''])
+  if (r.comision_pesos > 0) filas.push([`Efectivo · ${r.cuenta_pesos}`, 'Comisión del broker', `− ${m.ars(r.comision_pesos)}`, ''])
   filas.push(['Movimientos', 'Queda como Dividendo, con la empresa', `${c.item.ticker} · Dividendo`, ''])
   return (
     <div className="space-y-2.5">
@@ -214,6 +225,7 @@ function Comprobante({ c, onDeshacer, deshaciendo }) {
 
 // ─── Una tarjeta ─────────────────────────────────────────────────────────────
 function Fila({ it, abierta, onAbrir, confirmado, children, i }) {
+  const m = useMontos()
   const montoRotulo = confirmado ? `en ${confirmado.resultado.cuenta}` : (it.editado ? 'tu monto' : 'estimado')
   return (
     <div className="border-t border-line first:border-t-0 entra" style={{ '--i': i }}>
@@ -231,7 +243,7 @@ function Fila({ it, abierta, onAbrir, confirmado, children, i }) {
           <span className="block text-[12px] text-ink-3 tabular mt-0.5">Corte {ddmm(it.exDate)} · el broker acredita ~{ddmm(it.pagoEstimado)}</span>
         </span>
         <span className="text-right">
-          <span className={`block tabular text-[15px] font-semibold ${confirmado ? 'text-rendi-pos' : 'text-ink-0'}`}>{confirmado ? '+' : ''}{usd(confirmado ? confirmado.resultado.neto : it.neto)}</span>
+          <span className={`block tabular text-[15px] font-semibold ${confirmado ? 'text-rendi-pos' : 'text-ink-0'}`}>{confirmado ? '+' : ''}{m.usd(confirmado ? confirmado.resultado.neto : it.neto)}</span>
           <span className="block text-[11.5px] text-ink-3">{montoRotulo}</span>
         </span>
         <ChevronDown size={16} aria-hidden="true"
@@ -249,6 +261,8 @@ function Fila({ it, abierta, onAbrir, confirmado, children, i }) {
 // ─── La bandeja ──────────────────────────────────────────────────────────────
 export default function DividendosPorCobrar({ positions, brokers, mep, onCambio, className = '' }) {
   const toast = useToast()
+  const { hidden } = usePrivacy()
+  const mm = { usd: (n) => (hidden ? TAPADO : usd(n)) }
   const b = useDividendosPorCobrar({ positions, brokers, mep })
   const [abierta, setAbierta] = useState(null)
   const [editando, setEditando] = useState(null)
@@ -323,6 +337,7 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
   ].sort((x, y) => y.it.exDate.localeCompare(x.it.exDate) || x.it.key.localeCompare(y.it.key))
 
   return (
+    <Oculto.Provider value={!!hidden}>
     <section aria-labelledby="dividendos-titulo"
       className={`bg-bg-1 border border-line rounded-xl overflow-hidden ${className}`}>
       <div className="flex items-start gap-3 px-4 py-3.5">
@@ -335,7 +350,7 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
         </div>
         {!b.cargando && n > 0 && (
           <div className="hidden sm:block text-right shrink-0">
-            <div className="tabular text-[17px] font-semibold text-rendi-pos">~{usd(total)}</div>
+            <div className="tabular text-[17px] font-semibold text-rendi-pos">~{mm.usd(total)}</div>
             <div className="text-[11.5px] text-ink-3">a confirmar</div>
           </div>
         )}
@@ -404,7 +419,7 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
                 <span className="block text-[12px] text-ink-3 tabular mt-0.5">Corte {ddmm(it.exDate)} · todavía no llegó, aparece acá alrededor del {ddmm(it.pagoEstimado)}</span>
               </span>
               <span className="text-right">
-                <span className="block tabular text-[15px] text-ink-2">~{usd(it.neto)}</span>
+                <span className="block tabular text-[15px] text-ink-2">~{mm.usd(it.neto)}</span>
                 <span className="block text-[11.5px] text-ink-3">próximo</span>
               </span>
             </div>
@@ -412,5 +427,6 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
         </div>
       )}
     </section>
+    </Oculto.Provider>
   )
 }

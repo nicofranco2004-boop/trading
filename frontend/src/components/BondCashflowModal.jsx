@@ -241,6 +241,12 @@ export default function BondCashflowModal({
         ...(usaNuestroTc ? { fx_to_usd: appliedTc } : {}),
       }
       const res = await api.post('/bonds/cashflow', payload)
+      // Lo que avisa la página para mostrar el total recalculándose, con el monto
+      // en formato argentino (decía "+ARS 370524.5").
+      const cobroAnotado = {
+        texto: `${isCoupon ? 'cupón' : 'pago de amortización'} de ${asset}`,
+        monto: `+${moneyLabel} ${Number(amt).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      }
       let msg = `${isCoupon ? 'Cupón' : 'Amortización'} de ${asset} registrado · ${moneyLabel} ${amt}`
       if (res.qty_decremented > 0) {
         msg += ` · ${nfmt(res.qty_decremented, 2)} VN amortizados`
@@ -248,12 +254,12 @@ export default function BondCashflowModal({
         // El sanity check disparó — informar al user que su qty NO se tocó.
         msg += ' · qty intacta (cross-currency: pasá face_amortized para decrementar)'
         toast.push(msg, { type: 'warn' })
-        onSuccess?.({ texto: `${isCoupon ? 'cupón' : 'pago de amortización'} de ${asset}`, monto: `+${moneyLabel} ${amt}` })
+        onSuccess?.(cobroAnotado)
         onClose()
         return
       }
       toast.push(msg, { type: 'success' })
-      onSuccess?.({ texto: `${isCoupon ? 'cupón' : 'pago de amortización'} de ${asset}`, monto: `+${moneyLabel} ${amt}` })
+      onSuccess?.(cobroAnotado)
       onClose()
     } catch (err) {
       toast.push(`Error: ${err.message || 'No se pudo registrar el cashflow'}`, { type: 'error' })

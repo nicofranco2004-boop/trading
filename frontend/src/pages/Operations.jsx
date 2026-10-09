@@ -857,7 +857,9 @@ function KpiCell({ label, value, num, format, sub, tone, first, compacto = false
     return (
       <div className={`min-w-0 px-3 py-2.5 ${first ? '' : 'border-l border-line/50'}`}>
         <div className="text-[11.5px] text-ink-2 leading-none font-medium truncate">{label}</div>
-        <div className={`mt-1.5 font-medium tabular leading-none text-[15px] truncate ${valueColor}`}>{valor}</div>
+        {/* 13 px y sin cortar: a 375 px cada celda mide ~90 px y "US$1.234.567"
+            salía con puntos suspensivos (auditoría 2026-10-09). */}
+        <div className={`mt-1.5 font-medium tabular leading-tight text-[13px] [overflow-wrap:anywhere] ${valueColor}`}>{valor}</div>
       </div>
     )
   }

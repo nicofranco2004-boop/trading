@@ -26,7 +26,7 @@
 // EE.UU. (otra retención, sin medir) y acciones en brokers del exterior.
 
 import { underlyingShares } from './cedearRatio'
-import { cedearEspecieBase } from './tickers'
+import { cedearEspecieBase, CEDEAR_EN_EEUU } from './tickers'
 
 const DIA = 86400000
 
@@ -59,13 +59,27 @@ function nombreBase(nombre, brokers) {
   return nombre
 }
 
-/** Fracción de comisión en pesos para este broker (0 si no hay regla). */
+/** Fracción de comisión en pesos para este broker (0 si no hay regla). Por
+ *  PALABRA del nombre, no por pedazo: "Violeta Inversiones" contiene "iol" y se
+ *  le cobraba la comisión de IOL (auditoría 2026-10-09). */
 function comisionPesosPct(nombre, brokers, reglas) {
-  const n = nombreBase(nombre, brokers).toLowerCase()
+  const palabras = new Set(nombreBase(nombre, brokers).toLowerCase().split(/[^a-z0-9áéíóúñ]+/))
   for (const [clave, pct] of Object.entries(reglas?.comision_pesos || {})) {
-    if (n.includes(clave)) return pct
+    if (palabras.has(clave)) return pct
   }
   return 0
+}
+
+/** El símbolo de la acción en EE.UU. (lo que tiene Yahoo) para un CEDEAR:
+ *  casi siempre el mismo; DISN es DIS, BRKB es BRK-B (utils/tickers). */
+export function tickerEnEEUU(base) {
+  return CEDEAR_EN_EEUU[base] || base
+}
+
+function metaDe(o) {
+  if (!o?.undo_meta_json) return null
+  if (typeof o.undo_meta_json === 'object') return o.undo_meta_json
+  try { return JSON.parse(o.undo_meta_json) } catch { return null }
 }
 
 /**
@@ -76,18 +90,24 @@ function comisionPesosPct(nombre, brokers, reglas) {
  */
 export function yaRegistrado(operaciones, { familia, ticker, exDate, neto }, reglas) {
   const hasta = sumarDias(exDate, reglas?.ventana_ya_registrado ?? 45)
-  const tol = reglas?.tolerancia_monto_sin_activo ?? 0.2
+  const tol = reglas?.tolerancia_monto_sin_activo ?? 0.05
+  let parecidos = 0
   for (const o of operaciones || []) {
     if (o.op_type !== 'Dividendo') continue
     if (!familia.has(o.broker)) continue
+    // Un confirmado desde la bandeja trae su corte: cuenta por eso, sin mirar la fecha.
+    const meta = metaDe(o)
+    if (meta?.src === 'dividendo_bandeja' && meta.ex_date === exDate
+        && (o.asset || '').trim().toUpperCase() === ticker) return true
     const d = (o.date || '').slice(0, 10)
     if (d < exDate || d > hasta) continue
     const a = (o.asset || '').trim().toUpperCase()
     if (a === ticker) return true
     if ((a === '' || a === '—') && neto > 0 && o.pnl_usd != null
-        && Math.abs(Number(o.pnl_usd) - neto) <= tol * neto) return true
+        && Math.abs(Number(o.pnl_usd) - neto) <= tol * neto) parecidos += 1
   }
-  return false
+  // Sin activo: sólo si es el ÚNICO parecido (con dos no se sabe cuál es).
+  return parecidos === 1
 }
 
 /**
@@ -111,8 +131,12 @@ export function detectarDividendos({ positions, historial, operaciones, salteado
   const desde = sumarDias(hoy, -(reglas.dias_hacia_atras ?? 120))
   const paises = new Set(reglas.paises_con_regla || [])
 
-  // Lotes agrupados por (broker, empresa). Sólo los que se pueden pasar a
-  // acciones con el ratio EXACTO de la tabla de CEDEARs.
+  // Lotes agrupados por (BROKER, empresa) — el broker es el par entero: la
+  // cuenta en pesos y su "· USD". Agrupados por cuenta salían dos tarjetas del
+  // MISMO cobro (150 CEDEARs en IOL y 50 en IOL · USD) y, como "ya anotado"
+  // mira el par, confirmar una borraba la otra: se anotaba una parte
+  // (auditoría 2026-10-09). La tarjeta lleva el nombre del padre, que es con
+  // el que el servidor encuentra el par. Sólo lotes con el ratio EXACTO.
   const grupos = new Map()
   for (const p of positions || []) {
     if (p.is_cash || !(Number(p.quantity) > 0)) continue
@@ -120,14 +144,15 @@ export function detectarDividendos({ positions, historial, operaciones, salteado
     if (!eq || eq.scale !== 'cedear' || eq.source !== 'table') continue
     const ticker = cedearEspecieBase(p.asset)
     if (!ticker) continue
-    const k = `${p.broker}|${ticker}`
-    if (!grupos.has(k)) grupos.set(k, { broker: p.broker, ticker, lotes: [] })
+    const broker = nombreBase(p.broker, brokers)
+    const k = `${broker}|${ticker}`
+    if (!grupos.has(k)) grupos.set(k, { broker, ticker, lotes: [] })
     grupos.get(k).lotes.push({ p, eq })
   }
 
   const out = { paraConfirmar: [], proximos: [] }
   for (const g of grupos.values()) {
-    const emisor = historial.tickers?.[g.ticker]
+    const emisor = historial.tickers?.[tickerEnEEUU(g.ticker)]
     if (!emisor) continue
     const esEtf = emisor.tipo === 'ETF'
     if (!esEtf && !paises.has(emisor.pais)) continue   // sin regla medida → sin monto
@@ -196,7 +221,7 @@ export function tickersParaHistorial(positions) {
     const eq = underlyingShares(p)
     if (!eq || eq.scale !== 'cedear' || eq.source !== 'table') continue
     const t = cedearEspecieBase(p.asset)
-    if (t) out.add(t)
+    if (t) out.add(tickerEnEEUU(t))
   }
   return [...out].sort()
 }

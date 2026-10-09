@@ -442,7 +442,9 @@ function PositionsDesktop() {
   useEffect(() => {
     // `cargaLista`: posiciones Y precios llegaron (loadAll espera a los precios):
     // recién ahí el total es el de verdad (ver useRecalculoDeCartera).
-    loadAll().finally(() => setCargaLista(true))
+    // Si la carga falla, NO queda "lista": se recordaría un total de 0 o a
+    // medias como el último visto (auditoría 2026-10-09).
+    loadAll().then(ok => { if (ok) setCargaLista(true) })
     // Precios cada 90 s, sólo con la pestaña a la vista (relojVisible, el
     // mismo reloj de la cinta y las secciones de mercado). Antes era un
     // setInterval que seguía pidiendo con la pestaña oculta.
@@ -495,8 +497,10 @@ function PositionsDesktop() {
       setBondSkips(skips || [])
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
+      return true
     } catch (e) {
       console.error('Positions loadAll error:', e)
+      return false
     }
   }
 
@@ -1758,7 +1762,9 @@ function PositionsDesktop() {
   const recalculo = useRecalculoDeCartera({
     total: isArsDisp ? heroValueArs : heroValue, moneda: displayCurrency, listo: cargaLista,
   })
-  const anotarCobro = (cobro) => recalculo.anotar(cobro, loadAll)
+  const anotarCobro = (cobro) => recalculo.anotar(cobro, async () => {
+    if (await loadAll()) setCargaLista(true)
+  })
   const heroPnlDisp = isArsDisp ? heroPnlArs : heroPnl
   const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 

@@ -19,7 +19,7 @@ const REGLAS = {
   impuesto_eeuu: 0.30, otros_accion: 0.05,
   comision_pesos: { balanz: 0.0042, iol: 0.0072 },
   dias_hasta_el_pago: 21, dias_hacia_atras: 120,
-  ventana_ya_registrado: 45, tolerancia_monto_sin_activo: 0.20, solo_ultimo_pago: true,
+  ventana_ya_registrado: 45, tolerancia_monto_sin_activo: 0.05, solo_ultimo_pago: true,
   paises_con_regla: ['United States'],
 }
 const HOY = '2026-10-09'
@@ -163,6 +163,42 @@ describe('sólo el último pago de cada empresa', () => {
       historial: historial({ KO: dosPagos, PEP }),
     })
     expect(r.paraConfirmar.map(i => `${i.ticker} ${i.exDate}`).sort()).toEqual(['KO 2026-09-15', 'PEP 2026-09-04'])
+  })
+})
+
+describe('auditoría 2026-10-09', () => {
+  it('CEDEARs en la cuenta en pesos y en la "· USD" del mismo broker: UNA tarjeta con todo', () => {
+    const r = detectar({ positions: [lote({ quantity: 150 }), lote({ broker: 'Balanz · USD', quantity: 50, currency: 'USD' })] })
+    expect(r.paraConfirmar).toHaveLength(1)
+    expect(r.paraConfirmar[0].broker).toBe('Balanz')
+    expect(r.paraConfirmar[0].cedears).toBe(200)
+    expect(r.paraConfirmar[0].bruto).toBe(21.2)          // 40 acciones × 0,53
+  })
+
+  it('Disney: se le pide a Yahoo DIS (no DISN) y la tarjeta lleva DISN', () => {
+    expect(tickersParaHistorial([lote({ asset: 'DISN', quantity: 12 })])).toEqual(['DIS'])
+    const DIS = { pais: 'United States', tipo: 'EQUITY', pagos: [{ ex_date: '2026-09-15', por_accion: 0.5 }] }
+    const r = detectar({ positions: [lote({ asset: 'DISN', quantity: 12 })], historial: historial({ DIS }) })
+    expect(r.paraConfirmar.map(i => i.ticker)).toEqual(['DISN'])
+  })
+
+  it('la comisión en pesos va por palabra del nombre: "Violeta Inversiones" no es IOL', () => {
+    const brokers = [...BROKERS, { id: 9, name: 'Violeta Inversiones', currency: 'ARS' }]
+    setBrokersRegistry(brokers)
+    const r = detectar({ positions: [lote({ broker: 'Violeta Inversiones' })], brokers })
+    expect(r.paraConfirmar[0].comisionPesos).toBe(0)
+  })
+
+  it('dos importados sin activo que se parecen: no se sabe cuál es, la tarjeta queda', () => {
+    const op = (pnl) => ({ op_type: 'Dividendo', broker: 'Balanz · USD', asset: '—', date: '2026-10-07', pnl_usd: pnl })
+    expect(detectar({ operaciones: [op(10.3)] }).paraConfirmar).toEqual([])
+    expect(detectar({ operaciones: [op(10.3), op(10.35)] }).paraConfirmar).toHaveLength(1)
+  })
+
+  it('un confirmado de la bandeja cuenta por su corte aunque su fecha esté lejos', () => {
+    const operaciones = [{ op_type: 'Dividendo', broker: 'Balanz · USD', asset: 'KO', date: '2026-12-01', pnl_usd: 10,
+      undo_meta_json: JSON.stringify({ src: 'dividendo_bandeja', ex_date: '2026-09-15' }) }]
+    expect(detectar({ operaciones }).paraConfirmar).toEqual([])
   })
 })
 

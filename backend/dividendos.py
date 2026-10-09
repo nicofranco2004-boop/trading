@@ -81,8 +81,13 @@ REGLAS = {
     # si su fecha cae entre el corte y esta cantidad de días después.
     "ventana_ya_registrado": 45,
     # Para dividendos importados SIN activo (Cocos no dice de qué empresa es):
-    # cuentan como este cobro si el monto se parece así de cerca.
-    "tolerancia_monto_sin_activo": 0.20,
+    # cuentan como este cobro si el monto se parece así de cerca Y es el ÚNICO
+    # que se parece. Era 20 %: un sin-activo de OTRA empresa (9,50 contra 10,33)
+    # se comía el confirmado de KO (auditoría 2026-10-09).
+    "tolerancia_monto_sin_activo": 0.05,
+    # Para reemplazar un confirmado por un importado sin activo, además, el
+    # importado tiene que estar fechado cerca del cobro confirmado.
+    "dias_entre_cobro_e_importado": 10,
     # Países con regla medida. Lo demás, sin monto.
     "paises_con_regla": ["United States"],
 }
@@ -121,6 +126,15 @@ def crear_tablas(conn) -> None:
             UNIQUE (user_id, broker, asset, ex_date)
         );
         CREATE INDEX IF NOT EXISTS idx_div_salteados_user ON dividendos_salteados(user_id);
+        -- Los confirmados que un import reemplazó: si el import se revierte, vuelven.
+        CREATE TABLE IF NOT EXISTS dividendos_reemplazados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            batch_id TEXT NOT NULL,
+            op_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_div_reemplazados ON dividendos_reemplazados(user_id, batch_id);
     """)
 
 
@@ -284,14 +298,16 @@ def ya_registrado(conn, uid: int, broker: str, asset: str, ex_date: str,
                AND date >= ? AND date <= ?""",
         (uid, *par, desde, hasta)).fetchall()
     for f in filas:
-        if (f["asset"] or "").upper() == asset.upper():
+        if (f["asset"] or "").strip().upper() == asset.strip().upper():
             return f
     if neto_usd:
         tol = REGLAS["tolerancia_monto_sin_activo"]
-        for f in filas:
-            if (f["asset"] or "").strip() in ("", "—") and f["pnl_usd"]:
-                if abs(float(f["pnl_usd"]) - neto_usd) <= tol * neto_usd:
-                    return f
+        parecidos = [f for f in filas
+                     if (f["asset"] or "").strip() in ("", "—") and f["pnl_usd"]
+                     and abs(float(f["pnl_usd"]) - neto_usd) <= tol * neto_usd]
+        # Sólo si es el único: con dos parecidos no se sabe cuál es de esta empresa.
+        if len(parecidos) == 1:
+            return parecidos[0]
     return None
 
 
@@ -377,29 +393,43 @@ def registrar_cobro(conn, uid: int, *, broker: str, asset: str, ex_date: str,
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (uid, fecha, cuenta_usd, asset, "Dividendo", efectivo_nativo,
          ganancia, comisiones_fila, notas, moneda, fx_fila, json.dumps(meta)))
+    fila_caja = efectivo.caja(conn, uid, cuenta_usd)
+    efectivo_antes = float(fila_caja["invested"] or 0) if fila_caja else 0.0
     efectivo.mover(conn, uid, cuenta_usd, efectivo_nativo)
     if comision_pesos > 0:
         efectivo.mover(conn, uid, cuenta_ars, -round(comision_pesos, 2))
     return {"operation_id": cur.lastrowid, "cuenta": cuenta_usd, "cuenta_pesos": cuenta_ars,
             "neto": neto, "efectivo": efectivo_nativo, "moneda": moneda,
-            "comision_pesos": round(comision_pesos, 2), "ganancia_usd": round(ganancia, 2)}
+            "comision_pesos": round(comision_pesos, 2), "ganancia_usd": round(ganancia, 2),
+            # El saldo de la cuenta ANTES de este cobro, leído en la misma
+            # transacción: el comprobante "antes → después" no puede salir de la
+            # foto de la pantalla, que con dos cobros seguidos ya está vieja.
+            "efectivo_antes": round(efectivo_antes, 2)}
 
 
-def movimientos_de_efectivo(meta: dict) -> list:
-    """Lo que el cobro le hizo al efectivo, como [(cuenta, monto nativo)]."""
+def movimientos_de_efectivo(conn, uid: int, meta: dict, cuenta_actual: str) -> list:
+    """Lo que el cobro le hizo al efectivo, como [(cuenta, monto nativo)].
+
+    Las cuentas se calculan AHORA desde la cuenta actual de la fila, no se leen
+    de la foto: renombrar el broker actualiza la fila pero no la foto, y la plata
+    se "devolvía" a cuentas con el nombre viejo, que se creaban vacías (auditoría
+    2026-10-09: +US$ 10,33 y −$ 62 colgados en el broker renombrado)."""
     out = []
     if meta.get("cash"):
-        out.append((meta.get("cash_broker"), float(meta["cash"])))
-    if meta.get("comision_pesos") and meta.get("cuenta_pesos"):
-        out.append((meta["cuenta_pesos"], -float(meta["comision_pesos"])))
+        out.append((cuenta_actual, float(meta["cash"])))
+    if meta.get("comision_pesos"):
+        pesos = _cuenta_en_pesos(conn, uid, cuenta_actual)
+        if pesos:   # si esa cuenta ya no existe (se borró el broker), no hay a dónde devolver
+            out.append((pesos, -float(meta["comision_pesos"])))
     return out
 
 
-def deshacer_efectivo(conn, uid: int, meta: dict) -> list:
+def deshacer_efectivo(conn, uid: int, meta: dict, cuenta_actual: str) -> list:
     """Devuelve el efectivo que movió un cobro confirmado. La usan el borrado
-    desde Movimientos y el importador. Devuelve lo que aplicó [(cuenta, monto)]."""
+    desde Movimientos, el importador y el borrado de un broker. Devuelve lo que
+    aplicó [(cuenta, monto)]."""
     hecho = []
-    for cuenta, monto in movimientos_de_efectivo(meta):
+    for cuenta, monto in movimientos_de_efectivo(conn, uid, meta, cuenta_actual):
         if cuenta and monto:
             efectivo.mover(conn, uid, cuenta, -monto)
             hecho.append((cuenta, -monto))
@@ -407,7 +437,7 @@ def deshacer_efectivo(conn, uid: int, meta: dict) -> list:
 
 
 def reemplazar_por_importado(conn, uid: int, broker: str, asset: Optional[str], fecha: str,
-                             monto_usd: float) -> Optional[int]:
+                             monto_usd: float, batch_id: Optional[str] = None) -> Optional[int]:
     """El importador trae un dividendo que el usuario ya había confirmado desde la
     bandeja: el dato del broker manda. Borra el confirmado y devuelve su efectivo,
     para que el importado entre solo y no se cuente dos veces. Devuelve el id
@@ -422,11 +452,13 @@ def reemplazar_por_importado(conn, uid: int, broker: str, asset: Optional[str], 
     ph = ",".join("?" * len(par))
     asset = (asset or "").strip().upper()
     filas = conn.execute(
-        f"""SELECT id, asset, pnl_usd, undo_meta_json FROM operations
+        f"""SELECT * FROM operations
              WHERE user_id=? AND broker IN ({ph}) AND op_type='Dividendo'
                AND undo_meta_json LIKE ?""",
         (uid, *par, f'%"src": "{SRC}"%')).fetchall()
     tol = REGLAS["tolerancia_monto_sin_activo"]
+    dias = REGLAS["dias_entre_cobro_e_importado"]
+    candidatos = []
     for f in filas:
         try:
             meta = json.loads(f["undo_meta_json"])
@@ -436,17 +468,95 @@ def reemplazar_por_importado(conn, uid: int, broker: str, asset: Optional[str], 
         if not (desde <= fecha[:10] <= hasta):
             continue
         if asset and asset not in ("—",):
-            if (f["asset"] or "").upper() != asset:
+            if (f["asset"] or "").strip().upper() != asset:
                 continue
         else:
+            # Sin activo (Cocos): monto muy parecido Y fechado cerca del cobro.
             neto = float(meta.get("neto") or 0)
             if not neto or abs(monto_usd - neto) > tol * neto:
                 continue
-        deshacer_efectivo(conn, uid, meta)
-        conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (f["id"], uid))
-        log.info("dividendos: el import reemplazó el cobro confirmado %s (%s)", f["id"], f["asset"])
-        return f["id"]
-    return None
+            try:
+                lejos = abs((date.fromisoformat(fecha[:10])
+                             - date.fromisoformat(str(f["date"])[:10])).days)
+            except ValueError:
+                continue
+            if lejos > dias:
+                continue
+        candidatos.append((f, meta))
+    # Con activo, el primero (el mismo corte no puede estar dos veces). Sin
+    # activo, sólo si hay UNO: con dos parecidos no se sabe cuál es.
+    if not candidatos or (not (asset and asset != "—") and len(candidatos) != 1):
+        return None
+    f, meta = candidatos[0]
+    deshacer_efectivo(conn, uid, meta, f["broker"])
+    # Una copia del confirmado, atada al import: si ese import se revierte, el
+    # confirmado vuelve (`restaurar_reemplazados`). Sin esto, revertir dejaba el
+    # dividendo sin anotar en ningún lado (auditoría 2026-10-09).
+    if batch_id:
+        conn.execute(
+            "INSERT INTO dividendos_reemplazados (user_id, batch_id, op_json, created_at) "
+            "VALUES (?,?,?,?)",
+            (uid, batch_id, json.dumps({k: f[k] for k in f.keys() if k != "id"}),
+             datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (f["id"], uid))
+    log.info("dividendos: el import reemplazó el cobro confirmado %s (%s)", f["id"], f["asset"])
+    return f["id"]
+
+
+def restaurar_reemplazados(conn, uid: int, batch_id: str) -> int:
+    """Se revirtió un import que había reemplazado cobros confirmados desde la
+    bandeja: vuelven, con su efectivo, salvo que ese dividendo ya esté anotado de
+    otra forma (otro import). Devuelve cuántos volvieron."""
+    vueltos = 0
+    for r in conn.execute(
+            "SELECT id, op_json FROM dividendos_reemplazados WHERE user_id=? AND batch_id=?",
+            (uid, batch_id)).fetchall():
+        conn.execute("DELETE FROM dividendos_reemplazados WHERE id=?", (r["id"],))
+        try:
+            fila = json.loads(r["op_json"])
+            meta = json.loads(fila.get("undo_meta_json") or "{}")
+        except (TypeError, ValueError):
+            continue
+        cuenta = fila.get("broker") or ""
+        if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?",
+                            (uid, cuenta)).fetchone():
+            continue   # la cuenta ya no existe: no hay dónde volver a ponerlo
+        if ya_registrado(conn, uid, cuenta, fila.get("asset") or "",
+                         meta.get("ex_date") or str(fila.get("date"))[:10],
+                         neto_usd=float(meta.get("neto") or 0) or None):
+            continue
+        fila["user_id"] = uid
+        cols = list(fila.keys())
+        conn.execute(f"INSERT INTO operations ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                     tuple(fila[c] for c in cols))
+        for c, monto in movimientos_de_efectivo(conn, uid, meta, cuenta):
+            efectivo.mover(conn, uid, c, monto)
+        vueltos += 1
+    return vueltos
+
+
+def al_borrar_cuentas(conn, uid: int, nombres: list) -> None:
+    """Se borran estas cuentas (con sus operaciones). Un dividendo de la bandeja
+    que vive en una de ellas cobró su comisión en la cuenta en pesos del broker;
+    si ESA cuenta sobrevive (se borró sólo la "· USD"), se le devuelve: el
+    dividendo deja de existir y la comisión quedaba descontada para siempre
+    (auditoría 2026-10-09)."""
+    if not nombres:
+        return
+    ph = ",".join("?" * len(nombres))
+    for f in conn.execute(
+            f"""SELECT broker, undo_meta_json FROM operations
+                 WHERE user_id=? AND broker IN ({ph}) AND op_type='Dividendo'
+                   AND undo_meta_json LIKE ?""",
+            (uid, *nombres, f'%"src": "{SRC}"%')).fetchall():
+        try:
+            meta = json.loads(f["undo_meta_json"])
+        except (TypeError, ValueError):
+            continue
+        com = float(meta.get("comision_pesos") or 0)
+        pesos = _cuenta_en_pesos(conn, uid, f["broker"]) if com else None
+        if pesos and pesos not in nombres:
+            efectivo.mover(conn, uid, pesos, com)
 
 
 # ─── "No lo cobré" ───────────────────────────────────────────────────────────

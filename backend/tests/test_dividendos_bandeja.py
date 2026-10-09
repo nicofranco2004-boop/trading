@@ -294,6 +294,93 @@ class ImportarDespuesDeConfirmar(_Base):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+class AuditoriaServidor(_Base):
+    """Lo que encontró la auditoría del 2026-10-09 (cada caso fallaba antes)."""
+
+    def ids(self):
+        return {r["name"]: r["id"] for r in self.conn.execute(
+            "SELECT id, name FROM brokers WHERE user_id=?", (self.uid,))}
+
+    def mid(self, asset="KO"):
+        return [m for m in self.movimientos()
+                if m.get("asset") == asset and m["type"] == "DIVIDEND"][0]["id"]
+
+    def test_no_se_puede_editar_desde_operaciones(self):
+        """Editarlo pisaba su foto y prender "mueve efectivo" lo acreditaba otra vez;
+        borrarlo después dejaba US$ 10,33 inventados."""
+        self.assertEqual(self.confirmar().status_code, 200)
+        oid = self.dividendos()[0]["id"]
+        r = self.client.put(f"/api/operations/{oid}", json={
+            "date": COBRO, "broker": "Balanz · USD", "asset": "KO", "op_type": "Dividendo",
+            "pnl_usd": 20, "mueve_efectivo": True, "cash_on": True})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertAlmostEqual(self.caja("Balanz · USD"), 1240.50 + NETO, places=2)
+        self.assertEqual(self.client.delete(f"/api/movements/{self.mid()}").status_code, 200)
+        self.assertAlmostEqual(self.caja("Balanz · USD"), 1240.50, places=2)
+        self.assertAlmostEqual(self.caja("Balanz"), 100000, places=2)
+
+    def test_renombrar_el_broker_y_borrar_devuelve_a_las_cuentas_de_hoy(self):
+        self.assertEqual(self.confirmar().status_code, 200)
+        ids = self.ids()
+        for viejo, nuevo, ccy in (("Balanz", "Balanz Capital", "ARS"),
+                                  ("Balanz · USD", "Balanz Capital · USD", "USDT")):
+            r = self.client.put(f"/api/brokers/{ids[viejo]}", json={"name": nuevo, "currency": ccy})
+            self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.delete(f"/api/movements/{self.mid()}").status_code, 200)
+        self.assertAlmostEqual(self.caja("Balanz Capital · USD"), 1240.50, places=2)
+        self.assertAlmostEqual(self.caja("Balanz Capital"), 100000, places=2)
+        self.assertAlmostEqual(self.caja("Balanz · USD") + self.caja("Balanz"), 0, places=2,
+                               msg="se crearon cajas con el nombre viejo")
+
+    def test_un_sin_activo_de_otra_empresa_no_se_come_el_confirmado(self):
+        """KO confirmado (10,33); llega un dividendo sin activo de 9,50 de otra empresa."""
+        self.assertEqual(self.confirmar(comision_pesos=0).status_code, 200)
+        self.importar(_csv("2026-09-30,DIVIDENDO,Balanz,,,,9.50,,,0,USD,"))
+        assets = sorted((d["asset"] or "") for d in self.dividendos())
+        self.assertEqual(assets, ["KO", "—"], self.dividendos())
+
+    def test_revertir_el_import_que_lo_reemplazo_lo_devuelve(self):
+        self.assertEqual(self.confirmar().status_code, 200)
+        self.importar(_csv("2026-10-07,DIVIDENDO,Balanz,KO,,,10.40,,,0,USD,"))
+        lote = self.conn.execute("SELECT id FROM import_batches WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+                                 (self.uid,)).fetchone()["id"]
+        r = self.client.post(f"/api/imports/{lote}/revert")
+        self.assertEqual(r.status_code, 200, r.text)
+        divs = self.dividendos()
+        self.assertEqual(len(divs), 1, divs)
+        self.assertIn(dividendos.SRC, divs[0]["undo_meta_json"])
+        self.assertAlmostEqual(self.caja("Balanz · USD"), 1240.50 + NETO, places=2)
+        self.assertAlmostEqual(self.caja("Balanz"), 100000 - 62, places=2)
+
+    def test_borrar_solo_la_cuenta_en_dolares_devuelve_la_comision(self):
+        self.assertEqual(self.confirmar().status_code, 200)
+        r = self.client.delete(f"/api/brokers/{self.ids()['Balanz · USD']}", params={"force": "true"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.dividendos(), [])
+        self.assertAlmostEqual(self.caja("Balanz"), 100000, places=2)
+
+    def test_un_dividendo_viejo_en_pesos_sin_moneda_no_sale_como_dolares(self):
+        """Filas viejas sin moneda guardan `quantity` en pesos."""
+        self.conn.execute(
+            "INSERT INTO operations (user_id, date, broker, asset, op_type, quantity, pnl_usd) "
+            "VALUES (?,?,?,?,?,?,?)", (self.uid, "2025-05-02", "Balanz", "GGAL", "Dividendo", 14500, 10.0))
+        self.conn.commit()
+        m = [m for m in self.movimientos() if m.get("asset") == "GGAL"][0]
+        self.assertEqual(m["type"], "DIVIDEND")
+        self.assertAlmostEqual(m["amount_usd"], 10.0, places=2)
+
+    def test_el_csv_del_contador_lo_exporta_como_dividendo(self):
+        self.assertEqual(self.confirmar().status_code, 200)
+        with mock.patch.object(main, "_gate_export", lambda *a, **k: None):
+            r = self.client.get("/api/export/transactions.csv")
+        self.assertEqual(r.status_code, 200, r.text)
+        filas = [l for l in r.text.splitlines() if ",KO," in l and "COMPRA" not in l]
+        self.assertEqual(len(filas), 1, r.text)
+        self.assertIn("DIVIDENDO", filas[0])
+        self.assertIn("10.33", filas[0])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 class NoLoCobre(_Base):
 
     def test_saltear_y_deshacer(self):

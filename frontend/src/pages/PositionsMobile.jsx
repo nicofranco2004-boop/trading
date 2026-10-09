@@ -597,9 +597,12 @@ export default function PositionsMobile() {
     })
   }
 
-  async function onBondCashflowSuccess() {
+  async function onBondCashflowSuccess(cobro) {
     setBondCashflow(null)
-    await loadAll()
+    // Igual que Cartera de escritorio: el total se ve recalcular con el cupón
+    // adentro. Antes acá se ignoraba lo que avisa el modal (auditoría 2026-10-09).
+    if (cobro) await recalculo.anotar(cobro, loadAll)
+    else await loadAll()
   }
 
   // ─── "Agregar compra" sobre una posición existente ──────────────────────

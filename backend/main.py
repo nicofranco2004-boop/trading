@@ -4621,8 +4621,9 @@ _RESET_PORTFOLIO_TABLES = (
     "brokers", "positions", "archived_positions", "operations",
     "monthly_entries", "snapshots", "plazos_fijos", "goals", "twr_periods",
     "deleted_ops_journal", "bond_cashflow_skips",
-    # Los "No lo cobré" de la bandeja de dividendos (2026-10-09).
-    "dividendos_salteados",
+    # Los "No lo cobré" de la bandeja de dividendos y los confirmados que un
+    # import reemplazó (2026-10-09).
+    "dividendos_salteados", "dividendos_reemplazados",
     "ai_analyses_cache", "ai_user_facts",
     # Agregadas 2026-10-08: la huella con que se reconstruyó la historia y las
     # fotos medidas originales (antes de corregirlas por compras/ventas borradas).
@@ -5675,6 +5676,9 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
 
         # ── Force delete (o broker vacío) — incluye sibling para evitar orphans
         with conn:
+            # Dividendos de la bandeja de estas cuentas: si su comisión en pesos
+            # se cobró en una cuenta que sobrevive, vuelve (ver dividendos.py).
+            _dividendos.al_borrar_cuentas(conn, uid, broker_names)
             conn.execute(
                 f"DELETE FROM operations WHERE user_id=? AND broker IN ({placeholders})",
                 (uid, *broker_names),
@@ -15893,12 +15897,47 @@ def _flujos_manuales_del_mes(me_row, importados: dict):
     return dep, wit
 
 
-# op_type de un cobro cargado a mano → tipo de movimiento. Ver `_build_movements`.
+# op_type de un cobro cargado a mano → tipo de movimiento. Ver `_cobro_manual`.
 _TIPO_DE_COBRO_MANUAL = {
     "Dividendo": "DIVIDEND",
     "Cupón": "DIVIDEND", "Cupon": "DIVIDEND", "Renta": "DIVIDEND",
-    "Interés": "INTEREST", "Interes": "INTEREST",
+    "Interés": "INTEREST", "Interes": "INTEREST", "Interés PF": "INTEREST",
 }
+
+
+def _cobro_manual(d: dict):
+    """Un COBRO cargado a mano (dividendo de la bandeja de Cartera, cupón de la
+    de bonos, interés) como movimiento: tipo, lo que entró en dólares y las
+    comisiones. None si la fila no es un cobro. UNA regla para Movimientos y
+    para el CSV del contador (`transactions.csv`); hasta 2026-10-09 los dos los
+    mostraban como "Venta".
+
+    Lo que entró: los dividendos de la bandeja lo guardan en `quantity`, en la
+    moneda de la fila; sólo se usa si la moneda está DICHA (USD, o ARS con su
+    TC). Filas viejas sin moneda (dividendos que perdieron su vínculo con el
+    import) tienen `quantity` en pesos: leerlas como dólares mostraba $ 14.500
+    como US$ 14.500 (auditoría 2026-10-09). Para ésas, y para los cupones (que
+    no guardan `quantity`), lo que entró es su resultado en dólares."""
+    tipo = _TIPO_DE_COBRO_MANUAL.get((d.get("op_type") or "").strip())
+    if not tipo:
+        return None
+    ccy = (d.get("currency") or "").upper()
+    fx = _safe_float_or_none(d.get("fx_to_usd")) or 0
+    pnl = realized_pnl.realized_usd(d) if d.get("pnl_usd") is not None else 0
+    cant = _safe_float_or_none(d.get("quantity"))
+    if cant and ccy in ("USD", "USDT"):
+        monto, div = cant, 1.0
+    elif cant and ccy == "ARS" and fx > 0:
+        monto, div = cant / fx, fx
+    else:
+        monto, div = pnl, (fx if (ccy == "ARS" and fx > 0) else 1.0)
+    return {
+        "type": tipo,
+        "amount_usd": monto,
+        "currency": ccy or "USD",
+        "fees_usd": (_safe_float_or_none(d.get("commissions")) or 0) / div,
+        "pnl_usd": pnl,
+    }
 
 
 def _build_movements(uid: int):
@@ -15962,30 +16001,22 @@ def _build_movements(uid: int):
             # interés. Hasta 2026-10-09 caían en la rama de abajo y Movimientos los
             # mostraba como "Venta" del activo. Mismo tipo que tienen los
             # importados (el importador los guarda como DIVIDEND / INTEREST).
-            _cobro = _TIPO_DE_COBRO_MANUAL.get((d.get("op_type") or "").strip())
+            _cobro = _cobro_manual(d)
             if _cobro:
-                _ccy = (d.get("currency") or "").upper()
-                _fx_fila = _safe_float_or_none(d.get("fx_to_usd")) or 0
-                _div = _fx_fila if (_ccy == "ARS" and _fx_fila > 0) else 1.0
-                _cant = _safe_float_or_none(d.get("quantity"))
-                _pnl = (realized_pnl.realized_usd(d) if d.get("pnl_usd") is not None else 0)
                 movements.append({
                     "id": f"op-{d['id']}-cobro",
                     "kind": "movement",
                     "date": d.get("date"),
-                    "type": _cobro,
+                    "type": _cobro["type"],
                     "broker": d.get("broker") or "",
                     "asset": d.get("asset") or "",
                     "quantity": None,
                     "unit_price": None,
-                    # Lo que ENTRÓ a la cuenta (en dólares). Los cobros de la bandeja
-                    # de dividendos lo guardan en `quantity` (como el importador); los
-                    # de bonos no, y para ellos el neto es su `pnl_usd`.
-                    "amount_usd": (_cant / _div) if _cant else _pnl,
-                    "currency": _ccy or "USD",
+                    "amount_usd": _cobro["amount_usd"],
+                    "currency": _cobro["currency"],
                     "fx_to_usd": d.get("fx_to_usd"),
-                    "fees_usd": (_safe_float_or_none(d.get("commissions")) or 0) / _div,
-                    "pnl_usd": _pnl,
+                    "fees_usd": _cobro["fees_usd"],
+                    "pnl_usd": _cobro["pnl_usd"],
                     "notes": d.get("notes") or "",
                     "source": "manual",
                     "ref_id": d["id"],
@@ -18444,6 +18475,24 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                     _leer_conversion_manual(r), fecha=r["date"], broker=r["broker"],
                     notas=notas))
                 continue
+            # Un COBRO cargado a mano (dividendo de la bandeja, cupón, interés) no
+            # es una venta: salía "VENTA … monto 0" (auditoría 2026-10-09). Mismo
+            # tipo y mismo monto que le da Movimientos (`_cobro_manual`).
+            _cobro = _cobro_manual(dict(r))
+            if _cobro:
+                rows.append({
+                    "fecha": r["date"],
+                    "tipo": _humanize_tx_type(_cobro["type"]),
+                    "broker": r["broker"] or "",
+                    "activo": r["asset"] or "",
+                    "cantidad": "",
+                    "precio_unitario": "",
+                    "monto": round(_cobro["amount_usd"], 2),
+                    "moneda": "USD",
+                    "comisiones": round(_cobro["fees_usd"], 2),
+                    "notas": (r["notes"] or "") + " · manual",
+                })
+                continue
             # Futuros: solo se carga pnl_usd, no hay quantity/precios. Se exporta
             # como UNA fila con monto = pnl_usd (puede ser negativo).
             is_futuros = (
@@ -18852,7 +18901,7 @@ def _meta_movio_efectivo(meta: dict) -> bool:
 
 # Operaciones cuyo efectivo lo mueve OTRO mecanismo. El interruptor no se les
 # ofrece: sumarle éste sería contar la misma plata dos veces.
-_SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow')
+_SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow', _dividendos.SRC)
 
 # Cuántas veces la edición vuelve a leer la operación si otro pedido la cambió
 # entre la lectura y la escritura (ver `update_operation`). Con un doble click
@@ -19024,6 +19073,16 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                     meta_prev = json.loads(prev["undo_meta_json"]) or {}
                 except (ValueError, TypeError):
                     meta_prev = {}
+            # Un dividendo de la bandeja movió DOS cuentas (dólares y la comisión en
+            # pesos) y guarda su desglose: editarlo acá pisaba esa foto y prender el
+            # interruptor lo volvía a acreditar (auditoría 2026-10-09: borrarlo
+            # después dejaba US$ 10,33 inventados). Se corrige borrando y
+            # confirmando de nuevo, que deja todo coherente.
+            if meta_prev.get("src") == _dividendos.SRC:
+                conn.close()
+                raise HTTPException(400,
+                    "Este dividendo se anotó desde la bandeja de Cartera. Para corregirlo, "
+                    "borralo en Movimientos y confirmalo de nuevo con los montos correctos.")
             movia_antes = _meta_movio_efectivo(meta_prev)
             pedido = _pide_mover_efectivo(op)
             # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
@@ -19324,7 +19383,7 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
         # en la cuenta en dólares y (si hubo) debitó la comisión en la cuenta en
         # pesos. Se devuelven los dos. Misma función que usa el importador cuando
         # trae el mismo dividendo (`dividendos.reemplazar_por_importado`).
-        hecho = _dividendos.deshacer_efectivo(conn, uid, meta)
+        hecho = _dividendos.deshacer_efectivo(conn, uid, meta, broker)
         undo["cash_moves"] = [{"broker": b, "native": n} for b, n in hecho]
         otros_brokers.update(b for b, _ in hecho)
 
@@ -19572,7 +19631,7 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
             except (TypeError, ValueError):
                 _meta_div = {}
         if _meta_div.get("src") == _dividendos.SRC and _dividendos.ya_registrado(
-                conn, uid, _meta_div.get("broker_tenencia") or row.get("broker") or "",
+                conn, uid, row.get("broker") or "",
                 row.get("asset") or "", _meta_div.get("ex_date") or str(row.get("date"))[:10],
                 neto_usd=float(_meta_div.get("neto") or 0) or None):
             raise HTTPException(409,

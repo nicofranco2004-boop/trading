@@ -24,6 +24,7 @@ const sinMovimiento = () => typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 const VISIBLE_MS = 6000
+const TOPE_RECALCULANDO_MS = 20000
 
 /**
  * @param {Object|null} cobro        { id, texto: 'dividendo de SPY', articulo?: 'el'|'la', monto: '+US$ 2,65', deshecho? }
@@ -96,6 +97,16 @@ export default function RecalculoDeCartera({ cobro, recalculando, total, formato
     return () => clearTimeout(t)
   }, [fase])
 
+  // Tope: si la página no termina de cargar (los precios fallaron, la red se
+  // cortó), el aviso no se queda en "Recalculando…" para siempre ni muestra un
+  // total a medias: se va (auditoría 2026-10-09, el Dashboard de una cuenta
+  // sólo con efectivo no daba nunca el total por listo).
+  useEffect(() => {
+    if (fase !== 'recalculando') return undefined
+    const t = setTimeout(() => setFase(null), TOPE_RECALCULANDO_MS)
+    return () => clearTimeout(t)
+  }, [fase, cobro])
+
   if (!fase || !cobro) return null
   const monto = (v) => (oculto ? '••••••' : formato(v))
 
@@ -114,11 +125,11 @@ export default function RecalculoDeCartera({ cobro, recalculando, total, formato
             {fase === 'recalculando' ? (
               <>
                 <p className="text-[13.5px] font-semibold text-ink-0">Recalculando tu cartera…</p>
-                <p className="text-[12px] text-ink-3">{cobro.deshecho ? 'Sacando' : 'Sumando'} {cobro.articulo || 'el'} {cobro.texto}</p>
+                <p className="text-[12px] text-ink-3">{cobro.varios ? `Aplicando ${cobro.articulo} ${cobro.texto}` : `${cobro.deshecho ? 'Sacando' : 'Sumando'} ${cobro.articulo || 'el'} ${cobro.texto}`}</p>
               </>
             ) : (
               <>
-                <p className="text-[12px] text-ink-3">Tu cartera, {cobro.deshecho ? 'sin' : 'con'} {cobro.articulo || 'el'} {cobro.texto}</p>
+                <p className="text-[12px] text-ink-3">{cobro.varios ? `Tu cartera, después de ${cobro.articulo} ${cobro.texto}` : `Tu cartera, ${cobro.deshecho ? 'sin' : 'con'} ${cobro.articulo || 'el'} ${cobro.texto}`}</p>
                 <p className="tabular text-[15px] font-semibold text-ink-0">
                   {antes.current != null && <span className="text-ink-3 font-normal">{monto(antes.current)} → </span>}
                   <span className={`rounded px-0.5 ${!oculto ? 'flash-up' : ''}`}>{monto(mostrado)}</span>
