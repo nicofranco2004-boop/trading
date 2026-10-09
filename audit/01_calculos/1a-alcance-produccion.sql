@@ -428,16 +428,18 @@ JOIN brokers b
   ON b.user_id = o.user_id
  AND b.name    = o.broker
 WHERE UPPER(TRIM(COALESCE(o.asset, ''))) IN (
-          '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'APE', 'APT', 'ARB', 'ARKM', 'ATOM',
-          'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BONK', 'BTC', 'CFX',
-          'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
-          'ENJ', 'EOS', 'ETC', 'ETH', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS',
-          'GALA', 'GMX', 'GRT', 'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
-          'JTO', 'KAVA', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC', 'MKR',
-          'NEAR', 'NEO', 'ONT', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'PYTH', 'QTUM',
-          'RDNT', 'REN', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
-          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'VET',
-          'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
+          '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'ANKR', 'APE', 'APT', 'AR', 'ARB',
+          'ARKM', 'ATOM', 'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BOME',
+          'BONK', 'BTC', 'CELO', 'CFX', 'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN',
+          'DOGE', 'DOT', 'DYDX', 'EGLD', 'ENA', 'ENJ', 'ENS', 'EOS', 'ETC', 'ETH', 'FET',
+          'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS', 'GALA', 'GMT', 'GMX', 'GRT',
+          'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA', 'JASMY', 'JTO', 'JUP',
+          'KAS', 'KAVA', 'KSM', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC',
+          'MEW', 'MINA', 'MKR', 'NEAR', 'NEO', 'OCEAN', 'ONE', 'ONT', 'OP', 'ORDI',
+          'PENDLE', 'PEPE', 'POL', 'POPCAT', 'PYTH', 'QNT', 'QTUM', 'RDNT', 'REN',
+          'RENDER', 'RNDR', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
+          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI',
+          'VET', 'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
           'ZIL', 'ZRX'
       )
   AND COALESCE(o.exit_price, 0) = 0
@@ -476,16 +478,18 @@ JOIN brokers b
 WHERE COALESCE(p.is_cash, 0) = 0
   AND UPPER(TRIM(COALESCE(b.currency, ''))) = 'ARS'
   AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
-          '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'APE', 'APT', 'ARB', 'ARKM', 'ATOM',
-          'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BONK', 'BTC', 'CFX',
-          'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
-          'ENJ', 'EOS', 'ETC', 'ETH', 'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS',
-          'GALA', 'GMX', 'GRT', 'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA',
-          'JTO', 'KAVA', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC', 'MKR',
-          'NEAR', 'NEO', 'ONT', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POL', 'PYTH', 'QTUM',
-          'RDNT', 'REN', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
-          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'VET',
-          'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
+          '1INCH', 'AAVE', 'ADA', 'ALGO', 'ALT', 'ANKR', 'APE', 'APT', 'AR', 'ARB',
+          'ARKM', 'ATOM', 'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BOME',
+          'BONK', 'BTC', 'CELO', 'CFX', 'CHZ', 'COMP', 'CORE', 'CRV', 'CYBER', 'DEGEN',
+          'DOGE', 'DOT', 'DYDX', 'EGLD', 'ENA', 'ENJ', 'ENS', 'EOS', 'ETC', 'ETH', 'FET',
+          'FIL', 'FLOKI', 'FLOW', 'FRAX', 'FTM', 'FXS', 'GALA', 'GMT', 'GMX', 'GRT',
+          'HBAR', 'ICP', 'ICX', 'ID', 'ILV', 'IMX', 'INJ', 'IOTA', 'JASMY', 'JTO', 'JUP',
+          'KAS', 'KAVA', 'KSM', 'LDO', 'LINK', 'LRC', 'LTC', 'MANA', 'MANTA', 'MATIC',
+          'MEW', 'MINA', 'MKR', 'NEAR', 'NEO', 'OCEAN', 'ONE', 'ONT', 'OP', 'ORDI',
+          'PENDLE', 'PEPE', 'POL', 'POPCAT', 'PYTH', 'QNT', 'QTUM', 'RDNT', 'REN',
+          'RENDER', 'RNDR', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'SSV',
+          'STETH', 'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI',
+          'VET', 'WAVES', 'WBTC', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
           'ZIL', 'ZRX'
       )
 ;
@@ -520,11 +524,13 @@ WHERE UPPER(TRIM(COALESCE(currency, ''))) = 'ARS'
 -- Q12 · C-1 — Tenencias con un símbolo que es cripto Y acción a la vez
 -- ────────────────────────────────────────────────────────────────────────────
 -- El precio se rutea por el símbolo contra CRYPTO_SYMBOLS, sin mirar el broker.
--- Doce de esos símbolos son además tickers vivos en Estados Unidos: STX es
+-- Dieciséis de esos símbolos son además tickers vivos en Estados Unidos: STX es
 -- Stacks y también Seagate (S&P 500); AXS es Axie y también Axis Capital; SOL es
--- Solana y también Emeren. Ya se sacaron dos de la lista por esta misma razón
--- (CVX y DASH), con el comentario que lo explica en main.py.
--- Esta consulta acota a esos doce y excluye los exchanges, donde el símbolo SÍ
+-- Solana y también Emeren; desde 2026-10-08 AR (Arweave / Antero Resources), ENS
+-- (Ethereum Name Service / EnerSys), FET (Fetch.ai / Forum Energy) y QNT (Quant /
+-- Quantinuum). Ya se sacaron de la lista por esta misma razón CVX, DASH y ROSE,
+-- cuya acción SÍ está en el catálogo de Rendi (el comentario en main.py).
+-- Esta consulta acota a esos dieciséis y excluye los exchanges, donde el símbolo SÍ
 -- es la cripto. Lo que quede hay que mirarlo caso por caso: puede ser cripto
 -- legítima en un broker argentino, o una acción preciada como moneda.
 --
@@ -542,7 +548,8 @@ JOIN brokers b
 WHERE COALESCE(p.is_cash, 0) = 0
   AND UPPER(TRIM(COALESCE(p.asset, ''))) IN (
           'STX', 'AXS', 'SOL', 'NEO', 'ATOM', 'COMP',
-          'VET', 'LINK', 'SAND', 'ALT', 'APT', 'QTUM'
+          'VET', 'LINK', 'SAND', 'ALT', 'APT', 'QTUM',
+          'AR', 'ENS', 'FET', 'QNT'
       )
   AND LOWER(TRIM(COALESCE(b.name, ''))) NOT IN (
           'binance', 'bitget', 'buenbit', 'bybit', 'coinbase',

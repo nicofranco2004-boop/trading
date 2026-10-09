@@ -39,6 +39,7 @@ from typing import Dict, Any
 import json
 
 from behavioral import _native_ccy, es_bono_o_letra
+from cripto import es_cripto, es_tenencia_cripto
 from realized_pnl import es_conversion
 
 
@@ -74,10 +75,12 @@ def _invested_usd(p: Dict[str, Any], tc_blue: float, tc_cedear: float | None = N
 # crudos que el LLM necesita para razonar.
 
 # Stablecoins tratadas como CASH (mismo criterio que classifyAssetBucket del
-# frontend, profileAllocations.js) cuando la posición no viene marcada is_cash —
-# muchos brokers cripto no las marcan. Sin esto la lectura IA narra "alternativo/
-# volátil" y la card de Liquidez de abajo muestra "cash" → contradicción visible.
-_STABLECOINS = {"USDT", "USDC", "DAI"}
+# frontend, profileAllocations.js, que lee STABLECOINS de assetClass.js) cuando
+# la posición no viene marcada is_cash — muchos brokers cripto no las marcan. Sin
+# esto la lectura IA narra "alternativo/volátil" y la card de Liquidez de abajo
+# muestra "cash" → contradicción visible. Misma lista que la torta (test de
+# paridad en tests/test_cripto_listas_sueltas.py).
+_STABLECOINS = {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP", "FDUSD"}
 
 
 def _is_trade_op(op_type) -> bool:
@@ -247,15 +250,15 @@ def _build_card_data(
     # Para cards que cruzan con cartera, computamos buckets crudos.
     # Política simplificada (no idéntica a profileMatch.js pero suficiente
     # para que el LLM razone — el LLM no necesita los %  exactos al decimal):
-    #   • cripto             → alternative
+    #   • cripto             → alternative (cripto.es_tenencia_cripto: la lista de
+    #     la app o lo que el importador marcó CRYPTO, la misma regla que la torta;
+    #     hasta 2026-10-08 era una lista suelta de 14 y PEPE/KAS/FET eran equity)
     #   • bonos, letras y ONs  → fixed_income (behavioral.es_bono_o_letra, la
     #     misma regla que "Bonos y letras" de la torta; los FCI van a equity
     #     como en la pantalla)
     #   • cash               → cash
     #   • el resto           → equity
     #
-    crypto_set = {"BTC", "ETH", "USDT", "USDC", "SOL", "ADA", "DOT", "MATIC", "AVAX", "BNB", "XRP", "DOGE", "LINK", "AAVE"}
-
     bucket_totals = {"cash": 0, "fixed_income": 0, "equity": 0, "alternative": 0}
     for p in positions:
         if p.get("is_cash"):
@@ -266,7 +269,7 @@ def _build_card_data(
         ticker = (p.get("asset") or "").upper().split("/")[0].split("-")[0]
         # Strip pair suffix (USDT, USD, etc.)
         for q in ("USDT", "USDC", "BUSD"):
-            if ticker.endswith(q) and len(ticker) > len(q) and ticker[:-len(q)] in crypto_set:
+            if ticker.endswith(q) and len(ticker) > len(q) and es_cripto(ticker[:-len(q)]):
                 ticker = ticker[:-len(q)]
                 break
 
@@ -276,7 +279,7 @@ def _build_card_data(
             # classifyAssetBucket del frontend, que es lo que ve el user en las
             # cards de Liquidez/Allocation justo debajo de la lectura IA.
             bucket_totals["cash"] += val
-        elif ticker in crypto_set:
+        elif es_tenencia_cripto({**p, "asset": ticker}):
             bucket_totals["alternative"] += val
         elif es_bono_o_letra(p):
             bucket_totals["fixed_income"] += val

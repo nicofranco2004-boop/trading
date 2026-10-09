@@ -10,16 +10,17 @@ per-100 y NAV por nombre son trampas conocidas — no se registran por chat aún
 """
 
 CRYPTO_TICKERS = {
-    '1INCH', 'AAVE', 'ADA', 'AGIX', 'ALGO', 'ANKR', 'APE', 'APT', 'AR', 'ARB', 'ATOM',
-    'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BOME', 'BONK', 'BTC', 'CELO',
-    'CFX', 'CHZ', 'COMP', 'CRV', 'DASH', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD', 'ENA',
-    'ENJ', 'ENS', 'ETC', 'ETH', 'FET', 'FIL', 'FLOKI', 'FLOW', 'FTM', 'GALA', 'GMT',
-    'GMX', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IOTA', 'JASMY', 'JTO', 'JUP', 'KAS',
-    'KAVA', 'KSM', 'LDO', 'LINK', 'LTC', 'MANA', 'MATIC', 'MEW', 'MINA', 'MKR', 'NEAR',
-    'NEO', 'OCEAN', 'ONE', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POPCAT', 'PYTH', 'QNT',
-    'RNDR', 'ROSE', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL', 'STRK', 'STX',
-    'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'USDC', 'USDT', 'VET',
-    'WAVES', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC', 'ZIL', 'ZRX'
+    '1INCH', 'AAVE', 'ADA', 'ALGO', 'ANKR', 'APE', 'APT', 'AR', 'ARB', 'ATOM',
+    'AVAX', 'AXS', 'BAL', 'BAT', 'BCH', 'BLUR', 'BNB', 'BOME', 'BONK', 'BTC',
+    'CELO', 'CFX', 'CHZ', 'COMP', 'CRV', 'DEGEN', 'DOGE', 'DOT', 'DYDX', 'EGLD',
+    'ENA', 'ENJ', 'ENS', 'ETC', 'ETH', 'FET', 'FIL', 'FLOKI', 'FLOW', 'FTM', 'GALA',
+    'GMT', 'GMX', 'GRT', 'HBAR', 'ICP', 'IMX', 'INJ', 'IOTA', 'JASMY', 'JTO', 'JUP',
+    'KAS', 'KAVA', 'KSM', 'LDO', 'LINK', 'LTC', 'MANA', 'MATIC', 'MEW', 'MINA',
+    'MKR', 'NEAR', 'NEO', 'OCEAN', 'ONE', 'OP', 'ORDI', 'PENDLE', 'PEPE', 'POPCAT',
+    'PYTH', 'QNT', 'RNDR', 'RPL', 'RUNE', 'SAND', 'SEI', 'SHIB', 'SNX', 'SOL',
+    'STRK', 'STX', 'SUI', 'SUSHI', 'THETA', 'TIA', 'TON', 'TRX', 'UNI', 'USDC',
+    'USDT', 'VET', 'WAVES', 'WIF', 'WLD', 'XLM', 'XMR', 'XRP', 'XTZ', 'YFI', 'ZEC',
+    'ZIL', 'ZRX'
 }
 
 US_TICKERS = {

@@ -6,7 +6,7 @@
 // COSTO por igual → el P&L% queda invariante, solo suben ~5% los montos para
 // matchear el broker.
 //
-// CRYPTO_SYMBOLS está PORTADO de backend/main.py (CRYPTO_SYMBOLS). La paridad la garantiza
+// CRYPTO_SYMBOLS está PORTADO de backend/cripto.py (CRYPTO_SYMBOLS). La paridad la garantiza
 // crypto.test.js (si el back agrega un símbolo, el test falla hasta sincronizar).
 // `isCrypto` se usa además para que la cripto NUNCA se rutee a `.BA` (no existe
 // 'BTC.BA') aunque viva en un broker con nombre AR.
@@ -25,10 +25,30 @@ export const CRYPTO_SYMBOLS = new Set([
   'RDNT', 'APE', 'LDO', 'RPL', 'FXS', 'FRAX', 'PENDLE', 'SSV',
   'WBTC', 'STETH',
   'TON', 'ICP',
+  'ANKR', 'AR', 'BOME', 'CELO', 'ENA', 'ENS', 'FET', 'GMT', 'JASMY', 'JUP',
+  'KAS', 'KSM', 'MEW', 'MINA', 'OCEAN', 'ONE', 'POPCAT', 'QNT', 'RNDR',
+  'RENDER',
 ])
 
 export function isCrypto(asset) {
   return CRYPTO_SYMBOLS.has((asset || '').toUpperCase())
+}
+
+// Monedas estables: se cotizan como cripto pero el resto de la app las trata
+// como dólares (sin premium, sin ruteo a `.BA`), por eso no están en
+// CRYPTO_SYMBOLS. Espejo de backend/cripto.py CRIPTO_ESTABLES.
+export const CRIPTO_ESTABLES = new Set(['USDT', 'USDC'])
+
+/**
+ * esCripto — ¿el código es una cripto de la lista o una moneda estable?
+ * Espejo de backend cripto.es_cripto: acepta el código pelado ('PEPE') o con
+ * '-USD' pegado ('PEPE-USD', como lo guardan el inicio y la watchlist). Para
+ * decidir el PRECIO seguí usando isCrypto (las estables no llevan premium).
+ */
+export function esCripto(asset) {
+  let s = String(asset || '').trim().toUpperCase()
+  if (s.endsWith('-USD')) s = s.slice(0, -4)
+  return CRYPTO_SYMBOLS.has(s) || CRIPTO_ESTABLES.has(s)
 }
 
 /**

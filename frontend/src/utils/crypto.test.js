@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { CRYPTO_SYMBOLS, isCrypto, cryptoBrokerFactor } from './crypto.js'
+import { CRYPTO, tickerName } from './tickers.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CRIPTO = 1554, MEP = 1499
@@ -57,9 +58,37 @@ describe('cryptoBrokerFactor', () => {
   })
 })
 
+describe('el buscador sólo ofrece cripto que la app sabe valuar', () => {
+  // Hasta 2026-10-08 el buscador ofrecía 22 criptos que no estaban en
+  // CRYPTO_SYMBOLS: se valuaban como lo que el código fuera en otro lado (FET =
+  // Forum Energy, 394 veces de más; JUP = otra moneda; KAS en pesos = sin precio).
+  const ESTABLES = new Set(['USDT', 'USDC'])   // backend CRIPTO_ESTABLES: van como dólares
+
+  it('cada cripto del buscador está en CRYPTO_SYMBOLS (o es una estable)', () => {
+    const fuera = CRYPTO.map((x) => x.s).filter((s) => !CRYPTO_SYMBOLS.has(s) && !ESTABLES.has(s))
+    expect(fuera).toEqual([])
+  })
+  it('las que entraron se valúan como cripto', () => {
+    for (const s of ['FET', 'AR', 'ENS', 'QNT', 'KAS', 'JUP', 'ONE', 'RNDR', 'RENDER']) {
+      expect(isCrypto(s), s).toBe(true)
+    }
+  })
+  it('DASH, ROSE y AGIX no se ofrecen como cripto: el código es la acción', () => {
+    const buscador = new Set(CRYPTO.map((x) => x.s))
+    for (const s of ['DASH', 'ROSE', 'AGIX']) {
+      expect(isCrypto(s), s).toBe(false)
+      expect(buscador.has(s), s).toBe(false)
+    }
+    // El nombre sale de la primera lista que tiene el código, y la de cripto va
+    // primero: el que tenía Rosenbusch veía «Oasis Network».
+    expect(tickerName('ROSE')).toBe('Instituto Rosenbusch')
+    expect(tickerName('DASH')).toBe('DoorDash')
+  })
+})
+
 describe('CRYPTO_SYMBOLS — paridad FE/BE', () => {
-  it('coincide EXACTO con backend/main.py CRYPTO_SYMBOLS (guard anti-drift)', () => {
-    const py = readFileSync(resolve(__dirname, '../../../backend/main.py'), 'utf8')
+  it('coincide EXACTO con backend/cripto.py CRYPTO_SYMBOLS (guard anti-drift)', () => {
+    const py = readFileSync(resolve(__dirname, '../../../backend/cripto.py'), 'utf8')
     const m = py.match(/CRYPTO_SYMBOLS = \{([\s\S]*?)\}/)
     expect(m).toBeTruthy()
     const beSet = new Set([...m[1].matchAll(/'([A-Z0-9]+)'/g)].map((x) => x[1]))

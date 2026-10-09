@@ -275,9 +275,20 @@ class TestLasListasDeCriptoNoDriftean(unittest.TestCase):
     def test_Q13_mide_las_criptos_que_yahoo_cotiza_con_otro_nombre(self):
         """Q13 cuenta las tenencias de las criptos cuyo nombre en Yahoo no es
         '<SÍMBOLO>-USD', más ICP/USDT/USDC (estaban sólo en la copia del inicio).
-        Si se agrega una a `_YAHOO_CRIPTO_DISTINTO`, la consulta tiene que medirla."""
-        esperado = set(main._YAHOO_CRIPTO_DISTINTO) | {"ICP", "USDT", "USDC"}
+        Si se agrega una a `_YAHOO_CRIPTO_DISTINTO`, alguna consulta tiene que
+        medirla: Q13, o Q14 si llegó desde el buscador (JUP, ONE, GMT…)."""
+        q14 = self._listas_del_sql("Q14")["simbolos"]
+        esperado = (set(main._YAHOO_CRIPTO_DISTINTO) - q14) | {"ICP", "USDT", "USDC"}
         self.assertEqual(self._listas_del_sql("Q13")["simbolos"], esperado)
+
+    def test_Q14_lo_que_entra_es_cripto_y_lo_que_queda_afuera_no(self):
+        """Q14 separa las 22 en las que entraron a la lista y las que quedaron
+        afuera (DASH, ROSE, AGIX). Si la lista cambia, la consulta mide otra cosa."""
+        afuera = {"AGIX", "DASH", "ROSE"}
+        tanda = self._listas_del_sql("Q14")["simbolos"]
+        cripto = {s.upper() for s in main.CRYPTO_SYMBOLS}
+        self.assertEqual(tanda - afuera - cripto, set())
+        self.assertEqual(afuera & cripto, set())
 
     def test_Q14_mide_las_criptos_que_el_buscador_ofrecia_fuera_de_la_lista(self):
         """Q14 cuenta las tenencias de las 22 criptos que el buscador y el chat

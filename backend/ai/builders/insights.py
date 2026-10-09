@@ -102,13 +102,12 @@ from typing import Dict, Any, List, Optional
 from datetime import date
 
 from behavioral import _native_ccy, _trust_mkt_value_usd, exposicion_argentina
+from cripto import es_tenencia_cripto, is_exchange_broker
 import realized_pnl as _realized_pnl
 import twr as _twr
 
 from . import caida_medida
 
-
-_CRYPTO_HINT = {"BTC", "ETH", "USDT", "USDC", "AAVE", "SOL", "AVAX", "DOT", "DOGE", "ADA", "XRP", "LINK", "BNB"}
 
 # Acciones argentinas: la MISMA regla que el diagnóstico de sesgo local
 # (behavioral.es_accion_argentina: panel local + ADRs, con o sin .BA). Lo que
@@ -142,7 +141,11 @@ def _drawdown(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 def _classify_geography(p: Dict[str, Any]) -> str:
     """ar | us | crypto — para exposure breakdown.
 
-    - Crypto: ticker en hint list o broker = binance.
+    - Crypto: la misma regla que la torta (`cripto.es_tenencia_cripto`: el
+      código está en la lista de cripto de la app, o el importador la marcó
+      CRYPTO), o vive en un exchange cripto. Hasta 2026-10-08 era una lista
+      suelta de 13 códigos + «broker = binance»: PEPE, KAS o FET en Ripio o en
+      Cocos se le contaban a la IA como exposición a EE.UU.
     - AR: behavioral.exposicion_argentina — la MISMA regla que el diagnóstico de
       sesgo local (acciones argentinas y sus ADRs según el mercado de la
       tenencia, deuda argentina como la zona Renta Fija). Acá había otra: los
@@ -152,9 +155,7 @@ def _classify_geography(p: Dict[str, Any]) -> str:
       Económicamente un CEDEAR de MSFT es exposure US, no AR — solo el
       wrapper es local. Esa es la lectura útil para el LLM.
     """
-    a = (p.get("asset") or "").upper().strip()
-    b = (p.get("broker") or "").lower().strip()
-    if a in _CRYPTO_HINT or b == "binance":
+    if es_tenencia_cripto(p) or is_exchange_broker(p.get("broker")):
         return "crypto"
     if exposicion_argentina(p):
         return "ar"
@@ -306,8 +307,12 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Cargamos posiciones (incluye is_cash=1) + brokers para conocer la currency
     # real de cada uno (algunos tienen nombres con espacios — usar string match
     # del broker name no es suficiente).
+    # asset_type: lo leen el reparto por país (lo que el importador marcó CRYPTO
+    # es cripto aunque el código pelado sea una acción, como en la torta) y
+    # _price_is_ars (un CEDEAR cotiza en .BA). Sin la columna, las dos reglas
+    # que miran el tipo no lo veían nunca.
     positions = [dict(r) for r in conn.execute(
-        "SELECT asset, broker, quantity, invested, is_cash, currency FROM positions "
+        "SELECT asset, broker, quantity, invested, is_cash, currency, asset_type FROM positions "
         "WHERE user_id=? AND (quantity > 0 OR is_cash = 1)",
         (user_id,),
     ).fetchall()]
