@@ -5348,6 +5348,80 @@ NAME_KEYED_TABLES = (
 )
 
 
+# Dónde guardan las recetas de borrado (y los "Deshacer" pendientes) un nombre de
+# broker. Si aparece una clave nueva con un broker adentro, va acá: el guardián
+# `test_operaciones_con_receta.ElRenombreLlegaALasRecetas` lo controla.
+_CLAVES_CON_BROKER = ("broker", "cash_broker")        # el valor es un nombre
+_CLAVES_CON_BROKERS = ("brokers",)                    # lista de nombres
+_CLAVES_CON_PARES = ("pairs",)                        # lista de [padre, '· USD']
+_CLAVES_POR_BROKER = ("cash_by_broker",)              # {nombre: monto}
+# Otra receta adentro, como texto JSON: la del lote en una venta (`undo_meta`) y
+# la de la fila entera que guarda un "Deshacer" pendiente (`op_row`/`pos_row`).
+_CLAVES_CON_RECETA = ("undo_meta", "undo_meta_json")
+
+
+def _renombrar_broker_en(obj, viejo: str, nuevo: str):
+    """Devuelve `obj` (receta o journal ya leídos) con el broker `viejo` llamado
+    `nuevo` en las claves que guardan brokers. Nada más se toca: un activo o un
+    banco que se llamen igual que el broker no son el broker."""
+    if isinstance(obj, list):
+        return [_renombrar_broker_en(x, viejo, nuevo) for x in obj]
+    if not isinstance(obj, dict):
+        return obj
+    out = {}
+    for k, v in obj.items():
+        if k in _CLAVES_CON_BROKER and v == viejo:
+            out[k] = nuevo
+        elif k in _CLAVES_CON_BROKERS and isinstance(v, list):
+            out[k] = [nuevo if x == viejo else x for x in v]
+        elif k in _CLAVES_CON_PARES and isinstance(v, list):
+            out[k] = [[nuevo if x == viejo else x for x in par] if isinstance(par, list) else par
+                      for par in v]
+        elif k in _CLAVES_POR_BROKER and isinstance(v, dict):
+            out[k] = {(nuevo if b == viejo else b): m for b, m in v.items()}
+        elif k in _CLAVES_CON_RECETA and isinstance(v, str):
+            out[k] = _renombrar_broker_en_texto(v, viejo, nuevo)
+        else:
+            out[k] = _renombrar_broker_en(v, viejo, nuevo)
+    return out
+
+
+def _renombrar_broker_en_texto(texto, viejo: str, nuevo: str):
+    """Lo mismo sobre el texto JSON guardado. Si no cambia nada devuelve el texto
+    ORIGINAL, byte por byte: el borrado reclama la fila comparando ese texto."""
+    try:
+        obj = json.loads(texto)
+    except (ValueError, TypeError):
+        return texto
+    nuevo_obj = _renombrar_broker_en(obj, viejo, nuevo)
+    return texto if nuevo_obj == obj else json.dumps(nuevo_obj)
+
+
+def _renombrar_broker_en_recetas(conn, uid: int, viejo: str, nuevo: str) -> None:
+    """Las recetas de borrado guardan el NOMBRE del broker (a dónde vuelve la plata,
+    en qué broker vive el lote). Renombrar sin tocarlas dejaba el borrado frenado
+    con "ese broker ya no existe" para siempre — o, si después se creaba otro
+    broker con el nombre viejo, sacando la plata de ESE (auditoría 2026-10-09:
+    $514.794 salían del broker nuevo y el renombrado se quedaba con la plata).
+    También los "Deshacer" pendientes, que re-insertan filas con su broker."""
+    for tabla in ("operations", "positions"):
+        for r in conn.execute(
+                f"SELECT id, undo_meta_json FROM {tabla} "
+                "WHERE user_id=? AND undo_meta_json IS NOT NULL", (uid,)).fetchall():
+            t = _renombrar_broker_en_texto(r["undo_meta_json"], viejo, nuevo)
+            if t != r["undo_meta_json"]:
+                conn.execute(f"UPDATE {tabla} SET undo_meta_json=? WHERE id=? AND user_id=?",
+                             (t, r["id"], uid))
+    for r in conn.execute(
+            "SELECT id, broker, payload_json FROM deleted_ops_journal "
+            "WHERE user_id=? AND undone_at IS NULL", (uid,)).fetchall():
+        t = _renombrar_broker_en_texto(r["payload_json"], viejo, nuevo)
+        b = nuevo if r["broker"] == viejo else r["broker"]
+        if t != r["payload_json"] or b != r["broker"]:
+            conn.execute("UPDATE deleted_ops_journal SET payload_json=?, broker=? WHERE id=?",
+                         (t, b, r["id"]))
+
+
 @app.put("/api/brokers/{bid}")
 @reintentar_si_trabada
 def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_user)):
@@ -5522,6 +5596,8 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                                 f"UPDATE {tbl} SET broker=? WHERE user_id=? AND broker=?",
                                 (new_n, uid, old_n),
                             )
+                    # Y adentro de las recetas de borrado y de los "Deshacer".
+                    _renombrar_broker_en_recetas(conn, uid, old_n, new_n)
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
@@ -13982,13 +14058,15 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     # Debitar ARS, acreditar USD (con cost basis = TC de la conversión)
                     _adjust_broker_cash(conn, uid, ars_broker['name'], -data.ars_amount,
                                         permite_negativo=False)
-                    tc_usd_antes = _efectivo.tc_de_la_caja(conn, uid, usd_broker['name'])
+                    caja_usd_antes = _efectivo.estado_de_la_caja(conn, uid, usd_broker['name'])
                     _adjust_broker_cash(conn, uid, usd_broker['name'], data.usd_amount,
                                         tc_compra=data.tc)
                     movs = [{"broker": ars_broker['name'], "delta": -data.ars_amount},
                             {"broker": usd_broker['name'], "delta": data.usd_amount,
-                             "tc_compra": data.tc, "tc_antes": tc_usd_antes,
-                             "tc_despues": _efectivo.tc_de_la_caja(conn, uid, usd_broker['name'])}]
+                             "tc_compra": data.tc, "tc_antes": caja_usd_antes["tc"],
+                             "saldo_antes": caja_usd_antes["saldo"],
+                             "tc_despues": _efectivo.estado_de_la_caja(
+                                 conn, uid, usd_broker['name'])["tc"]}]
                     from_b, to_b = ars_broker['name'], usd_broker['name']
                     from_curr, to_curr = 'ARS', 'USDT'
                 else:  # usd_to_ars
@@ -14033,7 +14111,9 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     movs = [{"broker": usd_broker['name'], "delta": -data.usd_amount,
                              "tc_compra": tc_avg,
                              "tc_antes": cash_usd['tc_compra'] if cash_usd else None,
-                             "tc_despues": _efectivo.tc_de_la_caja(conn, uid, usd_broker['name'])},
+                             "saldo_antes": float(cash_usd['invested'] or 0) if cash_usd else 0.0,
+                             "tc_despues": _efectivo.estado_de_la_caja(
+                                 conn, uid, usd_broker['name'])["tc"]},
                             {"broker": ars_broker['name'], "delta": data.ars_amount}]
                     from_b, to_b = usd_broker['name'], ars_broker['name']
                     from_curr, to_curr = 'USDT', 'ARS'
@@ -14065,15 +14145,18 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                 )
 
                 # 3. Si fue venta de USD con P&L, sumarlo al pnl_realized del mes
-                #    (broker padre ARS + global). Esto hace que aparezca en Resumen
-                #    Mensual y en la atribución de Insights.
+                #    (broker de la operación + global). Esto hace que aparezca en
+                #    Resumen Mensual y en la atribución de Insights.
                 if data.direction == 'usd_to_ars' and abs(pnl_usd_realized) > 1e-6:
                     op_year, op_month = int(op_date[:4]), int(op_date[5:7])
-                    # El MISMO número que guarda la operación (redondeado al centavo):
-                    # con el crudo, el mes decía 9,375 y la operación 9,38, y el
-                    # próximo recálculo (que suma las operaciones) lo cambiaba solo.
+                    # El MISMO número y el MISMO renglón que deja el recálculo, que
+                    # suma las operaciones por su broker (el '· USD', `from_b`) y
+                    # redondeadas al centavo. Antes iba al padre en pesos y sin
+                    # redondear (9,375 contra 9,38): cualquier recálculo posterior
+                    # la mudaba de renglón y le cambiaba el número (auditoría
+                    # 2026-10-09: borrar y deshacer la venta no dejaba el mes igual).
                     _pnl_mes = round(pnl_usd_realized, 2)
-                    _update_monthly_pnl_realized(conn, uid, ars_broker['name'],
+                    _update_monthly_pnl_realized(conn, uid, from_b,
                                                  op_year, op_month, _pnl_mes)
                     _update_monthly_pnl_realized(conn, uid, 'global',
                                                  op_year, op_month, _pnl_mes)
@@ -14081,7 +14164,7 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     # si el mes afectado está cerrado con pnl_unrealized viejo, ese
                     # unrealized stale queda sin zerar y contamina capital_final y el
                     # P&L del mes/año hasta que otra cosa dispare el repair.
-                    _repair_monthly_chain(conn, uid, ars_broker['name'])
+                    _repair_monthly_chain(conn, uid, from_b)
                     _repair_monthly_chain(conn, uid, 'global')
                     conn.commit()
 
@@ -15623,6 +15706,10 @@ def get_operations(uid: int = Depends(get_effective_user)):
         # Para que el formulario no ofrezca una palanca que no puede funcionar.
         d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(
             importada, meta, d.get('op_type'))
+        # Y el tipo, si lo puso el sistema (la edición lo rechaza si cambia).
+        d['tipo_editable'] = not _tipo_lo_puso_el_sistema(meta, d.get('op_type'))
+        # Lo que deshace borrarla, para que "Solo P/L" lo diga antes (como Movimientos).
+        d['deshace_cobro_pf'] = _cobro_pf_de_la_receta(d)
         out.append(d)
     return out
 
@@ -18761,6 +18848,17 @@ def _op_type_con_efectivo_propio(op_type) -> bool:
 _INTENTOS_DE_RECLAMO = 3
 
 
+def _tipo_lo_puso_el_sistema(meta: dict, op_type) -> bool:
+    """¿La fila la escribió el cobro de un plazo fijo o una compra/venta de dólares?
+    Su tipo no se edita: en una fila VIEJA sin receta el tipo es lo único que dice
+    de qué puerta salió, y cambiarlo a "Venta" y volver a editar reabría la palanca
+    de efectivo (auditoría 2026-10-09: dos ediciones y se acreditaban $20.934.245)."""
+    src = (meta or {}).get('src')
+    if src in ('pf_cobro', 'conversion'):
+        return True
+    return not src and _op_type_con_efectivo_propio(op_type)
+
+
 def _acepta_interruptor_de_efectivo(importada: bool, meta: dict, op_type=None) -> bool:
     """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
 
@@ -18935,6 +19033,12 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                     meta_prev = json.loads(prev["undo_meta_json"]) or {}
                 except (ValueError, TypeError):
                     meta_prev = {}
+            if (_tipo_lo_puso_el_sistema(meta_prev, prev["op_type"])
+                    and (op.op_type or "").strip() != (prev["op_type"] or "").strip()):
+                conn.close()
+                raise HTTPException(400, "El tipo de esta operación no se puede cambiar: la "
+                                         "generó el cobro de un plazo fijo o una compra o "
+                                         "venta de dólares. El resto sí se puede editar.")
             movia_antes = _meta_movio_efectivo(meta_prev)
             pedido = _pide_mover_efectivo(op)
             # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
@@ -19257,12 +19361,14 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
                 r = _efectivo.revertir(conn, uid, m["broker"], -d,
                                        tc_compra=m.get("tc_compra"),
                                        tc_esperado=m.get("tc_despues"),
-                                       tc_a_dejar=m.get("tc_antes"))
+                                       tc_a_dejar=m.get("tc_antes"),
+                                       saldo_previo=m.get("saldo_antes"))
                 # Rehacer una COMPRA vuelve a promediar a su TC; rehacer una VENTA
                 # no toca el promedio (ver `_efectivo.revertir`).
                 hechos.append({"broker": m["broker"], "delta": -d,
                                "tc_compra": m.get("tc_compra") if d > 0 else None,
-                               "tc_antes": r["tc_antes"], "tc_despues": r["tc_despues"]})
+                               "tc_antes": r["tc_antes"], "tc_despues": r["tc_despues"],
+                               "saldo_antes": r["saldo_antes"]})
             else:
                 _adjust_broker_cash(conn, uid, m["broker"], -d)
                 hechos.append({"broker": m["broker"], "delta": -d})
@@ -19579,13 +19685,26 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
             conn.execute("UPDATE futures_positions SET closed_at=? WHERE id=? AND user_id=?",
                          (_fr.get("closed_at"), _fr.get("id"), uid))
         # Lo mismo con el plazo fijo cuyo cobro se borró: vuelve a quedar cobrado,
-        # con la marca original (es la que reconoce un próximo borrado).
-        if _pf and conn.execute(
-                "UPDATE plazos_fijos SET closed_at=? "
-                " WHERE id=? AND user_id=? AND closed_at IS NULL",
-                (_pf.get("closed_at"), _pf.get("id"), uid)).rowcount != 1:
-            raise HTTPException(409, "No se puede deshacer: ese plazo fijo ya lo volviste a "
-                                     "cobrar.")
+        # con la marca original (es la que reconoce un próximo borrado). El WHERE
+        # repite la huella: renovar no toma el turno, y en Postgres podía entrar
+        # entre el chequeo de arriba y este cierre (auditoría 2026-10-09).
+        if _pf:
+            _h = _pf.get("huella") or {}
+            if conn.execute(
+                    "UPDATE plazos_fijos SET closed_at=? "
+                    " WHERE id=? AND user_id=? AND closed_at IS NULL"
+                    "   AND banco=? AND capital=? AND moneda=? AND tasa=? AND rate_type=?"
+                    "   AND fecha_inicio=? AND plazo_dias=? AND modalidad=?"
+                    "   AND COALESCE(pago_frecuencia_meses, -1)=?",
+                    (_pf.get("closed_at"), _pf.get("id"), uid, _h.get("banco"),
+                     _h.get("capital"), _h.get("moneda"), _h.get("tasa"),
+                     _h.get("rate_type"), _h.get("fecha_inicio"), _h.get("plazo_dias"),
+                     _h.get("modalidad"),
+                     -1 if _h.get("pago_frecuencia_meses") is None
+                     else _h.get("pago_frecuencia_meses"))).rowcount != 1:
+                raise HTTPException(409, "No se puede deshacer: el plazo fijo cambió desde "
+                                         "que borraste el cobro (se cobró, se renovó o se "
+                                         "editó).")
         # Una conversión: cada caja vuelve a recibir lo que le hizo la conversión, y
         # la de dólares su TC promedio (exacto si nadie lo cambió desde el borrado).
         for _m in (p.get("movs") or []):
@@ -19594,7 +19713,8 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
                 _efectivo.revertir(conn, uid, _m["broker"], -_d,
                                    tc_compra=_m.get("tc_compra"),
                                    tc_esperado=_m.get("tc_despues"),
-                                   tc_a_dejar=_m.get("tc_antes"))
+                                   tc_a_dejar=_m.get("tc_antes"),
+                                   saldo_previo=_m.get("saldo_antes"))
             else:
                 _adjust_broker_cash(conn, uid, _m["broker"], -_d)
         # Re-invertir el cash que el borrado movió, en el MISMO broker que tocó y

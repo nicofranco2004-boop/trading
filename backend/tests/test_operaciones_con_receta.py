@@ -155,11 +155,17 @@ class ConRecetaBase(unittest.TestCase):
         resultado = self.conn.execute(
             "SELECT COALESCE(SUM(pnl_realized), 0) AS s FROM monthly_entries "
             "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["s"]
+        # Y en qué renglón quedó (sin los renglones en cero que deja un recálculo).
+        por_broker = {r["broker"]: round(float(r["s"]), 4) for r in self.conn.execute(
+            "SELECT broker, SUM(pnl_realized) AS s FROM monthly_entries "
+            "WHERE user_id=? AND broker <> 'global' GROUP BY broker", (self.uid,))
+            if abs(float(r["s"] or 0)) > 1e-9}
         # El aportado, al centavo: el recálculo de la cascada redondea los
         # depósitos a 4 decimales (US$ 706,713781 → 706,7138), con o sin esto.
         return {"cajas": cajas, "plazos_fijos": pfs, "operaciones": ops,
                 "aportado": round(snapshots_job.compute_net_deposited_db(self.conn, self.uid), 2),
-                "resultado_del_mes": round(float(resultado or 0), 4)}
+                "resultado_del_mes": round(float(resultado or 0), 4),
+                "resultado_por_broker": por_broker}
 
     def assertMismaCuenta(self, antes, despues, cuando):
         for k in antes:
@@ -205,19 +211,61 @@ class LaConversionSeBorraYSeDeshace(ConRecetaBase):
         self._deshacer(token)
         self.assertMismaCuenta(e_b, self.estado(), "después de deshacer")
 
-    def test_dos_compras_borrar_la_primera_deja_el_precio_de_la_segunda(self):
+    def test_dos_compras_borrar_la_ultima_vuelve_exacto(self):
+        self._depositar(self.PESOS, 1_000_000)
+        self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        e_una = self.estado()
+        segunda = self._convertir(self.PESOS, "ars_to_usd", 150_000, 100, 1500)
+        e_dos = self.estado()
+        self.assertEqual(e_dos["cajas"][f"{self.PESOS} · USD"], (200.0, 1400.0))
+        token = self._borrar(segunda)["undo_token"]
+        self.assertMismaCuenta(e_una, self.estado(), "después de borrar la última")
+        self._deshacer(token)
+        self.assertMismaCuenta(e_dos, self.estado(), "después de deshacer")
+
+    def test_dos_compras_a_distinto_precio_borrar_la_vieja_deja_el_promedio(self):
+        """Con otra compra a OTRO precio en el medio, sacar la vieja del promedio no
+        tiene cuenta exacta (es un promedio móvil): la plata vuelve exacta y el
+        precio queda como estaba, sin inventar uno. La auditoría mostró que la
+        cuenta inversa daba precios fuera de los que hubo."""
         self._depositar(self.PESOS, 1_000_000)
         primera = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
         self._convertir(self.PESOS, "ars_to_usd", 150_000, 100, 1500)
         e_antes = self.estado()
-        self.assertEqual(e_antes["cajas"][f"{self.PESOS} · USD"], (200.0, 1400.0))
-
         token = self._borrar(primera)["undo_token"]
-        # Quedan los 100 de la segunda, a SU precio: exacto.
-        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (100.0, 1500.0))
+        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (100.0, 1400.0))
         self.assertEqual(self.estado()["cajas"][self.PESOS], (850_000.0, None))
         self._deshacer(token)
         self.assertMismaCuenta(e_antes, self.estado(), "después de deshacer")
+
+    def test_con_ventas_en_el_medio_el_precio_no_sale_de_los_que_hubo(self):
+        """100 a 1.000, 300 a 1.800, se venden 200, se borra la primera: la cuenta
+        inversa daba un dólar a 2.200 (más caro que cualquier compra)."""
+        self._depositar(self.PESOS, 1_000_000)
+        primera = self._convertir(self.PESOS, "ars_to_usd", 100_000, 100, 1000)
+        self._convertir(self.PESOS, "ars_to_usd", 540_000, 300, 1800)
+        self._convertir(f"{self.PESOS} · USD", "usd_to_ars", 320_000, 200, 1600)
+        self._borrar(primera)
+        dolares, tc = self.estado()["cajas"][f"{self.PESOS} · USD"]
+        self.assertAlmostEqual(dolares, 100.0, places=6)
+        self.assertTrue(1000 <= tc <= 1800, tc)
+
+    def test_dolares_que_entraron_sin_precio_no_ganan_uno_al_borrar(self):
+        """Dólares depositados (sin precio) y después una compra: borrar la compra
+        los deja sin precio otra vez. Antes quedaban a 1.000 y venderlos
+        inventaba una ganancia cambiaria."""
+        self._depositar(self.PESOS, 1_000_000)
+        bid = self.conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
+                                (self.uid, self.PESOS)).fetchone()["id"]
+        self._ok(self.http.post(f"/api/brokers/{bid}/usd-sibling"))
+        self._depositar(f"{self.PESOS} · USD", 100)
+        e_antes = self.estado()
+        self.assertEqual(e_antes["cajas"][f"{self.PESOS} · USD"], (100.0, None))
+        compra = self._convertir(self.PESOS, "ars_to_usd", 100_000, 100, 1000)
+        token = self._borrar(compra)["undo_token"]
+        self.assertMismaCuenta(e_antes, self.estado(), "después de borrar la compra")
+        self._deshacer(token)
+        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (200.0, 1000.0))
 
     def test_dos_compras_al_mismo_precio_borrar_la_primera_no_deja_dolares_sin_precio(self):
         """Lo encontró la prueba en el navegador: con la caja vacía, 100 y después 10
@@ -243,6 +291,7 @@ class LaConversionSeBorraYSeDeshace(ConRecetaBase):
         dolares, tc = self.estado()["cajas"][f"{self.PESOS} · USD"]
         self.assertAlmostEqual(dolares, 1.0, places=6)      # 200 − 99 − 100: la plata, exacta
         self.assertTrue(1000 <= tc <= 1800, tc)
+        self.assertEqual(tc, 1400.0)                         # el promedio, como estaba
 
     def test_por_la_otra_puerta_tambien(self):
         self._depositar(self.PESOS, 1_000_000)
@@ -458,6 +507,193 @@ class LaPalancaDeEfectivoNoSeOfrece(ConRecetaBase):
                 self.assertIs(self._editable(op), True)
 
 
+class ElTipoQuePusoElSistemaNoSeCambia(ConRecetaBase):
+    """En una fila VIEJA sin receta el tipo es lo único que dice que la plata ya se
+    movió: cambiarlo a "Venta" y volver a editar reabría "mueve efectivo" y se
+    acreditaban $20.934.245 (auditoría 2026-10-09). El tipo de lo que generó el
+    sistema no se edita; lo demás sí."""
+
+    def _cuerpo(self, op, **cambios):
+        c = {k: op[k] for k in ("date", "broker", "asset", "op_type", "entry_price",
+                                "exit_price", "quantity", "pnl_usd", "pnl_pct",
+                                "commissions", "currency", "fx_to_usd")}
+        c["commissions"] = c["commissions"] or 0
+        c.update(cambios)
+        return c
+
+    def _filas(self):
+        self._depositar(self.PESOS, 1_000_000)
+        pid = self._plazo_fijo(500_000, desde=self.PESOS)
+        self._cobrar(pid, self.PESOS)
+        interes = self._ultima_op()
+        self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        return [interes, self._ultima_op()]
+
+    def test_nuevas_y_viejas_rechazan_otro_tipo_y_aceptan_lo_demas(self):
+        for vieja in (False, True):
+            with self.subTest(vieja=vieja):
+                for op in self._filas():
+                    if vieja:
+                        self.conn.execute("UPDATE operations SET undo_meta_json=NULL WHERE id=?",
+                                          (op["id"],))
+                        self.conn.commit()
+                    fila = [o for o in self._ok(self.http.get("/api/operations"))
+                            if o["id"] == op["id"]][0]
+                    self.assertIs(fila["tipo_editable"], False)
+                    antes = self.estado()
+                    r = self.http.put(f"/api/operations/{op['id']}",
+                                      json=self._cuerpo(op, op_type="Venta"))
+                    self.assertEqual(r.status_code, 400, r.text)
+                    self.assertMismaCuenta(antes, self.estado(), "después del 400")
+                    # Las notas sí se editan.
+                    self._ok(self.http.put(f"/api/operations/{op['id']}",
+                                           json=self._cuerpo(op, notes="corregida")))
+
+    def test_el_ataque_en_dos_pasos_no_mueve_plata(self):
+        interes = self._filas()[0]
+        self.conn.execute("UPDATE operations SET undo_meta_json=NULL WHERE id=?", (interes["id"],))
+        self.conn.commit()
+        antes = self.estado()["cajas"]
+        self.http.put(f"/api/operations/{interes['id']}", json=self._cuerpo(interes, op_type="Venta"))
+        self.http.put(f"/api/operations/{interes['id']}",
+                      json=self._cuerpo(interes, op_type="Venta", mueve_efectivo=True))
+        self.assertEqual(self.estado()["cajas"], antes)
+
+    def test_lo_tipeado_en_el_formulario_cambia_de_tipo(self):
+        op = self._ok(self.http.post("/api/operations", json={
+            "date": "2026-03-10", "broker": self.DOLARES, "asset": "KO",
+            "op_type": "Interés PF", "pnl_usd": 50.0}))
+        self._ok(self.http.put(f"/api/operations/{op['id']}", json=self._cuerpo(op, op_type="Venta")))
+
+
+class SoloPLAvisaLoMismoQueMovimientos(ConRecetaBase):
+    """La pestaña "Solo P/L" lista /api/operations y borra por DELETE
+    /api/operations: tiene que recibir lo mismo que Movimientos para avisar que
+    borrar el interés deshace el cobro (auditoría 2026-10-09: ahí salía el cartel
+    genérico y se reabría el plazo fijo sacando la plata sin avisar)."""
+
+    def test_la_lista_trae_lo_que_deshace(self):
+        self._depositar(self.PESOS, 1_000_000)
+        pid = self._plazo_fijo(500_000, desde=self.PESOS)
+        cobro = self._cobrar(pid, self.PESOS)
+        interes = self._ultima_op()
+        fila = [o for o in self._ok(self.http.get("/api/operations")) if o["id"] == interes["id"]][0]
+        self.assertEqual(fila["deshace_cobro_pf"], {
+            "banco": "Galicia", "monto": cobro["monto"], "broker": self.PESOS, "moneda": "ARS"})
+
+
+class ElRenombreLlegaALasRecetas(ConRecetaBase):
+    """Las recetas guardan el NOMBRE del broker. Renombrarlo sin tocarlas dejaba el
+    borrado frenado con "ya no existe", o —si después se creaba otro broker con el
+    nombre viejo— sacaba la plata de ESE (auditoría 2026-10-09)."""
+
+    def _renombrar(self, viejo, nuevo):
+        b = self.conn.execute("SELECT id, currency FROM brokers WHERE user_id=? AND name=?",
+                              (self.uid, viejo)).fetchone()
+        self._ok(self.http.put(f"/api/brokers/{b['id']}", json={"name": nuevo, "currency": b["currency"]}))
+
+    def _impostor(self, nombre, moneda):
+        """Otro broker con el nombre viejo: si el borrado mira el nombre viejo, la
+        plata sale de acá."""
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, nombre, moneda))
+        self.conn.commit()
+
+    def _caja(self, broker):
+        return self.estado()["cajas"].get(broker, (0.0, None))[0]
+
+    def test_conversion(self):
+        self._depositar(self.PESOS, 1_000_000)
+        op = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        self._renombrar(self.PESOS, "Cocos Capital")
+        self._impostor(self.PESOS, "ARS")
+        self._borrar(op)
+        self.assertEqual(self._caja("Cocos Capital"), 1_000_000.0)
+        self.assertEqual(self._caja("Cocos Capital · USD"), 0.0)
+        self.assertEqual(self._caja(self.PESOS), 0.0)
+
+    def test_interes_de_plazo_fijo_y_su_deshacer(self):
+        self._depositar(self.PESOS, 1_000_000)
+        pid = self._plazo_fijo(500_000, desde=self.PESOS)
+        self._cobrar(pid, self.PESOS)
+        cobrado = self._caja(self.PESOS)
+        # Borrar, renombrar con el "Deshacer" pendiente, y deshacer.
+        token = self._borrar(self._ultima_op())["undo_token"]
+        self._renombrar(self.PESOS, "Cocos Capital")
+        self._impostor(self.PESOS, "ARS")
+        self._deshacer(token)
+        self.assertEqual(self._caja("Cocos Capital"), cobrado)
+        self.assertEqual(self._ultima_op()["broker"], "Cocos Capital")
+        # Y la fila que volvió se borra contra el broker renombrado.
+        self._borrar(self._ultima_op())
+        self.assertEqual(self._caja("Cocos Capital"), 500_000.0)
+        self.assertEqual(self._caja(self.PESOS), 0.0)
+
+    def test_venta_con_el_boton_vender(self):
+        self._depositar(self.DOLARES, 10_000)
+        self._ok(self.http.post("/api/positions", json={
+            "broker": self.DOLARES, "asset": "KO", "buy_price": 50.0, "quantity": 10,
+            "invested": 500.0, "entry_date": "2026-03-05"}))
+        self._ok(self.http.post("/api/positions/sell", json={
+            "broker": self.DOLARES, "asset": "KO", "quantity": 10, "exit_price": 60.0,
+            "date": "2026-03-10"}))
+        venta = self._ultima_op()
+        self._renombrar(self.DOLARES, "IBKR Pro")
+        self._impostor(self.DOLARES, "USD")
+        self._borrar(venta, puerta="operaciones")
+        self.assertEqual(self._caja("IBKR Pro"), 9_500.0)
+        self.assertEqual(self._caja(self.DOLARES), 0.0)
+        lote = self.conn.execute("SELECT id, broker, quantity FROM positions WHERE user_id=? "
+                                 "AND asset='KO' AND is_cash=0", (self.uid,)).fetchone()
+        self.assertEqual((lote["broker"], lote["quantity"]), ("IBKR Pro", 10))
+        # El lote volvió con SU receta (iba adentro de la de la venta): también
+        # renombrada, así que se puede borrar y su plata vuelve al renombrado.
+        self._ok(self.http.delete(f"/api/positions/{lote['id']}"))
+        self.assertEqual(self._caja("IBKR Pro"), 10_000.0)
+        self.assertEqual(self._caja(self.DOLARES), 0.0)
+
+    def test_operacion_que_mueve_efectivo(self):
+        self._depositar(self.DOLARES, 10_000)
+        op = self._ok(self.http.post("/api/operations", json={
+            "date": "2026-03-10", "broker": self.DOLARES, "asset": "ES", "op_type": "Futuros",
+            "pnl_usd": 250.0, "mueve_efectivo": True}))
+        self._renombrar(self.DOLARES, "IBKR Pro")
+        self._impostor(self.DOLARES, "USD")
+        self._borrar(op, puerta="operaciones")
+        self.assertEqual(self._caja("IBKR Pro"), 10_000.0)
+        self.assertEqual(self._caja(self.DOLARES), 0.0)
+
+    def test_posicion_cargada_a_mano_con_autodeposito(self):
+        """La posición guarda en su receta el broker en que nació: el borrado frena
+        si no coincide con el de la fila. Renombrar movía la fila y no la receta."""
+        r = self._ok(self.http.post("/api/positions", json={
+            "broker": self.DOLARES, "asset": "KO", "buy_price": 50.0, "quantity": 10,
+            "invested": 500.0, "entry_date": "2026-03-05"}))
+        e_antes = self.estado()
+        self._renombrar(self.DOLARES, "IBKR Pro")
+        self._impostor(self.DOLARES, "USD")
+        self._ok(self.http.delete(f"/api/positions/{r['id']}"))
+        self.assertEqual(self._caja("IBKR Pro"), 0.0)       # el autodepósito se fue
+        self.assertEqual(self._caja(self.DOLARES), 0.0)
+        self.assertEqual(self.estado()["aportado"], round(e_antes["aportado"] - 500, 2))
+
+    def test_toda_clave_con_un_broker_la_conoce_el_renombre(self):
+        """Guardián: las recetas que se escriben en main.py sólo nombran brokers en
+        claves que `_renombrar_broker_en` sabe renombrar."""
+        conocidas = set(main._CLAVES_CON_BROKER + main._CLAVES_CON_BROKERS
+                        + main._CLAVES_CON_PARES + main._CLAVES_POR_BROKER)
+        arbol = ast.parse(open(MAIN, encoding="utf-8").read())
+        claves = set()
+        for d in ast.walk(arbol):
+            if isinstance(d, ast.Dict):
+                ks = [k.value for k in d.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+                if "src" in ks or "cash_broker" in ks or "movs" in ks:
+                    claves |= {k for k in ks if "broker" in k.lower()}
+        self.assertTrue(claves, "el guardián no encontró ninguna receta")
+        self.assertEqual(claves - conocidas, set(),
+                         "una receta guarda un broker en una clave que el renombre no conoce")
+
+
 class DeshacerElHistorialConservaLaReceta(ConRecetaBase):
     """Deshacer "borrar el historial de un activo" vuelve a insertar los cupones y
     dividendos que el borrado sacó. Hoy ahí sólo llegan filas importadas (con
@@ -517,7 +753,7 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
     fila a su import (las importadas las borra el camino del import). Y si escribe
     una receta con un `src` nuevo, tiene que enseñarle al borrado a leerla."""
 
-    INSERT = re.compile(r"INSERT\s+(OR\s+\w+\s+)?INTO\s+operations\b", re.I)
+    INSERT = re.compile(r"(INSERT\s+(OR\s+\w+\s+)?|REPLACE\s+)INTO\s+[\"`]?operations\b", re.I)
     RECETA_DESPUES = re.compile(r"UPDATE\s+operations\s+SET\s+undo_meta_json", re.I)
     VINCULO = re.compile(r"INSERT\s+(OR\s+\w+\s+)?INTO\s+import_op_links", re.I)
     # (archivo, función) que insertan sin receta, y por qué está bien.
@@ -683,10 +919,12 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
             "def despues(conn):\n"
             "    conn.execute('''INSERT OR IGNORE INTO operations (user_id) VALUES (?)''', (1,))\n"
             "    conn.execute('UPDATE operations SET undo_meta_json=? WHERE id=?', ('x', 1))\n"
+            "def reemplaza(conn):\n"
+            "    conn.execute('REPLACE INTO `operations` (user_id) VALUES (?)', (1,))\n"
             "def vinculada(conn):\n"
             "    cur = conn.execute('INSERT INTO operations (user_id) VALUES (?)', (1,))\n"
             "    _link(conn, 'b', 1, operation_id=cur.lastrowid)\n")
-        self.assertEqual(self._sin_receta(codigo, "x.py"), ["x.py:2 en sin"])
+        self.assertEqual(self._sin_receta(codigo, "x.py"), ["x.py:2 en sin", "x.py:9 en reemplaza"])
         self.assertEqual(self._insertan_en_tabla_variable(
             "def a(conn, t):\n    conn.execute(f'INSERT INTO {t} (x) VALUES (1)')\n"
             "def b(conn, c):\n    conn.execute(f'INSERT INTO positions ({c}) VALUES (1)')\n"),

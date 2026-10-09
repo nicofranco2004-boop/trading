@@ -55,6 +55,21 @@ import {
 // `mueve_efectivo` arranca en false: el default es "sólo registrar", que es lo
 // que el formulario hizo siempre. Prender el efectivo es una decisión que mueve
 // plata, y la toma el usuario — no un default.
+// Borrar el interés de un plazo fijo DESHACE EL COBRO entero (decisión de Nico,
+// 2026-10-09): el plazo fijo vuelve abierto y sale lo que entró. La fila dice
+// "venta de <banco>" o "Interés PF", así que sin este cartel nadie se lo espera.
+// Uno solo para "Todos los movimientos" y "Solo P/L".
+function confirmarDeshacerCobroPf(pf) {
+  const sale = pf.broker && pf.monto
+    ? `Salen ${fmtMoney(pf.monto, pf.moneda)} de ${pf.broker} (el capital más el interés que entraron al cobrarlo).`
+    : 'No sale plata de ninguna cuenta: cuando lo cobraste, la plata no entró a un broker.'
+  return window.confirm(
+    `¿Deshacer el cobro del plazo fijo de ${pf.banco}?\n\n` +
+    `El plazo fijo vuelve a Cartera, abierto. ${sale} ` +
+    `La ganancia del interés deja de contar.\n\nVas a poder deshacerlo.`,
+  )
+}
+
 const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '', mueve_efectivo: false }
 
 const RESULT_OPTIONS = [
@@ -275,14 +290,21 @@ export default function Operations() {
   // pasaba `op.id` y el feed `op`; al compartir renderer hubo que elegir una.
   function del(op) {
     const id = op?.id ?? op
-    return borrando.correr(() => borrarOperacion(id), `op-${id}`)
+    return borrando.correr(() => borrarOperacion(op), `op-${id}`)
   }
-  async function borrarOperacion(id) {
-    if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+  async function borrarOperacion(op) {
+    const id = op?.id ?? op
+    // El interés de un plazo fijo: borrarlo deshace el cobro. El MISMO cartel que
+    // en Movimientos (auditoría 2026-10-09: acá salía el genérico y se reabría el
+    // plazo fijo sacando la plata del broker sin avisar).
+    const pf = op?.deshace_cobro_pf
+    if (pf) {
+      if (!confirmarDeshacerCobroPf(pf)) return
+    } else if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     try {
       const res = await api.delete(`/operations/${id}`)
       await load()
-      offerUndo(res, '/operations/undo', 'Operación borrada.')
+      offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.')
     } catch (ex) {
       // El backend bloquea con mensaje claro los casos que aún no soporta
       // (manuales, bonos, activos con data manual mezclada).
@@ -908,7 +930,12 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           </div>
           <div>
             <label className={labelClass}>Tipo</label>
-            <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…" />
+            {/* Los tipos que pone el sistema (interés de plazo fijo, compra/venta de
+                dólares) no se editan: el backend lo rechaza, porque en una fila vieja
+                el tipo es lo único que dice que la plata ya se movió. */}
+            <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…"
+              disabled={form.tipo_editable === false}
+              title={form.tipo_editable === false ? 'Lo puso el sistema: el cobro de un plazo fijo o una compra/venta de dólares' : undefined} />
           </div>
         </div>
         {/* Precios y cantidad son OPCIONALES y se muestran siempre. Antes se
@@ -1219,14 +1246,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     // la fila dice "venta de <banco>", así que sin este cartel nadie se lo espera.
     const pf = m.deshace_cobro_pf
     if (pf) {
-      const sale = pf.broker && pf.monto
-        ? `Salen ${fmtMoney(pf.monto, pf.moneda)} de ${pf.broker} (el capital más el interés que entraron al cobrarlo).`
-        : 'No sale plata de ninguna cuenta: cuando lo cobraste, la plata no entró a un broker.'
-      if (!window.confirm(
-        `¿Deshacer el cobro del plazo fijo de ${pf.banco}?\n\n` +
-        `El plazo fijo vuelve a Cartera, abierto. ${sale} ` +
-        `La ganancia del interés deja de contar.\n\nVas a poder deshacerlo.`
-      )) return
+      if (!confirmarDeshacerCobroPf(pf)) return
     } else if (m.transfer_out) {
       // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
       // posición con su costo original. Si le decimos "borrar" el usuario cree que
