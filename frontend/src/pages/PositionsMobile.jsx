@@ -41,6 +41,8 @@ import { filaSinUnaPata } from '../utils/filaFusionada'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import DividendosPorCobrar from '../components/DividendosPorCobrar'
+import RecalculoDeCartera from '../components/RecalculoDeCartera'
+import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
@@ -1501,6 +1503,11 @@ export default function PositionsMobile() {
   // (`pnlUsdToday × tcValuacion`), y por eso el hero cierra con la suma de las filas.
   const heroInvertido = currency === 'ARS' ? invertidoHoyUsd * tcValuacion : invertidoUsd
   const heroValor = currency === 'ARS' ? (total + pfValueUsd) * tcValuacion : (total + pfValueUsd)
+  // El total recalculándose después de anotar o borrar un cobro (mismo hook que
+  // Cartera de escritorio). Con centavos: el hero redondea a pesos/dólares
+  // enteros y un dividendo de US$ 2,65 no se vería moverse.
+  const recalculo = useRecalculoDeCartera({ total: heroValor, moneda: currency, listo: !loading && !pricesLoading })
+  const fmtRecalculo = n => `${currency === 'ARS' ? '$' : 'US$'} ${Number(n).toLocaleString(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const heroPnl = heroValor - heroInvertido
   const heroPct = heroInvertido > 0 ? heroPnl / heroInvertido : 0
   // Contador de posiciones reales (lotes), independiente de la vista
@@ -1580,6 +1587,8 @@ export default function PositionsMobile() {
 
   return (
     <div className="pb-8">
+      <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
+        total={heroValor} formato={fmtRecalculo} />
       {/* Al bajar: la tira de un renglón (ver `compacto` arriba). Se pega justo
           debajo de la barra de arriba: su alto lo anota MobileTopBar en
           --alto-barra-celular (con un cliente abierto o la prueba mide más). */}
@@ -1700,7 +1709,8 @@ export default function PositionsMobile() {
         {/* Dividendos para confirmar: el MISMO componente que Cartera de
             escritorio (R6), con su propio pedido de datos. */}
         <DividendosPorCobrar positions={positions} brokers={brokers}
-          mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion} onCambio={loadAll} className="mt-3" />
+          mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion}
+          onCambio={(cobro) => recalculo.anotar(cobro, loadAll)} className="mt-3" />
       </div>
 
       {/* Los ajustes de vista viven en un sheet, así que la lista tiene que

@@ -248,12 +248,12 @@ export default function BondCashflowModal({
         // El sanity check disparó — informar al user que su qty NO se tocó.
         msg += ' · qty intacta (cross-currency: pasá face_amortized para decrementar)'
         toast.push(msg, { type: 'warn' })
-        onSuccess?.()
+        onSuccess?.({ texto: `${isCoupon ? 'cupón' : 'pago de amortización'} de ${asset}`, monto: `+${moneyLabel} ${amt}` })
         onClose()
         return
       }
       toast.push(msg, { type: 'success' })
-      onSuccess?.()
+      onSuccess?.({ texto: `${isCoupon ? 'cupón' : 'pago de amortización'} de ${asset}`, monto: `+${moneyLabel} ${amt}` })
       onClose()
     } catch (err) {
       toast.push(`Error: ${err.message || 'No se pudo registrar el cashflow'}`, { type: 'error' })

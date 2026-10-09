@@ -7,6 +7,9 @@
 // como "Dividendo" y cuenta como ganancia REALIZADA — no como depósito, ni como
 // ganancia no realizada de la acción. Ver backend/dividendos.py.
 //
+// `onCambio({ texto, monto, deshecho? })`: la página recarga la cartera y muestra
+// el total recalculado con <RecalculoDeCartera>.
+//
 // Datos y acciones: hooks/useDividendosPorCobrar.js (una sola fuente para
 // Cartera de escritorio y de celular). Detección: utils/dividendosPendientes.js.
 //
@@ -280,9 +283,10 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
 
   const confirmar = (it, montos) => enVuelo.correr(async () => {
     try {
-      await b.confirmar(it, montos)
+      const r = await b.confirmar(it, montos)
       setEditando(null)
-      onCambio?.()
+      // La página recarga la cartera y muestra el total recalculado (RecalculoDeCartera).
+      onCambio?.({ texto: `dividendo de ${it.ticker}`, monto: `+${usd(r.neto)}` })
     } catch (e) {
       toast.push(`No se pudo anotar el dividendo de ${it.ticker}: ${e.message}`, { type: 'error' })
     }
@@ -306,7 +310,7 @@ export default function DividendosPorCobrar({ positions, brokers, mep, onCambio,
     try {
       await b.deshacerCobro(c)
       setAbierta(c.item.key); setAnimada(null)
-      onCambio?.()
+      onCambio?.({ texto: `dividendo de ${c.item.ticker}`, monto: `−${usd(c.resultado.neto)}`, deshecho: true })
     } catch (e) {
       toast.push(`No se pudo deshacer: ${e.message}`, { type: 'error' })
     }

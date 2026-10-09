@@ -38,6 +38,7 @@ import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { opPnlUsd } from '../utils/assetPnl'
+import { anotarCambioDeCobro } from '../utils/cambioDeCobro'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
@@ -1231,11 +1232,24 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
       if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     }
+    // El artículo según el tipo: decía "Se borró la dividendo", "la depósito".
+    const articulo = ['compra', 'venta', 'comisión'].includes(label) ? 'la' : 'el'
     const okMsg = m.transfer_out
       ? `${m.asset || 'La posición'} volvió a tu cartera.`
-      : `Se borró la ${label}${asset}.`
+      : `Se borró ${articulo} ${label}${asset}.`
     try {
       const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
+      // Un cobro borrado acá BAJA el total de Cartera: la próxima vez que se vea,
+      // se muestra recalculándose desde el total de antes (RecalculoDeCartera).
+      if (m.type === 'DIVIDEND' || m.type === 'INTEREST') {
+        anotarCambioDeCobro({
+          texto: `${label}${m.asset ? ` de ${m.asset}` : ''}`,
+          monto: m.amount_usd
+            ? `−${histMoney.fmtMoneyAt(m.amount_usd, { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })}`
+            : null,
+          deshecho: true,
+        })
+      }
       await load()
       onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
