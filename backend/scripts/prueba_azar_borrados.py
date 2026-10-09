@@ -285,9 +285,15 @@ def ev_editar_mensual(w: Mundo, broker: str):
             "pnl_unrealized": max(0.0, float(row["pnl_unrealized"] or 0)),
             "capital_inicio": max(0.0, float(row["capital_inicio"] or 0)),
             "capital_final": max(0.0, float(row["capital_final"] or 0) + m)}
+    import snapshots_job
+    vio_antes = snapshots_job.compute_net_deposited_db(w.conn, w.uid)
     r = w.con_reloj(w.client.put, f"/api/monthly/{row['id']}", json=body)
     if r.status_code != 200:
         return
+    # ¿Lo ve ya el cron? (Antes de 2026-10-09 la edición de un broker llegaba a
+    # Global recién con el próximo recálculo; desde entonces, en el momento.) Se mide
+    # en vez de suponerlo: así la prueba sirve con las dos versiones.
+    vio = abs(snapshots_job.compute_net_deposited_db(w.conn, w.uid) - vio_antes - m) <= 0.01
     if broker == "global":
         w.ruido_global += m      # lo ve el cron hasta el próximo recálculo
         w.eventos.append(f"{w.ahora:%m-%d %H:%M} /mensual Global +{m}")
@@ -295,7 +301,7 @@ def ev_editar_mensual(w: Mundo, broker: str):
         cid = w.nuevo_cid("mens")
         # Plata a mano del broker: el cron (que suma Global) la ve recién cuando un
         # recálculo rearma Global con la suma de los brokers.
-        w.comps[cid] = {"usd": m, "reflejado": False, "vivo": True, "tipo": "mano",
+        w.comps[cid] = {"usd": m, "reflejado": vio, "vivo": True, "tipo": "mano",
                         "ym": f"{y:04d}-{mth:02d}", "fecha": None, "dir": "dep",
                         "broker": broker}
         w.eventos.append(f"{w.ahora:%m-%d %H:%M} /mensual {broker} +{m}")

@@ -3124,7 +3124,7 @@ def init_db():
                 -- CUÁNDO se cargó: UTC 'AAAA-MM-DD HH:MM:SS', el mismo reloj que
                 -- `import_batches.confirmed_at` (`_ahora_utc`)
                 cargado_at TEXT NOT NULL,
-                origen TEXT NOT NULL,            -- efectivo | autodeposito | plazo_fijo | conciliacion | mensual
+                origen TEXT NOT NULL,            -- efectivo | autodeposito | plazo_fijo | conciliacion | mensual | mensual_sin_global
                 ref TEXT,                        -- 'pos:<id>' / 'pf:<id>' si lo generó una carga
                 anulado_at TEXT,                 -- UTC; NULL = vigente
                 anulado_motivo TEXT
@@ -12527,8 +12527,11 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
                 prev_cap_final = cur_cap_final
 
 
-def _borrar_filas_de_la_cadena(conn, uid: int, ids) -> None:
-    """Borra filas de `monthly_entries` sin que su plata pase a ser capital inicial.
+def _borrar_filas_de_la_cadena(conn, uid: int, ids, motivo: str = "renglon_vacio") -> None:
+    """Borra filas de `monthly_entries` sin que su plata pase a ser capital inicial,
+    y anula las cargas a mano que estaban sumadas en ellas (`flujos_a_mano`, con
+    `motivo`): sin eso quedaban vigentes sin renglón y volvían a contar cuando el
+    renglón renacía (un deshacer, otra carga del mismo mes).
 
     El `capital_inicio` de la PRIMERA fila de cada broker es el capital que la
     persona ya tenía antes de empezar (lo puede declarar a mano en /mensual) y lo
@@ -12585,6 +12588,11 @@ def _borrar_filas_de_la_cadena(conn, uid: int, ids) -> None:
             continue
         conn.execute("UPDATE monthly_entries SET capital_inicio=? WHERE id=?",
                      (float(filas[k]["capital_inicio"] or 0), filas[s]["id"]))
+    for r in conn.execute(
+            f"SELECT broker, year, month FROM monthly_entries WHERE user_id=? AND id IN ({marcas})",
+            (uid, *ids)).fetchall():
+        _anular_flujos_a_mano(conn, uid, motivo, brokers=[r["broker"]],
+                              year=r["year"], month=r["month"])
     conn.execute(f"DELETE FROM monthly_entries WHERE user_id=? AND id IN ({marcas})",
                  (uid, *ids))
 
@@ -12697,8 +12705,8 @@ def _autodeposit_if_overdraw(conn, uid: int, broker: str, cost_native: float,
     try:
         y, m = int(date_iso[:4]), int(date_iso[5:7])
     except (ValueError, TypeError, IndexError):
-        now = datetime.utcnow()
-        y, m = now.year, now.month
+        _hoy = _iso_today()      # en Argentina, no en UTC
+        y, m = int(_hoy[:4]), int(_hoy[5:7])
     flujo_id = _registrar_flujo_a_mano(conn, uid, broker, y, m, 'deposit', amount_usd,
                                        native_amount=shortfall, fecha=date_iso,
                                        origen=origen, ref=ref)
@@ -12895,7 +12903,8 @@ def _registrar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
                             direction: str, amount_usd: float, *,
                             native_amount: Optional[float] = None,
                             fecha: Optional[str] = None, origen: str,
-                            ref: Optional[str] = None) -> Optional[int]:
+                            ref: Optional[str] = None,
+                            broker_ya_sumado: bool = False) -> Optional[int]:
     """LA puerta por la que entra un depósito o retiro cargado a mano: lo suma al
     renglón del mes del broker y al de Global (lo de siempre) y anota la carga, con
     su hora, en `flujos_a_mano`. Devuelve el id de esa carga (lo guarda quien la
@@ -12903,9 +12912,12 @@ def _registrar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
     transferencia del chat para compensar).
 
     `fecha` = el día del movimiento si tiene uno; `origen` = de dónde salió
-    (efectivo, autodeposito, plazo_fijo, conciliacion); `ref` = qué carga lo generó."""
-    _update_monthly_flow(conn, uid, broker, year, month, direction, amount_usd,
-                         is_manual=True, native_amount=native_amount)
+    (efectivo, autodeposito, plazo_fijo, conciliacion, mensual); `ref` = qué carga lo
+    generó. `broker_ya_sumado`: quien llama ya reescribió el renglón del broker (la
+    edición de /mensual) y falta sólo Global."""
+    if not broker_ya_sumado:
+        _update_monthly_flow(conn, uid, broker, year, month, direction, amount_usd,
+                             is_manual=True, native_amount=native_amount)
     _update_monthly_flow(conn, uid, 'global', year, month, direction, amount_usd,
                          is_manual=True)
     return _anotar_flujo_a_mano(conn, uid, broker, year, month, direction, amount_usd,
@@ -12918,8 +12930,7 @@ def _anotar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
                          native_amount: Optional[float] = None,
                          fecha: Optional[str] = None, origen: str,
                          ref: Optional[str] = None) -> Optional[int]:
-    """Sólo el renglón del detalle, para quien ya movió la suma por su lado (la
-    edición de /mensual reescribe `manual_*` entera y anota la diferencia).
+    """Sólo el renglón del detalle (lo llama `_registrar_flujo_a_mano`).
     'global' no se anota: su `manual_*` es la suma de los brokers y el recálculo la
     rearma de ahí (lo que se edita a mano en Global no sobrevive al recálculo)."""
     if broker == 'global' or abs(float(amount_usd or 0)) < 0.005:
@@ -12938,18 +12949,23 @@ def _anotar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
 def _restar_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
                          direction: str, amount_usd: float, *,
                          native_amount: Optional[float] = None,
-                         flujo_id: Optional[int] = None, motivo: str) -> None:
+                         flujo_id: Optional[int] = None, motivo: str) -> bool:
     """Saca de la suma del mes (broker y Global) una carga a mano que se borra o se
     compensa, y la marca anulada en el detalle. Montos POSITIVOS: acá se restan.
-    `native_amount` None = la columna en moneda del broker no se toca (así lo hacía
-    la compensación de la transferencia del chat; se conserva igual)."""
+    `native_amount` None = la columna en moneda del broker no se toca.
+
+    ⚠️ CON `flujo_id`, PRIMERO LA RECLAMA: si la carga ya no está vigente (se fue con
+    un renglón borrado, un broker borrado, otro pedido), su plata ya salió de la suma
+    y restarla otra vez se comería la de OTRA carga. Entonces no resta nada y devuelve
+    False. Sin `flujo_id` (cargado antes del detalle) resta como siempre."""
+    if flujo_id and _anular_flujos_a_mano(conn, uid, motivo, ids=[flujo_id]) != 1:
+        return False
     _update_monthly_flow(conn, uid, broker, year, month, direction, -amount_usd,
                          is_manual=True,
                          native_amount=(-native_amount if native_amount is not None else None))
     _update_monthly_flow(conn, uid, 'global', year, month, direction, -amount_usd,
                          is_manual=True)
-    if flujo_id:
-        _anular_flujos_a_mano(conn, uid, motivo, ids=[flujo_id])
+    return True
 
 
 def _revivir_flujo_a_mano(conn, uid: int, broker: str, year: int, month: int,
@@ -13002,13 +13018,42 @@ def _anular_flujos_a_mano(conn, uid: int, motivo: str, *, ids=None, brokers=None
 def _anotar_ajuste_mensual(conn, uid: int, broker: str, year: int, month: int,
                            antes: tuple, despues: tuple) -> None:
     """/mensual reescribe `manual_*` de un renglón entero (`_derive_manual_flows`):
-    la diferencia con lo que había es una carga a mano más, con su hora."""
+    la diferencia con lo que había es una carga a mano más, con su hora.
+
+    ⚠️ Y LLEGA A GLOBAL EN EL MOMENTO, como cualquier otra carga a mano. Antes la
+    edición de un broker se quedaba en su renglón: el total (Global, el que leen el
+    Dashboard, el cron y las fotos) se enteraba recién en el próximo recálculo —un
+    import o un borrado, días después—. Mientras tanto el capital aportado no
+    cambiaba, y después ninguna foto sabía desde cuándo tenía esa plata (la prueba
+    al azar: casi todo lo que quedaba mal al borrar un mes era esto).
+    Editar Global en sí no se anota: su `manual_*` es la suma de los brokers y el
+    recálculo la rearma de ahí.
+
+    ⚠️ SÓLO SI GLOBAL YA TIENE EL RENGLÓN DE ESE MES (lo normal: editar un mes, o
+    "pasar al mes siguiente", que crea Global primero). Si no lo tiene, no se crea:
+    declarar el capital inicial es crear el renglón del broker y DESPUÉS el de Global
+    con su arranque, y crearlo acá con arranque 0 rompía ese segundo paso ("ya
+    existe"; `test_borrar_primer_deposito`). Esa carga queda como
+    'mensual_sin_global': el cron no la ve hasta un recálculo y no se sabe desde qué
+    foto la tienen (el borrado la deduce, B)."""
+    if broker == 'global':
+        return
+    hay_global = conn.execute(
+        "SELECT 1 FROM monthly_entries WHERE user_id=? AND broker='global' AND year=? AND month=?",
+        (uid, year, month)).fetchone() is not None
     for direction, a, d in (("deposit", antes[0], despues[0]),
                             ("withdraw", antes[1], despues[1])):
         diff = float(d or 0) - float(a or 0)
-        if abs(diff) >= 0.005:
+        if abs(diff) < 0.005:
+            continue
+        if hay_global:
+            _registrar_flujo_a_mano(conn, uid, broker, year, month, direction, diff,
+                                    origen="mensual", broker_ya_sumado=True)
+        else:
             _anotar_flujo_a_mano(conn, uid, broker, year, month, direction, diff,
-                                 origen="mensual")
+                                 origen="mensual_sin_global")
+    if hay_global:
+        _repair_monthly_chain(conn, uid, 'global')
 
 
 class BrokerReconcileCashIn(BaseModel):
@@ -13091,9 +13136,9 @@ def broker_reconcile_cash(data: BrokerReconcileCashIn, uid: int = Depends(get_ef
             if first:
                 target_year, target_month = first['year'], first['month']
             else:
-                # Sin historia previa — usar mes actual
-                now = datetime.utcnow()
-                target_year, target_month = now.year, now.month
+                # Sin historia previa — el mes actual (en Argentina, no en UTC)
+                _hoy = _iso_today()
+                target_year, target_month = int(_hoy[:4]), int(_hoy[5:7])
                 sin_historia = True
 
             direction = 'deposit' if diff > 0 else 'withdraw'
@@ -13188,8 +13233,11 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 # la hace Monthly.jsx al mostrar (multiplica × TC para tabs ARS).
                 # El mes/año sale de data.date si vino (movimiento retroactivo del
                 # chat); sin fecha → hoy (comportamiento histórico de la UI).
-                now = datetime.utcnow()
-                _fy, _fm = now.year, now.month
+                # Sin fecha, el mes de HOY EN ARGENTINA (como el día que se anota en
+                # el detalle). Con la hora UTC, de 21 a 24 hs del último día del mes la
+                # carga caía en el mes siguiente.
+                _hoy = _iso_today()
+                _fy, _fm = int(_hoy[:4]), int(_hoy[5:7])
                 _fd_ok = False
                 if data.date:
                     try:
@@ -13251,8 +13299,8 @@ def _revert_cash_flow(uid: int, broker_name: str, direction: str,
             # revertir el cash nativo: si fue withdraw, sumar; si fue deposit, restar
             sign = 1.0 if direction == "withdraw" else -1.0
             _adjust_broker_cash(conn, uid, broker_name, sign * amount)
-            now = datetime.utcnow()
-            _fy, _fm = now.year, now.month
+            _hoy = _iso_today()      # el mismo mes que usó `cash_flow`
+            _fy, _fm = int(_hoy[:4]), int(_hoy[5:7])
             if date:
                 try:
                     _fd = datetime.strptime(date, "%Y-%m-%d")
@@ -13260,9 +13308,26 @@ def _revert_cash_flow(uid: int, broker_name: str, direction: str,
                 except ValueError:
                     pass
             amount_usd = amount / tc_blue if currency == "ARS" else amount
+            native = None
+            # Con la carga anotada, se resta EXACTAMENTE lo que ella sumó (mes,
+            # dólares y moneda del broker). Recalculado acá, en un broker en pesos el
+            # dólar del chat (`tc_blue`) no es el del día con que `cash_flow` la
+            # convirtió: el mes quedaba con un resto que ninguna carga explicaba, y
+            # la columna en pesos inflada.
+            if flujo_id:
+                f = conn.execute(
+                    "SELECT year, month, direction, monto_usd, monto_nativo FROM flujos_a_mano "
+                    "WHERE id=? AND user_id=? AND broker=? AND anulado_at IS NULL",
+                    (flujo_id, uid, broker_name)).fetchone()
+                if f and f["direction"] == direction:
+                    _fy, _fm = int(f["year"]), int(f["month"])
+                    amount_usd = float(f["monto_usd"])
+                    native = (float(f["monto_nativo"]) if f["monto_nativo"] is not None
+                              else None)
             # Resta de la MISMA columna, y la carga queda anulada en el detalle.
             _restar_flujo_a_mano(conn, uid, broker_name, _fy, _fm, direction, amount_usd,
-                                 flujo_id=flujo_id, motivo="transferencia_compensada")
+                                 native_amount=native, flujo_id=flujo_id,
+                                 motivo="transferencia_compensada")
             _repair_monthly_chain(conn, uid, broker_name)
             _repair_monthly_chain(conn, uid, "global")
     finally:
@@ -15079,6 +15144,10 @@ def update_monthly(eid: int, e: MonthlyIn, uid: int = Depends(get_effective_user
     conn = get_db()
     try:
         with conn:  # tx: update + repair atómico
+            # El turno de escritura ANTES de leer lo que había: SQLite abre la
+            # transacción recién en la primera escritura, y un depósito que entrara
+            # entre la lectura y el UPDATE se anotaba mal (la diferencia lo incluía).
+            _tomar_turno(conn, uid)
             man_dep, man_wit = _derive_manual_flows(
                 conn, uid, e.broker, e.year, e.month, e.deposits, e.withdrawals)
             # Lo manual que había, para anotar la diferencia como una carga más. El
@@ -15121,12 +15190,9 @@ def delete_monthly(eid: int, uid: int = Depends(get_effective_user)):
         with conn:  # tx: delete + repair atómico
             # Si es la primera fila del broker, su plata no puede quedar como capital
             # inicial del mes siguiente (ver `_borrar_filas_de_la_cadena`).
-            _borrar_filas_de_la_cadena(conn, uid, [eid])
+            # Las cargas a mano de ese renglón se van con él (las anula ahí adentro).
+            _borrar_filas_de_la_cadena(conn, uid, [eid], motivo="renglon_mensual_borrado")
             if target:
-                # Las cargas a mano de ese renglón se fueron con él.
-                _anular_flujos_a_mano(conn, uid, "renglon_mensual_borrado",
-                                      brokers=[target['broker']],
-                                      year=target['year'], month=target['month'])
                 _repair_monthly_chain(conn, uid, target['broker'])  # Phase 8
         conn.close()
         _ai_cache_invalidate(uid)
@@ -16832,8 +16898,12 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
        dicen las cuentas, y lo que entró después de ella (con el import) suma algo
        distinto de cero, así que sin re-estampar tendría otro número. Si las dos cosas dan igual —un import con un depósito y
        un retiro que se compensan— no hay cómo saberlo y el mes no se toca.
-    B. SIN ESE DATO (depósito a mano `me-`, que no guarda ni el día; posición a mano
-       con autodepósito; imports sin fecha de confirmación): la foto lo dice.
+    M. CARGAS A MANO CON SU HORA (`entrada` = {"capas": ...}, desde 2026-10-09: el
+       detalle `flujos_a_mano`): cada carga se le saca a las fotos sacadas después de
+       cargarla, cada una desde su propia foto (`_cambio_por_cargas_con_hora`). Si
+       las cargas no explican exactamente el cambio de las cuentas, sigue B.
+    B. SIN ESE DATO (lo cargado a mano ANTES del detalle —`me-`, posición a mano con
+       autodepósito—; imports sin fecha de confirmación): la foto lo dice.
          1. El primer mes cuya foto de cierre ya lo tenía: a la que no lo tenía le
             falta, contra las cuentas de antes, al menos ese monto — sin contar lo
             importado que entró a las fotos DESPUÉS de ese cierre (un resumen
@@ -16876,7 +16946,13 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     que había le saca todo a las fotos que lo tenían.
 
     LÍMITES CONOCIDOS (medidos; salvo donde se dice, ninguno peor que re-anclar):
-    · B: lo cargado a mano no guarda cuándo se cargó. Varios depósitos a mano del
+    · M: la foto DEL DÍA de la carga. Las fotos no guardan a qué hora se sacaron: si
+      ese día hubo otros movimientos, no se sabe si la foto es de antes o de después
+      de la carga, y se supone después. Prueba al azar con el cron de cada noche
+      (`scripts/prueba_azar_borrados.py`, 2026-10-09): 33 fotos mal de 90.052 con
+      montos distintos (antes de M: 4.943), 54 de 89.459 con montos repetidos (7.317);
+      a lo sumo una por escenario, siempre ésa.
+    · B (sólo lo cargado antes del detalle): lo cargado a mano no guarda cuándo se cargó. Varios depósitos a mano del
       mismo mes viven sumados en un renglón y `me-` los borra juntos: ninguna foto
       saltó el total, así que entre otro flujo del mes y el último a mano no se
       sabe cuánto tenía cada foto (`test_varios_depositos_a_mano_del_mes_en_un_
@@ -16978,6 +17054,14 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     if not cambiados:
         return [], None
     tol = max(0.01, 0.005 * max(abs(delta[ym]) for ym in cambiados))
+
+    # M. CARGAS A MANO CON SU HORA (`flujos_a_mano`): se sabe desde qué foto estaba
+    # cada una. Si no explican el cambio de las cuentas (una parte se cargó antes de
+    # que existiera el detalle, o vino de /mensual), sigue B con todo.
+    if journal is None and (entrada or {}).get("capas"):
+        _m = _cambio_por_cargas_con_hora(conn, uid, fotos, entrada["capas"], c0, c1)
+        if _m is not None:
+            return _m
 
     _flujos = []
     def _entro_despues(dia_cierre, ym):
@@ -17201,6 +17285,132 @@ def _cambio_de_aportado(conn, uid: int, antes: dict, desde: str, *,
     return cambios, {"desde": inicio, "fotos": hechos}
 
 
+def _capas_de_cargas(conn, uid: int, ids) -> list:
+    """Las cargas a mano `ids` (`flujos_a_mano`) como las usa
+    `_cambio_por_cargas_con_hora`: [{"id", "dia" (el día ARGENTINO de su hora de
+    carga), "ym" (el mes donde quedó sumada), "usd" (con signo: un retiro resta),
+    "origen"}]. Vigentes o ya anuladas: la puerta las anula antes de la cascada."""
+    ids = [int(i) for i in (ids or []) if i]
+    if not ids:
+        return []
+    out = []
+    for r in conn.execute(
+            f"""SELECT id, year, month, direction, monto_usd, cargado_at, origen
+                  FROM flujos_a_mano WHERE user_id=? AND id IN ({','.join('?' * len(ids))})""",
+            (uid, *ids)).fetchall():
+        dia = _dia_art_de_confirmacion(r["cargado_at"])
+        if dia is None:
+            return []       # una sin hora legible: no hay cómo saber desde qué foto
+        out.append({"id": r["id"], "dia": dia, "ym": f"{int(r['year']):04d}-{int(r['month']):02d}",
+                    "usd": (1.0 if r["direction"] == "deposit" else -1.0) * float(r["monto_usd"]),
+                    "origen": r["origen"]})
+    return out if len(out) == len(ids) else []
+
+
+def _cargas_a_mano_vigentes(conn, uid: int) -> list:
+    """(usd con signo, día en que entró a las fotos) de cada carga a mano vigente."""
+    out = []
+    for r in conn.execute(
+            "SELECT direction, monto_usd, cargado_at FROM flujos_a_mano "
+            "WHERE user_id=? AND anulado_at IS NULL AND origen <> 'mensual_sin_global'",
+            (uid,)).fetchall():
+        dia = _dia_art_de_confirmacion(r["cargado_at"])
+        if dia:
+            out.append(((1.0 if r["direction"] == "deposit" else -1.0) * float(r["monto_usd"]), dia))
+    return out
+
+
+def _cambio_por_cargas_con_hora(conn, uid: int, fotos, capas, c0, c1):
+    """`_cambio_de_aportado` (M) cuando lo borrado son cargas a mano con su hora
+    (`flujos_a_mano`): una foto tenía una carga si se sacó DESPUÉS de cargarla — el
+    cron y el Dashboard anotan la suma de todo lo cargado en ese momento, sin mirar la
+    fecha del movimiento —, y a esa foto se le resta exactamente esa carga. Varias
+    cargas del mismo mes que se borran juntas (`me-`) se restan cada una desde su
+    propia foto: la deducción por saltos (B) no podía separarlas.
+
+    None (y sigue B) si las cargas no explican EXACTAMENTE el cambio de las cuentas
+    mes por mes (parte de lo borrado se cargó antes de que existiera el detalle) o si
+    alguna la cargó /mensual sin que Global se enterara ('mensual_sin_global').
+
+    La foto DEL DÍA de la carga puede ser de antes (el cron de las 00:00, o el
+    Dashboard abierto antes de cargar): si no se movió lo que entró ese día y la
+    siguiente sí, se empieza por la siguiente — la misma prueba que A hace con el día
+    de un import. Si no se puede saber (otros movimientos el mismo día), cuenta como
+    que la tenía: lo más común es que la última foto del día sea el cron de las 23:59.
+
+    Un cierre RECONSTRUIDO (`mtm_backfill`) se reescribe con las cuentas de su mes
+    después de cada cambio: tiene las cargas fechadas hasta su mes, salvo que le
+    falte —contra las cuentas de antes— al menos lo de ellas (la misma prueba que B).
+    Lo vuelve a escribir igual la reconstrucción que corre al terminar el borrado."""
+    import bisect
+    capas = [c for c in (capas or []) if c]
+    # Una que el cron no vio al cargarse (/mensual sin renglón de Global): no se sabe
+    # desde qué foto está.
+    if not capas or any(c.get("origen") == "mensual_sin_global" for c in capas):
+        return None
+    tol = max(0.01, 0.005 * sum(abs(c["usd"]) for c in capas))
+    # 1. ¿Explican el cambio de las cuentas, mes por mes?
+    meses = sorted({str(s["date"])[:7] for s in fotos} | {c["ym"] for c in capas})
+    for ym in meses:
+        esperado = -sum(c["usd"] for c in capas if c["ym"] <= ym)
+        if abs((c1(f"{ym}-01") - c0(f"{ym}-01")) - esperado) > tol:
+            return None
+    # 2. Desde qué foto diaria estaba cada una.
+    entradas = defaultdict(float)     # día → lo que entró a las fotos ese día
+    for _f, usd, dia in _flujos_importados_vigentes(conn, uid):
+        entradas[dia] += usd
+    for usd, dia in _cargas_a_mano_vigentes(conn, uid):
+        entradas[dia] += usd
+    for c in capas:
+        entradas[c["dia"]] += c["usd"]
+    diarias = [s for s in fotos if (s["source"] or "") != "mtm_backfill"]
+    fechas = [str(s["date"])[:10] for s in diarias]
+
+    def _mostro(i, neto):
+        salto = float(diarias[i]["net_deposited"] or 0) - float(diarias[i - 1]["net_deposited"] or 0)
+        return abs(salto - neto) <= max(0.01, 0.005 * abs(neto))
+
+    inicio = {}
+    for c in capas:
+        k = bisect.bisect_left(fechas, c["dia"])
+        if k >= len(diarias):
+            inicio[c["id"]] = None          # ninguna foto diaria se sacó después
+            continue
+        if fechas[k] == c["dia"] and 0 < k < len(diarias) - 1:
+            netos = {c["usd"], entradas[c["dia"]]}
+            otros = sum(u for d, u in entradas.items() if c["dia"] < d <= fechas[k + 1])
+            if not (abs(otros) > 0.01 and _mostro(k + 1, otros)) and any(
+                    abs(n) > 0.01 and not _mostro(k, n) and _mostro(k + 1, n) for n in netos):
+                k += 1
+        inicio[c["id"]] = fechas[k]
+    # 3. A cada foto, lo de las cargas que tenía.
+    cambios, hechos = [], {}
+    for s in fotos:
+        d = str(s["date"])[:10]
+        ym = d[:7]
+        if (s["source"] or "") == "mtm_backfill":
+            # Como B: le falta, contra las cuentas de antes, AL MENOS lo de las cargas
+            # → no las tenía; si no, las tenía (se reconstruye después de cada carga).
+            # Exigir que cuadre exacto fallaba con un /mensual desfasado.
+            tenia = [c for c in capas if c["ym"] <= ym]
+            total = sum(c["usd"] for c in tenia)
+            falta = c0(f"{ym}-01") - float(s["net_deposited"] or 0)
+            if (total > 0 and falta >= total - tol) or (total < 0 and falta <= total + tol):
+                tenia = []
+        else:
+            tenia = [c for c in capas if inicio[c["id"]] is not None and d >= inicio[c["id"]]]
+        dl = -sum(c["usd"] for c in tenia)
+        if abs(dl) <= 0.01:
+            continue
+        viejo = float(s["net_deposited"] or 0)
+        cambios.append((round(viejo + dl, 4), s["id"], uid))
+        hechos[str(s["id"])] = round(dl, 4)
+    if not hechos:
+        return [], None
+    desdes = [v for v in inicio.values() if v]
+    return cambios, {"desde": min(desdes) if desdes else None, "fotos": hechos}
+
+
 def _fotos_con_importado_que_entra(conn, uid: int, fotos) -> set:
     """Fechas de las fotos en las que ENTRÓ un depósito o retiro importado que sigue
     vigente: la primera foto desde que entró (`_primer_dia_en_las_fotos`). El salto
@@ -17284,7 +17494,7 @@ def _cascade_after_movement_delete(conn, uid: int, since_date, brokers_touched, 
     `entrada`: si lo borrado viene de un import, {"dia", "lote", "fila"} — desde qué
     día lo tienen las fotos (el de confirmación del import, o el de la capa si tiene
     gemelos: `_entrada_de_movimiento_importado`), qué import lo trajo y qué fila se
-    borra.
+    borra. Si son cargas a mano con su hora, {"capas": `_capas_de_cargas(...)`}.
     Devuelve {"aportado": plan} para que la puerta lo anote en su journal.
     """
     for b in brokers_touched:
@@ -17352,8 +17562,9 @@ def _delete_one_movement(conn, uid: int, mid: str):
     """Parsea el id compuesto de /api/movements, revierte los side-effects (cash +
     operations linkeadas) y borra la fila fuente. Devuelve (since_date,
     brokers_touched, entrada, antes) para la cascada; `entrada` = desde qué día lo
-    tienen las fotos y qué import lo trajo (`_entrada_de_movimiento_importado`; None
-    para los manuales); `antes` = las cuentas justo antes del reclamo
+    tienen las fotos y qué import lo trajo (`_entrada_de_movimiento_importado`); para
+    los manuales, sus cargas con su hora (`_capas_de_cargas`), o None si el mes no
+    tiene ninguna anotada (cargado antes del detalle); `antes` = las cuentas justo antes del reclamo
     (`_foto_contable`: se saca acá adentro, después de validar y antes de la primera
     escritura). Levanta
     HTTPException para tipos no soportados en v1 (compras/ventas/holdings)."""
@@ -17481,14 +17692,22 @@ def _delete_one_movement(conn, uid: int, mid: str):
         ).rowcount != 1:
             raise HTTPException(409, "Ese movimiento cambió mientras lo borrabas. "
                                      "Recargá la página para ver cómo quedó.")
-        # Todas las cargas a mano de ese mes y sentido se fueron con el renglón.
+        # Todas las cargas a mano de ese mes y sentido se fueron con el renglón. Cada
+        # una sabe cuándo se cargó: la cascada se las saca a las fotos desde ahí
+        # (`_cambio_por_cargas_con_hora`). Si no explican todo lo borrado —una parte
+        # se cargó antes de que existiera el detalle—, la cascada lo deduce (B).
+        _dir = "deposit" if direction == "dep" else "withdraw"
+        _ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM flujos_a_mano WHERE user_id=? AND broker=? AND year=? AND month=? "
+            "AND direction=? AND anulado_at IS NULL",
+            (uid, broker, int(row["year"]), int(row["month"]), _dir)).fetchall()]
         _anular_flujos_a_mano(conn, uid, "movimiento_borrado", brokers=[broker],
-                              year=int(row["year"]), month=int(row["month"]),
-                              direction="deposit" if direction == "dep" else "withdraw")
+                              year=int(row["year"]), month=int(row["month"]), direction=_dir)
+        _capas = _capas_de_cargas(conn, uid, _ids)
         # deposit sumó cash → restamos; withdraw restó cash → devolvemos.
         _adjust_broker_cash(conn, uid, broker, -native if direction == "dep" else native)
         since = f"{int(row['year']):04d}-{int(row['month']):02d}-01"
-        return since, {broker}, None, antes   # no guarda ni el día ni cuándo se cargó
+        return since, {broker}, ({"capas": _capas} if _capas else None), antes
 
     # ── op-{n}-* (trade manual) / pos-{n} (holding abierto) → no soportado v1 ──
     if mid.startswith("op-") or mid.startswith("pos-"):
@@ -18886,10 +19105,21 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
             _ay = _am = None
         if _ay:
             _r = conn.execute(
-                "SELECT manual_deposits_native AS n FROM monthly_entries "
+                "SELECT manual_deposits_native AS n, manual_deposits AS u FROM monthly_entries "
                 " WHERE user_id=? AND broker=? AND year=? AND month=?",
                 (uid, broker, _ay, _am)).fetchone()
-            if not _r or float(_r["n"] or 0) + 1e-6 < autodep_native:
+            # También en dólares (la columna que mira todo lo aportado): /mensual
+            # nunca escribió la de moneda del broker, así que bajar el mes ahí dejaba
+            # pasar este control y el borrado restaba un depósito que ya no estaba —se
+            # comía el de otra carga—. Y si la carga del autodepósito ya está anulada
+            # (se fue con un renglón de /mensual borrado), tampoco está registrado.
+            _fid = autodep.get("flujo_id")
+            _anulada = bool(_fid) and not conn.execute(
+                "SELECT 1 FROM flujos_a_mano WHERE id=? AND user_id=? AND anulado_at IS NULL",
+                (_fid, uid)).fetchone()
+            if (not _r or float(_r["n"] or 0) + 1e-6 < autodep_native
+                    or float(_r["u"] or 0) + 0.01 < float(autodep.get("usd") or 0)
+                    or _anulada):
                 raise HTTPException(409,
                     "El depósito que financió esta compra ya no está registrado, así que "
                     "borrarla dejaría el saldo descuadrado. Restauralo primero.")
@@ -18943,7 +19173,11 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
          _json.dumps({"pos_row": pos_row, "credit": credit, "autodep": autodep}),
          since_date, broker))
 
-    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes)
+    # El autodepósito sabe cuándo se cargó: la cascada se lo saca a las fotos desde
+    # ahí. Una posición de antes del detalle no lo trae y la cascada lo deduce (B).
+    _capas = _capas_de_cargas(conn, uid, [autodep.get("flujo_id")]) if autodep_native > 0 else []
+    _r = _cascade_after_movement_delete(conn, uid, since_date, {broker}, antes=antes,
+                                        entrada=({"capas": _capas} if _capas else None))
     _anotar_aportado_en_journal(conn, uid, token, _r["aportado"])
     return {"ok": True, "undo_token": token, "broker": broker,
             "asset": pos["asset"], "manual": True}
@@ -19098,7 +19332,7 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
     else:  # manual_position
         row = dict(p["pos_row"])
         row["user_id"] = uid
-        _reinsert("positions", row)
+        _nuevo_pid = _reinsert("positions", row)
         # El borrado ACREDITÓ `credit` (= costo − autodepósito); el undo lo vuelve a
         # debitar y con eso el CASH ya queda como estaba. OJO: no hay que volver a
         # sumar el autodepósito acá — `credit` ya lo tiene descontado, sumarlo otra
@@ -19113,10 +19347,14 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
             except (ValueError, IndexError):
                 ay = am = None
             if ay:
-                # La misma carga, revivida con su hora original.
+                # La misma carga, revivida con su hora original (y apuntando a la
+                # posición con el id nuevo que le tocó al volver).
                 _revivir_flujo_a_mano(conn, uid, broker, ay, am, 'deposit', float(ad["usd"]),
                                       native_amount=float(ad["native"]),
                                       flujo_id=ad.get("flujo_id"))
+                if ad.get("flujo_id"):
+                    conn.execute("UPDATE flujos_a_mano SET ref=? WHERE id=? AND user_id=?",
+                                 (f"pos:{_nuevo_pid}", ad["flujo_id"], uid))
 
     _cascade_after_movement_delete(conn, uid, j["since_date"], {broker},
                                    antes=antes, journal=p)
@@ -23407,6 +23645,16 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
         for col, nat, signo in (("manual_deposits", "manual_deposits_native", 1),
                                 ("manual_withdrawals", "manual_withdrawals_native", -1)):
             usd, pesos = float(r[col] or 0), float(r[nat] or 0)
+            # Un mes con cargas anotadas (`flujos_a_mano`, desde 2026-10-09) se
+            # dolarizó con el dólar de su día: el 1.415 de ahí es casualidad, no el
+            # error de A-6 (que es anterior). Reescribirlo dejaba la suma distinta de
+            # sus cargas y "corregía" un depósito que estaba bien.
+            if conn.execute(
+                    "SELECT 1 FROM flujos_a_mano WHERE user_id=? AND broker=? AND year=? "
+                    "AND month=? AND direction=? AND anulado_at IS NULL LIMIT 1",
+                    (r["user_id"], r["broker"], r["year"], r["month"],
+                     "deposit" if signo > 0 else "withdraw")).fetchone():
+                continue
             if usd > 0 and pesos > 0 and abs(pesos / usd - 1415.0) < 0.5:
                 nuevo = round(pesos / rate, 2)
                 item[col] = {"pesos": round(pesos, 2), "usd_antes": round(usd, 2),
@@ -23414,6 +23662,8 @@ def _repair_caja_1415(conn, apply: bool) -> dict:
                 if signo > 0: d_dep += nuevo - usd
                 else:         d_wd  += nuevo - usd
                 sets.append(f"{col}=?"); args.append(nuevo)
+        if not sets:
+            ya_ok.append(item); continue
         item["_sql"] = (sets, args)
         cambios.append(item); usuarios.add(r["user_id"])
     if apply and cambios:
