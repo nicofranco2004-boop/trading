@@ -269,6 +269,89 @@ def check_caja_concilia(conn, uid: Optional[int] = None,
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Lo guardado ADENTRO de una fila nombra un broker que no existe
+# ─────────────────────────────────────────────────────────────────────────────
+def check_receta_con_broker_inexistente(conn, uid: Optional[int] = None) -> List[Violacion]:
+    """La receta para borrar algo cargado a mano (`undo_meta_json`) o una sección de
+    bonos archivada nombra un broker que no existe.
+
+    Hasta 2026-10-09 renombrar un broker no cambiaba esos nombres, y borrar después
+    mandaba la plata a una caja a nombre del broker viejo (invisible), re-creaba el
+    lote bajo ese nombre, o frenaba con 409 para siempre. Desde entonces el renombre
+    los reescribe (`renombre_broker`); esto mide cuántos quedaron de antes.
+
+    Aviso y no error: lo mismo deja un broker BORRADO (una posición que se movió
+    desde Cartera de un broker que después se borró), y desde los datos no se
+    distingue de un renombre. `fila_en_broker_vivo` ayuda: si la fila está en un
+    broker que existe y su receta nombra uno que no, lo más probable es un renombre.
+    """
+    import json
+    import renombre_broker as _ren
+    vivos: Dict[int, set] = {}
+    for r in _rows(conn, "SELECT user_id, name FROM brokers"
+                         + (" WHERE user_id=?" if uid is not None else ""),
+                   (uid,) if uid is not None else ()):
+        vivos.setdefault(r["user_id"], set()).add(r["name"])
+    out = []
+    for tabla in ("operations", "positions"):
+        filtro, params = _scope(uid, "user_id")
+        for r in _rows(conn, f"SELECT id, user_id, broker, undo_meta_json FROM {tabla} "
+                             f"WHERE undo_meta_json IS NOT NULL{filtro}", params):
+            suyos = vivos.get(r["user_id"], set())
+            faltan = sorted(n for n in _ren.nombres_en_json(r["undo_meta_json"])
+                            if n not in suyos)
+            if faltan:
+                try:
+                    src = (json.loads(r["undo_meta_json"]) or {}).get("src")
+                except (TypeError, ValueError, AttributeError):
+                    src = None
+                out.append(Violacion(
+                    chequeo="receta_con_broker_inexistente", severidad="aviso",
+                    user_id=r["user_id"],
+                    que_pasa=(f"La receta para borrar la fila {r['id']} de {tabla} ('{src}') "
+                              f"nombra {faltan}, que no existe(n): borrarla movería plata o "
+                              f"tenencia a un broker invisible, o frenaría para siempre."),
+                    detalle={"tabla": tabla, "id": r["id"], "src": src, "nombres": faltan,
+                             "fila_en_broker_vivo": r["broker"] in suyos}))
+    filtro, params = _scope(uid, "user_id")
+    for r in _rows(conn, f"SELECT id, user_id, payload FROM archived_positions "
+                         f"WHERE payload IS NOT NULL{filtro}", params):
+        suyos = vivos.get(r["user_id"], set())
+        faltan = sorted(n for n in _ren.nombres_en_json(r["payload"]) if n not in suyos)
+        if faltan:
+            out.append(Violacion(
+                chequeo="receta_con_broker_inexistente", severidad="aviso",
+                user_id=r["user_id"],
+                que_pasa=(f"La sección archivada {r['id']} tiene posiciones en {faltan}, que "
+                          f"no existe(n): al restaurarla quedarían invisibles."),
+                detalle={"tabla": "archived_positions", "id": r["id"], "nombres": faltan}))
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Futuros abiertos en un broker que no existe
+# ─────────────────────────────────────────────────────────────────────────────
+def check_futuro_abierto_sin_broker(conn, uid: Optional[int] = None) -> List[Violacion]:
+    """Cerrar un futuro acredita el resultado al efectivo de SU broker. Si ese broker
+    no existe, la plata va a una caja que no se ve en ningún lado. Hasta 2026-10-09
+    lo dejaba así renombrar el broker (`futures_positions` no estaba en
+    NAME_KEYED_TABLES); borrarlo todavía lo deja."""
+    filtro, params = _scope(uid, "f.user_id")
+    out = []
+    for r in _rows(conn, f"""
+        SELECT f.id, f.user_id, f.broker, f.symbol
+          FROM futures_positions f
+          LEFT JOIN brokers b ON b.user_id=f.user_id AND b.name=f.broker
+         WHERE b.id IS NULL AND f.closed_at IS NULL{filtro}""", params):
+        out.append(Violacion(
+            chequeo="futuro_abierto_sin_broker", severidad="error", user_id=r["user_id"],
+            que_pasa=(f"El futuro abierto {r['symbol']} (id {r['id']}) está en '{r['broker']}', "
+                      f"que no existe: cerrarlo mandaría el resultado a una caja invisible."),
+            detalle={"id": r["id"], "broker": r["broker"], "symbol": r["symbol"]}))
+    return out
+
+
 CHEQUEOS = (
     check_moneda_posicion_vs_broker,
     check_broker_inexistente,
@@ -276,6 +359,8 @@ CHEQUEOS = (
     check_subbroker_usd_bien_formado,
     check_cash_moneda,
     check_caja_concilia,
+    check_receta_con_broker_inexistente,
+    check_futuro_abierto_sin_broker,
 )
 
 

@@ -21,7 +21,8 @@ if BACKEND not in sys.path:
 from importing.invariantes import (                                  # noqa: E402
     correr, check_moneda_posicion_vs_broker, check_broker_inexistente,
     check_costo_no_positivo, check_subbroker_usd_bien_formado, check_cash_moneda,
-    check_caja_concilia,
+    check_caja_concilia, check_receta_con_broker_inexistente,
+    check_futuro_abierto_sin_broker,
 )
 
 UID = 77
@@ -37,11 +38,16 @@ def db():
         CREATE TABLE positions (id INTEGER PRIMARY KEY, user_id INT, broker TEXT,
                                 asset TEXT, is_cash INT DEFAULT 0, buy_price REAL,
                                 quantity REAL, invested REAL, currency TEXT,
-                                asset_type TEXT);
+                                asset_type TEXT, undo_meta_json TEXT);
         CREATE TABLE import_batches (id TEXT PRIMARY KEY, user_id INT, status TEXT);
         CREATE TABLE import_normalized_tx (id INTEGER PRIMARY KEY, batch_id TEXT,
                                            broker TEXT, currency TEXT,
                                            gross_amount REAL, notes TEXT);
+        CREATE TABLE operations (id INTEGER PRIMARY KEY, user_id INT, broker TEXT,
+                                 asset TEXT, undo_meta_json TEXT);
+        CREATE TABLE archived_positions (id INTEGER PRIMARY KEY, user_id INT, payload TEXT);
+        CREATE TABLE futures_positions (id INTEGER PRIMARY KEY, user_id INT, broker TEXT,
+                                        symbol TEXT, closed_at TEXT);
     """)
     yield conn
     conn.close()
@@ -242,3 +248,60 @@ def test_los_avisos_no_hacen_fallar_el_ok(db):
     r = correr(db, UID)
     assert r["avisos"] == 1 and r["errores"] == 0
     assert r["ok"] is True
+
+
+# ── 7. recetas que nombran un broker que no existe ───────────────────────────
+def test_receta_con_el_nombre_viejo_de_un_broker_es_aviso(db):
+    """Lo que dejaba renombrar un broker antes del 2026-10-09: la fila con el nombre
+    nuevo, su receta (y la del lote, como texto adentro) con el viejo."""
+    import json
+    _broker(db, "Cocos Capital", "ARS")
+    db.execute("INSERT INTO operations (user_id, broker, asset, undo_meta_json) VALUES (?,?,?,?)",
+               (UID, "Cocos Capital", "GGAL", json.dumps({
+                   "src": "fifo_sell", "cash_broker": "Cocos",
+                   "lot": {"broker": "Cocos", "undo_meta": json.dumps(
+                       {"src": "manual_position", "broker": "Cocos"})}})))
+    v = check_receta_con_broker_inexistente(db, UID)
+    assert len(v) == 1 and v[0]["severidad"] == "aviso"
+    assert v[0]["detalle"]["nombres"] == ["Cocos"] and v[0]["detalle"]["fila_en_broker_vivo"]
+
+
+def test_receta_sana_y_texto_libre_no_disparan(db):
+    """Un nombre que existe, o el nombre viejo en un campo que NO es de broker (una
+    nota), no es una receta rota."""
+    import json
+    _broker(db, "Cocos", "ARS")
+    db.execute("INSERT INTO operations (user_id, broker, asset, undo_meta_json) VALUES (?,?,?,?)",
+               (UID, "Cocos", "GGAL", json.dumps({"src": "fifo_sell", "cash_broker": "Cocos",
+                                                  "nota": "antes era Balanz"})))
+    db.execute("INSERT INTO archived_positions (user_id, payload) VALUES (?,?)",
+               (UID, json.dumps([{"broker": "Cocos", "asset": "AL30"}])))
+    assert check_receta_con_broker_inexistente(db, UID) == []
+
+
+def test_seccion_archivada_en_un_broker_que_no_existe_es_aviso(db):
+    import json
+    _broker(db, "Cocos", "ARS")
+    db.execute("INSERT INTO archived_positions (user_id, payload) VALUES (?,?)",
+               (UID, json.dumps([{"broker": "BP", "asset": "AL30"}])))
+    v = check_receta_con_broker_inexistente(db, UID)
+    assert [x["detalle"]["nombres"] for x in v] == [["BP"]]
+
+
+# ── 8. futuros abiertos sin broker ───────────────────────────────────────────
+def test_futuro_abierto_en_un_broker_que_no_existe_es_error(db):
+    _broker(db, "Binance Futures", "USDT")
+    db.execute("INSERT INTO futures_positions (user_id, broker, symbol) VALUES (?,?,?)",
+               (UID, "Binance", "BTCUSDT"))
+    v = check_futuro_abierto_sin_broker(db, UID)
+    assert len(v) == 1 and v[0]["severidad"] == "error"
+
+
+def test_futuro_cerrado_o_en_broker_vivo_no_dispara(db):
+    """Cerrado ya acreditó (no mueve más plata); en un broker que existe, está bien."""
+    _broker(db, "Binance", "USDT")
+    db.execute("INSERT INTO futures_positions (user_id, broker, symbol) VALUES (?,?,?)",
+               (UID, "Binance", "BTCUSDT"))
+    db.execute("INSERT INTO futures_positions (user_id, broker, symbol, closed_at) VALUES (?,?,?,?)",
+               (UID, "Viejo", "ETHUSDT", "2026-08-01"))
+    assert check_futuro_abierto_sin_broker(db, UID) == []

@@ -1403,13 +1403,23 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
     if not batch:
         return None
 
+    # El broker de cada fila sale de lo que decía el ARCHIVO. Si ese nombre ya no es
+    # un broker del usuario (lo renombró), se usa el de la fila interpretada, que el
+    # renombre sí cambió: sin esto, rehacer creaba de nuevo un broker con el nombre
+    # viejo y metía el import ahí (2026-10-09). Lo crudo no se reescribe al renombrar:
+    # hay cuentas con medio millón de filas (ver renombre_broker.py).
     rows = conn.execute(
-        """SELECT raw_json FROM import_raw_rows
-            WHERE batch_id=? ORDER BY row_index ASC""",
+        """SELECT r.raw_json,
+                  (SELECT MIN(n.broker) FROM import_normalized_tx n
+                    WHERE n.batch_id = r.batch_id AND n.raw_row_id = r.id) AS broker_hoy
+             FROM import_raw_rows r
+            WHERE r.batch_id=? ORDER BY r.row_index ASC""",
         (batch_id,),
     ).fetchall()
     if not rows:
         return None
+    vivos = {str(n or "").strip().lower() for (n,) in conn.execute(
+        "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()}
 
     parsed: List[Dict[str, Any]] = []
     for r in rows:
@@ -1417,6 +1427,10 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
             d = json.loads(r["raw_json"]) if r["raw_json"] else {}
         except json.JSONDecodeError:
             continue
+        _b = d.get("broker")
+        if (isinstance(_b, str) and _b.strip() and _b.strip().lower() not in vivos
+                and r["broker_hoy"]):
+            d["broker"] = r["broker_hoy"]
         # Excluir filas sintéticas del seed — las nuevas se generan en el redo
         if d.get("_synthetic_seed"):
             continue

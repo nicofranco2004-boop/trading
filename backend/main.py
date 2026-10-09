@@ -95,6 +95,7 @@ def _setup_yfinance_cache():
 _setup_yfinance_cache()
 import fx as _fx
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
+import renombre_broker as _renombre_broker   # el nombre del broker ADENTRO de lo guardado
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 # El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
 # abajo (constante + `_rate_pct` escritos a mano) y sólo los usaba el libro del
@@ -5345,7 +5346,19 @@ NAME_KEYED_TABLES = (
     # El detalle de lo cargado a mano: sin esto, renombrar el broker dejaba cada
     # carga apuntando a un nombre que ya no existe (2026-10-08).
     "flujos_a_mano",
+    # Los futuros ABIERTOS (2026-10-09): renombrar y después cerrar uno mandaba la
+    # ganancia, la operación y el mes al nombre viejo — plata en una caja invisible.
+    "futures_positions",
+    # El registro de borrados ("Deshacer" y la corrección de las fotos): la columna
+    # acá; lo que va ADENTRO de su JSON, en `renombre_broker.COLUMNAS_JSON`.
+    "deleted_ops_journal",
 )
+# Además de estas columnas, el nombre vive ADENTRO de textos JSON (las recetas de
+# borrado, las secciones archivadas, el registro de borrados, lo crudo de los imports;
+# la lista es `renombre_broker.COLUMNAS_JSON`): eso lo reescribe
+# `_renombre_broker.renombrar_adentro`, en la misma transacción.
+# `test_renombre_broker_recetas.py` revisa toda la cuenta después de renombrar y
+# falla si el nombre viejo quedó en algún lado.
 
 
 @app.put("/api/brokers/{bid}")
@@ -5354,9 +5367,10 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
     """Renombra (o cambia la moneda de) un broker, con cascade del nombre.
 
     Como las tablas de data linkean al broker por NOMBRE (ver NAME_KEYED_TABLES),
-    un rename A → A2 reescribe el nombre en las 6 tablas dentro de UNA transacción
-    atómica. Un cascade parcial sería estrictamente peor que el bug original, así
-    que la atomicidad es obligatoria.
+    un rename A → A2 reescribe el nombre en todas esas tablas Y adentro de los JSON
+    que lo guardan (recetas de borrado, archivadas, registro de borrados: ver
+    `renombre_broker`) dentro de UNA transacción atómica. Un cascade parcial sería
+    estrictamente peor que el bug original, así que la atomicidad es obligatoria.
 
     Reglas adicionales:
       • Sibling USD (parent_broker_id IS NOT NULL): es plumbing derivado del padre.
@@ -5485,6 +5499,23 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         #    ROLLBACK; lo convertimos en un 409 limpio en vez de un 500 crudo.
         try:
             with conn:
+                # El turno del usuario PRIMERO, y recién después se confirma que el
+                # nombre leído arriba sigue siendo el de hoy. Todo lo de abajo cambia
+                # "donde dice el nombre viejo": si otro renombre entró en el medio, el
+                # viejo ya no está en ningún lado, el broker quedaba con un nombre y
+                # sus filas y recetas con otro. Y un borrado que corre a la par lee la
+                # receta con el turno tomado: o ve la vieja entera o la nueva entera.
+                # (Lo mismo con el "· USD": que no lo hayan creado, borrado ni renombrado.)
+                _tomar_turno(conn, uid)
+                _hoy = conn.execute(
+                    "SELECT name FROM brokers WHERE id=? AND user_id=?", (bid, uid)).fetchone()
+                _sib_hoy = conn.execute(
+                    "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=?",
+                    (uid, bid)).fetchone()
+                if (not _hoy or _hoy["name"] != old_name
+                        or (_sib_hoy["name"] if _sib_hoy else None) != old_sibling):
+                    raise HTTPException(409, "El broker cambió mientras lo renombrabas. "
+                                             "Recargá la página y probá de nuevo.")
                 # brokers: nombre+moneda del padre, luego nombre del sibling (su moneda
                 # NO se toca — es plumbing interno USDT).
                 conn.execute(
@@ -5522,6 +5553,12 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                                 f"UPDATE {tbl} SET broker=? WHERE user_id=? AND broker=?",
                                 (new_n, uid, old_n),
                             )
+                # Y adentro de lo guardado como JSON (las recetas de borrado, las
+                # secciones archivadas, el registro de borrados, las filas crudas de
+                # los imports). Sin esto, borrar después de renombrar mandaba la plata
+                # a una caja a nombre del broker viejo (invisible) o frenaba con 409
+                # para siempre. Todos los pares a la vez: padre y "· USD".
+                _renombre_broker.renombrar_adentro(conn, uid, dict(rename_pairs))
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
