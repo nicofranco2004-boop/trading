@@ -13709,6 +13709,12 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             # (Un cobro pasa siempre, aunque el saldo esté en rojo: antes iba por la
             # copia estricta de las conversiones y rebotaba con "Saldo insuficiente".)
             _adjust_broker_cash(conn, uid, data.broker, net_amount)
+            # El cobro es resultado del mes: se recalcula en el momento y en la misma
+            # transacción, como al cobrar un plazo fijo o cargar una operación a mano.
+            # Sin esto el mes no lo incluía hasta que otra cosa recalculara (medido
+            # 2026-10-10: cobrar un cupón de US$ 100 dejaba GET /api/monthly sin nada).
+            _recalc_pnl_realized_from_ops(conn, uid)
+        _ai_cache_invalidate(uid)
 
         # Ganancia realizada del amort (sólo para diagnóstico / response):
         # cash recibido − cost basis consumido. Para cupones siempre = cash.
@@ -14328,6 +14334,9 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     _repair_monthly_chain(conn, uid, 'global')
                     conn.commit()
 
+            # Cambió el efectivo de dos cajas (y quizás el resultado del mes): sin
+            # esto la IA seguía contestando con la cartera de antes de la conversión.
+            _ai_cache_invalidate(uid)
             return {
                 "ok": True,
                 "from_broker": from_b,
