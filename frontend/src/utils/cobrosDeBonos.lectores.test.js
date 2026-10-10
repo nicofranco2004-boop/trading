@@ -181,3 +181,36 @@ describe('cuántos nominales baja confirmar una amortización', () => {
     expect(it.nominalesQueBajan).toBe(0)
   })
 })
+
+describe('la ventana de ±14 días: una sola, y con sus bordes', () => {
+  it('la pantalla usa el mismo número que el servidor', async () => {
+    const { DATE_TOLERANCE_DAYS } = await import('./pendingCashflows.js')
+    const py = backend('cobros_bonos.py')
+    expect(Number(py.match(/^VENTANA_DIAS\s*=\s*(\d+)/m)[1])).toBe(DATE_TOLERANCE_DAYS)
+    expect(DATE_TOLERANCE_DAYS).toBe(14)
+    // Y nadie más tiene su copia: la ficha del bono importa ésta.
+    const ficha = readFileSync(resolve(aqui, '../components/BondDetail.jsx'), 'utf8')
+    expect(ficha).not.toMatch(/DATE_TOLERANCE_DAYS\s*=\s*\d/)
+    expect(ficha).toMatch(/DATE_TOLERANCE_DAYS[^\n]*from '\.\.\/utils\/pendingCashflows'/)
+  })
+
+  const BONO = { id: 9, broker: 'IOL', asset: 'GD35', quantity: 5000, invested: 3100,
+    entry_date: '2025-04-02', nominal_original: 5000 }
+  const cobro = (date) => ({ id: 1, date, broker: 'IOL', asset: 'GD35', op_type: 'Dividendo', importada: true })
+
+  it('a 14 días (antes o después) es ese pago; a 15, no', () => {
+    for (const d of ['2026-06-25', '2026-07-09', '2026-07-23']) {
+      expect(cobroRegistrado([cobro(d)], BONO, '2026-07-09'), d).toBeTruthy()
+    }
+    for (const d of ['2026-06-24', '2026-07-24']) {
+      expect(cobroRegistrado([cobro(d)], BONO, '2026-07-09'), d).toBeUndefined()
+    }
+  })
+
+  it('la bandeja ofrece el pago sólo si el cobro quedó fuera de la ventana', () => {
+    const ofrece = (d) => detectPendingCashflows([BONO], [cobro(d)], [], { today: '2026-10-10' })
+      .some(it => it.date === '2026-07-09')
+    expect(ofrece('2026-07-23')).toBe(false)
+    expect(ofrece('2026-07-24')).toBe(true)
+  })
+})

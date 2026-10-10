@@ -727,7 +727,7 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
         _cobrado = float(tx.gross_amount or 0) or float(tx.quantity or 0) * float(tx.unit_price or 0)
         ya = _confirmado(conn, uid, tx.broker, tx.asset_symbol, tx.date,
                          monto=_cobrado or None, moneda=sell_currency, tc=tc_blue,
-                         batch_id=batch_id)
+                         batch_id=batch_id, contiene_amortizacion=True)
         if ya:
             raise CobroYaAnotado(
                 tx.row_index,

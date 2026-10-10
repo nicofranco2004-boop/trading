@@ -13664,14 +13664,13 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
             # mano, o cualquier cobro importado (ese ya trae el pago entero).
             import cobros_bonos
             tipo = 'Cupón' if data.flow_type == 'coupon' else 'Amortización'
-            for f in cobros_bonos._cerca(conn, uid, data.broker, data.asset, data.date):
-                importado = conn.execute(
-                    "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (f["id"],)).fetchone()
-                if importado or f["op_type"] == tipo:
-                    raise HTTPException(409, f"Ya hay un cobro de {data.asset.upper()} anotado "
-                                             f"cerca del {data.date[8:10]}/{data.date[5:7]} "
-                                             f"({f['op_type']} del {str(f['date'])[8:10]}/"
-                                             f"{str(f['date'])[5:7]}). Fijate en Movimientos.")
+            f = cobros_bonos.choca_con_lo_anotado(
+                conn, uid, data.broker, data.asset, data.date, tipo)
+            if f:
+                raise HTTPException(409, f"Ya hay un cobro de {data.asset.upper()} anotado "
+                                         f"cerca del {data.date[8:10]}/{data.date[5:7]} "
+                                         f"({f['op_type']} del {str(f['date'])[8:10]}/"
+                                         f"{str(f['date'])[5:7]}). Fijate en Movimientos.")
             out = _registrar_cobro_bono(conn, uid, data)
             _recalc_pnl_realized_from_ops(conn, uid)
         _ai_cache_invalidate(uid)
@@ -19848,7 +19847,7 @@ def _devolver_cobro_bono(conn, uid: int, op, meta: dict, undo: dict) -> None:
 
 def _cobro_bono_confirmado_a_mano(conn, uid: int, broker: str, asset: str, fecha: str,
                                    monto=None, moneda=None, es_amortizacion: bool = False,
-                                   tc=None, batch_id=None):
+                                   tc=None, batch_id=None, contiene_amortizacion: bool = False):
     """El importador trae el cobro de un bono (renta, cupón, amortización, o la
     "venta" con la que Balanz anota una amortización) y el usuario ya había anotado
     A MANO un cobro de ese bono —desde la bandeja de Cartera o el formulario— en
@@ -19869,7 +19868,7 @@ def _cobro_bono_confirmado_a_mano(conn, uid: int, broker: str, asset: str, fecha
     import cobros_bonos
     accion, dato = cobros_bonos.que_hacer_con_el_renglon(
         conn, uid, broker, asset, fecha, monto=monto, moneda=moneda, tc=tc,
-        es_amortizacion=es_amortizacion)
+        es_amortizacion=es_amortizacion, contiene_amortizacion=contiene_amortizacion)
     if accion == cobros_bonos.SALTEAR:
         return dato
     if accion == cobros_bonos.REEMPLAZAR:
@@ -20435,6 +20434,28 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
             raise HTTPException(409,
                 f"Ese dividendo de {row.get('asset')} ya está anotado (llegó con el archivo del "
                 "broker), así que no se vuelve a poner. Fijate en Movimientos.")
+        # Lo mismo un cobro de bono (cupón o amortización) que se borró y, mientras
+        # tanto, llegó por el archivo del broker —o se volvió a confirmar desde la
+        # bandeja—: deshacer el borrado lo anotaba DOS veces (lo encontró la prueba
+        # al azar, test_cupones_bandeja_azar, 2026-10-10). Misma regla que el
+        # formulario: choca con cualquier cobro importado de la ventana, o con uno
+        # a mano del mismo tipo.
+        _meta_bono = {}
+        if row.get("undo_meta_json") and '"bond_cashflow"' in str(row.get("undo_meta_json")):
+            try:
+                _meta_bono = json.loads(row["undo_meta_json"])
+            except (TypeError, ValueError):
+                _meta_bono = {}
+        if _meta_bono.get("src") == "bond_cashflow":
+            import cobros_bonos as _cobros_bonos
+            _ya = _cobros_bonos.choca_con_lo_anotado(
+                conn, uid, row.get("broker") or "", row.get("asset") or "",
+                str(row.get("date"))[:10], row.get("op_type"))
+            if _ya:
+                raise HTTPException(409,
+                    f"Ese cobro de {row.get('asset')} ya está anotado de nuevo "
+                    f"({_ya['op_type']} del {str(_ya['date'])[8:10]}/{str(_ya['date'])[5:7]}), "
+                    "así que no se vuelve a poner. Fijate en Movimientos.")
         _reinsert("operations", row)
         # Asegurar la fila del mes: al borrar, el mes pudo quedar en cero y el recalc
         # limpia las filas all-zero; después `_recalc` solo recompone meses que YA
@@ -21048,9 +21069,15 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
     # reversarla acá dejaría el P&L inconsistente. La bloqueamos hasta unificar ese
     # modelo. El caso dominante (bono importado con sus cupones/amort importados) sí va.
     if any(o["l_batch"] is None for o in rf_ops):
+        # El mensaje dice la SALIDA: decía sólo "llega en la próxima versión", y con
+        # la bandeja de cobros de Cartera casi todo bono importado tiene alguno
+        # (cada uno se borra solo, desde Movimientos, y devuelve lo que movió).
+        _n = sum(1 for o in rf_ops if o["l_batch"] is None)
         raise HTTPException(400,
-            "Este activo tiene cupones o amortizaciones cargados a mano (no importados); "
-            "su borrado entero llega en la próxima versión.")
+            f"Este bono tiene {_n} cobro{'s' if _n != 1 else ''} anotado{'s' if _n != 1 else ''} "
+            "a mano (cupones o amortizaciones confirmados desde Cartera). Borralos primero en "
+            "Movimientos —son los renglones de ese bono con el tacho— y después volvé a "
+            "borrar el activo entero.")
 
     # Para cada renta-fija importada ubicamos su fila fuente (import_normalized_tx) — es
     # la que acreditó el cash (gross_amount nativo) y hay que tombstonear para que no

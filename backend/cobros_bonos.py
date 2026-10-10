@@ -90,6 +90,21 @@ def ya_registrado(conn, uid: int, broker: str, asset: str, fecha: str):
     return filas[0] if filas else None
 
 
+def choca_con_lo_anotado(conn, uid: int, broker: str, asset: str, fecha: str, op_type: str):
+    """Para anotar UNA parte de un pago (el cupón, o la amortización): la fila ya
+    anotada que lo impide, o None. Choca con cualquier cobro IMPORTADO de la
+    ventana (el archivo trae el pago entero) y con uno a mano del mismo tipo.
+
+    La usan el formulario de la ficha del bono —que carga las dos partes por
+    separado— y el "Deshacer" del borrado de un cobro (que lo vuelve a poner)."""
+    for f in _cerca(conn, uid, broker, asset, fecha):
+        importado = conn.execute(
+            "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (f["id"],)).fetchone()
+        if importado or _norm(f["op_type"]) == _norm(op_type):
+            return f
+    return None
+
+
 def cobros_a_mano_cerca(conn, uid: int, broker: str, asset: str, fecha: str) -> list:
     """Los cobros de ese bono cargados A MANO (sin vínculo con una importación) a
     ±14 días: los que el importador reemplaza cuando trae el mismo pago."""
@@ -152,7 +167,8 @@ def _intocable(f) -> bool:
 
 def que_hacer_con_el_renglon(conn, uid: int, broker: str, asset: str, fecha: str, *,
                              monto=None, moneda=None, tc=None,
-                             es_amortizacion: bool = False) -> tuple:
+                             es_amortizacion: bool = False,
+                             contiene_amortizacion: bool = False) -> tuple:
     """El archivo trae un cobro de este bono (`monto` en `moneda`; `tc` = pesos por
     dólar con el que el importador pasa ese renglón). ¿Qué se hace con él, dado lo
     que el usuario ya anotó A MANO a ±14 días? Devuelve (acción, dato):
@@ -176,6 +192,11 @@ def que_hacer_con_el_renglon(conn, uid: int, broker: str, asset: str, fecha: str
           – están anotados el cupón Y la amortización → no puede ser "otra parte":
             se saltea aunque el monto difiera (no se puede reemplazar una
             amortización que ya bajó nominales);
+          – el renglón TRAE la amortización adentro (`contiene_amortizacion`: la
+            "venta" de nominales con la que Balanz anota el pago) y ya hay una
+            amortización anotada → se saltea: entrar además contaba el capital
+            dos veces y bajaba los nominales dos veces (lo encontró la prueba al
+            azar, 2026-10-10). Si faltaba anotar el cupón, se carga a mano;
           – si no, entra.
 
     Los montos se comparan en DÓLARES (lo anotado, con su TC sellado; el renglón,
@@ -202,6 +223,8 @@ def que_hacer_con_el_renglon(conn, uid: int, broker: str, asset: str, fecha: str
         return REEMPLAZAR, manuales
     if cupones and amorts:
         return SALTEAR, cupones[0]
+    if contiene_amortizacion and amorts:
+        return SALTEAR, amorts[0]
     return IMPORTAR, None
 
 

@@ -32,7 +32,10 @@ import { groupBrokersIntoAccounts, accountForBrokerName } from './brokerAccounts
 // Tolerancia para matchear una operation con una fecha del prospecto.
 // 14 días cubre T+1/T+2 estándar + delays operativos + diferencias de huso
 // en data de operaciones cargadas manualmente.
-const DATE_TOLERANCE_DAYS = 14
+// ESPEJO de VENTANA_DIAS en backend/cobros_bonos.py (lo controla
+// cobrosDeBonos.lectores.test.js). La ficha del bono (BondDetail) usa ESTE
+// número y esta cuenta de días: tenía su copia.
+export const DATE_TOLERANCE_DAYS = 14
 
 // Cuán atrás miramos. Si un pago del cronograma fue hace más de 2 años y el
 // user nunca lo registró ni saltó, asumimos que ya no aplica — probablemente
@@ -51,7 +54,7 @@ function todayIso() {
   return hoyISO()
 }
 
-function diffDaysAbs(a, b) {
+export function diffDaysAbs(a, b) {
   const pa = a.slice(0, 10).split('-').map(Number)
   const pb = b.slice(0, 10).split('-').map(Number)
   const ta = Date.UTC(pa[0], pa[1] - 1, pa[2])

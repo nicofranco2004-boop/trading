@@ -22,15 +22,7 @@ import {
   generateSchedule, getRemainingPayments, estimateYieldDetailed, nextPaymentForPosition,
   cerOptsFor, nominalOriginalDe,
 } from '../utils/bondSchedule'
-import { cobroRegistrado, cobrosDelActivo, esCobroAMano } from '../utils/pendingCashflows'
-
-const DATE_TOLERANCE_DAYS = 14  // mismo criterio que pendingCashflows.js
-
-function diffDaysAbs(a, b) {
-  const pa = a.slice(0, 10).split('-').map(Number)
-  const pb = b.slice(0, 10).split('-').map(Number)
-  return Math.abs(Math.round((Date.UTC(pb[0], pb[1] - 1, pb[2]) - Date.UTC(pa[0], pa[1] - 1, pa[2])) / 86400000))
-}
+import { cobroRegistrado, cobrosDelActivo, esCobroAMano, DATE_TOLERANCE_DAYS, diffDaysAbs } from '../utils/pendingCashflows'
 
 export function BondDetailBody({
   p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, cerBasis = 'CER',
