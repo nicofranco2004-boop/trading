@@ -288,6 +288,36 @@ class LaConversionSeBorraYSeDeshace(ConRecetaBase):
         self._deshacer(token)
         self.assertMismaCuenta(e_antes, self.estado(), "después de deshacer")
 
+    def test_el_precio_de_una_compra_vieja_ya_vendida_no_revive(self):
+        """La caja en cero conserva el precio de la última compra. Con dos compras
+        nuevas al mismo precio, borrar la primera "volvía al de antes": los dólares
+        de la segunda quedaban al precio de una compra de hace años, y venderlos
+        anotaba una ganancia cambiaria falsa (auditoría 2, 2026-10-10)."""
+        self._depositar(self.PESOS, 1_000_000)
+        self._convertir(self.PESOS, "ars_to_usd", 40_000, 100, 400)
+        self._convertir(f"{self.PESOS} · USD", "usd_to_ars", 40_000, 100, 400)
+        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (0.0, 400.0))
+        primera = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        self._convertir(self.PESOS, "ars_to_usd", 260_000, 200, 1300)
+        e_antes = self.estado()
+        token = self._borrar(primera)["undo_token"]
+        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (200.0, 1300.0))
+        self._deshacer(token)
+        self.assertMismaCuenta(e_antes, self.estado(), "después de deshacer")
+
+    def test_con_dolares_sin_precio_de_antes_los_comprados_despues_conservan_el_suyo(self):
+        """100 dólares depositados (sin precio), una compra de 100 y otra de 300 al
+        mismo precio; se borra la primera: los 300 no pueden quedar sin precio."""
+        self._depositar(self.PESOS, 1_000_000)
+        bid = self.conn.execute("SELECT id FROM brokers WHERE user_id=? AND name=?",
+                                (self.uid, self.PESOS)).fetchone()["id"]
+        self._ok(self.http.post(f"/api/brokers/{bid}/usd-sibling"))
+        self._depositar(f"{self.PESOS} · USD", 100)
+        primera = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        self._convertir(self.PESOS, "ars_to_usd", 390_000, 300, 1300)
+        self._borrar(primera)
+        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (400.0, 1300.0))
+
     def test_con_casi_todos_los_dolares_vendidos_el_precio_no_se_dispara(self):
         """La cuenta inversa del promedio divide por lo que queda: 100 a 1.000, 100
         a 1.800 y 99 vendidos daban un dólar a 41.400. Con poco saldo, no se toca."""

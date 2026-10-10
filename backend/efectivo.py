@@ -187,12 +187,21 @@ def revertir(conn, uid: int, broker: str, delta: float, *,
       · Si la caja sigue con el TC que dejó el movimiento (`tc_esperado`), nadie
         compró dólares a otro precio desde entonces: se vuelve al de antes
         (`tc_a_dejar`). EXACTO, aunque en el medio haya débitos, ventas o
-        depósitos sin precio (ninguno mueve el promedio). Si "el de antes" era
-        NINGUNO y quedan dólares: si la caja ya tenía dólares sin precio antes del
-        movimiento (`saldo_previo` > 0), vuelven a no tenerlo; si estaba vacía, lo
-        que queda entró después a este precio y lo conserva (dos compras a 1.300
-        en una caja vacía: borrar la primera dejaba los 10 dólares de la segunda
-        sin precio — lo encontró la prueba en el navegador).
+        depósitos sin precio (ninguno mueve el promedio). Con dos salvedades,
+        porque el promedio también queda igual si después se compró AL MISMO
+        precio, y "el de antes" puede no ser de ningún dólar que quede
+        (`saldo_previo` = lo que había en la caja antes del movimiento):
+          - la caja estaba VACÍA antes: su precio de entonces (ninguno, o el de
+            una compra vieja ya vendida — la caja en cero lo conserva) no era de
+            nadie. Si quedan dólares, entraron después a este precio y lo
+            conservan. Sin esto, dos compras a 1.300 y borrar la primera dejaba
+            los dólares de la segunda sin precio (prueba en el navegador) o al
+            precio de una compra de hace años (auditoría 2: 200 dólares a 400 →
+            ganancia cambiaria falsa de US$ 138 al venderlos);
+          - había dólares SIN precio antes: vuelven a no tenerlo sólo si no queda
+            más de lo que había; si queda más, lo de más se compró después y
+            conserva su precio (auditoría 2: 300 comprados a 1.300 quedaban sin
+            precio).
       · Si cambió (otra compra a otro precio en el medio):
           - entran dólares con `tc_compra` → se promedian a ese precio, como una
             compra (devolver los dólares de una venta borrada a su costo es
@@ -211,7 +220,8 @@ def revertir(conn, uid: int, broker: str, delta: float, *,
 
     if tc_esperado is not _SIN_EXPECTATIVA and _mismo_tc(tc_ahora, tc_esperado):
         tc_nuevo = tc_a_dejar
-        if tc_nuevo is None and actual + delta > 1e-9 and not (saldo_previo or 0) > 1e-9:
+        queda, habia = actual + delta, max(float(saldo_previo or 0), 0.0)
+        if queda > 1e-9 and (habia <= 1e-9 or (tc_a_dejar is None and queda > habia + 1e-9)):
             tc_nuevo = tc_ahora
         id_caja = mover(conn, uid, broker, delta)
         if id_caja:

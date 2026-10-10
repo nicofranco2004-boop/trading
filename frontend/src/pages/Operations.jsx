@@ -278,7 +278,7 @@ export default function Operations() {
 
   // Ofrece DESHACER de verdad. Cada borrado devuelve un `undo_token`; antes se
   // tiraba a la basura, así que el "podés deshacerlo" del confirm era mentira.
-  function offerUndo(res, undoBase, msg, cambio = null) {
+  function offerUndo(res, undoBase, msg, cambio = null, msgVuelta = 'Listo, lo restauramos.') {
     const token = res?.undo_token
     if (!token) { toast.push(msg, { type: 'success' }); return }
     toast.push(msg, {
@@ -293,7 +293,7 @@ export default function Operations() {
           })
           // Volvió: la próxima pantalla con total lo muestra sumándose.
           if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false })
-          toast.push('Listo, lo restauramos.', { type: 'success' })
+          toast.push(msgVuelta, { type: 'success' })
         } catch (ex) {
           toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
         }
@@ -315,6 +315,16 @@ export default function Operations() {
     const pf = op?.deshace_cobro_pf
     if (pf) {
       if (!confirmarDeshacerCobroPf(pf)) return
+    } else if (esConversion(op?.op_type)) {
+      // Una compra o venta de dólares mueve DOS cuentas: el cartel lo dice
+      // (auditoría 2, 2026-10-10: acá salía el genérico).
+      const compra = /ARS→/.test(op.op_type)
+      if (!confirm(
+        `¿Borrar esta ${compra ? 'compra' : 'venta'} de dólares?\n\n` +
+        (compra ? 'Vuelven los pesos a tu cuenta y salen los dólares.'
+                : 'Vuelven los dólares a tu cuenta y salen los pesos.') +
+        ' La operación deja de contar en todos los cálculos.\n\nVas a poder deshacerlo.'
+      )) return
     } else if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     try {
       const res = await recalcular(async () => {
@@ -328,7 +338,8 @@ export default function Operations() {
         ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el' }
         : { texto: 'operación', articulo: 'la' }
       anotarCambioDeMovimiento(cambio)
-      offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.', cambio)
+      offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.', cambio,
+        pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.' : undefined)
     } catch (ex) {
       // El backend bloquea con mensaje claro los casos que aún no soporta
       // (manuales, bonos, activos con data manual mezclada).
