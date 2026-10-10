@@ -129,3 +129,55 @@ describe('el win rate no cambió de regla (decisión de producto pendiente)', ()
     expect(s.trades).toBe(3)
   })
 })
+
+describe('cuándo NO hay confirmación de un click', () => {
+  const hoy = { today: '2026-10-10' }
+  const BROKERS = [{ id: 1, name: 'IOL', currency: 'USDT', parent_broker_id: null }]
+  const on = { id: 1, broker: 'IOL', asset: 'TLC1O', quantity: 1000, invested: 1040,
+    entry_date: '2025-01-10', nominal_al_cargar: 1000, currency: 'USD' }
+  const cer = { id: 2, broker: 'IOL', asset: 'TX26', quantity: 1000000, invested: 900000,
+    entry_date: '2024-01-15', nominal_al_cargar: 1000000, currency: 'ARS' }
+
+  it('una obligación negociable se marca como estimada', () => {
+    const items = detectPendingCashflows([on], [], [], { ...hoy, brokers: BROKERS })
+    expect(items.length).toBeGreaterThan(0)
+    expect(items.every(it => it.estimado)).toBe(true)
+  })
+  it('un soberano con cronograma propio no', () => {
+    const al30 = { id: 3, broker: 'IOL', asset: 'AL30', quantity: 6400, invested: 3840,
+      entry_date: '2024-01-15', nominal_al_cargar: 10000, currency: 'USD' }
+    const items = detectPendingCashflows([al30], [], [], { ...hoy, brokers: BROKERS })
+    expect(items.length).toBeGreaterThan(0)
+    expect(items.some(it => it.estimado)).toBe(false)
+  })
+  it('bono CER: serie cargando ≠ serie que no se pudo traer', () => {
+    const cargando = detectPendingCashflows([cer], [], [], { ...hoy, brokers: BROKERS, cerSeries: null })
+    const fallo = detectPendingCashflows([cer], [], [], { ...hoy, brokers: BROKERS, cerSeries: {} })
+    expect(cargando.length).toBeGreaterThan(0)
+    expect(cargando.every(it => it.cargandoCer && it.sinAjusteCer)).toBe(true)
+    expect(fallo.every(it => !it.cargandoCer && it.sinAjusteCer)).toBe(true)
+  })
+  it('un bono que no es CER nunca espera la serie', () => {
+    const items = detectPendingCashflows([on], [], [], { ...hoy, brokers: BROKERS, cerSeries: null })
+    expect(items.some(it => it.cargandoCer || it.cerViejo || it.sinAjusteCer)).toBe(false)
+  })
+})
+
+describe('cuántos nominales baja confirmar una amortización', () => {
+  const hoy = { today: '2026-10-10' }
+  const BROKERS = [{ id: 1, name: 'IOL', currency: 'USDT', parent_broker_id: null }]
+  const base = { broker: 'IOL', asset: 'AL30', quantity: 6400, invested: 3840,
+    entry_date: '2024-01-15', currency: 'USD' }
+  const julio = (lotes) => detectPendingCashflows(lotes, [], [], { ...hoy, brokers: BROKERS })
+    .find(it => it.date === '2026-07-09')
+
+  it('lote cargado a mano: baja el 8 % de sus nominales originales', () => {
+    const it = julio([{ ...base, id: 1, nominal_al_cargar: 10000 }])
+    expect(it.tenencia).toBe(6400)
+    expect(it.nominalesQueBajan).toBeCloseTo(800, 6)
+  })
+  it('lote que lleva el barrido de amortizaciones: no baja nada acá', () => {
+    const it = julio([{ ...base, id: 1, nominal_original: 10000, nominal_por_barrido: true }])
+    expect(it.nominalesQueBajan).toBe(0)
+  })
+})

@@ -13,8 +13,14 @@
 //     por encima de lo que te había costado esa parte (el resto es tu plata que
 //     vuelve: baja tu costo en el bono);
 //   · no toca el capital aportado ni la ganancia no realizada (por precio) del bono;
-//   · si después se importa el archivo del broker con el mismo pago, el del
-//     broker lo reemplaza (no se suma).
+//   · si después se importa el archivo del broker con el mismo pago, ese renglón
+//     del archivo se saltea (no se suma): manda lo anotado acá, que separa el
+//     cupón de la amortización. Ver backend/cobros_bonos.py.
+//
+// Sin confirmación de un click (hay que cargar los montos del broker) cuando el
+// monto propuesto no es confiable: bono ajustado por inflación sin la serie o
+// con la serie vieja, cuenta en otra moneda que el bono, y obligaciones
+// negociables (su cronograma es una estimación).
 //
 // Datos y acciones: hooks/useCuponesPorCobrar.js (una sola fuente para Cartera
 // de escritorio y de celular). Detección y montos: utils/pendingCashflows.js.
@@ -28,6 +34,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { useCuponesPorCobrar } from '../hooks/useCuponesPorCobrar'
 import { groupBrokersIntoAccounts, accountForBrokerName } from '../utils/brokerAccounts'
 import { parseNum } from '../utils/format'
+import { errorMessage } from '../utils/api'
 
 const num = (n, d = 2) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d })
 const plata = (moneda) => (n) => `${moneda === 'ARS' ? '$' : 'US$'} ${num(n)}`
@@ -36,6 +43,16 @@ const plata = (moneda) => (n) => `${moneda === 'ARS' ? '$' : 'US$'} ${num(n)}`
 const monedaDe = (resultado) => ((resultado?.partes?.[0]?.currency || 'USD').toUpperCase() === 'ARS' ? 'ARS' : 'USD')
 const loQueEntro = (resultado) => plata(monedaDe(resultado))(
   (resultado?.partes || []).reduce((s, p) => s + (p.amount_net || 0), 0))
+// Un resultado con su signo: "+US$ 2,50" / "− US$ 40,00" (nunca "+US$ -40,00").
+const conSigno = (m, v) => (v < 0 ? `− ${m(Math.abs(v))}` : `+${m(v)}`)
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+  'septiembre', 'octubre', 'noviembre', 'diciembre']
+const mesDe = (iso) => (iso ? `${MESES[+iso.slice(5, 7) - 1]} de ${iso.slice(0, 4)}` : '')
+// ¿Hay que cargar los montos del broker (sin confirmación de un click)?
+const hayQueCargar = (it) => !!(it.sinAjusteCer || it.cerViejo || it.otraMoneda || it.estimado)
+// "1,234.56" (formato de Estados Unidos, el de un resumen de Schwab o IBKR): el
+// lector de números lo toma como 1,234. Mejor frenarlo que anotar otra plata.
+const formatoDeEeuu = (s) => /\d,\d{3}\.\d/.test(String(s || ''))
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '')
 const ddmmaa = (iso) => (iso ? `${ddmm(iso)}/${iso.slice(2, 4)}` : '')
 const pctTxt = (v) => `${num(v, Number.isInteger(+(+v).toFixed(4)) ? 0 : (String(+(+v).toFixed(4)).split('.')[1]?.length > 2 ? 3 : 2))} %`
@@ -88,28 +105,51 @@ function Calculo({ it, animar }) {
       `Sobre ${it.vivoAntes < 100 ? 'lo que quedaba vivo' : 'tus nominales'}. Es ganancia`, m(it.coupon), false],
   ]
   if (amortiza) {
+    // Los lotes que no lleva el barrido de amortizaciones bajan su parte al
+    // confirmar: se dice ANTES (cargabas 6.400, confirmabas cuatro pagos y te
+    // quedaban 4.352 sin que la tarjeta lo hubiera avisado).
+    const bajan = it.nominalesQueBajan > 0.005
+      ? ` Tus nominales en cartera pasan de ${num(it.tenencia, 0)} a ${num(Math.max(0, it.tenencia - it.nominalesQueBajan), 0)}`
+      : ''
     renglones.push([`Amortización: cuota ${it.cuota} de ${it.cuotas}`,
-      `${pctTxt(it.amortPct)} de tus nominales. Te devuelven capital`, m(it.amort), 'capital'])
+      `${pctTxt(it.amortPct)} de tus nominales. Te devuelven capital.${bajan}`, m(it.amort), 'capital'])
   }
   if (it.cerFactor) {
     renglones.push(['Ajustado por inflación (CER)', `El capital se multiplica por ${num(it.cerFactor, 4)}: ya está en los montos`, null, false])
   }
   if (it.sinAjusteCer) {
     renglones.push(['Falta el ajuste por inflación (CER)',
-      'No pudimos traer la serie CER: el monto de abajo es el nominal, sin ajustar. Cargá el que te acreditó el broker con «Editar montos».',
+      'No pudimos traer la serie CER: el monto de abajo es el nominal, sin ajustar. Cargá el que te acreditó el broker con «Cargar lo que cobré».',
+      null, false])
+  }
+  if (it.cerViejo) {
+    renglones.push(['El ajuste por inflación (CER) está desactualizado',
+      'Usamos el último valor que tenemos: el monto real es un poco mayor. Cargá el que te acreditó el broker con «Cargar lo que cobré».',
+      null, false])
+  }
+  if (it.estimado) {
+    renglones.push(['Monto estimado',
+      'De esta obligación negociable no tenemos el cronograma del prospecto: lo calculamos con su tasa y su vencimiento. Cargá lo que te acreditó el broker con «Cargar lo que cobré».',
       null, false])
   }
   if (it.otraMoneda) {
     renglones.push([`Tu cuenta ${it.cuenta} está en ${it.cuentaMoneda === 'ARS' ? 'pesos' : 'dólares'}`,
-      `El bono paga en ${it.currency === 'ARS' ? 'pesos' : 'dólares'}: el broker te lo acredita convertido. Cargá lo que te acreditó con «Editar montos».`,
+      `El bono paga en ${it.currency === 'ARS' ? 'pesos' : 'dólares'}: el broker te lo acredita convertido. Cargá lo que te acreditó con «Cargar lo que cobré».`,
       null, false])
   }
   const n = renglones.length
   const cambiaCuenta = it.cuenta && it.cuenta !== it.broker && !it.otraMoneda
   const tieneCosto = amortiza && it.costoAmortizado != null
-  const ganAmort = tieneCosto ? Math.max(0, it.amort - it.costoAmortizado) : 0
+  // Lo que se gana (o se PIERDE) al amortizar: te devuelven el capital a la par,
+  // y eso puede ser más o menos de lo que pagaste. Con un bono comprado sobre la
+  // par la tarjeta prometía "ganaste US$ 0,00" y después se anotaba −US$ 40.
+  const resAmort = tieneCosto ? it.amort - it.costoAmortizado : 0
+  const ganAmort = Math.max(0, resAmort)
+  const pierde = resAmort < -0.005
+  // De lo que llega, cuánto es tu propia plata que vuelve.
   const costo = tieneCosto ? Math.min(it.amort, it.costoAmortizado) : 0
   const pct = (v) => (it.total > 0 ? (v / it.total) * 100 : 0)
+  const mon = it.currency === 'ARS' ? 'pesos' : 'dólares'
   return (
     <div className="space-y-3">
       <ul className="divide-y divide-dashed divide-line" aria-label="Cómo lo calculó Rendi">
@@ -129,16 +169,18 @@ function Calculo({ it, animar }) {
         className={`grid grid-cols-[16px_minmax(0,1fr)_auto] gap-2.5 items-baseline pt-3 border-t border-line-2 ${animar ? 'entra' : ''}`}>
         <Check size={14} strokeWidth={2.25} aria-hidden="true" className="text-rendi-pos self-center" />
         <span className="text-[13.5px] font-semibold text-ink-0 min-w-0">Te llega a {it.cuenta}
-          {cambiaCuenta && <span className="block text-[12px] font-normal text-ink-3">El bono vive en {it.broker}, pero paga en dólares: el cobro entra a tu cuenta en dólares</span>}
+          {cambiaCuenta && <span className="block text-[12px] font-normal text-ink-3">El bono vive en {it.broker}, pero paga en {mon}: el cobro entra a tu cuenta en {mon}</span>}
         </span>
         <span className="tabular text-[19px] font-semibold text-rendi-pos tracking-tight">{m(neto)}</span>
       </div>
       <div className="space-y-1.5">
         {amortiza ? (
           <p className="text-[12px] text-ink-2 tabular">
-            {tieneCosto
-              ? <>De {m(it.total)}, <b className="text-ink-0 font-semibold">{m(it.coupon + ganAmort)} son ganancia</b> y {m(costo)} es tu propia plata que vuelve.</>
-              : <>{m(it.coupon)} son ganancia (el cupón) y {m(it.amort)} es capital que vuelve.</>}
+            {!tieneCosto
+              ? <>{m(it.coupon)} son ganancia (el cupón) y {m(it.amort)} es capital que vuelve.</>
+              : pierde
+                ? <>De {m(it.total)}, {m(it.amort)} es tu propia plata que vuelve. Ese capital te había costado {m(it.costoAmortizado)}: al devolvértelo a la par perdés {m(-resAmort)}, así que <b className="text-ink-0 font-semibold">el resultado de este pago es {conSigno(m, it.coupon + resAmort)}</b>.</>
+                : <>De {m(it.total)}, <b className="text-ink-0 font-semibold">{m(it.coupon + ganAmort)} son ganancia</b> y {m(costo)} es tu propia plata que vuelve.</>}
           </p>
         ) : (
           <p className="text-[12px] text-ink-2">Todo el cupón es ganancia: este pago no devuelve capital.</p>
@@ -152,14 +194,15 @@ function Calculo({ it, animar }) {
         {amortiza && (
           <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-[11.5px] text-ink-2 tabular">
             <span className="inline-flex items-center gap-1.5"><i className="w-2 h-2 rounded-xs bg-rendi-pos" />Cupón {m(it.coupon)}</span>
-            {tieneCosto && <span className="inline-flex items-center gap-1.5"><i className="w-2 h-2 rounded-xs bg-rendi-pos/50" />Ganaste al amortizar {m(ganAmort)}</span>}
+            {tieneCosto && !pierde && <span className="inline-flex items-center gap-1.5"><i className="w-2 h-2 rounded-xs bg-rendi-pos/50" />Ganaste al amortizar {m(ganAmort)}</span>}
+            {pierde && <span className="inline-flex items-center gap-1.5 text-rendi-neg"><i className="w-2 h-2 rounded-xs bg-rendi-neg/70" />Perdés al amortizar {m(-resAmort)}</span>}
             <span className="inline-flex items-center gap-1.5"><i className="w-2 h-2 rounded-xs bg-data-cyan/70" />{tieneCosto ? `Vuelve tu costo ${m(costo)}` : `Capital ${m(it.amort)}`}</span>
           </div>
         )}
         {tieneCosto && (
           <p className="flex gap-1.5 text-[12px] text-ink-3">
             <Info size={13} className="shrink-0 mt-0.5" aria-hidden="true" />
-            Te devuelven el capital a la par; lo que pagaste por debajo de eso es ganancia. Al anotarlo, Rendi recalcula esa parte con lo que pagaste por cada compra.
+            Te devuelven el capital a la par: si lo pagaste por debajo de eso, la diferencia es ganancia; si lo pagaste por encima, pérdida. Al anotarlo, Rendi recalcula esa parte con lo que pagaste por cada compra.
           </p>
         )}
       </div>
@@ -184,7 +227,7 @@ function Cronograma({ puntos }) {
               {pt.estado === 'ok' ? '✓' : pt.estado === 'ahora' ? '!' : ''}
             </i>
             <b className="text-[11px] font-medium text-ink-1 tabular">{ddmmaa(pt.date)}</b>
-            <small className={`text-[10.5px] leading-tight ${pt.estado === 'ok' ? 'text-rendi-pos' : pt.estado === 'ahora' ? 'text-data-amber' : 'text-ink-3'}`}>{pt.rotulo}</small>
+            <small className={`text-[10.5px] leading-tight tabular ${pt.estado === 'ok' ? 'text-rendi-pos' : pt.estado === 'ahora' ? 'text-data-amber' : 'text-ink-3'}`}>{pt.rotulo}</small>
           </span>
         ))}
       </div>
@@ -228,7 +271,9 @@ function Edicion({ it, brokers, mep, onGuardar, onCancelar, guardando }) {
   const n = { cupon: parse(v.cupon), amort: it.amort > 0 ? parse(v.amort) : 0, comision: parse(v.comision) }
   const malo = Object.values(n).some(x => !Number.isFinite(x) || x < 0)
   const neto = Math.round(n.cupon * 100 + n.amort * 100 - n.comision * 100) / 100
-  const error = malo ? 'Cargá los montos: tienen que ser números de 0 para arriba.'
+  const eeuu = [v.cupon, v.amort, v.comision].some(formatoDeEeuu)
+  const error = eeuu ? 'Escribí los montos con coma para los decimales: 1.234,56 (no 1,234.56).'
+    : malo ? 'Cargá los montos: tienen que ser números de 0 para arriba.'
     : neto <= 0 ? 'Lo que te llega tiene que ser mayor a cero. Revisá la comisión.' : null
   const moneda = monedaCarga === 'ARS' ? '$' : 'US$'
   const destino = enPesos ? `${pesos} (pesos)` : it.cuenta
@@ -272,12 +317,20 @@ function Edicion({ it, brokers, mep, onGuardar, onCancelar, guardando }) {
           No pudimos calcular el ajuste por inflación de este pago. Cargá los montos que te acreditó el broker.
         </p>
       )}
+      {(it.cerViejo || it.estimado) && (
+        <p className="sm:col-span-2 flex gap-1.5 text-[12px] text-ink-3">
+          <Info size={13} className="shrink-0 mt-0.5" aria-hidden="true" />
+          {it.estimado
+            ? 'Los montos de abajo son una estimación (tasa y vencimiento del bono): reemplazalos por los que te acreditó el broker.'
+            : 'Los montos de abajo usan un ajuste por inflación desactualizado: reemplazalos por los que te acreditó el broker.'}
+        </p>
+      )}
       {campo('cupon', 'Cupón', 'Es ganancia', primero)}
       {it.amort > 0 && campo('amort', 'Amortización', 'Devolución de capital')}
       {campo('comision', 'Comisión del broker', 'Si te cobró algo por el pago')}
       <div className={`sm:col-span-2 flex items-baseline justify-between gap-3 rounded-lg bg-bg-2 px-3 py-2.5 ${error ? 'text-rendi-neg' : ''}`}>
         <span className="text-[13px] text-ink-1">Te llega a {destino}</span>
-        <span className={`tabular text-[18px] font-semibold ${error ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{malo ? '—' : `${moneda} ${num(neto)}`}</span>
+        <span className={`tabular text-[18px] font-semibold ${error ? 'text-rendi-neg' : 'text-rendi-pos'}`}>{(malo || eeuu) ? '—' : `${moneda} ${num(neto)}`}</span>
       </div>
       {error && <p className="sm:col-span-2 text-[12px] text-rendi-neg" role="alert">{error}</p>}
       <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
@@ -305,9 +358,13 @@ function Comprobante({ c, onDeshacer, deshaciendo }) {
   const filas = [
     [`Efectivo · ${c.cuenta}`, 'Entra lo que te llegó',
       <><span className="text-ink-3">{m(c.antes)} → </span>{m(efectivo)}</>, ''],
-    ['Ganancia realizada del mes',
-      amort ? `Cupón ${m(cupon?.ganancia || 0)} + lo que ganaste al amortizar ${m(amort.ganancia || 0)}` : 'Un cupón es ganancia de tu inversión',
-      `+${m(ganancia)}`, 'text-rendi-pos font-semibold'],
+    // Va al mes del PAGO, no al de hoy (un cobro de julio confirmado en octubre).
+    [`Ganancia realizada de ${mesDe(c.item.date)}`,
+      !amort ? 'Un cupón es ganancia de tu inversión'
+        : (amort.ganancia || 0) < 0
+          ? `Cupón ${m(cupon?.ganancia || 0)} − lo que perdiste al amortizar ${m(-amort.ganancia)}`
+          : `Cupón ${m(cupon?.ganancia || 0)} + lo que ganaste al amortizar ${m(amort.ganancia || 0)}`,
+      conSigno(m, ganancia), `${ganancia < 0 ? 'text-rendi-neg' : 'text-rendi-pos'} font-semibold`],
     ['Capital aportado', 'Sin cambios: no es plata que pusiste vos', 'sin cambios', 'text-ink-3'],
   ]
   if (amort) {
@@ -315,10 +372,17 @@ function Comprobante({ c, onDeshacer, deshaciendo }) {
       amort.cost_basis_consumed != null ? `− ${m(amort.cost_basis_consumed)}` : 'sin dato', 'text-data-cyan'])
     filas.push([`Lo que queda vivo de ${c.item.asset}`, `Te devolvió la cuota ${c.item.cuota} de ${c.item.cuotas}`,
       `${pctTxt(c.item.vivoAntes)} → ${pctTxt(c.item.vivoDespues)}`, ''])
+    // Lo que el servidor le bajó de verdad a tus lotes (0 si los lleva el barrido
+    // de amortizaciones, que ya los tenía descontados).
+    if (amort.qty_decremented > 0.005) {
+      filas.push([`Tus nominales de ${c.item.asset}`, 'Bajan los que el bono te devolvió',
+        `${num(c.item.tenencia, 0)} → ${num(Math.max(0, c.item.tenencia - amort.qty_decremented), 0)}`, ''])
+    }
   }
   filas.push([`Ganancia no realizada de ${c.item.asset}`, 'Sin cambios: el cobro ya es plata cobrada, no una suba de precio', 'sin cambios', 'text-ink-3'])
-  filas.push(['Movimientos', amort ? 'Dos renglones: el cupón (ganancia) y la amortización (capital)' : 'Queda como Cupón, con el bono',
-    amort ? `${c.item.asset} · Cupón y Amortización` : `${c.item.asset} · Cupón`, ''])
+  // Movimientos llama «Dividendo» a todo cobro de renta (también al cupón).
+  filas.push(['Movimientos', amort ? 'Dos renglones: el cupón (figura como «Dividendo») y la amortización' : 'Figura como «Dividendo», con el bono',
+    amort ? `${c.item.asset} · Dividendo y Amortización` : `${c.item.asset} · Dividendo`, ''])
   return (
     <div className="space-y-2.5">
       <div className="rounded-lg border border-line overflow-hidden">
@@ -367,7 +431,7 @@ function Fila({ it, abierta, onAbrir, confirmado, children, i }) {
             {confirmado?.editado && <span className="rounded-sm border border-data-violet/30 bg-data-violet/10 px-1.5 text-[11px] text-data-violet">Editado</span>}
             {confirmado && <span className="rounded-sm border border-rendi-pos/30 bg-rendi-pos/10 px-1.5 text-[11px] text-rendi-pos">Cobrado</span>}
           </span>
-          <span className="block text-[12px] text-ink-3 tabular mt-0.5">{tipo} del {ddmmaa(it.date)} · venció hace {it.daysAgo} {it.daysAgo === 1 ? 'día' : 'días'}</span>
+          <span className="block text-[12px] text-ink-3 tabular mt-0.5">{tipo} del {ddmmaa(it.date)} · {it.daysAgo === 0 ? 'paga hoy' : `pagó hace ${it.daysAgo} ${it.daysAgo === 1 ? 'día' : 'días'}`}</span>
         </span>
         <span className="text-right">
           <span className={`block tabular text-[15px] font-semibold ${confirmado ? 'text-rendi-pos' : 'text-ink-0'}`}>{confirmado ? '+' : ''}{m(entro)}</span>
@@ -386,9 +450,9 @@ function Fila({ it, abierta, onAbrir, confirmado, children, i }) {
 }
 
 // ─── La bandeja ──────────────────────────────────────────────────────────────
-export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, onCambio, className = '' }) {
+export default function CuponesPorCobrar({ positions, brokers, cerSeries, cerStale, mep, onCambio, className = '' }) {
   const toast = useToast()
-  const b = useCuponesPorCobrar({ positions, brokers, cerSeries, mep })
+  const b = useCuponesPorCobrar({ positions, brokers, cerSeries, cerStale, mep })
   const [abierta, setAbierta] = useState(null)
   const [editando, setEditando] = useState(null)
   const [animada, setAnimada] = useState(null)
@@ -417,7 +481,7 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
       : n === 1 ? 'Tenés 1 cobro de bonos para confirmar' : `Tenés ${n} cobros de bonos para confirmar`
   const sub = b.cargando ? 'Rendi cruza las fechas de pago de cada bono con lo que ya está anotado.'
     : n === 0 ? 'Los cobros confirmados ya están en el efectivo de cada broker, en Movimientos y en el cronograma de cada bono.'
-      : 'Estos bonos ya pagaron y no encontramos el cobro anotado. Revisá la cuenta y confirmá: entra al efectivo del broker.'
+      : 'Según su cronograma, estos bonos ya pagaron y no encontramos el cobro anotado. Revisá la cuenta (el broker puede acreditarlo uno o dos días hábiles después) y confirmá: entra al efectivo del broker.'
 
   const abrir = (key) => { setEditando(null); setAbierta(a => (a === key ? null : key)); setAnimada(key) }
 
@@ -429,7 +493,11 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
       // (RecalculoDeCartera), igual que al confirmar un dividendo.
       onCambio?.({ texto: `cobro de ${it.asset}`, monto: `+${loQueEntro(r)}` })
     } catch (e) {
-      toast.push(`No se pudo anotar el cobro de ${it.asset}: ${e.message}`, { type: 'error' })
+      // El mensaje del servidor en limpio (un 422 mostraba un bloque de JSON).
+      toast.push(`No se pudo anotar el cobro de ${it.asset}: ${errorMessage(e) || 'probá de nuevo en un momento.'}`, { type: 'error' })
+      // "Ya hay un cobro anotado" (409): la tarjeta está vieja. Se recarga para
+      // que desaparezca en vez de quedar ofreciendo algo que ya está.
+      if (e?.status === 409) onCambio?.()
     }
   }, it.key)
 
@@ -441,10 +509,10 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
       toast.push(`${it.asset} ${ddmm(it.date)}: no lo vamos a volver a mostrar.`, {
         // 8 s y no los 4 de siempre: es la única salida de un click equivocado.
         type: 'success', actionLabel: 'Deshacer', duration: 8000,
-        onAction: () => b.volverASugerir(it).then(() => onCambio?.()).catch(e => toast.push(e.message, { type: 'error' })),
+        onAction: () => b.volverASugerir(it).then(() => onCambio?.()).catch(e => toast.push(errorMessage(e) || 'No se pudo deshacer.', { type: 'error' })),
       })
     } catch (e) {
-      toast.push(`No se pudo guardar: ${e.message}`, { type: 'error' })
+      toast.push(`No se pudo guardar: ${errorMessage(e) || 'probá de nuevo en un momento.'}`, { type: 'error' })
     }
   }, it.key)
 
@@ -454,7 +522,7 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
       setAbierta(c.item.key); setAnimada(null)
       onCambio?.({ texto: `cobro de ${c.item.asset}`, monto: loQueEntro(c.resultado), deshecho: true })
     } catch (e) {
-      toast.push(`No se pudo deshacer: ${e.message}`, { type: 'error' })
+      toast.push(`No se pudo deshacer: ${errorMessage(e) || 'probá de nuevo en un momento.'}`, { type: 'error' })
     }
   }, c.item.key)
 
@@ -515,17 +583,17 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
                       Compará con lo que te muestra {it.broker}. Si no coincide (otra comisión, o te lo pagó en pesos), editalo: se anota tu número.
                     </p>
                     <div className="flex flex-wrap items-center gap-2">
-                      {!it.sinAjusteCer && !it.otraMoneda && <button type="button" disabled={enVuelo.activo(it.key)}
+                      {!hayQueCargar(it) && <button type="button" disabled={enVuelo.activo(it.key)}
                         onClick={() => confirmar(it, { cupon: it.coupon, amort: it.amort, comision: 0 })}
                         className="inline-flex items-center gap-1.5 rounded bg-data-violet px-3.5 py-2 text-[13px] font-medium text-white hover:bg-rendi-violet-hover disabled:opacity-60 transition">
                         {enVuelo.activo(it.key) ? <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> : <Check size={14} />}
                         {enVuelo.activo(it.key) ? 'Registrando…' : 'Confirmar cobro'}
                       </button>}
                       <button type="button" onClick={() => setEditando(it.key)}
-                        className={(it.sinAjusteCer || it.otraMoneda)
+                        className={hayQueCargar(it)
                           ? 'inline-flex items-center gap-1.5 rounded bg-data-violet px-3.5 py-2 text-[13px] font-medium text-white hover:bg-rendi-violet-hover transition'
                           : 'rounded border border-line-2 bg-bg-1 px-3.5 py-2 text-[13px] font-medium text-ink-0 hover:bg-bg-2 transition'}>
-                        {(it.sinAjusteCer || it.otraMoneda) ? 'Cargar lo que cobré' : 'Editar montos'}
+                        {hayQueCargar(it) ? 'Cargar lo que cobré' : 'Editar montos'}
                       </button>
                       <button type="button" onClick={() => saltar(it)} disabled={enVuelo.activo(it.key)}
                         className="px-2 py-2 text-[13px] text-ink-2 hover:text-ink-0">
@@ -546,7 +614,7 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
                 <p className="text-[13px] font-medium text-ink-0">
                   {b.importados.length === 1 ? '1 cobro ya entró con tu importación' : `${b.importados.length} cobros ya entraron con tu importación`}
                 </p>
-                <p className="text-[12px] text-ink-3 mt-0.5">El archivo del broker los llama «renta», «dividendo» o «interés». Rendi igual los reconoce como el pago del bono y no te los pide de nuevo.</p>
+                <p className="text-[12px] text-ink-3 mt-0.5">El archivo del broker los llama «renta», «dividendo» o «interés» (y a veces anota la amortización como una venta). Rendi igual los reconoce como el pago del bono y no te los pide de nuevo.</p>
                 <ul className="mt-2 space-y-1">
                   {b.importados.slice(0, 4).map(y => (
                     <li key={y.key} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 text-[12.5px] text-ink-1 items-baseline">

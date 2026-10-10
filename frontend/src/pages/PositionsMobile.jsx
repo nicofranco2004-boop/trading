@@ -948,7 +948,7 @@ export default function PositionsMobile() {
   // Misma condición que escritorio: se pide sólo si hay un bono CER en cartera.
   const _tieneCer = (positions || []).some(
     p => !p.is_cash && getBondMeta(p.asset)?.type === 'cer')
-  const { series: cerSeries } = useCerSeries(_tieneCer)
+  const { series: cerSeries, stale: cerStale } = useCerSeries(_tieneCer)
   // Resolutor de broker POR NOMBRE para las filas (ver PositionRow).
   const brokerDe = useCallback(name => brokers.find(b => b.name === name), [brokers])
 
@@ -1712,7 +1712,7 @@ export default function PositionsMobile() {
         <SplitRatioBanner onAdjusted={loadAll} />
         {/* Cobros de bonos para confirmar: el MISMO componente que Cartera de
             escritorio (R6), con su propio pedido de datos. */}
-        <CuponesPorCobrar positions={positions} brokers={brokers} cerSeries={cerSeries}
+        <CuponesPorCobrar positions={positions} brokers={brokers} cerSeries={cerSeries} cerStale={cerStale}
           mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion}
           onCambio={(cobro) => (cobro ? recalculo.anotar(cobro, loadAll) : loadAll())} className="mt-3" />
         {/* Dividendos para confirmar: el MISMO componente que Cartera de

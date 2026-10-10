@@ -242,6 +242,10 @@ function PositionsDesktop() {
   // importado se guarda como 'Dividendo', y si la bandeja sólo miraba 'Cupón'
   // lo ofrecía como pendiente y confirmarlo anotaba la plata dos veces.
   const [cobrosRenta, setCobrosRenta] = useState([])
+  // ¿Llegaron las operaciones y los "No lo cobré"? Si alguno de los dos pedidos
+  // falla NO se calculan pendientes: con la lista vacía, la ficha del bono
+  // pintaba en ámbar todos los pagos de dos años como "sin cobrar".
+  const [cobrosListos, setCobrosListos] = useState(false)
   // Sólo los cargados a mano (Cupón/Amortización): alimentan `bondCashflowsByKey`
   // (totales "ya cobraste" y el aporte al P&L de la fila). Los importados quedan
   // afuera de ESOS totales a propósito: su `pnl_usd` ya está en dólares y el de
@@ -344,8 +348,9 @@ function PositionsDesktop() {
     // el modal, así que ese número era el que terminaba escrito.
     // `brokers`: el cupón en dólares de un bono comprado en pesos se acredita en
     // la otra pata de la cuenta ("Cocos · USD"); sin la lista no se reconoce.
+    if (!cobrosListos) return []
     return detectPendingCashflows(positions, cobrosRenta, bondSkips, { cerSeries, brokers })
-  }, [positions, cobrosRenta, bondSkips, cerSeries, brokers])
+  }, [positions, cobrosRenta, bondSkips, cerSeries, brokers, cobrosListos])
 
   // Fechas pendientes por bono (`broker:asset` → Set de fechas ISO) — el
   // timeline del detalle las marca en ámbar ("venció sin confirmar").
@@ -438,8 +443,8 @@ function PositionsDesktop() {
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
         api.get('/snapshots?days=30').catch(() => []),
-        api.get('/operations').catch(() => []),
-        api.get('/bonds/cashflow/skips').catch(() => []),
+        api.get('/operations').catch(() => null),
+        api.get('/bonds/cashflow/skips').catch(() => null),
       ])
       setPositions(pos)
       setConfig(cfg)
@@ -447,8 +452,10 @@ function PositionsDesktop() {
       setBrokersRegistry(bkrs)   // parent-aware isArUsdBroker (robusto al rename)
       setDolar(dol)
       setSnapshots(snaps || [])
-      setCobrosRenta((ops || []).filter(esPagoDelBono))
-      setBondSkips(skips || [])
+      // Si un pedido falló se conserva lo que había (ver `cobrosListos`).
+      if (ops) setCobrosRenta(ops.filter(esPagoDelBono))
+      if (skips) setBondSkips(skips)
+      setCobrosListos(!!ops && !!skips)
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
       return true
@@ -1912,7 +1919,7 @@ function PositionsDesktop() {
           amortiza, la cuota de capital). Gemela de la bandeja de dividendos y el
           MISMO componente en Cartera de celular (R6): datos y acciones en
           hooks/useCuponesPorCobrar. */}
-      <CuponesPorCobrar positions={positions} brokers={brokers} cerSeries={cerSeries}
+      <CuponesPorCobrar positions={positions} brokers={brokers} cerSeries={cerSeries} cerStale={cerStale}
         mep={tcMepStrict} onCambio={(cobro) => (cobro ? anotarCobro(cobro) : loadAll())} className="mb-6" />
 
       {/* Dividendos que las empresas ya pagaron y el usuario no anotó. Mismo

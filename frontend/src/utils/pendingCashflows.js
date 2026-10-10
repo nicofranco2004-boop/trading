@@ -245,13 +245,16 @@ function bonosPorCuenta(positions, brokers) {
 //               otra pata de la cuenta ("Cocos · USD") no se reconoce.
 //     today (ISO opcional) — para tests con fecha fija.
 //     maxBacklogDays — override del default de 730.
-//     cerSeries — serie CER (bonos ajustados por inflación).
+//     cerSeries — serie CER (bonos ajustados por inflación). `null` = todavía
+//               cargando; `{}` = no se pudo traer.
+//     cerStale  — la serie está desactualizada (se usa el último valor conocido).
 //     tcRef — dólar de referencia para estimar el costo cuando cambia de moneda.
 //
 // Output: UN item por (cuenta, bono, fecha): { key, broker, asset, position,
 //   date, coupon, amort, total, kind, daysAgo, currency, cuenta, nominales,
 //   vivoAntes, vivoDespues, couponRate, amortPct, cuota, cuotas,
-//   costoAmortizado, cerFactor, sinAjusteCer }
+//   costoAmortizado, cerFactor, sinAjusteCer, cargandoCer, cerViejo, estimado,
+//   tenencia, nominalesQueBajan }
 //   ordenado por fecha descendente (más reciente primero).
 export function detectPendingCashflows(positions, ops, skips = [], options = {}) {
   const today = options.today || todayIso()
@@ -375,6 +378,24 @@ export function detectPendingCashflows(positions, ops, skips = [], options = {})
         // monto es el nominal, muchas veces más chico que el real. No se ofrece
         // confirmar con un click: hay que cargar el monto del broker.
         sinAjusteCer: esCer && !(pmt.cerFactor > 0),
+        // La serie todavía viaja (`null`): no es "no la pudimos traer". La
+        // bandeja espera en vez de mostrar un monto 34 veces menor y el aviso
+        // de falla durante un instante.
+        cargandoCer: esCer && options.cerSeries == null,
+        // Serie desactualizada: se ajustó con el último valor conocido, que da
+        // un poco menos que lo cobrado. Tampoco hay confirmación de un click.
+        cerViejo: esCer && pmt.cerFactor > 0 && !!options.cerStale,
+        // Obligaciones negociables: no tenemos el cronograma del prospecto; las
+        // fechas y montos salen de la tasa y el vencimiento (bondSchedule.js).
+        // Es una estimación: se cargan los montos del broker.
+        estimado: meta?.type === 'corporate',
+        // Lo que hay hoy en cartera y lo que este cobro le va a bajar: los lotes
+        // que no lleva el barrido de amortizaciones bajan su parte al confirmar.
+        tenencia: lotes.reduce((s, l) => s + (Number(l.quantity) || 0), 0),
+        nominalesQueBajan: amort > 0
+          ? deEste.filter(o => !o.l.nominal_por_barrido)
+            .reduce((s, o) => s + o.original * (pmt.amortPct / 100), 0)
+          : 0,
       })
     }
   }

@@ -17,14 +17,21 @@ import { detectPendingCashflows, detectCobrosImportados, cobroRegistrado, esCobr
 import { generateSchedule, cerOptsFor } from '../utils/bondSchedule'
 import { isBondTicker } from '../utils/tickers'
 import { hoyISO } from '../utils/fecha'
+import { isDemoMode } from '../utils/demo'
 
-export function useCuponesPorCobrar({ positions, brokers, cerSeries, mep }) {
-  const bonos = useMemo(() => [...new Set((positions || [])
+export function useCuponesPorCobrar({ positions, brokers, cerSeries, cerStale, mep }) {
+  // En el demo no hay bandeja: sus datos de ejemplo no traen cobros coherentes
+  // (proponía US$ 6,89 por una tenencia de $ 4,7 millones) y el demo no deja
+  // anotar nada, así que cada botón terminaba en "No se pudo…".
+  const demo = isDemoMode()
+  const bonos = useMemo(() => (demo ? [] : [...new Set((positions || [])
     .filter(p => !p.is_cash && p.quantity > 0 && isBondTicker(p.asset))
-    .map(p => p.asset))].sort(), [positions])
+    .map(p => p.asset))].sort()), [positions, demo])
   const clave = bonos.join(',')
   const [operaciones, setOperaciones] = useState(null)
-  const [salteados, setSalteados] = useState([])
+  // `null` = todavía no llegaron (o falló el pedido): sin saber qué pagos marcó
+  // "No lo cobré", la bandeja no se arma (volvían todos como pendientes).
+  const [salteados, setSalteados] = useState(null)
   const [cargando, setCargando] = useState(false)
   // Los confirmados en esta visita: la tarjeta queda mostrando "Así quedó
   // anotado" hasta que se sale de Cartera (la próxima vez ya no está).
@@ -59,15 +66,27 @@ export function useCuponesPorCobrar({ positions, brokers, cerSeries, mep }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clave, positions])
 
-  const opciones = useMemo(() => ({ brokers, cerSeries, tcRef: mep }), [brokers, cerSeries, mep])
+  const opciones = useMemo(() => ({ brokers, cerSeries, cerStale, tcRef: mep }),
+    [brokers, cerSeries, cerStale, mep])
 
-  const pendientes = useMemo(() => (operaciones
+  // Sin la lista de brokers no se sabe en qué cuenta entra el cobro ni cuáles son
+  // las dos patas de una misma cuenta: en el celular, si ese pedido fallaba, la
+  // bandeja ofrecía anotar US$ 827 en la cuenta en PESOS con un click y volvía a
+  // mostrar como pendientes los cobros ya importados en «· USD». Mismo criterio
+  // que cuando faltan las operaciones: no hay bandeja.
+  const listo = !!operaciones && !!salteados && Array.isArray(brokers) && brokers.length > 0
+
+  const pendientes = useMemo(() => (listo
     ? detectPendingCashflows(positions || [], operaciones, salteados, opciones) : []),
-  [positions, operaciones, salteados, opciones])
+  [listo, positions, operaciones, salteados, opciones])
 
-  const importados = useMemo(() => (operaciones
+  const importados = useMemo(() => (listo
     ? detectCobrosImportados(positions || [], operaciones, opciones) : []),
-  [positions, operaciones, opciones])
+  [listo, positions, operaciones, opciones])
+
+  // Hay un bono ajustado por inflación y su serie todavía no llegó: se sigue
+  // "revisando" hasta que llegue (o falle: ahí `cerSeries` pasa a `{}`).
+  const esperandoCer = pendientes.some(it => it.cargandoCer)
 
   // Los confirmados no vuelven a la lista de pendientes (ya hay una operación),
   // pero la tarjeta sigue a la vista con su comprobante.
@@ -143,13 +162,13 @@ export function useCuponesPorCobrar({ positions, brokers, cerSeries, mep }) {
 
   const saltar = useCallback(async (item) => {
     await api.post('/bonds/cashflow/skip', { broker: item.broker, asset: item.asset, date: item.date, reason: null })
-    setSalteados(prev => [...prev, { broker: item.broker, asset: item.asset, date: item.date }])
+    setSalteados(prev => [...(prev || []), { broker: item.broker, asset: item.asset, date: item.date }])
   }, [])
 
   const volverASugerir = useCallback(async (item) => {
     const q = new URLSearchParams({ broker: item.broker, asset: item.asset, date: item.date })
     await api.delete(`/bonds/cashflow/skip?${q}`)
-    setSalteados(prev => prev.filter(s => !(s.broker === item.broker && s.asset === item.asset && s.date === item.date)))
+    setSalteados(prev => (prev || []).filter(s => !(s.broker === item.broker && s.asset === item.asset && s.date === item.date)))
   }, [])
 
   /**
@@ -174,12 +193,17 @@ export function useCuponesPorCobrar({ positions, brokers, cerSeries, mep }) {
       const op = cobroRegistrado(operaciones || [], item.position, x.date, brokers)
       if (op) return { date: x.date, estado: 'ok', rotulo: esCobroAMano(op) ? 'confirmado' : 'importado' }
       if (pendientesDelBono.has(x.date)) return { date: x.date, estado: 'ahora', rotulo: 'a confirmar' }
+      // Un pago anterior a tu compra no "falta": lo cobró quien te vendió.
+      const compras = (item.lotes || []).map(l => (l.entry_date || '').slice(0, 10)).filter(Boolean)
+      if (compras.length && compras.every(d => d > x.date)) {
+        return { date: x.date, estado: 'nada', rotulo: 'antes de tu compra' }
+      }
       return { date: x.date, estado: 'nada', rotulo: 'sin registro' }
     })
   }, [cerSeries, pendientes, operaciones, brokers])
 
   return {
-    bonos, cronogramaDe, cargando,
+    bonos, cronogramaDe, cargando: cargando || esperandoCer,
     paraConfirmar, importados, confirmados,
     confirmar, deshacerCobro, saltar, volverASugerir,
   }
