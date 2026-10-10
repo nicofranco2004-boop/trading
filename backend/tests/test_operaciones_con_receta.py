@@ -495,14 +495,27 @@ class BorrarElInteresDeshaceElCobro(ConRecetaBase):
 class LaPalancaDeEfectivoNoSeOfrece(ConRecetaBase):
     """Las puertas que mueven plata por su cuenta no aceptan "mueve efectivo": ni el
     formulario la muestra ni el servidor la aplica si llega igual. Para las filas
-    nuevas lo dice su receta; para las viejas, su tipo."""
+    nuevas lo dice su receta. Las viejas no tienen receta, y SIN RECETA NO HAY
+    PALANCA, sea del tipo que sea (decisión de Nico, 2026-10-10).
 
-    def _editar_prendiendo_la_palanca(self, op):
+    Por qué todas y no sólo algunos tipos. El 2026-10-09 se cerró por tipo para el
+    interés de plazo fijo y las conversiones, y quedaron afuera 'Cupón',
+    'Amortización' y 'Venta' porque esos tipos también se tipean en el formulario.
+    Medido al día siguiente, por HTTP: un cupón de US$ 100 cobrado con el botón
+    acreditaba otros US$ 100; uno de $10.000 en un broker en pesos, $14.150.000
+    (los pesos leídos como dólares × el dólar); una venta, su ganancia otra vez. Y
+    en la copia de producción del 2026-08-16 las 1.066 filas viejas de esos tipos
+    eran del botón (413 cupones con la nota que escribe el botón, 5 amortizaciones
+    con su costo consumido, 648 ventas con la fecha de compra del lote: tres
+    casilleros que el formulario no escribe nunca) y ninguna tipeada. De las 1.235
+    filas viejas sin receta, la única que pudo salir del formulario era una."""
+
+    def _editar_prendiendo_la_palanca(self, op, **pedido):
         cuerpo = {k: op[k] for k in ("date", "broker", "asset", "op_type", "entry_price",
                                      "exit_price", "quantity", "pnl_usd", "pnl_pct",
                                      "commissions", "currency", "fx_to_usd")}
         cuerpo["commissions"] = cuerpo["commissions"] or 0
-        cuerpo["mueve_efectivo"] = True
+        cuerpo.update(pedido or {"mueve_efectivo": True})
         return self._ok(self.http.put(f"/api/operations/{op['id']}", json=cuerpo))
 
     def _editable(self, op):
@@ -544,6 +557,162 @@ class LaPalancaDeEfectivoNoSeOfrece(ConRecetaBase):
                     "date": "2026-03-10", "broker": self.DOLARES, "asset": "KO",
                     "op_type": tipo, "pnl_usd": 50.0}))
                 self.assertIs(self._editable(op), True)
+
+    # ── Sin receta no hay palanca: las otras puertas viejas (2026-10-10) ──
+    def _vieja(self, op):
+        """Como quedó una fila de antes del 2026-08-06: ninguna puerta guardaba receta."""
+        self.conn.execute("UPDATE operations SET undo_meta_json=NULL WHERE id=?", (op["id"],))
+        self.conn.commit()
+        return dict(op, undo_meta_json=None)
+
+    def _cuenta_sin_el_mes(self):
+        """`estado()` menos el resultado del mes: cualquier edición lo recalcula, con
+        o sin palanca, y acá se mide sólo lo que la palanca no puede tocar."""
+        return {k: v for k, v in self.estado().items() if not k.startswith("resultado")}
+
+    def _ni_la_palanca_ni_el_atajo(self, op, **pedido):
+        """No se ofrece; mandarla igual no mueve nada; y la fila sigue sin poder
+        borrarse. Lo último importa: prenderla le dejaba a la fila una receta de
+        formulario, y con eso el borrado —que a una fila vieja la frena— la sacaba
+        del historial sin deshacer lo que había hecho el botón (medido: la venta
+        desaparecía, las acciones no volvían y los US$ 1.500 quedaban)."""
+        self.assertIs(self._editable(op), False)
+        antes = self._cuenta_sin_el_mes()
+        self._editar_prendiendo_la_palanca(op, **pedido)
+        self.assertEqual(self._cuenta_sin_el_mes(), antes, "prender la palanca cambió la cuenta")
+        self._borrar(op, puerta="operaciones", codigo=400)
+        self.assertEqual(self._cuenta_sin_el_mes(), antes, "el borrado frenado cambió la cuenta")
+
+    def _cobrar_del_bono(self, broker, flujo, monto):
+        self._ok(self.http.post("/api/bonds/cashflow", json={
+            "broker": broker, "asset": "AL30", "flow_type": flujo, "amount": monto,
+            "date": "2026-07-09", "commissions": 0, "decrement_quantity": False,
+            "notes": "Estimado por cronograma — ajustá monto si difiere por retenciones/comisiones"}))
+        return self._ultima_op()
+
+    def _vender_con_el_boton(self):
+        self._depositar(self.DOLARES, 5_000)
+        self._ok(self.http.post("/api/positions", json={
+            "broker": self.DOLARES, "asset": "AAPL", "quantity": 10, "buy_price": 100,
+            "invested": 1000, "entry_date": "2026-01-15"}))
+        self._ok(self.http.post("/api/positions/sell", json={
+            "broker": self.DOLARES, "asset": "AAPL", "quantity": 10, "exit_price": 150,
+            "date": "2026-06-10"}))
+        venta = self._ultima_op()
+        self.assertEqual((venta["op_type"], venta["pnl_usd"]), ("Venta", 500))
+        return venta
+
+    def test_cupon_y_amortizacion_del_boton_viejos(self):
+        """En dólares duplicaba el cobro; en pesos lo multiplicaba por el dólar."""
+        for broker, monto in ((self.DOLARES, 100.0), (self.PESOS, 10_000.0)):
+            self._depositar(broker, 1_000_000)
+            for flujo in ("coupon", "amortization"):
+                with self.subTest(broker=broker, flujo=flujo):
+                    cobro = self._cobrar_del_bono(broker, flujo, monto)
+                    # Con su receta ya no se ofrecía: es el control del caso.
+                    self.assertIs(self._editable(cobro), False)
+                    self._ni_la_palanca_ni_el_atajo(self._vieja(cobro))
+
+    def test_venta_del_boton_vender_vieja(self):
+        venta = self._vieja(self._vender_con_el_boton())
+        self._ni_la_palanca_ni_el_atajo(venta)
+        # El nombre viejo del mismo pedido (`kind`), que un cliente viejo todavía manda.
+        self._ni_la_palanca_ni_el_atajo(venta, kind="futures")
+
+    def test_cambiarle_el_tipo_no_la_reabre(self):
+        """El tipo es texto libre y se edita. Una regla que lo mirara se abría en dos
+        pasos (cambiarlo, guardar, volver a editar); ésta no lo mira."""
+        self._depositar(self.DOLARES, 1_000)
+        cupon = self._vieja(self._cobrar_del_bono(self.DOLARES, "coupon", 100.0))
+        cuerpo = {k: cupon[k] for k in ("date", "broker", "asset", "pnl_usd", "currency",
+                                        "fx_to_usd")}
+        self._ok(self.http.put(f"/api/operations/{cupon['id']}",
+                               json=dict(cuerpo, op_type="LONG", commissions=0)))
+        self._ni_la_palanca_ni_el_atajo(dict(cupon, op_type="LONG"))
+
+    def test_una_vieja_que_parece_tipeada_tampoco(self):
+        """El costo que se aceptó: sin receta no se sabe de qué puerta salió la fila,
+        así que no se ofrece mover plata. Incluye la que deja el importador cuando
+        pierde su vínculo (un 'Dividendo' con el monto en la cantidad: 142 filas de
+        una persona en la copia de producción)."""
+        self._depositar(self.DOLARES, 1_000)
+        for tipo, extra in (("LONG", {}), ("Dividendo", {"quantity": 12.5}), ("", {})):
+            with self.subTest(tipo=tipo):
+                op = self._ok(self.http.post("/api/operations", json=dict({
+                    "date": "2026-03-10", "broker": self.DOLARES, "asset": "KO",
+                    "op_type": tipo, "pnl_usd": 50.0}, **extra)))
+                self.assertIs(self._editable(op), True)      # con receta, es suya
+                self._ni_la_palanca_ni_el_atajo(self._vieja(op))
+
+    def test_con_una_receta_que_no_se_reconoce_tampoco(self):
+        """La pregunta es "¿es del formulario?", no "¿es de una puerta conocida?".
+        La primera versión excluía una lista de puertas, y la auditoría del
+        2026-10-10 mostró que cualquier otro texto en la receta conseguía la
+        palanca (+70 y fila borrable). Las dos últimas dicen "ya movía plata" sin
+        decir de qué puerta salieron: corregirles el resultado movía la diferencia
+        y les dejaba una receta de formulario."""
+        self._depositar(self.DOLARES, 1_000)
+        for receta in ('{esto no es una receta', '{}', '{"cash": 50}', '{"src": ""}',
+                       '{"src": "otra_puerta"}', '{"src": "MANUAL_FORM"}',
+                       '{"src": ["manual_form"]}', '{"src": "manual_position"}',
+                       '{"cash_on": true}', '{"cash_on": true, "cash": 100}'):
+            with self.subTest(receta=receta):
+                op = self._ok(self.http.post("/api/operations", json={
+                    "date": "2026-03-10", "broker": self.DOLARES, "asset": "KO",
+                    "op_type": "LONG", "pnl_usd": 50.0}))
+                self.conn.execute("UPDATE operations SET undo_meta_json=? WHERE id=?",
+                                  (receta, op["id"]))
+                self.conn.commit()
+                op = dict(op, undo_meta_json=receta)
+                self._ni_la_palanca_ni_el_atajo(op)
+                # Y corrigiendo el resultado en el mismo pedido, con y sin palanca.
+                for pedido in ({"mueve_efectivo": True}, {"mueve_efectivo": False}, {}):
+                    cajas = self.estado()["cajas"]
+                    self._editar_prendiendo_la_palanca(op, pnl_usd=70.0, **pedido)
+                    self.assertEqual(self.estado()["cajas"], cajas, f"movió plata con {pedido}")
+                    self.assertEqual(self._ultima_op()["undo_meta_json"], receta,
+                                     f"la receta cambió con {pedido}")
+                self._borrar(op, puerta="operaciones", codigo=400)
+
+    def test_ninguna_forma_del_pedido_la_abre(self):
+        """Sobre una venta vieja del botón: la palanca junto con cualquier otro
+        cambio, sus dos nombres, y el "No" (que no puede dejarle una receta)."""
+        venta = self._vieja(self._vender_con_el_boton())
+        self._depositar(self.PESOS, 1_000)       # para que exista la caja en pesos
+        formas = (
+            {"mueve_efectivo": True},
+            {"mueve_efectivo": False},
+            {"kind": "futures"},
+            {"kind": None},
+            {"mueve_efectivo": True, "kind": "futures"},
+            {"mueve_efectivo": True, "pnl_usd": -250.0},
+            {"mueve_efectivo": True, "pnl_usd": 999.0, "date": "2026-07-01"},
+            {"mueve_efectivo": True, "op_type": "LONG"},
+            {"mueve_efectivo": True, "broker": self.PESOS, "currency": None, "fx_to_usd": None},
+            {"mueve_efectivo": True, "broker": self.DOLARES, "currency": None, "fx_to_usd": None,
+             "op_type": "Venta", "pnl_usd": 500.0},
+        )
+        cajas = self.estado()["cajas"]
+        aportado = self.estado()["aportado"]
+        for forma in formas:
+            with self.subTest(forma=forma):
+                self._editar_prendiendo_la_palanca(venta, **forma)
+                ahora = self.estado()
+                self.assertEqual(ahora["cajas"], cajas, "movió plata")
+                self.assertEqual(ahora["aportado"], aportado, "tocó el capital aportado")
+                fila = self._ultima_op()
+                self.assertEqual(fila["id"], venta["id"])
+                self.assertIsNone(fila["undo_meta_json"], "le dejó una receta")
+                self.assertIs(self._editable(fila), False)
+                self._borrar(fila, puerta="operaciones", codigo=400)
+
+    def test_corregirle_un_numero_a_una_vieja_sigue_andando(self):
+        """Cerrar la palanca no es cerrar la edición."""
+        venta = self._vieja(self._vender_con_el_boton())
+        antes = self.estado()["cajas"]
+        self._editar_prendiendo_la_palanca(venta, pnl_usd=480.0)   # sin mencionar la palanca
+        self.assertEqual(self._ultima_op()["pnl_usd"], 480.0)
+        self.assertEqual(self.estado()["cajas"], antes, "corregir el resultado movió plata")
 
 
 class ElTipoQuePusoElSistemaNoSeCambia(ConRecetaBase):
@@ -955,15 +1124,20 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
                          "recetas que el borrado no sabe leer")
 
     def test_las_que_mueven_plata_solas_no_aceptan_la_palanca(self):
-        """Toda receta que no sea del formulario mueve la plata por su cuenta: si no
-        está en `_SRC_CON_EFECTIVO_PROPIO`, la edición le ofrece "mueve efectivo" y
-        prenderlo acredita dos veces."""
+        """Toda receta que el borrado sabe leer es del formulario
+        (`_SRC_DEL_FORMULARIO`, las únicas con "mueve efectivo") o de una puerta
+        que mueve la plata por su cuenta (`_SRC_CON_EFECTIVO_PROPIO`). Desde
+        2026-10-10 una puerta que falte en la segunda queda cerrada igual —la
+        regla pregunta por la primera—, pero el registro se mantiene completo."""
         arbol = ast.parse(open(MAIN, encoding="utf-8").read())
         borrado = [f for f in ast.walk(arbol) if isinstance(f, ast.FunctionDef)
                    and f.name == "_delete_manual_operation_cascade"][0]
         atiende = self._srcs_que_atiende(borrado)
-        self.assertEqual(atiende - {"manual_form", "manual_futures"},
+        self.assertEqual(set(main._SRC_DEL_FORMULARIO), {"manual_form", "manual_futures"})
+        self.assertEqual(atiende - set(main._SRC_DEL_FORMULARIO),
                          set(main._SRC_CON_EFECTIVO_PROPIO))
+        # Y las dos listas no se pisan: una receta es del formulario o no lo es.
+        self.assertFalse(set(main._SRC_DEL_FORMULARIO) & set(main._SRC_CON_EFECTIVO_PROPIO))
 
     def test_el_guardian_ve_lo_que_dice_ver(self):
         """Control del instrumento: una puerta sin receta sale; con receta en el
