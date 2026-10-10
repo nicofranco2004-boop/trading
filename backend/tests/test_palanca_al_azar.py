@@ -165,12 +165,16 @@ class Sonda:
     def cobrar_del_bono(self):
         rng = self.rng
         broker, moneda = rng.choice(BROKERS)
-        self._ok(self.http.post("/api/bonds/cashflow", json={
+        r = self.http.post("/api/bonds/cashflow", json={
             "broker": broker, "asset": "AL30",
             "flow_type": rng.choice(("coupon", "amortization")),
             "amount": rng.choice((100.0, 26.31, 4287.75)) * (1 if moneda == "USD" else 100),
             "date": rng.choice(FECHAS), "commissions": 0, "decrement_quantity": False,
-            "notes": rng.choice((None, "Estimado por cronograma — ajustá monto si difiere"))}))
+            "notes": rng.choice((None, "Estimado por cronograma — ajustá monto si difiere"))})
+        # Desde la bandeja de cobros de bonos (2026-10-10) la misma parte del mismo
+        # pago no se anota dos veces: si al azar toca repetir cupón o amortización
+        # de una fecha ya cargada, el servidor responde 409 y no crea nada.
+        assert r.status_code in (200, 409), r.text
 
     def vender_con_el_boton(self):
         rng = self.rng
