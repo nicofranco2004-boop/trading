@@ -813,6 +813,52 @@ class LaCompraAManoSeBorraPorCualquierTacho(ConRecetaBase):
         self._ok(self.http.delete(f"/api/movements/pos-{otra['id']}"))
         self.assertMismaCuenta(por_cartera, self.cuenta(), "Movimientos contra Cartera")
 
+    def _borrar_el_deposito(self):
+        (dep,) = [m for m in self._ok(self.http.get("/api/movements")) if m["type"] == "DEPOSIT"]
+        self._ok(self.http.delete(f"/api/movements/{dep['id']}"))
+
+    def test_deshacer_no_deja_el_efectivo_en_negativo(self):
+        """Borrar la compra devuelve la plata; si después esa plata se va de la cuenta
+        (acá: se borra el depósito), "Deshacer" no puede volver a sacarla. Visto por
+        Nico el 2026-10-10: la compra volvía y el efectivo quedaba en −$2.400.000."""
+        self._depositar(self.DOLARES, 1000)
+        pid = self._comprar()                                    # efectivo: 500
+        e1 = self.cuenta()
+        token = self._ok(self.http.delete(f"/api/movements/pos-{pid}"))["undo_token"]   # 1.000
+        self._borrar_el_deposito()                               # 0
+        e = self.cuenta()
+        self.assertEqual(e["cajas"][self.DOLARES][0], 0.0)
+
+        r = self.http.post(f"/api/operations/undo/{token}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("negativo", r.json()["detail"])
+        self.assertMismaCuenta(e, self.cuenta(), "frenó sin tocar nada")
+
+        # Con la plata otra vez en la cuenta, el mismo "Deshacer" sí funciona.
+        self._depositar(self.DOLARES, 1000)
+        self._deshacer(token)
+        self.assertMismaCuenta(e1, self.cuenta(), "después de deshacer")
+
+    def test_deshacer_por_el_tacho_del_activo_tampoco_deja_negativo(self):
+        self._depositar(self.DOLARES, 1000)
+        self._comprar()
+        token = self._ok(self.http.delete("/api/assets/history", params={"asset": "KO"}))["undo_token"]
+        self._borrar_el_deposito()
+        e = self.cuenta()
+        r = self.http.post(f"/api/assets/undo/{token}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertMismaCuenta(e, self.cuenta(), "frenó sin tocar nada")
+
+    def test_deshacer_alcanza_si_todavia_hay_plata_para_cubrirlo(self):
+        """Que haya salido ALGO de plata no frena: frena sólo si no alcanza."""
+        self._depositar(self.DOLARES, 1000)
+        pid = self._comprar()                                    # 500
+        token = self._ok(self.http.delete(f"/api/movements/pos-{pid}"))["undo_token"]   # 1.000
+        self._ok(self.http.post("/api/cash/flow", json={
+            "broker_name": self.DOLARES, "direction": "withdraw", "amount": 300}))      # 700
+        self._deshacer(token)
+        self.assertEqual(self.cuenta()["cajas"][self.DOLARES][0], 200.0)
+
     def test_el_tacho_del_activo_borra_la_unica_compra_y_se_deshace(self):
         self._depositar(self.DOLARES, 1000)
         e0 = self.cuenta()

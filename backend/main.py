@@ -19819,6 +19819,32 @@ def _delete_manual_position_cascade(conn, uid: int, pid: int) -> dict:
             "asset": pos["asset"], "manual": True}
 
 
+def _efectivo_por_cuenta(conn, uid: int) -> dict:
+    """El efectivo de cada cuenta, en su moneda: {broker: monto}."""
+    return {r["broker"]: float(r["invested"] or 0) for r in conn.execute(
+        "SELECT broker, invested FROM positions WHERE user_id=? AND is_cash=1", (uid,))}
+
+
+def _frenar_si_deja_efectivo_negativo(conn, uid: int, cajas_antes: dict) -> None:
+    """Deshacer un borrado de algo cargado a mano vuelve a mover el efectivo que el
+    borrado había movido. Si en el medio esa plata se fue de la cuenta (se borró el
+    depósito, se retiró, se usó en otra compra), el undo la deja EN NEGATIVO.
+
+    Visto por Nico el 2026-10-10: borrar una compra (vuelven $2.400.000 al
+    efectivo), borrar el depósito (el efectivo queda en 0) y tocar "Deshacer" en la
+    compra → la compra volvía y el efectivo quedaba en −$2.400.000.
+
+    Lo cargado a mano nunca deja el efectivo en negativo (cargar una compra sin
+    plata anota sola el depósito que falta); el undo tampoco. Frena con el motivo,
+    y como frena con una excepción, quien llama deshace todo lo que se movió."""
+    for broker, ahora in _efectivo_por_cuenta(conn, uid).items():
+        if ahora < -0.005 and ahora < cajas_antes.get(broker, 0.0) - 0.005:
+            raise HTTPException(409,
+                f"No se puede deshacer: la plata que te había devuelto ese borrado ya no "
+                f"está en {broker} (después sacaste o borraste plata de esa cuenta) y "
+                "restaurarlo la dejaría en negativo. Cargalo de nuevo a mano.")
+
+
 def _stale_undo_msg() -> str:
     """Mensaje único de 'el mundo cambió desde que borraste' — lo comparten todas las
     guardas de frescura del undo manual."""
@@ -19901,6 +19927,9 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
     # ⚠️ ANTES DE LA PRIMERA ESCRITURA: abajo se vuelve a sumar el autodepósito a
     # `monthly_entries` antes de la cascada (misma razón que en el borrado).
     antes = _foto_contable(conn, uid)
+    # El efectivo de cada cuenta antes de deshacer: abajo se controla que ninguna
+    # quede en negativo por culpa de este undo (`_frenar_si_deja_efectivo_negativo`).
+    _cajas_antes = _efectivo_por_cuenta(conn, uid)
     # CLAIM ATÓMICO: marcar undone_at ES el lock — un doble-click no puede re-aplicar
     # el cash dos veces (la 2da matchea 0 filas → 409).
     if conn.execute(
@@ -20063,6 +20092,10 @@ def _undo_manual_delete(conn, uid: int, j) -> None:
                 if ad.get("flujo_id"):
                     conn.execute("UPDATE flujos_a_mano SET ref=? WHERE id=? AND user_id=?",
                                  (f"pos:{_nuevo_pid}", ad["flujo_id"], uid))
+
+    # Todo lo de arriba ya movió el efectivo. Antes de recalcular nada: si alguna
+    # cuenta quedó en negativo por este undo, se frena (el que llama deshace todo).
+    _frenar_si_deja_efectivo_negativo(conn, uid, _cajas_antes)
 
     _cascade_after_movement_delete(conn, uid, j["since_date"],
                                    {broker} | {m["broker"] for m in (p.get("cash_moves") or [])}
