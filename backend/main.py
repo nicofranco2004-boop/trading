@@ -11289,37 +11289,13 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
             # anotar un retiro. Antes caía en los caminos de abajo y respondía un
             # error que no correspondía ("la cargaste a mano antes de…" o "no
             # encontrada"); ahora dice qué hacer.
-            _fila = conn.execute(
-                "SELECT is_cash FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
-            if _fila and _fila["is_cash"]:
-                raise HTTPException(400, _EFECTIVO_NO_SE_BORRA)
-            link = conn.execute(
-                "SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1", (pid,),
-            ).fetchone()
-            if link:
-                # Cascada completa (reversa cash + tombstone + re-derive + snapshots). Puede
-                # bloquear con mensaje claro (bono, compra ya vendida en parte, lote semilla
-                # de foto): mejor frenar que corromper, igual que en Operaciones.
-                result = _delete_position_cascade(conn, uid, pid)
-                conn.commit()
-                _ai_cache_invalidate(uid)
-                return result
-            # Cargada a mano: si tiene su foto de reverso, cascada completa (devuelve el
-            # cash y revierte el autodepósito). Si es vieja y no la tiene, se borra
-            # directo como siempre — comportamiento previo, no lo empeoramos.
-            _has_meta = conn.execute(
-                "SELECT undo_meta_json FROM positions WHERE id=? AND user_id=?",
-                (pid, uid)).fetchone()
-            if _has_meta and _has_meta["undo_meta_json"]:
-                result = _delete_manual_position_cascade(conn, uid, pid)
-                conn.commit()
-                _ai_cache_invalidate(uid)
-                return result
-            # Sin link de import Y sin foto de reverso: es una fila VIEJA (o un lote semilla
-            # que fabricó el rebuild). El DELETE crudo la sacaba de la vista dejando el cash
-            # y el capital aportado como estaban → plata que no respalda nada. Bloqueamos,
-            # igual que el borrado manual de filas legacy: su reverso no es derivable.
-            raise HTTPException(400, _MANUAL_LEGACY_MSG)
+            # La decisión de CÓMO se borra (importada, cargada a mano, vieja sin
+            # receta, efectivo) vive en un solo lugar: `_borrar_posicion`, la misma
+            # puerta que usa el tacho de Movimientos.
+            result = _borrar_posicion(conn, uid, pid)
+            conn.commit()
+            _ai_cache_invalidate(uid)
+            return result
         except HTTPException:
             conn.rollback()
             raise
@@ -18288,11 +18264,15 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
                     out.update(_delete_operation_cascade(conn, uid, oid) or {})
                 elif mid.startswith("pos-"):
                     # pos-{n} → lote abierto MANUAL (los importados vienen como tx-).
+                    # Por la puerta única: hasta 2026-10-10 esto llamaba directo al
+                    # borrado de compras IMPORTADAS, que a una cargada a mano le
+                    # contestaba "por ahora solo se pueden borrar compras importadas"
+                    # — SIEMPRE, aunque desde Cartera esa misma compra se borraba bien.
                     try:
                         pid = int(mid[4:])
                     except ValueError:
                         raise HTTPException(400, "id de movimiento inválido")
-                    out.update(_delete_position_cascade(conn, uid, pid) or {})
+                    out.update(_borrar_posicion(conn, uid, pid) or {})
                 elif mid.startswith("tx-"):
                     # Importado: cash-flow → reverso clásico; compra/venta → cascada FIFO.
                     out.update(_route_tx_delete(conn, uid, mid) or {})
@@ -20254,6 +20234,64 @@ def _delete_operation_cascade(conn, uid: int, oid: int) -> dict:
     return {"ok": True, "undo_token": token, "broker": broker, "asset": asset}
 
 
+def _borrar_posicion(conn, uid: int, pid: int) -> dict:
+    """LA puerta para borrar una compra que sigue en cartera (un lote abierto).
+
+    Decide en UN lugar cómo se borra, para que el tacho de Cartera, el de
+    Movimientos y el del activo entero hagan lo mismo:
+
+      · el efectivo no es una tenencia: no se borra (se anota un retiro);
+      · IMPORTADA (tiene `import_op_links`) → `_delete_position_cascade`:
+        devuelve el cash, marca la fila fuente para que no resucite y re-deriva;
+      · CARGADA A MANO con su receta (`undo_meta_json`) →
+        `_delete_manual_position_cascade`: devuelve el cash y revierte el
+        autodepósito que la financió;
+      · vieja, sin receta → frena con `_MANUAL_LEGACY_MSG`: su reverso no es
+        derivable, y borrarla "a secas" dejaba plata que no respalda nada.
+
+    Antes cada tacho decidía por su cuenta: Cartera sabía los tres casos y
+    Movimientos sólo el de las importadas."""
+    fila = conn.execute(
+        "SELECT is_cash, undo_meta_json FROM positions WHERE id=? AND user_id=?",
+        (pid, uid)).fetchone()
+    if not fila:
+        raise HTTPException(404, "Posición no encontrada")
+    if fila["is_cash"]:
+        raise HTTPException(400, _EFECTIVO_NO_SE_BORRA)
+    if conn.execute("SELECT 1 FROM import_op_links WHERE position_id=? LIMIT 1",
+                    (pid,)).fetchone():
+        # Puede frenar con un mensaje claro (bono, compra ya vendida en parte, lote
+        # semilla de una foto): mejor frenar que corromper.
+        return _delete_position_cascade(conn, uid, pid)
+    if fila["undo_meta_json"]:
+        return _delete_manual_position_cascade(conn, uid, pid)
+    raise HTTPException(400, _MANUAL_LEGACY_MSG)
+
+
+def _borrar_activo_cargado_a_mano(conn, uid: int, asset: str) -> dict:
+    """El tacho del activo entero cuando ese activo NO tiene nada importado.
+
+    Si todo lo que hay es UNA compra cargada a mano que sigue en cartera, se borra
+    por la puerta única (`_borrar_posicion`) y se puede deshacer. Si hay varias
+    compras o alguna venta, no se adivina el orden: se le dice a la persona que
+    las borre de a una (cada una tiene su tacho y su deshacer)."""
+    lotes = conn.execute(
+        "SELECT id FROM positions WHERE user_id=? AND asset=? AND is_cash=0",
+        (uid, asset)).fetchall()
+    hay_ops = conn.execute(
+        "SELECT 1 FROM operations WHERE user_id=? AND asset=? LIMIT 1",
+        (uid, asset)).fetchone()
+    if not lotes and not hay_ops:
+        raise HTTPException(404, "No hay operaciones de ese activo para borrar")
+    if hay_ops or len(lotes) != 1:
+        raise HTTPException(400,
+            f"A {asset} lo cargaste a mano y tiene más de un movimiento, así que no se "
+            "borra entero de una. Abrí el grupo y borralos de a uno con su tacho "
+            "(si hay ventas, primero las ventas).")
+    r = _borrar_posicion(conn, uid, lotes[0]["id"])
+    return {**r, "asset": asset, "count": 1}
+
+
 def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
     """Borra un LOTE ABIERTO (una compra que todavía no se vendió) con cascada TOTAL.
     Espeja _delete_operation_cascade pero sobre el evento BUY. Fase 2.x: solo compras
@@ -20275,9 +20313,9 @@ def _delete_position_cascade(conn, uid: int, pos_id: int) -> dict:
         "SELECT batch_id, raw_row_id FROM import_op_links WHERE position_id=? LIMIT 1", (pos_id,),
     ).fetchone()
     if not link:
-        raise HTTPException(400,
-            "Por ahora solo se pueden borrar compras IMPORTADAS. Las cargadas a mano "
-            "llegan en la próxima versión.")
+        # Acá sólo se llega con una compra importada: las puertas pasan por
+        # `_borrar_posicion`, que manda las cargadas a mano a su propio borrado.
+        raise HTTPException(400, _MANUAL_LEGACY_MSG)
 
     batch_id, raw_row_id = link["batch_id"], link["raw_row_id"]
     src = conn.execute(
@@ -20512,7 +20550,8 @@ def _delete_asset_history_cascade(conn, uid: int, asset: str) -> dict:
         (uid, asset),
     ).fetchall()
     if not rows:
-        raise HTTPException(404, "No hay operaciones importadas de ese activo para borrar")
+        # Nada importado: lo que haya de ese activo se cargó a mano.
+        return _borrar_activo_cargado_a_mano(conn, uid, asset)
 
     # Pares (padre↔'· USD') únicos donde vive el activo.
     pairs, seen = [], set()
@@ -20714,11 +20753,21 @@ def undo_delete_asset_history(token: str, uid: int = Depends(get_effective_user)
             _tomar_turno(conn, uid)   # lo que se valida abajo ya no lo cambia otro pedido
             j = conn.execute(
                 "SELECT * FROM deleted_ops_journal WHERE user_id=? AND token=? "
-                "AND undone_at IS NULL AND kind='imported_asset'", (uid, token),
+                "AND undone_at IS NULL AND kind IN ('imported_asset','manual_position')",
+                (uid, token),
             ).fetchone()
             if not j:
                 raise HTTPException(404, "Nada para deshacer")
             import json as _json
+            if j["kind"] == "manual_position":
+                # El tacho del activo borró UNA compra cargada a mano
+                # (`_borrar_activo_cargado_a_mano`): se deshace igual que cuando se
+                # la borra sola (mismo camino que /api/operations/undo).
+                _undo_manual_delete(conn, uid, j)
+                conn.commit()
+                _ai_cache_invalidate(uid)
+                return {"ok": True, "asset": _json.loads(j["payload_json"])
+                        .get("pos_row", {}).get("asset")}
             p = _json.loads(j["payload_json"])
             asset, pairs = p["asset"], p["pairs"]
             _idset = set(p["tx_ids"])
