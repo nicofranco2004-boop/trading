@@ -213,14 +213,18 @@ class _Cuenta:
                     data={"format": "rendi_generic", "broker": self.nombre})
         self.ok("post", "/api/imports/confirm", json={"session_id": r["session_id"]})
 
+    def _papeles(self, conn) -> dict:
+        """{nombre de hoy: papel} de cada broker de la cuenta."""
+        return {r["name"]: ("USD" if r["parent_broker_id"] else "padre")
+                for r in conn.execute("SELECT name, parent_broker_id FROM brokers "
+                                      "WHERE user_id=?", (self.uid,))}
+
     def estado(self) -> dict:
         """Lo que importa de la cuenta, con cada broker por su PAPEL (padre / USD) y no
         por su nombre: así la corrida con renombre y la sin renombre se comparan."""
         conn = main.get_db()
         try:
-            papel = {r["name"]: ("USD" if r["parent_broker_id"] else "padre")
-                     for r in conn.execute("SELECT name, parent_broker_id FROM brokers "
-                                           "WHERE user_id=?", (self.uid,))}
+            papel = self._papeles(conn)
             papel["global"] = "global"
 
             def p(n):
