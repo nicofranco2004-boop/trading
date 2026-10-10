@@ -83,12 +83,34 @@ class BrokerInexistenteTest(unittest.TestCase):
             "buy_price": 100, "invested": 1000})
         self.assertEqual(r.status_code, 200, r.text)
 
-    def test_global_sigue_exceptuado(self):
-        """Igual que en /api/monthly: 'global' es la fila sintética de totales,
-        no un broker real."""
+    def test_global_NO_es_un_broker_donde_cargar(self):
+        """Hasta el 2026-10-09 este test se llamaba `test_global_sigue_exceptuado` y
+        fijaba lo contrario: que 'global' pasara, "igual que en /api/monthly".
+
+        Allá 'global' es legítimo: es la fila de totales. Acá no había ningún caso
+        que lo necesitara —los tres formularios que cargan posiciones eligen de la
+        lista de brokers, y el chat resuelve el broker por id— y lo que hacía era el
+        mismo daño que este archivo vino a frenar. Medido con el código anterior:
+        cargar US$1.000 en 'global' dejaba la posición y una caja bajo un nombre que
+        ninguna pantalla lista, y el aportado total en 3.000 contra un patrimonio de
+        1.000. En la copia de prod del 16/08 había 0 posiciones así."""
         r = self.client.post("/api/positions", headers=self.hdr, json={
             "broker": "global", "asset": "AAPL", "quantity": 1, "invested": 10})
-        self.assertNotEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.status_code, 400, r.text)
+        conn = main.get_db()
+        n = conn.execute("SELECT COUNT(*) c FROM positions WHERE user_id=? AND broker='global'",
+                         (self.uid,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 0)
+
+    def test_no_se_puede_crear_un_broker_llamado_global(self):
+        """El renombre a 'global' ya se rechazaba; el alta no. Un broker con ese
+        nombre compartiría sus filas mensuales con los totales de la cuenta."""
+        for nombre in ("global", "Global", " GLOBAL "):
+            r = self.client.post("/api/brokers", headers=self.hdr,
+                                 json={"name": nombre, "currency": "USD"})
+            self.assertEqual(r.status_code, 409, f"{nombre!r}: {r.text}")
+            self.assertEqual(r.json()["detail"]["code"], "broker_name_reserved")
 
 
 if __name__ == "__main__":

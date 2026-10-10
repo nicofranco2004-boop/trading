@@ -5275,6 +5275,18 @@ def get_brokers(uid: int = Depends(get_effective_user)):
 def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
     from ai import plan
     from billing import plan_textos
+    # Mismo rechazo (y mismo `code`) que el renombre a 'global'. Va ANTES del tope
+    # del plan: ese nombre no vale en ningún plan, y si no al usuario Free le
+    # saltaba "pasate a Pro" por un nombre que tampoco iba a poder usar en Pro.
+    if _nombre_de_broker_reservado(data.name):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "broker_name_reserved",
+                "broker_name": data.name,
+                "message": "'global' es un nombre reservado del sistema. Elegí otro.",
+            },
+        )
     with db_abierta() as conn:
         # Feature gate: el tope de brokers de cada plan (PLAN_LIMITS). Grandfather:
         # usuarios preexistentes con más conservan sus brokers pero no agregan
@@ -5340,22 +5352,182 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
 # nombre actual del broker). Ese era exactamente el bug reportado por el user:
 # renombrar "Cocos Capital" hacía desaparecer todas sus posiciones.
 #
-# NOTA: delete_broker limpia positions/operations/monthly_entries/import_batches
-# pero NO toca import_normalized_tx ni bond_cashflow_skips (orphan gap conocido).
-# En el rename SÍ las incluimos — el broker sigue existiendo y su historia debe
-# seguir atribuida.
-NAME_KEYED_TABLES = (
-    "positions",
-    "operations",
-    "monthly_entries",
-    "import_batches",
-    "import_normalized_tx",
-    "bond_cashflow_skips",
-    "dividendos_salteados",
+# UNA SOLA LISTA para el renombre Y para el borrado (2026-10-09). Antes eran
+# cuatro listas escritas a mano —la del renombre, la de `delete_broker`, la de
+# `_wipe_broker_data` y la del reset— y cada tabla nueva había que acordarse de
+# sumarla a todas. `archived_positions` (06/2026) y `futures_positions` (08/2026)
+# nacieron después y no entraron a ninguna de las dos de borrado: borrar el broker
+# dejaba el futuro abierto y la sección archivada, y cerrar/restaurar escribía la
+# operación, el mes y el efectivo bajo un nombre que ya no era un broker.
+# `tests/test_borrar_broker_sueltos.py` recorre el esquema y falla si aparece una
+# tabla con columna `broker` que no esté acá.
+#
+#   tabla: (al renombrar, al borrar el broker)
+#
+# Al renombrar:  'columna'   → UPDATE de la columna `broker` (update_broker)
+#                'pendiente' → todavía NO se reescribe (lo arregla la rama del
+#                              renombre: futuros, recetas, journals y payloads)
+# Al borrar:     'borrar'    → DELETE de las filas de ese broker
+#                'anular'    → flujos_a_mano: se marcan anuladas (no se borran)
+#                'revertir'  → import_batches: status='reverted' (auditoría)
+#                'payload'   → archived_positions: se sacan del JSON las
+#                              posiciones de ese broker (ver _archivadas_de_brokers)
+#                'conservar' → historia que ya no mueve ningún número:
+#                              · import_normalized_tx cuelga de un batch revertido
+#                              · deleted_ops_journal y dividendos_reemplazados
+#                                exigen que el broker exista antes de devolver algo
+BROKER_POR_NOMBRE = {
+    "positions":            ("columna",   "borrar"),
+    "operations":           ("columna",   "borrar"),
+    "monthly_entries":      ("columna",   "borrar"),
+    "import_batches":       ("columna",   "revertir"),
+    "import_normalized_tx": ("columna",   "conservar"),
+    "bond_cashflow_skips":  ("columna",   "borrar"),
+    "dividendos_salteados": ("columna",   "borrar"),
     # El detalle de lo cargado a mano: sin esto, renombrar el broker dejaba cada
     # carga apuntando a un nombre que ya no existe (2026-10-08).
-    "flujos_a_mano",
+    "flujos_a_mano":        ("columna",   "anular"),
+    "futures_positions":    ("pendiente", "borrar"),
+    "deleted_ops_journal":  ("pendiente", "conservar"),
+    # Sin columna `broker`: el nombre vive adentro de `payload` (JSON).
+    "archived_positions":   ("pendiente", "payload"),
+}
+
+# Las que el renombre reescribe por columna. Se DERIVA de la lista de arriba: no
+# es una segunda lista que haya que mantener.
+NAME_KEYED_TABLES = tuple(
+    t for t, (al_renombrar, _al_borrar) in BROKER_POR_NOMBRE.items()
+    if al_renombrar == "columna"
 )
+
+
+def _nombre_de_broker_reservado(nombre) -> bool:
+    """'global' es la CLAVE del agregado cross-broker en monthly_entries, no un
+    broker: uno con ese nombre compartiría sus filas mensuales con los totales de
+    toda la cuenta. El renombre ya lo rechazaba (update_broker, paso 2.5); el alta
+    no, y se podía crear."""
+    return (nombre or "").strip().lower() == "global"
+
+
+def _broker_existe(conn, uid: int, broker) -> bool:
+    """¿Ese nombre es HOY un broker del usuario? `'global'` no lo es nunca: es la
+    fila sintética de totales de monthly_entries, no un lugar donde cargar algo."""
+    if not broker or broker == "global":
+        return False
+    return conn.execute(
+        "SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)
+    ).fetchone() is not None
+
+
+def _subcuentas_de(conn, uid: int, bid: int) -> list:
+    """Los brokers hijos (sub-cuentas '· USD') de un broker. fetchall y no
+    fetchone: `POST /api/brokers` acepta un parent_broker_id arbitrario, así que un
+    padre puede tener más de un hijo, y con fetchone las filas del segundo en
+    adelante quedaban huérfanas."""
+    return conn.execute(
+        "SELECT id, name, currency FROM brokers WHERE user_id=? AND parent_broker_id=?",
+        (uid, bid),
+    ).fetchall()
+
+
+def _archivadas_de_brokers(conn, uid: int, nombres) -> list:
+    """Las secciones archivadas que guardan posiciones de esos brokers:
+    [(id de la archivada, posiciones que QUEDAN, cuántas se van)].
+
+    Una sección ('Bonos USD') se archiva entera, así que su payload puede mezclar
+    brokers: al borrar uno se sacan sólo SUS posiciones y el resto sigue
+    restaurable."""
+    nombres = set(nombres)
+    out = []
+    for a in conn.execute(
+            "SELECT id, payload FROM archived_positions WHERE user_id=?", (uid,)).fetchall():
+        try:
+            items = json.loads(a["payload"]) or []
+        except (ValueError, TypeError):
+            continue
+        quedan = [it for it in items
+                  if not (isinstance(it, dict) and it.get("broker") in nombres)]
+        if len(quedan) != len(items):
+            out.append((a["id"], quedan, len(items) - len(quedan)))
+    return out
+
+
+def _contar_datos_de_brokers(conn, uid: int, nombres) -> dict:
+    """Lo que se va a ir si se borran esos brokers — es lo que el frontend le
+    muestra al usuario antes de confirmar. Las claves las lee `avisoBorrarBroker`."""
+    nombres = list(nombres)
+    ph = ",".join("?" * len(nombres))
+
+    def _n(sql):
+        return conn.execute(sql, (uid, *nombres)).fetchone()[0]
+
+    return {
+        "positions": _n(f"SELECT COUNT(*) FROM positions WHERE user_id=? AND broker IN ({ph})"),
+        "operations": _n(f"SELECT COUNT(*) FROM operations WHERE user_id=? AND broker IN ({ph})"),
+        "monthly_entries": _n(
+            f"SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker IN ({ph})"),
+        "import_batches": _n(
+            f"""SELECT COUNT(*) FROM import_batches
+                WHERE user_id=? AND broker IN ({ph})
+                  AND status IN ('confirmed','preview')"""),
+        # Sólo los ABIERTOS: uno cerrado ya vive como operación (contada arriba).
+        "futures": _n(
+            f"""SELECT COUNT(*) FROM futures_positions
+                WHERE user_id=? AND broker IN ({ph}) AND closed_at IS NULL"""),
+        "archived": sum(se_van for _id, _quedan, se_van
+                        in _archivadas_de_brokers(conn, uid, nombres)),
+    }
+
+
+def _borrar_datos_de_brokers(conn, uid: int, nombres, motivo: str) -> dict:
+    """La ÚNICA función que saca de la cuenta todo lo que cuelga de esos nombres
+    de broker. La usan `delete_broker` y `_wipe_broker_data`; antes cada una tenía
+    su propia lista de DELETEs y ya habían divergido.
+
+    NO abre transacción ni borra la fila de `brokers`: va adentro del `with conn:`
+    del que llama, que borra el broker en el mismo paso (o no borra nada).
+    Devuelve {tabla: filas tocadas}."""
+    nombres = list(nombres)
+    if not nombres:
+        return {}
+    ph = ",".join("?" * len(nombres))
+    # Dividendos de la bandeja de estas cuentas: si su comisión en pesos se cobró
+    # en una cuenta que sobrevive, vuelve (ver dividendos.py). Va ANTES de los
+    # DELETE porque lee las operaciones que están por irse.
+    _dividendos.al_borrar_cuentas(conn, uid, nombres)
+    hechas = {}
+    for tabla, (_al_renombrar, al_borrar) in BROKER_POR_NOMBRE.items():
+        if al_borrar == "borrar":
+            # El nombre de tabla sale del dict fijo de arriba, nunca del usuario.
+            hechas[tabla] = conn.execute(
+                f"DELETE FROM {tabla} WHERE user_id=? AND broker IN ({ph})",
+                (uid, *nombres)).rowcount
+        elif al_borrar == "anular":
+            hechas[tabla] = _anular_flujos_a_mano(conn, uid, motivo, brokers=nombres)
+        elif al_borrar == "revertir":
+            hechas[tabla] = conn.execute(
+                f"""UPDATE import_batches
+                       SET status='reverted', reverted_at=datetime('now')
+                     WHERE user_id=? AND broker IN ({ph})
+                       AND status IN ('confirmed','preview')""",
+                (uid, *nombres)).rowcount
+        elif al_borrar == "payload":
+            se_fueron = 0
+            for aid, quedan, se_van in _archivadas_de_brokers(conn, uid, nombres):
+                if quedan:
+                    conn.execute(
+                        "UPDATE archived_positions SET payload=?, count=? "
+                        " WHERE id=? AND user_id=?",
+                        (json.dumps(quedan), len(quedan), aid, uid))
+                else:
+                    conn.execute(
+                        "DELETE FROM archived_positions WHERE id=? AND user_id=?", (aid, uid))
+                se_fueron += se_van
+            hechas[tabla] = se_fueron
+        elif al_borrar != "conservar":
+            raise RuntimeError(f"BROKER_POR_NOMBRE: política de borrado desconocida "
+                               f"{al_borrar!r} para {tabla}")
+    return hechas
 
 
 @app.put("/api/brokers/{bid}")
@@ -5572,11 +5744,12 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
     frontend a mostrar UN modal de confirmación antes de re-llamar con
     `?force=true`.
 
-    Cascade (cuando force=true):
-      • operations / positions / monthly_entries del broker
-      • import_batches → status='reverted' (no delete físico para auditoría)
-      • Las normalized_tx asociadas siguen en disco pero no afectan cálculos
-        porque el broker ya no existe.
+    Cascade (cuando force=true): TODO lo que cuelga del nombre del broker, según
+    `BROKER_POR_NOMBRE` — lo hace `_borrar_datos_de_brokers`, la misma función que
+    usa "Limpiar broker". Incluye los futuros (abiertos y cerrados) y las
+    posiciones de ese broker guardadas en secciones archivadas: antes quedaban, y
+    cerrar el futuro o restaurar la sección escribía bajo un broker que ya no
+    existía (efectivo y bonos que ninguna pantalla sumaba).
 
     Si el broker es padre de sibling(s) (parent_broker_id FK), se borran
     también — el frontend debe alertar al user. El borrado de los hijos es
@@ -5602,35 +5775,13 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
         # fetchall y no fetchone: `POST /api/brokers` acepta un parent_broker_id
         # arbitrario, así que un padre puede tener más de un hijo. Con fetchone
         # el cleanup dejaba huérfanas las filas del segundo en adelante.
-        siblings = conn.execute(
-            "SELECT id, name, currency FROM brokers WHERE user_id=? AND parent_broker_id=?",
-            (uid, bid),
-        ).fetchall()
+        siblings = _subcuentas_de(conn, uid, bid)
         sibling_name = siblings[0]["name"] if siblings else None
         broker_names = [broker_name] + [s["name"] for s in siblings]
 
         # ── Guard: contar data asociada (padre Y sibling si existe) ──────────
         placeholders = ",".join("?" * len(broker_names))
-        counts = {
-            "positions": conn.execute(
-                f"SELECT COUNT(*) FROM positions WHERE user_id=? AND broker IN ({placeholders})",
-                (uid, *broker_names),
-            ).fetchone()[0],
-            "operations": conn.execute(
-                f"SELECT COUNT(*) FROM operations WHERE user_id=? AND broker IN ({placeholders})",
-                (uid, *broker_names),
-            ).fetchone()[0],
-            "monthly_entries": conn.execute(
-                f"SELECT COUNT(*) FROM monthly_entries WHERE user_id=? AND broker IN ({placeholders})",
-                (uid, *broker_names),
-            ).fetchone()[0],
-            "import_batches": conn.execute(
-                f"""SELECT COUNT(*) FROM import_batches
-                    WHERE user_id=? AND broker IN ({placeholders})
-                      AND status IN ('confirmed','preview')""",
-                (uid, *broker_names),
-            ).fetchone()[0],
-        }
+        counts = _contar_datos_de_brokers(conn, uid, broker_names)
 
         has_data = any(v > 0 for v in counts.values())
         if has_data and not force:
@@ -5648,8 +5799,10 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
                         f"El broker '{broker_name}' tiene data asociada. "
                         f"Pasá ?force=true para borrar todo (incluyendo "
                         f"{counts['positions']} positions, {counts['operations']} operations, "
-                        f"{counts['monthly_entries']} entradas mensuales y "
-                        f"{counts['import_batches']} batches de import)."
+                        f"{counts['monthly_entries']} entradas mensuales, "
+                        f"{counts['import_batches']} batches de import, "
+                        f"{counts['futures']} futuros abiertos y "
+                        f"{counts['archived']} posiciones archivadas)."
                         + (f" El broker sibling '{sibling_name}' y sus datos también se eliminarán."
                            if sibling_name else "")
                     ),
@@ -5676,29 +5829,7 @@ def delete_broker(bid: int, force: bool = False, uid: int = Depends(get_effectiv
 
         # ── Force delete (o broker vacío) — incluye sibling para evitar orphans
         with conn:
-            # Dividendos de la bandeja de estas cuentas: si su comisión en pesos
-            # se cobró en una cuenta que sobrevive, vuelve (ver dividendos.py).
-            _dividendos.al_borrar_cuentas(conn, uid, broker_names)
-            conn.execute(
-                f"DELETE FROM operations WHERE user_id=? AND broker IN ({placeholders})",
-                (uid, *broker_names),
-            )
-            conn.execute(
-                f"DELETE FROM positions WHERE user_id=? AND broker IN ({placeholders})",
-                (uid, *broker_names),
-            )
-            conn.execute(
-                f"DELETE FROM monthly_entries WHERE user_id=? AND broker IN ({placeholders})",
-                (uid, *broker_names),
-            )
-            _anular_flujos_a_mano(conn, uid, "broker_borrado", brokers=broker_names)
-            conn.execute(
-                f"""UPDATE import_batches
-                   SET status='reverted', reverted_at=datetime('now')
-                   WHERE user_id=? AND broker IN ({placeholders})
-                     AND status IN ('confirmed','preview')""",
-                (uid, *broker_names),
-            )
+            _borrar_datos_de_brokers(conn, uid, broker_names, "broker_borrado")
             # DELETE explícito de los hijos ANTES del padre. NO alcanza con
             # confiar en el FK CASCADE: el schema de `brokers` existe en DOS
             # formas y sólo una lo tiene. El CREATE TABLE (main.py:728, bases
@@ -10842,8 +10973,8 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
 
 
 def _exigir_broker_existente(conn, uid: int, broker: str) -> None:
-    """El broker tiene que existir antes de escribirle una posición.
-    `POST /api/monthly` ya lo validaba; `POST /api/positions` no.
+    """El broker tiene que existir antes de escribirle algo (una posición, un
+    futuro). `POST /api/monthly` ya lo validaba; el resto no.
 
     ⚠️ ALCANCE: NO se aplica a `/api/operations`. Ahí el contrato TOLERA un broker
     desconocido a propósito — `test_importer.py::test_currency_fallback_to_usd_if_
@@ -10858,14 +10989,11 @@ def _exigir_broker_existente(conn, uid: int, broker: str) -> None:
     10.999 contra una valuación de 1.000) — porque el capital se registra pero la
     tenencia no la valúa ningún broker.
 
-    'global' se exceptúa igual que en /api/monthly: es la fila sintética de
-    totales, no un broker real."""
-    if not broker or broker == 'global':
-        return
-    existe = conn.execute(
-        "SELECT 1 FROM brokers WHERE user_id=? AND name=?", (uid, broker)
-    ).fetchone()
-    if not existe:
+    'global' NO se exceptúa (antes sí, copiado de /api/monthly): allá es la fila
+    sintética de totales, pero acá dejaba cargar una posición —y su caja— bajo un
+    "broker" que ninguna pantalla lista. /api/monthly tiene su propio chequeo y
+    no pasa por este helper."""
+    if not _broker_existe(conn, uid, broker):
         raise HTTPException(400, f"Broker '{broker}' no existe. Agregalo en Config primero.")
 
 
@@ -11151,9 +11279,14 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Ni editar una fila de efectivo, ni convertir un lote en efectivo (ver
         # _EFECTIVO_NO_SE_EDITA).
         _actual = conn.execute(
-            "SELECT is_cash FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+            "SELECT is_cash, broker FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
         if p.is_cash or (_actual and _actual["is_cash"]):
             raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
+        # Mover el lote a OTRO broker: ese broker tiene que existir (el alta ya lo
+        # exigía; la edición no, y dejaba el lote bajo un nombre que nadie suma).
+        # Sólo si CAMBIA: editar el precio de un lote no depende de esto.
+        if _actual and p.broker != _actual["broker"]:
+            _exigir_broker_existente(conn, uid, p.broker)
         if (p.tc_compra is None and not p.is_cash
                 and (p.currency or "").upper() == "ARS" and p.entry_date):
             # Mismo relleno que el alta: si el lote es en pesos y quedó sin TC, se
@@ -15547,6 +15680,9 @@ def create_futuro(data: FuturoIn, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # Sin esto se abría un futuro contra cualquier nombre, y al cerrarlo el
+            # resultado se acreditaba a una caja que ninguna pantalla suma.
+            _exigir_broker_existente(conn, uid, data.broker)
             cur = conn.execute(
                 """INSERT INTO futures_positions
                      (user_id, broker, symbol, base_asset, side, quantity, entry_price,
@@ -15569,6 +15705,7 @@ def update_futuro(fid: int, data: FuturoIn, uid: int = Depends(get_effective_use
     conn = get_db()
     try:
         with conn:
+            _exigir_broker_existente(conn, uid, data.broker)
             n = conn.execute(
                 """UPDATE futures_positions
                       SET broker=?, symbol=?, base_asset=?, side=?, quantity=?,
@@ -15634,6 +15771,16 @@ def close_futuro(fid: int, data: FuturoCloseIn, uid: int = Depends(get_effective
                 raise HTTPException(404, "Posición de futuros no encontrada")
             if pos["closed_at"]:
                 raise HTTPException(400, "Esa posición ya estaba cerrada.")
+            # El cierre escribe una operación, un mes y efectivo con el broker
+            # GUARDADO en el futuro. Si ese nombre ya no es un broker (se borró, o
+            # se renombró y el futuro quedó con el viejo), todo eso caía bajo un
+            # nombre fantasma: la ganancia aparecía en el mes y la plata en ningún
+            # lado. Va ANTES del claim de abajo: rechazar no puede dejarlo cerrado.
+            if not _broker_existe(conn, uid, pos["broker"]):
+                raise HTTPException(409,
+                    f"No se puede cerrar: el broker «{pos['broker']}» de este futuro ya "
+                    "no existe (se renombró o se borró). Borrá el futuro y cargalo de "
+                    "nuevo en el broker correcto.")
 
             direccion = -1 if (pos["side"] or 'long') == 'short' else 1
             bruto = (data.exit_price - float(pos["entry_price"])) * float(pos["quantity"]) * direccion
@@ -26945,14 +27092,17 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
 
     Scoped al uid: nunca toca datos de otro usuario. Devuelve el conteo de filas borradas.
     """
-    # Resolver el par padre↔sibling. Si el user eligió el sibling (tiene
-    # parent_broker_id) sumamos el padre; si eligió el padre, sumamos el sibling.
+    # Resolver la familia padre↔sub-cuentas. Si el user eligió una sub-cuenta (tiene
+    # parent_broker_id) se sube al padre; después se suman TODAS las sub-cuentas del
+    # padre (`_subcuentas_de`: fetchall — con fetchone quedaban huérfanas las filas
+    # de la segunda en adelante, el mismo arreglo que ya tenía delete_broker).
     sel = conn.execute(
         "SELECT id, parent_broker_id FROM brokers WHERE user_id=? AND name=?",
         (uid, broker),
     ).fetchone()
     broker_names = [broker]
     if sel:
+        padre_id = sel["parent_broker_id"] or sel["id"]
         if sel["parent_broker_id"]:
             parent = conn.execute(
                 "SELECT name FROM brokers WHERE user_id=? AND id=?",
@@ -26960,43 +27110,23 @@ def _wipe_broker_data(conn, uid: int, broker: str) -> dict:
             ).fetchone()
             if parent and parent["name"] not in broker_names:
                 broker_names.append(parent["name"])
-        else:
-            child = conn.execute(
-                "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=?",
-                (uid, sel["id"]),
-            ).fetchone()
-            if child and child["name"] not in broker_names:
+        for child in _subcuentas_de(conn, uid, padre_id):
+            if child["name"] not in broker_names:
                 broker_names.append(child["name"])
     ph = ",".join("?" * len(broker_names))
 
     counts: dict = {}
     with conn:
-        cur = conn.execute(
-            f"DELETE FROM operations WHERE user_id=? AND broker IN ({ph})",
-            (uid, *broker_names),
-        )
-        counts["operations_deleted"] = cur.rowcount
-
-        cur = conn.execute(
-            f"DELETE FROM positions WHERE user_id=? AND broker IN ({ph})",
-            (uid, *broker_names),
-        )
-        counts["positions_deleted"] = cur.rowcount
-
-        cur = conn.execute(
-            f"DELETE FROM monthly_entries WHERE user_id=? AND broker IN ({ph})",
-            (uid, *broker_names),
-        )
-        counts["monthly_entries_deleted"] = cur.rowcount
-        _anular_flujos_a_mano(conn, uid, "broker_vaciado", brokers=broker_names)
-
-        cur = conn.execute(
-            f"""UPDATE import_batches
-               SET status='reverted', reverted_at=datetime('now')
-               WHERE user_id=? AND broker IN ({ph}) AND status IN ('confirmed','preview')""",
-            (uid, *broker_names),
-        )
-        counts["batches_marked_reverted"] = cur.rowcount
+        # La MISMA función que usa delete_broker: una sola lista de qué se lleva
+        # el borrado de un broker (BROKER_POR_NOMBRE), futuros y secciones
+        # archivadas incluidos.
+        hechas = _borrar_datos_de_brokers(conn, uid, broker_names, "broker_vaciado")
+        counts["operations_deleted"] = hechas.get("operations", 0)
+        counts["positions_deleted"] = hechas.get("positions", 0)
+        counts["monthly_entries_deleted"] = hechas.get("monthly_entries", 0)
+        counts["batches_marked_reverted"] = hechas.get("import_batches", 0)
+        counts["futures_deleted"] = hechas.get("futures_positions", 0)
+        counts["archived_deleted"] = hechas.get("archived_positions", 0)
 
         # Borrar también la(s) fila(s) del broker (padre + sibling '· USD') para que
         # DESAPAREZCA de la lista. El user espera que "Limpiar broker" lo elimine;
@@ -41576,6 +41706,23 @@ def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_effective_us
             if not row:
                 raise HTTPException(404, "No se encontró la sección archivada.")
             items = _json.loads(row["payload"]) or []
+            # Las posiciones vuelven con el broker que tenían al archivarse. Si ese
+            # nombre ya no es un broker, volvían a `positions` sin que ninguna
+            # pantalla las sume. Borrar un broker ahora limpia sus archivadas
+            # (`_borrar_datos_de_brokers`); esto frena las que quedaron de antes.
+            faltan = sorted({str(it.get("broker")) for it in items
+                             if not _broker_existe(conn, uid, it.get("broker"))})
+            if faltan:
+                # El frontend lo muestra después de "No se pudo restaurar: ".
+                nombres = ", ".join(f"«{b}»" for b in faltan)
+                raise HTTPException(409, (
+                    f"El broker {nombres} ya no existe (se renombró o se borró). Si "
+                    "querés recuperar estas posiciones, creá un broker con ese mismo "
+                    "nombre y volvé a restaurar."
+                    if len(faltan) == 1 else
+                    f"Los brokers {nombres} ya no existen (se renombraron o se "
+                    "borraron). Si querés recuperar estas posiciones, creá brokers con "
+                    "esos mismos nombres y volvé a restaurar."))
             restored = 0
             for it in items:
                 cols = [k for k in it.keys()]

@@ -28,6 +28,7 @@ import Pill from './Pill'
 import UpgradeModal from './plan/UpgradeModal'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { usd, ars, fmtUsd, fmtArs, pctSigned } from '../utils/format'
+import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 
 function currencyTone(c) {
   switch (c) {
@@ -106,16 +107,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
         return
       }
       // 409 con resumen de data — mostrar al user
-      const c = detail.counts
-      const parts = []
-      if (c.positions > 0) parts.push(`${c.positions} ${c.positions === 1 ? 'posición' : 'posiciones'}`)
-      if (c.operations > 0) parts.push(`${c.operations} ${c.operations === 1 ? 'operación' : 'operaciones'}`)
-      if (c.monthly_entries > 0) parts.push(`${c.monthly_entries} ${c.monthly_entries === 1 ? 'entrada mensual' : 'entradas mensuales'}`)
-      if (c.import_batches > 0) parts.push(`${c.import_batches} ${c.import_batches === 1 ? 'import' : 'imports'}`)
-      const siblingWarning = detail.sibling
-        ? `\n\n⚠️ ATENCIÓN: este broker es PADRE de "${detail.sibling.name}" (${detail.sibling.currency}). Al borrar el padre, el sibling también se eliminará.`
-        : ''
-      const msg = `El broker "${b.name}" tiene data:\n\n  • ${parts.join('\n  • ')}${siblingWarning}\n\n¿Borrar TODO? Esta acción no se puede deshacer.`
+      const msg = avisoBorrarBroker(b.name, detail)
       if (!confirm(msg)) return
       // 2do intento con force=true
       try {

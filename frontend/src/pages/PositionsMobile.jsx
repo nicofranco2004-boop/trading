@@ -66,6 +66,7 @@ import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useRelojVisible } from '../hooks/useRelojVisible'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
+import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -903,8 +904,8 @@ export default function PositionsMobile() {
 
   async function deleteBrokerAction(b) {
     // Fase 5: doble confirmación cuando el broker tiene data. Mismo flow que
-    // BrokerManager.jsx (mantengo duplicación porque el mobile tiene su
-    // propio path; cuando se unifique en Fase 8 esto se centraliza).
+    // BrokerManager.jsx (el mobile tiene su propio path; el TEXTO del aviso ya
+    // es uno solo: utils/avisoBorrarBroker).
     try {
       await api.delete(`/brokers/${b.id}`)
     } catch (ex) {
@@ -913,16 +914,7 @@ export default function PositionsMobile() {
         alert(`No se pudo eliminar: ${ex?.message || 'error desconocido'}`)
         return
       }
-      const c = detail.counts
-      const parts = []
-      if (c.positions > 0) parts.push(`${c.positions} ${c.positions === 1 ? 'posición' : 'posiciones'}`)
-      if (c.operations > 0) parts.push(`${c.operations} ${c.operations === 1 ? 'operación' : 'operaciones'}`)
-      if (c.monthly_entries > 0) parts.push(`${c.monthly_entries} ${c.monthly_entries === 1 ? 'entrada mensual' : 'entradas mensuales'}`)
-      if (c.import_batches > 0) parts.push(`${c.import_batches} ${c.import_batches === 1 ? 'import' : 'imports'}`)
-      const siblingWarning = detail.sibling
-        ? `\n\n⚠️ ATENCIÓN: este broker es PADRE de "${detail.sibling.name}" (${detail.sibling.currency}). Al borrar el padre, el sibling también se eliminará.`
-        : ''
-      const msg = `El broker "${b.name}" tiene data:\n\n  • ${parts.join('\n  • ')}${siblingWarning}\n\n¿Borrar TODO? Esta acción no se puede deshacer.`
+      const msg = avisoBorrarBroker(b.name, detail)
       if (!confirm(msg)) return
       try {
         await api.delete(`/brokers/${b.id}?force=true`)
