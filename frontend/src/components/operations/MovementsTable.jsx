@@ -16,7 +16,7 @@ import {
 import { colorClass } from '../../utils/format'
 import { fmtConvertedRaw } from '../../contexts/CurrencyContext'
 import EmptyState from '../EmptyState'
-import { TYPE_META, DELETABLE_MOVEMENT_TYPES, amountClassFor, movPnl } from './shared'
+import { TYPE_META, puedeBorrarMovimiento, amountClassFor, movPnl } from './shared'
 
 export const MOV_PAGE_SIZE = 50
 
@@ -160,7 +160,7 @@ function MovementRow({ m, nueva = false, histMoney, indent = false, onDelete, de
         {m.notes || (m.source === 'monthly' ? 'Agregado mensual' : m.source === 'import' ? 'Desde import CSV' : '')}
       </td>
       <td className="px-2 py-2 text-right">
-        {onDelete && DELETABLE_MOVEMENT_TYPES.includes(m.type) && (
+        {onDelete && puedeBorrarMovimiento(m) && (
           <button
             type="button"
             onClick={() => onDelete(m)}

@@ -21,7 +21,7 @@ import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { fmtUsd as fmtUsdRaw, colorClass, parseNum, parseNumOrNull } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -58,6 +58,21 @@ import {
 // `mueve_efectivo` arranca en false: el default es "sólo registrar", que es lo
 // que el formulario hizo siempre. Prender el efectivo es una decisión que mueve
 // plata, y la toma el usuario — no un default.
+// Borrar el interés de un plazo fijo DESHACE EL COBRO entero (decisión de Nico,
+// 2026-10-09): el plazo fijo vuelve abierto y sale lo que entró. La fila dice
+// "venta de <banco>" o "Interés PF", así que sin este cartel nadie se lo espera.
+// Uno solo para "Todos los movimientos" y "Solo P/L".
+function confirmarDeshacerCobroPf(pf) {
+  const sale = pf.broker && pf.monto
+    ? `Salen ${fmtMoney(pf.monto, pf.moneda)} de ${pf.broker} (el capital más el interés que entraron al cobrarlo).`
+    : 'No sale plata de ninguna cuenta: cuando lo cobraste, la plata no entró a un broker.'
+  return window.confirm(
+    `¿Deshacer el cobro del plazo fijo de ${pf.banco}?\n\n` +
+    `El plazo fijo vuelve a Cartera, abierto. ${sale} ` +
+    `La ganancia del interés deja de contar.\n\nVas a poder deshacerlo.`,
+  )
+}
+
 const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '', mueve_efectivo: false }
 
 const RESULT_OPTIONS = [
@@ -263,7 +278,7 @@ export default function Operations() {
 
   // Ofrece DESHACER de verdad. Cada borrado devuelve un `undo_token`; antes se
   // tiraba a la basura, así que el "podés deshacerlo" del confirm era mentira.
-  function offerUndo(res, undoBase, msg, cambio = null) {
+  function offerUndo(res, undoBase, msg, cambio = null, msgVuelta = 'Listo, lo restauramos.') {
     const token = res?.undo_token
     if (!token) { toast.push(msg, { type: 'success' }); return }
     toast.push(msg, {
@@ -278,7 +293,7 @@ export default function Operations() {
           })
           // Volvió: la próxima pantalla con total lo muestra sumándose.
           if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false })
-          toast.push('Listo, lo restauramos.', { type: 'success' })
+          toast.push(msgVuelta, { type: 'success' })
         } catch (ex) {
           toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
         }
@@ -290,10 +305,27 @@ export default function Operations() {
   // pasaba `op.id` y el feed `op`; al compartir renderer hubo que elegir una.
   function del(op) {
     const id = op?.id ?? op
-    return borrando.correr(() => borrarOperacion(id), `op-${id}`)
+    return borrando.correr(() => borrarOperacion(op), `op-${id}`)
   }
-  async function borrarOperacion(id) {
-    if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+  async function borrarOperacion(op) {
+    const id = op?.id ?? op
+    // El interés de un plazo fijo: borrarlo deshace el cobro. El MISMO cartel que
+    // en Movimientos (auditoría 2026-10-09: acá salía el genérico y se reabría el
+    // plazo fijo sacando la plata del broker sin avisar).
+    const pf = op?.deshace_cobro_pf
+    if (pf) {
+      if (!confirmarDeshacerCobroPf(pf)) return
+    } else if (esConversion(op?.op_type)) {
+      // Una compra o venta de dólares mueve DOS cuentas: el cartel lo dice
+      // (auditoría 2, 2026-10-10: acá salía el genérico).
+      const compra = /ARS→/.test(op.op_type)
+      if (!confirm(
+        `¿Borrar esta ${compra ? 'compra' : 'venta'} de dólares?\n\n` +
+        (compra ? 'Vuelven los pesos a tu cuenta y salen los dólares.'
+                : 'Vuelven los dólares a tu cuenta y salen los pesos.') +
+        ' La operación deja de contar en todos los cálculos.\n\nVas a poder deshacerlo.'
+      )) return
+    } else if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     try {
       const res = await recalcular(async () => {
         const r = await api.delete(`/operations/${id}`)
@@ -302,9 +334,12 @@ export default function Operations() {
       })
       // El total de la cartera cambió: Cartera o Dashboard lo muestran
       // recalculándose la próxima vez que se vean (RecalculoDeCartera).
-      const cambio = { texto: 'operación', articulo: 'la' }
+      const cambio = pf
+        ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el' }
+        : { texto: 'operación', articulo: 'la' }
       anotarCambioDeMovimiento(cambio)
-      offerUndo(res, '/operations/undo', 'Operación borrada.', cambio)
+      offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.', cambio,
+        pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.' : undefined)
     } catch (ex) {
       // El backend bloquea con mensaje claro los casos que aún no soporta
       // (manuales, bonos, activos con data manual mezclada).
@@ -990,7 +1025,12 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           </div>
           <div>
             <label className={labelClass}>Tipo</label>
-            <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…" />
+            {/* Los tipos que pone el sistema (interés de plazo fijo, compra/venta de
+                dólares) no se editan: el backend lo rechaza, porque en una fila vieja
+                el tipo es lo único que dice que la plata ya se movió. */}
+            <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…"
+              disabled={form.tipo_editable === false}
+              title={form.tipo_editable === false ? 'Lo puso el sistema: el cobro de un plazo fijo o una compra/venta de dólares' : undefined} />
           </div>
         </div>
         {/* Precios y cantidad son OPCIONALES y se muestran siempre. Antes se
@@ -1298,7 +1338,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return borrando.correr(() => borrarMovimiento(m), `mov-${m.id}`)
   }
   async function borrarMovimiento(m) {
-    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta' }[m.type] || 'movimiento'
+    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta', FX_ARS_TO_USD: 'compra de dólares', FX_USD_TO_ARS: 'venta de dólares' }[m.type] || 'movimiento'
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
     // Al FX de SU fecha, el MISMO que muestra la fila que se está por borrar. Si
@@ -1309,10 +1349,16 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     const monto = m.amount_usd
       ? ` (${histMoney.fmtMoneyAt(m.amount_usd, { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })})`
       : ''
-    // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
-    // posición con su costo original. Si le decimos "borrar" el usuario cree que
-    // pierde el activo — es exactamente al revés.
-    if (m.transfer_out) {
+    // El interés de un plazo fijo cobrado: borrarlo DESHACE EL COBRO entero (el
+    // plazo fijo vuelve abierto y sale lo que entró). Decidido así el 2026-10-09;
+    // la fila dice "venta de <banco>", así que sin este cartel nadie se lo espera.
+    const pf = m.deshace_cobro_pf
+    if (pf) {
+      if (!confirmarDeshacerCobroPf(pf)) return
+    } else if (m.transfer_out) {
+      // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
+      // posición con su costo original. Si le decimos "borrar" el usuario cree que
+      // pierde el activo — es exactamente al revés.
       if (!window.confirm(
         `¿Reabrir ${m.asset || 'la posición'}?\n\n` +
         `Esta fila no es una venta tuya: la generó una foto de tenencia para cerrar ` +
@@ -1327,23 +1373,30 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     }
     // El artículo según el tipo: decía "Se borró la dividendo", "la depósito".
-    const articulo = ['compra', 'venta', 'comisión'].includes(label) ? 'la' : 'el'
-    const okMsg = m.transfer_out
-      ? `${m.asset || 'La posición'} volvió a tu cartera.`
-      : `Se borró ${articulo} ${label}${asset}.`
+    // ("compra de dólares" y "venta de dólares" también son femeninas.)
+    const articulo = /^(compra|venta|comisión)/.test(label) ? 'la' : 'el'
+    const okMsg = pf
+      ? `El plazo fijo de ${pf.banco} volvió a tu cartera.`
+      : m.transfer_out
+        ? `${m.asset || 'La posición'} volvió a tu cartera.`
+        : `Se borró ${articulo} ${label}${asset}.`
     // Lo que cambió, para que la próxima pantalla con total (Cartera o
     // Dashboard) lo muestre recalculándose. Una reapertura de una foto de
-    // tenencia también mueve el total: vuelve la posición.
-    const cambio = m.transfer_out
-      ? { texto: `posición de ${m.asset || 'ese activo'}`, articulo: 'la', deshecho: false }
-      : {
-          texto: `${label}${asset || (m.asset ? ` de ${m.asset}` : '')}`,
-          articulo,
-          monto: m.amount_usd
-            ? histMoney.fmtMoneyAt(Math.abs(m.amount_usd), { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })
-            : null,
-          deshecho: true,
-        }
+    // tenencia también mueve el total: vuelve la posición. Y deshacer el cobro
+    // de un plazo fijo: sale la plata y vuelve el plazo fijo.
+    const cambio = pf
+      ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el', deshecho: true }
+      : m.transfer_out
+        ? { texto: `posición de ${m.asset || 'ese activo'}`, articulo: 'la', deshecho: false }
+        : {
+            // Una conversión ya lo dice todo ("compra de dólares"): su activo es 'ARS→USD'.
+            texto: `${label}${String(m.type).startsWith('FX_') ? '' : (asset || (m.asset ? ` de ${m.asset}` : ''))}`,
+            articulo,
+            monto: m.amount_usd
+              ? histMoney.fmtMoneyAt(Math.abs(m.amount_usd), { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })
+              : null,
+            deshecho: true,
+          }
     try {
       // Mientras viaja el borrado y vuelven los datos, los números de arriba
       // se ven recalculando; después cuentan hasta el valor nuevo.
@@ -1355,10 +1408,13 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       anotarCambioDeMovimiento(cambio)
       onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
-      // todavía no: ahí solo confirmamos, sin prometer nada que no exista.
+      // todavía no: ahí solo confirmamos, sin prometer nada que no exista. Toda
+      // operación cargada a mano (`op-…`) se deshace por la misma puerta: también
+      // las conversiones, que no son ni compra ni venta.
       const token = res?.undo_token
       if (token) {
-        const base = m.type === 'BUY' || m.type === 'SELL' ? '/operations/undo' : null
+        const base = m.type === 'BUY' || m.type === 'SELL' || String(m.id).startsWith('op-')
+          ? '/operations/undo' : null
         if (base) {
           toast.push(okMsg, {
             type: 'success', duration: 12000, actionLabel: 'Deshacer',
@@ -1370,8 +1426,9 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
                 })
                 anotarCambioDeMovimiento({ ...cambio, deshecho: !cambio.deshecho })
                 onChanged?.()
-                toast.push(m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
-                                          : 'Listo, lo restauramos.', { type: 'success' })
+                toast.push(pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.'
+                  : m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
+                    : 'Listo, lo restauramos.', { type: 'success' })
               } catch (ex) {
                 toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
               }

@@ -74,14 +74,23 @@ describe('una conversión de moneda en Movimientos', () => {
     expect(compra.amount_usd * fx).toBeCloseTo(15400, 2)
   })
 
-  it('no ofrece borrar: el backend no sabe revertir una conversión', () => {
+  it('una conversión VIEJA no ofrece borrar: sin receta no se puede revertir', () => {
     // Antes salía como SELL → tacho → "¿Borrar venta de ARS→USDT (US$ 23.710.610)?"
-    // → 400. Hasta que exista un borrado que devuelva las dos monedas, el
-    // botón no se muestra.
+    // → 400. Las que no guardaron su receta siguen sin tacho: en una compra de
+    // dólares vieja ni siquiera quedó cuántos dólares entraron.
     expect(DELETABLE_MOVEMENT_TYPES).not.toContain('FX_ARS_TO_USD')
     expect(DELETABLE_MOVEMENT_TYPES).not.toContain('FX_USD_TO_ARS')
     expect(tabla([compra])).not.toContain('Borrar movimiento')
     expect(feed([compra])).not.toContain('Borrar movimiento')
+  })
+
+  it('una conversión CON receta sí ofrece borrar, en la tabla y en el celular', () => {
+    // Desde 2026-10-09 el backend la marca `borrable` y su borrado devuelve las
+    // dos monedas (test_operaciones_con_receta.py).
+    for (const fila of [{ ...compra, borrable: true }, { ...venta, borrable: true }]) {
+      expect(tabla([fila])).toContain('Borrar movimiento')
+      expect(feed([fila])).toContain('Borrar movimiento')
+    }
   })
 
   it('tiene rótulo y chip de filtro, como el resto de los tipos', () => {

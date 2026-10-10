@@ -4,7 +4,8 @@ Los escenarios armados de `test_renombre_broker_recetas.py` prueban cada receta 
 separado. Esto mezcla: una secuencia al azar de acciones reales por HTTP (depositar,
 cargar posiciones, vender, operaciones a mano, futuros, cobros de bonos, dividendos,
 "No lo cobré", archivar y restaurar bonos, editar una posición, importar archivos que
-se pisan, "Editar y rehacer" un import, borrar, deshacer)
+se pisan, "Editar y rehacer" un import, comprar y vender dólares, plazos fijos, borrar
+—también desde Movimientos— y deshacer)
 sobre una cuenta con tres brokers (uno en pesos con su "· USD" y otro aparte), y la
 corre DOS veces con la misma semilla: una con renombres metidos en pasos al azar y
 otra sin renombrar. Las respuestas de cada paso y el estado final (por PAPEL de cada
@@ -293,6 +294,47 @@ def _rehacer_import(c, rng):
     return _confirmar_vista_previa(c, c.pedir("post", f"/api/imports/{rng.choice(lotes)['id']}/redo"))
 
 
+def _comprar_o_vender_dolares(c, rng):
+    # Comprar dólares sale de la cuenta en pesos; venderlos, de la "· USD".
+    direccion = rng.choice(("ars_to_usd", "usd_to_ars"))
+    return c.pedir("post", "/api/conversions", json={
+        "from_broker": c.nombre_de("padre" if direccion == "ars_to_usd" else "USD"),
+        "direction": direccion,
+        "ars_amount": 13000, "usd_amount": 10, "tc": 1300, "kind": "MEP"}).status_code
+
+
+def _plazo_fijo(c, rng):
+    from datetime import date, timedelta
+    return c.pedir("post", "/api/plazos-fijos", json={
+        "banco": "Galicia", "capital": rng.choice((50000, 200000)), "moneda": "ARS", "tasa": 0.36,
+        "fecha_inicio": (date.today() - timedelta(days=40)).isoformat(),
+        "plazo_dias": 30, "source_broker": c.nombre_de("padre")}).status_code
+
+
+def _cobrar_plazo_fijo(c, rng):
+    abiertos = c.filas("SELECT id FROM plazos_fijos WHERE user_id=? AND closed_at IS NULL ORDER BY id")
+    if not abiertos:
+        return "sin plazos fijos"
+    return c.pedir("post", f"/api/plazos-fijos/{rng.choice(abiertos)['id']}/cobrar",
+                   json={"broker": c.nombre_de("padre")}).status_code
+
+
+def _borrar_en_movimientos(c, rng):
+    """Borrar desde la pantalla Movimientos (la puerta de las conversiones y los
+    cobros de plazo fijo). Se elige por la operación de atrás, en orden de creación."""
+    filas = sorted((m for m in c.ok("get", "/api/movements")
+                    if str(m.get("id", "")).startswith("op-") and m.get("ref_id")),
+                   key=lambda m: (m["ref_id"], str(m["id"]).split("-", 2)[-1]))
+    if not filas:
+        return "sin movimientos"
+    # El id de la fila lleva el id de la operación, que no es el mismo en las dos
+    # corridas: se elige por posición y se devuelve sólo el código.
+    r = c.pedir("delete", f"/api/movements/{rng.choice(filas)['id']}")
+    if r.status_code == 200 and (r.json() or {}).get("undo_token"):
+        c.tokens.append(("/api/operations/undo", r.json()["undo_token"]))
+    return r.status_code
+
+
 def _deshacer(c, rng):
     if not c.tokens:
         return "nada que deshacer"
@@ -304,7 +346,8 @@ ACCIONES = ((_depositar, 3), (_comprar, 5), (_vender, 4), (_operacion_a_mano, 2)
             (_abrir_futuro, 1), (_cerrar_futuro, 2), (_cobro_de_bono, 1), (_dividendo, 2),
             (_no_lo_cobre, 1), (_archivar_bonos, 2), (_restaurar_bonos, 2),
             (_editar_posicion, 1), (_borrar_operacion, 4), (_borrar_posicion, 3), (_deshacer, 4),
-            (_importar_archivo, 3), (_rehacer_import, 1))
+            (_importar_archivo, 3), (_rehacer_import, 1), (_comprar_o_vender_dolares, 3),
+            (_plazo_fijo, 1), (_cobrar_plazo_fijo, 2), (_borrar_en_movimientos, 3))
 
 
 def _plan_de_renombres(rng) -> list:

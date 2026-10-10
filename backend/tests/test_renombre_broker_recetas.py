@@ -265,6 +265,9 @@ class _Cuenta:
                 "futuros": sorted((p(r["broker"]), r["symbol"], r["closed_at"] or "")
                                   for r in conn.execute(
                     "SELECT broker, symbol, closed_at FROM futures_positions WHERE user_id=?", uid)),
+                "plazos_fijos": sorted((r["banco"] or "", r4(r["capital"]), bool(r["closed_at"]))
+                                       for r in conn.execute(
+                    "SELECT banco, capital, closed_at FROM plazos_fijos WHERE user_id=?", uid)),
                 "no_lo_cobre": sorted((p(r["broker"]), r["asset"], r["ex_date"])
                                       for r in conn.execute(
                     "SELECT broker, asset, ex_date FROM dividendos_salteados WHERE user_id=?", uid)),
@@ -583,6 +586,50 @@ def _armar_dividendo_reemplazado(cta):
         conn.close()
 
 
+# ── Comprar/vender dólares y cobrar un plazo fijo ────────────────────────────
+# Sus recetas guardan a qué caja fue cada pata (`movs[].broker`) y dónde se acreditó
+# el plazo fijo (`cash_broker`). Se borran desde Movimientos.
+def _fila_de_movimientos(cta, oid):
+    filas = [m for m in cta.ok("get", "/api/movements")
+             if m.get("ref_id") == oid and str(m["id"]).startswith("op-")
+             and not str(m["id"]).endswith("-buy")]
+    assert len(filas) == 1, f"la operación {oid} sale {len(filas)} veces en Movimientos"
+    return filas[0]["id"]
+
+
+def _armar_conversion(cta):
+    cta.depositar(1000000)
+    cta.ok("post", "/api/conversions", json={
+        "from_broker": cta.nombre, "direction": "ars_to_usd", "ars_amount": 130000,
+        "usd_amount": 100, "tc": 1300, "kind": "MEP"})
+    return {"oid": cta.ultima_operacion()}
+
+
+def _actuar_borrar_en_movimientos(cta, ctx):
+    return [_codigo(cta.pedir("delete", f"/api/movements/{_fila_de_movimientos(cta, ctx['oid'])}"))]
+
+
+def _armar_borrado_de_conversion(cta):
+    ctx = _armar_conversion(cta)
+    return {"tok": cta.ok("delete", f"/api/movements/{_fila_de_movimientos(cta, ctx['oid'])}")["undo_token"]}
+
+
+def _armar_cobro_de_plazo_fijo(cta):
+    from datetime import date, timedelta
+    cta.depositar(1000000)
+    pid = cta.ok("post", "/api/plazos-fijos", json={
+        "banco": "Galicia", "capital": 500000, "moneda": "ARS", "tasa": 0.36,
+        "fecha_inicio": (date.today() - timedelta(days=40)).isoformat(),
+        "plazo_dias": 30, "source_broker": cta.nombre})["id"]
+    cta.ok("post", f"/api/plazos-fijos/{pid}/cobrar", json={"broker": cta.nombre})
+    return {"oid": cta.ultima_operacion()}
+
+
+def _armar_borrado_de_cobro_de_plazo_fijo(cta):
+    ctx = _armar_cobro_de_plazo_fijo(cta)
+    return {"tok": cta.ok("delete", f"/api/movements/{_fila_de_movimientos(cta, ctx['oid'])}")["undo_token"]}
+
+
 # ── Volver a importar después de renombrar ───────────────────────────────────
 # El importador reconoce lo que ya tiene por una huella que lleva el NOMBRE del
 # broker adentro de un hash. Con el nombre nuevo, el resumen del mes siguiente (que
@@ -712,6 +759,14 @@ ESCENARIOS = [
               sub_usd=True),
     Escenario("dividendo_reemplazado_por_un_import_que_se_revierte",
               _armar_dividendo_reemplazado, _actuar_revertir_import, sub_usd=True),
+    Escenario("compra_de_dolares", _armar_conversion, _actuar_borrar_en_movimientos,
+              recetas={"conversion"}, sub_usd=True),
+    Escenario("deshacer_borrado_de_compra_de_dolares", _armar_borrado_de_conversion,
+              _actuar_deshacer_op, registros={"manual_op"}, sub_usd=True),
+    Escenario("cobro_de_plazo_fijo", _armar_cobro_de_plazo_fijo, _actuar_borrar_en_movimientos,
+              recetas={"pf_cobro"}),
+    Escenario("deshacer_borrado_de_cobro_de_plazo_fijo", _armar_borrado_de_cobro_de_plazo_fijo,
+              _actuar_deshacer_op, registros={"manual_op"}),
     Escenario("deshacer_edicion_de_posicion", _armar_edicion_grupo, _actuar_deshacer_grupo,
               recetas={"manual_position", "fifo_sell"}, registros={"position_group_edit"}),
 ]

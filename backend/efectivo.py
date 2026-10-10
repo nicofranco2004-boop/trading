@@ -149,3 +149,89 @@ def mover(conn, uid: int, broker: str, delta: float, *,
             (delta, fila["id"], uid),
         )
     return fila["id"]
+
+
+def estado_de_la_caja(conn, uid: int, broker: str) -> dict:
+    """Saldo y TC promedio vigentes de la caja (`tc` None si no hay caja o todavía
+    no tiene precio). Toma el saldo antes de leerlo, como `mover`."""
+    tomar_saldo(conn, uid, broker)
+    fila = caja(conn, uid, broker)
+    return {"saldo": float(fila["invested"] or 0) if fila else 0.0,
+            "tc": fila["tc_compra"] if fila else None}
+
+
+_SIN_EXPECTATIVA = object()
+
+
+def _mismo_tc(a, b) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(float(a) - float(b)) <= 1e-9 * max(1.0, abs(float(b)))
+
+
+def revertir(conn, uid: int, broker: str, delta: float, *,
+             tc_compra: Optional[float] = None,
+             tc_esperado=_SIN_EXPECTATIVA,
+             tc_a_dejar: Optional[float] = None,
+             saldo_previo: Optional[float] = None) -> dict:
+    """Mueve `delta` como REVERSO de un movimiento anterior (borrar o deshacer una
+    compra o venta de dólares) y repone el TC promedio de la caja.
+
+    El SALDO es exacto siempre: es una suma. El TC PROMEDIO no siempre se puede
+    reponer: es un promedio móvil, y sin el registro de cada compra no se puede
+    "sacar" una compra vieja de él (auditoría 2026-10-09: la cuenta inversa daba
+    exacto sin ventas en el medio, pero con ventas daba un dólar a 2.200 cuando
+    ninguna compra había costado más de 1.800; lo cierto queda ENTRE el promedio
+    actual y esa cuenta, y no hay cómo saber dónde). Por eso:
+
+      · Si la caja sigue con el TC que dejó el movimiento (`tc_esperado`), nadie
+        compró dólares a otro precio desde entonces: se vuelve al de antes
+        (`tc_a_dejar`). EXACTO, aunque en el medio haya débitos, ventas o
+        depósitos sin precio (ninguno mueve el promedio). Con dos salvedades,
+        porque el promedio también queda igual si después se compró AL MISMO
+        precio, y "el de antes" puede no ser de ningún dólar que quede
+        (`saldo_previo` = lo que había en la caja antes del movimiento):
+          - la caja estaba VACÍA antes: su precio de entonces (ninguno, o el de
+            una compra vieja ya vendida — la caja en cero lo conserva) no era de
+            nadie. Si quedan dólares, entraron después a este precio y lo
+            conservan. Sin esto, dos compras a 1.300 y borrar la primera dejaba
+            los dólares de la segunda sin precio (prueba en el navegador) o al
+            precio de una compra de hace años (auditoría 2: 200 dólares a 400 →
+            ganancia cambiaria falsa de US$ 138 al venderlos);
+          - había dólares SIN precio antes: vuelven a no tenerlo sólo si no queda
+            más de lo que había; si queda más, lo de más se compró después y
+            conserva su precio (auditoría 2: 300 comprados a 1.300 quedaban sin
+            precio).
+      · Si cambió (otra compra a otro precio en el medio):
+          - entran dólares con `tc_compra` → se promedian a ese precio, como una
+            compra (devolver los dólares de una venta borrada a su costo es
+            exacto aun con compras en el medio);
+          - salen dólares → el promedio queda como está. Es una aproximación
+            acotada: nunca inventa un precio ni se va fuera de los que hubo.
+
+    Devuelve el TC y el saldo que tenía la caja y el TC que quedó, para que el
+    reverso de este reverso pueda volver exacto."""
+    tomar_saldo(conn, uid, broker)
+    fila = caja(conn, uid, broker)
+    actual = float(fila["invested"] or 0) if fila else 0.0
+    tc_ahora = fila["tc_compra"] if fila else None
+    if not delta:
+        return {"tc_antes": tc_ahora, "tc_despues": tc_ahora, "saldo_antes": actual}
+
+    if tc_esperado is not _SIN_EXPECTATIVA and _mismo_tc(tc_ahora, tc_esperado):
+        tc_nuevo = tc_a_dejar
+        queda, habia = actual + delta, max(float(saldo_previo or 0), 0.0)
+        if queda > 1e-9 and (habia <= 1e-9 or (tc_a_dejar is None and queda > habia + 1e-9)):
+            tc_nuevo = tc_ahora
+        id_caja = mover(conn, uid, broker, delta)
+        if id_caja:
+            conn.execute("UPDATE positions SET tc_compra=? WHERE id=? AND user_id=?",
+                         (tc_nuevo, id_caja, uid))
+    elif tc_compra is not None and delta > 0:
+        mover(conn, uid, broker, delta, tc_compra=tc_compra)
+    else:
+        mover(conn, uid, broker, delta)
+
+    fila = caja(conn, uid, broker)
+    return {"tc_antes": tc_ahora, "tc_despues": fila["tc_compra"] if fila else None,
+            "saldo_antes": actual}
