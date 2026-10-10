@@ -1444,13 +1444,8 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
     broker_hoy = {rid: b for (rid, b) in conn.execute(
         "SELECT raw_row_id, MIN(broker) FROM import_normalized_tx "
         "WHERE batch_id=? GROUP BY raw_row_id", (batch_id,)).fetchall()}
-    de_antes = {}            # nombre anterior (minúsculas) → nombre de hoy; None si es de dos
-    for hoy, anteriores in _renombre_broker.nombres_anteriores(conn, uid).items():
-        actual = next((n for (n,) in conn.execute(
-            "SELECT name FROM brokers WHERE user_id=? AND LOWER(name)=?", (uid, hoy)).fetchall()), None)
-        for viejo in anteriores:
-            k = viejo.strip().lower()
-            de_antes[k] = actual if k not in de_antes else None
+    # nombre anterior → cómo se llama hoy ese broker (None si lo tuvieron dos)
+    de_antes = _renombre_broker.broker_de_hoy_por_nombre_anterior(conn, uid)
     from .persister import broker_pair
     _pares = {}
 

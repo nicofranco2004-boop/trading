@@ -47,7 +47,10 @@ import main
 # Con tilde y eñe a propósito: `json.dumps` los guarda escapados (Ñ, ú), y el
 # sub-broker agrega el "·" (·). Buscar el nombre crudo en el texto no los encuentra.
 VIEJO = "Zorzal Ñandú"
-NUEVO = "Zorzal Capital"
+# El nombre de HOY también con una mayúscula acentuada: `LOWER()` de SQLite no la baja,
+# y buscar al broker así no lo encontraba ("Editar y rehacer" resucitaba el nombre
+# viejo; lo cazó la prueba al azar, semilla 47, antes de publicar).
+NUEVO = "Zorzal Ávido"
 SUB = " · USD"
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"

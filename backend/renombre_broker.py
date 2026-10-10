@@ -213,16 +213,39 @@ def anotar_nombre_anterior(conn, uid: int, broker_id: int, viejo: str, nuevo: st
                  (json.dumps(lista) if lista else None, broker_id, uid))
 
 
-def nombres_anteriores(conn, uid: int) -> Dict[str, list]:
-    """{nombre de hoy en minúsculas: [nombres anteriores]} de los brokers del usuario
-    que alguna vez se renombraron."""
-    out = {}
+def _con_historia(conn, uid: int) -> list:
+    """[(nombre de hoy, [nombres anteriores])] de los brokers que se renombraron."""
+    out = []
     for f in conn.execute("SELECT name, nombres_anteriores FROM brokers "
                           "WHERE user_id=? AND nombres_anteriores IS NOT NULL", (uid,)).fetchall():
         try:
             lista = [n for n in json.loads(f["nombres_anteriores"] or "[]") if isinstance(n, str)]
         except (TypeError, ValueError):
             continue
-        if lista:
-            out[str(f["name"] or "").strip().lower()] = lista
+        if lista and f["name"]:
+            out.append((f["name"], lista))
+    return out
+
+
+def _clave(nombre) -> str:
+    """Como se comparan los nombres de broker en el importador: sin espacios al borde y
+    en minúsculas. SIEMPRE en Python: `LOWER()` de SQLite no baja la Ñ ni las tildes, y
+    buscar así un broker llamado "Zorzal Ñandú" no lo encontraba (prueba al azar)."""
+    return str(nombre or "").strip().lower()
+
+
+def nombres_anteriores(conn, uid: int) -> Dict[str, list]:
+    """{nombre de hoy (`_clave`): [nombres anteriores]} de los brokers del usuario que
+    alguna vez se renombraron. Para el anti-duplicados del importador."""
+    return {_clave(hoy): lista for hoy, lista in _con_historia(conn, uid)}
+
+
+def broker_de_hoy_por_nombre_anterior(conn, uid: int) -> Dict[str, Optional[str]]:
+    """{nombre anterior (`_clave`): cómo se llama hoy ese broker}. None si dos brokers
+    distintos tuvieron ese nombre (no se sabe cuál). Para "Editar y rehacer"."""
+    out: Dict[str, Optional[str]] = {}
+    for hoy, lista in _con_historia(conn, uid):
+        for viejo in lista:
+            k = _clave(viejo)
+            out[k] = hoy if k not in out else None
     return out
