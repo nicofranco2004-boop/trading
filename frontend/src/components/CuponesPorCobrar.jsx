@@ -31,6 +31,11 @@ import { parseNum } from '../utils/format'
 
 const num = (n, d = 2) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d })
 const plata = (moneda) => (n) => `${moneda === 'ARS' ? '$' : 'US$'} ${num(n)}`
+// Lo que entró a la cuenta con un pago confirmado (cupón + amortización), en la
+// moneda en que entró: el texto del aviso "Recalculando tu cartera".
+const monedaDe = (resultado) => ((resultado?.partes?.[0]?.currency || 'USD').toUpperCase() === 'ARS' ? 'ARS' : 'USD')
+const loQueEntro = (resultado) => plata(monedaDe(resultado))(
+  (resultado?.partes || []).reduce((s, p) => s + (p.amount_net || 0), 0))
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '')
 const ddmmaa = (iso) => (iso ? `${ddmm(iso)}/${iso.slice(2, 4)}` : '')
 const pctTxt = (v) => `${num(v, Number.isInteger(+(+v).toFixed(4)) ? 0 : (String(+(+v).toFixed(4)).split('.')[1]?.length > 2 ? 3 : 2))} %`
@@ -292,7 +297,7 @@ function Comprobante({ c, onDeshacer, deshaciendo }) {
   const partes = c.resultado.partes || []
   const cupon = partes.find(p => p.op_type === 'Cupón')
   const amort = partes.find(p => p.op_type === 'Amortización')
-  const moneda = (partes[0]?.currency || 'USD').toUpperCase() === 'ARS' ? 'ARS' : 'USD'
+  const moneda = monedaDe(c.resultado)
   const m = plata(moneda)
   const entro = partes.reduce((s, p) => s + (p.amount_net || 0), 0)
   const ganancia = partes.reduce((s, p) => s + (p.ganancia || 0), 0)
@@ -418,9 +423,11 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
 
   const confirmar = (it, montos) => enVuelo.correr(async () => {
     try {
-      await b.confirmar(it, montos)
+      const r = await b.confirmar(it, montos)
       setEditando(null)
-      onCambio?.()
+      // La página recarga la cartera y muestra el total recalculado
+      // (RecalculoDeCartera), igual que al confirmar un dividendo.
+      onCambio?.({ texto: `cobro de ${it.asset}`, monto: `+${loQueEntro(r)}` })
     } catch (e) {
       toast.push(`No se pudo anotar el cobro de ${it.asset}: ${e.message}`, { type: 'error' })
     }
@@ -445,7 +452,7 @@ export default function CuponesPorCobrar({ positions, brokers, cerSeries, mep, o
     try {
       await b.deshacerCobro(c)
       setAbierta(c.item.key); setAnimada(null)
-      onCambio?.()
+      onCambio?.({ texto: `cobro de ${c.item.asset}`, monto: loQueEntro(c.resultado), deshecho: true })
     } catch (e) {
       toast.push(`No se pudo deshacer: ${e.message}`, { type: 'error' })
     }

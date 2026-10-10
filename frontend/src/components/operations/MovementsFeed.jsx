@@ -13,7 +13,7 @@
 //     (ArrowUpRight / ArrowDownRight en vez de TrendingUp / TrendingDown).
 
 import { Trash2, RotateCcw, Repeat } from 'lucide-react'
-import { TYPE_META, DELETABLE_MOVEMENT_TYPES, amountClassFor } from './shared'
+import { TYPE_META, puedeBorrarMovimiento, amountClassFor } from './shared'
 
 // `nuevas`: ids de los movimientos recién agregados; esa tarjeta destella.
 // `borrando(clave)`: ¿ese borrado está viajando? Apaga el tacho (Operations).
@@ -46,7 +46,7 @@ export default function MovementsFeed({ groups, histMoney, onDelete, borrando = 
 function MovementRowMobile({ m, nueva = false, histMoney, onDelete, deleting }) {
   const meta = TYPE_META[m.type] || { label: m.type, Icon: Repeat, tone: null }
   const { Icon } = meta
-  const canDelete = DELETABLE_MOVEMENT_TYPES.includes(m.type)
+  const canDelete = puedeBorrarMovimiento(m)
   const amountClass = TYPE_META[m.type] ? amountClassFor(m.type) : 'text-ink-1'
   return (
     <li className={`flex items-center gap-3 px-4 py-2.5 border-t border-line/20 first:border-t-0 ${nueva ? 'destello-nueva' : ''}`}>

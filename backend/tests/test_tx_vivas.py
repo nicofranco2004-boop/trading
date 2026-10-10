@@ -75,6 +75,9 @@ LEEN_EL_LOG = {
     # Scripts de reparación de una sola vez, sobre lotes puntuales.
     ("scripts/backfill_currency_fix.py", "correct_currency"): "script de reparación sobre lotes puntuales",
     ("scripts/escala_foto_bonos.py", "<módulo>"): "script de diagnóstico sobre lotes deshechos",
+    # Herramienta de medición sobre una COPIA de prod (no corre en el servidor):
+    # compara lo que la bandeja de dividendos calcularía con lo que el broker pagó.
+    ("scripts/backtest_dividendos.py", "<módulo>"): "medición sobre una copia de prod: lee los dividendos y compras importados (filtra los lotes revertidos)",
 }
 
 _LEE = re.compile(r"\b(FROM|JOIN)\s+import_normalized_tx\b", re.I)

@@ -66,6 +66,11 @@ PERMITIDOS = {
         "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de prod en "
         "`immutable=1` para contrastar la escala (nominal vs residual) que reporta "
         "cada broker en su foto de tenencia. No corre en el servidor.",
+    ("scripts/backtest_dividendos.py", "<module>"):
+        "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de prod en "
+        "`immutable=1` para comparar el dividendo que calcula la bandeja contra el "
+        "que pagó cada broker (de ahí salen las REGLAS de backend/dividendos.py). "
+        "No corre en el servidor.",
     ("scripts/verificar_proyeccion.py", "<module>"):
         "Herramienta de MEDICIÓN, no código de la app: abre una COPIA de la base "
         "de producción en modo `immutable=1` (sólo lectura, físicamente incapaz "

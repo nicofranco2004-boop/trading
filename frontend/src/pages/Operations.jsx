@@ -21,7 +21,7 @@ import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { fmtUsd as fmtUsdRaw, colorClass, parseNum, parseNumOrNull } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -38,6 +38,9 @@ import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { opPnlUsd } from '../utils/assetPnl'
+import { anotarCambioDeMovimiento } from '../utils/cambioDeMovimiento'
+import AnimatedNumber from '../components/AnimatedNumber'
+import FlashValue from '../components/FlashValue'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
@@ -55,6 +58,21 @@ import {
 // `mueve_efectivo` arranca en false: el default es "sólo registrar", que es lo
 // que el formulario hizo siempre. Prender el efectivo es una decisión que mueve
 // plata, y la toma el usuario — no un default.
+// Borrar el interés de un plazo fijo DESHACE EL COBRO entero (decisión de Nico,
+// 2026-10-09): el plazo fijo vuelve abierto y sale lo que entró. La fila dice
+// "venta de <banco>" o "Interés PF", así que sin este cartel nadie se lo espera.
+// Uno solo para "Todos los movimientos" y "Solo P/L".
+function confirmarDeshacerCobroPf(pf) {
+  const sale = pf.broker && pf.monto
+    ? `Salen ${fmtMoney(pf.monto, pf.moneda)} de ${pf.broker} (el capital más el interés que entraron al cobrarlo).`
+    : 'No sale plata de ninguna cuenta: cuando lo cobraste, la plata no entró a un broker.'
+  return window.confirm(
+    `¿Deshacer el cobro del plazo fijo de ${pf.banco}?\n\n` +
+    `El plazo fijo vuelve a Cartera, abierto. ${sale} ` +
+    `La ganancia del interés deja de contar.\n\nVas a poder deshacerlo.`,
+  )
+}
+
 const EMPTY = { date: hoyISO(), broker: '', asset: '', op_type: '', entry_price: '', exit_price: '', quantity: '', pnl_usd: '', pnl_pct: '', commissions: '', mueve_efectivo: false }
 
 const RESULT_OPTIONS = [
@@ -103,6 +121,14 @@ export default function Operations() {
   // mandaba dos DELETE y el 2do terminaba en un error después de un borrado exitoso.
   // Clave por fila (`op-<id>`, `grp-<activo>`): borrar una no apaga las demás.
   const borrando = useEnVuelo()
+  // Mientras se borra (o se deshace) y se vuelven a pedir los datos, los
+  // números de arriba muestran que se están recalculando; después cuentan
+  // hasta el valor nuevo (KpiCell). Pedido de Nico, 2026-10-09.
+  const [recalculando, setRecalculando] = useState(false)
+  const recalcular = async (fn) => {
+    setRecalculando(true)
+    try { return await fn() } finally { setRecalculando(false) }
+  }
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [filterAsset, setFilterAsset] = useState(FILTROS_INICIALES.asset)
@@ -252,7 +278,7 @@ export default function Operations() {
 
   // Ofrece DESHACER de verdad. Cada borrado devuelve un `undo_token`; antes se
   // tiraba a la basura, así que el "podés deshacerlo" del confirm era mentira.
-  function offerUndo(res, undoBase, msg) {
+  function offerUndo(res, undoBase, msg, cambio = null, msgVuelta = 'Listo, lo restauramos.') {
     const token = res?.undo_token
     if (!token) { toast.push(msg, { type: 'success' }); return }
     toast.push(msg, {
@@ -261,9 +287,13 @@ export default function Operations() {
       actionLabel: 'Deshacer',
       onAction: async () => {
         try {
-          await api.post(`${undoBase}/${token}`)
-          await load()
-          toast.push('Listo, lo restauramos.', { type: 'success' })
+          await recalcular(async () => {
+            await api.post(`${undoBase}/${token}`)
+            await load()
+          })
+          // Volvió: la próxima pantalla con total lo muestra sumándose.
+          if (cambio) anotarCambioDeMovimiento({ ...cambio, deshecho: false })
+          toast.push(msgVuelta, { type: 'success' })
         } catch (ex) {
           toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
         }
@@ -275,14 +305,41 @@ export default function Operations() {
   // pasaba `op.id` y el feed `op`; al compartir renderer hubo que elegir una.
   function del(op) {
     const id = op?.id ?? op
-    return borrando.correr(() => borrarOperacion(id), `op-${id}`)
+    return borrando.correr(() => borrarOperacion(op), `op-${id}`)
   }
-  async function borrarOperacion(id) {
-    if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+  async function borrarOperacion(op) {
+    const id = op?.id ?? op
+    // El interés de un plazo fijo: borrarlo deshace el cobro. El MISMO cartel que
+    // en Movimientos (auditoría 2026-10-09: acá salía el genérico y se reabría el
+    // plazo fijo sacando la plata del broker sin avisar).
+    const pf = op?.deshace_cobro_pf
+    if (pf) {
+      if (!confirmarDeshacerCobroPf(pf)) return
+    } else if (esConversion(op?.op_type)) {
+      // Una compra o venta de dólares mueve DOS cuentas: el cartel lo dice
+      // (auditoría 2, 2026-10-10: acá salía el genérico).
+      const compra = /ARS→/.test(op.op_type)
+      if (!confirm(
+        `¿Borrar esta ${compra ? 'compra' : 'venta'} de dólares?\n\n` +
+        (compra ? 'Vuelven los pesos a tu cuenta y salen los dólares.'
+                : 'Vuelven los dólares a tu cuenta y salen los pesos.') +
+        ' La operación deja de contar en todos los cálculos.\n\nVas a poder deshacerlo.'
+      )) return
+    } else if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     try {
-      const res = await api.delete(`/operations/${id}`)
-      await load()
-      offerUndo(res, '/operations/undo', 'Operación borrada.')
+      const res = await recalcular(async () => {
+        const r = await api.delete(`/operations/${id}`)
+        await load()
+        return r
+      })
+      // El total de la cartera cambió: Cartera o Dashboard lo muestran
+      // recalculándose la próxima vez que se vean (RecalculoDeCartera).
+      const cambio = pf
+        ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el' }
+        : { texto: 'operación', articulo: 'la' }
+      anotarCambioDeMovimiento(cambio)
+      offerUndo(res, '/operations/undo', pf ? `El plazo fijo de ${pf.banco} volvió a tu cartera.` : 'Operación borrada.', cambio,
+        pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.' : undefined)
     } catch (ex) {
       // El backend bloquea con mensaje claro los casos que aún no soporta
       // (manuales, bonos, activos con data manual mezclada).
@@ -306,11 +363,16 @@ export default function Operations() {
       `Se recalcula todo. Vas a poder deshacerlo.`
     )) return
     try {
-      const res = await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
-      await load()
+      const res = await recalcular(async () => {
+        const r = await api.delete(`/assets/history?asset=${encodeURIComponent(asset)}`)
+        await load()
+        return r
+      })
       const n = res?.count
+      const cambio = { texto: `historial de ${asset}`, articulo: 'el' }
+      anotarCambioDeMovimiento(cambio)
       offerUndo(res, '/assets/undo',
-        `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`)
+        `${asset} borrado${n ? ` (${n} ${n === 1 ? 'operación' : 'operaciones'})` : ''}.`, cambio)
     } catch (ex) {
       toast.push(ex?.message || 'No se pudo borrar el activo.', { type: 'error', duration: 8000 })
     }
@@ -494,11 +556,12 @@ export default function Operations() {
       <>
       {/* KPI strip denso */}
       {!isMobile && (
-        <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
+        <FranjaKpis recalculando={recalculando} className="mb-4"><div className="flex flex-wrap">
           <KpiCell
             first
             label="P&L Realizado"
-            value={fmtConvertedRaw(totalPnlDisp, histMoney.currency, { decimals: 2 })}
+            num={totalPnlDisp}
+            format={(n) => fmtConvertedRaw(n, histMoney.currency, { decimals: 2 })}
             tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
             sub="acumulado histórico"
           />
@@ -515,7 +578,8 @@ export default function Operations() {
           )}
           <KpiCell
             label="Operaciones"
-            value={ops.filter(o => !esConversion(o.op_type)).length.toLocaleString('es-AR')}
+            num={ops.filter(o => !esConversion(o.op_type)).length}
+            format={(n) => Math.round(n).toLocaleString('es-AR')}
             sub="total cerradas"
           />
           <KpiCell
@@ -529,7 +593,7 @@ export default function Operations() {
             tone={bestTradeOp && bestTradeOp.pnl_usd > 0 ? 'pos' : null}
             sub="P&L individual"
           />
-        </div>
+        </div></FranjaKpis>
       )}
 
       {/* Header sticky con KPIs + filtros. Se pega justo debajo de la barra de
@@ -542,8 +606,11 @@ export default function Operations() {
               <div className="text-[12.5px] text-ink-2 leading-none mb-1 font-medium">
                 P&L acumulado · {ops.length} ops
               </div>
-              <div className={`text-xl font-medium tabular leading-none ${colorClass(totalPnlDisp)}`}>
-                {fmtConvertedRaw(totalPnlDisp, histMoney.currency, { signed: true, decimals: 2 })}
+              <div className={`text-xl font-medium tabular leading-none transition-opacity ${recalculando ? 'opacity-50' : ''} ${colorClass(totalPnlDisp)}`}>
+                <FlashValue value={totalPnlDisp}>
+                  <AnimatedNumber value={totalPnlDisp}
+                    format={(n) => fmtConvertedRaw(n, histMoney.currency, { signed: true, decimals: 2 })} />
+                </FlashValue>
               </div>
             </div>
             {winRate != null && (
@@ -809,16 +876,66 @@ function FilterGroup({ label, options, value, onChange }) {
     </div>
   )
 }
-function KpiCell({ label, value, sub, tone, first }) {
+// Con `num` + `format` el número CUENTA hasta su valor y destella cuando cambia
+// (borrar un depósito baja "Aportado neto" y se ve bajar). Sin ellos, `value`
+// tal cual (lo que no es un monto: "—", un porcentaje). `compacto`: la fila del
+// celular, tres números en una línea.
+function KpiCell({ label, value, num, format, sub, tone, first, compacto = false }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
     'text-ink-0'
+  const valor = num != null && format
+    ? <FlashValue value={num}><AnimatedNumber value={num} format={format} /></FlashValue>
+    : value
+  if (compacto) {
+    return (
+      <div className={`min-w-0 px-3 py-2.5 ${first ? '' : 'border-l border-line/50'}`}>
+        <div className="text-[11.5px] text-ink-2 leading-none font-medium truncate">{label}</div>
+        {/* 13 px y sin cortar: a 375 px cada celda mide ~90 px y "US$1.234.567"
+            salía con puntos suspensivos (auditoría 2026-10-09). */}
+        <div className={`mt-1.5 font-medium tabular leading-tight text-[13px] [overflow-wrap:anywhere] ${valueColor}`}>{valor}</div>
+      </div>
+    )
+  }
   return (
     <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
       <div className="text-[12.5px] text-ink-2 leading-none font-medium">{label}</div>
-      <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{value}</div>
+      <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{valor}</div>
       <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">{sub}</div>
+    </div>
+  )
+}
+
+// La franja de números mientras se recalcula: se atenúa y una línea la recorre
+// (el mismo barrido que el aviso de Cartera). Es el pedido real: termina cuando
+// vuelven los datos, y ahí los números cuentan hasta el valor nuevo.
+//
+// El barrido dura por lo menos MIN_RECALCULO_MS aunque el pedido vuelva antes:
+// en una conexión rápida el borrado tarda menos de una décima y el gesto no se
+// llegaba a ver (medido en la app 2026-10-09). Los números no esperan: cuentan
+// apenas llegan los datos; lo único que se estira es el barrido.
+const MIN_RECALCULO_MS = 700
+function FranjaKpis({ recalculando: pedido, className = '', children }) {
+  const [recalculando, setRecalculando] = useState(false)
+  const desde = useRef(0)
+  useEffect(() => {
+    if (pedido) { desde.current = Date.now(); setRecalculando(true); return undefined }
+    const falta = MIN_RECALCULO_MS - (Date.now() - desde.current)
+    if (falta <= 0) { setRecalculando(false); return undefined }
+    const t = setTimeout(() => setRecalculando(false), falta)
+    return () => clearTimeout(t)
+  }, [pedido])
+  return (
+    <div className={`relative border border-line rounded-xl bg-bg-1 overflow-hidden ${className}`}
+      aria-busy={recalculando || undefined}>
+      <div className={`transition-opacity duration-200 ${pedido ? 'opacity-50' : ''}`}>{children}</div>
+      {recalculando && (
+        <>
+          <span className="sr-only" role="status">Recalculando…</span>
+          <div className="barrido-escaneo absolute inset-x-0 bottom-0" aria-hidden="true" />
+        </>
+      )}
     </div>
   )
 }
@@ -908,7 +1025,12 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           </div>
           <div>
             <label className={labelClass}>Tipo</label>
-            <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…" />
+            {/* Los tipos que pone el sistema (interés de plazo fijo, compra/venta de
+                dólares) no se editan: el backend lo rechaza, porque en una fila vieja
+                el tipo es lo único que dice que la plata ya se movió. */}
+            <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…"
+              disabled={form.tipo_editable === false}
+              title={form.tipo_editable === false ? 'Lo puso el sistema: el cobro de un plazo fijo o una compra/venta de dólares' : undefined} />
           </div>
         </div>
         {/* Precios y cantidad son OPCIONALES y se muestran siempre. Antes se
@@ -1119,6 +1241,14 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   // Borrados en curso, por fila (`mov-<id>`, `grp-<activo>`). Mismo freno que
   // la pestaña "Solo P/L" (ver hooks/useEnVuelo).
   const borrando = useEnVuelo()
+  // Mientras se borra (o se deshace) y se vuelven a pedir los datos, los
+  // números de arriba muestran que se están recalculando; después cuentan
+  // hasta el valor nuevo (KpiCell). Pedido de Nico, 2026-10-09.
+  const [recalculando, setRecalculando] = useState(false)
+  const recalcular = async (fn) => {
+    setRecalculando(true)
+    try { return await fn() } finally { setRecalculando(false) }
+  }
   const toast = useToast()
   // Borrar TODO el historial de un activo desde acá, sin tener que entrar al activo.
   // Mismo endpoint (y misma cascada) que el tacho de grupo de "Solo P/L".
@@ -1161,8 +1291,13 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     }
   }
 
-  async function load() {
-    setLoading(true)
+  // `inicial`: la primera carga muestra "Cargando movimientos…". Las recargas
+  // (después de borrar, deshacer o cargar algo) NO: antes reemplazaban toda la
+  // vista por ese cartel, los números se volvían a dibujar desde cero y el
+  // recálculo no se veía (Cobrado contaba de 0 a 29 aunque no había cambiado).
+  // Ahora la vista se queda y cada número va de su valor viejo al nuevo.
+  async function load({ inicial = false } = {}) {
+    if (inicial) setLoading(true)
     try {
       const filas = await api.get('/movements') || []
       setMovements(filas)
@@ -1175,7 +1310,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load({ inicial: true }) }, [])
 
   // Algo se guardó desde el formulario de la página (Operations → `cambios`):
   // se vuelve a pedir la lista, y si fue un alta, la fila nueva destella. Los
@@ -1203,7 +1338,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return borrando.correr(() => borrarMovimiento(m), `mov-${m.id}`)
   }
   async function borrarMovimiento(m) {
-    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', AMORTIZATION: 'amortización', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta' }[m.type] || 'movimiento'
+    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', AMORTIZATION: 'amortización', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta', FX_ARS_TO_USD: 'compra de dólares', FX_USD_TO_ARS: 'venta de dólares' }[m.type] || 'movimiento'
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
     // Al FX de SU fecha, el MISMO que muestra la fila que se está por borrar. Si
@@ -1214,10 +1349,16 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     const monto = m.amount_usd
       ? ` (${histMoney.fmtMoneyAt(m.amount_usd, { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })})`
       : ''
-    // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
-    // posición con su costo original. Si le decimos "borrar" el usuario cree que
-    // pierde el activo — es exactamente al revés.
-    if (m.transfer_out) {
+    // El interés de un plazo fijo cobrado: borrarlo DESHACE EL COBRO entero (el
+    // plazo fijo vuelve abierto y sale lo que entró). Decidido así el 2026-10-09;
+    // la fila dice "venta de <banco>", así que sin este cartel nadie se lo espera.
+    const pf = m.deshace_cobro_pf
+    if (pf) {
+      if (!confirmarDeshacerCobroPf(pf)) return
+    } else if (m.transfer_out) {
+      // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
+      // posición con su costo original. Si le decimos "borrar" el usuario cree que
+      // pierde el activo — es exactamente al revés.
       if (!window.confirm(
         `¿Reabrir ${m.asset || 'la posición'}?\n\n` +
         `Esta fila no es una venta tuya: la generó una foto de tenencia para cerrar ` +
@@ -1231,28 +1372,63 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
       if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     }
-    const okMsg = m.transfer_out
-      ? `${m.asset || 'La posición'} volvió a tu cartera.`
-      : `Se borró la ${label}${asset}.`
+    // El artículo según el tipo: decía "Se borró la dividendo", "la depósito".
+    // ("compra de dólares" y "venta de dólares" también son femeninas.)
+    const articulo = /^(compra|venta|comisión)/.test(label) ? 'la' : 'el'
+    const okMsg = pf
+      ? `El plazo fijo de ${pf.banco} volvió a tu cartera.`
+      : m.transfer_out
+        ? `${m.asset || 'La posición'} volvió a tu cartera.`
+        : `Se borró ${articulo} ${label}${asset}.`
+    // Lo que cambió, para que la próxima pantalla con total (Cartera o
+    // Dashboard) lo muestre recalculándose. Una reapertura de una foto de
+    // tenencia también mueve el total: vuelve la posición. Y deshacer el cobro
+    // de un plazo fijo: sale la plata y vuelve el plazo fijo.
+    const cambio = pf
+      ? { texto: `cobro del plazo fijo de ${pf.banco}`, articulo: 'el', deshecho: true }
+      : m.transfer_out
+        ? { texto: `posición de ${m.asset || 'ese activo'}`, articulo: 'la', deshecho: false }
+        : {
+            // Una conversión ya lo dice todo ("compra de dólares"): su activo es 'ARS→USD'.
+            texto: `${label}${String(m.type).startsWith('FX_') ? '' : (asset || (m.asset ? ` de ${m.asset}` : ''))}`,
+            articulo,
+            monto: m.amount_usd
+              ? histMoney.fmtMoneyAt(Math.abs(m.amount_usd), { stampedFx: m.fx_to_usd, rowCurrency: m.currency, dateIso: m.date, decimals: 2 })
+              : null,
+            deshecho: true,
+          }
     try {
-      const res = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
-      await load()
+      // Mientras viaja el borrado y vuelven los datos, los números de arriba
+      // se ven recalculando; después cuentan hasta el valor nuevo.
+      const res = await recalcular(async () => {
+        const r = await api.delete(`/movements/${encodeURIComponent(m.id)}`)
+        await load()
+        return r
+      })
+      anotarCambioDeMovimiento(cambio)
       onChanged?.()
       // Los trades devuelven token de deshacer (cascada reversible). Los cash-flows
-      // todavía no: ahí solo confirmamos, sin prometer nada que no exista.
+      // todavía no: ahí solo confirmamos, sin prometer nada que no exista. Toda
+      // operación cargada a mano (`op-…`) se deshace por la misma puerta: también
+      // las conversiones, que no son ni compra ni venta.
       const token = res?.undo_token
       if (token) {
-        const base = m.type === 'BUY' || m.type === 'SELL' ? '/operations/undo' : null
+        const base = m.type === 'BUY' || m.type === 'SELL' || String(m.id).startsWith('op-')
+          ? '/operations/undo' : null
         if (base) {
           toast.push(okMsg, {
             type: 'success', duration: 12000, actionLabel: 'Deshacer',
             onAction: async () => {
               try {
-                await api.post(`${base}/${token}`)
-                await load()
+                await recalcular(async () => {
+                  await api.post(`${base}/${token}`)
+                  await load()
+                })
+                anotarCambioDeMovimiento({ ...cambio, deshecho: !cambio.deshecho })
                 onChanged?.()
-                toast.push(m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
-                                          : 'Listo, lo restauramos.', { type: 'success' })
+                toast.push(pf ? 'Listo, volvimos atrás: el plazo fijo está cobrado de nuevo.'
+                  : m.transfer_out ? 'Listo, volvimos atrás: el cierre está de nuevo.'
+                    : 'Listo, lo restauramos.', { type: 'success' })
               } catch (ex) {
                 toast.push(ex?.message || 'No se pudo deshacer.', { type: 'error', duration: 8000 })
               }
@@ -1359,11 +1535,24 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     <>
       {/* KPI strip adaptativo */}
       {!isMobile && (
-        <div className="border border-line rounded-xl bg-bg-1 flex flex-wrap mb-4">
+        <FranjaKpis recalculando={recalculando} className="mb-4"><div className="flex flex-wrap">
           {kpis.map((k, i) => (
-            <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone} />
+            <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone}
+              num={k.num} format={fmtUsd} />
           ))}
-        </div>
+        </div></FranjaKpis>
+      )}
+      {/* En el celular no había ningún número: borrar un depósito no mostraba
+          que bajaba lo aportado. Los mismos, compactos, en una fila. */}
+      {isMobile && !loading && kpis.length > 0 && (
+        <FranjaKpis recalculando={recalculando} className="mx-4 mt-3 mb-1">
+          <div className={`grid ${kpis.length === 1 ? 'grid-cols-1' : kpis.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+            {kpis.map((k, i) => (
+              <KpiCell key={k.label} compacto first={i === 0} label={k.label} value={k.value} tone={k.tone}
+                num={k.num} format={fmtUsd} />
+            ))}
+          </div>
+        </FranjaKpis>
       )}
 
       {/* Selector de tipo (pills) — escaneable */}
@@ -1510,24 +1699,26 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
       {
         label: `Total ${t === 'DEPOSIT' ? 'depositado' : 'retirado'}`,
         value: fmtUsd(total),
+        num: total,
         tone: t === 'DEPOSIT' ? 'pos' : 'neg',
         sub: `${count} eventos · bruto histórico`,
       },
       {
         label: 'Promedio',
         value: count > 0 ? fmtUsd(total / count) : '—',
+        num: count > 0 ? total / count : null,
         sub: 'por evento',
       },
     ]
   }
   if (filterType === 'DIVIDEND' || filterType === 'INTEREST') {
     return [
-      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmtUsd(sumByType(filterType)), tone: 'pos', sub: `${countByType(filterType)} pagos` },
+      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmtUsd(sumByType(filterType)), num: sumByType(filterType), tone: 'pos', sub: `${countByType(filterType)} pagos` },
     ]
   }
   if (filterType === 'FEE') {
     return [
-      { label: 'Total comisiones', value: fmtUsd(commTotalUsd), tone: commTotalUsd > 0 ? 'neg' : null, sub: `${countByType('FEE')} explícitas + embebidas en trades` },
+      { label: 'Total comisiones', value: fmtUsd(commTotalUsd), num: commTotalUsd, tone: commTotalUsd > 0 ? 'neg' : null, sub: `${countByType('FEE')} explícitas + embebidas en trades` },
     ]
   }
 
@@ -1543,10 +1734,11 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
     {
       label: 'Aportado neto',
       value: fmtUsd(neto),
+      num: neto,
       tone: neto > 0 ? 'pos' : neto < 0 ? 'neg' : null,
       sub: `${depCount} depósitos · ${witCount} retiros`,
     },
-    { label: 'Cobrado',    value: fmtUsd(dividendos), tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
-    { label: 'Comisiones', value: fmtUsd(comisiones), tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
+    { label: 'Cobrado',    value: fmtUsd(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
+    { label: 'Comisiones', value: fmtUsd(comisiones), num: comisiones, tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
   ]
 }
