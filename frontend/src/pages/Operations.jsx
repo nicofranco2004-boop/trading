@@ -39,8 +39,8 @@ import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
 import { opPnlUsd } from '../utils/assetPnl'
 import { anotarCambioDeMovimiento } from '../utils/cambioDeMovimiento'
-import AnimatedNumber from '../components/AnimatedNumber'
-import FlashValue from '../components/FlashValue'
+import NumeroQueCambia, { textoDeDiferencia } from '../components/NumeroQueCambia'
+import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
@@ -525,6 +525,7 @@ export default function Operations() {
           <KpiCell
             first
             label="P&L Realizado"
+            clave="movimientos:pnl-realizado" moneda={histMoney.currency}
             num={totalPnlDisp}
             format={(n) => fmtConvertedRaw(n, histMoney.currency, { decimals: 2 })}
             tone={totalPnlDisp >= 0 ? 'pos' : 'neg'}
@@ -543,6 +544,7 @@ export default function Operations() {
           )}
           <KpiCell
             label="Operaciones"
+            clave="movimientos:operaciones" moneda="cantidad"
             num={ops.filter(o => !esConversion(o.op_type)).length}
             format={(n) => Math.round(n).toLocaleString('es-AR')}
             sub="total cerradas"
@@ -572,10 +574,9 @@ export default function Operations() {
                 P&L acumulado · {ops.length} ops
               </div>
               <div className={`text-xl font-medium tabular leading-none transition-opacity ${recalculando ? 'opacity-50' : ''} ${colorClass(totalPnlDisp)}`}>
-                <FlashValue value={totalPnlDisp}>
-                  <AnimatedNumber value={totalPnlDisp}
-                    format={(n) => fmtConvertedRaw(n, histMoney.currency, { signed: true, decimals: 2 })} />
-                </FlashValue>
+                <NumeroQueCambia clave="movimientos:pnl-realizado" value={totalPnlDisp} moneda={histMoney.currency}
+                  format={(n) => fmtConvertedRaw(n, histMoney.currency, { signed: true, decimals: 2 })}
+                  conDiferencia={false} desdeCero />
               </div>
             </div>
             {winRate != null && (
@@ -845,17 +846,25 @@ function FilterGroup({ label, options, value, onChange }) {
 // (borrar un depósito baja "Aportado neto" y se ve bajar). Sin ellos, `value`
 // tal cual (lo que no es un monto: "—", un porcentaje). `compacto`: la fila del
 // celular, tres números en una línea.
-function KpiCell({ label, value, num, format, sub, tone, first, compacto = false }) {
+// Con `num` + `format` el número cuenta hasta su valor; con `clave` además se
+// acuerda de cuánto valía la última vez que se vio: al volver después de un
+// cambio (o al borrar acá mismo) cuenta del valor VIEJO al nuevo y, en la franja
+// ancha, dice la diferencia en el renglón de abajo unos segundos
+// (hooks/useNumeroQueCambia).
+function KpiCell({ label, value, num, format, sub, tone, first, compacto = false, clave, moneda = 'USD' }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
     'text-ink-0'
-  const valor = num != null && format
-    ? <FlashValue value={num}><AnimatedNumber value={num} format={format} /></FlashValue>
+  const vivo = num != null && !!format
+  const n = useNumeroQueCambia({ clave: vivo ? clave : null, value: vivo ? num : NaN, moneda, desdeCero: true, format })
+  const valor = vivo
+    ? <span key={n.destello?.n || 0} className={n.destello ? (n.destello.dir === 'up' ? 'flash-up' : 'flash-down') : ''}>{format(n.mostrado)}</span>
     : value
+  const cambio = vivo ? n.cambio : null
   if (compacto) {
     return (
-      <div className={`min-w-0 px-3 py-2.5 ${first ? '' : 'border-l border-line/50'}`}>
+      <div ref={n.ref} className={`min-w-0 px-3 py-2.5 ${first ? '' : 'border-l border-line/50'}`}>
         <div className="text-[11.5px] text-ink-2 leading-none font-medium truncate">{label}</div>
         {/* 13 px y sin cortar: a 375 px cada celda mide ~90 px y "US$1.234.567"
             salía con puntos suspensivos (auditoría 2026-10-09). */}
@@ -864,10 +873,14 @@ function KpiCell({ label, value, num, format, sub, tone, first, compacto = false
     )
   }
   return (
-    <div className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
+    <div ref={n.ref} className={`px-4 py-3 flex-1 min-w-[140px] ${first ? '' : 'border-l border-line/50'}`}>
       <div className="text-[12.5px] text-ink-2 leading-none font-medium">{label}</div>
       <div className={`mt-2 font-medium tabular num leading-none text-2xl tracking-tight ${valueColor}`}>{valor}</div>
-      <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">{sub}</div>
+      {cambio
+        ? <div className={`entra text-[12.5px] mt-1.5 leading-none truncate font-medium tabular ${cambio.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+            {textoDeDiferencia(cambio.delta, format)} respecto de antes
+          </div>
+        : <div className="text-[12.5px] text-ink-2 mt-1.5 leading-none truncate font-medium">{sub}</div>}
     </div>
   )
 }
@@ -1428,6 +1441,9 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   }, [movements, filterBroker, filterYear])
 
   const kpis = useMemo(() => computeMovementKpis(filtered, filterType, fmtUsd, commTotalUsd), [filtered, filterType, fmtUsd, commTotalUsd])
+  // Los números de arriba dependen del filtro: cada combinación es OTRO número
+  // para <KpiCell> (si no, cambiar de filtro se leería como un cambio de la cartera).
+  const filtrosPuestos = `${filterType}|${filterBroker}|${filterYear}`
 
   const brokersAvailable = useMemo(() => {
     const set = new Set(movements.map(m => m.broker).filter(Boolean))
@@ -1481,7 +1497,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         <FranjaKpis recalculando={recalculando} className="mb-4"><div className="flex flex-wrap">
           {kpis.map((k, i) => (
             <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone}
-              num={k.num} format={fmtUsd} />
+              num={k.num} format={fmtUsd} clave={`movimientos:${k.label}:${filtrosPuestos}`} />
           ))}
         </div></FranjaKpis>
       )}
@@ -1492,7 +1508,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
           <div className={`grid ${kpis.length === 1 ? 'grid-cols-1' : kpis.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
             {kpis.map((k, i) => (
               <KpiCell key={k.label} compacto first={i === 0} label={k.label} value={k.value} tone={k.tone}
-                num={k.num} format={fmtUsd} />
+                num={k.num} format={fmtUsd} clave={`movimientos:${k.label}:${filtrosPuestos}`} />
             ))}
           </div>
         </FranjaKpis>

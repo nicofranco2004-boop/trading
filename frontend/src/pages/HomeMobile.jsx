@@ -17,10 +17,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, TrendingUp, TrendingDown, Eye, EyeOff } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
-import FlashValue from '../components/FlashValue'
-import AnimatedNumber from '../components/AnimatedNumber'
 import RecalculoDeCartera from '../components/RecalculoDeCartera'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
+import NumeroQueCambia from '../components/NumeroQueCambia'
 import Skeleton from '../components/Skeleton'
 import Panel from '../components/Panel'
 import YearReturnLine from '../components/YearReturnLine'
@@ -385,14 +384,12 @@ export default function HomeMobile() {
         <div className="text-5xl font-medium tabular tracking-tight text-ink-0 leading-none mb-3">
           {hidden
             ? <span className="opacity-40 tracking-[0.2em] select-none">••••••</span>
-            : <FlashValue value={totals.totalValue + pf.valueUsd}>
-                {/* Cuenta de un valor al otro al cambiar de moneda (y al llegar
-                    precios nuevos), con el mismo formato de siempre. */}
-                <AnimatedNumber
-                  value={currency === 'ARS' ? (totals.totalValue + pf.valueUsd) * tcValuacion : totals.totalValue + pf.valueUsd}
-                  format={n => `$${fmtNumber(n)}`}
-                />
-              </FlashValue>}
+            : /* Cuenta de un valor al otro al cambiar de moneda, al llegar precios
+                 nuevos y —desde el valor que tenía la última vez que se vio—
+                 después de un cambio del usuario. Mismo formato de siempre. */
+              <NumeroQueCambia clave="inicio:total" moneda={currency} listo={!loading}
+                value={currency === 'ARS' ? (totals.totalValue + pf.valueUsd) * tcValuacion : totals.totalValue + pf.valueUsd}
+                format={n => `$${fmtNumber(n)}`} conDiferencia={false} desdeCero />}
           <button
             onClick={toggleCurrency}
             className="text-base text-ink-3 ml-1.5 font-normal hover:text-ink-1 active:text-ink-0 transition-colors"

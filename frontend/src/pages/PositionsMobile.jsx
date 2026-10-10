@@ -43,6 +43,7 @@ import SplitRatioBanner from '../components/SplitRatioBanner'
 import DividendosPorCobrar from '../components/DividendosPorCobrar'
 import RecalculoDeCartera from '../components/RecalculoDeCartera'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
+import NumeroQueCambia from '../components/NumeroQueCambia'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
@@ -59,7 +60,6 @@ import { useCerSeries } from '../hooks/useCerSeries'
 import { getBondMeta } from '../utils/bondMeta'
 import { hoyISO } from '../utils/fecha'
 import PesoEnCartera from '../components/PesoEnCartera'
-import AnimatedNumber from '../components/AnimatedNumber'
 import PreciosEnVivo from '../components/PreciosEnVivo'
 import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
@@ -1509,7 +1509,9 @@ export default function PositionsMobile() {
   // El total recalculándose después de anotar o borrar un cobro (mismo hook que
   // Cartera de escritorio). Con centavos: el hero redondea a pesos/dólares
   // enteros y un dividendo de US$ 2,65 no se vería moverse.
-  const recalculo = useRecalculoDeCartera({ total: heroValor, moneda: currency, listo: !loading && !pricesLoading })
+  // Posiciones Y precios llegaron: recién ahí los números son los de verdad.
+  const numerosListos = !loading && !pricesLoading
+  const recalculo = useRecalculoDeCartera({ total: heroValor, moneda: currency, listo: numerosListos })
   const fmtRecalculo = n => `${currency === 'ARS' ? '$' : 'US$'} ${Number(n).toLocaleString(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const heroPnl = heroValor - heroInvertido
   const heroPct = heroInvertido > 0 ? heroPnl / heroInvertido : 0
@@ -1618,9 +1620,8 @@ export default function PositionsMobile() {
           <div className={`${heroClass} font-medium tabular text-ink-0 leading-none tracking-tight min-w-0 truncate`}>
             {/* Cuenta de un valor al otro al cambiar de moneda o al llegar precios
                 nuevos; el texto final es el mismo `heroTexto` de siempre. */}
-            <FlashValue value={total + pfValueUsd}>
-              <AnimatedNumber value={heroValor} format={fmtHero} />
-            </FlashValue>
+            <NumeroQueCambia clave="cartera:total" value={heroValor} format={fmtHero} moneda={currency}
+              listo={numerosListos} conDiferencia={false} desdeCero />
           </div>
           <div className="ml-auto flex items-center gap-2 flex-shrink-0">
             <div className="inline-flex bg-bg-2 border border-line/60 rounded p-0.5" role="group" aria-label="Moneda">
@@ -1654,11 +1655,14 @@ export default function PositionsMobile() {
             {heroPnl >= 0
               ? <TrendingUp size={12} strokeWidth={1.75} aria-hidden="true" />
               : <TrendingDown size={12} strokeWidth={1.75} aria-hidden="true" />}
-            {montoCard(heroPnl, currency, { signed: true })}
+            <NumeroQueCambia clave="cartera:pnl" value={heroPnl} format={(n) => montoCard(n, currency, { signed: true })}
+              moneda={currency} listo={numerosListos} conDiferencia={false} />
             <span className="opacity-80">· {pctSigned(heroPct)}</span>
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 bg-bg-2 text-ink-2 tabular">
-            <span className="text-ink-3">Invertido</span>{montoCard(heroInvertido, currency)}
+            <span className="text-ink-3">Invertido</span>
+            <NumeroQueCambia clave="cartera:invertido" value={heroInvertido} format={(n) => montoCard(n, currency)}
+              moneda={currency} listo={numerosListos} conDiferencia={false} />
           </span>
         </div>
         {/* De cuándo son los precios y si se están moviendo. Reemplaza el
@@ -1773,6 +1777,7 @@ export default function PositionsMobile() {
                 onToggleUnificar={g.accountKey ? () => toggleCuentaSeparada(g.accountKey) : null}
                 positions={g.positions}
                 totalUsd={g.totalUsd}
+                listo={numerosListos}
                 totalPesoUsd={g.totalPesoUsd}
                 displayCurrency={currency}
                 tcValuacion={tcValuacion}
@@ -2350,6 +2355,7 @@ function FilaToggle({ label, hint, active, onToggle }) {
 
 const BrokerSection = memo(function BrokerSection({
   broker, positions, totalUsd, totalPesoUsd = null, displayCurrency = 'USD', tcValuacion = 1, conPista = false, onDeslizar,
+  listo = true,
   label, unified = false, puedeUnificarse = false, monedasCuenta = [], onToggleUnificar,
   onEdit, onDelete, brokerDe,
   onSellPosition, onBuyPosition, onAlertPosition, onCashFlowPosition, onConvertPosition,
@@ -2428,7 +2434,10 @@ const BrokerSection = memo(function BrokerSection({
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-sm font-semibold tabular text-ink-0">
             {/* Cuenta hasta el valor nuevo cuando llegan precios, como el total de arriba. */}
-            <AnimatedNumber value={displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd} format={(n) => montoCard(n, displayCurrency)} />
+            <NumeroQueCambia clave={`cartera:broker:${broker.name}:valor`}
+              value={displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd}
+              format={(n) => montoCard(n, displayCurrency)} moneda={displayCurrency}
+              listo={listo} conDiferencia={false} desdeCero />
           </span>
           <button
             type="button"
