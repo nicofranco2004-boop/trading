@@ -503,7 +503,12 @@ class BonoEnLaCuentaEnPesosTest(_Base):
         self.assertTrue(r.json()["cross_currency_skipped"])
         self.assertAlmostEqual(self._nominal("AL30"), 9200, places=4)
 
-    def test_cambiarle_la_cuenta_y_borrarlo_devuelve_la_plata_de_donde_entro(self):
+    def test_un_cobro_no_se_edita_se_borra_y_se_carga_de_nuevo(self):
+        """Hasta 2026-10-10 esta prueba editaba el cobro (le cambiaba la cuenta) y
+        medía que borrarlo devolviera la plata de donde entró. Editar un cobro
+        cambiaba la ganancia del mes o la cuenta de la fila sin tocar el efectivo
+        ni los nominales: ahora se rechaza con la explicación (igual que un
+        dividendo de la bandeja). La nota sí se puede cambiar."""
         r = self._pago(broker="Cocos", asset="AL30", date="2026-07-09",
                        coupon_amount=27, amort_amount=800, cash_broker="Cocos · USD")
         am = [p for p in r.json()["partes"] if p["op_type"] == "Amortización"][0]
@@ -511,8 +516,15 @@ class BonoEnLaCuentaEnPesosTest(_Base):
         body = {k: o[k] for k in ("date", "broker", "asset", "op_type", "entry_price",
                                   "exit_price", "quantity", "pnl_usd", "pnl_pct",
                                   "commissions", "currency", "fx_to_usd")}
-        body["broker"] = "Cocos"
-        self.assertEqual(self.client.put(f"/api/operations/{o['id']}", json=body).status_code, 200)
+        for cambio in ({"broker": "Cocos"}, {"pnl_usd": 500}, {"date": "2026-07-01"}):
+            resp = self.client.put(f"/api/operations/{o['id']}", json={**body, **cambio})
+            self.assertEqual(resp.status_code, 400, resp.text)
+            self.assertIn("borralo en Movimientos", resp.text)
+        self.assertEqual(self.client.put(f"/api/operations/{o['id']}",
+                                         json={**body, "notes": "lo vi en el resumen"}).status_code, 200)
+        despues = [x for x in self._ops("AL30") if x["id"] == o["id"]][0]
+        self.assertEqual((despues["pnl_usd"], despues["quantity"], despues["broker"]),
+                         (o["pnl_usd"], o["quantity"], o["broker"]))
         self.assertEqual(self.client.delete(
             f"/api/movements/op-{o['id']}-cobro").status_code, 200)
         # Los 800 salen de la cuenta en dólares (donde entraron); queda el cupón.

@@ -16376,50 +16376,14 @@ def _flujos_manuales_del_mes(me_row, importados: dict):
     return dep, wit
 
 
-# op_type de un cobro cargado a mano → tipo de movimiento. Ver `_cobro_manual`.
-_TIPO_DE_COBRO_MANUAL = {
-    "Dividendo": "DIVIDEND",
-    "Cupón": "DIVIDEND", "Cupon": "DIVIDEND", "Renta": "DIVIDEND",
-    "Interés": "INTEREST", "Interes": "INTEREST", "Interés PF": "INTEREST",
-    # La amortización de un bono es capital que vuelve, no un dividendo: tipo
-    # propio. Lo que entró va en `amount_usd` y sólo la GANANCIA en `pnl_usd`.
-    "Amortización": "AMORTIZATION", "Amortizacion": "AMORTIZATION",
-}
-
-
 def _cobro_manual(d: dict):
-    """Un COBRO cargado a mano (dividendo de la bandeja de Cartera, cupón de la
-    de bonos, interés) como movimiento: tipo, lo que entró en dólares y las
-    comisiones. None si la fila no es un cobro. UNA regla para Movimientos y
-    para el CSV del contador (`transactions.csv`); hasta 2026-10-09 los dos los
-    mostraban como "Venta".
-
-    Lo que entró: los dividendos de la bandeja lo guardan en `quantity`, en la
-    moneda de la fila; sólo se usa si la moneda está DICHA (USD, o ARS con su
-    TC). Filas viejas sin moneda (dividendos que perdieron su vínculo con el
-    import) tienen `quantity` en pesos: leerlas como dólares mostraba $ 14.500
-    como US$ 14.500 (auditoría 2026-10-09). Para ésas, y para los cupones (que
-    no guardan `quantity`), lo que entró es su resultado en dólares."""
-    tipo = _TIPO_DE_COBRO_MANUAL.get((d.get("op_type") or "").strip())
-    if not tipo:
-        return None
-    ccy = (d.get("currency") or "").upper()
-    fx = _safe_float_or_none(d.get("fx_to_usd")) or 0
-    pnl = realized_pnl.realized_usd(d) if d.get("pnl_usd") is not None else 0
-    cant = _safe_float_or_none(d.get("quantity"))
-    if cant and ccy in ("USD", "USDT"):
-        monto, div = cant, 1.0
-    elif cant and ccy == "ARS" and fx > 0:
-        monto, div = cant / fx, fx
-    else:
-        monto, div = pnl, (fx if (ccy == "ARS" and fx > 0) else 1.0)
-    return {
-        "type": tipo,
-        "amount_usd": monto,
-        "currency": ccy or "USD",
-        "fees_usd": (_safe_float_or_none(d.get("commissions")) or 0) / div,
-        "pnl_usd": pnl,
-    }
+    """Un COBRO cargado a mano (dividendo de la bandeja de Cartera, cupón o
+    amortización de la de bonos, interés) como movimiento: tipo, lo que entró en
+    dólares y las comisiones. None si la fila no es un cobro. La regla vive en
+    `realized_pnl.leer_cobro`: la misma para Movimientos, el CSV del contador
+    (`transactions.csv`) y lo que lee la IA. Hasta 2026-10-09 Movimientos y el
+    CSV los mostraban como "Venta"."""
+    return realized_pnl.leer_cobro(d)
 
 
 def _build_movements(uid: int):
@@ -18836,6 +18800,12 @@ def export_operations_csv(request: Request, uid: int = Depends(get_effective_use
                 if _leer_conversion_manual({**r, "op_type": r.get("tipo")})["desde_pesos"]:
                     continue
                 r["tipo"], r["asset"] = "Venta de USD", "USD"
+            # Un cobro (cupón, amortización, dividendo, interés) no tiene
+            # unidades: en `quantity` está la plata que entró, y bajo "Cantidad"
+            # el contador leía "800" nominales o "95.000" de un cupón en pesos.
+            # El monto cobrado está en transactions.csv; acá queda su ganancia.
+            if realized_pnl.es_cobro(r.get("tipo")):
+                r["quantity"] = None
             _ops.append(r)
         rows = _ops
     finally:
@@ -19616,6 +19586,31 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                 raise HTTPException(400,
                     "Este dividendo se anotó desde la bandeja de Cartera. Para corregirlo, "
                     "borralo en Movimientos y confirmalo de nuevo con los montos correctos.")
+            # Lo mismo un cobro de bono (cupón o amortización): la fila guarda lo
+            # que entró (`quantity`), la ganancia (`pnl_usd`) y la foto de lo que
+            # movió (efectivo, nominales de cada lote). Editarla acá cambiaba la
+            # ganancia del mes sin tocar el efectivo ni lo cobrado: Movimientos y
+            # Cartera seguían mostrando 27 y el mes sumaba 30 (auditoría
+            # 2026-10-10). La nota sí se puede cambiar: no mueve nada.
+            if meta_prev.get("src") == "bond_cashflow":
+                _antes = conn.execute(
+                    "SELECT date, broker, asset, op_type, quantity, pnl_usd, commissions "
+                    "FROM operations WHERE id=? AND user_id=?", (oid, uid)).fetchone()
+                _num = lambda v: round(float(v or 0), 6)
+                _igual = (_antes is not None
+                          and (op.date or "")[:10] == (_antes["date"] or "")[:10]
+                          and (op.broker or "") == (_antes["broker"] or "")
+                          and (op.asset or "").strip().upper() == (_antes["asset"] or "").strip().upper()
+                          and (op.op_type or "").strip() == (_antes["op_type"] or "").strip()
+                          and _num(op.pnl_usd) == _num(_antes["pnl_usd"])
+                          and (op.quantity is None or _num(op.quantity) == _num(_antes["quantity"]))
+                          and _num(op.commissions) == _num(_antes["commissions"]))
+                if not _igual:
+                    conn.close()
+                    raise HTTPException(400,
+                        "Este cobro se anotó desde Cartera (cupón o amortización de un bono). "
+                        "Para corregirlo, borralo en Movimientos y cargalo de nuevo con los "
+                        "montos correctos: así el efectivo y los nominales quedan coherentes.")
             if (_tipo_lo_puso_el_sistema(meta_prev, prev["op_type"])
                     and (op.op_type or "").strip() != (prev["op_type"] or "").strip()):
                 conn.close()
@@ -30385,9 +30380,11 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
         "positions": {"asset", "broker", "quantity", "invested", "buy_price",
                        "currency", "asset_type", "is_cash", "entry_date", "_kind"},
         # notes afuera a propósito: era el canal de texto libre por-item
+        # `fx_to_usd` y `commissions`: números que el servidor usa abajo para
+        # leer los cobros (cupones en pesos) en dólares; al modelo no le llegan.
         "operations": {"date", "broker", "asset", "op_type", "entry_price",
                         "exit_price", "quantity", "pnl_usd", "pnl_pct",
-                        "entry_date", "currency", "_kind"},
+                        "entry_date", "currency", "fx_to_usd", "commissions", "_kind"},
         "monthly": {"year", "month", "broker", "deposits", "withdrawals",
                      "pnl_realized", "pnl_unrealized", "capital_inicio",
                      "capital_final", "manual_deposits", "manual_withdrawals"},
@@ -30452,8 +30449,28 @@ def _sanitize_chat_snapshot(raw: dict) -> dict:
                 item["fx_pnl_usd"] = pnl   # ganancia cambiaria de la venta
             _ops.append(item)
             continue
-        if isinstance(o, dict) and "_kind" not in o:
-            o["_kind"] = "closed_trade"
+        # Los COBROS (cupón, amortización, dividendo, interés) tampoco son trades:
+        # `quantity` es la plata que entró —no unidades— y `pnl_usd` puede estar
+        # en pesos. Marcados 'closed_trade', el modelo recibía un cupón de
+        # $ 95.000 como `pnl_usd: 95000` (son US$ 76) y "800 unidades" de una
+        # amortización (auditoría 2026-10-10). Misma lectura que Movimientos.
+        _cobro = realized_pnl.leer_cobro(o) if isinstance(o, dict) else None
+        if _cobro:
+            _ops.append({
+                "date": o.get("date"),
+                "broker": o.get("broker"),
+                "asset": o.get("asset"),
+                "op_type": o.get("op_type"),
+                "amount_usd": round(float(_cobro["amount_usd"] or 0), 2),
+                "gain_usd": round(float(_cobro["pnl_usd"] or 0), 2),
+                "_kind": "income",
+            })
+            continue
+        if isinstance(o, dict):
+            o.pop("fx_to_usd", None)
+            o.pop("commissions", None)
+            if "_kind" not in o:
+                o["_kind"] = "closed_trade"
         _ops.append(o)
     sanitized["operations"] = _ops
 
@@ -33432,11 +33449,29 @@ def _execute_ai_tool_inner(name: str, input_data: dict, uid: int, request_id=Non
         with db_abierta() as conn:
             rows = conn.execute(
                 """SELECT date, op_type, entry_price, exit_price, quantity,
-                          pnl_usd, pnl_pct, entry_date
+                          pnl_usd, pnl_pct, entry_date, currency, fx_to_usd, commissions
                    FROM operations WHERE user_id=? AND asset=? ORDER BY date DESC""",
                 (uid, asset),
             ).fetchall()
-        return {"asset": asset, "operations": [dict(r) for r in rows], "count": len(rows)}
+        # Los cobros (cupón, amortización, dividendo, interés) con sus números de
+        # verdad: lo que entró y la ganancia, en dólares, sin "cantidad" (ahí está
+        # la plata cobrada, no unidades). Misma lectura que Movimientos.
+        ops_out = []
+        for r in rows:
+            d = dict(r)
+            cobro = realized_pnl.leer_cobro(d)
+            for k in ("currency", "fx_to_usd", "commissions"):
+                d.pop(k, None)
+            if cobro:
+                d = {"date": d.get("date"), "op_type": d.get("op_type"),
+                     "amount_usd": round(float(cobro["amount_usd"] or 0), 2),
+                     "gain_usd": round(float(cobro["pnl_usd"] or 0), 2),
+                     "kind": "income"}
+            ops_out.append(d)
+        return {"asset": asset, "operations": ops_out, "count": len(ops_out),
+                "_note": ("Las filas con kind='income' son cobros (cupón, amortización, "
+                          "dividendo, interés): amount_usd es lo que entró y gain_usd la "
+                          "ganancia, en dólares. No son compras ni ventas.")}
 
     elif name == "get_monthly_detail":
         # months debe ser int [1, 24]. El LLM puede mandar string o número
@@ -37760,7 +37795,7 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
 Es el LIBRO del asesor (_kind='advisor_book') — aum, clients, exposure, star, queues, distribution, ya descriptos en el modo asesor. TODO en USD al MEP. Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
         if book_mode else
         """REGLA CRÍTICA sobre los datos del usuario que vienen en el primer user message:
-El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Las operations con _kind='currency_conversion' son compras/ventas de dólares (usd_amount, ars_amount, tc): NO son trades, no cuentan como operaciones ganadas ni perdidas. Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
+El snapshot incluye summary, positions (ABIERTAS, _kind='open_position'), operations (CERRADAS, _kind='closed_trade'), monthly y brokers. Usá _kind para no confundir riesgo presente (open) con P&L histórico (closed). Las operations con _kind='currency_conversion' son compras/ventas de dólares (usd_amount, ars_amount, tc): NO son trades, no cuentan como operaciones ganadas ni perdidas. Las operations con _kind='income' son COBROS por tener el activo (cupón o amortización de un bono, dividendo, interés): amount_usd es lo que entró a la cuenta y gain_usd la parte que es ganancia, las dos en dólares (en una amortización el resto es capital propio que vuelve). No son compras ni ventas y no tienen cantidad ni precio. Si hay HECHOS DECLARADOS por el usuario, son verdad declarada — no los contradigas."""
     )
     system_text = f"""{base_system}
 
@@ -49331,7 +49366,7 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
     for r in conn.execute(
         f"""SELECT user_id, broker, asset, op_type,
                    {realized_pnl.realized_usd_sql()} AS pnl_usd,
-                   pnl_pct
+                   pnl_pct, cost_basis_consumed, currency, fx_to_usd
             FROM operations WHERE user_id IN ({ph}) AND pnl_usd IS NOT NULL""", ids
     ).fetchall():
         pnl = float(r["pnl_usd"] or 0)
@@ -49365,6 +49400,21 @@ def _advisor_realized_raw(conn, ids: list) -> dict:
             # La renta suma al resultado pero NO al capital invertido: no
             # invertiste para cobrar el cupón, el capital ya está contado.
             b["income_usd"] += pnl
+            continue
+
+        if "AMORTIZACION" in tipo:
+            # Espejo de assetPnl.js: la amortización no trae `pnl_pct`, pero su
+            # costo se sabe (`cost_basis_consumed`, en la moneda de la fila). Sin
+            # ese dato el lote conservó su costo y el cobro es renta. Antes
+            # marcaba el costo como incompleto y le borraba el % al bono.
+            cbc = r["cost_basis_consumed"]
+            if cbc is not None and float(cbc) > 0:
+                fx = float(r["fx_to_usd"] or 0)
+                en_pesos = (r["currency"] or "").upper() == "ARS" and fx > 0
+                b["realized_usd"] += pnl
+                b["cost_usd"] += float(cbc) / fx if en_pesos else float(cbc)
+            else:
+                b["income_usd"] += pnl
             continue
 
         b["realized_usd"] += pnl

@@ -40,6 +40,7 @@ import { computeBrokerValue, priceSymbol, isArUsdBroker, setBrokersRegistry, bui
 import { computeBestWorstClosedOp, monthlyReturnArs } from '../utils/insightsModel'
 import { esApto, esDibujable, baseIncomparable, esBordeFresco } from '../utils/evolution'
 import { esConversion } from '../utils/tradeStats'
+import { operacionesEnUsd } from '../utils/assetPnl'
 
 const MONTH_NAMES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
                      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']
@@ -216,7 +217,8 @@ export default function useMonthlyData({ broker = 'global' } = {}) {
         ])
         if (cancelled) return
         setMonthly(mon || [])
-        setOperations(ops || [])
+        // En dólares desde el borde (un cupón en pesos guarda pesos en `pnl_usd`).
+        setOperations(operacionesEnUsd(ops))
         setSnapshots(snaps || [])
         setPositions(pos || [])
         setBrokers(bkrs || [])

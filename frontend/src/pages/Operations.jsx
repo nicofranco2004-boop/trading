@@ -37,7 +37,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
-import { opPnlUsd } from '../utils/assetPnl'
+import { operacionesEnUsd } from '../utils/assetPnl'
 import { anotarCambioDeMovimiento } from '../utils/cambioDeMovimiento'
 import AnimatedNumber from '../components/AnimatedNumber'
 import FlashValue from '../components/FlashValue'
@@ -174,7 +174,7 @@ export default function Operations() {
       // en `pnl_usd_native`. Sin esto un cupón de $370.524 era el "Mejor trade
       // US$370.524" (medido, usuario real 2026-08).
       const rows = await api.get('/operations')
-      const filas = (rows || []).map(o => ({ ...o, pnl_usd_native: o.pnl_usd, pnl_usd: opPnlUsd(o) }))
+      const filas = operacionesEnUsd(rows)
       setOps(filas)
       return filas
     }
