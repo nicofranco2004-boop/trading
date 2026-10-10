@@ -243,8 +243,9 @@ export default function Operations() {
       kind: form.mueve_efectivo ? 'futures' : null,
     }
     // Operaciones donde el efectivo lo maneja otro mecanismo (importadas, ventas
-    // FIFO, cobros de bonos): no se manda ni prendido ni apagado. El backend lo
-    // ignora igual, pero mandar una orden que se descarta es pedir una confusión.
+    // FIFO, cobros) o que no tienen guardado de qué puerta salieron (las de antes
+    // de agosto de 2026): no se manda ni prendido ni apagado. El backend lo ignora
+    // igual, pero mandar una orden que se descarta es pedir una confusión.
     if (form.mueve_efectivo_editable === false) {
       delete body.mueve_efectivo
       delete body.kind
@@ -982,9 +983,11 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
   const mueveEfectivo = !!form.mueve_efectivo
   // Hay operaciones a las que el interruptor no se les puede tocar: las
   // importadas (el borrado lo resuelve el rebuild del import, así que un efectivo
-  // prendido acá no se revertiría nunca) y las que ya mueven plata por su cuenta
-  // —ventas FIFO, cobros de bonos—. El backend lo decide y lo manda en la fila;
-  // `undefined` es un alta, donde siempre se puede.
+  // prendido acá no se revertiría nunca), las que ya mueven plata por su cuenta
+  // —ventas FIFO, cobros— y las que no tienen guardado de qué puerta salieron
+  // (las de antes de agosto de 2026: casi todas son de un botón que ya acreditó).
+  // El backend lo decide y lo manda en la fila; `undefined` es un alta, donde
+  // siempre se puede.
   const puedeElegir = form.mueve_efectivo_editable !== false
   // El monto que se va a mover es el P&L. En un viaje de ida y vuelta (compra +
   // venta) la plata de la compra salió y volvió, así que el efecto NETO sobre el
@@ -1026,8 +1029,8 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           <div>
             <label className={labelClass}>Tipo</label>
             {/* Los tipos que pone el sistema (interés de plazo fijo, compra/venta de
-                dólares) no se editan: el backend lo rechaza, porque en una fila vieja
-                el tipo es lo único que dice que la plata ya se movió. */}
+                dólares) no se editan: el backend lo rechaza, porque el tipo decide
+                cómo se lee el monto de esa fila. */}
             <input value={form.op_type} onChange={e => setForm(f => ({ ...f, op_type: e.target.value }))} className={inputClass} placeholder="LONG, SHORT, Futuros…"
               disabled={form.tipo_editable === false}
               title={form.tipo_editable === false ? 'Lo puso el sistema: el cobro de un plazo fijo o una compra/venta de dólares' : undefined} />
@@ -1111,9 +1114,10 @@ export function OpFormModal({ mode, form, setForm, brokers, onSave, onClose }) {
           </div>
           {!puedeElegir && (
             <p className="text-[12.5px] leading-tight text-ink-2 font-medium">
-              En esta operación el efectivo ya lo maneja Rendi solo — viene de un
-              import, de una venta o del cobro de un bono. Tocarlo acá contaría la
-              misma plata dos veces, así que no se puede elegir.
+              En esta operación no se puede elegir: o el efectivo ya lo movió Rendi
+              solo —viene de un import, de una venta o de un cobro—, o se cargó antes
+              de que Rendi guardara cómo entró cada operación (agosto de 2026).
+              Prenderlo acá podría contar la misma plata dos veces.
             </p>
           )}
           {puedeElegir && (

@@ -95,6 +95,7 @@ def _setup_yfinance_cache():
 _setup_yfinance_cache()
 import fx as _fx
 import efectivo as _efectivo   # la única puerta por la que se mueve el saldo de un broker
+import renombre_broker as _renombre_broker   # el nombre del broker ADENTRO de lo guardado
 import dividendos as _dividendos   # bandeja de cobros de dividendos (Cartera)
 import realized_pnl          # criterio único de "P&L realizado en USD" (ver módulo)
 # El techo del % realizado y su regla viven en ese mismo módulo. Estaban acá
@@ -1148,6 +1149,7 @@ def init_db():
                 name TEXT NOT NULL,
                 currency TEXT NOT NULL DEFAULT 'USDT',
                 parent_broker_id INTEGER REFERENCES brokers(id) ON DELETE CASCADE,
+                nombres_anteriores TEXT,
                 UNIQUE(user_id, name)
             );
             -- Credenciales read-only por-usuario de brokers con API (Wallbit). La
@@ -1194,6 +1196,15 @@ def init_db():
         broker_cols = _table_cols(conn, 'brokers')
         if broker_cols and 'parent_broker_id' not in broker_cols:
             conn.execute("ALTER TABLE brokers ADD COLUMN parent_broker_id INTEGER REFERENCES brokers(id)")
+            conn.commit()
+        # brokers.nombres_anteriores (2026-10-10): JSON con los nombres que tuvo el
+        # broker antes de cada renombre. La huella con que el importador reconoce una
+        # fila ya importada lleva el NOMBRE del broker adentro de un hash: sin saber
+        # cómo se llamaba antes, renombrar y volver a importar duplicaba todo (ver
+        # renombre_broker.py). ALTER sin índice, después de que la tabla existe.
+        broker_cols = _table_cols(conn, 'brokers')
+        if broker_cols and 'nombres_anteriores' not in broker_cols:
+            conn.execute("ALTER TABLE brokers ADD COLUMN nombres_anteriores TEXT")
             conn.commit()
 
         # users — agregar columnas nuevas si la tabla ya existía
@@ -5355,83 +5366,22 @@ NAME_KEYED_TABLES = (
     # El detalle de lo cargado a mano: sin esto, renombrar el broker dejaba cada
     # carga apuntando a un nombre que ya no existe (2026-10-08).
     "flujos_a_mano",
+    # Los futuros ABIERTOS (2026-10-09): renombrar y después cerrar uno mandaba la
+    # ganancia, la operación y el mes al nombre viejo — plata en una caja invisible.
+    "futures_positions",
+    # El registro de borrados ("Deshacer" y la corrección de las fotos): la columna
+    # acá; lo que va ADENTRO de su JSON, en `renombre_broker.COLUMNAS_JSON`.
+    "deleted_ops_journal",
 )
-
-
-# Dónde guardan las recetas de borrado (y los "Deshacer" pendientes) un nombre de
-# broker. Si aparece una clave nueva con un broker adentro, va acá: el guardián
-# `test_operaciones_con_receta.ElRenombreLlegaALasRecetas` lo controla.
-# `lot_broker`: en un cobro de bono, la cuenta donde viven los lotes (el efectivo
-# puede haber entrado en la hermana «· USD»).
-_CLAVES_CON_BROKER = ("broker", "cash_broker", "lot_broker")   # el valor es un nombre
-_CLAVES_CON_BROKERS = ("brokers",)                    # lista de nombres
-_CLAVES_CON_PARES = ("pairs",)                        # lista de [padre, '· USD']
-_CLAVES_POR_BROKER = ("cash_by_broker",)              # {nombre: monto}
-# Otra receta adentro, como texto JSON: la del lote en una venta (`undo_meta`) y
-# la de la fila entera que guarda un "Deshacer" pendiente (`op_row`/`pos_row`).
-_CLAVES_CON_RECETA = ("undo_meta", "undo_meta_json")
-
-
-def _renombrar_broker_en(obj, viejo: str, nuevo: str):
-    """Devuelve `obj` (receta o journal ya leídos) con el broker `viejo` llamado
-    `nuevo` en las claves que guardan brokers. Nada más se toca: un activo o un
-    banco que se llamen igual que el broker no son el broker."""
-    if isinstance(obj, list):
-        return [_renombrar_broker_en(x, viejo, nuevo) for x in obj]
-    if not isinstance(obj, dict):
-        return obj
-    out = {}
-    for k, v in obj.items():
-        if k in _CLAVES_CON_BROKER and v == viejo:
-            out[k] = nuevo
-        elif k in _CLAVES_CON_BROKERS and isinstance(v, list):
-            out[k] = [nuevo if x == viejo else x for x in v]
-        elif k in _CLAVES_CON_PARES and isinstance(v, list):
-            out[k] = [[nuevo if x == viejo else x for x in par] if isinstance(par, list) else par
-                      for par in v]
-        elif k in _CLAVES_POR_BROKER and isinstance(v, dict):
-            out[k] = {(nuevo if b == viejo else b): m for b, m in v.items()}
-        elif k in _CLAVES_CON_RECETA and isinstance(v, str):
-            out[k] = _renombrar_broker_en_texto(v, viejo, nuevo)
-        else:
-            out[k] = _renombrar_broker_en(v, viejo, nuevo)
-    return out
-
-
-def _renombrar_broker_en_texto(texto, viejo: str, nuevo: str):
-    """Lo mismo sobre el texto JSON guardado. Si no cambia nada devuelve el texto
-    ORIGINAL, byte por byte: el borrado reclama la fila comparando ese texto."""
-    try:
-        obj = json.loads(texto)
-    except (ValueError, TypeError):
-        return texto
-    nuevo_obj = _renombrar_broker_en(obj, viejo, nuevo)
-    return texto if nuevo_obj == obj else json.dumps(nuevo_obj)
-
-
-def _renombrar_broker_en_recetas(conn, uid: int, viejo: str, nuevo: str) -> None:
-    """Las recetas de borrado guardan el NOMBRE del broker (a dónde vuelve la plata,
-    en qué broker vive el lote). Renombrar sin tocarlas dejaba el borrado frenado
-    con "ese broker ya no existe" para siempre — o, si después se creaba otro
-    broker con el nombre viejo, sacando la plata de ESE (auditoría 2026-10-09:
-    $514.794 salían del broker nuevo y el renombrado se quedaba con la plata).
-    También los "Deshacer" pendientes, que re-insertan filas con su broker."""
-    for tabla in ("operations", "positions"):
-        for r in conn.execute(
-                f"SELECT id, undo_meta_json FROM {tabla} "
-                "WHERE user_id=? AND undo_meta_json IS NOT NULL", (uid,)).fetchall():
-            t = _renombrar_broker_en_texto(r["undo_meta_json"], viejo, nuevo)
-            if t != r["undo_meta_json"]:
-                conn.execute(f"UPDATE {tabla} SET undo_meta_json=? WHERE id=? AND user_id=?",
-                             (t, r["id"], uid))
-    for r in conn.execute(
-            "SELECT id, broker, payload_json FROM deleted_ops_journal "
-            "WHERE user_id=? AND undone_at IS NULL", (uid,)).fetchall():
-        t = _renombrar_broker_en_texto(r["payload_json"], viejo, nuevo)
-        b = nuevo if r["broker"] == viejo else r["broker"]
-        if t != r["payload_json"] or b != r["broker"]:
-            conn.execute("UPDATE deleted_ops_journal SET payload_json=?, broker=? WHERE id=?",
-                         (t, b, r["id"]))
+# Además de estas columnas, el nombre vive ADENTRO de textos JSON (las recetas de
+# borrado, las secciones archivadas, el registro de borrados; la lista es
+# `renombre_broker.COLUMNAS_JSON`): eso lo reescribe
+# `_renombre_broker.renombrar_adentro`, en la misma transacción. Lo que NO se
+# reescribe y se resuelve al leer: las filas crudas de los imports ("Editar y
+# rehacer") y la huella del anti-duplicados (con `brokers.nombres_anteriores`).
+# `test_renombre_broker_recetas.py` revisa la cuenta después de renombrar (el nombre
+# viejo no puede quedar en ninguna columna de texto que sus escenarios escriban) y
+# compara cada caso con y sin renombre.
 
 
 @app.put("/api/brokers/{bid}")
@@ -5440,9 +5390,10 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
     """Renombra (o cambia la moneda de) un broker, con cascade del nombre.
 
     Como las tablas de data linkean al broker por NOMBRE (ver NAME_KEYED_TABLES),
-    un rename A → A2 reescribe el nombre en las 6 tablas dentro de UNA transacción
-    atómica. Un cascade parcial sería estrictamente peor que el bug original, así
-    que la atomicidad es obligatoria.
+    un rename A → A2 reescribe el nombre en todas esas tablas Y adentro de los JSON
+    que lo guardan (recetas de borrado, archivadas, registro de borrados: ver
+    `renombre_broker`) dentro de UNA transacción atómica. Un cascade parcial sería
+    estrictamente peor que el bug original, así que la atomicidad es obligatoria.
 
     Reglas adicionales:
       • Sibling USD (parent_broker_id IS NOT NULL): es plumbing derivado del padre.
@@ -5491,6 +5442,26 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                     "code": "broker_name_reserved",
                     "broker_name": new_name,
                     "message": "'global' es un nombre reservado del sistema. Elegí otro.",
+                },
+            )
+
+        # 2.6) El broker de una conexión automática. La sincronización de Wallbit busca
+        #      a su broker por el nombre FIJO "Wallbit" (`_wallbit_ensure_broker`, las
+        #      huellas ya importadas, la reconciliación): renombrado, la próxima
+        #      sincronización creaba OTRO "Wallbit" y cargaba toda la cuenta de nuevo
+        #      (auditoría 2026-10-10, con Wallbit simulado: dos brokers con la misma
+        #      tenencia y el mismo efectivo). Mientras esté conectado, no se renombra.
+        if name_changed and old_name == "Wallbit" and conn.execute(
+                "SELECT 1 FROM user_broker_credentials WHERE user_id=? AND broker='wallbit'",
+                (uid,)).fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "broker_conectado",
+                    "message": ("Este broker está conectado a Wallbit y se sincroniza por su "
+                                "nombre: si lo renombrás, la próxima sincronización cargaría "
+                                "todo de nuevo en otro broker. Para cambiarle el nombre, "
+                                "primero desconectá Wallbit."),
                 },
             )
 
@@ -5571,6 +5542,23 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
         #    ROLLBACK; lo convertimos en un 409 limpio en vez de un 500 crudo.
         try:
             with conn:
+                # El turno del usuario PRIMERO, y recién después se confirma que el
+                # nombre leído arriba sigue siendo el de hoy. Todo lo de abajo cambia
+                # "donde dice el nombre viejo": si otro renombre entró en el medio, el
+                # viejo ya no está en ningún lado, el broker quedaba con un nombre y
+                # sus filas y recetas con otro. Y un borrado que corre a la par lee la
+                # receta con el turno tomado: o ve la vieja entera o la nueva entera.
+                # (Lo mismo con el "· USD": que no lo hayan creado, borrado ni renombrado.)
+                _tomar_turno(conn, uid)
+                _hoy = conn.execute(
+                    "SELECT name FROM brokers WHERE id=? AND user_id=?", (bid, uid)).fetchone()
+                _sib_hoy = conn.execute(
+                    "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=?",
+                    (uid, bid)).fetchone()
+                if (not _hoy or _hoy["name"] != old_name
+                        or (_sib_hoy["name"] if _sib_hoy else None) != old_sibling):
+                    raise HTTPException(409, "El broker cambió mientras lo renombrabas. "
+                                             "Recargá la página y probá de nuevo.")
                 # brokers: nombre+moneda del padre, luego nombre del sibling (su moneda
                 # NO se toca — es plumbing interno USDT).
                 conn.execute(
@@ -5608,8 +5596,20 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                                 f"UPDATE {tbl} SET broker=? WHERE user_id=? AND broker=?",
                                 (new_n, uid, old_n),
                             )
-                    # Y adentro de las recetas de borrado y de los "Deshacer".
-                    _renombrar_broker_en_recetas(conn, uid, old_n, new_n)
+                # Y adentro de lo guardado como JSON (las recetas de borrado, las
+                # secciones archivadas, el registro de borrados; la lista es
+                # `renombre_broker.COLUMNAS_JSON`). Sin esto, borrar después de
+                # renombrar mandaba la plata a una caja a nombre del broker viejo
+                # (invisible) o frenaba con 409 para siempre. Todos los pares a la
+                # vez: padre y "· USD".
+                _renombre_broker.renombrar_adentro(conn, uid, dict(rename_pairs))
+                # Y el nombre que se deja queda anotado en el broker: es lo único que
+                # permite reconocer después lo que se importó con ese nombre (la
+                # huella del anti-duplicados lo lleva adentro de un hash).
+                _renombre_broker.anotar_nombre_anterior(conn, uid, bid, old_name, new_name)
+                if sibling is not None:
+                    _renombre_broker.anotar_nombre_anterior(
+                        conn, uid, sibling["id"], old_sibling, new_sibling)
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
@@ -16202,8 +16202,7 @@ def get_operations(uid: int = Depends(get_effective_user)):
         except (ValueError, TypeError):
             meta = {}
         # Para que el formulario no ofrezca una palanca que no puede funcionar.
-        d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(
-            importada, meta, d.get('op_type'))
+        d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(importada, meta)
         # Y el tipo, si lo puso el sistema (la edición lo rechaza si cambia).
         d['tipo_editable'] = not _tipo_lo_puso_el_sistema(meta, d.get('op_type'))
         # Lo que deshace borrarla, para que "Solo P/L" lo diga antes (como Movimientos).
@@ -19393,11 +19392,21 @@ def _meta_movio_efectivo(meta: dict) -> bool:
     return meta.get('src') == 'manual_futures'
 
 
-# Operaciones cuyo efectivo lo mueve OTRO mecanismo. El interruptor no se les
-# ofrece: sumarle éste sería contar la misma plata dos veces.
+# Las recetas que escribe el formulario de Operaciones (y el cierre de un futuro,
+# que usa la misma: ver `_meta_movio_efectivo`). Son las ÚNICAS a las que se les
+# ofrece el interruptor de efectivo — ver `_acepta_interruptor_de_efectivo`.
+_SRC_DEL_FORMULARIO = ('manual_form', 'manual_futures')
+
+# Operaciones cuyo efectivo lo mueve OTRO mecanismo: sumarle el interruptor sería
+# contar la misma plata dos veces.
 #   pf_cobro   — cobrar un plazo fijo acredita capital + interés (`cobrar_plazo_fijo`)
 #   conversion — comprar/vender dólares mueve las dos cajas (`create_conversion`)
 #   dividendo  — el confirmado desde la bandeja de Cartera (`dividendos.SRC`)
+# Desde 2026-10-10 esta lista ya no DECIDE nada (la regla pregunta "¿es del
+# formulario?", no "¿es de una de éstas?": una puerta que falte acá queda cerrada
+# igual). Es el registro de las otras puertas, y el guardián de
+# `test_operaciones_con_receta.py` exige que entre las dos listas esté toda
+# receta que el borrado sabe leer.
 _SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow', 'pf_cobro', 'conversion',
                             _dividendos.SRC)
 
@@ -19410,8 +19419,11 @@ def _op_type_con_efectivo_propio(op_type) -> bool:
     el interés en pesos leído como dólares y multiplicado por el TC, encima de lo
     que ya había entrado al cobrarlo.
 
-    Los cupones y las ventas viejas NO entran: esos tipos también se tipean en el
-    formulario, y una fila vieja sin receta no dice de cuál de las dos salió."""
+    Desde 2026-10-10 esto ya NO decide la palanca de efectivo —sin receta no se
+    ofrece, sea del tipo que sea: ver `_acepta_interruptor_de_efectivo`—. Queda
+    para lo otro que hace: que a estas filas no se les cambie el tipo
+    (`_tipo_lo_puso_el_sistema`). Los cupones y las ventas no entran porque esos
+    tipos también se tipean en el formulario."""
     return ((op_type or "").strip() == 'Interés PF'
             or realized_pnl.es_conversion(op_type))
 
@@ -19425,40 +19437,61 @@ def _tipo_lo_puso_el_sistema(meta: dict, op_type) -> bool:
     """¿La fila la escribió el cobro de un plazo fijo o una compra/venta de dólares?
     Su tipo no se edita: en una fila VIEJA sin receta el tipo es lo único que dice
     de qué puerta salió, y cambiarlo a "Venta" y volver a editar reabría la palanca
-    de efectivo (auditoría 2026-10-09: dos ediciones y se acreditaban $20.934.245)."""
+    de efectivo (auditoría 2026-10-09: dos ediciones y se acreditaban $20.934.245).
+
+    Desde 2026-10-10 la palanca ya no mira el tipo, así que ese ataque no existe
+    más. El bloqueo queda por lo otro que hace el tipo: decide cómo se LEE el
+    monto (un 'Interés PF' está en la moneda del broker — `realized_pnl`,
+    `_NATIVE_CCY_OPS`—, y una conversión no cuenta como operación cerrada)."""
     src = (meta or {}).get('src')
     if src in ('pf_cobro', 'conversion'):
         return True
     return not src and _op_type_con_efectivo_propio(op_type)
 
 
-def _acepta_interruptor_de_efectivo(importada: bool, meta: dict, op_type=None) -> bool:
+def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
     """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
 
-    Sólo a las CARGADAS A MANO y que no muevan plata por su cuenta:
+    Sólo a las que su RECETA dice que salieron del formulario:
 
       • Importadas — su borrado lo resuelve el rebuild del import (la fila de
         `import_op_links` manda sobre la foto de reverso), así que un efectivo
         prendido acá no se revertiría nunca: quedaría plata fabricada. Y además
         ya acreditaron, porque eso lo hace el importador.
-      • Ventas FIFO, cobros de bonos, cobros de plazo fijo y conversiones —
-        acreditan por su propio camino. Las nuevas lo dicen en su receta; las
-        viejas sin receta, por su tipo (`_op_type_con_efectivo_propio`).
+      • Ventas FIFO, cobros de bonos, cobros de plazo fijo, conversiones y
+        dividendos de la bandeja — acreditan por su propio camino, y lo dicen
+        en su receta (`_SRC_CON_EFECTIVO_PROPIO`).
+      • SIN RECETA — no se sabe de qué puerta salió la fila, así que no se
+        ofrece mover plata (decisión de Nico, 2026-10-10). Son las filas de
+        antes del 2026-08-06, y la que alguna puerta escriba sin receta por
+        error: la regla falla para el lado que no fabrica plata.
+      • Con una receta que no se reconoce (ilegible, sin `src`, o de una
+        puerta nueva que nadie anotó) — lo mismo. Por eso la pregunta es "¿es
+        del formulario?" (`_SRC_DEL_FORMULARIO`) y no "¿es de una puerta
+        conocida?": la primera versión de esta regla era una lista de puertas
+        a excluir, y una receta con cualquier otro texto conseguía la palanca.
 
-    `op_type` es el GUARDADO, no el que manda la edición: lo que importa es de
-    qué puerta salió la fila, y cambiarle el tipo no le saca la plata que movió.
+    Por qué sin receta es NO y no "depende del tipo". Hasta 2026-10-10 era al
+    revés (se ofrecía salvo a los tipos conocidos), con el argumento de que un
+    'Cupón' o una 'Venta' viejos podían haberse tipeado en el formulario. Medido
+    en la copia de producción del 2026-08-16: de 1.066 filas viejas de esos
+    tipos, 1.066 eran del botón —que ya había acreditado— y ninguna tipeada; y
+    por HTTP, prenderles la palanca duplicaba el cobro (un cupón de $10.000 en
+    un broker en pesos acreditaba $14.150.000: los pesos leídos como dólares ×
+    el TC). Además, prenderla le dejaba a la fila una receta de formulario, y
+    con eso el borrado —que a una fila vieja la frena— la sacaba del historial
+    sin deshacer lo que había hecho el botón. Y el tipo es texto libre que se
+    edita: una regla que lo mire se abre en dos pasos.
+
+    No recibe el tipo a propósito. Lo que importa es de qué puerta salió la
+    fila, y eso lo dice la receta o no lo dice nadie.
 
     Se calcula en UN lugar y lo usan los dos lados: el GET se lo cuenta al
     formulario (para no mostrar una palanca que no hace nada) y el PUT lo hace
     valer (para que mandarlo igual no mueva plata)."""
-    if importada:
+    if importada or not isinstance(meta, dict):
         return False
-    src = (meta or {}).get('src')
-    if src in _SRC_CON_EFECTIVO_PROPIO:
-        return False
-    # Con receta de formulario (manual_form/manual_futures) la tipeó la persona,
-    # aunque le haya puesto ese tipo: la palanca es suya.
-    return bool(src) or not _op_type_con_efectivo_propio(op_type)
+    return meta.get('src') in _SRC_DEL_FORMULARIO
 
 
 def _cash_nativo_de_meta(conn, uid: int, meta: dict, broker: str, fecha: str) -> float:
@@ -19650,14 +19683,21 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
             movia_antes = _meta_movio_efectivo(meta_prev)
             pedido = _pide_mover_efectivo(op)
             # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
-            # ventas FIFO, cobros de bonos y de plazos fijos, conversiones): su efectivo
-            # lo mueve otro mecanismo. El formulario ya no se los ofrece; acá se hace
-            # valer igual, porque un cliente viejo —o uno que reintente— puede mandarlo.
+            # ventas FIFO, cobros de bonos y de plazos fijos, conversiones, y toda fila
+            # sin receta): su efectivo lo mueve otro mecanismo, o no se sabe quién lo
+            # movió. El formulario ya no se los ofrece; acá se hace valer igual, porque
+            # un cliente viejo —o uno que reintente— puede mandarlo.
             importada = conn.execute(
                 "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
             ).fetchone() is not None
-            if not _acepta_interruptor_de_efectivo(importada, meta_prev, prev["op_type"]):
+            if not _acepta_interruptor_de_efectivo(importada, meta_prev):
+                # Ni por pedido ni por arrastre. Sin esto, una receta que dijera
+                # "ya movía plata" sin decir de qué puerta salió (no la escribe
+                # nadie, pero es lo que se vería en una fila dañada) hacía que
+                # corregirle el resultado moviera la diferencia y, de paso, le
+                # dejara una receta de formulario — con palanca y con borrado.
                 pedido = None
+                movia_antes = False
             # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
             mueve_ahora = movia_antes if pedido is None else pedido
 
@@ -19688,8 +19728,8 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                 undo_meta_nuevo = json.dumps(meta_nuevo)
 
             # EL RECLAMO. El WHERE repite lo que se leyó y de lo que depende la
-            # cuenta de arriba (la foto, el broker, la fecha y el tipo —que decide si
-            # la palanca vale en una fila vieja—). Si otro pedido lo
+            # cuenta de arriba (la foto, el broker, la fecha y el tipo —del que
+            # depende si el tipo se puede cambiar—). Si otro pedido lo
             # cambió en el medio, esto no toca ninguna fila y no se movió nada.
             reclamo = conn.execute(
                 """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,
@@ -41761,7 +41801,8 @@ def _wallbit_do_sync(conn, uid: int, api_key: str, *, full: bool) -> dict:
         # 1) Trades → posiciones/P&L
         seen = _wallbit_confirmed_fingerprints(conn, uid)
         # `trades_to_normalized` ya numera row_index 1..N en orden de fecha.
-        _dup = _import_pipeline.duplicate_row_indices_by_count(seen, txs)
+        _dup = _import_pipeline.duplicate_row_indices_by_count(
+            seen, txs, anteriores=_renombre_broker.nombres_anteriores(conn, uid))
         new_txs = [t for t in txs if t.row_index not in _dup]
         res["new_trades"] = len(new_txs)
         if new_txs:

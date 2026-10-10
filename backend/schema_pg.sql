@@ -693,6 +693,7 @@ CREATE TABLE IF NOT EXISTS brokers (
   name text NOT NULL,
   currency text NOT NULL DEFAULT 'USDT',
   parent_broker_id bigint,
+  nombres_anteriores text,
   UNIQUE (user_id, name)
 );
 
@@ -703,6 +704,8 @@ ALTER TABLE brokers ADD COLUMN IF NOT EXISTS name text;
 ALTER TABLE brokers ADD COLUMN IF NOT EXISTS currency text DEFAULT 'USDT';
 
 ALTER TABLE brokers ADD COLUMN IF NOT EXISTS parent_broker_id bigint;
+
+ALTER TABLE brokers ADD COLUMN IF NOT EXISTS nombres_anteriores text;
 
 CREATE TABLE IF NOT EXISTS config (
   key text NOT NULL,
