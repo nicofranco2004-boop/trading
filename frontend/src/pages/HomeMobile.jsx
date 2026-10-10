@@ -19,6 +19,8 @@ import { ArrowRight, TrendingUp, TrendingDown, Eye, EyeOff } from 'lucide-react'
 import MiniSparkline from '../components/MiniSparkline'
 import FlashValue from '../components/FlashValue'
 import AnimatedNumber from '../components/AnimatedNumber'
+import RecalculoDeCartera from '../components/RecalculoDeCartera'
+import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import Skeleton from '../components/Skeleton'
 import Panel from '../components/Panel'
 import YearReturnLine from '../components/YearReturnLine'
@@ -299,9 +301,23 @@ export default function HomeMobile() {
     return { pnlMonth, pnlMonthMeta: monthDelta, pnlDay, pnlDayMeta: daily, aportado, bestAsset }
   }, [snapshots, positions, prices, compareValue, aportado, brokers, tcCripto, tcCedear])
 
+  // Si en Movimientos se borró algo, Inicio (la primera pantalla con total del
+  // celular) lo muestra recalculándose: del último total visto acá al nuevo.
+  // Antes del `if (loading) return` (regla: el hook no va después de un return).
+  const totalUsd = totals.totalValue + pf.valueUsd
+  const recalculo = useRecalculoDeCartera({ total: totalUsd, moneda: 'USD', listo: !loading, pantalla: 'inicio' })
+  const fmtRecalculo = (usd) => currency === 'ARS'
+    ? `$ ${(usd * tcValuacion).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `US$ ${Number(usd).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const avisoRecalculo = (
+    <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
+      total={totalUsd} formato={fmtRecalculo} oculto={hidden} />
+  )
+
   if (loading) {
     return (
       <div className="px-4 py-6 space-y-5" aria-busy="true" aria-live="polite">
+        {avisoRecalculo}
         <div className="space-y-2">
           <Skeleton className="h-3 w-24" />
           <Skeleton className="h-12 w-48" />
@@ -317,6 +333,7 @@ export default function HomeMobile() {
 
   return (
     <div className="pb-8">
+      {avisoRecalculo}
       {/* ── 0. Onboarding checklist (mobile) ────────────────────────────
           Solo visible si el user no completó todos los items. Padding
           horizontal matchea el resto de la home mobile. */}

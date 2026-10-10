@@ -20,6 +20,9 @@ import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../ut
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
+import DividendosPorCobrar from '../components/DividendosPorCobrar'
+import RecalculoDeCartera from '../components/RecalculoDeCartera'
+import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition } from '../utils/tickers'
 import { buildPositionActions } from '../utils/positionActions'
@@ -118,6 +121,7 @@ function PositionsDesktop() {
   const [dolar, setDolar] = useState(null)
   const [brokers, setBrokers] = useState([])
   const [snapshots, setSnapshots] = useState([])
+  const [cargaLista, setCargaLista] = useState(false)
   const toast = useToast()
   const navigate = useNavigate()
   const [modal, setModal] = useState(null)
@@ -364,7 +368,8 @@ function PositionsDesktop() {
         decrement_quantity: false,
       })
       toast.push(`${item.asset} · cupón del ${item.date} registrado · +${item.currency} ${(item.coupon || item.total).toFixed(2).replace('.', ',')}`, { type: 'success' })
-      await loadAll()
+      await anotarCobro({ texto: `cupón de ${item.asset}`,
+        monto: `+${item.currency} ${(item.coupon || item.total).toFixed(2).replace('.', ',')}` })
     } catch (e) {
       toast.push(`No se pudo registrar: ${e.message}`, { type: 'error' })
     }
@@ -419,9 +424,11 @@ function PositionsDesktop() {
 
   // Tras registrar un cupón/amortización: recargar positions (cash actualizado)
   // + refrescar el listado de cobranzas para el bond expandable.
-  async function onBondCashflowSuccess() {
+  async function onBondCashflowSuccess(cobro) {
     setBondCashflow(null)
-    await loadAll()
+    // El modal avisa qué se cobró; sin eso (un llamador viejo), sólo se recarga.
+    if (cobro) await anotarCobro(cobro)
+    else await loadAll()
   }
 
   function toggleDetail(brokerName) {
@@ -433,7 +440,11 @@ function PositionsDesktop() {
   }
 
   useEffect(() => {
-    loadAll()
+    // `cargaLista`: posiciones Y precios llegaron (loadAll espera a los precios):
+    // recién ahí el total es el de verdad (ver useRecalculoDeCartera).
+    // Si la carga falla, NO queda "lista": se recordaría un total de 0 o a
+    // medias como el último visto (auditoría 2026-10-09).
+    loadAll().then(ok => { if (ok) setCargaLista(true) })
     // Precios cada 90 s, sólo con la pestaña a la vista (relojVisible, el
     // mismo reloj de la cinta y las secciones de mercado). Antes era un
     // setInterval que seguía pidiendo con la pestaña oculta.
@@ -486,8 +497,10 @@ function PositionsDesktop() {
       setBondSkips(skips || [])
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
+      return true
     } catch (e) {
       console.error('Positions loadAll error:', e)
+      return false
     }
   }
 
@@ -1744,6 +1757,14 @@ function PositionsDesktop() {
   // Cifras del hero según el display: ARS → nativas (mode-independent); USD → reflejan
   // el modo (en 'purchase' el invertido/P&L en USD absorben la devaluación).
   const isArsDisp = displayCurrency === 'ARS'
+  // Después de anotar un cobro (dividendo, cupón) —acá o, antes de entrar, en
+  // Movimientos— el total se muestra recalculándose. Ver RecalculoDeCartera.
+  const recalculo = useRecalculoDeCartera({
+    total: isArsDisp ? heroValueArs : heroValue, moneda: displayCurrency, listo: cargaLista,
+  })
+  const anotarCobro = (cobro) => recalculo.anotar(cobro, async () => {
+    if (await loadAll()) setCargaLista(true)
+  })
   const heroPnlDisp = isArsDisp ? heroPnlArs : heroPnl
   const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 
@@ -1893,6 +1914,8 @@ function PositionsDesktop() {
 
   return (
     <div className="page-shell-xwide">
+      <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
+        total={isArsDisp ? heroValueArs : heroValue} formato={isArsDisp ? fmtArs : fmtUsd} oculto={hidden} />
       <PageHeader
         eyebrow="Posiciones / Activas"
         title="Tu cartera en vivo"
@@ -1943,6 +1966,11 @@ function PositionsDesktop() {
         confirmando={confirmando.activo}
         onSkip={skipPendingCashflow}
       />
+
+      {/* Dividendos que las empresas ya pagaron y el usuario no anotó. Mismo
+          componente en Cartera de celular (R6): datos y acciones en
+          hooks/useDividendosPorCobrar. */}
+      <DividendosPorCobrar positions={positions} brokers={brokers} mep={tcMepStrict} onCambio={anotarCobro} className="mb-6" />
 
       {/* CEDEARs con cambio de ratio (split) sin ajustar → pérdida fantasma.
           Detecta y ofrece el ajuste de un clic. */}

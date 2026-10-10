@@ -127,10 +127,18 @@ class ConRecetaBase(unittest.TestCase):
             "SELECT * FROM operations WHERE user_id=? ORDER BY id DESC LIMIT 1",
             (self.uid,)).fetchone())
 
+    def _fila_de_movimientos(self, op):
+        """La fila de esa operación tal como la recibe Movimientos (su id cambia
+        según cómo se muestre: `-fx` una conversión, `-cobro` un interés…)."""
+        filas = [m for m in self._ok(self.http.get("/api/movements"))
+                 if m.get("ref_id") == op["id"] and str(m["id"]).startswith("op-")
+                 and not str(m["id"]).endswith("-buy")]
+        self.assertEqual(len(filas), 1, f"la operación {op['id']} no sale una vez en Movimientos")
+        return filas[0]
+
     def _borrar(self, op, puerta="movimientos", codigo=200):
         if puerta == "movimientos":
-            sufijo = "fx" if main.realized_pnl.es_conversion(op["op_type"]) else "sell"
-            r = self.http.delete(f"/api/movements/op-{op['id']}-{sufijo}")
+            r = self.http.delete(f"/api/movements/{self._fila_de_movimientos(op)['id']}")
         else:
             r = self.http.delete(f"/api/operations/{op['id']}")
         return self._ok(r, codigo)
@@ -303,8 +311,9 @@ class LaConversionSeBorraYSeDeshace(ConRecetaBase):
     def test_doble_click_en_borrar_y_en_deshacer_mueve_la_plata_una_vez(self):
         self._depositar(self.PESOS, 1_000_000)
         op = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        id_mov = self._fila_de_movimientos(op)["id"]
         token = self._borrar(op)["undo_token"]
-        r = self.http.delete(f"/api/movements/op-{op['id']}-fx")
+        r = self.http.delete(f"/api/movements/{id_mov}")
         self.assertIn(r.status_code, (404, 409), r.text)
         self.assertEqual(self.estado()["cajas"][self.PESOS], (1_000_000.0, None))
         self._deshacer(token)
@@ -422,8 +431,9 @@ class BorrarElInteresDeshaceElCobro(ConRecetaBase):
         pid = self._plazo_fijo(500_000, desde=self.PESOS)
         self._cobrar(pid, self.PESOS)
         interes = self._ultima_op()
+        id_mov = self._fila_de_movimientos(interes)["id"]
         self._borrar(interes)
-        r = self.http.delete(f"/api/movements/op-{interes['id']}-sell")
+        r = self.http.delete(f"/api/movements/{id_mov}")
         self.assertIn(r.status_code, (404, 409), r.text)
         self.assertEqual(self.estado()["cajas"][self.PESOS], (500_000.0, None))
 
@@ -432,8 +442,8 @@ class BorrarElInteresDeshaceElCobro(ConRecetaBase):
         pid = self._plazo_fijo(500_000, desde=self.PESOS)
         cobro = self._cobrar(pid, self.PESOS)
         interes = self._ultima_op()
-        fila = [m for m in self._ok(self.http.get("/api/movements"))
-                if m["id"] == f"op-{interes['id']}-sell"][0]
+        fila = self._fila_de_movimientos(interes)
+        self.assertEqual(fila["type"], "INTEREST")      # un cobro, no una "venta"
         self.assertEqual(fila["deshace_cobro_pf"], {
             "banco": "Galicia", "monto": cobro["monto"], "broker": self.PESOS, "moneda": "ARS"})
 
@@ -445,12 +455,11 @@ class BorrarElInteresDeshaceElCobro(ConRecetaBase):
         self.conn.execute("UPDATE operations SET undo_meta_json=NULL WHERE id=?", (interes["id"],))
         self.conn.commit()
         antes = self.estado()
-        r = self.http.delete(f"/api/movements/op-{interes['id']}-sell")
+        fila = self._fila_de_movimientos(interes)
+        self.assertIsNone(fila["deshace_cobro_pf"])
+        r = self.http.delete(f"/api/movements/{fila['id']}")
         self.assertEqual(r.status_code, 400, r.text)
         self.assertMismaCuenta(antes, self.estado(), "después del 400")
-        fila = [m for m in self._ok(self.http.get("/api/movements"))
-                if m["id"] == f"op-{interes['id']}-sell"][0]
-        self.assertIsNone(fila["deshace_cobro_pf"])
 
 
 class LaPalancaDeEfectivoNoSeOfrece(ConRecetaBase):
@@ -763,6 +772,10 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
         ("scripts/seed_f1.py", "<módulo>"): "script de desarrollo",
         ("scripts/base_sintetica.py", "poblar"): "base sintética para medir, no producción",
         ("scripts/test_bot_profile_boundaries.py", "*"): "script de prueba del bot",
+        ("dividendos.py", "restaurar_reemplazados"):
+            "al revertir un import, vuelve el dividendo confirmado que ese import había "
+            "reemplazado: re-inserta la fila ENTERA guardada (`op_json`: todas las columnas "
+            "menos el id), receta incluida",
     }
     # Las que insertan con el nombre de la tabla en una variable, y por qué está bien.
     DINAMICO = {
@@ -862,6 +875,21 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
                          "inserta en una tabla que no se ve en el texto: si puede ser "
                          "`operations`, que lleve la receta, y anotalo en DINAMICO")
 
+    @staticmethod
+    def _srcs_que_atiende(borrado):
+        """Los `src` que el borrado compara: literales (`src == "fifo_sell"`) o
+        constantes de otro módulo (`src == _dividendos.SRC`)."""
+        out = set()
+        for c in ast.walk(borrado):
+            if not (isinstance(c, ast.Compare) and getattr(c.left, "id", None) == "src"):
+                continue
+            v = c.comparators[0]
+            if isinstance(v, ast.Constant):
+                out.add(v.value)
+            elif isinstance(v, ast.Attribute) and isinstance(v.value, ast.Name):
+                out.add(getattr(getattr(main, v.value.id), v.attr))
+        return out
+
     def test_toda_receta_que_se_escribe_la_sabe_leer_el_borrado(self):
         """Cada `src` que una puerta escribe en una operación lo atiende
         `_delete_manual_operation_cascade`; si no, la fila nace con receta y el
@@ -869,9 +897,7 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
         arbol = ast.parse(open(MAIN, encoding="utf-8").read())
         borrado = [f for f in ast.walk(arbol) if isinstance(f, ast.FunctionDef)
                    and f.name == "_delete_manual_operation_cascade"][0]
-        atiende = {c.comparators[0].value for c in ast.walk(borrado)
-                   if isinstance(c, ast.Compare) and getattr(c.left, "id", None) == "src"
-                   and isinstance(c.comparators[0], ast.Constant)}
+        atiende = self._srcs_que_atiende(borrado)
         escritas = set()
         for fn in ast.walk(arbol):
             if not isinstance(fn, ast.FunctionDef):
@@ -902,9 +928,7 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
         arbol = ast.parse(open(MAIN, encoding="utf-8").read())
         borrado = [f for f in ast.walk(arbol) if isinstance(f, ast.FunctionDef)
                    and f.name == "_delete_manual_operation_cascade"][0]
-        atiende = {c.comparators[0].value for c in ast.walk(borrado)
-                   if isinstance(c, ast.Compare) and getattr(c.left, "id", None) == "src"
-                   and isinstance(c.comparators[0], ast.Constant)}
+        atiende = self._srcs_que_atiende(borrado)
         self.assertEqual(atiende - {"manual_form", "manual_futures"},
                          set(main._SRC_CON_EFECTIVO_PROPIO))
 
