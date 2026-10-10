@@ -135,6 +135,7 @@ class CobrosDeBonosAlAzarTest(unittest.TestCase):
         self.bajado = {}        # bono → nominales que le bajaron los cobros
         self.vivos = {}         # id de operación a mano → lo que la prueba mandó
         self.importado = set()  # (bono, fecha) que ya vino en un archivo
+        self.salteado = set()   # (bono, fecha) cuyo renglón del archivo se salteó
 
     def _importar(self, broker, *rows):
         r = self.c.post("/api/imports/preview",
@@ -346,6 +347,11 @@ class CobrosDeBonosAlAzarTest(unittest.TestCase):
         if (asset, fecha) in self.importado:
             self._cuenta(que, False)
             return viejo                 # ya importado: un segundo archivo igual es otro tema
+        # El renglón que se salteó por estar anotado a mano queda EXCLUIDO, como una
+        # fila borrada: subir de nuevo el mismo archivo no lo trae (aunque después se
+        # haya borrado el cobro a mano — ahí la bandeja lo vuelve a ofrecer). Se sube
+        # igual, para medir que de verdad no entra nada.
+        ya_salteado = (asset, fecha) in self.salteado
         dia = fecha[:8] + "10"
         del_archivo = cup + amo
         if asset == "AL30":
@@ -364,7 +370,9 @@ class CobrosDeBonosAlAzarTest(unittest.TestCase):
         montos = {t: v["monto"] for t, (_, v) in mios.items()}
         parecido = lambda a: abs(a - del_archivo) <= TOLERANCIA * max(a, del_archivo)
         grupos = [montos.get("Cupón"), montos.get("Amortización"), sum(montos.values()) if montos else None]
-        if not mios:
+        if ya_salteado:
+            entra, reemplaza = False, False
+        elif not mios:
             entra, reemplaza = True, False
         elif any(g and parecido(g) for g in grupos):
             entra, reemplaza = False, False
@@ -380,6 +388,8 @@ class CobrosDeBonosAlAzarTest(unittest.TestCase):
         if reemplaza:
             for op_id, _ in mios.values():
                 self._sacar(op_id)
+        if not entra:
+            self.salteado.add((asset, fecha))
         if entra:
             self.importado.add((asset, fecha))
             self.caja[cuenta] = self.caja.get(cuenta, 0) + del_archivo
