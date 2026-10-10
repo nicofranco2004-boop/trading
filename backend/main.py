@@ -15862,8 +15862,7 @@ def get_operations(uid: int = Depends(get_effective_user)):
         except (ValueError, TypeError):
             meta = {}
         # Para que el formulario no ofrezca una palanca que no puede funcionar.
-        d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(
-            importada, meta, d.get('op_type'))
+        d['mueve_efectivo_editable'] = _acepta_interruptor_de_efectivo(importada, meta)
         # Y el tipo, si lo puso el sistema (la edición lo rechaza si cambia).
         d['tipo_editable'] = not _tipo_lo_puso_el_sistema(meta, d.get('op_type'))
         # Lo que deshace borrarla, para que "Solo P/L" lo diga antes (como Movimientos).
@@ -19087,8 +19086,11 @@ def _op_type_con_efectivo_propio(op_type) -> bool:
     el interés en pesos leído como dólares y multiplicado por el TC, encima de lo
     que ya había entrado al cobrarlo.
 
-    Los cupones y las ventas viejas NO entran: esos tipos también se tipean en el
-    formulario, y una fila vieja sin receta no dice de cuál de las dos salió."""
+    Desde 2026-10-10 esto ya NO decide la palanca de efectivo —sin receta no se
+    ofrece, sea del tipo que sea: ver `_acepta_interruptor_de_efectivo`—. Queda
+    para lo otro que hace: que a estas filas no se les cambie el tipo
+    (`_tipo_lo_puso_el_sistema`). Los cupones y las ventas no entran porque esos
+    tipos también se tipean en el formulario."""
     return ((op_type or "").strip() == 'Interés PF'
             or realized_pnl.es_conversion(op_type))
 
@@ -19109,21 +19111,37 @@ def _tipo_lo_puso_el_sistema(meta: dict, op_type) -> bool:
     return not src and _op_type_con_efectivo_propio(op_type)
 
 
-def _acepta_interruptor_de_efectivo(importada: bool, meta: dict, op_type=None) -> bool:
+def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
     """¿Se le puede prender o apagar el movimiento de efectivo a esta operación?
 
-    Sólo a las CARGADAS A MANO y que no muevan plata por su cuenta:
+    Sólo a las que su RECETA dice que salieron del formulario:
 
       • Importadas — su borrado lo resuelve el rebuild del import (la fila de
         `import_op_links` manda sobre la foto de reverso), así que un efectivo
         prendido acá no se revertiría nunca: quedaría plata fabricada. Y además
         ya acreditaron, porque eso lo hace el importador.
-      • Ventas FIFO, cobros de bonos, cobros de plazo fijo y conversiones —
-        acreditan por su propio camino. Las nuevas lo dicen en su receta; las
-        viejas sin receta, por su tipo (`_op_type_con_efectivo_propio`).
+      • Ventas FIFO, cobros de bonos, cobros de plazo fijo, conversiones y
+        dividendos de la bandeja — acreditan por su propio camino, y lo dicen
+        en su receta (`_SRC_CON_EFECTIVO_PROPIO`).
+      • SIN RECETA — no se sabe de qué puerta salió la fila, así que no se
+        ofrece mover plata (decisión de Nico, 2026-10-10). Son las filas de
+        antes del 2026-08-06, y la que alguna puerta escriba sin receta por
+        error: la regla falla para el lado que no fabrica plata.
 
-    `op_type` es el GUARDADO, no el que manda la edición: lo que importa es de
-    qué puerta salió la fila, y cambiarle el tipo no le saca la plata que movió.
+    Por qué sin receta es NO y no "depende del tipo". Hasta 2026-10-10 era al
+    revés (se ofrecía salvo a los tipos conocidos), con el argumento de que un
+    'Cupón' o una 'Venta' viejos podían haberse tipeado en el formulario. Medido
+    en la copia de producción del 2026-08-16: de 1.066 filas viejas de esos
+    tipos, 1.066 eran del botón —que ya había acreditado— y ninguna tipeada; y
+    por HTTP, prenderles la palanca duplicaba el cobro (un cupón de $10.000 en
+    un broker en pesos acreditaba $14.150.000: los pesos leídos como dólares ×
+    el TC). Además, prenderla le dejaba a la fila una receta de formulario, y
+    con eso el borrado —que a una fila vieja la frena— la sacaba del historial
+    sin deshacer lo que había hecho el botón. Y el tipo es texto libre que se
+    edita: una regla que lo mire se abre en dos pasos.
+
+    No recibe el tipo a propósito. Lo que importa es de qué puerta salió la
+    fila, y eso lo dice la receta o no lo dice nadie.
 
     Se calcula en UN lugar y lo usan los dos lados: el GET se lo cuenta al
     formulario (para no mostrar una palanca que no hace nada) y el PUT lo hace
@@ -19131,11 +19149,9 @@ def _acepta_interruptor_de_efectivo(importada: bool, meta: dict, op_type=None) -
     if importada:
         return False
     src = (meta or {}).get('src')
-    if src in _SRC_CON_EFECTIVO_PROPIO:
+    if not src:
         return False
-    # Con receta de formulario (manual_form/manual_futures) la tipeó la persona,
-    # aunque le haya puesto ese tipo: la palanca es suya.
-    return bool(src) or not _op_type_con_efectivo_propio(op_type)
+    return src not in _SRC_CON_EFECTIVO_PROPIO
 
 
 def _cash_nativo_de_meta(conn, uid: int, meta: dict, broker: str, fecha: str) -> float:
@@ -19302,13 +19318,14 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
             movia_antes = _meta_movio_efectivo(meta_prev)
             pedido = _pide_mover_efectivo(op)
             # Hay operaciones a las que el interruptor no se les puede tocar (importadas,
-            # ventas FIFO, cobros de bonos y de plazos fijos, conversiones): su efectivo
-            # lo mueve otro mecanismo. El formulario ya no se los ofrece; acá se hace
-            # valer igual, porque un cliente viejo —o uno que reintente— puede mandarlo.
+            # ventas FIFO, cobros de bonos y de plazos fijos, conversiones, y toda fila
+            # sin receta): su efectivo lo mueve otro mecanismo, o no se sabe quién lo
+            # movió. El formulario ya no se los ofrece; acá se hace valer igual, porque
+            # un cliente viejo —o uno que reintente— puede mandarlo.
             importada = conn.execute(
                 "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
             ).fetchone() is not None
-            if not _acepta_interruptor_de_efectivo(importada, meta_prev, prev["op_type"]):
+            if not _acepta_interruptor_de_efectivo(importada, meta_prev):
                 pedido = None
             # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
             mueve_ahora = movia_antes if pedido is None else pedido
