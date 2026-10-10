@@ -644,18 +644,67 @@ class LaPalancaDeEfectivoNoSeOfrece(ConRecetaBase):
                 self.assertIs(self._editable(op), True)      # con receta, es suya
                 self._ni_la_palanca_ni_el_atajo(self._vieja(op))
 
-    def test_con_la_receta_ilegible_tampoco(self):
+    def test_con_una_receta_que_no_se_reconoce_tampoco(self):
+        """La pregunta es "¿es del formulario?", no "¿es de una puerta conocida?".
+        La primera versión excluía una lista de puertas, y la auditoría del
+        2026-10-10 mostró que cualquier otro texto en la receta conseguía la
+        palanca (+70 y fila borrable). Las dos últimas dicen "ya movía plata" sin
+        decir de qué puerta salieron: corregirles el resultado movía la diferencia
+        y les dejaba una receta de formulario."""
         self._depositar(self.DOLARES, 1_000)
-        op = self._ok(self.http.post("/api/operations", json={
-            "date": "2026-03-10", "broker": self.DOLARES, "asset": "KO",
-            "op_type": "LONG", "pnl_usd": 50.0}))
-        self.conn.execute("UPDATE operations SET undo_meta_json='{esto no es una receta' "
-                          "WHERE id=?", (op["id"],))
-        self.conn.commit()
-        self.assertIs(self._editable(op), False)
-        antes = self.estado()["cajas"]
-        self._editar_prendiendo_la_palanca(op)
-        self.assertEqual(self.estado()["cajas"], antes, "la palanca movió plata")
+        for receta in ('{esto no es una receta', '{}', '{"cash": 50}', '{"src": ""}',
+                       '{"src": "otra_puerta"}', '{"src": "MANUAL_FORM"}',
+                       '{"src": ["manual_form"]}', '{"src": "manual_position"}',
+                       '{"cash_on": true}', '{"cash_on": true, "cash": 100}'):
+            with self.subTest(receta=receta):
+                op = self._ok(self.http.post("/api/operations", json={
+                    "date": "2026-03-10", "broker": self.DOLARES, "asset": "KO",
+                    "op_type": "LONG", "pnl_usd": 50.0}))
+                self.conn.execute("UPDATE operations SET undo_meta_json=? WHERE id=?",
+                                  (receta, op["id"]))
+                self.conn.commit()
+                op = dict(op, undo_meta_json=receta)
+                self._ni_la_palanca_ni_el_atajo(op)
+                # Y corrigiendo el resultado en el mismo pedido, con y sin palanca.
+                for pedido in ({"mueve_efectivo": True}, {"mueve_efectivo": False}, {}):
+                    cajas = self.estado()["cajas"]
+                    self._editar_prendiendo_la_palanca(op, pnl_usd=70.0, **pedido)
+                    self.assertEqual(self.estado()["cajas"], cajas, f"movió plata con {pedido}")
+                    self.assertEqual(self._ultima_op()["undo_meta_json"], receta,
+                                     f"la receta cambió con {pedido}")
+                self._borrar(op, puerta="operaciones", codigo=400)
+
+    def test_ninguna_forma_del_pedido_la_abre(self):
+        """Sobre una venta vieja del botón: la palanca junto con cualquier otro
+        cambio, sus dos nombres, y el "No" (que no puede dejarle una receta)."""
+        venta = self._vieja(self._vender_con_el_boton())
+        self._depositar(self.PESOS, 1_000)       # para que exista la caja en pesos
+        formas = (
+            {"mueve_efectivo": True},
+            {"mueve_efectivo": False},
+            {"kind": "futures"},
+            {"kind": None},
+            {"mueve_efectivo": True, "kind": "futures"},
+            {"mueve_efectivo": True, "pnl_usd": -250.0},
+            {"mueve_efectivo": True, "pnl_usd": 999.0, "date": "2026-07-01"},
+            {"mueve_efectivo": True, "op_type": "LONG"},
+            {"mueve_efectivo": True, "broker": self.PESOS, "currency": None, "fx_to_usd": None},
+            {"mueve_efectivo": True, "broker": self.DOLARES, "currency": None, "fx_to_usd": None,
+             "op_type": "Venta", "pnl_usd": 500.0},
+        )
+        cajas = self.estado()["cajas"]
+        aportado = self.estado()["aportado"]
+        for forma in formas:
+            with self.subTest(forma=forma):
+                self._editar_prendiendo_la_palanca(venta, **forma)
+                ahora = self.estado()
+                self.assertEqual(ahora["cajas"], cajas, "movió plata")
+                self.assertEqual(ahora["aportado"], aportado, "tocó el capital aportado")
+                fila = self._ultima_op()
+                self.assertEqual(fila["id"], venta["id"])
+                self.assertIsNone(fila["undo_meta_json"], "le dejó una receta")
+                self.assertIs(self._editable(fila), False)
+                self._borrar(fila, puerta="operaciones", codigo=400)
 
     def test_corregirle_un_numero_a_una_vieja_sigue_andando(self):
         """Cerrar la palanca no es cerrar la edición."""
@@ -1072,15 +1121,20 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
                          "recetas que el borrado no sabe leer")
 
     def test_las_que_mueven_plata_solas_no_aceptan_la_palanca(self):
-        """Toda receta que no sea del formulario mueve la plata por su cuenta: si no
-        está en `_SRC_CON_EFECTIVO_PROPIO`, la edición le ofrece "mueve efectivo" y
-        prenderlo acredita dos veces."""
+        """Toda receta que el borrado sabe leer es del formulario
+        (`_SRC_DEL_FORMULARIO`, las únicas con "mueve efectivo") o de una puerta
+        que mueve la plata por su cuenta (`_SRC_CON_EFECTIVO_PROPIO`). Desde
+        2026-10-10 una puerta que falte en la segunda queda cerrada igual —la
+        regla pregunta por la primera—, pero el registro se mantiene completo."""
         arbol = ast.parse(open(MAIN, encoding="utf-8").read())
         borrado = [f for f in ast.walk(arbol) if isinstance(f, ast.FunctionDef)
                    and f.name == "_delete_manual_operation_cascade"][0]
         atiende = self._srcs_que_atiende(borrado)
-        self.assertEqual(atiende - {"manual_form", "manual_futures"},
+        self.assertEqual(set(main._SRC_DEL_FORMULARIO), {"manual_form", "manual_futures"})
+        self.assertEqual(atiende - set(main._SRC_DEL_FORMULARIO),
                          set(main._SRC_CON_EFECTIVO_PROPIO))
+        # Y las dos listas no se pisan: una receta es del formulario o no lo es.
+        self.assertFalse(set(main._SRC_DEL_FORMULARIO) & set(main._SRC_CON_EFECTIVO_PROPIO))
 
     def test_el_guardian_ve_lo_que_dice_ver(self):
         """Control del instrumento: una puerta sin receta sale; con receta en el

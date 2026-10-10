@@ -19069,11 +19069,21 @@ def _meta_movio_efectivo(meta: dict) -> bool:
     return meta.get('src') == 'manual_futures'
 
 
-# Operaciones cuyo efectivo lo mueve OTRO mecanismo. El interruptor no se les
-# ofrece: sumarle éste sería contar la misma plata dos veces.
+# Las recetas que escribe el formulario de Operaciones (y el cierre de un futuro,
+# que usa la misma: ver `_meta_movio_efectivo`). Son las ÚNICAS a las que se les
+# ofrece el interruptor de efectivo — ver `_acepta_interruptor_de_efectivo`.
+_SRC_DEL_FORMULARIO = ('manual_form', 'manual_futures')
+
+# Operaciones cuyo efectivo lo mueve OTRO mecanismo: sumarle el interruptor sería
+# contar la misma plata dos veces.
 #   pf_cobro   — cobrar un plazo fijo acredita capital + interés (`cobrar_plazo_fijo`)
 #   conversion — comprar/vender dólares mueve las dos cajas (`create_conversion`)
 #   dividendo  — el confirmado desde la bandeja de Cartera (`dividendos.SRC`)
+# Desde 2026-10-10 esta lista ya no DECIDE nada (la regla pregunta "¿es del
+# formulario?", no "¿es de una de éstas?": una puerta que falte acá queda cerrada
+# igual). Es el registro de las otras puertas, y el guardián de
+# `test_operaciones_con_receta.py` exige que entre las dos listas esté toda
+# receta que el borrado sabe leer.
 _SRC_CON_EFECTIVO_PROPIO = ('fifo_sell', 'bond_cashflow', 'pf_cobro', 'conversion',
                             _dividendos.SRC)
 
@@ -19104,7 +19114,12 @@ def _tipo_lo_puso_el_sistema(meta: dict, op_type) -> bool:
     """¿La fila la escribió el cobro de un plazo fijo o una compra/venta de dólares?
     Su tipo no se edita: en una fila VIEJA sin receta el tipo es lo único que dice
     de qué puerta salió, y cambiarlo a "Venta" y volver a editar reabría la palanca
-    de efectivo (auditoría 2026-10-09: dos ediciones y se acreditaban $20.934.245)."""
+    de efectivo (auditoría 2026-10-09: dos ediciones y se acreditaban $20.934.245).
+
+    Desde 2026-10-10 la palanca ya no mira el tipo, así que ese ataque no existe
+    más. El bloqueo queda por lo otro que hace el tipo: decide cómo se LEE el
+    monto (un 'Interés PF' está en la moneda del broker — `realized_pnl`,
+    `_NATIVE_CCY_OPS`—, y una conversión no cuenta como operación cerrada)."""
     src = (meta or {}).get('src')
     if src in ('pf_cobro', 'conversion'):
         return True
@@ -19127,6 +19142,11 @@ def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
         ofrece mover plata (decisión de Nico, 2026-10-10). Son las filas de
         antes del 2026-08-06, y la que alguna puerta escriba sin receta por
         error: la regla falla para el lado que no fabrica plata.
+      • Con una receta que no se reconoce (ilegible, sin `src`, o de una
+        puerta nueva que nadie anotó) — lo mismo. Por eso la pregunta es "¿es
+        del formulario?" (`_SRC_DEL_FORMULARIO`) y no "¿es de una puerta
+        conocida?": la primera versión de esta regla era una lista de puertas
+        a excluir, y una receta con cualquier otro texto conseguía la palanca.
 
     Por qué sin receta es NO y no "depende del tipo". Hasta 2026-10-10 era al
     revés (se ofrecía salvo a los tipos conocidos), con el argumento de que un
@@ -19146,12 +19166,9 @@ def _acepta_interruptor_de_efectivo(importada: bool, meta: dict) -> bool:
     Se calcula en UN lugar y lo usan los dos lados: el GET se lo cuenta al
     formulario (para no mostrar una palanca que no hace nada) y el PUT lo hace
     valer (para que mandarlo igual no mueva plata)."""
-    if importada:
+    if importada or not isinstance(meta, dict):
         return False
-    src = (meta or {}).get('src')
-    if not src:
-        return False
-    return src not in _SRC_CON_EFECTIVO_PROPIO
+    return meta.get('src') in _SRC_DEL_FORMULARIO
 
 
 def _cash_nativo_de_meta(conn, uid: int, meta: dict, broker: str, fecha: str) -> float:
@@ -19326,7 +19343,13 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                 "SELECT 1 FROM import_op_links WHERE operation_id=? LIMIT 1", (oid,)
             ).fetchone() is not None
             if not _acepta_interruptor_de_efectivo(importada, meta_prev):
+                # Ni por pedido ni por arrastre. Sin esto, una receta que dijera
+                # "ya movía plata" sin decir de qué puerta salió (no la escribe
+                # nadie, pero es lo que se vería en una fila dañada) hacía que
+                # corregirle el resultado moviera la diferencia y, de paso, le
+                # dejara una receta de formulario — con palanca y con borrado.
                 pedido = None
+                movia_antes = False
             # None = el PUT no mencionó el tema → se respeta lo que la operación ya hacía.
             mueve_ahora = movia_antes if pedido is None else pedido
 
@@ -19357,8 +19380,8 @@ def update_operation(oid: int, op: OperationIn, uid: int = Depends(get_effective
                 undo_meta_nuevo = json.dumps(meta_nuevo)
 
             # EL RECLAMO. El WHERE repite lo que se leyó y de lo que depende la
-            # cuenta de arriba (la foto, el broker, la fecha y el tipo —que decide si
-            # la palanca vale en una fila vieja—). Si otro pedido lo
+            # cuenta de arriba (la foto, el broker, la fecha y el tipo —del que
+            # depende si el tipo se puede cambiar—). Si otro pedido lo
             # cambió en el medio, esto no toca ninguna fila y no se movió nada.
             reclamo = conn.execute(
                 """UPDATE operations SET date=?, broker=?, asset=?, op_type=?, entry_price=?,

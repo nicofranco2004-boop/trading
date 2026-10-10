@@ -11,9 +11,10 @@ En cada edición compara, caja por caja, lo que se movió contra lo que TENÍA q
 moverse:
 
   · la palanca sólo vale para las filas cuya receta dice que salieron del
-    formulario; a las demás (sin receta, receta rota, importadas, puertas que
-    mueven plata solas) el pedido se les ignora: no se mueve nada, la receta no
-    cambia, el formulario no la ofrece;
+    formulario; a las demás (sin receta, receta rota o que no se reconoce,
+    importadas, puertas que mueven plata solas) la edición no les toca la plata
+    ni por pedido ni por arrastre: no se mueve nada, la receta no cambia, el
+    formulario no la ofrece;
   · una fila sin receta sigue sin poder borrarse, antes y después de editarla;
   · en las del formulario se mueve exactamente la diferencia entre lo que
     tenían acreditado y lo que queda acreditado.
@@ -52,9 +53,13 @@ TIPOS = ("LONG", "SHORT", "Futuros", "Cupón", "Amortización", "Venta", "Divide
 FECHAS = ("2026-03-10", "2026-05-22", "2026-07-09", "2026-08-01")
 BROKERS = (("IBKR", "USD"), ("Cocos", "ARS"))
 DEL_FORMULARIO = ("manual_form", "manual_futures")
-# Cómo queda una fila vieja o dañada. Todas tienen que leerse como "sin receta".
-RECETAS_ROTAS = (None, None, None, "", "{}", "{esto no es una receta", '{"cash": 50}',
-                 '{"src": ""}', '{"src": null}')
+# Cómo queda una fila vieja o dañada. Ninguna dice "salí del formulario", así que
+# ninguna tiene palanca; las dos últimas además dicen "ya movía plata" sin decir
+# de qué puerta salieron, y la anteúltima tanda trae un origen que nadie conoce.
+RECETAS_ROTAS = (None, None, None, None, "", "{}", "{esto no es una receta", '{"cash": 50}',
+                 '{"src": ""}', '{"src": null}', '{"src": "otra_puerta"}',
+                 '{"src": "MANUAL_FORM"}', '{"cash_on": true}',
+                 '{"cash_on": true, "cash": 100}')
 
 
 class Sonda:
@@ -114,9 +119,11 @@ class Sonda:
         if importada:
             return "importada"
         src = self._receta(fila).get("src")
-        if not src:
-            return "sin receta"
-        return "del formulario" if src in DEL_FORMULARIO else "de otra puerta"
+        if src in DEL_FORMULARIO:
+            return "del formulario"
+        if src in main._SRC_CON_EFECTIVO_PROPIO:
+            return "de otra puerta"
+        return "sin receta"          # ninguna, rota, o con un origen que nadie conoce
 
     def _en_moneda_del_broker(self, broker, usd, fecha):
         """La conversión no es lo que se audita: se usa la del sistema."""
@@ -244,26 +251,27 @@ class Sonda:
         acepta = clase == "del formulario"
         if pedido is True and not acepta:
             self.cuenta["pidieron_la_palanca_sin_ser_del_formulario"] += 1
-        pedido_que_vale = pedido if acepta else None
-        # Si YA movía plata, la edición la sigue por la diferencia (eso no cambió).
-        movia = bool(receta["cash_on"]) if "cash_on" in receta else receta.get("src") == "manual_futures"
-        mueve = movia if pedido_que_vale is None else pedido_que_vale
-        broker_antes = receta.get("cash_broker") or antes["broker"]
-        if movia:
-            habia = (float(receta["cash_native"] or 0) if receta.get("cash_native") is not None
-                     else self._en_moneda_del_broker(broker_antes, receta.get("cash") or 0,
-                                                     antes["date"]))
-        else:
-            habia = 0.0
-        queda = (self._en_moneda_del_broker(cuerpo["broker"], cuerpo["pnl_usd"] or 0, cuerpo["date"])
-                 if mueve else 0.0)
         debia = {b: 0.0 for b in cajas_antes}
-        if movia or mueve:
-            if broker_antes != cuerpo["broker"]:
-                debia[broker_antes] -= habia
-                debia[cuerpo["broker"]] += queda
+        if acepta:
+            # Se mueve la diferencia entre lo que tenía acreditado y lo que queda.
+            movia = (bool(receta["cash_on"]) if "cash_on" in receta
+                     else receta.get("src") == "manual_futures")
+            mueve = movia if pedido is None else pedido
+            broker_antes = receta.get("cash_broker") or antes["broker"]
+            if movia:
+                habia = (float(receta["cash_native"] or 0) if receta.get("cash_native") is not None
+                         else self._en_moneda_del_broker(broker_antes, receta.get("cash") or 0,
+                                                         antes["date"]))
             else:
-                debia[cuerpo["broker"]] += queda - habia
+                habia = 0.0
+            queda = (self._en_moneda_del_broker(cuerpo["broker"], cuerpo["pnl_usd"] or 0,
+                                                cuerpo["date"]) if mueve else 0.0)
+            if movia or mueve:
+                if broker_antes != cuerpo["broker"]:
+                    debia[broker_antes] -= habia
+                    debia[cuerpo["broker"]] += queda
+                else:
+                    debia[cuerpo["broker"]] += queda - habia
         for b in debia:
             if abs(debia[b] - movido[b]) > 0.01:
                 self._falla(f"{que}: en {b} se movió {movido[b]} y debía {round(debia[b], 4)}")
@@ -271,7 +279,7 @@ class Sonda:
             self.cuenta["ediciones_del_formulario_que_movieron_plata"] += 1
         if self._la_ofrece(oid) is not acepta:
             self._falla(f"{que}: el formulario {'NO ' if acepta else ''}ofrece la palanca")
-        if not acepta and not movia and despues["undo_meta_json"] != antes["undo_meta_json"]:
+        if not acepta and despues["undo_meta_json"] != antes["undo_meta_json"]:
             self._falla(f"{que}: la receta pasó a {despues['undo_meta_json']!r}")
 
     def borrar_una_sin_receta(self):
@@ -350,7 +358,8 @@ class LaPalancaAlAzar(unittest.TestCase):
         """Control: con la regla de antes (se ofrece salvo a las puertas conocidas)
         esta misma prueba tiene que encontrar plata movida y recetas regaladas."""
         def regla_vieja(importada, meta):
-            return (not importada) and (meta or {}).get("src") not in main._SRC_CON_EFECTIVO_PROPIO
+            src = meta.get("src") if isinstance(meta, dict) else None
+            return (not importada) and src not in main._SRC_CON_EFECTIVO_PROPIO
         with mock.patch.object(main, "_acepta_interruptor_de_efectivo", regla_vieja):
             sonda = Sonda(self.SEMILLA).correr(self.ESCENARIOS)
         texto = "\n".join(sonda.fallas)
