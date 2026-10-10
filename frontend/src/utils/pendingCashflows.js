@@ -404,6 +404,36 @@ export function detectPendingCashflows(positions, ops, skips = [], options = {})
   return pending
 }
 
+// ── Lo que la bandeja le manda al servidor para confirmar un pago ───────────
+// POST /api/bonds/cashflow/pago. Función pura (y no adentro del hook) para que
+// el contrato con el servidor se pueda probar: backend/tests/fixtures/
+// cupones_contrato.json guarda estos cuerpos, y test_cupones_contrato.py los
+// postea tal cual. Hasta 2026-10-10 ninguna prueba del servidor mandaba lo que
+// manda la pantalla (se podía dejar de mandar `face_amortized`, o mandar otra
+// cuenta, y todo seguía verde).
+//
+//   montos: { cupon, amort, comision, cuenta?, editado? } en la moneda de la
+//   cuenta donde entran (`montos.cuenta` si el usuario eligió otra, la de pesos;
+//   si no, `item.cuenta`). El nominal amortizado (a la par, en nominales del
+//   bono) viaja aparte para que el servidor no lo confunda con los pesos.
+export function cuerpoDelPago(item, montos) {
+  const cuerpo = {
+    broker: item.broker,
+    asset: item.asset,
+    date: item.date,
+    coupon_amount: montos.cupon,
+    amort_amount: montos.amort,
+    commissions: montos.comision || 0,
+    cash_broker: montos.cuenta || item.cuenta,
+    notes: montos.editado ? 'Confirmado desde la bandeja (montos editados)' : 'Confirmado desde la bandeja',
+  }
+  if (montos.amort > 0) {
+    // Con los nominales SIN redondear: redondeados, 111,12 contra una amortización de 111,11.
+    cuerpo.face_amortized = +((item.nominalesExactos ?? item.nominales) * (item.amortPct || 0) / 100).toFixed(6) || undefined
+  }
+  return cuerpo
+}
+
 // Los pagos del cronograma que ya entraron con una IMPORTACIÓN (el archivo del
 // broker los llama renta, dividendo o interés) dentro de la MISMA ventana que
 // mira la bandeja (desde la compra, hasta 2 años atrás). Se muestran aparte —"ya

@@ -10849,12 +10849,19 @@ def _anotar_nominales_de_bonos(conn, uid: int, lotes: list) -> None:
         return
     originales = _import_maturity.nominales_originales(conn, uid)
     # Importados (no de foto de tenencia) de CUALQUIER bono, tenga o no cronograma
-    # en el servidor.
+    # en el servidor, con su nominal original por la misma cuenta que el barrido.
     importados = _import_maturity.lotes_que_baja_el_barrido(conn, uid)
+    originales_todos = _import_maturity.nominales_originales(conn, uid, todos=True)
     for r in bonos:
         r["nominal_por_barrido"] = r["id"] in originales
         if r["id"] in originales:
             r["nominal_original"] = originales[r["id"]]
+        elif r["id"] in originales_todos:
+            # Importado, de un bono que el barrido no conoce (GD46, TX26…): su
+            # parte de compras − ventas del archivo. No lo mueven ni los cobros
+            # confirmados acá ni la "venta" con la que Balanz anota una
+            # amortización (ver `maturity.nominales_originales`).
+            r["nominal_original"] = originales_todos[r["id"]]
         elif r["id"] in importados:
             # Importado, de un bono que el barrido no conoce (GD46, GD35…): la
             # cantidad del archivo del broker YA es nominal original —la misma

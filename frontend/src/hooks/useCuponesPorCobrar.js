@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../utils/api'
-import { detectPendingCashflows, detectCobrosImportados, cobroRegistrado, esCobroAMano } from '../utils/pendingCashflows'
+import { detectPendingCashflows, detectCobrosImportados, cobroRegistrado, esCobroAMano, cuerpoDelPago } from '../utils/pendingCashflows'
 import { generateSchedule, cerOptsFor } from '../utils/bondSchedule'
 import { isBondTicker } from '../utils/tickers'
 import { hoyISO } from '../utils/fecha'
@@ -108,20 +108,7 @@ export function useCuponesPorCobrar({ positions, brokers, cerSeries, cerStale, m
    * bono) viaja aparte para que el servidor no lo confunda con los pesos.
    */
   const confirmar = useCallback(async (item, montos) => {
-    const cuerpo = {
-      broker: item.broker,
-      asset: item.asset,
-      date: item.date,
-      coupon_amount: montos.cupon,
-      amort_amount: montos.amort,
-      commissions: montos.comision || 0,
-      cash_broker: montos.cuenta || item.cuenta,
-      notes: montos.editado ? 'Confirmado desde la bandeja (montos editados)' : 'Confirmado desde la bandeja',
-    }
-    if (montos.amort > 0) {
-      // Con los nominales SIN redondear: redondeados, 111,12 contra una amortización de 111,11.
-      cuerpo.face_amortized = +((item.nominalesExactos ?? item.nominales) * (item.amortPct || 0) / 100).toFixed(6) || undefined
-    }
+    const cuerpo = cuerpoDelPago(item, montos)
     const r = await api.post('/bonds/cashflow/pago', cuerpo)
     const cuenta = r.partes?.[0]?.cash_broker || cuerpo.cash_broker
     const antes = efectivoDe(cuenta)

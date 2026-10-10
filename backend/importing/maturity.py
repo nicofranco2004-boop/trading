@@ -316,8 +316,15 @@ def lotes_que_baja_el_barrido(conn, uid: int) -> set:
     return linked - seed_pids
 
 
-def nominales_originales(conn, uid: int) -> Dict[int, float]:
+def nominales_originales(conn, uid: int, *, todos: bool = False) -> Dict[int, float]:
     """{id de lote: nominal ORIGINAL} para los lotes que lleva el barrido.
+
+    `todos=True`: también los lotes importados de bonos que el barrido NO conoce
+    (GD46, TX26…). La cuenta es la misma —su parte del nominal genuino del
+    archivo— y sirve igual: a esos lotes les bajan la cantidad los cobros
+    confirmados a mano y, en Balanz, la "venta" con la que el archivo anota cada
+    amortización; el genuino (compras − ventas de verdad) no cuenta ninguna de
+    las dos, así que sigue diciendo con cuánto nacieron.
 
     El barrido deja cada lote en `original × factor residual` de la fecha en que
     corrió (al importar; no todos los días): la cantidad guardada NO alcanza para
@@ -352,7 +359,7 @@ def nominales_originales(conn, uid: int) -> Dict[int, float]:
     out: Dict[int, float] = {}
     for (pair, asset), lots in groups.items():
         name = next((name_map.get((b, asset), "") for b in pair if name_map.get((b, asset))), "")
-        if not (is_amortizing_bond(asset) or is_amortizing_bond(name)):
+        if not todos and not (is_amortizing_bond(asset) or is_amortizing_bond(name)):
             continue
         genuino = _bond_genuine_net(conn, uid, list(pair), asset)
         actual = sum(float(l["quantity"] or 0) for l in lots)
