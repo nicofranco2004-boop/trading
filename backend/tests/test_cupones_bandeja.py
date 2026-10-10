@@ -348,6 +348,32 @@ class BonoSinCronogramaEnElServidorTest(_Base):
                        "2025-03-01,DEPOSITO,Balanz,,,,20000,,,0,USD,",
                        "2025-03-03,COMPRA,Balanz,GD46,10000,0.6,6000,,,0,USD,")
 
+    def test_la_cantidad_importada_es_nominal_original(self):
+        """Una sola lectura de la cantidad del archivo: nominal ORIGINAL, como en
+        AL30. La pantalla la tomaba como "lo vivo el día de la compra" y de 10.000
+        hacía 10.476. Y sigue en 10.000 después de cobrar una amortización."""
+        def gd46():
+            return [p for p in self.client.get("/api/positions").json() if p["asset"] == "GD46"]
+        self.assertEqual([(p["nominal_original"], p["nominal_por_barrido"], p.get("nominal_al_cargar"))
+                          for p in gd46()], [(10000, False, None)])
+        self.assertEqual(self._pago(broker="Balanz", asset="GD46", date="2026-07-09",
+                                    coupon_amount=0, amort_amount=227).status_code, 200)
+        self.assertEqual([(p["quantity"], p["nominal_original"]) for p in gd46()], [(9773, 10000)])
+
+    def test_el_asesor_lee_los_mismos_nominales_que_la_cartera_del_cliente(self):
+        """Cobros (asesor) y Cartera (cliente) salen de la MISMA función. El asesor
+        tenía una copia, y ya le faltaba la regla de arriba."""
+        del_cliente = [(p["quantity"], p.get("nominal_original"), p.get("nominal_al_cargar"))
+                       for p in self.client.get("/api/positions").json() if p["asset"] == "GD46"]
+        fila = [a for a in main._advisor_fixed_income_positions(self.conn, [self.uid])
+                if a["asset"] == "GD46"][0]
+        del_asesor = [(l["quantity"], l.get("nominal_original"), l.get("nominal_al_cargar"))
+                      for l in fila["_lots"]]
+        self.assertEqual(del_asesor, del_cliente)
+        self.assertEqual(del_asesor, [(10000, 10000, None)])
+        self.assertEqual(sorted(fila["_lots"][0]), ["entry_date", "nominal_original",
+                                                    "nominal_por_barrido", "quantity"])
+
     def test_importar_una_venta_despues_no_devuelve_lo_amortizado(self):
         r = self._pago(broker="Balanz", asset="GD46", date="2026-07-09",
                        coupon_amount=0, amort_amount=227)
@@ -622,6 +648,43 @@ class LoQueEncontroLaAuditoria4Test(_Base):
         self._vender_todo(0.70)
         # 227 + 9.773 × 0,70 − 6.000
         self.assertAlmostEqual(self._ganancia_realizada(), 227 + 6841.1 - 6000, places=2)
+
+    def test_el_costo_de_una_amortizacion_grande(self):
+        """El costo sale de lo que el lote tenía ANTES de bajarlo. Calculado después
+        (un error de la tarde del 2026-10-10), amortizar 6.000 de 10.000 anotaba
+        el costo de los 4.000 que quedaban, y el último pago del bono —que se
+        lleva el lote— anotaba todo lo cobrado como ganancia. Las pruebas de
+        entonces amortizaban siempre poco y no lo veían."""
+        for nominales, costo, ganancia in ((227, 136.2, 90.8), (4000, 2400, 1600),
+                                           (6000, 3600, 2400), (10000, 6000, 4000)):
+            with self.subTest(nominales=nominales):
+                r = self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                                        coupon_amount=0, amort_amount=nominales,
+                                        face_amortized=nominales))
+                parte = r.json()["partes"][0]
+                self.assertAlmostEqual(parte["cost_basis_consumed"], costo, places=2)
+                op = [o for o in self._ops("GD46") if o["id"] == parte["operation_id"]][0]
+                self.assertAlmostEqual(op["pnl_usd"], ganancia, places=2)
+                self.assertAlmostEqual(self._nominal("GD46"), 10000 - nominales, places=4)
+                self.assertAlmostEqual(self._ganancia_realizada(), ganancia, places=2)
+                self._ok(self.client.delete(f"/api/movements/op-{parte['operation_id']}-cobro"))
+                self.assertEqual([(p["quantity"], p["invested"]) for p in self._lote()],
+                                 [(10000, 6000)])
+
+    def test_el_ultimo_pago_y_despues_no_queda_nada_la_plata_cierra(self):
+        """El bono devuelve todo: 10.000 cobrados sobre 6.000 de costo = 4.000."""
+        self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                            coupon_amount=50, amort_amount=10000, face_amortized=10000))
+        self.assertEqual(self._lote(), [])
+        self.assertAlmostEqual(self._ganancia_realizada(), 4050, places=2)
+        self.assertAlmostEqual(self._efectivo("IOL"), 10050, places=2)
+
+    def test_amortizar_mas_de_la_mitad_y_vender_el_resto_la_plata_cierra(self):
+        self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                            coupon_amount=0, amort_amount=6000, face_amortized=6000))
+        self._vender_todo(0.70)          # quedan 4.000 → 2.800
+        # Plata real: 6.000 + 2.800 − 6.000 de costo.
+        self.assertAlmostEqual(self._ganancia_realizada(), 2800, places=2)
 
     def test_un_nominal_mayor_a_lo_que_hay_no_se_lleva_el_lote(self):
         """Pedir bajar 12.000 nominales con 10.000 en cartera se llevaba el lote

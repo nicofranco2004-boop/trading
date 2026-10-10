@@ -10831,8 +10831,10 @@ def _anotar_nominales_de_bonos(conn, uid: int, lotes: list) -> None:
       · `nominal_por_barrido` + `nominal_original`: el lote lo lleva el barrido de
         amortizaciones (importado, bono con cronograma en el servidor). Su original
         sale exacto de las compras y ventas del archivo (`maturity.nominales_originales`).
-      · `nominal_al_cargar`: para los demás (cargados a mano, de foto de tenencia,
-        bonos sin cronograma en el servidor) — la cantidad con la que nació el lote
+      · `nominal_original` (sin `nominal_por_barrido`): importado, de un bono sin
+        cronograma en el servidor — la cantidad del archivo es nominal original.
+      · `nominal_al_cargar`: para los demás (cargados a mano, de foto de tenencia)
+        — la cantidad con la que nació el lote
         = la de hoy + lo que le bajaron las amortizaciones cargadas a mano. La
         pantalla lo lleva a original con lo que estaba vivo en su `entry_date`.
 
@@ -10846,10 +10848,22 @@ def _anotar_nominales_de_bonos(conn, uid: int, lotes: list) -> None:
     if not bonos:
         return
     originales = _import_maturity.nominales_originales(conn, uid)
+    # Importados (no de foto de tenencia) de CUALQUIER bono, tenga o no cronograma
+    # en el servidor.
+    importados = _import_maturity.lotes_que_baja_el_barrido(conn, uid)
     for r in bonos:
         r["nominal_por_barrido"] = r["id"] in originales
         if r["id"] in originales:
             r["nominal_original"] = originales[r["id"]]
+        elif r["id"] in importados:
+            # Importado, de un bono que el barrido no conoce (GD46, GD35…): la
+            # cantidad del archivo del broker YA es nominal original —la misma
+            # lectura que hace el barrido con AL30/GD30— y nadie se la baja salvo
+            # los cobros de acá. Mandarla como "lo vivo al cargar" hacía que la
+            # pantalla la dividiera por lo vivo a la fecha de compra: 10.000 de
+            # GD46 pasaban a 10.476 y proponía 238,10 por pago en vez de 227,27
+            # (auditoría 2026-10-10: dos reglas para el mismo dato).
+            r["nominal_original"] = _nominal_al_cargar(conn, uid, r, amortizado)
         else:
             r["nominal_al_cargar"] = _nominal_al_cargar(conn, uid, r, amortizado)
 
@@ -13951,6 +13965,7 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
             # Lo que nadie baja no se resta: ese cobro es ganancia entera, y el
             # costo aparece cuando se vende — como antes de 2026-10-09.
             con_costo = dict(tomas_barrido)
+            excede = False
             if tomas_fuera:
                 # Freno de cordura (Phase 3F / hallazgo N1): no destruir la posición
                 # con un nominal que no es de este lote. Lo que se pide bajar no
@@ -13962,12 +13977,21 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
                     excluir_ids=del_barrido, hasta=data.date).values())
                 excede = a_bajar_fuera > disponible * 1.005 + 0.01
                 if data.decrement_quantity and not excede:
-                    qty_decremented, invested_decremented = _aplicar_amortizacion(
-                        conn, uid, tomas_fuera, detail_out=amort_detail)
                     con_costo.update(tomas_fuera)
                 else:
                     cross_currency_skipped = bool(data.decrement_quantity)
+            # ⚠️ EL COSTO SE CALCULA ANTES DE BAJAR LOS LOTES. Sale de la proporción
+            # (lo que se le saca a cada lote / lo que el lote TIENE): con el lote ya
+            # achicado, sacarle 6.000 de 10.000 daba el costo de 4.000 —lo que
+            # quedaba—, y con el lote borrado (el último pago del bono, que devuelve
+            # todo) no había costo: los 10.000 se anotaban enteros como ganancia.
+            # Con cuotas chicas da el mismo número y por eso no se veía (auditoría
+            # 2026-10-10: el error duró unas horas, lo introdujo el reordenamiento
+            # de la regla de arriba).
             costo_en_caja = _costo(con_costo) if con_costo else None
+            if tomas_fuera and data.decrement_quantity and not excede:
+                qty_decremented, invested_decremented = _aplicar_amortizacion(
+                    conn, uid, tomas_fuera, detail_out=amort_detail)
             if tomas_barrido:
                 # Que el barrido baje YA lo que este pago amortizó (corre sólo al
                 # importar: sin esto el costo seguía en el lote hasta el próximo
@@ -46909,7 +46933,7 @@ def _advisor_fixed_income_positions(conn, ids: list, stats: dict = None) -> list
     # lote (mismo dato que /api/positions: ver `_anotar_nominales_de_bonos`). Sin
     # esto Cobros estimaba con la cantidad de hoy y daba otro número que la Cartera
     # del propio cliente (US$ 1.133 vs US$ 824 para el mismo pago).
-    _orig, _amort = {}, {}
+    _por_cliente: dict = {}
     for r, (cat, ccy) in _fixed_income_rows(conn, ids):
         if not (float(r["quantity"] or 0) > 0):
             continue
@@ -46925,20 +46949,23 @@ def _advisor_fixed_income_positions(conn, ids: list, stats: dict = None) -> list
         })
         a["quantity"] += float(r["quantity"] or 0)
         _c = r["user_id"]
-        if _c not in _orig:
-            _orig[_c] = _import_maturity.nominales_originales(conn, _c)
-            _amort[_c] = _amortizado_a_mano_por_lote(conn, _c)
-        _lote = {"quantity": float(r["quantity"] or 0), "entry_date": r["entry_date"]}
-        if r["id"] in _orig[_c]:
-            _lote["nominal_original"] = _orig[_c][r["id"]]
-        else:
-            _lote["nominal_al_cargar"] = _nominal_al_cargar(conn, _c, r, _amort[_c])
+        # La MISMA función que /api/positions (acá había una copia, que ya se
+        # había quedado sin la regla de los importados sin cronograma).
+        _lote = {"id": r["id"], "asset": r["asset"], "asset_type": r["asset_type"] or "BOND",
+                 "is_cash": 0, "quantity": float(r["quantity"] or 0),
+                 "entry_date": r["entry_date"]}
+        _por_cliente.setdefault(_c, []).append(_lote)
         a["_lots"].append(_lote)
         if r["broker"] and r["broker"] not in a["brokers"]:
             a["brokers"].append(r["broker"])
         d = r["entry_date"]
         if d and (a["first_entry_date"] is None or d < a["first_entry_date"]):
             a["first_entry_date"] = d
+    for _c, _lotes in _por_cliente.items():
+        _anotar_nominales_de_bonos(conn, _c, _lotes)
+        for _l in _lotes:               # lo que era sólo para anotar no sale
+            for _k in ("id", "asset", "asset_type", "is_cash"):
+                _l.pop(_k, None)
     out = list(agg.values())
     for a in out:
         a["quantity"] = round(a["quantity"], 8)

@@ -93,16 +93,34 @@ describe('TX26 con CER 2x al maturity — cupón ajustado también', () => {
 
   const sched = generateSchedule('TX26', { cerSeries: series })
 
-  it('el último pago = (cupón + 100 face) × CER_factor_maturity', () => {
+  it('el último pago = (cupón + la última cuota de capital) × CER_factor_maturity', () => {
+    // Hasta 2026-10-10 esta prueba fijaba "al vencer devuelve los 100 enteros"
+    // (200 ajustados). TX26 devuelve el capital en 5 cuotas semestrales iguales
+    // desde el 09/11/2024 (Resolución 381/2020 del Ministerio de Economía): al
+    // vencimiento queda la última, el 20 %.
     const last = sched[sched.length - 1]
     expect(last.date).toBe('2026-11-09')
     // CER factor a maturity = 2.0
     expect(last.cerFactor).toBeCloseTo(2.0, 1)
-    // Cupón 2% TNA / 2 sem = 1% sobre face 100, ajustado por 2 = 2 ARS
-    // Amort 100 ajustado por 2 = 200 ARS
-    // Total = 202 ARS por 100 face original
-    expect(last.amort).toBeCloseTo(200, 0)
-    expect(last.total).toBeCloseTo(202, 0)
+    // Cupón 2 % TNA / 2 = 1 % sobre los 20 que quedaban vivos, × 2 = 0,4 ARS
+    // Amort 20 ajustado por 2 = 40 ARS
+    expect(last.amort).toBeCloseTo(40, 0)
+    expect(last.total).toBeCloseTo(40.4, 1)
+  })
+
+  it('TX26 y TX28 devuelven el capital en cuotas (Resolución 381/2020)', () => {
+    const cuotas = (t) => generateSchedule(t).filter(x => (x.amortPct || 0) > 0)
+      .map(x => [x.date, +x.amortPct.toFixed(6)])
+    expect(cuotas('TX26')).toEqual([
+      ['2024-11-09', 20], ['2025-05-09', 20], ['2025-11-09', 20], ['2026-05-09', 20], ['2026-11-09', 20]])
+    const tx28 = cuotas('TX28')
+    expect(tx28.length).toBe(10)
+    expect(tx28[0]).toEqual(['2024-05-09', 10])
+    expect(tx28[9]).toEqual(['2028-11-09', 10])
+    // El cupón se calcula sobre lo que queda vivo, no sobre el 100 %.
+    const mayo26 = generateSchedule('TX26').find(x => x.date === '2026-05-09')
+    expect(mayo26.faceBefore).toBeCloseTo(40, 6)      // ya devolvió 3 de 5
+    expect(mayo26.coupon).toBeCloseTo(0.4, 6)         // 2 %/2 × 40 (sin serie CER: factor 1)
   })
 
   it('cupones intermedios tienen factor < 2 (CER creció proporcionalmente)', () => {
