@@ -15,7 +15,8 @@ Lo que fija, con los tres errores que tenía el registro de cobros hasta el
      (por calendario). Confirmar la amortización NO los vuelve a bajar (antes:
      6.400 → 5.630,77).
   3. Lo que ya está anotado no se anota dos veces (409), y si después se importa
-     el archivo con el mismo pago, el dato del broker reemplaza al confirmado.
+     el archivo con el mismo pago, el renglón del archivo se saltea (o, si a mano
+     había sólo un cupón con otro monto, lo reemplaza): nunca entra además.
 
 Y lo de la cuenta: un bono en dólares comprado en la cuenta en pesos cobra en la
 cuenta en dólares; borrar el cobro devuelve el nominal a la cuenta del bono.
@@ -311,6 +312,18 @@ class BonoImportadoTest(_Base):
         self.assertAlmostEqual(am["cost_basis_consumed"], 480, places=2)   # 800 × 0,60
         self.assertAlmostEqual(am["pnl_usd"], 320, places=2)
 
+    def test_lote_importado_comprado_despues_del_pago_no_entra_en_el_costo(self):
+        """Un segundo lote importado, comprado en agosto a 0,90. El pago de julio
+        no lo cobró: el costo de lo amortizado sale sólo del primero (800 × 0,60).
+        Anotaba costo 600 y ganancia 200."""
+        self._importar("Balanz", "2026-08-03,COMPRA,Balanz,GD30,2000,0.9,1800,,,0,USD,")
+        r = self._pago(broker="Balanz", asset="GD30", date="2026-07-09",
+                       coupon_amount=0, amort_amount=800)
+        self.assertEqual(r.status_code, 200, r.text)
+        am = self._ops("GD30")[-1]
+        self.assertAlmostEqual(am["cost_basis_consumed"], 480, places=2)
+        self.assertAlmostEqual(am["pnl_usd"], 320, places=2)
+
     def test_deshacer_desde_movimientos(self):
         r = self._pago(broker="Balanz", asset="GD30", date="2026-07-09",
                        coupon_amount=27, amort_amount=800)
@@ -348,6 +361,27 @@ class BonoSinCronogramaEnElServidorTest(_Base):
         oid = r.json()["partes"][0]["operation_id"]
         self.assertEqual(self.client.delete(f"/api/movements/op-{oid}-cobro").status_code, 200)
         self.assertAlmostEqual(self._nominal("GD46"), 9000, places=4)
+
+
+    def test_revertir_y_volver_a_importar_la_compra_no_devuelve_lo_amortizado(self):
+        """Deshacer el import de la compra y subirlo de nuevo dejaba el lote otra
+        vez en 10.000, con los 227 ya cobrados, y el cobro imposible de borrar."""
+        compra = self.conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (self.uid,)).fetchone()["id"]
+        r = self._pago(broker="Balanz", asset="GD46", date="2026-07-09",
+                       coupon_amount=0, amort_amount=227)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.post(f"/api/imports/{compra}/revert").status_code, 200)
+        self.assertAlmostEqual(self._nominal("GD46"), 0, places=4)
+        self._importar("Balanz",
+                       "2025-03-01,DEPOSITO,Balanz,,,,20000,,,0,USD,",
+                       "2025-03-03,COMPRA,Balanz,GD46,10000,0.6,6000,,,0,USD,")
+        self.assertAlmostEqual(self._nominal("GD46"), 9773, places=4)
+        # Y el cobro se puede borrar: devuelve el nominal al lote nuevo.
+        oid = r.json()["partes"][0]["operation_id"]
+        self.assertEqual(self.client.delete(f"/api/movements/op-{oid}-cobro").status_code, 200)
+        self.assertAlmostEqual(self._nominal("GD46"), 10000, places=4)
 
 
 class BonoEnLaCuentaEnPesosTest(_Base):
@@ -443,18 +477,21 @@ class BonoEnLaCuentaEnPesosTest(_Base):
         """El formulario viejo, para un bono en dólares de la cuenta en pesos, manda
         el monto en PESOS y ningún nominal. Tomar los pesos como nominal topeaba en
         la tenencia entera y anotaba TODO su costo como pérdida (−US$ 3.007 donde
-        la ganancia real era +US$ 320). Sin nominal confiable no se inventa nada:
-        ganancia 0 y los nominales quedan como estaban."""
+        la ganancia real era +US$ 320). Sin nominal confiable no se toca el lote, y
+        entonces tampoco se le resta su costo a la ganancia (el costo que se resta
+        tiene que SALIR del lote, o la venta de después lo resta otra vez): el
+        cobro es ganancia entera, como antes de 2026-10-09, y los nominales quedan
+        como estaban. Con ganancia 0, como estuvo un día, la plata no cerraba."""
         r = self.client.post("/api/bonds/cashflow", json={
             "broker": "Cocos", "asset": "AL30", "flow_type": "amortization",
             "amount": 1160000, "date": "2026-07-09", "decrement_quantity": False,
             "fx_to_usd": 1450})
         self.assertEqual(r.status_code, 200, r.text)
         op = self._ops("AL30")[0]
-        self.assertAlmostEqual(op["pnl_usd"], 0, places=2)
+        self.assertAlmostEqual(op["pnl_usd"], 1160000, places=2)
         self.assertIsNone(op["cost_basis_consumed"])
         self.assertAlmostEqual(op["quantity"], 1160000, places=2)
-        self.assertAlmostEqual(self._ganancia_realizada(), 0, places=2)
+        self.assertAlmostEqual(self._ganancia_realizada(), 800, places=2)
         self.assertAlmostEqual(self._nominal("AL30"), 9200, places=4)
 
     def test_en_pesos_sin_nominales_tampoco_baja_la_tenencia(self):
@@ -526,6 +563,199 @@ class BonoEnLaCuentaEnPesosTest(_Base):
                        coupon_amount=27, amort_amount=0, cash_broker="IOL")
         self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(self._ops("AL30"), [])
+
+
+class LoQueEncontroLaAuditoria4Test(_Base):
+    """Auditoría del 2026-10-10. Bono cargado A MANO por la app (depósito + alta
+    de la posición) en una cuenta en dólares: 10.000 nominales de GD46 a 0,60."""
+
+    def setUp(self):
+        super().setUp()
+        self._broker("IOL", "USDT")
+        self._ok(self.client.post("/api/cash/flow", json={
+            "broker_name": "IOL", "direction": "deposit", "amount": 6000}))
+        self._ok(self.client.post("/api/positions", json={
+            "broker": "IOL", "asset": "GD46", "buy_price": 0.6, "quantity": 10000,
+            "invested": 6000, "entry_date": "2025-03-03", "asset_type": "BOND"}))
+
+    def _ok(self, r, codigo=200):
+        self.assertEqual(r.status_code, codigo, r.text)
+        return r
+
+    def _lote(self):
+        return [p for p in self.client.get("/api/positions").json() if p["asset"] == "GD46"]
+
+    def _vender_todo(self, precio):
+        self._ok(self.client.post("/api/positions/sell", json={
+            "broker": "IOL", "asset": "GD46", "quantity": self._nominal("GD46"),
+            "exit_price": precio, "date": "2026-08-03"}))
+
+    # ── la regla: el costo que se resta de la ganancia sale del lote ──────────
+    def test_sin_bajar_nominales_la_plata_cierra(self):
+        """Amortización de 227 por el formulario con "descontar nominales" apagado,
+        y después se vende todo a 0,70. Plata real: 227 + 7.000 − 6.000 = 1.227.
+        Rendi anotaba 1.090,8: le restaba al cobro un costo que quedaba en el lote,
+        y la venta lo volvía a restar."""
+        self._ok(self.client.post("/api/bonds/cashflow", json={
+            "broker": "IOL", "asset": "GD46", "flow_type": "amortization",
+            "amount": 227, "date": "2026-07-09", "decrement_quantity": False}))
+        self.assertAlmostEqual(self._nominal("GD46"), 10000, places=4)
+        self._vender_todo(0.70)
+        self.assertAlmostEqual(self._ganancia_realizada(), 1227, places=2)
+
+    def test_bajando_nominales_tambien_cierra(self):
+        self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                            coupon_amount=0, amort_amount=227))
+        self.assertAlmostEqual(self._nominal("GD46"), 9773, places=4)
+        self._vender_todo(0.70)
+        # 227 + 9.773 × 0,70 − 6.000
+        self.assertAlmostEqual(self._ganancia_realizada(), 227 + 6841.1 - 6000, places=2)
+
+    def test_un_nominal_mayor_a_lo_que_hay_no_se_lleva_el_lote(self):
+        """Pedir bajar 12.000 nominales con 10.000 en cartera se llevaba el lote
+        ENTERO y anotaba su costo completo como pérdida (un cobro de 100: −5.900).
+        No se baja nada, se avisa, y el cobro es ganancia entera."""
+        r = self._ok(self.client.post("/api/bonds/cashflow", json={
+            "broker": "IOL", "asset": "GD46", "flow_type": "amortization",
+            "amount": 100, "date": "2026-07-09", "decrement_quantity": True,
+            "face_amortized": 12000}))
+        self.assertTrue(r.json()["cross_currency_skipped"])
+        self.assertAlmostEqual(self._nominal("GD46"), 10000, places=4)
+        self.assertAlmostEqual(self._ganancia_realizada(), 100, places=2)
+
+    def test_la_comision_no_cambia_cuantos_nominales_volvieron(self):
+        self._ok(self.client.post("/api/bonds/cashflow", json={
+            "broker": "IOL", "asset": "GD46", "flow_type": "amortization",
+            "amount": 227, "commissions": 20, "date": "2026-07-09",
+            "decrement_quantity": True}))
+        self.assertAlmostEqual(self._nominal("GD46"), 9773, places=4)   # no 9.793
+        self.assertAlmostEqual(self._efectivo("IOL"), 207, places=2)
+
+    # ── deshacer deja todo como estaba ───────────────────────────────────────
+    def test_el_lote_amortizado_entero_vuelve_con_todo_lo_suyo(self):
+        """Volvía sin precio manual, sin nota y sin la receta para borrarlo."""
+        lote = self._lote()[0]
+        self.conn.execute("UPDATE positions SET price_override=0.97, notes='mi bono' WHERE id=?",
+                          (lote["id"],))
+        self.conn.commit()
+        fila = dict(self.conn.execute("SELECT * FROM positions WHERE id=?", (lote["id"],)).fetchone())
+        r = self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                                coupon_amount=0, amort_amount=10000))
+        self.assertEqual(self._lote(), [])
+        oid = r.json()["partes"][0]["operation_id"]
+        self._ok(self.client.delete(f"/api/movements/op-{oid}-cobro"))
+        vuelta = dict(self.conn.execute("SELECT * FROM positions WHERE id=?", (lote["id"],)).fetchone())
+        self.assertEqual(vuelta, fila)
+        # Y se puede borrar desde Cartera, como cualquier lote cargado a mano.
+        self._ok(self.client.delete(f"/api/positions/{lote['id']}"))
+
+    def test_vender_todo_borrar_la_venta_y_borrar_la_amortizacion(self):
+        """El lote renacía con otro número y la amortización quedaba imborrable
+        ("ya no queda nominal"); la bandeja creía que había nacido con 9.773."""
+        r = self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                                coupon_amount=0, amort_amount=227))
+        self._vender_todo(0.70)
+        venta = [o for o in self._ops("GD46") if o["op_type"] != "Amortización"][0]
+        self._ok(self.client.delete(f"/api/operations/{venta['id']}"))
+        self.assertEqual([(p["quantity"], p["nominal_al_cargar"]) for p in self._lote()],
+                         [(9773, 10000)])
+        oid = r.json()["partes"][0]["operation_id"]
+        self._ok(self.client.delete(f"/api/movements/op-{oid}-cobro"))
+        self.assertEqual([(p["quantity"], p["invested"]) for p in self._lote()], [(10000, 6000)])
+        self.assertAlmostEqual(self._efectivo("IOL"), 0, places=2)
+
+    def test_renombrar_la_cuenta_y_borrar_el_cobro(self):
+        """El cobro guarda en qué cuenta entró la plata y en cuál viven los lotes.
+        Renombrar sin tocar eso dejaba la plata en la cuenta real y un saldo
+        negativo en una cuenta que ya no existía."""
+        r = self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                                coupon_amount=20, amort_amount=10000))   # se lleva el lote
+        b = self.conn.execute("SELECT id FROM brokers WHERE user_id=? AND name='IOL'",
+                              (self.uid,)).fetchone()
+        self._ok(self.client.put(f"/api/brokers/{b['id']}", json={"name": "IOL Inversiones", "currency": "USDT"}))
+        # Un impostor con el nombre viejo: si el borrado mira el nombre viejo, sale de acá.
+        self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
+                          (self.uid, "IOL", "USDT"))
+        self.conn.commit()
+        for pt in r.json()["partes"]:
+            self._ok(self.client.delete(f"/api/movements/op-{pt['operation_id']}-cobro"))
+        self.assertAlmostEqual(self._efectivo("IOL Inversiones"), 0, places=2)
+        self.assertAlmostEqual(self._efectivo("IOL"), 0, places=2)
+        self.assertEqual([(p["broker"], p["quantity"]) for p in self._lote()],
+                         [("IOL Inversiones", 10000)])
+
+    # ── el importador ────────────────────────────────────────────────────────
+    def _importar_y_leer(self, *rows):
+        r = self.client.post(
+            "/api/imports/preview",
+            files=[("files", ("x.csv", io.BytesIO(_csv(*rows)), "text/csv"))],
+            data={"format": "rendi_generic", "broker": "IOL"})
+        self._ok(r)
+        return self._ok(self.client.post("/api/imports/confirm",
+                                         json={"session_id": r.json()["session_id"]})).json()
+
+    def test_el_archivo_trae_el_cupon_con_otro_monto_manda_el_broker(self):
+        """A mano 75; el archivo dice 50. Quedaban los dos (+125). Ahora el del
+        broker reemplaza al de a mano — y revertir ese import lo trae de vuelta."""
+        self._ok(self.client.post("/api/bonds/cashflow", json={
+            "broker": "IOL", "asset": "GD46", "flow_type": "coupon",
+            "amount": 75, "date": "2026-07-09"}))
+        batch = self._importar_y_leer("2026-07-10,RENTA,IOL,GD46,,,50,,,0,USD,")["batch_id"]
+        self.assertEqual([o["op_type"] for o in self._ops("GD46")], ["Dividendo"])
+        self.assertAlmostEqual(self._efectivo("IOL"), 50, places=2)
+        self._ok(self.client.post(f"/api/imports/{batch}/revert"))
+        self.assertEqual([o["op_type"] for o in self._ops("GD46")], ["Cupón"])
+        self.assertAlmostEqual(self._efectivo("IOL"), 75, places=2)
+        self.assertAlmostEqual(self._ganancia_realizada(), 75, places=2)
+
+    def test_cupon_y_amortizacion_anotados_y_el_archivo_trae_otro_monto(self):
+        """Están las dos partes anotadas (y la amortización ya bajó nominales): el
+        renglón del archivo no puede ser "otra parte". Se saltea aunque el monto
+        difiera más de 25 %. Entraba además: efectivo +577."""
+        self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                            coupon_amount=20, amort_amount=227))
+        res = self._importar_y_leer("2026-07-10,RENTA Y AMORTIZACION,IOL,GD46,,,330,,,0,USD,")
+        self.assertIn("ya lo anotaste", json.dumps(res, ensure_ascii=False))
+        self.assertAlmostEqual(self._efectivo("IOL"), 247, places=2)
+
+    def test_el_archivo_trae_solo_la_amortizacion_y_el_cupon_a_mano_se_queda(self):
+        """Borraba el cupón de 20 (creía que el renglón lo traía adentro). Cuando
+        el archivo DICE que el renglón es una amortización (la descripción llega
+        en la nota, como en Balanz e IEB), es la otra parte del pago: entra, y el
+        cupón a mano se queda."""
+        self._ok(self.client.post("/api/bonds/cashflow", json={
+            "broker": "IOL", "asset": "GD46", "flow_type": "coupon",
+            "amount": 20, "date": "2026-07-09"}))
+        self._importar_y_leer("2026-07-10,AMORTIZACION,IOL,GD46,,,227,,,0,USD,Amortizacion")
+        self.assertEqual(sorted(o["op_type"] for o in self._ops("GD46")), ["Amortización", "Cupón"])
+        self.assertAlmostEqual(self._efectivo("IOL"), 247, places=2)
+
+    def test_la_amortizacion_que_el_archivo_trae_como_venta(self):
+        """Balanz anota "Renta y Amortización" con cantidad como una VENTA de esos
+        nominales. Es el mismo pago: ya confirmado, el renglón se saltea."""
+        self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                            coupon_amount=20, amort_amount=227))
+        res = self._importar_y_leer(
+            "2026-07-10,VENTA,IOL,GD46,227,1.088,247,,,0,USD,Renta y Amortizacion")
+        self.assertIn("ya lo anotaste", json.dumps(res, ensure_ascii=False))
+        self.assertAlmostEqual(self._efectivo("IOL"), 247, places=2)
+        self.assertAlmostEqual(self._nominal("GD46"), 9773, places=4)
+
+    def test_la_venta_amortizacion_ya_importada_frena_a_la_bandeja(self):
+        self._importar_y_leer(
+            "2026-07-10,VENTA,IOL,GD46,227,1.088,247,,,0,USD,Renta y Amortizacion")
+        ops = [o for o in self.client.get("/api/operations").json() if o["asset"] == "GD46"]
+        self.assertEqual([o["amortizacion_importada"] for o in ops], [True])
+        r = self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                       coupon_amount=20, amort_amount=227)
+        self.assertEqual(r.status_code, 409, r.text)
+
+    def test_una_venta_comun_no_es_un_cobro(self):
+        self._importar_y_leer("2026-07-10,VENTA,IOL,GD46,227,0.7,158.9,,,0,USD,")
+        ops = [o for o in self.client.get("/api/operations").json() if o["asset"] == "GD46"]
+        self.assertEqual([o["amortizacion_importada"] for o in ops], [False])
+        self._ok(self._pago(broker="IOL", asset="GD46", date="2026-07-09",
+                            coupon_amount=20, amort_amount=0))
 
 
 if __name__ == "__main__":

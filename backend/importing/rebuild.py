@@ -632,20 +632,16 @@ def _capturar_amortizaciones_a_mano(conn, uid: int, brokers: List[str], asset: s
     1.000 y el lote queda en 9.000 (tenía que ser 8.773), con el costo devuelto; y
     borrar después ese cobro daba "ya no queda nominal" (apuntaba a un lote que ya
     no existe). Se capturan antes de borrar y se vuelven a aplicar al final
-    (`_reaplicar_amortizaciones_a_mano`), como el precio manual."""
-    import json
+    (`_reaplicar_amortizaciones_a_mano`), como el precio manual.
+
+    `qty`: lo que la amortización tiene que bajar (`cobros_bonos.nominal_pedido`),
+    no lo último que quedó aplicado: si un rearmado anterior encontró menos lotes,
+    el siguiente no tiene que arrastrar ese recorte."""
+    import cobros_bonos   # lazy: es un módulo del nivel de arriba
     out: List[Dict[str, Any]] = []
-    for r in conn.execute(
-            """SELECT id, date, broker, undo_meta_json FROM operations
-                WHERE user_id=? AND asset=? AND op_type IN ('Amortización','Amortizacion')
-                  AND undo_meta_json LIKE '%"bond_cashflow"%'
-                ORDER BY date ASC, id ASC""", (uid, asset)).fetchall():
-        try:
-            meta = json.loads(r["undo_meta_json"] or "{}")
-        except (TypeError, ValueError):
-            continue
+    for r, meta in cobros_bonos._manuales_que_bajaron_nominal(conn, uid, asset):
         lot_broker = meta.get("lot_broker") or r["broker"]
-        qty = _num(meta.get("qty_decremented"))
+        qty = cobros_bonos.nominal_pedido(meta)
         de_estas_cuentas = lot_broker in brokers or any(
             (d.get("broker") in brokers) for d in (meta.get("amort_lots") or []))
         if de_estas_cuentas and qty > 1e-9:
@@ -660,57 +656,29 @@ def _reaplicar_amortizaciones_a_mano(conn, uid: int, brokers: List[str], asset: 
     mano les había bajado, y deja en la operación la foto nueva (`amort_lots` con
     los ids nuevos) para que borrarla siga devolviendo el nominal al lote correcto.
 
-    Mismo reparto que el cobro (`main._reparto_de_amortizacion`): EN PROPORCIÓN
-    entre los lotes de TODAS las patas del broker ya comprados a esa fecha, sin
-    tocar los que baja el barrido de amortizaciones (ésos los lleva él)."""
+    La MISMA cuenta que el cobro (`cobros_bonos.reparto_de_amortizacion` y
+    `aplicar_amortizacion`; acá había una copia): EN PROPORCIÓN entre los lotes de
+    TODAS las patas del broker ya comprados a esa fecha, sin tocar los que baja el
+    barrido de amortizaciones (ésos los lleva él)."""
     if not amorts:
         return
     import json
+    import cobros_bonos
     from pricing.bond_amortization import is_amortizing_bond
     del_barrido: set = set()
     if is_amortizing_bond(asset):
         from .maturity import lotes_que_baja_el_barrido   # lazy: evita ciclo
         del_barrido = lotes_que_baja_el_barrido(conn, uid)
-    _ph = ",".join("?" * len(brokers))
     for a in amorts:
-        lots = [l for l in conn.execute(
-            f"""SELECT * FROM positions
-                WHERE user_id=? AND broker IN ({_ph}) AND asset=? AND is_cash=0 AND quantity > 0
-                ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
-            (uid, *brokers, asset)).fetchall()
-            if l["id"] not in del_barrido
-            and (not l["entry_date"] or not a["date"] or str(l["entry_date"])[:10] <= a["date"])]
-        total = sum(_num(l["quantity"]) for l in lots)
-        a_bajar = min(a["qty"], total)
-        detalle, inv_total, bajado = [], 0.0, 0.0
-        for lot in lots:
-            q = _num(lot["quantity"])
-            take = a_bajar * q / total if total > 1e-9 else 0.0
-            if take <= 1e-9:
-                continue
-            ratio = take / q
-            inv = _num(lot["invested"]) * ratio
-            com = _num(lot["commissions"]) * ratio
-            queda = q - take
-            if queda <= 1e-9:
-                conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (lot["id"], uid))
-            else:
-                conn.execute(
-                    "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                    (round(queda, 6), round(_num(lot["invested"]) - inv, 6),
-                     round(_num(lot["commissions"]) - com, 6), lot["id"], uid))
-            detalle.append({"id": lot["id"], "take": round(take, 6), "q_antes": round(q, 6),
-                            "inv": round(inv, 6), "com": round(com, 6), "survives": queda > 1e-9,
-                            "broker": lot["broker"],
-                            "entry_date": lot["entry_date"], "tc_compra": lot["tc_compra"],
-                            "currency": lot["currency"], "buy_price": lot["buy_price"],
-                            "asset_type": lot["asset_type"]})
-            inv_total += inv
-            bajado += take
+        tomas = cobros_bonos.reparto_de_amortizacion(
+            conn, uid, brokers, asset, a["qty"], excluir_ids=del_barrido,
+            hasta=a["date"] or None)
+        bajado, inv_total, detalle = cobros_bonos.aplicar_amortizacion(conn, uid, tomas)
         meta = dict(a["meta"])
+        meta["nominal_pedido"] = a["qty"]
         meta["amort_lots"] = detalle or None
-        meta["qty_decremented"] = round(bajado, 6)
-        meta["invested_decremented"] = round(inv_total, 6)
+        meta["qty_decremented"] = bajado
+        meta["invested_decremented"] = inv_total
         conn.execute("UPDATE operations SET undo_meta_json=? WHERE id=? AND user_id=?",
                      (json.dumps(meta), a["id"], uid))
 

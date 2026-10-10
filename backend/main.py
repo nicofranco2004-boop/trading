@@ -5361,7 +5361,9 @@ NAME_KEYED_TABLES = (
 # Dónde guardan las recetas de borrado (y los "Deshacer" pendientes) un nombre de
 # broker. Si aparece una clave nueva con un broker adentro, va acá: el guardián
 # `test_operaciones_con_receta.ElRenombreLlegaALasRecetas` lo controla.
-_CLAVES_CON_BROKER = ("broker", "cash_broker")        # el valor es un nombre
+# `lot_broker`: en un cobro de bono, la cuenta donde viven los lotes (el efectivo
+# puede haber entrado en la hermana «· USD»).
+_CLAVES_CON_BROKER = ("broker", "cash_broker", "lot_broker")   # el valor es un nombre
 _CLAVES_CON_BROKERS = ("brokers",)                    # lista de nombres
 _CLAVES_CON_PARES = ("pairs",)                        # lista de [padre, '· USD']
 _CLAVES_POR_BROKER = ("cash_by_broker",)              # {nombre: monto}
@@ -13864,10 +13866,13 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
         # del bono), usamos ESE valor. Sino, fallback a `net_amount`
         # como qty (comportamiento legacy — sólo correcto cuando
         # broker_currency == bond_currency).
+        # Sin nominal explícito, el monto BRUTO (a la par): la comisión del
+        # broker no cambia cuántos nominales devolvió el bono. Con el neto, un
+        # pago de 227 con 20 de comisión bajaba 207 (auditoría 2026-10-10).
         face_to_decrement = (
             data.face_amortized
             if data.face_amortized is not None and data.face_amortized > 0
-            else net_amount
+            else data.amount
         )
         # ¿Quién baja los nominales? Los lotes que lleva el barrido de
         # amortizaciones (`maturity.lotes_que_baja_el_barrido`: importados, no de
@@ -13889,8 +13894,8 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
         costo_en_caja = None
         tomas_fuera: dict = {}
         if not face_confiable:
-            # Pesos sin nominal: se anota el cobro y el efectivo; el nominal queda
-            # igual y no se inventa un costo (la ganancia queda en 0).
+            # Pesos sin nominal: se anota el cobro y el efectivo; el nominal y el
+            # costo del lote quedan igual (ver la regla de la ganancia, abajo).
             cross_currency_skipped = bool(data.decrement_quantity)
         else:
             # Cada lámina amortiza igual: el pago se reparte EN PROPORCIÓN entre los
@@ -13911,42 +13916,83 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
                         f"SELECT id, quantity, entry_date FROM positions WHERE user_id=? "
                         f"AND broker IN ({ph}) AND asset=? AND is_cash=0 AND quantity > 0",
                         (uid, *bs, activo)).fetchall():
+                    # Un lote comprado DESPUÉS del pago no lo cobró: no entra en el
+                    # reparto ni en el costo, sea del barrido o no. (El filtro
+                    # estaba sólo en la rama de abajo: con un lote importado de
+                    # agosto a 0,90, el pago de julio anotaba costo 600 y ganancia
+                    # 200 en vez de 480 y 320 — auditoría 2026-10-10.)
+                    if l["entry_date"] and str(l["entry_date"])[:10] > data.date[:10]:
+                        continue
                     if l["id"] in del_barrido:
                         orig[l["id"]] = originales.get(l["id"], float(l["quantity"] or 0))
-                    elif not l["entry_date"] or str(l["entry_date"])[:10] <= data.date[:10]:
+                    else:
                         vivo = residual_factor(activo, str(l["entry_date"] or data.date)[:10]) or 1.0
                         orig[l["id"]] = float(_nominal_al_cargar(conn, uid, l)) / max(vivo, 1e-9)
-                total_orig = sum(orig.values()) or 1.0
-                parte_fuera = sum(v for k, v in orig.items() if k not in del_barrido) / total_orig
-                tomas_barrido = {k: face_to_decrement * v / total_orig
-                                 for k, v in orig.items() if k in del_barrido}
+                total_orig = sum(orig.values())
+                if total_orig > 1e-9:
+                    parte_fuera = sum(v for k, v in orig.items() if k not in del_barrido) / total_orig
+                    tomas_barrido = {k: face_to_decrement * v / total_orig
+                                     for k, v in orig.items() if k in del_barrido}
+                else:
+                    parte_fuera = 0.0     # ningún lote estaba comprado ese día
+            a_bajar_fuera = face_to_decrement * parte_fuera
             if parte_fuera > 1e-9:
                 tomas_fuera = _reparto_de_amortizacion(
-                    conn, uid, lot_brokers, activo, face_to_decrement * parte_fuera,
+                    conn, uid, lot_brokers, activo, a_bajar_fuera,
                     excluir_ids=del_barrido, hasta=data.date)
-            costo_en_caja = _costo({**tomas_barrido, **tomas_fuera})
-            if data.decrement_quantity and tomas_fuera:
-                # Sanity check (Phase 3F / hallazgo N1): si lo que hay que bajar
-                # parece desproporcionado vs el nominal disponible, no se descuenta
-                # (no destruir la posición) y tampoco se inventa un costo.
-                disponible = _bond_total_qty(conn, uid, lot_brokers, activo)
-                if not del_barrido and disponible > 0 and face_to_decrement > disponible * 1.5:
-                    cross_currency_skipped = True
-                    costo_en_caja = None
-                else:
+            # LA REGLA (auditoría 2026-10-10): el costo que se le resta a la
+            # ganancia tiene que SALIR del lote. Si queda adentro, la venta de
+            # después lo vuelve a restar y la plata no cierra (medido: 10.000
+            # nominales a costo 6.000, amortización de 227 sin bajar nominales y
+            # venta a 7.000 → Rendi anotaba 1.090,8 de ganancia contra 1.227
+            # reales). Sale del lote cuando lo baja este cobro (`tomas_fuera`,
+            # abajo) o cuando lo baja el barrido de amortizaciones
+            # (`tomas_barrido`: reduce cantidad y costo en la misma proporción).
+            # Lo que nadie baja no se resta: ese cobro es ganancia entera, y el
+            # costo aparece cuando se vende — como antes de 2026-10-09.
+            con_costo = dict(tomas_barrido)
+            if tomas_fuera:
+                # Freno de cordura (Phase 3F / hallazgo N1): no destruir la posición
+                # con un nominal que no es de este lote. Lo que se pide bajar no
+                # puede superar lo que hay (un pelo de tolerancia por redondeo).
+                # Antes cortaba recién en 1,5 veces, y entre 1 y 1,5 se llevaba el
+                # lote ENTERO con todo su costo (un cobro de 100 anotaba −500).
+                disponible = sum(_reparto_de_amortizacion(
+                    conn, uid, lot_brokers, activo, 1e18,
+                    excluir_ids=del_barrido, hasta=data.date).values())
+                excede = a_bajar_fuera > disponible * 1.005 + 0.01
+                if data.decrement_quantity and not excede:
                     qty_decremented, invested_decremented = _aplicar_amortizacion(
                         conn, uid, tomas_fuera, detail_out=amort_detail)
+                    con_costo.update(tomas_fuera)
+                else:
+                    cross_currency_skipped = bool(data.decrement_quantity)
+            costo_en_caja = _costo(con_costo) if con_costo else None
+            if tomas_barrido:
+                # Que el barrido baje YA lo que este pago amortizó (corre sólo al
+                # importar: sin esto el costo seguía en el lote hasta el próximo
+                # archivo). Es por calendario e idempotente; si falla, queda como
+                # estaba y lo hace el próximo import.
+                conn.execute("SAVEPOINT barrido_del_cobro")
+                try:
+                    _import_maturity.sweep_bond_amortizations(conn, uid)
+                    conn.execute("RELEASE barrido_del_cobro")
+                except Exception as ex:
+                    conn.execute("ROLLBACK TO barrido_del_cobro")
+                    conn.execute("RELEASE barrido_del_cobro")
+                    log.warning("barrido tras el cobro de %s falló uid=%s: %s", activo, uid, ex)
 
     # La ganancia REALIZADA de la fila. Un cupón es ganancia entera. Una
     # amortización es tu plata que vuelve: sólo es ganancia lo que cobraste por
     # ENCIMA de lo que te había costado esa parte. Hasta 2026-10-09 la fila
     # guardaba el cobro entero y el recálculo mensual (pnl_realized =
     # SUM(pnl_usd)) contaba el capital devuelto como ganancia: un pago de GD30 de
-    # US$ 795 anotaba US$ 795 de ganancia en vez de US$ 334. Sin costo conocido
-    # (no hay lotes) se anota 0, como el importador: mejor no inventar ganancia.
+    # US$ 795 anotaba US$ 795 de ganancia en vez de US$ 334. Si ningún lote
+    # entregó costo (no se bajaron nominales, o no hay lotes), no hay nada que
+    # restar: ver LA REGLA, arriba.
     if data.flow_type == 'amortization':
         cost_basis_consumed = costo_en_caja
-        pnl_fila = round(net_amount - costo_en_caja, 6) if costo_en_caja is not None else 0.0
+        pnl_fila = round(net_amount - (costo_en_caja or 0.0), 6)
     else:
         pnl_fila = net_amount
 
@@ -13974,6 +14020,10 @@ def _registrar_cobro_bono(conn, uid: int, data: "BondCashflowIn") -> dict:
                            "nominal_por_barrido": bool(data.flow_type == 'amortization'
                                                        and nominal_por_barrido),
                            "flow_type": data.flow_type,
+                           # Lo que este cobro le tiene que bajar a los lotes que no
+                           # lleva el barrido: si un import se revierte y se rehace,
+                           # se vuelve a aplicar (`cobros_bonos.reaplicar_pendientes`).
+                           "nominal_pedido": qty_decremented,
                            "qty_decremented": qty_decremented,
                            "invested_decremented": invested_decremented,
                            # Qué le sacó a CADA lote: sin esto, al borrar el cobro
@@ -14123,65 +14173,23 @@ def _bond_total_qty(conn, uid: int, broker: str, asset: str) -> float:
 
 def _reparto_de_amortizacion(conn, uid: int, broker, asset: str, face: float, *,
                              excluir_ids: set = None, hasta: str = None) -> dict:
-    """{id de lote: nominales que le toca bajar} — `face` repartido EN PROPORCIÓN a
-    la cantidad de cada lote ya comprado a la fecha `hasta` (un lote comprado
-    después del pago no lo cobró). Sin tocar nada."""
-    ph, bs = _en_cuentas(broker)
-    lots = [l for l in conn.execute(
-        f"""SELECT id, quantity, entry_date FROM positions
-           WHERE user_id=? AND broker IN ({ph}) AND asset=? AND is_cash=0 AND quantity > 0""",
-        (uid, *bs, asset)).fetchall()
-        if not (excluir_ids and l["id"] in excluir_ids)
-        and (not hasta or not l["entry_date"] or str(l["entry_date"])[:10] <= hasta[:10])]
-    total = sum(float(l["quantity"] or 0) for l in lots)
-    if total <= 1e-9 or not face or face <= 0:
-        return {}
-    a_bajar = min(face, total)
-    return {l["id"]: a_bajar * float(l["quantity"] or 0) / total for l in lots}
+    """{id de lote: nominales que le toca bajar}, en proporción entre los lotes ya
+    comprados a `hasta`. La cuenta vive en `cobros_bonos.reparto_de_amortizacion`
+    (la comparte el rearmado de lotes importados)."""
+    import cobros_bonos
+    return cobros_bonos.reparto_de_amortizacion(conn, uid, broker, asset, face,
+                                                excluir_ids=excluir_ids, hasta=hasta)
 
 
 def _aplicar_amortizacion(conn, uid: int, tomas: dict, detail_out: list = None):
-    """Le baja a cada lote los nominales de `tomas` (y la misma proporción de su
-    costo y comisiones). Devuelve (nominales bajados, costo bajado).
-
-    `detail_out` recibe lo que se le sacó a CADA lote: con eso el borrado del
-    cobro lo restaura lote por lote (`_devolver_cobro_bono`), y `q_antes` permite
-    saber con cuánto había nacido el lote (`_nominal_al_cargar`)."""
-    total_qty, total_inv, detail = 0.0, 0.0, []
-    for lot_id, take in tomas.items():
-        lot = conn.execute("SELECT * FROM positions WHERE id=? AND user_id=? AND is_cash=0",
-                           (lot_id, uid)).fetchone()
-        if not lot:
-            continue
-        q = float(lot["quantity"] or 0)
-        take = min(float(take), q)
-        if take <= 0 or q <= 0:
-            continue
-        ratio = take / q
-        inv = float(lot["invested"] or 0) * ratio
-        com = float(lot["commissions"] or 0) * ratio
-        queda = q - take
-        if queda <= 1e-9:
-            # Lote totalmente amortizado — se borra para que no quede zombie.
-            conn.execute("DELETE FROM positions WHERE id=? AND user_id=?", (lot_id, uid))
-        else:
-            conn.execute(
-                "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                (round(queda, 6), round(float(lot["invested"] or 0) - inv, 6),
-                 round(float(lot["commissions"] or 0) - com, 6), lot_id, uid))
-        detail.append({"id": lot_id, "take": round(take, 6), "q_antes": round(q, 6),
-                       "inv": round(inv, 6), "com": round(com, 6), "survives": queda > 1e-9,
-                       # Si el lote se consume entero, borrar el cobro lo re-crea con
-                       # estos datos (ver `_devolver_cobro_bono`).
-                       "broker": lot["broker"],
-                       "entry_date": lot["entry_date"], "tc_compra": lot["tc_compra"],
-                       "currency": lot["currency"], "buy_price": lot["buy_price"],
-                       "asset_type": lot["asset_type"]})
-        total_qty += take
-        total_inv += inv
+    """Le baja a cada lote los nominales de `tomas`. Devuelve (nominales bajados,
+    costo bajado); `detail_out` recibe lo que se le sacó a cada lote. La cuenta
+    vive en `cobros_bonos.aplicar_amortizacion`."""
+    import cobros_bonos
+    qty, inv, detalle = cobros_bonos.aplicar_amortizacion(conn, uid, tomas)
     if detail_out is not None:
-        detail_out.extend(detail)
-    return round(total_qty, 6), round(total_inv, 6)
+        detail_out.extend(detalle)
+    return qty, inv
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -16153,6 +16161,8 @@ def get_operations(uid: int = Depends(get_effective_user)):
                  FROM operations o
                 WHERE o.user_id=? ORDER BY o.date DESC""", (uid,)
         ).fetchall()
+        import cobros_bonos as _cobros_bonos
+        ventas_amort = _cobros_bonos.ventas_que_son_amortizacion(conn, uid)
     out = []
     for r in rows:
         d = dict(r)
@@ -16173,6 +16183,10 @@ def get_operations(uid: int = Depends(get_effective_user)):
         # 'Amortización' (devolución de capital sin cantidad), y por el nombre no
         # se distinguen.
         d['importada'] = importada
+        # La "venta" con la que Balanz anota una amortización: es un cobro del
+        # bono, y la bandeja la tiene que contar como tal (si no, ofrece como
+        # pendiente un pago que ya entró). Ver cobros_bonos.ventas_que_son_amortizacion.
+        d['amortizacion_importada'] = d['id'] in ventas_amort
         out.append(d)
     return out
 
@@ -19771,15 +19785,22 @@ def _devolver_cobro_bono(conn, uid: int, op, meta: dict, undo: dict) -> None:
                     # de este bono nombran al lote por id (`_nominal_al_cargar`).
                     _id_libre = d.get("id") if d.get("id") is not None and not conn.execute(
                         "SELECT 1 FROM positions WHERE id=?", (d.get("id"),)).fetchone() else None
+                    # La fila ENTERA, si el cobro la guardó (precio manual, nota,
+                    # receta de borrado…); los cobros de antes guardaban seis campos.
+                    fila = {"broker": d.get("broker") or lot_broker, "asset": op["asset"],
+                            "is_cash": 0, "asset_type": d.get("asset_type") or "BOND",
+                            "entry_date": d.get("entry_date"), "tc_compra": d.get("tc_compra"),
+                            "currency": d.get("currency"), "buy_price": d.get("buy_price")}
+                    _cols = {r["name"] for r in conn.execute("PRAGMA table_info(positions)")}
+                    fila.update({k: v for k, v in (d.get("fila") or {}).items() if k in _cols})
+                    fila.update({"id": _id_libre, "user_id": uid, "is_cash": 0,
+                                 "quantity": float(d.get("take") or 0),
+                                 "invested": float(d.get("inv") or 0),
+                                 "commissions": float(d.get("com") or 0)})
+                    _c = list(fila)
                     cur_l = conn.execute(
-                        """INSERT INTO positions (id, user_id, broker, asset, is_cash,
-                             quantity, invested, commissions, asset_type,
-                             entry_date, tc_compra, currency, buy_price)
-                           VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?)""",
-                        (_id_libre, uid, d.get("broker") or lot_broker, op["asset"], float(d.get("take") or 0),
-                         float(d.get("inv") or 0), float(d.get("com") or 0),
-                         d.get("asset_type") or "BOND", d.get("entry_date"),
-                         d.get("tc_compra"), d.get("currency"), d.get("buy_price")))
+                        f"INSERT INTO positions ({','.join(_c)}) VALUES ({','.join('?' * len(_c))})",
+                        tuple(fila[c] for c in _c))
                     undo_lots.append({"mode": "insert", "id": cur_l.lastrowid})
             undo["lots"] = undo_lots
         else:
@@ -19800,43 +19821,85 @@ def _devolver_cobro_bono(conn, uid: int, op, meta: dict, undo: dict) -> None:
 
 
 def _cobro_bono_confirmado_a_mano(conn, uid: int, broker: str, asset: str, fecha: str,
-                                   monto=None, moneda=None, es_amortizacion: bool = False):
-    """El importador trae el cobro de un bono (renta, cupón, amortización) que el
-    usuario ya había anotado A MANO —desde la bandeja de Cartera o el formulario—
-    en esas cuentas a ±14 días. Devuelve esa operación (o None) y el importador
-    SALTEA la fila del archivo, con un aviso (`persister.CobroYaAnotado`).
+                                   monto=None, moneda=None, es_amortizacion: bool = False,
+                                   tc=None, batch_id=None):
+    """El importador trae el cobro de un bono (renta, cupón, amortización, o la
+    "venta" con la que Balanz anota una amortización) y el usuario ya había anotado
+    A MANO un cobro de ese bono —desde la bandeja de Cartera o el formulario— en
+    esas cuentas a ±14 días. Devuelve la operación que lo cubre (y el importador
+    SALTEA el renglón con un aviso, `persister.CobroYaAnotado`) o None (el renglón
+    entra).
 
-    Por qué no al revés (el archivo reemplaza a lo confirmado, como en dividendos):
-    lo anotado a mano separa el cupón (ganancia) de la amortización (capital que
-    vuelve) y ya bajó los nominales del lote; el archivo trae todo junto como
-    "Dividendo" (ganancia entera) y no baja nominales de lotes cargados a mano. Y
-    reemplazar no se podía deshacer: revertir el import borraba la fila importada
-    y el cobro confirmado quedaba perdido.
+    Por qué lo anotado a mano manda (y no al revés, como en dividendos): separa el
+    cupón (ganancia) de la amortización (capital que vuelve) y ya bajó los
+    nominales del lote; el archivo trae todo junto como "Dividendo" (ganancia
+    entera) y no baja nominales de lotes cargados a mano.
 
-    Sólo si es EL MISMO cobro (`cobros_bonos.cubierto_por_lo_anotado`): con un
-    cupón a mano de 20, el archivo que trae además la amortización de 227 tiene que
-    importar la amortización."""
+    La decisión es de `cobros_bonos.que_hacer_con_el_renglon`. Cuando toca
+    REEMPLAZAR (a mano hay sólo un cupón y el archivo trae otro monto, o el pago
+    entero), el cupón a mano se borra, se devuelve su efectivo y queda guardado
+    junto al import: si ese import se revierte, vuelve
+    (`_restaurar_cobros_reemplazados`)."""
     import cobros_bonos
-    ya = cobros_bonos.cubierto_por_lo_anotado(
-        conn, uid, broker, asset, fecha, monto=monto, moneda=moneda,
+    accion, dato = cobros_bonos.que_hacer_con_el_renglon(
+        conn, uid, broker, asset, fecha, monto=monto, moneda=moneda, tc=tc,
         es_amortizacion=es_amortizacion)
-    if ya:
-        return ya
-    # No es el mismo cobro, pero el archivo lo trae ADENTRO (a mano sólo el cupón;
-    # el archivo, "renta y amortización" junto): el cupón a mano se reemplaza por
-    # el renglón del archivo, para no contarlo dos veces. Sólo cupones: nada que
-    # le haya bajado nominales a un lote (`cobros_bonos.absorbidos_por_el_archivo`).
-    for f in cobros_bonos.absorbidos_por_el_archivo(
-            conn, uid, broker, asset, fecha, monto=monto, moneda=moneda):
+    if accion == cobros_bonos.SALTEAR:
+        return dato
+    if accion == cobros_bonos.REEMPLAZAR:
+        for f in dato:
+            try:
+                meta = json.loads(f["undo_meta_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            _devolver_cobro_bono(conn, uid, f, meta, {})
+            if batch_id:
+                # La misma tabla que usa la bandeja de dividendos para lo que un
+                # import reemplazó (cada módulo restaura lo suyo, por `src`).
+                conn.execute(
+                    "INSERT INTO dividendos_reemplazados (user_id, batch_id, op_json, created_at) "
+                    "VALUES (?,?,?,?)",
+                    (uid, batch_id, json.dumps({k: f[k] for k in f.keys() if k != "id"}),
+                     datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (f["id"], uid))
+            log.info("cobros de bonos: el import reemplazó el cobro a mano %s (%s %s)",
+                     f["id"], asset, fecha)
+    return None
+
+
+def _restaurar_cobros_reemplazados(conn, uid: int, batch_id: str) -> int:
+    """Se revirtió un import que había reemplazado cupones anotados a mano: vuelven,
+    con su efectivo, salvo que ese pago ya esté anotado de otra forma. Gemela de
+    `dividendos.restaurar_reemplazados` (comparten la tabla; cada una toma las
+    filas de su `src`). Devuelve cuántos volvieron."""
+    import cobros_bonos
+    vueltos = 0
+    for r in conn.execute(
+            "SELECT id, op_json FROM dividendos_reemplazados WHERE user_id=? AND batch_id=?",
+            (uid, batch_id)).fetchall():
         try:
-            meta = json.loads(f["undo_meta_json"] or "{}")
+            fila = json.loads(r["op_json"])
+            meta = json.loads(fila.get("undo_meta_json") or "{}")
         except (TypeError, ValueError):
             continue
-        _devolver_cobro_bono(conn, uid, f, meta, {})
-        conn.execute("DELETE FROM operations WHERE id=? AND user_id=?", (f["id"], uid))
-        log.info("cobros de bonos: el import absorbió el cobro a mano %s (%s %s)",
-                 f["id"], asset, fecha)
-    return None
+        if meta.get("src") != "bond_cashflow":
+            continue                      # no es de acá (un dividendo de la bandeja)
+        conn.execute("DELETE FROM dividendos_reemplazados WHERE id=?", (r["id"],))
+        cuenta = meta.get("cash_broker") or fila.get("broker") or ""
+        if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?",
+                            (uid, cuenta)).fetchone():
+            continue                      # la cuenta ya no existe: no hay dónde volver
+        if cobros_bonos.quedo_cubierto_despues(conn, uid, fila):
+            continue
+        fila["user_id"] = uid
+        cols = list(fila.keys())
+        conn.execute(f"INSERT INTO operations ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                     tuple(fila[c] for c in cols))
+        cash = float(meta.get("cash") or 0)
+        if cash:
+            _adjust_broker_cash(conn, uid, cuenta, cash)
+        vueltos += 1
+    return vueltos
 
 
 def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
@@ -19917,12 +19980,19 @@ def _delete_manual_operation_cascade(conn, uid: int, oid: int) -> dict:
                 undo["lot"] = {"mode": "update", "id": live["id"], "qty": consumed,
                                "inv": inv_back, "com": com_back}
             else:
+                # Con su MISMO id si está libre: las fotos de los cobros de bonos
+                # nombran al lote por id. Con un id nuevo, la amortización anotada
+                # antes de la venta quedaba imborrable ("ya no queda nominal") y la
+                # bandeja creía que el lote había nacido más chico (auditoría
+                # 2026-10-10). Misma regla que `_devolver_cobro_bono`.
+                _id_libre = lot.get("id") if lot.get("id") is not None and not conn.execute(
+                    "SELECT 1 FROM positions WHERE id=?", (lot.get("id"),)).fetchone() else None
                 cur_ins = conn.execute(
-                    """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price,
+                    """INSERT INTO positions (id, user_id, broker, asset, is_cash, buy_price,
                          quantity, invested, tc_compra, entry_date, commissions, asset_type,
                          currency, undo_meta_json)
-                       VALUES (?,?,?,0,?,?,?,?,?,?,?,?,?)""",
-                    (uid, lot.get("broker") or broker, lot.get("asset") or op["asset"],
+                       VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?)""",
+                    (_id_libre, uid, lot.get("broker") or broker, lot.get("asset") or op["asset"],
                      lot.get("buy_price"), consumed, inv_back, lot.get("tc_compra"),
                      lot.get("entry_date"), com_back, lot.get("asset_type"),
                      lot.get("currency"),
@@ -39331,6 +39401,7 @@ _import_helpers._repair_monthly_chain = _repair_monthly_chain
 _import_helpers._ensure_usd_sibling = _ensure_usd_sibling
 _import_helpers._recalc_pnl_realized_from_ops = _recalc_pnl_realized_from_ops
 _import_helpers._cobro_bono_confirmado_a_mano = _cobro_bono_confirmado_a_mano
+_import_helpers._restaurar_cobros_reemplazados = _restaurar_cobros_reemplazados
 
 
 @app.get("/api/imports/template")
@@ -41091,6 +41162,20 @@ def import_confirm(data: ImportConfirmIn, uid: int = Depends(get_effective_user)
             import traceback
             traceback.print_exc()
             post_proceso["amortizaciones"] = "error"
+
+        # Las amortizaciones confirmadas A MANO que se quedaron sin lote porque el
+        # import que lo había creado se revirtió: ahora que la compra volvió, se
+        # le vuelven a aplicar (si no, el bono quedaba entero con la amortización
+        # ya cobrada). No toca lo que lleva el barrido. Best-effort.
+        try:
+            import cobros_bonos as _cobros_bonos
+            with conn:
+                _cobros_bonos.reaplicar_pendientes(
+                    conn, uid, _import_maturity.lotes_que_baja_el_barrido)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            post_proceso["amortizaciones_a_mano"] = "error"
 
         # Tagear renta fija por el universo de data912 (soberanos, CER, BOPREAL,
         # ONs): los imports que no etiquetan el tipo (IEB) dejan bonos/ONs como

@@ -760,11 +760,17 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         # Realized gain = 76.92 − 84.612 = -7.692 (pérdida)
         self.assertAlmostEqual(body["realized_gain"], -7.692, places=2)
 
-    def test_amort_without_decrement_still_computes_cost_basis(self):
-        """Aún si decrement_quantity=false, calculamos cost_basis_consumed
-        para reportes (el user puede preferir no decrementar pero igual queremos
-        el P&L correcto del bono)."""
-        # Setup de setUp: 1000 VN invested 700 (bajo par)
+    def test_amort_without_decrement_no_resta_un_costo_que_queda_en_el_lote(self):
+        """Con decrement_quantity=false el lote queda intacto (1000 VN, costo 700).
+
+        Hasta 2026-10-10 esta prueba pedía calcular igual el costo consumido
+        (53,84) y una ganancia de 23,08 "para reportes". Estaba bien mientras ese
+        número era informativo. Desde 2026-10-09 la ganancia de la fila ES lo que
+        suma el P&L realizado, y ahí restar un costo que el lote conserva lo
+        resta DOS veces: ahora y cuando se venda. La regla: el costo que se resta
+        de la ganancia tiene que salir del lote. Si no sale, el cobro es ganancia
+        entera (como antes de 2026-10-09) y la venta posterior resta el costo
+        completo — la plata cierra, que es lo que mide el final de esta prueba."""
         res = self._post({
             "broker": "IBKR", "asset": "AL30",
             "flow_type": "amortization", "amount": 76.92, "date": "2026-07-09",
@@ -772,10 +778,7 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         })
         self.assertEqual(res.status_code, 200, res.text)
         body = res.json()
-        # Cost basis consumido SE CALCULA igual (read-only FIFO)
-        self.assertAlmostEqual(body["cost_basis_consumed"], 53.844, places=2)
-        self.assertAlmostEqual(body["realized_gain"], 23.076, places=2)
-        # Pero qty NO cambió
+        self.assertIsNone(body["cost_basis_consumed"])
         self.assertEqual(body["qty_decremented"], 0.0)
 
         conn = main.get_db()
@@ -783,9 +786,14 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
             "SELECT quantity, invested FROM positions WHERE user_id=? AND asset='AL30' AND is_cash=0",
             (self.uid,),
         ).fetchone()
+        op = conn.execute("SELECT pnl_usd, quantity FROM operations WHERE id=?",
+                          (body["operation_id"],)).fetchone()
         conn.close()
         self.assertAlmostEqual(pos["quantity"], 1000)
         self.assertAlmostEqual(pos["invested"], 700)
+        # Lo cobrado y la ganancia son el mismo número: no hay costo restado.
+        self.assertAlmostEqual(op["quantity"], 76.92, places=2)
+        self.assertAlmostEqual(op["pnl_usd"], 76.92, places=2)
 
     def test_coupon_has_no_cost_basis_consumed(self):
         """Para cupones, cost_basis_consumed siempre es NULL (no aplica)."""

@@ -501,7 +501,7 @@ def persist_batch(
                     # El cobro a mano queda marcado "respaldado por el archivo": su
                     # renglón ya vino. Si el mismo archivo trae la amortización en
                     # OTRO renglón, ése no lo puede tomar como "lo trae adentro" y
-                    # borrarlo (`cobros_bonos.absorbidos_por_el_archivo`).
+                    # borrarlo (`cobros_bonos.que_hacer_con_el_renglon`).
                     if getattr(inner_ex, "op_id", None):
                         import json as _json
                         _f = conn.execute("SELECT undo_meta_json FROM operations WHERE id=? AND user_id=?",
@@ -715,6 +715,27 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
     if sell_currency not in ("ARS", "USD"):
         sell_currency = broker_currency  # fallback defensivo
     currency = sell_currency  # alias usado abajo (mantengo el nombre antiguo)
+
+    # La "venta" con la que el lector de Balanz anota una AMORTIZACIÓN ("Renta y
+    # Amortización" con cantidad; la nota dice "amortiz") es un cobro del bono. Si
+    # el usuario ya lo había anotado a mano, el renglón se SALTEA, igual que un
+    # cupón (`_persist_dividend_or_interest`): entraba además, y el pago quedaba
+    # dos veces en el efectivo y en la ganancia (auditoría 2026-10-10).
+    _confirmado = getattr(helpers, "_cobro_bono_confirmado_a_mano", None)
+    if (_confirmado and tx.asset_symbol and tx.asset_symbol not in ("—",)
+            and "amortiz" in (tx.notes or "").lower()):
+        _cobrado = float(tx.gross_amount or 0) or float(tx.quantity or 0) * float(tx.unit_price or 0)
+        ya = _confirmado(conn, uid, tx.broker, tx.asset_symbol, tx.date,
+                         monto=_cobrado or None, moneda=sell_currency, tc=tc_blue,
+                         batch_id=batch_id)
+        if ya:
+            raise CobroYaAnotado(
+                tx.row_index,
+                f"Este pago de {tx.asset_symbol} ya lo anotaste en Rendi "
+                f"({ya['op_type']} del {str(ya['date'])[8:10]}/{str(ya['date'])[5:7]}): "
+                "no se vuelve a sumar. Si el monto del broker es otro, borralo en "
+                "Movimientos y confirmalo de nuevo con «Editar montos».",
+                op_id=ya["id"])
 
     # FIFO POR MONEDA: una venta en X consume SOLO lotes en X (el mismo ticker se
     # puede tener en ARS y USD). En import el routing ya separa ARS (padre)/USD
@@ -1061,7 +1082,8 @@ def _persist_dividend_or_interest(conn, uid, batch_id, raw_row_id, tx: Normalize
     _confirmado = getattr(helpers, "_cobro_bono_confirmado_a_mano", None)
     if _confirmado and tx.asset_symbol and tx.asset_symbol not in ("—",):
         ya = _confirmado(conn, uid, tx.broker, tx.asset_symbol, tx.date,
-                         monto=amount, moneda=currency, es_amortizacion=is_amort)
+                         monto=amount, moneda=currency, es_amortizacion=is_amort,
+                         tc=tc_blue, batch_id=batch_id)
         if ya:
             raise CobroYaAnotado(
                 tx.row_index,
@@ -1597,6 +1619,10 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                         else (tx["unit_price"] or 0) * (tx["quantity"] or 0))
             cost_total = (invested or 0) + (tx["fees"] or 0)
             if tx["created_position_id"]:
+                # Las amortizaciones a mano que le habían bajado nominal quedan
+                # pendientes de re-aplicar (ver cobros_bonos.soltar_lote).
+                import cobros_bonos
+                cobros_bonos.soltar_lote(conn, uid, tx["created_position_id"])
                 conn.execute(
                     "DELETE FROM positions WHERE id=? AND user_id=? AND is_cash=0",
                     (tx["created_position_id"], uid),
@@ -1803,6 +1829,8 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
     # balance ya lo revierte el accounting de arriba.
     for l in links:
         if l["position_id"]:
+            import cobros_bonos
+            cobros_bonos.soltar_lote(conn, uid, l["position_id"])
             conn.execute(
                 "DELETE FROM positions WHERE id=? AND user_id=? AND is_cash=0",
                 (l["position_id"], uid),
@@ -1826,6 +1854,11 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
     # los suma a la ganancia del mes. Ver dividendos.restaurar_reemplazados.
     from dividendos import restaurar_reemplazados
     restaurar_reemplazados(conn, uid, batch_id)
+    # Lo mismo con los cupones de bonos anotados a mano que este import había
+    # reemplazado (ver main._restaurar_cobros_reemplazados).
+    _restaurar_cobros = getattr(helpers, "_restaurar_cobros_reemplazados", None)
+    if _restaurar_cobros:
+        _restaurar_cobros(conn, uid, batch_id)
 
     # Repair chain (ya con el batch fuera de los flows confirmados)
     for b in brokers_touched:

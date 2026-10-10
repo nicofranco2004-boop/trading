@@ -40,11 +40,12 @@ const DATE_TOLERANCE_DAYS = 14
 // con históricos al cargar un AL30 que paga semestral desde 2024.
 const MAX_BACKLOG_DAYS = 730
 
-// Margen "antes de entry_date" que igualmente consideramos. Si el user cargó
-// la posición con entry_date 2026-01-15 pero el último cupón fue 2026-01-09,
-// es razonable que ese cupón LE corresponda (lo cobró el vendedor por T+x
-// settlement). 7 días de gracia cubre casos normales sin generar ruido.
-const ENTRY_DATE_GRACE_DAYS = 7
+// Un lote cobra los pagos desde el día de su compra, ni uno antes: el pago
+// anterior lo cobró quien vendió. Hasta 2026-10-10 había 7 días "de gracia" y la
+// bandeja ofrecía —con el botón de un click— el pago del 09/07 a un lote
+// comprado el 13/07: entraban US$ 827 que nunca existieron, y el servidor (que
+// aplica esta misma regla: `_reparto_de_amortizacion(hasta=…)`) no le bajaba
+// nominales a nadie.
 
 function todayIso() {
   return hoyISO()
@@ -93,6 +94,18 @@ export function esCobroDeRenta(op) {
   const tipo = String(op?.op_type || '').trim().toUpperCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
   return TIPOS_DE_COBRO.has(tipo)
+}
+
+// ¿Es un PAGO del bono ya anotado? Los cobros de renta, más la "venta" con la que
+// el lector de Balanz anota una amortización ("Renta y Amortización" con
+// cantidad): se llama 'Venta', pero es el pago del cronograma, y sin contarla la
+// bandeja lo ofrecía como pendiente (auditoría 2026-10-10: 403 operaciones de 46
+// usuarios en la copia de producción). Lo dice /api/operations
+// (`amortizacion_importada`); ESPEJO de cobros_bonos.ventas_que_son_amortizacion.
+// Sólo para "¿ya está anotado?": las sumas de lo cobrado usan `esCobroDeRenta`
+// (esa venta ya cuenta su ganancia como venta, y su `quantity` son nominales).
+export function esPagoDelBono(op) {
+  return esCobroDeRenta(op) || op?.amortizacion_importada === true
 }
 
 // ¿Lo escribió la carga A MANO (POST /bonds/cashflow)? Son los únicos que suma
@@ -160,7 +173,10 @@ export function cobrosDelActivo(ops, p, brokers) {
  * posición `p` (±DATE_TOLERANCE_DAYS), o undefined si no hay.
  */
 export function cobroRegistrado(ops, p, fecha, brokers) {
-  return cobrosDelActivo(ops, p, brokers).find(o =>
+  const nombres = (p?._brokers && p._brokers.length) ? p._brokers : [p?.broker]
+  const patas = patasDeLaCuenta(nombres, brokers)
+  return (ops || []).find(o =>
+    esPagoDelBono(o) && patas.has(o.broker) && mismoActivo(o.asset, p?.asset) &&
     o.date && diffDaysAbs(o.date, fecha) <= DATE_TOLERANCE_DAYS
   )
 }
@@ -271,10 +287,7 @@ export function detectPendingCashflows(positions, ops, skips = [], options = {})
     // vendedor previo. Sin entry_date, el backlog global.
     const desdeLote = (l) => {
       let d = earliestDate
-      if (l.entry_date) {
-        const g = subDays(l.entry_date, ENTRY_DATE_GRACE_DAYS)
-        if (g > d) d = g
-      }
+      if (l.entry_date && l.entry_date.slice(0, 10) > d) d = l.entry_date.slice(0, 10)
       return d
     }
     // Un "No lo cobré" vale para toda la cuenta: se anotó a nombre de una pata,
@@ -384,10 +397,7 @@ export function detectCobrosImportados(positions, ops, options = {}) {
     const schedule = generateSchedule(p.asset, cerOptsFor(p, options.cerSeries))
     if (!schedule) continue
     let desde = backlog
-    if (p.entry_date) {
-      const graced = subDays(p.entry_date, ENTRY_DATE_GRACE_DAYS)
-      if (graced > desde) desde = graced
-    }
+    if (p.entry_date && p.entry_date.slice(0, 10) > desde) desde = p.entry_date.slice(0, 10)
     for (const pmt of schedule) {
       if (pmt.date > today) break
       if (pmt.date < desde) continue
@@ -396,8 +406,11 @@ export function detectCobrosImportados(positions, ops, options = {}) {
       const k = `${op.id ?? ''}:${p.asset}:${pmt.date}`
       if (vistos.has(k)) continue
       vistos.add(k)
+      // En la venta-amortización de Balanz `quantity` son nominales, no plata.
+      const esVenta = op.amortizacion_importada === true
       out.push({ key: k, asset: p.asset, date: pmt.date, broker: op.broker,
-                 opDate: op.date, comoLoLlama: op.op_type, monto: Number(op.quantity) || null })
+                 opDate: op.date, comoLoLlama: esVenta ? 'Venta (amortización)' : op.op_type,
+                 monto: esVenta ? null : (Number(op.quantity) || null) })
     }
   }
   out.sort((a, b) => b.date.localeCompare(a.date))

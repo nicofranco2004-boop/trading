@@ -28,7 +28,7 @@ import { isBondPosition } from '../utils/tickers'
 import { buildPositionActions } from '../utils/positionActions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
-import { detectPendingCashflows, esCobroDeRenta, esCobroAMano, cobradoDelBonoUsd, fxDeCobroAMano } from '../utils/pendingCashflows'
+import { detectPendingCashflows, esPagoDelBono, esCobroAMano, cobradoDelBonoUsd, fxDeCobroAMano } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import { track } from '../utils/track'
@@ -447,7 +447,7 @@ function PositionsDesktop() {
       setBrokersRegistry(bkrs)   // parent-aware isArUsdBroker (robusto al rename)
       setDolar(dol)
       setSnapshots(snaps || [])
-      setCobrosRenta((ops || []).filter(esCobroDeRenta))
+      setCobrosRenta((ops || []).filter(esPagoDelBono))
       setBondSkips(skips || [])
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
