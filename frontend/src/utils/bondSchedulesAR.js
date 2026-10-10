@@ -77,7 +77,14 @@ export const CANJE_2020_2029 = {
 
 // ─── AR-2030 (AL30 / GD30) ─── ✅ verified ────────────────────────────────────
 // El más líquido del canje. Step-up: 0.125% → 0.50% → 0.75% → 1.75%.
-// Amortizaciones: 13 cuotas iguales del 7.6923% (≈100/13) empezando 2024-07-09.
+// Amortizaciones: 13 cuotas semestrales, la primera (2024-07-09) del 4 % y las
+// 12 siguientes del 8 % (4 + 12×8 = 100), según el prospecto.
+//
+// ⚠️ Hasta 2026-10-09 acá decía "13 cuotas iguales del 7,6923 %", mientras el
+// servidor (backend/pricing/bond_amortization.py, que baja los nominales) usaba
+// 4 % + 12×8 %. La bandeja de cobros proponía montos equivocados: el pago de
+// julio 2026 de 10.000 nominales como US$ 795,19 en vez de US$ 827. Hay un test
+// que compara las dos copias (bondSchedulesAR.paridad.test.js).
 //
 // Verificación cruzada: pricing en Cocos / IAMC matches dentro de ±5 bps.
 
@@ -92,7 +99,10 @@ export const CANJE_2020_2030 = {
     { from: '2023-07-09', to: '2027-07-09', rate: 0.750 },
     { from: '2027-07-09', to: '2030-07-09', rate: 1.750 },
   ],
-  amortSchedule: evenAmorts('2024-07-09', 13, 100 / 13),  // 13 cuotas × 7.6923%
+  amortSchedule: [
+    { date: '2024-07-09', pct: 4 },
+    ...evenAmorts('2025-01-09', 12, 8),               // 12 cuotas × 8 %
+  ],
   _verificationLevel: 'verified',
   _prospectusRef: 'Decreto 391/2020 + anexo AR-2030',
 }

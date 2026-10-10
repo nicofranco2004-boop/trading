@@ -765,10 +765,22 @@ class AmortizarUnBono(_Base):
         conn.close()
         cruce = self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND asset=? "
                             "AND is_cash=0 AND quantity > 0")
-        cobro = {"broker": "Schwab", "asset": "AL30", "flow_type": "amortization",
-                 "amount": 100, "date": main._iso_today(), "decrement_quantity": True}
-        rs = self.dos_a_la_vez(lambda: self.client.post("/api/bonds/cashflow",
-                                                        headers=self.h, json=cobro))
+        # Dos pagos DISTINTOS (fechas a más de 14 días): desde 2026-10-09 el mismo
+        # pago dos veces se frena (409, `cobros_bonos`), y lo que se prueba acá es
+        # que dos cobros legítimos a la vez descuenten los dos.
+        from datetime import date, timedelta
+        fechas = iter([main._iso_today(),
+                       (date.fromisoformat(main._iso_today()) - timedelta(days=60)).isoformat()])
+        import threading
+        candado = threading.Lock()
+
+        def un_cobro():
+            with candado:
+                fecha = next(fechas)
+            return self.client.post("/api/bonds/cashflow", headers=self.h, json={
+                "broker": "Schwab", "asset": "AL30", "flow_type": "amortization",
+                "amount": 100, "date": fecha, "decrement_quantity": True})
+        rs = self.dos_a_la_vez(un_cobro)
         self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
         self.assertFalse(cruce.se_juntaron, "los dos cobros leyeron los lotes a la vez")
         conn = main.get_db()

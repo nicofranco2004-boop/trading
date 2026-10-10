@@ -76,8 +76,10 @@ export default function BondCashflowModal({
     // El pago que se PRE-LLENA para registrar tiene que estar ajustado igual
     // que el que muestra la tarjeta: en un bono CER el cupón va sobre el capital
     // ajustado, y es la plata que el usuario cobró de verdad.
+    // `position`: para escalar por sus nominales ORIGINALES (el cronograma es por
+    // cada 100 originales; `quantity` es lo que queda vivo).
     const next = nextPaymentForPosition(asset, position.quantity, today(),
-                                        cerOptsFor({ asset }, cerSeries))
+                                        { ...cerOptsFor({ asset }, cerSeries), position })
     if (!next) return null
     // Para amortization vs coupon: filtramos el monto al sub-flujo correspondiente.
     if (flowType === 'coupon' && next.coupon > 0) {

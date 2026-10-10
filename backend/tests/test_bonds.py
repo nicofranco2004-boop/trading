@@ -639,10 +639,16 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         conn.close()
         self.assertAlmostEqual(pos["quantity"], 1000)
 
-    def test_amort_fifo_across_multiple_lots(self):
-        """Si hay múltiples lotes del mismo bono, decrementa FIFO."""
+    def test_amort_en_proporcion_entre_los_lotes(self):
+        """Si hay múltiples lotes del mismo bono, la amortización les baja a todos
+        EN PROPORCIÓN (cada lámina amortiza igual).
+
+        Hasta 2026-10-10 este test fijaba "el lote más viejo primero" (FIFO), que es
+        la regla de una VENTA. El barrido de amortizaciones de lo importado ya
+        reducía en proporción desde 2026-06-26 (`maturity.sweep_bond_amortizations`:
+        "el FIFO consumía una sola"); la carga a mano había quedado con la regla
+        vieja, y consumir un lote entero dejaba mal la tenencia del otro."""
         conn = main.get_db()
-        # Agregar segundo lote (más viejo) — debe consumirse primero
         conn.execute(
             """INSERT INTO positions (user_id, broker, asset, is_cash, invested,
                quantity, buy_price, commissions, entry_date)
@@ -652,7 +658,7 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # Amort de 150 — debe consumir todo el lote viejo (100) + 50 del nuevo
+        # Amort de 150 entre 100 y 1.000 nominales: 13,64 y 136,36.
         res = self._post({
             "broker": "IBKR", "asset": "AL30",
             "flow_type": "amortization", "amount": 150, "date": "2026-07-09",
@@ -664,15 +670,16 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         lots = conn.execute(
             """SELECT id, quantity, invested FROM positions
                WHERE user_id=? AND asset='AL30' AND is_cash=0
-               ORDER BY entry_date""",
+               ORDER BY quantity""",
             (self.uid,),
         ).fetchall()
         conn.close()
-        # El lote viejo debe haberse borrado, queda solo el nuevo con 950 VN
-        self.assertEqual(len(lots), 1)
-        self.assertAlmostEqual(lots[0]["quantity"], 950)  # 1000 - 50
-        # Invested del lote nuevo: 700 × (1 - 50/1000) = 665
-        self.assertAlmostEqual(lots[0]["invested"], 665)
+        self.assertEqual(len(lots), 2)
+        self.assertAlmostEqual(lots[0]["quantity"], 100 - 150 * 100 / 1100, places=4)
+        self.assertAlmostEqual(lots[1]["quantity"], 1000 - 150 * 1000 / 1100, places=4)
+        # El costo baja en la misma proporción en cada lote.
+        self.assertAlmostEqual(lots[0]["invested"], 100 * (1 - 150 / 1100), places=4)
+        self.assertAlmostEqual(lots[1]["invested"], 700 * (1 - 150 / 1100), places=4)
 
     # ─── Realized gain por amort (sub-fix Phase 3D) ──────────────────────────
     # CASO CANÓNICO del audit financiero: la amortización tiene DOS componentes:
@@ -800,15 +807,19 @@ class Phase3DCashflowExtensionsTest(unittest.TestCase):
         })
         conn = main.get_db()
         op = conn.execute(
-            "SELECT pnl_usd, cost_basis_consumed FROM operations WHERE user_id=? AND op_type='Amortización'",
+            "SELECT pnl_usd, quantity, cost_basis_consumed FROM operations WHERE user_id=? AND op_type='Amortización'",
             (self.uid,),
         ).fetchone()
         conn.close()
         self.assertIsNotNone(op["cost_basis_consumed"])
         # 700 × 50/1000 = 35
         self.assertAlmostEqual(op["cost_basis_consumed"], 35, places=2)
-        # Pnl_usd sigue guardando el cash neto (50)
-        self.assertAlmostEqual(op["pnl_usd"], 50, places=2)
+        # Desde 2026-10-09 `pnl_usd` es la GANANCIA realizada (50 cobrados − 35 de
+        # costo = 15) y lo cobrado va en `quantity`, como en el importador. Antes
+        # guardaba los 50 y el recálculo mensual (pnl_realized = SUM(pnl_usd))
+        # contaba los 35 de capital devuelto como ganancia.
+        self.assertAlmostEqual(op["pnl_usd"], 15, places=2)
+        self.assertAlmostEqual(op["quantity"], 50, places=2)
 
     # ─── Phase 3F: sanity check cross-currency (hallazgo N1 audit final) ─────
     # Bug que detectaba: en broker ARS con bono USD, `amount` está en pesos

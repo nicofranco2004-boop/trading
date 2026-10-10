@@ -99,20 +99,20 @@ describe('AL30 step-up real — cupones por período', () => {
     expect(p.coupon).toBeCloseTo(0.25, 4)
   })
 
-  it('cupón 2025-01-09 (período 0.75%, face ya reducido por 1 amort) = 0.346', () => {
-    // Face después de 1 amort = 100 − 7.6923 = 92.31
-    // Cupón = 0.75%/2 × 92.31 = 0.346
+  it('cupón 2025-01-09 (período 0.75%, face ya reducido por 1 amort) = 0.36', () => {
+    // Face después de la 1ª amort (4 %) = 96
+    // Cupón = 0.75%/2 × 96 = 0.36
     const p = sched.find(p => p.date === '2025-01-09')
     expect(p).toBeDefined()
-    expect(p.coupon).toBeCloseTo(0.346, 2)
+    expect(p.coupon).toBeCloseTo(0.36, 3)
   })
 
   it('cupón 2028-01-09 (primer período step-up 1.75%) usa rate 1.75', () => {
     const p = sched.find(p => p.date === '2028-01-09')
     expect(p).toBeDefined()
-    // Face después de 7 amorts = 100 − 7×7.6923 = 46.15
-    // Cupón = 1.75%/2 × 46.15 = 0.4039
-    expect(p.coupon).toBeCloseTo(0.4039, 2)
+    // Face después de 7 amorts = 100 − 4 − 6×8 = 48
+    // Cupón = 1.75%/2 × 48 = 0.42
+    expect(p.coupon).toBeCloseTo(0.42, 3)
     expect(p.rate).toBe(1.75)
   })
 })

@@ -13,7 +13,7 @@
 // La función `mergeEvents` ordena cronológicamente y deduplica si por algún
 // motivo aparece la misma fecha dos veces (defensivo).
 
-import { generateSchedule, cerOptsFor } from './bondSchedule'
+import { generateSchedule, cerOptsFor, nominalOriginalDe } from './bondSchedule'
 import { getBondMeta } from './bondMeta'
 import { isBondTicker, cedearEspecieBase } from './tickers'
 import { hoyISO } from './fecha'
@@ -65,12 +65,14 @@ export function upcomingBondEvents(positions, options = {}) {
     const bondCurrency = meta?.currency || 'USD'
     const maturityDate = meta?.maturity
 
+    // El cronograma es por 100 ORIGINALES y la posición guarda los vivos.
+    const k = nominalOriginalDe(p, schedule) / 100
     for (const pmt of schedule) {
       if (pmt.date <= today) continue
       if (pmt.date > cutoff) break
-      const couponAmt = pmt.coupon * p.quantity / 100
-      const amortAmt = pmt.amort * p.quantity / 100
-      const totalAmt = pmt.total * p.quantity / 100
+      const couponAmt = pmt.coupon * k
+      const amortAmt = pmt.amort * k
+      const totalAmt = pmt.total * k
       const isMaturity = pmt.date === maturityDate
       let eventType
       if (isMaturity) eventType = 'bond_maturity'

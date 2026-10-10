@@ -37,6 +37,10 @@ export const TYPE_META = {
   WITHDRAW: { label: 'Retiro',     Icon: ArrowUpFromLine,  color: 'text-rendi-warn',   tone: 'neg' },
   DIVIDEND: { label: 'Dividendo',  Icon: Coins,            color: 'text-rendi-pos',    tone: 'pos' },
   INTEREST: { label: 'Interés',    Icon: Coins,            color: 'text-rendi-pos',    tone: 'pos' },
+  // La amortización de un bono confirmada a mano: capital que vuelve (entra
+  // plata, pero no es un dividendo). El monto es lo que ENTRÓ; su `pnl_usd` es
+  // sólo lo ganado sobre el costo. Ver `_TIPO_DE_COBRO_MANUAL` en main.py.
+  AMORTIZATION: { label: 'Amortización', Icon: ArrowDownToLine, color: 'text-data-cyan', tone: 'pos' },
   FEE:      { label: 'Comisión',   Icon: Receipt,          color: 'text-ink-3',        tone: 'neg' },
   IMPUESTO: { label: 'Impuesto',   Icon: Receipt,          color: 'text-ink-3',        tone: 'neg' },
   // Conversiones de moneda. No son compra ni venta de un activo: el monto es la
@@ -59,7 +63,7 @@ export function amountClassFor(type) {
 // que bloquea con mensaje claro lo que aún no soporta: manuales en pesos, bonos,
 // compras ya vendidas, activos con data manual mezclada).
 // Estaba duplicada byte a byte en los dos archivos.
-export const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
+export const DELETABLE_MOVEMENT_TYPES = ['DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'INTEREST', 'AMORTIZATION', 'FEE', 'IMPUESTO', 'BUY', 'SELL']
 
 export const MOVEMENT_TYPES = [
   { id: 'all',      label: 'Todos',        icon: SlidersHorizontal },
@@ -69,6 +73,7 @@ export const MOVEMENT_TYPES = [
   { id: 'WITHDRAW', label: 'Retiros',      icon: ArrowUpFromLine,   tone: 'neg' },
   { id: 'DIVIDEND', label: 'Dividendos',   icon: Coins,             tone: 'pos' },
   { id: 'INTEREST', label: 'Intereses',    icon: Coins,             tone: 'pos' },
+  { id: 'AMORTIZATION', label: 'Amortizaciones', icon: ArrowDownToLine, tone: 'pos' },
   { id: 'FEE',      label: 'Comisiones',   icon: Receipt,           tone: 'neg' },
   { id: 'FX_ARS_TO_USD', label: 'Compras de USD', icon: ArrowLeftRight },
   { id: 'FX_USD_TO_ARS', label: 'Ventas de USD',  icon: ArrowLeftRight },

@@ -239,10 +239,11 @@ describe('nextPaymentForPosition', () => {
     const r = nextPaymentForPosition('AL30', 1000, '2026-05-11')
     expect(r).not.toBeNull()
     expect(r.date).toBe('2026-07-09')
-    // AL30 amort 7.69 por 100 face, cupón ~0.346 por 100 (face decreciente)
-    // qty=1000 nominales → recibe (cupón + amort) × 1000 / 100
-    expect(r.amort).toBeGreaterThan(70)  // ~76.92 (1000 × 7.692/100)
-    expect(r.amort).toBeLessThan(80)
+    // AL30 amortiza 8 por 100 ORIGINALES en julio 2026 (4 % la primera, 8 % las
+    // demás — prospecto). Los 1.000 nominales de la posición son los VIVOS: al
+    // 2026-05-11 queda vivo el 72 %, o sea 1.388,9 originales → 8 % = 111,11.
+    // (Hasta 2026-10-09 se multiplicaba como si fueran originales: daba de menos.)
+    expect(r.amort).toBeCloseTo(111.11, 2)
     expect(r.total).toBeGreaterThan(r.amort)  // cupón > 0
   })
 

@@ -8,8 +8,9 @@ US$125.000 (≈ el monto en pesos leído como si fueran dólares).
 
 ── El problema de fondo ──────────────────────────────────────────────────────
 La columna se llama `pnl_usd`, pero en las cobranzas de renta fija NO guarda
-USD: guarda el monto en la MONEDA DEL BROKER (`bond_cashflow` inserta
-`net_amount` tal cual). Un cupón de $125.000 en un broker en pesos entra a la
+USD: guarda la ganancia en la MONEDA DEL BROKER (`_registrar_cobro_bono`: en el
+cupón es el monto cobrado; en la amortización, desde 2026-10-09, sólo lo cobrado
+por encima del costo — lo cobrado va en `quantity`). Un cupón de $125.000 en un broker en pesos entra a la
 columna como 125000, y cualquiera que sume la columna cruda cuenta 125.000
 dólares.
 

@@ -31,6 +31,8 @@
  * @param sums  los resúmenes de cada pata (los que falten vienen undefined)
  * @returns un resumen con la misma forma, o null si no hay ninguno
  */
+import { patasDeLaCuenta } from './pendingCashflows'
+
 export function mergeBondSummaries(sums) {
   const reales = (sums || []).filter(Boolean)
   if (reales.length === 0) return null
@@ -64,12 +66,32 @@ export function mergeBondSummaries(sums) {
   }
 }
 
+const monedaNorm = (c) => {
+  const u = (c || '').toUpperCase()
+  return u === 'USDT' ? 'USD' : (u || null)
+}
+
 /**
  * El resumen que le corresponde a UNA fila de la tabla, sea de una pata o de
  * las dos. `_brokers` lo pone `_buildAgg` con todas las patas del grupo.
+ *
+ * Con `brokers`, suma también los cobros de las OTRAS patas de la cuenta: desde
+ * 2026-10-09 el cupón en dólares de un bono de «Cocos» se anota en «Cocos ·
+ * USD» (donde entró la plata), y la fila «Cocos» decía "Aún no registraste
+ * cobranzas" justo después de confirmarlo. Si esos cobros están en otra moneda
+ * que la fila, los montos NATIVOS no tienen unidad común y quedan en null (como
+ * en la fila que junta las dos patas): el panel muestra los de dólares.
  */
-export function bondSummaryDeLaFila(p, bondCashflowsByKey) {
+export function bondSummaryDeLaFila(p, bondCashflowsByKey, brokers = null) {
   if (!p || !bondCashflowsByKey) return null
-  const patas = (p._brokers && p._brokers.length) ? p._brokers : [p.broker]
-  return mergeBondSummaries(patas.map(b => bondCashflowsByKey.get(`${b}:${p.asset}`)))
+  const propias = (p._brokers && p._brokers.length) ? p._brokers : [p.broker]
+  const patas = [...patasDeLaCuenta(propias, brokers)]
+  const s = mergeBondSummaries(patas.map(b => bondCashflowsByKey.get(`${b}:${p.asset}`)))
+  if (!s) return s
+  const ajenas = patas.some(b => !propias.includes(b) && bondCashflowsByKey.get(`${b}:${p.asset}`))
+  if (!ajenas) return s
+  const monedasFila = new Set(propias.map(n => monedaNorm((brokers || []).find(b => b.name === n)?.currency)))
+  const monedaFila = monedasFila.size === 1 ? [...monedasFila][0] : null
+  if (monedaFila && monedaNorm(s.currency) === monedaFila) return s
+  return { ...s, coupons: null, amortizations: null, total: null, pnlContribution: null, currency: null }
 }
