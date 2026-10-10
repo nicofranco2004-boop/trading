@@ -119,7 +119,8 @@ def _recetas_y_registros(uid: int) -> tuple:
     srcs, kinds = set(), set()
     try:
         for t, c in (("operations", "undo_meta_json"), ("positions", "undo_meta_json"),
-                     ("archived_positions", "payload"), ("deleted_ops_journal", "payload_json")):
+                     ("archived_positions", "payload"), ("deleted_ops_journal", "payload_json"),
+                     ("dividendos_reemplazados", "op_json")):
             for (v,) in conn.execute(f"SELECT {c} FROM {t} WHERE user_id=? AND {c} IS NOT NULL",
                                      (uid,)):
                 for s in _textos(v):
@@ -247,9 +248,13 @@ class _Cuenta:
                 "futuros": sorted((p(r["broker"]), r["symbol"], r["closed_at"] or "")
                                   for r in conn.execute(
                     "SELECT broker, symbol, closed_at FROM futures_positions WHERE user_id=?", uid)),
+                "no_lo_cobre": sorted((p(r["broker"]), r["asset"], r["ex_date"])
+                                      for r in conn.execute(
+                    "SELECT broker, asset, ex_date FROM dividendos_salteados WHERE user_id=?", uid)),
                 "huerfanos": sorted(
                     f"{t}: «{r[0]}»" for t in ("positions", "operations", "monthly_entries",
-                                               "futures_positions", "flujos_a_mano")
+                                               "futures_positions", "flujos_a_mano",
+                                               "dividendos_salteados")
                     for r in conn.execute(f"SELECT broker FROM {t} WHERE user_id=?", uid)
                     if r[0] not in papel),
             }
@@ -478,6 +483,89 @@ def _actuar_revertir_import(cta, ctx):
     return [_codigo(cta.pedir("post", f"/api/imports/{ctx['batch']}/revert"))]
 
 
+# ── La bandeja de dividendos (Cartera) ───────────────────────────────────────
+# El cobro confirmado acredita dólares en la cuenta "· USD" y cobra la comisión en
+# pesos en el padre; su receta guarda las tres cuentas. "No lo cobré" guarda el
+# broker en su propia tabla. Y si un import trae el mismo dividendo, el confirmado
+# queda guardado aparte (con su broker) para volver si ese import se revierte.
+_KO = dict(asset="KO", ex_date="2026-09-15", fecha="2026-10-06", bruto=15.90,
+           impuesto=4.77, otros=0.80, comision_pesos=62.0, cedears=150)
+
+
+def _dolar_del_dia():
+    """La bandeja pasa la comisión en pesos a dólares con el dólar del día del cobro
+    (`fx_rates_daily`, tabla GLOBAL: se siembra, no se pisa lo que haya)."""
+    conn = main.get_db()
+    try:
+        for d in ("2026-09-15", "2026-10-06", "2026-10-07"):
+            if not conn.execute("SELECT 1 FROM fx_rates_daily WHERE date=?", (d,)).fetchone():
+                conn.execute(
+                    "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source, fetched_at) "
+                    "VALUES (?,?,?,?,datetime('now'))", (d, 1450.0, 1450.0, "test"))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _cuenta_con_cedear(cta):
+    _dolar_del_dia()
+    cta.depositar(3000000)
+    cta.depositar(1000, broker=cta.sub)
+    cta.posicion("KO", 150, 14000, asset_type="CEDEAR", currency="ARS")
+
+
+def _armar_dividendo(cta):
+    _cuenta_con_cedear(cta)
+    return {"oid": cta.ok("post", "/api/dividendos/cobro",
+                          json={"broker": cta.nombre, **_KO})["operation_id"]}
+
+
+def _actuar_dividendo(cta, ctx):
+    # Confirmarlo otra vez tiene que seguir frenando (lo reconoce por su receta, que
+    # el renombre reescribe: si cambiara el formato del texto dejaría de encontrarlo).
+    otra_vez = cta.pedir("post", "/api/dividendos/cobro", json={"broker": cta.nombre, **_KO})
+    borrar = cta.pedir("delete", f"/api/operations/{ctx['oid']}")
+    return [200 if otra_vez.status_code == 409 else f"confirmó dos veces: {otra_vez.status_code}",
+            _codigo(borrar)]
+
+
+def _armar_borrado_de_dividendo(cta):
+    ctx = _armar_dividendo(cta)
+    return {"tok": cta.ok("delete", f"/api/operations/{ctx['oid']}")["undo_token"]}
+
+
+def _armar_no_lo_cobre(cta):
+    _cuenta_con_cedear(cta)
+    cta.ok("post", "/api/dividendos/saltear", json={
+        "broker": cta.nombre, "asset": "KO", "ex_date": _KO["ex_date"]})
+    return {}
+
+
+def _actuar_quitar_no_lo_cobre(cta, ctx):
+    lista = cta.ok("get", "/api/dividendos/salteados")
+    lista = lista if isinstance(lista, list) else (lista.get("salteados") or [])
+    return [200 if [x["broker"] for x in lista] == [cta.nombre]
+            else f"la lista trae {[x['broker'] for x in lista]}",
+            _codigo(cta.pedir("delete", "/api/dividendos/saltear", params={
+                "broker": cta.nombre, "asset": "KO", "ex_date": _KO["ex_date"]}))]
+
+
+def _armar_dividendo_reemplazado(cta):
+    _armar_dividendo(cta)
+    # El archivo del broker trae el mismo dividendo: reemplaza al confirmado.
+    cta.importar(f"2026-10-07,DIVIDENDO,{cta.nombre},KO,,,10.33,,,0,USD,")
+    conn = main.get_db()
+    try:
+        guardados = conn.execute("SELECT COUNT(*) FROM dividendos_reemplazados WHERE user_id=?",
+                                 (cta.uid,)).fetchone()[0]
+        assert guardados == 1, f"el import no reemplazó al confirmado ({guardados})"
+        return {"batch": conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed'",
+            (cta.uid,)).fetchone()["id"]}
+    finally:
+        conn.close()
+
+
 def _armar_edicion_grupo(cta):
     cta.depositar(100000)
     cta.posicion("GGAL", 10, 5000)
@@ -523,6 +611,14 @@ ESCENARIOS = [
     Escenario("rehacer_import", _armar_import_para_rehacer, _actuar_rehacer, moneda="USD"),
     Escenario("revertir_foto_con_precio_de_fondo", _armar_precio_de_fondo,
               _actuar_revertir_import, recetas={"manual_position"}, moneda="USD"),
+    Escenario("dividendo_confirmado", _armar_dividendo, _actuar_dividendo,
+              recetas={"dividendo_bandeja", "manual_position"}, sub_usd=True),
+    Escenario("deshacer_borrado_de_dividendo", _armar_borrado_de_dividendo, _actuar_deshacer_op,
+              registros={"manual_op"}, sub_usd=True),
+    Escenario("dividendo_no_lo_cobre", _armar_no_lo_cobre, _actuar_quitar_no_lo_cobre,
+              sub_usd=True),
+    Escenario("dividendo_reemplazado_por_un_import_que_se_revierte",
+              _armar_dividendo_reemplazado, _actuar_revertir_import, sub_usd=True),
     Escenario("deshacer_edicion_de_posicion", _armar_edicion_grupo, _actuar_deshacer_grupo,
               recetas={"manual_position", "fifo_sell"}, registros={"position_group_edit"}),
 ]
@@ -697,11 +793,40 @@ def _fuentes_del_backend():
                     yield os.path.relpath(os.path.join(raiz, a), _BACKEND), fh.read()
 
 
+# `"src": <variable>` (el tipo no es un texto fijo). Si la variable es una constante
+# del módulo (dividendos.SRC) se resuelve importándolo; estas otras NO son recetas.
+_SRC_VARIABLES_QUE_NO_SON_RECETAS = {
+    ("main.py", "src"): "procedencia del precio de un activo (se sirve, no se guarda)",
+    ("main.py", "snap_src"): "las filas del import que tocó una edición de posición "
+                             "(clave `src` del registro, no un tipo de receta)",
+    (os.path.join("importing", "invariantes.py"), "src"): "detalle de un chequeo de admin",
+}
+
+
 class CadaRecetaTieneSuEscenario(unittest.TestCase):
     def test_cada_tipo_de_receta_del_codigo_tiene_escenario(self):
-        en_codigo = set()
-        for _ruta, texto in _fuentes_del_backend():
+        import importlib
+        en_codigo, sin_leer = set(), []
+        for ruta, texto in _fuentes_del_backend():
             en_codigo |= set(re.findall(r"""["']src["']\s*:\s*["'](\w+)["']""", texto))
+            # El tipo escrito con una VARIABLE: la bandeja de dividendos usa
+            # `"src": SRC` y la primera versión de este control no la vio.
+            for nombre in set(re.findall(r"""["']src["']\s*:\s*([A-Za-z_]\w*)""", texto)):
+                if (ruta, nombre) in _SRC_VARIABLES_QUE_NO_SON_RECETAS:
+                    continue
+                try:
+                    valor = getattr(importlib.import_module(
+                        ruta[:-3].replace(os.sep, ".")), nombre)
+                except Exception:
+                    valor = None
+                if isinstance(valor, str):
+                    en_codigo.add(valor)
+                else:
+                    sin_leer.append(f"{ruta}: \"src\": {nombre}")
+        self.assertEqual(sin_leer, [], "Hay recetas cuyo tipo no pude leer (no es un texto "
+                         "fijo ni una constante del módulo). Si es una receta de borrado, "
+                         "dejá el tipo en una constante y agregá su Escenario; si no lo es, "
+                         "sumala a _SRC_VARIABLES_QUE_NO_SON_RECETAS con el motivo.")
         en_codigo -= set(_SRC_QUE_NO_SON_RECETAS)
         cubiertas = set().union(*(e.recetas for e in ESCENARIOS))
         faltan = sorted(en_codigo - cubiertas)

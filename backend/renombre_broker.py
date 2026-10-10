@@ -29,8 +29,9 @@ import json
 from typing import Dict, Optional, Tuple
 
 # Claves que guardan nombres de broker aunque no digan "broker": el par padre↔"· USD"
-# del registro de una edición de posición y del borrado del historial de un activo.
-_CLAVES_DE_BROKER_SIN_LA_PALABRA = frozenset({"pair", "pairs"})
+# del registro de una edición de posición y del borrado del historial de un activo, y
+# la cuenta en pesos donde un dividendo de la bandeja cobró su comisión.
+_CLAVES_DE_BROKER_SIN_LA_PALABRA = frozenset({"pair", "pairs", "cuenta_pesos"})
 
 # Columnas de texto JSON con nombres de broker adentro: (tabla, columna). Las que no
 # tienen user_id se acotan por el import del usuario (`batch_id`).
@@ -43,6 +44,9 @@ COLUMNAS_JSON = (
     # con su broker: con el nombre viejo, revertir esa foto no limpiaba el precio y
     # re-aplicar las fotos no lo encontraba (visto en la copia de prod 16/08).
     ("import_batches", "fund_price_overrides"),
+    # El dividendo confirmado en la bandeja que un import reemplazó (la fila entera,
+    # con su receta): vuelve si ese import se revierte — a la cuenta que diga acá.
+    ("dividendos_reemplazados", "op_json"),
 )
 # NO va `import_raw_rows.raw_json` (lo que decía el archivo): una cuenta de prod tiene
 # 502.915 filas y reescribirlas trababa la base para TODOS durante decenas de

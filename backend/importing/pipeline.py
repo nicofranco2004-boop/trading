@@ -1409,17 +1409,19 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
     # viejo y metía el import ahí (2026-10-09). Lo crudo no se reescribe al renombrar:
     # hay cuentas con medio millón de filas (ver renombre_broker.py).
     rows = conn.execute(
-        """SELECT r.raw_json,
-                  (SELECT MIN(n.broker) FROM import_normalized_tx n
-                    WHERE n.batch_id = r.batch_id AND n.raw_row_id = r.id) AS broker_hoy
-             FROM import_raw_rows r
-            WHERE r.batch_id=? ORDER BY r.row_index ASC""",
+        """SELECT id, raw_json FROM import_raw_rows
+            WHERE batch_id=? ORDER BY row_index ASC""",
         (batch_id,),
     ).fetchall()
     if not rows:
         return None
     vivos = {str(n or "").strip().lower() for (n,) in conn.execute(
         "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()}
+    # UNA consulta para todo el import (hay índice por batch_id): preguntarlo fila
+    # por fila recorría el import entero cada vez.
+    broker_hoy = {rid: b for (rid, b) in conn.execute(
+        "SELECT raw_row_id, MIN(broker) FROM import_normalized_tx "
+        "WHERE batch_id=? GROUP BY raw_row_id", (batch_id,)).fetchall()}
 
     parsed: List[Dict[str, Any]] = []
     for r in rows:
@@ -1429,8 +1431,8 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
             continue
         _b = d.get("broker")
         if (isinstance(_b, str) and _b.strip() and _b.strip().lower() not in vivos
-                and r["broker_hoy"]):
-            d["broker"] = r["broker_hoy"]
+                and broker_hoy.get(r["id"])):
+            d["broker"] = broker_hoy[r["id"]]
         # Excluir filas sintéticas del seed — las nuevas se generan en el redo
         if d.get("_synthetic_seed"):
             continue
