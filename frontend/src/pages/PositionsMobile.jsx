@@ -66,6 +66,7 @@ import { PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useRelojVisible } from '../hooks/useRelojVisible'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
+import { confirmar } from '../utils/confirmar'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -768,7 +769,7 @@ export default function PositionsMobile() {
       return
     }
 
-    if (!confirm(`¿Eliminar la posición ${p.asset} en ${p.broker}? La acción no se puede deshacer.`)) return
+    if (!await confirmar(`¿Eliminar la posición ${p.asset} en ${p.broker}? La acción no se puede deshacer.`)) return
     try {
       await api.delete(`/positions/${p.id}`)
       track('position_deleted', { asset: p.asset, broker: p.broker })
@@ -923,7 +924,7 @@ export default function PositionsMobile() {
         ? `\n\n⚠️ ATENCIÓN: este broker es PADRE de "${detail.sibling.name}" (${detail.sibling.currency}). Al borrar el padre, el sibling también se eliminará.`
         : ''
       const msg = `El broker "${b.name}" tiene data:\n\n  • ${parts.join('\n  • ')}${siblingWarning}\n\n¿Borrar TODO? Esta acción no se puede deshacer.`
-      if (!confirm(msg)) return
+      if (!await confirmar(msg)) return
       try {
         await api.delete(`/brokers/${b.id}?force=true`)
       } catch (ex2) {

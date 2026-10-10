@@ -49,6 +49,7 @@ import { hoyISO } from '../utils/fecha'
 import {
   MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
 } from '../components/operations/shared'
+import { confirmar } from '../utils/confirmar'
 
 // pnl_usd arranca como string vacío (no 0) para que el form distinga
 // "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
@@ -66,7 +67,7 @@ function confirmarDeshacerCobroPf(pf) {
   const sale = pf.broker && pf.monto
     ? `Salen ${fmtMoney(pf.monto, pf.moneda)} de ${pf.broker} (el capital más el interés que entraron al cobrarlo).`
     : 'No sale plata de ninguna cuenta: cuando lo cobraste, la plata no entró a un broker.'
-  return window.confirm(
+  return confirmar(
     `¿Deshacer el cobro del plazo fijo de ${pf.banco}?\n\n` +
     `El plazo fijo vuelve a Cartera, abierto. ${sale} ` +
     `La ganancia del interés deja de contar.\n\nVas a poder deshacerlo.`,
@@ -314,18 +315,18 @@ export default function Operations() {
     // plazo fijo sacando la plata del broker sin avisar).
     const pf = op?.deshace_cobro_pf
     if (pf) {
-      if (!confirmarDeshacerCobroPf(pf)) return
+      if (!await confirmarDeshacerCobroPf(pf)) return
     } else if (esConversion(op?.op_type)) {
       // Una compra o venta de dólares mueve DOS cuentas: el cartel lo dice
       // (auditoría 2, 2026-10-10: acá salía el genérico).
       const compra = /ARS→/.test(op.op_type)
-      if (!confirm(
+      if (!await confirmar(
         `¿Borrar esta ${compra ? 'compra' : 'venta'} de dólares?\n\n` +
         (compra ? 'Vuelven los pesos a tu cuenta y salen los dólares.'
                 : 'Vuelven los dólares a tu cuenta y salen los pesos.') +
         ' La operación deja de contar en todos los cálculos.\n\nVas a poder deshacerlo.'
       )) return
-    } else if (!confirm('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
+    } else if (!await confirmar('¿Eliminar esta operación?\n\nSe recalculan tu P&L, rendimiento, métricas y la curva de evolución. La operación deja de contar en todos los cálculos.')) return
     try {
       const res = await recalcular(async () => {
         const r = await api.delete(`/operations/${id}`)
@@ -355,7 +356,7 @@ export default function Operations() {
     return borrando.correr(() => borrarActivo(g.key), `grp-${g.key}`)
   }
   async function borrarActivo(asset) {
-    if (!confirm(
+    if (!await confirmar(
       `¿Borrar TODO el historial de ${asset}?\n\n` +
       `Se borran TODAS sus operaciones (compras, ventas y, si es un bono, sus cupones ` +
       `y amortizaciones) en TODOS tus brokers — no solo las que estás viendo ahora. ` +
@@ -1269,7 +1270,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return borrando.correr(() => borrarActivo(g.key), `grp-${g.key}`)
   }
   async function borrarActivo(asset) {
-    if (!confirm(
+    if (!await confirmar(
       `¿Borrar TODO el historial de ${asset}?\n\n` +
       `Se borran TODAS sus operaciones (compras, ventas y, si es un bono, sus cupones ` +
       `y amortizaciones) en TODOS tus brokers — no solo las que estás viendo ahora. ` +
@@ -1367,12 +1368,12 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     // la fila dice "venta de <banco>", así que sin este cartel nadie se lo espera.
     const pf = m.deshace_cobro_pf
     if (pf) {
-      if (!confirmarDeshacerCobroPf(pf)) return
+      if (!await confirmarDeshacerCobroPf(pf)) return
     } else if (m.transfer_out) {
       // Cierre a costo de una foto de tenencia: NO es una venta, y sacarlo REABRE la
       // posición con su costo original. Si le decimos "borrar" el usuario cree que
       // pierde el activo — es exactamente al revés.
-      if (!window.confirm(
+      if (!await confirmar(
         `¿Reabrir ${m.asset || 'la posición'}?\n\n` +
         `Esta fila no es una venta tuya: la generó una foto de tenencia para cerrar ` +
         `${m.asset || 'el activo'} porque la foto no lo listaba. Al sacarla, la posición ` +
@@ -1383,7 +1384,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
       const efecto = isTrade
         ? 'Se recalcula todo: cartera, P&L, rendimiento, capital aportado y la evolución. Deja de contar en todos los cálculos.'
         : 'Se recalculan tu cartera, el capital aportado y la evolución. La operación deja de contar en todos los cálculos.'
-      if (!window.confirm(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
+      if (!await confirmar(`¿Borrar ${label}${asset}${monto}?\n\n${efecto}`)) return
     }
     // El artículo según el tipo: decía "Se borró la dividendo", "la depósito".
     // ("compra de dólares" y "venta de dólares" también son femeninas.)

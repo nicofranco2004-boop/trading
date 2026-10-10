@@ -60,6 +60,7 @@ import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { hoyISO } from '../utils/fecha'
+import { confirmar } from '../utils/confirmar'
 
 
 export const today = () => hoyISO()
@@ -841,7 +842,7 @@ function PositionsDesktop() {
   // mandaba un segundo DELETE que terminaba en error después del éxito.
   const borrando = useEnVuelo()
   const del = (id) => borrando.correr(async () => {
-    if (!confirm(
+    if (!await confirmar(
       '¿Eliminar esta posición?\n\n' +
       'Si vino de un import, se recalcula todo: efectivo, capital aportado, ' +
       'rendimiento y la curva de evolución. Deja de contar en todos los cálculos.'

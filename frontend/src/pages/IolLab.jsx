@@ -3,6 +3,7 @@ import { FlaskConical, Loader2, RefreshCw, Trash2, ShieldCheck, AlertTriangle, C
 import PageHeader from '../components/PageHeader'
 import Panel from '../components/Panel'
 import { api } from '../utils/api'
+import { confirmar } from '../utils/confirmar'
 
 // IolLab — /lab/iol. Página ESCONDIDA (sin ítem de nav) para que un tester pruebe
 // la API de IOL desde Rendi (PLAN_iol_sync.md, Fase 0). El backend gatea por
@@ -67,7 +68,7 @@ export default function IolLab() {
   }
 
   async function disconnect() {
-    if (!window.confirm('¿Borrar el refresh token guardado? Termina la medición de duración.')) return
+    if (!await confirmar('¿Borrar el refresh token guardado? Termina la medición de duración.')) return
     setBusy('disconnect'); setMsg(null)
     try { await api.delete('/iol/lab/disconnect'); setMsg({ type: 'ok', text: 'Token borrado.' }); await load() }
     catch (err) { setMsg({ type: 'err', text: err?.message || 'No se pudo desconectar.' }) }
