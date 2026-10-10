@@ -22,7 +22,7 @@ import tempfile
 PIEZAS = ("ninguno", "todo_como_antes", "sin_json", "sin_futuros", "sin_columna_del_registro",
           "sin_no_lo_cobre", "sin_pares", "sin_cuenta_pesos", "sin_anidado", "sin_claves_de_dict",
           "sin_operations", "sin_positions", "sin_archived_positions", "sin_deleted_ops_journal",
-          "sin_import_batches", "sin_dividendos_reemplazados")
+          "sin_import_batches", "sin_dividendos_reemplazados", "sin_nombres_anteriores")
 
 
 def _una(pieza: str, sin_escaneo: bool) -> None:
@@ -69,6 +69,8 @@ def _una(pieza: str, sin_escaneo: bool) -> None:
         "sin_cuenta_pesos": lambda: sin_clave("cuenta_pesos"),
         "sin_anidado": lambda: setattr(R, "_recorrer", sin_anidado),
         "sin_claves_de_dict": lambda: setattr(R, "_en_clave_de_broker", sin_claves_de_dict),
+        # El anti-duplicados y "Editar y rehacer" sin saber cómo se llamaba antes el broker.
+        "sin_nombres_anteriores": lambda: setattr(R, "nombres_anteriores", lambda conn, uid: {}),
     }
     for tabla in ("operations", "positions", "archived_positions", "deleted_ops_journal",
                   "import_batches", "dividendos_reemplazados"):

@@ -31,6 +31,7 @@ from .mapper import Mapping, apply_mapping, inspect_csv as mapper_inspect
 from .cash_sim import simulate as simulate_cash
 from .excel import to_csv_text, is_xlsx, xlsx_to_csv, is_html_table, html_table_to_csv
 from . import seed as _seed
+import renombre_broker as _renombre_broker   # los nombres anteriores de cada broker
 
 log = logging.getLogger(__name__)
 
@@ -158,25 +159,27 @@ def _file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _row_fingerprint(tx: NormalizedTx) -> str:
+def _row_fingerprint(tx: NormalizedTx, broker: Optional[str] = None) -> str:
     """Hash que identifica unívocamente una transacción a efectos de dedup.
     Misma fecha + broker + tipo + activo + cantidad + precio → misma fila lógica.
-    No incluye fees ni notes (que pueden diferir entre imports del mismo evento)."""
-    return _fp_from(tx, (tx.asset_symbol_raw or tx.asset_symbol or ""))
+    No incluye fees ni notes (que pueden diferir entre imports del mismo evento).
+    `broker`: con qué nombre de broker calcularla (por defecto el de la fila); el
+    anti-duplicados la prueba también con los nombres ANTERIORES del broker."""
+    return _fp_from(tx, (tx.asset_symbol_raw or tx.asset_symbol or ""), broker)
 
 
-def _row_fingerprint_legacy(tx: NormalizedTx) -> str:
+def _row_fingerprint_legacy(tx: NormalizedTx, broker: Optional[str] = None) -> str:
     """Fingerprint con el símbolo CANÓNICO (comportamiento hasta 2026-07). Los
     imports viejos lo tienen guardado, así que el dedup compara contra AMBOS:
     sin esto, estabilizar el fingerprint habría duplicado una vez más a todo el
     que ya había importado FCI. Para todo lo que no es FCI, ambos coinciden."""
-    return _fp_from(tx, (tx.asset_symbol or ""))
+    return _fp_from(tx, (tx.asset_symbol or ""), broker)
 
 
-def _fp_from(tx: NormalizedTx, symbol: str) -> str:
+def _fp_from(tx: NormalizedTx, symbol: str, broker: Optional[str] = None) -> str:
     parts = [
         tx.date or "",
-        (tx.broker or "").strip().lower(),
+        ((tx.broker if broker is None else broker) or "").strip().lower(),
         tx.operation_type or "",
         (symbol or "").strip().upper(),
         f"{tx.quantity:.8f}" if tx.quantity is not None else "",
@@ -301,11 +304,19 @@ def confirmed_fingerprint_counts(conn, uid: int, *, exclude_session: str = None,
     return Counter({r["fp"]: int(r["c"]) for r in conn.execute(q, args).fetchall()})
 
 
-def duplicate_row_indices_by_count(counts: "Counter", txs, already_skipped=()) -> set:
+def duplicate_row_indices_by_count(counts: "Counter", txs, already_skipped=(), *,
+                                   anteriores: Dict[str, list]) -> set:
     """row_index de las filas que YA están confirmadas, respetando multiplicidad:
     cada huella existente "consume" a lo sumo `counts[fp]` filas del archivo
     nuevo (en orden de fila); el resto entra. Mira la huella actual y la legacy
-    (símbolo canónico, imports anteriores a 2026-07) contra el mismo presupuesto."""
+    (símbolo canónico, imports anteriores a 2026-07) contra el mismo presupuesto.
+
+    `anteriores` = `renombre_broker.nombres_anteriores(conn, uid)`, y es OBLIGATORIO
+    a propósito: la huella guardada lleva el nombre que el broker tenía cuando se
+    importó. Si después se renombró, la misma fila da OTRA huella con el nombre de
+    hoy y entraba de nuevo (renombrar + importar el resumen del mes siguiente
+    duplicaba todo lo superpuesto). Se prueba con el nombre de hoy y con cada
+    nombre anterior de ESE broker, contra el mismo presupuesto."""
     if not counts:
         return set()
     budget = Counter(counts)
@@ -314,12 +325,14 @@ def duplicate_row_indices_by_count(counts: "Counter", txs, already_skipped=()) -
     for t in sorted(txs, key=lambda t: t.row_index):
         if t.row_index in skip:
             continue
-        fp = _row_fingerprint(t)
-        if budget.get(fp, 0) > 0:
-            budget[fp] -= 1; out.add(t.row_index); continue
-        lfp = _row_fingerprint_legacy(t)
-        if lfp != fp and budget.get(lfp, 0) > 0:
-            budget[lfp] -= 1; out.add(t.row_index)
+        nombres = [None] + list(anteriores.get((t.broker or "").strip().lower(), ()))
+        for nombre in nombres:
+            fp = _row_fingerprint(t, nombre)
+            if budget.get(fp, 0) > 0:
+                budget[fp] -= 1; out.add(t.row_index); break
+            lfp = _row_fingerprint_legacy(t, nombre)
+            if lfp != fp and budget.get(lfp, 0) > 0:
+                budget[lfp] -= 1; out.add(t.row_index); break
     return out
 
 
@@ -334,7 +347,8 @@ def already_imported_row_indices(conn, uid: int, session_id: str, txs,
     Por CONTEO (ver `confirmed_fingerprint_counts`): si ya entró 1 de 4 iguales,
     entran las otras 3."""
     counts = confirmed_fingerprint_counts(conn, uid, exclude_session=session_id)
-    return duplicate_row_indices_by_count(counts, txs, already_skipped)
+    return duplicate_row_indices_by_count(
+        counts, txs, already_skipped, anteriores=_renombre_broker.nombres_anteriores(conn, uid))
 
 
 def inspect(file_bytes: bytes) -> Dict[str, Any]:
@@ -878,7 +892,8 @@ def run_preview(
     # Huellas ya confirmadas — para anticipar en la previsualización EXACTAMENTE
     # lo que el confirm va a omitir (mismo helper, mismo conteo).
     duplicate_row_indices: List[int] = sorted(duplicate_row_indices_by_count(
-        confirmed_fingerprint_counts(conn, uid), valid_txs))
+        confirmed_fingerprint_counts(conn, uid), valid_txs,
+        anteriores=_renombre_broker.nombres_anteriores(conn, uid)))
 
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_import = _read_user_tc_blue(conn, uid)
@@ -1403,11 +1418,18 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
     if not batch:
         return None
 
-    # El broker de cada fila sale de lo que decía el ARCHIVO. Si ese nombre ya no es
-    # un broker del usuario (lo renombró), se usa el de la fila interpretada, que el
-    # renombre sí cambió: sin esto, rehacer creaba de nuevo un broker con el nombre
-    # viejo y metía el import ahí (2026-10-09). Lo crudo no se reescribe al renombrar:
-    # hay cuentas con medio millón de filas (ver renombre_broker.py).
+    # El broker de cada fila sale de lo que decía el ARCHIVO, y lo crudo no se
+    # reescribe al renombrar (hay cuentas con medio millón de filas: ver
+    # renombre_broker.py). Sin traducirlo acá, rehacer creaba de nuevo un broker con
+    # el nombre viejo y metía el import ahí (2026-10-09). Dos fuentes, en este orden:
+    #   1. La fila INTERPRETADA de esa fila cruda (`import_normalized_tx`), que el
+    #      renombre sí cambió: si hoy vive en un broker que no es el que dice el
+    #      archivo (ni su "· USD"), manda donde vive. Cubre también el nombre viejo
+    #      que después tomó OTRO broker.
+    #   2. Las filas que nunca se aplicaron (destildadas en el asistente, o repetidas
+    #      de otro archivo) no tienen fila interpretada: van por los nombres
+    #      ANTERIORES de cada broker (`brokers.nombres_anteriores`). Si ese nombre hoy
+    #      lo usa otro broker, sólo cuando el resto del lote confirma el destino.
     rows = conn.execute(
         """SELECT id, raw_json FROM import_raw_rows
             WHERE batch_id=? ORDER BY row_index ASC""",
@@ -1422,21 +1444,47 @@ def reconstruct_csv_from_batch(conn, *, uid: int, batch_id: str) -> Optional[byt
     broker_hoy = {rid: b for (rid, b) in conn.execute(
         "SELECT raw_row_id, MIN(broker) FROM import_normalized_tx "
         "WHERE batch_id=? GROUP BY raw_row_id", (batch_id,)).fetchall()}
+    de_antes = {}            # nombre anterior (minúsculas) → nombre de hoy; None si es de dos
+    for hoy, anteriores in _renombre_broker.nombres_anteriores(conn, uid).items():
+        actual = next((n for (n,) in conn.execute(
+            "SELECT name FROM brokers WHERE user_id=? AND LOWER(name)=?", (uid, hoy)).fetchall()), None)
+        for viejo in anteriores:
+            k = viejo.strip().lower()
+            de_antes[k] = actual if k not in de_antes else None
+    from .persister import broker_pair
+    _pares = {}
+
+    def _par(nombre: str) -> set:
+        if nombre not in _pares:
+            _pares[nombre] = {str(x or "").strip().lower() for x in broker_pair(conn, uid, nombre)}
+        return _pares[nombre]
 
     parsed: List[Dict[str, Any]] = []
+    sin_interpretar = []          # (fila, nombre del archivo) para la segunda pasada
+    destinos = {}                 # nombre del archivo → los pares donde cayeron sus filas
     for r in rows:
         try:
             d = json.loads(r["raw_json"]) if r["raw_json"] else {}
         except json.JSONDecodeError:
             continue
-        _b = d.get("broker")
-        if (isinstance(_b, str) and _b.strip() and _b.strip().lower() not in vivos
-                and broker_hoy.get(r["id"])):
-            d["broker"] = broker_hoy[r["id"]]
         # Excluir filas sintéticas del seed — las nuevas se generan en el redo
         if d.get("_synthetic_seed"):
             continue
+        _b = d.get("broker")
+        if isinstance(_b, str) and _b.strip():
+            clave, vive_en = _b.strip().lower(), broker_hoy.get(r["id"])
+            if vive_en:
+                destinos.setdefault(clave, set()).update(_par(vive_en))
+                if clave not in _par(vive_en):
+                    d["broker"] = vive_en
+            else:
+                sin_interpretar.append((d, clave))
         parsed.append(d)
+    for d, clave in sin_interpretar:
+        destino = de_antes.get(clave)
+        if destino and (clave not in vivos
+                        or destino.strip().lower() in destinos.get(clave, ())):
+            d["broker"] = destino
 
     if not parsed:
         return None

@@ -1149,6 +1149,7 @@ def init_db():
                 name TEXT NOT NULL,
                 currency TEXT NOT NULL DEFAULT 'USDT',
                 parent_broker_id INTEGER REFERENCES brokers(id) ON DELETE CASCADE,
+                nombres_anteriores TEXT,
                 UNIQUE(user_id, name)
             );
             -- Credenciales read-only por-usuario de brokers con API (Wallbit). La
@@ -1195,6 +1196,15 @@ def init_db():
         broker_cols = _table_cols(conn, 'brokers')
         if broker_cols and 'parent_broker_id' not in broker_cols:
             conn.execute("ALTER TABLE brokers ADD COLUMN parent_broker_id INTEGER REFERENCES brokers(id)")
+            conn.commit()
+        # brokers.nombres_anteriores (2026-10-10): JSON con los nombres que tuvo el
+        # broker antes de cada renombre. La huella con que el importador reconoce una
+        # fila ya importada lleva el NOMBRE del broker adentro de un hash: sin saber
+        # cómo se llamaba antes, renombrar y volver a importar duplicaba todo (ver
+        # renombre_broker.py). ALTER sin índice, después de que la tabla existe.
+        broker_cols = _table_cols(conn, 'brokers')
+        if broker_cols and 'nombres_anteriores' not in broker_cols:
+            conn.execute("ALTER TABLE brokers ADD COLUMN nombres_anteriores TEXT")
             conn.commit()
 
         # users — agregar columnas nuevas si la tabla ya existía
@@ -5364,11 +5374,14 @@ NAME_KEYED_TABLES = (
     "deleted_ops_journal",
 )
 # Además de estas columnas, el nombre vive ADENTRO de textos JSON (las recetas de
-# borrado, las secciones archivadas, el registro de borrados, lo crudo de los imports;
-# la lista es `renombre_broker.COLUMNAS_JSON`): eso lo reescribe
-# `_renombre_broker.renombrar_adentro`, en la misma transacción.
-# `test_renombre_broker_recetas.py` revisa toda la cuenta después de renombrar y
-# falla si el nombre viejo quedó en algún lado.
+# borrado, las secciones archivadas, el registro de borrados; la lista es
+# `renombre_broker.COLUMNAS_JSON`): eso lo reescribe
+# `_renombre_broker.renombrar_adentro`, en la misma transacción. Lo que NO se
+# reescribe y se resuelve al leer: las filas crudas de los imports ("Editar y
+# rehacer") y la huella del anti-duplicados (con `brokers.nombres_anteriores`).
+# `test_renombre_broker_recetas.py` revisa la cuenta después de renombrar (el nombre
+# viejo no puede quedar en ninguna columna de texto que sus escenarios escriban) y
+# compara cada caso con y sin renombre.
 
 
 @app.put("/api/brokers/{bid}")
@@ -5429,6 +5442,26 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                     "code": "broker_name_reserved",
                     "broker_name": new_name,
                     "message": "'global' es un nombre reservado del sistema. Elegí otro.",
+                },
+            )
+
+        # 2.6) El broker de una conexión automática. La sincronización de Wallbit busca
+        #      a su broker por el nombre FIJO "Wallbit" (`_wallbit_ensure_broker`, las
+        #      huellas ya importadas, la reconciliación): renombrado, la próxima
+        #      sincronización creaba OTRO "Wallbit" y cargaba toda la cuenta de nuevo
+        #      (auditoría 2026-10-10, con Wallbit simulado: dos brokers con la misma
+        #      tenencia y el mismo efectivo). Mientras esté conectado, no se renombra.
+        if name_changed and old_name == "Wallbit" and conn.execute(
+                "SELECT 1 FROM user_broker_credentials WHERE user_id=? AND broker='wallbit'",
+                (uid,)).fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "broker_conectado",
+                    "message": ("Este broker está conectado a Wallbit y se sincroniza por su "
+                                "nombre: si lo renombrás, la próxima sincronización cargaría "
+                                "todo de nuevo en otro broker. Para cambiarle el nombre, "
+                                "primero desconectá Wallbit."),
                 },
             )
 
@@ -5564,11 +5597,19 @@ def update_broker(bid: int, data: BrokerIn, uid: int = Depends(get_effective_use
                                 (new_n, uid, old_n),
                             )
                 # Y adentro de lo guardado como JSON (las recetas de borrado, las
-                # secciones archivadas, el registro de borrados, las filas crudas de
-                # los imports). Sin esto, borrar después de renombrar mandaba la plata
-                # a una caja a nombre del broker viejo (invisible) o frenaba con 409
-                # para siempre. Todos los pares a la vez: padre y "· USD".
+                # secciones archivadas, el registro de borrados; la lista es
+                # `renombre_broker.COLUMNAS_JSON`). Sin esto, borrar después de
+                # renombrar mandaba la plata a una caja a nombre del broker viejo
+                # (invisible) o frenaba con 409 para siempre. Todos los pares a la
+                # vez: padre y "· USD".
                 _renombre_broker.renombrar_adentro(conn, uid, dict(rename_pairs))
+                # Y el nombre que se deja queda anotado en el broker: es lo único que
+                # permite reconocer después lo que se importó con ese nombre (la
+                # huella del anti-duplicados lo lleva adentro de un hash).
+                _renombre_broker.anotar_nombre_anterior(conn, uid, bid, old_name, new_name)
+                if sibling is not None:
+                    _renombre_broker.anotar_nombre_anterior(
+                        conn, uid, sibling["id"], old_sibling, new_sibling)
         except ERR_INTEGRIDAD as ex:
             raise HTTPException(
                 status_code=409,
@@ -40876,7 +40917,8 @@ def _wallbit_do_sync(conn, uid: int, api_key: str, *, full: bool) -> dict:
         # 1) Trades → posiciones/P&L
         seen = _wallbit_confirmed_fingerprints(conn, uid)
         # `trades_to_normalized` ya numera row_index 1..N en orden de fecha.
-        _dup = _import_pipeline.duplicate_row_indices_by_count(seen, txs)
+        _dup = _import_pipeline.duplicate_row_indices_by_count(
+            seen, txs, anteriores=_renombre_broker.nombres_anteriores(conn, uid))
         new_txs = [t for t in txs if t.row_index not in _dup]
         res["new_trades"] = len(new_txs)
         if new_txs:

@@ -20,9 +20,12 @@ Cómo se prueba (todo por las mismas puertas que usa la app):
      broker, tenencias, operaciones, meses, futuros) tienen que ser IDÉNTICOS,
      salvo el nombre. Y ninguna fila puede quedar a nombre de un broker que no existe.
   2. GUARDIÁN POR VALOR — después de renombrar, el nombre viejo no puede aparecer en
-     NINGUNA columna de texto de la cuenta (decodificando los JSON, también los que
+     ninguna columna de texto de la cuenta (decodificando los JSON, también los que
      van como texto adentro de otros: así el "·" guardado como \\u00b7 no se esconde).
-     Si aparece en un lugar nuevo, el test dice dónde.
+     Si aparece en un lugar nuevo, el test dice dónde. LÍMITE: sólo ve el nombre
+     escrito como texto y sólo lo que los escenarios llegan a crear. No ve un nombre
+     adentro de un hash (la huella del anti-duplicados: por eso el escenario
+     `volver_a_importar`) ni uno fijo en el código (Wallbit: su propio test).
   3. COBERTURA — cada tipo de receta (`"src": ...`) y cada tipo de registro de
      borrado que exista en el código tiene que tener su escenario acá. Una receta
      nueva sin escenario hace fallar el test (con el mensaje de qué hacer).
@@ -57,6 +60,9 @@ _PUEDE_QUEDAR = {
     # de filas: trababa la base); "Editar y rehacer" lo traduce al leer, y el
     # escenario `rehacer_import` mide que ande.
     ("import_raw_rows", "raw_json"),
+    # Los nombres ANTERIORES del broker, guardados a propósito: sin ellos no se
+    # reconoce lo que se importó con el nombre viejo (escenario `volver_a_importar`).
+    ("brokers", "nombres_anteriores"),
 }
 
 
@@ -206,12 +212,16 @@ class _Cuenta:
         finally:
             conn.close()
 
-    def importar(self, *filas):
-        """Import por las puertas reales (`/api/imports/preview` + `/confirm`)."""
+    def importar(self, *filas, saltear=()):
+        """Import por las puertas reales (`/api/imports/preview` + `/confirm`).
+        `saltear`: filas que la persona destilda en el asistente. Devuelve cuáles
+        marcó el asistente como repetidas (ya importadas)."""
         r = self.ok("post", "/api/imports/preview",
                     files=[("files", ("x.csv", io.BytesIO(_csv(*filas)), "text/csv"))],
                     data={"format": "rendi_generic", "broker": self.nombre})
-        self.ok("post", "/api/imports/confirm", json={"session_id": r["session_id"]})
+        self.ok("post", "/api/imports/confirm",
+                json={"session_id": r["session_id"], "skip_row_indices": list(saltear)})
+        return sorted(r.get("duplicate_row_indices") or [])
 
     def _papeles(self, conn) -> dict:
         """{nombre de hoy: papel} de cada broker de la cuenta."""
@@ -570,6 +580,75 @@ def _armar_dividendo_reemplazado(cta):
         conn.close()
 
 
+# ── Volver a importar después de renombrar ───────────────────────────────────
+# El importador reconoce lo que ya tiene por una huella que lleva el NOMBRE del
+# broker adentro de un hash. Con el nombre nuevo, el resumen del mes siguiente (que
+# repite filas del anterior) entraba ENTERO otra vez: depósitos 200.000 donde había
+# 100.000 (auditoría 2026-10-10). Acá: importar, [renombrar], importar un archivo
+# que repite 3 filas y trae una nueva.
+def _armar_import(cta):
+    _importar(cta)
+    return {}
+
+
+def _actuar_volver_a_importar(cta, ctx):
+    repetidas = cta.importar(*(f.format(b=cta.nombre) for f in _FILAS_IMPORT[:3]),
+                             f"2026-08-20,COMPRA,{cta.nombre},NVDA,2,100,200,,,0,USD,")
+    return [200 if len(repetidas) == 3 else f"reconoció {len(repetidas)} repetidas de 3"]
+
+
+# Lo mismo en un broker en pesos con filas en dólares: el importador las manda al
+# "· USD", que se renombra junto con el padre y guarda SUS propios nombres anteriores.
+_FILAS_PESOS_Y_DOLARES = ("2026-08-01,DEPOSITO,{b},,,,900000,,,0,ARS,",
+                          "2026-08-03,COMPRA,{b},GGAL,10,5000,50000,,,0,ARS,",
+                          "2026-08-04,DEPOSITO,{b},,,,2000,,,0,USD,",
+                          "2026-08-05,COMPRA,{b},AAPL,4,150,600,,,0,USD,")
+
+
+def _armar_import_pesos_y_dolares(cta):
+    cta.importar(*(f.format(b=cta.nombre) for f in _FILAS_PESOS_Y_DOLARES))
+    return {}
+
+
+def _actuar_volver_a_importar_pesos_y_dolares(cta, ctx):
+    repetidas = cta.importar(*(f.format(b=cta.nombre) for f in _FILAS_PESOS_Y_DOLARES),
+                             f"2026-08-20,COMPRA,{cta.nombre},MSFT,1,300,300,,,0,USD,")
+    return [200 if len(repetidas) == 4 else f"reconoció {len(repetidas)} repetidas de 4"]
+
+
+# "Editar y rehacer" con una fila que la persona había DESTILDADO: esa fila no tiene
+# fila interpretada de donde sacar el broker de hoy; va por los nombres anteriores.
+def _armar_import_con_fila_destildada(cta):
+    cta.importar(*(f.format(b=cta.nombre) for f in _FILAS_IMPORT), saltear=[2])
+    return _batch_confirmado(cta)
+
+
+def _batch_confirmado(cta):
+    conn = main.get_db()
+    try:
+        return {"batch": conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' "
+            "ORDER BY created_at DESC, id DESC", (cta.uid,)).fetchone()["id"]}
+    finally:
+        conn.close()
+
+
+# "Editar y rehacer" el SEGUNDO de dos archivos que se pisan: sus filas repetidas
+# tampoco tienen fila interpretada, y al rehacer tienen que volver a reconocerse.
+def _armar_dos_archivos_que_se_pisan(cta):
+    _importar(cta)
+    cta.importar(*(f.format(b=cta.nombre) for f in _FILAS_IMPORT[:3]),
+                 f"2026-08-20,COMPRA,{cta.nombre},NVDA,2,100,200,,,0,USD,")
+    conn = main.get_db()
+    try:
+        return {"batch": conn.execute(
+            "SELECT b.id FROM import_batches b WHERE b.user_id=? AND b.status='confirmed' "
+            "AND EXISTS (SELECT 1 FROM import_normalized_tx n WHERE n.batch_id=b.id "
+            "            AND n.asset_symbol='NVDA')", (cta.uid,)).fetchone()["id"]}
+    finally:
+        conn.close()
+
+
 def _armar_edicion_grupo(cta):
     cta.depositar(100000)
     cta.posicion("GGAL", 10, 5000)
@@ -613,6 +692,13 @@ ESCENARIOS = [
     Escenario("deshacer_borrado_de_historial", _armar_borrado_historial,
               _actuar_deshacer_historial, registros={"imported_asset"}, moneda="USD"),
     Escenario("rehacer_import", _armar_import_para_rehacer, _actuar_rehacer, moneda="USD"),
+    Escenario("volver_a_importar", _armar_import, _actuar_volver_a_importar, moneda="USD"),
+    Escenario("volver_a_importar_pesos_y_dolares", _armar_import_pesos_y_dolares,
+              _actuar_volver_a_importar_pesos_y_dolares),
+    Escenario("rehacer_import_con_fila_destildada", _armar_import_con_fila_destildada,
+              _actuar_rehacer, moneda="USD"),
+    Escenario("rehacer_el_segundo_de_dos_archivos_que_se_pisan",
+              _armar_dos_archivos_que_se_pisan, _actuar_rehacer, moneda="USD"),
     Escenario("revertir_foto_con_precio_de_fondo", _armar_precio_de_fondo,
               _actuar_revertir_import, recetas={"manual_position"}, moneda="USD"),
     Escenario("dividendo_confirmado", _armar_dividendo, _actuar_dividendo,
@@ -726,6 +812,71 @@ class DosRenombresALaVez(unittest.TestCase):
             r = cta.pedir("put", f"/api/brokers/{cta.bid}", json={"name": NUEVO, "currency": "ARS"})
         self.assertEqual(r.status_code, 409, r.text)
         self.assertEqual([b["name"] for b in cta.ok("get", "/api/brokers")], [VIEJO])
+
+
+class ElBrokerDeUnaConexionAutomatica(unittest.TestCase):
+    """La sincronización de Wallbit busca a su broker por el nombre fijo "Wallbit".
+    Renombrado, la próxima sincronización creaba otro "Wallbit" y cargaba toda la
+    cuenta de nuevo. Mientras la conexión exista, el renombre frena y lo explica."""
+
+    def _cuenta_wallbit(self, conectado: bool):
+        cta = _Cuenta(moneda="USD")
+        conn = main.get_db()
+        try:      # el broker se llama "Wallbit" (así lo crea la conexión)
+            conn.execute("UPDATE brokers SET name='Wallbit' WHERE id=?", (cta.bid,))
+            if conectado:   # lo que deja POST /api/wallbit/connect (no se puede llamar: red)
+                conn.execute("INSERT INTO user_broker_credentials (user_id, broker, api_key_enc) "
+                             "VALUES (?, 'wallbit', 'x')", (cta.uid,))
+            conn.commit()
+        finally:
+            conn.close()
+        return cta
+
+    def test_conectado_no_se_renombra_y_dice_por_que(self):
+        cta = self._cuenta_wallbit(conectado=True)
+        r = cta.pedir("put", f"/api/brokers/{cta.bid}", json={"name": "Wallbit USA", "currency": "USD"})
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "broker_conectado")
+        self.assertEqual([b["name"] for b in cta.ok("get", "/api/brokers")], ["Wallbit"])
+        # Cambiarle sólo la moneda (sin tocar el nombre) sigue andando.
+        self.assertEqual(cta.pedir("put", f"/api/brokers/{cta.bid}",
+                                   json={"name": "Wallbit", "currency": "USD"}).status_code, 200)
+
+    def test_sin_conexion_se_renombra_como_cualquiera(self):
+        cta = self._cuenta_wallbit(conectado=False)
+        r = cta.pedir("put", f"/api/brokers/{cta.bid}", json={"name": "Wallbit USA", "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+
+class LosNombresAnteriores(unittest.TestCase):
+    """`brokers.nombres_anteriores`: lo que permite reconocer lo importado con un
+    nombre que el broker ya no tiene."""
+
+    def _anteriores(self, cta):
+        conn = main.get_db()
+        try:
+            return {r["name"]: json.loads(r["nombres_anteriores"] or "[]") for r in conn.execute(
+                "SELECT name, nombres_anteriores FROM brokers WHERE user_id=?", (cta.uid,))}
+        finally:
+            conn.close()
+
+    def test_cada_renombre_anota_el_nombre_que_deja_tambien_el_del_usd(self):
+        cta = _Cuenta(sub_usd=True)
+        cta.renombrar()
+        self.assertEqual(self._anteriores(cta), {NUEVO: [VIEJO], NUEVO + SUB: [VIEJO + SUB]})
+
+    def test_volver_a_un_nombre_que_ya_tuvo_lo_saca_de_la_lista(self):
+        cta = _Cuenta()
+        cta.renombrar()
+        cta.ok("put", f"/api/brokers/{cta.bid}", json={"name": "Tercero", "currency": "ARS"})
+        self.assertEqual(self._anteriores(cta), {"Tercero": [VIEJO, NUEVO]})
+        cta.ok("put", f"/api/brokers/{cta.bid}", json={"name": VIEJO, "currency": "ARS"})
+        self.assertEqual(self._anteriores(cta), {VIEJO: [NUEVO, "Tercero"]})
+
+    def test_cambiar_solo_la_moneda_no_anota_nada(self):
+        cta = _Cuenta()
+        cta.ok("put", f"/api/brokers/{cta.bid}", json={"name": VIEJO, "currency": "USD"})
+        self.assertEqual(self._anteriores(cta), {VIEJO: []})
 
 
 class LaMedicionDeLoQueQuedoDeAntes(unittest.TestCase):

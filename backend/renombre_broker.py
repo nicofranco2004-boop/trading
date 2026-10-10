@@ -44,6 +44,9 @@ COLUMNAS_JSON = (
     # con su broker: con el nombre viejo, revertir esa foto no limpiaba el precio y
     # re-aplicar las fotos no lo encontraba (visto en la copia de prod 16/08).
     ("import_batches", "fund_price_overrides"),
+    # Lo que decidió una foto de tenencia (qué redujo o sacó, por broker). Hoy sólo se
+    # usa para medir; va igual, para que no quede un nombre viejo esperando un lector.
+    ("import_batches", "override_info"),
     # El dividendo confirmado en la bandeja que un import reemplazó (la fila entera,
     # con su receta): vuelve si ese import se revierte — a la cuenta que diga acá.
     ("dividendos_reemplazados", "op_json"),
@@ -51,7 +54,15 @@ COLUMNAS_JSON = (
 # NO va `import_raw_rows.raw_json` (lo que decía el archivo): una cuenta de prod tiene
 # 502.915 filas y reescribirlas trababa la base para TODOS durante decenas de
 # segundos. "Editar y rehacer" lo traduce al leer (`reconstruct_csv_from_batch`).
-_POR_IMPORT = frozenset({"import_raw_rows"})
+#
+# Y hay un lugar donde el nombre NO se puede reescribir: la HUELLA con que el
+# importador reconoce una fila que ya importó (`import_normalized_tx.fingerprint`) es
+# un hash de fecha + nombre del broker + tipo + activo + cantidad + precio. Con el
+# nombre nuevo la huella de la misma fila da otra, y el próximo archivo que se
+# superponga entraba ENTERO otra vez (auditoría 2026-10-10: depósitos 200.000 donde
+# había 100.000). Por eso cada broker guarda sus nombres anteriores
+# (`brokers.nombres_anteriores`) y el anti-duplicados prueba la huella con el nombre de
+# hoy y con cada anterior (`importing.pipeline.duplicate_row_indices_by_count`).
 
 
 def es_clave_de_broker(clave) -> bool:
@@ -82,10 +93,18 @@ def _en_clave_de_broker(valor, nombres: Dict[str, str]) -> Tuple[object, bool]:
         for k, v in valor.items():
             nk = nombres.get(k, k) if isinstance(k, str) else k
             nv, c = _recorrer(v, nombres)
+            if nk in out and _es_numero(out[nk]) and _es_numero(nv):
+                # {"A": 10, "B": 5} con A→B (quedaba un "B" de un broker borrado):
+                # pisar perdía los 10. Son montos por broker: se suman.
+                nv = out[nk] + nv
             out[nk] = nv
             cambio |= c or nk != k
         return out, cambio
     return valor, False
+
+
+def _es_numero(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 def _recorrer(valor, nombres: Dict[str, str]) -> Tuple[object, bool]:
@@ -161,20 +180,49 @@ def renombrar_adentro(conn, uid: int, nombres: Dict[str, str]) -> Dict[str, int]
     hechas = {}
     # Los nombres de tabla y columna salen de la tupla fija de arriba, nunca del pedido.
     for tabla, col in COLUMNAS_JSON:
-        if tabla in _POR_IMPORT:
-            de_la_cuenta = "batch_id IN (SELECT id FROM import_batches WHERE user_id=?)"
-        else:
-            de_la_cuenta = "user_id=?"
         filas = conn.execute(
-            f"SELECT id, {col} AS t FROM {tabla} WHERE {de_la_cuenta} AND {col} IS NOT NULL",
+            f"SELECT id, {col} AS t FROM {tabla} WHERE user_id=? AND {col} IS NOT NULL",
             (uid,)).fetchall()
         n = 0
         for f in filas:
             nuevo = renombrar_en_json(f["t"], nombres)
             if nuevo is not None:
-                conn.execute(f"UPDATE {tabla} SET {col}=? WHERE id=? AND {de_la_cuenta}",
+                conn.execute(f"UPDATE {tabla} SET {col}=? WHERE id=? AND user_id=?",
                              (nuevo, f["id"], uid))
                 n += 1
         if n:
             hechas[tabla] = n
     return hechas
+
+
+# ─── Los nombres anteriores de cada broker ───────────────────────────────────
+def anotar_nombre_anterior(conn, uid: int, broker_id: int, viejo: str, nuevo: str) -> None:
+    """El broker `broker_id` deja de llamarse `viejo` y pasa a `nuevo`: `viejo` queda
+    anotado entre sus nombres anteriores. Si vuelve a un nombre que ya tuvo, ése sale
+    de la lista (es el de hoy). Va en la transacción del renombre."""
+    fila = conn.execute("SELECT nombres_anteriores FROM brokers WHERE id=? AND user_id=?",
+                        (broker_id, uid)).fetchone()
+    try:
+        lista = json.loads((fila["nombres_anteriores"] if fila else None) or "[]")
+    except (TypeError, ValueError):
+        lista = []
+    lista = [n for n in lista if isinstance(n, str) and n != nuevo and n != viejo]
+    if viejo and viejo != nuevo:
+        lista.append(viejo)
+    conn.execute("UPDATE brokers SET nombres_anteriores=? WHERE id=? AND user_id=?",
+                 (json.dumps(lista) if lista else None, broker_id, uid))
+
+
+def nombres_anteriores(conn, uid: int) -> Dict[str, list]:
+    """{nombre de hoy en minúsculas: [nombres anteriores]} de los brokers del usuario
+    que alguna vez se renombraron."""
+    out = {}
+    for f in conn.execute("SELECT name, nombres_anteriores FROM brokers "
+                          "WHERE user_id=? AND nombres_anteriores IS NOT NULL", (uid,)).fetchall():
+        try:
+            lista = [n for n in json.loads(f["nombres_anteriores"] or "[]") if isinstance(n, str)]
+        except (TypeError, ValueError):
+            continue
+        if lista:
+            out[str(f["name"] or "").strip().lower()] = lista
+    return out

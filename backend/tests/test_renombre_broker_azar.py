@@ -3,7 +3,8 @@
 Los escenarios armados de `test_renombre_broker_recetas.py` prueban cada receta por
 separado. Esto mezcla: una secuencia al azar de acciones reales por HTTP (depositar,
 cargar posiciones, vender, operaciones a mano, futuros, cobros de bonos, dividendos,
-"No lo cobré", archivar y restaurar bonos, editar una posición, borrar, deshacer)
+"No lo cobré", archivar y restaurar bonos, editar una posición, importar archivos que
+se pisan, "Editar y rehacer" un import, borrar, deshacer)
 sobre una cuenta con tres brokers (uno en pesos con su "· USD" y otro aparte), y la
 corre DOS veces con la misma semilla: una con renombres metidos en pasos al azar y
 otra sin renombrar. Las respuestas de cada paso y el estado final (por PAPEL de cada
@@ -245,6 +246,53 @@ def _borrar_posicion(c, rng):
     return r.status_code
 
 
+# Dos archivos por broker que se pisan entre sí (el segundo repite filas del primero).
+ARCHIVOS = {
+    "padre": (("2026-08-03,DEPOSITO,{b},,,,900000,,,0,ARS,",
+               "2026-08-04,COMPRA,{b},PAMP,10,3000,30000,,,0,ARS,",
+               "2026-08-06,COMPRA,{b},TXAR,5,800,4000,,,0,ARS,"),
+              ("2026-08-04,COMPRA,{b},PAMP,10,3000,30000,,,0,ARS,",
+               "2026-08-06,COMPRA,{b},TXAR,5,800,4000,,,0,ARS,",
+               "2026-08-25,VENTA,{b},PAMP,4,3500,14000,,,0,ARS,")),
+    "otro": (("2026-08-03,DEPOSITO,{b},,,,50000,,,0,USD,",
+              "2026-08-04,COMPRA,{b},NVDA,10,100,1000,,,0,USD,"),
+             ("2026-08-04,COMPRA,{b},NVDA,10,100,1000,,,0,USD,",
+              "2026-08-26,VENTA,{b},NVDA,3,120,360,,,0,USD,",
+              "2026-08-27,COMPRA,{b},AMD,4,150,600,,,0,USD,")),
+}
+
+
+def _confirmar_vista_previa(c, r):
+    if r.status_code != 200:
+        return r.status_code
+    cuerpo = r.json()
+    cuerpo = cuerpo.get("preview") or cuerpo
+    if not cuerpo.get("session_id"):
+        return "sin nada para confirmar"
+    repetidas = len(cuerpo.get("duplicate_row_indices") or [])
+    conf = c.pedir("post", "/api/imports/confirm", json={"session_id": cuerpo["session_id"]})
+    return f"{conf.status_code}, {repetidas} repetidas"
+
+
+def _importar_archivo(c, rng):
+    papel = rng.choice(("padre", "otro"))
+    nombre = c.nombre_de(papel)
+    filas = [f.format(b=nombre) for f in rng.choice(ARCHIVOS[papel])]
+    return _confirmar_vista_previa(c, c.pedir(
+        "post", "/api/imports/preview",
+        files=[("files", ("x.csv", base.io.BytesIO(base._csv(*filas)), "text/csv"))],
+        data={"format": "rendi_generic", "broker": nombre}))
+
+
+def _rehacer_import(c, rng):
+    # Por orden de creación (rowid): el id del lote es un texto al azar.
+    lotes = c.filas("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' "
+                    "AND parser_format='rendi_generic' ORDER BY rowid")
+    if not lotes:
+        return "sin imports"
+    return _confirmar_vista_previa(c, c.pedir("post", f"/api/imports/{rng.choice(lotes)['id']}/redo"))
+
+
 def _deshacer(c, rng):
     if not c.tokens:
         return "nada que deshacer"
@@ -255,7 +303,8 @@ def _deshacer(c, rng):
 ACCIONES = ((_depositar, 3), (_comprar, 5), (_vender, 4), (_operacion_a_mano, 2),
             (_abrir_futuro, 1), (_cerrar_futuro, 2), (_cobro_de_bono, 1), (_dividendo, 2),
             (_no_lo_cobre, 1), (_archivar_bonos, 2), (_restaurar_bonos, 2),
-            (_editar_posicion, 1), (_borrar_operacion, 4), (_borrar_posicion, 3), (_deshacer, 4))
+            (_editar_posicion, 1), (_borrar_operacion, 4), (_borrar_posicion, 3), (_deshacer, 4),
+            (_importar_archivo, 3), (_rehacer_import, 1))
 
 
 def _plan_de_renombres(rng) -> list:
