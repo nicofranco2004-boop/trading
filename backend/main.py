@@ -32676,7 +32676,8 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                     return {"error": (
                         f"Quedó el retiro en {broker_name} SIN el depósito en "
                         f"{to_row['name']} — avisale al usuario que cargue el "
-                        "depósito desde la app (Cartera → Cash → Depositar).")}
+                        "depósito desde la app (botón Registrar → Depósito; en el "
+                        "celular, Cartera → Cash).")}
             _ai_cache_invalidate(uid)
             _LAST_CHAT_TRADE[uid] = {
                 "kind": "transfer", "broker_id": p.get("broker_id"),

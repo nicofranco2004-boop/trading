@@ -19,7 +19,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useAlertsContext } from '../contexts/AlertsContext'
-import { menuVisible, pantallasVisibles, ASESOR_PROPIO, nombreDelCliente } from '../utils/navegacion'
+import { menuVisible, pantallasVisibles, ASESOR_PROPIO, GROUPS, nombreDelCliente } from '../utils/navegacion'
 import Panel from '../components/Panel'
 import MervallE from '../components/ai/MervallE'
 
@@ -37,11 +37,14 @@ import MervallE from '../components/ai/MervallE'
 // en este archivo.
 const PLAN_ASESOR = 'Plan Asesor'
 const TU_PORTFOLIO = 'Tu portfolio'
-const SECCIONES = [PLAN_ASESOR, TU_PORTFOLIO, 'Mercado', 'Análisis']
 // Grupo de la compu → sección del celular, cuando se llaman distinto (por el id
 // del grupo: su nombre cambia adentro de un cliente). Lo que en la compu va
 // suelto (Alertas, Importar) acá va con la cartera.
 const SECCION_DE_GRUPO = { cartera: TU_PORTFOLIO }
+// El orden de las secciones es el de los grupos de la compu (GROUPS). Estaba
+// escrito a mano acá: al reordenar el menú lateral, el celular se quedaba con
+// el orden viejo sin que nada avisara.
+const SECCIONES = [PLAN_ASESOR, ...GROUPS.map(g => SECCION_DE_GRUPO[g.id] || g.label)]
 
 // Los renglones de ayuda no dicen "tu"/"tus": el asesor adentro de un cliente
 // está mirando la cartera de OTRO.

@@ -28,6 +28,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { useAlertsContext } from '../../contexts/AlertsContext'
 import { menuVisible } from '../../utils/navegacion'
+import { direccionDeRegistrar } from '../../utils/registrar'
 
 const TABS = [
   // "Inicio", igual que en "Más" (antes: "Home" acá y "Resumen" allá, para
@@ -178,15 +179,17 @@ function TabItem({ to, label, icon: Icon }) {
 // entienda ("Agregar a watchlist" iba a `/?action=watchlist`, que nadie leía).
 export const QUICK_ACTIONS = [
   // Compra y venta separadas, igual que desktop. La compra es el alta de la
-  // posición (?action=new); la venta abre el flow FIFO (?action=sell) — si hay 1
-  // sola tenencia la vende directo, si hay varias lleva a elegir de la lista.
+  // posición; la venta abre el flow FIFO — si hay 1 sola tenencia la vende
+  // directo, si hay varias lleva a elegir de la lista. La dirección de cada una
+  // sale de utils/registrar.js, la lista que también lee el botón «Registrar»
+  // del menú lateral de la compu.
   {
     code: 'new_position',
     label: 'Registrar compra',
     sub: 'Agregar una tenencia nueva',
     icon: PlusCircle,
     tone: 'accent',
-    to: '/posiciones?action=new',
+    to: direccionDeRegistrar('comprar'),
   },
   {
     code: 'sell_position',
@@ -194,7 +197,7 @@ export const QUICK_ACTIONS = [
     sub: 'Vender una tenencia',
     icon: TrendingDown,
     tone: 'pos',
-    to: '/posiciones?action=sell',
+    to: direccionDeRegistrar('vender'),
   },
   {
     code: 'watchlist',
