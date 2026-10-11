@@ -93,6 +93,8 @@ export const EVENTOS = {
   config_tab_viewed: { label: 'Cambió de pestaña', donde: 'Configuración', tipo: 'vista' },
   recommendation_sent: { label: 'Recomendó Rendi', donde: 'Recomendar' },
   recommendation_email_copied: { label: 'Copió el mail para recomendar', donde: 'Recomendar' },
+  instalar_app_abierto: { label: 'Abrió «Descargar app»', donde: 'Descargar app', tipo: 'vista' },
+  instalar_app_un_toque: { label: 'Tocó «Instalar ahora» (Android)', donde: 'Descargar app' },
 
   // ── Primeros pasos ──
   onboarding_started: { label: 'Empezó el onboarding', donde: 'Onboarding', tipo: 'vista' },

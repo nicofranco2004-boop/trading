@@ -9,12 +9,18 @@ import ConfirmarHost from './components/ConfirmarHost'
 import { initAnalytics } from './utils/analytics'
 import { initMetaPixel } from './utils/metaPixel'
 import { isChunkLoadError, urlsAReparar, repararAssets } from './utils/chunkErrors'
+import { escucharInstalador } from './utils/instalarApp'
 import './index.css'
 
 // Inicializar GA4 y el Meta Pixel (Facebook/Instagram Ads) al arranque.
 // No-op fuera de rendi.finance (servidor local, previews): ver utils/medicion.js.
 initAnalytics()
 initMetaPixel()
+
+// Chrome en Android avisa UNA vez, al cargar, que Rendi se puede instalar. Hay
+// que estar escuchando desde ya para que el cartel «Descargar app» tenga el
+// botón de un toque cuando alguien lo abra (ver utils/instalarApp.js).
+escucharInstalador()
 
 // ─── Auto-reload on stale chunk error ────────────────────────────────────────
 // Safari (especialmente iOS) es agresivo cacheando HTML aunque el header

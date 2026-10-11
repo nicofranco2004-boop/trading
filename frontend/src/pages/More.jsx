@@ -8,12 +8,14 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ChevronRight, LogOut, Bell, BellRing, BellOff, Send, MessageCircle,
-  Sun, Moon,
+  Sun, Moon, Smartphone,
 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import RecommendationsModal from '../components/RecommendationsModal'
+import InstalarAppModal from '../components/InstalarAppModal'
+import { yaInstalada } from '../utils/instalarApp'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { useCoachDrawer } from '../contexts/CoachDrawerContext'
@@ -132,6 +134,10 @@ export default function More() {
   const coachDrawer = useCoachDrawer()
   const { clientCtx } = useAdvisorContext()
   const [recomOpen, setRecomOpen] = useState(false)
+  const [instalarOpen, setInstalarOpen] = useState(false)
+  // Quien ya abre Rendi desde el ícono de su pantalla de inicio no necesita
+  // que le ofrezcan instalarla.
+  const [instalada] = useState(() => yaInstalada())
 
   const { unseenCount = 0 } = useAlertsContext()  // el puntito de alertas sin ver
   const { atOwnLevel, isAdvisor, utilidades } = menuVisible({ user, clientCtx })
@@ -154,6 +160,28 @@ export default function More() {
         title="Más"
         subtitle="Todas las secciones de Rendi."
       />
+
+      {/* Descargar app — el paso a paso para dejar Rendi en la pantalla de
+          inicio. Va primero porque es lo único de esta lista que se hace una
+          sola vez; desaparece cuando ya está instalada. */}
+      {!instalada && (
+        <section>
+          <Panel padding="none" className="overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setInstalarOpen(true)}
+              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-bg-2/60 active:bg-bg-3 transition-colors text-left"
+            >
+              <Smartphone size={18} strokeWidth={1.75} className="text-data-violet flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-ink-0 leading-tight">Descargar app</div>
+                <div className="text-[11px] text-ink-3 leading-tight mt-0.5">Poné Rendi en tu pantalla de inicio, en 4 pasos</div>
+              </div>
+              <ChevronRight size={14} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
+            </button>
+          </Panel>
+        </section>
+      )}
 
       {/* Asistente — Mervall-E AI abre el drawer global, no navega a una ruta */}
       <section>
@@ -216,7 +244,7 @@ export default function More() {
       ))}
 
       {/* Notificaciones push */}
-      <PushNotificationsSection esAsesor={isAdvisor} />
+      <PushNotificationsSection esAsesor={isAdvisor} onInstalar={() => setInstalarOpen(true)} />
 
       {/* Configuración + logout */}
       <section>
@@ -295,13 +323,14 @@ export default function More() {
       {/* Modal de recomendaciones — trigger desde el botón "Recomendaciones"
           de la sección Cuenta arriba. */}
       <RecommendationsModal open={recomOpen} onClose={() => setRecomOpen(false)} />
+      <InstalarAppModal open={instalarOpen} onClose={() => setInstalarOpen(false)} origen="mas" />
     </div>
   )
 }
 
 // ─── Push notifications section ─────────────────────────────────────────
 
-function PushNotificationsSection({ esAsesor = false }) {
+function PushNotificationsSection({ esAsesor = false, onInstalar }) {
   const toast = useToast()
   const {
     supported, permission, subscribed, loading, error,
@@ -319,8 +348,13 @@ function PushNotificationsSection({ esAsesor = false }) {
           <div className="flex items-center gap-3">
             <BellOff size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
             <p className="text-xs text-ink-2 leading-relaxed">
-              Tu navegador no soporta notificaciones push. En iOS necesitás
-              instalar Rendi como PWA primero (Compartir → Agregar a inicio).
+              Desde este navegador no pueden llegarte notificaciones. En
+              iPhone llegan recién cuando Rendi está instalada en tu pantalla
+              de inicio.{' '}
+              <button type="button" onClick={onInstalar}
+                className="text-data-violet font-medium hover:underline">
+                Ver cómo instalarla
+              </button>
             </p>
           </div>
         </Panel>

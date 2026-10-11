@@ -23,7 +23,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
-  MessageCircle,
+  MessageCircle, Smartphone,
   Sun, Moon, LogOut, Menu, ChevronRight, Users, Search,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
@@ -37,6 +37,7 @@ import { prefetchRoute } from '../utils/routePrefetch'
 import { menuVisible, GROUPS, etiquetaDeGrupo } from '../utils/navegacion'
 import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
+import InstalarAppModal from './InstalarAppModal'
 import MervallE from './ai/MervallE'
 import RegistrarMenu from './RegistrarMenu'
 
@@ -68,6 +69,7 @@ export default function Sidebar() {
   const visibleLeaves = visibleGroups.flatMap(g => g.items)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
+  const [instalarOpen, setInstalarOpen] = useState(false)
 
   // Grupo de la ruta activa (para abrirlo solo).
   const activeGroupId = GROUPS.find(g => g.items.some(it => matchPath(location.pathname, it.to)))?.id
@@ -338,6 +340,15 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
+        {/* No es una pantalla: abre el cartel con el paso a paso para poner
+            Rendi en el celular. Por eso es un botón y no vive en UTILIDADES. */}
+        <button type="button" onClick={() => setInstalarOpen(true)}
+          title={collapsed ? 'Descargar app' : 'Poné Rendi en tu celular'}
+          className={`w-full flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded text-[13.5px] font-medium transition-colors text-ink-3 hover:text-data-violet hover:bg-data-violet/[0.06]`}>
+          <Smartphone size={16} strokeWidth={1.75} aria-hidden="true" />
+          {!collapsed && <span>Descargar app</span>}
+        </button>
+
         <button type="button" onClick={() => setRecomOpen(true)}
           title={collapsed ? 'Recomendaciones' : 'Mandanos una recomendación'}
           className={`w-full flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[13.5px] font-medium transition-colors text-ink-3 hover:text-data-violet hover:bg-data-violet/[0.06]`}>
@@ -374,6 +385,7 @@ export default function Sidebar() {
     </aside>
 
     <RecommendationsModal open={recomOpen} onClose={() => setRecomOpen(false)} />
+    <InstalarAppModal open={instalarOpen} onClose={() => setInstalarOpen(false)} origen="menu" />
     </>
   )
 }
