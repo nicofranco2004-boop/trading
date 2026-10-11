@@ -13672,6 +13672,10 @@ def bond_cashflow(data: BondCashflowIn, uid: int = Depends(get_effective_user)):
                                          f"({f['op_type']} del {str(f['date'])[8:10]}/"
                                          f"{str(f['date'])[5:7]}). Fijate en Movimientos.")
             out = _registrar_cobro_bono(conn, uid, data)
+            # El cobro es resultado del mes: se recalcula en el momento y en la misma
+            # transacción, como al cobrar un plazo fijo o cargar una operación a mano.
+            # Sin esto el mes no lo incluía hasta que otra cosa recalculara (medido
+            # 2026-10-10: cobrar un cupón de US$ 100 dejaba GET /api/monthly sin nada).
             _recalc_pnl_realized_from_ops(conn, uid)
         _ai_cache_invalidate(uid)
         return out
@@ -14664,6 +14668,9 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     _repair_monthly_chain(conn, uid, 'global')
                     conn.commit()
 
+            # Cambió el efectivo de dos cajas (y quizás el resultado del mes): sin
+            # esto la IA seguía contestando con la cartera de antes de la conversión.
+            _ai_cache_invalidate(uid)
             return {
                 "ok": True,
                 "from_broker": from_b,
