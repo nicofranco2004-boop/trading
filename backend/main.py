@@ -3416,6 +3416,27 @@ def init_db():
         except Exception as ex:
             log.warning("no se pudieron renombrar las cajas USDT de brokers en dólares: %s", ex)
 
+        # Cajas VACÍAS (o en rojo) que quedaron con el precio de compra de dólares
+        # que ya no tienen. Hasta 2026-10-11 la caja lo conservaba al vaciarse y los
+        # dólares que entraban después sin precio lo heredaban (ver efectivo.py; en
+        # la base de prod del 2026-08-16: 9 cajas, todas en cero).
+        # Desde entonces `efectivo.mover` ya no lo deja y tampoco lo lee, así que
+        # esto no cambia ningún saldo ni ningún resultado: deja la base diciendo lo
+        # mismo que la regla, que es lo que vigila el chequeo de invariantes
+        # (`caja_vacia_con_precio`). En cada boot y en WARNING, como el de arriba:
+        # "quedan 0" es la confirmación.
+        try:
+            n = conn.execute(
+                "UPDATE positions SET tc_compra=NULL "
+                f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").rowcount or 0
+            quedan = conn.execute(
+                "SELECT COUNT(*) c FROM positions "
+                f"WHERE {_efectivo.SQL_CAJA_VACIA_CON_PRECIO}").fetchone()["c"]
+            log.warning("cajas vacías con precio de compra: %d limpiadas ahora, quedan %d",
+                        n, quedan)
+        except Exception as ex:
+            log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
+
         conn.commit()
 
 
@@ -14559,7 +14580,9 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
     Cada compra de USD actualiza el `tc_compra` promedio ponderado del cash USD
     en el sub-broker. Cuando se venden esos USD, el cost basis ARS se calcula
     como `usd_amount * tc_compra_promedio`, y el P&L se compara contra los ARS
-    efectivamente recibidos.
+    efectivamente recibidos. El precio es de los dólares que hay: al vaciarse la
+    caja se pierde, y los que entran sin precio no ganan ni pierden al venderse
+    (la regla y la cuenta viven en efectivo.py).
     """
     with db_abierta() as conn:
         try:
@@ -14610,20 +14633,14 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     if not ars_broker:
                         raise HTTPException(400, "Broker padre ARS no encontrado.")
 
-                    # Computar P&L cambiario ANTES de modificar el cash:
-                    # cost_basis_ars = usd_amount * tc_compra_promedio_actual
-                    # El TC promedio se lee con el saldo TOMADO (2026-10-07): leído
-                    # sin tomar, una compra de dólares simultánea cambiaba el promedio
-                    # entre esta lectura y el débito, y la venta calculaba su ganancia
-                    # con un costo que ya no era — el costo de los dólares que se
-                    # vendieron y el de los que quedaron no sumaban lo que se pagó.
-                    _efectivo.tomar_saldo(conn, uid, usd_broker['name'])
-                    cash_usd = _efectivo.caja(conn, uid, usd_broker['name'])
-                    tc_avg = (cash_usd['tc_compra'] if cash_usd else None) or data.tc
-                    cost_basis_ars = data.usd_amount * tc_avg
-                    pnl_ars_realized = data.ars_amount - cost_basis_ars
-                    # P&L USD se mide al TC de la venta (mismo patrón que valuation.js)
-                    pnl_usd_realized = pnl_ars_realized / data.tc if data.tc > 0 else 0.0
+                    # A qué precio salen los dólares y cuánto se ganó, ANTES de
+                    # debitarlos y con el saldo tomado. La cuenta es una sola,
+                    # la misma del importador: `_efectivo.venta_de_dolares`.
+                    _venta = _efectivo.venta_de_dolares(
+                        conn, uid, usd_broker['name'], data.usd_amount, data.ars_amount,
+                        data.tc)
+                    tc_avg = _venta["tc_costo"]
+                    pnl_usd_realized = _venta["ganancia_usd"]
 
                     # Debitar USD, acreditar ARS
                     _adjust_broker_cash(conn, uid, usd_broker['name'], -data.usd_amount,
@@ -14633,8 +14650,8 @@ def create_conversion(data: ConversionIn, uid: int = Depends(get_effective_user)
                     # se borra, vuelven a ese costo.
                     movs = [{"broker": usd_broker['name'], "delta": -data.usd_amount,
                              "tc_compra": tc_avg,
-                             "tc_antes": cash_usd['tc_compra'] if cash_usd else None,
-                             "saldo_antes": float(cash_usd['invested'] or 0) if cash_usd else 0.0,
+                             "tc_antes": _venta["tc_antes"],
+                             "saldo_antes": _venta["saldo_antes"],
                              "tc_despues": _efectivo.estado_de_la_caja(
                                  conn, uid, usd_broker['name'])["tc"]},
                             {"broker": ars_broker['name'], "delta": data.ars_amount}]

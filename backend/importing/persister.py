@@ -39,6 +39,7 @@ from .schema import (
     OP_FX_ARS_TO_USD, OP_FX_USD_TO_ARS, OP_FEE, OP_TAX, OP_FUTURES_PNL,
 )
 from . import seed as _seed
+import efectivo as _efectivo   # el precio de los dólares y su ganancia cambiaria
 
 # Este módulo no tenía logger. Hace falta uno para poder avisar cuando un camino
 # de rescate se apaga: sin eso, un fallback silencioso deja de arreglar y nadie
@@ -1260,15 +1261,14 @@ def _persist_fx(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helpers, *, d
             "SELECT * FROM brokers WHERE id=? AND user_id=?",
             (usd_broker["parent_broker_id"], uid),
         ).fetchone()
-        cash_usd = conn.execute(
-            "SELECT tc_compra FROM positions WHERE user_id=? AND broker=? AND is_cash=1 "
-            "ORDER BY id LIMIT 1",
-            (uid, usd_broker["name"]),
-        ).fetchone()
-        tc_avg = (cash_usd["tc_compra"] if cash_usd else None) or tc
-        cost_basis_ars = usd_amount * tc_avg
-        pnl_ars = ars_amount - cost_basis_ars
-        op_pnl_usd = pnl_ars / tc if tc > 0 else 0.0
+        # A qué precio salen y cuánto se ganó: la misma cuenta que la conversión a
+        # mano. Acá vivía una copia que leía el precio de la caja por su lado, también
+        # el de una caja vacía, y se lo ponía a TODOS los dólares vendidos aunque la
+        # caja tuviera menos (un archivo puede dejarla en rojo).
+        venta = _efectivo.venta_de_dolares(
+            conn, uid, usd_broker["name"], usd_amount, ars_amount, tc)
+        tc_avg = venta["tc_costo"]
+        op_pnl_usd = venta["ganancia_usd"]
         op_pnl_pct = (op_pnl_usd / usd_amount * 100) if usd_amount > 0 else None
         helpers._adjust_broker_cash(conn, uid, usd_broker["name"], -usd_amount)
         helpers._adjust_broker_cash(conn, uid, ars_broker["name"], ars_amount)

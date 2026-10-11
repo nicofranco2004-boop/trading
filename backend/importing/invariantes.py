@@ -20,6 +20,7 @@ CHEQUEOS. Si el chequeo puede marcar algo legítimo, va con severidad "aviso", n
 "error". Ante la duda: aviso.
 """
 from __future__ import annotations
+import efectivo
 from money_fmt import fmt_num
 
 from typing import Any, Dict, List, Optional
@@ -352,6 +353,35 @@ def check_futuro_abierto_sin_broker(conn, uid: Optional[int] = None) -> List[Vio
     return out
 
 
+# ────────────────────────────────────────────────────────
+# 9. Caja vacía con precio de compra
+# ────────────────────────────────────────────────────────
+def check_caja_vacia_con_precio(conn, uid: Optional[int] = None) -> List[Violacion]:
+    """El precio de compra de los dólares de una caja es de los dólares que HAY: una
+    caja vacía o en rojo no tiene ninguno.
+
+    Hasta 2026-10-11 la caja lo conservaba al vaciarse, y los dólares que entraban
+    después sin precio (un dividendo, un depósito) lo heredaban: al venderlos se
+    anotaba una ganancia cambiaria contra una compra de hace años. Desde entonces
+    `efectivo.mover` —el único que escribe ese precio— lo saca, y el arranque limpia
+    las que habían quedado. Si esto marca algo, alguien volvió a escribirlo por
+    afuera de esa puerta."""
+    filtro, params = _scope(uid, "user_id")
+    out = []
+    for r in _rows(conn, f"""
+        SELECT id, user_id, broker, invested, tc_compra
+          FROM positions
+         WHERE {efectivo.SQL_CAJA_VACIA_CON_PRECIO}{filtro}""", params):
+        out.append(Violacion(
+            chequeo="caja_vacia_con_precio", severidad="error", user_id=r["user_id"],
+            que_pasa=(f"La caja de '{r['broker']}' está en {fmt_num(float(r['invested'] or 0), 2)} "
+                      f"y guarda un precio de compra de {fmt_num(float(r['tc_compra']), 2)}, "
+                      f"que no es de ningún dólar."),
+            detalle={"position_id": r["id"], "broker": r["broker"],
+                     "saldo": r["invested"], "tc_compra": r["tc_compra"]}))
+    return out
+
+
 CHEQUEOS = (
     check_moneda_posicion_vs_broker,
     check_broker_inexistente,
@@ -361,6 +391,7 @@ CHEQUEOS = (
     check_caja_concilia,
     check_receta_con_broker_inexistente,
     check_futuro_abierto_sin_broker,
+    check_caja_vacia_con_precio,
 )
 
 

@@ -19,6 +19,16 @@ saldo", cada una con su regla:
 
 Ahora todas pasan por `mover`, y lo que antes distinguía a cada copia es un
 parámetro explícito: ¿puede quedar negativo? ¿promedia el TC?
+
+El PRECIO de los dólares (`tc_compra` de la caja: a cuántos pesos se compraron,
+en promedio) también se escribe solamente acá, y es de los dólares que HAY: una
+caja vacía o en rojo no tiene precio. Hasta 2026-10-11 la caja lo conservaba al
+vaciarse, y los dólares que entraban después SIN precio (un dividendo, un
+depósito, lo cobrado de una venta) lo heredaban: 100 dólares comprados a 400 y
+vendidos, un dividendo de US$ 10 y su venta a 1.300 anotaban US$ 6,92 de
+ganancia cambiaria que no existía (auditoría 2 del 2026-10-10). Y la cuenta de
+esa ganancia (`venta_de_dolares`) estaba copiada en dos lugares —la conversión a
+mano y la importada—, cada una leyendo el precio por su lado.
 """
 from typing import Optional
 
@@ -40,6 +50,18 @@ def asset_de_caja(moneda_broker: Optional[str]) -> str:
     if moneda_broker == 'USD':
         return 'USD'
     return 'USDT'
+
+
+# Por debajo de medio centavo la caja está VACÍA: es lo que la pantalla muestra
+# como 0,00. Vender "todo" suele dejar un resto así (76,923077 comprados, 76,92
+# vendidos), y con el cero exacto ese resto conservaba el precio para los
+# dólares que entraran después.
+CAJA_VACIA = 0.005
+
+# Las cajas que rompen la regla, en SQL: lo usan la limpieza del arranque
+# (main.init_db) y el chequeo de invariantes, para que "vacía" sea una sola cosa.
+SQL_CAJA_VACIA_CON_PRECIO = (
+    f"is_cash=1 AND tc_compra IS NOT NULL AND COALESCE(invested, 0) < {CAJA_VACIA}")
 
 
 def tomar_saldo(conn, uid: int, broker: str) -> None:
@@ -67,6 +89,15 @@ def caja(conn, uid: int, broker: str):
     ).fetchone()
 
 
+def _precio_vigente(fila, saldo: float) -> Optional[float]:
+    """El precio de compra de los dólares que la caja TIENE, o None: no hay caja,
+    no tiene precio, o está vacía o en rojo (el que guarde no es de ningún dólar)."""
+    if not fila or saldo < CAJA_VACIA:
+        return None
+    tc = fila["tc_compra"]
+    return tc if (tc and tc > 0) else None
+
+
 def _moneda(conn, uid: int, broker: str) -> Optional[str]:
     row = conn.execute(
         "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1", (uid, broker),
@@ -86,9 +117,13 @@ def _moneda_para_mostrar(conn, uid: int, broker: str) -> str:
     return row["currency"] or ''
 
 
+_NO_FIJAR = object()
+
+
 def mover(conn, uid: int, broker: str, delta: float, *,
           permite_negativo: bool = True,
-          tc_compra: Optional[float] = None) -> Optional[int]:
+          tc_compra: Optional[float] = None,
+          tc_fijo=_NO_FIJAR) -> Optional[int]:
     """Suma `delta` (en la moneda del broker; negativo = sale plata) al efectivo
     del broker. Devuelve el id de la fila de efectivo, o None si `delta` es 0.
 
@@ -105,6 +140,15 @@ def mover(conn, uid: int, broker: str, delta: float, *,
     los dólares que ya había (sólo los que había de verdad: un saldo en rojo no
     tiene TC que pesar), para medir después la ganancia cambiaria al venderlos.
     Sólo aplica a créditos.
+
+    El precio es de los dólares que HAY, y esta función es la única que lo
+    escribe. Si la caja estaba vacía o en rojo, el que traía no cuenta; si queda
+    vacía o en rojo, queda sin precio. Lo que entra sin `tc_compra` a una caja
+    con dólares y precio sigue como siempre: no mueve el promedio.
+
+    `tc_fijo`: el precio que tiene que quedar, cuando lo decide quien llama. Sólo
+    lo usa `revertir`, que repone el de antes de un movimiento; la regla de la
+    caja vacía vale igual.
 
     El saldo se toma para escribir ANTES de leerlo (`tomar_saldo`) y la suma la
     hace la base (`invested = invested + ?`): con dos pedidos a la vez, el
@@ -124,11 +168,16 @@ def mover(conn, uid: int, broker: str, delta: float, *,
         if actual + delta < 0:
             delta = -actual          # el redondeo no deja un -0,0000001 de saldo
 
-    tc_nuevo = None
-    if tc_compra is not None and delta > 0:
+    tc_previo = _precio_vigente(fila, actual)
+    if tc_fijo is not _NO_FIJAR:
+        tc_nuevo = tc_fijo
+    elif tc_compra is not None and delta > 0:
         base = max(actual, 0.0)
-        tc_previo = (fila["tc_compra"] if fila else None) or tc_compra
-        tc_nuevo = (base * tc_previo + delta * tc_compra) / (base + delta)
+        tc_nuevo = (base * (tc_previo or tc_compra) + delta * tc_compra) / (base + delta)
+    else:
+        tc_nuevo = tc_previo
+    if actual + delta < CAJA_VACIA:
+        tc_nuevo = None
 
     if not fila:
         cur = conn.execute(
@@ -137,17 +186,11 @@ def mover(conn, uid: int, broker: str, delta: float, *,
             (uid, broker, asset_de_caja(_moneda(conn, uid, broker)), delta, tc_nuevo),
         )
         return cur.lastrowid
-    if tc_nuevo is not None:
-        conn.execute(
-            "UPDATE positions SET invested=COALESCE(invested, 0) + ?, tc_compra=? "
-            "WHERE id=? AND user_id=?",
-            (delta, tc_nuevo, fila["id"], uid),
-        )
-    else:
-        conn.execute(
-            "UPDATE positions SET invested=COALESCE(invested, 0) + ? WHERE id=? AND user_id=?",
-            (delta, fila["id"], uid),
-        )
+    conn.execute(
+        "UPDATE positions SET invested=COALESCE(invested, 0) + ?, tc_compra=? "
+        "WHERE id=? AND user_id=?",
+        (delta, tc_nuevo, fila["id"], uid),
+    )
     return fila["id"]
 
 
@@ -191,10 +234,13 @@ def revertir(conn, uid: int, broker: str, delta: float, *,
         porque el promedio también queda igual si después se compró AL MISMO
         precio, y "el de antes" puede no ser de ningún dólar que quede
         (`saldo_previo` = lo que había en la caja antes del movimiento):
-          - la caja estaba VACÍA antes: su precio de entonces (ninguno, o el de
-            una compra vieja ya vendida — la caja en cero lo conserva) no era de
-            nadie. Si quedan dólares, entraron después a este precio y lo
-            conservan. Sin esto, dos compras a 1.300 y borrar la primera dejaba
+          - la caja estaba VACÍA antes: su precio de entonces (ninguno; o, en
+            las recetas escritas hasta 2026-10-11, el de una compra vieja ya
+            vendida, que la caja en cero conservaba) no era de nadie. Si quedan
+            dólares, entraron después a este precio y lo conservan; si no queda
+            ninguno, la caja queda sin precio (`mover`: una receta vieja no
+            vuelve a pegarle el suyo a una caja vacía). Sin esto, dos compras a
+            1.300 y borrar la primera dejaba
             los dólares de la segunda sin precio (prueba en el navegador) o al
             precio de una compra de hace años (auditoría 2: 200 dólares a 400 →
             ganancia cambiaria falsa de US$ 138 al venderlos);
@@ -221,12 +267,10 @@ def revertir(conn, uid: int, broker: str, delta: float, *,
     if tc_esperado is not _SIN_EXPECTATIVA and _mismo_tc(tc_ahora, tc_esperado):
         tc_nuevo = tc_a_dejar
         queda, habia = actual + delta, max(float(saldo_previo or 0), 0.0)
-        if queda > 1e-9 and (habia <= 1e-9 or (tc_a_dejar is None and queda > habia + 1e-9)):
+        if queda >= CAJA_VACIA and (habia < CAJA_VACIA
+                                    or (tc_a_dejar is None and queda > habia + 1e-9)):
             tc_nuevo = tc_ahora
-        id_caja = mover(conn, uid, broker, delta)
-        if id_caja:
-            conn.execute("UPDATE positions SET tc_compra=? WHERE id=? AND user_id=?",
-                         (tc_nuevo, id_caja, uid))
+        mover(conn, uid, broker, delta, tc_fijo=tc_nuevo)
     elif tc_compra is not None and delta > 0:
         mover(conn, uid, broker, delta, tc_compra=tc_compra)
     else:
@@ -235,3 +279,40 @@ def revertir(conn, uid: int, broker: str, delta: float, *,
     fila = caja(conn, uid, broker)
     return {"tc_antes": tc_ahora, "tc_despues": fila["tc_compra"] if fila else None,
             "saldo_antes": actual}
+
+
+def venta_de_dolares(conn, uid: int, broker: str, dolares: float, pesos: float,
+                     tc_venta: float) -> dict:
+    """A qué precio salen los dólares que se venden y cuánta ganancia cambiaria
+    dejan. Llamar ANTES de debitarlos. Es la única cuenta: la usan la conversión
+    a mano (`create_conversion`) y la importada (`_persist_fx`).
+
+    Los dólares salen a su precio promedio de compra, y la ganancia es lo que se
+    cobró en pesos menos lo que costaron, en dólares al TC de la venta. Sólo los
+    dólares que la caja TIENE llevan ese precio:
+      · sin precio (depositados, cobrados, o caja vacía): no ganan ni pierden,
+        su costo es el TC de la venta;
+      · lo que se vende de más (sólo un archivo puede: le faltan compras viejas
+        y la caja queda en rojo): tampoco. Con 30 dólares a 400 en la caja, un
+        archivo que vendía 100 a 1.300 anotaba US$ 69,23; lo que se sabe son
+        los 30: US$ 20,77.
+
+    El precio se lee con el saldo TOMADO (2026-10-07): leído sin tomar, una
+    compra de dólares simultánea cambiaba el promedio entre esta lectura y el
+    débito, y el costo de los dólares vendidos y el de los que quedaban no
+    sumaban lo que se pagó.
+
+    Devuelve el precio al que salen (`tc_costo`), la ganancia (`ganancia_usd`) y
+    cómo estaba la caja (`saldo_antes`, `tc_antes`), para la receta del borrado."""
+    tomar_saldo(conn, uid, broker)
+    fila = caja(conn, uid, broker)
+    saldo = float(fila["invested"] or 0) if fila else 0.0
+    tc_caja = _precio_vigente(fila, saldo)
+    tc_costo = tc_caja or tc_venta
+    ganancia_pesos = pesos - dolares * tc_costo
+    if tc_caja and dolares > saldo:
+        ganancia_pesos *= saldo / dolares
+    return {"tc_costo": tc_costo,
+            "ganancia_usd": ganancia_pesos / tc_venta if tc_venta > 0 else 0.0,
+            "saldo_antes": saldo,
+            "tc_antes": fila["tc_compra"] if fila else None}
