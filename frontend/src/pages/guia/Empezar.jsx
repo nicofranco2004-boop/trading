@@ -109,8 +109,8 @@ export default function Empezar() {
 
       <h3>Opción B: Cargar manualmente</h3>
       <p>
-        Andá a <strong>Posiciones → Nueva posición</strong> (botón "+ Nueva posición"
-        en desktop, FAB "+" en mobile). Completás:
+        Tocá <strong>Registrar → Compra</strong> (el botón violeta del menú lateral
+        en la compu; el "+" de abajo en el celular). Completás:
       </p>
       <ul>
         <li><strong>Broker</strong> (el que creaste antes).</li>

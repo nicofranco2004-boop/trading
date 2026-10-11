@@ -10,8 +10,12 @@ import {
 
 // ── 3 secciones acordeón ──────────────────────────────────────────────────
 // • Tu Cartera: lo que tenés y moviste (lo que navegás seguido).
+// • Análisis:   entender e interpretar eso mismo (performance + calidad de tenencias).
 // • Mercado:    qué pasa afuera (el pulso del día + las noticias).
-// • Análisis:   entender e interpretar (performance + calidad de tenencias).
+// EL ORDEN ES EL DEL MENÚ, y va lo tuyo junto y primero (pedido de Nico,
+// 2026-10-11): antes era Tu Cartera · Mercado · Análisis, y Mercado cortaba al
+// medio las dos secciones que hablan de tu cartera. De acá lo toman el menú
+// lateral, el buscador ⌘K y "Más" del celular.
 // NOTA: el ítem "Rendimiento" (/analisis) se llamaba "Análisis"; se renombró
 // para no chocar con el nombre del grupo. Si preferís, volvé a "Análisis" o
 // "Diagnóstico".
@@ -25,18 +29,18 @@ export const GROUPS = [
     ],
   },
   {
-    id: 'mercado', label: 'Mercado', icon: LineChart,
-    items: [
-      { to: '/',          label: 'Resumen',   icon: Activity },
-      { to: '/novedades', label: 'Novedades', icon: Newspaper },
-    ],
-  },
-  {
     id: 'analisis', label: 'Análisis', icon: Compass,
     items: [
       { to: '/analisis',        label: 'Métricas',           icon: TrendingUp },
       { to: '/fundamentals',    label: 'Calidad de cartera', icon: Gauge },
       { to: '/perfil-inversor', label: 'Perfil de inversor', icon: UserRound },
+    ],
+  },
+  {
+    id: 'mercado', label: 'Mercado', icon: LineChart,
+    items: [
+      { to: '/',          label: 'Resumen',   icon: Activity },
+      { to: '/novedades', label: 'Novedades', icon: Newspaper },
     ],
   },
 ]
@@ -73,7 +77,7 @@ export const UTILIDADES = [
 // Qué ve cada uno. El asesor EN SU PROPIO NIVEL (sin haber entrado a la cuenta
 // de un cliente) no tiene cartera propia — decisión de producto: si quiere
 // invertir él, se agrega como su propio cliente, no mezcla cuenta de trabajo
-// con personal. Tu Cartera/Mercado/Análisis + los sueltos asumen una cartera
+// con personal. Tu Cartera/Análisis/Mercado + los sueltos asumen una cartera
 // cargada → no aplican. Adentro de un cliente (clientCtx activo) es SU
 // cartera → todo vuelve a mostrarse. El asesor SÍ ve Alertas a su nivel
 // (brief del libro + avisos de sus clientes); Importar no.
