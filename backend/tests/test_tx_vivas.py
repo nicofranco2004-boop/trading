@@ -40,6 +40,7 @@ LEEN_EL_LOG = {
     ("importing/proyeccion.py", "proyectar"): "proyecta UN lote (b.id = ?); filtra la lápida a mano",
     ("importing/pipeline.py", "load_session_for_confirm"): "carga las filas de la vista previa que se va a confirmar",
     ("importing/pipeline.py", "load_session_with_seed_revalidate"): "rearma la vista previa (borra y reinserta sus filas)",
+    ("importing/pipeline.py", "reconstruct_csv_from_batch"): "\"Editar y rehacer\" UN lote: sólo el NOMBRE de broker de cada fila (por si se renombró), no cantidades ni plata",
     # La huella del re-import: si no incluyera las borradas, un export que se
     # superpone las volvería a importar (resucitarían).
     ("importing/pipeline.py", "confirmed_fingerprint_counts"): "huella del re-import: lo borrado no tiene que resucitar",
