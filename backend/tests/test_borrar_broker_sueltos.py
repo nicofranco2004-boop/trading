@@ -294,6 +294,25 @@ class BorrarSeLlevaTodo(_Base):
         self.assertEqual(self._cerrar(fid).status_code, 404)
         self.assertEqual(self._sueltas(), {})
 
+    def test_la_plantilla_del_importador_se_conserva(self):
+        """La plantilla de columnas guarda un broker fijo (`defaults.broker`). Es una
+        preferencia, no cartera: borrar el broker NO la borra. No queda nada suelto
+        por eso: importar con ella vuelve a crear el broker de verdad (lo fija
+        `test_plantillas_importador.py`). Este test está para que la decisión quede
+        escrita — si alguien cambia la política en `BROKER_POR_NOMBRE`, que lo decida."""
+        bid = self._broker("Cocos", "USD")
+        self._depositar("Cocos", 500)
+        r = self.client.post("/api/imports/mappings", headers=self.h, json={
+            "name": "Mi archivo de Cocos",
+            "mapping": {"columns": {"date": "Fecha", "asset": "Ticker"},
+                        "defaults": {"broker": "Cocos"}}})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._borrar(bid)
+        guardadas = self.client.get("/api/imports/mappings", headers=self.h).json()
+        self.assertEqual([m["name"] for m in guardadas], ["Mi archivo de Cocos"])
+        self.assertEqual(main.BROKER_POR_NOMBRE["import_mappings"], ("json", "conservar"))
+        self.assertEqual(self._sueltas(), {})
+
     # ── el OTRO camino que borra brokers ─────────────────────────────────────
     def test_limpiar_broker_hace_lo_mismo(self):
         """`POST /api/imports/wipe-broker` borra el broker por su cuenta. Era una
@@ -658,7 +677,10 @@ class UnaSolaLista(unittest.TestCase):
         ata a la lista única: lo que cuelga de un broker tiene que irse con el
         reset. Las de import van por su propio paso del reset (por batch)."""
         por_su_cuenta = {"import_batches", "import_normalized_tx"}
-        faltan = set(main.BROKER_POR_NOMBRE) - set(main._RESET_PORTFOLIO_TABLES) - por_su_cuenta
+        # `import_mappings` (plantillas del importador) es una preferencia: el reset
+        # del usuario la conserva a propósito y sólo el de admin la borra.
+        cubiertas = set(main._RESET_PORTFOLIO_TABLES) | set(main._RESET_ADMIN_EXTRA_TABLES)
+        faltan = set(main.BROKER_POR_NOMBRE) - cubiertas - por_su_cuenta
         self.assertEqual(faltan, set())
 
 

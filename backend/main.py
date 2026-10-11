@@ -5383,10 +5383,12 @@ def create_broker(data: BrokerIn, uid: int = Depends(get_effective_user)):
 #                'revertir'  → import_batches: status='reverted' (auditoría)
 #                'payload'   → archived_positions: se sacan del JSON las
 #                              posiciones de ese broker (ver _archivadas_de_brokers)
-#                'conservar' → historia que ya no mueve ningún número:
+#                'conservar' → lo que no mueve ningún número si el broker no está:
 #                              · import_normalized_tx cuelga de un batch revertido
 #                              · deleted_ops_journal y dividendos_reemplazados
 #                                exigen que el broker exista antes de devolver algo
+#                              · import_mappings es una preferencia: usarla
+#                                vuelve a crear el broker, a la vista
 BROKER_POR_NOMBRE = {
     "positions":            ("columna",   "borrar"),
     "operations":           ("columna",   "borrar"),
@@ -5412,6 +5414,13 @@ BROKER_POR_NOMBRE = {
     # Sólo vuelve si ese import se revierte Y la cuenta existe; al borrar el broker
     # sus imports quedan revertidos, así que ya no hay quién lo devuelva.
     "dividendos_reemplazados": ("json",   "conservar"),
+    # La plantilla de columnas del importador (`mapping_json.defaults.broker`: el
+    # broker fijo al que va todo el archivo). Es una PREFERENCIA del usuario, no un
+    # dato de cartera (el reset del usuario tampoco la borra). Si el broker se borra
+    # la plantilla queda, y si después se importa con ella el importador crea el
+    # broker de verdad, a la vista — no una fila bajo un nombre que nadie lista
+    # (`test_plantillas_importador.py::test_un_broker_nuevo_de_verdad_se_sigue_creando`).
+    "import_mappings":      ("json",      "conservar"),
 }
 
 # Las que el renombre reescribe por columna. Se DERIVA de la lista de arriba: no
