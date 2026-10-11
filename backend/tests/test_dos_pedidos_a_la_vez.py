@@ -404,7 +404,13 @@ class DosAccionesDistintasSobreLoMismo(_Base):
         # importada o cargada a mano; la SEGUNDA es la que decide cuánto devolver.
         edito = threading.Event()
         del_lee = "SELECT * FROM operations WHERE id=? AND user_id=?"
-        cruce = self.cruzar(("SELECT broker, date, undo_meta_json FROM operations WHERE id=? AND user_id=?",
+        # La lectura con la que la edición decide. Va con el texto de HOY: desde que
+        # esa consulta sumó `op_type` (2026-10-09) el texto viejo ya no la marcaba, y
+        # el choque lo armaba, de casualidad, la última lectura de la edición (la
+        # misma consulta que el borrado): el test tardaba 20 s y, si la edición
+        # terminaba antes de que el borrado arrancara, fallaba sin forzar nada.
+        cruce = self.cruzar(("SELECT broker, date, op_type, undo_meta_json FROM operations "
+                             "WHERE id=? AND user_id=?",
                              del_lee),
                             y_despues={del_lee: edito}, saltear={del_lee: 1})
         hechos = iter(["editar", "borrar"])

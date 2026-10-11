@@ -146,6 +146,20 @@ class ConRecetaBase(unittest.TestCase):
     def _deshacer(self, token, codigo=200):
         return self._ok(self.http.post(f"/api/operations/undo/{token}"), codigo)
 
+    def _con_el_precio_viejo_en_la_receta(self, compra, tc_viejo):
+        """La compra de dólares, con la receta que le escribía el código hasta
+        2026-10-11 cuando la caja estaba vacía: "antes había tal precio" (el de una
+        compra ya vendida, que la caja en cero conservaba). Así están guardadas las
+        compras de entonces."""
+        meta = json.loads(compra["undo_meta_json"])
+        caja_usd = next(m for m in meta["movs"] if "tc_despues" in m)
+        self.assertEqual((caja_usd["tc_antes"], caja_usd["saldo_antes"]), (None, 0.0))
+        caja_usd["tc_antes"] = tc_viejo
+        self.conn.execute("UPDATE operations SET undo_meta_json=? WHERE id=? AND user_id=?",
+                          (json.dumps(meta), compra["id"], self.uid))
+        self.conn.commit()
+        return self._ultima_op()
+
     # ── lo que se mide ──
     def estado(self):
         """La cuenta entera, en números que no dependen de ids ni de la hora."""
@@ -289,15 +303,18 @@ class LaConversionSeBorraYSeDeshace(ConRecetaBase):
         self.assertMismaCuenta(e_antes, self.estado(), "después de deshacer")
 
     def test_el_precio_de_una_compra_vieja_ya_vendida_no_revive(self):
-        """La caja en cero conserva el precio de la última compra. Con dos compras
-        nuevas al mismo precio, borrar la primera "volvía al de antes": los dólares
-        de la segunda quedaban al precio de una compra de hace años, y venderlos
-        anotaba una ganancia cambiaria falsa (auditoría 2, 2026-10-10)."""
+        """Hasta 2026-10-11 la caja en cero conservaba el precio de la última compra,
+        y las compras de entonces lo guardaron en su receta como "el de antes". Con
+        dos compras nuevas al mismo precio, borrar la primera "volvía al de antes":
+        los dólares de la segunda quedaban al precio de una compra de hace años, y
+        venderlos anotaba una ganancia cambiaria falsa (auditoría 2, 2026-10-10).
+        La receta se deja como la escribía el código de entonces."""
         self._depositar(self.PESOS, 1_000_000)
         self._convertir(self.PESOS, "ars_to_usd", 40_000, 100, 400)
         self._convertir(f"{self.PESOS} · USD", "usd_to_ars", 40_000, 100, 400)
-        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (0.0, 400.0))
+        self.assertEqual(self.estado()["cajas"][f"{self.PESOS} · USD"], (0.0, None))
         primera = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        primera = self._con_el_precio_viejo_en_la_receta(primera, 400.0)
         self._convertir(self.PESOS, "ars_to_usd", 260_000, 200, 1300)
         e_antes = self.estado()
         token = self._borrar(primera)["undo_token"]
@@ -382,6 +399,136 @@ class LaConversionSeBorraYSeDeshace(ConRecetaBase):
         self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(r.json()["detail"], main._MANUAL_LEGACY_MSG)
         self.assertMismaCuenta(antes, self.estado(), "después del 400")
+
+
+class LaCajaVaciaNoTienePrecio(ConRecetaBase):
+    """El precio de compra de los dólares de una caja es de los dólares que HAY.
+
+    Hasta 2026-10-11 la caja lo conservaba al vaciarse, y los dólares que entraban
+    después SIN precio —un depósito, un dividendo, lo cobrado de una venta— lo
+    heredaban: al venderlos, la ganancia cambiaria se medía contra una compra de
+    hace años. Medido por la auditoría 2 del 2026-10-10: 100 dólares comprados a
+    400 y vendidos, US$ 10 depositados y vendidos a 1.300 anotaban US$ 6,92 que
+    no existían, y entraban al resultado del mes.
+
+    Todo por HTTP, como la app. Lo que entra por archivo está en
+    `test_efectivo_una_puerta.py`, y el dividendo de la bandeja en
+    `test_dividendos_bandeja.py`."""
+
+    def setUp(self):
+        super().setUp()
+        self.USD = f"{self.PESOS} · USD"
+        self._depositar(self.PESOS, 1_000_000)
+
+    def _caja_usd(self):
+        return self.estado()["cajas"][self.USD]
+
+    def _comprar_a_400_y_vender_todo(self):
+        self._convertir(self.PESOS, "ars_to_usd", 40_000, 100, 400)
+        self._convertir(self.USD, "usd_to_ars", 40_000, 100, 400)
+        self.assertEqual(self._caja_usd(), (0.0, None))
+
+    def _vender_sin_ganancia(self, dolares, tc, e_antes):
+        venta = self._convertir(self.USD, "usd_to_ars", dolares * tc, dolares, tc)
+        self.assertEqual(venta["pnl_usd"], 0, "ganancia cambiaria de dólares que no tenían precio")
+        self.assertEqual(venta["entry_price"], tc, "salieron a un precio que no es el de la venta")
+        e = self.estado()
+        self.assertEqual(e["resultado_del_mes"], e_antes["resultado_del_mes"])
+        self.assertEqual(e["resultado_por_broker"], e_antes["resultado_por_broker"])
+
+    def test_un_deposito_despues_de_vaciarla_no_hereda_el_precio_viejo(self):
+        """La reproducción de la auditoría."""
+        self._comprar_a_400_y_vender_todo()
+        e_antes = self.estado()
+        self._depositar(self.USD, 10)
+        self.assertEqual(self._caja_usd(), (10.0, None))
+        self._vender_sin_ganancia(10, 1300, e_antes)
+        self.assertEqual(self._caja_usd(), (0.0, None))
+
+    def test_lo_cobrado_de_una_venta_tampoco(self):
+        self._comprar_a_400_y_vender_todo()
+        # Un activo cargado a mano en la cuenta en dólares (se deposita solo lo que
+        # cuesta) y vendido con ganancia: lo cobrado entra a la caja, sin precio.
+        self._ok(self.http.post("/api/positions", json={
+            "broker": self.USD, "asset": "AAPL", "quantity": 10, "buy_price": 100,
+            "invested": 1000, "entry_date": "2026-01-15"}))
+        self._ok(self.http.post("/api/positions/sell", json={
+            "broker": self.USD, "asset": "AAPL", "quantity": 10, "exit_price": 150,
+            "date": "2026-06-10"}))
+        self.assertEqual(self._caja_usd(), (1500.0, None))
+        e_antes = self.estado()
+        self._vender_sin_ganancia(1500, 1300, e_antes)
+
+    def test_con_centavos_que_la_pantalla_muestra_como_cero_tambien_esta_vacia(self):
+        """Vender "todo" deja un resto: 76,923077 comprados y 76,92 vendidos. Con el
+        cero exacto, esos 0,003 conservaban el precio para lo que entrara después."""
+        self._convertir(self.PESOS, "ars_to_usd", 100_000, 76.923077, 1300)
+        self._convertir(self.USD, "usd_to_ars", 99_996, 76.92, 1300)
+        self.assertEqual(self._caja_usd(), (0.003077, None))
+        e_antes = self.estado()
+        self._depositar(self.USD, 10)
+        self._vender_sin_ganancia(10, 1500, e_antes)
+
+    def test_un_centavo_ya_es_plata_y_conserva_su_precio(self):
+        """El otro lado: lo que la pantalla muestra como 0,01 son dólares comprados."""
+        self._convertir(self.PESOS, "ars_to_usd", 40_000, 100, 400)
+        self._convertir(self.USD, "usd_to_ars", 39_996, 99.99, 400)
+        self.assertEqual(self._caja_usd(), (0.01, 400.0))
+
+    def test_vaciarla_y_borrar_la_venta_devuelve_los_dolares_con_su_precio(self):
+        """Que la caja vacía no tenga precio no puede hacer que se pierda: borrar la
+        venta que la vació devuelve los dólares al precio al que se habían comprado,
+        y deshacer ese borrado la vuelve a dejar vacía y sin precio."""
+        self._convertir(self.PESOS, "ars_to_usd", 40_000, 100, 400)
+        e_con_dolares = self.estado()
+        venta = self._convertir(self.USD, "usd_to_ars", 130_000, 100, 1300)
+        e_vacia = self.estado()
+        self.assertEqual(e_vacia["cajas"][self.USD], (0.0, None))
+        self.assertAlmostEqual(venta["pnl_usd"], 69.23, places=2)   # 100 × (1300 − 400) / 1300
+        token = self._borrar(venta)["undo_token"]
+        self.assertMismaCuenta(e_con_dolares, self.estado(), "después de borrar la venta")
+        self._deshacer(token)
+        self.assertMismaCuenta(e_vacia, self.estado(), "después de deshacer")
+
+    def test_borrar_una_compra_con_receta_vieja_no_le_devuelve_el_precio(self):
+        """El segundo escritor: borrar una compra reponía "el precio de antes" que
+        dice su receta, DESPUÉS de mover la plata. Las compras hechas hasta
+        2026-10-11 sobre una caja vaciada guardaron ahí el precio viejo: borrar una
+        se lo volvía a pegar a la caja vacía."""
+        self._comprar_a_400_y_vender_todo()
+        compra = self._convertir(self.PESOS, "ars_to_usd", 130_000, 100, 1300)
+        compra = self._con_el_precio_viejo_en_la_receta(compra, 400.0)
+        e_con_dolares = self.estado()
+        token = self._borrar(compra)["undo_token"]
+        self.assertEqual(self._caja_usd(), (0.0, None))
+        self._deshacer(token)
+        self.assertMismaCuenta(e_con_dolares, self.estado(), "después de deshacer")
+        # Y borrada otra vez, lo que entra después no hereda nada.
+        self._borrar(self._ultima_op())
+        e_antes = self.estado()
+        self._depositar(self.USD, 10)
+        self._vender_sin_ganancia(10, 1300, e_antes)
+
+    def test_una_caja_que_ya_estaba_vacia_con_precio_no_se_lo_pasa_a_lo_que_entra(self):
+        """Como estaban en producción (base del 2026-08-16: 9 cajas en cero con
+        precio). El arranque las limpia, pero la puerta tampoco lee ese precio: no
+        depende de que la limpieza haya pasado."""
+        for saldo_viejo in (0.0, 0.003, -20.0):
+            with self.subTest(saldo=saldo_viejo):
+                self._comprar_a_400_y_vender_todo()
+                self.conn.execute(
+                    "UPDATE positions SET invested=?, tc_compra=400 WHERE user_id=? AND broker=? "
+                    "AND is_cash=1", (saldo_viejo, self.uid, self.USD))
+                self.conn.commit()
+                e_antes = self.estado()
+                self._depositar(self.USD, 50)
+                self.assertEqual(self._caja_usd(), (round(saldo_viejo + 50, 6), None))
+                self._vender_sin_ganancia(10, 1300, e_antes)
+                # Dejarla en cero para la vuelta siguiente.
+                self.conn.execute(
+                    "UPDATE positions SET invested=0, tc_compra=NULL WHERE user_id=? AND broker=? "
+                    "AND is_cash=1", (self.uid, self.USD))
+                self.conn.commit()
 
 
 class BorrarElInteresDeshaceElCobro(ConRecetaBase):
