@@ -44,7 +44,7 @@ import { computeClassBreakdown } from '../utils/assetClass'
 import { assetSlicesFromPositions } from '../utils/bookComposition'
 import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
-import { pctCreible } from '../utils/assetPnl'
+import { pctCreible, operacionesEnUsd } from '../utils/assetPnl'
 import { denominadorAportado } from '../utils/evolution'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
@@ -642,7 +642,7 @@ function InsightsDesktop({ _embeddedTab }) {
       })
       if (!sigue()) return
       const d = r.datos
-      setMonthly(d.monthly || []); setPositions(d.positions || []); setBrokers(d.brokers || []); setBench(d.benchmarks); setSnapshots(d.snapshots || []); setDolar(d.dolar); setOperations(d.operations || []); setCommissionsApi(d.commissions); setInvestorProfile(d.profile || {})
+      setMonthly(d.monthly || []); setPositions(d.positions || []); setBrokers(d.brokers || []); setBench(d.benchmarks); setSnapshots(d.snapshots || []); setDolar(d.dolar); setOperations(operacionesEnUsd(d.operations)); setCommissionsApi(d.commissions); setInvestorProfile(d.profile || {})
       // Pasado el tope la página sale sin precios (el aviso de cotizaciones lo
       // dice) y se completa cuando lleguen. `null` = el pedido falló: no llegan,
       // y preciosListos queda en false (nada se manda ni se guarda al costo).

@@ -363,7 +363,9 @@ def detect_dividend_heavy(report: PeriodReport, ops: List[Dict[str, Any]]) -> Op
     div_int = sum(
         float(o.get("pnl_usd") or 0)
         for o in ops
-        if (o.get("op_type") or "") in ("Dividendo", "Interés")
+        # 'Cupón': el mismo cupón contaba si vino importado ('Dividendo') y no si
+        # se confirmó desde la bandeja de bonos. La amortización NO: es capital.
+        if (o.get("op_type") or "") in ("Dividendo", "Interés", "Cupón", "Cupon", "Renta")
     )
     total_realized = report.metrics.realized_pnl
     if div_int < 50 or total_realized <= 0:

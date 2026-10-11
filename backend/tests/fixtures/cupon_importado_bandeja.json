@@ -1,0 +1,97 @@
+{
+  "cupon_en_pesos": {
+    "positions": [
+      {
+        "broker": "Cocos",
+        "asset": "AL30",
+        "is_cash": false,
+        "entry_date": "2025-03-03",
+        "quantity_mayor_a_cero": true
+      },
+      {
+        "broker": "Cocos",
+        "asset": "ARS",
+        "is_cash": true,
+        "entry_date": null,
+        "quantity_mayor_a_cero": false
+      }
+    ],
+    "operations": [
+      {
+        "date": "2025-07-10",
+        "broker": "Cocos",
+        "asset": "AL30",
+        "op_type": "Dividendo"
+      },
+      {
+        "date": "2026-01-12",
+        "broker": "Cocos",
+        "asset": "AL30",
+        "op_type": "Dividendo"
+      }
+    ],
+    "brokers": [
+      {
+        "id": 1,
+        "name": "Cocos",
+        "currency": "ARS",
+        "parent_broker_id": null
+      }
+    ],
+    "skips": []
+  },
+  "cupon_en_la_pata_usd": {
+    "positions": [
+      {
+        "broker": "Cocos",
+        "asset": "AL30",
+        "is_cash": false,
+        "entry_date": "2025-03-03",
+        "quantity_mayor_a_cero": true
+      },
+      {
+        "broker": "Cocos",
+        "asset": "ARS",
+        "is_cash": true,
+        "entry_date": null,
+        "quantity_mayor_a_cero": false
+      },
+      {
+        "broker": "Cocos · USD",
+        "asset": "USDT",
+        "is_cash": true,
+        "entry_date": null,
+        "quantity_mayor_a_cero": false
+      }
+    ],
+    "operations": [
+      {
+        "date": "2025-07-10",
+        "broker": "Cocos · USD",
+        "asset": "AL30",
+        "op_type": "Dividendo"
+      },
+      {
+        "date": "2026-01-12",
+        "broker": "Cocos · USD",
+        "asset": "AL30",
+        "op_type": "Dividendo"
+      }
+    ],
+    "brokers": [
+      {
+        "id": 1,
+        "name": "Cocos",
+        "currency": "ARS",
+        "parent_broker_id": null
+      },
+      {
+        "id": 2,
+        "name": "Cocos · USD",
+        "currency": "USDT",
+        "parent_broker_id": 1
+      }
+    ],
+    "skips": []
+  }
+}

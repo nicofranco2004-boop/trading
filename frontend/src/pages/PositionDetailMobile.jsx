@@ -22,6 +22,9 @@ import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import Panel from '../components/Panel'
+import { operacionesEnUsd } from '../utils/assetPnl'
+import { esCobro } from '../utils/tradeStats'
+import { patasDeLaCuenta } from '../utils/pendingCashflows'
 
 export default function PositionDetailMobile() {
   const { id } = useParams()
@@ -59,7 +62,11 @@ export default function PositionDetailMobile() {
       setBrokersRegistry(bkrs || [])
       setDolar(dol)
       // Filtrar ops del mismo asset + broker
-      setOperations((ops || []).filter(o => o.asset === p.asset && o.broker === p.broker))
+      // Las DOS patas de la cuenta: el cobro de un bono comprado en «Cocos» entra
+      // en «Cocos · USD», y con el nombre exacto no aparecía. En dólares desde el
+      // borde (un cupón en pesos guarda pesos en `pnl_usd`).
+      const patas = patasDeLaCuenta([p.broker], bkrs || [])
+      setOperations(operacionesEnUsd(ops).filter(o => o.asset === p.asset && patas.has(o.broker)))
       // UNA sola key: la misma que la valuación va a LEER. Se pedía una y se leía
       // otra (abajo se indexaba prices[p.asset] crudo), así que un class-share
       // (BRK.B → se pide 'BRK-B') y un lote en pesos en cuenta USD (se pedía el
@@ -365,7 +372,7 @@ export default function PositionDetailMobile() {
                   <div className="text-xs text-ink-1 leading-none">
                     {op.date} · <span className="text-ink-3">{op.op_type || 'op'}</span>
                   </div>
-                  {op.quantity != null && (
+                  {op.quantity != null && !esCobro(op.op_type) && (
                     <div className="text-[10px] tabular text-ink-3 leading-none mt-1">
                       {formatQty(op.quantity)} u.
                     </div>
