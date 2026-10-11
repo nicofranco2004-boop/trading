@@ -42,8 +42,10 @@ _BOND_METADATA: Dict[str, Dict[str, Any]] = {
         "law": "ley_local",
         "currency_denom": "USD",
         "indexed_by": None,
-        "step_up": True,
-        "description": "Bonar 2029 USD ley local. Cupón step-up (0.5%→1.0%→1.5%→1.75%). El más corto del tramo AL — duration baja, sensible a el riesgo crédito AR pero menos volátil que largos.",
+        # Sin step-up: el 2029 paga 1 % fijo toda su vida (prospecto del canje,
+        # SEC 424B5 del 17/08/2020). Decía "0.5%→1.0%→1.5%→1.75%".
+        "step_up": False,
+        "description": "Bonar 2029 USD ley local. Cupón FIJO del 1% anual (es el único del canje 2020 sin step-up) y amortiza en 10 cuotas semestrales desde enero 2025. El más corto del tramo AL — duration baja, sensible a el riesgo crédito AR pero menos volátil que largos.",
     },
     "AL30": {
         "kind": "soberano_usd",
@@ -90,8 +92,8 @@ _BOND_METADATA: Dict[str, Dict[str, Any]] = {
         "law": "ley_ny",
         "currency_denom": "USD",
         "indexed_by": None,
-        "step_up": True,
-        "description": "Global 2029 USD ley NY. Mismo flujo que AL29 pero con protección legal extranjera. Suele cotizar premium vs AL29.",
+        "step_up": False,       # 1 % fijo, como AL29
+        "description": "Global 2029 USD ley NY. Mismo flujo que AL29 (cupón fijo del 1%) pero con protección legal extranjera. Suele cotizar premium vs AL29.",
     },
     "GD30": {
         "kind": "soberano_usd",

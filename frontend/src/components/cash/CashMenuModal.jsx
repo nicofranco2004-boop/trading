@@ -1,7 +1,9 @@
 // CashMenuModal — el paso previo al depósito/retiro: ¿en qué broker y qué
 // movimiento?
 // ═══════════════════════════════════════════════════════════════════════════
-// En escritorio este paso existió siempre (botón "Cash" del header). En el
+// En escritorio este paso existió siempre (fue el botón "Cash" del header; hoy
+// son «Depósito» y «Retiro» del botón Registrar del menú lateral, que lo abren
+// con el movimiento ya elegido). En el
 // celular NO: el ítem "Cash · depósito / retiro" del sheet de acciones saltaba
 // derecho a `brokers[0]` con `direction: 'deposit'` clavado. El usuario que
 // tenía tres brokers y quería registrar un retiro en el tercero no tenía cómo

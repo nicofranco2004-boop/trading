@@ -30,6 +30,21 @@
 // e `Interés` son renta, no resultado de una operación.
 const TIPOS_NO_TRADE = ['Compra', 'Dividendo', 'Interés']
 
+// Los COBROS: plata que entra por TENER el activo (dividendo, cupón, interés,
+// amortización de un bono). ESPEJO de `_TIPO_DE_COBRO` en
+// backend/realized_pnl.py (lo controla tradeStats.paridad.test.js). En estas
+// filas `quantity` NO son unidades: es la plata que entró. Quien la muestre
+// como cantidad escribe "800 u." de una amortización.
+// ⚠️ No decide si cuentan como operación ganada: eso es TIPOS_NO_TRADE (la
+// misma decisión de producto pendiente que `_NOT_A_TRADE` en el backend).
+const TIPOS_DE_COBRO = ['Dividendo', 'Cupón', 'Cupon', 'Renta', 'Interés', 'Interes',
+  'Interés PF', 'Amortización', 'Amortizacion']
+
+/** ¿La fila es un cobro (no una compra ni una venta)? */
+export function esCobro(opType) {
+  return TIPOS_DE_COBRO.includes(String(opType || '').trim())
+}
+
 // Las conversiones de moneda entran con DOS prefijos distintos según de qué
 // importador vengan ('Conversión ARS→USD' del parser, 'CONVERSION_USD' del
 // normalizador). El backend chequea los dos; acá también.

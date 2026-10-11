@@ -291,6 +291,85 @@ def _bond_genuine_net(conn, uid: int, brokers: List[str], asset: str) -> float:
     return net
 
 
+def lotes_que_baja_el_barrido(conn, uid: int) -> set:
+    """ids de los lotes cuyo nominal lleva `sweep_bond_amortizations` (si el bono
+    tiene cronograma): los que vienen de una importación, MENOS los sembrados por
+    una foto de tenencia ('Tenencia — apertura'), cuya cantidad YA es el nominal
+    residual real de HOY (la foto es la tenencia del broker). Las fotos se
+    identifican por created_position_id (el rebuild pierde el `notes` en la
+    posición pero la tx normalizada lo conserva); sólo fotos vivas (`TX_VIVAS`): la
+    de un import deshecho o la que la persona borró ya no sembró nada.
+
+    UNA sola regla: la usa el barrido y la usa el cobro de una amortización
+    (main._lotes_del_barrido) para no bajar dos veces lo que el barrido ya baja,
+    ni dejar sin bajar lo que el barrido no toca."""
+    linked = _import_linked_position_ids(conn, uid)
+    seed_pids = {
+        r["cpid"] for r in conn.execute(
+            f"""SELECT DISTINCT n.created_position_id AS cpid
+                 FROM {TX_VIVAS}
+                WHERE b.user_id=? AND n.created_position_id IS NOT NULL
+                  AND n.notes LIKE '{TENENCIA_APERTURA_NOTE_PREFIX}%'""",
+            (uid,),
+        ).fetchall()
+    }
+    return linked - seed_pids
+
+
+def nominales_originales(conn, uid: int, *, todos: bool = False) -> Dict[int, float]:
+    """{id de lote: nominal ORIGINAL} para los lotes que lleva el barrido.
+
+    `todos=True`: también los lotes importados de bonos que el barrido NO conoce
+    (GD46, TX26…). La cuenta es la misma —su parte del nominal genuino del
+    archivo— y sirve igual: a esos lotes les bajan la cantidad los cobros
+    confirmados a mano y, en Balanz, la "venta" con la que el archivo anota cada
+    amortización; el genuino (compras − ventas de verdad) no cuenta ninguna de
+    las dos, así que sigue diciendo con cuánto nacieron.
+
+    El barrido deja cada lote en `original × factor residual` de la fecha en que
+    corrió (al importar; no todos los días): la cantidad guardada NO alcanza para
+    saber el original —un lote importado en junio sigue con el residual de junio
+    aunque en julio haya amortizado otra cuota—. Pero el barrido reduce todos los
+    lotes de un bono por el MISMO factor a partir del nominal genuino (compras −
+    ventas del archivo), así que el original de cada lote es su parte de ese
+    genuino: cantidad × genuino / suma de cantidades. Exacto, haya corrido cuando
+    haya corrido. Lo usa la bandeja de cobros y toda estimación de pagos: el
+    cronograma está escrito por cada 100 ORIGINALES."""
+    del_barrido = lotes_que_baja_el_barrido(conn, uid)
+    if not del_barrido:
+        return {}
+    name_map: Dict[tuple, str] = {}
+    # Sólo lo importado que CUENTA (`TX_VIVAS`): un import deshecho o una fila
+    # borrada no le ponen nombre a nada.
+    for r in conn.execute(
+        f"""SELECT DISTINCT n.broker, n.asset_symbol, n.asset_name
+             FROM {TX_VIVAS}
+            WHERE b.user_id=? AND n.asset_symbol != ''""", (uid,)).fetchall():
+        name_map.setdefault((r["broker"], r["asset_symbol"]), r["asset_name"] or "")
+    pair_cache: Dict[str, tuple] = {}
+    groups: Dict[tuple, List[Any]] = {}
+    for p in conn.execute(
+        "SELECT id, broker, asset, quantity FROM positions "
+        "WHERE user_id=? AND is_cash=0 AND quantity > 0", (uid,)).fetchall():
+        if p["id"] not in del_barrido:
+            continue
+        if p["broker"] not in pair_cache:
+            pair_cache[p["broker"]] = tuple(broker_pair(conn, uid, p["broker"]))
+        groups.setdefault((pair_cache[p["broker"]], p["asset"]), []).append(p)
+    out: Dict[int, float] = {}
+    for (pair, asset), lots in groups.items():
+        name = next((name_map.get((b, asset), "") for b in pair if name_map.get((b, asset))), "")
+        if not todos and not (is_amortizing_bond(asset) or is_amortizing_bond(name)):
+            continue
+        genuino = _bond_genuine_net(conn, uid, list(pair), asset)
+        actual = sum(float(l["quantity"] or 0) for l in lots)
+        if genuino <= 1e-9 or actual <= 1e-9:
+            continue
+        for l in lots:
+            out[l["id"]] = round(float(l["quantity"] or 0) * genuino / actual, 6)
+    return out
+
+
 def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) -> Dict[str, Any]:
     """Baja el nominal de los bonos AR amortizantes (AL30/GD30/…) a su valor
     RESIDUAL = (comprado − vendido) × factor_residual(ref_date). Idempotente y
@@ -311,22 +390,7 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
     if ref_date is None:
         ref_date = date.today().isoformat()
 
-    linked = _import_linked_position_ids(conn, uid)
-    # Posiciones sembradas por la foto de tenencia ('Tenencia — apertura'): las
-    # EXIMIMOS de la amortización — su cantidad YA es el nominal residual real de HOY
-    # (la foto es la tenencia del broker). Las identificamos por created_position_id
-    # (el rebuild pierde el `notes` en la posición pero la tx normalizada lo conserva).
-    # Sólo fotos vivas (`TX_VIVAS`): la de un import deshecho o la que la persona
-    # borró ya no sembró nada, y su id de posición no puede eximir a otro lote.
-    seed_pids = {
-        r["cpid"] for r in conn.execute(
-            f"""SELECT DISTINCT n.created_position_id AS cpid
-                 FROM {TX_VIVAS}
-                WHERE b.user_id=? AND n.created_position_id IS NOT NULL
-                  AND n.notes LIKE '{TENENCIA_APERTURA_NOTE_PREFIX}%'""",
-            (uid,),
-        ).fetchall()
-    }
+    del_barrido = lotes_que_baja_el_barrido(conn, uid)
     adjusted: List[Dict[str, Any]] = []
 
     # nombre por (broker, activo): fallback para resolver el schedule por nombre si
@@ -380,7 +444,7 @@ def sweep_bond_amortizations(conn, uid: int, *, ref_date: Optional[str] = None) 
         # también los excluye, el factor cae a 1 = no-op sobre lo genuino). Sin esto un
         # bono conciliado por la foto (ej. AL30) se reduce por debajo de la foto y
         # encima queda partido entre particiones.
-        linked_lots = [l for l in lots if l["id"] in linked and l["id"] not in seed_pids]
+        linked_lots = [l for l in lots if l["id"] in del_barrido]
         current = sum((l["quantity"] or 0) for l in linked_lots)
         if current <= 1e-9:
             continue

@@ -20,6 +20,7 @@ import AssetLogo from '../AssetLogo'
 import { pctSigned, colorClass } from '../../utils/format'
 import { fmtConvertedCompactRaw } from '../../contexts/CurrencyContext'
 import { formatQty } from './shared'
+import { esCobro } from '../../utils/tradeStats'
 
 // `nuevas`: ids de las operaciones recién cargadas (Operations): esa tarjeta
 // destella al aparecer. Acá los grupos son por día y están siempre abiertos,
@@ -95,7 +96,7 @@ function OperationRow({ op, nueva = false, histMoney, onDelete, deleting = false
           }`}>
             {isBuy ? 'Compra' : (op.op_type || 'Venta')}
           </span>
-          {op.quantity != null && (
+          {op.quantity != null && !esCobro(op.op_type) && (
             <span className="text-[10px] tabular text-ink-3 truncate">
               {formatQty(op.quantity)} u.
             </span>

@@ -32,6 +32,8 @@ const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
 import { PositionFormModal, SellModal, ConvertModal, EditGroupModal, EMPTY_POS, today } from './Positions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
+import ConvertMenuModal from '../components/cash/ConvertMenuModal'
+import { accionDelPedido, cajasParaConvertir } from '../utils/registrar'
 import BondCashflowModal from '../components/BondCashflowModal'
 import { buildPositionActions } from '../utils/positionActions'
 import PlazosFijosGroup from '../components/PlazosFijosGroup'
@@ -40,6 +42,7 @@ import { lineaDelBono } from '../utils/lineaDelBono'
 import { filaSinUnaPata } from '../utils/filaFusionada'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
+import CuponesPorCobrar from '../components/CuponesPorCobrar'
 import DividendosPorCobrar from '../components/DividendosPorCobrar'
 import RecalculoDeCartera from '../components/RecalculoDeCartera'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
@@ -150,19 +153,9 @@ export function EncabezadoCompacto({ valor, currency, onMoneda, onBuscar }) {
   )
 }
 
-// Lo que esta pantalla entiende por la dirección (`/posiciones?action=…`): el
-// "+" de la barra de abajo manda acá. Una acción que no esté en esta lista cae
-// en la Cartera sin abrir nada (le pasó a "Agregar a watchlist", que iba a
-// `/?action=watchlist`).
-export const ACCION_POR_DIRECCION = { comprar: 'new', vender: 'sell' }
-
-// Qué pide la dirección: 'comprar', 'vender' o null. Es lo que usa la pantalla
-// para abrir el flujo, y lo que la prueba del "+" corre con la dirección de cada
-// acción (el nombre del parámetro, y qué valor abre qué, viven acá).
-export function accionDelPedido(search) {
-  const valor = new URLSearchParams(search || '').get('action')
-  return Object.keys(ACCION_POR_DIRECCION).find(k => ACCION_POR_DIRECCION[k] === valor) || null
-}
+// Lo que esta pantalla entiende por la dirección (`/posiciones?action=…`) vive
+// en utils/registrar.js: es la misma lista para el "+" de la barra de abajo, el
+// botón «Registrar» del menú lateral y la Cartera de la compu.
 
 export default function PositionsMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard/HomeMobile.
@@ -170,9 +163,10 @@ export default function PositionsMobile() {
   const navigate = useNavigate()
   const location = useLocation()
   const toast = useToast()
-  // ?action=sell (FAB) que llega antes de que carguen las posiciones → lo dejamos
-  // pendiente y lo disparamos cuando termina de cargar (la venta necesita la lista).
-  const pendingSellRef = useRef(false)
+  // Un pedido (?action=sell, deposit, …) que llega antes de que carguen las
+  // posiciones → lo dejamos pendiente y lo disparamos cuando termina de cargar
+  // (la venta, el efectivo y la conversión necesitan las listas).
+  const pendingRef = useRef(null)
   const [positions, setPositions] = useState([])
   const [brokers, setBrokers] = useState([])
   const [prices, setPrices] = useState({})
@@ -477,12 +471,12 @@ export default function PositionsMobile() {
   // "Cash" del header en escritorio. Antes el sheet de acciones del celular
   // llamaba directo a openCashFlow con `brokers[0]` y 'deposit' clavados: el
   // que tenía tres cuentas no tenía forma de registrar un retiro en la tercera.
-  function openCashMenu() {
+  function openCashMenu(direction = 'deposit') {
     if (!brokers.length) {
       toast.push('Primero agregá un broker.', { type: 'info' })
       return
     }
-    setCashMenuForm({ broker: brokers[0].name, direction: 'deposit' })
+    setCashMenuForm({ broker: brokers[0].name, direction })
     setAddModal('cash-menu')
   }
 
@@ -535,6 +529,25 @@ export default function PositionsMobile() {
     } catch (ex) {
       toast.push(`No se pudo registrar el ${cashFlowForm.direction === 'deposit' ? 'depósito' : 'retiro'}: ${ex?.message || 'Error'}`, { type: 'error' })
     }
+  }
+
+  // «Movimiento» del botón Registrar: con una sola caja convertible va directo
+  // al formulario; con varias (o ninguna) pregunta. Igual que en la compu.
+  function openConvertMenu() {
+    const cajas = cajasParaConvertir(positions, brokers)
+    if (cajas.length === 1) {
+      openConvert(cajas[0].p, cajas[0].direction)
+      return
+    }
+    setAddModal('convert-menu')
+  }
+
+  // Lo que pide la dirección, una vez que hay listas con qué atenderlo.
+  function atenderPedido(accion) {
+    if (accion === 'vender') openSellFlow('mobile_fab')
+    else if (accion === 'depositar') openCashMenu('deposit')
+    else if (accion === 'retirar') openCashMenu('withdraw')
+    else if (accion === 'convertir') openConvertMenu()
   }
 
   // ─── Conversión de moneda dentro de la cuenta ───────────────────────────
@@ -779,28 +792,31 @@ export default function PositionsMobile() {
     }
   }
 
-  // ?action=new / ?action=sell (FAB) → abrir el flow automáticamente. Limpiamos
-  // el query param para que un reload posterior no re-abra el modal.
+  // ?action=… (el "+" de abajo o el botón Registrar) → abrir el flow
+  // automáticamente. Limpiamos el query param para que un reload posterior no
+  // re-abra el modal.
   useEffect(() => {
     const action = accionDelPedido(location.search)
+    if (!action) return
+    navigate('/posiciones', { replace: true })
     if (action === 'comprar') {
       openNewPositionFlow('mobile_fab')
-      navigate('/posiciones', { replace: true })
-    } else if (action === 'vender') {
-      navigate('/posiciones', { replace: true })
-      // La venta necesita la lista de posiciones (carga async): si ya cargó la
-      // disparamos directo; si no, queda pendiente y la dispara el effect de abajo.
-      if (!loading) openSellFlow('mobile_fab')
-      else pendingSellRef.current = true
+      return
     }
+    // El resto necesita las listas de posiciones y brokers (carga async): si ya
+    // cargaron lo disparamos directo; si no, queda pendiente y lo dispara el
+    // effect de abajo.
+    if (!loading) atenderPedido(action)
+    else pendingRef.current = action
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, brokers.length])
 
-  // Dispara la venta pendiente del FAB cuando terminan de cargar las posiciones.
+  // Dispara el pedido pendiente cuando terminan de cargar las posiciones.
   useEffect(() => {
-    if (!loading && pendingSellRef.current) {
-      pendingSellRef.current = false
-      openSellFlow('mobile_fab')
+    if (!loading && pendingRef.current) {
+      const action = pendingRef.current
+      pendingRef.current = null
+      atenderPedido(action)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading])
@@ -948,7 +964,7 @@ export default function PositionsMobile() {
   // Misma condición que escritorio: se pide sólo si hay un bono CER en cartera.
   const _tieneCer = (positions || []).some(
     p => !p.is_cash && getBondMeta(p.asset)?.type === 'cer')
-  const { series: cerSeries } = useCerSeries(_tieneCer)
+  const { series: cerSeries, stale: cerStale } = useCerSeries(_tieneCer)
   // Resolutor de broker POR NOMBRE para las filas (ver PositionRow).
   const brokerDe = useCallback(name => brokers.find(b => b.name === name), [brokers])
 
@@ -1714,6 +1730,11 @@ export default function PositionsMobile() {
       {/* CEDEARs con cambio de ratio (split) sin ajustar → pérdida fantasma. */}
       <div className="px-4 pt-3">
         <SplitRatioBanner onAdjusted={loadAll} />
+        {/* Cobros de bonos para confirmar: el MISMO componente que Cartera de
+            escritorio (R6), con su propio pedido de datos. */}
+        <CuponesPorCobrar positions={positions} brokers={brokers} cerSeries={cerSeries} cerStale={cerStale}
+          mep={dolar?.mep?.medio ?? dolar?.mep?.venta ?? tcValuacion}
+          onCambio={(cobro) => (cobro ? recalculo.anotar(cobro, loadAll) : loadAll())} className="mt-3" />
         {/* Dividendos para confirmar: el MISMO componente que Cartera de
             escritorio (R6), con su propio pedido de datos. */}
         <DividendosPorCobrar positions={positions} brokers={brokers}
@@ -2138,6 +2159,16 @@ export default function PositionsMobile() {
           ctx={groupCtx}
           onClose={() => { setAddModal(null); setGroupTarget(null) }}
           onSave={saveGroup}
+        />
+      )}
+
+      {/* «Movimiento»: ¿de qué efectivo sale la conversión? */}
+      {addModal === 'convert-menu' && (
+        <ConvertMenuModal
+          cajas={cajasParaConvertir(positions, brokers)}
+          brokers={brokers}
+          onClose={() => setAddModal(null)}
+          onPick={(p, direction) => openConvert(p, direction)}
         />
       )}
 

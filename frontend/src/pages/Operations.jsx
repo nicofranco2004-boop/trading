@@ -37,7 +37,7 @@ import AnalyzeButton from '../components/ai/AnalyzeButton'
 import ExportCsvButton from '../components/plan/ExportCsvButton'
 import { useToast } from '../components/Toast'
 import { computeTradeStats, esConversion, mejorTrade, patronesDeOperaciones } from '../utils/tradeStats'
-import { opPnlUsd } from '../utils/assetPnl'
+import { operacionesEnUsd } from '../utils/assetPnl'
 import { anotarCambioDeMovimiento } from '../utils/cambioDeMovimiento'
 import NumeroQueCambia, { textoDeDiferencia } from '../components/NumeroQueCambia'
 import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
@@ -175,7 +175,7 @@ export default function Operations() {
       // en `pnl_usd_native`. Sin esto un cupón de $370.524 era el "Mejor trade
       // US$370.524" (medido, usuario real 2026-08).
       const rows = await api.get('/operations')
-      const filas = (rows || []).map(o => ({ ...o, pnl_usd_native: o.pnl_usd, pnl_usd: opPnlUsd(o) }))
+      const filas = operacionesEnUsd(rows)
       setOps(filas)
       return filas
     }
@@ -1356,7 +1356,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return borrando.correr(() => borrarMovimiento(m), `mov-${m.id}`)
   }
   async function borrarMovimiento(m) {
-    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta', FX_ARS_TO_USD: 'compra de dólares', FX_USD_TO_ARS: 'venta de dólares' }[m.type] || 'movimiento'
+    const label = { DEPOSIT: 'depósito', WITHDRAW: 'retiro', DIVIDEND: 'dividendo', INTEREST: 'interés', AMORTIZATION: 'amortización', FEE: 'comisión', IMPUESTO: 'impuesto', BUY: 'compra', SELL: 'venta', FX_ARS_TO_USD: 'compra de dólares', FX_USD_TO_ARS: 'venta de dólares' }[m.type] || 'movimiento'
     const isTrade = m.type === 'BUY' || m.type === 'SELL'
     const asset = isTrade && m.asset ? ` de ${m.asset}` : ''
     // Al FX de SU fecha, el MISMO que muestra la fila que se está por borrar. Si

@@ -415,7 +415,7 @@ export default function BrokerInstructions({ defaultBrokerId = 'cocos', lockBrok
             <div className="mt-2.5 pl-[26px] text-xs text-ink-2 leading-relaxed">
               <div className="font-medium text-ink-1 mb-0.5">Opción 1 — Manual (recomendado si operás poco)</div>
               <div className="text-ink-3">
-                Cada vez que hagas una compra o venta, usá los botones <span className="text-ink-1">"Registrar compra"</span> y <span className="text-ink-1">"Registrar venta"</span> arriba de Posiciones. Tu cartera queda actualizada en el momento.
+                Cada vez que hagas una compra o venta, tocá el botón violeta <span className="text-ink-1">"Registrar"</span> del menú lateral (en el celular, el <span className="text-ink-1">"+"</span> de abajo) y elegí qué anotar. Tu cartera queda actualizada en el momento.
               </div>
             </div>
 
