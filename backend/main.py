@@ -17980,6 +17980,34 @@ def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: f
     return out
 
 
+def _frenar_si_la_plata_del_deposito_no_esta(conn, uid: int, broker: str, monto: float) -> None:
+    """Un depósito cargado a mano no se borra si su plata ya no está en el efectivo
+    de ese broker: sin él, el saldo quedaría EN NEGATIVO con la tenencia viva.
+
+    Decisión de Nico (2026-10-10), después de verlo en la app: depositó, compró con
+    esa plata y borró el depósito → efectivo de IOL en −$990.000, con la compra en
+    cartera y el capital aportado en 0. Es el mismo criterio que el "Deshacer"
+    (`_frenar_si_deja_efectivo_negativo`) y que cargar una compra sin plata, que
+    anota sola el depósito que falta: lo cargado a mano no deja el efectivo en rojo.
+
+    Sólo lo cargado A MANO. Un depósito IMPORTADO se sigue pudiendo borrar aunque
+    deje el saldo en rojo: en una cuenta importada el rojo es la señal de que al
+    archivo le falta historia, y frenar ahí no deja corregir un depósito mal leído.
+
+    Va ANTES de la primera escritura: si frena, no se movió nada."""
+    fila = _efectivo.caja(conn, uid, broker)
+    hay = float(fila["invested"] or 0) if fila else 0.0
+    if hay - float(monto) < -0.005:
+        moneda = _efectivo._moneda_para_mostrar(conn, uid, broker)
+        en = lambda n: f"{_efectivo.fmt_num(float(n), 2)} {moneda}".rstrip()
+        raise HTTPException(409,
+            f"No se puede borrar este depósito: su plata ya no está en el efectivo de "
+            f"{broker} (la usaste en compras o la moviste). El depósito es de "
+            f"{en(monto)} y hoy hay {en(hay)}: sin él, el saldo quedaría en negativo. "
+            "Borrá primero lo que compraste con esa plata; o, si lo que querés es "
+            "corregir el monto, cargá antes el depósito correcto.")
+
+
 def _borrar_una_carga_a_mano(conn, uid: int, mid: str):
     """`mf-{id}`: borra UNA carga a mano (la que se ve en su renglón de Movimientos) y
     nada más. Devuelve lo mismo que `_delete_one_movement`. La reclama primero (doble
@@ -18008,6 +18036,8 @@ def _borrar_una_carga_a_mano(conn, uid: int, mid: str):
         native = (float(f["monto_usd"]) * _config_tc_blue(conn, uid)
                   if ((br["currency"] if br else "USD") or "USD").upper() == "ARS"
                   else float(f["monto_usd"]))
+    if f["direction"] == "deposit":
+        _frenar_si_la_plata_del_deposito_no_esta(conn, uid, broker, native)
     antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     if not _restar_flujo_a_mano(conn, uid, broker, int(f["year"]), int(f["month"]),
                                 f["direction"], float(f["monto_usd"]),
@@ -18082,6 +18112,8 @@ def _borrar_lo_manual_del_mes(conn, uid: int, mid: str):
         native = resto_usd * _config_tc_blue(conn, uid)
     else:
         native = resto_usd
+    if direction == "dep":
+        _frenar_si_la_plata_del_deposito_no_esta(conn, uid, broker, native)
     antes = _foto_contable(conn, uid)   # validado; antes de la primera escritura
     # Poner el manual del mes (USD + nativo) en 0 —en `mr-`, en lo de las cargas
     # sueltas, que se quedan— → _recalc recompone deposits.
