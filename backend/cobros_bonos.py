@@ -24,6 +24,8 @@ from __future__ import annotations
 import unicodedata
 from datetime import date, timedelta
 
+from fx import costo_del_lote
+
 # Días de tolerancia alrededor de la fecha del cronograma. ESPEJO de
 # DATE_TOLERANCE_DAYS en frontend/src/utils/pendingCashflows.js.
 VENTANA_DIAS = 14
@@ -312,7 +314,12 @@ def aplicar_amortizacion(conn, uid: int, tomas: dict) -> tuple:
         if take <= 1e-9 or q <= 0:
             continue
         ratio = take / q
-        inv = float(lot["invested"] or 0) * ratio
+        # El costo del lote, con la misma red que la venta (`fx.costo_del_lote`):
+        # sin `invested` guardado es precio × cantidad. Con `or 0` amortizaba a
+        # costo cero —todo lo cobrado era ganancia— y el resto del lote quedaba
+        # con un 0 ESCRITO, que ya no se distingue de un costo cero de verdad.
+        costo = costo_del_lote(lot["invested"], lot["buy_price"], q) or 0
+        inv = costo * ratio
         com = float(lot["commissions"] or 0) * ratio
         queda = q - take
         if queda <= 1e-9:
@@ -321,7 +328,7 @@ def aplicar_amortizacion(conn, uid: int, tomas: dict) -> tuple:
         else:
             conn.execute(
                 "UPDATE positions SET quantity=?, invested=?, commissions=? WHERE id=? AND user_id=?",
-                (round(queda, 6), round(float(lot["invested"] or 0) - inv, 6),
+                (round(queda, 6), round(costo - inv, 6),
                  round(float(lot["commissions"] or 0) - com, 6), lot_id, uid))
         detail.append({"id": lot_id, "take": round(take, 6), "q_antes": round(q, 6),
                        "inv": round(inv, 6), "com": round(com, 6), "survives": queda > 1e-9,

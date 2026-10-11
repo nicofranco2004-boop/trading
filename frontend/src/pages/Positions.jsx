@@ -23,6 +23,7 @@ import CuponesPorCobrar from '../components/CuponesPorCobrar'
 import DividendosPorCobrar from '../components/DividendosPorCobrar'
 import RecalculoDeCartera from '../components/RecalculoDeCartera'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
+import NumeroQueCambia from '../components/NumeroQueCambia'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import { isBondPosition } from '../utils/tickers'
 import { buildPositionActions } from '../utils/positionActions'
@@ -51,7 +52,6 @@ import BrokerManager from '../components/BrokerManager'
 import EmptyState from '../components/EmptyState'
 import LazySparkline from '../components/LazySparkline'
 import FlashValue from '../components/FlashValue'
-import AnimatedNumber from '../components/AnimatedNumber'
 import PreciosEnVivo from '../components/PreciosEnVivo'
 import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
@@ -62,6 +62,7 @@ import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
 import { hoyISO } from '../utils/fecha'
+import { confirmar } from '../utils/confirmar'
 
 
 export const today = () => hoyISO()
@@ -817,7 +818,7 @@ function PositionsDesktop() {
   // mandaba un segundo DELETE que terminaba en error después del éxito.
   const borrando = useEnVuelo()
   const del = (id) => borrando.correr(async () => {
-    if (!confirm(
+    if (!await confirmar(
       '¿Eliminar esta posición?\n\n' +
       'Si vino de un import, se recalcula todo: efectivo, capital aportado, ' +
       'rendimiento y la curva de evolución. Deja de contar en todos los cálculos.'
@@ -1797,6 +1798,10 @@ function PositionsDesktop() {
     if (await loadAll()) setCargaLista(true)
   })
   const heroPnlDisp = isArsDisp ? heroPnlArs : heroPnl
+  // Cómo se escriben los montos del encabezado y de las tarjetas de broker
+  // (los números que cuentan cuando cambian: <NumeroQueCambia>).
+  const montoSinSigno = (n) => (isArsDisp ? `ARS ${ars(n)}` : `USD ${usd(n)}`)
+  const montoConSigno = (n) => `${n >= 0 ? '+' : '−'}${montoSinSigno(Math.abs(n))}`
   const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 
   if (brokers.length === 0) {
@@ -2019,7 +2024,8 @@ function PositionsDesktop() {
         <p className="eyebrow mb-2">Tu cartera hoy</p>
         <div className="flex items-end gap-3">
           <span className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
-            <PrivacyMask><FlashValue value={isArsDisp ? heroValueArs : heroValue}><AnimatedNumber value={isArsDisp ? heroValueArs : heroValue} format={(n) => isArsDisp ? fmtArs(n) : fmtUsd(n)} /></FlashValue></PrivacyMask>
+            <PrivacyMask><NumeroQueCambia clave="cartera:total" value={isArsDisp ? heroValueArs : heroValue}
+              format={isArsDisp ? fmtArs : fmtUsd} moneda={displayCurrency} listo={cargaLista} desdeCero /></PrivacyMask>
           </span>
           <button onClick={togglePrivacy} className="mb-0.5 text-ink-3 hover:text-ink-0 transition-colors flex-shrink-0" title={hidden ? 'Mostrar saldos' : 'Ocultar saldos'}>
             {hidden ? <EyeOff size={20} strokeWidth={1.5} /> : <Eye size={20} strokeWidth={1.5} />}
@@ -2031,15 +2037,15 @@ function PositionsDesktop() {
             title="P&L no realizado"
           >
             {heroPnlDisp >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
-            {hidden ? '••••••' : (isArsDisp
-              ? `${heroPnlArs >= 0 ? '+' : '−'}ARS ${ars(Math.abs(heroPnlArs))}`
-              : `${heroPnl >= 0 ? '+' : '−'}USD ${usd(Math.abs(heroPnl))}`)}
+            <NumeroQueCambia clave="cartera:pnl" value={heroPnlDisp} format={montoConSigno}
+              moneda={displayCurrency} listo={cargaLista} oculto={hidden} conDiferencia={false} />
             <span className="opacity-80">· {pctSigned(heroPctDisp)}</span>
           </span>
           {!hidden && (
             <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
               <span className="text-ink-3">Invertido</span>
-              {isArsDisp ? `ARS ${ars(heroInvestedArs)}` : `USD ${usd(heroInvested)}`}
+              <NumeroQueCambia clave="cartera:invertido" value={isArsDisp ? heroInvestedArs : heroInvested}
+                format={montoSinSigno} moneda={displayCurrency} listo={cargaLista} conDiferencia={false} />
             </span>
           )}
           <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
@@ -2386,15 +2392,21 @@ function PositionsDesktop() {
                 <span className="font-semibold text-ink-0">
                   {/* Cuenta hasta el valor nuevo cuando llegan precios (y al
                       cambiar de moneda), como el total de arriba. */}
-                  {hidden ? '••••••' : <AnimatedNumber value={valueDisp} format={isArsDisp ? fmtArs : fmtUsd} />}
+                  <NumeroQueCambia clave={`cartera:broker:${section.key}:valor`} value={valueDisp}
+                    format={isArsDisp ? fmtArs : fmtUsd} moneda={displayCurrency} listo={cargaLista}
+                    oculto={hidden} desdeCero />
                 </span>
               </span>
               <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
                 <span className="text-ink-3">Invertido</span>
-                {hidden ? '••••••' : (isArsDisp ? fmtArs(investedDisp) : fmtUsd(investedDisp))}
+                <NumeroQueCambia clave={`cartera:broker:${section.key}:invertido`} value={investedDisp}
+                  format={isArsDisp ? fmtArs : fmtUsd} moneda={displayCurrency} listo={cargaLista}
+                  oculto={hidden} conDiferencia={false} />
               </span>
               <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium ${pnlDisp >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
-                {hidden ? '••••••' : `${pnlDisp >= 0 ? '+' : '−'}${isArsDisp ? `ARS ${ars(Math.abs(pnlDisp))}` : `USD ${usd(Math.abs(pnlDisp))}`}`}
+                <NumeroQueCambia clave={`cartera:broker:${section.key}:pnl`} value={pnlDisp}
+                  format={montoConSigno} moneda={displayCurrency} listo={cargaLista}
+                  oculto={hidden} conDiferencia={false} />
                 <span className="opacity-80">· {pctSigned(headerPnlPct)}</span>
               </span>
               {isArsDisp && (

@@ -17,6 +17,7 @@ import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { hoyISO } from '../utils/fecha'
+import { confirmar } from '../utils/confirmar'
 
 const PRESETS = [
   { label: 'Conservador', pct: 6, hint: 'Bonos y exposición pasiva al S&P' },
@@ -129,7 +130,7 @@ export default function Goals() {
   }
 
   async function del(id) {
-    if (!confirm('¿Eliminar este objetivo? La acción no se puede deshacer.')) return
+    if (!await confirmar('¿Eliminar este objetivo? La acción no se puede deshacer.')) return
     await api.delete(`/goals/${id}`)
     loadAll()
   }

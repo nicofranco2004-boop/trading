@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { RefreshCw, Loader2, CheckCircle2, Trash2, Plug, ChevronDown } from 'lucide-react'
 import { api } from '../../utils/api'
+import { confirmar } from '../../utils/confirmar'
 
 // WallbitConnect — conexión read-only a Wallbit vía API key. El usuario pega una
 // key con permiso `read`; Rendi trae sus operaciones y las sincroniza solas (sin
@@ -48,7 +49,7 @@ export default function WallbitConnect({ onSynced, onlyWhenConnected = false }) 
   }
 
   async function disconnect() {
-    if (!window.confirm('¿Desconectar Wallbit? Se borra la API key guardada. Tus posiciones ya importadas quedan.')) return
+    if (!await confirmar('¿Desconectar Wallbit? Se borra la API key guardada. Tus posiciones ya importadas quedan.')) return
     setBusy('disconnect'); setMsg(null)
     try { await api.delete('/wallbit/disconnect'); await loadStatus() }
     catch (e) { setMsg({ type: 'err', text: e?.message || 'No se pudo desconectar.' }) }

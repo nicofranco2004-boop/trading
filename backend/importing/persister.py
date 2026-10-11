@@ -46,10 +46,12 @@ import efectivo as _efectivo   # el precio de los dólares y su ganancia cambiar
 # se entera hasta que el número aparece mal en pantalla meses después.
 log = logging.getLogger(__name__)
 try:
-    from fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
+    from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
+                    costo_del_lote)
     from efectivo import asset_de_caja
 except ImportError:  # pragma: no cover — import relativo según cómo se cargue el paquete
-    from ..fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
+    from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
+                      costo_del_lote)
     from ..efectivo import asset_de_caja
 
 
@@ -859,7 +861,12 @@ def _persist_sell_fifo(conn, uid, batch_id, raw_row_id, tx: NormalizedTx, helper
             continue
         ratio = take / pos_qty if pos_qty > 0 else 0
         pos_buy_commissions = (p["commissions"] if "commissions" in p.keys() else 0) or 0
-        base_invested = (p["invested"] or 0) + pos_buy_commissions
+        # El costo del lote sale de `fx.costo_del_lote`: si la fila no tiene
+        # `invested` (lote cargado a mano sin ese campo) es precio × cantidad.
+        # Acá decía `(p["invested"] or 0)`: costo CERO, y la rama de pesos de
+        # abajo anotaba todo lo cobrado como ganancia.
+        base_invested = ((costo_del_lote(p["invested"], p["buy_price"], pos_qty) or 0)
+                         + pos_buy_commissions)
 
         # Moneda nativa del lote — la guardamos en positions.currency desde
         # el BUY. Si el lote es viejo (pre-migración) o no la trajo el parser,

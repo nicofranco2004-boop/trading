@@ -29,6 +29,7 @@ import UpgradeModal from './plan/UpgradeModal'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { usd, ars, fmtUsd, fmtArs, pctSigned } from '../utils/format'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
+import { confirmar } from '../utils/confirmar'
 
 function currencyTone(c) {
   switch (c) {
@@ -108,7 +109,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
       }
       // 409 con resumen de data — mostrar al user
       const msg = avisoBorrarBroker(b.name, detail)
-      if (!confirm(msg)) return
+      if (!await confirmar(msg)) return
       // 2do intento con force=true
       try {
         await api.delete(`/brokers/${b.id}?force=true`)

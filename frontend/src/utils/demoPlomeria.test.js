@@ -84,6 +84,16 @@ describe('lo que el visitante guarda a mano se bloquea; lo de fondo, no', () => 
     expect(bloqueada('POST', '/watchlist')).toBe(false)
     expect(bloqueada('POST', '/positions')).toBe(false)
   })
+  it('una compra sin "invertido" queda con su costo, igual que en el servidor', () => {
+    // El servidor completa precio × cantidad (`fx.costo_del_lote`). Si el demo
+    // guardara el vacío, Cartera mostraría el lote entero como ganancia.
+    const sin = handleDemoRequest('POST', '/positions',
+      { broker: 'Cocos', asset: 'GGAL', quantity: 10, buy_price: 5000 })
+    expect(sin.invested).toBe(50000)
+    const con = handleDemoRequest('POST', '/positions',
+      { broker: 'Cocos', asset: 'GGAL', quantity: 10, buy_price: 5000, invested: 48000 })
+    expect(con.invested).toBe(48000)
+  })
 })
 
 describe('el modo demo vence', () => {

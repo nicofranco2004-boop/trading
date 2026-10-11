@@ -3298,7 +3298,11 @@ export function handleDemoRequest(method, path, body) {
       is_cash: body.is_cash ? 1 : 0,
       buy_price: body.buy_price != null ? Number(body.buy_price) : null,
       quantity: body.quantity != null ? Number(body.quantity) : null,
-      invested: body.invested != null ? Number(body.invested) : null,
+      // Igual que el servidor (`fx.costo_del_lote`): "invertido" vacío es
+      // precio × cantidad, no un lote sin costo.
+      invested: body.invested != null ? Number(body.invested)
+        : (body.buy_price != null && body.quantity != null
+          ? Number(body.buy_price) * Number(body.quantity) : null),
       tc_compra: body.tc_compra != null ? Number(body.tc_compra) : null,
       price_override: body.price_override != null ? Number(body.price_override) : null,
       notes: body.notes || null,

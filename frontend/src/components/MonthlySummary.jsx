@@ -14,6 +14,7 @@ import { lookupHistoricalDolar } from '../utils/fx'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { confirmar } from '../utils/confirmar'
 
 const RECENT_MONTHS_DEFAULT = 6
 
@@ -385,7 +386,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   }
 
   const del = (id) => enVuelo.correr(async () => {
-    if (!confirm('¿Eliminar este registro mensual? La acción no se puede deshacer.')) return
+    if (!await confirmar('¿Eliminar este registro mensual? La acción no se puede deshacer.')) return
     await api.delete(`/monthly/${id}`)
     await load()
   }, `del-${id}`)

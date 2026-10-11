@@ -341,7 +341,9 @@ class CadaPuertaAnotaSuCarga(FlujosAManoBase):
         self._depositar(1000.0, fecha="2026-03-01")
         self._depositar(500.0, fecha="2026-03-15")
         self._depositar(100.0, fecha="2026-03-16", direction="withdraw")
-        self._depositar(70.0, fecha="2026-04-02")
+        # Lo de abril alcanza para cubrir el retiro: desde 2026-10-10 un depósito no
+        # se borra si deja el efectivo en negativo (con 70 quedaba en −30).
+        self._depositar(170.0, fecha="2026-04-02")
         row = self._renglon(self.BROKER, 2026, 3)
         r = self.http.delete(f"/api/movements/me-{row['id']}-dep")
         self.assertEqual(r.status_code, 200, r.text)
@@ -759,10 +761,18 @@ class CadaCargaSeBorraSola(FlujosAManoBase):
         self._posicion(1000.0, fecha="2026-03-05")      # 700 de saldo: aporte de 300
         resto = [m for m in self._movs() if m["id"].startswith("mr-")]
         self.assertEqual(len(resto), 1, self._movs())
+        # Con los 700 puestos en la compra, borrarlos dejaría el efectivo en −700:
+        # frena, pero por ESO (2026-10-10), no por el aporte de la compra nueva.
+        r = self.http.delete(f"/api/movements/{resto[0]['id']}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("quedaría en negativo", r.json()["detail"])
+        # Con plata en la cuenta, el aporte de la compra nueva no lo frena.
+        self._depositar(700.0, fecha="2026-04-10", broker=self.VACIO)
         r = self.http.delete(f"/api/movements/{resto[0]['id']}")
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual([m["notes"] for m in self._movs()],
-                         ["Aporte automático: compra cargada a mano sin saldo"])
+        self.assertEqual([m for m in self._movs() if m["id"].startswith("mr-")], [])
+        self.assertIn("Aporte automático: compra cargada a mano sin saldo",
+                      [m["notes"] for m in self._movs()])
         self.assert_suma_es_sus_cargas()
 
     def test_borrar_todo_el_mes_sigue_existiendo(self):

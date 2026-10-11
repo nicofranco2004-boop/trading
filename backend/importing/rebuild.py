@@ -60,9 +60,11 @@ from datetime import date as _date
 from .schema import OP_BUY, OP_SELL, TX_VIVAS
 from .persister import _link, broker_pair, reconciled_unit_price
 try:
-    from fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
+    from fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
+                    costo_del_lote)
 except ImportError:  # pragma: no cover
-    from ..fx import fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta
+    from ..fx import (fx_for_date, fx_version, FX_V2, costo_en_moneda_de_venta,
+                      costo_del_lote)
 from .maturity import is_bond_like_name
 from .normalizer import guess_asset_type
 try:
@@ -410,7 +412,11 @@ def _replay_asset(events: List[Dict[str, Any]], broker_currency: str,
                 continue
             ratio = take / pos_qty if pos_qty > 0 else 0
             pos_buy_commissions = lot["commissions"] or 0
-            base_invested = (lot["invested"] or 0) + pos_buy_commissions
+            # Misma red que el persister y la venta manual (`fx.costo_del_lote`).
+            # Los lotes de acá nacen de un evento de compra y siempre traen
+            # `invested`; se usa igual para que las tres copias digan lo mismo.
+            base_invested = ((costo_del_lote(lot["invested"], lot["buy_price"], pos_qty) or 0)
+                             + pos_buy_commissions)
 
             # Cross-currency: valuar el invested del lote en la moneda de la venta.
             # La cuenta vive en `fx.costo_en_moneda_de_venta` — LA misma que usan el

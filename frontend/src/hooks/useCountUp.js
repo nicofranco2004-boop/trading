@@ -12,7 +12,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { prefiereSinMovimiento } from '../utils/movimiento'
 
-export function useCountUp(target, { duration = 600 } = {}) {
+// `desde`: de dónde arranca la PRIMERA cuenta (por defecto 0). Lo usa
+// useNumeroQueCambia para contar desde el valor que el número tenía la última
+// vez que se vio, y no desde 0.
+export function useCountUp(target, { duration = 600, desde = 0 } = {}) {
   const numericTarget = Number(target)
   const safeTarget = Number.isFinite(numericTarget) ? numericTarget : 0
 
@@ -23,10 +26,14 @@ export function useCountUp(target, { duration = 600 } = {}) {
   // final, que es lo que la persona termina viendo. Sin esto, cualquier número
   // que cuenta se leía "0" en esas pruebas.
   const sinNavegador = typeof window === 'undefined'
-  const [value, setValue] = useState(() => (sinNavegador ? safeTarget : 0))
-  const fromRef = useRef(sinNavegador ? safeTarget : 0)
+  const arranque = Number.isFinite(Number(desde)) ? Number(desde) : 0
+  const [value, setValue] = useState(() => (sinNavegador ? safeTarget : arranque))
+  const fromRef = useRef(sinNavegador ? safeTarget : arranque)
   const rafRef = useRef(null)
-  const latestRef = useRef(0) // último valor renderizado (para cleanup sin stale closure)
+  // Último valor renderizado (para cleanup sin stale closure). Arranca donde
+  // arranca la cuenta: en 0 fijo, una cuenta cortada antes de su primer cuadro
+  // hacía que la siguiente saliera de 0 y no de `desde`.
+  const latestRef = useRef(sinNavegador ? safeTarget : arranque)
 
   useEffect(() => {
     // Sin animación: reduced-motion o valor no numérico → salto directo.

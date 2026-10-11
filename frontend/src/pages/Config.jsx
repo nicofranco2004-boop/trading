@@ -45,6 +45,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 // prueba, que es justo cuando tiene que decidir.
 import { alTerminar, vecesMas } from '../data/prueba'
 import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS, FREE_FEATURES, PRO_FEATURES } from '../data/planCatalog'
+import { confirmar } from '../utils/confirmar'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -129,7 +130,7 @@ function AdvisorAccessPanel() {
   }, [])
 
   const responder = async (req, accept) => {
-    if (!accept && !window.confirm(`¿Rechazar el pedido de ${req.name}? No va a ver nada de tu cartera.`)) return
+    if (!accept && !await confirmar(`¿Rechazar el pedido de ${req.name}? No va a ver nada de tu cartera.`)) return
     setRespondingId(req.id)
     try {
       await api.post(`/me/advisor/requests/${req.id}/respond`, { accept })
@@ -153,7 +154,7 @@ function AdvisorAccessPanel() {
   if (!advisors || (advisors.length === 0 && requests.length === 0)) return null
 
   const revoke = async (advisorUid, name) => {
-    if (!window.confirm(`¿Quitarle acceso a ${name}? Va a dejar de ver y editar tu cartera.`)) return
+    if (!await confirmar(`¿Quitarle acceso a ${name}? Va a dejar de ver y editar tu cartera.`)) return
     setRevokingId(advisorUid)
     try {
       await api.post(`/me/advisor/${advisorUid}/revoke`)
@@ -356,13 +357,13 @@ export default function Config() {
 
   async function resetData() {
     // Doble confirmación: es destructivo (irreversible) aunque conserve la cuenta.
-    const ok = window.confirm(
+    const ok = await confirmar(
       'Vas a EMPEZAR DE CERO.\n\n' +
       'Se borra toda tu cartera: brokers, posiciones, operaciones, imports, historial y ' +
       'snapshots, como si recién entraras a Rendi. Tu cuenta, tu plan y tus credenciales de ' +
       'brokers NO se tocan.\n\nEsta acción NO se puede deshacer. ¿Seguís?')
     if (!ok) return
-    const ok2 = window.confirm('Última confirmación: se borra TODA tu cartera. ¿Empezar de cero?')
+    const ok2 = await confirmar('Última confirmación: se borra TODA tu cartera. ¿Empezar de cero?')
     if (!ok2) return
     setResetState({ loading: true, error: '', pct: 0, tabla: null })
     try {
@@ -396,7 +397,7 @@ export default function Config() {
   }
 
   async function deleteAccount() {
-    const ok = window.confirm(
+    const ok = await confirmar(
       'Vas a ELIMINAR tu cuenta de Rendi de forma permanente.\n\n' +
       'Se borran todos tus datos (brokers, posiciones, operaciones, imports, historial) y ' +
       'se cancela tu suscripción. Esta acción NO se puede deshacer.\n\n¿Confirmás?')

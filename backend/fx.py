@@ -203,6 +203,45 @@ def fx_for_date(conn, date_str, fallback=None, riel: str = RIEL_MEP) -> Optional
 
 
 
+# ─── El costo de un lote ─────────────────────────────────────────────────────
+
+def costo_del_lote(invested, buy_price, quantity):
+    """Lo que costó un lote, en SU moneda y sin comisiones: el `invested` de la
+    fila y, si la fila no lo tiene, precio × cantidad. None si no hay con qué
+    saberlo.
+
+    POR QUÉ ACÁ Y NO EN CADA MOTOR
+    ──────────────────────────────
+    `positions.invested` puede ser NULL: `POST /api/positions` acepta un alta con
+    precio y cantidad y sin "invertido". El alta le descontaba a la caja
+    `invested ?? precio × cantidad` y en la fila guardaba el NULL: la plata salía
+    y el lote quedaba anotado como si no hubiera costado nada.
+
+    Aguas abajo, cada motor leía ese NULL por su cuenta. Los tres de venta
+    (`sell_position_fifo`, `persister._persist_sell_fifo`, `rebuild._replay_asset`)
+    tenían la red "sin costo guardado → precio × cantidad" SÓLO en la rama de
+    dólares; la de pesos restaba `(entry_invested or 0)` y anotaba todo lo cobrado
+    como ganancia (medido: 25,6 donde eran 9,6). Los dos de amortización de bonos
+    no la tenían en ninguna moneda.
+
+    Ahora la cuenta es una y la usan el alta (para la caja Y para la fila), la
+    edición y los cinco motores.
+
+    ⚠️ `is None`, NO "¿tiene valor?". Un `invested = 0` explícito es un costo
+    cero que alguien cargó (el alta le descuenta 0 a la caja), no un dato que
+    falta: no se pisa con precio × cantidad.
+
+    La red va ANTES de `costo_en_moneda_de_venta`: precio × cantidad está en la
+    moneda del lote, así que se convierte igual que un `invested` guardado. La
+    red vieja de la rama de dólares se aplicaba después y no convertía nada.
+    """
+    if invested is not None:
+        return float(invested)
+    if buy_price is None or quantity is None:
+        return None
+    return float(buy_price) * float(quantity)
+
+
 # ─── El costo de un lote, en la moneda de la venta ───────────────────────────
 
 def costo_en_moneda_de_venta(base_invested, lot_currency, sell_currency, *,

@@ -28,7 +28,8 @@ export function partesDelBorrado(counts) {
   return partes
 }
 
-/** El mensaje completo para el `confirm()`. `detail` es el `detail` del 409. */
+/** El mensaje completo para `confirmar()` (el cartel de Rendi): lo de antes del
+ *  primer renglón en blanco sale como título. `detail` es el `detail` del 409. */
 export function avisoBorrarBroker(nombre, detail) {
   const partes = partesDelBorrado(detail?.counts)
   const siblingWarning = detail?.sibling
