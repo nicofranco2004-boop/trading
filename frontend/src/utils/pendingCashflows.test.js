@@ -238,8 +238,8 @@ describe('detectPendingCashflows — múltiples posiciones', () => {
 
 describe('detectPendingCashflows — filtro por entry_date (Phase 3F)', () => {
   it('si la posición tiene entry_date, NO sugiere pagos previos a esa fecha', () => {
-    // Posición AL30 cargada con entry_date=2026-01-20 (más de 7 días después
-    // del cupón 2026-01-09, fuera del grace). El detector NO debe sugerir
+    // Posición AL30 cargada con entry_date=2026-01-20 (después del cupón del
+    // 2026-01-09). El detector NO debe sugerir
     // ningún pago anterior — todos corresponden al dueño previo.
     const posRecent = { ...POS_AL30, entry_date: '2026-01-20' }
     const pending = detectPendingCashflows(
@@ -277,10 +277,11 @@ describe('detectPendingCashflows — filtro por entry_date (Phase 3F)', () => {
     expect(pending[pending.length - 1].date).toBe('2024-01-09')
   })
 
-  it('grace period de 7 días: entry_date inmediatamente posterior al pago igual lo incluye', () => {
-    // entry_date 2026-01-10 (1 día después del cupón del 2026-01-09). Como el
-    // grace es 7 días, ese cupón SÍ se incluye (es posible que el user lo
-    // cobre por T+x del settlement).
+  it('comprado al día siguiente del pago: ese pago NO es tuyo (lo cobró quien vendió)', () => {
+    // Esta prueba certificaba lo contrario (7 días "de gracia") hasta
+    // 2026-10-10. El servidor nunca tuvo gracia: un lote comprado después del
+    // pago no entra en el reparto, así que confirmar acreditaba plata que no
+    // existió sin bajarle nominales a nadie. Una sola regla: desde la compra.
     const pos = { ...POS_AL30, entry_date: '2026-01-10' }
     const pending = detectPendingCashflows(
       [pos],
@@ -288,7 +289,17 @@ describe('detectPendingCashflows — filtro por entry_date (Phase 3F)', () => {
       [],
       { today: '2026-05-11', maxBacklogDays: 3650 }
     )
-    expect(pending.length).toBeGreaterThan(0)
+    expect(pending.find(p => p.date === '2026-01-09')).toBeUndefined()
+  })
+
+  it('comprado el mismo día del pago: sí se ofrece', () => {
+    const pos = { ...POS_AL30, entry_date: '2026-01-09' }
+    const pending = detectPendingCashflows(
+      [pos],
+      [],
+      [],
+      { today: '2026-05-11', maxBacklogDays: 3650 }
+    )
     expect(pending.find(p => p.date === '2026-01-09')).toBeDefined()
   })
 

@@ -1,0 +1,159 @@
+{
+  "hoy": "2026-10-10",
+  "pantalla": {
+    "importado_con_barrido": {
+      "positions": [
+        {
+          "broker": "Cocos",
+          "asset": "AL30",
+          "is_cash": false,
+          "entry_date": "2025-03-03",
+          "currency": "ARS",
+          "nominal_por_barrido": true,
+          "nominal_original": 10000,
+          "nominal_al_cargar": null,
+          "quantity_mayor_a_cero": true
+        },
+        {
+          "broker": "Cocos",
+          "asset": "ARS",
+          "is_cash": true,
+          "entry_date": null,
+          "currency": null,
+          "nominal_por_barrido": null,
+          "nominal_original": null,
+          "nominal_al_cargar": null
+        },
+        {
+          "broker": "Cocos · USD",
+          "asset": "USDT",
+          "is_cash": true,
+          "entry_date": null,
+          "currency": null,
+          "nominal_por_barrido": null,
+          "nominal_original": null,
+          "nominal_al_cargar": null
+        }
+      ],
+      "operations": [
+        {
+          "date": "2025-07-10",
+          "broker": "Cocos · USD",
+          "asset": "AL30",
+          "op_type": "Dividendo",
+          "importada": true,
+          "amortizacion_importada": false
+        }
+      ],
+      "brokers": [
+        {
+          "id": 1,
+          "name": "Cocos",
+          "currency": "ARS",
+          "parent_broker_id": null
+        },
+        {
+          "id": 2,
+          "name": "Cocos · USD",
+          "currency": "USDT",
+          "parent_broker_id": 1
+        }
+      ],
+      "skips": []
+    },
+    "importado_sin_cronograma": {
+      "positions": [
+        {
+          "broker": "Balanz",
+          "asset": "GD46",
+          "is_cash": false,
+          "entry_date": "2025-03-03",
+          "currency": "USD",
+          "nominal_por_barrido": false,
+          "nominal_original": 10000,
+          "nominal_al_cargar": null,
+          "quantity": 9772.73
+        },
+        {
+          "broker": "Balanz",
+          "asset": "USDT",
+          "is_cash": true,
+          "entry_date": null,
+          "currency": null,
+          "nominal_por_barrido": null,
+          "nominal_original": null,
+          "nominal_al_cargar": null
+        }
+      ],
+      "operations": [
+        {
+          "date": "2026-01-12",
+          "broker": "Balanz",
+          "asset": "GD46",
+          "op_type": "Venta",
+          "importada": true,
+          "amortizacion_importada": true
+        }
+      ],
+      "brokers": [
+        {
+          "id": 1,
+          "name": "Balanz",
+          "currency": "USDT",
+          "parent_broker_id": null
+        }
+      ],
+      "skips": []
+    }
+  },
+  "pagos": {
+    "importado_con_barrido": [
+      {
+        "broker": "Cocos",
+        "asset": "AL30",
+        "date": "2026-07-09",
+        "coupon_amount": 27,
+        "amort_amount": 800,
+        "commissions": 0,
+        "cash_broker": "Cocos · USD",
+        "notes": "Confirmado desde la bandeja",
+        "face_amortized": 800
+      },
+      {
+        "broker": "Cocos",
+        "asset": "AL30",
+        "date": "2026-01-09",
+        "coupon_amount": 30,
+        "amort_amount": 800,
+        "commissions": 0,
+        "cash_broker": "Cocos · USD",
+        "notes": "Confirmado desde la bandeja",
+        "face_amortized": 800
+      }
+    ],
+    "importado_sin_cronograma": [
+      {
+        "broker": "Balanz",
+        "asset": "GD46",
+        "date": "2026-07-09",
+        "coupon_amount": 192.19,
+        "amort_amount": 227.27,
+        "commissions": 0,
+        "cash_broker": "Balanz",
+        "notes": "Confirmado desde la bandeja",
+        "face_amortized": 227.2727
+      },
+      {
+        "broker": "Balanz",
+        "asset": "GD46",
+        "date": "2025-07-09",
+        "coupon_amount": 201.56,
+        "amort_amount": 227.27,
+        "commissions": 0,
+        "cash_broker": "Balanz",
+        "notes": "Confirmado desde la bandeja",
+        "face_amortized": 227.2727
+      }
+    ]
+  }
+}

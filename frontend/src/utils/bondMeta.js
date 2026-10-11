@@ -125,12 +125,18 @@ export const BOND_META = {
   //   factor(payment_date) = CER(payment_date) / CER(cerEmissionDate)
   // Si la serie CER no está disponible, fallback graceful: asume factor = 1
   // (comportamiento legacy) con warning visual.
+  // TX26 y TX28 devuelven el capital EN CUOTAS (Resolución 381/2020 del
+  // Ministerio de Economía, B.O. 18/08/2020): TX26 en 5 cuotas semestrales
+  // iguales del 09/11/2024 al 09/11/2026; TX28 en 10, del 09/05/2024 al
+  // 09/11/2028. Hasta 2026-10-10 figuraban como "un solo pago al vencer": la
+  // bandeja de cobros calculaba el cupón sobre el 100 % cuando ya quedaba vivo
+  // el 40 %, y no proponía ninguna de las devoluciones de capital.
   TX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-11-09',
           couponRate: 2.0, couponFreq: 'semiannual', dayCount: 'ACT/365',
-          cerEmissionDate: '2020-08-04' },
+          cerEmissionDate: '2020-08-04', amortStart: '2024-11-09', amortCount: 5 },
   TX28: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2028-11-09',
           couponRate: 2.25, couponFreq: 'semiannual', dayCount: 'ACT/365',
-          cerEmissionDate: '2020-08-04' },
+          cerEmissionDate: '2020-08-04', amortStart: '2024-05-09', amortCount: 10 },
   T2X5: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2025-11-09',
           couponRate: 1.4, couponFreq: 'semiannual', dayCount: 'ACT/365',
           cerEmissionDate: '2020-08-04' },

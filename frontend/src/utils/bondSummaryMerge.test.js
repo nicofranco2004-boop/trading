@@ -112,13 +112,14 @@ describe('nadie vuelve a armar la clave del bono con un solo broker', () => {
       .not.toMatch(/`\$\{p\.broker\}:\$\{p\.asset\}`/)
   })
 
-  it('las dos tablas, el orden y el desplegable piden el resumen por todas las patas', () => {
+  it('las dos tablas y el desplegable piden el resumen por todas las patas', () => {
     const src = readFileSync(join(SRC, 'pages/Positions.jsx'), 'utf8')
-    // TRES: la tabla en pesos, la tabla en dólares… y la clave de ORDEN. El
-    // tercero es el que casi se queda afuera: si ordena por un P&L sin cupones
-    // mientras la celda muestra uno con cupones, la tabla queda ordenada por un
-    // número que no está en la pantalla.
-    expect((src.match(/bondSummaryDeLaFila\s*\(/g) || []).length).toBe(3)
+    // DOS: la tabla en pesos y la tabla en dólares (el panel del bono). Desde
+    // 2026-10-09 la ganancia de la fila es sólo por precio y lo cobrado va
+    // APARTE (`cobradoDelBonoUsd`, que también mira todas las patas): la clave
+    // de ORDEN ya no suma cobros, igual que la celda que muestra.
+    expect((src.match(/bondSummaryDeLaFila\s*\(/g) || []).length).toBe(2)
+    expect((src.match(/cobradoDelBonoUsd\(cobrosRenta, p, brokers/g) || []).length).toBe(2)
     // …y las dos, más toggleBondExpand, arman la clave con todas las patas.
     expect((src.match(/_brokers \|\| \[p\.broker\]/g) || []).length).toBe(3)
   })

@@ -801,10 +801,22 @@ class AmortizarUnBono(_Base):
         conn.close()
         cruce = self.cruzar("SELECT * FROM positions WHERE user_id=? AND broker=? AND asset=? "
                             "AND is_cash=0 AND quantity > 0")
-        cobro = {"broker": "Schwab", "asset": "AL30", "flow_type": "amortization",
-                 "amount": 100, "date": main._iso_today(), "decrement_quantity": True}
-        rs = self.dos_a_la_vez(lambda: self.client.post("/api/bonds/cashflow",
-                                                        headers=self.h, json=cobro))
+        # Dos pagos DISTINTOS (fechas a más de 14 días): desde 2026-10-09 el mismo
+        # pago dos veces se frena (409, `cobros_bonos`), y lo que se prueba acá es
+        # que dos cobros legítimos a la vez descuenten los dos.
+        from datetime import date, timedelta
+        fechas = iter([main._iso_today(),
+                       (date.fromisoformat(main._iso_today()) - timedelta(days=60)).isoformat()])
+        import threading
+        candado = threading.Lock()
+
+        def un_cobro():
+            with candado:
+                fecha = next(fechas)
+            return self.client.post("/api/bonds/cashflow", headers=self.h, json={
+                "broker": "Schwab", "asset": "AL30", "flow_type": "amortization",
+                "amount": 100, "date": fecha, "decrement_quantity": True})
+        rs = self.dos_a_la_vez(un_cobro)
         self.assertEqual([x.status_code for x in rs], [200, 200], [x.text for x in rs])
         self.assertFalse(cruce.se_juntaron, "los dos cobros leyeron los lotes a la vez")
         conn = main.get_db()
@@ -814,6 +826,39 @@ class AmortizarUnBono(_Base):
         self.assertAlmostEqual(float(qty or 0), 800, places=4,
                                msg="una de las dos amortizaciones no descontó sus nominales")
         self.assertAlmostEqual(self.cash(), 200, places=2)
+
+    def test_doble_click_en_confirmar_el_pago_lo_anota_UNA_vez(self):
+        """La bandeja de Cartera confirma con un click (POST /bonds/cashflow/pago).
+        "¿Ya está anotado?" se decide con una lectura: sin tomar el turno ANTES de
+        leer, dos clicks a la vez leían los dos "no está" y el pago entraba dos
+        veces (la prueba de mutación del 2026-10-10 sacó el turno y nada se puso
+        rojo)."""
+        self.usuario([("Schwab", "USD", 0.0)])
+        conn = main.get_db()
+        conn.execute("""INSERT INTO positions (user_id, broker, asset, is_cash, quantity,
+                          buy_price, invested, entry_date) VALUES (?, 'Schwab', 'GD46', 0,
+                          1000, 0.6, 600, '2025-01-02')""", (self.uid,))
+        conn.commit()
+        conn.close()
+        # La lectura que decide: los cobros de ese bono en la ventana (`cobros_bonos._cerca`).
+        cruce = self.cruzar("AND UPPER(TRIM(asset))=?")
+        rs = self.dos_a_la_vez(lambda: self.client.post(
+            "/api/bonds/cashflow/pago", headers=self.h, json={
+                "broker": "Schwab", "asset": "GD46", "date": "2026-07-09",
+                "coupon_amount": 20, "amort_amount": 100, "face_amortized": 100}))
+        self.assertEqual(sorted(x.status_code for x in rs), [200, 409], [x.text for x in rs])
+        self.assertFalse(cruce.se_juntaron,
+                         "los dos pedidos leyeron «¿ya está anotado?» a la vez: /pago no "
+                         "tomó el turno antes de leer")
+        conn = main.get_db()
+        qty = conn.execute("SELECT SUM(quantity) q FROM positions WHERE user_id=? AND "
+                           "asset='GD46' AND is_cash=0", (self.uid,)).fetchone()["q"]
+        n = conn.execute("SELECT COUNT(*) c FROM operations WHERE user_id=? AND asset='GD46'",
+                         (self.uid,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(n, 2, "el pago (cupón + amortización) quedó anotado más de una vez")
+        self.assertAlmostEqual(float(qty or 0), 900, places=4)
+        self.assertAlmostEqual(self.cash(), 120, places=2)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

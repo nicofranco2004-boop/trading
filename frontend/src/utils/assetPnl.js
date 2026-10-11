@@ -80,11 +80,31 @@ const NATIVE_CCY_OPS = ['Cupón', 'Amortización', 'Interés PF']
 export function opPnlUsd(op) {
   const raw = op == null ? null : op.pnl_usd
   if (raw == null) return raw
+  // Ya normalizada en el borde (`operacionesEnUsd`): no se divide dos veces.
+  if (op.pnl_usd_native !== undefined) return raw
   if (!NATIVE_CCY_OPS.includes(String(op.op_type || '').trim())) return raw
   if (String(op.currency || '').toUpperCase() !== 'ARS') return raw
   const fx = Number(op.fx_to_usd)
   if (!Number.isFinite(fx) || fx <= 0) return raw
   return raw / fx
+}
+
+/**
+ * operacionesEnUsd — las filas de /api/operations con `pnl_usd` en USD de verdad.
+ *
+ * EL BORDE: se llama una vez, donde la pantalla recibe las operaciones, y todo
+ * lo de abajo (sumas, mejor operación, contribución por activo) lee dólares sin
+ * acordarse de convertir. El valor guardado queda en `pnl_usd_native` (el
+ * formulario de edición lo vuelve a escribir tal cual).
+ *
+ * Lo hacía sólo Movimientos; Métricas, Reportes, la ficha del activo y el
+ * detalle en celular sumaban el crudo: un cupón de $ 95.000 confirmado desde la
+ * bandeja de bonos era "la mejor operación: US$ 95.000" (auditoría 2026-10-10).
+ */
+export function operacionesEnUsd(rows) {
+  return (rows || []).map(o => (o && o.pnl_usd_native === undefined
+    ? { ...o, pnl_usd_native: o.pnl_usd, pnl_usd: opPnlUsd(o) }
+    : o))
 }
 
 import { normalizeTicker } from './assetClass'
@@ -230,6 +250,28 @@ export function computePnlByKey(positions = [], operations = [], brokers = [], c
     if (esRenta) {
       // Renta: suma al resultado, no al capital invertido.
       b.income += pnl
+      a.pnl += pnl
+      continue
+    }
+
+    // La amortización de un bono no trae `pnl_pct`, y sin eso marcaba el costo
+    // como incompleto y le borraba el % a toda la porción de bonos (medido
+    // 2026-10-10: +0,68 % → sin porcentaje al confirmar un pago). Pero su costo
+    // se sabe: es `cost_basis_consumed` (lo que costó el capital devuelto, en la
+    // moneda de la fila). Sin ese dato, el lote conservó su costo —que ya está
+    // en el denominador por la posición abierta— y el cobro es renta.
+    if (tipo.includes('AMORTIZACION')) {
+      const cbc = Number(op.cost_basis_consumed)
+      if (op.cost_basis_consumed != null && Number.isFinite(cbc) && cbc > 0) {
+        const fx = Number(op.fx_to_usd)
+        const enPesos = String(op.currency || '').toUpperCase() === 'ARS' && fx > 0
+        const costo = enPesos ? cbc / fx : cbc
+        b.realized += pnl
+        b.cost += costo
+        a.cost += costo
+      } else {
+        b.income += pnl
+      }
       a.pnl += pnl
       continue
     }

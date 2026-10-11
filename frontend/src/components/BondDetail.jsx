@@ -20,20 +20,18 @@ import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } f
 import { hoyISO } from '../utils/fecha'
 import {
   generateSchedule, getRemainingPayments, estimateYieldDetailed, nextPaymentForPosition,
-  cerOptsFor,
+  cerOptsFor, nominalOriginalDe,
 } from '../utils/bondSchedule'
-
-const DATE_TOLERANCE_DAYS = 14  // mismo criterio que pendingCashflows.js
-
-function diffDaysAbs(a, b) {
-  const pa = a.slice(0, 10).split('-').map(Number)
-  const pb = b.slice(0, 10).split('-').map(Number)
-  return Math.abs(Math.round((Date.UTC(pb[0], pb[1] - 1, pb[2]) - Date.UTC(pa[0], pa[1] - 1, pa[2])) / 86400000))
-}
+import { cobroRegistrado, cobrosDelActivo, esCobroAMano, DATE_TOLERANCE_DAYS, diffDaysAbs } from '../utils/pendingCashflows'
 
 export function BondDetailBody({
   p, summary, isARS, currentPrice, tcMep, cerSeries, cerStale, cerBasis = 'CER',
   onAddCoupon, onAddAmortization, pendingDates = null,
+  // Todos los cobros de renta de la cuenta (a mano + importados) y los brokers:
+  // deciden el ✓ del cronograma con la MISMA regla que la bandeja de pendientes
+  // (cobroRegistrado). Sin esto, un cupón importado ('Dividendo') salía gris
+  // "sin registro" — una invitación a cargarlo de nuevo con "+ Cupón".
+  cobros = null, brokers = null,
   // ¿La fila junta las dos patas de la cuenta? Lo decide la FILA, no el
   // resumen de cobranzas: un bono en las dos patas SIN cobros todavía —el caso
   // más común— no tiene resumen, y colgar la condición de ahí dejaba los
@@ -70,11 +68,23 @@ export function BondDetailBody({
   const pnlContribution = summary?.pnlContribution || 0
   const hasLegacyOps = summary?.hasLegacyOps || false
   const ops = summary?.ops || []
+  // ¿El cobro está en la moneda de esta fila? Un cobro de la otra pata (el bono
+  // en «Cocos», el cupón en «Cocos · USD») no tiene monto nativo comparable: se
+  // muestra por su lado en dólares (`usdByOpId`).
+  const mismaMonedaQueLaFila = (o) => (((o.currency || '').toUpperCase() === 'ARS') === !!isARS)
   // Pata USD por op: sin esto cada fila del historial se re-divide por el blue de
   // HOY (toDisp con un solo argumento) mientras el total de arriba usa el dólar
   // sellado en la op. Hoy coinciden porque los dos son el blue; en cuanto el
   // backend selle el MEP del día, el total y la suma de sus filas se separan.
   const usdByOpId = summary?.usdByOpId
+  // Cobros que entraron IMPORTADOS (Dividendo/Interés/Renta): el resumen de
+  // arriba sólo suma los cargados a mano, porque los importados guardan el monto
+  // en otra unidad. No se suman acá —eso cambiaría el P&L de la fila y es otra
+  // decisión—, pero tampoco se puede decir "aún no registraste cobranzas" con
+  // un botón "Cupón cobrado" al lado: es la invitación a cargarlos dos veces.
+  const cobrosImportados = cobros
+    ? cobrosDelActivo(cobros, p, brokers).filter(o => !esCobroAMano(o)).length
+    : 0
   // El % de capital recuperado compara dos montos NATIVOS. En la fila que junta
   // las dos patas no hay total nativo, así que no hay porcentaje que publicar:
   // null y la línea no lo muestra (un 0% sería falso, no "todavía nada").
@@ -84,10 +94,16 @@ export function BondDetailBody({
   const couponsUsd = summary?.couponsUsd || 0
   const amortizationsUsd = summary?.amortizationsUsd || 0
   const pnlContributionUsd = summary?.pnlContributionUsd || 0
-  const totalDisp = toDisp(total, totalUsd)
-  const couponsDisp = toDisp(coupons, couponsUsd)
-  const amortizationsDisp = toDisp(amortizations, amortizationsUsd)
-  const pnlContributionDisp = toDisp(pnlContribution, pnlContributionUsd)
+  // Al riel de display van los nativos TAL CUAL vienen del resumen: `null`
+  // significa "no hay monto nativo" (cobros en otra moneda que la fila) y ahí
+  // `toDisp` usa el de dólares. Con el `|| 0` de arriba un cupón que entró en
+  // «Cocos · USD» se mostraba como 0 en la fila «Cocos» en vista pesos, y el panel
+  // seguía diciendo "Aún no registraste cobranzas".
+  const nat = (k) => (summary ? summary[k] : 0)
+  const totalDisp = toDisp(nat('total'), totalUsd) || 0
+  const couponsDisp = toDisp(nat('coupons'), couponsUsd) || 0
+  const amortizationsDisp = toDisp(nat('amortizations'), amortizationsUsd) || 0
+  const pnlContributionDisp = toDisp(nat('pnlContribution'), pnlContributionUsd) || 0
   const amortRealizedGainDisp = pnlContributionDisp - couponsDisp
 
   // ── Schedule + TIR + próximo pago (misma lógica que la v1) ────────────────
@@ -127,7 +143,7 @@ export function BondDetailBody({
     : null
   const yieldEstimate = yieldDetail?.ytm ?? null
   const nextPay = p.quantity
-    ? nextPaymentForPosition(p.asset, p.quantity, today, cerOpts)
+    ? nextPaymentForPosition(p.asset, p.quantity, today, { ...cerOpts, position: p })
     : null
 
   // CER: factor actual (contexto del ajuste por inflación).
@@ -149,15 +165,27 @@ export function BondDetailBody({
   // ── Timeline: pasado (cobrado ✓ / pendiente ! / sin registro) + futuro ────
   // Mostramos los últimos 3 vencimientos + los próximos 4 + "+N más".
   const qty = p.quantity || 0
+  // El cronograma es por 100 ORIGINALES; `qty` son los nominales vivos de hoy.
+  const original = fullSchedule ? nominalOriginalDe(p, fullSchedule) : qty
   const timeline = []
   if (fullSchedule) {
     const past = fullSchedule.filter(pmt => pmt.date <= today && (pmt.total || 0) > 0).slice(-3)
     for (const pmt of past) {
-      const op = ops.find(o => diffDaysAbs(o.date, pmt.date) <= DATE_TOLERANCE_DAYS)
-      const status = op ? 'done' : (pendingDates?.has(pmt.date) ? 'pend' : 'off')
+      // `op`: el cobro cargado a mano, con su monto exacto en la moneda de la
+      // fila. Si no hay, puede haber uno IMPORTADO (Dividendo/Interés, quizás en
+      // la otra pata): el pago está cobrado igual, pero su monto viene en otra
+      // unidad (pnl_usd en dólares, a veces de la pata de enfrente), así que se
+      // muestra el estimado del cronograma con "~" en vez de inventar la cuenta.
+      // Sólo con su monto exacto si está en la moneda de la fila (el cobro pudo
+      // entrar en la otra pata de la cuenta, en dólares).
+      // Un pago puede ser DOS operaciones (cupón + amortización): se suman.
+      const delPago = ops.filter(o => diffDaysAbs(o.date, pmt.date) <= DATE_TOLERANCE_DAYS && mismaMonedaQueLaFila(o))
+      const op = delPago[0]
+      const cobrado = op || (cobros ? cobroRegistrado(cobros, p, pmt.date, brokers) : null)
+      const status = cobrado ? 'done' : (pendingDates?.has(pmt.date) ? 'pend' : 'off')
       timeline.push({
         date: pmt.date,
-        amount: op ? (+op.pnl_usd || 0) : (qty > 0 ? pmt.total * qty / 100 : null),
+        amount: op ? delPago.reduce((s, o) => s + (+(o.quantity ?? o.pnl_usd) || 0), 0) : (qty > 0 ? pmt.total * original / 100 : null),
         approx: !op,
         status,
         kind: pmt.amort > 0 && pmt.coupon > 0 ? 'cupón + amort' : pmt.amort > 0 ? 'amortización' : 'cupón',
@@ -167,7 +195,7 @@ export function BondDetailBody({
     for (const pmt of future) {
       timeline.push({
         date: pmt.date,
-        amount: qty > 0 ? pmt.total * qty / 100 : null,
+        amount: qty > 0 ? pmt.total * original / 100 : null,
         approx: true,
         status: 'fut',
         kind: pmt.amort > 0 && pmt.coupon > 0 ? 'cupón + amort' : pmt.amort > 0 ? 'amortización' : 'cupón',
@@ -261,10 +289,17 @@ export function BondDetailBody({
                 <p className="text-[10.5px] text-ink-3 mt-1.5">≈ USD {usd(totalUsd)} en cash{hasLegacyOps && <span className="text-rendi-warn"> (aprox)</span>}</p>
               )}
             </>
-          ) : (
+          ) : cobrosImportados === 0 ? (
             <p className="text-xs text-ink-2 leading-relaxed">
               Aún no registraste cobranzas. Cuando el cronograma venza, te lo proponemos
               para confirmar acá y en el inbox de Cartera.
+            </p>
+          ) : null}
+          {cobrosImportados > 0 && (
+            <p className={`text-xs text-ink-2 leading-relaxed ${totalDisp > 0 ? 'mt-2' : ''}`}>
+              {cobrosImportados === 1
+                ? '1 cobro de este bono entró con la importación de tu broker y ya está en el efectivo. No hace falta volver a cargarlo: lo ves en Movimientos.'
+                : `${cobrosImportados} cobros de este bono entraron con la importación de tu broker y ya están en el efectivo. No hace falta volver a cargarlos: los ves en Movimientos.`}
             </p>
           )}
           {/* Registrar un cobro necesita saber a QUÉ cuenta acreditarlo. En una
@@ -407,7 +442,7 @@ export function BondDetailBody({
                     <span className={`text-[10px] font-bold rounded-full px-2 py-0.5 shrink-0 ${o.op_type === 'Cupón' ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-data-violet/10 text-data-violet'}`}>{o.op_type}</span>
                     {o.notes && <span className="text-ink-3 truncate">{o.notes}</span>}
                   </div>
-                  <span className="font-semibold text-rendi-pos tabular shrink-0">+{moneyLabel} {fmt(toDisp(+o.pnl_usd || 0, usdByOpId?.get(o.id)))}</span>
+                  <span className="font-semibold text-rendi-pos tabular shrink-0">+{moneyLabel} {fmt(toDisp(mismaMonedaQueLaFila(o) ? (+(o.quantity ?? o.pnl_usd) || 0) : null, usdByOpId?.get(o.id)))}</span>
                 </div>
               ))}
             </div>

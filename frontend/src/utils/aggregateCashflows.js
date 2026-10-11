@@ -20,7 +20,7 @@
 //     Cartera, donde el bono es una fila más de su broker (`lineaDelBono.js` y
 //     `BondDetail.jsx` leen la moneda de pago del mismo `getBondMeta`).
 import { getBondMeta } from './bondMeta'
-import { getRemainingPayments, cerOptsFor } from './bondSchedule'
+import { getRemainingPayments, cerOptsFor, generateSchedule, nominalOriginalDe } from './bondSchedule'
 import { hoyISO } from './fecha'
 
 /** Suma días a un ISO sin corrimiento de huso. */
@@ -131,10 +131,18 @@ export function aggregateCashflows(positions, clients, opts = {}) {
     if (!plan) { sinCronograma.add(asset); continue }
     const { sched, payCcy, estimateKind } = plan
 
+    // Misma escala que `nextPaymentForPosition`: el cronograma es por 100
+    // ORIGINALES. Si la posición trae el dato del servidor (`nominalOriginalDe`),
+    // ése; las del libro del asesor no lo traen: ahí la cantidad se toma como lo
+    // vivo antes del primer pago que viene.
+    const conDato = p.nominal_original != null || p.nominal_al_cargar != null || (p._lots && p._lots.length)
+    const vivo = sched[0]?.faceBefore ?? 100
+    const k = conDato
+      ? nominalOriginalDe(p, generateSchedule(asset, cerOptsFor(asset, opts.cerSeries)) || []) / 100
+      : (vivo > 0 ? qty / vivo : 0)
     for (const s of sched) {
       if (s.date > end) break
-      // Misma escala que `nextPaymentForPosition`: el cronograma es por 100 nominales.
-      const native = +((s.total * qty) / 100).toFixed(2)
+      const native = +(s.total * k).toFixed(2)
       if (native <= 0) continue
       const key = `${s.date}|${asset}`
       let pay = byKey.get(key)

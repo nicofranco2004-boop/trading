@@ -169,6 +169,10 @@ export function generateSchedule(ticker, options = {}) {
       amort: amortAjustado,
       total: amortAjustado,
       rate: 0,
+      // Un pago único que devuelve TODO el capital (ver el caso general abajo).
+      faceBefore: 100,
+      faceAfter: 0,
+      amortPct: 100,
     }
     // Sólo agregamos cerFactor en bonos CER (con o sin serie disponible)
     if (meta.type === 'cer') entry.cerFactor = isCer && cerBase ? factor : null
@@ -254,6 +258,12 @@ export function generateSchedule(ticker, options = {}) {
       amort: amortOnThisDate,
       total: +(couponAmount + amortOnThisDate).toFixed(6),
       rate: rateAnnual,
+      // Lo que quedaba vivo del nominal original (de 100) ANTES y DESPUÉS de este
+      // pago, sin ajuste CER. La bandeja de cobros lo usa para pasar del nominal
+      // que tiene la posición (que puede ser el residual) al original.
+      faceBefore: +face.toFixed(6),
+      faceAfter: +Math.max(0, face - amortNominal).toFixed(6),
+      amortPct: +amortNominal.toFixed(6),
     }
     if (meta.type === 'cer') entry.cerFactor = isCer && cerBase ? factor : null
     schedule.push(entry)
@@ -393,14 +403,70 @@ export function cerOptsFor(posOrAsset, cerSeries) {
 }
 
 
+// ── De "por cada 100 originales" a los nominales de la posición ─────────────
+// El cronograma está escrito por cada 100 de nominal ORIGINAL, pero la posición
+// guarda los nominales que QUEDAN VIVOS (el barrido de amortizaciones los baja
+// en los bonos importados; registrar una amortización, en los cargados a mano).
+// Multiplicar el cronograma por los vivos daba de menos: 6.400 vivos de AL30
+// (10.000 originales) estimaban el pago de enero 2027 en US$ 527 en vez de 824.
+// Una sola regla para todas las estimaciones (próximo cobro, eventos, cronograma
+// de la ficha, Cobros del asesor). La bandeja de cobros tiene la suya, más fina,
+// porque sabe qué amortizaciones ya se registraron (pendingCashflows.js).
+export function vivoHoy(schedule, hoy) {
+  let vivo = 100
+  for (const pmt of schedule || []) {
+    if (pmt.date > hoy) break
+    if (pmt.faceAfter != null) vivo = pmt.faceAfter
+  }
+  return vivo
+}
+
+/**
+ * Los nominales ORIGINALES de una posición (un lote, o una fila que junta
+ * varios en `_lots`). La cantidad guardada es lo que queda vivo y no dice a qué
+ * fecha, así que deducirlo de ella sola fallaba (un lote importado en junio
+ * sigue con el residual de junio; uno cargado a mano puede no haber bajado
+ * nunca). El dato sale del servidor (`_anotar_nominales_de_bonos`, /api/positions):
+ *   · `nominal_original` — exacto, para los lotes que lleva el barrido de
+ *     amortizaciones (sale de las compras y ventas del archivo);
+ *   · `nominal_al_cargar` — la cantidad con la que nació el lote (la de hoy + lo
+ *     que le bajaron las amortizaciones a mano), que se lleva a original con lo
+ *     que estaba vivo en su `entry_date`: lo cargado refleja la tenencia de ese día.
+ * Sin ninguno de los dos (posiciones del libro del asesor, datos viejos) se toma
+ * la cantidad como la de su `entry_date`.
+ */
+export function nominalOriginalDe(p, schedule) {
+  const lotes = (p?._lots && p._lots.length) ? p._lots : [p]
+  let total = 0
+  for (const l of lotes) {
+    if (!l) continue
+    if (l.nominal_original != null) { total += Number(l.nominal_original) || 0; continue }
+    const base = Number(l.nominal_al_cargar ?? l.quantity) || 0
+    const vivo = l.entry_date ? vivoHoy(schedule, String(l.entry_date).slice(0, 10)) : 100
+    total += vivo > 0 ? base * 100 / vivo : 0
+  }
+  return total
+}
+
+/**
+ * `options.position`: la posición entera, para saber sus nominales originales
+ * (`nominalOriginalDe`). Sin ella, `quantity` se toma como lo vivo antes del pago.
+ */
 export function nextPaymentForPosition(ticker, quantity, from, options = {}) {
   const next = getNextPayment(ticker, from, options)
   if (!next || !quantity) return null
+  let k
+  if (options.position) {
+    k = nominalOriginalDe(options.position, generateSchedule(ticker, options)) / 100
+  } else {
+    const vivo = next.faceBefore ?? vivoHoy(generateSchedule(ticker, options), from)
+    k = vivo > 0 ? quantity / vivo : 0
+  }
   return {
     date: next.date,
-    coupon: +(next.coupon * quantity / 100).toFixed(2),
-    amort: +(next.amort * quantity / 100).toFixed(2),
-    total: +(next.total * quantity / 100).toFixed(2),
+    coupon: +(next.coupon * k).toFixed(2),
+    amort: +(next.amort * k).toFixed(2),
+    total: +(next.total * k).toFixed(2),
     isPureAmort: next.coupon === 0 && next.amort > 0,
     isPureCoupon: next.amort === 0 && next.coupon > 0,
   }
