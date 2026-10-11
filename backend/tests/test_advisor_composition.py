@@ -673,10 +673,32 @@ class MonedaNativaDeLasCobranzasTest(CompositionBase):
         self.assertAlmostEqual(r["income_usd"], 100.0, places=2)
 
     def test_la_amortizacion_tambien(self):
+        """Lo que fija esta prueba es la MONEDA: $ 62.500 al dólar sellado de 1.250
+        son US$ 50. Hasta 2026-10-10 los buscaba en `realized_usd`; una
+        amortización sin costo anotado (las de antes, o las que no le bajaron
+        nominales al lote) ahora cuenta como renta —su costo sigue en la posición
+        abierta— en vez de marcar el costo del bono como incompleto y borrarle
+        el porcentaje. El número es el mismo."""
         self._op_fx(self.ana, "Balanz", "AL30", "Amortización", 62500.0, "ARS", 1250.0)
         self.conn.commit()
         r = self._realized(self._get().json(), "AL30")
-        self.assertAlmostEqual(r["realized_usd"], 50.0, places=2)
+        self.assertAlmostEqual(r["income_usd"], 50.0, places=2)
+        self.assertAlmostEqual(r["realized_usd"], 0.0, places=2)
+        self.assertFalse(r["cost_incomplete"])
+
+    def test_la_amortizacion_con_su_costo_anotado(self):
+        """Con `cost_basis_consumed` (las de la bandeja): ganancia Y costo, los dos
+        pasados a dólares con el TC sellado de la fila."""
+        self.conn.execute(
+            """INSERT INTO operations (user_id, date, broker, asset, op_type, quantity,
+                                       pnl_usd, pnl_pct, currency, fx_to_usd, cost_basis_consumed)
+               VALUES (?, '2026-06-01', 'Balanz', 'AL30', 'Amortización', 1000000,
+                       400000, NULL, 'ARS', 1250, 600000)""", (self.ana,))
+        self.conn.commit()
+        r = self._realized(self._get().json(), "AL30")
+        self.assertAlmostEqual(r["realized_usd"], 320.0, places=2)
+        self.assertAlmostEqual(r["cost_usd"], 480.0, places=2)
+        self.assertFalse(r["cost_incomplete"])
 
     def test_una_venta_NO_se_convierte(self):
         # En Venta pnl_usd YA es USD y fx_to_usd guarda el tc_venta: dividir

@@ -21,13 +21,14 @@ DÓNDE SE ROMPÍA. En dos eslabones, y ninguno era la pantalla:
      su propio agujero: con comisión de compra cargada, el costo era la comisión
      sola.
 
-El cobro de amortización de un bono (`_amortize_position_fifo` y su gemela de
-sólo lectura) hacía la misma cuenta sin red en ninguna moneda, y además dejaba
-el resto del lote con costo 0 escrito.
+El cobro de amortización de un bono (`cobros_bonos.aplicar_amortizacion`, que
+baja el lote, y `main._costo_amortizado_en_caja`, que calcula la ganancia) hacía
+la misma cuenta sin red en ninguna moneda, y además dejaba el resto del lote con
+costo 0 escrito. El cambio de precio promedio del grupo, lo mismo.
 
 EL ARREGLO. Una sola definición del costo de un lote, `fx.costo_del_lote`, que
 usan el alta (para la caja Y para la fila), la edición, los tres motores de
-venta y los dos de amortización.
+venta, los dos de amortización y el cambio de precio promedio.
 
 POR QUÉ ALGUNOS ESCENARIOS PLANTAN EL LOTE A MANO. Con el alta arreglada, por
 HTTP ya no se puede fabricar un lote sin costo. Pero en producción existen (3
@@ -278,33 +279,53 @@ class LaVentaQueEntraPorUnArchivo(_Base):
 
 
 class LaAmortizacionDeUnBonoSinCosto(_Base):
-    """El cobro de una amortización consume costo del lote con la misma cuenta."""
+    """El cobro de una amortización le saca costo al lote con la misma cuenta
+    (`cobros_bonos.aplicar_amortizacion` y `main._costo_amortizado_en_caja`)."""
 
-    def _amortizar(self, descontar):
+    def _amortizar(self):
         r = self.client.post("/api/bonds/cashflow", headers=self.h, json={
             "broker": DOLARES, "asset": "AL30", "flow_type": "amortization",
             "amount": 100, "face_amortized": 100, "date": "2026-02-10",
-            "decrement_quantity": descontar})
+            "decrement_quantity": True})
         self.assertEqual(r.status_code, 200, r.text)
         conn = main.get_db()
         row = conn.execute(
-            "SELECT cost_basis_consumed FROM operations "
+            "SELECT id, pnl_usd, cost_basis_consumed FROM operations "
             "WHERE user_id=? AND op_type='Amortización'", (self.uid,)).fetchone()
         conn.close()
-        return float(row["cost_basis_consumed"])
+        return dict(row)
 
-    def test_descontando_nominales(self):
+    def test_la_ganancia_no_es_todo_lo_cobrado(self):
         pid = self._plantar(self.uid, DOLARES, "AL30", 0.7, 1000, "USD",
                             asset_type="BOND")
-        # 100 de 1.000 nominales comprados a 0,70 → se consumen 70 de costo.
-        self.assertAlmostEqual(self._amortizar(True), 70, places=4)
+        # Vuelven 100 de 1.000 nominales comprados a 0,70: 70 eran costo, 30 ganancia.
+        op = self._amortizar()
+        self.assertAlmostEqual(op["cost_basis_consumed"], 70, places=4)
+        self.assertAlmostEqual(op["pnl_usd"], 30, places=4)
         resto = self._lote(pid)
         self.assertAlmostEqual(resto["quantity"], 900, places=4)
         self.assertAlmostEqual(resto["invested"], 630, places=4)
 
-    def test_sin_descontar_nominales(self):
+    def test_da_lo_mismo_que_un_lote_con_costo(self):
+        otra_uid, otra_h = self._cuenta()
         self._plantar(self.uid, DOLARES, "AL30", 0.7, 1000, "USD", asset_type="BOND")
-        self.assertAlmostEqual(self._amortizar(False), 70, places=4)
+        self._plantar(otra_uid, DOLARES, "AL30", 0.7, 1000, "USD", invested=700,
+                      asset_type="BOND")
+        sin = self._amortizar()
+        self.uid, self.h = otra_uid, otra_h
+        con = self._amortizar()
+        self.assertAlmostEqual(sin["pnl_usd"], con["pnl_usd"], places=4)
+        self.assertAlmostEqual(sin["cost_basis_consumed"], con["cost_basis_consumed"], places=4)
+
+    def test_borrar_el_cobro_devuelve_el_costo_entero(self):
+        pid = self._plantar(self.uid, DOLARES, "AL30", 0.7, 1000, "USD",
+                            asset_type="BOND")
+        op = self._amortizar()
+        r = self.client.delete(f"/api/operations/{op['id']}", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        lote = self._lote(pid)
+        self.assertAlmostEqual(lote["quantity"], 1000, places=4)
+        self.assertAlmostEqual(lote["invested"], 700, places=4)
 
 
 if __name__ == "__main__":

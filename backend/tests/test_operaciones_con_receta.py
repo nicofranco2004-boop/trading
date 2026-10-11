@@ -978,6 +978,10 @@ class NadieCreaOperacionesSinReceta(unittest.TestCase):
             "al revertir un import, vuelve el dividendo confirmado que ese import había "
             "reemplazado: re-inserta la fila ENTERA guardada (`op_json`: todas las columnas "
             "menos el id), receta incluida",
+        ("main.py", "_restaurar_cobros_reemplazados"):
+            "gemela de la anterior para los cupones de bonos: al revertir un import, vuelve "
+            "el cupón a mano que ese import había reemplazado, con su fila ENTERA "
+            "(`op_json`), receta incluida",
     }
     # Las que insertan con el nombre de la tabla en una variable, y por qué está bien.
     DINAMICO = {

@@ -628,6 +628,67 @@ def _restaurar_precio_manual(conn, uid: int, brokers: List[str], asset: str,
     )
 
 
+def _capturar_amortizaciones_a_mano(conn, uid: int, brokers: List[str], asset: str) -> List[Dict[str, Any]]:
+    """Las amortizaciones cargadas A MANO (bandeja de cobros o formulario) que le
+    bajaron nominal a los lotes de este bono en estas cuentas.
+
+    El rebuild re-deriva los lotes SÓLO desde las compras y ventas importadas: lo
+    que una amortización confirmada les había bajado se perdía. Medido 2026-10-10:
+    GD46 de 10.000, amortización confirmada de 227 → 9.773; se importa una venta de
+    1.000 y el lote queda en 9.000 (tenía que ser 8.773), con el costo devuelto; y
+    borrar después ese cobro daba "ya no queda nominal" (apuntaba a un lote que ya
+    no existe). Se capturan antes de borrar y se vuelven a aplicar al final
+    (`_reaplicar_amortizaciones_a_mano`), como el precio manual.
+
+    `qty`: lo que la amortización tiene que bajar (`cobros_bonos.nominal_pedido`),
+    no lo último que quedó aplicado: si un rearmado anterior encontró menos lotes,
+    el siguiente no tiene que arrastrar ese recorte."""
+    import cobros_bonos   # lazy: es un módulo del nivel de arriba
+    out: List[Dict[str, Any]] = []
+    for r, meta in cobros_bonos._manuales_que_bajaron_nominal(conn, uid, asset):
+        lot_broker = meta.get("lot_broker") or r["broker"]
+        qty = cobros_bonos.nominal_pedido(meta)
+        de_estas_cuentas = lot_broker in brokers or any(
+            (d.get("broker") in brokers) for d in (meta.get("amort_lots") or []))
+        if de_estas_cuentas and qty > 1e-9:
+            out.append({"id": r["id"], "date": (r["date"] or "")[:10],
+                        "lot_broker": lot_broker, "qty": qty, "meta": meta})
+    return out
+
+
+def _reaplicar_amortizaciones_a_mano(conn, uid: int, brokers: List[str], asset: str,
+                                     amorts: List[Dict[str, Any]]) -> None:
+    """Vuelve a bajarle a los lotes recién reescritos lo que cada amortización a
+    mano les había bajado, y deja en la operación la foto nueva (`amort_lots` con
+    los ids nuevos) para que borrarla siga devolviendo el nominal al lote correcto.
+
+    La MISMA cuenta que el cobro (`cobros_bonos.reparto_de_amortizacion` y
+    `aplicar_amortizacion`; acá había una copia): EN PROPORCIÓN entre los lotes de
+    TODAS las patas del broker ya comprados a esa fecha, sin tocar los que baja el
+    barrido de amortizaciones (ésos los lleva él)."""
+    if not amorts:
+        return
+    import json
+    import cobros_bonos
+    from pricing.bond_amortization import is_amortizing_bond
+    del_barrido: set = set()
+    if is_amortizing_bond(asset):
+        from .maturity import lotes_que_baja_el_barrido   # lazy: evita ciclo
+        del_barrido = lotes_que_baja_el_barrido(conn, uid)
+    for a in amorts:
+        tomas = cobros_bonos.reparto_de_amortizacion(
+            conn, uid, brokers, asset, a["qty"], excluir_ids=del_barrido,
+            hasta=a["date"] or None)
+        bajado, inv_total, detalle = cobros_bonos.aplicar_amortizacion(conn, uid, tomas)
+        meta = dict(a["meta"])
+        meta["nominal_pedido"] = a["qty"]
+        meta["amort_lots"] = detalle or None
+        meta["qty_decremented"] = bajado
+        meta["invested_decremented"] = inv_total
+        conn.execute("UPDATE operations SET undo_meta_json=? WHERE id=? AND user_id=?",
+                     (json.dumps(meta), a["id"], uid))
+
+
 def _clear_old_state(conn, uid: int, brokers: List[str], asset: str,
                      events: List[Dict[str, Any]]) -> Dict[tuple, Optional[int]]:
     """Borra los lotes abiertos + ventas import-creadas del activo en los brokers
@@ -881,9 +942,11 @@ def rebuild_fifo_after_import(conn, uid: int, batch_id: str, *,
         conn.execute(f"SAVEPOINT {sp}")
         try:
             _precio_manual = _capturar_precio_manual(conn, uid, pair, asset)
+            _amorts_a_mano = _capturar_amortizaciones_a_mano(conn, uid, pair, asset)
             old_buy_pos = _clear_old_state(conn, uid, pair, asset, events)
             _write_rebuilt(conn, uid, replay)
             _restaurar_precio_manual(conn, uid, pair, asset, _precio_manual)
+            _reaplicar_amortizaciones_a_mano(conn, uid, pair, asset, _amorts_a_mano)
             _ensure_monthly_rows(conn, uid, replay["operations"])
 
             # Tombstones: compras consumidas del todo (sin lote abierto
@@ -962,9 +1025,11 @@ def rebuild_pair_asset(conn, uid: int, broker: str, asset: str, *,
     conn.execute("SAVEPOINT rebuild_del")
     try:
         _precio_manual = _capturar_precio_manual(conn, uid, pair, asset)
+        _amorts_a_mano = _capturar_amortizaciones_a_mano(conn, uid, pair, asset)
         old_buy_pos = _clear_old_state(conn, uid, pair, asset, events)
         _write_rebuilt(conn, uid, replay)
         _restaurar_precio_manual(conn, uid, pair, asset, _precio_manual)
+        _reaplicar_amortizaciones_a_mano(conn, uid, pair, asset, _amorts_a_mano)
         _ensure_monthly_rows(conn, uid, replay["operations"])
         surviving_buys = {
             (l["batch_id"], l["raw_row_id"])

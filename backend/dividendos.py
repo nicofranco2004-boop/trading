@@ -511,12 +511,17 @@ def restaurar_reemplazados(conn, uid: int, batch_id: str) -> int:
     for r in conn.execute(
             "SELECT id, op_json FROM dividendos_reemplazados WHERE user_id=? AND batch_id=?",
             (uid, batch_id)).fetchall():
-        conn.execute("DELETE FROM dividendos_reemplazados WHERE id=?", (r["id"],))
         try:
             fila = json.loads(r["op_json"])
             meta = json.loads(fila.get("undo_meta_json") or "{}")
         except (TypeError, ValueError):
+            conn.execute("DELETE FROM dividendos_reemplazados WHERE id=?", (r["id"],))
             continue
+        # La tabla la comparte la bandeja de bonos (un cupón a mano que el import
+        # reemplazó): ésos los restaura `main._restaurar_cobros_reemplazados`.
+        if meta.get("src") != SRC:
+            continue
+        conn.execute("DELETE FROM dividendos_reemplazados WHERE id=?", (r["id"],))
         cuenta = fila.get("broker") or ""
         if not conn.execute("SELECT 1 FROM brokers WHERE user_id=? AND name=?",
                             (uid, cuenta)).fetchone():
