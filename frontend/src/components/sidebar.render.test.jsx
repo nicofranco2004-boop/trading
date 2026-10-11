@@ -55,6 +55,19 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
     expect(comun).not.toContain('/admin')
     expect(rutas(dibujar({ tier: 'pro', is_admin: true }))).toContain('/admin')
   })
+  it('el botón Registrar: lo ve quien tiene una cartera donde anotar', () => {
+    const boton = /<button[^>]*aria-haspopup="menu"[^>]*>.*?Registrar<\/span><\/button>/s
+    expect(dibujar({ tier: 'pro' })).toMatch(boton)
+    // El asesor en su nivel no tiene cartera propia; adentro de un cliente, sí.
+    expect(dibujar({ tier: 'advisor' })).not.toContain('Registrar')
+    expect(dibujar({ tier: 'advisor' }, { id: 7 })).toMatch(boton)
+  })
+  it('el botón Registrar va arriba, antes del menú, y cerrado no ofrece nada', () => {
+    const html = dibujar({ tier: 'pro' })
+    expect(html.indexOf('Registrar')).toBeLessThan(html.indexOf('<nav'))
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('role="menuitem"')
+  })
   it('la lupa del buscador: una sola, con el atajo en su cartel', () => {
     const html = dibujar({ tier: 'pro' })
     expect(html.match(/aria-label="Buscar en Rendi"/g)).toHaveLength(1)

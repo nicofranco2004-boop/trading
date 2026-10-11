@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { Plus, DollarSign, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
@@ -28,6 +28,8 @@ import { isBondPosition } from '../utils/tickers'
 import { buildPositionActions } from '../utils/positionActions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
+import ConvertMenuModal from '../components/cash/ConvertMenuModal'
+import { accionDelPedido, cajasParaConvertir } from '../utils/registrar'
 import { detectPendingCashflows, esPagoDelBono, esCobroAMano, cobradoDelBonoUsd, fxDeCobroAMano } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
@@ -124,7 +126,17 @@ function PositionsDesktop() {
   const [cargaLista, setCargaLista] = useState(false)
   const toast = useToast()
   const navigate = useNavigate()
+  const location = useLocation()
   const [modal, setModal] = useState(null)
+  // Lo que pide el botón «Registrar» del menú lateral (`/posiciones?action=…`,
+  // ver utils/registrar.js): se guarda acá hasta que hay con qué atenderlo.
+  //   - datosListos: llegaron posiciones y brokers (los selectores de venta,
+  //     efectivo y conversión se arman con esas listas). Ahí se atiende.
+  //   - cargaTerminada: la primera carga terminó, bien o mal, precios incluidos.
+  //     Sin datos y terminada = falló: se avisa en vez de esperar para siempre.
+  const [pedido, setPedido] = useState(null)
+  const [datosListos, setDatosListos] = useState(false)
+  const [cargaTerminada, setCargaTerminada] = useState(false)
   // Edición a nivel grupo: la fila agregada que se está editando + su contexto
   // (ventas registradas / lotes importados) para los avisos del modal.
   const [groupTarget, setGroupTarget] = useState(null)
@@ -133,9 +145,11 @@ function PositionsDesktop() {
   const [pfFormOpen, setPfFormOpen] = useState(false)
   const [pfReloadKey, setPfReloadKey] = useState(0)
   const [pfTotals, setPfTotals] = useState({})  // {ARS, USD} reportado por el grupo PF
-  // Modales nuevos del header (3 botones: Compra, Venta, Cash):
+  // Modales del botón «Registrar» del menú lateral (antes, los 3 botones del
+  // header: Compra, Venta, Cash):
   //   - sell-selector: lista todas las posiciones no-cash y deja elegir cuál vender
   //   - cash-menu: selector broker + direction (deposit/withdraw) antes de abrir cashflow
+  //   - convert-menu: de qué efectivo sale la conversión pesos ↔ dólares
   // Estos NO modifican el modal classic — el del top puede coexistir con los antiguos.
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
@@ -403,7 +417,7 @@ function PositionsDesktop() {
     // recién ahí el total es el de verdad (ver useRecalculoDeCartera).
     // Si la carga falla, NO queda "lista": se recordaría un total de 0 o a
     // medias como el último visto (auditoría 2026-10-09).
-    loadAll().then(ok => { if (ok) setCargaLista(true) })
+    loadAll().then(ok => { if (ok) setCargaLista(true); setCargaTerminada(true) })
     // Precios cada 90 s, sólo con la pestaña a la vista (relojVisible, el
     // mismo reloj de la cinta y las secciones de mercado). Antes era un
     // setInterval que seguía pidiendo con la pestaña oculta.
@@ -456,6 +470,7 @@ function PositionsDesktop() {
       if (ops) setCobrosRenta(ops.filter(esPagoDelBono))
       if (skips) setBondSkips(skips)
       setCobrosListos(!!ops && !!skips)
+      setDatosListos(true)
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
       return true
@@ -923,12 +938,56 @@ function PositionsDesktop() {
     setModal('cashflow')
   }
 
-  // ─── Top-level CTAs (botones del PageHeader: Compra, Venta, Cash) ──────
+  // ─── Entradas del botón «Registrar» del menú lateral ───────────────────
   // Entrypoints generales que NO requieren contexto previo (a diferencia
   // de los 3-puntitos por fila). Pensados para users que quieren registrar
   // una operación sin tener que buscar la posición en la grilla primero.
+  // Fueron los botones del encabezado (Compra, Venta, Cash) hasta 2026-10-11.
 
-  function openSellFromHeader() {
+  // El pedido llega por la dirección. Se guarda y la dirección se limpia en el
+  // acto: recargar la página no tiene que volver a abrir el formulario.
+  useEffect(() => {
+    const accion = accionDelPedido(location.search)
+    if (!accion) return
+    setPedido(accion)
+    navigate('/posiciones', { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search])
+
+  useEffect(() => {
+    if (!pedido) return
+    if (!datosListos) {
+      // La carga falló: sin las listas no hay formulario que abrir, y callarse
+      // dejaría al usuario mirando la Cartera sin saber qué pasó.
+      if (cargaTerminada) {
+        setPedido(null)
+        toast.push('No pudimos cargar tu cartera, así que no se abrió el formulario. Tocá Reintentar y volvé a elegir qué registrar.', { type: 'error', duration: 8000 })
+      }
+      return
+    }
+    setPedido(null)
+    atenderPedido(pedido)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedido, datosListos, cargaTerminada])
+
+  function atenderPedido(accion) {
+    if (!brokers.length) {
+      toast.push('Primero sumá el broker donde tenés tus inversiones.', { type: 'info' })
+      return
+    }
+    if (accion === 'comprar') openAdd()
+    // Con una sola tenencia la venta va directo al formulario, que sugiere el
+    // precio de hoy. Si los precios todavía no llegaron (el pedido se atiende
+    // apenas hay posiciones, sin esperarlos) pasa por el selector: para cuando
+    // el usuario la elige ya están, y no se queda mirando la Cartera sin que
+    // pase nada.
+    else if (accion === 'vender') openSellFromHeader({ directoSiHayUna: cargaTerminada })
+    else if (accion === 'depositar') openCashMenu('deposit')
+    else if (accion === 'retirar') openCashMenu('withdraw')
+    else if (accion === 'convertir') openConvertMenu()
+  }
+
+  function openSellFromHeader({ directoSiHayUna = true } = {}) {
     setSellPickFrom(null)          // desde el header se listan TODAS
     setSellQuery('')
     // Filtramos posiciones cash (no se "venden", se retiran). Si hay 1 sola
@@ -938,21 +997,33 @@ function PositionsDesktop() {
       setModal('sell-empty')
       return
     }
-    if (sellable.length === 1) {
+    if (sellable.length === 1 && directoSiHayUna) {
       openSell(sellable[0])
       return
     }
     setModal('sell-selector')
   }
 
-  function openCashMenuFromHeader() {
-    // Pre-popular con el primer broker disponible. El user puede cambiar
-    // broker y direction adentro del modal antes de continuar.
+  function openCashMenu(direction) {
+    // Pre-popular con el primer broker disponible y con lo que se eligió en el
+    // menú (depósito o retiro). El user puede cambiar broker y direction
+    // adentro del modal antes de continuar.
     setCashMenuForm({
       broker: brokers[0]?.name || '',
-      direction: 'deposit',
+      direction,
     })
     setModal('cash-menu')
+  }
+
+  // «Movimiento»: pesos ↔ dólares adentro de una cuenta. Con una sola caja
+  // convertible va directo al formulario; con varias (o ninguna) pregunta.
+  function openConvertMenu() {
+    const cajas = cajasParaConvertir(positions, brokers)
+    if (cajas.length === 1) {
+      openConvert(cajas[0].p, cajas[0].direction)
+      return
+    }
+    setModal('convert-menu')
   }
 
   function continueCashMenu() {
@@ -1729,6 +1800,41 @@ function PositionsDesktop() {
   const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 
   if (brokers.length === 0) {
+    // «Todavía no llegó» no es «no tiene brokers». Hasta 2026-10-11 esta
+    // pantalla le decía "sumá tu primer broker" a cualquiera mientras la lista
+    // viajaba —y para siempre si la carga fallaba—. Con el servidor lento se
+    // veía varios segundos, justo lo que encuentra quien llega desde el botón
+    // «Registrar» esperando un formulario.
+    if (!datosListos) {
+      return (
+        <div className="page-shell-xwide">
+          <PageHeader eyebrow="Posiciones / Activas" title="Tu cartera en vivo" />
+          {cargaTerminada ? (
+            <div className="bg-bg-1 border border-line rounded-xl mt-6">
+              <EmptyState
+                title="No pudimos cargar tu cartera"
+                description="Tus datos están guardados: suele ser la conexión. Probá de nuevo."
+                action={
+                  <button
+                    type="button"
+                    onClick={() => loadAll().then(ok => { if (ok) setCargaLista(true) })}
+                    className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white text-sm font-medium rounded-sm px-4 py-2 transition-colors"
+                  >
+                    Reintentar
+                  </button>
+                }
+              />
+            </div>
+          ) : (
+            <div className="space-y-3 mt-6" aria-live="polite" aria-busy="true">
+              <div className="h-32 w-full bg-bg-1 rounded-xl esqueleto" />
+              <div className="h-24 w-2/5 bg-bg-1 rounded-xl esqueleto" />
+              <div className="h-64 w-full bg-bg-1 rounded-xl esqueleto" />
+            </div>
+          )}
+        </div>
+      )
+    }
     return (
       <div className="page-shell-xwide">
         <PageHeader
@@ -1881,37 +1987,10 @@ function PositionsDesktop() {
         title="Tu cartera en vivo"
         meta={meta}
         action={
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* 3 CTAs principales: Compra (primary violet) + Venta + Cash.
-                Sin estos botones, el user tenía que buscar la posición en
-                la grilla y usar los 3-puntitos. Atajos rápidos desde el
-                header — alineado con copy del checklist y BrokerInstructions. */}
-            <button
-              type="button"
-              onClick={() => openAdd()}
-              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-3 py-2 text-xs transition-colors press"
-            >
-              <Plus size={13} strokeWidth={2} />
-              Registrar compra
-            </button>
-            <button
-              type="button"
-              onClick={openSellFromHeader}
-              className="inline-flex items-center gap-1.5 bg-bg-1 hover:bg-bg-2 border border-line hover:border-line-3 text-ink-1 font-medium rounded-sm px-3 py-2 text-xs transition-colors"
-            >
-              <DollarSign size={13} strokeWidth={2} />
-              Registrar venta
-            </button>
-            <button
-              type="button"
-              onClick={openCashMenuFromHeader}
-              className="inline-flex items-center gap-1.5 bg-bg-1 hover:bg-bg-2 border border-line hover:border-line-3 text-ink-1 font-medium rounded-sm px-3 py-2 text-xs transition-colors"
-            >
-              <Wallet size={13} strokeWidth={2} />
-              Cash
-            </button>
-            <ExportCsvButton resource="positions" source="positions_header" variant="compact" />
-          </div>
+          // Registrar compra · Registrar venta · Cash vivían acá: ahora son el
+          // botón violeta «Registrar» del menú lateral (RegistrarMenu), que se
+          // ve desde cualquier pantalla y abre estos mismos formularios.
+          <ExportCsvButton resource="positions" source="positions_header" variant="compact" />
         }
       />
 
@@ -2989,7 +3068,7 @@ function PositionsDesktop() {
           <div className="space-y-4">
             <p className="text-sm text-ink-2 leading-relaxed">
               Primero tenés que registrar una compra. Una vez que tengas posiciones
-              abiertas, vas a poder venderlas con FIFO automático desde este botón.
+              abiertas, vas a poder venderlas con FIFO automático desde acá.
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -3179,6 +3258,15 @@ function PositionsDesktop() {
           brokers={brokers}
           onClose={() => setModal(null)}
           onContinue={continueCashMenu}
+        />
+      )}
+
+      {modal === 'convert-menu' && (
+        <ConvertMenuModal
+          cajas={cajasParaConvertir(positions, brokers)}
+          brokers={brokers}
+          onClose={() => setModal(null)}
+          onPick={(p, direction) => openConvert(p, direction)}
         />
       )}
 

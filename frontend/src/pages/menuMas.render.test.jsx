@@ -42,7 +42,8 @@ import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
 import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
 import fuenteDeApp from '../App.jsx?raw'
-import { accionDelPedido, EncabezadoCompacto, encabezadoCompactoVisible } from './PositionsMobile'
+import { EncabezadoCompacto, encabezadoCompactoVisible } from './PositionsMobile'
+import { accionDelPedido } from '../utils/registrar'
 
 const rutas = (html) => [...html.matchAll(/href="([^"]+)"/g)].map(m => m[1].replace(/&amp;/g, '&'))
 const dibujar = (Componente, u, c) => {
