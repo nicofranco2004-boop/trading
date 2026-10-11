@@ -67,11 +67,11 @@ describe('yaInstalada — no ofrecer instalar lo que ya está', () => {
 })
 
 describe('el cartel le habla al celular que tiene delante', () => {
-  it('en iPhone abre en iPhone, con las cuatro fotos y sin código QR', () => {
+  it('en iPhone abre en iPhone, con las cuatro fotos y sin el aviso de la compu', () => {
     const html = dibujar({ userAgent: IPHONE, maxTouchPoints: 5 })
     expect((html.match(/<img /g) || []).length).toBe(PASOS_IPHONE.length)
     expect(texto(html)).toContain('Agregar a inicio')
-    expect(html).not.toContain('Código QR')
+    expect(texto(html)).not.toContain('Estos pasos se hacen en el celular')
   })
 
   it('en Android abre en Android: nombra a Chrome y no muestra fotos de Safari', () => {
@@ -79,12 +79,11 @@ describe('el cartel le habla al celular que tiene delante', () => {
     expect(texto(html)).toContain('en Chrome')
     expect(texto(html)).toContain('Agregar a pantalla principal')
     expect(texto(html)).not.toContain('Safari')
-    expect(html).not.toContain('Código QR')
+    expect(texto(html)).not.toContain('Estos pasos se hacen en el celular')
   })
 
-  it('en la computadora abre en iPhone y suma el código QR', () => {
+  it('en la computadora abre en iPhone y avisa que los pasos van en el celular', () => {
     const html = dibujar({ userAgent: WINDOWS, maxTouchPoints: 0 })
-    expect(html).toContain('Código QR')
     expect(texto(html)).toContain('Estos pasos se hacen en el celular')
     expect(texto(html)).toContain('en Safari')
   })
@@ -122,12 +121,6 @@ describe('las fotos y el recuadro violeta', () => {
 
   it('Android tiene sus cuatro pasos', () => {
     expect(PASOS_ANDROID).toHaveLength(4)
-  })
-
-  it('el código QR apunta a rendi.finance (25×25 módulos + margen)', () => {
-    const svg = readFileSync(join(carpeta, 'qr-rendi.svg'), 'utf8')
-    expect(svg).toContain('viewBox="0 0 33 33"')
-    expect(svg).toContain('fill="#fff"')
   })
 })
 

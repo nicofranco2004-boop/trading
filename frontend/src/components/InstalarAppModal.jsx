@@ -9,8 +9,8 @@
 //     que una página instale sola, así que acá siempre son pasos a mano.
 //   • Android: Chrome sí deja → botón «Instalar ahora» cuando el navegador lo
 //     ofrece (utils/instalarApp.js), y los pasos a mano como plan B.
-//   • Computadora: los pasos se hacen en el celular, así que arriba va un
-//     código QR que abre Rendi ahí.
+//   • Computadora: los pasos se hacen en el celular, y el cartel lo avisa
+//     arriba de todo.
 //
 // Las capturas son recortes de 1206 px de ancho (iPhone, modo oscuro). El
 // recuadro violeta NO está pintado en la foto: se dibuja encima con `marco`,
@@ -28,7 +28,6 @@ import iphone1 from '../assets/instalar/iphone-1.jpg'
 import iphone2 from '../assets/instalar/iphone-2.jpg'
 import iphone3 from '../assets/instalar/iphone-3.jpg'
 import iphone4 from '../assets/instalar/iphone-4.jpg'
-import qrRendi from '../assets/instalar/qr-rendi.svg'
 
 export const PASOS_IPHONE = [
   {
@@ -107,15 +106,10 @@ export default function InstalarAppModal({ open, onClose, origen = 'menu' }) {
       </p>
 
       {plataforma === 'otro' && (
-        <div className="flex items-center gap-4 bg-bg-1 border border-line rounded-xl p-3 mb-4">
-          <img src={qrRendi} alt="Código QR que abre rendi.finance" width="84" height="84"
-            className="flex-shrink-0 rounded-lg" />
-          <p className="text-[13px] text-ink-2 leading-relaxed">
-            <b className="font-semibold text-ink-0">Estos pasos se hacen en el celular.</b><br />
-            Apuntá la cámara a este código para abrir Rendi ahí, o escribí{' '}
-            <b className="font-semibold text-ink-0">rendi.finance</b> en el navegador del teléfono.
-          </p>
-        </div>
+        <p className="text-[13px] text-ink-2 leading-relaxed bg-bg-1 border border-line rounded-xl px-3 py-2.5 mb-4">
+          <b className="font-semibold text-ink-0">Estos pasos se hacen en el celular.</b>{' '}
+          Abrí <b className="font-semibold text-ink-0">rendi.finance</b> en el navegador del teléfono y seguilos ahí.
+        </p>
       )}
 
       <div role="tablist" aria-label="Tipo de celular" className="flex gap-1 bg-bg-1 border border-line rounded-lg p-[3px] mb-4">
