@@ -29,7 +29,19 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
   // navegador. Se pone y se saca: no puede quedar para las pruebas que siguen.
   beforeAll(() => { vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} }) })
   afterAll(() => { vi.unstubAllGlobals() })
-  it('usuario común: Tu Cartera, Mercado, Análisis y los sueltos', () => {
+  it('las secciones van con lo tuyo junto y primero: Tu Cartera, Análisis, Mercado', () => {
+    // Mercado estaba al medio y cortaba las dos secciones que hablan de la
+    // cartera (pedido de Nico, 2026-10-11).
+    const html = dibujar({ tier: 'pro' })
+    const lugar = ['>Tu Cartera<', '>Análisis<', '>Mercado<'].map(t => html.indexOf(t))
+    for (const l of lugar) expect(l).toBeGreaterThan(0)
+    expect(lugar).toEqual([...lugar].sort((a, b) => a - b))
+    // Y adentro de cada una, sus pantallas en el orden de siempre.
+    const r = rutas(html.slice(html.indexOf('<nav')))
+    const orden = ['/dashboard', '/posiciones', '/operaciones', '/analisis', '/fundamentals', '/perfil-inversor', '/', '/novedades']
+    expect(r.filter(to => orden.includes(to))).toEqual(orden)
+  })
+  it('usuario común: Tu Cartera, Análisis, Mercado y los sueltos', () => {
     const r = rutas(dibujar({ tier: 'pro' }))
     for (const to of ['/dashboard', '/posiciones', '/operaciones', '/', '/novedades', '/analisis', '/fundamentals', '/perfil-inversor', '/alertas', '/imports']) {
       expect(r).toContain(to)

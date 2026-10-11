@@ -137,9 +137,15 @@ describe('"Más": cómo se agrupa', () => {
     expect(menuCompu({ tier: 'pro' }, null).html).toContain('>Tu Cartera<')
   })
 
-  it('usuario común: las secciones de la compu, ninguna de relleno', () => {
+  it('usuario común: las secciones de la compu, EN SU ORDEN, ninguna de relleno', () => {
     const t = titulos(menuMas({ tier: 'pro' }, null).html)
     for (const s of ['Tu portfolio', 'Mercado', 'Análisis']) expect(t).toContain(s)
+    // El orden lo pone la compu (GROUPS): el celular tenía el suyo escrito a
+    // mano y se quedaba con el viejo al reordenar el menú lateral.
+    const compu = menuCompu({ tier: 'pro' }, null).html
+    const enLaCompu = ['Tu Cartera', 'Análisis', 'Mercado'].sort((a, b) => compu.indexOf(`>${a}<`) - compu.indexOf(`>${b}<`))
+    const aCelular = { 'Tu Cartera': 'Tu portfolio' }
+    expect(t.filter(x => ['Tu portfolio', 'Mercado', 'Análisis'].includes(x))).toEqual(enLaCompu.map(g => aCelular[g] || g))
     for (const no of ['Plan Asesor', 'Otras secciones']) expect(t).not.toContain(no)
   })
 
