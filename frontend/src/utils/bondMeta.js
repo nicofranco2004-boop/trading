@@ -57,6 +57,7 @@
 
 import { CANJE_2020_BY_TICKER } from './bondSchedulesAR'
 import { pctTxt } from './format'
+import { hoyISO } from './fecha'
 
 // ════════════════════════════════════════════════════════════════════════════
 // SOBERANOS AR — Canje 2020 (Decreto 391/2020 + 676/2020)
@@ -74,6 +75,15 @@ import { pctTxt } from './format'
 // ISIN diferentes aunque sus flujos sean idénticos. Esto importa para reportes
 // de custodia, no para pricing.
 
+// La tasa del tramo que corre en una fecha, leída del cronograma. Misma regla
+// que el motor (`getRateForDate` en bondSchedule.js): gana el PRIMER tramo que
+// contiene la fecha, así el día del cambio vale la tasa del que termina.
+// Devuelve null si la fecha cae fuera del cronograma (bono ya vencido).
+export function tasaVigente(schedule, fecha = hoyISO()) {
+  const tramo = (schedule?.couponSchedule || []).find(c => fecha >= c.from && fecha <= c.to)
+  return tramo ? tramo.rate : null
+}
+
 function arSovereign({ ticker, governingLaw, isin, displayRate }) {
   const schedule = CANJE_2020_BY_TICKER[ticker]
   if (!schedule) throw new Error(`No schedule for AR sovereign ${ticker}`)
@@ -84,7 +94,11 @@ function arSovereign({ ticker, governingLaw, isin, displayRate }) {
     type: 'sovereign',
     governingLaw,
     isin,
-    couponRate: displayRate,  // Sólo para display ("TNA promedio aprox")
+    // El rótulo sale del MISMO cronograma con que se calculan los pagos. Hasta
+    // 2026-10-10 era el número escrito a mano de la tabla de abajo, una segunda
+    // copia que nadie cotejaba: GD35 decía 1,875 %, que no es ninguna tasa del
+    // prospecto. `displayRate` queda sólo de respaldo para un bono ya vencido.
+    couponRate: tasaVigente(schedule) ?? displayRate,
   }
 }
 
