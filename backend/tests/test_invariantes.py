@@ -22,7 +22,7 @@ from importing.invariantes import (                                  # noqa: E40
     correr, check_moneda_posicion_vs_broker, check_broker_inexistente,
     check_costo_no_positivo, check_subbroker_usd_bien_formado, check_cash_moneda,
     check_caja_concilia, check_receta_con_broker_inexistente,
-    check_futuro_abierto_sin_broker,
+    check_futuro_abierto_sin_broker, check_caja_vacia_con_precio,
 )
 
 UID = 77
@@ -38,7 +38,7 @@ def db():
         CREATE TABLE positions (id INTEGER PRIMARY KEY, user_id INT, broker TEXT,
                                 asset TEXT, is_cash INT DEFAULT 0, buy_price REAL,
                                 quantity REAL, invested REAL, currency TEXT,
-                                asset_type TEXT, undo_meta_json TEXT);
+                                asset_type TEXT, undo_meta_json TEXT, tc_compra REAL);
         CREATE TABLE import_batches (id TEXT PRIMARY KEY, user_id INT, status TEXT);
         CREATE TABLE import_normalized_tx (id INTEGER PRIMARY KEY, batch_id TEXT,
                                            broker TEXT, currency TEXT,
@@ -305,3 +305,29 @@ def test_futuro_cerrado_o_en_broker_vivo_no_dispara(db):
     db.execute("INSERT INTO futures_positions (user_id, broker, symbol, closed_at) VALUES (?,?,?,?)",
                (UID, "Viejo", "ETHUSDT", "2026-08-01"))
     assert check_futuro_abierto_sin_broker(db, UID) == []
+
+
+# ── 9. caja vacía con precio de compra ───────────────────────────────────────
+def _caja(db, broker, saldo, tc):
+    db.execute("INSERT INTO positions (user_id,broker,asset,is_cash,invested,tc_compra) "
+               "VALUES (?,?,?,1,?,?)", (UID, broker, "USDT", saldo, tc))
+
+
+def test_caja_vacia_o_en_rojo_con_precio_es_error(db):
+    """El precio es de los dólares que hay. En cero, con centavos que la pantalla
+    muestra como 0,00, o en rojo, el que quede guardado no es de ninguno."""
+    for nombre, saldo in (("A · USD", 0.0), ("B · USD", 0.003), ("C · USD", -70.0)):
+        _caja(db, nombre, saldo, 400.0)
+    v = check_caja_vacia_con_precio(db, UID)
+    assert sorted(x["detalle"]["broker"] for x in v) == ["A · USD", "B · USD", "C · USD"]
+    assert {x["severidad"] for x in v} == {"error"}
+
+
+def test_caja_con_dolares_y_precio_o_vacia_sin_precio_no_dispara(db):
+    _caja(db, "A · USD", 100.0, 400.0)     # dólares comprados: el precio es de ellos
+    _caja(db, "B · USD", 0.01, 400.0)      # un centavo ya es plata
+    _caja(db, "C · USD", 0.0, None)        # vacía y sin precio: como tiene que quedar
+    _caja(db, "D · USD", -70.0, None)
+    _pos(db, "Balanz", "GGAL", "ARS", qty=0, invested=0)   # un lote no es una caja
+    db.execute("UPDATE positions SET tc_compra=1000 WHERE asset='GGAL'")
+    assert check_caja_vacia_con_precio(db, UID) == []

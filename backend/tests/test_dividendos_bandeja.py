@@ -196,6 +196,38 @@ class ConfirmarElCobro(_Base):
         self.assertAlmostEqual(self.caja("Balanz · USD"), 1240.50 + 11.20, places=2)
         self.assertAlmostEqual(self.caja("Balanz"), 100000, places=2)
 
+    def test_no_hereda_el_precio_de_dolares_que_ya_se_vendieron(self):
+        """El dividendo entra a la caja SIN precio de compra. Si esa caja se había
+        vaciado, hasta 2026-10-11 conservaba el precio de los dólares vendidos y el
+        dividendo lo heredaba: 100 dólares comprados a 400 y vendidos, este cobro
+        de US$ 10,33 y su venta a 1.300 anotaban US$ 7,15 de ganancia cambiaria
+        (auditoría 2 del 2026-10-10). La regla está en efectivo.py."""
+        def pedir(ruta, cuerpo):
+            r = self.client.post(ruta, json=cuerpo)
+            self.assertEqual(r.status_code, 200, r.text)
+            return r.json()
+
+        def convertir(desde, direccion, pesos, dolares, tc):
+            return pedir("/api/conversions", {
+                "from_broker": desde, "direction": direccion, "ars_amount": pesos,
+                "usd_amount": dolares, "tc": tc, "kind": "MEP", "date": "2026-10-07"})
+
+        def realizado():
+            return round(float(self.conn.execute(
+                "SELECT COALESCE(SUM(pnl_realized), 0) FROM monthly_entries "
+                "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()[0]), 4)
+
+        pedir("/api/cash/flow", {"broker_name": "Balanz · USD", "direction": "withdraw",
+                                 "amount": 1240.50})
+        convertir("Balanz", "ars_to_usd", 40_000, 100, 400)
+        convertir("Balanz · USD", "usd_to_ars", 40_000, 100, 400)
+        self.assertEqual(self.confirmar().status_code, 200)
+        self.assertAlmostEqual(self.caja("Balanz · USD"), NETO, places=2)
+        con_el_dividendo = realizado()
+        venta = convertir("Balanz · USD", "usd_to_ars", round(NETO * 1300, 2), NETO, 1300)
+        self.assertEqual(venta["pnl_usd_realized"], 0)
+        self.assertEqual(realizado(), con_el_dividendo)
+
     def test_rechaza_lo_que_no_es_un_cobro(self):
         for cambios, codigo in (
                 (dict(fecha="2099-01-01"), 400),               # fecha futura

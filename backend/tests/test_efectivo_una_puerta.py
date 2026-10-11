@@ -11,11 +11,16 @@ una sola regla, cada una por el endpoint que la usa:
     rechazaba con "Saldo insuficiente" al acreditar un cupón).
   · Un retiro o una conversión que no alcanza rebota sin tocar nada.
   · El TC promedio de los dólares pesa sólo los dólares que había de verdad.
+  · Ese precio es de los dólares que HAY: lo escribe sólo la puerta, una caja
+    vacía no lo tiene, y lo que un archivo vende de más no lo lleva.
 """
+import ast
 import io
+import os
 import unittest
 import uuid
 
+import efectivo
 import main
 from fastapi.testclient import TestClient
 
@@ -270,6 +275,88 @@ class ElTipoDeCambioDeLosDolaresImportados(_Base):
         self.assertAlmostEqual(float(caja["tc_compra"]), 1000, places=4)
 
 
+    def _ventas_importadas(self):
+        conn = main.get_db()
+        filas = [dict(f) for f in conn.execute(
+            "SELECT date, quantity, entry_price, exit_price, pnl_usd FROM operations "
+            "WHERE user_id=? AND op_type LIKE 'CONVERSION IMPORT %USDT→ARS' ORDER BY date, id",
+            (self.uid,))]
+        realizado = conn.execute(
+            "SELECT COALESCE(SUM(pnl_realized), 0) s FROM monthly_entries "
+            "WHERE user_id=? AND broker='global'", (self.uid,)).fetchone()["s"]
+        conn.close()
+        return filas, round(float(realizado or 0), 2)
+
+    def test_un_dividendo_despues_de_vaciar_la_caja_no_hereda_el_precio_viejo(self):
+        """Casi todas las compras y ventas de dólares de producción llegan por
+        archivo (base del 2026-08-16: 306 compras importadas contra 2 a mano). Se
+        compran 100 dólares a 400 y se venden; meses después entra un dividendo de
+        US$ 10 y se vende a 1.300: antes anotaba US$ 6,92 de ganancia cambiaria,
+        contra la compra vieja. Mirado DESPUÉS del recálculo del confirm, que es
+        lo que queda en la cuenta."""
+        self.usuario([("Balanz", "ARS", None)])
+        self._importar(
+            "2026-01-05,DEPOSITO,Balanz,,,,1000000,,,,ARS,\n"
+            "2026-01-06,CONVERSION_ARS_USD,Balanz,,,,40000,100,400,,,MEP\n"
+            "2026-01-07,CONVERSION_USD_ARS,Balanz · USD,,,,40000,100,400,,,MEP\n"
+            "2026-02-10,DIVIDENDO,Balanz · USD,AAPL,,,10,,,,USD,\n"
+            "2026-02-11,CONVERSION_USD_ARS,Balanz · USD,,,,13000,10,1300,,,MEP\n")
+        ventas, realizado = self._ventas_importadas()
+        self.assertEqual([(v["quantity"], v["entry_price"], v["pnl_usd"]) for v in ventas],
+                         [(100.0, 400.0, 0.0), (10.0, 1300.0, 0.0)])
+        self.assertEqual(realizado, 10.0, "el resultado es el dividendo y nada más")
+        caja = self.cajas(self.SUB)[0]
+        self.assertAlmostEqual(float(caja["invested"]), 0, places=4)
+        self.assertIsNone(caja["tc_compra"])
+
+    def test_lo_que_el_archivo_vende_de_mas_no_lleva_precio(self):
+        """Un archivo puede vender más dólares de los que hay (le faltan compras
+        viejas). Con 30 a 400 en la caja y una venta de 100 a 1.300, los 100 salían
+        a 400: US$ 69,23. Lo que se sabe son los 30: 30 × 900 / 1.300 = US$ 20,77."""
+        self.usuario([("Balanz", "ARS", None)])
+        self._importar(
+            "2026-01-05,DEPOSITO,Balanz,,,,1000000,,,,ARS,\n"
+            "2026-01-06,CONVERSION_ARS_USD,Balanz,,,,12000,30,400,,,MEP\n"
+            "2026-02-11,CONVERSION_USD_ARS,Balanz · USD,,,,130000,100,1300,,,MEP\n")
+        ventas, realizado = self._ventas_importadas()
+        self.assertEqual([v["pnl_usd"] for v in ventas], [20.77])
+        self.assertEqual(realizado, 20.77)
+        caja = self.cajas(self.SUB)[0]
+        self.assertAlmostEqual(float(caja["invested"]), -70, places=4)
+        self.assertIsNone(caja["tc_compra"], "una caja en rojo no tiene dólares: no tiene precio")
+        # Y los dólares que entren después no heredan el de los 30.
+        self._importar(
+            "2026-03-10,DIVIDENDO,Balanz · USD,AAPL,,,100,,,,USD,\n"
+            "2026-03-11,CONVERSION_USD_ARS,Balanz · USD,,,,42000,30,1400,,,MEP\n")
+        ventas, realizado = self._ventas_importadas()
+        self.assertEqual([v["pnl_usd"] for v in ventas], [20.77, 0.0])
+        self.assertEqual(realizado, 120.77)
+
+    def test_con_la_caja_en_rojo_la_venta_no_usa_el_precio_que_haya_quedado(self):
+        """La cuenta de la ganancia tampoco lee el precio de una caja sin dólares,
+        aunque esté guardado (así estaban las de antes del arreglo, hasta que el
+        arranque las limpia): con la caja en −20 y un 400 viejo, vender 10 a 1.300
+        no gana ni pierde, y esos 10 salen al precio de la venta."""
+        self.usuario([("Balanz", "ARS", None)])
+        self._importar(
+            "2026-01-05,DEPOSITO,Balanz,,,,1000000,,,,ARS,\n"
+            "2026-01-06,CONVERSION_ARS_USD,Balanz,,,,12000,30,400,,,MEP\n"
+            "2026-01-07,CONVERSION_USD_ARS,Balanz · USD,,,,20000,50,400,,,MEP\n")
+        conn = main.get_db()
+        conn.execute("UPDATE positions SET tc_compra=400 WHERE user_id=? AND broker=? AND is_cash=1",
+                     (self.uid, self.SUB))
+        conn.commit()
+        conn.close()
+        self.assertEqual([(c["invested"], c["tc_compra"]) for c in self.cajas(self.SUB)],
+                         [(-20.0, 400.0)])
+        self._importar(
+            "2026-02-11,CONVERSION_USD_ARS,Balanz · USD,,,,13000,10,1300,,,MEP\n")
+        ventas, _ = self._ventas_importadas()
+        self.assertEqual([(v["entry_price"], v["pnl_usd"]) for v in ventas][-1], (1300.0, 0.0))
+        self.assertEqual([(c["invested"], c["tc_compra"]) for c in self.cajas(self.SUB)],
+                         [(-30.0, None)])
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 class ElEfectivoNoEsUnaPosicion(_Base):
     """El saldo no se cambia por las rutas de las posiciones comunes. "Editar
@@ -389,6 +476,123 @@ class LasCajasViejasSeRenombranAlArrancar(_Base):
         self.assertEqual([c["asset"] for c in self.cajas("Balanz · USD")], ["USDT"])
         self.assertEqual([(c["asset"], c["invested"]) for c in self.cajas("Balanz")],
                          [("ARS", 500_000.0)])
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class LasCajasVaciasPierdenElPrecioAlArrancar(_Base):
+    """Las cajas vacías que quedaron con precio de compra (9 en la base de prod del
+    2026-08-16) lo pierden en el arranque (init_db, el mismo camino que corre
+    producción al reiniciar). Sólo esas, y sólo el precio: no se toca ningún saldo,
+    ni el precio de una caja con dólares, ni el TC de compra de un lote."""
+
+    def test_al_arrancar_quedan_sin_precio_y_lo_demas_no_se_toca(self):
+        self.usuario([(f"B{i}", "ARS", None) for i in range(6)])
+        conn = main.get_db()
+        casos = {"B0 · USD": (0.0, 400.0), "B1 · USD": (0.003, 1300.0), "B2 · USD": (-70.0, 900.0),
+                 "B3 · USD": (0.01, 400.0), "B4 · USD": (250.0, 1100.0), "B5 · USD": (80.0, None)}
+        for nombre, (saldo, tc) in casos.items():
+            conn.execute("INSERT INTO brokers (user_id, name, currency, parent_broker_id) "
+                         "SELECT ?, ?, 'USDT', id FROM brokers WHERE user_id=? AND name=?",
+                         (self.uid, nombre, self.uid, nombre.split(" · ")[0]))
+            conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, invested, tc_compra) "
+                         "VALUES (?,?,'USDT',1,?,?)", (self.uid, nombre, saldo, tc))
+        # Un lote vendido entero (cantidad 0) con su TC de compra: no es una caja.
+        conn.execute("INSERT INTO positions (user_id, broker, asset, is_cash, quantity, invested, "
+                     "tc_compra) VALUES (?,'B0','GGAL',0,0,0,1050)", (self.uid,))
+        conn.commit()
+        conn.close()
+
+        main.init_db()
+        main.init_db()      # idempotente: la segunda pasada no encuentra nada
+
+        quedo = {n: (self.cajas(n)[0]["invested"], self.cajas(n)[0]["tc_compra"]) for n in casos}
+        self.assertEqual(quedo, {
+            "B0 · USD": (0.0, None), "B1 · USD": (0.003, None), "B2 · USD": (-70.0, None),
+            "B3 · USD": (0.01, 400.0), "B4 · USD": (250.0, 1100.0), "B5 · USD": (80.0, None)})
+        conn = main.get_db()
+        lote = conn.execute("SELECT tc_compra FROM positions WHERE user_id=? AND asset='GGAL'",
+                            (self.uid,)).fetchone()
+        sueltas = conn.execute(
+            f"SELECT COUNT(*) c FROM positions WHERE user_id=? AND {efectivo.SQL_CAJA_VACIA_CON_PRECIO}",
+            (self.uid,)).fetchone()["c"]
+        conn.close()
+        self.assertEqual(lote["tc_compra"], 1050)
+        self.assertEqual(sueltas, 0)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+class ElPrecioDeLaCajaSeEscribeEnUnSoloLugar(unittest.TestCase):
+    """Guardián del código. La regla "una caja vacía no tiene precio" se sostiene
+    porque el precio lo escribe UNA función (`efectivo.mover`) y la ganancia
+    cambiaria la calcula UNA (`efectivo.venta_de_dolares`). Las dos veces que se
+    rompió fue por una copia: borrar una conversión escribía el precio por su
+    cuenta, después de la puerta, y el importador leía el de la caja con su propia
+    consulta. El comportamiento lo fijan las pruebas de arriba y las de
+    `test_operaciones_con_receta.py`; esto avisa si vuelve a aparecer una copia."""
+
+    BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _fuentes(self):
+        for carpeta, _, archivos in os.walk(self.BACKEND):
+            if any(p in carpeta for p in ("tests", "scripts", "__pycache__", "node_modules")):
+                continue
+            for a in archivos:
+                if a.endswith(".py"):
+                    ruta = os.path.join(carpeta, a)
+                    with open(ruta, encoding="utf-8") as f:
+                        yield os.path.relpath(ruta, self.BACKEND), ast.parse(f.read())
+
+    @staticmethod
+    def _textos(nodo):
+        """Los textos escritos adentro de `nodo`, con los pedazos de un f-string y
+        los de una concatenación pegados (una consulta partida en dos renglones)."""
+        fuera = set()
+        for n in ast.walk(nodo):
+            if isinstance(n, ast.JoinedStr):
+                fuera.update(id(x) for x in ast.walk(n) if x is not n)
+                yield "".join(v.value for v in n.values
+                              if isinstance(v, ast.Constant) and isinstance(v.value, str))
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in fuera:
+                yield n.value
+
+    def test_solo_mover_escribe_el_precio_de_una_caja(self):
+        arbol = dict(self._fuentes())["efectivo.py"]
+        escriben = set()
+        for fn in (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef)):
+            sql = " ".join(" ".join(self._textos(fn)).split()).upper()
+            if "TC_COMPRA=?" in sql.replace(" ", "") or (
+                    "INSERT INTO POSITIONS" in sql and "TC_COMPRA" in sql):
+                escriben.add(fn.name)
+        self.assertEqual(escriben, {"mover"})
+
+    def test_nadie_mas_lee_ni_escribe_el_precio_de_una_caja_con_su_propia_consulta(self):
+        """Fuera de efectivo.py, ninguna consulta junta `tc_compra` con `is_cash=1`:
+        el precio de una caja se pide a efectivo.py, que sabe cuándo no vale."""
+        hallados = []
+        for ruta, arbol in self._fuentes():
+            if ruta == "efectivo.py":
+                continue
+            for llamada in (n for n in ast.walk(arbol) if isinstance(n, ast.Call)):
+                sql = "".join(" ".join(self._textos(llamada)).split()).lower()
+                if "tc_compra" in sql and "is_cash=1" in sql and "positions" in sql:
+                    hallados.append(f"{ruta}:{llamada.lineno}")
+        self.assertEqual(hallados, [])
+
+    def test_el_guardian_ve_lo_que_dice_ver(self):
+        """Las dos copias que hubo, como estaban escritas."""
+        vieja_escritura = ast.parse(
+            "def revertir(conn):\n"
+            "    conn.execute('UPDATE positions SET tc_compra=? WHERE id=? AND user_id=?', (1, 2, 3))\n")
+        fn = vieja_escritura.body[0]
+        self.assertIn("TC_COMPRA=?", " ".join(self._textos(fn)).upper().replace(" ", ""))
+        vieja_lectura = ast.parse(
+            "cash = conn.execute(\n"
+            "    'SELECT tc_compra FROM positions WHERE user_id=? AND broker=? AND is_cash=1 '\n"
+            "    'ORDER BY id LIMIT 1', (uid, b)).fetchone()\n")
+        llamadas = [n for n in ast.walk(vieja_lectura) if isinstance(n, ast.Call)]
+        self.assertTrue(any(
+            "tc_compra" in s and "is_cash=1" in s
+            for s in ("".join(" ".join(self._textos(c)).split()).lower() for c in llamadas)))
 
 
 if __name__ == "__main__":
