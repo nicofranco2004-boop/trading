@@ -10,7 +10,10 @@ textos JSON, y ahí no lo cambiaba nadie (reproducido el 2026-10-09):
   · las secciones de bonos ARCHIVADAS (filas enteras de positions, con su receta);
   · el registro de BORRADOS (`deleted_ops_journal`): la fila borrada, la caja, los
     eventos que corrigen las fotos, los pares de brokers;
-  · el precio de cada fondo que fijó una foto de tenencia.
+  · el precio de cada fondo que fijó una foto de tenencia;
+  · la plantilla de columnas del importador (`import_mappings`): el broker fijo al
+    que va todo el archivo. Con el viejo, importar con la plantilla volvía a crear un
+    broker con ese nombre.
 Con el nombre viejo ahí, borrar después de renombrar mandaba la plata a una caja
 nueva a nombre de un broker que ya no existe (invisible), re-creaba el lote bajo ese
 nombre, o frenaba con 409 para siempre.
@@ -21,7 +24,10 @@ Por qué no alcanza un `REPLACE` sobre el texto: `json.dumps` guarda "·" y "ñ"
 La regla: se cambia todo valor guardado bajo una clave de broker (la clave dice
 "broker", o es un par de brokers) que sea EXACTAMENTE un nombre viejo — como texto,
 como elemento de una lista o como clave de un diccionario (`cash_by_broker`). Nunca
-se toca un texto libre que sólo lo CONTENGA. `test_renombre_broker_recetas.py`
+se toca un texto libre que sólo lo CONTENGA. Una excepción, la plantilla del
+importador, que la escribe el cliente: ahí el nombre viejo también vale con otras
+mayúsculas o espacios al borde, y sólo se mira su parte `defaults` (ver
+COMO_EL_IMPORTADOR y SOLO_BAJO). `test_renombre_broker_recetas.py`
 revisa toda la cuenta después de renombrar: si una receta nueva guarda el nombre
 bajo otra clave, falla y dice dónde.
 """
@@ -50,7 +56,49 @@ COLUMNAS_JSON = (
     # El dividendo confirmado en la bandeja que un import reemplazó (la fila entera,
     # con su receta): vuelve si ese import se revierte — a la cuenta que diga acá.
     ("dividendos_reemplazados", "op_json"),
+    # La plantilla de columnas del importador ("Guardar mapeo actual"): el broker fijo
+    # al que van todas las filas del archivo. Con el nombre viejo, importar con la
+    # plantilla después de renombrar volvía a crear un broker con ese nombre y metía
+    # todo el archivo ahí (medido el 2026-10-10: dos brokers donde había uno). Sólo lo
+    # de `defaults`: ver SOLO_BAJO.
+    ("import_mappings", "mapping_json"),
 )
+
+# Columnas donde el nombre de un broker vive SÓLO adentro de ciertas claves de primer
+# nivel; el resto del JSON no se toca aunque la clave diga "broker". En la plantilla
+# del importador hay dos "broker": `defaults.broker` es el broker fijo, y
+# `columns.broker` es el TÍTULO de una columna del archivo de la persona ("Cuenta",
+# "Agente"…), que no es un broker. Si ese título es igual al nombre del broker, la
+# regla general lo cambiaba y la plantilla dejaba de servir ("La columna … no existe
+# en el archivo"). Se dice qué SÍ se mira (y no qué se saltea): una parte nueva de la
+# plantilla no se reescribe hasta que alguien la sume acá, y el test del renombre
+# avisa si quedó un nombre viejo en ella.
+SOLO_BAJO = {
+    ("import_mappings", "mapping_json"): ("defaults",),
+}
+
+# Columnas cuyo JSON lo escribe el CLIENTE tal cual lo manda, y no el servidor con el
+# nombre exacto del broker. Ahí el nombre viejo se busca también sin mirar mayúsculas
+# ni espacios al borde (`_clave`), que es como lo toma el importador: una plantilla
+# que dice "zorzal ñandú " importa al broker "Zorzal Ñandú", así que el renombre
+# también la tiene que seguir (auditoría 2026-10-11: letra por letra, quedaba con el
+# nombre viejo y el import volvía a crear ese broker). Desde ese día
+# `plantilla_con_broker_de_hoy` lo deja bien escrito al guardar; esto cubre lo
+# guardado antes. (Un límite: con DOS brokers que sólo difieren en mayúsculas,
+# "Balanz" y "balanz", el importador manda todo a uno de los dos sin mirar cuál dice
+# el archivo; acá el texto que es exactamente el nombre de un broker vivo no se toca.)
+COMO_EL_IMPORTADOR = frozenset({("import_mappings", "mapping_json")})
+
+# Techo de las plantillas del importador. Una real pesa unos cientos de caracteres
+# (doce datos y sus títulos) y nadie junta más de un puñado. El techo existe porque
+# el renombre las abre una por una DENTRO de su transacción, y en SQLite esa
+# transacción frena las escrituras de todos: lo que se recorre ahí tiene que tener
+# tope. Vale al guardar (main.py) y también al leer (`plantillas_al_alcance`): entre
+# 2026-05-08 y 2026-10-11 se pudo guardar sin tope, y una fila enorme de entonces no
+# puede trabar el renombre ni la lista (medido: 2.000 filas de 200.000 letras = 2,6 s
+# con la base tomada). Una plantilla fuera de tope no se lista ni se renombra.
+PLANTILLA_MAX_CARACTERES = 20_000
+PLANTILLAS_MAX_POR_CUENTA = 100
 # NO va `import_raw_rows.raw_json` (lo que decía el archivo): una cuenta de prod tiene
 # 502.915 filas y reescribirlas trababa la base para TODOS durante decenas de
 # segundos. "Editar y rehacer" lo traduce al leer (`reconstruct_csv_from_batch`).
@@ -130,17 +178,28 @@ def _recorrer(valor, nombres: Dict[str, str]) -> Tuple[object, bool]:
     return valor, False
 
 
-def renombrar_en_json(texto: Optional[str], nombres: Dict[str, str]) -> Optional[str]:
+def renombrar_en_json(texto: Optional[str], nombres: Dict[str, str],
+                      solo_bajo: Optional[Tuple[str, ...]] = None) -> Optional[str]:
     """El texto JSON con los nombres de broker viejos cambiados por los nuevos
     (`nombres` = {viejo: nuevo}), o None si no había nada que cambiar (o no es JSON).
-    Sólo se reescribe lo que cambió: el resto de la fila queda byte a byte igual."""
+    Sólo se reescribe lo que cambió: el resto de la fila queda byte a byte igual.
+    Con `solo_bajo`, sólo se mira adentro de esas claves de primer nivel (SOLO_BAJO)."""
     if not texto:
         return None
     try:
         valor = json.loads(texto)
     except (TypeError, ValueError):
         return None
-    nuevo, cambio = _recorrer(valor, nombres)
+    if solo_bajo is None:
+        nuevo, cambio = _recorrer(valor, nombres)
+    elif isinstance(valor, dict):
+        nuevo, cambio = dict(valor), False
+        for clave in solo_bajo:
+            if clave in valor:
+                nuevo[clave], c = _recorrer(valor[clave], nombres)
+                cambio |= c
+    else:
+        return None
     return _dumps_como(texto, nuevo) if cambio else None
 
 
@@ -173,19 +232,62 @@ def nombres_en_json(texto: Optional[str]) -> set:
     return {n for n in anotador.vistos if isinstance(n, str) and n}
 
 
+class _ComoElImportador(dict):
+    """El {viejo: nuevo} del renombre que también encuentra el nombre viejo escrito
+    con otras mayúsculas o con espacios al borde (COMO_EL_IMPORTADOR). Primero
+    exacto. Y nunca un texto que sea EXACTAMENTE el nombre de un broker que existe
+    hoy (`vivos`): "balanz" y "Balanz" pueden ser dos brokers distintos."""
+
+    def __init__(self, nombres: Dict[str, str], vivos: set):
+        super().__init__(nombres)
+        self._vivos = vivos
+        self._por_clave = {}
+        for viejo, nuevo in nombres.items():
+            self._por_clave.setdefault(_clave(viejo), nuevo)
+
+    def _por_otra_escritura(self, nombre) -> bool:
+        return (isinstance(nombre, str) and nombre not in self._vivos
+                and bool(nombre.strip()) and _clave(nombre) in self._por_clave)
+
+    def __contains__(self, nombre):
+        return dict.__contains__(self, nombre) or self._por_otra_escritura(nombre)
+
+    def __getitem__(self, nombre):
+        if dict.__contains__(self, nombre):
+            return dict.__getitem__(self, nombre)
+        if self._por_otra_escritura(nombre):
+            return self._por_clave[_clave(nombre)]
+        raise KeyError(nombre)
+
+    def get(self, nombre, defecto=None):
+        return self[nombre] if nombre in self else defecto
+
+
 def renombrar_adentro(conn, uid: int, nombres: Dict[str, str]) -> Dict[str, int]:
     """Reescribe los nombres de broker adentro de cada columna JSON de la cuenta.
     Va DENTRO de la transacción del renombre, después de tomar el turno: si algo
     falla, no queda un renombre a medias. Devuelve cuántas filas cambió por tabla."""
     hechas = {}
+    como_el_importador = None
     # Los nombres de tabla y columna salen de la tupla fija de arriba, nunca del pedido.
     for tabla, col in COLUMNAS_JSON:
-        filas = conn.execute(
-            f"SELECT id, {col} AS t FROM {tabla} WHERE user_id=? AND {col} IS NOT NULL",
-            (uid,)).fetchall()
+        if (tabla, col) == ("import_mappings", "mapping_json"):
+            filas = [{"id": f["id"], "t": f["mapping_json"]} for f in plantillas_al_alcance(conn, uid)]
+        else:
+            filas = conn.execute(
+                f"SELECT id, {col} AS t FROM {tabla} WHERE user_id=? AND {col} IS NOT NULL",
+                (uid,)).fetchall()
+        buscar = nombres
+        if (tabla, col) in COMO_EL_IMPORTADOR and filas:
+            if como_el_importador is None:
+                # A esta altura `brokers` ya tiene los nombres nuevos (ver update_broker).
+                vivos = {r["name"] for r in conn.execute(
+                    "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()}
+                como_el_importador = _ComoElImportador(nombres, vivos)
+            buscar = como_el_importador
         n = 0
         for f in filas:
-            nuevo = renombrar_en_json(f["t"], nombres)
+            nuevo = renombrar_en_json(f["t"], buscar, SOLO_BAJO.get((tabla, col)))
             if nuevo is not None:
                 conn.execute(f"UPDATE {tabla} SET {col}=? WHERE id=? AND user_id=?",
                              (nuevo, f["id"], uid))
@@ -193,6 +295,48 @@ def renombrar_adentro(conn, uid: int, nombres: Dict[str, str]) -> Dict[str, int]
         if n:
             hechas[tabla] = n
     return hechas
+
+
+# ─── Las plantillas de columnas del importador ────────────────────────────────
+def plantillas_al_alcance(conn, uid: int) -> list:
+    """Las plantillas de la cuenta que la app usa: las primeras
+    PLANTILLAS_MAX_POR_CUENTA (por orden de guardado) de hasta
+    PLANTILLA_MAX_CARACTERES. Las mismas para la lista del asistente y para el
+    renombre de brokers: lo que se ve es lo que se mantiene al día."""
+    return conn.execute(
+        "SELECT id, name, mapping_json, created_at FROM import_mappings "
+        "WHERE user_id=? AND mapping_json IS NOT NULL AND LENGTH(mapping_json) <= ? "
+        "ORDER BY id LIMIT ?",
+        (uid, PLANTILLA_MAX_CARACTERES, PLANTILLAS_MAX_POR_CUENTA)).fetchall()
+
+
+
+def plantilla_con_broker_de_hoy(conn, uid: int, mapping: dict) -> dict:
+    """El mapeo que manda el asistente —al guardar una plantilla y al importar con
+    él—, con su broker fijo (`defaults.broker`) escrito como se llama HOY el broker:
+      · tipeado con otras mayúsculas o un espacio de más (el importador lo iba a
+        tomar igual por ese broker) → su nombre;
+      · con un nombre que el broker tuvo ANTES (una pantalla que quedó abierta
+        mientras se lo renombraba en otra) → su nombre de hoy;
+      · si no es ningún broker de la cuenta → lo tipeado, sin los espacios del borde
+        (el importador lo va a crear así).
+    Al guardar se llama con el turno de la cuenta ya tomado. No modifica lo recibido."""
+    defaults = mapping.get("defaults") if isinstance(mapping, dict) else None
+    escrito = defaults.get("broker") if isinstance(defaults, dict) else None
+    if not isinstance(escrito, str):
+        return mapping
+    de_hoy = [r["name"] for r in conn.execute(
+        "SELECT name FROM brokers WHERE user_id=?", (uid,)).fetchall()]
+    if escrito in de_hoy:
+        return mapping
+    por_clave = {_clave(n): n for n in de_hoy}
+    nombre = (por_clave.get(_clave(escrito))
+              or broker_de_hoy_por_nombre_anterior(conn, uid).get(_clave(escrito))
+              or escrito.strip())
+    nuevos = {k: v for k, v in defaults.items() if k != "broker"}
+    if nombre:
+        nuevos["broker"] = nombre
+    return {**mapping, "defaults": nuevos}
 
 
 # ─── Los nombres anteriores de cada broker ───────────────────────────────────
@@ -242,7 +386,8 @@ def nombres_anteriores(conn, uid: int) -> Dict[str, list]:
 
 def broker_de_hoy_por_nombre_anterior(conn, uid: int) -> Dict[str, Optional[str]]:
     """{nombre anterior (`_clave`): cómo se llama hoy ese broker}. None si dos brokers
-    distintos tuvieron ese nombre (no se sabe cuál). Para "Editar y rehacer"."""
+    distintos tuvieron ese nombre (no se sabe cuál). Para "Editar y rehacer" y para el
+    broker fijo que manda el asistente (`plantilla_con_broker_de_hoy`)."""
     out: Dict[str, Optional[str]] = {}
     for hoy, lista in _con_historia(conn, uid):
         for viejo in lista:
