@@ -10824,9 +10824,11 @@ def get_positions(uid: int = Depends(get_effective_user)):
 def _manual_position_cost(invested, buy_price, quantity, commissions) -> float:
     """Costo cash de un alta manual: invested ?? buy_price×quantity, + comisiones.
     ÚNICA definición — el débito del alta y el re-crédito del undo de la
-    operación grupal DEBEN usar la misma fórmula o el cash driftea."""
-    cost = invested if invested is not None else (buy_price or 0) * (quantity or 0)
-    return (cost or 0) + (commissions or 0)
+    operación grupal DEBEN usar la misma fórmula o el cash driftea.
+
+    La parte `invested ?? buy_price×quantity` es `fx.costo_del_lote`: la misma que
+    queda guardada en la fila y la que leen los motores de venta."""
+    return (_fx.costo_del_lote(invested, buy_price, quantity) or 0) + (commissions or 0)
 
 
 # El saldo de efectivo (la fila is_cash=1) se mueve SÓLO por la puerta del efectivo
@@ -10869,12 +10871,21 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     tc_compra = p.tc_compra
     if not tc_compra and not p.is_cash and (resolved_ccy or "").upper() == "ARS":
         tc_compra = _fx.fx_for_date(conn, entry_date)   # None si la fecha es pre-serie
+    # EL COSTO QUE QUEDA EN LA FILA ES EL QUE PAGA LA CAJA. "Invertido" es opcional
+    # en el pedido; si no viene, es precio × cantidad. Antes se guardaba el NULL
+    # tal cual llegaba mientras, quince líneas más abajo, a la caja se le
+    # descontaba precio × cantidad: la plata salía y el lote quedaba anotado sin
+    # costo. Cartera lo mostraba entero como ganancia y, al venderlo en pesos, la
+    # venta anotaba TODO lo cobrado como resultado (medido 2026-10-10: 25,6 donde
+    # eran 9,6). El asesor (operación grupal) ya lo completaba antes de llamar acá;
+    # el formulario, el celular y cualquier otro cliente, no.
+    invested = _fx.costo_del_lote(p.invested, p.buy_price, p.quantity)
     cur = conn.execute(
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
            invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-         p.invested, tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
+         invested, tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
          (p.asset_type or None), resolved_ccy),
     )
     new_id = cur.lastrowid
@@ -11041,7 +11052,14 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
         raise HTTPException(404, "No encontramos esa posición")
 
     total_qty = sum(float(l["quantity"] or 0) for l in lots)
-    total_inv = sum(float(l["invested"] or 0) for l in lots)
+    # El costo de cada lote, con la misma red que la venta (`fx.costo_del_lote`):
+    # un lote sin `invested` cuesta precio × cantidad, no cero. Con `or 0` ese lote
+    # no entraba en el total, el factor `k` salía inflado, y al escalar quedaba con
+    # un 0 ESCRITO mientras los demás cargaban con todo el costo del grupo: el
+    # promedio daba bien y cada lote daba mal — y el FIFO consume de a uno.
+    _costo = {l["id"]: (_fx.costo_del_lote(l["invested"], l["buy_price"], l["quantity"]) or 0)
+              for l in lots}
+    total_inv = sum(_costo.values())
 
     # Snapshot ANTES de tocar nada (undo). Guardamos por id, así el undo no
     # depende de que el grupo siga existiendo con la misma clave.
@@ -11062,7 +11080,7 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
         if total_inv > 0:
             k = (float(p.avg_price) * total_qty) / total_inv
             for l in lots:
-                new_inv = float(l["invested"] or 0) * k
+                new_inv = _costo[l["id"]] * k
                 new_price = (float(l["buy_price"]) * k) if l["buy_price"] is not None else None
                 conn.execute(
                     "UPDATE positions SET invested=?, buy_price=COALESCE(?, buy_price) "
@@ -11253,7 +11271,10 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
                currency=COALESCE(?, currency)
                WHERE id=? AND user_id=?""",
             (p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
-             p.invested, p.tc_compra, p.price_override, p.notes, p.commissions or 0,
+             # "Invertido" vacío NO borra el costo: es precio × cantidad, igual que
+             # en el alta (`fx.costo_del_lote`). Antes pisaba la columna con NULL.
+             _fx.costo_del_lote(p.invested, p.buy_price, p.quantity),
+             p.tc_compra, p.price_override, p.notes, p.commissions or 0,
              p.entry_date, (p.asset_type or None), p.currency, pid, uid),
         )
         conn.commit()
@@ -13778,7 +13799,7 @@ def _compute_amort_cost_basis_fifo(conn, uid: int, broker: str, asset: str, amor
     es 0 o no aplica.
     """
     lots = conn.execute(
-        """SELECT quantity, invested FROM positions
+        """SELECT quantity, invested, buy_price FROM positions
            WHERE user_id=? AND broker=? AND asset=? AND is_cash=0 AND quantity > 0
            ORDER BY COALESCE(entry_date, '9999-12-31') ASC, id ASC""",
         (uid, broker, asset),
@@ -13799,7 +13820,8 @@ def _compute_amort_cost_basis_fifo(conn, uid: int, broker: str, asset: str, amor
         if take <= 0:
             continue
         ratio = take / lot_qty
-        total_consumed += (lot['invested'] or 0) * ratio
+        # Mismo costo que la gemela que escribe y que la venta (`fx.costo_del_lote`).
+        total_consumed += (_fx.costo_del_lote(lot['invested'], lot['buy_price'], lot_qty) or 0) * ratio
         remaining -= take
     return round(total_consumed, 6)
 
@@ -13861,9 +13883,14 @@ def _amortize_position_fifo(conn, uid: int, broker: str, asset: str, amort_amoun
             continue
         ratio = take / lot_qty
         new_qty = lot_qty - take
-        new_invested = (lot['invested'] or 0) * (1 - ratio)
+        # El costo del lote, con la misma red que la venta (`fx.costo_del_lote`).
+        # Con `(lot['invested'] or 0)` un lote sin costo guardado amortizaba a
+        # costo cero —todo lo cobrado era ganancia— y encima el resto quedaba con
+        # un 0 ESCRITO, que ya no se distingue de un costo cero de verdad.
+        lot_cost = _fx.costo_del_lote(lot['invested'], lot['buy_price'], lot_qty) or 0
+        new_invested = lot_cost * (1 - ratio)
         new_commissions = (lot['commissions'] or 0) * (1 - ratio)
-        invested_taken = (lot['invested'] or 0) * ratio
+        invested_taken = lot_cost * ratio
         com_taken = (lot['commissions'] or 0) * ratio
         total_invested_dec += invested_taken
         if new_qty <= 1e-9:
@@ -14600,7 +14627,16 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                     pos_buy_commissions = p["commissions"] if "commissions" in p.keys() else 0
                     pos_buy_commissions = pos_buy_commissions or 0
                     # `entry_invested` ahora incluye buy commissions prorrateadas.
-                    base_invested = ((p["invested"] or 0) + pos_buy_commissions)
+                    #
+                    # El costo del lote sale de `fx.costo_del_lote`: si la fila no
+                    # tiene `invested` es precio × cantidad. Acá decía
+                    # `(p["invested"] or 0)` —costo CERO— y la red vivía más abajo,
+                    # SÓLO en la rama de dólares: la de pesos anotaba todo lo
+                    # cobrado como ganancia. Va acá, antes de la conversión de
+                    # moneda, para que precio × cantidad se convierta igual que un
+                    # `invested` guardado.
+                    base_invested = ((_fx.costo_del_lote(p["invested"], buy_price, pos_qty) or 0)
+                                     + pos_buy_commissions)
 
                     # CROSS-CURRENCY: si el lote se compró en otra moneda que la de la
                     # venta, convertimos el cost basis a la moneda de la venta (igual
