@@ -239,10 +239,13 @@ describe('nextPaymentForPosition', () => {
     const r = nextPaymentForPosition('AL30', 1000, '2026-05-11')
     expect(r).not.toBeNull()
     expect(r.date).toBe('2026-07-09')
-    // AL30 amort 7.69 por 100 face, cupón ~0.346 por 100 (face decreciente)
-    // qty=1000 nominales → recibe (cupón + amort) × 1000 / 100
-    expect(r.amort).toBeGreaterThan(70)  // ~76.92 (1000 × 7.692/100)
-    expect(r.amort).toBeLessThan(80)
+    // AL30 amortiza 8 por 100 en julio 2026 (4 % la primera cuota, 8 % las 12
+    // siguientes — prospecto; decía 13 iguales de 7,69). qty=1000 nominales →
+    // (cupón + amort) × 1000 / 100.
+    // OJO al juntar con la bandeja de cobros de bonos (claude/bold-bouman-487b77):
+    // esa rama cambia este mismo renglón a 111,11, porque además pasa a leer los
+    // 1.000 como nominales VIVOS y no originales. Ahí queda la versión de ellos.
+    expect(r.amort).toBeCloseTo(80, 2)
     expect(r.total).toBeGreaterThan(r.amort)  // cupón > 0
   })
 

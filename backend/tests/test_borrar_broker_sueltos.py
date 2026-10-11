@@ -273,6 +273,27 @@ class BorrarSeLlevaTodo(_Base):
         self.assertEqual(self._q("SELECT * FROM bond_cashflow_skips WHERE user_id=?"), [])
         self.assertEqual(self._q("SELECT * FROM dividendos_salteados WHERE user_id=?"), [])
 
+    def test_renombrar_y_despues_borrar_no_deja_nada(self):
+        """Los dos arreglos juntos. El renombre reescribe el nombre adentro del
+        futuro y del payload archivado; el borrado, que busca por el nombre de HOY,
+        tiene que encontrarlos. (Antes de juntarlos, cada uno por separado dejaba
+        el futuro y la sección bajo el nombre viejo.)"""
+        bid = self._broker("Cocos", "USD")
+        self._depositar("Cocos", 500)
+        self._bono("Cocos")
+        self._archivar()
+        fid = self._futuro("Cocos")
+        r = self.client.put(f"/api/brokers/{bid}", headers=self.h,
+                            json={"name": "Cocos Capital", "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+        counts = self._borrar(bid)
+        self.assertEqual((counts["futures"], counts["archived"]), (1, 1))
+        self.assertEqual(self.client.get("/api/futures", headers=self.h).json(), [])
+        self.assertEqual(self._archivadas(), [])
+        self.assertEqual(self._cerrar(fid).status_code, 404)
+        self.assertEqual(self._sueltas(), {})
+
     # ── el OTRO camino que borra brokers ─────────────────────────────────────
     def test_limpiar_broker_hace_lo_mismo(self):
         """`POST /api/imports/wipe-broker` borra el broker por su cuenta. Era una
@@ -422,6 +443,74 @@ class NingunaPuertaEscribeEnUnBrokerQueNoExiste(_Base):
         self.assertEqual(r.json()["pnl_usd"], 1000.0)
         self.assertEqual(self._cajas(), [{"broker": "Binance", "invested": 2000.0}])
 
+    def test_renombrar_no_dispara_los_frenos(self):
+        """Control: después de renombrar, el broker guardado en el futuro y en la
+        sección archivada SÍ existe (el renombre lo reescribe). Cerrar y restaurar
+        tienen que andar, y la plata tiene que caer en el nombre de hoy."""
+        bid = self._broker("Cocos", "USD")
+        self._depositar("Cocos", 500)
+        self._bono("Cocos")
+        self._archivar()
+        fid = self._futuro("Cocos")
+        r = self.client.put(f"/api/brokers/{bid}", headers=self.h,
+                            json={"name": "Cocos Capital", "currency": "USD"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+        self.assertEqual(self._cerrar(fid).status_code, 200)
+        r = self.client.post("/api/sections/restore", headers=self.h,
+                             json={"archive_id": self._archivadas()[0]["id"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._sueltas(), {})
+        self.assertEqual({c["broker"] for c in self._cajas()}, {"Cocos Capital"})
+
+    def test_el_turno_se_toma_antes_de_mirar_si_el_broker_existe(self):
+        """sqlite3 abre la transacción en la primera ESCRITURA. Si la puerta mira
+        "¿existe el broker?" antes de escribir algo, un renombre o un borrado en ese
+        mismo instante (otra pestaña) entra entre la mirada y la escritura, y la
+        fila queda bajo el nombre que acaba de dejar de existir. Por eso cada
+        puerta toma el turno de escritura (`_tomar_turno`) ANTES de mirar.
+
+        Se mide el ORDEN de las dos llamadas dentro de cada pedido HTTP."""
+        self._broker("IEB", "USD")
+        self._broker("Balanz", "USD")
+        self._depositar("IEB", 500)
+        p = self._bono("IEB")
+        self._archivar()
+        aid = self._archivadas()[0]["id"]
+        p2 = self._bono("IEB", "GD30")
+        fid = self._futuro("IEB")
+        fut = {"broker": "IEB", "symbol": "BTCUSDT", "side": "long", "quantity": 0.1,
+               "entry_price": 60000, "opened_at": "2026-09-01"}
+        pos = {"asset": "GD30", "quantity": 100, "buy_price": 0.6, "invested": 60}
+
+        puertas = {
+            "cargar posición": lambda: self.client.post(
+                "/api/positions", headers=self.h, json={**pos, "broker": "IEB", "asset": "AE38",
+                                                        "asset_type": "BOND", "currency": "USD"}),
+            "mover posición": lambda: self.client.put(
+                f"/api/positions/{p2['id']}", headers=self.h, json={**pos, "broker": "Balanz"}),
+            "abrir futuro": lambda: self.client.post("/api/futures", headers=self.h, json=fut),
+            "editar futuro": lambda: self.client.put(
+                f"/api/futures/{fid}", headers=self.h, json={**fut, "quantity": 0.2}),
+            "cerrar futuro": lambda: self._cerrar(fid),
+            "restaurar sección": lambda: self.client.post(
+                "/api/sections/restore", headers=self.h, json={"archive_id": aid}),
+        }
+        turno, existe = main._tomar_turno, main._broker_existe
+        try:
+            for nombre, pedir in puertas.items():
+                orden = []
+                main._tomar_turno = lambda c, u, _o=orden: (_o.append("turno"), turno(c, u))[1]
+                main._broker_existe = lambda c, u, b, _o=orden: (_o.append("mira"), existe(c, u, b))[1]
+                r = pedir()
+                self.assertEqual(r.status_code, 200, f"{nombre}: {r.text}")
+                self.assertIn("mira", orden, f"{nombre}: no chequea que el broker exista")
+                self.assertIn("turno", orden, f"{nombre}: no toma el turno")
+                self.assertLess(orden.index("turno"), orden.index("mira"),
+                                f"{nombre}: mira si el broker existe ANTES de tomar el turno")
+        finally:
+            main._tomar_turno, main._broker_existe = turno, existe
+
     def test_restaurar_una_seccion_de_un_broker_que_ya_no_existe(self):
         """Las 70 posiciones archivadas de prod: su broker se borró cuando el
         borrado todavía no limpiaba las archivadas. Se planta sacando el broker por
@@ -500,12 +589,6 @@ class UnaSolaLista(unittest.TestCase):
     """`main.BROKER_POR_NOMBRE` es la única lista de tablas atadas al nombre de un
     broker. El renombre y los dos borrados salen de ahí."""
 
-    # Tienen una columna llamada `broker` que NO es el nombre de un broker del usuario.
-    NO_SON_NOMBRE_DE_BROKER = {
-        # constantes del conector ('wallbit', 'iol_lab'), no brokers.name
-        "user_broker_credentials",
-    }
-
     def _columnas(self):
         conn = main.get_db()
         try:
@@ -514,24 +597,40 @@ class UnaSolaLista(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_toda_tabla_con_columna_broker_esta_en_la_lista(self):
-        """Si esto falla, agregaste una tabla que guarda el nombre de un broker.
-        Sumala a `main.BROKER_POR_NOMBRE` y decidí qué le pasa cuando el broker se
-        renombra y cuando se borra — si no, vuelve el bug de este archivo."""
-        con_broker = {t for t, cols in self._columnas().items() if "broker" in cols}
-        faltan = con_broker - set(main.BROKER_POR_NOMBRE) - self.NO_SON_NOMBRE_DE_BROKER
+    def test_todo_lo_que_el_renombre_toca_tiene_politica_de_borrado(self):
+        """El renombre reescribe el nombre en columnas (`NAME_KEYED_TABLES`) y adentro
+        de JSON (`renombre_broker.COLUMNAS_JSON`). Todo lugar donde el nombre VIVE
+        tiene que decir también qué le pasa cuando el broker se BORRA: si esto
+        falla, alguien enseñó al renombre una tabla nueva y el borrado no la conoce
+        — así nacieron los futuros y las secciones archivadas sueltos.
+
+        Que ninguna tabla con columna `broker` quede fuera de `NAME_KEYED_TABLES` lo
+        vigila `test_renombre_broker_recetas.py::CadaColumnaDeBrokerSeRenombra`
+        recorriendo el esquema; como esa tupla sale de `BROKER_POR_NOMBRE`, una
+        tabla nueva entra por un solo lugar y queda cubierta de los dos lados."""
+        import renombre_broker
+        donde_vive = set(main.NAME_KEYED_TABLES) | {t for t, _col in renombre_broker.COLUMNAS_JSON}
+        faltan = donde_vive - set(main.BROKER_POR_NOMBRE)
         self.assertEqual(faltan, set(),
-                         f"tablas con columna `broker` fuera de BROKER_POR_NOMBRE: {faltan}")
+                         f"el renombre conoce estas tablas y el borrado no: {faltan}")
+        # Y al revés: lo que la lista dice que se renombra "por json" lo hace alguien.
+        con_json = {t for t, _col in renombre_broker.COLUMNAS_JSON}
+        for tabla, (al_renombrar, _b) in main.BROKER_POR_NOMBRE.items():
+            if al_renombrar == "json":
+                self.assertIn(tabla, con_json, f"{tabla}: nadie le reescribe el JSON")
 
     def test_la_lista_no_nombra_tablas_ni_columnas_que_no_existen(self):
         cols = self._columnas()
         for tabla, (al_renombrar, al_borrar) in main.BROKER_POR_NOMBRE.items():
             self.assertIn(tabla, cols, f"{tabla} no existe")
-            if al_borrar != "payload":
+            if al_renombrar == "columna":
                 self.assertIn("broker", cols[tabla], f"{tabla} no tiene columna broker")
             if al_borrar in ("borrar", "anular", "revertir", "payload"):
                 self.assertIn("user_id", cols[tabla],
                               f"{tabla} se toca por user_id y no tiene esa columna")
+            if al_borrar == "borrar":
+                self.assertIn("broker", cols[tabla],
+                              f"{tabla} se borra por columna broker y no la tiene")
 
     def test_politicas_conocidas(self):
         """Tres políticas tienen código propio atado a UNA tabla. Usarlas en otra
@@ -539,7 +638,7 @@ class UnaSolaLista(unittest.TestCase):
         propias = {"anular": "flujos_a_mano", "revertir": "import_batches",
                    "payload": "archived_positions"}
         for tabla, (al_renombrar, al_borrar) in main.BROKER_POR_NOMBRE.items():
-            self.assertIn(al_renombrar, ("columna", "pendiente"), tabla)
+            self.assertIn(al_renombrar, ("columna", "json"), tabla)
             self.assertIn(al_borrar, ("borrar", "conservar", *propias), tabla)
             if al_borrar in propias:
                 self.assertEqual(tabla, propias[al_borrar])
@@ -551,7 +650,7 @@ class UnaSolaLista(unittest.TestCase):
         # Las que ya se renombraban antes de unificar: ninguna se puede caer.
         for t in ("positions", "operations", "monthly_entries", "import_batches",
                   "import_normalized_tx", "bond_cashflow_skips", "dividendos_salteados",
-                  "flujos_a_mano"):
+                  "flujos_a_mano", "futures_positions", "deleted_ops_journal"):
             self.assertIn(t, main.NAME_KEYED_TABLES)
 
     def test_empezar_de_cero_tambien_las_cubre(self):
