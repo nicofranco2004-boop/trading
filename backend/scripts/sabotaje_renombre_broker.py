@@ -22,13 +22,16 @@ import tempfile
 PIEZAS = ("ninguno", "todo_como_antes", "sin_json", "sin_futuros", "sin_columna_del_registro",
           "sin_no_lo_cobre", "sin_pares", "sin_cuenta_pesos", "sin_anidado", "sin_claves_de_dict",
           "sin_operations", "sin_positions", "sin_archived_positions", "sin_deleted_ops_journal",
-          "sin_import_batches", "sin_dividendos_reemplazados", "sin_nombres_anteriores")
+          "sin_import_batches", "sin_dividendos_reemplazados", "sin_nombres_anteriores",
+          "sin_import_mappings", "plantilla_sin_acotar", "plantilla_letra_por_letra")
 
 
 def _una(pieza: str, sin_escaneo: bool) -> None:
     import unittest
     os.environ["DB_PATH"] = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    os.environ.setdefault("SEMILLAS_RENOMBRE", "1-12")
+    # La 23 es la primera que nota POR LOS NÚMEROS que el renombre dejó de seguir a
+    # las plantillas del importador (con 1-12 solas daba "al azar 0" sin el escaneo).
+    os.environ.setdefault("SEMILLAS_RENOMBRE", "1-12,23")
     sys.path.insert(0, os.getcwd())
     import main
     import renombre_broker as R
@@ -71,9 +74,14 @@ def _una(pieza: str, sin_escaneo: bool) -> None:
         "sin_claves_de_dict": lambda: setattr(R, "_en_clave_de_broker", sin_claves_de_dict),
         # El anti-duplicados y "Editar y rehacer" sin saber cómo se llamaba antes el broker.
         "sin_nombres_anteriores": lambda: setattr(R, "nombres_anteriores", lambda conn, uid: {}),
+        # La plantilla del importador con la regla general: también le cambia el TÍTULO
+        # de la columna del archivo cuando se llama igual que el broker.
+        "plantilla_sin_acotar": lambda: setattr(R, "SOLO_BAJO", {}),
+        # El broker de la plantilla comparado letra por letra (y no como el importador).
+        "plantilla_letra_por_letra": lambda: setattr(R, "COMO_EL_IMPORTADOR", frozenset()),
     }
     for tabla in ("operations", "positions", "archived_positions", "deleted_ops_journal",
-                  "import_batches", "dividendos_reemplazados"):
+                  "import_batches", "dividendos_reemplazados", "import_mappings"):
         sabotajes[f"sin_{tabla}"] = (lambda t: lambda: sin_columna(t))(tabla)
     sabotajes[pieza]()
 
@@ -86,7 +94,7 @@ def _una(pieza: str, sin_escaneo: bool) -> None:
     azar = sum(1 for c in caidos if c.startswith("semilla_"))
     armados = [c for c in caidos if not c.startswith("semilla_")]
     print(f"{pieza:26s} {'sin escaneo' if sin_escaneo else 'con escaneo':11s} "
-          f"caen {len(caidos):2d}/{res.testsRun} (al azar {azar:2d}/12): "
+          f"caen {len(caidos):2d}/{res.testsRun} (al azar {azar:2d}/{len(A.SEMILLAS)}): "
           f"{', '.join(armados) or '—'}", flush=True)
 
 

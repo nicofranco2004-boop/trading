@@ -40186,6 +40186,12 @@ def import_preview(
                 raise HTTPException(400, "La tanda no existe o no es tuya.")
         def _previsualizar():
             with conn:
+                # El broker fijo del mapeo lo eligió la persona en el asistente: es
+                # una referencia a uno de SUS brokers. Si la pantalla quedó abierta
+                # mientras lo renombraban en otra, manda el nombre de antes — y el
+                # importador creaba de nuevo un broker con ese nombre y metía el
+                # archivo ahí (auditoría 2026-10-11). Misma regla que al guardar una
+                # plantilla. Lo que dice el ARCHIVO (su columna de broker) no se toca.
                 return _import_pipeline.run_preview(
                     conn,
                     uid=uid,
@@ -40193,7 +40199,7 @@ def import_preview(
                     file_name=combined_name,
                     broker_hint=broker,
                     parser_format=format,
-                    mapping=parsed_mapping,
+                    mapping=_renombre_broker.plantilla_con_broker_de_hoy(conn, uid, parsed_mapping),
                     route_by_currency=flag_route,
                 )
         # Si otro usuario tiene el candado de la base (un confirm largo, la tanda
@@ -41737,32 +41743,20 @@ def import_list(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
-@app.get("/api/imports/{batch_id}")
-def import_detail(batch_id: str, uid: int = Depends(get_effective_user)):
-    """Detalle de un batch — incluye filas válidas y errores para auditoría."""
-    conn = get_db()
-    try:
-        batch = conn.execute(
-            "SELECT * FROM import_batches WHERE id=? AND user_id=?", (batch_id, uid),
-        ).fetchone()
-        if not batch:
-            raise HTTPException(404, "Batch no encontrado.")
-        rows = conn.execute(
-            """SELECT id, row_index, raw_json, status, errors_json
-                 FROM import_raw_rows WHERE batch_id=? ORDER BY row_index ASC""",
-            (batch_id,),
-        ).fetchall()
-        return {
-            "batch": dict(batch),
-            "rows": [dict(r) for r in rows],
-        }
-    finally:
-        conn.close()
+class PlantillaDeColumnas(BaseModel):
+    """Una plantilla como la arma el asistente: {dato de Rendi: título de la columna
+    en el archivo} y {dato de Rendi: valor fijo}. Texto a texto y nada más. Con
+    cualquier otra forma (un broker fijo escrito como número, una parte de más) el
+    renombre de brokers no sabría seguirla y el importador la leería a su manera
+    (auditoría 2026-10-11: broker fijo `7` → tras renombrar, dos brokers)."""
+    model_config = {"extra": "forbid"}
+    columns: dict[str, str] = Field(default_factory=dict)
+    defaults: dict[str, str] = Field(default_factory=dict)
 
 
 class ImportMappingIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
-    mapping: dict
+    mapping: PlantillaDeColumnas
 
 
 @app.get("/api/imports/mappings")
@@ -41770,36 +41764,74 @@ def import_mappings_list(uid: int = Depends(get_effective_user)):
     """Lista los mapping templates guardados del usuario."""
     conn = get_db()
     try:
-        rows = conn.execute(
-            """SELECT id, name, mapping_json, created_at
-                 FROM import_mappings WHERE user_id=? ORDER BY name ASC""",
-            (uid,),
-        ).fetchall()
-        return [
-            {"id": r["id"], "name": r["name"], "mapping": json.loads(r["mapping_json"]),
-             "created_at": r["created_at"]}
-            for r in rows
-        ]
+        rows = sorted(_renombre_broker.plantillas_al_alcance(conn, uid),
+                      key=lambda r: (r["name"], r["id"]))
+        out = []
+        for r in rows:
+            # Una fila que no se puede leer no esconde a las demás: el asistente
+            # muestra una lista vacía ante cualquier error, y eso es lo que se vio
+            # durante cinco meses con el 404. (Hoy guardar no deja escribir una así.)
+            try:
+                mapping = json.loads(r["mapping_json"], parse_constant=_no_es_json)
+            except (TypeError, ValueError):
+                mapping = None
+            if not isinstance(mapping, dict):
+                log.warning("plantilla de columnas ilegible: id %s de la cuenta %s", r["id"], uid)
+                continue
+            out.append({"id": r["id"], "name": r["name"], "mapping": mapping,
+                        "created_at": r["created_at"]})
+        return out
     finally:
         conn.close()
 
 
+def _no_es_json(constante: str):
+    """`NaN` e `Infinity`: Python los lee, pero la respuesta no los puede escribir."""
+    raise ValueError(constante)
+
+
 @app.post("/api/imports/mappings")
+@reintentar_si_trabada
 def import_mappings_save(data: ImportMappingIn, uid: int = Depends(get_effective_user)):
     """Guarda (o sobrescribe si ya existe el nombre) un mapping template."""
+    nombre = data.name.strip()
+    if not nombre:
+        raise HTTPException(400, "Poné un nombre para la plantilla.")
     conn = get_db()
     try:
         with conn:
+            # Primero el turno de la cuenta, y recién después mirar sus brokers: si
+            # un renombre se confirmaba entre la lectura y el guardado, la plantilla
+            # quedaba con el nombre que ya no existe (auditoría 2026-10-11).
+            _tomar_turno(conn, uid)
+            # El broker fijo se guarda con el nombre del broker (no como se tipeó):
+            # el renombre de brokers lo busca por ese nombre.
+            mapping = _renombre_broker.plantilla_con_broker_de_hoy(
+                conn, uid, data.mapping.model_dump())
+            texto = json.dumps(mapping, ensure_ascii=False)
+            # Los topes (`renombre_broker`): acá al guardar; al listar y al renombrar
+            # un broker los aplica `plantillas_al_alcance`.
+            if len(texto) > _renombre_broker.PLANTILLA_MAX_CARACTERES:
+                raise HTTPException(400, "La plantilla es demasiado grande para guardarla.")
+            ya_esta = conn.execute(
+                "SELECT 1 FROM import_mappings WHERE user_id=? AND name=?", (uid, nombre)).fetchone()
+            # Cuenta TODAS las filas, también las que la lista no muestra por estar
+            # fuera de tope: una nueva quedaría detrás de ellas, sin verse.
+            if not ya_esta and conn.execute(
+                    "SELECT COUNT(*) FROM import_mappings WHERE user_id=?",
+                    (uid,)).fetchone()[0] >= _renombre_broker.PLANTILLAS_MAX_POR_CUENTA:
+                raise HTTPException(400, f"Ya tenés {_renombre_broker.PLANTILLAS_MAX_POR_CUENTA} plantillas guardadas. "
+                                         "Borrá alguna desde «Administrar» para guardar otra.")
             conn.execute(
                 """INSERT INTO import_mappings (user_id, name, mapping_json)
                    VALUES (?,?,?)
                    ON CONFLICT(user_id, name) DO UPDATE SET
                      mapping_json = excluded.mapping_json""",
-                (uid, data.name.strip(), json.dumps(data.mapping, ensure_ascii=False)),
+                (uid, nombre, texto),
             )
             row = conn.execute(
                 "SELECT id, name, mapping_json, created_at FROM import_mappings WHERE user_id=? AND name=?",
-                (uid, data.name.strip()),
+                (uid, nombre),
             ).fetchone()
         return {"id": row["id"], "name": row["name"],
                 "mapping": json.loads(row["mapping_json"]), "created_at": row["created_at"]}
@@ -42004,6 +42036,36 @@ def sections_restore(data: SectionRestoreIn, uid: int = Depends(get_effective_us
         raise
     except Exception as ex:
         raise HTTPException(500, f"No se pudo restaurar la sección: {ex}")
+    finally:
+        conn.close()
+
+
+# Las rutas de UN import (`/api/imports/{batch_id}…`) van acá, DESPUÉS de todas las
+# fijas (`/api/imports/mappings`, `/parsers`, `/template`…): el servidor atiende con la
+# primera que coincide, y `{batch_id}` coincide con cualquier palabra. Con el detalle
+# declarado antes, pedir las plantillas guardadas buscaba un import llamado "mappings"
+# y contestaba 404: las plantillas de columnas no volvieron a aparecer nunca, desde el
+# día en que se agregaron (2026-05-08 → 2026-10-11). `test_rutas_tapadas.py` recorre la
+# tabla entera y falla si una ruta queda tapada por otra declarada antes.
+@app.get("/api/imports/{batch_id}")
+def import_detail(batch_id: str, uid: int = Depends(get_effective_user)):
+    """Detalle de un batch — incluye filas válidas y errores para auditoría."""
+    conn = get_db()
+    try:
+        batch = conn.execute(
+            "SELECT * FROM import_batches WHERE id=? AND user_id=?", (batch_id, uid),
+        ).fetchone()
+        if not batch:
+            raise HTTPException(404, "Batch no encontrado.")
+        rows = conn.execute(
+            """SELECT id, row_index, raw_json, status, errors_json
+                 FROM import_raw_rows WHERE batch_id=? ORDER BY row_index ASC""",
+            (batch_id,),
+        ).fetchall()
+        return {
+            "batch": dict(batch),
+            "rows": [dict(r) for r in rows],
+        }
     finally:
         conn.close()
 
