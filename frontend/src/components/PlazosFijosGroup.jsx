@@ -17,6 +17,7 @@ import { useToast } from './Toast'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
 import { pct } from '../utils/format'
+import { confirmar } from '../utils/confirmar'
 
 const todayStr = () => hoyISO()
 const moneyOf = (m) => (n) => (m === 'USD' ? 'US$' : '$') + Math.round(n).toLocaleString('es-AR')
@@ -59,13 +60,13 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   const cobrar = (pf, broker) => enVuelo.correr(() => cobrarPf(pf, broker), pf.id)
 
   async function borrar(pf) {
-    if (!confirm(`¿Eliminar el plazo fijo en ${pf.banco}? Esta acción no se puede deshacer.`)) return
+    if (!await confirmar(`¿Eliminar el plazo fijo en ${pf.banco}? Esta acción no se puede deshacer.`)) return
     try { await api.delete(`/plazos-fijos/${pf.id}`); await load() }
     catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
 
   async function renovarPf(pf) {
-    if (!confirm(`¿Renovar el plazo fijo en ${pf.banco}? Arranca un período nuevo con capital + interés, mismo plazo y tasa.`)) return
+    if (!await confirmar(`¿Renovar el plazo fijo en ${pf.banco}? Arranca un período nuevo con capital + interés, mismo plazo y tasa.`)) return
     try { await api.post(`/plazos-fijos/${pf.id}/renovar`); await load() }
     catch (e) { toast.push('Ocurrió un error: ' + e.message, { type: 'error' }) }
   }
@@ -73,7 +74,7 @@ export default function PlazosFijosGroup({ reloadKey, onAdd, onTotals, brokers =
   async function cobrarPf(pf, broker) {
     if (!broker) {
       const monto = computePf(pf, todayStr()).valorHoy
-      if (!confirm(`¿Retirar ${moneyOf(pf.moneda)(monto)}? La plata sale de tu cartera (no se trackea). El interés igual queda contabilizado como ganancia.`)) return
+      if (!await confirmar(`¿Retirar ${moneyOf(pf.moneda)(monto)}? La plata sale de tu cartera (no se trackea). El interés igual queda contabilizado como ganancia.`)) return
     }
     try {
       const res = await api.post(`/plazos-fijos/${pf.id}/cobrar`, { broker: broker || null })

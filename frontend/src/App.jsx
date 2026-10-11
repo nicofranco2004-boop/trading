@@ -44,6 +44,10 @@ import ResetPassword from './pages/ResetPassword'
 import ClaimAccount from './pages/ClaimAccount'
 import AdvisorAccessRequest from './pages/AdvisorAccessRequest'
 import ReportPublic from './pages/ReportPublic'
+// Empieza a contar los cambios de la cartera (para que cada número muestre cómo
+// cambió: components/NumeroQueCambia). Tiene que escuchar desde ANTES de la
+// primera escritura, por eso se carga acá y no con la primera pantalla.
+import './utils/valoresVistos'
 
 // ─── Lazy imports: páginas del flujo autenticado ──────────────────────────────
 // Cada página queda en su propio chunk JS, descargado on-demand al navegar.

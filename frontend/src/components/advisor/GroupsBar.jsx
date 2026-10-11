@@ -10,6 +10,7 @@ import Modal from '../Modal'
 import { api } from '../../utils/api'
 import { useToast } from '../Toast'
 import { parseNum } from '../../utils/format'
+import { confirmar } from '../../utils/confirmar'
 
 const inputCls = 'w-full text-sm bg-bg-2 border border-line rounded-sm px-3 py-2 text-ink-0 placeholder:text-ink-3 focus:border-rendi-accent/50 outline-none'
 
@@ -78,7 +79,7 @@ export default function GroupsBar({ activeId, onPick }) {
   }
 
   async function remove(g) {
-    if (!window.confirm(`¿Borrar el grupo "${g.name}"? Tus clientes no se tocan.`)) return
+    if (!await confirmar(`¿Borrar el grupo "${g.name}"? Tus clientes no se tocan.`)) return
     try {
       await api.delete(`/advisor/groups/${g.id}`)
       if (activeId === g.id) onPick?.(null)

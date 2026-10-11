@@ -13,6 +13,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
 import { pctTxt, pctVar } from '../utils/format'
 import { Link } from 'react-router-dom'
+import { confirmar } from '../utils/confirmar'
 
 // Nombre de cada plan, en un solo lugar. Estaba escrito inline en tres sitios
 // del grant y ninguno contemplaba 'advisor', asi que el Plan Asesor se
@@ -126,7 +127,7 @@ export default function Admin() {
   }
 
   async function approveUser(u) {
-    if (!confirm(`¿Aprobar a ${u.email}? Una vez aprobado podrá iniciar sesión.`)) return
+    if (!await confirmar(`¿Aprobar a ${u.email}? Una vez aprobado podrá iniciar sesión.`)) return
     try {
       await api.post(`/admin/users/${u.id}/approve`)
       refresh()
@@ -137,7 +138,7 @@ export default function Admin() {
 
   async function deleteUser(u) {
     if (u.is_admin) return
-    if (!confirm(`¿Eliminar la cuenta de ${u.email} junto a todos sus datos? Esta acción no se puede deshacer.`)) return
+    if (!await confirmar(`¿Eliminar la cuenta de ${u.email} junto a todos sus datos? Esta acción no se puede deshacer.`)) return
     try {
       await api.delete(`/admin/users/${u.id}`)
       refresh()
@@ -155,7 +156,7 @@ export default function Admin() {
     // 30 días → Plus", que es exactamente lo que NO quería hacer, y canceló.
     const planLabel = PLAN_LABEL[plan] || plan
     const esAsesor = plan === 'advisor'
-    if (!confirm(
+    if (!await confirmar(
       `¿Dar ${planLabel} por ${days} días a ${u.email}? Es de cortesía (gratis) y se vence solo.`
       + (esAsesor ? '\n\nEl Plan Asesor REEMPLAZA el plan de usuario que tenga y le habilita Clientes.' : '')
     )) return
@@ -199,7 +200,7 @@ export default function Admin() {
                + ` Le estás ACORTANDO el acceso (los ${days} días del plan nuevo arrancan hoy).`
         }
         if (esAsesor) msg += '\n\nAdemás le habilita Clientes y su cuenta pasa a ser el libro.'
-        if (!confirm(msg)) return
+        if (!await confirmar(msg)) return
         res = await api.post(url + '&force=true')
       }
       if (res?.ok) {
@@ -214,7 +215,7 @@ export default function Admin() {
   }
 
   async function restoreTier(u) {
-    if (!confirm(`¿Restaurar el plan de ${u.email}? Usa el crédito que ya pagó (vigente), no recobra ni mueve fechas.`)) return
+    if (!await confirmar(`¿Restaurar el plan de ${u.email}? Usa el crédito que ya pagó (vigente), no recobra ni mueve fechas.`)) return
     try {
       const res = await api.post('/admin/billing/restore-tier?email=' + encodeURIComponent(u.email))
       if (res?.ok && res?.changed) {
@@ -613,7 +614,7 @@ function useEnvioEnTandas({ url, toast, recargar }) {
     }
     let r
     try {
-      if (pregunta && !window.confirm(pregunta)) return
+      if (pregunta && !await confirmar(pregunta)) return
       r = await enviarEnTandas({
         post: (u, b) => api.post(u, b), url, cuerpo, vistos, lote,
         alAvanzar: p => avanceEnvio(url, p),
@@ -1733,7 +1734,7 @@ function BackfillPanel({ toast }) {
     const detail = costMode
       ? `${preview.cost_positions_changed || 0} bonos a corregir (per-100→per-1), SIN tocar cantidades ni comisiones`
       : `${preview.positions_changed} cambios seguros de cantidad`
-    if (!confirm(`¿Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
+    if (!await confirmar(`¿Aplicar a ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'} ` +
                  `(${detail})? Hacé un backup antes. Solo es reversible desde backup.`)) return
     setApplying(true); setProgress({ done: 0, total: 0 })
     try {
@@ -1977,7 +1978,7 @@ function MtmBackfillPanel({ toast }) {
 
   async function apply() {
     if (!preview) return
-    if (!confirm(`¿Aplicar la valuación histórica a mercado en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
+    if (!await confirmar(`¿Aplicar la valuación histórica a mercado en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
                  `Hacé un backup antes. Solo es reversible desde backup.`)) return
     setApplying(true); setProgress({ done: 0, total: 0, phase: 'run' })
     try {
@@ -2780,7 +2781,7 @@ function FxMigratePanel({ toast }) {
   // asesor y la punta del gráfico hasta fin de mes. Ya no se generan; esto
   // limpia los que quedaron.
   async function limpiarFuturos(apply) {
-    if (apply && !confirm(`¿Borrar ${futuros?.snapshots_futuros} snapshot(s) con fecha futura ` +
+    if (apply && !await confirmar(`¿Borrar ${futuros?.snapshots_futuros} snapshot(s) con fecha futura ` +
                           `de ${futuros?.cuentas} cuenta(s)? Un snapshot fechado en el futuro es ` +
                           `incorrecto por definición: lo reemplazan el diario del cron y el de ` +
                           `fin de mes cuando el mes cierre.`)) return
@@ -2828,10 +2829,10 @@ function FxMigratePanel({ toast }) {
         if (!limpio.length) return
         ids.length = 0; ids.push(...limpio)
       }
-      if (sinSim.length && !confirm(`${sinSim.length} cuenta(s) sin simulación previa. ¿Aplicar igual?`)) return
+      if (sinSim.length && !await confirmar(`${sinSim.length} cuenta(s) sin simulación previa. ¿Aplicar igual?`)) return
       const dPnl = ids.reduce((a, id) => a + (sims[id]?.delta?.pnl_ventas_usd || 0), 0)
       const dDep = ids.reduce((a, id) => a + ((sims[id]?.delta?.deposits_usd || 0) - (sims[id]?.delta?.withdrawals_usd || 0)), 0)
-      if (!confirm(`¿Migrar ${ids.length} cuenta(s) al TC histórico?\n` +
+      if (!await confirmar(`¿Migrar ${ids.length} cuenta(s) al TC histórico?\n` +
                    `Δ P&L de ventas (simulado): US$ ${Math.round(dPnl).toLocaleString('es-AR')}\n` +
                    `Δ Aportado neto (simulado): US$ ${Math.round(dDep).toLocaleString('es-AR')}\n` +
                    `El % por operación NO cambia. Hacé un backup antes.`)) return
@@ -3145,10 +3146,10 @@ function FxMigratePanel({ toast }) {
                 cruza igual. El motivo de cada frenada trae el "US$ x/venta" —
                 mirá ESE número antes de forzar, no el total. */}
             <button
-              onClick={() => {
+              onClick={async () => {
                 const n = sel.size
                 if (!n) return
-                if (!confirm(
+                if (!await confirmar(
                   `Forzar la migración de ${n} cuenta${n === 1 ? '' : 's'} SALTEANDO la verificación.\n\n` +
                   `Hacelo sólo si ya miraste el motivo de la frenada y entendés por qué.\n` +
                   `En el Δ P&L, el número que importa es el POR VENTA: las cuentas sanas ` +
@@ -3375,7 +3376,7 @@ function CurrencyBackfillPanel({ toast }) {
 
   async function apply() {
     if (!preview) return
-    if (!confirm(`¿Aplicar la corrección de moneda en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
+    if (!await confirmar(`¿Aplicar la corrección de moneda en ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
                  `Antes: (1) revisá que los fondos FCI tocados sean todos money-market, (2) hacé un backup. ` +
                  `Solo reversible desde backup.`)) return
     setApplying(true); setProgress({ done: 0, total: 0 })
@@ -3545,7 +3546,7 @@ function RepairUserPanel({ toast }) {
   async function repair() {
     const e = email.trim()
     if (!e) return
-    if (!confirm(`¿Reparar el histórico de ${e}? Borra y regenera sus snapshots (no toca posiciones ni cash).`)) return
+    if (!await confirmar(`¿Reparar el histórico de ${e}? Borra y regenera sus snapshots (no toca posiciones ni cash).`)) return
     setBusy(true); setResult(null)
     try {
       const r = await api.post('/admin/repair-user-history', { email: e })
@@ -3637,7 +3638,7 @@ function ResetUserPanel({ toast }) {
   async function resetear() {
     const e = email.trim()
     if (!preview || confirmar.trim().toLowerCase() !== e.toLowerCase()) return
-    if (!confirm(`ÚLTIMA CONFIRMACIÓN\n\nVas a borrar ${preview.total_filas.toLocaleString('es-AR')} filas de ${preview.usuario.email}.\n\nNO se puede deshacer. Su login y su plan pago NO se tocan.`)) return
+    if (!await confirmar(`ÚLTIMA CONFIRMACIÓN\n\nVas a borrar ${preview.total_filas.toLocaleString('es-AR')} filas de ${preview.usuario.email}.\n\nNO se puede deshacer. Su login y su plan pago NO se tocan.`)) return
     setBusy(true); setProg({ estado: 'corriendo', pct: 0 })
     try {
       const r = await api.post('/admin/reset-user', { email: e, confirmar_email: confirmar.trim() })
@@ -3812,7 +3813,7 @@ function MassRepairPanel({ toast }) {
 
   async function apply() {
     if (!preview) return
-    if (!confirm(`¿Reparar snapshots de ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
+    if (!await confirmar(`¿Reparar snapshots de ${preview.users_changed} cuenta${preview.users_changed === 1 ? '' : 's'}? ` +
                  `Borra solo los contaminados (los diarios legítimos quedan). Hacé un backup antes.`)) return
     setApplying(true); setProgress({ done: 0, total: 0 })
     try {

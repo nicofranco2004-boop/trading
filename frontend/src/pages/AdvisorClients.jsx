@@ -34,6 +34,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import Modal from '../components/Modal'
 import { usd, fmtMoney, parseNum } from '../utils/format'
+import { confirmar } from '../utils/confirmar'
 
 // ─── Página ──────────────────────────────────────────────────────────────────
 
@@ -144,7 +145,7 @@ export default function AdvisorClients() {
   }
 
   const revoke = async (c) => {
-    if (!window.confirm(`¿Quitar a "${c.label}" de tu lista? Sus datos no se borran; solo dejás de verlo.`)) return
+    if (!await confirmar(`¿Quitar a "${c.label}" de tu lista? Sus datos no se borran; solo dejás de verlo.`)) return
     try {
       await api.post(`/advisor/clients/${c.client_uid}/revoke`)
       toast.push('Cliente quitado de tu lista')

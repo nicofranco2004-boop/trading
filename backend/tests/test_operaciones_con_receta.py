@@ -1052,6 +1052,299 @@ class ElRenombreLlegaALasRecetas(ConRecetaBase):
                          "una receta guarda un broker en una clave que el renombre no conoce")
 
 
+class LaCompraAManoSeBorraPorCualquierTacho(ConRecetaBase):
+    """Una compra cargada a mano que sigue en cartera se borra igual desde los tres
+    tachos: el de Cartera, el de su fila en Movimientos y el del activo entero.
+
+    Visto por Nico en la app el 2026-10-10: el tacho de Movimientos contestaba "por
+    ahora solo se pueden borrar compras IMPORTADAS, las cargadas a mano llegan en la
+    próxima versión", y el del activo "no hay operaciones importadas de ese activo".
+    Desde Cartera esa misma compra se borraba bien: el arreglo (la receta de la
+    posición) existía, pero Movimientos llamaba directo al borrado de las importadas.
+    Ninguna prueba pasaba por `/api/movements/pos-…`, por eso nadie lo vio.
+
+    Todo por HTTP, como la app: la compra entra por `POST /api/positions`."""
+
+    def _comprar(self, activo="KO", cantidad=10, precio=50.0, fecha="2026-03-05"):
+        return self._ok(self.http.post("/api/positions", json={
+            "broker": self.DOLARES, "asset": activo, "buy_price": precio,
+            "quantity": cantidad, "invested": precio * cantidad, "entry_date": fecha}))["id"]
+
+    def _fila_de_la_compra(self, pid):
+        filas = [m for m in self._ok(self.http.get("/api/movements")) if m["id"] == f"pos-{pid}"]
+        self.assertEqual(len(filas), 1, "la compra a mano no sale una vez en Movimientos")
+        return filas[0]
+
+    def cuenta(self):
+        """`estado()` más las tenencias (lo que este borrado saca y devuelve)."""
+        e = self.estado()
+        e["tenencias"] = sorted(
+            (r["broker"], r["asset"], round(float(r["quantity"] or 0), 6),
+             round(float(r["invested"] or 0), 6), bool(r["undo_meta_json"]))
+            for r in self.conn.execute(
+                "SELECT * FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)))
+        return e
+
+    def test_desde_movimientos_con_plata_en_la_cuenta(self):
+        self._depositar(self.DOLARES, 1000)
+        e0 = self.cuenta()
+        pid = self._comprar()
+        e1 = self.cuenta()
+        self.assertEqual(e1["cajas"][self.DOLARES][0], 500.0)        # la compra salió del efectivo
+        fila = self._fila_de_la_compra(pid)
+
+        r = self._ok(self.http.delete(f"/api/movements/{fila['id']}"))
+        self.assertTrue(r.get("undo_token"), "el borrado tiene que poder deshacerse")
+        self.assertMismaCuenta(e0, self.cuenta(), "después de borrar")   # vuelve la plata, se va KO
+
+        self._deshacer(r["undo_token"])
+        self.assertMismaCuenta(e1, self.cuenta(), "después de deshacer")
+        # Y la que volvió se borra otra vez (volvió con su receta).
+        (otra,) = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)).fetchall()
+        self._ok(self.http.delete(f"/api/movements/pos-{otra['id']}"))
+        self.assertMismaCuenta(e0, self.cuenta(), "después de borrar otra vez")
+
+    def test_desde_movimientos_cuando_la_compra_trajo_su_deposito(self):
+        """Sin plata en la cuenta, cargar la compra anota sola el depósito que la
+        financia. Borrarla se lleva ese depósito: no queda efectivo ni aportado."""
+        e0 = self.cuenta()
+        pid = self._comprar()
+        self.assertEqual(self.cuenta()["aportado"], round(e0["aportado"] + 500, 2))
+        self._ok(self.http.delete(f"/api/movements/pos-{pid}"))
+        e2 = self.cuenta()
+        # Queda la caja del broker, vacía (antes de la compra ni existía): es lo
+        # único que no vuelve a como estaba, y no es plata.
+        self.assertEqual(e2.pop("cajas"), {self.DOLARES: (0.0, None)})
+        e0.pop("cajas")
+        self.assertMismaCuenta(e0, e2, "después de borrar")
+
+    def test_movimientos_y_cartera_dejan_la_cuenta_igual(self):
+        self._depositar(self.DOLARES, 300)          # alcanza para una parte: mitad y mitad
+        pid = self._comprar()
+        e1 = self.cuenta()
+        token = self._ok(self.http.delete(f"/api/positions/{pid}"))["undo_token"]
+        por_cartera = self.cuenta()
+        self._deshacer(token)
+        self.assertMismaCuenta(e1, self.cuenta(), "después de deshacer")
+        (otra,) = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=0", (self.uid,)).fetchall()
+        self._ok(self.http.delete(f"/api/movements/pos-{otra['id']}"))
+        self.assertMismaCuenta(por_cartera, self.cuenta(), "Movimientos contra Cartera")
+
+    def _borrar_el_deposito(self):
+        (dep,) = [m for m in self._ok(self.http.get("/api/movements")) if m["type"] == "DEPOSIT"]
+        self._ok(self.http.delete(f"/api/movements/{dep['id']}"))
+
+    def test_deshacer_no_deja_el_efectivo_en_negativo(self):
+        """Borrar la compra devuelve la plata; si después esa plata se va de la cuenta
+        (acá: se borra el depósito), "Deshacer" no puede volver a sacarla. Visto por
+        Nico el 2026-10-10: la compra volvía y el efectivo quedaba en −$2.400.000."""
+        self._depositar(self.DOLARES, 1000)
+        pid = self._comprar()                                    # efectivo: 500
+        e1 = self.cuenta()
+        token = self._ok(self.http.delete(f"/api/movements/pos-{pid}"))["undo_token"]   # 1.000
+        self._borrar_el_deposito()                               # 0
+        e = self.cuenta()
+        self.assertEqual(e["cajas"][self.DOLARES][0], 0.0)
+
+        r = self.http.post(f"/api/operations/undo/{token}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("negativo", r.json()["detail"])
+        self.assertMismaCuenta(e, self.cuenta(), "frenó sin tocar nada")
+
+        # Con la plata otra vez en la cuenta, el mismo "Deshacer" sí funciona.
+        self._depositar(self.DOLARES, 1000)
+        self._deshacer(token)
+        self.assertMismaCuenta(e1, self.cuenta(), "después de deshacer")
+
+    def test_deshacer_por_el_tacho_del_activo_tampoco_deja_negativo(self):
+        self._depositar(self.DOLARES, 1000)
+        self._comprar()
+        token = self._ok(self.http.delete("/api/assets/history", params={"asset": "KO"}))["undo_token"]
+        self._borrar_el_deposito()
+        e = self.cuenta()
+        r = self.http.post(f"/api/assets/undo/{token}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertMismaCuenta(e, self.cuenta(), "frenó sin tocar nada")
+
+    def test_deshacer_alcanza_si_todavia_hay_plata_para_cubrirlo(self):
+        """Que haya salido ALGO de plata no frena: frena sólo si no alcanza."""
+        self._depositar(self.DOLARES, 1000)
+        pid = self._comprar()                                    # 500
+        token = self._ok(self.http.delete(f"/api/movements/pos-{pid}"))["undo_token"]   # 1.000
+        self._ok(self.http.post("/api/cash/flow", json={
+            "broker_name": self.DOLARES, "direction": "withdraw", "amount": 300}))      # 700
+        self._deshacer(token)
+        self.assertEqual(self.cuenta()["cajas"][self.DOLARES][0], 200.0)
+
+    def test_el_tacho_del_activo_borra_la_unica_compra_y_se_deshace(self):
+        self._depositar(self.DOLARES, 1000)
+        e0 = self.cuenta()
+        self._comprar()
+        e1 = self.cuenta()
+        r = self._ok(self.http.delete("/api/assets/history", params={"asset": "KO"}))
+        self.assertEqual(r["count"], 1)
+        self.assertMismaCuenta(e0, self.cuenta(), "después de borrar el activo")
+        # El aviso de Movimientos deshace por la puerta del activo.
+        self._ok(self.http.post(f"/api/assets/undo/{r['undo_token']}"))
+        self.assertMismaCuenta(e1, self.cuenta(), "después de deshacer")
+        self._ok(self.http.post(f"/api/assets/undo/{r['undo_token']}"), 404)   # una sola vez
+
+    def test_el_tacho_del_activo_con_dos_compras_dice_que_hacer_y_no_toca_nada(self):
+        self._depositar(self.DOLARES, 2000)
+        self._comprar()
+        self._comprar(fecha="2026-04-07")
+        e = self.cuenta()
+        r = self.http.delete("/api/assets/history", params={"asset": "KO"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("de a uno", r.json()["detail"])
+        self.assertMismaCuenta(e, self.cuenta(), "frenó sin tocar nada")
+
+    def test_de_un_activo_que_no_existe_no_hay_nada_que_borrar(self):
+        self._ok(self.http.delete("/api/assets/history", params={"asset": "NADA"}), 404)
+
+    def test_la_compra_vieja_sin_receta_frena_con_el_motivo_verdadero(self):
+        """Una fila de antes de las recetas no se puede revertir: frena, pero diciendo
+        eso — no que "las cargadas a mano llegan en la próxima versión"."""
+        pid = self.conn.execute(
+            "INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity, "
+            "invested, entry_date) VALUES (?,?,?,0,50,10,500,'2025-01-10')",
+            (self.uid, self.DOLARES, "PEP")).lastrowid
+        self.conn.commit()
+        e = self.cuenta()
+        for puerta in (f"/api/movements/pos-{pid}", f"/api/positions/{pid}"):
+            r = self.http.delete(puerta)
+            self.assertEqual(r.status_code, 400, r.text)
+            self.assertEqual(r.json()["detail"], main._MANUAL_LEGACY_MSG, puerta)
+        self.assertMismaCuenta(e, self.cuenta(), "frenó sin tocar nada")
+
+    def test_el_efectivo_no_se_borra_por_ningun_tacho(self):
+        self._depositar(self.DOLARES, 1000)
+        caja = self.conn.execute(
+            "SELECT id FROM positions WHERE user_id=? AND is_cash=1", (self.uid,)).fetchone()["id"]
+        for puerta in (f"/api/movements/pos-{caja}", f"/api/positions/{caja}"):
+            r = self.http.delete(puerta)
+            self.assertEqual(r.status_code, 400, r.text)
+            self.assertEqual(r.json()["detail"], main._EFECTIVO_NO_SE_BORRA, puerta)
+
+    def test_una_sola_puerta_decide_como_se_borra_una_compra(self):
+        """Guardián: los dos borrados de una compra (importada y a mano) sólo se
+        llaman desde `_borrar_posicion` — y el de importadas, además, desde la ruta
+        de las filas importadas (`_route_tx_delete`), que ya sabe que lo es. Si un
+        tacho nuevo llama directo a uno de los dos, vuelve el error de hoy."""
+        arbol = ast.parse(open(MAIN, encoding="utf-8").read())
+        quien_llama = {"_delete_position_cascade": set(), "_delete_manual_position_cascade": set()}
+        for fn in ast.walk(arbol):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(fn):
+                    if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                            and n.func.id in quien_llama):
+                        quien_llama[n.func.id].add(fn.name)
+        # `ast.walk` de una función incluye sus funciones internas: `_do` vive
+        # adentro de `delete_movement`, así que un llamado ahí aparece con los dos nombres.
+        self.assertEqual(quien_llama["_delete_position_cascade"],
+                         {"_borrar_posicion", "_route_tx_delete"})
+        self.assertEqual(quien_llama["_delete_manual_position_cascade"], {"_borrar_posicion"})
+
+
+class ElDepositoCuyaPlataNoEstaNoSeBorra(ConRecetaBase):
+    """Un depósito cargado a mano no se borra si su plata ya no está en el efectivo.
+
+    Visto por Nico en la app el 2026-10-10: depositó en IOL, compró con esa plata y
+    borró el depósito → el efectivo quedó en −$990.000 con la compra en cartera y
+    el capital aportado en 0. Decidió frenarlo, igual que el "Deshacer" que dejaba
+    el saldo en rojo. Todo por HTTP, como la app."""
+
+    def _comprar(self, monto=500.0):
+        return self._ok(self.http.post("/api/positions", json={
+            "broker": self.DOLARES, "asset": "KO", "buy_price": monto / 10, "quantity": 10,
+            "invested": monto, "entry_date": date.today().isoformat()}))["id"]
+
+    def _depositos(self):
+        return [m for m in self._ok(self.http.get("/api/movements")) if m["type"] == "DEPOSIT"]
+
+    def _retirar(self, monto):
+        self._ok(self.http.post("/api/cash/flow", json={
+            "broker_name": self.DOLARES, "direction": "withdraw", "amount": monto}))
+
+    def test_con_la_plata_invertida_frena_y_no_toca_nada(self):
+        self._depositar(self.DOLARES, 1000)
+        pid = self._comprar(500)                                  # quedan 500 de efectivo
+        e = self.estado()
+        (dep,) = self._depositos()
+        r = self.http.delete(f"/api/movements/{dep['id']}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("quedaría en negativo", r.json()["detail"])
+        self.assertIn(self.DOLARES, r.json()["detail"])
+        self.assertMismaCuenta(e, self.estado(), "frenó sin tocar nada")
+        self.assertEqual(len(self._depositos()), 1)               # el depósito sigue ahí
+
+        # Lo que dice el cartel funciona: primero la compra, después el depósito.
+        self._ok(self.http.delete(f"/api/positions/{pid}"))
+        self._ok(self.http.delete(f"/api/movements/{dep['id']}"))
+        e2 = self.estado()
+        self.assertEqual(e2["cajas"][self.DOLARES][0], 0.0)
+        self.assertEqual(e2["aportado"], 0.0)
+
+    def test_para_corregir_el_monto_se_carga_antes_el_correcto(self):
+        self._depositar(self.DOLARES, 1000)                       # el mal cargado
+        self._comprar(500)
+        (mal,) = self._depositos()
+        self._depositar(self.DOLARES, 800)                        # el correcto
+        self._ok(self.http.delete(f"/api/movements/{mal['id']}"))
+        e = self.estado()
+        self.assertEqual(e["cajas"][self.DOLARES][0], 300.0)      # 800 − 500
+        self.assertEqual(e["aportado"], 800.0)
+
+    def test_si_la_plata_esta_el_deposito_se_borra_como_siempre(self):
+        self._depositar(self.DOLARES, 1000)
+        (dep,) = self._depositos()
+        self._ok(self.http.delete(f"/api/movements/{dep['id']}"))
+        self.assertEqual(self.estado()["cajas"][self.DOLARES][0], 0.0)
+
+    def test_tambien_frena_si_la_plata_se_retiro(self):
+        self._depositar(self.DOLARES, 1000)
+        self._retirar(400)
+        (dep,) = self._depositos()
+        e = self.estado()
+        r = self.http.delete(f"/api/movements/{dep['id']}")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertMismaCuenta(e, self.estado(), "frenó sin tocar nada")
+
+    def test_la_puerta_del_mes_entero_frena_igual(self):
+        """`me-…-dep` borra todo lo depositado a mano en el mes (la pantalla vieja):
+        es otra puerta al mismo depósito y tiene el mismo freno."""
+        self._depositar(self.DOLARES, 1000)
+        self._comprar(500)
+        self.conn.commit()
+        fila = self.conn.execute(
+            "SELECT id FROM monthly_entries WHERE user_id=? AND broker=? "
+            "AND COALESCE(manual_deposits, 0) > 0", (self.uid, self.DOLARES)).fetchone()
+        e = self.estado()
+        r = self.http.delete(f"/api/movements/me-{fila['id']}-dep")
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("quedaría en negativo", r.json()["detail"])
+        self.assertMismaCuenta(e, self.estado(), "frenó sin tocar nada")
+
+    def test_borrar_un_retiro_nunca_frena(self):
+        """Borrar un retiro DEVUELVE plata: no puede dejar el saldo en rojo."""
+        self._depositar(self.DOLARES, 1000)
+        self._retirar(400)
+        (ret,) = [m for m in self._ok(self.http.get("/api/movements")) if m["type"] == "WITHDRAW"]
+        self._ok(self.http.delete(f"/api/movements/{ret['id']}"))
+        self.assertEqual(self.estado()["cajas"][self.DOLARES][0], 1000.0)
+
+    def test_las_dos_puertas_que_borran_un_deposito_a_mano_tienen_el_freno(self):
+        """Guardián: quien reste un depósito a mano del efectivo pasa antes por el freno."""
+        fuente = open(MAIN, encoding="utf-8").read()
+        for fn in ("_borrar_una_carga_a_mano", "_borrar_lo_manual_del_mes"):
+            cuerpo = fuente.split(f"def {fn}(")[1].split("\ndef ")[0]
+            self.assertIn("_frenar_si_la_plata_del_deposito_no_esta(", cuerpo, fn)
+            self.assertLess(cuerpo.index("_frenar_si_la_plata_del_deposito_no_esta("),
+                            cuerpo.index("_adjust_broker_cash("), f"{fn}: el freno va antes de mover plata")
+
+
 class DeshacerElHistorialConservaLaReceta(ConRecetaBase):
     """Deshacer "borrar el historial de un activo" vuelve a insertar los cupones y
     dividendos que el borrado sacó. Hoy ahí sólo llegan filas importadas (con

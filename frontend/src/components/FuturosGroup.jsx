@@ -21,6 +21,7 @@ import { useToast } from './Toast'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
 import { parseNum } from '../utils/format'
+import { confirmar } from '../utils/confirmar'
 
 const hoy = () => hoyISO()
 const usd = (n) => (n < 0 ? '−' : '') + 'US$' + Math.abs(n).toLocaleString('es-AR',
@@ -75,7 +76,7 @@ export default function FuturosGroup({ reloadKey, brokers = [], onChange }) {
 
   const borrar = (f) => borrando.correr(() => borrarFuturo(f), f.id)
   async function borrarFuturo(f) {
-    if (!confirm(`¿Borrar la posición ${f.symbol}? No mueve plata: una posición abierta nunca tocó tu efectivo.`)) return
+    if (!await confirmar(`¿Borrar la posición ${f.symbol}? No mueve plata: una posición abierta nunca tocó tu efectivo.`)) return
     try {
       await api.delete(`/futures/${f.id}`)
       toast.push('Posición borrada')

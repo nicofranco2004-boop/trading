@@ -24,10 +24,10 @@ import YearReturnLine from '../components/YearReturnLine'
 import RangeTabs, { RANGES } from '../components/RangeTabs'
 import LazySparkline from '../components/LazySparkline'
 import AssetLogo from '../components/AssetLogo'
-import FlashValue from '../components/FlashValue'
 import RecalculoDeCartera from '../components/RecalculoDeCartera'
+import NumeroQueCambia, { textoDeDiferencia } from '../components/NumeroQueCambia'
+import { useNumeroQueCambia } from '../hooks/useNumeroQueCambia'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
-import AnimatedNumber from '../components/AnimatedNumber'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
@@ -356,6 +356,9 @@ function PersonalDashboard() {
   const recalculo = useRecalculoDeCartera({
     total: portfolioTotal, moneda: 'USD', listo: !loading && totalListo, pantalla: 'dashboard',
   })
+  // Los números del Dashboard ya son los de verdad (posiciones, meses y
+  // precios): recién ahí cada métrica muestra su cambio (NumeroQueCambia).
+  const metricasListas = !loading && totalListo
 
   // Dynamic insight line — uses largest gainers/losers from open positions
   const arsBrokerNames = useMemo(() => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)), [brokers])
@@ -939,13 +942,15 @@ function PersonalDashboard() {
           </InfoTooltip>
         </div>
         <div className="text-[30px] sm:text-[34px] leading-none font-semibold text-ink-0 tabular">
-          <PrivacyMask><FlashValue value={portfolioTotal}><AnimatedNumber value={portfolioTotal} format={fmt} /></FlashValue></PrivacyMask>
+          <PrivacyMask><NumeroQueCambia clave="dashboard:total" value={portfolioTotal} format={fmt}
+            moneda="USD" listo={metricasListas} desdeCero /></PrivacyMask>
         </div>
         <div className="flex items-center gap-2 flex-wrap mt-3.5 text-[12.5px]">
           <span className={`inline-flex items-center gap-1.5 font-medium tabular rounded-full px-2.5 py-1 ${totalReturnUsd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
             {totalReturnUsd >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
             <span>{totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}</span>
-            <span>{hidden ? '••••••' : fmtSigned(totalReturnUsd)}</span>
+            <NumeroQueCambia clave="dashboard:ganancia-total" value={totalReturnUsd} format={fmtSigned}
+              moneda="USD" listo={metricasListas} oculto={hidden} conDiferencia={false} />
             <span className="opacity-80">· {pctSigned(totalReturnPct)}</span>
           </span>
           {!hidden && (
@@ -958,7 +963,8 @@ function PersonalDashboard() {
           {!hidden && (
             <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
               <span className="text-ink-3">Aportado</span>
-              {fmt(netDeposited)}
+              <NumeroQueCambia clave="dashboard:aportado-chip" value={netDeposited} format={fmt}
+                moneda="USD" listo={metricasListas} conDiferencia={false} />
             </span>
           )}
         </div>
@@ -997,6 +1003,7 @@ function PersonalDashboard() {
         <KpiCell
           label="Capital aportado"
           value={fmt(netDeposited)}
+          clave="dashboard:aportado" num={netDeposited} format={fmt} moneda="USD" listo={metricasListas} oculto={hidden}
           sub="depósitos netos"
           infoAlign="left"
           info={
@@ -1013,6 +1020,7 @@ function PersonalDashboard() {
         <KpiCell
           label="P&L realizado"
           value={fmtSignedDirect(realizedPnlDisp)}
+          clave="dashboard:realizado" num={realizedPnlDisp} format={fmtSignedDirect} moneda={currency} listo={metricasListas} oculto={hidden}
           tone={realizedPnlDisp >= 0 ? 'pos' : 'neg'}
           sub="operaciones cerradas"
           info={
@@ -1029,6 +1037,7 @@ function PersonalDashboard() {
         <KpiCell
           label="P&L no realizado"
           value={fmtSigned(totalPnl)}
+          clave="dashboard:no-realizado" num={totalPnl} format={fmtSigned} moneda="USD" listo={metricasListas} oculto={hidden}
           tone={totalPnl >= 0 ? 'pos' : 'neg'}
           sub={`${pctSigned(totalPct)} sobre costo`}
           info={
@@ -1046,6 +1055,8 @@ function PersonalDashboard() {
           <KpiCell
             label={gapIsOutflow ? 'Diferencia sin explicar' : 'Dividendos e intereses'}
             value={fmt(Math.abs(accountingGap))}
+            clave={gapIsOutflow ? 'dashboard:diferencia' : 'dashboard:dividendos-intereses'}
+            num={Math.abs(accountingGap)} format={fmt} moneda="USD" listo={metricasListas} oculto={hidden}
             tone={gapIsOutflow ? undefined : 'pos'}
             sub={gapIsOutflow ? 'revisar — no son retiros' : 'no cargados como P&L'}
             info={
@@ -1602,19 +1613,37 @@ function VarCell({ label, data, fmtSigned, note = null, pctHero = false }) {
   )
 }
 
-function KpiCell({ label, value, sub, tone, info, infoAlign = 'right' }) {
+// Con `clave` + `num` + `format` la tarjeta muestra CÓMO CAMBIÓ después de que el
+// usuario hizo algo (cobró, vendió, depositó, borró): cuenta del valor que tenía
+// la última vez que se vio al de ahora, destella, y en el renglón de abajo dice
+// la diferencia unos segundos (ahí, y no al lado del número: no hay lugar y no
+// mueve la tarjeta). Sin cambio del usuario se ve como siempre. Ver
+// hooks/useNumeroQueCambia. Sin esas props, `value` tal cual.
+function KpiCell({ label, value, sub, tone, info, infoAlign = 'right',
+                   clave, num, format, moneda = 'USD', listo = true, oculto = false }) {
   const valueColor =
     tone === 'pos' ? 'text-rendi-pos' :
     tone === 'neg' ? 'text-rendi-neg' :
     'text-ink-0'
+  const vivo = clave != null && format != null
+  const n = useNumeroQueCambia({ clave: vivo ? clave : null, value: vivo ? num : NaN, moneda, listo, format })
+  const cambio = vivo && !oculto ? n.cambio : null
   return (
-    <div className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
+    <div ref={n.ref} className="bg-bg-1 border border-line rounded-xl px-4 py-3.5">
       <div className="flex items-center gap-1 leading-none">
         <div className="text-[12.5px] text-ink-2 font-medium">{label}</div>
         {info && <InfoTooltip size={11} align={infoAlign}>{info}</InfoTooltip>}
       </div>
-      <div className={`mt-2 font-semibold tabular num leading-none text-[19px] tracking-tight ${valueColor}`}>{value}</div>
-      <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>
+      <div className={`mt-2 font-semibold tabular num leading-none text-[19px] tracking-tight ${valueColor}`}>
+        {oculto ? '••••••' : vivo
+          ? <span key={n.destello?.n || 0} className={n.destello ? (n.destello.dir === 'up' ? 'flash-up' : 'flash-down') : ''}>{format(n.mostrado)}</span>
+          : value}
+      </div>
+      {cambio
+        ? <div className={`entra text-[11.5px] mt-1.5 leading-none truncate tabular font-medium ${cambio.delta >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+            {textoDeDiferencia(cambio.delta, format)} respecto de antes
+          </div>
+        : <div className="text-[11.5px] text-ink-3 mt-1.5 leading-none truncate">{sub}</div>}
     </div>
   )
 }

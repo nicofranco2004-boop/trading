@@ -5,6 +5,7 @@ import { HelmetProvider } from 'react-helmet-async'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ToastProvider } from './components/Toast'
+import ConfirmarHost from './components/ConfirmarHost'
 import { initAnalytics } from './utils/analytics'
 import { initMetaPixel } from './utils/metaPixel'
 import { isChunkLoadError, urlsAReparar, repararAssets } from './utils/chunkErrors'
@@ -98,6 +99,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <ToastProvider>
           <App />
+          {/* El "¿Seguro?" de Rendi, uno para toda la app (utils/confirmar.js). */}
+          <ConfirmarHost />
         </ToastProvider>
       </BrowserRouter>
     </HelmetProvider>

@@ -28,6 +28,7 @@ import Pill from './Pill'
 import UpgradeModal from './plan/UpgradeModal'
 import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { usd, ars, fmtUsd, fmtArs, pctSigned } from '../utils/format'
+import { confirmar } from '../utils/confirmar'
 
 function currencyTone(c) {
   switch (c) {
@@ -116,7 +117,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
         ? `\n\n⚠️ ATENCIÓN: este broker es PADRE de "${detail.sibling.name}" (${detail.sibling.currency}). Al borrar el padre, el sibling también se eliminará.`
         : ''
       const msg = `El broker "${b.name}" tiene data:\n\n  • ${parts.join('\n  • ')}${siblingWarning}\n\n¿Borrar TODO? Esta acción no se puede deshacer.`
-      if (!confirm(msg)) return
+      if (!await confirmar(msg)) return
       // 2do intento con force=true
       try {
         await api.delete(`/brokers/${b.id}?force=true`)

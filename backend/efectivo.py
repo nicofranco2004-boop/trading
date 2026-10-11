@@ -131,6 +131,11 @@ def mover(conn, uid: int, broker: str, delta: float, *,
       · True (el motor: compras, ventas, borrados, deshacer, el importador): el
         saldo puede quedar en rojo — es la señal visible de que falta cargar
         plata, y frenar ahí dejaría la operación a medias.
+        Dos excepciones que NO se resuelven acá sino antes, en main.py, porque
+        necesitan su propio motivo (decisión de Nico, 2026-10-10): borrar un
+        depósito cargado a mano (`_frenar_si_la_plata_del_deposito_no_esta`) y
+        deshacer el borrado de algo cargado a mano
+        (`_frenar_si_deja_efectivo_negativo`) frenan si dejarían el saldo en rojo.
       · False (lo que el usuario pide a mano: retirar, convertir): si un DÉBITO
         deja el saldo bajo cero, no se toca nada y se contesta 400 "Saldo
         insuficiente". Un CRÉDITO pasa siempre, aunque el saldo siga negativo

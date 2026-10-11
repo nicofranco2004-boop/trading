@@ -27,6 +27,7 @@ import { usd as usdFmt, ars as arsFmt, pctTxt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
 import BookComposition from '../components/advisor/BookComposition'
 import ClientPicker from '../components/advisor/ClientPicker'
+import { confirmar } from '../utils/confirmar'
 
 // El libro calcula en USD; la MONEDA DE DISPLAY sigue la elección del asesor
 // en Config → Tipos de cambio (mismo CurrencyContext que el resto de la app;
@@ -881,7 +882,7 @@ function ReportModal({ onClose }) {
   // Reversible a propósito — cortarlo por error no puede ser definitivo.
   async function toggleRevoke(r) {
     const cortar = (r.estado || 'activo') === 'activo'
-    if (cortar && !confirm(
+    if (cortar && !await confirmar(
       `¿Cortar el link del informe de ${r.client}?\n\n` +
       'Quien lo tenga deja de poder abrirlo. Podés reactivarlo después.')) return
     try {
