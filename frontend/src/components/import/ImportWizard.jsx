@@ -157,6 +157,145 @@ export function resolverFaltaTenencia(parserGroups, platform,
   return { label: g.tenencia_label || null, broker: g.platform_label || platform }
 }
 
+// Como compara nombres de broker el importador del servidor (`importing/pipeline.py`):
+// sin espacios al borde y sin distinguir mayúsculas.
+const claveDeBroker = nombre => String(nombre ?? '').trim().toLowerCase()
+
+/**
+ * El mapeo de columnas que se manda es el que la pantalla MUESTRA.
+ *
+ * El paso de mapeo dibuja cada dato con listas desplegables, y una lista sólo puede
+ * mostrar un valor que tenga entre sus opciones. Si el mapeo trae otro (de una
+ * plantilla guardada hace meses, por ejemplo), la lista muestra "— sin columna —" o
+ * "— valor fijo —" y el valor viaja igual, sin que nadie lo vea. Esta función deja
+ * el mapeo como se ve, y devuelve aparte lo que tuvo que sacar o cambiar:
+ *
+ *  · "Todo a un broker": el broker es el elegido en el paso anterior (el cartel
+ *    "Importando todo a: X"); en ese modo la fila Broker ni se muestra. Antes una
+ *    plantilla lo pisaba sin avisar: el cartel decía B y el archivo iba al broker A
+ *    con el que se había guardado → `brokerReemplazado`. Y si el mapeo repartía las
+ *    filas por una columna de broker, esa columna no se usa → `columnaDeBrokerIgnorada`.
+ *  · "Varios brokers": el broker fijo se elige de una lista con los brokers que
+ *    existen. Si el del mapeo ya no existe (se borró, o se renombró antes de que el
+ *    renombre actualizara las plantillas) se saca → `brokerQueYaNoExiste`: antes se
+ *    mandaba igual y el importador creaba de nuevo un broker con ese nombre (medido
+ *    el 2026-10-10: dos brokers donde había uno). Si no está tal cual pero existe
+ *    escrito con otras mayúsculas, queda con el nombre de la lista (el servidor lo
+ *    toma por ese broker). Sin ningún broker cargado el campo es un texto libre que
+ *    SÍ muestra el valor.
+ *  · Columnas: un título que el archivo no tiene se saca → `columnasQueNoEstan`
+ *    (con `headers` = los títulos del archivo). Antes la fila mostraba "— sin
+ *    columna —" y el servidor rechazaba el archivo por una columna que en pantalla
+ *    no estaba elegida.
+ *  · Valores fijos: sólo los de los datos que tienen casillero de valor fijo
+ *    (`campos` = los datos de Rendi, con `allow_default`). Un valor fijo de Fecha o
+ *    de Activo no se puede ver ni sacar en pantalla.
+ *
+ * La usan las cinco puertas del mapeo, todas con el mismo estado de pantalla
+ * (`loQueSeVe` en el asistente): al leer el archivo, al cargar una plantilla, al
+ * DIBUJAR el paso, al mandarlo y al guardarlo como plantilla. Dibujar, mandar y
+ * guardar salen de la misma cuenta. No modifica lo que recibe, y aplicarla dos veces
+ * da lo mismo que una. Nadie veía nada
+ * de esto porque las plantillas no cargaban nunca: pedirlas contestaba 404
+ * (2026-05-08 → 2026-10-11, backend/tests/test_plantillas_importador.py).
+ */
+export function mapeoQueSeVe(mapping, { importMode, singleBroker, brokers = [], headers = null, campos = null } = {}) {
+  // Sólo texto: un valor de otro tipo (de una plantilla escrita por fuera del
+  // asistente) no lo muestra ninguna lista ni casillero, y el servidor no lo guarda.
+  const soloTexto = parte => Object.fromEntries(
+    Object.entries(parte || {}).filter(([, valor]) => typeof valor === 'string' && valor))
+  const columns = soloTexto(mapping?.columns)
+  const defaults = soloTexto(mapping?.defaults)
+  let brokerQueYaNoExiste = null
+  let brokerReemplazado = null
+  let columnaDeBrokerIgnorada = null
+
+  if (!claveDeBroker(defaults.broker)) delete defaults.broker      // vacío o sólo espacios
+
+  if (importMode === 'single') {
+    // La fila Broker no se muestra: ni columna ni valor fijo propios.
+    if (columns.broker) columnaDeBrokerIgnorada = columns.broker
+    delete columns.broker
+    if (singleBroker) {
+      if (defaults.broker && claveDeBroker(defaults.broker) !== claveDeBroker(singleBroker)) {
+        brokerReemplazado = defaults.broker
+      }
+      defaults.broker = singleBroker
+    } else {
+      delete defaults.broker
+    }
+  } else if (defaults.broker && brokers.length > 0) {
+    // Primero el nombre exacto: "Balanz" y "balanz" pueden ser dos brokers distintos.
+    const enLaLista = brokers.find(b => b.name === defaults.broker)
+      || brokers.find(b => claveDeBroker(b.name) === claveDeBroker(defaults.broker))
+    if (enLaLista) {
+      defaults.broker = enLaLista.name
+    } else {
+      brokerQueYaNoExiste = defaults.broker
+      delete defaults.broker
+    }
+  }
+
+  const columnasQueNoEstan = []
+  if (Array.isArray(headers)) {
+    for (const [campo, titulo] of Object.entries(columns)) {
+      if (!headers.includes(titulo)) {
+        columnasQueNoEstan.push({ campo, titulo })
+        delete columns[campo]
+      }
+    }
+  }
+
+  if (Array.isArray(campos)) {
+    for (const campo of Object.keys(defaults)) {
+      const dato = campos.find(c => c.id === campo)
+      if (dato && !dato.allow_default) delete defaults[campo]
+    }
+  }
+
+  return {
+    mapping: { columns, defaults },
+    brokerQueYaNoExiste, brokerReemplazado, columnaDeBrokerIgnorada, columnasQueNoEstan,
+  }
+}
+
+/**
+ * Lo que hay que contarle a la persona cuando una plantilla no quedó tal cual se
+ * guardó: `[{ id, texto, campo }]`, uno por cosa. `campo` es la fila del mapeo donde
+ * se arregla (el aviso se va cuando la persona toca esa fila) o null si no se
+ * arregla ahí. Lista vacía si la plantilla quedó como estaba.
+ */
+export function avisosDePlantilla({ brokerQueYaNoExiste, brokerReemplazado, columnaDeBrokerIgnorada,
+                                    columnasQueNoEstan = [] }, { singleBroker, campos = null } = {}) {
+  const nombreDe = campo => (campos || []).find(c => c.id === campo)?.label || campo
+  const avisos = []
+  if (columnaDeBrokerIgnorada) {
+    avisos.push({ id: 'columna-de-broker', campo: null,
+      texto: `Esta plantilla repartía las filas entre brokers según la columna «${columnaDeBrokerIgnorada}». Ahora va todo a «${singleBroker}»: si tu archivo mezcla brokers, volvé al inicio y elegí «Mi archivo mezcla varios brokers».` })
+  } else if (brokerReemplazado) {
+    avisos.push({ id: 'broker-reemplazado', campo: null,
+      texto: `Esta plantilla se guardó importando a «${brokerReemplazado}». Ahora estás importando a «${singleBroker}»: si no es lo que querías, volvé al inicio y cambiá el broker.` })
+  }
+  if (brokerQueYaNoExiste) {
+    avisos.push({ id: 'broker-no-existe', campo: 'broker',
+      texto: `La plantilla usaba «${brokerQueYaNoExiste}» como broker fijo, y ese broker ya no existe (se borró o cambió de nombre). Elegí otro en la fila Broker; para que quede, guardá la plantilla otra vez.` })
+  }
+  for (const { campo, titulo } of columnasQueNoEstan) {
+    avisos.push({ id: `columna-${campo}`, campo,
+      texto: `La plantilla usaba la columna «${titulo}» para ${nombreDe(campo)}, y este archivo no la tiene: ${nombreDe(campo)} quedó sin columna.` })
+  }
+  return avisos
+}
+
+/**
+ * La lista de brokers cuando llega del servidor. Si tardó y la persona ya creó un
+ * broker desde el asistente, ese broker no está en lo que llega (se pidió antes):
+ * se conserva, sin repetir ninguno.
+ */
+export function brokersAlLlegarLaLista(enPantalla, llegados) {
+  return [...llegados, ...enPantalla.filter(p => !llegados.some(b => b.id === p.id))]
+}
+
 // Broker que crea cada parser específico (hardcoded en el registry del backend).
 // La foto de tenencia se aplica sobre ese broker; para parsers específicos el
 // wizard no pide elegir broker (singleBroker queda vacío) → resolvemos por formato.
@@ -254,6 +393,10 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   const [brokers, setBrokers] = useState([])
   // Templates de mapping guardados — se cargan al montar y se actualizan al guardar.
   const [savedTemplates, setSavedTemplates] = useState([])
+  // Lo que cambió al cargar una plantilla (ver `avisosDePlantilla`). Se muestra en
+  // el paso de mapeo. El aviso de una fila se va cuando la persona toca esa fila;
+  // todos, al cargar otra plantilla, leer otro archivo o generar la vista previa.
+  const [avisosPlantilla, setAvisosPlantilla] = useState([])
   // Modo: 'single' = todas las filas son de un broker (no hace falta columna);
   // 'general' = el archivo mezcla varios brokers (mapeo desde columna).
   const [importMode, setImportMode] = useState('single')
@@ -273,9 +416,11 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
       .then(g => setParserGroups(withBlockedPlatforms(g)))
       .catch(() => setParserGroups(withBlockedPlatforms([])))
     api.get('/brokers').then(bs => {
-      setBrokers(bs)
-      if (!singleBroker && bs.length > 0) setSingleBroker(bs[0].name)
-    }).catch(() => setBrokers([]))
+      // Con `prev`: si la lista tarda y la persona ya creó un broker desde acá, ni
+      // se lo saca de la lista ni se lo cambia por el primero alfabético.
+      setBrokers(prev => brokersAlLlegarLaLista(prev, bs))
+      if (bs.length > 0) setSingleBroker(prev => prev || bs[0].name)
+    }).catch(() => {})
     api.get('/imports/mappings').then(setSavedTemplates).catch(() => setSavedTemplates([]))
   }, [])
 
@@ -290,7 +435,10 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   async function saveTemplate(name) {
     if (!name?.trim()) return
     try {
-      const saved = await api.post('/imports/mappings', { name: name.trim(), mapping })
+      // Se guarda lo que la pantalla muestra, no el estado crudo (que puede traer
+      // un broker que la lista ya no tiene).
+      const saved = await api.post('/imports/mappings',
+        { name: name.trim(), mapping: loQueSeVe(mapping).mapping })
       setSavedTemplates(t => {
         const others = t.filter(x => x.name !== saved.name)
         return [...others, saved].sort((a, b) => a.name.localeCompare(b.name))
@@ -310,12 +458,19 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
     }
   }
 
+  // El mapeo como lo muestra la pantalla, con el estado de AHORA (`mapeoQueSeVe`).
+  // `archivo` es lo que devolvió la lectura del archivo (sus títulos y los datos de
+  // Rendi): por defecto el que ya está cargado.
+  const loQueSeVe = (m, archivo = inspect) => mapeoQueSeVe(m, {
+    importMode, singleBroker, brokers, headers: archivo?.headers, campos: archivo?.rendi_fields,
+  })
+
   function loadTemplate(template) {
     if (!template) return
-    setMapping({
-      columns: { ...(template.mapping?.columns || {}) },
-      defaults: { ...(template.mapping?.defaults || {}) },
-    })
+    const cargado = loQueSeVe(template.mapping)
+    setMapping(cargado.mapping)
+    setAvisosPlantilla(avisosDePlantilla(cargado, { singleBroker, campos: inspect?.rendi_fields }))
+    setError(null)
   }
 
   function reset() {
@@ -381,21 +536,6 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
       else next.add(rowIndex)
       return next
     })
-  }
-
-  // Aplica el broker single al mapping.defaults cuando el modo lo amerita.
-  // Sobrescribe cualquier columna mapeada para 'broker' (single-mode manda).
-  function applyImportMode(currentMapping) {
-    if (importMode === 'single' && singleBroker) {
-      const cols = { ...(currentMapping.columns || {}) }
-      delete cols.broker
-      return {
-        columns: cols,
-        defaults: { ...(currentMapping.defaults || {}), broker: singleBroker },
-      }
-    }
-    // En modo general no tocamos lo que el auto-detect haya sugerido para broker.
-    return currentMapping
   }
 
   async function downloadTemplate() {
@@ -535,7 +675,8 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
         columns: { ...(data.suggested_mapping?.columns || {}) },
         defaults: { ...(data.suggested_mapping?.defaults || {}) },
       }
-      setMapping(applyImportMode(initial))
+      setMapping(loQueSeVe(initial, data).mapping)
+      setAvisosPlantilla([])
       setStep(STEP_MAP)
     } catch (ex) {
       setError(ex.message || 'Error al leer el archivo.')
@@ -545,11 +686,13 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
   }
 
   async function confirmMapping() {
-    // Validar required fields
+    // Lo que se manda es lo que el paso está dibujando: las dos cosas salen de
+    // `loQueSeVe(mapping)` con el mismo estado. Y la validación mira ESO.
+    const { mapping: aEnviar } = loQueSeVe(mapping)
     const missing = (inspect?.rendi_fields || []).filter(f => {
       if (!f.required) return false
-      const hasCol = !!mapping.columns?.[f.id]
-      const hasDef = !!mapping.defaults?.[f.id]
+      const hasCol = !!aEnviar.columns?.[f.id]
+      const hasDef = !!aEnviar.defaults?.[f.id]
       return !hasCol && !hasDef
     })
     if (missing.length > 0) {
@@ -562,11 +705,15 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
       const fd = new FormData()
       files.forEach(f => fd.append('files', f))
       fd.append('format', 'rendi_generic')
-      fd.append('mapping', JSON.stringify(mapping))
+      fd.append('mapping', JSON.stringify(aEnviar))
       // route_by_currency lo decide el backend solo (auto-detección por moneda).
       const data = await api.upload('/imports/preview', fd)
       setPreview(data)
+      setAvisosPlantilla([])
       setStep(STEP_PREVIEW)
+      // La vista previa crea los brokers nuevos que nombre el archivo: si la persona
+      // vuelve al mapeo, la lista de "valor fijo" los tiene que tener.
+      api.get('/brokers').then(setBrokers).catch(() => {})
     } catch (ex) {
       setError(ex.message || 'Error al previsualizar el archivo.')
     } finally {
@@ -815,7 +962,7 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           {step === STEP_MAP && inspect && (
             <MapStep
               inspect={inspect}
-              mapping={mapping}
+              mapping={loQueSeVe(mapping).mapping}
               setMapping={setMapping}
               brokers={brokers}
               importMode={importMode}
@@ -825,6 +972,8 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
               onSaveTemplate={saveTemplate}
               onDeleteTemplate={deleteTemplate}
               onLoadTemplate={loadTemplate}
+              avisos={avisosPlantilla}
+              onTocarMapeo={campo => setAvisosPlantilla(a => a.filter(x => x.campo !== campo))}
             />
           )}
 
@@ -1579,8 +1728,11 @@ function UploadStep({ faltaTenencia = null, sourceType, platform, format, parser
 }
 
 
-function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBroker, useCurrencyRouting,
-                    savedTemplates = [], onSaveTemplate, onDeleteTemplate, onLoadTemplate }) {
+// Exportado para poder dibujarlo en un test y comparar lo que muestra con lo que se
+// manda (plantillaDeColumnas.test.js). `mapping` llega ya como se ve (`loQueSeVe`).
+export function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBroker, useCurrencyRouting,
+                    savedTemplates = [], onSaveTemplate, onDeleteTemplate, onLoadTemplate,
+                    avisos = [], onTocarMapeo }) {
   const headers = inspect.headers || []
   const allFields = inspect.rendi_fields || []
   const sampleRows = inspect.sample_rows || []
@@ -1592,6 +1744,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
   const [templateName, setTemplateName] = useState('')
 
   function setColumn(fieldId, header) {
+    onTocarMapeo?.(fieldId)
     setMapping(m => {
       const cols = { ...(m.columns || {}) }
       if (header) cols[fieldId] = header
@@ -1600,6 +1753,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
     })
   }
   function setDefault(fieldId, value) {
+    onTocarMapeo?.(fieldId)
     setMapping(m => {
       const defs = { ...(m.defaults || {}) }
       if (value) defs[fieldId] = value
@@ -1621,6 +1775,15 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
               Filas en USD → al sub-broker <span className="font-medium">{singleBroker} · USD</span> (auto-creado).
             </div>
           )}
+        </div>
+      )}
+
+      {avisos.length > 0 && (
+        <div className="flex items-start gap-2 px-3 py-2 rounded bg-rendi-warn/10 border border-rendi-warn/30 text-rendi-warn text-sm">
+          <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+          <div className="space-y-1 min-w-0 break-words">
+            {avisos.map(a => <p key={a.id}>{a.texto}</p>)}
+          </div>
         </div>
       )}
 
@@ -1667,6 +1830,7 @@ function MapStep({ inspect, mapping, setMapping, brokers, importMode, singleBrok
                 }
               }}
               placeholder="Nombre (ej: IBKR template)"
+              maxLength={80}
               autoFocus
               className="bg-bg-2 dark:bg-bg-1/40 border border-line-2 rounded-md px-2 py-1 text-xs text-ink-0 placeholder-ink-3"
             />

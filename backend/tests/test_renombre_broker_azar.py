@@ -4,8 +4,9 @@ Los escenarios armados de `test_renombre_broker_recetas.py` prueban cada receta 
 separado. Esto mezcla: una secuencia al azar de acciones reales por HTTP (depositar,
 cargar posiciones, vender, operaciones a mano, futuros, cobros de bonos, dividendos,
 "No lo cobré", archivar y restaurar bonos, editar una posición, importar archivos que
-se pisan, "Editar y rehacer" un import, comprar y vender dólares, plazos fijos, borrar
-—también desde Movimientos— y deshacer)
+se pisan, "Editar y rehacer" un import, guardar una plantilla de columnas e importar
+con ella, comprar y vender dólares, plazos fijos, borrar —también desde Movimientos—
+y deshacer)
 sobre una cuenta con tres brokers (uno en pesos con su "· USD" y otro aparte), y la
 corre DOS veces con la misma semilla: una con renombres metidos en pasos al azar y
 otra sin renombrar. Las respuestas de cada paso y el estado final (por PAPEL de cada
@@ -33,7 +34,10 @@ except ImportError:                                  # corrido suelto desde test
 
 
 def _semillas():
-    crudo = os.environ.get("SEMILLAS_RENOMBRE", "1,2,3,4,5,6")
+    # La 23 es la primera en la que una plantilla se guarda, el broker se renombra y
+    # después se importa con ella: si el renombre deja de seguir a las plantillas,
+    # cambian los NÚMEROS de esa corrida (medido el 2026-10-11 con el sabotaje).
+    crudo = os.environ.get("SEMILLAS_RENOMBRE", "1,2,3,4,5,6,23")
     out = []
     for parte in crudo.split(","):
         if "-" in parte:
@@ -285,6 +289,45 @@ def _importar_archivo(c, rng):
         data={"format": "rendi_generic", "broker": nombre}))
 
 
+# La plantilla de columnas del importador guarda el broker fijo de ese momento; se usa
+# pasos después, cuando el broker ya puede llamarse de otra manera (o cuando el vecino
+# tomó el nombre que quedó libre: la plantilla sigue al BROKER, no al nombre).
+# Cada broker importa SU archivo (otra moneda, otro activo, otro depósito), como los
+# de `ARCHIVOS`. No es un detalle: la huella con que el importador reconoce una fila
+# ya importada lleva el NOMBRE del broker y se cuenta para toda la cuenta, así que si
+# los dos brokers importaran las mismas filas y el vecino tomara el nombre que el
+# primero dejó libre, las suyas saldrían como "repetidas" y no entrarían. Es un
+# problema real y anterior a las plantillas (auditoría 2026-10-11, queda como tarea
+# aparte); con archivos iguales esta prueba lo encontraría por azar, sin poder decir
+# que es eso.
+ARCHIVO_DEL_BANCO = {"padre": dict(moneda="ARS", activo="MELI", deposito=100000),
+                     "otro": dict(moneda="USD", activo="TSLA", deposito=70000)}
+
+
+def _guardar_plantilla(c, rng):
+    papel = rng.choice(("padre", "otro"))
+    return c.pedir("post", "/api/imports/mappings", json={"name": f"plantilla {papel}", "mapping": {
+        "columns": dict(base.COLUMNAS_DEL_BANCO),
+        "defaults": {"broker": c.nombre_de(papel)}}}).status_code
+
+
+def _importar_con_plantilla(c, rng):
+    r = c.pedir("get", "/api/imports/mappings")
+    if r.status_code != 200:
+        return f"pedir las plantillas → {r.status_code}"
+    if not r.json():
+        # Todavía no hay ninguna: se guarda, para que la use un paso de más adelante
+        # (lo que se quiere medir es guardar → renombrar → usar).
+        return f"sin plantillas: guardé una ({_guardar_plantilla(c, rng)})"
+    plantilla = rng.choice(r.json())                 # vienen ordenadas por nombre
+    papel = plantilla["name"].split()[-1]
+    return _confirmar_vista_previa(c, c.pedir(
+        "post", "/api/imports/preview",
+        files=[("files", ("banco.csv", base.io.BytesIO(
+            base.archivo_del_banco(**ARCHIVO_DEL_BANCO[papel])), "text/csv"))],
+        data={"format": "rendi_generic", "mapping": base.json.dumps(plantilla["mapping"])}))
+
+
 def _rehacer_import(c, rng):
     # Por orden de creación (rowid): el id del lote es un texto al azar.
     lotes = c.filas("SELECT id FROM import_batches WHERE user_id=? AND status='confirmed' "
@@ -347,6 +390,7 @@ ACCIONES = ((_depositar, 3), (_comprar, 5), (_vender, 4), (_operacion_a_mano, 2)
             (_no_lo_cobre, 1), (_archivar_bonos, 2), (_restaurar_bonos, 2),
             (_editar_posicion, 1), (_borrar_operacion, 4), (_borrar_posicion, 3), (_deshacer, 4),
             (_importar_archivo, 3), (_rehacer_import, 1), (_comprar_o_vender_dolares, 3),
+            (_guardar_plantilla, 1), (_importar_con_plantilla, 3),
             (_plazo_fijo, 1), (_cobrar_plazo_fijo, 2), (_borrar_en_movimientos, 3))
 
 

@@ -69,6 +69,32 @@ _PUEDE_QUEDAR = {
 }
 
 
+# Partes de un JSON que NO guardan brokers aunque una clave diga "broker", con el
+# motivo: (tabla, columna) → clave de primer nivel que se saltea. Todo el resto de esa
+# columna se revisa igual.
+_NO_SON_BROKERS = {
+    # La plantilla de columnas del importador: `columns` es {campo de Rendi: TÍTULO de
+    # la columna en el archivo de la persona}. `columns.broker` = "Cuenta" (o como se
+    # llame la columna) es un título, y cambiarlo rompe la plantilla. El broker fijo
+    # va en `defaults.broker`, que sí se revisa (escenarios `plantilla_…`).
+    ("import_mappings", "mapping_json"): "columns",
+}
+
+
+def _sin_lo_que_no_es_broker(tabla: str, columna: str, valor):
+    clave = _NO_SON_BROKERS.get((tabla, columna))
+    if clave is None or not isinstance(valor, str):
+        return valor
+    try:
+        d = json.loads(valor)
+    except ValueError:
+        return valor
+    if isinstance(d, dict) and clave in d:
+        d = {k: v for k, v in d.items() if k != clave}
+        return json.dumps(d, ensure_ascii=False)
+    return valor
+
+
 def _csv(*filas: str) -> bytes:
     return (HDR + "".join(f + "\n" for f in filas)).encode("utf-8")
 
@@ -114,7 +140,7 @@ def _apariciones(uid: int, nombre: str) -> list:
                 for c in cols:
                     if (t, c) in _PUEDE_QUEDAR:
                         continue
-                    v = f[c]
+                    v = _sin_lo_que_no_es_broker(t, c, f[c])
                     if isinstance(v, str) and any(nombre in s for s in _textos(v)):
                         out.append(f"{t}.{c} (id {f['id'] if 'id' in cols else '?'}): {v[:160]}")
     finally:
@@ -699,6 +725,121 @@ def _armar_dos_archivos_que_se_pisan(cta):
         conn.close()
 
 
+# ── Las plantillas de columnas del importador ("Guardar mapeo actual") ────────
+# La plantilla guarda el broker FIJO al que van todas las filas (`defaults.broker`).
+# Con el nombre viejo ahí, importar con la plantilla después de renombrar volvía a
+# crear un broker con ese nombre y metía el archivo entero en él (medido el
+# 2026-10-10: dos brokers donde había uno, y el renombrado vacío). Acá: guardar la
+# plantilla, [renombrar], pedirla como la pide el asistente e importar con ella.
+# (Hasta el 2026-10-11 pedirla contestaba 404 — ver test_plantillas_importador.py.)
+COLUMNAS_DEL_BANCO = {"fecha": "Dia", "tipo": "Mov", "activo": "Papel", "cantidad": "Cant",
+                      "precio": "Px", "monto": "Total", "moneda": "Mon"}
+
+
+def archivo_del_banco(moneda="USD", titulo_extra=None, activo="MELI", deposito=100000) -> bytes:
+    """Un archivo con títulos propios y SIN el broker en ninguna fila. `titulo_extra`
+    le agrega una columna vacía con ese título."""
+    cab = "Dia,Mov,Papel,Cant,Px,Total,Mon" + (f",{titulo_extra}" if titulo_extra else "")
+    cola = "," if titulo_extra else ""
+    return (f"{cab}\n"
+            f"2026-08-01,DEPOSITO,,,,{deposito},{moneda}{cola}\n"
+            f"2026-08-03,COMPRA,{activo},10,150,1500,{moneda}{cola}\n").encode("utf-8")
+
+
+def importar_con_plantilla(cta, plantilla: dict, archivo: bytes) -> list:
+    """Vista previa + confirmar con el mapeo de una plantilla: los dos códigos."""
+    r = cta.pedir("post", "/api/imports/preview",
+                  files=[("files", ("banco.csv", io.BytesIO(archivo), "text/csv"))],
+                  data={"format": "rendi_generic", "mapping": json.dumps(plantilla)})
+    out = [_codigo(r)]
+    if r.status_code == 200:
+        out.append(_codigo(cta.pedir("post", "/api/imports/confirm",
+                                     json={"session_id": r.json()["session_id"]})))
+    return out
+
+
+def _plantilla_guardada(cta, broker, columnas=None):
+    cta.ok("post", "/api/imports/mappings", json={"name": "mi banco", "mapping": {
+        "columns": dict(columnas or COLUMNAS_DEL_BANCO), "defaults": {"broker": broker}}})
+
+
+def _armar_plantilla(cta):
+    _plantilla_guardada(cta, cta.nombre)
+    return {"archivo": archivo_del_banco()}
+
+
+# La trampa: el archivo tiene una columna que se llama IGUAL que el broker (vacía en
+# todas las filas, así que manda el broker fijo). `columns.broker` es ese título: si
+# el renombre lo cambia, la plantilla busca una columna que el archivo no tiene.
+def _armar_plantilla_con_columna_que_se_llama_como_el_broker(cta):
+    _plantilla_guardada(cta, cta.nombre, dict(COLUMNAS_DEL_BANCO, broker=VIEJO))
+    return {"archivo": archivo_del_banco(titulo_extra=VIEJO)}
+
+
+# El broker fijo es el "· USD": se renombra el PADRE y la plantilla lo tiene que seguir.
+def _armar_plantilla_al_sub_broker_usd(cta):
+    _plantilla_guardada(cta, cta.sub)
+    return {"archivo": archivo_del_banco()}
+
+
+# Una plantilla guardada ANTES del 2026-10-11 puede tener el broker escrito con otras
+# mayúsculas o con espacios al borde (el asistente mandaba lo tipeado y se guardaba
+# tal cual). El importador la toma igual por ese broker, así que el renombre la tiene
+# que seguir. Hoy guardar la deja bien escrita (test_plantillas_importador.py), por
+# eso acá la fila se planta como quedaba antes.
+def _plantar_plantilla_de_antes(cta, broker_como_estaba_escrito):
+    conn = main.get_db()
+    try:
+        conn.execute("INSERT INTO import_mappings (user_id, name, mapping_json) VALUES (?,?,?)",
+                     (cta.uid, "mi banco", json.dumps(
+                         {"columns": dict(COLUMNAS_DEL_BANCO),
+                          "defaults": {"broker": broker_como_estaba_escrito}}, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _armar_plantilla_escrita_de_otra_manera(cta):
+    escrito = f"  {VIEJO.upper()} "
+    assert escrito.strip() != VIEJO and escrito.strip().lower() == VIEJO.lower()
+    _plantar_plantilla_de_antes(cta, escrito)
+    return {"archivo": archivo_del_banco()}
+
+
+# Lo mismo con el "· USD": se renombra el PADRE, y la plantilla nombra al hijo con
+# otras mayúsculas. El renombre lleva los dos pares (padre e hijo) y busca en ambos.
+def _armar_plantilla_al_sub_usd_escrita_de_otra_manera(cta):
+    escrito = f" {cta.sub.upper()}  "
+    assert escrito.strip() != cta.sub and escrito.strip().lower() == cta.sub.lower()
+    _plantar_plantilla_de_antes(cta, escrito)
+    return {"archivo": archivo_del_banco()}
+
+
+# La pantalla que quedó abierta: el asistente manda como broker fijo el nombre que el
+# broker tenía cuando se abrió. No es un nombre que diga el archivo: es una referencia
+# a ESE broker, así que el import va al broker, se llame como se llame hoy. (Antes
+# volvía a crear un broker con el nombre viejo y metía el archivo ahí.)
+def _armar_pantalla_abierta(cta):
+    return {"broker_en_pantalla": cta.nombre, "archivo": archivo_del_banco()}
+
+
+def _actuar_importar_desde_la_pantalla_abierta(cta, ctx):
+    return importar_con_plantilla(cta, {"columns": dict(COLUMNAS_DEL_BANCO),
+                                        "defaults": {"broker": ctx["broker_en_pantalla"]}},
+                                  ctx["archivo"])
+
+
+def _armar_pantalla_abierta_en_el_sub_usd(cta):
+    return {"broker_en_pantalla": cta.sub, "archivo": archivo_del_banco()}
+
+
+def _actuar_importar_con_la_plantilla(cta, ctx):
+    r = cta.pedir("get", "/api/imports/mappings")
+    if r.status_code != 200 or not r.json():
+        return [f"pedir las plantillas → {r.status_code} {r.text[:80]}"]
+    return [200] + importar_con_plantilla(cta, r.json()[0]["mapping"], ctx["archivo"])
+
+
 def _armar_edicion_grupo(cta):
     cta.depositar(100000)
     cta.posicion("GGAL", 10, 5000)
@@ -769,6 +910,24 @@ ESCENARIOS = [
               _actuar_deshacer_op, registros={"manual_op"}),
     Escenario("deshacer_edicion_de_posicion", _armar_edicion_grupo, _actuar_deshacer_grupo,
               recetas={"manual_position", "fifo_sell"}, registros={"position_group_edit"}),
+    Escenario("plantilla_del_importador", _armar_plantilla, _actuar_importar_con_la_plantilla,
+              moneda="USD"),
+    Escenario("plantilla_con_columna_que_se_llama_como_el_broker",
+              _armar_plantilla_con_columna_que_se_llama_como_el_broker,
+              _actuar_importar_con_la_plantilla, moneda="USD"),
+    Escenario("plantilla_al_sub_broker_usd", _armar_plantilla_al_sub_broker_usd,
+              _actuar_importar_con_la_plantilla, sub_usd=True),
+    Escenario("plantilla_con_el_broker_escrito_de_otra_manera",
+              _armar_plantilla_escrita_de_otra_manera, _actuar_importar_con_la_plantilla,
+              moneda="USD"),
+    Escenario("plantilla_al_sub_broker_usd_escrito_de_otra_manera",
+              _armar_plantilla_al_sub_usd_escrita_de_otra_manera,
+              _actuar_importar_con_la_plantilla, sub_usd=True),
+    Escenario("importar_desde_una_pantalla_que_quedo_abierta", _armar_pantalla_abierta,
+              _actuar_importar_desde_la_pantalla_abierta, moneda="USD"),
+    Escenario("importar_al_sub_broker_usd_desde_una_pantalla_que_quedo_abierta",
+              _armar_pantalla_abierta_en_el_sub_usd,
+              _actuar_importar_desde_la_pantalla_abierta, sub_usd=True),
 ]
 
 
