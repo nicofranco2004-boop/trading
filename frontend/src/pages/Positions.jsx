@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { Plus, DollarSign, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
@@ -19,7 +19,7 @@ import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
-import PendingCashflowsBanner from '../components/PendingCashflowsBanner'
+import CuponesPorCobrar from '../components/CuponesPorCobrar'
 import DividendosPorCobrar from '../components/DividendosPorCobrar'
 import RecalculoDeCartera from '../components/RecalculoDeCartera'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
@@ -28,7 +28,9 @@ import { isBondPosition } from '../utils/tickers'
 import { buildPositionActions } from '../utils/positionActions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
-import { detectPendingCashflows } from '../utils/pendingCashflows'
+import ConvertMenuModal from '../components/cash/ConvertMenuModal'
+import { accionDelPedido, cajasParaConvertir } from '../utils/registrar'
+import { detectPendingCashflows, esPagoDelBono, esCobroAMano, cobradoDelBonoUsd, fxDeCobroAMano } from '../utils/pendingCashflows'
 import { getBondMeta, formatBondType, formatCouponLabel, formatCouponTooltip } from '../utils/bondMeta'
 import InlineAIButton from '../components/ai/InlineAIButton'
 import { track } from '../utils/track'
@@ -124,7 +126,17 @@ function PositionsDesktop() {
   const [cargaLista, setCargaLista] = useState(false)
   const toast = useToast()
   const navigate = useNavigate()
+  const location = useLocation()
   const [modal, setModal] = useState(null)
+  // Lo que pide el botón «Registrar» del menú lateral (`/posiciones?action=…`,
+  // ver utils/registrar.js): se guarda acá hasta que hay con qué atenderlo.
+  //   - datosListos: llegaron posiciones y brokers (los selectores de venta,
+  //     efectivo y conversión se arman con esas listas). Ahí se atiende.
+  //   - cargaTerminada: la primera carga terminó, bien o mal, precios incluidos.
+  //     Sin datos y terminada = falló: se avisa en vez de esperar para siempre.
+  const [pedido, setPedido] = useState(null)
+  const [datosListos, setDatosListos] = useState(false)
+  const [cargaTerminada, setCargaTerminada] = useState(false)
   // Edición a nivel grupo: la fila agregada que se está editando + su contexto
   // (ventas registradas / lotes importados) para los avisos del modal.
   const [groupTarget, setGroupTarget] = useState(null)
@@ -133,9 +145,11 @@ function PositionsDesktop() {
   const [pfFormOpen, setPfFormOpen] = useState(false)
   const [pfReloadKey, setPfReloadKey] = useState(0)
   const [pfTotals, setPfTotals] = useState({})  // {ARS, USD} reportado por el grupo PF
-  // Modales nuevos del header (3 botones: Compra, Venta, Cash):
+  // Modales del botón «Registrar» del menú lateral (antes, los 3 botones del
+  // header: Compra, Venta, Cash):
   //   - sell-selector: lista todas las posiciones no-cash y deja elegir cuál vender
   //   - cash-menu: selector broker + direction (deposit/withdraw) antes de abrir cashflow
+  //   - convert-menu: de qué efectivo sale la conversión pesos ↔ dólares
   // Estos NO modifican el modal classic — el del top puede coexistir con los antiguos.
   const [form, setForm] = useState(EMPTY_POS)
   const [sellForm, setSellForm] = useState({ broker: '', asset: '', currency: 'USDT', quantity: '', exit_price: '', tc_venta: '', date: '', commissions: '' })
@@ -235,10 +249,24 @@ function PositionsDesktop() {
   // Posiciones de bono expandidas inline (mostrar meta + historial cobranzas).
   // Keyeado por `${broker}:${asset}` para que múltiples bonos puedan estar abiertos.
   const [expandedBonds, setExpandedBonds] = useState(() => new Set())
-  // Listado plano de ops Cupón/Amortización (cobranzas de bonos). Se carga
-  // de /operations al montar y se refresca con loadAll() después de un INSERT.
-  // Lo agrupamos por `${broker}:${asset}` vía useMemo en `bondCashflowsByKey`.
-  const [bondOps, setBondOps] = useState([])
+  // Todos los cobros de renta (Cupón/Amortización cargados a mano + Dividendo/
+  // Interés/Renta importados). Se carga de /operations al montar y se refresca
+  // con loadAll() después de un INSERT. Con ESTA lista se decide si un pago del
+  // cronograma ya entró (bandeja de pendientes y ✓ del cronograma): un cupón
+  // importado se guarda como 'Dividendo', y si la bandeja sólo miraba 'Cupón'
+  // lo ofrecía como pendiente y confirmarlo anotaba la plata dos veces.
+  const [cobrosRenta, setCobrosRenta] = useState([])
+  // ¿Llegaron las operaciones y los "No lo cobré"? Si alguno de los dos pedidos
+  // falla NO se calculan pendientes: con la lista vacía, la ficha del bono
+  // pintaba en ámbar todos los pagos de dos años como "sin cobrar".
+  const [cobrosListos, setCobrosListos] = useState(false)
+  // Sólo los cargados a mano (Cupón/Amortización): alimentan `bondCashflowsByKey`
+  // (totales "ya cobraste" y el aporte al P&L de la fila). Los importados quedan
+  // afuera de ESOS totales a propósito: su `pnl_usd` ya está en dólares y el de
+  // los manuales en moneda nativa, y la cuenta de abajo los divide por el TC.
+  const bondOps = useMemo(
+    () => cobrosRenta.filter(esCobroAMano),
+    [cobrosRenta])
   // Phase 3C: serie diaria de CER para el ajuste de capital de los bonos.
   // La serie vive en un hook con cache de sesión (`useCerSeries`), compartido
   // con las pantallas de eventos: antes se pedía sólo acá y sólo al expandir un
@@ -326,101 +354,46 @@ function PositionsDesktop() {
   // Phase 3E — Inbox de cobranzas pendientes (detección + acciones)
   // ────────────────────────────────────────────────────────────────────────
   // Compara cronograma teórico vs operations vs skips para listar pagos
-  // pendientes de confirmar. Usa los mismos bondOps + bondSkips ya cargados.
+  // pendientes de confirmar. Usa los cobrosRenta + bondSkips ya cargados.
   const pendingCashflows = useMemo(() => {
     // Con `cerSeries`: el pago pendiente de un bono CER se detecta y se PRE-LLENA
     // con el monto ajustado, que es el que el usuario cobró. Sin ella salía en
     // nominal —hasta 37× por debajo— y el `prefill` tiene prioridad absoluta en
     // el modal, así que ese número era el que terminaba escrito.
-    return detectPendingCashflows(positions, bondOps, bondSkips, { cerSeries })
-  }, [positions, bondOps, bondSkips, cerSeries])
+    // `brokers`: el cupón en dólares de un bono comprado en pesos se acredita en
+    // la otra pata de la cuenta ("Cocos · USD"); sin la lista no se reconoce.
+    if (!cobrosListos) return []
+    return detectPendingCashflows(positions, cobrosRenta, bondSkips, { cerSeries, brokers })
+  }, [positions, cobrosRenta, bondSkips, cerSeries, brokers, cobrosListos])
 
   // Fechas pendientes por bono (`broker:asset` → Set de fechas ISO) — el
   // timeline del detalle las marca en ámbar ("venció sin confirmar").
+  // Un pago pendiente es de TODA la cuenta (lotes de las dos patas): se anota
+  // bajo cada pata que tiene lotes, y la fila junta las de sus patas
+  // (`pendientesDeLaFila`). Con una sola llave (`broker:asset`) la fila de la otra
+  // pata —y la que fusiona las dos— mostraba "sin registro" en vez de ámbar.
   const pendingDatesByKey = useMemo(() => {
     const m = new Map()
     for (const it of pendingCashflows) {
-      const k = `${it.broker}:${it.asset}`
-      if (!m.has(k)) m.set(k, new Set())
-      m.get(k).add(it.date)
+      const patas = new Set([it.broker, ...(it.lotes || []).map(l => l.broker)])
+      for (const b of patas) {
+        const k = `${b}:${it.asset}`
+        if (!m.has(k)) m.set(k, new Set())
+        m.get(k).add(it.date)
+      }
     }
     return m
   }, [pendingCashflows])
-
-  // Confirmación DIRECTA desde el inbox (1 click, sin modal) — v2 de bonos.
-  // SOLO cupones y sin cross-currency: el monto teórico está en la moneda del
-  // bono; si el broker cobra en otra (bono USD en broker ARS) o hay que
-  // decrementar VN (amortizaciones), el flujo cae al modal ("Revisar").
-  // Freno por renglón: el cupón confirmado es un ALTA, y el servidor no
-  // distingue un doble click de dos cobros. Antes lo frenaba un estado, que
-  // apaga el botón recién en el dibujo siguiente; ver hooks/useEnVuelo.
-  const confirmando = useEnVuelo()
-  const confirmPendingDirect = (item) => confirmando.correr(async () => {
-    try {
-      await api.post('/bonds/cashflow', {
-        broker: item.broker,
-        asset: item.asset,
-        flow_type: 'coupon',
-        amount: item.coupon || item.total,
-        date: item.date,
-        commissions: 0,
-        notes: 'Confirmado desde el inbox (monto teórico del cronograma)',
-        decrement_quantity: false,
-      })
-      toast.push(`${item.asset} · cupón del ${item.date} registrado · +${item.currency} ${(item.coupon || item.total).toFixed(2).replace('.', ',')}`, { type: 'success' })
-      await anotarCobro({ texto: `cupón de ${item.asset}`,
-        monto: `+${item.currency} ${(item.coupon || item.total).toFixed(2).replace('.', ',')}` })
-    } catch (e) {
-      toast.push(`No se pudo registrar: ${e.message}`, { type: 'error' })
+  const pendientesDeLaFila = (p) => {
+    const out = new Set()
+    for (const b of (p._brokers && p._brokers.length ? p._brokers : [p.broker])) {
+      for (const d of (pendingDatesByKey.get(`${b}:${p.asset}`) || [])) out.add(d)
     }
-  }, item.key)
-
-  // Click "Revisar y confirmar" / "Ajustar" en un item del inbox → abre
-  // BondCashflowModal con la posición Y el pago concreto que se está confirmando.
-  //
-  // El prefill NO es opcional acá: sin él, el modal cae a nextPaymentForPosition,
-  // que por definición devuelve el próximo pago FUTURO (getRemainingPayments
-  // filtra `date > hoy`). Eso registraba la operation con la fecha del pago
-  // SIGUIENTE — el pendiente (fecha pasada) nunca matcheaba dentro de los ±14
-  // días de tolerancia y seguía apareciendo para siempre, mientras el pago
-  // futuro quedaba marcado como cobrado antes de ocurrir.
-  //
-  // Pega en todo lo que NO toma el atajo de confirmPendingDirect: amortizaciones,
-  // pagos mixtos y — el caso argentino típico — bonos en dólares cuyo broker
-  // acredita en pesos.
-  function confirmPendingCashflow(item) {
-    const flowType = item.kind === 'amortizacion' ? 'amortization' : 'coupon'
-    openBondCashflow(item.position, flowType, {
-      date: item.date,
-      // Los montos del item ya vienen escalados a la qty del lote.
-      // 'mixto' se registra como Cupón (comportamiento existente) → el monto
-      // es el crédito completo que recibió el user (cupón + amortización).
-      amount: flowType === 'amortization' ? item.amort : item.total,
-      // Face en VN a decrementar. Devolver capital es a la par, así que el
-      // monto amortizado ES el nominal amortizado.
-      faceAmortized: item.amort > 0 ? item.amort : undefined,
-    })
+    return out
   }
 
-  // Click "Saltar" en un item → POST /bonds/cashflow/skip + actualiza state.
-  async function skipPendingCashflow(item) {
-    try {
-      await api.post('/bonds/cashflow/skip', {
-        broker: item.broker,
-        asset: item.asset,
-        date: item.date,
-        reason: null,  // futuro: prompt al user "¿por qué?" (default, vendido, etc.)
-      })
-      // Actualizar state local sin re-fetch (más responsive)
-      setBondSkips(prev => [...prev, {
-        broker: item.broker, asset: item.asset, date: item.date, reason: null,
-        created_at: new Date().toISOString(),
-      }])
-      toast.push(`${item.asset} · pago del ${item.date} saltado`, { type: 'success' })
-    } catch (e) {
-      toast.push(`No se pudo saltar: ${e.message}`, { type: 'error' })
-    }
-  }
+  // La confirmación de los cobros vive en <CuponesPorCobrar> (bandeja de bonos,
+  // gemela de la de dividendos): confirmar, editar, "No lo cobré" y deshacer.
 
   // Tras registrar un cupón/amortización: recargar positions (cash actualizado)
   // + refrescar el listado de cobranzas para el bond expandable.
@@ -444,7 +417,7 @@ function PositionsDesktop() {
     // recién ahí el total es el de verdad (ver useRecalculoDeCartera).
     // Si la carga falla, NO queda "lista": se recordaría un total de 0 o a
     // medias como el último visto (auditoría 2026-10-09).
-    loadAll().then(ok => { if (ok) setCargaLista(true) })
+    loadAll().then(ok => { if (ok) setCargaLista(true); setCargaTerminada(true) })
     // Precios cada 90 s, sólo con la pestaña a la vista (relojVisible, el
     // mismo reloj de la cinta y las secciones de mercado). Antes era un
     // setInterval que seguía pidiendo con la pestaña oculta.
@@ -484,8 +457,8 @@ function PositionsDesktop() {
         api.get('/brokers'),
         api.get('/dolar').catch(() => null),
         api.get('/snapshots?days=30').catch(() => []),
-        api.get('/operations').catch(() => []),
-        api.get('/bonds/cashflow/skips').catch(() => []),
+        api.get('/operations').catch(() => null),
+        api.get('/bonds/cashflow/skips').catch(() => null),
       ])
       setPositions(pos)
       setConfig(cfg)
@@ -493,8 +466,11 @@ function PositionsDesktop() {
       setBrokersRegistry(bkrs)   // parent-aware isArUsdBroker (robusto al rename)
       setDolar(dol)
       setSnapshots(snaps || [])
-      setBondOps((ops || []).filter(o => o.op_type === 'Cupón' || o.op_type === 'Amortización'))
-      setBondSkips(skips || [])
+      // Si un pedido falló se conserva lo que había (ver `cobrosListos`).
+      if (ops) setCobrosRenta(ops.filter(esPagoDelBono))
+      if (skips) setBondSkips(skips)
+      setCobrosListos(!!ops && !!skips)
+      setDatosListos(true)
       latestRef.current = { pos, cfg, bkrs }
       await fetchPrices(pos, cfg, bkrs)
       return true
@@ -536,7 +512,10 @@ function PositionsDesktop() {
       })
       const entry = map.get(key)
       entry.ops.push(op)
-      const amt = +op.pnl_usd || 0
+      // Lo que ENTRÓ a la caja. Desde 2026-10-09 va en `quantity` (como el
+      // importador) y `pnl_usd` es la ganancia; los cobros viejos sólo tienen
+      // `pnl_usd`, que entonces era el cobro entero.
+      const amt = +(op.quantity ?? op.pnl_usd) || 0
       entry.total += amt
 
       // Conversión a USD: fx_to_usd stampado en op (Phase 3D), o fallback.
@@ -548,15 +527,9 @@ function PositionsDesktop() {
       // llegaba siempre NULL o 1.0 daba igual, pero en cuanto el backend empiece a
       // sellar el MEP del día, multiplicar por 1250 convierte un cupón de $95.000
       // en US$118 millones.
-      let fx = op.fx_to_usd
-      if (fx == null || fx <= 0) {
-        entry.hasLegacyOps = true
-        if (op.currency === 'ARS' || (op.currency == null && amt > 1000)) {
-          fx = tcValuacion || 1
-        } else {
-          fx = 1.0
-        }
-      }
+      // Misma regla que lo cobrado "aparte" (`fxDeCobroAMano`): una sola.
+      if (!(op.fx_to_usd > 0)) entry.hasLegacyOps = true
+      const fx = fxDeCobroAMano(op, tcValuacion)
       const amtUsd = amt / fx
       entry.totalUsd += amtUsd
       // Pata USD de ESTA op: las filas del historial tienen que mostrar el mismo
@@ -565,7 +538,10 @@ function PositionsDesktop() {
 
       // Aporte al P&L: cupones = 100%; amorts = sólo la ganancia realizada.
       let pnlContrib = amt
-      if (op.op_type === 'Amortización') {
+      if (op.op_type === 'Amortización' && op.quantity != null) {
+        // Cobro nuevo: el servidor ya guardó la ganancia (cobro − costo).
+        pnlContrib = +op.pnl_usd || 0
+      } else if (op.op_type === 'Amortización') {
         const cbConsumed = op.cost_basis_consumed
         if (cbConsumed != null && cbConsumed >= 0) {
           pnlContrib = amt - cbConsumed  // puede ser negativo si compró premium
@@ -962,12 +938,56 @@ function PositionsDesktop() {
     setModal('cashflow')
   }
 
-  // ─── Top-level CTAs (botones del PageHeader: Compra, Venta, Cash) ──────
+  // ─── Entradas del botón «Registrar» del menú lateral ───────────────────
   // Entrypoints generales que NO requieren contexto previo (a diferencia
   // de los 3-puntitos por fila). Pensados para users que quieren registrar
   // una operación sin tener que buscar la posición en la grilla primero.
+  // Fueron los botones del encabezado (Compra, Venta, Cash) hasta 2026-10-11.
 
-  function openSellFromHeader() {
+  // El pedido llega por la dirección. Se guarda y la dirección se limpia en el
+  // acto: recargar la página no tiene que volver a abrir el formulario.
+  useEffect(() => {
+    const accion = accionDelPedido(location.search)
+    if (!accion) return
+    setPedido(accion)
+    navigate('/posiciones', { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search])
+
+  useEffect(() => {
+    if (!pedido) return
+    if (!datosListos) {
+      // La carga falló: sin las listas no hay formulario que abrir, y callarse
+      // dejaría al usuario mirando la Cartera sin saber qué pasó.
+      if (cargaTerminada) {
+        setPedido(null)
+        toast.push('No pudimos cargar tu cartera, así que no se abrió el formulario. Tocá Reintentar y volvé a elegir qué registrar.', { type: 'error', duration: 8000 })
+      }
+      return
+    }
+    setPedido(null)
+    atenderPedido(pedido)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedido, datosListos, cargaTerminada])
+
+  function atenderPedido(accion) {
+    if (!brokers.length) {
+      toast.push('Primero sumá el broker donde tenés tus inversiones.', { type: 'info' })
+      return
+    }
+    if (accion === 'comprar') openAdd()
+    // Con una sola tenencia la venta va directo al formulario, que sugiere el
+    // precio de hoy. Si los precios todavía no llegaron (el pedido se atiende
+    // apenas hay posiciones, sin esperarlos) pasa por el selector: para cuando
+    // el usuario la elige ya están, y no se queda mirando la Cartera sin que
+    // pase nada.
+    else if (accion === 'vender') openSellFromHeader({ directoSiHayUna: cargaTerminada })
+    else if (accion === 'depositar') openCashMenu('deposit')
+    else if (accion === 'retirar') openCashMenu('withdraw')
+    else if (accion === 'convertir') openConvertMenu()
+  }
+
+  function openSellFromHeader({ directoSiHayUna = true } = {}) {
     setSellPickFrom(null)          // desde el header se listan TODAS
     setSellQuery('')
     // Filtramos posiciones cash (no se "venden", se retiran). Si hay 1 sola
@@ -977,21 +997,33 @@ function PositionsDesktop() {
       setModal('sell-empty')
       return
     }
-    if (sellable.length === 1) {
+    if (sellable.length === 1 && directoSiHayUna) {
       openSell(sellable[0])
       return
     }
     setModal('sell-selector')
   }
 
-  function openCashMenuFromHeader() {
-    // Pre-popular con el primer broker disponible. El user puede cambiar
-    // broker y direction adentro del modal antes de continuar.
+  function openCashMenu(direction) {
+    // Pre-popular con el primer broker disponible y con lo que se eligió en el
+    // menú (depósito o retiro). El user puede cambiar broker y direction
+    // adentro del modal antes de continuar.
     setCashMenuForm({
       broker: brokers[0]?.name || '',
-      direction: 'deposit',
+      direction,
     })
     setModal('cash-menu')
+  }
+
+  // «Movimiento»: pesos ↔ dólares adentro de una cuenta. Con una sola caja
+  // convertible va directo al formulario; con varias (o ninguna) pregunta.
+  function openConvertMenu() {
+    const cajas = cajasParaConvertir(positions, brokers)
+    if (cajas.length === 1) {
+      openConvert(cajas[0].p, cajas[0].direction)
+      return
+    }
+    setModal('convert-menu')
   }
 
   function continueCashMenu() {
@@ -1108,12 +1140,11 @@ function PositionsDesktop() {
     // la clave de una sola pata, una fila de cuenta unificada se ORDENABA por
     // un P&L sin cupones mientras MOSTRABA uno con cupones: la tabla quedaba
     // ordenada por un número que no estaba en pantalla.
-    const pnlContrib = isBond
-      ? (bondSummaryDeLaFila(p, bondCashflowsByKey)?.pnlContribution || 0)
-      : 0
-    const basePnl = isARS ? c.pnlArs : c.pnl
-    const adjPnl = (basePnl != null && pnlContrib) ? basePnl + pnlContrib : basePnl
-    const adjPnlPct = (isBond && adjPnl != null && p.invested > 0) ? adjPnl / p.invested : c.pnlPct
+    // La ganancia de la fila es SÓLO por precio (no realizada): lo cobrado del
+    // bono es realizado y se muestra aparte, nunca sumado (misma regla que los
+    // dividendos, 2026-10-09). Ordena por el mismo número que muestra la celda.
+    const adjPnl = isARS ? c.pnlArs : c.pnl
+    const adjPnlPct = c.pnlPct
     return {
       value:  isARS ? c.valueUsd : c.value,
       pnl:    adjPnl,
@@ -1769,6 +1800,41 @@ function PositionsDesktop() {
   const heroPctDisp = isArsDisp ? heroPctArs : heroPct
 
   if (brokers.length === 0) {
+    // «Todavía no llegó» no es «no tiene brokers». Hasta 2026-10-11 esta
+    // pantalla le decía "sumá tu primer broker" a cualquiera mientras la lista
+    // viajaba —y para siempre si la carga fallaba—. Con el servidor lento se
+    // veía varios segundos, justo lo que encuentra quien llega desde el botón
+    // «Registrar» esperando un formulario.
+    if (!datosListos) {
+      return (
+        <div className="page-shell-xwide">
+          <PageHeader eyebrow="Posiciones / Activas" title="Tu cartera en vivo" />
+          {cargaTerminada ? (
+            <div className="bg-bg-1 border border-line rounded-xl mt-6">
+              <EmptyState
+                title="No pudimos cargar tu cartera"
+                description="Tus datos están guardados: suele ser la conexión. Probá de nuevo."
+                action={
+                  <button
+                    type="button"
+                    onClick={() => loadAll().then(ok => { if (ok) setCargaLista(true) })}
+                    className="inline-flex items-center gap-2 bg-data-violet hover:bg-data-violet/90 text-white text-sm font-medium rounded-sm px-4 py-2 transition-colors"
+                  >
+                    Reintentar
+                  </button>
+                }
+              />
+            </div>
+          ) : (
+            <div className="space-y-3 mt-6" aria-live="polite" aria-busy="true">
+              <div className="h-32 w-full bg-bg-1 rounded-xl esqueleto" />
+              <div className="h-24 w-2/5 bg-bg-1 rounded-xl esqueleto" />
+              <div className="h-64 w-full bg-bg-1 rounded-xl esqueleto" />
+            </div>
+          )}
+        </div>
+      )
+    }
     return (
       <div className="page-shell-xwide">
         <PageHeader
@@ -1921,51 +1987,19 @@ function PositionsDesktop() {
         title="Tu cartera en vivo"
         meta={meta}
         action={
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* 3 CTAs principales: Compra (primary violet) + Venta + Cash.
-                Sin estos botones, el user tenía que buscar la posición en
-                la grilla y usar los 3-puntitos. Atajos rápidos desde el
-                header — alineado con copy del checklist y BrokerInstructions. */}
-            <button
-              type="button"
-              onClick={() => openAdd()}
-              className="inline-flex items-center gap-1.5 bg-data-violet hover:bg-data-violet/90 text-white font-medium rounded-sm px-3 py-2 text-xs transition-colors press"
-            >
-              <Plus size={13} strokeWidth={2} />
-              Registrar compra
-            </button>
-            <button
-              type="button"
-              onClick={openSellFromHeader}
-              className="inline-flex items-center gap-1.5 bg-bg-1 hover:bg-bg-2 border border-line hover:border-line-3 text-ink-1 font-medium rounded-sm px-3 py-2 text-xs transition-colors"
-            >
-              <DollarSign size={13} strokeWidth={2} />
-              Registrar venta
-            </button>
-            <button
-              type="button"
-              onClick={openCashMenuFromHeader}
-              className="inline-flex items-center gap-1.5 bg-bg-1 hover:bg-bg-2 border border-line hover:border-line-3 text-ink-1 font-medium rounded-sm px-3 py-2 text-xs transition-colors"
-            >
-              <Wallet size={13} strokeWidth={2} />
-              Cash
-            </button>
-            <ExportCsvButton resource="positions" source="positions_header" variant="compact" />
-          </div>
+          // Registrar compra · Registrar venta · Cash vivían acá: ahora son el
+          // botón violeta «Registrar» del menú lateral (RegistrarMenu), que se
+          // ve desde cualquier pantalla y abre estos mismos formularios.
+          <ExportCsvButton resource="positions" source="positions_header" variant="compact" />
         }
       />
 
-      {/* Phase 3E — Inbox de cobranzas pendientes. Sólo se renderea cuando hay
-          al menos una pendiente. Va arriba del hero para máxima visibilidad —
-          pagos no registrados distorsionan el P&L total. */}
-      <PendingCashflowsBanner
-        pending={pendingCashflows}
-        brokers={brokers}
-        onConfirm={confirmPendingCashflow}
-        onConfirmDirect={confirmPendingDirect}
-        confirmando={confirmando.activo}
-        onSkip={skipPendingCashflow}
-      />
+      {/* Cobros de bonos que ya pagaron y el usuario no anotó (cupón y, si el bono
+          amortiza, la cuota de capital). Gemela de la bandeja de dividendos y el
+          MISMO componente en Cartera de celular (R6): datos y acciones en
+          hooks/useCuponesPorCobrar. */}
+      <CuponesPorCobrar positions={positions} brokers={brokers} cerSeries={cerSeries} cerStale={cerStale}
+        mep={tcMepStrict} onCambio={(cobro) => (cobro ? anotarCobro(cobro) : loadAll())} className="mb-6" />
 
       {/* Dividendos que las empresas ya pagaron y el usuario no anotó. Mismo
           componente en Cartera de celular (R6): datos y acciones en
@@ -2407,10 +2441,6 @@ function PositionsDesktop() {
                       const c = calcRowTabla(p, section.isPair)
                       // Moneda de ESTA fila (null si fusiona las dos patas).
                       const rowCcy = p._multiCcy ? null : _ccyDeLote(p, isARS)
-                      // P&L "con cupones": sumamos cobranzas (en ARS, misma moneda
-                      // que el broker) al P&L mark-to-market. Es el "total return"
-                      // del bono — captura tanto la variación de precio como los
-                      // flujos cobrados durante la tenencia.
                       const isBond = isBondPosition(p) && !p.is_cash
                       // La clave incluye TODAS las patas del grupo: una fila de cuenta
                       // unificada fusiona el mismo bono de la pata pesos y la dólar, y
@@ -2419,22 +2449,16 @@ function PositionsDesktop() {
                       // y se comía los cupones: US$1.298 de diferencia con la misma
                       // cuenta separada (medido 2026-09-22, ver bondSummaryMerge.js).
                       const bondKey = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
-                      const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey) : null
-                      // Phase 3D sub-fix: P&L augmentado usa pnlContribution
-                      // (sólo cupones + ganancia realizada de amorts), NO el
-                      // cash total — la devolución de capital de los amorts
-                      // no es ganancia.
-                      const cobranzasCash = bondSummary?.total || 0
-                      const pnlContrib = bondSummary?.pnlContribution || 0
-                      const pnlContribUsd = bondSummary?.pnlContributionUsd || 0
-                      const adjPnlArs = (c.pnlArs != null && pnlContrib)
-                        ? c.pnlArs + pnlContrib
-                        : c.pnlArs
-                      // Pata USD del P&L augmentado: usamos c.pnlUsd (exacto de calcARS)
-                      // + la contribución de cobranzas ya convertida a USD (no re-dividir).
-                      const adjPnlUsd = (c.pnlUsd != null && pnlContribUsd)
-                        ? c.pnlUsd + pnlContribUsd
-                        : c.pnlUsd
+                      const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey, brokers) : null
+                      // La ganancia de la fila es SÓLO por precio (no realizada). Lo
+                      // cobrado del bono —cupones y la ganancia de las amortizaciones,
+                      // a mano o importados— es REALIZADO y va aparte, debajo, nunca
+                      // sumado: misma regla que los dividendos (Nico, 2026-10-09).
+                      // Hasta acá se sumaba sólo lo cargado a mano: un cupón importado
+                      // no aparecía y uno confirmado sí, para el mismo bono.
+                      const cobradoUsd = isBond ? cobradoDelBonoUsd(cobrosRenta, p, brokers, tcValuacion) : 0
+                      const adjPnlArs = c.pnlArs
+                      const adjPnlUsd = c.pnlUsd
                       const adjPnlDisp = isArsDisp ? adjPnlArs : adjPnlUsd
                       // El % debe derivar de la MISMA pata (ARS/USD) que el monto
                       // mostrado (adjPnlDisp). En 'purchase' ARS% ≠ USD%. Vista USD
@@ -2475,9 +2499,7 @@ function PositionsDesktop() {
                       // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
                       // se ocultan (redundantes con las columnas ya-en-USD).
                       const arsColSpan = showDetail ? (isArsDisp ? 13 : 10) : 9
-                      const pnlTooltip = (isBond && pnlContrib !== 0)
-                        ? `P&L = mark-to-market (${c.pnlArs >= 0 ? '+' : '-'}ARS ${ars(Math.abs(c.pnlArs || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}ARS ${ars(Math.abs(pnlContrib))} de ganancia realizada (cupones + parte de ganancia de amorts). Cash total cobrado: ARS ${ars(cobranzasCash)}.`
-                        : undefined
+                      const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
                       return (
                         <Fragment key={rowKey}>
                         <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
@@ -2618,7 +2640,7 @@ function PositionsDesktop() {
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-3 text-xs tabular`}>{p.tc_compra ?? '—'}</td>}
                           {showDetail && isArsDisp && <td className={`${tdClass} text-ink-2 tabular`}>{c.invUsd != null ? (hidden ? '••••••' : fmtUsd(c.invUsd)) : '—'}</td>}
                           <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (isArsDisp ? (c.valueArs != null ? <FlashValue value={c.valueArs}>{fmtArs(c.valueArs)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>) : (c.valueUsd != null ? <FlashValue value={c.valueUsd}>{fmtUsd(c.valueUsd)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>))}{!isLot && <PesoEnCartera valor={isArsDisp ? c.valueArs : c.valueUsd} total={totalPesoDisp} nombre={section.label} />}</td>
-                          <td className={`${tdClass} tabular`} title={pnlTooltip}>
+                          <td className={`${tdClass} tabular`}>
                             <span className="inline-flex items-center gap-1.5">
                               <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>
                                 {hidden ? '••••••' : (adjPnlDisp != null ? `${adjPnlDisp >= 0 ? '+' : '-'}${isArsDisp ? `ARS ${ars(Math.abs(adjPnlDisp))}` : `USD ${usd(Math.abs(adjPnlDisp))}`}` : '—')}
@@ -2626,10 +2648,12 @@ function PositionsDesktop() {
                               {adjPnlPct != null && (
                                 <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${adjPnlPct >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(adjPnlPct)}</span>
                               )}
-                              {!hidden && isBond && pnlContrib !== 0 && (
-                                <span className="text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
-                              )}
                             </span>
+                            {!hidden && isBond && !isLot && Math.abs(cobradoUsd) >= 0.005 && (
+                              <span className="block text-[11px] text-rendi-pos tabular normal-case" title="Ganancia realizada: lo que ya cobraste de este bono (cupones y lo ganado al amortizar). No está sumado a la ganancia por precio.">
+                                aparte: {cobradoDisp >= 0 ? '+' : '−'}{isArsDisp ? `ARS ${ars(Math.abs(cobradoDisp))}` : `USD ${usd(Math.abs(cobradoDisp))}`} cobrado
+                              </span>
+                            )}
                           </td>
                           {showDetail && isArsDisp && <td className={`${tdClass} font-medium tabular ${colorClass(c.pnlUsd)}`}>{hidden ? '••••••' : (c.pnlUsd != null ? `${c.pnlUsd >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnlUsd))}` : '—')}</td>}
                           <td className={`${tdClass} tabular`}>
@@ -2661,7 +2685,9 @@ function PositionsDesktop() {
                             filaFusionada={filaSinUnaPata(p)}
                             colSpan={arsColSpan}
                             summary={bondSummary}
-                            pendingDates={pendingDatesByKey.get(bondKey)}
+                            pendingDates={pendientesDeLaFila(p)}
+                            cobros={cobrosRenta}
+                            brokers={brokers}
                             isARS={true}
                             isArsDisp={isArsDisp}
                             tcValuacion={tcValuacion}
@@ -2741,13 +2767,12 @@ function PositionsDesktop() {
                     // Ver el comentario equivalente en la tabla ARS: la clave lleva
                     // TODAS las patas, porque la fila de cuenta unificada no tiene una.
                     const bondKey = `${(p._brokers || [p.broker]).join('+')}:${p.asset}`
-                    const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey) : null
-                    // Phase 3D sub-fix: ver comentario equivalente en tabla ARS.
-                    const cobranzasCash = bondSummary?.total || 0
-                    const pnlContrib = bondSummary?.pnlContribution || 0
-                    const adjPnl = (c.pnl != null && pnlContrib)
-                      ? c.pnl + pnlContrib
-                      : c.pnl
+                    const bondSummary = isBond ? bondSummaryDeLaFila(p, bondCashflowsByKey, brokers) : null
+                    // La ganancia de la fila es SÓLO por precio; lo cobrado va aparte
+                    // (ver el comentario equivalente en la tabla ARS).
+                    const cobradoUsd = isBond ? cobradoDelBonoUsd(cobrosRenta, p, brokers, tcValuacion) : 0
+                    const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
+                    const adjPnl = c.pnl
                     // P&L en la moneda de DISPLAY: calcUSDT sólo da USD → la pata ARS
                     // se deriva ×tcValuacion. El % (abajo) es adimensional, no se convierte.
                     const adjPnlDisp = isArsDisp ? (adjPnl != null ? adjPnl * tcValuacion : null) : adjPnl
@@ -2772,9 +2797,6 @@ function PositionsDesktop() {
                       : null
                     const dvUsd = dvFor(p, false)
                     const expanded = isBond && !isLot && expandedBonds.has(bondKey)
-                    const pnlTooltip = (isBond && pnlContrib !== 0)
-                      ? `P&L = mark-to-market (${c.pnl >= 0 ? '+' : '-'}USD ${usd(Math.abs(c.pnl || 0))}) + ${pnlContrib >= 0 ? '+' : '-'}USD ${usd(Math.abs(pnlContrib))} de ganancia realizada (cupones + ganancia de amorts). Cash total cobrado: USD ${usd(cobranzasCash)}.`
-                      : undefined
                     return (
                       <Fragment key={rowKey}>
                       <tr className={`border-b border-line/50 hover:bg-bg-2/40 ${p.is_cash ? 'bg-bg-2/30' : ''} ${isLot ? 'bg-bg-2/15' : ''}`}>
@@ -2859,7 +2881,7 @@ function PositionsDesktop() {
                         <td className={`${tdClass} text-ink-1 tabular`}>{c.price != null ? <FlashValue value={c.price}>{isArsDisp ? fmtArs(c.price * tcValuacion) : fmtUsd(c.price)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>}</td>
                         {showDetail && <td className={`${tdClass} text-ink-1 tabular`}>{hidden ? '••••••' : (isArsDisp ? fmtArs((c.investedUsd ?? p.invested) * tcValuacion) : fmtUsd(c.investedUsd ?? p.invested))}</td>}
                         <td className={`${tdClass} text-ink-0 font-medium tabular`}>{hidden ? '••••••' : (c.value != null ? <FlashValue value={c.value}>{isArsDisp ? fmtArs(c.value * tcValuacion) : fmtUsd(c.value)}</FlashValue> : <span title="Cargando precio" className="text-ink-3">—</span>)}{!isLot && <PesoEnCartera valor={c.value != null && isArsDisp ? c.value * tcValuacion : c.value} total={totalPesoDisp} nombre={section.label} />}</td>
-                        <td className={`${tdClass} tabular`} title={pnlTooltip}>
+                        <td className={`${tdClass} tabular`}>
                           <span className="inline-flex items-center gap-1.5">
                             <span className={`font-semibold ${colorClass(adjPnlDisp)}`}>
                               {hidden ? '••••••' : (adjPnlDisp != null ? `${adjPnlDisp >= 0 ? '+' : '-'}${isArsDisp ? `ARS ${ars(Math.abs(adjPnlDisp))}` : `USD ${usd(Math.abs(adjPnlDisp))}`}` : '—')}
@@ -2867,10 +2889,12 @@ function PositionsDesktop() {
                             {adjPnlPct != null && (
                               <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${adjPnlPct >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>{pctSigned(adjPnlPct)}</span>
                             )}
-                            {!hidden && isBond && pnlContrib !== 0 && (
-                              <span className="text-[10px] font-mono text-rendi-accent normal-case" title={pnlTooltip}>·c</span>
-                            )}
                           </span>
+                          {!hidden && isBond && !isLot && Math.abs(cobradoUsd) >= 0.005 && (
+                            <span className="block text-[11px] text-rendi-pos tabular normal-case" title="Ganancia realizada: lo que ya cobraste de este bono (cupones y lo ganado al amortizar). No está sumado a la ganancia por precio.">
+                              aparte: {cobradoDisp >= 0 ? '+' : '−'}{isArsDisp ? `ARS ${ars(Math.abs(cobradoDisp))}` : `USD ${usd(Math.abs(cobradoDisp))}`} cobrado
+                            </span>
+                          )}
                         </td>
                         <td className={`${tdClass} tabular`}>
                           {dvUsd ? (
@@ -2901,7 +2925,9 @@ function PositionsDesktop() {
                           filaFusionada={filaSinUnaPata(p)}
                           colSpan={showDetail ? 10 : 9}
                           summary={bondSummary}
-                          pendingDates={pendingDatesByKey.get(bondKey)}
+                          pendingDates={pendientesDeLaFila(p)}
+                          cobros={cobrosRenta}
+                          brokers={brokers}
                           isARS={false}
                           isArsDisp={isArsDisp}
                           tcValuacion={tcValuacion}
@@ -3042,7 +3068,7 @@ function PositionsDesktop() {
           <div className="space-y-4">
             <p className="text-sm text-ink-2 leading-relaxed">
               Primero tenés que registrar una compra. Una vez que tengas posiciones
-              abiertas, vas a poder venderlas con FIFO automático desde este botón.
+              abiertas, vas a poder venderlas con FIFO automático desde acá.
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -3232,6 +3258,15 @@ function PositionsDesktop() {
           brokers={brokers}
           onClose={() => setModal(null)}
           onContinue={continueCashMenu}
+        />
+      )}
+
+      {modal === 'convert-menu' && (
+        <ConvertMenuModal
+          cajas={cajasParaConvertir(positions, brokers)}
+          brokers={brokers}
+          onClose={() => setModal(null)}
+          onPick={(p, direction) => openConvert(p, direction)}
         />
       )}
 

@@ -8,8 +8,9 @@ US$125.000 (≈ el monto en pesos leído como si fueran dólares).
 
 ── El problema de fondo ──────────────────────────────────────────────────────
 La columna se llama `pnl_usd`, pero en las cobranzas de renta fija NO guarda
-USD: guarda el monto en la MONEDA DEL BROKER (`bond_cashflow` inserta
-`net_amount` tal cual). Un cupón de $125.000 en un broker en pesos entra a la
+USD: guarda la ganancia en la MONEDA DEL BROKER (`_registrar_cobro_bono`: en el
+cupón es el monto cobrado; en la amortización, desde 2026-10-09, sólo lo cobrado
+por encima del costo — lo cobrado va en `quantity`). Un cupón de $125.000 en un broker en pesos entra a la
 columna como 125000, y cualquiera que sume la columna cruda cuenta 125.000
 dólares.
 
@@ -172,6 +173,84 @@ def realized_usd(row) -> float:
     except (TypeError, ValueError):
         return raw
     return raw / fx if fx > 0 else raw
+
+
+# ─── Los COBROS: plata que entra por TENER el activo ───────────────────────
+#
+# Un dividendo, un cupón, un interés, la amortización de un bono. Viven en la
+# misma tabla y con las mismas columnas que una venta, pero se leen distinto:
+#
+#   · `quantity` NO son unidades: es lo que entró a la cuenta (en los cobros
+#     anotados desde las bandejas de Cartera y en los importados);
+#   · `pnl_usd` es la GANANCIA, en la moneda de la cuenta para los de
+#     `_NATIVE_CCY_OPS` (`realized_usd` la pasa a dólares). En una amortización
+#     es sólo lo cobrado por encima del costo: el resto es capital que vuelve.
+#
+# UNA regla (`leer_cobro`) para Movimientos, el CSV del contador, el chat de IA
+# y sus herramientas. Quien lea la fila como un trade muestra "800 unidades" o
+# le cuenta al modelo $ 95.000 como US$ 95.000 (auditoría 2026-10-10).
+#
+# ⚠️ Esto NO decide si un cobro cuenta como "operación ganada" en el win rate:
+# eso es el Pendiente #1 de arriba (`_NOT_A_TRADE`), decisión de producto.
+_TIPO_DE_COBRO = {
+    "Dividendo": "DIVIDEND",
+    "Cupón": "DIVIDEND", "Cupon": "DIVIDEND", "Renta": "DIVIDEND",
+    "Interés": "INTEREST", "Interes": "INTEREST", "Interés PF": "INTEREST",
+    # La amortización de un bono es capital que vuelve, no un dividendo: tipo
+    # propio. Lo que entró va en `amount_usd` y sólo la GANANCIA en `pnl_usd`.
+    "Amortización": "AMORTIZATION", "Amortizacion": "AMORTIZATION",
+}
+
+
+def es_cobro(op_type) -> bool:
+    return (op_type or "").strip() in _TIPO_DE_COBRO
+
+
+def leer_cobro(d):
+    """Un COBRO como movimiento: tipo, lo que entró en dólares, la ganancia en
+    dólares y las comisiones. None si la fila no es un cobro. `d` es un dict (o
+    Row) con `op_type`, `quantity`, `pnl_usd`, `currency`, `fx_to_usd`,
+    `commissions`.
+
+    Lo que entró: los cobros de las bandejas lo guardan en `quantity`, en la
+    moneda de la fila; sólo se usa si la moneda está DICHA (USD, o ARS con su
+    TC). Filas viejas sin moneda (dividendos que perdieron su vínculo con el
+    import) tienen `quantity` en pesos: leerlas como dólares mostraba $ 14.500
+    como US$ 14.500 (auditoría 2026-10-09). Para ésas, y para los cupones
+    anteriores a 2026-10-09 (que no guardaban `quantity`), lo que entró es su
+    resultado en dólares."""
+    def _get(k):
+        try:
+            return d[k]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    def _num(v):
+        try:
+            return None if v is None or v == "" else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    tipo = _TIPO_DE_COBRO.get((_get("op_type") or "").strip())
+    if not tipo:
+        return None
+    ccy = (_get("currency") or "").upper()
+    fx = _num(_get("fx_to_usd")) or 0
+    pnl = realized_usd(d) if _get("pnl_usd") is not None else 0
+    cant = _num(_get("quantity"))
+    if cant and ccy in ("USD", "USDT"):
+        monto, div = cant, 1.0
+    elif cant and ccy == "ARS" and fx > 0:
+        monto, div = cant / fx, fx
+    else:
+        monto, div = pnl, (fx if (ccy == "ARS" and fx > 0) else 1.0)
+    return {
+        "type": tipo,
+        "amount_usd": monto,
+        "currency": ccy or "USD",
+        "fees_usd": (_num(_get("commissions")) or 0) / div,
+        "pnl_usd": pnl,
+    }
 
 
 # ─── El techo de credibilidad del % realizado (F4 · guard C7) ──────────────

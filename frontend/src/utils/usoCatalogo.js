@@ -85,6 +85,8 @@ export const EVENTOS = {
   mobile_search_viewed: { label: 'Abrió Buscar', donde: 'Celular', tipo: 'vista' },
   mobile_search_pick: { label: 'Eligió un resultado de Buscar', donde: 'Celular' },
   mobile_fab_opened: { label: 'Abrió el botón +', donde: 'Celular' },
+  registrar_abierto: { label: 'Abrió el botón Registrar', donde: 'Barra lateral' },
+  registrar_elegido: { label: 'Eligió qué registrar', donde: 'Barra lateral' },
   moneda_cambiada: { label: 'Cambió USD / Pesos', donde: 'Barra lateral' },
   dolar_valuacion_cambiado: { label: 'Cambió MEP / CCL', donde: 'Configuración' },
   montos_ocultos_cambiado: { label: 'Ocultó/mostró los montos', donde: 'Barra lateral' },

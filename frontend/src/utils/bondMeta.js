@@ -57,14 +57,15 @@
 
 import { CANJE_2020_BY_TICKER } from './bondSchedulesAR'
 import { pctTxt } from './format'
+import { hoyISO } from './fecha'
 
 // ════════════════════════════════════════════════════════════════════════════
 // SOBERANOS AR — Canje 2020 (Decreto 391/2020 + 676/2020)
 // ════════════════════════════════════════════════════════════════════════════
 // Cada par AL/GD comparte cronograma de pagos (definido en bondSchedulesAR.js).
 // Acá sólo se especifican los campos que VARÍAN: governingLaw, isin, y un
-// `couponRate` promedio informativo (para display "TNA ~X%" en BondDetailRow
-// cuando no rendere el step-up completo).
+// `couponRate` informativo: la tasa del tramo VIGENTE (julio 2024 – julio 2027)
+// según el prospecto. Es sólo un rótulo; el cálculo usa `couponSchedule`.
 //
 // Phase 3B: los soberanos consumen couponSchedule + amortSchedule reales del
 // prospecto. El `couponRate` ya no se usa para CÁLCULO (el motor matemático
@@ -73,6 +74,15 @@ import { pctTxt } from './format'
 // ISINs: AL (Argentine ley local) y GD (Globales NY ley extranjera) tienen
 // ISIN diferentes aunque sus flujos sean idénticos. Esto importa para reportes
 // de custodia, no para pricing.
+
+// La tasa del tramo que corre en una fecha, leída del cronograma. Misma regla
+// que el motor (`getRateForDate` en bondSchedule.js): gana el PRIMER tramo que
+// contiene la fecha, así el día del cambio vale la tasa del que termina.
+// Devuelve null si la fecha cae fuera del cronograma (bono ya vencido).
+export function tasaVigente(schedule, fecha = hoyISO()) {
+  const tramo = (schedule?.couponSchedule || []).find(c => fecha >= c.from && fecha <= c.to)
+  return tramo ? tramo.rate : null
+}
 
 function arSovereign({ ticker, governingLaw, isin, displayRate }) {
   const schedule = CANJE_2020_BY_TICKER[ticker]
@@ -84,7 +94,11 @@ function arSovereign({ ticker, governingLaw, isin, displayRate }) {
     type: 'sovereign',
     governingLaw,
     isin,
-    couponRate: displayRate,  // Sólo para display ("TNA promedio aprox")
+    // El rótulo sale del MISMO cronograma con que se calculan los pagos. Hasta
+    // 2026-10-10 era el número escrito a mano de la tabla de abajo, una segunda
+    // copia que nadie cotejaba: GD35 decía 1,875 %, que no es ninguna tasa del
+    // prospecto. `displayRate` queda sólo de respaldo para un bono ya vencido.
+    couponRate: tasaVigente(schedule) ?? displayRate,
   }
 }
 
@@ -93,17 +107,17 @@ export const BOND_META = {
   // ISINs ARARGE320xx6 (placeholder hasta verificar exacto)
   AL29: arSovereign({ ticker: 'AL29', governingLaw: 'Argentina', isin: 'ARARGE3209S6', displayRate: 1.0 }),
   AL30: arSovereign({ ticker: 'AL30', governingLaw: 'Argentina', isin: 'ARARGE3209U2', displayRate: 0.75 }),
-  AL35: arSovereign({ ticker: 'AL35', governingLaw: 'Argentina', isin: 'ARARGE3209X6', displayRate: 1.875 }),
-  AE38: arSovereign({ ticker: 'AE38', governingLaw: 'Argentina', isin: 'ARARGE3209Z1', displayRate: 2.0 }),
-  AL41: arSovereign({ ticker: 'AL41', governingLaw: 'Argentina', isin: 'ARARGE3210A3', displayRate: 2.5 }),
+  AL35: arSovereign({ ticker: 'AL35', governingLaw: 'Argentina', isin: 'ARARGE3209X6', displayRate: 4.125 }),
+  AE38: arSovereign({ ticker: 'AE38', governingLaw: 'Argentina', isin: 'ARARGE3209Z1', displayRate: 5.0 }),
+  AL41: arSovereign({ ticker: 'AL41', governingLaw: 'Argentina', isin: 'ARARGE3210A3', displayRate: 3.5 }),
 
   // ─── Soberanos AR USD — ley extranjera (Globales NY) ──────────────────────
   GD29: arSovereign({ ticker: 'GD29', governingLaw: 'NewYork', isin: 'US040114HS92', displayRate: 1.0 }),
   GD30: arSovereign({ ticker: 'GD30', governingLaw: 'NewYork', isin: 'US040114HT75', displayRate: 0.75 }),
-  GD35: arSovereign({ ticker: 'GD35', governingLaw: 'NewYork', isin: 'US040114HV40', displayRate: 1.875 }),
-  GD38: arSovereign({ ticker: 'GD38', governingLaw: 'NewYork', isin: 'US040114HW23', displayRate: 2.0 }),
-  GD41: arSovereign({ ticker: 'GD41', governingLaw: 'NewYork', isin: 'US040114HX06', displayRate: 2.5 }),
-  GD46: arSovereign({ ticker: 'GD46', governingLaw: 'NewYork', isin: 'US040114HY88', displayRate: 2.5 }),
+  GD35: arSovereign({ ticker: 'GD35', governingLaw: 'NewYork', isin: 'US040114HV40', displayRate: 4.125 }),
+  GD38: arSovereign({ ticker: 'GD38', governingLaw: 'NewYork', isin: 'US040114HW23', displayRate: 5.0 }),
+  GD41: arSovereign({ ticker: 'GD41', governingLaw: 'NewYork', isin: 'US040114HX06', displayRate: 3.5 }),
+  GD46: arSovereign({ ticker: 'GD46', governingLaw: 'NewYork', isin: 'US040114HY88', displayRate: 4.125 }),
 
   // ─── CER / ARS-Linked ─────────────────────────────────────────────────────
   // Phase 3C: agregamos `cerEmissionDate` para el factor de ajuste del capital.
@@ -111,12 +125,18 @@ export const BOND_META = {
   //   factor(payment_date) = CER(payment_date) / CER(cerEmissionDate)
   // Si la serie CER no está disponible, fallback graceful: asume factor = 1
   // (comportamiento legacy) con warning visual.
+  // TX26 y TX28 devuelven el capital EN CUOTAS (Resolución 381/2020 del
+  // Ministerio de Economía, B.O. 18/08/2020): TX26 en 5 cuotas semestrales
+  // iguales del 09/11/2024 al 09/11/2026; TX28 en 10, del 09/05/2024 al
+  // 09/11/2028. Hasta 2026-10-10 figuraban como "un solo pago al vencer": la
+  // bandeja de cobros calculaba el cupón sobre el 100 % cuando ya quedaba vivo
+  // el 40 %, y no proponía ninguna de las devoluciones de capital.
   TX26: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2026-11-09',
           couponRate: 2.0, couponFreq: 'semiannual', dayCount: 'ACT/365',
-          cerEmissionDate: '2020-08-04' },
+          cerEmissionDate: '2020-08-04', amortStart: '2024-11-09', amortCount: 5 },
   TX28: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2028-11-09',
           couponRate: 2.25, couponFreq: 'semiannual', dayCount: 'ACT/365',
-          cerEmissionDate: '2020-08-04' },
+          cerEmissionDate: '2020-08-04', amortStart: '2024-05-09', amortCount: 10 },
   T2X5: { currency: 'ARS', issuer: 'Soberano AR', type: 'cer', maturity: '2025-11-09',
           couponRate: 1.4, couponFreq: 'semiannual', dayCount: 'ACT/365',
           cerEmissionDate: '2020-08-04' },

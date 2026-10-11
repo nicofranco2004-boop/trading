@@ -7,7 +7,7 @@ Params: asset, broker (opcional)
 from __future__ import annotations
 from typing import Dict, Any
 
-from realized_pnl import realized_usd_sql
+from realized_pnl import realized_usd_sql, leer_cobro
 
 
 def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
@@ -22,19 +22,28 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # una lista que mezclaba precios de compra en dólares con cupones de 125.000
     # rotulados `pnl_usd`. Es el builder con más chance de morder, porque
     # position.lots se pide justamente sobre renta fija.
+    # `pnl_nativo`, `currency`, `fx_to_usd`: para leer los cobros con la regla
+    # única (`realized_pnl.leer_cobro`); al paquete no salen.
+    _cols = (f"date, op_type, entry_price, exit_price, quantity, "
+             f"{realized_usd_sql()} AS pnl_usd, pnl_usd AS pnl_nativo, "
+             f"currency, fx_to_usd, commissions")
     if broker:
+        # Las DOS patas de la cuenta: el cobro de un bono comprado en «Cocos»
+        # entra en «Cocos · USD», y filtrando por el nombre exacto la IA no veía
+        # ningún cobro (auditoría 2026-10-10).
+        from importing.persister import broker_pair
+        par = sorted(broker_pair(conn, user_id, broker)) or [broker]
+        ph = ",".join("?" * len(par))
         rows = conn.execute(
-            f"""SELECT date, op_type, entry_price, exit_price, quantity,
-                      {realized_usd_sql()} AS pnl_usd
+            f"""SELECT {_cols}
                  FROM operations
-                WHERE user_id=? AND asset=? AND broker=?
+                WHERE user_id=? AND asset=? AND broker IN ({ph})
                 ORDER BY date ASC""",
-            (user_id, asset, broker),
+            (user_id, asset, *par),
         ).fetchall()
     else:
         rows = conn.execute(
-            f"""SELECT date, op_type, entry_price, exit_price, quantity,
-                      {realized_usd_sql()} AS pnl_usd, broker
+            f"""SELECT {_cols}, broker
                  FROM operations
                 WHERE user_id=? AND asset=?
                 ORDER BY date ASC""",
@@ -55,6 +64,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         entry = float(rd.get("entry_price") or 0)
         exit_p = rd.get("exit_price")
         pnl = rd.get("pnl_usd")
+        # Un cobro (cupón, amortización, dividendo, interés) no es un lote: en
+        # `quantity` está la plata que entró, no unidades. Salía como
+        # {"op_type": "Amortización", "price": 0.0, "qty": 800.0}.
+        cobro = leer_cobro({**rd, "pnl_usd": rd.get("pnl_nativo")})
+        if cobro:
+            lots.append({
+                "date": str(rd.get("date"))[:10] if rd.get("date") else None,
+                "op_type": op_type,
+                "kind": "income",
+                "amount_usd": round(float(cobro["amount_usd"] or 0), 2),
+                "pnl_usd": round(float(cobro["pnl_usd"] or 0), 2),
+            })
+            closes += 1
+            continue
         price = float(exit_p) if exit_p is not None else entry
         lot = {
             "date": str(rd.get("date"))[:10] if rd.get("date") else None,

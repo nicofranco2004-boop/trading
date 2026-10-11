@@ -28,6 +28,8 @@ import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import { operacionesEnUsd } from '../utils/assetPnl'
+import { esCobro } from '../utils/tradeStats'
 
 // ─── Matriz de valuación por lote (reusa la lógica de PositionDetailMobile) ──
 // Devuelve { valueUsd, investedUsd, pnlUsd, priceLocal } para UN lote.
@@ -147,7 +149,8 @@ export default function AssetDetail() {
       // rutea el precio al ADR US en vez del .BA local (~10× en GGAL/BMA).
       setBrokersRegistry(bkrs || [])
       setDolar(dol)
-      setOperations((ops || []).filter(o => (o.asset || '').toUpperCase() === asset))
+      // En dólares desde el borde (un cupón en pesos guarda pesos en `pnl_usd`).
+      setOperations(operacionesEnUsd(ops).filter(o => (o.asset || '').toUpperCase() === asset))
       // Fetchar todos los símbolos de precio que necesitan los lotes
       const syms = [...new Set(myLots.map(p => symbolFor(p, bkrs || [])).filter(Boolean))]
       if (syms.length) {
@@ -356,7 +359,7 @@ export default function AssetDetail() {
                         {op.date} · <span className="text-ink-3">{op.op_type || 'op'}</span>
                         <span className="text-ink-3 hidden sm:inline"> · {op.broker}</span>
                       </div>
-                      {op.quantity != null && (
+                      {op.quantity != null && !esCobro(op.op_type) && (
                         <div className="text-[10px] font-mono text-ink-3 leading-none mt-1">{formatQty(op.quantity)} u.</div>
                       )}
                     </div>

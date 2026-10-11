@@ -1,7 +1,24 @@
 // bondSchedulesAR.js — cronogramas detallados de soberanos AR (canje 2020).
 // ════════════════════════════════════════════════════════════════════════════
-// Fuente primaria: Decreto 391/2020 + Decreto 676/2020 (Boletín Oficial AR)
-// + Anexos técnicos del Ministerio de Economía + comunicados oficiales BCRA.
+// Fuente primaria: el suplemento de prospecto del canje, Amendment No. 2, que la
+// República presentó ante la SEC el 17/08/2020 (tabla "New Bonds / Interest Rate
+// / Maturity / Principal Repayment", págs. S-32 a S-35):
+//   https://www.sec.gov/Archives/edgar/data/914021/000119312520221606/d68512d424b5.htm
+// Los bonos de ley local (AL29, AL30, AL35, AE38, AL41) replican esas condiciones
+// (Ley 27.556).
+//
+// ⚠️ 2026-10-10: TODAS las tasas y cuotas de abajo se cotejaron contra esa tabla.
+// Hasta ese día cuatro bonos tenían tasas "de memoria" y la bandeja de cobros de
+// Cartera —que ofrece confirmar el pago con un click— proponía, por 10.000
+// nominales de GD35, US$ 75 por semestre: el bono paga US$ 206,25.
+//   · 2029: decía escalonado 0,5 → 1 → 1,75 %. Es 1 % fijo.
+//   · 2035: le faltaban los tramos 3,625 % (2023-24), 4,125 % (2024-27),
+//           4,75 % (2027-28) y 5 % (2028 en adelante).
+//   · 2038: le faltaban 4,25 % (2023-24) y 5 % desde julio 2024 (decía desde 2027).
+//   · 2046: tasas equivocadas en todos los tramos desde 2022, y las 44 cuotas
+//           arrancaban el 09/07/2024 (es el 09/01/2025; la última, al vencer).
+// Cuotas de capital: iguales (cada una = lo que queda / las que faltan), salvo la
+// primera del 2030, que es 1/25 (4 %) — nota (1) de la tabla.
 //
 // Cada par AL/GD comparte cronograma idéntico (mismas fechas, mismos rates,
 // mismas cuotas de amortización); difieren SÓLO en governingLaw (Argentina
@@ -52,13 +69,10 @@ function evenAmorts(firstDate, count, pctEach) {
   return semestralDates(firstDate, count).map(date => ({ date, pct: pctEach }))
 }
 
-// ─── AR-2029 (AL29 / GD29) ─── 🔶 approx ──────────────────────────────────────
-// Step-up coupons: 0.50% (3.9 años) → 1.00% (4 años) → 1.75% (2 años).
-// Amortizaciones: 10 cuotas iguales del 10% empezando 2025-01-09.
-//
-// NOTA: AL29/GD29 fueron el bono MÁS CORTO del canje. La amort empieza muy
-// temprano (~5 años antes de maturity). Los rates step-up acá son la
-// interpretación común — verificar contra prospecto oficial para fineza.
+// ─── AR-2029 (AL29 / GD29) ─── ✅ verified ────────────────────────────────────
+// Cupón FIJO del 1 % anual toda la vida del bono (es el único del canje sin
+// step-up: se entregó por los intereses corridos de los bonos viejos).
+// Amortizaciones: 10 cuotas iguales del 10 % empezando 2025-01-09.
 
 export const CANJE_2020_2029 = {
   issueDate: '2020-09-04',
@@ -66,18 +80,23 @@ export const CANJE_2020_2029 = {
   couponFreq: 'semiannual',
   dayCount: '30/360',
   couponSchedule: [
-    { from: '2020-09-04', to: '2023-07-09', rate: 0.500 },
-    { from: '2023-07-09', to: '2027-07-09', rate: 1.000 },
-    { from: '2027-07-09', to: '2029-07-09', rate: 1.750 },
+    { from: '2020-09-04', to: '2029-07-09', rate: 1.000 },
   ],
   amortSchedule: evenAmorts('2025-01-09', 10, 10),  // 10 cuotas × 10%
-  _verificationLevel: 'approx',
-  _prospectusRef: 'Decreto 391/2020 + anexo AR-2029',
+  _verificationLevel: 'verified',
+  _prospectusRef: 'SEC 424B5 (17/08/2020), pág. S-32: New USD 2029 Bonds',
 }
 
 // ─── AR-2030 (AL30 / GD30) ─── ✅ verified ────────────────────────────────────
 // El más líquido del canje. Step-up: 0.125% → 0.50% → 0.75% → 1.75%.
-// Amortizaciones: 13 cuotas iguales del 7.6923% (≈100/13) empezando 2024-07-09.
+// Amortizaciones: 13 cuotas semestrales, la primera (2024-07-09) del 4 % y las
+// 12 siguientes del 8 % (4 + 12×8 = 100), según el prospecto.
+//
+// ⚠️ Hasta 2026-10-09 acá decía "13 cuotas iguales del 7,6923 %", mientras el
+// servidor (backend/pricing/bond_amortization.py, que baja los nominales) usaba
+// 4 % + 12×8 %. La bandeja de cobros proponía montos equivocados: el pago de
+// julio 2026 de 10.000 nominales como US$ 795,19 en vez de US$ 827. Hay un test
+// que compara las dos copias (bondSchedulesAR.paridad.test.js).
 //
 // Verificación cruzada: pricing en Cocos / IAMC matches dentro de ±5 bps.
 
@@ -92,16 +111,18 @@ export const CANJE_2020_2030 = {
     { from: '2023-07-09', to: '2027-07-09', rate: 0.750 },
     { from: '2027-07-09', to: '2030-07-09', rate: 1.750 },
   ],
-  amortSchedule: evenAmorts('2024-07-09', 13, 100 / 13),  // 13 cuotas × 7.6923%
+  amortSchedule: [
+    { date: '2024-07-09', pct: 4 },
+    ...evenAmorts('2025-01-09', 12, 8),               // 12 cuotas × 8 %
+  ],
   _verificationLevel: 'verified',
-  _prospectusRef: 'Decreto 391/2020 + anexo AR-2030',
+  _prospectusRef: 'SEC 424B5 (17/08/2020), pág. S-32: New USD 2030 Bonds',
 }
 
 // ─── AR-2035 (AL35 / GD35) ─── ✅ verified ────────────────────────────────────
-// Step-up agresivo: 0.125% → 1.125% → 1.50% → 3.625%. El último período
-// (8 años a 3.625%) representa la mayoría del valor del bono. La diferencia
-// entre la TIR con step-up real vs proxy 1.875% es ~200 bps — hallazgo C2.
-// Amortizaciones: 10 cuotas iguales del 10% empezando 2031-01-09.
+// Step-up: 0,125 % → 1,125 % → 1,5 % → 3,625 % → 4,125 % → 4,75 % → 5 %.
+// Desde julio 2024 paga 4,125 % (cada semestre, US$ 206,25 por 10.000 nominales).
+// Amortizaciones: 10 cuotas iguales del 10 % empezando 2031-01-09.
 
 export const CANJE_2020_2035 = {
   issueDate: '2020-09-04',
@@ -111,21 +132,20 @@ export const CANJE_2020_2035 = {
   couponSchedule: [
     { from: '2020-09-04', to: '2021-07-09', rate: 0.125 },
     { from: '2021-07-09', to: '2022-07-09', rate: 1.125 },
-    { from: '2022-07-09', to: '2027-07-09', rate: 1.500 },
-    { from: '2027-07-09', to: '2035-07-09', rate: 3.625 },
+    { from: '2022-07-09', to: '2023-07-09', rate: 1.500 },
+    { from: '2023-07-09', to: '2024-07-09', rate: 3.625 },
+    { from: '2024-07-09', to: '2027-07-09', rate: 4.125 },
+    { from: '2027-07-09', to: '2028-07-09', rate: 4.750 },
+    { from: '2028-07-09', to: '2035-07-09', rate: 5.000 },
   ],
   amortSchedule: evenAmorts('2031-01-09', 10, 10),  // 10 cuotas × 10%
   _verificationLevel: 'verified',
-  _prospectusRef: 'Decreto 391/2020 + anexo AR-2035',
+  _prospectusRef: 'SEC 424B5 (17/08/2020), pág. S-33: New USD 2035 Bonds',
 }
 
-// ─── AR-2038 (AE38 / GD38) ─── 🔶 approx ──────────────────────────────────────
-// Step-up: 0.125% → 2.00% → 3.875% → 5.00%. Amortizaciones: 22 cuotas
-// iguales del 4.5454% (≈100/22) empezando 2027-07-09.
-//
-// AE38 es ley local emitido más tardío en el canje (no formó parte del lote
-// inicial AL); los rates por convención son los mismos que GD38 — verificar
-// si AE38 tiene matiz vs GD38.
+// ─── AR-2038 (AE38 / GD38) ─── ✅ verified ────────────────────────────────────
+// Step-up: 0,125 % → 2 % → 3,875 % → 4,25 % → 5 % (desde julio 2024).
+// Amortizaciones: 22 cuotas iguales del 4,5454 % (100/22) empezando 2027-07-09.
 
 export const CANJE_2020_2038 = {
   issueDate: '2020-09-04',
@@ -135,21 +155,18 @@ export const CANJE_2020_2038 = {
   couponSchedule: [
     { from: '2020-09-04', to: '2021-07-09', rate: 0.125 },
     { from: '2021-07-09', to: '2022-07-09', rate: 2.000 },
-    { from: '2022-07-09', to: '2027-07-09', rate: 3.875 },
-    { from: '2027-07-09', to: '2038-01-09', rate: 5.000 },
+    { from: '2022-07-09', to: '2023-07-09', rate: 3.875 },
+    { from: '2023-07-09', to: '2024-07-09', rate: 4.250 },
+    { from: '2024-07-09', to: '2038-01-09', rate: 5.000 },
   ],
   amortSchedule: evenAmorts('2027-07-09', 22, 100 / 22),  // 22 cuotas × ~4.5454%
-  _verificationLevel: 'approx',
-  _prospectusRef: 'Decreto 391/2020 + anexo AR-2038',
+  _verificationLevel: 'verified',
+  _prospectusRef: 'SEC 424B5 (17/08/2020), pág. S-33: New USD 2038 Bonds',
 }
 
-// ─── AR-2041 (AL41 / GD41) ─── 🔶 approx ──────────────────────────────────────
-// Step-up: 0.125% → 2.50% → 3.50% → 4.875%. Amortizaciones: 28 cuotas
-// iguales (~3.571%) empezando 2028-01-09 (verificar si es enero o julio).
-//
-// El audit reportó incertidumbre sobre amortStart en PR #9 anterior — acá
-// asumo 2028-01-09 según uso de mercado. Si el prospecto dice julio,
-// updateá esta fecha.
+// ─── AR-2041 (AL41 / GD41) ─── ✅ verified ────────────────────────────────────
+// Step-up: 0,125 % → 2,5 % → 3,5 % → 4,875 %. Amortizaciones: 28 cuotas
+// iguales (~3,571 %) empezando 2028-01-09 (el prospecto dice enero).
 
 export const CANJE_2020_2041 = {
   issueDate: '2020-09-04',
@@ -163,13 +180,14 @@ export const CANJE_2020_2041 = {
     { from: '2029-07-09', to: '2041-07-09', rate: 4.875 },
   ],
   amortSchedule: evenAmorts('2028-01-09', 28, 100 / 28),  // 28 cuotas × ~3.571%
-  _verificationLevel: 'approx',
-  _prospectusRef: 'Decreto 391/2020 + anexo AR-2041',
+  _verificationLevel: 'verified',
+  _prospectusRef: 'SEC 424B5 (17/08/2020), pág. S-34: New USD 2041 Bonds',
 }
 
-// ─── AR-2046 (GD46 únicamente — no hay AL46) ─── 🔶 approx ────────────────────
-// El bono más largo del canje (26 años). Step-up: 0.125% → 1.125% → 1.875%
-// → 4.125%. Amortizaciones: 44 cuotas (≈2.272%) empezando 2024-07-09.
+// ─── AR-2046 (GD46 únicamente — no hay AL46) ─── ✅ verified ──────────────────
+// El bono más largo del canje (26 años). Step-up: 0,125 % → 1,125 % → 1,5 % →
+// 3,625 % → 4,125 % → 4,375 % → 5 %. Amortizaciones: 44 cuotas iguales
+// (≈2,2727 %) empezando 2025-01-09; la última, al vencimiento (2046-07-09).
 
 export const CANJE_2020_2046 = {
   issueDate: '2020-09-04',
@@ -179,12 +197,15 @@ export const CANJE_2020_2046 = {
   couponSchedule: [
     { from: '2020-09-04', to: '2021-07-09', rate: 0.125 },
     { from: '2021-07-09', to: '2022-07-09', rate: 1.125 },
-    { from: '2022-07-09', to: '2027-07-09', rate: 1.875 },
-    { from: '2027-07-09', to: '2046-07-09', rate: 4.125 },
+    { from: '2022-07-09', to: '2023-07-09', rate: 1.500 },
+    { from: '2023-07-09', to: '2024-07-09', rate: 3.625 },
+    { from: '2024-07-09', to: '2027-07-09', rate: 4.125 },
+    { from: '2027-07-09', to: '2028-07-09', rate: 4.375 },
+    { from: '2028-07-09', to: '2046-07-09', rate: 5.000 },
   ],
-  amortSchedule: evenAmorts('2024-07-09', 44, 100 / 44),  // 44 cuotas × ~2.272%
-  _verificationLevel: 'approx',
-  _prospectusRef: 'Decreto 391/2020 + anexo AR-2046',
+  amortSchedule: evenAmorts('2025-01-09', 44, 100 / 44),  // 44 cuotas × ~2.2727%
+  _verificationLevel: 'verified',
+  _prospectusRef: 'SEC 424B5 (17/08/2020), pág. S-35: New USD 2046 Bonds',
 }
 
 // ─── Index de canje 2020 ────────────────────────────────────────────────────

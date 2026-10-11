@@ -2,8 +2,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Reestructura 2026-07: de links planos a 3 secciones ACORDEÓN que se despliegan
 // al tocarlas (menos ruido, más aire). Afuera del acordeón, siempre visibles:
-// Alertas e Importar (acciones a mano, no escondidas). Mervall-E AI arriba; utilidades
-// (Guía / Config / Recomendaciones) + cuenta abajo.
+// Alertas e Importar (acciones a mano, no escondidas). Arriba de todo, debajo de
+// la moneda, el botón violeta «Registrar» (RegistrarMenu); después Mervall-E AI;
+// utilidades (Guía / Config / Recomendaciones) + cuenta abajo.
 //
 // Espaciado GENEROSO a propósito (filas altas, texto grande): llena el alto y
 // evita el vacío negro. Dos estados de ancho:
@@ -37,6 +38,7 @@ import { menuVisible, GROUPS, etiquetaDeGrupo } from '../utils/navegacion'
 import { abrirBuscador, atajoBuscador } from './BuscadorRapido'
 import RecommendationsModal from './RecommendationsModal'
 import MervallE from './ai/MervallE'
+import RegistrarMenu from './RegistrarMenu'
 
 const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
@@ -151,6 +153,17 @@ export default function Sidebar() {
           </button>
         )}
       </div>
+
+      {/* Registrar — el botón violeta, fijo arriba como la moneda (fuera del
+          <nav> scrolleable): compra, venta, depósito, retiro y movimiento desde
+          cualquier pantalla. Antes eran tres botones en el encabezado de la
+          Cartera. El asesor en su nivel no tiene cartera propia donde anotar:
+          lo ve recién adentro de un cliente. */}
+      {!atOwnLevel && (
+        <div className={`flex-shrink-0 pt-3 ${collapsed ? 'px-2 flex justify-center' : 'px-2.5'}`}>
+          <RegistrarMenu collapsed={collapsed} />
+        </div>
+      )}
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-5 px-2.5">
