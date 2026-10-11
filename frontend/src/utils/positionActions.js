@@ -36,6 +36,7 @@ import {
   ArrowDownCircle, ArrowUpCircle, ChevronUp, Layers as LayersIcon,
 } from 'lucide-react'
 import { filaSinUnaPata } from './filaFusionada'
+import { conversionDeLaCaja } from './registrar'
 
 /**
  * @param {object}  p          La fila (posición, lote, agregado o efectivo).
@@ -108,16 +109,17 @@ export function buildPositionActions(p, handlers = {}, opts = {}) {
   // aporte o retiro; el servidor rechaza las otras dos (main.py,
   // _EFECTIVO_NO_SE_EDITA / _EFECTIVO_NO_SE_BORRA).
   if (p.is_cash) {
-    const esCashArs = broker?.currency === 'ARS'
-    const esCashUsdSubBroker = broker?.currency === 'USDT' && broker?.parent_broker_id != null
+    // Hacia dónde se puede convertir esta caja: la misma regla que el selector
+    // de «Movimiento» del botón Registrar (utils/registrar.js).
+    const conversion = conversionDeLaCaja(p, broker)
     return compact([
       onCashFlow && { id: 'deposit',  label: 'Depositar', icon: ArrowDownCircle, tone: 'pos',  onClick: () => onCashFlow(p, 'deposit') },
       onCashFlow && { id: 'withdraw', label: 'Retirar',   icon: ArrowUpCircle,   tone: 'warn', onClick: () => onCashFlow(p, 'withdraw') },
-      esCashArs && onConvert && {
+      conversion === 'ars_to_usd' && onConvert && {
         id: 'to-usd', label: 'Comprar USD', icon: DollarSign, tone: 'accent',
         onClick: () => onConvert(p, 'ars_to_usd'),
       },
-      esCashUsdSubBroker && onConvert && {
+      conversion === 'usd_to_ars' && onConvert && {
         id: 'to-ars', label: 'Vender USD a ARS', icon: DollarSign, tone: 'accent',
         onClick: () => onConvert(p, 'usd_to_ars'),
       },
