@@ -4,7 +4,7 @@
 // En mobile es una página real (/mas). En desktop esta ruta no se usa
 // porque la sidebar muestra todo directamente.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ChevronRight, LogOut, Bell, BellRing, BellOff, Send, MessageCircle,
@@ -14,7 +14,7 @@ import PageHeader from '../components/PageHeader'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import RecommendationsModal from '../components/RecommendationsModal'
-import InstalarAppModal from '../components/InstalarAppModal'
+import InstalarAppModal, { precargarFotosDeInstalar } from '../components/InstalarAppModal'
 import { yaInstalada } from '../utils/instalarApp'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
@@ -138,6 +138,9 @@ export default function More() {
   // Quien ya abre Rendi desde el ícono de su pantalla de inicio no necesita
   // que le ofrezcan instalarla.
   const [instalada] = useState(() => yaInstalada())
+  // En el celular no hay «pasar el mouse por encima»: las fotos del cartel se
+  // piden al entrar a esta pantalla, para que estén cuando toque la tarjeta.
+  useEffect(() => { if (!instalada) precargarFotosDeInstalar() }, [instalada])
 
   const { unseenCount = 0 } = useAlertsContext()  // el puntito de alertas sin ver
   const { atOwnLevel, isAdvisor, utilidades } = menuVisible({ user, clientCtx })

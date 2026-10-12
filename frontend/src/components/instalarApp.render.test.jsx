@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import InstalarAppModal, { PASOS_IPHONE, PASOS_ANDROID } from './InstalarAppModal.jsx'
+import InstalarAppModal, { PASOS_IPHONE, PASOS_ANDROID, precargarFotosDeInstalar } from './InstalarAppModal.jsx'
 import {
   plataformaDe, yaInstalada, escucharInstalador, hayInstalador, instalarAhora,
 } from '../utils/instalarApp.js'
@@ -121,6 +121,31 @@ describe('las fotos y el recuadro violeta', () => {
 
   it('Android tiene sus cuatro pasos', () => {
     expect(PASOS_ANDROID).toHaveLength(4)
+  })
+})
+
+// En producción los cuatro recuadros quedaban vacíos un buen rato en Safari. El
+// servidor entregaba cada foto en 0,2 s: lo lento era el navegador decidiendo
+// cuándo pedirlas, porque llevaban loading="lazy" adentro de un cartel con
+// scroll propio.
+describe('las fotos no se hacen esperar', () => {
+  it('ninguna foto del cartel se pide en modo perezoso', () => {
+    const html = dibujar({ userAgent: IPHONE, maxTouchPoints: 5 })
+    expect(html).not.toContain('loading="lazy"')
+  })
+
+  it('el recuadro violeta no se dibuja sobre una foto que todavía no llegó', () => {
+    // Recién dibujado, ninguna foto cargó: no tiene que haber recuadros.
+    const html = dibujar({ userAgent: IPHONE, maxTouchPoints: 5 })
+    expect(html).not.toContain('border-data-violet ring-4')
+  })
+
+  it('se piden las cuatro por adelantado, y una sola vez', () => {
+    const pedidas = []
+    vi.stubGlobal('Image', class { set src(v) { pedidas.push(v) } })
+    precargarFotosDeInstalar()
+    precargarFotosDeInstalar()
+    expect(pedidas).toEqual(PASOS_IPHONE.map(p => p.foto))
   })
 })
 

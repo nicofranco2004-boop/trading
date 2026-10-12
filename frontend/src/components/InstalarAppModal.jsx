@@ -19,7 +19,7 @@
 //
 // Trigger: «Descargar app» en el pie del Sidebar + tarjeta en /mas.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Download, MoreVertical, Smartphone, SquarePlus, Globe } from 'lucide-react'
 import Modal from './Modal'
 import { track } from '../utils/track'
@@ -70,6 +70,47 @@ const PESTANAS = [
   { id: 'iphone',  label: 'iPhone' },
   { id: 'android', label: 'Android' },
 ]
+
+// Las fotos se piden ANTES de que se abra el cartel: cuando el mouse llega al
+// botón del menú, o al entrar a /mas. Pesan 59 KB entre las cuatro y el
+// servidor las entrega en 0,2 s, así que para cuando el cartel aparece ya
+// están en la memoria del navegador.
+//
+// Sin esto se veían los cuatro recuadros vacíos un buen rato. La causa no era
+// el peso ni el servidor: las imágenes llevaban `loading="lazy"` («pedila
+// recién cuando esté por verse»), y Safari, adentro de un cartel con scroll
+// propio, se toma su tiempo para decidir que ya se ven. NO volver a ponerlo:
+// acá no ahorra nada, porque el <img> sólo existe con el cartel abierto.
+let fotosPedidas = false
+export function precargarFotosDeInstalar() {
+  if (fotosPedidas || typeof Image === 'undefined') return
+  fotosPedidas = true
+  for (const p of PASOS_IPHONE) {
+    const img = new Image()
+    img.src = p.foto
+  }
+}
+
+// El recuadro violeta aparece recién cuando la foto llegó: un recuadro marcando
+// un botón sobre una caja vacía parece un cartel roto.
+function Foto({ paso }) {
+  const ref = useRef(null)
+  const [lista, setLista] = useState(false)
+  // Si la foto ya estaba en memoria, el navegador puede no avisar con `onLoad`.
+  useEffect(() => {
+    if (ref.current?.complete && ref.current.naturalWidth > 0) setLista(true)
+  }, [])
+  return (
+    <div className="relative rounded-xl overflow-hidden border border-line-2 bg-bg-0">
+      <img ref={ref} src={paso.foto} alt={paso.alt} width={paso.ancho} height={paso.alto}
+        decoding="async" onLoad={() => setLista(true)} className="block w-full h-auto" />
+      {lista && (
+        <span aria-hidden="true" style={paso.marco}
+          className="absolute rounded-xl border-2 border-data-violet ring-4 ring-data-violet/30" />
+      )}
+    </div>
+  )
+}
 
 function Numero({ n }) {
   return (
@@ -135,12 +176,7 @@ export default function InstalarAppModal({ open, onClose, origen = 'menu' }) {
                 <Numero n={i + 1} />
                 <p className="text-[13.5px] text-ink-1 leading-snug">{p.texto}</p>
               </div>
-              <div className="relative rounded-xl overflow-hidden border border-line-2">
-                <img src={p.foto} alt={p.alt} width={p.ancho} height={p.alto}
-                  loading="lazy" className="block w-full h-auto" />
-                <span aria-hidden="true" style={p.marco}
-                  className="absolute rounded-xl border-2 border-data-violet ring-4 ring-data-violet/30" />
-              </div>
+              <Foto paso={p} />
               {p.nota && <p className="text-xs text-ink-3 leading-relaxed mt-1.5">{p.nota}</p>}
             </li>
           ))}
