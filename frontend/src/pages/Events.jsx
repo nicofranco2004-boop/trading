@@ -863,12 +863,15 @@ function EventAgenda({ events, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx 
     <div ref={ref}>
       {groups.map((g, gi) => {
         const rail = dayRail(g.date)
-        const { className, style } = entrada(visto, Math.min(gi, MAXIMO_ESCALON), 'grid gap-4')
+        // minmax(0, 1fr): con `1fr` la columna medía lo que su texto más largo
+        // (el título no se cortaba con "…") y en el celular la agenda medía
+        // 823 px en una pantalla de 375 (medido el 2026-10-02).
+        // El riel del día baja a 56 px en el celular: «MAÑANA» mide 54, y
+        // esos 20 px son los que le faltaban al título a 360 px de pantalla.
+        const { className, style } = entrada(visto, Math.min(gi, MAXIMO_ESCALON),
+          'grid gap-3 sm:gap-4 grid-cols-[56px_minmax(0,1fr)] sm:grid-cols-[72px_minmax(0,1fr)]')
         return (
-          // minmax(0, 1fr): con `1fr` la columna medía lo que su texto más largo
-          // (el título no se cortaba con "…") y en el celular la agenda medía
-          // 823 px en una pantalla de 375 (medido el 2026-10-02).
-          <div key={g.date} className={className} style={{ ...style, gridTemplateColumns: '72px minmax(0, 1fr)' }}>
+          <div key={g.date} className={className} style={style}>
             <div className="text-right pt-4">
               <div className={`text-[12px] font-bold ${rail.today ? 'text-data-violet' : 'text-ink-0'}`}>{rail.top}</div>
               <div className="text-[11.5px] text-ink-3">{rail.sub}</div>
@@ -939,8 +942,15 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
 
   return (
     <div className={`bg-bg-1 border border-line rounded-xl overflow-hidden transition-colors ${expandable ? 'cursor-pointer hover:border-ink-3/60' : ''}`}>
+      {/* Grilla y no fila: «Analizar» + «en N días» miden ~170 px fijos y en una
+          fila de 250 (celular) dejaban al título en 0 px — se veía el logo y los
+          botones, sin decir de qué era el evento (medido el 2026-10-13). A 768
+          (tablet) lo dejaban en 67 px. Debajo de `lg` van en una segunda línea,
+          alineados con el texto; desde `lg` vuelven a la derecha, como antes. */}
       <div
-        className="px-4 py-3 flex items-center gap-3"
+        className={`px-4 py-3 grid items-center gap-x-3 gap-y-2 ${expandable
+          ? 'grid-cols-[auto_minmax(0,1fr)_auto] lg:grid-cols-[auto_minmax(0,1fr)_auto_auto]'
+          : 'grid-cols-[auto_minmax(0,1fr)] lg:grid-cols-[auto_minmax(0,1fr)_auto]'}`}
         onClick={expandable ? () => setOpen(o => !o) : undefined}
         role={expandable ? 'button' : undefined}
         aria-expanded={expandable ? open : undefined}
@@ -952,31 +962,35 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
         ) : (
           <AssetLogo asset={ticker} size={36} />
         )}
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0">
           <div className="text-[14px] font-semibold text-ink-0 truncate">
             {title}
             {!confirmed && <span className="ml-1.5 text-[11px] text-ink-3 font-normal">· est.</span>}
           </div>
-          <div className="text-[12.5px] text-ink-3 truncate">
+          {/* Hasta 2 líneas debajo de `lg`: en una sola, el celular cortaba el
+              «→ ~+US$ …» — lo único de la fila que es tuyo. */}
+          <div className="text-[12.5px] text-ink-3 line-clamp-2 lg:line-clamp-none lg:truncate">
             {detail}
             {personal && <b className="text-data-cyan font-semibold">{detail ? ' · ' : ''}{personal}</b>}
           </div>
         </div>
-        {!isMacro && (
-          <span onClick={e => e.stopPropagation()}>
-            <InlineAIButton
-              topic="events.item"
-              params={{ ticker, event_type: eventType, event_date: eventDate, details: typeof details === 'string' ? details : (details?.title || '') }}
-              subtitle={`${ticker} · ${eventType}`}
-              label="Analizar"
-            />
+        <div className="col-start-2 row-start-2 lg:col-start-3 lg:row-start-1 flex items-center gap-3">
+          {!isMacro && (
+            <span onClick={e => e.stopPropagation()}>
+              <InlineAIButton
+                topic="events.item"
+                params={{ ticker, event_type: eventType, event_date: eventDate, details: typeof details === 'string' ? details : (details?.title || '') }}
+                subtitle={`${ticker} · ${eventType}`}
+                label="Analizar"
+              />
+            </span>
+          )}
+          <span className="flex-none text-[11.5px] font-bold text-data-violet bg-data-violet/12 rounded-full px-2.5 py-1 whitespace-nowrap">
+            {whenLabel}
           </span>
-        )}
-        <span className="flex-none text-[11.5px] font-bold text-data-violet bg-data-violet/12 rounded-full px-2.5 py-1 whitespace-nowrap">
-          {whenLabel}
-        </span>
+        </div>
         {expandable && (
-          <ChevronRight size={15} strokeWidth={2} className={`flex-none text-ink-3 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+          <ChevronRight size={15} strokeWidth={2} className={`col-start-3 row-start-1 lg:col-start-4 text-ink-3 transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
         )}
       </div>
       {expandable && open && <EarningsExpectations symbol={ticker} />}
