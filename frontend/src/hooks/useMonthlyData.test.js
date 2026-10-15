@@ -105,20 +105,6 @@ describe('buildMonthlyReports', () => {
     expect(out.years[0].months.map(m => m.month)).toEqual([1, 2, 3, 5, 8])
   })
 
-  it('calcula bestMonth/worstMonth correctamente entre meses con baseline', () => {
-    const out = buildMonthlyReports(
-      [
-        { year: 2026, month: 1, broker: 'global', capital_inicio: 1000, capital_final: 1050, pnl_realized: 50 },   // +5%
-        { year: 2026, month: 2, broker: 'global', capital_inicio: 1050, capital_final: 1230, pnl_realized: 180 }, // +17.1%
-        { year: 2026, month: 3, broker: 'global', capital_inicio: 1230, capital_final: 1180, pnl_realized: -50 }, // -4.1%
-      ],
-      []
-    )
-    const yr = out.years[0]
-    expect(yr.bestMonth.name).toBe('Febrero')
-    expect(yr.worstMonth.name).toBe('Marzo')
-  })
-
   it('omite entries por broker que NO sean global', () => {
     const out = buildMonthlyReports(
       [

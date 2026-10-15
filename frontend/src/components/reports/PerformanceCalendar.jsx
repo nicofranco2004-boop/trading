@@ -204,14 +204,7 @@ function computeKpis(yearGroups) {
   const realizedSum = last12.reduce((s, m) => s + (m.metrics.realized_pnl || 0), 0)
   const trades = last12.reduce((s, m) => s + (m.metrics.trades_count || 0), 0)
   const positiveCount = last12.filter(m => (m.metrics.delta_pct || 0) > 0).length
-
-  let best = null, worst = null
-  for (const m of last12) {
-    if (m.metrics.delta_pct == null) continue
-    if (!best  || m.metrics.delta_pct > best.metrics.delta_pct)  best  = m
-    if (!worst || m.metrics.delta_pct < worst.metrics.delta_pct) worst = m
-  }
-  return { realizedSum, trades, positiveCount, totalCount: last12.length, best, worst, last12 }
+  return { realizedSum, trades, positiveCount, totalCount: last12.length, last12 }
 }
 
 function KpiCell({ label, value, sub, tone, first }) {
@@ -274,17 +267,56 @@ function fmtFechaCorta(iso) {
 // Lo que Reportes ya calculaba para el año en curso y sólo mostraba ahí. Los
 // meses en verde y el mejor/peor salen de las celdas que ya están dibujadas
 // arriba, así que describen exactamente lo que el usuario tiene delante.
-function Dato({ label, valor, tono }) {
+function Dato({ label, valor, tono, nota }) {
   const color = tono === 'pos' ? 'text-rendi-pos' : tono === 'neg' ? 'text-rendi-neg' : 'text-ink-1'
   return (
     <div className="flex flex-col gap-0.5 min-w-[92px]">
       <span className="text-[10.5px] text-ink-3 font-medium leading-none">{label}</span>
       <span className={`text-[13px] font-semibold tabular leading-none ${color}`}>{valor}</span>
+      {nota && <span className="text-[10.5px] text-ink-3 leading-none">{nota}</span>}
     </div>
   )
 }
 
-function MetricasDelAno({ resumen, months, pesos }) {
+// El mejor y el peor mes del año, COMO LOS ELIGIÓ EL SERVIDOR.
+//
+// ⚠️ ACÁ SE RANKEABA A MANO Y SE MEZCLABAN BASES. El máximo y el mínimo salían de
+// todos los meses con número, sin mirar si estaban medidos a precio de mercado o
+// eran de la contabilidad —que para un mes cerrado está al costo: un mes sin
+// ventas da ~0 % aunque la cartera se haya movido—. Con un año de meses a mercado
+// en verde y uno contable plano, el "peor mes" era el plano; y un realizado
+// contable podía ganarle el "mejor" a un mes de mercado que subió de verdad.
+// Ahora la elección es de `twr.mejor_y_peor_mes` (vía `ranking_por_anio` de
+// `/api/reports/timeline`), la misma regla que usan la IA y el Wrapped: se
+// rankean los meses a mercado; si no hay ninguno, los contables, y se dice.
+// Los números son los de las barras de arriba: el servidor rankea esos mismos.
+export function mejorYPeorMes(ranking, months) {
+  if (!ranking?.mejor) return []
+  const nombre = (mes) => {
+    const m = months.find(mm => mm.period_key === mes)
+    return (m?.period_label || '').split(' ')[0].toLowerCase()
+  }
+  const contable = ranking.base === 'contable'
+  // Si quedaron afuera meses contables, el "mejor" puede no ser la barra más
+  // alta: hay que decir entre cuáles se eligió.
+  const deDonde = contable ? 'de tu historia importada'
+    : ranking.sin_medir_a_mercado > 0 ? 'a precio de mercado' : null
+  const nota = (mes) => [nombre(mes), deDonde].filter(Boolean).join(', ')
+  // La contabilidad va sin color, como el número del año cuando es contable.
+  const tonoDe = (p) => (contable ? undefined
+    : pctVarSign(p, 1) > 0 ? 'pos' : pctVarSign(p, 1) < 0 ? 'neg' : undefined)
+  const out = []
+  const { mejor, peor } = ranking
+  // pctVar: en un año con todos los meses en rojo, "Mejor mes" decía "+-1,2%".
+  // El color, el del número que se ve: −0,04 se escribe "0,0%" y no va en rojo.
+  out.push({ label: 'Mejor mes', valor: pctVar(mejor.pct, 1), tono: tonoDe(mejor.pct), nota: nota(mejor.mes) })
+  if (peor && peor.mes !== mejor.mes && pctVarSign(peor.pct, 1) < 0) {
+    out.push({ label: 'Peor mes', valor: pctVar(peor.pct, 1), tono: contable ? undefined : 'neg', nota: nota(peor.mes) })
+  }
+  return out
+}
+
+function MetricasDelAno({ resumen, months, pesos, ranking }) {
   if (!resumen) return null
   // Los montos del año, cada uno a los pesos de su momento: lo aportado y
   // retirado con la regla del Dashboard (los pesos que se pusieron), lo
@@ -339,12 +371,8 @@ function MetricasDelAno({ resumen, months, pesos }) {
   }
   if (pcts.length > 0) {
     datos.push({ label: 'Meses en verde', valor: `${verdes} de ${mesesDelAnio}` })
-    const mejor = Math.max(...pcts), peor = Math.min(...pcts)
-    // pctVar: en un año con todos los meses en rojo, "Mejor mes" decía "+-1,2%".
-    // El color, el del número que se ve: −0,04 se escribe "0,0%" y no va en rojo.
-    datos.push({ label: 'Mejor mes', valor: pctVar(mejor, 1), tono: pctVarSign(mejor, 1) > 0 ? 'pos' : pctVarSign(mejor, 1) < 0 ? 'neg' : undefined })
-    if (pctVarSign(peor, 1) < 0) datos.push({ label: 'Peor mes', valor: pctVar(peor, 1), tono: 'neg' })
   }
+  datos.push(...mejorYPeorMes(ranking, months))
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
   // ruido que el ojo tiene que descartar en cada pasada.
   if (datos.length === 0) return null
@@ -377,7 +405,7 @@ function MetricasDelAno({ resumen, months, pesos }) {
 }
 
 export default function PerformanceCalendar({ yearGroups, years = [], yearsLoading = false,
-                                             historicos = true }) {
+                                             historicos = true, rankingPorAnio = {} }) {
   const kpis = computeKpis(yearGroups)
   // Los montos respetan el toggle global ARS/USD, cada uno al dólar de su mes
   // (utils/periodoEnPesos.js). Los % no cambian (son ratios).
@@ -537,7 +565,8 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   />
                 </div>
               </div>
-              <MetricasDelAno resumen={resumen} months={months} pesos={pesos} />
+              <MetricasDelAno resumen={resumen} months={months} pesos={pesos}
+                              ranking={rankingPorAnio?.[String(year)]} />
               </div>
             )
           })}

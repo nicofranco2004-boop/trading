@@ -21,7 +21,6 @@
 //     years: [
 //       {
 //         year, ytdUsd, ytdPct, startUsd, endUsd,
-//         bestMonth, worstMonth,
 //         months: [
 //           { period, name, deltaUsd, deltaPct, startUsd, endUsd,
 //             deposits, withdrawals, pnlRealized, pnlUnrealized,
@@ -788,15 +787,6 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
         ? (ytdUsd / cumNetDepEnd) * 100
         : null
 
-      // Best / worst del año (solo entre meses con deltaPct válido — manual/partial)
-      const withPct = sorted.filter(m => m.source !== 'derived')
-      const bestMonth = withPct.length > 0
-        ? [...withPct].sort((a, b) => b.deltaPct - a.deltaPct)[0]
-        : null
-      const worstMonth = withPct.length > 0
-        ? [...withPct].sort((a, b) => a.deltaPct - b.deltaPct)[0]
-        : null
-
       return {
         year,
         ytdUsd,
@@ -809,8 +799,6 @@ export function buildMonthlyReports(monthly, operations, snapshots = [], selecte
         endSource,
         liveDate: endSource === 'live' ? liveDate : null,
         flowsYear,
-        bestMonth: bestMonth ? { name: bestMonth.name, pct: bestMonth.deltaPct } : null,
-        worstMonth: worstMonth ? { name: worstMonth.name, pct: worstMonth.deltaPct } : null,
         months: sorted,
         derivedCount: sorted.filter(m => m.source === 'derived').length,
         manualCount: sorted.filter(m => m.source === 'manual').length,
