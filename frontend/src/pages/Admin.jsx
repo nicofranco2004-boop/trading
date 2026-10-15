@@ -382,6 +382,13 @@ export default function Admin() {
       {/* ── Backup manual (S3) — hacelo ANTES de cualquier recompute/repair ── */}
       <BackupPanel toast={toast} />
 
+      {/* Fichas de suscripción duplicadas: el rastro del bug del webhook del
+          15/10. Va acá, junto al backup, porque es lo que conviene correr
+          antes de cualquier limpieza. */}
+      <div className="mb-5">
+        <DedupSuscripciones />
+      </div>
+
       {/* ── Backfill: recomputar posiciones de cuentas ya importadas (FIFO + amort) ── */}
       <BackfillPanel toast={toast} />
 
@@ -4220,5 +4227,96 @@ function PruebasResumen({ data }) {
         </p>
       )}
     </section>
+  )
+}
+
+// ─── Fichas de suscripción duplicadas ──────────────────────────────────────
+// Las dejó un bug del webhook (arreglado el 15/10): cada aviso de Rebill sobre
+// una suscripción que YA estaba activa abría otra ficha del mismo cobro, en vez
+// de actualizar la que había. No cobraba dos veces —del lado de Rebill hay una
+// sola suscripción— pero los registros de Rendi quedaban mintiendo sobre quién
+// paga qué, y por el mismo camino el monto quedaba en 0.
+//
+// Dos pasos a propósito: primero MUESTRA lo que borraría, y recién con un
+// segundo click borra. Un botón que borra al primer click es un botón que nadie
+// se anima a apretar.
+function DedupSuscripciones() {
+  const [previo, setPrevio] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const toast = useToast()
+
+  async function llamar(apply) {
+    setBusy(true)
+    try {
+      const r = await api.post(
+        `/admin/billing/dedup-suscripciones${apply ? '?apply=1' : ''}`)
+      setPrevio(r)
+      if (apply) {
+        toast.push(
+          r.filas_a_borrar
+            ? `Listo: ${r.filas_a_borrar} ficha(s) duplicada(s) borrada(s) ✓`
+            : 'No había nada que borrar',
+          { type: 'success' })
+      }
+    } catch (e) {
+      toast.push('Error: ' + (e.message || ''), { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+      <div className="flex items-start gap-2 mb-1">
+        <AlertTriangle size={16} className="text-rendi-warn mt-0.5 flex-shrink-0" />
+        <div>
+          <h3 className="text-sm font-semibold text-ink-0">Fichas de suscripción duplicadas</h3>
+          <p className="text-xs text-ink-2 mt-0.5">
+            La misma suscripción de Rebill anotada más de una vez. Conserva siempre la
+            más vieja (el alta original) y nunca toca fichas con identificadores distintos,
+            que serían cobros de verdad.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-3 flex-wrap">
+        <button
+          onClick={() => llamar(false)} disabled={busy}
+          className="px-3 py-1.5 rounded-lg border border-line text-ink-1 text-xs hover:bg-bg-2 disabled:opacity-50"
+        >
+          {busy ? 'Mirando…' : 'Ver qué borraría'}
+        </button>
+        {previo && !previo.aplicado && previo.filas_a_borrar > 0 && (
+          <button
+            onClick={() => llamar(true)} disabled={busy}
+            className="px-3 py-1.5 rounded-lg bg-rendi-warn/15 border border-rendi-warn/40 text-rendi-warn text-xs font-medium hover:bg-rendi-warn/25 disabled:opacity-50"
+          >
+            Borrar {previo.filas_a_borrar} ficha(s)
+          </button>
+        )}
+      </div>
+
+      {previo && (
+        <div className="mt-3 text-xs text-ink-2 space-y-1">
+          <p>
+            <span className="tabular text-ink-0">{previo.grupos_con_copias}</span> suscripción(es)
+            con copias · <span className="tabular text-ink-0">{previo.filas_a_borrar}</span> ficha(s)
+            de más{previo.aplicado ? ' · ya borradas' : ''}
+          </p>
+          {previo.filas_a_borrar === 0 && (
+            <p className="text-rendi-pos">No hay fichas duplicadas.</p>
+          )}
+          {previo.detalle?.length > 0 && (
+            <div className="max-h-40 overflow-auto divide-y divide-line/40 mt-2">
+              {previo.detalle.map(g => (
+                <div key={`${g.user_id}-${g.id_en_rebill}`} className="py-1.5">
+                  <span className="text-ink-1">usuario {g.user_id}</span>
+                  <span className="text-ink-3"> · conserva la del {g.conserva.alta}</span>
+                  <span className="text-rendi-warn"> · borra {g.borra.length}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
