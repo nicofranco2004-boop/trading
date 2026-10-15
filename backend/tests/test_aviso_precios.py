@@ -216,5 +216,76 @@ class PorElCaminoReal(Base):
             self.client.post("/api/me/aviso-precios-visto").status_code, 401)
 
 
+class ElPanelQueLePREGUNTAaRebill(Base):
+    """`/api/admin/billing/precios-rebill`.
+
+    Existe por una pregunta que Rendi no podía contestar: editar el precio de un
+    plan en el dashboard de Rebill, ¿alcanza a las suscripciones que YA estaban?
+    Rendi nunca manda un monto —el link lleva sólo el id del plan—, así que el
+    número vive del lado de Rebill y desde la app era invisible. El panel
+    compara, fila por fila, lo que Rendi registró al dar de alta contra lo que
+    Rebill contesta hoy."""
+
+    def _admin(self):
+        cur = self.conn.execute(
+            "INSERT INTO users (email, password_hash, approved, email_verified, "
+            "                   is_admin) VALUES (?,?,1,1,1)",
+            (f"jefe{uuid.uuid4().hex[:6]}@rendi.test", "x"))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def test_es_solo_para_admin(self):
+        uid = self._persona()
+        self._paga(uid)
+        r = self.client.get("/api/admin/billing/precios-rebill",
+                            headers=self._headers(uid))
+        self.assertEqual(r.status_code, 403, r.text)
+
+    def test_dice_los_precios_nuevos_y_lista_las_activas(self):
+        jefe = self._admin()
+        uid = self._persona()
+        self._paga(uid, "plus")
+
+        r = self.client.get("/api/admin/billing/precios-rebill",
+                            headers=self._headers(jefe))
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+
+        # Los 4 montos salen de billing/pricing.py, no escritos en el endpoint.
+        from billing import pricing as planes
+        self.assertEqual(d["plan_nuevo"], {
+            "plus_mensual": planes.PLUS_ARS_MONTHLY_TOTAL,
+            "plus_anual": planes.PLUS_ARS_ANNUAL_TOTAL,
+            "pro_mensual": planes.ARS_MONTHLY_TOTAL,
+            "pro_anual": planes.ARS_ANNUAL_TOTAL,
+        })
+
+        emails = [x["email"] for x in d["suscripciones"]]
+        self.assertEqual(len(emails), 1, "no listó la suscripción activa")
+        fila = d["suscripciones"][0]
+        self.assertEqual(fila["registrado_en_rendi"], 8900)
+
+    def test_si_rebill_no_contesta_la_fila_lo_dice_y_no_revienta(self):
+        """Sin clave de API —como en los tests— cada fila tiene que reportar su
+        error, no tirar abajo el panel entero. Un diagnóstico que se cae cuando
+        hay un problema es justo el que no sirve."""
+        jefe = self._admin()
+        uid = self._persona()
+        self._paga(uid)
+        r = self.client.get("/api/admin/billing/precios-rebill",
+                            headers=self._headers(jefe))
+        self.assertEqual(r.status_code, 200, r.text)
+        fila = r.json()["suscripciones"][0]
+        self.assertTrue(fila["error"] or fila["rebill_dice"],
+                        "ni contestó ni dijo por qué no")
+
+    def test_no_devuelve_ninguna_credencial(self):
+        jefe = self._admin()
+        cuerpo = self.client.get("/api/admin/billing/precios-rebill",
+                                 headers=self._headers(jefe)).text.lower()
+        for secreto in ("sk_test", "sk_live", "api_key", "x-api-key"):
+            self.assertNotIn(secreto, cuerpo)
+
+
 if __name__ == "__main__":
     unittest.main()

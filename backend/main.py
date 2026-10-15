@@ -27663,6 +27663,87 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
         conn.close()
 
 
+@app.get("/api/admin/billing/precios-rebill")
+def admin_precios_rebill(uid: int = Depends(get_admin_user)):
+    """¿Qué le va a cobrar REBILL a cada suscripción activa? READ-ONLY.
+
+    Existe por una pregunta que Rendi no podía contestar y que importa cada vez
+    que se toca un precio: **editar el precio de un plan en el dashboard de
+    Rebill, ¿alcanza a las suscripciones que YA estaban?** Rendi nunca manda un
+    monto —el link de pago lleva sólo el id del plan—, así que el número vive
+    entero del lado de Rebill y desde acá era invisible.
+
+    Lo que se compara, fila por fila:
+      • `registrado_en_rendi` — `subscriptions.amount_ars`, lo que se guardó
+        CUANDO se dio de alta. Es historia: no cambia porque cambie el plan.
+      • `rebill_dice` — lo que Rebill contesta HOY para esa suscripción.
+
+    Si los dos números difieren, el precio nuevo le llegó. Si son iguales,
+    Rebill le congeló el precio de alta y hay que moverlo a mano.
+
+    No escribe nada y no devuelve ninguna credencial.
+    """
+    from billing import rebill
+    # ⚠️ `billing.pricing` y NO `pricing`: en este archivo `pricing` es el
+    # paquete de COTIZACIONES (letras, yahoo). Dos módulos con el mismo nombre.
+    from billing import pricing as planes
+    salida = {"plan_nuevo": {
+        "plus_mensual": planes.PLUS_ARS_MONTHLY_TOTAL,
+        "plus_anual": planes.PLUS_ARS_ANNUAL_TOTAL,
+        "pro_mensual": planes.ARS_MONTHLY_TOTAL,
+        "pro_anual": planes.ARS_ANNUAL_TOTAL,
+    }, "suscripciones": []}
+
+    with db_abierta() as conn:
+        filas = conn.execute(
+            """SELECT s.mp_subscription_id AS sid, s.external_reference AS ref,
+                      s.period, s.amount_ars, u.email
+                 FROM subscriptions s JOIN users u ON u.id = s.user_id
+                WHERE s.status = 'authorized'
+                ORDER BY s.created_at DESC""").fetchall()
+
+    for r in filas:
+        item = {
+            "email": r["email"],
+            "period": r["period"],
+            "registrado_en_rendi": r["amount_ars"],
+            "rebill_dice": None,
+            "error": None,
+        }
+        try:
+            data = rebill.get_subscription(r["sid"] or "") or {}
+            # No damos por sabido el nombre del campo: se buscan TODAS las
+            # claves que parezcan un monto y se devuelven las que haya. Es la
+            # forma honesta de leer una respuesta cuyo esquema no controlamos.
+            montos = {}
+
+            def _buscar(d, prefijo=""):
+                if isinstance(d, dict):
+                    for k, v in d.items():
+                        ruta = f"{prefijo}.{k}" if prefijo else k
+                        if isinstance(v, (dict, list)):
+                            _buscar(v, ruta)
+                        elif any(t in k.lower() for t in
+                                 ("amount", "price", "total", "monto")):
+                            montos[ruta] = v
+                elif isinstance(d, list):
+                    for i, v in enumerate(d[:5]):
+                        _buscar(v, f"{prefijo}[{i}]")
+
+            _buscar(data)
+            item["rebill_dice"] = montos or None
+            item["estado_en_rebill"] = data.get("status")
+        except Exception as ex:
+            item["error"] = f"{type(ex).__name__}: {str(ex)[:160]}"
+        salida["suscripciones"].append(item)
+
+    salida["como_leerlo"] = (
+        "Si 'rebill_dice' trae el precio NUEVO, el cambio alcanzó a las "
+        "suscripciones que ya estaban. Si trae el VIEJO (igual a "
+        "'registrado_en_rendi'), Rebill les congeló el precio de alta.")
+    return salida
+
+
 @app.get("/api/admin/billing/inspect")
 def admin_billing_inspect(email: str, uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY del estado de billing de un user, por email.
