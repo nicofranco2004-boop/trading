@@ -809,7 +809,7 @@ def test_el_cedear_avisa_con_su_accion_en_nueva_york_hasta_que_abre_byma(clean, 
     monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["AAPL.BA"])
     _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("AAPL", 3.4)], {"AAPL": 6})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
-    assert _events(conn)[-1]["message"] == "AAPL en Nueva York sube 3,4% en el pre-mercado"
+    assert _events(conn)[-1]["message"] == "AAPL en Nueva York sube 3,4% en el pre-mercado, desde el cierre de BYMA"
     # Con BYMA abierta, el CEDEAR ya tiene precio propio: no hay anticipo.
     conn.execute("DELETE FROM alert_symbol_state"); conn.commit()
     _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("AAPL", 3.4)], {"AAPL": 6}, ahora=_A_LAS_1115)
@@ -836,7 +836,7 @@ def test_en_invierno_el_cedear_avisa_lo_que_se_movio_desde_el_cierre_de_byma(cle
                 {lun: 100.0})
     monkeypatch.setattr(_fdh, "_traer_velas", traer)
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
-    assert _events(conn)[-1]["message"] == "AAPL en Nueva York sube 3,6% en el pre-mercado"
+    assert _events(conn)[-1]["message"] == "AAPL en Nueva York sube 3,6% en el pre-mercado, desde el cierre de BYMA"
     # El mismo movimiento contra el mismo cierre de BYMA no se repite.
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
@@ -1160,3 +1160,133 @@ def test_doble_del_post_de_anoche_en_el_pre(clean, monkeypatch):
     assert _events(conn)[-1]["message"] == "NVDA sube 6,6% en el pre-mercado (el doble de tu alerta)"
     _rueda(monkeypatch, 7.0)
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0          # la apertura no repite
+
+
+# ── Tercera auditoría (2026-10-15): lo que entró después de las dos primeras ──
+
+def _pre_desde(sym, pct, dia_cierre, precio=100.0):
+    rmt = _cierre_ts(dia_cierre)
+    return {"symbol": sym, "marketState": "PRE", "market": "us_market",
+            "regularMarketTime": rmt, "regularMarketPrice": precio,
+            "preMarketChangePercent": pct, "preMarketTime": rmt + 15 * 3600,
+            "preMarketPrice": round(precio * (1 + pct / 100), 4)}
+
+
+def _dias_de_byma(desde, hasta, sin=()):
+    d, out = desde, set()
+    while d <= hasta:
+        if d.weekday() < 5 and d not in sin:
+            out.add(d)
+        d += timedelta(days=1)
+    return out
+
+
+def test_el_dia_despues_de_un_feriado_argentino_el_cedear_avisa_una_vez(clean, monkeypatch):
+    # Lunes 12/10: feriado acá, Nueva York abierta. El martes a las 9 el pre de
+    # AAPL va +3,4 % desde el último cierre de BYMA (el VIERNES 9/10); a las 12
+    # abre BYMA y el CEDEAR va +3,6 % contra ese mismo viernes. Es UN movimiento.
+    # Antes la rueda medía «contra el lunes» (no conocía el feriado) y avisaba
+    # dos veces.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["AAPL.BA"])
+    dias = _dias_de_byma(date(2026, 9, 14), date(2026, 10, 13), sin={date(2026, 10, 12)})
+
+    def velas(simbolo):
+        v = [(_dt.datetime(2026, 10, 13, 8, 0, tzinfo=_fdh.ZONA_NY) + _dt.timedelta(minutes=5 * i), 103.4)
+             for i in range(6)]
+        return v, {date(2026, 10, 9): 100.0, date(2026, 10, 12): 100.0}
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(_fdh, "_traer_sesiones_byma", lambda: dias)
+    monkeypatch.setattr(_fdh, "_traer_velas", velas)
+    cots = [_pre_desde("SPY", 0.2, "2026-10-12"), _pre_desde("AAPL", 3.4, "2026-10-12")]
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", lambda s: [c for c in cots if c["symbol"] in s])
+    monkeypatch.setattr("fechas.ahora_art", lambda: datetime(2026, 10, 13, 9, 0))
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+    _fdh._vaciar_cache()
+    monkeypatch.setattr("fechas.ahora_art", lambda: datetime(2026, 10, 13, 12, 0))
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL.BA": _q(1000, 3.6, sym="AAPL.BA")})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    assert [e["message"] for e in _events(conn)] == [
+        "AAPL en Nueva York sube 3,4% en el pre-mercado, desde el cierre de BYMA"]
+    assert ae._base_de_la_rueda("AAPL.BA", dias) == "2026-10-09"
+
+
+def _invierno_nvda(monkeypatch, tenencias, falla_la_primera=False):
+    # Martes 17/11, 9:00 de acá. El lunes NVDA valía 97 cuando cerró BYMA (15:00
+    # de NY), cerró la rueda en 100 y en el pre va 103,5: la acción +3,5 %, el
+    # CEDEAR +6,7 % (le falta también la última hora de NY).
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: tenencias)
+    llamadas = {"n": 0}
+
+    def velas(simbolo):
+        llamadas["n"] += 1
+        if falla_la_primera and llamadas["n"] == 1:
+            raise RuntimeError("Yahoo no respondió")
+        v = [(_dt.datetime(2026, 11, 16, 14, 55, tzinfo=_fdh.ZONA_NY), 97.0)]
+        v += [(_dt.datetime(2026, 11, 17, 7, 0, tzinfo=_fdh.ZONA_NY) + _dt.timedelta(minutes=5 * i), 103.5)
+              for i in range(6)]
+        return v, {date(2026, 11, 16): 100.0}
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(_fdh, "_traer_sesiones_byma", lambda: _dias_de_byma(date(2026, 10, 19), date(2026, 11, 16)))
+    monkeypatch.setattr(_fdh, "_traer_velas", velas)
+    cots = [_pre_desde("SPY", 0.2, "2026-11-16"), _pre_desde("NVDA", 3.5, "2026-11-16")]
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", lambda s: [c for c in cots if c["symbol"] in s])
+    monkeypatch.setattr("fechas.ahora_art", lambda: datetime(2026, 11, 17, 9, 0))
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
+
+
+@pytest.mark.parametrize("orden", [["NVDA", "NVDA.BA"], ["NVDA.BA", "NVDA"]])
+def test_nvda_y_su_cedear_con_numeros_distintos_son_dos_renglones(clean, monkeypatch, orden):
+    # Antes se juntaban en uno: según el orden, «NVDA en Nueva York sube 6,7% en el
+    # pre-mercado» (falso: NVDA va +3,5 %) o «NVDA sube 3,5%» escondiendo el
+    # CEDEAR y gastándole el aviso del doble.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    _invierno_nvda(monkeypatch, orden)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 2
+    assert sorted(e["message"] for e in _events(conn)) == [
+        "NVDA en Nueva York sube 6,7% en el pre-mercado, desde el cierre de BYMA",
+        "NVDA sube 3,5% en el pre-mercado"]
+    claves = {r["symbol"] for r in conn.execute("SELECT symbol FROM alert_symbol_state")}
+    # El CEDEAR +6,7 % ya está en el doble de 3 %: ese aviso ya dio el número.
+    assert claves == {"NVDA#2026-11-16#up", "NVDA.BA#2026-11-16#up", "NVDA.BA#2026-11-16#upx2"}
+
+
+def test_sin_el_precio_al_cierre_de_byma_no_salta_un_falso_doble(clean, monkeypatch):
+    # Yahoo no da las velas una vez: el CEDEAR queda medido contra el cierre de
+    # NY (+3,5 %). Cuando vuelven, el MISMO precio da +6,7 %. Antes eso era un
+    # «el doble de tu alerta» sin que nada se hubiera movido.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    _invierno_nvda(monkeypatch, ["NVDA.BA"], falla_la_primera=True)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0      # espera al dato
+    _fdh._bases_cache.clear()                                       # pasaron los 2 minutos
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert [e["message"] for e in _events(conn)] == [
+        "NVDA en Nueva York sube 6,7% en el pre-mercado, desde el cierre de BYMA"]
+
+
+def test_los_dias_de_byma_se_piden_sin_la_base_tomada(clean, monkeypatch):
+    # El almanaque de BYMA (para la base de los `.BA`) es red: tiene que ir
+    # antes de la primera escritura del ciclo, como el resto de Yahoo.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    _mk_alert(conn, kind="pct_move", symbol="MSFT", up_pct=1, threshold=None, repeat="always")
+    _invierno_nvda(monkeypatch, ["NVDA", "NVDA.BA", "AMD.BA"])
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"MSFT": _q(100, 0.2, sym="MSFT")})
+    vistos = []
+    for nombre in ("_pedir_yahoo", "_traer_velas", "_traer_sesiones_byma"):
+        orig = getattr(_fdh, nombre)
+        monkeypatch.setattr(_fdh, nombre, (lambda o, n: lambda *a: (vistos.append((n, conn.in_transaction)), o(*a))[1])(orig, nombre))
+    for _ in range(2):
+        _fdh._vaciar_cache()
+        ae.evaluate_alerts(conn, only_user=1)
+    assert {n for n, _ in vistos} >= {"_pedir_yahoo", "_traer_velas", "_traer_sesiones_byma"}
+    assert not any(t for _, t in vistos), vistos

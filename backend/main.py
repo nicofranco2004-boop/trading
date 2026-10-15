@@ -31461,7 +31461,7 @@ def _lotes_con_referencia_eeuu(uid: int, simbolos=None, tope: float = None):
     if not refs:
         return [], tc_cedear, None
     broker_ccy = {b['name']: b['currency'] for b in brokers}
-    # El total sale de la FOTO DIARIA más reciente (si es de la última semana):
+    # El total sale del último CIERRE del cron (si es de los últimos 3 días):
     # valuar la cartera entera de cada suscriptor a las 11 eran S×P pedidos a
     # Yahoo justo cuando abre BYMA (auditoría 2026-10-15). Se valúan sólo las
     # tenencias que siguen a EE.UU.; sin foto, se valúa todo como antes.
@@ -31486,13 +31486,19 @@ def _lotes_con_referencia_eeuu(uid: int, simbolos=None, tope: float = None):
 
 
 def _ultimo_total_de_foto(uid: int):
-    """El valor total (USD) de la foto diaria más reciente del usuario, si es de
-    los últimos 7 días; si no, None."""
+    """El valor total (USD) del último CIERRE del cron del usuario (`source='cron'`:
+    posiciones × precio real), si es de los últimos 3 días; si no, None y el que
+    llama valúa la cartera entera.
+
+    Sólo el cron y sólo reciente: una foto del navegador o del importador, o una
+    de hace una semana (después de un depósito grande), inflaba o achicaba el «%
+    sobre la cartera» del mail (auditoría 2026-10-15)."""
     from fechas import hoy_art
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT date, total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+            "SELECT date, total_value FROM snapshots WHERE user_id=? AND source='cron' "
+            "ORDER BY date DESC LIMIT 1",
             (uid,)).fetchone()
     except Exception:
         return None
@@ -31504,7 +31510,7 @@ def _ultimo_total_de_foto(uid: int):
         dias = (datetime.fromisoformat(hoy_art()) - datetime.fromisoformat(str(row["date"])[:10])).days
     except ValueError:
         return None
-    return float(row["total_value"]) if dias <= 7 else None
+    return float(row["total_value"]) if dias <= 3 else None
 
 
 def _con_nombres(positions):

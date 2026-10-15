@@ -242,8 +242,8 @@ def _v(dia, h, m, c):
 def test_las_velas_dan_el_post_de_la_rueda_anterior_y_el_pre_de_hoy():
     mie, jue = dt.date(2026, 10, 14), dt.date(2026, 10, 15)
     velas = [_v(mie, 15, 55, 343.04),          # última vela de la rueda (no es el cierre oficial)
-             _v(mie, 17, 0, 344.0), _v(mie, 19, 55, 344.78),
-             _v(jue, 4, 0, 345.0), _v(jue, 9, 25, 346.9),
+             _v(mie, 17, 0, 344.0), _v(mie, 18, 0, 344.5), _v(mie, 19, 55, 344.78),
+             _v(jue, 4, 0, 345.0), _v(jue, 7, 0, 346.0), _v(jue, 9, 25, 346.9),
              _v(jue, 9, 35, 350.0)]            # ya es la rueda de hoy: no es pre
     f = fdh.franjas_de_velas(velas, {dt.date(2026, 10, 13): 341.27, mie: 342.96}, jue)
     # Contra el cierre OFICIAL del 14 (342,96), como la cotización en vivo.
@@ -355,7 +355,7 @@ LUN_16_11 = dt.date(2026, 11, 16)
 VELAS_AAPL_INVIERNO = ([(dt.datetime.combine(LUN_16_11, dt.time(h, m), NY), c) for h, m, c in (
     (14, 50, 99.5), (14, 55, 100.0),   # la de las 14:55 termina a las 15:00: ESA
     (15, 0, 101.0), (15, 55, 101.9),   # la última hora de la rueda de NY
-    (16, 0, 102.0), (17, 0, 103.0))],  # el post
+    (16, 0, 102.0), (16, 30, 102.5), (17, 0, 103.0))],  # el post (3 velas: MIN_VELAS)
     {dt.date(2026, 11, 13): 98.0, LUN_16_11: 102.0})
 
 
@@ -517,7 +517,8 @@ def test_el_resumen_del_chat_usa_el_de_byma_para_el_cedear_y_el_de_ny_para_la_ac
 def test_el_mail_mide_el_cedear_desde_el_cierre_de_byma():
     mar = dt.date(2026, 11, 17)
     velas, cierres = VELAS_AAPL_INVIERNO
-    velas = velas + [(dt.datetime.combine(mar, dt.time(9, 25), NY), 104.0)]
+    velas = velas + [(dt.datetime.combine(mar, dt.time(h, m), NY), c)
+                     for h, m, c in ((4, 0, 103.5), (7, 0, 103.8), (9, 25, 104.0))]
     cierre = dt.datetime(2026, 11, 16, 17, 0, tzinfo=AR)
     f = fdh.franjas_de_velas(velas, cierres, mar, cierre_byma=cierre)
     assert f["post"]["pct"] == pytest.approx((103 / 102 - 1) * 100, abs=1e-4)
@@ -563,3 +564,36 @@ def test_el_endpoint_tiene_un_limite_por_usuario(cliente):
     assert codigos[:30] == [200] * 30
     assert 429 in codigos[30:]
     _m._rate_store.clear()
+
+
+# ── Tercera auditoría (2026-10-15) ───────────────────────────────────────────
+
+def test_byma_solo_acepta_acciones_que_sigue_un_cedear_o_una_accion_argentina(invierno):
+    # Cada símbolo de `byma` cuesta dos pedidos de velas en el grupo de Yahoo que
+    # usa toda la app. Antes aceptaba cualquiera: ZZZZ y KKKK también se pedían.
+    c, _y, v = invierno
+    r = c.get("/api/fuera-de-horario", params={"symbols": "AAPL,ZZZZ", "byma": "AAPL,ZZZZ,KKKK"}).json()
+    assert v.pedidos == ["AAPL"]
+    assert r["cotizaciones"]["AAPL"]["pct_byma"] == pytest.approx(3.0, abs=1e-4)
+    assert "BRK-B" in fdh._siguen_a_byma() and "YPF" in fdh._siguen_a_byma()
+
+
+def test_sin_el_precio_al_cierre_de_byma_avisa_que_es_aproximado(monkeypatch):
+    y = Yahoo([_cot("SPY", "POST", LUN_16_11, 600.0, post=601.0),
+               _cot("AAPL", "POST", LUN_16_11, 102.0, post=103.0)])
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {LUN_16_11})
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=Velas({}, falla=True),
+                   ahora=dt.datetime(2026, 11, 16, 19, 0, tzinfo=AR))
+    aapl = r["cotizaciones"]["AAPL"]
+    assert aapl["pct_byma"] == aapl["pct"]
+    assert aapl["byma_aproximado"] is True
+
+
+def test_una_sola_vela_en_el_post_no_es_que_opero():
+    # MEDIDO 2026-10-15: GGAL tenía en el post sólo la vela de las 16:00 (la del
+    # cierre oficial) y el mail decía «GGAL 0,0 %». Con menos de MIN_VELAS velas,
+    # la franja no operó (la regla de las alertas).
+    mie, jue = dt.date(2026, 10, 14), dt.date(2026, 10, 15)
+    velas = [_v(mie, 15, 55, 80.0), _v(mie, 16, 0, 80.75), _v(jue, 9, 0, 80.64)]
+    f = fdh.franjas_de_velas(velas, {dt.date(2026, 10, 13): 79.0, mie: 80.75}, jue)
+    assert f == {"post": None, "pre": None}
