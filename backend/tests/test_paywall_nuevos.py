@@ -405,5 +405,37 @@ class ElAlta(Base):
         self.assertEqual(kw["total_days"], tr.TRIAL_TOTAL_DAYS)
 
 
+class LlevarseLosPropiosDatos(Base):
+    """⭐ Con la cuenta en pausa se tiene que poder EXPORTAR.
+
+    Es el hermano del borrado de cuenta: sin esto, a quien no elige un plan la
+    única salida que le queda es BORRAR todo. O sea «pagá o perdé lo que
+    cargaste» — y lo que cargó puede ser el historial de años de varios brokers
+    tipeado a mano. El muro existe para cobrar, no para retener a nadie con sus
+    cosas adentro.
+
+    Importa especialmente de cara al 1/11/2026, cuando el muro va a alcanzar a
+    toda la gente del beta: el mail les promete que pueden descargar lo suyo."""
+
+    def test_puede_exportar_estando_en_pausa(self):
+        uid = self._usuario()
+        self._viajar(uid, tr.TRIAL_TOTAL_DAYS + 1)      # se le venció la prueba
+        self.assertTrue(self._en_pausa(uid), "el montaje no dejó la cuenta en pausa")
+        for ruta in ("/api/export/operations.csv", "/api/export/positions.csv",
+                     "/api/export/transactions.csv", "/api/export/monthly.csv"):
+            r = self.client.get(ruta, headers=self._headers(uid))
+            self.assertNotEqual(
+                r.status_code, main.CUENTA_EN_PAUSA,
+                f"{ruta} bloqueado: la única salida vuelve a ser borrar la cuenta")
+
+    def test_los_datos_VIVOS_siguen_bloqueados(self):
+        """La excepción es para LLEVARSE lo cargado, no para seguir usando
+        Rendi: las pantallas siguen cortadas."""
+        uid = self._usuario()
+        self._viajar(uid, tr.TRIAL_TOTAL_DAYS + 1)
+        r = self.client.get(ElMuroCorta.RUTA_DE_DATOS, headers=self._headers(uid))
+        self.assertEqual(r.status_code, main.CUENTA_EN_PAUSA, r.text)
+
+
 if __name__ == "__main__":
     unittest.main()

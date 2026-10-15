@@ -3739,7 +3739,15 @@ CUENTA_EN_PAUSA = 402   # "Payment Required". El frontend lo mapea al muro.
 #   · /api/plan/   → qué incluye cada plan (lo que el muro pinta) y la métrica.
 # Se comparan como PREFIJO de la ruta, así que cubren también los endpoints que
 # se agreguen debajo.
-EXENTOS_CON_CUENTA_EN_PAUSA = ("/api/auth/", "/api/billing/", "/api/plan/")
+#   · /api/export/→ ⭐ LLEVARSE LOS PROPIOS DATOS. Es el hermano del borrado de
+#                    cuenta de más abajo y por el mismo motivo: con la cuenta en
+#                    pausa, sin esto la única salida era BORRAR todo. O sea
+#                    "pagá o perdé lo que cargaste", y lo que cargó puede ser el
+#                    historial de años de varios brokers tipeado a mano. Es sólo
+#                    lectura y son sus datos: el muro es para cobrar, no para
+#                    retener a nadie con sus cosas adentro.
+EXENTOS_CON_CUENTA_EN_PAUSA = ("/api/auth/", "/api/billing/", "/api/plan/",
+                               "/api/export/")
 
 # Rutas EXACTAS (método + path), no prefijos. Van aparte porque `/api/me` como
 # prefijo abriría también `/api/me/reset-data` y `/api/me/advisor/*`, que no
