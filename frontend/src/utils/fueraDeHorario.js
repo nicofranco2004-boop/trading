@@ -31,6 +31,10 @@ import { valuePositionLot } from './valuation'
 import { classifyAsset, isArMarket } from './assetClass'
 import { cedearEspecieBase, CEDEAR_EN_EEUU, ADR_DE_ACCION_AR } from './tickers'
 
+/** Los índices no operan fuera de la rueda; los ETFs que los copian, sí. La
+ *  cinta de arriba muestra el pre/post del índice a través de su ETF. */
+export const ETF_DEL_INDICE = { '^GSPC': 'SPY', '^IXIC': 'QQQ', '^DJI': 'DIA' }
+
 /** Cada cuánto se repide (el servidor guarda cada cotización 60 s). */
 export const FUERA_DE_HORARIO_MS = 60 * 1000
 
@@ -102,16 +106,23 @@ export function pctDeLaTenencia(p, brokers, datos) {
  *   total: { usd, ars, pct },              // pct = fracción del valor (0,0029)
  *   porBroker: { [nombre]: { usd, ars, valorUsd, valorArs, pct, aplica } },
  *   porPosicion: { [id]: { usd, ars, pct, via, s } },  // pct en puntos; null = sin operar
+ *   porVia: {                              // para «¿Cómo se calcula?»
+ *     exacto:   { usd, ars, valorUsd, valorArs },   // la acción misma (Schwab, IBKR…)
+ *     anticipo: { usd, ars, valorUsd, valorArs },   // CEDEAR o acción argentina vía ADR:
+ *   },                                                //   en pesos también se mueve con el CCL
  * }}
  */
 export function impactoFueraDeHorario(positions = [], brokers = [], ctx = {}, datos = null) {
-  const vacio = { aplica: false, total: { usd: 0, ars: 0, pct: 0 }, porBroker: {}, porPosicion: {} }
+  const nuevaVia = () => ({ usd: 0, ars: 0, valorUsd: 0, valorArs: 0 })
+  const vacio = { aplica: false, total: { usd: 0, ars: 0, pct: 0 }, porBroker: {}, porPosicion: {},
+    porVia: { exacto: nuevaVia(), anticipo: nuevaVia() } }
   if (!haySesion(datos)) return vacio
   const { prices = {}, tcValuacion, tcCedear, tcCripto = null } = ctx
   if (!tcValuacion) return vacio
   const porNombre = Object.fromEntries((brokers || []).map(b => [b.name, b]))
   const porBroker = {}
   const porPosicion = {}
+  const porVia = { exacto: nuevaVia(), anticipo: nuevaVia() }
   let totalUsd = 0, totalArs = 0, valorTotalUsd = 0, aplica = false
 
   for (const p of positions || []) {
@@ -133,6 +144,11 @@ export function impactoFueraDeHorario(positions = [], brokers = [], ctx = {}, da
     const usd = (v.valueUsd || 0) * f
     const ars = enPesos ? (v.valueArs || 0) * f : usd * tcValuacion
     porPosicion[p.id] = { usd, ars, pct: t.pct, via: t.via, s: t.s }
+    const pv = porVia[t.via === 'propio' ? 'exacto' : 'anticipo']
+    pv.usd += usd
+    pv.ars += ars
+    pv.valorUsd += v.valueUsd || 0
+    pv.valorArs += enPesos ? (v.valueArs || 0) : (v.valueUsd || 0) * tcValuacion
     b.usd += usd
     b.ars += ars
     totalUsd += usd
@@ -144,6 +160,7 @@ export function impactoFueraDeHorario(positions = [], brokers = [], ctx = {}, da
     total: { usd: totalUsd, ars: totalArs, pct: valorTotalUsd > 0 ? totalUsd / valorTotalUsd : 0 },
     porBroker,
     porPosicion,
+    porVia,
   }
 }
 

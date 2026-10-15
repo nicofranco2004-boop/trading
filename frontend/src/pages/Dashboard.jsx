@@ -993,7 +993,7 @@ function PersonalDashboard() {
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={hidden} className="mt-2.5"
+          <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden} className="mt-2.5"
             total={currency === 'ARS'
               ? portfolioTotal * tcValuacion + impactoFdh.total.ars
               : portfolioTotal + impactoFdh.total.usd} />

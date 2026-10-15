@@ -1695,7 +1695,7 @@ export default function PositionsMobile() {
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} className="-mt-1 mb-2.5"
+          <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={currency} className="-mt-1 mb-2.5"
             total={heroValor + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
         )}
         {/* De cuándo son los precios y si se están moviendo. Reemplaza el

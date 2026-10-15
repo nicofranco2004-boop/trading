@@ -2088,7 +2088,7 @@ function PositionsDesktop() {
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi sesion={sesionFdh} moneda={displayCurrency} oculto={hidden} className="mt-2.5"
+          <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={displayCurrency} oculto={hidden} className="mt-2.5"
             total={isArsDisp ? heroValueArs + impactoFdh.total.ars : heroValue + impactoFdh.total.usd} />
         )}
       </div>

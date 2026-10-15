@@ -121,6 +121,18 @@ describe('la plata que mueve', () => {
     expect(pctDeLaTenencia(POS[0], BROKERS, null)).toBeNull()
   })
 
+  it('separa lo exacto (la acción misma) del anticipo (CEDEAR y vía ADR), que en pesos también se mueve con el CCL', () => {
+    const d = datos('pre', { NVDA: -1.6, AAPL: 0.74, GGAL: -0.28, YPF: -0.7, DIS: 1.1 })
+    const r = impactoFueraDeHorario(POS, BROKERS, ctx, d)
+    const { exacto, anticipo } = r.porVia
+    const de = (ids) => ids.reduce((s, id) => s + r.porPosicion[id].usd, 0)
+    expect(exacto.usd).toBeCloseTo(de([1, 2, 3]), 9)        // NVDA, AAPL y GGAL en Schwab
+    expect(anticipo.usd).toBeCloseTo(de([4, 5, 10]), 9)     // CEDEAR AAPL, YPFD, CEDEAR DISN
+    expect(exacto.usd + anticipo.usd).toBeCloseTo(r.total.usd, 9)
+    // El valor en pesos del anticipo es el de las tenencias en pesos, tal cual.
+    expect(anticipo.valorArs).toBeCloseTo(87 * 27700 + 40 * 41000 + 30 * 14000, 6)
+  })
+
   it('una fila con varios lotes suma sus lotes', () => {
     const dos = [lote(21, 'Schwab', 'NVDA', 10, 1500, { currency: 'USD' }), lote(22, 'Schwab', 'NVDA', 25, 3500, { currency: 'USD' })]
     const r = impactoFueraDeHorario(dos, BROKERS, ctx, datos('post', { NVDA: 1 }))

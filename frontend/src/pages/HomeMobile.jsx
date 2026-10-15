@@ -419,7 +419,7 @@ export default function HomeMobile() {
             <ChipFueraDeHorario sesion={sesionFdh} moneda={currency} oculto={hidden} className="text-[12px]"
               monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
               pctFraccion={impactoFdh.total.pct} />
-            <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={hidden}
+            <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden}
               total={(currency === 'ARS' ? (totals.totalValue + pf.valueUsd) * tcValuacion : totals.totalValue + pf.valueUsd)
                 + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
           </div>

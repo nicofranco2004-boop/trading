@@ -6,7 +6,9 @@
 //   · El número va en verde o rojo como cualquier ganancia de Rendi.
 // Las cuentas salen de utils/fueraDeHorario.js; acá no se calcula nada.
 
-import { Sun, Moon } from 'lucide-react'
+import { useState } from 'react'
+import { Sun, Moon, ChevronDown } from 'lucide-react'
+import { useCurrency } from '../contexts/CurrencyContext'
 import { usd, ars, pctVar, pctColor, colorClass } from '../utils/format'
 import { nombreDeSesion, nombreCorto, rotuloVia, estadoDeSesion } from '../utils/fueraDeHorario'
 
@@ -69,15 +71,93 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
   )
 }
 
-/** «Todavía no está en el total. Si el mercado abriera así, tu cartera quedaría en …». */
-export function SiAbrieraAsi({ sesion, total, moneda, oculto = false, className = '' }) {
+const valorFdh = (n, moneda) => (moneda === 'ARS' ? `ARS ${ars(n)}` : `USD ${usd(n)}`)
+
+/**
+ * «Todavía no está en el total. Si el mercado abriera así, tu cartera quedaría
+ * en …» y, con `impacto` (el de impactoFueraDeHorario), el desplegable
+ * «¿Cómo se calcula?», que separa lo exacto de lo que es anticipo y avisa que un
+ * CEDEAR también se mueve con el dólar CCL.
+ */
+export function SiAbrieraAsi({ sesion, total, moneda, oculto = false, className = '', impacto = null }) {
+  const [abierto, setAbierto] = useState(false)
   if (!sesion || oculto || total == null) return null
-  const valor = moneda === 'ARS' ? `ARS ${ars(total)}` : `USD ${usd(total)}`
   return (
-    <p className={`text-[12px] text-ink-2 tabular ${className}`}>
-      Todavía no está en el total. Si el mercado abriera así, tu cartera quedaría en{' '}
-      <span className="text-ink-1">{valor}</span>.
-    </p>
+    <div className={className}>
+      <p className="text-[12px] text-ink-2 tabular">
+        Todavía no está en el total. Si el mercado abriera así, tu cartera quedaría en{' '}
+        <span className="text-ink-1">{valorFdh(total, moneda)}</span>.
+        {impacto && (
+          <button type="button" onClick={() => setAbierto(a => !a)} aria-expanded={abierto}
+            className="ml-1.5 inline-flex items-center gap-0.5 text-rendi-accent hover:text-rendi-accent/80 font-medium">
+            {abierto ? 'Ocultar el cálculo' : '¿Cómo se calcula?'}
+            <ChevronDown size={12} strokeWidth={2} className={`transition-transform ${abierto ? 'rotate-180' : ''}`} aria-hidden="true" />
+          </button>
+        )}
+      </p>
+      {impacto && abierto && <ComoSeCalcula sesion={sesion} impacto={impacto} moneda={moneda} />}
+    </div>
+  )
+}
+
+/** El detalle del cálculo: por tipo de tenencia, y por qué un CEDEAR puede abrir distinto. */
+export function ComoSeCalcula({ sesion, impacto, moneda }) {
+  const { valuationDollar } = useCurrency()
+  const t = tonoDeSesion(sesion)
+  const { exacto, anticipo } = impacto.porVia
+  const m = (x) => (moneda === 'ARS' ? x.ars : x.usd)
+  const franja = sesion === 'pre' ? 'en el pre-mercado' : 'en el post-mercado'
+  const cuando = sesion === 'pre' ? 'cuando abra BYMA a las 11' : 'mañana, cuando abra BYMA'
+  const unoPorCiento = anticipo.valorArs * 0.01
+  const Fila = ({ titulo, detalle, monto, fuerte = false }) => (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className={fuerte ? 'font-semibold text-ink-0' : 'text-ink-0'}>{titulo}</div>
+        {detalle && <div className="text-[11.5px] text-ink-3">{detalle}</div>}
+      </div>
+      <span className={`tabular whitespace-nowrap ${fuerte ? 'font-semibold' : ''} ${colorClass(monto)}`}>{montoFdh(monto, moneda)}</span>
+    </div>
+  )
+  return (
+    <div className={`mt-2 rounded-lg border border-dashed ${t.borde} bg-bg-2/40 p-3 text-[12.5px] text-ink-1 flex flex-col gap-2.5`}>
+      <p>
+        Para cada activo: <span className="text-ink-0">su valor al último cierre × lo que se mueve su acción en
+        Nueva York {franja}</span>. Después se suma todo.
+      </p>
+      <div className="flex flex-col gap-2">
+        {exacto.valorUsd > 0 && (
+          <Fila titulo="Acciones y ETFs de EE.UU." detalle="Exacto: es el precio de esa misma acción." monto={m(exacto)} />
+        )}
+        {anticipo.valorUsd > 0 && (
+          <Fila titulo="CEDEARs y acciones argentinas"
+            detalle="Anticipo: usa lo que se mueve la acción (o su ADR) en Nueva York." monto={m(anticipo)} />
+        )}
+        <div className="border-t border-line pt-2">
+          <Fila titulo="Total" monto={moneda === 'ARS' ? impacto.total.ars : impacto.total.usd} fuerte />
+        </div>
+      </div>
+      {anticipo.valorArs > 0 && (
+        <div className="rounded bg-rendi-warn/10 p-2.5 flex flex-col gap-1.5">
+          <div className="font-semibold text-rendi-warn">Por qué puede haber diferencia {cuando}</div>
+          <p>
+            Un CEDEAR en pesos vale lo que la acción en Nueva York <span className="text-ink-0">× el dólar CCL</span> (más
+            lo que pida el mercado ese día). Este cálculo sólo mira la acción: todavía no sabe qué va a hacer el CCL.
+          </p>
+          <p className="tabular">
+            Cada <span className="text-ink-0">1 %</span> que suba o baje el CCL, tus CEDEARs y acciones argentinas
+            ({valorFdh(anticipo.valorArs, 'ARS')}) se mueven unos{' '}
+            <span className="text-ink-0">{valorFdh(unoPorCiento, 'ARS')}</span> más o menos, aparte de este número.
+          </p>
+          {moneda !== 'ARS' && (
+            <p className="text-ink-2">
+              En dólares la diferencia es más chica: Rendi pasa esos pesos a dólares al{' '}
+              {valuationDollar === 'ccl' ? 'CCL' : 'MEP'}, que se mueve parecido al CCL.
+            </p>
+          )}
+        </div>
+      )}
+      <p className="text-ink-3">Nada de esto se suma a tu total ni a tu ganancia hasta que abra el mercado.</p>
+    </div>
   )
 }
 
