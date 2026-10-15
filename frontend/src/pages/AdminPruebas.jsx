@@ -401,11 +401,16 @@ export default function AdminPruebas() {
 
   useEffect(() => { cargar() }, [days])
 
-  async function cargar() {
+  // `limite` opcional: la pantalla trae 200 por defecto y las pide todas cuando
+  // se lo piden desde el aviso de lista cortada. Medido: las 1.300 del 1/11 son
+  // ~930 KB y la consulta tarda 0,00 s.
+  async function cargar(limite) {
     const mio = ++pedido.current
     setCargando(true); setError('')
     try {
-      const r = await api.get(`/admin/billing/trial-progress?days=${days}`)
+      const r = await api.get(
+        `/admin/billing/trial-progress?days=${days}` +
+        (limite ? `&limite=${limite}` : ''))
       if (mio === pedido.current) setData(r)
     } catch (e) {
       if (mio !== pedido.current) return
@@ -508,9 +513,12 @@ export default function AdminPruebas() {
           que se toman decisiones. */}
       {data?.truncado && (
         <div className="rounded-lg border border-rendi-warn/30 bg-rendi-warn/5 p-3 text-[12px] text-rendi-warn mb-3.5">
-          Hay {data.total_en_ventana} pruebas en esta ventana y la tabla muestra las{' '}
-          {personas.length} más recientes. El resumen de abajo cuenta sólo esas: para verlas
-          todas, achicá la ventana de días.
+          Hay {data.total_en_ventana} pruebas en esta ventana y la tabla muestra{' '}
+          {personas.length}. El resumen de abajo —y el CSV— cuentan sólo esas.{' '}
+          <button type="button" onClick={() => cargar(data.total_en_ventana)}
+                  className="underline underline-offset-2 font-medium hover:text-ink-0">
+            Traer las {data.total_en_ventana}
+          </button>
         </div>
       )}
 

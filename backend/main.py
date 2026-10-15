@@ -35680,6 +35680,7 @@ def admin_trial_funnel(days: int = 90, uid: int = Depends(get_admin_user)):
 
 @app.get("/api/admin/billing/trial-progress")
 def admin_trial_progress(days: int = 30, detalle: bool = False,
+                         limite: int = 200,
                          uid: int = Depends(get_admin_user)):
     """Seguimiento persona por persona de las pruebas: cuándo arrancó cada uno,
     cuánto le queda y —lo que el embudo no dice— si está AVANZANDO.
@@ -35696,7 +35697,15 @@ def admin_trial_progress(days: int = 30, detalle: bool = False,
     from billing import trial as _trial
     conn = get_db()
     try:
-        return _trial.progreso(conn, days=days, detalle=detalle)
+        # ⭐ `limite` es pedible porque el consejo que daba la pantalla cuando
+        # cortaba la lista —"achicá la ventana de días"— NO SIRVE para una tanda
+        # masiva: si las 1.300 pruebas del 1/11 están todas activas, ninguna
+        # ventana las achica (el filtro es por fecha de FIN, y están todas en el
+        # futuro). Y el CSV bajaba 200 de 1.300 sin decirlo. Medido: las 1.300
+        # entran en ~930 KB y la consulta tarda 0,00 s, así que no hay motivo
+        # para no poder pedirlas.
+        return _trial.progreso(conn, days=days, detalle=detalle,
+                               limit=max(1, min(limite, 2000)))
     finally:
         conn.close()
 

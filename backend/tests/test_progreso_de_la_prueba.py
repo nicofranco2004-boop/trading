@@ -929,6 +929,35 @@ class LaPuertaDelPanel(Base):
         self.assertEqual(liviana["ventanas"]["7"]["dias_entro"],
                          completa["ventanas"]["7"]["dias_entro"])
 
+    def test_se_pueden_pedir_MAS_de_las_200_por_defecto(self):
+        """⭐ El aviso de lista cortada aconsejaba "achicá la ventana de días", y
+        para una tanda masiva eso NO SIRVE: si las 1.300 pruebas del 1/11 están
+        todas activas, ninguna ventana las achica (el filtro es por fecha de FIN
+        y están todas en el futuro). Y el CSV bajaba 200 de 1.300 sin decirlo.
+        Medido: las 1.300 entran en ~930 KB y la consulta tarda 0,00 s."""
+        jefe = self._persona(admin=1)
+        for _ in range(5):
+            self._con_prueba(self._persona(), arrancó_hace=2)
+        h = self._headers(jefe)
+
+        cortada = self.client.get(
+            "/api/admin/billing/trial-progress?limite=2", headers=h).json()
+        self.assertEqual(len(cortada["personas"]), 2)
+        self.assertTrue(cortada["truncado"])
+
+        todas = self.client.get(
+            "/api/admin/billing/trial-progress?limite=500", headers=h).json()
+        self.assertEqual(len(todas["personas"]), 5)
+        self.assertFalse(todas["truncado"])
+
+    def test_el_limite_tiene_techo(self):
+        """Pedible no es ilimitado: un `limite` gigante no puede convertirse en
+        una consulta sin freno."""
+        jefe = self._persona(admin=1)
+        r = self.client.get("/api/admin/billing/trial-progress?limite=999999",
+                            headers=self._headers(jefe))
+        self.assertEqual(r.status_code, 200, r.text)
+
     def test_days_fuera_de_rango_se_rechaza(self):
         jefe = self._persona(admin=1)
         r = self.client.get("/api/admin/billing/trial-progress?days=9999",
