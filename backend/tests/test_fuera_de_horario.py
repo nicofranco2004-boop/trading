@@ -528,3 +528,38 @@ def test_el_mail_mide_el_cedear_desde_el_cierre_de_byma():
     r = fdh.resumen_de_la_manana(lotes, {"AAPL": f}, ahora=dt.datetime(2026, 11, 17, 11, 0, tzinfo=AR))
     assert r["post"]["usd"] == pytest.approx(1000 * (103 / 102 - 1) + 30.0, abs=0.01)
     assert r["pre"]["usd"] == pytest.approx(1000 * (104 / 102 - 1) + 40.0, abs=0.01)
+
+
+
+# ── Segunda auditoría (2026-10-15) ───────────────────────────────────────────
+
+def test_brk_punto_b_en_schwab_pide_brk_guion_b():
+    assert fdh.referencia_en_eeuu("BRK.B") == ("BRK-B", "propio")
+    assert fdh.referencia_en_eeuu("BRK B") == ("BRK-B", "propio")
+
+
+def test_la_noche_se_nombra_con_el_dia_argentino():
+    jueves = "2026-10-15"
+    a_las_2330 = dt.datetime(2026, 10, 15, 23, 30, tzinfo=AR)
+    a_las_0030 = dt.datetime(2026, 10, 16, 0, 30, tzinfo=AR)
+    assert fdh._nombre_de_la_noche(jueves, a_las_2330.date()) == "esta noche"
+    assert fdh._nombre_de_la_noche(jueves, a_las_0030.date()) == "anoche"
+
+
+def test_el_chat_separa_la_accion_de_su_cedear():
+    datos = {"sesion": "pre", "byma_abierto": False,
+             "cotizaciones": {"AAPL": {"pct": 1.0, "precio": 101.0, "base": "2026-10-14"}}}
+    r = fdh.resumen_de_lotes([{"asset": "AAPL", "valor": 1000.0, "ref": ("AAPL", "propio")},
+                              {"asset": "AAPL", "valor": 500.0, "ref": ("AAPL", "eeuu")}], datos)
+    vias = sorted(a["via"] for a in r["activos"])
+    assert vias == ["eeuu", "propio"]
+
+
+def test_el_endpoint_tiene_un_limite_por_usuario(cliente):
+    c, _y = cliente
+    import main as _m
+    _m._rate_store.clear()
+    codigos = [c.get("/api/fuera-de-horario", params={"symbols": "AAPL"}).status_code for _ in range(32)]
+    assert codigos[:30] == [200] * 30
+    assert 429 in codigos[30:]
+    _m._rate_store.clear()

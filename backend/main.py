@@ -31461,10 +31461,17 @@ def _lotes_con_referencia_eeuu(uid: int, simbolos=None, tope: float = None):
     if not refs:
         return [], tc_cedear, None
     broker_ccy = {b['name']: b['currency'] for b in brokers}
-    syms = build_price_symbols(positions, brokers)
+    # El total sale de la FOTO DIARIA más reciente (si es de la última semana):
+    # valuar la cartera entera de cada suscriptor a las 11 eran S×P pedidos a
+    # Yahoo justo cuando abre BYMA (auditoría 2026-10-15). Se valúan sólo las
+    # tenencias que siguen a EE.UU.; sin foto, se valúa todo como antes.
+    total = _ultimo_total_de_foto(uid)
+    a_valuar = list(refs) if total is not None else list(range(len(positions)))
+    syms = build_price_symbols([positions[i] for i in a_valuar], brokers)
     prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=tope or _yahoo.TOPE_FONDO_SEG) if syms else {}
-    lotes, total = [], 0.0
-    for i, p in enumerate(positions):
+    lotes, suma = [], 0.0
+    for i in a_valuar:
+        p = positions[i]
         if broker_ccy.get(p.get('broker')) is None:
             continue    # huérfana: la valuación del chat también la descarta
         try:
@@ -31472,10 +31479,32 @@ def _lotes_con_referencia_eeuu(uid: int, simbolos=None, tope: float = None):
         except Exception as ex:
             log.warning("fuera_de_horario: lote %s falló: %s", p.get('asset'), ex)
             continue
-        total += v
+        suma += v
         if i in refs and v > 0:
             lotes.append({"asset": p.get('asset'), "valor": v, "ref": refs[i]})
-    return lotes, tc_cedear, total
+    return lotes, tc_cedear, (total if total is not None else suma)
+
+
+def _ultimo_total_de_foto(uid: int):
+    """El valor total (USD) de la foto diaria más reciente del usuario, si es de
+    los últimos 7 días; si no, None."""
+    from fechas import hoy_art
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT date, total_value FROM snapshots WHERE user_id=? ORDER BY date DESC LIMIT 1",
+            (uid,)).fetchone()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if not row or not row["total_value"] or row["total_value"] <= 0:
+        return None
+    try:
+        dias = (datetime.fromisoformat(hoy_art()) - datetime.fromisoformat(str(row["date"])[:10])).days
+    except ValueError:
+        return None
+    return float(row["total_value"]) if dias <= 7 else None
 
 
 def _con_nombres(positions):
@@ -45081,7 +45110,8 @@ def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
 
 
 @app.get("/api/fuera-de-horario")
-def fuera_de_horario_endpoint(symbols: str = "", listas: bool = False, byma: str = "",
+def fuera_de_horario_endpoint(request: Request, symbols: str = "", listas: bool = False,
+                              byma: str = "",
                               uid: int = Depends(get_effective_user)):
     """Pre y post mercado de Wall Street (ver `fuera_de_horario.py`).
 
@@ -45092,6 +45122,9 @@ def fuera_de_horario_endpoint(symbols: str = "", listas: bool = False, byma: str
     `listas=1` suma los índices, los ADRs argentinos y los populares, para la
     sección de Mercado. Es un ANTICIPO: no toca ningún número guardado."""
     import fuera_de_horario as _fdh
+    # Las pantallas lo piden una vez por minuto cada una: 30 por minuto sobran, y
+    # ponen un techo a quien quiera forzar pedidos a Yahoo (auditoría 2026-10-15).
+    _check_rate_limit(request, 30, 60, suffix=f"fdh:{uid}")
     return _fdh.estado(_fdh.limpiar_simbolos(symbols), listas=listas,
                        byma=_fdh.limpiar_simbolos(byma))
 

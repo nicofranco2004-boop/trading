@@ -787,9 +787,10 @@ def test_avisa_en_el_pre_mercado_una_vez_y_sin_gastar_la_alerta_del_dia(clean, m
     assert ev["message"] == "NVDA cae 3,5% en el pre-mercado"
     # Una vez por franja y por día.
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
-    # No toca la alerta del día: sigue activa (aunque sea «una vez») y armada.
+    # «Una sola vez» se cumple con el aviso del pre (auditoría 2026-10-15: antes
+    # seguía avisando día tras día). El estado del DÍA no se toca.
     a = conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()
-    assert a["active"] == 1
+    assert a["active"] == 0
     assert ae._sym_state(conn, aid, "NVDA") == (1, None)
 
 
@@ -1039,3 +1040,123 @@ def test_si_da_vuelta_despues_de_la_apertura_avisa(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
     _rueda(monkeypatch, -3.3)
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+
+
+# ── Segunda auditoría (2026-10-15) ───────────────────────────────────────────
+
+def _otra_conexion_puede_escribir():
+    """¿Puede OTRA conexión escribir ahora? Es lo que le pasa al resto de la app
+    (guardar una operación, un import) mientras corre el ciclo de alertas."""
+    otra = main.get_db()
+    try:
+        otra.execute("PRAGMA busy_timeout=200")
+        otra.execute("UPDATE users SET name=name WHERE id=1")
+        otra.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        otra.close()
+
+
+def test_el_ciclo_no_tiene_tomada_la_base_mientras_espera_a_yahoo(clean, monkeypatch):
+    # Medido en la auditoría: la poda al principio y el pre/post antes del commit
+    # dejaban la transacción de escritura abierta durante los pedidos a Yahoo.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", up_pct=3, down_pct=3, threshold=None,
+              symbol="NVDA", repeat="always")
+    conn.execute("INSERT INTO alert_symbol_state (alert_id, symbol, armed, updated_at) "
+                 "SELECT id, 'NVDA', 0, datetime('now') FROM alerts"); conn.commit()
+    vistos = {}
+
+    def quotes(syms):
+        vistos["precios"] = _otra_conexion_puede_escribir()
+        return {"NVDA": _q(100.5, 0.5, sym="NVDA")}       # dentro de la banda: re-arma (escribe)
+
+    def yahoo(simbolos):
+        vistos["pre_post"] = _otra_conexion_puede_escribir()
+        return [_cot("SPY", 0.1), _cot("NVDA", 0.5)]
+
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(ae, "_quotes_for", quotes)
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", yahoo)
+    monkeypatch.setattr("fechas.ahora_art", lambda: _A_LAS_858)
+    ae.evaluate_alerts(conn, only_user=1)
+    assert vistos == {"precios": True, "pre_post": True}
+
+
+def test_la_misma_accion_por_dos_papeles_es_un_solo_renglon(clean, monkeypatch):
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["NVDA", "NVDA.BA"])
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.5)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    # Y el otro papel quedó anotado: la apertura no lo avisa.
+    _rueda(monkeypatch, 3.4, sym="NVDA.BA")
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_una_vez_apagada_en_la_rueda_no_suma_avisos_del_pre_en_el_mismo_ciclo(clean, monkeypatch):
+    # Desde el 1/11, de 11 a 11:30 coinciden BYMA abierta y el pre de Nueva York.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
+              threshold=None, repeat="once")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["YPFD.BA", "NVDA"])
+    _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5)], {"NVDA": 6}, ahora=_A_LAS_1115)
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"YPFD.BA": _q(40000, -4.0, sym="YPFD.BA")})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+
+# ── Segundo aviso al doble del umbral (Nico, 2026-10-15) ─────────────────────
+# El mismo movimiento avisa una vez más si llega al doble del umbral; nunca una
+# tercera. Si el primer aviso ya salió con el doble, ese aviso ya dio el número.
+
+def test_doble_pre_mas_3_y_abre_mas_6(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _rueda(monkeypatch, 6.2)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "NVDA subió 6,2% hoy (el doble de tu alerta)"
+    _rueda(monkeypatch, 9.0)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0          # nunca una tercera
+
+
+def test_doble_en_la_misma_rueda(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _rueda(monkeypatch, 3.2)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _rueda(monkeypatch, 4.5)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0          # todavía no es el doble
+    _rueda(monkeypatch, 6.5)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _rueda(monkeypatch, 7.0)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_si_arranca_en_el_doble_es_un_solo_aviso(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _rueda(monkeypatch, 7.0)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "NVDA subió 7% hoy"
+    _rueda(monkeypatch, 7.4)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_doble_del_post_de_anoche_en_el_pre(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    ayer = ae._base_de_la_rueda("NVDA")
+    _fuera(monkeypatch, [_cot("SPY", 0.2, estado="POST", cierre=ayer),
+                         _cot("NVDA", 3.3, estado="POST", cierre=ayer)], {"NVDA": 6}, hora_velas=17)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 6.6)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "NVDA sube 6,6% en el pre-mercado (el doble de tu alerta)"
+    _rueda(monkeypatch, 7.0)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0          # la apertura no repite
