@@ -1982,3 +1982,140 @@ def _resumen(personas: list, pagaron: set) -> dict:
         "terminadas_sin_pagar": (len(personas) - len(activas)
                                  - sum(1 for p in personas if p["estado"] == "pago")),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DEL BETA (1/11/2026): la prueba para los que YA ESTABAN
+# ═══════════════════════════════════════════════════════════════════════════
+# Hasta hoy la prueba arranca sola al verificar el mail, y nada más. Esto es la
+# herramienta de UNA SOLA VEZ para dársela a los ~1.300 que ya estaban cuando
+# Rendi sale del beta.
+#
+# ⭐ EL ORDEN ES EL BUG, Y ES EL ÚNICO QUE IMPORTA. Hay que arrancar la prueba
+# ANTES de poner la marca de "tiene que elegir plan". Al revés —marca primero—
+# esa persona entra a Rendi y se encuentra el muro EL DÍA 1, sin un solo día de
+# prueba. Ya pasó en producción en septiembre con un caso suelto; acá serían
+# 1.300 a la vez. Por eso la marca sólo se escribe si la prueba arrancó.
+#
+# ⭐ LA MARCA DE "YA USÓ SU PRUEBA" SE BORRA (decisión de Nico, 15/10:
+# "prueba para todos"). `trial_consumed` existe para que nadie repita la prueba
+# BORRÁNDOSE LA CUENTA, no para castigar a los que probaron Rendi durante el
+# beta — y el mail del 1/11 les promete 20 días sin asteriscos.
+#
+# ⭐ A QUIÉN NO SE TOCA. Exactamente a los mismos que el muro exime
+# (`main.cuenta_en_pausa`): admin y cuentas administradas por un asesor. Más
+# todo el que HOY no es free: el que paga, el asesor, el del plan regalado y el
+# que ya está probando. La regla "sólo los free" los cubre a todos de una, y es
+# la única que no puede pisarle el crédito a alguien que lo está usando.
+#
+# Idempotente: saltea a quien ya tiene `requires_plan`, así que correrla dos
+# veces no le reinicia la prueba a nadie.
+
+def fin_del_beta(conn, apply: bool = False, limit: int = 5000) -> dict:
+    """Le arranca la prueba y le pone la marca a los usuarios del beta.
+
+    Sin `apply` no escribe NADA y devuelve exactamente lo que haría.
+    """
+    from ai import quota
+    salida = {
+        "aplicado": bool(apply),
+        "dias_de_prueba": TRIAL_TOTAL_DAYS,
+        "les_arranca_la_prueba": 0,
+        "marca_sin_prueba_por_no_verificar": 0,
+        "salteados": {"paga": 0, "no_es_free": 0, "admin": 0,
+                      "cliente_de_asesor": 0, "ya_tenia_la_marca": 0},
+        "fallaron": [],
+    }
+
+    filas = conn.execute(
+        """SELECT id, email, email_verified, is_admin, managed_by,
+                  COALESCE(requires_plan,0) AS requires_plan
+             FROM users
+            ORDER BY id""").fetchall()
+
+    for r in filas[:max(1, limit)]:
+        uid = int(r["id"])
+        if r["requires_plan"]:
+            salida["salteados"]["ya_tenia_la_marca"] += 1
+            continue
+        if r["is_admin"]:
+            salida["salteados"]["admin"] += 1
+            continue
+        if r["managed_by"] is not None:
+            salida["salteados"]["cliente_de_asesor"] += 1
+            continue
+        if _has_paid_sub(conn, uid):
+            salida["salteados"]["paga"] += 1
+            continue
+        # ⭐ "Sólo los free" cubre de una al asesor, al plan regalado y al que ya
+        # está probando: a ninguno se le puede pisar el crédito que está usando.
+        if quota.get_tier(conn, uid) not in (None, "free"):
+            salida["salteados"]["no_es_free"] += 1
+            continue
+
+        # Sin mail verificado no se le arranca la prueba AHORA: se le quemarían
+        # los 20 días sin que entre nunca. Se le pone la marca y `verify_email`
+        # se la arranca el día que aparezca — que es el camino que ya existe.
+        if not r["email_verified"]:
+            salida["marca_sin_prueba_por_no_verificar"] += 1
+            if apply:
+                _borrar_marca_de_prueba_usada(conn, uid, r["email"])
+                _poner_marca_de_plan_requerido(conn, uid)
+            continue
+
+        if not apply:
+            salida["les_arranca_la_prueba"] += 1
+            continue
+
+        _borrar_marca_de_prueba_usada(conn, uid, r["email"])
+        res = start(conn, uid)
+        if not res.get("ok"):
+            # NO se pone la marca: sin prueba, la marca es el muro el día 1.
+            salida["fallaron"].append(
+                {"id": uid, "motivo": res.get("reason") or "desconocido"})
+            continue
+        _poner_marca_de_plan_requerido(conn, uid)
+        salida["les_arranca_la_prueba"] += 1
+
+    salida["nota"] = (
+        "Nada se escribió — llamá con ?apply=1 para aplicarlo."
+        if not apply else
+        "Listo. Cada uno tiene sus %d días desde hoy." % TRIAL_TOTAL_DAYS)
+    return salida
+
+
+def _borrar_marca_de_prueba_usada(conn, user_id: int, email: str) -> None:
+    """⚠️ LA MARCA DE "YA USÓ SU PRUEBA" VIVE EN DOS LUGARES, y borrar uno solo
+    no alcanza — el guard pregunta por los dos con un `or`:
+
+      · `users.trial_used_at` — por USUARIO. Se borra con la cuenta.
+      · `trial_consumed.email_key` — por CASILLA. Sobrevive al borrado de la
+        cuenta, que es justamente para lo que existe (que nadie repita la prueba
+        borrándose y registrándose de nuevo).
+
+    Encontrado probando: con sólo la segunda borrada, `start()` seguía
+    devolviendo `already_used` y esa persona quedaba sin prueba.
+
+    ⚠️ Y la clave se calcula con `_email_key`, que es la MISMA función que
+    escribió la fila: normaliza la casilla (el +alias y los puntos de Gmail son
+    la misma bandeja) **y además la hashea**. Con `normalizar_email` a secas el
+    DELETE no matchea nada y la fila queda viva — comprobado: la prueba seguía
+    sin arrancar y el motivo seguía siendo `already_used`."""
+    try:
+        with conn:
+            conn.execute("DELETE FROM trial_consumed WHERE email_key = ?",
+                         (_email_key(email),))
+            conn.execute("UPDATE users SET trial_used_at = NULL WHERE id = ?",
+                         (user_id,))
+    except Exception as ex:
+        log.warning("fin_del_beta: no se pudo borrar la marca de %s: %s",
+                    (email or "")[:40], ex)
+
+
+def _poner_marca_de_plan_requerido(conn, user_id: int) -> None:
+    try:
+        with conn:
+            conn.execute("UPDATE users SET requires_plan = 1 WHERE id = ?",
+                         (user_id,))
+    except Exception as ex:
+        log.warning("fin_del_beta: no se pudo marcar uid=%s: %s", user_id, ex)

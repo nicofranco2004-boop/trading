@@ -27899,6 +27899,26 @@ def admin_dedup_suscripciones(apply: int = 0, uid: int = Depends(get_admin_user)
     }
 
 
+@app.post("/api/admin/billing/fin-del-beta")
+def admin_fin_del_beta(apply: int = 0, uid: int = Depends(get_admin_user)):
+    """1/11/2026: le arranca la prueba de 20 días a los usuarios del beta.
+
+    Por defecto NO escribe nada y devuelve exactamente lo que haría. `?apply=1`
+    para aplicarlo. Idempotente: saltea a quien ya tiene la marca, así que
+    correrla dos veces no le reinicia la prueba a nadie.
+
+    El detalle de a quién toca y en qué orden está en `trial.fin_del_beta`.
+    Lo importante: la marca de "tiene que elegir plan" se escribe SÓLO si la
+    prueba arrancó — al revés, esa persona se come el muro el día 1.
+    """
+    from billing import trial as _trial
+    conn = get_db()
+    try:
+        return _trial.fin_del_beta(conn, apply=bool(apply))
+    finally:
+        conn.close()
+
+
 @app.get("/api/admin/billing/precios-rebill")
 def admin_precios_rebill(uid: int = Depends(get_admin_user)):
     """¿Qué le va a cobrar REBILL a cada suscripción activa? READ-ONLY.
