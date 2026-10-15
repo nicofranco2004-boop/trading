@@ -68,3 +68,14 @@ export function tcDeFechaDetalle(idx, dateIso) {
 // La tabla POR MES (el cierre de cada mes, para los cálculos que trabajan sobre
 // `monthly_entries`) es `dolarMensualDe` en utils/capitalAportado.js: la misma
 // serie y la misma preferencia (MEP; blue donde no hay MEP).
+
+/**
+ * dolarDelDiaDe — de las filas de `/api/fx-rates`, `(iso) => dólar elegido de ese
+ * día | null`: lo mismo que `useFxHistory().getRateForDate` (el de cada fila de
+ * Movimientos), sin React. Lo usa `useDolarMensual` para los aportes en dólares
+ * que tienen su día (utils/capitalAportado.js).
+ */
+export function dolarDelDiaDe(rows) {
+  const idx = indexarSerie(rows)
+  return (dateIso) => tcDeFechaDetalle(idx, dateIso).tc
+}

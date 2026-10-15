@@ -24,6 +24,9 @@ import { convertSeriesToArs } from './evolution'
 import { buildDashboardInsight } from './insights'
 import { selectDiagnostics } from './diagnostics'
 import { pickFinancialRate } from '../contexts/CurrencyContext'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join, relative } from 'node:path'
 
 const { monthly, positions, brokers, dolar, prices } = datos
 // El dólar de cada mes, de la MISMA serie que recibe la app (`/api/fx-rates`,
@@ -159,6 +162,85 @@ const fila = (broker, year, month, extra = {}) => ({
 const BLUE = { '2025-01': 1200, '2025-02': 1250, '2025-03': 1300, '2025-06': 1500 }
 const PESOS = [{ name: 'Cocos', currency: 'ARS' }]
 const DOLARES = [{ name: 'IBKR', currency: 'USD' }]
+
+// Los aportes en dólares con su DÍA (`usd_con_dia` de /api/monthly).
+const DIA = { '2025-02-03': 1210, '2025-02-20': 1240, '2025-03-14': 1280, '2025-03-15': 1290 }
+const tcDia = (iso) => DIA[iso] ?? null
+const conDia = (importado = {}, aMano = {}) => ({
+  importado: { dep: [], ret: [], ...importado }, a_mano: { dep: [], ret: [], ...aMano },
+})
+
+describe('capitalAportado — los aportes en dólares van al dólar de SU DÍA', () => {
+  it('cargado a mano en un broker en dólares: cada carga a su día, no al cierre del mes', () => {
+    const monthly = [
+      fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
+      fila('IBKR', 2025, 2, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1000,
+        usd_con_dia: conDia({}, { dep: [['2025-02-03', 600], ['2025-02-20', 400]] }) }),
+    ]
+    const r = capitalAportado({ monthly, brokers: DOLARES, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 })
+    expect(r.ars).toBe(600 * 1210 + 400 * 1240)
+    // Sin el dólar del día (la pantalla no lo pasó, o la serie no cargó): el del mes, lo de antes.
+    expect(capitalAportado({ monthly, brokers: DOLARES, dolarMes: BLUE, tcHoy: 1500 }).ars).toBe(1_250_000)
+    expect(capitalAportado({ monthly, brokers: DOLARES, dolarMes: BLUE, tcEnFecha: () => null, tcHoy: 1500 }).ars).toBe(1_250_000)
+  })
+
+  it('lo importado en dólares también, aunque el broker sea en pesos', () => {
+    const monthly = [
+      fila('global', 2025, 2, { deposits: 1000 }),
+      fila('Cocos', 2025, 2, { deposits: 1000, usd_con_dia: conDia({ dep: [['2025-02-03', 1000]] }) }),
+    ]
+    expect(capitalAportado({ monthly, brokers: PESOS, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 }).ars).toBe(1_210_000)
+  })
+
+  it('en un broker en pesos con sus pesos guardados, mandan los pesos (las cargas con día no se cuentan dos veces)', () => {
+    const monthly = [
+      fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
+      fila('Cocos', 2025, 2, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1_180_000,
+        usd_con_dia: conDia({}, { dep: [['2025-02-03', 1000]] }) }),
+    ]
+    expect(capitalAportado({ monthly, brokers: PESOS, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 }).ars).toBe(1_180_000)
+  })
+
+  it('en un broker en pesos SIN pesos guardados (carga vieja), cada carga a su día', () => {
+    const monthly = [
+      fila('global', 2025, 3, { deposits: 1000, manual_deposits: 1000 }),
+      fila('Cocos', 2025, 3, { deposits: 1000, manual_deposits: 1000,
+        usd_con_dia: conDia({}, { dep: [['2025-03-15', 1000]] }) }),
+    ]
+    expect(capitalAportado({ monthly, brokers: PESOS, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 }).ars).toBe(1_290_000)
+  })
+
+  it('lo que no tiene día va al dólar del mes; si los días dicen más dólares que la fila, se achican', () => {
+    const parcial = [
+      fila('global', 2025, 3, { deposits: 1000, manual_deposits: 1000 }),
+      fila('IBKR', 2025, 3, { deposits: 1000, manual_deposits: 1000,
+        usd_con_dia: conDia({}, { dep: [['2025-03-14', 400]] }) }),
+    ]
+    expect(capitalAportado({ monthly: parcial, brokers: DOLARES, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 }).ars)
+      .toBe(400 * 1280 + 600 * 1300)
+    const deMas = [
+      fila('global', 2025, 3, { deposits: 500, manual_deposits: 500 }),
+      fila('IBKR', 2025, 3, { deposits: 500, manual_deposits: 500,
+        usd_con_dia: conDia({}, { dep: [['2025-03-14', 1000]] }) }),
+    ]
+    expect(capitalAportado({ monthly: deMas, brokers: DOLARES, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 }).ars)
+      .toBe(500 * 1280)
+  })
+
+  it('los retiros en dólares, igual; y en dólares el número no cambia', () => {
+    const monthly = [
+      fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
+      fila('IBKR', 2025, 2, { deposits: 1000, manual_deposits: 1000,
+        usd_con_dia: conDia({}, { dep: [['2025-02-03', 1000]] }) }),
+      fila('global', 2025, 3, { withdrawals: 300, manual_withdrawals: 300 }),
+      fila('IBKR', 2025, 3, { withdrawals: 300, manual_withdrawals: 300,
+        usd_con_dia: conDia({}, { ret: [['2025-03-15', 300]] }) }),
+    ]
+    const r = capitalAportado({ monthly, brokers: DOLARES, dolarMes: BLUE, tcEnFecha: tcDia, tcHoy: 1500 })
+    expect(r.ars).toBe(1000 * 1210 - 300 * 1290)
+    expect(r.usd).toBe(700)
+  })
+})
 
 describe('capitalAportado — la regla', () => {
   it('un depósito en pesos son esos pesos, aunque el dólar del mes sea otro', () => {
@@ -352,5 +434,37 @@ describe('noRealizadoEnVista — el no realizado del Dashboard y el % del inicio
     const valor = v.reduce((s, x) => s + x.value, 0), costo = v.reduce((s, x) => s + x.invested, 0)
     expect(r.monto).toBeCloseTo(valor - costo, 8)
     expect(r.pct).toBeCloseTo((valor - costo) / costo, 10)
+  })
+})
+
+// ── Guardián: toda pantalla que pide la tabla le pasa el dólar del DÍA ─────
+// Sin `tcEnFecha` la tabla vuelve, callada, al dólar del cierre del mes para los
+// aportes en dólares, y esa pantalla deja de coincidir con Movimientos (lo que
+// pasaba hasta el 2026-10-15). Recorre el árbol, no una lista: una pantalla nueva
+// que llame a la tabla entra sola.
+
+describe('guardián — los que piden la tabla de aportes pasan `tcEnFecha`', () => {
+  const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const archivos = (dir) => readdirSync(dir).flatMap(n => {
+    const p = join(dir, n)
+    if (statSync(p).isDirectory()) return n === '__design__' ? [] : archivos(p)
+    return /\.(js|jsx)$/.test(n) && !/\.test\.js$/.test(n) ? [p] : []
+  })
+  const FUNCIONES = /\b(capitalAportado|resultadoTotal|aportesDelMesEnPesos|aportadoAcumuladoAl|aportadoEnPesosAl|aportesEnPesos)\(\{/g
+
+  it('cada llamada lleva el dólar del día', () => {
+    const sinDia = []
+    let llamadas = 0
+    for (const p of archivos(SRC)) {
+      if (p.endsWith(join('utils', 'capitalAportado.js'))) continue
+      const src = readFileSync(p, 'utf8')
+      for (const m of src.matchAll(FUNCIONES)) {
+        llamadas++
+        const args = src.slice(m.index, src.indexOf('})', m.index))
+        if (!args.includes('tcEnFecha')) sinDia.push(`${relative(SRC, p)}: ${m[1]}`)
+      }
+    }
+    expect(llamadas).toBeGreaterThanOrEqual(6)
+    expect(sinDia).toEqual([])
   })
 })

@@ -359,7 +359,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const { user } = useAuth()
   const { valuationDollar, currency, costBasis } = useCurrency()
   // El dólar de cada mes, para lo aportado en pesos (capitalAportado.js).
-  const { dolarMes } = useDolarMensual()
+  const { dolarMes, tcEnFecha } = useDolarMensual()
   const plan = usePlanFeatures()
   // Plazos fijos: viven en otra tabla y no entran en `positions`. Los traemos
   // para que la torta de distribución sume el mismo patrimonio que el Dashboard.
@@ -2160,7 +2160,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // "Capital aportado" y la "Ganancia total" del Dashboard). Los montos de
   // `discipline` quedan en esa moneda: la tarjeta los escribe con `amtEnVista`.
   const resultado = resultadoTotal({
-    monthly, brokers, dolarMes, tcHoy: tcValuacion,
+    monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion,
     valorHoyUsd: totalPortfolio, moneda: currency,
   })
   const discipline = atribucionDelCrecimiento({

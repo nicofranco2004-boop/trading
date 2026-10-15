@@ -238,7 +238,7 @@ function PersonalDashboard() {
   const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcValuacion)
   // El dólar de cada mes, para llevar a pesos lo aportado en dólares (ver
   // capitalAportado.js). De la base propia: no espera a /benchmarks.
-  const { dolarMes, listo: dolarMesListo } = useDolarMensual()
+  const { dolarMes, tcEnFecha, listo: dolarMesListo } = useDolarMensual()
   const pf = pfUsd(usePfRollup(), tcValuacion)   // plazos fijos → USD (valor + capital)
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis) }))
@@ -334,10 +334,10 @@ function PersonalDashboard() {
   // `totalReturnUsd`/`netDeposited` siguen siendo los de dólares: con ellos se
   // comparan las fotos guardadas y va el rendimiento a la IA.
   const resultado = useMemo(() => resultadoTotal({
-    monthly, brokers, dolarMes, tcHoy: tcValuacion,
+    monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion,
     valorHoyUsd: totalValue, moneda: currency, extraUsd: pf.investedUsd,
     capitalMaximoUsd: capitalMaximo,
-  }), [monthly, brokers, dolarMes, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
+  }), [monthly, brokers, dolarMes, tcEnFecha, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
 
   // ── Discrepancia contable ───────────────────────────────────────────────────
   // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
@@ -726,14 +726,14 @@ function PersonalDashboard() {
     if (currency !== 'ARS') return evoSeries
     // La línea de lo aportado, a los pesos que se pusieron (la misma regla que
     // el "Capital aportado" de arriba); el valor, al dólar de cada foto.
-    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, dolarMes, tcHoy: tcValuacion })
+    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion })
     // El punto de hoy va al MEP de HOY: el valor vivo está medido al MEP
     // (`valorAlMep`), así que × el MEP de hoy son sus pesos. Los anteriores, al
     // dólar elegido de su fecha (MEP).
     const hoy = hoyISO()
     const dolarDe = (d) => (d >= hoy ? tcMep : getHistoricalFx(d))
     return convertSeriesToArs(evoSeries, dolarDe, aportadoArs)
-  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, dolarMes, tcValuacion, tcMep])
+  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, dolarMes, tcEnFecha, tcValuacion, tcMep])
 
   // For chart Y-axis nice domain — usa evoSeriesDisplay para que el dominio
   // refleje los valores realmente graficados (ARS o USD según toggle).

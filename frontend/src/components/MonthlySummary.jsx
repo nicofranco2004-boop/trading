@@ -77,7 +77,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const saving = enVuelo.activo()
   const [tcValuacion, setTcValuacion] = useState(1415)
   // El dólar elegido (MEP) al cierre de cada mes — ver utils/tcHistorico.js.
-  const { dolarMes } = useDolarMensual()
+  const { dolarMes, tcEnFecha } = useDolarMensual()
   // Por default mostramos TODO el historial. Razón: tras un import grande,
   // la ventana de "últimos 6" puede caer entera en un período sin actividad
   // (la historia importada queda en meses anteriores). El usuario puede
@@ -193,7 +193,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   // mano o en el import; si no, al dólar de su mes). Sin esto se mostraban como
   // dólares × el dólar del cierre del mes, y no coincidían con Reportes.
   const aportesMes = tabIsARS
-    ? aportesDelMesEnPesos({ monthly: entries, brokers, dolarMes, tcHoy: tcValuacion, broker: tab, soloEseBroker: true })
+    ? aportesDelMesEnPesos({ monthly: entries, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion, broker: tab, soloEseBroker: true })
     : null
   const claveDe = (m) => `${m.year}-${String(m.month).padStart(2, '0')}`
   function depAt(m) {

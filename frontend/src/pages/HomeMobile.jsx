@@ -59,8 +59,8 @@ export default function HomeMobile() {
   const [prices, setPrices] = useState({})
   const [snapshots, setSnapshots] = useState([])
   const [bench, setBench] = useState(null)
-  // El dólar de cada mes, para "Capital aportado" en pesos (capitalAportado.js).
-  const { dolarMes } = useDolarMensual()
+  // El dólar de cada mes y de cada día, para "Capital aportado" en pesos (capitalAportado.js).
+  const { dolarMes, tcEnFecha } = useDolarMensual()
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadAll() }, [])
@@ -156,8 +156,8 @@ export default function HomeMobile() {
   // MUESTRA en pesos — a los pesos que se pusieron, no los dólares × el dólar de
   // hoy (un depósito de $10 M de hace un año se leía $10,86 M).
   const aportes = useMemo(
-    () => capitalAportado({ monthly, brokers, dolarMes, tcHoy: tcValuacion }),
-    [monthly, brokers, dolarMes, tcValuacion],
+    () => capitalAportado({ monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion }),
+    [monthly, brokers, dolarMes, tcEnFecha, tcValuacion],
   )
   const aportado = aportes.usd
   // En pesos lo aportado puede dar negativo (se retiró más de lo que se puso):

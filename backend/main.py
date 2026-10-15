@@ -1062,6 +1062,67 @@ def _aportes_en_pesos_por_mes(conn, uid: int, tc_blue: float) -> dict:
     return out
 
 
+def _aportes_en_dolares_con_dia(conn, uid: int, tc_blue: float) -> dict:
+    """Los aportes y retiros EN DÓLARES de cada fila mensual de broker, con el DÍA en
+    que entraron: {(broker, 'AAAA', 'MM'): {'importado': {'dep': [[fecha, usd], …],
+    'ret': […]}, 'a_mano': {'dep': […], 'ret': […]}}}. Sin 'global'.
+
+    Para la pantalla en pesos: los aportes que no tienen pesos guardados (los que
+    entraron en dólares) se pasan a pesos con el dólar de SU DÍA, el mismo con que
+    Movimientos muestra cada fila. Hasta el 2026-10-15 iban al dólar del cierre del
+    mes (`monthly_entries` no tiene día) y la misma plata daba dos números: US$2.000
+    del 02/03/2026 eran $2.835.200 en Movimientos y $2.852.100 en "Capital aportado".
+
+    Las filas son LAS DE MOVIMIENTOS, armadas con las mismas funciones:
+      · 'importado': DEPOSIT / WITHDRAW importados que NO son en pesos (los en pesos
+        ya viajan con sus pesos, `_aportes_en_pesos_por_mes`), con la fecha del
+        import y los dólares con que entraron a `monthly_entries`
+        (`_FLUJO_IMPORT_USD_SQL`). Las conversiones no van: sus dos patas tienen pesos.
+      · 'a_mano': lo cargado a mano, renglón por renglón como en Movimientos
+        (`_filas_a_mano_del_mes`: cada carga con su día, y el resto del mes sin día
+        al 15, igual que esa lista). Se manda para TODOS los brokers: en uno en pesos
+        la pantalla lo usa sólo si no puede usar los pesos guardados."""
+    out: dict = {}
+
+    def _lado(broker, y, m, clave, lado):
+        v = out.setdefault((broker, y, m), {"importado": {"dep": [], "ret": []},
+                                            "a_mano": {"dep": [], "ret": []}})
+        return v[clave][lado]
+    try:
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, substr(n.date, 1, 10) AS fecha,
+                          n.operation_type AS op,
+                          COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS usd
+                     FROM {TX_VIVAS}
+                    WHERE {_FLUJO_IMPORT_DONDE_SQL}
+                      AND COALESCE(UPPER(n.currency), '') <> 'ARS'
+                    GROUP BY n.broker, y, m, fecha, n.operation_type""",
+                (tc_blue, tc_blue, uid)).fetchall():
+            if r["broker"] is None or r["y"] is None or r["m"] is None or not (r["usd"] or 0):
+                continue
+            _lado(r["broker"], r["y"], r["m"], "importado",
+                  "dep" if r["op"] == "DEPOSIT" else "ret").append([r["fecha"], round(float(r["usd"]), 6)])
+    except ERR_OPERACIONAL:
+        pass                # tablas de import aún no existen (DB fresca)
+
+    me_rows = conn.execute(
+        """SELECT id, year, month, broker, deposits, withdrawals,
+                  manual_deposits_native, manual_withdrawals_native FROM monthly_entries
+            WHERE user_id = ? AND broker <> 'global' AND (deposits > 0 OR withdrawals > 0)""",
+        (uid,)).fetchall()
+    importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
+    for r in me_rows:
+        dep, wit = _flujos_manuales_del_mes(r, importados)
+        if dep <= 0.01 and wit <= 0.01:
+            continue
+        y, m = f"{int(r['year']):04d}", f"{int(r['month']):02d}"
+        for f in _filas_a_mano_del_mes(conn, uid, r, dep, wit):
+            _lado(r["broker"], y, m, "a_mano", "dep" if f["type"] == "DEPOSIT" else "ret").append(
+                [str(f["fecha"])[:10], round(float(f["usd"]), 6)])
+    return out
+
+
 def _backfill_manual_flows(conn) -> None:
     """One-time (migración): separa el residual manual de monthly_entries hacia las
     columnas manual_*. manual = max(0, total − imports_confirmados). Es exactamente
@@ -15981,15 +16042,22 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         # cubren (`..._dep_usd`/`..._ret_usd`). Con ellos y con `manual_*_native`
         # (lo cargado a mano) la pantalla en pesos muestra lo aportado en los pesos
         # que se pusieron (capitalAportado.js). Ver `_aportes_en_pesos_por_mes`.
-        importados = _aportes_en_pesos_por_mes(conn, uid, _user_tc_blue(conn, uid))
+        tc_blue = _user_tc_blue(conn, uid)
+        importados = _aportes_en_pesos_por_mes(conn, uid, tc_blue)
+        # Y lo que entró EN DÓLARES, con su día (`usd_con_dia`): la pantalla lo pasa
+        # a pesos con el dólar de ese día, como cada fila de Movimientos. Ver
+        # `_aportes_en_dolares_con_dia`.
+        con_dia = _aportes_en_dolares_con_dia(conn, uid, tc_blue)
         out = []
         for r in rows:
             d = dict(r)
             if d["broker"] != "global":
-                v = importados.get((d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}"),
-                                   (0.0, 0.0, 0.0, 0.0))
+                k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
+                v = importados.get(k, (0.0, 0.0, 0.0, 0.0))
                 (d["pesos_importados_dep"], d["pesos_importados_dep_usd"],
                  d["pesos_importados_ret"], d["pesos_importados_ret_usd"]) = (round(x, 6) for x in v)
+                if k in con_dia:
+                    d["usd_con_dia"] = con_dia[k]
             out.append(d)
         return out
     finally:

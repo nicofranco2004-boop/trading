@@ -15,7 +15,7 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { api } from '../utils/api'
-import { indexarSerie, tcDeFechaDetalle } from '../utils/tcHistorico'
+import { indexarSerie, tcDeFechaDetalle, dolarDelDiaDe } from '../utils/tcHistorico'
 import { dolarMensualDe } from '../utils/capitalAportado'
 
 // Los helpers puros (indexar la serie, buscar el dólar de una fecha) viven en
@@ -194,5 +194,9 @@ export function useDolarMensual() {
     return () => { cancelled = true }
   }, [])
   const dolarMes = useMemo(() => dolarMensualDe(filas), [filas])
-  return { dolarMes, listo: filas != null }
+  // El dólar de UN DÍA, de la misma serie y con la misma regla que
+  // `useFxHistory().getRateForDate` (el de cada fila de Movimientos): para los
+  // aportes en dólares que tienen su día (utils/capitalAportado.js).
+  const tcEnFecha = useMemo(() => dolarDelDiaDe(filas), [filas])
+  return { dolarMes, tcEnFecha, listo: filas != null }
 }

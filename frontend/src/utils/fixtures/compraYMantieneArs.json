@@ -3154,6 +3154,21 @@
     "pesos_importados_ret_usd": 0.0,
     "pnl_realized": 0.0,
     "pnl_unrealized": 0.0,
+    "usd_con_dia": {
+     "a_mano": {
+      "dep": [
+       [
+        "2025-10-13",
+        7080.648587
+       ]
+      ],
+      "ret": []
+     },
+     "importado": {
+      "dep": [],
+      "ret": []
+     }
+    },
     "user_id": 2,
     "withdrawals": 0.0,
     "year": 2025
@@ -3192,6 +3207,21 @@
     "pesos_importados_ret_usd": 0.0,
     "pnl_realized": 0.0,
     "pnl_unrealized": 0.0,
+    "usd_con_dia": {
+     "a_mano": {
+      "dep": [],
+      "ret": [
+       [
+        "2026-02-10",
+        698.007189
+       ]
+      ]
+     },
+     "importado": {
+      "dep": [],
+      "ret": []
+     }
+    },
     "user_id": 2,
     "withdrawals": 698.0071894740515,
     "year": 2026
@@ -3251,6 +3281,21 @@
     "pesos_importados_ret_usd": 0.0,
     "pnl_realized": 0.0,
     "pnl_unrealized": 0.0,
+    "usd_con_dia": {
+     "a_mano": {
+      "dep": [
+       [
+        "2026-03-02",
+        2000.0
+       ]
+      ],
+      "ret": []
+     },
+     "importado": {
+      "dep": [],
+      "ret": []
+     }
+    },
     "user_id": 2,
     "withdrawals": 0.0,
     "year": 2026
@@ -3352,6 +3397,21 @@
     "pesos_importados_ret_usd": 0.0,
     "pnl_realized": 0.0,
     "pnl_unrealized": 0.0,
+    "usd_con_dia": {
+     "a_mano": {
+      "dep": [],
+      "ret": [
+       [
+        "2026-06-15",
+        500.0
+       ]
+      ]
+     },
+     "importado": {
+      "dep": [],
+      "ret": []
+     }
+    },
     "user_id": 2,
     "withdrawals": 500.0,
     "year": 2026

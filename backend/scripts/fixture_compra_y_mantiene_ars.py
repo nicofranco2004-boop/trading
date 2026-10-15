@@ -29,6 +29,11 @@ Uso (SIEMPRE con una base descartable; sin DB_PATH el script no corre):
     DB_PATH=/tmp/x.db FX_DESDE_DB=~/Downloads/trading-2026-08-16.db \\
         YF_TZ_CACHE_LOCATION=$(mktemp -d) \\
         python3 backend/scripts/fixture_compra_y_mantiene_ars.py
+
+`SOLO_MIXTA=1` rearma sólo la cuenta `mixta` y deja el resto del archivo como
+estaba (no sale a internet: la mixta son flujos de efectivo, y el dólar de cada
+día sale de `fx_rates_daily`). Sirve cuando cambia lo que devuelve el servidor
+para esa cuenta y no hay por qué tocar los precios ni el dólar de hoy guardados.
 """
 import json
 import os
@@ -109,6 +114,11 @@ def main_():
     if os.environ.get("FX_DESDE_DB"):
         copiar_historia_del_dolar(os.environ["FX_DESDE_DB"])
     http = TestClient(main.app)
+    if os.environ.get("SOLO_MIXTA"):
+        with open(SALIDA) as f:
+            datos = json.load(f)
+        cuenta_nueva()      # la primera cuenta, vacía: la mixta conserva sus ids
+        return guardar(armar_mixta(http, datos))
     h = cuenta_nueva()
 
     ok(http.post("/api/brokers", json={"name": "Balanz", "currency": "ARS"}, headers=h))
@@ -138,7 +148,11 @@ def main_():
                      if r["date"] >= FX_DESDE],
     }
 
-    # La cuenta mixta, por las mismas puertas.
+    guardar(armar_mixta(http, datos))
+
+
+def armar_mixta(http, datos):
+    """La cuenta mixta, por las mismas puertas."""
     hm = cuenta_nueva(tier="pro")
     for nombre, moneda in {(b, m) for b, m, *_ in MIXTA}:
         ok(http.post("/api/brokers", json={"name": nombre, "currency": moneda}, headers=hm))
@@ -157,6 +171,10 @@ def main_():
         "reporte_anio": ok(http.get("/api/reports/period/year/2026?broker=global"
                                     "&modo=certero&moneda=ars", headers=hm)),
     }
+    return datos
+
+
+def guardar(datos):
     os.makedirs(os.path.dirname(SALIDA), exist_ok=True)
     with open(SALIDA, "w") as f:
         json.dump(datos, f, ensure_ascii=False, indent=1, sort_keys=True)

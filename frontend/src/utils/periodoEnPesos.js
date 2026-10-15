@@ -54,7 +54,7 @@ export function crearPesosDelPeriodo({
 } = {}) {
   const enPesos = moneda === 'ARS' && tcHoy > 0
   const meses = enPesos && Array.isArray(monthly) && monthly.length
-    ? aportesDelMesEnPesos({ monthly, brokers, dolarMes, tcHoy, broker })
+    ? aportesDelMesEnPesos({ monthly, brokers, dolarMes, tcEnFecha, tcHoy, broker })
     : new Map()
   const tc = (iso) => {
     const v = iso && typeof tcEnFecha === 'function' ? tcEnFecha(iso) : null
@@ -123,7 +123,7 @@ export function crearPesosDelPeriodo({
   function aportadoHasta(fechaIso, cumUsd) {
     if (!enPesos) return num(cumUsd)
     // `cum_deposited` del servidor no trae el saldo inicial: se compara sin él.
-    const a = aportadoAcumuladoAl({ monthly, brokers, dolarMes, tcHoy, broker, hastaIso: fechaIso, sinSaldoInicial: true })
+    const a = aportadoAcumuladoAl({ monthly, brokers, dolarMes, tcEnFecha, tcHoy, broker, hastaIso: fechaIso, sinSaldoInicial: true })
     return a && cerca(a.usd, cumUsd) ? a.ars : null
   }
 
