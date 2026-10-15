@@ -1697,8 +1697,16 @@ def compute_metrics_for_period(
                                   if q.get("apto") and q.get("date") != "hoy"]
                         if len(_aptos) >= 2:
                             _v0, _v1 = _aptos[0], _aptos[-1]
-                            _flujo_v = (float(_v1.get("net_deposited") or 0)
-                                        - float(_v0.get("net_deposited") or 0))
+                            # ⚠️ `["net_deposited"]`, NO `.get(...) or 0`. Hasta el
+                            # 2026-10-15 los puntos de la curva no traían el
+                            # aportado, el `.get` lo leía como 0 sin decir nada y un
+                            # depósito adentro del mes salía publicado como ganancia
+                            # (+US$5.000 al lado de 0,0 %). Si el campo vuelve a
+                            # faltar, que reviente acá —el except de abajo lo deja
+                            # en el log y el mes cae entero a la contabilidad— en
+                            # vez de publicar un monto inventado.
+                            _flujo_v = (float(_v1["net_deposited"] or 0)
+                                        - float(_v0["net_deposited"] or 0))
                             month_twr_usd = round(
                                 (float(_v1["value"]) - float(_v0["value"])) - _flujo_v, 2)
                     else:
