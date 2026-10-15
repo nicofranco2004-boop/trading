@@ -6,6 +6,10 @@ import {
   simulateDolarCash,
   simulateArsCash,
   computeInflationCumulative,
+  simulateInflacionAr,
+  veredictoInflacion,
+  compararEnPesos,
+  patrimonioEnPesos,
 } from './benchmarkSim.js'
 
 const month = (y, m, capInicio, capFinal, deposits = 0, withdrawals = 0) => ({
@@ -253,5 +257,91 @@ describe('computeInflationCumulative', () => {
     const m = [month(2025, 1, 1000, 0)]
     const inf = { '2024-12': 5 }
     expect(computeInflationCumulative(m, inf)).toBe(null)
+  })
+})
+
+// ── simulateInflacionAr / veredictoInflacion ─────────────────────────────────
+// El caso real (cuenta que compra y mantiene, por la API) vive en
+// vsInflacionCompraYMantiene.test.js. Acá, las reglas de calendario.
+
+describe('simulateInflacionAr', () => {
+  const blue = { '2025-01': 1000, '2025-02': 1000, '2025-03': 1000, '2025-04': 1000 }
+
+  it('el mes en que entra la plata no capitaliza; desde el siguiente, sí', () => {
+    const m = [month(2025, 1, 0, 0, 100), month(2025, 2, 0, 0)]
+    const r = simulateInflacionAr(m, { '2025-01': 50, '2025-02': 10 }, blue)
+    expect(r.finalArs).toBeCloseTo(100 * 1000 * 1.10, 6)
+    expect(r.meses).toBe(1)
+    expect(r.hastaMes).toBe('2025-02')
+  })
+
+  it('un mes SIN FILA también capitaliza (recorre el calendario, no las filas)', () => {
+    // Febrero no tiene fila: es el mes del que compra y no hace nada.
+    const m = [month(2025, 1, 0, 0, 100), month(2025, 3, 0, 0)]
+    const r = simulateInflacionAr(m, { '2025-02': 10, '2025-03': 10 }, blue)
+    expect(r.finalArs).toBeCloseTo(100 * 1000 * 1.1 * 1.1, 6)
+    expect(r.meses).toBe(2)
+  })
+
+  it('los meses sin IPC publicado no capitalizan, y `hastaMes` lo dice', () => {
+    const m = [month(2025, 1, 0, 0, 100), month(2025, 4, 0, 0)]
+    const r = simulateInflacionAr(m, { '2025-02': 10 }, blue)
+    expect(r.finalArs).toBeCloseTo(100 * 1000 * 1.1, 6)
+    expect(r.hastaMes).toBe('2025-02')
+  })
+
+  it('el retiro sale al blue de su mes', () => {
+    const m = [month(2025, 1, 0, 0, 100), month(2025, 2, 0, 0, 0, 50)]
+    const r = simulateInflacionAr(m, { '2025-02': 10 }, { ...blue, '2025-02': 2000 })
+    expect(r.finalArs).toBeCloseTo(100 * 1000 * 1.1 - 50 * 2000, 6)
+    expect(r.finalValue).toBeCloseTo(r.finalArs / 2000, 6)
+  })
+})
+
+describe('veredictoInflacion', () => {
+  const m = [month(2025, 1, 0, 0, 100), month(2025, 2, 0, 0)]
+  const args = { globalMonthly: m, inflationMap: { '2025-02': 10 }, blueMap: { '2025-01': 1000 } }
+
+  it('tu patrimonio de hoy contra la misma plata ajustada por inflación', () => {
+    const v = veredictoInflacion({ ...args, valorHoyUsd: 121, valorHoyArs: 121_000, valorHoyMedido: true })
+    expect(v.pct).toBeCloseTo(10, 6)          // 121 contra 110
+    expect(v.inflacionPct).toBeCloseTo(10, 6)
+  })
+
+  it('sin el valor de hoy medido (precios incompletos) no hay veredicto', () => {
+    expect(veredictoInflacion({ ...args, valorHoyUsd: 121, valorHoyArs: 121_000, valorHoyMedido: false })).toBeNull()
+  })
+
+  it('sin un solo mes de inflación contada no hay veredicto', () => {
+    const v = veredictoInflacion({ ...args, inflationMap: { '2025-01': 10 }, valorHoyUsd: 121, valorHoyArs: 121_000, valorHoyMedido: true })
+    expect(v).toBeNull()
+  })
+})
+
+describe('compararEnPesos / patrimonioEnPesos', () => {
+  // Una alternativa simulada que hoy valdría $1.300.000.
+  const alt = 1_300_000
+
+  it('broker en PESOS: la misma plata da el mismo veredicto en MEP y en CCL', () => {
+    // $1.400.000 en pesos; la valuación los dividió por el dólar elegido.
+    const conTc = (tc) => {
+      const usd = 1_400_000 / tc
+      return compararEnPesos(usd, patrimonioEnPesos([{ currency: 'ARS', valueUsd: usd }], tc, 1500), alt)
+    }
+    expect(conTc(1400).pct).toBeCloseTo(conTc(1600).pct, 10)
+    expect(conTc(1400).pct).toBeCloseTo((1.4 / 1.3 - 1) * 100, 10)
+  })
+
+  it('broker en DÓLARES: pasa a pesos al blue de la simulación, no al dólar elegido', () => {
+    // US$ 1.000 valen US$ 1.000 en MEP y en CCL; en pesos, al blue de cierre.
+    const ars = (tc) => patrimonioEnPesos([{ currency: 'USD', valueUsd: 1000 }], tc, 1300)
+    expect(ars(1400)).toBe(1_300_000)
+    expect(ars(1600)).toBe(1_300_000)
+    expect(compararEnPesos(1000, ars(1600), alt).pct).toBeCloseTo(0, 10)
+  })
+
+  it('sin el dólar que corresponde, o sin alternativa, no compara', () => {
+    expect(patrimonioEnPesos([{ currency: 'USD', valueUsd: 1000 }], 1400, null)).toBeNull()
+    expect(compararEnPesos(100, 100_000, 0)).toBeNull()
   })
 })

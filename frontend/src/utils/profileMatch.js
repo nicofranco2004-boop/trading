@@ -602,11 +602,12 @@ export function computeLiquidityRisk(profile, positions, brokers) {
 
 // ─── Card: Expectativa de retorno vs retorno real ───────────────────────────
 //
-// Cruza la expectativa de retorno declarada en el test contra el retorno REAL
-// de la cartera (neto de inflación, en pesos) sobre la ventana disponible.
-// A diferencia de las otras cards, el retorno/inflación NO se derivan de las
-// posiciones — se calculan en Insights (TWR + inflación INDEC) y se pasan acá
-// vía `returnData`. Así mantenemos la lógica declarado-vs-real en un solo lugar.
+// Cruza la expectativa de retorno declarada en el test contra cuánto le gana (o
+// pierde) la cartera a la inflación. El número NO se deriva acá: es el
+// `vsInflacion` de Insights (benchmarkSim `veredictoInflacion`) — tu patrimonio de
+// hoy contra la misma plata ajustada por inflación INDEC —, el mismo que muestra
+// la celda "Inflación" de las alternativas. Así la tarjeta y la celda no se
+// pueden contradecir.
 
 const _round1 = (x) => Math.round(x * 10) / 10
 
@@ -624,14 +625,14 @@ export const RETURN_EXPECTATION_META = {
  * computeReturnExpectation
  *
  * @param {Object} profile     { return_expectation, ... } o null
- * @param {Object} returnData  { portfolioReturnPct, inflationPct, realReturnPct, monthsCounted }
- *                             realReturnPct = retorno neto de inflación (pesos), null si no computable.
+ * @param {Object} returnData  { realReturnPct, inflationPct, monthsCounted, valorHoyArs, mismaPlataArs }
+ *                             realReturnPct = cuánto le ganás a la inflación (%), null si no computable.
  * @returns {Object} CardData
  */
 export function computeReturnExpectation(profile, returnData = {}) {
   const declared = profile?.return_expectation
   const meta = declared ? RETURN_EXPECTATION_META[declared] : null
-  const { portfolioReturnPct, inflationPct, realReturnPct, monthsCounted } = returnData
+  const { inflationPct, realReturnPct, monthsCounted, valorHoyArs, mismaPlataArs } = returnData
 
   // Sin expectativa declarada: no_profile si tenemos datos de retorno (el user
   // tiene cartera pero no respondió esta pregunta → card oculta hasta que la
@@ -652,11 +653,9 @@ export function computeReturnExpectation(profile, returnData = {}) {
     return { status: 'no_data', declared: declaredData }
   }
 
-  // Guarda de plausibilidad: un retorno real absurdamente extremo casi siempre
-  // viene del "retorno fantasma" de la cadena TWR en pesos (usa cost-basis en
-  // vez de mark-to-market → subestima el retorno y lo hunde contra inflación).
-  // No mostramos la card con un número que no podemos confiar. Ver backlog
-  // TWR/C1. Banda amplia para no ocultar caídas reales moderadas.
+  // Guarda de plausibilidad. Nació para tapar el "retorno fantasma" de la cadena
+  // TWR en pesos (al costo en vez de a mercado), que dejó de ser la fuente el
+  // 2026-10-14. Se conserva como red: fuera de esta banda, no se muestra.
   if (realReturnPct < -40 || realReturnPct > 150) {
     return { status: 'no_data', declared: declaredData }
   }
@@ -671,9 +670,12 @@ export function computeReturnExpectation(profile, returnData = {}) {
     declared: declaredData,
     actual: {
       realReturnPct: _round1(realReturnPct),
-      portfolioReturnPct: (portfolioReturnPct != null && isFinite(portfolioReturnPct)) ? _round1(portfolioReturnPct) : null,
       inflationPct: (inflationPct != null && isFinite(inflationPct)) ? _round1(inflationPct) : null,
       monthsCounted: monthsCounted ?? null,
+      // Los dos montos de la comparación, en pesos: lo que vale hoy y lo que
+      // valdría la misma plata ajustada por inflación.
+      valorHoyArs: (valorHoyArs > 0) ? valorHoyArs : null,
+      mismaPlataArs: (mismaPlataArs > 0) ? mismaPlataArs : null,
     },
     comparison,
   }
