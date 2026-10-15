@@ -218,6 +218,59 @@ class LaLimpiezaDeLasCopias(Base):
         self.assertEqual(r.json()["filas_a_borrar"], 0)
         self.assertEqual(len(self._filas(uid)), 2)
 
+    def test_con_estados_MEZCLADOS_conserva_la_que_MANDA(self):
+        """⭐ El caso que casi se va al bombo. La regla era "conservá la más
+        vieja", y con copias todas 'authorized' daba igual. Pero el panel mostró
+        un grupo donde las copias NO comparten estado: ahí la más vieja podía ser
+        la 'cancelled' y se habría borrado la 'authorized' — dejando a alguien
+        que paga figurando como que no paga.
+
+        Ahora manda el ESTADO (mismo orden de prioridad que `/api/auth/me`) y
+        recién a igualdad decide la fecha."""
+        jefe = self._persona(admin=1)
+        uid = self._persona()
+        # La vieja está CANCELADA y la nueva ACTIVA: es el orden peligroso.
+        self.conn.execute(
+            "INSERT INTO subscriptions (user_id, mp_subscription_id, status, "
+            "  external_reference, period, amount_ars, created_at) "
+            "VALUES (?,'sub_mix','cancelled',?,'monthly',0,'2026-07-09 17:03:30')",
+            (uid, f"rendi-{uid}-plus-monthly"))
+        self.conn.execute(
+            "INSERT INTO subscriptions (user_id, mp_subscription_id, status, "
+            "  external_reference, period, amount_ars, created_at) "
+            "VALUES (?,'sub_mix','authorized',?,'monthly',8900,'2026-10-15 17:55:00')",
+            (uid, f"rendi-{uid}-plus-monthly"))
+        self.conn.commit()
+
+        h = {"Authorization": f"Bearer {main.create_token(jefe)}"}
+        previo = self.client.post("/api/admin/billing/dedup-suscripciones",
+                                  headers=h).json()
+        # El preview tiene que MOSTRAR los estados, o no se puede revisar a ojo.
+        self.assertEqual(previo["detalle"][0]["estados"],
+                         ["authorized", "cancelled"])
+
+        self.client.post("/api/admin/billing/dedup-suscripciones?apply=1", headers=h)
+        quedan = self._filas(uid)
+        self.assertEqual(len(quedan), 1)
+        self.assertEqual(
+            quedan[0]["status"], "authorized",
+            "borró la ficha ACTIVA y dejó la cancelada: esa persona pasa a "
+            "figurar como que no paga")
+        self.assertEqual(quedan[0]["amount_ars"], 8900)
+
+    def test_a_igualdad_de_estado_sigue_ganando_la_mas_vieja(self):
+        """El contraveneno: el arreglo no puede cambiar el caso normal, que es
+        el que vimos en producción (3 copias, todas 'authorized')."""
+        jefe = self._persona(admin=1)
+        uid = self._persona()
+        self._copias(uid, "sub_dup", 3)
+        antes = self._filas(uid)
+        self.client.post("/api/admin/billing/dedup-suscripciones?apply=1",
+                         headers={"Authorization": f"Bearer {main.create_token(jefe)}"})
+        quedan = self._filas(uid)
+        self.assertEqual(len(quedan), 1)
+        self.assertEqual(quedan[0]["id"], antes[0]["id"])
+
     def test_es_solo_para_admin(self):
         uid = self._persona()
         r = self.client.post("/api/admin/billing/dedup-suscripciones",

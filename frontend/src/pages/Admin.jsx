@@ -4309,8 +4309,14 @@ function DedupSuscripciones() {
               {previo.detalle.map(g => (
                 <div key={`${g.user_id}-${g.id_en_rebill}`} className="py-1.5">
                   <span className="text-ink-1">usuario {g.user_id}</span>
-                  <span className="text-ink-3"> · conserva la del {g.conserva.alta}</span>
+                  <span className="text-ink-3"> · conserva la <b className="text-ink-1">{g.conserva.estado}</b> del {g.conserva.alta}</span>
                   <span className="text-rendi-warn"> · borra {g.borra.length}</span>
+                  {/* Los estados del grupo, para poder revisar a ojo que no se
+                      esté borrando la ficha que manda. Si acá dice más de un
+                      estado, mirá cuál conserva antes de apretar. */}
+                  {g.estados?.length > 1 && (
+                    <span className="text-ink-3"> ({g.estados.join(' + ')})</span>
+                  )}
                 </div>
               ))}
             </div>

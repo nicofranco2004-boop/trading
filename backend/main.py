@@ -27811,8 +27811,16 @@ def admin_dedup_suscripciones(apply: int = 0, uid: int = Depends(get_admin_user)
     distintos NO se tocan ni se cuentan — serían suscripciones de verdad, y
     confundirlas sería borrar un cobro real.
 
-    CUÁL SE CONSERVA: la MÁS VIEJA de cada grupo, que es la del alta original y
-    la que tiene la fecha real. Las copias nacieron después, por un aviso.
+    CUÁL SE CONSERVA: la que mejor representa el ESTADO ACTUAL, y recién después
+    la más vieja. El orden de prioridad es el MISMO que usa `/api/auth/me` para
+    elegir "la suscripción relevante" cuando hay varias.
+
+    ⚠️ Antes decía "la más vieja" a secas, y con los datos que se habían visto
+    (copias todas 'authorized') daba igual. Pero el panel mostró un grupo más
+    donde las copias NO comparten estado: ahí "la más vieja" podía conservar una
+    fila 'cancelled' y BORRAR la 'authorized' — o sea, dejar a alguien que paga
+    figurando como que no. Entre filas del mismo estado sí gana la más vieja,
+    que es la del alta original.
 
     Nada referencia `subscriptions.id` (verificado), y `credit_ledger` guarda el
     id de REBILL en texto, no el de la fila: borrar estas copias no deja nada
@@ -27832,14 +27840,24 @@ def admin_dedup_suscripciones(apply: int = 0, uid: int = Depends(get_admin_user)
         for r in filas:
             por_grupo.setdefault((r["user_id"], r["sid"]), []).append(r)
 
+        # El mismo orden de prioridad que `/api/auth/me`: el estado que manda es
+        # el que describe la situación de hoy, no el que se escribió primero.
+        PRIORIDAD = {"authorized": 0, "retrying": 1, "paused": 2,
+                     "superseded": 3, "cancelled": 4}
+
         for (user_id, sid), rs in por_grupo.items():
             if len(rs) < 2:
                 continue
-            # La primera es la más vieja: el ORDER BY ya las dejó en orden.
-            conserva, copias = rs[0], rs[1:]
+            # Ordena por estado y, a igualdad, por fecha de alta (ya venían
+            # ordenadas por created_at ASC, y `sorted` es estable).
+            ordenadas = sorted(rs, key=lambda r: PRIORIDAD.get(r["status"], 9))
+            conserva = ordenadas[0]
+            copias = [r for r in rs if r["id"] != conserva["id"]]
             grupos.append({
                 "user_id": user_id,
                 "id_en_rebill": sid,
+                # Para poder revisar a ojo que no se esté borrando la que manda.
+                "estados": sorted({r["status"] for r in rs}),
                 "conserva": {"fila": conserva["id"], "alta": conserva["created_at"],
                              "estado": conserva["status"]},
                 "borra": [{"fila": c["id"], "alta": c["created_at"],
