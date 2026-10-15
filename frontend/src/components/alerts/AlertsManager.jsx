@@ -298,6 +298,16 @@ export default function AlertsManager({ plan, prefill }) {
               <p className="text-[11px] text-ink-3">Completá uno o los dos (podés poner valores distintos)</p>
               <PctInput icon={TrendingUp} label="Sube más de" value={form.up_pct} onChange={v => setField('up_pct', v)} />
               <PctInput icon={TrendingDown} label="Baja más de" value={form.down_pct} onChange={v => setField('down_pct', v)} />
+              {/* Fuera de la rueda: el motor (alerts_engine._evaluar_fuera_de_rueda)
+                  también avisa en el pre y el post mercado, sólo para "En el día". */}
+              {(form.scope === 'holdings' || form.baseline === 'prev_close') && (
+                <p className="text-[11px] text-ink-3">
+                  Si es una acción de EE.UU., un CEDEAR o una acción argentina con ADR, también te
+                  avisamos si se mueve así en el pre o el post mercado de Wall Street. Una vez por
+                  movimiento: si el pre ya te avisó una suba, la apertura no la repite, salvo que llegue
+                  al doble de lo que marcaste.
+                </p>
+              )}
             </div>
           )}
 

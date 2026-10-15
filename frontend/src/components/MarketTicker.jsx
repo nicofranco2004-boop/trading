@@ -17,6 +17,11 @@
 // compu la lista sola es más angosta que la ventana, y con una sola copia por
 // mitad se vería un hueco vacío antes de volver a empezar.
 //
+// Fuera de la rueda de Wall Street (pre y post mercado), el S&P 500 y el Nasdaq
+// suman al lado un sol (pre) o una luna (post) con lo que se mueven en ese
+// momento, vía SPY y QQQ (los índices en sí no operan fuera de horario). Sale
+// de GET /fuera-de-horario, el mismo dato que Cartera y Mercado.
+//
 // Cuando el refresco periódico (useMarketIndices, cada 5 min) trae otra
 // variación, ese porcentaje destella verde o rojo (FlashValue), como Movers.
 //
@@ -30,8 +35,15 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useMarketIndices, conDato } from '../hooks/useMarketIndices'
-import { pctVar, pctVarSign, fmtIndexPrice } from '../utils/format'
+import { pctVar, pctVarSign, pctColor, fmtIndexPrice } from '../utils/format'
 import FlashValue from './FlashValue'
+import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
+import { ETF_DEL_INDICE, nombreDeSesion } from '../utils/fueraDeHorario'
+import { IconoSesion, tonoDeSesion } from './FueraDeHorario'
+
+// Pre y post mercado: al lado del S&P 500 y del Nasdaq, con el sol (pre) o la
+// luna (post), igual que en Cartera. Merval, cripto y oro no tienen.
+const ETFS_DE_LA_CINTA = Object.values(ETF_DEL_INDICE).sort()
 
 const PX_POR_SEGUNDO = 36
 
@@ -41,7 +53,21 @@ export function copiasPorMitad(anchoVisible, anchoLista) {
   return Math.max(1, Math.ceil(anchoVisible / anchoLista))
 }
 
-function Cotizacion({ it }) {
+// «☀ −0,12%» — lo que se mueve el índice fuera de la rueda (vía su ETF).
+function FueraDeRueda({ it, fdh }) {
+  const etf = ETF_DEL_INDICE[it.symbol]
+  const pct = etf && fdh?.sesion ? fdh.cotizaciones?.[etf]?.pct : null
+  if (pct == null) return null
+  return (
+    <span className={`inline-flex items-center gap-1 ${tonoDeSesion(fdh.sesion).texto}`}
+      title={`${nombreDeSesion(fdh.sesion)} (vía ${etf}). No es la variación de la rueda.`}>
+      <IconoSesion sesion={fdh.sesion} size={11} />
+      <span className={`font-semibold tabular ${pctColor(pct)}`}>{pctVar(pct)}</span>
+    </span>
+  )
+}
+
+function Cotizacion({ it, fdh }) {
   const dir = pctVarSign(it.change_pct)
   const tono = dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-2'
   return (
@@ -58,6 +84,7 @@ function Cotizacion({ it }) {
           )}
           {pctVar(it.change_pct)}
         </FlashValue>
+        <FueraDeRueda it={it} fdh={fdh} />
       </span>
     </li>
   )
@@ -66,6 +93,7 @@ function Cotizacion({ it }) {
 export default function MarketTicker({ className = '' }) {
   const { items, loading } = useMarketIndices()
   const lista = conDato(items)
+  const fdh = useFueraDeHorario(ETFS_DE_LA_CINTA)
   const cajaRef = useRef(null)
   const copiaRef = useRef(null)
   const [medida, setMedida] = useState({ copias: 1, anchoLista: 0 })
@@ -127,7 +155,7 @@ export default function MarketTicker({ className = '' }) {
             aria-hidden={i > 0 ? 'true' : undefined}
             className="ticker-copia flex shrink-0 items-center"
           >
-            {lista.map(it => <Cotizacion key={it.symbol} it={it} />)}
+            {lista.map(it => <Cotizacion key={it.symbol} it={it} fdh={fdh} />)}
           </ul>
         ))}
       </div>

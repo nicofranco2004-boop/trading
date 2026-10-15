@@ -24,6 +24,12 @@ re-armar. Hacía falta porque antes de que abra el mercado —y cuando la barra 
 día viene con los OHLC en NaN, que con los `.BA` pasa seguido— el proveedor
 devuelve el cierre a cierre de AYER, y salía por mail con el título "hoy".
 
+Fuera de la rueda (pre y post mercado de Wall Street): las pct_move "En el día"
+también avisan si la acción —o, para un CEDEAR o una acción argentina, su acción
+o ADR en Nueva York— se mueve más que el umbral en el pre o en el post. Ver
+`_evaluar_fuera_de_rueda`: un aviso por franja y por día, sólo con operaciones
+de verdad detrás, y SIN consumir la alerta del día (es un anticipo).
+
 Entrega: reusa _send_push_to_user (Web Push) + billing.emails.send_alert_email
 (Resend). Cada disparo queda logueado en alert_events (dedup + feed in-app), uno
 por activo — pero el ENVÍO es uno por alerta y por ciclo: una alerta de "toda mi
@@ -289,6 +295,93 @@ def _set_sym_fired(conn, alert_id: int, symbol, date: str):
     )
 
 
+# ─── El mismo movimiento no se avisa dos veces ────────────────────────────────
+# Regla (Nico, 2026-10-15): un movimiento se define por CONTRA QUÉ CIERRE se mide
+# y hacia dónde va. El post-mercado de anoche, el pre-mercado de hoy y la rueda
+# de hoy se miden los tres contra el cierre de ayer: si los tres dicen «+3 %»,
+# es UNA suba contada tres veces y se avisa una vez. El post de hoy se mide
+# contra el cierre de hoy: otro 3 % arriba es una suba NUEVA. Y si cambia de
+# sentido contra el mismo cierre (pre +3 %, abre −3 %), también se avisa.
+# Se anota en alert_symbol_state con la clave '<símbolo>#<cierre>#<up|down>'.
+
+def _clave_movimiento(symbol, base: str, lado: str) -> str:
+    return f"{symbol}#{base}#{lado}"
+
+
+def _ya_avisado(conn, alert_id: int, symbol, base, lado) -> bool:
+    if not base or not lado:
+        return False
+    return _sym_state(conn, alert_id, _clave_movimiento(symbol, base, lado))[1] is not None
+
+
+def _anotar_movimiento(conn, alert_id: int, symbol, base, lado) -> None:
+    if base and lado:
+        _set_sym_fired(conn, alert_id, _clave_movimiento(symbol, base, lado), base)
+
+
+# Segundo aviso (Nico, 2026-10-15): si el MISMO movimiento llega al doble del
+# umbral, se avisa una vez más — y nunca una tercera. Se anota con el sentido
+# 'upx2' / 'downx2' en la misma clave. Si el primer aviso ya salió con el doble
+# (abrió +7 % con una alerta de 3 %), se anotan los dos: ese aviso ya dio el número.
+_DOBLE = "x2"
+
+
+def _llego_al_doble(change, alert, lado) -> bool:
+    thr = alert["up_pct"] if lado == "up" else alert["down_pct"]
+    return thr is not None and change is not None and abs(change) >= 2 * abs(thr)
+
+
+def _toca_el_doble(conn, alert, symbol, base, lado, change) -> bool:
+    """¿Este movimiento ya avisado llegó al doble y todavía no se avisó eso?"""
+    return (_ya_avisado(conn, alert["id"], symbol, base, lado)
+            and _llego_al_doble(change, alert, lado)
+            and not _ya_avisado(conn, alert["id"], symbol, base, lado + _DOBLE))
+
+
+def _anotar_aviso(conn, alert, symbol, base, lado, change, doble: bool) -> None:
+    """Anota lo que se acaba de avisar: el movimiento y, si ya está en el doble
+    (o este ES el aviso del doble), también el segundo escalón."""
+    if not doble:
+        _anotar_movimiento(conn, alert["id"], symbol, base, lado)
+    if doble or _llego_al_doble(change, alert, lado):
+        _anotar_movimiento(conn, alert["id"], symbol, base, lado + _DOBLE)
+
+
+_SUFIJO_DOBLE = " (el doble de tu alerta)"
+
+
+def _base_de_la_rueda(symbol, sesiones_byma: set = None) -> str:
+    """El cierre contra el que se mide la «Var. día» de hoy: la rueda anterior a
+    la de hoy (un lunes, el viernes).
+
+    Un papel de BYMA (`.BA`) usa los días en que operó BYMA (`sesiones_byma`, de
+    `fuera_de_horario._sesiones_de_byma`): es la MISMA fuente que da la fecha del
+    pre/post de un CEDEAR (`base_byma`). Con dos almanaques distintos, el martes
+    después del feriado del lunes 12/10 el pre decía «contra el viernes» y la
+    rueda «contra el lunes», y el mismo +3 % se avisaba dos veces (auditoría
+    2026-10-15). Las acciones de EE.UU. no conocen feriados de allá: el día
+    después de uno puede salir un aviso repetido, una vez."""
+    from datetime import date as _date
+    d = _date.fromisoformat(_sesion_hoy(symbol)) - timedelta(days=1)
+    usar = bool(sesiones_byma) and str(symbol or "").upper().endswith(".BA")
+    for _ in range(20):
+        if d.weekday() < 5 and (not usar or d in sesiones_byma):
+            return d.isoformat()
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
+def _podar_movimientos(conn, now: datetime) -> None:
+    """Las claves de movimiento viejas no sirven más (un cierre de hace 10 días ya
+    no lo mide nadie)."""
+    corte = (now - timedelta(days=10)).date().isoformat()
+    try:
+        conn.execute("DELETE FROM alert_symbol_state WHERE symbol LIKE ? AND last_fired_date < ?",
+                     ("%#%#%", corte))
+    except Exception as ex:
+        log.warning("alerts: no se pudieron podar los movimientos viejos: %s", ex)
+
+
 # ─── Mensajes ─────────────────────────────────────────────────────────────────
 
 def _display_symbol(symbol: str) -> str:
@@ -373,17 +466,29 @@ def _group_line(alert, symbol, price, change_pct) -> str:
     return f"{base} y cotiza a {_fmt(price, _ccy_for(symbol, alert['currency']))}"
 
 
-def _compose_group_message(items) -> str:
+def _cuando_item(it) -> str:
+    f = it.get("fuera")
+    return f"en el {_NOMBRE_FRANJA[f['sesion']]}" if f else "hoy"
+
+
+def _compose_group_message(items, fuera: dict = None, mixto: bool = False) -> str:
     """El asunto de un aviso agrupado. Nombra los movimientos en vez de
     contarlos: "INTC cayó 5.8%, NVDA cayó 3.4% y 2 más hoy", no "4 alertas".
 
     Es la misma lección que el resumen de mercado — el asunto ES el titular y es
     lo que decide si el mail se abre; cuántos avisos hay es justo lo que a nadie
     le importa. `items` llega ya ordenado de mayor a menor movimiento."""
+    if mixto:
+        # Rueda y pre/post juntos: cada uno con su cuándo, sin sufijo común.
+        etiquetas = [f"{it['label']} {_cuando_item(it)}" for it in items]
+        if len(etiquetas) == 2:
+            return f"{etiquetas[0]} y {etiquetas[1]}"
+        return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más"
     etiquetas = [it["label"] for it in items]
+    cuando = f"en el {_NOMBRE_FRANJA[fuera['sesion']]}" if fuera else "hoy"
     if len(etiquetas) == 2:
-        return f"{etiquetas[0]} y {etiquetas[1]} hoy"
-    return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más hoy"
+        return f"{etiquetas[0]} y {etiquetas[1]} {cuando}"
+    return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más {cuando}"
 
 
 # ─── Entrega ──────────────────────────────────────────────────────────────────
@@ -425,8 +530,11 @@ def _deliver(conn, alert, items) -> tuple:
     # Más grande primero: si hay que nombrar dos en el asunto, que sean los dos
     # que más se movieron.
     items = sorted(items, key=lambda it: abs(it.get("change_pct") or 0), reverse=True)
+    franjas = {(it.get("fuera") or {}).get("sesion") for it in items}
+    mixto = len(franjas) > 1
+    fuera = None if mixto else items[0].get("fuera")
     heading = (items[0]["message"] if len(items) == 1
-               else _compose_group_message(items))
+               else _compose_group_message(items, fuera, mixto=mixto))
     if client_label:
         # El asesor recibe alertas de N clientes: el prefijo dice de quién es.
         heading = f"[{client_label}] {heading}"
@@ -457,9 +565,22 @@ def _deliver(conn, alert, items) -> tuple:
                 from billing import emails
                 if len(items) == 1:
                     it = items[0]
-                    detail = _email_detail(alert, it["symbol"], it["price"],
-                                           it["change_pct"])
+                    detail = (_detalle_fuera(it["symbol"], it["change_pct"], it["price"], fuera)
+                              if fuera else
+                              _email_detail(alert, it["symbol"], it["price"], it["change_pct"]))
                     lines = None
+                elif mixto:
+                    # Rueda y pre/post en el mismo aviso: cada renglón dice dónde.
+                    detail = (f"se movieron {len(items)} activos de tu cartera. Lo de Wall "
+                              f"Street fuera de la rueda es un anticipo: todavía no se suma "
+                              f"a tu cartera.")
+                    lines = [it["line"] + (f" ({_cuando_item(it)})" if it.get("fuera") else " hoy")
+                             for it in items]
+                elif fuera:
+                    detail = (f"en el {_NOMBRE_FRANJA[fuera['sesion']]} de Wall Street se están "
+                              f"moviendo {len(items)} activos de tu cartera. Es un anticipo: "
+                              f"todavía no se suma a tu cartera.")
+                    lines = [it["line"] for it in items]
                 else:
                     detail = f"se movieron {len(items)} activos de tu cartera hoy:"
                     lines = [it["line"] for it in items]
@@ -502,7 +623,8 @@ def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
     return f"{sym} {verbo} {_fmt_pct(change_pct)}% {desde}{cotiza}."
 
 
-def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list):
+def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
+          fuera: dict = None, doble: bool = False):
     """Dispara: log en alert_events + actualiza last_fired_* + ENCOLA la entrega.
 
     El mail y el push no salen acá. Se acumulan en `pendientes` y salen al
@@ -512,14 +634,30 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     El evento de la app se escribe igual, uno por activo y en el momento — es lo
     que alimenta la lista de "Últimos avisos" y el puntito del sidebar. Las dos
     banderas de entregado se completan cuando la entrega efectivamente sale."""
-    message = _compose_message(alert, symbol, price, change_pct)
+    if fuera:
+        # Pre o post mercado: el mensaje dice en qué franja y, para un CEDEAR,
+        # que es su acción en Nueva York. El precio es el de allá, en dólares.
+        message = _mensaje_fuera(symbol, change_pct, fuera)
+        label = _etiqueta_fuera(symbol, change_pct, fuera)
+        line = _renglon_fuera(symbol, change_pct, price, fuera)
+    else:
+        message = _compose_message(alert, symbol, price, change_pct)
+        label = _short_label(alert, symbol, price, change_pct)
+        line = _group_line(alert, symbol, price, change_pct)
+    if doble:
+        # El segundo aviso del mismo movimiento dice por qué vuelve a llegar.
+        message += _SUFIJO_DOBLE
+        line += _SUFIJO_DOBLE
     cur = conn.execute(
         """INSERT INTO alert_events
            (alert_id, user_id, symbol, fired_at, price, message,
             delivered_push, delivered_email)
            VALUES (?,?,?,?,?,?,0,0)""",
+        # Fuera de la rueda el precio es el de Nueva York, en dólares: guardado
+        # junto a un símbolo .BA se leería como pesos. Se guarda el %, como en las
+        # pct_move sin precio.
         (alert["id"], alert["user_id"], symbol, now.isoformat(),
-         price if price is not None else change_pct, message),
+         change_pct if fuera else (price if price is not None else change_pct), message),
     )
     conn.execute(
         "UPDATE alerts SET last_fired_at=?, last_fired_price=? WHERE id=?",
@@ -528,9 +666,9 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     pendientes.append({
         "alert": alert, "symbol": symbol, "price": price,
         "change_pct": change_pct, "message": message,
-        "label": _short_label(alert, symbol, price, change_pct),
-        "line": _group_line(alert, symbol, price, change_pct),
+        "label": label, "line": line,
         "event_id": cur.lastrowid,
+        "fuera": fuera,
     })
     log.info("alert %s fired (uid=%s sym=%s): %s",
              alert["id"], alert["user_id"], symbol, message)
@@ -542,6 +680,10 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
     Una alerta que falla al entregar no puede dejar sin avisar a las otras: cada
     grupo va en su propio try (misma guarda que el cron usa entre el motor de
     precios y el del libro del asesor)."""
+    # Uno por alerta, AUNQUE mezcle franjas: desde el 1/11, de 11:00 a 11:30
+    # coinciden la rueda de BYMA y el pre de Nueva York, y dos mails seguidos de
+    # la misma alerta son justo el spam que el agrupado vino a evitar. Cada
+    # renglón dice dónde fue (ver `_deliver`).
     por_alerta: dict = {}
     for it in pendientes:
         por_alerta.setdefault(it["alert"]["id"], []).append(it)
@@ -571,6 +713,197 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
                 pass
         log.info("alert %s entregada (%s aviso/s, push=%s email=%s)",
                  alert["id"], len(items), push_ok, email_ok)
+
+
+# ─── Fuera de la rueda: pre y post mercado de Wall Street ─────────────────────
+
+_NOMBRE_FRANJA = {"pre": "pre-mercado", "post": "post-mercado"}
+
+
+def _quien(symbol, fuera) -> str:
+    """«NVDA» o, para un CEDEAR / acción argentina, «AAPL en Nueva York»: lo que
+    se mueve es la acción de allá, no el papel de acá (que todavía no operó)."""
+    sym = _display_symbol(symbol)
+    ref = fuera.get("ref")
+    if fuera.get("via") == "propio":
+        return sym
+    return f"{ref} en Nueva York" if ref == sym else f"{sym} ({ref} en Nueva York)"
+
+
+def _desde_byma(fuera) -> str:
+    """Un CEDEAR o una acción argentina se mide desde lo que valía su acción
+    cuando cerró BYMA (`pct_segun_via`): en invierno, una hora antes del cierre
+    de NY. Sin decirlo, «NVDA en Nueva York sube 6,7% en el pre-mercado» era
+    falso: el pre-mercado de NVDA, contra su cierre, era +3,5 % (auditoría
+    2026-10-15)."""
+    return "" if fuera.get("via") == "propio" else ", desde el cierre de BYMA"
+
+
+def _etiqueta_fuera(symbol, change_pct, fuera) -> str:
+    verbo = "sube" if (change_pct or 0) >= 0 else "cae"
+    return f"{_quien(symbol, fuera)} {verbo} {_fmt_pct(change_pct)}%"
+
+
+def _mensaje_fuera(symbol, change_pct, fuera) -> str:
+    """El título: «NVDA cae 3,1% en el pre-mercado» o, para un CEDEAR, «AAPL en
+    Nueva York sube 3,4% en el pre-mercado, desde el cierre de BYMA»."""
+    return (f"{_etiqueta_fuera(symbol, change_pct, fuera)} en el {_NOMBRE_FRANJA[fuera['sesion']]}"
+            f"{_desde_byma(fuera)}")
+
+
+def _renglon_fuera(symbol, change_pct, price, fuera) -> str:
+    base = _etiqueta_fuera(symbol, change_pct, fuera) + _desde_byma(fuera)
+    return f"{base} y cotiza a {_fmt(price, 'USD')}" if price else base
+
+
+def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
+    """El cuerpo del mail: qué franja, contra qué, y que es un anticipo.
+
+    Arranca en minúscula: el mail lo antepone con «Hola Nico,» (como el resto de
+    los avisos). Y lo que se dice del papel de ACÁ depende de la franja: en el
+    pre todavía no operó hoy; en el post ya cerró en BYMA y esto anticipa cómo
+    puede abrir mañana."""
+    franja = _NOMBRE_FRANJA[fuera["sesion"]]
+    momento = ("antes de que abra la rueda" if fuera["sesion"] == "pre"
+               else "después del cierre de la rueda")
+    # «El último cierre» y no «el de ayer»: un lunes es el del viernes. Un CEDEAR
+    # se mide desde lo que valía su acción cuando cerró BYMA (ver `_desde_byma`).
+    if fuera.get("via") == "propio":
+        contra = "contra el último cierre" if fuera["sesion"] == "pre" else "contra el cierre de hoy"
+    else:
+        contra = ("desde lo que valía cuando cerró BYMA" if fuera["sesion"] == "pre"
+                  else "desde lo que valía cuando cerró BYMA hoy")
+    verbo = "sube" if (change_pct or 0) >= 0 else "cae"
+    cotiza = f" y cotiza a {_fmt(price, 'USD')}" if price else ""
+    txt = (f"en el {franja} de Wall Street ({momento}), {_quien(symbol, fuera)} {verbo} "
+           f"{_fmt_pct(change_pct)}% {contra}{cotiza}. Es un anticipo: todavía no "
+           f"se suma a tu cartera.")
+    if fuera.get("via") != "propio":
+        papel = (f"Tu CEDEAR de {_display_symbol(symbol)}" if fuera.get("via") == "eeuu"
+                 else f"Tu acción de {_display_symbol(symbol)}")
+        if fuera["sesion"] == "pre":
+            txt += (f" {papel} todavía no operó hoy: cuando abra BYMA, en pesos también "
+                    f"va a pesar lo que haga el dólar CCL.")
+        else:
+            txt += (f" {papel} ya cerró hoy en BYMA: esto anticipa cómo puede abrir en la "
+                    f"próxima rueda, y en pesos también va a pesar lo que haga el dólar CCL.")
+    return txt
+
+
+def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
+                            deactivated: set = None) -> int:
+    """Las pct_move "En el día" en el pre y el post mercado de Wall Street.
+
+    Reglas (decididas el 2026-10-15):
+      · Sólo pct_move con baseline "En el día" (prev_close). Las de precio
+        objetivo y las de "Desde ahora" no: un precio en pesos no se puede
+        comparar con uno de Nueva York.
+      · El % es el del pre/post de la acción de EE.UU. que sigue la tenencia
+        (`fuera_de_horario.referencia_en_eeuu`, la misma de la pantalla). Para un
+        CEDEAR o una acción argentina, desde el cierre de BYMA
+        (`fuera_de_horario.pct_segun_via`) y sólo hasta que abre BYMA.
+      · Sólo con operaciones de verdad: MIN_VELAS velas de 5 min en la franja
+        (`con_operaciones`). Una operación suelta no dispara.
+      · El mismo movimiento se avisa UNA vez (ver `_ya_avisado`): el post de
+        anoche, el pre de hoy y la rueda de hoy se miden contra el mismo cierre;
+        si ya se avisó «+3 %» contra ese cierre, ni el pre ni la apertura lo
+        repiten. El post de hoy (contra el cierre de hoy) o un cambio de sentido
+        sí avisan. Una alerta "una sola vez" se apaga con el primer aviso, sea
+        en la rueda o fuera de ella.
+      · Si dos tenencias siguen a la misma acción (NVDA y el CEDEAR de NVDA) y
+        dan el MISMO %, un solo renglón; si dan distinto (en invierno el CEDEAR
+        se mide desde el cierre de BYMA), dos.
+      · Si el precio al cierre de BYMA no llegó (`byma_aproximado`), el CEDEAR
+        no avisa hasta que llegue.
+      · La red (Yahoo) va ANTES de cualquier escritura: el que llama confirma lo
+        anterior, así no se tiene tomada la base mientras se espera a Yahoo.
+    """
+    import fuera_de_horario as fdh
+    deactivated = deactivated if deactivated is not None else set()
+    candidatas = []
+    for a, sym in units:
+        if a["kind"] != "pct_move" or (a["baseline"] or "prev_close") != "prev_close":
+            continue
+        if a["id"] in deactivated:
+            continue      # una «una sola vez» que ya avisó en este mismo ciclo
+        if sym in _crypto_symbols():
+            continue
+        ref = fdh.referencia_en_eeuu(sym)
+        if ref:
+            candidatas.append((a, sym, ref))
+    if not candidatas:
+        return 0
+    try:
+        datos = fdh.estado(sorted({r[0] for _, _, r in candidatas}),
+                           byma=sorted({r[0] for _, _, r in candidatas if r[1] != "propio"}))
+    except Exception as ex:
+        log.warning("alerts fuera de la rueda: Yahoo falló: %s", ex)
+        return 0
+    sesion = datos.get("sesion")
+    if sesion not in ("pre", "post"):
+        return 0          # en la rueda manda la «Var. día»; de noche no hay nada vivo
+    cot = datos.get("cotizaciones") or {}
+
+    cruzaron = []
+    for a, sym, (ref, via) in candidatas:
+        if via != "propio" and datos.get("byma_abierto"):
+            continue      # el papel de acá ya tiene precio propio
+        q = cot.get(ref) or {}
+        # Un CEDEAR: lo que se movió su acción desde que cerró BYMA, y el cierre
+        # contra el que se mide es el de BYMA (el mismo de su «Var. día»).
+        if via != "propio" and q.get("byma_aproximado"):
+            # Yahoo no dio el precio al cierre de BYMA y el % vino contra el de NY:
+            # cuando vuelva, el mismo precio «se movería» de 3,5 a 6,7 % y saltaría
+            # un falso aviso del doble (auditoría 2026-10-15). Se espera al dato.
+            continue
+        pct = fdh.pct_segun_via(q, via)
+        lado = pct_move_side(pct, a["up_pct"], a["down_pct"])
+        base = (q.get("base_byma") if via != "propio" else None) or q.get("base")
+        if pct is None or not lado or not base:
+            continue
+        doble = False
+        if _ya_avisado(conn, a["id"], sym, base, lado):
+            # El mismo movimiento (mismo cierre, mismo sentido) ya se avisó: sólo
+            # vuelve si llegó al doble del umbral, una vez.
+            if not _toca_el_doble(conn, a, sym, base, lado, pct):
+                continue
+            doble = True
+        cruzaron.append((a, sym, ref, via, pct, q.get("precio"), (base, lado), doble))
+    if not cruzaron:
+        return 0
+    try:
+        velas = fdh.con_operaciones(sorted({c[2] for c in cruzaron}), sesion)
+    except Exception as ex:
+        log.warning("alerts fuera de la rueda: velas fallaron: %s", ex)
+        return 0
+    fired = 0
+    mismo_ref = set()     # (alerta, acción de EE.UU., sentido, %, base) ya avisados en ESTE ciclo
+    for a, sym, ref, via, pct, precio, clave, doble in cruzaron:
+        if a["id"] in deactivated:
+            continue
+        # NVDA en Schwab y el CEDEAR de NVDA son la MISMA suba sólo si dicen el
+        # mismo número desde el mismo cierre (en verano). En invierno el CEDEAR
+        # se mide desde el cierre de BYMA y da otro %: son dos renglones. Juntarlos
+        # escondía uno y le gastaba su aviso del doble (auditoría 2026-10-15).
+        igual = (a["id"], ref, clave[1], doble, round(pct, 1), clave[0])
+        if igual in mismo_ref:
+            _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
+            continue
+        if velas.get(ref, 0) < fdh.MIN_VELAS:
+            log.info("alert %s %s: %+.2f%% en el %s con %s velas: poca operación, no aviso",
+                     a["id"], sym, pct, sesion, velas.get(ref, 0))
+            continue
+        _fire(conn, a, sym, precio, pct, now, pendientes,
+              fuera={"sesion": sesion, "ref": ref, "via": via}, doble=doble)
+        _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
+        mismo_ref.add(igual)
+        fired += 1
+        if a["repeat"] == "once":
+            # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
+            # rueda (auditoría 2026-10-15: seguía avisando día tras día).
+            conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+            deactivated.add(a["id"])
+    return fired
 
 
 # ─── Loop principal ────────────────────────────────────────────────────────────
@@ -623,6 +956,16 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     quotes = _quotes_for(list(quote_syms)) if quote_syms else {}
 
     market_open = _market_open_now(now)
+    # Los días en que operó BYMA, para la base de la «Var. día» de los `.BA`
+    # (`_base_de_la_rueda`). Es red (cacheada 10 min): va ACÁ, antes de la
+    # primera escritura del ciclo, no adentro del loop con la base tomada.
+    sesiones_byma = None
+    if any(str(s).upper().endswith(".BA") for _a, s in units):
+        try:
+            import fuera_de_horario as _fdh
+            sesiones_byma = _fdh._sesiones_de_byma()
+        except Exception as ex:
+            log.warning("alerts: no se pudo saber qué días operó BYMA: %s", ex)
     # Los avisos de este ciclo se acumulan acá y salen todos juntos al final,
     # un envío por alerta. Ver `_entregar_pendientes`.
     pendientes: list = []
@@ -706,14 +1049,51 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     if change is not None and not armed and not fired_today:
                         _set_sym_armed(conn, a["id"], sym, 1)   # día nuevo, dentro de banda → re-arma
                     continue
+                # Cripto no tiene pre ni post y su día es el día UTC (opera los
+                # sábados): la regla de «mismo cierre» no aplica. Con ella, el
+                # sábado, el domingo y el lunes compartían clave y se callaban
+                # entre sí (auditoría 2026-10-15).
+                es_cripto = sym in _crypto_symbols()
+                base = None if es_cripto else _base_de_la_rueda(sym, sesiones_byma)
+                if tradeable and base and _toca_el_doble(conn, a, sym, base, side, change):
+                    # El mismo movimiento llegó al doble del umbral: segundo y
+                    # último aviso, aunque hoy ya haya avisado (+3 % a las 11,
+                    # +6 % a las 15; o pre +3 % y abre +6 %).
+                    _fire(conn, a, sym, fire_price, change, now, pendientes, doble=True)
+                    fired += 1
+                    _set_sym_fired(conn, a["id"], sym, today)
+                    _anotar_aviso(conn, a, sym, base, side, change, doble=True)
+                    continue
                 if not armed or not tradeable or fired_today:
+                    continue
+                if _ya_avisado(conn, a["id"], sym, base, side):
+                    # Es el MISMO movimiento que ya se avisó fuera de la rueda (el
+                    # post de anoche o el pre de hoy, contra el mismo cierre): no se
+                    # manda nada. El día NO se marca como avisado: si en la rueda
+                    # da vuelta (pre +3 %, después −3 %), eso sí se avisa. Y una
+                    # alerta «una sola vez» ya cumplió: se apaga.
+                    if a["repeat"] == "once":
+                        conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+                        deactivated.add(a["id"])
                     continue
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
+                _anotar_aviso(conn, a, sym, base, side, change, doble=False)
                 if a["repeat"] == "once":
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])
+
+    # Pre y post mercado de Wall Street (anticipo, con su propio estado).
+    # ⚠️ ANTES se confirma lo escrito en el loop: esto pregunta a Yahoo (hasta
+    # minutos si anda lento) y con la transacción abierta el resto de la app
+    # comía «database is locked» (auditoría 2026-10-15, medido con una segunda
+    # conexión). Adentro, la red va antes que cualquier escritura.
+    conn.commit()
+    try:
+        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now, deactivated)
+    except Exception as ex:
+        log.warning("alerts fuera de la rueda falló: %s", ex)
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
     # cartera se sabe cuántos activos se movieron y puede salir un mail solo.
@@ -734,5 +1114,8 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
         + ("" if only_user is None else " AND user_id=?"),
         (now.isoformat(),) + (() if only_user is None else (only_user,)),
     )
+    # La poda va AL FINAL, pegada al último commit: al principio abría la
+    # transacción de escritura y la dejaba tomada durante los pedidos de precios.
+    _podar_movimientos(conn, now)
     conn.commit()
     return {"alerts": len(alerts), "evaluated": len(units), "fired": fired}

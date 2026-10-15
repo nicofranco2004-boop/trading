@@ -28987,6 +28987,7 @@ Cómo contar el resultado:
 - Si sin_medir pesa más de ~5% de la cartera, una frase: qué parte no se pudo medir y por qué.
 - Contás lo que YA pasó, nunca lo que va a pasar: nada de "podría pesar cuando abran", "se espera que", "mañana puede". Un titular sobre futuros o pronósticos se cuenta como lo que dice el titular, no como una predicción tuya.
 - Bloque ---RENDI---: stats con el movimiento del día (usd_txt), el % sobre la cartera y el activo que más movió; sources: "cotizaciones de [dia_txt]" y "titulares de [fuentes]".
+- Pre y post mercado: si el resultado trae `fuera_de_horario`, después del día agregá lo que viene pasando fuera de la rueda ("En el post-mercado tu cartera viene [usd_txt] ([pct_sobre_la_cartera_txt]), sobre todo por [activo]"), con sus números tal cual y su por qué con las mismas reglas de arriba. Es un anticipo: NUNCA lo sumes al día ni al valor. Si hay anticipo de CEDEARs, una frase: siguen a la acción en Nueva York y en pesos también pesa el CCL (es la única excepción a "contás lo que ya pasó"). Si abierto=false, el post ya cerró: contalo en pasado con `cuando` ("[cuando], en el post-mercado…"), nunca "anoche" si `cuando` dice otra cosa.
 
 NOTICIAS DE MERCADO (get_market_news) — CAUSALIDAD Y SEGURIDAD
 
@@ -31575,6 +31576,7 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
     modelo: él sólo lo cuenta.
     """
     import cartera_hoy as _ch
+    import fuera_de_horario as _fdh
     from fechas import hoy_art
     from snapshots_job import _broker_name_sets, position_price_key
     cached = _CARTERA_HOY_CACHE.get(uid)
@@ -31678,6 +31680,9 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
                     "valor_previo": None, "motivo": None,
                     "mercado": None, "rueda": None, "es_hoy": False}
             k = claves.get(i)
+            # La acción de EE.UU. que lo anticipa fuera de la rueda (pre y post
+            # mercado), con la MISMA clave de precio con que se lo valúa.
+            lote["ref"] = _fdh.referencia_en_eeuu(k, p.get('asset_type'))
             if k is None:
                 lote["motivo"] = "efectivo"
             elif p.get('price_override') not in (None, 0, ''):
@@ -31738,6 +31743,20 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
                            "estado": _estado_mercado(m, ult, hoy)}
         resumen = _ch.armar(lotes, hoy, mercados)
 
+        # ── Pre y post mercado de Wall Street: un ANTICIPO aparte del día, que
+        # no se suma a nada (la misma regla que la pantalla). Sobre el MISMO
+        # valor de cada lote que el resto de esta respuesta. ──
+        fdh_res = None
+        refs = sorted({l["ref"][0] for l in lotes if l.get("ref")})
+        # Los que siguen a un CEDEAR o una acción argentina se miden desde el
+        # cierre de BYMA (`fuera_de_horario.pct_segun_via`), como la pantalla.
+        desde_byma = sorted({l["ref"][0] for l in lotes if l.get("ref") and l["ref"][1] != "propio"})
+        if refs:
+            try:
+                fdh_res = _fdh.resumen_de_lotes(lotes, _fdh.estado(refs, byma=desde_byma), tc_pesos=tc_cedear)
+            except Exception as ex:
+                log.warning("cartera_hoy: pre/post mercado falló uid=%s: %s", uid, ex)
+
         # ── Noticias: las de los activos que movieron la cartera y las del
         # mercado. MISMA ventana y MISMO reparto por tema que el mail del
         # resumen del mercado (market_brief), para no tener dos criterios de
@@ -31745,6 +31764,12 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
         # que no llega sigue bajando en segundo plano para la próxima pregunta).
         import market_brief as _mb
         tickers = _ch.tickers_para_noticias(resumen, CRYPTO_SYMBOLS)
+        # Lo que más se mueve fuera de la rueda también necesita su «por qué».
+        for a in (fdh_res or {}).get("activos") or []:
+            if len(tickers) >= 6:
+                break
+            if abs(a.get("pct") or 0) >= 1 and a["asset"] not in tickers:
+                tickers.append(a["asset"])
         if tickers:
             try:
                 _ensure_news_batch_parallel([(f"{t} acciones", "es", "portfolio") for t in tickers],
@@ -31803,12 +31828,118 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
         "titular sólo PUEDE explicar un movimiento si nombra a ese activo o a su "
         "tema; decilo con cautela ('coincide con', 'puede tener que ver con') y "
         "citá la fuente. Si ningún titular lo explica, decí que no ves una causa "
-        "clara en las noticias. No uses fechas que aparezcan dentro de un titular."
+        "clara en las noticias. No uses fechas que aparezcan dentro de un titular. "
+        "(7) Si viene `fuera_de_horario`, Wall Street está operando fuera de la rueda "
+        "(pre-mercado antes de abrir, post-mercado después de cerrar) o el post ya "
+        "cerró (abierto=false). Contalo APARTE del día, después de él, como ANTICIPO, "
+        "con su usd_txt y pct_sobre_la_cartera_txt tal cual. Si abierto=true, en "
+        "presente ('en el pre-mercado tu cartera viene [usd_txt]'); si abierto=false, "
+        "en pasado y con `cuando` ('[cuando], en el post-mercado, tu cartera se movió "
+        "[usd_txt]'): nunca digas 'anoche' si `cuando` dice otra cosa. NUNCA lo sumes "
+        "al movimiento del día ni al valor de la cartera: no se suma hasta que abre el "
+        "mercado. Si anticipo_usd_txt no es null, aclará que lo de CEDEARs y acciones "
+        "argentinas sigue a la acción en Nueva York y que en pesos también pesa el "
+        "dólar CCL (ccl_1pct_en_pesos_txt = cuánto mueve un 1% de CCL). Esa aclaración "
+        "es la ÚNICA excepción a la regla de no hablar de lo que va a pasar."
     )
+    if fdh_res:
+        resumen["fuera_de_horario"] = fdh_res
     if len(_CARTERA_HOY_CACHE) > 500:
         _CARTERA_HOY_CACHE.clear()
     _CARTERA_HOY_CACHE[uid] = (time.time(), resumen)
     return resumen
+
+
+def _tenencias_que_siguen_a_eeuu(uid: int):
+    """(brokers, positions, tc_blue, tc_cedear, refs) — refs = {índice de la
+    posición: (símbolo de EE.UU., vía)} de las tenencias que siguen a una acción
+    de EE.UU. Sólo lee la base: no pide precios."""
+    import fuera_de_horario as _fdh
+    from snapshots_job import _broker_name_sets, position_price_key
+    conn = get_db()
+    try:
+        brokers, positions, tc_blue, tc_cedear = _chat_valuation_inputs(conn, uid)
+    finally:
+        conn.close()
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+    ars_names, ar_usd_names = _broker_name_sets(brokers)
+    refs = {}
+    for i, p in enumerate(positions):
+        if p.get('is_cash') or broker_ccy.get(p.get('broker')) is None:
+            continue
+        ref = _fdh.referencia_en_eeuu(position_price_key(p, ars_names, ar_usd_names), p.get('asset_type'))
+        if ref:
+            refs[i] = ref
+    return brokers, positions, tc_blue, tc_cedear, refs
+
+
+def _lotes_con_referencia_eeuu(uid: int, simbolos=None, tope: float = None):
+    """Las tenencias que siguen a una acción de EE.UU. (sólo las de `simbolos`,
+    si viene), valuadas en USD con la MISMA valuación del chat
+    (`_chat_valuation_inputs` + `_valuar_lote_chat`) y la MISMA clave de precio
+    (`position_price_key`). Para el pre/post mercado del mail.
+
+    Devuelve (lotes, dólar de los CEDEARs, valor de TODA la cartera); cada lote =
+    {asset, valor, ref}. El total es para el «% sobre la cartera»: dividir sólo por
+    las tenencias de EE.UU. lo inflaba (auditoría 2026-10-15: −1,6 % cuando era
+    −0,16 %). El chat no la usa: su tool ya valúa cada lote para el día y le pega
+    la referencia en el mismo paso. Sin tenencias que valuar no pide precios."""
+    brokers, positions, tc_blue, tc_cedear, refs = _tenencias_que_siguen_a_eeuu(uid)
+    if simbolos is not None:
+        refs = {i: r for i, r in refs.items() if r[0] in simbolos}
+    if not refs:
+        return [], tc_cedear, None
+    broker_ccy = {b['name']: b['currency'] for b in brokers}
+    # El total sale del último CIERRE del cron (si es de los últimos 3 días):
+    # valuar la cartera entera de cada suscriptor a las 11 eran S×P pedidos a
+    # Yahoo justo cuando abre BYMA (auditoría 2026-10-15). Se valúan sólo las
+    # tenencias que siguen a EE.UU.; sin foto, se valúa todo como antes.
+    total = _ultimo_total_de_foto(uid)
+    a_valuar = list(refs) if total is not None else list(range(len(positions)))
+    syms = build_price_symbols([positions[i] for i in a_valuar], brokers)
+    prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=tope or _yahoo.TOPE_FONDO_SEG) if syms else {}
+    lotes, suma = [], 0.0
+    for i in a_valuar:
+        p = positions[i]
+        if broker_ccy.get(p.get('broker')) is None:
+            continue    # huérfana: la valuación del chat también la descarta
+        try:
+            v, _ = _valuar_lote_chat(p, prices, broker_ccy[p['broker']], tc_blue, tc_cedear)
+        except Exception as ex:
+            log.warning("fuera_de_horario: lote %s falló: %s", p.get('asset'), ex)
+            continue
+        suma += v
+        if i in refs and v > 0:
+            lotes.append({"asset": p.get('asset'), "valor": v, "ref": refs[i]})
+    return lotes, tc_cedear, (total if total is not None else suma)
+
+
+def _ultimo_total_de_foto(uid: int):
+    """El valor total (USD) del último CIERRE del cron del usuario (`source='cron'`:
+    posiciones × precio real), si es de los últimos 3 días; si no, None y el que
+    llama valúa la cartera entera.
+
+    Sólo el cron y sólo reciente: una foto del navegador o del importador, o una
+    de hace una semana (después de un depósito grande), inflaba o achicaba el «%
+    sobre la cartera» del mail (auditoría 2026-10-15)."""
+    from fechas import hoy_art
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT date, total_value FROM snapshots WHERE user_id=? AND source='cron' "
+            "ORDER BY date DESC LIMIT 1",
+            (uid,)).fetchone()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if not row or not row["total_value"] or row["total_value"] <= 0:
+        return None
+    try:
+        dias = (datetime.fromisoformat(hoy_art()) - datetime.fromisoformat(str(row["date"])[:10])).days
+    except ValueError:
+        return None
+    return float(row["total_value"]) if dias <= 3 else None
 
 
 def _con_nombres(positions):
@@ -33648,7 +33779,10 @@ _AI_TOOLS = [
             "el día: '¿qué pasó hoy con mi cartera?', '¿cómo me fue hoy?', '¿por qué "
             "bajó / subió mi cartera?', '¿qué se movió hoy?', '¿cómo viene el día?'. "
             "Ya trae las noticias: NO llames además get_recent_news_for_assets ni "
-            "get_market_news para la misma pregunta."
+            "get_market_news para la misma pregunta. Si Wall Street está en el pre o "
+            "post mercado, trae también `fuera_de_horario` (cuánto viene moviéndose la "
+            "cartera fuera de la rueda): usala también para '¿cómo viene el "
+            "pre-mercado / post-mercado?'."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
@@ -45432,6 +45566,26 @@ def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
     # Copia: `data` es el objeto GUARDADO por `_cached`; escribirle el estado
     # lo dejaría congelado para el próximo que pida.
     return {**data, **estado_de_rueda((data.get("gainers") or []) + (data.get("losers") or []))}
+
+
+@app.get("/api/fuera-de-horario")
+def fuera_de_horario_endpoint(request: Request, symbols: str = "", listas: bool = False,
+                              byma: str = "",
+                              uid: int = Depends(get_effective_user)):
+    """Pre y post mercado de Wall Street (ver `fuera_de_horario.py`).
+
+    `symbols`: las acciones de EE.UU. que la pantalla quiere (el frontend ya
+    tradujo cada CEDEAR a su acción y cada acción argentina a su ADR).
+    `byma`: cuáles de esas siguen a un CEDEAR o a una acción argentina: traen
+    también el % desde el cierre de BYMA (`pct_byma`).
+    `listas=1` suma los índices, los ADRs argentinos y los populares, para la
+    sección de Mercado. Es un ANTICIPO: no toca ningún número guardado."""
+    import fuera_de_horario as _fdh
+    # Las pantallas lo piden una vez por minuto cada una: 30 por minuto sobran, y
+    # ponen un techo a quien quiera forzar pedidos a Yahoo (auditoría 2026-10-15).
+    _check_rate_limit(request, 30, 60, suffix=f"fdh:{uid}")
+    return _fdh.estado(_fdh.limpiar_simbolos(symbols), listas=listas,
+                       byma=_fdh.limpiar_simbolos(byma))
 
 
 # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────────

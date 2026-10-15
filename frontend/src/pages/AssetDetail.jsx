@@ -27,6 +27,7 @@ import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCos
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { operacionesEnUsd } from '../utils/assetPnl'
 import { esCobro } from '../utils/tradeStats'
@@ -258,6 +259,9 @@ export default function AssetDetail() {
               <span className="text-ink-3 text-xs ml-1">no realizado</span>
             </div>
           )}
+          {/* Pre/post de Wall Street: anticipo, no sumado al valor de arriba. */}
+          <ChipDelActivo lotes={positions} brokers={brokers} prices={prices}
+            tcValuacion={tcValuacion} tcCedear={tcCedear} tcCripto={tcCripto} className="mt-3 text-[12.5px]" />
         </section>
       </AskAIAbout>
 

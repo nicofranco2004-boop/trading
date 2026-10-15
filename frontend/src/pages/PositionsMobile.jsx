@@ -14,7 +14,7 @@
 // Filtro: tap en chip "Cocos" filtra a ese broker. "Todos" muestra todo.
 // Botón "+" violeta abre modal de agregar broker (mismo flow que desktop).
 
-import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo, createContext, useContext } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, Download, Wallet, ChevronDown, ArrowRight, MoreVertical } from 'lucide-react'
 import { groupBrokersIntoAccounts, brokerLegLabel } from '../utils/brokerAccounts'
@@ -49,7 +49,7 @@ import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import NumeroQueCambia from '../components/NumeroQueCambia'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
-import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
+import { fmtUsd, ars, pctSigned, pctVar, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { cuerpoDeVenta, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { isBondPosition } from '../utils/tickers'
@@ -72,6 +72,10 @@ import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { usePrivacy } from '../contexts/PrivacyContext'
+import { impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
+import { ChipFueraDeHorario, SiAbrieraAsi, IconoSesion, tonoDeSesion } from '../components/FueraDeHorario'
 
 const SORT_OPTIONS = [
   { id: 'value',  label: 'Valor' },
@@ -1492,6 +1496,20 @@ export default function PositionsMobile() {
   // (`pnlUsdToday × tcValuacion`), y por eso el hero cierra con la suma de las filas.
   const heroInvertido = currency === 'ARS' ? invertidoHoyUsd * tcValuacion : invertidoUsd
   const heroValor = currency === 'ARS' ? (total + pfValueUsd) * tcValuacion : (total + pfValueUsd)
+
+  // Pre y post mercado: un ANTICIPO al lado del total, nunca sumado. La cuenta
+  // es la de utils/fueraDeHorario, la misma de la compu, el Dashboard y el
+  // inicio. Las filas y los brokers la leen del contexto (FdhCtx).
+  const fdh = useFueraDeHorarioDe(positions, brokers)
+  const impactoFdh = useMemo(
+    () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
+    [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
+  const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
+  // El ojito de los saldos: el resto de esta pantalla todavía no lo respeta,
+  // pero lo nuevo sí (auditoría 2026-10-15).
+  const { hidden: ocultoFdh } = usePrivacy()
+  const fdhCtx = useMemo(() => (sesionFdh ? { sesion: sesionFdh, impacto: impactoFdh, oculto: ocultoFdh } : null),
+    [sesionFdh, impactoFdh, ocultoFdh])
   // El total recalculándose después de anotar o borrar un cobro (mismo hook que
   // Cartera de escritorio). Con centavos: el hero redondea a pesos/dólares
   // enteros y un dividendo de US$ 2,65 no se vería moverse.
@@ -1577,6 +1595,7 @@ export default function PositionsMobile() {
   }
 
   return (
+    <FdhCtx.Provider value={fdhCtx}>
     <div className="pb-8">
       <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
         total={heroValor} formato={fmtRecalculo} />
@@ -1650,7 +1669,16 @@ export default function PositionsMobile() {
             <NumeroQueCambia clave="cartera:invertido" value={heroInvertido} format={(n) => montoCard(n, currency)}
               moneda={currency} listo={numerosListos} conDiferencia={false} />
           </span>
+          {sesionFdh && (
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={ocultoFdh} className="py-0.5"
+              monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
+              pctFraccion={impactoFdh.total.pct} />
+          )}
         </div>
+        {sesionFdh && (
+          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={ocultoFdh} className="-mt-1 mb-2.5"
+            total={heroValor + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
+        )}
         {/* De cuándo son los precios y si se están moviendo. Reemplaza el
             puntito violeta que sólo decía "cargando". */}
         <div className="-mt-1 mb-2.5">
@@ -2248,6 +2276,7 @@ export default function PositionsMobile() {
         />
       )}
     </div>
+    </FdhCtx.Provider>
   )
 
   // Save de Nueva Posición desde mobile — misma normalización que desktop
@@ -2433,12 +2462,15 @@ const BrokerSection = memo(function BrokerSection({
           )}
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          <span className="text-sm font-semibold tabular text-ink-0">
-            {/* Cuenta hasta el valor nuevo cuando llegan precios, como el total de arriba. */}
-            <NumeroQueCambia clave={`cartera:broker:${broker.name}:valor`}
-              value={displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd}
-              format={(n) => montoCard(n, displayCurrency)} moneda={displayCurrency}
-              listo={listo} conDiferencia={false} desdeCero />
+          <span className="flex flex-col items-end">
+            <span className="text-sm font-semibold tabular text-ink-0">
+              {/* Cuenta hasta el valor nuevo cuando llegan precios, como el total de arriba. */}
+              <NumeroQueCambia clave={`cartera:broker:${broker.name}:valor`}
+                value={displayCurrency === 'ARS' ? totalUsd * tcValuacion : totalUsd}
+                format={(n) => montoCard(n, displayCurrency)} moneda={displayCurrency}
+                listo={listo} conDiferencia={false} desdeCero />
+            </span>
+            <FdhDelBroker filas={positions} moneda={displayCurrency} />
           </span>
           <button
             type="button"
@@ -2548,6 +2580,48 @@ const COLUMNAS = [
 // Celda de valores: 108px, alineada a la derecha, hasta dos renglones (monto
 // arriba, % abajo). A 108px los montos entran SIN abreviar — ése era el único
 // motivo de existir de `compactAmount`/`compactValue`, que ya no están.
+// ─── Pre y post mercado (el contexto lo llena PositionsMobile) ──────────────
+const FdhCtx = createContext(null)
+
+// «☾ +0,85 % · +$53» debajo del valor de la fila. Nada si no aplica.
+function FdhDeLaFila({ p, moneda }) {
+  const ctx = useContext(FdhCtx)
+  if (!ctx || p.is_cash) return null
+  const r = sumarTenencias((p._lots || [p]).map(l => l.id), ctx.impacto)
+  if (!r) return null
+  const t = tonoDeSesion(ctx.sesion)
+  if (r.pct == null) {
+    return <div className={`${LINEA_2} text-ink-3 flex items-center gap-1`}><span className={t.texto}><IconoSesion sesion={ctx.sesion} size={10} /></span>sin operar</div>
+  }
+  const monto = moneda === 'ARS' ? r.ars : r.usd
+  return (
+    <div className={`${LINEA_2} tabular flex items-center gap-1 whitespace-nowrap ${colorClass(r.pct)}`}
+      title="Lo que se mueve fuera de la rueda. No está sumado al valor.">
+      <span className={t.texto}><IconoSesion sesion={ctx.sesion} size={10} /></span>
+      {pctVar(r.pct)} · {ctx.oculto ? '••••' : montoCard(monto, moneda, { signed: true })}
+    </div>
+  )
+}
+
+// «☾ +$118» debajo del valor del broker. Suma sus filas (sin contar dos veces
+// los lotes de una fila abierta).
+function FdhDelBroker({ filas, moneda }) {
+  const ctx = useContext(FdhCtx)
+  if (!ctx) return null
+  const ids = filas.filter(p => !p._isLot).flatMap(p => (p._lots || [p]).map(l => l.id))
+  const r = sumarTenencias(ids, ctx.impacto)
+  if (!r) return null
+  const monto = moneda === 'ARS' ? r.ars : r.usd
+  const t = tonoDeSesion(ctx.sesion)
+  return (
+    <span className={`text-[11px] tabular inline-flex items-center gap-1 ${t.texto}`}
+      title="Lo que se mueve este broker fuera de la rueda. No está sumado al valor.">
+      <IconoSesion sesion={ctx.sesion} size={10} />{nombreCorto(ctx.sesion)}
+      <span className={colorClass(monto)}>{ctx.oculto ? '••••' : montoCard(monto, moneda, { signed: true })}</span>
+    </span>
+  )
+}
+
 function Celda({ children }) {
   return (
     <div
@@ -2998,6 +3072,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
             (sin el buscador). No en las filas de lote: su fila agregada ya lo
             muestra, y sumarlas contaría la misma plata dos veces. */}
         {!p._isLot && <PesoEnCartera valor={p.valueUsd} total={totalCuenta} nombre={nombreCuenta} />}
+        <FdhDeLaFila p={p} moneda={displayCurrency} />
       </Celda>
 
       {/* P&L — el monto y el % se colorean por SEPARADO. No es cosmético: para
