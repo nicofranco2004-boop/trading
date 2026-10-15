@@ -43,8 +43,9 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capita
   const losers = withPnl.filter(p => p.pnl_usd < 0).sort((a, b) => a.pnl_usd - b.pnl_usd)
   const winners = withPnl.filter(p => p.pnl_usd > 0).sort((a, b) => b.pnl_usd - a.pnl_usd)
 
+  // El signo menos de verdad (−), como el chip del hero: con `toFixed` salía "-39,2%" con guion.
   const pctTxt = totalReturnPct != null
-    ? `${totalReturnPct >= 0 ? '+' : ''}${(totalReturnPct * 100).toFixed(1).replace('.', ',')}%`
+    ? `${totalReturnPct >= 0 ? '+' : '−'}${Math.abs(totalReturnPct * 100).toFixed(1).replace('.', ',')}%`
     : null
 
   // Sin porcentaje que sostener, la frase se cuenta con la PLATA. Es el mismo

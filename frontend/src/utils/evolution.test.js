@@ -11,7 +11,7 @@ import {
 
 const TCB = 1500
 
-// El dólar elegido al cierre de cada mes (`tcMensual` de useFxHistory).
+// El dólar elegido al cierre de cada mes (`dolarMes` de useDolarMensual).
 const BENCH = {
   '2025-01': 1000,
   '2025-02': 1100,

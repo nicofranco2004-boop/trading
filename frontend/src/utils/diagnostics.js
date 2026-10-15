@@ -198,33 +198,29 @@ export const DIAGNOSTIC_GENERATORS = [
     id: 'beat_inflation_ars',
     category: 'Performance',
     severity: 'positive',
-    // Retorno real = retorno de la cartera EN PESOS deflactado por la inflación
-    // INDEC acumulada. CRÍTICO: comparar contra inflación-pesos exige el retorno
-    // de la cartera en pesos (portfolioReturnArsPct, del último punto de
-    // benchSeriesArs), NO el retorno en USD — mezclar monedas invierte el veredicto.
-    // real = (1+rPortArs)/(1+infl) − 1.
-    generate: ({ portfolioReturnArsPct, inflationCum, currency }) => {
-      if (currency !== 'ARS' || !inflationCum || inflationCum.cumPct == null) return null
-      if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
-      const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
-      if (realPct < 0) return null
-      return `Tu cartera en pesos supera a la inflación INDEC con un retorno real de **+${realPct.toFixed(1).replace('.', ',')}%**.`
+    // `vsInflacion` es LA respuesta a "¿le ganás a la inflación?" (benchmarkSim
+    // `veredictoInflacion`): tu patrimonio de hoy, a precio de mercado, contra la
+    // misma plata ajustada por inflación INDEC. Es el mismo número que la celda
+    // "Inflación" de las alternativas, así que este hallazgo no la puede
+    // contradecir. Antes cada uno deflactaba por su cuenta un retorno en pesos
+    // armado sobre la cadena al costo (ver el comentario de `veredictoInflacion`).
+    generate: ({ vsInflacion, currency }) => {
+      if (currency !== 'ARS' || !vsInflacion || !isFinite(vsInflacion.pct)) return null
+      if (vsInflacion.pct < 0) return null
+      return `Tu cartera le gana a la inflación INDEC: hoy vale **${pctTxt(vsInflacion.pct, decimalesFinos(vsInflacion.pct, 1))}** más que la misma plata ajustada por inflación.`
     },
   },
   {
     id: 'lose_to_inflation_ars',
     category: 'Performance',
     severity: 'warn',
-    // Mismo principio que beat_inflation_ars: retorno EN PESOS de la cartera
-    // (portfolioReturnArsPct) deflactado por inflación-pesos. Nunca retorno-USD.
-    generate: ({ portfolioReturnArsPct, inflationCum, currency }) => {
-      if (currency !== 'ARS' || !inflationCum || inflationCum.cumPct == null) return null
-      if (portfolioReturnArsPct == null || !isFinite(portfolioReturnArsPct)) return null
-      const realPct = ((1 + portfolioReturnArsPct / 100) / (1 + inflationCum.cumPct / 100) - 1) * 100
-      if (realPct >= 0) return null
+    // Mismo número que beat_inflation_ars y que la celda "Inflación".
+    generate: ({ vsInflacion, currency }) => {
+      if (currency !== 'ARS' || !vsInflacion || !isFinite(vsInflacion.pct)) return null
+      if (vsInflacion.pct >= 0) return null
       // decimalesFinos: el mismo número que la celda "Inflación" de las
       // alternativas (−0,03 → "0,03%", no "0,0%").
-      return `Tu cartera en pesos rinde **${pctTxt(Math.abs(realPct), decimalesFinos(realPct, 1))}** por debajo de la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
+      return `Tu cartera vale **${pctTxt(Math.abs(vsInflacion.pct), decimalesFinos(vsInflacion.pct, 1))}** menos que la misma plata ajustada por la inflación INDEC. Hay pérdida de poder adquisitivo en términos reales.`
     },
   },
 

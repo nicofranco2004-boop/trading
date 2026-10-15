@@ -16,22 +16,26 @@
 //
 // LA REGLA para llevar un aporte a pesos — la misma que `useHistoricalMoney` usa
 // para cada movimiento de la lista:
-//   1. Si se cargó EN PESOS, son esos pesos. El servidor los guarda tal cual en
-//      `manual_deposits_native` / `manual_withdrawals_native` de la fila del
-//      broker (en la moneda del broker; en 'global' esas columnas no se llenan).
-//   2. Si no hay pesos guardados (aportes en dólares, imports, el saldo con el
-//      que arrancó la historia), son esos dólares AL DÓLAR DE SU MES: el dólar
-//      que el usuario eligió (MEP; ver utils/tcHistorico.js) al cierre del mes
-//      (`tcMensual` de useFxHistory; la fila es mensual, no hay día exacto). Es
-//      el MISMO dólar que el de hoy, de otra fecha. Hasta el 2026-10-15 esto
-//      usaba el BLUE (`/benchmarks` → `dolar_blue`) mientras el valor de hoy iba
-//      al MEP: dos dólares distintos en la misma resta "valor − aportado".
-//   3. Si el dólar de ese mes no está (la serie no cargó todavía, o el aporte es
+//   1. Si entró EN PESOS, son esos pesos. `/api/monthly` los manda en cada fila
+//      de broker, con los dólares de la fila que cubren:
+//        · lo IMPORTADO (y las dos patas de cada conversión ARS↔USD, con los
+//          pesos de la conversión para que sume cero, como en dólares):
+//          `pesos_importados_dep`/`_ret` (+ `_usd`). Ver
+//          `_aportes_en_pesos_por_mes` en main.py.
+//        · lo cargado A MANO en un broker en pesos: `manual_*_native`.
+//   2. Si no hay pesos guardados (aportes en dólares, el saldo con el que
+//      arrancó la historia), son esos dólares AL DÓLAR DE SU MES: el del cierre
+//      del mes en la serie histórica de la app (`/api/fx-rates`, ver
+//      `dolarMensualDe`): el MEP, o el blue donde no hay MEP — el mismo dólar con
+//      que el servidor guarda cada flujo (`fx_for_date`) y el que la app usa
+//      para TODO monto de otra fecha (utils/tcHistorico.js). Es de la base
+//      propia: no espera a ningún servicio de afuera.
+//   3. Si el dólar de ese mes no está (la serie no cargó, o el aporte es
 //      anterior a la serie), el dólar de hoy — lo de antes, declarado como
 //      último recurso. Los pesos guardados (regla 1) no dependen de esto.
 //
-// El saldo inicial (`capital_inicio` del primer mes) va al dólar del mes ANTERIOR
-// al primero: es plata que ya estaba cuando empezó la historia.
+// El saldo inicial (`capital_inicio` del primer mes) va al dólar del mes
+// ANTERIOR al primero: es plata que ya estaba cuando empezó la historia.
 //
 // Lo que NO hace: no toca el número en dólares. `usd` es exactamente lo que
 // devolvía `netCapitalContributed` (y lo que va a las fotos del servidor).
@@ -50,17 +54,43 @@ function ordenar(filas) {
 
 const n = (v) => (Number.isFinite(+v) ? +v : 0)
 
-// Un nativo sólo se usa si el dólar que implica (pesos ÷ dólares de la misma
-// fila) es un dólar plausible para ese mes. Protege de una fila que mezcla
-// cargas con pesos guardados y cargas viejas sin ellos (de antes de que existiera
-// la columna): ahí el cociente da cualquier cosa y es mejor caer a la regla 2.
-const RANGO_PLAUSIBLE = [0.6, 1.6]
+// Los pesos cargados A MANO se usan salvo que cubran claramente MENOS dólares de
+// los que dice la fila: una fila que mezcla cargas con pesos guardados y cargas
+// viejas sin ellos (de antes de que existiera la columna) da un cociente
+// pesos ÷ dólares muy por debajo del dólar del mes, y ahí es mejor la regla 2.
+// El control es de UN solo lado a propósito: un cociente ALTO es una carga vieja
+// dolarizada con el dólar del día en que se cargó y no el de su fecha (pasó hasta
+// que el servidor empezó a resolver el dólar por fecha) — sus pesos están bien y
+// sus dólares no. Medido en la copia de prod: depósitos de 2020 y 2023 con
+// cociente 4× y 18× el blue de su mes; descartar esos pesos erraba 65–94 %.
+// Lo importado no pasa por este control: sus pesos salen de la misma fila del
+// import que sus dólares, no se pueden mezclar.
+const MINIMO_PLAUSIBLE = 0.6
 
-function nativoUsable(pesos, usd, fxMes) {
+function pesosAMano(pesos, usd, dolarDeLaSerie) {
   if (!(pesos > 0) || !(usd > 0)) return false
-  if (!(fxMes > 0)) return true
-  const r = (pesos / usd) / fxMes
-  return r >= RANGO_PLAUSIBLE[0] && r <= RANGO_PLAUSIBLE[1]
+  if (!(dolarDeLaSerie > 0)) return true
+  return (pesos / usd) / dolarDeLaSerie >= MINIMO_PLAUSIBLE
+}
+
+/**
+ * dolarMensualDe — de la serie diaria de `/api/fx-rates` (ascendente, filas
+ * {date, blue, mep}), el dólar del CIERRE de cada mes: {'AAAA-MM': dólar}. El
+ * último MEP del mes; sin ninguno en el mes (la serie no lo tiene antes de
+ * 2018), el último blue. Es lo que usa `fx_for_date` del servidor para guardar flujos.
+ */
+export function dolarMensualDe(filas) {
+  // Por mes, el último MEP y el último blue por separado: el cron nocturno escribe
+  // el blue y no siempre el MEP, así que el último día de un mes puede no tener
+  // MEP aunque el mes sí lo tenga. Se prefiere el último MEP del mes.
+  const mep = {}, blue = {}
+  for (const r of filas || []) {
+    if (!r?.date) continue
+    const k = String(r.date).slice(0, 7)
+    if (Number(r.mep) > 0) mep[k] = Number(r.mep)
+    if (Number(r.blue) > 0) blue[k] = Number(r.blue)
+  }
+  return { ...blue, ...mep }
 }
 
 // La tabla de la que salen las dos preguntas ("¿cuánto aportaste?" y "¿cuánto
@@ -68,52 +98,60 @@ function nativoUsable(pesos, usd, fxMes) {
 // dólares y en pesos, con su acumulado.
 //
 // `broker`: 'global' (la cartera entera, lo de siempre) o el nombre de un broker
-// (Reportes filtrado por broker): sus filas, y sus pesos guardados si es en pesos.
-function tablaDeAportes({ monthly, brokers, tcMensual, tcHoy, broker = 'global' }) {
+// (Reportes filtrado por broker): sus filas, y sus pesos guardados.
+function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy, broker = 'global' }) {
   const globales = ordenar((monthly || []).filter(m => m.broker === broker))
   if (globales.length === 0) return null
 
   const respaldo = tcHoy > 0 ? tcHoy : 0
-  const tcDe = (y, mo) => {
-    const v = lookupMonthly(tcMensual, claveMes(y, mo))
-    return v > 0 ? v : respaldo
+  const dolarDeLaSerie = (y, mo) => {
+    const v = lookupMonthly(dolarMes, claveMes(y, mo))
+    return v > 0 ? v : null
   }
 
-  // Brokers en pesos: sus columnas *_native son pesos.
+  // Brokers en pesos: sus columnas manual_*_native son pesos.
   const enPesos = new Set((brokers || [])
     .filter(b => (b?.currency || '').toUpperCase() === 'ARS')
     .map(b => b.name))
-  const filasEnPesos = new Map()
+  const filasDelMes = new Map()
   for (const m of monthly || []) {
-    if (m.broker === 'global' || !enPesos.has(m.broker)) continue
+    if (m.broker === 'global') continue
     if (broker !== 'global' && m.broker !== broker) continue
     const k = claveMes(m.year, m.month)
-    filasEnPesos.set(k, [...(filasEnPesos.get(k) || []), m])
+    filasDelMes.set(k, [...(filasDelMes.get(k) || []), m])
   }
 
   // Igual que netCapitalContributed: el baseline es costo, nunca valor de mercado.
   const primero = globales[0]
   const baselineUsd = n(primero.capital_inicio_costo ?? primero.capital_inicio)
   const antes = primero.month === 1 ? [primero.year - 1, 12] : [primero.year, primero.month - 1]
-  const tcAntes = lookupMonthly(tcMensual, claveMes(...antes))
-  const baselineArs = baselineUsd * (tcAntes > 0 ? tcAntes : tcDe(primero.year, primero.month))
+  const baselineFx = dolarDeLaSerie(...antes) ?? dolarDeLaSerie(primero.year, primero.month) ?? respaldo
+  const baselineArs = baselineUsd * baselineFx
 
   let cumUsd = baselineUsd
   let cumArs = baselineArs
   const meses = globales.map(g => {
     const k = claveMes(g.year, g.month)
-    const fx = tcDe(g.year, g.month)
+    const serie = dolarDeLaSerie(g.year, g.month)
+    const fx = serie ?? respaldo
     const usd = n(g.deposits) - n(g.withdrawals)
     // Los dos lados por separado (Reportes muestra "Depósitos" y "Retiros").
     let depSinPesosUsd = n(g.deposits)
     let retSinPesosUsd = n(g.withdrawals)
     let depPesos = 0
     let retPesos = 0
-    for (const b of filasEnPesos.get(k) || []) {
-      const [depUsd, depArs] = [n(b.manual_deposits), n(b.manual_deposits_native)]
-      const [retUsd, retArs] = [n(b.manual_withdrawals), n(b.manual_withdrawals_native)]
-      if (nativoUsable(depArs, depUsd, fx)) { depSinPesosUsd -= depUsd; depPesos += depArs }
-      if (nativoUsable(retArs, retUsd, fx)) { retSinPesosUsd -= retUsd; retPesos += retArs }
+    for (const b of filasDelMes.get(k) || []) {
+      // Lo importado: siempre.
+      depSinPesosUsd -= n(b.pesos_importados_dep_usd)
+      retSinPesosUsd -= n(b.pesos_importados_ret_usd)
+      depPesos += n(b.pesos_importados_dep)
+      retPesos += n(b.pesos_importados_ret)
+      // Lo cargado a mano en un broker en pesos.
+      if (!enPesos.has(b.broker)) continue
+      const [depArs, depUsd] = [n(b.manual_deposits_native), n(b.manual_deposits)]
+      const [retArs, retUsd] = [n(b.manual_withdrawals_native), n(b.manual_withdrawals)]
+      if (pesosAMano(depArs, depUsd, serie)) { depSinPesosUsd -= depUsd; depPesos += depArs }
+      if (pesosAMano(retArs, retUsd, serie)) { retSinPesosUsd -= retUsd; retPesos += retArs }
     }
     const depArs = depPesos + depSinPesosUsd * fx
     const retArs = retPesos + retSinPesosUsd * fx
@@ -133,8 +171,7 @@ function tablaDeAportes({ monthly, brokers, tcMensual, tcHoy, broker = 'global' 
  *                               cada broker: los pesos guardados viven en las de
  *                               broker)
  * @param {Array}  args.brokers  /api/brokers (para saber cuáles son en pesos)
- * @param {Object} args.tcMensual `tcMensual` de useFxHistory ({'YYYY-MM': dólar
- *                               elegido al cierre del mes}; ver tcHistorico.js)
+ * @param {Object} args.dolarMes {'AAAA-MM': dólar del cierre} (`dolarMensualDe`)
  * @param {number} args.tcHoy    el dólar de hoy: último recurso (regla 3)
  * @returns {{ usd:number, ars:number, arsMaximo:number }}
  *   usd        = capital_inicio del primer mes + Σ(deposits − withdrawals)
@@ -156,13 +193,13 @@ export function capitalAportado(args = {}) {
 
 /**
  * aportesDelMesEnPesos — los depósitos y retiros de CADA mes, en pesos, con la
- * misma regla (pesos guardados; si no, al dólar elegido de su mes). Para las
- * tarjetas de Reportes, que muestran "Depósitos" y "Retiros" de un período: así
- * suman lo mismo que el "Capital aportado" del Dashboard.
+ * misma regla (pesos guardados; si no, al dólar de su mes). Para las tarjetas de
+ * Reportes, que muestran "Depósitos" y "Retiros" de un período: así suman lo
+ * mismo que el "Capital aportado" del Dashboard.
  *
  * `args.broker` (opcional): 'global' o un broker, como el filtro de Reportes.
  *
- * @returns {Map<string, {depUsd, retUsd, depArs, retArs, fx}>} por 'YYYY-MM'
+ * @returns {Map<string, {depUsd, retUsd, depArs, retArs, fx}>} por 'AAAA-MM'
  *          (sólo los meses que tienen fila de ese broker)
  */
 export function aportesDelMesEnPesos(args = {}) {
@@ -223,7 +260,7 @@ export function aportadoEnPesosAl(args = {}) {
         // depósito y un retiro que casi se cancelan) el cociente no significa
         // nada: ahí, el dólar del mes.
         const implicito = Math.abs(m.usd) >= 1 ? m.ars / m.usd : null
-        fx = implicito && nativoUsable(implicito, 1, m.fx) ? implicito : (m.fx || fx)
+        fx = implicito > 0 ? implicito : (m.fx || fx)
       }
       break
     }
@@ -255,10 +292,10 @@ export function aportadoEnPesosAl(args = {}) {
  *          pct en fracción (0,42 = +42 %), null si no hay denominador.
  */
 export function resultadoTotal({
-  monthly, brokers, tcMensual, tcHoy, valorHoyUsd = 0, moneda = 'USD',
+  monthly, brokers, dolarMes, tcHoy, valorHoyUsd = 0, moneda = 'USD',
   extraUsd = 0, capitalMaximoUsd = null,
 } = {}) {
-  const ap = capitalAportado({ monthly, brokers, tcMensual, tcHoy })
+  const ap = capitalAportado({ monthly, brokers, dolarMes, tcHoy })
   const aportadoUsd = ap.usd + extraUsd
   if (moneda === 'ARS' && tcHoy > 0) {
     const aportado = ap.ars + extraUsd * tcHoy
@@ -274,25 +311,33 @@ export function resultadoTotal({
 }
 
 /**
- * diferenciaDeCambio — en pesos, la parte de la "Ganancia total" que no está ni
- * en lo realizado ni en lo no realizado: lo que cambió en pesos la plata que
- * entró o está en DÓLARES, entre que entró y hoy.
+ * restoEnPesos — en pesos, la parte de la "Ganancia total" que no explican ni
+ * "P&L realizado" ni "P&L no realizado", medida EN PESOS:
  *
- * En dólares no existe (es la misma plata medida en otra moneda). En pesos
- * aparece desde que lo aportado se cuenta a los pesos que se pusieron: quien
- * depositó US$ 1.000 con el dólar a 1.200 puso $1,2 M; si hoy esos dólares valen
- * US$ 1.100 con el dólar a 1.500, ganó $450.000 en pesos — $150.000 por el papel
- * (el "no realizado", al dólar de hoy, como en Cartera) y $300.000 por el dólar.
- * Sin esta línea el desglose del Dashboard no sumaba la ganancia del título.
+ *   resto = ganancia total − realizado − no realizado        (todo en pesos)
  *
- * Identidad (en dólares, la de siempre): ganancia = realizado + no realizado − descuadre.
- * En pesos le falta este término:        ganancia = realizado + no realizado − descuadre × dólar de hoy + esto.
+ * El desglose del Dashboard ("¿De dónde sale la ganancia?") la muestra como su
+ * propia tarjeta para sumar el título. Qué suele haber adentro:
+ *   · el dólar: la plata que está o entró en dólares vale más (o menos) pesos
+ *     que cuando entró — el no realizado de lo que está en dólares va al dólar
+ *     de hoy, lo aportado al de su fecha;
+ *   · las ventas: "P&L realizado" cuenta cada venta en dólares de su fecha, y
+ *     en pesos de hoy esa misma ganancia es otra;
+ *   · dividendos o intereses no cargados, o un costo mal cargado (lo mismo que
+ *     la tarjeta en dólares).
+ * No se separa el dólar del resto porque para eso hace falta saber a qué dólar
+ * entró cada dólar que hay en caja, y ese dato no está.
  *
- * @param descuadreUsd  el `accountingGap` del Dashboard (en dólares; >0 = la
- *                      cartera vale menos de lo que explican flujos y P&L)
- * @returns {number} pesos (+ = el dólar sumó, − = restó). 0 fuera de pesos.
+ * ⚠️ NO es el descuadre en dólares × el dólar de hoy. Ese descuadre puede ser
+ * sólo el dólar distinto del día del depósito y del de la compra, que en pesos
+ * no existe. Medido en la revisión: un depósito de $10 M con el dólar a 1.000
+ * y una compra con el dólar a 1.400 mostraban "+$4,4 M de diferencia de cambio"
+ * y "$4,4 M sin explicar" a la vez, en una cuenta que nunca tuvo dólares. En
+ * pesos esa cuenta cierra sola: resto = 0.
+ *
+ * @returns {number} pesos (+ = suma a la ganancia). 0 fuera de pesos.
  */
-export function diferenciaDeCambio({ moneda, ganancia, realizado, noRealizado, descuadreUsd = 0, tcHoy }) {
-  if (moneda !== 'ARS' || !(tcHoy > 0)) return 0
-  return ganancia - realizado - noRealizado + descuadreUsd * tcHoy
+export function restoEnPesos({ resultado, realizado = 0, noRealizado = 0 }) {
+  if (resultado?.moneda !== 'ARS') return 0
+  return resultado.ganancia - realizado - noRealizado
 }

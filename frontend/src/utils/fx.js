@@ -3,7 +3,7 @@
  * ─────────────────────
  * El dólar ELEGIDO al cierre de (year, month) — ver utils/tcHistorico.js.
  *
- * Source: `tcMensual` de `useFxHistory` (`tcMensualDeSerie` sobre /api/fx-rates),
+ * Source: `dolarMes` de `useDolarMensual` (`dolarMensualDe` sobre /api/fx-rates),
  * a `{YYYY-MM: rate}` map con la última cotización de cada mes (MEP; blue antes
  * de 2018). Hasta el 2026-10-15 recibía `bench` y leía `bench.dolar_blue`: lo
  * viejo iba al BLUE mientras lo de hoy (`liveTc`) iba al MEP.
@@ -18,19 +18,19 @@
  * 4. Earliest known month if no prior data exists.
  * 5. Final fallback to `liveTc` (the bench fetch may have failed entirely).
  *
- * @param {Object|null} tcMensual  `{YYYY-MM: rate}`, or null/undefined if unavailable
+ * @param {Object|null} dolarMes  `{YYYY-MM: rate}`, or null/undefined if unavailable
  * @param {number}      year   target year
  * @param {number}      month  1-12
  * @param {number}      liveTc current live tcValuacion (used for current month + final fallback)
  * @param {Date}        now    optional override for "today" — useful in tests
  * @returns {number}
  */
-export function lookupHistoricalDolar(tcMensual, year, month, liveTc, now = new Date()) {
+export function lookupHistoricalDolar(dolarMes, year, month, liveTc, now = new Date()) {
   const todayY = now.getFullYear()
   const todayM = now.getMonth() + 1
   if (year === todayY && month === todayM) return liveTc
 
-  const map = tcMensual
+  const map = dolarMes
   if (!map || typeof map !== 'object') return liveTc
 
   const key = `${year}-${String(month).padStart(2, '0')}`

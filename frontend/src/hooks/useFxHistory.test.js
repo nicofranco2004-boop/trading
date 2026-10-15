@@ -6,7 +6,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fetchFxHistory, _resetFxCacheForTesting } from './useFxHistory'
-import { indexarSerie, tcDeFechaDetalle, tcMensualDeSerie } from '../utils/tcHistorico'
+import { indexarSerie, tcDeFechaDetalle } from '../utils/tcHistorico'
+import { dolarMensualDe } from '../utils/capitalAportado'
 
 const lookupRate = (rows, d) => tcDeFechaDetalle(indexarSerie(rows), d).tc
 import { api } from '../utils/api'
@@ -87,8 +88,8 @@ describe('dólar de una fecha — el elegido (MEP) cuando la serie lo tiene', ()
   })
 
   it('la tabla mensual: el último MEP de cada mes; un día sin MEP no lo pisa', () => {
-    expect(tcMensualDeSerie(SERIE)).toEqual({ '2018-10': 37.2, '2025-10': 1520, '2025-11': 1490 })
-    expect(tcMensualDeSerie(SERIE.slice(0, 5))['2025-10']).toBe(1510)
+    expect(dolarMensualDe(SERIE)).toEqual({ '2018-10': 37.2, '2025-10': 1520, '2025-11': 1490 })
+    expect(dolarMensualDe(SERIE.slice(0, 5))['2025-10']).toBe(1510)
   })
 })
 

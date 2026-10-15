@@ -19,17 +19,16 @@ import { describe, it, expect } from 'vitest'
 import datos from './fixtures/compraYMantieneArs.json'
 import { computeBrokerValue, coberturaDePrecios, COBERTURA_MINIMA, noRealizadoEnVista } from './valuation'
 import { applyMtmToMonthly, atribucionDelCrecimiento, netCapitalContributed } from './insightsModel'
-import { capitalAportado, resultadoTotal, aportadoEnPesosAl, diferenciaDeCambio } from './capitalAportado'
+import { capitalAportado, resultadoTotal, aportadoEnPesosAl, restoEnPesos, dolarMensualDe } from './capitalAportado'
 import { convertSeriesToArs } from './evolution'
 import { buildDashboardInsight } from './insights'
 import { selectDiagnostics } from './diagnostics'
 import { pickFinancialRate } from '../contexts/CurrencyContext'
-import { tcMensualDeSerie } from './tcHistorico'
 
 const { monthly, positions, brokers, dolar, prices } = datos
-// El dólar elegido al cierre de cada mes, de la MISMA serie que recibe la app
-// (`/api/fx-rates`), armado con la misma función que `useFxHistory`.
-const TC_MENSUAL = tcMensualDeSerie(datos.fx_rates)
+// El dólar de cada mes, de la MISMA serie que recibe la app (`/api/fx-rates`,
+// guardada en el fixture), armado con la misma función que `useDolarMensual`.
+const DOLAR_MES = dolarMensualDe(datos.fx_rates)
 const DEPOSITO = 10_000_000
 
 // Lo mismo que Dashboard.jsx, en el mismo orden (sin plazos fijos: la cuenta no tiene).
@@ -39,7 +38,7 @@ function comoElDashboard(moneda, precios = prices) {
   const brokerTotals = brokers.map(b => computeBrokerValue(positions, precios, b, tcValuacion, tcValuacion, tcCripto, 'purchase'))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0)
   const resultado = resultadoTotal({
-    monthly, brokers, tcMensual: TC_MENSUAL, tcHoy: tcValuacion,
+    monthly, brokers, dolarMes: DOLAR_MES, tcHoy: tcValuacion,
     valorHoyUsd: totalValue, moneda, extraUsd: 0, capitalMaximoUsd: null,
   })
   const costoHoyUsd = brokers.reduce((s, b) => s + computeBrokerValue(positions, precios, b, tcValuacion, tcValuacion, tcCripto, 'today').invested, 0)
@@ -117,7 +116,7 @@ describe('Capital aportado en pesos — cuenta que compra y mantiene, cargada po
       [...monthly.filter(m => m.broker === 'global')].sort((a, b) => (a.year - b.year) || (a.month - b.month)),
       [], undefined, totalPortfolio)
     const resultado = resultadoTotal({
-      monthly, brokers, tcMensual: TC_MENSUAL, tcHoy: tc, valorHoyUsd: totalPortfolio, moneda: 'ARS',
+      monthly, brokers, dolarMes: DOLAR_MES, tcHoy: tc, valorHoyUsd: totalPortfolio, moneda: 'ARS',
     })
     const d = atribucionDelCrecimiento({
       globalMonthly, valorHoy: resultado.valor, aportado: resultado.aportado,
@@ -137,9 +136,9 @@ describe('Capital aportado en pesos — cuenta que compra y mantiene, cargada po
 
   it('la línea punteada del gráfico en pesos se queda en $10 M (no sube con el dólar)', () => {
     const nd = netCapitalContributed(monthly.filter(m => m.broker === 'global'))
-    const conv = aportadoEnPesosAl({ monthly, brokers, tcMensual: TC_MENSUAL, tcHoy: ars.tcValuacion })
+    const conv = aportadoEnPesosAl({ monthly, brokers, dolarMes: DOLAR_MES, tcHoy: ars.tcValuacion })
     // Fotos de fin de mes, cada una con su dólar (el del mes) y el mismo aportado en dólares.
-    const serie = Object.entries(TC_MENSUAL).filter(([k]) => k >= '2025-10')
+    const serie = Object.entries(DOLAR_MES).filter(([k]) => k >= '2025-10')
       .map(([k, tc]) => ({ date: `${k}-28`, valueUsd: 9000, netDeposited: nd, fxToUsdBlue: tc }))
     const vieja = convertSeriesToArs(serie, null)
     const nueva = convertSeriesToArs(serie, null, conv)
@@ -157,8 +156,7 @@ const fila = (broker, year, month, extra = {}) => ({
   manual_deposits: 0, manual_deposits_native: 0, manual_withdrawals: 0, manual_withdrawals_native: 0,
   ...extra,
 })
-// El dólar elegido (MEP) al cierre de cada mes — `tcMensual` de useFxHistory.
-const TC = { '2025-01': 1200, '2025-02': 1250, '2025-03': 1300, '2025-06': 1500 }
+const BLUE = { '2025-01': 1200, '2025-02': 1250, '2025-03': 1300, '2025-06': 1500 }
 const PESOS = [{ name: 'Cocos', currency: 'ARS' }]
 const DOLARES = [{ name: 'IBKR', currency: 'USD' }]
 
@@ -168,35 +166,70 @@ describe('capitalAportado — la regla', () => {
       fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
       fila('Cocos', 2025, 2, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1_180_000 }),
     ]
-    expect(capitalAportado({ monthly, brokers: PESOS, tcMensual: TC, tcHoy: 1500 }).ars).toBe(1_180_000)
+    expect(capitalAportado({ monthly, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500 }).ars).toBe(1_180_000)
   })
 
-  it('un depósito en dólares va al dólar elegido de SU mes, no al de hoy', () => {
+  it('un depósito en dólares va al blue de SU mes, no al de hoy', () => {
     const monthly = [
       fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
       fila('IBKR', 2025, 2, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1000 }),
     ]
-    expect(capitalAportado({ monthly, brokers: DOLARES, tcMensual: TC, tcHoy: 1500 }).ars).toBe(1_250_000)
+    expect(capitalAportado({ monthly, brokers: DOLARES, dolarMes: BLUE, tcHoy: 1500 }).ars).toBe(1_250_000)
   })
 
-  it('una fila vieja sin los pesos guardados (o con un cociente imposible) cae al dólar del mes', () => {
+  it('una fila vieja sin los pesos guardados (o con pesos que cubren mucho menos que sus dólares) cae al dólar del mes', () => {
     const sinNativo = [
       fila('global', 2025, 3, { deposits: 1000, manual_deposits: 1000 }),
       fila('Cocos', 2025, 3, { deposits: 1000, manual_deposits: 1000 }),
     ]
-    expect(capitalAportado({ monthly: sinNativo, brokers: PESOS, tcMensual: TC, tcHoy: 1500 }).ars).toBe(1_300_000)
+    expect(capitalAportado({ monthly: sinNativo, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500 }).ars).toBe(1_300_000)
     // Mitad de las cargas con pesos guardados y mitad sin: el cociente da 650, la mitad de un dólar posible.
     const mezclada = [
       fila('global', 2025, 3, { deposits: 1000, manual_deposits: 1000 }),
       fila('Cocos', 2025, 3, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 650_000 }),
     ]
-    expect(capitalAportado({ monthly: mezclada, brokers: PESOS, tcMensual: TC, tcHoy: 1500 }).ars).toBe(1_300_000)
+    expect(capitalAportado({ monthly: mezclada, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500 }).ars).toBe(1_300_000)
   })
 
-  it('el saldo con que arrancó la historia va al dólar del mes anterior; sin serie, al dólar de hoy', () => {
+  it('una carga vieja dolarizada con el dólar de HOY conserva sus pesos (el cociente alto no la descarta)', () => {
+    // $1.300.000 de marzo 2025 guardados como US$ 866 (÷ 1.500, el dólar del día en que se cargó).
+    const monthly = [
+      fila('global', 2025, 3, { deposits: 866.67, manual_deposits: 866.67 }),
+      fila('Cocos', 2025, 3, { deposits: 866.67, manual_deposits: 866.67, manual_deposits_native: 1_300_000 }),
+    ]
+    expect(capitalAportado({ monthly, brokers: PESOS, dolarMes: { '2025-03': 1000 }, tcHoy: 1500 }).ars).toBe(1_300_000)
+  })
+
+  it('sin la serie del dólar, los pesos cargados a mano se usan igual (no se comparan con el dólar de hoy)', () => {
+    const monthly = [
+      fila('global', 2019, 5, { deposits: 1000, manual_deposits: 1000 }),
+      fila('Cocos', 2019, 5, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 45_000 }),
+    ]
+    expect(capitalAportado({ monthly, brokers: PESOS, dolarMes: null, tcHoy: 1500 }).ars).toBe(45_000)
+  })
+
+  it('lo importado: los pesos que manda el servidor, aunque sus dólares estén sellados con otro dólar', () => {
+    const monthly = [
+      fila('global', 2023, 2, { deposits: 8237.36 }),
+      fila('IOL', 2023, 2, { deposits: 8237.36, pesos_importados_dep: 12_644_347, pesos_importados_dep_usd: 8237.36 }),
+    ]
+    expect(capitalAportado({ monthly, brokers: [{ name: 'IOL', currency: 'ARS' }], dolarMes: { '2023-02': 375 }, tcHoy: 1535 }).ars).toBe(12_644_347)
+  })
+
+  it('una conversión importada suma cero pesos (las dos patas con los pesos de la conversión)', () => {
+    const monthly = [
+      fila('global', 2024, 2, { deposits: 1000, withdrawals: 1000 }),
+      fila('IOL', 2024, 2, { withdrawals: 1000, pesos_importados_ret: 1_400_000, pesos_importados_ret_usd: 1000 }),
+      fila('IOL · USD', 2024, 2, { deposits: 1000, pesos_importados_dep: 1_400_000, pesos_importados_dep_usd: 1000 }),
+    ]
+    // Con la pata en dólares al blue del mes (1.250) habría aparecido −$150.000 de "aporte".
+    expect(capitalAportado({ monthly, brokers: [{ name: 'IOL', currency: 'ARS' }], dolarMes: { '2024-02': 1250 }, tcHoy: 1500 }).ars).toBe(0)
+  })
+
+  it('el saldo con que arrancó la historia va al blue del mes anterior; sin serie, al dólar de hoy', () => {
     const monthly = [fila('global', 2025, 2, { capital_inicio: 500 })]
-    expect(capitalAportado({ monthly, brokers: [], tcMensual: TC, tcHoy: 1500 }).ars).toBe(600_000)
-    expect(capitalAportado({ monthly, brokers: [], tcMensual: null, tcHoy: 1500 }).ars).toBe(750_000)
+    expect(capitalAportado({ monthly, brokers: [], dolarMes: BLUE, tcHoy: 1500 }).ars).toBe(600_000)
+    expect(capitalAportado({ monthly, brokers: [], dolarMes: null, tcHoy: 1500 }).ars).toBe(750_000)
   })
 
   it('los retiros en pesos restan sus pesos, y el máximo aportado es el denominador del %', () => {
@@ -206,12 +239,12 @@ describe('capitalAportado — la regla', () => {
       fila('global', 2025, 6, { withdrawals: 800, manual_withdrawals: 800 }),
       fila('Cocos', 2025, 6, { withdrawals: 800, manual_withdrawals: 800, manual_withdrawals_native: 1_200_000 }),
     ]
-    const r = capitalAportado({ monthly, brokers: PESOS, tcMensual: TC, tcHoy: 1500 })
+    const r = capitalAportado({ monthly, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500 })
     expect(r.usd).toBe(200)
     expect(r.ars).toBe(0)
     expect(r.arsMaximo).toBe(1_200_000)
     // Vale hoy $300.000: ganó $300.000 sobre lo máximo que llegó a tener puesto.
-    const res = resultadoTotal({ monthly, brokers: PESOS, tcMensual: TC, tcHoy: 1500, valorHoyUsd: 200, moneda: 'ARS' })
+    const res = resultadoTotal({ monthly, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500, valorHoyUsd: 200, moneda: 'ARS' })
     expect(res.ganancia).toBe(300_000)
     expect(res.pct).toBeCloseTo(0.25, 10)
   })
@@ -221,7 +254,7 @@ describe('capitalAportado — la regla', () => {
       fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
       fila('Cocos', 2025, 2, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1_250_000 }),
     ]
-    const res = resultadoTotal({ monthly, brokers: PESOS, tcMensual: TC, tcHoy: 1500, valorHoyUsd: 1200, moneda: 'ARS', extraUsd: 100 })
+    const res = resultadoTotal({ monthly, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500, valorHoyUsd: 1200, moneda: 'ARS', extraUsd: 100 })
     expect(res.aportado).toBe(1_250_000 + 150_000)
     expect(res.valor).toBe(1_800_000)
   })
@@ -233,7 +266,7 @@ describe('capitalAportado — la regla', () => {
       fila('global', 2025, 3, { deposits: 1000, manual_deposits: 1000 }),
       fila('Cocos', 2025, 3, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1_250_000 }),
     ]
-    const conv = aportadoEnPesosAl({ monthly, brokers: PESOS, tcMensual: TC, tcHoy: 1500 })
+    const conv = aportadoEnPesosAl({ monthly, brokers: PESOS, dolarMes: BLUE, tcHoy: 1500 })
     expect(conv(1000, '2025-02-15')).toBe(1_200_000)            // sin aportes nuevos: lo mismo
     expect(conv(1500, '2025-03-10')).toBe(1_200_000 + 625_000)  // la mitad del aporte de marzo
     expect(conv(2000, '2025-03-31')).toBe(2_450_000)            // al cierre, el acumulado exacto
@@ -241,30 +274,67 @@ describe('capitalAportado — la regla', () => {
   })
 })
 
-describe('diferenciaDeCambio — el desglose en pesos de quien tiene dólares', () => {
-  it('US$ 1.000 depositados con el dólar a 1.200 que hoy valen US$ 1.100 con el dólar a 1.500', () => {
+describe('restoEnPesos — lo que el desglose en pesos no explica con realizado + no realizado', () => {
+  it('quien sólo puso pesos y compró con otro dólar: en pesos cierra solo (resto 0), aunque en dólares haya descuadre', () => {
+    // Caso de la revisión: $10 M depositados con el dólar a 1.000 (US$ 10.000) y la
+    // compra hecha después con el dólar a 1.400 (costo US$ 7.143 en modo 'purchase').
+    const monthly = [
+      fila('global', 2025, 1, { deposits: 10000, manual_deposits: 10000 }),
+      fila('Cocos', 2025, 1, { deposits: 10000, manual_deposits: 10000, manual_deposits_native: 10_000_000 }),
+    ]
+    const posiciones = [{ id: 1, broker: 'Cocos', asset: 'GGAL', quantity: 1000, invested: 10_000_000,
+      currency: 'ARS', tc_compra: 1400, is_cash: 0, entry_date: '2025-03-10' }]
+    const precios = { 'GGAL.BA': 12_000 }
+    const tc = 1500
+    const valorUsd = computeBrokerValue(posiciones, precios, PESOS[0], tc, tc, null, 'purchase').value
+    const res = resultadoTotal({ monthly, brokers: PESOS, dolarMes: { '2025-01': 1000 }, tcHoy: tc, valorHoyUsd: valorUsd, moneda: 'ARS' })
+    expect(res.aportado).toBe(10_000_000)
+    expect(res.ganancia).toBeCloseTo(2_000_000, 4)
+    const nr = noRealizadoEnVista({ positions: posiciones, prices: precios, brokers: PESOS, tcValuacion: tc, costBasis: 'purchase', moneda: 'ARS' })
+    expect(nr.monto).toBeCloseTo(2_000_000, 4)
+    expect(Math.abs(restoEnPesos({ resultado: res, realizado: 0, noRealizado: nr.monto }))).toBeLessThan(0.01)
+    // En dólares el descuadre existe (aportado US$ 10.000 vs costo US$ 7.143) y su
+    // tarjeta se sigue mostrando ahí; en pesos ya no se suma × el dólar de hoy.
+    const costoUsd = computeBrokerValue(posiciones, precios, PESOS[0], tc, tc, null, 'purchase').invested
+    expect(10000 - costoUsd).toBeGreaterThan(2800)
+  })
+
+  it('quien puso dólares: lo que subió el dólar queda en el resto y el desglose suma el título', () => {
+    // US$ 1.000 depositados con el dólar a 1.200 que hoy valen US$ 1.100 con el dólar a 1.500.
     const monthly = [
       fila('global', 2025, 2, { deposits: 1000, manual_deposits: 1000 }),
       fila('IBKR', 2025, 2, { deposits: 1000, manual_deposits: 1000, manual_deposits_native: 1000 }),
     ]
-    const tcMes = { '2025-02': 1200 }
-    const res = resultadoTotal({ monthly, brokers: DOLARES, tcMensual: tcMes, tcHoy: 1500, valorHoyUsd: 1100, moneda: 'ARS' })
+    const res = resultadoTotal({ monthly, brokers: DOLARES, dolarMes: { '2025-02': 1200 }, tcHoy: 1500, valorHoyUsd: 1100, moneda: 'ARS' })
     expect(res.aportado).toBe(1_200_000)
     expect(res.ganancia).toBe(450_000)
-    // El no realizado del Dashboard en pesos: (valor − costo) al dólar de hoy.
-    const noRealizado = (1100 - 1000) * 1500
-    const cambio = diferenciaDeCambio({ moneda: 'ARS', ganancia: res.ganancia, realizado: 0, noRealizado, descuadreUsd: 0, tcHoy: 1500 })
-    expect(cambio).toBe(300_000)
-    expect(noRealizado + cambio).toBe(res.ganancia)   // el desglose suma el título
-    // En dólares no existe.
-    expect(diferenciaDeCambio({ moneda: 'USD', ganancia: 100, realizado: 0, noRealizado: 100, tcHoy: 1500 })).toBe(0)
+    const noRealizado = (1100 - 1000) * 1500   // el no realizado en pesos: al dólar de hoy
+    const resto = restoEnPesos({ resultado: res, realizado: 0, noRealizado })
+    expect(resto).toBe(300_000)
+    expect(noRealizado + resto).toBe(res.ganancia)
   })
 
-  it('la cuenta del caso (todo en pesos) no tiene diferencia de cambio', () => {
+  it('en dólares no hay resto (la tarjeta en dólares es la de siempre)', () => {
+    expect(restoEnPesos({ resultado: { moneda: 'USD', ganancia: 100 }, realizado: 0, noRealizado: 50 })).toBe(0)
+  })
+
+  it('la cuenta del caso (todo en pesos) no tiene resto', () => {
     const tc = pickFinancialRate(dolar, 'mep')
     const r = comoElDashboard('ARS')
     const noRealizado = (r.totalValue - r.costoHoyUsd) * tc
-    expect(Math.abs(diferenciaDeCambio({ moneda: 'ARS', ganancia: r.resultado.ganancia, realizado: 0, noRealizado, tcHoy: tc }))).toBeLessThan(1)
+    expect(Math.abs(restoEnPesos({ resultado: r.resultado, realizado: 0, noRealizado }))).toBeLessThan(1)
+  })
+})
+
+describe('dolarMensualDe — el dólar del cierre de cada mes, de la serie de la app', () => {
+  it('el último MEP del mes; sin MEP en el mes, el último blue', () => {
+    const filas = [
+      { date: '2018-01-30', blue: 19.5 }, { date: '2018-01-31', blue: 19.7 },
+      { date: '2025-10-30', blue: 1440, mep: 1480 }, { date: '2025-10-31', blue: 1450 },   // el cron no escribió el MEP del 31
+      { date: '2025-11-28', blue: 1425, mep: 1460 },
+    ]
+    expect(dolarMensualDe(filas)).toEqual({ '2018-01': 19.7, '2025-10': 1480, '2025-11': 1460 })
+    expect(dolarMensualDe(null)).toEqual({})
   })
 })
 

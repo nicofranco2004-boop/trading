@@ -15,7 +15,8 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { api } from '../utils/api'
-import { indexarSerie, tcDeFechaDetalle, tcMensualDeSerie } from '../utils/tcHistorico'
+import { indexarSerie, tcDeFechaDetalle } from '../utils/tcHistorico'
+import { dolarMensualDe } from '../utils/capitalAportado'
 
 // Los helpers puros (indexar la serie, buscar el dólar de una fecha) viven en
 // utils/tcHistorico.js, testeables sin React.
@@ -82,8 +83,8 @@ export function _resetFxCacheForTesting() {
 }
 
 /**
- * Hook que devuelve el dólar elegido de cada fecha (MEP; blue antes de 2018) +
- * su tabla mensual.
+ * Hook que devuelve el dólar elegido de cada fecha (MEP; blue antes de 2018).
+ * La tabla por mes (el cierre de cada mes) la da `useDolarMensual`, abajo.
  *
  * @param {number} fallbackTcValuacion — el dólar de hoy (último recurso)
  * @returns {{
@@ -122,8 +123,6 @@ export function useFxHistory(fallbackTcValuacion = 1415) {
   // render: con ~15 años de serie y cientos de ops, el scan lineal era
   // O(ops × filas) por render. Se construye una sola vez por cambio de `data`.
   const fxIndex = useMemo(() => indexarSerie(sortedRows), [sortedRows])
-  // El dólar elegido al cierre de cada mes, para los cálculos mensuales.
-  const tcMensual = useMemo(() => tcMensualDeSerie(sortedRows), [sortedRows])
 
   // EL DÓLAR ELEGIDO DE ESA FECHA (ver utils/tcHistorico.js): el MEP del día, o
   // el blue antes de que existiera el MEP en la serie. Hasta el 2026-10-15 esto
@@ -162,9 +161,38 @@ export function useFxHistory(fallbackTcValuacion = 1415) {
     getRateOrFallback,
     getMepOrFallback,
     getMepDetail,
-    tcMensual,
     // Clave estable para memoizar cálculos que dependen de la serie: cambia
     // cuando la serie termina de cargar (o se recarga), no en cada render.
     fxKey: fxIndex.dates.length,
   }
+}
+
+/**
+ * useDolarMensual — el dólar del cierre de cada mes ({'AAAA-MM': dólar}, ver
+ * `dolarMensualDe`) de la misma serie de /api/fx-rates (cacheada por sesión),
+ * para llevar a pesos lo aportado en dólares (utils/capitalAportado.js) y todo
+ * cálculo que trabaja por mes (Reportes, el resumen mensual, Análisis). Es el
+ * mismo dólar que `getRateForDate`, al cierre de cada mes.
+ *
+ * `listo` = la serie ya respondió (o falló: entonces el mapa viene vacío y la
+ * cuenta cae al dólar de hoy). Las pantallas en pesos esperan a `listo` antes de
+ * mostrar "Capital aportado" como número firme: sin esto, durante la carga se
+ * veía el número calculado con el dólar de hoy y la animación anunciaba una
+ * diferencia que no existía.
+ */
+export function useDolarMensual() {
+  const [filas, setFilas] = useState(_fxCacheData)
+  useEffect(() => {
+    let cancelled = false
+    if (_fxCacheData) {
+      setFilas(_fxCacheData)
+      return () => { cancelled = true }
+    }
+    fetchFxHistory().then(rows => {
+      if (!cancelled) setFilas(rows)
+    })
+    return () => { cancelled = true }
+  }, [])
+  const dolarMes = useMemo(() => dolarMensualDe(filas), [filas])
+  return { dolarMes, listo: filas != null }
 }

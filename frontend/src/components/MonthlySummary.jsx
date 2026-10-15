@@ -11,7 +11,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { lookupHistoricalDolar } from '../utils/fx'
-import { useFxHistory } from '../hooks/useFxHistory'
+import { useDolarMensual } from '../hooks/useFxHistory'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -76,7 +76,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const saving = enVuelo.activo()
   const [tcValuacion, setTcValuacion] = useState(1415)
   // El dólar elegido (MEP) al cierre de cada mes — ver utils/tcHistorico.js.
-  const { tcMensual } = useFxHistory(tcValuacion)
+  const { dolarMes } = useDolarMensual()
   // Por default mostramos TODO el historial. Razón: tras un import grande,
   // la ventana de "últimos 6" puede caer entera en un período sin actividad
   // (la historia importada queda en meses anteriores). El usuario puede
@@ -178,12 +178,12 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
   const tabIsARS = tab !== 'global' && brokers.find(b => b.name === tab)?.currency === 'ARS'
 
   // Phase 5 — for ARS tabs, convert stored USD-eq → display ARS using el dólar
-  // elegido al cierre de (year, month) (`tcMensual`; hasta el 2026-10-15, el
+  // elegido al cierre de (year, month) (`dolarMes`; hasta el 2026-10-15, el
   // blue). Current month uses live tcValuacion. For USD/global tabs: passthrough.
   function valueAt(v, year, month) {
     if (v == null) return null
     if (!tabIsARS) return v
-    const rate = lookupHistoricalDolar(tcMensual, year, month, tcValuacion)
+    const rate = lookupHistoricalDolar(dolarMes, year, month, tcValuacion)
     return v * rate
   }
 

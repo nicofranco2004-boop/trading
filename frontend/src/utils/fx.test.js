@@ -3,7 +3,7 @@ import { lookupHistoricalDolar } from './fx.js'
 
 const LIVE = 1500
 
-// El dólar elegido al cierre de cada mes (`tcMensual` de useFxHistory).
+// El dólar elegido al cierre de cada mes (`dolarMes` de useDolarMensual).
 const BENCH = {
   '2024-01': 1000,
   '2024-02': 1050,

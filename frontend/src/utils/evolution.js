@@ -783,13 +783,13 @@ export function rendimientoDelRango(snapshots, { dias = null, liveValue = null, 
  *
  * @param {Array}  snapshots     [{ date, total_value, total_invested, net_deposited }, ...]
  * @param {Array}  globalMonthly monthly_entries for broker='global', SORTED ASC by year/month
- * @param {Object} tcMensual     `tcMensual` de useFxHistory: {YYYY-MM: dólar elegido} (or null)
+ * @param {Object} dolarMes      `dolarMes` de useDolarMensual: {YYYY-MM: dólar elegido} (or null)
  * @param {number} tcValuacion   el dólar de hoy (used as fallback in lookupHistoricalDolar)
  *
  * @returns {{ seriesUsd: Array, seriesArs: Array } | null}
  *   null if there are <2 snapshots (caller should fall back to monthly logic).
  */
-export function buildEvolutionFromSnapshots(snapshots, globalMonthly, tcMensual, tcValuacion) {
+export function buildEvolutionFromSnapshots(snapshots, globalMonthly, dolarMes, tcValuacion) {
   if (!snapshots || snapshots.length < 2) return null
   // ⚠️ Sólo puntos en BASE DE MERCADO. `snapshots` mezcla mediciones del cron con
   // fotos que el import FABRICA copiando la cadena contable
@@ -917,7 +917,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, tcMensual,
       // Initialize ARS baselines too (snapshot por snapshot tiene su propio fx)
       const y0 = +s.date.slice(0, 4)
       const mo0 = +s.date.slice(5, 7)
-      const fx0 = lookupHistoricalDolar(tcMensual, y0, mo0, tcValuacion)
+      const fx0 = lookupHistoricalDolar(dolarMes, y0, mo0, tcValuacion)
       prevBaselineArs = netDep * fx0
       prevValueArs = value * fx0
     } else {
@@ -962,7 +962,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, tcMensual,
     // técnicamente el % se mantiene; sin embargo lo replicamos por simetría.
     const y = +s.date.slice(0, 4)
     const mo = +s.date.slice(5, 7)
-    const fx = lookupHistoricalDolar(tcMensual, y, mo, tcValuacion)
+    const fx = lookupHistoricalDolar(dolarMes, y, mo, tcValuacion)
     const valueArs    = value * fx
     const baselineArs = netDep * fx
 

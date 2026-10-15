@@ -12,7 +12,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { useCurrency, fmtConvertedRaw } from '../contexts/CurrencyContext'
-import { useFxHistory } from './useFxHistory'
+import { useFxHistory, useDolarMensual } from './useFxHistory'
 import { api } from '../utils/api'
 import { crearPesosDelPeriodo } from '../utils/periodoEnPesos'
 
@@ -21,16 +21,17 @@ export const PeriodoEnVista = createContext(null)
 
 function usePesos({ monthly = null, brokers = null, broker = 'global' } = {}) {
   const { currency, tcValuacion } = useCurrency()
-  const { getRateForDate, tcMensual, fxKey } = useFxHistory(tcValuacion)
+  const { getRateForDate, fxKey } = useFxHistory(tcValuacion)
+  const { dolarMes } = useDolarMensual()
   return useMemo(() => {
     const p = crearPesosDelPeriodo({
-      moneda: currency, tcHoy: tcValuacion, tcEnFecha: getRateForDate, tcMensual,
+      moneda: currency, tcHoy: tcValuacion, tcEnFecha: getRateForDate, dolarMes,
       monthly, brokers, broker,
     })
     // Formatea un monto que YA está en `p.moneda` (no reconvierte).
     const fmt = (v, opts) => fmtConvertedRaw(v, p.moneda, opts)
     return { ...p, fmt }
-  }, [currency, tcValuacion, fxKey, tcMensual, monthly, brokers, broker])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currency, tcValuacion, fxKey, dolarMes, monthly, brokers, broker])  // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 export function PesosDelPeriodoProvider({ broker = 'global', children }) {

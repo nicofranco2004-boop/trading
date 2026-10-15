@@ -65,24 +65,6 @@ export function tcDeFechaDetalle(idx, dateIso) {
   return NADA
 }
 
-/**
- * tcMensualDeSerie — `{ 'YYYY-MM': dólar elegido al cierre de ese mes }`.
- *
- * Mismo formato que tenía `bench.dolar_blue` (la última cotización de cada mes),
- * para los cálculos que trabajan por mes (`monthly_entries` no tiene día): el
- * aportado en pesos, el resumen mensual, la evolución del gráfico.
- */
-export function tcMensualDeSerie(rows) {
-  const out = {}
-  const ultimoMep = {}
-  for (const r of rows || []) {
-    if (!r?.date) continue
-    const k = r.date.slice(0, 7)
-    const m = Number(r.mep)
-    const b = Number(r.blue)
-    if (r.mep != null && m > 0) { ultimoMep[k] = m; out[k] = m; continue }
-    // Un día sin MEP no pisa el MEP que el mes ya tenía.
-    if (ultimoMep[k] == null && r.blue != null && b > 0) out[k] = b
-  }
-  return out
-}
+// La tabla POR MES (el cierre de cada mes, para los cálculos que trabajan sobre
+// `monthly_entries`) es `dolarMensualDe` en utils/capitalAportado.js: la misma
+// serie y la misma preferencia (MEP; blue donde no hay MEP).

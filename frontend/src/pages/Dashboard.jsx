@@ -31,7 +31,7 @@ import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import { usd, ars, fmtUsd, fmtArs, pct, pctSigned, usdCompact } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
-import { useFxHistory } from '../hooks/useFxHistory'
+import { useFxHistory, useDolarMensual } from '../hooks/useFxHistory'
 import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
@@ -50,7 +50,7 @@ import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
-import { resultadoTotal, aportadoEnPesosAl, diferenciaDeCambio } from '../utils/capitalAportado'
+import { resultadoTotal, aportadoEnPesosAl, restoEnPesos } from '../utils/capitalAportado'
 import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
@@ -236,7 +236,10 @@ function PersonalDashboard() {
   // PROPIO blue (no el actual), reflejando la realidad histórica.
   // fxToUsdBlue stampeado en el snapshot tiene prioridad sobre el
   // lookup del hook (es el más auténtico al momento del snapshot).
-  const { getRateOrFallback: getHistoricalFx, tcMensual } = useFxHistory(tcValuacion)
+  const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcValuacion)
+  // El dólar de cada mes, para llevar a pesos lo aportado en dólares (ver
+  // capitalAportado.js). De la base propia: no espera a /benchmarks.
+  const { dolarMes, listo: dolarMesListo } = useDolarMensual()
   const pf = pfUsd(usePfRollup(), tcValuacion)   // plazos fijos → USD (valor + capital)
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis) }))
@@ -332,10 +335,10 @@ function PersonalDashboard() {
   // `totalReturnUsd`/`netDeposited` siguen siendo los de dólares: con ellos se
   // comparan las fotos guardadas y va el rendimiento a la IA.
   const resultado = useMemo(() => resultadoTotal({
-    monthly, brokers, tcMensual, tcHoy: tcValuacion,
+    monthly, brokers, dolarMes, tcHoy: tcValuacion,
     valorHoyUsd: totalValue, moneda: currency, extraUsd: pf.investedUsd,
     capitalMaximoUsd: capitalMaximo,
-  }), [monthly, brokers, tcMensual, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
+  }), [monthly, brokers, dolarMes, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
 
   // ── Discrepancia contable ───────────────────────────────────────────────────
   // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
@@ -363,14 +366,13 @@ function PersonalDashboard() {
   const accountingGap = (realizedPnl + totalPnl) - totalReturnUsd
   const showAccountingGap = Math.abs(accountingGap) > 500
   const gapIsOutflow = accountingGap > 0
-  // En pesos, lo que el dólar sumó (o restó) a la plata que entró o está en
-  // dólares: sin esta tarjeta el desglose no suma la "Ganancia total" en pesos de
-  // quien tiene dólares. Ver `diferenciaDeCambio` (utils/capitalAportado.js).
-  const cambio = diferenciaDeCambio({
-    moneda: resultado.moneda, ganancia: resultado.ganancia, realizado: realizedPnlDisp,
-    noRealizado: noRealizado.monto, descuadreUsd: accountingGap, tcHoy: tcValuacion,
-  })
-  const showCambio = Math.abs(cambio) > 500 * tcValuacion
+  // En pesos el desglose se cierra EN PESOS: lo que ni el realizado ni el no
+  // realizado explican va a su propia tarjeta (`restoEnPesos`), y la tarjeta del
+  // descuadre en dólares no se muestra — ese descuadre puede ser sólo el dólar
+  // distinto del día del depósito y del de la compra, que en pesos no existe.
+  const restoArs = restoEnPesos({ resultado, realizado: realizedPnlDisp, noRealizado: noRealizado.monto })
+  const showResto = resultado.moneda === 'ARS' && Math.abs(restoArs) > 500 * tcValuacion
+  const showGapUsd = resultado.moneda !== 'ARS' && showAccountingGap
 
   const portfolioTotal = totalValue
   // Si en Movimientos se borró algo (un depósito, un dividendo, una venta), la
@@ -382,7 +384,9 @@ function PersonalDashboard() {
   })
   // Los números del Dashboard ya son los de verdad (posiciones, meses y
   // precios): recién ahí cada métrica muestra su cambio (NumeroQueCambia).
-  const metricasListas = !loading && totalListo
+  // En pesos, además, la serie del dólar: sin ella lo aportado en dólares va al
+  // dólar de hoy, y el número firme sería otro (ver useDolarMensual).
+  const metricasListas = !loading && totalListo && (currency !== 'ARS' || dolarMesListo)
 
   // Dynamic insight line — uses largest gainers/losers from open positions
   const arsBrokerNames = useMemo(() => new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name)), [brokers])
@@ -723,9 +727,9 @@ function PersonalDashboard() {
     if (currency !== 'ARS') return evoSeries
     // La línea de lo aportado, a los pesos que se pusieron (la misma regla que
     // el "Capital aportado" de arriba); el valor, al dólar de cada foto.
-    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, tcMensual, tcHoy: tcValuacion })
+    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, dolarMes, tcHoy: tcValuacion })
     return convertSeriesToArs(evoSeries, getHistoricalFx, aportadoArs)
-  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, tcMensual, tcValuacion])
+  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, dolarMes, tcValuacion])
 
   // For chart Y-axis nice domain — usa evoSeriesDisplay para que el dominio
   // refleje los valores realmente graficados (ARS o USD según toggle).
@@ -1028,7 +1032,14 @@ function PersonalDashboard() {
           <p className="font-medium text-ink-0">Resultado total</p>
           <p>Cuánto vale tu cartera HOY de más (o de menos) respecto a lo que pusiste neto — es el número del hero.</p>
           <p className="text-ink-3 font-mono text-[11px]">= valor actual − capital aportado neto</p>
-          {showAccountingGap && (
+          {showResto && (
+            <>
+              <div className="border-t border-line/60 my-1.5" />
+              <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
+              <p className="text-ink-3">En pesos, parte de la ganancia viene del dólar y de cómo se cuentan las ventas (ver "Efecto del dólar y otros").</p>
+            </>
+          )}
+          {showGapUsd && (
             <>
               <div className="border-t border-line/60 my-1.5" />
               <p className="font-medium text-ink-1">¿Por qué no es igual a realizado + no realizado?</p>
@@ -1093,26 +1104,30 @@ function PersonalDashboard() {
             </>
           }
         />
-        {showCambio && (
+        {showResto && (
           <KpiCell
-            label="Diferencia de cambio"
-            value={fmtSignedDirect(cambio)}
-            clave="dashboard:diferencia-de-cambio" num={cambio} format={fmtSignedDirect} moneda="ARS" listo={metricasListas} oculto={hidden}
-            tone={cambio >= 0 ? 'pos' : 'neg'}
-            sub={cambio >= 0 ? 'lo que subió el dólar' : 'lo que bajó el dólar'}
+            label="Efecto del dólar y otros"
+            value={fmtSignedDirect(restoArs)}
+            clave="dashboard:resto-en-pesos" num={restoArs} format={fmtSignedDirect} moneda="ARS" listo={metricasListas} oculto={hidden}
+            tone={restoArs >= 0 ? 'pos' : 'neg'}
+            sub={restoArs >= 0 ? 'suma a la ganancia en pesos' : 'resta a la ganancia en pesos'}
             info={
               <>
                 <p className="font-medium text-ink-0">Qué es</p>
-                <p>Cuánto cambió en pesos la plata que entró o está en dólares, entre que entró y hoy. Sólo aparece en pesos: en dólares es la misma plata.</p>
+                <p>La parte de tu ganancia en pesos que no explican el P&L realizado ni el no realizado. Sólo aparece mirando en pesos.</p>
                 <div className="border-t border-line/60 my-1.5" />
                 <p className="font-medium text-ink-0">Cómo se calcula</p>
                 <p className="text-ink-3 tabular text-[11px]">= ganancia total − (realizado + no realizado)</p>
-                <p className="text-ink-3">Lo aportado cuenta los pesos que pusiste (o tus dólares al dólar de ese mes); el no realizado va al dólar de hoy. La diferencia entre los dos dólares es esto.</p>
+                <div className="border-t border-line/60 my-1.5" />
+                <p className="font-medium text-ink-0">Qué suele haber adentro</p>
+                <p className="text-ink-3">La suba (o baja) del dólar sobre la plata que tenés o pusiste en dólares: lo aportado cuenta el dólar del día en que entró y el no realizado, el de hoy.</p>
+                <p className="text-ink-3">Tus ventas: el P&L realizado cuenta cada venta en dólares de su fecha, y en pesos de hoy esa ganancia es otra.</p>
+                <p className="text-ink-3">Dividendos o intereses que no cargaste, o un costo mal cargado.</p>
               </>
             }
           />
         )}
-        {showAccountingGap && (
+        {showGapUsd && (
           <KpiCell
             label={gapIsOutflow ? 'Diferencia sin explicar' : 'Dividendos e intereses'}
             value={fmt(Math.abs(accountingGap))}

@@ -19,7 +19,8 @@
 
 import { describe, it, expect } from 'vitest'
 import datos from './fixtures/compraYMantieneArs.json'
-import { indexarSerie, tcDeFechaDetalle, tcMensualDeSerie } from './tcHistorico'
+import { indexarSerie, tcDeFechaDetalle } from './tcHistorico'
+import { dolarMensualDe } from './capitalAportado'
 import { dineroHistorico } from '../hooks/useHistoricalMoney'
 import { computeMovementKpis } from '../pages/Operations.jsx'
 import { capitalAportado } from './capitalAportado'
@@ -32,7 +33,7 @@ const TC_HOY = pickFinancialRate(dolar, 'mep')
 const IDX = indexarSerie(FX)
 // Lo que hace `useFxHistory().getRateOrFallback`.
 const tcEn = (d) => tcDeFechaDetalle(IDX, d).tc || TC_HOY
-const TC_MENSUAL = tcMensualDeSerie(FX)
+const TC_MENSUAL = dolarMensualDe(FX)
 const mep = (d) => FX.find(r => r.date === d).mep
 const blue = (d) => FX.find(r => r.date === d).blue
 
@@ -100,7 +101,7 @@ describe('Movimientos — los números de arriba son la suma de las filas', () =
 
 describe('Reportes — cada período a los pesos de su momento', () => {
   const pesos = crearPesosDelPeriodo({
-    moneda: 'ARS', tcHoy: TC_HOY, tcEnFecha: tcEn, tcMensual: TC_MENSUAL,
+    moneda: 'ARS', tcHoy: TC_HOY, tcEnFecha: tcEn, dolarMes: TC_MENSUAL,
     monthly: mixta.monthly, brokers: mixta.brokers,
   })
   const mes = (y, m, metrics) => ({
@@ -132,7 +133,7 @@ describe('Reportes — cada período a los pesos de su momento', () => {
   })
 
   it('"Capital aportado" del año = el del Dashboard (la misma tabla)', () => {
-    const usd = capitalAportado({ monthly: mixta.monthly, brokers: mixta.brokers, tcMensual: TC_MENSUAL, tcHoy: TC_HOY })
+    const usd = capitalAportado({ monthly: mixta.monthly, brokers: mixta.brokers, dolarMes: TC_MENSUAL, tcHoy: TC_HOY })
     expect(pesos.aportadoHasta('2026-10-15', usd.usd)).toBeCloseTo(usd.ars, 6)
     // Y si los dólares no coinciden con los del servidor, no inventa pesos.
     expect(pesos.aportadoHasta('2026-10-15', usd.usd + 500)).toBe(null)
@@ -146,7 +147,7 @@ describe('Reportes — cada período a los pesos de su momento', () => {
   })
 
   it('en dólares, los números del servidor tal cual', () => {
-    const usd = crearPesosDelPeriodo({ moneda: 'USD', tcHoy: TC_HOY, tcEnFecha: tcEn, tcMensual: TC_MENSUAL })
+    const usd = crearPesosDelPeriodo({ moneda: 'USD', tcHoy: TC_HOY, tcEnFecha: tcEn, dolarMes: TC_MENSUAL })
     const m = { deposits: 7058.16, withdrawals: 0, start_value: 1, end_value: 2, delta_usd: 1, realized_pnl: 3 }
     expect(usd.enVista(mes(2025, 10, m))).toMatchObject({
       depositos: 7058.16, retiros: 0, inicio: 1, cierre: 2, resultado: 1, realizado: 3,

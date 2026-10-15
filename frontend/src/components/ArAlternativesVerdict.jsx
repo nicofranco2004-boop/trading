@@ -6,11 +6,16 @@
 // le pierde a esa alternativa y por cuánto. Solo se muestran las que tienen
 // data (pct != null); si ninguna aplica, el bloque no renderiza.
 //
-// Semántica del pct (viene de Insights):
-//   • Plazo fijo / Dólar → spread flow-matched: (tu patrimonio − lo que valdría
-//     hoy si la misma plata, con los mismos aportes/retiros, hubiera ido ahí).
-//   • Inflación → retorno REAL geométrico ((1+r)/(1+infl)−1), mismo cálculo que
-//     el diagnóstico beat/lose_inflation_ars (así el veredicto no lo contradice).
+// Semántica del pct (viene de Insights), LA MISMA en las tres celdas:
+//   spread flow-matched: (tu patrimonio de hoy − lo que valdría hoy si la misma
+//   plata, con los mismos aportes/retiros, hubiera ido a esa alternativa).
+//   • Plazo fijo UVA → capitaliza con el coeficiente UVA. Se compara EN PESOS
+//     (`compararEnPesos`): antes cambiaba con el selector MEP/CCL.
+//   • Dólar → la plata quieta en dólares.
+//   • Inflación → ajustada por IPC del INDEC (`veredictoInflacion`). Es el mismo
+//     número que el hallazgo beat/lose_inflation_ars y la tarjeta de expectativa.
+//     Hasta 2026-10-14 era un retorno time-weighted en pesos sobre la cadena al
+//     costo, y contradecía a la celda del UVA.
 //   pct ≥ 0 = "le ganás".
 //
 // Al verse (useAlVerse): en cada celda se pone "Le ganás"/"Le perdés", el
@@ -77,14 +82,13 @@ export default function ArAlternativesVerdict({ items }) {
       </div>
 
       <p className="text-[12px] text-ink-3 mt-4 leading-relaxed">
-        <b>Plazo fijo UVA</b> y <b>Dólar</b> comparan tu patrimonio de hoy contra lo que
-        valdría si la misma plata —con los mismos aportes y retiros— hubiera ido ahí.
-        El plazo fijo UVA se simula <b>en pesos</b> (capitaliza con el coeficiente UVA) y
-        recién después se pasa a <b>dólares</b> al tipo de cambio de cada mes, así los dos
-        lados se miden en la misma moneda y la comparación es válida.
-        <b> Inflación</b> es otra cosa: el retorno real de tu plata en pesos, ya descontado
-        el IPC. <b>Los tres porcentajes no se restan entre sí</b> — cada uno responde una
-        pregunta distinta.
+        Las tres comparan tu patrimonio de hoy contra lo que valdría si la misma
+        plata —con los mismos aportes y retiros— hubiera ido ahí. El plazo fijo UVA y la
+        inflación se simulan y se comparan <b>en pesos</b> (con el coeficiente UVA y con
+        el IPC del INDEC); el dólar, <b>en dólares</b>. Así cada lado se mide en la misma
+        moneda que su alternativa, y el resultado no cambia según qué dólar elijas para
+        valuar. <b>Los tres porcentajes no se restan entre sí</b> — cada uno mide contra
+        una alternativa distinta.
       </p>
     </div>
   )

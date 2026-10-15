@@ -43,18 +43,18 @@ const cerca = (a, b) => Math.abs((a || 0) - (b || 0)) <= Math.max(1, 0.01 * Math
  * @param {number}   args.tcHoy       el dólar de hoy (el elegido)
  * @param {(iso:string)=>number|null} args.tcEnFecha  el dólar elegido de una
  *                                    fecha (`getRateForDate` de useFxHistory)
- * @param {Object}   args.tcMensual   `tcMensual` de useFxHistory
+ * @param {Object}   args.dolarMes    `dolarMes` de useDolarMensual
  * @param {Array}    [args.monthly]   /api/monthly (sin esto, los flujos van al
  *                                    dólar del cierre)
  * @param {Array}    [args.brokers]   /api/brokers
  * @param {string}   [args.broker]    'global' o el broker del filtro
  */
 export function crearPesosDelPeriodo({
-  moneda, tcHoy, tcEnFecha, tcMensual, monthly, brokers, broker = 'global',
+  moneda, tcHoy, tcEnFecha, dolarMes, monthly, brokers, broker = 'global',
 } = {}) {
   const enPesos = moneda === 'ARS' && tcHoy > 0
   const meses = enPesos && Array.isArray(monthly) && monthly.length
-    ? aportesDelMesEnPesos({ monthly, brokers, tcMensual, tcHoy, broker })
+    ? aportesDelMesEnPesos({ monthly, brokers, dolarMes, tcHoy, broker })
     : new Map()
   const tc = (iso) => {
     const v = iso && typeof tcEnFecha === 'function' ? tcEnFecha(iso) : null
@@ -122,7 +122,7 @@ export function crearPesosDelPeriodo({
    */
   function aportadoHasta(fechaIso, cumUsd) {
     if (!enPesos) return num(cumUsd)
-    const a = aportadoAcumuladoAl({ monthly, brokers, tcMensual, tcHoy, broker, hastaIso: fechaIso })
+    const a = aportadoAcumuladoAl({ monthly, brokers, dolarMes, tcHoy, broker, hastaIso: fechaIso })
     return a && cerca(a.usd, cumUsd) ? a.ars : null
   }
 
