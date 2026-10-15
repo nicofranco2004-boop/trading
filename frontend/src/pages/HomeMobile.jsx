@@ -44,8 +44,8 @@ import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimi
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import FueraDeHorarioMercado from '../components/home/FueraDeHorarioMercado'
-import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
-import { simbolosFueraDeHorario, impactoFueraDeHorario } from '../utils/fueraDeHorario'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { impactoFueraDeHorario } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi } from '../components/FueraDeHorario'
 
 export default function HomeMobile() {
@@ -136,8 +136,7 @@ export default function HomeMobile() {
   const carteraFdh = useMemo(
     () => ({ positions, brokers, prices, tcValuacion, tcCedear, tcCripto }),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto])
-  const simbolosFdh = useMemo(() => simbolosFueraDeHorario(positions, brokers), [positions, brokers])
-  const fdh = useFueraDeHorario(simbolosFdh)
+  const fdh = useFueraDeHorarioDe(positions, brokers)
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, carteraFdh, fdh), [positions, brokers, carteraFdh, fdh])
   const sesionFdh = impactoFdh.aplica ? fdh.sesion : null

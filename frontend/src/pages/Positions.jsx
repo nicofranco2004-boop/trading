@@ -58,8 +58,8 @@ import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
-import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
-import { simbolosFueraDeHorario, impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, EncabezadoColumna, CeldaFueraDeHorario } from '../components/FueraDeHorario'
 import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -1746,8 +1746,7 @@ function PositionsDesktop() {
   // Pre y post mercado de Wall Street: un ANTICIPO al lado del total, nunca
   // sumado. La cuenta es la de utils/fueraDeHorario (la misma del celular, el
   // Dashboard y el inicio).
-  const simbolosFdh = useMemo(() => simbolosFueraDeHorario(positions, brokers), [positions, brokers])
-  const fdh = useFueraDeHorario(simbolosFdh)
+  const fdh = useFueraDeHorarioDe(positions, brokers)
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])

@@ -451,6 +451,7 @@ def _yahoo_pre_post_mudo(monkeypatch):
         return
     monkeypatch.setattr(fuera_de_horario, "_pedir_yahoo", lambda simbolos: [])
     monkeypatch.setattr(fuera_de_horario, "_traer_velas", lambda simbolo: ([], {}))
+    monkeypatch.setattr(fuera_de_horario, "_traer_sesiones_byma", lambda: set())
     fuera_de_horario._franjas_cache.clear()
     fuera_de_horario._vaciar_cache()
     yield

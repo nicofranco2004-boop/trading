@@ -48,6 +48,26 @@ semana, el del viernes).
 Cada % se acepta sólo si su hora es POSTERIOR al último cierre: un pre o post
 viejo que Yahoo todavía arrastre no se muestra como si fuera de hoy (ver la
 regla «el número que dice hoy»).
+
+CEDEARs Y ACCIONES ARGENTINAS: DESDE QUE CERRÓ BYMA (`pct_byma`)
+────────────────────────────────────────────────────────────────
+El precio de un CEDEAR es el del cierre de BYMA (17:00 de Argentina). Lo que
+todavía no tiene adentro es lo que se movió su acción en Nueva York DESPUÉS de
+esa hora. De marzo a octubre las 17:00 de acá son las 16:00 de NY, el mismo
+cierre que usa Yahoo, y los dos % coinciden. Desde el primer domingo de
+noviembre EE.UU. atrasa el reloj: BYMA cierra a las 15:00 de NY, y la última
+hora de la rueda de NY no estaba ni en el precio del CEDEAR ni en el % contra
+el cierre de NY (auditoría 2026-10-15). Por eso para las tenencias que siguen a
+otra acción (vía 'eeuu' o 'adr') se usa `pct_byma`: el precio de ahora contra
+el de la acción EN EL MOMENTO en que cerró BYMA, sacado de las velas de 5
+minutos (`precio_al_cierre_de_byma`). La misma cuenta resuelve los días en que
+un mercado opera y el otro no: con BYMA cerrada por feriado (12/10) el CEDEAR
+arrastra el precio del viernes, y con NY cerrada (Acción de Gracias) el CEDEAR
+del jueves ya tiene adentro el post del miércoles. Qué días operó BYMA lo dicen
+las velas diarias del Merval (`_sesiones_de_byma`), no un calendario nuestro.
+Las acciones de EE.UU. en un broker del exterior ('propio') siguen con `pct`:
+su precio ES el cierre de NY. La regla de qué % usa cada vía es UNA
+(`pct_segun_via`), y la pantalla la copia en `pctDeLaTenencia`.
 """
 from __future__ import annotations
 
@@ -228,19 +248,22 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
         q = cot.get(simbolo)
         if not q:
             continue
-        if q.get("pct") is None:
+        pct = pct_segun_via(q, via)
+        if pct is None:
             sin_operar.add(l.get("asset"))
             continue
         valor = float(l.get("valor") or 0)
-        usd = valor * float(q["pct"]) / 100
+        usd = valor * float(pct) / 100
         if via == "propio":
             exacto += usd
         else:
             anticipo += usd
             anticipo_valor += valor
-        a = por_activo.setdefault(l.get("asset"), {
+        # Por activo Y vía: AAPL en Schwab y el CEDEAR AAPL se mueven distinto
+        # cuando BYMA cerró antes que NY.
+        a = por_activo.setdefault((l.get("asset"), via), {
             "asset": l.get("asset"), "sigue_a": simbolo, "via": via,
-            "pct": round(float(q["pct"]), 2), "usd": 0.0})
+            "pct": round(float(pct), 2), "usd": 0.0})
         a["usd"] += usd
     if not por_activo and not sin_operar:
         return None
@@ -261,8 +284,9 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
         a["usd"] = round(a["usd"], 2)
         a["usd_txt"] = _usd(a["usd"])
         a["pct_txt"] = _pct(a["pct"])
-        a["como"] = {"propio": "la acción misma", "eeuu": "CEDEAR: sigue a su acción en Nueva York",
-                     "adr": "acción argentina: sigue a su ADR en Nueva York"}[a["via"]]
+        a["como"] = {"propio": "la acción misma",
+                     "eeuu": "CEDEAR: lo que se movió su acción en Nueva York desde que cerró BYMA",
+                     "adr": "acción argentina: lo que se movió su ADR en Nueva York desde que cerró BYMA"}[a["via"]]
     pct_cartera = (total / total_valor * 100) if total_valor > 0 else None
     out = {
         "sesion": nombre if sesion != "post_cerrado" else "post-mercado (ya cerró)",
@@ -363,6 +387,8 @@ def _vaciar_cache() -> None:
     with _lock:
         _cache.clear()
         _falla_hasta = 0.0
+        _bases_cache.clear()
+        _sesiones_cache[:] = [0.0, None]
 
 
 def _es_de_eeuu(q: dict) -> bool:
@@ -435,13 +461,178 @@ def byma_abierto(ahora: _dt.datetime) -> bool:
     return a.weekday() < 5 and _dt.time(11, 0) <= a.time() < _dt.time(17, 0)
 
 
+# ─── El momento en que cerró BYMA y cuánto valía la acción en NY a esa hora ──
+CIERRE_BYMA = _dt.time(17, 0)
+_VELA = _dt.timedelta(minutes=5)
+_sesiones_cache: list = [0.0, None]     # [ts, set de fechas en que operó BYMA | None]
+_SESIONES_TTL_S = 600
+_bases_cache: Dict[tuple, tuple] = {}   # (símbolo, cierre de BYMA) → (ts, precio | None)
+_BASE_FALLIDA_TTL_S = 120               # sin velas: se reintenta en 2 minutos, no en cada refresco
+
+
+def _traer_sesiones_byma():
+    """Las fechas (de Argentina) en que operó BYMA el último mes: las velas
+    diarias del Merval. Medido 2026-10-15: no trae el 12/10 (feriado acá, NY
+    abierta) y trae la de hoy desde que abre la rueda."""
+    import yfinance as yf
+    h = yf.Ticker("^MERV").history(period="1mo", interval="1d", auto_adjust=False)
+    return {ts.tz_convert(ZONA_AR).date() for ts, c in zip(h.index, h["Close"]) if c == c}
+
+
+def _sesiones_de_byma() -> Optional[set]:
+    """`_traer_sesiones_byma` cacheado 10 minutos. None si Yahoo no responde."""
+    ahora = time.time()
+    if ahora - _sesiones_cache[0] < _SESIONES_TTL_S:
+        return _sesiones_cache[1]
+    try:
+        sesiones = _yahoo.con_tope(_traer_sesiones_byma, tope=_yahoo.TOPE_PANTALLA_SEG,
+                                   que="días de BYMA") or None
+    except Exception as ex:
+        log.warning("fuera_de_horario: no se pudo saber qué días operó BYMA: %r", ex)
+        sesiones = None
+    _sesiones_cache[:] = [ahora, sesiones]
+    return sesiones
+
+
+def cierre_de_byma(ahora: _dt.datetime, sesiones: Optional[set] = None) -> _dt.datetime:
+    """El último cierre de BYMA (17:00 de Argentina) que ya pasó. `sesiones`: los
+    días en que operó (`_sesiones_de_byma`); sin ese dato, de lunes a viernes
+    (un feriado de acá quedaría como si hubiera operado)."""
+    a = ahora.astimezone(ZONA_AR)
+    for usar_sesiones in ((True, False) if sesiones else (False,)):
+        d = a.date()
+        for _ in range(20):
+            c = _dt.datetime.combine(d, CIERRE_BYMA, tzinfo=ZONA_AR)
+            if c <= a and d.weekday() < 5 and (not usar_sesiones or d in sesiones):
+                return c
+            d -= _dt.timedelta(days=1)
+    return _dt.datetime.combine(a.date(), CIERRE_BYMA, tzinfo=ZONA_AR)
+
+
+def coincide_con_el_cierre_de_ny(cierre_byma: _dt.datetime, cierre_ny: _dt.datetime) -> bool:
+    """¿BYMA cerró a la misma hora que la rueda de NY de ese día? (de marzo a
+    octubre, 17:00 de acá = 16:00 de allá). Entonces el % contra el cierre de NY
+    ya es el % desde el cierre de BYMA y no hace falta ninguna vela."""
+    return abs((cierre_byma - cierre_ny).total_seconds()) <= 10 * 60
+
+
+def precio_al_cierre_de_byma(velas: list, cierres: dict, cierre_byma: _dt.datetime) -> Optional[float]:
+    """Cuánto valía la acción en NY en el momento en que cerró BYMA.
+
+    `velas`: [(datetime de NY, cierre)] de 5 minutos, con pre y post
+    (`_traer_velas`); `cierres`: {fecha de NY: cierre oficial}.
+      · Si BYMA cerró justo al cierre de la rueda de NY (16:00 de NY): el cierre
+        OFICIAL de ese día, el mismo de Yahoo (la última vela no es el oficial:
+        NVDA 221,50 contra 221,30).
+      · Si no: el cierre de la última vela que TERMINÓ antes del cierre de BYMA
+        (la vela de las 14:55 termina a las 15:00). Cubre la rueda (invierno),
+        el post de un día de cierre temprano y el post de la noche anterior si
+        NY no abrió ese día.
+    None si no hay ninguna vela antes (el que llama decide)."""
+    ny = cierre_byma.astimezone(ZONA_NY)
+    if _dt.time(16, 0) <= ny.time() < _dt.time(16, 10) and cierres.get(ny.date()):
+        return float(cierres[ny.date()])
+    previas = [(t, c) for t, c in velas if c and t + _VELA <= cierre_byma]
+    return float(max(previas, key=lambda x: x[0])[1]) if previas else None
+
+
+def _pct_entre(precio, base) -> Optional[float]:
+    if not precio or not base:
+        return None
+    return round((float(precio) / float(base) - 1) * 100, 4)
+
+
+def _bases_byma(simbolos: List[str], cierre_byma: _dt.datetime, traer: Callable = None,
+                tope: float = _yahoo.TOPE_PANTALLA_SEG) -> Dict[str, Optional[float]]:
+    """{símbolo: precio al cierre de BYMA} — un pedido de velas por símbolo, en
+    paralelo. El precio de un cierre que ya pasó no cambia: se guarda por
+    (símbolo, cierre) hasta el próximo cierre. Sin respuesta se guarda None un
+    rato corto, para no hacer esperar cada refresco de la pantalla."""
+    traer = traer or _traer_velas
+    ahora = time.time()
+    out, faltan = {}, []
+    with _lock:
+        for s in dict.fromkeys(simbolos):
+            hit = _bases_cache.get((s, cierre_byma))
+            if hit and (hit[1] is not None or ahora - hit[0] < _BASE_FALLIDA_TTL_S):
+                out[s] = hit[1]
+            else:
+                faltan.append(s)
+    if faltan:
+        crudos, _ = _yahoo.varios(traer, faltan, tope=tope, que="velas al cierre de BYMA")
+        with _lock:
+            for k in [k for k in _bases_cache if k[1] < cierre_byma]:
+                _bases_cache.pop(k, None)
+            for s in faltan:
+                base = None
+                if s in crudos:
+                    velas, cierres = crudos[s]
+                    base = precio_al_cierre_de_byma(velas, cierres, cierre_byma)
+                _bases_cache[(s, cierre_byma)] = (ahora, base)
+                out[s] = base
+    return out
+
+
+def pct_segun_via(q: dict, via: str) -> Optional[float]:
+    """EL % que le toca a una tenencia (la pantalla copia esta regla en
+    `pctDeLaTenencia`): la acción misma ('propio') → contra el cierre de NY;
+    un CEDEAR o una acción argentina → desde que cerró BYMA, si vino."""
+    if via != "propio" and "pct_byma" in (q or {}):
+        return q["pct_byma"]
+    return (q or {}).get("pct")
+
+
 def limpiar_simbolos(texto: str) -> List[str]:
     crudos = [s.strip().upper() for s in (texto or "").split(",") if s.strip()]
     return [s for s in dict.fromkeys(crudos) if _SIMBOLO_RE.match(s)][:MAX_SIMBOLOS]
 
 
+def _agregar_pct_byma(cotizaciones: dict, crudas: dict, byma: List[str], sesion: str,
+                      ahora: _dt.datetime, traer: Callable = None) -> None:
+    """Le pone `pct_byma` y `base_byma` a las cotizaciones de `byma` (en el lugar).
+
+    El precio de ahora es el del pre/post; si la acción todavía no operó en el
+    post, su precio sigue siendo el cierre de la rueda (y la última hora de NY
+    igual está pendiente para el CEDEAR). En el pre sin operar no se sabe
+    cuánto terminó el post de anoche: queda «sin operar», como la acción.
+    Sin velas (Yahoo no respondió) se usa el % contra el cierre de NY, como
+    antes de este arreglo, y se avisa en el log."""
+    con_dato = [s for s in byma if s in cotizaciones]
+    if not con_dato:
+        return
+    cierre = cierre_de_byma(ahora, _sesiones_de_byma())
+    hace_falta = []
+    for s in con_dato:
+        c, q = cotizaciones[s], crudas[s]
+        c["base_byma"] = cierre.date().isoformat()
+        t = q.get("regularMarketTime")
+        cierre_ny = _dt.datetime.fromtimestamp(int(t), _dt.timezone.utc) if t else None
+        if cierre_ny is not None and coincide_con_el_cierre_de_ny(cierre, cierre_ny):
+            c["pct_byma"] = c["pct"]
+        else:
+            hace_falta.append(s)
+    if not hace_falta:
+        return
+    bases = _bases_byma(hace_falta, cierre, traer=traer)
+    campo = "preMarketPrice" if sesion == "pre" else "postMarketPrice"
+    for s in hace_falta:
+        c, q = cotizaciones[s], crudas[s]
+        base = bases.get(s)
+        if base is None:
+            log.warning("fuera_de_horario: sin el precio de %s al cierre de BYMA; va contra el cierre de NY", s)
+            c["pct_byma"] = c["pct"]
+            continue
+        if c["pct"] is not None:
+            ahora_precio = q.get(campo)
+        elif sesion != "pre":
+            ahora_precio = q.get("regularMarketPrice")
+        else:
+            ahora_precio = None
+        c["pct_byma"] = _pct_entre(ahora_precio, base)
+
+
 def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None,
-           pedir: Callable = None) -> dict:
+           pedir: Callable = None, byma: Iterable[str] = (), traer: Callable = None) -> dict:
     """Lo que devuelve `/api/fuera-de-horario`.
 
     {
@@ -449,9 +640,12 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
       cierra: '10:30' (hora argentina en que termina la franja; None si cerrada),
       byma_abierto: bool,
       actualizado: ISO,
-      cotizaciones: {símbolo: {pct, precio}}   — pct None = no operó todavía,
-      listas: {indices, adrs, populares}       — sólo con listas=True,
+      cotizaciones: {símbolo: {pct, precio, base}}   — pct None = no operó todavía,
+      listas: {indices, adrs, populares}             — sólo con listas=True,
     }
+    `byma`: los símbolos que siguen a un CEDEAR o a una acción argentina. Esos
+    traen además `pct_byma` (desde el cierre de BYMA) y `base_byma` (la fecha de
+    ese cierre); ver «CEDEARs y acciones argentinas» arriba.
     Los símbolos que Yahoo no conoce no aparecen en `cotizaciones`.
     """
     if ahora is None:
@@ -459,7 +653,8 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
         # está abierta dependía de la hora a la que corriera la suite.
         import fechas
         ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
-    pedidos = list(simbolos)
+    byma = list(dict.fromkeys(byma or ()))
+    pedidos = list(dict.fromkeys([*simbolos, *byma]))
     if listas:
         for grupo in (INDICES, ADRS, POPULARES):
             pedidos += [x["s"] for x in grupo]
@@ -481,6 +676,7 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
             pct = _pct(q, sesion)
             cotizaciones[s] = {"pct": pct, "precio": q.get(campo) if pct is not None else None,
                                "base": _base_del_pct(q)}
+        _agregar_pct_byma(cotizaciones, crudas, byma, sesion, ahora, traer)
 
     cierra = None
     if sesion == "pre":
@@ -510,11 +706,12 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
 # mismo que usa la cotización en vivo, no la última vela de 5 minutos (que
 # difiere por la subasta de cierre: NVDA 221,50 contra 221,30 oficial).
 
-_franjas_cache: Dict[tuple, tuple] = {}   # (símbolo, día NY) → (ts, franjas)
+_franjas_cache: Dict[tuple, tuple] = {}   # (símbolo, día NY, cierre de BYMA) → (ts, franjas)
 _FRANJAS_TTL_S = 600
 
 
-def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date) -> dict:
+def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date,
+                     cierre_byma: Optional[_dt.datetime] = None) -> dict:
     """El post de la rueda anterior y el pre de hoy, a partir de las velas.
 
     `velas`: [(datetime con zona de NY, cierre de la vela)], de 5 minutos.
@@ -522,6 +719,13 @@ def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date) -> dict:
     Devuelve {"post": {pct, dia, hasta} | None, "pre": {pct, dia, hasta} | None},
     con pct en PUNTOS (0,64 = 0,64 %), contra el cierre oficial de la rueda
     anterior a hoy.
+
+    Con `cierre_byma` (el último cierre de BYMA), cada franja trae además
+    `pct_byma`: lo mismo pero desde el precio de la acción a esa hora (ver
+    «CEDEARs y acciones argentinas» arriba; es el que usan los CEDEARs). Si la
+    acción no operó en el post pero BYMA cerró antes que NY, el post igual
+    aparece para los CEDEARs (pct None, pct_byma = cierre de NY contra el
+    precio al cierre de BYMA): esa última hora de NY sigue pendiente.
     """
     anteriores = sorted(d for d in cierres if d < hoy_ny)
     if not anteriores:
@@ -530,6 +734,11 @@ def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date) -> dict:
     base = cierres[previa]
     if not base:
         return {"post": None, "pre": None}
+    base_byma = None
+    if cierre_byma is not None:
+        base_byma = precio_al_cierre_de_byma(velas, cierres, cierre_byma)
+    # ¿El CEDEAR tiene pendiente algo que el % contra el cierre de NY no ve?
+    corrige = base_byma is not None and abs(base_byma - float(base)) > 1e-9
 
     def _ultima(dia, desde, hasta):
         dentro = [(t, c) for t, c in velas
@@ -540,11 +749,20 @@ def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date) -> dict:
     for franja, dia, desde, hasta in (("post", previa, _dt.time(16, 0), _dt.time(20, 0)),
                                       ("pre", hoy_ny, _dt.time(4, 0), _dt.time(9, 30))):
         u = _ultima(dia, desde, hasta)
-        out[franja] = None if u is None else {
-            "pct": round((float(u[1]) / float(base) - 1) * 100, 4),
+        if u is None and not (franja == "post" and corrige):
+            out[franja] = None
+            continue
+        out[franja] = {
+            "pct": None if u is None else round((float(u[1]) / float(base) - 1) * 100, 4),
             "dia": dia.isoformat(),
-            "hasta": u[0].strftime("%H:%M"),
+            "hasta": None if u is None else u[0].strftime("%H:%M"),
         }
+        if cierre_byma is not None:
+            if base_byma is None:
+                out[franja]["pct_byma"] = out[franja]["pct"]      # sin velas: contra el cierre de NY
+            else:
+                ahora_precio = float(u[1]) if u is not None else float(base)
+                out[franja]["pct_byma"] = _pct_entre(ahora_precio, base_byma)
     return out
 
 
@@ -573,10 +791,11 @@ def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = N
         import fechas
         ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
     hoy_ny = ahora.astimezone(ZONA_NY).date()
+    cierre = cierre_de_byma(ahora, _sesiones_de_byma())
     t0 = time.time()
     out, faltan = {}, []
     for s in dict.fromkeys(simbolos):
-        hit = _franjas_cache.get((s, hoy_ny))
+        hit = _franjas_cache.get((s, hoy_ny, cierre))
         if hit and t0 - hit[0] < _FRANJAS_TTL_S:
             out[s] = hit[1]
         else:
@@ -584,13 +803,13 @@ def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = N
     if faltan:
         crudos, sin_respuesta = _yahoo.varios(traer, faltan, tope=_yahoo.TOPE_FONDO_SEG, que="velas pre/post")
         for s, (velas, cierres) in crudos.items():
-            f = franjas_de_velas(velas, cierres, hoy_ny)
-            _franjas_cache[(s, hoy_ny)] = (t0, f)
+            f = franjas_de_velas(velas, cierres, hoy_ny, cierre_byma=cierre)
+            _franjas_cache[(s, hoy_ny, cierre)] = (t0, f)
             out[s] = f
         # Los que no respondieron se guardan VACÍOS: el mail de las 11 corre una
         # vez por suscriptor, y sin esto cada uno volvía a esperar a Yahoo.
         for s in sin_respuesta:
-            _franjas_cache[(s, hoy_ny)] = (t0, {"post": None, "pre": None})
+            _franjas_cache[(s, hoy_ny, cierre)] = (t0, {"post": None, "pre": None})
         for k in [k for k in _franjas_cache if k[1] < hoy_ny]:
             _franjas_cache.pop(k, None)
     return out
@@ -615,7 +834,9 @@ def resumen_de_la_manana(lotes: list, por_simbolo: Dict[str, dict], tc_pesos: Op
     ny = ahora.astimezone(ZONA_NY)
     out = {}
     for franja in ("post", "pre"):
-        cot = {s: {"pct": f[franja]["pct"]} for s, f in por_simbolo.items() if f.get(franja)}
+        # Con `pct_byma` si vino: los CEDEARs lo usan (`pct_segun_via`).
+        cot = {s: {k: v for k, v in f[franja].items() if k in ("pct", "pct_byma")}
+               for s, f in por_simbolo.items() if f.get(franja)}
         if not cot:
             continue
         # Los CEDEARs SÍ cuentan: a las 11 BYMA recién abre, y lo que se movió su

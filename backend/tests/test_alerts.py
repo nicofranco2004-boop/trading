@@ -815,6 +815,31 @@ def test_el_cedear_avisa_con_su_accion_en_nueva_york_hasta_que_abre_byma(clean, 
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
 
+def test_en_invierno_el_cedear_avisa_lo_que_se_movio_desde_el_cierre_de_byma(clean, monkeypatch):
+    # Martes 17/11, 9:00 de acá (7:00 de NY). Desde el 1/11 BYMA cierra a las
+    # 15:00 de NY: el lunes AAPL valía 97 a esa hora y cerró la rueda en 100. En
+    # el pre va +0,5 % contra el cierre de NY, pero el CEDEAR tiene pendiente
+    # 100,5 / 97 = +3,6 %: eso es lo que se avisa.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["AAPL.BA"])
+    _fuera(monkeypatch, [_cot("SPY", 0.2, cierre="2026-11-16"), _cot("AAPL", 0.5, cierre="2026-11-16")],
+           {"AAPL": 6}, ahora=datetime(2026, 11, 17, 9, 0))
+    hoy_velas = _con_velas({"AAPL": 6})
+
+    def traer(simbolo):
+        velas, _ = hoy_velas(simbolo)
+        lun = _dt.date(2026, 11, 16)
+        return ([(_dt.datetime.combine(lun, _dt.time(14, 55), _fdh.ZONA_NY), 97.0)] + velas,
+                {lun: 100.0})
+    monkeypatch.setattr(_fdh, "_traer_velas", traer)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "AAPL en Nueva York sube 3,6% en el pre-mercado"
+    # El mismo movimiento contra el mismo cierre de BYMA no se repite.
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
 def test_en_la_rueda_normal_no_hay_aviso_de_pre(clean, monkeypatch):
     conn = clean
     _mk_alert(conn, kind="pct_move", down_pct=3, threshold=None, symbol="NVDA", repeat="always")

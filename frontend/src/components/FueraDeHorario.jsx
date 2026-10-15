@@ -14,9 +14,9 @@ import InfoTooltip from './InfoTooltip'
 import { usd, ars, pctVar, pctColor, colorClass } from '../utils/format'
 import {
   nombreDeSesion, nombreCorto, rotuloVia, estadoDeSesion,
-  simbolosFueraDeHorario, impactoFueraDeHorario, sumarTenencias,
+  impactoFueraDeHorario, sumarTenencias,
 } from '../utils/fueraDeHorario'
-import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 
 const esPre = (sesion) => sesion === 'pre'
 
@@ -98,8 +98,7 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
  */
 export function ChipDelActivo({ lotes, brokers, prices, tcValuacion, tcCedear, tcCripto = null, className = '' }) {
   const { hidden } = usePrivacy()
-  const simbolos = useMemo(() => simbolosFueraDeHorario(lotes, brokers), [lotes, brokers])
-  const datos = useFueraDeHorario(simbolos)
+  const datos = useFueraDeHorarioDe(lotes, brokers)
   const impacto = useMemo(
     () => impactoFueraDeHorario(lotes, brokers, { prices, tcValuacion, tcCedear, tcCripto }, datos),
     [lotes, brokers, prices, tcValuacion, tcCedear, tcCripto, datos])
@@ -151,12 +150,12 @@ export function ComoSeCalcula({ sesion, impacto, moneda, oculto = false }) {
   return (
     <div className="flex flex-col gap-2 text-left normal-case">
       <p className="font-semibold text-ink-0">Cómo se calcula el {nombre}</p>
-      <p>Cada activo: su valor al último cierre × lo que se mueve su acción en Nueva York ahora. Después se suma.</p>
+      <p>Cada activo: su valor al último cierre × lo que se movió su acción en Nueva York desde ese cierre. Después se suma.</p>
       {exacto.valorUsd > 0 && (
         <Fila titulo="Acciones y ETFs de EE.UU." detalle="Exacto: es el precio de esa misma acción." monto={m(exacto)} />
       )}
       {anticipo.valorUsd > 0 && (
-        <Fila titulo="CEDEARs y acciones argentinas" detalle="Anticipo: usa la acción (o su ADR) en Nueva York." monto={m(anticipo)} />
+        <Fila titulo="CEDEARs y acciones argentinas" detalle="Anticipo: lo que se movió la acción (o su ADR) en Nueva York desde que cerró BYMA, a las 17." monto={m(anticipo)} />
       )}
       <div className="border-t border-line pt-1.5">
         <Fila titulo="Total" monto={moneda === 'ARS' ? impacto.total.ars : impacto.total.usd} fuerte />
@@ -230,7 +229,7 @@ export function CeldaFueraDeHorario({ r, moneda, oculto = false, soloMonto = fal
   const via = rotuloVia(r.via)
   return (
     <div className="leading-tight"
-      title={via ? `Lo que se mueve la acción en Nueva York (${via}). Anticipa al papel de acá, sin contar lo que haga el dólar CCL.` : undefined}>
+      title={via ? `Lo que se movió la acción en Nueva York (${via}) desde que cerró BYMA. Anticipa al papel de acá, sin contar lo que haga el dólar CCL.` : undefined}>
       <div className={`font-medium ${colorClass(monto)}`}>{oculto ? '••••••' : montoFdh(monto, moneda)}</div>
       <div className={`text-[10px] ${pctColor(r.pct)}`}>
         {pctVar(r.pct)}{via && <span className="text-ink-3"> {via}</span>}

@@ -71,9 +71,9 @@ import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
-import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { simbolosFueraDeHorario, impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
+import { impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, IconoSesion, tonoDeSesion } from '../components/FueraDeHorario'
 
 const SORT_OPTIONS = [
@@ -1523,8 +1523,7 @@ export default function PositionsMobile() {
   // Pre y post mercado: un ANTICIPO al lado del total, nunca sumado. La cuenta
   // es la de utils/fueraDeHorario, la misma de la compu, el Dashboard y el
   // inicio. Las filas y los brokers la leen del contexto (FdhCtx).
-  const simbolosFdh = useMemo(() => simbolosFueraDeHorario(positions, brokers), [positions, brokers])
-  const fdh = useFueraDeHorario(simbolosFdh)
+  const fdh = useFueraDeHorarioDe(positions, brokers)
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])

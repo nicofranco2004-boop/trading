@@ -1500,6 +1500,51 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
         self.assertEqual(r["post"]["cuando"], "el viernes a la noche")
         self.assertAlmostEqual(r["post"]["usd"], -22.0, places=2)
 
+    def test_en_invierno_el_cedear_cuenta_desde_el_cierre_de_byma(self):
+        # Martes 17/11 a las 11:00 (desde el 1/11 BYMA cierra a las 15:00 de NY).
+        # El lunes AAPL valía 100 a esa hora, cerró la rueda en 102, terminó el
+        # post en 103 y esta mañana va 104. Al CEDEAR le falta TODO desde las
+        # 15:00 de NY (+3 % y +4 %); a la acción misma, desde su cierre.
+        # Por `market_brief._fuera_de_horario`, lo que llama el envío de las 11.
+        import datetime as dt
+        import fuera_de_horario as fdh
+        ny = fdh.ZONA_NY
+        lun, mar = dt.date(2026, 11, 16), dt.date(2026, 11, 17)
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO brokers (id,user_id,name,currency) VALUES (2,1,'IOL','ARS')")
+            conn.execute("INSERT INTO positions (user_id, broker, asset, asset_type, quantity, invested, is_cash) "
+                         "VALUES (1,'IOL','AAPL','cedear',10,250000,0)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        def traer(simbolo):
+            if simbolo != "AAPL":
+                return [], {}
+            return ([(dt.datetime.combine(d, dt.time(h, m), ny), c) for d, h, m, c in (
+                (lun, 14, 55, 100.0), (lun, 15, 55, 101.9), (lun, 19, 55, 103.0), (mar, 9, 25, 104.0))],
+                {dt.date(2026, 11, 13): 98.0, lun: 102.0})
+
+        def _de_a_uno(fn, items, **kw):
+            return {i: fn(i) for i in items}, []
+        fdh._franjas_cache.clear()
+        with patch.object(fdh, "_traer_velas", traer), \
+             patch.object(fdh._yahoo, "varios", _de_a_uno), \
+             patch("fechas.ahora_art", return_value=datetime(2026, 11, 17, 11, 0)), \
+             patch.object(main, "fetch_prices_for_symbols", return_value={"AAPL.BA": 28000.0}), \
+             patch.object(main, "_user_tc_blue", return_value=1450.0), \
+             patch.object(main, "_user_tc_cedear", return_value=1400.0):
+            r = market_brief._fuera_de_horario(1)
+            valor = main._lotes_con_referencia_eeuu(1)[0][0]["valor"]
+        self.assertAlmostEqual(valor, 10 * 28000.0 / 1400.0, places=2)
+        por = {a["asset"]: a for a in r["post"]["activos"]}
+        self.assertAlmostEqual(por["AAPL"]["pct"], 3.0, places=2)
+        self.assertAlmostEqual(r["post"]["usd"], round(valor * 0.03, 2), places=2)
+        self.assertAlmostEqual(r["pre"]["usd"], round(valor * 0.04, 2), places=2)
+        lineas = emails._lineas_fuera_de_horario(r)
+        self.assertIn("desde que cerró BYMA", lineas["nota"])
+
     def test_sin_nada_fuera_de_la_rueda_el_mail_es_el_de_siempre(self):
         brief, visto = self._correr(datetime(2026, 10, 15, 11, 0), lambda s: ([], {}))
         self.assertNotIn("fuera_de_horario", brief)

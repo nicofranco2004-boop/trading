@@ -739,7 +739,8 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
         comparar con uno de Nueva York.
       · El % es el del pre/post de la acción de EE.UU. que sigue la tenencia
         (`fuera_de_horario.referencia_en_eeuu`, la misma de la pantalla). Para un
-        CEDEAR o una acción argentina, sólo hasta que abre BYMA.
+        CEDEAR o una acción argentina, desde el cierre de BYMA
+        (`fuera_de_horario.pct_segun_via`) y sólo hasta que abre BYMA.
       · Sólo con operaciones de verdad: MIN_VELAS velas de 5 min en la franja
         (`con_operaciones`). Una operación suelta no dispara.
       · El mismo movimiento se avisa UNA vez (ver `_ya_avisado`): el post de
@@ -762,7 +763,8 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
     if not candidatas:
         return 0
     try:
-        datos = fdh.estado(sorted({r[0] for _, _, r in candidatas}))
+        datos = fdh.estado(sorted({r[0] for _, _, r in candidatas}),
+                           byma=sorted({r[0] for _, _, r in candidatas if r[1] != "propio"}))
     except Exception as ex:
         log.warning("alerts fuera de la rueda: Yahoo falló: %s", ex)
         return 0
@@ -776,9 +778,11 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
         if via != "propio" and datos.get("byma_abierto"):
             continue      # el papel de acá ya tiene precio propio
         q = cot.get(ref) or {}
-        pct = q.get("pct")
+        # Un CEDEAR: lo que se movió su acción desde que cerró BYMA, y el cierre
+        # contra el que se mide es el de BYMA (el mismo de su «Var. día»).
+        pct = fdh.pct_segun_via(q, via)
         lado = pct_move_side(pct, a["up_pct"], a["down_pct"])
-        base = q.get("base")
+        base = (q.get("base_byma") if via != "propio" else None) or q.get("base")
         if pct is None or not lado or not base:
             continue
         if _ya_avisado(conn, a["id"], sym, base, lado):

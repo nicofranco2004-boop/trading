@@ -303,3 +303,228 @@ def test_el_post_del_viernes_no_se_llama_anoche_un_domingo():
     assert r["cuando"] == "el viernes a la noche"
     assert r["abierto"] is False
     assert r["sin_operar_todavia"] == []
+
+
+# ─── CEDEARs: desde el cierre de BYMA, no desde el de NY ────────────────────
+# Desde el 1/11 (EE.UU. atrasa el reloj) BYMA cierra a las 17:00 de acá = 15:00
+# de NY. La última hora de la rueda de NY no está en el precio del CEDEAR ni en
+# el % contra el cierre de NY: el anticipo del CEDEAR se mide contra el precio
+# de la acción a las 15:00 de NY. Medido 2026-10-15 con Yahoo en vivo: las
+# velas de 5 minutos traen la de las 14:55 (termina 15:00) y la diaria del
+# Merval no trae el 12/10 (feriado acá, NY abierta).
+
+NY = fdh.ZONA_NY
+
+
+def _ts(dia, h, m=0):
+    return int(dt.datetime.combine(dia, dt.time(h, m), NY).timestamp())
+
+
+def _cot(sym, estado, cierre_dia, cierre, post=None, pre=None):
+    """Cotización de Yahoo con la forma medida: el % contra `cierre` (el de la
+    rueda del `cierre_dia`, 16:00 de NY)."""
+    t = _ts(cierre_dia, 16)
+    d = {"symbol": sym, "marketState": estado, "market": "us_market",
+         "regularMarketTime": t, "regularMarketPrice": cierre}
+    if post is not None:
+        d.update(postMarketPrice=post, postMarketTime=t + 3600,
+                 postMarketChangePercent=(post / cierre - 1) * 100)
+    if pre is not None:
+        d.update(preMarketPrice=pre, preMarketTime=t + 15 * 3600,
+                 preMarketChangePercent=(pre / cierre - 1) * 100)
+    return d
+
+
+class Velas:
+    """Velas de 5 minutos de mentira, por símbolo; cuenta los pedidos."""
+    def __init__(self, por_simbolo, falla=False):
+        self.por = por_simbolo
+        self.pedidos = []
+        self.falla = falla
+
+    def __call__(self, simbolo):
+        self.pedidos.append(simbolo)
+        if self.falla:
+            raise RuntimeError("Yahoo caído")
+        return self.por.get(simbolo, ([], {}))
+
+
+LUN_16_11 = dt.date(2026, 11, 16)
+# AAPL el lunes 16/11 (invierno): 100 a las 15:00 de NY (cierre de BYMA), cierra
+# la rueda en 102 y en el post va 103.
+VELAS_AAPL_INVIERNO = ([(dt.datetime.combine(LUN_16_11, dt.time(h, m), NY), c) for h, m, c in (
+    (14, 50, 99.5), (14, 55, 100.0),   # la de las 14:55 termina a las 15:00: ESA
+    (15, 0, 101.0), (15, 55, 101.9),   # la última hora de la rueda de NY
+    (16, 0, 102.0), (17, 0, 103.0))],  # el post
+    {dt.date(2026, 11, 13): 98.0, LUN_16_11: 102.0})
+
+
+@pytest.fixture
+def invierno(monkeypatch):
+    """El endpoint el lunes 16/11 a las 19:00 de acá (17:00 de NY): post abierto."""
+    y = Yahoo([_cot("SPY", "POST", LUN_16_11, 600.0, post=601.0),
+               _cot("AAPL", "POST", LUN_16_11, 102.0, post=103.0),
+               _cot("NVDA", "POST", LUN_16_11, 200.0, post=202.0)])
+    v = Velas({"AAPL": VELAS_AAPL_INVIERNO})
+    monkeypatch.setattr(fdh, "_pedir_yahoo", y)
+    monkeypatch.setattr(fdh, "_traer_velas", v)
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {dt.date(2026, 11, 13), LUN_16_11})
+    monkeypatch.setattr("fechas.ahora_art", lambda: dt.datetime(2026, 11, 16, 19, 0))
+    main.app.dependency_overrides[main.get_effective_user] = lambda: 1
+    try:
+        yield TestClient(main.app), y, v
+    finally:
+        main.app.dependency_overrides.pop(main.get_effective_user, None)
+
+
+def test_en_invierno_el_cedear_se_mide_desde_el_cierre_de_byma(invierno):
+    c, _y, v = invierno
+    r = c.get("/api/fuera-de-horario", params={"symbols": "AAPL,NVDA", "byma": "AAPL"}).json()
+    aapl = r["cotizaciones"]["AAPL"]
+    # La acción misma (Schwab): contra el cierre de NY, 103 / 102.
+    assert aapl["pct"] == pytest.approx((103 / 102 - 1) * 100, abs=1e-4)
+    # El CEDEAR: contra la acción a las 15:00 de NY, 103 / 100 = +3 %. Incluye
+    # la última hora de la rueda (+2 %), que no estaba en ningún lado.
+    assert aapl["pct_byma"] == pytest.approx(3.0, abs=1e-4)
+    assert aapl["base_byma"] == "2026-11-16"
+    # NVDA no la sigue ningún CEDEAR: ni se piden sus velas.
+    assert "pct_byma" not in r["cotizaciones"]["NVDA"]
+    assert v.pedidos == ["AAPL"]
+    # El precio de un cierre que ya pasó no cambia: el próximo refresco no repide velas.
+    fdh._cache.clear()
+    c.get("/api/fuera-de-horario", params={"symbols": "AAPL,NVDA", "byma": "AAPL"})
+    assert v.pedidos == ["AAPL"]
+
+
+def test_en_invierno_el_cedear_sin_operar_en_el_post_igual_tiene_la_ultima_hora(monkeypatch):
+    # La acción todavía no operó en el post: su precio es el cierre (102), y la
+    # hora de 15 a 16 de NY sigue pendiente para el CEDEAR.
+    y = Yahoo([_cot("SPY", "POST", LUN_16_11, 600.0, post=601.0),
+               _cot("AAPL", "POST", LUN_16_11, 102.0)])
+    v = Velas({"AAPL": VELAS_AAPL_INVIERNO})
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {LUN_16_11})
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=v,
+                   ahora=dt.datetime(2026, 11, 16, 19, 0, tzinfo=AR))
+    aapl = r["cotizaciones"]["AAPL"]
+    assert aapl["pct"] is None                                    # la acción: «sin operar»
+    assert aapl["pct_byma"] == pytest.approx(2.0, abs=1e-4)       # el CEDEAR: 102 / 100
+
+
+def test_en_invierno_el_pre_se_mide_desde_el_cierre_de_byma_de_ayer(monkeypatch):
+    mar = dt.date(2026, 11, 17)
+    y = Yahoo([_cot("SPY", "PRE", LUN_16_11, 600.0, pre=601.0),
+               _cot("AAPL", "PRE", LUN_16_11, 102.0, pre=104.0)])
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {LUN_16_11})
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=Velas({"AAPL": VELAS_AAPL_INVIERNO}),
+                   ahora=dt.datetime.combine(mar, dt.time(9, 0), AR))
+    assert r["cotizaciones"]["AAPL"]["pct_byma"] == pytest.approx(4.0, abs=1e-4)   # 104 / 100
+
+
+def test_en_verano_los_dos_porcentajes_coinciden_y_no_se_piden_velas(monkeypatch):
+    # Octubre: 17:00 de acá = 16:00 de NY, el mismo cierre de Yahoo.
+    mie = dt.date(2026, 10, 14)
+    y = Yahoo([_cot("SPY", "POST", mie, 600.0, post=601.0), _cot("AAPL", "POST", mie, 102.0, post=103.0)])
+    v = Velas({})
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {mie})
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=v,
+                   ahora=dt.datetime(2026, 10, 14, 18, 0, tzinfo=AR))
+    aapl = r["cotizaciones"]["AAPL"]
+    assert aapl["pct_byma"] == aapl["pct"]
+    assert v.pedidos == []
+
+
+def test_con_byma_cerrada_por_feriado_se_mide_desde_su_ultimo_cierre(monkeypatch):
+    # Lunes 12/10/2026: feriado acá, NY abierta (medido: el Merval no tiene vela
+    # ese día). El CEDEAR sigue con el precio del viernes 9: le falta TODO el
+    # lunes de NY, no sólo el post.
+    vie, lun = dt.date(2026, 10, 9), dt.date(2026, 10, 12)
+    velas = ([(dt.datetime.combine(lun, dt.time(15, 55), NY), 104.0)], {vie: 100.0, lun: 105.0})
+    y = Yahoo([_cot("SPY", "POST", lun, 600.0, post=601.0), _cot("AAPL", "POST", lun, 105.0, post=106.0)])
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {dt.date(2026, 10, 8), vie})
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=Velas({"AAPL": velas}),
+                   ahora=dt.datetime(2026, 10, 12, 18, 0, tzinfo=AR))
+    aapl = r["cotizaciones"]["AAPL"]
+    assert aapl["base_byma"] == "2026-10-09"
+    assert aapl["pct_byma"] == pytest.approx(6.0, abs=1e-4)      # 106 contra el cierre oficial del 9 (100)
+
+
+def test_con_nueva_york_cerrada_el_cedear_ya_tiene_adentro_el_post_anterior(monkeypatch):
+    # Jueves 26/11/2026, Acción de Gracias: NY cerrada, BYMA abierta. El CEDEAR
+    # cerró a las 17:00 de acá con el post del miércoles ya adentro: mostrarle el
+    # post del miércoles como anticipo era contarlo dos veces.
+    mie, jue = dt.date(2026, 11, 25), dt.date(2026, 11, 26)
+    velas = ([(dt.datetime.combine(mie, dt.time(h, m), NY), c) for h, m, c in
+              ((14, 55, 100.0), (15, 55, 101.0), (19, 55, 103.0))], {mie: 101.0})
+    y = Yahoo([_cot("SPY", "CLOSED", mie, 600.0, post=601.0), _cot("AAPL", "CLOSED", mie, 101.0, post=103.0)])
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {mie, jue})
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=Velas({"AAPL": velas}),
+                   ahora=dt.datetime(2026, 11, 26, 20, 0, tzinfo=AR))
+    assert r["sesion"] == "post_cerrado"
+    aapl = r["cotizaciones"]["AAPL"]
+    assert aapl["pct"] == pytest.approx((103 / 101 - 1) * 100, abs=1e-4)   # la acción, contra su cierre
+    assert aapl["pct_byma"] == pytest.approx(0.0, abs=1e-4)                # el CEDEAR ya lo tiene
+
+
+def test_sin_velas_va_contra_el_cierre_de_ny_y_no_hace_esperar_cada_refresco(monkeypatch):
+    y = Yahoo([_cot("SPY", "POST", LUN_16_11, 600.0, post=601.0),
+               _cot("AAPL", "POST", LUN_16_11, 102.0, post=103.0)])
+    v = Velas({}, falla=True)
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {LUN_16_11})
+    ahora = dt.datetime(2026, 11, 16, 19, 0, tzinfo=AR)
+    r = fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=v, ahora=ahora)
+    aapl = r["cotizaciones"]["AAPL"]
+    assert aapl["pct_byma"] == aapl["pct"]          # como antes del arreglo, no «sin operar»
+    fdh._cache.clear()
+    fdh.estado(["AAPL"], byma=["AAPL"], pedir=y, traer=v, ahora=ahora)
+    assert v.pedidos == ["AAPL"]                    # la falla se recuerda un rato
+
+
+@pytest.mark.parametrize("ahora,sesiones,esperado", [
+    (dt.datetime(2026, 11, 16, 19, 0), {dt.date(2026, 11, 16)}, dt.datetime(2026, 11, 16, 17, 0)),
+    (dt.datetime(2026, 11, 16, 16, 59), {dt.date(2026, 11, 13), dt.date(2026, 11, 16)},
+     dt.datetime(2026, 11, 13, 17, 0)),                           # todavía no cerró hoy: el viernes
+    (dt.datetime(2026, 11, 17, 9, 0), None, dt.datetime(2026, 11, 16, 17, 0)),   # sin Merval: de lunes a viernes
+    (dt.datetime(2026, 10, 13, 9, 0), {dt.date(2026, 10, 9)}, dt.datetime(2026, 10, 9, 17, 0)),   # el 12 fue feriado
+])
+def test_el_ultimo_cierre_de_byma(ahora, sesiones, esperado):
+    assert fdh.cierre_de_byma(ahora.replace(tzinfo=AR), sesiones) == esperado.replace(tzinfo=AR)
+
+
+def test_el_chat_y_la_pantalla_eligen_el_mismo_porcentaje():
+    # La regla de `pct_segun_via` y la de `pctDeLaTenencia` (utils/fueraDeHorario.js).
+    q = {"pct": 0.98, "pct_byma": 3.0}
+    assert fdh.pct_segun_via(q, "propio") == 0.98
+    assert fdh.pct_segun_via(q, "eeuu") == 3.0
+    assert fdh.pct_segun_via(q, "adr") == 3.0
+    assert fdh.pct_segun_via({"pct": 0.98}, "eeuu") == 0.98     # no se pidió desde BYMA
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "frontend", "src", "utils", "fueraDeHorario.js")
+    js = open(ruta, encoding="utf-8").read()
+    assert "ref.via !== 'propio' && q.pct_byma !== undefined ? q.pct_byma : q.pct" in js
+
+
+def test_el_resumen_del_chat_usa_el_de_byma_para_el_cedear_y_el_de_ny_para_la_accion():
+    datos = {"sesion": "post", "byma_abierto": False, "cierra": "22:00",
+             "cotizaciones": {"AAPL": {"pct": 1.0, "pct_byma": 3.0, "base": "2026-11-16"}}}
+    lotes = [{"asset": "AAPL", "valor": 1000.0, "ref": ("AAPL", "propio")},
+             {"asset": "AAPL", "valor": 1000.0, "ref": ("AAPL", "eeuu")}]
+    r = fdh.resumen_de_lotes(lotes, datos)
+    assert r["usd"] == pytest.approx(10.0 + 30.0)
+    por = {a["via"]: a for a in r["activos"]}
+    assert por["propio"]["pct"] == 1.0 and por["eeuu"]["pct"] == 3.0
+
+
+def test_el_mail_mide_el_cedear_desde_el_cierre_de_byma():
+    mar = dt.date(2026, 11, 17)
+    velas, cierres = VELAS_AAPL_INVIERNO
+    velas = velas + [(dt.datetime.combine(mar, dt.time(9, 25), NY), 104.0)]
+    cierre = dt.datetime(2026, 11, 16, 17, 0, tzinfo=AR)
+    f = fdh.franjas_de_velas(velas, cierres, mar, cierre_byma=cierre)
+    assert f["post"]["pct"] == pytest.approx((103 / 102 - 1) * 100, abs=1e-4)
+    assert f["post"]["pct_byma"] == pytest.approx(3.0, abs=1e-4)
+    assert f["pre"]["pct_byma"] == pytest.approx(4.0, abs=1e-4)
+    lotes = [{"asset": "NVDA", "valor": 1000.0, "ref": ("AAPL", "propio")},
+             {"asset": "AAPL", "valor": 1000.0, "ref": ("AAPL", "eeuu")}]
+    r = fdh.resumen_de_la_manana(lotes, {"AAPL": f}, ahora=dt.datetime(2026, 11, 17, 11, 0, tzinfo=AR))
+    assert r["post"]["usd"] == pytest.approx(1000 * (103 / 102 - 1) + 30.0, abs=0.01)
+    assert r["pre"]["usd"] == pytest.approx(1000 * (104 / 102 - 1) + 40.0, abs=0.01)

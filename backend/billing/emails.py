@@ -1173,8 +1173,8 @@ def _lineas_fuera_de_horario(fdh) -> dict:
         hay_anticipo = hay_anticipo or bool(r.get("anticipo_usd_txt"))
     if not lineas:
         return {}
-    nota = ("Los CEDEARs y las acciones argentinas siguen a su acción en Nueva York; "
-            "en pesos también pesa lo que haga el dólar CCL." if hay_anticipo else "")
+    nota = ("Los CEDEARs y las acciones argentinas siguen a su acción en Nueva York desde que "
+            "cerró BYMA; en pesos también pesa lo que haga el dólar CCL." if hay_anticipo else "")
     return {"lineas": lineas, "nota": nota}
 
 

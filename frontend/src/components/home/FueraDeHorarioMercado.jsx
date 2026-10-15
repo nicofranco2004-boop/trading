@@ -15,8 +15,8 @@
 // (de 11 a 17, o de noche, no se pide nada de más).
 
 import { useEffect, useMemo, useState } from 'react'
-import { useFueraDeHorario } from '../../hooks/useFueraDeHorario'
-import { simbolosFueraDeHorario, impactoFueraDeHorario, nombreDeSesion, estadoDeSesion } from '../../utils/fueraDeHorario'
+import { useFueraDeHorarioDe } from '../../hooks/useFueraDeHorario'
+import { impactoFueraDeHorario, nombreDeSesion, estadoDeSesion } from '../../utils/fueraDeHorario'
 import { IconoSesion, tonoDeSesion, montoFdh } from '../FueraDeHorario'
 import { pctVar, pctColor, colorClass } from '../../utils/format'
 import { api } from '../../utils/api'
@@ -71,7 +71,7 @@ function Lista({ titulo, tono, items, moneda, oculto, vacio }) {
       {items.length === 0 ? (
         <div className="px-3 py-2.5 rounded-lg border border-dashed border-line text-[12.5px] text-ink-3">{vacio}</div>
       ) : items.map(x => (
-        <div key={x.s} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-2/60">
+        <div key={`${x.s}|${x.n || ''}`} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-2/60">
           <span className="text-[13px] font-semibold text-ink-0 w-14 flex-shrink-0">{x.s}</span>
           <span className="flex-1 min-w-0 text-[12.5px] text-ink-2 truncate">{x.n}</span>
           {x.monto != null && (
@@ -89,8 +89,7 @@ export default function FueraDeHorarioMercado({ cartera = null, moneda = 'USD', 
   const [hayCartera, setHayCartera] = useState(false)
   const propia = useCarteraPropia(!cartera && hayCartera)
   const c = cartera || propia
-  const simbolos = useMemo(() => (c ? simbolosFueraDeHorario(c.positions, c.brokers) : []), [c])
-  const datos = useFueraDeHorario(simbolos, { listas: true })
+  const datos = useFueraDeHorarioDe(c?.positions, c?.brokers, { listas: true })
   useEffect(() => { if (datos?.sesion) setHayCartera(true) }, [datos?.sesion])
 
   const impacto = useMemo(
@@ -99,11 +98,15 @@ export default function FueraDeHorarioMercado({ cartera = null, moneda = 'USD', 
 
   // «Tus activos»: una fila por acción de EE.UU., con la plata de todas las
   // tenencias que la siguen (el CEDEAR de AAPL y AAPL en Schwab suman juntas).
+  // Juntas sólo si se mueven igual: de noviembre a marzo el CEDEAR se mide
+  // desde el cierre de BYMA (15:00 de NY) y AAPL en Schwab desde el de NY, y
+  // un % solo para las dos mentía en una de las dos filas.
   const mios = useMemo(() => {
     if (!impacto?.aplica) return []
     const porSimbolo = {}
     for (const r of Object.values(impacto.porPosicion)) {
-      const x = porSimbolo[r.s] || (porSimbolo[r.s] = { s: r.s, pct: r.pct, monto: 0, vias: new Set(), propia: false })
+      const k = `${r.s}|${r.pct}`
+      const x = porSimbolo[k] || (porSimbolo[k] = { s: r.s, pct: r.pct, monto: 0, vias: new Set(), propia: false })
       x.monto += moneda === 'ARS' ? r.ars : r.usd
       if (r.via === 'propio') x.propia = true
       else x.vias.add(r.via === 'eeuu' ? 'CEDEAR' : 'vía ADR')
@@ -121,7 +124,7 @@ export default function FueraDeHorarioMercado({ cartera = null, moneda = 'USD', 
   const conPct = (grupo) => (grupo || []).map(x => ({ ...x, pct: datos?.cotizaciones?.[x.s]?.pct ?? null }))
   const pestanas = [
     mios.length > 0 && { id: 'mios', label: 'Tus activos', items: mios,
-      pie: 'Al lado del %, la plata que te mueve cada una. Los CEDEARs y las acciones argentinas siguen a su acción en Nueva York: es un anticipo, sin lo que haga el dólar CCL.' },
+      pie: 'Al lado del %, la plata que te mueve cada una. Los CEDEARs y las acciones argentinas siguen a su acción en Nueva York desde que cerró BYMA: es un anticipo, sin lo que haga el dólar CCL.' },
     { id: 'adrs', label: 'ADRs argentinos', items: conPct(listas?.adrs),
       pie: 'Las acciones argentinas que cotizan en Nueva York. Anticipan cómo puede abrir el Merval.' },
     { id: 'populares', label: 'Populares', items: conPct(listas?.populares),

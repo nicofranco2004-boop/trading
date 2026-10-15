@@ -26,6 +26,17 @@
 //     el ticker local tal cual en Yahoo daría OTRA empresa (AGRO → Adecoagro).
 // Los dos anticipos ('eeuu' y 'adr') NO incluyen lo que se mueva el dólar CCL,
 // y se apagan cuando abre BYMA: desde ahí el papel tiene precio propio.
+//
+// CONTRA QUÉ SE MIDE EL ANTICIPO (`pct_byma`)
+//   El precio de un CEDEAR es el del cierre de BYMA (17:00 de acá). Lo pendiente
+//   es lo que se movió su acción en NY DESPUÉS de esa hora. De noviembre a marzo
+//   las 17:00 de acá son las 15:00 de NY: la última hora de la rueda de NY no
+//   está en el precio del CEDEAR ni en el % contra el cierre de NY. Por eso los
+//   anticipos usan `pct_byma`, que el servidor calcula contra el precio de la
+//   acción a la hora del cierre de BYMA (backend/fuera_de_horario.py, regla
+//   `pct_segun_via`, la misma que copia `pctDeLaTenencia`). Para pedirlo, el
+//   servidor tiene que saber qué símbolos siguen a un papel de acá:
+//   `simbolosDesdeByma`.
 
 import { valuePositionLot, priceSymbol, costInPesos, BYMA_EXCEPCIONES } from './valuation'
 import { classifyAsset, isArMarket } from './assetClass'
@@ -81,12 +92,26 @@ export function simbolosFueraDeHorario(positions = [], brokers = []) {
   return [...out].sort()
 }
 
+/** Los que siguen a un CEDEAR o a una acción argentina: el servidor les calcula
+ *  además el % desde el cierre de BYMA. */
+export function simbolosDesdeByma(positions = [], brokers = []) {
+  const out = new Set()
+  for (const p of positions || []) {
+    const r = referenciaEnEEUU(p, brokers)
+    if (r && r.via !== 'propio') out.add(r.s)
+  }
+  return [...out].sort()
+}
+
 /** ¿Hay pre o post para mostrar? */
 export const haySesion = (datos) => Boolean(datos?.sesion)
 
 /**
  * El % (en puntos: 0,64 = 0,64 %) que corresponde a esta tenencia, o null si
  * no aplica. `{ pct: null }` = aplica pero todavía no operó.
+ * La acción misma: contra el cierre de NY. Un CEDEAR o una acción argentina:
+ * desde el cierre de BYMA (`pct_byma`), si vino. La misma regla que
+ * `pct_segun_via` del servidor (chat, mail y alertas).
  */
 export function pctDeLaTenencia(p, brokers, datos) {
   if (!haySesion(datos)) return null
@@ -95,7 +120,8 @@ export function pctDeLaTenencia(p, brokers, datos) {
   if (ref.via !== 'propio' && datos.byma_abierto) return null
   const q = datos.cotizaciones?.[ref.s]
   if (!q) return null
-  return { pct: q.pct, via: ref.via, s: ref.s }
+  const pct = ref.via !== 'propio' && q.pct_byma !== undefined ? q.pct_byma : q.pct
+  return { pct, via: ref.via, s: ref.s }
 }
 
 /**

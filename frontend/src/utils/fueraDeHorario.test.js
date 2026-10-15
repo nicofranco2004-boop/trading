@@ -2,7 +2,7 @@
 // cuánta plata mueve. Atraviesa `valuePositionLot` (la valuación real de las
 // pantallas), no un valor armado a mano: si la valuación cambia, esto lo ve.
 import { describe, it, expect } from 'vitest'
-import { referenciaEnEEUU, simbolosFueraDeHorario, impactoFueraDeHorario, pctDeLaTenencia, sumarTenencias } from './fueraDeHorario'
+import { referenciaEnEEUU, simbolosFueraDeHorario, simbolosDesdeByma, impactoFueraDeHorario, pctDeLaTenencia, sumarTenencias } from './fueraDeHorario'
 import { computeBrokerValue } from './valuation'
 
 const BROKERS = [
@@ -169,5 +169,39 @@ describe('lo que encontró la auditoría (2026-10-15)', () => {
   it('un CEDEAR comprado en pesos dentro de una cuenta en dólares es anticipo, como en el servidor', () => {
     expect(referenciaEnEEUU(lote(33, 'Schwab', 'AAPL', 10, 270000, { currency: 'ARS' }), BROKERS))
       .toEqual({ s: 'AAPL', via: 'eeuu' })
+  })
+})
+
+
+// Desde el 1/11 (EE.UU. atrasa el reloj) BYMA cierra a las 15:00 de NY: la
+// última hora de la rueda de NY no está en el precio del CEDEAR. El servidor
+// manda `pct_byma` (desde el cierre de BYMA) para los símbolos de `byma`; los
+// anticipos lo usan y la acción misma sigue con `pct` (contra el cierre de NY).
+describe('el anticipo de un CEDEAR va desde el cierre de BYMA', () => {
+  const invierno = {
+    sesion: 'post', cierra: '22:00', byma_abierto: false,
+    cotizaciones: {
+      AAPL: { pct: 0.98, pct_byma: 3.0, precio: 103 },     // 103 contra 102 (NY) y contra 100 (15:00 NY)
+      NVDA: { pct: -1.6, precio: 175.6 },
+      YPF: { pct: 1.0, pct_byma: 2.5, precio: 40 },
+    },
+  }
+  it('pide desde BYMA sólo lo que sigue a un CEDEAR o a una acción argentina', () => {
+    expect(simbolosDesdeByma(POS, BROKERS)).toEqual(['AAPL', 'DIS', 'YPF'])
+  })
+  it('AAPL en Schwab usa el cierre de NY; el CEDEAR AAPL, el de BYMA', () => {
+    expect(pctDeLaTenencia(POS[1], BROKERS, invierno).pct).toBe(0.98)
+    expect(pctDeLaTenencia(POS[3], BROKERS, invierno).pct).toBe(3.0)
+    expect(pctDeLaTenencia(POS[4], BROKERS, invierno).pct).toBe(2.5)
+  })
+  it('la plata del CEDEAR sale de su valor × el % desde el cierre de BYMA', () => {
+    const imp = impactoFueraDeHorario(POS, BROKERS, ctx, invierno)
+    const valorArs = 87 * 27700
+    expect(imp.porPosicion[4].ars).toBeCloseTo(valorArs * 0.03, 2)
+    expect(imp.porPosicion[2].usd).toBeCloseTo(22 * 192.4 * 0.0098, 4)
+  })
+  it('si el servidor no lo mandó, usa el % contra el cierre de NY', () => {
+    const sinByma = { ...invierno, cotizaciones: { AAPL: { pct: 0.98, precio: 103 } } }
+    expect(pctDeLaTenencia(POS[3], BROKERS, sinByma).pct).toBe(0.98)
   })
 })

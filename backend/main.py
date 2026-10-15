@@ -31319,9 +31319,12 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
         # valor de cada lote que el resto de esta respuesta. ──
         fdh_res = None
         refs = sorted({l["ref"][0] for l in lotes if l.get("ref")})
+        # Los que siguen a un CEDEAR o una acción argentina se miden desde el
+        # cierre de BYMA (`fuera_de_horario.pct_segun_via`), como la pantalla.
+        desde_byma = sorted({l["ref"][0] for l in lotes if l.get("ref") and l["ref"][1] != "propio"})
         if refs:
             try:
-                fdh_res = _fdh.resumen_de_lotes(lotes, _fdh.estado(refs), tc_pesos=tc_cedear)
+                fdh_res = _fdh.resumen_de_lotes(lotes, _fdh.estado(refs, byma=desde_byma), tc_pesos=tc_cedear)
             except Exception as ex:
                 log.warning("cartera_hoy: pre/post mercado falló uid=%s: %s", uid, ex)
 
@@ -45078,16 +45081,19 @@ def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
 
 
 @app.get("/api/fuera-de-horario")
-def fuera_de_horario_endpoint(symbols: str = "", listas: bool = False,
+def fuera_de_horario_endpoint(symbols: str = "", listas: bool = False, byma: str = "",
                               uid: int = Depends(get_effective_user)):
     """Pre y post mercado de Wall Street (ver `fuera_de_horario.py`).
 
     `symbols`: las acciones de EE.UU. que la pantalla quiere (el frontend ya
     tradujo cada CEDEAR a su acción y cada acción argentina a su ADR).
+    `byma`: cuáles de esas siguen a un CEDEAR o a una acción argentina: traen
+    también el % desde el cierre de BYMA (`pct_byma`).
     `listas=1` suma los índices, los ADRs argentinos y los populares, para la
     sección de Mercado. Es un ANTICIPO: no toca ningún número guardado."""
     import fuera_de_horario as _fdh
-    return _fdh.estado(_fdh.limpiar_simbolos(symbols), listas=listas)
+    return _fdh.estado(_fdh.limpiar_simbolos(symbols), listas=listas,
+                       byma=_fdh.limpiar_simbolos(byma))
 
 
 # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────────

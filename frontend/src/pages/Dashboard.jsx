@@ -48,8 +48,8 @@ import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
-import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
-import { simbolosFueraDeHorario, impactoFueraDeHorario } from '../utils/fueraDeHorario'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { impactoFueraDeHorario } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../components/FueraDeHorario'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
@@ -246,8 +246,7 @@ function PersonalDashboard() {
 
   // Pre y post mercado: un ANTICIPO debajo del valor actual, nunca sumado (ni
   // al total, ni a «Hoy», ni a la curva). La cuenta es la de utils/fueraDeHorario.
-  const simbolosFdh = useMemo(() => simbolosFueraDeHorario(positions, brokers), [positions, brokers])
-  const fdh = useFueraDeHorario(simbolosFdh)
+  const fdh = useFueraDeHorarioDe(positions, brokers)
   const impactoFdh = useMemo(
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
