@@ -450,7 +450,12 @@ def test_mañana_termina_tu_pro_no_se_reintenta_ya_en_plus(conn):
         _en_prueba_hace_mas(conn, uid, 1)
         with _red_de_mentira(_Reloj()) as resend2:
             subs.run_lifecycle_job(conn)
-        assert resend2.a(ana) == []
+        # ⚠️ Lo que no puede repetirse es EL AVISO DE FIN DE PRO, no "cualquier
+        # mail": el día del paso sale además el de "ya estás en Plus"
+        # (`send_trial_plus_started`, desde el 15/10). Medir silencio total
+        # ponía este test en rojo por un mail que SÍ corresponde.
+        assert [a_ for to, a_, _ in resend2.mails
+                if to == ana and "termina" in a_] == []
     assert len(resend.a(ana)) == 1
     assert conn.execute("SELECT tier FROM users WHERE id=?", (uid,)).fetchone()["tier"] == "plus"
 
@@ -1284,7 +1289,16 @@ def test_fin_de_pro_sale_el_dia_utc_anterior_al_paso_a_plus_a_cualquier_hora(
     with _red_de_mentira(_Reloj()) as resend:
         subs.run_lifecycle_job(conn)
     for uid, (hace, ini, fin) in casos.items():
-        llego = bool(resend.a(f"u{hace}{ini.hour}@{DOMINIO}"))
+        # ⚠️ Mide EL AVISO DE FIN DE PRO, no "llegó algún mail". Desde el
+        # 15/10 el paso a Plus manda su propio mail el día del cambio
+        # (`send_trial_plus_started`, pedido de Nico), así que medir "llegó
+        # algo" daba True también para `hace == TRIAL_PRO_DAYS` y este test se
+        # ponía rojo midiendo otra cosa. Lo que vigila sigue siendo lo mismo:
+        # que el de fin de Pro salga el día UTC anterior al paso, a cualquier
+        # hora.
+        casilla = f"u{hace}{ini.hour}@{DOMINIO}"
+        llego = any(to == casilla and "termina" in asunto
+                    for to, asunto, _ in resend.mails)
         desde, hasta = tr.ventanas_de_aviso(ini.isoformat(), fin.isoformat())[tr.MAIL_PRO_ENDING]
         assert llego == (hace == tr.TRIAL_PRO_DAYS - 1), (hora_utc, hace, ini)
         assert llego == (desde <= ahora < hasta), (hora_utc, hace, ini, desde, hasta)

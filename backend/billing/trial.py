@@ -571,7 +571,10 @@ def step_down_due_trials(conn) -> int:
     cutoff = (datetime.utcnow().date() - timedelta(days=TRIAL_PRO_DAYS)).isoformat()
     try:
         rows = conn.execute(
-            """SELECT id, email, trial_started_at FROM users
+            # `name` entra para el saludo del mail del paso a Plus: sin esa
+            # columna, `_name(r)` revienta con KeyError y el step-down se cae
+            # entero — o sea, nadie pasa a Plus por un mail.
+            """SELECT id, email, name, trial_started_at FROM users
                 WHERE tier='pro'
                   AND trial_started_at IS NOT NULL
                   AND date(replace(trial_started_at,'T',' ')) <= ?
@@ -591,7 +594,7 @@ def step_down_due_trials(conn) -> int:
         return 0
     if not rows:
         return 0
-    n = 0
+    n, bajados = 0, []
     with conn:
         for r in rows:
             # quota_window_from va en el MISMO UPDATE (no por note_tier_change):
@@ -625,7 +628,35 @@ def step_down_due_trials(conn) -> int:
             except Exception:
                 pass
             n += 1
+            bajados.append(r)
     log.info("trial step-down pro→plus: %d usuarios", n)
+
+    # ⚠️ `emails` se importa acá y no arriba porque en este módulo NO está a
+    # nivel de módulo: cada función hace su propio `from billing import emails`.
+    # Sin esta línea la lambda de abajo levanta NameError cuando se la llama —
+    # adentro de `_avisar_una_vez`, que no lo deja salir— y el mail no se manda
+    # sin un solo error visible. Lo cazó el test, no la lectura.
+    from billing import emails
+
+    # ⭐ El aviso va DESPUÉS de cerrar la transacción, nunca adentro: mandar un
+    # mail es una llamada HTTP de hasta 10 s y adentro de un `with conn` deja la
+    # base tomada todo ese rato (con 1.300 usuarios el 1/11, eso es la app
+    # trabada). Si el mail falla, el paso a Plus ya está hecho igual — y
+    # `_avisar_una_vez` lo reintenta en la corrida siguiente.
+    for r in bajados:
+        if not r["email"]:
+            continue
+        _avisar_una_vez(conn, r["id"], MAIL_PLUS_STARTED, lambda r=r:
+                        emails.send_trial_plus_started(
+                            # ⚠️ Inline y no `_name(r)`: ese helper vive ADENTRO
+                            # de `send_due_trial_emails`, no a nivel de módulo.
+                            # Usarlo acá daba NameError, y el log lo dijo
+                            # ("el envío falló: name '_name' is not defined")
+                            # mientras el paso a Plus se hacía igual: el mail se
+                            # perdía sin que nada se cayera.
+                            to=r["email"],
+                            user_name=(r["name"] or r["email"].split("@")[0]),
+                            plus_days=TRIAL_PLUS_DAYS, pro_days=TRIAL_PRO_DAYS))
     return n
 
 
@@ -635,9 +666,14 @@ def step_down_due_trials(conn) -> int:
 #   día 7  → mañana termina Pro   ← el que más convierte: avisa ANTES
 #   día 14 → quedan 2 días
 #   día 16 → terminó (con su propio resumen)
-# El del día 8 (ya pasaste a Plus) va SOLO dentro de la app: se avisó el día
-# anterior y dos mails seguidos por lo mismo hacen que dejen de abrirlos justo
-# antes del aviso que importa.
+# El del paso a Plus SÍ sale por mail desde el 15/10 (pedido de Nico). Antes iba
+# sólo dentro de la app, con este argumento —que sigue siendo cierto y hay que
+# tenerlo presente—: se avisó la víspera, y dos mails seguidos por lo mismo hacen
+# que dejen de abrirlos justo antes del aviso que convierte. Lo que lo dio vuelta:
+# el cartel de la app dice el ESTADO ("estás en Plus, te quedan N días"), no que
+# HOY cambió algo, así que quien no lo lee se encuentra el chat restringido sin
+# explicación. Por eso el mail nuevo no repite al de la víspera: aquél dice
+# "aprovechá hoy", éste dice qué cambió y qué gana el Plus.
 #
 # La idempotencia es propia (tabla trial_email_log) y NO se apoya en la tabla
 # subscriptions como el resto de los avisos: un usuario de trial no tiene fila
@@ -646,6 +682,7 @@ def step_down_due_trials(conn) -> int:
 
 MAIL_STARTED = "started"
 MAIL_PRO_ENDING = "pro_ending"
+MAIL_PLUS_STARTED = "plus_started"   # el día que de verdad pasa a Plus
 MAIL_ENDING_SOON = "ending_soon"
 MAIL_ENDED = "ended"
 

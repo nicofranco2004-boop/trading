@@ -2593,6 +2593,63 @@ def send_trial_pro_ending(*, to: str, user_name: str, plus_days: int,
                  from_addr=_from_noreply())
 
 
+def send_trial_plus_started(*, to: str, user_name: str, plus_days: int,
+                            pro_days: int) -> bool:
+    """El día que de verdad pasa de Pro a Plus.
+
+    ⚠️ DECISIÓN QUE ESTE MAIL CAMBIA. Hasta el 15/10 este aviso iba SÓLO dentro
+    de la app, a propósito: ya se avisó la víspera, y dos mails seguidos por lo
+    mismo hacen que dejen de abrirlos justo antes del aviso que convierte (el de
+    "quedan 3 días"). Nico pidió el mail igual, y el argumento a favor es que el
+    cartel de la app dice el ESTADO ("estás en Plus, te quedan N días"), no que
+    HOY cambió algo: quien no lo lee se encuentra el chat restringido sin
+    explicación y puede creer que Rendi se rompió.
+
+    Por eso este mail NO repite el de la víspera: aquél decía "aprovechá hoy lo
+    que vas a perder"; éste dice qué cambió y qué GANA el Plus, que desde el
+    15/10 es Rendi entero menos la IA.
+    """
+    from ai.quota import LIMITS as _L
+    _pro_sem = _L["pro"]["analyses_per_week"]
+    _plus_sem = _L["plus"]["analyses_per_week"]
+    _titulo = f"Ya estás en Plus · te quedan {plus_days} días de prueba"
+    body_html = f"""
+      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{_titulo}</h1>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Hola {user_name}: terminaron tus {pro_days} días de Pro y desde hoy estás
+        probando el Plus. Te cuento qué cambió, para que no te sorprenda.
+      </p>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 8px;"><b>Lo que sigue igual</b></p>
+      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 16px;">
+        <li>Todos tus brokers y tu historial, intactos.</li>
+        <li>El diagnóstico completo y los 12 detectores de comportamiento.</li>
+        <li>Las alertas, sin tope.</li>
+        <li>Las métricas de riesgo completas.</li>
+      </ul>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 8px;"><b>Lo que cambió</b></p>
+      <ul style="font-size:14px;line-height:1.8;color:#374151;padding-left:20px;margin:0 0 20px;">
+        <li>El chat vuelve a las <b>preguntas guiadas</b> (en Pro es libre).</li>
+        <li>Los análisis con IA pasan de {_pro_sem} a <b>{_plus_sem} por semana</b>.</li>
+      </ul>
+      <p style="font-size:14px;color:#374151;line-height:1.6;">
+        Si la IA es lo que más te sirvió, podés volver a Pro desde
+        <a href="{_TRIAL_URL}" style="color:#8B7BFF;text-decoration:none;font-weight:600;">acá</a>.
+      </p>
+    """
+    text = (
+        f"{_titulo}\n\n"
+        f"Hola {user_name}: terminaron tus {pro_days} días de Pro y desde hoy "
+        f"estás probando el Plus.\n\n"
+        f"Sigue igual: todos tus brokers, el diagnóstico completo, los 12 "
+        f"detectores, las alertas sin tope y las métricas de riesgo.\n\n"
+        f"Cambió: el chat vuelve a preguntas guiadas y los análisis con IA pasan "
+        f"de {_pro_sem} a {_plus_sem} por semana.\n\n"
+        f"Volver a Pro: {_TRIAL_URL}\n\n— Rendi"
+    )
+    return _send(to, _titulo, _wrap_html(body_html), text,
+                 from_addr=_from_noreply())
+
+
 def send_trial_ending_soon(*, to: str, user_name: str, days_left: int,
                            requiere_plan: bool = False) -> bool:
     """La ventana real para decidir, con los dos planes a la vista.

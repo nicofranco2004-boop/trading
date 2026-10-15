@@ -80,6 +80,7 @@ class LaPruebaCompleta(unittest.TestCase):
         self.enviados = []
         self._orig = {}
         for fn in ("send_trial_started", "send_trial_pro_ending",
+                   "send_trial_plus_started",
                    "send_trial_ending_soon", "send_trial_ended",
                    "send_welcome_free", "send_trials_ended_admin"):
             if hasattr(_em, fn):
@@ -181,6 +182,46 @@ class LaPruebaCompleta(unittest.TestCase):
         self.assertNotEqual(antes, None)
         entra, r = self._entra()
         self.assertTrue(entra, "lo bloqueamos a mitad de la prueba")
+
+    def test_el_dia_que_pasa_a_plus_le_llega_el_mail(self):
+        """⭐ Pedido de Nico el 15/10. Antes el paso a Plus no mandaba NADA: se
+        había avisado la víspera y el resto quedaba a cargo del cartel de la
+        app, que dice el ESTADO ("estás en Plus") y no que HOY cambió algo. Quien
+        no lo leía se encontraba el chat restringido sin explicación.
+
+        El mail sale desde `step_down_due_trials`, o sea del paso REAL, no de una
+        fecha calculada aparte: si el cron no bajó a nadie, no se manda nada."""
+        self._estamos_en_el_dia(tr.TRIAL_PRO_DAYS + 1)   # primer día de Plus
+        self.enviados.clear()
+        tr.step_down_due_trials(self.conn)
+        self.assertIn("send_trial_plus_started", self._mails(),
+                      f"no avisó el paso a Plus; salieron: {self._mails()}")
+
+    def test_el_mail_del_paso_a_plus_sale_UNA_sola_vez(self):
+        """El cron corre todos los días: si no fuera idempotente, esa persona
+        recibiría el mismo mail cada mañana durante diez días."""
+        self._estamos_en_el_dia(tr.TRIAL_PRO_DAYS + 1)
+        tr.step_down_due_trials(self.conn)
+        self.enviados.clear()
+        for _ in range(3):
+            tr.step_down_due_trials(self.conn)
+        self.assertNotIn("send_trial_plus_started", self._mails(),
+                         "el mail del paso a Plus se repite en cada corrida")
+
+    def test_al_que_PAGO_no_le_llega_el_del_paso_a_plus(self):
+        """El que pagó no baja a Plus —el step-down lo excluye— así que tampoco
+        puede recibir el aviso de que bajó."""
+        self._estamos_en_el_dia(tr.TRIAL_PRO_DAYS + 1)
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        self.conn.execute(
+            "INSERT INTO subscriptions (user_id, status, external_reference, "
+            "  period, amount_ars, created_at) "
+            "VALUES (?, 'authorized', ?, 'monthly', 15900, ?)",
+            (self.uid, f"rendi-{self.uid}-pro-monthly", ts))
+        self.conn.commit()
+        self.enviados.clear()
+        tr.step_down_due_trials(self.conn)
+        self.assertNotIn("send_trial_plus_started", self._mails())
 
     def test_cuando_faltan_tres_dias_le_pide_elegir_un_plan(self):
         self._estamos_en_el_dia(tr.TRIAL_TOTAL_DAYS - tr.MAIL_AVISO_DIAS_ANTES + 1)
