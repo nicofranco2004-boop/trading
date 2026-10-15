@@ -78,6 +78,7 @@ import {
   netCapitalContributed,
   monthlyReturnArs,
   applyMtmToMonthly,
+  atribucionDelCrecimiento,
   acumuladoDeVentana,
   perfEsDeLaVista,
   etiquetasFinales,
@@ -2140,26 +2141,17 @@ function InsightsDesktop({ _embeddedTab }) {
   // operations (todas las ops del user) y la función filtra a SELLs adentro.
   const styleCard = computeStyleCoherence(investorProfile, operations)
 
-  // ── Insight 3: Deposit discipline ──
-  let discipline = null
-  if (globalMonthly.length > 0) {
-    const totalDeposits = globalMonthly.reduce((s, m) => s + m.deposits, 0)
-    const totalWithdrawals = globalMonthly.reduce((s, m) => s + m.withdrawals, 0)
-    const netDeposits = totalDeposits - totalWithdrawals
-    // P&L real por mes = capital_final - capital_inicio - aportes_netos
-    // (NO sumar pnl_unrealized mes a mes: es snapshot acumulado, se cuenta N veces)
-    const totalPnl = globalMonthly.reduce((s, m) => {
-      const net = (m.deposits || 0) - (m.withdrawals || 0)
-      return s + ((m.capital_final || 0) - (m.capital_inicio || 0) - net)
-    }, 0)
-    const totalGrowth = netDeposits + totalPnl
-    discipline = {
-      deposits: netDeposits,
-      pnl: totalPnl,
-      total: totalGrowth,
-      pnlShare: totalGrowth !== 0 ? (totalPnl / Math.abs(totalGrowth)) * 100 : 0,
-    }
-  }
+  // ── Insight 3: Atribución del crecimiento (aportes vs mercado) ──
+  // De las dos puntas MEDIDAS — lo aportado y el valor de hoy —, no de la suma
+  // de la cadena mensual: para una cuenta cargada a mano esa cadena vale al costo
+  // todos los meses y el mercado daba $0. Sin precios completos, null: la
+  // tarjeta y los hallazgos growth_from_* no se publican. Ver
+  // `atribucionDelCrecimiento` (insightsModel.js).
+  const discipline = atribucionDelCrecimiento({
+    globalMonthly,
+    valorHoy: totalPortfolio,
+    valorHoyMedido: preciosCompletos,
+  })
 
   // (El "cash ratio" que se calculaba acá se fue con la tarjeta de barras: el %
   // de efectivo ahora es la porción "Efectivo" de la torta por activo, sobre el
@@ -3937,9 +3929,11 @@ function InsightsDesktop({ _embeddedTab }) {
 // "¿crecí porque invierto bien o porque deposité más plata?"
 //
 // Visual: barra horizontal apilada + números abajo. Usa los datos de `discipline`:
-//   deposits = aportes netos
-//   pnl      = ganancia/pérdida real del mercado (no incluye flujos)
-//   total    = deposits + pnl (cambio total del portfolio)
+//   deposits = capital aportado (lo que pusiste, neto de retiros)
+//   pnl      = valor de hoy − capital aportado
+//   total    = deposits + pnl = valor de hoy
+// Los arma `atribucionDelCrecimiento` (insightsModel.js) con las dos puntas
+// medidas; sin precios completos viene null y la tarjeta no se muestra.
 function PerformanceAttribution({ discipline, amt }) {
   // Al verse, la barra se arma (primero los aportes, después el mercado) y los
   // dos montos cuentan. Antes aparecía ya llena: la transición de 300 ms sólo
@@ -3961,7 +3955,7 @@ function PerformanceAttribution({ discipline, amt }) {
           <h2 className="font-semibold text-ink-0">Atribución del crecimiento</h2>
           <InfoTooltip>
             <p className="font-semibold text-ink-0">Cómo se calcula</p>
-            <p>La cartera crece o decrece por dos vías: <span className="font-medium">aportes netos</span> (depósitos menos retiros) y <span className="font-medium">rendimiento del mercado</span> (P&L mensual).</p>
+            <p>Lo que vale hoy tu cartera se explica por dos vías: <span className="font-medium">aportes netos</span> (lo que pusiste menos lo que retiraste) y <span className="font-medium">rendimiento del mercado</span> (lo que vale hoy, a precio de mercado, menos esos aportes).</p>
             <p className="text-ink-3">Si el crecimiento proviene principalmente de aportes, no refleja gestión sino capital nuevo. La performance real es la rentabilidad generada sobre el capital ya invertido.</p>
           </InfoTooltip>
         </div>
@@ -3970,7 +3964,7 @@ function PerformanceAttribution({ discipline, amt }) {
         </span>
       </div>
       <p className="text-xs text-ink-3 mb-4">
-        Qué porción del crecimiento proviene del rendimiento del mercado vs nuevos aportes.
+        Qué porción del crecimiento proviene del rendimiento del mercado vs tus aportes.
       </p>
 
       {/* Stacked bar */}
@@ -4011,7 +4005,7 @@ function PerformanceAttribution({ discipline, amt }) {
         {pnlShare >= 60 && pnlPositive
           ? 'Más del 60% del crecimiento proviene del rendimiento del mercado. Indicador positivo de gestión.'
           : depShare >= 70
-          ? 'La cartera creció principalmente por nuevos aportes, no por rendimiento. La rentabilidad real depende de lo que genere el capital ya invertido.'
+          ? 'La cartera creció principalmente por tus aportes, no por rendimiento. La rentabilidad real depende de lo que genere el capital ya invertido.'
           : pnlPositive
           ? 'Distribución equilibrada entre aportes y rendimiento del mercado.'
           : 'El mercado generó pérdidas en el período. El crecimiento neto se sostiene únicamente con los aportes.'}
