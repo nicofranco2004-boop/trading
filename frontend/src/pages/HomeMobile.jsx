@@ -42,6 +42,7 @@ import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { fechaCorta } from '../utils/lineaDelBono'
 import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { capitalAportado } from '../utils/capitalAportado'
+import { useDolarMensual } from '../hooks/useFxHistory'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -58,6 +59,8 @@ export default function HomeMobile() {
   const [prices, setPrices] = useState({})
   const [snapshots, setSnapshots] = useState([])
   const [bench, setBench] = useState(null)
+  // El dólar de cada mes, para "Capital aportado" en pesos (capitalAportado.js).
+  const { dolarMes } = useDolarMensual()
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadAll() }, [])
@@ -124,8 +127,8 @@ export default function HomeMobile() {
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost
     // El "% histórico" del título, en la moneda en que se mira: en pesos, sobre
-    // los pesos que se pagaron (el mismo número que "P&L no realizado" del
-    // Dashboard; ver `noRealizadoEnVista`).
+    // los pesos que se pagaron (la misma regla que "P&L no realizado" del
+    // Dashboard, `noRealizadoEnVista`; acá sin los plazos fijos, como antes).
     const { pct } = noRealizadoEnVista({ positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency })
     return { totalValue, totalCost, totalPnl, pct }
   }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, currency])
@@ -151,10 +154,13 @@ export default function HomeMobile() {
   // MUESTRA en pesos — a los pesos que se pusieron, no los dólares × el dólar de
   // hoy (un depósito de $10 M de hace un año se leía $10,86 M).
   const aportes = useMemo(
-    () => capitalAportado({ monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion }),
-    [monthly, brokers, bench, tcValuacion],
+    () => capitalAportado({ monthly, brokers, dolarMes, tcHoy: tcValuacion }),
+    [monthly, brokers, dolarMes, tcValuacion],
   )
   const aportado = aportes.usd
+  // En pesos lo aportado puede dar negativo (se retiró más de lo que se puso):
+  // el signo menos de verdad, separado del número.
+  const aportadoTexto = (v) => `${v < 0 ? '−' : ''}$${fmtNumber(Math.abs(v))}`
 
   // Serie 30d desde snapshots + punto LIVE de hoy — base para sparkline + delta.
   // buildPortfolioValueSeries (mismo helper que la curva del Dashboard):
@@ -486,7 +492,7 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="Capital aportado"
-            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? aportes.ars : kpis.aportado)}` : '—')}
+            value={hidden ? '••••••' : (kpis.aportado > 0 ? aportadoTexto(currency === 'ARS' ? aportes.ars : kpis.aportado) : '—')}
             sub={`${currency} neto`}
             topBorder
           />

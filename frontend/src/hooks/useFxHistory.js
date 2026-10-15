@@ -15,6 +15,7 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { api } from '../utils/api'
+import { dolarMensualDe } from '../utils/capitalAportado'
 
 // ── Pure helpers (testeables sin React) ──────────────────────────────────────
 //
@@ -223,4 +224,32 @@ export function useFxHistory(fallbackTcValuacion = 1415) {
     // cuando la serie termina de cargar (o se recarga), no en cada render.
     fxKey: fxIndex.dates.length,
   }
+}
+
+/**
+ * useDolarMensual — el dólar del cierre de cada mes ({'AAAA-MM': dólar}, ver
+ * `dolarMensualDe`) de la misma serie de /api/fx-rates (cacheada por sesión),
+ * para llevar a pesos lo aportado en dólares (utils/capitalAportado.js).
+ *
+ * `listo` = la serie ya respondió (o falló: entonces el mapa viene vacío y la
+ * cuenta cae al dólar de hoy). Las pantallas en pesos esperan a `listo` antes de
+ * mostrar "Capital aportado" como número firme: sin esto, durante la carga se
+ * veía el número calculado con el dólar de hoy y la animación anunciaba una
+ * diferencia que no existía.
+ */
+export function useDolarMensual() {
+  const [filas, setFilas] = useState(_fxCacheData)
+  useEffect(() => {
+    let cancelled = false
+    if (_fxCacheData) {
+      setFilas(_fxCacheData)
+      return () => { cancelled = true }
+    }
+    fetchFxHistory().then(rows => {
+      if (!cancelled) setFilas(rows)
+    })
+    return () => { cancelled = true }
+  }, [])
+  const dolarMes = useMemo(() => dolarMensualDe(filas), [filas])
+  return { dolarMes, listo: filas != null }
 }

@@ -1055,7 +1055,7 @@ export function valuePositionLot(p, ctx = {}) {
  * medido con $10 M depositados y siete compras, "+$3,36 M" de no realizado al
  * lado de una "Ganancia total" en pesos de +$4,2 M sin nada realizado. Los lotes
  * con costo en dólares siguen al dólar de hoy (como en Cartera); lo que el dólar
- * les sumó lo cuenta aparte `diferenciaDeCambio` (capitalAportado.js).
+ * les movió en pesos queda en `restoEnPesos` (capitalAportado.js).
  *
  * `extraValorUsd`/`extraCostoUsd`: lo que no son posiciones (los plazos fijos),
  * ya al dólar de hoy.
