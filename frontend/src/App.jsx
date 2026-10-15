@@ -25,6 +25,7 @@ import DemoBanner from './components/DemoBanner'
 // ("mañana pasás a Plus") tiene que verlo el que está usando la app.
 import { TrialBanner } from './components/plan/TrialCta'
 import MuroElegirPlan from './components/plan/MuroElegirPlan'
+import AvisoPrecios from './components/plan/AvisoPrecios'
 import SupportWhatsAppFab from './components/SupportWhatsAppFab'
 import { useIsMobile } from './hooks/useIsMobile'
 import { trackRoute } from './utils/track'
@@ -511,6 +512,11 @@ export default function App() {
               <RouteTracker />
               <Layout />
               <MuroDePlanGate />
+              {/* Aviso único de cambio de precios. Hermano del muro y no hijo
+                  de una página: así aparece una vez al entrar, sin importar en
+                  qué pantalla caiga la sesión. No choca con el muro — el muro
+                  es para cuentas en pausa y esto es sólo para quien paga. */}
+              <AvisoPrecios />
               {/* EL ACOMPAÑANTE. Hermano de <Layout/>, no hijo de una página:
                   montado adentro el router lo desmontaría al navegar, el
                   <audio> se destruiría y Rendi se callaría a mitad de frase —

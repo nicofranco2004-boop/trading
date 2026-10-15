@@ -775,3 +775,58 @@ def _sync_authorized_with_mp(conn) -> int:
                     r["mp_subscription_id"], r["status"], new_status)
             updated += 1
     return updated
+
+
+# ─── Aviso único: cambiaron los precios (15/10/2026) ────────────────────────
+# A quién se le muestra y a quién no. La pregunta parece trivial y no lo es: en
+# Rendi, quien está en la PRUEBA tiene `tier` 'pro' o 'plus' igual que quien
+# paga —el tier sale del crédito, no de la tarjeta—, así que preguntar por el
+# tier le mostraría un aviso de aumento a alguien que todavía no pagó nunca.
+#
+# El dato que de verdad los separa es si hay una suscripción cobrada y viva, y
+# ese predicado YA EXISTE y es el mismo que usa la prueba para no contar como
+# "probando" a quien ya decidió: `trial._has_paid_sub`. Se reusa a propósito —
+# una segunda versión de "¿esta persona paga?" es como se desincronizan dos
+# pantallas que hablan de la misma gente.
+#
+# Quedan afuera, correctamente: los free, los que están en la prueba, y los que
+# tienen el plan regalado desde admin (no se les cobra, así que un aviso de
+# cambio de precio no les dice nada).
+
+AVISO_PRECIOS_COL = "aviso_precios_oct26_at"
+
+
+def debe_ver_aviso_precios(conn, user_id: int) -> bool:
+    """¿Hay que mostrarle UNA VEZ el aviso de que cambiaron los precios?"""
+    try:
+        from ai import quota
+        from billing.trial import _has_paid_sub
+        if quota.get_tier(conn, user_id) not in ("plus", "pro"):
+            return False
+        if not _has_paid_sub(conn, user_id):
+            return False          # está en la prueba, o tiene el plan regalado
+        row = conn.execute(
+            f"SELECT {AVISO_PRECIOS_COL} AS visto FROM users WHERE id=?",
+            (user_id,)).fetchone()
+        return bool(row) and not row["visto"]
+    except Exception as ex:
+        # Un aviso que falla NO puede romper el login. Ante la duda, no se
+        # muestra: molestar de más es peor que no avisar por la app (el mail
+        # sale igual).
+        log.warning("aviso de precios uid=%s: %s", user_id, ex)
+        return False
+
+
+def marcar_aviso_precios_visto(conn, user_id: int) -> bool:
+    """Lo marca como visto. Idempotente: si ya tenía fecha, no la pisa — así
+    queda cuándo lo vio por primera vez y no cuándo fue el último intento."""
+    try:
+        with conn:
+            conn.execute(
+                f"UPDATE users SET {AVISO_PRECIOS_COL} = ? "
+                f"WHERE id = ? AND {AVISO_PRECIOS_COL} IS NULL",
+                (datetime.utcnow().isoformat(), user_id))
+        return True
+    except Exception as ex:
+        log.warning("marcar aviso de precios uid=%s: %s", user_id, ex)
+        return False

@@ -2943,6 +2943,13 @@ def init_db():
         # 'YYYY-MM-DD'. UN aviso por persona y por vencimiento real: ver
         # `billing.subscriptions._send_credit_expiring_reminders`. Sin índice
         # (se lee y escribe por id de usuario).
+        # Cuándo se le mostró el aviso de que cambiaron los precios (15/10/2026).
+        # ⭐ Va en la BASE y no en el navegador a propósito: con `localStorage` el
+        # aviso vuelve a aparecer en cada dispositivo, en cada navegador y en cada
+        # ventana de incógnito — que es exactamente la forma en que estos avisos
+        # terminan mostrándose "varias veces" aunque el código diga una sola.
+        if user_cols_after and 'aviso_precios_oct26_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN aviso_precios_oct26_at TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -4528,8 +4535,21 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
         except Exception: pass
 
 
+@app.post("/api/me/aviso-precios-visto")
+def marcar_aviso_precios_visto(uid: int = Depends(get_current_user)):
+    """Marca el aviso de cambio de precios como visto, para que no vuelva.
+
+    `get_current_user` y no `get_effective_user`: la marca es de quien inició
+    sesión. Idempotente y a prueba de doble click — el UPDATE sólo escribe si la
+    columna está en NULL, así que el segundo no pisa la fecha del primero."""
+    from billing import subscriptions as _subs
+    with db_abierta() as conn:
+        _subs.marcar_aviso_precios_visto(conn, uid)
+    return {"ok": True}
+
+
 @app.get("/api/auth/me")
-def me(uid: int = Depends(get_effective_user)):
+def me(request: Request, uid: int = Depends(get_effective_user)):
     from ai import quota
     with db_abierta() as conn:
         row = conn.execute(
@@ -4571,6 +4591,21 @@ def me(uid: int = Depends(get_effective_user)):
                LIMIT 1""",
             (uid,),
         ).fetchone()
+        # ⭐ El aviso de que cambiaron los precios (15/10/2026), UNA sola vez y
+        # sólo a quien paga de verdad. Quien está en la prueba tiene tier
+        # 'pro'/'plus' igual que quien paga, así que la regla no puede ser el
+        # tier: ver `subscriptions.debe_ver_aviso_precios`.
+        # ⚠️ Va por el uid AUTENTICADO y no por el resuelto: si un asesor está
+        # mirando la cuenta de un cliente, `uid` es el del CLIENTE, y el aviso
+        # —más el click que lo marca como visto— le corresponde al asesor. Mismo
+        # patrón que usa `/api/plan/features` para el estado de la prueba.
+        try:
+            from billing import subscriptions as _subs
+            _yo = getattr(request.state, "rendi_auth_uid", uid)
+            d["aviso_precios"] = _subs.debe_ver_aviso_precios(conn, _yo)
+        except Exception:
+            d["aviso_precios"] = False
+
         d["subscription_status"] = sub["status"] if sub else None
         d["subscription_period_end"] = sub["current_period_end"] if sub else None
         d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
