@@ -49,7 +49,8 @@ import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import NumeroQueCambia from '../components/NumeroQueCambia'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
-import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
+import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
+import { cuerpoDeVenta, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { isBondPosition } from '../utils/tickers'
 import TcMissingBadge from '../components/TcMissingBadge'
@@ -410,8 +411,9 @@ export default function PositionsMobile() {
       asset: p.asset,
       currency: sellCcy,
       quantity: '',
-      exit_price: suggested ? +(+suggested).toFixed(4) : '',
-      tc_venta: isARS ? +(pickFinancialRate(dolar, valuationDollar) || 1415).toFixed(2) : '',
+      // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
+      exit_price: suggested ? numACampo(+(+suggested).toFixed(4)) : '',
+      tc_venta: isARS ? numACampo(+(pickFinancialRate(dolar, valuationDollar) || 1415).toFixed(2)) : '',
       date: today(),
       commissions: '',
     })
@@ -419,27 +421,12 @@ export default function PositionsMobile() {
   }
 
   async function confirmSell() {
-    const body = {
-      broker: sellForm.broker,
-      asset: sellForm.asset,
-      quantity: +sellForm.quantity,
-      exit_price: +sellForm.exit_price,
-      date: sellForm.date,
-      commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
-      // Moneda de la venta → el FIFO consume SOLO lotes de esa moneda. Mobile no
-      // la mandaba y el backend caía a la del broker (back-compat), así que un
-      // lote en pesos alojado en una cuenta en dólares consumía los lotes de la
-      // otra moneda. Desktop sí la manda desde siempre: misma venta, dos
-      // resultados según el aparato. `sellForm.currency` sale de `sellCurrency`.
-      currency: sellForm.currency === 'ARS' ? 'ARS' : 'USD',
-      ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
-    }
-    if (!body.quantity || body.quantity <= 0) {
-      return alert('La cantidad ingresada no es válida.')
-    }
-    if (body.exit_price == null || body.exit_price < 0) {
-      return alert('El precio ingresado no es válido.')
-    }
+    // Se lee con la misma función que dibuja el SellModal (utils/formulariosCartera).
+    // Mobile antes no mandaba la moneda y el backend caía a la del broker: un lote
+    // en pesos alojado en una cuenta en dólares consumía los de la otra moneda.
+    // Ahora el cuerpo es uno solo para los dos aparatos.
+    const { body, error } = cuerpoDeVenta(sellForm)
+    if (error) return alert(error)
     try {
       await api.post('/positions/sell', body)
       track('position_sold', { asset: sellForm.asset, broker: sellForm.broker })
@@ -563,34 +550,23 @@ export default function PositionsMobile() {
       kind: 'MEP',
       ars_amount: '',
       usd_amount: '',
-      tc: tcValuacion ? String(tcValuacion) : '',
+      tc: tcValuacion ? numACampo(tcValuacion) : '',
       date: today(),
     })
     setAddModal('convert')
   }
 
   async function confirmConvert() {
-    const arsAmount = +convertForm.ars_amount
-    const usdAmount = +convertForm.usd_amount
-    const tc = +convertForm.tc
-    if (!arsAmount || arsAmount <= 0) return toast.push('Ingresá un monto ARS válido.', { type: 'warn' })
-    if (!usdAmount || usdAmount <= 0) return toast.push('Ingresá un monto USD válido.', { type: 'warn' })
-    if (!tc || tc <= 0) return toast.push('Ingresá un tipo de cambio válido.', { type: 'warn' })
-    const debit = convertForm.direction === 'ars_to_usd' ? arsAmount : usdAmount
+    // Se lee con la misma función que dibuja el ConvertModal (utils/formulariosCartera).
+    const { body, error } = cuerpoDeConversion(convertForm)
+    if (error) return toast.push(error, { type: 'warn' })
+    const debit = convertForm.direction === 'ars_to_usd' ? body.ars_amount : body.usd_amount
     if (debit > convertForm.available + 0.001) {
       const curr = convertForm.direction === 'ars_to_usd' ? 'ARS' : 'USD'
       return toast.push(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2).replace('.', ',')} ${curr}.`, { type: 'warn' })
     }
     try {
-      await api.post('/conversions', {
-        from_broker: convertForm.from_broker,
-        direction: convertForm.direction,
-        ars_amount: arsAmount,
-        usd_amount: usdAmount,
-        tc,
-        kind: convertForm.kind,
-        date: convertForm.date || null,
-      })
+      await api.post('/conversions', body)
       setAddModal(null)
       setConvertForm(null)
       await loadAll()
@@ -719,11 +695,12 @@ export default function PositionsMobile() {
     setAddForm({
       ...p,
       is_cash: !!p.is_cash,
-      buy_price: p.buy_price ?? '',
-      quantity: p.quantity ?? '',
-      invested: p.invested ?? '',
-      tc_compra: p.tc_compra ?? '',
-      commissions: p.commissions ?? '',
+      // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
+      buy_price: numACampo(p.buy_price),
+      quantity: numACampo(p.quantity),
+      invested: numACampo(p.invested),
+      tc_compra: numACampo(p.tc_compra),
+      commissions: numACampo(p.commissions),
       notes: p.notes ?? '',
       entry_date: p.entry_date ?? '',
     })

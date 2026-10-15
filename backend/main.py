@@ -3004,6 +3004,13 @@ def init_db():
         # 'YYYY-MM-DD'. UN aviso por persona y por vencimiento real: ver
         # `billing.subscriptions._send_credit_expiring_reminders`. Sin índice
         # (se lee y escribe por id de usuario).
+        # Cuándo se le mostró el aviso de que cambiaron los precios (15/10/2026).
+        # ⭐ Va en la BASE y no en el navegador a propósito: con `localStorage` el
+        # aviso vuelve a aparecer en cada dispositivo, en cada navegador y en cada
+        # ventana de incógnito — que es exactamente la forma en que estos avisos
+        # terminan mostrándose "varias veces" aunque el código diga una sola.
+        if user_cols_after and 'aviso_precios_oct26_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN aviso_precios_oct26_at TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -4589,8 +4596,21 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
         except Exception: pass
 
 
+@app.post("/api/me/aviso-precios-visto")
+def marcar_aviso_precios_visto(uid: int = Depends(get_current_user)):
+    """Marca el aviso de cambio de precios como visto, para que no vuelva.
+
+    `get_current_user` y no `get_effective_user`: la marca es de quien inició
+    sesión. Idempotente y a prueba de doble click — el UPDATE sólo escribe si la
+    columna está en NULL, así que el segundo no pisa la fecha del primero."""
+    from billing import subscriptions as _subs
+    with db_abierta() as conn:
+        _subs.marcar_aviso_precios_visto(conn, uid)
+    return {"ok": True}
+
+
 @app.get("/api/auth/me")
-def me(uid: int = Depends(get_effective_user)):
+def me(request: Request, uid: int = Depends(get_effective_user)):
     from ai import quota
     with db_abierta() as conn:
         row = conn.execute(
@@ -4632,6 +4652,21 @@ def me(uid: int = Depends(get_effective_user)):
                LIMIT 1""",
             (uid,),
         ).fetchone()
+        # ⭐ El aviso de que cambiaron los precios (15/10/2026), UNA sola vez y
+        # sólo a quien paga de verdad. Quien está en la prueba tiene tier
+        # 'pro'/'plus' igual que quien paga, así que la regla no puede ser el
+        # tier: ver `subscriptions.debe_ver_aviso_precios`.
+        # ⚠️ Va por el uid AUTENTICADO y no por el resuelto: si un asesor está
+        # mirando la cuenta de un cliente, `uid` es el del CLIENTE, y el aviso
+        # —más el click que lo marca como visto— le corresponde al asesor. Mismo
+        # patrón que usa `/api/plan/features` para el estado de la prueba.
+        try:
+            from billing import subscriptions as _subs
+            _yo = getattr(request.state, "rendi_auth_uid", uid)
+            d["aviso_precios"] = _subs.debe_ver_aviso_precios(conn, _yo)
+        except Exception:
+            d["aviso_precios"] = False
+
         d["subscription_status"] = sub["status"] if sub else None
         d["subscription_period_end"] = sub["current_period_end"] if sub else None
         d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
@@ -27759,6 +27794,106 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
         return res
     finally:
         conn.close()
+
+
+@app.get("/api/admin/billing/precios-rebill")
+def admin_precios_rebill(uid: int = Depends(get_admin_user)):
+    """¿Qué le va a cobrar REBILL a cada suscripción activa? READ-ONLY.
+
+    Existe por una pregunta que Rendi no podía contestar y que importa cada vez
+    que se toca un precio: **editar el precio de un plan en el dashboard de
+    Rebill, ¿alcanza a las suscripciones que YA estaban?** Rendi nunca manda un
+    monto —el link de pago lleva sólo el id del plan—, así que el número vive
+    entero del lado de Rebill y desde acá era invisible.
+
+    Lo que se compara, fila por fila:
+      • `registrado_en_rendi` — `subscriptions.amount_ars`, lo que se guardó
+        CUANDO se dio de alta. Es historia: no cambia porque cambie el plan.
+      • `rebill_dice` — lo que Rebill contesta HOY para esa suscripción.
+
+    Si los dos números difieren, el precio nuevo le llegó. Si son iguales,
+    Rebill le congeló el precio de alta y hay que moverlo a mano.
+
+    No escribe nada y no devuelve ninguna credencial.
+    """
+    from billing import rebill
+    # ⚠️ `billing.pricing` y NO `pricing`: en este archivo `pricing` es el
+    # paquete de COTIZACIONES (letras, yahoo). Dos módulos con el mismo nombre.
+    from billing import pricing as planes
+    salida = {"plan_nuevo": {
+        "plus_mensual": planes.PLUS_ARS_MONTHLY_TOTAL,
+        "plus_anual": planes.PLUS_ARS_ANNUAL_TOTAL,
+        "pro_mensual": planes.ARS_MONTHLY_TOTAL,
+        "pro_anual": planes.ARS_ANNUAL_TOTAL,
+    }, "suscripciones": []}
+
+    with db_abierta() as conn:
+        filas = conn.execute(
+            """SELECT s.mp_subscription_id AS sid, s.external_reference AS ref,
+                      s.period, s.amount_ars, s.created_at, u.email
+                 FROM subscriptions s JOIN users u ON u.id = s.user_id
+                WHERE s.status = 'authorized'
+                ORDER BY u.email, s.created_at DESC""").fetchall()
+
+    for r in filas:
+        item = {
+            "email": r["email"],
+            "period": r["period"],
+            # ⭐ El id de la suscripción EN REBILL. Sin esto no se puede saber
+            # si varias filas 'authorized' de la misma persona son la MISMA
+            # suscripción duplicada en nuestra tabla (inofensivo para el cobro)
+            # o suscripciones distintas (le cobran dos veces). Son preguntas
+            # con consecuencias opuestas y se distinguen sólo por el id.
+            "id_en_rebill": r["sid"],
+            "alta_en_rendi": r["created_at"],
+            "registrado_en_rendi": r["amount_ars"],
+            "rebill_dice": None,
+            "error": None,
+        }
+        try:
+            data = rebill.get_subscription(r["sid"] or "") or {}
+            # No damos por sabido el nombre del campo: se buscan TODAS las
+            # claves que parezcan un monto y se devuelven las que haya. Es la
+            # forma honesta de leer una respuesta cuyo esquema no controlamos.
+            montos = {}
+
+            def _buscar(d, prefijo=""):
+                if isinstance(d, dict):
+                    for k, v in d.items():
+                        ruta = f"{prefijo}.{k}" if prefijo else k
+                        if isinstance(v, (dict, list)):
+                            _buscar(v, ruta)
+                        elif any(t in k.lower() for t in
+                                 ("amount", "price", "total", "monto")):
+                            montos[ruta] = v
+                elif isinstance(d, list):
+                    for i, v in enumerate(d[:5]):
+                        _buscar(v, f"{prefijo}[{i}]")
+
+            _buscar(data)
+            item["rebill_dice"] = montos or None
+            item["estado_en_rebill"] = data.get("status")
+        except Exception as ex:
+            item["error"] = f"{type(ex).__name__}: {str(ex)[:160]}"
+        salida["suscripciones"].append(item)
+
+    # Resumen: lo que importa es cuántas suscripciones DISTINTAS tiene cada uno
+    # en Rebill, no cuántas filas tenemos nosotros.
+    por_mail = {}
+    for it in salida["suscripciones"]:
+        por_mail.setdefault(it["email"], set()).add(it["id_en_rebill"])
+    salida["resumen"] = {
+        "filas_authorized": len(salida["suscripciones"]),
+        "personas": len(por_mail),
+        "con_mas_de_una_suscripcion_en_rebill": {
+            m: sorted(ids) for m, ids in por_mail.items() if len(ids) > 1
+        },
+    }
+    salida["como_leerlo"] = (
+        "Si 'rebill_dice' trae el precio NUEVO, el cambio alcanzó a las "
+        "suscripciones que ya estaban. Si trae el VIEJO (igual a "
+        "'registrado_en_rendi'), Rebill les congeló el precio de alta.")
+    return salida
 
 
 @app.get("/api/admin/billing/inspect")

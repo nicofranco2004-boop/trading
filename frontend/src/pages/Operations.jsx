@@ -21,7 +21,7 @@ import { Plus, Search, X, SlidersHorizontal, Filter } from 'lucide-react'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
 import DateInput from '../components/DateInput'
-import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull } from '../utils/format'
+import { fmtUsd as fmtUsdRaw, fmtMoney, colorClass, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { track } from '../utils/track'
 import { useMoneyFormat, fmtConvertedRaw } from '../contexts/CurrencyContext'
 import { useHistoricalMoney } from '../hooks/useHistoricalMoney'
@@ -207,12 +207,13 @@ export default function Operations() {
     // string). Si es 0 deliberado, queda 0 visible en el input.
     setForm({
       ...op,
-      entry_price: op.entry_price ?? '',
-      exit_price: op.exit_price ?? '',
-      quantity: op.quantity ?? '',
-      pnl_usd: (op.pnl_usd_native ?? op.pnl_usd) ?? '',
-      pnl_pct: op.pnl_pct ?? '',
-      commissions: op.commissions ?? '',
+      // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
+      entry_price: numACampo(op.entry_price),
+      exit_price: numACampo(op.exit_price),
+      quantity: numACampo(op.quantity),
+      pnl_usd: numACampo(op.pnl_usd_native ?? op.pnl_usd),
+      pnl_pct: numACampo(op.pnl_pct),
+      commissions: numACampo(op.commissions),
       // Estado real del interruptor, leído de la foto de reverso que dejó el alta.
       // En la edición se puede dar vuelta: el backend acredita o devuelve según
       // cómo quede.

@@ -56,6 +56,10 @@ export function mapMeToUser(me) {
     subscription_period_end: me.subscription_period_end || null,
     subscription_cancelled_at: me.subscription_cancelled_at || null,
     subscription_period: me.subscription_period || null,
+    // Aviso único de cambio de precios (15/10/2026). Quién califica lo decide
+    // el BACKEND: acá no se puede, porque quien está en la prueba tiene el
+    // mismo tier que quien paga. Ver `subscriptions.debe_ver_aviso_precios`.
+    aviso_precios: !!me.aviso_precios,
     // Crédito (modelo Rendi-managed proration). Si credit_active_until
     // > NOW el user tiene acceso al tier sin necesidad de tener una
     // sub Rebill autorizada — viene de un upgrade/downgrade mid-período.

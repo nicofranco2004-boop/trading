@@ -196,9 +196,9 @@ export default function Reembolso() {
             y escapa a nuestro control y al de Rebill.
           </p>
           <p>
-            El reintegro se hace en la misma moneda en la que se cobró (pesos argentinos). Recordá que
-            el precio está anclado en dólares estadounidenses (USD) al tipo de cambio del día; el monto
-            que devolvemos es el que efectivamente se te cobró en ARS por la operación reembolsada.
+            El reintegro se hace en la misma moneda en la que se cobró (pesos argentinos), y el monto
+            que devolvemos es el que efectivamente se te cobró en ARS por la operación reembolsada —
+            aunque desde entonces el precio de lista haya cambiado.
           </p>
         </Section>
 

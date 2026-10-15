@@ -11,7 +11,7 @@ import EmptyState from '../components/EmptyState'
 import { PageSkeleton } from '../components/Skeleton'
 import InfoTooltip from '../components/InfoTooltip'
 import { useToast } from '../components/Toast'
-import { usd, fmtUsd, pctTxt, parseNum } from '../utils/format'
+import { usd, fmtUsd, pctTxt, parseNum, numACampo } from '../utils/format'
 import { priceSymbol, computeBrokerValue, isArUsdBroker, buildPriceSymbols } from '../utils/valuation'
 import { api } from '../utils/api'
 import { pickFinancialRate, useCurrency } from '../contexts/CurrencyContext'
@@ -100,8 +100,9 @@ export default function Goals() {
   function openEdit(g) {
     setForm({
       id: g.id,
-      target_usd: g.target_usd,
+      target_usd: numACampo(g.target_usd),
       target_date: g.target_date,
+      // Queda número: lo comparten el deslizador y el campo (y se compara contra el CAGR).
       expected_return_pct: g.expected_return_pct,
       label: g.label || '',
     })

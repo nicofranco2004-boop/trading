@@ -258,6 +258,9 @@ export function parseNum(v) {
     const [ent, dec] = cifras.split(',')
     // Los puntos que acompañan a una coma sólo pueden ser miles bien formados.
     if (ent.includes('.') && !/^\d{1,3}(\.\d{3})+$/.test(ent)) return NaN
+    // Y nunca van DESPUÉS de la coma: "1,536.90" es el formato inglés (mil
+    // quinientos), y leerlo con la coma decimal daba 1,536 sin ningún aviso.
+    if (dec && dec.includes('.')) return NaN
     limpio = ent.replace(/\./g, '') + (dec ? '.' + dec : '')
   } else {
     const puntos = (cifras.match(/\./g) || []).length
@@ -272,7 +275,9 @@ export function parseNum(v) {
     }
   }
 
-  const n = parseFloat(limpio) * signo * Math.pow(10, exp)
+  // `e${exp}` y no `* 10 ** exp`: la multiplicación corre el último decimal
+  // (1,234e-7 volvía 1,2339999…e-7) y un número precargado tiene que volver igual.
+  const n = parseFloat(`${limpio}e${exp}`) * signo
   return Number.isFinite(n) ? n : NaN
 }
 
@@ -286,6 +291,22 @@ export function parseNum(v) {
 export const numToInput = (n) => {
   if (n == null || !Number.isFinite(Number(n))) return ''
   return Number(n).toLocaleString(LOCALE, { maximumFractionDigits: 8 })
+}
+
+// Número que YA está guardado (un precio, una cantidad, un TC) → texto para
+// precargar un campo editable, SIN perder ni un decimal y sin separador de miles:
+// 12.345 → "12,345", 10820 → "10820", 0.123456789 → "0,123456789".
+//
+// Existe porque precargar el número crudo deja escrito "12.345" en el campo, y
+// parseNum lee ese texto como DOCE MIL (punto + tres cifras = miles). Mientras
+// nadie lo tocaba viajaba como número y salía bien; apenas el usuario corregía un
+// dígito, el precio se multiplicaba por mil. numToInput no sirve acá: redondea a
+// 8 decimales y una cantidad de cripto guardada volvería cambiada.
+export const numACampo = (n) => {
+  if (n == null || n === '') return ''
+  const x = Number(n)
+  if (!Number.isFinite(x)) return typeof n === 'string' ? n : ''
+  return String(x).replace('.', ',')
 }
 
 // Variante para formularios: devuelve null (no NaN) cuando no hay número, que es
