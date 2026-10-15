@@ -98,11 +98,19 @@ LIMITS = {
         # ai/oido.py, donde el tope de BYTES resultó no ser un tope de plata.
         "dictado_seconds_per_week": 1800,
     },
-    # Plus diferencial IA: 9× más chat que Free (9 vs 1) y 6× más análisis
-    # (6 vs 1). Plus es upgrade de "más broker + algo más de IA descriptiva".
-    # Pro sigue siendo el motor IA premium real (chat libre + causalidad + 60 análisis).
+    # Plus NO es un plan de IA (decisión de producto del 2026-10-15). Antes era
+    # "más brokers + algo más de IA descriptiva", un plan definido por recortes
+    # que nadie podía nombrar: 6 de 12 detectores, 6 puntos de diagnóstico, 25
+    # alertas. Ahora Plus = **Rendi entero** (todas las métricas completas, ver
+    # ai/plan.py) y lo que lo separa del Pro es la IA, más los brokers.
+    #
+    # El cupo de análisis bajó de 6 a 2 a propósito: con Free en 1, el salto
+    # Free→Plus en IA queda invisible, que es exactamente el mensaje. Quien usó
+    # la IA en la prueba tiene un solo lugar donde ir, y es Pro.
+    # ⚠️ A los que YA pagaban Plus se les respeta el 6 — ver
+    # `ANALISIS_PLUS_ANTES_DEL_CAMBIO` y `limites_del_usuario()`.
     "plus": {
-        "analyses_per_week": 6,
+        "analyses_per_week": 2,
         "hub_queries_per_week": 0,
         "chat_per_week": 9,             # 9× Free
         "diag_dismiss_per_week": None,  # ilimitado (el diferencial vs Free)
@@ -176,6 +184,37 @@ def _paid_override_expired(conn, user_id: int, credit_active_until) -> bool:
         return sub is None
     except Exception:
         return False  # ante la duda, no cortar acceso
+
+
+# Lo que el plan Plus prometía ANTES del 2026-10-15. No es un número decorativo:
+# es lo que se le prometió por escrito a quien ya estaba pagando, y bajarle el
+# cupo a alguien que ya paga cuesta más de lo que ahorra en tokens.
+ANALISIS_PLUS_ANTES_DEL_CAMBIO = 6
+
+
+def limites_del_usuario(conn, user_id: int, tier: str) -> dict:
+    """Los límites que le corresponden a ESTE usuario, no sólo a su plan.
+
+    Existe por una sola razón: `users.quota_plus_legacy` marca a los que ya
+    pagaban Plus cuando su cupo de análisis era 6, y a ellos se les respeta.
+
+    Y existe como función y no como tres `if` porque el cupo se lee en CUATRO
+    lugares distintos (`get_current_usage`, `reserve_chat`, `reserve_analysis`,
+    `reserve_diag_dismiss`): aplicar el respeto en uno solo habría dejado a esa
+    persona viendo "6 disponibles" en la pantalla y comiéndose un 429 al tercero.
+    """
+    base = LIMITS[tier]
+    if tier != "plus":
+        return base
+    try:
+        row = conn.execute(
+            "SELECT quota_plus_legacy FROM users WHERE id=?", (user_id,)).fetchone()
+        if not (row and row["quota_plus_legacy"]):
+            return base
+    except Exception:
+        # Base sin la columna (Postgres sin migrar): límites del plan, como siempre.
+        return base
+    return {**base, "analyses_per_week": ANALISIS_PLUS_ANTES_DEL_CAMBIO}
 
 
 def get_tier(conn, user_id: int) -> Tier:
@@ -411,7 +450,7 @@ def get_current_usage(conn, user_id: int, tier_override: str = None) -> dict:
     resets_on = row["resets_on"] if row else None
 
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
-    limits = LIMITS[tier]
+    limits = limites_del_usuario(conn, user_id, tier)
     a_limit = limits["analyses_per_week"]
     h_limit = limits["hub_queries_per_week"]
     c_limit = limits.get("chat_per_week", 0)
@@ -543,7 +582,7 @@ def reserve_chat(conn, user_id: int, tier_override: str = None) -> tuple[bool, d
     POST-reserva (la consulta en curso ya cuenta).
     """
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
-    limit = LIMITS[tier]["chat_per_week"]
+    limit = limites_del_usuario(conn, user_id, tier)["chat_per_week"]
     today = date.today()
     window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
     with conn:
@@ -602,7 +641,7 @@ def reserve_analysis(conn, user_id: int, tier_override: str = None) -> tuple[boo
     el caller lo devuelve con refund_analysis.
     """
     tier = tier_override if tier_override in LIMITS else get_tier(conn, user_id)
-    limit = LIMITS[tier]["analyses_per_week"]
+    limit = limites_del_usuario(conn, user_id, tier)["analyses_per_week"]
     today = date.today()
     window_start = _window_start(today, _window_floor(conn, user_id)).isoformat()
     with conn:
@@ -741,7 +780,7 @@ def reserve_diag_dismiss(conn, user_id: int) -> tuple[bool, dict]:
     Devuelve (ok, usage). ok=False → el endpoint responde 429 con upgrade payload.
     """
     tier = get_tier(conn, user_id)
-    limit = LIMITS[tier].get("diag_dismiss_per_week")
+    limit = limites_del_usuario(conn, user_id, tier).get("diag_dismiss_per_week")
     if limit is None:  # ilimitado
         return True, get_current_usage(conn, user_id)
     today = date.today()

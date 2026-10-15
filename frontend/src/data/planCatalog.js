@@ -55,6 +55,11 @@ export const FREE_FEATURES = {
   ],
 }
 
+// Plus = **Rendi entero, sin el analista** (2026-10-15). Antes se definía por
+// recortes —6 de 12 detectores, 25 alertas— y nadie podía nombrar lo que
+// compraba. Ahora las métricas están COMPLETAS y lo que lo separa del Pro son
+// dos cosas que se dicen en una frase: la IA y los brokers.
+//
 // ⚠️ SIN FREE (decisión de Nico, 2026-09-26): no hay más Free a futuro — quien
 // se registra arranca la prueba y después elige Plus o Pro. Las tarjetas que se
 // venden no se comparan contra un plan que esa persona nunca tuvo: nada de
@@ -65,10 +70,10 @@ export const PLUS_FEATURES = {
   essentials: [
     { label: 'Dashboard, cartera, movimientos e insights' },
     { label: 'Personalizá el diagnóstico sin límite', sub: '“No me interesa” ilimitado' },
-    { label: '6 detectores de comportamiento visibles (de 12 disponibles)' },
+    { label: 'Los 12 detectores de comportamiento' },
     { label: 'Métricas de riesgo', sub: 'Sharpe, Sortino, beta, alfa, Information Ratio, Calmar, CAGR y volatilidad' },
     { label: 'Reportes históricos completos (todos los meses)' },
-    { label: 'Hasta 25 alertas, de precio objetivo y de variación %' },
+    { label: 'Alertas sin tope' },
     { label: 'Export CSV consolidado para tu contador', sub: 'Compras, ventas, depósitos, retiros y dividendos' },
     { label: 'Hasta 3 brokers consolidados' },
   ],
@@ -77,15 +82,15 @@ export const PLUS_FEATURES = {
     title: 'Lo principal',
     items: [
       'Hasta 3 brokers consolidados',
-      '6 detectores de comportamiento visibles (de 12 disponibles)',
+      'Los 12 detectores de comportamiento',
       'Métricas de riesgo (Sharpe, Sortino, alfa, Calmar…)',
-      'Hasta 25 alertas, de precio objetivo y de variación %',
+      'Alertas sin tope, de precio objetivo y de variación %',
       'Reportes históricos + Export CSV',
       '9 consultas por semana a Mervall-E AI, con preguntas guiadas',
     ],
   },
   quotas: [
-    { label: 'Análisis IA / sem', value: '6' },
+    { label: 'Análisis IA / sem', value: '2' },
     { label: 'Chat Mervall-E AI / sem', value: '9' },
     { label: 'Brokers', value: '3' },
   ],
@@ -94,21 +99,23 @@ export const PLUS_FEATURES = {
 export const PRO_FEATURES = {
   essentials: [
     { label: 'Todo lo del Plus' },
-    { label: '60 análisis IA / semana', sub: '10× más que Plus' },
+    { label: '60 análisis IA / semana', sub: '30× más que Plus' },
     { label: 'Chat libre con Mervall-E AI', sub: '40 consultas/sem · texto libre, sin restricción de preguntas' },
     { label: 'Respuestas con causalidad y comparaciones', sub: 'Modo research-note: no solo describe, infiere por qué' },
     { label: 'Follow-ups: profundizá cualquier análisis con preguntas libres' },
     { label: 'Memoria persistente de Mervall-E AI', sub: 'Los hechos que le aclarás se respetan entre sesiones' },
     { label: 'Brokers ilimitados' },
-    { label: '12 detectores de comportamiento completos' },
   ],
+  // Vs Plus quedó reducido a propósito: desde que el Plus tiene las métricas
+  // completas, TODO lo que separa al Pro es la IA — más los brokers.
   diff: {
     title: 'Vs Plus',
     items: [
-      '10× más análisis IA (60/sem vs 6/sem)',
+      '30× más análisis IA (60/sem vs 2/sem)',
       'Chat libre con Mervall-E AI (vs 12 preguntas guiadas)',
       'IA con causalidad y memoria persistente',
-      'Comportamiento completo (12 vs 6) + brokers ilimitados',
+      'Repreguntá sobre cualquier análisis (follow-ups)',
+      'Brokers ilimitados (Plus: 3)',
     ],
   },
   quotas: [
