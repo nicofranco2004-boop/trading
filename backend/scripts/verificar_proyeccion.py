@@ -13,10 +13,11 @@ un activo" (to_seed → lo crea). Los dos son de composición.
 
 SOLO LECTURA (immutable=1).
 """
-import sys, json, sqlite3
+import os, sys, json, sqlite3
 from collections import Counter, defaultdict
 
-sys.path.insert(0, '/Users/nicolaspussetto/rendi-worktrees/import-asesor/backend')
+# El backend es la carpeta de arriba (antes apuntaba a una copia que ya no existe).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from importing.proyeccion import proyectar   # noqa
 
 DB = '/Users/nicolaspussetto/Downloads/trading-2026-08-16.db'

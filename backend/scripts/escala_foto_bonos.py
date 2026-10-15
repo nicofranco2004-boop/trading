@@ -20,10 +20,11 @@ proyección a D da la tenencia REAL de ese día.
 
 SOLO LECTURA.
 """
-import sys, sqlite3
+import os, sys, sqlite3
 from collections import defaultdict
 
-sys.path.insert(0, '/Users/nicolaspussetto/rendi-worktrees/import-asesor/backend')
+# El backend es la carpeta de arriba (antes apuntaba a una copia que ya no existe).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pricing.bond_amortization import is_amortizing_bond, residual_factor  # noqa
 from importing.proyeccion import proyectar  # noqa
 

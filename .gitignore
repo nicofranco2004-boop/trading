@@ -35,7 +35,7 @@ frontend/dist/
 # `design/video/` es el proyecto Remotion: ~120 MB de .mp4 fuente más su
 # node_modules. Git guarda cada versión de un binario ENTERA y para siempre —
 # un repo que se lleva los .mp4 no se puede volver a achicar sin reescribir la
-# historia. Los fuentes de video viven fuera del repo (copia en ~/rendi-rescate).
+# historia. Los fuentes de video viven fuera del repo (copia en ~/Documents/rendi-archivo/rendi-rescate).
 design/video/
 
 # Video y audio en cualquier ruta, para que el próximo pesado no entre por
