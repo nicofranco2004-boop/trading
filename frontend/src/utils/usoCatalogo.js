@@ -37,6 +37,10 @@ export const EVENTOS = {
   cartera_tab_viewed: { label: 'Cambió de pestaña', donde: 'Cartera', tipo: 'vista' },
   operation_added: { label: 'Cargó una operación', donde: 'Movimientos' },
   export_csv_downloaded: { label: 'Exportó a CSV', donde: 'Movimientos / Cartera' },
+  // Se lleva sus datos DESDE EL MURO, o sea en el momento de decidir si
+  // paga. Vale la pena mirarlo aparte: dice cuánta gente elige irse con lo
+  // suyo en vez de elegir un plan.
+  export_en_el_muro: { label: 'Se llevó sus datos desde el muro', donde: 'Muro de elegir plan' },
 
   // ── Importar ──
   import_started: { label: 'Empezó a importar', donde: 'Importar' },

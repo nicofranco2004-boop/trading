@@ -17,11 +17,13 @@
 //
 // El muro REAL lo aplica el backend (402 `plan_requerido` en cualquier
 // endpoint de datos, desde `get_effective_user`). Esto es la cara visible.
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { usePlanFeatures } from '../../hooks/usePlanFeatures'
 import { track } from '../../utils/track'
+import { api } from '../../utils/api'
+import { hoyISO } from '../../utils/fecha'
 import {
   fmtArs, annualSavingsArs, ANNUAL_DISCOUNT_BADGE_PCT,
   PLUS_PRICE_ARS_MONTHLY, PRO_PRICE_ARS_MONTHLY,
@@ -138,6 +140,73 @@ function TarjetaPlan({ plan, anual, destacado, onElegir }) {
         Elegir {p.nombre}
       </button>
     </div>
+  )
+}
+
+// ─── Llevarse lo cargado ───────────────────────────────────────────────────
+// ⭐ POR QUÉ ESTÁ ACÁ Y NO EN CONFIGURACIÓN. El muro tapa la app entera, así que
+// quien decide no pagar no llega a Configuración, que es donde vive el botón de
+// descargar. La exportación quedó habilitada para las cuentas en pausa
+// (`EXENTOS_CON_CUENTA_EN_PAUSA` incluye `/api/export/`), pero sin esto no había
+// NADA para apretar: funcionaba y no se podía usar. Y el mail del fin del beta
+// promete, con todas las letras, que puede descargar lo que cargó.
+//
+// Y es el momento donde más importa: la pregunta que tiene en la cabeza quien
+// mira esta pantalla es "¿pierdo todo lo que cargué?". Que la respuesta esté acá
+// —y sea "no, y además te lo llevás"— cambia la pantalla de rehén a decisión.
+//
+// No reusa `ExportCsvButton` a propósito: ése pregunta `can('export.csv')` por el
+// plan, y esta persona NO tiene plan — le mostraría el cartel de "mejorá tu plan"
+// justo cuando le estamos diciendo que puede llevarse lo suyo.
+const DESCARGAS = [
+  { recurso: 'positions', texto: 'posiciones' },
+  { recurso: 'operations', texto: 'operaciones' },
+  { recurso: 'transactions', texto: 'movimientos' },
+]
+
+function LlevarseLoCargado() {
+  const [bajando, setBajando] = useState(null)
+  const [error, setError] = useState(false)
+
+  async function bajar({ recurso, texto }) {
+    setBajando(recurso); setError(false)
+    try {
+      track('export_en_el_muro', { recurso })
+      const blob = await api.getBlob(`/export/${recurso}.csv`)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `rendi_${texto}_${hoyISO()}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      setError(true)
+    } finally { setBajando(null) }
+  }
+
+  return (
+    <p className="text-[12px] leading-relaxed text-ink-3">
+      Si preferís no seguir, llevate lo tuyo:{' '}
+      {DESCARGAS.map((d, i) => (
+        <span key={d.recurso}>
+          {i > 0 && ' · '}
+          <button
+            type="button" onClick={() => bajar(d)} disabled={!!bajando}
+            className="underline underline-offset-2 hover:text-ink-1 disabled:opacity-50"
+          >
+            {bajando === d.recurso ? 'bajando…' : d.texto}
+          </button>
+        </span>
+      ))}
+      .
+      {error && (
+        <span className="block text-rendi-warn mt-1">
+          No se pudo descargar. Probá de nuevo en un momento.
+        </span>
+      )}
+    </p>
   )
 }
 
@@ -322,11 +391,17 @@ export default function MuroElegirPlan({ anual, onCambiarPeriodo, resumen, motiv
 
         <div className="mt-6 flex flex-col items-start justify-between gap-4
                         border-t border-line pt-5 sm:flex-row sm:items-center">
-          <p className="max-w-[520px] text-[12px] leading-relaxed text-ink-3">
-            Se cobra en pesos con tarjeta. Cancelás cuando quieras desde
-            Configuración y no se vuelve a cobrar. Si no elegís ahora, tus datos
-            quedan guardados — volvés cuando quieras.
-          </p>
+          {/* Los dos párrafos van juntos en una columna: el contenedor de
+              afuera es una FILA (la letra chica a la izquierda, «salir» a la
+              derecha), así que suelto el segundo se metía en el medio. */}
+          <div className="max-w-[520px] space-y-2">
+            <p className="text-[12px] leading-relaxed text-ink-3">
+              Se cobra en pesos con tarjeta. Cancelás cuando quieras desde
+              Configuración y no se vuelve a cobrar. Si no elegís ahora, tus datos
+              quedan guardados — volvés cuando quieras.
+            </p>
+            <LlevarseLoCargado />
+          </div>
           <button
             type="button"
             onClick={logout}
