@@ -2137,12 +2137,23 @@ def _borrar_marca_de_prueba_usada(conn, user_id: int, email: str) -> None:
     escribió la fila: normaliza la casilla (el +alias y los puntos de Gmail son
     la misma bandeja) **y además la hashea**. Con `normalizar_email` a secas el
     DELETE no matchea nada y la fila queda viva — comprobado: la prueba seguía
-    sin arrancar y el motivo seguía siendo `already_used`."""
+    sin arrancar y el motivo seguía siendo `already_used`.
+
+    ⭐⭐ Y HAY UNA TERCERA MARCA, que es la peor de las tres porque no impide la
+    prueba: la deja MUDA. `trial_email_log` tiene clave (user_id, kind), así que
+    a quien ya recibió los avisos de su prueba vieja **los cuatro le quedan
+    bloqueados** en la nueva: bienvenida, víspera de Pro, "quedan 3 días" y
+    cierre. Medido: los 4 en BLOQUEADO. Esa persona pasaría los 20 días entera
+    sin un solo mail y se encontraría el muro sin ningún aviso — exactamente lo
+    contrario de lo que promete el anuncio del fin del beta. Por eso el registro
+    de avisos también se limpia."""
     try:
         with conn:
             conn.execute("DELETE FROM trial_consumed WHERE email_key = ?",
                          (_email_key(email),))
             conn.execute("UPDATE users SET trial_used_at = NULL WHERE id = ?",
+                         (user_id,))
+            conn.execute("DELETE FROM trial_email_log WHERE user_id = ?",
                          (user_id,))
     except Exception as ex:
         log.warning("fin_del_beta: no se pudo borrar la marca de %s: %s",

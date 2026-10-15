@@ -180,6 +180,41 @@ class AQuienLeArranca(Base):
         self.assertEqual(quota.get_tier(self.conn, uid), "pro")
         self.assertFalse(main.cuenta_en_pausa(self.conn, uid))
 
+    def test_al_que_YA_RECIBIO_los_avisos_le_vuelven_a_salir(self):
+        """⭐⭐ La tercera marca, y la peor de las tres: no impide la prueba, la
+        deja MUDA. `trial_email_log` tiene clave (user_id, kind), así que a quien
+        ya recibió los avisos de su prueba vieja los CUATRO le quedan
+        bloqueados en la nueva. Esa persona pasaría los 20 días sin un solo mail
+        y se encontraría el muro sin ningún aviso — lo contrario de lo que
+        promete el anuncio del fin del beta."""
+        uid = self._del_beta()
+        for k in (tr.MAIL_STARTED, tr.MAIL_PRO_ENDING,
+                  tr.MAIL_ENDING_SOON, tr.MAIL_ENDED):
+            self.conn.execute(
+                "INSERT INTO trial_email_log (user_id, kind, sent_at) VALUES (?,?,?)",
+                (uid, k, datetime.utcnow().isoformat()))
+        self.conn.commit()
+        for k in (tr.MAIL_STARTED, tr.MAIL_ENDING_SOON):
+            self.assertTrue(tr._already_sent(self.conn, uid, k),
+                            "el montaje no reproduce el caso")
+
+        # Se espía la bienvenida: es el único de los cuatro que sale AHORA.
+        from billing import emails as _em
+        salieron = []
+        _em.send_trial_started = lambda **kw: (salieron.append("started"), True)[1]
+
+        tr.fin_del_beta(self.conn, apply=True)
+
+        # La bienvenida volvió a salir de verdad…
+        self.assertEqual(salieron, ["started"],
+                         "su prueba nueva arrancó sin mail de bienvenida")
+        # …y los tres que vienen DESPUÉS quedaron desbloqueados, que es lo que
+        # decide si los próximos 20 días tienen avisos o son mudos.
+        for k in (tr.MAIL_PRO_ENDING, tr.MAIL_ENDING_SOON, tr.MAIL_ENDED):
+            self.assertFalse(
+                tr._already_sent(self.conn, uid, k),
+                f"«{k}» sigue bloqueado: su prueba nueva va a ser muda")
+
     def test_al_que_no_verifico_el_mail_le_pone_la_marca_SIN_quemar_la_prueba(self):
         """Arrancársela ahora le quemaría los 20 días sin que entre nunca.
         `verify_email` se la arranca el día que aparezca — el camino que ya
