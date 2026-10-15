@@ -141,6 +141,19 @@ describe('la plata que mueve', () => {
     expect(fila.pct).toBe(1)
     expect(sumarTenencias([999], r)).toBeNull()
   })
+
+  it('la ficha de un activo da lo mismo que su fila en Cartera', () => {
+    // La ficha (AssetDetail / PositionDetailMobile) hace la cuenta SÓLO con los
+    // lotes de ese activo; Cartera, con toda la cartera. Tiene que dar igual.
+    const d = datos('pre', { NVDA: -1.6, AAPL: 0.74, GGAL: -0.28, YPF: -0.7, DIS: 1.1 })
+    const cartera = impactoFueraDeHorario(POS, BROKERS, ctx, d)
+    const aapl = POS.filter(p => p.asset === 'AAPL')          // Schwab + el CEDEAR de Cocos
+    const ficha = impactoFueraDeHorario(aapl, BROKERS, ctx, d)
+    const fila = sumarTenencias(aapl.map(p => p.id), cartera)
+    expect(ficha.aplica).toBe(true)
+    expect(ficha.total.usd).toBeCloseTo(fila.usd, 9)
+    expect(ficha.total.pct * 100).toBeCloseTo(0.74, 9)        // el % es el de la acción
+  })
 })
 
 

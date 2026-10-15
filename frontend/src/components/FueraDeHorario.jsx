@@ -6,11 +6,17 @@
 //   · El número va en verde o rojo como cualquier ganancia de Rendi.
 // Las cuentas salen de utils/fueraDeHorario.js; acá no se calcula nada.
 
+import { useMemo } from 'react'
 import { Sun, Moon } from 'lucide-react'
 import { useCurrency } from '../contexts/CurrencyContext'
+import { usePrivacy } from '../contexts/PrivacyContext'
 import InfoTooltip from './InfoTooltip'
 import { usd, ars, pctVar, pctColor, colorClass } from '../utils/format'
-import { nombreDeSesion, nombreCorto, rotuloVia, estadoDeSesion } from '../utils/fueraDeHorario'
+import {
+  nombreDeSesion, nombreCorto, rotuloVia, estadoDeSesion,
+  simbolosFueraDeHorario, impactoFueraDeHorario, sumarTenencias,
+} from '../utils/fueraDeHorario'
+import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
 
 const esPre = (sesion) => sesion === 'pre'
 
@@ -54,15 +60,17 @@ export function EstadoSesion({ datos, className = '' }) {
  * `pctFraccion` es la fracción del valor (0,0029), como el resto de los
  * porcentajes de cartera.
  */
-export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto = false, className = '', impacto = null }) {
+export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto = false, className = '', impacto = null, sinOperar = false }) {
   if (!sesion) return null
   const t = tonoDeSesion(sesion)
-  const pctPuntos = pctFraccion != null ? pctFraccion * 100 : null
+  const pctPuntos = pctFraccion != null && !sinOperar ? pctFraccion * 100 : null
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-[3px] border border-dashed ${t.borde} ${t.texto} tabular ${className}`}>
       <IconoSesion sesion={sesion} />
       <span>{nombreDeSesion(sesion)}</span>
-      {oculto
+      {sinOperar
+        ? <span className="text-ink-3" title="Todavía no operó fuera de la rueda.">sin operar</span>
+        : oculto
         ? <span className="text-ink-2">••••</span>
         : <span className={`font-semibold ${colorClass(monto)}`}>{montoFdh(monto, moneda)}</span>}
       {pctPuntos != null && <span className={pctColor(pctPuntos)}>{pctVar(pctPuntos)}</span>}
@@ -77,6 +85,30 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
         </InfoTooltip>
       )}
     </span>
+  )
+}
+
+/**
+ * El chip de la ficha de UN activo (AssetDetail en la compu, PositionDetailMobile
+ * en el celular): la misma cuenta que la fila de Cartera, sobre los lotes de esa
+ * ficha. En dólares, la moneda de la ficha. Nada si el activo no tiene pre/post
+ * (bonos, fondos, acción argentina sin ADR…) o si no hay sesión.
+ * `prices`, `tcValuacion`, `tcCedear` y `tcCripto` son los mismos que Cartera
+ * le pasa a impactoFueraDeHorario. «sin operar» si la acción todavía no se movió.
+ */
+export function ChipDelActivo({ lotes, brokers, prices, tcValuacion, tcCedear, tcCripto = null, className = '' }) {
+  const { hidden } = usePrivacy()
+  const simbolos = useMemo(() => simbolosFueraDeHorario(lotes, brokers), [lotes, brokers])
+  const datos = useFueraDeHorario(simbolos)
+  const impacto = useMemo(
+    () => impactoFueraDeHorario(lotes, brokers, { prices, tcValuacion, tcCedear, tcCripto }, datos),
+    [lotes, brokers, prices, tcValuacion, tcCedear, tcCripto, datos])
+  if (!impacto.aplica) return null
+  const r = sumarTenencias((lotes || []).map(l => l.id), impacto)
+  return (
+    <ChipFueraDeHorario impacto={impacto} sesion={datos.sesion} moneda="USD" oculto={hidden}
+      monto={impacto.total.usd} pctFraccion={impacto.total.pct} sinOperar={r?.pct == null}
+      className={className} />
   )
 }
 

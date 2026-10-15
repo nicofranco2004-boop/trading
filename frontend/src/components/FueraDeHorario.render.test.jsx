@@ -2,7 +2,7 @@
 // plata (auditoría 2026-10-15: mostraba los montos con el ojito tachado).
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ComoSeCalcula } from './FueraDeHorario'
+import { ComoSeCalcula, ChipFueraDeHorario } from './FueraDeHorario'
 
 const impacto = {
   total: { usd: 59.23, ars: 84343, pct: 0.0014 },
@@ -23,5 +23,15 @@ describe('ComoSeCalcula', () => {
     expect(html).not.toContain('59,23')
     expect(html).not.toContain('2.796.000')
     expect(html).toContain('Cómo se calcula el pre-mercado')
+  })
+})
+
+describe('ChipFueraDeHorario', () => {
+  it('si la acción todavía no operó dice «sin operar», no «USD 0,00 0,00 %»', () => {
+    const html = renderToStaticMarkup(
+      <ChipFueraDeHorario sesion="post" monto={0} pctFraccion={0} moneda="USD" sinOperar />)
+    expect(html).toContain('sin operar')
+    expect(html).not.toContain('USD 0,00')
+    expect(html).not.toContain('%')
   })
 })
