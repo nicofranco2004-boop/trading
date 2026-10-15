@@ -258,6 +258,9 @@ export function parseNum(v) {
     const [ent, dec] = cifras.split(',')
     // Los puntos que acompañan a una coma sólo pueden ser miles bien formados.
     if (ent.includes('.') && !/^\d{1,3}(\.\d{3})+$/.test(ent)) return NaN
+    // Y nunca van DESPUÉS de la coma: "1,536.90" es el formato inglés (mil
+    // quinientos), y leerlo con la coma decimal daba 1,536 sin ningún aviso.
+    if (dec && dec.includes('.')) return NaN
     limpio = ent.replace(/\./g, '') + (dec ? '.' + dec : '')
   } else {
     const puntos = (cifras.match(/\./g) || []).length

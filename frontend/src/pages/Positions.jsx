@@ -40,6 +40,7 @@ import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput } from '../utils/format'
+import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
@@ -899,19 +900,9 @@ function PositionsDesktop() {
   }
 
   async function confirmSell() {
-    const body = {
-      broker: sellForm.broker,
-      asset: sellForm.asset,
-      quantity: +sellForm.quantity,
-      exit_price: +sellForm.exit_price,
-      date: sellForm.date,
-      commissions: sellForm.commissions !== '' ? +sellForm.commissions : 0,
-      // Moneda de la venta → el FIFO consume solo lotes de esa moneda.
-      currency: sellForm.currency === 'ARS' ? 'ARS' : 'USD',
-      ...(sellForm.currency === 'ARS' && sellForm.tc_venta ? { tc_venta: +sellForm.tc_venta } : {}),
-    }
-    if (!body.quantity || body.quantity <= 0) return toast.push('La cantidad ingresada no es válida.', { type: 'warn' })
-    if (body.exit_price == null || body.exit_price < 0) return toast.push('El precio ingresado no es válido.', { type: 'warn' })
+    // Se lee con la misma función que dibuja el modal (utils/formulariosCartera).
+    const { body, error } = cuerpoDeVenta(sellForm)
+    if (error) return toast.push(error, { type: 'warn' })
     try {
       const res = await api.post('/positions/sell', body)
       track('position_sold', { source: 'desktop', asset: body.asset, broker: body.broker })
@@ -1066,28 +1057,17 @@ function PositionsDesktop() {
   }
 
   async function confirmConvert() {
-    const arsAmount = +convertForm.ars_amount
-    const usdAmount = +convertForm.usd_amount
-    const tc = +convertForm.tc
-    if (!arsAmount || arsAmount <= 0) return toast.push('Ingresá un monto ARS válido.', { type: 'warn' })
-    if (!usdAmount || usdAmount <= 0) return toast.push('Ingresá un monto USD válido.', { type: 'warn' })
-    if (!tc || tc <= 0) return toast.push('Ingresá un tipo de cambio válido.', { type: 'warn' })
+    // Se lee con la misma función que dibuja el modal (utils/formulariosCartera).
+    const { body, error } = cuerpoDeConversion(convertForm)
+    if (error) return toast.push(error, { type: 'warn' })
     // Validar saldo según dirección
-    const debit = convertForm.direction === 'ars_to_usd' ? arsAmount : usdAmount
+    const debit = convertForm.direction === 'ars_to_usd' ? body.ars_amount : body.usd_amount
     if (debit > convertForm.available + 0.001) {
       const curr = convertForm.direction === 'ars_to_usd' ? 'ARS' : 'USD'
       return toast.push(`Saldo insuficiente. Disponible: ${convertForm.available.toFixed(2).replace('.', ',')} ${curr}.`, { type: 'warn' })
     }
     try {
-      await api.post('/conversions', {
-        from_broker: convertForm.from_broker,
-        direction: convertForm.direction,
-        ars_amount: arsAmount,
-        usd_amount: usdAmount,
-        tc,
-        kind: convertForm.kind,
-        date: convertForm.date || null,
-      })
+      await api.post('/conversions', body)
       setModal(null)
       loadAll()
     } catch (e) {
@@ -3321,9 +3301,10 @@ export function ConvertModal({ form, setForm, tcValuacion, onClose, onConfirm })
   // los dos, y ninguno tiene que acordarse de pasarlo (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
   const isArsToUsd = form.direction === 'ars_to_usd'
-  const arsNum = parseNum(form.ars_amount) || 0
-  const usdNum = parseNum(form.usd_amount) || 0
-  const tcNum = parseNum(form.tc) || 0
+  const leido = leerConversion(form)
+  const arsNum = leido.ars_amount || 0
+  const usdNum = leido.usd_amount || 0
+  const tcNum = leido.tc || 0
 
   // Auto-cálculo: si el usuario tipea ARS o TC, recalculamos USD (y viceversa).
   // Mantiene los dos campos editables pero coherentes.
@@ -3774,9 +3755,13 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
   const avgBuy = totalInvested && totalQty ? totalInvested / totalQty : null
   const isARS = form.currency === 'ARS'
 
-  const qtyNum = parseNum(form.quantity) || 0
-  const priceNum = parseNum(form.exit_price) || 0
-  const tcVenta = parseNum(form.tc_venta) || tcValuacion || 1
+  // Misma lectura que arma lo que se manda (cuerpoDeVenta): lo que se ve acá
+  // es lo que llega al servidor.
+  const leido = leerVenta(form)
+  const qtyNum = leido.quantity || 0
+  const priceNum = leido.exit_price || 0
+  const comisionNum = leido.commissions || 0
+  const tcVenta = leido.tc_venta || tcValuacion || 1
 
   // TC de la venta = el que existía en la FECHA de la venta, no el de hoy.
   // Mismo criterio que el aporte con fecha (MEP del día, blue de fallback; y
@@ -3957,18 +3942,18 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
                 {(qtyNum * priceNum).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
               </span>
             </div>
-            {(parseNum(form.commissions) || 0) > 0 && (
+            {comisionNum > 0 && (
               <div className="flex items-center justify-between mt-1">
                 <span className="text-ink-3">Comisiones</span>
                 <span className="font-mono text-red-500 dark:text-red-400">
-                  −{parseNum(form.commissions).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
+                  −{comisionNum.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
                 </span>
               </div>
             )}
             <div className="flex items-center justify-between border-t border-line/50 mt-1.5 pt-1.5">
               <span className="text-ink-2 font-medium">Neto recibido</span>
               <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                {(qtyNum * priceNum - (parseNum(form.commissions) || 0)).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
+                {(qtyNum * priceNum - comisionNum).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {isARS ? 'ARS' : 'USD'}
               </span>
             </div>
           </div>
