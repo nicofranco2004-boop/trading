@@ -332,9 +332,16 @@ class PorLaPuertaReal(Base):
         self.assertFalse(r.json()["aplicado"])
         self.assertEqual(self._marca(uid), 0)
 
+        # ⚠️ Con `apply=1` el endpoint arranca un HILO DE FONDO y contesta al
+        # instante: son 1.300 mails de bienvenida, entre 7 y 22 minutos, y el
+        # proxy corta el pedido mucho antes. Así que acá se comprueba que
+        # ARRANCA, no el efecto — el efecto lo cubren los 15 tests que llaman a
+        # `fin_del_beta` directo, sin hilo de por medio.
         r2 = self.client.post("/api/admin/billing/fin-del-beta?apply=1", headers=h)
-        self.assertTrue(r2.json()["aplicado"])
-        self.assertEqual(self._marca(uid), 1)
+        self.assertEqual(r2.status_code, 200, r2.text)
+        self.assertIn("nota", r2.json())
+        self.assertNotIn("aplicado", r2.json(),
+                         "contesta como si hubiera terminado y recién arrancó")
 
 
 if __name__ == "__main__":

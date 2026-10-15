@@ -27966,11 +27966,47 @@ def admin_fin_del_beta(apply: int = 0, uid: int = Depends(get_admin_user)):
     prueba arrancó — al revés, esa persona se come el muro el día 1.
     """
     from billing import trial as _trial
-    conn = get_db()
-    try:
-        return _trial.fin_del_beta(conn, apply=bool(apply))
-    finally:
-        conn.close()
+    if not apply:
+        # La vista previa no escribe nada y es instantánea: medido, 0,02 s con
+        # 1.300 usuarios. Va sincrónica para que devuelva los números de verdad.
+        conn = get_db()
+        try:
+            return _trial.fin_del_beta(conn, apply=False)
+        finally:
+            conn.close()
+
+    # ⭐ APLICAR VA EN UN HILO DE FONDO, y no por la base: arrancar 1.300 pruebas
+    # son 0,25 s de escrituras (medido). Lo que tarda son los 1.300 MAILS de
+    # bienvenida —uno por persona, cada uno una llamada HTTP a Resend— que a 0,3-1 s
+    # cada uno son entre 7 y 22 minutos. El proxy corta el pedido mucho antes, así
+    # que sincrónico el admin vería un error de tiempo agotado mientras el trabajo
+    # sigue corriendo: lo peor de los dos mundos.
+    #
+    # Mismo mecanismo que la puerta del cron (`_correr_en_fondo`), que además
+    # envuelve los envíos en `emails.envio_masivo()` para que hagan la fila y no
+    # saturen a Resend.
+    #
+    # Un 200 acá quiere decir "arrancó", no "terminó". Para ver el avance:
+    # volver a pedir la VISTA PREVIA — cuando `les_arranca_la_prueba` da 0, no
+    # queda nadie. La herramienta es idempotente, así que re-correrla es seguro.
+    def _job():
+        conn = get_db()
+        try:
+            res = _trial.fin_del_beta(conn, apply=True)
+            log.info("fin_del_beta: arrancaron %s pruebas, %s sin verificar, "
+                     "fallaron %s, salteados %s",
+                     res["les_arranca_la_prueba"],
+                     res["marca_sin_prueba_por_no_verificar"],
+                     len(res["fallaron"]), res["salteados"])
+        finally:
+            conn.close()
+
+    out = _correr_en_fondo("fin_del_beta", _job)
+    out["nota"] = ("Arrancó en segundo plano: los mails de bienvenida tardan "
+                   "entre 7 y 22 minutos con ~1.300 personas. Para ver el avance, "
+                   "pedí la VISTA PREVIA (sin apply): cuando "
+                   "`les_arranca_la_prueba` dé 0, no queda nadie.")
+    return out
 
 
 @app.get("/api/admin/billing/precios-rebill")
