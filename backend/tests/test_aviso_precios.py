@@ -279,6 +279,51 @@ class ElPanelQueLePREGUNTAaRebill(Base):
         self.assertTrue(fila["error"] or fila["rebill_dice"],
                         "ni contestó ni dijo por qué no")
 
+    def test_avisa_cuando_alguien_tiene_DOS_suscripciones_en_rebill(self):
+        """⭐ 15/10, con los datos reales: 14 filas 'authorized' para 8 personas.
+        Tres tenían 3 filas cada una. Eso puede ser la MISMA suscripción
+        duplicada en nuestra tabla (inofensivo) o suscripciones DISTINTAS en
+        Rebill (le cobran dos veces) — y se distinguen sólo por el id, que el
+        panel no mostraba. El resumen ahora lo dice sin hacer contar filas."""
+        jefe = self._admin()
+        uid = self._persona()
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        # Dos filas con IDS DISTINTOS: dos suscripciones de verdad.
+        for sid in ("sub_aaa", "sub_bbb"):
+            self.conn.execute(
+                "INSERT INTO subscriptions (user_id, mp_subscription_id, status, "
+                "  external_reference, period, amount_ars, created_at) "
+                "VALUES (?,?,'authorized',?,'monthly',8900,?)",
+                (uid, sid, f"rendi-{uid}-plus-monthly", ts))
+        self.conn.commit()
+
+        d = self.client.get("/api/admin/billing/precios-rebill",
+                            headers=self._headers(jefe)).json()
+        dobles = d["resumen"]["con_mas_de_una_suscripcion_en_rebill"]
+        self.assertEqual(len(dobles), 1, f"no avisó de la doble suscripción: {d['resumen']}")
+        self.assertEqual(sorted(next(iter(dobles.values()))), ["sub_aaa", "sub_bbb"])
+
+    def test_la_misma_suscripcion_repetida_NO_cuenta_como_dos(self):
+        """El contraveneno: dos filas con el MISMO id son un duplicado nuestro,
+        no un cobro doble. Si el resumen las contara, mandaría a revisar un
+        problema que no existe."""
+        jefe = self._admin()
+        uid = self._persona()
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        for _ in range(3):
+            self.conn.execute(
+                "INSERT INTO subscriptions (user_id, mp_subscription_id, status, "
+                "  external_reference, period, amount_ars, created_at) "
+                "VALUES (?,'sub_misma','authorized',?,'monthly',8900,?)",
+                (uid, f"rendi-{uid}-plus-monthly", ts))
+        self.conn.commit()
+
+        d = self.client.get("/api/admin/billing/precios-rebill",
+                            headers=self._headers(jefe)).json()
+        self.assertEqual(d["resumen"]["con_mas_de_una_suscripcion_en_rebill"], {})
+        self.assertEqual(d["resumen"]["filas_authorized"], 3)
+        self.assertEqual(d["resumen"]["personas"], 1)
+
     def test_no_devuelve_ninguna_credencial(self):
         jefe = self._admin()
         cuerpo = self.client.get("/api/admin/billing/precios-rebill",

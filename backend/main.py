@@ -27697,15 +27697,22 @@ def admin_precios_rebill(uid: int = Depends(get_admin_user)):
     with db_abierta() as conn:
         filas = conn.execute(
             """SELECT s.mp_subscription_id AS sid, s.external_reference AS ref,
-                      s.period, s.amount_ars, u.email
+                      s.period, s.amount_ars, s.created_at, u.email
                  FROM subscriptions s JOIN users u ON u.id = s.user_id
                 WHERE s.status = 'authorized'
-                ORDER BY s.created_at DESC""").fetchall()
+                ORDER BY u.email, s.created_at DESC""").fetchall()
 
     for r in filas:
         item = {
             "email": r["email"],
             "period": r["period"],
+            # ⭐ El id de la suscripción EN REBILL. Sin esto no se puede saber
+            # si varias filas 'authorized' de la misma persona son la MISMA
+            # suscripción duplicada en nuestra tabla (inofensivo para el cobro)
+            # o suscripciones distintas (le cobran dos veces). Son preguntas
+            # con consecuencias opuestas y se distinguen sólo por el id.
+            "id_en_rebill": r["sid"],
+            "alta_en_rendi": r["created_at"],
             "registrado_en_rendi": r["amount_ars"],
             "rebill_dice": None,
             "error": None,
@@ -27737,6 +27744,18 @@ def admin_precios_rebill(uid: int = Depends(get_admin_user)):
             item["error"] = f"{type(ex).__name__}: {str(ex)[:160]}"
         salida["suscripciones"].append(item)
 
+    # Resumen: lo que importa es cuántas suscripciones DISTINTAS tiene cada uno
+    # en Rebill, no cuántas filas tenemos nosotros.
+    por_mail = {}
+    for it in salida["suscripciones"]:
+        por_mail.setdefault(it["email"], set()).add(it["id_en_rebill"])
+    salida["resumen"] = {
+        "filas_authorized": len(salida["suscripciones"]),
+        "personas": len(por_mail),
+        "con_mas_de_una_suscripcion_en_rebill": {
+            m: sorted(ids) for m, ids in por_mail.items() if len(ids) > 1
+        },
+    }
     salida["como_leerlo"] = (
         "Si 'rebill_dice' trae el precio NUEVO, el cambio alcanzó a las "
         "suscripciones que ya estaban. Si trae el VIEJO (igual a "
