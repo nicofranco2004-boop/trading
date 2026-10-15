@@ -27663,6 +27663,73 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
         conn.close()
 
 
+@app.post("/api/admin/billing/dedup-suscripciones")
+def admin_dedup_suscripciones(apply: int = 0, uid: int = Depends(get_admin_user)):
+    """Limpia las filas de suscripción DUPLICADAS. Por defecto NO borra nada.
+
+    Las dejó el bug de `_rebill_activate` (arreglado en este mismo commit):
+    insertaba una fila nueva por cada aviso de Rebill sobre una suscripción que
+    ya estaba activa, en vez de actualizar la que había. Medido el 2026-10-15:
+    14 filas para 8 personas.
+
+    QUÉ CONSIDERA DUPLICADO, y es deliberadamente estrecho: dos o más filas del
+    MISMO usuario con el MISMO `mp_subscription_id` no vacío. Eso no es "parecido":
+    es literalmente la misma suscripción de Rebill anotada N veces. Filas con ids
+    distintos NO se tocan ni se cuentan — serían suscripciones de verdad, y
+    confundirlas sería borrar un cobro real.
+
+    CUÁL SE CONSERVA: la MÁS VIEJA de cada grupo, que es la del alta original y
+    la que tiene la fecha real. Las copias nacieron después, por un aviso.
+
+    Nada referencia `subscriptions.id` (verificado), y `credit_ledger` guarda el
+    id de REBILL en texto, no el de la fila: borrar estas copias no deja nada
+    colgando.
+
+    `?apply=1` para que borre. Sin eso devuelve exactamente lo que haría.
+    """
+    borrar, grupos = [], []
+    with db_abierta() as conn:
+        filas = conn.execute(
+            """SELECT id, user_id, mp_subscription_id AS sid, status, created_at
+                 FROM subscriptions
+                WHERE mp_subscription_id IS NOT NULL AND mp_subscription_id != ''
+                ORDER BY user_id, mp_subscription_id, created_at ASC""").fetchall()
+
+        por_grupo = {}
+        for r in filas:
+            por_grupo.setdefault((r["user_id"], r["sid"]), []).append(r)
+
+        for (user_id, sid), rs in por_grupo.items():
+            if len(rs) < 2:
+                continue
+            # La primera es la más vieja: el ORDER BY ya las dejó en orden.
+            conserva, copias = rs[0], rs[1:]
+            grupos.append({
+                "user_id": user_id,
+                "id_en_rebill": sid,
+                "conserva": {"fila": conserva["id"], "alta": conserva["created_at"],
+                             "estado": conserva["status"]},
+                "borra": [{"fila": c["id"], "alta": c["created_at"],
+                           "estado": c["status"]} for c in copias],
+            })
+            borrar += [c["id"] for c in copias]
+
+        if apply and borrar:
+            ph = ",".join("?" for _ in borrar)
+            with conn:
+                conn.execute(
+                    f"DELETE FROM subscriptions WHERE id IN ({ph})", tuple(borrar))
+
+    return {
+        "aplicado": bool(apply),
+        "grupos_con_copias": len(grupos),
+        "filas_a_borrar": len(borrar),
+        "detalle": grupos,
+        "nota": ("Nada se borró — llamá con ?apply=1 para aplicarlo."
+                 if not apply else "Copias borradas."),
+    }
+
+
 @app.get("/api/admin/billing/precios-rebill")
 def admin_precios_rebill(uid: int = Depends(get_admin_user)):
     """¿Qué le va a cobrar REBILL a cada suscripción activa? READ-ONLY.
@@ -35833,15 +35900,39 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
                      "WHERE id = ?", (target_tier, uid))
 
-        # Buscar la pending subscription que creó /api/billing/subscribe.
-        # Si existe, la actualizamos con el subscription_id real. Si no,
-        # creamos una nueva (race condition: webhook llegó antes que insert).
-        existing = conn.execute(
-            """SELECT id FROM subscriptions
-               WHERE user_id = ? AND status = 'pending'
-               ORDER BY created_at DESC LIMIT 1""",
-            (uid,),
-        ).fetchone()
+        # ⭐ PRIMERO por el id de Rebill, que es la IDENTIDAD de la suscripción.
+        #
+        # EL BUG (medido el 2026-10-15): esto buscaba SÓLO una fila 'pending'
+        # —la que crea /api/billing/subscribe— y si no la encontraba INSERTABA
+        # una nueva. Pero a quien ya está activo hace meses no le queda ninguna
+        # pending, así que cada aviso que Rebill manda sobre su suscripción
+        # creaba OTRA fila 'authorized' del MISMO cobro. Al editar los 4 precios
+        # en el dashboard, Rebill avisó por cada suscripción afectada: quedaron
+        # 14 filas para 8 personas, tres de ellas con 3 filas cada una.
+        #
+        # No cobraba dos veces (del lado de Rebill hay una sola suscripción),
+        # pero ensuciaba los registros de Rendi y —misma causa— dejaba
+        # `amount_ars` en 0: por el camino del INSERT la fila nace con
+        # `amount_ars_cobrado or 0`, y un aviso de "cambió el plan" no trae
+        # monto cobrado. Por eso Rendi no sabía cuánto pagaba nadie.
+        #
+        # El orden importa: el id de Rebill identifica la suscripción, la fila
+        # 'pending' es sólo el borrador que dejó el checkout antes de tener id.
+        existing = None
+        if sub_id:
+            existing = conn.execute(
+                """SELECT id FROM subscriptions
+                   WHERE user_id = ? AND mp_subscription_id = ?
+                   ORDER BY created_at ASC LIMIT 1""",
+                (uid, sub_id),
+            ).fetchone()
+        if not existing:
+            existing = conn.execute(
+                """SELECT id FROM subscriptions
+                   WHERE user_id = ? AND status = 'pending'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (uid,),
+            ).fetchone()
         if existing:
             conn.execute(
                 """UPDATE subscriptions
