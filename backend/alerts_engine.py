@@ -24,6 +24,12 @@ re-armar. Hacía falta porque antes de que abra el mercado —y cuando la barra 
 día viene con los OHLC en NaN, que con los `.BA` pasa seguido— el proveedor
 devuelve el cierre a cierre de AYER, y salía por mail con el título "hoy".
 
+Fuera de la rueda (pre y post mercado de Wall Street): las pct_move "En el día"
+también avisan si la acción —o, para un CEDEAR o una acción argentina, su acción
+o ADR en Nueva York— se mueve más que el umbral en el pre o en el post. Ver
+`_evaluar_fuera_de_rueda`: un aviso por franja y por día, sólo con operaciones
+de verdad detrás, y SIN consumir la alerta del día (es un anticipo).
+
 Entrega: reusa _send_push_to_user (Web Push) + billing.emails.send_alert_email
 (Resend). Cada disparo queda logueado en alert_events (dedup + feed in-app), uno
 por activo — pero el ENVÍO es uno por alerta y por ciclo: una alerta de "toda mi
@@ -373,17 +379,29 @@ def _group_line(alert, symbol, price, change_pct) -> str:
     return f"{base} y cotiza a {_fmt(price, _ccy_for(symbol, alert['currency']))}"
 
 
-def _compose_group_message(items) -> str:
+def _cuando_item(it) -> str:
+    f = it.get("fuera")
+    return f"en el {_NOMBRE_FRANJA[f['sesion']]}" if f else "hoy"
+
+
+def _compose_group_message(items, fuera: dict = None, mixto: bool = False) -> str:
     """El asunto de un aviso agrupado. Nombra los movimientos en vez de
     contarlos: "INTC cayó 5.8%, NVDA cayó 3.4% y 2 más hoy", no "4 alertas".
 
     Es la misma lección que el resumen de mercado — el asunto ES el titular y es
     lo que decide si el mail se abre; cuántos avisos hay es justo lo que a nadie
     le importa. `items` llega ya ordenado de mayor a menor movimiento."""
+    if mixto:
+        # Rueda y pre/post juntos: cada uno con su cuándo, sin sufijo común.
+        etiquetas = [f"{it['label']} {_cuando_item(it)}" for it in items]
+        if len(etiquetas) == 2:
+            return f"{etiquetas[0]} y {etiquetas[1]}"
+        return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más"
     etiquetas = [it["label"] for it in items]
+    cuando = f"en el {_NOMBRE_FRANJA[fuera['sesion']]}" if fuera else "hoy"
     if len(etiquetas) == 2:
-        return f"{etiquetas[0]} y {etiquetas[1]} hoy"
-    return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más hoy"
+        return f"{etiquetas[0]} y {etiquetas[1]} {cuando}"
+    return f"{etiquetas[0]}, {etiquetas[1]} y {len(etiquetas) - 2} más {cuando}"
 
 
 # ─── Entrega ──────────────────────────────────────────────────────────────────
@@ -425,8 +443,11 @@ def _deliver(conn, alert, items) -> tuple:
     # Más grande primero: si hay que nombrar dos en el asunto, que sean los dos
     # que más se movieron.
     items = sorted(items, key=lambda it: abs(it.get("change_pct") or 0), reverse=True)
+    franjas = {(it.get("fuera") or {}).get("sesion") for it in items}
+    mixto = len(franjas) > 1
+    fuera = None if mixto else items[0].get("fuera")
     heading = (items[0]["message"] if len(items) == 1
-               else _compose_group_message(items))
+               else _compose_group_message(items, fuera, mixto=mixto))
     if client_label:
         # El asesor recibe alertas de N clientes: el prefijo dice de quién es.
         heading = f"[{client_label}] {heading}"
@@ -457,9 +478,22 @@ def _deliver(conn, alert, items) -> tuple:
                 from billing import emails
                 if len(items) == 1:
                     it = items[0]
-                    detail = _email_detail(alert, it["symbol"], it["price"],
-                                           it["change_pct"])
+                    detail = (_detalle_fuera(it["symbol"], it["change_pct"], it["price"], fuera)
+                              if fuera else
+                              _email_detail(alert, it["symbol"], it["price"], it["change_pct"]))
                     lines = None
+                elif mixto:
+                    # Rueda y pre/post en el mismo aviso: cada renglón dice dónde.
+                    detail = (f"se movieron {len(items)} activos de tu cartera. Lo de Wall "
+                              f"Street fuera de la rueda es un anticipo: todavía no se suma "
+                              f"a tu cartera.")
+                    lines = [it["line"] + (f" ({_cuando_item(it)})" if it.get("fuera") else " hoy")
+                             for it in items]
+                elif fuera:
+                    detail = (f"en el {_NOMBRE_FRANJA[fuera['sesion']]} de Wall Street se están "
+                              f"moviendo {len(items)} activos de tu cartera. Es un anticipo: "
+                              f"todavía no se suma a tu cartera.")
+                    lines = [it["line"] for it in items]
                 else:
                     detail = f"se movieron {len(items)} activos de tu cartera hoy:"
                     lines = [it["line"] for it in items]
@@ -502,7 +536,8 @@ def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
     return f"{sym} {verbo} {_fmt_pct(change_pct)}% {desde}{cotiza}."
 
 
-def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list):
+def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
+          fuera: dict = None):
     """Dispara: log en alert_events + actualiza last_fired_* + ENCOLA la entrega.
 
     El mail y el push no salen acá. Se acumulan en `pendientes` y salen al
@@ -512,7 +547,16 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     El evento de la app se escribe igual, uno por activo y en el momento — es lo
     que alimenta la lista de "Últimos avisos" y el puntito del sidebar. Las dos
     banderas de entregado se completan cuando la entrega efectivamente sale."""
-    message = _compose_message(alert, symbol, price, change_pct)
+    if fuera:
+        # Pre o post mercado: el mensaje dice en qué franja y, para un CEDEAR,
+        # que es su acción en Nueva York. El precio es el de allá, en dólares.
+        message = _mensaje_fuera(symbol, change_pct, fuera)
+        label = _etiqueta_fuera(symbol, change_pct, fuera)
+        line = _renglon_fuera(symbol, change_pct, price, fuera)
+    else:
+        message = _compose_message(alert, symbol, price, change_pct)
+        label = _short_label(alert, symbol, price, change_pct)
+        line = _group_line(alert, symbol, price, change_pct)
     cur = conn.execute(
         """INSERT INTO alert_events
            (alert_id, user_id, symbol, fired_at, price, message,
@@ -528,9 +572,9 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     pendientes.append({
         "alert": alert, "symbol": symbol, "price": price,
         "change_pct": change_pct, "message": message,
-        "label": _short_label(alert, symbol, price, change_pct),
-        "line": _group_line(alert, symbol, price, change_pct),
+        "label": label, "line": line,
         "event_id": cur.lastrowid,
+        "fuera": fuera,
     })
     log.info("alert %s fired (uid=%s sym=%s): %s",
              alert["id"], alert["user_id"], symbol, message)
@@ -542,6 +586,10 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
     Una alerta que falla al entregar no puede dejar sin avisar a las otras: cada
     grupo va en su propio try (misma guarda que el cron usa entre el motor de
     precios y el del libro del asesor)."""
+    # Uno por alerta, AUNQUE mezcle franjas: desde el 1/11, de 11:00 a 11:30
+    # coinciden la rueda de BYMA y el pre de Nueva York, y dos mails seguidos de
+    # la misma alerta son justo el spam que el agrupado vino a evitar. Cada
+    # renglón dice dónde fue (ver `_deliver`).
     por_alerta: dict = {}
     for it in pendientes:
         por_alerta.setdefault(it["alert"]["id"], []).append(it)
@@ -571,6 +619,139 @@ def _entregar_pendientes(conn, pendientes: list) -> None:
                 pass
         log.info("alert %s entregada (%s aviso/s, push=%s email=%s)",
                  alert["id"], len(items), push_ok, email_ok)
+
+
+# ─── Fuera de la rueda: pre y post mercado de Wall Street ─────────────────────
+
+_NOMBRE_FRANJA = {"pre": "pre-mercado", "post": "post-mercado"}
+
+
+def _quien(symbol, fuera) -> str:
+    """«NVDA» o, para un CEDEAR / acción argentina, «AAPL en Nueva York»: lo que
+    se mueve es la acción de allá, no el papel de acá (que todavía no operó)."""
+    sym = _display_symbol(symbol)
+    ref = fuera.get("ref")
+    if fuera.get("via") == "propio":
+        return sym
+    return f"{ref} en Nueva York" if ref == sym else f"{sym} ({ref} en Nueva York)"
+
+
+def _etiqueta_fuera(symbol, change_pct, fuera) -> str:
+    verbo = "sube" if (change_pct or 0) >= 0 else "cae"
+    return f"{_quien(symbol, fuera)} {verbo} {_fmt_pct(change_pct)}%"
+
+
+def _mensaje_fuera(symbol, change_pct, fuera) -> str:
+    """El título: «NVDA cae 3,1% en el pre-mercado»."""
+    return f"{_etiqueta_fuera(symbol, change_pct, fuera)} en el {_NOMBRE_FRANJA[fuera['sesion']]}"
+
+
+def _renglon_fuera(symbol, change_pct, price, fuera) -> str:
+    base = _etiqueta_fuera(symbol, change_pct, fuera)
+    return f"{base} y cotiza a {_fmt(price, 'USD')}" if price else base
+
+
+def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
+    """El cuerpo del mail: qué franja, contra qué, y que es un anticipo.
+
+    Arranca en minúscula: el mail lo antepone con «Hola Nico,» (como el resto de
+    los avisos). Y lo que se dice del papel de ACÁ depende de la franja: en el
+    pre todavía no operó hoy; en el post ya cerró en BYMA y esto anticipa cómo
+    puede abrir mañana."""
+    franja = _NOMBRE_FRANJA[fuera["sesion"]]
+    momento = ("antes de que abra la rueda" if fuera["sesion"] == "pre"
+               else "después del cierre de la rueda")
+    contra = "el cierre de ayer" if fuera["sesion"] == "pre" else "el cierre de hoy"
+    verbo = "sube" if (change_pct or 0) >= 0 else "cae"
+    cotiza = f" y cotiza a {_fmt(price, 'USD')}" if price else ""
+    txt = (f"en el {franja} de Wall Street ({momento}), {_quien(symbol, fuera)} {verbo} "
+           f"{_fmt_pct(change_pct)}% contra {contra}{cotiza}. Es un anticipo: todavía no "
+           f"se suma a tu cartera.")
+    if fuera.get("via") != "propio":
+        papel = (f"Tu CEDEAR de {_display_symbol(symbol)}" if fuera.get("via") == "eeuu"
+                 else f"Tu acción de {_display_symbol(symbol)}")
+        if fuera["sesion"] == "pre":
+            txt += (f" {papel} todavía no operó hoy: cuando abra BYMA, en pesos también "
+                    f"va a pesar lo que haga el dólar CCL.")
+        else:
+            txt += (f" {papel} ya cerró hoy en BYMA: esto anticipa cómo puede abrir mañana, "
+                    f"y en pesos también va a pesar lo que haga el dólar CCL.")
+    return txt
+
+
+def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) -> int:
+    """Las pct_move "En el día" en el pre y el post mercado de Wall Street.
+
+    Reglas (decididas el 2026-10-15):
+      · Sólo pct_move con baseline "En el día" (prev_close). Las de precio
+        objetivo y las de "Desde ahora" no: un precio en pesos no se puede
+        comparar con uno de Nueva York.
+      · El % es el del pre/post de la acción de EE.UU. que sigue la tenencia
+        (`fuera_de_horario.referencia_en_eeuu`, la misma de la pantalla). Para un
+        CEDEAR o una acción argentina, sólo hasta que abre BYMA.
+      · Sólo con operaciones de verdad: MIN_VELAS velas de 5 min en la franja
+        (`con_operaciones`). Una operación suelta no dispara.
+      · Un aviso por (alerta, activo, franja) y por día, en su propio estado
+        ('<símbolo>@pre' en alert_symbol_state): NO toca el estado del día, así
+        que si en la rueda se mueve, la alerta avisa igual. Y una alerta "una
+        sola vez" no se apaga por un aviso del pre: es un anticipo.
+    """
+    import fuera_de_horario as fdh
+    candidatas = []
+    for a, sym in units:
+        if a["kind"] != "pct_move" or (a["baseline"] or "prev_close") != "prev_close":
+            continue
+        if sym in _crypto_symbols():
+            continue
+        ref = fdh.referencia_en_eeuu(sym)
+        if ref:
+            candidatas.append((a, sym, ref))
+    if not candidatas:
+        return 0
+    try:
+        datos = fdh.estado(sorted({r[0] for _, _, r in candidatas}))
+    except Exception as ex:
+        log.warning("alerts fuera de la rueda: Yahoo falló: %s", ex)
+        return 0
+    sesion = datos.get("sesion")
+    if sesion not in ("pre", "post"):
+        return 0          # en la rueda manda la «Var. día»; de noche no hay nada vivo
+    cot = datos.get("cotizaciones") or {}
+    # El día de la franja es el de Nueva York, con el reloj compartido de Rendi
+    # (el mismo con que `fuera_de_horario` cuenta las velas de hoy).
+    import fechas
+    hoy = fechas.ahora_art().replace(tzinfo=fdh.ZONA_AR).astimezone(fdh.ZONA_NY).date().isoformat()
+
+    cruzaron = []
+    for a, sym, (ref, via) in candidatas:
+        if via != "propio" and datos.get("byma_abierto"):
+            continue      # el papel de acá ya tiene precio propio
+        q = cot.get(ref) or {}
+        pct = q.get("pct")
+        if pct is None or not pct_move_side(pct, a["up_pct"], a["down_pct"]):
+            continue
+        clave = f"{sym}@{sesion}"
+        if _sym_state(conn, a["id"], clave)[1] == hoy:
+            continue      # ya avisó en esta franja hoy
+        cruzaron.append((a, sym, ref, via, pct, q.get("precio"), clave))
+    if not cruzaron:
+        return 0
+    try:
+        velas = fdh.con_operaciones(sorted({c[2] for c in cruzaron}), sesion)
+    except Exception as ex:
+        log.warning("alerts fuera de la rueda: velas fallaron: %s", ex)
+        return 0
+    fired = 0
+    for a, sym, ref, via, pct, precio, clave in cruzaron:
+        if velas.get(ref, 0) < fdh.MIN_VELAS:
+            log.info("alert %s %s: %+.2f%% en el %s con %s velas: poca operación, no aviso",
+                     a["id"], sym, pct, sesion, velas.get(ref, 0))
+            continue
+        _fire(conn, a, sym, precio, pct, now, pendientes,
+              fuera={"sesion": sesion, "ref": ref, "via": via})
+        _set_sym_fired(conn, a["id"], clave, hoy)
+        fired += 1
+    return fired
 
 
 # ─── Loop principal ────────────────────────────────────────────────────────────
@@ -714,6 +895,12 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 if a["repeat"] == "once":
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])
+
+    # Pre y post mercado de Wall Street (anticipo, con su propio estado).
+    try:
+        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now)
+    except Exception as ex:
+        log.warning("alerts fuera de la rueda falló: %s", ex)
 
     # La entrega va DESPUÉS del loop: recién cuando terminó de evaluarse toda la
     # cartera se sabe cuántos activos se movieron y puede salir un mail solo.

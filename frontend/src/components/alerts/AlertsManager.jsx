@@ -298,6 +298,14 @@ export default function AlertsManager({ plan, prefill }) {
               <p className="text-[11px] text-ink-3">Completá uno o los dos (podés poner valores distintos)</p>
               <PctInput icon={TrendingUp} label="Sube más de" value={form.up_pct} onChange={v => setField('up_pct', v)} />
               <PctInput icon={TrendingDown} label="Baja más de" value={form.down_pct} onChange={v => setField('down_pct', v)} />
+              {/* Fuera de la rueda: el motor (alerts_engine._evaluar_fuera_de_rueda)
+                  también avisa en el pre y el post mercado, sólo para "En el día". */}
+              {(form.scope === 'holdings' || form.baseline === 'prev_close') && (
+                <p className="text-[11px] text-ink-3">
+                  Si es una acción de EE.UU. o un CEDEAR, también te avisamos si se mueve así en el
+                  pre o el post mercado de Wall Street (como anticipo, una vez por franja).
+                </p>
+              )}
             </div>
           )}
 

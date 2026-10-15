@@ -721,3 +721,159 @@ def test_el_mail_agrupado_arma_la_lista_en_html_y_en_texto(monkeypatch):
     assert capturado["subject"] == "INTC cayó 5,8% y NVDA cayó 3,4% hoy"
     assert "<li" in capturado["html"] and "INTC cayó 5,8% y cotiza a $31.020" in capturado["html"]
     assert "  · NVDA cayó 3,4% y cotiza a $14.080" in capturado["text"]
+
+
+# ── Fuera de la rueda: pre y post mercado de Wall Street ─────────────────────
+# Yahoo con la forma medida el 2026-10-15 (`/v7/finance/quote`): SPY dice qué
+# momento es. Las velas de 5 minutos dicen si hubo operaciones de verdad.
+
+import datetime as _dt
+import fuera_de_horario as _fdh
+from unittest.mock import patch as _patch
+
+_A_LAS_858 = datetime(2026, 10, 15, 8, 58)      # hora argentina: pre abierto, BYMA cerrada
+_A_LAS_1115 = datetime(2026, 10, 15, 11, 15)    # BYMA ya abrió
+
+
+def _cot(sym, pct, estado="PRE"):
+    return {"symbol": sym, "marketState": estado, "market": "us_market",
+            "regularMarketTime": 1000, "regularMarketPrice": 100.0,
+            "preMarketChangePercent": pct, "preMarketTime": 2000, "preMarketPrice": 100 + pct}
+
+
+def _con_velas(cuantas):
+    """`cuantas` velas de 5 minutos con operaciones en el pre de hoy (NY)."""
+    def traer(simbolo):
+        n = cuantas.get(simbolo, 0)
+        velas = [(_dt.datetime(2026, 10, 15, 8, 0, tzinfo=_fdh.ZONA_NY) + _dt.timedelta(minutes=5 * i), 100.0)
+                 for i in range(n)]
+        return velas, {}
+    return traer
+
+
+def _fuera(monkeypatch, cotizaciones, velas, ahora=_A_LAS_858):
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(_fdh, "_pedir_yahoo",
+                        lambda simbolos: [c for c in cotizaciones if c["symbol"] in simbolos])
+    monkeypatch.setattr(_fdh, "_traer_velas", _con_velas(velas))
+    monkeypatch.setattr("fechas.ahora_art", lambda: ahora)
+    # Fuera de la rueda no hay «Var. día» de hoy: el camino de siempre no dispara.
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
+
+
+def test_avisa_en_el_pre_mercado_una_vez_y_sin_gastar_la_alerta_del_dia(clean, monkeypatch):
+    conn = clean
+    aid = _mk_alert(conn, kind="pct_move", down_pct=3, threshold=None, symbol="NVDA", repeat="once")
+    _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    ev = _events(conn)[-1]
+    assert ev["message"] == "NVDA cae 3,5% en el pre-mercado"
+    # Una vez por franja y por día.
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    # No toca la alerta del día: sigue activa (aunque sea «una vez») y armada.
+    a = conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()
+    assert a["active"] == 1
+    assert ae._sym_state(conn, aid, "NVDA") == (1, None)
+
+
+def test_una_operacion_suelta_no_dispara(clean, monkeypatch):
+    # PAM, 14/10: +5,26 % en el post por UNA vela (16:15) y nada más.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", up_pct=3, threshold=None, symbol="PAM", repeat="always")
+    _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("PAM", 5.26)], {"PAM": 1})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_el_cedear_avisa_con_su_accion_en_nueva_york_hasta_que_abre_byma(clean, monkeypatch):
+    conn = clean
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+              threshold=None, repeat="always")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["AAPL.BA"])
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("AAPL", 3.4)], {"AAPL": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "AAPL en Nueva York sube 3,4% en el pre-mercado"
+    # Con BYMA abierta, el CEDEAR ya tiene precio propio: no hay anticipo.
+    conn.execute("DELETE FROM alert_symbol_state"); conn.commit()
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("AAPL", 3.4)], {"AAPL": 6}, ahora=_A_LAS_1115)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_en_la_rueda_normal_no_hay_aviso_de_pre(clean, monkeypatch):
+    conn = clean
+    _mk_alert(conn, kind="pct_move", down_pct=3, threshold=None, symbol="NVDA", repeat="always")
+    _fuera(monkeypatch, [_cot("SPY", -0.3, estado="REGULAR"), _cot("NVDA", -3.5, estado="REGULAR")],
+           {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def test_el_mail_dice_que_fue_en_el_pre_mercado(clean, monkeypatch):
+    import main as _main
+    from billing import emails as _emails
+    conn = clean
+    conn.execute("UPDATE users SET email='a@a.co' WHERE id=1"); conn.commit()
+    _mk_alert(conn, kind="pct_move", down_pct=3, threshold=None, symbol="NVDA",
+              repeat="always", channel="email")
+    _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5)], {"NVDA": 6})
+    mails = []
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    monkeypatch.setattr(_emails, "send_alert_email", lambda **kw: mails.append(kw) or True)
+    ae.evaluate_alerts(conn, only_user=1)
+    assert mails[0]["heading"] == "NVDA cae 3,5% en el pre-mercado"
+    # En minúscula: el mail le antepone «Hola Nico,».
+    assert mails[0]["detail"].startswith("en el pre-mercado de Wall Street (antes de que abra la rueda)")
+    assert "Es un anticipo" in mails[0]["detail"]
+
+
+def test_lo_que_dice_del_cedear_depende_de_la_franja():
+    pre = ae._detalle_fuera("AAPL.BA", 3.4, 354.62, {"sesion": "pre", "ref": "AAPL", "via": "eeuu"})
+    post = ae._detalle_fuera("AAPL.BA", 3.4, 354.62, {"sesion": "post", "ref": "AAPL", "via": "eeuu"})
+    assert "Tu CEDEAR de AAPL todavía no operó hoy" in pre
+    # A la noche el CEDEAR YA operó (BYMA cerró a las 17): decir que no operó era falso.
+    assert "todavía no operó" not in post
+    assert "Tu CEDEAR de AAPL ya cerró hoy en BYMA: esto anticipa cómo puede abrir mañana" in post
+    adr = ae._detalle_fuera("YPFD.BA", -2.0, 51.0, {"sesion": "pre", "ref": "YPF", "via": "adr"})
+    assert "Tu acción de YPFD todavía no operó hoy" in adr
+
+
+
+def _mails_reales(monkeypatch):
+    from billing import emails as _emails
+    mails = []
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    monkeypatch.setattr(_emails, "send_alert_email", lambda **kw: mails.append(kw) or True)
+    return mails
+
+
+def test_varios_en_el_pre_salen_en_un_solo_mail(clean, monkeypatch):
+    conn = clean
+    conn.execute("UPDATE users SET email='a@a.co' WHERE id=1"); conn.commit()
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
+              threshold=None, repeat="always", channel="email")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["NVDA", "MSFT", "AAPL.BA"])
+    _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5), _cot("MSFT", -3.2), _cot("AAPL", 3.4)],
+           {"NVDA": 6, "MSFT": 6, "AAPL": 6})
+    mails = _mails_reales(monkeypatch)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 3
+    assert len(mails) == 1                                    # UN mail, no tres
+    # Del más grande al más chico, como el resto de los avisos agrupados.
+    assert mails[0]["heading"] == "NVDA cae 3,5%, AAPL en Nueva York sube 3,4% y 1 más en el pre-mercado"
+    assert len(mails[0]["lines"]) == 3
+    assert "Es un anticipo" in mails[0]["detail"]
+
+
+def test_rueda_y_pre_a_la_vez_tambien_van_en_un_solo_mail(clean, monkeypatch):
+    # Desde el 1/11, de 11:00 a 11:30 coinciden BYMA abierta y el pre de Nueva York.
+    conn = clean
+    conn.execute("UPDATE users SET email='a@a.co' WHERE id=1"); conn.commit()
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
+              threshold=None, repeat="always", channel="email")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["GGAL.BA", "NVDA"])
+    _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5), _cot("GGAL", -2.0)],
+           {"NVDA": 6, "GGAL": 6}, ahora=_A_LAS_1115)
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"GGAL.BA": _q(5500, -4.0, sym="GGAL.BA")})
+    mails = _mails_reales(monkeypatch)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 2
+    assert len(mails) == 1
+    assert mails[0]["heading"] == "GGAL cayó 4% hoy y NVDA cae 3,5% en el pre-mercado"
+    assert any(l.endswith("(en el pre-mercado)") for l in mails[0]["lines"])
+    assert any(l.endswith(" hoy") for l in mails[0]["lines"])

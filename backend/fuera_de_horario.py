@@ -545,3 +545,39 @@ def resumen_de_la_manana(lotes: list, por_simbolo: Dict[str, dict], tc_pesos: Op
         r.pop("sin_operar_todavia", None)
         out[franja] = r
     return out or None
+
+
+# ─── Para las alertas: ¿el movimiento de ahora tiene operaciones detrás? ────
+# Fuera de la rueda opera poca gente y UNA operación suelta marca un salto
+# falso. MEDIDO 2026-10-15: PAM figuraba +5,26 % en el post del 14 por una sola
+# vela, la de las 16:15, y nada más. Una alerta que salta por eso le enseña al
+# usuario a ignorar las alertas. Por eso una alerta fuera de la rueda pide al
+# menos MIN_VELAS velas de 5 minutos con operaciones en la franja de hoy.
+MIN_VELAS = 3
+
+_VENTANAS = {"pre": (_dt.time(4, 0), _dt.time(9, 30)), "post": (_dt.time(16, 0), _dt.time(20, 0))}
+
+
+def velas_en_franja(velas: list, hoy_ny: _dt.date, sesion: str) -> int:
+    """Cuántas velas de 5 minutos con operaciones tuvo HOY la franja `sesion`
+    ('pre' o 'post'). `velas` = [(datetime de NY, cierre)], como `_traer_velas`
+    (Yahoo sólo arma velas donde hubo operaciones)."""
+    ventana = _VENTANAS.get(sesion)
+    if not ventana:
+        return 0
+    desde, hasta = ventana
+    return sum(1 for t, c in velas if c and t.date() == hoy_ny and desde <= t.time() < hasta)
+
+
+def con_operaciones(simbolos: List[str], sesion: str, ahora: _dt.datetime = None,
+                    traer: Callable = None) -> Dict[str, int]:
+    """{símbolo: velas de hoy en la franja}. Un pedido de velas por símbolo,
+    sólo para los que ya cruzaron el umbral de alguna alerta (son pocos)."""
+    traer = traer or _traer_velas
+    if ahora is None:
+        import fechas
+        ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
+    hoy_ny = ahora.astimezone(ZONA_NY).date()
+    crudos, _ = _yahoo.varios(traer, list(dict.fromkeys(simbolos)),
+                              tope=_yahoo.TOPE_FONDO_SEG, que="velas para alertas")
+    return {s: velas_en_franja(v, hoy_ny, sesion) for s, (v, _c) in crudos.items()}
