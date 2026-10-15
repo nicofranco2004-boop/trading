@@ -1074,6 +1074,22 @@ def send_market_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
             'En tu agenda de hoy</h2>'
             f'<table style="width:100%;border-collapse:collapse;">{rows}</table></div>')
 
+    # Wall Street fuera de la rueda: el post-mercado de anoche y el pre de esta
+    # mañana. Las cifras las pone el CÓDIGO (market_brief._fuera_de_horario), no
+    # el modelo — la misma frontera que el calendario de abajo.
+    fdh_lineas = _lineas_fuera_de_horario((brief or {}).get("fuera_de_horario"))
+    fdh_html = ""
+    if fdh_lineas:
+        fdh_html = (
+            '<div style="margin:28px 0 0;padding:14px 16px;background:#f7f7fb;border-radius:8px;">'
+            '<h2 style="font-size:13px;font-weight:600;margin:0 0 6px;color:#1a1f2e;">'
+            'Wall Street fuera de la rueda</h2>'
+            + "".join(f'<p style="font-size:14px;line-height:1.55;color:#2b2f3a;margin:6px 0 0;">'
+                      f'{html.escape(l)}</p>' for l in fdh_lineas["lineas"])
+            + (f'<p style="font-size:12px;line-height:1.5;color:#6b7280;margin:8px 0 0;">'
+               f'{html.escape(fdh_lineas["nota"])}</p>' if fdh_lineas.get("nota") else "")
+            + '</div>')
+
     url = f"{APP_URL}/novedades"
     alerts_url = f"{APP_URL}/alertas"
     body_html = f"""
@@ -1083,6 +1099,7 @@ def send_market_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
       </h1>
       {mercado_html}
       {cartera_html}
+      {fdh_html}
       {events_html}
       <div style="text-align:center;margin:30px 0 6px;">
         <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:13px 30px;border-radius:8px;font-weight:600;font-size:15px;">
@@ -1101,6 +1118,9 @@ def send_market_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     txt_parts = [f"{titular}\n\n{hi}", "\n\n".join(mercado)]
     if cartera:
         txt_parts.append("LO TUYO\n" + "\n\n".join(cartera))
+    if fdh_lineas:
+        txt_parts.append("WALL STREET FUERA DE LA RUEDA\n" + "\n".join(fdh_lineas["lineas"])
+                         + (f"\n{fdh_lineas['nota']}" if fdh_lineas.get("nota") else ""))
     if events:
         txt_parts.append("EN TU AGENDA DE HOY\n" + "\n".join(
             f"  - {e.get('ticker','')}: {e.get('label','')}" for e in events))
@@ -1116,6 +1136,37 @@ def send_market_brief(*, to: str, user_name: str = "", brief: dict) -> bool:
     return _send(to, subject, _wrap_html(body_html), text,
                  from_addr=_from_alerts(),
                  reply_to="soporte@rendi.finance")
+
+
+def _lineas_fuera_de_horario(fdh) -> dict:
+    """Las frases del bloque «Wall Street fuera de la rueda» del resumen diario,
+    a partir de `fuera_de_horario.resumen_de_la_manana` (cifras ya formateadas).
+
+    «Anoche, en el post-mercado, tu cartera se movió −US$ 104,10 (−0,25%). Lo que
+    más pesó: NVDA (−1,60%) y MSFT (−0,69%).» Vacío si no hay nada."""
+    if not fdh:
+        return {}
+    lineas, hay_anticipo = [], False
+    for franja, nombre in (("post", "post-mercado"), ("pre", "pre-mercado")):
+        r = fdh.get(franja)
+        if not r:
+            continue
+        cuando = r.get("cuando") or ""
+        verbo = "viene moviendo" if r.get("abierto") else "se movió"
+        pct = f" ({r['pct_sobre_la_cartera_txt']})" if r.get("pct_sobre_la_cartera_txt") else ""
+        frase = f"{cuando[:1].upper()}{cuando[1:]}, en el {nombre}, tu cartera {verbo} {r['usd_txt']}{pct}."
+        top = [a for a in (r.get("activos") or []) if a.get("usd")][:3]
+        if top:
+            nombres = [f"{a['asset']} ({a['pct_txt']})" for a in top]
+            unidos = nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
+            frase += f" Lo que más pesó: {unidos}."
+        lineas.append(frase)
+        hay_anticipo = hay_anticipo or bool(r.get("anticipo_usd_txt"))
+    if not lineas:
+        return {}
+    nota = ("Los CEDEARs y las acciones argentinas siguen a su acción en Nueva York; "
+            "en pesos también pesa lo que haga el dólar CCL." if hay_anticipo else "")
+    return {"lineas": lineas, "nota": nota}
 
 
 def send_reengagement(*, to: str, user_name: str = "") -> bool:

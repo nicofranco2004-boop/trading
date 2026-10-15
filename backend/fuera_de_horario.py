@@ -116,6 +116,142 @@ POPULARES = [
     {"s": "SPY", "n": "S&P 500 (ETF)"}, {"s": "QQQ", "n": "Nasdaq 100 (ETF)"},
 ]
 
+# ─── A qué acción de EE.UU. mira cada tenencia ──────────────────────────────
+# COPIA de las dos tablas de frontend/src/utils/tickers.js (CEDEAR_EN_EEUU,
+# CEDEAR_ESPECIE_ALIAS y ADR_DE_ACCION_AR): la pantalla y el chat tienen que
+# traducir igual. tests/test_fuera_de_horario.py compara las dos copias —si
+# cambiás una sin la otra, falla.
+CEDEAR_EN_EEUU = {"DISN": "DIS", "BRKB": "BRK-B", "NOKA": "NOK"}
+CEDEAR_ESPECIE_ALIAS = {"SI": "SID"}
+ADR_DE_ACCION_AR = {
+    "GGAL": "GGAL", "BMA": "BMA", "CEPU": "CEPU", "EDN": "EDN", "BBAR": "BBAR", "SUPV": "SUPV",
+    "YPFD": "YPF", "PAMP": "PAM", "TGSU2": "TGS", "CRES": "CRESY", "TECO2": "TEO",
+    "LOMA": "LOMA", "IRSA": "IRS",
+}
+
+
+def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = None):
+    """La acción de EE.UU. que anticipa a una tenencia, o None. Mismas reglas
+    que `referenciaEnEEUU` (utils/fueraDeHorario.js):
+
+      · '<X>.BA' de un CEDEAR → su acción en EE.UU. ('eeuu'; DISN → DIS).
+      · '<X>.BA' de una acción argentina con ADR → el ADR ('adr'; YPFD → YPF).
+      · '<X>.BA' de cualquier otra cosa (bono, acción sin ADR) → None: el ticker
+        local tal cual en Yahoo sería OTRA empresa (AGRO → Adecoagro).
+      · Un ticker de EE.UU. (broker del exterior) → él mismo ('propio'), salvo
+        cripto, bonos, fondos y efectivo.
+
+    `clave_precio` es la de `snapshots_job.position_price_key`: la MISMA con
+    que el chat valúa la tenencia. Devuelve (símbolo, vía) o None.
+    """
+    if not clave_precio:
+        return None
+    from cripto import CRYPTO_SYMBOLS
+    from ai.trade_tickers import CEDEAR_TICKERS, AR_STOCK_TICKERS
+    from behavioral import _is_ar_bond
+    clave = str(clave_precio).upper()
+    tipo = (asset_type or "").upper()
+    if clave.startswith("FCI:") or tipo in ("FUND", "BOND", "CRYPTO"):
+        return None
+    if clave.endswith(".BA"):
+        base = clave[:-3]
+        if base in CRYPTO_SYMBOLS:
+            return None
+        if base in AR_STOCK_TICKERS and tipo != "CEDEAR":
+            adr = ADR_DE_ACCION_AR.get(base)
+            return (adr, "adr") if adr else None
+        especie = CEDEAR_ESPECIE_ALIAS.get(base, base)
+        if base in CEDEAR_TICKERS or especie in CEDEAR_TICKERS or tipo == "CEDEAR":
+            return (CEDEAR_EN_EEUU.get(especie, especie), "eeuu")
+        return None
+    if clave in CRYPTO_SYMBOLS or clave in ("USD", "USDT", "USDC", "ARS") or _is_ar_bond(clave):
+        return None
+    return (clave, "propio")
+
+
+def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None, top: int = 6) -> Optional[dict]:
+    """El pre/post de una cartera YA valuada, para el chat y el mail. None si no
+    hay pre ni post o si ninguna tenencia lo tiene.
+
+    Cada lote: {asset, valor (USD), ref: (símbolo, vía) | None}. La plata es
+    valor × % (la misma regla que la pantalla). Con BYMA abierta los CEDEARs y
+    las acciones argentinas ya tienen precio propio: su anticipo no se cuenta.
+    `tc_pesos`: el dólar con que el chat pasa pesos a dólares, para decir cuánto
+    mueve un 1 % del CCL sobre lo que está en pesos.
+    """
+    sesion = (datos or {}).get("sesion")
+    if not sesion:
+        return None
+    cot = datos.get("cotizaciones") or {}
+    total_valor = sum(float(l.get("valor") or 0) for l in lotes)
+    por_activo: Dict[str, dict] = {}
+    sin_operar = set()
+    exacto = anticipo = anticipo_valor = 0.0
+    for l in lotes:
+        ref = l.get("ref")
+        if not ref:
+            continue
+        simbolo, via = ref
+        if via != "propio" and datos.get("byma_abierto"):
+            continue
+        q = cot.get(simbolo)
+        if not q:
+            continue
+        if q.get("pct") is None:
+            sin_operar.add(l.get("asset"))
+            continue
+        valor = float(l.get("valor") or 0)
+        usd = valor * float(q["pct"]) / 100
+        if via == "propio":
+            exacto += usd
+        else:
+            anticipo += usd
+            anticipo_valor += valor
+        a = por_activo.setdefault(l.get("asset"), {
+            "asset": l.get("asset"), "sigue_a": simbolo, "via": via,
+            "pct": round(float(q["pct"]), 2), "usd": 0.0})
+        a["usd"] += usd
+    if not por_activo and not sin_operar:
+        return None
+    total = exacto + anticipo
+    nombre = "pre-mercado" if sesion == "pre" else "post-mercado"
+
+    def _usd(v):
+        from money_fmt import fmt_money
+        s = fmt_money(round(v, 2), "USD")
+        return s if v < 0 else "+" + s
+
+    def _pct(v):
+        from money_fmt import fmt_num
+        return f"{fmt_num(v, 2, signed=True)}%"
+
+    activos = sorted(por_activo.values(), key=lambda a: abs(a["usd"]), reverse=True)
+    for a in activos:
+        a["usd"] = round(a["usd"], 2)
+        a["usd_txt"] = _usd(a["usd"])
+        a["pct_txt"] = _pct(a["pct"])
+        a["como"] = {"propio": "la acción misma", "eeuu": "CEDEAR: sigue a su acción en Nueva York",
+                     "adr": "acción argentina: sigue a su ADR en Nueva York"}[a["via"]]
+    pct_cartera = (total / total_valor * 100) if total_valor > 0 else None
+    out = {
+        "sesion": nombre if sesion != "post_cerrado" else "post-mercado (ya cerró)",
+        "abierto": sesion in ("pre", "post"),
+        "cierra_hora_argentina": datos.get("cierra"),
+        "usd": round(total, 2),
+        "usd_txt": _usd(total),
+        "pct_sobre_la_cartera": None if pct_cartera is None else round(pct_cartera, 2),
+        "pct_sobre_la_cartera_txt": None if pct_cartera is None else _pct(pct_cartera),
+        "exacto_usd_txt": _usd(exacto),
+        "anticipo_usd_txt": _usd(anticipo) if anticipo_valor > 0 else None,
+        "activos": activos[:top],
+        "sin_operar_todavia": sorted(a for a in sin_operar if a),
+    }
+    if anticipo_valor > 0 and tc_pesos:
+        from money_fmt import fmt_money
+        out["ccl_1pct_en_pesos_txt"] = fmt_money(round(anticipo_valor * tc_pesos * 0.01), "ARS")
+    return out
+
+
 _cache: Dict[str, tuple] = {}      # símbolo → (ts, cotización cruda de Yahoo | None)
 _lock = threading.Lock()
 
@@ -244,7 +380,11 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
     }
     Los símbolos que Yahoo no conoce no aparecen en `cotizaciones`.
     """
-    ahora = ahora or _dt.datetime.now(_dt.timezone.utc)
+    if ahora is None:
+        # El reloj compartido de Rendi (las pruebas lo fijan): sin esto, si BYMA
+        # está abierta dependía de la hora a la que corriera la suite.
+        import fechas
+        ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
     pedidos = list(simbolos)
     if listas:
         for grupo in (INDICES, ADRS, POPULARES):
@@ -278,3 +418,130 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
     if listas:
         out["listas"] = {"indices": INDICES, "adrs": ADRS, "populares": POPULARES}
     return out
+
+
+# ─── Lo que ya pasó: el post-mercado de anoche y el pre de esta mañana ──────
+# Para el mail de las 11:00. MEDIDO 2026-10-15: apenas arranca el pre-mercado,
+# la cotización en vivo de Yahoo ya NO trae el post de la noche anterior
+# (postMarketChangePercent vacío a las 9:26 de NY), y en la rueda normal
+# tampoco el pre. El historial de velas de 5 minutos con `prepost=True` sí trae
+# las dos franjas (AAPL: post del 14 hasta las 19:55; pre del 15 hasta las 9:25).
+# Contra qué se mide: el CIERRE OFICIAL de la rueda anterior (vela diaria), el
+# mismo que usa la cotización en vivo, no la última vela de 5 minutos (que
+# difiere por la subasta de cierre: NVDA 221,50 contra 221,30 oficial).
+
+_franjas_cache: Dict[tuple, tuple] = {}   # (símbolo, día NY) → (ts, franjas)
+_FRANJAS_TTL_S = 600
+
+
+def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date) -> dict:
+    """El post de la rueda anterior y el pre de hoy, a partir de las velas.
+
+    `velas`: [(datetime con zona de NY, cierre de la vela)], de 5 minutos.
+    `cierres`: {fecha: cierre oficial} de las ruedas (velas diarias).
+    Devuelve {"post": {pct, dia, hasta} | None, "pre": {pct, dia, hasta} | None},
+    con pct en PUNTOS (0,64 = 0,64 %), contra el cierre oficial de la rueda
+    anterior a hoy.
+    """
+    anteriores = sorted(d for d in cierres if d < hoy_ny)
+    if not anteriores:
+        return {"post": None, "pre": None}
+    previa = anteriores[-1]
+    base = cierres[previa]
+    if not base:
+        return {"post": None, "pre": None}
+
+    def _ultima(dia, desde, hasta):
+        dentro = [(t, c) for t, c in velas
+                  if t.date() == dia and desde <= t.time() < hasta and c]
+        return max(dentro, key=lambda x: x[0]) if dentro else None
+
+    out = {}
+    for franja, dia, desde, hasta in (("post", previa, _dt.time(16, 0), _dt.time(20, 0)),
+                                      ("pre", hoy_ny, _dt.time(4, 0), _dt.time(9, 30))):
+        u = _ultima(dia, desde, hasta)
+        out[franja] = None if u is None else {
+            "pct": round((float(u[1]) / float(base) - 1) * 100, 4),
+            "dia": dia.isoformat(),
+            "hasta": u[0].strftime("%H:%M"),
+        }
+    return out
+
+
+def _traer_velas(simbolo: str):
+    """Velas de 5 minutos con pre y post, y cierres diarios oficiales (5 días)."""
+    import yfinance as yf
+    t = yf.Ticker(simbolo)
+    h5 = t.history(period="5d", interval="5m", prepost=True)
+    hd = t.history(period="5d", interval="1d")
+    velas = [(ts.tz_convert(ZONA_NY).to_pydatetime(), float(c))
+             for ts, c in zip(h5.index, h5["Close"]) if c == c]
+    cierres = {ts.tz_convert(ZONA_NY).date(): float(c)
+               for ts, c in zip(hd.index, hd["Close"]) if c == c}
+    return velas, cierres
+
+
+def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = None) -> Dict[str, dict]:
+    """{símbolo: franjas_de_velas(...)} para estos símbolos de EE.UU. Un pedido
+    por símbolo, en paralelo, con el tope de los trabajos de fondo (lo usa el
+    mail); cacheado 10 minutos por símbolo y día."""
+    traer = traer or _traer_velas
+    if ahora is None:
+        import fechas
+        ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
+    hoy_ny = ahora.astimezone(ZONA_NY).date()
+    t0 = time.time()
+    out, faltan = {}, []
+    for s in dict.fromkeys(simbolos):
+        hit = _franjas_cache.get((s, hoy_ny))
+        if hit and t0 - hit[0] < _FRANJAS_TTL_S:
+            out[s] = hit[1]
+        else:
+            faltan.append(s)
+    if faltan:
+        crudos, _ = _yahoo.varios(traer, faltan, tope=_yahoo.TOPE_FONDO_SEG, que="velas pre/post")
+        for s, (velas, cierres) in crudos.items():
+            f = franjas_de_velas(velas, cierres, hoy_ny)
+            _franjas_cache[(s, hoy_ny)] = (t0, f)
+            out[s] = f
+    return out
+
+
+def _nombre_de_la_noche(dia_iso: str, hoy_ny: _dt.date) -> str:
+    d = _dt.date.fromisoformat(dia_iso)
+    if d == hoy_ny - _dt.timedelta(days=1):
+        return "anoche"
+    dias = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+    return f"el {dias[d.weekday()]} a la noche"
+
+
+def resumen_de_la_manana(lotes: list, por_simbolo: Dict[str, dict], tc_pesos: Optional[float] = None,
+                         ahora: _dt.datetime = None) -> Optional[dict]:
+    """Para el mail: cuánto movió la cartera el post-mercado de la noche anterior
+    y el pre-mercado de hoy. Misma cuenta que la pantalla y el chat
+    (`resumen_de_lotes`). None si ninguna de las dos franjas tiene nada."""
+    if ahora is None:
+        import fechas
+        ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
+    ny = ahora.astimezone(ZONA_NY)
+    out = {}
+    for franja in ("post", "pre"):
+        cot = {s: {"pct": f[franja]["pct"]} for s, f in por_simbolo.items() if f.get(franja)}
+        if not cot:
+            continue
+        # Los CEDEARs SÍ cuentan: a las 11 BYMA recién abre, y lo que se movió su
+        # acción de noche es justo lo que todavía no estaba en su precio.
+        r = resumen_de_lotes(lotes, {"sesion": "post_cerrado" if franja == "post" else "pre",
+                                     "byma_abierto": False, "cotizaciones": cot}, tc_pesos=tc_pesos)
+        if not r or not r["activos"]:
+            continue
+        dia = next(f[franja]["dia"] for f in por_simbolo.values() if f.get(franja))
+        if franja == "post":
+            r["cuando"] = _nombre_de_la_noche(dia, ny.date())
+            r["abierto"] = False
+        else:
+            r["abierto"] = ny.time() < _dt.time(9, 30) and ny.weekday() < 5
+            r["cuando"] = "esta mañana"
+        r.pop("sin_operar_todavia", None)
+        out[franja] = r
+    return out or None

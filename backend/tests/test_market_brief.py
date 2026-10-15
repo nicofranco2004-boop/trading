@@ -1381,3 +1381,105 @@ class VistaPreviaDelAsesorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FueraDeHorarioEnElMailTest(unittest.TestCase):
+    """El post-mercado de anoche y el pre de esta mañana en el resumen diario,
+    por el cron real. Las cifras las pone el código; al modelo le llega sólo
+    hacia dónde se movió cada activo con noticia, sin números."""
+
+    setUp = MarketBriefTest.setUp
+    _pos = MarketBriefTest._pos
+    _news = MarketBriefTest._news
+    _suscribir = MarketBriefTest._suscribir
+    _correr_cron = MarketBriefTest._correr_cron
+
+    @staticmethod
+    def _velas(cierre_prev_dia, cierre_prev, post, pre, hoy):
+        """NVDA: cierre oficial de la rueda anterior, la última vela del post de
+        esa noche y la última del pre de hoy (velas de 5 minutos, hora de NY)."""
+        import datetime as dt
+        import fuera_de_horario as fdh
+        ny = fdh.ZONA_NY
+
+        def traer(simbolo):
+            if simbolo != "NVDA":
+                return [], {}
+            velas = [
+                (dt.datetime.combine(cierre_prev_dia, dt.time(15, 55), ny), cierre_prev),
+                (dt.datetime.combine(cierre_prev_dia, dt.time(19, 55), ny), post),
+                (dt.datetime.combine(hoy, dt.time(9, 25), ny), pre),
+            ]
+            return velas, {cierre_prev_dia - dt.timedelta(days=1): 1.0, cierre_prev_dia: cierre_prev}
+        return traer
+
+    def _correr(self, ahora_art, traer):
+        import fuera_de_horario as fdh
+        self._pos("NVDA", qty=10)
+        self._news("NVDA", "Nvidia cae tras el dato de inflación")
+        self._suscribir()
+        visto = {}
+
+        def _narrar(*a, **k):
+            visto.update(k)
+            return _NarracionFake()
+
+        # El cron corre con `_ThreadSincrono` (reemplaza threading.Thread), y eso
+        # rompe el pool de Yahoo: acá las velas se piden de a una. La cuenta es
+        # la misma; sólo cambia que no van en paralelo.
+        def _de_a_uno(fn, items, **kw):
+            return {i: fn(i) for i in items}, []
+
+        fdh._franjas_cache.clear()
+        with patch.object(fdh, "_traer_velas", traer), \
+             patch.object(fdh._yahoo, "varios", _de_a_uno), \
+             patch("fechas.ahora_art", return_value=ahora_art), \
+             patch.object(main, "fetch_prices_for_symbols", return_value={"NVDA": 220.0}), \
+             patch.object(main, "_user_tc_blue", return_value=1450.0), \
+             patch.object(main, "_user_tc_cedear", return_value=1400.0), \
+             patch.object(market_brief, "narrate", _narrar):
+            _, enviados, _ = self._correr_cron()
+        return enviados[0]["brief"], visto
+
+    def test_anoche_en_el_post_y_esta_manana_en_el_pre(self):
+        import datetime as dt
+        traer = self._velas(dt.date(2026, 10, 14), 220.0, 217.8, 222.2, dt.date(2026, 10, 15))
+        brief, visto = self._correr(datetime(2026, 10, 15, 11, 0), traer)   # jueves 11:00
+        f = brief["fuera_de_horario"]
+        # 10 NVDA × US$ 220 (la valuación del chat) × −1 % / +1 %.
+        self.assertAlmostEqual(f["post"]["usd"], -22.0, places=2)
+        self.assertEqual(f["post"]["cuando"], "anoche")
+        self.assertAlmostEqual(f["pre"]["usd"], 22.0, places=2)
+        self.assertFalse(f["pre"]["abierto"])           # a las 10 de NY el pre ya cerró
+        # Al modelo: hacia dónde y cuándo, SIN un solo número.
+        movs = visto["fuera_de_horario"]
+        self.assertEqual({(m["activo"], m["movimiento"]) for m in movs},
+                         {("NVDA", "bajó"), ("NVDA", "subió")})
+        self.assertFalse(any(ch.isdigit() for m in movs for v in m.values() for ch in str(v)))
+        # Y el mail lo dice con la cifra que puso el código.
+        cuerpo = {}
+        with patch.object(emails, "_send",
+                          lambda to, subject, html, text, **kw: cuerpo.update(html=html, text=text) or True):
+            emails.send_market_brief(to="a@b.co", user_name="Nico", brief=brief)
+        self.assertIn("Wall Street fuera de la rueda", cuerpo["html"])
+        self.assertIn("Anoche, en el post-mercado, tu cartera se movió", cuerpo["text"])
+        self.assertIn("NVDA (", cuerpo["text"])
+
+    def test_el_lunes_cuenta_el_post_del_viernes(self):
+        # Directo sobre la cuenta (no por el cron): mover el reloj del cron al
+        # lunes deja afuera las noticias de prueba, que son de hoy.
+        import datetime as dt
+        import fuera_de_horario as fdh
+        traer = self._velas(dt.date(2026, 10, 16), 220.0, 217.8, 222.2, dt.date(2026, 10, 19))
+        velas, cierres = traer("NVDA")
+        lunes = dt.datetime(2026, 10, 19, 11, 0, tzinfo=fdh.ZONA_AR)
+        por = {"NVDA": fdh.franjas_de_velas(velas, cierres, dt.date(2026, 10, 19))}
+        r = fdh.resumen_de_la_manana([{"asset": "NVDA", "valor": 2200.0, "ref": ("NVDA", "propio")}],
+                                     por, ahora=lunes)
+        self.assertEqual(r["post"]["cuando"], "el viernes a la noche")
+        self.assertAlmostEqual(r["post"]["usd"], -22.0, places=2)
+
+    def test_sin_nada_fuera_de_la_rueda_el_mail_es_el_de_siempre(self):
+        brief, visto = self._correr(datetime(2026, 10, 15, 11, 0), lambda s: ([], {}))
+        self.assertNotIn("fuera_de_horario", brief)
+        self.assertNotIn("fuera_de_horario", visto)

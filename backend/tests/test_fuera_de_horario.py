@@ -179,3 +179,75 @@ def test_el_endpoint_con_listas_trae_indices_adrs_y_populares(cliente):
     assert "MELI" in {x["s"] for x in r["listas"]["populares"]}
     # Todo lo de las listas se pidió en el mismo viaje a Yahoo.
     assert len(y.pedidos) == 1
+
+
+# ─── Las tablas de traducción: la pantalla y el chat traducen igual ─────────
+
+def _tabla_js(nombre):
+    """Lee `export const <nombre> = { ... }` de frontend/src/utils/tickers.js."""
+    import re
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "frontend", "src", "utils", "tickers.js")
+    texto = open(ruta, encoding="utf-8").read()
+    m = re.search(r"export const " + nombre + r"\s*=\s*\{(.*?)\}", texto, re.S)
+    assert m, f"no encontré {nombre} en tickers.js"
+    return dict(re.findall(r"([A-Z0-9]+)\s*:\s*'([A-Z0-9.\-]+)'", m.group(1)))
+
+
+@pytest.mark.parametrize("nombre", ["CEDEAR_EN_EEUU", "CEDEAR_ESPECIE_ALIAS", "ADR_DE_ACCION_AR"])
+def test_las_tablas_del_servidor_son_las_de_la_pantalla(nombre):
+    assert getattr(fdh, nombre) == _tabla_js(nombre), (
+        f"{nombre} cambió en frontend/src/utils/tickers.js y no en fuera_de_horario.py (o al revés)")
+
+
+@pytest.mark.parametrize("clave,tipo,esperado", [
+    ("AAPL.BA", "CEDEAR", ("AAPL", "eeuu")),
+    ("DISN.BA", None, ("DIS", "eeuu")),        # el CEDEAR de Disney es DIS en EE.UU.
+    ("YPFD.BA", None, ("YPF", "adr")),
+    ("AGRO.BA", None, None),                   # sin ADR: AGRO tal cual sería Adecoagro
+    ("AL30.BA", "BOND", None),
+    ("AL30.BA", None, None),
+    ("GD30", None, None),                      # bono en un broker del exterior
+    ("BTC", None, None),
+    ("FCI:ALGO", None, None),
+    ("NVDA", None, ("NVDA", "propio")),
+    ("GGAL", None, ("GGAL", "propio")),        # el ADR en Schwab es él mismo
+    ("SPY.BA", None, ("SPY", "eeuu")),         # CEDEAR de un ETF
+])
+def test_a_que_accion_de_eeuu_mira_cada_tenencia(clave, tipo, esperado):
+    assert fdh.referencia_en_eeuu(clave, tipo) == esperado
+
+
+# ─── El post de anoche y el pre de hoy, desde las velas (para el mail) ──────
+
+def _v(dia, h, m, c):
+    return (dt.datetime.combine(dia, dt.time(h, m), fdh.ZONA_NY), c)
+
+
+def test_las_velas_dan_el_post_de_la_rueda_anterior_y_el_pre_de_hoy():
+    mie, jue = dt.date(2026, 10, 14), dt.date(2026, 10, 15)
+    velas = [_v(mie, 15, 55, 343.04),          # última vela de la rueda (no es el cierre oficial)
+             _v(mie, 17, 0, 344.0), _v(mie, 19, 55, 344.78),
+             _v(jue, 4, 0, 345.0), _v(jue, 9, 25, 346.9),
+             _v(jue, 9, 35, 350.0)]            # ya es la rueda de hoy: no es pre
+    f = fdh.franjas_de_velas(velas, {dt.date(2026, 10, 13): 341.27, mie: 342.96}, jue)
+    # Contra el cierre OFICIAL del 14 (342,96), como la cotización en vivo.
+    assert f["post"] == {"pct": pytest.approx((344.78 / 342.96 - 1) * 100, abs=1e-4), "dia": "2026-10-14", "hasta": "19:55"}
+    assert f["pre"]["pct"] == pytest.approx((346.9 / 342.96 - 1) * 100, abs=1e-4)
+    assert f["pre"]["hasta"] == "09:25"
+
+
+def test_sin_velas_fuera_de_la_rueda_no_hay_franja():
+    mie, jue = dt.date(2026, 10, 14), dt.date(2026, 10, 15)
+    f = fdh.franjas_de_velas([_v(mie, 15, 55, 80.0)], {mie: 80.75}, jue)
+    assert f == {"post": None, "pre": None}
+
+
+def test_antes_de_las_930_de_nueva_york_el_pre_viene_abierto():
+    jue = dt.date(2026, 10, 15)
+    por = {"NVDA": {"post": None, "pre": {"pct": 1.0, "dia": "2026-10-15", "hasta": "08:00"}}}
+    lotes = [{"asset": "NVDA", "valor": 1000.0, "ref": ("NVDA", "propio")}]
+    temprano = dt.datetime(2026, 11, 5, 11, 0, tzinfo=AR)     # desde el 1/11: 9:00 de NY
+    assert fdh.resumen_de_la_manana(lotes, por, ahora=temprano)["pre"]["abierto"] is True
+    tarde = dt.datetime(2026, 10, 15, 11, 0, tzinfo=AR)        # octubre: 10:00 de NY
+    assert fdh.resumen_de_la_manana(lotes, por, ahora=tarde)["pre"]["abierto"] is False

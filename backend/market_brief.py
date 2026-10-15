@@ -536,6 +536,13 @@ arriba, acá se da por sabida.
 Si un mismo hecho toca las dos partes (por ejemplo, el BCRA cambia los encajes y \
 la persona tiene un banco), el hecho va en "mercado" y el efecto sobre su activo \
 va en "tu_cartera", en una sola oración y sin volver a explicar el hecho.
+
+- Si viene `movimientos_fuera_de_horario`: son activos de la lista que se movieron \
+en Wall Street FUERA de la rueda (en el post-mercado de anoche o en el pre-mercado \
+de esta mañana), con hacia dónde. Podés contarlo en tu_cartera ("Nvidia bajó \
+anoche, en el post-mercado de Wall Street") y unirlo con un titular SÓLO si ese \
+titular lo explica, con "coincide con". SIN cifras: cuánto movió su cartera lo \
+pone Rendi en otro bloque del mail.
 """
 
 # El asesor NO tiene cartera: tiene un LIBRO de clientes. Y ahí aparece el dato
@@ -561,6 +568,47 @@ arriba, acá se da por sabida.
 Nada de pronósticos ni de qué debería hacer con sus clientes: contás lo que pasó y \
 a quiénes les toca. La decisión es del asesor.
 """
+
+
+def _fuera_de_horario(uid: int):
+    """El post-mercado de anoche y el pre de esta mañana sobre la cartera, o None.
+    Primero se miran las velas de las acciones de EE.UU. que la cartera sigue
+    (no pide precios de la cartera si no hubo nada fuera de la rueda)."""
+    try:
+        import main
+        import fuera_de_horario as fdh
+        refs = main._tenencias_que_siguen_a_eeuu(uid)[4]
+        simbolos = sorted({r[0] for r in refs.values()})
+        if not simbolos:
+            return None
+        por = fdh.franjas(simbolos)
+        con_dato = {s: f for s, f in por.items() if f.get("post") or f.get("pre")}
+        if not con_dato:
+            return None
+        lotes, tc = main._lotes_con_referencia_eeuu(uid, simbolos=set(con_dato))
+        return fdh.resumen_de_la_manana(lotes, con_dato, tc_pesos=tc)
+    except Exception as ex:
+        log.warning("market_brief: pre/post mercado falló uid=%s: %s", uid, ex)
+        return None
+
+
+def _movimientos_para_narrar(fdh: dict, news: list) -> list:
+    """Lo que el modelo puede saber del pre/post: hacia dónde se movió cada
+    activo QUE TIENE NOTICIA (la misma regla del packet: sin noticia no se
+    nombra) y en qué franja. Sin cifras ni plata: los números los pone el código."""
+    if not fdh:
+        return []
+    con_noticia = {n.get("ticker") for n in news or [] if n.get("ticker")}
+    out = []
+    for franja, nombre in (("post", "post-mercado"), ("pre", "pre-mercado")):
+        r = fdh.get(franja)
+        if not r:
+            continue
+        for a in r.get("activos") or []:
+            if a.get("asset") in con_noticia and abs(a.get("pct") or 0) >= 1:
+                out.append({"activo": a["asset"], "cuando": f"{r['cuando']}, en el {nombre}",
+                            "movimiento": "subió" if a["pct"] > 0 else "bajó"})
+    return out
 
 
 def _packet_para_narrar(contexto: list, news: list, tickers: list,
@@ -717,7 +765,8 @@ def numeros_sin_respaldo(narrativa, contexto: list, news: list) -> list:
     return sueltos
 
 
-def narrate(contexto: list, news: list, tickers: list, holders: dict = None):
+def narrate(contexto: list, news: list, tickers: list, holders: dict = None,
+            fuera_de_horario: list = None):
     """Escribe la narración. Devuelve el objeto validado, o None.
 
     `holders` decide para quién se escribe: si viene (mapa {activo: [clientes]}
@@ -745,6 +794,8 @@ def narrate(contexto: list, news: list, tickers: list, holders: dict = None):
         sistema = _SYSTEM_BASE + (
             _CIERRE_ASESOR if holders is not None else _CIERRE_INVERSOR)
         packet = _packet_para_narrar(contexto, news, tickers, holders)
+        if fuera_de_horario:
+            packet["movimientos_fuera_de_horario"] = fuera_de_horario
 
         # Dos intentos: si el primero inventa un número, se rehace UNA vez.
         # No es un reintento por las dudas — el modelo ya demostró que se le
@@ -852,6 +903,10 @@ def build_brief(conn, uid: int, day: str = None, contexto: list = None,
         contexto = market_context(conn, desde)
     news = _news_for(conn, tickers, desde)
     events = _events_today(conn, tickers, day)
+    # Wall Street fuera de la rueda: cuánto movió la cartera el post-mercado de
+    # anoche y el pre de esta mañana. Lo calcula el CÓDIGO (regla 1); al modelo
+    # sólo le llega hacia dónde se movió cada activo que tiene noticia.
+    fdh = _fuera_de_horario(uid)
 
     # Sin material no hay nada que narrar. Los eventos SOLOS no alcanzan: "hoy
     # AAPL presenta balance" es una línea de calendario, no un resumen del
@@ -868,10 +923,15 @@ def build_brief(conn, uid: int, day: str = None, contexto: list = None,
         "news": news,
         "context_n": len(contexto),
     }
+    if fdh:
+        out["fuera_de_horario"] = fdh
     if not narrar:
         return Armado(out)
 
-    narrativa = narrate(contexto, news, tickers)
+    # Sólo si hay algo: la firma de tres argumentos sigue siendo la de siempre.
+    movs = _movimientos_para_narrar(fdh, news)
+    narrativa = (narrate(contexto, news, tickers, fuera_de_horario=movs) if movs
+                 else narrate(contexto, news, tickers))
     if narrativa is None:
         return Armado({}, NARRACION_DESCARTADA)
     out["narrative"] = {

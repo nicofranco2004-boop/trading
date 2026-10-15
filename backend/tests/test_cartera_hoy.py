@@ -252,10 +252,14 @@ class CaminoDeProduccionTest(unittest.TestCase):
             self.conn.execute(f"DELETE FROM {t}")
         self.conn.commit()
 
-    def _correr(self, live, ahora=A_LAS_932, precios=None):
+    def _correr(self, live, ahora=A_LAS_932, precios=None, pre_post=None):
         tabla = _tabla_yahoo({"MSFT": [590.0, 600.0]}, [AYER, HOY])
         precios = precios or {"AAPL.BA": live["AAPL"]["c"], "MSFT": 600.0}
-        with patch("fechas.hoy_art", return_value=HOY), \
+        import fuera_de_horario
+        fuera_de_horario._vaciar_cache()
+        yahoo_fdh = (lambda simbolos: [q for q in (pre_post or []) if q["symbol"] in simbolos])
+        with patch.object(fuera_de_horario, "_pedir_yahoo", side_effect=yahoo_fdh), \
+             patch("fechas.hoy_art", return_value=HOY), \
              patch("fechas.ahora_art", return_value=ahora), \
              patch.object(main, "_user_tc_blue", return_value=1450.0), \
              patch.object(main, "_user_tc_cedear", return_value=self.MEP), \
@@ -266,6 +270,48 @@ class CaminoDeProduccionTest(unittest.TestCase):
              patch.object(main._yahoo, "varios", return_value=({}, [])), \
              patch.object(main, "_ensure_news_batch_parallel", return_value=None):
             return main._execute_ai_tool_inner("get_portfolio_today", {}, self.uid)
+
+    # Yahoo a las 8:58 de un día con pre-mercado (forma medida 2026-10-15):
+    # SPY dice qué momento es; AAPL y MSFT ya operaron en el pre.
+    @staticmethod
+    def _pre(sym, pct, estado="PRE"):
+        return {"symbol": sym, "marketState": estado, "market": "us_market",
+                "regularMarketTime": 1000, "regularMarketPrice": 100.0,
+                "preMarketChangePercent": pct, "preMarketTime": 2000, "preMarketPrice": 100 + pct}
+
+    def test_en_el_pre_mercado_trae_el_anticipo_aparte_y_sin_sumarlo(self):
+        sin = self._correr(LIVE_PREAPERTURA)
+        self.assertNotIn("fuera_de_horario", sin)          # sin pre/post: no aparece
+        main._CARTERA_HOY_CACHE.clear()
+        r = self._correr(LIVE_PREAPERTURA, pre_post=[
+            self._pre("SPY", -0.3), self._pre("AAPL", 0.74), self._pre("MSFT", -1.0)])
+        f = r["fuera_de_horario"]
+        self.assertEqual(f["sesion"], "pre-mercado")
+        self.assertTrue(f["abierto"])
+        # Sobre el MISMO valor de cada lote que el resto de la respuesta:
+        # MSFT 10 × 600 = US$ 6.000 × −1 % ; el CEDEAR 100 × ARS 27.100 ÷ MEP × +0,74 %.
+        msft = 10 * 600.0 * -0.01
+        aapl = 100 * 27100.0 / self.MEP * 0.0074
+        self.assertAlmostEqual(f["usd"], round(msft + aapl, 2), places=2)
+        por = {a["asset"]: a for a in f["activos"]}
+        self.assertEqual(por["AAPL"]["via"], "eeuu")
+        self.assertEqual(por["MSFT"]["via"], "propio")
+        self.assertIsNotNone(f["anticipo_usd_txt"])
+        self.assertIn("ccl_1pct_en_pesos_txt", f)
+        # No toca NADA del día: el movimiento y el valor son los mismos que sin pre.
+        self.assertEqual(r["movimiento"], sin["movimiento"])
+        self.assertEqual(r["valor_cartera_usd"], sin["valor_cartera_usd"])
+        self.assertIn("(7)", r["_note"])
+
+    def test_con_byma_abierta_el_cedear_ya_no_lleva_anticipo(self):
+        # Desde el 1/11 el pre de EE.UU. sigue hasta las 11:30: de 11 a 11:30 el
+        # CEDEAR ya cotiza en BYMA con precio propio.
+        a_las_1115 = datetime(2026, 10, 8, 11, 15, tzinfo=ART)
+        r = self._correr(LIVE_PREAPERTURA, ahora=a_las_1115, pre_post=[
+            self._pre("SPY", -0.3), self._pre("AAPL", 0.74), self._pre("MSFT", -1.0)])
+        f = r["fuera_de_horario"]
+        self.assertEqual([a["asset"] for a in f["activos"]], ["MSFT"])
+        self.assertIsNone(f["anticipo_usd_txt"])
 
     def _var_dia_de_posiciones(self, c, pct, qty):
         """La fórmula de Positions.jsx (dayVarOf + dvFor): previo del feed =
