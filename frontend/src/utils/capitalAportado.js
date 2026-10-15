@@ -23,13 +23,23 @@
 //          `pesos_importados_dep`/`_ret` (+ `_usd`). Ver
 //          `_aportes_en_pesos_por_mes` en main.py.
 //        · lo cargado A MANO en un broker en pesos: `manual_*_native`.
-//   2. Si no hay pesos guardados (aportes en dólares, el saldo con el que
-//      arrancó la historia), son esos dólares AL DÓLAR DE SU MES: el del cierre
-//      del mes en la serie histórica de la app (`/api/fx-rates`, ver
-//      `dolarMensualDe`): el MEP, o el blue donde no hay MEP — el mismo dólar con
-//      que el servidor guarda cada flujo (`fx_for_date`). Es de la base propia:
-//      no espera a ningún servicio de afuera.
-//   3. Si el dólar de ese mes no está (la serie no cargó, o el aporte es
+//   2. Si entró EN DÓLARES, son esos dólares AL DÓLAR DE SU DÍA (`tcEnFecha`,
+//      el mismo que usa Movimientos para cada fila: utils/tcHistorico.js, el
+//      dólar que eligió el usuario). `/api/monthly` manda en cada fila de broker
+//      esos aportes con su día (`usd_con_dia`), armados con las mismas funciones
+//      que la lista de Movimientos (`_aportes_en_dolares_con_dia` en main.py):
+//        · 'importado': lo importado en dólares, con la fecha del import.
+//        · 'a_mano': lo cargado a mano, cada carga con su día (y lo que no tiene
+//          día, al 15 del mes, como en Movimientos). En un broker en pesos se usa
+//          sólo si no se pudieron usar sus pesos guardados.
+//      Hasta el 2026-10-15 iban al dólar del CIERRE del mes y la misma plata daba
+//      dos números: US$2.000 del 02/03/2026 eran $2.835.200 en Movimientos y
+//      $2.852.100 en "Capital aportado" (cuenta `mixta` del fixture).
+//   3. Lo que queda sin pesos ni día (el saldo con el que arrancó la historia,
+//      lo editado a mano en Global, filas viejas), al dólar del CIERRE DE SU MES
+//      en la serie de la app (`/api/fx-rates`, ver `dolarMensualDe`): el MEP, o
+//      el blue donde no hay MEP.
+//   4. Si el dólar de ese mes no está (la serie no cargó, o el aporte es
 //      anterior a la serie), el dólar de hoy — lo de antes, declarado como
 //      último recurso. Los pesos guardados (regla 1) no dependen de esto.
 //
@@ -56,7 +66,7 @@ const n = (v) => (Number.isFinite(+v) ? +v : 0)
 // Los pesos cargados A MANO se usan salvo que cubran claramente MENOS dólares de
 // los que dice la fila: una fila que mezcla cargas con pesos guardados y cargas
 // viejas sin ellos (de antes de que existiera la columna) da un cociente
-// pesos ÷ dólares muy por debajo del dólar del mes, y ahí es mejor la regla 2.
+// pesos ÷ dólares muy por debajo del dólar del mes, y ahí son mejores las reglas 2 y 3.
 // El control es de UN solo lado a propósito: un cociente ALTO es una carga vieja
 // dolarizada con el dólar del día en que se cargó y no el de su fecha (pasó hasta
 // que el servidor empezó a resolver el dólar por fecha) — sus pesos están bien y
@@ -92,17 +102,70 @@ export function dolarMensualDe(filas) {
   return { ...blue, ...mep }
 }
 
+/**
+ * brokersDelFiltro — los brokers que mira un reporte filtrado por `broker`: el
+ * broker y su PAR padre↔"· USD", por `parent_broker_id` (no por el nombre). Es
+ * la MISMA regla que el servidor (`broker_pair` en importing/persister.py, que
+ * usa `brokers_del_filtro` de Reportes): el padre suma sus "· USD"; un "· USD"
+ * suma su padre. Sin esto, Reportes de "IOL" sumaba en el servidor también
+ * "IOL · USD" y la pantalla no, y los pesos no cerraban.
+ */
+export function brokersDelFiltro(brokers, broker) {
+  if (broker === 'global') return ['global']
+  const lista = brokers || []
+  const b = lista.find(x => x.name === broker)
+  if (!b) return [broker]
+  const nombres = new Set([broker])
+  if (b.parent_broker_id) {
+    const padre = lista.find(x => x.id === b.parent_broker_id)
+    if (padre) nombres.add(padre.name)
+  } else {
+    for (const x of lista) if (x.parent_broker_id === b.id) nombres.add(x.name)
+  }
+  return [...nombres].sort()
+}
+
+// Las filas de varios brokers, sumadas por mes, con la forma de una fila 'global'.
+function sumarPorMes(filas) {
+  const porMes = new Map()
+  for (const r of filas) {
+    const k = claveMes(r.year, r.month)
+    const a = porMes.get(k) || { year: r.year, month: r.month, deposits: 0, withdrawals: 0,
+      capital_inicio: 0, capital_inicio_costo: 0 }
+    a.deposits += n(r.deposits)
+    a.withdrawals += n(r.withdrawals)
+    a.capital_inicio += n(r.capital_inicio)
+    a.capital_inicio_costo += n(r.capital_inicio_costo ?? r.capital_inicio)
+    porMes.set(k, a)
+  }
+  return ordenar([...porMes.values()])
+}
+
 // La tabla de la que salen las dos preguntas ("¿cuánto aportaste?" y "¿cuánto
 // tenías aportado tal día?"): el saldo inicial y, mes a mes, lo aportado en
 // dólares y en pesos, con su acumulado.
-function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy }) {
-  const globales = ordenar((monthly || []).filter(m => m.broker === 'global'))
+//
+// `broker`: 'global' (la cartera entera, lo de siempre) o el nombre de un broker
+// (Reportes filtrado por broker): las filas de su PAR (`brokersDelFiltro`)
+// sumadas mes a mes, y sus pesos guardados. `soloEseBroker`: sin el par (la
+// pestaña de un broker del resumen mensual muestra sólo su fila).
+function tablaDeAportes({ monthly, brokers, dolarMes, tcEnFecha, tcHoy, broker = 'global', soloEseBroker = false }) {
+  const delFiltro = broker === 'global' ? null
+    : new Set(soloEseBroker ? [broker] : brokersDelFiltro(brokers, broker))
+  const globales = delFiltro
+    ? sumarPorMes((monthly || []).filter(m => delFiltro.has(m.broker)))
+    : ordenar((monthly || []).filter(m => m.broker === 'global'))
   if (globales.length === 0) return null
 
   const respaldo = tcHoy > 0 ? tcHoy : 0
   const dolarDeLaSerie = (y, mo) => {
     const v = lookupMonthly(dolarMes, claveMes(y, mo))
     return v > 0 ? v : null
+  }
+  // El dólar de UN DÍA (regla 2); sin él, el del mes (regla 3).
+  const dolarDelDia = (fecha, delMes) => {
+    const v = fecha && typeof tcEnFecha === 'function' ? tcEnFecha(fecha) : null
+    return v > 0 ? v : delMes
   }
 
   // Brokers en pesos: sus columnas manual_*_native son pesos.
@@ -112,6 +175,7 @@ function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy }) {
   const filasDelMes = new Map()
   for (const m of monthly || []) {
     if (m.broker === 'global') continue
+    if (delFiltro && !delFiltro.has(m.broker)) continue
     const k = claveMes(m.year, m.month)
     filasDelMes.set(k, [...(filasDelMes.get(k) || []), m])
   }
@@ -130,23 +194,56 @@ function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy }) {
     const serie = dolarDeLaSerie(g.year, g.month)
     const fx = serie ?? respaldo
     const usd = n(g.deposits) - n(g.withdrawals)
-    let sinPesosUsd = usd
-    let pesos = 0
+    // Los dos lados por separado (Reportes muestra "Depósitos" y "Retiros").
+    let depSinPesosUsd = n(g.deposits)
+    let retSinPesosUsd = n(g.withdrawals)
+    let depPesos = 0
+    let retPesos = 0
+    // Los aportes en dólares CON SU DÍA (regla 2): dólares y pesos de cada lado.
+    const conDia = { dep: [0, 0], ret: [0, 0] }
+    const sumarConDia = (lado, filas) => {
+      for (const [fecha, u] of filas || []) {
+        conDia[lado][0] += n(u)
+        conDia[lado][1] += n(u) * dolarDelDia(fecha, fx)
+      }
+    }
     for (const b of filasDelMes.get(k) || []) {
       // Lo importado: siempre.
-      sinPesosUsd -= n(b.pesos_importados_dep_usd) - n(b.pesos_importados_ret_usd)
-      pesos += n(b.pesos_importados_dep) - n(b.pesos_importados_ret)
-      // Lo cargado a mano en un broker en pesos.
-      if (!enPesos.has(b.broker)) continue
-      const [depArs, depUsd] = [n(b.manual_deposits_native), n(b.manual_deposits)]
-      const [retArs, retUsd] = [n(b.manual_withdrawals_native), n(b.manual_withdrawals)]
-      if (pesosAMano(depArs, depUsd, serie)) { sinPesosUsd -= depUsd; pesos += depArs }
-      if (pesosAMano(retArs, retUsd, serie)) { sinPesosUsd += retUsd; pesos -= retArs }
+      depSinPesosUsd -= n(b.pesos_importados_dep_usd)
+      retSinPesosUsd -= n(b.pesos_importados_ret_usd)
+      depPesos += n(b.pesos_importados_dep)
+      retPesos += n(b.pesos_importados_ret)
+      const dia = b.usd_con_dia || {}
+      sumarConDia('dep', dia.importado?.dep)
+      sumarConDia('ret', dia.importado?.ret)
+      // Lo cargado a mano: en un broker en pesos, sus pesos; si no (o si no
+      // sirven), cada carga al dólar de su día.
+      let depManualEnPesos = false
+      let retManualEnPesos = false
+      if (enPesos.has(b.broker)) {
+        const [depArs, depUsd] = [n(b.manual_deposits_native), n(b.manual_deposits)]
+        const [retArs, retUsd] = [n(b.manual_withdrawals_native), n(b.manual_withdrawals)]
+        if (pesosAMano(depArs, depUsd, serie)) { depSinPesosUsd -= depUsd; depPesos += depArs; depManualEnPesos = true }
+        if (pesosAMano(retArs, retUsd, serie)) { retSinPesosUsd -= retUsd; retPesos += retArs; retManualEnPesos = true }
+      }
+      if (!depManualEnPesos) sumarConDia('dep', dia.a_mano?.dep)
+      if (!retManualEnPesos) sumarConDia('ret', dia.a_mano?.ret)
     }
-    const ars = pesos + sinPesosUsd * fx
+    // Lo que tiene día cubre parte de los dólares sin pesos; el resto, al dólar
+    // del mes (regla 3). Si los días dicen MÁS dólares de los que quedan (una
+    // fila vieja que no cierra), se achican en proporción: la tabla nunca cuenta
+    // más dólares que la fila.
+    const enPesosDelLado = (sinPesosUsd, [usdDia, arsDia]) => {
+      if (!(usdDia > 0) || !(sinPesosUsd > 0)) return sinPesosUsd * fx
+      if (usdDia > sinPesosUsd + 0.01) return arsDia * (sinPesosUsd / usdDia)
+      return arsDia + (sinPesosUsd - usdDia) * fx
+    }
+    const depArs = depPesos + enPesosDelLado(depSinPesosUsd, conDia.dep)
+    const retArs = retPesos + enPesosDelLado(retSinPesosUsd, conDia.ret)
+    const ars = depArs - retArs
     cumUsd += usd
     cumArs += ars
-    return { k, fx, usd, ars, cumUsd, cumArs }
+    return { k, fx, usd, ars, depUsd: n(g.deposits), retUsd: n(g.withdrawals), depArs, retArs, cumUsd, cumArs }
   })
   return { baselineUsd, baselineArs, meses }
 }
@@ -160,7 +257,10 @@ function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy }) {
  *                               broker)
  * @param {Array}  args.brokers  /api/brokers (para saber cuáles son en pesos)
  * @param {Object} args.dolarMes {'AAAA-MM': dólar del cierre} (`dolarMensualDe`)
- * @param {number} args.tcHoy    el dólar de hoy: último recurso (regla 3)
+ * @param {(iso:string)=>number|null} args.tcEnFecha  el dólar elegido de un día
+ *                               (`tcEnFecha` de useDolarMensual, el mismo de
+ *                               Movimientos): los aportes en dólares con su día
+ * @param {number} args.tcHoy    el dólar de hoy: último recurso (regla 4)
  * @returns {{ usd:number, ars:number, arsMaximo:number }}
  *   usd        = capital_inicio del primer mes + Σ(deposits − withdrawals)
  *                (idéntico a `netCapitalContributed`)
@@ -177,6 +277,50 @@ export function capitalAportado(args = {}) {
   // fotos del servidor y lo que se compara contra ellas.
   const usd = netCapitalContributed((args.monthly || []).filter(m => m.broker === 'global'))
   return { usd, ars: ultimo.cumArs, arsMaximo }
+}
+
+/**
+ * aportesDelMesEnPesos — los depósitos y retiros de CADA mes, en pesos, con la
+ * misma regla (pesos guardados; si no, al dólar de su día o de su mes). Para las tarjetas de
+ * Reportes, que muestran "Depósitos" y "Retiros" de un período: así suman lo
+ * mismo que el "Capital aportado" del Dashboard.
+ *
+ * `args.broker` (opcional): 'global' o un broker, como el filtro de Reportes
+ * (con su par); `args.soloEseBroker`: sólo esa fila, sin el par.
+ *
+ * @returns {Map<string, {depUsd, retUsd, depArs, retArs, fx}>} por 'AAAA-MM'
+ *          (sólo los meses que tienen fila de ese broker)
+ */
+export function aportesDelMesEnPesos(args = {}) {
+  const t = tablaDeAportes(args)
+  const out = new Map()
+  for (const m of t?.meses || []) {
+    out.set(m.k, { depUsd: m.depUsd, retUsd: m.retUsd, depArs: m.depArs, retArs: m.retArs, fx: m.fx })
+  }
+  return out
+}
+
+/**
+ * aportadoAcumuladoAl — lo aportado hasta el cierre del mes de `hastaIso`, en
+ * las dos monedas, para `broker` ('global' o uno). Es el "Capital aportado" de
+ * Reportes: el mismo acumulado que el Dashboard, cortado en otra fecha.
+ *
+ * `sinSaldoInicial`: sin el saldo con que arrancó la historia — lo que el
+ * servidor llama `cum_deposited` en Reportes (depósitos − retiros, sin baseline).
+ *
+ * @returns {{usd:number, ars:number} | null} null sin filas
+ */
+export function aportadoAcumuladoAl({ hastaIso, sinSaldoInicial = false, ...args } = {}) {
+  const t = tablaDeAportes(args)
+  if (!t) return null
+  const k = String(hastaIso || '9999-12').slice(0, 7)
+  let out = { usd: t.baselineUsd, ars: t.baselineArs }
+  for (const m of t.meses) {
+    if (m.k > k) break
+    out = { usd: m.cumUsd, ars: m.cumArs }
+  }
+  if (sinSaldoInicial) out = { usd: out.usd - t.baselineUsd, ars: out.ars - t.baselineArs }
+  return out
 }
 
 /**
@@ -241,10 +385,10 @@ export function aportadoEnPesosAl(args = {}) {
  *          pct en fracción (0,42 = +42 %), null si no hay denominador.
  */
 export function resultadoTotal({
-  monthly, brokers, dolarMes, tcHoy, valorHoyUsd = 0, moneda = 'USD',
+  monthly, brokers, dolarMes, tcEnFecha, tcHoy, valorHoyUsd = 0, moneda = 'USD',
   extraUsd = 0, capitalMaximoUsd = null,
 } = {}) {
-  const ap = capitalAportado({ monthly, brokers, dolarMes, tcHoy })
+  const ap = capitalAportado({ monthly, brokers, dolarMes, tcEnFecha, tcHoy })
   const aportadoUsd = ap.usd + extraUsd
   if (moneda === 'ARS' && tcHoy > 0) {
     const aportado = ap.ars + extraUsd * tcHoy

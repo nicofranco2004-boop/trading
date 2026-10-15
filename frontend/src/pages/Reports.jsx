@@ -27,6 +27,7 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { api } from '../utils/api'
 import ModoRendimiento from '../components/ModoRendimiento'
 import { useCurrency } from '../contexts/CurrencyContext'
+import { PesosDelPeriodoProvider, usePesosDelPeriodo } from '../hooks/usePesosDelPeriodo'
 import { hoyISO, fechaISO } from '../utils/fecha'
 import { claveSemanaISO } from '../utils/semanas'
 import { pctVar, pctColor, pctVarSign, ppVarFino } from '../utils/format'
@@ -199,6 +200,9 @@ export default function Reports() {
   useEffect(() => { setExpandedKey(null) }, [tab])
 
   return (
+    // Los montos de todas las tarjetas, en la moneda en que se mira y cada uno
+    // al dólar de su fecha (utils/periodoEnPesos.js).
+    <PesosDelPeriodoProvider broker={broker}>
     <div className="page-shell-wide">
       <PageHeader
         eyebrow="Reportes / Performance"
@@ -297,6 +301,7 @@ export default function Reports() {
         </>
       )}
     </div>
+    </PesosDelPeriodoProvider>
   )
 }
 
@@ -470,6 +475,9 @@ export function PeriodRow({ period, expanded, onToggle }) {
   const noBasis = period?.metrics?.basis_incomparable === true
   const pct = noBasis ? null : period?.metrics?.delta_pct
   const usd = noBasis ? null : period?.metrics?.delta_usd
+  // El monto, al dólar del cierre del período (utils/periodoEnPesos.js).
+  const pesos = usePesosDelPeriodo()
+  const usdVista = usd == null ? null : pesos.enVista(period).resultado
   // Uno o dos decimales según el tamaño, y el color del número que se ve.
   const decs = pct != null && Math.abs(pct) >= 10 ? 1 : 2
   const tono = pct == null ? 'text-ink-3' : pctColor(pct, decs)
@@ -511,7 +519,7 @@ export function PeriodRow({ period, expanded, onToggle }) {
           )}
           {usd != null && (
             <span className={`text-xs font-mono tabular ${tono} hidden sm:inline`}>
-              {usd >= 0 ? '+' : '−'}US$ {Math.abs(usd).toLocaleString('es-AR', { maximumFractionDigits: 0 })}
+              {plata(usdVista, pesos.moneda, { signed: true })}
             </span>
           )}
           {expanded
@@ -540,6 +548,8 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // después del return temprano renderiza 0 hooks primero y 1 después —
   // "Rendered more hooks than during the previous render", pantalla rota.
   const [showTech, setShowTech] = useState(false)
+  // Los montos en la moneda en que se mira, cada uno al dólar de su fecha.
+  const pesos = usePesosDelPeriodo()
   if (loading) {
     return (
       <div className="p-10 text-center text-ink-3">
@@ -558,6 +568,9 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
 
   const m = period.metrics || {}
   const snap = period.portfolio_snapshot || {}
+  const v = pesos.enVista(period)
+  const mon = pesos.moneda
+  const fin = period.period_end || hoyISO()
   // AUDIT D-1: ver PeriodRow. Con base incomparable no hay resultado del período
   // que mostrar — publicar "US$ 0" sería afirmar que no pasó nada, que es tan
   // falso como el −US$127.486 que mostraba antes.
@@ -593,9 +606,11 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // "US$ 0" al lado de "Posiciones: N" (parecía cuenta vaciada).
   const _endVal = m.end_value > 0 ? m.end_value : null
   const capitalNow = snap.latest_value != null ? snap.latest_value : _endVal
+  const capitalNowVista = snap.latest_value != null ? pesos.deHoy(snap.latest_value)
+    : (_endVal != null ? v.cierre : null)
   kpis.push({
     label: 'Capital actual',
-    value: capitalNow != null ? `US$ ${fmtNum(capitalNow)}` : '—',
+    value: capitalNowVista != null ? plata(capitalNowVista, mon) : '—',
     sub: snap.latest_date ? `Al ${formatDateShort(snap.latest_date)}` : null,
   })
 
@@ -607,7 +622,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     : 'del mes'
     kpis.push({
       label: `P&L ${periodLabel}`,
-      value: usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : '—',
+      value: usd != null ? plata(v.resultado, mon, { signed: true }) : '—',
       sub: pct != null ? `${pctVar(pct, 2)}`
         : noBasis ? 'falta el cierre del arranque' : null,
       tone: noBasis ? undefined : (isPos ? 'pos' : 'neg'),
@@ -617,7 +632,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   if (m.realized_pnl != null && (m.realized_pnl !== 0 || m.trades_count > 0)) {
     kpis.push({
       label: 'P&L realizado',
-      value: `${m.realized_pnl >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(m.realized_pnl))}`,
+      value: plata(v.realizado, mon, { signed: true }),
       sub: m.trades_count != null ? `${m.trades_count} op${m.trades_count !== 1 ? 's' : ''} cerrada${m.trades_count !== 1 ? 's' : ''}` : 'operaciones cerradas',
       tone: m.realized_pnl >= 0 ? 'pos' : 'neg',
     })
@@ -626,7 +641,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   if (!isFlat && m.unrealized_pnl != null && m.unrealized_pnl !== 0) {
     kpis.push({
       label: 'P&L no realizado',
-      value: `${m.unrealized_pnl >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(m.unrealized_pnl))}`,
+      value: plata(v.noRealizado, mon, { signed: true }),
       sub: 'mark-to-market',
       tone: m.unrealized_pnl >= 0 ? 'pos' : 'neg',
     })
@@ -646,20 +661,28 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
   // El sub-label aclara que el % es sobre lo aportado (NO TWRR), para evitar
   // confusión con el delta_pct del período que sí neutraliza flujos.
   if (tab === 'year' && snap.cum_deposited != null && snap.cum_deposited > 0) {
+    // En pesos, los pesos que se pusieron: el mismo acumulado que el "Capital
+    // aportado" del Dashboard (utils/capitalAportado.js), cortado al cierre del
+    // período. Si esa cuenta no explica los dólares del servidor, se muestra en
+    // dólares en vez de inventar pesos.
+    const apVista = pesos.aportadoHasta(fin, snap.cum_deposited)
+    const [apMon, apVal, capVal] = apVista != null
+      ? [mon, apVista, capitalNowVista]
+      : ['USD', snap.cum_deposited, capitalNow]
     kpis.push({
       label: 'Capital aportado',
-      value: `US$ ${fmtNum(snap.cum_deposited)}`,
+      value: plata(apVal, apMon),
       // ⚠️ NO CUANDO NO HAY BASE. Este cociente compara el capital de HOY contra
       // lo aportado, así que da un "retorno" enorme cuando la cartera arrancó con
       // posiciones que nunca entraron como aporte — justo lo que
       // `basis_incomparable` señala. Se veía en la misma tarjeta que dice "Año sin
       // base para medir el rendimiento": al lado del "—" del P&L, un
       // "+1565.9%". Uno de los dos está mintiendo, y es éste.
-      sub: (capitalNow != null && !noBasis)
-        ? `Retorno sobre aportes: ${capitalNow > snap.cum_deposited ? '+' : '−'}${(((capitalNow - snap.cum_deposited) / snap.cum_deposited) * 100).toFixed(1).replace('.', ',')}%`
+      sub: (capVal != null && !noBasis)
+        ? `Retorno sobre aportes: ${capVal > apVal ? '+' : '−'}${(Math.abs((capVal - apVal) / apVal) * 100).toFixed(1).replace('.', ',')}%`
         : 'depósitos netos',
-      tone: (capitalNow != null && !noBasis)
-        ? (capitalNow >= snap.cum_deposited ? 'pos' : 'neg')
+      tone: (capVal != null && !noBasis)
+        ? (capVal >= apVal ? 'pos' : 'neg')
         : undefined,
     })
   }
@@ -688,7 +711,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     const fechaStr = d.prev_date ? ` · vs ${formatDateShort(d.prev_date)}` : ''
     kpis.push({
       label: 'Δ último cierre',
-      value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
+      value: plata(pesos.deHoy(d.usd), mon, { signed: true }),
       sub: pctStr + fechaStr,
       tone: d.pct >= 0 ? 'pos' : 'neg',
     })
@@ -708,7 +731,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     const fechaStr = d.prev_date ? ` · vs ${formatDateShort(d.prev_date)}` : ''
     kpis.push({
       label,
-      value: `${d.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(d.usd))}`,
+      value: plata(pesos.deHoy(d.usd), mon, { signed: true }),
       sub: `${pctVar(d.pct, 2)}` + fechaStr,
       tone: d.pct >= 0 ? 'pos' : 'neg',
     })
@@ -724,7 +747,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     kpis.push({
       label,
       value: `${pctVar(snap.ytd.pct, 2)}`,
-      sub: `${snap.ytd.usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(snap.ytd.usd))}`,
+      sub: plata(pesos.deHoy(snap.ytd.usd), mon, { signed: true }),
       // El color del número que se ve (pctVarSign): −0,004 se escribe "0,00%".
       tone: pctVarSign(snap.ytd.pct, 2) > 0 ? 'pos' : pctVarSign(snap.ytd.pct, 2) < 0 ? 'neg' : null,
     })
@@ -735,7 +758,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
     const op = snap.last_op
     kpis.push({
       label: 'Última op cerrada',
-      value: `${op.asset} ${op.pnl_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(op.pnl_usd))}`,
+      value: `${op.asset} ${plata(pesos.deFecha(op.pnl_usd, op.date), mon, { signed: true })}`,
       sub: formatDateShort(op.date),
       tone: op.pnl_usd >= 0 ? 'pos' : 'neg',
     })
@@ -766,11 +789,11 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
 
   // Flujos netos
   if ((m.deposits || m.withdrawals) && (m.deposits + m.withdrawals) > 0) {
-    const net = (m.deposits || 0) - (m.withdrawals || 0)
+    const net = (v.depositos || 0) - (v.retiros || 0)
     kpis.push({
       label: 'Flujos netos',
-      value: `${net >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(net))}`,
-      sub: `Aportes US$ ${fmtNum(m.deposits || 0)}`,
+      value: plata(net, mon, { signed: true }),
+      sub: `Aportes ${plata(v.depositos || 0, mon)}`,
     })
   }
 
@@ -825,7 +848,7 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
               {pct != null ? `${pctVar(pct, 2)}` : '—'}
             </span>
             <span className={`text-sm font-mono tabular ${colorClass}`}>
-              {usd != null ? `${usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(usd))}` : ''}
+              {usd != null ? plata(v.resultado, mon, { signed: true }) : ''}
             </span>
           </div>
         )}
@@ -896,13 +919,13 @@ function CurrentPeriodView({ period, loading, tab, broker = 'global' }) {
           <div>
             {bestMover && (
               <KVRow label={bestMover.delta_usd >= 0 ? 'Mejor activo' : 'Menor caída'}
-                value={`${bestMover.asset} ${bestMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(bestMover.delta_usd))}`}
+                value={`${bestMover.asset} ${plata(pesos.alCierre(bestMover.delta_usd, period.period_end, period.is_current), mon, { signed: true })}`}
                 sub={bestMover.delta_pct != null ? `${pctVar(bestMover.delta_pct, 1)}` : null}
                 tone={bestMover.delta_usd >= 0 ? 'pos' : 'neg'} />
             )}
             {worstMover && (
               <KVRow label={worstMover.delta_usd < 0 ? 'Peor pérdida' : 'Menor suba'}
-                value={`${worstMover.asset} ${worstMover.delta_usd >= 0 ? '+' : '−'}US$ ${fmtNum(Math.abs(worstMover.delta_usd))}`}
+                value={`${worstMover.asset} ${plata(pesos.alCierre(worstMover.delta_usd, period.period_end, period.is_current), mon, { signed: true })}`}
                 sub={worstMover.delta_pct != null ? `${pctVar(worstMover.delta_pct, 1)}` : null}
                 tone={worstMover.delta_usd < 0 ? 'neg' : 'pos'} />
             )}
@@ -957,6 +980,14 @@ function KVRow({ label, value, sub, tone }) {
       </span>
     </div>
   )
+}
+
+// Un monto YA en `moneda` ('USD' | 'ARS'), con el formato de esta pantalla
+// ("+US$ 1.234" / "+$ 1.234.567"): el número no se convierte acá.
+function plata(v, moneda, { signed = false } = {}) {
+  if (v == null || !Number.isFinite(v)) return '—'
+  const signo = signed ? (v >= 0 ? '+' : '−') : (v < 0 ? '−' : '')
+  return `${signo}${moneda === 'ARS' ? '$' : 'US$'} ${fmtNum(Math.abs(v))}`
 }
 
 // Formato compacto de números — agrupador es-AR con punto.

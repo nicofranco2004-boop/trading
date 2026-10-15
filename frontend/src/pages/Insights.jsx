@@ -359,7 +359,7 @@ function InsightsDesktop({ _embeddedTab }) {
   const { user } = useAuth()
   const { valuationDollar, currency, costBasis } = useCurrency()
   // El dólar de cada mes, para lo aportado en pesos (capitalAportado.js).
-  const { dolarMes } = useDolarMensual()
+  const { dolarMes, tcEnFecha } = useDolarMensual()
   const plan = usePlanFeatures()
   // Plazos fijos: viven en otra tabla y no entran en `positions`. Los traemos
   // para que la torta de distribución sume el mismo patrimonio que el Dashboard.
@@ -913,7 +913,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // (residuos de imports antiguos), el % no se va a < −100% y no rompe el
   // rebase chain-linked del chart de benchmarks.
   //
-  // ARS: convertir value_t e invested_t a pesos usando el dólar blue del mes
+  // ARS: convertir value_t e invested_t a pesos usando el dólar elegido del mes
   // correspondiente (los flujos quedan al fx de cuando ocurrieron — aproximación).
   const seriesUsd = []
   const seriesArs = []
@@ -921,7 +921,11 @@ function InsightsDesktop({ _embeddedTab }) {
   // ── Phase 7 — Daily granularity from snapshots when available ──
   // ≥2 snapshots → daily evolution (Total Return %, realized step-matched
   // from monthly_entries). Else fallback al cómputo mensual de abajo.
-  const dailyEvo = buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcValuacion)
+  // El dólar elegido al cierre de cada mes (`dolarMes`, el mismo de "Capital
+  // aportado"): hasta el 2026-10-15 esta curva en pesos usaba el blue
+  // (`bench.dolar_blue`) para lo viejo y el MEP para hoy.
+  const dolarMapa = Object.keys(dolarMes || {}).length ? dolarMes : null
+  const dailyEvo = buildEvolutionFromSnapshots(snapshots, globalMonthly, dolarMapa, tcValuacion)
   if (dailyEvo) {
     seriesUsd.push(...dailyEvo.seriesUsd)
     seriesArs.push(...dailyEvo.seriesArs)
@@ -929,17 +933,17 @@ function InsightsDesktop({ _embeddedTab }) {
     const baseline = globalMonthly[0].capital_inicio || 0
     const firstKey = monthKey(globalMonthly[0].year, globalMonthly[0].month)
 
-    const dolarKeys = bench?.dolar_blue ? Object.keys(bench.dolar_blue).sort() : []
+    const dolarKeys = dolarMapa ? Object.keys(dolarMapa).sort() : []
     const lookupDolar = (key) => {
-      if (!bench?.dolar_blue) return null
-      if (bench.dolar_blue[key]) return bench.dolar_blue[key]
+      if (!dolarMapa) return null
+      if (dolarMapa[key]) return dolarMapa[key]
       let found = null
       for (const k of dolarKeys) {
         if (k <= key) found = k
         else break
       }
       if (!found) found = dolarKeys[0]
-      return found ? bench.dolar_blue[found] : null
+      return found ? dolarMapa[found] : null
     }
     const fxBase = lookupDolar(firstKey)
 
@@ -1036,7 +1040,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // ARS: mismo TWR pero con el capital inicial al fx del mes ANTERIOR. Si los
       // tres términos van al fx del MISMO mes, el fx se cancela en el cociente y
       // esta línea "en pesos" es la línea en dólares. Ver monthlyReturnArs().
-      if (fxBase && bench?.dolar_blue) {
+      if (fxBase && dolarMapa) {
         const fx = lookupDolar(monthKey(m.year, m.month)) || fxBase
         const rArs = monthlyReturnArs({ ci, cf, net, fxPrev: fxPrevChart, fx, isImportInitial }) ?? 0
         fxPrevChart = fx
@@ -1072,11 +1076,10 @@ function InsightsDesktop({ _embeddedTab }) {
       // ARS "Hoy" — el cierre del último mes vale a SU fx, el valor de hoy al de
       // hoy. Los dos al mismo tcValuacion (como estaba) hacía que el tramo final
       // tampoco viera la devaluación.
-      // Los dos lados salen del mapa `dolar_blue`, NO de tcValuacion: tcValuacion es el MEP
-      // (pickFinancialRate), y como lo que mueve el retorno es el cociente
-      // fx_hoy/fx_últimoMes, mezclar rieles metería un salto espurio del tamaño
-      // del cambio de la brecha blue-MEP.
-      const fxHoyChart = dolarKeys.length ? bench.dolar_blue[dolarKeys[dolarKeys.length - 1]] : null
+      // Los dos lados salen de la MISMA tabla (`dolarMapa`), no uno de la tabla y
+      // otro del vivo: lo que mueve el retorno es el cociente fx_hoy/fx_últimoMes,
+      // y mezclar fuentes metería un salto espurio.
+      const fxHoyChart = dolarKeys.length ? dolarMapa[dolarKeys[dolarKeys.length - 1]] : null
       if (fxBase && fxHoyChart) {
         const lastCfArs = lastCf * fxPrevChart
         const valueArsLive = totalPortfolio * fxHoyChart
@@ -1086,7 +1089,7 @@ function InsightsDesktop({ _embeddedTab }) {
           cumIdxArs *= (1 + rLiveArsClamped)
         }
         const totalArsLive = +((cumIdxArs - 1) * 100).toFixed(2)
-        // Mismo riel que el numerador (cumRealizedArs se acumuló al blue de cada mes).
+        // Mismo riel que el numerador (cumRealizedArs se acumuló al dólar de cada mes).
         const denomArsLive = (denominadorAportado(cumNetDeposits, peakNetDeposits) ?? 0) * fxHoyChart
         const realArsLive = denomArsLive > 0 ? +((cumRealizedArs / denomArsLive) * 100).toFixed(2) : 0
         seriesArs.push({ key: 'today', label: 'Hoy', realized: realArsLive, total: totalArsLive })
@@ -2157,7 +2160,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // "Capital aportado" y la "Ganancia total" del Dashboard). Los montos de
   // `discipline` quedan en esa moneda: la tarjeta los escribe con `amtEnVista`.
   const resultado = resultadoTotal({
-    monthly, brokers, dolarMes, tcHoy: tcValuacion,
+    monthly, brokers, dolarMes, tcEnFecha, tcHoy: tcValuacion,
     valorHoyUsd: totalPortfolio, moneda: currency,
   })
   const discipline = atribucionDelCrecimiento({
