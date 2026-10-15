@@ -1162,11 +1162,21 @@ def _lineas_fuera_de_horario(fdh) -> dict:
                       else "contra el último cierre")
             frase = f"{cuando[:1].upper()}{cuando[1:]}, en el {nombre}, tu cartera {verbo} {r['usd_txt']}{pct} {contra}."
         else:
+            # Un CEDEAR se mide desde el cierre de BYMA (en invierno, una hora antes
+            # que el de NY): decir «el cierre de la rueda» a secas era falso para él.
+            contra = ("contra el cierre de la rueda (el de BYMA para tus CEDEARs y acciones argentinas)"
+                      if r.get("anticipo_usd_txt") else "contra el cierre de la rueda")
             frase = (f"{cuando[:1].upper()}{cuando[1:]}, en el {nombre}, tu cartera se movió "
-                     f"{r['usd_txt']}{pct} contra el cierre de la rueda.")
+                     f"{r['usd_txt']}{pct} {contra}.")
         top = [a for a in (r.get("activos") or []) if a.get("usd")][:3]
         if top:
-            nombres = [f"{a['asset']} ({a['pct_txt']})" for a in top]
+            # NVDA en un broker de EE.UU. y el CEDEAR de NVDA son dos renglones con
+            # dos % distintos: sin decir cuál es cuál se leía «NVDA (+3,50%) y NVDA
+            # (+6,70%)» (auditoría 2026-10-15).
+            repetidos = {a["asset"] for a in top if sum(b["asset"] == a["asset"] for b in top) > 1}
+            papel = {"eeuu": "CEDEAR, ", "adr": "en BYMA, ", "propio": "en EE.UU., "}
+            nombres = [f"{a['asset']} ({papel.get(a.get('via'), '') if a['asset'] in repetidos else ''}"
+                       f"{a['pct_txt']})" for a in top]
             unidos = nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
             frase += f" Lo que más pesó: {unidos}."
         lineas.append(frase)

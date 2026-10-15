@@ -173,6 +173,21 @@ ADR_DE_ACCION_AR = {
 }
 
 
+def _siguen_a_byma() -> frozenset:
+    """Las acciones de EE.UU. que sigue algún CEDEAR o alguna acción argentina:
+    las únicas que pueden pedir el % desde el cierre de BYMA. Cada una cuesta dos
+    pedidos de velas a Yahoo, en el mismo grupo de trabajadores que da los precios
+    de toda la app; sin esta lista cerrada, `byma=` aceptaba cualquier símbolo
+    (hasta ~9.000 pedidos por minuto de un solo usuario) y la memoria de bases
+    crecía sin techo (auditoría 2026-10-15)."""
+    from ai.trade_tickers import CEDEAR_TICKERS
+    out = set(ADR_DE_ACCION_AR.values())
+    for c in CEDEARS | frozenset(CEDEAR_TICKERS):
+        especie = CEDEAR_ESPECIE_ALIAS.get(c, c)
+        out.add(CEDEAR_EN_EEUU.get(especie, especie))
+    return frozenset(out)
+
+
 def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = None):
     """La acción de EE.UU. que anticipa a una tenencia, o None. Mismas reglas
     que `referenciaEnEEUU` (utils/fueraDeHorario.js):
@@ -628,6 +643,9 @@ def _agregar_pct_byma(cotizaciones: dict, crudas: dict, byma: List[str], sesion:
         if base is None:
             log.warning("fuera_de_horario: sin el precio de %s al cierre de BYMA; va contra el cierre de NY", s)
             c["pct_byma"] = c["pct"]
+            # Las alertas no disparan con esto: cuando vuelva el dato, el mismo
+            # precio daría otro % y saltaría un falso «doble».
+            c["byma_aproximado"] = True
             continue
         if c["pct"] is not None:
             ahora_precio = q.get(campo)
@@ -660,7 +678,8 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
         # está abierta dependía de la hora a la que corriera la suite.
         import fechas
         ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
-    byma = list(dict.fromkeys(byma or ()))
+    siguen = _siguen_a_byma()
+    byma = [b for b in dict.fromkeys(byma or ()) if b in siguen]
     pedidos = list(dict.fromkeys([*simbolos, *byma]))
     if listas:
         for grupo in (INDICES, ADRS, POPULARES):
@@ -748,9 +767,13 @@ def franjas_de_velas(velas: list, cierres: dict, hoy_ny: _dt.date,
     corrige = base_byma is not None and abs(base_byma - float(base)) > 1e-9
 
     def _ultima(dia, desde, hasta):
+        # Con menos de MIN_VELAS velas con operaciones la franja cuenta como «no
+        # operó»: la regla de las alertas. MEDIDO 2026-10-15: GGAL tenía en el
+        # post sólo la vela de las 16:00 (la del cierre oficial) y el mail decía
+        # «GGAL 0,0 %»; PAM, una sola de las 16:15 con +5,26 %.
         dentro = [(t, c) for t, c in velas
                   if t.date() == dia and desde <= t.time() < hasta and c]
-        return max(dentro, key=lambda x: x[0]) if dentro else None
+        return max(dentro, key=lambda x: x[0]) if len(dentro) >= MIN_VELAS else None
 
     out = {}
     for franja, dia, desde, hasta in (("post", previa, _dt.time(16, 0), _dt.time(20, 0)),

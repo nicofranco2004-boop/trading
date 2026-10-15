@@ -604,7 +604,15 @@ def _movimientos_para_narrar(fdh: dict, news: list) -> list:
         r = fdh.get(franja)
         if not r:
             continue
+        vistos = set()
         for a in r.get("activos") or []:
+            # Un activo una vez por franja: NVDA en EE.UU. y el CEDEAR de NVDA
+            # podían llegar como «subió» y «bajó» la misma noche (el CEDEAR se mide
+            # desde el cierre de BYMA). Queda el que más plata movió (vienen
+            # ordenados así).
+            if a.get("asset") in vistos:
+                continue
+            vistos.add(a.get("asset"))
             if a.get("asset") in con_noticia and abs(a.get("pct") or 0) >= 1:
                 out.append({"activo": a["asset"], "cuando": f"{r['cuando']}, en el {nombre}",
                             "movimiento": "subió" if a["pct"] > 0 else "bajó"})

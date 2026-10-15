@@ -1405,9 +1405,15 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
         def traer(simbolo):
             if simbolo != "NVDA":
                 return [], {}
+            # Tres velas por franja: con menos, la franja cuenta como «no operó»
+            # (fuera_de_horario.MIN_VELAS, la regla de las alertas).
             velas = [
                 (dt.datetime.combine(cierre_prev_dia, dt.time(15, 55), ny), cierre_prev),
+                (dt.datetime.combine(cierre_prev_dia, dt.time(16, 30), ny), cierre_prev),
+                (dt.datetime.combine(cierre_prev_dia, dt.time(18, 0), ny), cierre_prev),
                 (dt.datetime.combine(cierre_prev_dia, dt.time(19, 55), ny), post),
+                (dt.datetime.combine(hoy, dt.time(4, 0), ny), cierre_prev),
+                (dt.datetime.combine(hoy, dt.time(7, 0), ny), cierre_prev),
                 (dt.datetime.combine(hoy, dt.time(9, 25), ny), pre),
             ]
             return velas, {cierre_prev_dia - dt.timedelta(days=1): 1.0, cierre_prev_dia: cierre_prev}
@@ -1496,8 +1502,9 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
         try:
             conn.execute("INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash) "
                          "VALUES (1,'Balanz','KO',10,600,0)")
-            conn.execute("INSERT INTO snapshots (user_id, date, total_value, total_invested) "
-                         "VALUES (1, ?, 4400, 4000)", (hoy_art(),))
+            conn.execute("DELETE FROM snapshots WHERE user_id=1")   # la base es de todo el módulo
+            conn.execute("INSERT INTO snapshots (user_id, date, total_value, total_invested, source) "
+                         "VALUES (1, ?, 4400, 4000, 'cron')", (hoy_art(),))
             conn.commit()
         finally:
             conn.close()
@@ -1517,6 +1524,50 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
                 lotes, tc, total = main._lotes_con_referencia_eeuu(1, simbolos={"NVDA"})
         self.assertEqual(total, 4400)
         self.assertTrue(all("KO" not in p for p in pedidos))
+
+    def test_una_foto_del_navegador_no_es_el_total(self):
+        # Tercera auditoría: el total salía de CUALQUIER foto de la última semana
+        # (la del navegador, la del importador). Sólo cuenta el cierre del cron
+        # reciente; si no hay, se valúa la cartera entera.
+        import datetime as dt
+        from fechas import hoy_art
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash) "
+                         "VALUES (1,'Balanz','KO',10,600,0)")
+            conn.execute("DELETE FROM snapshots WHERE user_id=1")   # la base es de todo el módulo
+            conn.execute("INSERT INTO snapshots (user_id, date, total_value, total_invested, source) "
+                         "VALUES (1, ?, 4400, 4000, 'browser')", (hoy_art(),))
+            conn.commit()
+        finally:
+            conn.close()
+        pedidos = []
+
+        def contar(syms, *a, **k):
+            pedidos.append(sorted(syms))
+            return {"NVDA": 220.0, "KO": 60.0}
+        with patch.object(main, "fetch_prices_for_symbols", contar), \
+             patch("fechas.ahora_art", return_value=datetime(2026, 10, 15, 11, 0)):
+            self._pos("NVDA", qty=10)
+            _lotes, _tc, total = main._lotes_con_referencia_eeuu(1, simbolos={"NVDA"})
+        self.assertNotEqual(total, 4400)
+        self.assertTrue(any("KO" in p for p in pedidos))
+
+    def test_nvda_y_su_cedear_se_distinguen_en_el_mail(self):
+        # Tercera auditoría: «Lo que más pesó: NVDA (+3,50%) y NVDA (+6,70%)».
+        r = {"cuando": "anoche", "usd_txt": "+US$ 100", "pct_sobre_la_cartera_txt": "+1,00%",
+             "anticipo_usd_txt": "+US$ 67", "activos": [
+                 {"asset": "NVDA", "via": "eeuu", "pct": 6.7, "pct_txt": "+6,70%", "usd": 67.0},
+                 {"asset": "NVDA", "via": "propio", "pct": 3.5, "pct_txt": "+3,50%", "usd": 35.0},
+                 {"asset": "AAPL", "via": "propio", "pct": 1.0, "pct_txt": "+1,00%", "usd": 10.0}]}
+        linea = emails._lineas_fuera_de_horario({"post": r})["lineas"][0]
+        self.assertIn("NVDA (CEDEAR, +6,70%), NVDA (en EE.UU., +3,50%) y AAPL (+1,00%)", linea)
+        self.assertIn("el de BYMA para tus CEDEARs", linea)
+        # Al modelo, un activo una vez por franja: el que más plata movió.
+        movs = market_brief._movimientos_para_narrar(
+            {"post": {**r, "activos": [{**r["activos"][0], "pct": -1.5}, r["activos"][1]]}},
+            [{"ticker": "NVDA"}])
+        self.assertEqual([m["movimiento"] for m in movs], ["bajó"])
 
     def test_el_lunes_cuenta_el_post_del_viernes(self):
         # Directo sobre la cuenta (no por el cron): mover el reloj del cron al
@@ -1555,7 +1606,9 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
             if simbolo != "AAPL":
                 return [], {}
             return ([(dt.datetime.combine(d, dt.time(h, m), ny), c) for d, h, m, c in (
-                (lun, 14, 55, 100.0), (lun, 15, 55, 101.9), (lun, 19, 55, 103.0), (mar, 9, 25, 104.0))],
+                (lun, 14, 55, 100.0), (lun, 15, 55, 101.9),
+                (lun, 16, 30, 102.5), (lun, 18, 0, 102.8), (lun, 19, 55, 103.0),
+                (mar, 4, 0, 103.5), (mar, 7, 0, 103.8), (mar, 9, 25, 104.0))],
                 {dt.date(2026, 11, 13): 98.0, lun: 102.0})
 
         def _de_a_uno(fn, items, **kw):
