@@ -48,6 +48,9 @@ import DistribucionPorActivo from '../components/DistribucionPorActivo'
 import { computeSectorBreakdown } from '../utils/assetSector'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
+import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
+import { simbolosFueraDeHorario, impactoFueraDeHorario } from '../utils/fueraDeHorario'
+import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, LineaBroker } from '../components/FueraDeHorario'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
 import { applyMtmToMonthly } from '../utils/insightsModel'
@@ -240,6 +243,15 @@ function PersonalDashboard() {
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis) }))
   const totalValue = brokerTotals.reduce((s, b) => s + b.value, 0) + pf.valueUsd
+
+  // Pre y post mercado: un ANTICIPO debajo del valor actual, nunca sumado (ni
+  // al total, ni a «Hoy», ni a la curva). La cuenta es la de utils/fueraDeHorario.
+  const simbolosFdh = useMemo(() => simbolosFueraDeHorario(positions, brokers), [positions, brokers])
+  const fdh = useFueraDeHorario(simbolosFdh)
+  const impactoFdh = useMemo(
+    () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
+    [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
+  const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
   const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis
   const totalPct = totalCostBasis > 0 ? totalPnl / totalCostBasis : 0
@@ -813,7 +825,14 @@ function PersonalDashboard() {
   // siempre, al lado de un dato que nadie volvía a pedir).
   // Sin ningún precio en la respuesta (proveedor caído) no hay "Precios de
   // hace…": la misma regla que Cartera (hayPrecios).
-  const meta = lastUpdated && hayPrecios(prices) ? <PreciosEnVivo actualizado={lastUpdated} /> : null
+  const meta = lastUpdated && hayPrecios(prices)
+    ? (
+      <span className="inline-flex items-center gap-2 flex-wrap">
+        {sesionFdh && <EstadoSesion datos={fdh} />}
+        <PreciosEnVivo actualizado={lastUpdated} />
+      </span>
+    )
+    : null
 
   // Helper: convierte USD → moneda activa para mostrar.
   // Para ARS multiplica por tcValuacion actual (snapshot). No es histórico — los
@@ -967,7 +986,18 @@ function PersonalDashboard() {
                 moneda="USD" listo={metricasListas} conDiferencia={false} />
             </span>
           )}
+          {sesionFdh && (
+            <ChipFueraDeHorario sesion={sesionFdh} moneda={currency} oculto={hidden}
+              monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
+              pctFraccion={impactoFdh.total.pct} />
+          )}
         </div>
+        {sesionFdh && (
+          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={hidden} className="mt-2.5"
+            total={currency === 'ARS'
+              ? portfolioTotal * tcValuacion + impactoFdh.total.ars
+              : portfolioTotal + impactoFdh.total.usd} />
+        )}
         {insight && (
           <div className="flex items-center gap-2.5 mt-4 pt-3.5 border-t border-line/60 text-[13px] text-ink-2">
             <span className={`w-[7px] h-[7px] rounded-full flex-shrink-0 ${insight.tone === 'negative' ? 'bg-rendi-neg' : insight.tone === 'positive' ? 'bg-rendi-pos' : 'bg-ink-3'}`} />
@@ -1130,6 +1160,11 @@ function PersonalDashboard() {
                     key: 'd',
                     label: dailyVar.dayDiff === 1 ? 'Hoy' : `Últimos ${dailyVar.dayDiff} días`,
                     data: dailyVar,
+                    extra: sesionFdh && (
+                      <LineaBroker sesion={sesionFdh} oculto={hidden} moneda={currency}
+                        monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
+                        pctFraccion={impactoFdh.total.pct} />
+                    ),
                   }
                 : { key: 'd', label: 'Hoy', vacio: 'falta el cierre de la rueda anterior' },
               monthlyVar
@@ -1173,6 +1208,7 @@ function PersonalDashboard() {
                   label={c.label}
                   data={c.data}
                   note={c.note}
+                  extra={c.extra}
                   pctHero={c.pctHero}
                   fmtSigned={fmtSigned}
                 />
@@ -1535,7 +1571,8 @@ function PersonalDashboard() {
           </div>
           <div className={`grid gap-3 ${brokers.length === 1 ? 'grid-cols-1 max-w-sm' : brokers.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 md:grid-cols-3'}`}>
             {brokerTotals.map(b => (
-              <BrokerCard key={b.id} broker={b} totals={b} hidden={hidden} />
+              <BrokerCard key={b.id} broker={b} totals={b} hidden={hidden}
+                fueraDeHorario={fdhDeBroker(sesionFdh, impactoFdh, b)} />
             ))}
           </div>
         </div>
@@ -1593,7 +1630,15 @@ function SinDatoCell({ label, motivo }) {
   )
 }
 
-function VarCell({ label, data, fmtSigned, note = null, pctHero = false }) {
+// La línea de pre/post de una tarjeta de broker del Dashboard (la misma que en
+// Cartera). null si en ese broker no aplica.
+function fdhDeBroker(sesion, impacto, b) {
+  const r = sesion ? impacto.porBroker?.[b.name] : null
+  if (!r?.aplica) return null
+  return { sesion, usd: r.usd, ars: r.ars, pct: r.pct, via: b.currency === 'ARS' || isArUsdBroker(b.name) ? 'EE.UU.' : '' }
+}
+
+function VarCell({ label, data, fmtSigned, note = null, pctHero = false, extra = null }) {
   const pos = (pctHero ? data.pct : data.usd) >= 0
   const toneCls = pos ? 'text-rendi-pos' : 'text-rendi-neg'
   const subTone = pos ? 'text-rendi-pos/80' : 'text-rendi-neg/80'
@@ -1609,6 +1654,7 @@ function VarCell({ label, data, fmtSigned, note = null, pctHero = false }) {
       {note && (
         <div className="text-[11px] text-ink-3 mt-1.5 leading-none truncate">{note}</div>
       )}
+      {extra}
     </div>
   )
 }

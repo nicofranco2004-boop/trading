@@ -30,6 +30,7 @@ import { refreshPlanFeatures } from '../hooks/usePlanFeatures'
 import { usd, ars, fmtUsd, fmtArs, pctSigned } from '../utils/format'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
+import { LineaBroker } from './FueraDeHorario'
 
 function currencyTone(c) {
   switch (c) {
@@ -40,7 +41,7 @@ function currencyTone(c) {
   }
 }
 
-export default function BrokerManager({ brokers, onChange, totals, hidden }) {
+export default function BrokerManager({ brokers, onChange, totals, hidden, fueraDeHorario = null }) {
   // Mismas cuentas y misma preferencia de separación que las tablas de Cartera:
   // este bloque se dibuja en la MISMA pantalla, justo arriba, así que mostrar
   // las cuentas separadas acá y unificadas abajo era la contradicción más
@@ -157,6 +158,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
                 pnlUsd: (acc?.pnlUsd || 0) + (t.pnlUsd || 0),
               }
             }, null)}
+            fueraDeHorario={sumarFdhDeCuenta(fueraDeHorario, cuenta.patas)}
             hidden={hidden}
             onEdit={() => setEditing({ ...cuenta.parent })}
             onDelete={() => deleteBroker(cuenta.parent)}
@@ -166,6 +168,7 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
             key={b.id}
             broker={b}
             totals={totals?.[b.name]}
+            fueraDeHorario={sumarFdhDeCuenta(fueraDeHorario, [b])}
             hidden={hidden}
             onEdit={() => setEditing({ ...b })}
             onDelete={() => deleteBroker(b)}
@@ -293,7 +296,26 @@ export default function BrokerManager({ brokers, onChange, totals, hidden }) {
 // broker vacío) la card degrada a nombre + moneda. Exportada para que el
 // Dashboard use la MISMA pieza (sin acciones: onEdit/onDelete opcionales).
 
-export function BrokerCard({ broker, totals, hidden, onEdit, onDelete, label, forzarUsd = false, monedasCuenta }) {
+// Lo que mueve el pre/post en una cuenta (una o varias patas), en dólares y en
+// pesos. `fdh` = { sesion, porBroker } de utils/fueraDeHorario. null si nada aplica.
+function sumarFdhDeCuenta(fdh, patas) {
+  if (!fdh?.sesion) return null
+  let usd = 0, ars = 0, valorUsd = 0, hay = false, enPesos = false
+  for (const b of patas) {
+    const r = fdh.porBroker?.[b.name]
+    if (!r) continue
+    valorUsd += r.valorUsd
+    if (!r.aplica) continue
+    hay = true
+    usd += r.usd
+    ars += r.ars
+    if (b.currency === 'ARS' || isArUsdBroker(b.name)) enPesos = true
+  }
+  if (!hay) return null
+  return { sesion: fdh.sesion, usd, ars, pct: valorUsd > 0 ? usd / valorUsd : 0, via: enPesos ? 'EE.UU.' : '' }
+}
+
+export function BrokerCard({ broker, totals, hidden, onEdit, onDelete, label, forzarUsd = false, monedasCuenta, fueraDeHorario = null }) {
   // `forzarUsd`: la card representa una CUENTA con más de una moneda. No hay una
   // moneda nativa que mostrar, y `valueArs` no se puede sumar entre patas, así
   // que se muestra en dólares, que es donde las dos son comparables.
@@ -349,6 +371,11 @@ export function BrokerCard({ broker, totals, hidden, onEdit, onDelete, label, fo
               {hidden ? '••••••' : `${pnl >= 0 ? '+' : '−'}${isARS ? `ARS ${ars(Math.abs(pnl))}` : `USD ${usd(Math.abs(pnl))}`}`}
               {pct != null && <span className="opacity-80"> · {pctSigned(pct)}</span>}
             </div>
+          )}
+          {fueraDeHorario && (
+            <LineaBroker sesion={fueraDeHorario.sesion} oculto={hidden} via={fueraDeHorario.via}
+              moneda={isARS ? 'ARS' : 'USD'} monto={isARS ? fueraDeHorario.ars : fueraDeHorario.usd}
+              pctFraccion={fueraDeHorario.pct} />
           )}
         </>
       ) : (

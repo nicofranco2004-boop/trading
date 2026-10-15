@@ -58,6 +58,9 @@ import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
+import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
+import { simbolosFueraDeHorario, impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
+import { ChipFueraDeHorario, SiAbrieraAsi, EstadoSesion, EncabezadoColumna, CeldaFueraDeHorario } from '../components/FueraDeHorario'
 import PositionsMobile from './PositionsMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useCerSeries } from '../hooks/useCerSeries'
@@ -1740,6 +1743,16 @@ function PositionsDesktop() {
     return { value, invested }
   }, [brokers, positions, prices, tcValuacion, tcCedear, tcCripto])
 
+  // Pre y post mercado de Wall Street: un ANTICIPO al lado del total, nunca
+  // sumado. La cuenta es la de utils/fueraDeHorario (la misma del celular, el
+  // Dashboard y el inicio).
+  const simbolosFdh = useMemo(() => simbolosFueraDeHorario(positions, brokers), [positions, brokers])
+  const fdh = useFueraDeHorario(simbolosFdh)
+  const impactoFdh = useMemo(
+    () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
+    [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
+  const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
+
   // Delta vs último snapshot guardado. Se llama "variación diaria" cuando
   // dayDiff === 1, pero si el usuario no abrió la app durante varios días
   // el snapshot anterior puede ser de hace 5/16/N días — en ese caso el
@@ -1873,7 +1886,12 @@ function PositionsDesktop() {
   // Cartera SÍ vuelve a pedir los precios solos (relojVisible, cada
   // PRECIOS_CARTERA_MS con la pestaña a la vista): puede prometerlo.
   const meta = lastUpdated
-    ? <PreciosEnVivo actualizado={lastUpdated} seActualizanSolos seMueven={preciosSeMueven} />
+    ? (
+      <span className="inline-flex items-center gap-2 flex-wrap">
+        {sesionFdh && <EstadoSesion datos={fdh} />}
+        <PreciosEnVivo actualizado={lastUpdated} seActualizanSolos seMueven={preciosSeMueven} />
+      </span>
+    )
     : null
 
   // ─── Estado derivado de los filtros ──────────────────────────────────────
@@ -2051,6 +2069,11 @@ function PositionsDesktop() {
           <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
             {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
           </span>
+          {sesionFdh && (
+            <ChipFueraDeHorario sesion={sesionFdh} moneda={displayCurrency} oculto={hidden}
+              monto={isArsDisp ? impactoFdh.total.ars : impactoFdh.total.usd}
+              pctFraccion={impactoFdh.total.pct} />
+          )}
           {/* Reconciliación: el hero suma TODO. La renta fija ya NO está afuera —
               volvió a la tabla de su broker, así que las tarjetas la suman. Lo
               único que sigue sin tarjeta es el plazo fijo, y sólo por eso puede
@@ -2064,6 +2087,10 @@ function PositionsDesktop() {
             </span>
           )}
         </div>
+        {sesionFdh && (
+          <SiAbrieraAsi sesion={sesionFdh} moneda={displayCurrency} oculto={hidden} className="mt-2.5"
+            total={isArsDisp ? heroValueArs + impactoFdh.total.ars : heroValue + impactoFdh.total.usd} />
+        )}
       </div>
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
@@ -2072,7 +2099,8 @@ function PositionsDesktop() {
       {/* Broker cards + agregar (movido desde /config). Va debajo del hero
           KPI y antes del breakdown detallado por broker para que el user
           vea sus cuentas conectadas de un vistazo, con valor y P&L nativos. */}
-      <BrokerManager brokers={brokers} onChange={loadAll} totals={totals.byBroker} hidden={hidden} />
+      <BrokerManager brokers={brokers} onChange={loadAll} totals={totals.byBroker} hidden={hidden}
+        fueraDeHorario={sesionFdh ? { sesion: sesionFdh, porBroker: impactoFdh.porBroker } : null} />
 
       {/* ─── Barra de filtros + orden ─────────────────────────────────────
           Buscar activo · filtrar por broker (Todos | uno) · ordenar dentro de
@@ -2228,6 +2256,9 @@ function PositionsDesktop() {
           return r
         }
         const r = sumarTarjeta(bposRaw)
+        // La columna de pre/post sólo en las tablas donde algo la tiene: en la
+        // de un exchange de cripto sería una columna de rayas.
+        const fdhAca = Boolean(sesionFdh) && section.patas.some(b => impactoFdh.porBroker[b.name]?.aplica)
         // El peso de cada fila (PesoEnCartera) va sobre la tarjeta COMPLETA, no
         // sobre lo que dejó el buscador: con "NVDA" en la búsqueda la tarjeta
         // queda con esa sola fila y decía "Pesa 100 % de Schwab" (es 28,9 %).
@@ -2444,6 +2475,7 @@ function PositionsDesktop() {
                       <th className={thClass}>P&L</th>
                       {showDetail && isArsDisp && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>Var. día</th>
+                      {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -2510,7 +2542,7 @@ function PositionsDesktop() {
                       // + Invertido si showDetail (+1) + TC Compra/Inv.USD/P&L USD si
                       // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
                       // se ocultan (redundantes con las columnas ya-en-USD).
-                      const arsColSpan = showDetail ? (isArsDisp ? 13 : 10) : 9
+                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0)
                       const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
                       return (
                         <Fragment key={rowKey}>
@@ -2678,6 +2710,12 @@ function PositionsDesktop() {
                               <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
                             )}
                           </td>
+                          {fdhAca && (
+                            <td className={`${tdClass} tabular`}>
+                              <CeldaFueraDeHorario r={sumarTenencias((p._lots || [p]).map(l => l.id), impactoFdh)}
+                                moneda={displayCurrency} oculto={hidden} />
+                            </td>
+                          )}
                           <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -2742,6 +2780,12 @@ function PositionsDesktop() {
                           ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay / tcValuacion))}`)}</span>
                           : <span className="text-ink-3">—</span>}
                       </td>
+                      {fdhAca && (
+                        <td className="px-3 py-2.5 text-xs font-bold tabular">
+                          <CeldaFueraDeHorario soloMonto r={sumarTenencias(bposRaw.map(l => l.id), impactoFdh)}
+                            moneda={displayCurrency} oculto={hidden} />
+                        </td>
+                      )}
                       <td />
                     </tr>
                   </tfoot>
@@ -2768,6 +2812,7 @@ function PositionsDesktop() {
                     <th className={thClass}>Valor</th>
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>Var. día</th>
+                    {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
@@ -2918,6 +2963,12 @@ function PositionsDesktop() {
                             <span className="text-ink-3" title="Sin cierre anterior disponible para este símbolo">—</span>
                           )}
                         </td>
+                        {fdhAca && (
+                          <td className={`${tdClass} tabular`}>
+                            <CeldaFueraDeHorario r={sumarTenencias((p._lots || [p]).map(l => l.id), impactoFdh)}
+                              moneda={displayCurrency} oculto={hidden} />
+                          </td>
+                        )}
                         <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -2935,7 +2986,7 @@ function PositionsDesktop() {
                         <BondDetailRow
                           p={p}
                           filaFusionada={filaSinUnaPata(p)}
-                          colSpan={showDetail ? 10 : 9}
+                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0)}
                           summary={bondSummary}
                           pendingDates={pendientesDeLaFila(p)}
                           cobros={cobrosRenta}
@@ -2974,6 +3025,12 @@ function PositionsDesktop() {
                         ? <span className={colorClass(brokerDay)}>{hidden ? '••••••' : (isArsDisp ? `${brokerDay >= 0 ? '+' : '-'}ARS ${ars(Math.abs(brokerDay * tcValuacion))}` : `${brokerDay >= 0 ? '+' : '-'}USD ${usd(Math.abs(brokerDay))}`)}</span>
                         : <span className="text-ink-3">—</span>}
                     </td>
+                    {fdhAca && (
+                      <td className="px-3 py-2.5 text-xs font-bold tabular">
+                        <CeldaFueraDeHorario soloMonto r={sumarTenencias(bposRaw.map(l => l.id), impactoFdh)}
+                          moneda={displayCurrency} oculto={hidden} />
+                      </td>
+                    )}
                     <td />
                   </tr>
                 </tfoot>

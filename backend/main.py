@@ -44981,6 +44981,19 @@ def home_movers(market: str = "sp500", uid: int = Depends(get_effective_user)):
     return {**data, **estado_de_rueda((data.get("gainers") or []) + (data.get("losers") or []))}
 
 
+@app.get("/api/fuera-de-horario")
+def fuera_de_horario_endpoint(symbols: str = "", listas: bool = False,
+                              uid: int = Depends(get_effective_user)):
+    """Pre y post mercado de Wall Street (ver `fuera_de_horario.py`).
+
+    `symbols`: las acciones de EE.UU. que la pantalla quiere (el frontend ya
+    tradujo cada CEDEAR a su acción y cada acción argentina a su ADR).
+    `listas=1` suma los índices, los ADRs argentinos y los populares, para la
+    sección de Mercado. Es un ANTICIPO: no toca ningún número guardado."""
+    import fuera_de_horario as _fdh
+    return _fdh.estado(_fdh.limpiar_simbolos(symbols), listas=listas)
+
+
 # ─── Watchlist (Home V1.5) ───────────────────────────────────────────────────
 
 class WatchlistAddIn(BaseModel):

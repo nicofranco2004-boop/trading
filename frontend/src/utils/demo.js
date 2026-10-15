@@ -2062,6 +2062,70 @@ export function _ruedaDemo(ahora = new Date(), total = 1) {
   }
 }
 
+// Pre y post mercado del demo (GET /fuera-de-horario). Como `_ruedaDemo`, la
+// FRANJA sigue al reloj real de Nueva York (pre 4:00–9:30, post 16:00–20:00, de
+// lunes a viernes): fuera de esas horas el demo no muestra la sección, igual que
+// la app. Los % son simulados, fijos por símbolo y por día. Las listas son una
+// muestra de las del servidor (backend/fuera_de_horario.py).
+const _FDH_LISTAS = {
+  indices: [{ s: 'SPY', n: 'S&P 500' }, { s: 'QQQ', n: 'Nasdaq' }, { s: 'DIA', n: 'Dow Jones' }],
+  adrs: [
+    { s: 'GGAL', n: 'Grupo Galicia' }, { s: 'YPF', n: 'YPF' }, { s: 'PAM', n: 'Pampa Energía' },
+    { s: 'BMA', n: 'Banco Macro' }, { s: 'SUPV', n: 'Supervielle' }, { s: 'CEPU', n: 'Central Puerto' },
+    { s: 'TGS', n: 'Transportadora Gas del Sur' }, { s: 'VIST', n: 'Vista Energy' }, { s: 'LOMA', n: 'Loma Negra' },
+  ],
+  populares: [
+    { s: 'AAPL', n: 'Apple' }, { s: 'MSFT', n: 'Microsoft' }, { s: 'NVDA', n: 'Nvidia' },
+    { s: 'AMZN', n: 'Amazon' }, { s: 'GOOGL', n: 'Alphabet' }, { s: 'META', n: 'Meta' },
+    { s: 'TSLA', n: 'Tesla' }, { s: 'MELI', n: 'MercadoLibre' }, { s: 'KO', n: 'Coca-Cola' },
+    { s: 'SPY', n: 'S&P 500 (ETF)' },
+  ],
+}
+
+export function _fueraDeHorarioDemo(query = '', ahora = new Date()) {
+  const partes = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  }).formatToParts(ahora).map(p => [p.type, p.value]))
+  const habil = !['Sat', 'Sun'].includes(partes.weekday)
+  const min = Number(partes.hour) * 60 + Number(partes.minute)
+  const sesion = !habil ? 'post_cerrado'
+    : min >= 4 * 60 && min < 9 * 60 + 30 ? 'pre'
+    : min >= 9 * 60 + 30 && min < 16 * 60 ? null
+    : min >= 16 * 60 && min < 20 * 60 ? 'post'
+    : 'post_cerrado'
+  // Hora argentina (UTC−3 fija) de una hora de Nueva York de hoy.
+  const nyMenosUtc = ((Number(partes.hour) - ahora.getUTCHours() + 36) % 24) - 12
+  const enAr = (hNy, mNy) => {
+    const t = (hNy * 60 + mNy - nyMenosUtc * 60 - 3 * 60 + 1440) % 1440
+    return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
+  }
+  const ar = new Date(ahora.getTime() - 3 * 3600000)
+  const minAr = ar.getUTCHours() * 60 + ar.getUTCMinutes()
+  const bymaAbierto = ![0, 6].includes(ar.getUTCDay()) && minAr >= 11 * 60 && minAr < 17 * 60
+
+  const params = new URLSearchParams(query)
+  const pedidos = (params.get('symbols') || '').split(',').filter(Boolean)
+  const listas = params.get('listas') === '1'
+  if (listas) for (const g of Object.values(_FDH_LISTAS)) pedidos.push(...g.map(x => x.s))
+  const dia = fechaISO(ahora)
+  const pctDe = (s) => {
+    let h = 0
+    for (const ch of `${s}|${dia}|${sesion}`) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+    if (h % 9 === 0) return null            // todavía no operó
+    return Math.round(((h % 500) / 100 - 2.5) * 100) / 100
+  }
+  const cotizaciones = {}
+  if (sesion) for (const s of pedidos) cotizaciones[s] = { pct: pctDe(s), precio: null }
+  return {
+    sesion,
+    cierra: sesion === 'pre' ? enAr(9, 30) : sesion === 'post' ? enAr(20, 0) : null,
+    byma_abierto: bymaAbierto,
+    actualizado: ahora.toISOString(),
+    cotizaciones,
+    ...(listas ? { listas: _FDH_LISTAS } : {}),
+  }
+}
+
 const EVENTS_PORTFOLIO = [
   { ticker: 'NVDA', event_type: 'earnings',    event_date: _todayPlus(5),  confirmed: 1, details: { title: 'NVDA · Reporte Q1 2026' } },
   { ticker: 'AAPL', event_type: 'ex_dividend', event_date: _todayPlus(2),  confirmed: 1, details: { amount: 0.25 } },
@@ -2943,6 +3007,7 @@ export function handleDemoRequest(method, path, body) {
       return { blocks: buildHeatmapBlocks(market) }
     }
     if (basePath === '/home/indices') return { items: INDICES_STRIP }
+    if (basePath === '/fuera-de-horario') return _fueraDeHorarioDemo(query)
     if (basePath.startsWith('/home/movers')) {
       const market = (query || '').match(/market=([^&]+)/)?.[1] || 'sp500'
       // Con la forma del servidor (home/market.py `_build_movers`): el nombre
