@@ -382,6 +382,11 @@ export default function Admin() {
       {/* ── Backup manual (S3) — hacelo ANTES de cualquier recompute/repair ── */}
       <BackupPanel toast={toast} />
 
+      {/* Herramienta de una sola vez para el 1/11/2026. Se saca después. */}
+      <div className="mb-5">
+        <FinDelBeta />
+      </div>
+
 
       {/* ── Backfill: recomputar posiciones de cuentas ya importadas (FIFO + amort) ── */}
       <BackfillPanel toast={toast} />
@@ -4221,5 +4226,116 @@ function PruebasResumen({ data }) {
         </p>
       )}
     </section>
+  )
+}
+
+// ─── Fin del beta: activarle la prueba a todos ─────────────────────────────
+// Herramienta de UNA SOLA VEZ para el 1/11/2026. Dos pasos a propósito: «Ver
+// qué haría» no escribe nada, y recién con el segundo botón se aplica.
+//
+// ⚠️ «Activar» contesta al instante pero NO terminó: son ~1.300 mails de
+// bienvenida, entre 7 y 22 minutos (medido). Por eso después hay que mirar el
+// avance con la misma vista previa — cuando `les_arranca_la_prueba` da 0, no
+// queda nadie. La herramienta es idempotente: re-aplicar es seguro y nadie
+// recibe 20 días dos veces.
+function FinDelBeta() {
+  const [previo, setPrevio] = useState(null)
+  const [lanzado, setLanzado] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const toast = useToast()
+
+  async function ver() {
+    setBusy(true)
+    try {
+      setPrevio(await api.post('/admin/billing/fin-del-beta'))
+    } catch (e) {
+      toast.push('Error: ' + (e.message || ''), { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  async function activar() {
+    setBusy(true)
+    try {
+      await api.post('/admin/billing/fin-del-beta?apply=1')
+      setLanzado(true)
+      toast.push('Arrancó. Los mails tardan entre 7 y 22 minutos — mirá el avance.',
+                 { type: 'success' })
+    } catch (e) {
+      toast.push('Error: ' + (e.message || ''), { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const s = previo?.salteados || {}
+  const fallaron = previo?.fallaron || []
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5">
+      <div className="flex items-start gap-2 mb-1">
+        <Gift size={16} className="text-data-violet mt-0.5 flex-shrink-0" />
+        <div>
+          <h3 className="text-sm font-semibold text-ink-0">
+            Fin del beta · activar la prueba a todos
+          </h3>
+          <p className="text-xs text-ink-2 mt-0.5">
+            Les arranca la prueba de {previo?.dias_de_prueba ?? 20} días a los usuarios
+            del beta y los deja con plan requerido. No toca a los que pagan, al admin,
+            a los clientes de asesores ni a nadie que hoy tenga plan.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-3 flex-wrap">
+        <button
+          onClick={ver} disabled={busy}
+          className="px-3 py-1.5 rounded-lg border border-line text-ink-1 text-xs hover:bg-bg-2 disabled:opacity-50"
+        >
+          {busy ? 'Mirando…' : (lanzado ? 'Ver avance' : 'Ver qué haría')}
+        </button>
+        {previo && !lanzado && previo.les_arranca_la_prueba > 0 && fallaron.length === 0 && (
+          <button
+            onClick={activar} disabled={busy}
+            className="px-3 py-1.5 rounded-lg bg-data-violet/15 border border-data-violet/40 text-data-violet text-xs font-medium hover:bg-data-violet/25 disabled:opacity-50"
+          >
+            Activar a {previo.les_arranca_la_prueba} persona(s)
+          </button>
+        )}
+      </div>
+
+      {lanzado && (
+        <p className="mt-3 text-xs text-rendi-pos">
+          Arrancó en segundo plano. Apretá «Ver avance»: cuando «les arranca la prueba»
+          dé 0, no queda nadie.
+        </p>
+      )}
+
+      {previo && (
+        <div className="mt-3 text-xs space-y-1">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 text-ink-2">
+            <span>Les arranca la prueba
+              <b className="text-ink-0 tabular ml-1">{previo.les_arranca_la_prueba}</b></span>
+            <span>Sin verificar el mail
+              <b className="text-ink-0 tabular ml-1">{previo.marca_sin_prueba_por_no_verificar}</b></span>
+            <span>Ya tenían la marca
+              <b className="text-ink-0 tabular ml-1">{s.ya_tenia_la_marca ?? 0}</b></span>
+            <span>Pagan
+              <b className="text-ink-0 tabular ml-1">{s.paga ?? 0}</b></span>
+            <span>Ya tienen plan
+              <b className="text-ink-0 tabular ml-1">{s.no_es_free ?? 0}</b></span>
+            <span>Clientes de asesor
+              <b className="text-ink-0 tabular ml-1">{s.cliente_de_asesor ?? 0}</b></span>
+          </div>
+          {/* 🔴 Si algo falló, NO se aplica: una prueba que no arrancó deja a esa
+              persona con el muro puesto el día 1. El botón de activar desaparece. */}
+          {fallaron.length > 0 ? (
+            <p className="text-rendi-neg mt-2">
+              🔴 {fallaron.length} fallaron — no apliques y avisá. Motivos:{' '}
+              {[...new Set(fallaron.map(f => f.motivo))].join(', ')}
+            </p>
+          ) : (
+            <p className="text-ink-3 mt-2">Ninguna falló.</p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
