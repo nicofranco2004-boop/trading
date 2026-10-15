@@ -730,7 +730,8 @@ def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
     return txt
 
 
-def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) -> int:
+def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
+                            deactivated: set = None) -> int:
     """Las pct_move "En el día" en el pre y el post mercado de Wall Street.
 
     Reglas (decididas el 2026-10-15):
@@ -746,14 +747,21 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
         anoche, el pre de hoy y la rueda de hoy se miden contra el mismo cierre;
         si ya se avisó «+3 %» contra ese cierre, ni el pre ni la apertura lo
         repiten. El post de hoy (contra el cierre de hoy) o un cambio de sentido
-        sí avisan. Una alerta "una sola vez" no se apaga por un aviso fuera de la
-        rueda: es un anticipo.
+        sí avisan. Una alerta "una sola vez" se apaga con el primer aviso, sea
+        en la rueda o fuera de ella.
+      · Si dos tenencias siguen a la misma acción (NVDA y el CEDEAR de NVDA), un
+        solo renglón.
+      · La red (Yahoo) va ANTES de cualquier escritura: el que llama confirma lo
+        anterior, así no se tiene tomada la base mientras se espera a Yahoo.
     """
     import fuera_de_horario as fdh
+    deactivated = deactivated if deactivated is not None else set()
     candidatas = []
     for a, sym in units:
         if a["kind"] != "pct_move" or (a["baseline"] or "prev_close") != "prev_close":
             continue
+        if a["id"] in deactivated:
+            continue      # una «una sola vez» que ya avisó en este mismo ciclo
         if sym in _crypto_symbols():
             continue
         ref = fdh.referencia_en_eeuu(sym)
@@ -792,7 +800,15 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
         log.warning("alerts fuera de la rueda: velas fallaron: %s", ex)
         return 0
     fired = 0
+    mismo_ref = set()     # (alerta, acción de EE.UU., sentido) ya avisados en ESTE ciclo
     for a, sym, ref, via, pct, precio, clave in cruzaron:
+        if a["id"] in deactivated:
+            continue
+        if (a["id"], ref, clave[1]) in mismo_ref:
+            # NVDA en Schwab y el CEDEAR de NVDA son la MISMA suba: un renglón.
+            # El otro papel queda anotado como avisado.
+            _anotar_movimiento(conn, a["id"], sym, *clave)
+            continue
         if velas.get(ref, 0) < fdh.MIN_VELAS:
             log.info("alert %s %s: %+.2f%% en el %s con %s velas: poca operación, no aviso",
                      a["id"], sym, pct, sesion, velas.get(ref, 0))
@@ -800,7 +816,13 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
         _fire(conn, a, sym, precio, pct, now, pendientes,
               fuera={"sesion": sesion, "ref": ref, "via": via})
         _anotar_movimiento(conn, a["id"], sym, *clave)
+        mismo_ref.add((a["id"], ref, clave[1]))
         fired += 1
+        if a["repeat"] == "once":
+            # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
+            # rueda (auditoría 2026-10-15: seguía avisando día tras día).
+            conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+            deactivated.add(a["id"])
     return fired
 
 
@@ -820,7 +842,6 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     alerts = conn.execute(q, params).fetchall()
     if not alerts:
         return {"alerts": 0, "evaluated": 0, "fired": 0}
-    _podar_movimientos(conn, now)
 
     # Expandir a unidades (alerta, símbolo). holdings-scope → cada tenencia.
     # Qué precio necesita cada una: price_target y pct_move "Desde ahora"
@@ -965,8 +986,13 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     deactivated.add(a["id"])
 
     # Pre y post mercado de Wall Street (anticipo, con su propio estado).
+    # ⚠️ ANTES se confirma lo escrito en el loop: esto pregunta a Yahoo (hasta
+    # minutos si anda lento) y con la transacción abierta el resto de la app
+    # comía «database is locked» (auditoría 2026-10-15, medido con una segunda
+    # conexión). Adentro, la red va antes que cualquier escritura.
+    conn.commit()
     try:
-        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now)
+        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now, deactivated)
     except Exception as ex:
         log.warning("alerts fuera de la rueda falló: %s", ex)
 
@@ -989,5 +1015,8 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
         + ("" if only_user is None else " AND user_id=?"),
         (now.isoformat(),) + (() if only_user is None else (only_user,)),
     )
+    # La poda va AL FINAL, pegada al último commit: al principio abría la
+    # transacción de escritura y la dejaba tomada durante los pedidos de precios.
+    _podar_movimientos(conn, now)
     conn.commit()
     return {"alerts": len(alerts), "evaluated": len(units), "fired": fired}

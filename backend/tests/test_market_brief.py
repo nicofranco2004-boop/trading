@@ -1486,6 +1486,38 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
         lineas = emails._lineas_fuera_de_horario(brief["fuera_de_horario"])["lineas"]
         self.assertIn("incluye lo de la noche", lineas[1])
 
+    def test_con_foto_diaria_no_valua_toda_la_cartera(self):
+        # Auditoría 2026-10-15: valuar la cartera ENTERA de cada suscriptor a las 11
+        # eran S×P pedidos a Yahoo. Con foto reciente, el total sale de ahí y sólo
+        # se piden los precios de lo que sigue a EE.UU.
+        import datetime as dt
+        from fechas import hoy_art
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash) "
+                         "VALUES (1,'Balanz','KO',10,600,0)")
+            conn.execute("INSERT INTO snapshots (user_id, date, total_value, total_invested) "
+                         "VALUES (1, ?, 4400, 4000)", (hoy_art(),))
+            conn.commit()
+        finally:
+            conn.close()
+        pedidos = []
+        orig = main.fetch_prices_for_symbols
+
+        def contar(syms, *a, **k):
+            pedidos.append(sorted(syms))
+            return {"NVDA": 220.0}
+        traer = self._velas(dt.date(2026, 10, 14), 220.0, 217.8, 222.2, dt.date(2026, 10, 15))
+        with patch.object(main, "fetch_prices_for_symbols", contar):
+            lotes, tc, total = None, None, None
+            import fuera_de_horario as fdh
+            with patch.object(fdh, "_traer_velas", traer), \
+                 patch("fechas.ahora_art", return_value=datetime(2026, 10, 15, 11, 0)):
+                self._pos("NVDA", qty=10)
+                lotes, tc, total = main._lotes_con_referencia_eeuu(1, simbolos={"NVDA"})
+        self.assertEqual(total, 4400)
+        self.assertTrue(all("KO" not in p for p in pedidos))
+
     def test_el_lunes_cuenta_el_post_del_viernes(self):
         # Directo sobre la cuenta (no por el cron): mover el reloj del cron al
         # lunes deja afuera las noticias de prueba, que son de hoy.

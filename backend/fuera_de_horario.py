@@ -190,7 +190,10 @@ def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = 
         return None
     if clave in CRYPTO_SYMBOLS or clave in ("USD", "USDT", "USDC", "ARS") or _is_ar_bond(clave):
         return None
-    return (clave, "propio")
+    # Yahoo cotiza las clases con guión: 'BRK.B' o 'BRK B' → 'BRK-B'. La misma
+    # regla que `snapshots_job._to_yf_us` y `priceSymbol` de la pantalla (auditoría
+    # 2026-10-15: la pantalla lo contaba y el chat, el mail y las alertas no).
+    return (re.sub(r"[\s.]+", "-", clave), "propio")
 
 
 def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None, top: int = 6,
@@ -238,7 +241,9 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
         else:
             anticipo += usd
             anticipo_valor += valor
-        a = por_activo.setdefault(l.get("asset"), {
+        # Por (activo, vía): NVDA en Schwab y el CEDEAR de NVDA son dos renglones
+        # (uno exacto, otro anticipo), no uno con la etiqueta del primero.
+        a = por_activo.setdefault((l.get("asset"), via), {
             "asset": l.get("asset"), "sigue_a": simbolo, "via": via,
             "pct": round(float(q["pct"]), 2), "usd": 0.0})
         a["usd"] += usd
@@ -286,7 +291,7 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
             if ahora is None:
                 import fechas
                 ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
-            out["cuando"] = _nombre_de_la_noche(base, ahora.astimezone(ZONA_NY).date())
+            out["cuando"] = _nombre_de_la_noche(base, ahora.astimezone(ZONA_AR).date())
     if anticipo_valor > 0 and tc_pesos:
         from money_fmt import fmt_money
         out["ccl_1pct_en_pesos_txt"] = fmt_money(round(anticipo_valor * tc_pesos * 0.01), "ARS")
@@ -349,7 +354,10 @@ def _cotizaciones(simbolos: Iterable[str], pedir: Callable = None,
                 for k in viejos:
                     _cache.pop(k, None)
                 if len(_cache) > _MAX_CACHE:
-                    _cache.clear()
+                    # Los más viejos primero, nunca todo de golpe: vaciarlo entero
+                    # dejaba a todos sin caché por culpa de un solo pedido grande.
+                    for k, _ in sorted(_cache.items(), key=lambda kv: kv[1][0])[:len(_cache) - _MAX_CACHE]:
+                        _cache.pop(k, None)
             for s in lote:
                 q = por_simbolo.get(s)
                 _cache[s] = (ahora, q)
@@ -583,6 +591,10 @@ def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = N
             faltan.append(s)
     if faltan:
         crudos, sin_respuesta = _yahoo.varios(traer, faltan, tope=_yahoo.TOPE_FONDO_SEG, que="velas pre/post")
+        if crudos and not any(v for v, _c in crudos.values()):
+            # Con la cookie vieja de Yahoo (ver memoria yfinance-cookie) el historial
+            # vuelve VACÍO al instante para todos: que no pase en silencio.
+            log.warning("fuera_de_horario: Yahoo devolvió 0 velas para los %d símbolos pedidos", len(crudos))
         for s, (velas, cierres) in crudos.items():
             f = franjas_de_velas(velas, cierres, hoy_ny)
             _franjas_cache[(s, hoy_ny)] = (t0, f)
@@ -596,9 +608,15 @@ def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = N
     return out
 
 
-def _nombre_de_la_noche(dia_iso: str, hoy_ny: _dt.date) -> str:
+def _nombre_de_la_noche(dia_iso: str, hoy_ar: _dt.date) -> str:
+    """Cómo nombrar la noche de la rueda `dia_iso` visto desde HOY EN ARGENTINA
+    (el día de quien lee): a las 23:30 del jueves el post del jueves es «esta
+    noche», y a las 00:30 del viernes ya es «anoche» (con el día de Nueva York
+    las dos decían «el jueves a la noche»)."""
     d = _dt.date.fromisoformat(dia_iso)
-    if d == hoy_ny - _dt.timedelta(days=1):
+    if d == hoy_ar:
+        return "esta noche"
+    if d == hoy_ar - _dt.timedelta(days=1):
         return "anoche"
     dias = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
     return f"el {dias[d.weekday()]} a la noche"
@@ -627,7 +645,7 @@ def resumen_de_la_manana(lotes: list, por_simbolo: Dict[str, dict], tc_pesos: Op
             continue
         dia = next(f[franja]["dia"] for f in por_simbolo.values() if f.get(franja))
         if franja == "post":
-            r["cuando"] = _nombre_de_la_noche(dia, ny.date())
+            r["cuando"] = _nombre_de_la_noche(dia, ahora.astimezone(ZONA_AR).date())
             r["abierto"] = False
         else:
             r["abierto"] = ny.time() < _dt.time(9, 30) and ny.weekday() < 5
@@ -670,4 +688,7 @@ def con_operaciones(simbolos: List[str], sesion: str, ahora: _dt.datetime = None
     hoy_ny = ahora.astimezone(ZONA_NY).date()
     crudos, _ = _yahoo.varios(traer, list(dict.fromkeys(simbolos)),
                               tope=_yahoo.TOPE_FONDO_SEG, que="velas para alertas")
+    if crudos and not any(v for v, _c in crudos.values()):
+        log.warning("fuera_de_horario: 0 velas para %d símbolos: las alertas fuera de la rueda "
+                    "no van a disparar (¿Yahoo caído o cookie vieja?)", len(crudos))
     return {s: velas_en_franja(v, hoy_ny, sesion) for s, (v, _c) in crudos.items()}
