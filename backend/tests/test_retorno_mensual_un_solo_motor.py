@@ -56,7 +56,10 @@ class TestNingunLectorReimplementaLaRegla(unittest.TestCase):
                     "ai/builders/dashboard_evolution.py"]
         for rel in lectores:
             txt = (raiz / rel).read_text(encoding="utf-8")
-            self.assertIn("_twr.retorno_mensual(", txt, f"{rel} no usa el helper")
+            # El mes se le pide al motor (`rendimientos_mensuales`, que cae a
+            # `retorno_mensual` cuando no puede medir a mercado) o al helper.
+            self.assertTrue("_twr.rendimientos_mensuales(" in txt
+                            or "_twr.retorno_mensual(" in txt, f"{rel} no usa el helper")
             # Ni la cuenta a mano ni el primitivo pelado (que se saltea el guard).
             self.assertNotIn("_twr.dietz(", txt, f"{rel} llama al primitivo sin el guard")
             self.assertIsNone(

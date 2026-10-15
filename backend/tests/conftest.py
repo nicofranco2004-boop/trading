@@ -434,3 +434,25 @@ def _fuentes_sin_marca_de_caida():
     if m is not None and hasattr(m, "_FUENTE_CAIDA"):
         m._FUENTE_CAIDA.clear()
     yield
+
+
+# ─── Ningún test le pregunta a Yahoo por el pre/post mercado ────────────────
+# La tool del chat «¿qué pasó hoy?» consulta el pre y post mercado de Wall
+# Street (fuera_de_horario.py). Sin esto, cada test que pasa por ella haría un
+# pedido REAL a Yahoo (hasta 8 s) y su resultado dependería de la hora a la que
+# corre la suite. Acá Yahoo "no conoce nada" → no hay sesión. El test que quiere
+# pre o post lo dice (monkeypatch de `_pedir_yahoo` o `pedir=`).
+@pytest.fixture(autouse=True)
+def _yahoo_pre_post_mudo(monkeypatch):
+    try:
+        import fuera_de_horario
+    except Exception:
+        yield
+        return
+    monkeypatch.setattr(fuera_de_horario, "_pedir_yahoo", lambda simbolos: [])
+    monkeypatch.setattr(fuera_de_horario, "_traer_velas", lambda simbolo: ([], {}))
+    monkeypatch.setattr(fuera_de_horario, "_traer_sesiones_byma", lambda: set())
+    fuera_de_horario._franjas_cache.clear()
+    fuera_de_horario._vaciar_cache()
+    yield
+    fuera_de_horario._vaciar_cache()

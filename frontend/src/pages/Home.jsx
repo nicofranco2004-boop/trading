@@ -18,6 +18,9 @@ import EventsPreview from '../components/home/EventsPreview'
 import SearchBar from '../components/home/SearchBar'
 import Watchlist from '../components/home/Watchlist'
 import OnboardingChecklist from '../components/home/OnboardingChecklist'
+import FueraDeHorarioMercado from '../components/home/FueraDeHorarioMercado'
+import { useCurrency } from '../contexts/CurrencyContext'
+import { usePrivacy } from '../contexts/PrivacyContext'
 import Eyebrow from '../components/Eyebrow'
 import HomeMobile from './HomeMobile'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -26,6 +29,8 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 
 export default function Home() {
   const isMobile = useIsMobile()
+  const { currency } = useCurrency()
+  const { hidden } = usePrivacy()
   if (isMobile) return <HomeMobile />
 
   return (
@@ -47,6 +52,9 @@ export default function Home() {
             todos los items (broker, posición, perfil, IA). Se silencia
             automáticamente cuando está todo done o el user lo cierra. */}
         <OnboardingChecklist />
+
+        {/* 0.5 Pre y post mercado — sólo existe en esas franjas */}
+        <FueraDeHorarioMercado moneda={currency} oculto={hidden} />
 
         {/* 1. Strip de índices */}
         <IndicesStrip />

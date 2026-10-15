@@ -20,6 +20,7 @@ import { usd, pctSigned, colorClass, LOCALE } from '../utils/format'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey, cashAssetLabel } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import AskAIAbout from '../components/ai/AskAIAbout'
+import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import Panel from '../components/Panel'
 import { operacionesEnUsd } from '../utils/assetPnl'
@@ -270,6 +271,9 @@ export default function PositionDetailMobile() {
               <span>{pctSigned(pnlPct)}</span>
             </div>
           )}
+          {/* Pre/post de Wall Street: anticipo, no sumado al valor de arriba. */}
+          <ChipDelActivo lotes={[p]} brokers={brokers} prices={prices}
+            tcValuacion={tcValuacion} tcCedear={tcCedear} tcCripto={tcCripto} className="mt-3 text-[12px]" />
         </section>
       </AskAIAbout>
 

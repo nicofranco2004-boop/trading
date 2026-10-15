@@ -620,6 +620,16 @@ MOTIVO_TEXTO = {
     "capital_chico": "Al principio tu cuenta tenía menos de US$100. Sobre tan poco capital "
                      "un porcentaje no describe nada, así que esos meses no entran en el "
                      "rendimiento.",
+    # Los de UN MES (`rendimientos_mensuales`). El mes se mide entre el cierre
+    # del mes anterior y el cierre del propio mes; si falta una de las dos fotos,
+    # o están en lados distintos de un hueco, ese mes no se mide a mercado.
+    "mes_sin_cierre_anterior": "No hay una foto a precio real del cierre del mes "
+                               "anterior, así que este mes no se puede medir a mercado.",
+    "mes_sin_cierre": "No hay una foto a precio real del cierre de este mes, así que "
+                      "no se puede medir a mercado.",
+    "mes_partido": "Entre el cierre del mes anterior y el de este mes la medición se "
+                   "corta (un hueco o una foto dudosa), así que este mes no se puede "
+                   "medir a mercado.",
 }
 
 
@@ -879,6 +889,263 @@ def contable_de_filas(filas):
     if abs(pct) > MAX_PNL_PCT:
         return None, 0
     return pct, tramos[-1][1]
+
+
+# ─── El rendimiento de CADA MES ──────────────────────────────────────────────
+#
+# Cuántos días puede caer cada cierre antes del fin de mes y seguir sirviendo de
+# borde. Un fin de mes en sábado deja el último cierre del cron el viernes, y el
+# feriado largo argentino suma dos días más. Lo que cubre la medición de verdad
+# viaja igual en `ventana_desde`/`ventana_hasta`, así que nada se esconde.
+MES_TOLERANCIA_BORDE_DIAS = 4
+
+
+def rendimientos_mensuales(conn, uid: int, desde=None, hasta=None, *,
+                           moneda=None, hoy=None) -> list:
+    """El rendimiento de cada mes de la cuenta, CON SU PROCEDENCIA. Un solo lugar.
+
+    Devuelve un dict por cada mes de `monthly_entries` (broker 'global') dentro de
+    la ventana, en orden:
+
+        {"mes": "YYYY-MM",
+         "pct": float|None,           # en puntos (2,5 = 2,5 %)
+         "base": "mercado"|"contable"|None,
+         "motivo": str|None,          # por qué NO se pudo medir a mercado
+         "motivo_texto": str|None,
+         "ventana_desde": str|None,   # el cierre de arranque que se usó (mercado)
+         "ventana_hasta": str|None,   # el cierre final que se usó (mercado)
+         "resultado_usd": float|None, # lo que ganó o perdió, sin aportes (mercado, USD)
+         "capital_final": float}      # el de la contabilidad, para contexto
+
+    ⚠️ POR QUÉ EXISTE. Para un mes CERRADO `monthly_entries` está AL COSTO:
+    `_repair_monthly_chain` deja `capital_final = capital_inicio + flujos +
+    pnl_realized`, así que el Dietz de esa fila es lo REALIZADO y nada más. Un mes
+    sin ventas da ~0 % aunque la cartera haya subido o bajado mucho. Cinco lectores
+    (el Wrapped y los paquetes de la IA de evolución, reportes, dashboard y
+    métricas pro) elegían el "mejor" y el "peor" mes con ese número. El acumulado
+    ya se le pedía al motor (`rendimiento_publicable`, F6); el mes no.
+
+    LA REGLA, la misma de `rendimiento_publicable`:
+      · a mercado cuando se puede: entre el cierre del mes anterior y el cierre
+        del mes, sobre la cadena del motor (`curva_indexada`, modo certero). El
+        número es `index_publicado(fin) / index_publicado(inicio) − 1`, o sea el
+        producto de los legs de Dietz del motor, con SUS flujos y SUS guards
+        (`leg_dudoso`, el hueco de 45 días, el piso de capital). Las dos puntas
+        tienen que estar en el MISMO tramo: si en el medio la serie se corta, el
+        mes no se mide — se corta, no se puentea.
+      · si no se puede, la contabilidad DICIENDO que es contabilidad (`base`
+        'contable', con el motivo), con los guards de la rama contable: el mes de
+        alta no se mide, `leg_dudoso`, el piso de US$100 y el clamp por mes.
+      · si tampoco, `pct` None con el motivo. Nunca el costo disfrazado.
+
+    El mes en curso se cierra contra HOY (el último cierre a mercado de los
+    últimos días), no contra el fin de mes calendario.
+    """
+    _moneda = moneda if moneda is not None else MONEDA_USD
+    q = ("SELECT year, month, capital_inicio, capital_final, deposits, withdrawals "
+         "FROM monthly_entries WHERE user_id=? AND broker='global'")
+    args = [uid]
+    for valor, op in ((desde, ">="), (hasta, "<=")):
+        if not valor:
+            continue
+        k = clave_mes(valor)
+        if k is None:
+            raise ValueError(f"ventana inválida: {valor!r} no es una fecha ISO")
+        q += f" AND (year*100+month) {op} ?"; args.append(k)
+    filas = []
+    for r in conn.execute(q + " ORDER BY year, month", args).fetchall():
+        y, m = r["year"], r["month"]
+        if not isinstance(y, int) or not isinstance(m, int) or not (1 <= m <= 12):
+            continue
+        filas.append(r)
+    if not filas:
+        return []
+
+    from datetime import date as _date, timedelta as _td
+    _hoy = hoy or _hoy_art()
+    tol = _td(days=MES_TOLERANCIA_BORDE_DIAS)
+
+    def _iso(d):
+        return d.isoformat()
+
+    def _d(s):
+        return _date.fromisoformat(str(s)[:10])
+
+    # UNA llamada al motor para toda la ventana: arranca lo bastante antes del
+    # primer mes como para que su cierre anterior entre como borde.
+    _primero = _date(filas[0]["year"], filas[0]["month"], 1)
+    _ultimo = _fin_de_mes(f"{filas[-1]['year']:04d}-{filas[-1]['month']:02d}")
+    _c_desde = _iso(_primero - _td(days=1) - tol)
+    motivo_motor = None
+    puntos = []
+    try:
+        c = curva_indexada(conn, uid, _c_desde, min(_ultimo, _hoy),
+                           modo=MODO_CERTERO, moneda=_moneda)
+        motivo_motor = c.get("motivo")
+        # Valor y aportado por fecha, de la serie del motor (en dólares): sirven
+        # para el monto del mes. El índice sale de la curva.
+        _crudo = {}
+        for t in c.get("tramos") or []:
+            for p in t:
+                if p.get("apto"):
+                    _crudo[p["date"]] = p
+        for p in c.get("curva") or []:
+            if p.get("apto") and p.get("date") != "hoy":
+                puntos.append({**p, "_serie": _crudo.get(p["date"])})
+    except Exception:
+        log.exception("rendimientos_mensuales: motor uid=%s", uid)
+        motivo_motor = None
+
+    def _ultimo_hasta(limite, piso):
+        """El último punto apto con piso <= fecha <= limite."""
+        elegido = None
+        for p in puntos:
+            if p["date"] > limite:
+                break
+            if p["date"] >= piso:
+                elegido = p
+        return elegido
+
+    from realized_pnl import MAX_PNL_PCT
+    out = []
+    for r in filas:
+        ym = f"{r['year']:04d}-{r['month']:02d}"
+        ini_mes = _date(r["year"], r["month"], 1)
+        lim_ini = ini_mes - _td(days=1)
+        lim_fin = min(_d(_fin_de_mes(ym)), _d(_hoy))
+        item = {"mes": ym, "pct": None, "base": None, "motivo": None,
+                "motivo_texto": None, "ventana_desde": None, "ventana_hasta": None,
+                "resultado_usd": None,
+                "capital_final": round(float(r["capital_final"] or 0), 2)}
+
+        motivo = None
+        if lim_fin < ini_mes:
+            motivo = "sin_historia"
+        elif not puntos:
+            motivo = motivo_motor or "sin_mediciones"
+        else:
+            p0 = _ultimo_hasta(_iso(lim_ini), _iso(lim_ini - tol))
+            p1 = _ultimo_hasta(_iso(lim_fin), max(_iso(ini_mes), _iso(lim_fin - tol)))
+            if p0 is None:
+                motivo = "mes_sin_cierre_anterior"
+            elif p1 is None:
+                motivo = "mes_sin_cierre"
+            elif p0.get("tramo") != p1.get("tramo") or p1["date"] <= p0["date"]:
+                motivo = "mes_partido"
+            else:
+                # Todos los legs del medio tienen que haber medido: un leg con
+                # denominador que no da (`dietz` → None) no mueve el índice, y eso
+                # se leería como un 0 % que nadie midió.
+                _medio = [q_ for q_ in puntos
+                          if p0["date"] < q_["date"] <= p1["date"]]
+                i0 = float(p0.get("index_publicado") or 0)
+                i1 = float(p1.get("index_publicado") or 0)
+                if i0 <= 0 or any(q_.get("ret") is None for q_ in _medio):
+                    motivo = "mes_partido"
+                else:
+                    pct = (i1 / i0 - 1.0) * 100
+                    if abs(pct) > MAX_PNL_PCT:
+                        motivo = "cadena_implausible"
+                    else:
+                        item.update(pct=pct, base="mercado",
+                                    ventana_desde=p0["date"], ventana_hasta=p1["date"])
+                        s0, s1 = p0.get("_serie"), p1.get("_serie")
+                        if _moneda == MONEDA_USD and s0 and s1:
+                            item["resultado_usd"] = round(
+                                (float(s1["value"]) - float(s0["value"]))
+                                - (float(s1["net_deposited"] or 0)
+                                   - float(s0["net_deposited"] or 0)), 2)
+        if item["base"] == "mercado":
+            out.append(item)
+            continue
+
+        # La contabilidad, etiquetada. Los mismos guards que la rama contable del
+        # acumulado (`contable_de_filas`), aplicados a un mes solo.
+        item["motivo"] = motivo
+        item["motivo_texto"] = MOTIVO_TEXTO.get(motivo) if motivo else None
+        ret = mes_contable(r)
+        if ret is not None:
+            item.update(pct=ret * 100, base="contable")
+        out.append(item)
+    return out
+
+
+def mes_contable(fila):
+    """El rendimiento de UN mes según la contabilidad (`monthly_entries`), con los
+    guards de la rama contable. Fracción (0,05 = 5 %) o None.
+
+    Es la rama de respaldo de `rendimientos_mensuales`, y existe suelta porque el
+    Wrapped es una función PURA (recibe filas, no una conexión): sin esto tendría
+    que quedarse con su propia copia de la regla. Los guards son los mismos que los
+    de `contable_de_filas`: el mes de alta no se mide (`retorno_mensual`), el clamp
+    por mes, el piso de US$100 de capital y `leg_dudoso`.
+    """
+    def _campo(k):
+        try:
+            return fila[k]
+        except (KeyError, IndexError, TypeError):
+            return None
+    ci = float(_campo("capital_inicio") or 0)
+    cf = float(_campo("capital_final") or 0)
+    flujo = float(_campo("deposits") or 0) - float(_campo("withdrawals") or 0)
+    ret = retorno_mensual(ci, cf, flujo)
+    if (ret is None or ret < -0.95 or ret > 5 or ci < PISO_DENOMINADOR_USD
+            or leg_dudoso(ci, cf, flujo)):
+        return None
+    return ret
+
+
+def meses_contables(filas) -> list:
+    """`rendimientos_mensuales` SIN conexión: sólo la rama contable, con la misma
+    forma. Para el que no puede consultar el motor (el Wrapped puro)."""
+    out = []
+    for r in filas:
+        try:
+            y, m = int(r["year"]), int(r["month"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (1 <= m <= 12):
+            continue
+        ret = mes_contable(r)
+        out.append({"mes": f"{y:04d}-{m:02d}",
+                    "pct": ret * 100 if ret is not None else None,
+                    "base": "contable" if ret is not None else None,
+                    "motivo": None, "motivo_texto": None,
+                    "ventana_desde": None, "ventana_hasta": None,
+                    "resultado_usd": None,
+                    "capital_final": round(float(r["capital_final"] or 0), 2)})
+    return out
+
+
+def mejor_y_peor_mes(meses: list) -> dict:
+    """El ranking de los meses de `rendimientos_mensuales`, sin mezclar bases.
+
+        {"base": "mercado"|"contable"|None,
+         "meses": [...],            # los que entran al ranking, en orden
+         "mejor": dict|None, "peor": dict|None,
+         "positivos": int, "total": int,
+         "sin_medir_a_mercado": int}   # meses de la ventana que NO son de mercado
+
+    ⚠️ NO SE MEZCLAN. Un mes contable de una cartera que no vendió da ~0 %, y un
+    mes a mercado da lo que se movió el precio: ponerlos en la misma tabla hace que
+    el "peor mes" sea el contable plano al lado de uno de mercado que subió, y que
+    el "mejor" sea el de mercado al lado de uno que se derrumbó sin vender. Se
+    rankean los de mercado; si no hay ninguno, los contables, y `base` lo dice.
+    """
+    con_pct = [m for m in meses if m.get("pct") is not None]
+    mercado = [m for m in con_pct if m.get("base") == "mercado"]
+    elegidos = mercado if mercado else con_pct
+    base = (elegidos[0]["base"] if elegidos else None)
+    positivos = sum(1 for m in elegidos if m["pct"] > 0)
+    return {
+        "base": base,
+        "meses": elegidos,
+        "mejor": max(elegidos, key=lambda m: m["pct"]) if elegidos else None,
+        "peor": min(elegidos, key=lambda m: m["pct"]) if elegidos else None,
+        "positivos": positivos,
+        "total": len(elegidos),
+        "sin_medir_a_mercado": len(meses) - len(mercado),
+    }
 
 
 # ─── La cota de cordura de UN leg ────────────────────────────────────────────

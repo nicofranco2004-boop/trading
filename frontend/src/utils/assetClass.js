@@ -197,7 +197,7 @@ function isFciLike(ticker, assetType) {
  * clasificador, no una copia: la torta del asesor y la del cliente salen del
  * mismo código y no pueden divergir.
  */
-function isArMarket(position, brokers) {
+export function isArMarket(position, brokers) {
   if ((position.asset_type || '').toUpperCase() === 'CEDEAR') return true
   if (position.is_ar_market != null) return Boolean(position.is_ar_market)
   if (isArUsdBroker(position.broker)) return true

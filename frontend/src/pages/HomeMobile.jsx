@@ -45,6 +45,10 @@ import { capitalAportado } from '../utils/capitalAportado'
 import { useDolarMensual, useFxHistory } from '../hooks/useFxHistory'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
+import FueraDeHorarioMercado from '../components/home/FueraDeHorarioMercado'
+import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
+import { impactoFueraDeHorario } from '../utils/fueraDeHorario'
+import { ChipFueraDeHorario, SiAbrieraAsi } from '../components/FueraDeHorario'
 
 export default function HomeMobile() {
   // Fase A (2026-05-31): currency global via context — sincroniza con Dashboard.
@@ -132,6 +136,17 @@ export default function HomeMobile() {
     const { pct } = noRealizadoEnVista({ positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency })
     return { totalValue, totalCost, totalPnl, pct }
   }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, currency])
+
+  // Pre y post mercado: un ANTICIPO debajo de «Tu cartera», nunca sumado. La
+  // cuenta es la de utils/fueraDeHorario; la sección de Mercado de abajo
+  // recibe esta misma cartera para no volver a pedirla.
+  const carteraFdh = useMemo(
+    () => ({ positions, brokers, prices, tcValuacion, tcCedear, tcCripto }),
+    [positions, brokers, prices, tcValuacion, tcCedear, tcCripto])
+  const fdh = useFueraDeHorarioDe(positions, brokers)
+  const impactoFdh = useMemo(
+    () => impactoFueraDeHorario(positions, brokers, carteraFdh, fdh), [positions, brokers, carteraFdh, fdh])
+  const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
 
   // Total valuado SIEMPRE al MEP, SOLO para comparar contra snapshots (P&L Día /
   // P&L Mes / sparkline). Los snapshots viven en MEP por diseño; si el riel del
@@ -412,6 +427,16 @@ export default function HomeMobile() {
             {currency}
           </button>
         </div>
+        {sesionFdh && (
+          <div className="-mt-1 mb-3 flex flex-col gap-1.5 items-start">
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden} className="text-[12px]"
+              monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
+              pctFraccion={impactoFdh.total.pct} />
+            <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={hidden}
+              total={(currency === 'ARS' ? (totals.totalValue + pf.valueUsd) * tcValuacion : totals.totalValue + pf.valueUsd)
+                + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
+          </div>
+        )}
 
         {/* Sparkline 30d con delta del MISMO período (no histórico) */}
         {series30d ? (
@@ -474,6 +499,11 @@ export default function HomeMobile() {
           </Panel>
         )}
       </section>
+
+      {/* ── 1.5 Pre y post mercado — sólo existe en esas franjas ─────── */}
+      <div className="px-4 pb-4 empty:hidden">
+        <FueraDeHorarioMercado cartera={carteraFdh} moneda={currency} oculto={hidden} />
+      </div>
 
       {/* ── 2. KPI strip 2x2 ────────────────────────────────────────── */}
       <section className="px-4 mb-5">
