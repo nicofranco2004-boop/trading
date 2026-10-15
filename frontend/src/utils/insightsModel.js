@@ -52,6 +52,60 @@ export function netCapitalContributed(globalMonthly) {
   return baseline + flows
 }
 
+// ─── Atribución del crecimiento: aportes vs mercado ─────────────────────────
+/**
+ * atribucionDelCrecimiento — "¿crecí porque invierto bien o porque puse plata?"
+ * Lo leen la tarjeta "Atribución del crecimiento" de Análisis y los hallazgos
+ * growth_from_deposits / growth_from_market del diagnóstico.
+ *
+ *   aportes  = capital aportado = el capital con que arrancó el registro
+ *              + Σ(deposits − withdrawals)              (`netCapitalContributed`)
+ *   mercado  = valor de HOY − capital aportado
+ *   total    = aportes + mercado = valor de HOY
+ *
+ * Las tres son las del Dashboard ("Aportado", "Ganancia total", "Valor actual")
+ * y el "Resultado total" de Análisis.
+ *
+ * ⚠️ POR QUÉ NO SUMA LA CADENA MENSUAL. Hasta el 2026-10-14 el mercado era
+ * Σ(capital_final − capital_inicio − aportes) mes a mes. Eso sólo mide algo si
+ * la cadena está a valor de mercado, y para las cuentas cargadas a mano no lo
+ * está nunca: no hay fotos, `applyMtmToMonthly` no re-ancla nada y cada mes
+ * vale AL COSTO. Medido con una cuenta que depositó $10 M y compró siete
+ * acciones que hoy valen ~$14,2 M: "Rendimiento del mercado +ARS 0 (0 %)". Y en
+ * las cuentas con fotos a medias la suma tampoco cerraba: un mes re-anclado al
+ * lado de uno al costo deja el salto entre los dos afuera de la cuenta.
+ *
+ * Lo que SÍ está medido son las dos puntas: lo aportado y lo que la cartera vale
+ * hoy.
+ *
+ * El capital con que arranca el registro (una cuenta importada que ya tenía
+ * plata) cuenta como aporte, igual que en el Dashboard: si no, la misma plata
+ * era "aporte" para quien la cargó como depósito y "crecimiento" de nada para
+ * quien la trajo en el primer mes, y aportes + mercado no daba el valor de hoy.
+ *
+ * ⚠️ NO es la suma de la lista por activo ("Atribución por activo") en pesos:
+ * esa lista convierte el costo de cada papel al dólar de HOY, y lo aportado acá
+ * está en dólares del día de cada depósito. Ver la tarea "aportes en pesos".
+ *
+ * Sin precios completos (`valorHoyMedido` falso) el valor de hoy lleva activos
+ * al costo y la respuesta es null: no se publica un "mercado" al costo.
+ *
+ * @returns {{ deposits, pnl, total, pnlShare } | null}  montos en USD
+ */
+export function atribucionDelCrecimiento({ globalMonthly, valorHoy, valorHoyMedido }) {
+  if (!valorHoyMedido || !(valorHoy > 0)) return null
+  const sorted = sortGlobalMonthly(globalMonthly)
+  if (sorted.length === 0) return null
+  const deposits = netCapitalContributed(sorted)
+  const pnl = valorHoy - deposits
+  return {
+    deposits,
+    pnl,
+    total: valorHoy,
+    pnlShare: (pnl / valorHoy) * 100,
+  }
+}
+
 // ─── Serie de retorno acumulado (TWRR) ──────────────────────────────────────
 /**
  * buildCumulativeReturnSeries
