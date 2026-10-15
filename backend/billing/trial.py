@@ -367,7 +367,7 @@ class _TopeDelMes(Exception):
     que hay que deshacerla entera."""
 
 
-def start(conn, user_id: int) -> dict:
+def start(conn, user_id: int, del_beta: bool = False) -> dict:
     """Activa el trial. Idempotente por `trial_used_at`: un segundo intento
     devuelve can_start=False/already_used sin tocar nada.
 
@@ -388,13 +388,14 @@ def start(conn, user_id: int) -> dict:
     # `_start_tx` ya trata cap=0 como "sin tope".
     cap = 0 if _requiere_plan(conn, user_id) else monthly_cap()
     try:
-        return _start_tx(conn, user_id, until, now_iso, cap)
+        return _start_tx(conn, user_id, until, now_iso, cap, del_beta=del_beta)
     except _TopeDelMes:
         # El `with conn` de _start_tx ya deshizo el alta al propagarse.
         return {"ok": False, "can_start": False, "reason": "monthly_cap_reached"}
 
 
-def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int) -> dict:
+def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int,
+              del_beta: bool = False) -> dict:
     with conn:
         # trial_ends_at fija CUÁL crédito es el del trial. Sin esto, "usó el
         # trial alguna vez" quedaba pegado para siempre y el cron le bajaba el
@@ -474,7 +475,14 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int) -> dict:
         row = conn.execute("SELECT email, name, requires_plan FROM users WHERE id=?",
                            (user_id,)).fetchone()
         if row and row["email"]:
-            _avisar_una_vez(conn, user_id, MAIL_STARTED, _bienvenida(row))
+            # `del_beta` sólo agrega una línea al mail ("como te conté, Rendi
+            # salió del beta"): sin eso, a quien usa Rendi gratis hace meses le
+            # llega "arrancó tu prueba" de la nada. ⚠️ El REINTENTO del cron
+            # (abajo, en `send_due_trial_emails`) no sabe de dónde salió la
+            # prueba y manda la versión sin esa línea: pasa sólo si Resend
+            # rechazó el primer envío, y es una línea de contexto, no un dato.
+            _avisar_una_vez(conn, user_id, MAIL_STARTED,
+                            _bienvenida(row, del_beta=del_beta))
     except Exception as ex:
         log.warning("mail de bienvenida del trial falló uid=%s: %s", user_id, ex)
     return {"ok": True, **status(conn, user_id)}
@@ -766,7 +774,7 @@ def _mark_sent(conn, user_id: int, kind: str) -> Optional[str]:
         return None
 
 
-def _bienvenida(row):
+def _bienvenida(row, del_beta: bool = False):
     """El mail de bienvenida de la prueba para esta fila de `users` (con email,
     name y requires_plan). `requiere_plan` como en los otros avisos: sin él, a
     quien nació sin plan gratis le prometía "cuando se termina, tu cuenta vuelve
@@ -775,7 +783,14 @@ def _bienvenida(row):
     return lambda: emails.send_trial_started(
         to=row["email"], user_name=(row["name"] or row["email"].split("@")[0]),
         pro_days=TRIAL_PRO_DAYS, total_days=TRIAL_TOTAL_DAYS,
-        requiere_plan=bool(row["requires_plan"]))
+        # ⭐ `or del_beta`: a la gente del beta la marca `requires_plan` se le
+        # escribe DESPUÉS de arrancar la prueba, y a propósito (al revés se come
+        # el muro el día 1 si el arranque falla). Pero el mail sale en el medio,
+        # así que leyendo sólo la columna le decía «cuando se termina, tu cuenta
+        # vuelve a Free sola» a 1.300 personas que van a quedar EN PAUSA: les
+        # promete un plan que ya no existe y les saca la urgencia de la única
+        # decisión que tienen que tomar. `del_beta` ES la intención de marcarlo.
+        requiere_plan=bool(row["requires_plan"]) or del_beta, del_beta=del_beta)
 
 
 def _avisar_una_vez(conn, user_id: int, kind: str, mandar, tanda=None) -> bool:
@@ -2120,7 +2135,7 @@ def fin_del_beta(conn, apply: bool = False, limit: int = 5000) -> dict:
             continue
 
         _borrar_marca_de_prueba_usada(conn, uid, r["email"])
-        res = start(conn, uid)
+        res = start(conn, uid, del_beta=True)
         if not res.get("ok"):
             # NO se pone la marca: sin prueba, la marca es el muro el día 1.
             salida["fallaron"].append(

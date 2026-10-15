@@ -110,6 +110,32 @@ class Base(unittest.TestCase):
             (plan, (datetime.utcnow() + timedelta(days=dias)).isoformat(), uid))
         self.conn.commit()
 
+    def _espiar_bienvenida(self):
+        """Espía `send_trial_started` y lo DEVUELVE al terminar el test.
+
+        Sin devolverlo, el espía queda puesto: el `setUp` del test siguiente
+        guarda como "original" lo que encuentra —que ya es este espía— y a partir
+        de ahí ningún test vuelve a ver el mail de verdad. Pasó: un test empezó a
+        fallar por el espía de OTRO."""
+        from billing import emails as _em
+        previo = _em.send_trial_started
+        recibido = {}
+
+        def _fake(**kw):
+            recibido.update(kw)
+            recibido.setdefault("_veces", 0)
+            recibido["_veces"] += 1
+            return True
+
+        _em.send_trial_started = _fake
+        # ⚠️ NO con `addCleanup`: eso corre DESPUÉS del tearDown, así que volvía
+        # a dejar el espía puesto justo cuando el archivo terminaba — y los 6
+        # tests de `test_ritmo_de_envio` que miran la bienvenida pasaban a fallar
+        # en la suite completa (solos pasaban). El tearDown de Base ya restaura
+        # el original desde `self._orig`; con eso alcanza.
+        del previo
+        return recibido
+
     def _marca(self, uid):
         return self.conn.execute(
             "SELECT COALESCE(requires_plan,0) c FROM users WHERE id=?",
@@ -199,14 +225,12 @@ class AQuienLeArranca(Base):
                             "el montaje no reproduce el caso")
 
         # Se espía la bienvenida: es el único de los cuatro que sale AHORA.
-        from billing import emails as _em
-        salieron = []
-        _em.send_trial_started = lambda **kw: (salieron.append("started"), True)[1]
+        recibido = self._espiar_bienvenida()
 
         tr.fin_del_beta(self.conn, apply=True)
 
         # La bienvenida volvió a salir de verdad…
-        self.assertEqual(salieron, ["started"],
+        self.assertEqual(recibido.get("_veces"), 1,
                          "su prueba nueva arrancó sin mail de bienvenida")
         # …y los tres que vienen DESPUÉS quedaron desbloqueados, que es lo que
         # decide si los próximos 20 días tienen avisos o son mudos.
@@ -214,6 +238,34 @@ class AQuienLeArranca(Base):
             self.assertFalse(
                 tr._already_sent(self.conn, uid, k),
                 f"«{k}» sigue bloqueado: su prueba nueva va a ser muda")
+
+    def test_el_mail_de_bienvenida_dice_que_viene_del_FIN_DEL_BETA(self):
+        """⭐ Pedido de Nico: que a todos los de la tanda les llegue un mail
+        diciendo que arrancó su prueba y en qué consiste. Ese mail YA existía y
+        ya salía (es `send_trial_started`, uno por persona). Lo que le faltaba
+        era decir POR QUÉ llega: alguien que usa Rendi gratis hace meses no pidió
+        ninguna prueba, y "arrancó tu prueba" a secas se lee como un error."""
+        uid = self._del_beta()
+        recibido = self._espiar_bienvenida()
+
+        tr.fin_del_beta(self.conn, apply=True)
+
+        self.assertTrue(recibido, "no salió el mail de bienvenida")
+        self.assertTrue(recibido.get("del_beta"),
+                        "el mail no aclara que viene del fin del beta")
+        # Y lo que el mail cuenta de la prueba sale de las constantes, no a mano.
+        self.assertEqual(recibido.get("pro_days"), tr.TRIAL_PRO_DAYS)
+        self.assertEqual(recibido.get("total_days"), tr.TRIAL_TOTAL_DAYS)
+        self.assertTrue(recibido.get("requiere_plan"),
+                        "le va a decir que vuelve a Free, y queda en PAUSA")
+
+    def test_al_que_se_registra_NORMAL_no_le_habla_del_beta(self):
+        """El contraveneno: quien se registra hoy no tiene idea de qué beta le
+        hablan."""
+        uid = self._del_beta()
+        recibido = self._espiar_bienvenida()
+        tr.start(self.conn, uid)
+        self.assertFalse(recibido.get("del_beta"))
 
     def test_al_que_no_verifico_el_mail_le_pone_la_marca_SIN_quemar_la_prueba(self):
         """Arrancársela ahora le quemaría los 20 días sin que entre nunca.

@@ -2478,7 +2478,8 @@ _TRIAL_URL = "https://rendi.finance/planes"
 
 
 def send_trial_started(*, to: str, user_name: str, pro_days: int,
-                       total_days: int, requiere_plan: bool = False) -> bool:
+                       total_days: int, requiere_plan: bool = False,
+                       del_beta: bool = False) -> bool:
     """Día 1. Lo importante no es dar la bienvenida: es que haga TRES COSAS
     concretas hoy. Un trial que arranca sin uso el primer día no se recupera.
 
@@ -2491,7 +2492,20 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
     mail, y no es un matiz: decirle "cuando se termina tu cuenta vuelve a Free"
     a alguien que no tiene Free es prometerle algo que no existe, y encima le
     saca la urgencia de la única decisión que tiene que tomar.
+
+    ⭐ `del_beta` = le llega porque Rendi salió del beta (1/11/2026), no porque
+    se haya registrado recién. Sin esta línea, a alguien que usa Rendi gratis
+    hace meses le llega "arrancó tu prueba" de la nada: no pidió ninguna prueba.
+    La línea lo ata al anuncio que recibió unos días antes, y es lo que hace que
+    el mail se entienda en vez de parecer un error del sistema.
     """
+    _del_beta_html = ("" if not del_beta else
+                      '<p style="font-size:14px;line-height:1.6;color:#6B7280;'
+                      'margin:0 0 16px;">Como te conté por mail, Rendi salió del '
+                      'beta. Esto es lo que sigue para vos.</p>')
+    _del_beta_txt = ("" if not del_beta else
+                     "Como te conté por mail, Rendi salió del beta. Esto es lo "
+                     "que sigue para vos.\n\n")
     plus_days = total_days - pro_days
     # La comparación con el plan Free, sólo a quien lo tiene.
     _sin_free = "" if requiere_plan else " — sin las 12 preguntas fijas del plan Free"
@@ -2512,6 +2526,7 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
             "Sin tarjeta: cuando se termina, tu cuenta vuelve a Free sola."
         )
     body_html = f"""
+      {_del_beta_html}
       <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">Ya tenés Rendi Pro, {user_name}</h1>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
         Durante los próximos <b>{pro_days} días</b> tenés todo Pro, y después seguís
@@ -2530,6 +2545,7 @@ def send_trial_started(*, to: str, user_name: str, pro_days: int,
       </p>
     """
     text = (
+        f"{_del_beta_txt}"
         f"Ya tenés Rendi Pro, {user_name}\n\n"
         f"{pro_days} días con todo Pro y después {plus_days} días de Plus. "
         f"{_cierre_txt}\n\n"
