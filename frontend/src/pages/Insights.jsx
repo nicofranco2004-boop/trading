@@ -4770,7 +4770,7 @@ function ProfileObjectiveCard({ data }) {
 // Card: Expectativa de retorno declarada vs retorno real (neto de inflación).
 function ProfileReturnExpectationCard({ data }) {
   if (!data || data.status !== 'ready') return null
-  const { realReturnPct, inflationPct, monthsCounted, valorHoyArs, mismaPlataArs } = data.actual
+  const { realReturnPct, monthsCounted, valorHoyArs, mismaPlataArs } = data.actual
   const realPos = realReturnPct >= 0
   const verdictText = data.comparison === 'above'
     ? 'Tu retorno real va por encima de esa expectativa.'
@@ -4799,7 +4799,10 @@ function ProfileReturnExpectationCard({ data }) {
       </div>
       {valorHoyArs != null && mismaPlataArs != null && (
         <p className="text-xs text-ink-3 mt-1 leading-snug tabular">
-          Hoy vale {fmtArs(Math.round(valorHoyArs))} · ajustada por inflación{inflationPct != null ? ` (${pctTxt(inflationPct)})` : ''} sería {fmtArs(Math.round(mismaPlataArs))}
+          {/* Sin el % de inflación al lado: es el índice desde el PRIMER aporte, y
+              con aportes en varias fechas la plata nueva tuvo menos inflación —
+              "ajustada por inflación (30 %)" no sería la cuenta del monto. */}
+          Hoy vale {fmtArs(Math.round(valorHoyArs))} · la misma plata ajustada por inflación valdría {fmtArs(Math.round(mismaPlataArs))}
         </p>
       )}
       <p className="text-xs text-ink-2 mt-3 leading-snug">{verdictText}</p>
