@@ -677,6 +677,26 @@ function semanasDelMesDemo(m) {
   return lunes.map(_semanaDemo).filter(Boolean).map(({ _textoOps, ...w }) => w)
 }
 
+// `ranking_por_anio` de `/api/reports/timeline`, con la forma de
+// `twr.mejor_y_peor_mes`. Los meses del demo se miden todos sobre las fotos del
+// demo (a mercado), así que no hay bases que separar: base 'mercado' siempre.
+function _rankingPorAnioDemo() {
+  const porAnio = {}
+  for (const r of REPORTS_TIMELINE) {
+    if (!r.is_relevant || r.metrics?.delta_pct == null) continue
+    const y = r.period_key.slice(0, 4)
+    ;(porAnio[y] ||= []).push({ mes: r.period_key, pct: r.metrics.delta_pct, base: 'mercado' })
+  }
+  const out = {}
+  for (const [y, meses] of Object.entries(porAnio)) {
+    meses.sort((a, b) => (a.mes < b.mes ? -1 : 1))
+    const mejor = meses.reduce((a, b) => (b.pct > a.pct ? b : a))
+    const peor = meses.reduce((a, b) => (b.pct < a.pct ? b : a))
+    out[y] = { base: 'mercado', meses, mejor, peor, total: meses.length,
+               positivos: meses.filter(m => m.pct > 0).length, sin_medir_a_mercado: 0 }
+  }
+  return out
+}
 const REPORTS_TIMELINE = (() => {
   const globals = MONTHLY.filter(m => m.broker === 'global')
   const hoy = new Date()
@@ -3078,7 +3098,8 @@ export function handleDemoRequest(method, path, body) {
     }
     // Reports timeline (Reportes page)
     if (basePath === '/reports/timeline') {
-      return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length }
+      return { reports: REPORTS_TIMELINE, total: REPORTS_TIMELINE.length,
+               ranking_por_anio: _rankingPorAnioDemo() }
     }
 
     // Reports period — day / week / month / year (página Reportes tabs)

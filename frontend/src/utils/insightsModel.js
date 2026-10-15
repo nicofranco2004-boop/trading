@@ -268,50 +268,6 @@ export function computeDrawdownOnReturns(series) {
   }
 }
 
-// ─── Mejor / peor mes (excluyendo mes en curso) ─────────────────────────────
-/**
- * computeBestWorstMonth
- *
- * Detecta el mes con mayor y menor rendimiento porcentual sobre el capital
- * de inicio. Excluye el mes calendario actual porque está incompleto.
- *
- * Fórmula:
- *   pnl_mes = capital_final − capital_inicio − (depósitos − retiros)
- *   pct     = pnl_mes / capital_inicio
- *
- * @param {Array}  globalMonthly      entradas del broker `global`
- * @param {Date}   today              fecha de referencia (default = ahora)
- * @returns {{ best, worst, count } | null}  best/worst tienen { year, month, pnl, pct }
- */
-export function computeBestWorstMonth(globalMonthly, today = new Date()) {
-  const sorted = sortGlobalMonthly(globalMonthly)
-  if (sorted.length === 0) return null
-
-  const todayY = today.getFullYear()
-  const todayM = today.getMonth() + 1
-
-  // Excluye el mes en curso — está incompleto y comparar contra meses
-  // cerrados es injusto.
-  const closed = sorted.filter(m => !(m.year === todayY && m.month === todayM))
-
-  const months = closed
-    .map(m => {
-      const capInicio = m.capital_inicio || 0
-      const capFinal = m.capital_final || 0
-      const net = (m.deposits || 0) - (m.withdrawals || 0)
-      const pnl = capFinal - capInicio - net
-      const pct = capInicio > 0 ? (pnl / capInicio) * 100 : null
-      return { year: m.year, month: m.month, pnl, pct }
-    })
-    .filter(m => m.pct != null)
-
-  if (months.length === 0) return null
-
-  const best = months.reduce((a, b) => (a.pct >= b.pct ? a : b))
-  const worst = months.reduce((a, b) => (a.pct <= b.pct ? a : b))
-  return { best, worst, count: months.length }
-}
-
 // ─── Contribución por activo (realized + unrealized) ────────────────────────
 /**
  * computeAssetContribution

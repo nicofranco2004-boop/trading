@@ -10,7 +10,6 @@ import {
   netCapitalContributed,
   buildCumulativeReturnSeries,
   computeDrawdownOnReturns,
-  computeBestWorstMonth,
   acumuladoDeVentana,
   acumuladoPublicado,
   computeAssetContribution,
@@ -194,44 +193,6 @@ describe('computeDrawdownOnReturns', () => {
     const series = buildCumulativeReturnSeries(m)
     const dd = computeDrawdownOnReturns(series)
     expect(dd.maxPct).toBe(0)  // el "cálculo viejo" daría ~-45%
-  })
-})
-
-// ── computeBestWorstMonth ─────────────────────────────────────────────────────
-
-describe('computeBestWorstMonth', () => {
-  it('null si no hay data', () => {
-    expect(computeBestWorstMonth([])).toBe(null)
-  })
-
-  it('detecta mejor y peor mes', () => {
-    const m = [
-      month(2025, 1, 1000, 1100),   // +10%
-      month(2025, 2, 1100, 990),    // -10%
-      month(2025, 3, 990, 1080),    // +9.09%
-    ]
-    const r = computeBestWorstMonth(m, new Date(2025, 5, 1))  // jun → ya cerraron
-    expect(r.best.month).toBe(1)
-    expect(r.best.pct).toBeCloseTo(10, 1)
-    expect(r.worst.month).toBe(2)
-    expect(r.worst.pct).toBeCloseTo(-10, 1)
-    expect(r.count).toBe(3)
-  })
-
-  it('excluye el mes calendario actual', () => {
-    const m = [
-      month(2025, 1, 1000, 1100),         // +10%
-      month(2025, 5, 1100, 2000),         // +81.8% pero es el mes en curso
-    ]
-    const r = computeBestWorstMonth(m, new Date(2025, 4, 15))  // mayo en curso
-    expect(r.best.month).toBe(1)         // mayo no entra
-    expect(r.count).toBe(1)
-  })
-
-  it('null si solo hay mes en curso', () => {
-    const m = [month(2025, 5, 1000, 1100)]
-    const r = computeBestWorstMonth(m, new Date(2025, 4, 1))
-    expect(r).toBe(null)
   })
 })
 
