@@ -36,7 +36,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import AdvisorDashboard from './AdvisorDashboard'
 import { api } from '../utils/api'
-import { computeBrokerValue, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
+import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, setBrokersRegistry } from '../utils/valuation'
 import { sePuedeGuardar, guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { auditPositions } from '../utils/valuationGuards'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -50,7 +50,8 @@ import { toDistributionAiParams } from '../utils/distributionAi'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { buildPortfolioValueSeries, convertSeriesToArs, computeDailyPnl, computeReturnDelta, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion, capitalMaximoAportado, retornoTotal } from '../utils/evolution'
 import { buildDashboardInsight } from '../utils/insights'
-import { applyMtmToMonthly } from '../utils/insightsModel'
+import { resultadoTotal, aportadoEnPesosAl, diferenciaDeCambio } from '../utils/capitalAportado'
+import { applyMtmToMonthly, netCapitalContributed } from '../utils/insightsModel'
 import { hoyISO } from '../utils/fecha'
 import { useAlVerse } from '../hooks/useAlVerse'
 import PuntaViva, { puntaEsDeAhora } from '../components/PuntaViva'
@@ -243,21 +244,24 @@ function PersonalDashboard() {
   const totalCostBasis = brokerTotals.reduce((s, b) => s + b.invested, 0) + pf.investedUsd
   const totalPnl = totalValue - totalCostBasis
   const totalPct = totalCostBasis > 0 ? totalPnl / totalCostBasis : 0
+  // "P&L no realizado" en la moneda en que se mira: en pesos, el costo en los
+  // pesos que se pagaron (ver `noRealizadoEnVista`, que comparte con el inicio
+  // del celular). En dólares es exactamente `totalPnl`/`totalPct`.
+  const noRealizado = useMemo(() => noRealizadoEnVista({
+    positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency,
+    extraValorUsd: pf.valueUsd, extraCostoUsd: pf.investedUsd,
+  }), [positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, currency, pf.valueUsd, pf.investedUsd])
 
   // Capital aportado real = capital_inicio del PRIMER mes (lo que ya tenías en la
   // cuenta cuando empezaste a trackear) + acumulado de depósitos − retiros.
   // Sin la baseline, el % "sobre lo aportado" se infla porque divide por un
   // monto chiquito (solo los flujos explícitos, no la plata que ya estaba).
   // Mismo criterio que usa Insights para la curva de evolución.
-  const netDepositedBase = useMemo(() => {
-    const globals = monthly
-      .filter(m => m.broker === 'global')
-      .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
-    if (globals.length === 0) return 0
-    const baseline = globals[0].capital_inicio || 0
-    const flows = globals.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
-    return baseline + flows
-  }, [monthly])
+  // Es `netCapitalContributed` (insightsModel.js): acá vivía una copia de la fórmula.
+  const netDepositedBase = useMemo(
+    () => netCapitalContributed(monthly.filter(m => m.broker === 'global')),
+    [monthly],
+  )
   // El capital del PF también es plata aportada → entra en el "neto depositado".
   const netDeposited = netDepositedBase + pf.investedUsd
   // Las comparaciones contra snapshots (que NO tienen PF) usan los totales
@@ -320,6 +324,18 @@ function PersonalDashboard() {
   const { usd: totalReturnUsd, pct: totalReturnPct } = retornoTotal({
     totalValue, netDeposited, capitalMaximo,
   })
+  // Lo que se MUESTRA como "Capital aportado" y "Ganancia total" (y su %), en la
+  // moneda en que se mira. En dólares es exactamente lo de arriba. En pesos NO es
+  // "dólares × el dólar de hoy": un depósito de $10 M de hace un año se veía como
+  // $10,86 M aportados y la devaluación se le descontaba a la ganancia. Ver
+  // `resultadoTotal` (utils/capitalAportado.js), que también usa Análisis.
+  // `totalReturnUsd`/`netDeposited` siguen siendo los de dólares: con ellos se
+  // comparan las fotos guardadas y va el rendimiento a la IA.
+  const resultado = useMemo(() => resultadoTotal({
+    monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion,
+    valorHoyUsd: totalValue, moneda: currency, extraUsd: pf.investedUsd,
+    capitalMaximoUsd: capitalMaximo,
+  }), [monthly, brokers, bench, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
 
   // ── Discrepancia contable ───────────────────────────────────────────────────
   // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
@@ -347,6 +363,14 @@ function PersonalDashboard() {
   const accountingGap = (realizedPnl + totalPnl) - totalReturnUsd
   const showAccountingGap = Math.abs(accountingGap) > 500
   const gapIsOutflow = accountingGap > 0
+  // En pesos, lo que el dólar sumó (o restó) a la plata que entró o está en
+  // dólares: sin esta tarjeta el desglose no suma la "Ganancia total" en pesos de
+  // quien tiene dólares. Ver `diferenciaDeCambio` (utils/capitalAportado.js).
+  const cambio = diferenciaDeCambio({
+    moneda: resultado.moneda, ganancia: resultado.ganancia, realizado: realizedPnlDisp,
+    noRealizado: noRealizado.monto, descuadreUsd: accountingGap, tcHoy: tcValuacion,
+  })
+  const showCambio = Math.abs(cambio) > 500 * tcValuacion
 
   const portfolioTotal = totalValue
   // Si en Movimientos se borró algo (un depósito, un dividendo, una venta), la
@@ -516,7 +540,7 @@ function PersonalDashboard() {
   // `capitalMaximo` va también acá: la frase de arriba del Dashboard y el chip
   // del hero son el MISMO número. Sin esto, cambiarle el denominador a uno
   // solo dejaba dos porcentajes distintos en la misma pantalla.
-  const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, capitalMaximo, positions: positionsForInsight }), [totalValue, netDeposited, capitalMaximo, positionsForInsight])
+  const insight = useMemo(() => buildDashboardInsight({ totalValue, netDeposited, capitalMaximo, positions: positionsForInsight, resultado }), [totalValue, netDeposited, capitalMaximo, positionsForInsight, resultado])
 
   // Cobertura de precios: fracción del cost basis (lo que se cotiza, pesado en USD por el motor)
   // que tiene un precio real. Es el guard contra snapshots subvaluados: si
@@ -697,8 +721,11 @@ function PersonalDashboard() {
   // Helper `convertSeriesToArs` es testeable como función pura.
   const evoSeriesDisplay = useMemo(() => {
     if (currency !== 'ARS') return evoSeries
-    return convertSeriesToArs(evoSeries, getHistoricalFx)
-  }, [evoSeries, currency, getHistoricalFx])
+    // La línea de lo aportado, a los pesos que se pusieron (la misma regla que
+    // el "Capital aportado" de arriba); el valor, al dólar de cada foto.
+    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion })
+    return convertSeriesToArs(evoSeries, getHistoricalFx, aportadoArs)
+  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, bench, tcValuacion])
 
   // For chart Y-axis nice domain — usa evoSeriesDisplay para que el dominio
   // refleje los valores realmente graficados (ARS o USD según toggle).
@@ -831,6 +858,12 @@ function PersonalDashboard() {
       ? `${sign(usdValue)}ARS ${ars(Math.abs(usdValue * tcValuacion))}`
       : `${sign(usdValue)}USD ${usd(Math.abs(usdValue))}`
   }
+  // Valores que YA vienen en la moneda de display (los convertimos nosotros con
+  // el dólar de su fecha, o son pesos guardados) — no vuelven a multiplicar.
+  const fmtDirect = (v) => {
+    if (v == null) return '—'
+    return currency === 'ARS' ? fmtArs(v) : fmtUsd(v)
+  }
   // Igual que fmtSigned pero para valores que YA vienen en la moneda de display
   // (los que convertimos nosotros con FX histórico) — no vuelve a multiplicar.
   const fmtSignedDirect = (v) => {
@@ -839,6 +872,14 @@ function PersonalDashboard() {
       ? `${sign(v)}ARS ${ars(Math.abs(v))}`
       : `${sign(v)}USD ${usd(Math.abs(v))}`
   }
+
+  // El chip pegado al gráfico. En "Máx" ES la "Ganancia total" del título, y en
+  // pesos tiene que decir lo mismo que el título (lo aportado a los pesos que se
+  // pusieron), no la ganancia en dólares × el dólar de hoy. `periodChange` sigue
+  // en dólares: es lo que va a la IA, que recibe dólares y lo sabe.
+  const chipRango = periodChange && (rangeDays > 0
+    ? { texto: fmtSigned(periodChange.usd), pct: periodChange.pct, positivo: periodChange.usd >= 0 }
+    : { texto: fmtSignedDirect(resultado.ganancia), pct: resultado.pct, positivo: resultado.ganancia >= 0 })
 
   return (
     <div className="page-shell">
@@ -946,12 +987,12 @@ function PersonalDashboard() {
             moneda="USD" listo={metricasListas} desdeCero /></PrivacyMask>
         </div>
         <div className="flex items-center gap-2 flex-wrap mt-3.5 text-[12.5px]">
-          <span className={`inline-flex items-center gap-1.5 font-medium tabular rounded-full px-2.5 py-1 ${totalReturnUsd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
-            {totalReturnUsd >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
-            <span>{totalReturnUsd >= 0 ? 'Ganancia total' : 'Pérdida total'}</span>
-            <NumeroQueCambia clave="dashboard:ganancia-total" value={totalReturnUsd} format={fmtSigned}
-              moneda="USD" listo={metricasListas} oculto={hidden} conDiferencia={false} />
-            <span className="opacity-80">· {pctSigned(totalReturnPct)}</span>
+          <span className={`inline-flex items-center gap-1.5 font-medium tabular rounded-full px-2.5 py-1 ${resultado.ganancia >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+            {resultado.ganancia >= 0 ? <TrendingUp size={13} strokeWidth={1.75} /> : <TrendingDown size={13} strokeWidth={1.75} />}
+            <span>{resultado.ganancia >= 0 ? 'Ganancia total' : 'Pérdida total'}</span>
+            <NumeroQueCambia clave="dashboard:ganancia-total" value={resultado.ganancia} format={fmtSignedDirect}
+              moneda={resultado.moneda} listo={metricasListas} oculto={hidden} conDiferencia={false} />
+            <span className="opacity-80">· {pctSigned(resultado.pct)}</span>
           </span>
           {!hidden && (
             <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
@@ -963,8 +1004,8 @@ function PersonalDashboard() {
           {!hidden && (
             <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-bg-2 text-ink-2 tabular">
               <span className="text-ink-3">Aportado</span>
-              <NumeroQueCambia clave="dashboard:aportado-chip" value={netDeposited} format={fmt}
-                moneda="USD" listo={metricasListas} conDiferencia={false} />
+              <NumeroQueCambia clave="dashboard:aportado-chip" value={resultado.aportado} format={fmtDirect}
+                moneda={resultado.moneda} listo={metricasListas} conDiferencia={false} />
             </span>
           )}
         </div>
@@ -1002,8 +1043,8 @@ function PersonalDashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
         <KpiCell
           label="Capital aportado"
-          value={fmt(netDeposited)}
-          clave="dashboard:aportado" num={netDeposited} format={fmt} moneda="USD" listo={metricasListas} oculto={hidden}
+          value={fmtDirect(resultado.aportado)}
+          clave="dashboard:aportado" num={resultado.aportado} format={fmtDirect} moneda={resultado.moneda} listo={metricasListas} oculto={hidden}
           sub="depósitos netos"
           infoAlign="left"
           info={
@@ -1014,6 +1055,7 @@ function PersonalDashboard() {
               <p className="font-medium text-ink-0">Cómo se calcula</p>
               <p className="text-ink-3 font-mono text-[11px]">= depósitos − retiros (+ saldo inicial si ya tenías plata al empezar)</p>
               <p className="text-ink-3">Si retirás y volvés a depositar lo mismo, no se duplica: solo cuenta el neto que está expuesto al mercado.</p>
+              <p className="text-ink-3">En pesos, cada depósito cuenta los pesos que pusiste (los que entraron en dólares, al dólar de ese mes), no lo que valen al dólar de hoy.</p>
             </>
           }
         />
@@ -1036,10 +1078,10 @@ function PersonalDashboard() {
         />
         <KpiCell
           label="P&L no realizado"
-          value={fmtSigned(totalPnl)}
-          clave="dashboard:no-realizado" num={totalPnl} format={fmtSigned} moneda="USD" listo={metricasListas} oculto={hidden}
-          tone={totalPnl >= 0 ? 'pos' : 'neg'}
-          sub={`${pctSigned(totalPct)} sobre costo`}
+          value={fmtSignedDirect(noRealizado.monto)}
+          clave="dashboard:no-realizado" num={noRealizado.monto} format={fmtSignedDirect} moneda={currency} listo={metricasListas} oculto={hidden}
+          tone={noRealizado.monto >= 0 ? 'pos' : 'neg'}
+          sub={`${pctSigned(noRealizado.pct)} sobre costo`}
           info={
             <>
               <p className="font-medium text-ink-0">Qué es</p>
@@ -1051,6 +1093,25 @@ function PersonalDashboard() {
             </>
           }
         />
+        {showCambio && (
+          <KpiCell
+            label="Diferencia de cambio"
+            value={fmtSignedDirect(cambio)}
+            clave="dashboard:diferencia-de-cambio" num={cambio} format={fmtSignedDirect} moneda="ARS" listo={metricasListas} oculto={hidden}
+            tone={cambio >= 0 ? 'pos' : 'neg'}
+            sub={cambio >= 0 ? 'lo que subió el dólar' : 'lo que bajó el dólar'}
+            info={
+              <>
+                <p className="font-medium text-ink-0">Qué es</p>
+                <p>Cuánto cambió en pesos la plata que entró o está en dólares, entre que entró y hoy. Sólo aparece en pesos: en dólares es la misma plata.</p>
+                <div className="border-t border-line/60 my-1.5" />
+                <p className="font-medium text-ink-0">Cómo se calcula</p>
+                <p className="text-ink-3 tabular text-[11px]">= ganancia total − (realizado + no realizado)</p>
+                <p className="text-ink-3">Lo aportado cuenta los pesos que pusiste (o tus dólares al dólar de ese mes); el no realizado va al dólar de hoy. La diferencia entre los dos dólares es esto.</p>
+              </>
+            }
+          />
+        )}
         {showAccountingGap && (
           <KpiCell
             label={gapIsOutflow ? 'Diferencia sin explicar' : 'Dividendos e intereses'}
@@ -1237,12 +1298,12 @@ function PersonalDashboard() {
               Rendimiento ajustado por flujos de capital — aportes y retiros se neutralizan para reflejar performance pura.
             </p>
             {periodChange && evoSeries.length >= 2 ? (
-              <span className={`inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium tabular rounded-full px-2.5 py-1 ${periodChange.usd >= 0 ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
+              <span className={`inline-flex items-center gap-1.5 mt-3 text-[12.5px] font-medium tabular rounded-full px-2.5 py-1 ${chipRango.positivo ? 'bg-rendi-pos/10 text-rendi-pos' : 'bg-rendi-neg/10 text-rendi-neg'}`}>
                 {/* Mismo formato que "Hoy" y "Este mes": sigue la moneda elegida
                     y se tapa con "ocultar saldos". Antes decía "USD" siempre y
                     quedaba a la vista con los saldos ocultos. */}
-                <PrivacyMask>{fmtSigned(periodChange.usd)}</PrivacyMask>
-                <span className="opacity-80">· {pctSigned(periodChange.pct)}</span>
+                <PrivacyMask>{chipRango.texto}</PrivacyMask>
+                <span className="opacity-80">· {pctSigned(chipRango.pct)}</span>
                 {/* El rótulo es el período MEDIDO: 1D dice cuántos días (como la
                     card "Hoy"); si no hubo un cierre pegado al arranque del rango,
                     dice desde qué fecha se midió. */}
@@ -1297,7 +1358,7 @@ function PersonalDashboard() {
           (() => {
             // Color condicional: verde solo si el portfolio gana, rojo si pierde.
             // Audit visual: verde es semántico, no decorativo.
-            const isProfit = totalReturnUsd >= 0
+            const isProfit = resultado.ganancia >= 0
             const lineColor = trendStroke(isProfit)
             const fillId = isProfit ? 'grad-value-pos' : 'grad-value-neg'
             const ultimo = evoSeriesDisplay.length - 1
@@ -1400,7 +1461,7 @@ function PersonalDashboard() {
             <span className="inline-flex items-center gap-1.5">
               <span
                 className="inline-block w-3 h-0.5 rounded-full"
-                style={{ background: trendStroke(totalReturnUsd >= 0) }}
+                style={{ background: trendStroke(resultado.ganancia >= 0) }}
               />
               Valor de la cartera
             </span>

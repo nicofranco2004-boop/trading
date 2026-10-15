@@ -36,11 +36,12 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { computeBrokerValue, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
+import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { fechaCorta } from '../utils/lineaDelBono'
 import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
+import { capitalAportado } from '../utils/capitalAportado'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -122,9 +123,12 @@ export default function HomeMobile() {
     const totalValue = bt.reduce((s, b) => s + b.value, 0)
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost
-    const pct = totalCost > 0 ? totalPnl / totalCost : 0
+    // El "% histórico" del título, en la moneda en que se mira: en pesos, sobre
+    // los pesos que se pagaron (el mismo número que "P&L no realizado" del
+    // Dashboard; ver `noRealizadoEnVista`).
+    const { pct } = noRealizadoEnVista({ positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency })
     return { totalValue, totalCost, totalPnl, pct }
-  }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto])
+  }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, currency])
 
   // Total valuado SIEMPRE al MEP, SOLO para comparar contra snapshots (P&L Día /
   // P&L Mes / sparkline). Los snapshots viven en MEP por diseño; si el riel del
@@ -142,14 +146,15 @@ export default function HomeMobile() {
 
   // Capital aportado = baseline + flujos. Misma fórmula que compute_net_deposited
   // del backend → comparable 1:1 con snapshot.net_deposited (ambos en USD).
-  const aportado = useMemo(() => {
-    const sorted = monthly
-      .filter(m => m.broker === 'global')
-      .sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month))
-    const baseline = sorted[0]?.capital_inicio || 0
-    const flows = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
-    return baseline + flows
-  }, [monthly])
+  // Es `capitalAportado` (utils/capitalAportado.js), la misma cuenta del
+  // Dashboard: `usd` va a las comparaciones con las fotos; `ars` es lo que se
+  // MUESTRA en pesos — a los pesos que se pusieron, no los dólares × el dólar de
+  // hoy (un depósito de $10 M de hace un año se leía $10,86 M).
+  const aportes = useMemo(
+    () => capitalAportado({ monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion }),
+    [monthly, brokers, bench, tcValuacion],
+  )
+  const aportado = aportes.usd
 
   // Serie 30d desde snapshots + punto LIVE de hoy — base para sparkline + delta.
   // buildPortfolioValueSeries (mismo helper que la curva del Dashboard):
@@ -481,7 +486,7 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="Capital aportado"
-            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcValuacion : kpis.aportado)}` : '—')}
+            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? aportes.ars : kpis.aportado)}` : '—')}
             sub={`${currency} neto`}
             topBorder
           />

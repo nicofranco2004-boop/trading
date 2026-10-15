@@ -90,6 +90,7 @@ import {
   benchPedido,
   BENCH_EN_CERO,
 } from '../utils/insightsModel'
+import { resultadoTotal } from '../utils/capitalAportado'
 import {
   simulateSp500,
   simulateDolarCash,
@@ -2147,9 +2148,18 @@ function InsightsDesktop({ _embeddedTab }) {
   // todos los meses y el mercado daba $0. Sin precios completos, null: la
   // tarjeta y los hallazgos growth_from_* no se publican. Ver
   // `atribucionDelCrecimiento` (insightsModel.js).
+  // En la moneda en que se mira: en pesos, lo aportado a los pesos que se
+  // pusieron y el valor de hoy en pesos (`resultadoTotal`, la misma cuenta que el
+  // "Capital aportado" y la "Ganancia total" del Dashboard). Los montos de
+  // `discipline` quedan en esa moneda: la tarjeta los escribe con `amtEnVista`.
+  const resultado = resultadoTotal({
+    monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion,
+    valorHoyUsd: totalPortfolio, moneda: currency,
+  })
   const discipline = atribucionDelCrecimiento({
     globalMonthly,
-    valorHoy: totalPortfolio,
+    valorHoy: resultado.valor,
+    aportado: resultado.aportado,
     valorHoyMedido: preciosCompletos,
   })
 
@@ -2850,13 +2860,19 @@ function InsightsDesktop({ _embeddedTab }) {
   // imputar a un FX histórico exacto), así que usamos el blue actual.
   function amt(usdValue, opts = {}) {
     if (usdValue == null || isNaN(usdValue)) return '—'
+    return amtEnVista(currency === 'ARS' ? usdValue * tcValuacion : usdValue, opts)
+  }
+  // Un monto que YA está en la moneda en que se mira (los de `resultadoTotal`,
+  // que lleva lo aportado a los pesos que se pusieron): no se vuelve a
+  // multiplicar por el dólar de hoy.
+  function amtEnVista(value, opts = {}) {
+    if (value == null || isNaN(value)) return '—'
     // El signo menos de verdad, como pctVar/pctTxt y el texto del diagnóstico
     // ("−USD 240"): la lista de atribución decía "-USD 240,00" con guion.
-    const sign = opts.signed ? (usdValue >= 0 ? '+' : '−') : ''
-    const abs = Math.abs(usdValue)
+    const sign = opts.signed ? (value >= 0 ? '+' : '−') : ''
+    const abs = Math.abs(value)
     if (currency === 'ARS') {
-      const arsValue = abs * tcValuacion
-      return `${sign}ARS ${arsValue.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+      return `${sign}ARS ${abs.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
     }
     return `${sign}USD ${abs.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   }
@@ -3805,7 +3821,7 @@ function InsightsDesktop({ _embeddedTab }) {
           topic="insights.attribution"
           subtitle="Qué activos manejaron tu P&L"
         >
-          <PerformanceAttribution discipline={discipline} amt={amt} />
+          <PerformanceAttribution discipline={discipline} amt={amtEnVista} />
         </AskAIAbout>
       )}
 
