@@ -222,11 +222,17 @@ export default function Terminos() {
             <Link to="/planes" className="text-data-violet hover:underline">/planes</Link>.
           </p>
           <p>
-            <strong className="text-ink-0">Precio en pesos, anclado en dólares.</strong> Cobramos
-            en pesos argentinos (ARS). El precio de referencia está expresado en dólares
-            estadounidenses (USD) y se convierte a ARS al tipo de cambio del día. Por eso el
-            ancla es el precio en USD y el monto exacto en ARS puede variar de un día a otro.
-            Siempre vas a ver el monto final en ARS antes de confirmar el pago.
+            <strong className="text-ink-0">Precio en pesos, fijo.</strong> Cobramos en pesos
+            argentinos (ARS) y el precio es un monto fijo en pesos: no se recalcula con el tipo
+            de cambio ni cambia de un día a otro. Si en algún lado ves un equivalente en dólares,
+            es informativo. Siempre vas a ver el monto final en ARS antes de confirmar el pago.
+          </p>
+          <p>
+            <strong className="text-ink-0">Cambios de precio.</strong> Podemos ajustar los precios
+            de los planes. Cuando lo hacemos te avisamos por mail antes de que apliquen, y el
+            precio nuevo rige desde tu siguiente renovación — nunca retroactivamente sobre un
+            período que ya pagaste. Si no estás de acuerdo, podés cancelar antes de esa fecha y
+            seguís usando Rendi hasta el final del período que tenés pago.
           </p>
           <p>
             <strong className="text-ink-0">Renovación automática.</strong> Las suscripciones
