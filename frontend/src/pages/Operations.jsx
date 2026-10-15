@@ -387,7 +387,7 @@ export default function Operations() {
   // solo para el TONO (color), que no debe depender del FX.
   const totalPnlDisp = useMemo(
     () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
-    [ops, histMoney.currency, histMoney.fxKey],
+    [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Win rate: UNA definición, la del backend (utils/tradeStats). Acá se contaban
   // dividendos e intereses como ganadores y se dividía por ops.length (compras
@@ -401,7 +401,7 @@ export default function Operations() {
     () => mejorTrade(ops, o => histMoney.convertedValue(o.pnl_usd, {
       stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
     })),
-    [ops, histMoney.currency, histMoney.fxKey],
+    [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
   const periodOptions = useMemo(() => buildPeriodOptions(ops), [ops])
@@ -1509,11 +1509,11 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     const embedded = sumarEnVista(
       scoped.filter(m => m.type !== 'FEE' && m.type !== 'IMPUESTO'), m => m.fees_usd || 0)
     return loose + embedded
-  }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey])
+  }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
 
   const kpis = useMemo(
     () => computeMovementKpis(filtered, filterType, { sumar: sumarEnVista, fmt: fmtVista }, commTotal),
-    [filtered, filterType, commTotal, histMoney.currency, histMoney.fxKey],
+    [filtered, filterType, commTotal, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Los números de arriba dependen del filtro: cada combinación es OTRO número
   // para <KpiCell> (si no, cambiar de filtro se leería como un cambio de la cartera).

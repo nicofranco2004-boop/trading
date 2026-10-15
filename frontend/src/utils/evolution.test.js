@@ -331,7 +331,7 @@ describe('computeReturnDelta — variación mensual (sinceDate)', () => {
 // ─── Phase C audit fix C1: convertSeriesToArs + fxToUsdBlue propagation ─────
 // Verifica:
 //   • buildPortfolioValueSeries propaga fx_to_usd_blue del snapshot al output
-//   • convertSeriesToArs aplica el FX correcto por punto (stamped > lookup)
+//   • convertSeriesToArs aplica el FX correcto por punto (el de la fecha > el blue grabado)
 //   • _fxUsed se expone en cada punto para que el chart pueda mostrarlo
 
 describe("buildPortfolioValueSeries propaga fx_to_usd_blue (Phase C)", () => {
@@ -372,24 +372,25 @@ describe("convertSeriesToArs (Phase C audit fix C1)", () => {
     return m[date] || null
   }
 
-  it("usa fxToUsdBlue stampeado cuando está presente (prioridad 1)", () => {
+  it("usa el dólar elegido de la fecha aunque la foto tenga el blue grabado (prioridad 1)", () => {
+    // Desde 2026-10-15: el grabado es el BLUE. Si ganara, en el mismo gráfico
+    // convivirían puntos al blue y al MEP y la línea saltaría entre dos días.
     const series = [
       { date: "2025-06-01", valueUsd: 1000, netDeposited: 800, fxToUsdBlue: 1234 },
     ]
     const out = convertSeriesToArs(series, getFx)
-    // 1000 * 1234 = 1234000 (stamped gana sobre el lookup de 1200)
-    expect(out[0].valueUsd).toBe(1234000)
-    expect(out[0].netDeposited).toBe(800 * 1234)
-    expect(out[0]._fxUsed).toBe(1234)
+    expect(out[0].valueUsd).toBe(1000 * 1200)
+    expect(out[0].netDeposited).toBe(800 * 1200)
+    expect(out[0]._fxUsed).toBe(1200)
   })
 
-  it("hace fallback a getFxForDate si no hay stamped (prioridad 2)", () => {
+  it("sin dólar de la fecha (la serie no cargó) usa el grabado en la foto (prioridad 2)", () => {
     const series = [
-      { date: "2025-06-02", valueUsd: 500, netDeposited: 400, fxToUsdBlue: null },
+      { date: "2030-01-02", valueUsd: 500, netDeposited: 400, fxToUsdBlue: 1234 },
     ]
     const out = convertSeriesToArs(series, getFx)
-    expect(out[0].valueUsd).toBe(500 * 1210)
-    expect(out[0]._fxUsed).toBe(1210)
+    expect(out[0].valueUsd).toBe(500 * 1234)
+    expect(out[0]._fxUsed).toBe(1234)
   })
 
   it("último fallback es 1 (no convierte) cuando getFx devuelve null", () => {

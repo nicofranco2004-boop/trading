@@ -23,7 +23,7 @@ import { indexarSerie, tcDeFechaDetalle } from './tcHistorico'
 import { dolarMensualDe } from './capitalAportado'
 import { dineroHistorico } from '../hooks/useHistoricalMoney'
 import { computeMovementKpis } from '../pages/Operations.jsx'
-import { capitalAportado } from './capitalAportado'
+import { capitalAportado, brokersDelFiltro, aportesDelMesEnPesos } from './capitalAportado'
 import { crearPesosDelPeriodo } from './periodoEnPesos'
 import { serieDelLibroEnVista } from './evolution'
 import { pickFinancialRate } from '../contexts/CurrencyContext'
@@ -132,11 +132,74 @@ describe('Reportes — cada período a los pesos de su momento', () => {
     expect(v.retiros).toBeCloseTo(1_000_000 + 500 * TC_MENSUAL['2026-06'], 4)
   })
 
-  it('"Capital aportado" del año = el del Dashboard (la misma tabla)', () => {
+  it('las tarjetas de mes que manda el servidor: depósitos y retiros en los pesos que fueron', () => {
+    const porMes = Object.fromEntries(mixta.timeline.reports.map(p => [p.period_key, pesos.enVista(p)]))
+    expect(porMes['2025-10'].depositos).toBeCloseTo(10_000_000, 4)
+    expect(porMes['2026-02'].retiros).toBeCloseTo(1_000_000, 4)
+    expect(porMes['2026-03'].depositos).toBeCloseTo(2000 * TC_MENSUAL['2026-03'], 6)
+    expect(porMes['2026-06'].retiros).toBeCloseTo(500 * TC_MENSUAL['2026-06'], 6)
+  })
+
+  it('"Capital aportado" de la pestaña Año, con lo que manda el servidor = el del Dashboard', () => {
+    // `cum_deposited` es lo que el servidor manda en el reporte del año (sin el
+    // saldo inicial). La prueba anterior le pasaba el número del Dashboard en vez
+    // de este, y por eso no veía el caso de abajo.
+    const r = mixta.reporte_anio
     const usd = capitalAportado({ monthly: mixta.monthly, brokers: mixta.brokers, dolarMes: TC_MENSUAL, tcHoy: TC_HOY })
-    expect(pesos.aportadoHasta('2026-10-15', usd.usd)).toBeCloseTo(usd.ars, 6)
+    expect(pesos.aportadoHasta(r.period_end, r.portfolio_snapshot.cum_deposited)).toBeCloseTo(usd.ars, 6)
     // Y si los dólares no coinciden con los del servidor, no inventa pesos.
-    expect(pesos.aportadoHasta('2026-10-15', usd.usd + 500)).toBe(null)
+    expect(pesos.aportadoHasta(r.period_end, r.portfolio_snapshot.cum_deposited + 500)).toBe(null)
+  })
+
+  it('una cuenta que arrancó con saldo: "Capital aportado" del año igual sale en pesos', () => {
+    // El servidor no cuenta el saldo inicial en `cum_deposited`; la tabla sí lo
+    // tiene. Antes nunca coincidían y la tarjeta quedaba en dólares.
+    const monthly = [
+      { broker: 'global', year: 2026, month: 1, capital_inicio: 10_000, deposits: 1000, withdrawals: 0 },
+      { broker: 'Balanz', year: 2026, month: 1, capital_inicio: 10_000, deposits: 1000, withdrawals: 0,
+        manual_deposits: 1000, manual_deposits_native: 1_400_000 },
+    ]
+    const p = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: TC_HOY, tcEnFecha: tcEn, dolarMes: TC_MENSUAL,
+      monthly, brokers: mixta.brokers })
+    expect(p.aportadoHasta('2026-12-31', 1000)).toBeCloseTo(1_400_000, 6)
+  })
+
+  it('filtrado por un broker con su parte en dólares ("IOL" + "IOL · USD"): la misma suma que el servidor', () => {
+    // El servidor (`brokers_del_filtro` → `broker_pair`) suma el par por
+    // parent_broker_id. La pantalla tiene que mirar las mismas filas.
+    const brokers = [
+      { id: 1, name: 'IOL', currency: 'ARS', parent_broker_id: null },
+      { id: 2, name: 'IOL · USD', currency: 'USDT', parent_broker_id: 1 },
+      { id: 3, name: 'IBKR', currency: 'USD', parent_broker_id: null },
+    ]
+    expect(brokersDelFiltro(brokers, 'IOL')).toEqual(['IOL', 'IOL · USD'])
+    expect(brokersDelFiltro(brokers, 'IOL · USD')).toEqual(['IOL', 'IOL · USD'])
+    expect(brokersDelFiltro(brokers, 'IBKR')).toEqual(['IBKR'])
+    const monthly = [
+      { broker: 'global', year: 2026, month: 3, deposits: 4000, withdrawals: 0 },
+      { broker: 'IOL', year: 2026, month: 3, deposits: 2000, withdrawals: 0,
+        manual_deposits: 2000, manual_deposits_native: 2_800_000 },
+      { broker: 'IOL · USD', year: 2026, month: 3, deposits: 1000, withdrawals: 0 },
+      { broker: 'IBKR', year: 2026, month: 3, deposits: 1000, withdrawals: 0 },
+    ]
+    const p = crearPesosDelPeriodo({ moneda: 'ARS', tcHoy: TC_HOY, tcEnFecha: tcEn, dolarMes: TC_MENSUAL,
+      monthly, brokers, broker: 'IOL' })
+    // Lo que el servidor manda para "IOL": US$3.000 (IOL + IOL · USD).
+    const v = p.enVista(mes(2026, 3, { deposits: 3000, withdrawals: 0 }))
+    expect(v.depositos).toBeCloseTo(2_800_000 + 1000 * TC_MENSUAL['2026-03'], 6)
+  })
+
+  it('"Aportaste" de un hallazgo dice lo mismo que "Depósitos" aunque en el mes haya retiros', () => {
+    const r = filaGlobal(2025, 10)
+    const v = pesos.enVista(mes(2025, 10, { deposits: r.deposits, withdrawals: 3000 }))
+    expect(r.deposits * v.fxDepositos).toBeCloseTo(v.depositos, 6)
+  })
+
+  it('el resumen mensual de un broker en pesos: los pesos que entraron, sin su par', () => {
+    const t = aportesDelMesEnPesos({ monthly: mixta.monthly, brokers: mixta.brokers, dolarMes: TC_MENSUAL,
+      tcHoy: TC_HOY, broker: 'Balanz', soloEseBroker: true })
+    expect(t.get('2025-10').depArs).toBeCloseTo(10_000_000, 4)
+    expect(t.get('2026-02').retArs).toBeCloseTo(1_000_000, 4)
   })
 
   it('valor de inicio y de cierre, cada uno al dólar de su día', () => {

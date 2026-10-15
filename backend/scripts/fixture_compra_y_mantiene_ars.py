@@ -151,6 +151,11 @@ def main_():
         "monthly": ok(http.get("/api/monthly", headers=hm)),
         "brokers": ok(http.get("/api/brokers", headers=hm)),
         "movements": ok(http.get("/api/movements", headers=hm)),
+        # Lo que recibe Reportes (pestaña Mes y pestaña Año), en pesos.
+        "timeline": ok(http.get("/api/reports/timeline?broker=global&months=14"
+                                "&modo=certero&moneda=ars", headers=hm)),
+        "reporte_anio": ok(http.get("/api/reports/period/year/2026?broker=global"
+                                    "&modo=certero&moneda=ars", headers=hm)),
     }
     os.makedirs(os.path.dirname(SALIDA), exist_ok=True)
     with open(SALIDA, "w") as f:

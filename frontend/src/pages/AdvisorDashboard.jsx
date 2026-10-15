@@ -533,9 +533,17 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
   const delta = useMemo(() => {
     if (visible.length < 2 || !baseline || !period) return null
     const b = visible[visible.length - 1]
+    // En pesos, los aportes del período al dólar con que fueron entrando: el
+    // mismo que la línea punteada (cuánto subió en pesos ÷ cuánto en dólares en
+    // la ventana). Lo del mercado es resultado hasta hoy: al dólar de hoy.
+    const dNd = (b.net_deposited_usd || 0) - (baseline.net_deposited_usd || 0)
+    const implicito = Math.abs(dNd) >= 1 ? (b.aportado - baseline.aportado) / dNd : null
+    const fxAportes = fmt.isArs && implicito > 0 ? implicito / fmt.tcValuacion : 1
     return {
       market: period.mercado_usd,
-      flows: period.aportes_usd,
+      // En dólares de HOY equivalentes, para que `money()` (que multiplica por el
+      // dólar de hoy) dé los pesos con que entraron.
+      flows: period.aportes_usd == null ? null : period.aportes_usd * fxAportes,
       clients: b.clients - baseline.clients,
       measured: period.clientes_medidos ?? 0,
       total: period.clientes_total ?? 0,
@@ -543,7 +551,7 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
       noData: period.clientes_sin_medicion ?? 0,
       gap: period.clientes_con_hueco ?? 0,
     }
-  }, [visible, baseline, period])
+  }, [visible, baseline, period, fmt.isArs, fmt.tcValuacion])
 
   // U5 (audit): si la historia existe pero es más vieja que el rango default
   // (3M), auto-ampliamos UNA vez al rango más chico que muestre la curva —

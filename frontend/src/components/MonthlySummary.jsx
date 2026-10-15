@@ -11,6 +11,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { computeBrokerValue, priceSymbol, isArUsdBroker, buildPriceSymbols, coberturaDePrecios, COBERTURA_MINIMA } from '../utils/valuation'
 import { guardarPnlNoRealizado } from '../utils/guardarValuacion'
 import { lookupHistoricalDolar } from '../utils/fx'
+import { aportesDelMesEnPesos } from '../utils/capitalAportado'
 import { useDolarMensual } from '../hooks/useFxHistory'
 import { specFromMonth } from '../utils/shareCard'
 import { track } from '../utils/track'
@@ -185,6 +186,23 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     if (!tabIsARS) return v
     const rate = lookupHistoricalDolar(dolarMes, year, month, tcValuacion)
     return v * rate
+  }
+
+  // Depósitos y retiros de un broker en pesos: los PESOS que entraron y salieron
+  // (la regla de "Capital aportado", utils/capitalAportado.js: los guardados a
+  // mano o en el import; si no, al dólar de su mes). Sin esto se mostraban como
+  // dólares × el dólar del cierre del mes, y no coincidían con Reportes.
+  const aportesMes = tabIsARS
+    ? aportesDelMesEnPesos({ monthly: entries, brokers, dolarMes, tcHoy: tcValuacion, broker: tab, soloEseBroker: true })
+    : null
+  const claveDe = (m) => `${m.year}-${String(m.month).padStart(2, '0')}`
+  function depAt(m) {
+    const a = aportesMes?.get(claveDe(m))
+    return a ? a.depArs : valueAt(m.deposits || 0, m.year, m.month)
+  }
+  function retAt(m) {
+    const a = aportesMes?.get(claveDe(m))
+    return a ? a.retArs : valueAt(m.withdrawals || 0, m.year, m.month)
   }
 
   // Format a stored value (USD-eq for ARS tabs, USD for others), using the
@@ -403,8 +421,8 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
     const retPct = m.capital_inicio > 0 ? snap(rawRet / m.capital_inicio) : 0
     const conv = (v) => valueAt(v, m.year, m.month) || 0
     return {
-      deposits: acc.deposits + conv(m.deposits),
-      withdrawals: acc.withdrawals + conv(m.withdrawals),
+      deposits: acc.deposits + (depAt(m) || 0),
+      withdrawals: acc.withdrawals + (retAt(m) || 0),
       pnl_realized: acc.pnl_realized + conv(m.pnl_realized),
       pnl_unrealized: acc.pnl_unrealized + conv(isCurrentRow ? (m.pnl_unrealized || 0) : 0),
       ret: acc.ret + conv(rawRet),
@@ -602,7 +620,7 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       <>
                         <td className={`${tdClass} font-bold tabular ${colorClass(ret)}`}>{fmtMoney(ret, m.year, m.month)}</td>
                         <td className={`${tdClass} font-bold tabular ${colorClass(retPct)}`}>{pctSigned(retPct)}</td>
-                        <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoney(net, m.year, m.month)}</td>
+                        <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoneyDirect(depAt(m) - retAt(m))}</td>
                         <td className={tdClass}>
                           {isCurrent ? (
                             <span className="inline-flex items-center gap-1 text-[12px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded-sm bg-bg-3 text-ink-1 border border-line">
@@ -617,9 +635,9 @@ export default function MonthlySummary({ refreshKey = 0 } = {}) {
                       </>
                     ) : (
                       <>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.deposits, m.year, m.month)}</td>
-                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.withdrawals, m.year, m.month)}</td>
-                        <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoney(net, m.year, m.month)}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoneyDirect(depAt(m))}</td>
+                        <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoneyDirect(retAt(m))}</td>
+                        <td className={`${tdClass} tabular ${colorClass(net)}`}>{fmtMoneyDirect(depAt(m) - retAt(m))}</td>
                         <td className={`${tdClass} tabular ${colorClass(m.pnl_realized)}`}>{fmtMoney(m.pnl_realized, m.year, m.month)}</td>
                         <td className={`${tdClass} tabular ${isCurrent ? colorClass(m.pnl_unrealized) : ''}`}>{isCurrent ? fmtMoney(m.pnl_unrealized, m.year, m.month) : fmtMoney(0, m.year, m.month)}</td>
                         <td className={`${tdClass} text-ink-2 tabular`}>{fmtMoney(m.capital_inicio, m.year, m.month)}</td>

@@ -115,7 +115,9 @@ export function dineroHistorico({ currency, tcValuacion, getRateForDate }) {
     return total
   }
 
-  return { currency, fmtMoneyAt, fmtMoneyCompactAt, convertedValue, resolveFx, sumConvertedAt }
+  // `tcValuacion` viaja para memoizar: es el respaldo de las filas sin fecha o sin
+  // serie, así que un cambio del dólar de hoy cambia esos totales.
+  return { currency, tcValuacion, fmtMoneyAt, fmtMoneyCompactAt, convertedValue, resolveFx, sumConvertedAt }
 }
 
 export function useHistoricalMoney() {

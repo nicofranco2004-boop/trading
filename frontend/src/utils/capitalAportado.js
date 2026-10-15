@@ -93,14 +93,59 @@ export function dolarMensualDe(filas) {
   return { ...blue, ...mep }
 }
 
+/**
+ * brokersDelFiltro — los brokers que mira un reporte filtrado por `broker`: el
+ * broker y su PAR padre↔"· USD", por `parent_broker_id` (no por el nombre). Es
+ * la MISMA regla que el servidor (`broker_pair` en importing/persister.py, que
+ * usa `brokers_del_filtro` de Reportes): el padre suma sus "· USD"; un "· USD"
+ * suma su padre. Sin esto, Reportes de "IOL" sumaba en el servidor también
+ * "IOL · USD" y la pantalla no, y los pesos no cerraban.
+ */
+export function brokersDelFiltro(brokers, broker) {
+  if (broker === 'global') return ['global']
+  const lista = brokers || []
+  const b = lista.find(x => x.name === broker)
+  if (!b) return [broker]
+  const nombres = new Set([broker])
+  if (b.parent_broker_id) {
+    const padre = lista.find(x => x.id === b.parent_broker_id)
+    if (padre) nombres.add(padre.name)
+  } else {
+    for (const x of lista) if (x.parent_broker_id === b.id) nombres.add(x.name)
+  }
+  return [...nombres].sort()
+}
+
+// Las filas de varios brokers, sumadas por mes, con la forma de una fila 'global'.
+function sumarPorMes(filas) {
+  const porMes = new Map()
+  for (const r of filas) {
+    const k = claveMes(r.year, r.month)
+    const a = porMes.get(k) || { year: r.year, month: r.month, deposits: 0, withdrawals: 0,
+      capital_inicio: 0, capital_inicio_costo: 0 }
+    a.deposits += n(r.deposits)
+    a.withdrawals += n(r.withdrawals)
+    a.capital_inicio += n(r.capital_inicio)
+    a.capital_inicio_costo += n(r.capital_inicio_costo ?? r.capital_inicio)
+    porMes.set(k, a)
+  }
+  return ordenar([...porMes.values()])
+}
+
 // La tabla de la que salen las dos preguntas ("¿cuánto aportaste?" y "¿cuánto
 // tenías aportado tal día?"): el saldo inicial y, mes a mes, lo aportado en
 // dólares y en pesos, con su acumulado.
 //
 // `broker`: 'global' (la cartera entera, lo de siempre) o el nombre de un broker
-// (Reportes filtrado por broker): sus filas, y sus pesos guardados.
-function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy, broker = 'global' }) {
-  const globales = ordenar((monthly || []).filter(m => m.broker === broker))
+// (Reportes filtrado por broker): las filas de su PAR (`brokersDelFiltro`)
+// sumadas mes a mes, y sus pesos guardados. `soloEseBroker`: sin el par (la
+// pestaña de un broker del resumen mensual muestra sólo su fila).
+function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy, broker = 'global', soloEseBroker = false }) {
+  const delFiltro = broker === 'global' ? null
+    : new Set(soloEseBroker ? [broker] : brokersDelFiltro(brokers, broker))
+  const globales = delFiltro
+    ? sumarPorMes((monthly || []).filter(m => delFiltro.has(m.broker)))
+    : ordenar((monthly || []).filter(m => m.broker === 'global'))
   if (globales.length === 0) return null
 
   const respaldo = tcHoy > 0 ? tcHoy : 0
@@ -116,7 +161,7 @@ function tablaDeAportes({ monthly, brokers, dolarMes, tcHoy, broker = 'global' }
   const filasDelMes = new Map()
   for (const m of monthly || []) {
     if (m.broker === 'global') continue
-    if (broker !== 'global' && m.broker !== broker) continue
+    if (delFiltro && !delFiltro.has(m.broker)) continue
     const k = claveMes(m.year, m.month)
     filasDelMes.set(k, [...(filasDelMes.get(k) || []), m])
   }
@@ -197,7 +242,8 @@ export function capitalAportado(args = {}) {
  * Reportes, que muestran "Depósitos" y "Retiros" de un período: así suman lo
  * mismo que el "Capital aportado" del Dashboard.
  *
- * `args.broker` (opcional): 'global' o un broker, como el filtro de Reportes.
+ * `args.broker` (opcional): 'global' o un broker, como el filtro de Reportes
+ * (con su par); `args.soloEseBroker`: sólo esa fila, sin el par.
  *
  * @returns {Map<string, {depUsd, retUsd, depArs, retArs, fx}>} por 'AAAA-MM'
  *          (sólo los meses que tienen fila de ese broker)
@@ -216,9 +262,12 @@ export function aportesDelMesEnPesos(args = {}) {
  * las dos monedas, para `broker` ('global' o uno). Es el "Capital aportado" de
  * Reportes: el mismo acumulado que el Dashboard, cortado en otra fecha.
  *
+ * `sinSaldoInicial`: sin el saldo con que arrancó la historia — lo que el
+ * servidor llama `cum_deposited` en Reportes (depósitos − retiros, sin baseline).
+ *
  * @returns {{usd:number, ars:number} | null} null sin filas
  */
-export function aportadoAcumuladoAl({ hastaIso, ...args } = {}) {
+export function aportadoAcumuladoAl({ hastaIso, sinSaldoInicial = false, ...args } = {}) {
   const t = tablaDeAportes(args)
   if (!t) return null
   const k = String(hastaIso || '9999-12').slice(0, 7)
@@ -227,6 +276,7 @@ export function aportadoAcumuladoAl({ hastaIso, ...args } = {}) {
     if (m.k > k) break
     out = { usd: m.cumUsd, ars: m.cumArs }
   }
+  if (sinSaldoInicial) out = { usd: out.usd - t.baselineUsd, ars: out.ars - t.baselineArs }
   return out
 }
 

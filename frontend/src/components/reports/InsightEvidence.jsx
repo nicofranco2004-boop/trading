@@ -131,12 +131,15 @@ function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd }) {
   )
 }
 
-function CashDragEvidence({ ev, fmtUsd }) {
+// El efectivo de esta evidencia es el de HOY (el hallazgo se calcula con las
+// posiciones actuales y se pega a cada período, reporting/detectors.py): va al
+// dólar de hoy, no al del período de la tarjeta.
+function CashDragEvidence({ ev, fmtHoy }) {
   return (
     <div className="space-y-1.5 text-[11px]">
       <div className="flex items-baseline justify-between">
         <span className="text-ink-2">En cash</span>
-        <span className="font-mono tabular text-ink-1">{fmtUsd(ev.cash_usd)}</span>
+        <span className="font-mono tabular text-ink-1">{fmtHoy(ev.cash_usd)}</span>
       </div>
       <div className="h-1.5 rounded-full bg-bg-3 overflow-hidden">
         <div className="h-full bg-ink-2/50" style={{ width: `${Math.min(100, ev.cash_pct)}%` }} aria-hidden="true" />
@@ -295,7 +298,10 @@ export default function InsightEvidence({ insight }) {
   const conFx = (fx) => (v) => (v == null || !Number.isFinite(v) ? '—'
     : fmtConvertedRaw(money.isArs ? v * fx : v, money.currency))
   const fmtUsd = periodo ? conFx(periodo.fxCierre) : (v) => money.fmtMoney(v, { signed: false })
-  const fmtFlujo = periodo ? conFx(periodo.fxFlujos) : fmtUsd
+  // Los depósitos, con el dólar de los depósitos del período: así "Aportaste"
+  // dice lo mismo que "Depósitos" de la misma tarjeta.
+  const fmtFlujo = periodo ? conFx(periodo.fxDepositos) : fmtUsd
+  const fmtHoy = (v) => money.fmtMoney(v, { signed: false })
   if (!insight.evidence || Object.keys(insight.evidence).length === 0) return null
   if (!Renderer) {
     // Fallback: JSON crudo (debug-only — debería no ocurrir en prod)
@@ -305,5 +311,5 @@ export default function InsightEvidence({ insight }) {
       </pre>
     )
   }
-  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} />
+  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} fmtHoy={fmtHoy} />
 }

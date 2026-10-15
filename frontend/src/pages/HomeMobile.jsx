@@ -42,7 +42,7 @@ import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { fechaCorta } from '../utils/lineaDelBono'
 import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { capitalAportado } from '../utils/capitalAportado'
-import { useDolarMensual } from '../hooks/useFxHistory'
+import { useDolarMensual, useFxHistory } from '../hooks/useFxHistory'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -140,6 +140,8 @@ export default function HomeMobile() {
   // (hero = totals); las comparaciones van ancladas al mismo sabor que la serie.
   // Con riel MEP (default) tcMep === tcCedear → mismo número, cero cambio.
   const tcMep = pickFinancialRate(dolar, 'mep') || tcValuacion
+  // El dólar elegido de cada fecha (MEP; utils/tcHistorico.js) para las puntas viejas.
+  const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcValuacion)
   const totalsMep = useMemo(() => {
     if (tcMep === tcCedear) return null  // riel MEP: reusar totals (evita doble cálculo)
     // La misma cuenta que usa el Dashboard: `valorAlMep` (utils/valuation).
@@ -190,6 +192,7 @@ export default function HomeMobile() {
     return {
       values: points.map(p => p.valueUsd),
       first: first.valueUsd,
+      firstDate: first.date,
       last: last.valueUsd,
       deltaUsd: delta ? delta.usd : null,
       // Sin un cierre pegado al arranque de los 30 días se mide desde el más
@@ -429,7 +432,7 @@ export default function HomeMobile() {
               </div>
               {series30d.deltaUsd != null ? (
                 <span className={`text-xs tabular ${series30d.positive ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-                  {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcValuacion : series30d.deltaUsd))}`}
+                  {hidden ? '••••••' : `${series30d.positive ? '+' : '−'}$${fmtNumber(Math.abs(currency === 'ARS' ? series30d.deltaUsd * tcMep : series30d.deltaUsd))}`}
                 </span>
               ) : (
                 <span className="text-[11px] text-ink-3">sin rendimiento medible</span>
@@ -444,8 +447,12 @@ export default function HomeMobile() {
               />
             </div>
             <div className="flex items-baseline justify-between mt-1.5 text-[10px] text-ink-3">
-              <span className="tabular">Hace 30d · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.first * tcValuacion : series30d.first)}`}</span>
-              <span className="tabular">Hoy · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.last * tcValuacion : series30d.last)}`}</span>
+              {/* En pesos, cada punta a SU dólar: la de hace 30 días al dólar elegido
+                  de esa fecha (no al de hoy: así no parecía que la cartera creció
+                  lo que subió el dólar), y la de hoy al MEP de hoy — la serie está
+                  medida al MEP (`valorAlMep`), igual que el gráfico del Dashboard. */}
+              <span className="tabular">Hace 30d · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.first * getHistoricalFx(series30d.firstDate) : series30d.first)}`}</span>
+              <span className="tabular">Hoy · {hidden ? '••••••' : `$${fmtNumber(currency === 'ARS' ? series30d.last * tcMep : series30d.last)}`}</span>
             </div>
           </Panel>
         ) : (

@@ -59,6 +59,9 @@ describe('Defensive — missing/empty bench → liveTc', () => {
   it('the map is not an object', () => {
     expect(lookupHistoricalDolar(1500, 2024, 6, LIVE, NOW)).toBe(LIVE)
   })
+  it('el objeto entero de /benchmarks (no la tabla) no da NaN: cae al dólar de hoy', () => {
+    expect(lookupHistoricalDolar({ sp500: { '2024-06': 5000 }, dolar_blue: { '2024-06': 1200 } }, 2024, 6, LIVE, NOW)).toBe(LIVE)
+  })
   it('empty map', () => {
     expect(lookupHistoricalDolar({}, 2024, 6, LIVE, NOW)).toBe(LIVE)
   })

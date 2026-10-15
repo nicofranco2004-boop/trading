@@ -98,5 +98,45 @@ class MovimientosEnPesos(unittest.TestCase):
         self.assertAlmostEqual(m["amount_usd"], 2000, places=6)
 
 
+    def test_un_broker_que_paso_de_dolares_a_pesos_no_inventa_pesos(self):
+        # La carga se hizo cuando el broker estaba en dólares: su "monto nativo" son
+        # esos dólares. Si después el broker pasa a pesos, NO son pesos — si viajara
+        # como ARS con dólar 1,0, en pesos se leería $2.000 en vez de ~$2 millones.
+        # Mismo control que "Capital aportado" (`pesosAMano` en capitalAportado.js).
+        # La historia del dólar de ese día, como en producción (la tabla viene llena
+        # desde 2011): sin ella el control no tiene contra qué comparar.
+        conn = main.get_db()
+        conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+                     "VALUES ('2024-03-15', 1020, 1010, 'test')")
+        conn.commit()
+        conn.close()
+        r = self.client.post("/api/brokers", headers=self.h, json={"name": "Cocos"})
+        self.assertEqual(r.status_code, 200, r.text)
+        bid = r.json()["id"]
+        r = self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "Cocos", "direction": "deposit", "amount": 2000, "date": "2024-03-15"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.put(f"/api/brokers/{bid}", headers=self.h, json={"name": "Cocos", "currency": "ARS"})
+        self.assertEqual(r.status_code, 200, r.text)
+        m = [x for x in self.movimientos() if x["broker"] == "Cocos"][0]
+        self.assertEqual(m["currency"], "USD")
+        self.assertIsNone(m["fx_to_usd"])
+        self.assertAlmostEqual(m["amount_usd"], 2000, places=6)
+
+    def test_lo_cargado_sin_dia_tambien_vuelve_a_sus_pesos(self):
+        # Una carga vieja, de antes del detalle por carga: el mes tiene los pesos
+        # (`manual_deposits_native`) pero no hay renglón con día. Va como fila
+        # "del mes" (`mr-`) y tiene que traer sus pesos igual.
+        conn = main.get_db()
+        conn.execute(
+            "INSERT INTO monthly_entries (user_id, broker, year, month, capital_inicio, "
+            "capital_final, deposits, withdrawals, manual_deposits, manual_deposits_native) "
+            "VALUES (?, 'IOL', 2023, 5, 0, 1000, 1000, 0, 1000, 480000)", (self.uid,))
+        conn.commit()
+        conn.close()
+        m = [x for x in self.movimientos() if x["broker"] == "IOL" and x["id"].startswith("mr-")]
+        self.assertEqual(len(m), 1, m)
+        self.assertAlmostEqual(en_pesos(m[0]), 480_000, places=2)
+
 if __name__ == "__main__":
     unittest.main()

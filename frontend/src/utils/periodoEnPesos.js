@@ -62,10 +62,11 @@ export function crearPesosDelPeriodo({
   }
 
   /**
-   * @returns {{ moneda, fxInicio, fxCierre, fxFlujos, inicio, cierre,
+   * @returns {{ moneda, fxInicio, fxCierre, fxDepositos, inicio, cierre,
    *             depositos, retiros, resultado, realizado, noRealizado }}
    *   montos YA en `moneda` (formatear sin convertir: fmtConvertedRaw). Los
-   *   `fx*` sirven para pasar otros montos del mismo período con la misma regla.
+   *   `fx*` sirven para pasar otros montos del mismo período con la misma regla
+   *   (`fxDepositos`: el de sus depósitos).
    */
   function enVista(p) {
     const m = p?.metrics || {}
@@ -73,7 +74,7 @@ export function crearPesosDelPeriodo({
     const ret = num(m.withdrawals) || 0
     if (!enPesos) {
       return {
-        moneda: 'USD', fxInicio: 1, fxCierre: 1, fxFlujos: 1,
+        moneda: 'USD', fxInicio: 1, fxCierre: 1, fxDepositos: 1,
         inicio: num(m.start_value), cierre: num(m.end_value),
         depositos: dep, retiros: ret,
         resultado: num(m.delta_usd), realizado: num(m.realized_pnl), noRealizado: num(m.unrealized_pnl),
@@ -97,16 +98,15 @@ export function crearPesosDelPeriodo({
       // no, mezclaríamos dos fuentes y el número no sería de nadie.
       if (cerca(du, dep) && cerca(ru, ret)) { depositos = da; retiros = ra }
     }
-    // El dólar que tuvieron los flujos del período (para la evidencia de los
-    // hallazgos). Con un neto chico el cociente no significa nada.
-    const netoUsd = dep - ret
-    const implicito = Math.abs(netoUsd) >= 1 ? (depositos - retiros) / netoUsd : null
-    const fxFlujos = implicito && implicito / fxCierre >= 0.6 && implicito / fxCierre <= 1.6
-      ? implicito : fxCierre
+    // El dólar que tuvieron los DEPÓSITOS del período (los pesos que mostramos ÷
+    // sus dólares): con él, otro monto de depósitos del mismo período (la
+    // evidencia de un hallazgo) dice lo mismo que la fila "Depósitos". Se mira
+    // sólo el lado de los depósitos: con el neto, un retiro en el mes lo movía.
+    const fxDepositos = dep > 0 ? depositos / dep : fxCierre
 
     const x = (v, fx) => (num(v) == null ? null : num(v) * fx)
     return {
-      moneda: 'ARS', fxInicio, fxCierre, fxFlujos,
+      moneda: 'ARS', fxInicio, fxCierre, fxDepositos,
       inicio: x(m.start_value, fxInicio), cierre: x(m.end_value, fxCierre),
       depositos, retiros,
       resultado: x(m.delta_usd, fxCierre),
@@ -122,7 +122,8 @@ export function crearPesosDelPeriodo({
    */
   function aportadoHasta(fechaIso, cumUsd) {
     if (!enPesos) return num(cumUsd)
-    const a = aportadoAcumuladoAl({ monthly, brokers, dolarMes, tcHoy, broker, hastaIso: fechaIso })
+    // `cum_deposited` del servidor no trae el saldo inicial: se compara sin él.
+    const a = aportadoAcumuladoAl({ monthly, brokers, dolarMes, tcHoy, broker, hastaIso: fechaIso, sinSaldoInicial: true })
     return a && cerca(a.usd, cumUsd) ? a.ars : null
   }
 

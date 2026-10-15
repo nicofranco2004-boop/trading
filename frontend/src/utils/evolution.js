@@ -177,12 +177,16 @@ export function baseIncomparable(inicioEsMedido, inicioValor, depositos = 0, ret
  * FX histórico per-punto (Phase C audit fix C1).
  *
  * Prioridad de FX por punto:
- *   1. punto.fxToUsdBlue stampeado en el snapshot original (más auténtico)
- *   2. getFxForDate(punto.date) — lookup en la historia de blue
+ *   1. getFxForDate(punto.date) — el dólar ELEGIDO de esa fecha (MEP; ver
+ *      utils/tcHistorico.js), el mismo que el resto de la app.
+ *   2. punto.fxToUsdBlue grabado en la foto — es el BLUE: sólo si no hay serie.
+ *   Hasta el 2026-10-15 el blue grabado iba primero: en el mismo gráfico
+ *   convivían puntos al blue (fotos con dólar grabado) y al MEP (sin él), y la
+ *   línea del valor saltaba ~1 % entre dos días sin que se moviera nada.
  *
  * Retorna una nueva serie con `valueUsd` y `netDeposited` convertidos a ARS
  * (los nombres de las keys se preservan por compat con el chart que ya las usa),
- * y agrega `_fxUsed` para inspección/transparencia (chart muestra el TC blue
+ * y agrega `_fxUsed` para inspección/transparencia (chart muestra el dólar
  * usado en el tooltip).
  *
  * @param {Array} series — output de buildPortfolioValueSeries (cada item con
@@ -193,10 +197,9 @@ export function baseIncomparable(inicioEsMedido, inicioValor, depositos = 0, ret
 export function convertSeriesToArs(series, getFxForDate, aportadoEnPesos = null) {
   if (!Array.isArray(series)) return []
   return series.map(p => {
+    const deLaFecha = typeof getFxForDate === 'function' ? getFxForDate(p.date) : null
     const stamped = p.fxToUsdBlue
-    const fx = (stamped && stamped > 0)
-      ? stamped
-      : (typeof getFxForDate === 'function' ? getFxForDate(p.date) : null)
+    const fx = (deLaFecha && deLaFecha > 0) ? deLaFecha : stamped
     const safeFx = (fx && fx > 0) ? fx : 1  // último fallback: no convertir
     return {
       ...p,

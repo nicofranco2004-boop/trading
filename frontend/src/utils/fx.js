@@ -33,8 +33,12 @@ export function lookupHistoricalDolar(dolarMes, year, month, liveTc, now = new D
   const map = dolarMes
   if (!map || typeof map !== 'object') return liveTc
 
+  // Sólo números: un objeto que no es la tabla (p.ej. la respuesta entera de
+  // /benchmarks, lo que esta función recibía antes del 2026-10-15) no puede
+  // devolver otra cosa que un dólar — sin esto la cuenta daba NaN sin avisar.
+  const dolar = (v) => (Number.isFinite(+v) && +v > 0 && typeof v !== 'object' ? +v : null)
   const key = `${year}-${String(month).padStart(2, '0')}`
-  if (map[key] != null) return map[key]
+  if (dolar(map[key]) != null) return dolar(map[key])
 
   const keys = Object.keys(map).sort()
   if (keys.length === 0) return liveTc
@@ -46,5 +50,5 @@ export function lookupHistoricalDolar(dolarMes, year, month, liveTc, now = new D
     else break
   }
   if (!found) found = keys[0] // before earliest data → use earliest known
-  return map[found] != null ? map[found] : liveTc
+  return dolar(map[found]) ?? liveTc
 }

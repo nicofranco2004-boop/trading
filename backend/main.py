@@ -16940,6 +16940,10 @@ def _build_movements(uid: int):
             if cur == "ARS":
                 _rate_row = (amt / stamped) if (stamped and stamped > 0 and amt) else None
                 amount_usd = stamped if stamped is not None else (amt / tc_blue if tc_blue > 0 else amt)
+                # Sin dólares estampados se dividió por `tc_blue`: ese es su dólar, y
+                # viaja para que la pantalla vuelva a los pesos del archivo.
+                if stamped is None and tc_blue > 0 and amt:
+                    _rate_row = tc_blue
                 # Las fees comparten el TC de SU fila (derivado del estampado) para
                 # que no queden mezcladas con el dólar de hoy.
                 _fee_rate = _rate_row if (_rate_row and _rate_row > 0) else (tc_blue if tc_blue > 0 else None)
@@ -16995,7 +16999,8 @@ def _build_movements(uid: int):
         # deposits/withdrawals (fix 2026-05-27). Antes lo hacía y borraba los
         # manuales del user.
         me_rows = conn.execute(
-            """SELECT id, year, month, broker, deposits, withdrawals
+            """SELECT id, year, month, broker, deposits, withdrawals,
+                      manual_deposits_native, manual_withdrawals_native
                  FROM monthly_entries
                 WHERE user_id = ? AND broker <> 'global'
                   AND (deposits > 0 OR withdrawals > 0)
@@ -17017,8 +17022,10 @@ def _build_movements(uid: int):
                 # con que se guardó (pesos ÷ dólares), igual que una operación en
                 # pesos. La pantalla multiplica de vuelta y muestra exactamente lo
                 # que se cargó, en vez de reconstruirlo con el dólar de esa fecha.
-                _en_pesos = (d.get("broker") in _brokers_en_pesos and (f.get("nativo") or 0) > 0
-                             and f["usd"] > 0)
+                # Con el MISMO control que "Capital aportado" (`_pesos_plausibles`):
+                # una carga de cuando el broker estaba en dólares no tiene pesos.
+                _en_pesos = (d.get("broker") in _brokers_en_pesos
+                             and _pesos_plausibles(conn, f.get("nativo"), f["usd"], f["fecha"]))
                 movements.append({
                     "id": f["id"],
                     "kind": "movement",
@@ -18585,6 +18592,36 @@ _NOTA_DE_CARGA = {
 }
 
 
+# Mismo control que `pesosAMano` del front (frontend/src/utils/capitalAportado.js),
+# que es el que usa "Capital aportado": los pesos guardados de una carga a mano se
+# creen salvo que cubran claramente MENOS dólares de los que dice la fila. Pasa con
+# una carga hecha cuando el broker todavía estaba en dólares (el "monto nativo" son
+# esos dólares: pesos ÷ dólares = 1) o con una fila que mezcla cargas con y sin
+# pesos guardados. De un solo lado a propósito: un cociente ALTO es una carga vieja
+# dolarizada con el dólar del día en que se cargó, y sus pesos están bien.
+_PESOS_MINIMO_PLAUSIBLE = 0.6
+
+
+def _pesos_plausibles(conn, pesos, usd, fecha) -> bool:
+    if not pesos or not usd or pesos <= 0 or usd <= 0:
+        return False
+    try:
+        tc = _fx.fx_for_date(conn, fecha) if fecha else None
+    except Exception:
+        tc = None
+    if not tc or tc <= 0:
+        return True
+    return (pesos / usd) / tc >= _PESOS_MINIMO_PLAUSIBLE
+
+
+def _nativo_de(me_row, col):
+    try:
+        v = me_row[col]
+    except (IndexError, KeyError):
+        return None
+    return float(v) if v is not None else None
+
+
 def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: float) -> list:
     """Los renglones de lo cargado a mano en un mes de un broker, como los muestran
     Movimientos y la exportación (las dos lo arman con esto): una fila por carga suelta
@@ -18605,8 +18642,19 @@ def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: f
                         "nota": _NOTA_DE_CARGA.get((f["origen"], direction), "A mano")})
         resto = total - sum(float(f["monto_usd"]) for f in sueltas)
         if resto > 0.01:
+            # Los pesos de lo que no tiene día: lo guardado del mes (`manual_*_native`)
+            # menos lo de las cargas sueltas. Sólo si todas las sueltas los tienen;
+            # si no, no se sabe qué parte es de quién.
+            _col = "manual_deposits_native" if sufijo == "dep" else "manual_withdrawals_native"
+            _total_nativo = _nativo_de(me_row, _col)
+            _nativo_resto = None
+            if _total_nativo is not None and all(f["monto_nativo"] is not None for f in sueltas):
+                _nativo_resto = _total_nativo - sum(float(f["monto_nativo"]) for f in sueltas)
+                if _nativo_resto <= 0.01:
+                    _nativo_resto = None
             out.append({"id": f"mr-{me_row['id']}-{sufijo}", "type": tipo,
-                        "fecha": f"{y:04d}-{m:02d}-15", "aprox": True, "usd": resto, "nativo": None,
+                        "fecha": f"{y:04d}-{m:02d}-15", "aprox": True, "usd": resto,
+                        "nativo": _nativo_resto,
                         "nota": (f"{'Depósitos' if sufijo == 'dep' else 'Retiros'} a mano de "
                                  f"{y}-{m:02d} sin día registrado")})
     return out
