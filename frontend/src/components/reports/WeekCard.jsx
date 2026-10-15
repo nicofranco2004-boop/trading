@@ -8,7 +8,7 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import InsightChip from './InsightChip'
-import { useMoneyFormat } from '../../contexts/CurrencyContext'
+import { usePesosDelPeriodo, PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
 import { pctVar, pctColor } from '../../utils/format'
 
 export default function WeekCard({ week }) {
@@ -25,9 +25,11 @@ export default function WeekCard({ week }) {
   const tono = deltaPct != null
     ? pctColor(deltaPct, 2)
     : ((deltaUsd ?? 0) >= 0 ? 'text-rendi-pos' : 'text-rendi-neg')
-  // Fase B: delta_usd y realized_pnl respetan el toggle global ARS/USD.
-  const money = useMoneyFormat()
-  const fmtUsd = (v) => money.fmtMoney(v, { signed: true })
+  // delta_usd y realized_pnl respetan el toggle global ARS/USD; en pesos, al
+  // dólar del cierre de la semana (utils/periodoEnPesos.js), no al de hoy.
+  const pesos = usePesosDelPeriodo()
+  const enVista = pesos.enVista(week)
+  const fmtPlata = (v) => pesos.fmt(v, { signed: true })
 
   // Sin actividad: chip minimal, no expandible
   if (!week.is_relevant) {
@@ -40,6 +42,7 @@ export default function WeekCard({ week }) {
   }
 
   return (
+    <PeriodoEnVista.Provider value={enVista}>
     <div className="rounded-sm border border-line bg-bg-2/40">
       <button
         onClick={() => setOpen(o => !o)}
@@ -56,7 +59,7 @@ export default function WeekCard({ week }) {
           {week.headline}
         </span>
         <span className="text-[10px] text-ink-3 font-mono tabular">
-          {noBasis ? null : fmtUsd(deltaUsd)}
+          {noBasis ? null : fmtPlata(enVista.resultado)}
         </span>
         {open
           ? <ChevronUp size={14} className="text-ink-3" strokeWidth={1.75} aria-hidden="true" />
@@ -78,11 +81,12 @@ export default function WeekCard({ week }) {
           <div className="grid grid-cols-3 gap-2 text-[10px]">
             <Stat label="Trades" value={week.metrics.trades_count} />
             <Stat label="Win rate" value={week.metrics.win_rate != null ? `${week.metrics.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
-            <Stat label="Realizado" value={fmtUsd(week.metrics.realized_pnl)} />
+            <Stat label="Realizado" value={fmtPlata(enVista.realizado)} />
           </div>
         </div>
       )}
     </div>
+    </PeriodoEnVista.Provider>
   )
 }
 

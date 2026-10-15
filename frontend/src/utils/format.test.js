@@ -54,6 +54,8 @@ describe('parseNum — lee lo que la gente escribe', () => {
     expect(parseNum('1.2.3')).toBeNaN()
     expect(parseNum('1,2,3')).toBeNaN()
     expect(parseNum('1.03,74')).toBeNaN()       // los puntos no son miles válidos
+    expect(parseNum('1,536.90')).toBeNaN()      // formato inglés: no es 1,536
+    expect(parseNum('1,234,567.89')).toBeNaN()
     expect(parseNum('--5')).toBeNaN()
     expect(parseNum('abc')).toBeNaN()
     expect(parseNum('')).toBeNaN()

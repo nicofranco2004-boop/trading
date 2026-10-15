@@ -3,13 +3,12 @@ import { lookupHistoricalDolar } from './fx.js'
 
 const LIVE = 1500
 
+// El dólar elegido al cierre de cada mes (`dolarMes` de useDolarMensual).
 const BENCH = {
-  dolar_blue: {
-    '2024-01': 1000,
-    '2024-02': 1050,
-    '2024-04': 1100,   // March missing intentionally — gap test
-    '2025-12': 1300,
-  },
+  '2024-01': 1000,
+  '2024-02': 1050,
+  '2024-04': 1100,   // March missing intentionally — gap test
+  '2025-12': 1300,
 }
 
 const NOW = new Date(2026, 4, 15) // May 2026 (month is 0-indexed in Date)
@@ -19,7 +18,7 @@ describe('Current calendar month → liveTc', () => {
     expect(lookupHistoricalDolar(BENCH, 2026, 5, LIVE, NOW)).toBe(LIVE)
   })
   it('current month wins even if bench has data for it', () => {
-    const benchWithCurrent = { dolar_blue: { ...BENCH.dolar_blue, '2026-05': 9999 } }
+    const benchWithCurrent = { ...BENCH, '2026-05': 9999 }
     expect(lookupHistoricalDolar(benchWithCurrent, 2026, 5, LIVE, NOW)).toBe(LIVE)
   })
 })
@@ -57,17 +56,20 @@ describe('Defensive — missing/empty bench → liveTc', () => {
   it('undefined bench', () => {
     expect(lookupHistoricalDolar(undefined, 2024, 6, LIVE, NOW)).toBe(LIVE)
   })
-  it('bench without dolar_blue field', () => {
-    expect(lookupHistoricalDolar({ sp500: {} }, 2024, 6, LIVE, NOW)).toBe(LIVE)
+  it('the map is not an object', () => {
+    expect(lookupHistoricalDolar(1500, 2024, 6, LIVE, NOW)).toBe(LIVE)
   })
-  it('empty dolar_blue map', () => {
-    expect(lookupHistoricalDolar({ dolar_blue: {} }, 2024, 6, LIVE, NOW)).toBe(LIVE)
+  it('el objeto entero de /benchmarks (no la tabla) no da NaN: cae al dólar de hoy', () => {
+    expect(lookupHistoricalDolar({ sp500: { '2024-06': 5000 }, dolar_blue: { '2024-06': 1200 } }, 2024, 6, LIVE, NOW)).toBe(LIVE)
+  })
+  it('empty map', () => {
+    expect(lookupHistoricalDolar({}, 2024, 6, LIVE, NOW)).toBe(LIVE)
   })
 })
 
 describe('Bench rate is null/undefined for the matched key → liveTc', () => {
   it('rate is null for found key', () => {
-    const broken = { dolar_blue: { '2024-01': null } }
+    const broken = { '2024-01': null }
     expect(lookupHistoricalDolar(broken, 2024, 1, LIVE, NOW)).toBe(LIVE)
   })
 })

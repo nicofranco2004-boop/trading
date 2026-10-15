@@ -75,7 +75,7 @@ export const FAQS = [
   },
   {
     q: '¿Cobran en pesos argentinos o en dólares?',
-    a: `Cobramos en pesos argentinos a precio fijo. Plus $${fmtArs(PLUS_PRICE_ARS_MONTHLY)} / Pro $${fmtArs(PRO_PRICE_ARS_MONTHLY)} por mes, sin sorpresas. El cargo en tu tarjeta es el mismo número que ves en la página de planes. Periódicamente ajustamos los precios para mantenernos en equilibrio con la inflación — siempre con anuncio previo y respetando el precio actual de tu próximo cobro si ya estás suscripto.`,
+    a: `Cobramos en pesos argentinos a precio fijo. Plus $${fmtArs(PLUS_PRICE_ARS_MONTHLY)} / Pro $${fmtArs(PRO_PRICE_ARS_MONTHLY)} por mes, sin sorpresas. El cargo en tu tarjeta es el mismo número que ves en la página de planes. Periódicamente ajustamos los precios para mantenernos en equilibrio con la inflación — siempre te avisamos por mail antes de que apliquen, y el precio nuevo rige desde tu siguiente renovación.`,
   },
   {
     // Sin nombre de modelo a propósito: decía "Claude Haiku 4.5" y el chat usa

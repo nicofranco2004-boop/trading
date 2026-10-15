@@ -993,6 +993,136 @@ def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
     return {k: (v[0], v[1]) for k, v in out.items()}
 
 
+
+def _aportes_en_pesos_por_mes(conn, uid: int, tc_blue: float) -> dict:
+    """Los aportes y retiros de cada fila mensual de broker cuyos PESOS se conocen:
+    {(broker, 'AAAA', 'MM'): [dep_pesos, dep_usd, ret_pesos, ret_usd]}. Sin 'global'.
+
+    `monthly_entries` guarda los flujos en dólares; para mostrar "Capital aportado"
+    en pesos la pantalla necesita los pesos que se pusieron (ver
+    frontend/src/utils/capitalAportado.js). Lo cargado a mano los trae en
+    `manual_*_native`; lo IMPORTADO no tenía de dónde sacarlos y la pantalla los
+    reconstruía con el dólar del mes. Medido sobre la copia de prod del 16/08 (648
+    cuentas con depósitos importados en pesos): esa reconstrucción erraba más del
+    20 % de lo depositado en 1 de cada 10, porque el neto de un mes con entradas
+    y salidas al dólar de días distintos no vuelve a dar los pesos. Los pesos
+    están en `import_normalized_tx.gross_amount`: acá se leen.
+
+    Cuenta lo MISMO que `_import_flows_por_mes` (mismos fragmentos de SQL, mismo
+    TX_VIVAS), sólo que de cada flujo devuelve los pesos y los dólares con que
+    entró a `monthly_entries` (`*_usd`: la parte del mes que esos pesos cubren):
+      · DEPOSIT / WITHDRAW importados en pesos: `gross_amount`.
+      · Las dos patas de una conversión ARS↔USD: los pesos de la conversión
+        (`gross_amount`), también en la pata en dólares. Así una conversión suma
+        cero pesos al aportado, igual que suma cero dólares; con la pata en
+        dólares al dólar del mes aparecía la brecha blue/MEP como aporte.
+    Los pesos de lo importado mandan aunque sus dólares estén mal: en la copia de
+    prod hay depósitos de 2020 y 2023 sellados con el dólar de HOY (cociente 4× y
+    18× el blue de su mes) y con los pesos bien. Lo cargado a mano NO va acá: sus
+    pesos ya viajan en `manual_*_native` de la fila."""
+    out: dict = {}
+
+    def _sumar(broker, y, m, lado, pesos, usd):
+        if broker is None or y is None or m is None:
+            return
+        v = out.setdefault((broker, y, m), [0.0, 0.0, 0.0, 0.0])
+        v[lado] += float(pesos or 0)
+        v[lado + 1] += float(usd or 0)
+    try:
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, n.operation_type AS op,
+                          COALESCE(SUM(ABS(n.gross_amount)), 0) AS pesos,
+                          COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS usd
+                     FROM {TX_VIVAS}
+                    WHERE {_FLUJO_IMPORT_DONDE_SQL} AND UPPER(n.currency)='ARS'
+                    GROUP BY n.broker, y, m, n.operation_type""",
+                (tc_blue, tc_blue, uid)).fetchall():
+            _sumar(r["broker"], r["y"], r["m"], 0 if r["op"] == "DEPOSIT" else 2, r["pesos"], r["usd"])
+        # Conversiones: el que paga RETIRA, el que cobra DEPOSITA — los mismos pesos.
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, COALESCE(SUM(ABS(n.gross_amount)), 0) AS pesos,
+                          COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS usd
+                     FROM {TX_VIVAS}
+                    WHERE {_FX_PATA_DONDE_SQL}
+                    GROUP BY n.broker, y, m""", (uid,)).fetchall():
+            _sumar(r["broker"], r["y"], r["m"], 2, r["pesos"], r["usd"])
+        for r in conn.execute(
+                f"""SELECT bc.name AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, COALESCE(SUM(ABS(n.gross_amount)), 0) AS pesos,
+                          COALESCE(SUM({_FX_PATA_USD_SQL}), 0) AS usd
+                     FROM {TX_VIVAS}
+                     {_FX_COBRA_JOIN_SQL}
+                    WHERE {_FX_PATA_DONDE_SQL}
+                    GROUP BY bc.name, y, m""", (uid,)).fetchall():
+            _sumar(r["broker"], r["y"], r["m"], 0, r["pesos"], r["usd"])
+    except ERR_OPERACIONAL:
+        return {}           # tablas de import aún no existen (DB fresca)
+    return out
+
+
+def _aportes_en_dolares_con_dia(conn, uid: int, tc_blue: float) -> dict:
+    """Los aportes y retiros EN DÓLARES de cada fila mensual de broker, con el DÍA en
+    que entraron: {(broker, 'AAAA', 'MM'): {'importado': {'dep': [[fecha, usd], …],
+    'ret': […]}, 'a_mano': {'dep': […], 'ret': […]}}}. Sin 'global'.
+
+    Para la pantalla en pesos: los aportes que no tienen pesos guardados (los que
+    entraron en dólares) se pasan a pesos con el dólar de SU DÍA, el mismo con que
+    Movimientos muestra cada fila. Hasta el 2026-10-15 iban al dólar del cierre del
+    mes (`monthly_entries` no tiene día) y la misma plata daba dos números: US$2.000
+    del 02/03/2026 eran $2.835.200 en Movimientos y $2.852.100 en "Capital aportado".
+
+    Las filas son LAS DE MOVIMIENTOS, armadas con las mismas funciones:
+      · 'importado': DEPOSIT / WITHDRAW importados que NO son en pesos (los en pesos
+        ya viajan con sus pesos, `_aportes_en_pesos_por_mes`), con la fecha del
+        import y los dólares con que entraron a `monthly_entries`
+        (`_FLUJO_IMPORT_USD_SQL`). Las conversiones no van: sus dos patas tienen pesos.
+      · 'a_mano': lo cargado a mano, renglón por renglón como en Movimientos
+        (`_filas_a_mano_del_mes`: cada carga con su día, y el resto del mes sin día
+        al 15, igual que esa lista). Se manda para TODOS los brokers: en uno en pesos
+        la pantalla lo usa sólo si no puede usar los pesos guardados."""
+    out: dict = {}
+
+    def _lado(broker, y, m, clave, lado):
+        v = out.setdefault((broker, y, m), {"importado": {"dep": [], "ret": []},
+                                            "a_mano": {"dep": [], "ret": []}})
+        return v[clave][lado]
+    try:
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, substr(n.date, 1, 10) AS fecha,
+                          n.operation_type AS op,
+                          COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS usd
+                     FROM {TX_VIVAS}
+                    WHERE {_FLUJO_IMPORT_DONDE_SQL}
+                      AND COALESCE(UPPER(n.currency), '') <> 'ARS'
+                    GROUP BY n.broker, y, m, fecha, n.operation_type""",
+                (tc_blue, tc_blue, uid)).fetchall():
+            if r["broker"] is None or r["y"] is None or r["m"] is None or not (r["usd"] or 0):
+                continue
+            _lado(r["broker"], r["y"], r["m"], "importado",
+                  "dep" if r["op"] == "DEPOSIT" else "ret").append([r["fecha"], round(float(r["usd"]), 6)])
+    except ERR_OPERACIONAL:
+        pass                # tablas de import aún no existen (DB fresca)
+
+    me_rows = conn.execute(
+        """SELECT id, year, month, broker, deposits, withdrawals,
+                  manual_deposits_native, manual_withdrawals_native FROM monthly_entries
+            WHERE user_id = ? AND broker <> 'global' AND (deposits > 0 OR withdrawals > 0)""",
+        (uid,)).fetchall()
+    importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
+    for r in me_rows:
+        dep, wit = _flujos_manuales_del_mes(r, importados)
+        if dep <= 0.01 and wit <= 0.01:
+            continue
+        y, m = f"{int(r['year']):04d}", f"{int(r['month']):02d}"
+        for f in _filas_a_mano_del_mes(conn, uid, r, dep, wit):
+            _lado(r["broker"], y, m, "a_mano", "dep" if f["type"] == "DEPOSIT" else "ret").append(
+                [str(f["fecha"])[:10], round(float(f["usd"]), 6)])
+    return out
+
+
 def _backfill_manual_flows(conn) -> None:
     """One-time (migración): separa el residual manual de monthly_entries hacia las
     columnas manual_*. manual = max(0, total − imports_confirmados). Es exactamente
@@ -2874,6 +3004,13 @@ def init_db():
         # 'YYYY-MM-DD'. UN aviso por persona y por vencimiento real: ver
         # `billing.subscriptions._send_credit_expiring_reminders`. Sin índice
         # (se lee y escribe por id de usuario).
+        # Cuándo se le mostró el aviso de que cambiaron los precios (15/10/2026).
+        # ⭐ Va en la BASE y no en el navegador a propósito: con `localStorage` el
+        # aviso vuelve a aparecer en cada dispositivo, en cada navegador y en cada
+        # ventana de incógnito — que es exactamente la forma en que estos avisos
+        # terminan mostrándose "varias veces" aunque el código diga una sola.
+        if user_cols_after and 'aviso_precios_oct26_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN aviso_precios_oct26_at TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -4459,8 +4596,21 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
         except Exception: pass
 
 
+@app.post("/api/me/aviso-precios-visto")
+def marcar_aviso_precios_visto(uid: int = Depends(get_current_user)):
+    """Marca el aviso de cambio de precios como visto, para que no vuelva.
+
+    `get_current_user` y no `get_effective_user`: la marca es de quien inició
+    sesión. Idempotente y a prueba de doble click — el UPDATE sólo escribe si la
+    columna está en NULL, así que el segundo no pisa la fecha del primero."""
+    from billing import subscriptions as _subs
+    with db_abierta() as conn:
+        _subs.marcar_aviso_precios_visto(conn, uid)
+    return {"ok": True}
+
+
 @app.get("/api/auth/me")
-def me(uid: int = Depends(get_effective_user)):
+def me(request: Request, uid: int = Depends(get_effective_user)):
     from ai import quota
     with db_abierta() as conn:
         row = conn.execute(
@@ -4502,6 +4652,21 @@ def me(uid: int = Depends(get_effective_user)):
                LIMIT 1""",
             (uid,),
         ).fetchone()
+        # ⭐ El aviso de que cambiaron los precios (15/10/2026), UNA sola vez y
+        # sólo a quien paga de verdad. Quien está en la prueba tiene tier
+        # 'pro'/'plus' igual que quien paga, así que la regla no puede ser el
+        # tier: ver `subscriptions.debe_ver_aviso_precios`.
+        # ⚠️ Va por el uid AUTENTICADO y no por el resuelto: si un asesor está
+        # mirando la cuenta de un cliente, `uid` es el del CLIENTE, y el aviso
+        # —más el click que lo marca como visto— le corresponde al asesor. Mismo
+        # patrón que usa `/api/plan/features` para el estado de la prueba.
+        try:
+            from billing import subscriptions as _subs
+            _yo = getattr(request.state, "rendi_auth_uid", uid)
+            d["aviso_precios"] = _subs.debe_ver_aviso_precios(conn, _yo)
+        except Exception:
+            d["aviso_precios"] = False
+
         d["subscription_status"] = sub["status"] if sub else None
         d["subscription_period_end"] = sub["current_period_end"] if sub else None
         d["subscription_cancelled_at"] = sub["cancelled_at"] if sub else None
@@ -15907,7 +16072,29 @@ def get_monthly(uid: int = Depends(get_effective_user)):
         rows = conn.execute(
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month, broker", (uid,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        # Los PESOS de lo IMPORTADO en cada fila de broker
+        # (`pesos_importados_dep`/`_ret`) y los dólares de la fila que esos pesos
+        # cubren (`..._dep_usd`/`..._ret_usd`). Con ellos y con `manual_*_native`
+        # (lo cargado a mano) la pantalla en pesos muestra lo aportado en los pesos
+        # que se pusieron (capitalAportado.js). Ver `_aportes_en_pesos_por_mes`.
+        tc_blue = _user_tc_blue(conn, uid)
+        importados = _aportes_en_pesos_por_mes(conn, uid, tc_blue)
+        # Y lo que entró EN DÓLARES, con su día (`usd_con_dia`): la pantalla lo pasa
+        # a pesos con el dólar de ese día, como cada fila de Movimientos. Ver
+        # `_aportes_en_dolares_con_dia`.
+        con_dia = _aportes_en_dolares_con_dia(conn, uid, tc_blue)
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d["broker"] != "global":
+                k = (d["broker"], f"{int(d['year']):04d}", f"{int(d['month']):02d}")
+                v = importados.get(k, (0.0, 0.0, 0.0, 0.0))
+                (d["pesos_importados_dep"], d["pesos_importados_dep_usd"],
+                 d["pesos_importados_ret"], d["pesos_importados_ret_usd"]) = (round(x, 6) for x in v)
+                if k in con_dia:
+                    d["usd_con_dia"] = con_dia[k]
+            out.append(d)
+        return out
     finally:
         conn.close()
 
@@ -16852,9 +17039,14 @@ def _build_movements(uid: int):
             # Antes se usaba siempre el de hoy: una compra de 2021 se dividía por
             # ~1500 y el movimiento aparecía con un monto irreal.
             stamped = _safe_float_or_none(d.get("gross_amount_usd"))
+            _rate_row = None
             if cur == "ARS":
                 _rate_row = (amt / stamped) if (stamped and stamped > 0 and amt) else None
                 amount_usd = stamped if stamped is not None else (amt / tc_blue if tc_blue > 0 else amt)
+                # Sin dólares estampados se dividió por `tc_blue`: ese es su dólar, y
+                # viaja para que la pantalla vuelva a los pesos del archivo.
+                if stamped is None and tc_blue > 0 and amt:
+                    _rate_row = tc_blue
                 # Las fees comparten el TC de SU fila (derivado del estampado) para
                 # que no queden mezcladas con el dólar de hoy.
                 _fee_rate = _rate_row if (_rate_row and _rate_row > 0) else (tc_blue if tc_blue > 0 else None)
@@ -16873,6 +17065,10 @@ def _build_movements(uid: int):
                 "unit_price": _safe_float_or_none(d.get("unit_price")),
                 "amount_usd": amount_usd,
                 "currency": cur,
+                # El dólar con que se estampó (pesos del archivo ÷ dólares): con él la
+                # pantalla vuelve EXACTO a los pesos del import (`gross_amount`), los
+                # mismos que usa "Capital aportado" (`_aportes_en_pesos_por_mes`).
+                "fx_to_usd": _rate_row,
                 "fees_usd": fees_usd,
                 "notes": d.get("notes") or "",
                 "source": "import",
@@ -16906,7 +17102,8 @@ def _build_movements(uid: int):
         # deposits/withdrawals (fix 2026-05-27). Antes lo hacía y borraba los
         # manuales del user.
         me_rows = conn.execute(
-            """SELECT id, year, month, broker, deposits, withdrawals
+            """SELECT id, year, month, broker, deposits, withdrawals,
+                      manual_deposits_native, manual_withdrawals_native
                  FROM monthly_entries
                 WHERE user_id = ? AND broker <> 'global'
                   AND (deposits > 0 OR withdrawals > 0)
@@ -16914,6 +17111,9 @@ def _build_movements(uid: int):
             (uid,),
         ).fetchall()
         importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
+        # Brokers en pesos: sus cargas a mano viajan con los pesos que se cargaron.
+        _brokers_en_pesos = {b["name"] for b in conn.execute(
+            "SELECT name FROM brokers WHERE user_id=? AND UPPER(currency)='ARS'", (uid,))}
         for r in me_rows:
             d = dict(r)
             deposits_manual, withdrawals_manual = _flujos_manuales_del_mes(r, importados)
@@ -16921,6 +17121,14 @@ def _build_movements(uid: int):
             # una "del mes" con lo que no tiene día (`mr-`). Lo arma la misma función
             # que la exportación.
             for f in _filas_a_mano_del_mes(conn, uid, r, deposits_manual, withdrawals_manual):
+                # Una carga en pesos viaja con SUS pesos: `currency='ARS'` y el dólar
+                # con que se guardó (pesos ÷ dólares), igual que una operación en
+                # pesos. La pantalla multiplica de vuelta y muestra exactamente lo
+                # que se cargó, en vez de reconstruirlo con el dólar de esa fecha.
+                # Con el MISMO control que "Capital aportado" (`_pesos_plausibles`):
+                # una carga de cuando el broker estaba en dólares no tiene pesos.
+                _en_pesos = (d.get("broker") in _brokers_en_pesos
+                             and _pesos_plausibles(conn, f.get("nativo"), f["usd"], f["fecha"]))
                 movements.append({
                     "id": f["id"],
                     "kind": "movement",
@@ -16931,7 +17139,8 @@ def _build_movements(uid: int):
                     "quantity": None,
                     "unit_price": None,
                     "amount_usd": f["usd"],
-                    "currency": "USD",
+                    "currency": "ARS" if _en_pesos else "USD",
+                    "fx_to_usd": (f["nativo"] / f["usd"]) if _en_pesos else None,
                     "fees_usd": 0,
                     "notes": f["nota"],
                     "source": "monthly",
@@ -18486,6 +18695,36 @@ _NOTA_DE_CARGA = {
 }
 
 
+# Mismo control que `pesosAMano` del front (frontend/src/utils/capitalAportado.js),
+# que es el que usa "Capital aportado": los pesos guardados de una carga a mano se
+# creen salvo que cubran claramente MENOS dólares de los que dice la fila. Pasa con
+# una carga hecha cuando el broker todavía estaba en dólares (el "monto nativo" son
+# esos dólares: pesos ÷ dólares = 1) o con una fila que mezcla cargas con y sin
+# pesos guardados. De un solo lado a propósito: un cociente ALTO es una carga vieja
+# dolarizada con el dólar del día en que se cargó, y sus pesos están bien.
+_PESOS_MINIMO_PLAUSIBLE = 0.6
+
+
+def _pesos_plausibles(conn, pesos, usd, fecha) -> bool:
+    if not pesos or not usd or pesos <= 0 or usd <= 0:
+        return False
+    try:
+        tc = _fx.fx_for_date(conn, fecha) if fecha else None
+    except Exception:
+        tc = None
+    if not tc or tc <= 0:
+        return True
+    return (pesos / usd) / tc >= _PESOS_MINIMO_PLAUSIBLE
+
+
+def _nativo_de(me_row, col):
+    try:
+        v = me_row[col]
+    except (IndexError, KeyError):
+        return None
+    return float(v) if v is not None else None
+
+
 def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: float) -> list:
     """Los renglones de lo cargado a mano en un mes de un broker, como los muestran
     Movimientos y la exportación (las dos lo arman con esto): una fila por carga suelta
@@ -18501,11 +18740,24 @@ def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: f
             out.append({"id": f"mf-{f['id']}", "type": tipo,
                         "fecha": f["fecha"] or f"{y:04d}-{m:02d}-15", "aprox": not f["fecha"],
                         "usd": float(f["monto_usd"]),
+                        # En la moneda del broker, tal cual se cargó (None si no se sabe).
+                        "nativo": (float(f["monto_nativo"]) if f["monto_nativo"] is not None else None),
                         "nota": _NOTA_DE_CARGA.get((f["origen"], direction), "A mano")})
         resto = total - sum(float(f["monto_usd"]) for f in sueltas)
         if resto > 0.01:
+            # Los pesos de lo que no tiene día: lo guardado del mes (`manual_*_native`)
+            # menos lo de las cargas sueltas. Sólo si todas las sueltas los tienen;
+            # si no, no se sabe qué parte es de quién.
+            _col = "manual_deposits_native" if sufijo == "dep" else "manual_withdrawals_native"
+            _total_nativo = _nativo_de(me_row, _col)
+            _nativo_resto = None
+            if _total_nativo is not None and all(f["monto_nativo"] is not None for f in sueltas):
+                _nativo_resto = _total_nativo - sum(float(f["monto_nativo"]) for f in sueltas)
+                if _nativo_resto <= 0.01:
+                    _nativo_resto = None
             out.append({"id": f"mr-{me_row['id']}-{sufijo}", "type": tipo,
                         "fecha": f"{y:04d}-{m:02d}-15", "aprox": True, "usd": resto,
+                        "nativo": _nativo_resto,
                         "nota": (f"{'Depósitos' if sufijo == 'dep' else 'Retiros'} a mano de "
                                  f"{y}-{m:02d} sin día registrado")})
     return out
@@ -27554,6 +27806,173 @@ def admin_email_broadcast(data: BroadcastEmailIn, uid: int = Depends(get_admin_u
         conn.close()
 
 
+@app.post("/api/admin/billing/dedup-suscripciones")
+def admin_dedup_suscripciones(apply: int = 0, uid: int = Depends(get_admin_user)):
+    """Limpia las filas de suscripción DUPLICADAS. Por defecto NO borra nada.
+
+    Las dejó el bug de `_rebill_activate` (arreglado en este mismo commit):
+    insertaba una fila nueva por cada aviso de Rebill sobre una suscripción que
+    ya estaba activa, en vez de actualizar la que había. Medido el 2026-10-15:
+    14 filas para 8 personas.
+
+    QUÉ CONSIDERA DUPLICADO, y es deliberadamente estrecho: dos o más filas del
+    MISMO usuario con el MISMO `mp_subscription_id` no vacío. Eso no es "parecido":
+    es literalmente la misma suscripción de Rebill anotada N veces. Filas con ids
+    distintos NO se tocan ni se cuentan — serían suscripciones de verdad, y
+    confundirlas sería borrar un cobro real.
+
+    CUÁL SE CONSERVA: la MÁS VIEJA de cada grupo, que es la del alta original y
+    la que tiene la fecha real. Las copias nacieron después, por un aviso.
+
+    Nada referencia `subscriptions.id` (verificado), y `credit_ledger` guarda el
+    id de REBILL en texto, no el de la fila: borrar estas copias no deja nada
+    colgando.
+
+    `?apply=1` para que borre. Sin eso devuelve exactamente lo que haría.
+    """
+    borrar, grupos = [], []
+    with db_abierta() as conn:
+        filas = conn.execute(
+            """SELECT id, user_id, mp_subscription_id AS sid, status, created_at
+                 FROM subscriptions
+                WHERE mp_subscription_id IS NOT NULL AND mp_subscription_id != ''
+                ORDER BY user_id, mp_subscription_id, created_at ASC""").fetchall()
+
+        por_grupo = {}
+        for r in filas:
+            por_grupo.setdefault((r["user_id"], r["sid"]), []).append(r)
+
+        for (user_id, sid), rs in por_grupo.items():
+            if len(rs) < 2:
+                continue
+            # La primera es la más vieja: el ORDER BY ya las dejó en orden.
+            conserva, copias = rs[0], rs[1:]
+            grupos.append({
+                "user_id": user_id,
+                "id_en_rebill": sid,
+                "conserva": {"fila": conserva["id"], "alta": conserva["created_at"],
+                             "estado": conserva["status"]},
+                "borra": [{"fila": c["id"], "alta": c["created_at"],
+                           "estado": c["status"]} for c in copias],
+            })
+            borrar += [c["id"] for c in copias]
+
+        if apply and borrar:
+            ph = ",".join("?" for _ in borrar)
+            with conn:
+                conn.execute(
+                    f"DELETE FROM subscriptions WHERE id IN ({ph})", tuple(borrar))
+
+    return {
+        "aplicado": bool(apply),
+        "grupos_con_copias": len(grupos),
+        "filas_a_borrar": len(borrar),
+        "detalle": grupos,
+        "nota": ("Nada se borró — llamá con ?apply=1 para aplicarlo."
+                 if not apply else "Copias borradas."),
+    }
+
+
+@app.get("/api/admin/billing/precios-rebill")
+def admin_precios_rebill(uid: int = Depends(get_admin_user)):
+    """¿Qué le va a cobrar REBILL a cada suscripción activa? READ-ONLY.
+
+    Existe por una pregunta que Rendi no podía contestar y que importa cada vez
+    que se toca un precio: **editar el precio de un plan en el dashboard de
+    Rebill, ¿alcanza a las suscripciones que YA estaban?** Rendi nunca manda un
+    monto —el link de pago lleva sólo el id del plan—, así que el número vive
+    entero del lado de Rebill y desde acá era invisible.
+
+    Lo que se compara, fila por fila:
+      • `registrado_en_rendi` — `subscriptions.amount_ars`, lo que se guardó
+        CUANDO se dio de alta. Es historia: no cambia porque cambie el plan.
+      • `rebill_dice` — lo que Rebill contesta HOY para esa suscripción.
+
+    Si los dos números difieren, el precio nuevo le llegó. Si son iguales,
+    Rebill le congeló el precio de alta y hay que moverlo a mano.
+
+    No escribe nada y no devuelve ninguna credencial.
+    """
+    from billing import rebill
+    # ⚠️ `billing.pricing` y NO `pricing`: en este archivo `pricing` es el
+    # paquete de COTIZACIONES (letras, yahoo). Dos módulos con el mismo nombre.
+    from billing import pricing as planes
+    salida = {"plan_nuevo": {
+        "plus_mensual": planes.PLUS_ARS_MONTHLY_TOTAL,
+        "plus_anual": planes.PLUS_ARS_ANNUAL_TOTAL,
+        "pro_mensual": planes.ARS_MONTHLY_TOTAL,
+        "pro_anual": planes.ARS_ANNUAL_TOTAL,
+    }, "suscripciones": []}
+
+    with db_abierta() as conn:
+        filas = conn.execute(
+            """SELECT s.mp_subscription_id AS sid, s.external_reference AS ref,
+                      s.period, s.amount_ars, s.created_at, u.email
+                 FROM subscriptions s JOIN users u ON u.id = s.user_id
+                WHERE s.status = 'authorized'
+                ORDER BY u.email, s.created_at DESC""").fetchall()
+
+    for r in filas:
+        item = {
+            "email": r["email"],
+            "period": r["period"],
+            # ⭐ El id de la suscripción EN REBILL. Sin esto no se puede saber
+            # si varias filas 'authorized' de la misma persona son la MISMA
+            # suscripción duplicada en nuestra tabla (inofensivo para el cobro)
+            # o suscripciones distintas (le cobran dos veces). Son preguntas
+            # con consecuencias opuestas y se distinguen sólo por el id.
+            "id_en_rebill": r["sid"],
+            "alta_en_rendi": r["created_at"],
+            "registrado_en_rendi": r["amount_ars"],
+            "rebill_dice": None,
+            "error": None,
+        }
+        try:
+            data = rebill.get_subscription(r["sid"] or "") or {}
+            # No damos por sabido el nombre del campo: se buscan TODAS las
+            # claves que parezcan un monto y se devuelven las que haya. Es la
+            # forma honesta de leer una respuesta cuyo esquema no controlamos.
+            montos = {}
+
+            def _buscar(d, prefijo=""):
+                if isinstance(d, dict):
+                    for k, v in d.items():
+                        ruta = f"{prefijo}.{k}" if prefijo else k
+                        if isinstance(v, (dict, list)):
+                            _buscar(v, ruta)
+                        elif any(t in k.lower() for t in
+                                 ("amount", "price", "total", "monto")):
+                            montos[ruta] = v
+                elif isinstance(d, list):
+                    for i, v in enumerate(d[:5]):
+                        _buscar(v, f"{prefijo}[{i}]")
+
+            _buscar(data)
+            item["rebill_dice"] = montos or None
+            item["estado_en_rebill"] = data.get("status")
+        except Exception as ex:
+            item["error"] = f"{type(ex).__name__}: {str(ex)[:160]}"
+        salida["suscripciones"].append(item)
+
+    # Resumen: lo que importa es cuántas suscripciones DISTINTAS tiene cada uno
+    # en Rebill, no cuántas filas tenemos nosotros.
+    por_mail = {}
+    for it in salida["suscripciones"]:
+        por_mail.setdefault(it["email"], set()).add(it["id_en_rebill"])
+    salida["resumen"] = {
+        "filas_authorized": len(salida["suscripciones"]),
+        "personas": len(por_mail),
+        "con_mas_de_una_suscripcion_en_rebill": {
+            m: sorted(ids) for m, ids in por_mail.items() if len(ids) > 1
+        },
+    }
+    salida["como_leerlo"] = (
+        "Si 'rebill_dice' trae el precio NUEVO, el cambio alcanzó a las "
+        "suscripciones que ya estaban. Si trae el VIEJO (igual a "
+        "'registrado_en_rendi'), Rebill les congeló el precio de alta.")
+    return salida
+
+
 @app.get("/api/admin/billing/inspect")
 def admin_billing_inspect(email: str, uid: int = Depends(get_admin_user)):
     """Diagnóstico READ-ONLY del estado de billing de un user, por email.
@@ -35624,15 +36043,39 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
         conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
                      "WHERE id = ?", (target_tier, uid))
 
-        # Buscar la pending subscription que creó /api/billing/subscribe.
-        # Si existe, la actualizamos con el subscription_id real. Si no,
-        # creamos una nueva (race condition: webhook llegó antes que insert).
-        existing = conn.execute(
-            """SELECT id FROM subscriptions
-               WHERE user_id = ? AND status = 'pending'
-               ORDER BY created_at DESC LIMIT 1""",
-            (uid,),
-        ).fetchone()
+        # ⭐ PRIMERO por el id de Rebill, que es la IDENTIDAD de la suscripción.
+        #
+        # EL BUG (medido el 2026-10-15): esto buscaba SÓLO una fila 'pending'
+        # —la que crea /api/billing/subscribe— y si no la encontraba INSERTABA
+        # una nueva. Pero a quien ya está activo hace meses no le queda ninguna
+        # pending, así que cada aviso que Rebill manda sobre su suscripción
+        # creaba OTRA fila 'authorized' del MISMO cobro. Al editar los 4 precios
+        # en el dashboard, Rebill avisó por cada suscripción afectada: quedaron
+        # 14 filas para 8 personas, tres de ellas con 3 filas cada una.
+        #
+        # No cobraba dos veces (del lado de Rebill hay una sola suscripción),
+        # pero ensuciaba los registros de Rendi y —misma causa— dejaba
+        # `amount_ars` en 0: por el camino del INSERT la fila nace con
+        # `amount_ars_cobrado or 0`, y un aviso de "cambió el plan" no trae
+        # monto cobrado. Por eso Rendi no sabía cuánto pagaba nadie.
+        #
+        # El orden importa: el id de Rebill identifica la suscripción, la fila
+        # 'pending' es sólo el borrador que dejó el checkout antes de tener id.
+        existing = None
+        if sub_id:
+            existing = conn.execute(
+                """SELECT id FROM subscriptions
+                   WHERE user_id = ? AND mp_subscription_id = ?
+                   ORDER BY created_at ASC LIMIT 1""",
+                (uid, sub_id),
+            ).fetchone()
+        if not existing:
+            existing = conn.execute(
+                """SELECT id FROM subscriptions
+                   WHERE user_id = ? AND status = 'pending'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (uid,),
+            ).fetchone()
         if existing:
             conn.execute(
                 """UPDATE subscriptions

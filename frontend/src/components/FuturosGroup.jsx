@@ -20,7 +20,7 @@ import { api } from '../utils/api'
 import { useToast } from './Toast'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { hoyISO } from '../utils/fecha'
-import { parseNum } from '../utils/format'
+import { parseNum, numACampo } from '../utils/format'
 import { confirmar } from '../utils/confirmar'
 
 const hoy = () => hoyISO()
@@ -428,7 +428,9 @@ function CerrarFuturo({ pos, precio, onClose, onDone }) {
   const redondear = (x) => {
     if (x == null || !isFinite(x)) return ''
     const d = Math.abs(x) >= 1000 ? 2 : Math.abs(x) >= 1 ? 4 : 8
-    return String(Number(x.toFixed(d)))
+    // Con coma: "2.345" (punto) lo lee parseNum como dos mil trescientos y el
+    // cierre se guardaba así aunque nadie tocara el campo.
+    return numACampo(Number(x.toFixed(d)))
   }
   const [salida, setSalida] = useState(redondear(precio))
   const [comis, setComis] = useState('')

@@ -35,6 +35,9 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PERMITIDOS = {
     ("main.py", "get_db"):
         "ES el interruptor: la rama SQLite de get_db() tiene que abrir SQLite.",
+    ("scripts/fixture_compra_y_mantiene_ars.py", "copiar_historia_del_dolar"):
+        "Sólo LEE `fx_rates_daily` de una copia descargada de la base (un archivo, no la "
+        "base de la app) para armar la cuenta de prueba; lo que escribe va por get_db().",
     ("importing/recompute_backfill.py", "_clone_db"):
         "El ensayo por clon, marcado sólo-SQLite a propósito y con guard "
         "(dberrors.exigir_clon_soportado).",

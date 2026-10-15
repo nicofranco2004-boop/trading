@@ -18,7 +18,7 @@ import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useAlerts } from '../../hooks/useAlerts'
 import { POPULAR_TICKERS } from '../../utils/tickers'
 import { api } from '../../utils/api'
-import { parseNum } from '../../utils/format'
+import { parseNum, numACampo } from '../../utils/format'
 
 const EMPTY_FORM = {
   kind: 'price_target',
@@ -75,7 +75,7 @@ export default function AlertsManager({ plan, prefill }) {
           // Si el plan no tiene alertas por variación, queda el formulario
           // de siempre (el botón de ese tipo muestra su candado).
           ...((prefill.downPct || prefill.upPct) && canPct
-            ? { kind: 'pct_move', down_pct: prefill.downPct ? String(prefill.downPct) : '', up_pct: prefill.upPct ? String(prefill.upPct) : '' }
+            ? { kind: 'pct_move', down_pct: prefill.downPct ? numACampo(prefill.downPct) : '', up_pct: prefill.upPct ? numACampo(prefill.upPct) : '' }
             : {}),
         }
       : EMPTY_FORM
