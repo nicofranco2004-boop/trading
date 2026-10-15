@@ -42,6 +42,7 @@ import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { fechaCorta } from '../utils/lineaDelBono'
 import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
 import { capitalAportado } from '../utils/capitalAportado'
+import { useFxHistory } from '../hooks/useFxHistory'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 
@@ -150,9 +151,12 @@ export default function HomeMobile() {
   // Dashboard: `usd` va a las comparaciones con las fotos; `ars` es lo que se
   // MUESTRA en pesos — a los pesos que se pusieron, no los dólares × el dólar de
   // hoy (un depósito de $10 M de hace un año se leía $10,86 M).
+  // Lo aportado en dólares, al dólar que elegiste del mes en que entró (ver
+  // utils/tcHistorico.js) — el mismo que el de hoy, de otra fecha.
+  const { tcMensual } = useFxHistory(tcValuacion)
   const aportes = useMemo(
-    () => capitalAportado({ monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion }),
-    [monthly, brokers, bench, tcValuacion],
+    () => capitalAportado({ monthly, brokers, tcMensual, tcHoy: tcValuacion }),
+    [monthly, brokers, tcMensual, tcValuacion],
   )
   const aportado = aportes.usd
 

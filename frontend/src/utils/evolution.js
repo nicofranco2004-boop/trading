@@ -213,6 +213,47 @@ export function convertSeriesToArs(series, getFxForDate, aportadoEnPesos = null)
   })
 }
 
+/**
+ * serieDelLibroEnVista — la evolución del libro del asesor (`/advisor/book/
+ * history`: `{date, aum_usd, net_deposited_usd, clients}`) en la moneda en que
+ * se mira. Devuelve los mismos puntos con `aum` y `aportado` YA convertidos.
+ *
+ * En pesos, la misma regla que el resto de la app (utils/tcHistorico.js): cada
+ * cosa al dólar ELEGIDO de su fecha.
+ *   • Lo administrado de cada día, al dólar de ese día (hoy, al de hoy).
+ *   • Lo aportado NO es "el aportado de ese día × el dólar de ese día": eso hacía
+ *     subir la línea punteada con el dólar sin que entrara un peso. Es la suma de
+ *     lo que fue entrando, cada aporte (o cliente que entra con su capital) al
+ *     dólar del día en que entró. Hasta el 2026-10-15 la línea entera iba al
+ *     dólar de HOY.
+ *
+ * @param {Array} series
+ * @param {'USD'|'ARS'} moneda
+ * @param {(iso:string)=>number|null} tcEn  el dólar elegido de una fecha
+ * @param {number} tcHoy
+ * @param {string} hoyIso  el día argentino: desde ahí, el dólar de hoy
+ */
+export function serieDelLibroEnVista(series, moneda, tcEn, tcHoy, hoyIso) {
+  if (!Array.isArray(series)) return []
+  if (moneda !== 'ARS' || !(tcHoy > 0)) {
+    return series.map(p => ({ ...p, aum: p.aum_usd, aportado: p.net_deposited_usd }))
+  }
+  const fxDe = (d) => {
+    if (hoyIso && d >= hoyIso) return tcHoy
+    const v = typeof tcEn === 'function' ? tcEn(d) : null
+    return v > 0 ? v : tcHoy
+  }
+  let ndPrevio = null
+  let aportado = 0
+  return series.map(p => {
+    const fx = fxDe(p.date)
+    const nd = Number(p.net_deposited_usd) || 0
+    aportado += (ndPrevio == null ? nd : nd - ndPrevio) * fx
+    ndPrevio = nd
+    return { ...p, aum: (Number(p.aum_usd) || 0) * fx, aportado }
+  })
+}
+
 export function buildPortfolioValueSeries(snapshots, days = null, liveValue = null, liveNet = null, liveFx = null) {
   // ⚠️ FILTRAR ACÁ ES LO QUE ARREGLA EL EJE Y, EL CHIP Y EL ANCLA — los tres
   // consumidores a dos saltos que no nombran `snapshots` en ninguna línea.
@@ -737,18 +778,18 @@ export function rendimientoDelRango(snapshots, { dias = null, liveValue = null, 
  * Cumulative `pnl_realized` is sourced from `monthly_entries` (the "global"
  * broker, sorted ascending), step-matched onto each snapshot by its YYYY-MM.
  *
- * ARS series: value & baseline are converted using the historical blue rate
- * for the snapshot's (year, month) via `lookupHistoricalDolar`.
+ * ARS series: value & baseline are converted using el dólar elegido al cierre
+ * del (year, month) del snapshot via `lookupHistoricalDolar` (ver tcHistorico.js).
  *
  * @param {Array}  snapshots     [{ date, total_value, total_invested, net_deposited }, ...]
  * @param {Array}  globalMonthly monthly_entries for broker='global', SORTED ASC by year/month
- * @param {Object} bench         bench.dolar_blue map (or null)
- * @param {number} tcValuacion        live blue rate (used as fallback in lookupHistoricalDolar)
+ * @param {Object} tcMensual     `tcMensual` de useFxHistory: {YYYY-MM: dólar elegido} (or null)
+ * @param {number} tcValuacion   el dólar de hoy (used as fallback in lookupHistoricalDolar)
  *
  * @returns {{ seriesUsd: Array, seriesArs: Array } | null}
  *   null if there are <2 snapshots (caller should fall back to monthly logic).
  */
-export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcValuacion) {
+export function buildEvolutionFromSnapshots(snapshots, globalMonthly, tcMensual, tcValuacion) {
   if (!snapshots || snapshots.length < 2) return null
   // ⚠️ Sólo puntos en BASE DE MERCADO. `snapshots` mezcla mediciones del cron con
   // fotos que el import FABRICA copiando la cadena contable
@@ -876,7 +917,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
       // Initialize ARS baselines too (snapshot por snapshot tiene su propio fx)
       const y0 = +s.date.slice(0, 4)
       const mo0 = +s.date.slice(5, 7)
-      const fx0 = lookupHistoricalDolar(bench, y0, mo0, tcValuacion)
+      const fx0 = lookupHistoricalDolar(tcMensual, y0, mo0, tcValuacion)
       prevBaselineArs = netDep * fx0
       prevValueArs = value * fx0
     } else {
@@ -921,7 +962,7 @@ export function buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcV
     // técnicamente el % se mantiene; sin embargo lo replicamos por simetría.
     const y = +s.date.slice(0, 4)
     const mo = +s.date.slice(5, 7)
-    const fx = lookupHistoricalDolar(bench, y, mo, tcValuacion)
+    const fx = lookupHistoricalDolar(tcMensual, y, mo, tcValuacion)
     const valueArs    = value * fx
     const baselineArs = netDep * fx
 

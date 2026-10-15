@@ -6,11 +6,14 @@
 // Diseño: mini-cards con bars/grids/comparisons en vez de listas planas.
 // El objetivo es que el user "vea" la evidencia, no que la lea.
 //
-// Fase B (2026-05-31): los valores USD respetan el toggle global ARS/USD
-// via useMoneyFormat(). La conversión usa tcValuacion actual — limitación MVP
-// para data histórica (Fase C trackeará TC por fecha).
+// Los valores USD respetan el toggle global ARS/USD. En pesos, cada monto va al
+// dólar de su PERÍODO (el de la tarjeta que contiene el hallazgo; ver
+// utils/periodoEnPesos.js): lo aportado, a los pesos que se pusieron; lo demás,
+// al dólar del cierre. Hasta el 2026-10-15 iba todo al dólar de HOY.
 
-import { useMoneyFormat } from '../../contexts/CurrencyContext'
+import { useContext } from 'react'
+import { useMoneyFormat, fmtConvertedRaw } from '../../contexts/CurrencyContext'
+import { PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
 import { pctTxt, pctVar, pctColor } from '../../utils/format'
 
 // Todos los % de la evidencia vienen del backend en escala de PORCENTAJE
@@ -96,7 +99,7 @@ function WinRateEvidence({ ev }) {
   )
 }
 
-function DepositsDriveEvidence({ ev, fmtUsd }) {
+function DepositsDriveEvidence({ ev, fmtUsd, fmtFlujo = fmtUsd }) {
   const deps = ev.deposits || 0
   const market = ev.market_growth || 0
   const totalAbs = deps + Math.abs(market) || 1
@@ -115,7 +118,7 @@ function DepositsDriveEvidence({ ev, fmtUsd }) {
       <div className="grid grid-cols-2 gap-2 text-[11px]">
         <div>
           <div className="text-ink-3 text-[12.5px] font-medium">Aportaste</div>
-          <div className="font-mono tabular text-ink-1">{fmtUsd(deps)}</div>
+          <div className="font-mono tabular text-ink-1">{fmtFlujo(deps)}</div>
         </div>
         <div>
           <div className="text-ink-3 text-[12.5px] font-medium">Mercado</div>
@@ -287,7 +290,12 @@ export default function InsightEvidence({ insight }) {
   // Hook se llama incondicionalmente (rules of hooks) — formatter atado al
   // toggle global. Los renderers individuales lo reciben como prop.
   const money = useMoneyFormat()
-  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
+  const periodo = useContext(PeriodoEnVista)
+  // Dentro de una tarjeta de período: al dólar de ESE período. Suelta: el de hoy.
+  const conFx = (fx) => (v) => (v == null || !Number.isFinite(v) ? '—'
+    : fmtConvertedRaw(money.isArs ? v * fx : v, money.currency))
+  const fmtUsd = periodo ? conFx(periodo.fxCierre) : (v) => money.fmtMoney(v, { signed: false })
+  const fmtFlujo = periodo ? conFx(periodo.fxFlujos) : fmtUsd
   if (!insight.evidence || Object.keys(insight.evidence).length === 0) return null
   if (!Renderer) {
     // Fallback: JSON crudo (debug-only — debería no ocurrir en prod)
@@ -297,5 +305,5 @@ export default function InsightEvidence({ insight }) {
       </pre>
     )
   }
-  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} />
+  return <Renderer ev={insight.evidence} fmtUsd={fmtUsd} fmtFlujo={fmtFlujo} />
 }

@@ -236,7 +236,7 @@ function PersonalDashboard() {
   // PROPIO blue (no el actual), reflejando la realidad histórica.
   // fxToUsdBlue stampeado en el snapshot tiene prioridad sobre el
   // lookup del hook (es el más auténtico al momento del snapshot).
-  const { getRateOrFallback: getHistoricalFx } = useFxHistory(tcValuacion)
+  const { getRateOrFallback: getHistoricalFx, tcMensual } = useFxHistory(tcValuacion)
   const pf = pfUsd(usePfRollup(), tcValuacion)   // plazos fijos → USD (valor + capital)
 
   const brokerTotals = brokers.map(b => ({ ...b, ...computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis) }))
@@ -299,7 +299,7 @@ function PersonalDashboard() {
         const v = m.pnl_realized || 0
         if (!v) return s
         // Último día del mes del asiento (Date.UTC con day=0 del mes siguiente)
-        // → FX de ese momento. getHistoricalFx ya cae al blue actual si no hay serie.
+        // → FX de ese momento. getHistoricalFx ya cae al dólar de hoy si no hay serie.
         const lastDay = new Date(Date.UTC(m.year, m.month, 0)).toISOString().slice(0, 10)
         return s + v * (getHistoricalFx(lastDay) || tcValuacion)
       }, 0)
@@ -332,10 +332,10 @@ function PersonalDashboard() {
   // `totalReturnUsd`/`netDeposited` siguen siendo los de dólares: con ellos se
   // comparan las fotos guardadas y va el rendimiento a la IA.
   const resultado = useMemo(() => resultadoTotal({
-    monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion,
+    monthly, brokers, tcMensual, tcHoy: tcValuacion,
     valorHoyUsd: totalValue, moneda: currency, extraUsd: pf.investedUsd,
     capitalMaximoUsd: capitalMaximo,
-  }), [monthly, brokers, bench, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
+  }), [monthly, brokers, tcMensual, tcValuacion, totalValue, currency, pf.investedUsd, capitalMaximo])
 
   // ── Discrepancia contable ───────────────────────────────────────────────────
   // Identidad: realizedPnl + unrealizedPnl = totalReturnUsd + discrepancia
@@ -723,9 +723,9 @@ function PersonalDashboard() {
     if (currency !== 'ARS') return evoSeries
     // La línea de lo aportado, a los pesos que se pusieron (la misma regla que
     // el "Capital aportado" de arriba); el valor, al dólar de cada foto.
-    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion })
+    const aportadoArs = aportadoEnPesosAl({ monthly, brokers, tcMensual, tcHoy: tcValuacion })
     return convertSeriesToArs(evoSeries, getHistoricalFx, aportadoArs)
-  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, bench, tcValuacion])
+  }, [evoSeries, currency, getHistoricalFx, monthly, brokers, tcMensual, tcValuacion])
 
   // For chart Y-axis nice domain — usa evoSeriesDisplay para que el dominio
   // refleje los valores realmente graficados (ARS o USD según toggle).

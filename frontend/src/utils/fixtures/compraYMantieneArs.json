@@ -1326,7 +1326,7 @@
    "2026-07": 2057.99,
    "2026-08": 2096.27,
    "2026-09": 2138.48,
-   "2026-10": 2156.58
+   "2026-10": 2157.79
   }
  },
  "brokers": [
@@ -1344,37 +1344,2287 @@
   "blue": {
    "compra": 1530.0,
    "medio": 1540.0,
-   "updated_at": "2026-10-14T17:56:00.000Z",
+   "updated_at": "2026-10-15T11:57:00.000Z",
    "venta": 1550.0
   },
   "ccl": {
-   "compra": 1615.3,
-   "medio": 1615.8,
-   "updated_at": "2026-10-14T17:56:00.000Z",
-   "venta": 1616.3
+   "compra": 1615.8,
+   "medio": 1616.55,
+   "updated_at": "2026-10-15T11:57:00.000Z",
+   "venta": 1617.3
   },
   "cripto": {
-   "compra": 1613.14,
-   "medio": 1614.45,
-   "updated_at": "2026-10-14T17:56:00.000Z",
-   "venta": 1615.75
+   "compra": 1613.19,
+   "medio": 1614.49,
+   "updated_at": "2026-10-15T11:57:00.000Z",
+   "venta": 1615.79
   },
-  "fetched_at": "2026-10-14T18:42:43.246182Z",
+  "fetched_at": "2026-10-15T12:48:29.540717Z",
   "mep": {
-   "compra": 1537.4,
-   "medio": 1538.3,
-   "updated_at": "2026-10-14T17:56:00.000Z",
-   "venta": 1539.2
+   "compra": 1534.0,
+   "medio": 1536.85,
+   "updated_at": "2026-10-15T11:57:00.000Z",
+   "venta": 1539.7
   }
+ },
+ "fx_rates": [
+  {
+   "blue": 1360.0,
+   "date": "2025-09-01",
+   "mep": 1378.55
+  },
+  {
+   "blue": 1350.0,
+   "date": "2025-09-02",
+   "mep": 1368.4
+  },
+  {
+   "blue": 1340.0,
+   "date": "2025-09-03",
+   "mep": 1368.3000000000002
+  },
+  {
+   "blue": 1355.0,
+   "date": "2025-09-04",
+   "mep": 1378.0500000000002
+  },
+  {
+   "blue": 1360.0,
+   "date": "2025-09-05",
+   "mep": 1387.0
+  },
+  {
+   "blue": 1360.0,
+   "date": "2025-09-06",
+   "mep": 1387.0
+  },
+  {
+   "blue": 1360.0,
+   "date": "2025-09-07",
+   "mep": 1387.0
+  },
+  {
+   "blue": 1370.0,
+   "date": "2025-09-08",
+   "mep": 1434.65
+  },
+  {
+   "blue": 1375.0,
+   "date": "2025-09-09",
+   "mep": 1432.0
+  },
+  {
+   "blue": 1385.0,
+   "date": "2025-09-10",
+   "mep": 1425.7
+  },
+  {
+   "blue": 1400.0,
+   "date": "2025-09-11",
+   "mep": 1441.3000000000002
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-09-12",
+   "mep": 1468.35
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-09-13",
+   "mep": 1468.35
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-09-14",
+   "mep": 1468.35
+  },
+  {
+   "blue": 1445.0,
+   "date": "2025-09-15",
+   "mep": 1486.5
+  },
+  {
+   "blue": 1445.0,
+   "date": "2025-09-16",
+   "mep": 1469.6999999999998
+  },
+  {
+   "blue": 1480.0,
+   "date": "2025-09-17",
+   "mep": 1486.9
+  },
+  {
+   "blue": 1500.0,
+   "date": "2025-09-18",
+   "mep": 1557.15
+  },
+  {
+   "blue": 1510.0,
+   "date": "2025-09-19",
+   "mep": 1551.95
+  },
+  {
+   "blue": 1510.0,
+   "date": "2025-09-20",
+   "mep": 1551.95
+  },
+  {
+   "blue": 1510.0,
+   "date": "2025-09-21",
+   "mep": 1551.95
+  },
+  {
+   "blue": 1465.0,
+   "date": "2025-09-22",
+   "mep": 1426.85
+  },
+  {
+   "blue": 1400.0,
+   "date": "2025-09-23",
+   "mep": 1404.9
+  },
+  {
+   "blue": 1395.0,
+   "date": "2025-09-24",
+   "mep": 1373.65
+  },
+  {
+   "blue": 1400.0,
+   "date": "2025-09-25",
+   "mep": 1378.1
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-09-26",
+   "mep": 1432.9
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-09-27",
+   "mep": 1432.9
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-09-28",
+   "mep": 1432.9
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-09-29",
+   "mep": 1451.25
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-09-30",
+   "mep": 1498.6
+  },
+  {
+   "blue": 1450.0,
+   "date": "2025-10-01",
+   "mep": 1524.55
+  },
+  {
+   "blue": 1440.0,
+   "date": "2025-10-02",
+   "mep": 1503.65
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-10-03",
+   "mep": 1504.0
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-10-04",
+   "mep": 1504.0
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-10-05",
+   "mep": 1504.0
+  },
+  {
+   "blue": 1440.0,
+   "date": "2025-10-06",
+   "mep": 1499.3000000000002
+  },
+  {
+   "blue": 1450.0,
+   "date": "2025-10-07",
+   "mep": 1531.9
+  },
+  {
+   "blue": 1465.0,
+   "date": "2025-10-08",
+   "mep": 1528.8
+  },
+  {
+   "blue": 1465.0,
+   "date": "2025-10-09",
+   "mep": 1447.25
+  },
+  {
+   "blue": 1465.0,
+   "date": "2025-10-10",
+   "mep": 1447.25
+  },
+  {
+   "blue": 1465.0,
+   "date": "2025-10-11",
+   "mep": 1447.25
+  },
+  {
+   "blue": 1465.0,
+   "date": "2025-10-12",
+   "mep": 1447.25
+  },
+  {
+   "blue": 1395.0,
+   "date": "2025-10-13",
+   "mep": 1412.3
+  },
+  {
+   "blue": 1410.0,
+   "date": "2025-10-14",
+   "mep": 1457.1999999999998
+  },
+  {
+   "blue": 1440.0,
+   "date": "2025-10-15",
+   "mep": 1436.15
+  },
+  {
+   "blue": 1455.0,
+   "date": "2025-10-16",
+   "mep": 1474.35
+  },
+  {
+   "blue": 1475.0,
+   "date": "2025-10-17",
+   "mep": 1530.25
+  },
+  {
+   "blue": 1475.0,
+   "date": "2025-10-18",
+   "mep": 1530.25
+  },
+  {
+   "blue": 1475.0,
+   "date": "2025-10-19",
+   "mep": 1530.25
+  },
+  {
+   "blue": 1495.0,
+   "date": "2025-10-20",
+   "mep": 1551.65
+  },
+  {
+   "blue": 1535.0,
+   "date": "2025-10-21",
+   "mep": 1593.4
+  },
+  {
+   "blue": 1540.0,
+   "date": "2025-10-22",
+   "mep": 1589.25
+  },
+  {
+   "blue": 1515.0,
+   "date": "2025-10-23",
+   "mep": 1544.05
+  },
+  {
+   "blue": 1515.0,
+   "date": "2025-10-24",
+   "mep": 1543.4
+  },
+  {
+   "blue": 1515.0,
+   "date": "2025-10-25",
+   "mep": 1543.4
+  },
+  {
+   "blue": 1515.0,
+   "date": "2025-10-26",
+   "mep": 1543.4
+  },
+  {
+   "blue": 1455.0,
+   "date": "2025-10-27",
+   "mep": 1442.6999999999998
+  },
+  {
+   "blue": 1460.0,
+   "date": "2025-10-28",
+   "mep": 1480.15
+  },
+  {
+   "blue": 1450.0,
+   "date": "2025-10-29",
+   "mep": 1469.3
+  },
+  {
+   "blue": 1445.0,
+   "date": "2025-10-30",
+   "mep": 1470.3000000000002
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-10-31",
+   "mep": 1489.65
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-11-01",
+   "mep": 1489.65
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-11-02",
+   "mep": 1489.65
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-11-03",
+   "mep": 1493.35
+  },
+  {
+   "blue": 1445.0,
+   "date": "2025-11-04",
+   "mep": 1490.45
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-11-05",
+   "mep": 1479.2
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-06",
+   "mep": 1480.0
+  },
+  {
+   "blue": 1405.0,
+   "date": "2025-11-07",
+   "mep": 1453.95
+  },
+  {
+   "blue": 1405.0,
+   "date": "2025-11-08",
+   "mep": 1453.95
+  },
+  {
+   "blue": 1405.0,
+   "date": "2025-11-09",
+   "mep": 1453.95
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-11-10",
+   "mep": 1457.9
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-11-11",
+   "mep": 1455.4
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-12",
+   "mep": 1451.5
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-13",
+   "mep": 1457.25
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-11-14",
+   "mep": 1453.3
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-11-15",
+   "mep": 1453.3
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-11-16",
+   "mep": 1453.3
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-17",
+   "mep": 1447.35
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-11-18",
+   "mep": 1441.0
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-11-19",
+   "mep": 1442.5
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-11-20",
+   "mep": 1451.7
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-11-21",
+   "mep": 1464.1999999999998
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-11-22",
+   "mep": 1464.1999999999998
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-11-23",
+   "mep": 1464.1999999999998
+  },
+  {
+   "blue": 1415.0,
+   "date": "2025-11-24",
+   "mep": 1464.1999999999998
+  },
+  {
+   "blue": 1450.0,
+   "date": "2025-11-25",
+   "mep": 1481.5
+  },
+  {
+   "blue": 1440.0,
+   "date": "2025-11-26",
+   "mep": 1489.1
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-11-27",
+   "mep": 1482.35
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-28",
+   "mep": 1478.3000000000002
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-29",
+   "mep": 1478.3000000000002
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-11-30",
+   "mep": 1478.3000000000002
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-12-01",
+   "mep": 1475.85
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-12-02",
+   "mep": 1479.8
+  },
+  {
+   "blue": 1430.0,
+   "date": "2025-12-03",
+   "mep": 1468.9
+  },
+  {
+   "blue": 1420.0,
+   "date": "2025-12-04",
+   "mep": 1470.8000000000002
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-12-05",
+   "mep": 1477.75
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-12-06",
+   "mep": 1477.75
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-12-07",
+   "mep": 1477.75
+  },
+  {
+   "blue": 1425.0,
+   "date": "2025-12-08",
+   "mep": 1477.75
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-12-09",
+   "mep": 1469.85
+  },
+  {
+   "blue": 1440.0,
+   "date": "2025-12-10",
+   "mep": 1472.55
+  },
+  {
+   "blue": 1440.0,
+   "date": "2025-12-11",
+   "mep": 1477.9499999999998
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-12-12",
+   "mep": 1478.0500000000002
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-12-13",
+   "mep": 1478.0500000000002
+  },
+  {
+   "blue": 1435.0,
+   "date": "2025-12-14",
+   "mep": 1478.0500000000002
+  },
+  {
+   "blue": 1470.0,
+   "date": "2025-12-15",
+   "mep": 1492.7
+  },
+  {
+   "blue": 1490.0,
+   "date": "2025-12-16",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1490.0,
+   "date": "2025-12-17",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1480.0,
+   "date": "2025-12-18",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1475.0,
+   "date": "2025-12-19",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1475.0,
+   "date": "2025-12-20",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1475.0,
+   "date": "2025-12-21",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1495.0,
+   "date": "2025-12-22",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1495.0,
+   "date": "2025-12-23",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1495.0,
+   "date": "2025-12-24",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1495.0,
+   "date": "2025-12-25",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2025-12-26",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2025-12-27",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2025-12-28",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2025-12-29",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2025-12-30",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2025-12-31",
+   "mep": 1500.5
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-01-01",
+   "mep": 1483.65
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-01-02",
+   "mep": 1503.3
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-01-03",
+   "mep": 1503.3
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-01-04",
+   "mep": 1503.3
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-01-05",
+   "mep": 1500.55
+  },
+  {
+   "blue": 1510.0,
+   "date": "2026-01-06",
+   "mep": 1497.75
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-01-07",
+   "mep": 1496.45
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-01-08",
+   "mep": 1494.8
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-09",
+   "mep": 1490.75
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-10",
+   "mep": 1490.75
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-11",
+   "mep": 1490.75
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-12",
+   "mep": 1487.7
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-13",
+   "mep": 1487.85
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-01-14",
+   "mep": 1479.9
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-01-15",
+   "mep": 1473.1
+  },
+  {
+   "blue": 1490.0,
+   "date": "2026-01-16",
+   "mep": 1472.55
+  },
+  {
+   "blue": 1490.0,
+   "date": "2026-01-17",
+   "mep": 1472.55
+  },
+  {
+   "blue": 1490.0,
+   "date": "2026-01-18",
+   "mep": 1472.55
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-19",
+   "mep": 1468.05
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-01-20",
+   "mep": 1471.6
+  },
+  {
+   "blue": 1490.0,
+   "date": "2026-01-21",
+   "mep": 1461.6
+  },
+  {
+   "blue": 1485.0,
+   "date": "2026-01-22",
+   "mep": 1458.65
+  },
+  {
+   "blue": 1475.0,
+   "date": "2026-01-23",
+   "mep": 1469.0500000000002
+  },
+  {
+   "blue": 1475.0,
+   "date": "2026-01-24",
+   "mep": 1469.0500000000002
+  },
+  {
+   "blue": 1475.0,
+   "date": "2026-01-25",
+   "mep": 1469.0500000000002
+  },
+  {
+   "blue": 1480.0,
+   "date": "2026-01-26",
+   "mep": 1469.4
+  },
+  {
+   "blue": 1480.0,
+   "date": "2026-01-27",
+   "mep": 1463.6999999999998
+  },
+  {
+   "blue": 1475.0,
+   "date": "2026-01-28",
+   "mep": 1463.7
+  },
+  {
+   "blue": 1465.0,
+   "date": "2026-01-29",
+   "mep": 1459.45
+  },
+  {
+   "blue": 1460.0,
+   "date": "2026-01-30",
+   "mep": 1462.5
+  },
+  {
+   "blue": 1460.0,
+   "date": "2026-01-31",
+   "mep": 1462.5
+  },
+  {
+   "blue": 1460.0,
+   "date": "2026-02-01",
+   "mep": 1462.5
+  },
+  {
+   "blue": 1440.0,
+   "date": "2026-02-03",
+   "mep": 1457.5500000000002
+  },
+  {
+   "blue": 1445.0,
+   "date": "2026-02-04",
+   "mep": 1457.45
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-05",
+   "mep": 1463.9
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-02-06",
+   "mep": 1447.0
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-02-07",
+   "mep": 1447.0
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-02-08",
+   "mep": 1447.0
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-02-09",
+   "mep": 1438.1
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-02-10",
+   "mep": 1432.65
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-02-11",
+   "mep": 1429.85
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-12",
+   "mep": 1417.25
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-13",
+   "mep": 1423.8
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-14",
+   "mep": 1423.8
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-15",
+   "mep": 1423.8
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-16",
+   "mep": 1423.8
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-17",
+   "mep": 1423.8
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-02-18",
+   "mep": 1411.4
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-02-19",
+   "mep": 1409.35
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-02-20",
+   "mep": 1400.8
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-02-21",
+   "mep": 1400.8
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-02-22",
+   "mep": 1400.8
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-02-23",
+   "mep": 1393.6
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-02-24",
+   "mep": 1404.55
+  },
+  {
+   "blue": 1435.0,
+   "date": "2026-02-25",
+   "mep": 1425.75
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-02-26",
+   "mep": 1434.85
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-02-27",
+   "mep": 1416.85
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-02-28",
+   "mep": 1416.85
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-01",
+   "mep": 1416.85
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-03-02",
+   "mep": 1417.6
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-03",
+   "mep": 1436.0500000000002
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-04",
+   "mep": 1426.7
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-03-05",
+   "mep": 1433.55
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-06",
+   "mep": 1437.5
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-07",
+   "mep": 1437.5
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-08",
+   "mep": 1437.5
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-09",
+   "mep": 1430.25
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-10",
+   "mep": 1421.25
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-11",
+   "mep": 1412.1
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-03-12",
+   "mep": 1413.8000000000002
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-13",
+   "mep": 1421.8000000000002
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-14",
+   "mep": 1421.8000000000002
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-15",
+   "mep": 1421.8000000000002
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-16",
+   "mep": 1421.8000000000002
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-03-17",
+   "mep": 1419.95
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-03-18",
+   "mep": 1423.4
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-03-19",
+   "mep": 1418.35
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-20",
+   "mep": 1423.25
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-21",
+   "mep": 1423.25
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-22",
+   "mep": 1423.25
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-23",
+   "mep": 1413.2
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-24",
+   "mep": 1413.2
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-03-25",
+   "mep": 1405.75
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-26",
+   "mep": 1399.0
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-27",
+   "mep": 1426.75
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-28",
+   "mep": 1426.75
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-03-29",
+   "mep": 1426.75
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-03-30",
+   "mep": 1434.4
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-03-31",
+   "mep": 1426.05
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-01",
+   "mep": 1434.3
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-02",
+   "mep": 1434.3
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-03",
+   "mep": 1434.3
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-04",
+   "mep": 1434.3
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-05",
+   "mep": 1434.3
+  },
+  {
+   "blue": 1395.0,
+   "date": "2026-04-06",
+   "mep": 1428.1
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-04-07",
+   "mep": 1432.05
+  },
+  {
+   "blue": 1385.0,
+   "date": "2026-04-08",
+   "mep": 1424.7
+  },
+  {
+   "blue": 1385.0,
+   "date": "2026-04-09",
+   "mep": 1423.1
+  },
+  {
+   "blue": 1382.5,
+   "date": "2026-04-10",
+   "mep": 1411.65
+  },
+  {
+   "blue": 1382.5,
+   "date": "2026-04-11",
+   "mep": 1411.65
+  },
+  {
+   "blue": 1382.5,
+   "date": "2026-04-12",
+   "mep": 1411.65
+  },
+  {
+   "blue": 1392.5,
+   "date": "2026-04-13",
+   "mep": 1403.95
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-14",
+   "mep": 1412.1
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-15",
+   "mep": 1396.3
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-04-16",
+   "mep": 1404.15
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-17",
+   "mep": 1411.85
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-18",
+   "mep": 1411.85
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-19",
+   "mep": 1411.85
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-20",
+   "mep": 1416.75
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-04-21",
+   "mep": 1414.9
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-04-22",
+   "mep": 1418.75
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-04-23",
+   "mep": 1425.15
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-04-24",
+   "mep": 1439.2
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-04-25",
+   "mep": 1439.2
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-04-26",
+   "mep": 1439.2
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-04-27",
+   "mep": 1458.9
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-04-28",
+   "mep": 1445.25
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-04-29",
+   "mep": 1437.3000000000002
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-04-30",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-01",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-02",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-03",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1395.0,
+   "date": "2026-05-04",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1400.0,
+   "date": "2026-05-05",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-06",
+   "mep": 1443.0
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-07",
+   "mep": 1427.8
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-08",
+   "mep": 1430.65
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-09",
+   "mep": 1430.65
+  },
+  {
+   "blue": 1390.0,
+   "date": "2026-05-10",
+   "mep": 1430.65
+  },
+  {
+   "blue": 1395.0,
+   "date": "2026-05-11",
+   "mep": 1426.45
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-05-12",
+   "mep": 1420.15
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-05-13",
+   "mep": 1423.9
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-05-14",
+   "mep": 1425.1
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-05-15",
+   "mep": 1425.65
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-05-16",
+   "mep": 1425.65
+  },
+  {
+   "blue": 1405.0,
+   "date": "2026-05-17",
+   "mep": 1425.65
+  },
+  {
+   "blue": 1410.0,
+   "date": "2026-05-18",
+   "mep": 1431.6
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-05-19",
+   "mep": 1429.55
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-05-20",
+   "mep": 1432.25
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-05-21",
+   "mep": 1425.7
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-05-22",
+   "mep": 1429.35
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-05-23",
+   "mep": 1429.35
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-05-24",
+   "mep": 1429.35
+  },
+  {
+   "blue": 1415.0,
+   "date": "2026-05-25",
+   "mep": 1429.35
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-05-26",
+   "mep": 1432.8000000000002
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-05-27",
+   "mep": 1430.05
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-05-28",
+   "mep": 1431.9
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-05-29",
+   "mep": 1433.4499999999998
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-05-30",
+   "mep": 1433.4499999999998
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-05-31",
+   "mep": 1433.4499999999998
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-06-01",
+   "mep": 1440.5
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-06-02",
+   "mep": 1449.4
+  },
+  {
+   "blue": 1420.0,
+   "date": "2026-06-03",
+   "mep": 1461.05
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-06-04",
+   "mep": 1457.4499999999998
+  },
+  {
+   "blue": 1422.5,
+   "date": "2026-06-05",
+   "mep": 1459.15
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-06-06",
+   "mep": 1459.15
+  },
+  {
+   "blue": 1425.0,
+   "date": "2026-06-07",
+   "mep": 1459.15
+  },
+  {
+   "blue": 1430.0,
+   "date": "2026-06-08",
+   "mep": 1465.5
+  },
+  {
+   "blue": 1442.5,
+   "date": "2026-06-09",
+   "mep": 1458.55
+  },
+  {
+   "blue": 1445.0,
+   "date": "2026-06-10",
+   "mep": 1456.1999999999998
+  },
+  {
+   "blue": 1440.0,
+   "date": "2026-06-11",
+   "mep": 1451.5500000000002
+  },
+  {
+   "blue": 1445.0,
+   "date": "2026-06-12",
+   "mep": 1450.8000000000002
+  },
+  {
+   "blue": 1450.0,
+   "date": "2026-06-13",
+   "mep": 1450.8000000000002
+  },
+  {
+   "blue": 1450.0,
+   "date": "2026-06-14",
+   "mep": 1450.8000000000002
+  },
+  {
+   "blue": 1450.0,
+   "date": "2026-06-15",
+   "mep": 1450.8000000000002
+  },
+  {
+   "blue": 1455.0,
+   "date": "2026-06-16",
+   "mep": 1454.8
+  },
+  {
+   "blue": 1465.0,
+   "date": "2026-06-17",
+   "mep": 1460.6
+  },
+  {
+   "blue": 1470.0,
+   "date": "2026-06-18",
+   "mep": 1467.3
+  },
+  {
+   "blue": 1472.5,
+   "date": "2026-06-19",
+   "mep": 1476.6
+  },
+  {
+   "blue": 1470.0,
+   "date": "2026-06-20",
+   "mep": 1476.6
+  },
+  {
+   "blue": 1470.0,
+   "date": "2026-06-21",
+   "mep": 1476.6
+  },
+  {
+   "blue": 1477.5,
+   "date": "2026-06-22",
+   "mep": 1483.9499999999998
+  },
+  {
+   "blue": 1495.0,
+   "date": "2026-06-23",
+   "mep": 1507.0
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-06-24",
+   "mep": 1505.0500000000002
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-06-25",
+   "mep": 1500.35
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-06-26",
+   "mep": 1500.9
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-06-27",
+   "mep": 1500.9
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-06-28",
+   "mep": 1500.9
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-06-29",
+   "mep": 1507.4
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-06-30",
+   "mep": 1517.35
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-07-01",
+   "mep": 1519.2
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-07-02",
+   "mep": 1529.7
+  },
+  {
+   "blue": 1502.5,
+   "date": "2026-07-03",
+   "mep": 1524.45
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-04",
+   "mep": 1524.45
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-05",
+   "mep": 1524.45
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-07-06",
+   "mep": 1523.1
+  },
+  {
+   "blue": 1505.0,
+   "date": "2026-07-07",
+   "mep": 1529.4499999999998
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-08",
+   "mep": 1528.4
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-09",
+   "mep": 1528.4
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-10",
+   "mep": 1523.0
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-11",
+   "mep": 1523.0
+  },
+  {
+   "blue": 1500.0,
+   "date": "2026-07-12",
+   "mep": 1523.0
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-07-13",
+   "mep": 1519.8000000000002
+  },
+  {
+   "blue": 1510.0,
+   "date": "2026-07-14",
+   "mep": 1507.15
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-07-15",
+   "mep": 1512.35
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-07-16",
+   "mep": 1514.2
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-07-17",
+   "mep": 1520.1
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-07-18",
+   "mep": 1520.1
+  },
+  {
+   "blue": 1520.0,
+   "date": "2026-07-19",
+   "mep": 1520.1
+  },
+  {
+   "blue": 1530.0,
+   "date": "2026-07-20",
+   "mep": 1512.5500000000002
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-07-21",
+   "mep": 1509.0500000000002
+  },
+  {
+   "blue": 1545.0,
+   "date": "2026-07-22",
+   "mep": 1511.6
+  },
+  {
+   "blue": 1540.0,
+   "date": "2026-07-23",
+   "mep": 1518.75
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-07-24",
+   "mep": 1531.4
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-07-25",
+   "mep": 1531.4
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-07-26",
+   "mep": 1531.4
+  },
+  {
+   "blue": 1550.0,
+   "date": "2026-07-27",
+   "mep": 1531.85
+  },
+  {
+   "blue": 1560.0,
+   "date": "2026-07-28",
+   "mep": 1530.9
+  },
+  {
+   "blue": 1560.0,
+   "date": "2026-07-29",
+   "mep": 1523.1999999999998
+  },
+  {
+   "blue": 1555.0,
+   "date": "2026-07-30",
+   "mep": 1510.2
+  },
+  {
+   "blue": 1550.0,
+   "date": "2026-07-31",
+   "mep": 1519.4499999999998
+  },
+  {
+   "blue": 1550.0,
+   "date": "2026-08-01",
+   "mep": 1519.4499999999998
+  },
+  {
+   "blue": 1550.0,
+   "date": "2026-08-02",
+   "mep": 1519.4499999999998
+  },
+  {
+   "blue": 1545.0,
+   "date": "2026-08-03",
+   "mep": 1525.8
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-08-04",
+   "mep": 1520.5
+  },
+  {
+   "blue": 1530.0,
+   "date": "2026-08-05",
+   "mep": 1518.85
+  },
+  {
+   "blue": 1525.0,
+   "date": "2026-08-06",
+   "mep": 1517.5500000000002
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-08-07",
+   "mep": 1524.1999999999998
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-08-08",
+   "mep": 1524.1999999999998
+  },
+  {
+   "blue": 1515.0,
+   "date": "2026-08-09",
+   "mep": 1524.1999999999998
+  },
+  {
+   "blue": 1525.0,
+   "date": "2026-08-10",
+   "mep": 1524.15
+  },
+  {
+   "blue": 1540.0,
+   "date": "2026-08-11",
+   "mep": 1523.6
+  },
+  {
+   "blue": 1530.0,
+   "date": "2026-08-12",
+   "mep": 1525.45
+  },
+  {
+   "blue": 1530.0,
+   "date": "2026-08-13",
+   "mep": 1523.35
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-08-14",
+   "mep": 1515.6
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-08-15",
+   "mep": 1515.6
+  },
+  {
+   "blue": 1535.0,
+   "date": "2026-08-16",
+   "mep": null
+  }
+ ],
+ "mixta": {
+  "_como_se_armo": "flujos de efectivo cargados por la API: deposit 10,000,000 en Balanz (ARS) el 2025-10-13; withdraw 1,000,000 en Balanz (ARS) el 2026-02-10; deposit 2,000 en IBKR (USD) el 2026-03-02; withdraw 500 en IBKR (USD) el 2026-06-15",
+  "brokers": [
+   {
+    "currency": "ARS",
+    "id": 3,
+    "is_exchange": 0,
+    "name": "Balanz",
+    "nombres_anteriores": null,
+    "parent_broker_id": null,
+    "user_id": 2
+   },
+   {
+    "currency": "USD",
+    "id": 2,
+    "is_exchange": 0,
+    "name": "IBKR",
+    "nombres_anteriores": null,
+    "parent_broker_id": null,
+    "user_id": 2
+   }
+  ],
+  "monthly": [
+   {
+    "broker": "Balanz",
+    "capital_final": 7080.648587410607,
+    "capital_inicio": 0.0,
+    "deposits": 7080.648587410607,
+    "id": 27,
+    "manual_deposits": 7080.648587410607,
+    "manual_deposits_native": 10000000.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 10,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2025
+   },
+   {
+    "broker": "global",
+    "capital_final": 7080.648587410607,
+    "capital_inicio": 0.0,
+    "deposits": 7080.648587410607,
+    "id": 28,
+    "manual_deposits": 7080.648587410607,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 10,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2025
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.641397936556,
+    "capital_inicio": 7080.648587410607,
+    "deposits": 0.0,
+    "id": 29,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 698.0071894740515,
+    "manual_withdrawals_native": 1000000.0,
+    "month": 2,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 698.0071894740515,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 6382.641397936556,
+    "capital_inicio": 7080.648587410607,
+    "deposits": 0.0,
+    "id": 30,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 698.0071894740515,
+    "manual_withdrawals_native": 0.0,
+    "month": 2,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 698.0071894740515,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 35,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 3,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "IBKR",
+    "capital_final": 2000.0,
+    "capital_inicio": 0.0,
+    "deposits": 2000.0,
+    "id": 31,
+    "manual_deposits": 2000.0,
+    "manual_deposits_native": 2000.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 3,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 8382.641397936557,
+    "capital_inicio": 6382.641397936556,
+    "deposits": 2000.0,
+    "id": 32,
+    "manual_deposits": 2000.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 3,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 36,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 4,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 37,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 5,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 38,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 6,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "IBKR",
+    "capital_final": 1500.0,
+    "capital_inicio": 2000.0,
+    "deposits": 0.0,
+    "id": 33,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 500.0,
+    "manual_withdrawals_native": 500.0,
+    "month": 6,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 500.0,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 7882.641397936557,
+    "capital_inicio": 8382.641397936557,
+    "deposits": 0.0,
+    "id": 34,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 500.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 6,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 500.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 39,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 7,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "IBKR",
+    "capital_final": 1500.0,
+    "capital_inicio": 1500.0,
+    "deposits": 0.0,
+    "id": 47,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 7,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 7882.6414,
+    "capital_inicio": 7882.6414,
+    "deposits": 0.0,
+    "id": 43,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 7,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 40,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 8,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "IBKR",
+    "capital_final": 1500.0,
+    "capital_inicio": 1500.0,
+    "deposits": 0.0,
+    "id": 48,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 8,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 7882.6414,
+    "capital_inicio": 7882.6414,
+    "deposits": 0.0,
+    "id": 44,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 8,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 41,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 9,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "IBKR",
+    "capital_final": 1500.0,
+    "capital_inicio": 1500.0,
+    "deposits": 0.0,
+    "id": 49,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 9,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 7882.6414,
+    "capital_inicio": 7882.6414,
+    "deposits": 0.0,
+    "id": 45,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 9,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "Balanz",
+    "capital_final": 6382.6414,
+    "capital_inicio": 6382.6414,
+    "deposits": 0.0,
+    "id": 42,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 10,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "IBKR",
+    "capital_final": 1500.0,
+    "capital_inicio": 1500.0,
+    "deposits": 0.0,
+    "id": 50,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 10,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   },
+   {
+    "broker": "global",
+    "capital_final": 7882.6414,
+    "capital_inicio": 7882.6414,
+    "deposits": 0.0,
+    "id": 46,
+    "manual_deposits": 0.0,
+    "manual_deposits_native": 0.0,
+    "manual_withdrawals": 0.0,
+    "manual_withdrawals_native": 0.0,
+    "month": 10,
+    "pnl_realized": 0.0,
+    "pnl_unrealized": 0.0,
+    "user_id": 2,
+    "withdrawals": 0.0,
+    "year": 2026
+   }
+  ],
+  "movements": [
+   {
+    "amount_usd": 500.0,
+    "approx_date": false,
+    "asset": "",
+    "broker": "IBKR",
+    "currency": "USD",
+    "date": "2026-06-15",
+    "fees_usd": 0,
+    "id": "mf-5",
+    "kind": "movement",
+    "notes": "Retiro a mano",
+    "quantity": null,
+    "ref_id": 33,
+    "source": "monthly",
+    "type": "WITHDRAW",
+    "unit_price": null
+   },
+   {
+    "amount_usd": 2000.0,
+    "approx_date": false,
+    "asset": "",
+    "broker": "IBKR",
+    "currency": "USD",
+    "date": "2026-03-02",
+    "fees_usd": 0,
+    "id": "mf-4",
+    "kind": "movement",
+    "notes": "Depósito a mano",
+    "quantity": null,
+    "ref_id": 31,
+    "source": "monthly",
+    "type": "DEPOSIT",
+    "unit_price": null
+   },
+   {
+    "amount_usd": 698.007189,
+    "approx_date": false,
+    "asset": "",
+    "broker": "Balanz",
+    "currency": "USD",
+    "date": "2026-02-10",
+    "fees_usd": 0,
+    "id": "mf-3",
+    "kind": "movement",
+    "notes": "Retiro a mano",
+    "quantity": null,
+    "ref_id": 29,
+    "source": "monthly",
+    "type": "WITHDRAW",
+    "unit_price": null
+   },
+   {
+    "amount_usd": 7080.648587,
+    "approx_date": false,
+    "asset": "",
+    "broker": "Balanz",
+    "currency": "USD",
+    "date": "2025-10-13",
+    "fees_usd": 0,
+    "id": "mf-2",
+    "kind": "movement",
+    "notes": "Depósito a mano",
+    "quantity": null,
+    "ref_id": 27,
+    "source": "monthly",
+    "type": "DEPOSIT",
+    "unit_price": null
+   }
+  ]
  },
  "monthly": [
   {
    "broker": "Balanz",
-   "capital_final": 7067.137809187279,
+   "capital_final": 7080.648587410607,
    "capital_inicio": 0.0,
-   "deposits": 7067.137809187279,
+   "deposits": 7080.648587410607,
    "id": 1,
-   "manual_deposits": 7067.137809187279,
+   "manual_deposits": 7080.648587410607,
    "manual_deposits_native": 10000000.0,
    "manual_withdrawals": 0.0,
    "manual_withdrawals_native": 0.0,
@@ -1387,11 +3637,11 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.137809187279,
+   "capital_final": 7080.648587410607,
    "capital_inicio": 0.0,
-   "deposits": 7067.137809187279,
+   "deposits": 7080.648587410607,
    "id": 2,
-   "manual_deposits": 7067.137809187279,
+   "manual_deposits": 7080.648587410607,
    "manual_deposits_native": 0.0,
    "manual_withdrawals": 0.0,
    "manual_withdrawals_native": 0.0,
@@ -1404,8 +3654,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 3,
    "manual_deposits": 0.0,
@@ -1421,8 +3671,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 15,
    "manual_deposits": 0.0,
@@ -1438,8 +3688,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 4,
    "manual_deposits": 0.0,
@@ -1455,8 +3705,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 16,
    "manual_deposits": 0.0,
@@ -1472,8 +3722,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 5,
    "manual_deposits": 0.0,
@@ -1489,8 +3739,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 17,
    "manual_deposits": 0.0,
@@ -1506,8 +3756,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 6,
    "manual_deposits": 0.0,
@@ -1523,8 +3773,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 18,
    "manual_deposits": 0.0,
@@ -1540,8 +3790,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 7,
    "manual_deposits": 0.0,
@@ -1557,8 +3807,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 19,
    "manual_deposits": 0.0,
@@ -1574,8 +3824,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 8,
    "manual_deposits": 0.0,
@@ -1591,8 +3841,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 20,
    "manual_deposits": 0.0,
@@ -1608,8 +3858,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 9,
    "manual_deposits": 0.0,
@@ -1625,8 +3875,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 21,
    "manual_deposits": 0.0,
@@ -1642,8 +3892,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 10,
    "manual_deposits": 0.0,
@@ -1659,8 +3909,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 22,
    "manual_deposits": 0.0,
@@ -1676,8 +3926,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 11,
    "manual_deposits": 0.0,
@@ -1693,8 +3943,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 23,
    "manual_deposits": 0.0,
@@ -1710,8 +3960,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 12,
    "manual_deposits": 0.0,
@@ -1727,8 +3977,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 24,
    "manual_deposits": 0.0,
@@ -1744,8 +3994,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 13,
    "manual_deposits": 0.0,
@@ -1761,8 +4011,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 25,
    "manual_deposits": 0.0,
@@ -1778,8 +4028,8 @@
   },
   {
    "broker": "Balanz",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 14,
    "manual_deposits": 0.0,
@@ -1795,8 +4045,8 @@
   },
   {
    "broker": "global",
-   "capital_final": 7067.1378,
-   "capital_inicio": 7067.1378,
+   "capital_final": 7080.6486,
+   "capital_inicio": 7080.6486,
    "deposits": 0.0,
    "id": 26,
    "manual_deposits": 0.0,
@@ -1809,6 +4059,144 @@
    "user_id": 1,
    "withdrawals": 0.0,
    "year": 2026
+  }
+ ],
+ "movements": [
+  {
+   "amount_usd": 7080.648587,
+   "approx_date": false,
+   "asset": "",
+   "broker": "Balanz",
+   "currency": "USD",
+   "date": "2025-10-13",
+   "fees_usd": 0,
+   "id": "mf-1",
+   "kind": "movement",
+   "notes": "Depósito a mano",
+   "quantity": null,
+   "ref_id": 1,
+   "source": "monthly",
+   "type": "DEPOSIT",
+   "unit_price": null
+  },
+  {
+   "amount_usd": 1008.9924237060116,
+   "asset": "GGAL",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-2",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 300.0,
+   "ref_id": 2,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 4750.0
+  },
+  {
+   "amount_usd": 1013.4957162076047,
+   "asset": "YPFD",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-3",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 360.0,
+   "ref_id": 3,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 3976.0
+  },
+  {
+   "amount_usd": 1019.1177511860087,
+   "asset": "PAMP",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-4",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 370.0,
+   "ref_id": 4,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 3890.0
+  },
+  {
+   "amount_usd": 1003.9226793174255,
+   "asset": "KO",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-5",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 74.0,
+   "ref_id": 5,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 19160.0
+  },
+  {
+   "amount_usd": 1009.034907597536,
+   "asset": "MSFT",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-6",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 58.0,
+   "ref_id": 6,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 24570.0
+  },
+  {
+   "amount_usd": 995.65248176733,
+   "asset": "MELI",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-7",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 54.0,
+   "ref_id": 7,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 26040.0
+  },
+  {
+   "amount_usd": 1007.6329391772286,
+   "asset": "GOOGL",
+   "broker": "Balanz",
+   "currency": "ARS",
+   "date": "2025-10-13",
+   "fees_usd": 0.0,
+   "id": "pos-8",
+   "is_open_position": true,
+   "kind": "movement",
+   "notes": "",
+   "quantity": 236.0,
+   "ref_id": 8,
+   "source": "manual",
+   "type": "BUY",
+   "unit_price": 6030.0
   }
  ],
  "positions": [
@@ -1846,7 +4234,7 @@
    "price_override": null,
    "quantity": 300.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1425000.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   },
@@ -1865,7 +4253,7 @@
    "price_override": null,
    "quantity": 236.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1423080.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   },
@@ -1884,7 +4272,7 @@
    "price_override": null,
    "quantity": 74.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1417840.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   },
@@ -1903,7 +4291,7 @@
    "price_override": null,
    "quantity": 54.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1406160.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   },
@@ -1922,7 +4310,7 @@
    "price_override": null,
    "quantity": 58.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1425060.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   },
@@ -1941,7 +4329,7 @@
    "price_override": null,
    "quantity": 370.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1439300.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   },
@@ -1960,19 +4348,19 @@
    "price_override": null,
    "quantity": 360.0,
    "split_adjusted_through": null,
-   "tc_compra": null,
+   "tc_compra": 1412.3,
    "undo_meta_json": "{\"src\": \"manual_position\", \"cost\": 1431360.0, \"autodep\": null, \"entry_date\": \"2025-10-13\", \"broker\": \"Balanz\"}",
    "user_id": 1
   }
  ],
  "prices": {
-  "GGAL.BA": 5790.0,
-  "GOOGL.BA": 9700.0,
-  "KO.BA": 29660.0,
-  "MELI.BA": 24560.0,
-  "MSFT.BA": 28760.0,
-  "PAMP.BA": 5230.0,
-  "YPFD.BA": 8490.0,
+  "GGAL.BA": 5750.0,
+  "GOOGL.BA": 9715.0,
+  "KO.BA": 29640.0,
+  "MELI.BA": 24690.0,
+  "MSFT.BA": 28700.0,
+  "PAMP.BA": 5220.0,
+  "YPFD.BA": 8460.0,
   "__meta": {}
  },
  "snapshots": []

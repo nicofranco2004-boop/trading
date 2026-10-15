@@ -49,6 +49,7 @@ import { denominadorAportado } from '../utils/evolution'
 import { toDistributionAiParams } from '../utils/distributionAi'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { lookupHistoricalDolar } from '../utils/fx'
+import { useFxHistory } from '../hooks/useFxHistory'
 import { buildEvolutionFromSnapshots } from '../utils/evolution'
 import CargaPorPasos from '../components/novedades/CargaPorPasos'
 import { useDemora } from '../hooks/useDemora'
@@ -687,6 +688,10 @@ function InsightsDesktop({ _embeddedTab }) {
     return [...new Set([...buildPriceSymbols(pos, bkrs), ...arsSyms, ...usdtSyms])].join(',')
   }
 
+  // El dólar elegido al cierre de cada mes (ver más abajo, `tcMapa`). Es un
+  // hook: va ARRIBA del return de "Cargando".
+  const { tcMensual } = useFxHistory(pickFinancialRate(dolar, valuationDollar) || 1415)
+
   // Cargando: los pedidos reales con su tilde (y lo que trajeron), sólo si
   // tarda (useDemora). Antes: "Cargando…" sin más.
   if (loading) {
@@ -736,6 +741,11 @@ function InsightsDesktop({ _embeddedTab }) {
   //                Excluye cash. Esto es lo que un usuario espera ver al preguntarse
   //                "¿qué tan expuesto estoy a un único activo?".
   const tcValuacion = pickFinancialRate(dolar, valuationDollar) || 1415
+  // Lo viejo se pasa a pesos al dólar ELEGIDO de su mes (MEP; ver
+  // utils/tcHistorico.js), el mismo que el de hoy. Hasta el 2026-10-15 esta
+  // pantalla usaba el blue (`bench.dolar_blue`) para lo viejo y el MEP para hoy.
+  // (`tcMensual` sale de un hook llamado arriba del return de "Cargando".)
+  const tcMapa = Object.keys(tcMensual || {}).length ? tcMensual : null
   const tcCedear = pickFinancialRate(dolar, valuationDollar) || tcValuacion  // dólar financiero p/ CEDEARs
   const tcCripto = dolar?.cripto?.venta  // dólar cripto (~5% sobre spot) p/ cripto en broker AR
   // Brokers que son exchange (Binance, Ripio…): la cripto se valúa a spot (factor 1).
@@ -907,7 +917,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // (residuos de imports antiguos), el % no se va a < −100% y no rompe el
   // rebase chain-linked del chart de benchmarks.
   //
-  // ARS: convertir value_t e invested_t a pesos usando el dólar blue del mes
+  // ARS: convertir value_t e invested_t a pesos usando el dólar elegido del mes
   // correspondiente (los flujos quedan al fx de cuando ocurrieron — aproximación).
   const seriesUsd = []
   const seriesArs = []
@@ -915,7 +925,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // ── Phase 7 — Daily granularity from snapshots when available ──
   // ≥2 snapshots → daily evolution (Total Return %, realized step-matched
   // from monthly_entries). Else fallback al cómputo mensual de abajo.
-  const dailyEvo = buildEvolutionFromSnapshots(snapshots, globalMonthly, bench, tcValuacion)
+  const dailyEvo = buildEvolutionFromSnapshots(snapshots, globalMonthly, tcMapa, tcValuacion)
   if (dailyEvo) {
     seriesUsd.push(...dailyEvo.seriesUsd)
     seriesArs.push(...dailyEvo.seriesArs)
@@ -923,17 +933,17 @@ function InsightsDesktop({ _embeddedTab }) {
     const baseline = globalMonthly[0].capital_inicio || 0
     const firstKey = monthKey(globalMonthly[0].year, globalMonthly[0].month)
 
-    const dolarKeys = bench?.dolar_blue ? Object.keys(bench.dolar_blue).sort() : []
+    const dolarKeys = tcMapa ? Object.keys(tcMapa).sort() : []
     const lookupDolar = (key) => {
-      if (!bench?.dolar_blue) return null
-      if (bench.dolar_blue[key]) return bench.dolar_blue[key]
+      if (!tcMapa) return null
+      if (tcMapa[key]) return tcMapa[key]
       let found = null
       for (const k of dolarKeys) {
         if (k <= key) found = k
         else break
       }
       if (!found) found = dolarKeys[0]
-      return found ? bench.dolar_blue[found] : null
+      return found ? tcMapa[found] : null
     }
     const fxBase = lookupDolar(firstKey)
 
@@ -1030,7 +1040,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // ARS: mismo TWR pero con el capital inicial al fx del mes ANTERIOR. Si los
       // tres términos van al fx del MISMO mes, el fx se cancela en el cociente y
       // esta línea "en pesos" es la línea en dólares. Ver monthlyReturnArs().
-      if (fxBase && bench?.dolar_blue) {
+      if (fxBase && tcMapa) {
         const fx = lookupDolar(monthKey(m.year, m.month)) || fxBase
         const rArs = monthlyReturnArs({ ci, cf, net, fxPrev: fxPrevChart, fx, isImportInitial }) ?? 0
         fxPrevChart = fx
@@ -1066,11 +1076,10 @@ function InsightsDesktop({ _embeddedTab }) {
       // ARS "Hoy" — el cierre del último mes vale a SU fx, el valor de hoy al de
       // hoy. Los dos al mismo tcValuacion (como estaba) hacía que el tramo final
       // tampoco viera la devaluación.
-      // Los dos lados salen del mapa `dolar_blue`, NO de tcValuacion: tcValuacion es el MEP
-      // (pickFinancialRate), y como lo que mueve el retorno es el cociente
-      // fx_hoy/fx_últimoMes, mezclar rieles metería un salto espurio del tamaño
-      // del cambio de la brecha blue-MEP.
-      const fxHoyChart = dolarKeys.length ? bench.dolar_blue[dolarKeys[dolarKeys.length - 1]] : null
+      // Los dos lados salen de la MISMA tabla (`tcMapa`, el dólar elegido de cada
+      // mes), no uno de la tabla y otro del vivo: lo que mueve el retorno es el
+      // cociente fx_hoy/fx_últimoMes, y mezclar fuentes metería un salto espurio.
+      const fxHoyChart = dolarKeys.length ? tcMapa[dolarKeys[dolarKeys.length - 1]] : null
       if (fxBase && fxHoyChart) {
         const lastCfArs = lastCf * fxPrevChart
         const valueArsLive = totalPortfolio * fxHoyChart
@@ -1080,7 +1089,7 @@ function InsightsDesktop({ _embeddedTab }) {
           cumIdxArs *= (1 + rLiveArsClamped)
         }
         const totalArsLive = +((cumIdxArs - 1) * 100).toFixed(2)
-        // Mismo riel que el numerador (cumRealizedArs se acumuló al blue de cada mes).
+        // Mismo riel que el numerador (cumRealizedArs se acumuló al dólar de cada mes).
         const denomArsLive = (denominadorAportado(cumNetDeposits, peakNetDeposits) ?? 0) * fxHoyChart
         const realArsLive = denomArsLive > 0 ? +((cumRealizedArs / denomArsLive) * 100).toFixed(2) : 0
         seriesArs.push({ key: 'today', label: 'Hoy', realized: realArsLive, total: totalArsLive })
@@ -1093,8 +1102,8 @@ function InsightsDesktop({ _embeddedTab }) {
   //  1. Cubrir toda la historia desde el primer mes registrado, no solo 30 días
   //  2. Garantizar que los puntos son "YYYY-MM", coincidiendo con bench.sp500
   //     y bench.inflation_ar que también son mensuales.
-  //  3. USD: globalMonthly (total en USD — incluye ARS brokers convertidos al blue del mes)
-  //  4. ARS: solo brokers ARS, convertidos a pesos × blue del mes, comparados con inflación.
+  //  3. USD: globalMonthly (total en USD — incluye ARS brokers convertidos al dólar del mes)
+  //  4. ARS: solo brokers ARS, convertidos a pesos × el dólar elegido del mes, comparados con inflación.
   //     No tiene sentido mezclar posiciones USD al tipo de cambio → inflación.
   const arsBrokerNames = new Set(brokers.filter(b => b.currency === 'ARS').map(b => b.name))
 
@@ -1126,15 +1135,15 @@ function InsightsDesktop({ _embeddedTab }) {
     return `${MON[(+mo) - 1]} '${yr.slice(2)}`
   }
 
-  // Lookup dolar blue con fallback (reutilizable en ambas series)
-  const blueKeys = bench?.dolar_blue ? Object.keys(bench.dolar_blue).sort() : []
-  const lookupBlue = (mk) => {
-    if (!bench?.dolar_blue) return null
-    if (bench.dolar_blue[mk]) return bench.dolar_blue[mk]
+  // El dólar elegido del mes, con fallback (reutilizable en ambas series)
+  const tcKeys = tcMapa ? Object.keys(tcMapa).sort() : []
+  const lookupTc = (mk) => {
+    if (!tcMapa) return null
+    if (tcMapa[mk]) return tcMapa[mk]
     let found = null
-    for (const k of blueKeys) { if (k <= mk) found = k; else break }
-    if (!found && blueKeys.length) found = blueKeys[0]
-    return found ? bench.dolar_blue[found] : null
+    for (const k of tcKeys) { if (k <= mk) found = k; else break }
+    if (!found && tcKeys.length) found = tcKeys[0]
+    return found ? tcMapa[found] : null
   }
 
   // benchSeriesUsd — LA LÍNEA DEL PORTFOLIO EN USD, ahora servida por el backend.
@@ -1234,7 +1243,7 @@ function InsightsDesktop({ _embeddedTab }) {
     return out
   })()
 
-  // benchSeriesArs — solo brokers ARS, capital en pesos (USD × blue del mes) en % acumulado MWR.
+  // benchSeriesArs — solo brokers ARS, capital en pesos (USD × el dólar elegido del mes) en % acumulado MWR.
   // Además expone, vía closures de scope externo:
   //   • portfolioReturnArsPctRaw — el retorno acumulado en pesos del último punto
   //     SIN el clamp [-99, +200] que aplica el chart. El diagnóstico beat/lose_inflation
@@ -1245,19 +1254,19 @@ function InsightsDesktop({ _embeddedTab }) {
   let arsWindowFirstKey = null
   let arsWindowLastKey = null
   const benchSeriesArs = (() => {
-    if (arsBrokerNames.size === 0 || !bench?.dolar_blue) return []
+    if (arsBrokerNames.size === 0 || !tcMapa) return []
     // Flujos mensuales de los brokers ARS (fuente compartida con los shadows).
     if (arsMonthly.length === 0) return []
 
     const firstKey = monthKey(arsMonthly[0].year, arsMonthly[0].month)
-    const blueBase = lookupBlue(firstKey)
-    if (!blueBase) return []
+    const tcBase = lookupTc(firstKey)
+    if (!tcBase) return []
     // Rango real de la serie ARS — se usa para recortar la inflación al mismo período.
     arsWindowFirstKey = firstKey
     arsWindowLastKey = monthKey(arsMonthly[arsMonthly.length - 1].year, arsMonthly[arsMonthly.length - 1].month)
 
     const out = []
-    const baselinePesos = arsMonthly[0].capital_inicio * blueBase
+    const baselinePesos = arsMonthly[0].capital_inicio * tcBase
     let netFlowsPesos = 0, cumRealizedPesos = 0
     let cumIdxArs = 1.0
     // Mismo denominador que todo el resto — solo para el realized% (la línea
@@ -1268,12 +1277,12 @@ function InsightsDesktop({ _embeddedTab }) {
     let idxArs = 0
     // El FX del mes ANTERIOR: sin esto el retorno "en pesos" era el retorno en
     // dólares (el fx se cancelaba arriba y abajo). Ver monthlyReturnArs().
-    let fxPrevArs = blueBase
+    let fxPrevArs = tcBase
     for (const m of arsMonthly) {
       const isFirst = idxArs === 0
       idxArs++
       const k = monthKey(m.year, m.month)
-      const fx = lookupBlue(k) || blueBase
+      const fx = lookupTc(k) || tcBase
       const net = (m.deposits || 0) - (m.withdrawals || 0)
       const ci = m.capital_inicio || 0
       const cf = m.capital_final || 0
@@ -1290,13 +1299,13 @@ function InsightsDesktop({ _embeddedTab }) {
       cumRealizedPesos += (m.pnl_realized || 0) * fx
       const investedNowPesos = baselinePesos + netFlowsPesos
       if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
-      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, tcBase) ?? 0)
       const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       portfolioReturnArsPctRaw = total  // TWR acumulado — para el diagnóstico de inflación
       out.push({ key: k, label: benchLabel(k), total, realized: +real.toFixed(2) })
     }
-    // Punto "Hoy" — valor live de posiciones ARS al blue actual (extiende el TWR)
+    // Punto "Hoy" — valor live de posiciones ARS al dólar de hoy (extiende el TWR)
     const arsLiveUsd = brokers
       .filter(b => arsBrokerNames.has(b.name))
       .reduce((s, b) => s + computeBrokerValue(positions, prices, b, tcValuacion, tcCedear, tcCripto, costBasis).value, 0)
@@ -1326,10 +1335,10 @@ function InsightsDesktop({ _embeddedTab }) {
       // El punto "Hoy" tenía el MISMO bug que el loop: los dos lados al mismo
       // tcValuacion ⇒ el FX se cancelaba y el tramo final tampoco veía la devaluación.
       // El cierre del último mes vale a SU FX; el valor de hoy, al de hoy.
-      // Los dos salen del riel `dolar_blue` a propósito: lo que mueve el retorno
-      // es el cociente fx_hoy/fx_últimoMes, y mezclar rieles (tcValuacion es MEP)
-      // metería un salto espurio del tamaño de la brecha.
-      const fxHoy = blueKeys.length ? bench.dolar_blue[blueKeys[blueKeys.length - 1]] : null
+      // Los dos salen de la misma tabla (`tcMapa`) a propósito: lo que mueve el
+      // retorno es el cociente fx_hoy/fx_últimoMes, y mezclar fuentes metería un
+      // salto espurio.
+      const fxHoy = tcKeys.length ? tcMapa[tcKeys[tcKeys.length - 1]] : null
       const lastCfArs = (lastM.capital_final || 0) * fxPrevArs
       const valueNowArs = arsLiveUsd * (fxHoy || fxPrevArs)
       if (lastCfArs > 0) {
@@ -1338,7 +1347,7 @@ function InsightsDesktop({ _embeddedTab }) {
       }
       const total = +((cumIdxArs - 1) * 100).toFixed(2)
       const investedNowPesos = baselinePesos + netFlowsPesos
-      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, tcBase) ?? 0)
       const real  = denomP > 0 ? (cumRealizedPesos / denomP) * 100 : 0
       // El punto "Hoy" es el último de la serie → su TWR es el retorno final.
       portfolioReturnArsPctRaw = total
@@ -1577,7 +1586,7 @@ function InsightsDesktop({ _embeddedTab }) {
     inflation:  'Inflación AR',
     merval:     'Merval',
     plazo_fijo: 'Plazo fijo UVA',
-    pesos_cash: 'Pesos cash (blue)',
+    pesos_cash: 'Pesos cash',
   }
   const benchmarkKey = BENCHMARK_LABELS[selectedBench] || 'Benchmark'
 
@@ -1598,10 +1607,10 @@ function InsightsDesktop({ _embeddedTab }) {
   ]
   const BENCHMARK_OPTIONS_ARS = [
     { key: 'inflation',  label: 'Inflación AR',    available: hasData(bench?.inflation_ar) },
-    { key: 'merval',     label: 'Merval',          available: hasData(bench?.merval) && hasData(bench?.dolar_blue) },
+    { key: 'merval',     label: 'Merval',          available: hasData(bench?.merval) && hasData(tcMapa) },
     { key: 'sp500',      label: 'S&P 500',         available: hasData(bench?.sp500) },
-    { key: 'plazo_fijo', label: 'Plazo fijo UVA',  available: hasData(bench?.uva) && hasData(bench?.dolar_blue) },
-    { key: 'pesos_cash', label: 'Pesos cash (blue)', available: hasData(bench?.dolar_blue) },
+    { key: 'plazo_fijo', label: 'Plazo fijo UVA',  available: hasData(bench?.uva) && hasData(tcMapa) },
+    { key: 'pesos_cash', label: 'Pesos cash', available: hasData(tcMapa) },
   ]
   const benchmarkOptions = currency === 'USD' ? BENCHMARK_OPTIONS_USD : BENCHMARK_OPTIONS_ARS
 
@@ -1768,7 +1777,7 @@ function InsightsDesktop({ _embeddedTab }) {
     const simMonthly = isArs ? arsMonthly : globalMonthly
 
     // Skeleton de meses para dibujar SOLO el benchmark cuando la serie del
-    // portfolio (windowSeries) viene vacía — p.ej. en ARS sin dolar_blue, donde
+    // portfolio (windowSeries) viene vacía — p.ej. en ARS sin la serie del dólar, donde
     // benchSeriesArs no se puede construir. El benchmark (inflación/Merval/S&P)
     // se calcula aparte, así que puede dibujarse igual con el portfolio en null
     // en lugar de colapsar TODO el gráfico (ver más abajo).
@@ -1829,8 +1838,8 @@ function InsightsDesktop({ _embeddedTab }) {
     }
 
     // Versión en PESOS del shadow — espejo exacto de benchSeriesArs. El simulador
-    // devuelve valores USD-equiv; acá los pasamos a pesos (× blue del mes) y
-    // medimos el retorno contra el capital aportado en pesos (flows × blue del
+    // devuelve valores USD-equiv; acá los pasamos a pesos (× el dólar del mes) y
+    // medimos el retorno contra el capital aportado en pesos (flows × el dólar del
     // mes). Se usa en modo ARS para que el benchmark sea comparable a la línea
     // del portfolio, que también es retorno-en-pesos. Sin esto, comparábamos
     // retorno-en-pesos (cartera) contra retorno-en-dólares (benchmark).
@@ -1838,11 +1847,11 @@ function InsightsDesktop({ _embeddedTab }) {
       const result = new Map()
       if (!simResult || arsMonthly.length === 0) return result
       const firstK = monthKey(arsMonthly[0].year, arsMonthly[0].month)
-      const blueBase = lookupBlue(firstK)
-      if (!blueBase) return result
+      const tcBase = lookupTc(firstK)
+      if (!tcBase) return result
 
-      // Camino preferido: retorno SIMPLE del índice en PESOS — (price[k]×blue[k]) /
-      // (price[first]×blue[first]) − 1, time-weighted, sin ponderar por los flujos.
+      // Camino preferido: retorno SIMPLE del índice en PESOS — (price[k]×tc[k]) /
+      // (price[first]×tc[first]) − 1, time-weighted, sin ponderar por los flujos.
       // Aplica a los benchmarks que exponen priceSeries (S&P/T-Bills/Oro/dólar-cash).
       const ps = simResult.priceSeries
       if (ps && ps.length > 0 && simResult.firstPrice > 0) {
@@ -1850,16 +1859,16 @@ function InsightsDesktop({ _embeddedTab }) {
         for (const p of ps) priceByKey[p.key] = p.price
         const priceBase = priceByKey[firstK] ?? simResult.firstPrice
         if (priceBase > 0) {
-          const basePesos = priceBase * blueBase
+          const basePesos = priceBase * tcBase
           for (const m of arsMonthly) {
             const mk = monthKey(m.year, m.month)
             const price = priceByKey[mk]
             if (price == null || price <= 0) continue
-            const fx = lookupBlue(mk) || blueBase
+            const fx = lookupTc(mk) || tcBase
             result.set(mk, +(((price * fx) / basePesos - 1) * 100).toFixed(4))
           }
           // "Today": precio MÁS fresco del índice (latestBenchPrice, igual que el
-          // path USD) × blue actual. Usar ps[last] dejaba el "hoy" del benchmark
+          // path USD) × el dólar de hoy. Usar ps[last] dejaba el "hoy" del benchmark
           // congelado en el último mes cargado mientras la cartera live ya reflejaba
           // el movimiento del índice → el benchmark se veía peor de lo real.
           const lastPrice = ps[ps.length - 1].price
@@ -1874,7 +1883,7 @@ function InsightsDesktop({ _embeddedTab }) {
       // Fallback (benchmarks ARS-nativos SIN priceSeries: Merval / plazo fijo /
       // pesos cash): método flow-matched anterior. TODO: portarlos a índice simple.
       if (!simResult.series || simResult.series.length === 0) return result
-      const baselinePesos = (arsMonthly[0].capital_inicio || 0) * blueBase
+      const baselinePesos = (arsMonthly[0].capital_inicio || 0) * tcBase
       let netFlowsPesos = 0
       let peakInvestedPesos = baselinePesos > 0 ? baselinePesos : 0
 
@@ -1883,11 +1892,11 @@ function InsightsDesktop({ _embeddedTab }) {
 
       for (const m of arsMonthly) {
         const mk = monthKey(m.year, m.month)
-        const fx = lookupBlue(mk) || blueBase
+        const fx = lookupTc(mk) || tcBase
         netFlowsPesos += ((m.deposits || 0) - (m.withdrawals || 0)) * fx
         const investedNowPesos = baselinePesos + netFlowsPesos
         if (investedNowPesos > peakInvestedPesos) peakInvestedPesos = investedNowPesos
-        const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
+        const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, tcBase) ?? 0)
         const shadowUsd = simByKey[mk]
         if (shadowUsd == null) continue
         const gainP = (shadowUsd * fx) - investedNowPesos
@@ -1895,11 +1904,11 @@ function InsightsDesktop({ _embeddedTab }) {
         result.set(mk, +Math.min(Math.max(pct, -99), 200).toFixed(2))
       }
 
-      // "Today": último valor del sim al blue ACTUAL — igual que el punto Hoy del
+      // "Today": último valor del sim al dólar de HOY — igual que el punto Hoy del
       // portfolio (valor live × tcValuacion), para que ambos reciban el mismo salto de FX.
       const last = simResult.series[simResult.series.length - 1]
       const investedNowPesos = baselinePesos + netFlowsPesos
-      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, blueBase) ?? 0)
+      const denomP = (denominadorAportado(investedNowPesos, peakInvestedPesos, tcBase) ?? 0)
       const gainP = (last.value * tcValuacion) - investedNowPesos
       const pct = denomP > 0 ? (gainP / denomP) * 100 : 0
       result.set('today', +Math.min(Math.max(pct, -99), 200).toFixed(2))
@@ -1974,12 +1983,12 @@ function InsightsDesktop({ _embeddedTab }) {
       shadowPctByMonth = buildShadow(simulateDolarCash(simMonthly))
     } else if (selectedBench === 'inflation') {
       shadowPctByMonth = buildInflationCumPct(simMonthly)
-    } else if (selectedBench === 'merval' && bench?.merval && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadow(simulateMerval(simMonthly, bench.merval, bench.dolar_blue))
-    } else if (selectedBench === 'plazo_fijo' && bench?.uva && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadow(simulatePlazoFijoUva(simMonthly, bench.uva, bench.dolar_blue))
-    } else if (selectedBench === 'pesos_cash' && bench?.dolar_blue) {
-      shadowPctByMonth = buildShadow(simulateArsCash(simMonthly, bench.dolar_blue))
+    } else if (selectedBench === 'merval' && bench?.merval && tcMapa) {
+      shadowPctByMonth = buildShadow(simulateMerval(simMonthly, bench.merval, tcMapa))
+    } else if (selectedBench === 'plazo_fijo' && bench?.uva && tcMapa) {
+      shadowPctByMonth = buildShadow(simulatePlazoFijoUva(simMonthly, bench.uva, tcMapa))
+    } else if (selectedBench === 'pesos_cash' && tcMapa) {
+      shadowPctByMonth = buildShadow(simulateArsCash(simMonthly, tcMapa))
     }
 
     // DESACOPLE: el benchmark no depende de la serie del portfolio. Si el
@@ -2153,7 +2162,7 @@ function InsightsDesktop({ _embeddedTab }) {
   // "Capital aportado" y la "Ganancia total" del Dashboard). Los montos de
   // `discipline` quedan en esa moneda: la tarjeta los escribe con `amtEnVista`.
   const resultado = resultadoTotal({
-    monthly, brokers, blueMap: bench?.dolar_blue, tcHoy: tcValuacion,
+    monthly, brokers, tcMensual: tcMapa, tcHoy: tcValuacion,
     valorHoyUsd: totalPortfolio, moneda: currency,
   })
   const discipline = atribucionDelCrecimiento({
@@ -2494,9 +2503,9 @@ function InsightsDesktop({ _embeddedTab }) {
   const shvSim       = simulateShv(globalMonthly, bench?.shv)
   const goldSim      = simulateGold(globalMonthly, bench?.gld)
   const dolarCashSim = simulateDolarCash(globalMonthly)
-  const mervalSim    = simulateMerval(globalMonthly, bench?.merval, bench?.dolar_blue)
-  const plazoFijoSim = simulatePlazoFijoUva(globalMonthly, bench?.uva, bench?.dolar_blue)
-  const arsCashSim   = simulateArsCash(globalMonthly, bench?.dolar_blue)
+  const mervalSim    = simulateMerval(globalMonthly, bench?.merval, tcMapa)
+  const plazoFijoSim = simulatePlazoFijoUva(globalMonthly, bench?.uva, tcMapa)
+  const arsCashSim   = simulateArsCash(globalMonthly, tcMapa)
   const inflationCum = computeInflationCumulative(globalMonthly, bench?.inflation_ar)
 
   // ── Métricas pro: Sharpe Ratio + Volatilidad anualizada ────────────────────
@@ -2857,7 +2866,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // Helper de moneda activa: convierte un monto USD al ARS actual cuando el
   // toggle global está en ARS. Las métricas son globales (no las podemos
-  // imputar a un FX histórico exacto), así que usamos el blue actual.
+  // imputar a un FX histórico exacto), así que usamos el dólar de hoy.
   function amt(usdValue, opts = {}) {
     if (usdValue == null || isNaN(usdValue)) return '—'
     return amtEnVista(currency === 'ARS' ? usdValue * tcValuacion : usdValue, opts)
@@ -2930,8 +2939,8 @@ function InsightsDesktop({ _embeddedTab }) {
   // Cada una lleva ahora su base escrita.
   const verdictItems = [
     // La UNIDAD va escrita: el UVA se simula EN PESOS (capitaliza con el
-    // coeficiente) y recién después se pasa a dólares al blue de cada mes
-    // (`simulatePlazoFijoUva`, índice uva/blue). La cuenta es correcta, pero sin
+    // coeficiente) y recién después se pasa a dólares al dólar elegido de cada mes
+    // (`simulatePlazoFijoUva`, índice uva/dólar). La cuenta es correcta, pero sin
     // decir "medido en dólares" cualquiera lee "me comparan mi rendimiento en USD
     // contra una tasa en pesos" y desconfía del número — pasó.
     {

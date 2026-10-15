@@ -25,6 +25,9 @@ import { whatsappUrl } from '../utils/support'
 import { WhatsAppIcon } from '../components/SupportWhatsAppFab'
 import { usd as usdFmt, ars as arsFmt, pctTxt } from '../utils/format'
 import { useMoneyFormat } from '../contexts/CurrencyContext'
+import { useFxHistory } from '../hooks/useFxHistory'
+import { serieDelLibroEnVista } from '../utils/evolution'
+import { hoyISO } from '../utils/fecha'
 import BookComposition from '../components/advisor/BookComposition'
 import ClientPicker from '../components/advisor/ClientPicker'
 import { confirmar } from '../utils/confirmar'
@@ -488,11 +491,19 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
   const fmt = useMoneyFormat()
   const { money, smoney } = moneyHelpers(fmt)
   const [range, setRange] = useState('3M')
+  // La curva en la moneda en que se mira, cada punto al dólar de su fecha y lo
+  // aportado a los pesos con que entró (ver `serieDelLibroEnVista`).
+  const { getRateForDate, fxKey } = useFxHistory(fmt.tcValuacion)
+  const serieVista = useMemo(
+    () => (series ? serieDelLibroEnVista(series, fmt.currency, getRateForDate, fmt.tcValuacion, hoyISO()) : series),
+    [series, fmt.currency, fmt.tcValuacion, fxKey],  // eslint-disable-line react-hooks/exhaustive-deps
+  )
 
   const rangeDef = EVO_RANGES.find(r => r.key === range) ?? EVO_RANGES[1]
   const period = periods?.[rangeDef.period] ?? null
 
   const { visible, baseline } = useMemo(() => {
+    const series = serieVista
     if (!series?.length) return { visible: [], baseline: null }
     // El corte lo da el backend (día argentino) para que la curva visible y el
     // "en el período" hablen del mismo tramo. Sin él, el de siempre.
@@ -504,7 +515,7 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
       visible: series.slice(firstIdx),
       baseline: firstIdx > 0 ? series[firstIdx - 1] : series[firstIdx],
     }
-  }, [series, range, period])
+  }, [serieVista, range, period])
 
   // ⚠️ "EL MERCADO SUMÓ X" YA NO SE CALCULA ACÁ. Era ΔAUM − Δaportado entre dos
   // puntos de la curva sumada, y esa resta mezcla tres cosas que no son mercado:
@@ -579,9 +590,10 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
     )
   }
 
-  const { isArs, convert } = fmt
-  const fmtShort = (vUsd) => {
-    const v = isArs ? convert(vUsd) : vUsd
+  // Los puntos de la curva YA están en la moneda en que se mira: no se convierten.
+  const { isArs } = fmt
+  const enVista = (v) => (isArs ? arsFmt(v) : usdFmt(v, 0))
+  const fmtShort = (v) => {
     const sym = isArs ? '$' : 'US$'
     const abs = Math.abs(v)
     if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(1).replace('.', ',')}B`
@@ -590,7 +602,7 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
     return `${sym}${Math.round(v)}`
   }
   const signed = (n) => (n >= 0 ? `+${money(n, 0)}` : `−${money(Math.abs(n), 0)}`)
-  const vals = visible.flatMap(p => [p.aum_usd, p.net_deposited_usd])
+  const vals = visible.flatMap(p => [p.aum, p.aportado])
   const mn = Math.min(...vals), mx = Math.max(...vals)
 
   return (
@@ -667,15 +679,15 @@ function BookEvolution({ series, periods = null, error, picker = null, subset = 
               contentStyle={{ ...chartTooltip.contentStyle, padding: '10px 14px' }}
               labelStyle={chartTooltip.labelStyle}
               itemStyle={chartTooltip.itemStyle}
-              formatter={(v, name) => [money(v, 0), name === 'aum_usd' ? 'Administrado' : 'Aportado neto']}
+              formatter={(v, name) => [enVista(v), name === 'aum' ? 'Administrado' : 'Aportado neto']}
               labelFormatter={(label, payload) => {
                 const p = payload?.[0]?.payload
                 return p ? `${p.date} · ${p.clients} cliente${p.clients === 1 ? '' : 's'}` : label
               }}
             />
-            <Area type="monotone" dataKey="net_deposited_usd" stroke={chartReferenceStroke} strokeWidth={1.5}
+            <Area type="monotone" dataKey="aportado" stroke={chartReferenceStroke} strokeWidth={1.5}
                   strokeDasharray="4 4" fill="none" dot={false} activeDot={false} />
-            <Area type="monotone" dataKey="aum_usd" stroke="rgb(var(--data-violet))" strokeWidth={1.75}
+            <Area type="monotone" dataKey="aum" stroke="rgb(var(--data-violet))" strokeWidth={1.75}
                   fill="url(#bookEvoFill)" dot={false}
                   activeDot={{ r: 4, fill: 'rgb(var(--data-violet))', stroke: 'rgb(var(--bg-1))', strokeWidth: 2 }} />
           </AreaChart>

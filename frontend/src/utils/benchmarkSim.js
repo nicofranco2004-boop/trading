@@ -9,7 +9,7 @@
 // drawdown del benchmark, el rendimiento real hubiera sido distinto.
 //
 // Granularidad: mensual. Los datos `bench.*` del backend son mensuales
-// (último cierre del mes para S&P, blue/MEP de ese mes para FX, IPC
+// (último cierre del mes para S&P, el dólar elegido de ese mes para FX, IPC
 // mensual para inflación). Para MVP es suficiente.
 //
 // Convenciones:
@@ -131,44 +131,44 @@ export function simulateDolarCash(globalMonthly) {
   return simulateBenchmark(globalMonthly, () => 1)
 }
 
-// ─── Pesos AR (cash en ARS al blue de cada mes) ─────────────────────────────
+// ─── Pesos AR (cash en ARS al dólar de cada mes) ─────────────────────────────
 /**
- * "Si hubieras convertido cada depósito a pesos al blue del día y los
+ * "Si hubieras convertido cada depósito a pesos al dólar del día y los
  *  hubieras dejado quietos en pesos."
  *
- * Cada flujo USD se convierte a ARS al blue de ese mes y se acumula en pesos.
- * El valor final en USD se obtiene dividiendo los pesos totales por el blue
+ * Cada flujo USD se convierte a ARS al dólar de ese mes y se acumula en pesos.
+ * El valor final en USD se obtiene dividiendo los pesos totales por el tc
  * del último mes — captura cuánto poder de compra "en USD" perdiste o
  * ganaste por sostener pesos.
  *
  * @returns {{ finalValue, series, finalPesos } | null}
- *          series = [{ key, value }] en USD-equivalente (pesos / blue del mes)
+ *          series = [{ key, value }] en USD-equivalente (pesos / tc del mes)
  */
-export function simulateArsCash(globalMonthly, blueMap) {
-  if (!blueMap || Object.keys(blueMap).length === 0) return null
+export function simulateArsCash(globalMonthly, tcMap) {
+  if (!tcMap || Object.keys(tcMap).length === 0) return null
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
   const firstKey = monthKey(sorted[0].year, sorted[0].month)
-  const firstBlue = lookupMonthly(blueMap, firstKey)
-  if (firstBlue == null || firstBlue <= 0) return null
+  const firstTc = lookupMonthly(tcMap, firstKey)
+  if (firstTc == null || firstTc <= 0) return null
 
-  // Convertir capital inicial USD a pesos al blue del primer mes.
-  let pesos = (sorted[0].capital_inicio || 0) * firstBlue
+  // Convertir capital inicial USD a pesos al dólar del primer mes.
+  let pesos = (sorted[0].capital_inicio || 0) * firstTc
   const series = []
-  // priceSeries = "precio" USD-equiv de 1 peso sostenido = 1/blue. Permite al
+  // priceSeries = "precio" USD-equiv de 1 peso sostenido = 1/dólar. Permite al
   // chart medir el benchmark como índice simple (en pesos da 0%; en USD da la
   // pérdida por devaluación). Ver buildShadowFromSim/Ars en Insights.
   const priceSeries = []
-  const firstPrice = 1 / firstBlue
+  const firstPrice = 1 / firstTc
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
-    const blue = lookupMonthly(blueMap, k) ?? firstBlue
+    const tc = lookupMonthly(tcMap, k) ?? firstTc
     const net = (m.deposits || 0) - (m.withdrawals || 0)
-    pesos += net * blue
-    series.push({ key: k, value: blue > 0 ? pesos / blue : 0 })
-    priceSeries.push({ key: k, price: blue > 0 ? 1 / blue : firstPrice })
+    pesos += net * tc
+    series.push({ key: k, value: tc > 0 ? pesos / tc : 0 })
+    priceSeries.push({ key: k, price: tc > 0 ? 1 / tc : firstPrice })
   }
 
   return {
@@ -248,45 +248,45 @@ export function simulateGold(globalMonthly, gldMap) {
  * Simula tus aportes en el Merval (índice acciones argentinas, en ARS).
  *
  * IMPORTANTE: el Merval cotiza en pesos. Para hacer apples-to-apples con un
- * user que tiene flujos en USD, convertimos cada flow USD → ARS al blue del
- * mes, compramos puntos del Merval ese mes, y al final dividimos por el blue
+ * user que tiene flujos en USD, convertimos cada flow USD → ARS al dólar del
+ * mes, compramos puntos del Merval ese mes, y al final dividimos por el tc
  * actual para volver a USD-equivalente.
  *
  * @returns {{ finalValue, series, finalUnits } | null}  series en USD-equiv
  */
-export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
+export function simulateMerval(globalMonthly, mervalArsMap, tcMap) {
   if (!mervalArsMap || Object.keys(mervalArsMap).length === 0) return null
-  if (!blueMap || Object.keys(blueMap).length === 0) return null
+  if (!tcMap || Object.keys(tcMap).length === 0) return null
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
   const firstKey = monthKey(sorted[0].year, sorted[0].month)
   const firstMerv = lookupMonthly(mervalArsMap, firstKey)
-  const firstBlue = lookupMonthly(blueMap, firstKey)
-  if (!firstMerv || !firstBlue || firstMerv <= 0 || firstBlue <= 0) return null
+  const firstTc = lookupMonthly(tcMap, firstKey)
+  if (!firstMerv || !firstTc || firstMerv <= 0 || firstTc <= 0) return null
 
-  // Capital USD inicial → ARS al blue del primer mes → puntos del Merval
-  let units = ((sorted[0].capital_inicio || 0) * firstBlue) / firstMerv
+  // Capital USD inicial → ARS al dólar del primer mes → puntos del Merval
+  let units = ((sorted[0].capital_inicio || 0) * firstTc) / firstMerv
   const series = []
-  // priceSeries = "precio" USD-equiv de 1 punto del Merval = merv/blue. En pesos
-  // (×blue) reproduce el retorno del Merval; en USD lo ajusta por FX.
+  // priceSeries = "precio" USD-equiv de 1 punto del Merval = merv/dólar. En pesos
+  // (×tc) reproduce el retorno del Merval; en USD lo ajusta por FX.
   const priceSeries = []
-  const firstPrice = firstMerv / firstBlue
+  const firstPrice = firstMerv / firstTc
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
     const merv = lookupMonthly(mervalArsMap, k) ?? firstMerv
-    const blue = lookupMonthly(blueMap, k) ?? firstBlue
+    const tc = lookupMonthly(tcMap, k) ?? firstTc
     const netUsd = (m.deposits || 0) - (m.withdrawals || 0)
-    if (merv > 0 && blue > 0) {
-      // Flow USD → ARS al blue del mes → compramos puntos del Merval
-      units += (netUsd * blue) / merv
+    if (merv > 0 && tc > 0) {
+      // Flow USD → ARS al dólar del mes → compramos puntos del Merval
+      units += (netUsd * tc) / merv
     }
-    // Valor en USD-equiv = (puntos * merv_ars) / blue_actual
+    // Valor en USD-equiv = (puntos * merv_ars) / tc_actual
     const valueArs = units * merv
-    const valueUsd = blue > 0 ? valueArs / blue : 0
+    const valueUsd = tc > 0 ? valueArs / tc : 0
     series.push({ key: k, value: valueUsd })
-    priceSeries.push({ key: k, price: blue > 0 ? merv / blue : firstPrice })
+    priceSeries.push({ key: k, price: tc > 0 ? merv / tc : firstPrice })
   }
 
   return {
@@ -313,37 +313,37 @@ export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
  *
  * @param {Array}  globalMonthly  global monthly entries
  * @param {Object} uvaMap         { 'YYYY-MM': uva_value } UVA al cierre del mes
- * @param {Object} blueMap        { 'YYYY-MM': blue_venta } para conversión USD↔ARS
+ * @param {Object} tcMap        { 'YYYY-MM': tc } para conversión USD↔ARS
  * @returns {{ finalValue, series, finalArs } | null}
  *          series con value en USD-equiv (apples-to-apples con otros benchmarks)
  */
-export function simulatePlazoFijoUva(globalMonthly, uvaMap, blueMap) {
+export function simulatePlazoFijoUva(globalMonthly, uvaMap, tcMap) {
   if (!uvaMap || Object.keys(uvaMap).length === 0) return null
-  if (!blueMap || Object.keys(blueMap).length === 0) return null
+  if (!tcMap || Object.keys(tcMap).length === 0) return null
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
 
   const firstKey = monthKey(sorted[0].year, sorted[0].month)
-  const firstBlue = lookupMonthly(blueMap, firstKey)
+  const firstTc = lookupMonthly(tcMap, firstKey)
   const firstUva = lookupMonthly(uvaMap, firstKey)
-  if (!firstBlue || firstBlue <= 0) return null
+  if (!firstTc || firstTc <= 0) return null
   if (!firstUva || firstUva <= 0) return null
 
-  // Capital USD inicial → ARS al blue del primer mes. Mantenemos saldo en
-  // ARS para capitalizar con UVA; convertimos a USD-eq al blue del mes en
+  // Capital USD inicial → ARS al dólar del primer mes. Mantenemos saldo en
+  // ARS para capitalizar con UVA; convertimos a USD-eq al dólar del mes en
   // cada punto.
-  let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
+  let valueArs = (sorted[0].capital_inicio || 0) * firstTc
   let prevUva = firstUva  // primer mes: ratio = 1 → no capitaliza (alineado con S&P)
   const series = []
-  // priceSeries = "precio" USD-equiv del índice UVA = uva/blue. En pesos (×blue)
+  // priceSeries = "precio" USD-equiv del índice UVA = uva/dólar. En pesos (×tc)
   // reproduce el ajuste UVA (≈ inflación); en USD lo ajusta por FX.
   const priceSeries = []
-  const firstPrice = firstUva / firstBlue
+  const firstPrice = firstUva / firstTc
 
   for (const m of sorted) {
     const k = monthKey(m.year, m.month)
     const uva = lookupMonthly(uvaMap, k) ?? prevUva
-    const blue = lookupMonthly(blueMap, k) ?? firstBlue
+    const tc = lookupMonthly(tcMap, k) ?? firstTc
 
     // Capitalizar con ratio UVA. En el primer mes prevUva === firstUva === uva
     // → ratio = 1 → no genera retorno (alineado con simulateBenchmark donde
@@ -352,17 +352,17 @@ export function simulatePlazoFijoUva(globalMonthly, uvaMap, blueMap) {
       valueArs *= uva / prevUva
     }
 
-    // Agregar flow al blue del mes (apples-to-apples)
+    // Agregar flow al dólar del mes (apples-to-apples)
     const netUsd = (m.deposits || 0) - (m.withdrawals || 0)
-    valueArs += netUsd * blue
+    valueArs += netUsd * tc
 
     // Update prevUva para próxima iteración
     if (uva > 0) prevUva = uva
 
-    // Value USD-equiv = ARS / blue del mes
-    const valueUsd = blue > 0 ? valueArs / blue : 0
+    // Value USD-equiv = ARS / tc del mes
+    const valueUsd = tc > 0 ? valueArs / tc : 0
     series.push({ key: k, value: valueUsd })
-    priceSeries.push({ key: k, price: (blue > 0 && uva > 0) ? uva / blue : firstPrice })
+    priceSeries.push({ key: k, price: (tc > 0 && uva > 0) ? uva / tc : firstPrice })
   }
 
   return {

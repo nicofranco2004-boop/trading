@@ -15,26 +15,10 @@
 
 import { useEffect, useState, useMemo, useRef } from 'react'
 import { api } from '../utils/api'
+import { indexarSerie, tcDeFechaDetalle, tcMensualDeSerie } from '../utils/tcHistorico'
 
-// ── Pure helpers (testeables sin React) ──────────────────────────────────────
-//
-// lookupRate(rows, dateIso) — busca el blue en `rows` para `dateIso`. Si no
-// hay match exacto, devuelve el del día anterior más cercano (común para
-// fines de semana / feriados donde no se publica blue). Si no hay nada
-// anterior, devuelve null.
-
-export function lookupRate(rows, dateIso) {
-  if (!dateIso || !Array.isArray(rows) || rows.length === 0) return null
-  // Sort once (caller pasa rows ya ordenadas para ahorrar trabajo en hot path)
-  let candidate = null
-  for (const r of rows) {
-    if (!r?.date || r?.blue == null) continue
-    if (r.date <= dateIso) candidate = r
-    else break // rows están sorted asc → más adelante no aplica
-  }
-  return candidate ? Number(candidate.blue) : null
-}
-
+// Los helpers puros (indexar la serie, buscar el dólar de una fecha) viven en
+// utils/tcHistorico.js, testeables sin React.
 
 // Cache módulo-level: una sola request por sesión / página. Compartido
 // entre todos los consumers (Dashboard chart, Reports cards, etc).
@@ -98,9 +82,10 @@ export function _resetFxCacheForTesting() {
 }
 
 /**
- * Hook que devuelve la historia de blue + un helper getRateForDate.
+ * Hook que devuelve el dólar elegido de cada fecha (MEP; blue antes de 2018) +
+ * su tabla mensual.
  *
- * @param {number} fallbackTcValuacion — blue actual (del context o de un fetch local)
+ * @param {number} fallbackTcValuacion — el dólar de hoy (último recurso)
  * @returns {{
  *   loaded: boolean,
  *   getRateForDate: (dateIso: string) => number | null,
@@ -124,47 +109,28 @@ export function useFxHistory(fallbackTcValuacion = 1415) {
     return () => { cancelled = true }
   }, [])
 
-  // Asume que el backend devuelve rows ya ordenadas ascendentemente —
-  // lookupRate hace búsqueda lineal con break temprano.
+  // Asume que el backend devuelve rows ya ordenadas ascendentemente (la
+  // búsqueda binaria de tcHistorico lo necesita).
   const sortedRows = useMemo(() => {
     if (!data || !Array.isArray(data)) return []
     return data
   }, [data])
 
-  // Índice date → blue + array de fechas ordenado, para resolver por búsqueda
-  // BINARIA en vez del scan lineal. Los agregados nuevos (convert-then-sum en
-  // headers de grupo y KPIs) llaman esto una vez POR OPERACIÓN en cada render:
-  // con ~10 años de serie (3.650 filas) y cientos de ops, el scan lineal era
+  // Índice de la serie (fechas ordenadas + MEP y blue por fecha) para resolver
+  // por búsqueda BINARIA en vez del scan lineal. Los agregados (convert-then-sum
+  // en headers de grupo y KPIs) llaman esto una vez POR OPERACIÓN en cada
+  // render: con ~15 años de serie y cientos de ops, el scan lineal era
   // O(ops × filas) por render. Se construye una sola vez por cambio de `data`.
-  const fxIndex = useMemo(() => {
-    const dates = []
-    const byDate = new Map()
-    const mepByDate = new Map()
-    for (const r of sortedRows) {
-      if (!r?.date || r?.blue == null) continue
-      dates.push(r.date)
-      byDate.set(r.date, Number(r.blue))
-      // MEP del día, cuando la fila lo trae. Se guarda APARTE para no cambiar lo que
-      // ven los consumidores actuales (todos leen el blue); lo usa la vista previa del
-      // depósito con fecha, que tiene que mostrar el mismo dólar que el backend guarda.
-      if (r?.mep != null) mepByDate.set(r.date, Number(r.mep))
-    }
-    return { dates, byDate, mepByDate }
-  }, [sortedRows])
+  const fxIndex = useMemo(() => indexarSerie(sortedRows), [sortedRows])
+  // El dólar elegido al cierre de cada mes, para los cálculos mensuales.
+  const tcMensual = useMemo(() => tcMensualDeSerie(sortedRows), [sortedRows])
 
+  // EL DÓLAR ELEGIDO DE ESA FECHA (ver utils/tcHistorico.js): el MEP del día, o
+  // el blue antes de que existiera el MEP en la serie. Hasta el 2026-10-15 esto
+  // devolvía el BLUE mientras el dólar de hoy era el MEP: lo viejo y lo de hoy
+  // se pasaban a pesos con dos dólares distintos.
   function getRateForDate(dateIso) {
-    if (!dateIso) return null
-    const { dates, byDate } = fxIndex
-    if (dates.length === 0) return null
-    const exact = byDate.get(dateIso)
-    if (exact != null) return exact
-    // Sin match exacto (fin de semana / feriado) → el día anterior más cercano.
-    let lo = 0, hi = dates.length - 1, best = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      if (dates[mid] <= dateIso) { best = mid; lo = mid + 1 } else { hi = mid - 1 }
-    }
-    return best >= 0 ? byDate.get(dates[best]) : null
+    return tcDeFechaDetalle(fxIndex, dateIso).tc
   }
 
   function getRateOrFallback(dateIso) {
@@ -172,45 +138,22 @@ export function useFxHistory(fallbackTcValuacion = 1415) {
     return r != null && r > 0 ? r : fallbackRef.current
   }
 
-  // MEP del día con TRAZA: además del TC, de dónde salió y de QUÉ FECHA.
+  // El mismo dólar con TRAZA: además del TC, de dónde salió y de QUÉ FECHA.
   //
-  // La fecha importa: `mep_venta` es nullable y el cron nocturno no lo escribe, así
-  // que el MEP "del 15/08" puede ser en realidad el del 13/08. Quien le muestra el
-  // número a un usuario tiene que poder decirle qué día está usando — si no, la
-  // degradación es muda y el usuario cree que le estamos dando el dólar de su
-  // liquidación. Devuelve `{tc: null}` en vez de caer al fallback: sugerir un monto
+  // La fecha importa: `mep_venta` es nullable y el cron nocturno puede no
+  // escribirlo, así que el MEP "del 15/08" puede ser en realidad el del 13/08.
+  // Quien le muestra el número a un usuario tiene que poder decirle qué día está
+  // usando. Devuelve `{tc: null}` en vez de caer al fallback: sugerir un monto
   // con el dólar de HOY para un cupón de hace dos años es peor que no sugerir nada.
   function getMepDetail(dateIso) {
-    const NADA = { tc: null, source: null, asOf: null }
-    if (!dateIso) return NADA
-    const { dates, mepByDate, byDate } = fxIndex
-    if (!mepByDate || !dates || dates.length === 0) return NADA
-    const exact = mepByDate.get(dateIso)
-    if (exact != null && exact > 0) return { tc: exact, source: 'mep', asOf: dateIso }
-    let lo = 0, hi = dates.length - 1, best = -1
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1
-      if (dates[mid] <= dateIso) { best = mid; lo = mid + 1 } else { hi = mid - 1 }
-    }
-    for (let i = best; i >= 0; i--) {
-      const v = mepByDate.get(dates[i])
-      if (v != null && v > 0) return { tc: v, source: 'mep', asOf: dates[i] }
-    }
-    // Sin ningún MEP ≤ la fecha (pre-2018): red histórica al blue, declarada.
-    if (best >= 0) {
-      const b = byDate.get(dates[best])
-      if (b != null && b > 0) return { tc: b, source: 'blue', asOf: dates[best] }
-    }
-    return NADA
+    return tcDeFechaDetalle(fxIndex, dateIso)
   }
 
-  // Espeja `fx_for_date` del backend, que prefiere el MEP: lo usa la vista previa del
-  // depósito para no mostrar un dólar distinto del que se va a guardar. Los
-  // consumidores viejos siguen con getRateOrFallback (blue).
+  // Espeja `fx_for_date` del backend (MEP, red al blue): lo usan las vistas
+  // previas de depósitos y ventas con fecha, para no mostrar un dólar distinto
+  // del que se va a guardar. Hoy es el mismo dólar que `getRateOrFallback`.
   function getMepOrFallback(dateIso) {
-    if (!dateIso) return fallbackRef.current
-    const { tc } = getMepDetail(dateIso)
-    return tc != null && tc > 0 ? tc : getRateOrFallback(dateIso)
+    return getRateOrFallback(dateIso)
   }
 
   return {
@@ -219,6 +162,7 @@ export function useFxHistory(fallbackTcValuacion = 1415) {
     getRateOrFallback,
     getMepOrFallback,
     getMepDetail,
+    tcMensual,
     // Clave estable para memoizar cálculos que dependen de la serie: cambia
     // cuando la serie termina de cargar (o se recarga), no en cada render.
     fxKey: fxIndex.dates.length,
