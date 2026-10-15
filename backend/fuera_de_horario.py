@@ -435,6 +435,9 @@ def sesion_de(spy: Optional[dict]) -> Optional[str]:
     return None
 
 
+_SUBASTA_S = 5 * 60    # hasta 5 min después del cierre, al precio del cierre = la subasta
+
+
 def _pct(q: dict, sesion: Optional[str]) -> Optional[float]:
     """El % de pre o post de una cotización, o None si no operó desde el último
     cierre (o si es de otro momento)."""
@@ -445,6 +448,13 @@ def _pct(q: dict, sesion: Optional[str]) -> Optional[float]:
     hora = q.get(f"{campo}Time") or 0
     cierre = q.get("regularMarketTime") or 0
     if pct is None or hora <= cierre:
+        return None
+    if (sesion != "pre" and hora - cierre <= _SUBASTA_S
+            and q.get(f"{campo}Price") == q.get("regularMarketPrice")):
+        # La subasta de cierre, no una operación del post. MEDIDO 2026-10-15
+        # 17:20: GGAL, PAM, BMA, SUPV y CEPU traían postMarketTime 16:00:13 a
+        # 16:01:28, al precio exacto del cierre y 0 %, sin ninguna otra operación
+        # — y la pantalla decía «GGAL +0,00 %» en vez de «sin operar».
         return None
     try:
         return round(float(pct), 4)
@@ -821,7 +831,12 @@ def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = N
         import fechas
         ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
     hoy_ny = ahora.astimezone(ZONA_NY).date()
-    cierre = cierre_de_byma(ahora, _sesiones_de_byma())
+    # El cierre de BYMA ANTERIOR al pre de hoy: es la noche que cuenta el mail.
+    # Con el de «ahora», un mail mandado después de las 17:00 medía el post de
+    # anoche contra el cierre de BYMA de HOY (GGAL −2,5 % en un post que no
+    # existió; medido 2026-10-15 17:10).
+    antes_del_pre = _dt.datetime.combine(hoy_ny, _dt.time(4, 0), tzinfo=ZONA_NY)
+    cierre = cierre_de_byma(min(ahora, antes_del_pre), _sesiones_de_byma())
     t0 = time.time()
     out, faltan = {}, []
     for s in dict.fromkeys(simbolos):

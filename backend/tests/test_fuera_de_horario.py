@@ -597,3 +597,44 @@ def test_una_sola_vela_en_el_post_no_es_que_opero():
     velas = [_v(mie, 15, 55, 80.0), _v(mie, 16, 0, 80.75), _v(jue, 9, 0, 80.64)]
     f = fdh.franjas_de_velas(velas, {dt.date(2026, 10, 13): 79.0, mie: 80.75}, jue)
     assert f == {"post": None, "pre": None}
+
+
+# ── Prueba en vivo del post (2026-10-15 17:10) ───────────────────────────────
+
+def test_la_subasta_de_cierre_no_es_una_operacion_del_post():
+    # MEDIDO: GGAL a las 17:20 traía postMarketTime 16:00:49, al precio exacto del
+    # cierre y 0 %. Es la subasta de cierre: «sin operar», no «+0,00 %».
+    cierre = 1792094401                                   # 15/10 16:00:01 de NY
+    ggal = {"symbol": "GGAL", "market": "us_market", "regularMarketTime": cierre,
+            "regularMarketPrice": 36.47, "postMarketTime": cierre + 48,
+            "postMarketPrice": 36.47, "postMarketChangePercent": 0.0}
+    assert fdh._pct(ggal, "post") is None
+    # AAPL sí operó: 17:09 de NY, otro precio.
+    aapl = {"symbol": "AAPL", "market": "us_market", "regularMarketTime": cierre,
+            "regularMarketPrice": 342.0, "postMarketTime": cierre + 4193,
+            "postMarketPrice": 342.2, "postMarketChangePercent": 0.0584831}
+    assert fdh._pct(aapl, "post") == pytest.approx(0.0585, abs=1e-4)
+    # Una operación de verdad al mismo precio, pero una hora después, cuenta.
+    assert fdh._pct({**ggal, "postMarketTime": cierre + 3600}, "post") == 0.0
+
+
+def test_el_mail_mandado_tarde_mide_la_noche_desde_el_cierre_de_byma_de_ayer(monkeypatch):
+    # El mail cuenta el post de ANOCHE (14/10) y el pre de hoy. Mandado a las
+    # 17:10 (ya cerró BYMA hoy), medía el CEDEAR contra el cierre de HOY: GGAL
+    # −2,5 % en un post de anoche que no existió.
+    mie, jue = dt.date(2026, 10, 14), dt.date(2026, 10, 15)
+    velas = [_v(mie, 15, 55, 37.4), _v(mie, 16, 30, 37.45), _v(mie, 17, 0, 37.5), _v(mie, 18, 0, 37.6),
+             _v(jue, 4, 0, 37.5), _v(jue, 6, 0, 37.55), _v(jue, 9, 0, 37.6), _v(jue, 15, 55, 36.5)]
+    cierres = {dt.date(2026, 10, 13): 37.0, mie: 37.4, jue: 36.47}
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", lambda: {dt.date(2026, 10, 13), mie, jue})
+    monkeypatch.setattr(fdh._yahoo, "varios", lambda fn, items, **kw: ({i: fn(i) for i in items}, []))
+    fdh._franjas_cache.clear()
+    tarde = fdh.franjas(["GGAL"], ahora=dt.datetime(2026, 10, 15, 17, 10, tzinfo=AR),
+                        traer=lambda s: (velas, cierres))["GGAL"]
+    fdh._franjas_cache.clear()
+    a_las_11 = fdh.franjas(["GGAL"], ahora=dt.datetime(2026, 10, 15, 11, 0, tzinfo=AR),
+                           traer=lambda s: (velas, cierres))["GGAL"]
+    assert tarde == a_las_11
+    # En octubre BYMA y NY cierran juntos: el % del CEDEAR es el de la acción.
+    assert tarde["post"]["pct_byma"] == pytest.approx(tarde["post"]["pct"], abs=1e-4)
+    assert tarde["post"]["pct"] == pytest.approx((37.6 / 37.4 - 1) * 100, abs=1e-4)
