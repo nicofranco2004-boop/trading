@@ -28558,7 +28558,7 @@ Cómo contar el resultado:
 - Si sin_medir pesa más de ~5% de la cartera, una frase: qué parte no se pudo medir y por qué.
 - Contás lo que YA pasó, nunca lo que va a pasar: nada de "podría pesar cuando abran", "se espera que", "mañana puede". Un titular sobre futuros o pronósticos se cuenta como lo que dice el titular, no como una predicción tuya.
 - Bloque ---RENDI---: stats con el movimiento del día (usd_txt), el % sobre la cartera y el activo que más movió; sources: "cotizaciones de [dia_txt]" y "titulares de [fuentes]".
-- Pre y post mercado: si el resultado trae `fuera_de_horario`, después del día agregá lo que viene pasando fuera de la rueda ("En el post-mercado tu cartera viene −US$ 104 (−0,25%), sobre todo por NVDA"), con sus números tal cual y su por qué con las mismas reglas de arriba. Es un anticipo: NUNCA lo sumes al día ni al valor. Si hay anticipo de CEDEARs, una frase: siguen a la acción en Nueva York y en pesos también pesa el CCL. Si abierto=false, el post ya cerró: contalo en pasado ("anoche, en el post-mercado…").
+- Pre y post mercado: si el resultado trae `fuera_de_horario`, después del día agregá lo que viene pasando fuera de la rueda ("En el post-mercado tu cartera viene [usd_txt] ([pct_sobre_la_cartera_txt]), sobre todo por [activo]"), con sus números tal cual y su por qué con las mismas reglas de arriba. Es un anticipo: NUNCA lo sumes al día ni al valor. Si hay anticipo de CEDEARs, una frase: siguen a la acción en Nueva York y en pesos también pesa el CCL (es la única excepción a "contás lo que ya pasó"). Si abierto=false, el post ya cerró: contalo en pasado con `cuando` ("[cuando], en el post-mercado…"), nunca "anoche" si `cuando` dice otra cosa.
 
 NOTICIAS DE MERCADO (get_market_news) — CAUSALIDAD Y SEGURIDAD
 
@@ -31399,13 +31399,16 @@ def _cartera_hoy_para_chat(uid: int) -> dict:
         "clara en las noticias. No uses fechas que aparezcan dentro de un titular. "
         "(7) Si viene `fuera_de_horario`, Wall Street está operando fuera de la rueda "
         "(pre-mercado antes de abrir, post-mercado después de cerrar) o el post ya "
-        "cerró (abierto=false). Contalo APARTE del día, después de él, como ANTICIPO "
-        "con su usd_txt y pct_sobre_la_cartera_txt tal cual: 'en el pre-mercado tu "
-        "cartera viene +US$ 59 (+0,14%)'. NUNCA lo sumes al movimiento del día ni al "
-        "valor de la cartera: no se suma hasta que abre el mercado. Si "
-        "anticipo_usd_txt no es null, aclará que lo de CEDEARs y acciones argentinas "
-        "sigue a la acción en Nueva York y que en pesos también va a pesar el dólar "
-        "CCL (ccl_1pct_en_pesos_txt = cuánto mueve un 1% de CCL)."
+        "cerró (abierto=false). Contalo APARTE del día, después de él, como ANTICIPO, "
+        "con su usd_txt y pct_sobre_la_cartera_txt tal cual. Si abierto=true, en "
+        "presente ('en el pre-mercado tu cartera viene [usd_txt]'); si abierto=false, "
+        "en pasado y con `cuando` ('[cuando], en el post-mercado, tu cartera se movió "
+        "[usd_txt]'): nunca digas 'anoche' si `cuando` dice otra cosa. NUNCA lo sumes "
+        "al movimiento del día ni al valor de la cartera: no se suma hasta que abre el "
+        "mercado. Si anticipo_usd_txt no es null, aclará que lo de CEDEARs y acciones "
+        "argentinas sigue a la acción en Nueva York y que en pesos también pesa el "
+        "dólar CCL (ccl_1pct_en_pesos_txt = cuánto mueve un 1% de CCL). Esa aclaración "
+        "es la ÚNICA excepción a la regla de no hablar de lo que va a pasar."
     )
     if fdh_res:
         resumen["fuera_de_horario"] = fdh_res
@@ -31442,29 +31445,34 @@ def _lotes_con_referencia_eeuu(uid: int, simbolos=None, tope: float = None):
     """Las tenencias que siguen a una acción de EE.UU. (sólo las de `simbolos`,
     si viene), valuadas en USD con la MISMA valuación del chat
     (`_chat_valuation_inputs` + `_valuar_lote_chat`) y la MISMA clave de precio
-    (`position_price_key`). Para el pre/post mercado del mail. Devuelve (lotes,
-    dólar de los CEDEARs); cada lote = {asset, valor, ref}. El chat no la usa: su
-    tool ya valúa cada lote para el día y le pega la referencia en el mismo paso.
-    Sin tenencias que valuar no pide precios."""
+    (`position_price_key`). Para el pre/post mercado del mail.
+
+    Devuelve (lotes, dólar de los CEDEARs, valor de TODA la cartera); cada lote =
+    {asset, valor, ref}. El total es para el «% sobre la cartera»: dividir sólo por
+    las tenencias de EE.UU. lo inflaba (auditoría 2026-10-15: −1,6 % cuando era
+    −0,16 %). El chat no la usa: su tool ya valúa cada lote para el día y le pega
+    la referencia en el mismo paso. Sin tenencias que valuar no pide precios."""
     brokers, positions, tc_blue, tc_cedear, refs = _tenencias_que_siguen_a_eeuu(uid)
     if simbolos is not None:
         refs = {i: r for i, r in refs.items() if r[0] in simbolos}
     if not refs:
-        return [], tc_cedear
+        return [], tc_cedear, None
     broker_ccy = {b['name']: b['currency'] for b in brokers}
-    syms = build_price_symbols([positions[i] for i in refs], brokers)
+    syms = build_price_symbols(positions, brokers)
     prices = fetch_prices_for_symbols(syms, CRYPTO_YF, tope=tope or _yahoo.TOPE_FONDO_SEG) if syms else {}
-    lotes = []
-    for i, ref in refs.items():
-        p = positions[i]
+    lotes, total = [], 0.0
+    for i, p in enumerate(positions):
+        if broker_ccy.get(p.get('broker')) is None:
+            continue    # huérfana: la valuación del chat también la descarta
         try:
             v, _ = _valuar_lote_chat(p, prices, broker_ccy[p['broker']], tc_blue, tc_cedear)
         except Exception as ex:
             log.warning("fuera_de_horario: lote %s falló: %s", p.get('asset'), ex)
             continue
-        if v > 0:
-            lotes.append({"asset": p.get('asset'), "valor": v, "ref": ref})
-    return lotes, tc_cedear
+        total += v
+        if i in refs and v > 0:
+            lotes.append({"asset": p.get('asset'), "valor": v, "ref": refs[i]})
+    return lotes, tc_cedear, total
 
 
 def _con_nombres(positions):

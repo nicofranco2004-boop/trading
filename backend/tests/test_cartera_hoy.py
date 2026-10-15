@@ -305,8 +305,9 @@ class CaminoDeProduccionTest(unittest.TestCase):
 
     def test_con_byma_abierta_el_cedear_ya_no_lleva_anticipo(self):
         # Desde el 1/11 el pre de EE.UU. sigue hasta las 11:30: de 11 a 11:30 el
-        # CEDEAR ya cotiza en BYMA con precio propio.
-        a_las_1115 = datetime(2026, 10, 8, 11, 15, tzinfo=ART)
+        # CEDEAR ya cotiza en BYMA con precio propio. (En octubre las 11:15 ya son
+        # rueda en Nueva York: ni se pregunta.)
+        a_las_1115 = datetime(2026, 11, 5, 11, 15, tzinfo=ART)
         r = self._correr(LIVE_PREAPERTURA, ahora=a_las_1115, pre_post=[
             self._pre("SPY", -0.3), self._pre("AAPL", 0.74), self._pre("MSFT", -1.0)])
         f = r["fuera_de_horario"]

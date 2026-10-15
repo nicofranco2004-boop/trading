@@ -142,3 +142,19 @@ describe('la plata que mueve', () => {
     expect(sumarTenencias([999], r)).toBeNull()
   })
 })
+
+
+describe('lo que encontró la auditoría (2026-10-15)', () => {
+  it('un ticker con punto pide el MISMO símbolo que el precio (BRK.B → BRK-B)', () => {
+    expect(referenciaEnEEUU(lote(31, 'Schwab', 'BRK.B', 1, 400, { currency: 'USD' }), BROKERS))
+      .toEqual({ s: 'BRK-B', via: 'propio' })
+  })
+  it('el CEDEAR guardado como BRK.B sigue a Berkshire en EE.UU.', () => {
+    expect(referenciaEnEEUU(lote(32, 'Cocos', 'BRK.B', 1, 20000, { currency: 'ARS', asset_type: 'CEDEAR' }), BROKERS))
+      .toEqual({ s: 'BRK-B', via: 'eeuu' })
+  })
+  it('un CEDEAR comprado en pesos dentro de una cuenta en dólares es anticipo, como en el servidor', () => {
+    expect(referenciaEnEEUU(lote(33, 'Schwab', 'AAPL', 10, 270000, { currency: 'ARS' }), BROKERS))
+      .toEqual({ s: 'AAPL', via: 'eeuu' })
+  })
+})

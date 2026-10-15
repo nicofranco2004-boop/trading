@@ -22,6 +22,7 @@ import { pctVar, pctColor, colorClass } from '../../utils/format'
 import { api } from '../../utils/api'
 import { buildPriceSymbols } from '../../utils/valuation'
 import { useCurrency, pickFinancialRate } from '../../contexts/CurrencyContext'
+import { useRelojVisible } from '../../hooks/useRelojVisible'
 
 const TOPE_LISTA = 5
 
@@ -29,6 +30,11 @@ const TOPE_LISTA = 5
 function useCarteraPropia(activo) {
   const { valuationDollar } = useCurrency()
   const [c, setC] = useState(null)
+  // No congelarla (auditoría 2026-10-15): si cambia el dólar elegido, o cada 10
+  // minutos con la pestaña a la vista, se vuelve a pedir (la de Cartera se
+  // refresca cada 90 s).
+  useEffect(() => { setC(null) }, [valuationDollar])
+  useRelojVisible(() => setC(null), 10 * 60 * 1000)
   useEffect(() => {
     if (!activo || c) return
     let vivo = true

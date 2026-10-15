@@ -1152,9 +1152,18 @@ def _lineas_fuera_de_horario(fdh) -> dict:
         if not r:
             continue
         cuando = r.get("cuando") or ""
-        verbo = "viene moviendo" if r.get("abierto") else "se movió"
         pct = f" ({r['pct_sobre_la_cartera_txt']})" if r.get("pct_sobre_la_cartera_txt") else ""
-        frase = f"{cuando[:1].upper()}{cuando[1:]}, en el {nombre}, tu cartera {verbo} {r['usd_txt']}{pct}."
+        if franja == "pre":
+            # El pre se mide contra el MISMO cierre que el post de anoche: ya lo
+            # incluye. Dos frases paralelas se leían como una suma (−22 y +22 = 0,
+            # cuando el neto era +22). Auditoría 2026-10-15.
+            verbo = "viene" if r.get("abierto") else "quedó"
+            contra = ("contra ese mismo cierre (incluye lo de la noche)" if fdh.get("post")
+                      else "contra el último cierre")
+            frase = f"{cuando[:1].upper()}{cuando[1:]}, en el {nombre}, tu cartera {verbo} {r['usd_txt']}{pct} {contra}."
+        else:
+            frase = (f"{cuando[:1].upper()}{cuando[1:]}, en el {nombre}, tu cartera se movió "
+                     f"{r['usd_txt']}{pct} contra el cierre de la rueda.")
         top = [a for a in (r.get("activos") or []) if a.get("usd")][:3]
         if top:
             nombres = [f"{a['asset']} ({a['pct_txt']})" for a in top]

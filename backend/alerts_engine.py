@@ -609,8 +609,11 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
            (alert_id, user_id, symbol, fired_at, price, message,
             delivered_push, delivered_email)
            VALUES (?,?,?,?,?,?,0,0)""",
+        # Fuera de la rueda el precio es el de Nueva York, en dólares: guardado
+        # junto a un símbolo .BA se leería como pesos. Se guarda el %, como en las
+        # pct_move sin precio.
         (alert["id"], alert["user_id"], symbol, now.isoformat(),
-         price if price is not None else change_pct, message),
+         change_pct if fuera else (price if price is not None else change_pct), message),
     )
     conn.execute(
         "UPDATE alerts SET last_fired_at=?, last_fired_price=? WHERE id=?",
@@ -708,7 +711,8 @@ def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
     franja = _NOMBRE_FRANJA[fuera["sesion"]]
     momento = ("antes de que abra la rueda" if fuera["sesion"] == "pre"
                else "después del cierre de la rueda")
-    contra = "el cierre de ayer" if fuera["sesion"] == "pre" else "el cierre de hoy"
+    # «El último cierre» y no «el de ayer»: un lunes es el del viernes.
+    contra = "el último cierre" if fuera["sesion"] == "pre" else "el cierre de hoy"
     verbo = "sube" if (change_pct or 0) >= 0 else "cae"
     cotiza = f" y cotiza a {_fmt(price, 'USD')}" if price else ""
     txt = (f"en el {franja} de Wall Street ({momento}), {_quien(symbol, fuera)} {verbo} "
@@ -721,8 +725,8 @@ def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
             txt += (f" {papel} todavía no operó hoy: cuando abra BYMA, en pesos también "
                     f"va a pesar lo que haga el dólar CCL.")
         else:
-            txt += (f" {papel} ya cerró hoy en BYMA: esto anticipa cómo puede abrir mañana, "
-                    f"y en pesos también va a pesar lo que haga el dólar CCL.")
+            txt += (f" {papel} ya cerró hoy en BYMA: esto anticipa cómo puede abrir en la "
+                    f"próxima rueda, y en pesos también va a pesar lo que haga el dólar CCL.")
     return txt
 
 
@@ -936,12 +940,21 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     continue
                 if not armed or not tradeable or fired_today:
                     continue
-                base = _base_de_la_rueda(sym)
+                # Cripto no tiene pre ni post y su día es el día UTC (opera los
+                # sábados): la regla de «mismo cierre» no aplica. Con ella, el
+                # sábado, el domingo y el lunes compartían clave y se callaban
+                # entre sí (auditoría 2026-10-15).
+                es_cripto = sym in _crypto_symbols()
+                base = None if es_cripto else _base_de_la_rueda(sym)
                 if _ya_avisado(conn, a["id"], sym, base, side):
                     # Es el MISMO movimiento que ya se avisó fuera de la rueda (el
-                    # post de anoche o el pre de hoy, contra el mismo cierre): se
-                    # da por avisado hoy, sin mandar nada.
-                    _set_sym_fired(conn, a["id"], sym, today)
+                    # post de anoche o el pre de hoy, contra el mismo cierre): no se
+                    # manda nada. El día NO se marca como avisado: si en la rueda
+                    # da vuelta (pre +3 %, después −3 %), eso sí se avisa. Y una
+                    # alerta «una sola vez» ya cumplió: se apaga.
+                    if a["repeat"] == "once":
+                        conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
+                        deactivated.add(a["id"])
                     continue
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1

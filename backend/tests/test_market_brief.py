@@ -1465,6 +1465,27 @@ class FueraDeHorarioEnElMailTest(unittest.TestCase):
         self.assertIn("Anoche, en el post-mercado, tu cartera se movió", cuerpo["text"])
         self.assertIn("NVDA (", cuerpo["text"])
 
+    def test_el_porcentaje_es_sobre_toda_la_cartera_no_solo_lo_de_eeuu(self):
+        # Auditoría 2026-10-15: dividía sólo por las tenencias que siguen a EE.UU.
+        # Con US$ 2.200 de NVDA y US$ 2.200 en efectivo, −1 % de NVDA es −0,5 % de
+        # la cartera, no −1 %.
+        import datetime as dt
+        conn = main.get_db()
+        try:
+            conn.execute("INSERT INTO positions (user_id, broker, asset, quantity, invested, is_cash) "
+                         "VALUES (1,'Balanz','USD',2200,2200,1)")
+            conn.commit()
+        finally:
+            conn.close()
+        traer = self._velas(dt.date(2026, 10, 14), 220.0, 217.8, 222.2, dt.date(2026, 10, 15))
+        brief, _ = self._correr(datetime(2026, 10, 15, 11, 0), traer)
+        post = brief["fuera_de_horario"]["post"]
+        self.assertAlmostEqual(post["usd"], -22.0, places=2)
+        self.assertAlmostEqual(post["pct_sobre_la_cartera"], -0.5, places=2)
+        # Y el pre, que se mide contra el mismo cierre, dice que ya incluye la noche.
+        lineas = emails._lineas_fuera_de_horario(brief["fuera_de_horario"])["lineas"]
+        self.assertIn("incluye lo de la noche", lineas[1])
+
     def test_el_lunes_cuenta_el_post_del_viernes(self):
         # Directo sobre la cuenta (no por el cron): mover el reloj del cron al
         # lunes deja afuera las noticias de prueba, que son de hoy.

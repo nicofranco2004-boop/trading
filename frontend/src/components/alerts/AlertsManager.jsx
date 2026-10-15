@@ -302,8 +302,9 @@ export default function AlertsManager({ plan, prefill }) {
                   también avisa en el pre y el post mercado, sólo para "En el día". */}
               {(form.scope === 'holdings' || form.baseline === 'prev_close') && (
                 <p className="text-[11px] text-ink-3">
-                  Si es una acción de EE.UU. o un CEDEAR, también te avisamos si se mueve así en el
-                  pre o el post mercado de Wall Street (como anticipo, una vez por franja).
+                  Si es una acción de EE.UU., un CEDEAR o una acción argentina con ADR, también te
+                  avisamos si se mueve así en el pre o el post mercado de Wall Street. Una sola vez por
+                  movimiento: si el pre ya te avisó una suba, la apertura no la repite.
                 </p>
               )}
             </div>

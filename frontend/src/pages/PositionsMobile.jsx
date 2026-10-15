@@ -72,6 +72,7 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 import { avisoBorrarBroker } from '../utils/avisoBorrarBroker'
 import { confirmar } from '../utils/confirmar'
 import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
+import { usePrivacy } from '../contexts/PrivacyContext'
 import { simbolosFueraDeHorario, impactoFueraDeHorario, sumarTenencias, nombreCorto } from '../utils/fueraDeHorario'
 import { ChipFueraDeHorario, SiAbrieraAsi, IconoSesion, tonoDeSesion } from '../components/FueraDeHorario'
 
@@ -1528,7 +1529,11 @@ export default function PositionsMobile() {
     () => impactoFueraDeHorario(positions, brokers, { prices, tcValuacion, tcCedear, tcCripto }, fdh),
     [positions, brokers, prices, tcValuacion, tcCedear, tcCripto, fdh])
   const sesionFdh = impactoFdh.aplica ? fdh.sesion : null
-  const fdhCtx = useMemo(() => (sesionFdh ? { sesion: sesionFdh, impacto: impactoFdh } : null), [sesionFdh, impactoFdh])
+  // El ojito de los saldos: el resto de esta pantalla todavía no lo respeta,
+  // pero lo nuevo sí (auditoría 2026-10-15).
+  const { hidden: ocultoFdh } = usePrivacy()
+  const fdhCtx = useMemo(() => (sesionFdh ? { sesion: sesionFdh, impacto: impactoFdh, oculto: ocultoFdh } : null),
+    [sesionFdh, impactoFdh, ocultoFdh])
   // El total recalculándose después de anotar o borrar un cobro (mismo hook que
   // Cartera de escritorio). Con centavos: el hero redondea a pesos/dólares
   // enteros y un dividendo de US$ 2,65 no se vería moverse.
@@ -1689,13 +1694,13 @@ export default function PositionsMobile() {
               moneda={currency} listo={numerosListos} conDiferencia={false} />
           </span>
           {sesionFdh && (
-            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} className="py-0.5"
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={ocultoFdh} className="py-0.5"
               monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
               pctFraccion={impactoFdh.total.pct} />
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} className="-mt-1 mb-2.5"
+          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={ocultoFdh} className="-mt-1 mb-2.5"
             total={heroValor + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
         )}
         {/* De cuándo son los precios y si se están moviendo. Reemplaza el
@@ -2617,7 +2622,7 @@ function FdhDeLaFila({ p, moneda }) {
     <div className={`${LINEA_2} tabular flex items-center gap-1 whitespace-nowrap ${colorClass(r.pct)}`}
       title="Lo que se mueve fuera de la rueda. No está sumado al valor.">
       <span className={t.texto}><IconoSesion sesion={ctx.sesion} size={10} /></span>
-      {pctVar(r.pct)} · {montoCard(monto, moneda, { signed: true })}
+      {pctVar(r.pct)} · {ctx.oculto ? '••••' : montoCard(monto, moneda, { signed: true })}
     </div>
   )
 }
@@ -2636,7 +2641,7 @@ function FdhDelBroker({ filas, moneda }) {
     <span className={`text-[11px] tabular inline-flex items-center gap-1 ${t.texto}`}
       title="Lo que se mueve este broker fuera de la rueda. No está sumado al valor.">
       <IconoSesion sesion={ctx.sesion} size={10} />{nombreCorto(ctx.sesion)}
-      <span className={colorClass(monto)}>{montoCard(monto, moneda, { signed: true })}</span>
+      <span className={colorClass(monto)}>{ctx.oculto ? '••••' : montoCard(monto, moneda, { signed: true })}</span>
     </span>
   )
 }

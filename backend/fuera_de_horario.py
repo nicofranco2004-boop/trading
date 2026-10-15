@@ -123,6 +123,29 @@ POPULARES = [
 # cambiás una sin la otra, falla.
 CEDEAR_EN_EEUU = {"DISN": "DIS", "BRKB": "BRK-B", "NOKA": "NOK"}
 CEDEAR_ESPECIE_ALIAS = {"SI": "SID"}
+# La lista de CEDEARs de la PANTALLA (CEDEARS_LIST de utils/tickers.js), copiada:
+# la de ai.trade_tickers (119) es la allowlist del chat para registrar
+# operaciones y le faltaban 49 (BRKB, MCD, GLOB, MSTR, NVO…) — esos CEDEARs
+# tenían pre/post en la pantalla y no en el chat, el mail ni las alertas
+# (auditoría 2026-10-15). La prueba de paridad compara esta copia con la de la
+# pantalla.
+CEDEARS = frozenset({
+    "AAL", "AAPL", "ABBV", "ABEV", "ABNB", "ACWI", "ADBE", "ALAB", "AMC", "AMD", "AMGN",
+    "AMZN", "ANET", "ARKK", "ASML", "ASTS", "AVGO", "AXP", "AZN", "BA", "BABA", "BAC", "BAK",
+    "BB", "BBD", "BIDU", "BIOX", "BLK", "BMNR", "BMY", "BRK-B", "BRKB", "C", "CAT", "CEG",
+    "COIN", "COP", "COPX", "COST", "CRM", "CRWD", "CRWV", "CSCO", "CVX", "DDOG", "DE", "DISN",
+    "DOCU", "DOW", "EA", "EEM", "ETHA", "EWY", "EWZ", "F", "FXI", "GE", "GILD", "GLD", "GLOB",
+    "GM", "GME", "GOOGL", "GPRK", "GS", "HD", "HIMS", "HMY", "HON", "HOOD", "HUT", "IBIT",
+    "IBM", "INTC", "IREN", "ITUB", "JD", "JMIA", "JNJ", "JPM", "KEEL", "KO", "LAC", "LAR",
+    "LLY", "LMT", "MA", "MCD", "MELI", "META", "MMM", "MP", "MRK", "MRNA", "MS", "MSFT",
+    "MSTR", "MU", "MUX", "NBIS", "NET", "NFLX", "NIO", "NKE", "NOKA", "NOW", "NU", "NVDA",
+    "NVO", "NVS", "O", "OKLO", "ONDS", "ORCL", "PAGS", "PANW", "PATH", "PBR", "PDD", "PEP",
+    "PFE", "PINS", "PLTR", "PYPL", "QCOM", "QQQ", "RGTI", "RIO", "RIOT", "RKLB", "ROKU", "RTX",
+    "SATL", "SBUX", "SE", "SHOP", "SID", "SNAP", "SNDK", "SNOW", "SPCE", "SPCX", "SPOT", "SPY",
+    "STNE", "T", "TGT", "TRIP", "TSLA", "TSM", "TTWO", "TWLO", "UBER", "UNH", "URA", "V",
+    "VALE", "VIG", "VIST", "VST", "WFC", "WMT", "XLE", "XLF", "XLV", "XOM", "XYZ", "ZM",
+})
+
 ADR_DE_ACCION_AR = {
     "GGAL": "GGAL", "BMA": "BMA", "CEPU": "CEPU", "EDN": "EDN", "BBAR": "BBAR", "SUPV": "SUPV",
     "YPFD": "YPF", "PAMP": "PAM", "TGSU2": "TGS", "CRES": "CRESY", "TECO2": "TEO",
@@ -148,6 +171,7 @@ def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = 
         return None
     from cripto import CRYPTO_SYMBOLS
     from ai.trade_tickers import CEDEAR_TICKERS, AR_STOCK_TICKERS
+    cedears = CEDEARS | frozenset(CEDEAR_TICKERS)
     from behavioral import _is_ar_bond
     clave = str(clave_precio).upper()
     tipo = (asset_type or "").upper()
@@ -161,7 +185,7 @@ def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = 
             adr = ADR_DE_ACCION_AR.get(base)
             return (adr, "adr") if adr else None
         especie = CEDEAR_ESPECIE_ALIAS.get(base, base)
-        if base in CEDEAR_TICKERS or especie in CEDEAR_TICKERS or tipo == "CEDEAR":
+        if base in cedears or especie in cedears or tipo == "CEDEAR":
             return (CEDEAR_EN_EEUU.get(especie, especie), "eeuu")
         return None
     if clave in CRYPTO_SYMBOLS or clave in ("USD", "USDT", "USDC", "ARS") or _is_ar_bond(clave):
@@ -169,7 +193,8 @@ def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = 
     return (clave, "propio")
 
 
-def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None, top: int = 6) -> Optional[dict]:
+def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None, top: int = 6,
+                     total_cartera: Optional[float] = None, ahora: _dt.datetime = None) -> Optional[dict]:
     """El pre/post de una cartera YA valuada, para el chat y el mail. None si no
     hay pre ni post o si ninguna tenencia lo tiene.
 
@@ -178,12 +203,18 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
     las acciones argentinas ya tienen precio propio: su anticipo no se cuenta.
     `tc_pesos`: el dólar con que el chat pasa pesos a dólares, para decir cuánto
     mueve un 1 % del CCL sobre lo que está en pesos.
+    `total_cartera`: el valor de TODA la cartera (USD), para el «% sobre la
+    cartera». Si no viene, es la suma de `lotes` — lo que sirve sólo cuando
+    `lotes` ES toda la cartera (el chat). El mail pasa sólo las tenencias que
+    siguen a EE.UU.: sin esto decía «−1,6 %» de la cartera cuando era −0,16 %
+    (auditoría 2026-10-15).
     """
     sesion = (datos or {}).get("sesion")
     if not sesion:
         return None
     cot = datos.get("cotizaciones") or {}
-    total_valor = sum(float(l.get("valor") or 0) for l in lotes)
+    total_valor = (float(total_cartera) if total_cartera is not None
+                   else sum(float(l.get("valor") or 0) for l in lotes))
     por_activo: Dict[str, dict] = {}
     sin_operar = set()
     exacto = anticipo = anticipo_valor = 0.0
@@ -244,8 +275,18 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
         "exacto_usd_txt": _usd(exacto),
         "anticipo_usd_txt": _usd(anticipo) if anticipo_valor > 0 else None,
         "activos": activos[:top],
-        "sin_operar_todavia": sorted(a for a in sin_operar if a),
+        # «Todavía no operó» sólo tiene sentido con la franja abierta.
+        "sin_operar_todavia": sorted(a for a in sin_operar if a) if sesion in ("pre", "post") else [],
     }
+    if sesion == "post_cerrado":
+        # De QUÉ noche es: el fin de semana sigue a la vista el post del viernes,
+        # y decir «anoche» un sábado sería falso.
+        base = next((q.get("base") for q in cot.values() if q and q.get("base")), None)
+        if base:
+            if ahora is None:
+                import fechas
+                ahora = fechas.ahora_art().replace(tzinfo=ZONA_AR)
+            out["cuando"] = _nombre_de_la_noche(base, ahora.astimezone(ZONA_NY).date())
     if anticipo_valor > 0 and tc_pesos:
         from money_fmt import fmt_money
         out["ccl_1pct_en_pesos_txt"] = fmt_money(round(anticipo_valor * tc_pesos * 0.01), "ARS")
@@ -254,6 +295,9 @@ def resumen_de_lotes(lotes: list, datos: dict, tc_pesos: Optional[float] = None,
 
 _cache: Dict[str, tuple] = {}      # símbolo → (ts, cotización cruda de Yahoo | None)
 _lock = threading.Lock()
+_MAX_CACHE = 3000                  # símbolos guardados (los pide cualquiera con sesión: tope)
+_PAUSA_SI_FALLA_S = 20             # Yahoo no respondió: no se le vuelve a preguntar por 20 s
+_falla_hasta = 0.0
 
 
 def _pedir_yahoo(simbolos: List[str]) -> List[dict]:
@@ -284,16 +328,28 @@ def _cotizaciones(simbolos: Iterable[str], pedir: Callable = None,
                     out[s] = hit[1]
             else:
                 faltan.append(s)
+    global _falla_hasta
+    if faltan and ahora < _falla_hasta:
+        return out          # Yahoo acaba de fallar: no hacer esperar a nadie más por 20 s
     for i in range(0, len(faltan), _LOTE):
         lote = faltan[i:i + _LOTE]
         try:
             crudas = _yahoo.con_tope(pedir, lote, tope=tope, que="pre/post de Yahoo")
         except Exception as ex:
-            # Sin respuesta NO se cachea: el próximo refresco vuelve a probar.
+            # Sin respuesta NO se cachea el dato (el próximo refresco vuelve a
+            # probar), pero sí la falla, un rato: sin esto, con Yahoo colgado cada
+            # pantalla y cada pregunta al chat esperaba el tope entero.
             log.warning("fuera_de_horario: Yahoo no dio el pre/post de %d símbolos: %r", len(lote), ex)
-            continue
+            _falla_hasta = time.time() + _PAUSA_SI_FALLA_S
+            break
         por_simbolo = {q.get("symbol"): q for q in crudas if q.get("symbol")}
         with _lock:
+            if len(_cache) > _MAX_CACHE:
+                viejos = [k for k, (ts, _q) in _cache.items() if ahora - ts >= _TTL_S]
+                for k in viejos:
+                    _cache.pop(k, None)
+                if len(_cache) > _MAX_CACHE:
+                    _cache.clear()
             for s in lote:
                 q = por_simbolo.get(s)
                 _cache[s] = (ahora, q)
@@ -303,8 +359,10 @@ def _cotizaciones(simbolos: Iterable[str], pedir: Callable = None,
 
 
 def _vaciar_cache() -> None:
+    global _falla_hasta
     with _lock:
         _cache.clear()
+        _falla_hasta = 0.0
 
 
 def _es_de_eeuu(q: dict) -> bool:
@@ -405,7 +463,12 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
     if listas:
         for grupo in (INDICES, ADRS, POPULARES):
             pedidos += [x["s"] for x in grupo]
-    crudas = _cotizaciones(["SPY", *pedidos], pedir=pedir)
+    # En la rueda normal (lunes a viernes, 9:30 a 16:00 de Nueva York) no hay
+    # pre ni post: no se le pregunta a Yahoo. Ahorra el pedido del chat, de la
+    # cinta y de cada pantalla durante todo el día.
+    ny = ahora.astimezone(ZONA_NY)
+    en_rueda = ny.weekday() < 5 and _dt.time(9, 30) <= ny.time() < _dt.time(16, 0)
+    crudas = {} if en_rueda else _cotizaciones(["SPY", *pedidos], pedir=pedir)
     sesion = sesion_de(crudas.get("SPY"))
 
     cotizaciones = {}
@@ -489,8 +552,11 @@ def _traer_velas(simbolo: str):
     """Velas de 5 minutos con pre y post, y cierres diarios oficiales (5 días)."""
     import yfinance as yf
     t = yf.Ticker(simbolo)
-    h5 = t.history(period="5d", interval="5m", prepost=True)
-    hd = t.history(period="5d", interval="1d")
+    # auto_adjust=False en las dos: la diaria viene AJUSTADA por dividendos por
+    # defecto y la de 5 minutos no. El día de corte de un dividendo, el post de
+    # anoche salía inflado por el rinde del dividendo (auditoría 2026-10-15).
+    h5 = t.history(period="5d", interval="5m", prepost=True, auto_adjust=False)
+    hd = t.history(period="5d", interval="1d", auto_adjust=False)
     velas = [(ts.tz_convert(ZONA_NY).to_pydatetime(), float(c))
              for ts, c in zip(h5.index, h5["Close"]) if c == c]
     cierres = {ts.tz_convert(ZONA_NY).date(): float(c)
@@ -516,11 +582,17 @@ def franjas(simbolos: List[str], ahora: _dt.datetime = None, traer: Callable = N
         else:
             faltan.append(s)
     if faltan:
-        crudos, _ = _yahoo.varios(traer, faltan, tope=_yahoo.TOPE_FONDO_SEG, que="velas pre/post")
+        crudos, sin_respuesta = _yahoo.varios(traer, faltan, tope=_yahoo.TOPE_FONDO_SEG, que="velas pre/post")
         for s, (velas, cierres) in crudos.items():
             f = franjas_de_velas(velas, cierres, hoy_ny)
             _franjas_cache[(s, hoy_ny)] = (t0, f)
             out[s] = f
+        # Los que no respondieron se guardan VACÍOS: el mail de las 11 corre una
+        # vez por suscriptor, y sin esto cada uno volvía a esperar a Yahoo.
+        for s in sin_respuesta:
+            _franjas_cache[(s, hoy_ny)] = (t0, {"post": None, "pre": None})
+        for k in [k for k in _franjas_cache if k[1] < hoy_ny]:
+            _franjas_cache.pop(k, None)
     return out
 
 
@@ -533,7 +605,7 @@ def _nombre_de_la_noche(dia_iso: str, hoy_ny: _dt.date) -> str:
 
 
 def resumen_de_la_manana(lotes: list, por_simbolo: Dict[str, dict], tc_pesos: Optional[float] = None,
-                         ahora: _dt.datetime = None) -> Optional[dict]:
+                         ahora: _dt.datetime = None, total_cartera: Optional[float] = None) -> Optional[dict]:
     """Para el mail: cuánto movió la cartera el post-mercado de la noche anterior
     y el pre-mercado de hoy. Misma cuenta que la pantalla y el chat
     (`resumen_de_lotes`). None si ninguna de las dos franjas tiene nada."""
@@ -549,7 +621,8 @@ def resumen_de_la_manana(lotes: list, por_simbolo: Dict[str, dict], tc_pesos: Op
         # Los CEDEARs SÍ cuentan: a las 11 BYMA recién abre, y lo que se movió su
         # acción de noche es justo lo que todavía no estaba en su precio.
         r = resumen_de_lotes(lotes, {"sesion": "post_cerrado" if franja == "post" else "pre",
-                                     "byma_abierto": False, "cotizaciones": cot}, tc_pesos=tc_pesos)
+                                     "byma_abierto": False, "cotizaciones": cot}, tc_pesos=tc_pesos,
+                             total_cartera=total_cartera, ahora=ahora)
         if not r or not r["activos"]:
             continue
         dia = next(f[franja]["dia"] for f in por_simbolo.values() if f.get(franja))

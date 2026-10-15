@@ -73,7 +73,7 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
         // (el default) quedaba tapado por el menú lateral cuando el chip cae cerca
         // de él (compu a 1024 px); si se pasa del borde derecho, InfoTooltip lo corre.
         <InfoTooltip label={`Cómo se calcula el ${sesion === 'pre' ? 'pre-mercado' : 'post-mercado'}`} size={13} ancho="w-80" align="left">
-          <ComoSeCalcula sesion={sesion} impacto={impacto} moneda={moneda} />
+          <ComoSeCalcula sesion={sesion} impacto={impacto} moneda={moneda} oculto={oculto} />
         </InfoTooltip>
       )}
     </span>
@@ -97,19 +97,23 @@ export function SiAbrieraAsi({ sesion, total, moneda, oculto = false, className 
 }
 
 /** El detalle del cálculo: por tipo de tenencia, y por qué un CEDEAR puede abrir distinto. */
-export function ComoSeCalcula({ sesion, impacto, moneda }) {
+export function ComoSeCalcula({ sesion, impacto, moneda, oculto = false }) {
   const { valuationDollar } = useCurrency()
   const { exacto, anticipo } = impacto.porVia
   const m = (x) => (moneda === 'ARS' ? x.ars : x.usd)
   const nombre = sesion === 'pre' ? 'pre-mercado' : 'post-mercado'
-  const cuando = sesion === 'pre' ? 'cuando abra BYMA a las 11' : 'mañana, cuando abra BYMA'
+  const cuando = sesion === 'pre' ? 'cuando abra BYMA a las 11' : 'cuando vuelva a abrir BYMA'
+  // Con los saldos ocultos, la explicación sigue pero sin montos (auditoría
+  // 2026-10-15: el (?) mostraba la plata con el ojito tachado).
+  const plata = (n, m) => (oculto ? '••••' : montoFdh(n, m))
+  const valor = (n, m) => (oculto ? '••••' : valorFdh(n, m))
   const Fila = ({ titulo, detalle, monto, fuerte = false }) => (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <div className={`text-ink-0 ${fuerte ? 'font-semibold' : ''}`}>{titulo}</div>
         {detalle && <div className="text-[11px] text-ink-3 leading-snug">{detalle}</div>}
       </div>
-      <span className={`tabular whitespace-nowrap ${fuerte ? 'font-semibold' : ''} ${colorClass(monto)}`}>{montoFdh(monto, moneda)}</span>
+      <span className={`tabular whitespace-nowrap ${fuerte ? 'font-semibold' : ''} ${colorClass(monto)}`}>{plata(monto, moneda)}</span>
     </div>
   )
   return (
@@ -134,8 +138,8 @@ export function ComoSeCalcula({ sesion, impacto, moneda }) {
           </p>
           <p className="tabular">
             Cada <span className="text-ink-0">1 %</span> que se mueva el CCL, tus CEDEARs y acciones argentinas
-            ({valorFdh(anticipo.valorArs, 'ARS')}) se mueven unos{' '}
-            <span className="text-ink-0">{valorFdh(anticipo.valorArs * 0.01, 'ARS')}</span> más o menos.
+            ({valor(anticipo.valorArs, 'ARS')}) se mueven unos{' '}
+            <span className="text-ink-0">{valor(anticipo.valorArs * 0.01, 'ARS')}</span> más o menos.
           </p>
           {moneda !== 'ARS' && (
             <p className="text-ink-2">

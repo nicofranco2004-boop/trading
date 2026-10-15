@@ -538,9 +538,9 @@ la persona tiene un banco), el hecho va en "mercado" y el efecto sobre su activo
 va en "tu_cartera", en una sola oración y sin volver a explicar el hecho.
 
 - Si viene `movimientos_fuera_de_horario`: son activos de la lista que se movieron \
-en Wall Street FUERA de la rueda (en el post-mercado de anoche o en el pre-mercado \
-de esta mañana), con hacia dónde. Podés contarlo en tu_cartera ("Nvidia bajó \
-anoche, en el post-mercado de Wall Street") y unirlo con un titular SÓLO si ese \
+en Wall Street FUERA de la rueda (en el post-mercado de la noche anterior o en el \
+pre-mercado de esta mañana), con hacia dónde y cuándo (`cuando`). Podés contarlo en \
+tu_cartera ("[activo] [movimiento] [cuando], en Wall Street") y unirlo con un titular SÓLO si ese \
 titular lo explica, con "coincide con". SIN cifras: cuánto movió su cartera lo \
 pone Rendi en otro bloque del mail.
 """
@@ -585,8 +585,8 @@ def _fuera_de_horario(uid: int):
         con_dato = {s: f for s, f in por.items() if f.get("post") or f.get("pre")}
         if not con_dato:
             return None
-        lotes, tc = main._lotes_con_referencia_eeuu(uid, simbolos=set(con_dato))
-        return fdh.resumen_de_la_manana(lotes, con_dato, tc_pesos=tc)
+        lotes, tc, total = main._lotes_con_referencia_eeuu(uid, simbolos=set(con_dato))
+        return fdh.resumen_de_la_manana(lotes, con_dato, tc_pesos=tc, total_cartera=total)
     except Exception as ex:
         log.warning("market_brief: pre/post mercado falló uid=%s: %s", uid, ex)
         return None

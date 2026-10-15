@@ -27,9 +27,9 @@
 // Los dos anticipos ('eeuu' y 'adr') NO incluyen lo que se mueva el dólar CCL,
 // y se apagan cuando abre BYMA: desde ahí el papel tiene precio propio.
 
-import { valuePositionLot } from './valuation'
+import { valuePositionLot, priceSymbol, costInPesos, BYMA_EXCEPCIONES } from './valuation'
 import { classifyAsset, isArMarket } from './assetClass'
-import { cedearEspecieBase, CEDEAR_EN_EEUU, ADR_DE_ACCION_AR } from './tickers'
+import { cedearEspecieBase, CEDEAR_EN_EEUU, ADR_DE_ACCION_AR, CEDEAR_TICKERS } from './tickers'
 
 /** Los índices no operan fuera de la rueda; los ETFs que los copian, sí. La
  *  cinta de arriba muestra el pre/post del índice a través de su ETF. */
@@ -49,17 +49,24 @@ export function referenciaEnEEUU(p, brokers = []) {
   const clase = classifyAsset(p, brokers)
   const ticker = sinBA(p.asset)
   if (!ticker) return null
-  if (clase === 'cedear') {
-    const base = cedearEspecieBase(ticker)
-    return { s: CEDEAR_EN_EEUU[base] || base, via: 'eeuu' }
-  }
+  // Un lote comprado EN PESOS se valúa por su .BA aunque viva en una cuenta en
+  // dólares (costInPesos, la misma regla que valuationPriceKey y el servidor):
+  // es un papel de BYMA. Sin esto la pantalla lo contaba como «exacto» y el
+  // chat como anticipo (auditoría 2026-10-15).
+  const enAr = isArMarket(p, brokers) || costInPesos(p)
+  // El ticker de BYMA, con las mismas excepciones que el precio (BRK.B → BRKB).
+  const especie = cedearEspecieBase(BYMA_EXCEPCIONES[ticker] || ticker)
+  const esCedear = clase === 'cedear' || (enAr && (clase === 'accion_us' || clase === 'etf')
+    && CEDEAR_TICKERS.has(especie))
+  if (esCedear) return { s: CEDEAR_EN_EEUU[especie] || especie, via: 'eeuu' }
   if (clase === 'accion_ar') {
-    if (!isArMarket(p, brokers)) return { s: ticker, via: 'propio' }   // el ADR en Schwab
+    if (!enAr) return { s: ticker, via: 'propio' }   // el ADR en Schwab
     const adr = ADR_DE_ACCION_AR[ticker]
     return adr ? { s: adr, via: 'adr' } : null
   }
   if (clase === 'accion_us' || clase === 'etf') {
-    return isArMarket(p, brokers) ? null : { s: ticker, via: 'propio' }
+    // El MISMO símbolo con que se pide el precio: 'BRK.B' → 'BRK-B'.
+    return enAr ? null : { s: priceSymbol(ticker, false, p.asset_type), via: 'propio' }
   }
   return null
 }

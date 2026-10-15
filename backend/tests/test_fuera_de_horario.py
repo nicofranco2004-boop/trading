@@ -140,13 +140,25 @@ def test_un_solo_pedido_a_yahoo_y_un_minuto_de_cache():
     assert len(y.pedidos) == 1              # todo salió del caché, incluso lo que no existe
 
 
-def test_si_yahoo_falla_no_se_guarda_la_falla():
+def test_si_yahoo_falla_no_se_guarda_el_dato_y_se_espera_un_rato():
     caido = Yahoo(PRE_MERCADO, falla=True)
     r = fdh.estado(["AAPL"], ahora=AHORA_PRE, pedir=caido)
     assert r["sesion"] is None and r["cotizaciones"] == {}
+    # Durante la pausa NO se le vuelve a preguntar (nadie espera el tope entero).
     sano = Yahoo(PRE_MERCADO)
     r = fdh.estado(["AAPL"], ahora=AHORA_PRE, pedir=sano)
-    assert r["sesion"] == "pre"             # el siguiente refresco volvió a preguntar
+    assert sano.pedidos == [] and r["sesion"] is None
+    # Pasada la pausa, vuelve a preguntar: la falla no quedó guardada como dato.
+    fdh._falla_hasta = 0.0
+    r = fdh.estado(["AAPL"], ahora=AHORA_PRE, pedir=sano)
+    assert r["sesion"] == "pre"
+
+
+def test_en_la_rueda_normal_ni_se_le_pregunta_a_yahoo():
+    y = Yahoo(PRE_MERCADO)
+    a_las_13 = dt.datetime(2026, 10, 15, 13, 0, tzinfo=AR)      # 12:00 de Nueva York
+    r = fdh.estado(["AAPL"], ahora=a_las_13, pedir=y)
+    assert y.pedidos == [] and r["sesion"] is None
 
 
 # ─── El endpoint, como lo llama la pantalla ─────────────────────────────────
@@ -156,6 +168,8 @@ def cliente(monkeypatch):
     y = Yahoo(PRE_MERCADO + [q(x["s"], pre=0.1) for x in fdh.ADRS + fdh.POPULARES + fdh.INDICES
                               if x["s"] not in ("SPY", "AAPL", "NVDA", "PAM")])
     monkeypatch.setattr(fdh, "_pedir_yahoo", y)
+    # A las 8:58: pre-mercado (en la rueda normal ni se le pregunta a Yahoo).
+    monkeypatch.setattr("fechas.ahora_art", lambda: AHORA_PRE.replace(tzinfo=None))
     main.app.dependency_overrides[main.get_effective_user] = lambda: 1
     try:
         yield TestClient(main.app), y
@@ -252,3 +266,40 @@ def test_antes_de_las_930_de_nueva_york_el_pre_viene_abierto():
     assert fdh.resumen_de_la_manana(lotes, por, ahora=temprano)["pre"]["abierto"] is True
     tarde = dt.datetime(2026, 10, 15, 11, 0, tzinfo=AR)        # octubre: 10:00 de NY
     assert fdh.resumen_de_la_manana(lotes, por, ahora=tarde)["pre"]["abierto"] is False
+
+
+
+def test_la_lista_de_cedears_es_la_de_la_pantalla():
+    import re
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "frontend", "src", "utils", "tickers.js")
+    texto = open(ruta, encoding="utf-8").read()
+    m = re.search(r"export const CEDEARS_LIST = \[(.*?)\n\]", texto, re.S)
+    pantalla = set(re.findall(r"s: '([A-Z0-9.\-]+)'", m.group(1)))
+    assert fdh.CEDEARS == pantalla, (
+        "CEDEARS_LIST cambió en tickers.js y no en fuera_de_horario.CEDEARS (o al revés)")
+
+
+@pytest.mark.parametrize("clave,esperado", [
+    ("BRKB.BA", ("BRK-B", "eeuu")),     # faltaba en la lista del servidor (auditoría)
+    ("MCD.BA", ("MCD", "eeuu")),
+    ("NOKA.BA", ("NOK", "eeuu")),
+    ("BRK-B", ("BRK-B", "propio")),     # en Schwab: la clave de precio ya viene con guión
+])
+def test_los_cedears_que_faltaban(clave, esperado):
+    assert fdh.referencia_en_eeuu(clave) == esperado
+
+
+def test_el_post_del_viernes_no_se_llama_anoche_un_domingo():
+    # El fin de semana sigue a la vista el post del viernes. El sábado ES «anoche»;
+    # el domingo (y el lunes antes del pre) ya no.
+    datos = {"sesion": "post_cerrado", "byma_abierto": False,
+             "cotizaciones": {"NVDA": {"pct": 1.0, "precio": 101.0, "base": "2026-10-16"}}}
+    lote = [{"asset": "NVDA", "valor": 1000.0, "ref": ("NVDA", "propio")}]
+    sabado = dt.datetime(2026, 10, 17, 12, 0, tzinfo=AR)
+    domingo = dt.datetime(2026, 10, 18, 12, 0, tzinfo=AR)
+    assert fdh.resumen_de_lotes(lote, datos, ahora=sabado)["cuando"] == "anoche"
+    r = fdh.resumen_de_lotes(lote, datos, ahora=domingo)
+    assert r["cuando"] == "el viernes a la noche"
+    assert r["abierto"] is False
+    assert r["sin_operar_todavia"] == []

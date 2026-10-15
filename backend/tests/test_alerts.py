@@ -732,7 +732,8 @@ import fuera_de_horario as _fdh
 from unittest.mock import patch as _patch
 
 _A_LAS_858 = datetime(2026, 10, 15, 8, 58)      # hora argentina: pre abierto, BYMA cerrada
-_A_LAS_1115 = datetime(2026, 10, 15, 11, 15)    # BYMA ya abrió
+# BYMA ya abrió y el pre de Nueva York sigue (desde el 1/11: 11:15 ART = 9:15 NY).
+_A_LAS_1115 = datetime(2026, 11, 5, 11, 15)
 
 
 def _cierre_ts(dia_iso):
@@ -758,9 +759,11 @@ def _con_velas(cuantas, hora=8):
     """`cuantas` velas de 5 minutos con operaciones hoy (NY) desde `hora`: 8 cae
     en el pre, 17 en el post."""
     def traer(simbolo):
+        import fechas
+        hoy = fechas.ahora_art().replace(tzinfo=_fdh.ZONA_AR).astimezone(_fdh.ZONA_NY).date()
         n = cuantas.get(simbolo, 0)
-        velas = [(_dt.datetime(2026, 10, 15, hora, 0, tzinfo=_fdh.ZONA_NY) + _dt.timedelta(minutes=5 * i), 100.0)
-                 for i in range(n)]
+        velas = [(_dt.datetime(hoy.year, hoy.month, hoy.day, hora, 0, tzinfo=_fdh.ZONA_NY)
+                  + _dt.timedelta(minutes=5 * i), 100.0) for i in range(n)]
         return velas, {}
     return traer
 
@@ -844,7 +847,7 @@ def test_lo_que_dice_del_cedear_depende_de_la_franja():
     assert "Tu CEDEAR de AAPL todavía no operó hoy" in pre
     # A la noche el CEDEAR YA operó (BYMA cerró a las 17): decir que no operó era falso.
     assert "todavía no operó" not in post
-    assert "Tu CEDEAR de AAPL ya cerró hoy en BYMA: esto anticipa cómo puede abrir mañana" in post
+    assert "Tu CEDEAR de AAPL ya cerró hoy en BYMA: esto anticipa cómo puede abrir en la próxima rueda" in post
     adr = ae._detalle_fuera("YPFD.BA", -2.0, 51.0, {"sesion": "pre", "ref": "YPF", "via": "adr"})
     assert "Tu acción de YPFD todavía no operó hoy" in adr
 
@@ -972,3 +975,42 @@ def test_caso5_post_de_anoche_y_pre_de_hoy_es_el_mismo_movimiento(clean, monkeyp
     _rueda(monkeypatch, 3.1)
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
     assert len(_events(conn)) == 1
+
+
+
+def test_cripto_no_usa_la_regla_del_mismo_cierre(clean, monkeypatch):
+    # Auditoría 2026-10-15: con la regla, sábado, domingo y lunes compartían la
+    # clave del viernes y se callaban entre sí.
+    conn = clean
+    _mk_alert(conn, kind="pct_move", up_pct=5, threshold=None, symbol="BTC", repeat="always")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"BTC": _q(105, 6.0, sym="BTC")})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    claves = [r["symbol"] for r in conn.execute("SELECT symbol FROM alert_symbol_state").fetchall()]
+    assert not any("#" in c for c in claves)
+    # Día nuevo (como en el resto de los tests): vuelve a poder avisar.
+    conn.execute("UPDATE alert_symbol_state SET last_fired_date='2000-01-01', armed=1"); conn.commit()
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+
+def test_una_vez_queda_cumplida_con_el_aviso_del_pre(clean, monkeypatch):
+    conn = clean
+    aid = _mk_alert(conn, kind="pct_move", up_pct=3, down_pct=3, threshold=None,
+                    symbol="NVDA", repeat="once")
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _rueda(monkeypatch, 3.2)                      # la misma suba en la rueda
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
+
+
+def test_si_da_vuelta_despues_de_la_apertura_avisa(clean, monkeypatch):
+    # Pre +3 % (aviso) → abre +3 % (mismo movimiento, sin aviso) → más tarde −3 %:
+    # cambió de sentido contra el mismo cierre, avisa.
+    conn = clean
+    _alerta_nvda(conn)
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _rueda(monkeypatch, 3.2)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    _rueda(monkeypatch, -3.3)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
