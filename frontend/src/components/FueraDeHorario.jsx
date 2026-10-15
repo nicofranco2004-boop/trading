@@ -69,7 +69,10 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
       {/* El (?) va PEGADO al número que explica: abajo, suelto, no se sabía a
           qué se refería. Sólo existe mientras hay pre o post (el chip también). */}
       {impacto && (
-        <InfoTooltip label={`Cómo se calcula el ${sesion === 'pre' ? 'pre-mercado' : 'post-mercado'}`} size={13} ancho="w-80">
+        // align 'left': el globo crece hacia la DERECHA del (?). Hacia la izquierda
+        // (el default) quedaba tapado por el menú lateral cuando el chip cae cerca
+        // de él (compu a 1024 px); si se pasa del borde derecho, InfoTooltip lo corre.
+        <InfoTooltip label={`Cómo se calcula el ${sesion === 'pre' ? 'pre-mercado' : 'post-mercado'}`} size={13} ancho="w-80" align="left">
           <ComoSeCalcula sesion={sesion} impacto={impacto} moneda={moneda} />
         </InfoTooltip>
       )}
