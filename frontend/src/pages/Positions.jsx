@@ -2070,7 +2070,7 @@ function PositionsDesktop() {
             {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
           </span>
           {sesionFdh && (
-            <ChipFueraDeHorario sesion={sesionFdh} moneda={displayCurrency} oculto={hidden}
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={displayCurrency} oculto={hidden}
               monto={isArsDisp ? impactoFdh.total.ars : impactoFdh.total.usd}
               pctFraccion={impactoFdh.total.pct} />
           )}
@@ -2088,7 +2088,7 @@ function PositionsDesktop() {
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={displayCurrency} oculto={hidden} className="mt-2.5"
+          <SiAbrieraAsi sesion={sesionFdh} moneda={displayCurrency} oculto={hidden} className="mt-2.5"
             total={isArsDisp ? heroValueArs + impactoFdh.total.ars : heroValue + impactoFdh.total.usd} />
         )}
       </div>

@@ -987,13 +987,13 @@ function PersonalDashboard() {
             </span>
           )}
           {sesionFdh && (
-            <ChipFueraDeHorario sesion={sesionFdh} moneda={currency} oculto={hidden}
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden}
               monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
               pctFraccion={impactoFdh.total.pct} />
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden} className="mt-2.5"
+          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={hidden} className="mt-2.5"
             total={currency === 'ARS'
               ? portfolioTotal * tcValuacion + impactoFdh.total.ars
               : portfolioTotal + impactoFdh.total.usd} />

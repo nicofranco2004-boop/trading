@@ -416,10 +416,10 @@ export default function HomeMobile() {
         </div>
         {sesionFdh && (
           <div className="-mt-1 mb-3 flex flex-col gap-1.5 items-start">
-            <ChipFueraDeHorario sesion={sesionFdh} moneda={currency} oculto={hidden} className="text-[12px]"
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden} className="text-[12px]"
               monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
               pctFraccion={impactoFdh.total.pct} />
-            <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={currency} oculto={hidden}
+            <SiAbrieraAsi sesion={sesionFdh} moneda={currency} oculto={hidden}
               total={(currency === 'ARS' ? (totals.totalValue + pf.valueUsd) * tcValuacion : totals.totalValue + pf.valueUsd)
                 + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
           </div>

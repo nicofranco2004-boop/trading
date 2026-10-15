@@ -1689,13 +1689,13 @@ export default function PositionsMobile() {
               moneda={currency} listo={numerosListos} conDiferencia={false} />
           </span>
           {sesionFdh && (
-            <ChipFueraDeHorario sesion={sesionFdh} moneda={currency} className="py-0.5"
+            <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={currency} className="py-0.5"
               monto={currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd}
               pctFraccion={impactoFdh.total.pct} />
           )}
         </div>
         {sesionFdh && (
-          <SiAbrieraAsi impacto={impactoFdh} sesion={sesionFdh} moneda={currency} className="-mt-1 mb-2.5"
+          <SiAbrieraAsi sesion={sesionFdh} moneda={currency} className="-mt-1 mb-2.5"
             total={heroValor + (currency === 'ARS' ? impactoFdh.total.ars : impactoFdh.total.usd)} />
         )}
         {/* De cuándo son los precios y si se están moviendo. Reemplaza el

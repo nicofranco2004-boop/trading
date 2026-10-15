@@ -25,14 +25,34 @@ import { HelpCircle } from 'lucide-react'
  * globo (256px hacia la derecha) se cortaba en TODAS sus líneas. Por eso, si el
  * globo se saldría de la pantalla, se corre lo justo para entrar. Sólo se mueve
  * el que se iba a salir: los que ya entraban quedan exactamente donde estaban.
+ *
+ * `ancho`: la clase de ancho del globo (default `w-64`, 256px). El del pre/post
+ * mercado usa `w-80`: lleva una tabla chica y el aviso del dólar CCL.
  */
-export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom' }) {
+/**
+ * El estilo que corre el globo `d` píxeles (positivo = a la derecha).
+ *
+ * ⚠️ El margen tiene que ir del LADO ANCLADO. Con 'left' y 'center' el globo
+ * está anclado por `left`, y `marginLeft` lo corre. Con 'right' está anclado
+ * por `right` y su `left` es automático: el navegador recalcula ese `left` y un
+ * `marginLeft` no lo mueve NI UN PÍXEL (lo absorbe). Hasta 2026-10-15 la
+ * corrección usaba siempre `marginLeft`, así que con 'right' —el default, 13 de
+ * los 26 usos— el globo que se escapaba por la izquierda en el celular quedaba
+ * cortado igual. Medido en la ayuda del pre-mercado de Cartera a 375 px.
+ */
+export function estiloDeCorrimiento(align, d) {
+  if (!d) return undefined
+  return align === 'right' ? { marginRight: -d } : { marginLeft: d }
+}
+
+export default function InfoTooltip({ children, label = 'Cómo se calcula', size = 13, align = 'right', side = 'bottom', ancho = 'w-64' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const globoRef = useRef(null)
   // Corrimiento horizontal para que el globo entre en la pantalla. Va por
-  // `marginLeft` y no por `transform`: la variante 'center' ya usa
-  // `-translate-x-1/2`, y un transform inline la pisaría.
+  // margen y no por `transform`: la variante 'center' ya usa
+  // `-translate-x-1/2`, y un transform inline la pisaría. Qué margen: ver
+  // `estiloDeCorrimiento`.
   const [corrimiento, setCorrimiento] = useState(0)
   const corrimientoRef = useRef(0)
 
@@ -98,8 +118,8 @@ export default function InfoTooltip({ children, label = 'Cómo se calcula', size
       {open && (
         <div
           ref={globoRef}
-          style={corrimiento ? { marginLeft: corrimiento } : undefined}
-          className={`absolute z-30 w-64 max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
+          style={estiloDeCorrimiento(align, corrimiento)}
+          className={`absolute z-30 ${ancho} max-w-[80vw] px-3 py-2.5 rounded-lg bg-bg-1 border border-line shadow-lg text-xs leading-relaxed text-ink-1 space-y-1.5 ${
             align === 'center' ? 'left-1/2 -translate-x-1/2'
               : align === 'right' ? 'right-0' : 'left-0'
           } ${side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'}`}
