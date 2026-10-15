@@ -4270,9 +4270,9 @@ function DedupSuscripciones() {
         <div>
           <h3 className="text-sm font-semibold text-ink-0">Fichas de suscripción duplicadas</h3>
           <p className="text-xs text-ink-2 mt-0.5">
-            La misma suscripción de Rebill anotada más de una vez. Conserva siempre la
-            más vieja (el alta original) y nunca toca fichas con identificadores distintos,
-            que serían cobros de verdad.
+            La misma suscripción de Rebill anotada más de una vez. Conserva la ficha que
+            manda —el estado más vigente, y a igualdad la más vieja— y nunca toca fichas
+            con identificadores distintos, que serían cobros de verdad.
           </p>
         </div>
       </div>
