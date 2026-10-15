@@ -735,27 +735,41 @@ _A_LAS_858 = datetime(2026, 10, 15, 8, 58)      # hora argentina: pre abierto, B
 _A_LAS_1115 = datetime(2026, 10, 15, 11, 15)    # BYMA ya abrió
 
 
-def _cot(sym, pct, estado="PRE"):
+def _cierre_ts(dia_iso):
+    """El cierre de la rueda de ese día (16:00 de Nueva York), como lo manda Yahoo."""
+    d = date.fromisoformat(dia_iso)
+    return int(_dt.datetime(d.year, d.month, d.day, 16, 0, tzinfo=_fdh.ZONA_NY).timestamp())
+
+
+def _cot(sym, pct, estado="PRE", cierre=None):
+    """Pre (o post, con estado="POST") contra el cierre `cierre` (por defecto el
+    del día hábil anterior: el mismo contra el que mide la «Var. día» de hoy)."""
+    rmt = _cierre_ts(cierre or ae._base_de_la_rueda(sym))
+    if estado == "POST":
+        return {"symbol": sym, "marketState": estado, "market": "us_market",
+                "regularMarketTime": rmt, "regularMarketPrice": 100.0,
+                "postMarketChangePercent": pct, "postMarketTime": rmt + 3600, "postMarketPrice": 100 + pct}
     return {"symbol": sym, "marketState": estado, "market": "us_market",
-            "regularMarketTime": 1000, "regularMarketPrice": 100.0,
-            "preMarketChangePercent": pct, "preMarketTime": 2000, "preMarketPrice": 100 + pct}
+            "regularMarketTime": rmt, "regularMarketPrice": 100.0,
+            "preMarketChangePercent": pct, "preMarketTime": rmt + 15 * 3600, "preMarketPrice": 100 + pct}
 
 
-def _con_velas(cuantas):
-    """`cuantas` velas de 5 minutos con operaciones en el pre de hoy (NY)."""
+def _con_velas(cuantas, hora=8):
+    """`cuantas` velas de 5 minutos con operaciones hoy (NY) desde `hora`: 8 cae
+    en el pre, 17 en el post."""
     def traer(simbolo):
         n = cuantas.get(simbolo, 0)
-        velas = [(_dt.datetime(2026, 10, 15, 8, 0, tzinfo=_fdh.ZONA_NY) + _dt.timedelta(minutes=5 * i), 100.0)
+        velas = [(_dt.datetime(2026, 10, 15, hora, 0, tzinfo=_fdh.ZONA_NY) + _dt.timedelta(minutes=5 * i), 100.0)
                  for i in range(n)]
         return velas, {}
     return traer
 
 
-def _fuera(monkeypatch, cotizaciones, velas, ahora=_A_LAS_858):
+def _fuera(monkeypatch, cotizaciones, velas, ahora=_A_LAS_858, hora_velas=8):
     _fdh._vaciar_cache()
     monkeypatch.setattr(_fdh, "_pedir_yahoo",
                         lambda simbolos: [c for c in cotizaciones if c["symbol"] in simbolos])
-    monkeypatch.setattr(_fdh, "_traer_velas", _con_velas(velas))
+    monkeypatch.setattr(_fdh, "_traer_velas", _con_velas(velas, hora_velas))
     monkeypatch.setattr("fechas.ahora_art", lambda: ahora)
     # Fuera de la rueda no hay «Var. día» de hoy: el camino de siempre no dispara.
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
@@ -877,3 +891,84 @@ def test_rueda_y_pre_a_la_vez_tambien_van_en_un_solo_mail(clean, monkeypatch):
     assert mails[0]["heading"] == "GGAL cayó 4% hoy y NVDA cae 3,5% en el pre-mercado"
     assert any(l.endswith("(en el pre-mercado)") for l in mails[0]["lines"])
     assert any(l.endswith(" hoy") for l in mails[0]["lines"])
+
+
+
+# ── El mismo movimiento se avisa una vez (los cinco casos de Nico, 15/10) ────
+# Un movimiento = contra qué cierre se mide + hacia dónde. El post de anoche, el
+# pre de hoy y la rueda de hoy se miden contra el cierre de ayer; el post de hoy,
+# contra el de hoy.
+
+def _rueda(monkeypatch, pct, sym="NVDA"):
+    """La rueda normal: Yahoo dice REGULAR (no hay pre ni post) y la «Var. día»
+    de hoy trae `pct`."""
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(_fdh, "_pedir_yahoo",
+                        lambda simbolos: [_cot("SPY", 0.1, estado="REGULAR")])
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {sym: _q(100 + pct, pct, sym=sym)})
+
+
+def _alerta_nvda(conn):
+    return _mk_alert(conn, kind="pct_move", up_pct=3, down_pct=3, threshold=None,
+                     symbol="NVDA", repeat="always")
+
+
+def test_caso1_pre_mas_3_y_abre_mas_3_avisa_una_sola_vez(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1        # en el pre
+    _rueda(monkeypatch, 3.2)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0        # la apertura es la MISMA suba
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0        # y no vuelve en el día
+    assert len(_events(conn)) == 1
+
+
+def test_caso2_sin_pre_y_sube_en_la_rueda_avisa(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 0.5)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    _rueda(monkeypatch, 3.2)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+
+def test_caso3_pre_mas_3_y_abre_menos_3_avisa_las_dos(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _rueda(monkeypatch, -3.1)                                         # cambió de sentido
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert [e["message"] for e in _events(conn)] == ["NVDA sube 3,4% en el pre-mercado",
+                                                     "NVDA cayó 3,1% hoy"]
+
+
+def test_caso4_rueda_mas_3_y_post_otro_mas_3_avisa_las_dos(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    _rueda(monkeypatch, 3.2)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    hoy = ae._sesion_hoy("NVDA")
+    # El post se mide contra el cierre de HOY: otro 3 % arriba es una suba nueva.
+    _fuera(monkeypatch, [_cot("SPY", 0.2, estado="POST", cierre=hoy),
+                         _cot("NVDA", 3.3, estado="POST", cierre=hoy)], {"NVDA": 6}, hora_velas=17)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "NVDA sube 3,3% en el post-mercado"
+
+
+def test_caso5_post_de_anoche_y_pre_de_hoy_es_el_mismo_movimiento(clean, monkeypatch):
+    conn = clean
+    _alerta_nvda(conn)
+    ayer = ae._base_de_la_rueda("NVDA")
+    # Anoche, en el post: +3,3 % contra el cierre de ayer.
+    _fuera(monkeypatch, [_cot("SPY", 0.2, estado="POST", cierre=ayer),
+                         _cot("NVDA", 3.3, estado="POST", cierre=ayer)], {"NVDA": 6}, hora_velas=17)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    # Hoy en el pre sigue +3,5 % contra el MISMO cierre: no se repite de noche.
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.5)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    # Y abre +3,1 %: tampoco.
+    _rueda(monkeypatch, 3.1)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    assert len(_events(conn)) == 1

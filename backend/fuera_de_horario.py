@@ -346,6 +346,22 @@ def _pct(q: dict, sesion: Optional[str]) -> Optional[float]:
         return None
 
 
+def _base_del_pct(q: dict) -> Optional[str]:
+    """Contra QUÉ CIERRE se mide el % de pre o post: la fecha (de Nueva York) del
+    último cierre de la rueda, `regularMarketTime`. En el pre es el de ayer (el
+    viernes, un lunes; el día hábil anterior, después de un feriado); en el post,
+    el de hoy. Las alertas lo usan para no avisar dos veces el mismo movimiento:
+    el post de anoche, el pre de hoy y la rueda de hoy se miden contra el mismo
+    cierre."""
+    t = q.get("regularMarketTime")
+    if not t:
+        return None
+    try:
+        return _dt.datetime.fromtimestamp(int(t), ZONA_NY).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _hora_ar(hora_ny: _dt.time, ahora: _dt.datetime) -> str:
     """Una hora de Nueva York (de hoy) en hora argentina, 'H:MM'."""
     hoy_ny = ahora.astimezone(ZONA_NY).date()
@@ -400,7 +416,8 @@ def estado(simbolos: List[str], listas: bool = False, ahora: _dt.datetime = None
             if not q or not _es_de_eeuu(q):
                 continue
             pct = _pct(q, sesion)
-            cotizaciones[s] = {"pct": pct, "precio": q.get(campo) if pct is not None else None}
+            cotizaciones[s] = {"pct": pct, "precio": q.get(campo) if pct is not None else None,
+                               "base": _base_del_pct(q)}
 
     cierra = None
     if sesion == "pre":

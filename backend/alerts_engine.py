@@ -295,6 +295,53 @@ def _set_sym_fired(conn, alert_id: int, symbol, date: str):
     )
 
 
+# ─── El mismo movimiento no se avisa dos veces ────────────────────────────────
+# Regla (Nico, 2026-10-15): un movimiento se define por CONTRA QUÉ CIERRE se mide
+# y hacia dónde va. El post-mercado de anoche, el pre-mercado de hoy y la rueda
+# de hoy se miden los tres contra el cierre de ayer: si los tres dicen «+3 %»,
+# es UNA suba contada tres veces y se avisa una vez. El post de hoy se mide
+# contra el cierre de hoy: otro 3 % arriba es una suba NUEVA. Y si cambia de
+# sentido contra el mismo cierre (pre +3 %, abre −3 %), también se avisa.
+# Se anota en alert_symbol_state con la clave '<símbolo>#<cierre>#<up|down>'.
+
+def _clave_movimiento(symbol, base: str, lado: str) -> str:
+    return f"{symbol}#{base}#{lado}"
+
+
+def _ya_avisado(conn, alert_id: int, symbol, base, lado) -> bool:
+    if not base or not lado:
+        return False
+    return _sym_state(conn, alert_id, _clave_movimiento(symbol, base, lado))[1] is not None
+
+
+def _anotar_movimiento(conn, alert_id: int, symbol, base, lado) -> None:
+    if base and lado:
+        _set_sym_fired(conn, alert_id, _clave_movimiento(symbol, base, lado), base)
+
+
+def _base_de_la_rueda(symbol) -> str:
+    """El cierre contra el que se mide la «Var. día» de hoy: el día hábil
+    anterior a la rueda de hoy (un lunes, el viernes). No conoce feriados: el día
+    después de uno puede salir un aviso repetido, una vez. Fuera de la rueda la
+    fecha la da Yahoo y es exacta (`fuera_de_horario._base_del_pct`)."""
+    from datetime import date as _date
+    d = _date.fromisoformat(_sesion_hoy(symbol)) - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
+def _podar_movimientos(conn, now: datetime) -> None:
+    """Las claves de movimiento viejas no sirven más (un cierre de hace 10 días ya
+    no lo mide nadie)."""
+    corte = (now - timedelta(days=10)).date().isoformat()
+    try:
+        conn.execute("DELETE FROM alert_symbol_state WHERE symbol LIKE ? AND last_fired_date < ?",
+                     ("%#%#%", corte))
+    except Exception as ex:
+        log.warning("alerts: no se pudieron podar los movimientos viejos: %s", ex)
+
+
 # ─── Mensajes ─────────────────────────────────────────────────────────────────
 
 def _display_symbol(symbol: str) -> str:
@@ -691,10 +738,12 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
         CEDEAR o una acción argentina, sólo hasta que abre BYMA.
       · Sólo con operaciones de verdad: MIN_VELAS velas de 5 min en la franja
         (`con_operaciones`). Una operación suelta no dispara.
-      · Un aviso por (alerta, activo, franja) y por día, en su propio estado
-        ('<símbolo>@pre' en alert_symbol_state): NO toca el estado del día, así
-        que si en la rueda se mueve, la alerta avisa igual. Y una alerta "una
-        sola vez" no se apaga por un aviso del pre: es un anticipo.
+      · El mismo movimiento se avisa UNA vez (ver `_ya_avisado`): el post de
+        anoche, el pre de hoy y la rueda de hoy se miden contra el mismo cierre;
+        si ya se avisó «+3 %» contra ese cierre, ni el pre ni la apertura lo
+        repiten. El post de hoy (contra el cierre de hoy) o un cambio de sentido
+        sí avisan. Una alerta "una sola vez" no se apaga por un aviso fuera de la
+        rueda: es un anticipo.
     """
     import fuera_de_horario as fdh
     candidatas = []
@@ -717,10 +766,6 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
     if sesion not in ("pre", "post"):
         return 0          # en la rueda manda la «Var. día»; de noche no hay nada vivo
     cot = datos.get("cotizaciones") or {}
-    # El día de la franja es el de Nueva York, con el reloj compartido de Rendi
-    # (el mismo con que `fuera_de_horario` cuenta las velas de hoy).
-    import fechas
-    hoy = fechas.ahora_art().replace(tzinfo=fdh.ZONA_AR).astimezone(fdh.ZONA_NY).date().isoformat()
 
     cruzaron = []
     for a, sym, (ref, via) in candidatas:
@@ -728,12 +773,13 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
             continue      # el papel de acá ya tiene precio propio
         q = cot.get(ref) or {}
         pct = q.get("pct")
-        if pct is None or not pct_move_side(pct, a["up_pct"], a["down_pct"]):
+        lado = pct_move_side(pct, a["up_pct"], a["down_pct"])
+        base = q.get("base")
+        if pct is None or not lado or not base:
             continue
-        clave = f"{sym}@{sesion}"
-        if _sym_state(conn, a["id"], clave)[1] == hoy:
-            continue      # ya avisó en esta franja hoy
-        cruzaron.append((a, sym, ref, via, pct, q.get("precio"), clave))
+        if _ya_avisado(conn, a["id"], sym, base, lado):
+            continue      # el mismo movimiento (mismo cierre, mismo sentido) ya se avisó
+        cruzaron.append((a, sym, ref, via, pct, q.get("precio"), (base, lado)))
     if not cruzaron:
         return 0
     try:
@@ -749,7 +795,7 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) 
             continue
         _fire(conn, a, sym, precio, pct, now, pendientes,
               fuera={"sesion": sesion, "ref": ref, "via": via})
-        _set_sym_fired(conn, a["id"], clave, hoy)
+        _anotar_movimiento(conn, a["id"], sym, *clave)
         fired += 1
     return fired
 
@@ -770,6 +816,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     alerts = conn.execute(q, params).fetchall()
     if not alerts:
         return {"alerts": 0, "evaluated": 0, "fired": 0}
+    _podar_movimientos(conn, now)
 
     # Expandir a unidades (alerta, símbolo). holdings-scope → cada tenencia.
     # Qué precio necesita cada una: price_target y pct_move "Desde ahora"
@@ -889,9 +936,17 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     continue
                 if not armed or not tradeable or fired_today:
                     continue
+                base = _base_de_la_rueda(sym)
+                if _ya_avisado(conn, a["id"], sym, base, side):
+                    # Es el MISMO movimiento que ya se avisó fuera de la rueda (el
+                    # post de anoche o el pre de hoy, contra el mismo cierre): se
+                    # da por avisado hoy, sin mandar nada.
+                    _set_sym_fired(conn, a["id"], sym, today)
+                    continue
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
+                _anotar_movimiento(conn, a["id"], sym, base, side)
                 if a["repeat"] == "once":
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])

@@ -73,7 +73,8 @@ def test_en_el_pre_mercado_da_el_porcentaje_de_cada_accion():
 
 def test_la_que_no_opero_es_sin_operar_no_cero():
     r = fdh.estado(["PAM"], ahora=AHORA_PRE, pedir=Yahoo(PRE_MERCADO))
-    assert r["cotizaciones"]["PAM"] == {"pct": None, "precio": None}
+    # Y con contra qué cierre se mide (el del 14/10, 16:00 de NY): lo usan las alertas.
+    assert r["cotizaciones"]["PAM"] == {"pct": None, "precio": None, "base": "2026-10-14"}
 
 
 def test_lo_que_no_cotiza_en_eeuu_no_aparece():
