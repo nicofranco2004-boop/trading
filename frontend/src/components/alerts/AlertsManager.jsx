@@ -303,8 +303,9 @@ export default function AlertsManager({ plan, prefill }) {
               {(form.scope === 'holdings' || form.baseline === 'prev_close') && (
                 <p className="text-[11px] text-ink-3">
                   Si es una acción de EE.UU., un CEDEAR o una acción argentina con ADR, también te
-                  avisamos si se mueve así en el pre o el post mercado de Wall Street. Una sola vez por
-                  movimiento: si el pre ya te avisó una suba, la apertura no la repite.
+                  avisamos si se mueve así en el pre o el post mercado de Wall Street. Una vez por
+                  movimiento: si el pre ya te avisó una suba, la apertura no la repite, salvo que llegue
+                  al doble de lo que marcaste.
                 </p>
               )}
             </div>

@@ -319,6 +319,37 @@ def _anotar_movimiento(conn, alert_id: int, symbol, base, lado) -> None:
         _set_sym_fired(conn, alert_id, _clave_movimiento(symbol, base, lado), base)
 
 
+# Segundo aviso (Nico, 2026-10-15): si el MISMO movimiento llega al doble del
+# umbral, se avisa una vez más — y nunca una tercera. Se anota con el sentido
+# 'upx2' / 'downx2' en la misma clave. Si el primer aviso ya salió con el doble
+# (abrió +7 % con una alerta de 3 %), se anotan los dos: ese aviso ya dio el número.
+_DOBLE = "x2"
+
+
+def _llego_al_doble(change, alert, lado) -> bool:
+    thr = alert["up_pct"] if lado == "up" else alert["down_pct"]
+    return thr is not None and change is not None and abs(change) >= 2 * abs(thr)
+
+
+def _toca_el_doble(conn, alert, symbol, base, lado, change) -> bool:
+    """¿Este movimiento ya avisado llegó al doble y todavía no se avisó eso?"""
+    return (_ya_avisado(conn, alert["id"], symbol, base, lado)
+            and _llego_al_doble(change, alert, lado)
+            and not _ya_avisado(conn, alert["id"], symbol, base, lado + _DOBLE))
+
+
+def _anotar_aviso(conn, alert, symbol, base, lado, change, doble: bool) -> None:
+    """Anota lo que se acaba de avisar: el movimiento y, si ya está en el doble
+    (o este ES el aviso del doble), también el segundo escalón."""
+    if not doble:
+        _anotar_movimiento(conn, alert["id"], symbol, base, lado)
+    if doble or _llego_al_doble(change, alert, lado):
+        _anotar_movimiento(conn, alert["id"], symbol, base, lado + _DOBLE)
+
+
+_SUFIJO_DOBLE = " (el doble de tu alerta)"
+
+
 def _base_de_la_rueda(symbol) -> str:
     """El cierre contra el que se mide la «Var. día» de hoy: el día hábil
     anterior a la rueda de hoy (un lunes, el viernes). No conoce feriados: el día
@@ -584,7 +615,7 @@ def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
-          fuera: dict = None):
+          fuera: dict = None, doble: bool = False):
     """Dispara: log en alert_events + actualiza last_fired_* + ENCOLA la entrega.
 
     El mail y el push no salen acá. Se acumulan en `pendientes` y salen al
@@ -604,6 +635,10 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
         message = _compose_message(alert, symbol, price, change_pct)
         label = _short_label(alert, symbol, price, change_pct)
         line = _group_line(alert, symbol, price, change_pct)
+    if doble:
+        # El segundo aviso del mismo movimiento dice por qué vuelve a llegar.
+        message += _SUFIJO_DOBLE
+        line += _SUFIJO_DOBLE
     cur = conn.execute(
         """INSERT INTO alert_events
            (alert_id, user_id, symbol, fired_at, price, message,
@@ -789,9 +824,14 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         base = q.get("base")
         if pct is None or not lado or not base:
             continue
+        doble = False
         if _ya_avisado(conn, a["id"], sym, base, lado):
-            continue      # el mismo movimiento (mismo cierre, mismo sentido) ya se avisó
-        cruzaron.append((a, sym, ref, via, pct, q.get("precio"), (base, lado)))
+            # El mismo movimiento (mismo cierre, mismo sentido) ya se avisó: sólo
+            # vuelve si llegó al doble del umbral, una vez.
+            if not _toca_el_doble(conn, a, sym, base, lado, pct):
+                continue
+            doble = True
+        cruzaron.append((a, sym, ref, via, pct, q.get("precio"), (base, lado), doble))
     if not cruzaron:
         return 0
     try:
@@ -801,22 +841,22 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         return 0
     fired = 0
     mismo_ref = set()     # (alerta, acción de EE.UU., sentido) ya avisados en ESTE ciclo
-    for a, sym, ref, via, pct, precio, clave in cruzaron:
+    for a, sym, ref, via, pct, precio, clave, doble in cruzaron:
         if a["id"] in deactivated:
             continue
-        if (a["id"], ref, clave[1]) in mismo_ref:
+        if (a["id"], ref, clave[1], doble) in mismo_ref:
             # NVDA en Schwab y el CEDEAR de NVDA son la MISMA suba: un renglón.
             # El otro papel queda anotado como avisado.
-            _anotar_movimiento(conn, a["id"], sym, *clave)
+            _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
             continue
         if velas.get(ref, 0) < fdh.MIN_VELAS:
             log.info("alert %s %s: %+.2f%% en el %s con %s velas: poca operación, no aviso",
                      a["id"], sym, pct, sesion, velas.get(ref, 0))
             continue
         _fire(conn, a, sym, precio, pct, now, pendientes,
-              fuera={"sesion": sesion, "ref": ref, "via": via})
-        _anotar_movimiento(conn, a["id"], sym, *clave)
-        mismo_ref.add((a["id"], ref, clave[1]))
+              fuera={"sesion": sesion, "ref": ref, "via": via}, doble=doble)
+        _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
+        mismo_ref.add((a["id"], ref, clave[1], doble))
         fired += 1
         if a["repeat"] == "once":
             # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
@@ -959,14 +999,23 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     if change is not None and not armed and not fired_today:
                         _set_sym_armed(conn, a["id"], sym, 1)   # día nuevo, dentro de banda → re-arma
                     continue
-                if not armed or not tradeable or fired_today:
-                    continue
                 # Cripto no tiene pre ni post y su día es el día UTC (opera los
                 # sábados): la regla de «mismo cierre» no aplica. Con ella, el
                 # sábado, el domingo y el lunes compartían clave y se callaban
                 # entre sí (auditoría 2026-10-15).
                 es_cripto = sym in _crypto_symbols()
                 base = None if es_cripto else _base_de_la_rueda(sym)
+                if tradeable and base and _toca_el_doble(conn, a, sym, base, side, change):
+                    # El mismo movimiento llegó al doble del umbral: segundo y
+                    # último aviso, aunque hoy ya haya avisado (+3 % a las 11,
+                    # +6 % a las 15; o pre +3 % y abre +6 %).
+                    _fire(conn, a, sym, fire_price, change, now, pendientes, doble=True)
+                    fired += 1
+                    _set_sym_fired(conn, a["id"], sym, today)
+                    _anotar_aviso(conn, a, sym, base, side, change, doble=True)
+                    continue
+                if not armed or not tradeable or fired_today:
+                    continue
                 if _ya_avisado(conn, a["id"], sym, base, side):
                     # Es el MISMO movimiento que ya se avisó fuera de la rueda (el
                     # post de anoche o el pre de hoy, contra el mismo cierre): no se
@@ -980,7 +1029,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
-                _anotar_movimiento(conn, a["id"], sym, base, side)
+                _anotar_aviso(conn, a, sym, base, side, change, doble=False)
                 if a["repeat"] == "once":
                     conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
                     deactivated.add(a["id"])
