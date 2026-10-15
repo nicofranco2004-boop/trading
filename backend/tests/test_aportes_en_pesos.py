@@ -107,6 +107,76 @@ class AportesEnPesos(unittest.TestCase):
                    for x in filas if x["broker"] != "global")
         self.assertAlmostEqual(neto, 3_000_000 + 2_000_000 - 500_000 + 800_000, places=2)
 
+    def test_el_estado_inicial_va_al_dolar_del_dia_del_import(self):
+        # El "Estado inicial" del importador pregunta "¿cuánto efectivo tenés HOY?"
+        # y anota la diferencia como depósitos sintéticos —uno por moneda— fechados
+        # el día ANTES del primer movimiento: los montos son del día del import.
+        # La pata en dólares iba sin pesos y la pantalla la pasaba al dólar de SU
+        # fecha: en la cuenta 826 de prod, −$24 M + US$ 19.756 × 16 (el dólar de
+        # 2017) daba "Capital aportado" en pesos −$23,6 M. Por la puerta real:
+        # preview + confirm con `seed_state`, lo mismo que manda el asistente.
+        conn = main.get_db()
+        try:
+            padre = conn.execute("SELECT id FROM brokers WHERE user_id=? AND name='IOL'",
+                                 (self.uid,)).fetchone()["id"]
+            conn.execute("INSERT INTO brokers (user_id, name, currency, parent_broker_id) "
+                         "VALUES (?, 'IOL · USD', 'USDT', ?)", (self.uid, padre))
+            # El dólar del día del import (la serie sólo tiene hoy: los movimientos
+            # de 2024 no lo usan).
+            hoy = conn.execute("SELECT date('now')").fetchone()[0]
+            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta) "
+                         "VALUES (?, 1450, 1500)", (hoy,))
+            conn.commit()
+        finally:
+            conn.close()
+        csv = (HDR + "2024-01-05,DEPOSITO,IOL,,,,3000000,,,,ARS,dep real\n"
+                     "2024-01-06,COMPRA,IOL,GGAL,1000,2000,2000000,,,,ARS,compra\n")
+        r = self.client.post(
+            "/api/imports/preview", headers=self.h,
+            files=[("files", ("x.csv", io.BytesIO(csv.encode("utf-8")), "text/csv"))],
+            data={"format": "rendi_generic", "broker": "IOL"})
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post("/api/imports/confirm", headers=self.h, json={
+            "session_id": r.json()["session_id"],
+            "seed_state": {"seed_date": "2024-01-04", "brokers": [
+                {"broker": "IOL", "cash": {"ARS": 5_000_000}, "assets": []},
+                {"broker": "IOL · USD", "cash": {"USDT": 1_000}, "assets": []}]}})
+        self.assertEqual(r.status_code, 200, r.text)
+        # Y un depósito REAL en dólares en el mismo mes, importado en el broker en dólares.
+        self.importar("IOL · USD", "2024-01-20,DEPOSITO,IOL · USD,,,,500,,,,USD,dep usd real\n")
+
+        # Los dos sintéticos existen y son lo que dicen ser (sin huella, con su nota).
+        conn = main.get_db()
+        try:
+            sint = conn.execute(
+                """SELECT n.broker, n.gross_amount, n.fingerprint FROM import_normalized_tx n
+                     JOIN import_batches b ON b.id = n.batch_id
+                    WHERE b.user_id=? AND n.operation_type='DEPOSIT'
+                      AND n.notes LIKE 'Estado inicial%' ORDER BY n.broker""",
+                (self.uid,)).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual([(x["broker"], round(x["gross_amount"])) for x in sint],
+                         [("IOL", 5_000_000), ("IOL · USD", 1_000)])
+        self.assertTrue(all(x["fingerprint"] is None for x in sint))
+
+        filas = self.client.get("/api/monthly", headers=self.h).json()
+        # La pata en pesos: sus pesos (del día del import), junto con el depósito real.
+        pesos = self.fila(filas, "IOL", 2024, 1)
+        self.assertAlmostEqual(pesos["pesos_importados_dep"], 3_000_000 + 5_000_000, places=2)
+        # La pata en dólares: al dólar del día del import, no al de enero de 2024.
+        usd = self.fila(filas, "IOL · USD", 2024, 1)
+        self.assertAlmostEqual(usd["pesos_importados_dep_usd"], 1_000, places=4)
+        self.assertAlmostEqual(usd["pesos_importados_dep"], 1_000 * 1500, places=2)
+        self.assertAlmostEqual(usd["deposits"], 1_000 + 500, places=4)
+        # Viaja por UN solo lado: con pesos, y no también como depósito en dólares con
+        # su día (`usd_con_dia`) — ahí queda sólo el real, y los dólares del mes cierran:
+        # los que llevan pesos + los que van con su día = todo lo que entró.
+        importado = usd["usd_con_dia"]["importado"]
+        self.assertEqual(importado["dep"], [["2024-01-20", 500.0]])
+        self.assertAlmostEqual(usd["pesos_importados_dep_usd"] + sum(x[1] for x in importado["dep"]),
+                               usd["deposits"], places=4)
+
     def test_cuenta_sin_imports(self):
         # Sin nada importado la respuesta sigue llegando, con los campos en cero.
         r = self.client.post("/api/cash/flow", headers=self.h, json={

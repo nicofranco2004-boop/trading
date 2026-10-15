@@ -239,11 +239,32 @@ class SeedSinteticoNoSeReEstampaTest(unittest.TestCase):
     """
 
     def test_la_query_excluye_las_sinteticas(self):
+        # El criterio vive en UN lugar (`estado_inicial`, importing/schema.py), que
+        # comparten el migrador, su diagnóstico y "Capital aportado" en pesos.
         src = inspect_source()
         i = src.index("PATA 1: re-estampar")
         bloque = src[i:i + 2400]
-        self.assertIn("n.fingerprint IS NOT NULL", bloque)
-        self.assertIn("NOT LIKE 'Estado inicial%'", bloque)
+        self.assertIn('AND NOT """ + estado_inicial()', bloque)
+
+    def test_el_criterio_deja_afuera_las_sinteticas_y_nada_mas(self):
+        # Por comportamiento, no por texto: la condición corrida sobre filas.
+        import sqlite3
+        from importing.schema import estado_inicial
+        c = sqlite3.connect(":memory:")
+        c.execute("CREATE TABLE import_normalized_tx (id INTEGER, fingerprint TEXT, notes TEXT)")
+        c.executemany("INSERT INTO import_normalized_tx VALUES (?,?,?)", [
+            (1, "abc", "Depósito de fondos"),                          # parseada: cuenta
+            (2, None, "Estado inicial — depósito sintético (Rendi)"),  # el seed: afuera
+            (3, None, None),                                           # sin huella: afuera
+            (4, "def", "Estado inicial — retiro sintético (Rendi)"),   # red por la nota
+            (5, "ghi", None),                                          # parseada sin nota
+        ])
+        vivas = [r[0] for r in c.execute(
+            "SELECT id FROM import_normalized_tx n WHERE NOT " + estado_inicial() + " ORDER BY id")]
+        self.assertEqual(vivas, [1, 5])
+        sint = [r[0] for r in c.execute(
+            "SELECT id FROM import_normalized_tx n2 WHERE " + estado_inicial("n2") + " ORDER BY id")]
+        self.assertEqual(sint, [2, 3, 4])
 
     def test_se_reporta_cuantas_quedaron_afuera(self):
         src = inspect_source()

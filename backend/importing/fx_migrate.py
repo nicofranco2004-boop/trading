@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover
     from ..fx import fx_for_date, fx_version, set_fx_version, FX_V1, FX_V2
 
 from . import rebuild as _rebuild
+from .schema import estado_inicial
 from . import persister as _persister
 
 log = logging.getLogger(__name__)
@@ -184,8 +185,7 @@ def fechas_sospechosas(conn, uid, ratio=50.0, ratio_aviso=10.0, min_filas=3):
                   AND UPPER(COALESCE(n.currency,''))='ARS'
                   AND n.operation_type='DEPOSIT'
                   AND n.gross_amount IS NOT NULL AND n.gross_amount > 0
-                  AND n.fingerprint IS NOT NULL
-                  AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'""",
+                  AND NOT """ + estado_inicial(),
             (uid,)).fetchall()
     except Exception:
         return None
@@ -311,8 +311,7 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
             WHERE b.user_id=? AND b.status='confirmed'
               AND UPPER(COALESCE(n.currency,''))='ARS'
               AND n.gross_amount IS NOT NULL
-              AND n.fingerprint IS NOT NULL
-              AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'""", (uid,)).fetchall()
+              AND NOT """ + estado_inicial(), (uid,)).fetchall()
     sinteticas = conn.execute(
         """SELECT COUNT(*) n, ROUND(COALESCE(SUM(n2.gross_amount_usd),0),2) usd
              FROM import_normalized_tx n2
@@ -320,8 +319,7 @@ def migrate_user_fx(conn, uid: int, helpers, *, recalc, backfill_snapshots,
             WHERE b.user_id=? AND b.status='confirmed'
               AND UPPER(COALESCE(n2.currency,''))='ARS'
               AND n2.gross_amount IS NOT NULL
-              AND (n2.fingerprint IS NULL
-                   OR COALESCE(n2.notes,'') LIKE 'Estado inicial%')""", (uid,)).fetchone()
+              AND """ + estado_inicial("n2"), (uid,)).fetchone()
     cache: Dict[str, Optional[float]] = {}
     sin_tc = 0
     restamped = 0

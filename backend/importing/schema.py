@@ -48,6 +48,33 @@ def tx_vivas(n: str = "n", b: str = "b") -> str:
 TX_VIVAS = tx_vivas()
 
 
+# ─── El "Estado inicial": montos del DÍA DEL IMPORT con fecha VIEJA ──────────
+# El "Estado inicial" del importador (seed.py) le pregunta a la persona "¿cuánto
+# efectivo tenés HOY?" y anota la diferencia como depósitos o retiros sintéticos
+# (uno por moneda) fechados UN DÍA ANTES del primer movimiento del archivo. O sea:
+# el monto es del día del import y la fecha es la más vieja de la cuenta. Se
+# reconocen porque el INSERT del seed (persister.py) no lleva `fingerprint` —toda
+# fila parseada sí— y, de red, por la nota.
+#
+# Quien lleve uno de estos montos de una moneda a otra tiene que usar el dólar del
+# DÍA DEL IMPORT, nunca el de su fecha: sus dos patas (pesos y dólares) están
+# medidas ese día. Con el dólar de su fecha:
+#   · el migrador al dólar histórico multiplicaba ×33 un depósito de la cuenta 324
+#     (por eso no las re-estampa: su `gross_amount_usd` ya es del día del import);
+#   · "Capital aportado" en pesos (`_aportes_en_pesos_por_mes`) sumaba la pata en
+#     pesos (pesos del día del import) contra la pata en dólares pasada al dólar de
+#     2017: en la cuenta 826, −$24 M + US$ 19.756 × 16 = −$23,6 M aportados.
+# Medido en la copia de prod del 16/08: 389 filas en pesos y su pata en dólares,
+# en 357 cuentas. Lectores: fx_migrate.py (re-estampado y fechas sospechosas), su
+# diagnóstico en main.py, `_aportes_en_pesos_por_mes` y `_aportes_en_dolares_con_dia`
+# (estos dos con `_dolar_del_estado_inicial`, para que la pata en dólares viaje por
+# un solo lado).
+def estado_inicial(n: str = "n") -> str:
+    """WHERE de las filas importadas sintéticas del "Estado inicial" (montos del
+    día del import). `NOT {estado_inicial()}` para excluirlas."""
+    return f"({n}.fingerprint IS NULL OR COALESCE({n}.notes,'') LIKE 'Estado inicial%')"
+
+
 # ─── Enums (strings simples para serializar a SQLite) ────────────────────────
 
 OP_BUY = "BUY"

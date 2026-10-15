@@ -15,7 +15,7 @@ from dberrors import ERR_INTEGRIDAD, ERR_OPERACIONAL
 # Las filas importadas que CUENTAN (confirmadas y sin lápida). Va arriba de todo:
 # `init_db()` corre al importar este módulo y su migración de flujos manuales ya
 # las lee, mucho antes del bloque de imports de `importing` más abajo.
-from importing.schema import TX_VIVAS, tx_vivas
+from importing.schema import TX_VIVAS, tx_vivas, estado_inicial
 # CÓMO escribe Rendi — fuente ÚNICA del tono, compartida con ai/prompts.py.
 # Import top-level (no lazy como el resto de `ai`) porque los prompts de chat
 # se arman a nivel de módulo. `ai/voz.py` no importa nada, así que no hay
@@ -994,6 +994,23 @@ def _import_flows_por_mes(conn, uid: int, tc_blue: float) -> dict:
 
 
 
+_DIA_DEL_IMPORT_SQL = "substr(COALESCE(b.confirmed_at, b.created_at), 1, 10)"
+
+
+def _dolar_del_estado_inicial(conn, dia_import, cache: dict):
+    """El dólar con que se pasa a pesos la pata en DÓLARES del "Estado inicial"
+    (`estado_inicial`, importing/schema.py): el del DÍA DEL IMPORT, que es cuando se
+    midieron sus montos. None si la serie no lo tiene: entonces esa pata NO lleva
+    pesos y viaja como cualquier aporte en dólares. `_aportes_en_pesos_por_mes` y
+    `_aportes_en_dolares_con_dia` preguntan acá las dos, para que una fila vaya
+    exactamente por uno de los dos lados (con pesos, o en dólares con su día) y
+    nunca por los dos."""
+    if dia_import not in cache:
+        tc = _fx.fx_for_date(conn, dia_import) if dia_import else None
+        cache[dia_import] = tc if tc and tc > 0 else None
+    return cache[dia_import]
+
+
 def _aportes_en_pesos_por_mes(conn, uid: int, tc_blue: float) -> dict:
     """Los aportes y retiros de cada fila mensual de broker cuyos PESOS se conocen:
     {(broker, 'AAAA', 'MM'): [dep_pesos, dep_usd, ret_pesos, ret_usd]}. Sin 'global'.
@@ -1019,7 +1036,17 @@ def _aportes_en_pesos_por_mes(conn, uid: int, tc_blue: float) -> dict:
     Los pesos de lo importado mandan aunque sus dólares estén mal: en la copia de
     prod hay depósitos de 2020 y 2023 sellados con el dólar de HOY (cociente 4× y
     18× el blue de su mes) y con los pesos bien. Lo cargado a mano NO va acá: sus
-    pesos ya viajan en `manual_*_native` de la fila."""
+    pesos ya viajan en `manual_*_native` de la fila.
+
+    ⚠️ EL "ESTADO INICIAL" SINTÉTICO (`estado_inicial`, importing/schema.py) es del
+    DÍA DEL IMPORT aunque esté fechado el día antes del primer movimiento: su pata
+    en pesos entra con su monto (pesos de ese día) y su pata en dólares, al dólar de
+    ese día. Antes la pata en dólares iba sin pesos y la pantalla la pasaba al dólar
+    de su fecha: en la cuenta 826, −$24 M + US$ 19.756 × 16 (el dólar de 2017) daba
+    "Capital aportado" en pesos −$23,6 M. Excluir la pata en pesos en vez de esto
+    tampoco sirve: la cuenta 174 pasaba de +$11,8 M a −$0,6 M (sus $13,4 M del día
+    del import, llevados al dólar de 2019, valían 14 veces menos que sus retiros
+    reales de 2025)."""
     out: dict = {}
 
     def _sumar(broker, y, m, lado, pesos, usd):
@@ -1039,6 +1066,26 @@ def _aportes_en_pesos_por_mes(conn, uid: int, tc_blue: float) -> dict:
                     GROUP BY n.broker, y, m, n.operation_type""",
                 (tc_blue, tc_blue, uid)).fetchall():
             _sumar(r["broker"], r["y"], r["m"], 0 if r["op"] == "DEPOSIT" else 2, r["pesos"], r["usd"])
+        # La pata en DÓLARES del "Estado inicial": sus pesos son los del día del
+        # import, como los de su pata en pesos (que ya entró arriba con su monto).
+        # Sin esto la pantalla la pasaba al dólar de SU fecha —la más vieja de la
+        # cuenta— y el par no se compensaba. Sin dólar de ese día, queda sin pesos
+        # conocidos (al dólar de su mes, lo de antes).
+        dolar_del_dia: dict = {}
+        for r in conn.execute(
+                f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
+                          strftime('%m', n.date) AS m, n.operation_type AS op,
+                          {_DIA_DEL_IMPORT_SQL} AS dia_import,
+                          COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS usd
+                     FROM {TX_VIVAS}
+                    WHERE {_FLUJO_IMPORT_DONDE_SQL} AND UPPER(COALESCE(n.currency,''))<>'ARS'
+                      AND {estado_inicial()}
+                    GROUP BY n.broker, y, m, n.operation_type, dia_import""",
+                (tc_blue, tc_blue, uid)).fetchall():
+            tc = _dolar_del_estado_inicial(conn, r["dia_import"], dolar_del_dia)
+            if tc:
+                _sumar(r["broker"], r["y"], r["m"], 0 if r["op"] == "DEPOSIT" else 2,
+                       float(r["usd"] or 0) * tc, r["usd"])
         # Conversiones: el que paga RETIRA, el que cobra DEPOSITA — los mismos pesos.
         for r in conn.execute(
                 f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
@@ -1078,11 +1125,14 @@ def _aportes_en_dolares_con_dia(conn, uid: int, tc_blue: float) -> dict:
         ya viajan con sus pesos, `_aportes_en_pesos_por_mes`), con la fecha del
         import y los dólares con que entraron a `monthly_entries`
         (`_FLUJO_IMPORT_USD_SQL`). Las conversiones no van: sus dos patas tienen pesos.
+        Tampoco la pata en dólares del "Estado inicial" cuando ya lleva pesos (los
+        del día del import; ver `_dolar_del_estado_inicial`).
       · 'a_mano': lo cargado a mano, renglón por renglón como en Movimientos
         (`_filas_a_mano_del_mes`: cada carga con su día, y el resto del mes sin día
         al 15, igual que esa lista). Se manda para TODOS los brokers: en uno en pesos
         la pantalla lo usa sólo si no puede usar los pesos guardados."""
     out: dict = {}
+    dolar_ei: dict = {}
 
     def _lado(broker, y, m, clave, lado):
         v = out.setdefault((broker, y, m), {"importado": {"dep": [], "ret": []},
@@ -1092,14 +1142,21 @@ def _aportes_en_dolares_con_dia(conn, uid: int, tc_blue: float) -> dict:
         for r in conn.execute(
                 f"""SELECT n.broker AS broker, strftime('%Y', n.date) AS y,
                           strftime('%m', n.date) AS m, substr(n.date, 1, 10) AS fecha,
-                          n.operation_type AS op,
+                          n.operation_type AS op, {estado_inicial()} AS es_estado_inicial,
+                          {_DIA_DEL_IMPORT_SQL} AS dia_import,
                           COALESCE(SUM({_FLUJO_IMPORT_USD_SQL}), 0) AS usd
                      FROM {TX_VIVAS}
                     WHERE {_FLUJO_IMPORT_DONDE_SQL}
                       AND COALESCE(UPPER(n.currency), '') <> 'ARS'
-                    GROUP BY n.broker, y, m, fecha, n.operation_type""",
+                    GROUP BY n.broker, y, m, fecha, n.operation_type, es_estado_inicial, dia_import""",
                 (tc_blue, tc_blue, uid)).fetchall():
             if r["broker"] is None or r["y"] is None or r["m"] is None or not (r["usd"] or 0):
+                continue
+            # La pata en dólares del "Estado inicial" ya viaja CON PESOS (los del día
+            # del import, `_aportes_en_pesos_por_mes`): mandarla también acá, con la
+            # fecha vieja del sintético, la contaba dos veces y metía el dólar de esa
+            # fecha en los pesos de los aportes reales del mes.
+            if r["es_estado_inicial"] and _dolar_del_estado_inicial(conn, r["dia_import"], dolar_ei):
                 continue
             _lado(r["broker"], r["y"], r["m"], "importado",
                   "dep" if r["op"] == "DEPOSIT" else "ret").append([r["fecha"], round(float(r["usd"]), 6)])
@@ -24177,8 +24234,7 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
                   AND UPPER(COALESCE(n.currency,''))='ARS'
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND n.gross_amount IS NOT NULL
-                  AND n.fingerprint IS NOT NULL
-                  AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'
+                  AND NOT """ + estado_inicial() + """
                 GROUP BY anio, op ORDER BY anio, op""", (user_id,)).fetchall()
         # El USD v2 se re-deriva fila por fila (el TC es el del DÍA, no el del
         # año): agregarlo por año recién después es lo único fiel al migrador.
@@ -24190,8 +24246,7 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
                   AND UPPER(COALESCE(n.currency,''))='ARS'
                   AND n.operation_type IN ('DEPOSIT','WITHDRAW')
                   AND n.gross_amount IS NOT NULL
-                  AND n.fingerprint IS NOT NULL
-                  AND COALESCE(n.notes,'') NOT LIKE 'Estado inicial%'""", (user_id,)).fetchall()
+                  AND NOT """ + estado_inicial(), (user_id,)).fetchall()
         # Las del "Estado inicial" se cuentan aparte y NO entran en el desglose:
         # el migrador ya no las re-estampa (su monto está en pesos de hoy y su
         # fecha es `earliest − 1 día`, ver fx_migrate.py). Mostrarlas acá haría
@@ -24204,8 +24259,7 @@ def admin_fx_aportado_breakdown(user_id: int, uid: int = Depends(get_admin_user)
                 WHERE b.user_id=? AND b.status='confirmed'
                   AND UPPER(COALESCE(n2.currency,''))='ARS'
                   AND n2.operation_type IN ('DEPOSIT','WITHDRAW')
-                  AND (n2.fingerprint IS NULL
-                       OR COALESCE(n2.notes,'') LIKE 'Estado inicial%')""",
+                  AND """ + estado_inicial("n2"),
             (user_id,)).fetchone()
         cache, v2, sin_tc = {}, {}, 0
         for r in crudas:
