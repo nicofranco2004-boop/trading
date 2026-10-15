@@ -904,6 +904,13 @@ def backfill_user(conn, uid: int, today: _date, _pasada: int = 1) -> dict:
     # La reconstruccion se persiste como foto propia (source='mtm_backfill'), no
     # como una fila 'import' derivada de la cadena contable.
     res["snapshots_escritos"] = _persist_mtm_snapshots(conn, uid, por_mes)
+    # ⚠️ RESPETAR LA FECHA EXACTA DE UNA MEDICIÓN NO ALCANZA. El cron no corrió un
+    # 30/6, la reconstrucción de junio cayó entre el 29/6 y el 1/7 medidos, y como
+    # las dos valúan cosas distintas (ver "LA COSTURA" en twr.py) la curva publicaba
+    # −65 % y +189 % en dos días (uid 783). La foto se escribe igual —es la
+    # historia de la cuenta y la banda contable la muestra— pero no como cierre.
+    # El UPSERT de arriba la re-estampa por su cobertura; esto la vuelve a marcar.
+    res["reconstrucciones_superadas"] = _twr.marcar_reconstrucciones_superadas(conn, uid)
     return res
 
 

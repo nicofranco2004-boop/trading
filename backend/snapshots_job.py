@@ -1196,6 +1196,18 @@ def take_snapshot_for_user(
     """, (uid, target_date, total_value, total_invested, net_deposited, tc_blue, holdings_json,
           round(coverage, 4)))
 
+    # Una foto reconstruida de fin de mes que quedó ADENTRO de lo que el cron ya
+    # midió (la de junio, si el cron no corrió el 30/6 y midió el 29 y hoy) deja
+    # de ser un cierre: valúa otra cosa que el cron y le mete a la curva —y a los
+    # bordes de mes de Reportes— dos saltos que nadie vivió (ver "LA COSTURA" en
+    # twr.py). La reconstrucción de fin de mes se escribe ANTES de que exista la
+    # medición que la cubre: el único que se entera a tiempo es el que mide.
+    try:
+        from twr import marcar_reconstrucciones_superadas
+        marcar_reconstrucciones_superadas(conn, uid)
+    except Exception:
+        log.exception("snapshot: no se pudieron marcar las reconstrucciones superadas de %s", uid)
+
     return {
         'ok': True,
         'sin_precio': [s for s, _ in sin_precio],

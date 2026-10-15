@@ -916,6 +916,21 @@ def bordes_mercado_periodo(conn, uid: int, period_start: str, period_end: str,
         return None
     if str(fin.get("date"))[:10] <= str(ini.get("date"))[:10]:
         return None                     # sin dos bordes distintos no hay tramo
+    # ⚠️ UNA PUNTA RECONSTRUIDA Y LA OTRA DEL CRON: LA COSTURA TIENE QUE CERRAR.
+    # Las dos son base de mercado, pero valúan cosas distintas (ver "LA COSTURA" en
+    # twr.py): la resta podía ser la brecha entre la contabilidad y las posiciones,
+    # no el mes. Medido en la copia: uid 635, agosto +141,95 % con la cartera
+    # quieta. La pregunta NO se repite acá: se le hace al motor, que ya decidió si
+    # el leg de la costura cierra (`twr.costura_no_cierra`, en `serie_medible`), y
+    # si lo cortó adentro de este tramo no hay borde de mercado.
+    _ini_d, _fin_d = str(ini.get("date"))[:10], str(fin.get("date"))[:10]
+    if (((ini.get("source") or "") == "mtm_backfill")
+            != ((fin.get("source") or "") == "mtm_backfill")):
+        import twr as _twr_c
+        _s = _twr_c.serie_medible(conn, uid, None, _fin_d)
+        if any(c.get("cadena") == "costura" and _ini_d <= str(c.get("desde")) <= _fin_d
+               for c in (_s.get("cortes_dudosos") or [])):
+            return None
 
     # Los flujos tienen que ser los de la VENTANA ENTRE LOS DOS BORDES, no los del
     # mes calendario: si el cierre quedó rezagado (cron caído los últimos días),

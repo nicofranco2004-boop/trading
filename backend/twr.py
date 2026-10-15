@@ -1623,6 +1623,147 @@ def _dias(a: str, b: str) -> int:
     return abs((date(yb, mb, db) - date(ya, ma, da)).days)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LA COSTURA ENTRE LA RECONSTRUCCIÓN Y EL CRON
+#
+# Las dos escriben fotos "a mercado", pero NO miden la misma cosa:
+#   · el cron (`snapshots_job.take_snapshot_for_user`): las POSICIONES de la
+#     cuenta × precio, más la caja que la cuenta tiene anotada;
+#   · la reconstrucción (`scripts/backfill_historical_mtm.py`): la CONTABILIDAD
+#     al costo (aportes − retiros + realizado) más lo no realizado de lo que trae
+#     el import. La caja no se mira: se supone que es lo que la contabilidad deja.
+# Dan lo mismo sólo cuando la contabilidad describe toda la plata de la cuenta. Si
+# el import empezó con la cuenta ya andando (falta el saldo de arranque), faltan
+# depósitos, o hay posiciones cargadas a mano, las dos fotos describen carteras
+# distintas, y la resta entre una y otra no es un movimiento del mercado.
+#
+# ⚠️ EL APORTADO NO ERA EL CULPABLE. Se sospechó primero del `net_deposited`
+# (cada escritor estampa el suyo), pero la curva no usa la estampa sino el
+# canónico anclado (`_aportado_por_punto`): las dos puntas salen de la MISMA
+# contabilidad. En 44 de los 74 legs que cruzan la costura el aportado es idéntico
+# de los dos lados; en los otros 30 hay depósitos o retiros reales del período.
+# Lo que salta es el VALOR.
+# Medido sobre la copia de producción del 2026-08-16 (con la reconstrucción
+# corrida localmente):
+#   · uid 635: contabilidad con US$4.863 aportados y US$19.659 en acciones →
+#     la reconstrucción dice 7.138 (la "caja" que deja la contabilidad es
+#     −12.521); el cron, 13 días después, 16.859. Leg +136 %, acumulado +267,89 %.
+#   · uid 783: cron 29/6 846 → reconstruida 30/6 295 → cron 1/7 853: −65 % y
+#     +189 % en dos días, con el mismo aportado. La reconstrucción del 30/6 se
+#     escribió EN MEDIO de mediciones del cron porque el cron no corrió ese día.
+#   · uid 57: el import de Bull Market (13/8) trajo un retiro del 7/7 de una
+#     cuenta cuyo saldo previo nunca se cargó. Las fotos del cron de julio se
+#     escribieron antes del import y no lo ven; el aportado de julio sí → +257 %
+#     en el leg 30/6 → 1/7.
+#
+# Dos reglas, una por cada forma del defecto:
+#   1. Una reconstrucción que cae ADENTRO de un tramo que el cron ya midió
+#      (medición antes y después, encadenables entre sí) no agrega nada y mete dos
+#      costuras. Deja de ser un cierre (`marcar_reconstrucciones_superadas`, la
+#      llaman el reconstructor y el cron) y la curva no la lee.
+#   2. La costura que queda (la última reconstrucción antes de que el cron empiece)
+#      se encadena sólo si CIERRA: la medición tiene que parecerse a la
+#      reconstrucción más los flujos (`costura_no_cierra`, en `serie_medible`).
+#      Es la misma pregunta que el traspaso contable→mercado, con otra tolerancia.
+
+# ⚠️ ×1,25 Y NO ×3, Y SALIÓ DE MEDIR. Hasta acá la costura sólo la cortaba
+# `leg_dudoso` (×3). Sobre las 51 costuras que el motor encadenaba en la copia:
+#     tolerancia   costuras cortadas
+#     ×3                 0     (635 pasaba con ×2,36)
+#     ×2                 3
+#     ×1,5               5
+#     ×1,25             11
+#     ×1,1              25
+# Y contra qué se compara: entre dos mediciones DEL CRON separadas 16 a 30 días
+# (11.064 pares), el 90 % se mueve menos de 11,6 % y el 99 % menos de 48 %. ×1,25
+# corta lo que una cartera real hace pocas veces en un mes, y es el mismo número
+# que el motor ya usa para preguntar si la contabilidad se parece a la
+# reconstrucción (`CONTABLE_VS_RECONSTRUIDO_MAX_VECES`). Un corte que sobra no
+# inventa nada: la cuenta publica su contabilidad, etiquetada como tal.
+RECONSTRUIDO_VS_MEDICION_MAX_VECES = 1.25
+
+
+def costura_no_cierra(v0: float, v1: float, flow: float) -> bool:
+    """¿El leg entre una reconstrucción y una medición del cron NO describe la
+    misma cartera? `v1` contra `v0 + flujo`: sin flujos, lo que se movió el
+    mercado en el medio. Una base ≤ 0 (los flujos se llevan más de lo que la
+    reconstrucción decía que había) no cierra nunca."""
+    try:
+        v0, v1, flow = float(v0), float(v1), float(flow or 0.0)
+    except (TypeError, ValueError):
+        return True
+    base = v0 + flow
+    if base <= 0 or v1 <= 0:
+        return True
+    ratio = v1 / base
+    t = RECONSTRUIDO_VS_MEDICION_MAX_VECES
+    return ratio > t or ratio < 1.0 / t
+
+
+def es_costura(clase_a: str, clase_b: str) -> bool:
+    """¿El leg une una reconstrucción con una medición del cron (en cualquier orden)?"""
+    return {clase_a, clase_b} == {RECONSTRUIDO, MEDICION}
+
+
+def reconstruccion_superada(fecha: str, mediciones: list,
+                            max_dias: int = MAX_HUECO_DIAS) -> bool:
+    """¿El cron ya midió el período de esta reconstrucción? Sí cuando tiene una
+    medición antes y otra después, y esas dos se encadenan entre sí (no hay un
+    hueco que la reconstrucción esté llenando). `mediciones`: fechas ISO ordenadas
+    (`fechas_de_medicion`)."""
+    import bisect
+    f = str(fecha)[:10]
+    i = bisect.bisect_left(mediciones, f)
+    j = bisect.bisect_right(mediciones, f)
+    if i == 0 or j >= len(mediciones):
+        return False
+    return _dias(mediciones[i - 1], mediciones[j]) <= max_dias
+
+
+def fechas_de_medicion(conn, uid: int) -> list:
+    """Las fechas de las mediciones del cron, ordenadas (las de `bordes_medibles`)."""
+    return [str(r["date"])[:10] for r in bordes_medibles(conn, uid)]
+
+
+def marcar_reconstrucciones_superadas(conn, uid: int) -> int:
+    """Estampa como NO-cierre (`base='costo'`, `apto=0`) las fotos reconstruidas
+    que caen adentro de un tramo que el cron ya midió (regla 1 de arriba).
+    Devuelve cuántas cambió. NO commitea.
+
+    ⚠️ SE MARCAN, NO SE BORRAN. Las fotos del cron anteriores a la columna
+    `source` (2026-08-06) se reconocen por venir en días SEGUIDOS
+    (`clasificar_serie`, RACHA_CRON_MINIMA), y la reconstrucción de un fin de mes
+    sin foto del cron es justo la que tapa ese día. Borrándola, la racha se corta y
+    fotos reales del cron pasan a leerse como del browser (medido: uid 590, cinco
+    días de junio). Con el estampo de una reconstrucción mayormente al costo, todos
+    los lectores ya saben qué hacer: no es borde de período (`reporting.builder`),
+    ni pico ni denominador, ni `apto` para el libro del asesor; `serie_medible`
+    además la saca de la línea.
+
+    La llaman los dos que pueden dejar una así: el reconstructor (al escribir, que
+    re-estampa sus filas en cada corrida) y el cron (al medir: la foto de fin de mes
+    se reconstruye ANTES de que exista la medición del día siguiente que la cubre).
+    Si el cron deja de cubrir ese período (una medición que se invalida), la
+    próxima reconstrucción la vuelve a estampar por su cobertura."""
+    if not (_tiene_columna(conn, "snapshots", "base")
+            and _tiene_columna(conn, "snapshots", "apto")):
+        return 0
+    rec = conn.execute(
+        "SELECT date, base, apto FROM snapshots WHERE user_id=? AND source='mtm_backfill'",
+        (uid,)).fetchall()
+    if not rec:
+        return 0
+    meds = fechas_de_medicion(conn, uid)
+    n = 0
+    for r in rec:
+        if (reconstruccion_superada(r["date"], meds)
+                and (r["base"] != VALUADO_AL_COSTO or r["apto"] != 0)):
+            conn.execute("UPDATE snapshots SET base=?, apto=0 WHERE user_id=? AND date=? "
+                         "AND source='mtm_backfill'", (VALUADO_AL_COSTO, uid, r["date"]))
+            n += 1
+    return n
+
+
 def netdep_canonico(conn, uid: int):
     """date → net_deposited, calculado AHORA desde `monthly_entries`.
 
@@ -1741,7 +1882,7 @@ def corredor_del_mes(canon, brutos: dict, ym: str,
     return lo, hi
 
 
-def _aportado_por_punto(conn, uid: int, filas):
+def _aportado_por_punto(conn, uid: int, filas, excluir=()):
     """Devuelve fila → aportado acumulado, con el borde de mes ANCLADO al canónico
     y el día dentro del mes decidido por la estampa.
 
@@ -1847,9 +1988,11 @@ def _aportado_por_punto(conn, uid: int, filas):
     # `filas` más las medidas de la cuenta (`total_value > 0`, el filtro de
     # `serie_medible`): sin ventana es lo mismo que `filas`; con ventana, la
     # serie entera. Una estampa vacía no es un movimiento: se saltea.
+    # `excluir`: fechas de fotos que no son de la serie (las reconstrucciones que
+    # el cron ya midió, ver `reconstruccion_superada`): su estampa tampoco mueve.
     _estampas = {str(r["date"])[:10]: r["net_deposited"] for r in conn.execute(
         "SELECT date, net_deposited FROM snapshots WHERE user_id=? AND total_value > 0",
-        (uid,)).fetchall()}
+        (uid,)).fetchall() if str(r["date"])[:10] not in excluir}
     for r in filas:
         _estampas[str(r["date"])[:10]] = r["net_deposited"]
     _primer_mes_contable = min(brutos) if brutos else None
@@ -2257,11 +2400,35 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
     # fila, y que un mes nuevo no re-etiquete los viejos.
     bases = bases_de_serie(filas, clases)
     aptos = aptos_de_serie(filas, clases, bases)
+    # LA RECONSTRUCCIÓN QUE EL CRON YA MIDIÓ NO ENTRA (regla 1 de la costura, ver
+    # `reconstruccion_superada`). El cron y el reconstructor la marcan, pero esta
+    # lectura no depende de que ya hayan pasado: con la del cron que todavía no
+    # corrió, la serie tenía dos costuras. Contra TODAS las mediciones de la cuenta,
+    # no las de la ventana: `?desde=` y la serie entera dicen lo mismo de la fila.
+    # ⚠️ DESPUÉS DE CLASIFICAR, NO ANTES: la fila sigue contando para la cadencia
+    # (`clasificar_serie`) — sacarla antes cortaba la racha de las fotos del cron
+    # anteriores a `source` y las bajaba a fotos del browser (uid 590).
+    _superadas = set()
+    if any(_col(r, "source") == "mtm_backfill" for r in filas):
+        _meds = fechas_de_medicion(conn, uid)
+        _superadas = {i for i, r in enumerate(filas)
+                      if _col(r, "source") == "mtm_backfill"
+                      and reconstruccion_superada(r["date"], _meds)}
+    reconstruido_superado = len(_superadas)
+    if _superadas:
+        _quedan = [i for i in range(len(filas)) if i not in _superadas]
+        _fechas_superadas = {str(filas[i]["date"])[:10] for i in _superadas}
+        filas = [filas[i] for i in _quedan]
+        clases = [clases[i] for i in _quedan]
+        bases = [bases[i] for i in _quedan]
+        aptos = [aptos[i] for i in _quedan]
+    else:
+        _fechas_superadas = set()
     # El TC por fecha, sólo si se mide en pesos. En dólares `_fx` es None y NADA
     # del camino de abajo multiplica por nada: el modo USD queda idéntico bit a
     # bit, que es la propiedad que sostiene seis A/B seguidos.
     _fx, _riel_fx = (serie_fx(conn, desde, hasta) if moneda == MONEDA_ARS else (None, None))
-    _nd = _aportado_por_punto(conn, uid, filas)
+    _nd = _aportado_por_punto(conn, uid, filas, excluir=_fechas_superadas)
     # ⚠️ LA CONTABILIDAD SE APAGA EN LA PRIMERA MEDICIÓN REAL (sólo estimado). Desde
     # que hay un cierre a mercado, la reconstrucción contable de esa misma fecha
     # es información estrictamente peor, y encadenarla en paralelo contaba el
@@ -2474,12 +2641,21 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
                 _v0, _v1, _flow = _leg_en_moneda(ultimo_apto, p, ultimo_apto["value"],
                                                  valor_para_dibujar(p))
                 motivo_corte = leg_dudoso(_v0, _v1, _flow)
+                _cadena = "mercado"
+                # ⚠️ LA COSTURA RECONSTRUCCIÓN↔CRON TIENE QUE CERRAR (regla 2, ver
+                # `costura_no_cierra`). Las dos son base de mercado, pero cada una
+                # valúa otra cosa; `leg_dudoso` con su ×3 dejaba pasar al uid 635
+                # (+136 % en 13 días, ×2,36) y al 57 (los flujos se llevaban más de
+                # lo que la reconstrucción decía que había: +257 % en un día).
+                if (not motivo_corte and es_costura(ultimo_apto["clase"], p["clase"])
+                        and costura_no_cierra(_v0, _v1, _flow)):
+                    motivo_corte, _cadena = "cadena_implausible", "costura"
                 if motivo_corte:
                     corta = True
                     cortes_dudosos.append({
                         "desde": ultimo_apto["date"], "hasta": p["date"], "motivo": motivo_corte,
                         "v0": ultimo_apto["value"], "v1": valor_para_dibujar(p),
-                        "flujo": _flow, "cadena": "mercado"})
+                        "flujo": _flow, "cadena": _cadena})
         elif (actual and modo == MODO_ESTIMADO and p["base"] == VALUADO_AL_COSTO
               and ultimo_costo is not None):
             _v0, _v1, _flow = _leg_en_moneda(ultimo_costo, p,
@@ -2623,6 +2799,9 @@ def serie_medible(conn, uid: int, desde: str = None, hasta: str = None, *,
         # Filas contables fechadas en o después de la primera medición real, que
         # en estimado quedan fuera de la línea (siguen en `contable`).
         "contable_superado": contable_superado,
+        # Fotos reconstruidas que caían adentro de un tramo que el cron ya midió
+        # (ver `reconstruccion_superada`): no entran a nada.
+        "reconstruido_superado": reconstruido_superado,
         # Fotos contables cuyo valor se tomó de la cadena porque la foto estaba
         # desactualizada (ver el comentario de `_cf_del_mes`).
         "contable_realineado": contable_realineado,
