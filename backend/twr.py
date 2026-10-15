@@ -2930,6 +2930,15 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
                      "valor_foto": p.get("valor_foto"),
                      # El TC del día (None en dólares).
                      "fx": p.get("fx"),
+                     # ⚠️ LO APORTADO HASTA ESTE PUNTO (en dólares), el MISMO de la
+                     # serie de la que sale. Sin esto el punto traía el valor y no
+                     # el flujo, y quien armaba un monto entre dos puntos —"valor
+                     # final − inicial − (aportado final − inicial)"— leía el
+                     # aportado como 0: Reportes publicaba un depósito de US$5.000
+                     # adentro del mes como "+US$5.000" de resultado al lado de un
+                     # 0,0 % (test_deposito_en_el_mes_no_es_ganancia.py). El valor y
+                     # su flujo viajan juntos o el monto no se puede armar.
+                     "net_deposited": p.get("net_deposited"),
                      # Misma disciplina que en `serie_medible`: el número crudo de
                      # un punto que no mide no se llama `value`.
                      ("value" if p["apto"] else "value_no_medible"):
@@ -3142,6 +3151,9 @@ def curva_indexada(conn, uid: int, desde: str = None, hasta: str = None, *,
             curva.append({"date": "hoy", "index": round(_idx_hoy, 6),
                           "index_publicado": round(_ip_hoy, 6),
                           "fx": _p_hoy.get("fx"),
+                          # El aportado de hoy, el mismo con el que se midió la
+                          # pata live (ver `net_deposited` en los puntos de arriba).
+                          "net_deposited": _p_hoy["net_deposited"],
                           "value": float(valor_live), "clase": MEDICION,
                           "apto": True, "ret": r, "estimado": False,
                           "base": VALUADO_A_MERCADO,

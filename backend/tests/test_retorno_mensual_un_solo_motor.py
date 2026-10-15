@@ -51,7 +51,9 @@ class TestNingunLectorReimplementaLaRegla(unittest.TestCase):
         """
         import re, pathlib
         raiz = pathlib.Path(__file__).resolve().parent.parent
-        lectores = ["wrapped.py", "ai/builders/insights.py",
+        # `ai/builders/insights.py` ya no está: desde 2026-10-15 no compone meses,
+        # le pide el acumulado al motor (ver el test de abajo).
+        lectores = ["wrapped.py",
                     "ai/builders/insights_evolution.py", "ai/builders/reports.py",
                     "ai/builders/dashboard_evolution.py"]
         for rel in lectores:
@@ -65,6 +67,18 @@ class TestNingunLectorReimplementaLaRegla(unittest.TestCase):
             self.assertIsNone(
                 re.search(r"\(\s*cf\s*-\s*ci\s*-\s*net\s*\)\s*/", txt),
                 f"{rel} volvió a escribir la cuenta a mano")
+
+
+    def test_el_paquete_de_insights_le_pide_el_numero_al_motor(self):
+        """Componía `monthly_entries` (la contabilidad AL COSTO) por su cuenta: a la
+        cuenta "compra y mantiene en pesos" le decía a la IA 0,0 % y "la
+        inflación te ganó". Ahora es `twr.rendimiento_publicable`, como los otros
+        tres paquetes desde F6."""
+        import pathlib
+        txt = (pathlib.Path(__file__).resolve().parent.parent
+               / "ai/builders/insights.py").read_text(encoding="utf-8")
+        self.assertIn("_twr.rendimiento_publicable(", txt)
+        self.assertNotIn("FROM monthly_entries", txt)
 
 
 class TestElMesDeAltaNoSeMide(unittest.TestCase):

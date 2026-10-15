@@ -66,7 +66,6 @@ import {
   rellenarTimestamps,
   resolucionDeSerie,
   computeDrawdownOnReturns,
-  computeBestWorstMonth,
   computeAssetContribution,
   computeBestWorstClosedOp,
   computeProfitFactor,
@@ -874,7 +873,7 @@ function InsightsDesktop({ _embeddedTab }) {
 
   // ── Cumulative performance series (monthly + today) ──
   // ÚNICO punto de entrada de la cadena mensual: todo lo de abajo (las 4 series,
-  // Sharpe/CAGR/vol/Sortino, drawdown, mejor/peor mes, los shadows de benchmark)
+  // Sharpe/CAGR/vol/Sortino, drawdown, los shadows de benchmark)
   // se deriva de acá. Por eso la corrección a valor de mercado se aplica UNA vez,
   // en el origen, en vez de parchear cada consumidor.
   const globalMonthly = applyMtmToMonthly(
@@ -2104,11 +2103,6 @@ function InsightsDesktop({ _embeddedTab }) {
       rellenarTimestamps(filas, ahoraPerf), claveCartera, `${userName} estimado`)
   })()
 
-  // ── Insight: Mejor / Peor mes ──
-  // Ahora excluye el mes calendario actual (incompleto) — comparar un mes a
-  // medio camino contra meses cerrados es injusto.
-  const bestWorstMonth = computeBestWorstMonth(globalMonthly)
-
   // ── Insight 2: Max drawdown — sobre TWRR (rendimiento ajustado por flujos) ──
   // Reemplaza el cálculo viejo sobre valor absoluto, que reportaba retiros
   // grandes como caídas y depósitos como recuperaciones falsas.
@@ -2761,10 +2755,6 @@ function InsightsDesktop({ _embeddedTab }) {
       months_tracked: globalMonthly.length,
       drawdown_max_pct: drawdown ? +drawdown.max.toFixed(2) : null,
       drawdown_current_pct: drawdown ? +drawdown.current.toFixed(2) : null,
-      best_month_pct: bestWorstMonth ? +bestWorstMonth.best.pct.toFixed(2) : null,
-      best_month_period: bestWorstMonth ? `${bestWorstMonth.best.year}-${String(bestWorstMonth.best.month).padStart(2,'0')}` : null,
-      worst_month_pct: bestWorstMonth ? +bestWorstMonth.worst.pct.toFixed(2) : null,
-      worst_month_period: bestWorstMonth ? `${bestWorstMonth.worst.year}-${String(bestWorstMonth.worst.month).padStart(2,'0')}` : null,
       win_rate_pct: winRate ? +winRate.pct.toFixed(2) : null,
       total_trades: winRate ? winRate.total : 0,
       avg_win_usd: winRate?.avgWin != null ? +winRate.avgWin.toFixed(2) : null,

@@ -16,6 +16,7 @@ import { api } from '../utils/api'
  *   loading: boolean,
  *   error: string | null,
  *   yearGroups: Array<{ year: number, months: PeriodReport[] }>,
+ *   rankingPorAnio: { [year: string]: { base, mejor, peor, positivos, total, sin_medir_a_mercado } },
  *   hasAnyData: boolean,
  *   reload: () => void,
  * }}
@@ -25,6 +26,9 @@ export default function useReportsTimeline(broker = 'global', months = 12,
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [reports, setReports] = useState([])
+  // El mejor y el peor mes de cada año, elegidos por el servidor
+  // (`twr.mejor_y_peor_mes`). Se lee, no se recalcula: ver PerformanceCalendar.
+  const [rankingPorAnio, setRankingPorAnio] = useState({})
   const [trigger, setTrigger] = useState(0)
 
   useEffect(() => {
@@ -36,6 +40,7 @@ export default function useReportsTimeline(broker = 'global', months = 12,
       .then(data => {
         if (cancelled) return
         setReports(data?.reports || [])
+        setRankingPorAnio(data?.ranking_por_anio || {})
       })
       .catch(ex => {
         if (cancelled) return
@@ -64,6 +69,7 @@ export default function useReportsTimeline(broker = 'global', months = 12,
     loading,
     error,
     yearGroups,
+    rankingPorAnio,
     hasAnyData: reports.length > 0,
     reload: () => setTrigger(t => t + 1),
   }

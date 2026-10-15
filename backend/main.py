@@ -44569,7 +44569,7 @@ def _cerrar_al_apagar():
 from reporting.builder import build_period_report
 from reporting.detectors import run_detectors
 from reporting.schema import report_to_dict
-from reporting.timeline import build_timeline, _compute_user_historical_win_rate, _compute_avg_trades_per_month, _fetch_positions_for_concentration
+from reporting.timeline import build_timeline, ranking_por_anio, _compute_user_historical_win_rate, _compute_avg_trades_per_month, _fetch_positions_for_concentration
 
 
 def _latest_snapshot_value(conn, uid: int) -> Optional[float]:
@@ -45236,6 +45236,10 @@ def reports_timeline(
             "modo": modo,
             "moneda": moneda,
             "reports": [report_to_dict(r) for r in timeline],
+            # El mejor y el peor mes de cada año, elegidos en el servidor con la
+            # regla del motor (`twr.mejor_y_peor_mes`: no mezcla meses a mercado con
+            # meses contables). La pantalla lo LEE; no lo vuelve a calcular.
+            "ranking_por_anio": ranking_por_anio(timeline),
         }
     finally:
         conn.close()

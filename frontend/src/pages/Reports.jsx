@@ -259,6 +259,7 @@ export default function Reports() {
             years={yearsData.years}
             yearsLoading={yearsData.loading}
             historicos={yearsData.historicos}
+            rankingPorAnio={timelineData.rankingPorAnio}
           />
 
           {plan.can('reportes.historicos') ? (

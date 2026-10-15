@@ -248,6 +248,38 @@ def _build_timeline(
     return list(reversed(out_asc))
 
 
+def ranking_por_anio(reports: List[PeriodReport]) -> Dict[str, Dict[str, Any]]:
+    """El mejor y el peor mes de cada año de la timeline, con la regla del motor.
+
+    ⚠️ LA PANTALLA RANKEABA SOLA Y MEZCLABA BASES. La fila de cada año de Reportes
+    tomaba el máximo y el mínimo de los `delta_pct` de sus meses sin mirar `basis`:
+    un mes medido a mercado y uno contable —que para un mes cerrado está al costo
+    y da ~0 % si no hubo ventas— competían en la misma tabla. El "peor mes" salía
+    el contable plano al lado de meses de mercado que subieron, y el "mejor" podía
+    ser un realizado contable al lado de uno de mercado que se movió de verdad.
+
+    La regla de no mezclar vive en `twr.mejor_y_peor_mes` (la misma que usan la IA
+    y el Wrapped). Acá sólo se le pasan LOS MISMOS números que dibuja cada barra
+    del mes —`delta_pct` con su `basis`, los meses relevantes— para que el "Mejor
+    mes" escrito debajo sea siempre una de las barras de arriba.
+
+    Devuelve {"2025": {base, mejor, peor, positivos, total, sin_medir_a_mercado,
+    meses}} (claves de texto: así viajan en JSON).
+    """
+    import twr
+    por_anio: Dict[str, List[Dict[str, Any]]] = {}
+    for r in reports:
+        if r.period_type != "month" or not r.is_relevant:
+            continue
+        pct = r.metrics.delta_pct
+        if pct is None:
+            continue
+        por_anio.setdefault(r.period_key[:4], []).append(
+            {"mes": r.period_key, "pct": pct, "base": r.metrics.basis})
+    return {y: twr.mejor_y_peor_mes(sorted(meses, key=lambda m: m["mes"]))
+            for y, meses in por_anio.items()}
+
+
 def wrpt_is_current_check(week_key: str) -> bool:
     """¿La semana del key es la semana actual ISO? (para decidir liveValue).
 
