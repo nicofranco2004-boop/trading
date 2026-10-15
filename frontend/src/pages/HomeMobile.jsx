@@ -36,11 +36,13 @@ import AskAIAbout from '../components/ai/AskAIAbout'
 import { rendimientoParaIa } from '../utils/rendimientoAi'
 import { api } from '../utils/api'
 import { usePrivacy } from '../contexts/PrivacyContext'
-import { computeBrokerValue, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
+import { computeBrokerValue, noRealizadoEnVista, valorAlMep, priceSymbol, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { usePfRollup, pfUsd } from '../hooks/usePfRollup'
 import { fechaCorta } from '../utils/lineaDelBono'
 import { computeDailyPnl, computeReturnDelta, buildPortfolioValueSeries, rendimientoDelRango, diagnosticoSinMedicion, textoSinMedicion } from '../utils/evolution'
+import { capitalAportado } from '../utils/capitalAportado'
+import { useDolarMensual } from '../hooks/useFxHistory'
 import { fmtUsd, fmtArs, ars, pctSigned, colorClass } from '../utils/format'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import FueraDeHorarioMercado from '../components/home/FueraDeHorarioMercado'
@@ -61,6 +63,8 @@ export default function HomeMobile() {
   const [prices, setPrices] = useState({})
   const [snapshots, setSnapshots] = useState([])
   const [bench, setBench] = useState(null)
+  // El dólar de cada mes, para "Capital aportado" en pesos (capitalAportado.js).
+  const { dolarMes } = useDolarMensual()
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadAll() }, [])
@@ -126,9 +130,12 @@ export default function HomeMobile() {
     const totalValue = bt.reduce((s, b) => s + b.value, 0)
     const totalCost = bt.reduce((s, b) => s + b.invested, 0)
     const totalPnl = totalValue - totalCost
-    const pct = totalCost > 0 ? totalPnl / totalCost : 0
+    // El "% histórico" del título, en la moneda en que se mira: en pesos, sobre
+    // los pesos que se pagaron (la misma regla que "P&L no realizado" del
+    // Dashboard, `noRealizadoEnVista`; acá sin los plazos fijos, como antes).
+    const { pct } = noRealizadoEnVista({ positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, moneda: currency })
     return { totalValue, totalCost, totalPnl, pct }
-  }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto])
+  }, [positions, prices, brokers, tcValuacion, tcCedear, tcCripto, costBasis, currency])
 
   // Pre y post mercado: un ANTICIPO debajo de «Tu cartera», nunca sumado. La
   // cuenta es la de utils/fueraDeHorario; la sección de Mercado de abajo
@@ -157,14 +164,18 @@ export default function HomeMobile() {
 
   // Capital aportado = baseline + flujos. Misma fórmula que compute_net_deposited
   // del backend → comparable 1:1 con snapshot.net_deposited (ambos en USD).
-  const aportado = useMemo(() => {
-    const sorted = monthly
-      .filter(m => m.broker === 'global')
-      .sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month))
-    const baseline = sorted[0]?.capital_inicio || 0
-    const flows = sorted.reduce((s, m) => s + (m.deposits || 0) - (m.withdrawals || 0), 0)
-    return baseline + flows
-  }, [monthly])
+  // Es `capitalAportado` (utils/capitalAportado.js), la misma cuenta del
+  // Dashboard: `usd` va a las comparaciones con las fotos; `ars` es lo que se
+  // MUESTRA en pesos — a los pesos que se pusieron, no los dólares × el dólar de
+  // hoy (un depósito de $10 M de hace un año se leía $10,86 M).
+  const aportes = useMemo(
+    () => capitalAportado({ monthly, brokers, dolarMes, tcHoy: tcValuacion }),
+    [monthly, brokers, dolarMes, tcValuacion],
+  )
+  const aportado = aportes.usd
+  // En pesos lo aportado puede dar negativo (se retiró más de lo que se puso):
+  // el signo menos de verdad, separado del número.
+  const aportadoTexto = (v) => `${v < 0 ? '−' : ''}$${fmtNumber(Math.abs(v))}`
 
   // Serie 30d desde snapshots + punto LIVE de hoy — base para sparkline + delta.
   // buildPortfolioValueSeries (mismo helper que la curva del Dashboard):
@@ -511,7 +522,7 @@ export default function HomeMobile() {
           />
           <KpiCell
             label="Capital aportado"
-            value={hidden ? '••••••' : (kpis.aportado > 0 ? `$${fmtNumber(currency === 'ARS' ? kpis.aportado * tcValuacion : kpis.aportado)}` : '—')}
+            value={hidden ? '••••••' : (kpis.aportado > 0 ? aportadoTexto(currency === 'ARS' ? aportes.ars : kpis.aportado) : '—')}
             sub={`${currency} neto`}
             topBorder
           />

@@ -223,6 +223,187 @@ export function computeInflationCumulative(globalMonthly, inflationMap) {
   }
 }
 
+// ─── Inflación AR como alternativa (la misma plata, ajustada por IPC) ────────
+/**
+ * "Si la misma plata, con los mismos aportes y retiros, hubiera seguido a la
+ *  inflación del INDEC."
+ *
+ * Es el gemelo de `simulatePlazoFijoUva` con el IPC en vez del coeficiente UVA:
+ * mismos rieles (cada flujo a pesos al blue de SU mes, el final a dólares al
+ * blue del último mes) y misma regla de calendario (el mes en que entra la plata
+ * no capitaliza; desde el siguiente, sí). Así la celda "Inflación" y la de
+ * "Plazo fijo UVA" sólo pueden diferir por el índice, nunca por la cuenta.
+ *
+ * Recorre los meses del CALENDARIO, no las filas: un mes sin movimientos puede no
+ * tener fila, y saltearlo dejaba afuera su inflación.
+ *
+ * Los meses sin IPC publicado (el INDEC publica con ~2 semanas de atraso) no
+ * capitalizan: `hastaMes` dice hasta dónde llega la inflación contada, para que
+ * la pantalla lo escriba en vez de callarlo.
+ *
+ * @returns {{ finalValue, finalArs, blueFinal, inflacionPct, meses, hastaMes } | null}
+ */
+export function simulateInflacionAr(globalMonthly, inflationMap, blueMap) {
+  if (!inflationMap || Object.keys(inflationMap).length === 0) return null
+  if (!blueMap || Object.keys(blueMap).length === 0) return null
+  const sorted = sortGlobalMonthly(globalMonthly)
+  if (sorted.length === 0) return null
+
+  const firstKey = monthKey(sorted[0].year, sorted[0].month)
+  const firstBlue = lookupMonthly(blueMap, firstKey)
+  if (!firstBlue || firstBlue <= 0) return null
+
+  const netoPorMes = new Map()
+  for (const m of sorted) {
+    const k = monthKey(m.year, m.month)
+    netoPorMes.set(k, (netoPorMes.get(k) || 0) + (m.deposits || 0) - (m.withdrawals || 0))
+  }
+  const lastKey = monthKey(sorted[sorted.length - 1].year, sorted[sorted.length - 1].month)
+
+  let valueArs = (sorted[0].capital_inicio || 0) * firstBlue
+  let cum = 1, meses = 0, hastaMes = null, blue = firstBlue
+  let y = sorted[0].year, mo = sorted[0].month
+  for (let k = firstKey; k <= lastKey; k = monthKey(y, mo)) {
+    blue = lookupMonthly(blueMap, k) ?? firstBlue
+    const ipc = k === firstKey ? null : inflationMap[k]
+    if (ipc != null) {
+      valueArs *= 1 + ipc / 100
+      cum *= 1 + ipc / 100
+      meses += 1
+      hastaMes = k
+    }
+    valueArs += (netoPorMes.get(k) || 0) * blue
+    mo += 1
+    if (mo > 12) { mo = 1; y += 1 }
+  }
+
+  return {
+    finalValue: blue > 0 ? valueArs / blue : 0,
+    finalArs: valueArs,
+    blueFinal: blue,
+    inflacionPct: (cum - 1) * 100,
+    meses,
+    hastaMes,
+  }
+}
+
+/**
+ * veredictoInflacion — "¿Le ganás a la inflación?", UNA sola cuenta para todas
+ * las superficies que lo afirman: la celda "Inflación" de las alternativas, el
+ * hallazgo beat/lose_inflation_ars, la tarjeta "Retorno esperado vs real" del
+ * perfil y lo que se le pasa a la IA (los `verdicts`).
+ *
+ * ⚠️ POR QUÉ NO ES UN TWR. Antes la respuesta era el retorno time-weighted en
+ * pesos de `benchSeriesArs`, encadenado sobre `capital_inicio`/`capital_final`
+ * de los brokers en pesos. Para una cuenta que compra y mantiene esa cadena
+ * vale AL COSTO todos los meses (medido el 2026-10-13: 7.080,6 dólares cada mes
+ * de octubre de 2025 a octubre de 2026, mientras las acciones subían 37 %), así que el "retorno en pesos"
+ * era sólo el movimiento del dólar, y contra la inflación daba "Le perdés
+ * −16,6 %" a una cartera que le ganaba. Un TWR necesita el valor de mercado de
+ * cada mes, y para las cuentas cargadas a mano ese dato no existe (la
+ * reconstrucción a precio real sólo corre sobre imports).
+ *
+ * Lo que SÍ está medido son las dos puntas: los aportes y retiros (hechos, con
+ * su mes) y lo que la cartera vale HOY a precio de mercado. Con eso alcanza para
+ * la pregunta, de la misma forma que ya la contestan las celdas de Plazo fijo y
+ * Dólar: tu patrimonio de hoy contra lo que valdría la misma plata ajustada por
+ * inflación.
+ *
+ * Sin precios completos (`valorHoyMedido` falso) el valor de hoy lleva activos
+ * al costo, y la respuesta es null: no se publica un número al costo.
+ *
+ * La comparación se hace EN PESOS (`compararEnPesos`), con `valorHoyArs` armado
+ * por `patrimonioEnPesos`: así el veredicto no depende de si mirás en MEP o en CCL.
+ *
+ * @returns {{ pct, inflacionPct, meses, hastaMes, valorHoyArs, mismaPlataArs } | null}
+ *          pct ≥ 0 = le ganás. Montos en pesos.
+ */
+export function veredictoInflacion({ globalMonthly, inflationMap, blueMap, valorHoyUsd, valorHoyArs, valorHoyMedido }) {
+  if (!valorHoyMedido || !(valorHoyUsd > 0)) return null
+  const sim = simulateInflacionAr(globalMonthly, inflationMap, blueMap)
+  // Sin un solo mes de inflación contada no hay comparación (la cuenta tiene
+  // menos de un mes, o el INDEC todavía no publicó el mes siguiente al aporte).
+  if (!sim || sim.meses === 0) return null
+  const cmp = compararEnPesos(valorHoyUsd, valorHoyArs, sim.finalArs)
+  if (!cmp) return null
+  return {
+    pct: cmp.pct,
+    inflacionPct: sim.inflacionPct,
+    meses: sim.meses,
+    hastaMes: sim.hastaMes,
+    valorHoyArs,
+    mismaPlataArs: sim.finalArs,
+  }
+}
+
+/**
+ * El blue con el que las simulaciones en pesos cierran: el del último mes de la
+ * cadena (`simulatePlazoFijoUva`, `simulateInflacionAr`, … usan el mismo).
+ */
+export function blueAlCierre(globalMonthly, blueMap) {
+  const sorted = sortGlobalMonthly(globalMonthly)
+  if (sorted.length === 0 || !blueMap) return null
+  const last = sorted[sorted.length - 1]
+  const v = lookupMonthly(blueMap, monthKey(last.year, last.month))
+  return v > 0 ? v : null
+}
+
+/**
+ * patrimonioEnPesos — lo que vale hoy tu cartera, EN PESOS, con el dólar que
+ * corresponde a cada parte para compararla contra una alternativa en pesos.
+ *
+ * Las simulaciones pasan cada aporte de dólares a pesos al blue de su mes. Para
+ * que el dólar se cancele, la punta de hoy tiene que usar la misma vara:
+ *   · Un broker EN PESOS vale pesos: `valueUsd × tcValuacion` deshace exactamente
+ *     la división que hizo la valuación (`computeBrokerValue`), sin importar si
+ *     elegiste MEP o CCL.
+ *   · Un broker EN DÓLARES vale dólares: pasan a pesos al MISMO blue con el que
+ *     la simulación cierra (`blueHoy`), igual que sus aportes.
+ * Medido el 2026-10-15: comparando el total en dólares contra la simulación al
+ * blue, la misma cartera de $14.239.060 le ganaba a la inflación +7,9 % mirando
+ * en MEP y +2,7 % en CCL; y pasando TODO al dólar del selector, el problema se
+ * mudaba a los brokers en dólares.
+ *
+ * @param porBroker [{ currency, valueUsd }]
+ * @returns {number|null}
+ */
+export function patrimonioEnPesos(porBroker, tcValuacion, blueHoy) {
+  let ars = 0
+  for (const b of porBroker || []) {
+    const v = b.valueUsd || 0
+    if (v === 0) continue
+    const tc = b.currency === 'ARS' ? tcValuacion : blueHoy
+    if (!(tc > 0)) return null
+    ars += v * tc
+  }
+  return ars
+}
+
+/**
+ * compararEnPesos — tu patrimonio de hoy contra una alternativa simulada EN
+ * PESOS (plazo fijo UVA, inflación, Merval, pesos quietos).
+ *
+ * ⚠️ POR QUÉ NO SE COMPARA `finalValue`. Las simulaciones en pesos devuelven
+ * además un `finalValue` en dólares, al BLUE del último mes; el patrimonio
+ * (`totalPortfolio`) está al dólar con el que VALUÁS (MEP o CCL, el selector).
+ * Mezclar esos dos dólares en la punta de hoy hacía que el veredicto cambiara con
+ * el selector sin que cambiara un peso de la cartera. Se compara en pesos, con
+ * `valorHoyArs` de `patrimonioEnPesos`; `delta` sigue en dólares (al valuar) para
+ * quien lo muestre en dólares.
+ *
+ * Lo que queda: los aportes a un broker en pesos vuelven a pesos al blue de SU
+ * mes, y el servidor los había pasado a dólares al MEP del día
+ * (`_manual_flow_rate`). Esa diferencia (≈1 punto en el caso medido) no se cierra
+ * sin el monto original en pesos.
+ *
+ * @returns {{ delta, pct } | null}  delta en dólares; pct ≥ 0 = le ganás.
+ */
+export function compararEnPesos(valorHoyUsd, valorHoyArs, benchFinalArs) {
+  if (!(valorHoyUsd > 0) || !(valorHoyArs > 0) || !(benchFinalArs > 0)) return null
+  const ratio = valorHoyArs / benchFinalArs
+  return { delta: valorHoyUsd * (1 - 1 / ratio), pct: (ratio - 1) * 100 }
+}
+
 // ─── T-Bill USD (SHV ETF) ───────────────────────────────────────────────────
 /**
  * Simula tus aportes en T-Bills USD (proxy: ETF SHV — iShares 0-3 Month Treasury).
@@ -289,10 +470,14 @@ export function simulateMerval(globalMonthly, mervalArsMap, blueMap) {
     priceSeries.push({ key: k, price: blue > 0 ? merv / blue : firstPrice })
   }
 
+  const lastK = monthKey(sorted[sorted.length - 1].year, sorted[sorted.length - 1].month)
   return {
     finalValue: series[series.length - 1].value,
     series,
     finalUnits: units,
+    // Los pesos que valdrían hoy esos puntos del Merval: para comparar en pesos
+    // (`compararEnPesos`), sin pasar por el blue del último mes.
+    finalArs: units * (lookupMonthly(mervalArsMap, lastK) ?? firstMerv),
     priceSeries,
     firstPrice,
   }

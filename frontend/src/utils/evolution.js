@@ -190,7 +190,7 @@ export function baseIncomparable(inicioEsMedido, inicioValor, depositos = 0, ret
  * @param {(dateIso: string) => number} getFxForDate — resolver del FX por fecha
  * @returns {Array} serie con valores convertidos a ARS
  */
-export function convertSeriesToArs(series, getFxForDate) {
+export function convertSeriesToArs(series, getFxForDate, aportadoEnPesos = null) {
   if (!Array.isArray(series)) return []
   return series.map(p => {
     const stamped = p.fxToUsdBlue
@@ -201,7 +201,13 @@ export function convertSeriesToArs(series, getFxForDate) {
     return {
       ...p,
       valueUsd: p.valueUsd * safeFx,
-      netDeposited: p.netDeposited * safeFx,
+      // Lo APORTADO no se pasa a pesos con el dólar del día de la foto: eso hacía
+      // subir la línea punteada con el dólar sin que nadie depositara nada. Lo
+      // convierte `aportadoEnPesosAl` (capitalAportado.js) a los pesos que se
+      // pusieron; sin él (no hay meses), la regla vieja.
+      netDeposited: typeof aportadoEnPesos === 'function'
+        ? aportadoEnPesos(p.netDeposited, p.date)
+        : p.netDeposited * safeFx,
       _fxUsed: safeFx,
     }
   })

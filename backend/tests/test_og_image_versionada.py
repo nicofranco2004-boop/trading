@@ -82,6 +82,44 @@ class ElNombreDeLaImagenDelLink(unittest.TestCase):
             os.path.exists(os.path.join(PUBLIC, "og-image.png")),
             "se borró og-image.png: los links ya compartidos pierden la tarjeta")
 
+    def test_el_pie_con_los_precios_se_DERIVA(self):
+        """⭐ El pie de la imagen («Después de la prueba: Plus $X · Pro $Y») era
+        el QUINTO lugar donde vivía el precio escrito a mano, y el que menos se
+        mira: no es una pantalla, es un dibujo. El 15/10, cuando Plus pasó a
+        8.900, habría quedado anunciando los de septiembre dentro del PNG. Y ya
+        venía desfasado de antes (decía ≈US$4 / ≈US$9, la equivalencia de hace
+        meses).
+
+        Este test no abre el PNG —no se puede leer un texto dibujado— sino que
+        exige que el pie se CONSTRUYA de `billing/pricing.py`."""
+        fuente = _leer(GENERADOR)
+        i = fuente.index("PIE_PRECIOS")
+        pie = fuente[i:fuente.index("\n)", i)]
+        for campo in ("PLUS_ARS_MONTHLY_TOTAL", "ARS_MONTHLY_TOTAL"):
+            self.assertIn(campo, pie,
+                          f"el pie no deriva {campo} de billing/pricing.py")
+        # Y que no haya vuelto a aparecer un número escrito a mano.
+        self.assertIsNone(
+            re.search(r"\$\s?\d[\d.]{3,}", pie),
+            f"hay un precio escrito a mano en el pie de la imagen:\n{pie}")
+
+    def test_el_pie_dice_los_precios_que_se_cobran(self):
+        """La otra punta: que lo derivado sea EL precio de hoy. Si el pie
+        derivara del campo equivocado, el test de arriba pasaría igual."""
+        import importlib.util
+        ruta = os.path.join(os.path.dirname(os.path.dirname(HERE)),
+                            "backend", "billing", "pricing.py")
+        spec = importlib.util.spec_from_file_location("pricing_og", ruta)
+        pricing = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pricing)
+        fuente = _leer(GENERADOR)
+        pie = fuente[fuente.index("PIE_PRECIOS"):]
+        self.assertIn("PLUS_ARS_MONTHLY_TOTAL", pie)
+        # Los dos montos existen y son los que cobra el backend.
+        self.assertGreater(pricing.PLUS_ARS_MONTHLY_TOTAL, 0)
+        self.assertGreater(pricing.ARS_MONTHLY_TOTAL, pricing.PLUS_ARS_MONTHLY_TOTAL,
+                           "el Pro tiene que costar más que el Plus")
+
     def test_la_version_no_quedo_en_v1(self):
         """Contraveneno del bug original: si alguien cambia el arte y se olvida
         de subir la versión, este test no puede saberlo — pero sí puede exigir

@@ -1044,6 +1044,37 @@ export function valuePositionLot(p, ctx = {}) {
 }
 
 /**
+ * noRealizadoEnVista — "P&L no realizado" (y su % sobre costo) en la moneda en
+ * que se mira. Lo usan el Dashboard y el inicio del celular.
+ *
+ * En dólares es lo de siempre: valor − costo con el `costBasis` elegido.
+ * EN PESOS el costo va en los pesos que se pagaron (modo 'today' × el dólar de
+ * hoy = el costo nativo de los lotes en pesos), igual que el hero de Cartera
+ * (`totalsToday`). Con 'purchase' el costo de un lote en pesos está en dólares
+ * del día de la compra y × el dólar de hoy se inflaba con la devaluación:
+ * medido con $10 M depositados y siete compras, "+$3,36 M" de no realizado al
+ * lado de una "Ganancia total" en pesos de +$4,2 M sin nada realizado. Los lotes
+ * con costo en dólares siguen al dólar de hoy (como en Cartera); lo que el dólar
+ * les movió en pesos queda en `restoEnPesos` (capitalAportado.js).
+ *
+ * `extraValorUsd`/`extraCostoUsd`: lo que no son posiciones (los plazos fijos),
+ * ya al dólar de hoy.
+ * @returns {{ monto, pct }}  monto en la moneda de la vista; pct en fracción
+ */
+export function noRealizadoEnVista({ positions, prices, brokers, tcValuacion, tcCedear = tcValuacion, tcCripto = null,
+                                     costBasis = 'today', moneda = 'USD', extraValorUsd = 0, extraCostoUsd = 0 }) {
+  const base = moneda === 'ARS' ? 'today' : costBasis
+  let valor = extraValorUsd, costo = extraCostoUsd
+  for (const b of brokers || []) {
+    const r = computeBrokerValue(positions || [], prices || {}, b, tcValuacion, tcCedear, tcCripto, base)
+    valor += r.value
+    costo += r.invested
+  }
+  const pct = costo > 0 ? (valor - costo) / costo : 0
+  return { monto: (valor - costo) * (moneda === 'ARS' ? tcValuacion : 1), pct }
+}
+
+/**
  * computeBrokerValue — la SUMA de valuePositionLot sobre los lotes del broker.
  * Toda la lógica por lote vive en valuePositionLot; acá no queda ninguna rama.
  */

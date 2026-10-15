@@ -28,7 +28,7 @@ const BASE_URL = 'https://rendi.finance'
 // forma de purgar la suya. Si cambia el arte, sube la versión en los TRES
 // lugares (acá, `index.html` y `scripts/generate-og-image.py`) — hay un test
 // que no deja que queden distintos.
-const DEFAULT_OG_IMAGE = '/og-image-v2.png'
+const DEFAULT_OG_IMAGE = '/og-image-v3.png'
 
 export default function PageMeta({
   title,

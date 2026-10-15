@@ -58,7 +58,7 @@ LOGOS   = AQUI.parent / 'public' / 'logos'
 # Cambiar el arte = subir la versión acá Y en los dos lugares que la nombran
 # (`index.html` y `PageMeta.jsx`). El test no deja que se desincronicen.
 # El archivo viejo NO se borra: los posteos que ya salieron apuntan ahí.
-OG_VERSION = 'v2'
+OG_VERSION = 'v3'   # v2 → v3 el 15/10: cambió el precio dibujado en el pie
 OUT     = AQUI.parent / 'public' / f'og-image-{OG_VERSION}.png'
 
 # Los números que se muestran. Una cartera de ejemplo, coherente entre sí.
@@ -73,7 +73,36 @@ VEREDICTOS = [
 BROKERS = ['Cocos', 'Balanz', 'IOL', 'Bull Market', 'Binance', '+9 más']
 TICKERS = ['NVDA', 'GGAL', 'BTC', 'MELI']
 DIAS_DE_PRUEBA = 20
-PIE_PRECIOS = 'Después de la prueba: Plus $5.990 (≈US$4) · Pro $13.990 (≈US$9) por mes'
+# ⭐ EL PIE SE DERIVA, NO SE ESCRIBE. Este era el QUINTO lugar donde vivía el
+# precio a mano, y el 15/10 —cuando Plus pasó a 8.900 y Pro a 15.900— habría
+# quedado dibujado dentro del PNG anunciando los de septiembre, en la única
+# pieza que nadie vuelve a mirar porque no es una pantalla: es una imagen.
+# Y ya venía desfasado de antes: decía «≈US$4 · ≈US$9», que era la equivalencia
+# de hace meses (la real de hoy sale de ARS_PER_USD_DISPLAY).
+#
+# `billing/pricing.py` no importa nada fuera de la biblioteca estándar, así que
+# se puede leer directo sin levantar el backend entero.
+def _precios_del_backend():
+    import importlib.util
+    ruta = AQUI.parent.parent / 'backend' / 'billing' / 'pricing.py'
+    spec = importlib.util.spec_from_file_location('rendi_pricing', ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+_P = _precios_del_backend()
+
+def _pesos(n: int) -> str:
+    """8900 → '8.900'. El punto separa los miles en TODO Rendi."""
+    return f"{n:,}".replace(",", ".")
+
+# El dólar va redondeado al entero: es un «≈» informativo en un pie de imagen,
+# no un precio. El valor exacto (5,93) sale igual del mismo lugar.
+PIE_PRECIOS = (
+    f'Después de la prueba: '
+    f'Plus ${_pesos(_P.PLUS_ARS_MONTHLY_TOTAL)} (≈US${round(float(_P.PLUS_USD_MONTHLY_DISPLAY))}) · '
+    f'Pro ${_pesos(_P.ARS_MONTHLY_TOTAL)} (≈US${round(float(_P.USD_MONTHLY_DISPLAY))}) por mes'
+)
 
 
 def fuente(px: int, peso: str = 'regular') -> ImageFont.FreeTypeFont:

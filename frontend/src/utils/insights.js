@@ -1,7 +1,7 @@
 // Generates plain-Spanish auto-insights from portfolio data.
 // Pure functions — easy to unit-test and extend.
 
-import { fmtUsd } from './format'
+import { fmtUsd, fmtArs } from './format'
 import { retornoTotal } from './evolution'
 
 /**
@@ -18,23 +18,34 @@ import { retornoTotal } from './evolution'
  *                                          TIENEN que ser el mismo número.
  * @param {Array}  args.positions        — open positions enriched with { asset, pnl_usd, pnl_pct, value_usd }
  *                                          (pnl_usd / pnl_pct may be null if price not loaded)
+ * @param {object} [args.resultado]      — el de `resultadoTotal` (capitalAportado.js), el
+ *                                          MISMO objeto que pinta el chip del hero: con él la
+ *                                          frase habla en la moneda en que se mira, con la
+ *                                          ganancia y el % del chip. Sin él, la cuenta en
+ *                                          dólares de siempre.
  */
-export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capitalMaximo = null, positions = [] } = {}) {
+export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capitalMaximo = null, positions = [], resultado = null } = {}) {
   if (totalValue <= 0 && netDeposited <= 0) return null
 
   // MISMA regla que el hero, y de la misma función: acá vivía la segunda copia
   // del `netDeposited > 0 ? ... : 0`. `pct` puede venir en null — no hay
   // denominador que lo sostenga — y entonces la frase habla de PLATA y no de
   // porcentaje, en vez de afirmar un 0 % que sería falso.
-  const { usd: totalReturn, pct: totalReturnPct } = retornoTotal({ totalValue, netDeposited, capitalMaximo })
+  // En pesos, el chip dice la ganancia EN PESOS (lo aportado, a los pesos que se
+  // pusieron) y su %: la frase tiene que decir lo mismo, no el % en dólares.
+  const { usd: totalReturn, pct: totalReturnPct } = resultado
+    ? { usd: resultado.ganancia, pct: resultado.pct }
+    : retornoTotal({ totalValue, netDeposited, capitalMaximo })
+  const fmtMonto = (v) => (resultado?.moneda === 'ARS' ? fmtArs(v) : fmtUsd(v))
 
   // Find biggest losers / winners with valid pnl
   const withPnl = positions.filter(p => p.pnl_usd != null && p.pnl_pct != null)
   const losers = withPnl.filter(p => p.pnl_usd < 0).sort((a, b) => a.pnl_usd - b.pnl_usd)
   const winners = withPnl.filter(p => p.pnl_usd > 0).sort((a, b) => b.pnl_usd - a.pnl_usd)
 
+  // El signo menos de verdad (−), como el chip del hero: con `toFixed` salía "-39,2%" con guion.
   const pctTxt = totalReturnPct != null
-    ? `${totalReturnPct >= 0 ? '+' : ''}${(totalReturnPct * 100).toFixed(1).replace('.', ',')}%`
+    ? `${totalReturnPct >= 0 ? '+' : '−'}${Math.abs(totalReturnPct * 100).toFixed(1).replace('.', ',')}%`
     : null
 
   // Sin porcentaje que sostener, la frase se cuenta con la PLATA. Es el mismo
@@ -50,7 +61,7 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capita
     // retiró plata que nunca retiró. Desde acá no se puede distinguir cuál es.
     return {
       tone: totalReturn >= 0 ? 'positive' : 'negative',
-      text: `Tu cartera está ${fmtUsd(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'} de lo que aportaste. El porcentaje no se puede calcular: no hay un capital aportado contra el cual medirlo.`,
+      text: `Tu cartera está ${fmtMonto(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'} de lo que aportaste. El porcentaje no se puede calcular: no hay un capital aportado contra el cual medirlo.`,
     }
   }
 
@@ -76,7 +87,7 @@ export function buildDashboardInsight({ totalValue = 0, netDeposited = 0, capita
   if (totalReturn !== 0) {
     return {
       tone: totalReturn >= 0 ? 'positive' : 'negative',
-      text: `Tu cartera rinde ${pctTxt} sobre el capital aportado (${fmtUsd(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'}).`,
+      text: `Tu cartera rinde ${pctTxt} sobre el capital aportado (${fmtMonto(Math.abs(totalReturn))} ${totalReturn >= 0 ? 'a favor' : 'en contra'}).`,
     }
   }
 

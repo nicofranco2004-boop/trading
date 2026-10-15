@@ -83,20 +83,26 @@ export function netCapitalContributed(globalMonthly) {
  * era "aporte" para quien la cargó como depósito y "crecimiento" de nada para
  * quien la trajo en el primer mes, y aportes + mercado no daba el valor de hoy.
  *
- * ⚠️ NO es la suma de la lista por activo ("Atribución por activo") en pesos:
- * esa lista convierte el costo de cada papel al dólar de HOY, y lo aportado acá
- * está en dólares del día de cada depósito. Ver la tarea "aportes en pesos".
+ * EN PESOS, `aportado` y `valorHoy` vienen de `resultadoTotal`
+ * (capitalAportado.js): lo aportado a los pesos que se pusieron y el valor de hoy
+ * en pesos — las mismas dos cifras que el Dashboard en pesos. Antes la tarjeta
+ * convertía los dólares de acá con el dólar de HOY y la devaluación entre cada
+ * depósito y hoy pasaba de "mercado" a "aportes" (medido: $10 M depositados se
+ * leían "Aportes netos +ARS 10.861.131").
  *
  * Sin precios completos (`valorHoyMedido` falso) el valor de hoy lleva activos
  * al costo y la respuesta es null: no se publica un "mercado" al costo.
  *
- * @returns {{ deposits, pnl, total, pnlShare } | null}  montos en USD
+ * @param {number} [aportado]  lo aportado, en la MISMA moneda que `valorHoy`.
+ *                             Sin él, `netCapitalContributed` (dólares).
+ * @returns {{ deposits, pnl, total, pnlShare } | null}  montos en la moneda de
+ *          `valorHoy`
  */
-export function atribucionDelCrecimiento({ globalMonthly, valorHoy, valorHoyMedido }) {
+export function atribucionDelCrecimiento({ globalMonthly, valorHoy, valorHoyMedido, aportado = null }) {
   if (!valorHoyMedido || !(valorHoy > 0)) return null
   const sorted = sortGlobalMonthly(globalMonthly)
   if (sorted.length === 0) return null
-  const deposits = netCapitalContributed(sorted)
+  const deposits = Number.isFinite(aportado) ? aportado : netCapitalContributed(sorted)
   const pnl = valorHoy - deposits
   return {
     deposits,

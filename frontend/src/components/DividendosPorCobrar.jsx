@@ -31,6 +31,7 @@ import { useDemora } from '../hooks/useDemora'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import { useDividendosPorCobrar } from '../hooks/useDividendosPorCobrar'
 import { usePrivacy } from '../contexts/PrivacyContext'
+import { parseNum } from '../utils/format'
 
 const num = (n, d = 2) => Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: d, maximumFractionDigits: d })
 const usd = (n) => `US$ ${num(n)}`
@@ -44,10 +45,10 @@ function useMontos() {
   return { usd: (n) => (oculto ? TAPADO : usd(n)), ars: (n) => (oculto ? TAPADO : ars(n)) }
 }
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '')
-const parse = (s) => {
-  const v = parseFloat(String(s ?? '').trim().replace(/\./g, '').replace(',', '.'))
-  return Number.isFinite(v) ? v : NaN
-}
+// El parser de la app (utils/format). La copia que vivía acá borraba TODOS los
+// puntos: "0.70" (punto decimal, como lo escribe quien copia del resumen del
+// broker) se leía 70 — un dividendo de setenta centavos cargado como setenta dólares.
+const parse = parseNum
 const sinMovimiento = () => typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
