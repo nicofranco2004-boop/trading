@@ -317,6 +317,57 @@ class PorLaPuertaReal(Base):
         self.conn.commit()
         return cur.lastrowid
 
+    def test_la_tanda_corta_la_lista(self):
+        """⭐ `?limite=N` para repartirlo en tandas. No es un capricho técnico:
+        un dominio que manda un puñado de mails por día y de golpe manda 1.300
+        en 13 minutos es señal de spam para Gmail y Outlook, por buena que sea la
+        autenticación. Y de paso reparte el muro del día 21, que si no le cae a
+        1.300 personas la misma mañana."""
+        jefe = self._admin()
+        for _ in range(5):
+            self._del_beta()
+        h = {"Authorization": f"Bearer {main.create_token(jefe)}"}
+        d = self.client.post("/api/admin/billing/fin-del-beta?limite=2",
+                             headers=h).json()
+        self.assertEqual(d["les_arranca_la_prueba"], 2,
+                         "la tanda no cortó la lista")
+
+    def test_las_tandas_AVANZAN_de_verdad(self):
+        """⭐⭐ El bug que esto vigila: el tope contaba FILAS MIRADAS. Con tope
+        300 sobre 1.300 usuarios, la primera tanda miraba las filas 1-300 (de las
+        que el admin y los que pagan se saltean) y arrancaba ~290; la segunda
+        volvía a mirar las MISMAS filas, ya marcadas, y arrancaba un puñado.
+        Apretando cinco veces, la prueba le llegaba a ~310 de 1.300 — y los
+        números del panel daban bien, porque cada tanda informaba su propio cero.
+
+        Ahora el tope cuenta pruebas ARRANCADAS, así que las tandas avanzan."""
+        jefe = self._admin()          # se saltea, y antes consumía un lugar
+        for _ in range(6):
+            self._del_beta()
+        h = {"Authorization": f"Bearer {main.create_token(jefe)}"}
+
+        # Tres tandas de 2 tienen que cubrir a los 6, no a 2 y nada más.
+        arrancados = 0
+        for vuelta in range(3):
+            d = tr.fin_del_beta(self.conn, apply=True, limit=2)
+            arrancados += d["les_arranca_la_prueba"]
+            self.assertEqual(d["les_arranca_la_prueba"], 2,
+                             f"la tanda {vuelta + 1} arrancó "
+                             f"{d['les_arranca_la_prueba']} en vez de 2")
+        self.assertEqual(arrancados, 6, "las tandas no avanzaron")
+
+        # Y la cuarta no encuentra a nadie: está todo hecho.
+        d = tr.fin_del_beta(self.conn, apply=True, limit=2)
+        self.assertEqual(d["les_arranca_la_prueba"], 0)
+        self.assertFalse(d["quedan_para_la_proxima_tanda"])
+
+    def test_avisa_cuando_el_tope_cortó_la_lista(self):
+        for _ in range(4):
+            self._del_beta()
+        d = tr.fin_del_beta(self.conn, limit=2)
+        self.assertTrue(d["quedan_para_la_proxima_tanda"],
+                        "cortó la lista y no lo dijo")
+
     def test_es_solo_para_admin(self):
         uid = self._del_beta()
         r = self.client.post("/api/admin/billing/fin-del-beta",

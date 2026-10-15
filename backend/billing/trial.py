@@ -2058,6 +2058,8 @@ def fin_del_beta(conn, apply: bool = False, limit: int = 5000) -> dict:
         "aplicado": bool(apply),
         "dias_de_prueba": TRIAL_TOTAL_DAYS,
         "les_arranca_la_prueba": 0,
+        # Si el tope cortó la lista: hay que volver a correrla mañana.
+        "quedan_para_la_proxima_tanda": False,
         "marca_sin_prueba_por_no_verificar": 0,
         "salteados": {"paga": 0, "no_es_free": 0, "admin": 0,
                       "cliente_de_asesor": 0, "ya_tenia_la_marca": 0},
@@ -2070,7 +2072,20 @@ def fin_del_beta(conn, apply: bool = False, limit: int = 5000) -> dict:
              FROM users
             ORDER BY id""").fetchall()
 
-    for r in filas[:max(1, limit)]:
+    # ⭐ EL TOPE CUENTA PRUEBAS ARRANCADAS, NO FILAS MIRADAS, y la diferencia
+    # rompía las tandas por completo. Antes era `filas[:limit]`: con tope 300, la
+    # primera tanda miraba las filas 1-300 —de las cuales el admin, los 8 que
+    # pagan y los asesores se saltean— y arrancaba ~290. La SEGUNDA tanda volvía
+    # a mirar las MISMAS filas 1-300, ahora casi todas con la marca puesta, y
+    # arrancaba un puñado. O sea: apretando cinco veces, la prueba le llegaba a
+    # ~310 personas de 1.300 y nada avisaba — los números del panel darían bien
+    # porque cada tanda informaría su propio verdadero cero.
+    tope = max(1, limit)
+
+    for r in filas:
+        if salida["les_arranca_la_prueba"] >= tope:
+            salida["quedan_para_la_proxima_tanda"] = True
+            break
         uid = int(r["id"])
         if r["requires_plan"]:
             salida["salteados"]["ya_tenia_la_marca"] += 1

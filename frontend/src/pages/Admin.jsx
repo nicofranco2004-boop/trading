@@ -4242,12 +4242,17 @@ function FinDelBeta() {
   const [previo, setPrevio] = useState(null)
   const [lanzado, setLanzado] = useState(false)
   const [busy, setBusy] = useState(false)
+  // ⭐ Por tandas, y el motivo es de REPUTACIÓN, no técnico: un dominio que manda
+  // un puñado de mails por día y de golpe manda 1.300 en 13 minutos es señal de
+  // spam para Gmail y Outlook, por buena que sea la autenticación. Y de paso
+  // reparte el muro del día 21, que si no le cae a 1.300 la misma mañana.
+  const [tanda, setTanda] = useState(300)
   const toast = useToast()
 
   async function ver() {
     setBusy(true)
     try {
-      setPrevio(await api.post('/admin/billing/fin-del-beta'))
+      setPrevio(await api.post(`/admin/billing/fin-del-beta?limite=${tanda}`))
     } catch (e) {
       toast.push('Error: ' + (e.message || ''), { type: 'error' })
     } finally { setBusy(false) }
@@ -4256,7 +4261,7 @@ function FinDelBeta() {
   async function activar() {
     setBusy(true)
     try {
-      await api.post('/admin/billing/fin-del-beta?apply=1')
+      await api.post(`/admin/billing/fin-del-beta?apply=1&limite=${tanda}`)
       setLanzado(true)
       toast.push('Arrancó. Los mails tardan entre 7 y 22 minutos — mirá el avance.',
                  { type: 'success' })
@@ -4285,6 +4290,14 @@ function FinDelBeta() {
       </div>
 
       <div className="flex items-center gap-2 mt-3 flex-wrap">
+        <select
+          value={tanda} onChange={e => { setTanda(Number(e.target.value)); setPrevio(null) }}
+          className="px-2 py-1.5 rounded-lg border border-line bg-bg-1 text-ink-2 text-xs"
+        >
+          <option value={300}>de a 300 (recomendado)</option>
+          <option value={500}>de a 500</option>
+          <option value={5000}>todos de una</option>
+        </select>
         <button
           onClick={ver} disabled={busy}
           className="px-3 py-1.5 rounded-lg border border-line text-ink-1 text-xs hover:bg-bg-2 disabled:opacity-50"
@@ -4326,6 +4339,11 @@ function FinDelBeta() {
           </div>
           {/* 🔴 Si algo falló, NO se aplica: una prueba que no arrancó deja a esa
               persona con el muro puesto el día 1. El botón de activar desaparece. */}
+          {previo.quedan_para_la_proxima_tanda && (
+            <p className="text-rendi-warn mt-2">
+              La tanda cortó la lista: quedan más para la próxima vuelta.
+            </p>
+          )}
           {fallaron.length > 0 ? (
             <p className="text-rendi-neg mt-2">
               🔴 {fallaron.length} fallaron — no apliques y avisá. Motivos:{' '}

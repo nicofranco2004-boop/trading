@@ -27954,7 +27954,8 @@ def admin_dedup_suscripciones(apply: int = 0, uid: int = Depends(get_admin_user)
 
 
 @app.post("/api/admin/billing/fin-del-beta")
-def admin_fin_del_beta(apply: int = 0, uid: int = Depends(get_admin_user)):
+def admin_fin_del_beta(apply: int = 0, limite: int = 5000,
+                       uid: int = Depends(get_admin_user)):
     """1/11/2026: le arranca la prueba de 20 días a los usuarios del beta.
 
     Por defecto NO escribe nada y devuelve exactamente lo que haría. `?apply=1`
@@ -27971,7 +27972,7 @@ def admin_fin_del_beta(apply: int = 0, uid: int = Depends(get_admin_user)):
         # 1.300 usuarios. Va sincrónica para que devuelva los números de verdad.
         conn = get_db()
         try:
-            return _trial.fin_del_beta(conn, apply=False)
+            return _trial.fin_del_beta(conn, apply=False, limit=limite)
         finally:
             conn.close()
 
@@ -27984,7 +27985,16 @@ def admin_fin_del_beta(apply: int = 0, uid: int = Depends(get_admin_user)):
     #
     # Mismo mecanismo que la puerta del cron (`_correr_en_fondo`), que además
     # envuelve los envíos en `emails.envio_masivo()` para que hagan la fila y no
-    # saturen a Resend.
+    # saturen a Resend (`PAUSA_ENTRE_ENVIOS` = 0,6 s entre uno y otro, para TODO
+    # el proceso: son 13 minutos de piso con 1.300 mails).
+    #
+    # ⭐ `?limite=N` existe para hacerlo POR TANDAS, y la razón no es técnica
+    # sino de REPUTACIÓN: un dominio que manda un puñado de mails por día y de
+    # golpe manda 1.300 en 13 minutos es una señal de spam para Gmail y Outlook,
+    # por más que la autenticación esté perfecta (y lo está: Resend firma con
+    # DKIM y manda con SPF propio desde `send.rendi.finance`). Repartirlo en
+    # tandas de ~300 por día durante cuatro días lo evita — y de paso reparte el
+    # muro del día 21, que si no le cae a 1.300 personas la misma mañana.
     #
     # Un 200 acá quiere decir "arrancó", no "terminó". Para ver el avance:
     # volver a pedir la VISTA PREVIA — cuando `les_arranca_la_prueba` da 0, no
@@ -27992,7 +28002,7 @@ def admin_fin_del_beta(apply: int = 0, uid: int = Depends(get_admin_user)):
     def _job():
         conn = get_db()
         try:
-            res = _trial.fin_del_beta(conn, apply=True)
+            res = _trial.fin_del_beta(conn, apply=True, limit=limite)
             log.info("fin_del_beta: arrancaron %s pruebas, %s sin verificar, "
                      "fallaron %s, salteados %s",
                      res["les_arranca_la_prueba"],
