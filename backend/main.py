@@ -16936,6 +16936,7 @@ def _build_movements(uid: int):
             # Antes se usaba siempre el de hoy: una compra de 2021 se dividía por
             # ~1500 y el movimiento aparecía con un monto irreal.
             stamped = _safe_float_or_none(d.get("gross_amount_usd"))
+            _rate_row = None
             if cur == "ARS":
                 _rate_row = (amt / stamped) if (stamped and stamped > 0 and amt) else None
                 amount_usd = stamped if stamped is not None else (amt / tc_blue if tc_blue > 0 else amt)
@@ -16957,6 +16958,10 @@ def _build_movements(uid: int):
                 "unit_price": _safe_float_or_none(d.get("unit_price")),
                 "amount_usd": amount_usd,
                 "currency": cur,
+                # El dólar con que se estampó (pesos del archivo ÷ dólares): con él la
+                # pantalla vuelve EXACTO a los pesos del import (`gross_amount`), los
+                # mismos que usa "Capital aportado" (`_aportes_en_pesos_por_mes`).
+                "fx_to_usd": _rate_row,
                 "fees_usd": fees_usd,
                 "notes": d.get("notes") or "",
                 "source": "import",
@@ -16998,6 +17003,9 @@ def _build_movements(uid: int):
             (uid,),
         ).fetchall()
         importados = _import_flows_por_mes(conn, uid, tc_blue) if me_rows else {}
+        # Brokers en pesos: sus cargas a mano viajan con los pesos que se cargaron.
+        _brokers_en_pesos = {b["name"] for b in conn.execute(
+            "SELECT name FROM brokers WHERE user_id=? AND UPPER(currency)='ARS'", (uid,))}
         for r in me_rows:
             d = dict(r)
             deposits_manual, withdrawals_manual = _flujos_manuales_del_mes(r, importados)
@@ -17005,6 +17013,12 @@ def _build_movements(uid: int):
             # una "del mes" con lo que no tiene día (`mr-`). Lo arma la misma función
             # que la exportación.
             for f in _filas_a_mano_del_mes(conn, uid, r, deposits_manual, withdrawals_manual):
+                # Una carga en pesos viaja con SUS pesos: `currency='ARS'` y el dólar
+                # con que se guardó (pesos ÷ dólares), igual que una operación en
+                # pesos. La pantalla multiplica de vuelta y muestra exactamente lo
+                # que se cargó, en vez de reconstruirlo con el dólar de esa fecha.
+                _en_pesos = (d.get("broker") in _brokers_en_pesos and (f.get("nativo") or 0) > 0
+                             and f["usd"] > 0)
                 movements.append({
                     "id": f["id"],
                     "kind": "movement",
@@ -17015,7 +17029,8 @@ def _build_movements(uid: int):
                     "quantity": None,
                     "unit_price": None,
                     "amount_usd": f["usd"],
-                    "currency": "USD",
+                    "currency": "ARS" if _en_pesos else "USD",
+                    "fx_to_usd": (f["nativo"] / f["usd"]) if _en_pesos else None,
                     "fees_usd": 0,
                     "notes": f["nota"],
                     "source": "monthly",
@@ -18585,11 +18600,13 @@ def _filas_a_mano_del_mes(conn, uid: int, me_row, dep_resto: float, wit_resto: f
             out.append({"id": f"mf-{f['id']}", "type": tipo,
                         "fecha": f["fecha"] or f"{y:04d}-{m:02d}-15", "aprox": not f["fecha"],
                         "usd": float(f["monto_usd"]),
+                        # En la moneda del broker, tal cual se cargó (None si no se sabe).
+                        "nativo": (float(f["monto_nativo"]) if f["monto_nativo"] is not None else None),
                         "nota": _NOTA_DE_CARGA.get((f["origen"], direction), "A mano")})
         resto = total - sum(float(f["monto_usd"]) for f in sueltas)
         if resto > 0.01:
             out.append({"id": f"mr-{me_row['id']}-{sufijo}", "type": tipo,
-                        "fecha": f"{y:04d}-{m:02d}-15", "aprox": True, "usd": resto,
+                        "fecha": f"{y:04d}-{m:02d}-15", "aprox": True, "usd": resto, "nativo": None,
                         "nota": (f"{'Depósitos' if sufijo == 'dep' else 'Retiros'} a mano de "
                                  f"{y}-{m:02d} sin día registrado")})
     return out
