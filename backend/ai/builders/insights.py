@@ -23,9 +23,10 @@ Shape:
 {
   "screen": "insights",
   "window_days": 365,
-  "twr_pct": float | null,           # rendimiento acumulado total del período
-                                     # (compuesto via monthly_entries — combina P&L
-                                     #  realizado por mes + unrealized del mes en curso)
+  "twr_pct": float | null,           # rendimiento acumulado del período, en dólares,
+                                     # del motor (`twr.rendimiento_publicable`)
+  "twr_base": "mercado" | "contable" | null,  # de dónde sale twr_pct
+  "twr_motivo_texto": str | null,    # por qué no se pudo medir a mercado
   "realized_pnl_usd": float | null,  # P&L USD absoluto sumado de trades cerrados
   "realized_avg_pct_per_trade": float | null,  # promedio simple de pnl_pct por trade
                                      # (NO es return sobre capital — es la performance
@@ -171,64 +172,31 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # Sobre toda la historia medida, como la pantalla: ver `_drawdown`.
     drawdown = _drawdown(conn, user_id, **kwargs)
 
-    # TWR via monthly_entries (broker='global') — el backend ya guarda capital
-    # inicio/final por mes con flujos neteados. Compoundeamos los % mensuales
-    # para el período. Es mucho más confiable que computar TWR sobre snapshots
-    # crudos porque net_deposited se popula retroactivamente al importar
-    # operations y eso rompe el cálculo basado en deltas.
-    twr_pct: Optional[float] = None
-    _twr_meses = [None, None]      # (primer mes cubierto, último mes cubierto)
-    try:
-        from datetime import timedelta
-        cutoff_date = today - timedelta(days=window_days)
-        m_rows = conn.execute(
-            """SELECT year, month, capital_inicio, capital_final, deposits, withdrawals
-                 FROM monthly_entries
-                WHERE user_id=? AND broker='global'
-                ORDER BY year, month""",
-            (user_id,),
-        ).fetchall()
-        compound = 1.0
-        used = 0
-        for r in m_rows:
-            y, m = r["year"], r["month"]
-            try:
-                end_of_month = date(y, m + 1, 1) - timedelta(days=1) if m < 12 else date(y, 12, 31)
-            except ValueError:
-                continue
-            if end_of_month < cutoff_date:
-                continue
-            ci = float(r["capital_inicio"] or 0)
-            cf = float(r["capital_final"] or 0)
-            dep = float(r["deposits"] or 0)
-            wd = float(r["withdrawals"] or 0)
-            # El retorno del mes, con SUS DOS GUARDS, en un solo lugar: el mes de
-            # alta no se mide y el denominador lleva el 0,5 del flujo. Escribir la
-            # cuenta acá es volver a tener dos motores — con `/ci` este mismo mes
-            # daba +10,0 % donde el motor mide +6,67 % (+213,8 % contra +116,9 % a
-            # doce meses). Ver `twr.retorno_mensual`.
-            ret = _twr.retorno_mensual(ci, cf, dep - wd)
-            if ret is None:
-                continue
-            # Cap defensivo a ±200% por mes — algo absurdo y rompería compound
-            if ret < -0.95 or ret > 5:
-                continue
-            compound *= (1 + ret)
-            used += 1
-            # Los meses que el retorno REALMENTE cubre. No son "los de la
-            # ventana": arriba se saltean el mes de alta (`retorno_mensual`
-            # devuelve None) y los outliers. Sirven para convertirlo a pesos con
-            # la devaluación DEL MISMO TRAMO — con la de la ventana entera se le
-            # sumaría devaluación que ese retorno no contiene.
-            _mes = f"{y:04d}-{m:02d}"
-            if _twr_meses[0] is None or _mes < _twr_meses[0]:
-                _twr_meses[0] = _mes
-            if _twr_meses[1] is None or _mes > _twr_meses[1]:
-                _twr_meses[1] = _mes
-        if used > 0:
-            twr_pct = round((compound - 1) * 100, 2)
-    except Exception:
-        twr_pct = None
+    # ⚠️ EL RENDIMIENTO SE LE PIDE AL MOTOR, NO SE COMPONE ACÁ (F6).
+    #
+    # Esto multiplicaba `(1 + retorno)` mes a mes sobre `monthly_entries`: la
+    # contabilidad AL COSTO, que para un mes cerrado no sabe nada del mercado. Fue
+    # el único de los paquetes de la IA que quedó sin pasar al motor cuando F6 se
+    # lo propagó a `insights_evolution`, `reports` y `dashboard`. Medido con la
+    # cuenta "compra y mantiene en pesos" (depósito y siete compras el 13/10/2025,
+    # la cartera +7,2 % en pesos de octubre a septiembre): este paquete le decía a
+    # la IA `twr_pct = 0,0` y, contra la inflación, "te ganó". `rendimiento_
+    # publicable` mide a mercado cuando hay fotos y, cuando no, publica la
+    # contabilidad DICIENDO que es contabilidad (`twr_base`).
+    from datetime import timedelta
+    from ai.builders.caida_medida import leer_modo
+    _cutoff_iso = (today - timedelta(days=window_days)).isoformat()
+    _modo_twr = leer_modo(kwargs.get("modo"))
+    _rend = _twr.rendimiento_publicable(conn, user_id, desde=_cutoff_iso, modo=_modo_twr,
+                                        valor_live=kwargs.get("valor_live"))
+    twr_pct: Optional[float] = _rend["pct"]
+    # En pesos, del MISMO motor y sobre la misma ventana — la vía exacta de
+    # `twr.vs_inflacion_ar`. Sólo a mercado: la contabilidad al costo de un mes
+    # cerrado es el realizado sobre lo aportado, y compararla con la inflación es
+    # justo la afirmación falsa ("la inflación te ganó") que esto vino a sacar.
+    _rend_ars = _twr.rendimiento_publicable(
+        conn, user_id, desde=_cutoff_iso, modo=_modo_twr, moneda=_twr.MONEDA_ARS,
+        valor_live=kwargs.get("valor_live"), permitir_contable=False)
 
     # ── 2. Operations: trades cerrados, win rate, best/worst, attribution ────
     # currency/fx_to_usd hacen falta para normalizar: en Cupón/Amortización
@@ -565,7 +533,6 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # ── 4. Benchmarks ────────────────────────────────────────────────────────
     sp500_pct: Optional[float] = None
     inflation_pct: Optional[float] = None
-    fx_ventana = None
     try:
         import main as _m
         cache_bench = getattr(_m, "_bench_cache", {}) or {}
@@ -592,41 +559,23 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             for _, pct in infl_in_window:
                 comp *= (1 + pct / 100)
             inflation_pct = round((comp - 1) * 100, 2)
-            # El TC de las dos puntas DEL TRAMO QUE CUBRE `twr_pct`, para poder
-            # compararlo en pesos (ver `twr.vs_inflacion_ar`). `twr_pct` sale de
-            # monthly_entries, que está en DÓLARES: restarle la inflación del
-            # INDEC, que mide precios en pesos, deja afuera la devaluación. El
-            # paquete se lo pasaba así a la IA, que narraba a partir de ese número.
-            #
-            # ⚠️ LAS FECHAS SALEN DEL TWR, NO DE LA INFLACIÓN. Son ventanas
-            # distintas: el TWR saltea el mes de alta y el INDEC publica con ~14
-            # días de atraso. Tomar las de la inflación convertía el retorno con
-            # una devaluación que no le corresponde, y el resultado no era ni el
-            # retorno de una ventana ni el de la otra.
-            if _twr_meses[0] and _twr_meses[1]:
-                _y0, _m0 = (int(x) for x in _twr_meses[0].split("-"))
-                _mes_previo = f"{_y0 - 1:04d}-12" if _m0 == 1 else f"{_y0:04d}-{_m0 - 1:02d}"
-                _d0 = _twr._fin_de_mes(_mes_previo)
-                _d1 = _twr._fin_de_mes(_twr_meses[1])
-                _fxfn, _ = _twr.serie_fx(conn, _d0, _d1)
-                _f0, _f1 = _fxfn(_d0), _fxfn(_d1)
-                if _f0 and _f1:
-                    fx_ventana = (_f0, _f1)
     except Exception:
         pass
 
     _ret_ars_infl, _delta_infl_pp = _twr.vs_inflacion_ar(
-        twr_pct, inflation_pct,
-        fx0=(fx_ventana or (None, None))[0], fx1=(fx_ventana or (None, None))[1])
+        _rend_ars["pct"], inflation_pct, moneda=_twr.MONEDA_ARS)
     _ret_ars_infl = round(_ret_ars_infl, 2) if _ret_ars_infl is not None else None
     _delta_infl_pp = round(_delta_infl_pp, 2) if _delta_infl_pp is not None else None
 
     vs_benchmarks = {
         "sp500_pct": sp500_pct,
         "inflation_ar_pct": inflation_pct,
+        # Sólo a mercado: la contabilidad al costo contra el S&P compara el
+        # realizado con un índice que sí ve el mercado.
         "delta_sp500_pp": (
             round(twr_pct - sp500_pct, 2)
-            if twr_pct is not None and sp500_pct is not None else None
+            if (twr_pct is not None and sp500_pct is not None
+                and _rend["base"] == "mercado") else None
         ),
         # SIEMPRE EN PESOS. `twr_pct` está en dólares y la inflación del INDEC en
         # pesos; la resta cruda dejaba afuera la devaluación y daba vuelta el
@@ -660,7 +609,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             # `window_days: 365` el modelo podía leer una caída de hace dos años
             # como "del último año".
             "drawdown": "Caída MEDIDA COMO RENDIMIENTO (un depósito o un retiro no cuenta) sobre TODA la historia medida, desde drawdown.medido_desde — NO sobre window_days: una caída vieja no es 'del último año'. Es el mismo número que la pantalla. Si trae insufficient_data, `reason` dice por qué no hay número.",
-            "twr_pct": "TWR del período. Compuesto via monthly_entries. Combina P&L realizado de meses cerrados + unrealized mark-to-market del mes en curso. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
+            "twr_pct": "Rendimiento del período (window_days), en dólares: el MISMO motor que la pantalla. twr_base dice de dónde sale: 'mercado' = medido con el valor real de la cartera; 'contable' = la contabilidad al costo (no ve cuánto subieron o bajaron los papeles): decilo así y no lo compares contra nada. NO descompone realizado vs unrealized — usar realized_pnl_usd + unrealized_pnl_total_usd para eso.",
             "realized_pnl_usd": "USD ABSOLUTO sumado de trades CERRADOS. No es %, no es vs invested. Si negativo, perdiste en operaciones cerradas. Si chico vs total_equity_usd, casi todo el resultado está en unrealized.",
             "realized_avg_pct_per_trade": "Promedio simple de pnl_pct por trade cerrado. NO acumulado, NO compounded. Solo describe performance media por operación.",
             "unrealized_pnl_total_usd": "USD mark-to-market HOY de TODAS las posiciones abiertas. Cambia con el mercado. Si twr_pct alto y realized_pnl_usd bajo, este campo explica la diferencia.",
@@ -672,6 +621,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         },
         "window_days": window_days,
         "twr_pct": twr_pct,
+        "twr_base": _rend["base"],
+        "twr_motivo_texto": _rend["motivo_texto"],
         # Métricas de trades cerrados — REPLACE del viejo twr_realized_pct
         # que era engañoso (denominador inflado por capital rotativo). Ahora:
         # - realized_pnl_usd: cuánto se ganó/perdió neto en USD (claro)
