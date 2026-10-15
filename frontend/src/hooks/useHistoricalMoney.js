@@ -1,10 +1,11 @@
 // useHistoricalMoney — formatter que combina toggle global ARS/USD con FX
 // histórico per-fecha. Pensado para listas con valores USD viejos (operaciones,
-// movimientos, P&L realizado) donde el blue de cuando se generó NO es el de hoy.
+// movimientos, P&L realizado) donde el dólar de cuando se generó NO es el de hoy.
 //
 // Prioridad de FX cuando currency==='ARS':
 //   1. `stampedFx` (preferido) — fx_to_usd stampeado en el row al guardar
-//   2. `lookupRate(history, dateIso)` — busca en /api/fx-rates por fecha
+//   2. el dólar ELEGIDO de esa fecha (MEP; blue antes de 2018) — `useFxHistory`,
+//      ver utils/tcHistorico.js. Es el mismo dólar que el de hoy, pero de su día.
 //   3. `tcValuacion` actual — último fallback
 //
 // Cuando currency==='USD', no convierte (el valor canónico USD se formatea
@@ -22,7 +23,7 @@ import { useFxHistory } from './useFxHistory'
  * un valor USD. Pure function — testeable sin React.
  *
  * @param {string} currency — 'USD' | 'ARS' (toggle global)
- * @param {number} tcValuacion — blue actual (fallback final)
+ * @param {number} tcValuacion — el dólar de hoy (fallback final)
  * @param {object} opts — { stampedFx?, dateIso? }
  * @param {(date: string) => number | null} getRateForDate — lookup histórico
  * @returns {number} FX para multiplicar. 1 si currency='USD' (no convertir).
@@ -34,8 +35,8 @@ export function resolveHistoricalFx(currency, tcValuacion, opts, getRateForDate)
   // que se usó para llevarlo a USD, así que invertirlo reconstruye el nominal real.
   // En un evento en DÓLARES el backend estampa 1.0 (no hubo conversión) — tomarlo
   // como "ARS por USD" mostraría un P&L de USD 10.000 como "$10.000" (~1500× menos).
-  // Para esos casos ignoramos el stamp y vamos al blue de la fecha, que es lo que
-  // el usuario quiere ver: cuántos pesos representaban esos dólares ese día.
+  // Para esos casos ignoramos el stamp y vamos al dólar elegido de la fecha, que es
+  // lo que el usuario quiere ver: cuántos pesos representaban esos dólares ese día.
   const rowCcy = (opts?.rowCurrency || '').toUpperCase()
   const stampUsable = stamped && stamped > 0 && !(rowCcy && rowCcy !== 'ARS')
   if (stampUsable) return stamped
@@ -47,12 +48,15 @@ export function resolveHistoricalFx(currency, tcValuacion, opts, getRateForDate)
   return tcValuacion > 0 ? tcValuacion : 1
 }
 
-export function useHistoricalMoney() {
-  const { currency, tcValuacion } = useCurrency()
-  const { getRateOrFallback, fxKey } = useFxHistory(tcValuacion)
-
+/**
+ * dineroHistorico — la conversión de `useHistoricalMoney`, sin React: la misma
+ * función que corre la pantalla, para poder probarla con las respuestas reales
+ * del servidor (`getRateForDate` = el dólar elegido de cada fecha, de
+ * `useFxHistory` / utils/tcHistorico.js).
+ */
+export function dineroHistorico({ currency, tcValuacion, getRateForDate }) {
   function resolveFx(opts) {
-    return resolveHistoricalFx(currency, tcValuacion, opts, getRateOrFallback)
+    return resolveHistoricalFx(currency, tcValuacion, opts, getRateForDate)
   }
 
   function convertedValue(usdValue, opts) {
@@ -90,7 +94,7 @@ export function useHistoricalMoney() {
    * las filas que muestra (`total === Σ filas`), incluso con una sola fila.
    *
    * Sumar los USD y convertir el total al FX de hoy (convert-after-sum) re-expresa
-   * ganancias viejas al dólar actual → infla un resultado que ya ocurrió. Mismo
+   * montos viejos al dólar actual → infla un resultado que ya ocurrió. Mismo
    * criterio que MonthlySummary (valueAt por mes) y que MovementRow ("un retiro de
    * $1000 USD en 2024 no se muestra hoy como $1.466.000").
    *
@@ -111,13 +115,16 @@ export function useHistoricalMoney() {
     return total
   }
 
+  // `tcValuacion` viaja para memoizar: es el respaldo de las filas sin fecha o sin
+  // serie, así que un cambio del dólar de hoy cambia esos totales.
+  return { currency, tcValuacion, fmtMoneyAt, fmtMoneyCompactAt, convertedValue, resolveFx, sumConvertedAt }
+}
+
+export function useHistoricalMoney() {
+  const { currency, tcValuacion } = useCurrency()
+  const { getRateOrFallback, fxKey } = useFxHistory(tcValuacion)
   return {
-    currency,
-    fmtMoneyAt,
-    fmtMoneyCompactAt,
-    convertedValue,
-    resolveFx,
-    sumConvertedAt,
+    ...dineroHistorico({ currency, tcValuacion, getRateForDate: getRateOrFallback }),
     // Para memoizar agregados: cambia cuando cambia la serie FX (no por render).
     fxKey,
   }

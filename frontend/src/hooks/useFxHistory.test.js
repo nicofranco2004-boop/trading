@@ -1,10 +1,15 @@
-// Tests del helper puro `lookupRate` (Phase C — FX histórico).
+// Tests del dólar de una fecha (utils/tcHistorico.js) — el que usa el hook.
+// Estas filas no traen MEP: prueban la red al blue (fechas anteriores a 2018).
 //
 // El hook React `useFxHistory` no se testea acá (requiere @testing-library)
 // — el smoke test es el build pasando + Dashboard chart funcionando.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { lookupRate, fetchFxHistory, _resetFxCacheForTesting } from './useFxHistory'
+import { fetchFxHistory, _resetFxCacheForTesting } from './useFxHistory'
+import { indexarSerie, tcDeFechaDetalle } from '../utils/tcHistorico'
+import { dolarMensualDe } from '../utils/capitalAportado'
+
+const lookupRate = (rows, d) => tcDeFechaDetalle(indexarSerie(rows), d).tc
 import { api } from '../utils/api'
 
 const ROWS = [
@@ -15,7 +20,7 @@ const ROWS = [
   { date: '2025-01-07', blue: 1225 },
 ]
 
-describe('lookupRate', () => {
+describe('dólar de una fecha — sin MEP en la serie, el blue', () => {
   it('match exacto devuelve el blue de esa fecha', () => {
     expect(lookupRate(ROWS, '2025-01-02')).toBe(1205)
   })
@@ -55,6 +60,36 @@ describe('lookupRate', () => {
     ]
     expect(lookupRate(dirty, '2025-01-02')).toBe(1200) // skipea null, usa día previo
     expect(lookupRate(dirty, '2025-01-03')).toBe(1210)
+  })
+})
+
+describe('dólar de una fecha — el elegido (MEP) cuando la serie lo tiene', () => {
+  const SERIE = [
+    { date: '2018-10-26', blue: 37, mep: null },
+    { date: '2018-10-29', blue: 37.5, mep: 37.2 },
+    { date: '2025-10-10', blue: 1450, mep: 1500 },
+    { date: '2025-10-13', blue: 1455, mep: 1510 },
+    { date: '2025-10-14', blue: 1460, mep: null },   // el cron no escribió el MEP
+    { date: '2025-10-31', blue: 1470, mep: 1520 },
+    { date: '2025-11-03', blue: 1480, mep: 1490 },
+  ]
+  const idx = indexarSerie(SERIE)
+
+  it('prefiere el MEP del día al blue', () => {
+    expect(tcDeFechaDetalle(idx, '2025-10-13')).toEqual({ tc: 1510, source: 'mep', asOf: '2025-10-13' })
+  })
+
+  it('un día sin MEP usa el último MEP anterior, no el blue', () => {
+    expect(tcDeFechaDetalle(idx, '2025-10-14')).toEqual({ tc: 1510, source: 'mep', asOf: '2025-10-13' })
+  })
+
+  it('antes de que exista el MEP en la serie, el blue (la red del servidor)', () => {
+    expect(tcDeFechaDetalle(idx, '2018-10-27')).toEqual({ tc: 37, source: 'blue', asOf: '2018-10-26' })
+  })
+
+  it('la tabla mensual: el último MEP de cada mes; un día sin MEP no lo pisa', () => {
+    expect(dolarMensualDe(SERIE)).toEqual({ '2018-10': 37.2, '2025-10': 1520, '2025-11': 1490 })
+    expect(dolarMensualDe(SERIE.slice(0, 5))['2025-10']).toBe(1510)
   })
 })
 

@@ -31,7 +31,7 @@ import HighlightsRail from './HighlightsRail'
 import WeekCard from './WeekCard'
 import Pill from '../Pill'
 import AskAIAbout from '../ai/AskAIAbout'
-import { useMoneyFormat } from '../../contexts/CurrencyContext'
+import { usePesosDelPeriodo, PeriodoEnVista } from '../../hooks/usePesosDelPeriodo'
 import { pctVar, pctColor } from '../../utils/format'
 
 function daysUntilPeriodEnd(period_end_iso) {
@@ -61,10 +61,12 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
   const noBasis = p.metrics?.basis_incomparable === true
   const deltaPct = noBasis ? null : p.metrics?.delta_pct
   const deltaUsd = noBasis ? null : p.metrics?.delta_usd
-  // Fase B: el delta_usd / valores monetarios respetan el toggle global
-  // ARS/USD. El backend siempre devuelve USD; la conversión a ARS usa
-  // tcValuacion ACTUAL (limitación MVP — Fase C trackeará TC histórico).
-  const money = useMoneyFormat()
+  // Los montos respetan el toggle global ARS/USD. El backend devuelve USD; en
+  // pesos, cada monto va al dólar de su fecha (utils/periodoEnPesos.js): los
+  // depósitos son los pesos que se pusieron, el valor de cierre al dólar del
+  // cierre. Hasta el 2026-10-15 todo iba al dólar de HOY.
+  const pesos = usePesosDelPeriodo()
+  const enVista = pesos.enVista(p)
 
   // Caso minimal: período sin actividad y no en curso → colapsado a 1 línea sticky
   if (!p.is_relevant && !p.is_current) {
@@ -97,6 +99,7 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
       params={aiParams}
       subtitle={p.period_label}
     >
+    <PeriodoEnVista.Provider value={enVista}>
     <article className="rounded border border-line bg-bg-1 overflow-hidden">
       {/* HERO */}
       <header className="px-5 py-4">
@@ -112,7 +115,7 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
               {pctVar(deltaPct, 2)}
             </span>
             <span className="text-xs tabular text-ink-3">
-              {noBasis ? null : money.fmtMoney(deltaUsd, { signed: true })}
+              {noBasis ? null : pesos.fmt(enVista.resultado, { signed: true })}
             </span>
           </div>
         </div>
@@ -198,26 +201,25 @@ export default function MonthCard({ period, month, defaultExpanded = false }) {
             ? <ChevronUp size={12} strokeWidth={1.75} aria-hidden="true" />
             : <ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />}
         </button>
-        {metricsOpen && <MetricsGrid metrics={p.metrics} money={money} />}
+        {metricsOpen && <MetricsGrid metrics={p.metrics} enVista={enVista} fmt={pesos.fmt} />}
       </div>
     </article>
+    </PeriodoEnVista.Provider>
     </AskAIAbout>
   )
 }
 
 // ─── Grid de métricas técnicas ───────────────────────────────────────────────
 
-function MetricsGrid({ metrics: m, money }) {
-  // Fallback al formatter inyectado o, si no llega (defensa), USD plano.
-  const fmt = money?.fmtMoney || ((v) => v == null ? '—' : `US$${Math.abs(v).toLocaleString('es-AR', { maximumFractionDigits: 0 })}`)
+function MetricsGrid({ metrics: m, enVista: v, fmt }) {
   return (
     <div className="px-5 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-      <Cell label="Valor inicio" value={m.start_value != null ? fmt(m.start_value) : '—'} />
-      <Cell label="Valor cierre" value={m.end_value != null ? fmt(m.end_value) : '—'} />
-      <Cell label="Depósitos" value={m.deposits ? fmt(m.deposits) : fmt(0)} />
-      <Cell label="Retiros"   value={m.withdrawals ? fmt(m.withdrawals) : fmt(0)} />
-      <Cell label="Realizado" value={fmt(m.realized_pnl, { signed: true })} accent />
-      <Cell label="No realizado" value={fmt(m.unrealized_pnl, { signed: true })} accent />
+      <Cell label="Valor inicio" value={v.inicio != null ? fmt(v.inicio) : '—'} />
+      <Cell label="Valor cierre" value={v.cierre != null ? fmt(v.cierre) : '—'} />
+      <Cell label="Depósitos" value={fmt(v.depositos || 0)} />
+      <Cell label="Retiros"   value={fmt(v.retiros || 0)} />
+      <Cell label="Realizado" value={fmt(v.realizado, { signed: true })} accent />
+      <Cell label="No realizado" value={fmt(v.noRealizado, { signed: true })} accent />
       <Cell label="Trades" value={m.trades_count} />
       <Cell label="Win rate" value={m.win_rate != null ? `${m.win_rate.toFixed(0).replace('.', ',')}%` : '—'} />
       {m.vs_sp500_pct != null && (

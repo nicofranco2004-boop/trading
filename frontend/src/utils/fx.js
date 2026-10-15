@@ -1,14 +1,16 @@
 /**
  * lookupHistoricalDolar
  * ─────────────────────
- * Find the dolar-blue venta rate for a given (year, month).
+ * El dólar ELEGIDO al cierre de (year, month) — ver utils/tcHistorico.js.
  *
- * Source: backend /api/benchmarks → bench.dolar_blue, a `{YYYY-MM: rate}` map
- * keyed by the LAST observation of each month from argentinadatos.com.
+ * Source: `dolarMes` de `useDolarMensual` (`dolarMensualDe` sobre /api/fx-rates),
+ * a `{YYYY-MM: rate}` map con la última cotización de cada mes (MEP; blue antes
+ * de 2018). Hasta el 2026-10-15 recibía `bench` y leía `bench.dolar_blue`: lo
+ * viejo iba al BLUE mientras lo de hoy (`liveTc`) iba al MEP.
  *
  * Lookup strategy
  * ───────────────
- * 1. Current calendar month → use `liveTc` (live blue rate). Historical map
+ * 1. Current calendar month → use `liveTc` (el dólar de hoy). Historical map
  *    only has the last observation of finished months; for "this month"
  *    today's live rate is more accurate.
  * 2. Exact match `YYYY-MM` in the map.
@@ -16,23 +18,27 @@
  * 4. Earliest known month if no prior data exists.
  * 5. Final fallback to `liveTc` (the bench fetch may have failed entirely).
  *
- * @param {Object|null} bench  bench.dolar_blue map, or null/undefined if unavailable
+ * @param {Object|null} dolarMes  `{YYYY-MM: rate}`, or null/undefined if unavailable
  * @param {number}      year   target year
  * @param {number}      month  1-12
  * @param {number}      liveTc current live tcValuacion (used for current month + final fallback)
  * @param {Date}        now    optional override for "today" — useful in tests
  * @returns {number}
  */
-export function lookupHistoricalDolar(bench, year, month, liveTc, now = new Date()) {
+export function lookupHistoricalDolar(dolarMes, year, month, liveTc, now = new Date()) {
   const todayY = now.getFullYear()
   const todayM = now.getMonth() + 1
   if (year === todayY && month === todayM) return liveTc
 
-  const map = bench && bench.dolar_blue
-  if (!map) return liveTc
+  const map = dolarMes
+  if (!map || typeof map !== 'object') return liveTc
 
+  // Sólo números: un objeto que no es la tabla (p.ej. la respuesta entera de
+  // /benchmarks, lo que esta función recibía antes del 2026-10-15) no puede
+  // devolver otra cosa que un dólar — sin esto la cuenta daba NaN sin avisar.
+  const dolar = (v) => (Number.isFinite(+v) && +v > 0 && typeof v !== 'object' ? +v : null)
   const key = `${year}-${String(month).padStart(2, '0')}`
-  if (map[key] != null) return map[key]
+  if (dolar(map[key]) != null) return dolar(map[key])
 
   const keys = Object.keys(map).sort()
   if (keys.length === 0) return liveTc
@@ -44,5 +50,5 @@ export function lookupHistoricalDolar(bench, year, month, liveTc, now = new Date
     else break
   }
   if (!found) found = keys[0] // before earliest data → use earliest known
-  return map[found] != null ? map[found] : liveTc
+  return dolar(map[found]) ?? liveTc
 }

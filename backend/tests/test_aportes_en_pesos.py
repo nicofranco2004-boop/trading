@@ -120,3 +120,85 @@ class AportesEnPesos(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AportesEnDolaresConSuDia(unittest.TestCase):
+    """`/api/monthly` manda también los aportes EN DÓLARES con su día (`usd_con_dia`),
+    para que la pantalla los pase a pesos con el dólar de ESE día — el mismo con que
+    Movimientos muestra cada fila — y no con el del cierre del mes (hasta el
+    2026-10-15: US$2.000 del 02/03/2026 eran $2.835.200 en Movimientos y $2.852.100
+    en "Capital aportado").
+
+    La prueba: cada depósito o retiro en dólares de Movimientos aparece, con su día y
+    sus dólares, en la fila de su broker y su mes; y nada más."""
+
+    importar = AportesEnPesos.importar
+    fila = AportesEnPesos.fila
+
+    def setUp(self):
+        AportesEnPesos.setUp(self)
+        conn = main.get_db()
+        conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?, 'IBKR', 'USD')",
+                     (self.uid,))
+        conn.commit()
+        conn.close()
+
+    def test_cada_fila_en_dolares_de_movimientos_esta_con_su_dia(self):
+        # Importado: dos depósitos en dólares el mismo mes, un retiro, y un depósito
+        # en pesos (ése viaja con sus pesos, no acá).
+        self.importar("IBKR",
+                      "2024-04-08,DEPOSITO,IBKR,,,,1500,,,,USD,dep usd 1\n"
+                      "2024-04-22,DEPOSITO,IBKR,,,,700,,,,USD,dep usd 2\n"
+                      "2024-06-03,RETIRO,IBKR,,,,200,,,,USD,ret usd\n")
+        self.importar("IOL", "2024-04-10,DEPOSITO,IOL,,,,3000000,,,,ARS,dep ars\n")
+        # A mano: un depósito y un retiro en dólares con el botón de efectivo.
+        for direccion, monto, fecha in (("deposit", 2000, "2024-05-20"), ("withdraw", 300, "2024-05-28")):
+            r = self.client.post("/api/cash/flow", headers=self.h, json={
+                "broker_name": "IBKR", "direction": direccion, "amount": monto, "date": fecha})
+            self.assertEqual(r.status_code, 200, r.text)
+
+        filas = self.client.get("/api/monthly", headers=self.h).json()
+        movs = self.client.get("/api/movements", headers=self.h).json()
+
+        en_monthly = []
+        for f in filas:
+            if f["broker"] == "global":
+                self.assertNotIn("usd_con_dia", f)
+                continue
+            dia = f.get("usd_con_dia") or {}
+            for clave in ("importado", "a_mano"):
+                for lado, tipo in (("dep", "DEPOSIT"), ("ret", "WITHDRAW")):
+                    for fecha, usd in (dia.get(clave) or {}).get(lado, []):
+                        self.assertEqual(fecha[:7], f"{f['year']:04d}-{f['month']:02d}")
+                        en_monthly.append((f["broker"], tipo, fecha, round(usd, 4), clave))
+
+        en_movs = sorted(
+            (m["broker"], m["type"], m["date"][:10], round(m["amount_usd"], 4),
+             "importado" if m["source"] == "import" else "a_mano")
+            for m in movs if m["type"] in ("DEPOSIT", "WITHDRAW") and m["currency"] == "USD")
+        self.assertEqual(len(en_movs), 5, en_movs)
+        # Lo cargado a mano en el broker en PESOS también viaja (la pantalla lo usa sólo
+        # si no puede usar sus pesos); lo importado en pesos, no.
+        self.assertEqual(sorted(x for x in en_monthly if x[0] == "IBKR"), en_movs)
+        self.assertEqual([x for x in en_monthly if x[0] == "IOL"], [])
+        self.assertIn(("IBKR", "DEPOSIT", "2024-05-20", 2000.0, "a_mano"), en_movs)
+        self.assertIn(("IBKR", "DEPOSIT", "2024-04-22", 700.0, "importado"), en_movs)
+
+        # Y suman exactamente los dólares de su fila: no hay plata de más ni de menos.
+        for f in filas:
+            if f["broker"] != "IBKR" or not f.get("usd_con_dia"):
+                continue
+            d = f["usd_con_dia"]
+            dep = sum(u for c in ("importado", "a_mano") for _, u in d[c]["dep"])
+            ret = sum(u for c in ("importado", "a_mano") for _, u in d[c]["ret"])
+            self.assertAlmostEqual(dep, f["deposits"], places=4)
+            self.assertAlmostEqual(ret, f["withdrawals"], places=4)
+
+    def test_en_un_broker_en_pesos_lo_cargado_a_mano_va_con_su_dia(self):
+        r = self.client.post("/api/cash/flow", headers=self.h, json={
+            "broker_name": "IOL", "direction": "deposit", "amount": 1_000_000, "date": "2025-06-10"})
+        self.assertEqual(r.status_code, 200, r.text)
+        jun = self.fila(self.client.get("/api/monthly", headers=self.h).json(), "IOL", 2025, 6)
+        self.assertEqual(jun["usd_con_dia"]["a_mano"]["dep"],
+                         [["2025-06-10", round(jun["manual_deposits"], 6)]])
+        self.assertEqual(jun["usd_con_dia"]["importado"], {"dep": [], "ret": []})

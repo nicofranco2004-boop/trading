@@ -388,7 +388,7 @@ export default function Operations() {
   // solo para el TONO (color), que no debe depender del FX.
   const totalPnlDisp = useMemo(
     () => histMoney.sumConvertedAt(ops, o => (o.pnl_usd || 0)),
-    [ops, histMoney.currency, histMoney.fxKey],
+    [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Win rate: UNA definición, la del backend (utils/tradeStats). Acá se contaban
   // dividendos e intereses como ganadores y se dividía por ops.length (compras
@@ -402,7 +402,7 @@ export default function Operations() {
     () => mejorTrade(ops, o => histMoney.convertedValue(o.pnl_usd, {
       stampedFx: o.fx_to_usd, rowCurrency: o.currency, dateIso: o.date,
     })),
-    [ops, histMoney.currency, histMoney.fxKey],
+    [ops, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   const patterns = useMemo(() => patronesDeOperaciones(ops), [ops])
   const periodOptions = useMemo(() => buildPeriodOptions(ops), [ops])
@@ -1229,11 +1229,16 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   // computeMovementKpis y a los renderers vía props para evitar shadow.
   // Phase C audit fix H1: el HM (historical money) se usa en cada fila
   // individual (cada movimiento tiene su date). El P&L de los headers de grupo
-  // también va por HM (convert-then-sum) para que coincida con sus filas. Los
-  // KPIs de montos (totales / promedios) siguen con `money`.
+  // también va por HM (convert-then-sum) para que coincida con sus filas.
+  // Desde el 2026-10-15 los KPIs de montos (totales, promedios, cobrado,
+  // comisiones) también: antes sumaban los dólares y los pasaban a pesos con el
+  // dólar de HOY, mientras cada fila iba con el de su fecha — "Aportado neto"
+  // no era la suma de los depósitos que la lista mostraba debajo.
   const money = useMoneyFormat()
   const histMoney = useHistoricalMoney()
-  const fmtUsd = (v) => money.fmtMoney(v, { signed: false })
+  // Formatea un monto YA convertido a la moneda en que se mira (no reconvierte).
+  const fmtVista = (v) => fmtConvertedRaw(v, histMoney.currency)
+  const sumarEnVista = (rows, getUsd) => histMoney.sumConvertedAt(rows, getUsd)
   const [movements, setMovements] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -1474,9 +1479,9 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     })
   }, [movements, filterType, filterBroker, filterYear])
 
-  // KPIs adaptativos según filtro. fmtUsd se pasa explícito para que
-  // computeMovementKpis no dependa del scope module-level (que ya quedó
-  // aliased a fmtUsdRaw — desconectado del toggle global).
+  // KPIs adaptativos según filtro. La suma y el formato se pasan explícitos
+  // para que computeMovementKpis no dependa del scope module-level (que ya
+  // quedó aliased a fmtUsdRaw — desconectado del toggle global).
   // Comisiones TOTALES del scope broker/año (SIN filtrar por tipo, para que
   // clickear el chip COMISIONES no cambie el número): FEE explícitos (amount_usd)
   // + comisión EMBEBIDA en cada trade (fees_usd — Balanz la trae dentro del
@@ -1493,17 +1498,24 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
   // respeta los filtros de broker/año, que el endpoint no conoce. Si tocás el
   // criterio, tocá los dos: hay un test que los compara
   // (test_monto_venta_ars.py::MetricasYMovimientosCoinciden).
-  const commTotalUsd = useMemo(() => {
+  //
+  // Cada comisión, en la moneda en que se mira, con el dólar de SU fila (la de
+  // la comisión suelta o la del trade que la trae adentro): convertir y después
+  // sumar, igual que las filas.
+  const commTotal = useMemo(() => {
     const scoped = movements.filter(m =>
       (filterBroker === 'all' || m.broker === filterBroker) &&
       (filterYear === 'all' || (m.date || '').startsWith(filterYear)))
-    const loose = scoped.reduce((s, m) => m.type === 'FEE' ? s + (m.amount_usd || 0) : s, 0)
-    const embedded = scoped.reduce((s, m) =>
-      (m.type !== 'FEE' && m.type !== 'IMPUESTO') ? s + (m.fees_usd || 0) : s, 0)
+    const loose = sumarEnVista(scoped.filter(m => m.type === 'FEE'), m => m.amount_usd || 0)
+    const embedded = sumarEnVista(
+      scoped.filter(m => m.type !== 'FEE' && m.type !== 'IMPUESTO'), m => m.fees_usd || 0)
     return loose + embedded
-  }, [movements, filterBroker, filterYear])
+  }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
 
-  const kpis = useMemo(() => computeMovementKpis(filtered, filterType, fmtUsd, commTotalUsd), [filtered, filterType, fmtUsd, commTotalUsd])
+  const kpis = useMemo(
+    () => computeMovementKpis(filtered, filterType, { sumar: sumarEnVista, fmt: fmtVista }, commTotal),
+    [filtered, filterType, commTotal, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
+  )
   // Los números de arriba dependen del filtro: cada combinación es OTRO número
   // para <KpiCell> (si no, cambiar de filtro se leería como un cambio de la cartera).
   const filtrosPuestos = `${filterType}|${filterBroker}|${filterYear}`
@@ -1560,7 +1572,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
         <FranjaKpis recalculando={recalculando} className="mb-4"><div className="flex flex-wrap">
           {kpis.map((k, i) => (
             <KpiCell key={k.label} first={i === 0} label={k.label} value={k.value} sub={k.sub} tone={k.tone}
-              num={k.num} format={fmtUsd} clave={`movimientos:${k.label}:${filtrosPuestos}`} />
+              num={k.num} format={fmtVista} clave={`movimientos:${k.label}:${filtrosPuestos}`} />
           ))}
         </div></FranjaKpis>
       )}
@@ -1571,7 +1583,7 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
           <div className={`grid ${kpis.length === 1 ? 'grid-cols-1' : kpis.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
             {kpis.map((k, i) => (
               <KpiCell key={k.label} compacto first={i === 0} label={k.label} value={k.value} tone={k.tone}
-                num={k.num} format={fmtUsd} clave={`movimientos:${k.label}:${filtrosPuestos}`} />
+                num={k.num} format={fmtVista} clave={`movimientos:${k.label}:${filtrosPuestos}`} />
             ))}
           </div>
         </FranjaKpis>
@@ -1709,8 +1721,14 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
 //     que el user vea dos números distintos en pantallas distintas.
 // El bruto sigue accesible filtrando por DEPÓSITOS o RETIROS individualmente
 // (en esa vista mostramos bruto + promedio, que es lo que tiene sentido ahí).
-function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
-  const sumByType = (t) => rows.filter(r => r.type === t).reduce((s, r) => s + (r.amount_usd || 0), 0)
+//
+// EN LA MONEDA EN QUE SE MIRA, FILA POR FILA. `sumar(filas, getUsd)` convierte
+// cada fila con el dólar de SU fecha y recién después suma (`sumConvertedAt`):
+// el total es la suma de lo que muestran las filas. `fmt` formatea un monto que
+// ya está en esa moneda. `comisiones` llega igual, ya convertido.
+// En dólares, `sumar` es la suma de siempre y no cambia ningún número.
+export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisionesTotal = 0) {
+  const sumByType = (t) => sumar(rows.filter(r => r.type === t), r => r.amount_usd || 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
   if (filterType === 'DEPOSIT' || filterType === 'WITHDRAW') {
@@ -1720,14 +1738,14 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
     return [
       {
         label: `Total ${t === 'DEPOSIT' ? 'depositado' : 'retirado'}`,
-        value: fmtUsd(total),
+        value: fmt(total),
         num: total,
         tone: t === 'DEPOSIT' ? 'pos' : 'neg',
         sub: `${count} eventos · bruto histórico`,
       },
       {
         label: 'Promedio',
-        value: count > 0 ? fmtUsd(total / count) : '—',
+        value: count > 0 ? fmt(total / count) : '—',
         num: count > 0 ? total / count : null,
         sub: 'por evento',
       },
@@ -1735,12 +1753,12 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
   }
   if (filterType === 'DIVIDEND' || filterType === 'INTEREST') {
     return [
-      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmtUsd(sumByType(filterType)), num: sumByType(filterType), tone: 'pos', sub: `${countByType(filterType)} pagos` },
+      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmt(sumByType(filterType)), num: sumByType(filterType), tone: 'pos', sub: `${countByType(filterType)} pagos` },
     ]
   }
   if (filterType === 'FEE') {
     return [
-      { label: 'Total comisiones', value: fmtUsd(commTotalUsd), num: commTotalUsd, tone: commTotalUsd > 0 ? 'neg' : null, sub: `${countByType('FEE')} explícitas + embebidas en trades` },
+      { label: 'Total comisiones', value: fmt(comisionesTotal), num: comisionesTotal, tone: comisionesTotal > 0 ? 'neg' : null, sub: `${countByType('FEE')} explícitas + embebidas en trades` },
     ]
   }
 
@@ -1751,16 +1769,16 @@ function computeMovementKpis(rows, filterType, fmtUsd, commTotalUsd = 0) {
   const depCount = countByType('DEPOSIT')
   const witCount = countByType('WITHDRAW')
   const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
-  const comisiones = commTotalUsd  // FEE explícitos + embebidas en trades (no solo los FEE sueltos)
+  const comisiones = comisionesTotal  // FEE explícitos + embebidas en trades (no solo los FEE sueltos)
   return [
     {
       label: 'Aportado neto',
-      value: fmtUsd(neto),
+      value: fmt(neto),
       num: neto,
       tone: neto > 0 ? 'pos' : neto < 0 ? 'neg' : null,
       sub: `${depCount} depósitos · ${witCount} retiros`,
     },
-    { label: 'Cobrado',    value: fmtUsd(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
-    { label: 'Comisiones', value: fmtUsd(comisiones), num: comisiones, tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
+    { label: 'Cobrado',    value: fmt(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
+    { label: 'Comisiones', value: fmt(comisiones), num: comisiones, tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
   ]
 }

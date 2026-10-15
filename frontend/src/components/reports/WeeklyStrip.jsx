@@ -22,7 +22,8 @@
 
 import { useMemo, useState } from 'react'
 import Panel from '../Panel'
-import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
+import { useCurrency } from '../../contexts/CurrencyContext'
+import { usePesosDelPeriodo } from '../../hooks/usePesosDelPeriodo'
 import { colorClass } from '../../utils/format'
 import { hoyISO } from '../../utils/fecha'
 import {
@@ -41,7 +42,9 @@ function claseDePedazo(pedazo) {
 
 export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoElegido = 'todo', onModo }) {
   const { currency } = useCurrency()
-  const { fmtMoney } = useMoneyFormat()
+  // Cada semana a los pesos de SU cierre (utils/periodoEnPesos.js), no al
+  // dólar de hoy.
+  const pesos = usePesosDelPeriodo()
   const [elegida, setElegida] = useState(null)
 
   // Con un broker elegido el motor no puede separar las abiertas (la foto de la
@@ -56,7 +59,7 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
   )
   const escala = useMemo(() => escalaDeSerie(medidas, modo), [medidas, modo])
 
-  const fmtPlata = (v) => fmtMoney(v, { signed: true })
+  const fmtPlata = (v, m) => pesos.fmt(pesos.alCierre(v, m?.fin, m?.enCurso), { signed: true })
   const frac = fraccionArriba(escala)
   // ⚠️ Estas tres son medidas de CSS (`top`/`bottom`), no texto: van con PUNTO.
   // Con coma ("42,50%") el navegador descarta la declaración sin avisar y la
@@ -141,7 +144,7 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
                   activa={i === indice}
                   onElegir={() => setElegida(i)}
                   descripcion={`${rangoSemana(m.inicio, m.fin)}: ${
-                    m.estado === 'sin-medicion' ? 'sin medición' : fmtPlata(valorDe(m, modo))
+                    m.estado === 'sin-medicion' ? 'sin medición' : fmtPlata(valorDe(m, modo), m)
                   }`}
                 />
               ))}
@@ -186,7 +189,7 @@ export default function WeeklyStrip({ yearGroups, broker = 'global', modo: modoE
           modo={modo}
           porBroker={porBroker}
           enPesos={currency === 'ARS'}
-          fmtPlata={fmtPlata}
+          fmtPlata={(v) => fmtPlata(v, foco)}
         />
       </div>
     </Panel>

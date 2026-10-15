@@ -21,7 +21,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Lock } from 'lucide-react'
-import { useCurrency, useMoneyFormat } from '../../contexts/CurrencyContext'
+import { useCurrency } from '../../contexts/CurrencyContext'
+import { usePesosDelPeriodo } from '../../hooks/usePesosDelPeriodo'
 import { fechaEnPalabras } from '../YearReturnLine'
 import { useAlVerse } from '../../hooks/useAlVerse'
 import { pctVar, pctTxt, pctVarSign, ppVarFino, decimalesFinos } from '../../utils/format'
@@ -47,7 +48,7 @@ const MES_INICIAL = ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D']
 // que no toque el borde y se lea como cortada.
 const ALTO_MAX_PCT = 92
 
-function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
+function BarrasDelAnio({ cells, pesos, enPesos, tipAbajo }) {
   const [encima, setEncima] = useState(null)
   // Las barras crecen desde la línea del medio, mes por mes, cuando el año
   // entra en pantalla (`.crece-arriba` / `.crece-abajo`, index.css).
@@ -56,12 +57,14 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
   const meses = cells.map(({ month }) => {
     const m = month?.metrics
     if (!month || !month.is_relevant || m?.delta_pct == null) return null
+    // En la moneda en que se mira, al dólar de SU mes (utils/periodoEnPesos.js).
+    const v = pesos.enVista(month)
     return {
       pct: m.delta_pct,
-      usd: m.delta_usd,
+      usd: v.resultado,
       // Sólo lo que se cerró vendiendo. NO es lo mismo que `delta_usd`, que
       // incluye lo que se movieron las posiciones que siguen abiertas.
-      realizado: m.realized_pnl,
+      realizado: v.realizado,
       label: month.period_label,
       actual: month.is_current,
     }
@@ -106,24 +109,26 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
             <span className="text-ink-3 text-[11px]">·</span>
             <b className={`text-[13px] font-semibold tabular ${
               activo.usd >= 0 ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
-              {money.fmtMoney(activo.usd, { signed: true })}
+              {pesos.fmt(activo.usd, { signed: true })}
             </b>
           </div>
-          {/* ⚠️ EN PESOS EL % Y EL MONTO NO ESTÁN EN EL MISMO PESO. El porcentaje lo
-              mide el motor con el dólar de CADA PUNTA, así que incluye la devaluación
-              de ese mes; el monto sale en dólares y lo convierte la pantalla al dólar
-              de HOY (es deliberado: convertirlo también en el servidor lo convertiría
-              dos veces, ver `_pct_en_pesos`). Puestos uno al lado del otro invitan a
-              una cuenta que no da, así que el globo dice a qué dólar está el monto.
-              Medido: mayo 2025 = +3,98 % y +$629.063, que son US$409 al dólar de hoy. */}
+          {/* ⚠️ EN PESOS EL % Y EL MONTO NO MIDEN LO MISMO. El porcentaje lo mide
+              el motor con el dólar de CADA PUNTA, así que incluye la devaluación de
+              ese mes; el monto es la ganancia EN DÓLARES del mes, pasada a pesos con
+              el dólar del cierre de ese mes (hasta el 2026-10-15, con el de HOY:
+              mayo 2025 = +$629.063 eran US$409 al dólar de un año y medio después).
+              Puestos uno al lado del otro invitan a una cuenta que no da, así que el
+              globo dice qué es el monto. */}
           {enPesos && (
-            <div className="text-[10px] text-ink-3 mt-1 leading-none">al dólar de hoy</div>
+            <div className="text-[10px] text-ink-3 mt-1 leading-none">
+              {activo.actual ? 'en dólares, al dólar de hoy' : 'en dólares, al dólar de fin de mes'}
+            </div>
           )}
           {/* El renglón de abajo sólo cuando hubo ventas: en un mes sin operaciones
               cerradas, un "realizado: 0" no informa, ocupa. */}
           {!!activo.realizado && (
             <div className="text-[10.5px] text-ink-3 mt-1 leading-none tabular">
-              de operaciones cerradas: {money.fmtMoney(activo.realizado, { signed: true })}
+              de operaciones cerradas: {pesos.fmt(activo.realizado, { signed: true })}
             </div>
           )}
         </div>
@@ -140,7 +145,7 @@ function BarrasDelAnio({ cells, money, enPesos, tipAbajo }) {
             onBlur={() => setEncima(null)}
             tabIndex={m ? 0 : -1}
             aria-label={m
-              ? `${m.label}: ${m.pct >= 0 ? '+' : '−'}${Math.abs(m.pct).toFixed(2).replace('.', ',')} por ciento, ${money.fmtMoney(m.usd, { signed: true })}`
+              ? `${m.label}: ${m.pct >= 0 ? '+' : '−'}${Math.abs(m.pct).toFixed(2).replace('.', ',')} por ciento, ${pesos.fmt(m.usd, { signed: true })}`
               : undefined}
             className={`flex-1 min-w-0 relative rounded-sm transition-colors
                         focus:outline-none focus-visible:ring-1 focus-visible:ring-rendi-accent
@@ -206,7 +211,7 @@ function computeKpis(yearGroups) {
     if (!best  || m.metrics.delta_pct > best.metrics.delta_pct)  best  = m
     if (!worst || m.metrics.delta_pct < worst.metrics.delta_pct) worst = m
   }
-  return { realizedSum, trades, positiveCount, totalCount: last12.length, best, worst }
+  return { realizedSum, trades, positiveCount, totalCount: last12.length, best, worst, last12 }
 }
 
 function KpiCell({ label, value, sub, tone, first }) {
@@ -279,8 +284,21 @@ function Dato({ label, valor, tono }) {
   )
 }
 
-function MetricasDelAno({ resumen, months, money, enPesos }) {
+function MetricasDelAno({ resumen, months, pesos }) {
   if (!resumen) return null
+  // Los montos del año, cada uno a los pesos de su momento: lo aportado y
+  // retirado con la regla del Dashboard (los pesos que se pusieron), lo
+  // realizado mes por mes al dólar de cada mes (convertir y después sumar).
+  const anio = pesos.enVista({
+    period_type: 'year', is_current: !!resumen.is_current,
+    period_start: `${resumen.year}-01-01`, period_end: `${resumen.year}-12-31`,
+    metrics: { deposits: resumen.deposits, withdrawals: resumen.withdrawals, realized_pnl: resumen.realized_pnl },
+  })
+  const realizadoMeses = months.filter(m => m.metrics?.realized_pnl != null)
+  const sumaUsd = realizadoMeses.reduce((s, m) => s + m.metrics.realized_pnl, 0)
+  const realizadoVista = Math.abs(sumaUsd - (resumen.realized_pnl || 0)) < 0.5
+    ? realizadoMeses.reduce((s, m) => s + (pesos.enVista(m).realizado || 0), 0)
+    : anio.realizado
   const conDato = months.filter(m => m.is_relevant && m.metrics?.delta_pct != null)
   const pcts = conDato.map(m => m.metrics.delta_pct)
   const verdes = pcts.filter(p => p > 0).length
@@ -304,13 +322,13 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
     datos.push({ label: 'Inflación AR', valor: pctVar(resumen.inflation_pct, 1) })
   }
   if (resumen.deposits > 0) {
-    datos.push({ label: 'Aportaste', valor: money.fmtMoney(resumen.deposits) })
+    datos.push({ label: 'Aportaste', valor: pesos.fmt(anio.depositos) })
   }
   if (resumen.withdrawals > 0) {
-    datos.push({ label: 'Retiraste', valor: money.fmtMoney(resumen.withdrawals) })
+    datos.push({ label: 'Retiraste', valor: pesos.fmt(anio.retiros) })
   }
   if (resumen.realized_pnl) {
-    datos.push({ label: 'P&L realizado', valor: money.fmtMoney(resumen.realized_pnl, { signed: true }),
+    datos.push({ label: 'P&L realizado', valor: pesos.fmt(realizadoVista, { signed: true }),
                  tono: resumen.realized_pnl >= 0 ? 'pos' : 'neg' })
   }
   if (resumen.trades_count > 0) {
@@ -330,20 +348,13 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
   // Sin un solo dato la fila no se dibuja: un separador vacío bajo cada año es
   // ruido que el ojo tiene que descartar en cada pasada.
   if (datos.length === 0) return null
-  const hayMontos = resumen.deposits > 0 || resumen.withdrawals > 0 || !!resumen.realized_pnl
   return (
     <div className="flex flex-wrap gap-x-6 gap-y-2.5 pl-[120px] pt-2.5 border-t border-line/50">
       {datos.map((d, i) => <Dato key={i} {...d} />)}
-      {/* ⚠️ TODOS LOS MONTOS DE ESTA FILA ESTÁN AL DÓLAR DE HOY, NO AL DE SU FECHA.
-          El servidor los publica en dólares a propósito (ver `_pct_en_pesos`) y la
-          pantalla los convierte al pasar a pesos. Eso hace que dos aportes de US$500
-          hechos en años distintos se muestren como el MISMO monto en pesos —medido:
-          2025 y 2026 dicen los dos "$769.100"— cuando en su momento fueron cantidades
-          bien distintas. Mientras el monto no venga convertido a la época, esto se
-          declara en vez de dejar que se lea como pesos de entonces. */}
-      {enPesos && hayMontos && (
-        <span className="text-[10.5px] text-ink-3 self-end leading-none">montos al dólar de hoy</span>
-      )}
+      {/* Hasta el 2026-10-15 acá decía "montos al dólar de hoy": todos los montos
+          de la fila se pasaban a pesos con el dólar de HOY, y dos aportes de US$500
+          de años distintos se leían igual ("$769.100" los dos). Ahora cada uno va
+          a los pesos de su momento (ver arriba) y el aviso no hace falta. */}
       {sinMedir > 0 && (
         // ⚠️ ESTO EXPLICA POR QUÉ LAS BARRAS NO COMPONEN EL TOTAL DE AL LADO. El
         // total lo mide el motor punta a punta; las barras son los meses que hay.
@@ -368,9 +379,9 @@ function MetricasDelAno({ resumen, months, money, enPesos }) {
 export default function PerformanceCalendar({ yearGroups, years = [], yearsLoading = false,
                                              historicos = true }) {
   const kpis = computeKpis(yearGroups)
-  // Fase B: el P&L Realizado 12M respeta el toggle global ARS/USD.
-  // Los % no cambian (son ratios) — solo el valor monetario se convierte.
-  const money = useMoneyFormat()
+  // Los montos respetan el toggle global ARS/USD, cada uno al dólar de su mes
+  // (utils/periodoEnPesos.js). Los % no cambian (son ratios).
+  const pesos = usePesosDelPeriodo()
   // El selector global de moneda: decide si los montos que dibuja esta pantalla
   // están convertidos, y por lo tanto si hay que declarar a qué dólar.
   const { currency } = useCurrency()
@@ -378,6 +389,8 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
   // Los números de la tira cuentan al verse (arriba del return: es un hook).
   const [refKpis, kpisVistos] = useAlVerse()
   if (!kpis) return null
+  // Convertir y después sumar: cada mes con su dólar, no la suma al de hoy.
+  const realizadoVista = kpis.last12.reduce((s, m) => s + (pesos.enVista(m).realizado || 0), 0)
 
   return (
     <section className="mb-6 space-y-3">
@@ -386,8 +399,8 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
         <KpiCell
           first
           label="P&L Realizado · 12M"
-          value={<AnimatedNumber value={kpis.realizedSum} visto={kpisVistos} format={n => money.fmtMoney(n, { signed: true })} />}
-          tone={kpis.realizedSum >= 0 ? 'pos' : 'neg'}
+          value={<AnimatedNumber value={realizadoVista} visto={kpisVistos} format={n => pesos.fmt(n, { signed: true })} />}
+          tone={realizadoVista >= 0 ? 'pos' : 'neg'}
           sub={`${kpis.totalCount} ${kpis.totalCount === 1 ? 'mes activo' : 'meses activos'}`}
         />
         <KpiCell
@@ -502,7 +515,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                       El detalle mes a mes de este año todavía no está cargado.
                     </div>
                   ) : (
-                    <BarrasDelAnio cells={cells} money={money} enPesos={enPesos}
+                    <BarrasDelAnio cells={cells} pesos={pesos} enPesos={enPesos}
                                    tipAbajo={idxAnio === 0} />
                   )}
                 </div>
@@ -524,7 +537,7 @@ export default function PerformanceCalendar({ yearGroups, years = [], yearsLoadi
                   />
                 </div>
               </div>
-              <MetricasDelAno resumen={resumen} months={months} money={money} enPesos={enPesos} />
+              <MetricasDelAno resumen={resumen} months={months} pesos={pesos} />
               </div>
             )
           })}
