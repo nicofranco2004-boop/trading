@@ -39,8 +39,10 @@ Shape (~700 bytes):
   "insufficient_data": true, "reason": str,      # sólo si curva es null
   "caida_desde_el_mejor_momento_pct": float | null,
   "caida_al_cierre": str | null,
-  "best_month": {"month", "pct"} | null,
+  "best_month": {"month", "pct"} | null,         # del motor: `twr.rendimientos_mensuales`
   "worst_month": {"month", "pct"} | null,
+  "meses_base": "mercado" | "contable" | null,   # con qué regla se rankearon
+  "meses_sin_medir_a_mercado": int,
 }
 """
 
@@ -200,28 +202,20 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
 
 
 def _mejor_y_peor_mes(conn, user_id: int) -> Dict[str, Any]:
-    """Mejor / peor mes, de `monthly_entries`."""
-    monthly = [dict(r) for r in conn.execute(
-        "SELECT * FROM monthly_entries WHERE user_id=? AND broker='global' "
-        "ORDER BY year ASC, month ASC", (user_id,)
-    ).fetchall()]
-    best_month = None
-    worst_month = None
-    if monthly:
-        scored = []
-        for m in monthly:
-            ci = m.get("capital_inicio") or 0
-            cf = m.get("capital_final") or 0
-            net = (m.get("deposits") or 0) - (m.get("withdrawals") or 0)
-            # El MISMO retorno que publican los otros cuatro lectores, con sus dos
-            # guards. Con `/ci` el "mejor mes" podía ser el mes en que entró un
-            # depósito grande, no el mes en que la cartera rindió.
-            ret = _twr.retorno_mensual(ci, cf, net)
-            if ret is not None:
-                ret = max(-0.95, min(5.0, ret))
-                scored.append((f"{m['year']}-{m['month']:02d}", ret))
-        if scored:
-            scored.sort(key=lambda x: x[1])
-            worst_month = {"month": scored[0][0], "pct": round(scored[0][1], 4)}
-            best_month = {"month": scored[-1][0], "pct": round(scored[-1][1], 4)}
-    return {"best_month": best_month, "worst_month": worst_month}
+    """Mejor / peor mes, del MOTOR (`twr.rendimientos_mensuales`).
+
+    ⚠️ ANTES SALÍA DEL DIETZ DE `monthly_entries`, y para un mes cerrado esa fila
+    está al costo: el mes de una cartera que no vendió daba ~0 % aunque se hubiera
+    movido 20 %. El "peor mes" era el plano y el que se derrumbó ni aparecía.
+    `meses_base` dice con qué regla se rankeó ('mercado' o, si ningún mes se pudo
+    medir a mercado, 'contable').
+    """
+    r = _twr.mejor_y_peor_mes(_twr.rendimientos_mensuales(conn, user_id))
+    best_month = worst_month = None
+    if r["mejor"] is not None:
+        # `pct` en fracción (0,05 = 5 %), como siempre publicó este paquete.
+        best_month = {"month": r["mejor"]["mes"], "pct": round(r["mejor"]["pct"] / 100, 4)}
+        worst_month = {"month": r["peor"]["mes"], "pct": round(r["peor"]["pct"] / 100, 4)}
+    return {"best_month": best_month, "worst_month": worst_month,
+            "meses_base": r["base"],
+            "meses_sin_medir_a_mercado": r["sin_medir_a_mercado"]}

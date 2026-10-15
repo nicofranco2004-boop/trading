@@ -37,7 +37,10 @@ Shape (~0.7KB):
     "currency": "USD",
     "n_months_loaded": int,
     "date_range": { "from": "2025-04", "to": "2026-05" },
-    "monthly_pnl_range_usd": [worst, best],
+    "monthly_pnl_range": {worst_usd, best_usd, base, meses},
+                     # base 'mercado' = lo que se movió la cartera cada mes sin
+                     # aportes (twr.rendimientos_mensuales); 'contable' = sólo
+                     # lo realizado, porque ningún mes se pudo medir a mercado
   }
 }
 """
@@ -112,14 +115,28 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "from": f"{first['year']}-{int(first['month']):02d}",
             "to":   f"{last['year']}-{int(last['month']):02d}",
         }
-        pnls = []
-        for r in monthly_rows:
-            pnl = (r["pnl_realized"] or 0) + (r["pnl_unrealized"] or 0)
-            pnls.append(pnl)
+        # ⚠️ EL RESULTADO DE CADA MES SALE DEL MOTOR, NO DE LA FILA. Era
+        # `pnl_realized + pnl_unrealized` de `monthly_entries`, y ninguna de las
+        # dos es "lo que ganaste ese mes": para un mes cerrado la fila está al
+        # costo, y `pnl_unrealized` es el latente ACUMULADO desde la compra (lo
+        # postea el navegador), no la variación del mes. Ahora: lo que se movió la
+        # cartera entre el cierre del mes anterior y el del mes, sin aportes
+        # (`twr.rendimientos_mensuales`). Si ningún mes se pudo medir a mercado, se
+        # usa lo REALIZADO del mes y `base` dice 'contable'.
+        import twr as _twr
+        meses = _twr.rendimientos_mensuales(conn, user_id)
+        pnls = [m["resultado_usd"] for m in meses
+                if m["base"] == "mercado" and m["resultado_usd"] is not None]
+        base = "mercado"
+        if not pnls:
+            pnls = [float(r["pnl_realized"] or 0) for r in monthly_rows]
+            base = "contable"
         if pnls:
             monthly_pnl_range = {
                 "worst_usd": round(min(pnls), 2),
                 "best_usd":  round(max(pnls), 2),
+                "base": base,
+                "meses": len(pnls),
             }
 
     # Currency: leemos el config del user (default USD)

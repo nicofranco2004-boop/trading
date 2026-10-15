@@ -13,14 +13,16 @@ Shape (~700 bytes):
   "twr_pct": float | null,           # acumulado — SIEMPRE de `twr.rendimiento_publicable`
   "twr_base": "mercado" | "contable" | null,   # de dónde sale ese número
   "twr_motivo_texto": str | null,    # por qué no se pudo medir a mercado
-  "monthly_returns": [
-    { "month": "YYYY-MM", "return_pct": float, "capital_final": float }
+  "monthly_returns": [         # cada mes, de `twr.rendimientos_mensuales`
+    { "month": "YYYY-MM", "return_pct": float, "base": str, "capital_final": float }
   ],
-  "best_month": { "month": str, "return_pct": float } | null,
-  "worst_month": { "month": str, "return_pct": float } | null,
+  "best_month": { "month": str, "return_pct": float, "base": str } | null,
+  "worst_month": { "month": str, "return_pct": float, "base": str } | null,
   "positive_months": int,
   "total_months": int,
   "consistency_pct": float,    # % de meses con retorno > 0
+  "monthly_base": "mercado" | "contable" | null,   # con qué regla se midieron
+  "months_not_market": int,    # meses de la ventana que no se midieron a mercado
 }
 """
 from __future__ import annotations
@@ -34,42 +36,28 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     today = date.today()
     cutoff = today - timedelta(days=window_days)
 
-    rows = conn.execute(
-        """SELECT year, month, capital_inicio, capital_final, deposits, withdrawals
-             FROM monthly_entries
-            WHERE user_id=? AND broker='global'
-            ORDER BY year, month""",
-        (user_id,),
-    ).fetchall()
+    # ⚠️ CADA MES SE LE PIDE AL MOTOR, IGUAL QUE EL ACUMULADO. Antes salía del
+    # Dietz de `monthly_entries`, que para un mes cerrado está AL COSTO: un mes sin
+    # ventas daba ~0 % aunque la cartera se hubiera movido mucho, y de ahí salían
+    # el mejor mes, el peor y la consistencia. `rendimientos_mensuales` mide a
+    # mercado cuando puede y, si no, etiqueta la contabilidad; `mejor_y_peor_mes`
+    # no mezcla las dos reglas en el mismo ranking.
+    # El mes que TERMINA antes del corte queda afuera: `desde` es el primer día del
+    # mes que contiene al corte.
+    meses = _twr.rendimientos_mensuales(conn, user_id,
+                                        desde=cutoff.replace(day=1).isoformat())
+    rk = _twr.mejor_y_peor_mes(meses)
+    monthly_returns = [{
+        "month": m["mes"],
+        "return_pct": round(m["pct"], 2),
+        "base": m["base"],
+        "capital_final": m["capital_final"],
+    } for m in rk["meses"]]
+    positive = rk["positivos"]
 
-    monthly_returns = []
-    positive = 0
-    for r in rows:
-        y, m = r["year"], r["month"]
-        try:
-            end_of_month = date(y, m + 1, 1) - timedelta(days=1) if m < 12 else date(y, 12, 31)
-        except ValueError:
-            continue
-        if end_of_month < cutoff:
-            continue
-        ci = float(r["capital_inicio"] or 0)
-        cf = float(r["capital_final"] or 0)
-        dep = float(r["deposits"] or 0)
-        wd = float(r["withdrawals"] or 0)
-        # El retorno del mes con sus dos guards (el mes de alta no se mide; el
-        # denominador lleva el 0,5 del flujo). Ver `twr.retorno_mensual`.
-        ret = _twr.retorno_mensual(ci, cf, dep - wd)
-        if ret is None:
-            continue
-        if ret < -0.95 or ret > 5:
-            continue
-        if ret > 0:
-            positive += 1
-        monthly_returns.append({
-            "month": f"{y:04d}-{m:02d}",
-            "return_pct": round(ret * 100, 2),
-            "capital_final": round(cf, 2),
-        })
+    def _corto(m):
+        return ({"month": m["mes"], "return_pct": round(m["pct"], 2), "base": m["base"]}
+                if m else None)
 
     # ⚠️ EL ACUMULADO SE LE PIDE AL MOTOR, NO SE COMPONE ACÁ (F6).
     #
@@ -89,9 +77,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # mal era el producto.
     _rend = _twr.rendimiento_publicable(conn, user_id, desde=cutoff.isoformat())
     twr_pct: Optional[float] = _rend["pct"]
-    total = len(monthly_returns)
-    best = max(monthly_returns, key=lambda x: x["return_pct"]) if monthly_returns else None
-    worst = min(monthly_returns, key=lambda x: x["return_pct"]) if monthly_returns else None
+    total = rk["total"]
+    best = _corto(rk["mejor"])
+    worst = _corto(rk["peor"])
 
     return {
         "screen": "insights.evolution",
@@ -109,4 +97,8 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         "positive_months": positive,
         "total_months": total,
         "consistency_pct": round((positive / total) * 100, 1) if total > 0 else 0,
+        # Con qué regla se midieron los meses de arriba, y cuántos de la ventana
+        # no se pudieron medir a mercado (no entran al ranking si hay de mercado).
+        "monthly_base": rk["base"],
+        "months_not_market": rk["sin_medir_a_mercado"],
     }
