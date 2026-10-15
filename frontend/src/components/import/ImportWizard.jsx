@@ -79,7 +79,7 @@ const STEP_SEED = 'seed'
 const STEP_RECONCILE = 'reconcile'
 import { TrialCta, TrialFinePrint, TRIAL_PRO_DAYS, TRIAL_PLUS_DAYS } from '../plan/TrialCta'
 import { usePlanFeatures as _usePlanFeaturesTrial } from '../../hooks/usePlanFeatures'
-import { parseNum, parseNumOrNull } from '../../utils/format'
+import { parseNum, parseNumOrNull, numACampo } from '../../utils/format'
 
 const STEP_DONE = 'done'
 
@@ -739,7 +739,8 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
       ),
       assets: (b.assets || []).map(a => ({
         symbol: a.symbol,
-        qty: String(a.min_qty || ''),
+        // Con coma: "1.234" (punto) lo lee parseNum como mil doscientos.
+        qty: a.min_qty ? numACampo(a.min_qty) : '',
         cost_basis_unit: '',
         min_qty: a.min_qty,
         // exact_qty: la cantidad es conocida y fija (posición transferida) — el
@@ -2912,7 +2913,7 @@ function SeedStep({ suggestions, seedState, setSeedState }) {
                         <div key={ai} className="flex items-center gap-2 flex-wrap rounded-md border border-line px-2 py-1.5">
                           <span className="font-mono font-semibold text-ink-0 text-sm w-14">{a.symbol}</span>
                           <span className="text-[11px] text-ink-3">
-                            {a.exact_qty ? '' : 'mín. '}{Number(a.qty).toLocaleString('es-AR', { maximumFractionDigits: 8 })} nominales
+                            {a.exact_qty ? '' : 'mín. '}{(parseNum(a.qty) || 0).toLocaleString('es-AR', { maximumFractionDigits: 8 })} nominales
                           </span>
                           {needsPrice && (
                             <button
