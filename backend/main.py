@@ -19439,6 +19439,7 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
     # `finally`. Si el bloque de abajo fallara antes de resolverlo, el endpoint
     # moriría con NameError en vez de devolver un Wrapped sin el número.
     rendimiento = None
+    meses = None
     try:
         monthly = [dict(r) for r in conn.execute(
             "SELECT * FROM monthly_entries WHERE user_id=? ORDER BY year, month", (uid,)
@@ -19526,10 +19527,19 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
         except Exception:
             logging.exception("wrapped rendimiento_publicable %s", year)
             rendimiento = None
+        # Y por el mismo motivo, CADA MES del año: los slides de mejor/peor mes
+        # salían del Dietz de `monthly_entries`, que para un mes cerrado está al
+        # costo (un mes sin ventas daba ~0 % aunque la cartera se moviera 20 %).
+        try:
+            meses = _twr_w.rendimientos_mensuales(
+                conn, uid, desde=f"{year}-01-01", hasta=f"{year}-12-31")
+        except Exception:
+            logging.exception("wrapped rendimientos_mensuales %s", year)
+            meses = None
     finally:
         conn.close()
     return build_wrapped(year, monthly, ops, behavioral_cards, benchmarks,
-                         inflation_ytd, fx_de, rendimiento=rendimiento)
+                         inflation_ytd, fx_de, rendimiento=rendimiento, meses=meses)
 
 
 @app.get("/api/behavioral/insights")

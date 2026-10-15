@@ -263,43 +263,71 @@ def _slide_pnl(rows: List[dict], year: int, rendimiento: Optional[dict] = None) 
     }
 
 
-def _slide_best_month(rows: List[dict]) -> Optional[dict]:
-    # El MISMO retorno que publica el slide del rendimiento. Cuando cada slide
-    # derivaba el suyo, el "mejor mes" podía ser el mes en que entró un depósito
-    # grande y no el mes en que la cartera rindió.
-    candidates = [(ret, r) for r, ret in _retornos_mensuales(rows)]
-    if not candidates:
+def _ranking_de_meses(rows: List[dict], meses: Optional[List[dict]] = None) -> dict:
+    """El ranking de meses que usan los slides de mejor/peor mes y el intro.
+
+    `meses` es `twr.rendimientos_mensuales` del año, que resuelve el endpoint
+    porque tiene la conexión: cada mes medido A MERCADO cuando se puede. Sin eso
+    (esta función es pura y los tests la llaman con filas), la rama contable de
+    la MISMA regla, `twr.meses_contables`. El ranking no mezcla bases
+    (`twr.mejor_y_peor_mes`).
+
+    ⚠️ ANTES ERA EL DIETZ DE `monthly_entries`, que para un mes cerrado está al
+    costo: un mes sin ventas daba ~0 % aunque la cartera se hubiera movido 20 %, y
+    eso salía como "tu peor mes" en una imagen que se comparte.
+    """
+    if meses is None:
+        meses = _twr.meses_contables(rows)
+    return _twr.mejor_y_peor_mes(meses)
+
+
+def _nombre_mes(mes: str) -> str:
+    return MONTHS_ES[int(mes[5:7]) - 1].capitalize()
+
+
+def _nota_base(base: Optional[str]) -> str:
+    # Lo mismo que el slide del rendimiento: un número de la contabilidad cargada
+    # no se presenta como si fuera una medición de mercado.
+    return ('a precio de mercado' if base == 'mercado'
+            else 'según tu contabilidad cargada (sólo lo vendido)')
+
+
+def _slide_best_month(rows: List[dict], meses: Optional[List[dict]] = None) -> Optional[dict]:
+    rk = _ranking_de_meses(rows, meses)
+    m = rk['mejor']
+    if m is None:
         return None
-    candidates.sort(key=lambda t: t[0], reverse=True)
-    ret, row = candidates[0]
-    month_name = MONTHS_ES[(row.get('month') or 1) - 1].capitalize()
+    ret = m['pct'] / 100
+    month_name = _nombre_mes(m['mes'])
     sign = '+' if ret >= 0 else '−'
     return {
         'code': 'best_month',
         'kind': 'best_month',
         'title': f'{month_name} fue tu mejor mes',
-        'subtitle': f'{sign}{fmt_num(abs(ret) * 100, 2)}% — ${fmt_num(row.get("capital_inicio", 0), 0)} → ${fmt_num(row.get("capital_final", 0), 0)}',
+        'subtitle': f'{sign}{fmt_num(abs(ret) * 100, 2)}% — {_nota_base(rk["base"])}',
+        'base': rk['base'],
         'metric': {'value': f'{sign}{fmt_num(abs(ret) * 100, 2)}%', 'label': f'{month_name.upper()}'},
         'stats': [],
         'tone': 'positive' if ret >= 0 else 'negative',
     }
 
 
-def _slide_worst_month(rows: List[dict]) -> Optional[dict]:
-    candidates = [(ret, r) for r, ret in _retornos_mensuales(rows)]
-    if not candidates:
+def _slide_worst_month(rows: List[dict], meses: Optional[List[dict]] = None) -> Optional[dict]:
+    rk = _ranking_de_meses(rows, meses)
+    m = rk['peor']
+    if m is None:
         return None
-    candidates.sort(key=lambda t: t[0])
-    ret, row = candidates[0]
+    ret = m['pct'] / 100
     if ret >= 0:
         # No hay mes en negativo — skip
         return None
-    month_name = MONTHS_ES[(row.get('month') or 1) - 1].capitalize()
+    month_name = _nombre_mes(m['mes'])
     return {
         'code': 'worst_month',
         'kind': 'worst_month',
         'title': f'{month_name} fue el más duro',
-        'subtitle': f'−{fmt_num(abs(ret) * 100, 2)}% — todos tenemos meses así.',
+        'subtitle': f'−{fmt_num(abs(ret) * 100, 2)}% {_nota_base(rk["base"])} — todos tenemos meses así.',
+        'base': rk['base'],
         'metric': {'value': f'−{fmt_num(abs(ret) * 100, 2)}%', 'label': f'{month_name.upper()}'},
         'stats': [],
         'tone': 'negative',
@@ -554,6 +582,7 @@ def build_wrapped(
     inflation_ytd: Optional[float] = None,
     fx_de=None,
     rendimiento: Optional[dict] = None,
+    meses: Optional[List[dict]] = None,
 ) -> dict:
     """Orquesta los slides. Retorna {year, slides: [...], summary: {...}}.
 
@@ -565,7 +594,8 @@ def build_wrapped(
     ops = _operations_for_year(operations or [], year)
     # `rendimiento` es el dict de `twr.rendimiento_publicable`, que el endpoint
     # resuelve porque tiene la conexión. Acá no se consulta nada: esta función es
-    # pura a propósito.
+    # pura a propósito. Lo mismo `meses` (`twr.rendimientos_mensuales` del año):
+    # sin él, los slides de mejor/peor mes usan la rama contable y lo dicen.
     twr = _twr_for_period(rows, rendimiento)
 
     # Computar teaser para el intro
@@ -576,20 +606,12 @@ def build_wrapped(
             (r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0)
             for r in rows
         )
-        # Best month label (mismo cálculo que el slide best_month)
-        best_candidates = []
-        for r in rows:
-            ci = r.get('capital_inicio') or 0
-            if ci <= 0:
-                continue
-            ret = ((r.get('pnl_realized') or 0) + (r.get('pnl_unrealized') or 0)) / ci
-            best_candidates.append((ret, r))
-        if best_candidates:
-            best_candidates.sort(key=lambda t: t[0], reverse=True)
-            best_row = best_candidates[0][1]
-            month_idx = (best_row.get('month') or 1) - 1
-            if 0 <= month_idx < 12:
-                best_month_label = MONTHS_ES[month_idx].capitalize()
+        # ⚠️ EL MISMO RANKING QUE EL SLIDE best_month. El comentario de acá decía
+        # "mismo cálculo" y no lo era: hacía `(pnl_realized + pnl_unrealized) / ci`,
+        # así que el intro podía anunciar un mejor mes y el slide siguiente otro.
+        _mejor = _ranking_de_meses(rows, meses)['mejor']
+        if _mejor is not None:
+            best_month_label = _nombre_mes(_mejor['mes'])
 
     teaser = {
         'twr': twr,
@@ -616,11 +638,11 @@ def build_wrapped(
         })
         return {'year': year, 'slides': slides, 'summary': {'has_data': False}}
 
-    best_month = _slide_best_month(rows)
+    best_month = _slide_best_month(rows, meses)
     if best_month:
         slides.append(best_month)
 
-    worst_month = _slide_worst_month(rows)
+    worst_month = _slide_worst_month(rows, meses)
     if worst_month:
         slides.append(worst_month)
 
