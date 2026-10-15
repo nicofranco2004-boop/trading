@@ -49,7 +49,7 @@ import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import NumeroQueCambia from '../components/NumeroQueCambia'
 import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
-import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull } from '../utils/format'
+import { fmtUsd, ars, pctSigned, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { cuerpoDeVenta, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { isBondPosition } from '../utils/tickers'
@@ -411,8 +411,9 @@ export default function PositionsMobile() {
       asset: p.asset,
       currency: sellCcy,
       quantity: '',
-      exit_price: suggested ? +(+suggested).toFixed(4) : '',
-      tc_venta: isARS ? +(pickFinancialRate(dolar, valuationDollar) || 1415).toFixed(2) : '',
+      // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
+      exit_price: suggested ? numACampo(+(+suggested).toFixed(4)) : '',
+      tc_venta: isARS ? numACampo(+(pickFinancialRate(dolar, valuationDollar) || 1415).toFixed(2)) : '',
       date: today(),
       commissions: '',
     })
@@ -549,7 +550,7 @@ export default function PositionsMobile() {
       kind: 'MEP',
       ars_amount: '',
       usd_amount: '',
-      tc: tcValuacion ? String(tcValuacion) : '',
+      tc: tcValuacion ? numACampo(tcValuacion) : '',
       date: today(),
     })
     setAddModal('convert')
@@ -694,11 +695,12 @@ export default function PositionsMobile() {
     setAddForm({
       ...p,
       is_cash: !!p.is_cash,
-      buy_price: p.buy_price ?? '',
-      quantity: p.quantity ?? '',
-      invested: p.invested ?? '',
-      tc_compra: p.tc_compra ?? '',
-      commissions: p.commissions ?? '',
+      // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
+      buy_price: numACampo(p.buy_price),
+      quantity: numACampo(p.quantity),
+      invested: numACampo(p.invested),
+      tc_compra: numACampo(p.tc_compra),
+      commissions: numACampo(p.commissions),
       notes: p.notes ?? '',
       entry_date: p.entry_date ?? '',
     })

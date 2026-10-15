@@ -7,13 +7,13 @@ import Panel from '../Panel'
 import { api } from '../../utils/api'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
 import { useToast } from '../Toast'
-import { parseNum } from '../../utils/format'
+import { parseNum, numACampo } from '../../utils/format'
 
 
 export default function ClientMoveAlert({ config, onSaved }) {
   const toast = useToast()
-  const [up, setUp] = useState(config?.up_pct != null ? String(config.up_pct) : '')
-  const [down, setDown] = useState(config?.down_pct != null ? String(config.down_pct) : '')
+  const [up, setUp] = useState(config?.up_pct != null ? numACampo(config.up_pct) : '')
+  const [down, setDown] = useState(config?.down_pct != null ? numACampo(config.down_pct) : '')
   const [channel, setChannel] = useState(config?.channel || 'both')
   // Alcance: todo el libro, o sólo un grupo guardado ("Los de Amazon").
   const [groupId, setGroupId] = useState(config?.group_id || 0)

@@ -3,6 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { cuerpoDeVenta, cuerpoDeConversion } from './formulariosCartera'
 import fuenteEscritorio from '../pages/Positions.jsx?raw'
 import fuenteCelular from '../pages/PositionsMobile.jsx?raw'
+import fuenteMovimientos from '../pages/Operations.jsx?raw'
+import fuenteFuturos from '../components/FuturosGroup.jsx?raw'
+import fuenteImportador from '../components/import/ImportWizard.jsx?raw'
+import { numACampo, parseNum } from './format'
 
 // El modal de venta se dibuja de verdad (el mismo que montan compu y celular) y
 // se compara lo que MUESTRA con lo que se MANDARÍA. Antes de 2026-10-15 los dos
@@ -100,4 +104,40 @@ describe('guardia: ningún envío de cartera vuelve a leer con +campo', () => {
       expect(fuente).toMatch(/cuerpoDeConversion\(convertForm\)/)
     })
   }
+})
+
+describe('precarga: el número que escribe el sistema vuelve igual al leerlo', () => {
+  // Un precio guardado de 12.345 precargado crudo se veía "12.345": parseNum lo
+  // lee como doce mil (punto + tres cifras = miles). Al corregir un dígito, el
+  // precio se multiplicaba por mil; en el cierre de futuros, sin tocar nada.
+  it('ida y vuelta exacta, también con tres decimales y en cripto', () => {
+    for (const n of [12.345, 245.125, 0.125, 999.999, 10820, 1536.9, 0.123456789, 1.234e-7, -5.5, 0]) {
+      expect(parseNum(numACampo(n))).toBe(n)
+    }
+  })
+  it('el precio sugerido de la venta, corregido a mano, no se multiplica por mil', () => {
+    const precargado = numACampo(12.345)              // lo que pone openSell
+    expect(precargado).toBe('12,345')
+    const corregido = precargado.slice(0, -1) + '6'   // el usuario toca el último dígito
+    const { body } = cuerpoDeVenta(venta({ currency: 'USDT', exit_price: corregido, tc_venta: '' }))
+    expect(body.exit_price).toBe(12.346)
+  })
+  it('la cantidad tipeada con coma en el modal de venta se dibuja y se manda igual', () => {
+    const form = venta({ quantity: '0,5', exit_price: '10820' })
+    expect(cuerpoDeVenta(form).body.quantity).toBe(0.5)
+    expect(montoDe(dibujar(form), 'Bruto')).toBe(5410)
+  })
+  const fuentes = [['escritorio', fuenteEscritorio], ['celular', fuenteCelular], ['movimientos', fuenteMovimientos]]
+  for (const [nombre, fuente] of fuentes) {
+    it(`${nombre}: las precargas de números pasan por numACampo`, () => {
+      // La forma vieja: el número crudo directo al campo de texto.
+      expect(fuente).not.toMatch(/(buy_price|quantity|invested|tc_compra|price_override|commissions|entry_price|exit_price|pnl_pct): (p|op)\.\w+ \?\? ''/)
+      expect(fuente).not.toMatch(/exit_price: suggested[^,\n]*\? \+/)
+      expect(fuente).not.toMatch(/tc: tcValuacion \? String\(/)
+    })
+  }
+  it('futuros e importador tampoco precargan con String(número)', () => {
+    expect(fuenteFuturos).not.toMatch(/return String\(Number\(/)
+    expect(fuenteImportador).not.toMatch(/qty: String\(a\.min_qty/)
+  })
 })

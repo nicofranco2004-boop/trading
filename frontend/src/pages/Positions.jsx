@@ -39,7 +39,7 @@ import { nextPaymentForPosition } from '../utils/bondSchedule'
 import BondDetailRow from '../components/BondDetail'
 import ReturnFxHint from '../components/ReturnFxHint'
 import StalePricesNotice from '../components/StalePricesNotice'
-import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput } from '../utils/format'
+import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput, numACampo } from '../utils/format'
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
@@ -660,15 +660,17 @@ function PositionsDesktop() {
     const fallbackPrice = (!p.is_cash && !p.buy_price && p.quantity > 0 && p.invested > 0)
       ? +(p.invested / p.quantity).toFixed(6)
       : null
+    // Los números guardados entran como texto con coma (numACampo): crudos, un
+    // precio de 12.345 quedaba escrito "12.345" y al corregirlo se leía doce mil.
     setForm({
       ...p,
       is_cash: !!p.is_cash,
-      buy_price: (p.buy_price || fallbackPrice) ?? '',
-      quantity: p.quantity ?? '',
-      invested: p.invested ?? '',
-      tc_compra: p.tc_compra ?? '',
-      price_override: p.price_override ?? '',
-      commissions: p.commissions ?? '',
+      buy_price: numACampo(p.buy_price || fallbackPrice),
+      quantity: numACampo(p.quantity),
+      invested: numACampo(p.invested),
+      tc_compra: numACampo(p.tc_compra),
+      price_override: numACampo(p.price_override),
+      commissions: numACampo(p.commissions),
       notes: p.notes ?? '',
       entry_date: p.entry_date ?? '',
     })
@@ -891,8 +893,9 @@ function PositionsDesktop() {
       asset: p.asset,
       currency: sellCcy,
       quantity: '',
-      exit_price: suggested != null ? +suggested.toFixed(4) : '',
-      tc_venta: isARS ? +tcValuacion.toFixed(2) : '',
+      // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
+      exit_price: suggested != null ? numACampo(+suggested.toFixed(4)) : '',
+      tc_venta: isARS ? numACampo(+tcValuacion.toFixed(2)) : '',
       date: today(),
       commissions: '',
     })
@@ -1050,7 +1053,7 @@ function PositionsDesktop() {
       kind: 'MEP',
       ars_amount: '',
       usd_amount: '',
-      tc: tcValuacion ? String(tcValuacion) : '',
+      tc: tcValuacion ? numACampo(tcValuacion) : '',
       date: today(),
     })
     setModal('convert')
@@ -3779,7 +3782,7 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
       const next = { ...f, date: v }
       if (isARS && !tcTouchedRef.current && v) {
         const r = tcForDate(v)
-        if (r > 0) next.tc_venta = +r.toFixed(2)
+        if (r > 0) next.tc_venta = numACampo(+r.toFixed(2))
       }
       return next
     })
@@ -4422,12 +4425,13 @@ function QtySlider({ totalQty, quantity, onChange, asset, priceUsd, pnlUsd }) {
     const newQty = (totalQty * p) / 100
     // redondeo razonable: 8 decimales para cripto, 4 para acciones
     const decimals = totalQty < 1 ? 8 : 6
-    onChange(+newQty.toFixed(decimals))
+    onChange(numACampo(+newQty.toFixed(decimals)))
   }
 
+  // Se guarda el TEXTO tal cual y se lee con parseNum (como el resto del modal).
+  // Con `+q`, escribir "0,5" dejaba NaN escrito en el campo y "1.000" saltaba a 1.
   function setQty(q) {
-    const clean = q === '' ? '' : +q
-    onChange(clean)
+    onChange(q)
   }
 
   return (
