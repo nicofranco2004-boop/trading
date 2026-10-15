@@ -79,13 +79,16 @@ export function ChipFueraDeHorario({ sesion, monto, pctFraccion, moneda, oculto 
 
 const valorFdh = (n, moneda) => (moneda === 'ARS' ? `ARS ${ars(n)}` : `USD ${usd(n)}`)
 
-/** «Todavía no está en el total. Si el mercado abriera así, tu cartera quedaría en …». */
+/** «El pre-mercado no se suma a tu total: se suma cuando abre el mercado. Si
+ *  abriera así, tu cartera quedaría en …». Nombra la franja a propósito: un
+ *  «todavía no está en el total» suelto no decía QUÉ no estaba. */
 export function SiAbrieraAsi({ sesion, total, moneda, oculto = false, className = '' }) {
   if (!sesion || oculto || total == null) return null
+  const nombre = sesion === 'pre' ? 'pre-mercado' : 'post-mercado'
   return (
     <p className={`text-[12px] text-ink-2 tabular ${className}`}>
-      Todavía no está en el total. Si el mercado abriera así, tu cartera quedaría en{' '}
-      <span className="text-ink-1">{valorFdh(total, moneda)}</span>.
+      <span className="text-ink-1">El {nombre} no se suma a tu total</span>: se suma cuando abre el mercado.
+      Si abriera así, tu cartera quedaría en <span className="text-ink-1">{valorFdh(total, moneda)}</span>.
     </p>
   )
 }
