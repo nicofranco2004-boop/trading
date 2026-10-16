@@ -46765,6 +46765,19 @@ def market_brief_prefs_get(uid: int = Depends(get_current_user)):
         conn.close()
 
 
+@app.get("/api/market-brief/ultimo")
+def market_brief_ultimo(uid: int = Depends(get_current_user)):
+    """El último resumen que se le mandó a la persona — lo que abre la
+    notificación del resumen. Uno solo: el de hoy reemplaza al de ayer.
+    `{"resumen": null}` si nunca recibió uno."""
+    conn = get_db()
+    try:
+        import market_brief
+        return {"resumen": market_brief.ultimo_resumen(conn, uid)}
+    finally:
+        conn.close()
+
+
 class MarketBriefPrefsIn(BaseModel):
     enabled: bool
 

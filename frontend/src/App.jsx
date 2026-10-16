@@ -71,6 +71,7 @@ const Alertas = lazy(() => import('./pages/Alertas'))
 const RendiAI = lazy(() => import('./pages/RendiAI'))
 const Reports = lazy(() => import('./pages/Reports'))
 const Novedades = lazy(() => import('./pages/Novedades'))
+const ResumenMercado = lazy(() => import('./pages/ResumenMercado'))
 const FirstInsight = lazy(() => import('./pages/FirstInsight'))
 const Behavioral = lazy(() => import('./pages/Behavioral'))
 const Wrapped = lazy(() => import('./pages/Wrapped'))
@@ -268,6 +269,9 @@ function AppRoutes() {
       <Route path="/reportes"        element={<Navigate to="/analisis?tab=reportes"      replace />} />
       <Route path="/mensual" element={<Monthly />} />
       <Route path="/novedades" element={<Novedades />} />
+      {/* Lo abre la notificación del resumen del mercado
+          (market_brief.PUSH_URL). Si se mueve, mover también esa constante. */}
+      <Route path="/resumen" element={<ResumenMercado />} />
       {/* Redirects back-compat */}
       <Route path="/eventos"  element={<Navigate to="/novedades?tab=eventos"  replace />} />
       <Route path="/noticias" element={<Navigate to="/novedades?tab=noticias" replace />} />

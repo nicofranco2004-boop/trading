@@ -3264,6 +3264,7 @@ export function handleDemoRequest(method, path, body) {
     if (basePath === '/positions/split-check')  return { suggestions: [] }
     if (basePath === '/sections/archived')      return { archived: [] }
     if (basePath === '/market-brief/prefs')     return { enabled: false }
+    if (basePath === '/market-brief/ultimo')    return { resumen: null }
     if (basePath === '/me/advisor')             return { advisors: [], requests: [] }
     if (basePath === '/wallbit/status')         return { connected: false }
     if (basePath === '/advisor/alerts')         return { history: [] }

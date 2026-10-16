@@ -153,6 +153,13 @@ def mark_sent(conn, uid: int, day: str, narrative: dict = None):
     (Antes esto alimentaba también el botón de la card, que mostraba el mail
     real del día. Ese botón ahora muestra un ejemplo fijo — el mail real la
     persona ya lo tiene en su casilla. Se sigue guardando igual.)
+
+    Desde 2026-10-16 lo guardado es `para_mostrar(brief)`: la narración MÁS los
+    dos bloques que arma el código (Wall Street fuera de la rueda y la agenda).
+    Es lo que lee la pantalla /resumen cuando la persona toca la notificación —
+    ver `ultimo_resumen`. Las claves de la narración (`titular`, `mercado`,
+    `tu_cartera`) siguen en el mismo lugar, así que las filas viejas se leen
+    igual: sólo les faltan los dos bloques.
     """
     conn.execute(
         "INSERT OR IGNORE INTO market_brief_log (user_id, date, sent_at, narrative) "
@@ -167,7 +174,8 @@ def sent_narrative(conn, uid: int, day: str):
     columna `narrative`, para cuando haga falta revisar qué le dijimos a
     alguien. Lo usa el test que verifica que el texto se guarda. No es un
     backfill dormido ni una función olvidada — si algún día se agrega una
-    pantalla de admin para revisar resúmenes, entra por acá.
+    pantalla de admin para revisar resúmenes, entra por acá. (La pantalla de la
+    PERSONA lee otra cosa: el último, sin pedir fecha — `ultimo_resumen`.)
     """
     try:
         row = conn.execute(
@@ -176,6 +184,101 @@ def sent_narrative(conn, uid: int, day: str):
         return json.loads(row["narrative"]) if row and row["narrative"] else None
     except Exception:
         return None
+
+
+def para_mostrar(brief: dict) -> dict:
+    """Lo que ve la persona: el mismo contenido que el mail, ya listo.
+
+    Los dos bloques que no escribe el modelo se pasan por EL MISMO armador que
+    usa el mail (`emails._lineas_fuera_de_horario`), no por una copia: si la
+    frase del post-mercado cambia, cambia en los dos lados a la vez. Dos
+    redacciones de la misma cifra terminan diciendo cosas distintas.
+    """
+    from billing import emails
+    brief = brief or {}
+    nar = brief.get("narrative") or {}
+    fdh = emails._lineas_fuera_de_horario(brief.get("fuera_de_horario"))
+    return {
+        "titular": nar.get("titular") or "",
+        "mercado": list(nar.get("mercado") or []),
+        "tu_cartera": list(nar.get("tu_cartera") or []),
+        "fuera_de_horario": ({"lineas": list(fdh.get("lineas") or []),
+                              "nota": fdh.get("nota") or ""} if fdh else None),
+        "agenda": [{"ticker": e.get("ticker") or "", "label": e.get("label") or ""}
+                   for e in (brief.get("events") or [])],
+    }
+
+
+def ultimo_resumen(conn, uid: int):
+    """El ÚLTIMO resumen que se le mandó a la persona, o None.
+
+    Uno solo, a propósito (pedido de Nico, 2026-10-16: «se tiene que ir
+    limpiando cada vez que llega uno nuevo»). La pantalla no es un archivo de
+    resúmenes viejos: cuando llega el de hoy, el de ayer deja de verse. Las
+    filas viejas NO se borran — son el registro de auditoría de `mark_sent` —,
+    simplemente nadie las muestra.
+    """
+    try:
+        row = conn.execute(
+            "SELECT date, sent_at, narrative FROM market_brief_log "
+            "WHERE user_id=? AND narrative IS NOT NULL "
+            "ORDER BY date DESC LIMIT 1", (uid,)).fetchone()
+    except Exception as ex:
+        log.warning("market_brief: no se pudo leer el último de uid=%s: %s", uid, ex)
+        return None
+    if not row:
+        return None
+    try:
+        guardado = json.loads(row["narrative"])
+    except Exception:
+        return None
+    if not isinstance(guardado, dict) or not guardado.get("titular"):
+        return None
+    return {
+        "date": row["date"],
+        "sent_at": row["sent_at"],
+        "titular": guardado.get("titular") or "",
+        "mercado": guardado.get("mercado") or [],
+        "tu_cartera": guardado.get("tu_cartera") or [],
+        "fuera_de_horario": guardado.get("fuera_de_horario"),
+        "agenda": guardado.get("agenda") or [],
+    }
+
+
+# La notificación lleva SIEMPRE la misma etiqueta. El celular reemplaza una
+# notificación por otra con la misma etiqueta en vez de apilarlas: el resumen de
+# hoy pisa al de ayer en el centro de notificaciones («se tiene que ir limpiando
+# cada vez que llega uno nuevo», Nico 2026-10-16).
+PUSH_TAG = "resumen-mercado"
+# Adónde lleva tocarla. Ruta del frontend — verificar si alguna vez se mueve:
+# el push de las alertas apuntó un mes a una pestaña que ya no existía.
+PUSH_URL = "/resumen"
+
+
+def avisar_por_push(uid: int, contenido: dict) -> int:
+    """Manda la notificación del resumen a los dispositivos de la persona.
+
+    Va DESPUÉS del mail y nunca lo frena: si la notificación falla, el mail ya
+    salió y quedó sellado. Devuelve a cuántos dispositivos llegó (0 si la persona
+    no activó las notificaciones, que es el caso de casi todos — no es un error).
+
+    El cuerpo es el titular: es lo único que entra en una notificación, y es lo
+    mismo que el asunto del mail. El resto se lee tocándola.
+    """
+    titular = (contenido or {}).get("titular") or ""
+    if not titular:
+        return 0
+    try:
+        import main
+        return main._send_push_to_user(uid, {
+            "title": "Resumen del mercado",
+            "body": titular,
+            "url": PUSH_URL,
+            "tag": PUSH_TAG,
+        })
+    except Exception as ex:
+        log.warning("market_brief: push uid=%s falló: %s", uid, ex)
+        return 0
 
 
 # ─── Traer las noticias ANTES de redactar ────────────────────────────────────
@@ -1068,9 +1171,14 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
                     # el servicio de mail rechazó, esta persona NO puede quedar
                     # marcada como enviada o se queda sin su resumen y nadie se
                     # entera. El reintento lo da la próxima corrida del cron.
-                    mark_sent(conn, uid, day, data.get("narrative"))
+                    contenido = para_mostrar(data)
+                    mark_sent(conn, uid, day, contenido)
                     conn.commit()
                     sent += 1
+                    # La notificación, recién con el mail sellado y confirmado:
+                    # la pantalla a la que lleva lee esa fila. Al revés, la
+                    # persona tocaría el aviso y encontraría el resumen de ayer.
+                    avisar_por_push(uid, contenido)
                 else:
                     failed += 1
             except Exception as ex:

@@ -112,6 +112,16 @@ class MarketBriefTest(unittest.TestCase):
         pr.start()
         self.addCleanup(pr.stop)
 
+        # ⚠️ NI NOTIFICACIONES. Desde que el resumen también avisa por push,
+        # cada corrida del cron llama a `_send_push_to_user`. Con las claves
+        # VAPID en el entorno de quien corre la suite, saldría a Apple/Google de
+        # verdad. El test que quiere mirar el aviso pone su propio espía.
+        self._pushes = []
+        pp = patch.object(main, "_send_push_to_user",
+                          lambda uid, payload: self._pushes.append((uid, payload)) or 1)
+        pp.start()
+        self.addCleanup(pp.stop)
+
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _pos(self, asset, uid=1, qty=10):
@@ -649,6 +659,112 @@ class MarketBriefTest(unittest.TestCase):
             conn.close()
         self.assertIsNotNone(guardada, "no quedó registro de lo que se mandó")
         self.assertEqual(guardada["titular"], _NarracionFake().titular)
+
+    # ── la notificación y la pantalla /resumen ──────────────────────────────
+
+    def test_el_resumen_tambien_avisa_por_notificacion_con_el_titular(self):
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia sube")
+        self._suscribir()
+
+        _, enviados, _ = self._correr_cron()
+        self.assertEqual(len(enviados), 1, "el mail tiene que salir igual")
+        self.assertEqual(len(self._pushes), 1)
+        uid, payload = self._pushes[0]
+        self.assertEqual(uid, 1)
+        self.assertEqual(payload["body"], _NarracionFake().titular)
+        self.assertEqual(payload["url"], "/resumen")
+        # La etiqueta fija es la que hace que el de hoy REEMPLACE al de ayer en
+        # el celular en vez de apilarse. Si alguien le agrega la fecha, se apilan.
+        self.assertEqual(payload["tag"], "resumen-mercado")
+
+    def test_sin_mail_no_hay_notificacion(self):
+        """Si el mail rebota, la fila no se sella — y la notificación llevaría
+        a una pantalla con el resumen de AYER. Tiene que esperar al reintento."""
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia sube")
+        self._suscribir()
+
+        with patch.object(main.threading, "Thread", _ThreadSincrono), \
+             patch.object(emails, "send_market_brief", return_value=False), \
+             patch.object(market_brief, "_refresh_news_for", return_value=0), \
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
+            self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
+        self.assertEqual(self._pushes, [])
+
+    def test_la_notificacion_que_falla_no_frena_el_mail_de_los_demas(self):
+        self._pos("NVDA", uid=1)
+        self._pos("NVDA", uid=2)
+        self._news("NVDA", "Nvidia sube")
+        self._suscribir(1)
+        self._suscribir(2)
+
+        def _explota(uid, payload):
+            raise RuntimeError("el servidor de push no contesta")
+
+        with patch.object(main, "_send_push_to_user", _explota):
+            _, enviados, _ = self._correr_cron()
+        self.assertEqual(sorted(e["to"] for e in enviados),
+                         ["nico@test.co", "otro@test.co"])
+        self.assertEqual(self._parte["sent"], 2)
+        self.assertEqual(self._parte["failed"], 0)
+
+    def test_la_pantalla_muestra_el_ultimo_y_lo_mismo_que_el_mail(self):
+        """Entra por el cron real y lee por el endpoint real: lo que la persona
+        ve al tocar la notificación es lo que se le mandó, y sólo el último."""
+        hoy = market_brief._today_art()
+        self._pos("NVDA")
+        self._news("NVDA", "Nvidia sube")
+        self._evento("NVDA", "earnings", hoy)
+        self._suscribir()
+        # El de un día anterior, ya guardado. No tiene que verse más.
+        conn = main.get_db()
+        try:
+            market_brief.mark_sent(conn, 1, "2026-01-02", {
+                "titular": "El resumen viejo", "mercado": ["viejo"],
+                "tu_cartera": []})
+            conn.commit()
+        finally:
+            conn.close()
+
+        hdr = {"Authorization": f"Bearer {main.create_token(1)}"}
+        antes = self.http.get("/api/market-brief/ultimo", headers=hdr).json()
+        self.assertEqual(antes["resumen"]["titular"], "El resumen viejo")
+
+        _, enviados, _ = self._correr_cron()
+        r = self.http.get("/api/market-brief/ultimo", headers=hdr)
+        self.assertEqual(r.status_code, 200)
+        res = r.json()["resumen"]
+        self.assertEqual(res["date"], hoy)
+        self.assertEqual(res["titular"], _NarracionFake().titular)
+        self.assertEqual(res["mercado"], _NarracionFake().mercado)
+        # La agenda es la misma que llevó el mail, renglón por renglón.
+        mail = enviados[0]["brief"]
+        self.assertEqual([(a["ticker"], a["label"]) for a in res["agenda"]],
+                         [(e["ticker"], e["label"]) for e in mail["events"]])
+        self.assertTrue(res["agenda"], "el evento de hoy no llegó a la pantalla")
+
+    def test_la_notificacion_lleva_a_una_ruta_que_existe(self):
+        """El push de las alertas apuntó un mes a una pestaña que ya no
+        existía. La ruta del frontend y la constante tienen que coincidir."""
+        app_jsx = os.path.join(os.path.dirname(__file__), "..", "..",
+                               "frontend", "src", "App.jsx")
+        with open(app_jsx, encoding="utf-8") as f:
+            self.assertIn(f'path="{market_brief.PUSH_URL}"', f.read())
+
+    def test_la_pantalla_es_de_cada_uno(self):
+        conn = main.get_db()
+        try:
+            market_brief.mark_sent(conn, 2, "2026-01-02", {
+                "titular": "El de otro", "mercado": ["x"], "tu_cartera": []})
+            conn.commit()
+        finally:
+            conn.close()
+        hdr = {"Authorization": f"Bearer {main.create_token(1)}"}
+        r = self.http.get("/api/market-brief/ultimo", headers=hdr)
+        self.assertIsNone(r.json()["resumen"])
+        self.assertEqual(
+            self.http.get("/api/market-brief/ultimo").status_code, 401)
 
     # ── la ventana del lunes ─────────────────────────────────────────────────
 

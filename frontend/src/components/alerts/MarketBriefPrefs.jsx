@@ -9,14 +9,19 @@
 // va a un puñado de casillas conocidas, este a toda la base, y un mail diario
 // que nadie pidió es cómo se llega a la pestaña "Actualizaciones" de Gmail.
 //
+// El cuerpo (titular, párrafos, agenda) lo dibuja ResumenMercadoCuerpo, el
+// mismo que usa la pantalla /resumen: el ejemplo muestra el formato real.
+//
 // Sistema visual: la generación nueva — Panel como superficie (rounded-xl),
 // rótulos sans sentence-case, cero tipografía de ancho fijo. Mismo tratamiento
 // que components/advisor/BriefPrefs.jsx, del que sale este componente.
 // (El nombre de la clase prohibida no se escribe ni en los comentarios: el
 // guard del contrato cuenta el literal y no distingue prosa de código.)
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Sunrise } from 'lucide-react'
 import Panel from '../Panel'
+import ResumenMercadoCuerpo from './ResumenMercadoCuerpo'
 import { api } from '../../utils/api'
 import { useToast } from '../Toast'
 
@@ -46,7 +51,7 @@ const EJEMPLO = {
     'YPFD y PAMP acompañan la suba del petróleo. GGAL cae con los bonos, ' +
     'como suele pasar con los bancos cuando sube el riesgo país.',
   ],
-  events: [
+  agenda: [
     { ticker: 'AAPL', label: 'Reporte trimestral' },
     { ticker: 'AL30', label: 'Cupón + amortización' },
   ],
@@ -118,6 +123,14 @@ export default function MarketBriefPrefs() {
             className="text-[11px] text-rendi-accent hover:underline mt-1.5">
             {verEjemplo ? 'Ocultar ejemplo' : 'Ver ejemplo'}
           </button>
+          {/* El último que llegó, adentro de la app: lo mismo que abre la
+              notificación. Sólo con el resumen prendido — apagado, la
+              pantalla no tendría nada nuevo que mostrar. */}
+          {on && (
+            <Link to="/resumen" className="text-[11px] text-rendi-accent hover:underline mt-1.5 ml-3">
+              Ver el último
+            </Link>
+          )}
         </div>
         <button
           type="button"
@@ -142,25 +155,7 @@ export default function MarketBriefPrefs() {
             Un ejemplo con datos inventados, para que veas el formato. El tuyo se
             arma con las noticias del día y tus activos.
           </div>
-          <div>
-            <div className="text-sm font-medium text-ink-0 leading-snug">
-              {EJEMPLO.titular}
-            </div>
-            {EJEMPLO.mercado.map((p, k) => (
-              <p key={k} className="text-xs text-ink-1 leading-relaxed mt-2">{p}</p>
-            ))}
-            <div className="text-[11px] tracking-label text-ink-3 mt-3">Lo tuyo</div>
-            {EJEMPLO.tu_cartera.map((p, k) => (
-              <p key={k} className="text-xs text-ink-1 leading-relaxed mt-1">{p}</p>
-            ))}
-            <div className="text-[11px] tracking-label text-ink-3 mt-3">En tu agenda de hoy</div>
-            {EJEMPLO.events.map((e, k) => (
-              <div key={k} className="text-xs text-ink-1 mt-0.5">
-                <span className="font-medium">{e.ticker}</span>
-                <span className="text-ink-2"> — {e.label}</span>
-              </div>
-            ))}
-          </div>
+          <ResumenMercadoCuerpo resumen={EJEMPLO} compacto />
         </div>
       )}
     </Panel>
