@@ -536,6 +536,12 @@ def extract_subscription_id(payload: dict) -> str:
     candidates = [
         sub.get("id"),                          # subscription.* events
         pay.get("subscriptionId"),              # payment.* events
+        # ⭐ Donde lo manda Rebill DE VERDAD en payment.created (medido en
+        # producción el 2026-10-16): al lado de `payment`, no adentro. Sin esta
+        # línea el id caía a "" en todo aviso de cobro: el cobro quedaba en el
+        # registro de créditos sin suscripción y el freno anti-duplicado de
+        # `grant_payment_credit` (que pide los dos ids) no se activaba nunca.
+        data.get("subscriptionId"),
         data.get("subscription_id"),
         data.get("id"),
         payload.get("subscription_id"),

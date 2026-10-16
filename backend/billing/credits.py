@@ -179,8 +179,8 @@ def grant_payment_credit(
     `amount_usd`: si no se provee, usa el precio del catálogo (PLAN_PRICES_USD).
                   Útil cuando Rebill no nos manda el monto en el webhook payload.
 
-    IDEMPOTENCY: si `payment_id` + `subscription_id` están presentes, antes de
-    procesar chequeamos si ya hay un row en credit_ledger con ese par. Si sí,
+    IDEMPOTENCY: si `payment_id` está presente, antes de procesar chequeamos
+    si ya hay un row en credit_ledger con ese cobro para el user. Si sí,
     es un retry duplicado de Rebill (race del LB, timeout retry) — devolvemos
     el estado actual SIN extender el crédito de nuevo. Si la UNIQUE constraint
     DB-side se viola igual (race condition entre el SELECT y el INSERT), el
@@ -192,14 +192,18 @@ def grant_payment_credit(
             raise ValueError(f"Plan/period inválido: {plan}/{period}")
 
     # ─── Idempotency check (app-side) ─────────────────────────────────────
-    if payment_id and subscription_id:
+    # Alcanza con el id del COBRO: Rebill no repite un `pay_…` entre cobros.
+    # Antes pedía también el de la suscripción, y en los avisos de cobro reales
+    # ese id no se estaba leyendo (ver `rebill.extract_subscription_id`): el
+    # freno no se activaba nunca y un reintento de Rebill acreditaba dos veces.
+    if payment_id:
         existing = conn.execute(
             """SELECT id, active_until_after FROM credit_ledger
-               WHERE source_subscription_id = ?
+               WHERE user_id = ?
                  AND payment_id = ?
                  AND kind = 'payment'
                LIMIT 1""",
-            (subscription_id, str(payment_id)),
+            (user_id, str(payment_id)),
         ).fetchone()
         if existing:
             log.warning(

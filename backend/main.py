@@ -36262,12 +36262,44 @@ def _notify_plan_change(conn, uid: int, old_tier, new_tier, source: str, *,
         log.warning("plan-change admin notify falló para uid %s: %s", uid, ex)
 
 
-def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict):
+def _rebill_cobro_ya_acreditado(conn, uid: int, sub_id: str) -> bool:
+    """¿Esta suscripción ya tiene acreditado algún cobro?
+
+    Es la pregunta que separa «entró plata» de «Rebill avisa algo sobre una
+    suscripción que ya conocemos». Sin `sub_id` no se puede responder: se
+    contesta que no, que es lo que pasaba antes (acreditar)."""
+    if not sub_id:
+        return False
+    return conn.execute(
+        """SELECT 1 FROM credit_ledger
+            WHERE user_id = ? AND source_subscription_id = ? AND kind = 'payment'
+            LIMIT 1""",
+        (uid, sub_id),
+    ).fetchone() is not None
+
+
+def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict,
+                     acreditar: bool = True):
     """Marca al user como Plus/Pro, actualiza/crea la subscription row, y
     otorga crédito por el período cobrado.
 
     El crédito (credit_active_until + anchor) es lo que valida el acceso
     del user al tier — el daily cron baja a Free cuando vence.
+
+    ⭐ DÍAS DE MÁS (medido en producción el 2026-10-16): esta función suma
+    30 días cada vez que corre, y corre por avisos que NO son cobros:
+      · `subscription.updated` con status 'active' — Rebill lo manda cuando se
+        edita el precio en el dashboard, cuando la persona cambia la tarjeta,
+        etc. Al editar los precios el 2026-10-15 llegaron DOS por suscripción:
+        +60 días gratis a cada uno.
+      · `subscription.created` llega junto con `payment.created` del MISMO
+        primer cobro, y los dos acreditaban: el primer mes contaba doble.
+    Una persona con un solo pago de Pro mensual quedó con 119 días.
+
+    Por eso `acreditar=False` desde `subscription.updated` (no se movió
+    plata), y desde `subscription.created` sólo se acredita si ese cobro no
+    entró ya por `payment.created` (llegan con segundos de diferencia y en
+    cualquier orden).
     """
     from billing import credits as billing_credits
     # Normalizamos plan/period a valores válidos ANTES de usarlos: así
@@ -36385,8 +36417,19 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict)
                  amount_ars_cobrado or 0),
             )
 
+    if acreditar and _rebill_cobro_ya_acreditado(conn, uid, sub_id):
+        acreditar = False
+        log.info("Rebill: sub %s de user %s ya tiene su cobro acreditado — "
+                 "el alta no suma días otra vez", sub_id, uid)
+
     # Conceder crédito por el período cobrado (fuera del with por simplicidad —
     # credits.grant_payment_credit maneja su propia tx).
+    if not acreditar:
+        log.info("Rebill: user %s activated as %s (sub=%s) sin sumar días",
+                 uid, target_tier, sub_id)
+        _notify_plan_change(conn, uid, before_tier, target_tier, "payment",
+                            amount_usd=amount_usd)
+        return
     try:
         billing_credits.grant_payment_credit(
             conn,
@@ -36491,8 +36534,12 @@ def _rebill_subscription_status_change(conn, uid: int, metadata: dict, sub_id: s
              uid, sub_id, new_status, status_detail)
 
     if new_status == "active":
-        # Re-activación (p.ej. user resolvió un retrying con card update)
-        _rebill_activate(conn, uid, metadata, sub_id, payload)
+        # Re-activación (p.ej. user resolvió un retrying con card update), o un
+        # aviso de "cambió algo" (precio editado en el dashboard, tarjeta nueva).
+        # Ninguno es un cobro: el tier se realinea pero NO se suman días. Si la
+        # reactivación vino con un cobro, ese cobro llega como `payment.created`
+        # y ahí se acredita. Ver «DÍAS DE MÁS» en `_rebill_activate`.
+        _rebill_activate(conn, uid, metadata, sub_id, payload, acreditar=False)
     elif new_status in ("cancelled", "defaulted", "finished"):
         _rebill_cancel(conn, uid, sub_id, payload)
     elif new_status in ("paused", "retrying"):
@@ -36573,38 +36620,88 @@ def _rebill_record_payment(conn, uid: int, sub_id: str, payload: dict):
             break
     is_successful = payment_status in ("approved", "succeeded", "paid", "completed", "")
 
-    # Monto cobrado
-    amount_usd = None
+    # Monto cobrado. ⚠️ EN PESOS: es el mismo dato que `_rebill_activate` ya
+    # dejó de guardar como dólares (ver allá). Acá se seguía anotando en
+    # `amount_usd`: el primer cobro de Pro quedó en el registro de créditos
+    # como «13.990 dólares». Va a `amount_ars` y al motor de crédito se le
+    # pasa None, para que use el precio de catálogo.
+    amount_ars_cobrado = None
     payment_obj = data_obj.get("payment") or {}
     for c in (payment_obj.get("amount"), data_obj.get("amount"), payload.get("amount")):
         try:
             if c is not None:
-                amount_usd = float(c)
+                amount_ars_cobrado = float(c)
                 break
         except (TypeError, ValueError):
             continue
+    amount_usd = None   # el catálogo manda
 
     with conn:
         if sub_id:
             conn.execute(
                 """UPDATE subscriptions
                    SET last_payment_id = ?,
-                       amount_usd = COALESCE(?, amount_usd),
+                       amount_ars = COALESCE(?, amount_ars),
                        updated_at = datetime('now')
                    WHERE user_id = ? AND mp_subscription_id = ?""",
-                (payment_id, amount_usd, uid, sub_id),
+                (payment_id, amount_ars_cobrado, uid, sub_id),
             )
 
-    if is_successful:
-        # Necesitamos plan/period — los recuperamos del anchor del user o de
-        # la subscription. El payload de payment.created rara vez incluye
-        # metadata, así que el anchor es la fuente más confiable.
-        anchor_row = conn.execute(
-            """SELECT credit_anchor_plan, credit_anchor_period FROM users WHERE id = ?""",
-            (uid,),
+    # ⭐ El PRIMER cobro llega dos veces: como `subscription.created` y como
+    # `payment.created` (paymentType = first_subscription_payment), con
+    # segundos de diferencia y en cualquier orden. Si el alta ya lo acreditó
+    # —su fila no tiene payment_id, porque el aviso del alta no lo trae— se le
+    # pone el id a esa fila y NO se suman otros 30 días. Ver «DÍAS DE MÁS» en
+    # `_rebill_activate`.
+    payment_type = str(payment_obj.get("paymentType") or "").lower()
+    if is_successful and sub_id and payment_id and payment_type in ("first_subscription_payment", ""):
+        fila_del_alta = conn.execute(
+            """SELECT id, created_at FROM credit_ledger
+                WHERE user_id = ? AND source_subscription_id = ?
+                  AND kind = 'payment' AND payment_id IS NULL
+                ORDER BY id ASC LIMIT 1""",
+            (uid, sub_id),
         ).fetchone()
-        anchor_plan = (anchor_row["credit_anchor_plan"] if anchor_row else None)
-        anchor_period = (anchor_row["credit_anchor_period"] if anchor_row else None)
+        es_el_mismo = False
+        if fila_del_alta:
+            if payment_type == "first_subscription_payment":
+                es_el_mismo = True
+            else:
+                # Sin paymentType no sabemos si es el primero: sólo lo es si el
+                # alta se acreditó hace menos de un día. Una renovación llega
+                # un mes después.
+                try:
+                    _alta = datetime.fromisoformat(str(fila_del_alta["created_at"]).replace(" ", "T"))
+                    es_el_mismo = (datetime.utcnow() - _alta) < timedelta(days=1)
+                except Exception:
+                    es_el_mismo = False
+        if es_el_mismo:
+            with conn:
+                conn.execute("UPDATE credit_ledger SET payment_id = ? WHERE id = ?",
+                             (payment_id, fila_del_alta["id"]))
+            log.info("Rebill: payment %s es el primer cobro de sub %s, ya acreditado "
+                     "por el alta (ledger %s) — no suma días otra vez",
+                     payment_id, sub_id, fila_del_alta["id"])
+            return
+
+    if is_successful:
+        # Necesitamos plan/period. Primero lo que dice EL COBRO: payment.created
+        # trae la metadata de la suscripción (rendi_plan / rendi_period). Antes
+        # se leía sólo el anchor del user, y quien paga desde la prueba gratis
+        # no tiene anchor: si este aviso llegaba antes que el del alta, el cobro
+        # no se acreditaba acá. Después el anchor y la fila de la suscripción.
+        _meta = payment_obj.get("metadata") or data_obj.get("metadata") or {}
+        anchor_plan = (str(_meta.get("rendi_plan") or "").strip().lower() or None)
+        anchor_period = (str(_meta.get("rendi_period") or "").strip().lower() or None)
+        if anchor_plan not in ("plus", "pro") or anchor_period not in ("monthly", "annual"):
+            anchor_plan = anchor_period = None
+        if not anchor_plan:
+            anchor_row = conn.execute(
+                """SELECT credit_anchor_plan, credit_anchor_period FROM users WHERE id = ?""",
+                (uid,),
+            ).fetchone()
+            anchor_plan = (anchor_row["credit_anchor_plan"] if anchor_row else None)
+            anchor_period = (anchor_row["credit_anchor_period"] if anchor_row else None)
 
         # Fallback: leer de la subscription row (period siempre se guarda al crear)
         if not anchor_plan or not anchor_period:
