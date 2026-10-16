@@ -32,7 +32,6 @@ vi.mock('../components/ai/mervalle/estadoDelChat', () => ({
   enEscena: () => 'portada',
   sinPensando: (e) => e,
   usePortadaConPersonaje: () => false,
-  ANCHO_COMPANERO: 1024,
 }))
 vi.mock('../hooks/useIsMobile', () => ({ useAnchoMinimo: () => true, useIsMobile: () => false }))
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { email: 'asesor@prueba.test', tier: 'advisor' } }) }))

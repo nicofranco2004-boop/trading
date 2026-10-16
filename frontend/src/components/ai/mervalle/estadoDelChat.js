@@ -159,23 +159,23 @@ export function useEstadoMervallE() {
    dos pantallas que la necesitan (AICoach y RendiAI): estaba copiada en las
    dos, igual hoy pero libre de separarse mañana. */
 
-/** Desde este ancho hay lugar para el compañero al costado del cuadro de
- *  texto. Más angosto (tablet con la barra lateral abierta) le comía el
- *  cuadro: a 768 px quedaban 320 px para escribir. */
-export const ANCHO_COMPANERO = 1024
-
 /**
  * @returns {'portada'|'companero'|'cabecera'} quién sigue el chat:
- *   · chat vacío → la portada;
- *   · con conversación y lugar al costado → el compañero del cuadro de texto;
- *   · con conversación y sin lugar (celular, tablet) → la cabecera.
+ *   · chat vacío → la portada (si entró; si no, la cabecera);
+ *   · con conversación → el compañero: el cuadro con el cuerpo entero
+ *     (CuadroMervallE), al costado del chat si hay lugar y en la esquina si no.
+ *
+ * Hasta el 2026-10-16 el compañero era un busto de 60 px que sólo aparecía
+ * desde 1024 px de ancho; en el celular y la tablet seguía la conversación la
+ * cabecita de 38 px de la barra. Pedido de Nico: "en mobile no se llega a
+ * apreciar para nada". Ahora el cuadro está en todos los tamaños.
  */
-export function enEscena({ hayConversacion, hayLugarAlCostado, hayPortada = true }) {
+export function enEscena({ hayConversacion, hayPortada = true }) {
   // Con el chat vacío está la portada… si ENTRÓ. Si no hay lugar para dibujar
   // a nadie (iPhone SE, Safari con las barras, el celular acostado), la
   // cabecera toma el turno: si no, no se movía ningún Mervall-E.
   if (!hayConversacion) return hayPortada ? 'portada' : 'cabecera'
-  return hayLugarAlCostado ? 'companero' : 'cabecera'
+  return 'companero'
 }
 
 /* ¿La portada dibujó a su Mervall-E? Lo sabe AICoach (mide el lugar) y lo

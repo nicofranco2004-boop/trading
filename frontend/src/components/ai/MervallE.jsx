@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Es la cara de la IA en todos los lugares donde la IA es "alguien": la
 // cabecera de /ai, la portada del chat vacío (del tamaño que entra), el
-// compañero al costado del cuadro de texto (compu, con conversación), el
+// cuadro de cuerpo entero mientras hay conversación (CuadroMervallE), el
 // avatar de cada respuesta, la espera, la isla flotante, la landing y los
 // accesos (barra lateral, barra del celular, Más, buscador, onboarding, guía).
 // Quién se mueve en /ai lo decide mervalle/estadoDelChat.enEscena. Los botones chicos de "✦ Analizar" NO son él: son

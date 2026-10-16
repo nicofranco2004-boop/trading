@@ -24,8 +24,7 @@ import CargaPorPasos from '../components/novedades/CargaPorPasos'
 import ViendoTuCartera from '../components/ai/ViendoTuCartera'
 import { useVoz } from '../contexts/VozContext'
 import MervallE from '../components/ai/MervallE'
-import { useEstadoMervallE, enEscena, sinPensando, usePortadaConPersonaje, ANCHO_COMPANERO } from '../components/ai/mervalle/estadoDelChat'
-import { useAnchoMinimo } from '../hooks/useIsMobile'
+import { useEstadoMervallE, enEscena, sinPensando, usePortadaConPersonaje } from '../components/ai/mervalle/estadoDelChat'
 
 // Book-mode: AICoach exige un snapshot truthy para habilitar el envío; el
 // backend lo IGNORA en este modo (arma el libro server-side). Ref estable
@@ -155,15 +154,14 @@ export default function RendiAI() {
 
   // La cara de Mervall-E en la cabecera. UNO SOLO EN ESCENA por pantalla, con
   // la misma regla que AICoach (estadoDelChat.enEscena): con el chat vacío
-  // está la portada, y con conversación y lugar al costado, el compañero del
-  // cuadro de texto. Ahí la cabecera va CONGELADA y en reposo — no cambia de
-  // cara junto con él. Sólo cuando no hay lugar al costado (celular, tablet)
-  // es ella la que sigue el chat; "pensando" lo dice la burbuja de la espera.
-  // No sigue al cursor.
+  // está la portada, y con conversación, el cuadro de cuerpo entero
+  // (CuadroMervallE). Ahí la cabecera va CONGELADA y en reposo — no cambia de
+  // cara junto con él. Sólo cuando la portada no entró (iPhone SE, Safari con
+  // las barras) es ella la que se mueve; "pensando" lo dice la burbuja de la
+  // espera. No sigue al cursor.
   const mervalle = useEstadoMervallE()
-  const hayLugarAlCostado = useAnchoMinimo(ANCHO_COMPANERO)
   const hayPortada = usePortadaConPersonaje()
-  const cabeceraEnEscena = enEscena({ hayConversacion: hilo.length > 0, hayLugarAlCostado, hayPortada }) === 'cabecera'
+  const cabeceraEnEscena = enEscena({ hayConversacion: hilo.length > 0, hayPortada }) === 'cabecera'
   // El cargador aparece sólo si la lectura TARDA (useDemora): con la cartera
   // en milisegundos, prenderlo y apagarlo en un parpadeo es ruido. Mientras se
   // ve, el chat no está montado: la cabecera es el único Mervall-E en pantalla

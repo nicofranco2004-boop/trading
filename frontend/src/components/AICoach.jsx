@@ -34,8 +34,9 @@ import { usePegadoAlFondo } from '../hooks/usePegadoAlFondo'
 import { SUGERIDAS, SUGERIDAS_ASESOR } from './ai/preguntasSugeridas'
 import MervallE from './ai/MervallE'
 import { avisarTipeo, avisarMicrofono } from './ai/mervalle/motor'
-import { useEstadoMervallE, useSaludoDelDia, enEscena, formaDePortada, avisarPortada, ANCHO_COMPANERO } from './ai/mervalle/estadoDelChat'
-import { useIsMobile, useAnchoMinimo } from '../hooks/useIsMobile'
+import { useEstadoMervallE, useSaludoDelDia, enEscena, formaDePortada, avisarPortada } from './ai/mervalle/estadoDelChat'
+import CuadroMervallE from './ai/CuadroMervallE'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { PRO_FEATURES, CUPO_CHAT } from '../data/planCatalog'
 import { cupoDe } from '../data/prueba'
 
@@ -223,12 +224,11 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
   const esCelular = useIsMobile()
   // UNO SOLO EN ESCENA en /ai (la regla vive en estadoDelChat.enEscena y la
   // lee también la cabecera de RendiAI): con el chat vacío, la portada; con
-  // conversación y lugar al costado, el compañero del cuadro de texto (el
-  // único lugar donde se ve el monitor del pecho reaccionar); sin lugar
-  // (celular, tablet), la cabecera.
-  const hayLugarAlCostado = useAnchoMinimo(ANCHO_COMPANERO)
-  const escena = enEscena({ hayConversacion: messages.length > 0, hayLugarAlCostado: fullHeight && hayLugarAlCostado })
-  const conCompanero = escena === 'companero'
+  // conversación, el cuadro de cuerpo entero (CuadroMervallE): al costado del
+  // chat si hay lugar, en la esquina si no. Sólo en la página /ai: el chat
+  // chico embebido no tiene dónde ponerlo.
+  const escena = enEscena({ hayConversacion: messages.length > 0 })
+  const conCompanero = fullHeight && escena === 'companero'
   // La portada: el Mervall-E que ENTRA (es lo único que se achica). Si no
   // entra ni la cabeza, no va. El lugar disponible NO es el alto de la zona:
   // con el chat vacío la zona mide lo que su contenido, así que sin personaje
@@ -286,7 +286,7 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
 
   return (
     <div className={fullHeight
-      ? 'flex flex-col h-full min-h-0'
+      ? 'relative flex flex-col h-full min-h-0'
       : 'bg-bg-2/60 border border-line/80 dark:border-line/50 shadow-sm dark:shadow-none rounded-xl overflow-hidden flex flex-col'}>
       {/* Header — solo en modo embebido; la página /ai trae su propio chrome */}
       {!fullHeight && (
@@ -334,6 +334,10 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
         </div>
       </div>
       )}
+
+      {/* Mervall-E de cuerpo entero mientras charlás: al costado del chat si
+          hay lugar, en la esquina (arrastrable) si no. Ver CuadroMervallE. */}
+      {conCompanero && <CuadroMervallE estado={mervalle.estado} tono={mervalle.tono} />}
 
       {/* Mensajes */}
       <div
@@ -660,16 +664,6 @@ export default function AICoach({ snapshot, suggested, autoAsk, onAutoAskUsado, 
         })()}
         {mic.aviso && <div className="mb-2">{mic.aviso}</div>}
         <div className="flex items-end gap-3">
-        {/* EL COMPAÑERO, al costado del cuadro (desde 1024 px, con conversación):
-            mira lo que escribís, piensa, habla y reacciona. A 60 px el monitor
-            del pecho se lee por el COLOR (verde, ámbar o rojo con el tono de la
-            respuesta), no por el dibujo: las velas y las barras son de 1 px.
-            Sin él, el pecho sólo existía en la portada vacía y no se veía nunca
-            en una conversación (auditoría 2026-10-04). */}
-        {conCompanero && (
-          <MervallE size={60} forma="bust" escucha estado={mervalle.estado} tono={mervalle.tono}
-            className="mb-7" />
-        )}
         <div className="flex-1 min-w-0">
         <form
           onSubmit={handleFreeSubmit}

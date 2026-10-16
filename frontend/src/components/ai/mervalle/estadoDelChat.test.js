@@ -168,17 +168,15 @@ describe('finDeTurnoQueCuenta — sólo un turno que trajo respuesta', () => {
 })
 
 describe('enEscena — uno solo se mueve en /ai', () => {
-  it('chat vacío → la portada, haya o no lugar al costado', () => {
-    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: true })).toBe('portada')
-    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: false })).toBe('portada')
+  it('chat vacío → la portada', () => {
+    expect(enEscena({ hayConversacion: false })).toBe('portada')
   })
-  it('con conversación: el compañero si hay lugar, la cabecera si no (celular, tablet)', () => {
-    expect(enEscena({ hayConversacion: true, hayLugarAlCostado: true })).toBe('companero')
-    expect(enEscena({ hayConversacion: true, hayLugarAlCostado: false })).toBe('cabecera')
+  it('con conversación: el cuadro de cuerpo entero, en cualquier tamaño de pantalla', () => {
+    expect(enEscena({ hayConversacion: true })).toBe('companero')
+    expect(enEscena({ hayConversacion: true, hayPortada: false })).toBe('companero')
   })
   it('chat vacío SIN lugar para la portada (iPhone SE, Safari con barras): la cabecera toma el turno', () => {
-    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: false, hayPortada: false })).toBe('cabecera')
-    expect(enEscena({ hayConversacion: false, hayLugarAlCostado: true, hayPortada: false })).toBe('cabecera')
+    expect(enEscena({ hayConversacion: false, hayPortada: false })).toBe('cabecera')
   })
   it('sinPensando deja todo igual menos "pensando"', () => {
     expect(sinPensando('pensando')).toBe('reposo')
