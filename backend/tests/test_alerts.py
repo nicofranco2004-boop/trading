@@ -742,17 +742,52 @@ def _cierre_ts(dia_iso):
     return int(_dt.datetime(d.year, d.month, d.day, 16, 0, tzinfo=_fdh.ZONA_NY).timestamp())
 
 
+def _fijar_hora(monkeypatch, ahora=_A_LAS_858):
+    """La hora argentina de la prueba, en los DOS relojes que lee el motor:
+    `fechas.ahora_art` (el calendario: qué día es, contra qué cierre se mide) y
+    el `utcnow()` de `evaluate_alerts` (con el que estampa los avisos y borra
+    las anotaciones de movimientos de hace más de 10 días).
+
+    Va ANTES de cualquier cosa que lea el calendario (`_base_de_la_rueda`,
+    `_sesion_hoy`, una rueda). Con el reloj de verdad las pruebas sólo andaban
+    cerca del día en que se escribieron (2026-10-15): al otro día el «cierre de
+    ayer» de la prueba ya no era el del motor (fallaban 8, a cualquier hora), y
+    diez días después la poda borraba el «ya avisé» a mitad de la prueba."""
+    monkeypatch.setattr("fechas.ahora_art", lambda: ahora)
+
+    class _Reloj(datetime):
+        @classmethod
+        def utcnow(cls):
+            return ahora + timedelta(hours=3)       # la Argentina es UTC−3 todo el año
+    monkeypatch.setattr(ae, "datetime", _Reloj)
+
+
 def _cot(sym, pct, estado="PRE", cierre=None):
     """Pre (o post, con estado="POST") contra el cierre `cierre` (por defecto el
-    del día hábil anterior: el mismo contra el que mide la «Var. día» de hoy)."""
-    rmt = _cierre_ts(cierre or ae._base_de_la_rueda(sym))
-    if estado == "POST":
+    del día hábil anterior: el mismo contra el que mide la «Var. día» de hoy).
+
+    Devuelve la RECETA, no la cotización: la arma `_como_yahoo` cuando el motor
+    le pregunta a Yahoo, con la hora que fijó la prueba. Armada acá, el cierre por
+    defecto salía del reloj de verdad, porque los argumentos de `_fuera(...)` se
+    evalúan antes de que `_fuera` fije la hora."""
+    def armar():
+        rmt = _cierre_ts(cierre or ae._base_de_la_rueda(sym))
+        if estado == "POST":
+            return {"symbol": sym, "marketState": estado, "market": "us_market",
+                    "regularMarketTime": rmt, "regularMarketPrice": 100.0,
+                    "postMarketChangePercent": pct, "postMarketTime": rmt + 3600, "postMarketPrice": 100 + pct}
         return {"symbol": sym, "marketState": estado, "market": "us_market",
                 "regularMarketTime": rmt, "regularMarketPrice": 100.0,
-                "postMarketChangePercent": pct, "postMarketTime": rmt + 3600, "postMarketPrice": 100 + pct}
-    return {"symbol": sym, "marketState": estado, "market": "us_market",
-            "regularMarketTime": rmt, "regularMarketPrice": 100.0,
-            "preMarketChangePercent": pct, "preMarketTime": rmt + 15 * 3600, "preMarketPrice": 100 + pct}
+                "preMarketChangePercent": pct, "preMarketTime": rmt + 15 * 3600, "preMarketPrice": 100 + pct}
+    return armar
+
+
+def _como_yahoo(cotizaciones):
+    """El `_pedir_yahoo` de la prueba: arma las cotizaciones (`_cot`) recién
+    cuando se las piden."""
+    def pedir(simbolos):
+        return [c for c in (armar() for armar in cotizaciones) if c["symbol"] in simbolos]
+    return pedir
 
 
 def _con_velas(cuantas, hora=8):
@@ -769,11 +804,10 @@ def _con_velas(cuantas, hora=8):
 
 
 def _fuera(monkeypatch, cotizaciones, velas, ahora=_A_LAS_858, hora_velas=8):
+    _fijar_hora(monkeypatch, ahora)
     _fdh._vaciar_cache()
-    monkeypatch.setattr(_fdh, "_pedir_yahoo",
-                        lambda simbolos: [c for c in cotizaciones if c["symbol"] in simbolos])
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", _como_yahoo(cotizaciones))
     monkeypatch.setattr(_fdh, "_traer_velas", _con_velas(velas, hora_velas))
-    monkeypatch.setattr("fechas.ahora_art", lambda: ahora)
     # Fuera de la rueda no hay «Var. día» de hoy: el camino de siempre no dispara.
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
 
@@ -932,8 +966,7 @@ def _rueda(monkeypatch, pct, sym="NVDA"):
     """La rueda normal: Yahoo dice REGULAR (no hay pre ni post) y la «Var. día»
     de hoy trae `pct`."""
     _fdh._vaciar_cache()
-    monkeypatch.setattr(_fdh, "_pedir_yahoo",
-                        lambda simbolos: [_cot("SPY", 0.1, estado="REGULAR")])
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", _como_yahoo([_cot("SPY", 0.1, estado="REGULAR")]))
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {sym: _q(100 + pct, pct, sym=sym)})
 
 
@@ -976,6 +1009,7 @@ def test_caso3_pre_mas_3_y_abre_menos_3_avisa_las_dos(clean, monkeypatch):
 def test_caso4_rueda_mas_3_y_post_otro_mas_3_avisa_las_dos(clean, monkeypatch):
     conn = clean
     _alerta_nvda(conn)
+    _fijar_hora(monkeypatch)
     _rueda(monkeypatch, 3.2)
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
     hoy = ae._sesion_hoy("NVDA")
@@ -989,6 +1023,7 @@ def test_caso4_rueda_mas_3_y_post_otro_mas_3_avisa_las_dos(clean, monkeypatch):
 def test_caso5_post_de_anoche_y_pre_de_hoy_es_el_mismo_movimiento(clean, monkeypatch):
     conn = clean
     _alerta_nvda(conn)
+    _fijar_hora(monkeypatch)
     ayer = ae._base_de_la_rueda("NVDA")
     # Anoche, en el post: +3,3 % contra el cierre de ayer.
     _fuera(monkeypatch, [_cot("SPY", 0.2, estado="POST", cierre=ayer),
@@ -1076,12 +1111,12 @@ def test_el_ciclo_no_tiene_tomada_la_base_mientras_espera_a_yahoo(clean, monkeyp
 
     def yahoo(simbolos):
         vistos["pre_post"] = _otra_conexion_puede_escribir()
-        return [_cot("SPY", 0.1), _cot("NVDA", 0.5)]
+        return _como_yahoo([_cot("SPY", 0.1), _cot("NVDA", 0.5)])(simbolos)
 
     _fdh._vaciar_cache()
     monkeypatch.setattr(ae, "_quotes_for", quotes)
     monkeypatch.setattr(_fdh, "_pedir_yahoo", yahoo)
-    monkeypatch.setattr("fechas.ahora_art", lambda: _A_LAS_858)
+    _fijar_hora(monkeypatch)
     ae.evaluate_alerts(conn, only_user=1)
     assert vistos == {"precios": True, "pre_post": True}
 
@@ -1151,6 +1186,7 @@ def test_si_arranca_en_el_doble_es_un_solo_aviso(clean, monkeypatch):
 def test_doble_del_post_de_anoche_en_el_pre(clean, monkeypatch):
     conn = clean
     _alerta_nvda(conn)
+    _fijar_hora(monkeypatch)
     ayer = ae._base_de_la_rueda("NVDA")
     _fuera(monkeypatch, [_cot("SPY", 0.2, estado="POST", cierre=ayer),
                          _cot("NVDA", 3.3, estado="POST", cierre=ayer)], {"NVDA": 6}, hora_velas=17)
@@ -1202,12 +1238,12 @@ def test_el_dia_despues_de_un_feriado_argentino_el_cedear_avisa_una_vez(clean, m
     monkeypatch.setattr(_fdh, "_traer_velas", velas)
     cots = [_pre_desde("SPY", 0.2, "2026-10-12"), _pre_desde("AAPL", 3.4, "2026-10-12")]
     monkeypatch.setattr(_fdh, "_pedir_yahoo", lambda s: [c for c in cots if c["symbol"] in s])
-    monkeypatch.setattr("fechas.ahora_art", lambda: datetime(2026, 10, 13, 9, 0))
+    _fijar_hora(monkeypatch, datetime(2026, 10, 13, 9, 0))
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
 
     _fdh._vaciar_cache()
-    monkeypatch.setattr("fechas.ahora_art", lambda: datetime(2026, 10, 13, 12, 0))
+    _fijar_hora(monkeypatch, datetime(2026, 10, 13, 12, 0))
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL.BA": _q(1000, 3.6, sym="AAPL.BA")})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
     assert [e["message"] for e in _events(conn)] == [
@@ -1235,7 +1271,7 @@ def _invierno_nvda(monkeypatch, tenencias, falla_la_primera=False):
     monkeypatch.setattr(_fdh, "_traer_velas", velas)
     cots = [_pre_desde("SPY", 0.2, "2026-11-16"), _pre_desde("NVDA", 3.5, "2026-11-16")]
     monkeypatch.setattr(_fdh, "_pedir_yahoo", lambda s: [c for c in cots if c["symbol"] in s])
-    monkeypatch.setattr("fechas.ahora_art", lambda: datetime(2026, 11, 17, 9, 0))
+    _fijar_hora(monkeypatch, datetime(2026, 11, 17, 9, 0))
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {})
 
 
