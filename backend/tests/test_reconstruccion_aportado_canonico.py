@@ -47,6 +47,7 @@ import sys
 import time
 import unittest
 import uuid
+from datetime import date
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -60,8 +61,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
 # AAPL a fin de cada mes: marzo de 2025 200, julio 240, septiembre 260, y sigue
 # subiendo 10 por mes (así todo mes cerrado, también los de 2026, tiene precio).
+# Hasta diciembre del año que viene, contado desde hoy: con 48 meses fijos
+# (hasta 2028-12) la prueba se ponía roja sola en 2029.
 PRECIOS = {f"{2025 + (n - 1) // 12}-{(n - 1) % 12 + 1:02d}": 200.0 + 10 * (n - 3)
-           for n in range(1, 49)}
+           for n in range(1, (date.today().year + 2 - 2025) * 12 + 1)}
 # Lo que el Dashboard dibuja (frontend/src/utils/evolution.js, ACEPTA_LINEA).
 ACEPTA_LINEA = ("medicion", "reconstruido", "intradia")
 

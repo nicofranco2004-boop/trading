@@ -19,12 +19,14 @@ from importing.persister import _backfill_snapshots_from_monthly
 
 
 def _precios(**por_mes):
-    """Yahoo de mentira con un cierre para CADA mes de 2024-08 a 2027-12, como el
-    real. La reconstrucción cubre todos los meses cerrados desde el primero de la
-    contabilidad, no sólo los que tienen fila: después de octubre la persona sigue
-    con sus 10 AAPL. Los meses que no se nombran repiten el cierre de octubre."""
+    """Yahoo de mentira con un cierre para CADA mes de 2024-08 a diciembre del año
+    que viene (contado desde hoy), como el real. La reconstrucción cubre todos los
+    meses cerrados desde el primero de la contabilidad, no sólo los que tienen fila:
+    después de octubre la persona sigue con sus 10 AAPL. Los meses que no se nombran
+    repiten el cierre de octubre. Con el tope escrito a mano («2027-12») la cobertura
+    bajaba de 1 y la prueba se ponía roja sola desde febrero de 2028."""
     out, y, m = {}, 2024, 8
-    while (y, m) <= (2027, 12):
+    while (y, m) <= (date.today().year + 1, 12):
         out[f"{y}-{m:02d}"] = 275.0
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     out.update({k.replace("_", "-")[1:]: v for k, v in por_mes.items()})

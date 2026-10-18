@@ -20,6 +20,7 @@ import os
 import sys
 import unittest
 import uuid
+from datetime import date
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,7 +30,13 @@ import main  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 FECHA = "2025-10-13"
-MESES = [f"{2025 + (i // 12)}-{i % 12 + 1:02d}" for i in range(9, 22)]   # 2025-10 … 2026-10
+# De 2025-10 hasta el mes de HOY (como el día en que se escribió, 2026-10): con la
+# serie cortada en 2026-10 la inflación del período se quedaba sin meses y la
+# prueba se ponía roja sola (medido: ya en enero de 2028). No llega al futuro: un
+# dólar con fecha de mañana sería «el último» para quien lo busque.
+_HOY = date.today()
+MESES = [f"{2025 + (i // 12)}-{i % 12 + 1:02d}"
+         for i in range(9, (_HOY.year - 2025) * 12 + _HOY.month)]   # 2025-10 … el mes de hoy
 
 
 class LaIaNoComparaLaContabilidadAlCosto(unittest.TestCase):
@@ -37,7 +44,8 @@ class LaIaNoComparaLaContabilidadAlCosto(unittest.TestCase):
     def setUp(self):
         conn = main.get_db()
         try:
-            conn.execute("DELETE FROM fx_rates_daily WHERE date >= '2025-09-01' AND date < '2026-11-01'")
+            conn.execute("DELETE FROM fx_rates_daily WHERE date >= '2025-09-01' AND date <= ?",
+                         (MESES[-1] + "-31",))
             for i, ym in enumerate(MESES):
                 v = 1400.0 * 1.02 ** i
                 conn.execute(
