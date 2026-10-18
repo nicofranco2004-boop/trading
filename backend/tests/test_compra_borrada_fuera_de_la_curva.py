@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import unittest
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SECRET_KEY", "test-secret")
@@ -35,9 +36,12 @@ import scripts.backfill_historical_mtm as bf  # noqa: E402
 from tests.test_reconstruccion_sigue_a_la_contabilidad import _Despues  # noqa: E402
 
 # Cierre de cada mes: AAPL 200 en marzo de 2025 y +10 por mes; MSFT 300 y +20.
+# Los años llegan hasta el que viene, contados desde hoy: la reconstrucción pide
+# un cierre por cada mes hasta HOY, y con la tabla cortada en 2026 la prueba se
+# ponía roja sola desde el 31/01/2027 (KeyError: '2027-01').
 def _serie(base, paso):
     return {f"{y}-{m:02d}": base + paso * min(max((y - 2025) * 12 + m - 3, 0), 7)
-            for y in (2025, 2026) for m in range(1, 13)}
+            for y in range(2025, date.today().year + 2) for m in range(1, 13)}
 
 
 PRECIO = {"AAPL": _serie(200.0, 10.0), "MSFT": _serie(300.0, 20.0)}

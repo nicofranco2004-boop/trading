@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import unittest
+from datetime import date
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,8 +50,11 @@ class _ContraElCron(_Despues):
 
     def setUp(self):
         super().setUp()
+        # Hasta el año que viene, contado desde hoy (con la tabla cortada en 2026,
+        # desde 2027 los meses nuevos se quedaban sin cierre).
         bf._fetch_monthly_close = lambda key, start: {
-            f"{y}-{m:02d}": 200.0 for y in (2025, 2026) for m in range(1, 13)}
+            f"{y}-{m:02d}": 200.0 for y in range(2025, date.today().year + 2)
+            for m in range(1, 13)}
         for p in (mock.patch.object(sj, "fetch_prices_for_symbols", _px),
                   mock.patch.object(sj, "apply_last_known_prices", lambda *a, **k: {})):
             p.start()

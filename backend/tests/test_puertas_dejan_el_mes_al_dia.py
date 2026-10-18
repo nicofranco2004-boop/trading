@@ -58,6 +58,10 @@ import realized_pnl
 # Ayer: ni futura (el cobro de un cupón la rechaza) ni pegada al cambio de día
 # entre el reloj del servidor (UTC) y el argentino.
 AYER = (date.today() - timedelta(days=1)).isoformat()
+# Un corte de dividendo de hace dos semanas: el cobro (AYER) tiene que caer dentro
+# de los 45 días del corte. Con el corte escrito a mano («2026-09-15») la prueba
+# se ponía roja sola desde el 31/10/2026.
+CORTE_RECIENTE = (date.today() - timedelta(days=15)).isoformat()
 DOLAR = 1250.0
 
 
@@ -318,7 +322,7 @@ class LasDemasPuertas(_Base):
         self.conn.commit()
         self.ia_con_datos_viejos()
         self._ok(self.http.post("/api/dividendos/cobro", json=dict(
-            broker=self.PESOS, asset="KO", ex_date="2026-09-15", fecha=AYER,
+            broker=self.PESOS, asset="KO", ex_date=CORTE_RECIENTE, fecha=AYER,
             bruto=15.90, impuesto=4.77, otros=0.80, comision_pesos=0, cedears=150)))
         self.al_dia({f"{self.PESOS} · USD": 10.33, "global": 10.33})
 

@@ -52,8 +52,11 @@ from tests.test_reconstruccion_aportado_canonico import _Cuenta  # noqa: E402
 
 # AAPL a fin de mes: 200 en marzo de 2025 y +10 por mes hasta 270 en octubre;
 # de ahí en adelante, 270.
+# Los años llegan hasta el que viene, contados desde hoy: la reconstrucción pide
+# un cierre por cada mes hasta HOY, y con la tabla cortada en 2026 la prueba se
+# ponía roja sola desde el 31/01/2027 (KeyError: '2027-01').
 PRECIOS = {f"{y}-{m:02d}": (200.0 + 10 * min(max((y - 2025) * 12 + m - 3, 0), 7))
-           for y in (2025, 2026) for m in range(1, 13)}
+           for y in range(2025, date.today().year + 2) for m in range(1, 13)}
 
 IBKR = (
     "2025-03-03,DEPOSITO,IBKR,,,,10000,,,0,USD,",

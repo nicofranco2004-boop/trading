@@ -149,20 +149,22 @@ class TestLocalSaveAndPrune(unittest.TestCase):
         """Borra solo lo que está más viejo que keep_days."""
         os.makedirs(self.backup_dir, exist_ok=True)
         now = datetime.now(timezone.utc)
-        # Crear backups con mtime variado
-        files = {
-            'trading-2026-05-30.db.gz': now - timedelta(days=1),    # fresh
-            'trading-2026-05-15.db.gz': now - timedelta(days=16),   # fresh para keep=30
-            'trading-2026-04-01.db.gz': now - timedelta(days=60),   # OLD
-            'trading-2026-01-15.db.gz': now - timedelta(days=200),  # OLD
-        }
+        # Crear backups con mtime variado. El NOMBRE lleva la fecha de su mtime,
+        # como los que escribe el backup de verdad: `prune_local_backups` mira el
+        # nombre para «el primero de cada mes del último año». Con nombres
+        # escritos a mano («2026-01-15») la prueba se ponía roja sola cuando ese
+        # nombre cumplía un año (16/01/2027).
+        files = {f'trading-{t:%Y-%m-%d}.db.gz': t for t in (
+            now - timedelta(days=1),    # fresh
+            now - timedelta(days=16),   # fresh para keep=30
+            now - timedelta(days=60),   # OLD
+            now - timedelta(days=200),  # OLD
+        )}
         # Pero hay que preservar 'primer de cada mes' del último año.
         # Para este test usamos keep_days=30 y monthly preservation:
-        # - 2026-05-30 → joven, queda
-        # - 2026-05-15 → joven, queda (y es el primer de mayo en este set,
-        #               pero también es el más viejo de mayo, así que ya es primero)
-        # - 2026-04-01 → > 30 días, PERO es primero de abril, lo preservamos
-        # - 2026-01-15 → > 30 días, PERO es primero de enero, lo preservamos
+        # - hace 1 y 16 días → jóvenes, quedan
+        # - hace 60 días → > 30 días, PERO es el único (primero) de su mes, lo preservamos
+        # - hace 200 días → > 30 días, PERO es el único (primero) de su mes, lo preservamos
 
         for fname, mtime in files.items():
             path = Path(self.backup_dir) / fname
@@ -183,12 +185,14 @@ class TestLocalSaveAndPrune(unittest.TestCase):
         se preserva. Los del medio se borran si > keep_days."""
         os.makedirs(self.backup_dir, exist_ok=True)
         now = datetime.now(timezone.utc)
-        # 3 backups en abril, todos > 30 días, todos < 365 días
-        files = {
-            'trading-2026-04-01.db.gz': now - timedelta(days=60),   # primer de abril → preservar
-            'trading-2026-04-15.db.gz': now - timedelta(days=46),   # medio mes → borrar
-            'trading-2026-04-30.db.gz': now - timedelta(days=31),   # finde mes → borrar
-        }
+        # 3 backups en un mismo mes de hace unos cuatro meses: todos > 30 días,
+        # todos < 365 días. El mes se cuenta desde hoy: con «abril de 2026»
+        # escrito a mano, el 1/4 salía del año preservado el 2/4/2027 y la
+        # prueba se ponía roja sola.
+        mes = (now - timedelta(days=120)).replace(day=1, hour=12, minute=0)
+        dias = (mes, mes + timedelta(days=14), mes + timedelta(days=27))
+        files = {f'trading-{t:%Y-%m-%d}.db.gz': t for t in dias}
+        # el primero del mes → preservar; los otros dos (medio mes, fin de mes) → borrar
         for fname, mtime in files.items():
             path = Path(self.backup_dir) / fname
             path.write_bytes(b'x')
@@ -199,7 +203,7 @@ class TestLocalSaveAndPrune(unittest.TestCase):
         self.assertEqual(deleted, 2)
 
         remaining = sorted([f.name for f in Path(self.backup_dir).iterdir()])
-        self.assertEqual(remaining, ['trading-2026-04-01.db.gz'])
+        self.assertEqual(remaining, [f'trading-{mes:%Y-%m-%d}.db.gz'])
 
 
 class TestRunBackupPipeline(unittest.TestCase):

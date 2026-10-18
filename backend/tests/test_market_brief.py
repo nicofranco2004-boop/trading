@@ -453,8 +453,8 @@ class MarketBriefTest(unittest.TestCase):
     # ── la narración ─────────────────────────────────────────────────────────
 
     def _macro(self, title, hours_ago=4, categoria="macro",
-               query="Federal Reserve interest rates"):
-        ahora = datetime.utcnow()
+               query="Federal Reserve interest rates", ahora=None):
+        ahora = ahora or datetime.utcnow()
         conn = main.get_db()
         try:
             conn.execute(
@@ -548,11 +548,18 @@ class MarketBriefTest(unittest.TestCase):
         Ya pasó de verdad, aunque del lado bueno: las primeras búsquedas de
         petróleo trajeron notas del 19 de agosto y la ventana las descartó.
         """
-        self._macro("Noticia de esta mañana", hours_ago=3)
+        # Las horas se cuentan desde las 11:00 argentinas de hoy (14:00 UTC), la
+        # hora del mail, y no desde el reloj: la ventana corta a una medianoche
+        # comparando contra `published_at` en UTC (holgura de 3 h a propósito,
+        # ver `_news_window_start`). Un lunes después de las 21:00, «hace cuatro
+        # días» en UTC ya caía el viernes, adentro de la ventana, y la prueba se
+        # ponía roja sola.
+        once = datetime.fromisoformat(market_brief._today_art()) + timedelta(hours=14)
+        self._macro("Noticia de esta mañana", hours_ago=3, ahora=once)
         self._macro("Noticia de hace tres semanas", hours_ago=24 * 21,
-                    query="US CPI inflation")
+                    query="US CPI inflation", ahora=once)
         self._macro("Noticia de hace cuatro días", hours_ago=24 * 4,
-                    query="Merval acciones Argentina")
+                    query="Merval acciones Argentina", ahora=once)
 
         conn = main.get_db()
         try:

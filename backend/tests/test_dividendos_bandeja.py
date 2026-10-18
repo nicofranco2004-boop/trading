@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,7 @@ os.environ["DB_PATH"] = TMP_DB.name
 from fastapi.testclient import TestClient  # noqa: E402
 
 import dividendos  # noqa: E402
+import fechas  # noqa: E402
 import main  # noqa: E402
 
 HDR = "fecha,tipo,broker,activo,cantidad,precio,monto,monto_usd,tc,comisiones,moneda,notas\n"
@@ -432,11 +434,15 @@ class Historial(_Base):
 
     def test_trae_lo_que_pago_cada_empresa_y_las_reglas_y_usa_la_cache(self):
         llamadas = []
+        # Un corte de hace un mes, contado con el MISMO calendario que el
+        # servidor: el historial trae los últimos `dias_hacia_atras` (120) días.
+        # Con CORTE («2026-09-15») la prueba se ponía roja sola desde el 14/01/2027.
+        reciente = (fechas.hoy_art_date() - timedelta(days=30)).isoformat()
 
         def falso(pedido):
             llamadas.append(pedido)
             ticker, con_emisor = pedido
-            return {"pagos": [("2020-01-01", 0.40), (CORTE, 0.53)],
+            return {"pagos": [("2020-01-01", 0.40), (reciente, 0.53)],
                     "pais": "United States" if con_emisor else None,
                     "tipo": "EQUITY" if con_emisor else None}
 
@@ -448,7 +454,7 @@ class Historial(_Base):
             ko = body["tickers"]["KO"]
             self.assertEqual(ko["pais"], "United States")
             # Lo de 2020 queda fuera de la ventana.
-            self.assertEqual(ko["pagos"], [{"ex_date": CORTE, "por_accion": 0.53}])
+            self.assertEqual(ko["pagos"], [{"ex_date": reciente, "por_accion": 0.53}])
             # La segunda vez sale de la caché: Yahoo no se vuelve a llamar.
             self.client.get("/api/dividendos/historial", params={"tickers": "KO"})
         self.assertEqual(llamadas, [("KO", True)])
