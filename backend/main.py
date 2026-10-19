@@ -46161,11 +46161,39 @@ class AlertCreateIn(BaseModel):
 class AlertUpdateIn(BaseModel):
     active: Optional[bool] = None
     threshold: Optional[float] = Field(None, gt=0, le=1e12)
+    # pct_move: los % se editan desde el formulario de /alertas. 0 = «sin ese
+    # lado» (se guarda NULL); tiene que quedar al menos uno.
+    up_pct: Optional[float] = Field(None, ge=0, le=100000)
+    down_pct: Optional[float] = Field(None, ge=0, le=100000)
     direction: Optional[str] = Field(None, max_length=8)
     channel: Optional[str] = Field(None, max_length=8)
     repeat: Optional[str] = Field(None, max_length=8)
     cooldown_min: Optional[int] = Field(None, ge=0, le=100000)
     note: Optional[str] = Field(None, max_length=200)
+
+    # Los mismos valores válidos que el alta (AlertCreateIn). Antes la edición
+    # no validaba: un PATCH con channel='x' quedaba guardado y el motor no
+    # mandaba ni push ni mail, sin ningún error.
+    @field_validator('direction')
+    @classmethod
+    def _v_dir(cls, v):
+        if v is not None and v not in ('above', 'below', 'either'):
+            raise ValueError('direction inválido')
+        return v
+
+    @field_validator('channel')
+    @classmethod
+    def _v_chan(cls, v):
+        if v is not None and v not in ('push', 'email', 'both'):
+            raise ValueError('channel inválido')
+        return v
+
+    @field_validator('repeat')
+    @classmethod
+    def _v_rep(cls, v):
+        if v is not None and v not in ('once', 'daily', 'always'):
+            raise ValueError('repeat inválido')
+        return v
 
 
 def _alert_row_to_dict(r) -> dict:
@@ -46296,6 +46324,14 @@ def alerts_update(alert_id: int, data: AlertUpdateIn, uid: int = Depends(get_eff
         if not row:
             raise HTTPException(404, "Alerta no encontrada.")
         sets, params = [], []
+        if data.up_pct is not None or data.down_pct is not None:
+            if row["kind"] != "pct_move":
+                raise HTTPException(400, "Los % son sólo de los avisos por movimiento.")
+            up = row["up_pct"] if data.up_pct is None else (data.up_pct or None)
+            down = row["down_pct"] if data.down_pct is None else (data.down_pct or None)
+            if not up and not down:
+                raise HTTPException(400, "Poné al menos uno de los dos %.")
+            sets += ["up_pct=?", "down_pct=?"]; params += [up, down]
         for col in ("threshold", "cooldown_min", "note"):
             val = getattr(data, col)
             if val is not None:

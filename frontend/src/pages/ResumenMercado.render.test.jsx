@@ -11,7 +11,7 @@ import { MemoryRouter } from 'react-router-dom'
 vi.mock('../components/Toast', () => ({ useToast: () => ({ push: () => {} }) }))
 
 import ResumenMercadoCuerpo from '../components/alerts/ResumenMercadoCuerpo'
-import MarketBriefPrefs from '../components/alerts/MarketBriefPrefs'
+import CrearAlerta from '../components/alerts/CrearAlerta'
 import { subtituloDelResumen, hoyArgentina, fechaLarga } from './ResumenMercado'
 import fuenteDeApp from '../App.jsx?raw'
 
@@ -77,7 +77,8 @@ describe('el ejemplo de la card usa el mismo cuerpo', () => {
   it('se dibuja sin romperse', () => {
     // Cerrado no muestra el ejemplo; alcanza con que la card monte con el
     // cuerpo compartido importado.
-    const html = renderToStaticMarkup(<MemoryRouter><MarketBriefPrefs /></MemoryRouter>)
+    const resumen = { cargado: true, prendido: false, error: false, cargar: () => {}, cambiar: () => {} }
+    const html = renderToStaticMarkup(<MemoryRouter><CrearAlerta resumen={resumen} onCrearAviso={() => {}} /></MemoryRouter>)
     expect(html).toContain('Resumen del mercado')
   })
 })

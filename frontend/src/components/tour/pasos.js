@@ -76,6 +76,9 @@ export const PASOS = [
     id: 'resumen-mercado',
     marca: 'resumen-mercado',
     ruta: '/alertas',
+    // La pestaña «Crear alerta»: ahí están las dos tarjetas que se resaltan,
+    // tenga o no alertas armadas la persona (sin ?tab entraría en «Mis alertas»).
+    busqueda: '?tab=crear',
     titulo: 'Enterate sin entrar',
     texto: 'Prendé esto y cada mañana te llega un mail con lo que pasó desde que cerró '
       + 'el mercado: las tasas, el dólar, la inflación, el petróleo — y qué de todo eso '
@@ -85,6 +88,9 @@ export const PASOS = [
     id: 'alertas-precio',
     marca: 'nueva-alerta',
     ruta: '/alertas',
+    // La pestaña «Crear alerta»: ahí están las dos tarjetas que se resaltan,
+    // tenga o no alertas armadas la persona (sin ?tab entraría en «Mis alertas»).
+    busqueda: '?tab=crear',
     titulo: 'Y avisos cuando algo se mueve',
     texto: 'Acá pedís que te avisemos si un activo llega a cierto precio, o si alguno de '
       + 'los tuyos sube o baja más de lo que vos digas. Te llega por mail y al teléfono.',

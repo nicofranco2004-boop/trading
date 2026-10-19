@@ -550,7 +550,10 @@ def _deliver(conn, alert, items) -> tuple:
                 # Iba a /config?tab=notificaciones: ruta MUERTA desde que las
                 # alertas se mudaron a /alertas (en Config ya no existe esa
                 # pestana), asi que tocar el push caia en Config > Cuenta.
-                "url": "/dashboard",
+                # Despues fue /dashboard, que no dice nada del aviso. Ahora abre
+                # «Mis alertas»: la alerta que salto, con su estado y para
+                # pausarla.
+                "url": "/alertas?tab=mis",
                 "tag": (f"alert-{alert['id']}-{items[0]['symbol'] or ''}"
                         if len(items) == 1 else f"alert-{alert['id']}-grupo"),
             })

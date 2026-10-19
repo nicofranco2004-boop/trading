@@ -1326,3 +1326,39 @@ def test_los_dias_de_byma_se_piden_sin_la_base_tomada(clean, monkeypatch):
         ae.evaluate_alerts(conn, only_user=1)
     assert {n for n, _ in vistos} >= {"_pedir_yahoo", "_traer_velas", "_traer_sesiones_byma"}
     assert not any(t for _, t in vistos), vistos
+
+
+# ── Editar desde el formulario de /alertas ───────────────────────────────────
+
+def test_patch_edita_los_porcentajes_de_un_aviso_por_movimiento(clean):
+    """El formulario nuevo deja cambiar los % de un aviso por movimiento. Antes
+    el PATCH no los conocía: se ignoraban en silencio y la pantalla mostraba
+    «guardado» con los números viejos."""
+    conn = clean
+    aid = _mk_alert(conn, user_id=2, kind="pct_move", scope="holdings", symbol=None,
+                    up_pct=8.0, down_pct=5.0, threshold=None)
+    main.alerts_update(aid, main.AlertUpdateIn(up_pct=0, down_pct=7), uid=2)
+    row = conn.execute("SELECT up_pct, down_pct FROM alerts WHERE id=?", (aid,)).fetchone()
+    assert row["up_pct"] is None and row["down_pct"] == 7
+
+    # Los dos vacíos no: quedaría un aviso que no avisa nunca.
+    with pytest.raises(main.HTTPException) as e:
+        main.alerts_update(aid, main.AlertUpdateIn(down_pct=0), uid=2)
+    assert e.value.status_code == 400
+
+
+def test_patch_porcentaje_en_aviso_de_precio_es_error(clean):
+    aid = _mk_alert(clean)
+    with pytest.raises(main.HTTPException) as e:
+        main.alerts_update(aid, main.AlertUpdateIn(up_pct=5), uid=1)
+    assert e.value.status_code == 400
+
+
+def test_patch_valida_canal_como_el_alta(clean):
+    """El alta rechazaba un canal inventado y la edición lo guardaba: el motor
+    después no mandaba ni push ni mail."""
+    with pytest.raises(ValueError):
+        main.AlertUpdateIn(channel="fax")
+    with pytest.raises(ValueError):
+        main.AlertUpdateIn(repeat="nunca")
+    assert main.AlertUpdateIn(channel="email").channel == "email"

@@ -48,8 +48,8 @@ export function AlertsProvider({ children }) {
   }, [refresh])
 
   // Refrescar al volver a la pestaña (throttle 60s) → capta alertas nuevas sin
-  // polling constante. No afecta la vista de /alertas (AlertsManager tiene su
-  // propia instancia de useAlerts); acá sólo mueve el contador del sidebar.
+  // polling constante. No afecta la vista de /alertas (la página Alertas tiene
+  // su propia instancia de useAlerts); acá sólo mueve el contador del sidebar.
   const lastRefreshRef = useRef(0)
   useEffect(() => {
     const onVisible = () => {

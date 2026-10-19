@@ -45,7 +45,7 @@ export default function TourNovedades() {
   const [i, setI] = useState(0)
   const [caja, setCaja] = useState(null)
   const navigate = useNavigate()
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   const cerradoRef = useRef(false)
 
   // ¿Arranca? Una sola vez por usuario, y nunca en las pantallas que piden la
@@ -73,9 +73,14 @@ export default function TourNovedades() {
   const paso = crudo && modoLibro && crudo.libro ? { ...crudo, ...crudo.libro } : crudo
 
   // Llevar al usuario a donde vive el paso.
+  // `busqueda` abre además una pestaña de esa pantalla (/alertas?tab=crear):
+  // sin ella, quien ya está en la ruta pero en otra pestaña no vería el blanco.
   useEffect(() => {
-    if (paso?.ruta && pathname !== paso.ruta) navigate(paso.ruta)
-  }, [paso, pathname, navigate])
+    if (!paso?.ruta) return
+    if (pathname !== paso.ruta || (paso.busqueda && search !== paso.busqueda)) {
+      navigate(paso.ruta + (paso.busqueda || ''))
+    }
+  }, [paso, pathname, search, navigate])
 
   // Buscar el blanco y SEGUIRLO. Si no aparece, se saltea el paso.
   //

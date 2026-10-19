@@ -16,7 +16,7 @@ describe('cada paso resalta algo que está de verdad', () => {
     '../AICoach.jsx', '../../pages/RendiAI.jsx',
     // Los pasos de Alertas: el resumen diario del mercado (lo nuevo) y los
     // avisos de precio (lo que ya estaba).
-    '../alerts/MarketBriefPrefs.jsx', '../alerts/AlertsManager.jsx',
+    '../alerts/CrearAlerta.jsx',
     // El interruptor de tema: en el menú lateral (computadora) y en «Más»
     // (celular). Los dos llevan la misma marca a propósito.
     '../Sidebar.jsx', '../../pages/More.jsx',
@@ -99,6 +99,8 @@ describe('cada paso resalta algo que está de verdad', () => {
     // buscar un interruptor que no está en pantalla y saltearía los dos pasos.
     for (const id of ['resumen-mercado', 'alertas-precio']) {
       expect(PASOS.find(p => p.id === id).ruta, id).toBe('/alertas')
+      // Y a la pestaña «Crear alerta», que es donde viven las dos tarjetas.
+      expect(PASOS.find(p => p.id === id).busqueda, id).toBe('?tab=crear')
     }
   })
 })

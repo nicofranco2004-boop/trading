@@ -1,6 +1,6 @@
 // ResumenMercadoCuerpo — el cuerpo del resumen del mercado, dibujado UNA vez.
 // ═══════════════════════════════════════════════════════════════════════════
-// Lo usan dos lugares: el ejemplo de la card de /alertas (MarketBriefPrefs) y la
+// Lo usan dos lugares: el ejemplo de la tarjeta de /alertas (CrearAlerta) y la
 // pantalla /resumen, que abre la notificación del resumen. Antes el ejemplo
 // tenía su propio dibujo; con una segunda pantalla, dos copias del mismo bloque
 // se terminan desviando — y el ejemplo dejaría de mostrar lo que de verdad llega.
