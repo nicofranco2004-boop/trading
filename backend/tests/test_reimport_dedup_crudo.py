@@ -148,6 +148,22 @@ class ReimportConTickerDelBroker(unittest.TestCase):
             (prev["session_id"],)).fetchone()["c"]
         self.assertEqual(cargadas, 1, "sólo tiene que entrar la compra nueva de febrero")
 
+    def test_reimportar_declarando_lo_que_ya_tenia_tampoco_duplica(self):
+        """El otro camino del confirm: con `seed_state` (el usuario declara lo que
+        tenía antes del archivo) las filas se vuelven a armar desde el crudo y se
+        reescriben en `import_normalized_tx`. Este camino NO estaba roto (arma las
+        filas con el ticker del broker en memoria); la prueba es guardia para que
+        siga así ahora que esa reescritura también guarda la columna nueva."""
+        self._import(CSV_ENERO, "enero.csv")
+        antes = self._tenencia()
+        prev = self._preview(CSV_ENERO, "enero_otra_vez.csv")
+        r = self.client.post("/api/imports/confirm", json={
+            "session_id": prev["session_id"],
+            "seed_state": {"seed_date": "2026-01-04",
+                           "brokers": [{"broker": self.BROKER, "cash": {"ARS": 0}, "assets": []}]}})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self._tenencia(), antes)
+
     def test_el_ticker_del_broker_queda_guardado(self):
         """La huella guardada se recalcula igual desde la base: sin esto, cada
         lector que la rehidrata la calcula con otro ticker."""
