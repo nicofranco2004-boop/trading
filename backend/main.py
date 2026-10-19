@@ -3497,6 +3497,17 @@ def init_db():
         if norm_cols and 'tc_compra' not in norm_cols:
             conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN tc_compra REAL")
 
+        # Migración (2026-10-19): `asset_symbol_raw`, el ticker TAL COMO LO MANDA EL
+        # BROKER (COCOA, AL30D) antes de que Rendi lo traduzca (FCI:…, AL30). La
+        # huella anti-duplicados se arma con él (`pipeline._row_fingerprint`): la
+        # previsualización la guarda con el ticker del broker y, sin esta columna,
+        # el confirm la recalculaba con el de Rendi → no coincidían nunca y
+        # reimportar duplicaba fondos y bonos en dólares. Sin índice. NULL en las
+        # filas viejas → la huella cae al ticker de Rendi, como hasta hoy.
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'asset_symbol_raw' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN asset_symbol_raw TEXT")
+
         # Migración (2026-08): tombstone `excluded_at`/`excluded_by` para borrar una
         # operación importada sin destruir el log (el rebuild lo respeta en _full_events
         # → no resucita al re-importar). Ver project_delete_ops_cascade.
