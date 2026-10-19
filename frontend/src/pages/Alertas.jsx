@@ -29,6 +29,8 @@ import { useResumenMercado } from '../hooks/useResumenMercado'
 import { useAlertsContext } from '../contexts/AlertsContext'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useToast } from '../components/Toast'
+import AvisoNotificaciones from '../components/AvisoNotificaciones'
+import { usePushNotifications } from '../hooks/usePushNotifications'
 import { api } from '../utils/api'
 import { simbolo, diaArgentina } from '../components/alerts/alertasTexto'
 
@@ -68,6 +70,9 @@ function AlertasPropias({ plan }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const { items, events, loading, create, update, remove } = useAlerts()
   const resumen = useResumenMercado()
+  const push = usePushNotifications()
+  // El aviso quedó creado pero las notificaciones no se activaron.
+  const [notaPush, setNotaPush] = useState(null)
   const hoy = diaArgentina(new Date().toISOString())
 
   // El link que trae un ticker (?new=) abre el formulario ya cargado.
@@ -118,8 +123,18 @@ function AlertasPropias({ plan }) {
     catch { toast.push('No se pudo guardar', { type: 'error' }) }
   }
 
-  function creada(res, payload) {
+  function creada(res, payload, pedidoPush) {
     toast.push('Aviso creado')
+    if (pedidoPush) {
+      setNotaPush(null)
+      pedidoPush.catch((ex) => {
+        // 'bloqueadas' ya lo explica el cartel de AvisoNotificaciones de abajo.
+        if (ex?.motivo === 'bloqueadas') return
+        setNotaPush(payload.channel === 'both'
+          ? 'El aviso quedó creado, pero las notificaciones no se activaron: por ahora te llega por mail. Las podés activar cuando quieras desde Más → Notificaciones.'
+          : 'El aviso quedó creado, pero las notificaciones no se activaron, así que todavía no te va a llegar. Activalas desde Más → Notificaciones, o cambialo para que también te llegue por mail.')
+      })
+    }
     // Un ticker que no resolvió precio (typo o símbolo que no existe): se avisa.
     if (res && res.resolved === false && payload.symbol) {
       toast.push(`No encontramos el precio de ${simbolo(payload.symbol)} ahora. Si el ticker está bien va a funcionar igual; si no, borralo y armalo de nuevo.`, { type: 'error' })
@@ -142,6 +157,17 @@ function AlertasPropias({ plan }) {
       {tab === 'crear' && (
         <CrearAlerta resumen={resumen} alTope={alTope} alertsMax={alertsMax} puedeMovimiento={puedeMovimiento}
           onCrearAviso={() => setFormulario({})} />
+      )}
+      {tab === 'mis' && notaPush && (
+        <div role="status" className="flex items-start gap-3 rounded-xl border border-rendi-warn/30 bg-rendi-warn/5 px-4 py-3">
+          <p className="flex-1 text-sm text-ink-1">{notaPush}</p>
+          <button type="button" onClick={() => setNotaPush(null)} className="text-sm text-ink-2 hover:text-ink-1">Cerrar</button>
+        </div>
+      )}
+      {/* Las notificaciones no se pueden activar en este dispositivo y alguno
+          de tus avisos llega por ahí: se explica por qué y qué hacer. */}
+      {tab === 'mis' && push.motivo && items.some(a => a.active && a.channel !== 'email') && (
+        <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="alertas" />
       )}
       {tab === 'mis' && (
         <MisAlertas items={items} events={events} precios={precios} resumen={resumen} hoy={hoy}

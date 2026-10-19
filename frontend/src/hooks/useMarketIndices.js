@@ -26,6 +26,7 @@ import { useSyncExternalStore } from 'react'
 import { api } from '../utils/api'
 import { isDemoMode } from '../utils/demo'
 import { relojVisible, REFRESCO_MERCADO_MS } from '../utils/relojVisible'
+import { diaMes } from '../utils/fecha'
 
 export const REFRESH_MS = REFRESCO_MERCADO_MS
 
@@ -96,6 +97,15 @@ export function useMarketIndices() {
 // pero una cinta que pasa guiones es ruido.
 export function conDato(items) {
   return (items || []).filter(it => it && (it.price != null || it.change_pct != null))
+}
+
+// «al 16/10» cuando el número del índice es de una rueda vieja (el servidor
+// lo marca `atrasado` y no manda su variación): la cinta de arriba y la tira
+// del inicio lo muestran en vez de un % que no es el de hoy. Pasó el
+// 2026-10-19: Yahoo dejó de actualizar el Merval y decía −0,35 % (el viernes).
+// null si el número está al día.
+export function rotuloAtrasado(it) {
+  return it?.atrasado && it.as_of ? `al ${diaMes(it.as_of)}` : null
 }
 
 // Sólo para tests: vuelve el módulo a cero.

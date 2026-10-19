@@ -146,9 +146,9 @@ export default function MobileSearch() {
       // sin requerir recarga manual.
       notifyWatchlistChanged({ symbol: t.symbol, added: true })
       track('watchlist_added', { symbol: t.symbol, source: 'mobile_search' })
-      toast?.show?.({ kind: 'success', text: `${t.symbol} agregado a watchlist` })
+      toast.push(`${t.symbol} agregado a tu Watchlist`, { type: 'success' })
     } catch (ex) {
-      toast?.show?.({ kind: 'error', text: ex?.message || 'Error al agregar' })
+      toast.push(ex?.message || 'No se pudo agregar', { type: 'error' })
     } finally {
       setAdding(null)
     }

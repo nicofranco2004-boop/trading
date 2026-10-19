@@ -11,8 +11,12 @@
 
 /* eslint-disable no-restricted-globals */
 
-const APP_ICON = '/rendi-icon-192.png'      // si existe, sirve como icono
-const APP_BADGE = '/rendi-badge-72.png'     // badge monocromo Android
+// El ícono de la app (public/). Hasta 2026-10-19 apuntaba a '/rendi-icon-192.png'
+// y '/rendi-badge-72.png', que nunca existieron: las notificaciones salían sin
+// el logo. Sin badge a propósito: Android usa sólo su silueta, y la del logo
+// con fondo sale como un cuadrado blanco; sin él, Chrome pone la suya.
+const APP_ICON = '/android-chrome-192.png'
+const APP_BADGE = undefined
 
 self.addEventListener('install', (event) => {
   // Activarse inmediatamente sin esperar a que se cierren las pestañas viejas

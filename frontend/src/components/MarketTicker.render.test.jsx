@@ -50,6 +50,20 @@ describe('MarketTicker — la cinta de arriba', () => {
     expect(una).toMatch(/text-ink-2[^>]*>0,00%/)
   })
 
+  it('el índice de una rueda vieja dice «al 16/10», no un % como si fuera de hoy', async () => {
+    // 2026-10-19: Yahoo dejó de actualizar el Merval; el servidor lo manda
+    // `atrasado`, sin variación (antes la cinta decía −0,35 %, la del viernes).
+    const merv = { symbol: '^MERV', label: 'Merval', kind: 'index', price: 2848945,
+      change_pct: null, as_of: '2026-10-16', atrasado: true }
+    const html = await dibujar({ items: [ITEMS[0], merv] })
+    const una = html.slice(0, html.indexOf('</ul>'))
+    expect(una).toContain('Merval')
+    expect(una).toContain('2.848.945')
+    expect(una).toContain('al 16/10')
+    expect((una.match(/▼/g) || []).length).toBe(0)
+    expect(una).not.toContain('—')
+  })
+
   it('la cotización que no llegó no pasa por la cinta como un guión', async () => {
     const html = await dibujar({ items: ITEMS })
     expect(html).not.toContain('Oro')

@@ -55,6 +55,10 @@ export const PASOS_IPHONE = [
     marco: { left: '79.19%', top: '8.72%', width: '17%', height: '24.2%' },
     alt: 'La pantalla Agregar a inicio, con el botón Agregar marcado arriba a la derecha',
     texto: <>Tocá <b className="font-semibold text-ink-0">Agregar</b>, arriba a la derecha</>,
+    // En iPhone lo agregado al inicio guarda sus datos aparte de Safari: puede
+    // pedir iniciar sesión otra vez. «Si» a propósito: no se pudo comprobar en
+    // un iPhone de verdad (auditoría 2026-10-19), y avisarlo evita el susto.
+    nota: 'Si al abrirla desde el ícono te pide tu mail y contraseña, es normal: funciona como una app aparte. Después, en Inicio, tocá «Activar» para recibir las notificaciones.',
   },
 ]
 

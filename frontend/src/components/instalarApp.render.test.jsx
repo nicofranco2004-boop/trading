@@ -150,13 +150,26 @@ describe('las fotos no se hacen esperar', () => {
 })
 
 describe('instalar de un toque (Chrome en Android)', () => {
-  function ventanaFalsa() {
+  // Un Android de verdad: desde 2026-10-19 el aviso de la COMPU se ignora
+  // (Chrome y Edge de escritorio también lo mandan, y el botón instalaba Rendi
+  // en la compu desde «Agregá Rendi a tu celular»).
+  const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36'
+  const COMPU = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
+  function ventanaFalsa(userAgent = ANDROID) {
     const oyentes = {}
     return {
+      navigator: { userAgent, maxTouchPoints: 0 },
       addEventListener: (tipo, f) => { oyentes[tipo] = f },
       disparar: (tipo, e) => oyentes[tipo]?.(e),
     }
   }
+
+  it('en la compu el aviso se ignora: no hay botón que instale Rendi en la compu', () => {
+    const win = ventanaFalsa(COMPU)
+    escucharInstalador(win)
+    win.disparar('beforeinstallprompt', { prompt: async () => {}, userChoice: Promise.resolve({ outcome: 'accepted' }) })
+    expect(hayInstalador()).toBe(false)
+  })
 
   it('sin aviso del navegador no hay botón, y pedirlo no revienta', async () => {
     expect(hayInstalador()).toBe(false)

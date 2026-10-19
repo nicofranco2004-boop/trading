@@ -22,6 +22,7 @@
 // abierta, que no pasa por el login.
 
 import { NO_SE_CUENTAN, EVENTOS, claveDeUso, pantallaDe } from './usoCatalogo'
+import { yaInstalada, esCelular, plataformaDe } from './instalarApp'
 
 const CADA_MS = 30_000
 const SENALES = ['pointerdown', 'keydown', 'wheel', 'touchstart']
@@ -69,6 +70,11 @@ function marcarAbierta() {
   if (ultimoDiaAbierta === hoy) return
   ultimoDiaAbierta = hoy
   sumar('app_abierta')
+  // Abierta desde el ícono del inicio de un CELULAR (no la compu instalada):
+  // para /admin, cuánta gente la usa como app. Lo que tilda el paso de la lista
+  // NO es esto (esto sólo viaja si la persona toca algo): es
+  // avisarSiEstaInstalada en utils/instalarApp.js.
+  if (yaInstalada() && esCelular(plataformaDe(window.navigator || {}))) sumar(claveDeUso('app_abierta_instalada'))
 }
 
 export function mandar({ alCerrar = false } = {}) {

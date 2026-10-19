@@ -32,7 +32,7 @@ import { POPULAR_TICKERS } from '../../utils/tickers'
 import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
-import { useToast } from '../Toast'
+import AvisoNotificaciones from '../AvisoNotificaciones'
 import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal } from './alertasTexto'
 
 const VACIO = {
@@ -91,7 +91,6 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   const [upsell, setUpsell] = useState(false)
   const [precio, setPrecio] = useState(null)
   const push = usePushNotifications()
-  const toast = useToast()
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const esPrecio = form.kind === 'price_target'
@@ -145,6 +144,14 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
       if (!cartera && !sym) { setErr('Elegí un activo o «Toda mi cartera».'); return }
       if (!(up > 0) && !(down > 0)) { setErr('Poné al menos uno de los dos %.'); return }
     }
+    // Si eligió celular y este dispositivo no tiene las notificaciones, el
+    // permiso se pide YA, en el mismo toque: Safari del iPhone (y Firefox) no
+    // muestran el pedido si sale después de esperar al servidor. La respuesta
+    // se mira cuando el aviso quedó creado (la página la muestra en «Mis
+    // alertas»). Viene del arreglo de AlertsManager en claude/habito-instalar-push.
+    const quierePush = !editando && form.channel !== 'email' && push && !push.subscribed && !push.motivo
+    const pedidoPush = quierePush ? push.subscribe() : null
+    pedidoPush?.catch(() => {})   // se atiende en la página; esto evita el «rechazo sin atender» si falla el alta
     setOcupado(true)
     try {
       if (editando) {
@@ -167,15 +174,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
               baseline: cartera ? 'prev_close' : form.baseline }),
       }
       const res = await crear(pedido)
-      // Eligió celular y todavía no dio permiso: se lo pedimos ahora. Si el
-      // navegador las tiene bloqueadas, el pedido falla: se avisa en vez de
-      // dejar un error suelto (el aviso igual quedó creado y el mail llega).
-      if (form.channel !== 'email' && push && push.supported && !push.subscribed && push.subscribe) {
-        Promise.resolve().then(() => push.subscribe()).catch(() => toast.push(
-          'El aviso quedó creado, pero tu navegador tiene las notificaciones bloqueadas. Activalas en sus ajustes para recibirlo acá.',
-          { type: 'error' }))
-      }
-      onCreada?.(res, pedido)
+      onCreada?.(res, pedido, pedidoPush)
       onClose()
     } catch (e2) {
       if (e2?.status === 403 && e2?.payload?.upgrade) setUpsell(true)
@@ -306,7 +305,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         {/* Por dónde y cuántas veces, plegado */}
         {opciones ? (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Campo rotulo="Avisarme por" ayuda={push && push.supported === false ? 'En iPhone, agregá Rendi a tu inicio para recibir notificaciones.' : null}>
+            <Campo rotulo="Avisarme por" ayuda="El mail siempre llega. La notificación te avisa al momento en este dispositivo.">
               <div className="grid grid-cols-2 gap-2">
                 <Llave activa={form.channel !== 'push'} icono={Mail} texto="Mail"
                   onClick={() => set('channel', form.channel === 'both' ? 'push' : form.channel === 'push' ? 'both' : 'email')} />
@@ -322,6 +321,12 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
             </Campo>
           </div>
         ) : null}
+
+        {/* Las notificaciones no se pueden activar en este dispositivo (iPhone
+            sin Rendi en el inicio, permiso bloqueado…) y el aviso las pide. */}
+        {push?.motivo && form.channel !== 'email' && (
+          <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="alertas" />
+        )}
 
         {err && <p className="text-sm text-rendi-neg">{err}</p>}
 

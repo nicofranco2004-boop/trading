@@ -8,6 +8,7 @@ import { setUserId, setUserProperties, trackEvent } from '../utils/analytics'
 import { trackMetaEvent } from '../utils/metaPixel'
 import { quienEs } from '../utils/quienEs'
 import { activarUso, mandar as mandarUso } from '../utils/uso'
+import { avisarSiEstaInstalada } from '../utils/instalarApp'
 
 const AuthContext = createContext(null)
 
@@ -216,7 +217,10 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const quien = !user || isDemoMode() ? null : quienEs(user)
     activarUso(false)
-    if (quien) activarUso(true)
+    if (quien) {
+      activarUso(true)
+      avisarSiEstaInstalada(quien)
+    }
   }, [user ? quienEs(user) : null])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep-alive: pinga /api/health cada 4 min para que Railway no duerma el servicio.

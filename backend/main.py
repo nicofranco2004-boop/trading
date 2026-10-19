@@ -3083,6 +3083,12 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN origen TEXT")
         if user_cols_after and 'origen_visto_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN origen_visto_at TEXT")
+        # Primera vez que abrió Rendi desde el ícono del inicio de un CELULAR
+        # (no la compu). La escribe POST /api/primeros-pasos/instalada; la lee la
+        # lista de primeros pasos. Columna propia y no `uso_diario`: aquello se
+        # poda a los 13 meses y sólo se manda si la persona tocó la pantalla.
+        if user_cols_after and 'app_instalada_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN app_instalada_at TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -3496,6 +3502,17 @@ def init_db():
         norm_cols = _table_cols(conn, 'import_normalized_tx')
         if norm_cols and 'tc_compra' not in norm_cols:
             conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN tc_compra REAL")
+
+        # Migración (2026-10-19): `asset_symbol_raw`, el ticker TAL COMO LO MANDA EL
+        # BROKER (COCOA, AL30D) antes de que Rendi lo traduzca (FCI:…, AL30). La
+        # huella anti-duplicados se arma con él (`pipeline._row_fingerprint`): la
+        # previsualización la guarda con el ticker del broker y, sin esta columna,
+        # el confirm la recalculaba con el de Rendi → no coincidían nunca y
+        # reimportar duplicaba fondos y bonos en dólares. Sin índice. NULL en las
+        # filas viejas → la huella cae al ticker de Rendi, como hasta hoy.
+        norm_cols = _table_cols(conn, 'import_normalized_tx')
+        if norm_cols and 'asset_symbol_raw' not in norm_cols:
+            conn.execute("ALTER TABLE import_normalized_tx ADD COLUMN asset_symbol_raw TEXT")
 
         # Migración (2026-08): tombstone `excluded_at`/`excluded_by` para borrar una
         # operación importada sin destruir el log (el rebuild lo respeta en _full_events
@@ -47178,18 +47195,67 @@ def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _contar_dispositivos_push(conn, uid: int) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (uid,)
+    ).fetchone()[0]
+
+
 @app.get("/api/push/status")
 def push_status(uid: int = Depends(get_effective_user)):
     """Cuenta cuántas subs tiene este user. Útil para que el UI sepa si está
     suscrito en al menos un device."""
     conn = get_db()
     try:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (uid,)
-        ).fetchone()[0]
-        return {"subscribed_devices": count}
+        return {"subscribed_devices": _contar_dispositivos_push(conn, uid)}
     finally:
         conn.close()
+
+
+@app.get("/api/primeros-pasos")
+def primeros_pasos(uid: int = Depends(get_current_user)):
+    """Lo que la lista de primeros pasos de Inicio no puede saber desde el
+    navegador en el que está abierta:
+
+    - app_instalada: alguna vez abrió Rendi desde el ícono del inicio de un
+      celular (`users.app_instalada_at`). Vale también mirando desde la compu.
+    - dispositivos_push: en cuántos dispositivos activó las notificaciones.
+    - alertas: cuántas alertas armó.
+    - resumen_activo: si prendió el resumen diario del mercado.
+
+    `get_current_user` (no el efectivo): la lista no se muestra cuando un asesor
+    mira la cuenta de un cliente, y estos pasos son de quien está frente a la
+    pantalla."""
+    conn = get_db()
+    try:
+        import market_brief
+        fila = conn.execute("SELECT app_instalada_at FROM users WHERE id = ?", (uid,)).fetchone()
+        alertas = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)).fetchone()[0]
+        return {
+            "app_instalada": bool(fila and fila["app_instalada_at"]),
+            "dispositivos_push": _contar_dispositivos_push(conn, uid),
+            "alertas": alertas,
+            "resumen_activo": market_brief.brief_enabled(conn, uid),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/primeros-pasos/instalada")
+def marcar_app_instalada(request: Request, uid: int = Depends(get_current_user)):
+    """El celular avisa que Rendi está abierta desde el ícono del inicio
+    (utils/instalarApp.js → `avisarSiEstaInstalada`, al arrancar la sesión, sin
+    esperar a que la persona toque nada). Se guarda la PRIMERA vez y no se
+    pisa: repetirlo no cambia nada."""
+    _check_rate_limit(request, max_calls=20, window_seconds=3600, suffix=f"instalada:{uid}")
+    with db_abierta() as conn:
+        conn.execute(
+            "UPDATE users SET app_instalada_at = COALESCE(app_instalada_at, ?) WHERE id = ?",
+            (datetime.utcnow().isoformat(timespec="seconds"), uid))
+        conn.commit()
+    # JSON y no 204: utils/api.js lee siempre el cuerpo, y uno vacío lo daba por error.
+    return {"ok": True}
 
 
 def _send_push_to_user(uid: int, payload: dict) -> int:

@@ -149,7 +149,7 @@ CRYPTO_META = {
 INDICES = [
     {"symbol": "^GSPC", "label": "S&P 500",    "kind": "index"},
     {"symbol": "^IXIC", "label": "Nasdaq",     "kind": "index"},
-    {"symbol": "^MERV", "label": "Merval",     "kind": "index"},
+    {"symbol": "^MERV", "label": "Merval",     "kind": "index", "rueda": "byma"},
     {"symbol": "BTC-USD", "label": "Bitcoin",  "kind": "crypto"},
     {"symbol": "ETH-USD", "label": "Ethereum", "kind": "crypto"},
     {"symbol": "GC=F", "label": "Oro",         "kind": "commodity"},
@@ -403,20 +403,48 @@ def _invalidate_quote_cache(symbols: Optional[List[str]] = None) -> None:
 
 @_cached("indices_strip", ttl_s=900)  # 15min
 def get_indices_strip() -> List[Dict[str, Any]]:
-    """Strip superior del Home: 6 índices/activos de referencia."""
+    """Strip superior del Home: 6 índices/activos de referencia.
+
+    `as_of`: de qué rueda es el número. `atrasado`: hubo una rueda MÁS NUEVA
+    que la del número, así que su variación no es «la del día» — se manda sin
+    `change_pct` (la cinta muestra «al 16/10» y Mervall-E no la cuenta como de
+    hoy). Pasó el 2026-10-19: Yahoo dejó de actualizar ^MERV y la cinta decía
+    «Merval −0,35 %» con BYMA abierta: era la variación del viernes."""
     symbols = [i["symbol"] for i in INDICES]
     quotes = _fetch_batch_quotes(symbols)
     out = []
     for cfg in INDICES:
         q = quotes.get(cfg["symbol"])
+        as_of = q.get("as_of") if q else None
+        atrasado = bool(as_of) and _hubo_una_rueda_despues(cfg.get("rueda"), as_of)
         out.append({
             "symbol": cfg["symbol"],
             "label": cfg["label"],
             "kind": cfg["kind"],
             "price": q["price"] if q else None,
-            "change_pct": q["change_pct"] if q else None,
+            "change_pct": None if atrasado else (q["change_pct"] if q else None),
+            "as_of": as_of,
+            "atrasado": atrasado,
         })
     return out
+
+
+def _hubo_una_rueda_despues(rueda: Optional[str], as_of: str) -> bool:
+    """¿Operó la rueda `rueda` algún día después de `as_of` (hasta hoy)?
+
+    Sólo BYMA, con el calendario de días operados de `fuera_de_horario` (el
+    mismo que usa el post-mercado de los CEDEARs). Sin calendario, o para otra
+    rueda, no se afirma nada: False."""
+    if rueda != "byma":
+        return False
+    try:
+        import fuera_de_horario
+        sesiones = fuera_de_horario._sesiones_de_byma()
+    except Exception as ex:
+        log.warning(f"indices_strip: sin calendario de BYMA: {ex}")
+        return False
+    hoy = hoy_de_mercado("byma")
+    return any(as_of < d.isoformat() <= hoy for d in (sesiones or ()))
 
 
 # Registry de mercados soportados — clave usada por los endpoints
