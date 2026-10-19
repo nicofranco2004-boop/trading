@@ -322,13 +322,13 @@ export default function Sidebar() {
           aria-controls="sidebar-pie"
           title={piePlegado ? 'Mostrar Alertas, Importar y el resto' : 'Achicar: dejar más lugar a la cartera'}
           aria-label={piePlegado ? 'Mostrar las opciones de abajo' : 'Ocultar las opciones de abajo'}
-          className="absolute -top-3 left-1/2 -translate-x-1/2 z-10 w-6 h-6 flex items-center justify-center rounded-full border border-line bg-bg-0 text-ink-3 hover:text-ink-0 hover:bg-bg-2 transition-colors"
+          className="absolute -top-3 left-1/2 -translate-x-1/2 z-10 w-6 h-6 flex items-center justify-center rounded-full border border-data-violet/50 bg-bg-0 text-data-violet hover:bg-data-violet/15 hover:border-data-violet transition-colors"
         >
           <ChevronDown size={14} strokeWidth={2} aria-hidden="true"
             className={`transition-transform duration-200 ${piePlegado ? 'rotate-180' : ''}`} />
           {piePlegado && unseenCount > 0 && (
             <span aria-hidden title="Tenés alertas sin ver"
-              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-data-violet" />
+              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-data-violet ring-2 ring-bg-0" />
           )}
         </button>
 
