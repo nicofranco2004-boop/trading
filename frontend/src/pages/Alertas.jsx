@@ -7,8 +7,8 @@
 //
 // La pestaña viaja en la dirección (?tab=crear | ?tab=mis): el tutorial de
 // novedades abre «crear» para resaltar las dos tarjetas, y recargar no te
-// cambia de pestaña. Sin ?tab, entra en «Mis alertas» si ya tenés algo armado
-// y en «Crear» si no.
+// cambia de pestaña. Sin ?tab, entra en «Mis alertas» si ya creaste algún
+// aviso y en «Crear» si no (pestanaInicial, abajo).
 //
 // Prefill: /alertas?new=MSFT.BA&ccy=ARS (desde el menú de una posición) y
 // /alertas?new=BTC&down=10 (desde un botón de Mervall-E AI) abren el formulario
@@ -33,6 +33,19 @@ import AvisoNotificaciones from '../components/AvisoNotificaciones'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { api } from '../utils/api'
 import { simbolo, diaArgentina } from '../components/alerts/alertasTexto'
+
+// La pestaña con la que se abre la página. La de la dirección manda (el
+// tutorial pide «crear»; los mails y las notificaciones de un aviso que saltó,
+// «mis»). Sin dirección decide si creaste algún aviso: el resumen diario del
+// mercado NO cuenta. Antes contaba, y quien sólo tenía el resumen prendido
+// caía en «Mis alertas» sin ninguna alerta creada (pedido de Nico,
+// 2026-10-19: sin alertas, se abre en Crear). null = todavía cargando.
+// Exportada para las pruebas.
+export function pestanaInicial({ tabUrl, cargando, cantidadAvisos }) {
+  if (tabUrl === 'crear' || tabUrl === 'mis') return tabUrl
+  if (cargando) return null
+  return cantidadAvisos > 0 ? 'mis' : 'crear'
+}
 
 export default function Alertas() {
   const plan = usePlanFeatures()
@@ -93,11 +106,7 @@ function AlertasPropias({ plan }) {
   const puedeMovimiento = plan?.can ? plan.can('alerts.pct_move') : false
 
   // La pestaña: la de la dirección, o la que corresponde a lo que tenés.
-  const tabUrl = searchParams.get('tab')
-  const tab = tabUrl === 'crear' || tabUrl === 'mis'
-    ? tabUrl
-    : (loading || !resumen.cargado) ? null
-    : (items.length > 0 || resumen.prendido) ? 'mis' : 'crear'
+  const tab = pestanaInicial({ tabUrl: searchParams.get('tab'), cargando: loading, cantidadAvisos: items.length })
   const irA = useCallback((t) => {
     setSearchParams(p => { const n = new URLSearchParams(p); n.set('tab', t); n.delete('new'); n.delete('ccy'); n.delete('down'); n.delete('up'); return n }, { replace: true })
   }, [setSearchParams])
