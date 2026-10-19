@@ -4,7 +4,29 @@
   "framework": "vite",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "https://trading-production-143b.up.railway.app/api/$1" },
-    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+    { "source": "/planes", "destination": "/planes/index.html" },
+    { "source": "/terminos", "destination": "/terminos/index.html" },
+    { "source": "/reembolso", "destination": "/reembolso/index.html" },
+    { "source": "/privacidad", "destination": "/privacidad/index.html" },
+    { "source": "/brokers/cocos", "destination": "/brokers/cocos/index.html" },
+    { "source": "/brokers/iol", "destination": "/brokers/iol/index.html" },
+    { "source": "/brokers/binance", "destination": "/brokers/binance/index.html" },
+    { "source": "/cedears", "destination": "/cedears/index.html" },
+    { "source": "/bonos-argentinos", "destination": "/bonos-argentinos/index.html" },
+    { "source": "/afip-cripto", "destination": "/afip-cripto/index.html" },
+    { "source": "/blog", "destination": "/blog/index.html" },
+    { "source": "/blog/fifo-cedears-argentina", "destination": "/blog/fifo-cedears-argentina/index.html" },
+    { "source": "/blog/pnl-real-usd-blue-argentina", "destination": "/blog/pnl-real-usd-blue-argentina/index.html" },
+    { "source": "/blog/comparativa-brokers-argentina", "destination": "/blog/comparativa-brokers-argentina/index.html" },
+    { "source": "/guia", "destination": "/guia/index.html" },
+    { "source": "/guia/empezar", "destination": "/guia/empezar/index.html" },
+    { "source": "/guia/cartera-y-operaciones", "destination": "/guia/cartera-y-operaciones/index.html" },
+    { "source": "/guia/insights-y-reportes", "destination": "/guia/insights-y-reportes/index.html" },
+    { "source": "/guia/coach-ia", "destination": "/guia/coach-ia/index.html" },
+    { "source": "/guia/novedades", "destination": "/guia/novedades/index.html" },
+    { "source": "/guia/cuenta-y-planes", "destination": "/guia/cuenta-y-planes/index.html" },
+    { "source": "/guia/asesores", "destination": "/guia/asesores/index.html" },
+    { "source": "/((?!assets/).*)", "destination": "/app.html" }
   ],
   "headers": [
     {
@@ -32,6 +54,22 @@
     },
     {
       "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Expires", "value": "0" }
+      ]
+    },
+    {
+      "source": "/(planes|terminos|reembolso|privacidad|brokers/.*|cedears|bonos-argentinos|afip-cripto|blog|blog/.*|guia|guia/.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Expires", "value": "0" }
+      ]
+    },
+    {
+      "source": "/app.html",
       "headers": [
         { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" },
         { "key": "Pragma", "value": "no-cache" },

@@ -22,7 +22,7 @@
 
     <!-- Primary SEO -->
     <title>Rendi — Tu portfolio, con IA | Tracker multi-broker para Argentina</title>
-    <meta name="description" content="Seguí tu cartera de acciones, CEDEARs, bonos AR y crypto en un solo lugar. P&L real en USD, FIFO automático, Mervall-E AI con memoria. Multi-broker: Cocos, IOL, Schwab, Binance, Balanz." />
+    <meta name="description" content="Seguí acciones, CEDEARs, bonos y cripto de todos tus brokers en un lugar: P&L real en USD, FIFO, Sharpe, alfa vs S&P 500, drawdown y Mervall-E AI." />
     <meta name="keywords" content="tracker inversiones, portafolio argentina, ia inversiones, Mervall-E AI, FIFO automatico, P&L USD real, multi-broker, Cocos, IOL, Schwab, Binance, Balanz, CEDEARs, bonos AR, AL30, inflacion, dolar blue, MEP" />
     <meta name="author" content="Rendi" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
@@ -108,8 +108,22 @@
       "@context": "https://schema.org",
       "@type": "SoftwareApplication",
       "name": "Rendi",
-      "description": "Tracker de portafolio multi-broker con Mervall-E AI. Seguí acciones, CEDEARs, bonos AR y crypto con P&L real en USD, FIFO automático y análisis con IA.",
+      "description": "Tracker de portafolio multi-broker con Mervall-E AI. Seguí acciones, CEDEARs, bonos AR y crypto con P&L real en USD, FIFO automático, métricas de riesgo profesionales y análisis con IA.",
       "applicationCategory": "FinanceApplication",
+      "featureList": [
+        "Cartera multi-broker consolidada (Cocos, IOL, Balanz, Bull, Schwab, Binance y más)",
+        "P&L real en USD con FIFO automático, lote por lote",
+        "Rendimiento ponderado por tiempo (TWR) y CAGR",
+        "Comparación contra S&P 500, Merval, inflación, plazo fijo UVA, oro y dólar",
+        "Ratio de Sharpe, ratio de Sortino, Information Ratio y ratio de Calmar",
+        "Alfa y beta contra el S&P 500",
+        "Volatilidad anualizada y drawdown máximo",
+        "Concentración de cartera (top 3) y allocation por geografía",
+        "Perfil de inversor declarado vs cartera real",
+        "Detectores de comportamiento (FOMO, aversión a la pérdida, anchoring, overtrading)",
+        "Mervall-E AI: asistente de IA con los datos de tu cartera",
+        "Export CSV con FIFO para el contador (AFIP/ARCA)"
+      ],
       "operatingSystem": "Web",
       "inLanguage": "es-AR",
       "offers": [
@@ -149,7 +163,7 @@
           "@type": "HowToStep",
           "position": 3,
           "name": "Mirás tus Métricas",
-          "text": "Allocation por geografía, win rate, drawdown real, perfil de inversor declarado vs cartera real, concentración top 3. Datos limpios sobre cómo decidís.",
+          "text": "Allocation por geografía, win rate, drawdown máximo, concentración top 3 y perfil de inversor declarado vs cartera real. En Plus y Pro: Sharpe, Sortino, alfa y beta contra el S&P 500, Information Ratio, Calmar, CAGR y volatilidad.",
           "url": "https://rendi.finance/#como-funciona"
         },
         {
@@ -222,6 +236,18 @@
       })()
     </script>
 
+    <!-- Las páginas públicas llegan YA ESCRITAS dentro de #root (para los
+         buscadores y las IA: scripts/prerender.mjs). Con sesión iniciada no se
+         muestran: en "/" la persona va a su Inicio, no a la portada, y verla un
+         instante antes de que monte React sería un parpadeo. `rendi_user` es la
+         misma marca que usa AuthContext para arrancar con sesión. -->
+    <script>
+      try {
+        if (localStorage.getItem('rendi_user')) document.documentElement.classList.add('con-sesion')
+      } catch (e) { /* modo privado: se muestra lo escrito, React lo reemplaza */ }
+    </script>
+    <style>.con-sesion [data-prerender] { display: none }</style>
+
     <!-- Meta Pixel -->
     <!-- Sólo en rendi.finance: el servidor local y los previews no son
          visitantes. La lista es la misma que SITIOS_MEDIDOS de
@@ -263,9 +289,10 @@
         <h2>Qué te da Rendi</h2>
         <ul>
           <li><strong>Multi-broker</strong> — Cocos, IOL, Balanz, Bull, Schwab, Binance y más.</li>
-          <li><strong>P&amp;L en USD real</strong> — convertimos cada operación al dólar blue del día.</li>
+          <li><strong>P&amp;L en USD real</strong> — cada operación en pesos se pasa al dólar MEP de su fecha.</li>
           <li><strong>FIFO automático</strong> — criterio fiscal AR aplicado al vender.</li>
           <li><strong>CEDEARs y bonos AR</strong> — AL30, GD30, TX26 con metadata de cupones.</li>
+          <li><strong>Métricas de riesgo</strong> — Sharpe, Sortino, alfa y beta vs S&amp;P 500, Calmar, volatilidad y drawdown máximo.</li>
           <li><strong>Mervall-E AI</strong> — el asistente de IA que te contesta con los datos de tu cartera.</li>
         </ul>
         <p>

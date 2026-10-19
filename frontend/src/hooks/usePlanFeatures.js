@@ -53,6 +53,14 @@ try {
   }
 } catch { /* ignore */ }
 
+// Sólo para scripts/prerender.mjs, que arma las páginas públicas al publicar:
+// ahí no corre ningún efecto, así que sin esto /planes quedaba en "Cargando
+// planes…" para siempre y el robot no leía ni un precio. Se siembra lo mismo
+// que termina viendo un visitante sin cuenta (el pedido le vuelve 401 → free).
+export function sembrarParaPrerender(datos) {
+  _cached = datos
+}
+
 function _notify() {
   _listeners.forEach(fn => fn(_version))
 }

@@ -17,7 +17,7 @@ function resolveBuildId(mode) {
   )
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, isSsrBuild }) => {
   const buildId = resolveBuildId(mode)
   return {
     plugins: [
@@ -57,7 +57,10 @@ export default defineConfig(({ mode }) => {
       // Recharts pesa ~150KB gzipped, lucide-react ~30KB. Separarlos del bundle
       // principal permite que Home carga sin Recharts (lo necesita Dashboard /
       // Insights / Reportes que son lazy igual via React.lazy si quisiéramos).
-      rollupOptions: {
+      // En el armado del lado del servidor (`--ssr`, el que escribe las páginas
+      // públicas: scripts/prerender.mjs) las librerías quedan afuera del paquete
+      // y Rollup rechaza repartirlas en pedazos — y ahí tampoco hace falta.
+      rollupOptions: isSsrBuild ? {} : {
         output: {
           manualChunks: {
             recharts: ['recharts'],

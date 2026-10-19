@@ -27,6 +27,7 @@ backend/__pycache__/
 *.pyc
 node_modules/
 frontend/dist/
+frontend/dist-ssr/
 .DS_Store
 
 # ── design/ — el kit de generación de assets SÍ entra al repo (los scripts,

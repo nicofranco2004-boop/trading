@@ -33,6 +33,9 @@ import { registrarPantalla } from './utils/uso'
 import { trackPageView } from './utils/analytics'
 import { trackMetaPageView } from './utils/metaPixel'
 import { useAutoUpdate } from './utils/autoUpdate'
+// Las páginas públicas salen de una sola lista (ver paginasPublicas.js): la
+// misma que se publica ya escrita para los buscadores y las IA.
+import { COMPONENTES_PUBLICOS } from './paginasPublicas'
 
 // ─── Eager imports: páginas del flujo no-autenticado ──────────────────────────
 // Estas son las primeras que ve un user sin login (Landing → Login →
@@ -90,7 +93,7 @@ const AdvisorClients = lazy(() => import('./pages/AdvisorClients'))
 const AdvisorImports = lazy(() => import('./pages/AdvisorImports'))
 const AdvisorCobros = lazy(() => import('./pages/AdvisorCobros'))
 const More = lazy(() => import('./pages/More'))
-const Planes = lazy(() => import('./pages/Planes'))
+const Planes = COMPONENTES_PUBLICOS['/planes']
 // BillingReturn exporta 3 componentes — Vite los dedupea en un solo chunk
 // porque comparten el import path. El user solo entra a UNO de los 3 según
 // el resultado de Mercado Pago, pero los 3 quedan en el mismo bundle.
@@ -102,27 +105,27 @@ const PositionDetailMobile = lazy(() => import('./pages/PositionDetailMobile'))
 // Páginas legales — accesibles SIN login (compliance: el user puede leer
 // los T&C antes de pagar / sin tener una cuenta). Lazy igual porque la
 // mayoría de los visitantes no las necesitan ver.
-const Terminos = lazy(() => import('./pages/Terminos'))
-const Reembolso = lazy(() => import('./pages/Reembolso'))
-const Privacidad = lazy(() => import('./pages/Privacidad'))
+const Terminos = COMPONENTES_PUBLICOS['/terminos']
+const Reembolso = COMPONENTES_PUBLICOS['/reembolso']
+const Privacidad = COMPONENTES_PUBLICOS['/privacidad']
 
 // SEO landings — páginas keyword-específicas que rankean long-tail
 // (cocos, iol, binance, cedears, bonos AR, AFIP cripto). Accesibles
 // sin login. Lazy porque solo se cargan cuando alguien viene de Google.
-const LandingCocos = lazy(() => import('./pages/keywords/Cocos'))
-const LandingIOL = lazy(() => import('./pages/keywords/IOL'))
-const LandingBinance = lazy(() => import('./pages/keywords/Binance'))
-const LandingCedears = lazy(() => import('./pages/keywords/Cedears'))
-const LandingBonosAR = lazy(() => import('./pages/keywords/BonosAR'))
-const LandingAfipCripto = lazy(() => import('./pages/keywords/AfipCripto'))
+const LandingCocos = COMPONENTES_PUBLICOS['/brokers/cocos']
+const LandingIOL = COMPONENTES_PUBLICOS['/brokers/iol']
+const LandingBinance = COMPONENTES_PUBLICOS['/brokers/binance']
+const LandingCedears = COMPONENTES_PUBLICOS['/cedears']
+const LandingBonosAR = COMPONENTES_PUBLICOS['/bonos-argentinos']
+const LandingAfipCripto = COMPONENTES_PUBLICOS['/afip-cripto']
 
 // Blog — accesible sin login. Cada artículo es un componente JSX por
 // simplicidad (no markdown). Para agregar uno: crear el archivo + entry
 // en pages/Blog.jsx POSTS + ruta acá + sitemap.
-const Blog = lazy(() => import('./pages/Blog'))
-const BlogFifoCedears = lazy(() => import('./pages/blog/articles/FifoCedearsArgentina'))
-const BlogPnlRealUsdBlue = lazy(() => import('./pages/blog/articles/PnlRealUsdBlue'))
-const BlogComparativaBrokers = lazy(() => import('./pages/blog/articles/ComparativaBrokersArgentina'))
+const Blog = COMPONENTES_PUBLICOS['/blog']
+const BlogFifoCedears = COMPONENTES_PUBLICOS['/blog/fifo-cedears-argentina']
+const BlogPnlRealUsdBlue = COMPONENTES_PUBLICOS['/blog/pnl-real-usd-blue-argentina']
+const BlogComparativaBrokers = COMPONENTES_PUBLICOS['/blog/comparativa-brokers-argentina']
 
 // Onboarding wizard — flow guiado de primer uso post-signup.
 // Auto-trigger desde VerifyEmail.jsx si el user no tiene brokers.
@@ -133,14 +136,14 @@ const Onboarding = lazy(() => import('./pages/Onboarding'))
 // Linkeado desde la Landing (botón "Ver guía completa" en HowItWorks) y
 // desde el Sidebar (footer) para usuarios logueados. SEO friendly: cada
 // sub-página tiene su propio canonical + metadescription.
-const Guia = lazy(() => import('./pages/Guia'))
-const GuiaEmpezar = lazy(() => import('./pages/guia/Empezar'))
-const GuiaCarteraYOperaciones = lazy(() => import('./pages/guia/CarteraYOperaciones'))
-const GuiaInsightsYReportes = lazy(() => import('./pages/guia/InsightsYReportes'))
-const GuiaCoachIA = lazy(() => import('./pages/guia/CoachIA'))
-const GuiaNovedades = lazy(() => import('./pages/guia/Novedades'))
-const GuiaCuentaYPlanes = lazy(() => import('./pages/guia/CuentaYPlanes'))
-const GuiaAsesores = lazy(() => import('./pages/guia/Asesores'))
+const Guia = COMPONENTES_PUBLICOS['/guia']
+const GuiaEmpezar = COMPONENTES_PUBLICOS['/guia/empezar']
+const GuiaCarteraYOperaciones = COMPONENTES_PUBLICOS['/guia/cartera-y-operaciones']
+const GuiaInsightsYReportes = COMPONENTES_PUBLICOS['/guia/insights-y-reportes']
+const GuiaCoachIA = COMPONENTES_PUBLICOS['/guia/coach-ia']
+const GuiaNovedades = COMPONENTES_PUBLICOS['/guia/novedades']
+const GuiaCuentaYPlanes = COMPONENTES_PUBLICOS['/guia/cuenta-y-planes']
+const GuiaAsesores = COMPONENTES_PUBLICOS['/guia/asesores']
 
 // Fallback mínimo mientras carga el chunk. El shell (Sidebar / MobileTopBar)
 // queda montado, así que la nav no parpadea — solo el content area se reemplaza.

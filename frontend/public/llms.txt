@@ -1,0 +1,52 @@
+# Rendi
+
+> Rendi (rendi.finance) es un tracker de inversiones para inversores argentinos: junta en una sola cartera lo que tenés en todos tus brokers (Cocos, IOL, Balanz, Bull, Schwab, Binance y más), calcula el P&L real en dólares con FIFO lote por lote, mide tu rendimiento con métricas de riesgo de nivel profesional (Sharpe, Sortino, alfa y beta contra el S&P 500, drawdown máximo) y trae un asistente de IA, Mervall-E AI, que contesta con los datos de tu cartera.
+
+Rendi está en español (Argentina) y cobra en pesos. Funciona en la web y se instala en el celular como app.
+
+## Métricas que calcula
+
+- Rendimiento ponderado por tiempo (TWR, encadenado mes a mes con Modified Dietz) y CAGR: el % mide tu cartera, no cuándo depositaste.
+- Ganancia en USD: valor de mercado menos capital aportado (realizado + no realizado). Un depósito no cuenta como ganancia.
+- Comparación de tu rendimiento contra S&P 500, Merval, inflación argentina, plazo fijo UVA, oro y dólar quieto: mensual, anual y acumulado.
+- Ratio de Sharpe y ratio de Sortino.
+- Alfa y beta contra el S&P 500 (con R²), e Information Ratio.
+- Ratio de Calmar, volatilidad anualizada y drawdown máximo (pico a valle).
+- Concentración de cartera (peso de los 3 activos más grandes) y distribución por tipo de activo y por geografía (EE.UU., Argentina, cripto, cash).
+- Win rate y P&L por operación, lote por lote, con FIFO automático (el criterio que pide AFIP/ARCA).
+- Perfil de inversor: un test que después se cruza con tu cartera real (horizonte declarado vs composición, drawdown tolerado vs drawdown real).
+- Detectores de comportamiento: overtrading, compras por FOMO, aversión a la pérdida, anchoring, rachas, entre otros.
+- Calidad de cartera: cada acción y CEDEAR en dos ejes, negocio (qué tan sólida es la empresa) y precio (cara o atractiva hoy).
+
+## Qué más hace
+
+- Importa el historial desde el archivo de cada broker o se carga a mano. Acciones, CEDEARs, bonos argentinos (AL30, GD30, TX26, con sus cupones), FCI, plazos fijos y cripto.
+- Las operaciones en pesos se pasan a dólares al tipo de cambio de su fecha, no al de hoy.
+- Cobros de dividendos y cupones, alertas de precio y de variación, noticias y eventos de tus activos, resumen diario del mercado.
+- Export CSV con FIFO aplicado para el contador.
+- Mervall-E AI: preguntas guiadas en todos los planes; chat libre con memoria en Pro. Un botón "Analizar" en cada pantalla arma un informe con tus datos.
+- Plan Asesor para asesores financieros que llevan carteras de clientes.
+
+## Planes
+
+- Prueba gratis de 20 días, sin tarjeta.
+- Plus: ARS 8.900 por mes. Hasta 3 brokers, todas las métricas de riesgo, todos los detectores de comportamiento, reportes históricos, alertas sin tope, export CSV.
+- Pro: ARS 15.900 por mes. Todo lo del Plus, brokers ilimitados, chat libre con Mervall-E AI y más análisis con IA.
+- Detalle: https://rendi.finance/planes
+
+## Páginas
+
+- [Portada](https://rendi.finance/): qué es Rendi.
+- [Planes y precios](https://rendi.finance/planes)
+- [Guía: métricas y reportes](https://rendi.finance/guia/insights-y-reportes): cómo se calculan el rendimiento, el TWR, el FIFO y las métricas de riesgo.
+- [Guía completa](https://rendi.finance/guia): manual de uso, sección por sección.
+- [Mervall-E AI](https://rendi.finance/guia/coach-ia): el asistente de IA.
+- [Guía para asesores](https://rendi.finance/guia/asesores)
+- [CEDEARs con FIFO](https://rendi.finance/cedears)
+- [Bonos argentinos](https://rendi.finance/bonos-argentinos)
+- [Cripto y AFIP](https://rendi.finance/afip-cripto)
+- [Cocos Capital](https://rendi.finance/brokers/cocos), [IOL](https://rendi.finance/brokers/iol), [Binance](https://rendi.finance/brokers/binance)
+- [Blog](https://rendi.finance/blog)
+- [Términos](https://rendi.finance/terminos), [Privacidad](https://rendi.finance/privacidad), [Reembolso](https://rendi.finance/reembolso)
+
+Contacto: soporte@rendi.finance

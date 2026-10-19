@@ -23,6 +23,7 @@ import fuenteBarra from './MobileTopBar.jsx?raw'
 import ClientContextBar from '../advisor/ClientContextBar'
 import MobileSearch from '../../pages/MobileSearch'
 import fuenteDeApp from '../../App.jsx?raw'
+import fuenteDePublicas from '../../paginasPublicas.js?raw'
 import { CTA_PRUEBA } from '../../data/prueba'
 
 const dibujar = (Componente, { u = usuario, c = cliente, props = {} } = {}) => {
@@ -180,9 +181,14 @@ describe('páginas públicas con la sesión abierta', () => {
   const desde = fuenteDeApp.indexOf('function AppRoutes()')
   const rutasDeAdentro = fuenteDeApp.slice(desde, fuenteDeApp.indexOf('</Routes>', desde))
   const componentes = new Set([...rutasDeAdentro.matchAll(/element={<([A-Z]\w*)/g)].map(m => m[1]))
+  // Las públicas salen de la lista única (`const Guia = COMPONENTES_PUBLICOS['/guia']`):
+  // su archivo se lee de paginasPublicas.js.
+  const archivoDeRuta = Object.fromEntries(
+    [...fuenteDePublicas.matchAll(/'(\/[^']*)': \(\) => import\('\.\/(pages\/[^']+)'\)/g)].map(m => [m[1], m[2]]))
   const archivoDe = Object.fromEntries([
     ...fuenteDeApp.matchAll(/const (\w+) = lazy\(\(\) => import\('\.\/(pages\/[^']+)'\)\)/g),
     ...fuenteDeApp.matchAll(/import (\w+) from '\.\/(pages\/[^']+)'/g),
+    ...[...fuenteDeApp.matchAll(/const (\w+) = COMPONENTES_PUBLICOS\['([^']+)'\]/g)].map(m => [m[0], m[1], archivoDeRuta[m[2]]]),
   ].map(m => [m[1], `/src/${m[2].replace(/\.jsx$/, '')}.jsx`]))
   // Una página "pública" es la que tiene algo para visitantes: el encabezado
   // público (directo o por su plantilla: GuidePage, BlogPost, KeywordLanding),

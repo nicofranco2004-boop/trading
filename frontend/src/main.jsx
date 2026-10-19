@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { HelmetProvider } from 'react-helmet-async'
 import App from './App'
+import { precargarPaginaPublica } from './paginasPublicas'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ToastProvider } from './components/Toast'
 import ConfirmarHost from './components/ConfirmarHost'
@@ -105,16 +106,28 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 })
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <ErrorBoundary>
-    <HelmetProvider>
-      <BrowserRouter>
-        <ToastProvider>
-          <App />
-          {/* El "¿Seguro?" de Rendi, uno para toda la app (utils/confirmar.js). */}
-          <ConfirmarHost />
-        </ToastProvider>
-      </BrowserRouter>
-    </HelmetProvider>
-  </ErrorBoundary>
-)
+function montar() {
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <ErrorBoundary>
+      <HelmetProvider>
+        <BrowserRouter>
+          <ToastProvider>
+            <App />
+            {/* El "¿Seguro?" de Rendi, uno para toda la app (utils/confirmar.js). */}
+            <ConfirmarHost />
+          </ToastProvider>
+        </BrowserRouter>
+      </HelmetProvider>
+    </ErrorBoundary>
+  )
+}
+
+// Si la página llegó YA ESCRITA (las públicas: scripts/prerender.mjs), primero
+// bajamos su pedazo y recién después montamos. Si no, React mostraba el
+// esqueleto gris mientras lo bajaba y la persona veía texto → gris → texto.
+// precargarPaginaPublica nunca falla: en el peor caso, monta como siempre.
+if (document.querySelector('[data-prerender]')) {
+  precargarPaginaPublica(window.location.pathname).then(montar)
+} else {
+  montar()
+}

@@ -232,6 +232,43 @@ class ElPRECIOQueLeeGOOGLE(unittest.TestCase):
         self.assertNotIn("Free", self._ofertas())
 
 
+class LaFichaQueLeenLasIA(unittest.TestCase):
+    """`frontend/public/llms.txt` es la ficha de Rendi para las IA (Grok,
+    ChatGPT, Perplexity, Claude): la leen cuando alguien les pregunta qué
+    tracker usar. Es texto fijo y no puede importar el catálogo, así que los
+    precios y los días de prueba están a mano — y una IA repite lo que lee,
+    viejo o no, sin que nadie se entere."""
+
+    LLMS = os.path.join(os.path.dirname(BACKEND), "frontend", "public", "llms.txt")
+
+    def _texto(self) -> str:
+        return open(self.LLMS, encoding="utf-8").read()
+
+    @staticmethod
+    def _pesos(n: int) -> str:
+        return f"ARS {n:,}".replace(",", ".")
+
+    def test_los_precios_son_los_del_backend(self):
+        from billing.pricing import PLUS_ARS_MONTHLY_TOTAL, ARS_MONTHLY_TOTAL
+        texto = self._texto()
+        for nombre, real in (("Plus", PLUS_ARS_MONTHLY_TOTAL), ("Pro", ARS_MONTHLY_TOTAL)):
+            m = re.search(rf"^- {nombre}: (ARS [\d.]+) por mes", texto, re.M)
+            self.assertTrue(m, f"llms.txt ya no dice el precio del {nombre}: revisar este test")
+            self.assertEqual(m.group(1), self._pesos(real),
+                             f"llms.txt dice {m.group(1)} para {nombre} y el precio es {self._pesos(real)}")
+
+    def test_los_dias_de_prueba(self):
+        from billing.trial import TRIAL_TOTAL_DAYS
+        dias = re.findall(r"(\d+) días", self._texto())
+        self.assertTrue(dias, "llms.txt ya no menciona la prueba: revisar este test")
+        for d in dias:
+            self.assertEqual(int(d), TRIAL_TOTAL_DAYS,
+                             f"llms.txt ofrece {d} días y la prueba es de {TRIAL_TOTAL_DAYS}")
+
+    def test_no_ofrece_el_plan_free(self):
+        self.assertNotRegex(self._texto(), r"(?i)plan free|gratis para siempre")
+
+
 class ElChatQueDiceElHowToDeGOOGLE(unittest.TestCase):
     """El HowTo de `frontend/index.html` (otro JSON-LD que Google puede mostrar)
     cuenta en su paso 5 cuántas consultas por semana tiene el chat. La home dice

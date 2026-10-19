@@ -343,14 +343,14 @@ function Features() {
     },
     {
       Icon: LineChart,
-      title: 'Benchmarks reales',
-      body: 'Compará tu rendimiento contra S&P 500 e inflación AR. En cada período: mensual, anual, acumulado. Sin trampas con bases.',
+      title: 'Benchmarks y métricas de riesgo',
+      body: 'Tu rendimiento (TWR) contra S&P 500, Merval, inflación y plazo fijo UVA: mensual, anual y acumulado. Y las métricas de un gestor de fondos: Sharpe, Sortino, alfa y beta vs S&P 500, Calmar, volatilidad y drawdown máximo.',
       meta: 'VS · MERCADO',
     },
     {
       Icon: Zap,
       title: 'Análisis de comportamiento',
-      body: 'Detectores de overtrading, sesgo de confirmación, anchoring. Tu trading mirado desde la lente del behavioral, no del cheerleading.',
+      body: 'Detectores de overtrading, FOMO, aversión a la pérdida y anchoring. Y tu perfil de inversor declarado contra tu cartera real. Tu trading mirado desde la lente del behavioral, no del cheerleading.',
       meta: 'BEHAVIORAL · DETECT',
     },
     {
@@ -465,8 +465,8 @@ function HowItWorks() {
       Icon: BarChart3,
       meta: 'INSIGHTS · COMPORTAMIENTO',
       title: 'Mirás tus Métricas',
-      body: 'Allocation por geografía (US, AR, cripto, cash), win rate, drawdown real, comparativa de tu perfil declarado vs tu cartera real, concentración top 3. Datos limpios sobre cómo decidís — no sobre cuánto te divierte mirar el gráfico.',
-      chips: ['Allocation', 'Drawdown', 'Perfil vs cartera'],
+      body: 'Allocation por geografía (US, AR, cripto, cash), win rate, drawdown máximo, concentración top 3 y tu perfil declarado vs tu cartera real. En Plus y Pro: Sharpe, Sortino, alfa y beta contra el S&P 500, Information Ratio, Calmar, CAGR y volatilidad. Datos limpios sobre cómo decidís — no sobre cuánto te divierte mirar el gráfico.',
+      chips: ['Drawdown', 'Sharpe · Sortino', 'Alfa vs S&P 500'],
       Visual: MockInsights,
     },
     {
