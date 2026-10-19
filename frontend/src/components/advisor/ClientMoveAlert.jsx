@@ -6,6 +6,7 @@ import { TrendingUp, TrendingDown, Users } from 'lucide-react'
 import Panel from '../Panel'
 import { api } from '../../utils/api'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
+import AvisoNotificaciones from '../AvisoNotificaciones'
 import { useToast } from '../Toast'
 import { parseNum, numACampo } from '../../utils/format'
 
@@ -48,8 +49,15 @@ export default function ClientMoveAlert({ config, onSaved }) {
       // Si eligió push y todavía no dio permiso, lo pedimos ahora: si no,
       // la alerta "anda" pero no le llega nada (audit).
       if (nextActive && (channel === 'push' || channel === 'both')
-          && push && push.supported && !push.subscribed) {
-        push.subscribe?.()
+          && push && !push.motivo && !push.subscribed) {
+        // Esperando la respuesta: antes, si salía mal, no se enteraba nadie.
+        push.subscribe().catch((ex) => {
+          if (ex?.motivo === 'bloqueadas') return   // lo explica el cartel de abajo
+          toast.push(channel === 'both'
+            ? 'Las notificaciones no se activaron: por ahora la alerta te llega por mail.'
+            : 'Las notificaciones no se activaron, así que la alerta todavía no te va a llegar. Activalas desde Más → Notificaciones.',
+            { type: 'warn', duration: 8000 })
+        })
       }
     } catch (e) {
       toast.push(e?.message || 'No se pudo guardar', { type: 'error' })
@@ -120,10 +128,10 @@ export default function ClientMoveAlert({ config, onSaved }) {
         <p className="text-[11px] text-ink-3 -mt-1">
           Un aviso por cliente por día, solo con el mercado abierto — no te llena la casilla.
           {groupId ? ' Quiénes entran al grupo se resuelve con el último cierre; el movimiento del día se mide en vivo.' : ''}
-          {(channel === 'push' || channel === 'both') && push && push.supported === false
-            ? ' El push no está disponible en este dispositivo: te va a llegar por email.'
-            : ''}
         </p>
+        {(channel === 'push' || channel === 'both') && push.motivo && (
+          <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="alerta_clientes" />
+        )}
 
         <div className="flex gap-2 pt-1">
           <button type="button" disabled={busy} onClick={() => save(!active)}

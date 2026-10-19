@@ -47136,16 +47136,58 @@ def push_unsubscribe(sub: PushSubIn, uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _contar_dispositivos_push(conn, uid: int) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (uid,)
+    ).fetchone()[0]
+
+
 @app.get("/api/push/status")
 def push_status(uid: int = Depends(get_effective_user)):
     """Cuenta cuántas subs tiene este user. Útil para que el UI sepa si está
     suscrito en al menos un device."""
     conn = get_db()
     try:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM push_subscriptions WHERE user_id = ?", (uid,)
-        ).fetchone()[0]
-        return {"subscribed_devices": count}
+        return {"subscribed_devices": _contar_dispositivos_push(conn, uid)}
+    finally:
+        conn.close()
+
+
+# El evento que manda el frontend (utils/uso.js) cuando Rendi se abre desde el
+# ícono del inicio. El prefijo `vista:` es el de usoCatalogo.js (tipo 'vista'):
+# así el panel de uso no lo cuenta como un botón tocado.
+_USO_APP_INSTALADA = "vista:app_abierta_instalada"
+
+
+@app.get("/api/primeros-pasos")
+def primeros_pasos(uid: int = Depends(get_current_user)):
+    """Lo que la lista de primeros pasos de Inicio no puede saber desde el
+    navegador en el que está abierta:
+
+    - app_instalada: alguna vez abrió Rendi desde el ícono del celular (vale
+      también mirando desde la compu). Sale del uso guardado, que dura 13 meses:
+      quien la sigue usando desde el ícono lo vuelve a anotar cada día.
+    - dispositivos_push: en cuántos dispositivos activó las notificaciones.
+    - alertas: cuántas alertas armó.
+    - resumen_activo: si prendió el resumen diario del mercado.
+
+    `get_current_user` (no el efectivo): la lista no se muestra cuando un asesor
+    mira la cuenta de un cliente, y estos pasos son de quien está frente a la
+    pantalla."""
+    conn = get_db()
+    try:
+        import market_brief
+        instalada = conn.execute(
+            "SELECT 1 FROM uso_diario WHERE user_id = ? AND evento = ? LIMIT 1",
+            (uid, _USO_APP_INSTALADA)).fetchone() is not None
+        alertas = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)).fetchone()[0]
+        return {
+            "app_instalada": instalada,
+            "dispositivos_push": _contar_dispositivos_push(conn, uid),
+            "alertas": alertas,
+            "resumen_activo": market_brief.brief_enabled(conn, uid),
+        }
     finally:
         conn.close()
 

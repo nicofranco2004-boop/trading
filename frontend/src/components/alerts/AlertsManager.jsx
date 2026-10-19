@@ -15,6 +15,7 @@ import Panel from '../Panel'
 import Pill from '../Pill'
 import AssetResultRow from '../AssetResultRow'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
+import AvisoNotificaciones from '../AvisoNotificaciones'
 import { useAlerts } from '../../hooks/useAlerts'
 import { POPULAR_TICKERS } from '../../utils/tickers'
 import { api } from '../../utils/api'
@@ -84,6 +85,7 @@ export default function AlertsManager({ plan, prefill }) {
   const [err, setErr] = useState(null)
   const [upsell, setUpsell] = useState(false)
   const [warnSym, setWarnSym] = useState(null)   // ticker que no resolvió precio
+  const [notaPush, setNotaPush] = useState(null)  // la alerta se creó pero el push no se activó
   const [currentPrice, setCurrentPrice] = useState(null)  // precio actual del ticker elegido
 
   const push = usePushNotifications()
@@ -147,9 +149,18 @@ export default function AlertsManager({ plan, prefill }) {
       // Ticker que no resolvió precio (typo / símbolo inexistente) → avisamos.
       setWarnSym(res && res.resolved === false && payload.symbol ? payload.symbol : null)
       setForm(EMPTY_FORM)
-      // Si eligió push/ambos y no dio permiso todavía, lo invitamos.
-      if ((form.channel === 'push' || form.channel === 'both') && push && !push.subscribed && push.supported) {
-        push.subscribe?.()
+      // Si eligió push/ambos y no dio permiso todavía, lo invitamos. Antes el
+      // pedido iba sin esperar la respuesta: si salía mal, nadie se enteraba y
+      // la persona creía que el aviso le iba a llegar al celular.
+      if ((form.channel === 'push' || form.channel === 'both') && push && !push.subscribed && !push.motivo) {
+        setNotaPush(null)
+        push.subscribe().catch((ex) => {
+          // 'bloqueadas' ya se explica con el cartel de abajo (el permiso cambió).
+          if (ex?.motivo === 'bloqueadas') return
+          setNotaPush(form.channel === 'both'
+            ? 'La alerta quedó creada, pero las notificaciones no se activaron: por ahora te llega por mail. Las podés activar cuando quieras desde Más → Notificaciones.'
+            : 'La alerta quedó creada, pero las notificaciones no se activaron, así que todavía no te va a llegar. Activalas desde Más → Notificaciones, o cambiala a «Push + Email».')
+        })
       }
     } catch (e2) {
       if (e2?.status === 403 && e2?.payload?.upgrade) {
@@ -213,6 +224,21 @@ export default function AlertsManager({ plan, prefill }) {
             Si el símbolo es correcto, la alerta va a funcionar igual; si fue un error, borrala y creala de nuevo.
           </div>
           <button onClick={() => setWarnSym(null)} className="text-ink-3 hover:text-ink-1"><X size={14} /></button>
+        </div>
+      )}
+
+      {/* Las notificaciones no se pueden activar en este dispositivo (iPhone sin
+          Rendi en el inicio, permiso bloqueado…). Se muestra sólo si a la
+          persona le importa: tiene alertas por push o está armando una. */}
+      {push.motivo && (items.some(a => a.channel === 'push' || a.channel === 'both')
+        || (showForm && form.channel !== 'email')) && (
+        <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma} origen="alertas" className="mx-4 mt-3" />
+      )}
+
+      {notaPush && (
+        <div className="mx-4 mt-3 rounded-sm border border-rendi-warn/30 bg-rendi-warn/5 px-3 py-2.5 flex items-start gap-2.5">
+          <div className="flex-1 min-w-0 text-xs text-ink-1">{notaPush}</div>
+          <button onClick={() => setNotaPush(null)} aria-label="Cerrar aviso" className="text-ink-3 hover:text-ink-1"><X size={14} /></button>
         </div>
       )}
 
@@ -318,8 +344,7 @@ export default function AlertsManager({ plan, prefill }) {
             <SegBtn active={form.channel === 'email'} onClick={() => setField('channel', 'email')} label="Email" icon={Mail} />
           </div>
           <p className="text-[11px] text-ink-3 -mt-1">
-            El email siempre llega. El push es un extra para desktop y Android
-            {push && push.supported === false ? ' — en iPhone, agregá Rendi a tu inicio' : ''}.
+            El email siempre llega. La notificación te avisa al momento en este dispositivo.
           </p>
           <div className="flex gap-2">
             <SegBtn active={form.repeat === 'once'} onClick={() => setField('repeat', 'once')} label="Una vez" />

@@ -15,11 +15,22 @@
 // API:
 //   const {
 //     supported, permission, subscribed, loading, error,
+//     plataforma, motivo,
 //     subscribe, unsubscribe, sendTest,
 //   } = usePushNotifications()
+//
+// `motivo` dice por qué NO se pueden activar acá ('iphone-sin-instalar',
+// 'bloqueadas'…; null si se puede) y lo traduce a palabras
+// utils/notificaciones.js — el mismo texto en todas las pantallas. Los errores
+// de `subscribe()` salen en castellano y llevan `.motivo`: nunca el mensaje
+// crudo del navegador (que llega en inglés y sin decir qué hacer).
 
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../utils/api'
+import { plataformaDe, yaInstalada } from '../utils/instalarApp'
+import {
+  motivoSinPush, textoSinPush, MENSAJE_CERRO_EL_PEDIDO, MENSAJE_FALLA,
+} from '../utils/notificaciones'
 
 const SW_PATH = '/sw.js'
 
@@ -61,23 +72,31 @@ function subscriptionToPayload(sub) {
   }
 }
 
+function hayPush() {
+  return typeof window !== 'undefined' &&
+    'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+}
+
+function errorCon(motivo, mensaje) {
+  return Object.assign(new Error(mensaje), { motivo })
+}
+
 export function usePushNotifications() {
-  const [supported, setSupported] = useState(false)
-  const [permission, setPermission] = useState('default')
+  // Se detecta en el PRIMER render, no en un efecto: si arrancara en «no
+  // soportado» y se corrigiera después, en la compu se vería por un instante
+  // el cartel de «este navegador no deja recibir notificaciones».
+  const [supported] = useState(hayPush)
+  const [permission, setPermission] = useState(() => (hayPush() ? Notification.permission : 'default'))
   const [subscribed, setSubscribed] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [plataforma] = useState(() => (typeof navigator === 'undefined' ? 'otro' : plataformaDe(navigator)))
+  const [instalada] = useState(() => yaInstalada())
+  const motivo = motivoSinPush({ supported, permission, plataforma, instalada })
 
-  // Detectar capabilities + estado inicial al montar
+  // Estado inicial: ¿este dispositivo ya tiene la suscripción?
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    const isSupported =
-      'serviceWorker' in navigator &&
-      'PushManager' in window &&
-      'Notification' in window
-    setSupported(isSupported)
-    if (!isSupported) return
-    setPermission(Notification.permission)
+    if (!supported) return
 
     // Si ya hay registración, ver si tiene sub
     navigator.serviceWorker.getRegistration(SW_PATH).then(async (reg) => {
@@ -87,7 +106,7 @@ export function usePushNotifications() {
         setSubscribed(!!sub)
       } catch { /* ignore */ }
     })
-  }, [])
+  }, [supported])
 
   // Registra el SW si no está, devuelve la registración.
   async function ensureSWRegistered() {
@@ -104,22 +123,23 @@ export function usePushNotifications() {
     setLoading(true)
     setError(null)
     try {
-      if (!supported) throw new Error('Tu browser no soporta notificaciones push.')
+      const sinPush = motivoSinPush({
+        supported, permission: supported ? Notification.permission : 'default', plataforma, instalada,
+      })
+      if (sinPush) throw errorCon(sinPush, textoSinPush(sinPush, plataforma).titulo)
       // Pedir permiso si está en default
       if (Notification.permission === 'default') {
         const result = await Notification.requestPermission()
         setPermission(result)
-        if (result !== 'granted') {
-          throw new Error('Permiso denegado. Activá las notificaciones en los ajustes del navegador.')
-        }
-      } else if (Notification.permission === 'denied') {
-        throw new Error('Notificaciones bloqueadas. Activalas en los ajustes del navegador y refrescá.')
+        if (result === 'denied') throw errorCon('bloqueadas', textoSinPush('bloqueadas', plataforma).titulo)
+        // Cerró el cartel del navegador sin elegir: no es un error, puede volver a tocar.
+        if (result !== 'granted') throw errorCon('cerro-el-pedido', MENSAJE_CERRO_EL_PEDIDO)
       }
 
       const reg = await ensureSWRegistered()
       // Pedir public key al backend
       const { public_key } = await api.get('/push/vapid-public-key')
-      if (!public_key) throw new Error('Backend no tiene VAPID configurado.')
+      if (!public_key) throw new Error('el servidor no devolvió la clave pública de push (VAPID)')
 
       // Crear o reusar sub
       let sub = await reg.pushManager.getSubscription()
@@ -134,12 +154,17 @@ export function usePushNotifications() {
       await api.post('/push/subscribe', payload)
       setSubscribed(true)
     } catch (ex) {
-      setError(ex?.message || 'No pudimos suscribir.')
-      throw ex
+      // Lo que no es uno de nuestros motivos (el navegador falló, el servidor
+      // no respondió) se cuenta en la consola tal cual —para quien lo tenga que
+      // investigar— y a la persona se le dice algo que entienda.
+      const e = ex?.motivo ? ex : errorCon('falla', MENSAJE_FALLA)
+      if (!ex?.motivo) console.warn('[push] no se pudo activar:', ex)
+      setError(e.message)
+      throw e
     } finally {
       setLoading(false)
     }
-  }, [supported])
+  }, [supported, plataforma, instalada])
 
   const unsubscribe = useCallback(async () => {
     setLoading(true)
@@ -171,5 +196,5 @@ export function usePushNotifications() {
     }
   }, [])
 
-  return { supported, permission, subscribed, loading, error, subscribe, unsubscribe, sendTest }
+  return { supported, permission, subscribed, loading, error, plataforma, motivo, subscribe, unsubscribe, sendTest }
 }

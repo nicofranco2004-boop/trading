@@ -15,6 +15,8 @@ import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import RecommendationsModal from '../components/RecommendationsModal'
 import InstalarAppModal, { precargarFotosDeInstalar } from '../components/InstalarAppModal'
+import AvisoNotificaciones from '../components/AvisoNotificaciones'
+import { MENSAJE_FALLA } from '../utils/notificaciones'
 import { yaInstalada } from '../utils/instalarApp'
 import { useToast } from '../components/Toast'
 import { usePushNotifications } from '../hooks/usePushNotifications'
@@ -247,7 +249,7 @@ export default function More() {
       ))}
 
       {/* Notificaciones push */}
-      <PushNotificationsSection esAsesor={isAdvisor} onInstalar={() => setInstalarOpen(true)} />
+      <PushNotificationsSection esAsesor={isAdvisor} />
 
       {/* Configuración + logout */}
       <section>
@@ -333,49 +335,42 @@ export default function More() {
 
 // ─── Push notifications section ─────────────────────────────────────────
 
-function PushNotificationsSection({ esAsesor = false, onInstalar }) {
+function PushNotificationsSection({ esAsesor = false }) {
   const toast = useToast()
   const {
-    supported, permission, subscribed, loading, error,
+    supported, permission, subscribed, loading, plataforma, motivo,
     subscribe, unsubscribe, sendTest,
   } = usePushNotifications()
   const [testing, setTesting] = useState(false)
 
+  // Sin push en este dispositivo (iPhone sin Rendi en el inicio, navegador que
+  // no lo trae): el cartel compartido dice por qué y qué hacer.
   if (!supported) {
     return (
       <section>
         <h2 className="text-[12.5px] text-ink-2 mb-2 px-1 font-medium">
           Notificaciones
         </h2>
-        <Panel padding="md">
-          <div className="flex items-center gap-3">
-            <BellOff size={16} strokeWidth={1.75} className="text-ink-3 flex-shrink-0" />
-            <p className="text-xs text-ink-2 leading-relaxed">
-              Desde este navegador no pueden llegarte notificaciones. En
-              iPhone llegan recién cuando Rendi está instalada en tu pantalla
-              de inicio.{' '}
-              <button type="button" onClick={onInstalar}
-                className="text-data-violet font-medium hover:underline">
-                Ver cómo instalarla
-              </button>
-            </p>
-          </div>
-        </Panel>
+        <AvisoNotificaciones motivo={motivo} plataforma={plataforma} origen="mas" />
       </section>
     )
   }
 
+  // Ojo: el Toast se llama con push(texto, { type }). Hasta 2026-10-19 esta
+  // sección llamaba a un `show` que no existe, y con el `?.` no daba error:
+  // ningún mensaje —ni «activadas», ni los errores— se llegó a ver nunca.
   async function handleToggle() {
     try {
       if (subscribed) {
         await unsubscribe()
-        toast?.show?.({ kind: 'success', text: 'Notificaciones desactivadas' })
+        toast.push('Notificaciones desactivadas', { type: 'success' })
       } else {
         await subscribe()
-        toast?.show?.({ kind: 'success', text: 'Notificaciones activadas' })
+        toast.push('Notificaciones activadas', { type: 'success' })
       }
     } catch (ex) {
-      toast?.show?.({ kind: 'error', text: ex?.message || 'Hubo un error' })
+      // Los motivos con cartel (bloqueadas) ya se ven abajo; el resto, mensaje.
+      if (ex?.motivo !== 'bloqueadas') toast.push(ex?.message || MENSAJE_FALLA, { type: ex?.motivo === 'cerro-el-pedido' ? 'info' : 'error' })
     }
   }
 
@@ -384,12 +379,12 @@ function PushNotificationsSection({ esAsesor = false, onInstalar }) {
     try {
       const sent = await sendTest()
       if (sent > 0) {
-        toast?.show?.({ kind: 'success', text: `Push enviado a ${sent} ${sent === 1 ? 'device' : 'devices'}` })
+        toast.push(sent === 1 ? 'Te mandamos una notificación de prueba' : `Te mandamos una notificación de prueba a ${sent} dispositivos`, { type: 'success' })
       } else {
-        toast?.show?.({ kind: 'warning', text: 'No hay devices suscritos.' })
+        toast.push('No encontramos ningún dispositivo con las notificaciones activadas.', { type: 'warn' })
       }
-    } catch (ex) {
-      toast?.show?.({ kind: 'error', text: ex?.message || 'No se pudo enviar' })
+    } catch {
+      toast.push('No pudimos mandar la prueba. Probá de nuevo en un rato.', { type: 'error' })
     } finally {
       setTesting(false)
     }
@@ -429,9 +424,12 @@ function PushNotificationsSection({ esAsesor = false, onInstalar }) {
                   variación (alerts_engine) y, al asesor, los movimientos de
                   las carteras de sus clientes (advisor_alerts). */}
               {permission === 'denied' && !subscribed
-                ? 'Reactivá en los ajustes del navegador.'
+                ? 'Abajo te decimos cómo destrabarlas.'
                 : `${subscribed ? 'Te llegan a este dispositivo' : 'Recibí en este dispositivo'} ${
                     esAsesor ? 'los movimientos de tus clientes y tus avisos de precio.' : 'tus avisos de precio y de variación.'}`}
+              {/* Cada dispositivo se activa por separado: activarlas en la
+                  compu no hace que lleguen al celular. */}
+              {subscribed && plataforma === 'otro' && ' Para que te lleguen al celular, activalas también desde el celular.'}
             </div>
           </div>
           <span className={`text-[12px] ${subscribed ? 'text-rendi-neg' : 'text-rendi-pos'} font-medium`}>
@@ -449,10 +447,10 @@ function PushNotificationsSection({ esAsesor = false, onInstalar }) {
             <Send size={16} strokeWidth={1.75} className="text-ink-2 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-ink-0 leading-tight">
-                Mandame un test
+                Mandame una de prueba
               </div>
               <div className="text-[11px] text-ink-3 leading-tight mt-0.5">
-                Verificá que las notificaciones llegan correctamente.
+                Para ver que las notificaciones te llegan bien.
               </div>
             </div>
             <span className="text-[12px] text-data-blue font-medium">
@@ -461,12 +459,8 @@ function PushNotificationsSection({ esAsesor = false, onInstalar }) {
           </button>
         )}
 
-        {error && (
-          <div className="px-4 py-2 border-t border-line/40 bg-rendi-neg/[0.04] text-[11px] text-rendi-neg">
-            {error}
-          </div>
-        )}
       </Panel>
+      {motivo && <AvisoNotificaciones motivo={motivo} plataforma={plataforma} origen="mas" className="mt-2" />}
     </section>
   )
 }

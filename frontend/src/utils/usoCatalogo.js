@@ -108,6 +108,9 @@ export const EVENTOS = {
   checklist_viewed: { label: 'Vio la lista de primeros pasos', donde: 'Inicio', soloGA: true, tipo: 'vista' },
   checklist_item_clicked: { label: 'Tocó un paso de la lista', donde: 'Inicio' },
   checklist_dismissed: { label: 'Cerró la lista de primeros pasos', donde: 'Inicio' },
+  checklist_paso_omitido: { label: 'Dejó un paso de la lista para después', donde: 'Inicio' },
+  checklist_push_activado: { label: 'Activó las notificaciones desde la lista', donde: 'Inicio' },
+  checklist_resumen_activado: { label: 'Prendió el resumen del mercado desde la lista', donde: 'Inicio' },
   demo_mode_started: { label: 'Entró al demo', donde: 'Demo' },
   demo_mode_exited: { label: 'Salió del demo', donde: 'Demo' },
   demo_plan_cta: { label: 'Fue a planes desde el demo', donde: 'Planes' },
@@ -140,6 +143,9 @@ export const EVENTOS = {
 
   // ── Interno ──
   app_abierta: { label: 'Abrió la app', donde: '—' },
+  // Lo lee también el servidor (/api/primeros-pasos) para tildar el paso de la
+  // lista: si se renombra, cambiar _USO_APP_INSTALADA en main.py.
+  app_abierta_instalada: { label: 'Abrió Rendi desde el ícono del celular', donde: '—', tipo: 'vista' },
 }
 
 // Eventos que existen en el código pero NO se cuentan, con el motivo.
