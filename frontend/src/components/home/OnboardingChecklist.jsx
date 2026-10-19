@@ -24,10 +24,16 @@
 //
 // Los pasos 1 y 2 son SUGERENCIAS, no obligaciones: tienen «Ahora no», que los
 // manda al final como «para después» (con «Retomar») y cuenta como resuelto para
-// que la lista pueda terminarse sin hacerlos. Se guarda en ESTE navegador a
-// propósito: quien lo deja para después en la compu lo vuelve a ver en el
-// celular, que es donde se hace. Y nunca se pide el permiso del navegador sin
-// que la persona toque «Activar».
+// que la lista pueda terminarse sin hacerlos. Pasados DIAS_PARA_VOLVER días el
+// paso vuelve solo a su lugar, como sugerencia otra vez (pedido de Nico: «que
+// cada 3-4 días se lo vuelva a mostrar»); otro «Ahora no» lo esconde otros tantos.
+// Se guarda en ESTE navegador a propósito: quien lo deja para después en la
+// compu lo vuelve a ver en el celular, que es donde se hace. Y nunca se pide el
+// permiso del navegador sin que la persona toque «Activar».
+//
+// Los tres pasos de «Para tener Rendi a mano» se VAN de la lista apenas se
+// hacen (no quedan tachados): son sugerencias, y una sugerencia cumplida no
+// tiene nada más que decir. Los de la cartera siguen quedando tachados.
 //
 // Si las notificaciones no se pueden activar acá (iPhone sin Rendi en el
 // inicio, permiso bloqueado), el paso abre el cartel compartido
@@ -68,16 +74,20 @@ import { useToast } from '../Toast'
 
 const CHECKLIST_DISMISSED_KEY = 'rendi_checklist_dismissed'
 const OMITIDOS_KEY = 'rendi_checklist_omitidos'
+export const DIAS_PARA_VOLVER = 3
+const MS_PARA_VOLVER = DIAS_PARA_VOLVER * 24 * 60 * 60 * 1000
 
+// { [paso]: cuándo tocó «Ahora no» (ms) }. Cualquier otra forma se descarta:
+// el paso vuelve a mostrarse, que es lo seguro para una sugerencia.
 function leerOmitidos() {
   try {
-    const v = JSON.parse(localStorage.getItem(OMITIDOS_KEY) || '[]')
-    return Array.isArray(v) ? v : []
-  } catch { return [] }
+    const v = JSON.parse(localStorage.getItem(OMITIDOS_KEY) || '{}')
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+  } catch { return {} }
 }
 
-function guardarOmitidos(lista) {
-  try { localStorage.setItem(OMITIDOS_KEY, JSON.stringify(lista)) } catch {}
+function guardarOmitidos(omitidos) {
+  try { localStorage.setItem(OMITIDOS_KEY, JSON.stringify(omitidos)) } catch {}
 }
 
 const GRUPOS = [
@@ -206,6 +216,7 @@ export default function OnboardingChecklist() {
     {
       id: 'instalar',
       grupo: 'a_mano',
+      seVaAlHacerse: true,
       omitible: true,
       recomendado: true,
       done: instalada,
@@ -228,6 +239,7 @@ export default function OnboardingChecklist() {
     {
       id: 'push',
       grupo: 'a_mano',
+      seVaAlHacerse: true,
       omitible: true,
       done: state.pasos.dispositivos_push > 0 || push.subscribed,
       Icon: Bell,
@@ -239,6 +251,7 @@ export default function OnboardingChecklist() {
     {
       id: 'alerta',
       grupo: 'a_mano',
+      seVaAlHacerse: true,
       done: state.pasos.alertas > 0,
       Icon: BellRing,
       title: 'Armá tu primera alerta',
@@ -299,7 +312,11 @@ export default function OnboardingChecklist() {
   ]
 
   const doneCount = items.filter((it) => it.done).length
-  const esOmitido = (it) => !it.done && it.omitible && omitidos.includes(it.id)
+  const ahora = Date.now()
+  const esOmitido = (it) => {
+    const cuando = Number(omitidos[it.id])
+    return !it.done && !!it.omitible && cuando > 0 && ahora - cuando < MS_PARA_VOLVER
+  }
   const resueltos = items.filter((it) => it.done || esOmitido(it)).length
 
   // Track view solo en el primer load para no inflar GA con duplicados.
@@ -361,14 +378,14 @@ export default function OnboardingChecklist() {
 
   function omitir(item) {
     track('checklist_paso_omitido', { item: item.id })
-    const lista = [...new Set([...omitidos, item.id])]
+    const lista = { ...omitidos, [item.id]: Date.now() }
     guardarOmitidos(lista)
     setOmitidos(lista)
     if (item.id === 'push') setVerAvisoPush(false)
   }
 
   function retomar(item) {
-    const lista = omitidos.filter((id) => id !== item.id)
+    const { [item.id]: _, ...lista } = omitidos
     guardarOmitidos(lista)
     setOmitidos(lista)
   }
@@ -442,7 +459,8 @@ export default function OnboardingChecklist() {
 
       {/* Items, por grupo */}
       {GRUPOS.map((g) => {
-        const delGrupo = items.filter((it) => it.grupo === g.id && !esOmitido(it))
+        const delGrupo = items.filter((it) => it.grupo === g.id && !esOmitido(it)
+          && !(it.done && it.seVaAlHacerse))
         if (!delGrupo.length) return null
         return (
           <div key={g.id} className="mb-3 last:mb-0">

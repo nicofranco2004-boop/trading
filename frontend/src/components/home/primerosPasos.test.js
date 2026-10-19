@@ -8,7 +8,9 @@
 //   1. En un iPhone con Rendi abierta en Safari, «Activar» NO tira un error:
 //      muestra «Primero, agregá Rendi a tu inicio» con el botón al paso a paso.
 //   2. «Ahora no» manda el paso al final («para después») y «Retomar» lo trae.
-//   3. Lo que sabe el servidor tilda los pasos aunque se mire desde la compu.
+//      A los 3 días vuelve solo, como sugerencia otra vez.
+//   3. Lo que sabe el servidor tilda los pasos aunque se mire desde la compu, y
+//      los de «tener Rendi a mano» se VAN de la lista apenas se hacen.
 //   4. En la compu, «Activar» suscribe de verdad y después ofrece el resumen;
 //      «Sí, mandámelo» lo prende en el servidor.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -112,7 +114,9 @@ describe('primeros pasos: tener Rendi a mano', () => {
     await tocar('Ahora no')
     let t = texto(montado.contenedor)
     expect(t).toContain('Agregá Rendi a tu celular · para después')
-    expect(JSON.parse(local.get('rendi_checklist_omitidos'))).toEqual(['instalar'])
+    const guardado = JSON.parse(local.get('rendi_checklist_omitidos'))
+    expect(Object.keys(guardado)).toEqual(['instalar'])
+    expect(Math.abs(guardado.instalar - Date.now())).toBeLessThan(5000)   // cuándo lo dijo
     await montado.desmontar()
     montado = await montarLista()
     expect(texto(montado.contenedor)).toContain('Agregá Rendi a tu celular · para después')
@@ -122,11 +126,37 @@ describe('primeros pasos: tener Rendi a mano', () => {
     expect(t).toContain('Queda con su ícono en tu inicio')
   })
 
-  it('lo que sabe el servidor tilda los pasos, y con todo resuelto la lista no aparece', async () => {
+  it('«Ahora no» dura 3 días: al día siguiente sigue escondido, a los 4 vuelve a su lugar', async () => {
+    const DIA = 24 * 60 * 60 * 1000
+    let { local } = dispositivo({ ua: IPHONE, conPush: false })
+    local.set('rendi_checklist_omitidos', JSON.stringify({ instalar: Date.now() - 1 * DIA, push: Date.now() - 4 * DIA }))
+    montado = await montarLista()
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Agregá Rendi a tu celular · para después')       // 1 día: escondido
+    expect(t).not.toContain('Activá las notificaciones · para después')   // 4 días: volvió
+    expect(t).toContain('Te avisamos al momento cuando se mueve lo que seguís')
+    // Volvió en su lugar (arriba, en «a mano»), no al final.
+    expect(t.indexOf('Activá las notificaciones')).toBeLessThan(t.indexOf('Para tener tu cartera bien'))
+
+    // Justo antes de los 3 días, todavía no.
+    await montado.desmontar()
+    ;({ local } = dispositivo({ ua: IPHONE, conPush: false }))
+    local.set('rendi_checklist_omitidos', JSON.stringify({ push: Date.now() - (3 * DIA - 60_000) }))
+    montado = await montarLista()
+    expect(texto(montado.contenedor)).toContain('Activá las notificaciones · para después')
+  })
+
+  it('lo hecho de «tener Rendi a mano» se va de la lista (no queda tachado)', async () => {
     pasosDelServidor = { app_instalada: true, dispositivos_push: 1, alertas: 2, resumen_activo: true }
     dispositivo({ ua: MAC, conPush: false })
     montado = await montarLista()
-    expect(texto(montado.contenedor)).toContain('3 de 7 listos')
+    const t = texto(montado.contenedor)
+    expect(t).toContain('3 de 7 listos')
+    expect(t).not.toContain('Agregá Rendi a tu celular')
+    expect(t).not.toContain('Activá las notificaciones')
+    expect(t).not.toContain('Armá tu primera alerta')
+    expect(t).not.toContain('Para tener Rendi a mano')       // el grupo vacío tampoco queda
+    expect(t).toContain('Importá tu historial')
     await montado.desmontar()
 
     // Los cuatro de la cartera hechos (o dejados para después) → nada que mostrar.
@@ -154,6 +184,7 @@ describe('primeros pasos: activar desde la compu', () => {
     let t = texto(montado.contenedor)
     expect(t).toContain('¿Te mandamos también el resumen del mercado?')
     expect(t).toContain('1 de 7 listos')
+    expect(t).not.toContain('Activá las notificaciones')     // hecho → se fue
     await tocar('Sí, mandámelo')
     expect(api.patch).toHaveBeenCalledWith('/market-brief/prefs', { enabled: true })
     t = texto(montado.contenedor)
