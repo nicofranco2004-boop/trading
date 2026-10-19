@@ -24,39 +24,54 @@ CRYPTO_TICKERS = {
 }
 
 US_TICKERS = {
-    'AAPL', 'ABBV', 'ABEV', 'ABNB', 'ABT', 'ACN', 'ADBE', 'ADSK', 'AFRM', 'AGG',
-    'AMAT', 'AMC', 'AMD', 'AMGN', 'AMZN', 'ANET', 'ARGT', 'ARKG', 'ARKK', 'ASML',
-    'ASTS', 'AVGO', 'AXP', 'BA', 'BABA', 'BAC', 'BB', 'BBD', 'BKNG', 'BLK', 'BNTX',
-    'BRK-B', 'BSX', 'BX', 'C', 'CAT', 'CMCSA', 'CMG', 'COIN', 'COP', 'COST', 'CRM',
-    'CRWD', 'CSCO', 'CVNA', 'CVX', 'DASH', 'DBC', 'DDOG', 'DE', 'DIA', 'DIS', 'DOCU',
-    'EA', 'EEM', 'EFA', 'EOG', 'ETHE', 'ETSY', 'EWJ', 'EWZ', 'F', 'FBTC', 'GBTC', 'GD',
-    'GE', 'GILD', 'GLD', 'GM', 'GME', 'GOOG', 'GOOGL', 'GS', 'HD', 'HOOD', 'HYG',
-    'IAU', 'IBIT', 'IBM', 'IEF', 'INDA', 'INTC', 'INTU', 'ITUB', 'IVV', 'IWM', 'JD',
-    'JNJ', 'JPM', 'KLAC', 'KO', 'LCID', 'LI', 'LIN', 'LLY', 'LMT', 'LQD', 'LRCX',
-    'LYFT', 'MA', 'MCHI', 'MDB', 'MDLZ', 'MELI', 'META', 'MPC', 'MRK', 'MRNA', 'MRVL',
-    'MS', 'MSFT', 'MU', 'NET', 'NFLX', 'NIO', 'NKE', 'NOC', 'NOW', 'NU', 'NVAX',
-    'NVDA', 'OKTA', 'ORCL', 'OXY', 'PANW', 'PARA', 'PBR', 'PDD', 'PEP', 'PFE', 'PG',
-    'PINS', 'PLTR', 'PSX', 'PYPL', 'QCOM', 'QQQ', 'QQQM', 'RBLX', 'RIVN', 'RKLB',
-    'ROKU', 'RTX', 'SBUX', 'SHOP', 'SHY', 'SLB', 'SLV', 'SMH', 'SNAP', 'SNOW', 'SOFI',
-    'SOXL', 'SOXX', 'SPCX', 'SPGI', 'SPOT', 'SPY', 'SQ', 'SQQQ', 'T', 'TEAM', 'TGT',
-    'TLT', 'TMF', 'TMO', 'TMUS', 'TQQQ', 'TSLA', 'TSM', 'TTWO', 'TWLO', 'TXN', 'U',
-    'UBER', 'UNG', 'UNH', 'UPRO', 'UPST', 'USO', 'V', 'VALE', 'VEA', 'VIST', 'VOO',
-    'VST', 'VTI', 'VWO', 'VZ', 'WBD', 'WDAY', 'WFC', 'WMT', 'XLB', 'XLC', 'XLE', 'XLF',
-    'XLI', 'XLK', 'XLP', 'XLRE', 'XLU', 'XLV', 'XLY', 'XOM', 'XPEV', 'ZM', 'ZS'
+    'AAL', 'AAPL', 'ABBV', 'ABEV', 'ABNB', 'ABT', 'ACN', 'ADBE', 'ADSK', 'AFRM',
+    'AGG', 'ALAB', 'AMAT', 'AMC', 'AMD', 'AMGN', 'AMZN', 'ANET', 'ARGT', 'ARKG',
+    'ARKK', 'ASML', 'ASTS', 'AVGO', 'AXP', 'AZN', 'BA', 'BABA', 'BAC', 'BAK', 'BB',
+    'BBD', 'BIDU', 'BIOX', 'BKNG', 'BLK', 'BMNR', 'BMY', 'BND', 'BNTX', 'BRK-B',
+    'BSX', 'BX', 'C', 'CAT', 'CEG', 'CMCSA', 'CMG', 'COIN', 'COP', 'COST', 'CRM',
+    'CRWD', 'CRWV', 'CSCO', 'CVNA', 'CVX', 'DASH', 'DBC', 'DDOG', 'DE', 'DIA',
+    'DIS', 'DOCU', 'DOW', 'EA', 'EEM', 'EFA', 'EOG', 'ETHE', 'ETSY', 'EWJ', 'EWZ',
+    'F', 'FBTC', 'GBTC', 'GD', 'GE', 'GILD', 'GLD', 'GLOB', 'GM', 'GME', 'GOOG',
+    'GOOGL', 'GPRK', 'GS', 'HD', 'HIMS', 'HMY', 'HON', 'HOOD', 'HUT', 'HYG', 'IAU',
+    'IBIT', 'IBM', 'IEF', 'INDA', 'INTC', 'INTU', 'IREN', 'ITUB', 'IVV', 'IWM',
+    'JD', 'JMIA', 'JNJ', 'JPM', 'KEEL', 'KLAC', 'KO', 'LAC', 'LAR', 'LCID', 'LI',
+    'LIN', 'LLY', 'LMT', 'LOW', 'LQD', 'LRCX', 'LYFT', 'MA', 'MCD', 'MCHI', 'MDB',
+    'MDLZ', 'MELI', 'META', 'MMM', 'MP', 'MPC', 'MRK', 'MRNA', 'MRVL', 'MS', 'MSFT',
+    'MSTR', 'MU', 'MUX', 'NBIS', 'NET', 'NFLX', 'NIO', 'NKE', 'NOC', 'NOK', 'NOW',
+    'NU', 'NVAX', 'NVDA', 'NVO', 'NVS', 'O', 'OKLO', 'OKTA', 'ONDS', 'ORCL', 'OXY',
+    'PAGS', 'PANW', 'PARA', 'PATH', 'PBR', 'PDD', 'PEP', 'PFE', 'PG', 'PINS',
+    'PLTR', 'PSX', 'PYPL', 'QCOM', 'QQQ', 'QQQM', 'RBLX', 'RGTI', 'RIO', 'RIOT',
+    'RIVN', 'RKLB', 'ROKU', 'RTX', 'SATL', 'SBUX', 'SCHD', 'SE', 'SHOP', 'SHY',
+    'SID', 'SLB', 'SLV', 'SMH', 'SNAP', 'SNDK', 'SNOW', 'SOFI', 'SOXL', 'SOXX',
+    'SPCE', 'SPCX', 'SPGI', 'SPOT', 'SPY', 'SQ', 'SQQQ', 'STNE', 'T', 'TEAM', 'TGT',
+    'TIP', 'TLT', 'TMF', 'TMO', 'TMUS', 'TQQQ', 'TRIP', 'TSLA', 'TSM', 'TTWO',
+    'TWLO', 'TXN', 'U', 'UBER', 'UNG', 'UNH', 'UPRO', 'UPST', 'USO', 'V', 'VALE',
+    'VEA', 'VIG', 'VIST', 'VOO', 'VST', 'VTI', 'VWO', 'VYM', 'VZ', 'WBD', 'WDAY',
+    'WFC', 'WMT', 'XLB', 'XLC', 'XLE', 'XLF', 'XLI', 'XLK', 'XLP', 'XLRE', 'XLU',
+    'XLV', 'XLY', 'XOM', 'XPEV', 'XYZ', 'ZM', 'ZS'
 }
 
+# Los CEDEARs de la pantalla (CEDEARS_LIST), TODOS. Hasta 2026-10-19 eran 119 de
+# 168: el chat no podía registrar IREN, MSTR, MCD, NOW… y fuera_de_horario.py
+# tenía su propia copia completa para tapar el hueco. Ahora esta es la única
+# copia del servidor; tests/test_fuera_de_horario.py la compara con la pantalla.
 CEDEAR_TICKERS = {
-    'AAPL', 'ABBV', 'ABEV', 'ABNB', 'ADBE', 'AMC', 'AMD', 'AMGN', 'AMZN', 'ANET',
-    'ARKK', 'ASTS', 'AVGO', 'AXP', 'AZN', 'BA', 'BABA', 'BAC', 'BB', 'BBD', 'BIDU',
-    'BLK', 'BMY', 'BRK-B', 'C', 'CAT', 'COIN', 'COP', 'COST', 'CRM', 'CRWD', 'CSCO',
-    'CVX', 'DDOG', 'DE', 'DISN', 'DOCU', 'EA', 'EEM', 'EWZ', 'F', 'GE', 'GILD', 'GLD',
-    'GM', 'GME', 'GOOGL', 'GS', 'HD', 'HON', 'HOOD', 'IBIT', 'IBM', 'INTC', 'ITUB',
-    'JD', 'JNJ', 'JPM', 'KO', 'LLY', 'LMT', 'MA', 'MELI', 'META', 'MMM', 'MRK', 'MRNA',
-    'MS', 'MSFT', 'MU', 'NET', 'NFLX', 'NIO', 'NKE', 'NU', 'NVDA', 'NVS', 'OKLO',
-    'ORCL', 'PANW', 'PBR', 'PDD', 'PEP', 'PFE', 'PINS', 'PLTR', 'PYPL', 'QCOM', 'QQQ',
-    'RKLB', 'ROKU', 'RTX', 'SBUX', 'SHOP', 'SNAP', 'SNOW', 'SPCX', 'SPOT', 'SPY', 'T',
-    'TGT', 'TSLA', 'TSM', 'TTWO', 'TWLO', 'UBER', 'UNH', 'V', 'VALE', 'VIST', 'VST',
-    'WFC', 'WMT', 'XLE', 'XLF', 'XLV', 'XOM', 'XYZ', 'ZM'
+    'AAL', 'AAPL', 'ABBV', 'ABEV', 'ABNB', 'ACWI', 'ADBE', 'ALAB', 'AMC', 'AMD',
+    'AMGN', 'AMZN', 'ANET', 'ARKK', 'ASML', 'ASTS', 'AVGO', 'AXP', 'AZN', 'BA',
+    'BABA', 'BAC', 'BAK', 'BB', 'BBD', 'BIDU', 'BIOX', 'BLK', 'BMNR', 'BMY',
+    'BRK-B', 'BRKB', 'C', 'CAT', 'CEG', 'COIN', 'COP', 'COPX', 'COST', 'CRM',
+    'CRWD', 'CRWV', 'CSCO', 'CVX', 'DDOG', 'DE', 'DISN', 'DOCU', 'DOW', 'EA', 'EEM',
+    'ETHA', 'EWY', 'EWZ', 'F', 'FXI', 'GE', 'GILD', 'GLD', 'GLOB', 'GM', 'GME',
+    'GOOGL', 'GPRK', 'GS', 'HD', 'HIMS', 'HMY', 'HON', 'HOOD', 'HUT', 'IBIT', 'IBM',
+    'INTC', 'IREN', 'ITUB', 'JD', 'JMIA', 'JNJ', 'JPM', 'KEEL', 'KO', 'LAC', 'LAR',
+    'LLY', 'LMT', 'MA', 'MCD', 'MELI', 'META', 'MMM', 'MP', 'MRK', 'MRNA', 'MS',
+    'MSFT', 'MSTR', 'MU', 'MUX', 'NBIS', 'NET', 'NFLX', 'NIO', 'NKE', 'NOKA', 'NOW',
+    'NU', 'NVDA', 'NVO', 'NVS', 'O', 'OKLO', 'ONDS', 'ORCL', 'PAGS', 'PANW', 'PATH',
+    'PBR', 'PDD', 'PEP', 'PFE', 'PINS', 'PLTR', 'PYPL', 'QCOM', 'QQQ', 'RGTI',
+    'RIO', 'RIOT', 'RKLB', 'ROKU', 'RTX', 'SATL', 'SBUX', 'SE', 'SHOP', 'SID',
+    'SNAP', 'SNDK', 'SNOW', 'SPCE', 'SPCX', 'SPOT', 'SPY', 'STNE', 'T', 'TGT',
+    'TRIP', 'TSLA', 'TSM', 'TTWO', 'TWLO', 'UBER', 'UNH', 'URA', 'V', 'VALE', 'VIG',
+    'VIST', 'VST', 'WFC', 'WMT', 'XLE', 'XLF', 'XLV', 'XOM', 'XYZ', 'ZM'
 }
 
 AR_STOCK_TICKERS = {
@@ -297,8 +312,10 @@ def resolve_asset(raw: str):
                     or t in US_TICKERS or t in AR_STOCK_TICKERS)
         compact = _re.sub(r"[\s.\-]+", "", s)      # "SPACE X" → "SPACEX"
         dashed = _re.sub(r"[\s.]+", "-", s)         # "BRK.B" → "BRK-B"
-        for cand in (NAME_ALIASES.get(compact), compact if _known(compact) else None,
-                     dashed if _known(dashed) else None):
+        # El guion va antes que lo compactado: "BRK.B" es BRK-B (acción y
+        # CEDEAR), no BRKB (sólo la especie del CEDEAR en BYMA).
+        for cand in (NAME_ALIASES.get(compact), dashed if _known(dashed) else None,
+                     compact if _known(compact) else None):
             if cand:
                 s = cand
                 break

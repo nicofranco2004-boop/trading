@@ -143,28 +143,12 @@ POPULARES = [
 # cambiás una sin la otra, falla.
 CEDEAR_EN_EEUU = {"DISN": "DIS", "BRKB": "BRK-B", "NOKA": "NOK"}
 CEDEAR_ESPECIE_ALIAS = {"SI": "SID"}
-# La lista de CEDEARs de la PANTALLA (CEDEARS_LIST de utils/tickers.js), copiada:
-# la de ai.trade_tickers (119) es la allowlist del chat para registrar
-# operaciones y le faltaban 49 (BRKB, MCD, GLOB, MSTR, NVO…) — esos CEDEARs
-# tenían pre/post en la pantalla y no en el chat, el mail ni las alertas
-# (auditoría 2026-10-15). La prueba de paridad compara esta copia con la de la
-# pantalla.
-CEDEARS = frozenset({
-    "AAL", "AAPL", "ABBV", "ABEV", "ABNB", "ACWI", "ADBE", "ALAB", "AMC", "AMD", "AMGN",
-    "AMZN", "ANET", "ARKK", "ASML", "ASTS", "AVGO", "AXP", "AZN", "BA", "BABA", "BAC", "BAK",
-    "BB", "BBD", "BIDU", "BIOX", "BLK", "BMNR", "BMY", "BRK-B", "BRKB", "C", "CAT", "CEG",
-    "COIN", "COP", "COPX", "COST", "CRM", "CRWD", "CRWV", "CSCO", "CVX", "DDOG", "DE", "DISN",
-    "DOCU", "DOW", "EA", "EEM", "ETHA", "EWY", "EWZ", "F", "FXI", "GE", "GILD", "GLD", "GLOB",
-    "GM", "GME", "GOOGL", "GPRK", "GS", "HD", "HIMS", "HMY", "HON", "HOOD", "HUT", "IBIT",
-    "IBM", "INTC", "IREN", "ITUB", "JD", "JMIA", "JNJ", "JPM", "KEEL", "KO", "LAC", "LAR",
-    "LLY", "LMT", "MA", "MCD", "MELI", "META", "MMM", "MP", "MRK", "MRNA", "MS", "MSFT",
-    "MSTR", "MU", "MUX", "NBIS", "NET", "NFLX", "NIO", "NKE", "NOKA", "NOW", "NU", "NVDA",
-    "NVO", "NVS", "O", "OKLO", "ONDS", "ORCL", "PAGS", "PANW", "PATH", "PBR", "PDD", "PEP",
-    "PFE", "PINS", "PLTR", "PYPL", "QCOM", "QQQ", "RGTI", "RIO", "RIOT", "RKLB", "ROKU", "RTX",
-    "SATL", "SBUX", "SE", "SHOP", "SID", "SNAP", "SNDK", "SNOW", "SPCE", "SPCX", "SPOT", "SPY",
-    "STNE", "T", "TGT", "TRIP", "TSLA", "TSM", "TTWO", "TWLO", "UBER", "UNH", "URA", "V",
-    "VALE", "VIG", "VIST", "VST", "WFC", "WMT", "XLE", "XLF", "XLV", "XOM", "XYZ", "ZM",
-})
+# La lista de CEDEARs de la PANTALLA (CEDEARS_LIST de utils/tickers.js). Antes
+# era una copia propia: la del chat (ai.trade_tickers) tenía 119 y le faltaban 49
+# (BRKB, MCD, GLOB, MSTR, NVO…) — auditoría 2026-10-15. Desde 2026-10-19 la del
+# chat está completa y es la única; la prueba de paridad la compara con la pantalla.
+from ai.trade_tickers import CEDEAR_TICKERS as _CEDEAR_TICKERS  # noqa: E402
+CEDEARS = frozenset(_CEDEAR_TICKERS)
 
 ADR_DE_ACCION_AR = {
     "GGAL": "GGAL", "BMA": "BMA", "CEPU": "CEPU", "EDN": "EDN", "BBAR": "BBAR", "SUPV": "SUPV",
@@ -180,9 +164,8 @@ def _siguen_a_byma() -> frozenset:
     de toda la app; sin esta lista cerrada, `byma=` aceptaba cualquier símbolo
     (hasta ~9.000 pedidos por minuto de un solo usuario) y la memoria de bases
     crecía sin techo (auditoría 2026-10-15)."""
-    from ai.trade_tickers import CEDEAR_TICKERS
     out = set(ADR_DE_ACCION_AR.values())
-    for c in CEDEARS | frozenset(CEDEAR_TICKERS):
+    for c in CEDEARS:
         especie = CEDEAR_ESPECIE_ALIAS.get(c, c)
         out.add(CEDEAR_EN_EEUU.get(especie, especie))
     return frozenset(out)
@@ -205,8 +188,8 @@ def referencia_en_eeuu(clave_precio: Optional[str], asset_type: Optional[str] = 
     if not clave_precio:
         return None
     from cripto import CRYPTO_SYMBOLS
-    from ai.trade_tickers import CEDEAR_TICKERS, AR_STOCK_TICKERS
-    cedears = CEDEARS | frozenset(CEDEAR_TICKERS)
+    from ai.trade_tickers import AR_STOCK_TICKERS
+    cedears = CEDEARS
     from behavioral import _is_ar_bond
     clave = str(clave_precio).upper()
     tipo = (asset_type or "").upper()

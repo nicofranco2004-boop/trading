@@ -72,7 +72,7 @@ const SECTOR_MAP = new Map([
     'AAPL', 'MSFT', 'ORCL', 'CRM', 'ADBE', 'IBM', 'CSCO', 'ACN', 'NOW', 'INTU',
     'PANW', 'CRWD', 'SNOW', 'PLTR', 'SHOP', 'DDOG', 'NET', 'ZS', 'OKTA', 'MDB',
     'TWLO', 'DOCU', 'ZM', 'ADSK', 'WDAY', 'TEAM', 'ANET', 'BB', 'XLK', 'GLOB',
-    'CRWV', 'NBIS', 'NOKA', 'PATH', 'RGTI', 'ONDS',
+    'CRWV', 'NBIS', 'NOKA', 'NOK', 'PATH', 'RGTI', 'ONDS',
   ]),
   ...M('semis', [
     'NVDA', 'AMD', 'INTC', 'QCOM', 'AVGO', 'MU', 'TXN', 'AMAT', 'LRCX', 'KLAC',

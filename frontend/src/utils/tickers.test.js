@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST,
-  ARG_LIDER, ARG_GENERAL, CEDEAR_SEARCH,
+  ARG_LIDER, ARG_GENERAL, CEDEAR_SEARCH, CEDEAR_EN_EEUU, cedearEspecieBase,
 } from './tickers'
 
 const LISTAS = {
@@ -63,6 +63,25 @@ describe('los CEDEARs que pidieron los usuarios están', () => {
     ['MUX', 'McEwen — pedido el 2026-08-11'],
   ])('%s está en CEDEARS_LIST (%s)', (sym) => {
     expect(simbolos.has(sym)).toBe(true)
+  })
+})
+
+describe('cada CEDEAR tiene también su acción de EE.UU.', () => {
+  // 2026-10-19: IREN estaba como CEDEAR y no como acción, igual que otros 42
+  // del barrido de BYMA del 2026-08-11. Quien la tenía en un broker del
+  // exterior no la encontraba. Los ETF van aparte (ETFS / "(CEDEAR)" en el nombre).
+  const us = new Set([...STOCKS_US, ...ETFS].map(x => x.s))
+
+  it('ningún CEDEAR de empresa queda sin su acción', () => {
+    const faltan = CEDEARS_LIST
+      .filter(x => !/\(CEDEAR\)/.test(x.n))
+      .map(x => CEDEAR_EN_EEUU[cedearEspecieBase(x.s)] || cedearEspecieBase(x.s))
+      .filter(s => !us.has(s))
+    expect(faltan, 'agregalos a STOCKS_US (y a ai/trade_tickers.US_TICKERS)').toEqual([])
+  })
+
+  it('IREN está como acción (pedido del 2026-10-19)', () => {
+    expect(us.has('IREN')).toBe(true)
   })
 })
 

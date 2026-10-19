@@ -334,6 +334,7 @@ ASSET_NAMES = {
     'NIO': 'NIO',
     'NKE': 'Nike',
     'NOC': 'Northrop Grumman',
+    'NOK': 'Nokia',
     'NOKA': 'Nokia',
     'NOW': 'ServiceNow',
     'NQ1!': 'E-mini Nasdaq Futuros',

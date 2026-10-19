@@ -135,6 +135,7 @@ class TestNombresHablables(unittest.TestCase):
             ("BRK-B", "BRKB"),          # Berkshire, dos formas del mismo código
             ("SQ", "XYZ"),              # Block, ticker viejo y nuevo
             ("DIS", "DISN"),            # Disney, US y CEDEAR
+            ("NOK", "NOKA"),            # Nokia, US y CEDEAR
             ("CAPU", "CAPX"),           # Capex, dos códigos del mismo papel
             ("TLC5O", "TLCMO"),         # Telecom 2031, misma ON
         }
