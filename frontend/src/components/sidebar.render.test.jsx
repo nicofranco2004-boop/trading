@@ -42,9 +42,9 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
     const orden = ['/dashboard', '/posiciones', '/operaciones', '/analisis', '/fundamentals', '/perfil-inversor', '/', '/novedades']
     expect(r.filter(to => orden.includes(to))).toEqual(orden)
   })
-  it('usuario común: Tu Cartera, Análisis, Mercado y los sueltos', () => {
+  it('usuario común: Tu Cartera, Análisis, Mercado y Alertas (Importar va adentro de Registrar)', () => {
     const r = rutas(dibujar({ tier: 'pro' }))
-    for (const to of ['/dashboard', '/posiciones', '/operaciones', '/', '/novedades', '/analisis', '/fundamentals', '/perfil-inversor', '/alertas', '/imports']) {
+    for (const to of ['/dashboard', '/posiciones', '/operaciones', '/', '/novedades', '/analisis', '/fundamentals', '/perfil-inversor', '/alertas']) {
       expect(r).toContain(to)
     }
     expect(r).not.toContain('/clientes')
@@ -91,8 +91,8 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
     expect(html).toMatch(/⌘K|Ctrl K/)
   })
 
-  // La flechita del pie (pedido de Nico, 2026-10-19): Alertas, Importar y las
-  // utilidades le tapaban lugar a la cartera. Abierto por defecto; plegado deja
+  // La flechita del pie (pedido de Nico, 2026-10-19): las utilidades le
+  // tapaban lugar a la cartera. Abierto por defecto; plegado deja
   // la cartera, el tema y salir, y esconde el resto también al teclado (inert).
   const pie = (html) => html.slice(html.indexOf('id="sidebar-pie"'))
   it('el pie arranca abierto, con la flechita para plegarlo', () => {
@@ -102,17 +102,35 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
     expect(html).toContain('aria-expanded="true" aria-controls="sidebar-pie"')
     expect(html).not.toMatch(/id="sidebar-pie"[^>]*inert/)
   })
-  it('plegado: Alertas, Importar y utilidades quedan adentro e inertes; cartera, tema y salir a la vista', () => {
+  it('plegado: las utilidades quedan adentro e inertes; cartera, Alertas, tema y salir a la vista', () => {
     guardado = { rendi_sidebar_pie_plegado: 'true' }
     const html = dibujar({ tier: 'pro' })
     expect(html).toMatch(/id="sidebar-pie"[^>]*inert=""/)
     expect(html).toContain('aria-expanded="false" aria-controls="sidebar-pie"')
     const adentro = rutas(pie(html).slice(0, pie(html).indexOf('Recomendaciones')))
-    for (const to of ['/alertas', '/imports', '/guia', '/config']) expect(adentro).toContain(to)
-    // Lo de la cartera sigue arriba, fuera del pie.
+    for (const to of ['/guia', '/config']) expect(adentro).toContain(to)
+    // Lo de la cartera y Alertas siguen arriba, fuera del pie.
     const afuera = rutas(html.slice(0, html.indexOf('id="sidebar-pie"')))
-    for (const to of ['/dashboard', '/posiciones', '/operaciones']) expect(afuera).toContain(to)
+    for (const to of ['/dashboard', '/posiciones', '/operaciones', '/alertas']) expect(afuera).toContain(to)
+    expect(adentro).not.toContain('/alertas')
     expect(pie(html)).toContain('aria-label="Cerrar sesión"')
     guardado = {}
+  })
+  // Alertas en chico, arriba al lado de Registrar (pedido de Nico, 2026-10-19):
+  // ya no es una fila de sección abajo.
+  it('Alertas es la campanita al lado de Registrar, antes del menú de secciones', () => {
+    const html = dibujar({ tier: 'pro' })
+    const campana = html.indexOf('href="/alertas"')
+    expect(campana).toBeGreaterThan(html.indexOf('Registrar'))
+    expect(campana).toBeLessThan(html.indexOf('<nav'))
+    expect(html).toMatch(/href="\/alertas"[^>]*aria-label="Alertas"|aria-label="Alertas"[^>]*href="\/alertas"/)
+    expect(html.match(/href="\/alertas"/g)).toHaveLength(1)
+  })
+  it('asesor en su nivel (sin Registrar): Alertas arriba, como fila chica con el nombre', () => {
+    const html = dibujar({ tier: 'advisor' })
+    const i = html.indexOf('href="/alertas"')
+    expect(i).toBeGreaterThan(0)
+    expect(i).toBeLessThan(html.indexOf('<nav'))
+    expect(html.slice(i, html.indexOf('</a>', i))).toContain('>Alertas<')
   })
 })

@@ -1,10 +1,12 @@
 // Sidebar — navegación lateral colapsable (V3).
 // ═══════════════════════════════════════════════════════════════════════════
 // Reestructura 2026-07: de links planos a 3 secciones ACORDEÓN que se despliegan
-// al tocarlas (menos ruido, más aire). Afuera del acordeón, siempre visibles:
-// Alertas e Importar (acciones a mano, no escondidas). Arriba de todo, debajo de
-// la moneda, el botón violeta «Registrar» (RegistrarMenu); después Mervall-E AI;
-// utilidades (Guía / Config / Recomendaciones) + cuenta abajo.
+// al tocarlas (menos ruido, más aire). Arriba de todo, debajo de la moneda, el
+// botón violeta «Registrar» (RegistrarMenu) con la campanita de Alertas al lado,
+// en chico; Importar vive ADENTRO de Registrar, separado de las cargas a mano
+// (pedido de Nico, 2026-10-19: como filas sueltas abajo ocupaban como una
+// sección más). Después Mervall-E AI; utilidades (Guía / Config /
+// Recomendaciones) + cuenta abajo.
 //
 // Espaciado GENEROSO a propósito (filas altas, texto grande): llena el alto y
 // evita el vacío negro. Dos estados de ancho:
@@ -20,8 +22,7 @@
 // conoce el atajo): desplegado, en el encabezado al lado de las tres rayas;
 // plegado, debajo de la moneda.
 //
-// El pie (Alertas, Importar, Admin, Guía, Config, Descargar app,
-// Recomendaciones) se puede PLEGAR con la flechita que está sobre su línea de
+// El pie (Admin, Guía, Config, Descargar app, Recomendaciones) se puede PLEGAR con la flechita que está sobre su línea de
 // arriba: le tapaba lugar a las secciones de la cartera (pedido de Nico,
 // 2026-10-19). Abierto por defecto; la preferencia queda en localStorage. El
 // tema, salir y el plan quedan siempre a la vista. Si la ruta activa es una
@@ -75,6 +76,11 @@ export default function Sidebar() {
   const { atOwnLevel, groups: visibleGroups, loose: visibleLoose,
           asesorPropio, clientesDesdeCliente, utilidades } = menuVisible({ user, clientCtx })
   const visibleLeaves = visibleGroups.flatMap(g => g.items)
+  // Los «sueltos» ya no son filas: Alertas va de campanita al lado de
+  // Registrar e Importar adentro de su menú. Qué se ve sigue saliendo de la
+  // lista compartida (el asesor en su nivel no tiene Importar).
+  const alertas = visibleLoose.find(i => i.to === '/alertas')
+  const importar = visibleLoose.find(i => i.to === '/imports')
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [piePlegado, setPiePlegado] = useState(() => localStorage.getItem(LS_PIE) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
@@ -91,7 +97,7 @@ export default function Sidebar() {
 
   // Si la ruta activa vive en el pie, el pie se abre solo: si no, la pantalla
   // en la que estás no se ve marcada en ningún lado del menú.
-  const activaEnPie = [...visibleLoose, ...utilidades].some(it => matchPath(location.pathname, it.to))
+  const activaEnPie = utilidades.some(it => matchPath(location.pathname, it.to))
   useEffect(() => {
     if (activaEnPie) setPiePlegado(false)
   }, [activaEnPie])
@@ -181,11 +187,38 @@ export default function Sidebar() {
           cualquier pantalla. Antes eran tres botones en el encabezado de la
           Cartera. El asesor en su nivel no tiene cartera propia donde anotar:
           lo ve recién adentro de un cliente. */}
-      {!atOwnLevel && (
-        <div className={`flex-shrink-0 pt-3 ${collapsed ? 'px-2 flex justify-center' : 'px-2.5'}`}>
-          <RegistrarMenu collapsed={collapsed} />
-        </div>
-      )}
+      {/* Al lado, Alertas en chico: la campanita (con el puntito si hay
+          alertas sin ver). El asesor en su nivel, sin Registrar, la ve como
+          una fila chica con el nombre. */}
+      <div className={`flex-shrink-0 pt-3 ${collapsed ? 'px-2 flex flex-col items-center gap-2' : 'px-2.5 flex items-center gap-2'}`}>
+        {!atOwnLevel && (
+          <div className={collapsed ? '' : 'flex-1 min-w-0'}>
+            <RegistrarMenu collapsed={collapsed} importar={importar} />
+          </div>
+        )}
+        {alertas && (() => {
+          const soloIcono = collapsed || !atOwnLevel
+          const AlertIcon = alertas.icon
+          return (
+            <NavLink to={alertas.to} title={soloIcono ? 'Alertas' : undefined}
+              aria-label={soloIcono ? 'Alertas' : undefined}
+              onMouseEnter={() => prefetchRoute(alertas.to)} onFocus={() => prefetchRoute(alertas.to)}
+              className={({ isActive }) =>
+                `relative flex-shrink-0 inline-flex items-center justify-center gap-2 rounded-lg border transition-colors ${
+                  soloIcono ? (collapsed ? 'w-9 h-9' : 'w-10 h-10') : 'w-full h-9 text-[13px] font-medium'
+                } ${isActive ? 'border-data-violet/60 bg-data-violet/10 text-data-violet' : 'border-line text-ink-2 hover:text-ink-0 hover:bg-bg-2'}`}>
+              <AlertIcon size={16} strokeWidth={1.75} aria-hidden="true" />
+              {!soloIcono && <span>{alertas.label}</span>}
+              {/* Puntito violeta sólo si hay eventos SIN VER. Al entrar a
+                  /alertas se marcan vistos (AlertsContext.markSeen) → se apaga. */}
+              {unseenCount > 0 && (
+                <span aria-hidden title="Tenés alertas sin ver"
+                  className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-data-violet ring-2 ring-bg-0" />
+              )}
+            </NavLink>
+          )
+        })()}
+      </div>
 
       {/* Navegación */}
       <nav className="flex-1 overflow-y-auto overflow-x-hidden py-5 px-2.5">
@@ -309,65 +342,29 @@ export default function Sidebar() {
         )}
       </nav>
 
-      {/* Footer: sueltos (Alertas / Importar) + utilidades + cuenta */}
+      {/* Footer: utilidades + cuenta */}
       <div className="relative border-t border-line px-2.5 py-3 flex-shrink-0">
         {/* La flechita que pliega el pie, montada sobre la línea divisoria.
-            Abierto apunta para abajo («guardar»); plegado, para arriba. Con el
-            pie plegado, el puntito de alertas sin ver pasa a la flechita para
-            que no se pierda. */}
+            Abierto apunta para abajo («guardar»); plegado, para arriba. */}
         <button
           type="button"
           onClick={() => setPiePlegado(p => !p)}
           aria-expanded={!piePlegado}
           aria-controls="sidebar-pie"
-          title={piePlegado ? 'Mostrar Alertas, Importar y el resto' : 'Achicar: dejar más lugar a la cartera'}
+          title={piePlegado ? 'Mostrar Guía, Configuración y el resto' : 'Achicar: dejar más lugar a la cartera'}
           aria-label={piePlegado ? 'Mostrar las opciones de abajo' : 'Ocultar las opciones de abajo'}
           className="absolute -top-3 left-1/2 -translate-x-1/2 z-10 w-6 h-6 flex items-center justify-center rounded-full border border-data-violet/50 bg-bg-0 text-data-violet hover:bg-data-violet/15 hover:border-data-violet transition-colors"
         >
           <ChevronDown size={14} strokeWidth={2} aria-hidden="true"
             className={`transition-transform duration-200 ${piePlegado ? 'rotate-180' : ''}`} />
-          {piePlegado && unseenCount > 0 && (
-            <span aria-hidden title="Tenés alertas sin ver"
-              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-data-violet ring-2 ring-bg-0" />
-          )}
         </button>
 
-        {/* Lo plegable: sueltos + utilidades. El alto anima de 0 a lo que
+        {/* Lo plegable: las utilidades. El alto anima de 0 a lo que
             mida (grid 0fr → 1fr), sin tope fijo que corte una fila. */}
         <div id="sidebar-pie"
           className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${piePlegado ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}
           inert={piePlegado ? '' : undefined}>
         <div className="overflow-hidden min-h-0">
-        {/* Sueltos — tinta más fuerte que las utilidades */}
-        {visibleLoose.map(({ to, label, icon: Icon }) => {
-          // Puntito violeta sólo en Alertas y sólo si hay eventos SIN VER. Al
-          // entrar a /alertas se marcan vistos (AlertsContext.markSeen) → se apaga.
-          const showDot = to === '/alertas' && unseenCount > 0
-          return (
-          <NavLink key={to} to={to} title={collapsed ? label : undefined}
-            onMouseEnter={() => prefetchRoute(to)} onFocus={() => prefetchRoute(to)}
-            className={({ isActive }) =>
-              `relative flex items-center gap-3 ${collapsed ? 'justify-center px-2' : 'pl-3 pr-2.5'} py-2.5 rounded-md text-[14px] font-medium transition-colors ${
-                isActive ? 'text-ink-0 bg-bg-2' : 'text-ink-1 hover:text-ink-0 hover:bg-bg-1'
-              }`}>
-            {({ isActive }) => (
-              <>
-                <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
-                {!collapsed && <span className="flex-1">{label}</span>}
-                {showDot && (
-                  <span aria-hidden title="Tenés alertas sin ver"
-                    className={`w-2 h-2 rounded-full bg-data-violet ${collapsed ? 'absolute top-1.5 right-1.5' : ''}`}
-                    style={collapsed ? undefined : { boxShadow: '0 0 0 3px rgb(var(--data-violet) / 0.12)' }} />
-                )}
-                {isActive && <ActiveBar />}
-              </>
-            )}
-          </NavLink>
-          )
-        })}
-
-        <div className="border-t border-line/40 my-2 mx-1" aria-hidden="true" />
-
         {/* Admin, Guía y Configuración: la lista vive en utils/navegacion.js
             (UTILIDADES), compartida con el buscador ⌘K. Admin conserva su
             estilo de fila; las otras dos, el de utilidad. */}

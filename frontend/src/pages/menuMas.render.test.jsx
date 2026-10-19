@@ -37,6 +37,13 @@ vi.mock('../components/CurrencySwitcher', () => ({ default: () => null }))
 vi.mock('../components/RecommendationsModal', () => ({ default: () => null }))
 vi.mock('../components/Toast', () => ({ useToast: () => null }))
 vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => push }))
+// Importar historial vive adentro del menú de Registrar (2026-10-19), que sólo
+// se dibuja al tocarlo. Acá se lo dibuja como un enlace más, con lo que el
+// menú lateral le pasa: si el lateral deja de pasárselo, «Importar» falta en la
+// compu y la comparación con el celular da rojo.
+vi.mock('../components/RegistrarMenu', () => ({
+  default: ({ importar }) => (importar ? <a href={importar.to}>Importar historial</a> : null),
+}))
 
 import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
@@ -50,16 +57,18 @@ const dibujar = (Componente, u, c) => {
   usuario = u; cliente = c
   return renderToStaticMarkup(<MemoryRouter initialEntries={['/mas']}><Componente /></MemoryRouter>)
 }
-// Arriba del <nav> del menú lateral va el logo, que lleva a "/" para todos
-// (también al asesor, que no tiene esa pantalla en su menú): es el logo, no
-// una entrada del menú. Se exige que sea lo ÚNICO que hay ahí arriba: un
-// enlace nuevo en esa franja tiene que estar también en el celular.
+// Arriba del <nav> del menú lateral va primero el logo, que lleva a "/" para
+// todos (también al asesor, que no tiene esa pantalla en su menú): es el logo,
+// no una entrada del menú, y se descuenta. Lo demás de esa franja (Registrar
+// con Importar adentro, la campanita de Alertas) SÍ cuenta: tiene que estar
+// también en el celular.
 const menuCompu = (u, c) => {
   const html = dibujar(Sidebar, u, c)
   const corte = html.indexOf('<nav')
   expect(corte, 'el menú lateral perdió su <nav>').toBeGreaterThan(0)
-  expect(rutas(html.slice(0, corte)), 'arriba del menú lateral sólo va el logo').toEqual(['/'])
-  return { html, rutas: rutas(html.slice(corte)) }
+  const arriba = rutas(html.slice(0, corte))
+  expect(arriba[0], 'lo primero del menú lateral es el logo').toBe('/')
+  return { html, rutas: [...arriba.slice(1), ...rutas(html.slice(corte))] }
 }
 const menuMas = (u, c) => {
   const html = dibujar(More, u, c)

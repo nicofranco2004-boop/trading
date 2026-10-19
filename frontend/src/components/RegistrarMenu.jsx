@@ -15,6 +15,12 @@
 //
 // Dos anchos, como el menú lateral: desplegado dice «Registrar»; plegado
 // (56 px) es el cuadrado violeta con el "+".
+//
+// Abajo de todo, en una franja propia (otro fondo, su título, ícono violeta de
+// borde punteado), «Importar historial»: no es una carga a mano sino subir el
+// archivo del broker, y antes era una fila suelta del menú lateral (pedido de
+// Nico, 2026-10-19). Llega por `importar` desde la lista compartida del menú
+// (utils/navegacion.js): quien no tiene Importar no lo ve acá tampoco.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -26,7 +32,7 @@ import { track } from '../utils/track'
 const MENU_W = 272
 // Alto aproximado del menú abierto: sólo para que no se salga por abajo en una
 // ventana muy baja.
-const MENU_H = 330
+const MENU_H = 400
 
 // El color del ícono es la intención de cada renglón, con los mismos tonos que
 // ya usan el selector de efectivo (CashMenuModal) y el "+" del celular.
@@ -37,7 +43,7 @@ const TONO = {
   info:   'bg-data-cyan/10 text-data-cyan',
 }
 
-export default function RegistrarMenu({ collapsed = false }) {
+export default function RegistrarMenu({ collapsed = false, importar = null }) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState(null)   // coords fixed {top, left} del menú
   const btnRef = useRef(null)
@@ -101,6 +107,12 @@ export default function RegistrarMenu({ collapsed = false }) {
     navigate(direccionDeRegistrar(accion.id))
   }
 
+  function irAImportar() {
+    track('registrar_elegido', { code: 'importar' })
+    setOpen(false)
+    navigate(importar.to)
+  }
+
   // Flechas arriba/abajo entre opciones.
   function moverFoco(e) {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
@@ -162,6 +174,28 @@ export default function RegistrarMenu({ collapsed = false }) {
               </div>
             )
           })}
+          {importar && (() => {
+            const ImportIcon = importar.icon
+            return (
+              <div className="mt-1.5 -mx-1.5 -mb-1.5 px-1.5 pt-1.5 pb-1.5 border-t border-line bg-bg-1 rounded-b-xl">
+                <p className="px-2.5 pt-1 pb-1 text-[12px] text-ink-3">¿Tenés el historial del broker?</p>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={irAImportar}
+                  className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left transition-colors hover:bg-bg-2 focus:bg-bg-2 focus:outline-none"
+                >
+                  <span className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center border border-dashed border-data-violet/60 text-data-violet">
+                    <ImportIcon size={16} strokeWidth={2} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[13.5px] font-medium text-ink-0">Importar historial</span>
+                    <span className="block text-[12px] text-ink-3 leading-snug">Subí el archivo de tu broker y se carga todo</span>
+                  </span>
+                </button>
+              </div>
+            )
+          })()}
         </div>,
         document.body,
       )}
