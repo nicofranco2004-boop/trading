@@ -412,6 +412,29 @@ class SoloCuandoCambia(_Despues):
         self.assertNotEqual(despues, antes)
         self.assertEqual(despues, self._reconstruccion_nueva())
 
+    def test_la_huella_se_escribe_y_se_compara_con_el_mismo_dia(self):
+        """`_reconstruir_mtm` escribe la huella con su «hoy» y
+        `_cuentas_que_cambiaron` la compara con el suyo. Si los dos «hoy» no son
+        el mismo, una cuenta recién reconstruida sigue «cambiada» y cada pedido la
+        reconstruye entera (y sale a Yahoo). Pasaba el último día de cada mes de 21
+        a 24 h cuando uno leía el día argentino y el otro el UTC: medido con el
+        reloj simulado (18/10/2026), la cuenta quedaba marcada ni bien terminaba.
+
+        Acá el «ahora» de la app (`fechas.ahora_art`) es el último día del mes
+        pasado a las 23:30, y la cuenta tiene la fila de ese mes, como toda cuenta
+        real. Si alguno de los dos lee otro reloj (el de verdad), ve otro mes."""
+        from datetime import datetime, timedelta
+        self._importar(*IBKR)
+        self._esperar()
+        hoy = hoy_art_date()
+        fin_de_mes = datetime(hoy.year, hoy.month, 1, 23, 30) - timedelta(days=1)
+        self._sql("INSERT INTO monthly_entries (user_id, year, month, broker, capital_inicio, "
+                  "deposits, withdrawals, pnl_realized) VALUES (?,?,?,'global',14000,0,0,0)",
+                  self.uid, fin_de_mes.year, fin_de_mes.month)
+        with mock.patch("fechas.ahora_art", return_value=fin_de_mes):
+            self.assertTrue(main._reconstruir_mtm(self.uid)["reconstruida"])
+            self.assertEqual(main._cuentas_que_cambiaron([self.uid]), ([], []))
+
 
 class LasHerramientasDelAdmin(_Despues):
 
