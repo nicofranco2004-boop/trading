@@ -64,7 +64,8 @@ minutos (`precio_al_cierre_de_byma`). La misma cuenta resuelve los días en que
 un mercado opera y el otro no: con BYMA cerrada por feriado (12/10) el CEDEAR
 arrastra el precio del viernes, y con NY cerrada (Acción de Gracias) el CEDEAR
 del jueves ya tiene adentro el post del miércoles. Qué días operó BYMA lo dicen
-las velas diarias del Merval (`_sesiones_de_byma`), no un calendario nuestro.
+las velas diarias de cuatro acciones de BYMA (`_sesiones_de_byma`), no un
+calendario nuestro.
 Las acciones de EE.UU. en un broker del exterior ('propio') siguen con `pct`:
 su precio ES el cierre de NY. La regla de qué % usa cada vía es UNA
 (`pct_segun_via`), y la pantalla la copia en `pctDeLaTenencia`.
@@ -485,13 +486,42 @@ _bases_cache: Dict[tuple, tuple] = {}   # (símbolo, cierre de BYMA) → (ts, pr
 _BASE_FALLIDA_TTL_S = 120               # sin velas: se reintenta en 2 minutos, no en cada refresco
 
 
-def _traer_sesiones_byma():
-    """Las fechas (de Argentina) en que operó BYMA el último mes: las velas
-    diarias del Merval. Medido 2026-10-15: no trae el 12/10 (feriado acá, NY
-    abierta) y trae la de hoy desde que abre la rueda."""
+# Con qué se sabe qué días operó BYMA. Antes era el índice Merval (^MERV), y el
+# 2026-10-19 Yahoo dejó de publicarlo («possibly delisted»): sin la vela de hoy,
+# el último cierre de BYMA pasaba a ser el del viernes y el «post-mercado» de los
+# CEDEARs medía desde el viernes — mostraba la rueda entera de hoy como post
+# (Dashboard: «Post +USD 104,85 · +1,11 %» contra «Hoy +USD 104,10»). Medido ese
+# día: estas cuatro sí tenían el 19/10, y ninguna el feriado del 12/10. Alcanza
+# con que UNA haya operado: si Yahoo pierde una, las otras tres sostienen el día.
+PAPELES_CALENDARIO_BYMA = ("GGAL.BA", "YPFD.BA", "PAMP.BA", "BMA.BA")
+
+
+def _dias_de_un_papel(simbolo: str) -> set:
+    """Los días (de Argentina) en que `simbolo` tuvo operaciones el último mes."""
     import yfinance as yf
-    h = yf.Ticker("^MERV").history(period="1mo", interval="1d", auto_adjust=False)
-    return {ts.tz_convert(ZONA_AR).date() for ts, c in zip(h.index, h["Close"]) if c == c}
+    h = yf.Ticker(simbolo).history(period="1mo", interval="1d", auto_adjust=False)
+    return dias_operados(zip(h.index, h["Close"], h["Volume"]))
+
+
+def dias_operados(velas) -> set:
+    """[(fecha o timestamp, cierre, volumen)] → los días con precio y con
+    operaciones. Una vela sin cierre o con volumen 0 no cuenta como día operado."""
+    dias = set()
+    for ts, cierre, volumen in velas:
+        if cierre is None or cierre != cierre or not volumen or volumen != volumen:
+            continue
+        if hasattr(ts, "tz_convert"):
+            ts = ts.tz_convert(ZONA_AR) if ts.tzinfo else ts
+        dias.add(ts.date() if hasattr(ts, "date") else ts)
+    return dias
+
+
+def _traer_sesiones_byma():
+    """Las fechas (de Argentina) en que operó BYMA el último mes: la UNIÓN de los
+    días operados por `PAPELES_CALENDARIO_BYMA`, pedidos en paralelo."""
+    crudos, _ = _yahoo.varios(_dias_de_un_papel, PAPELES_CALENDARIO_BYMA,
+                              tope=_yahoo.TOPE_PANTALLA_SEG, que="días de BYMA")
+    return set().union(*crudos.values()) if crudos else set()
 
 
 def _sesiones_de_byma() -> Optional[set]:
@@ -500,8 +530,9 @@ def _sesiones_de_byma() -> Optional[set]:
     if ahora - _sesiones_cache[0] < _SESIONES_TTL_S:
         return _sesiones_cache[1]
     try:
-        sesiones = _yahoo.con_tope(_traer_sesiones_byma, tope=_yahoo.TOPE_PANTALLA_SEG,
-                                   que="días de BYMA") or None
+        # Sin `con_tope` alrededor: adentro ya corre `varios`, que tiene su propio
+        # tope (anidarlos puede trabar el pool, ver pricing/yahoo.py).
+        sesiones = _traer_sesiones_byma() or None
     except Exception as ex:
         log.warning("fuera_de_horario: no se pudo saber qué días operó BYMA: %r", ex)
         sesiones = None

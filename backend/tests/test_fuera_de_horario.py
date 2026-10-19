@@ -638,3 +638,50 @@ def test_el_mail_mandado_tarde_mide_la_noche_desde_el_cierre_de_byma_de_ayer(mon
     # En octubre BYMA y NY cierran juntos: el % del CEDEAR es el de la acción.
     assert tarde["post"]["pct_byma"] == pytest.approx(tarde["post"]["pct"], abs=1e-4)
     assert tarde["post"]["pct"] == pytest.approx((37.6 / 37.4 - 1) * 100, abs=1e-4)
+
+
+# ─── Qué días operó BYMA: cuatro acciones, no el índice ─────────────────────
+# El 2026-10-19 Yahoo dejó de publicar ^MERV y el calendario se quedó en el
+# viernes 16: a las 17:25 el «post» de los CEDEARs medía desde el viernes y
+# mostraba la rueda entera de hoy (Dashboard: Post +1,11 % = Hoy +1,1 %).
+_TRAER_SESIONES_REAL = fdh._traer_sesiones_byma   # el conftest lo silencia en cada prueba
+LUN_19_10 = dt.date(2026, 10, 19)
+
+
+def test_los_dias_de_byma_salen_de_varias_acciones_y_alcanza_con_una(monkeypatch):
+    vie, feriado = dt.date(2026, 10, 16), dt.date(2026, 10, 12)
+    dias = {
+        "GGAL.BA": {dt.date(2026, 10, 9), vie},                    # Yahoo perdió la vela de hoy
+        "YPFD.BA": {dt.date(2026, 10, 9), vie, LUN_19_10},
+        # PAMP.BA y BMA.BA: Yahoo no respondió (fn tira → `varios` lo descarta)
+    }
+
+    def un_papel(s):
+        if s not in dias:
+            raise RuntimeError("sin respuesta")
+        return dias[s]
+
+    monkeypatch.setattr(fdh, "_traer_sesiones_byma", _TRAER_SESIONES_REAL)
+    monkeypatch.setattr(fdh, "_dias_de_un_papel", un_papel)
+    y = Yahoo([_cot("SPY", "POST", LUN_19_10, 766.48, post=766.82),
+               _cot("INTC", "POST", LUN_19_10, 92.03, post=92.14)])
+    v = Velas({})
+    r = fdh.estado(["INTC"], byma=["INTC"], pedir=y, traer=v,
+                   ahora=dt.datetime(2026, 10, 19, 17, 25, tzinfo=AR))
+    intc = r["cotizaciones"]["INTC"]
+    assert feriado not in fdh._sesiones_de_byma()
+    assert intc["base_byma"] == "2026-10-19"          # hoy, no el viernes
+    # Octubre: BYMA y NY cerraron juntos → el CEDEAR mueve lo mismo que la acción
+    # en el post (+0,12 %), no la rueda entera (+2,4 %). Ni hacen falta velas.
+    assert intc["pct_byma"] == intc["pct"] == pytest.approx((92.14 / 92.03 - 1) * 100, abs=1e-3)
+    assert v.pedidos == []
+
+
+def test_dias_operados_descarta_velas_sin_precio_o_sin_operaciones():
+    import pandas as pd
+    ts = lambda d: pd.Timestamp(d, tz="America/Argentina/Buenos_Aires")
+    velas = [(ts("2026-10-16"), 5805.0, 2218209),
+             (ts("2026-10-19"), 5690.0, 2391617),
+             (ts("2026-10-12"), 5800.0, 0),               # feriado con vela vacía
+             (ts("2026-10-13"), float("nan"), 100)]
+    assert fdh.dias_operados(velas) == {dt.date(2026, 10, 16), LUN_19_10}
