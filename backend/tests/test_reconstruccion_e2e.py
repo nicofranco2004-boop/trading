@@ -161,10 +161,11 @@ class ReconstruccionE2ETest(unittest.TestCase):
             "broker='global' ORDER BY year, month", (self.uid,))]
         r = main._reconstruir_mtm(self.uid)
         self.assertTrue(r["reconstruida"])
-        # El hilo usa el reloj de la app (UTC), igual que acá.
-        from datetime import datetime
+        # El hilo usa el calendario de la app (día argentino, fechas.py), igual
+        # que acá. Con UTC, el último día del mes de 21 a 24 h contaba un mes de más.
+        from fechas import hoy_art_date
         self.assertEqual(r["snapshots"],
-                         _meses_cerrados_desde_agosto_2024(datetime.utcnow().date()))
+                         _meses_cerrados_desde_agosto_2024(hoy_art_date()))
         self.assertAlmostEqual(r["cobertura_media"], 1.0, places=3)
         cf_despues = [r2["capital_final"] for r2 in self.conn.execute(
             "SELECT capital_final FROM monthly_entries WHERE user_id=? AND "

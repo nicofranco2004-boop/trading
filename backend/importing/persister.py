@@ -1361,8 +1361,11 @@ def _backfill_snapshots_from_monthly(conn, uid: int) -> None:
     from twr import netdep_canonico as _netdep_canonico
     _canon = _netdep_canonico(conn, uid)
     import calendar
-    from datetime import date as _date, datetime as _dt
-    hoy = _dt.utcnow().date()
+    from datetime import date as _date
+    from fechas import hoy_art_date
+    # ⏰ EL DÍA ARGENTINO (fechas.py). Con `utcnow()`, el penúltimo día del mes de
+    # 21 a 24 h ya era el último y se fabricaba la foto de fin de mes un día antes.
+    hoy = hoy_art_date()
     # Un snapshot de fin de mes para un mes que TODAVÍA NO TERMINÓ está fechado en
     # el futuro y su valor es el capital al costo (el recalc pone pnl_unrealized=0),
     # o sea SIN la ganancia no realizada. Y como `_latest_snapshots` elige por

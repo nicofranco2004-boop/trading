@@ -39,7 +39,9 @@ class RolloverFechaFuturaTest(unittest.TestCase):
             "VALUES ('roll@rendi.test','x',1,1)").lastrowid
         conn.execute("INSERT INTO brokers (user_id,name,currency) VALUES (?,?,'USDT')",
                      (self.uid, self.BROKER))
-        ahora = datetime.utcnow()
+        # El mes en curso es el ARGENTINO (fechas.py), el mismo que usa el rollover.
+        from fechas import hoy_art_date
+        ahora = hoy_art_date()
         self.anio, self.mes = ahora.year, ahora.month
         # Historia real: un mes cerrado, bastante antes del actual.
         self._fila(conn, self.anio - 1, 1, capital_final=1000)
