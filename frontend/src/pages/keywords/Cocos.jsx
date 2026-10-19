@@ -14,8 +14,8 @@ const FEATURES = [
     desc: 'Descargá desde Cocos los Movimientos (Actividad → Descargar Movimientos) y el Estado de Cuenta (Portfolio → Descargar portfolio) y subí ambos a Rendi. Reconocemos automáticamente acciones AR, CEDEARs, bonos y FCI.',
   },
   {
-    title: 'P&L real en USD blue, no pesos nominales',
-    desc: 'Cocos te muestra el monto en ARS. Rendi convierte cada operación al dólar blue del día — vez si realmente ganaste poder de compra o solo seguiste la inflación.',
+    title: 'P&L real en USD, no pesos nominales',
+    desc: 'Cocos te muestra el monto en ARS. Rendi pasa cada operación al dólar MEP de su fecha — ves si realmente ganaste poder de compra o solo seguiste la inflación.',
   },
   {
     title: 'Combiná Cocos con IOL, Balanz, Schwab, Binance',
@@ -70,12 +70,12 @@ export default function Cocos() {
     <KeywordLanding
       kicker="Tracker para Cocos Capital"
       h1="Seguí tu cartera de Cocos en USD real, con FIFO automático"
-      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares blue, con FIFO automático para AFIP y Mervall-E AI con memoria."
+      intro="Cocos te muestra tu cartera en pesos. Rendi la consolida con tus otros brokers (IOL, Balanz, Schwab, Binance) y te muestra el P&L real en dólares (al MEP de cada fecha), con FIFO automático para AFIP y Mervall-E AI con memoria."
       features={FEATURES}
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Tracker Cocos Capital — Rendi | Cartera consolidada en USD"
-      metaDescription="Seguí tu cartera de Cocos Capital + otros brokers (IOL, Balanz, Schwab, Binance) en Rendi. P&L real en USD blue, FIFO automático, Mervall-E AI. Importás el CSV de Cocos en 30 segundos."
+      metaDescription="Seguí tu cartera de Cocos Capital junto a IOL, Balanz, Schwab y Binance: P&L real en USD, FIFO automático y Mervall-E AI. Importás el CSV en 30 segundos."
       canonicalPath="/brokers/cocos"
     />
   )

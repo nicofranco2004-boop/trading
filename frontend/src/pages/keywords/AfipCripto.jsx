@@ -57,7 +57,7 @@ export default function AfipCripto() {
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="Declarar cripto a AFIP con FIFO — Rendi"
-      metaDescription="FIFO automático para tu cripto (Binance, exchanges, wallets) según criterio fiscal AR. Cost basis correcto, distinción staking/trading, export CSV anual para tu contador."
+      metaDescription="FIFO automático para tu cripto (Binance, exchanges, wallets) con criterio fiscal argentino: costo correcto por lote y CSV anual para tu contador."
       canonicalPath="/afip-cripto"
     />
   )

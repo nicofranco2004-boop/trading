@@ -90,7 +90,7 @@ export default function Guia() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Guía completa de Rendi — Manual de uso"
-        description="Cómo usar Rendi paso a paso: agregar operaciones, importar CSV, ver insights, usar Mervall-E AI, gestionar tu suscripción. Manual completo para inversores argentinos."
+        description="Cómo usar Rendi paso a paso: cargar operaciones, importar CSV, métricas, Mervall-E AI y tu suscripción. Manual para inversores argentinos."
         canonical="/guia"
       />
 

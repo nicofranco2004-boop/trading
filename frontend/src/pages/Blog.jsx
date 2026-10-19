@@ -48,7 +48,7 @@ export default function Blog() {
     <div className="min-h-screen bg-bg-0 text-ink-0">
       <PageMeta
         title="Blog de Rendi — Tracker de inversiones Argentina"
-        description="Artículos sobre FIFO en CEDEARs, P&L en USD blue, AFIP cripto, comparativas de brokers argentinos. Contenido para inversores AR multi-broker."
+        description="Artículos sobre FIFO en CEDEARs, P&L real en dólares, AFIP cripto, comparativas de brokers argentinos. Contenido para inversores AR multi-broker."
         canonical="/blog"
       />
 
@@ -64,7 +64,7 @@ export default function Blog() {
             Aprende a invertir mejor desde Argentina
           </h1>
           <p className="text-base text-ink-2 leading-relaxed max-w-2xl">
-            Artículos sobre FIFO en CEDEARs, P&L real en USD blue, AFIP cripto,
+            Artículos sobre FIFO en CEDEARs, P&L real en dólares, AFIP cripto,
             comparativas de brokers. Para inversores argentinos que quieren entender
             qué pasa con su plata.
           </p>

@@ -328,7 +328,7 @@ export default function Planes({ embedded = false }) {
         <>
           <PageMeta
             title={`Planes y precios — Rendi | Plus desde ARS ${fmtArs(PLUS_PRICE_ARS_MONTHLY)}/mes`}
-            description={`Probá Rendi ${TRIAL_TOTAL_DAYS} días gratis, sin tarjeta. Después elegís Plus, para multi-broker, o Pro, con chat libre con Mervall-E AI y memoria. Precio fijo en pesos. Cancelás cuando quieras.`}
+            description={`Probá Rendi ${TRIAL_TOTAL_DAYS} días gratis, sin tarjeta. Plus: multi-broker y métricas de riesgo. Pro: chat libre con Mervall-E AI. Precio fijo en pesos.`}
             canonical="/planes"
           />
           <PageHeader
@@ -408,7 +408,10 @@ export default function Planes({ embedded = false }) {
         </div>
       )}
 
-      {loading ? (
+      {/* Sin sesión no hay nada que esperar: el pedido vuelve 401 y el visitante
+          ve los planes de visitante. Esperarlo hacía que la página escrita
+          (scripts/prerender.mjs) pasara por precios → "Cargando planes…" → precios. */}
+      {loading && user ? (
         <div className="text-center py-12 text-ink-3 text-sm">Cargando planes…</div>
       ) : (
         <>
@@ -617,7 +620,7 @@ export default function Planes({ embedded = false }) {
       </div>
 
       <p className="text-[11px] text-ink-3 text-center max-w-2xl mx-auto mt-4 leading-relaxed">
-        Suscribite cuando te conviene y cancelá cuando quieras. Cobramos en pesos al TC blue del día.
+        Suscribite cuando te conviene y cancelá cuando quieras. Cobramos en pesos, a precio fijo: no depende del dólar.
       </p>
 
       {/* Footer legal — visible siempre. Compliance: el user puede leer T&C

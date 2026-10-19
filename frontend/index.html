@@ -194,7 +194,7 @@
       "name": "Rendi",
       "alternateName": "Rendi Finance",
       "url": "https://rendi.finance",
-      "logo": "https://rendi.finance/favicon.svg",
+      "logo": "https://rendi.finance/android-chrome-512.png",
       "description": "Tracker de portafolio multi-broker para inversores argentinos con Mervall-E AI.",
       "email": "soporte@rendi.finance",
       "areaServed": { "@type": "Country", "name": "Argentina" },
@@ -239,11 +239,16 @@
     <!-- Las páginas públicas llegan YA ESCRITAS dentro de #root (para los
          buscadores y las IA: scripts/prerender.mjs). Con sesión iniciada no se
          muestran: en "/" la persona va a su Inicio, no a la portada, y verla un
-         instante antes de que monte React sería un parpadeo. `rendi_user` es la
-         misma marca que usa AuthContext para arrancar con sesión. -->
+         instante antes de que monte React sería un parpadeo. Son las mismas marcas
+         con las que AuthContext arranca con alguien adentro: `rendi_user`, y el
+         demo (`?demo=1` / `?demo=true`, o la marca `rendi_demo_mode`) — si no,
+         "Probar demo" mostraba la portada de nuevo antes de abrir el demo. -->
     <script>
       try {
-        if (localStorage.getItem('rendi_user')) document.documentElement.classList.add('con-sesion')
+        var demo = /[?&]demo=(1|true)(&|$)/.test(location.search)
+        if (demo || localStorage.getItem('rendi_user') || localStorage.getItem('rendi_demo_mode')) {
+          document.documentElement.classList.add('con-sesion')
+        }
       } catch (e) { /* modo privado: se muestra lo escrito, React lo reemplaza */ }
     </script>
     <style>.con-sesion [data-prerender] { display: none }</style>

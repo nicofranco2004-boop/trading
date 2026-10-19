@@ -63,7 +63,7 @@ export const FAQS = [
   },
   {
     q: '¿Cómo se calcula el P&L en dólares cuando opero en pesos?',
-    a: 'Rendi convierte cada operación al dólar blue del día en que ocurrió (o al MEP/CCL según el activo). Eso te da un P&L real en USD que refleja qué pasó con tu poder de compra, no solo con el monto nominal en pesos. Para CEDEARs y bonos AR usamos el MEP implícito; para activos USD-denominated en brokers ARS, el blue.',
+    a: 'Rendi pasa cada operación en pesos al dólar MEP del día en que ocurrió, no al de hoy. Eso te da un P&L real en USD que refleja qué pasó con tu poder de compra, no solo con el monto nominal en pesos. Para fechas anteriores a 2018, cuando no hay serie del MEP, usa el blue de ese día.',
   },
   {
     q: '¿Cómo funciona el FIFO automático para AFIP / ARCA?',

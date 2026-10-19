@@ -46,7 +46,7 @@ export default function BlogPost({
     publisher: {
       '@type': 'Organization',
       name: 'Rendi',
-      logo: { '@type': 'ImageObject', url: `${BASE_URL}/favicon.svg` },
+      logo: { '@type': 'ImageObject', url: `${BASE_URL}/android-chrome-512.png` },
     },
     mainEntityOfPage: { '@type': 'WebPage', '@id': canonicalUrl },
   }

@@ -49,6 +49,10 @@ const COPIAS = [
   /Hasta\s+\d+\s+brokers?/,                              // "Hasta 3 brokers"
   /vs\s+\d+\s+en\s+(Free|Plus)/,                         // "(vs 1 en Free)"
   /\d+\s+análisis\s+(IA\s+)?(por semana|\/\s*sem)/,        // "60 análisis por semana"
+  // "Plus: 6 análisis + 9 chat por semana" en la guía de Mervall-E: el Plus daba
+  // 2 y nada avisaba, porque el número no iba pegado a "por semana".
+  /\d+\s+análisis\s*\+/,
+  /\d+\s+chat\s+(por semana|\/\s*sem)/,
   /en vez de \d+/,                                       // "…en vez de 6"
   // "4 detectores", "6 detectores": un TOPE. "los 12 detectores" es el total
   // del producto (cuántos hay), no lo que da un plan: queda afuera a propósito.

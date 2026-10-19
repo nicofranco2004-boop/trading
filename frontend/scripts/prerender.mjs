@@ -20,6 +20,10 @@
 // Con sesión iniciada, lo escrito ni se muestra (ver `con-sesion` en index.html).
 //
 // Si algo falla, el build falla y Vercel NO publica: queda la versión anterior.
+// La hora de Argentina, no la de la máquina que arma (Vercel corre en UTC):
+// la maqueta de la portada escribe la fecha de hoy, y de 21 a 24 h decía mañana.
+process.env.TZ = 'America/Argentina/Buenos_Aires'
+
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,6 +50,8 @@ globalThis.sessionStorage = almacenVacio()
 
 const { render, RUTAS } = await import(path.join(raiz, 'dist-ssr', 'entry-server.js'))
 
+const BLOQUE_HOWTO = /\s*<script type="application\/ld\+json">\s*\{\s*"@context": "https:\/\/schema\.org",\s*"@type": "HowTo"[\s\S]*?<\/script>/
+
 const escapar = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // Saca del <head> base las etiquetas que la página trae propias (título,
@@ -61,9 +67,17 @@ function armarHead(base, helmet, ruta) {
   }
   // El hreflang tiene que apuntar a ESTA página, no a la portada.
   const url = ruta === '/' ? `${BASE}/` : `${BASE}${ruta}`
-  head = head.replace(/(<link rel="alternate" hreflang="[^"]+" href=")[^"]*(")/g, `$1${url}$2`)
-  const propias = [tieneTitulo ? titulo : '', metas, helmet.link.toString()].filter(Boolean).join('\n    ')
-  return head.replace('</head>', `    ${propias}\n  </head>`)
+  head = head.replace(/(<link rel="alternate" hreflang="[^"]+" href=")[^"]*(")/g, (_, a, b) => `${a}${url}${b}`)
+  // El "Cómo funciona" (HowTo) describe la portada: Google pide que los datos
+  // estructurados hablen de la página donde están, y repetido en /terminos o en
+  // un artículo del blog no es cierto.
+  if (ruta !== '/') head = head.replace(BLOQUE_HOWTO, '')
+  // `helmet.script` trae los datos estructurados que arma cada página (las
+  // preguntas frecuentes de la portada, el Article de cada nota del blog). Sin
+  // esto quedaban afuera de lo escrito y el robot no los veía.
+  const propias = [tieneTitulo ? titulo : '', metas, helmet.link.toString(), helmet.script.toString()]
+    .filter(Boolean).join('\n    ')
+  return head.replace('</head>', () => `    ${propias}\n  </head>`)
 }
 
 // El cartel "Rendi necesita JavaScript" con el resumen de la portada: en una
@@ -76,6 +90,7 @@ if (!base.includes('<div id="root"></div>')) {
   throw new Error('dist/index.html no tiene <div id="root"></div>: ¿ya estaba prerenderizado?')
 }
 if (!CARTEL_SIN_JS.test(base)) throw new Error('No encontré el cartel <noscript> de index.html')
+if (!BLOQUE_HOWTO.test(base)) throw new Error('No encontré el HowTo de index.html')
 fs.writeFileSync(path.join(dist, 'app.html'), base)
 
 let total = 0
@@ -84,7 +99,9 @@ for (const ruta of RUTAS) {
   if (html.length < 2000) throw new Error(`${ruta} salió casi vacía (${html.length} letras)`)
   let pagina = armarHead(base, helmet, ruta)
     .replace(CARTEL_SIN_JS, '')
-    .replace('<div id="root"></div>', `<div id="root"><div data-prerender="">${html}</div></div>`)
+    // Con función y no con texto: en el texto de reemplazo `$&`, `$'` y `$$`
+    // son especiales, y las páginas están llenas de "$" por los precios.
+    .replace('<div id="root"></div>', () => `<div id="root"><div data-prerender="">${html}</div></div>`)
   const destino = ruta === '/'
     ? path.join(dist, 'index.html')
     : path.join(dist, ...ruta.split('/').filter(Boolean), 'index.html')

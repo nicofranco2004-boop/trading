@@ -88,3 +88,19 @@ describe('lazyPublica: la página escrita no pasa por el esqueleto gris', () => 
     await expect(precargarPaginaPublica('/ruta-que-no-existe')).resolves.toBeUndefined()
   })
 })
+
+describe('los archivos que nombran los datos para Google existen', () => {
+  // El logo de la Organization apuntaba a /favicon.svg, que nunca existió:
+  // Vercel devolvía la página y Google se quedaba sin logo, sin ningún error.
+  it('cada https://rendi.finance/<archivo> de index.html y de las notas del blog está en public/', () => {
+    const fuentes = [leer('index.html'), leer('src/components/blog/BlogPost.jsx'), leer('src/components/PageMeta.jsx')]
+    const nombrados = new Set()
+    for (const f of fuentes) {
+      for (const m of f.matchAll(/(?:https:\/\/rendi\.finance|\$\{BASE_URL\})(\/[\w./-]+\.(?:png|jpe?g|svg|webp|ico))/g)) nombrados.add(m[1])
+    }
+    expect(nombrados.size).toBeGreaterThan(0)
+    for (const p of nombrados) {
+      expect(fs.existsSync(path.join(raiz, 'public', p)), `${p} no está en public/`).toBe(true)
+    }
+  })
+})

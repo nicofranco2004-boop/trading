@@ -74,7 +74,7 @@ export default function CuentaYPlanes() {
       <ul>
         <li><strong>Cuenta</strong>: tu email, nombre, plan actual, contador de uso semanal de IA.</li>
         <li><strong>Brokers</strong>: agregar/editar/eliminar brokers conectados, gestionar monedas.</li>
-        <li><strong>TC blue manual</strong>: si no querés que Rendi tome el blue automático, podés fijar un valor custom.</li>
+        <li><strong>Dólar de valuación</strong>: con qué dólar ver tu cartera — MEP (el que viene) o CCL.</li>
         <li><strong>Cambiar contraseña</strong>: requiere tu password actual.</li>
         <li><strong>Importar datos</strong>: link al wizard CSV.</li>
         <li><strong>Tema</strong>: dark/light (default dark).</li>

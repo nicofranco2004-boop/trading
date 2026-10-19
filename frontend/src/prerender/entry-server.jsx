@@ -8,12 +8,8 @@ import { Routes, Route } from 'react-router-dom'
 import { ThemeProvider } from '../contexts/ThemeContext'
 import { AuthProvider } from '../contexts/AuthContext'
 import { PAGINAS_PUBLICAS } from '../paginasPublicas'
-import { sembrarParaPrerender } from '../hooks/usePlanFeatures'
 
 export const RUTAS = Object.keys(PAGINAS_PUBLICAS)
-
-// Lo que ve un visitante sin cuenta (ver usePlanFeatures).
-sembrarParaPrerender({ tier: 'free' })
 
 export async function render(url) {
   const cargar = PAGINAS_PUBLICAS[url]

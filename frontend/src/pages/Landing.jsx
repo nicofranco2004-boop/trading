@@ -332,7 +332,7 @@ function Features() {
     {
       Icon: Coins,
       title: 'P&L en USD real',
-      body: 'TC blue/MEP automático, conversión histórica para tus tenencias en pesos. Sin guessing — el USD del cierre es el USD que importa.',
+      body: 'Dólar MEP automático (o CCL, si lo preferís) y cada operación en pesos al dólar de su fecha, no al de hoy. Sin guessing — el USD del cierre es el USD que importa.',
       meta: 'FX · TC LIVE',
     },
     {
@@ -625,7 +625,7 @@ function BrokerSolutions() {
       to: '/brokers/cocos',
       Icon: Building2,
       title: 'Cocos Capital',
-      desc: 'Importás tu CSV o cargás manual. Cocos USD y pesos en una vista, con TC blue automático.',
+      desc: 'Importás tu CSV o cargás manual. Cocos USD y pesos en una vista, con dólar MEP automático.',
       meta: 'BROKER · AR',
     },
     {

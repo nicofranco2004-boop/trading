@@ -56,8 +56,8 @@ export default function PnlRealUsdBlue() {
 
       <ul>
         <li><strong>Bonos USD denominated (AL30, GD30) cobrados en pesos</strong>: dólar MEP del día.</li>
-        <li><strong>Acciones AR (Merval) y CEDEARs en ARS</strong>: dólar blue del día (o MEP si el broker lo permite).</li>
-        <li><strong>Crypto en exchanges AR / P2P</strong>: blue del día (o el TC implícito que usás para entrar/salir).</li>
+        <li><strong>Acciones AR (Merval) y CEDEARs en ARS</strong>: dólar MEP del día — es el dólar que podés comprar con esos pesos en el mismo mercado.</li>
+        <li><strong>Crypto comprada con pesos (exchanges AR / P2P)</strong>: el MEP del día, o el TC implícito que usaste para entrar y salir.</li>
         <li><strong>Acciones USA en Schwab</strong>: ya están en USD, no se convierte.</li>
       </ul>
 
@@ -130,7 +130,7 @@ export default function PnlRealUsdBlue() {
       </p>
 
       <ul>
-        <li>Cada operación se registra con su fecha y se le aplica el TC apropiado del día (blue, MEP, o ambos según el activo).</li>
+        <li>Cada operación en pesos se registra con su fecha y se pasa al dólar MEP de ese día (antes de 2018, cuando no hay serie del MEP, al blue de ese día).</li>
         <li>El P&L en USD se actualiza en cada compra y venta.</li>
         <li>El dashboard te muestra <strong>en USD</strong> y <strong>en pesos</strong> lado a lado para que tengas la doble visión.</li>
         <li>Mervall-E AI usa el USD como moneda principal para análisis — porque ahí está tu performance real.</li>
@@ -141,7 +141,7 @@ export default function PnlRealUsdBlue() {
       <p>
         Mirar tu cartera solo en pesos en Argentina es como tomar la temperatura sin
         considerar la humedad: el número está, pero no te dice qué se siente realmente.
-        El P&L en USD blue te da la lectura correcta — la única que importa para decisiones
+        El P&L en USD te da la lectura correcta — la única que importa para decisiones
         de largo plazo.
       </p>
 

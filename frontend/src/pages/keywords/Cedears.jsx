@@ -58,7 +58,7 @@ export default function Cedears() {
       howSteps={HOW_STEPS}
       relatedLinks={RELATED}
       metaTitle="CEDEARs con FIFO automático — Rendi | P&L real en USD"
-      metaDescription="Tracker de CEDEARs (NVDA, AAPL, MELI, GGAL) con valor real en USD usando ratios. FIFO automático para AFIP, dividendos al MEP correcto, Mervall-E AI con contexto."
+      metaDescription="Tracker de CEDEARs (NVDA, AAPL, MELI, GGAL) con valor real en USD por ratio, FIFO automático para AFIP, dividendos al MEP y Mervall-E AI."
       canonicalPath="/cedears"
     />
   )

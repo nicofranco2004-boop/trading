@@ -2,6 +2,12 @@
 
 import GuidePage from '../../components/guide/GuidePage'
 import AdvisorNote from '../../components/guide/AdvisorNote'
+// Los cupos se leen del catálogo (el que test_promesas_vs_producto ata al
+// backend): escritos a mano decían "Plus: 6 análisis" cuando el Plus da 2.
+import { FREE_FEATURES, PLUS_FEATURES, PRO_FEATURES, CUPO_CHAT } from '../../data/planCatalog'
+import { cupoDe } from '../../data/prueba'
+
+const CUPO_ANALISIS = 'Análisis IA / sem'
 
 export default function CoachIA() {
   return (
@@ -148,9 +154,9 @@ export default function CoachIA() {
         (no resetea el lunes — el slot más viejo se libera cada día):
       </p>
       <ul>
-        <li><strong>Free</strong>: 1 análisis + 1 chat por semana (una degustación).</li>
-        <li><strong>Plus</strong>: 6 análisis + 9 chat por semana (6× análisis y 9× chat que Free).</li>
-        <li><strong>Pro</strong>: 60 análisis + 40 chat por semana + memoria persistente.</li>
+        <li><strong>Plus</strong>: {cupoDe(PLUS_FEATURES, CUPO_ANALISIS)} análisis + {cupoDe(PLUS_FEATURES, CUPO_CHAT)} chat por semana.</li>
+        <li><strong>Pro</strong>: {cupoDe(PRO_FEATURES, CUPO_ANALISIS)} análisis + {cupoDe(PRO_FEATURES, CUPO_CHAT)} chat por semana + memoria persistente.</li>
+        <li><strong>Free</strong> (sólo las cuentas que ya lo tenían): {cupoDe(FREE_FEATURES, CUPO_ANALISIS)} análisis + {cupoDe(FREE_FEATURES, CUPO_CHAT)} chat por semana.</li>
       </ul>
       <p>
         Cuando llegás al cap, te avisamos cuándo se libera la próxima consulta. Si
