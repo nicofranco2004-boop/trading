@@ -41,6 +41,7 @@ from money_fmt import fmt_num
 
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 log = logging.getLogger("alerts")
 
@@ -457,15 +458,6 @@ def _short_label(alert, symbol, price, change_pct) -> str:
     return f"{_display_symbol(symbol)} {verbo} {_fmt_pct(change_pct)}%"
 
 
-def _group_line(alert, symbol, price, change_pct) -> str:
-    """Un renglón de la lista del mail agrupado: el movimiento y a cuánto
-    cotiza, en la moneda del activo (un CEDEAR cotiza en pesos)."""
-    base = _short_label(alert, symbol, price, change_pct)
-    if price is None:
-        return base
-    return f"{base} y cotiza a {_fmt(price, _ccy_for(symbol, alert['currency']))}"
-
-
 def _cuando_item(it) -> str:
     f = it.get("fuera")
     return f"en el {_NOMBRE_FRANJA[f['sesion']]}" if f else "hoy"
@@ -566,64 +558,151 @@ def _deliver(conn, alert, items) -> tuple:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
-                if len(items) == 1:
-                    it = items[0]
-                    detail = (_detalle_fuera(it["symbol"], it["change_pct"], it["price"], fuera)
-                              if fuera else
-                              _email_detail(alert, it["symbol"], it["price"], it["change_pct"]))
-                    lines = None
-                elif mixto:
-                    # Rueda y pre/post en el mismo aviso: cada renglón dice dónde.
-                    detail = (f"se movieron {len(items)} activos de tu cartera. Lo de Wall "
-                              f"Street fuera de la rueda es un anticipo: todavía no se suma "
-                              f"a tu cartera.")
-                    lines = [it["line"] + (f" ({_cuando_item(it)})" if it.get("fuera") else " hoy")
-                             for it in items]
-                elif fuera:
-                    detail = (f"en el {_NOMBRE_FRANJA[fuera['sesion']]} de Wall Street se están "
-                              f"moviendo {len(items)} activos de tu cartera. Es un anticipo: "
-                              f"todavía no se suma a tu cartera.")
-                    lines = [it["line"] for it in items]
-                else:
-                    detail = f"se movieron {len(items)} activos de tu cartera hoy:"
-                    lines = [it["line"] for it in items]
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
-                    heading=heading, detail=detail, lines=lines)
+                    **_contenido_del_mail(alert, items, fuera, mixto, client_label, heading))
         except Exception as ex:
             log.warning("alerts email uid=%s falló: %s", uid, ex)
 
     return push_ok, email_ok
 
 
-def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
-    """Cuerpo del mail: los NÚMEROS, no una invitación a ir a buscarlos.
+# ─── El mail ──────────────────────────────────────────────────────────────────
+# Diseño del tablero «Cómo llega por mail» (lienzo de Alertas, 19/10/2026): un
+# titular grande, UNA oración, la lista si son varios, UN botón y al pie lo que
+# se puede hacer con la alerta. El asunto no se arma acá: es `heading` (el
+# titular que nombra los movimientos, ver `_deliver`).
 
-    Antes decía "tuvo un movimiento importante hoy, entrá a Rendi para ver
-    cómo impacta en tu cartera": el título traía más información que el
-    cuerpo, y un mail que no dice nada no se abre. Gmail mide justamente eso
-    para decidir la pestaña — medido el 2026-09-09 sobre la casilla del
-    fundador, las ÚNICAS alertas que se salieron de Actualizaciones son las
-    que estaban leídas. `price` y `change_pct` ya los tenía _deliver() al
-    lado; sólo no se los pasaba a esta función."""
-    sym = _display_symbol(symbol)
-    ccy = _ccy_for(symbol, alert["currency"])
-    cur = _fmt(price, ccy)
+# «Mis alertas»: donde está la alerta que saltó, con su interruptor para
+# pausarla o volver a prenderla y el formulario para cambiarle el %. Es la misma
+# ruta a la que lleva el push.
+_MIS_ALERTAS = "/alertas?tab=mis"
+
+
+def _pct_con_signo(v) -> str:
+    """"+8,4%" / "−5,6%": el % de la lista, con el signo que en el asunto dice
+    el verbo ("subió" / "cayó"). Mismo redondeo que el asunto (`_fmt_pct`)."""
+    return f"{'+' if (v or 0) >= 0 else '−'}{_fmt_pct(v)}%"
+
+
+def _email_detail(alert, symbol, price=None, change_pct=None, doble=False) -> str:
+    """La oración del mail de UN activo en la rueda (el mail le antepone "Hola
+    Juan, "): lo que el titular no dice, que es a cuánto está ahora.
+
+    Tiene que traer NÚMEROS. Antes decía "tuvo un movimiento importante hoy,
+    entrá a Rendi para ver cómo impacta en tu cartera": el título traía más
+    información que el cuerpo, y un mail que no dice nada no se abre. Gmail mide
+    justamente eso para decidir la pestaña — medido el 2026-09-09 sobre la
+    casilla del fundador, las ÚNICAS alertas que se salieron de Actualizaciones
+    son las que estaban leídas. El titular ya lleva el % (o el precio marcado);
+    esto lleva el precio de ahora, en la moneda del activo."""
+    cur = _fmt(price, _ccy_for(symbol, alert["currency"]))
+    ahora = f" Ahora está en {cur}." if price is not None else ""
     if alert["kind"] == "price_target":
-        thr = _fmt(alert["threshold"], ccy)
-        lado = "subió hasta" if alert["direction"] == "above" else "bajó hasta"
-        if price is None:
-            return f"{sym} cruzó los {thr} que habías marcado."
-        return (f"{sym} {lado} {cur}. Vos habías marcado {thr}, "
-                f"así que ya lo cruzó.")
-    desde = ("desde que armaste la alerta"
-             if (alert["baseline"] or "prev_close") == "set_price"
-             else "desde el cierre de ayer")
-    if change_pct is None:
-        return f"{sym} se movió {desde}."
-    verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
-    cotiza = f" y cotiza a {cur}" if price is not None else ""
-    return f"{sym} {verbo} {_fmt_pct(change_pct)}% {desde}{cotiza}."
+        return f"es el precio que marcaste.{ahora}"
+    if doble:
+        return f"ya es el doble del límite que marcaste.{ahora}"
+    return f"pasó el límite que marcaste.{ahora}"
+
+
+def _titulo_precio(alert, symbol, price) -> str:
+    """«GGAL llegó a $8.000»: el precio que la persona MARCÓ, no el de ahora (ése
+    va en la oración). Es lo que reconoce de un vistazo — lo eligió ella."""
+    ccy = _ccy_for(symbol, alert["currency"])
+    marcado = alert["threshold"] if alert["threshold"] is not None else price
+    return f"{_display_symbol(symbol)} llegó a {_fmt(marcado, ccy)}"
+
+
+def _fila(it, mixto: bool) -> dict:
+    """Un renglón de la lista del agrupado: quién y cuánto. Lo que haga falta
+    aclarar (que fue en el pre-mercado, que es el doble) va en una nota chica
+    abajo del nombre, no en la columna del %."""
+    f = it.get("fuera")
+    nombre = _quien(it["symbol"], f) if f else _display_symbol(it["symbol"])
+    notas = []
+    if mixto:
+        notas.append(_cuando_item(it))
+    if f and f.get("via") != "propio":
+        notas.append(_desde_byma(f).lstrip(", "))
+    if it.get("doble"):
+        notas.append(_SUFIJO_DOBLE.strip(" ()"))
+    return {"nombre": nombre, "pct": it.get("change_pct"),
+            "pct_txt": _pct_con_signo(it.get("change_pct")), "nota": " · ".join(notas)}
+
+
+def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading) -> dict:
+    """Todo lo que lleva el mail: asunto, titular, oración, lista, botón y pie.
+    Devuelve los argumentos de `emails.send_alert_email` (menos el destinatario).
+
+    El asunto es `heading`, el mismo texto del push, salvo en el aviso de precio:
+    ahí asunto y titular dicen el precio MARCADO («GGAL llegó a $8.000») y la
+    oración el de ahora. El push sigue diciendo el de ahora («GGAL alcanzó
+    $8.012»): esta función arma sólo el mail.
+
+      · Un precio: «GGAL llegó a $8.000» / «es el precio que marcaste. Ahora
+        está en $8.012.» / botón «Ver GGAL».
+      · Un %: el titular es el mismo del asunto («AAPL cayó 5% hoy») / «pasó el
+        límite que marcaste. Ahora está en …» / botón «Ver AAPL».
+      · Varios: «3 de tus activos se movieron fuerte hoy» / la lista de ticker y
+        % / botón «Ver mi cartera».
+    El pie: si era «una sola vez», que ya cumplió y cómo volver a activarla; si
+    no, cómo cambiar el % (o pausarla, la de precio). Los dos van a «Mis
+    alertas». Antes el botón llevaba a /dashboard, que no dice nada del aviso."""
+    una_vez = alert["repeat"] == "once"
+    if una_vez:
+        pie = ("Esta alerta ya cumplió.", "Volver a activarla", _MIS_ALERTAS)
+    elif alert["kind"] == "price_target":
+        pie = ("Te volvemos a avisar si lo cruza de nuevo.", "Pausarla o cambiarla", _MIS_ALERTAS)
+    else:
+        pie = ("¿Demasiados avisos?", "Cambiá el %", _MIS_ALERTAS)
+
+    if len(items) == 1:
+        it = items[0]
+        sym = _display_symbol(it["symbol"])
+        if fuera:
+            # El pre/post explica qué franja, contra qué cierre y que es un
+            # anticipo: es más que una oración, pero sin eso el % engaña.
+            titulo = it["message"]
+            detail = _detalle_fuera(it["symbol"], it["change_pct"], it["price"], fuera)
+        elif alert["kind"] == "price_target":
+            titulo = _titulo_precio(alert, it["symbol"], it["price"])
+            detail = _email_detail(alert, it["symbol"], it["price"])
+            heading = f"[{client_label}] {titulo}" if client_label else titulo
+        else:
+            titulo = it["message"]
+            detail = _email_detail(alert, it["symbol"], it["price"], it["change_pct"],
+                                   doble=bool(it.get("doble")))
+        contenido = {"titulo": titulo, "detail": detail, "filas": None,
+                     "cta_label": f"Ver {sym}", "cta_path": f"/activo/{quote(sym, safe='')}"}
+    else:
+        n = len(items)
+        if mixto:
+            titulo = f"{n} de tus activos se movieron fuerte"
+            detail = ("pasaron el límite que marcaste. Lo de Wall Street fuera de la "
+                      "rueda es un anticipo: todavía no se suma a tu cartera.")
+        elif fuera:
+            franja = _NOMBRE_FRANJA[fuera["sesion"]]
+            titulo = f"{n} de tus activos se mueven fuerte en el {franja}"
+            detail = (f"pasaron el límite que marcaste en el {franja} de Wall Street. "
+                      f"Es un anticipo: todavía no se suma a tu cartera.")
+        else:
+            titulo = f"{n} de tus activos se movieron fuerte hoy"
+            detail = "pasaron el límite que marcaste."
+        contenido = {"titulo": titulo, "detail": detail,
+                     "filas": [_fila(it, mixto) for it in items],
+                     "cta_label": "Ver mi cartera", "cta_path": "/posiciones"}
+
+    if client_label:
+        # Plan Asesor: la alerta es de una cuenta que administra. Su cartera, su
+        # ficha y su «Mis alertas» no son las de esa cuenta: se entra desde
+        # Clientes. El asunto ya lleva «[Cliente]» adelante.
+        contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
+        contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
+        pie = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
+               "Ir a mis clientes", "/clientes")
+    contenido["pie"] = pie
+    contenido["heading"] = heading
+    return contenido
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
@@ -642,15 +721,12 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
         # que es su acción en Nueva York. El precio es el de allá, en dólares.
         message = _mensaje_fuera(symbol, change_pct, fuera)
         label = _etiqueta_fuera(symbol, change_pct, fuera)
-        line = _renglon_fuera(symbol, change_pct, price, fuera)
     else:
         message = _compose_message(alert, symbol, price, change_pct)
         label = _short_label(alert, symbol, price, change_pct)
-        line = _group_line(alert, symbol, price, change_pct)
     if doble:
         # El segundo aviso del mismo movimiento dice por qué vuelve a llegar.
         message += _SUFIJO_DOBLE
-        line += _SUFIJO_DOBLE
     cur = conn.execute(
         """INSERT INTO alert_events
            (alert_id, user_id, symbol, fired_at, price, message,
@@ -669,9 +745,9 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     pendientes.append({
         "alert": alert, "symbol": symbol, "price": price,
         "change_pct": change_pct, "message": message,
-        "label": label, "line": line,
+        "label": label,
         "event_id": cur.lastrowid,
-        "fuera": fuera,
+        "fuera": fuera, "doble": doble,
     })
     log.info("alert %s fired (uid=%s sym=%s): %s",
              alert["id"], alert["user_id"], symbol, message)
@@ -752,11 +828,6 @@ def _mensaje_fuera(symbol, change_pct, fuera) -> str:
     Nueva York sube 3,4% en el pre-mercado, desde el cierre de BYMA»."""
     return (f"{_etiqueta_fuera(symbol, change_pct, fuera)} en el {_NOMBRE_FRANJA[fuera['sesion']]}"
             f"{_desde_byma(fuera)}")
-
-
-def _renglon_fuera(symbol, change_pct, price, fuera) -> str:
-    base = _etiqueta_fuera(symbol, change_pct, fuera) + _desde_byma(fuera)
-    return f"{base} y cotiza a {_fmt(price, 'USD')}" if price else base
 
 
 def _detalle_fuera(symbol, change_pct, price, fuera) -> str:

@@ -939,18 +939,74 @@ def _from_alerts() -> str:
     return os.environ.get("EMAIL_FROM_ALERTS", _from_noreply())
 
 
+# Los colores del tablero «Cómo llega por mail» (lienzo de Alertas, 19/10/2026).
+# Un aviso es otra cosa que un recibo o una bienvenida: no lleva la franja negra
+# con el logo ni el pie de WhatsApp, lleva lo que pasó y UN botón. Por eso tiene
+# su propio envoltorio en vez de `_wrap_html`.
+_AVISO_VERDE = "#0A8149"
+_AVISO_ROJO = "#C62B38"
+_AVISO_VIOLETA = "#8B7DFF"
+_AVISO_LINK = "#5B4DDB"
+_AVISO_LINEA = "#E5E6EE"
+_AVISO_FUENTE = "Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
+
+
+def _wrap_aviso(body: str, preheader: str = "") -> str:
+    """El envoltorio de los avisos: fondo gris lavanda, una tarjeta blanca con
+    «rendi.» arriba y el contenido. Todo con tablas y estilos en línea, que es
+    lo único que Gmail y Outlook respetan (un `display:flex` lo tiran).
+
+    `preheader` es el renglón gris que Gmail muestra al lado del asunto en la
+    bandeja: va escondido en el cuerpo. Sin él, la bandeja mostraba «rendi.»."""
+    oculto = (f'<div style="display:none;max-height:0;overflow:hidden;opacity:0;'
+              f'color:transparent;">{html.escape(preheader)}</div>') if preheader else ""
+    return f"""<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rendi</title></head>
+<body style="margin:0;padding:0;background:#ECECF3;font-family:{_AVISO_FUENTE};color:#15171E;">
+  {oculto}
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#ECECF3;padding:32px 12px;">
+    <tr><td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;background:#FFFFFF;border:1px solid {_AVISO_LINEA};border-radius:12px;">
+        <tr><td style="padding:36px 40px;">
+          <div style="font-size:20px;font-weight:700;letter-spacing:-0.02em;color:#15171E;margin:0 0 24px;">rendi<span style="color:{_AVISO_VIOLETA};">.</span></div>
+          {body}
+        </td></tr>
+      </table>
+      <p style="max-width:560px;font-size:12px;line-height:1.6;color:#6B7280;margin:16px auto 0;">
+        Si algo no cierra, respondé este mail y te contestamos.
+      </p>
+    </td></tr>
+  </table>
+</body></html>"""
+
+
 def send_alert_email(*, to: str, user_name: str = "", heading: str,
                      detail: str, cta_path: str = "/dashboard",
-                     lines: Optional[list] = None) -> bool:
+                     lines: Optional[list] = None, titulo: Optional[str] = None,
+                     filas: Optional[list] = None, cta_label: str = "Ver en Rendi",
+                     pie: Optional[tuple] = None) -> bool:
     """Email de una alerta disparada (precio, % de variacion, movimiento del
-    libro del asesor). Template branded: logo arriba y boton a Rendi, igual
-    que el brief del asesor.
+    libro del asesor). Diseño del tablero «Cómo llega por mail» (19/10/2026):
+    un titular grande, UNA oración, la lista si son varios, UN botón y al pie
+    lo que se puede hacer con la alerta.
 
-    `heading` = titulo corto (ej. 'MELI cayo 3.1% hoy'), tambien es el asunto.
-    `detail` = el cuerpo, y tiene que traer LOS NUMEROS. Antes decia "entra a
-    Rendi para ver como impacta en tu cartera": el asunto informaba mas que el
-    cuerpo y el mail no se abria. Los numeros los arma quien dispara la
-    alerta (alerts_engine._email_detail / advisor_alerts).
+    `heading` = el ASUNTO. Es lo que decide si el mail se abre, así que nombra
+    los movimientos ("INTC cayó 5,8%, NVDA cayó 3,4% y 1 más hoy"), nunca
+    "4 alertas".
+    `titulo` = el titular grande del cuerpo; sin él, el mismo `heading`. En el
+    agrupado el asunto nombra los movimientos y el titular los cuenta ("3 de
+    tus activos se movieron fuerte hoy"), porque la lista va justo abajo.
+    `detail` = la oración, en minúscula: el mail le antepone "Hola Juan, ". Tiene
+    que traer LOS NUMEROS que el titular no tenga. Antes decía "entrá a Rendi
+    para ver cómo impacta en tu cartera": el asunto informaba más que el cuerpo
+    y el mail no se abría. Los arma quien dispara la alerta
+    (alerts_engine._contenido_del_mail / advisor_alerts).
+    `filas` = la lista del agrupado: [{'nombre': 'YPFD', 'pct': 8.4,
+    'pct_txt': '+8,4%', 'nota': ''}], el % en verde si sube y en rojo si cae.
+    `lines` = la lista en texto suelto, la que todavía usa el libro del asesor.
+    `cta_label` / `cta_path` = el botón ("Ver GGAL" → /activo/GGAL).
+    `pie` = (texto, link, ruta): ("Esta alerta ya cumplió.", "Volver a
+    activarla", "/alertas?tab=mis"). Sin `pie`, el genérico que lleva a Alertas.
 
     `cta_path` default = /dashboard. OJO: el default era
     /config?tab=notificaciones, una ruta MUERTA -- las alertas se mudaron a
@@ -960,47 +1016,69 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
     reply_to a soporte@: si el usuario contesta el aviso, el mail le llega al
     equipo en vez de perderse en no_reply@.
 
-    `lines` opcional: cuando una alerta de "toda mi cartera" dispara con varios
-    activos a la vez, va UN mail con la lista en vez de uno por activo. Antes
-    salían cuatro mails en el mismo minuto — molesto de leer, y además la señal
-    más fuerte de "correo automático" que mira Gmail para decidir la pestaña.
-    Sin `lines` el mail es exactamente el de siempre."""
-    name = (user_name or "").strip()
-    safe_name = html.escape(name)
-    hi = f"Hola {safe_name}, " if safe_name else ""
+    Una alerta de "toda mi cartera" que dispara con varios activos a la vez
+    manda UN mail con la lista, no uno por activo. Antes salían cuatro mails en
+    el mismo minuto — molesto de leer, y además la señal más fuerte de "correo
+    automático" que mira Gmail para decidir la pestaña."""
+    # "Hola Juan," y no "Hola Juan Pérez,": el mismo saludo que los mails
+    # personales (`nombre_de_pila`). Si el nombre no sirve, "Hola," a secas.
+    pila = nombre_de_pila(user_name)
+    hola = f"Hola {pila}, " if pila else "Hola, "
+    titular = titulo or heading
     url = f"{APP_URL}{cta_path}"
-    alerts_url = f"{APP_URL}/alertas"
-    lista_html = ""
-    if lines:
+    if pie is None:
+        pie = ("Recibís este aviso porque configuraste una alerta.",
+               "Cambiarla o apagarla", "/alertas")
+    pie_txt, pie_link, pie_path = pie
+    pie_url = f"{APP_URL}{pie_path}"
+
+    lista_html = lista_txt = ""
+    if filas:
+        renglones = []
+        for i, f in enumerate(filas):
+            color = _AVISO_VERDE if (f.get("pct") or 0) >= 0 else _AVISO_ROJO
+            borde = "" if i == 0 else f"border-top:1px solid {_AVISO_LINEA};"
+            nota = (f'<div style="font-size:13px;font-weight:400;color:#6B7280;margin-top:2px;">'
+                    f'{html.escape(f["nota"])}</div>') if f.get("nota") else ""
+            renglones.append(
+                f'<tr><td style="padding:12px 0;{borde}font-size:16px;font-weight:600;color:#15171E;">'
+                f'{html.escape(f["nombre"])}{nota}</td>'
+                f'<td align="right" style="padding:12px 0;{borde}font-size:16px;font-weight:600;'
+                f'color:{color};white-space:nowrap;vertical-align:top;">{html.escape(f["pct_txt"])}</td></tr>')
+        lista_html = (
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="margin:0 0 24px;">' + "".join(renglones) + "</table>")
+        lista_txt = "\n".join(
+            f"  {f['nombre']}  {f['pct_txt']}" + (f" ({f['nota']})" if f.get("nota") else "")
+            for f in filas) + "\n\n"
+    elif lines:
         renglones = "".join(
             f'<li style="margin:0 0 8px;">{html.escape(str(l))}</li>' for l in lines)
         lista_html = (
-            '<ul style="font-size:15px;line-height:1.6;color:#374151;'
-            'margin:0 0 20px;padding-left:20px;">' + renglones + "</ul>")
+            '<ul style="font-size:16px;line-height:1.6;color:#3D4351;'
+            'margin:0 0 24px;padding-left:20px;">' + renglones + "</ul>")
+        lista_txt = "\n".join(f"  · {l}" for l in lines) + "\n\n"
+
+    oracion = f"{hola}{detail}"
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{html.escape(heading)}</h1>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 {'8px' if lines else '20px'};">
-        {hi}{html.escape(detail)}
-      </p>
+      <h1 style="font-size:28px;font-weight:700;letter-spacing:-0.02em;line-height:1.2;color:#15171E;margin:0 0 10px;">{html.escape(titular)}</h1>
+      <p style="font-size:16px;line-height:1.6;color:#3D4351;margin:0 0 24px;">{html.escape(oracion)}</p>
       {lista_html}
-      <div style="text-align:center;margin:24px 0;">
-        <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
-          Ver en Rendi
-        </a>
-      </div>
-      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:16px 0 0;">
-        Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o apagarla
-        en <a href="{alerts_url}" style="color:#5b4ddb;">Alertas</a>, y si algo no cierra
-        respondeme este mail.
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;"><tr>
+        <td style="background:{_AVISO_VIOLETA};border-radius:8px;">
+          <a href="{html.escape(url)}" style="display:inline-block;color:#FFFFFF;text-decoration:none;padding:14px 28px;font-weight:600;font-size:15px;">{html.escape(cta_label)}</a>
+        </td>
+      </tr></table>
+      <p style="font-size:13px;line-height:1.6;color:#6B7280;margin:0;">
+        {html.escape(pie_txt)} <a href="{html.escape(pie_url)}" style="color:{_AVISO_LINK};">{html.escape(pie_link)}</a>
       </p>
     """
-    lista_txt = ("\n" + "\n".join(f"  · {l}" for l in lines) + "\n") if lines else ""
-    text = (f"{heading}\n\n{hi}{detail}\n{lista_txt}\n"
-            f"Ver en Rendi: {url}\n\n"
-            f"Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o "
-            f"apagarla en {alerts_url}, y si algo no cierra respondeme este mail.\n\n"
-            "\u2014 Rendi")
-    return _send(to, heading, _wrap_html(body_html), text,
+    text = (f"{titular}\n\n{oracion}\n\n{lista_txt}"
+            f"{cta_label}: {url}\n\n"
+            f"{pie_txt} {pie_link}: {pie_url}\n\n"
+            "Si algo no cierra, respondé este mail y te contestamos.\n\n"
+            "— Rendi")
+    return _send(to, heading, _wrap_aviso(body_html, preheader=oracion), text,
                  from_addr=_from_alerts(),
                  reply_to="soporte@rendi.finance")
 
