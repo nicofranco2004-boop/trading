@@ -106,6 +106,30 @@ export const STOCKS_US = [
   { s: 'VIST', n: 'Vista Energy' }, { s: 'VST', n: 'Vistra Energy' },
   { s: 'WBD', n: 'Warner Bros. Discovery' }, { s: 'PARA', n: 'Paramount Global' }, { s: 'T', n: 'AT&T' },
   { s: 'VZ', n: 'Verizon' }, { s: 'TMUS', n: 'T-Mobile US' }, { s: 'CMCSA', n: 'Comcast' },
+  // ── Agregados 2026-10-19 ────────────────────────────────────────────────────
+  // Un usuario tenía el CEDEAR de IREN pero no podía cargar la ACCIÓN: estaba en
+  // CEDEARS_LIST y no acá. Al cruzar las dos listas aparecieron 43 así (casi todos
+  // del barrido de BYMA del 2026-08-11, que sólo sumó la pata CEDEAR). Los 43
+  // verificados en Yahoo hoy: cotizan en USD en NYSE/Nasdaq. Mismo nombre que en
+  // CEDEARS_LIST (ai/asset_names.py dice el de la primera lista que lo tenga).
+  // NOK es el CEDEAR NOKA y XYZ es Block desde 2025 (SQ, arriba, ya no cotiza).
+  { s: 'IREN', n: 'IREN' }, { s: 'MSTR', n: 'Strategy (MicroStrategy)' },
+  { s: 'CEG', n: 'Constellation Energy' }, { s: 'HIMS', n: 'Hims & Hers Health' },
+  { s: 'GLOB', n: 'Globant' }, { s: 'NBIS', n: 'Nebius Group' }, { s: 'CRWV', n: 'CoreWeave' },
+  { s: 'RIOT', n: 'Riot Platforms' }, { s: 'HUT', n: 'Hut 8' }, { s: 'BMNR', n: 'Bitmine Immersion' },
+  { s: 'OKLO', n: 'Oklo' }, { s: 'ALAB', n: 'Astera Labs' }, { s: 'RGTI', n: 'Rigetti Computing' },
+  { s: 'PATH', n: 'UiPath' }, { s: 'SE', n: 'Sea Limited' }, { s: 'MP', n: 'MP Materials' },
+  { s: 'XYZ', n: 'Block (ex-Square)' }, { s: 'BIDU', n: 'Baidu' }, { s: 'BMY', n: 'Bristol-Myers' },
+  { s: 'HON', n: 'Honeywell' }, { s: 'MMM', n: '3M' }, { s: 'AZN', n: 'AstraZeneca' },
+  { s: 'NVS', n: 'Novartis' }, { s: 'DOW', n: 'Dow' }, { s: 'O', n: 'Realty Income' },
+  { s: 'AAL', n: 'American Airlines' }, { s: 'TRIP', n: 'Tripadvisor' }, { s: 'NOK', n: 'Nokia' },
+  { s: 'LAR', n: 'Lithium Argentina' }, { s: 'LAC', n: 'Lithium Americas' },
+  { s: 'SATL', n: 'Satellogic' }, { s: 'BIOX', n: 'Bioceres Crop Solutions' },
+  { s: 'KEEL', n: 'Keel Infrastructure' }, { s: 'SPCE', n: 'Virgin Galactic' },
+  { s: 'ONDS', n: 'Ondas' }, { s: 'JMIA', n: 'Jumia Technologies' }, { s: 'PAGS', n: 'PagSeguro' },
+  { s: 'STNE', n: 'StoneCo' }, { s: 'SID', n: 'Companhia Siderúrgica Nacional' },
+  { s: 'BAK', n: 'Braskem' }, { s: 'GPRK', n: 'GeoPark' }, { s: 'HMY', n: 'Harmony Gold' },
+  { s: 'MUX', n: 'McEwen Inc.' },
 ]
 
 // === ETFs POPULARES ===

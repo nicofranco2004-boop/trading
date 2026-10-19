@@ -1484,6 +1484,30 @@ class TestBrokerCurrencyDisambiguation(_Base):
         self.assertNotIn(self.uid, main._TRADE_DRAFT)
 
 
+class TestIrenAccionYCedear(_Base):
+    """Pedido 2026-10-19: IREN estaba como CEDEAR en la pantalla pero no como
+    acción, y el chat no lo conocía de ninguna forma (su lista de CEDEARs tenía
+    119 de 168). Agregar sólo la acción lo hubiera empeorado: «compré IREN en
+    Balanz» habría contestado que una acción US no puede estar en pesos."""
+
+    def test_el_chat_lo_conoce_como_las_dos_cosas(self):
+        self.assertEqual(resolve_asset("iren"), ("IREN", {"STOCK", "CEDEAR"}))
+
+    def test_en_un_broker_en_pesos_es_el_cedear(self):
+        r = _h({"action": "buy", "asset": "IREN", "asset_type": "STOCK",
+                "broker": "Balanz", "quantity": 10, "price": 25000},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["kind"], "CEDEAR")
+
+    def test_en_un_broker_en_dolares_es_la_accion(self):
+        r = _h({"action": "buy", "asset": "IREN", "asset_type": "STOCK",
+                "broker": "Binance", "quantity": 10, "price": 28},
+               self.uid, request_id="A")
+        self.assertEqual(r.get("status"), "needs_confirmation", r)
+        self.assertEqual(main._TRADE_DRAFT[self.uid]["payload"]["kind"], "STOCK")
+
+
 class TestTradeMarketPriceSymbolResolution(unittest.TestCase):
     """El helper resuelve el símbolo canónico y solo cotiza cuando la moneda
     de la operación coincide con la del feed (CEDEAR/.BA=ARS; US/cripto=USD)."""
