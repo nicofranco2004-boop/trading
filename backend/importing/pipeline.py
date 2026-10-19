@@ -913,8 +913,9 @@ def run_preview(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra,
+                asset_symbol_raw)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
@@ -930,7 +931,11 @@ def run_preview(
              # guardaba: el arreglo estaba escrito y no se había propagado.
              fp, gross_usd, 1 if getattr(tx, "transfer_out", False) else 0,
              1 if getattr(tx, "transfer_in", False) else 0,
-             tx.tc_compra),
+             tx.tc_compra,
+             # El ticker del broker: la huella de arriba sale de él y el confirm
+             # la recalcula desde esta tabla. Sin guardarlo, la recalculaba con el
+             # ticker de Rendi y el anti-duplicados no reconocía fondos ni bonos D.
+             getattr(tx, "asset_symbol_raw", None)),
         )
 
     preview_payload = build_preview(
@@ -1208,8 +1213,9 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra,
+                asset_symbol_raw)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (batch_id, raw_id, tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
@@ -1217,7 +1223,8 @@ def store_preview_txs(conn, uid: int, *, broker: str, parser_format: str,
              _row_fingerprint(tx), gross_usd,
              1 if getattr(tx, "transfer_out", False) else 0,
              1 if getattr(tx, "transfer_in", False) else 0,
-             getattr(tx, "tc_compra", None)))
+             getattr(tx, "tc_compra", None),
+             getattr(tx, "asset_symbol_raw", None)))
     return batch_id
 
 
@@ -1280,6 +1287,13 @@ def load_session_for_confirm(conn, *, uid: int, session_id: str
             # diferencia de transfer_out) → si no se persiste+rehidrata, la
             # compra de CEDEAR pierde el dato antes de _persist_buy.
             tc_compra=r["tc_compra"] if "tc_compra" in r.keys() else None,
+            # El ticker del broker (COCOA, AL30D), del que sale la huella
+            # anti-duplicados. La previsualización la calculó y la guardó con él;
+            # si acá no vuelve, el confirm la recalcula con el ticker de Rendi
+            # (FCI:…, AL30), no coincide con ninguna guardada y la fila que la
+            # pantalla avisó «ya estaba importada» entra de nuevo. NULL en filas
+            # anteriores a la columna → cae al ticker de Rendi, como antes.
+            asset_symbol_raw=(r["asset_symbol_raw"] if "asset_symbol_raw" in r.keys() else None),
         )
         txs.append(tx)
         raw_id_by_index[r["r_idx"]] = r["raw_row_id"]
@@ -1374,8 +1388,9 @@ def load_session_with_seed_revalidate(
             """INSERT INTO import_normalized_tx
                (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                 quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fingerprint, gross_amount_usd, transfer_out, transfer_in, tc_compra,
+                asset_symbol_raw)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session_id, raw_id_by_index[tx.row_index], tx.date, tx.broker, tx.operation_type,
              tx.asset_symbol, tx.asset_name, tx.asset_type,
              tx.quantity, tx.unit_price, tx.gross_amount,
@@ -1384,7 +1399,8 @@ def load_session_with_seed_revalidate(
              # round-trip y la venta a costo se convierte en pérdida fantasma.
              fp, gross_usd, 1 if getattr(tx, "transfer_out", False) else 0,
              1 if getattr(tx, "transfer_in", False) else 0,
-             getattr(tx, "tc_compra", None)),
+             getattr(tx, "tc_compra", None),
+             getattr(tx, "asset_symbol_raw", None)),
         )
 
     return valid_txs, raw_id_by_index

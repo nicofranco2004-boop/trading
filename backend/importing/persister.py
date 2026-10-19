@@ -282,13 +282,13 @@ def persist_batch(
                     """INSERT INTO import_normalized_tx
                        (batch_id, raw_row_id, date, broker, operation_type, asset_symbol, asset_name, asset_type,
                         quantity, unit_price, gross_amount, fees, taxes, currency, settlement_currency, notes,
-                        gross_amount_usd)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        gross_amount_usd, asset_symbol_raw)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (batch_id, raw_id, st.date, st.broker, st.operation_type,
                      st.asset_symbol, st.asset_name, st.asset_type,
                      st.quantity, st.unit_price, st.gross_amount,
                      st.fees, st.taxes, st.currency, st.settlement_currency, st.notes,
-                     gross_usd),
+                     gross_usd, getattr(st, "asset_symbol_raw", None)),
                 )
             txs = list(seed_txs) + list(txs)
 
