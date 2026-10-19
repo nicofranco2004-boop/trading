@@ -19,12 +19,19 @@
 // misma lista que usa el buscador ⌘K. Una lupa abre ese buscador (para quien no
 // conoce el atajo): desplegado, en el encabezado al lado de las tres rayas;
 // plegado, debajo de la moneda.
+//
+// El pie (Alertas, Importar, Admin, Guía, Config, Descargar app,
+// Recomendaciones) se puede PLEGAR con la flechita que está sobre su línea de
+// arriba: le tapaba lugar a las secciones de la cartera (pedido de Nico,
+// 2026-10-19). Abierto por defecto; la preferencia queda en localStorage. El
+// tema, salir y el plan quedan siempre a la vista. Si la ruta activa es una
+// del pie, se abre solo (como el acordeón).
 
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   MessageCircle, Smartphone,
-  Sun, Moon, LogOut, Menu, ChevronRight, Users, Search,
+  Sun, Moon, LogOut, Menu, ChevronRight, ChevronDown, Users, Search,
 } from 'lucide-react'
 import RendiLogo from './RendiLogo'
 import CurrencySwitcher from './CurrencySwitcher'
@@ -44,6 +51,7 @@ import RegistrarMenu from './RegistrarMenu'
 const SIDEBAR_W_EXPANDED = '248px'
 const SIDEBAR_W_COLLAPSED = '56px'
 const LS_KEY = 'rendi_sidebar_collapsed'
+const LS_PIE = 'rendi_sidebar_pie_plegado'
 
 // Las listas de pantallas y quién ve cuáles viven en utils/navegacion.js: las
 // comparte el buscador rápido ⌘K (BuscadorRapido), así nunca ofrece un lugar
@@ -68,6 +76,7 @@ export default function Sidebar() {
           asesorPropio, clientesDesdeCliente, utilidades } = menuVisible({ user, clientCtx })
   const visibleLeaves = visibleGroups.flatMap(g => g.items)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
+  const [piePlegado, setPiePlegado] = useState(() => localStorage.getItem(LS_PIE) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)
   const [instalarOpen, setInstalarOpen] = useState(false)
 
@@ -79,6 +88,17 @@ export default function Sidebar() {
   useEffect(() => {
     if (activeGroupId) setOpenGroup(activeGroupId)
   }, [activeGroupId])
+
+  // Si la ruta activa vive en el pie, el pie se abre solo: si no, la pantalla
+  // en la que estás no se ve marcada en ningún lado del menú.
+  const activaEnPie = [...visibleLoose, ...utilidades].some(it => matchPath(location.pathname, it.to))
+  useEffect(() => {
+    if (activaEnPie) setPiePlegado(false)
+  }, [activaEnPie])
+
+  useEffect(() => {
+    localStorage.setItem(LS_PIE, String(piePlegado))
+  }, [piePlegado])
 
   // Persistir + setear CSS var consumida por <main> (margin dinámico)
   useEffect(() => {
@@ -290,8 +310,35 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer: sueltos (Alertas / Importar) + utilidades + cuenta */}
-      <div className="border-t border-line px-2.5 py-3 flex-shrink-0">
-        {/* Sueltos — siempre visibles, tinta más fuerte que las utilidades */}
+      <div className="relative border-t border-line px-2.5 py-3 flex-shrink-0">
+        {/* La flechita que pliega el pie, montada sobre la línea divisoria.
+            Abierto apunta para abajo («guardar»); plegado, para arriba. Con el
+            pie plegado, el puntito de alertas sin ver pasa a la flechita para
+            que no se pierda. */}
+        <button
+          type="button"
+          onClick={() => setPiePlegado(p => !p)}
+          aria-expanded={!piePlegado}
+          aria-controls="sidebar-pie"
+          title={piePlegado ? 'Mostrar Alertas, Importar y el resto' : 'Achicar: dejar más lugar a la cartera'}
+          aria-label={piePlegado ? 'Mostrar las opciones de abajo' : 'Ocultar las opciones de abajo'}
+          className="absolute -top-3 left-1/2 -translate-x-1/2 z-10 w-6 h-6 flex items-center justify-center rounded-full border border-data-violet/50 bg-bg-0 text-data-violet hover:bg-data-violet/15 hover:border-data-violet transition-colors"
+        >
+          <ChevronDown size={14} strokeWidth={2} aria-hidden="true"
+            className={`transition-transform duration-200 ${piePlegado ? 'rotate-180' : ''}`} />
+          {piePlegado && unseenCount > 0 && (
+            <span aria-hidden title="Tenés alertas sin ver"
+              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-data-violet ring-2 ring-bg-0" />
+          )}
+        </button>
+
+        {/* Lo plegable: sueltos + utilidades. El alto anima de 0 a lo que
+            mida (grid 0fr → 1fr), sin tope fijo que corte una fila. */}
+        <div id="sidebar-pie"
+          className={`grid transition-[grid-template-rows,opacity] duration-200 ease-out ${piePlegado ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}
+          inert={piePlegado ? '' : undefined}>
+        <div className="overflow-hidden min-h-0">
+        {/* Sueltos — tinta más fuerte que las utilidades */}
         {visibleLoose.map(({ to, label, icon: Icon }) => {
           // Puntito violeta sólo en Alertas y sólo si hay eventos SIN VER. Al
           // entrar a /alertas se marcan vistos (AlertsContext.markSeen) → se apaga.
@@ -356,6 +403,8 @@ export default function Sidebar() {
           <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
           {!collapsed && <span>Recomendaciones</span>}
         </button>
+        </div>
+        </div>
 
         {/* User row: nombre + badge de plan (solo expandida) */}
         {user && !collapsed && (

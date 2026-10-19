@@ -8,6 +8,7 @@ import { MemoryRouter } from 'react-router-dom'
 // ninguna prueba lo vio, porque ninguna dibujaba el menú. Ésta lo dibuja.
 let usuario = { tier: 'pro' }
 let cliente = null
+let guardado = {}  // lo que el menú "recuerda" en localStorage
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: usuario, logout: () => {} }) }))
 vi.mock('../contexts/AdvisorContext', () => ({ useAdvisorContext: () => ({ clientCtx: cliente }) }))
 vi.mock('../contexts/AlertsContext', () => ({ useAlertsContext: () => ({ unseenCount: 0 }) }))
@@ -27,7 +28,7 @@ const dibujar = (u, c = null, en = '/dashboard') => {
 describe('<Sidebar> se dibuja con la lista compartida', () => {
   // El menú recuerda si estaba plegado en localStorage; en estas pruebas no hay
   // navegador. Se pone y se saca: no puede quedar para las pruebas que siguen.
-  beforeAll(() => { vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} }) })
+  beforeAll(() => { vi.stubGlobal('localStorage', { getItem: (k) => guardado[k] ?? null, setItem: () => {}, removeItem: () => {} }) })
   afterAll(() => { vi.unstubAllGlobals() })
   it('las secciones van con lo tuyo junto y primero: Tu Cartera, Análisis, Mercado', () => {
     // Mercado estaba al medio y cortaba las dos secciones que hablan de la
@@ -88,5 +89,30 @@ describe('<Sidebar> se dibuja con la lista compartida', () => {
     const html = dibujar({ tier: 'pro' })
     expect(html).toContain('aria-label="Buscar en Rendi"')
     expect(html).toMatch(/⌘K|Ctrl K/)
+  })
+
+  // La flechita del pie (pedido de Nico, 2026-10-19): Alertas, Importar y las
+  // utilidades le tapaban lugar a la cartera. Abierto por defecto; plegado deja
+  // la cartera, el tema y salir, y esconde el resto también al teclado (inert).
+  const pie = (html) => html.slice(html.indexOf('id="sidebar-pie"'))
+  it('el pie arranca abierto, con la flechita para plegarlo', () => {
+    guardado = {}
+    const html = dibujar({ tier: 'pro' })
+    expect(html).toMatch(/aria-controls="sidebar-pie"[^>]*aria-label="Ocultar las opciones de abajo"/)
+    expect(html).toContain('aria-expanded="true" aria-controls="sidebar-pie"')
+    expect(html).not.toMatch(/id="sidebar-pie"[^>]*inert/)
+  })
+  it('plegado: Alertas, Importar y utilidades quedan adentro e inertes; cartera, tema y salir a la vista', () => {
+    guardado = { rendi_sidebar_pie_plegado: 'true' }
+    const html = dibujar({ tier: 'pro' })
+    expect(html).toMatch(/id="sidebar-pie"[^>]*inert=""/)
+    expect(html).toContain('aria-expanded="false" aria-controls="sidebar-pie"')
+    const adentro = rutas(pie(html).slice(0, pie(html).indexOf('Recomendaciones')))
+    for (const to of ['/alertas', '/imports', '/guia', '/config']) expect(adentro).toContain(to)
+    // Lo de la cartera sigue arriba, fuera del pie.
+    const afuera = rutas(html.slice(0, html.indexOf('id="sidebar-pie"')))
+    for (const to of ['/dashboard', '/posiciones', '/operaciones']) expect(afuera).toContain(to)
+    expect(pie(html)).toContain('aria-label="Cerrar sesión"')
+    guardado = {}
   })
 })
