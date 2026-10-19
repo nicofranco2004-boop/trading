@@ -426,7 +426,6 @@ ASSET_NAMES = {
     'SPOT': 'Spotify',
     'SPX': 'S&P 500',
     'SPY': 'SPDR S&P 500',
-    'SQ': 'Block',
     'SQQQ': 'ProShares -3x Nasdaq',
     'SSEC': 'Shanghai Composite',
     'STNE': 'StoneCo',

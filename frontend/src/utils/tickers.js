@@ -77,7 +77,7 @@ export const STOCKS_US = [
   { s: 'INTU', n: 'Intuit' }, { s: 'AMAT', n: 'Applied Materials' }, { s: 'LRCX', n: 'Lam Research' },
   { s: 'KLAC', n: 'KLA Corp' }, { s: 'PANW', n: 'Palo Alto Networks' }, { s: 'CRWD', n: 'CrowdStrike' },
   { s: 'SNOW', n: 'Snowflake' }, { s: 'PLTR', n: 'Palantir' }, { s: 'COIN', n: 'Coinbase' },
-  { s: 'SHOP', n: 'Shopify' }, { s: 'SQ', n: 'Block' }, { s: 'HOOD', n: 'Robinhood' },
+  { s: 'SHOP', n: 'Shopify' }, { s: 'HOOD', n: 'Robinhood' },
   { s: 'SOFI', n: 'SoFi Technologies' }, { s: 'ABNB', n: 'Airbnb' }, { s: 'MELI', n: 'MercadoLibre' },
   { s: 'BABA', n: 'Alibaba' }, { s: 'JD', n: 'JD.com' }, { s: 'PDD', n: 'PDD Holdings' },
   { s: 'NIO', n: 'NIO' }, { s: 'LI', n: 'Li Auto' }, { s: 'XPEV', n: 'XPeng' },
@@ -112,7 +112,10 @@ export const STOCKS_US = [
   // del barrido de BYMA del 2026-08-11, que sólo sumó la pata CEDEAR). Los 43
   // verificados en Yahoo hoy: cotizan en USD en NYSE/Nasdaq. Mismo nombre que en
   // CEDEARS_LIST (ai/asset_names.py dice el de la primera lista que lo tenga).
-  // NOK es el CEDEAR NOKA y XYZ es Block desde 2025 (SQ, arriba, ya no cotiza).
+  // NOK es el CEDEAR NOKA y XYZ es Block desde 2025. SQ, su código viejo, estaba
+  // en esta lista y ya no cotiza (Yahoo y BYMA, medido 2026-10-19): se sacó, y si
+  // llega igual —un archivo viejo, el chat, un formulario— el servidor lo guarda
+  // como XYZ (backend/tickers_renombrados.py).
   { s: 'IREN', n: 'IREN' }, { s: 'MSTR', n: 'Strategy (MicroStrategy)' },
   { s: 'CEG', n: 'Constellation Energy' }, { s: 'HIMS', n: 'Hims & Hers Health' },
   { s: 'GLOB', n: 'Globant' }, { s: 'NBIS', n: 'Nebius Group' }, { s: 'CRWV', n: 'CoreWeave' },
