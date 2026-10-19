@@ -444,7 +444,7 @@ def _cuentas_que_cambiaron(uids) -> tuple:
     versión (`sin_marca`) van aparte: después del deploy son todas, y van a la fila
     para no salir a Yahoo con todas a la vez."""
     from scripts.backfill_historical_mtm import huella_de_entrada
-    from datetime import datetime as _dt
+    from fechas import hoy_art_date
     propias, sin_marca = [], []
     with db_abierta() as conn:
         for uid in sorted(uids):
@@ -455,7 +455,11 @@ def _cuentas_que_cambiaron(uids) -> tuple:
                 elif escrita == _MTM_FALLIDA:
                     if not _fallida_hace_poco(conn, uid):
                         propias.append(uid)
-                elif huella_de_entrada(conn, uid, _dt.utcnow().date()) != escrita:
+                # El MISMO día que usa `_reconstruir_mtm` para escribir la huella
+                # (fechas.py). Si uno fuera UTC y el otro argentino, de 21 a 24 del
+                # último día del mes nunca coincidirían y cada aviso del Dashboard
+                # pediría una reconstrucción entera.
+                elif huella_de_entrada(conn, uid, hoy_art_date()) != escrita:
                     propias.append(uid)
             except Exception:
                 log.exception("mtm-auto: no se pudo comparar la huella de %s", uid)
@@ -13112,7 +13116,12 @@ def _repair_monthly_chain(conn, uid: int, broker: str) -> None:
 
     EPS = 0.01
     prev_cap_final = None
-    now = datetime.utcnow()
+    # ⏰ EL MES ARGENTINO (fechas.py), el mismo que `is_period_current`. Con
+    # `utcnow()` el último día de cada mes, de 21 a 24 h, ya era el mes siguiente:
+    # se creaba esa fila y la ganancia no realizada se mudaba ahí, mientras
+    # Reportes seguía mostrando el mes en curso sin ella.
+    from fechas import hoy_art_date
+    now = hoy_art_date()
     current_year, current_month = now.year, now.month
 
     for row in rows:
@@ -15208,7 +15217,12 @@ def sync_unrealized(data: SyncUnrealizedIn, uid: int = Depends(get_effective_use
     """
     with db_abierta() as conn:
         try:
-            now = datetime.utcnow()
+            # ⏰ EL MES ARGENTINO (fechas.py), el mismo que `is_period_current`. Con
+            # `utcnow()` el último día de cada mes, de 21 a 24 h, ya era el mes siguiente:
+            # se creaba esa fila y la ganancia no realizada se mudaba ahí, mientras
+            # Reportes seguía mostrando el mes en curso sin ella.
+            from fechas import hoy_art_date
+            now = hoy_art_date()
             current = conn.execute(
                 """SELECT id, capital_inicio, deposits, withdrawals, pnl_realized
                    FROM monthly_entries
@@ -15673,7 +15687,12 @@ def _rollover_to_current_month(conn, uid: int, broker: str) -> int:
 
     Devuelve la cantidad de rows nuevas creadas.
     """
-    now = datetime.utcnow()
+    # ⏰ EL MES ARGENTINO (fechas.py), el mismo que `is_period_current`. Con
+    # `utcnow()` el último día de cada mes, de 21 a 24 h, ya era el mes siguiente:
+    # se creaba esa fila y la ganancia no realizada se mudaba ahí, mientras
+    # Reportes seguía mostrando el mes en curso sin ella.
+    from fechas import hoy_art_date
+    now = hoy_art_date()
     target_year, target_month = now.year, now.month
 
     # La última fila EN O ANTES del mes actual, no la última en absoluto. Antes
@@ -23094,12 +23113,12 @@ def admin_backfill_mtm(apply: bool = False, offset: int = 0, limit: int = 0,
     ticker). Gate: solo el admin logueado.
     """
     from scripts.backfill_historical_mtm import backfill_summary
-    from datetime import datetime as _dt
+    from fechas import hoy_art_date
     conn = get_db()
     try:
         all_users = [r["id"] for r in conn.execute("SELECT id FROM users ORDER BY id").fetchall()]
         users = all_users[offset:offset + limit] if limit > 0 else all_users[offset:]
-        summary = backfill_summary(conn, users, _dt.utcnow().date(), apply=bool(apply))
+        summary = backfill_summary(conn, users, hoy_art_date(), apply=bool(apply))
         summary.update(ok=True, applied=bool(apply), total_all_users=len(all_users),
                        offset=offset, processed=len(users))
         log.info("admin_backfill_mtm apply=%s users_changed=%s errors=%s",
@@ -41275,13 +41294,17 @@ def import_tenencia_preview(
         # más usado —y el que peor cobertura tiene— quedaría permanentemente
         # inservible en el flujo del asesor, porque siempre cortaría por
         # `fecha_desconocida`.
+        from fechas import hoy_art
         _fecha_nombre = (None if snap.date else
                          _import_tenencia.fecha_de_nombre_archivo(file.filename or ""))
         fecha_origen = ("archivo" if snap.date
                         else "nombre_archivo" if _fecha_nombre
                         else "fallback_hoy")
         seed_date = (snap.date or _fecha_nombre
-                     or _import_excel.datetime.now().strftime("%Y-%m-%d"))
+                     # El día ARGENTINO (fechas.py), no el reloj del proceso: en
+                     # Railway es UTC y de 21 a 24 h los lotes de apertura
+                     # nacían fechados mañana.
+                     or hoy_art())
         override_info = None   # sólo lo puebla el path OVERRIDE de Balanz
         # Inicializado ANTES de la bifurcación: la respuesta es común a los dos
         # caminos y definirlo adentro de uno daba NameError en el otro.
@@ -42235,7 +42258,6 @@ def _reconstruir_mtm(uid: int) -> dict:
     conn = get_db()
     try:
         from scripts.backfill_historical_mtm import backfill_user
-        from datetime import datetime as _dt
         # ⚠️ ACÁ NO SE RE-ESTAMPA `net_deposited`, Y ES A PROPÓSITO.
         # Lo agregué en la ronda anterior para que las estampas viejas dejaran de
         # mezclarse con las nuevas. El remedio resultó peor: la fórmula que estampa
@@ -42247,7 +42269,12 @@ def _reconstruir_mtm(uid: int) -> dict:
         # el camino de TODO import confirmado, de toda cuenta.
         # La mezcla de estampas se resuelve donde corresponde: `twr.serie_medible`
         # detecta cuándo la estampa dejó de coincidir con la contabilidad actual.
-        _hoy = _dt.utcnow().date()
+        # ⏰ EL DÍA ARGENTINO (fechas.py). Con `utcnow()`, el último día de cada mes
+        # de 21 a 24 h la reconstrucción creía que el mes ya había cerrado y
+        # escribía su foto de cierre. `_cuentas_que_cambiaron` compara la huella
+        # con este mismo día: se mueven juntos.
+        from fechas import hoy_art_date
+        _hoy = hoy_art_date()
         res = backfill_user(conn, uid, _hoy)
         # `res["huella"]`: la contabilidad que describen las fotos de esta corrida
         # (`backfill_user` reinicia si cambió en el medio). Se guarda en la MISMA

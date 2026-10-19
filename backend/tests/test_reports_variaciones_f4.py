@@ -804,8 +804,8 @@ class VariacionesF4Test(unittest.TestCase):
         self._sembrar_cadena(2026, 10, 201119, 131, 199017, pnl_unrealized=-2233)
         _backfill_snapshots_from_monthly(self.conn, self.uid)
         self.conn.commit()
-        # ⚠️ El escritor decide qué meses escribe con el reloj REAL de la máquina
-        # (`utcnow()`, no `fechas`): desde el 31/10/2026 escribe además la fila de
+        # ⚠️ El escritor decide qué meses escribe con el reloj REAL (el día
+        # argentino de hoy, `fechas`): desde el 31/10/2026 escribe además la fila de
         # octubre. Por eso se mira SÓLO la del 30/9, que es la que importa acá y la
         # que existe a cualquier fecha posterior. Esa fila de octubre no cambia
         # ninguno de los casos de abajo (todos cierran antes del 31/10).

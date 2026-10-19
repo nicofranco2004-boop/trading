@@ -3237,7 +3237,7 @@ class CashFlowFechaDecideElMesTest(unittest.TestCase):
     """La FECHA del depósito decide en qué mes se asienta el aporte.
 
     `date` es opcional en `CashFlowIn` y, cuando falta, el endpoint bookea con
-    `datetime.utcnow()` — o sea, el mes de HOY. La pantalla de la cartera en el
+    `_iso_today()` — o sea, el mes de HOY (argentino). La pantalla de la cartera en el
     CELULAR no tenía campo de fecha y mandaba el POST sin `date`: un depósito de
     marzo cargado desde el teléfono entraba como aporte del mes corriente y
     corría el capital aportado, que es el DENOMINADOR del rendimiento.
@@ -3289,10 +3289,11 @@ class CashFlowFechaDecideElMesTest(unittest.TestCase):
         from datetime import datetime
         res = self._post()
         self.assertEqual(res.status_code, 200, f"body: {res.text}")
-        # UTC a propósito: es el reloj que usa el endpoint cuando no hay fecha.
-        # Compararlo contra el día ARGENTINO pondría el test en rojo solo entre
-        # las 21:00 y la medianoche.
-        hoy = datetime.utcnow()
+        # El día ARGENTINO: es el que usa el endpoint cuando no hay fecha
+        # (`_iso_today()`). Con UTC, el último día del mes de 21 a 24 h esta
+        # prueba esperaba el mes siguiente.
+        from fechas import hoy_art_date
+        hoy = hoy_art_date()
         meses = self._meses_con_aporte()
         self.assertEqual([(a, m) for a, m, _ in meses], [(hoy.year, hoy.month)])
 
@@ -4451,8 +4452,8 @@ class AutoRolloverServerSideTest(unittest.TestCase):
     def test_rollover_creates_current_month_when_missing(self):
         """Sembrar una row vieja → GET /api/monthly debe crear rows hasta
         el current calendar month."""
-        from datetime import datetime
-        now = datetime.utcnow()
+        from fechas import hoy_art_date
+        now = hoy_art_date()     # el mes en curso es el argentino, como el rollover
 
         # Sembrar 1 row de hace muchos meses (descartando que esté en el
         # current month por timing — usamos year-1 para garantizar gap).
@@ -4505,8 +4506,8 @@ class AutoRolloverServerSideTest(unittest.TestCase):
 
     def test_rollover_is_idempotent(self):
         """Llamar GET /api/monthly dos veces no crea rows duplicadas."""
-        from datetime import datetime
-        now = datetime.utcnow()
+        from fechas import hoy_art_date
+        now = hoy_art_date()     # el mes en curso es el argentino, como el rollover
         old_year = now.year - 1
 
         conn = main.get_db()
@@ -5174,8 +5175,8 @@ class RepairMonthlyChainOpenMonthTest(unittest.TestCase):
     def test_current_month_preserves_pnl_unrealized(self):
         """Sanity check: si la row ES el current calendar month, sus
         valores live (pnl_unrealized, capital_final) deben preservarse."""
-        from datetime import datetime
-        now = datetime.utcnow()
+        from fechas import hoy_art_date
+        now = hoy_art_date()     # el mes en curso es el argentino, como el rollover
         y, m = now.year, now.month
 
         conn = main.get_db()

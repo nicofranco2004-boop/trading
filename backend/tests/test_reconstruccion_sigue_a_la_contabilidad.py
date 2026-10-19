@@ -36,7 +36,11 @@ import os
 import sys
 import time
 import unittest
-from datetime import date
+# El día de la app (argentino, fechas.py), el mismo con el que `_reconstruir_mtm`
+# corre la reconstrucción. Con `date.today()` (UTC en Railway), el último día del
+# mes de 21 a 24 h esta "reconstrucción esperada" daba el mes por cerrado y la de
+# la app no: el test comparaba dos relojes, no dos resultados.
+from fechas import hoy_art_date
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -120,7 +124,7 @@ class _Despues(_Cuenta):
         try:
             with mock.patch.object(bf, "_persist_mtm_snapshots",
                                    side_effect=lambda c, u, pm: capt.update(pm) or 0):
-                bf.backfill_user(conn, self.uid, date.today())
+                bf.backfill_user(conn, self.uid, hoy_art_date())
         finally:
             conn.rollback()
             conn.close()
@@ -452,7 +456,7 @@ class LasHerramientasDelAdmin(_Despues):
                 "net_deposited, source) VALUES (?, '2025-02-28', 1.0, 1.0, 1.0, 'mtm_backfill')",
                 (self.uid,))
             conn.commit()
-            r = bf.backfill_summary(conn, [self.uid], date.today(), apply=False)
+            r = bf.backfill_summary(conn, [self.uid], hoy_art_date(), apply=False)
         finally:
             conn.close()
         # Febrero es anterior a toda la contabilidad (empieza en marzo).
@@ -529,7 +533,7 @@ class LoQueSeEscapaba(_Despues):
         bf._HIST_CACHE.clear()
         conn = main.get_db()
         try:
-            res = bf.backfill_user(conn, self.uid, date.today())
+            res = bf.backfill_user(conn, self.uid, hoy_art_date())
             conn.commit()
         finally:
             conn.close()

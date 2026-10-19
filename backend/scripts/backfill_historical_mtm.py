@@ -995,8 +995,8 @@ def _print(summaries, apply):
 
 
 def run(apply: bool, only_uid=None) -> int:
-    from datetime import datetime
-    today = datetime.utcnow().date()
+    from fechas import hoy_art_date
+    today = hoy_art_date()      # el día argentino, como `_reconstruir_mtm`
     real = main.get_db()
     try:
         if only_uid is not None:

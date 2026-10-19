@@ -51,9 +51,10 @@ ACEPTA_LINEA = ("medicion", "reconstruido", "intradia")
 
 def _ultimo_mes_cerrado():
     """La reconstrucción no toca el mes en curso (lo maneja el flujo live). Se le
-    pregunta a la app qué día es hoy, con el mismo reloj que usa el hilo."""
-    from datetime import datetime
-    hoy = datetime.utcnow().date()
+    pregunta a la app qué día es hoy, con el mismo reloj que usa el hilo (el
+    día argentino de fechas.py)."""
+    from fechas import hoy_art_date
+    hoy = hoy_art_date()
     y, m = (hoy.year, hoy.month - 1) if hoy.month > 1 else (hoy.year - 1, 12)
     return f"{y}-{m:02d}"
 

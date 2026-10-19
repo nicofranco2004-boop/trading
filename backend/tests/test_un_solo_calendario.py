@@ -231,5 +231,120 @@ class LoQuePERSISTEUsaElDiaArgentino(unittest.TestCase):
             "argentino. Usá `_iso_today()`:\n  " + "\n  ".join(sospechosas))
 
 
+
+# ─── "Hoy" sacado del reloj crudo: la lista sólo puede achicarse ─────────────
+# `date.today()` es la hora del PROCESO (UTC en Railway, ART en una Mac) y
+# `utcnow().date()` es el día UTC: de 21 a 24 h argentinas los dos ya dicen
+# mañana. El relevamiento del 18/10/2026 los clasificó uno por uno; la tanda 1
+# (los que ESCRIBEN datos: contabilidad mensual, reconstrucción, foto del import,
+# tenencia sin fecha) ya pasó a `fechas`. Lo que queda está anotado acá con
+# cuántos tiene cada archivo: los UTC a propósito (cripto, cuota de IA) y la
+# deuda de las tandas 2 y 3 (IA, CSV, admin, barridos de bonos).
+#
+# Si este test se pone rojo porque SUBIÓ un número o apareció un archivo: usá
+# `fechas.hoy_art()` / `hoy_art_date()`. Si BAJÓ: bajalo acá también, así la
+# lista no esconde nada. Es un guard por TEXTO y tiene puntos ciegos: no ve
+# `now = datetime.utcnow()` seguido de `now.month` (así se escondían los tres de
+# la contabilidad mensual). Para esos está `test_mes_argentino_contabilidad.py`,
+# que congela el reloj y mira el resultado.
+DIA_DEL_RELOJ_CRUDO = re.compile(
+    r"utcnow\(\)\.date\(\)"
+    r"|(?<![\w.])_?date\.today\(\)"
+    r"|\.now\(\)\.date\(\)"
+    r"|\.now\(\)\.strftime\(\s*['\"]%Y-%m")
+
+PENDIENTES = {
+    # (b) UTC a propósito — la cuota se mueve entera o no se mueve (main.py:~29990)
+    "ai/quota.py": 11,
+    "billing/trial.py": 2,          # paso a Plus (día UTC del alta) + piso de cuota
+    "home/market.py": 1,            # cripto: velas diarias en días UTC
+    # main.py: 1 cripto (`hoy_utc` de la cartera de hoy) + 4 nombres de CSV
+    # + diagnóstico admin de Reportes + benchmarks y detalle mensual del chat
+    "main.py": 8,
+    # (a) deuda de las tandas 2 y 3
+    "ai/builders/dashboard_top_holdings.py": 1,
+    "ai/builders/goal.py": 1,
+    "ai/builders/insights.py": 1,
+    "ai/builders/insights_benchmarks.py": 1,
+    "ai/builders/insights_evolution.py": 1,
+    "ai/builders/news.py": 1,
+    "ai/builders/news_item.py": 1,
+    "ai/builders/position.py": 1,
+    "ai/builders/reports.py": 1,
+    "importing/maturity.py": 1,
+    "importing/recompute_backfill.py": 1,
+    "scripts/backfill_bond_amortizations.py": 1,
+    # (c) no deciden nada del usuario
+    "iol_api.py": 1,
+    "scripts/iol_spike.py": 1,
+    "scripts/seed_f1.py": 1,
+    "scripts/backfill_historical_mtm.py": 1,   # clave de la caché mensual de precios
+}
+
+
+def _sin_comentarios_ni_textos(fuente):
+    """`fuente` con los comentarios y los strings en blanco (los docstrings que
+    explican arreglos viejos nombran `date.today()` y no son llamadas). Se
+    blanquean en su lugar —no se borran— para que el resto quede como estaba."""
+    import io
+    import tokenize
+    lineas = [list(l) for l in fuente.splitlines(True)]
+    for tok in tokenize.generate_tokens(io.StringIO(fuente).readline):
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        (f0, c0), (f1, c1) = tok.start, tok.end
+        for f in range(f0, f1 + 1):
+            fila = lineas[f - 1]
+            desde = c0 if f == f0 else 0
+            hasta = c1 if f == f1 else len(fila)
+            for c in range(desde, hasta):
+                if fila[c] != "\n":
+                    fila[c] = " "
+    return "".join("".join(l) for l in lineas)
+
+
+def _codigo_sin_comentarios_ni_textos(ruta):
+    with open(ruta, encoding="utf-8") as fh:
+        return _sin_comentarios_ni_textos(fh.read())
+
+
+class ElDiaNoSaleDelRelojCrudo(unittest.TestCase):
+
+    def test_nadie_nuevo_saca_el_dia_del_reloj_crudo(self):
+        encontrados = {}
+        for raiz, dirs, files in os.walk(BACKEND):
+            dirs[:] = [d for d in dirs
+                       if d not in ("tests", "backups", "__pycache__", "venv", ".venv")]
+            for f in files:
+                if not f.endswith(".py") or f == DUENIO_DEL_CALENDARIO:
+                    continue
+                ruta = os.path.join(raiz, f)
+                if os.path.basename(ruta).startswith("zz_sonda"):
+                    continue    # archivos temporales de otras pruebas guardianas
+                n = len(DIA_DEL_RELOJ_CRUDO.findall(_codigo_sin_comentarios_ni_textos(ruta)))
+                if n:
+                    encontrados[os.path.relpath(ruta, BACKEND)] = n
+        diferencias = {
+            ruta: f"anotados {PENDIENTES.get(ruta, 0)}, hay {encontrados.get(ruta, 0)}"
+            for ruta in set(encontrados) | set(PENDIENTES)
+            if encontrados.get(ruta, 0) != PENDIENTES.get(ruta, 0)
+        }
+        self.assertEqual(
+            diferencias, {},
+            "Cambió cuántos lugares sacan el día del reloj crudo. Si subió: usá "
+            "`fechas.hoy_art()` / `hoy_art_date()`. Si bajó: actualizá PENDIENTES.")
+
+    def test_la_reconstruccion_y_su_huella_usan_el_mismo_dia(self):
+        """`_reconstruir_mtm` escribe la huella con un día y `_cuentas_que_cambiaron`
+        la compara con otro: si no son el MISMO, de 21 a 24 del último día del mes
+        nunca coinciden y cada aviso del Dashboard pide una reconstrucción entera."""
+        import inspect
+        import main
+        for fn in (main._reconstruir_mtm, main._cuentas_que_cambiaron):
+            fuente = _sin_comentarios_ni_textos(inspect.getsource(fn))
+            self.assertIn("hoy_art_date()", fuente, fn.__name__)
+            self.assertNotIn("utcnow", fuente, fn.__name__)
+
+
 if __name__ == "__main__":
     unittest.main()
