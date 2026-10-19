@@ -104,7 +104,7 @@ const SECTOR_MAP = new Map([
   ]),
   ...M('financiero', [
     'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'C', 'AXP', 'BLK', 'SPGI',
-    'BX', 'PYPL', 'SQ', 'COIN', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'ITUB', 'NU',
+    'BX', 'PYPL', 'COIN', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'ITUB', 'NU',
     'BBD', 'BRK.B', 'BRKB', 'XLF',
     'GGAL', 'BMA', 'BBAR', 'SUPV', 'BYMA', 'VALO', 'BPAT', 'BHIP',
     'A3', 'BRK-B', 'PAGS', 'STNE', 'XYZ',

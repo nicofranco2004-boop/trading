@@ -126,14 +126,13 @@ class TestNombresHablables(unittest.TestCase):
         """El guard general del de arriba, para el próximo par que se agregue.
 
         Se permiten sólo los que SON el mismo instrumento escrito de dos formas
-        (la clase A y la C de Alphabet, el ticker viejo y el nuevo de Block).
+        (la clase A y la C de Alphabet, Disney en Nueva York y su CEDEAR).
         Cualquier par nuevo que comparta nombre hay que mirarlo: o son lo mismo
         y va a esta lista, o es el bug de los bonos otra vez.
         """
         MISMO_INSTRUMENTO = {
             ("GOOG", "GOOGL"),          # Alphabet clase C y clase A
             ("BRK-B", "BRKB"),          # Berkshire, dos formas del mismo código
-            ("SQ", "XYZ"),              # Block, ticker viejo y nuevo
             ("DIS", "DISN"),            # Disney, US y CEDEAR
             ("NOK", "NOKA"),            # Nokia, US y CEDEAR
             ("CAPU", "CAPX"),           # Capex, dos códigos del mismo papel

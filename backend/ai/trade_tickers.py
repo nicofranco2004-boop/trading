@@ -43,7 +43,7 @@ US_TICKERS = {
     'PLTR', 'PSX', 'PYPL', 'QCOM', 'QQQ', 'QQQM', 'RBLX', 'RGTI', 'RIO', 'RIOT',
     'RIVN', 'RKLB', 'ROKU', 'RTX', 'SATL', 'SBUX', 'SCHD', 'SE', 'SHOP', 'SHY',
     'SID', 'SLB', 'SLV', 'SMH', 'SNAP', 'SNDK', 'SNOW', 'SOFI', 'SOXL', 'SOXX',
-    'SPCE', 'SPCX', 'SPGI', 'SPOT', 'SPY', 'SQ', 'SQQQ', 'STNE', 'T', 'TEAM', 'TGT',
+    'SPCE', 'SPCX', 'SPGI', 'SPOT', 'SPY', 'SQQQ', 'STNE', 'T', 'TEAM', 'TGT',
     'TIP', 'TLT', 'TMF', 'TMO', 'TMUS', 'TQQQ', 'TRIP', 'TSLA', 'TSM', 'TTWO',
     'TWLO', 'TXN', 'U', 'UBER', 'UNG', 'UNH', 'UPRO', 'UPST', 'USO', 'V', 'VALE',
     'VEA', 'VIG', 'VIST', 'VOO', 'VST', 'VTI', 'VWO', 'VYM', 'VZ', 'WBD', 'WDAY',
@@ -129,7 +129,7 @@ NAME_ALIASES = {
     'BLACKBERRY': 'BB',
     'BLACKROCK': 'BLK',
     'BLACKSTONE': 'BX',
-    'BLOCK': 'SQ',
+    'BLOCK': 'XYZ',
     'BOEING': 'BA',
     'BOLDT': 'BOLT',
     'BRASIL': 'EWZ',
@@ -291,6 +291,13 @@ NAME_ALIASES = {
     'ZOOM': 'ZM',
     'ZSCALER': 'ZS',
 }
+
+# Códigos que ya no cotizan → el vigente ("compré SQ" → XYZ). La tabla es UNA, la
+# de tickers_renombrados.py: el chat, el importador y los formularios traducen
+# igual, y el código viejo no está en ninguna lista de arriba (no cotiza).
+from tickers_renombrados import TICKERS_RENOMBRADOS as _RENOMBRADOS  # noqa: E402
+NAME_ALIASES.update(_RENOMBRADOS)
+NAME_ALIASES['SQUARE'] = 'XYZ'   # Block se llamaba Square
 
 
 def resolve_asset(raw: str):

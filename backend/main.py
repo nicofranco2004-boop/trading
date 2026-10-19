@@ -51,6 +51,7 @@ except ImportError:
     pass
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as _esperar_futuros
 from eventos_guardados import eventos_guardados
+from tickers_renombrados import ticker_vigente   # SQ → XYZ: el código que cotiza hoy
 import yfinance as yf
 from pricing import yahoo as _yahoo   # toda llamada a Yahoo con alguien esperando
 import requests
@@ -11275,7 +11276,9 @@ class PositionIn(BaseModel):
     @field_validator('asset')
     @classmethod
     def clean_asset(cls, v):
-        return v.strip().upper()
+        # ticker_vigente: un código que ya no cotiza (SQ) se guarda con el que
+        # cotiza (XYZ). Ver tickers_renombrados.py.
+        return ticker_vigente(v.strip().upper())
 
     @field_validator('broker')
     @classmethod
@@ -11605,7 +11608,8 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
 
     broker = (p.broker or "").strip()
     asset = (p.asset or "").strip()
-    new_asset = (p.new_asset or "").strip()
+    # Renombrar A un código que ya no cotiza (SQ) deja el grupo con el vigente.
+    new_asset = ticker_vigente((p.new_asset or "").strip())
     if not broker or not asset:
         raise HTTPException(400, "Falta el broker o el activo")
     if p.tc_mode and p.tc_mode not in ("historical", "fixed"):
@@ -16432,7 +16436,9 @@ class OperationIn(BaseModel):
     @field_validator('asset')
     @classmethod
     def clean_asset(cls, v):
-        return v.strip().upper()
+        # ticker_vigente: un código que ya no cotiza (SQ) se guarda con el que
+        # cotiza (XYZ). Ver tickers_renombrados.py.
+        return ticker_vigente(v.strip().upper())
 
     @field_validator('currency')
     @classmethod
@@ -46024,7 +46030,7 @@ class WatchlistAddIn(BaseModel):
         v = v.strip().upper()
         if not re.match(r'^[A-Z0-9]{1,10}(\.BA|-USD)?$', v):
             raise ValueError('Símbolo inválido')
-        return v
+        return ticker_vigente(v)   # SQ → XYZ: el que cotiza (tickers_renombrados.py)
 
 
 @app.get("/api/watchlist")
@@ -46148,7 +46154,7 @@ class AlertCreateIn(BaseModel):
     def _v_sym(cls, v):
         if v is None:
             return None
-        v = v.strip().upper()
+        v = ticker_vigente(v.strip().upper())   # SQ → XYZ: una alerta sobre SQ no saltaría nunca
         return v or None
 
 
@@ -49399,6 +49405,8 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
     existente + moneda compatible); las inválidas van a `skipped` sin bloquear
     el resto. Las válidas se aplican en UNA transacción (o entran todas o
     ninguna) y el lote queda con batch_id → deshacible con /undo."""
+    # SQ → XYZ también en la etiqueta del lote (cada fila ya lo hace en PositionIn).
+    asset = ticker_vigente((asset or "").strip())
     conn = get_db()
     try:
         _require_advisor(conn, uid)

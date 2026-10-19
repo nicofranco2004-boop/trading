@@ -332,6 +332,23 @@ class NormalizedTx:
     # tocar el modelo FX-neutral por defecto. NULL = sin dato → cae a hoy.
     tc_compra: Optional[float] = None
 
+    def __post_init__(self):
+        # Código viejo → vigente (SQ → XYZ): ver tickers_renombrados.py. Va ACÁ
+        # y no en cada parser porque toda operación importada nace como
+        # NormalizedTx —archivo, Wallbit, foto de tenencias, estado inicial,
+        # traspasos y la relectura de la sesión—, así que ninguna se lo saltea.
+        #
+        # El crudo (asset_symbol_raw) se traduce TAMBIÉN. La huella anti-
+        # duplicados sale del crudo, y el confirm rehidrata las filas desde
+        # import_normalized_tx, que no guarda el crudo: ahí la huella sale del
+        # canónico. Si el crudo quedaba "SQ", la vista previa avisaba «ya estaba
+        # importada» y el confirm la volvía a cargar (medido: reimportar el mismo
+        # archivo dejaba 20 en vez de 10).
+        if (self.asset_type or "").upper() not in ("CRYPTO", "FIAT", "FUND"):
+            from tickers_renombrados import ticker_vigente
+            self.asset_symbol = ticker_vigente(self.asset_symbol)
+            self.asset_symbol_raw = ticker_vigente(self.asset_symbol_raw)
+
     def to_db_dict(self) -> Dict[str, Any]:
         return asdict(self)
 

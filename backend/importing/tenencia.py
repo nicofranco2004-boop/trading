@@ -87,6 +87,14 @@ class Holding:
     per100: bool = False      # True si la columna Precio venía per-100 (bonos)
     name: str = ""
 
+    def __post_init__(self):
+        # SQ → XYZ (tickers_renombrados.py): la foto se compara contra lo que
+        # Rendi guardó, y lo importado ya entra con el código vigente. Sin esto
+        # una foto que dijera SQ sembraba un duplicado y marcaba XYZ «¿vendido?».
+        if (self.asset_type or "").upper() not in ("CRYPTO", "FIAT", "FUND"):
+            from tickers_renombrados import ticker_vigente
+            self.ticker = ticker_vigente(self.ticker)
+
 
 @dataclass
 class TenenciaSnapshot:
