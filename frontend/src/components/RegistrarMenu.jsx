@@ -20,13 +20,15 @@
 // borde punteado), «Importar historial»: no es una carga a mano sino subir el
 // archivo del broker, y antes era una fila suelta del menú lateral (pedido de
 // Nico, 2026-10-19). Llega por `importar` desde la lista compartida del menú
-// (utils/navegacion.js): quien no tiene Importar no lo ve acá tampoco.
+// (utils/navegacion.js): quien no tiene Importar no lo ve acá tampoco. El "+"
+// del celular (MobileTabBar) tiene la misma franja, con el mismo texto
+// (IMPORTAR_HISTORIAL de utils/registrar.js).
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
-import { ACCIONES_REGISTRAR, direccionDeRegistrar } from '../utils/registrar'
+import { ACCIONES_REGISTRAR, IMPORTAR_HISTORIAL, direccionDeRegistrar } from '../utils/registrar'
 import { track } from '../utils/track'
 
 const MENU_W = 272
@@ -178,7 +180,7 @@ export default function RegistrarMenu({ collapsed = false, importar = null }) {
             const ImportIcon = importar.icon
             return (
               <div className="mt-1.5 -mx-1.5 -mb-1.5 px-1.5 pt-1.5 pb-1.5 border-t border-line bg-bg-1 rounded-b-xl">
-                <p className="px-2.5 pt-1 pb-1 text-[12px] text-ink-3">¿Tenés el historial del broker?</p>
+                <p className="px-2.5 pt-1 pb-1 text-[12px] text-ink-3">{IMPORTAR_HISTORIAL.pregunta}</p>
                 <button
                   type="button"
                   role="menuitem"
@@ -189,8 +191,8 @@ export default function RegistrarMenu({ collapsed = false, importar = null }) {
                     <ImportIcon size={16} strokeWidth={2} aria-hidden="true" />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[13.5px] font-medium text-ink-0">Importar historial</span>
-                    <span className="block text-[12px] text-ink-3 leading-snug">Subí el archivo de tu broker y se carga todo</span>
+                    <span className="block text-[13.5px] font-medium text-ink-0">{IMPORTAR_HISTORIAL.label}</span>
+                    <span className="block text-[12px] text-ink-3 leading-snug">{IMPORTAR_HISTORIAL.sub}</span>
                   </span>
                 </button>
               </div>

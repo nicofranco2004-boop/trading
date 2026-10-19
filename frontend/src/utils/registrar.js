@@ -22,6 +22,16 @@ export const ACCIONES_REGISTRAR = [
   { id: 'convertir', valor: 'convert',  grupo: 'moneda',    label: 'Movimiento', sub: 'Pasar de pesos a dólares, o al revés', icon: ArrowLeftRight,  tone: 'info' },
 ]
 
+// La franja de abajo del menú de Registrar (compu) y del "+" (celular): subir
+// el historial del broker. No es una carga a mano, por eso va aparte y no en
+// ACCIONES_REGISTRAR. A dónde lleva y quién lo ve sale de utils/navegacion.js
+// (`importar` de menuVisible); acá sólo el texto, uno para los dos menús.
+export const IMPORTAR_HISTORIAL = {
+  pregunta: '¿Tenés el historial del broker?',
+  label: 'Importar historial',
+  sub: 'Subí el archivo de tu broker y se carga todo',
+}
+
 const PARAMETRO = 'action'
 
 // A dónde hay que ir para registrar `id` ('comprar', 'vender', …).

@@ -43,7 +43,9 @@ const PLAN_ASESOR = 'Plan Asesor'
 const TU_PORTFOLIO = 'Tu portfolio'
 // Grupo de la compu → sección del celular, cuando se llaman distinto (por el id
 // del grupo: su nombre cambia adentro de un cliente). Lo que en la compu va
-// suelto (Alertas, Importar) acá va con la cartera.
+// suelto (Alertas) acá va con la cartera. Importar no está acá: vive adentro
+// del "+" de la barra de abajo, como adentro de Registrar en la compu
+// (`enRegistrar` en utils/navegacion.js).
 const SECCION_DE_GRUPO = { cartera: TU_PORTFOLIO }
 // El orden de las secciones es el de los grupos de la compu (GROUPS). Estaba
 // escrito a mano acá: al reordenar el menú lateral, el celular se quedaba con
@@ -56,7 +58,6 @@ const EN_EL_CELULAR = {
   '/dashboard':       { sub: 'Evolución, distribución y de dónde sale la ganancia' },
   '/posiciones':      { sub: 'Tenencias, brokers y objetivos' },
   '/operaciones':     { sub: 'Compras, ventas, depósitos y dividendos' },
-  '/imports':         { label: 'Importar CSV', sub: 'Los archivos que bajás de cada broker' },
   '/alertas':         { sub: 'Resumen diario del mercado y avisos de precio' },
   // En el celular "/" es la pestaña Inicio (arriba el saldo, abajo el
   // mercado): se llama igual acá. En la compu es "Resumen", otra pantalla.
@@ -153,7 +154,7 @@ export default function More() {
     .sort((a, b) => posicion(DEL_PIE, a.to) - posicion(DEL_PIE, b.to))
   const allGroups = [
     ...seccionesDelMenuMas(
-      pantallasVisibles({ user, clientCtx }).filter(p => !delPie.has(p.to)),
+      pantallasVisibles({ user, clientCtx }).filter(p => !delPie.has(p.to) && !p.enRegistrar),
       { atOwnLevel, cliente: nombreDelCliente(clientCtx) }),
     ...(admin.length > 0 ? [{ label: 'Admin', items: admin }] : []),
   ]

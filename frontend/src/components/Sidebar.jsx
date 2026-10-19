@@ -73,14 +73,13 @@ export default function Sidebar() {
   const { clientCtx } = useAdvisorContext()
   // Qué ve cada uno (asesor en su nivel, adentro de un cliente, el resto):
   // la regla vive en utils/navegacion.js, compartida con el buscador ⌘K.
-  const { atOwnLevel, groups: visibleGroups, loose: visibleLoose,
+  const { atOwnLevel, groups: visibleGroups, loose: visibleLoose, importar,
           asesorPropio, clientesDesdeCliente, utilidades } = menuVisible({ user, clientCtx })
   const visibleLeaves = visibleGroups.flatMap(g => g.items)
   // Los «sueltos» ya no son filas: Alertas va de campanita al lado de
   // Registrar e Importar adentro de su menú. Qué se ve sigue saliendo de la
   // lista compartida (el asesor en su nivel no tiene Importar).
   const alertas = visibleLoose.find(i => i.to === '/alertas')
-  const importar = visibleLoose.find(i => i.to === '/imports')
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(LS_KEY) === 'true')
   const [piePlegado, setPiePlegado] = useState(() => localStorage.getItem(LS_PIE) === 'true')
   const [recomOpen, setRecomOpen] = useState(false)

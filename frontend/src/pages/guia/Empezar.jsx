@@ -96,8 +96,9 @@ export default function Empezar() {
 
       <h3>Opción A: Importar CSV (rápido)</h3>
       <p>
-        Si ya operás hace un tiempo, bajá el historial de tu broker en CSV y subílo
-        en <strong>Importes</strong>. Rendi reconoce los formatos de Cocos, IOL,
+        Si ya operás hace un tiempo, bajá el historial de tu broker en CSV y subilo
+        desde <strong>Registrar → Importar historial</strong> (el botón violeta del
+        menú lateral en la compu; el "+" de abajo en el celular). Rendi reconoce los formatos de Cocos, IOL,
         Balanz, Schwab y Binance automáticamente. Mapeamos las columnas, te mostramos
         un preview antes de confirmar, y creamos las posiciones + operaciones de una.
       </p>

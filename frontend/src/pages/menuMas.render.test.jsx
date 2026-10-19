@@ -47,7 +47,7 @@ vi.mock('../components/RegistrarMenu', () => ({
 
 import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
-import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
+import MobileTabBar, { QUICK_ACTIONS, QuickActionsSheet } from '../components/mobile/MobileTabBar'
 import fuenteDeApp from '../App.jsx?raw'
 import { EncabezadoCompacto, encabezadoCompactoVisible } from './PositionsMobile'
 import { accionDelPedido } from '../utils/registrar'
@@ -70,9 +70,14 @@ const menuCompu = (u, c) => {
   expect(arriba[0], 'lo primero del menú lateral es el logo').toBe('/')
   return { html, rutas: [...arriba.slice(1), ...rutas(html.slice(corte))] }
 }
+// Del lado del celular cuenta «Más» y también la hoja del "+" de la barra de
+// abajo: Importar vive ahí (2026-10-19), como adentro de Registrar en la compu.
+// La hoja sólo existe si la barra tiene el "+" (el asesor en su nivel no).
 const menuMas = (u, c) => {
   const html = dibujar(More, u, c)
-  return { html, rutas: rutas(html) }
+  const conMas = dibujar(MobileTabBar, u, c).includes('Abrir acciones rápidas')
+  const hoja = conMas ? rutas(dibujar(() => <QuickActionsSheet onClose={() => {}} />, u, c)) : []
+  return { html, rutas: [...rutas(html), ...hoja] }
 }
 const titulos = (html) => [...html.matchAll(/<h2[^>]*>\s*([^<]*?)\s*<\/h2>/g)].map(m => m[1])
 const ordenadas = (r) => [...new Set(r)].sort()
@@ -299,5 +304,23 @@ describe('decisiones de producto (2026-10-01)', () => {
     expect(encabezadoCompactoVisible(300, 93)).toBe(false)
     expect(encabezadoCompactoVisible(93, 93)).toBe(true)
     expect(encabezadoCompactoVisible(40, 140)).toBe(true)
+  })
+})
+
+describe('Importar historial: en el "+" del celular, no en «Más»', () => {
+  it('usuario común: está en la hoja del "+", con su franja, y «Más» ya no lo lista', () => {
+    usuario = { tier: 'pro' }; cliente = null
+    const hoja = renderToStaticMarkup(<MemoryRouter><QuickActionsSheet onClose={() => {}} /></MemoryRouter>)
+    expect(hoja).toContain('href="/imports"')
+    expect(hoja).toContain('Importar historial')
+    expect(hoja).toContain('¿Tenés el historial del broker?')
+    // Va después de las acciones a mano, aparte.
+    expect(hoja.indexOf('Importar historial')).toBeGreaterThan(hoja.indexOf('Buscar activo'))
+    expect(rutas(dibujar(More, { tier: 'pro' }, null))).not.toContain('/imports')
+  })
+  it('asesor adentro de un cliente: también en el "+"', () => {
+    usuario = { tier: 'advisor' }; cliente = CLIENTE
+    const hoja = renderToStaticMarkup(<MemoryRouter><QuickActionsSheet onClose={() => {}} /></MemoryRouter>)
+    expect(hoja).toContain('href="/imports"')
   })
 })
