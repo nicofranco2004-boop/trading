@@ -169,6 +169,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
                     round(float(item["change_pct"]), 2)
                     if item.get("change_pct") is not None else None
                 ),
+                # Sin variación porque el número es de una rueda vieja: que
+                # el modelo sepa de cuándo es, en vez de leer «sin dato».
+                **({"dato_del": item.get("as_of")} if item.get("atrasado") else {}),
             })
     except Exception:
         indices_list = []

@@ -7,7 +7,7 @@
 // y escribía por su cuenta, y la misma caída se leía "-0,85%" acá y "−0,85%"
 // en la barra del celular.
 
-import { useMarketIndices } from '../../hooks/useMarketIndices'
+import { useMarketIndices, rotuloAtrasado } from '../../hooks/useMarketIndices'
 import { pctVar, pctVarSign, fmtIndexPrice } from '../../utils/format'
 
 export default function IndicesStrip() {
@@ -43,9 +43,15 @@ export default function IndicesStrip() {
             <div className="mt-2 text-[19px] font-semibold text-ink-0 num tabular leading-none">
               {fmtIndexPrice(it.price, it.kind)}
             </div>
-            <div className={`mt-1.5 text-[12.5px] font-semibold tabular num ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-2'}`}>
-              {dir > 0 ? '▲ ' : dir < 0 ? '▼ ' : ''}{pctVar(it.change_pct)}
-            </div>
+            {rotuloAtrasado(it) ? (
+              <div className="mt-1.5 text-[12.5px] text-ink-3" title="Sin datos de la última rueda: es el último valor publicado.">
+                {rotuloAtrasado(it)}
+              </div>
+            ) : (
+              <div className={`mt-1.5 text-[12.5px] font-semibold tabular num ${dir > 0 ? 'text-rendi-pos' : dir < 0 ? 'text-rendi-neg' : 'text-ink-2'}`}>
+                {dir > 0 ? '▲ ' : dir < 0 ? '▼ ' : ''}{pctVar(it.change_pct)}
+              </div>
+            )}
           </div>
         )
       })}

@@ -34,7 +34,7 @@
 // antes. Lo resuelve index.css (`.ticker-caja` / `.ticker-copia`), sin JS.
 
 import { useEffect, useRef, useState } from 'react'
-import { useMarketIndices, conDato } from '../hooks/useMarketIndices'
+import { useMarketIndices, conDato, rotuloAtrasado } from '../hooks/useMarketIndices'
 import { pctVar, pctVarSign, pctColor, fmtIndexPrice } from '../utils/format'
 import FlashValue from './FlashValue'
 import { useFueraDeHorario } from '../hooks/useFueraDeHorario'
@@ -77,13 +77,20 @@ function Cotizacion({ it, fdh }) {
         <span className="text-ink-2 font-medium">{it.label}</span>
         <span className="text-ink-0 tabular">{fmtIndexPrice(it.price, it.kind)}</span>
         {/* Destella verde o rojo cuando un refresco (cada 5 min,
-            useMarketIndices) trae otra variación — la misma pieza que Movers. */}
-        <FlashValue value={it.change_pct} className={`font-semibold tabular px-0.5 ${tono}`}>
-          {dir !== 0 && (
-            <span aria-hidden="true" className="mr-0.5 text-[0.7em]">{dir > 0 ? '▲' : '▼'}</span>
-          )}
-          {pctVar(it.change_pct)}
-        </FlashValue>
+            useMarketIndices) trae otra variación — la misma pieza que Movers.
+            Si el número es de una rueda vieja, en vez del % va «al 16/10». */}
+        {rotuloAtrasado(it) ? (
+          <span className="text-ink-3" title="Sin datos de la última rueda: es el último valor publicado.">
+            {rotuloAtrasado(it)}
+          </span>
+        ) : (
+          <FlashValue value={it.change_pct} className={`font-semibold tabular px-0.5 ${tono}`}>
+            {dir !== 0 && (
+              <span aria-hidden="true" className="mr-0.5 text-[0.7em]">{dir > 0 ? '▲' : '▼'}</span>
+            )}
+            {pctVar(it.change_pct)}
+          </FlashValue>
+        )}
         <FueraDeRueda it={it} fdh={fdh} />
       </span>
     </li>
