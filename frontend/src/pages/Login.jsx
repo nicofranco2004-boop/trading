@@ -6,6 +6,7 @@ import { enableDemoMode } from '../utils/demo'
 import { track } from '../utils/track'
 import { trackEvent } from '../utils/analytics'
 import { trackMetaEvent } from '../utils/metaPixel'
+import { origenParaElRegistro, olvidarOrigen } from '../utils/origen'
 import RendiLogo from '../components/RendiLogo'
 import PageMeta from '../components/PageMeta'
 
@@ -124,7 +125,11 @@ export default function Login() {
     setLoading(true)
     try {
       const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
-      const body = mode === 'login' ? { email: cleanEmail, password } : { email: cleanEmail, password, name: name.trim() }
+      // El registro lleva de qué post vino la persona, si entró por un link con
+      // código (ver utils/origen.js). Sin código no se manda nada.
+      const body = mode === 'login'
+        ? { email: cleanEmail, password }
+        : { email: cleanEmail, password, name: name.trim(), ...(origenParaElRegistro() || {}) }
       let res
       // Timeout de 20s: si Railway está en cold start y tarda demasiado, en vez
       // de dejar el botón en "Cargando…" indefinidamente damos un mensaje claro
@@ -207,6 +212,9 @@ export default function Login() {
         }
         throw new Error(friendly)
       }
+      // La cuenta ya quedó creada con su origen: se olvida, para que una
+      // segunda cuenta desde el mismo navegador no herede el mismo post.
+      if (mode === 'register') olvidarOrigen()
       // Registro con verificación pendiente → llevar a /verify-email
       if (data.needs_verification) {
         // Señal de mid-funnel para Meta/GA4: el signup se completó (falta el

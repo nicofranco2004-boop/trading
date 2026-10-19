@@ -8,6 +8,7 @@ import {
 } from '../utils/envioEnTandas'
 import StatCard from '../components/StatCard'
 import UsoDeRendi from '../components/admin/UsoDeRendi'
+import RegistrosPorOrigen from '../components/admin/RegistrosPorOrigen'
 import { PageSkeleton } from '../components/Skeleton'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../components/Toast'
@@ -310,6 +311,8 @@ export default function Admin() {
             setQuery(email)
             document.getElementById('tabla-usuarios')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
           }} />
+
+          <RegistrosPorOrigen />
 
           {/* ── Embudo de activación ─────────────────────────────────────── */}
           {stats.activation && (

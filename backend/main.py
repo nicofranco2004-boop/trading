@@ -7,7 +7,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, field_validator, Field
-from typing import Optional, List
+from typing import Any, Optional, List
 import sqlite3, os, secrets, time, hashlib, hmac, json, threading, asyncio
 from contextlib import contextmanager
 import dberrors
@@ -3068,6 +3068,16 @@ def init_db():
         # terminan mostrándose "varias veces" aunque el código diga una sola.
         if user_cols_after and 'aviso_precios_oct26_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_precios_oct26_at TEXT")
+        # De qué post o campaña vino quien se registró (`?d=x-20261019` o
+        # `utm_*`, ver frontend/src/utils/origen.js) y cuándo abrió ese link.
+        # NULL = entró sin código (directo, buscador, o una cuenta de antes de
+        # que esto existiera). La escribe SÓLO /api/auth/register; la cuenta el
+        # panel de /admin (`_registros_por_origen`). Sin índice: el panel lee los
+        # registros de 30 días y agrupa en memoria de la base.
+        if user_cols_after and 'origen' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN origen TEXT")
+        if user_cols_after and 'origen_visto_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN origen_visto_at TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -4000,6 +4010,56 @@ class RegisterIn(BaseModel):
             raise ValueError('La contraseña debe tener al menos 10 caracteres')
         return v
 
+    # De qué post vino (`?d=x-20261019` o `utm_*`, ver frontend/src/utils/origen.js)
+    # y cuándo abrió ese link. Los dos son opcionales y NUNCA rechazan un
+    # registro: un código raro se limpia o se descarta, nunca da 422. Perder
+    # una cuenta por un dato de medición sería medir al revés.
+    origen: Optional[Any] = None
+    origen_visto: Optional[Any] = None
+
+    @field_validator('origen', mode='before')
+    @classmethod
+    def origen_limpio(cls, v):
+        return _normalizar_origen(v)
+
+    @field_validator('origen_visto', mode='before')
+    @classmethod
+    def origen_visto_limpio(cls, v):
+        return _normalizar_origen_visto(v)
+
+
+_ORIGEN_LARGO_MAX = 60
+
+
+def _normalizar_origen(v) -> Optional[str]:
+    """El código de origen limpio, con la MISMA regla que el navegador
+    (`normalizarCodigo` en utils/origen.js): minúsculas, sólo letras, números y
+    `- _ . /`, hasta 60. None si no queda nada o no es texto."""
+    import re as _re
+    if not isinstance(v, str):
+        return None
+    limpio = _re.sub(r"\s+", "-", v.strip().lower())
+    limpio = _re.sub(r"[^a-z0-9._/-]", "", limpio)[:_ORIGEN_LARGO_MAX]
+    return limpio or None
+
+
+def _normalizar_origen_visto(v) -> Optional[str]:
+    """Cuándo abrió el link, en el formato de `users.created_at` (UTC,
+    'YYYY-MM-DD HH:MM:SS'). None si no se entiende o es del futuro (un reloj
+    del teléfono mal puesto no puede fechar un clic después del registro)."""
+    from datetime import datetime as _dt, timezone as _tz
+    if not isinstance(v, str) or len(v) > 40:
+        return None
+    try:
+        t = _dt.fromisoformat(v.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(_tz.utc).replace(tzinfo=None)
+    if t > _dt.utcnow() + timedelta(minutes=5):
+        return None
+    return t.strftime("%Y-%m-%d %H:%M:%S")
+
 
 class LoginIn(BaseModel):
     email: str = Field(..., max_length=254)
@@ -4281,6 +4341,17 @@ def register(data: RegisterIn, request: Request, response: Response,
                      email_verified),
                 )
             uid = cur.lastrowid
+
+            # De qué post vino. Aparte del INSERT y con red, por el mismo motivo
+            # que `requires_plan`: anotar el origen no puede tumbar un registro.
+            if data.origen:
+                try:
+                    conn.execute(
+                        "UPDATE users SET origen=?, origen_visto_at=? WHERE id=?",
+                        (data.origen, data.origen_visto, uid),
+                    )
+                except Exception as ex:
+                    log.error("No se pudo anotar el origen del registro uid=%s: %s", uid, ex)
 
             # SOLO el admin hereda los datos legacy con user_id=0 (datos iniciales del owner).
             # Esto cierra el agujero: si la DB tiene datos huérfanos, solo el dueño los puede absorber.
@@ -25969,11 +26040,16 @@ def admin_backup_trigger(uid: int = Depends(get_admin_user)):
 # Usuarios REALES: verificados, no-admin, sin cuentas de test/internas — mismo
 # filtro que /api/stats/public para que los números cierren. Lo usan el embudo
 # de activación y el conteo de ingresos; si cambia, cambia para los dos.
-_SQL_USUARIO_REAL = ("email_verified=1 AND is_admin=0 "
-                     "AND email NOT LIKE '%@rendi.test' "
-                     "AND email NOT LIKE '%@rendi.finance' "
-                     "AND email NOT LIKE 'test@%' "
-                     "AND email NOT LIKE '%+test%'")
+#
+# `_SQL_CUENTA_DE_AFUERA` es la misma cuenta SIN exigir el mail confirmado: la
+# usa el conteo de registros por origen, donde "se registró y no confirmó" es
+# justamente uno de los datos que se quieren ver.
+_SQL_CUENTA_DE_AFUERA = ("is_admin=0 "
+                         "AND email NOT LIKE '%@rendi.test' "
+                         "AND email NOT LIKE '%@rendi.finance' "
+                         "AND email NOT LIKE 'test@%' "
+                         "AND email NOT LIKE '%+test%'")
+_SQL_USUARIO_REAL = "email_verified=1 AND " + _SQL_CUENTA_DE_AFUERA
 
 
 def _sql_quienes_cuentan(internos: bool = False) -> str:
@@ -26342,6 +26418,71 @@ def admin_uso(desde: Optional[str] = None, hasta: Optional[str] = None,
                           "operaciones": _mediana([ops.get(u, 0) for u in inactivos])},
         },
     }
+
+
+# ¿Cargó su cartera? Las mismas tres cosas que mira `tiene_datos` en el panel de
+# pruebas (billing/trial.py): una posición que no sea efectivo, una operación o
+# una importación confirmada. Quien importó un archivo que sólo traía movimientos
+# de caja también cargó: sus filas no son posiciones, pero pasó el importador.
+_SQL_CARGO_CARTERA = (
+    "(EXISTS (SELECT 1 FROM positions p WHERE p.user_id=u.id AND COALESCE(p.is_cash,0)=0)"
+    " OR EXISTS (SELECT 1 FROM operations o WHERE o.user_id=u.id)"
+    " OR EXISTS (SELECT 1 FROM import_batches ib WHERE ib.user_id=u.id AND ib.status='confirmed'))"
+)
+
+
+def _registros_por_origen(conn, desde, hasta) -> dict:
+    """Cuántas cuentas se crearon entre dos días argentinos (los dos
+    incluidos), agrupadas por el post o campaña de donde vinieron
+    (`users.origen`, ver /api/auth/register). Por cada origen: cuántos se
+    registraron, cuántos confirmaron el mail y cuántos cargaron su cartera.
+
+    Cuenta registros, no usuarios confirmados: el que creó la cuenta y no
+    confirmó el mail también vino por ese post, y ver cuántos se caen ahí es
+    parte de lo que se mide. Afuera: admins, cuentas internas o de prueba
+    (`_SQL_CUENTA_DE_AFUERA`) y los clientes que crea un asesor (no se
+    registraron: los dio de alta otro)."""
+    ini, fin = _rango_utc(desde, hasta)
+    filas = conn.execute(
+        f"""SELECT COALESCE(u.origen, '') AS origen,
+                  COUNT(*) AS registros,
+                  SUM(CASE WHEN u.email_verified=1 THEN 1 ELSE 0 END) AS confirmaron,
+                  SUM(CASE WHEN {_SQL_CARGO_CARTERA} THEN 1 ELSE 0 END) AS cargaron
+             FROM users u
+            WHERE u.created_at >= ? AND u.created_at < ?
+              AND u.managed_by IS NULL
+              AND {_SQL_CUENTA_DE_AFUERA}
+            GROUP BY COALESCE(u.origen, '')""",
+        (ini, fin),
+    ).fetchall()
+    salida = [{
+        "origen": r["origen"] or None,
+        "registros": int(r["registros"] or 0),
+        "confirmaron": int(r["confirmaron"] or 0),
+        "cargaron": int(r["cargaron"] or 0),
+    } for r in filas]
+    # Los que tienen código primero (más registros arriba); "sin código" al final.
+    salida.sort(key=lambda f: (f["origen"] is None, -f["registros"], f["origen"] or ""))
+    con_codigo = [f for f in salida if f["origen"]]
+    return {
+        "desde": desde.isoformat(),
+        "hasta": hasta.isoformat(),
+        "registros": sum(f["registros"] for f in salida),
+        "con_codigo": sum(f["registros"] for f in con_codigo),
+        "origenes": salida,
+    }
+
+
+@app.get("/api/admin/origenes")
+def admin_origenes(uid: int = Depends(get_admin_user)):
+    """Registros por origen (qué post los trajo), últimos 7 y 30 días
+    argentinos contando hoy."""
+    hoy = _hoy_art_date()
+    with db_abierta() as conn:
+        return {
+            "7d": _registros_por_origen(conn, hoy - timedelta(days=6), hoy),
+            "30d": _registros_por_origen(conn, hoy - timedelta(days=29), hoy),
+        }
 
 
 @app.get("/api/admin/stats")

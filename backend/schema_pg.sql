@@ -1982,6 +1982,8 @@ CREATE TABLE IF NOT EXISTS users (
   requires_plan bigint DEFAULT 0,
   quota_plus_legacy bigint DEFAULT 0,
   aviso_precios_oct26_at text,
+  origen text,
+  origen_visto_at text,
   aviso_vencimiento_de text,
   UNIQUE (email)
 );
@@ -2045,6 +2047,11 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_plan bigint DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_plus_legacy bigint DEFAULT 0;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS aviso_precios_oct26_at text;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS origen text;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS origen_visto_at text;
+
 ALTER TABLE users ADD COLUMN IF NOT EXISTS aviso_vencimiento_de text;
 
 CREATE TABLE IF NOT EXISTS uso_diario (
