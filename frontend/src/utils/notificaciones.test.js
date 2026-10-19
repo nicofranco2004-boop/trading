@@ -33,9 +33,21 @@ describe('textoSinPush', () => {
   })
 
   it('bloqueadas: dice dónde tocar en SU dispositivo', () => {
-    expect(textoSinPush('bloqueadas', 'iphone').cuerpo).toContain('Ajustes del iPhone')
+    expect(textoSinPush('bloqueadas', 'iphone').cuerpo).toContain('la app Ajustes → Notificaciones → Rendi')
     expect(textoSinPush('bloqueadas', 'android').cuerpo).toContain('Configuración de sitios')
     expect(textoSinPush('bloqueadas', 'otro').cuerpo).toContain('a la izquierda de la dirección')
+    // Safari de Mac no tiene ese ícono; Chrome de Mac sí (y su descripción también dice «Safari»).
+    const SAFARI = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
+    const CHROME = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
+    expect(textoSinPush('bloqueadas', 'otro', SAFARI).cuerpo).toContain('menú de Safari → Ajustes → Sitios web')
+    expect(textoSinPush('bloqueadas', 'otro', CHROME).cuerpo).toContain('a la izquierda de la dirección')
+  })
+
+  it('no promete el mail a secas: una alerta «sólo notificación» no manda mail', () => {
+    for (const [m, p] of [['iphone-viejo', 'iphone'], ['navegador', 'otro'], ['navegador', 'android']]) {
+      expect(textoSinPush(m, p).cuerpo).not.toContain('tus alertas te llegan por mail')
+      expect(textoSinPush(m, p).cuerpo).toContain('también por mail')
+    }
   })
 
   it('sin motivo no hay cartel', () => expect(textoSinPush(null, 'otro')).toBe(null))

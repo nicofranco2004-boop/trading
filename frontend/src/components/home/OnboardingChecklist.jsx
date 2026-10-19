@@ -9,9 +9,12 @@
 //
 //   Para tener Rendi a mano
 //   1. Agregá Rendi a tu celular — se abrió alguna vez desde el ícono del inicio
-//      (servidor: /api/primeros-pasos.app_instalada, que sale del uso que anota
-//      utils/uso.js) o está abierta así ahora mismo.
-//   2. Activá las notificaciones — algún dispositivo suscripto (servidor).
+//      de un CELULAR (servidor: users.app_instalada_at, que escribe
+//      avisarSiEstaInstalada en utils/instalarApp.js) o está abierta así ahora.
+//      Rendi instalada en la COMPU no cuenta: el paso es tenerla en el bolsillo.
+//   2. Activá las notificaciones — en el celular: ESTE teléfono suscripto (si
+//      las activó en la compu, en el celular se le siguen sugiriendo); en la
+//      compu: algún dispositivo suscripto (servidor).
 //   3. Armá tu primera alerta    — al menos una alerta (servidor).
 //
 //   Para tener tu cartera bien (los de antes)
@@ -22,7 +25,7 @@
 //   6. Probá Mervall-E AI      — flag localStorage 'rendi_ai_discovered'
 //   7. Quiz de perfil inversor — investor_profile != null
 //
-// Los pasos 1 y 2 son SUGERENCIAS, no obligaciones: tienen «Ahora no», que los
+// Los tres son SUGERENCIAS, no obligaciones: tienen «Ahora no», que los
 // manda al final como «para después» (con «Retomar») y cuenta como resuelto para
 // que la lista pueda terminarse sin hacerlos. Pasados DIAS_PARA_VOLVER días el
 // paso vuelve solo a su lugar, como sugerencia otra vez (pedido de Nico: «que
@@ -66,7 +69,7 @@ import { isAIDiscovered, AI_DISCOVERY_KEY } from '../ai/AIDiscoveryBanner'
 import { isPositionsDiscovered, POSITIONS_DISCOVERED_KEY } from '../../utils/positionsDiscovered'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { usePushNotifications } from '../../hooks/usePushNotifications'
-import { yaInstalada, instalarAhora, useHayInstalador } from '../../utils/instalarApp'
+import { yaInstalada, esCelular, plataformaDe, instalarAhora, useHayInstalador } from '../../utils/instalarApp'
 import { MENSAJE_FALLA, textoSinPush } from '../../utils/notificaciones'
 import InstalarAppModal, { precargarFotosDeInstalar } from '../InstalarAppModal'
 import AvisoNotificaciones from '../AvisoNotificaciones'
@@ -103,7 +106,12 @@ export default function OnboardingChecklist() {
   const toast = useToast()
   const push = usePushNotifications()
   const hayInstalador = useHayInstalador()
-  const [instaladaAca] = useState(() => yaInstalada())
+  // Abierta desde el ícono de ESTE celular (la compu instalada no cuenta).
+  const [instaladaAca] = useState(() => yaInstalada()
+    && esCelular(typeof navigator === 'undefined' ? 'otro' : plataformaDe(navigator)))
+  // Aceptó el «Instalar» de un toque (Android): el ícono ya está en su inicio,
+  // aunque la marca del servidor llega recién cuando la abra desde ahí.
+  const [recienInstalada, setRecienInstalada] = useState(false)
   const [state, setState] = useState({
     hasImported: null,  // hizo al menos un import (batch) → Paso 1 del setup
     // Paso 2 = DESCUBRIMIENTO: vio la pantalla de Posiciones (no carga real, ni
@@ -197,14 +205,15 @@ export default function OnboardingChecklist() {
 
   // Fetch inicial + cada vez que location cambia a / (vuelve a Home) o cuando
   // refreshTick se incrementa por un evento externo.
+  // En la cuenta de un cliente (asesor) la lista no se muestra: tampoco se pide nada.
   useEffect(() => {
-    if (dismissed) return
+    if (dismissed || clientCtx) return
     const cleanup = fetchState()
     return cleanup
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dismissed, location.pathname, refreshTick])
+  }, [dismissed, clientCtx, location.pathname, refreshTick])
 
-  const instalada = instaladaAca || !!state.pasos.app_instalada
+  const instalada = instaladaAca || recienInstalada || !!state.pasos.app_instalada
   // Las fotos del paso a paso se piden por adelantado (en Safari tardan si se
   // piden recién al abrir el cartel — ver InstalarAppModal).
   useEffect(() => {
@@ -212,6 +221,7 @@ export default function OnboardingChecklist() {
   }, [state.loaded, instalada, dismissed])
 
   const enCompu = push.plataforma === 'otro'
+  const enCelular = esCelular(push.plataforma)
   const items = [
     {
       id: 'instalar',
@@ -231,7 +241,8 @@ export default function OnboardingChecklist() {
         if (hayInstalador) {
           const r = await instalarAhora()
           track('instalar_app_un_toque', { resultado: r, origen: 'lista' })
-          if (r === 'accepted' || r === 'dismissed') return
+          if (r === 'accepted') { setRecienInstalada(true); return }
+          if (r === 'dismissed') return
         }
         setInstalarOpen(true)
       },
@@ -241,7 +252,10 @@ export default function OnboardingChecklist() {
       grupo: 'a_mano',
       seVaAlHacerse: true,
       omitible: true,
-      done: state.pasos.dispositivos_push > 0 || push.subscribed,
+      done: enCelular ? push.subscribed : (state.pasos.dispositivos_push > 0 || push.subscribed),
+      // En el celular, hasta saber si ESTE teléfono está suscripto no se
+      // muestra: si no, aparecería y se iría un instante después.
+      oculto: enCelular && !push.revisado,
       Icon: Bell,
       title: 'Activá las notificaciones',
       desc: 'Te avisamos al momento cuando se mueve lo que seguís, aunque no tengas Rendi abierta.',
@@ -252,6 +266,10 @@ export default function OnboardingChecklist() {
       id: 'alerta',
       grupo: 'a_mano',
       seVaAlHacerse: true,
+      // También sugerencia: sin «Ahora no», quien ya usaba Rendi sólo podía
+      // sacarse la lista con la X, que es para siempre y se lleva puesta la
+      // sugerencia de instalar (auditoría 2026-10-19).
+      omitible: true,
       done: state.pasos.alertas > 0,
       Icon: BellRing,
       title: 'Armá tu primera alerta',
@@ -317,7 +335,9 @@ export default function OnboardingChecklist() {
     const cuando = Number(omitidos[it.id])
     return !it.done && !!it.omitible && cuando > 0 && ahora - cuando < MS_PARA_VOLVER
   }
-  const resueltos = items.filter((it) => it.done || esOmitido(it)).length
+  // Lo que todavía no se puede mostrar cuenta como resuelto por ahora: si no,
+  // la lista quedaría abierta y vacía mientras el celular revisa.
+  const resueltos = items.filter((it) => it.done || esOmitido(it) || it.oculto).length
 
   // Track view solo en el primer load para no inflar GA con duplicados.
   useEffect(() => {
@@ -329,6 +349,7 @@ export default function OnboardingChecklist() {
     // Acá no se puede (iPhone sin Rendi en el inicio, navegador sin soporte,
     // permiso bloqueado): en vez de un error, el cartel con qué hacer.
     if (push.motivo) { setVerAvisoPush(true); return }
+    if (push.loading) return
     try {
       await push.subscribe()
       track('checklist_push_activado')
@@ -337,7 +358,10 @@ export default function OnboardingChecklist() {
       toast.push(enCompu
         ? 'Listo: te llegan a esta compu. Para el celular, activalas también desde ahí.'
         : 'Notificaciones activadas', { type: 'success', duration: enCompu ? 7000 : 4000 })
-      if (!state.pasos.resumen_activo) setOfrecerResumen(true)
+      // El resumen habla de LO QUE TIENE: sin cartera cargada no sale
+      // (market_brief: SIN_ACTIVOS). Ofrecerlo antes de importar era prometer
+      // algo que no llega.
+      if (!state.pasos.resumen_activo && state.hasImported) setOfrecerResumen(true)
     } catch (ex) {
       // Un motivo con cartel (bloqueadas, o uno que cambió desde que se dibujó): el cartel.
       if (textoSinPush(ex?.motivo, push.plataforma)) setVerAvisoPush(true)
@@ -428,7 +452,8 @@ export default function OnboardingChecklist() {
 
       {/* Progress mini */}
       <div className="mb-4">
-        <div className="h-1 bg-bg-2 rounded-full overflow-hidden">
+        <div className="h-1 bg-bg-2 rounded-full overflow-hidden" role="progressbar"
+          aria-label="Pasos listos" aria-valuemin={0} aria-valuemax={items.length} aria-valuenow={doneCount}>
           <div
             className="h-full bg-data-violet transition-all duration-500"
             style={{ width: `${(doneCount / items.length) * 100}%` }}
@@ -459,7 +484,7 @@ export default function OnboardingChecklist() {
 
       {/* Items, por grupo */}
       {GRUPOS.map((g) => {
-        const delGrupo = items.filter((it) => it.grupo === g.id && !esOmitido(it)
+        const delGrupo = items.filter((it) => it.grupo === g.id && !esOmitido(it) && !it.oculto
           && !(it.done && it.seVaAlHacerse))
         if (!delGrupo.length) return null
         return (
@@ -488,7 +513,7 @@ export default function OnboardingChecklist() {
             <li key={item.id} className="flex items-center gap-2 text-xs text-ink-3">
               <Circle size={12} strokeWidth={1.5} className="flex-shrink-0" aria-hidden="true" />
               <span className="flex-1 min-w-0 truncate">{item.title} · para después</span>
-              <button type="button" onClick={() => retomar(item)}
+              <button type="button" onClick={() => retomar(item)} aria-label={`Retomar: ${item.title}`}
                 className="text-data-violet font-medium hover:underline flex-shrink-0">
                 Retomar
               </button>
@@ -559,7 +584,7 @@ function Paso({ item, onClick, onOmitir }) {
 
       {/* «Ahora no»: los pasos que son sugerencia se pueden dejar para después */}
       {!isDone && onOmitir && (
-        <button type="button" onClick={onOmitir}
+        <button type="button" onClick={onOmitir} aria-label={`Ahora no: ${item.title}`}
           className="flex-shrink-0 px-3 py-1.5 sm:py-0 text-right sm:text-center text-[11px] text-ink-3 hover:text-ink-1 border-t sm:border-t-0 sm:border-l border-line/60 transition-colors">
           Ahora no
         </button>

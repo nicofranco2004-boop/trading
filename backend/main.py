@@ -3082,6 +3082,12 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN origen TEXT")
         if user_cols_after and 'origen_visto_at' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN origen_visto_at TEXT")
+        # Primera vez que abrió Rendi desde el ícono del inicio de un CELULAR
+        # (no la compu). La escribe POST /api/primeros-pasos/instalada; la lee la
+        # lista de primeros pasos. Columna propia y no `uso_diario`: aquello se
+        # poda a los 13 meses y sólo se manda si la persona tocó la pantalla.
+        if user_cols_after and 'app_instalada_at' not in user_cols_after:
+            conn.execute("ALTER TABLE users ADD COLUMN app_instalada_at TEXT")
         if user_cols_after and 'aviso_vencimiento_de' not in user_cols_after:
             conn.execute("ALTER TABLE users ADD COLUMN aviso_vencimiento_de TEXT")
             conn.commit()
@@ -47153,20 +47159,13 @@ def push_status(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
-# El evento que manda el frontend (utils/uso.js) cuando Rendi se abre desde el
-# ícono del inicio. El prefijo `vista:` es el de usoCatalogo.js (tipo 'vista'):
-# así el panel de uso no lo cuenta como un botón tocado.
-_USO_APP_INSTALADA = "vista:app_abierta_instalada"
-
-
 @app.get("/api/primeros-pasos")
 def primeros_pasos(uid: int = Depends(get_current_user)):
     """Lo que la lista de primeros pasos de Inicio no puede saber desde el
     navegador en el que está abierta:
 
-    - app_instalada: alguna vez abrió Rendi desde el ícono del celular (vale
-      también mirando desde la compu). Sale del uso guardado, que dura 13 meses:
-      quien la sigue usando desde el ícono lo vuelve a anotar cada día.
+    - app_instalada: alguna vez abrió Rendi desde el ícono del inicio de un
+      celular (`users.app_instalada_at`). Vale también mirando desde la compu.
     - dispositivos_push: en cuántos dispositivos activó las notificaciones.
     - alertas: cuántas alertas armó.
     - resumen_activo: si prendió el resumen diario del mercado.
@@ -47177,19 +47176,32 @@ def primeros_pasos(uid: int = Depends(get_current_user)):
     conn = get_db()
     try:
         import market_brief
-        instalada = conn.execute(
-            "SELECT 1 FROM uso_diario WHERE user_id = ? AND evento = ? LIMIT 1",
-            (uid, _USO_APP_INSTALADA)).fetchone() is not None
+        fila = conn.execute("SELECT app_instalada_at FROM users WHERE id = ?", (uid,)).fetchone()
         alertas = conn.execute(
             "SELECT COUNT(*) FROM alerts WHERE user_id = ?", (uid,)).fetchone()[0]
         return {
-            "app_instalada": instalada,
+            "app_instalada": bool(fila and fila["app_instalada_at"]),
             "dispositivos_push": _contar_dispositivos_push(conn, uid),
             "alertas": alertas,
             "resumen_activo": market_brief.brief_enabled(conn, uid),
         }
     finally:
         conn.close()
+
+
+@app.post("/api/primeros-pasos/instalada", status_code=204)
+def marcar_app_instalada(request: Request, uid: int = Depends(get_current_user)):
+    """El celular avisa que Rendi está abierta desde el ícono del inicio
+    (utils/instalarApp.js → `avisarSiEstaInstalada`, al arrancar la sesión, sin
+    esperar a que la persona toque nada). Se guarda la PRIMERA vez y no se
+    pisa: repetirlo no cambia nada."""
+    _check_rate_limit(request, max_calls=20, window_seconds=3600, suffix=f"instalada:{uid}")
+    with db_abierta() as conn:
+        conn.execute(
+            "UPDATE users SET app_instalada_at = COALESCE(app_instalada_at, ?) WHERE id = ?",
+            (datetime.utcnow().isoformat(timespec="seconds"), uid))
+        conn.commit()
+    return Response(status_code=204)
 
 
 def _send_push_to_user(uid: int, payload: dict) -> int:

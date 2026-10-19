@@ -12,7 +12,7 @@ import { textoSinPush } from '../utils/notificaciones'
 
 export default function AvisoNotificaciones({ motivo, plataforma, origen, className = '' }) {
   const [instalarOpen, setInstalarOpen] = useState(false)
-  const texto = textoSinPush(motivo, plataforma)
+  const texto = textoSinPush(motivo, plataforma, typeof navigator === 'undefined' ? '' : navigator.userAgent)
   // Si el cartel ofrece el paso a paso, las fotos se piden ya: en Safari tardan
   // en aparecer si se piden recién al abrirlo (ver InstalarAppModal).
   useEffect(() => { if (texto?.boton) precargarFotosDeInstalar() }, [texto?.boton])

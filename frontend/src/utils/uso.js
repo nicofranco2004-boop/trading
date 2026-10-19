@@ -22,7 +22,7 @@
 // abierta, que no pasa por el login.
 
 import { NO_SE_CUENTAN, EVENTOS, claveDeUso, pantallaDe } from './usoCatalogo'
-import { yaInstalada } from './instalarApp'
+import { yaInstalada, esCelular, plataformaDe } from './instalarApp'
 
 const CADA_MS = 30_000
 const SENALES = ['pointerdown', 'keydown', 'wheel', 'touchstart']
@@ -70,10 +70,11 @@ function marcarAbierta() {
   if (ultimoDiaAbierta === hoy) return
   ultimoDiaAbierta = hoy
   sumar('app_abierta')
-  // Abierta desde el ícono del inicio (no desde el navegador). Además de
-  // contarse en /admin, es lo que tilda «Agregá Rendi a tu celular» en la lista
-  // de primeros pasos — también en la compu, que sola no tiene cómo saberlo.
-  if (yaInstalada()) sumar(claveDeUso('app_abierta_instalada'))
+  // Abierta desde el ícono del inicio de un CELULAR (no la compu instalada):
+  // para /admin, cuánta gente la usa como app. Lo que tilda el paso de la lista
+  // NO es esto (esto sólo viaja si la persona toca algo): es
+  // avisarSiEstaInstalada en utils/instalarApp.js.
+  if (yaInstalada() && esCelular(plataformaDe(window.navigator || {}))) sumar(claveDeUso('app_abierta_instalada'))
 }
 
 export function mandar({ alCerrar = false } = {}) {

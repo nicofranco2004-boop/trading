@@ -14,7 +14,7 @@
 //
 // API:
 //   const {
-//     supported, permission, subscribed, loading, error,
+//     supported, permission, subscribed, revisado, loading, error,
 //     plataforma, motivo,
 //     subscribe, unsubscribe, sendTest,
 //   } = usePushNotifications()
@@ -25,7 +25,7 @@
 // de `subscribe()` salen en castellano y llevan `.motivo`: nunca el mensaje
 // crudo del navegador (que llega en inglés y sin decir qué hacer).
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../utils/api'
 import { plataformaDe, yaInstalada } from '../utils/instalarApp'
 import {
@@ -88,24 +88,43 @@ export function usePushNotifications() {
   const [supported] = useState(hayPush)
   const [permission, setPermission] = useState(() => (hayPush() ? Notification.permission : 'default'))
   const [subscribed, setSubscribed] = useState(false)
+  // ¿Ya se miró si ESTE dispositivo está suscripto? Hasta entonces `subscribed`
+  // es un «no sé», no un «no» (la lista del celular espera esto para no
+  // mostrar el paso y sacarlo un instante después).
+  const [revisado, setRevisado] = useState(() => !hayPush())
   const [loading, setLoading] = useState(false)
+  const enCurso = useRef(null)
   const [error, setError] = useState(null)
   const [plataforma] = useState(() => (typeof navigator === 'undefined' ? 'otro' : plataformaDe(navigator)))
   const [instalada] = useState(() => yaInstalada())
   const motivo = motivoSinPush({ supported, permission, plataforma, instalada })
 
-  // Estado inicial: ¿este dispositivo ya tiene la suscripción?
+  // ¿Este dispositivo tiene la suscripción, y qué dice el permiso? Al montar y
+  // cada vez que la persona VUELVE a la pantalla: si fue a Ajustes a
+  // destrabarlas, al volver tiene que dejar de decir «bloqueadas» sin cerrar
+  // la app (en el iPhone instalada no hay botón de recargar).
   useEffect(() => {
     if (!supported) return
-
-    // Si ya hay registración, ver si tiene sub
-    navigator.serviceWorker.getRegistration(SW_PATH).then(async (reg) => {
-      if (!reg) return
-      try {
-        const sub = await reg.pushManager.getSubscription()
-        setSubscribed(!!sub)
-      } catch { /* ignore */ }
-    })
+    let vivo = true
+    function revisar() {
+      try { setPermission(Notification.permission) } catch { /* ignore */ }
+      Promise.resolve(navigator.serviceWorker.getRegistration(SW_PATH))
+        .then(async (reg) => {
+          const sub = reg ? await reg.pushManager.getSubscription() : null
+          if (vivo) setSubscribed(!!sub)
+        })
+        .catch(() => { /* ignore */ })
+        .finally(() => { if (vivo) setRevisado(true) })
+    }
+    function alVolver() { if (document.visibilityState !== 'hidden') revisar() }
+    revisar()
+    document.addEventListener('visibilitychange', alVolver)
+    window.addEventListener('focus', alVolver)
+    return () => {
+      vivo = false
+      document.removeEventListener('visibilitychange', alVolver)
+      window.removeEventListener('focus', alVolver)
+    }
   }, [supported])
 
   // Registra el SW si no está, devuelve la registración.
@@ -119,7 +138,15 @@ export function usePushNotifications() {
     return reg
   }
 
-  const subscribe = useCallback(async () => {
+  // Un doble toque en «Activar» no arranca dos activaciones: el segundo recibe
+  // la misma respuesta que el primero.
+  const subscribe = useCallback(() => {
+    if (!enCurso.current) enCurso.current = suscribir().finally(() => { enCurso.current = null })
+    return enCurso.current
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supported, plataforma, instalada])
+
+  async function suscribir() {
     setLoading(true)
     setError(null)
     try {
@@ -164,7 +191,7 @@ export function usePushNotifications() {
     } finally {
       setLoading(false)
     }
-  }, [supported, plataforma, instalada])
+  }
 
   const unsubscribe = useCallback(async () => {
     setLoading(true)
@@ -196,5 +223,5 @@ export function usePushNotifications() {
     }
   }, [])
 
-  return { supported, permission, subscribed, loading, error, plataforma, motivo, subscribe, unsubscribe, sendTest }
+  return { supported, permission, subscribed, revisado, loading, error, plataforma, motivo, subscribe, unsubscribe, sendTest }
 }

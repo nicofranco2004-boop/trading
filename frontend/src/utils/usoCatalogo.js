@@ -143,8 +143,6 @@ export const EVENTOS = {
 
   // ── Interno ──
   app_abierta: { label: 'Abrió la app', donde: '—' },
-  // Lo lee también el servidor (/api/primeros-pasos) para tildar el paso de la
-  // lista: si se renombra, cambiar _USO_APP_INSTALADA en main.py.
   app_abierta_instalada: { label: 'Abrió Rendi desde el ícono del celular', donde: '—', tipo: 'vista' },
 }
 

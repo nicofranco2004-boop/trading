@@ -143,18 +143,23 @@ export default function AlertsManager({ plan, prefill }) {
         : { direction: form.direction, threshold: thr, currency: form.currency }),
     }
     setBusy(true)
+    // Si eligió push/ambos y este dispositivo no las tiene, el permiso se pide
+    // YA, en el mismo toque: Safari del iPhone (y Firefox) no muestran el pedido
+    // si sale después de esperar al servidor. La respuesta se mira cuando la
+    // alerta quedó creada; antes ni se miraba y la persona creía que el aviso
+    // le iba a llegar al celular.
+    const quierePush = (form.channel === 'push' || form.channel === 'both') && push && !push.subscribed && !push.motivo
+    const pedidoPush = quierePush ? push.subscribe() : null
+    pedidoPush?.catch(() => {})   // se atiende abajo; esto evita el «rechazo sin atender» si falla create
     try {
       const res = await create(payload)
       setShowForm(false)
       // Ticker que no resolvió precio (typo / símbolo inexistente) → avisamos.
       setWarnSym(res && res.resolved === false && payload.symbol ? payload.symbol : null)
       setForm(EMPTY_FORM)
-      // Si eligió push/ambos y no dio permiso todavía, lo invitamos. Antes el
-      // pedido iba sin esperar la respuesta: si salía mal, nadie se enteraba y
-      // la persona creía que el aviso le iba a llegar al celular.
-      if ((form.channel === 'push' || form.channel === 'both') && push && !push.subscribed && !push.motivo) {
+      if (pedidoPush) {
         setNotaPush(null)
-        push.subscribe().catch((ex) => {
+        pedidoPush.catch((ex) => {
           // 'bloqueadas' ya se explica con el cartel de abajo (el permiso cambió).
           if (ex?.motivo === 'bloqueadas') return
           setNotaPush(form.channel === 'both'

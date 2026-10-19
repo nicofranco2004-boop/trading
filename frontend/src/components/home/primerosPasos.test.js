@@ -23,12 +23,14 @@ vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn(), useLocation: ()
 
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
 const MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36'
 
 let pasosDelServidor
+let importo
 function servidor() {
   api.get.mockImplementation(async (url) => {
     if (url === '/auth/investor-profile') return {}
-    if (url === '/imports') return []
+    if (url === '/imports') return importo ? [{ id: 1 }] : []
     if (url === '/primeros-pasos') return pasosDelServidor
     if (url === '/push/vapid-public-key') return { public_key: 'BEl62iUYgUivxIkv69yViEuiBIa' }
     throw new Error(`GET inesperado ${url}`)
@@ -39,7 +41,7 @@ function servidor() {
 
 // Un teléfono o una compu. `conPush` arma lo que un navegador con
 // notificaciones trae (service worker + PushManager + Notification).
-function dispositivo({ ua, conPush }) {
+function dispositivo({ ua, conPush, instalada = false, permiso = 'default' }) {
   const nav = { userAgent: ua, maxTouchPoints: ua === IPHONE ? 5 : 0, language: 'es-AR' }
   if (conPush) {
     const sub = { endpoint: 'https://push.example/abc', toJSON: () => ({ endpoint: 'https://push.example/abc', keys: { p256dh: 'p', auth: 'a' } }) }
@@ -48,9 +50,10 @@ function dispositivo({ ua, conPush }) {
   }
   vi.stubGlobal('navigator', nav)
   const { local } = instalarNavegadorMinimo()
-  window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
+  // `instalada` = abierta desde el ícono (sin las barras del navegador).
+  window.matchMedia = (q) => ({ matches: instalada && /standalone/.test(q), addEventListener() {}, removeEventListener() {} })
   if (conPush) {
-    const Notification = { permission: 'default', requestPermission: vi.fn(async () => { Notification.permission = 'granted'; return 'granted' }) }
+    const Notification = { permission: permiso, requestPermission: vi.fn(async () => { Notification.permission = 'granted'; return 'granted' }) }
     window.PushManager = class {}
     window.Notification = Notification
     vi.stubGlobal('Notification', Notification)
@@ -66,7 +69,9 @@ async function montarLista() {
 let montado
 beforeEach(() => {
   vi.resetModules()
+  vi.clearAllMocks()   // las llamadas al servidor no se arrastran de una prueba a otra
   pasosDelServidor = { app_instalada: false, dispositivos_push: 0, alertas: 0, resumen_activo: false }
+  importo = false
   servidor()
 })
 afterEach(async () => {
@@ -177,13 +182,14 @@ describe('primeros pasos: tener Rendi a mano', () => {
 describe('primeros pasos: activar desde la compu', () => {
   it('«Activar» suscribe este dispositivo y ofrece el resumen; «Sí, mandámelo» lo prende', async () => {
     dispositivo({ ua: MAC, conPush: true })
+    importo = true
     montado = await montarLista()
     await tocar('Activar')
     expect(Notification.requestPermission).toHaveBeenCalledTimes(1)    // lo pidió porque la persona tocó
     expect(api.post).toHaveBeenCalledWith('/push/subscribe', expect.objectContaining({ endpoint: 'https://push.example/abc' }))
     let t = texto(montado.contenedor)
     expect(t).toContain('¿Te mandamos también el resumen del mercado?')
-    expect(t).toContain('1 de 7 listos')
+    expect(t).toContain('2 de 7 listos')                     // importó + notificaciones
     expect(t).not.toContain('Activá las notificaciones')     // hecho → se fue
     await tocar('Sí, mandámelo')
     expect(api.patch).toHaveBeenCalledWith('/market-brief/prefs', { enabled: true })
@@ -191,9 +197,102 @@ describe('primeros pasos: activar desde la compu', () => {
     expect(t).not.toContain('¿Te mandamos también')
   })
 
+  it('sin cartera cargada no se ofrece el resumen (no le llegaría: habla de lo que tiene)', async () => {
+    dispositivo({ ua: MAC, conPush: true })
+    montado = await montarLista()
+    await tocar('Activar')
+    expect(api.post).toHaveBeenCalledWith('/push/subscribe', expect.anything())
+    expect(texto(montado.contenedor)).not.toContain('¿Te mandamos también el resumen')
+  })
+
   it('al montar no pide permiso solo: sólo cuando la persona toca', async () => {
     dispositivo({ ua: MAC, conPush: true })
     montado = await montarLista()
     expect(Notification.requestPermission).not.toHaveBeenCalled()
+  })
+})
+
+describe('auditoría 2026-10-19: celular ≠ compu', () => {
+  it('en la compu el aviso «se puede instalar» del navegador no ofrece instalar (instalaría en la compu)', async () => {
+    dispositivo({ ua: MAC, conPush: false })
+    const { escucharInstalador } = await import('../../utils/instalarApp')
+    escucharInstalador(window)
+    window.dispatchEvent(Object.assign(new Event('beforeinstallprompt'), { prompt: vi.fn(), userChoice: Promise.resolve({ outcome: 'accepted' }) }))
+    montado = await montarLista()
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Agregá Rendi a tu celular')
+    expect(t).toContain('Ver cómo')
+    expect(buscarBoton(montado.contenedor, 'Instalar')).toBe(null)
+  })
+
+  it('en Android, el mismo aviso sí da «Instalar» en un toque, y al aceptar el paso se va', async () => {
+    dispositivo({ ua: ANDROID, conPush: false })
+    const { escucharInstalador } = await import('../../utils/instalarApp')
+    escucharInstalador(window)
+    window.dispatchEvent(Object.assign(new Event('beforeinstallprompt'), { prompt: vi.fn(async () => {}), userChoice: Promise.resolve({ outcome: 'accepted' }) }))
+    montado = await montarLista()
+    await tocar('Instalar')
+    expect(texto(montado.contenedor)).not.toContain('Agregá Rendi a tu celular')
+  })
+
+  it('Rendi instalada en la COMPU no tilda «en tu celular» ni le avisa al servidor', async () => {
+    dispositivo({ ua: MAC, conPush: false, instalada: true })
+    const { avisarSiEstaInstalada } = await import('../../utils/instalarApp')
+    expect(avisarSiEstaInstalada(window)).toBe(false)
+    montado = await montarLista()
+    expect(texto(montado.contenedor)).toContain('Agregá Rendi a tu celular')
+    expect(api.post).not.toHaveBeenCalledWith('/primeros-pasos/instalada', expect.anything())
+  })
+
+  it('abierta desde el ícono del iPhone: le avisa al servidor una vez, sin esperar un toque', async () => {
+    dispositivo({ ua: IPHONE, conPush: false, instalada: true })
+    const { avisarSiEstaInstalada } = await import('../../utils/instalarApp')
+    expect(avisarSiEstaInstalada(window)).toBe(true)
+    expect(avisarSiEstaInstalada(window)).toBe(false)          // la segunda no repite
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(api.post).toHaveBeenCalledWith('/primeros-pasos/instalada', {})
+  })
+
+  it('activó en la compu → en el celular se le siguen sugiriendo (cuenta ESTE teléfono)', async () => {
+    pasosDelServidor = { app_instalada: true, dispositivos_push: 1, alertas: 0, resumen_activo: false }
+    dispositivo({ ua: ANDROID, conPush: true })
+    montado = await montarLista()
+    expect(texto(montado.contenedor)).toContain('Activá las notificaciones')
+    await montado.desmontar()
+    // En la compu, con el mismo servidor, ya está hecho.
+    dispositivo({ ua: MAC, conPush: true })
+    montado = await montarLista()
+    expect(texto(montado.contenedor)).not.toContain('Activá las notificaciones')
+  })
+
+  it('doble toque en «Activar» pide el permiso una sola vez', async () => {
+    dispositivo({ ua: MAC, conPush: true })
+    montado = await montarLista()
+    const boton = buscarBoton(montado.contenedor, 'Activar')
+    await enActo(async () => { clic(montado.contenedor, boton); clic(montado.contenedor, boton) })
+    expect(Notification.requestPermission).toHaveBeenCalledTimes(1)
+    expect(api.post.mock.calls.filter(([u]) => u === '/push/subscribe')).toHaveLength(1)
+  })
+
+  it('las destrabó en Ajustes y volvió: deja de decir «bloqueadas» sin recargar', async () => {
+    dispositivo({ ua: MAC, conPush: true, permiso: 'denied' })
+    montado = await montarLista()
+    await tocar('Activar')
+    expect(texto(montado.contenedor)).toContain('Las notificaciones están bloqueadas')
+    Notification.permission = 'default'
+    await enActo(async () => { window.dispatchEvent(new Event('focus')) })
+    expect(texto(montado.contenedor)).not.toContain('Las notificaciones están bloqueadas')
+  })
+
+  it('la alerta también se puede dejar para después', async () => {
+    dispositivo({ ua: IPHONE, conPush: false })
+    montado = await montarLista()
+    const boton = buscarBoton(montado.contenedor, 'Ahora no')
+    expect(boton).not.toBe(null)
+    // Tres «Ahora no»: instalar, notificaciones y alerta.
+    let n = 0
+    const pila = [montado.contenedor]
+    while (pila.length) { const x = pila.shift(); if (x.nodeName === 'BUTTON' && texto(x) === 'Ahora no') n++; pila.push(...(x.childNodes || [])) }
+    expect(n).toBe(3)
   })
 })

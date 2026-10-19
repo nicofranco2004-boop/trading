@@ -2,17 +2,15 @@
 saber desde el navegador en el que está abierta (2026-10-19).
 
 Todo por HTTP y con la sesión del usuario, como lo hace la app:
-- «Agregá Rendi a tu celular» se tilda cuando el navegador mandó el uso
-  `vista:app_abierta_instalada` (utils/uso.js lo suma al abrir Rendi desde el
-  ícono). Vale mirando desde la compu.
+- «Agregá Rendi a tu celular» se tilda con `users.app_instalada_at`, que
+  escribe POST /api/primeros-pasos/instalada cuando el celular abre Rendi desde
+  el ícono. Vale mirando desde la compu.
 - «Activá las notificaciones»: algún dispositivo suscripto.
 - «Armá tu primera alerta»: alguna alerta.
 - resumen_activo: para no ofrecer el resumen a quien ya lo tiene.
 
 Corre con: cd backend && python3 -m pytest tests/test_primeros_pasos.py
 """
-import os
-import re
 import unittest
 import uuid
 from unittest.mock import patch
@@ -56,14 +54,25 @@ class PrimerosPasos(unittest.TestCase):
             "app_instalada": False, "dispositivos_push": 0, "alertas": 0, "resumen_activo": False})
 
     def test_abrir_desde_el_icono_tilda_instalar(self):
-        # Abrir la app desde el navegador NO cuenta.
-        self.client.post("/api/uso/eventos", json={"eventos": {"app_abierta": 1}}, headers=self.h)
-        self.assertFalse(self.pasos()["app_instalada"])
-        # Desde el ícono, sí (el nombre exacto que manda utils/uso.js).
-        r = self.client.post("/api/uso/eventos",
-                             json={"eventos": {"vista:app_abierta_instalada": 1}}, headers=self.h)
+        """El celular avisa con POST /api/primeros-pasos/instalada (utils/instalarApp.js,
+        al arrancar la sesión). Guarda la PRIMERA vez y repetirlo no la pisa."""
+        r = self.client.post("/api/primeros-pasos/instalada", json={}, headers=self.h)
         self.assertEqual(r.status_code, 204, r.text)
         self.assertTrue(self.pasos()["app_instalada"])
+        primera = self._q("SELECT app_instalada_at FROM users WHERE id=?", (self.uid,))[0][0]
+        self.assertTrue(primera)
+        self.client.post("/api/primeros-pasos/instalada", json={}, headers=self.h)
+        self.assertEqual(self._q("SELECT app_instalada_at FROM users WHERE id=?", (self.uid,))[0][0], primera)
+
+    def test_la_medicion_de_uso_ya_no_decide_el_paso(self):
+        """Antes salía de uso_diario: se poda a los 13 meses y sólo viaja si la
+        persona tocó la pantalla (auditoría 2026-10-19). Ahora es otra cosa."""
+        self.client.post("/api/uso/eventos",
+                         json={"eventos": {"vista:app_abierta_instalada": 1}}, headers=self.h)
+        self.assertFalse(self.pasos()["app_instalada"])
+
+    def test_instalada_sin_sesion_no_escribe(self):
+        self.assertEqual(self.client.post("/api/primeros-pasos/instalada", json={}).status_code, 401)
 
     def test_suscribir_un_dispositivo_tilda_notificaciones(self):
         r = self.client.post("/api/push/subscribe", headers=self.h, json={
@@ -91,17 +100,12 @@ class PrimerosPasos(unittest.TestCase):
     def test_sin_sesion_no_responde(self):
         self.assertEqual(self.client.get("/api/primeros-pasos").status_code, 401)
 
-    def test_el_nombre_coincide_con_el_del_navegador(self):
-        """El servidor busca `_USO_APP_INSTALADA`; el navegador lo arma con el
-        catálogo (tipo 'vista' → prefijo `vista:`). Si uno se renombra sin el
-        otro, el paso no se tilda nunca y ninguna otra prueba se entera."""
-        cat = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "src", "utils", "usoCatalogo.js")
-        with open(cat, encoding="utf-8") as f:
-            src = f.read()
-        m = re.search(r"^\s*app_abierta_instalada:\s*\{[^}]*\}", src, re.M)
-        self.assertIsNotNone(m, "falta app_abierta_instalada en usoCatalogo.js")
-        self.assertIn("tipo: 'vista'", m.group(0))
-        self.assertEqual(main._USO_APP_INSTALADA, "vista:app_abierta_instalada")
+    def _q(self, sql, params=()):
+        conn = main.get_db()
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

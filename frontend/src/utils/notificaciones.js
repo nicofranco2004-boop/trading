@@ -29,45 +29,58 @@ export function motivoSinPush({ supported, permission, plataforma, instalada }) 
 // volver a preguntar: lo tiene que cambiar ella, y para eso necesita saber
 // dónde tocar en SU teléfono o SU compu.
 const DESBLOQUEAR = {
-  iphone: 'Abrí los Ajustes del iPhone → Notificaciones → Rendi → prendé «Permitir notificaciones».',
+  iphone: 'Abrí la app Ajustes → Notificaciones → Rendi → prendé «Permitir notificaciones».',
   android: 'En Chrome, tocá los tres puntitos → Configuración → Configuración de sitios → Notificaciones → rendi.finance → Permitir. Si Rendi está en tu inicio: mantené apretado el ícono → Información de la app → Notificaciones.',
   otro: 'Tocá el ícono que está a la izquierda de la dirección rendi.finance (un candado o unas rayitas) → Notificaciones → Permitir, y recargá la página.',
+  // Safari de Mac no tiene ese ícono: se cambia desde su menú.
+  safari: 'En el menú de Safari → Ajustes → Sitios web → Notificaciones → rendi.finance → Permitir, y recargá la página.',
 }
+
+/** Safari de Mac (no Chrome, Edge ni Firefox, que también dicen «Safari» en su descripción). */
+export function esSafariDeMac(userAgent = '') {
+  const ua = String(userAgent || '')
+  return /macintosh/i.test(ua) && /safari/i.test(ua) && !/chrome|chromium|crios|edg|firefox|fxios|opr/i.test(ua)
+}
+
+// Una alerta «sólo notificación» no manda mail (alerts_engine): prometer el
+// mail a secas era falso para esas.
+const MIENTRAS_TANTO = 'Mientras tanto, las alertas que elegiste recibir también por mail te llegan ahí.'
 
 /**
  * Qué mostrar para cada motivo. `boton` = abre el paso a paso para agregar
  * Rendi al celular (null si no aplica).
  */
-export function textoSinPush(motivo, plataforma) {
+export function textoSinPush(motivo, plataforma, userAgent = '') {
   switch (motivo) {
     case 'iphone-sin-instalar':
       return {
         titulo: 'Primero, agregá Rendi a tu inicio',
-        cuerpo: 'En iPhone, Apple sólo deja mandar notificaciones a las apps que están en la pantalla de inicio. Son 4 toques y no hay que descargar nada. Después abrí Rendi desde el ícono y tocá «Activar» de nuevo.',
+        cuerpo: 'En iPhone, Apple sólo deja mandar notificaciones a las apps que están en la pantalla de inicio. Son unos pocos toques y no hay que descargar nada. Después abrí Rendi desde el ícono y tocá «Activar» de nuevo. Si ya la agregaste, abrila desde el ícono: desde Safari no se puede.',
         boton: 'Ver cómo agregarla',
       }
     case 'iphone-viejo':
       return {
         titulo: 'Tu iPhone necesita actualizarse',
-        cuerpo: 'Las notificaciones llegan a iPhone desde iOS 16.4. Se actualiza en Ajustes → General → Actualización de software. Mientras tanto, tus alertas te llegan por mail.',
+        cuerpo: `Las notificaciones llegan a iPhone desde iOS 16.4. Se actualiza en Ajustes → General → Actualización de software. ${MIENTRAS_TANTO}`,
         boton: null,
       }
     case 'navegador':
       return plataforma === 'android'
         ? {
             titulo: 'Este navegador no deja recibir notificaciones',
-            cuerpo: 'Abrí Rendi en Chrome y activalas desde ahí. Mientras tanto, tus alertas te llegan por mail.',
+            cuerpo: `Abrí Rendi en Chrome y activalas desde ahí. ${MIENTRAS_TANTO}`,
             boton: null,
           }
         : {
             titulo: 'Este navegador no deja recibir notificaciones',
-            cuerpo: 'Probá desde Chrome, Edge o Safari, o agregá Rendi a tu celular y activalas ahí. Mientras tanto, tus alertas te llegan por mail.',
+            cuerpo: `Probá desde Chrome, Edge o Safari, o agregá Rendi a tu celular y activalas ahí. ${MIENTRAS_TANTO}`,
             boton: 'Ver cómo agregarla',
           }
     case 'bloqueadas':
       return {
         titulo: 'Las notificaciones están bloqueadas',
-        cuerpo: `En algún momento le dijiste que no a Rendi, y el navegador no nos deja volver a preguntarte. Para cambiarlo: ${DESBLOQUEAR[plataforma] || DESBLOQUEAR.otro}`,
+        cuerpo: `En algún momento le dijiste que no a Rendi, y el navegador no nos deja volver a preguntarte. Para cambiarlo: ${
+          plataforma === 'otro' && esSafariDeMac(userAgent) ? DESBLOQUEAR.safari : (DESBLOQUEAR[plataforma] || DESBLOQUEAR.otro)}`,
         boton: null,
       }
     default:
@@ -78,4 +91,6 @@ export function textoSinPush(motivo, plataforma) {
 // Lo que se le dice cuando el intento de activar no salió y no es ninguno de
 // los motivos de arriba (esos se muestran como cartel, no como mensaje suelto).
 export const MENSAJE_CERRO_EL_PEDIDO = 'No se activaron. Cuando quieras, tocá «Activar» de nuevo.'
-export const MENSAJE_FALLA = 'No pudimos activarlas ahora. Probá de nuevo en un rato.'
+// Brave, una ventana privada de Firefox: el navegador dice que sí y después
+// falla. Reintentar ahí no sirve, por eso se ofrece otro camino.
+export const MENSAJE_FALLA = 'No pudimos activarlas en este navegador. Probá de nuevo en un rato, o desde Chrome o el celular.'
