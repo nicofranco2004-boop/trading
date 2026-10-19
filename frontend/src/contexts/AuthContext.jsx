@@ -219,7 +219,7 @@ export function AuthProvider({ children }) {
     activarUso(false)
     if (quien) {
       activarUso(true)
-      avisarSiEstaInstalada()
+      avisarSiEstaInstalada(quien)
     }
   }, [user ? quienEs(user) : null])  // eslint-disable-line react-hooks/exhaustive-deps
 

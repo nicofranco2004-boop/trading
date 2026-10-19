@@ -82,6 +82,10 @@ export async function instalarAhora() {
   try {
     await e.prompt()
     const { outcome } = await e.userChoice
+    // Aceptó: el ícono ya está en su inicio. Se avisa ya (lo usan la lista y el
+    // paso a paso de «Descargar app»): si no, el paso volvía a aparecer en Chrome
+    // y en la compu hasta que la abriera desde el ícono.
+    if (outcome === 'accepted') avisarAlServidor(null)
     return outcome
   } catch {
     return 'error'
@@ -102,13 +106,32 @@ export function useHayInstalador() {
 // Abierta desde el ícono del inicio de un celular → se le avisa al servidor
 // (users.app_instalada_at), que tilda «Agregá Rendi a tu celular» en todos
 // lados, también en la compu. Va apenas hay sesión, sin esperar a que toque
-// nada (la medición de uso sí espera, y perdía a quien sólo entra a mirar). Una
-// vez por carga de página; el servidor guarda la primera y no la pisa.
-let avisado = false
-export function avisarSiEstaInstalada(win = typeof window !== 'undefined' ? window : undefined) {
-  if (avisado || !win || !yaInstalada(win)) return false
-  if (!esCelular(plataformaDe(win.navigator || {}))) return false
-  avisado = true
-  api.post('/primeros-pasos/instalada', {}).catch(() => { avisado = false })
+// nada (la medición de uso sí espera, y perdía a quien sólo entra a mirar).
+//
+// UNA vez por persona y dispositivo, recordado en el propio teléfono: el
+// servidor guarda la primera fecha y no la pisa, así que repetirlo en cada
+// apertura sólo ocupaba el turno de escritura de la base (auditoría 2026-10-19).
+// Si el aviso falla, no se recuerda: se reintenta la próxima vez que la abra.
+const CLAVE_AVISADA = 'rendi_instalada_avisada'
+let enVuelo = false
+
+function yaAvisado(quien) {
+  try { return localStorage.getItem(CLAVE_AVISADA) === String(quien) } catch { return false }
+}
+
+function avisarAlServidor(quien) {
+  if (enVuelo || (quien != null && yaAvisado(quien))) return false
+  enVuelo = true
+  api.post('/primeros-pasos/instalada', {})
+    .then(() => { try { if (quien != null) localStorage.setItem(CLAVE_AVISADA, String(quien)) } catch { /* sin almacenamiento: se repite, no pasa nada */ } })
+    .catch(() => {})
+    .finally(() => { enVuelo = false })
   return true
+}
+
+/** Al arrancar la sesión (AuthContext). `quien` = la persona, para no mezclar cuentas en un mismo teléfono. */
+export function avisarSiEstaInstalada(quien, win = typeof window !== 'undefined' ? window : undefined) {
+  if (!win || !yaInstalada(win)) return false
+  if (!esCelular(plataformaDe(win.navigator || {}))) return false
+  return avisarAlServidor(quien)
 }

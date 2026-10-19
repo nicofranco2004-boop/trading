@@ -170,15 +170,25 @@ export function usePushNotifications() {
 
       // Crear o reusar sub
       let sub = await reg.pushManager.getSubscription()
+      let nueva = false
       if (!sub) {
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(public_key),
         })
+        nueva = true
       }
 
       const payload = subscriptionToPayload(sub)
-      await api.post('/push/subscribe', payload)
+      try {
+        await api.post('/push/subscribe', payload)
+      } catch (ex) {
+        // El navegador quedó suscripto pero el servidor no se enteró (corte de
+        // red): se deshace. Si no, al volver a la pantalla el teléfono se daba
+        // por activado y nunca le llegaba nada (auditoría 2026-10-19).
+        if (nueva) { try { await sub.unsubscribe() } catch { /* ya se pierde igual */ } }
+        throw ex
+      }
       setSubscribed(true)
     } catch (ex) {
       // Lo que no es uno de nuestros motivos (el navegador falló, el servidor

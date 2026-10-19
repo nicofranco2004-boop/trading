@@ -47189,7 +47189,7 @@ def primeros_pasos(uid: int = Depends(get_current_user)):
         conn.close()
 
 
-@app.post("/api/primeros-pasos/instalada", status_code=204)
+@app.post("/api/primeros-pasos/instalada")
 def marcar_app_instalada(request: Request, uid: int = Depends(get_current_user)):
     """El celular avisa que Rendi está abierta desde el ícono del inicio
     (utils/instalarApp.js → `avisarSiEstaInstalada`, al arrancar la sesión, sin
@@ -47201,7 +47201,8 @@ def marcar_app_instalada(request: Request, uid: int = Depends(get_current_user))
             "UPDATE users SET app_instalada_at = COALESCE(app_instalada_at, ?) WHERE id = ?",
             (datetime.utcnow().isoformat(timespec="seconds"), uid))
         conn.commit()
-    return Response(status_code=204)
+    # JSON y no 204: utils/api.js lee siempre el cuerpo, y uno vacío lo daba por error.
+    return {"ok": True}
 
 
 def _send_push_to_user(uid: int, payload: dict) -> int:

@@ -57,7 +57,8 @@ class PrimerosPasos(unittest.TestCase):
         """El celular avisa con POST /api/primeros-pasos/instalada (utils/instalarApp.js,
         al arrancar la sesión). Guarda la PRIMERA vez y repetirlo no la pisa."""
         r = self.client.post("/api/primeros-pasos/instalada", json={}, headers=self.h)
-        self.assertEqual(r.status_code, 204, r.text)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"ok": True})   # utils/api.js lee el cuerpo como JSON
         self.assertTrue(self.pasos()["app_instalada"])
         primera = self._q("SELECT app_instalada_at FROM users WHERE id=?", (self.uid,))[0][0]
         self.assertTrue(primera)

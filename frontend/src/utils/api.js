@@ -201,6 +201,9 @@ const NO_TOCAN_LA_CARTERA = [
   '/ai', '/fundamentals', '/market-brief', '/alerts', '/push', '/watchlist', '/goals',
   '/diagnostics', '/feedback', '/auth', '/plan', '/billing', '/me/advisor',
   '/monthly/sync-unrealized', '/snapshots',
+  // «Abrí Rendi desde el ícono» (utils/instalarApp.js): sin esto, cada apertura
+  // desde el inicio del celular hacía releer la cartera.
+  '/primeros-pasos',
 ]
 export function escrituraTocaLaCartera(path) {
   const p = String(path || '').split('?')[0]

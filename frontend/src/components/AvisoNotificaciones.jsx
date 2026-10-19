@@ -10,9 +10,9 @@ import { BellOff, Smartphone } from 'lucide-react'
 import InstalarAppModal, { precargarFotosDeInstalar } from './InstalarAppModal'
 import { textoSinPush } from '../utils/notificaciones'
 
-export default function AvisoNotificaciones({ motivo, plataforma, origen, className = '' }) {
+export default function AvisoNotificaciones({ motivo, plataforma, origen, yaLaAgrego = false, className = '' }) {
   const [instalarOpen, setInstalarOpen] = useState(false)
-  const texto = textoSinPush(motivo, plataforma, typeof navigator === 'undefined' ? '' : navigator.userAgent)
+  const texto = textoSinPush(motivo, plataforma, typeof navigator === 'undefined' ? '' : navigator.userAgent, { yaLaAgrego })
   // Si el cartel ofrece el paso a paso, las fotos se piden ya: en Safari tardan
   // en aparecer si se piden recién al abrirlo (ver InstalarAppModal).
   useEffect(() => { if (texto?.boton) precargarFotosDeInstalar() }, [texto?.boton])

@@ -252,7 +252,12 @@ export default function OnboardingChecklist() {
       grupo: 'a_mano',
       seVaAlHacerse: true,
       omitible: true,
-      done: enCelular ? push.subscribed : (state.pasos.dispositivos_push > 0 || push.subscribed),
+      // Excepción: iPhone en Safari con Rendi ya en el inicio y notificaciones
+      // activas (entró desde un link de un mail). Safari nunca puede tenerlas:
+      // pedírselas ahí era pedirle algo que ya hizo.
+      done: enCelular
+        ? push.subscribed || (push.motivo === 'iphone-sin-instalar' && !!state.pasos.app_instalada && state.pasos.dispositivos_push > 0)
+        : (state.pasos.dispositivos_push > 0 || push.subscribed),
       // En el celular, hasta saber si ESTE teléfono está suscripto no se
       // muestra: si no, aparecería y se iría un instante después.
       oculto: enCelular && !push.revisado,
@@ -436,7 +441,9 @@ export default function OnboardingChecklist() {
               Tu setup en Rendi
             </h2>
             <p className="text-xs sm:text-sm text-ink-2 leading-relaxed">
-              {doneCount} de {items.length} listos · faltan {items.length - doneCount} para sacarle todo el jugo.
+              {doneCount === items.length
+                ? 'Todo listo.'
+                : `${doneCount} de ${items.length} listos · faltan ${items.length - doneCount} para sacarle todo el jugo.`}
             </p>
           </div>
         </div>
@@ -487,6 +494,19 @@ export default function OnboardingChecklist() {
         const delGrupo = items.filter((it) => it.grupo === g.id && !esOmitido(it) && !it.oculto
           && !(it.done && it.seVaAlHacerse))
         if (!delGrupo.length) return null
+        // Un grupo TODO hecho se resume en una línea. Quien ya había completado
+        // los 4 pasos de la cartera, al publicarse esto, veía 4 filas tachadas
+        // arriba del saldo (en el celular, la primera pantalla entera) sólo
+        // para mostrarle los pasos nuevos (auditoría 2026-10-19).
+        const todos = items.filter((it) => it.grupo === g.id)
+        if (todos.every((it) => it.done)) {
+          return (
+            <p key={g.id} className="flex items-center gap-2 text-xs text-ink-2 mb-3 last:mb-0 px-0.5">
+              <CheckCircle2 size={14} strokeWidth={2} className="text-rendi-pos flex-shrink-0" aria-hidden="true" />
+              {g.titulo}: {todos.length} de {todos.length} listos
+            </p>
+          )
+        }
         return (
           <div key={g.id} className="mb-3 last:mb-0">
             <h3 className="text-xs text-ink-2 font-medium mb-2 px-0.5">{g.titulo}</h3>
@@ -497,7 +517,7 @@ export default function OnboardingChecklist() {
                     onOmitir={item.omitible ? () => omitir(item) : null} />
                   {item.id === 'push' && !item.done && verAvisoPush && push.motivo && (
                     <AvisoNotificaciones motivo={push.motivo} plataforma={push.plataforma}
-                      origen="lista" className="mt-2" />
+                      origen="lista" yaLaAgrego={instalada} className="mt-2" />
                   )}
                 </li>
               ))}

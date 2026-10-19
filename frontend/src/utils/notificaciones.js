@@ -50,9 +50,19 @@ const MIENTRAS_TANTO = 'Mientras tanto, las alertas que elegiste recibir tambié
  * Qué mostrar para cada motivo. `boton` = abre el paso a paso para agregar
  * Rendi al celular (null si no aplica).
  */
-export function textoSinPush(motivo, plataforma, userAgent = '') {
+export function textoSinPush(motivo, plataforma, userAgent = '', { yaLaAgrego = false } = {}) {
   switch (motivo) {
     case 'iphone-sin-instalar':
+      // El servidor sabe que ya la abrió desde el ícono (users.app_instalada_at):
+      // entró por Safari (p. ej. desde un link de un mail). No hay nada que
+      // agregar: hay que abrirla desde el ícono.
+      if (yaLaAgrego) {
+        return {
+          titulo: 'Abrí Rendi desde el ícono de tu inicio',
+          cuerpo: 'Ya la tenés agregada. Desde Safari Apple no deja recibir notificaciones: abrila desde el ícono y tocá «Activar» ahí.',
+          boton: null,
+        }
+      }
       return {
         titulo: 'Primero, agregá Rendi a tu inicio',
         cuerpo: 'En iPhone, Apple sólo deja mandar notificaciones a las apps que están en la pantalla de inicio. Son unos pocos toques y no hay que descargar nada. Después abrí Rendi desde el ícono y tocá «Activar» de nuevo. Si ya la agregaste, abrila desde el ícono: desde Safari no se puede.',

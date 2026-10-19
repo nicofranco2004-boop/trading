@@ -233,24 +233,51 @@ describe('auditoría 2026-10-19: celular ≠ compu', () => {
     montado = await montarLista()
     await tocar('Instalar')
     expect(texto(montado.contenedor)).not.toContain('Agregá Rendi a tu celular')
+    // Y el servidor se entera ya: si no, en Chrome y en la compu el paso volvía.
+    expect(api.post).toHaveBeenCalledWith('/primeros-pasos/instalada', {})
   })
 
   it('Rendi instalada en la COMPU no tilda «en tu celular» ni le avisa al servidor', async () => {
     dispositivo({ ua: MAC, conPush: false, instalada: true })
     const { avisarSiEstaInstalada } = await import('../../utils/instalarApp')
-    expect(avisarSiEstaInstalada(window)).toBe(false)
+    expect(avisarSiEstaInstalada(7, window)).toBe(false)
     montado = await montarLista()
     expect(texto(montado.contenedor)).toContain('Agregá Rendi a tu celular')
     expect(api.post).not.toHaveBeenCalledWith('/primeros-pasos/instalada', expect.anything())
   })
 
-  it('abierta desde el ícono del iPhone: le avisa al servidor una vez, sin esperar un toque', async () => {
-    dispositivo({ ua: IPHONE, conPush: false, instalada: true })
-    const { avisarSiEstaInstalada } = await import('../../utils/instalarApp')
-    expect(avisarSiEstaInstalada(window)).toBe(true)
-    expect(avisarSiEstaInstalada(window)).toBe(false)          // la segunda no repite
+  it('abierta desde el ícono del iPhone: le avisa al servidor UNA vez por persona y teléfono, sin esperar un toque', async () => {
+    const { local } = dispositivo({ ua: IPHONE, conPush: false, instalada: true })
+    let { avisarSiEstaInstalada } = await import('../../utils/instalarApp')
+    expect(avisarSiEstaInstalada(7, window)).toBe(true)
+    expect(avisarSiEstaInstalada(7, window)).toBe(false)       // mientras va, no repite
+    await enActo(async () => {})
     expect(api.post).toHaveBeenCalledTimes(1)
     expect(api.post).toHaveBeenCalledWith('/primeros-pasos/instalada', {})
+    expect(local.get('rendi_instalada_avisada')).toBe('7')
+    // Otra apertura (otra carga de la página): ya está avisado, no escribe de nuevo.
+    vi.resetModules()
+    ;({ avisarSiEstaInstalada } = await import('../../utils/instalarApp'))
+    expect(avisarSiEstaInstalada(7, window)).toBe(false)
+    // Otra cuenta en el mismo teléfono: sí.
+    expect(avisarSiEstaInstalada(8, window)).toBe(true)
+    expect(api.post).toHaveBeenCalledTimes(2)
+  })
+
+  it('si el aviso de «instalada» falla, no se recuerda: se reintenta la próxima vez', async () => {
+    const { local } = dispositivo({ ua: IPHONE, conPush: false, instalada: true })
+    api.post.mockRejectedValueOnce(new Error('sin red'))
+    const { avisarSiEstaInstalada } = await import('../../utils/instalarApp')
+    expect(avisarSiEstaInstalada(7, window)).toBe(true)
+    await enActo(async () => {})
+    expect(local.get('rendi_instalada_avisada')).toBeUndefined()
+    expect(avisarSiEstaInstalada(7, window)).toBe(true)
+  })
+
+  it('el aviso de «instalada» no hace releer la cartera', async () => {
+    dispositivo({ ua: IPHONE, conPush: false })
+    const { escrituraTocaLaCartera } = await vi.importActual('../../utils/api')
+    expect(escrituraTocaLaCartera('/primeros-pasos/instalada')).toBe(false)
   })
 
   it('activó en la compu → en el celular se le siguen sugiriendo (cuenta ESTE teléfono)', async () => {
@@ -294,5 +321,75 @@ describe('auditoría 2026-10-19: celular ≠ compu', () => {
     const pila = [montado.contenedor]
     while (pila.length) { const x = pila.shift(); if (x.nodeName === 'BUTTON' && texto(x) === 'Ahora no') n++; pila.push(...(x.childNodes || [])) }
     expect(n).toBe(3)
+  })
+})
+
+describe('auditoría 2 (2026-10-19)', () => {
+  it('si el servidor no recibe la suscripción, se deshace (el teléfono no se cree activado)', async () => {
+    dispositivo({ ua: ANDROID, conPush: true })
+    api.post.mockImplementation(async (url) => { if (url === '/push/subscribe') throw new Error('sin red'); return { ok: true } })
+    montado = await montarLista()
+    const reg = await navigator.serviceWorker.register()
+    const sub = await reg.pushManager.subscribe()
+    sub.unsubscribe = vi.fn(async () => true)
+    reg.pushManager.subscribe.mockResolvedValue(sub)
+    await tocar('Activar')
+    expect(sub.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(texto(montado.contenedor)).toContain('Activá las notificaciones')   // sigue pendiente
+  })
+
+  it('iPhone en Safari con Rendi ya en el inicio y notificaciones activas: no se las vuelve a pedir', async () => {
+    pasosDelServidor = { app_instalada: true, dispositivos_push: 1, alertas: 0, resumen_activo: false }
+    dispositivo({ ua: IPHONE, conPush: false })
+    montado = await montarLista()
+    expect(texto(montado.contenedor)).not.toContain('Activá las notificaciones')
+  })
+
+  it('iPhone en Safari con Rendi ya en el inicio pero sin notificaciones: le dice que la abra desde el ícono', async () => {
+    pasosDelServidor = { app_instalada: true, dispositivos_push: 0, alertas: 0, resumen_activo: false }
+    dispositivo({ ua: IPHONE, conPush: false })
+    montado = await montarLista()
+    await tocar('Activar')
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Abrí Rendi desde el ícono de tu inicio')
+    expect(t).not.toContain('Primero, agregá Rendi a tu inicio')
+    expect(buscarBoton(montado.contenedor, 'Ver cómo agregarla')).toBe(null)
+  })
+
+  it('la cartera completa se resume en una línea, sin las 4 filas tachadas', async () => {
+    api.get.mockImplementation(async (url) => {
+      if (url === '/auth/investor-profile') return { horizonte: 'largo' }
+      if (url === '/imports') return [{ id: 1 }]
+      if (url === '/primeros-pasos') return pasosDelServidor
+      throw new Error(url)
+    })
+    const { local } = dispositivo({ ua: IPHONE, conPush: false })
+    local.set('rendi_positions_discovered', '1')
+    local.set('rendi_ai_discovered', '1')
+    montado = await montarLista()
+    const t = texto(montado.contenedor)
+    expect(t).toContain('Para tener tu cartera bien: 4 de 4 listos')
+    expect(t).not.toContain('Importá tu historial')
+    expect(t).toContain('Agregá Rendi a tu celular')
+  })
+
+  it('con todo hecho y la oferta del resumen abierta, no dice «faltan 0»', async () => {
+    pasosDelServidor = { app_instalada: true, dispositivos_push: 0, alertas: 1, resumen_activo: false }
+    api.get.mockImplementation(async (url) => {
+      if (url === '/auth/investor-profile') return { horizonte: 'largo' }
+      if (url === '/imports') return [{ id: 1 }]
+      if (url === '/primeros-pasos') return pasosDelServidor
+      if (url === '/push/vapid-public-key') return { public_key: 'BEl62iUYgUivxIkv69yViEuiBIa' }
+      throw new Error(url)
+    })
+    const { local } = dispositivo({ ua: MAC, conPush: true })
+    local.set('rendi_positions_discovered', '1')
+    local.set('rendi_ai_discovered', '1')
+    montado = await montarLista()
+    await tocar('Activar')
+    const t = texto(montado.contenedor)
+    expect(t).toContain('¿Te mandamos también el resumen del mercado?')
+    expect(t).toContain('Todo listo.')
+    expect(t).not.toContain('faltan 0')
   })
 })
