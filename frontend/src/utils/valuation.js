@@ -744,6 +744,21 @@ export function sellPriceSuggestion(p, prices, { enPesos, cedearRate, tcCripto, 
   // broker (así se carga), así que no se convierte. Mobile no lo respetaba —
   // otra forma de la misma divergencia entre aparatos.
   if (p.price_override != null) return p.price_override
+  // Lote en DÓLARES (no cripto) alojado en un broker EN PESOS — así deja el
+  // importador de Balanz los CEDEARs pagados en dólares, y así quedaron compras
+  // viejas: se lee igual que lo valúa Cartera (`usdLotValue`), el precio .BA ÷
+  // MEP. Con la key de "broker en dólares" se leía el ticker de Nueva York y a un
+  // CEDEAR de US$ 18 se le sugería US$ 230 (auditoría 20/10), y el guard ×50 no
+  // lo frenaba.
+  const _b = _brokersByName.get(p.broker)
+  if (!isArsBroker && _b && (_b.currency || '').toUpperCase() === 'ARS' && costInUsd(p)) {
+    const sym = priceSymbol(p.asset, true, p.asset_type)
+    const raw = (prices || {})[sym]
+    if (raw == null) return undefined
+    const precio = sym.endsWith('.BA') ? (cedearRate > 0 ? raw / cedearRate : undefined) : raw
+    if (precio == null || !Number.isFinite(precio)) return undefined
+    return trustMktValue(precio, p.buy_price, p.asset_type, false) ? precio : undefined
+  }
   const key = valuationPriceKey(p, !!isArsBroker)
   const raw = key ? (prices || {})[key] : undefined
   if (raw == null) return undefined

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Plus, DollarSign, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Coins, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
+import { Plus, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import TickerSearch from '../components/TickerSearch'
@@ -17,6 +17,9 @@ import { lineaDelBono } from '../utils/lineaDelBono'
 import { bondSummaryDeLaFila } from '../utils/bondSummaryMerge'
 import { filaSinUnaPata } from '../utils/filaFusionada'
 import { groupBrokersIntoAccounts, flattenAccounts, brokerLegLabel } from '../utils/brokerAccounts'
+import { admiteDosMonedas, brokersParaElegir, formularioDeCaja, cuentaDe } from '../utils/pataDeLaMoneda'
+import { precioCedearEnDolares } from '../utils/opcionesCedear'
+import { opcionesDeVenta, lotesDeLaVenta, etiquetaDeVenta } from '../utils/opcionesDeVenta'
 import PfFormModal from '../components/PfFormModal'
 import BondCashflowModal from '../components/BondCashflowModal'
 import CuponesPorCobrar from '../components/CuponesPorCobrar'
@@ -42,8 +45,9 @@ import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput, numACampo } from '../utils/format'
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, sellPriceSuggestion, sellCurrency, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import TcMissingBadge from '../components/TcMissingBadge'
+import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { usePrivacy, PrivacyMask } from '../contexts/PrivacyContext'
@@ -86,6 +90,42 @@ export const EMPTY_POS = {
 const CATEGORY_ASSET_TYPE = {
   cedears: 'CEDEAR', stocks: 'STOCK', etfs: 'ETF', crypto: 'CRYPTO',
   bonds: 'BOND', letras: 'LETRA', ar_lider: 'STOCK', ar_gen: 'STOCK',
+}
+
+// "Agregar compra" desde una fila de Cartera: UNA definición para escritorio y
+// celular. Una fila que junta las dos patas no tiene `broker` (en escritorio iba
+// vacío: el form mostraba "—" y el alta fallaba; el celular mandaba a desplegar
+// la fila). Se manda la CUENTA del primer lote; la moneda, la de la fila si es
+// una sola — si mezcla, la elige el usuario con el selector del formulario.
+export function formDeCompraDeFila(p, brokers) {
+  const lote = (p._lots && p._lots[0]) || p
+  return {
+    ...EMPTY_POS,
+    broker: p.broker || cuentaDe(lote.broker, brokers),
+    asset: p.asset,
+    asset_type: p.asset_type || lote.asset_type || '',
+    currency: p._multiCcy ? '' : (p.currency || lote.currency || ''),
+    entry_date: today(),
+  }
+}
+
+// Lo que el flujo "Agregar" (AddPositionFlow) le pasa al formulario de compra.
+// UNA definición para escritorio y celular: el celular escribía la suya y no
+// mandaba el tipo (un CEDEAR cargado desde el teléfono quedaba sin asset_type).
+// `currency` es la moneda que eligió el usuario al elegir el activo (CEDEAR en
+// pesos / en dólares); vacía, el backend la infiere del broker.
+export function formDesdeElFlujo(f, { asset, broker, category, currency }) {
+  return {
+    ...f,
+    asset,
+    broker: broker || f.broker,
+    asset_type: CATEGORY_ASSET_TYPE[category] || '',
+    currency: currency || '',
+    // Precio e invertido se vacían: si cambió el activo (o de pesos a dólares) los
+    // de antes están en otra moneda, y con el precio lleno el formulario no
+    // trae el nuevo. La cantidad se respeta.
+    buy_price: '', invested: '',
+  }
 }
 
 const BROKER_COLORS = [
@@ -620,14 +660,7 @@ function PositionsDesktop() {
   function openBuyForPosition(p) {
     if (!p || p.is_cash) return openAdd(p?.broker)
     track('position_add_started', { source: 'desktop_fila' })
-    setForm({
-      ...EMPTY_POS,
-      broker: p.broker,
-      asset: p.asset,
-      asset_type: p.asset_type || '',
-      currency: p.currency || '',
-      entry_date: today(),
-    })
+    setForm(formDeCompraDeFila(p, brokers))
     setModal('add')
   }
 
@@ -651,8 +684,8 @@ function PositionsDesktop() {
 
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
   // broker elegido en el paso 1 (o el preseleccionado). Abre el form.
-  function onAssetSelectedFromFlow({ asset, broker, category }) {
-    setForm(f => ({ ...f, asset, broker: broker || f.broker, asset_type: CATEGORY_ASSET_TYPE[category] || '' }))
+  function onAssetSelectedFromFlow(sel) {
+    setForm(f => formDesdeElFlujo(f, sel))
     setModal('add')
   }
   function openEdit(p) {
@@ -702,7 +735,12 @@ function PositionsDesktop() {
         if (!porPata.has(k)) porPata.set(k, [])
         porPata.get(k).push(l)
       }
-      setEditPickFrom([...porPata.values()].map(lots => ({ broker: lots[0].broker, lots })))
+      // La moneda viaja con la pata: el selector rotulaba (y armaba el grupo) con
+      // la moneda del BROKER, así que con 2+ lotes en pesos dentro de la pata USD
+      // la edición viajaba con currency USD y el servidor (`_group_lots`, que
+      // filtra por moneda) editaba los lotes EN DÓLARES en vez de los de pesos.
+      setEditPickFrom([...porPata.values()].map(lots => ({
+        broker: lots[0].broker, lots, moneda: _ccyDeLote(lots[0]) })))
       setModal('edit-picker')
       return
     }
@@ -858,21 +896,27 @@ function PositionsDesktop() {
   function openSell(p) {
     if (p.is_cash) return
     track('position_sell_started', { source: 'desktop' })
-    // Una fila que fusiona las dos patas de la cuenta no tiene un broker al que
-    // mandar la venta: mandarla igual la metería en el ledger FIFO equivocado.
-    // En vez de cortar, se abre el MISMO selector que "Registrar venta" del
-    // header, acotado a los lotes de este activo — el usuario elige la pata y
-    // sigue por el flujo normal.
-    if (filaSinUnaPata(p)) {
+    // Lo que se vende es (cuenta, activo, MONEDA) — opcionesDeVenta. Si la fila
+    // junta compras en pesos y en dólares, se pregunta cuál; si es una sola
+    // moneda (aunque viva en Cocos y en Cocos · USD) va directo: el servidor
+    // busca los lotes en toda la cuenta igual.
+    const opciones = opcionesDeVenta(p._lots || [p], brokers)
+    if (opciones.length > 1) {
       setSellPickFrom(p._lots || [])
       setSellQuery('')
       setModal('sell-selector')
       return
     }
-    const broker = brokers.find(b => b.name === p.broker)
+    if (!opciones.length) return
+    abrirVenta(opciones[0], filaSinUnaPata(p) ? opciones[0].lots[0] : p)
+  }
+
+  // `o`: la opción de venta (cuenta, activo, moneda). `p`: una fila o lote de
+  // ella, sólo para sugerir el precio de hoy.
+  function abrirVenta(o, p) {
     // Moneda de la venta = la del LOTE (el mismo ticker se puede tener en ARS y
     // USD). Define qué lotes consume el FIFO y la sugerencia de precio/tc.
-    const sellCcy = sellCurrency(p, broker)
+    const sellCcy = o.moneda
     const isARS = sellCcy === 'ARS'
     // El precio sugerido sale del MISMO helper que usa mobile. Antes cada pantalla
     // lo derivaba de su propio motor de filas (acá calcARS/calcUSDT, allá una key
@@ -892,8 +936,10 @@ function PositionsDesktop() {
       isExchange: exchangeBrokers.has(p.broker),
     })
     setSellForm({
-      broker: p.broker,
-      asset: p.asset,
+      // La pata de esa moneda: ahí entra lo cobrado (y el servidor la vuelve a
+      // resolver con _pata_de_la_moneda).
+      broker: o.broker,
+      asset: o.asset,
       currency: sellCcy,
       quantity: '',
       // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
@@ -924,15 +970,14 @@ function PositionsDesktop() {
   }
 
   function openCashFlow(p, direction) {
-    const broker = brokers.find(b => b.name === p.broker)
-    setCashFlowForm({
-      broker: p.broker,
-      currency: broker?.currency || 'USDT',
-      direction,
-      amount: '',
-      available: p.invested || 0,
-      date: hoyISO(),
-    })
+    // Desde la fila de efectivo: la moneda es la de ESA caja (la de pesos de
+    // Cocos o la de dólares de 'Cocos · USD'). formularioDeCaja es el mismo
+    // armado que usa el celular.
+    setCashFlowForm(formularioDeCaja({
+      brokers, positions, brokerName: p.broker,
+      moneda: cuentaDe(p.broker, brokers) !== p.broker ? 'USD' : 'ARS',
+      direction, date: hoyISO(),
+    }))
     setModal('cashflow')
   }
 
@@ -990,13 +1035,13 @@ function PositionsDesktop() {
     setSellQuery('')
     // Filtramos posiciones cash (no se "venden", se retiran). Si hay 1 sola
     // saltamos el selector — es la única opción posible.
-    const sellable = positions.filter(p => !p.is_cash)
-    if (sellable.length === 0) {
+    const opciones = opcionesDeVenta(positions, brokers)
+    if (opciones.length === 0) {
       setModal('sell-empty')
       return
     }
-    if (sellable.length === 1 && directoSiHayUna) {
-      openSell(sellable[0])
+    if (opciones.length === 1 && directoSiHayUna) {
+      abrirVenta(opciones[0], opciones[0].lots[0])
       return
     }
     setModal('sell-selector')
@@ -1007,8 +1052,9 @@ function PositionsDesktop() {
     // menú (depósito o retiro). El user puede cambiar broker y direction
     // adentro del modal antes de continuar.
     setCashMenuForm({
-      broker: brokers[0]?.name || '',
+      broker: brokersParaElegir(brokers)[0]?.name || '',
       direction,
+      moneda: 'ARS',
     })
     setModal('cash-menu')
   }
@@ -1030,17 +1076,13 @@ function PositionsDesktop() {
     // broker para que `available` (saldo para retiros) sea preciso. Si el
     // broker no tiene cash todavía, usamos available=0.
     const brokerName = cashMenuForm.broker
-    const broker = brokers.find(b => b.name === brokerName)
-    if (!broker) return
-    const cashPos = positions.find(p => p.broker === brokerName && p.is_cash)
-    setCashFlowForm({
-      broker: brokerName,
-      currency: broker.currency || 'USDT',
-      direction: cashMenuForm.direction,
-      amount: '',
-      available: cashPos?.invested || 0,
-      date: hoyISO(),
-    })
+    if (!brokers.some(b => b.name === brokerName)) return
+    // La cuenta + la moneda elegida → la caja real (Cocos en dólares = la de
+    // 'Cocos · USD'), con SU saldo como tope del retiro.
+    setCashFlowForm(formularioDeCaja({
+      brokers, positions, brokerName, moneda: cashMenuForm.moneda,
+      direction: cashMenuForm.direction, date: hoyISO(),
+    }))
     setModal('cashflow')
   }
 
@@ -1081,15 +1123,6 @@ function PositionsDesktop() {
     }
   }
 
-  async function createUsdSibling(broker) {
-    try {
-      await api.post(`/brokers/${broker.id}/usd-sibling`)
-      loadAll()
-    } catch (e) {
-      toast.push('Ocurrió un error: ' + e.message, { type: 'error' })
-    }
-  }
-
   async function confirmCashFlow() {
     const amount = parseNum(cashFlowForm.amount)
     if (!amount || amount <= 0) return toast.push('Ingresá un monto válido.', { type: 'warn' })
@@ -1102,6 +1135,8 @@ function PositionsDesktop() {
         direction: cashFlowForm.direction,
         amount,
         date: cashFlowForm.date,
+        // Dólares "en Cocos" → la caja de 'Cocos · USD' (la crea si no existe).
+        currency: cashFlowForm.moneda || null,
         // El backend resuelve el dólar por la FECHA; esto queda de fallback para
         // cuando no hay cotización guardada de ese día.
         tc_blue: tcValuacion,
@@ -2048,9 +2083,17 @@ function PositionsDesktop() {
                 format={montoSinSigno} moneda={displayCurrency} listo={cargaLista} conDiferencia={false} />
             </span>
           )}
-          <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
-            {brokers.length} {brokers.length === 1 ? 'broker activo' : 'brokers activos'}
-          </span>
+          {/* Cuentas, no filas de `brokers`: la pata en dólares de Cocos no es
+              otro broker (ahora nace sola con la primera compra en dólares, y
+              decía "3 brokers activos" al lado de "2 cuentas conectadas"). */}
+          {(() => {
+            const n = brokersParaElegir(brokers).length
+            return (
+              <span className="inline-flex items-center rounded-full px-2.5 py-1 bg-bg-2 text-ink-2">
+                {n} {n === 1 ? 'broker activo' : 'brokers activos'}
+              </span>
+            )
+          })()}
           {sesionFdh && (
             <ChipFueraDeHorario impacto={impactoFdh} sesion={sesionFdh} moneda={displayCurrency} oculto={hidden}
               monto={isArsDisp ? impactoFdh.total.ars : impactoFdh.total.usd}
@@ -2333,20 +2376,14 @@ function PositionsDesktop() {
                   <span className="text-ink-3 select-none text-sm" title={parentName || undefined}>└─</span>
                 )}
                 <h3 className={`text-base font-semibold leading-tight ${color.text}`}>{section.label}</h3>
-                {section.isPair ? (
-                  // Una cuenta con dos patas no tiene UNA moneda nativa: se
-                  // muestran las dos, que es justo lo que el usuario quería ver
-                  // junto. El badge NO dice la moneda de display (eso lo dice el
-                  // toggle global); dice en qué monedas opera la cuenta.
-                  <span className="inline-flex items-center gap-1">
-                    <span className="text-[10.5px] font-semibold tracking-wide rounded-full px-2 py-0.5 bg-rendi-warn/10 text-rendi-warn">ARS</span>
-                    <span className="text-[10.5px] font-semibold tracking-wide rounded-full px-2 py-0.5 bg-data-cyan/10 text-data-cyan">USD</span>
-                  </span>
-                ) : (
-                  <span className={`text-[10.5px] font-semibold tracking-wide rounded-full px-2 py-0.5 ${isARS ? 'bg-rendi-warn/10 text-rendi-warn' : 'bg-data-cyan/10 text-data-cyan'}`}>
-                    {isARS ? 'ARS' : 'USD'}
-                  </span>
-                )}
+                {/* En qué monedas opera la cuenta (NO la moneda de display: eso lo
+                    dice el toggle global). Con la pastilla de EtiquetaFila: antes el
+                    "ARS" iba en el ámbar de las advertencias. Una cuenta con dos
+                    patas no tiene UNA moneda nativa: van las dos. */}
+                <EtiquetaMoneda
+                  moneda={section.isPair ? 'AMBAS' : (isARS ? 'ARS' : 'USD')}
+                  className="text-[11px]"
+                />
                 {isSubBroker && (
                   <span className="text-[10.5px] rounded-full px-2 py-0.5 bg-bg-2 text-ink-3" title="Creado automáticamente al convertir ARS a USD">
                     sub-broker
@@ -2373,18 +2410,9 @@ function PositionsDesktop() {
                 )}
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Para brokers ARS sin sub-broker USD: ofrecemos crearlo
-                    manualmente. Util para el caso de CEDEARs en USD comprados
-                    en Cocos sin pasar primero por una conversión ARS→USD. */}
-                {isARS && !section.isPair && !brokers.some(b => b.parent_broker_id === broker.id) && (
-                  <button
-                    onClick={() => createUsdSibling(broker)}
-                    className="flex items-center gap-1 text-[11px] text-rendi-accent hover:text-rendi-accent/80 px-2 py-1 rounded-sm hover:bg-rendi-accent/10 transition"
-                    title="Crea un sub-broker USD asociado para registrar tenencias en dólares (CEDEARs en USD, USDT, etc.)"
-                  >
-                    <DollarSign size={12} strokeWidth={1.5} /> Crear sub-broker USD
-                  </button>
-                )}
+                {/* Ya no se ofrece «Crear sub-broker USD»: la pata en dólares se
+                    crea sola con la primera compra o depósito en dólares de la
+                    cuenta (_pata_de_la_moneda en el backend). */}
                 <button
                   onClick={() => toggleDetail(section.key)}
                   className="flex items-center gap-1 text-[11px] text-ink-3 hover:text-ink-0 px-2 py-1 rounded-sm hover:bg-bg-2 transition"
@@ -2549,7 +2577,7 @@ function PositionsDesktop() {
                                       {p.asset}
                                     </button>
                                   )}
-                                  {!!p.is_cash && <span className={`${chipSize} tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium`}><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
+                                  {!!p.is_cash && <EtiquetaEfectivo className={chipSize} />}
                                   {/* Chip de moneda: sólo en la cuenta unificada,
                                       donde conviven las dos patas y hace falta
                                       saber de cuál viene cada fila. En una cuenta
@@ -2557,56 +2585,17 @@ function PositionsDesktop() {
                                       la dice el badge del header. */}
                                   {section.isPair && !p.is_cash && (
                                     rowCcy === null ? (
-                                      <span
-                                        className={`${chipSize} px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 font-medium`}
-                                        title={`Comprado en las dos monedas de la cuenta (${(p._brokers || []).join(' y ')})`}
-                                      >ARS + USD</span>
+                                      <EtiquetaMoneda moneda="AMBAS" className={chipSize}
+                                        title={`Comprado en pesos y en dólares (${(p._brokers || []).join(' y ')})`} />
                                     ) : (
-                                      <span
-                                        className={`${chipSize} px-1 py-0.5 rounded-sm border font-medium ${rowCcy === 'ARS' ? 'bg-rendi-warn/10 text-rendi-warn border-rendi-warn/30' : 'bg-data-cyan/10 text-data-cyan border-data-cyan/30'}`}
-                                        title={`Comprado en ${rowCcy === 'ARS' ? 'pesos' : 'dólares'} — ${brokerLegLabel(p.broker, brokers)}`}
-                                      >{rowCcy === 'ARS' ? 'ARS' : 'USD'}</span>
+                                      <EtiquetaMoneda moneda={rowCcy === 'ARS' ? 'ARS' : 'USD'} className={chipSize}
+                                        title={`Comprado en ${rowCcy === 'ARS' ? 'pesos' : 'dólares'} — ${brokerLegLabel(p.broker, brokers)}`} />
                                     )
                                   )}
-                                  {isBond && (
-                                    <span
-                                      className={`${chipSize} tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium`}
-                                      title="Bono / Obligación Negociable"
-                                    >
-                                      <Coins size={9} strokeWidth={1.5} /> BONO
-                                    </span>
-                                  )}
+                                  {isBond && <EtiquetaBono className={chipSize} />}
                                   {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
-                                  {/* Sobre los LOTES, no sobre la fila. La fila
-                                      agregada es sintética: su `tc_compra` sale de
-                                      un lote (o de ninguno, si fusiona monedas), así
-                                      que preguntarle a ella daba las dos respuestas
-                                      equivocadas — badge de más cuando los lotes SÍ
-                                      tienen su TC, y badge de menos cuando le faltaba
-                                      al segundo lote pero no al primero. */}
-                                  {(p._lots || [p]).some(l => lotMissingPurchaseRate(l, costBasis, true)) && (
-                                    <button
-                                      type="button"
-                                      onClick={e => {
-                                        // stopPropagation: la celda entera navega al
-                                        // detalle del activo, que es READ-ONLY. El
-                                        // badge dice "cargá el TC", así que tiene que
-                                        // llevar a donde se carga.
-                                        e.stopPropagation()
-                                        const faltan = (p._lots || [p]).filter(
-                                          l => lotMissingPurchaseRate(l, costBasis, true))
-                                        if (faltan.length === 1) openEdit(faltan[0])
-                                        else if (isAgg) openEditGroup(p)
-                                        else openEdit(p)
-                                      }}
-                                      className={`${chipSize} tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 font-medium hover:bg-rendi-warn/25 transition`}
-                                      title="Sin tipo de cambio de compra registrado — este lote usa el dólar de hoy para el costo en USD. Tocá para cargarlo."
-                                    >
-                                      TC?
-                                    </button>
-                                  )}
                                 </div>
-                                <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
+                                <div className="text-[11px] text-ink-3 mt-0.5 tabular flex items-center gap-2">
                                   <span>{
                                     // En un bono, el renglón de contexto dice vencimiento y
                                     // próximo cobro en vez de la fecha de compra: es lo que la
@@ -2617,6 +2606,33 @@ function PositionsDesktop() {
                                     (!isLot && lineaDelBono(p))
                                     || (isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha'))
                                   }</span>
+                                  {/* En el renglón de la fecha y no al lado del nombre: con la
+                                      moneda ya ahí, la columna no da para las dos y la fila
+                                      se partía en dos renglones. */}
+                                  {/* Sobre los LOTES, no sobre la fila. La fila
+                                      agregada es sintética: su `tc_compra` sale de
+                                      un lote (o de ninguno, si fusiona monedas), así
+                                      que preguntarle a ella daba las dos respuestas
+                                      equivocadas — badge de más cuando los lotes SÍ
+                                      tienen su TC, y badge de menos cuando le faltaba
+                                      al segundo lote pero no al primero. */}
+                                  {(p._lots || [p]).some(l => lotMissingPurchaseRate(l, costBasis, true)) && (
+                                    <EtiquetaFaltaTc
+                                      className="text-[11px]"
+                                      onClick={e => {
+                                        // stopPropagation: la celda entera navega al
+                                        // detalle del activo, que es READ-ONLY. La
+                                        // etiqueta dice "falta el TC", así que tiene que
+                                        // llevar a donde se carga.
+                                        e.stopPropagation()
+                                        const faltan = (p._lots || [p]).filter(
+                                          l => lotMissingPurchaseRate(l, costBasis, true))
+                                        if (faltan.length === 1) openEdit(faltan[0])
+                                        else if (isAgg) openEditGroup(p)
+                                        else openEdit(p)
+                                      }}
+                                    />
+                                  )}
                                   {isAgg && lotCount > 1 && (
                                     <button
                                       type="button"
@@ -2859,19 +2875,11 @@ function PositionsDesktop() {
                                     {p.asset}
                                   </button>
                                 )}
-                                {!!p.is_cash && <span className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-bg-3 border border-line text-ink-2 flex items-center gap-0.5 font-medium"><Wallet size={9} strokeWidth={1.5} /> CASH</span>}
-                                {isBond && (
-                                  <span
-                                    className="text-[12.5px] tracking-[0.12em] px-1 py-0.5 rounded-sm bg-rendi-accent/15 text-rendi-accent border border-rendi-accent/30 flex items-center gap-0.5 font-medium"
-                                    title="Bono / Obligación Negociable"
-                                  >
-                                    <Coins size={9} strokeWidth={1.5} /> BONO
-                                  </span>
-                                )}
+                                {!!p.is_cash && <EtiquetaEfectivo className="text-[12.5px]" />}
+                                {isBond && <EtiquetaBono className="text-[12.5px]" />}
                                 {!!p.price_override && <span className="text-rendi-warn" title="Precio manual configurado">●</span>}
-                                {!hidden && <TcMissingBadge p={p} costBasis={costBasis} />}
                               </div>
-                              <div className="text-[10px] text-ink-3 mt-0.5 font-mono flex items-center gap-2">
+                              <div className="text-[11px] text-ink-3 mt-0.5 tabular flex items-center gap-2">
                                 <span>{
                                     // En un bono, el renglón de contexto dice vencimiento y
                                     // próximo cobro en vez de la fecha de compra: es lo que la
@@ -2882,6 +2890,8 @@ function PositionsDesktop() {
                                     (!isLot && lineaDelBono(p))
                                     || (isAgg && lotCount > 1 ? `desde ${p.entry_date || '—'}` : (p.entry_date || 'sin fecha'))
                                   }</span>
+                                {/* En el renglón de la fecha, igual que la otra tabla. */}
+                                {!hidden && <TcMissingBadge p={p} costBasis={costBasis} className="text-[11px]" />}
                                 {isAgg && lotCount > 1 && (
                                   <button
                                     type="button"
@@ -3104,6 +3114,7 @@ function PositionsDesktop() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
+          brokers={brokers}
           tcValuacion={tcValuacion}
           fxHist={fxHist}
           onClose={() => setModal(null)}
@@ -3155,13 +3166,12 @@ function PositionsDesktop() {
               su propio precio de compra y su tipo de cambio, así que se editan por separado.
             </p>
             <ul className="space-y-1.5">
-              {editPickFrom.map(({ broker, lots }) => {
+              {editPickFrom.map(({ broker, lots, moneda }) => {
                 const qty = lots.reduce((t, l) => t + (l.quantity || 0), 0)
-                const b = brokers.find(br => br.name === broker)
-                const esArs = b?.currency === 'ARS'
+                const esArs = moneda === 'ARS'
                 const inv = lots.reduce((t, l) => t + (l.invested || 0) + (l.commissions || 0), 0)
                 return (
-                  <li key={broker}>
+                  <li key={`${broker}:${moneda}`}>
                     <button
                       type="button"
                       onClick={() => {
@@ -3175,10 +3185,8 @@ function PositionsDesktop() {
                     >
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-sm font-semibold text-ink-0">{brokerLegLabel(broker, brokers)}</span>
-                          <span className={`text-[12.5px] px-1.5 py-0.5 rounded border font-medium ${esArs ? 'bg-rendi-warn/10 text-rendi-warn border-rendi-warn/30' : 'bg-data-cyan/10 text-data-cyan border-data-cyan/30'}`}>
-                            {esArs ? '$' : 'US$'}
-                          </span>
+                          <span className="text-sm font-semibold text-ink-0">{cuentaDe(broker, brokers)}</span>
+                          <EtiquetaMoneda moneda={esArs ? 'ARS' : 'USD'} className="text-[11.5px]" />
                         </div>
                         <div className="text-xs text-ink-3 leading-relaxed">
                           {qty} unidades · {lots.length} {lots.length === 1 ? 'lote' : 'lotes'} ·
@@ -3211,7 +3219,7 @@ function PositionsDesktop() {
           <div className="space-y-2 max-h-[60vh] overflow-y-auto -mx-2 px-2">
             <p className="text-xs text-ink-3 leading-relaxed mb-2">
               {sellPickFrom
-                ? 'Tenés este activo comprado en las dos monedas de la cuenta. Elegí de cuál sale la venta — el FIFO consume los lotes de esa pata.'
+                ? 'Tenés este activo comprado en pesos y en dólares. Elegí cuál vendés: se venden primero las compras más viejas de esa moneda.'
                 : 'Seleccioná la posición y te abrimos el formulario de venta con FIFO automático.'}
             </p>
             <div className="relative mb-2">
@@ -3232,60 +3240,55 @@ function PositionsDesktop() {
                 </button>
               )}
             </div>
-            <ul className="space-y-1.5">
-              {(sellPickFrom || positions)
-                .filter(p => !p.is_cash)
-                // Busca por ticker Y por nombre mostrado (un FCI se llama por su
-                // nombre largo, no por su símbolo) Y por broker, que es lo que
-                // distingue las dos patas del mismo activo.
-                .filter(p => {
-                  const q = sellQuery.trim().toLowerCase()
-                  if (!q) return true
-                  return `${p.asset} ${fciLabel(p.asset)} ${p.broker}`.toLowerCase().includes(q)
-                })
-                .sort((a, b) => {
-                  // Ordenar por broker (alfabético) y dentro de cada broker
-                  // por valor (mayor primero — más probable que el user
-                  // quiera vender posiciones grandes).
-                  if (a.broker !== b.broker) return a.broker.localeCompare(b.broker)
-                  return (b.invested || 0) - (a.invested || 0)
-                })
-                .map(p => {
-                  const b = brokers.find(br => br.name === p.broker)
-                  const isARS = b?.currency === 'ARS'
-                  return (
-                    <li key={p.id}>
-                      <button
-                        type="button"
-                        onClick={() => { setModal(null); setSellPickFrom(null); setTimeout(() => openSell(p), 0) }}
-                        className="w-full p-3 border border-line hover:border-data-violet hover:bg-data-violet/[0.04] rounded text-left transition-all group flex items-center gap-3"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-sm font-semibold text-ink-0">{fciLabel(p.asset)}</span>
-                            <span className="text-[12.5px] text-ink-2 bg-bg-2 border border-line/60 px-1.5 py-0.5 rounded font-medium">
-                              {brokerLegLabel(p.broker, brokers)}
-                            </span>
+            {(() => {
+              // Una fila por (cuenta, activo, moneda), con todas sus compras
+              // sumadas: la venta cierra primero las más viejas de esa moneda,
+              // así que no hay "cuál compra" que elegir (ver opcionesDeVenta).
+              const q = sellQuery.trim().toLowerCase()
+              const opciones = opcionesDeVenta(sellPickFrom || positions, brokers)
+                .filter(o => !q || `${o.asset} ${fciLabel(o.asset)} ${etiquetaDeVenta(o)}`.toLowerCase().includes(q))
+                .sort((a, b) => a.cuenta.localeCompare(b.cuenta)
+                  || fciLabel(a.asset).localeCompare(fciLabel(b.asset))
+                  || a.moneda.localeCompare(b.moneda))
+              return (
+                <>
+                  <ul className="space-y-1.5">
+                    {opciones.map(o => (
+                      <li key={o.key}>
+                        <button
+                          type="button"
+                          onClick={() => { setModal(null); setSellPickFrom(null); setTimeout(() => abrirVenta(o, o.lots[0]), 0) }}
+                          className="w-full p-3 border border-line hover:border-data-violet hover:bg-data-violet/[0.04] rounded text-left transition-all group flex items-center gap-3"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                              <span className="text-sm font-semibold text-ink-0">{fciLabel(o.asset)}</span>
+                              <span className="text-xs text-ink-3">{o.cuenta}</span>
+                              {/* Siempre: una cuenta del exterior con el mismo activo en
+                                  dos monedas mostraba dos renglones idénticos. */}
+                              <EtiquetaMoneda moneda={o.moneda} className="text-[11.5px]" />
+                            </div>
+                            <div className="text-xs text-ink-3 leading-relaxed tabular">
+                              {o.qty.toLocaleString('es-AR', { maximumFractionDigits: 6 })} unidades
+                              {o.lots.length > 1 ? ` · ${o.lots.length} compras` : ''}
+                              {' · '}invertido {o.moneda === 'ARS' ? `$ ${ars(o.invested)}` : `US$ ${usd(o.invested)}`}
+                            </div>
                           </div>
-                          <div className="text-xs text-ink-3 leading-relaxed">
-                            {p.quantity || 0} unidades · invertido {isARS ? `${ars(p.invested || 0)} ARS` : `${usd(p.invested || 0)} USD`}
-                          </div>
-                        </div>
-                        <span className="text-xs font-medium text-data-violet group-hover:translate-x-0.5 transition-transform">
-                          Vender →
-                        </span>
-                      </button>
-                    </li>
-                  )
-                })}
-            </ul>
-            {sellQuery.trim() && !(sellPickFrom || positions).some(p => !p.is_cash
-              && `${p.asset} ${fciLabel(p.asset)} ${p.broker}`.toLowerCase()
-                   .includes(sellQuery.trim().toLowerCase())) && (
-              <p className="text-xs text-ink-3 py-6 text-center">
-                Ningún activo coincide con «{sellQuery.trim()}».
-              </p>
-            )}
+                          <span className="text-xs font-medium text-data-violet group-hover:translate-x-0.5 transition-transform">
+                            Vender →
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {q && opciones.length === 0 && (
+                    <p className="text-xs text-ink-3 py-6 text-center">
+                      Ningún activo coincide con «{sellQuery.trim()}».
+                    </p>
+                  )}
+                </>
+              )
+            })()}
             <div className="flex justify-end pt-3 mt-2 border-t border-line/40">
               <button
                 type="button"
@@ -3799,15 +3802,18 @@ function buildPositionMenu(p, { openEdit, openEditGroup, openAdd, openBuy, openS
   })
 }
 
-export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClose, onConfirm }) {
+export function SellModal({ form, setForm, positions, brokers, tcValuacion, fxHist, onClose, onConfirm }) {
   // Freno del doble click: una venta repetida es, para el servidor, una
   // segunda venta legítima si quedan nominales. Vive en el modal para que
   // escritorio y celular lo tengan sin pasarlo (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
-  // Posiciones FIFO del par (broker, asset)
-  const lots = positions
-    .filter(p => p.broker === form.broker && p.asset === form.asset && !p.is_cash && (p.quantity || 0) > 0)
-    .sort((a, b) => (a.entry_date || '9999').localeCompare(b.entry_date || '9999') || a.id - b.id)
+  // Los lotes que va a cerrar la venta, con la MISMA regla que el servidor: toda
+  // la cuenta (Cocos y Cocos · USD), sólo los de la moneda de la venta, del más
+  // viejo al más nuevo (ver utils/opcionesDeVenta). Antes era sólo el broker
+  // elegido y sin mirar la moneda: el disponible y la vista previa mezclaban la
+  // compra en pesos con la de dólares, y el servidor hacía otra cosa.
+  const lots = lotesDeLaVenta(positions, brokers, {
+    broker: form.broker, asset: form.asset, currency: form.currency })
 
   const totalQty = lots.reduce((s, p) => s + (p.quantity || 0), 0)
   const totalInvested = lots.reduce((s, p) => s + (p.invested || 0), 0)
@@ -3880,7 +3886,9 @@ export function SellModal({ form, setForm, positions, tcValuacion, fxHist, onClo
   const inputCls = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60'
 
   return (
-    <Modal title={`Vender ${form.asset} en ${form.broker}`} onClose={onClose}>
+    <Modal title={`Vender ${form.asset} en ${admiteDosMonedas(form.broker, brokers)
+      ? `${cuentaDe(form.broker, brokers)} · en ${form.currency === 'ARS' ? 'pesos' : 'dólares'}`
+      : form.broker}`} onClose={onClose}>
       <div className="space-y-3">
         {/* Resumen del activo */}
         <div className="bg-bg-2/50 rounded-lg p-3 grid grid-cols-3 gap-3 text-xs">
@@ -4104,7 +4112,16 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
   // Freno del doble click. En el alta es lo único que lo frena: dos POST de la
   // misma compra son, para el servidor, dos compras (ver hooks/useEnVuelo).
   const enVuelo = useEnVuelo()
-  const isARS = selectedBrokerCurrency === 'ARS'
+  // La moneda de ESTA compra: la del lote si la eligió el usuario (el CEDEAR en
+  // pesos o en dólares del buscador, o la del lote que se edita), si no la del
+  // broker. Antes salía sólo del broker: una compra en dólares en Cocos se
+  // pedía en pesos, y editar un lote en dólares de una cuenta en pesos
+  // mostraba sus montos con la etiqueta ARS.
+  const lotCcy = form.currency
+    ? (String(form.currency).toUpperCase() === 'ARS' ? 'ARS' : 'USD')
+    : (selectedBrokerCurrency === 'ARS' ? 'ARS' : 'USD')
+  const isARS = lotCcy === 'ARS'
+  const dosMonedas = admiteDosMonedas(form.broker, brokers)
   // UX mejorada (user feedback): el form pedía 3 valores (precio + cantidad +
   // invertido) pero matemáticamente solo necesita 2. Trackeamos el orden de
   // los últimos edits del user para que el campo MENOS recientemente editado
@@ -4145,17 +4162,35 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
   }
   const roundMoney = (n) => {
     if (!n || !isFinite(n)) return ''
-    return numToInput(+n.toFixed(2))
+    // Menos de 1: 4 decimales (hay CEDEARs en dólares a US$ 0,29; con 2 la
+    // precarga ya salía 1 % corrida).
+    return numToInput(+n.toFixed(n < 1 ? 4 : 2))
   }
 
   // Auto-fill del precio cuando elegís ticker (solo en modo "add", para no
-  // pisar lo que ya estaba al editar).
-  async function fetchAndFillPrice(ticker) {
+  // pisar lo que ya estaba al editar). `ccy`: la moneda de la compra — se pasa
+  // explícita al cambiarla con el selector (el estado todavía no se actualizó).
+  async function fetchAndFillPrice(ticker, ccy = lotCcy) {
     if (!ticker || mode === 'edit') return
-    const symbol = priceSymbol(ticker, isARS)
+    const enPesos = ccy === 'ARS'
+    const symbol = priceSymbol(ticker, enPesos)
     try {
-      const data = await api.get(`/prices?symbols=${symbol}`)
-      const price = data?.[symbol]
+      // CEDEAR en dólares: su precio en la Bolsa (AAPLD), no el de la acción en
+      // Nueva York — que es lo que daba `priceSymbol` sin el sufijo .BA (US$ 230
+      // por un CEDEAR que vale US$ 18). Vale para la pata en dólares de una
+      // cuenta argentina y para cualquier broker en dólares con un CEDEAR; NO
+      // para cripto ni fondos, que tienen su precio propio.
+      const cedearUsd = !enPesos && !getBondMeta(ticker) && !isCrypto(ticker) && !isFciSym(ticker)
+        && (form.asset_type === 'CEDEAR' || isArUsdBroker(form.broker))
+      let price
+      if (cedearUsd) {
+        // Sin precio D, nada: el de /prices para un CEDEAR sería el de pesos o el
+        // de Nueva York, los dos en otra escala. Mejor el campo vacío.
+        price = await precioCedearEnDolares(ticker)
+      } else {
+        const data = await api.get(`/prices?symbols=${symbol}`)
+        price = data?.[symbol]
+      }
       if (price && price > 0) {
         setForm(f => {
           // Si ya hay precio puesto a mano, no pisar
@@ -4291,9 +4326,11 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
               // mostramos como contexto (no editable, para no duplicar el control).
               <div className="flex items-center gap-2 bg-bg-2 border border-line rounded-md px-3 py-2 h-[38px]">
                 <Wallet size={14} className="text-ink-3 flex-shrink-0" aria-hidden="true" />
-                <span className="text-sm text-ink-0 font-medium truncate">{form.broker || '—'}</span>
-                {selectedBrokerCurrency && (
-                  <span className="ml-auto text-[12px] text-ink-3 font-medium">{selectedBrokerCurrency}</span>
+                <span className="text-sm text-ink-0 font-medium truncate">{cuentaDe(form.broker, brokers) || '—'}</span>
+                {(dosMonedas || selectedBrokerCurrency) && (
+                  <span className="ml-auto text-[12px] text-ink-3 font-medium">
+                    {dosMonedas ? (isARS ? 'En pesos' : 'En dólares') : selectedBrokerCurrency}
+                  </span>
                 )}
               </div>
             ) : (
@@ -4315,7 +4352,15 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
             {mode === 'add' && form.asset && onChangeAsset ? (
               <div className="flex items-center gap-2.5 bg-bg-2 border border-line rounded-md px-3 py-2">
                 <AssetLogo asset={form.asset} size={28} />
-                <span className="font-semibold text-ink-0 text-sm tabular flex-1">{form.asset}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="block font-semibold text-ink-0 text-sm tabular">{form.asset}</span>
+                  {/* En una cuenta argentina el mismo CEDEAR existe en pesos y en
+                      dólares: que se vea cuál se eligió, porque decide de qué
+                      caja sale la plata. */}
+                  {dosMonedas && form.asset_type === 'CEDEAR' && (
+                    <span className="block text-[11px] text-ink-3">CEDEAR en {isARS ? 'pesos' : 'dólares'}</span>
+                  )}
+                </span>
                 <button
                   type="button"
                   onClick={onChangeAsset}
@@ -4333,6 +4378,37 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
             )}
           </div>
         </div>
+
+        {/* Pesos o dólares, en una cuenta argentina: el buscador ya lo decide
+            para los CEDEAR y los fondos, pero un bono, una ON o una acción
+            también se compran en dólares — y con "Cocos · USD" escondido, este
+            selector es la única forma de decirlo. */}
+        {mode === 'add' && dosMonedas && !form.is_cash && (
+          <div>
+            <label className="block text-xs text-ink-3 mb-1">¿En qué moneda pagaste?</label>
+            <div className="flex gap-2" role="group" aria-label="Moneda de la compra">
+              {[['ARS', 'Pesos'], ['USD', 'Dólares']].map(([c, t]) => (
+                <button
+                  key={c}
+                  type="button"
+                  aria-pressed={lotCcy === c}
+                  onClick={() => {
+                    if (lotCcy === c) return
+                    // El precio y el invertido de antes están en la otra moneda.
+                    setForm(f => ({ ...f, currency: c, buy_price: '', invested: '' }))
+                    setPricesFetched(false)
+                    if (form.asset) fetchAndFillPrice(form.asset, c)
+                  }}
+                  className={`px-4 py-1.5 text-sm rounded border transition-colors ${lotCcy === c
+                    ? 'border-rendi-accent/50 bg-rendi-accent/10 text-ink-0 font-medium'
+                    : 'border-line text-ink-2 hover:border-line-3'}`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* "Es cash" solo al EDITAR una fila que YA es efectivo (corregir un saldo
             mal importado). Al CREAR está oculto a propósito: esta alta NO registra

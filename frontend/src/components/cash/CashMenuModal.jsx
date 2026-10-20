@@ -14,10 +14,18 @@
 import Modal from '../Modal'
 import { ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import { brokerCurrencyLabel } from '../../utils/valuation'
+import { brokersParaElegir, admiteDosMonedas } from '../../utils/pataDeLaMoneda'
 
 const inputClass = 'w-full bg-bg-2 border border-line-2 rounded px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
 export default function CashMenuModal({ form, setForm, brokers, onClose, onContinue }) {
+  // Se elige la CUENTA ("Cocos") y la moneda; no la pata "Cocos · USD". La
+  // moneda decide a qué caja va (ver utils/pataDeLaMoneda).
+  const opciones = brokersParaElegir(brokers)
+  const dosMonedas = admiteDosMonedas(form.broker, brokers)
+  const moneda = form.moneda || 'ARS'
+  const btnMoneda = activa => `px-4 py-2 text-sm rounded border transition-colors ${
+    activa ? 'border-rendi-accent/50 bg-rendi-accent/10 text-ink-0 font-medium' : 'border-line text-ink-2 hover:border-line-3'}`
   return (
     <Modal title="Movimiento de cash" onClose={onClose}>
       <div className="space-y-4">
@@ -33,11 +41,25 @@ export default function CashMenuModal({ form, setForm, brokers, onClose, onConti
             onChange={e => setForm(f => ({ ...f, broker: e.target.value }))}
             className={inputClass}
           >
-            {brokers.map(b => (
-              <option key={b.id} value={b.name}>{b.name} ({brokerCurrencyLabel(b, brokers)})</option>
+            {opciones.map(b => (
+              <option key={b.id} value={b.name}>
+                {b.name} ({admiteDosMonedas(b.name, brokers) ? 'pesos y dólares' : brokerCurrencyLabel(b, brokers)})
+              </option>
             ))}
           </select>
         </div>
+
+        {dosMonedas && (
+          <div>
+            <label className="block text-xs text-ink-3 mb-1.5">¿En qué moneda?</label>
+            <div className="flex gap-2" role="group" aria-label="Moneda del movimiento">
+              <button type="button" aria-pressed={moneda === 'ARS'} className={btnMoneda(moneda === 'ARS')}
+                onClick={() => setForm(f => ({ ...f, moneda: 'ARS' }))}>Pesos</button>
+              <button type="button" aria-pressed={moneda === 'USD'} className={btnMoneda(moneda === 'USD')}
+                onClick={() => setForm(f => ({ ...f, moneda: 'USD' }))}>Dólares</button>
+            </div>
+          </div>
+        )}
 
         {/* Selector dirección */}
         <div>

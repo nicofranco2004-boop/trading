@@ -17,6 +17,9 @@
 
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { brokerCurrencyLabel } from '../utils/valuation'
+import { brokersParaElegir, admiteDosMonedas, cuentaDe } from '../utils/pataDeLaMoneda'
+import { cargarCedears, opcionesCedear } from '../utils/opcionesCedear'
+import { usd, ars } from '../utils/format'
 import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight, CircleHelp } from 'lucide-react'
 import {
   CRYPTO, STOCKS_US, ETFS, INDICES, CEDEARS_LIST, ARG_LIDER, ARG_GENERAL,
@@ -82,7 +85,15 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   const [categoryId, setCategoryId] = useState(null)
   const [fciList, setFciList] = useState([])
   const [holdings, setHoldings] = useState([])   // posiciones del user (para "En tu cartera")
+  // /api/cedears: todos, con precio en dólares. `undefined` = cargando; `null` = no llegó.
+  const [cedears, setCedears] = useState(undefined)
   const current = SEQ[stepIdx]
+
+  useEffect(() => {
+    let alive = true
+    cargarCedears().then(items => { if (alive) setCedears(items) })
+    return () => { alive = false }
+  }, [])
 
   // El catálogo de FCI es dinámico (viene del backend); el resto de categorías
   // son listas estáticas de utils/tickers. Lo cargamos al montar.
@@ -110,6 +121,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
             symbol: String(p.asset).toUpperCase(),
             name: p.asset,
             broker: p.broker,
+            currency: (p.currency || '').toUpperCase() || null,
             quantity: Number(p.quantity || 0),
           })))
       })
@@ -121,23 +133,44 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   // moneda. Un fondo en USD no puede vivir en un broker ARS (se valuaría como
   // si el precio fuera en pesos). Para el resto de activos no aplica esta regla.
   const brokerCurrency = (brokers.find(b => b.name === chosenBroker) || {}).currency || null
+  // Cuenta argentina (o su pata en dólares): se puede comprar en pesos y en
+  // dólares; la moneda la decide el activo elegido (CEDEAR en pesos / en dólares,
+  // la moneda del fondo) o el selector del formulario.
+  const enCuentaArgentina = admiteDosMonedas(chosenBroker, brokers)
   const fciForBroker = useMemo(() => {
+    // En una cuenta argentina, los fondos de las DOS monedas, cada uno con la
+    // suya (`_ccy`): un fondo en dólares va a la caja en dólares. Antes se
+    // filtraba por la moneda del broker y, con "Cocos · USD" escondido, los
+    // fondos en dólares no se podían comprar en ningún lado.
+    if (enCuentaArgentina) {
+      return fciList.map(f => ({ ...f, _ccy: f._moneda === 'USD' ? 'USD' : 'ARS' }))
+    }
     if (!brokerCurrency) return fciList
     const wantUSD = brokerCurrency !== 'ARS'  // ARS broker → fondos ARS; USDT/USD → fondos USD
     return fciList.filter(f => (f._moneda === 'USD') === wantUSD)
-  }, [fciList, brokerCurrency])
+  }, [fciList, brokerCurrency, enCuentaArgentina])
+
+  // Cada CEDEAR se ofrece en pesos y en dólares (ver opcionesCedear).
+  const cedearsList = useMemo(
+    () => opcionesCedear(CEDEARS_LIST, cedears, { enCuentaArgentina }),
+    [cedears, enCuentaArgentina])
 
   const categories = useMemo(() => ([
-    ...CATEGORIES,
+    ...CATEGORIES.map(c => (c.id === 'cedears'
+      ? { ...c, list: cedearsList,
+          hint: enCuentaArgentina ? 'En pesos o en dólares, listados en BYMA' : c.hint }
+      : c)),
     {
       id: 'fci', label: 'Fondos (FCI)', icon: PiggyBank, list: fciForBroker,
-      hint: brokerCurrency === 'ARS'
+      hint: enCuentaArgentina
+        ? 'FIMA, money market, renta fija (en pesos y en dólares)'
+        : brokerCurrency === 'ARS'
         ? 'FIMA, money market, renta fija (en pesos)'
         : brokerCurrency
           ? 'Fondos en dólares (FIMA Dólares, etc.)'
           : 'FIMA, money market, renta fija…',
     },
-  ]), [fciForBroker, brokerCurrency])
+  ]), [fciForBroker, brokerCurrency, cedearsList, enCuentaArgentina])
 
   // Derivamos la categoría del id para que refleje siempre la lista actual
   // (importa para FCI, que se llena async después del fetch).
@@ -148,37 +181,54 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   // broker, que ya viene aplicado en `categories`). Cada item lleva su categoría
   // de origen (`_catId`) y su tipo (`_type`) para el badge y para rutear la
   // selección directo al form sin pasar por el paso de categoría.
-  const universe = useMemo(() => categories.flatMap(cat => {
-    const type = CATEGORY_TO_TYPE[cat.id] || null
-    return (cat.list || []).map(t => ({ ...t, _catId: cat.id, _type: type }))
-  }), [categories])
+  const universe = useMemo(() => {
+    const todo = categories.flatMap(cat => {
+      const type = CATEGORY_TO_TYPE[cat.id] || null
+      return (cat.list || []).map(t => ({ ...t, _catId: cat.id, _type: type }))
+    })
+    if (!enCuentaArgentina) return todo
+    // En una cuenta argentina "AAPL" como Acción US es el mismo papel que el
+    // CEDEAR en pesos (se valúa por su precio en BYMA): mostrar las dos filas
+    // en el buscador era ofrecer dos veces lo mismo con nombres distintos.
+    const cedearSyms = new Set(cedearsList.map(t => t.s))
+    return todo.filter(t => !((t._catId === 'stocks' || t._catId === 'etfs') && cedearSyms.has(t.s)))
+  }, [categories, enCuentaArgentina, cedearsList])
 
   // Un mismo símbolo puede vivir en 2 categorías (AAPL como Acción US y como
   // CEDEAR). Al elegir una tenencia/sugerencia resolvemos a qué categoría rutear:
   // en un broker ARS preferimos el CEDEAR; en uno USD, la acción. Si no está en
   // ninguna lista (bono/letra/FCI suelto), devolvemos catId indefinido (el
-  // backend infiere el tipo del broker).
-  function resolvePick(symbol, name) {
+  // backend infiere el tipo del broker). Con `ccy`, en una cuenta argentina se
+  // elige el CEDEAR de esa moneda (una tenencia en dólares → "en dólares").
+  function resolvePick(symbol, name, ccy = null) {
     const sym = (symbol || '').toUpperCase()
     const matches = universe.filter(u => (u.s || '').toUpperCase() === sym)
     if (!matches.length) return { s: symbol, n: name, _catId: undefined, _type: inferType(symbol) }
+    if (ccy) {
+      const deEsaMoneda = matches.find(m => m._ccy === ccy)
+      if (deEsaMoneda) return deEsaMoneda
+    }
     if (matches.length === 1) return matches[0]
-    const wantCedear = brokerCurrency === 'ARS'
+    const wantCedear = enCuentaArgentina || brokerCurrency === 'ARS'
     return matches.find(m => (m._catId === 'cedears') === wantCedear) || matches[0]
   }
 
-  // Tenencias en el broker elegido, agregadas por símbolo (varios lotes → 1 fila).
+  // Tenencias en la cuenta elegida (sus dos monedas), una fila por símbolo y
+  // moneda: AAPL en pesos y AAPL en dólares son dos cosas distintas para comprar.
   const brokerHoldings = useMemo(() => {
     if (!chosenBroker) return []
+    const cuenta = cuentaDe(chosenBroker, brokers)
     const map = new Map()
     for (const h of holdings) {
-      if (h.broker !== chosenBroker) continue
-      const prev = map.get(h.symbol)
+      if (cuentaDe(h.broker, brokers) !== cuenta) continue
+      const ccy = enCuentaArgentina ? (h.currency === 'ARS' ? 'ARS' : 'USD') : null
+      const key = `${h.symbol}:${ccy || ''}`
+      const prev = map.get(key)
       if (prev) prev.quantity += h.quantity
-      else map.set(h.symbol, { ...h })
+      else map.set(key, { ...h, currency: ccy })
     }
     return [...map.values()]
-  }, [holdings, chosenBroker])
+  }, [holdings, chosenBroker, brokers, enCuentaArgentina])
 
   // Sugeridos: tickers populares que se pueden agregar en este broker y que el
   // user todavía NO tiene acá. Recortado a 6 para no tapar las categorías.
@@ -213,13 +263,24 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
     setStepIdx(i => i + 1)
   }
   function selectTicker(t, catId = categoryId) {
-    onAssetSelected({ asset: t.s, name: t.n, category: catId, broker: chosenBroker })
+    // `currency`: la moneda de la compra cuando la eligió el usuario (el CEDEAR en
+    // pesos o en dólares). El backend manda la compra a la caja de esa moneda;
+    // por eso el broker que viaja es la CUENTA, no su pata.
+    const currency = t._ccy || null
+    onAssetSelected({
+      asset: t.s, name: t.n, category: catId,
+      broker: currency ? cuentaDe(chosenBroker, brokers) : chosenBroker,
+      currency,
+    })
   }
   // Elegir una tenencia o sugerencia (por símbolo): resolvemos la categoría y
   // vamos derecho al form.
-  function selectBySymbol(symbol, name) {
-    const r = resolvePick(symbol, name)
-    selectTicker(r, r._catId)
+  function selectBySymbol(symbol, name, ccy = null) {
+    const r = resolvePick(symbol, name, ccy)
+    // La moneda de la tenencia manda: "AL30 · En dólares" o un CEDEAR sin especie
+    // dólar en la lista tienen que abrir el formulario EN DÓLARES aunque el
+    // catálogo sólo traiga la fila sin moneda (antes caían en pesos).
+    selectTicker({ ...r, _ccy: ccy || r._ccy }, r._catId)
   }
   function back() {
     setStepIdx(i => {
@@ -248,7 +309,9 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
           onBack={stepIdx > 0 ? back : null}
           onClose={onClose}
         />
-        {current === 'broker' && <StepBrokerPicker brokers={brokers} onPick={selectBroker} onPlazoFijo={onPlazoFijo} onCreateBroker={onCreateBroker} />}
+        {/* Sin las patas en dólares ("Cocos · USD"): se elige la cuenta, y la
+            moneda sale del activo (CEDEAR en pesos / en dólares). */}
+        {current === 'broker' && <StepBrokerPicker brokers={brokersParaElegir(brokers)} allBrokers={brokers} onPick={selectBroker} onPlazoFijo={onPlazoFijo} onCreateBroker={onCreateBroker} />}
         {current === 'type' && (
           <Step1AssetType
             categories={categories}
@@ -326,7 +389,7 @@ function FlowHeader({ current, stepNum, total, category, chosenBroker, onBack, o
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 0 — Broker Picker (en qué cartera entra la posición)
 // ════════════════════════════════════════════════════════════════════════════
-function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
+function StepBrokerPicker({ brokers, allBrokers = brokers, onPick, onPlazoFijo, onCreateBroker }) {
   const hasBrokers = brokers && brokers.length > 0
   return (
     <div className="overflow-y-auto flex-1 p-5">
@@ -344,7 +407,7 @@ function StepBrokerPicker({ brokers, onPick, onPlazoFijo, onCreateBroker }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-ink-0 text-sm leading-tight truncate">{b.name}</h3>
-                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{brokerCurrencyLabel(b, brokers)}</p>
+                  <p className="text-[12px] text-ink-3 mt-1 tracking-[0.12em] font-medium">{admiteDosMonedas(b.name, allBrokers) ? 'Pesos y dólares' : brokerCurrencyLabel(b, allBrokers)}</p>
                 </div>
               </div>
             </button>
@@ -427,7 +490,7 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
   const results = useMemo(() => {
     if (!q) return []
     return universe
-      .filter(t => norm(t.s).includes(q) || norm(t.n).includes(q) || norm(t._sub).includes(q))
+      .filter(t => norm(t.s).includes(q) || norm(t.n).includes(q) || norm(t._sub).includes(q) || norm(t._codigo).includes(q))
       .slice(0, RESULT_CAP)
   }, [q, universe])
 
@@ -480,13 +543,14 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
               {results.map(t => {
                 const isFci = t._catId === 'fci'
                 return (
-                  <li key={`${t._catId}:${t.s}`}>
+                  <li key={`${t._catId}:${t.s}:${t._ccy || ''}`}>
                     <AssetResultRow
                       symbol={t.s}
                       title={isFci ? t.n : undefined}
                       name={isFci ? undefined : t.n}
-                      sub={isFci ? t._sub : (t._catId === 'bonds' ? t._sub : undefined)}
+                      sub={isFci ? t._sub : ((t._catId === 'bonds' || t._ccy) ? t._sub : undefined)}
                       type={t._type}
+                      right={<PrecioOpcion t={t} />}
                       onClick={() => onPickAsset(t)}
                     />
                   </li>
@@ -502,12 +566,13 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
                 <p className="px-5 pt-3 pb-1 text-[12px] tracking-[0.12em] text-ink-3 font-medium">En tu cartera</p>
                 <ul className="divide-y divide-line/50 dark:divide-line/40">
                   {holdings.map(h => (
-                    <li key={`hold:${h.symbol}`}>
+                    <li key={`hold:${h.symbol}:${h.currency || ''}`}>
                       <AssetResultRow
                         symbol={h.symbol}
                         name={h.name}
+                        sub={h.currency ? (h.currency === 'ARS' ? 'En pesos' : 'En dólares') : undefined}
                         type={inferType(h.symbol)}
-                        onClick={() => onPickSymbol(h.symbol, h.name)}
+                        onClick={() => onPickSymbol(h.symbol, h.name, h.currency)}
                       />
                     </li>
                   ))}
@@ -572,6 +637,23 @@ function Step1AssetType({ categories, universe, holdings = [], suggestions = [],
   )
 }
 
+// El precio de una opción del buscador (CEDEAR en pesos / en dólares), con los
+// colores de EtiquetaFila (aqua = dólares; el verde es de las ganancias). El de
+// dólares estimado (la especie D no operó hoy o está lejos) lleva "≈": es el
+// precio en pesos ÷ MEP, el mismo con el que Cartera valúa esa tenencia.
+function PrecioOpcion({ t }) {
+  if (!t?._ccy || !(t._px > 0)) return null
+  const enDolares = t._ccy === 'USD'
+  return (
+    <span
+      className={`text-xs tabular px-2 py-0.5 rounded-full ${enDolares ? 'bg-data-cyan/10 text-data-cyan' : 'bg-bg-2 text-ink-2'}`}
+      title={t._estimado ? 'Estimado: precio en pesos ÷ dólar MEP (la especie en dólares no operó hoy)' : undefined}
+    >
+      {enDolares ? `${t._estimado ? '≈ ' : ''}US$ ${usd(t._px)}` : `$ ${ars(t._px)}`}
+    </span>
+  )
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 2 — Ticker Picker (search + lista con logos)
 // ════════════════════════════════════════════════════════════════════════════
@@ -588,8 +670,10 @@ function Step2TickerPicker({ category, onPick }) {
   const filtered = useMemo(() => {
     const q = norm(query.trim())
     if (!q) return category.list
+    // `_codigo`: el CEDEAR en dólares también se encuentra por su código de la
+    // Bolsa (AAPLD, GOGLD), que es como figura en el broker.
     return category.list.filter(t =>
-      norm(t.s).includes(q) || norm(t.n).includes(q)
+      norm(t.s).includes(q) || norm(t.n).includes(q) || norm(t._codigo).includes(q)
     )
   }, [query, category])
 
@@ -633,12 +717,13 @@ function Step2TickerPicker({ category, onPick }) {
         ) : (
           <ul className="divide-y divide-line/50 dark:divide-line/40">
             {filtered.map(t => (
-              <li key={t.s}>
+              <li key={`${t.s}:${t._ccy || ''}`}>
                 <AssetResultRow
                   symbol={t.s}
                   name={t.n}
                   sub={t._sub}
                   type={CATEGORY_TO_TYPE[category.id] || null}
+                  right={<PrecioOpcion t={t} />}
                   onClick={() => onPick(t)}
                 />
               </li>

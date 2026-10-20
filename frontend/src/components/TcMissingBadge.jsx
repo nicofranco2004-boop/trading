@@ -1,7 +1,8 @@
 import { lotMissingPurchaseRate } from '../utils/valuation'
+import { EtiquetaFaltaTc } from './EtiquetaFila'
 
 /**
- * TcMissingBadge — pill "TC?" que se muestra junto a la columna INV. USD cuando el
+ * TcMissingBadge — pastilla "Falta TC" que va en el renglón de la fecha de la fila cuando el
  * modo "Costo en dólares" está en 'purchase' pero ESTE lote no tiene tc_compra
  * registrado (compras previas al fix del importador, o cargadas sin tipo de cambio)
  * → cae silenciosamente al dólar de hoy. Sin el badge, esos lotes parecerían "sin
@@ -9,14 +10,8 @@ import { lotMissingPurchaseRate } from '../utils/valuation'
  *
  * Uso: <TcMissingBadge p={posicion} costBasis={costBasis} isArsBroker={isARS} />
  */
-export default function TcMissingBadge({ p, costBasis, isArsBroker = false }) {
+export default function TcMissingBadge({ p, costBasis, isArsBroker = false, className = 'ml-1 text-[12.5px] align-middle' }) {
   if (!lotMissingPurchaseRate(p, costBasis, isArsBroker)) return null
-  return (
-    <span
-      className="ml-1 text-[12.5px] tracking-[0.1em] px-1 py-0.5 rounded-sm bg-rendi-warn/15 text-rendi-warn border border-rendi-warn/30 align-middle select-none font-medium"
-      title="Sin tipo de cambio de compra registrado — este lote usa el dólar de hoy para el costo en USD"
-    >
-      TC?
-    </span>
-  )
+  // La misma pastilla "Falta TC" que la fila de Cartera (EtiquetaFila).
+  return <EtiquetaFaltaTc className={className} />
 }
