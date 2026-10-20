@@ -103,6 +103,26 @@ export function opcionesCedear(curada, items, { enCuentaArgentina }) {
   return filas
 }
 
+/**
+ * Los CEDEARs que cotizan en dólares, por su símbolo de precio en pesos
+ * ('AAPL.BA' → { px: 18.04, codigo: 'AAPLD' }). Lo usan las alertas, que
+ * guardan el CEDEAR como 'AAPL.BA' + la moneda. Se indexa por el código de la
+ * Bolsa (BRKB.BA, el que arma priceSymbol) y por el ticker de Rendi (BRK-B.BA),
+ * igual que alerts_engine._codigos en el servidor.
+ * @returns {Map<string,{px:number|null, codigo:string}>|null} null = no llegó.
+ */
+export function dolaresPorSimbolo(items) {
+  if (!Array.isArray(items)) return null
+  const m = new Map()
+  for (const it of items) {
+    if (!it?.dolares) continue
+    for (const c of [it.pesos, it.s]) {
+      if (c) m.set(`${String(c).toUpperCase()}.BA`, { px: it.px_usd ?? null, codigo: it.dolares })
+    }
+  }
+  return m
+}
+
 /** El precio en dólares de un CEDEAR, para precargar la compra. */
 export async function precioCedearEnDolares(simbolo) {
   const items = await cargarCedears()

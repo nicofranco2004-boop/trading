@@ -46,6 +46,7 @@ import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum,
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
 import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -664,23 +665,14 @@ function PositionsDesktop() {
     setModal('add')
   }
 
-  // "Crear alerta" desde el menú de la posición → abre Config › Notificaciones con
-  // el ticker precargado en su RIEL (.BA/ARS para CEDEARs y brokers AR·USD, pelado/
-  // USD para el resto), espejo de la lógica de valuación (priceSymbol).
+  // "Crear alerta" desde el menú de la posición: el ticker en su riel y, si es un
+  // CEDEAR comprado en dólares, en dólares — ver components/alerts/alertaDePosicion
+  // (el mismo que el celular).
   function openAlertForPosition(p) {
     if (!p || p.is_cash) return
-    // Cripto SIEMPRE por su ticker pelado en USD (BTC→BTC-USD); nunca .BA —
-    // aunque se haya comprado en un broker AR (donde priceSymbol daría 'BTC.BA',
-    // que no cotiza y dejaba la alerta muerta).
-    if (isCrypto(p.asset)) {
-      navigate(`/alertas?new=${encodeURIComponent(p.asset)}&ccy=USD`)
-      return
-    }
-    const arsRail = costInPesos(p) || p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
-    const sym = priceSymbol(p.asset, arsRail, p.asset_type)
-    const ccy = arsRail ? 'ARS' : 'USD'
-    navigate(`/alertas?new=${encodeURIComponent(sym)}&ccy=${ccy}`)
+    navigate(linkDeAlerta(p))
   }
+
 
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
   // broker elegido en el paso 1 (o el preseleccionado). Abre el form.

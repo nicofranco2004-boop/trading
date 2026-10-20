@@ -33,7 +33,8 @@ import { api } from '../../utils/api'
 import { parseNum, numACampo } from '../../utils/format'
 import { confirmar } from '../../utils/confirmar'
 import AvisoNotificaciones from '../AvisoNotificaciones'
-import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal } from './alertasTexto'
+import { monedaDe, simbolo, fmtPrecio, fmtPct, confirmacion, canal, monedasPosibles } from './alertasTexto'
+import { cargarCedears, dolaresPorSimbolo } from '../../utils/opcionesCedear'
 
 const VACIO = {
   kind: 'price_target',
@@ -96,11 +97,30 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   const esPrecio = form.kind === 'price_target'
   const cartera = !esPrecio && form.scope === 'holdings'
 
+  // Los CEDEARs que cotizan en dólares (AAPLD): el buscador los ofrece en las
+  // dos monedas y de acá sale su precio en dólares — la misma lista que el
+  // buscador de "Registrar compra" y que el servidor usa para vigilarlos.
+  const [cedears, setCedears] = useState(undefined)
+  useEffect(() => {
+    let vivo = true
+    cargarCedears().then(items => { if (vivo) setCedears(items) })
+    return () => { vivo = false }
+  }, [])
+  const dolares = useMemo(() => (cedears === undefined ? undefined : dolaresPorSimbolo(cedears)), [cedears])
+
+  const sym = (form.symbol || '').trim().toUpperCase()
+  // La moneda del precio es una que el activo TIENE (la regla del servidor,
+  // main._moneda_del_aviso): antes el selector $/US$ era libre y «AAPL baja a
+  // US$ 15» se comparaba contra los pesos del CEDEAR — no avisaba nunca.
+  const monedas = monedasPosibles(sym, dolares)
+  const moneda = editando || monedas.includes(form.currency) ? form.currency : monedas[0]
+  const enDolaresDeLaBolsa = sym.endsWith('.BA') && moneda === 'USD'
+
   // El precio de ahora del activo elegido: contexto para la persona y para el
   // «le falta X %» del campo de precio.
-  const sym = (form.symbol || '').trim().toUpperCase()
   useEffect(() => {
     if (!sym || cartera) { setPrecio(null); return }
+    if (enDolaresDeLaBolsa) { setPrecio(dolares?.get(sym)?.px ?? null); return }
     let cancelado = false
     const t = setTimeout(async () => {
       try {
@@ -109,7 +129,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
       } catch { if (!cancelado) setPrecio(null) }
     }, 400)
     return () => { cancelado = true; clearTimeout(t) }
-  }, [sym, cartera])
+  }, [sym, cartera, enDolaresDeLaBolsa, dolares])
 
   function elegirTipo(kind) {
     if (editando) return
@@ -125,6 +145,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   const borrador = {
     ...form,
     symbol: cartera ? null : sym,
+    currency: moneda,
     threshold: parseNum(form.threshold),
     up_pct: parseNum(form.up_pct),
     down_pct: parseNum(form.down_pct),
@@ -169,7 +190,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
         channel: form.channel,
         repeat: form.repeat,
         ...(esPrecio
-          ? { direction: form.direction, threshold: thr, currency: form.currency }
+          ? { direction: form.direction, threshold: thr, currency: moneda }
           : { up_pct: up > 0 ? up : undefined, down_pct: down > 0 ? down : undefined,
               baseline: cartera ? 'prev_close' : form.baseline }),
       }
@@ -229,11 +250,11 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
             {editando ? (
               <Fijo>
                 <span className="font-semibold">{simbolo(sym)}</span>
-                {precio != null && <span className="ml-auto tabular text-ink-1">{fmtPrecio(precio, monedaDe(sym))}</span>}
+                {precio != null && <span className="ml-auto tabular text-ink-1">{fmtPrecio(precio, moneda)}</span>}
               </Fijo>
             ) : (
-              <BuscadorTicker valor={form.symbol} precio={precio}
-                onChange={v => setForm(f => ({ ...f, symbol: v, currency: monedaDe(v) }))} />
+              <BuscadorTicker valor={form.symbol} precio={precio} moneda={moneda} dolares={dolares}
+                onChange={(v, ccy) => setForm(f => ({ ...f, symbol: v, currency: ccy || monedaDe(v) }))} />
             )}
           </Campo>
         )}
@@ -248,10 +269,10 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
             </Campo>
             <Campo rotulo="Precio">
               <div className={`${CAMPO} flex items-center gap-2`}>
-                {editando ? (
-                  <span className="text-ink-2">{form.currency === 'ARS' ? '$' : 'US$'}</span>
+                {editando || monedas.length < 2 ? (
+                  <span className="text-ink-2">{moneda === 'ARS' ? '$' : 'US$'}</span>
                 ) : (
-                  <select aria-label="Moneda" value={form.currency} onChange={e => set('currency', e.target.value)}
+                  <select aria-label="Moneda" value={moneda} onChange={e => set('currency', e.target.value)}
                     className="bg-transparent text-ink-2 outline-none -ml-1">
                     <option value="ARS">$</option>
                     <option value="USD">US$</option>
@@ -413,21 +434,41 @@ function Llave({ activa, icono: Icono, texto, onClick }) {
 // Buscador de ticker con las mismas filas (logo + ticker + nombre + tipo) que el
 // resto de la app. Acepta un ticker que no esté en la lista: las alertas
 // aceptan cualquier símbolo.
-function BuscadorTicker({ valor, onChange, precio }) {
+//
+// Un CEDEAR que cotiza en dólares aparece dos veces, como en "Registrar
+// compra": «CEDEAR en pesos» y «CEDEAR en dólares · AAPLD». Elegir una fila
+// elige el activo Y la moneda (`onChange(símbolo, moneda)`); también se lo
+// encuentra escribiendo el código en dólares (AAPLD).
+export function filasDelBuscador(valor, dolares) {
+  const q = (valor || '').trim().toUpperCase()
+  const filas = []
+  for (const t of POPULAR_TICKERS) {
+    const s = t.symbol.toUpperCase()
+    const d = s.endsWith('.BA') ? dolares?.get(s) : null
+    const base = { symbol: t.symbol, name: t.name, type: t.type }
+    if (d) {
+      filas.push({ ...base, ccy: 'ARS', sub: 'CEDEAR en pesos', codigos: [s] })
+      filas.push({ ...base, ccy: 'USD', sub: `CEDEAR en dólares · ${d.codigo}`, codigos: [s, d.codigo] })
+    } else {
+      filas.push({ ...base, ccy: null, sub: undefined, codigos: [s] })
+    }
+  }
+  if (!q) return filas.filter(f => f.ccy !== 'USD').slice(0, 8)
+  const empieza = [], contiene = []
+  for (const f of filas) {
+    if (f.codigos.some(c => c.startsWith(q))) empieza.push(f)
+    else if (f.codigos.some(c => c.includes(q)) || (f.name || '').toUpperCase().includes(q)) contiene.push(f)
+  }
+  // Quien escribió el código en dólares (AAPLD) busca esa fila: va primero.
+  const exacta = empieza.filter(f => f.ccy === 'USD' && f.codigos[1] === q)
+  return [...exacta, ...empieza.filter(f => !exacta.includes(f)), ...contiene].slice(0, 8)
+}
+
+function BuscadorTicker({ valor, onChange, precio, moneda, dolares }) {
   const [abierto, setAbierto] = useState(false)
   const caja = useRef(null)
 
-  const resultados = useMemo(() => {
-    const q = (valor || '').trim().toUpperCase()
-    if (!q) return POPULAR_TICKERS.slice(0, 8)
-    const empieza = [], contiene = []
-    for (const t of POPULAR_TICKERS) {
-      const s = t.symbol.toUpperCase()
-      if (s.startsWith(q)) empieza.push(t)
-      else if (s.includes(q) || (t.name || '').toUpperCase().includes(q)) contiene.push(t)
-    }
-    return [...empieza, ...contiene].slice(0, 8)
-  }, [valor])
+  const resultados = useMemo(() => filasDelBuscador(valor, dolares), [valor, dolares])
 
   useEffect(() => {
     function afuera(e) { if (caja.current && !caja.current.contains(e.target)) setAbierto(false) }
@@ -446,14 +487,14 @@ function BuscadorTicker({ valor, onChange, precio }) {
           onFocus={() => setAbierto(true)}
           className="flex-1 min-w-0 bg-transparent outline-none text-[15px] font-semibold placeholder:font-normal placeholder:text-ink-3" />
         {precio != null && sym && (
-          <span className="text-sm text-ink-1 tabular flex-shrink-0">{fmtPrecio(precio, monedaDe(sym))}</span>
+          <span className="text-sm text-ink-1 tabular flex-shrink-0">{fmtPrecio(precio, moneda)}</span>
         )}
       </div>
       {abierto && resultados.length > 0 && (
         <div className="absolute z-30 left-0 right-0 mt-1 bg-bg-raised border border-line rounded-lg shadow-2xl overflow-hidden max-h-72 overflow-y-auto">
           {resultados.map(t => (
-            <AssetResultRow key={t.symbol} symbol={t.symbol} name={t.name} type={t.type}
-              onClick={() => { onChange(t.symbol); setAbierto(false) }} />
+            <AssetResultRow key={`${t.symbol}:${t.ccy || ''}`} symbol={t.symbol} name={t.name} type={t.type} sub={t.sub}
+              onClick={() => { onChange(t.symbol, t.ccy); setAbierto(false) }} />
           ))}
         </div>
       )}

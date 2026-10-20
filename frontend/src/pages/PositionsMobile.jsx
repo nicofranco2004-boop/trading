@@ -54,6 +54,7 @@ import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, pctVar, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { cuerpoDeVenta, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
+import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import { isBondPosition } from '../utils/tickers'
 import { EtiquetaMoneda } from '../components/EtiquetaFila'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
@@ -597,21 +598,13 @@ export default function PositionsMobile() {
   }
 
   // ─── "Crear alerta" ─────────────────────────────────────────────────────
-  // Abre /alertas con el ticker precargado en SU riel (.BA/ARS para CEDEARs y
-  // brokers AR·USD, pelado/USD para el resto) — espejo de la valuación.
+  // El ticker en su riel y, si es un CEDEAR comprado en dólares, en dólares:
+  // ver components/alerts/alertaDePosicion (el mismo que la compu).
   function openAlertForPosition(p) {
     if (!p || p.is_cash) return
-    // Cripto SIEMPRE por su ticker pelado en USD (BTC→BTC-USD); nunca .BA,
-    // que no cotiza y dejaría la alerta muerta.
-    if (isCrypto(p.asset)) {
-      navigate(`/alertas?new=${encodeURIComponent(p.asset)}&ccy=USD`)
-      return
-    }
-    const arsRail = costInPesos(p) || p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
-    const sym = priceSymbol(p.asset, arsRail, p.asset_type)
-    const ccy = arsRail ? 'ARS' : 'USD'
-    navigate(`/alertas?new=${encodeURIComponent(sym)}&ccy=${ccy}`)
+    navigate(linkDeAlerta(p))
   }
+
 
   // ─── "Editar posición" de una fila AGREGADA ─────────────────────────────
   // El agregado es sintético: su `id` es la string 'agg:<broker>:<ticker>', así

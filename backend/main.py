@@ -10331,6 +10331,13 @@ def get_cedears(uid: int = Depends(get_effective_user)):
     aparece en pesos y en dólares, y al elegir el de dólares el formulario se
     precarga con `px_usd`. Ver cedears_dolar.py (qué precio en dólares se usa y
     por qué no siempre es el de BYMA)."""
+    return cedears_con_dolares()
+
+
+def cedears_con_dolares() -> dict:
+    """{'mep', 'items'[, 'parcial']}: la lista de `GET /api/cedears`. La leen
+    también las alertas de precio de un CEDEAR en dólares (alerts_engine), para
+    que el aviso mire el MISMO precio en dólares que muestra el buscador."""
     import cedears_dolar
     feed = {s: f for s, f in (_fetch_data912_equities() or {}).items()
             if f.get('mercado') == 'arg_cedears'}
@@ -46440,6 +46447,40 @@ def alerts_list(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _moneda_del_aviso(symbol: str, currency) -> str:
+    """La moneda de un aviso de precio: la que el activo TIENE, nunca un rótulo.
+
+    El motor compara el número que marcó la persona contra el precio del activo
+    en esta moneda. Antes se guardaba lo que mandara el formulario y no se
+    convertía nada: «AAPL (CEDEAR) baja a US$ 15» se comparaba contra el precio
+    en PESOS y no avisaba nunca; «AAPL (Nasdaq) sube a $ 300.000», al revés.
+
+      · '.BA' (CEDEAR / acción / bono de la Bolsa) → pesos; en dólares sólo un
+        CEDEAR que cotiza en dólares (AAPLD), con ese precio
+        (alerts_engine.cedear_en_dolares).
+      · FCI → la que diga (los hay en pesos y en dólares).
+      · el resto (acción de EE.UU., cripto) → dólares.
+    Sin moneda → la del riel."""
+    import alerts_engine as _ae
+    ccy = (currency or "").strip().upper() or None
+    if ccy not in (None, "ARS", "USD"):
+        raise HTTPException(400, "Moneda inválida: pesos (ARS) o dólares (USD).")
+    symbol = _ae._norm_sym(symbol)   # cripto de un broker AR: BTC.BA → BTC
+    nombre = _ae._display_symbol(symbol)
+    if symbol.startswith("FCI:"):
+        return ccy or "ARS"
+    if symbol.endswith(".BA"):
+        if ccy != "USD":
+            return "ARS"
+        if _ae.tiene_precio_en_dolares(symbol) is False:
+            raise HTTPException(400, f"{nombre} no cotiza en dólares en la Bolsa: "
+                                     f"poné el precio en pesos.")
+        return "USD"
+    if ccy == "ARS":
+        raise HTTPException(400, f"{nombre} cotiza en dólares: poné el precio en US$.")
+    return "USD"
+
+
 @app.post("/api/alerts")
 def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
@@ -46471,8 +46512,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
                 raise HTTPException(400, "Dirección inválida para precio objetivo (above/below).")
             if not (threshold and threshold > 0):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
-            if not currency:
-                currency = "ARS" if symbol.endswith(".BA") else "USD"
+            currency = _moneda_del_aviso(symbol, currency)
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -46500,7 +46540,8 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
         anchor_price = None
         resolved = True
         if symbol:  # ticker-scope (price_target siempre; pct_move de un activo)
-            current_price = _ae.price_for_alert(symbol)
+            current_price = _ae.price_for_alert(symbol, en_dolares=_ae.cedear_en_dolares(
+                data.kind, data.scope, symbol, currency))
             resolved = current_price is not None
             if data.kind == "price_target":
                 met = _ae.condition_met("price_target", data.direction, threshold,

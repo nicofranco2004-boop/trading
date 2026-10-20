@@ -85,10 +85,90 @@ def _quotes_for(symbols: list) -> dict:
         return {}
 
 
-def price_for_alert(symbol: str):
+def price_for_alert(symbol: str, en_dolares: bool = False):
     """Precio actual de UN símbolo — para armar el edge-trigger al crear la
-    alerta (arma según de qué lado del umbral está hoy)."""
+    alerta (arma según de qué lado del umbral está hoy). `en_dolares`: un CEDEAR
+    vigilado en dólares (ver `cedear_en_dolares`)."""
+    if en_dolares:
+        return precios_cedear_en_dolares([symbol]).get(symbol)
     return _prices_for([symbol]).get(symbol)
+
+
+# ─── CEDEAR en dólares ────────────────────────────────────────────────────────
+# Un CEDEAR cotiza en la Bolsa en pesos (AAPL) y en dólares (AAPLD). Una alerta
+# de precio lo guarda como 'AAPL.BA' + la moneda: 'ARS' mira el precio en pesos,
+# 'USD' el precio en dólares — el MISMO que muestra el buscador de "Registrar
+# compra" (main.cedears_con_dolares → cedears_dolar.universo: el AAPLD de hoy si
+# está cerca de pesos ÷ MEP, si no pesos ÷ MEP).
+#
+# Antes la moneda era sólo un rótulo: «AAPL baja a US$ 15» se comparaba contra
+# el precio EN PESOS (~$20.000) y no avisaba nunca. Por eso el alta rechaza una
+# moneda que el activo no tiene (ver main.alerts_create).
+
+def cedear_en_dolares(kind, scope, symbol, currency) -> bool:
+    """¿Es una alerta de precio sobre un CEDEAR vigilado en dólares?
+
+    Sólo el aviso de precio: en el de % la moneda no cambia nada que se vea (el
+    movimiento es el del CEDEAR) y "toda mi cartera" se expande a símbolos que
+    llevan su propio riel."""
+    return (kind == "price_target" and (scope or "ticker") == "ticker"
+            and bool(symbol) and str(symbol).upper().endswith(".BA")
+            and str(currency or "").upper() == "USD")
+
+
+def _es_cedear_usd(alert, symbol) -> bool:
+    return cedear_en_dolares(_campo(alert, "kind"), _campo(alert, "scope"),
+                             symbol, _campo(alert, "currency"))
+
+
+def _campo(alert, k):
+    try:
+        return alert[k]
+    except (KeyError, IndexError):
+        return None
+
+
+def cedears_con_dolares():
+    """Los CEDEARs de la Bolsa con su precio en dólares (`main.cedears_con_dolares`),
+    o None si la lista no se pudo armar (data912 caído): "no sé" no es "no tiene"."""
+    try:
+        import main
+        items = (main.cedears_con_dolares() or {}).get("items")
+    except Exception as ex:
+        log.warning("alerts: no se pudo armar la lista de CEDEARs en dólares: %s", ex)
+        return None
+    return items or None
+
+
+def _codigos(it) -> set:
+    """Cómo puede venir escrito el CEDEAR en una alerta: el código de la Bolsa
+    (BRKB.BA, el que arma priceSymbol) o el ticker de Rendi (BRK-B.BA)."""
+    return {f"{c}.BA" for c in (it.get("pesos"), it.get("s")) if c}
+
+
+def precios_cedear_en_dolares(symbols, items=None) -> dict:
+    """{símbolo '.BA': precio en dólares} de los que tienen especie en dólares."""
+    syms = {str(s).upper() for s in symbols if s and str(s).upper().endswith(".BA")}
+    if not syms:
+        return {}
+    if items is None:
+        items = cedears_con_dolares() or []
+    out = {}
+    for it in items:
+        if not (it.get("dolares") and it.get("px_usd")):
+            continue
+        for cod in _codigos(it) & syms:
+            out[cod] = float(it["px_usd"])
+    return out
+
+
+def tiene_precio_en_dolares(symbol):
+    """True / False si el CEDEAR tiene (o no) especie en dólares; None si la
+    lista no está (no se puede saber)."""
+    items = cedears_con_dolares()
+    if items is None:
+        return None
+    return str(symbol or "").upper() in precios_cedear_en_dolares([symbol], items)
 
 
 def _holding_symbols(conn, uid: int) -> list:
@@ -417,6 +497,14 @@ def _ccy_for(symbol, fallback=None) -> str:
     return (fallback or "USD")
 
 
+def _moneda(alert, symbol) -> str:
+    """La moneda en que se muestra el precio de ESTE aviso: la del riel del
+    símbolo (`_ccy_for`), salvo un CEDEAR vigilado en dólares."""
+    if _es_cedear_usd(alert, symbol):
+        return "USD"
+    return _ccy_for(symbol, _campo(alert, "currency"))
+
+
 def _fmt(price, currency) -> str:
     """Precio en convención argentina. Mostraba los pesos bien ($7.350) y los
     dólares a la inglesa (US$2,145.30) en el MISMO mail; ahora los dos salen
@@ -428,7 +516,7 @@ def _fmt(price, currency) -> str:
 
 def _compose_message(alert, symbol, price, change_pct) -> str:
     sym = _display_symbol(symbol)
-    ccy = _ccy_for(symbol, alert["currency"])
+    ccy = _moneda(alert, symbol)
     if alert["kind"] == "price_target":
         thr = _fmt(alert["threshold"], ccy)
         cur = _fmt(price, ccy)
@@ -596,7 +684,7 @@ def _email_detail(alert, symbol, price=None, change_pct=None, doble=False) -> st
     casilla del fundador, las ÚNICAS alertas que se salieron de Actualizaciones
     son las que estaban leídas. El titular ya lleva el % (o el precio marcado);
     esto lleva el precio de ahora, en la moneda del activo."""
-    cur = _fmt(price, _ccy_for(symbol, alert["currency"]))
+    cur = _fmt(price, _moneda(alert, symbol))
     ahora = f" Ahora está en {cur}." if price is not None else ""
     if alert["kind"] == "price_target":
         return f"es el precio que marcaste.{ahora}"
@@ -608,7 +696,7 @@ def _email_detail(alert, symbol, price=None, change_pct=None, doble=False) -> st
 def _titulo_precio(alert, symbol, price) -> str:
     """«GGAL llegó a $8.000»: el precio que la persona MARCÓ, no el de ahora (ése
     va en la oración). Es lo que reconoce de un vistazo — lo eligió ella."""
-    ccy = _ccy_for(symbol, alert["currency"])
+    ccy = _moneda(alert, symbol)
     marcado = alert["threshold"] if alert["threshold"] is not None else price
     return f"{_display_symbol(symbol)} llegó a {_fmt(marcado, ccy)}"
 
@@ -1027,6 +1115,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             bucket.add(sym)
 
     prices = _prices_for(list(price_syms)) if price_syms else {}
+    # Los CEDEARs vigilados en dólares: su precio sale aparte (ver
+    # `cedear_en_dolares`). Mismo símbolo que la alerta en pesos, otro precio.
+    usd_syms = {sym for a, sym in units if _es_cedear_usd(a, sym)}
+    precios_usd = precios_cedear_en_dolares(usd_syms) if usd_syms else {}
     quotes = _quotes_for(list(quote_syms)) if quote_syms else {}
 
     market_open = _market_open_now(now)
@@ -1053,7 +1145,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
         tradeable = (sym in _crypto_symbols()) or market_open
 
         if a["kind"] == "price_target":
-            price = prices.get(sym)
+            price = (precios_usd if _es_cedear_usd(a, sym) else prices).get(sym)
             met = condition_met("price_target", a["direction"], a["threshold"], price, None)
             if met is None:
                 continue  # sin precio → no adivinar

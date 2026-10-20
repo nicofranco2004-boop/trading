@@ -27,12 +27,13 @@ import { usePlanFeatures } from '../hooks/usePlanFeatures'
 import { useAlerts } from '../hooks/useAlerts'
 import { useResumenMercado } from '../hooks/useResumenMercado'
 import { useAlertsContext } from '../contexts/AlertsContext'
+import { cargarCedears, dolaresPorSimbolo } from '../utils/opcionesCedear'
 import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { useToast } from '../components/Toast'
 import AvisoNotificaciones from '../components/AvisoNotificaciones'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { api } from '../utils/api'
-import { simbolo, diaArgentina } from '../components/alerts/alertasTexto'
+import { simbolo, diaArgentina, esCedearEnDolares } from '../components/alerts/alertasTexto'
 
 // La pestaña con la que se abre la página. La de la dirección manda (el
 // tutorial pide «crear»; los mails y las notificaciones de un aviso que saltó,
@@ -115,15 +116,26 @@ function AlertasPropias({ plan }) {
   const simbolos = useMemo(
     () => [...new Set(items.filter(a => a.symbol).map(a => a.symbol.toUpperCase()))].sort().join(','),
     [items])
+  // Los CEDEARs vigilados en dólares traen su precio de la lista de la Bolsa
+  // (el mismo que mira el servidor), bajo la clave 'AAPL.BA|USD'.
+  const hayCedearEnDolares = useMemo(() => items.some(esCedearEnDolares), [items])
   const [precios, setPrecios] = useState({})
   useEffect(() => {
     if (!simbolos) { setPrecios({}); return }
     let cancelado = false
-    api.get(`/prices?symbols=${encodeURIComponent(simbolos)}`)
-      .then(res => { if (!cancelado) setPrecios(res || {}) })
-      .catch(() => { if (!cancelado) setPrecios({}) })
+    Promise.all([
+      api.get(`/prices?symbols=${encodeURIComponent(simbolos)}`).catch(() => ({})),
+      hayCedearEnDolares ? cargarCedears() : null,
+    ]).then(([res, cedears]) => {
+      if (cancelado) return
+      const todos = { ...(res || {}) }
+      for (const [s, d] of dolaresPorSimbolo(cedears) || []) {
+        if (d.px != null) todos[`${s}|USD`] = d.px
+      }
+      setPrecios(todos)
+    })
     return () => { cancelado = true }
-  }, [simbolos])
+  }, [simbolos, hayCedearEnDolares])
 
   const cuantas = items.length + (resumen.prendido ? 1 : 0)
 

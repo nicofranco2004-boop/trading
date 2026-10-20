@@ -522,8 +522,15 @@ def test_la_moneda_sale_del_activo_y_no_de_la_fila_de_la_alerta():
     cuerpo = ae._email_detail(a, "INTC.BA", 31020.0, -5.77)
     assert "$31.020" in cuerpo and "US$" not in cuerpo
     assert "US$" not in ae._compose_message(
-        _alert(kind="price_target", currency="USD", threshold=30000.0, direction="below"),
+        _alert(kind="price_target", currency="ARS", threshold=30000.0, direction="below"),
         "INTC.BA", 31020.0, None)
+    # Un aviso de PRECIO de un CEDEAR guardado en dólares, en cambio, es el
+    # CEDEAR en dólares (INTCD): el motor le pasa el precio en dólares y se
+    # muestra en US$ (ver test_alertas_cedear_dolares). Hasta el 20/10 esa
+    # combinación era la trampa del selector $/US$ y se mostraba en pesos.
+    assert "US$ 20,14" in ae._compose_message(
+        _alert(kind="price_target", currency="USD", threshold=20.0, direction="below"),
+        "INTC.BA", 20.14, None)
     # …y el activo que sí está en dólares no se toca, con la misma alerta.
     assert "US$ 212,29" in ae._email_detail(a, "NVDA", 212.29, -3.4)
 
