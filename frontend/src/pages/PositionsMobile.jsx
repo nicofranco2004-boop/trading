@@ -31,7 +31,7 @@ import UpgradeModal from '../components/plan/UpgradeModal'
 // ETFs/INDICES/AR_LIDER/AR_GENERAL/BONDS_*). Lazy-load para que el primer
 // render de /cartera no espere a parsearlo — solo cuando el user abre el flow.
 const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
-import { PositionFormModal, SellModal, ConvertModal, EditGroupModal, EMPTY_POS, today, formDesdeElFlujo, formDeCompraDeFila } from './Positions'
+import { PositionFormModal, SellModal, ConvertModal, EditGroupModal, EMPTY_POS, today, formDesdeElFlujo, formDeCompraDeFila, compraDeFilaSinMoneda } from './Positions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
 import ConvertMenuModal from '../components/cash/ConvertMenuModal'
@@ -272,6 +272,8 @@ export default function PositionsMobile() {
   //              'sell'       → modal de venta con FIFO preview
   //              'cashflow'   → depositar / retirar (solo cash positions)
   const [addModal, setAddModal] = useState(null)
+  // Lo que el buscador del alta abre ya escrito (ver compraDeFilaSinMoneda).
+  const [flowQuery, setFlowQuery] = useState('')
   const [pfFormOpen, setPfFormOpen] = useState(false)
   const [pfReloadKey, setPfReloadKey] = useState(0)
   const [pfTotals, setPfTotals] = useState({})
@@ -591,9 +593,14 @@ export default function PositionsMobile() {
   // flow normal: no tiene sentido "comprar más" de una posición de caja.
   function openBuyForPosition(p) {
     if (!p || p.is_cash) return openNewPositionFlow('mobile_row_menu')
-    // El mismo armado que escritorio: con la fila que junta las dos patas se
-    // abre el formulario de la cuenta, con el selector de moneda.
+    // El mismo armado que escritorio: con la fila que junta pesos y dólares se
+    // abre el buscador con el ticker escrito, para elegir cuál se compró.
     setAddForm(formDeCompraDeFila(p, brokers))
+    if (compraDeFilaSinMoneda(p, brokers)) {
+      setFlowQuery(p.asset)
+      setAddModal('add-flow')
+      return
+    }
     setAddModal('add')
   }
 
@@ -2016,14 +2023,16 @@ export default function PositionsMobile() {
           </div>
         }>
           <AddPositionFlow
-            onClose={() => setAddModal(null)}
+            onClose={() => { setFlowQuery(''); setAddModal(null) }}
             brokers={brokers}
             initialBroker={addForm.broker || null}
+            initialQuery={flowQuery}
             onPlazoFijo={() => { setAddModal(null); setPfFormOpen(true) }}
             // MAN-01: sin brokers, en vez de un dead-end ("creá desde Config")
             // ofrecemos crear el primero acá mismo (cierra el flow + abre el alta).
             onCreateBroker={() => { setAddModal(null); setShowAddBroker(true) }}
             onAssetSelected={sel => {
+              setFlowQuery('')
               setAddForm(f => formDesdeElFlujo(f, sel))
               setAddModal('add')
             }}

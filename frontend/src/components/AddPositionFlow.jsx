@@ -18,7 +18,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { brokerCurrencyLabel } from '../utils/valuation'
 import { brokersParaElegir, admiteDosMonedas, cuentaDe } from '../utils/pataDeLaMoneda'
-import { cargarCedears, opcionesCedear } from '../utils/opcionesCedear'
+import { cargarCedears, opcionesCedear, bonosEnDosMonedas } from '../utils/opcionesCedear'
 import { usd, ars } from '../utils/format'
 import { X, ArrowLeft, Search, Coins, TrendingUp, Layers, BarChart3, Activity, Building2, Landmark, PiggyBank, Wallet, ChevronDown, ChevronUp, FileText, ArrowRight, CircleHelp } from 'lucide-react'
 import {
@@ -73,7 +73,9 @@ const CATEGORIES = [
 const norm = (v) => (v || '').toString().toLowerCase()
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 
-export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, onPlazoFijo, onCreateBroker }) {
+// `initialQuery`: el buscador abre ya escrito ("Agregar compra" desde una fila
+// que junta lotes en pesos y en dólares: se elige ahí cuál de los dos se compró).
+export default function AddPositionFlow({ onClose, onAssetSelected, brokers = [], initialBroker = null, initialQuery = '', onPlazoFijo, onCreateBroker }) {
   // Secuencia de pasos. Si ya viene un broker preseleccionado (alta desde el
   // menú de un broker puntual, o "Cambiar" activo), salteamos el paso de broker.
   const needsBrokerStep = !initialBroker
@@ -134,8 +136,8 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
   // si el precio fuera en pesos). Para el resto de activos no aplica esta regla.
   const brokerCurrency = (brokers.find(b => b.name === chosenBroker) || {}).currency || null
   // Cuenta argentina (o su pata en dólares): se puede comprar en pesos y en
-  // dólares; la moneda la decide el activo elegido (CEDEAR en pesos / en dólares,
-  // la moneda del fondo) o el selector del formulario.
+  // dólares; la moneda la decide el activo elegido (CEDEAR, bono u ON en pesos /
+  // en dólares, la moneda del fondo). Lo demás, en pesos.
   const enCuentaArgentina = admiteDosMonedas(chosenBroker, brokers)
   const fciForBroker = useMemo(() => {
     // En una cuenta argentina, los fondos de las DOS monedas, cada uno con la
@@ -155,11 +157,17 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
     () => opcionesCedear(CEDEARS_LIST, cedears, { enCuentaArgentina }),
     [cedears, enCuentaArgentina])
 
+  const bondsList = useMemo(
+    () => bonosEnDosMonedas(BONDS_COMBINED, { enCuentaArgentina }),
+    [enCuentaArgentina])
+
   const categories = useMemo(() => ([
     ...CATEGORIES.map(c => (c.id === 'cedears'
       ? { ...c, list: cedearsList,
           hint: enCuentaArgentina ? 'En pesos o en dólares, listados en BYMA' : c.hint }
-      : c)),
+      : c.id === 'bonds'
+        ? { ...c, list: bondsList }
+        : c)),
     {
       id: 'fci', label: 'Fondos (FCI)', icon: PiggyBank, list: fciForBroker,
       hint: enCuentaArgentina
@@ -170,7 +178,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
           ? 'Fondos en dólares (FIMA Dólares, etc.)'
           : 'FIMA, money market, renta fija…',
     },
-  ]), [fciForBroker, brokerCurrency, cedearsList, enCuentaArgentina])
+  ]), [fciForBroker, brokerCurrency, cedearsList, bondsList, enCuentaArgentina])
 
   // Derivamos la categoría del id para que refleje siempre la lista actual
   // (importa para FCI, que se llena async después del fetch).
@@ -321,6 +329,7 @@ export default function AddPositionFlow({ onClose, onAssetSelected, brokers = []
             onPick={selectCategory}
             onPickAsset={t => selectTicker(t, t._catId)}
             onPickSymbol={selectBySymbol}
+            initialQuery={initialQuery}
           />
         )}
         {current === 'ticker' && (
@@ -465,13 +474,13 @@ function StepBrokerPicker({ brokers, allBrokers = brokers, onPick, onPlazoFijo, 
 // ════════════════════════════════════════════════════════════════════════════
 // STEP 1 — Asset Type Picker (grid de categorías)
 // ════════════════════════════════════════════════════════════════════════════
-function Step1AssetType({ categories, universe, holdings = [], suggestions = [], onPick, onPickAsset, onPickSymbol }) {
-  const [query, setQuery] = useState('')
+function Step1AssetType({ categories, universe, holdings = [], suggestions = [], onPick, onPickAsset, onPickSymbol, initialQuery = '' }) {
+  const [query, setQuery] = useState(initialQuery)
   // `engaged` = el user tocó el buscador. Recién ahí mostramos "En tu cartera" +
   // "Sugeridos"; antes de eso (apenas elegido el broker) mostramos solo las
   // categorías. Una vez activo, se mantiene (no se resetea en blur para no cortar
   // el click sobre una sugerencia).
-  const [engaged, setEngaged] = useState(false)
+  const [engaged, setEngaged] = useState(!!initialQuery)
   const inputRef = useRef(null)
   const q = norm(query.trim())
   const searching = q.length > 0

@@ -97,7 +97,7 @@ const CATEGORY_ASSET_TYPE = {
 // celular. Una fila que junta las dos patas no tiene `broker` (en escritorio iba
 // vacío: el form mostraba "—" y el alta fallaba; el celular mandaba a desplegar
 // la fila). Se manda la CUENTA del primer lote; la moneda, la de la fila si es
-// una sola — si mezcla, la elige el usuario con el selector del formulario.
+// una sola — si mezcla, ver compraDeFilaSinMoneda.
 export function formDeCompraDeFila(p, brokers) {
   const lote = (p._lots && p._lots[0]) || p
   return {
@@ -108,6 +108,15 @@ export function formDeCompraDeFila(p, brokers) {
     currency: p._multiCcy ? '' : (p.currency || lote.currency || ''),
     entry_date: today(),
   }
+}
+
+// La fila junta lotes en pesos y en dólares de una cuenta argentina: no hay UNA
+// moneda que precargar. Se abre el buscador con el ticker escrito y se elige ahí
+// "AAPL en pesos" o "AAPLD en dólares" — la misma decisión que en un alta nueva.
+// Escritorio y celular usan esta misma regla.
+export function compraDeFilaSinMoneda(p, brokers) {
+  const f = formDeCompraDeFila(p, brokers)
+  return !f.currency && !!p?._multiCcy && admiteDosMonedas(f.broker, brokers)
 }
 
 // Lo que el flujo "Agregar" (AddPositionFlow) le pasa al formulario de compra.
@@ -174,6 +183,8 @@ function PositionsDesktop() {
   const navigate = useNavigate()
   const location = useLocation()
   const [modal, setModal] = useState(null)
+  // Lo que el buscador del alta abre ya escrito (ver compraDeFilaSinMoneda).
+  const [flowQuery, setFlowQuery] = useState('')
   // Lo que pide el botón «Registrar» del menú lateral (`/posiciones?action=…`,
   // ver utils/registrar.js): se guarda acá hasta que hay con qué atenderlo.
   //   - datosListos: llegaron posiciones y brokers (los selectores de venta,
@@ -662,6 +673,11 @@ function PositionsDesktop() {
     if (!p || p.is_cash) return openAdd(p?.broker)
     track('position_add_started', { source: 'desktop_fila' })
     setForm(formDeCompraDeFila(p, brokers))
+    if (compraDeFilaSinMoneda(p, brokers)) {
+      setFlowQuery(p.asset)
+      setModal('add-flow')
+      return
+    }
     setModal('add')
   }
 
@@ -677,6 +693,7 @@ function PositionsDesktop() {
   // Callback del AddPositionFlow cuando el user selecciona un ticker. Trae el
   // broker elegido en el paso 1 (o el preseleccionado). Abre el form.
   function onAssetSelectedFromFlow(sel) {
+    setFlowQuery('')
     setForm(f => formDesdeElFlujo(f, sel))
     setModal('add')
   }
@@ -3057,10 +3074,11 @@ function PositionsDesktop() {
 
       {modal === 'add-flow' && (
         <AddPositionFlow
-          onClose={() => setModal(null)}
+          onClose={() => { setFlowQuery(''); setModal(null) }}
           onAssetSelected={onAssetSelectedFromFlow}
           brokers={brokers}
           initialBroker={form.broker || null}
+          initialQuery={flowQuery}
           onPlazoFijo={() => { setModal(null); setPfFormOpen(true) }}
         />
       )}
@@ -4346,11 +4364,13 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
                 <AssetLogo asset={form.asset} size={28} />
                 <span className="flex-1 min-w-0">
                   <span className="block font-semibold text-ink-0 text-sm tabular">{form.asset}</span>
-                  {/* En una cuenta argentina el mismo CEDEAR existe en pesos y en
-                      dólares: que se vea cuál se eligió, porque decide de qué
-                      caja sale la plata. */}
-                  {dosMonedas && form.asset_type === 'CEDEAR' && (
-                    <span className="block text-[11px] text-ink-3">CEDEAR en {isARS ? 'pesos' : 'dólares'}</span>
+                  {/* En una cuenta argentina el mismo CEDEAR (o bono) existe en
+                      pesos y en dólares: que se vea cuál se eligió, porque decide
+                      de qué caja sale la plata. Para cambiarlo, "Cambiar". */}
+                  {dosMonedas && !form.is_cash && (
+                    <span className="block text-[11px] text-ink-3">
+                      {form.asset_type === 'CEDEAR' ? 'CEDEAR en' : form.asset_type === 'BOND' ? 'Bono en' : 'En'} {isARS ? 'pesos' : 'dólares'}
+                    </span>
                   )}
                 </span>
                 <button
@@ -4371,37 +4391,10 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
           </div>
         </div>
 
-        {/* Pesos o dólares, en una cuenta argentina: el buscador ya lo decide
-            para los CEDEAR y los fondos, pero un bono, una ON o una acción
-            también se compran en dólares — y con "Cocos · USD" escondido, este
-            selector es la única forma de decirlo. */}
-        {mode === 'add' && dosMonedas && !form.is_cash && (
-          <div>
-            <label className="block text-xs text-ink-3 mb-1">¿En qué moneda pagaste?</label>
-            <div className="flex gap-2" role="group" aria-label="Moneda de la compra">
-              {[['ARS', 'Pesos'], ['USD', 'Dólares']].map(([c, t]) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-pressed={lotCcy === c}
-                  onClick={() => {
-                    if (lotCcy === c) return
-                    // El precio y el invertido de antes están en la otra moneda.
-                    setForm(f => ({ ...f, currency: c, buy_price: '', invested: '' }))
-                    setPricesFetched(false)
-                    if (form.asset) fetchAndFillPrice(form.asset, c)
-                  }}
-                  className={`px-4 py-1.5 text-sm rounded border transition-colors ${lotCcy === c
-                    ? 'border-rendi-accent/50 bg-rendi-accent/10 text-ink-0 font-medium'
-                    : 'border-line text-ink-2 hover:border-line-3'}`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
+        {/* Sin selector "¿En qué moneda pagaste?": en una cuenta argentina la
+            moneda la decide el activo elegido en el buscador (AAPL o AAPLD, AL30
+            o AL30D, el fondo en pesos o en dólares). Preguntarlo de nuevo era un
+            paso que no agregaba nada — el precio que pagaste ya dice la moneda. */}
         {/* "Es cash" solo al EDITAR una fila que YA es efectivo (corregir un saldo
             mal importado). Al CREAR está oculto a propósito: esta alta NO registra
             el aporte —`_insert_manual_position` saltea toda la contabilidad con

@@ -129,3 +129,23 @@ export async function precioCedearEnDolares(simbolo) {
   const it = (items || []).find(x => x.s === String(simbolo || '').toUpperCase())
   return it?.px_usd ?? null
 }
+
+// En una cuenta argentina un soberano o una ON se compra en pesos (AL30) o en
+// dólares (AL30D): dos filas, como los CEDEAR, y la moneda sale de la fila que se
+// elige — el precio que pagaste ya dice en qué moneda pagaste. Los CER son sólo
+// en pesos y los ETF de bonos US no se tocan.
+const BONO_EN_DOS_MONEDAS = new Set(['Soberano AR', 'ON (Argentina)'])
+/** Las filas de bonos del buscador, con la moneda de cada una (`_ccy`). */
+export function bonosEnDosMonedas(lista, { enCuentaArgentina }) {
+  if (!enCuentaArgentina) return lista
+  return lista.flatMap(b => {
+    if (!BONO_EN_DOS_MONEDAS.has(b._sub)) return [b]
+    // El código en dólares sólo cuando es el de siempre (AL30 → AL30D); los
+    // BOPREAL, las ONs y los que ya terminan en D tienen otros.
+    const codigo = /^(AL|AE|AO|GD)\d{2}$/.test(b.s) ? `${b.s}D` : null
+    return [
+      { ...b, _ccy: 'ARS', _sub: `${b._sub} · en pesos` },
+      { ...b, _ccy: 'USD', _codigo: codigo, _sub: `${b._sub} · en dólares${codigo ? ` · ${codigo}` : ''}` },
+    ]
+  })
+}

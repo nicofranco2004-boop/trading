@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { opcionesCedear } from './opcionesCedear'
+import { opcionesCedear, bonosEnDosMonedas } from './opcionesCedear'
 
 const CURADA = [{ s: 'AAPL', n: 'Apple' }, { s: 'GOOGL', n: 'Alphabet' }, { s: 'BLK', n: 'BlackRock' }]
 // Recorte de lo que devuelve /api/cedears.
@@ -66,5 +66,37 @@ describe('opcionesCedear — auditoría 20/10', () => {
     const items = [{ s: 'BRK-B', pesos: 'BRKB', dolares: 'BRKBD', px_ars: 39180, px_usd: 25.45, fuente_usd: 'byma' }]
     const o = opcionesCedear(curada, items, { enCuentaArgentina: true })
     expect([...new Set(o.map(x => x.s))]).toEqual(['BRK-B'])
+  })
+})
+
+// Sin el selector "¿En qué moneda pagaste?" (20/10, pedido de Nico: el precio ya
+// dice la moneda), la única forma de comprar un AL30 en dólares en Cocos es elegir
+// la fila "en dólares" del buscador. Si esto se rompe, se compra en pesos sin aviso.
+describe('bonosEnDosMonedas', () => {
+  const BONOS = [
+    { s: 'AL30', n: 'Bonar 2030', _sub: 'Soberano AR' },
+    { s: 'BPOA7', n: 'BOPREAL 1-A', _sub: 'Soberano AR' },
+    { s: 'TX26', n: 'CER 2026', _sub: 'CER (ARS)' },
+    { s: 'YCA0O', n: 'YPF 2026', _sub: 'ON (Argentina)' },
+    { s: 'TLT', n: 'iShares 20+', _sub: 'ETF US' },
+  ]
+
+  it('en una cuenta argentina: soberanos y ONs en pesos y en dólares; CER y ETF US una sola fila', () => {
+    const o = bonosEnDosMonedas(BONOS, { enCuentaArgentina: true })
+    expect(o.filter(x => x.s === 'AL30').map(x => x._ccy)).toEqual(['ARS', 'USD'])
+    expect(o.filter(x => x.s === 'YCA0O').map(x => x._ccy)).toEqual(['ARS', 'USD'])
+    expect(o.filter(x => x.s === 'TX26')).toEqual([BONOS[2]])
+    expect(o.filter(x => x.s === 'TLT')).toEqual([BONOS[4]])
+  })
+
+  it('el código en dólares sólo cuando es el de siempre (AL30D), y se encuentra buscándolo', () => {
+    const o = bonosEnDosMonedas(BONOS, { enCuentaArgentina: true })
+    expect(o.find(x => x.s === 'AL30' && x._ccy === 'USD')).toMatchObject({ _codigo: 'AL30D', _sub: 'Soberano AR · en dólares · AL30D' })
+    expect(o.find(x => x.s === 'BPOA7' && x._ccy === 'USD')).toMatchObject({ _codigo: null, _sub: 'Soberano AR · en dólares' })
+    expect(o.find(x => x.s === 'YCA0O' && x._ccy === 'ARS')._sub).toBe('ON (Argentina) · en pesos')
+  })
+
+  it('fuera de una cuenta argentina la lista queda igual', () => {
+    expect(bonosEnDosMonedas(BONOS, { enCuentaArgentina: false })).toBe(BONOS)
   })
 })
