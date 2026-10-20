@@ -675,7 +675,9 @@ class DeshacerDelChat(_Base):
             "broker_id": broker_id, "asset": "AAPL", "quantity": 10,
             "summary": "compra de 10 AAPL", "ts": time.time()}
         self.addCleanup(main._LAST_CHAT_TRADE.pop, self.uid, None)
-        cruce = self.cruzar("SELECT quantity FROM positions WHERE id=? AND user_id=?")
+        # El texto EXACTO de la lectura del deshacer (main._undo_last_trade_handler):
+        # lee también la nota del alta, que dice de qué caja salió la plata.
+        cruce = self.cruzar("SELECT quantity, broker, undo_meta_json FROM positions WHERE id=? AND user_id=?")
 
         rs = self.dos_a_la_vez(lambda: main._undo_last_trade_handler(self.uid))
 

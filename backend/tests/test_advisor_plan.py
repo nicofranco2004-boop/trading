@@ -519,6 +519,40 @@ class ReviewFixesTest(AdvisorBase):
         r = self.http.post("/api/advisor/group-op", json=body, headers=self._hdr(self.advisor))
         self.assertEqual(r.status_code, 400)  # ninguna fila válida
 
+    def test_group_op_en_dolares_en_cuenta_argentina_va_a_su_pata_y_se_deshace(self):
+        # 20/10: dólares en una cuenta en pesos ya no se saltean — van a la pata
+        # '· USD' del cliente (la crea si no existe), como una compra del propio
+        # cliente. El autodepósito queda en DÓLARES y el deshacer devuelve todo ahí.
+        body = {"asset": "AAPL", "currency": "USD", "asset_type": "CEDEAR",
+                "rows": [{"client_uid": self.client_uid, "broker": "Cocos",
+                          "quantity": 10, "buy_price": 18}]}
+        r = self.http.post("/api/advisor/group-op", json=body, headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["skipped"], [])
+        conn = main.get_db()
+        try:
+            lote = conn.execute(
+                "SELECT broker, currency FROM positions WHERE user_id=? AND asset='AAPL'",
+                (self.client_uid,)).fetchone()
+            self.assertEqual((lote["broker"], lote["currency"]), ("Cocos · USD", "USD"))
+            item = conn.execute(
+                "SELECT autodep_native, autodep_usd FROM advisor_op_batch_items WHERE batch_id=?",
+                (r.json()["batch_id"],)).fetchone()
+            self.assertAlmostEqual(item["autodep_native"], 180.0, places=2)
+            self.assertAlmostEqual(item["autodep_usd"], 180.0, places=2)   # no 180 ÷ MEP
+        finally:
+            conn.close()
+        u = self.http.post(f"/api/advisor/group-op/{r.json()['batch_id']}/undo",
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(u.status_code, 200, u.text)
+        conn = main.get_db()
+        try:
+            caja = conn.execute("SELECT invested FROM positions WHERE user_id=? AND broker=? "
+                                "AND is_cash=1", (self.client_uid, "Cocos · USD")).fetchone()
+            self.assertAlmostEqual(float(caja["invested"] or 0) if caja else 0.0, 0.0, places=6)
+        finally:
+            conn.close()
+
     def test_undo_parcial_no_marca_lote_y_permite_reintento(self):
         # Lote a 2 clientes → revocar B → undo revierte A y NO estampa
         # undone_at → re-activar B → segundo undo revierte B y cierra el lote.

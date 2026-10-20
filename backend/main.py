@@ -9826,8 +9826,11 @@ def _fetch_data912_equities():
                 sym = item.get('symbol')
                 close = item.get('c')
                 if sym and close and close > 0:
+                    # `mercado`: de qué lista vino. El buscador de CEDEARs
+                    # (cedears_dolar) lee SÓLO los de arg_cedears: con las acciones
+                    # argentinas mezcladas, YPFD se leía como "YPF en dólares".
                     result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
-                                   'v': item.get('v')}
+                                   'v': item.get('v'), 'mercado': endpoint}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -10318,6 +10321,39 @@ def _log_etapas_precios(crono: "_Cronometro", pedidos: int, sin_cache: int) -> N
     log.log(logging.WARNING if total >= 10 else logging.INFO,
             "precios: %d símbolos (%d sin caché) en %.1f s — %s",
             pedidos, sin_cache, total, crono.texto())
+
+
+@app.get("/api/cedears")
+def get_cedears(uid: int = Depends(get_effective_user)):
+    """Todos los CEDEARs de BYMA con su precio en pesos y en dólares (especie D).
+
+    Lo lee el buscador de "Registrar compra": en un broker argentino cada CEDEAR
+    aparece en pesos y en dólares, y al elegir el de dólares el formulario se
+    precarga con `px_usd`. Ver cedears_dolar.py (qué precio en dólares se usa y
+    por qué no siempre es el de BYMA)."""
+    import cedears_dolar
+    feed = {s: f for s, f in (_fetch_data912_equities() or {}).items()
+            if f.get('mercado') == 'arg_cedears'}
+    mep = _current_cedear_rate()
+    # Antes de la apertura el feed de BYMA viene a la mitad (medido 20/10: 465
+    # códigos a las 10:23 contra 1.025 a las 9:56): faltan raíces y especies, y
+    # con lo que falta los pares se arman peor (Petrobras y Vale quedaban sin
+    # dólares). Con un feed parcial se devuelve la última lista armada con uno
+    # completo — los precios del feed son los del último cierre igual.
+    items = cedears_dolar.universo(feed, mep)
+    ult = _CEDEARS_ULTIMO
+    if ult["items"] and len(feed) < 0.8 * ult["n_feed"]:
+        return {"mep": mep, "items": ult["items"], "parcial": True}
+    if items and len(feed) >= ult["n_feed"] * 0.8:
+        ult["items"], ult["n_feed"] = items, max(len(feed), ult["n_feed"])
+    return {"mep": mep, "items": items}
+
+
+# La última lista de CEDEARs armada con un feed completo (ver get_cedears). En
+# memoria: si el proceso arranca antes de la apertura, la primera lista es la del
+# feed parcial, sin raíces disfrazadas (cedears_dolar._PRECIO_DE_DOLAR) pero con
+# menos dólares hasta que el feed se complete.
+_CEDEARS_ULTIMO = {"items": None, "n_feed": 0}
 
 
 @app.get("/api/prices")
@@ -11440,6 +11476,11 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
     # una posición dada de alta a las 22:00 nacía fechada mañana.
     entry_date = p.entry_date or _iso_today()
+    # La pata de la cuenta que corresponde a la moneda: una compra en dólares
+    # "en Cocos" vive en 'Cocos · USD', que es donde están sus dólares. De acá
+    # para abajo todo (la fila, la caja, el autodepósito, el borrado) usa ESTE
+    # broker y no el que vino en el pedido.
+    broker = _pata_de_la_moneda(conn, uid, p.broker, p.currency)
     # Moneda nativa del lote: explícita del form, o inferida del broker
     # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
     # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
@@ -11447,7 +11488,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     if not resolved_ccy and not p.is_cash:
         _br = conn.execute(
             "SELECT currency FROM brokers WHERE user_id=? AND name=?",
-            (uid, p.broker)).fetchone()
+            (uid, broker)).fetchone()
         resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
     # TC de compra: si el usuario dejó el campo en blanco y el lote es en pesos,
     # se completa con el dólar de la FECHA de la compra (hoy o retroactiva —
@@ -11470,7 +11511,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
            invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
+        (uid, broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
          invested, tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
          (p.asset_type or None), resolved_ccy),
     )
@@ -11486,14 +11527,21 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
             # depositamos el faltante (sube cash + capital aportado) antes
             # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
             _adm: dict = {}
-            _autodep = _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date,
+            _autodep = _autodeposit_if_overdraw(conn, uid, broker, cost, entry_date,
                                                 meta_out=_adm, ref=f"pos:{new_id}")
             if meta_out is not None:
                 # El caller (op grupal) persiste esto para que el undo acredite
                 # EXACTO lo debitado y revierta el autodepósito si lo hubo.
                 meta_out.update({"cost": cost, "autodep_native": _autodep,
+                                 # Los dólares del autodepósito tal como se
+                                 # asentaron, y la caja real (la pata de la
+                                 # moneda): quien persiste el undo los copia en
+                                 # vez de recalcularlos con la moneda del broker
+                                 # que vino en el pedido.
+                                 "autodep_usd": (_adm or {}).get("usd"),
+                                 "broker": broker,
                                  "entry_date": entry_date})
-            _adjust_broker_cash(conn, uid, p.broker, -cost)
+            _adjust_broker_cash(conn, uid, broker, -cost)
             # Reversibilidad del alta manual: guardamos en la fila lo que debitó y el
             # autodepósito que disparó (si hubo). El borrado tiene que devolver
             # `cost − autodep` y revertir el flujo mensual del autodepósito; devolver
@@ -11508,7 +11556,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
                                   # desde Cartera); guardamos el de origen para que el
                                   # borrado detecte el cambio en vez de devolver la plata
                                   # al broker equivocado.
-                                  "broker": p.broker}),
+                                  "broker": broker}),
                  new_id, uid))
 
     return conn.execute(
@@ -12794,6 +12842,17 @@ class CashFlowIn(BaseModel):
     # depósito") — monthly_entries bookea el AÑO/MES de esta fecha (mismo
     # patrón que _autodeposit_if_overdraw, que ya registra retro por fecha).
     date: Optional[str] = Field(None, max_length=10)
+    # Moneda del movimiento ('ARS'|'USD'). None → la del broker (lo de siempre).
+    # Dólares "en Cocos" van a la caja de 'Cocos · USD' (ver _pata_de_la_moneda).
+    currency: Optional[str] = Field(None, max_length=8)
+
+    @field_validator('currency')
+    @classmethod
+    def clean_currency(cls, v):
+        if not v:
+            return None
+        u = v.strip().upper()
+        return u if u in ('ARS', 'USD', 'USDT') else None
 
     @field_validator('direction')
     @classmethod
@@ -13924,6 +13983,23 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 ).fetchone()
                 if not broker_row:
                     raise HTTPException(404, f"Broker '{data.broker_name}' no encontrado")
+                # Dólares "en Cocos" → la caja de 'Cocos · USD' (y pesos en un
+                # sub-broker dólar → la del padre). Si el retiro rebota por saldo, la
+                # transacción entera se deshace, incluido el sub-broker recién creado.
+                # En una variable propia (no se pisa el pedido: ver la venta).
+                broker_name = _pata_de_la_moneda(conn, uid, data.broker_name, data.currency)
+                if broker_name != data.broker_name:
+                    broker_row = conn.execute(
+                        "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker_name)
+                    ).fetchone()
+                # Una moneda que la cuenta no tiene (pesos en IBKR) no se acepta: antes
+                # pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
+                if data.currency:
+                    _pedida = "ARS" if data.currency.upper() == "ARS" else "USD"
+                    _caja = "ARS" if broker_row["currency"] == "ARS" else "USD"
+                    if _pedida != _caja:
+                        raise HTTPException(400, f"{data.broker_name} no tiene caja en "
+                                                 f"{'pesos' if _pedida == 'ARS' else 'dólares'}.")
 
                 currency = broker_row['currency']   # 'USDT' or 'ARS'
                 sign = 1 if data.direction == 'deposit' else -1
@@ -13933,7 +14009,7 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 # había caja); un DEPÓSITO pasa siempre, aunque el saldo siga en rojo
                 # (la idea es ir achicando el descubierto). La puerta toma el saldo
                 # antes de leerlo: dos movimientos a la vez cuentan los dos.
-                _adjust_broker_cash(conn, uid, data.broker_name, sign * data.amount,
+                _adjust_broker_cash(conn, uid, broker_name, sign * data.amount,
                                     permite_negativo=False)
 
                 # 3 & 4. Ambas entradas (broker + global) se guardan en USD.
@@ -13968,12 +14044,12 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 # El día del movimiento: el que eligió la persona, o hoy (argentino)
                 # si no mandó ninguno.
                 _flujo_id = _registrar_flujo_a_mano(
-                    conn, uid, data.broker_name, _fy, _fm, data.direction, amount_usd,
+                    conn, uid, broker_name, _fy, _fm, data.direction, amount_usd,
                     native_amount=data.amount,
                     fecha=(_fd.date().isoformat() if _fd_ok else _iso_today()),
                     origen="efectivo")
                 # Phase 8 — repair chain for both touched brokers.
-                _repair_monthly_chain(conn, uid, data.broker_name)
+                _repair_monthly_chain(conn, uid, broker_name)
                 _repair_monthly_chain(conn, uid, 'global')
 
             # Un depósito o retiro cambia lo aportado: lo que la IA tenía guardado
@@ -14993,6 +15069,11 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     """
     parent_id = parent_broker_row['id']
     parent_name = parent_broker_row['name']
+    # El turno de escritura ANTES de mirar si existe: dos pedidos a la vez que
+    # traen los primeros dólares de la cuenta (un depósito y una venta) veían
+    # los dos que no había pata, los dos la creaban y el segundo rebotaba con
+    # "UNIQUE constraint failed". Con el turno, el segundo espera y la encuentra.
+    _tomar_turno(conn, uid)
     sibling = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND parent_broker_id=? AND currency='USDT'",
         (uid, parent_id),
@@ -15020,6 +15101,67 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     return dict(conn.execute(
         "SELECT * FROM brokers WHERE id=? AND user_id=?", (cur.lastrowid, uid)
     ).fetchone())
+
+
+def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
+                       crear: bool = True) -> str:
+    """El broker REAL donde vive algo hecho "en `broker`" en la moneda `currency`.
+
+    Cada broker tiene UNA caja de efectivo y esa caja tiene UNA moneda. Los
+    dólares de una cuenta argentina viven en su sub-broker '<Padre> · USD'
+    (`_ensure_usd_sibling`). El usuario ya no elige ese sub-broker: elige "Cocos"
+    y la moneda, y esto lo traduce. Lo cargado a mano va ENTERO a la pata (lote y
+    plata). OJO: el importador NO hace lo mismo con los CEDEAR pagados en dólares —
+    deja el lote en el padre y saca la plata de la pata (`persister.cash_broker_for`,
+    a propósito, por un reporte de Balanz). Las dos formas conviven: el FIFO y la
+    cuenta unificada miran el par entero (`broker_pair`).
+
+      • broker ARS  + moneda USD → el sub-broker '· USD' (se crea si no existe).
+      • sub-broker '· USD' de un padre ARS + moneda ARS → el padre.
+      • cualquier otro caso (sin moneda, misma moneda, broker del exterior,
+        broker desconocido) → el mismo `broker`, sin tocar nada.
+
+    Sin esto, una compra en dólares anotada a "Cocos" descontaba los dólares de
+    la caja de PESOS, y el autodepósito del faltante quedaba asentado como pesos
+    (medido: un aporte de US$ 30.000 anotado como US$ 19).
+
+    Lo usan las tres puertas por donde entra o sale plata de una cuenta a mano:
+    el alta de una compra (`_insert_manual_position`, que también usan el chat y la
+    compra grupal del asesor), la venta (`/api/positions/sell`) y el
+    depósito/retiro (`/api/cash/flow`). El chat además resuelve la pata al validar
+    (`_register_trade`) y lee dónde quedó con `_pata_existente`.
+    """
+    if not currency:
+        return broker
+    ccy = "ARS" if currency.strip().upper() == "ARS" else "USD"
+    row = conn.execute(
+        "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)
+    ).fetchone()
+    if not row:
+        return broker
+    if row["currency"] == "ARS":
+        if ccy == "USD":
+            if crear:
+                return _ensure_usd_sibling(conn, uid, row)["name"]
+            hijo = conn.execute(
+                "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=? "
+                "AND currency='USDT' LIMIT 1", (uid, row["id"])).fetchone()
+            return hijo["name"] if hijo else broker
+        return broker
+    if ccy == "ARS" and row["parent_broker_id"]:
+        padre = conn.execute(
+            "SELECT name, currency FROM brokers WHERE user_id=? AND id=?",
+            (uid, row["parent_broker_id"]),
+        ).fetchone()
+        if padre and padre["currency"] == "ARS":
+            return padre["name"]
+    return broker
+
+
+def _pata_existente(conn, uid: int, broker: str, currency: Optional[str]) -> str:
+    """Lo mismo que `_pata_de_la_moneda` pero SIN crear la pata: para leer dónde
+    quedó algo (el deshacer del chat), nunca para escribir."""
+    return _pata_de_la_moneda(conn, uid, broker, currency, crear=False)
 
 
 @app.post("/api/conversions")
@@ -15332,9 +15474,18 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción
+                # Lo cobrado entra a la caja de SU moneda: una venta en dólares "en
+                # Cocos" acredita en 'Cocos · USD'. Los lotes se buscan igual en
+                # todo el par (ver broker_pair abajo), así que esto sólo decide a qué
+                # caja va la plata y con qué broker se asienta la venta.
+                # En una variable propia, NO en `data.broker`: el decorador
+                # @reintentar_si_trabada vuelve a llamar con el MISMO pedido, y si la
+                # primera vuelta se deshizo después de crear la pata, el reintento
+                # arrancaba con un broker que ya no existía.
+                broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
                 # Obtener moneda del broker
                 br = conn.execute(
-                    "SELECT currency FROM brokers WHERE name=? AND user_id=?", (data.broker, uid)
+                    "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid)
                 ).fetchone()
                 currency = br["currency"] if br else "USDT"
                 # Moneda de venta normalizada (USDT→USD) + blue actual como fallback
@@ -15354,7 +15505,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # la fila donde vive el lote), pero deja el modelo FIFO idéntico al del
                 # import/rebuild. El cash sigue per-broker (entra al broker de la venta).
                 from importing.persister import broker_pair
-                _pair = broker_pair(conn, uid, data.broker)
+                _pair = broker_pair(conn, uid, broker)
                 _ph = ",".join("?" * len(_pair))
                 # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
                 all_positions = conn.execute(
@@ -15573,11 +15724,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         (_json_sell.dumps({
                             "src": "fifo_sell",
                             "cash": round(data.exit_price * take - chunk_commission_native, 6),
-                            # OJO: el cash se acredita a `data.broker`, pero la operación se
+                            # OJO: el cash se acredita a `broker`, pero la operación se
                             # estampa con el broker del LOTE — en un par padre↔'· USD' pueden
                             # ser distintos. Sin esto, el borrado reversaba el cash del broker
                             # EQUIVOCADO y dejaba los dos saldos corridos.
-                            "cash_broker": data.broker,
+                            "cash_broker": broker,
                             "pnl_usd": round(pnl_usd, 2),
                             "lot": {
                                 "id": p["id"], "broker": p["broker"], "asset": p["asset"],
@@ -15629,7 +15780,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
 
                 # ── Phase 2 — acreditar proceeds al cash del broker (moneda nativa) ──
                 if total_proceeds_native > 0:
-                    _adjust_broker_cash(conn, uid, data.broker, total_proceeds_native)
+                    _adjust_broker_cash(conn, uid, broker, total_proceeds_native)
 
                 # ── Registrar P&L realizado en monthly_entries ────────────────────────
                 # Usar el año/mes de la operación (no necessarily el mes actual).
@@ -15650,11 +15801,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 else:
                     pnl_for_broker = total_pnl_usd
 
-                _update_monthly_pnl_realized(conn, uid, data.broker, op_year, op_month, pnl_for_broker)
+                _update_monthly_pnl_realized(conn, uid, broker, op_year, op_month, pnl_for_broker)
                 _update_monthly_pnl_realized(conn, uid, 'global',    op_year, op_month, total_pnl_usd)
 
                 # Phase 8 — repair chain for both touched brokers (still in tx).
-                _repair_monthly_chain(conn, uid, data.broker)
+                _repair_monthly_chain(conn, uid, broker)
                 _repair_monthly_chain(conn, uid, 'global')
 
                 ops = [dict(conn.execute(
@@ -33173,6 +33324,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # o USD que se venden a pesos) e es INDEPENDIENTE del broker (que es
         # siempre el padre ARS) → no se fuerza.
         currency = str(fields.get("currency") or "").strip().upper()
+        _sin_caja_usd = False   # dólares en una cuenta AR que todavía no tiene pata USD
         if _is_convert:
             if broker and broker_ccy != "ARS":
                 _TRADE_DRAFT.pop(uid, None)
@@ -33209,12 +33361,33 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                                "Si acepta el de hoy, re-llamá con "
                                "price_source='market_today'; si dio otro, mandá tc=<ese número>")
         elif broker_ccy:
+            # Dólares "en Cocos": van a la pata en dólares de la cuenta, como en la
+            # app (_pata_de_la_moneda). El usuario ya no ve 'Cocos · USD' en
+            # ninguna lista, así que mandarlo a nombrarla era un callejón sin salida.
+            # Si la pata existe, se valida contra ELLA (su caja, su id); si no
+            # existe, la caja en dólares está en 0 y la crea la escritura.
+            # Sólo CEDEARs (y la plata): es lo único que el chat registra en dólares
+            # en una cuenta argentina. Una acción argentina "en dólares" casi
+            # siempre es el modelo equivocándose de moneda, y este control es la
+            # red que lo frena (test_currency_broker_mismatch_rejected).
+            if (currency == "USD" and broker_ccy == "ARS"
+                    and (action in ("deposit", "withdraw")
+                         or (action in ("buy", "sell") and kind == "CEDEAR"))):
+                _leg = conn.execute(
+                    "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=? "
+                    "AND currency != 'ARS' ORDER BY id LIMIT 1",
+                    (uid, brokers[broker]["id"])).fetchone()
+                if _leg and _leg["name"] in brokers:
+                    broker = _leg["name"]
+                else:
+                    _sin_caja_usd = True
+                broker_ccy = "USD"
             if currency and currency != broker_ccy:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
                     f"{broker} opera en {broker_ccy}, pero la operación vino en "
                     f"{currency}. Si el activo lo tiene en la otra moneda es otro "
-                    f"broker (o el sub-broker '· USD'). Confirmá con el usuario."
+                    f"broker. Confirmá con el usuario."
                 )}
             currency = broker_ccy   # server manda: la moneda es la del broker
         elif currency not in ("ARS", "USD"):
@@ -33562,7 +33735,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # retiro (o pata origen de una transferencia): no puede dejar el
             # cash negativo — mismo predicado que el endpoint (que igual lo
             # re-chequea al ejecutar; acá evitamos armar un pendiente muerto)
-            cash_row = conn.execute(
+            cash_row = None if _sin_caja_usd else conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, broker)).fetchone()
             cash_now = float(cash_row["invested"] or 0) if cash_row else 0.0
@@ -33574,7 +33747,9 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     "si el monto o el broker son otros."
                 )}
         elif action == "buy":
-            cash_row = conn.execute(
+            # Sin pata en dólares todavía, la caja en dólares está en 0 (la de
+            # `broker`, que sigue siendo el padre, es la de PESOS).
+            cash_row = None if _sin_caja_usd else conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, broker)).fetchone()
             cash_now = float(cash_row["invested"] or 0) if cash_row else 0.0
@@ -33677,13 +33852,23 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                 _tc = _current_cedear_rate() or _user_tc_blue(_c2, uid)
             finally:
                 _c2.close()
+            # Con la moneda: dólares "en Cocos" van a la pata en dólares (y la
+            # crea si hace falta). El deshacer tiene que apuntar a ESA caja, no al
+            # broker que nombró el usuario.
             cash_flow(CashFlowIn(
                 broker_name=broker_name, direction=p["action"],
-                amount=p["amount"], tc_blue=_tc,
+                amount=p["amount"], tc_blue=_tc, currency=p.get("currency"),
                 date=None if p.get("date_is_today") else p.get("date")), uid)
             _ai_cache_invalidate(uid)   # cash_flow no lo hace (create_position sí)
+            _c3 = get_db()
+            try:
+                _fila = _c3.execute(
+                    "SELECT id FROM brokers WHERE user_id=? AND name=?",
+                    (uid, _pata_existente(_c3, uid, broker_name, p.get("currency")))).fetchone()
+            finally:
+                _c3.close()
             _LAST_CHAT_TRADE[uid] = {
-                "kind": p["action"], "broker_id": p.get("broker_id"),
+                "kind": p["action"], "broker_id": (_fila["id"] if _fila else p.get("broker_id")),
                 "amount": p["amount"], "tc_used": _tc,
                 "summary": _register_trade_summary(p), "ts": now}
         elif p["action"] == "convert":
@@ -34069,7 +34254,7 @@ def _undo_last_trade_handler(uid: int) -> dict:
             _LAST_CHAT_TRADE.pop(uid, None)
             return {"error": "El broker de esa operación ya no existe. Revisá desde la app."}
         with conn:
-            row = conn.execute("SELECT quantity FROM positions WHERE id=? AND user_id=?",
+            row = conn.execute("SELECT quantity, broker, undo_meta_json FROM positions WHERE id=? AND user_id=?",
                                (info["position_id"], uid)).fetchone()
             if not row:
                 _LAST_CHAT_TRADE.pop(uid, None)
@@ -34083,7 +34268,21 @@ def _undo_last_trade_handler(uid: int) -> dict:
             if conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
                             (info["position_id"], uid, row["quantity"])).rowcount != 1:
                 return {"error": "Esa compra ya se está deshaciendo. Nada más para deshacer."}
-            _adjust_broker_cash(conn, uid, br["name"], info["cash_debited"])
+            # La plata vuelve a la caja de la que SALIÓ, que el alta dejó anotada
+            # en la fila (`undo_meta_json.broker`, ver _insert_manual_position).
+            # Ni el broker que eligió el chat (una compra en dólares "en Cocos" se
+            # debita de 'Cocos · USD') ni el broker ACTUAL del lote (si se lo movió
+            # a otro broker después, la plata no salió de ahí).
+            # Si ese nombre ya no existe (un renombre que no reescribió la nota),
+            # el broker actual del lote: el renombre sí lo arrastra.
+            import json as _json_undo
+            try:
+                _caja = (_json_undo.loads(row["undo_meta_json"] or "{}") or {}).get("broker")
+            except (TypeError, ValueError):
+                _caja = None
+            if not _caja or not _broker_existe(conn, uid, _caja):
+                _caja = row["broker"] if _broker_existe(conn, uid, row["broker"]) else br["name"]
+            _adjust_broker_cash(conn, uid, _caja, info["cash_debited"])
     finally:
         conn.close()
     _LAST_CHAT_TRADE.pop(uid, None)
@@ -49557,9 +49756,13 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
             # Guard de moneda: un lote ARS no puede caer en un broker USD del
             # cliente (mezcla ARS+USD en el FIFO + débito de cash en la moneda
             # equivocada). Se saltea la fila con razón explícita.
-            if batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
-                hint = " — usá su sub-cuenta dólar (crear desde la Cartera del cliente)" \
-                    if _ccy_family(batch_ccy) == "USD" else ""
+            # Dólares en una cuenta argentina SÍ pasan: van a su pata en dólares
+            # (_pata_de_la_moneda, adentro de _insert_manual_position), igual que
+            # una compra del propio cliente. Pesos en un broker en dólares, no.
+            if batch_ccy and _ccy_family(batch_ccy) == "USD" and bc == "ARS":
+                pass
+            elif batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
+                hint = ""
                 skipped.append({"client_uid": cid,
                                 "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row['broker']!r} ({bc}){hint}"})
                 continue
@@ -49591,13 +49794,12 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
                 _adep_n = float(meta.get("autodep_native") or 0)
                 _adep_usd = None
                 if _adep_n > 0:
-                    # Misma conversión que _autodeposit_if_overdraw (ahora MEP de la
-                    # fecha) — se persiste para revertir el flujo. Tiene que usar el
-                    # MISMO rate o el undo revierte un monto distinto del aplicado.
-                    _bc = broker_ccy.get((row["client_uid"], row["broker"]))
-                    _tcb = (_autodeposit_rate(conn, row["client_uid"], meta.get("entry_date"))
-                            if _bc == "ARS" else 0)
-                    _adep_usd = round(_adep_n / _tcb, 2) if (_bc == "ARS" and _tcb > 0) else round(_adep_n, 2)
+                    # Los dólares que _autodeposit_if_overdraw ASENTÓ (meta_out), no
+                    # una segunda cuenta: antes se recalculaban acá con la moneda del
+                    # broker pedido, y con la compra en dólares mandada a la pata
+                    # en dólares (_pata_de_la_moneda) esa moneda ya no es la de la caja.
+                    _adep_usd = (round(float(meta["autodep_usd"]), 2)
+                                 if meta.get("autodep_usd") is not None else round(_adep_n, 2))
                 conn.execute(
                     """INSERT INTO advisor_op_batch_items
                        (batch_id, client_uid, position_id, cost_debited,
@@ -49980,8 +50182,16 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                 # PREVIO al lote (audit: acreditar el costo entero dejaba cash
                 # y capital aportado fantasma en cada cuenta sin fondos).
                 credit = round((cost or 0) - autodep_n, 6)
+                # La caja de la que SALIÓ la plata (la anotó el alta en la fila), no
+                # el broker actual del lote: si el cliente lo movió de broker después,
+                # el crédito y el autodepósito iban a parar a la cuenta equivocada.
+                try:
+                    _caja = ((json.loads(pos["undo_meta_json"] or "{}") or {}).get("broker")
+                             or pos["broker"])
+                except (TypeError, ValueError):
+                    _caja = pos["broker"]
                 if credit > 0:
-                    _adjust_broker_cash(conn, cid, pos["broker"], credit)
+                    _adjust_broker_cash(conn, cid, _caja, credit)
                 if autodep_n > 0 and it["autodep_usd"]:
                     _ym = str(it["autodep_ym"] or "")
                     try:
@@ -49998,10 +50208,10 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                                     .get("autodep") or {}).get("flujo_id")
                         except (TypeError, ValueError):
                             _fid = None
-                        _restar_flujo_a_mano(conn, cid, pos["broker"], _ay, _am, 'deposit',
+                        _restar_flujo_a_mano(conn, cid, _caja, _ay, _am, 'deposit',
                                              float(it["autodep_usd"]), native_amount=autodep_n,
                                              flujo_id=_fid, motivo="operacion_grupal_deshecha")
-                        _repair_monthly_chain(conn, cid, pos["broker"])
+                        _repair_monthly_chain(conn, cid, _caja)
                         _repair_monthly_chain(conn, cid, 'global')
                 conn.execute(
                     "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",
