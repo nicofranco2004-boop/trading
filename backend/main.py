@@ -11623,6 +11623,9 @@ class PositionGroupEditIn(BaseModel):
     asset: str                                   # el activo ACTUAL (identifica al grupo)
     currency: Optional[str] = None               # el grupo se arma por moneda (la fila agregada también)
     new_asset: Optional[str] = None              # renombrar el ticker
+    # Cambiar el TIPO (CEDEAR ↔ acción): el código suele ser el mismo (AMZN, IREN),
+    # así que renombrar no alcanza — es el tipo lo que decide con qué precio se valúa.
+    new_asset_type: Optional[str] = Field(None, max_length=16)
     avg_price: Optional[float] = Field(None, gt=0)   # nuevo precio PROMEDIO ponderado
     tc_mode: Optional[str] = None                # 'historical' | 'fixed'
     tc_value: Optional[float] = Field(None, gt=0)
@@ -11656,6 +11659,24 @@ def _src_tx_for_position(conn, uid: int, pid: int):
     ).fetchone()
 
 
+def _cambiar_tipo_del_lote(conn, uid: int, pid: int, asset_type: str) -> None:
+    """Pone el tipo de activo de UN lote, y también en la fila del import que lo
+    creó (si vino de un archivo). Es la única puerta de las dos ediciones (un lote
+    y la posición entera).
+
+    La fila del import es la que manda después: el rehacer del FIFO
+    (`rebuild_pair_asset`, que corre al borrar una operación o al reimportar) vuelve
+    a escribir los lotes con el tipo del evento, y la reconstrucción de la historia
+    (`ledger_replay`) lo lee de ahí antes que de `positions`. Cambiar sólo
+    `positions` duraba hasta la próxima de esas y el activo volvía a ser CEDEAR."""
+    conn.execute("UPDATE positions SET asset_type=? WHERE id=? AND user_id=?",
+                 (asset_type, pid, uid))
+    src = _src_tx_for_position(conn, uid, pid)
+    if src:
+        conn.execute("UPDATE import_normalized_tx SET asset_type=? WHERE id=?",
+                     (asset_type, src["id"]))
+
+
 def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     """Edita TODOS los lotes de un activo de una sola vez. Reversible.
 
@@ -11671,6 +11692,9 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
       • `tc_mode` → 'historical': el TC de la FECHA de cada lote (lo mismo que hace el
         alta manual); 'fixed': un único TC para todos. Un TC no se prorratea — no es
         una magnitud repartible como la plata.
+      • `new_asset_type` → IGUALAR, como el ticker. Es lo que separa el CEDEAR de
+        AMZN de la acción AMZN (mismo código): sin esto, «pasar a la acción» cambiaba
+        el promedio y el activo se seguía valuando con el precio del CEDEAR.
 
     La cantidad NO se edita acá: repartirla exige decidir de qué lote sacar, y eso
     cambia el FIFO y las fechas de compra. Eso sigue siendo por lote.
@@ -11682,13 +11706,14 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     asset = (p.asset or "").strip()
     # Renombrar A un código que ya no cotiza (SQ) deja el grupo con el vigente.
     new_asset = ticker_vigente((p.new_asset or "").strip())
+    new_type = (p.new_asset_type or "").strip().upper() or None
     if not broker or not asset:
         raise HTTPException(400, "Falta el broker o el activo")
     if p.tc_mode and p.tc_mode not in ("historical", "fixed"):
         raise HTTPException(400, "tc_mode inválido")
     if p.tc_mode == "fixed" and not p.tc_value:
         raise HTTPException(400, "Falta el tipo de cambio")
-    if not new_asset and p.avg_price is None and not p.tc_mode:
+    if not new_asset and p.avg_price is None and not p.tc_mode and not new_type:
         raise HTTPException(400, "No mandaste ningún cambio")
 
     lots = _group_lots(conn, uid, broker, asset, p.currency)
@@ -11710,12 +11735,14 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     snap_lots, snap_src = [], []
     for l in lots:
         snap_lots.append({"id": l["id"], "asset": l["asset"], "buy_price": l["buy_price"],
-                          "invested": l["invested"], "tc_compra": l["tc_compra"]})
+                          "invested": l["invested"], "tc_compra": l["tc_compra"],
+                          "asset_type": l["asset_type"]})
         src = _src_tx_for_position(conn, uid, l["id"])
         if src:
             snap_src.append({"id": src["id"], "asset_symbol": src["asset_symbol"],
                              "unit_price": src["unit_price"], "gross_amount": src["gross_amount"],
-                             "tc_compra": src["tc_compra"] if "tc_compra" in src.keys() else None})
+                             "tc_compra": src["tc_compra"] if "tc_compra" in src.keys() else None,
+                             "asset_type": src["asset_type"]})
 
     # ── Precio promedio: escalado proporcional ────────────────────────
     if p.avg_price is not None:
@@ -11760,6 +11787,11 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
             if src:
                 conn.execute("UPDATE import_normalized_tx SET tc_compra=? WHERE id=?",
                              (tc, src["id"]))
+
+    # ── Tipo de activo (CEDEAR ↔ acción) ──────────────────────────────
+    if new_type:
+        for l in lots:
+            _cambiar_tipo_del_lote(conn, uid, l["id"], new_type)
 
     # ── Renombrar el activo ───────────────────────────────────────────
     if new_asset and new_asset != asset:
@@ -11828,11 +11860,19 @@ def _undo_edit_position_group(conn, uid: int, token: str) -> dict:
             "UPDATE positions SET asset=?, buy_price=?, invested=?, tc_compra=? "
             "WHERE id=? AND user_id=?",
             (l["asset"], l["buy_price"], l["invested"], l["tc_compra"], l["id"], uid))
+        # El tipo, sólo si la foto lo guardó: las ediciones anteriores a que se
+        # pudiera cambiar no lo tocaron, y su undo tampoco tiene que tocarlo.
+        if "asset_type" in l:
+            conn.execute("UPDATE positions SET asset_type=? WHERE id=? AND user_id=?",
+                         (l["asset_type"], l["id"], uid))
     for s in pl.get("src", []):
         conn.execute(
             "UPDATE import_normalized_tx SET asset_symbol=?, unit_price=?, gross_amount=?, "
             "tc_compra=? WHERE id=?",
             (s["asset_symbol"], s["unit_price"], s["gross_amount"], s["tc_compra"], s["id"]))
+        if "asset_type" in s:
+            conn.execute("UPDATE import_normalized_tx SET asset_type=? WHERE id=?",
+                         (s["asset_type"], s["id"]))
     if pl.get("new_asset"):
         pair = pl.get("pair") or [pl.get("broker")]
         _ph = ",".join("?" * len(pair))
@@ -11891,7 +11931,8 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Ni editar una fila de efectivo, ni convertir un lote en efectivo (ver
         # _EFECTIVO_NO_SE_EDITA).
         _actual = conn.execute(
-            "SELECT is_cash, broker FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+            "SELECT is_cash, broker, asset_type FROM positions WHERE id=? AND user_id=?",
+            (pid, uid)).fetchone()
         if p.is_cash or (_actual and _actual["is_cash"]):
             raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
         # Mover el lote a OTRO broker: ese broker tiene que existir (el alta ya lo
@@ -11926,6 +11967,12 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
              p.tc_compra, p.price_override, p.notes, p.commissions or 0,
              p.entry_date, (p.asset_type or None), p.currency, pid, uid),
         )
+        # Pasó de CEDEAR a acción (o al revés): también en la fila del import, si
+        # el lote vino de un archivo — si no, el próximo rehacer lo devuelve al
+        # tipo viejo (ver _cambiar_tipo_del_lote).
+        _tipo = (p.asset_type or "").strip().upper()
+        if _actual and _tipo and _tipo != (_actual["asset_type"] or "").upper():
+            _cambiar_tipo_del_lote(conn, uid, pid, _tipo)
         conn.commit()
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()

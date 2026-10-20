@@ -28,7 +28,8 @@ import RecalculoDeCartera from '../components/RecalculoDeCartera'
 import { useRecalculoDeCartera } from '../hooks/useRecalculoDeCartera'
 import NumeroQueCambia from '../components/NumeroQueCambia'
 import SplitRatioBanner from '../components/SplitRatioBanner'
-import { isBondPosition } from '../utils/tickers'
+import { isBondPosition, CATEGORY_ASSET_TYPE } from '../utils/tickers'
+import { tipoDeLaEleccion, avisoDeCambioDeTipo, monedaAlCambiarDeTipo } from '../utils/cambioDeTipo'
 import { buildPositionActions } from '../utils/positionActions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
@@ -81,16 +82,6 @@ export const EMPTY_POS = {
   buy_price: '', quantity: '', invested: '', tc_compra: '', commissions: '', notes: '',
   price_override: '',
   entry_date: '', asset_type: '', currency: '',
-}
-
-// Categoría del flujo "Agregar" → asset_type guardado. Lo importante es CEDEAR:
-// en un broker USD define que se valúe por el precio LOCAL (.BA), no por la
-// acción US del ticker. Las acciones AR (panel líder/general) también son STOCK
-// de BYMA. El resto se deja sin tipo (se valúa por el ticker, que es lo correcto
-// para acciones US, ETFs y cripto reales).
-const CATEGORY_ASSET_TYPE = {
-  cedears: 'CEDEAR', stocks: 'STOCK', etfs: 'ETF', crypto: 'CRYPTO',
-  bonds: 'BOND', letras: 'LETRA', ar_lider: 'STOCK', ar_gen: 'STOCK',
 }
 
 // "Agregar compra" desde una fila de Cartera: UNA definición para escritorio y
@@ -3103,6 +3094,7 @@ function PositionsDesktop() {
         <EditGroupModal
           group={groupTarget}
           ctx={groupCtx}
+          brokers={brokers}
           onClose={() => setModal(null)}
           onSave={saveGroup}
         />
@@ -3608,10 +3600,20 @@ function sortBrokersForDisplay(brokers) {
   return flattenAccounts(groupBrokersIntoAccounts(brokers))
 }
 
+// Lo que cambia al pasar de CEDEAR a acción (o al revés), debajo del buscador de
+// las dos ediciones. Ver utils/cambioDeTipo.
+function AvisoDeTipo({ aviso }) {
+  if (!aviso) return null
+  const cls = aviso.tono === 'aviso'
+    ? 'text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/25'
+    : 'text-ink-2 bg-bg-2/50 border-line'
+  return <p className={`text-xs leading-relaxed border rounded px-3 py-2 ${cls}`}>{aviso.texto}</p>
+}
+
 // Editar la posición ENTERA (todos sus lotes). La fila agregada es una VISTA, no un
 // registro: cada campo baja a los lotes con una regla distinta, y la pantalla tiene
 // que decir cuál, porque no son intercambiables (ver el docstring del endpoint).
-export function EditGroupModal({ group, ctx, onClose, onSave }) {
+export function EditGroupModal({ group, ctx, brokers, onClose, onSave }) {
   const lots = group?._lots || []
   const totalQty = lots.reduce((s, l) => s + (l.quantity || 0), 0)
   const totalInv = lots.reduce((s, l) => s + (l.invested || 0), 0)
@@ -3619,6 +3621,9 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
   const isARS = (group?.currency || '').toUpperCase() === 'ARS'
 
   const [asset, setAsset] = useState(group?.asset || '')
+  // Lo elegido en el buscador (CEDEAR o acción: mismo código). Sólo cuenta si
+  // cambia el tipo que tienen hoy los lotes.
+  const [eleccion, setEleccion] = useState(null)
   const [avg, setAvg] = useState('')
   const [tcMode, setTcMode] = useState('')          // '' | 'historical' | 'fixed'
   const [tcValue, setTcValue] = useState('')
@@ -3628,7 +3633,14 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
   const avgNum = parseNumOrNull(avg)
   const k = (avgNum && avgNow > 0) ? avgNum / avgNow : null
   const renamed = asset && asset !== group?.asset
-  const nothing = !renamed && avgNum == null && !tcMode
+  const tipoNuevo = tipoDeLaEleccion(eleccion)
+  // Contra TODOS los lotes, no sólo el primero (que es el que rotula la fila): si
+  // alguno quedó con otro tipo, elegir el mismo que el primero también lo iguala.
+  const retipado = !!tipoNuevo
+    && lots.some(l => String(l.asset_type || '').toUpperCase() !== tipoNuevo)
+  const avisoTipo = avisoDeCambioDeTipo({
+    antes: group?.asset_type, eleccion, broker: group?.broker, brokers })
+  const nothing = !renamed && !retipado && avgNum == null && !tcMode
   const badAvg = avg !== '' && !(avgNum > 0)
   const badTc = tcMode === 'fixed' && !(parseNum(tcValue) > 0)
 
@@ -3645,13 +3657,18 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
 
         <div>
           <label className="block text-xs text-ink-3 mb-1">Activo</label>
-          <TickerSearch value={asset} onChange={setAsset} currency={group?.currency} />
+          <TickerSearch
+            value={asset}
+            onChange={(v, el) => { setAsset(v); setEleccion(tipoDeLaEleccion(el) ? el : null) }}
+            currency={group?.currency}
+          />
           {renamed && (
             <p className="text-[11px] text-ink-3 mt-1">
               Se renombra en los {lots.length} lotes, en sus operaciones y en el import que
               los creó (si no, la próxima importación lo volvería a dejar como estaba).
             </p>
           )}
+          {avisoTipo && <div className="mt-2"><AvisoDeTipo aviso={avisoTipo} /></div>}
         </div>
 
         <div>
@@ -3754,6 +3771,7 @@ export function EditGroupModal({ group, ctx, onClose, onSave }) {
             disabled={nothing || badAvg || badTc || saving}
             onClick={() => enVuelo.correr(() => onSave({
               new_asset: renamed ? asset : undefined,
+              new_asset_type: retipado ? tipoNuevo : undefined,
               avg_price: avgNum ?? undefined,
               tc_mode: tcMode || undefined,
               tc_value: tcMode === 'fixed' ? parseNum(tcValue) : undefined,
@@ -4147,6 +4165,13 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
   // exacto, pero conoce monto total e units).
   const [editOrder, setEditOrder] = useState(['buy_price', 'quantity', 'invested'])
   const [pricesFetched, setPricesFetched] = useState(false)
+  // El tipo con que se abrió el formulario y lo último elegido en el buscador:
+  // con los dos se avisa si la edición pasa de CEDEAR a acción (o al revés).
+  const [tipoAlAbrir] = useState(form.asset_type || '')
+  const [eleccion, setEleccion] = useState(null)
+  const avisoTipo = mode === 'edit' && eleccion
+    ? avisoDeCambioDeTipo({ antes: tipoAlAbrir, eleccion, broker: form.broker, brokers })
+    : null
   const inputClass = 'w-full bg-bg-2 border border-line-2 rounded-md px-3 py-2 text-sm text-ink-0 focus:outline-none focus:ring-2 focus:ring-rendi-accent/40 focus:border-rendi-accent/60 transition'
 
   // Si el asset viene preseteado desde el AddPositionFlow (no por TickerSearch
@@ -4220,9 +4245,18 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
     setPricesFetched(true)
   }
 
-  function onAssetChange(v) {
+  // `eleccion`: de qué lista del buscador salió (ver TickerSearch). Es lo que
+  // separa el CEDEAR de IREN de la acción IREN — mismo código —, así que el tipo
+  // y la moneda se toman de acá. Tipeado a mano no la trae: el tipo queda como
+  // estaba.
+  function onAssetChange(v, eleccion) {
     const upper = (v || '').toUpperCase()
-    setForm(f => ({ ...f, asset: upper }))
+    const tipo = tipoDeLaEleccion(eleccion)
+    setForm(f => tipo
+      ? { ...f, asset: upper, asset_type: tipo,
+          currency: monedaAlCambiarDeTipo({ moneda: f.currency, eleccion, broker: f.broker, brokers }) }
+      : { ...f, asset: upper })
+    setEleccion(tipo ? eleccion : null)
     setPricesFetched(false)
     if (upper.length >= 2) {
       // Pequeño debounce implícito: solo si el ticker tiene al menos 2 chars
@@ -4390,6 +4424,7 @@ export function PositionFormModal({ mode, form, setForm, brokers, selectedBroker
             )}
           </div>
         </div>
+        <AvisoDeTipo aviso={avisoTipo} />
 
         {/* Sin selector "¿En qué moneda pagaste?": en una cuenta argentina la
             moneda la decide el activo elegido en el buscador (AAPL o AAPLD, AL30

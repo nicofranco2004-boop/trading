@@ -111,8 +111,12 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
   const showManual = query.trim().length > 0 &&
     !filtered.some(f => f.s === query.trim().toUpperCase())
 
-  function pick(ticker) {
-    onChange(ticker)
+  // `onChange(ticker, eleccion)`: la elección dice de QUÉ lista salió (el CEDEAR
+  // de IREN o la acción IREN — mismo código). Sin ella, quien edita una posición
+  // no se entera de cuál eligió la persona y el tipo viejo queda guardado (ver
+  // utils/cambioDeTipo). Lo tipeado a mano y el "ticker manual" no la traen.
+  function pick(ticker, categoria) {
+    onChange(ticker, categoria ? { categoria } : undefined)
     setQuery(ticker)
     setOpen(false)
   }
@@ -134,7 +138,7 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
       setHighlightIdx(i => Math.max(0, i - 1))
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      if (highlightIdx < filtered.length) pick(filtered[highlightIdx].s)
+      if (highlightIdx < filtered.length) pick(filtered[highlightIdx].s, filtered[highlightIdx]._cat)
       else if (showManual) pick(query.trim().toUpperCase())
     } else if (e.key === 'Escape') {
       setOpen(false)
@@ -232,8 +236,8 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                 type="button"
                 data-idx={i}
                 onMouseEnter={() => setHighlightIdx(i)}
-                onClick={() => pick(item.s)}
-                className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between gap-3 transition border-l-2 ${
+                onClick={() => pick(item.s, item._cat)}
+                className={`w-full text-left px-3.5 py-2.5 flex items-center gap-3 transition border-l-2 ${
                   highlightIdx === i
                     ? 'bg-rendi-accent/10 border-rendi-accent'
                     : 'border-transparent hover:bg-bg-2 dark:hover:bg-bg-2'
@@ -244,11 +248,15 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
                   <span className="font-mono font-semibold text-sm text-ink-0 dark:text-white shrink-0 truncate max-w-[8rem]">
                     {item.s}
                   </span>
+                  {/* El tipo va pegado al código, no al borde derecho: dentro de
+                      «Editar» la lista es más ancha que la ventana y el borde
+                      derecho quedaba cortado — se veían dos «IREN» sin saber
+                      cuál era la acción y cuál el CEDEAR. */}
+                  <AssetTypeBadge type={CATEGORY_TO_TYPE[item._cat]} />
                   <span className="text-xs text-ink-3 truncate">
                     {item.n}
                   </span>
                 </div>
-                <AssetTypeBadge type={CATEGORY_TO_TYPE[item._cat]} />
               </button>
             ))}
             {showManual && (

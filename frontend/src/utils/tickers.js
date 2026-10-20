@@ -716,3 +716,16 @@ export const CATEGORY_TO_TYPE = {
   bonds: 'bond', ar_lider: 'stock_ar', ar_gen: 'stock_ar', indices: 'index',
   fci: 'fci',
 }
+
+// Categoría elegida en el buscador → asset_type que se GUARDA en la posición.
+// Lo importante es CEDEAR: en un broker USD define que se valúe por el precio
+// LOCAL (.BA), no por la acción US del ticker — y el código suele ser el mismo
+// (AMZN, IREN), así que el tipo es lo ÚNICO que los separa. Las acciones AR
+// (panel líder/general) también son STOCK de BYMA. El resto se deja sin tipo (se
+// valúa por el ticker, que es lo correcto para índices y fondos).
+// Una sola tabla para el alta (formDesdeElFlujo) y las dos ediciones
+// (utils/cambioDeTipo).
+export const CATEGORY_ASSET_TYPE = {
+  cedears: 'CEDEAR', stocks: 'STOCK', etfs: 'ETF', crypto: 'CRYPTO',
+  bonds: 'BOND', letras: 'LETRA', ar_lider: 'STOCK', ar_gen: 'STOCK',
+}

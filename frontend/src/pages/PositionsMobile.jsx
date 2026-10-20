@@ -2125,6 +2125,7 @@ export default function PositionsMobile() {
         <EditGroupModal
           group={groupTarget}
           ctx={groupCtx}
+          brokers={brokers}
           onClose={() => { setAddModal(null); setGroupTarget(null) }}
           onSave={saveGroup}
         />

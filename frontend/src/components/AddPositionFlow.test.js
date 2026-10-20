@@ -7,7 +7,7 @@
 // para que el resto del sistema lo trate igual que si lo hubiera elegido de una
 // lista. Ese contrato pasa por DOS mapas que viven en archivos distintos:
 //
-//   AddPositionFlow.TIPOS_OTRO[].cat  →  Positions.CATEGORY_ASSET_TYPE[cat]
+//   AddPositionFlow.TIPOS_OTRO[].cat  →  tickers.CATEGORY_ASSET_TYPE[cat]
 //
 // Un typo en el `cat` (un 'bond' donde va 'bonds') no rompe nada visible: el
 // activo se guarda igual, pero SIN asset_type. Y sin asset_type un CEDEAR
@@ -15,18 +15,18 @@
 // un bono no entra en la zona de Renta Fija, y nadie se entera hasta que el
 // usuario reporta que "los números están raros".
 //
-// Los dos mapas se leen del archivo fuente a propósito: importarlos rompería por
-// el JSX, y duplicarlos acá haría que el test se quede viejo justo cuando hace
-// falta.
+// TIPOS_OTRO se lee del archivo fuente a propósito: importarlo rompería por el
+// JSX, y duplicarlo acá haría que el test se quede viejo justo cuando hace
+// falta. CATEGORY_ASSET_TYPE vive en utils/tickers.js (JS sin JSX): se importa.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { CATEGORY_ASSET_TYPE } from '../utils/tickers'
 
 const AQUI = dirname(fileURLToPath(import.meta.url))
 const FLOW = readFileSync(join(AQUI, 'AddPositionFlow.jsx'), 'utf8')
-const POSITIONS = readFileSync(join(AQUI, '..', 'pages', 'Positions.jsx'), 'utf8')
 const TICKERS = readFileSync(join(AQUI, '..', 'utils', 'tickers.js'), 'utf8')
 
 /** Los `cat:` que ofrece el paso "Otro". */
@@ -42,11 +42,9 @@ function idsDeCategoria() {
   return new Set([...ids, 'fci'])   // 'fci' se agrega dinámico (catálogo del backend)
 }
 
-/** El mapa categoría → asset_type que usa Positions al guardar. */
+/** El mapa categoría → asset_type que usan el alta y las ediciones al guardar. */
 function mapaAssetType() {
-  const bloque = /const CATEGORY_ASSET_TYPE = \{([\s\S]*?)\}/.exec(POSITIONS)
-  expect(bloque, 'no encontré CATEGORY_ASSET_TYPE en Positions.jsx').toBeTruthy()
-  return new Set([...bloque[1].matchAll(/(\w+):\s*'/g)].map(m => m[1]))
+  return new Set(Object.keys(CATEGORY_ASSET_TYPE))
 }
 
 describe('paso "Otro" — agregar un activo que no está en la lista', () => {
