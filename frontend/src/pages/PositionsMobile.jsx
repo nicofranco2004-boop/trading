@@ -42,6 +42,7 @@ import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import PosicionesArchivadas from '../components/PosicionesArchivadas'
 import { lineaDelBono } from '../utils/lineaDelBono'
 import { filaSinUnaPata } from '../utils/filaFusionada'
+import { pctEnVista } from '../utils/pctDeLaFila'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import CuponesPorCobrar from '../components/CuponesPorCobrar'
@@ -53,7 +54,7 @@ import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, pctVar, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { cuerpoDeVenta, cuerpoDeConversion } from '../utils/formulariosCartera'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, avgCostArsPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import { isBondPosition } from '../utils/tickers'
 import { EtiquetaMoneda } from '../components/EtiquetaFila'
@@ -1164,6 +1165,9 @@ export default function PositionsMobile() {
         // rutearlo no cambia nada; con costo en pesos, en cambio, tomar
         // `buy_price` crudo lo inflaría ~1500×.
         avgPriceUsd: avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis, criptoProm),
+        // Y en pesos, los pesos que se pagaron — no el promedio en USD × el dólar
+        // de hoy (ver avgCostArsPerUnit). null fuera de un broker ARS: se deriva.
+        avgPriceArs: isAR ? avgCostArsPerUnit(p) : null,
       }
     })
   }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcValuacion, tcCedear, tcCripto, costBasis])
@@ -1194,7 +1198,7 @@ export default function PositionsMobile() {
     if (a.is_cash && !b.is_cash) return 1
     if (!a.is_cash && b.is_cash) return -1
     switch (sortBy) {
-      case 'pnl':   return (b.pnlPct || 0) - (a.pnlPct || 0)
+      case 'pnl':   return (pctEnVista(b, currency) || 0) - (pctEnVista(a, currency) || 0)
       case 'alpha': return (a.asset || '').localeCompare(b.asset || '')
       case 'value':
       default:      return (b.valueUsd || 0) - (a.valueUsd || 0)
@@ -1294,6 +1298,7 @@ export default function PositionsMobile() {
         // `...lots[0]` de arriba traía el del primer lote, que es el precio de
         // una sola compra y no el promedio del ticker.
         avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcValuacion, tcCedear, costBasis, criptoProm),
+        avgPriceArs: isAR ? avgCostArsPerUnit({ ...lots[0], quantity: totalQty, _lots: lots }) : null,
       })
     }
     return [...out, ...cash]
@@ -1392,7 +1397,7 @@ export default function PositionsMobile() {
     }
     groups.sort((a, b) => b.totalUsd - a.totalUsd)
     return groups
-  }, [filteredByBroker, enriched, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas])
+  }, [filteredByBroker, enriched, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas, currency])
 
   // Lista plana cuando hay filtro de broker activo
   const flatList = useMemo(() => {
@@ -1402,7 +1407,7 @@ export default function PositionsMobile() {
     const agg = aggregateMobile([...filteredByBroker], junta)
     agg.sort(comparePositions)
     return flattenMobile(agg)
-  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas])
+  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas, currency])
 
   // ¿Hay algo que desglosar en lo que se ve? Sale de los MISMOS grupos que se
   // dibujan (`grouped` / `flatList`), no de una regla aparte — misma decisión
@@ -2801,8 +2806,11 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
   // en la moneda del BROKER (`pnlLocal`), así que con el toggle en pesos un
   // broker USD seguía mostrando dólares.
-  // El PORCENTAJE no se toca: sigue siendo `p.pnlPct`, el retorno NOMINAL EN
-  // PESOS para posiciones ARS, igual que el desktop. Es decisión del dueño.
+  // El PORCENTAJE sale de la MISMA moneda que el monto (ver pctEnVista), igual
+  // que el desktop desde 932bebfc. Hasta el 21/10 acá se dejaba el % nominal en
+  // pesos también con la vista en dólares, y el comentario decía que así lo
+  // hacía el desktop — no era cierto: GGAL salía "−$133 · +13,4 %" en el
+  // celular y "−USD 132,56 · −16,4 %" en la compu, la misma posición.
   // En la fila que fusiona las dos monedas, `aggregateMobile` fuerza isAR=false y
   // manda el PORCENTAJE a la base display (pnlUsd/investedUsd, ruteada por
   // tc_compra). Si el MONTO siguiera saliendo de `pnlUsdToday` (base HOY), en la
@@ -2811,6 +2819,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   const pnlDisplay = displayCurrency === 'ARS'
     ? ((p._multiCcy ? p.pnlUsd : p.pnlUsdToday) * tcValuacion)
     : p.pnlUsd
+  const pnlPctDisplay = pctEnVista(p, displayCurrency)
   const [accionesAbiertas, setAccionesAbiertas] = useState(false)
   // Selector de pata para la fila que junta las dos monedas de la cuenta:
   // 'sell' | 'edit' | null. Desktop abre un modal con lo mismo.
@@ -2953,8 +2962,11 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   const valorDisp = displayCurrency === 'ARS' ? p.valueUsd * tcValuacion : p.valueUsd
   const dayDisp = p.dayVarUsd == null ? null
     : displayCurrency === 'ARS' ? p.dayVarUsd * tcValuacion : p.dayVarUsd
-  const avgDisp = p.avgPriceUsd == null ? null
-    : displayCurrency === 'ARS' ? p.avgPriceUsd * tcValuacion : p.avgPriceUsd
+  // En pesos, el promedio en pesos que se pagó; sólo si no lo hay (costo en
+  // dólares, otra moneda) se deriva del de USD. Mismo criterio que el desktop.
+  const avgDisp = displayCurrency === 'ARS'
+    ? (p.avgPriceArs ?? (p.avgPriceUsd != null ? p.avgPriceUsd * tcValuacion : null))
+    : p.avgPriceUsd
 
   // La línea de contexto del ancla. Para un LOTE va la fecha de compra, que es
   // lo único que lo distingue de sus hermanos. Se corta la fecha a mano en vez
@@ -3043,11 +3055,8 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
         <FdhDeLaFila p={p} moneda={displayCurrency} />
       </Celda>
 
-      {/* P&L — el monto y el % se colorean por SEPARADO. No es cosmético: para
-          una posición ARS el % es el retorno NOMINAL EN PESOS y el monto sigue
-          al toggle, así que pueden tener signos distintos (AL30: −$44 en USD,
-          +0,4% en pesos). Pintarlos del mismo color haría pasar uno de los dos
-          por lo que no es. */}
+      {/* P&L — el monto y el % están en la MISMA moneda (pctEnVista), así que
+          tienen el mismo signo. Se siguen coloreando cada uno por su número. */}
       <Celda>
         {p.is_cash ? <Vacio /> : !p.priceTrusted ? (
           /* Sin cotización el valor ES el costo y el P&L es 0 por construcción.
@@ -3059,7 +3068,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
             <div className={`${LINEA_1} ${colorClass(pnlDisplay)}`}>
               {montoCard(pnlDisplay, displayCurrency, { signed: true })}
             </div>
-            <div className={`${LINEA_2} ${colorClass(p.pnlPct)}`}>{pctSigned(p.pnlPct)}</div>
+            <div className={`${LINEA_2} ${colorClass(pnlPctDisplay)}`}>{pctSigned(pnlPctDisplay)}</div>
           </>
         )}
       </Celda>

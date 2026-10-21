@@ -1274,6 +1274,37 @@ export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = fa
 }
 
 /**
+ * avgCostArsPerUnit — costo promedio POR UNIDAD en PESOS, para una posición de un
+ * broker en pesos. Es la columna "Precio prom." de Cartera con la vista en pesos.
+ *
+ * Son los pesos que se pagaron, sin pasar por ningún dólar: el peso no tiene
+ * "dólar de compra", así que el modo 'today' | 'purchase' no lo toca. Por eso NO
+ * se puede derivar de `avgCostUsdPerUnit × dólar de hoy`: en modo 'purchase' ese
+ * promedio en USD está al dólar de CADA compra, y multiplicarlo por el de hoy da
+ * un precio que nadie pagó. Medido en el demo (GGAL, 200 acciones, ARS 850.000):
+ * USD 4,05 × 1.424 = $5.764 en el celular contra los $4.250 reales, mientras la
+ * ganancia de al lado (+$114.000) sí salía de los $4.250.
+ *
+ * SIN comisiones, igual que `avgCostUsdPerUnit`, para que las dos vistas midan lo
+ * mismo.
+ *
+ * Devuelve null cuando algún lote tiene el costo en DÓLARES (bono/ON/FCI-USD,
+ * CEDEAR comprado a MEP, cripto comprada en dólares): ahí no hay un precio en
+ * pesos que se haya pagado y quien llama lo deriva del promedio en USD × dólar.
+ *
+ * @param p  posición o agregado (con `_lots` si es multi-lote) de un broker ARS
+ * @returns number|null
+ */
+export function avgCostArsPerUnit(p) {
+  const qty = p?.quantity || 0
+  if (!p || p.is_cash || qty <= 0) return null
+  const lots = (p._lots && p._lots.length) ? p._lots : [p]
+  if (lots.some(l => costInUsd(l) || cryptoCostInUsd(l))) return null
+  const cost = lots.reduce((s, l) => s + (l?.invested || 0), 0)
+  return cost > 0 ? cost / qty : null
+}
+
+/**
  * sumRowUSDT / sumRowARS — valor de una fila AGREGADA a partir de sus lotes.
  *
  * Reciben el resultado de valuar CADA LOTE por separado y lo suman. Una fila
