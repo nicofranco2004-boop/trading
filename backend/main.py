@@ -3674,6 +3674,13 @@ def init_db():
         except Exception as ex:
             log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
 
+        # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
+        try:
+            _n = _migrar_tokens_link_a_huella(conn)
+            log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
+        except Exception as ex:
+            log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
+
         conn.commit()
 
 
@@ -4202,6 +4209,29 @@ def _migrar_reset_tokens_a_huella(conn) -> tuple:
         conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
                      (_hash_token(r["token"]), r["id"]))
     return len(vivos), len(en_claro)
+
+
+def _migrar_tokens_link_a_huella(conn) -> int:
+    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
+    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
+
+    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
+    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
+    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
+    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
+
+    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
+    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
+    es una decisión de producto (parte C), no un cambio mecánico."""
+    convertidos = 0
+    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
+        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
+        for r in filas:
+            if r["token"] and not _es_huella(r["token"]):
+                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
+                             (_hash_token(r["token"]), r["id"]))
+                convertidos += 1
+    return convertidos
 
 
 # ─── Login history / device tracking ─────────────────────────────────────────
@@ -48284,7 +48314,8 @@ def advisor_invite_client(
                 """INSERT INTO advisor_claim_tokens
                        (user_id, advisor_uid, token, email, expires_at)
                    VALUES (?,?,?,?,?)""",
-                (client_uid, uid, token, email_norm, expires))
+                (client_uid, uid, _hash_token(token), email_norm, expires))
+        # El token crudo va SÓLO al mail; en la base quedó su huella (RENDI-10).
         claim_url = f"{_frontend_url()}/claim?token={token}"
         # El envío es LA operación (audit: un fallo silencioso dejaba al asesor
         # esperando a un cliente que nunca recibió nada). send devuelve bool.
@@ -48397,7 +48428,8 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
             """INSERT INTO advisor_link_requests
                    (advisor_uid, client_uid, shadow_uid, permission, token, email, expires_at)
                VALUES (?,?,?,?,?,?,?)""",
-            (uid, target_uid, shadow_uid, permission, token, email_norm, expires))
+            (uid, target_uid, shadow_uid, permission, _hash_token(token), email_norm, expires))
+    # El token crudo va SÓLO al mail; en la base quedó su huella (RENDI-10).
     url = f"{_frontend_url()}/acceso?token={token}"
     sent = False
     try:
@@ -48532,7 +48564,8 @@ def link_request_preview(token: str, request: Request):
     conn = get_db()
     try:
         req = conn.execute(
-            "SELECT * FROM advisor_link_requests WHERE token=?", (token,)).fetchone()
+            "SELECT * FROM advisor_link_requests WHERE token=?",
+            (_hash_token(token),)).fetchone()
         if not req:
             raise HTTPException(400, "Link inválido.")
         adv = conn.execute("SELECT name, email FROM users WHERE id=?",
@@ -48575,7 +48608,8 @@ def link_request_respond(data: LinkRequestRespondIn, request: Request):
     conn = get_db()
     try:
         req = conn.execute(
-            "SELECT * FROM advisor_link_requests WHERE token=?", (data.token,)).fetchone()
+            "SELECT * FROM advisor_link_requests WHERE token=?",
+            (_hash_token(data.token),)).fetchone()
         if not req:
             raise HTTPException(400, "Link inválido.")
         if data.accept:
@@ -48605,12 +48639,13 @@ def claim_preview(token: str, request: Request):
                LEFT JOIN advisor_clients ac
                       ON ac.advisor_uid = ct.advisor_uid AND ac.client_uid = ct.user_id
                WHERE ct.token=? AND ct.used_at IS NULL""",
-            (token,),
+            (_hash_token(token),),
         ).fetchone()
         if not row:
             raise HTTPException(400, "Link inválido o ya usado.")
         exp = conn.execute(
-            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()
+            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?",
+            (_hash_token(token),)).fetchone()
         if exp and datetime.fromisoformat(exp["expires_at"]) < datetime.utcnow():
             raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
         # Marca del asesor (audit): el claim es EL momento donde el cliente
@@ -48619,7 +48654,7 @@ def claim_preview(token: str, request: Request):
             """SELECT ap.display_name, ap.cnv_matricula, ap.logo_data
                FROM advisor_profile ap
                JOIN advisor_claim_tokens ct ON ct.advisor_uid = ap.advisor_uid
-               WHERE ct.token=?""", (token,)).fetchone()
+               WHERE ct.token=?""", (_hash_token(token),)).fetchone()
         return {
             "advisor_name": (prof["display_name"] if prof and prof["display_name"] else None)
                             or row["advisor_name"] or row["advisor_email"].split("@")[0],
@@ -48647,7 +48682,7 @@ def claim_account(data: ClaimAccountIn, request: Request, response: Response):
         row = conn.execute(
             """SELECT id, user_id, email, expires_at, used_at
                FROM advisor_claim_tokens WHERE token=?""",
-            (data.token,),
+            (_hash_token(data.token),),
         ).fetchone()
         if not row or row["used_at"]:
             raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")

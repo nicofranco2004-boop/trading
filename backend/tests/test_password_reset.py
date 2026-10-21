@@ -277,3 +277,54 @@ class MigracionTokensReseteoTest(unittest.TestCase):
         self.assertEqual(migrados, 0)
         huella2 = self.conn.execute("SELECT token FROM password_reset_tokens").fetchone()["token"]
         self.assertEqual(huella1, huella2)
+
+
+class MigracionTokensLinkTest(unittest.TestCase):
+    """RENDI-10 parte B: la migración de arranque pasa a huella los tokens de
+    link de asesor (claim y pedido de acceso) sin borrar filas."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        for t in ("advisor_claim_tokens", "advisor_link_requests"):
+            self.conn.execute(f"DELETE FROM {t}")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_claim_y_link_pasan_a_huella_y_es_idempotente(self):
+        exp = "2999-01-01T00:00:00"
+        self.conn.execute(
+            "INSERT INTO advisor_claim_tokens (user_id, advisor_uid, token, email, expires_at) "
+            "VALUES (10, 20, ?, 'c@c.co', ?)", ("claim-en-claro-abcdef123", exp))
+        self.conn.execute(
+            "INSERT INTO advisor_link_requests (advisor_uid, client_uid, shadow_uid, permission, "
+            "token, email, expires_at) VALUES (20, 10, NULL, 'read', ?, 'c@c.co', ?)",
+            ("acceso-en-claro-ghijk456", exp))
+        self.conn.commit()
+
+        convertidos = main._migrar_tokens_link_a_huella(self.conn)
+        self.conn.commit()
+        self.assertEqual(convertidos, 2)
+        ct = self.conn.execute("SELECT token FROM advisor_claim_tokens").fetchone()["token"]
+        lt = self.conn.execute("SELECT token FROM advisor_link_requests").fetchone()["token"]
+        self.assertEqual(ct, main._hash_token("claim-en-claro-abcdef123"))
+        self.assertEqual(lt, main._hash_token("acceso-en-claro-ghijk456"))
+
+        # Segunda corrida: ya son huellas, no toca nada.
+        self.assertEqual(main._migrar_tokens_link_a_huella(self.conn), 0)
+
+    def test_no_borra_filas_usadas_ni_cambia_otros_campos(self):
+        exp = "2999-01-01T00:00:00"
+        self.conn.execute(
+            "INSERT INTO advisor_claim_tokens (user_id, advisor_uid, token, email, expires_at, used_at) "
+            "VALUES (11, 21, ?, 'u@u.co', ?, '2026-01-01T00:00:00')", ("usado-en-claro-xyz789", exp))
+        self.conn.commit()
+        main._migrar_tokens_link_a_huella(self.conn)
+        self.conn.commit()
+        fila = self.conn.execute(
+            "SELECT token, used_at, email FROM advisor_claim_tokens").fetchone()
+        # La fila sigue (no se borró), used_at y email intactos, token hasheado.
+        self.assertEqual(fila["used_at"], "2026-01-01T00:00:00")
+        self.assertEqual(fila["email"], "u@u.co")
+        self.assertEqual(fila["token"], main._hash_token("usado-en-claro-xyz789"))
