@@ -4201,6 +4201,32 @@ def _gen_reset_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _validar_cron_token(request: Request, *nombres_env: str) -> None:
+    """Puerta común de los crons externos (cron-job.org). RENDI-05.
+
+    Reemplaza la comparación con `!=`, que cortaba en la primera letra distinta y
+    dejaba adivinar el token a cronómetro: ahora `hmac.compare_digest` (tiempo
+    constante). Acepta el token por la cabecera `X-Cron-Token` (preferida) o por
+    `?token=` (compat: cron-job.org lo manda así hoy); cuando llega por la URL
+    loguea un aviso —la URL queda en los logs de todos los proxies— para migrarlo
+    a la cabecera y cerrar esa fuga. Varios `nombres_env`: vale cualquiera que esté
+    seteado (p.ej. el token propio o el de snapshots como respaldo). Falla cerrado:
+    sin ninguna variable → 503; token ausente o que no coincide → 401."""
+    esperados = [v for v in ((os.environ.get(n) or "").strip() for n in nombres_env) if v]
+    if not esperados:
+        raise HTTPException(503, f"Cron no configurado (falta {nombres_env[0]}).")
+    en_cabecera = (request.headers.get("x-cron-token") or "").strip()
+    en_url = (request.query_params.get("token") or "").strip()
+    got = en_cabecera or en_url
+    ok = bool(got) and any(
+        hmac.compare_digest(got.encode("utf-8"), e.encode("utf-8")) for e in esperados)
+    if not ok:
+        raise HTTPException(401, "Token inválido.")
+    if en_url and not en_cabecera:
+        log.warning("cron %s: token recibido por URL (queda en los logs) — migrar a "
+                    "la cabecera X-Cron-Token", request.url.path)
+
+
 def _hash_token(token: str) -> str:
     """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
 
@@ -43934,12 +43960,7 @@ def iol_lab_run_cron(request: Request):
     """Renueva el refresh token de TODOS los testers con medición activa. Lo pega
     cron-job.org cada hora. Auth: X-Cron-Token o ?token= contra IOL_LAB_CRON_TOKEN.
     Sin token configurado → 503. Sincrónico: son 1-3 cuentas, un POST cada una."""
-    expected = (os.environ.get("IOL_LAB_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "IOL Lab cron no configurado (falta IOL_LAB_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token") or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "IOL_LAB_CRON_TOKEN")
     return _iol_lab_refresh_all()
 
 
@@ -46871,13 +46892,7 @@ def alerts_evaluate(request: Request):
     corte de ~30 s del proxy: el cron veía un error con los avisos saliendo, y
     sin guarda un segundo ping podía encimar otra corrida. 200 = "arrancó"; el
     resultado va al registro."""
-    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "ALERTS_CRON_TOKEN")
     return _correr_en_fondo("alertas", _evaluar_alertas_job)
 
 
@@ -46904,13 +46919,7 @@ def snapshots_run_cron(request: Request):
     Lo pega un cron externo (cron-job.org) 1x/día ~03:00 UTC, después del cierre de
     NYSE/BCBA. Auth: header X-Cron-Token o ?token= contra SNAPSHOT_CRON_TOKEN. Sin
     token configurado → 503 (endpoint cerrado)."""
-    expected = (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Snapshot cron no configurado (falta SNAPSHOT_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "SNAPSHOT_CRON_TOKEN")
     # El job es el wrapper existente: corre + loguea + captura errores.
     return _correr_en_fondo("snapshot_diario", _run_daily_snapshot_job)
 
@@ -46960,13 +46969,7 @@ def billing_run_cron(request: Request):
     ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
     Railway. Es la misma limitación que el cron de snapshots.
     """
-    expected = (os.environ.get("BILLING_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Billing cron no configurado (falta BILLING_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "BILLING_CRON_TOKEN")
     solo_avisos = (request.query_params.get("solo_avisos") or "").strip().lower() in (
         "1", "true", "si", "sí")
     return {**_correr_en_fondo(
@@ -47341,14 +47344,7 @@ def advisor_brief_run_cron(request: Request):
 
     Auth: header X-Cron-Token o ?token= contra ADVISOR_BRIEF_TOKEN (o el de
     snapshots como fallback, para no multiplicar secretos)."""
-    expected = ((os.environ.get("ADVISOR_BRIEF_TOKEN") or "").strip()
-                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
-    if not expected:
-        raise HTTPException(503, "Brief no configurado (falta ADVISOR_BRIEF_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "ADVISOR_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN")
     kind = (request.query_params.get("kind") or "open").strip().lower()
     if kind not in ("open", "close"):
         raise HTTPException(400, "kind debe ser 'open' o 'close'.")
@@ -47463,14 +47459,7 @@ def market_brief_run_cron(request: Request):
     al de snapshots para no multiplicar secretos (mismo criterio que el brief
     del asesor: así se da de alta el cron sin tocar Railway).
     """
-    expected = ((os.environ.get("MARKET_BRIEF_TOKEN") or "").strip()
-                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
-    if not expected:
-        raise HTTPException(503, "Resumen de mercado no configurado (falta MARKET_BRIEF_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "MARKET_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN")
 
     def _bg():
         # El parte de la corrida sale por DOS canales: el registro (para
