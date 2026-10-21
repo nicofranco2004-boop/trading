@@ -463,6 +463,30 @@ def _podar_movimientos(conn, now: datetime) -> None:
         log.warning("alerts: no se pudieron podar los movimientos viejos: %s", ex)
 
 
+# ─── «Una sola vez» ───────────────────────────────────────────────────────────
+
+def _cumplio_una_vez(conn, alert) -> None:
+    """Una alerta «una sola vez» que acaba de dar su aviso queda apagada. Es el
+    ÚNICO lugar que la apaga: precio, % de un activo, % de toda la cartera, en
+    la rueda o fuera de ella, primer aviso o el del doble.
+
+    El apagado se escribe en el momento (va en la misma transacción que el
+    aviso: un corte del proceso no la deja prendida), pero el ciclo NO corta
+    acá. Los demás activos de la misma alerta se siguen mirando —el ciclo usa
+    la lista de alertas que leyó al arrancar, no la base— y todo lo que pasó el
+    % en esta pasada sale en el MISMO aviso agrupado (`_entregar_pendientes`).
+
+    Antes cortaba con el primer activo: «toda mi cartera, 3 %» con AAPL −8 %,
+    KO −4 % y NVDA +5 % en la misma pasada avisaba sólo AAPL y se apagaba; KO y
+    NVDA no llegaban nunca (medido el 21/10/2026). Y el aviso del doble en la
+    rueda no la apagaba: seguía avisando.
+
+    Regla (Nico, 2026-10-21): «una vez» en toda la cartera es UN aviso con
+    todos los que pasaron el % en esa pasada, y después se apaga."""
+    if alert["repeat"] == "once":
+        conn.execute("UPDATE alerts SET active=0 WHERE id=?", (alert["id"],))
+
+
 # ─── Mensajes ─────────────────────────────────────────────────────────────────
 
 def _display_symbol(symbol: str) -> str:
@@ -952,8 +976,7 @@ def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
     return txt
 
 
-def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
-                            deactivated: set = None) -> int:
+def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) -> int:
     """Las pct_move "En el día" en el pre y el post mercado de Wall Street.
 
     Reglas (decididas el 2026-10-15):
@@ -970,8 +993,10 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         anoche, el pre de hoy y la rueda de hoy se miden contra el mismo cierre;
         si ya se avisó «+3 %» contra ese cierre, ni el pre ni la apertura lo
         repiten. El post de hoy (contra el cierre de hoy) o un cambio de sentido
-        sí avisan. Una alerta "una sola vez" se apaga con el primer aviso, sea
-        en la rueda o fuera de ella.
+        sí avisan. Una alerta "una sola vez" se apaga con su primer aviso, sea
+        en la rueda o fuera de ella — y ese aviso lleva todo lo que pasó el % en
+        el ciclo, también lo de la rueda de BYMA si coincide con el pre
+        (`_cumplio_una_vez`).
       · Si dos tenencias siguen a la misma acción (NVDA y el CEDEAR de NVDA) y
         dan el MISMO %, un solo renglón; si dan distinto (en invierno el CEDEAR
         se mide desde el cierre de BYMA), dos.
@@ -981,13 +1006,10 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         anterior, así no se tiene tomada la base mientras se espera a Yahoo.
     """
     import fuera_de_horario as fdh
-    deactivated = deactivated if deactivated is not None else set()
     candidatas = []
     for a, sym in units:
         if a["kind"] != "pct_move" or (a["baseline"] or "prev_close") != "prev_close":
             continue
-        if a["id"] in deactivated:
-            continue      # una «una sola vez» que ya avisó en este mismo ciclo
         if sym in _crypto_symbols():
             continue
         ref = fdh.referencia_en_eeuu(sym)
@@ -1041,8 +1063,6 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
     fired = 0
     mismo_ref = set()     # (alerta, acción de EE.UU., sentido, %, base) ya avisados en ESTE ciclo
     for a, sym, ref, via, pct, precio, clave, doble in cruzaron:
-        if a["id"] in deactivated:
-            continue
         # NVDA en Schwab y el CEDEAR de NVDA son la MISMA suba sólo si dicen el
         # mismo número desde el mismo cierre (en verano). En invierno el CEDEAR
         # se mide desde el cierre de BYMA y da otro %: son dos renglones. Juntarlos
@@ -1060,11 +1080,9 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
         mismo_ref.add(igual)
         fired += 1
-        if a["repeat"] == "once":
-            # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
-            # rueda (auditoría 2026-10-15: seguía avisando día tras día).
-            conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-            deactivated.add(a["id"])
+        # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
+        # rueda (auditoría 2026-10-15: seguía avisando día tras día).
+        _cumplio_una_vez(conn, a)
     return fired
 
 
@@ -1136,10 +1154,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # un envío por alerta. Ver `_entregar_pendientes`.
     pendientes: list = []
     fired = 0
-    deactivated: set = set()   # alertas 'once' de pct_move ya disparadas este ciclo
+    # Una «una sola vez» que avisa en el ciclo se apaga ahí mismo, pero sus
+    # otros activos se siguen mirando: van todos en el mismo aviso (ver
+    # `_cumplio_una_vez`).
     for a, sym in units:
-        if a["id"] in deactivated:
-            continue
         # Acciones/CEDEARs/bonos: solo disparan en horario de mercado (evita saltos
         # de madrugada sobre precios congelados). Cripto: 24/7.
         tradeable = (sym in _crypto_symbols()) or market_open
@@ -1152,9 +1170,8 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             if a["armed"] and met and tradeable:
                 _fire(conn, a, sym, price, None, now, pendientes)
                 fired += 1
-                new_active = 0 if a["repeat"] == "once" else 1
-                conn.execute("UPDATE alerts SET armed=0, active=? WHERE id=?",
-                             (new_active, a["id"]))
+                conn.execute("UPDATE alerts SET armed=0 WHERE id=?", (a["id"],))
+                _cumplio_una_vez(conn, a)
             elif not a["armed"] and not met:
                 conn.execute("UPDATE alerts SET armed=1 WHERE id=?", (a["id"],))  # re-arma (cualquier hora)
         else:  # pct_move
@@ -1197,9 +1214,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     # "Siempre" = avisar CADA X%: re-anclar al precio actual.
                     conn.execute("UPDATE alerts SET anchor_price=? WHERE id=?",
                                  (fire_price, a["id"]))
-                if a["repeat"] == "once":
-                    conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                    deactivated.add(a["id"])
+                _cumplio_una_vez(conn, a)
             else:
                 # "En el día": edge-trigger POR SÍMBOLO + tope de 1 aviso por jornada.
                 #  • dispara al cruzar el umbral;
@@ -1229,6 +1244,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     fired += 1
                     _set_sym_fired(conn, a["id"], sym, today)
                     _anotar_aviso(conn, a, sym, base, side, change, doble=True)
+                    _cumplio_una_vez(conn, a)
                     continue
                 if not armed or not tradeable or fired_today:
                     continue
@@ -1237,18 +1253,15 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     # post de anoche o el pre de hoy, contra el mismo cierre): no se
                     # manda nada. El día NO se marca como avisado: si en la rueda
                     # da vuelta (pre +3 %, después −3 %), eso sí se avisa. Y una
-                    # alerta «una sola vez» ya cumplió: se apaga.
-                    if a["repeat"] == "once":
-                        conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                        deactivated.add(a["id"])
+                    # alerta «una sola vez» ya cumplió: se apaga — sin callar a
+                    # los otros activos de la cartera que se movieron ahora.
+                    _cumplio_una_vez(conn, a)
                     continue
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
                 _anotar_aviso(conn, a, sym, base, side, change, doble=False)
-                if a["repeat"] == "once":
-                    conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                    deactivated.add(a["id"])
+                _cumplio_una_vez(conn, a)
 
     # Pre y post mercado de Wall Street (anticipo, con su propio estado).
     # ⚠️ ANTES se confirma lo escrito en el loop: esto pregunta a Yahoo (hasta
@@ -1257,7 +1270,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # conexión). Adentro, la red va antes que cualquier escritura.
     conn.commit()
     try:
-        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now, deactivated)
+        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now)
     except Exception as ex:
         log.warning("alerts fuera de la rueda falló: %s", ex)
 

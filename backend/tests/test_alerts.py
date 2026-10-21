@@ -280,20 +280,33 @@ def test_pct_move_once_deactivates(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
 
-def test_pct_move_once_holdings_fires_once_then_stops(clean, monkeypatch):
-    # holdings 'once': dispara el/los que se movieron este ciclo y se apaga.
+def test_pct_move_once_holdings_fires_once_then_stops(clean, buzon, monkeypatch):
+    # holdings 'once': UN aviso con TODOS los que se movieron este ciclo, y se
+    # apaga. Antes se apagaba con el primero y salteaba el resto: con estos tres
+    # avisaba sólo AAPL (medido el 21/10/2026). La prueba vieja miraba nada más
+    # que quedara apagada, así que no lo veía.
     conn = clean
-    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
-              down_pct=5, threshold=None, repeat="once")
-    monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "KO"])
+    mails, pushes = buzon
+    aid = _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+                    down_pct=3, threshold=None, repeat="once", channel="both")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "KO", "NVDA", "MSFT"])
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
-        "AAPL": _q(90, -8.0),
-        "KO":   _q(60, -6.0),
+        "AAPL": _q(90, -8.0, sym="AAPL"),
+        "KO":   _q(60, -4.0, sym="KO"),
+        "NVDA": _q(140, 5.0, sym="NVDA"),
+        "MSFT": _q(400, 1.0, sym="MSFT"),     # no pasa el %: no entra
     })
-    ae.evaluate_alerts(conn, only_user=1)
-    assert conn.execute("SELECT active FROM alerts").fetchone()["active"] == 0
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 3
+    assert [e["symbol"] for e in _events(conn)] == ["AAPL", "KO", "NVDA"]
+    # Los tres en UN aviso: un mail y un push, con la lista.
+    assert len(mails) == 1 and len(pushes) == 1
+    assert [(f["nombre"], f["pct_txt"]) for f in mails[0]["filas"]] == [
+        ("AAPL", "−8%"), ("NVDA", "+5%"), ("KO", "−4%")]
+    assert mails[0]["pie"][0] == "Esta alerta ya cumplió."
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
     # próximo ciclo: inactiva → 0 disparos
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    assert len(mails) == 1
 
 
 # ── Horario de mercado + baseline "Desde ahora" (set_price) ──────────────────
@@ -1161,15 +1174,68 @@ def test_la_misma_accion_por_dos_papeles_es_un_solo_renglon(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
 
-def test_una_vez_apagada_en_la_rueda_no_suma_avisos_del_pre_en_el_mismo_ciclo(clean, monkeypatch):
+def test_una_vez_junta_la_rueda_y_el_pre_del_mismo_ciclo_en_un_aviso(clean, monkeypatch):
     # Desde el 1/11, de 11 a 11:30 coinciden BYMA abierta y el pre de Nueva York.
+    # «Una vez» es UN aviso con todo lo que pasó el % en la pasada: YPFD en la
+    # rueda y NVDA en el pre van juntos, y después se apaga. Hasta el 21/10/2026
+    # el aviso de YPFD la apagaba y NVDA no llegaba nunca (lo pedía esta misma
+    # prueba, de la auditoría del 15/10).
     conn = clean
-    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
-              threshold=None, repeat="once")
+    conn.execute("UPDATE users SET email='a@a.co' WHERE id=1"); conn.commit()
+    aid = _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
+                    threshold=None, repeat="once", channel="email")
     monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["YPFD.BA", "NVDA"])
     _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5)], {"NVDA": 6}, ahora=_A_LAS_1115)
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"YPFD.BA": _q(40000, -4.0, sym="YPFD.BA")})
+    mails = _mails_reales(monkeypatch)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 2
+    assert len(mails) == 1
+    assert mails[0]["heading"] == "YPFD cayó 4% hoy y NVDA cae 3,5% en el pre-mercado"
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def _reactivar(aid):
+    """«Volver a activarla» desde Mis alertas: el mismo PATCH de la pantalla."""
+    main.alerts_update(aid, main.AlertUpdateIn(active=True), uid=1)
+
+
+def test_una_vez_ya_avisada_no_calla_al_resto_de_la_cartera(clean, monkeypatch):
+    # «Toda mi cartera, una vez», reactivada después del aviso del pre de NVDA.
+    # En la rueda NVDA sigue con la MISMA suba (no se repite) y KO cae 4 %: KO se
+    # avisa y la alerta se apaga. Antes NVDA, primero en la lista, la apagaba en
+    # silencio y KO no llegaba nunca.
+    conn = clean
+    aid = _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+                    down_pct=3, threshold=None, repeat="once")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["NVDA", "KO"])
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4), _cot("KO", 0.3)],
+           {"NVDA": 6, "KO": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1            # NVDA en el pre
+    _reactivar(aid)
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", _como_yahoo([_cot("SPY", 0.1, estado="REGULAR")]))
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
+        "NVDA": _q(103.2, 3.2, sym="NVDA"), "KO": _q(57.6, -4.0, sym="KO")})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["symbol"] == "KO"
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
+
+
+def test_una_vez_tambien_se_apaga_con_el_aviso_del_doble(clean, monkeypatch):
+    # Reactivada después del aviso del pre: si la misma suba llega al doble en la
+    # rueda, ése es su aviso y se apaga. Antes el doble de la rueda la dejaba
+    # prendida (el del pre sí la apagaba) y seguía avisando.
+    conn = clean
+    aid = _mk_alert(conn, kind="pct_move", up_pct=3, down_pct=3, threshold=None,
+                    symbol="NVDA", repeat="once")
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _reactivar(aid)
+    _rueda(monkeypatch, 6.5)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "NVDA subió 6,5% hoy (el doble de tu alerta)"
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
 
 
 # ── Segundo aviso al doble del umbral (Nico, 2026-10-15) ─────────────────────
