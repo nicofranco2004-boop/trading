@@ -3663,6 +3663,17 @@ def init_db():
         except Exception as ex:
             log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
 
+        # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
+        # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
+        # huella los vivos) vive en una función para que el test la atraviese. En
+        # WARNING como las de arriba (init_db corre antes del basicConfig).
+        try:
+            _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
+            log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
+                        _vivos, _migrados)
+        except Exception as ex:
+            log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
+
         conn.commit()
 
 
@@ -4147,6 +4158,50 @@ def _frontend_url() -> str:
 def _gen_reset_token() -> str:
     """URL-safe random ~43 chars (~256 bits de entropía)."""
     return secrets.token_urlsafe(32)
+
+
+def _hash_token(token: str) -> str:
+    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
+
+    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
+    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
+    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
+    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
+    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
+
+    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
+    (claim, link-request de asesor, informe público) comparten el mismo patrón y
+    se migran a este helper con su propia migración de links vivos — RENDI-10."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
+
+
+def _es_huella(valor: str) -> bool:
+    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
+    return (len(valor or "") == _TOKEN_HASH_LEN
+            and all(c in "0123456789abcdef" for c in valor))
+
+
+def _migrar_reset_tokens_a_huella(conn) -> tuple:
+    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
+
+    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
+    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
+    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
+
+    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
+    atraviese por el mismo camino que corre en producción."""
+    conn.execute(
+        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
+        (datetime.utcnow().isoformat(),))
+    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
+    en_claro = [r for r in vivos if not _es_huella(r["token"])]
+    for r in en_claro:
+        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
+                     (_hash_token(r["token"]), r["id"]))
+    return len(vivos), len(en_claro)
 
 
 # ─── Login history / device tracking ─────────────────────────────────────────
@@ -4673,8 +4728,9 @@ def forgot_password(data: ForgotPasswordIn, request: Request):
                 conn.execute(
                     """INSERT INTO password_reset_tokens (user_id, token, expires_at)
                        VALUES (?, ?, ?)""",
-                    (user["id"], token, expires),
+                    (user["id"], _hash_token(token), expires),
                 )
+            # El token crudo va SÓLO al mail; en la base quedó su huella.
             reset_url = f"{_frontend_url()}/reset-password?token={token}"
             try:
                 from billing import emails
@@ -4708,7 +4764,7 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
         row = conn.execute(
             """SELECT id, user_id, expires_at, used_at FROM password_reset_tokens
                WHERE token = ?""",
-            (data.token,),
+            (_hash_token(data.token),),
         ).fetchone()
         if not row or row["used_at"]:
             raise HTTPException(400, "Link inválido o ya usado. Pedí uno nuevo.")

@@ -115,17 +115,13 @@ class ResetPasswordTest(unittest.TestCase):
         self.email = _unique_email()
         self.original_password = "OriginalPwd123$"
         _register_and_verify(self.client, self.email, password=self.original_password)
-        # Request reset → get token
-        with patch("billing.emails._send"):
+        # Request reset → sacar el token DEL MAIL (ya no vive en claro en la base:
+        # la base guarda su huella, RENDI-10). Es de donde lo saca el usuario real.
+        with patch("billing.emails.send_password_reset") as mock_spr:
             self.client.post("/api/auth/forgot-password", json={"email": self.email})
-        conn = main.get_db()
-        self.token = conn.execute(
-            """SELECT token FROM password_reset_tokens
-               WHERE user_id = (SELECT id FROM users WHERE email=?)
-                 AND used_at IS NULL""",
-            (self.email,),
-        ).fetchone()["token"]
-        conn.close()
+        reset_url = mock_spr.call_args.kwargs["reset_url"]
+        from urllib.parse import urlparse, parse_qs
+        self.token = parse_qs(urlparse(reset_url).query)["token"][0]
 
     def test_reset_with_valid_token_changes_password(self):
         new_pw = "NuevoPassword456$"
@@ -161,12 +157,13 @@ class ResetPasswordTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
     def test_reset_with_expired_token_fails(self):
-        # Forzar token a vencer
+        # Forzar token a vencer. La base guarda la huella, así que se busca por la
+        # huella del token (RENDI-10), no por el token crudo del mail.
         conn = main.get_db()
         conn.execute(
             """UPDATE password_reset_tokens SET expires_at = datetime('now', '-1 hour')
                WHERE token = ?""",
-            (self.token,),
+            (main._hash_token(self.token),),
         )
         conn.commit()
         conn.close()
@@ -179,6 +176,29 @@ class ResetPasswordTest(unittest.TestCase):
         r = self.client.post("/api/auth/reset-password",
                             json={"token": self.token, "new_password": "short"})
         self.assertEqual(r.status_code, 422)
+
+    def test_token_se_guarda_como_huella_no_en_claro(self):
+        """RENDI-10: en la base queda la huella (sha256, 64 hex), no el token del
+        mail. Y el valor guardado NO sirve como token: quien tenga una copia de la
+        base no puede usar el link de reseteo."""
+        conn = main.get_db()
+        guardado = conn.execute(
+            """SELECT token FROM password_reset_tokens
+               WHERE user_id = (SELECT id FROM users WHERE email=?) AND used_at IS NULL""",
+            (self.email,)).fetchone()["token"]
+        conn.close()
+        # Lo guardado es la huella del token del mail, no el token.
+        self.assertNotEqual(guardado, self.token)
+        self.assertEqual(guardado, main._hash_token(self.token))
+        self.assertEqual(len(guardado), 64)
+        # Usar el valor de la base COMO token no restablece nada (da 400).
+        r = self.client.post("/api/auth/reset-password",
+                            json={"token": guardado, "new_password": "NoDeberiaFuncionar1$"})
+        self.assertEqual(r.status_code, 400)
+        # Y el login con la contraseña original sigue valiendo: no se cambió nada.
+        r_login = self.client.post("/api/auth/login",
+                                   json={"email": self.email, "password": self.original_password})
+        self.assertEqual(r_login.status_code, 200)
 
 class ChangePasswordTest(unittest.TestCase):
     """Cambiar la contraseña desde Configuración, con la sesión abierta."""
@@ -216,3 +236,44 @@ class ChangePasswordTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MigracionTokensReseteoTest(unittest.TestCase):
+    """RENDI-10: la migración de arranque deja la tabla sin tokens en claro."""
+
+    def setUp(self):
+        self.conn = main.get_db()
+        self.conn.execute("DELETE FROM password_reset_tokens")
+        self.conn.execute("DELETE FROM users")
+        self.conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (1,'m@m.co','M','x')")
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _ins(self, token, used_at=None, expires="2999-01-01T00:00:00"):
+        self.conn.execute(
+            "INSERT INTO password_reset_tokens (user_id, token, expires_at, used_at) VALUES (1,?,?,?)",
+            (token, expires, used_at))
+        self.conn.commit()
+
+    def test_borra_usados_y_vencidos_y_hashea_los_vivos(self):
+        self._ins("token-vivo-en-claro-123456789")                 # vivo en claro → se hashea
+        self._ins("token-usado", used_at="2026-01-01T00:00:00")    # usado → se borra
+        self._ins("token-vencido", expires="2000-01-01T00:00:00")  # vencido → se borra
+        vivos, migrados = main._migrar_reset_tokens_a_huella(self.conn)
+        self.conn.commit()
+        self.assertEqual((vivos, migrados), (1, 1))
+        filas = self.conn.execute("SELECT token FROM password_reset_tokens").fetchall()
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0]["token"], main._hash_token("token-vivo-en-claro-123456789"))
+
+    def test_es_idempotente(self):
+        self._ins("otro-token-en-claro-abcdefghij")
+        main._migrar_reset_tokens_a_huella(self.conn); self.conn.commit()
+        huella1 = self.conn.execute("SELECT token FROM password_reset_tokens").fetchone()["token"]
+        # Segunda corrida: no debe volver a hashear (ya es huella).
+        vivos, migrados = main._migrar_reset_tokens_a_huella(self.conn); self.conn.commit()
+        self.assertEqual(migrados, 0)
+        huella2 = self.conn.execute("SELECT token FROM password_reset_tokens").fetchone()["token"]
+        self.assertEqual(huella1, huella2)
