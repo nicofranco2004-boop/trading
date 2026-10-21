@@ -1600,7 +1600,11 @@ function PositionsDesktop() {
         valueArs: c.valueArs, investedArs: invArs, pnlArs: c.pnlArs,
         priceLocal: c.priceArs,
         avgUsd: qty > 0 ? invUsd / qty : null,
-        avgArs: qty > 0 ? invArs / qty : null,
+        // Los pesos pagados, sin comisiones: la MISMA regla que la sección de una
+        // sola pata y que el celular (avgCostArsPerUnit). Con `invArs` (que lleva
+        // las comisiones) la misma compra mostraba otro promedio según la cuenta
+        // estuviera unificada o no.
+        avgArs: avgCostArsPerUnit(p),
         ccy: 'ARS',
       }
     }
