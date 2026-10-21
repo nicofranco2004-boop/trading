@@ -328,3 +328,47 @@ class MigracionTokensLinkTest(unittest.TestCase):
         self.assertEqual(fila["used_at"], "2026-01-01T00:00:00")
         self.assertEqual(fila["email"], "u@u.co")
         self.assertEqual(fila["token"], main._hash_token("usado-en-claro-xyz789"))
+
+
+class SesionViejaSeCortaAlCambiarPasswordTest(unittest.TestCase):
+    """RENDI-11: cambiar la contraseña invalida las sesiones emitidas ANTES del
+    cambio, también en las cuentas viejas cuyo token no lleva la marca `pca`
+    (password_changed_at NULL). La validación vive en get_current_user, que es el
+    paso obligado de todo request autenticado; se atraviesa vía /api/auth/me."""
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        self.client = TestClient(main.app)
+        self.email = _unique_email("sesion")
+        _register_and_verify(self.client, self.email, password="Password123$")
+        conn = main.get_db()
+        self.uid = conn.execute("SELECT id FROM users WHERE email=?", (self.email,)).fetchone()["id"]
+        # Simular una cuenta VIEJA: sin marca de cambio de contraseña, sin muro.
+        conn.execute("UPDATE users SET password_changed_at=NULL, requires_plan=0 WHERE id=?",
+                     (self.uid,))
+        conn.commit(); conn.close()
+        self.client.cookies.clear()
+
+    def _me(self, token):
+        return self.client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    def test_token_emitido_antes_del_cambio_queda_invalidado(self):
+        import time
+        viejo = int(time.time()) - 3600  # sesión del atacante, emitida hace 1 hora
+        token_atacante = main.jwt.encode(
+            {"sub": str(self.uid), "iat": viejo, "exp": viejo + main.TOKEN_DAYS * 86400},
+            main.SECRET_KEY, algorithm=main.ALGORITHM)
+        # Antes del cambio, esa sesión robada entra.
+        self.assertEqual(self._me(token_atacante).status_code, 200)
+
+        # El dueño cambia la contraseña desde SU sesión (otro token, válido ahora).
+        token_dueno = main.create_token(self.uid, None)
+        r = self.client.post(
+            "/api/auth/change-password",
+            headers={"Authorization": f"Bearer {token_dueno}"},
+            json={"current_password": "Password123$", "new_password": "NuevaClave456$"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.client.cookies.clear()
+
+        # Después del cambio, la sesión robada queda afuera.
+        self.assertEqual(self._me(token_atacante).status_code, 401)

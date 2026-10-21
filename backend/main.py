@@ -3700,6 +3700,37 @@ def create_token(user_id: int, pw_changed_at: Optional[str] = None) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
+# Margen para el desfasaje entre el reloj del proceso (iat del token) y el de la
+# base (password_changed_at): el token que se emite AL cambiar la contraseña no
+# debe cortarse a sí mismo por una diferencia de milisegundos.
+_PWD_CHANGE_GRACE_S = 5
+
+
+def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
+    """¿El token se emitió DESPUÉS del último cambio de contraseña? True = sigue
+    válido; False = hay que echarlo.
+
+    Compara la fecha de emisión del token (`iat`, epoch UTC) contra
+    `password_changed_at`. Así alcanza también a las cuentas viejas cuyos tokens
+    NO llevan `pca` (se crearon cuando la columna estaba vacía): antes esas
+    sesiones sobrevivían al cambio de contraseña. Con un token sin `iat` cae al
+    criterio anterior (`pca`). Ante cualquier duda de formato devuelve True: un
+    error de parseo no puede dejar a nadie afuera de su cuenta — el cambio de
+    contraseña ya exige la contraseña actual o el link de reseteo."""
+    from datetime import timezone
+    iat = payload.get("iat")
+    if iat is None:
+        pca = payload.get("pca")
+        return not (pca and pca != pwd_changed_at)
+    try:
+        dt = datetime.fromisoformat(str(pwd_changed_at).replace(" ", "T"))
+        cambio_epoch = dt.replace(tzinfo=timezone.utc).timestamp()
+        return float(iat) >= cambio_epoch - _PWD_CHANGE_GRACE_S
+    except (ValueError, TypeError):
+        pca = payload.get("pca")
+        return not (pca and pca != pwd_changed_at)
+
+
 def get_current_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -3742,8 +3773,11 @@ def get_current_user(
     if not row:
         raise HTTPException(401, "Token inválido")
     request.state.rendi_requires_plan = marca
-    pca = payload.get("pca")
-    if pca and row["password_changed_at"] and pca != row["password_changed_at"]:
+    # El token queda invalidado si se emitió ANTES del último cambio de contraseña.
+    # Se mira la fecha de emisión (iat), no sólo la marca `pca`, para alcanzar
+    # también a las cuentas viejas cuyos tokens no la llevan (RENDI-11).
+    if row["password_changed_at"] and not _token_posterior_al_cambio(
+            payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
     return uid
 
