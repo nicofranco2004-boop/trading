@@ -1450,6 +1450,13 @@ def init_db():
             # lo recibieron de los que sí (a esos se les puede volver a mandar,
             # pero sólo con el botón aparte). Sin índice encima.
             conn.execute("ALTER TABLE users ADD COLUMN trial_feedback_email_sent_at TEXT")
+        if user_cols and 'pausa_email_sent_at' not in user_cols:
+            # Timestamp ISO del ÚLTIMO mail "tu cuenta está en pausa" (terminó la
+            # prueba y no eligió plan). NULL = nunca. Lo usa
+            # /api/admin/email/reactivar-pausa para separar a los que nunca lo
+            # recibieron (el botón principal) del resto de los que están en
+            # pausa. Sin índice encima.
+            conn.execute("ALTER TABLE users ADD COLUMN pausa_email_sent_at TEXT")
         if user_cols and 'pro_trial_until' not in user_cols:
             # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
             # está perdiendo). Es una marca aparte a propósito: si se hiciera
@@ -3911,6 +3918,35 @@ def motivo_de_pausa(conn, uid: int) -> Optional[str]:
         return None
 
 
+def resumen_de_lo_guardado(conn, uid: int) -> Optional[str]:
+    """"4 brokers y 312 movimientos": lo que la cuenta tiene guardado, en la
+    frase que se le dice a alguien con la cuenta en pausa. None si no cargó
+    nada (o no se pudo contar): se omite la frase antes que decir "tus 0
+    brokers".
+
+    La usan el muro (`/api/auth/me` → `pausa_resumen`) y el mail a las cuentas
+    en pausa (/api/admin/email/reactivar-pausa), para que digan lo mismo."""
+    try:
+        # El contador OFICIAL, el mismo que usa la cuota del plan y el
+        # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
+        # distinto en las cuentas con sub-brokers, y el muro terminaba
+        # diciendo "6 brokers" donde el mail del mismo día decía 4.
+        from ai import plan as _plan
+        nb = _plan.count_broker_accounts(conn, uid) or 0
+        nm = conn.execute(
+            "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
+        ).fetchone()["c"] or 0
+    except Exception as ex:
+        log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
+        return None
+    partes = []
+    if nb:
+        partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
+    if nm:
+        partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
+    return " y ".join(partes) or None
+
+
 def get_effective_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -4886,27 +4922,8 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
         # que sabrían contar esto, están justamente bloqueados.
         # Si no hay nada que contar, no se manda: el muro omite la frase antes
         # que decir "tus 0 brokers".
-        d["pausa_resumen"] = None
-        if d["cuenta_en_pausa"]:
-            try:
-                # El contador OFICIAL, el mismo que usa la cuota del plan y el
-                # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
-                # distinto en las cuentas con sub-brokers, y el muro terminaba
-                # diciendo "6 brokers" donde el mail del mismo día decía 4.
-                from ai import plan as _plan
-                nb = _plan.count_broker_accounts(conn, uid) or 0
-                nm = conn.execute(
-                    "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
-                ).fetchone()["c"] or 0
-                partes = []
-                if nb:
-                    partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
-                if nm:
-                    partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
-                if partes:
-                    d["pausa_resumen"] = " y ".join(partes)
-            except Exception as ex:
-                log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
+        d["pausa_resumen"] = (resumen_de_lo_guardado(conn, uid)
+                              if d["cuenta_en_pausa"] else None)
 
         sub_status = d.get("subscription_status")
         cred_active = bool(d.get("credit_days_remaining", 0) > 0)
@@ -27108,9 +27125,9 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 
 
 # ─── Envíos masivos del panel de admin ────────────────────────────────────────
-# Los cinco mails que el admin le manda a mucha gente desde el panel
-# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba y
-# el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
+# Los seis mails que el admin le manda a mucha gente desde el panel
+# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba,
+# cuentas en pausa y el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
 # su loop y cada arreglo quedaba en uno solo: el de feedback tenía pausa, tandas
 # y freno al doble click, y los otros cuatro mandaban todo de un tirón.
 #
@@ -27270,7 +27287,8 @@ def _sigue_existiendo(conn, uid):
 # Columnas de `users` donde un envío masivo anota a quién ya le mandó. Lista
 # cerrada: el nombre va pegado al SQL.
 _MARCAS_DE_ENVIO = ("reengagement_email_sent_at", "gift_plan_email_sent_at",
-                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at")
+                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at",
+                    "pausa_email_sent_at")
 
 
 def _marca_en_columna(conn, columna):
@@ -27308,7 +27326,7 @@ def _marca_en_columna(conn, columna):
 
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
                   inicio=None, inciertos_previos=0):
-    """Manda un mail a cada destinatario, de a uno. Es el motor de los cinco
+    """Manda un mail a cada destinatario, de a uno. Es el motor de los seis
     envíos masivos del panel de admin.
 
     `destinatarios`: los que el admin vio y que HOY siguen calificando (cada
@@ -27857,6 +27875,64 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
         conn.close()
 
 
+def _otros_mails_de_rendi(conn, mails: dict, propia: str):
+    """Todos los mails que Rendi le mandó por iniciativa propia a cada persona,
+    menos el de la columna `propia` (el mail que se está por mandar, que cada
+    endpoint mira aparte). `mails` = {uid: email}.
+
+    Devuelve ({uid: [fechas UTC]}, {uid: {tipos de aviso automático ya salidos}}).
+    Junta:
+      · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
+      · los otros mails a mano de este panel (_MARCAS_DE_ENVIO, columnas de
+        users; el mail libre: broadcast_send_log).
+    Sin los segundos, alguien que recibió el re-engagement hace un minuto
+    recibía también el de feedback: dos mails en el mismo minuto. Es la regla
+    de los dos mails que la usan (feedback de la prueba y cuentas en pausa);
+    si una cambia acá, cambia para las dos."""
+    otros = {uid: [] for uid in mails}
+    avisos = {uid: set() for uid in mails}
+    if not mails:
+        return otros, avisos
+    ph = ",".join("?" for _ in mails)
+    cols = [c for c in _MARCAS_DE_ENVIO if c != propia]
+    try:
+        for r in conn.execute(
+                f"SELECT id, {', '.join(cols)} FROM users WHERE id IN ({ph})",
+                tuple(mails)).fetchall():
+            for col in cols:
+                f = _fecha_utc(r[col])
+                if f:
+                    otros[int(r["id"])].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudieron leer las marcas de users: %s", ex)
+        _deshacer_transaccion(conn)
+    try:
+        for r in conn.execute(
+            f"""SELECT user_id, kind, sent_at FROM trial_email_log
+                 WHERE user_id IN ({ph})""", tuple(mails)).fetchall():
+            uid = int(r["user_id"])
+            avisos[uid].add(r["kind"])
+            f = _fecha_utc(r["sent_at"])
+            if f:
+                otros[uid].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudo leer trial_email_log: %s", ex)
+        _deshacer_transaccion(conn)
+    por_mail = {(m or "").strip().lower(): uid for uid, m in mails.items()}
+    ph = ",".join("?" for _ in por_mail)
+    try:
+        for r in conn.execute(
+            f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
+                 WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
+            f = _fecha_utc(r["sent_at"])
+            if f and r["e"] in por_mail:
+                otros[por_mail[r["e"]]].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudo leer broadcast_send_log: %s", ex)
+        _deshacer_transaccion(conn)
+    return otros, avisos
+
+
 @app.post("/api/admin/email/feedback-prueba")
 def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(get_admin_user)):
     """Mail "¿qué te está pareciendo Rendi?" a quienes están EN LA PRUEBA GRATIS.
@@ -27936,17 +28012,15 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
         def _horas_desde(d):
             return round((ahora - d).total_seconds() / 3600, 1) if d else None
 
-        # Una fila por persona con todo lo que hace falta para decidir:
-        # la marca de ESTE mail, cuándo arrancó la prueba y las marcas de los
-        # otros mails que se mandan a mano desde este mismo panel.
+        # Una fila por persona con todo lo que hace falta para decidir: la
+        # marca de ESTE mail y cuándo arrancó la prueba. Los otros mails que le
+        # llegaron los junta `_otros_mails_de_rendi`.
         datos = {}
         if vivos:
             ph = ",".join("?" for _ in vivos)
             for r in conn.execute(
                 f"""SELECT id, email, trial_feedback_email_sent_at AS enviado,
-                           trial_started_at, trial_ends_at,
-                           reengagement_email_sent_at, gift_plan_email_sent_at,
-                           trial_invite_email_sent_at
+                           trial_started_at, trial_ends_at
                       FROM users
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
@@ -27955,46 +28029,9 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
                     tuple(int(v["id"]) for v in vivos)).fetchall():
                 datos[int(r["id"])] = dict(r)
 
-        # Todos los mails que Rendi le mandó por iniciativa propia, como fechas:
-        #   · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
-        #   · los otros mails a mano de este panel (re-engagement, regalo,
-        #     invitación: columnas de users; el mail libre: broadcast_send_log).
-        # Sin los segundos, alguien que recibió el re-engagement hace un minuto
-        # recibía este también: dos mails en el mismo minuto.
-        otros_mails = {uid: [] for uid in datos}
-        avisos_enviados = {uid: set() for uid in datos}
-        for uid, d in datos.items():
-            for col in ("reengagement_email_sent_at", "gift_plan_email_sent_at",
-                        "trial_invite_email_sent_at"):
-                f = _fecha_utc(d.get(col))
-                if f:
-                    otros_mails[uid].append(f)
-        if datos:
-            ph = ",".join("?" for _ in datos)
-            try:
-                for r in conn.execute(
-                    f"""SELECT user_id, kind, sent_at FROM trial_email_log
-                         WHERE user_id IN ({ph})""", tuple(datos)).fetchall():
-                    uid = int(r["user_id"])
-                    avisos_enviados[uid].add(r["kind"])
-                    f = _fecha_utc(r["sent_at"])
-                    if f:
-                        otros_mails[uid].append(f)
-            except Exception as ex:
-                log.warning("feedback-prueba: no se pudo leer trial_email_log: %s", ex)
-                _deshacer_transaccion(conn)
-            por_mail = {(d["email"] or "").strip().lower(): uid for uid, d in datos.items()}
-            ph = ",".join("?" for _ in por_mail)
-            try:
-                for r in conn.execute(
-                    f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
-                         WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
-                    f = _fecha_utc(r["sent_at"])
-                    if f and r["e"] in por_mail:
-                        otros_mails[por_mail[r["e"]]].append(f)
-            except Exception as ex:
-                log.warning("feedback-prueba: no se pudo leer broadcast_send_log: %s", ex)
-                _deshacer_transaccion(conn)
+        otros_mails, avisos_enviados = _otros_mails_de_rendi(
+            conn, {uid: d["email"] for uid, d in datos.items()},
+            propia="trial_feedback_email_sent_at")
 
         ventana = _td(hours=FEEDBACK_PRUEBA_ESPERA_HORAS)
         # Cómo se llama en el panel cada aviso automático de la prueba.
@@ -28093,6 +28130,266 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
             mandar=lambda t: emails.send_trial_feedback(
                 to=t["email"], user_name=(t.get("name") or ""), reenvio=reenvio),
             campaña=f"feedback-prueba ({data.grupo})", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["grupo"] = data.grupo
+        return res
+    finally:
+        conn.close()
+
+
+# Campaña "tu cuenta está en pausa" (/api/admin/email/reactivar-pausa).
+# Días en pausa antes de poder mandarle: el día después de que termina la
+# prueba le llega solo el aviso automático "Terminó tu prueba", que dice casi
+# lo mismo. Otro mail en esos días se lee como insistencia, no como una persona
+# que escribe.
+REACTIVAR_PAUSA_MIN_DIAS = 3
+# Horas que tiene que esperar alguien a quien le llegó OTRO mail de Rendi (o
+# este mismo) antes de que se le pueda mandar: dos el mismo día son spam.
+REACTIVAR_PAUSA_ESPERA_HORAS = 24
+# Cuántos activos nombra el mail ("con GGAL, AAPL y MELI adentro").
+REACTIVAR_PAUSA_ACTIVOS = 3
+
+
+class ReactivarPausaEmailIn(BaseModel):
+    confirm: bool = False                 # False = DRY RUN (las listas, no manda nada)
+    grupo: str = "nuevos"                 # 'nuevos' (nunca lo recibieron) | 'todos' (todos los en pausa)
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+    prueba_a_mi: bool = False             # manda UNO al mail del admin logueado y no toca a nadie
+    con_cartera: bool = True              # (sólo prueba_a_mi) qué versión del mail mandarse
+
+
+def _pausa_desde(d: dict, ahora: datetime) -> Optional[datetime]:
+    """Desde cuándo está en pausa (UTC): lo último que le daba acceso y ya
+    venció — el fin de la prueba, del crédito (un plan que pagó o le
+    regalaron) o de la prueba de Pro. Si nada de eso existió (la prueba nunca
+    arrancó: `motivo_de_pausa` = 'prueba_usada'), desde que creó la cuenta."""
+    vencidos = [f for f in (_fecha_utc(d.get("trial_ends_at")),
+                            _fecha_utc(d.get("credit_active_until")),
+                            _fecha_utc(d.get("pro_trial_until")))
+                if f is not None and f <= ahora]
+    if vencidos:
+        return max(vencidos)
+    return _fecha_utc(d.get("created_at"))
+
+
+def _activos_para_el_mail(conn, uid: int, n: int = REACTIVAR_PAUSA_ACTIVOS) -> list:
+    """Hasta `n` tickers que la persona tiene ABIERTOS, los que más movió
+    primero, escritos como los reconoce ella ("GGAL", no "GGAL.BA").
+
+    Se ordena por cantidad de operaciones y no por monto a propósito: el monto
+    mezcla pesos y dólares, y para nombrar "lo que tenés" alcanza con lo que
+    más tocó. Los nombres largos o raros (fondos comunes, "FCI Balanz
+    Ahorro…") se saltean: en una frase del mail se leen como un error."""
+    try:
+        filas = conn.execute(
+            f"""SELECT p.asset,
+                       (SELECT COUNT(*) FROM operations o
+                         WHERE o.user_id = p.user_id AND o.asset = p.asset) AS n_ops
+                  FROM positions p
+                 WHERE p.user_id = ? AND {_SQL_POSICION_ABIERTA}""", (uid,)).fetchall()
+    except Exception as ex:
+        log.warning("activos del mail de pausa uid=%s: %s", uid, ex)
+        _deshacer_transaccion(conn)
+        return []
+    import re as _re
+    por_ticker = {}
+    for r in filas:
+        t = (r["asset"] or "").strip().upper()
+        if t.endswith(".BA"):
+            t = t[:-3]
+        if not _re.fullmatch(r"[A-Z][A-Z0-9]{0,5}", t):
+            continue
+        por_ticker[t] = por_ticker.get(t, 0) + int(r["n_ops"] or 0)
+    return [t for t, _ in sorted(por_ticker.items(), key=lambda kv: (-kv[1], kv[0]))][:n]
+
+
+def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
+    """Una fila por cada cuenta EN PAUSA con mail confirmado, con todo lo que
+    el mail personaliza y lo que decide si se le puede mandar hoy.
+
+    ⭐ "Está en pausa" lo decide `cuenta_en_pausa`, la MISMA función que pone
+    el muro en la app y la etiqueta "en pausa" del panel de usuarios. Con un
+    criterio propio acá (p. ej. "trial_ends_at vencido") se colaría el que
+    pagó, que conserva su trial_ends_at. Sin mail confirmado no entra: esa
+    persona no llegó a usar nada, y el panel la muestra como "sin confirmar".
+
+    `ids` = sólo esos (los que vio el admin)."""
+    from billing import emails
+    from billing import trial as _trial
+    from fechas import dia_art
+
+    filtro, params = _filtro_ids("id", ids)
+    filas = []
+    for r in conn.execute(
+        f"""SELECT id, email, name, created_at, trial_started_at, trial_ends_at,
+                   credit_active_until, pro_trial_until,
+                   pausa_email_sent_at AS enviado
+              FROM users
+             WHERE requires_plan = 1
+               AND COALESCE(is_admin,0) = 0
+               AND managed_by IS NULL
+               AND COALESCE(email_verified,0) = 1
+               AND TRIM(COALESCE(email,'')) <> ''
+               {filtro}
+             ORDER BY id""", params).fetchall():
+        d = dict(r)
+        if cuenta_en_pausa(conn, d["id"]):
+            filas.append(d)
+
+    otros_mails, avisos_enviados = _otros_mails_de_rendi(
+        conn, {d["id"]: d["email"] for d in filas}, propia="pausa_email_sent_at")
+    ventana = timedelta(hours=REACTIVAR_PAUSA_ESPERA_HORAS)
+
+    def _horas_desde(f):
+        return (ahora - f).total_seconds() / 3600 if f else None
+
+    out = []
+    for d in filas:
+        uid_ = d["id"]
+        desde = _pausa_desde(d, ahora)
+        dias = int((_horas_desde(desde) or 0) // 24)
+        resumen = resumen_de_lo_guardado(conn, uid_)
+        activos = _activos_para_el_mail(conn, uid_) if resumen else []
+        otro = _horas_desde(max(otros_mails[uid_])) if otros_mails[uid_] else None
+        propio = _horas_desde(_fecha_utc(d["enviado"]))
+        # El aviso automático "Terminó tu prueba" todavía no salió y su
+        # ventana sigue abierta: sale en la próxima corrida del cron.
+        fin_pendiente = False
+        if _trial.MAIL_ENDED not in avisos_enviados[uid_]:
+            v = _trial.ventanas_de_aviso(d["trial_started_at"], d["trial_ends_at"]).get(
+                _trial.MAIL_ENDED)
+            fin_pendiente = bool(v) and ahora < v[1] and v[0] <= ahora + ventana
+        espera = None
+        if dias < REACTIVAR_PAUSA_MIN_DIAS:
+            espera = (f"lleva {dias} {'día' if dias == 1 else 'días'} en pausa · "
+                      f"entra con {REACTIVAR_PAUSA_MIN_DIAS}")
+        elif fin_pendiente:
+            espera = ("todavía no le llegó el aviso automático «terminó tu prueba» · "
+                      "se le puede mandar después")
+        elif otro is not None and otro < REACTIVAR_PAUSA_ESPERA_HORAS:
+            espera = (f"le llegó otro mail de Rendi {_hace_txt(otro)} · "
+                      "se le puede mandar a partir de mañana")
+        elif propio is not None and propio < REACTIVAR_PAUSA_ESPERA_HORAS:
+            espera = (f"lo recibió {_hace_txt(propio)} · "
+                      "se le puede volver a mandar a partir de mañana")
+        pausa_dia = dia_art(desde) if desde else None
+        asunto, _html, texto = emails.reactivar_pausa_contenido(
+            d.get("name") or "", resumen=resumen, activos=activos,
+            pausa_desde=pausa_dia, reenvio=bool(d["enviado"]))
+        out.append({
+            "id": uid_, "email": d["email"], "name": d.get("name"),
+            "saludo": emails.nombre_de_pila(d.get("name")),
+            "motivo": motivo_de_pausa(conn, uid_),
+            "pausa_desde": pausa_dia.isoformat() if pausa_dia else None,
+            "dias_en_pausa": dias,
+            "resumen": resumen, "activos": activos,
+            "con_cartera": bool(resumen),
+            "sent_at": d["enviado"],
+            "espera": espera,
+            # El mail EXACTO que le llegaría a esta persona hoy.
+            "mail": {"asunto": asunto, "texto": texto},
+            # Para mandar hace falta lo de arriba; esto no viaja al panel.
+            "_resumen": resumen, "_activos": activos, "_pausa_dia": pausa_dia,
+        })
+    # Los más recientes primero: el que pausó hace una semana todavía se acuerda
+    # de lo que cargó.
+    out.sort(key=lambda f: (f["pausa_desde"] or ""), reverse=True)
+    return out
+
+
+def _sin_privados(fila: dict) -> dict:
+    return {k: v for k, v in fila.items() if not k.startswith("_")}
+
+
+@app.post("/api/admin/email/reactivar-pausa")
+def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(get_admin_user)):
+    """Mail a las cuentas EN PAUSA: se les terminó la prueba (o el plan) y no
+    eligieron uno, así que no pueden entrar. Mismo motor y mismas reglas que el
+    de feedback de la prueba.
+
+    Dos botones en el panel:
+      • 'nuevos' → los que NUNCA lo recibieron. Es el principal.
+      • 'todos'  → todos los que están en pausa, lo hayan recibido o no. Al que
+        ya lo recibió le llega la versión de reenvío (otra apertura).
+    Al que pagó (o volvió a tener acceso) deja de aparecer: se pregunta a
+    `cuenta_en_pausa` en cada pedido, también al mandar.
+
+    Personalizado por persona (ver emails.reactivar_pausa_contenido): saludo
+    con su nombre, desde cuándo está en pausa, y lo que dejó guardado
+    (brokers, movimientos y hasta 3 activos). Al que no cargó nada le llega
+    otro mail, que le pregunta qué lo frenó. La vista previa trae el mail
+    exacto de cada fila.
+
+    No se le manda (se ve en gris, con el motivo en `espera`) a quien:
+      · lleva menos de REACTIVAR_PAUSA_MIN_DIAS días en pausa;
+      · todavía no recibió el aviso automático "Terminó tu prueba";
+      · recibió otro mail de Rendi —o este— hace menos de
+        REACTIVAR_PAUSA_ESPERA_HORAS horas.
+    El backend la descarta aunque venga en `vistos`.
+
+    `vistos` = cada persona que el admin vio, CON la fecha de envío que vio
+    (obligatorio para mandar, de a ENVIO_MASIVO_LOTE). Se marca ANTES de
+    mandar contra esa fecha: un doble click no le manda dos veces a nadie.
+
+    `prueba_a_mi=True` manda UN mail al admin que aprieta el botón, con SUS
+    datos (o un ejemplo si no tiene cartera y pidió la versión con cartera), y
+    no toca a nadie más."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
+    from billing import emails
+    from fechas import hoy_art_date
+
+    if data.grupo not in ("nuevos", "todos"):
+        raise HTTPException(422, "grupo debe ser 'nuevos' o 'todos'")
+    conn = get_db()
+    try:
+        if data.prueba_a_mi:
+            yo = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
+            if not yo or not (yo["email"] or "").strip():
+                raise HTTPException(400, "Tu cuenta no tiene un mail cargado.")
+            resumen, activos = None, []
+            if data.con_cartera:
+                resumen = resumen_de_lo_guardado(conn, uid)
+                activos = _activos_para_el_mail(conn, uid) if resumen else []
+                if not resumen:
+                    resumen, activos = "2 brokers y 143 movimientos", ["GGAL", "AAPL", "MELI"]
+            try:
+                ok = emails.send_reactivar_pausa(
+                    to=yo["email"], user_name=(yo["name"] or ""), resumen=resumen,
+                    activos=activos, pausa_desde=hoy_art_date() - timedelta(days=7))
+            except Exception as ex:
+                log.error("reactivar-pausa: la prueba al admin falló: %s", ex)
+                ok = False
+            return {"prueba": True, "to": yo["email"], "sent": bool(ok)}
+
+        ahora = datetime.utcnow()
+        if not data.confirm:
+            filas = _reactivar_pausa_filas(conn, ahora)
+            return {
+                "dry_run": True,
+                "en_pausa": len(filas),
+                "nuevos": [_sin_privados(f) for f in filas if not f["sent_at"]],
+                "ya_recibieron": [_sin_privados(f) for f in filas if f["sent_at"]],
+                "min_dias": REACTIVAR_PAUSA_MIN_DIAS,
+                "lote": ENVIO_MASIVO_LOTE,
+                "espera_horas": REACTIVAR_PAUSA_ESPERA_HORAS,
+            }
+
+        visto = _vistos_o_422(data.vistos)
+        grupo = [t for t in _reactivar_pausa_filas(conn, ahora, ids=list(visto))
+                 if not t["espera"] and (data.grupo == "todos" or not t["sent_at"])]
+        for t in grupo:
+            # La marca que se compara es la que VIO el admin, no la que leyó
+            # este pedido (el doble click de "mandar a todos").
+            t["visto"] = visto[t["id"]]
+        marcar, desmarcar = _marca_en_columna(conn, "pausa_email_sent_at")
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_reactivar_pausa(
+                to=t["email"], user_name=(t.get("name") or ""), resumen=t["_resumen"],
+                activos=t["_activos"], pausa_desde=t["_pausa_dia"],
+                reenvio=t["visto"] is not None),
+            campaña=f"reactivar-pausa ({data.grupo})", inicio=t0,
             inciertos_previos=data.inciertos_seguidos)
         res["grupo"] = data.grupo
         return res
@@ -40250,16 +40547,13 @@ class AIVozIn(BaseModel):
     sig: str = Field(..., min_length=8, max_length=128)
 
 
-_MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
-             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
-
-
 def _fecha_legible(iso: str) -> str:
     """"2026-09-19" → "19 de septiembre". La fecha sale de la base en formato de
     máquina y así se le estaba mostrando al usuario. Nadie lee una fecha así."""
+    from fechas import fecha_legible
     try:
         a, m, d = str(iso).split("-")
-        return "%d de %s" % (int(d), _MESES_ES[int(m) - 1])
+        return fecha_legible(date(int(a), int(m), int(d)))
     except Exception:
         return str(iso)
 

@@ -1553,6 +1553,123 @@ def send_trial_feedback(*, to: str, user_name: str = "", reenvio: bool = False) 
                  reply_to="soporte@rendi.finance")
 
 
+# ─── Campaña: cuentas en pausa (terminó la prueba y no eligieron plan) ──────
+
+def _lista_con_y(cosas) -> str:
+    """["GGAL"] → "GGAL" · ["GGAL", "AAPL"] → "GGAL y AAPL" · tres → "A, B y C"."""
+    cosas = [c for c in cosas if c]
+    if len(cosas) <= 1:
+        return "".join(cosas)
+    return ", ".join(cosas[:-1]) + " y " + cosas[-1]
+
+
+def reactivar_pausa_contenido(user_name: str = "", *, resumen: Optional[str] = None,
+                              activos=(), pausa_desde=None, reenvio: bool = False) -> tuple:
+    """(asunto, html, texto) del mail a una cuenta EN PAUSA: se le terminó la
+    prueba (o el plan) y no eligió uno, así que no puede entrar.
+
+    Separado del envío, como feedback_prueba_contenido, para que el panel de
+    admin muestre EXACTAMENTE el mail de cada persona.
+
+    Lo personalizado, todo con datos que la cuenta tiene y nada estimado:
+      · `user_name` → el saludo (nombre_de_pila: "Hola," a secas si no sirve).
+      · `pausa_desde` (date, día argentino) → "está en pausa desde el 3 de
+        octubre". Sin fecha, la frase la omite antes que inventarla.
+      · `resumen` ("2 brokers y 143 movimientos", el MISMO texto que le
+        muestra el muro de la app) y `activos` (hasta 3 tickers que tiene
+        abiertos) → lo que dejó guardado.
+    Y según haya cargado algo o no, son dos mails distintos:
+      · con cartera: lo suyo sigue ahí, entra donde lo dejó.
+      · sin cartera (`resumen` vacío): no hay nada guardado que ofrecerle, así
+        que el mail pregunta qué lo frenó — es la única forma de saber por qué
+        no convirtió — y de paso le cuenta que importar es un archivo.
+
+    Formato PLANO y firma personal, igual que el de feedback: un mail con
+    pinta de escrito 1-a-1 cae en Principal y se contesta.
+
+    `reenvio=True` es para quien ya lo recibió: misma idea, otra apertura (un
+    mail idéntico delata el botón). Mismo asunto, para que Gmail los junte.
+    No dice "te escribí": la marca de envío puede existir sin que haya salido."""
+    nombre = nombre_de_pila(user_name)
+    saludo = f"Hola {nombre}," if nombre else "Hola,"
+    desde = ""
+    if pausa_desde:
+        from fechas import fecha_legible
+        desde = f" desde el {fecha_legible(pausa_desde)}"
+    planes_txt = "rendi.finance/planes"
+    planes_html = f'<a href="{_TRIAL_URL}" style="color:#5b4ddb;">{planes_txt}</a>'
+
+    if resumen:
+        asunto = "Tu cartera sigue guardada en Rendi"
+        cartera = resumen + (f", con {_lista_con_y(activos)} adentro" if activos else "")
+        if reenvio:
+            apertura = (f"un recordatorio corto: tu cuenta de Rendi sigue en pausa{desde}, "
+                        f"y todo lo que cargaste sigue ahí, sin tocar: {cartera}.")
+        else:
+            apertura = (f"tu cuenta de Rendi está en pausa{desde}. Lo que cargaste no se "
+                        f"borró: está todo guardado tal cual lo dejaste — {cartera}.")
+        parrafos = [
+            "Elegís un plan y entrás justo donde lo dejaste, con tu cartera valuada a "
+            "precios de hoy. No hay que importar nada de nuevo.",
+            ("Los planes están en ", ""),
+            "Y si algo te frenó —el precio, algo que no funcionó o algo que te faltó—, "
+            "respondé este mail y contame. Lo leo yo, y es lo que decide qué arreglamos "
+            "primero.",
+        ]
+    else:
+        asunto = "Una pregunta corta sobre Rendi"
+        if reenvio:
+            apertura = (f"un recordatorio corto: tu cuenta de Rendi sigue en pausa{desde}, "
+                        "y todavía no llegaste a cargar tu cartera.")
+        else:
+            apertura = (f"tu cuenta de Rendi está en pausa{desde}, y vi que no llegaste a "
+                        "cargar tu cartera.")
+        parrafos = [
+            "Me sirve mucho saber qué pasó: ¿no tuviste tiempo, no encontraste cómo "
+            "importar tus movimientos, o Rendi no era lo que buscabas? Con una línea de "
+            "respuesta alcanza, y lo leo yo.",
+            "Por si fue lo segundo: con el archivo de movimientos que te da tu broker "
+            "(Cocos, IOL, Balanz, Bull Market, PPI y otros), Rendi arma tu cartera sola y "
+            "te muestra tu rendimiento real en dólares.",
+            ("Si querés volver, elegís un plan en ", " y arrancás de ahí."),
+        ]
+
+    # Un párrafo en tupla es el que lleva el link a los planes: (antes, después).
+    def _p_html(p):
+        if isinstance(p, tuple):
+            return f"{html.escape(p[0])}{planes_html}{html.escape(p[1])}"
+        return html.escape(p)
+
+    def _p_txt(p):
+        return f"{p[0]}{_TRIAL_URL}{p[1]}" if isinstance(p, tuple) else p
+
+    estilo_p = 'style="margin:0 0 14px;"'
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        f'<p {estilo_p}>{html.escape(saludo)} {html.escape(apertura)}</p>'
+        + "".join(f'<p {estilo_p}>{_p_html(p)}</p>' for p in parrafos)
+        + '<p style="margin:18px 0 0;">Nicolás — Rendi</p>'
+        '</div>'
+    )
+    texto = (f"{saludo} {apertura}\n\n"
+             + "\n\n".join(_p_txt(p) for p in parrafos)
+             + "\n\nNicolás — Rendi")
+    return asunto, body_html, texto
+
+
+def send_reactivar_pausa(*, to: str, user_name: str = "", resumen: Optional[str] = None,
+                         activos=(), pausa_desde=None, reenvio: bool = False) -> bool:
+    """Mail a una cuenta en pausa (ver reactivar_pausa_contenido). Lo dispara a
+    mano el admin (/api/admin/email/reactivar-pausa); no lo manda ningún cron.
+    Las respuestas van a soporte@."""
+    asunto, body_html, texto = reactivar_pausa_contenido(
+        user_name, resumen=resumen, activos=activos, pausa_desde=pausa_desde,
+        reenvio=reenvio)
+    return _send(to, asunto, body_html, texto, from_addr=_from_support(),
+                 reply_to="soporte@rendi.finance")
+
+
 # ─── Campaña: avisar que la prueba gratis está disponible ───────────────────
 
 # Tres textos para la MISMA campaña. Se manda de a tandas de 50, así que se
