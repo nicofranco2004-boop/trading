@@ -14,7 +14,8 @@
 //
 // Por dónde avisa y cuántas veces quedan plegados en una línea («Por mail y
 // celular · una vez · cambiar»): casi nadie los cambia y antes eran la mitad
-// de los botones del formulario.
+// de los botones del formulario. Por eso el «cuántas veces» de arranque tiene
+// que ser el que sirve: ver `repeticionPorDefecto`.
 //
 // Editar: el servidor deja cambiar el precio, la dirección, los %, el canal y
 // la repetición. El activo y lo que se vigila, no: para eso se arma otra.
@@ -47,7 +48,32 @@ const VACIO = {
   down_pct: '',        // pct_move: cae más de
   baseline: 'prev_close', // pct_move de un activo: 'prev_close' (en el día) | 'set_price' (desde ahora)
   channel: 'both',
-  repeat: 'once',
+  repeat: 'once',      // el de precio; al cambiar de tipo lo decide repeticionPorDefecto
+}
+
+// «Cuántas veces» arranca según lo que se vigila: el % de toda la cartera en
+// «Todos los días»; el de precio y el de un activo, en «Una vez». Con «Una vez»
+// la de toda la cartera se apagaba con el primer activo que pasaba el % —y
+// avisaba sólo de ése aunque se movieran tres juntos—: quien pedía «avisame si
+// algo de mi cartera se mueve 3 %» recibía un aviso y nunca más (21/10/2026).
+export function repeticionPorDefecto(kind, scope) {
+  return kind === 'pct_move' && scope === 'holdings' ? 'always' : 'once'
+}
+
+// Cambiar qué se vigila (el tipo o «Qué vigilar»). Si la persona ya eligió
+// «Cuántas veces» a mano, se respeta; si no, sigue a lo que se vigila.
+export function alCambiarVigilancia(f, cambios, repeticionElegida) {
+  const n = { ...f, ...cambios }
+  return repeticionElegida ? n : { ...n, repeat: repeticionPorDefecto(n.kind, n.scope) }
+}
+
+// Al pasar a «Se mueve un %» sin activo elegido arranca en «Toda mi cartera»,
+// el uso más común; con un activo ya elegido, sigue con ese.
+export function alElegirTipo(f, kind, repeticionElegida) {
+  return alCambiarVigilancia(f, {
+    kind, direction: 'above', threshold: '', up_pct: '', down_pct: '',
+    scope: kind === 'pct_move' && !(f.symbol || '').trim() ? 'holdings' : 'ticker',
+  }, repeticionElegida)
 }
 
 // El borrador inicial: una alerta que se edita, un link que trae el ticker
@@ -87,6 +113,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
   const puedeMovimiento = plan?.can ? plan.can('alerts.pct_move') : false
   const [form, setForm] = useState(() => borradorInicial({ alerta, prefill, puedeMovimiento }))
   const [opciones, setOpciones] = useState(false)
+  const [repeticionElegida, setRepeticionElegida] = useState(false)
   const [ocupado, setOcupado] = useState(false)
   const [err, setErr] = useState(null)
   const [upsell, setUpsell] = useState(false)
@@ -135,10 +162,7 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
     if (editando) return
     if (kind === 'pct_move' && !puedeMovimiento) { setUpsell(true); return }
     setUpsell(false)
-    // Al pasar a «Se mueve un %» sin activo elegido arranca en «Toda mi
-    // cartera», el uso más común; con un activo ya elegido, sigue con ese.
-    setForm(f => ({ ...f, kind, direction: 'above', threshold: '', up_pct: '', down_pct: '',
-      scope: kind === 'pct_move' && !(f.symbol || '').trim() ? 'holdings' : 'ticker' }))
+    setForm(f => alElegirTipo(f, kind, repeticionElegida))
   }
 
   // Lo que se manda es lo que se ve: el borrador con los números leídos.
@@ -237,7 +261,8 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
             {editando ? (
               <Fijo>{cartera ? 'Toda mi cartera' : simbolo(sym)}</Fijo>
             ) : (
-              <Segmentos etiqueta="Qué vigilar" grande valor={form.scope} onChange={v => set('scope', v)} opciones={[
+              <Segmentos etiqueta="Qué vigilar" grande valor={form.scope}
+                onChange={v => setForm(f => alCambiarVigilancia(f, { scope: v }, repeticionElegida))} opciones={[
                 { valor: 'holdings', texto: <><Briefcase size={15} strokeWidth={1.75} /> Toda mi cartera</> },
                 { valor: 'ticker', texto: <><Search size={15} strokeWidth={1.75} /> Un activo</> },
               ]} />
@@ -335,7 +360,8 @@ export default function AlertaForm({ plan, alerta, prefill, onClose, crear, actu
               </div>
             </Campo>
             <Campo rotulo="Cuántas veces">
-              <Segmentos etiqueta="Cuántas veces" grande valor={form.repeat} onChange={v => set('repeat', v)} opciones={[
+              <Segmentos etiqueta="Cuántas veces" grande valor={form.repeat}
+                onChange={v => { setRepeticionElegida(true); set('repeat', v) }} opciones={[
                 { valor: 'once', texto: 'Una vez' },
                 { valor: 'always', texto: esPrecio ? 'Cada vez que cruce' : 'Todos los días' },
               ]} />
