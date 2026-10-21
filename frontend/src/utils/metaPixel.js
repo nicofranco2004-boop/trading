@@ -21,6 +21,7 @@
 // una prueba en el servidor local no es un visitante ni un registro.
 
 import { seMideAca } from './medicion'
+import { urlTieneDatosSensibles } from './rutasSensibles'
 
 const META_PIXEL_ID = '1281911210681122' // ← Pixel "Rendi" del ad account (Events Manager).
 // Antes apuntaba a 1313319913641013, que NO existía en esta cuenta publicitaria →
@@ -111,10 +112,10 @@ export function trackMetaEvent(name, params = {}) {
  * RouteTracker da granularidad (retargetear "vio /planes", etc.).
  */
 export function trackMetaPageView() {
-  // /i/:token y /claim llevan secretos en la URL: fbevents manda la location
-  // completa a Facebook — el guard del index.html solo cubría la carga
-  // inicial, no la navegación SPA (audit de seguridad).
-  const p = window.location.pathname
-  if (p.startsWith('/i/') || p.startsWith('/claim') || p.startsWith('/acceso')) return
+  // Las rutas con secreto/PII en la URL (y cualquier URL con token/email/code en
+  // la query) no se reportan: fbevents manda la location completa a Facebook, y
+  // el guard del index.html sólo cubre la carga inicial, no la navegación SPA.
+  // El criterio es único y falla cerrado (rutasSensibles.js, audit RENDI-09).
+  if (urlTieneDatosSensibles(window.location.pathname, window.location.search)) return
   trackMetaEvent('PageView')
 }

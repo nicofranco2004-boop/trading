@@ -32,6 +32,7 @@
 
 import { seMideAca } from './medicion'
 import { registrarUsoGA } from './uso'
+import { urlTieneDatosSensibles } from './rutasSensibles'
 
 // GA4 Measurement ID — hardcoded porque Vercel no inyectaba el env var
 // correctamente (problema con flag VITE_ exposed). El ID es público por
@@ -91,20 +92,21 @@ export function initAnalytics() {
  * Trackea un page view. Llamar en cada route change.
  * RouteTracker en App.jsx ya lo hace automático.
  */
-// Rutas que llevan un SECRETO en la URL (token de claim = takeover de la
-// cuenta; token del informe público = la cartera del cliente). NUNCA se
-// reportan a analytics: GA guardaba la URL completa y cualquiera con acceso
-// a la propiedad (o Google mismo) leía el token (audit de seguridad).
-const isSensitivePath = (p) => typeof p === 'string' && (p.startsWith('/i/') || p.startsWith('/claim') || p.startsWith('/acceso'))
+// Rutas con un SECRETO o PII en la URL (token de claim/reset = takeover de la
+// cuenta; token del informe = la cartera del cliente; email en /verify-email).
+// NUNCA se reportan a analytics: GA guardaba la URL completa y cualquiera con
+// acceso a la propiedad (o Google mismo) la leía. Criterio único y que falla
+// cerrado en rutasSensibles.js (audit RENDI-09).
 
 export function trackPageView(path, title) {
   if (!initialized || !window.gtag) return
-  if (isSensitivePath(path || window.location.pathname)) return
-  // page_location sin query de token (defensa extra si algún flujo lo agrega)
+  if (urlTieneDatosSensibles(path || window.location.pathname, window.location.search)) return
+  // page_location sin params sensibles (defensa extra si algún flujo los agrega)
   let loc = window.location.href
   try {
     const u = new URL(loc)
-    if (u.searchParams.has('token')) { u.searchParams.delete('token'); loc = u.toString() }
+    for (const k of ['token', 'email', 'code']) u.searchParams.delete(k)
+    loc = u.toString()
   } catch { /* URL rara — mandamos origin+path pelado */ loc = window.location.origin + path }
   window.gtag('event', 'page_view', {
     page_path: path,
