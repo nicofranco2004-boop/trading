@@ -81,6 +81,18 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             f"Code '{code}' no existe. Disponibles: {available}"
         )
 
+    # Recorte por plan: un detector más allá del tope de la cuenta está bloqueado,
+    # así que no se narra por IA (si no, Free obtenía por el Coach el análisis de
+    # una card que la pantalla le muestra con candado) — RENDI-A04. El orden de
+    # `cards` es el mismo que usa la pantalla para decidir cuáles son visibles.
+    from ai import plan as _plan
+    tope = _plan.detectores_visibles(conn, user_id)
+    if tope is not None:
+        idx = next((i for i, c in enumerate(cards)
+                    if (c.get("code") or "").lower() == code), None)
+        if idx is not None and idx >= tope:
+            raise ValueError("Ese detector es parte de un plan superior.")
+
     # Contexto: otras cards activas (high/medium) para que el LLM pueda
     # mencionar correlaciones si aplica. Sin evidence — solo el header.
     others = [

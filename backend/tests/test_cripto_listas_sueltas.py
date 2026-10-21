@@ -85,7 +85,7 @@ class CriptoFueraDeLasListasViejas(unittest.TestCase):
         conn = main.get_db()
         sufijo = uuid.uuid4().hex[:10]
         self.uid = conn.execute(
-            "INSERT INTO users (email, password_hash, approved, investor_profile) VALUES (?,?,1,?)",
+            "INSERT INTO users (email, password_hash, approved, tier, investor_profile) VALUES (?,?,1,'plus',?)",
             (f"cripto-{sufijo}@rendi.test", "x",
              json.dumps({"horizon": "long", "drawdown": "medium", "goal": "growth",
                          "style": "buy_hold", "experience": "intermediate"}))).lastrowid

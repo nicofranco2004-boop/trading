@@ -164,6 +164,21 @@ def can_access(conn, user_id: int, feature_id: str) -> bool:
     return bool(limits["can_access"].get(feature_id, False))
 
 
+def detectores_visibles(conn, user_id: int):
+    """Cuántos detectores de comportamiento ve la cuenta: None = todos (sin tope),
+    N = sólo los primeros N. Es el MISMO número que alimenta la pantalla
+    (`behavioral_tags_visible`), para que el recorte del servidor y el del front
+    coincidan. Falla cerrado: ante cualquier error devuelve 1 — nunca se regalan
+    los detectores pagos por un bug de plan.
+
+    Lo usan los TRES lugares que exponen el dato (la pantalla y los dos builders
+    de IA), para que el criterio viva en un solo lado."""
+    try:
+        return get_plan_features(conn, user_id)["limits"].get("behavioral_tags_visible")
+    except Exception:
+        return 1
+
+
 def count_broker_accounts(conn, user_id: int) -> int:
     """Cuántas CUENTAS tiene el user — no cuántas filas hay en `brokers`.
 

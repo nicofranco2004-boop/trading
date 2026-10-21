@@ -20178,7 +20178,7 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
 
 
 @app.get("/api/behavioral/insights")
-def behavioral_insights(uid: int = Depends(get_effective_user)):
+def behavioral_insights(request: Request, uid: int = Depends(get_effective_user)):
     """Detecta sesgos comportamentales sobre el historial del usuario.
     Sprint 3 + 3.1 + 3.2 del plan post-auditoría. 10 detectores en total.
 
@@ -20218,9 +20218,26 @@ def behavioral_insights(uid: int = Depends(get_effective_user)):
                 inflation_monthly = _fetch_inflation_ar()
         except Exception:
             inflation_monthly = {}
+        # Cuántos detectores puede ver esta cuenta (None = todos). Se resuelve con
+        # conn viva; el recorte se aplica después del build (que no usa conn).
+        # El plan que manda es el de QUIEN pide: si un asesor mira la cuenta de un
+        # cliente (contexto), los ve con SU plan, no con el del cliente — si no, al
+        # asesor (que paga) se le recortarían los detectores del cliente.
+        from ai import plan as _plan
+        plan_uid = getattr(request.state, "rendi_auth_uid", uid)
+        tope_detectores = _plan.detectores_visibles(conn, plan_uid)
     finally:
         conn.close()
-    return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
+    result = build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
+    # Recorte EN EL SERVIDOR: a quien no tiene todos los detectores se le dan los
+    # primeros N completos; del resto sólo viaja el `code` (lo único que el preview
+    # educativo del front necesita), nunca el análisis personal. Antes iban los 12
+    # completos y el recorte vivía sólo en la pantalla — una cortina, no una puerta.
+    if tope_detectores is not None and isinstance(result.get("cards"), list):
+        cards = result["cards"]
+        result["cards"] = (cards[:tope_detectores]
+                           + [{"code": c.get("code")} for c in cards[tope_detectores:]])
+    return result
 
 
 def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional[str]) -> str:
