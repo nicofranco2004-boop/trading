@@ -77,7 +77,7 @@ class _Cuenta(unittest.TestCase):
         cls.http = TestClient(main.app)
         conn = main.get_db()
         cls.uid = conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'plus')",
             (f"costura-{uuid.uuid4().hex[:10]}@rendi.test", "x")).lastrowid
         conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                      (cls.uid, cls.BROKER, cls.MONEDA))

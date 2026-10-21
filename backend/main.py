@@ -45858,6 +45858,37 @@ def _valor_vivo_mercado(conn, uid: int) -> Optional[float]:
 # conversión, importar desde importing.pipeline.
 
 
+def _es_periodo_en_curso(period_type: str, period_key: str) -> bool:
+    """¿El período pedido es el que está corriendo ahora (en hora argentina)?
+
+    El período en curso es gratis (es el que muestra el inicio); los CERRADOS son
+    de plan pago. Mismo reloj ART que el resto del archivo — de 21 a 24 UTC, el
+    mes y el año en curso seguían siendo "actual" acá, no según la hora del proceso."""
+    today = _hoy_art_date()
+    if period_type == "day":
+        return period_key == _iso_today()
+    if period_type == "week":
+        iy, iw, _wd = today.isocalendar()
+        return period_key == f"{iy}-W{iw:02d}"
+    if period_type == "month":
+        return period_key == today.strftime("%Y-%m")
+    if period_type == "year":
+        return period_key == str(today.year)
+    return False
+
+
+def _tiene_reportes_historicos(conn, uid: int) -> bool:
+    """¿La cuenta tiene acceso a los períodos cerrados de Reportes? Falla cerrado
+    (ante un error de plan, NO se regala). El teaser lo pinta el front; el corte
+    de verdad vive acá, porque un gate sólo en el navegador es una cortina."""
+    try:
+        from ai import plan as _plan
+        return _plan.can_access(conn, uid, "reportes.historicos")
+    except Exception:
+        log.exception("plan para reportes.historicos uid=%s", uid)
+        return False
+
+
 @app.get("/api/reports/timeline")
 def reports_timeline(
     broker: str = "global",
@@ -45882,6 +45913,12 @@ def reports_timeline(
         raise HTTPException(400, "months debe estar entre 1 y 36")
     conn = get_db()
     try:
+        # Los meses pasados son de plan pago (igual que /reports/years): a quien no
+        # lo tiene se le da sólo el mes en curso. Antes se mandaban los 36 y el
+        # front los escondía — datos pagos viajando igual. El teaser lo pinta el
+        # front con LockedSection; el corte de verdad es éste.
+        if not _tiene_reportes_historicos(conn, uid):
+            months = 1
         bench_data = _bench_para_reportes()
         # live_value es el TOTAL del portfolio (snapshots no se desagregan
         # por broker). Solo aplica como end_value del período en curso cuando
@@ -46152,6 +46189,15 @@ def reports_period_detail(
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
+        # Los períodos CERRADOS son de plan pago; el EN CURSO es gratis (lo muestra
+        # el inicio). Un deep-link directo a un período pasado desde una cuenta sin
+        # plan se corta acá, no sólo en la pantalla.
+        en_curso = _es_periodo_en_curso(period_type, period_key)
+        if not en_curso and not _tiene_reportes_historicos(conn, uid):
+            raise HTTPException(403, {
+                "code": "plan_requerido",
+                "message": "Ver un período cerrado es parte de un plan pago.",
+            })
         bench_data = _bench_para_reportes()
         # AUDIT H-9: rate LIVE (misma cascada que el cron) — ver _live_valuation_rate.
         tc_blue = _live_valuation_rate(conn, uid)
@@ -46160,27 +46206,12 @@ def reports_period_detail(
         # Esto permite ver el delta intraday vs cierre de ayer / lunes /
         # 1 enero, aunque el cron del snapshot diario todavía no haya corrido.
         live_value = None
-        is_current_period_for_live = False
+        # El valor LIVE sólo aplica al período EN CURSO y a la vista global. El
+        # "¿es el período en curso?" lo decide `_es_periodo_en_curso` (mismo reloj
+        # ART), el mismo que usa el gate de plan de arriba — una sola fuente.
+        is_current_period_for_live = en_curso and broker == "global"
         if broker == "global":
             live_value = _latest_snapshot_value(conn, uid)
-            # ⚠️ EL MISMO RELOJ QUE LA RAMA `day` DE ABAJO.
-            # Estas cuatro ramas decidían con dos calendarios distintos: `day`
-            # comparaba contra `_iso_today()` (argentino) y las otras tres contra
-            # `date.today()`, que es la hora local del proceso — UTC en Railway.
-            # De 21:00 a 23:59 ART el mes y el año en curso dejaban de
-            # reconocerse como actuales, así que el reporte del período vivo
-            # cerraba con el último snapshot en vez del valor live.
-            today = _hoy_art_date()
-            if period_type == "day" and period_key == _iso_today():
-                is_current_period_for_live = True
-            elif period_type == "week":
-                iy, iw, _wd = today.isocalendar()
-                if period_key == f"{iy}-W{iw:02d}":
-                    is_current_period_for_live = True
-            elif period_type == "month" and period_key == today.strftime("%Y-%m"):
-                is_current_period_for_live = True
-            elif period_type == "year" and period_key == str(today.year):
-                is_current_period_for_live = True
             if is_current_period_for_live:
                 try:
                     lv = _valor_vivo_mercado(conn, uid)

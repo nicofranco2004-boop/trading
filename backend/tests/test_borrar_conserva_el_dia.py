@@ -128,7 +128,7 @@ class BorrarConservaElDia(unittest.TestCase):
                 pass
         self.conn.commit()
         self.uid = self.conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'plus')",
             ("borrar_dia@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "USDT"))
@@ -1146,7 +1146,7 @@ class BorrarConservaElDia(unittest.TestCase):
         broker sin saldo (cada una dispara su autodepósito): KO 2.000 que las fotos
         ven desde el 5-feb y PEP 3.000 desde el 10-feb."""
         uid2 = self.conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'plus')",
             ("solo_posiciones@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (uid2, "MANUAL", "USDT"))
@@ -2483,7 +2483,7 @@ class LaSemanaDespuesDeBorrar(unittest.TestCase):
                 pass
         self.conn.commit()
         self.uid = self.conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'plus')",
             ("semana_borrar@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "USDT"))
