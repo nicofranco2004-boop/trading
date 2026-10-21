@@ -46673,10 +46673,16 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # `alert_symbol_state` no tiene user_id: se ata por subquery a `alerts`
+            # para no tocar el estado de alertas AJENAS, y se borra ANTES que la
+            # alerta (después el subquery ya no la encontraría). Sin este candado,
+            # pasar el id de una alerta de otro reseteaba su "ya te avisé".
+            conn.execute(
+                "DELETE FROM alert_symbol_state WHERE alert_id IN "
+                "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
-            conn.execute("DELETE FROM alert_symbol_state WHERE alert_id=?", (alert_id,))
         return {"ok": True}
     finally:
         conn.close()
