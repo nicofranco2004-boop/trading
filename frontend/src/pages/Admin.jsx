@@ -1301,9 +1301,10 @@ function FeedbackPruebaTabla({ filas, conFecha = false }) {
 // ─── ReactivarPausaPanel — mail a las cuentas EN PAUSA ───────────────────────
 // Las que terminaron la prueba (o el plan) y no eligieron uno: no pueden
 // entrar. Misma regla que el muro de la app, del lado del backend. El mail va
-// personalizado (nombre, desde cuándo, lo que dejó guardado; al que no cargó
-// nada le llega otro que le pregunta qué lo frenó), y cada fila deja ver el
-// mail EXACTO que le llegaría. Dos botones: los que nunca lo recibieron
+// personalizado (nombre, desde cuándo; al que no cargó nada le llega otro que
+// le pregunta qué pasó), y cada fila deja ver el mail EXACTO que le llegaría.
+// De la cartera sólo viaja SI cargó algo: ni activos ni cantidades, tampoco
+// acá (la Política de Privacidad reserva esos datos para prestar el servicio). Dos botones: los que nunca lo recibieron
 // (principal) y todos los que están en pausa.
 function ReactivarPausaPanel({ toast }) {
   const { preview, loading, recargar: loadPreview } = useVistaPrevia(
@@ -1370,9 +1371,10 @@ function ReactivarPausaPanel({ toast }) {
 
       <p className="text-xs text-ink-3 leading-relaxed">
         A los que se les terminó la prueba (o el plan) y no eligieron uno: hoy no pueden entrar. Es la misma
-        regla que el cartel «en pausa» de la lista de usuarios. El mail va con lo de cada uno: el nombre, desde
-        cuándo está en pausa y lo que dejó guardado (brokers, movimientos y sus activos). Al que no llegó a
-        cargar nada le llega otro mail, que le pregunta qué lo frenó. Tocá una fila para ver su mail. En gris: los
+        regla que el cartel «en pausa» de la lista de usuarios. El mail va con el nombre de cada uno y desde cuándo
+        está en pausa. Si cargó algo, le dice que todo sigue guardado; si no, le pregunta qué pasó. Nunca nombra
+        lo que hay en su cartera: la Política de Privacidad promete usar esos datos sólo para el servicio. Tocá
+        una fila para ver su mail. En gris: los
         que llevan menos de {preview?.min_dias ?? 3} días en pausa, a los que todavía no les llegó el aviso
         automático «terminó tu prueba», o a los que les llegó otro mail de Rendi en las
         últimas {preview?.espera_horas ?? 24} h. Las respuestas llegan a soporte@. Al que paga, deja de aparecer.
@@ -1381,7 +1383,7 @@ function ReactivarPausaPanel({ toast }) {
       {preview && (
         <>
           <div className="grid grid-cols-3 gap-3">
-            <ConvCell label="En pausa" value={preview.en_pausa} hint={`${conCartera} con cartera cargada`} />
+            <ConvCell label="En pausa" value={preview.en_pausa} hint={`${conCartera} cargaron datos`} />
             <ConvCell label="Nunca lo recibieron" value={nuevos.length}
                       hint={`${nuevosListos.length} se pueden mandar hoy`} />
             <ConvCell label="Ya lo recibieron" value={yaRecibieron.length} hint="siguen en pausa" />
@@ -1482,7 +1484,7 @@ function PausaTabla({ filas, conFecha = false }) {
           <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
             <th className="text-left px-2 py-1">Email</th>
             <th className="text-left px-2 py-1">Saludo</th>
-            <th className="text-left px-2 py-1">Lo que dejó guardado</th>
+            <th className="text-left px-2 py-1">Cargó datos</th>
             <th className="text-right px-2 py-1">En pausa</th>
             {conFecha && <th className="text-right px-2 py-1">Lo recibió</th>}
           </tr>
@@ -1512,9 +1514,7 @@ function PausaFila({ r, conFecha, columnas, abierta, alTocar }) {
           {r.saludo ? `Hola ${r.saludo},` : <span className="text-ink-3">Hola, (sin nombre)</span>}
         </td>
         <td className="px-2 py-1 text-ink-2">
-          {r.resumen
-            ? <>{r.resumen}{r.activos?.length > 0 && <span className="text-ink-3"> · {r.activos.join(', ')}</span>}</>
-            : <span className="text-ink-3">nada cargado</span>}
+          {r.con_cartera ? 'sí' : <span className="text-ink-3">nada cargado</span>}
         </td>
         <td className="px-2 py-1 text-right tabular text-ink-2 whitespace-nowrap">
           desde {diaCorto(r.pausa_desde)} · {r.dias_en_pausa} {r.dias_en_pausa === 1 ? 'día' : 'días'}

@@ -1555,34 +1555,31 @@ def send_trial_feedback(*, to: str, user_name: str = "", reenvio: bool = False) 
 
 # ─── Campaña: cuentas en pausa (terminó la prueba y no eligieron plan) ──────
 
-def _lista_con_y(cosas) -> str:
-    """["GGAL"] → "GGAL" · ["GGAL", "AAPL"] → "GGAL y AAPL" · tres → "A, B y C"."""
-    cosas = [c for c in cosas if c]
-    if len(cosas) <= 1:
-        return "".join(cosas)
-    return ", ".join(cosas[:-1]) + " y " + cosas[-1]
-
-
-def reactivar_pausa_contenido(user_name: str = "", *, resumen: Optional[str] = None,
-                              activos=(), pausa_desde=None, reenvio: bool = False) -> tuple:
+def reactivar_pausa_contenido(user_name: str = "", *, con_cartera: bool,
+                              pausa_desde=None, reenvio: bool = False) -> tuple:
     """(asunto, html, texto) del mail a una cuenta EN PAUSA: se le terminó la
     prueba (o el plan) y no eligió uno, así que no puede entrar.
 
     Separado del envío, como feedback_prueba_contenido, para que el panel de
     admin muestre EXACTAMENTE el mail de cada persona.
 
-    Lo personalizado, todo con datos que la cuenta tiene y nada estimado:
+    🔒 Lo que este mail NO dice: nada de lo que hay ADENTRO de la cartera —ni
+    activos, ni montos, ni cuántos brokers o movimientos—. La Política de
+    Privacidad promete que los datos de cartera se usan "exclusivamente para
+    prestarte el servicio" y "no para publicidad", y este mail es para que
+    alguien que no paga vuelva a pagar. Además un mail viaja y se queda en
+    una bandeja que puede ver otro. Decidido por Nico el 2026-10-21.
+
+    Lo personalizado:
       · `user_name` → el saludo (nombre_de_pila: "Hola," a secas si no sirve).
       · `pausa_desde` (date, día argentino) → "está en pausa desde el 3 de
         octubre". Sin fecha, la frase la omite antes que inventarla.
-      · `resumen` ("2 brokers y 143 movimientos", el MISMO texto que le
-        muestra el muro de la app) y `activos` (hasta 3 tickers que tiene
-        abiertos) → lo que dejó guardado.
-    Y según haya cargado algo o no, son dos mails distintos:
-      · con cartera: lo suyo sigue ahí, entra donde lo dejó.
-      · sin cartera (`resumen` vacío): no hay nada guardado que ofrecerle, así
-        que el mail pregunta qué lo frenó — es la única forma de saber por qué
-        no convirtió — y de paso le cuenta que importar es un archivo.
+      · `con_cartera` (¿cargó algo?) → cuál de los dos mails:
+          · con cartera: lo suyo sigue guardado, entra donde lo dejó.
+          · sin cartera: no hay nada guardado que ofrecerle, así que pregunta
+            qué pasó — es la única forma de saber por qué no convirtió — y de
+            paso cuenta que importar es un archivo. No dice "vi que no
+            cargaste nada": suena a que alguien miró su cuenta.
 
     Formato PLANO y firma personal, igual que el de feedback: un mail con
     pinta de escrito 1-a-1 cae en Principal y se contesta.
@@ -1599,15 +1596,14 @@ def reactivar_pausa_contenido(user_name: str = "", *, resumen: Optional[str] = N
     planes_txt = "rendi.finance/planes"
     planes_html = f'<a href="{_TRIAL_URL}" style="color:#5b4ddb;">{planes_txt}</a>'
 
-    if resumen:
+    if con_cartera:
         asunto = "Tu cartera sigue guardada en Rendi"
-        cartera = resumen + (f", con {_lista_con_y(activos)} adentro" if activos else "")
         if reenvio:
             apertura = (f"un recordatorio corto: tu cuenta de Rendi sigue en pausa{desde}, "
-                        f"y todo lo que cargaste sigue ahí, sin tocar: {cartera}.")
+                        "y todo lo que cargaste sigue guardado, sin tocar.")
         else:
             apertura = (f"tu cuenta de Rendi está en pausa{desde}. Lo que cargaste no se "
-                        f"borró: está todo guardado tal cual lo dejaste — {cartera}.")
+                        "borró: está todo guardado, tal cual lo dejaste.")
         parrafos = [
             "Elegís un plan y entrás justo donde lo dejaste, con tu cartera valuada a "
             "precios de hoy. No hay que importar nada de nuevo.",
@@ -1620,14 +1616,13 @@ def reactivar_pausa_contenido(user_name: str = "", *, resumen: Optional[str] = N
         asunto = "Una pregunta corta sobre Rendi"
         if reenvio:
             apertura = (f"un recordatorio corto: tu cuenta de Rendi sigue en pausa{desde}, "
-                        "y todavía no llegaste a cargar tu cartera.")
+                        "y me sigue sirviendo saber qué pasó.")
         else:
-            apertura = (f"tu cuenta de Rendi está en pausa{desde}, y vi que no llegaste a "
-                        "cargar tu cartera.")
+            apertura = (f"tu cuenta de Rendi está en pausa{desde}, y me gustaría saber "
+                        "qué pasó.")
         parrafos = [
-            "Me sirve mucho saber qué pasó: ¿no tuviste tiempo, no encontraste cómo "
-            "importar tus movimientos, o Rendi no era lo que buscabas? Con una línea de "
-            "respuesta alcanza, y lo leo yo.",
+            "¿No tuviste tiempo, no encontraste cómo importar tus movimientos, o Rendi no "
+            "era lo que buscabas? Con una línea de respuesta alcanza, y lo leo yo.",
             "Por si fue lo segundo: con el archivo de movimientos que te da tu broker "
             "(Cocos, IOL, Balanz, Bull Market, PPI y otros), Rendi arma tu cartera sola y "
             "te muestra tu rendimiento real en dólares.",
@@ -1658,14 +1653,13 @@ def reactivar_pausa_contenido(user_name: str = "", *, resumen: Optional[str] = N
     return asunto, body_html, texto
 
 
-def send_reactivar_pausa(*, to: str, user_name: str = "", resumen: Optional[str] = None,
-                         activos=(), pausa_desde=None, reenvio: bool = False) -> bool:
+def send_reactivar_pausa(*, to: str, user_name: str = "", con_cartera: bool,
+                         pausa_desde=None, reenvio: bool = False) -> bool:
     """Mail a una cuenta en pausa (ver reactivar_pausa_contenido). Lo dispara a
     mano el admin (/api/admin/email/reactivar-pausa); no lo manda ningún cron.
     Las respuestas van a soporte@."""
     asunto, body_html, texto = reactivar_pausa_contenido(
-        user_name, resumen=resumen, activos=activos, pausa_desde=pausa_desde,
-        reenvio=reenvio)
+        user_name, con_cartera=con_cartera, pausa_desde=pausa_desde, reenvio=reenvio)
     return _send(to, asunto, body_html, texto, from_addr=_from_support(),
                  reply_to="soporte@rendi.finance")
 

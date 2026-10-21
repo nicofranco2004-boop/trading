@@ -3924,8 +3924,11 @@ def resumen_de_lo_guardado(conn, uid: int) -> Optional[str]:
     nada (o no se pudo contar): se omite la frase antes que decir "tus 0
     brokers".
 
-    La usan el muro (`/api/auth/me` → `pausa_resumen`) y el mail a las cuentas
-    en pausa (/api/admin/email/reactivar-pausa), para que digan lo mismo."""
+    La usa el muro (`/api/auth/me` → `pausa_resumen`). El mail a las cuentas
+    en pausa (/api/admin/email/reactivar-pausa) sólo mira si es None (cargó
+    algo o no), para que "cargó algo" sea la misma regla en los dos: el mail
+    NO repite la frase, porque es promoción y la Política de Privacidad
+    reserva los datos de cartera para prestar el servicio."""
     try:
         # El contador OFICIAL, el mismo que usa la cuota del plan y el
         # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
@@ -28146,8 +28149,6 @@ REACTIVAR_PAUSA_MIN_DIAS = 3
 # Horas que tiene que esperar alguien a quien le llegó OTRO mail de Rendi (o
 # este mismo) antes de que se le pueda mandar: dos el mismo día son spam.
 REACTIVAR_PAUSA_ESPERA_HORAS = 24
-# Cuántos activos nombra el mail ("con GGAL, AAPL y MELI adentro").
-REACTIVAR_PAUSA_ACTIVOS = 3
 
 
 class ReactivarPausaEmailIn(BaseModel):
@@ -28173,40 +28174,15 @@ def _pausa_desde(d: dict, ahora: datetime) -> Optional[datetime]:
     return _fecha_utc(d.get("created_at"))
 
 
-def _activos_para_el_mail(conn, uid: int, n: int = REACTIVAR_PAUSA_ACTIVOS) -> list:
-    """Hasta `n` tickers que la persona tiene ABIERTOS, los que más movió
-    primero, escritos como los reconoce ella ("GGAL", no "GGAL.BA").
-
-    Se ordena por cantidad de operaciones y no por monto a propósito: el monto
-    mezcla pesos y dólares, y para nombrar "lo que tenés" alcanza con lo que
-    más tocó. Los nombres largos o raros (fondos comunes, "FCI Balanz
-    Ahorro…") se saltean: en una frase del mail se leen como un error."""
-    try:
-        filas = conn.execute(
-            f"""SELECT p.asset,
-                       (SELECT COUNT(*) FROM operations o
-                         WHERE o.user_id = p.user_id AND o.asset = p.asset) AS n_ops
-                  FROM positions p
-                 WHERE p.user_id = ? AND {_SQL_POSICION_ABIERTA}""", (uid,)).fetchall()
-    except Exception as ex:
-        log.warning("activos del mail de pausa uid=%s: %s", uid, ex)
-        _deshacer_transaccion(conn)
-        return []
-    import re as _re
-    por_ticker = {}
-    for r in filas:
-        t = (r["asset"] or "").strip().upper()
-        if t.endswith(".BA"):
-            t = t[:-3]
-        if not _re.fullmatch(r"[A-Z][A-Z0-9]{0,5}", t):
-            continue
-        por_ticker[t] = por_ticker.get(t, 0) + int(r["n_ops"] or 0)
-    return [t for t, _ in sorted(por_ticker.items(), key=lambda kv: (-kv[1], kv[0]))][:n]
-
-
 def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
     """Una fila por cada cuenta EN PAUSA con mail confirmado, con todo lo que
     el mail personaliza y lo que decide si se le puede mandar hoy.
+
+    🔒 De la cartera sólo sale SI cargó algo (para elegir cuál de los dos
+    mails): ni activos, ni montos, ni cuántos brokers o movimientos, tampoco
+    hacia el panel. La Política de Privacidad promete usar los datos de
+    cartera sólo para prestar el servicio, y esto es un mail para que vuelva
+    a pagar (ver emails.reactivar_pausa_contenido).
 
     ⭐ "Está en pausa" lo decide `cuenta_en_pausa`, la MISMA función que pone
     el muro en la app y la etiqueta "en pausa" del panel de usuarios. Con un
@@ -28249,8 +28225,8 @@ def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
         uid_ = d["id"]
         desde = _pausa_desde(d, ahora)
         dias = int((_horas_desde(desde) or 0) // 24)
-        resumen = resumen_de_lo_guardado(conn, uid_)
-        activos = _activos_para_el_mail(conn, uid_) if resumen else []
+        # La misma definición de "cargó algo" que la frase del muro.
+        con_cartera = resumen_de_lo_guardado(conn, uid_) is not None
         otro = _horas_desde(max(otros_mails[uid_])) if otros_mails[uid_] else None
         propio = _horas_desde(_fecha_utc(d["enviado"]))
         # El aviso automático "Terminó tu prueba" todavía no salió y su
@@ -28275,7 +28251,7 @@ def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
                       "se le puede volver a mandar a partir de mañana")
         pausa_dia = dia_art(desde) if desde else None
         asunto, _html, texto = emails.reactivar_pausa_contenido(
-            d.get("name") or "", resumen=resumen, activos=activos,
+            d.get("name") or "", con_cartera=con_cartera,
             pausa_desde=pausa_dia, reenvio=bool(d["enviado"]))
         out.append({
             "id": uid_, "email": d["email"], "name": d.get("name"),
@@ -28283,14 +28259,13 @@ def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
             "motivo": motivo_de_pausa(conn, uid_),
             "pausa_desde": pausa_dia.isoformat() if pausa_dia else None,
             "dias_en_pausa": dias,
-            "resumen": resumen, "activos": activos,
-            "con_cartera": bool(resumen),
+            "con_cartera": con_cartera,
             "sent_at": d["enviado"],
             "espera": espera,
             # El mail EXACTO que le llegaría a esta persona hoy.
             "mail": {"asunto": asunto, "texto": texto},
-            # Para mandar hace falta lo de arriba; esto no viaja al panel.
-            "_resumen": resumen, "_activos": activos, "_pausa_dia": pausa_dia,
+            # Para mandar hace falta la fecha como día; esto no viaja al panel.
+            "_pausa_dia": pausa_dia,
         })
     # Los más recientes primero: el que pausó hace una semana todavía se acuerda
     # de lo que cargó.
@@ -28316,10 +28291,10 @@ def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(
     `cuenta_en_pausa` en cada pedido, también al mandar.
 
     Personalizado por persona (ver emails.reactivar_pausa_contenido): saludo
-    con su nombre, desde cuándo está en pausa, y lo que dejó guardado
-    (brokers, movimientos y hasta 3 activos). Al que no cargó nada le llega
-    otro mail, que le pregunta qué lo frenó. La vista previa trae el mail
-    exacto de cada fila.
+    con su nombre y desde cuándo está en pausa. Si cargó algo, el mail le
+    dice que todo sigue guardado; si no, le pregunta qué pasó. NUNCA nombra
+    lo que hay adentro de la cartera (Política de Privacidad). La vista
+    previa trae el mail exacto de cada fila.
 
     No se le manda (se ve en gris, con el motivo en `espera`) a quien:
       · lleva menos de REACTIVAR_PAUSA_MIN_DIAS días en pausa;
@@ -28332,9 +28307,8 @@ def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(
     (obligatorio para mandar, de a ENVIO_MASIVO_LOTE). Se marca ANTES de
     mandar contra esa fecha: un doble click no le manda dos veces a nadie.
 
-    `prueba_a_mi=True` manda UN mail al admin que aprieta el botón, con SUS
-    datos (o un ejemplo si no tiene cartera y pidió la versión con cartera), y
-    no toca a nadie más."""
+    `prueba_a_mi=True` manda UN mail al admin que aprieta el botón, en la
+    versión que pide (`con_cartera`), y no toca a nadie más."""
     t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
     from billing import emails
     from fechas import hoy_art_date
@@ -28347,16 +28321,11 @@ def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(
             yo = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if not yo or not (yo["email"] or "").strip():
                 raise HTTPException(400, "Tu cuenta no tiene un mail cargado.")
-            resumen, activos = None, []
-            if data.con_cartera:
-                resumen = resumen_de_lo_guardado(conn, uid)
-                activos = _activos_para_el_mail(conn, uid) if resumen else []
-                if not resumen:
-                    resumen, activos = "2 brokers y 143 movimientos", ["GGAL", "AAPL", "MELI"]
             try:
                 ok = emails.send_reactivar_pausa(
-                    to=yo["email"], user_name=(yo["name"] or ""), resumen=resumen,
-                    activos=activos, pausa_desde=hoy_art_date() - timedelta(days=7))
+                    to=yo["email"], user_name=(yo["name"] or ""),
+                    con_cartera=data.con_cartera,
+                    pausa_desde=hoy_art_date() - timedelta(days=7))
             except Exception as ex:
                 log.error("reactivar-pausa: la prueba al admin falló: %s", ex)
                 ok = False
@@ -28386,8 +28355,8 @@ def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(
         res = _envio_masivo(
             conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
             mandar=lambda t: emails.send_reactivar_pausa(
-                to=t["email"], user_name=(t.get("name") or ""), resumen=t["_resumen"],
-                activos=t["_activos"], pausa_desde=t["_pausa_dia"],
+                to=t["email"], user_name=(t.get("name") or ""),
+                con_cartera=t["con_cartera"], pausa_desde=t["_pausa_dia"],
                 reenvio=t["visto"] is not None),
             campaña=f"reactivar-pausa ({data.grupo})", inicio=t0,
             inciertos_previos=data.inciertos_seguidos)

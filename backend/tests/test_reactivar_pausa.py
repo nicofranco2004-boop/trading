@@ -215,43 +215,49 @@ class MailCuentasEnPausa(unittest.TestCase):
 
     # ── 2. lo personalizado ─────────────────────────────────────────────────
 
-    def test_el_mail_lleva_lo_que_dejo_guardado(self):
+    def test_el_mail_nunca_nombra_lo_que_hay_en_la_cartera(self):
+        """La Política de Privacidad promete usar los datos de cartera sólo
+        para prestar el servicio, y este mail es para que vuelva a pagar: ni
+        activos ni cantidades, ni en el mail ni en lo que ve el panel. Lo único
+        que cuenta es SI cargó algo (qué versión del mail le toca)."""
         uid = self._en_pausa(name="lucía gómez")
-        self._cartera(uid, {"GGAL.BA": 5, "AAPL": 3, "MELI": 1, "TSLA": 0,
-                            "FCI BALANZ AHORRO EN PESOS": 9},
+        self._cartera(uid, {"GGAL.BA": 5, "AAPL": 3, "MELI": 1},
                       brokers=("Cocos", "IOL"))
-        f = self._fila(uid)
+        v = self._vista()
+        f = self._fila(uid, v)
         self.assertTrue(f["con_cartera"])
         self.assertEqual(f["saludo"], "Lucía")
-        self.assertEqual(f["resumen"], "2 brokers y 18 movimientos")
-        # Los que más movió primero, sin ".BA", y el fondo con nombre largo afuera.
-        self.assertEqual(f["activos"], ["GGAL", "AAPL", "MELI"])
+        self.assertEqual(f["mail"]["asunto"], "Tu cartera sigue guardada en Rendi")
         texto = f["mail"]["texto"]
         self.assertTrue(texto.startswith("Hola Lucía, tu cuenta de Rendi está en pausa desde el "),
                         texto[:80])
-        self.assertIn("2 brokers y 18 movimientos, con GGAL, AAPL y MELI adentro", texto)
-        self.assertEqual(f["mail"]["asunto"], "Tu cartera sigue guardada en Rendi")
+        self.assertIn("está todo guardado, tal cual lo dejaste", texto)
         self.assertIn("Nicolás — Rendi", texto)
-        self.assertNotIn("_resumen", f, "los datos internos viajaron al panel")
+        crudo = repr(v)   # TODO lo que viaja al panel, no sólo esta fila
+        for dato in ("GGAL", "AAPL", "MELI", "Cocos", "IOL", "broker", "movimiento",
+                     "resumen", "activos"):
+            self.assertNotIn(dato, crudo, f"«{dato}» salió de la cartera hacia el mail o el panel")
 
-    def test_el_resumen_es_el_mismo_que_ve_en_el_muro(self):
+    def test_el_muro_sigue_diciendo_lo_que_tiene_guardado(self):
+        """La frase del muro de la app se movió a una función compartida: tiene
+        que seguir diciendo lo mismo (ahí sí corresponde: es el servicio)."""
         uid = self._en_pausa()
         self._cartera(uid, {"GGAL": 2})
         h = {"Authorization": f"Bearer {main.create_token(uid)}"}
         me = self.client.get("/api/auth/me", headers=h).json()
         self.assertTrue(me["cuenta_en_pausa"])
-        self.assertEqual(me["pausa_resumen"], self._fila(uid)["resumen"])
         self.assertEqual(me["pausa_resumen"], "1 broker y 2 movimientos")
+        self.assertTrue(self._fila(uid)["con_cartera"])
 
     def test_el_que_no_cargo_nada_recibe_el_otro_mail(self):
         uid = self._en_pausa(name="Martín")
         f = self._fila(uid)
         self.assertFalse(f["con_cartera"])
-        self.assertIsNone(f["resumen"])
-        self.assertEqual(f["activos"], [])
         self.assertEqual(f["mail"]["asunto"], "Una pregunta corta sobre Rendi")
-        self.assertIn("no llegaste a cargar tu cartera", f["mail"]["texto"])
-        self.assertNotIn("adentro", f["mail"]["texto"])
+        self.assertIn("me gustaría saber qué pasó", f["mail"]["texto"])
+        # No dice que alguien miró su cuenta.
+        self.assertNotIn("vi que", f["mail"]["texto"])
+        self.assertNotIn("no llegaste a cargar", f["mail"]["texto"])
 
     def test_desde_cuando_esta_en_pausa(self):
         uid = self._en_pausa(dias=5)
@@ -437,7 +443,9 @@ class MailCuentasEnPausa(unittest.TestCase):
         self.assertEqual(m["subject"], f["mail"]["asunto"])
         self.assertTrue(m["text"].startswith(f["mail"]["texto"]), m["text"][:80])
         self.assertIn("Hola Lucía,", m["html"])
-        self.assertIn("con GGAL y AL30 adentro", m["html"])
+        self.assertIn("tal cual lo dejaste", m["html"])
+        for dato in ("GGAL", "AL30", "movimiento", "broker"):
+            self.assertNotIn(dato, m["html"] + m["text"])
         self.assertIn('href="https://rendi.finance/planes"', m["html"])
         self.assertIn("soporte@rendi.finance", m["from"])
         self.assertEqual(m["reply_to"], "soporte@rendi.finance")
@@ -457,8 +465,7 @@ class MailCuentasEnPausa(unittest.TestCase):
             kw = spy.call_args.kwargs
             self.assertEqual(kw["to"], self._mail(self.admin))
             self.assertEqual(kw["user_name"], "Nicolás")
-            # Sin cartera propia, la versión con cartera sale con un ejemplo.
-            self.assertEqual(bool(kw["resumen"]), con_cartera)
+            self.assertEqual(kw["con_cartera"], con_cartera)
         self.assertIsNone(self._marca(alguien))
         self.assertIsNone(self._marca(self.admin))
 
