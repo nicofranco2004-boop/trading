@@ -16,12 +16,17 @@ cada vista con lo que hay guardado:
 El dólar de cada día es el punto medio del MEP de `fx_rates_daily` (la misma
 expresión que `fx.fx_for_date`), con el blue de red como allá.
 
+EL FIBONACCI (picos, pozos, tramos de suba y de bajada) vive en
+`estructura.py`; acá sólo se le pasa la misma serie que va al gráfico.
+
 QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
 dibujan en la pantalla con lo que ya tiene la ficha.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
+
+import estructura
 
 RUEDAS_ANIO = 252
 # Cuántas ruedas se mandan a la pantalla: 2 años, el rango más largo del gráfico.
@@ -233,4 +238,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) ->
         "convertida": s["convertida"],
         "puntos": puntos,
         "lectura": lectura(velas),
+        # Fibonacci del último tramo (estructura.py), sobre TODA la historia
+        # guardada de esta misma serie: los niveles quedan en la moneda del gráfico.
+        "fibonacci": estructura.fibonacci(velas),
     }

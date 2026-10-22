@@ -2,7 +2,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
 // compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
-// castellano. Se mide en DÓLARES por defecto: un CEDEAR en pesos sube con el
+// castellano. El botón «Fibonacci» de la leyenda (apagado de entrada) suma la
+// capa del último tramo de suba o bajada (CapaFibonacci.jsx). Se mide en DÓLARES por defecto: un CEDEAR en pesos sube con el
 // dólar aunque la empresa no se mueva (ver backend/tecnico.py).
 //
 // Los números vienen de GET /api/tecnico (las velas que se guardan de noche).
@@ -16,6 +17,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'
+import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa } from './CapaFibonacci'
 import { api } from '../../utils/api'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas,
@@ -68,7 +70,7 @@ export default function LecturaTecnica({
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
   // Qué líneas se ven: la leyenda prende y apaga cada una.
-  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true })
+  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true, fib: false })
   const [tipo, setTipoEstado] = useState(tipoGuardado)
   const setTipo = (t) => { setTipoEstado(t); guardarTipo(t) }
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
@@ -162,7 +164,7 @@ export default function LecturaTecnica({
       )}
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? marcas(lotes, operaciones) : []} ver={ver} tipo={tipo}
-        onZoom={zoom} onMover={mover} />
+        fibonacci={ver.fib ? actual.fibonacci : null} onZoom={zoom} onMover={mover} />
       <p className="text-[11.5px] text-ink-3 mt-1">
         {semanales && 'Cada vela es una semana. '}
         {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita, o pasá a velas semanales. '}
@@ -179,9 +181,15 @@ export default function LecturaTecnica({
           <Chip activo={ver.prom} onClick={() => alternar('prom')} color={COLOR.promedio} punteado>Tu precio promedio</Chip>
         )}
         <Chip activo={ver.marcas} onClick={() => alternar('marcas')} puntos>Tus compras y ventas</Chip>
+        {actual.fibonacci && (
+          <Chip activo={ver.fib} onClick={() => alternar('fib')} color={COLOR_FIB}>Fibonacci</Chip>
+        )}
       </div>
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {ver.fib && actual.fibonacci && (
+          <TarjetaFibonacci fib={actual.fibonacci} precio={(x) => fmtPrecio(x, moneda)} fecha={fechaCorta} />
+        )}
         {lista.map(t => <Tarjeta key={t.id} t={t} />)}
         {promedio != null && pnlPct != null && (
           <Tarjeta t={{
@@ -316,7 +324,7 @@ function rotulosDeMeses(puntos) {
   })
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', onZoom, onMover }) {
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea', fibonacci = null, onZoom, onMover }) {
   const conVelas = tipo === 'velas'
   const ref = useRef(null)
   const arrastre = useRef(null)
@@ -354,6 +362,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       if (ver.s50 && p.s50 != null) valores.push(p.s50)
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
     }
+    valores.push(...preciosDeLaCapa(fibonacci))
     let lo = Math.min(...valores), hi = Math.max(...valores)
     // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
     // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el
@@ -397,7 +406,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       path: { c, s50: linea('s50'), s200: linea('s200') },
       area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
     }
-  }, [puntos, promedio, ver.s50, ver.s200, conVelas])
+  }, [puntos, promedio, ver.s50, ver.s200, conVelas, fibonacci])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -487,6 +496,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
             )}
           </svg>
 
+          <CapaFibonacci fib={fibonacci} puntos={puntos} pctX={pctX} pctY={pctY} precio={(x) => fmtPrecio(x, moneda)} />
           {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
               SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}
           {visibles.map((m, k) => (
