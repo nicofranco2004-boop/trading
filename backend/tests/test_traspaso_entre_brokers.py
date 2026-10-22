@@ -272,5 +272,48 @@ class LoQueEncontroAuditarEsteCodigo(_Base):
                          "el retiro que acompaña a la venta no se aplicó")
 
 
+# Una compra de VIST con DÓLARES en el broker viejo, antes del traspaso. Va a
+# parar al sub-broker "Bull Market · USD", no al padre.
+COMPRA_USD = b"04/01/24;CPU$;29746;238413,74;295,03;DOLAR;10.0000  VIST\n"
+VIEJO_CON_USD = VIEJO.replace(b"22/01/24;DTRT", COMPRA_USD + b"22/01/24;DTRT")
+SOLO_COMPRA_USD = b"F.Liquid;Cpbt;N.Cpbt;Importe;Dolares;Mda;Ref./Cantidad\n" + COMPRA_USD
+
+
+class LaMitadEnDolaresSeVaConElTraspaso(_Base):
+    """Caso real (Agustín Sapino, 2026-10-22): después de aprobar los 11 cierres,
+    Bull Market seguía mostrando AL30 2.830 y VIST 10. Eran los papeles que había
+    comprado con DÓLARES: quedan en "Bull Market · USD", y el cierre sólo miraba
+    el primer broker que matcheaba (el de pesos)."""
+    USD_N = "Bull Market · USD"
+
+    def test_cierra_tambien_lo_comprado_en_dolares(self):
+        self.importar(VIEJO_CON_USD, self.VIEJO_N, "bullmarket")
+        self.assertEqual(self.qty(self.USD_N, "VIST"), 10.0,
+                         "precondición: la compra en dólares va al sub-broker")
+        prop = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(len(prop), 1, "tiene que ser UNA propuesta por papel")
+        self.assertEqual(float(prop[0]["quantity"]), 17.0)
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        self.assertEqual(self.qty(self.USD_N, "VIST"), 0.0,
+                         "quedó abierta la mitad comprada en dólares")
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
+    def test_lo_ya_cerrado_se_descuenta_y_se_propone_lo_que_falta(self):
+        """Las cuentas que ya aprobaron el cierre viejo (sólo la mitad en pesos):
+        volver a subir un archivo tiene que proponer lo que FALTA, no saltear el
+        papel porque ya tiene un cierre, ni cerrar de nuevo lo de pesos."""
+        self.importar(VIEJO, self.VIEJO_N, "bullmarket")
+        self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        prop = self.importar(SOLO_COMPRA_USD, self.VIEJO_N, "bullmarket",
+                             aprobar=["VIST"], nombre="g.csv")
+        self.assertEqual([float(p["quantity"]) for p in prop], [10.0])
+        self.assertEqual(self.qty(self.USD_N, "VIST"), 0.0)
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+        # Y una vez cerrado todo, no se vuelve a proponer.
+        prop = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(prop, [])
+
+
 if __name__ == "__main__":
     unittest.main()

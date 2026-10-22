@@ -808,8 +808,16 @@ def run_preview(
     # el confirm las aplica y el revert las deshace sin código extra — y van
     # marcadas `[requiere-aprobacion]`, o sea que NO se aplican solas.
     # Ver `importing/traspasos.py` para los tres frenos.
+    #
+    # Las filas que el confirm va a omitir por repetidas no cuentan como
+    # tenencia nueva: al volver a subir el archivo del broker que ENTREGA, sus
+    # compras ya están en la base y contarlas otra vez propondría cerrar de más.
+    _huellas_confirmadas = confirmed_fingerprint_counts(conn, uid)
+    _anteriores = _renombre_broker.nombres_anteriores(conn, uid)
     _cierres_traspaso = _traspasos.cerrar_origen_de_traspasos(
-        conn, uid, valid_txs, existing_pos)
+        conn, uid, valid_txs, existing_pos,
+        repetidas=duplicate_row_indices_by_count(
+            _huellas_confirmadas, valid_txs, anteriores=_anteriores))
     valid_txs += _cierres_traspaso
 
     # Combinar errores por row_index (parse + norm + validation)
@@ -892,8 +900,7 @@ def run_preview(
     # Huellas ya confirmadas — para anticipar en la previsualización EXACTAMENTE
     # lo que el confirm va a omitir (mismo helper, mismo conteo).
     duplicate_row_indices: List[int] = sorted(duplicate_row_indices_by_count(
-        confirmed_fingerprint_counts(conn, uid), valid_txs,
-        anteriores=_renombre_broker.nombres_anteriores(conn, uid)))
+        _huellas_confirmadas, valid_txs, anteriores=_anteriores))
 
     # Fase 4: tc_blue stamp at write time
     tc_blue_at_import = _read_user_tc_blue(conn, uid)
