@@ -23,6 +23,10 @@ import PageMeta from '../components/PageMeta'
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams()
+  // El email se captura UNA vez y se saca de la URL (mismo patrón que
+  // ClaimAccount): esta pantalla dispara eventos de analytics y GA pega la URL
+  // a todos, así que /verify-email?email=... le filtraba el email a Google
+  // (audit 2026-10-22). Sale también del historial y del Referer.
   const emailFromUrl = searchParams.get('email') || ''
   const [email] = useState(emailFromUrl)
   const [digits, setDigits] = useState(['', '', '', '', '', ''])
@@ -35,10 +39,14 @@ export default function VerifyEmail() {
   const { login } = useAuth()
   const navigate = useNavigate()
 
-  // Si no hay email en URL, mandar al login (no podemos verificar sin saber quién)
+  // Si no hay email en URL, mandar al login (no podemos verificar sin saber quién).
+  // Con email, lo sacamos de la barra de direcciones (ya quedó capturado arriba).
   useEffect(() => {
-    if (!email) navigate('/login')
-    else inputs.current[0]?.focus()
+    if (!email) { navigate('/login'); return }
+    if (window.location.search.includes('email=')) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    inputs.current[0]?.focus()
   }, [email, navigate])
 
   // Resend cooldown countdown
