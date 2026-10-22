@@ -1827,7 +1827,7 @@ function PositionsDesktop() {
       <td className={tdClass}>
         {(p.is_cash || isLot) ? gris(isLot ? '' : '—')
           : estado === 'cargando' ? gris('…')
-            : estado === 'error' ? gris('—', 'No pudimos traer la lectura técnica')
+            : estado === 'error' ? gris('—', 'No pudimos traer el análisis técnico')
               : lleno}
       </td>
     )
@@ -2518,8 +2518,8 @@ function PositionsDesktop() {
                       {showDetail && isArsDisp && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>Var. día</th>
                       {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
-                      <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su media de 200 días">Tendencia</th>
-                      <th className={thClass} title="Fuerza del movimiento (RSI de 14 ruedas): 0 a 100, 50 es parejo">Fuerza (RSI)</th>
+                      <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
+                      <th className={thClass} title="Fuerza (RSI): compara las subas con las bajas de las últimas 3 semanas, de 0 a 100">Fuerza (RSI)</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -2852,8 +2852,8 @@ function PositionsDesktop() {
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>Var. día</th>
                     {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
-                    <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su media de 200 días">Tendencia</th>
-                    <th className={thClass} title="Fuerza del movimiento (RSI de 14 ruedas): 0 a 100, 50 es parejo">Fuerza (RSI)</th>
+                    <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su promedio de los últimos 200 días">Tendencia</th>
+                    <th className={thClass} title="Fuerza (RSI): compara las subas con las bajas de las últimas 3 semanas, de 0 a 100">Fuerza (RSI)</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>

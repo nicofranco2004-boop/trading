@@ -8,7 +8,7 @@
 // de cada pantalla. Las cuentas: utils/radiografia.js; los números técnicos,
 // POST /api/tecnico/cartera (backend/tecnico.py, los mismos que la ficha).
 //
-// «Alcista» = el precio está arriba de su media de 200 días, medido en DÓLARES
+// «Alcista» = el precio está arriba de su promedio de 200 días, medido en DÓLARES
 // (un CEDEAR en pesos sube con el dólar aunque la empresa no se mueva). Sin
 // velas guardadas, «Sin lectura»: nunca se inventa.
 //
@@ -94,7 +94,7 @@ export function FuerzaRsi({ x, className = '', sinGuion = false }) {
   if (!f) return sinGuion ? null : <span className={`text-ink-3 ${className}`}>—</span>
   const pos = Math.min(100, Math.max(0, f.rsi))
   return (
-    <span className={`inline-flex items-center gap-2 ${className}`} title={`RSI ${Math.round(f.rsi)} de 100: ${f.palabra.toLowerCase()}`}>
+    <span className={`inline-flex items-center gap-2 ${className}`} title={`Fuerza (RSI): ${Math.round(f.rsi)} de 100 · ${f.palabra}`}>
       <span aria-hidden="true" className="relative w-14 h-1.5 rounded-full bg-bg-3 flex-none">
         <span className="absolute inset-y-0 left-0 rounded-l-full bg-rendi-neg-fill/35" style={{ width: `${RSI_CASTIGADO}%` }} />
         <span className="absolute inset-y-0 right-0 rounded-r-full bg-rendi-pos-fill/35" style={{ width: `${100 - RSI_ESTIRADO}%` }} />
@@ -132,7 +132,7 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
     return (
       <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 ${className}`}>
         <div className="text-[12px] text-ink-2 font-medium">Radiografía técnica · medida en dólares</div>
-        <p className="text-[13.5px] text-ink-1 mt-1.5">No pudimos traer la lectura técnica de tus activos ahora. Probá recargar la página en un rato.</p>
+        <p className="text-[13.5px] text-ink-1 mt-1.5">No pudimos traer el análisis técnico de tus activos ahora. Probá recargar la página en un rato.</p>
       </section>
     )
   }
@@ -141,7 +141,7 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
   }
   const { alcista, bajista, sin } = r.grupos
   const sinNinguna = alcista.valor === 0 && bajista.valor === 0
-  const etiqueta = `${pctTxt(alcista)} alcista, ${pctTxt(bajista)} bajista, ${pctTxt(sin)} sin lectura técnica`
+  const etiqueta = `${pctTxt(alcista)} alcista, ${pctTxt(bajista)} bajista, ${pctTxt(sin)} sin lectura`
 
   return (
     <section aria-label="Radiografía técnica"
@@ -152,7 +152,7 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
           <p className="text-[15px] text-ink-1 leading-snug">
             Ninguno de tus activos tiene todavía una tendencia de fondo para leer: bonos, fondos y
             efectivo no tienen historia de precios en Rendi, y una acción o un CEDEAR necesita 200
-            ruedas de precios guardados.
+            días de mercado con precios guardados.
           </p>
         ) : (
           <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">
@@ -182,7 +182,7 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
           })}
         </div>
         <p className="text-[12px] text-ink-3 leading-relaxed">
-          «Alcista» = el precio está arriba de su media de 200 días. Bonos, fondos y efectivo no tienen
+          «Alcista» = el precio está arriba de su promedio de los últimos 200 días. Bonos, fondos y efectivo no tienen
           historia de precios en Rendi: por eso van sin lectura. Describe el precio; no es una recomendación.
         </p>
       </div>
@@ -191,7 +191,7 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
         <div className="text-[12px] text-ink-2 font-medium">Lo que cambió esta semana</div>
         {r.cambios.length === 0 ? (
           <p className="text-[13px] text-ink-2 leading-relaxed">
-            Ninguno de tus activos cruzó su media de 50 o de 200 días, y ninguno tiene la fuerza (RSI) en un extremo.
+            Ninguno de tus activos cruzó su promedio de 50 o de 200 días, y ninguno subió o cayó muy rápido.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">

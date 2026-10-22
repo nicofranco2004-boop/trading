@@ -5,7 +5,7 @@ import {
 } from './radiografia'
 import { lecturaDeLaFila } from '../components/RadiografiaTecnica'
 import { computeBrokerValue, setBrokersRegistry } from './valuation'
-import { tarjetas } from './tecnico'
+import { tarjetas, veredictoRsi } from './tecnico'
 
 const BROKERS = [
   { id: 1, name: 'IOL', currency: 'ARS' },
@@ -52,7 +52,7 @@ describe('las palabras son las de la ficha', () => {
     expect(tendencia(lec('X', false, { ...ALCISTA, media200: null, dist_media200: null })).id).toBe('sin')
     expect(tendencia({ asset: 'AL30', local: true, disponible: false }).palabra).toBe('Sin lectura')
     expect(tendencia(null).id).toBe('sin')
-    expect(fuerza(lec('X', false, ALCISTA))).toEqual({ rsi: 64, palabra: 'Pesan más las subas' })
+    expect(fuerza(lec('X', false, ALCISTA))).toEqual({ rsi: 64, palabra: veredictoRsi(64) })
     expect(fuerza({ disponible: false })).toBeNull()
   })
 
@@ -103,9 +103,9 @@ describe('radiografia, con la valuación de la Cartera', () => {
     expect(r.grupos.alcista.nombres).toEqual(['NVDA'])
     expect(r.grupos.sin.nombres).toEqual(['plazos fijos', 'efectivo'])
     expect(r.cambios).toEqual([
-      { asset: 'NVDA', tono: 'pos', texto: 'recuperó su media de 200 días (martes 20/10)' },
-      { asset: 'KO', tono: 'neg', texto: 'perdió su media de 50 días (miércoles 21/10)' },
-      { asset: 'KO', tono: 'aviso', texto: 'tiene el RSI en 24: bajó muy fuerte y rápido' },
+      { asset: 'NVDA', tono: 'pos', texto: 'pasó arriba de su promedio de 200 días (martes 20/10)' },
+      { asset: 'KO', tono: 'neg', texto: 'quedó abajo de su promedio de 50 días (miércoles 21/10)' },
+      { asset: 'KO', tono: 'aviso', texto: `tiene la fuerza en 24 de 100: ${veredictoRsi(24).toLowerCase()}` },
     ])
   })
 

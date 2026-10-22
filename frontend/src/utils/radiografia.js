@@ -7,7 +7,7 @@
 //     número de arriba de la Cartera;
 //   · los NÚMEROS técnicos vienen de POST /api/tecnico/cartera (backend/tecnico.py,
 //     la misma `lectura` que la ficha de cada activo);
-//   · las PALABRAS («Alcista», «Pesan más las subas») son las de la ficha
+//   · las PALABRAS («Alcista», «Toma fuerza») son las de la ficha
 //     (`tarjetas` y `veredictoRsi` de utils/tecnico.js): un activo no puede
 //     decir «Alcista» en la Cartera y «Bajista» en su ficha.
 
@@ -71,7 +71,7 @@ export function lecturaDeFila(indice, p) {
 /**
  * La tendencia de fondo con las palabras de la ficha: { id: 'alcista' |
  * 'bajista' | 'sin', palabra, motivo }. «Sin lectura» cuando no hay velas o no
- * alcanzan para la media de 200 (la ficha dice «Faltan datos»).
+ * alcanzan para el promedio de 200 días (la ficha dice «Faltan datos»).
  */
 export function tendencia(x, hoy = hoyISO()) {
   if (!x || !x.disponible || !x.lectura) {
@@ -98,7 +98,7 @@ function fechaCorta(iso) {
   return `${d}/${m}/${y}`
 }
 
-/** El RSI de la fila y su palabra («Pesan más las subas»). null si no hay o
+/** El RSI de la fila y su palabra (`veredictoRsi`, «Toma fuerza»). null si no hay o
  *  si la lectura es vieja. */
 export function fuerza(x, hoy = hoyISO()) {
   const rsi = x?.disponible && !lecturaVieja(x, hoy) ? x.lectura?.rsi : null
@@ -170,7 +170,7 @@ export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyIS
     salida[id] = { valor: valores[i], pct: pcts[i], fraccion: total > 0 ? valores[i] / total : 0, nombres }
   })
 
-  // Lo que cambió: primero los cruces de la media de 200 (la tendencia de
+  // Lo que cambió: primero los cruces del promedio de 200 (la tendencia de
   // fondo), después los de 50, después el RSI en un extremo; dentro de cada
   // uno, lo que más pesa en tu cartera primero.
   // Sólo lecturas de hoy: una serie cortada no tiene «esta semana» (el servidor
@@ -184,7 +184,7 @@ export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyIS
       const arriba = c.direccion === 'arriba'
       cambios.push({
         asset: a.nombre, tono: arriba ? 'pos' : 'neg',
-        texto: `${arriba ? 'recuperó' : 'perdió'} su media de ${n} días (${cuando(c.fecha)})`,
+        texto: `${arriba ? 'pasó arriba' : 'quedó abajo'} de su promedio de ${n} días (${cuando(c.fecha)})`,
       })
     }
   }
@@ -193,7 +193,7 @@ export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyIS
     if (r == null || (r >= RSI_CASTIGADO && r <= RSI_ESTIRADO)) continue
     cambios.push({
       asset: a.nombre, tono: 'aviso',
-      texto: `tiene el RSI en ${Math.round(r)}: ${veredictoRsi(r).toLowerCase()}`,
+      texto: `tiene la fuerza en ${Math.round(r)} de 100: ${veredictoRsi(r).toLowerCase()}`,
     })
   }
   return { total, grupos: salida, cambios }
