@@ -352,7 +352,13 @@ def convert_plan(
 
     now = datetime.utcnow()
     before_iso = state["active_until"]
-    new_rate = daily_rate(new_plan, new_period)
+    # Los nuevos días se valúan al rate del período que la persona PAGÓ
+    # (anchor_period), NO al del período nuevo. Si no, pasar de mensual a anual
+    # compraba los días restantes al precio anual con descuento sin comprometerse
+    # al año: ~37% de días fabricados (medido: 30 → 41). Cambiar de período sólo
+    # reetiqueta; el cambio de PLAN (plus↔pro) sí ajusta, por el ratio de precios
+    # del MISMO período. RENDI-B02.
+    new_rate = daily_rate(new_plan, state["anchor_period"])
 
     # Los días de PRUEBA que todavía quedan adentro de la ventana NO se valúan:
     # se arrastran como días. Es el mismo invariante que hizo que el trial naciera
@@ -460,7 +466,9 @@ def preview_plan_change(conn, user_id: int, new_plan: str, new_period: str) -> d
             "current_state": state,
         }
     remaining_usd = state["remaining_usd"]
-    new_rate = daily_rate(new_plan, new_period)
+    # Mismo criterio que convert_plan: el período no se valúa con su propio rate
+    # (eso regalaba el descuento anual sobre crédito ya pagado). RENDI-B02.
+    new_rate = daily_rate(new_plan, state["anchor_period"])
     new_days = remaining_usd / new_rate if new_rate > 0 else 0.0
     return {
         "eligible":            True,
