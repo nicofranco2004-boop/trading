@@ -1,13 +1,13 @@
 {
   "_leeme": "Baseline del contrato de diseño. NO editar a mano: regenerar con `node scripts/gen-design-baseline.mjs --write` y sólo cuando la deuda BAJÓ. Unidad: ocurrencias (salvo mono_uppercase, que es coocurrencia por línea, y paginas_mobile, que cuenta archivos). Ruta ausente en un mapa = 0. El contrato está en frontend/CLAUDE.md; los patrones en scripts/design-patterns.mjs.",
-  "_archivosEscaneados": 428,
+  "_archivosEscaneados": 434,
   "totales": {
     "mono_clase": 301,
     "mono_inline": 22,
     "mono_uppercase": 65,
     "clase_renombrada": 0,
     "rounded_arbitrario": 7,
-    "rounded_md": 285,
+    "rounded_md": 283,
     "rounded_2xl_3xl": 18,
     "upper_inline": 10,
     "fork_viewport": 2,
@@ -155,7 +155,6 @@
       "src/pages/Landing.jsx": 1,
       "src/pages/Login.jsx": 2,
       "src/pages/MobileSearch.jsx": 1,
-      "src/pages/Operations.jsx": 2,
       "src/pages/Planes.jsx": 2,
       "src/pages/Positions.jsx": 23,
       "src/pages/PositionsMobile.jsx": 1,

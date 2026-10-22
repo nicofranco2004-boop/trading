@@ -45,6 +45,7 @@ import TradesTable, { PAGE_SIZE } from '../components/operations/TradesTable'
 import TradesFeed from '../components/operations/TradesFeed'
 import MovementsTable, { MOV_PAGE_SIZE } from '../components/operations/MovementsTable'
 import MovementsFeed from '../components/operations/MovementsFeed'
+import CobrosView from '../components/operations/CobrosView'
 import { hoyISO } from '../utils/fecha'
 import {
   MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
@@ -476,7 +477,9 @@ export default function Operations() {
           title="Operaciones"
           subtitle={tab === 'trades'
             ? 'Historial de trades cerrados con P&L realizado.'
-            : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
+            : tab === 'cobros'
+              ? 'Lo que te pagaron tus inversiones: dividendos, cupones e intereses.'
+              : 'Todos los movimientos: trades, depósitos, retiros, dividendos y comisiones.'}
           action={
             <div className="flex items-center gap-2 flex-wrap">
               <AnalyzeButton screen="operations" subtitle="Tu historial completo" />
@@ -496,43 +499,33 @@ export default function Operations() {
           que /posiciones y /analisis (filled pills + violet en activa). */}
       {!isMobile && (
         <div className="inline-flex flex-wrap gap-2 mb-5">
-          <button
-            onClick={() => setTab('all')}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-              tab === 'all'
-                ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-            }`}
-          >
-            Todos los movimientos
-          </button>
-          <button
-            onClick={() => setTab('trades')}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-md border transition-all ${
-              tab === 'trades'
-                ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
-                : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
-            }`}
-          >
-            Solo P/L
-          </button>
+          {[['all', 'Todos los movimientos'], ['trades', 'Solo P/L'], ['cobros', 'Cobros']].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded border transition-all ${
+                tab === id
+                  ? 'bg-data-violet/15 text-data-violet border-data-violet/40 shadow-sm'
+                  : 'bg-bg-1 text-ink-2 border-line hover:text-ink-0 hover:border-line-2 hover:bg-bg-2'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       )}
       {isMobile && (
         <div className="px-4 pt-3 flex items-center gap-2">
           <div className="flex flex-1 min-w-0 rounded-sm border border-line/60 bg-bg-1 p-0.5 text-xs font-medium">
-            <button
-              onClick={() => setTab('trades')}
-              className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'trades' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
-            >
-              Trades
-            </button>
-            <button
-              onClick={() => setTab('all')}
-              className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === 'all' ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
-            >
-              Movimientos
-            </button>
+            {[['trades', 'Trades'], ['all', 'Movimientos'], ['cobros', 'Cobros']].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className={`flex-1 py-1.5 rounded-sm transition-colors ${tab === id ? 'bg-bg-3 text-ink-0' : 'text-ink-3'}`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           {/* El alta de una operación existía SÓLO en la rama ancha: el feed no
               tenía ningún botón que la abriera, así que desde el teléfono no
@@ -554,6 +547,14 @@ export default function Operations() {
           las operaciones del tab "Solo P/L", cuyos datos viven acá. Antes el
           feed lo montaba sin el prop y borrar en el celular no refrescaba nada. */}
       {tab === 'all' && <MovementsView onChanged={load} isMobile={isMobile} cambios={cambios} />}
+
+      {/* Cobros: dividendos, cupones e intereses por mes, año y activo. Una sola
+          vista para las dos anchuras (se acomoda sola, R6). */}
+      {tab === 'cobros' && (
+        <div className={isMobile ? 'px-4 pt-3' : ''}>
+          <CobrosView conTitulo={isMobile} />
+        </div>
+      )}
 
       {tab === 'trades' && (
       <>

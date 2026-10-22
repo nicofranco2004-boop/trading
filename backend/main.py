@@ -17207,6 +17207,25 @@ def _cobro_manual(d: dict):
     return realized_pnl.leer_cobro(d)
 
 
+def _tipo_de_fila_importada(d) -> str:
+    """El tipo con que se MUESTRA una fila de `import_normalized_tx` (Movimientos y
+    el CSV para el contador). `d` trae operation_type, asset_symbol, asset_type y
+    notes.
+
+    La amortización de un bono que el archivo trae SIN cantidad (Balanz, IOL, el
+    genérico) se importa como DIVIDEND. El persister la anota como lo que es
+    —'Amortización', capital que vuelve, sin ganancia (`_is_amort_capital_return`)—,
+    pero las dos listas la mostraban como "Dividendo": Movimientos la sumaba a
+    "Cobrado" y a la pestaña Cobros, y los pagos de AL30/GD30 contaban entero el
+    capital devuelto como renta. Misma regla que el persister, para que la fila
+    diga lo mismo que la cuenta."""
+    op_type = (d["operation_type"] or "").upper()
+    if op_type in ("DIVIDEND", "INTEREST") and _import_persister._is_amort_capital_return(
+            op_type, d["asset_symbol"], d["asset_type"], d["notes"]):
+        return "AMORTIZATION"
+    return op_type
+
+
 def _build_movements(uid: int):
     """Las filas de /api/movements, sin el decorador HTTP.
 
@@ -17415,7 +17434,8 @@ def _build_movements(uid: int):
         tx_rows = conn.execute(
             f"""SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out,
+                      t.asset_type
                 FROM {tx_vivas('t')}
                 WHERE b.user_id = ?
                 ORDER BY t.date DESC""",
@@ -17423,7 +17443,7 @@ def _build_movements(uid: int):
         ).fetchall()
         for r in tx_rows:
             d = dict(r)
-            op_type = (d.get("operation_type") or "").upper()
+            op_type = _tipo_de_fila_importada(d)
             # La conversión importada casi nunca trae moneda (en el backup de prod
             # del 2026-08-16, 533 de 534 sin `currency`): caía al `else` de abajo y
             # mostraba los PESOS como dólares (comprar US$1.000 → "US$1.400.000").
@@ -19516,6 +19536,21 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     return {"ok": True, **({"undo_token": out["undo_token"]} if out.get("undo_token") else {})}
 
 
+@app.get("/api/cobros")
+def get_cobros(uid: int = Depends(get_effective_user)):
+    """La pestaña Cobros de Movimientos: dividendos, cupones e intereses por mes,
+    por año y por activo, en dólares al dólar del día de cada cobro.
+
+    Sobre las MISMAS filas que Movimientos (`_build_movements`), como las
+    comisiones de abajo: el total coincide con el "Cobrado" de esa pantalla por
+    construcción. La agrupación y lo que cuenta como cobro viven en `cobros.py`.
+    El estimado de los próximos 12 meses lo arma la pantalla
+    (frontend/src/utils/cobros.js): necesita el cronograma de los bonos y la
+    equivalencia CEDEAR → acción, que viven allá."""
+    import cobros as _cobros
+    return _cobros.resumir(_build_movements(uid), _iso_today())
+
+
 @app.get("/api/insights/commissions")
 def get_commissions_total(uid: int = Depends(get_effective_user)):
     """Total de comisiones e impuestos, sobre las MISMAS filas que Movimientos.
@@ -19816,7 +19851,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
         tx_rows = conn.execute(
             f"""SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.asset_type
                FROM {tx_vivas('t')}
                WHERE b.user_id = ?""",
             (uid,),
@@ -19829,7 +19864,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                 continue
             rows.append({
                 "fecha": r["date"],
-                "tipo": _humanize_tx_type(r["operation_type"]),
+                "tipo": _humanize_tx_type(_tipo_de_fila_importada(r)),
                 "broker": r["broker"] or "",
                 "activo": r["asset_symbol"] or r["asset_name"] or "",
                 "cantidad": r["quantity"],
