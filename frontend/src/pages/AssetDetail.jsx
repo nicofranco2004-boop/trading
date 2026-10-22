@@ -18,7 +18,7 @@ import {
   ArrowLeft, TrendingUp, TrendingDown, Calendar, BarChart3, Layers,
 } from 'lucide-react'
 import AssetLogo from '../components/AssetLogo'
-import AssetMiniChart from '../components/home/AssetMiniChart'
+import LecturaTecnica from '../components/asset/LecturaTecnica'
 import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
@@ -272,13 +272,16 @@ export default function AssetDetail() {
           Antes igual se pedía y la tarjeta mostraba el error crudo del backend
           en rojo ("Símbolo inválido: …"), que además filtraba el símbolo interno
           y le hacía creer al usuario que su fondo estaba mal cargado. */}
-      {agg.lots.length > 0 && !esFci(symbolFor(agg.lots[0], brokers)) && (
-        <section className="mb-5">
-          <div className="text-[12.5px] text-ink-2 mb-2 font-medium">Precio · últimos 30 días</div>
-          <div className="bg-bg-1 border border-line/60 rounded-lg p-3">
-            <AssetMiniChart symbol={symbolFor(agg.lots[0], brokers)} />
-          </div>
-        </section>
+      {/* Lectura técnica (medias, RSI, tus compras y tu precio). Si el activo
+          todavía no tiene velas guardadas, adentro cae al gráfico de 30 días. */}
+      {!esFci(asset) && !(agg.lots.length > 0 && esFci(symbolFor(agg.lots[0], brokers))) && (
+        <LecturaTecnica
+          asset={asset}
+          symbolMiniChart={agg.lots.length > 0 ? symbolFor(agg.lots[0], brokers) : null}
+          lotes={positions}
+          operaciones={operations}
+          pnlPctUsd={agg.lots.length > 0 ? agg.pnlPct : null}
+        />
       )}
 
       {/* Stats de operatoria */}

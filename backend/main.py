@@ -11370,6 +11370,64 @@ def _variacion_del_dia(symbols, uid=None, *, tope=None) -> dict:
     return out
 
 
+# ─── Lectura técnica de la ficha del activo ─────────────────────────────────
+
+@app.get("/api/tecnico/{asset}")
+def get_tecnico(asset: str, moneda: str = "usd", uid: int = Depends(get_effective_user)):
+    """La serie del gráfico técnico (precio, medias de 50 y 200, RSI) y los
+    números de la lectura, en dólares (default) o en pesos. Sale de las velas
+    guardadas (velas_diarias.py), no de Yahoo: si el activo todavía no tiene
+    velas, `disponible` es False y la ficha lo dice. Las cuentas: tecnico.py."""
+    sym = (asset or "").strip().upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"Símbolo inválido: {asset}")
+    import tecnico
+    with db_abierta() as conn:
+        return tecnico.para_la_ficha(conn, sym, moneda)
+
+
+@app.get("/api/admin/velas")
+def admin_velas(uid: int = Depends(get_admin_user)):
+    """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,
+    cuándo corrió por última vez y cuáles fallaron. Sólo lee."""
+    from fechas import hoy_art_date
+    atrasado = (hoy_art_date() - timedelta(days=5)).isoformat()
+    with db_abierta() as conn:
+        e = conn.execute(
+            """SELECT COUNT(*) AS activos, COALESCE(SUM(ok), 0) AS ok,
+                      COALESCE(SUM(CASE WHEN ultima_completa IS NULL THEN 1 ELSE 0 END), 0) AS sin_historia,
+                      MAX(ultima_corrida) AS ultima_corrida
+                 FROM velas_estado""").fetchone()
+        v = conn.execute(
+            """SELECT COUNT(*) AS filas, MIN(date) AS desde, MAX(date) AS hasta
+                 FROM velas_diarias""").fetchone()
+        atrasados = conn.execute(
+            """SELECT symbol, MAX(date) AS hasta FROM velas_diarias
+                GROUP BY symbol HAVING MAX(date) < ? ORDER BY symbol LIMIT 50""",
+            (atrasado,)).fetchall()
+        fallados = conn.execute(
+            """SELECT symbol, error, ultima_corrida FROM velas_estado
+                WHERE ok = 0 ORDER BY ultima_corrida DESC LIMIT 50""").fetchall()
+    return {
+        "activos": e["activos"], "ok": e["ok"], "sin_historia": e["sin_historia"],
+        "ultima_corrida": e["ultima_corrida"],
+        "filas": v["filas"], "desde": v["desde"], "hasta": v["hasta"],
+        "atrasados": [dict(r) for r in atrasados],
+        "fallados": [dict(r) for r in fallados],
+        "corriendo": "velas_diarias" in _corridas_en_curso,
+    }
+
+
+@app.post("/api/admin/velas/correr")
+def admin_velas_correr(uid: int = Depends(get_admin_user)):
+    """Corre ahora el guardado de velas, sin esperar a la noche. En el fondo:
+    la primera vez baja 3 años de cada activo y tarda unos minutos."""
+    if "velas_diarias" in _corridas_en_curso:
+        return {"ok": True, "status": "already_running"}
+    threading.Thread(target=_run_velas_diarias_job, daemon=True, name="corrida-velas").start()
+    return {"ok": True, "status": "started"}
+
+
 # ─── Historical prices (mini-chart en AssetQuickView) ───────────────────────
 # Cache simple in-memory keyed por (symbol, period). yfinance fetchea las
 # series históricas — para periods chicos (1mo) es rápido. TTL 1h porque
@@ -45277,14 +45335,22 @@ def _run_daily_snapshot_job():
 
 
 def _run_velas_diarias_job():
-    """Pone al día las velas diarias del análisis técnico (velas_diarias.py)."""
+    """Pone al día las velas diarias del análisis técnico (velas_diarias.py).
+
+    Con su propia bandera: la corre la foto diaria al terminar y también el botón
+    de /admin, y las dos no pueden escribir la misma tabla a la vez."""
     _velas_log = logging.getLogger("velas_diarias")
+    if not _tomar_corrida("velas_diarias"):
+        _velas_log.info("Velas diarias: ya hay una corrida en curso, se saltea")
+        return
     try:
         import velas_diarias
         with db_abierta() as conn:
             _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
     except Exception as e:
         _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
+    finally:
+        _soltar_corrida("velas_diarias")
 
 
 def _run_backup_db_job():

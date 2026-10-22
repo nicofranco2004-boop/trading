@@ -404,6 +404,7 @@ export default function Admin() {
       <AlcanceAuditoriaPanel toast={toast} />
       <RepairInteresPfPanel toast={toast} />
       <RepairCaja1415Panel toast={toast} />
+      <VelasPanel toast={toast} />
       <FciRefreshPanel toast={toast} />
       <MtmAuditPanel toast={toast} />
       <FxMigratePanel toast={toast} />
@@ -2341,6 +2342,80 @@ function MtmBackfillPanel({ toast }) {
 // usuario reporta "falta el mío"— hay que esperar al cron o dispararlo a mano.
 // El endpoint existía pero es POST-only: sin botón, en la práctica había que
 // esperar 24h para que el usuario que reportó pudiera cargar su fondo.
+// ─── VelasPanel — el guardado nocturno de precios (análisis técnico) ─────────
+// Lee GET /api/admin/velas: cuántos activos tienen precios guardados, desde y
+// hasta cuándo, cuándo corrió por última vez y cuáles fallaron. El botón corre
+// el guardado ahora (la primera vez baja 3 años de cada activo: unos minutos).
+function VelasPanel({ toast }) {
+  const [e, setE] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function cargar() {
+    try { setE(await api.get('/admin/velas')) } catch (ex) { toast.push('Error: ' + ex.message, { type: 'error' }) }
+  }
+  useEffect(() => { cargar() /* eslint-disable-next-line */ }, [])
+
+  async function correr() {
+    setBusy(true)
+    try {
+      const r = await api.post('/admin/velas/correr')
+      toast.push(r.status === 'already_running' ? 'Ya estaba corriendo' : 'Arrancó: tarda unos minutos', { type: 'success' })
+      setTimeout(cargar, 3000)
+    } catch (ex) {
+      toast.push('Error: ' + ex.message, { type: 'error' })
+    } finally { setBusy(false) }
+  }
+
+  const sano = e && e.activos > 0 && e.fallados.length === 0 && e.atrasados.length === 0
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <RefreshCw size={16} className="text-violet-500" />
+          <h2 className="font-semibold text-ink-0">Precios guardados (análisis técnico)</h2>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={cargar} className="text-xs px-3 py-1.5 rounded border border-line text-ink-1 hover:bg-bg-3">Actualizar</button>
+          <button onClick={correr} disabled={busy || e?.corriendo}
+            className="text-xs px-3 py-1.5 rounded bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            {e?.corriendo ? 'Corriendo…' : busy ? 'Arrancando…' : 'Correr ahora'}
+          </button>
+        </div>
+      </div>
+      {!e ? <p className="text-xs text-ink-3">Cargando…</p> : (
+        <>
+          <p className={`text-sm font-medium ${e.activos === 0 ? 'text-rendi-warn' : sano ? 'text-rendi-pos' : 'text-rendi-warn'}`}>
+            {e.activos === 0
+              ? 'Todavía no se guardó nada: corre esta noche al final de la foto diaria, o tocá «Correr ahora».'
+              : sano ? 'Todo al día.' : 'Hay activos con problemas (abajo).'}
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <Row label="Activos seguidos"><span className="tabular">{e.activos} ({e.ok} bien)</span></Row>
+            <Row label="Velas guardadas"><span className="tabular">{e.filas.toLocaleString('es-AR')}</span></Row>
+            <Row label="Desde / hasta"><span className="tabular">{e.desde || '—'} → {e.hasta || '—'}</span></Row>
+            <Row label="Última corrida (UTC)"><span className="tabular">{e.ultima_corrida || '—'}</span></Row>
+          </div>
+          {e.sin_historia > 0 && (
+            <p className="text-xs text-ink-2">{e.sin_historia} todavía sin su historia completa (se bajan primero en la próxima corrida).</p>
+          )}
+          {e.fallados.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Yahoo no devolvió datos ({e.fallados.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.fallados.map(f => f.symbol).join(' · ')}</div>
+            </div>
+          )}
+          {e.atrasados.length > 0 && (
+            <div className="text-xs">
+              <div className="text-ink-2 font-medium mb-1">Sin velas nuevas hace más de 5 días ({e.atrasados.length})</div>
+              <div className="text-ink-3 leading-relaxed">{e.atrasados.map(a => `${a.symbol} (${a.hasta})`).join(' · ')}</div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function FciRefreshPanel({ toast }) {
   const [r, setR] = useState(null)
   const [busy, setBusy] = useState(false)

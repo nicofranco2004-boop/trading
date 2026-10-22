@@ -1,0 +1,206 @@
+"""Lectura técnica de un activo: medias, fuerza del movimiento y máximo del año.
+
+QUÉ ES. Toma las velas que guarda `velas_diarias` y arma, para la ficha del
+activo, la serie del gráfico (precio, media de 50, media de 200, RSI) y los
+números de la lectura (dónde está el precio contra cada media, hacia dónde va la
+de 200, el RSI y la distancia al máximo de 12 meses). Las PALABRAS ("alcista",
+"muy estirado") las pone la pantalla; acá van sólo los números, en un lugar.
+
+EN QUÉ MONEDA. La tendencia se lee en DÓLARES por defecto: un CEDEAR en pesos
+sube aunque la empresa no se mueva, sólo porque sube el dólar. Cómo se arma
+cada vista con lo que hay guardado:
+  · dólares: la serie de afuera si existe (la acción de Nueva York de un CEDEAR,
+    una acción o ETF de EE.UU., una cripto); si no, la de BYMA en pesos ÷ el
+    dólar MEP de CADA día (una acción argentina).
+  · pesos: la de BYMA si existe; si no, la de afuera × el MEP de cada día.
+El dólar de cada día es el punto medio del MEP de `fx_rates_daily` (la misma
+expresión que `fx.fx_for_date`), con el blue de red como allá.
+
+QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
+dibujan en la pantalla con lo que ya tiene la ficha.
+"""
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+RUEDAS_ANIO = 252
+# Cuántas ruedas se mandan a la pantalla: 2 años, el rango más largo del gráfico.
+RUEDAS_GRAFICO = 2 * RUEDAS_ANIO
+# Hacia dónde va la media de 200: su cambio en el último mes de ruedas.
+RUEDAS_PENDIENTE = 20
+# Un dólar de hace más días que esto no es "el de ese día" (mismo techo que
+# price_history.MAX_DIAS_ATRAS): sin él, la vela no se convierte.
+MAX_DIAS_SIN_DOLAR = 7
+
+
+# ─── Cuentas ─────────────────────────────────────────────────────────────────
+
+def media(valores: list, n: int) -> list:
+    """Media simple de las últimas `n`. None hasta que haya `n` valores."""
+    out, suma = [], 0.0
+    for i, v in enumerate(valores):
+        suma += v
+        if i >= n:
+            suma -= valores[i - n]
+        out.append(suma / n if i >= n - 1 else None)
+    return out
+
+
+def rsi(cierres: list, n: int = 14) -> list:
+    """RSI de Wilder (el de TradingView): el promedio de las subas contra el de
+    las bajas de las últimas `n` ruedas, suavizado. 0 a 100. None al principio."""
+    out = [None] * len(cierres)
+    if len(cierres) <= n:
+        return out
+    subas = bajas = 0.0
+    for i in range(1, n + 1):
+        d = cierres[i] - cierres[i - 1]
+        subas += max(d, 0.0)
+        bajas += max(-d, 0.0)
+    subas, bajas = subas / n, bajas / n
+
+    def _valor(s, b):
+        if b == 0:
+            return 100.0 if s > 0 else 50.0
+        return 100.0 - 100.0 / (1.0 + s / b)
+
+    out[n] = _valor(subas, bajas)
+    for i in range(n + 1, len(cierres)):
+        d = cierres[i] - cierres[i - 1]
+        subas = (subas * (n - 1) + max(d, 0.0)) / n
+        bajas = (bajas * (n - 1) + max(-d, 0.0)) / n
+        out[i] = _valor(subas, bajas)
+    return out
+
+
+def _pct(a, b):
+    return (a / b - 1.0) * 100.0 if (a is not None and b) else None
+
+
+def lectura(velas: list) -> dict:
+    """Los números de la lectura técnica sobre la última vela."""
+    cierres = [v["close"] for v in velas]
+    n = len(cierres)
+    if not n:
+        return {"ruedas": 0}
+    m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
+    ultimo = cierres[-1]
+    anio = velas[-RUEDAS_ANIO:]
+    maximo = max((v.get("high") or v["close"]) for v in anio)
+    minimo = min((v.get("low") or v["close"]) for v in anio)
+    m200_antes = m200[-1 - RUEDAS_PENDIENTE] if n > RUEDAS_PENDIENTE else None
+    vols = [v.get("volume") for v in velas[-21:-1] if v.get("volume")]
+    vol_hoy = velas[-1].get("volume")
+    return {
+        "ruedas": n,
+        "fecha": velas[-1]["date"],
+        "precio": ultimo,
+        "media50": m50[-1],
+        "dist_media50": _pct(ultimo, m50[-1]),
+        "media200": m200[-1],
+        "dist_media200": _pct(ultimo, m200[-1]),
+        "pendiente_media200": _pct(m200[-1], m200_antes),
+        "rsi": r[-1],
+        "maximo_12m": maximo,
+        "dist_maximo_12m": _pct(ultimo, maximo),
+        "minimo_12m": minimo,
+        "volumen_vs_promedio": (vol_hoy / (sum(vols) / len(vols))) if (vol_hoy and len(vols) >= 10) else None,
+        "anio_completo": n >= RUEDAS_ANIO,
+    }
+
+
+# ─── Qué serie y en qué moneda ───────────────────────────────────────────────
+
+def _dolares_por_dia(conn, desde: str) -> dict:
+    """{fecha: dólar MEP medio} desde `desde`, con el blue donde no hay MEP.
+    Es la misma cuenta que `fx.fx_for_date`, hecha una vez para toda la serie."""
+    from fx import SQL_MEDIO_BLUE, SQL_MEDIO_MEP
+    rows = conn.execute(
+        f"SELECT date, {SQL_MEDIO_MEP} AS mep, {SQL_MEDIO_BLUE} AS blue FROM fx_rates_daily "
+        "WHERE date >= ? ORDER BY date",
+        ((date.fromisoformat(desde) - timedelta(days=MAX_DIAS_SIN_DOLAR)).isoformat(),)).fetchall()
+    out = {}
+    for r in rows:
+        v = r["mep"] if (r["mep"] or 0) > 0 else r["blue"]
+        if v and v > 0:
+            out[r["date"]] = float(v)
+    return out
+
+
+def _convertir(velas: list, dolares: dict, por: str) -> list:
+    """Pasa una serie de moneda: `por`='dividir' (pesos → dólares) o
+    'multiplicar' (dólares → pesos), con el dólar de cada día. Un día sin dólar
+    en la última semana se saltea: no se inventa con uno viejo."""
+    fechas = sorted(dolares)
+    out, j, ultimo = [], 0, None
+    for v in velas:
+        while j < len(fechas) and fechas[j] <= v["date"]:
+            ultimo = fechas[j]
+            j += 1
+        if not ultimo or (date.fromisoformat(v["date"]) - date.fromisoformat(ultimo)).days > MAX_DIAS_SIN_DOLAR:
+            continue
+        tc = dolares[ultimo]
+        f = (lambda x: x / tc) if por == "dividir" else (lambda x: x * tc)
+        out.append({**v, **{k: (f(v[k]) if v.get(k) is not None else None)
+                             for k in ("open", "high", "low", "close")}})
+    return out
+
+
+def serie(conn, asset: str, moneda: str = "usd") -> dict:
+    """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
+    {velas, ticker, convertida} o {velas: []} si no hay."""
+    from cripto import yahoo_de_cripto
+    from snapshots_job import simbolo_byma
+    import velas_diarias
+
+    a = (asset or "").strip().upper()
+    if a.endswith(".BA"):
+        a = a[:-3]
+    if not a:
+        return {"velas": []}
+    cripto = yahoo_de_cripto(a)
+    afuera = velas_diarias.serie(conn, cripto or a)
+    byma = [] if cripto else velas_diarias.serie(conn, simbolo_byma(a))
+
+    if moneda == "ars":
+        if byma:
+            return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
+        if afuera:
+            return {"velas": _convertir(afuera, _dolares_por_dia(conn, afuera[0]["date"]), "multiplicar"),
+                    "ticker": cripto or a, "convertida": "mep"}
+        return {"velas": []}
+    if afuera:
+        return {"velas": afuera, "ticker": cripto or a, "convertida": None}
+    if byma:
+        return {"velas": _convertir(byma, _dolares_por_dia(conn, byma[0]["date"]), "dividir"),
+                "ticker": simbolo_byma(a), "convertida": "mep"}
+    return {"velas": []}
+
+
+def para_la_ficha(conn, asset: str, moneda: str = "usd") -> dict:
+    """Lo que necesita la ficha: la serie del gráfico (2 años) con sus medias y
+    su RSI ya calculados sobre TODA la historia guardada (la media de 200 del
+    primer punto del gráfico necesita los 10 meses de antes) y la lectura."""
+    moneda = "ars" if moneda == "ars" else "usd"
+    s = serie(conn, asset, moneda)
+    velas = s["velas"]
+    if not velas:
+        return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
+    cierres = [v["close"] for v in velas]
+    m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
+    desde = max(0, len(velas) - RUEDAS_GRAFICO)
+
+    def _r(x, d=4):
+        return round(x, d) if x is not None else None
+
+    puntos = [{"d": velas[i]["date"], "c": _r(cierres[i]), "s50": _r(m50[i]),
+               "s200": _r(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
+    return {
+        "asset": (asset or "").upper(),
+        "moneda": moneda,
+        "disponible": True,
+        "ticker": s["ticker"],
+        "convertida": s["convertida"],
+        "puntos": puntos,
+        "lectura": lectura(velas),
+    }
