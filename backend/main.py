@@ -43356,6 +43356,17 @@ _wallbit_sync_locks = defaultdict(threading.Lock)
 #   2. deployar
 #   3. confirmar en los logs: "credenciales: ... 0 migradas ahora"
 #   4. recién entonces rotar SECRET_KEY
+#
+# ⚠️ ORDEN OBLIGATORIO PARA ROTAR CREDENTIALS_KEY (agregado tras el incidente de
+# Railway del 2026-10-21). Cambiarla a secas deja todo ilegible: la nueva no abre
+# lo cifrado con la vieja, y SECRET_KEY tampoco. Por eso existe
+# CREDENTIALS_KEY_ANTERIOR, que sólo descifra:
+#   1. crear CREDENTIALS_KEY_ANTERIOR con una COPIA del valor actual de
+#      CREDENTIALS_KEY, y deployar sin tocar nada más de esto
+#   2. confirmar en los logs: "CREDENTIALS_KEY_ANTERIOR es IGUAL" (la copia está bien)
+#   3. poner el valor nuevo en CREDENTIALS_KEY y deployar → la migración re-cifra
+#   4. redeployar y confirmar "0 migradas ahora" + "SEGURO borrar CREDENTIALS_KEY_ANTERIOR"
+#   5. recién entonces borrar CREDENTIALS_KEY_ANTERIOR
 
 def _fernet_de(material: str):
     """Fernet(sha256(material)) → 32 bytes urlsafe-b64. Es la derivación de
@@ -43373,8 +43384,18 @@ def _creds_clave_propia() -> Optional[str]:
     return (os.environ.get("CREDENTIALS_KEY") or "").strip() or None
 
 
+def _creds_clave_anterior() -> Optional[str]:
+    """CREDENTIALS_KEY_ANTERIOR: el valor que tenía CREDENTIALS_KEY antes de
+    rotarla. Sólo descifra. Se ignora si no hay CREDENTIALS_KEY: sin clave propia
+    el sistema es el de antes y no hay nada que rotar."""
+    if not _creds_clave_propia():
+        return None
+    return (os.environ.get("CREDENTIALS_KEY_ANTERIOR") or "").strip() or None
+
+
 def _wallbit_cipher():
-    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), SECRET_KEY (legacy, sólo
+    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), CREDENTIALS_KEY_ANTERIOR
+    (sólo descifra, mientras dura una rotación), SECRET_KEY (legacy, sólo
     descifra)]. El nombre `_wallbit_` quedó de cuando Wallbit era el único
     conector; hoy cifra también el refresh token de IOL."""
     from cryptography.fernet import MultiFernet
@@ -43382,6 +43403,9 @@ def _wallbit_cipher():
     propia = _creds_clave_propia()
     if propia:
         claves.append(_fernet_de(propia))
+    anterior = _creds_clave_anterior()
+    if anterior and anterior != propia:
+        claves.append(_fernet_de(anterior))
     claves.append(_fernet_de(SECRET_KEY or "dev-insecure"))
     return MultiFernet(claves)
 
@@ -43453,13 +43477,28 @@ def _migrar_credenciales_a_credentials_key() -> None:
         #      "SEGURO rotar" era la única en INFO y era justo la que había que leer.
         # Este renglón ES el gate de la rotación de SECRET_KEY: si no se ve, el
         # procedimiento no se puede hacer.
+        # La rotación de CREDENTIALS_KEY tiene su propio semáforo, en la misma
+        # línea para que haya UN solo renglón que leer.
+        anterior = _creds_clave_anterior()
+        if not anterior:
+            sobre_anterior = ""
+        elif anterior == propia:
+            sobre_anterior = (" CREDENTIALS_KEY_ANTERIOR es IGUAL a CREDENTIALS_KEY: la copia "
+                              "está bien, ya podés poner el valor nuevo en CREDENTIALS_KEY.")
+        elif migradas:
+            sobre_anterior = " NO borres CREDENTIALS_KEY_ANTERIOR todavía."
+        elif ilegibles:
+            sobre_anterior = (" NO borres CREDENTIALS_KEY_ANTERIOR: hay ilegibles; compará "
+                              "con el número de antes de rotar.")
+        else:
+            sobre_anterior = " SEGURO borrar CREDENTIALS_KEY_ANTERIOR."
         if migradas:
             log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, %d migradas ahora, %d "
                         "ilegibles. NO rotes SECRET_KEY todavía: redeployá y confirmá "
-                        "'0 migradas ahora'.", ya, migradas, ilegibles)
+                        "'0 migradas ahora'.%s", ya, migradas, ilegibles, sobre_anterior)
         else:
             log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, 0 migradas ahora, %d "
-                        "ilegibles. SEGURO rotar SECRET_KEY.", ya, ilegibles)
+                        "ilegibles. SEGURO rotar SECRET_KEY.%s", ya, ilegibles, sobre_anterior)
     except Exception as e:
         log.warning("credenciales: la migración a CREDENTIALS_KEY falló (%s). Siguen "
                     "legibles con SECRET_KEY. NO rotes SECRET_KEY.", e)
@@ -43503,9 +43542,10 @@ def _log_config_arranque() -> None:
     # trabajo para el que no es.
     _misma = bool(os.environ.get("OPENAI_API_KEY")) and \
         os.environ.get("OPENAI_API_KEY") == os.environ.get("VOZ_SIGNING_KEY")
-    log.warning("config al arrancar: %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
+    log.warning("config al arrancar: %s | %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
                 _forma("SECRET_KEY"), _forma("ANTHROPIC_API_KEY"),
-                _forma("CREDENTIALS_KEY"), _forma("OPENAI_API_KEY"),
+                _forma("CREDENTIALS_KEY"), _forma("CREDENTIALS_KEY_ANTERIOR"),
+                _forma("OPENAI_API_KEY"),
                 _forma("VOZ_SIGNING_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE",
                 "  ⚠️ OPENAI_API_KEY y VOZ_SIGNING_KEY son LA MISMA — no debería" if _misma else "")
 
