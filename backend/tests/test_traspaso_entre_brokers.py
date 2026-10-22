@@ -314,6 +314,24 @@ class LaMitadEnDolaresSeVaConElTraspaso(_Base):
         prop = self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
         self.assertEqual(prop, [])
 
+    def test_borrar_y_volver_a_subir_el_broker_viejo_no_cierra_de_mas(self):
+        """Lo que se le indica a quien quedó con el cierre viejo: borrar el import
+        del broker viejo ("Forzar revert") y volver a subirlo. El cierre de antes
+        sigue vivo en el lote del broker NUEVO; como VIST entró 21 por 7 (ratio),
+        "lo que falta" daba 14 y se volvía a cerrar todo lo recién subido."""
+        self.importar(VIEJO, self.VIEJO_N, "bullmarket")
+        self.importar(NUEVO, self.NUEVO_N, "balanz_movimientos", aprobar=["VIST"])
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        sid = self.conn.execute(
+            "SELECT id FROM import_batches WHERE user_id=? AND broker=? AND status='confirmed'",
+            (self.uid, self.VIEJO_N)).fetchone()["id"]
+        with self.conn:
+            main._revert_batch_de(self.conn, self.uid, sid, nuclear=True)
+        prop = self.importar(VIEJO, self.VIEJO_N, "bullmarket", aprobar=["VIST"], nombre="h.csv")
+        self.assertEqual(prop, [], "propuso cerrar otra vez lo que ya estaba cerrado")
+        self.assertEqual(self.qty(self.VIEJO_N, "VIST"), 0.0)
+        self.assertEqual(self.qty(self.NUEVO_N, "VIST"), 21.0)
+
 
 if __name__ == "__main__":
     unittest.main()
