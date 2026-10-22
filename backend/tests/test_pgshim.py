@@ -163,12 +163,25 @@ def test_pragma_table_info_acepta_el_nombre_entre_comillas():
 
 
 def test_los_otros_pragma_no_se_tocan():
-    """Sólo `table_info` se traduce. Los demás PRAGMA son configuración de SQLite
-    y tienen que seguir de largo: si el traductor se los comiera, `foreign_keys=ON`
-    se apagaría en silencio y las cascadas de borrado dejarían de correr."""
-    for p in ("PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON",
-              "PRAGMA busy_timeout=15000", "PRAGMA page_count"):
+    """Sólo `table_info` y `foreign_keys` se traducen. El resto son configuración
+    de SQLite y tienen que seguir de largo.
+
+    ⚠️ **El miedo original de este test sigue en pie y está abajo.** Decía: «si el
+    traductor se los comiera, `foreign_keys=ON` se apagaría en silencio y las
+    cascadas de borrado dejarían de correr». `foreign_keys` ahora SÍ se traduce
+    —los fixtures lo necesitan para sembrar en cualquier orden—, así que ese
+    miedo se volvió un assert explícito: `ON` tiene que caer en el estado donde
+    Postgres SÍ verifica (`origin`), nunca en el que no (`replica`).
+    """
+    for p in ("PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=15000",
+              "PRAGMA page_count"):
         assert traducir(p) == p, p
+
+    # El miedo de arriba, hecho assert: prender no puede terminar apagando.
+    # Ojo con el substring: `session_replication_role` CONTIENE "replica", así
+    # que hay que mirar el VALOR entre comillas, no el texto entero.
+    assert traducir("PRAGMA foreign_keys=ON").endswith("= 'origin'")
+    assert not traducir("PRAGMA foreign_keys=ON").endswith("= 'replica'")
 
 
 def test_sqlite_master_se_convierte_en_el_catalogo_de_postgres():
@@ -321,6 +334,37 @@ def test_un_modificador_desconocido_avisa_en_vez_de_adivinar(mod):
     período y cambia un número. Preferimos que explote."""
     with pytest.raises(NotImplementedError):
         traducir(f"SELECT date('now', '{mod}')")
+
+
+def test_pragma_foreign_keys_se_traduce_a_suspender_las_verificaciones():
+    """Los fixtures apagan las FK para sembrar filas en cualquier orden."""
+    assert traducir("PRAGMA foreign_keys=OFF") == "SET session_replication_role = 'replica'"
+    assert traducir("PRAGMA foreign_keys=ON") == "SET session_replication_role = 'origin'"
+    assert traducir("PRAGMA foreign_keys = off") == "SET session_replication_role = 'replica'"
+    # Los demás PRAGMA NO se tocan: sólo este tiene equivalente.
+    assert traducir("PRAGMA journal_mode=WAL") == "PRAGMA journal_mode=WAL"
+
+
+def test_el_esquema_NO_tiene_triggers_ni_reglas():
+    """La guarda de la traducción de arriba, y por qué este test existe.
+
+    `session_replication_role='replica'` no apaga sólo las claves foráneas:
+    también apaga los TRIGGERS y las REGLAS de usuario. Hoy la equivalencia es
+    exacta porque el esquema no tiene ninguno. El día que se agregue un trigger,
+    apagar las FK en un fixture también lo apagaría a él — y el test que dependa
+    de ese trigger pasaría o fallaría por un motivo que nadie relacionaría.
+
+    **Si este test se pone rojo, NO lo aflojes:** andá a
+    `pgshim.traducir` (la rama de `_RE_PRAGMA_FK`) y decidí qué hacer con el
+    trigger nuevo antes de seguir.
+    """
+    import pathlib, re
+    esquema = (pathlib.Path(__file__).resolve().parent.parent / "schema_pg.sql").read_text()
+    triggers = len(re.findall(r"CREATE\s+TRIGGER", esquema, re.I))
+    reglas = len(re.findall(r"CREATE\s+RULE", esquema, re.I))
+    assert (triggers, reglas) == (0, 0), (
+        f"el esquema ahora tiene {triggers} trigger(s) y {reglas} regla(s): la "
+        f"traducción de PRAGMA foreign_keys dejó de ser exacta")
 
 
 def test_no_toca_lo_que_apenas_se_parece():

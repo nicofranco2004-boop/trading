@@ -170,8 +170,8 @@ class MarketBriefTest(unittest.TestCase):
     def _suscribir(self, uid=1, enabled=1):
         conn = main.get_db()
         try:
-            conn.execute("INSERT OR REPLACE INTO market_brief_prefs "
-                         "(user_id, enabled) VALUES (?,?)", (uid, enabled))
+            conn.execute("INSERT INTO market_brief_prefs "
+                         "(user_id, enabled) VALUES (?,?) ON CONFLICT (user_id) DO UPDATE SET enabled=EXCLUDED.enabled", (uid, enabled))
             conn.commit()
         finally:
             conn.close()

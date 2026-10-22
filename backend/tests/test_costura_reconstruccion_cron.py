@@ -82,8 +82,8 @@ class _Cuenta(unittest.TestCase):
         conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                      (cls.uid, cls.BROKER, cls.MONEDA))
         for d, tc in cls.FX.items():
-            conn.execute("INSERT OR REPLACE INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
-                         "VALUES (?,?,?,'manual')", (d, tc, tc))
+            conn.execute("INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) "
+                         "VALUES (?,?,?,'manual') ON CONFLICT (date) DO UPDATE SET blue_venta=EXCLUDED.blue_venta, mep_venta=EXCLUDED.mep_venta, source=EXCLUDED.source", (d, tc, tc))
         conn.commit()
         conn.close()
         cls.h = {"Authorization": f"Bearer {main.create_token(cls.uid)}"}

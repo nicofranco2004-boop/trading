@@ -402,11 +402,14 @@ class TestRepararCaja1415(unittest.TestCase):
                 "INSERT INTO fx_rates_daily (date, blue_venta, mep_venta, source) VALUES (?, ?, ?, 'manual') "
                 "ON CONFLICT (date) DO UPDATE SET mep_venta=EXCLUDED.mep_venta", (d, mep, mep))
         self.conn.execute(
-            """INSERT INTO import_batches (user_id, broker, parser_format, file_name, file_hash,
+            # `id` va EXPLÍCITO: es la clave primaria y no se autogenera (es un
+            # texto, no un contador). SQLite dejaba omitirla —le ponía NULL y
+            # seguía—; Postgres la rechaza.
+            """INSERT INTO import_batches (id, user_id, broker, parser_format, file_name, file_hash,
                    total_rows, valid_rows, invalid_rows, status, created_at, confirmed_at)
-               VALUES (?, 'Cocos', 'cocos', 'x.csv', ?, 1, 1, 0, 'confirmed',
+               VALUES (?, ?, 'Cocos', 'cocos', 'x.csv', ?, 1, 1, 0, 'confirmed',
                        '2026-06-01T10:00:00', '2026-06-01T10:05:00')""",
-            (self.uid, f"h-{id(self)}"))
+            (f"b-{id(self)}", self.uid, f"h-{id(self)}"))
         for broker in ("Cocos", "global"):
             self.conn.execute(
                 """INSERT INTO monthly_entries (user_id, year, month, broker, deposits, withdrawals,

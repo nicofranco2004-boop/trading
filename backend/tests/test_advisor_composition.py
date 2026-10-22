@@ -86,8 +86,8 @@ class CompositionBase(unittest.TestCase):
 
     def _price(self, symbol, price):
         self.conn.execute(
-            "INSERT OR REPLACE INTO asset_last_price (symbol, price, updated_at) "
-            "VALUES (?,?, '2026-08-25 20:00:00')", (symbol, price))
+            "INSERT INTO asset_last_price (symbol, price, updated_at) "
+            "VALUES (?,?, '2026-08-25 20:00:00') ON CONFLICT (symbol) DO UPDATE SET price=EXCLUDED.price, updated_at=EXCLUDED.updated_at", (symbol, price))
 
     def _pf(self, uid, capital, moneda="ARS", tasa=0.0, plazo=30):
         self.conn.execute(
