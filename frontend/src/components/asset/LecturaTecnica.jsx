@@ -545,25 +545,34 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
               <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/50" style={{ left: `${pctX(hover)}%` }} />
               <span aria-hidden="true" className="pointer-events-none absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
                 style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%`, background: COLOR.precio }} />
-              <div className={`pointer-events-none absolute top-2 rounded-lg border border-line-2 bg-bg-raised px-2.5 py-2 text-[12px] leading-snug shadow-sm tabular min-w-[150px] ${pctX(hover) > 55 ? '-translate-x-[calc(100%+10px)]' : 'translate-x-[10px]'}`}
-                style={{ left: `${pctX(hover)}%` }}>
-                <div className="text-ink-3">{ph.semana ? `Semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</div>
-                <div className="text-ink-0 font-semibold text-[13px]">{fmtPrecio(ph.c, moneda)}</div>
+              {/* El globo va pegado al punto que se mira (abajo a la derecha;
+                  del otro lado si no entra), chico y de un renglón por dato:
+                  arriba y fijo tapaba casi todo el gráfico (Nico, 22/10). */}
+              <div className={`pointer-events-none absolute z-10 rounded border border-line-2 bg-bg-raised/95 px-2 py-1.5 text-[11px] leading-tight shadow-sm tabular whitespace-nowrap ${pctX(hover) > 62 ? '-translate-x-[calc(100%+12px)]' : 'translate-x-3'} ${pctY(ph.c) > 55 ? '-translate-y-[calc(100%+12px)]' : 'translate-y-3'}`}
+                style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%` }}>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
+                  <span className="text-ink-2">{ph.semana ? `sem. ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
+                </div>
                 {conVelas && (() => {
                   const vela = velaCompleta(ph, hover > 0 ? puntos[hover - 1].c : null)
                   return (
                     <>
-                      <Fila k="Apertura" v={fmtPrecio(vela.o, moneda)} />
-                      <Fila k="Máximo" v={fmtPrecio(vela.h, moneda)} />
-                      <Fila k="Mínimo" v={fmtPrecio(vela.l, moneda)} />
+                      <div className="text-ink-2 mt-0.5">
+                        Ap. <span className="text-ink-1">{fmtPrecio(vela.o, moneda).replace(/^US\$ |^\$ /, '')}</span>
+                        {' · '}Máx. <span className="text-ink-1">{fmtPrecio(vela.h, moneda).replace(/^US\$ |^\$ /, '')}</span>
+                        {' · '}Mín. <span className="text-ink-1">{fmtPrecio(vela.l, moneda).replace(/^US\$ |^\$ /, '')}</span>
+                      </div>
                     </>
                   )
                 })()}
-                {ph.s200 != null && <Fila color={COLOR.media200} k="Media 200" v={fmtPrecio(ph.s200, moneda)} />}
-                {ph.s50 != null && <Fila color={COLOR.media50} k="Media 50" v={fmtPrecio(ph.s50, moneda)} />}
-                {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
+                <div className="flex gap-2.5 mt-0.5">
+                  {ph.s200 != null && <Fila color={COLOR.media200} k="200" v={fmtPrecio(ph.s200, moneda).replace(/^US\$ |^\$ /, '')} />}
+                  {ph.s50 != null && <Fila color={COLOR.media50} k="50" v={fmtPrecio(ph.s50, moneda).replace(/^US\$ |^\$ /, '')} />}
+                  {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
+                </div>
                 {visibles.filter(m => m.i === hover).map(m => (
-                  <div key={m.tipo} className={`mt-1 font-medium ${m.tipo === 'compra' ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
+                  <div key={m.tipo} className={`mt-0.5 font-medium ${m.tipo === 'compra' ? 'text-rendi-pos' : 'text-rendi-neg'}`}>
                     {m.tipo === 'compra' ? 'Compraste' : 'Vendiste'} {ph.semana ? 'esta semana' : 'este día'}
                   </div>
                 ))}
@@ -635,13 +644,13 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
   )
 }
 
+// Un dato del globo, en una sola línea: la rayita del color de su línea, el
+// nombre corto y el valor.
 function Fila({ color, k, v: valor }) {
   return (
-    <div className="flex items-center justify-between gap-3 text-ink-2">
-      <span className="inline-flex items-center gap-1.5">
-        {color && <span className="w-2 h-0.5 rounded-full" style={{ background: color }} />}{k}
-      </span>
+    <span className="inline-flex items-center gap-1 text-ink-2 whitespace-nowrap">
+      {color && <span className="w-2 h-0.5 rounded-full" style={{ background: color }} />}{k}
       <span className="text-ink-1">{valor}</span>
-    </div>
+    </span>
   )
 }
