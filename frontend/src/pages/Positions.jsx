@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef, Fragment } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef, Fragment } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Plus, ChevronDown, ChevronUp, Wallet, TrendingUp, TrendingDown, Layers as LayersIcon, Rows3 as RowsIcon, Search, X, Eye, EyeOff } from 'lucide-react'
 import ActionMenu from '../components/ActionMenu'
@@ -64,6 +64,8 @@ import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
+import RadiografiaTecnica, { useLecturasCartera, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
+import { lecturaDeFila } from '../utils/radiografia'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
@@ -1810,6 +1812,26 @@ function PositionsDesktop() {
   const pfValueUsd = (pfTotals.USD?.valor || 0) + (pfTotals.ARS?.valor || 0) / tcValuacion
   const pfInvestedUsd = (pfTotals.USD?.capital || 0) + (pfTotals.ARS?.capital || 0) / tcValuacion
   const heroValue = totals.value + pfValueUsd
+
+  // Radiografía técnica: cada lote pesa lo que vale en `totals` (las piezas de
+  // computeBrokerValue, cuya suma es este total) y los plazos fijos suman sin
+  // lectura. Las lecturas, una sola vez para toda la página.
+  const lecturas = useLecturasCartera(positions)
+  const valorDeLote = useCallback(p => totals.byBroker[p.broker]?.porLote?.get(p.id) ?? 0, [totals])
+  const radiografiaExtra = useMemo(() => (pfValueUsd > 0 ? [{ nombre: 'plazos fijos', valor: pfValueUsd }] : []), [pfValueUsd])
+  // Las dos columnas técnicas de una fila (las dos tablas). El lote de una fila
+  // abierta no las repite; el efectivo no tiene.
+  const celdasTecnicas = (p, isLot) => {
+    const x = lecturaDeFila(lecturas.indice, p)
+    const nada = <span className="text-ink-3">{isLot ? '' : '—'}</span>
+    const cargando = lecturas.cargando && !p.is_cash && !isLot
+    return (
+      <>
+        <td className={tdClass}>{cargando ? <span className="text-ink-3">…</span> : (p.is_cash || isLot) ? nada : <TendenciaChip x={x} />}</td>
+        <td className={tdClass}>{cargando ? <span className="text-ink-3">…</span> : (p.is_cash || isLot) ? nada : <FuerzaRsi x={x} />}</td>
+      </>
+    )
+  }
   const heroInvested = totals.invested + pfInvestedUsd
   const heroPnl = heroValue - heroInvested
   const heroPct = heroInvested > 0 ? heroPnl / heroInvested : 0
@@ -2121,6 +2143,11 @@ function PositionsDesktop() {
             total={isArsDisp ? heroValueArs + impactoFdh.total.ars : heroValue + impactoFdh.total.usd} />
         )}
       </div>
+
+      {/* Radiografía técnica: cuánto de tu plata está en tendencia alcista. La
+          MISMA pieza que en el celular (R6). */}
+      <RadiografiaTecnica lotes={positions} valorDe={valorDeLote} extra={radiografiaExtra}
+        indice={lecturas.indice} cargando={lecturas.cargando} className="mb-5" />
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}
@@ -2490,6 +2517,8 @@ function PositionsDesktop() {
                       {showDetail && isArsDisp && <th className={thClass}>P&L USD</th>}
                       <th className={thClass}>Var. día</th>
                       {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
+                      <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su media de 200 días">Tendencia</th>
+                      <th className={thClass} title="Fuerza del movimiento (RSI de 14 ruedas): 0 a 100, 50 es parejo">Fuerza (RSI)</th>
                       <th className={thClassStickyRight}></th>
                     </tr>
                   </thead>
@@ -2561,7 +2590,7 @@ function PositionsDesktop() {
                       // + Invertido si showDetail (+1) + TC Compra/Inv.USD/P&L USD si
                       // showDetail && vista ARS (+3). USD: los 3 helpers cross-moneda
                       // se ocultan (redundantes con las columnas ya-en-USD).
-                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0)
+                      const arsColSpan = (showDetail ? (isArsDisp ? 13 : 10) : 9) + (fdhAca ? 1 : 0) + 2   // +2: Tendencia y Fuerza (RSI)
                       const cobradoDisp = isArsDisp ? cobradoUsd * tcValuacion : cobradoUsd
                       return (
                         <Fragment key={rowKey}>
@@ -2723,6 +2752,7 @@ function PositionsDesktop() {
                                 moneda={displayCurrency} oculto={hidden} />
                             </td>
                           )}
+                          {celdasTecnicas(p, isLot)}
                           <td className={tdClassStickyRight}>
                             <div className="flex items-center gap-1 justify-end">
                               {!p.is_cash && (
@@ -2793,6 +2823,7 @@ function PositionsDesktop() {
                             moneda={displayCurrency} oculto={hidden} />
                         </td>
                       )}
+                      <td colSpan={2} />
                       <td />
                     </tr>
                   </tfoot>
@@ -2820,6 +2851,8 @@ function PositionsDesktop() {
                     <th className={thClass}>P&L</th>
                     <th className={thClass}>Var. día</th>
                     {fdhAca && <th className={thClass}><EncabezadoColumna sesion={sesionFdh} /></th>}
+                    <th className={thClass} title="Tendencia de fondo, en dólares: el precio contra su media de 200 días">Tendencia</th>
+                    <th className={thClass} title="Fuerza del movimiento (RSI de 14 ruedas): 0 a 100, 50 es parejo">Fuerza (RSI)</th>
                     <th className={thClassStickyRight}></th>
                   </tr>
                 </thead>
@@ -2970,6 +3003,7 @@ function PositionsDesktop() {
                               moneda={displayCurrency} oculto={hidden} />
                           </td>
                         )}
+                        {celdasTecnicas(p, isLot)}
                         <td className={tdClassStickyRight}>
                           <div className="flex items-center gap-1 justify-end">
                             {!p.is_cash && (
@@ -2987,7 +3021,7 @@ function PositionsDesktop() {
                         <BondDetailRow
                           p={p}
                           filaFusionada={filaSinUnaPata(p)}
-                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0)}
+                          colSpan={(showDetail ? 10 : 9) + (fdhAca ? 1 : 0) + 2}
                           summary={bondSummary}
                           pendingDates={pendientesDeLaFila(p)}
                           cobros={cobrosRenta}
@@ -3032,6 +3066,7 @@ function PositionsDesktop() {
                           moneda={displayCurrency} oculto={hidden} />
                       </td>
                     )}
+                    <td colSpan={2} />
                     <td />
                   </tr>
                 </tfoot>

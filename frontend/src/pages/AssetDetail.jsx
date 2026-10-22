@@ -23,10 +23,12 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { isBymaHolding, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
-import { cedearRatio } from '../utils/cedearRatio'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
+// ¿Es una acción argentina? La regla vive con la radiografía de la Cartera: la
+// ficha y la Cartera leen el mismo activo con la misma marca `local`.
+import { esAccionLocal } from '../utils/radiografia'
 import AskAIAbout from '../components/ai/AskAIAbout'
 import { ChipDelActivo } from '../components/FueraDeHorario'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
@@ -121,13 +123,6 @@ function costoEnPesos(lots) {
     invertido: abiertos.reduce((s, p) => s + costoDelLote(p), 0),
     cantidad: abiertos.reduce((s, p) => s + Number(p.quantity), 0),
   }
-}
-
-// ¿Es una acción argentina (no un CEDEAR)? Entonces su gráfico en dólares es su
-// precio de BYMA ÷ el MEP, no el ADR de Nueva York (GGAL "de afuera" son 10).
-function esAccionLocal(asset, lots) {
-  if (!lots.length || cedearRatio(asset) || isCrypto(asset)) return false
-  return lots.every(p => p.asset_type !== 'CEDEAR' && isBymaHolding(p))
 }
 
 // Símbolo de precio que necesita un lote (para fetchear el set correcto).

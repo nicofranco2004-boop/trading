@@ -11389,6 +11389,35 @@ def get_tecnico(asset: str, moneda: str = "usd", local: int = 0,
         return tecnico.para_la_ficha(conn, sym, moneda, bool(local))
 
 
+class ActivoTecnicoIn(BaseModel):
+    asset: str = Field(..., max_length=40)
+    local: bool = False
+
+
+class CarteraTecnicaIn(BaseModel):
+    activos: List[ActivoTecnicoIn] = Field(default_factory=list)
+
+
+@app.post("/api/tecnico/cartera")
+def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effective_user)):
+    """La lectura técnica en dólares de varios activos de una vez, para la
+    radiografía de la Cartera (tecnico.para_la_cartera). La pantalla manda sus
+    activos con la marca `local` de la ficha. Un símbolo que no es un ticker
+    (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
+    abajo el resto del pedido."""
+    import tecnico
+    if len(body.activos) > tecnico.MAX_ACTIVOS_CARTERA:
+        raise HTTPException(400, f"Máximo {tecnico.MAX_ACTIVOS_CARTERA} activos por pedido")
+    validos, invalidos = [], []
+    for a in body.activos:
+        sym = (a.asset or "").strip().upper()
+        (validos if _SYMBOL_RE.match(sym) else invalidos).append((sym, a.local))
+    with db_abierta() as conn:
+        lecturas = tecnico.para_la_cartera(conn, validos)
+    return {"lecturas": lecturas + [{"asset": s, "local": bool(l), "disponible": False}
+                                    for s, l in invalidos]}
+
+
 @app.get("/api/admin/velas")
 def admin_velas(uid: int = Depends(get_admin_user)):
     """Estado del guardado nocturno de velas: cuántos activos, desde cuándo,

@@ -1,0 +1,175 @@
+// radiografia.js — la radiografía técnica de la Cartera: cuánto de tu plata está
+// en activos con tendencia de fondo alcista.
+// ════════════════════════════════════════════════════════════════════════════
+// Tres fuentes, ninguna recalculada acá:
+//   · el VALOR de cada tenencia lo pone la pantalla que la dibuja (`valorDe`),
+//     con la misma valuación que arma su total — así el «54 %» cierra contra el
+//     número de arriba de la Cartera;
+//   · los NÚMEROS técnicos vienen de POST /api/tecnico/cartera (backend/tecnico.py,
+//     la misma `lectura` que la ficha de cada activo);
+//   · las PALABRAS («Alcista», «Pesan más las subas») son las de la ficha
+//     (`tarjetas` y `veredictoRsi` de utils/tecnico.js): un activo no puede
+//     decir «Alcista» en la Cartera y «Bajista» en su ficha.
+
+import { isBymaHolding, fciLabel } from './valuation'
+import { isCrypto } from './crypto'
+import { cedearRatio } from './cedearRatio'
+import { tarjetas, veredictoRsi, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
+
+/**
+ * ¿Este lote es una acción ARGENTINA (no un CEDEAR)? Entonces su lectura en
+ * dólares es su precio de BYMA ÷ el MEP de cada día, no el ADR de Nueva York
+ * (GGAL "de afuera" son 10 acciones). La regla de la ficha, lote por lote.
+ */
+export function esLoteLocal(p) {
+  if (!p || p.is_cash || cedearRatio(p.asset) || isCrypto(p.asset)) return false
+  return p.asset_type !== 'CEDEAR' && isBymaHolding(p)
+}
+
+/** La marca `local` de la ficha: todos los lotes del activo son acción argentina. */
+export function esAccionLocal(asset, lots) {
+  if (!lots.length || cedearRatio(asset) || isCrypto(asset)) return false
+  return lots.every(esLoteLocal)
+}
+
+const clave = (asset, local) => `${asset}|${local ? 1 : 0}`
+
+/** Lo que se le pide al servidor: cada activo (con su marca `local`) una vez. */
+export function activosParaLeer(lotes = []) {
+  const vistos = new Map()
+  for (const p of lotes) {
+    if (!p || p.is_cash || !p.asset) continue
+    const local = esLoteLocal(p)
+    const k = clave(p.asset, local)
+    if (!vistos.has(k)) vistos.set(k, { asset: p.asset, local })
+  }
+  return [...vistos.values()].sort((a, b) => clave(a.asset, a.local).localeCompare(clave(b.asset, b.local)))
+}
+
+/** {clave → lectura del servidor}. */
+export function indexarLecturas(lecturas = []) {
+  const out = new Map()
+  for (const x of lecturas) out.set(clave(x.asset, x.local), x)
+  return out
+}
+
+/** La lectura de una fila de la tabla (un lote o una fila que junta lotes del
+ *  mismo broker). null si es efectivo o no llegó. */
+export function lecturaDeFila(indice, p) {
+  if (!indice || !p || p.is_cash) return null
+  const lots = p._lots || [p]
+  return indice.get(clave(String(p.asset || '').toUpperCase(), esAccionLocal(p.asset, lots))) || null
+}
+
+/**
+ * La tendencia de fondo con las palabras de la ficha: { id: 'alcista' |
+ * 'bajista' | 'sin', palabra, motivo }. «Sin lectura» cuando no hay velas o no
+ * alcanzan para la media de 200 (la ficha dice «Faltan datos»).
+ */
+export function tendencia(x) {
+  if (!x || !x.disponible || !x.lectura) {
+    return { id: 'sin', palabra: 'Sin lectura', motivo: 'Todavía no hay historia de precios guardada para este activo.' }
+  }
+  const fondo = tarjetas(x.lectura).find(t => t.id === 'fondo')
+  if (fondo?.veredicto === 'Alcista') return { id: 'alcista', palabra: 'Alcista', motivo: fondo.texto }
+  if (fondo?.veredicto === 'Bajista') return { id: 'bajista', palabra: 'Bajista', motivo: fondo.texto }
+  return { id: 'sin', palabra: 'Sin lectura', motivo: fondo?.texto || 'Faltan datos.' }
+}
+
+/** El RSI de la fila y su palabra («Pesan más las subas»). null si no hay. */
+export function fuerza(x) {
+  const rsi = x?.disponible ? x.lectura?.rsi : null
+  if (rsi == null) return null
+  return { rsi, palabra: veredictoRsi(rsi) }
+}
+
+/**
+ * Porcentajes enteros que suman 100 (el método del resto mayor): redondear cada
+ * uno por su lado puede dar 99 o 101 y la barra no cerraría.
+ */
+export function repartirCien(valores) {
+  const total = valores.reduce((s, v) => s + v, 0)
+  if (!(total > 0)) return valores.map(() => 0)
+  const crudos = valores.map(v => (v / total) * 100)
+  const pisos = crudos.map(Math.floor)
+  let falta = 100 - pisos.reduce((s, v) => s + v, 0)
+  const orden = crudos.map((c, i) => [c - pisos[i], i]).sort((a, b) => b[0] - a[0])
+  for (const [, i] of orden) {
+    if (falta <= 0) break
+    pisos[i] += 1
+    falta -= 1
+  }
+  return pisos
+}
+
+const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
+function cuando(iso) {
+  const [y, m, d] = iso.split('-').map(Number)
+  const f = new Date(Date.UTC(y, m - 1, d))
+  return `${DIAS[f.getUTCDay()]} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`
+}
+
+/**
+ * La radiografía. `lotes`: todas las posiciones (efectivo incluido); `valorDe(p)`:
+ * el valor en dólares de ESE lote, el que usa la pantalla para su total;
+ * `extra`: [{ nombre, valor }] lo que suma al total sin ser una posición (los
+ * plazos fijos). Devuelve:
+ *   { total, grupos: { alcista, bajista, sin } con { valor, pct, nombres[] },
+ *     cambios: [{ asset, tono: 'pos'|'neg'|'aviso', texto }] }
+ */
+export function radiografia(lotes = [], valorDe, indice, extra = []) {
+  const porActivo = new Map()   // clave → { nombre, valor, x }
+  const sumar = (k, nombre, valor, x) => {
+    if (!(valor > 0)) return
+    const a = porActivo.get(k) || { nombre, valor: 0, x }
+    a.valor += valor
+    porActivo.set(k, a)
+  }
+  for (const p of lotes) {
+    if (!p) continue
+    const v = Number(valorDe(p))
+    if (p.is_cash) { sumar('efectivo', 'efectivo', v, null); continue }
+    const local = esLoteLocal(p)
+    const k = clave(String(p.asset).toUpperCase(), local)
+    sumar(k, fciLabel(p.asset), v, indice?.get(k) || null)
+  }
+  for (const e of extra) sumar(`extra:${e.nombre}`, e.nombre, Number(e.valor), null)
+
+  const grupos = { alcista: [], bajista: [], sin: [] }
+  for (const a of porActivo.values()) grupos[tendencia(a.x).id].push(a)
+  const ids = ['alcista', 'bajista', 'sin']
+  const valores = ids.map(id => grupos[id].reduce((s, a) => s + a.valor, 0))
+  const pcts = repartirCien(valores)
+  const total = valores.reduce((s, v) => s + v, 0)
+  const salida = {}
+  ids.forEach((id, i) => {
+    const nombres = [...new Set(grupos[id].sort((a, b) => b.valor - a.valor).map(a => a.nombre))]
+    salida[id] = { valor: valores[i], pct: pcts[i], fraccion: total > 0 ? valores[i] / total : 0, nombres }
+  })
+
+  // Lo que cambió: primero los cruces de la media de 200 (la tendencia de
+  // fondo), después los de 50, después el RSI en un extremo; dentro de cada
+  // uno, lo que más pesa en tu cartera primero.
+  const conLectura = [...porActivo.values()].filter(a => a.x?.disponible).sort((a, b) => b.valor - a.valor)
+  const cambios = []
+  for (const n of [200, 50]) {
+    for (const a of conLectura) {
+      const c = (a.x.cambios || []).find(c => c.media === n)
+      if (!c) continue
+      const arriba = c.direccion === 'arriba'
+      cambios.push({
+        asset: a.nombre, tono: arriba ? 'pos' : 'neg',
+        texto: `${arriba ? 'recuperó' : 'perdió'} su media de ${n} días (${cuando(c.fecha)})`,
+      })
+    }
+  }
+  for (const a of conLectura) {
+    const r = a.x.lectura?.rsi
+    if (r == null || (r >= RSI_CASTIGADO && r <= RSI_ESTIRADO)) continue
+    cambios.push({
+      asset: a.nombre, tono: 'aviso',
+      texto: `tiene el RSI en ${Math.round(r)}: ${veredictoRsi(r).toLowerCase()}`,
+    })
+  }
+  return { total, grupos: salida, cambios }
+}

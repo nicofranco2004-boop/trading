@@ -234,3 +234,61 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False) ->
         "puntos": puntos,
         "lectura": lectura(velas),
     }
+
+
+# ─── La radiografía de la Cartera: varios activos de una vez ────────────────
+
+# «Lo que cambió esta semana»: los cruces de los últimos 7 días corridos desde
+# la última vela (por FECHA, no por cantidad de velas: la cripto cotiza los 7
+# días y la bolsa 5).
+DIAS_CAMBIOS = 7
+# Tope de activos por pedido: una cartera grande tiene ~60; esto frena un
+# pedido armado a mano que haga leer miles de series.
+MAX_ACTIVOS_CARTERA = 200
+
+
+def _cruce_de_media(velas: list, cierres: list, medias: list, desde: str):
+    """El ÚLTIMO cruce del precio con su media desde la fecha `desde` (exclusive):
+    {'direccion': 'arriba'|'abajo', 'fecha'}. «Arriba» es la misma regla que la
+    tarjeta de la ficha (precio ≥ media). None si no cruzó."""
+    for i in range(len(velas) - 1, 0, -1):
+        if velas[i]["date"] <= desde:
+            break
+        a0, a1 = medias[i - 1], medias[i]
+        if a0 is None or a1 is None:
+            continue
+        antes, ahora = cierres[i - 1] >= a0, cierres[i] >= a1
+        if antes != ahora:
+            return {"direccion": "arriba" if ahora else "abajo", "fecha": velas[i]["date"]}
+    return None
+
+
+def para_la_cartera(conn, activos: list) -> list:
+    """La lectura en DÓLARES de varios activos, para la radiografía de la Cartera.
+
+    `activos`: [(asset, local)], con `local` igual que en la ficha (acción
+    argentina → su precio de BYMA ÷ el MEP). Cada uno devuelve la MISMA
+    `lectura` que la ficha (así las palabras salen de la misma regla) y
+    `cambios`: los cruces de la media de 200 y de 50 de los últimos
+    `DIAS_CAMBIOS` días. Sin velas: `disponible` False, nunca se inventa."""
+    out, vistos = [], set()
+    for asset, local in activos:
+        a = (asset or "").strip().upper()
+        clave = (a, bool(local))
+        if not a or clave in vistos:
+            continue
+        vistos.add(clave)
+        velas = serie(conn, a, "usd", bool(local))["velas"]
+        if not velas:
+            out.append({"asset": a, "local": bool(local), "disponible": False})
+            continue
+        cierres = [v["close"] for v in velas]
+        desde = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_CAMBIOS)).isoformat()
+        cambios = []
+        for n in (200, 50):
+            c = _cruce_de_media(velas, cierres, media(cierres, n), desde)
+            if c:
+                cambios.append({"media": n, **c})
+        out.append({"asset": a, "local": bool(local), "disponible": True,
+                    "lectura": lectura(velas), "cambios": cambios})
+    return out
