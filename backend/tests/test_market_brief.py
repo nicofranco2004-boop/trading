@@ -93,6 +93,10 @@ class MarketBriefTest(unittest.TestCase):
         finally:
             conn.close()
         self.addCleanup(lambda: os.environ.pop("MARKET_BRIEF_TOKEN", None))
+        # La cuenta de intentos del día vive en memoria y los tests reusan los
+        # ids 1 y 2: sin esto, el cuarto test que corre al usuario 1 hoy se
+        # quedaba sin intentos.
+        market_brief._intentos_del_dia.clear()
 
         # ⚠️ NINGÚN test llama al modelo de verdad. Sin esto la suite salía a
         # la API de Anthropic con la key del entorno: pasó de 1 segundo a 50 y
@@ -364,6 +368,34 @@ class MarketBriefTest(unittest.TestCase):
         # Y la corrida siguiente lo reintenta.
         _, enviados, _ = self._correr_cron()
         self.assertEqual(len(enviados), 1)
+
+    def test_un_cron_que_se_dispara_de_mas_no_paga_la_ia_sin_fin(self):
+        """A quien le falla el envío no se lo sella y la corrida siguiente lo
+        reintenta — pero no para siempre. Con el cron disparando de más (cada
+        minuto en vez de una vez por día), cada corrida volvía a pedirle el
+        resumen al modelo. Pasa por el endpoint del cron, como en producción."""
+        self._pos("NVDA")
+        self._news("NVDA", "Algo de Nvidia")
+        self._suscribir()
+        pedidos = []
+
+        def _narrar(*a, **k):
+            pedidos.append(1)
+            return _NarracionFake()
+
+        partes = []
+        with patch.object(market_brief, "narrate", _narrar), \
+             patch.object(main.threading, "Thread", _ThreadSincrono), \
+             patch.object(emails, "send_market_brief", return_value=False), \
+             patch.object(emails, "send_market_brief_run_admin",
+                          lambda **kw: partes.append(kw.get("res")) or True), \
+             patch.object(market_brief, "_refresh_news_for", return_value=0), \
+             patch.object(emails, "PAUSA_ENTRE_ENVIOS", 0):
+            for _ in range(market_brief.MAX_INTENTOS_POR_DIA + 4):
+                self.http.post(f"/api/market-brief/run-cron?token={TOKEN}")
+
+        self.assertEqual(len(pedidos), market_brief.MAX_INTENTOS_POR_DIA)
+        self.assertEqual(partes[-1]["motivos"][market_brief.TOPE_DE_INTENTOS], 1)
 
     # ── nunca un mail vacío ──────────────────────────────────────────────────
 
