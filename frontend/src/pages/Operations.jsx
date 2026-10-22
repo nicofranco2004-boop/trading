@@ -51,6 +51,7 @@ import {
   MOVEMENT_TYPES, GROUP_OPTIONS, buildGroups, buildPeriodOptions, enPeriodo,
 } from '../components/operations/shared'
 import { confirmar } from '../utils/confirmar'
+import { cobradoDe } from '../utils/cobros'
 
 // pnl_usd arranca como string vacío (no 0) para que el form distinga
 // "no completado" de "0 USD" — sin esto, el user que quiere cargar un trade
@@ -1513,9 +1514,22 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
     return loose + embedded
   }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
 
+  // Lo cobrado (dividendos, cupones, intereses) del alcance broker/año, SIN
+  // filtrar por tipo, como las comisiones: un pago de bono con cupón y
+  // amortización juntos es una fila "Amortización" o "Venta", y su cupón tiene
+  // que estar en "Cobrado" y en el total del filtro Dividendos. La cuenta es la
+  // de la pestaña Cobros (`cobradoDe`, utils/cobros.js): los dos números
+  // coinciden por construcción.
+  const cobrado = useMemo(() => {
+    const scoped = movements.filter(m =>
+      (filterBroker === 'all' || m.broker === filterBroker) &&
+      (filterYear === 'all' || (m.date || '').startsWith(filterYear)))
+    return cobradoDe(scoped, sumarEnVista)
+  }, [movements, filterBroker, filterYear, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion])
+
   const kpis = useMemo(
-    () => computeMovementKpis(filtered, filterType, { sumar: sumarEnVista, fmt: fmtVista }, commTotal),
-    [filtered, filterType, commTotal, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
+    () => computeMovementKpis(filtered, filterType, { sumar: sumarEnVista, fmt: fmtVista }, commTotal, cobrado),
+    [filtered, filterType, commTotal, cobrado, histMoney.currency, histMoney.fxKey, histMoney.tcValuacion],
   )
   // Los números de arriba dependen del filtro: cada combinación es OTRO número
   // para <KpiCell> (si no, cambiar de filtro se leería como un cambio de la cartera).
@@ -1728,7 +1742,11 @@ function MovementsView({ onChanged, isMobile, cambios = { n: 0, alta: false } })
 // el total es la suma de lo que muestran las filas. `fmt` formatea un monto que
 // ya está en esa moneda. `comisiones` llega igual, ya convertido.
 // En dólares, `sumar` es la suma de siempre y no cambia ningún número.
-export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisionesTotal = 0) {
+// LO COBRADO llega hecho (`cobrado`, de `cobradoDe` sobre el alcance broker/año):
+// es la cuenta de la pestaña Cobros, con el cupón de los pagos mixtos adentro.
+// Sin él (las pruebas que pasan sólo filas), se calcula sobre `rows` con la
+// misma función.
+export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisionesTotal = 0, cobrado = cobradoDe(rows, sumar)) {
   const sumByType = (t) => sumar(rows.filter(r => r.type === t), r => r.amount_usd || 0)
   const countByType = (t) => rows.filter(r => r.type === t).length
 
@@ -1753,8 +1771,14 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
     ]
   }
   if (filterType === 'DIVIDEND' || filterType === 'INTEREST') {
+    const total = cobrado[filterType]
+    const pagos = cobrado.pagos[filterType]
+    const conMixtos = filterType === 'DIVIDEND' && cobrado.mixtos > 0
     return [
-      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmt(sumByType(filterType)), num: sumByType(filterType), tone: 'pos', sub: `${countByType(filterType)} pagos` },
+      { label: `Total ${filterType === 'DIVIDEND' ? 'dividendos' : 'intereses'}`, value: fmt(total), num: total, tone: 'pos',
+        sub: conMixtos
+          ? `${pagos} pagos · incluye el cupón de ${cobrado.mixtos} ${cobrado.mixtos === 1 ? 'pago de bono' : 'pagos de bonos'} con amortización`
+          : `${pagos} pagos` },
     ]
   }
   if (filterType === 'FEE') {
@@ -1769,7 +1793,7 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
   const neto = dep - wit
   const depCount = countByType('DEPOSIT')
   const witCount = countByType('WITHDRAW')
-  const dividendos = sumByType('DIVIDEND') + sumByType('INTEREST')
+  const dividendos = cobrado.total
   const comisiones = comisionesTotal  // FEE explícitos + embebidas en trades (no solo los FEE sueltos)
   return [
     {
@@ -1779,7 +1803,7 @@ export function computeMovementKpis(rows, filterType, { sumar, fmt }, comisiones
       tone: neto > 0 ? 'pos' : neto < 0 ? 'neg' : null,
       sub: `${depCount} depósitos · ${witCount} retiros`,
     },
-    { label: 'Cobrado',    value: fmt(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos + intereses' },
+    { label: 'Cobrado',    value: fmt(dividendos), num: dividendos, tone: dividendos > 0 ? 'pos' : null, sub: 'dividendos, cupones e intereses' },
     { label: 'Comisiones', value: fmt(comisiones), num: comisiones, tone: comisiones > 0 ? 'neg' : null, sub: 'fees totales (incl. embebidas)' },
   ]
 }

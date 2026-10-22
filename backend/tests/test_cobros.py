@@ -26,6 +26,8 @@ vence sola cuando el año cambia.
 Corre con: cd backend && python3 -m pytest tests/test_cobros.py
 """
 import io
+import json
+import os
 import unittest
 import uuid
 from unittest import mock
@@ -193,6 +195,74 @@ class Cobros(unittest.TestCase):
     def test_sin_cobros_todo_vacio(self):
         c = self._cobros()
         self.assertEqual((c["cobros"], c["pagos_mixtos"], c["anios_previos"]), ([], [], []))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# "Cobrado" de Movimientos == total del año de Cobros, al centavo.
+#
+# Las dos pantallas suman con la misma función de la pantalla
+# (frontend/src/utils/cobros.js · cobradoDe / resumirCobros), pero cada una
+# arranca de SU pedido: Movimientos de /api/movements, Cobros de /api/cobros.
+# Esta prueba arma un caso con los dos pagos mixtos de Balanz (sin cantidad y
+# con cantidad), un dividendo en pesos, un interés y uno del año anterior,
+# por el importador de verdad, y guarda lo que devuelven LOS DOS pedidos en
+# frontend/src/utils/fixtures/cobrosYMovimientos.json. La prueba de la
+# pantalla (cobrosYMovimientos.test.js) lee ese archivo y compara al centavo.
+#
+# Si el servidor cambia lo que devuelve, esta prueba falla hasta regenerar el
+# archivo (REGENERAR_FIXTURE_COBROS=1): así el archivo no queda viejo sin que
+# nadie se entere. "Hoy" está fijo (22/10/2026) para que no venza con la fecha.
+FIXTURE = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "src", "utils",
+                       "fixtures", "cobrosYMovimientos.json")
+CAMPOS_MOV = ("date", "type", "broker", "asset", "amount_usd", "currency", "fx_to_usd", "cobro", "notes")
+
+
+class CobradoIgualEnLasDosPantallas(Cobros):
+    def _escenario(self):
+        self._dolar_del_dia("2026-05-20", 1180)
+        self._dolar_del_dia("2026-03-10", 1100)
+        self._importar(
+            "2025-02-01,COMPRA,IOL,AL30,1000,0.60,,,,,USD,\n"
+            "2025-02-01,COMPRA,IOL,GD30,1000,0.60,,,,,USD,\n"
+            "2025-07-01,DIVIDENDO,IOL,KO,,,4,,,,USD,\n"
+            "2026-01-09,VENTA,IOL,AL30,80,0.54,,,,,USD,Renta y Amortización AL30\n"
+            "2026-03-10,INTERES,IOL,,,,20000,,,,ARS,Interés caución\n"
+            "2026-04-01,DIVIDENDO,IOL,KO,,,4.10,,,,USD,\n"
+            "2026-05-20,DIVIDENDO,IOL,GGAL,,,150000,,,,ARS,\n"
+            "2026-07-09,DIVIDENDO,IOL,GD30,,,84.50,,,,USD,Renta y Amortización GD30\n")
+
+    def test_los_dos_pedidos_quedan_guardados_para_la_prueba_de_la_pantalla(self):
+        self._escenario()
+        with mock.patch.object(main, "_iso_today", lambda: "2026-10-22"):
+            cobros = self._cobros()
+        r = self.client.get("/api/movements", headers=self.h)
+        self.assertEqual(r.status_code, 200, r.text)
+        movs = sorted(({k: m.get(k) for k in CAMPOS_MOV} for m in r.json()),
+                      key=lambda m: (m["date"] or "", m["type"], m["asset"] or ""))
+        # Lo mínimo para que la comparación tenga sentido: los dos pagos mixtos
+        # viajan marcados y no como cobros enteros.
+        self.assertEqual(sorted(m["asset"] for m in movs if m["cobro"] == "mixto"), ["AL30", "GD30"])
+        self.assertEqual(sorted(p["activo"] for p in cobros["pagos_mixtos"]), ["AL30", "GD30"])
+        datos = {"movements": movs, "cobros": cobros}
+        if os.environ.get("REGENERAR_FIXTURE_COBROS"):
+            with open(FIXTURE, "w", encoding="utf-8") as fh:
+                json.dump(datos, fh, ensure_ascii=False, indent=1, sort_keys=True)
+                fh.write("\n")
+        with open(FIXTURE, encoding="utf-8") as fh:
+            guardado = json.load(fh)
+        self.assertEqual(json.loads(json.dumps(datos)), guardado,
+                         "El servidor devuelve otra cosa: correr con REGENERAR_FIXTURE_COBROS=1 "
+                         "y volver a correr la prueba de la pantalla (cobrosYMovimientos.test.js).")
+
+    # Las de la clase madre ya corrieron arriba.
+    test_un_dividendo_en_pesos_vale_el_dolar_del_dia_en_que_se_cobro = None
+    test_un_cupon_confirmado_en_la_bandeja_va_al_dolar_de_su_dia = None
+    test_los_cobros_son_el_cobrado_de_movimientos_y_la_amortizacion_no_cuenta = None
+    test_la_amortizacion_sola_importada_no_es_un_cobro = None
+    test_renta_y_amortizacion_sin_cantidad_viaja_como_pago_mixto = None
+    test_renta_y_amortizacion_con_cantidad_tambien = None
+    test_cobros_desde_el_anio_anterior_y_totales_de_los_viejos = None
+    test_sin_cobros_todo_vacio = None
 
 
 if __name__ == "__main__":

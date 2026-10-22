@@ -86,6 +86,67 @@ export function cuponDelPago({ fecha, activo, usd }, cerSeries) {
   return usd * (pago.coupon / pago.total)
 }
 
+// ─── LA cuenta de cuánto se cobró ────────────────────────────────────────────
+// Movimientos ("Cobrado", el total del filtro Dividendos/Intereses) y la pestaña
+// Cobros cuentan con ESTAS dos funciones, sobre las mismas filas: qué fila es un
+// cobro lo decide el servidor (`cobros.clase_de_cobro`, viaja como `cobro` en
+// cada fila de /api/movements) y cuánto cuenta, `montoCobrado`. Antes Cobros
+// separaba el cupón de los pagos mixtos y "Cobrado" no: dos números para lo
+// mismo (pedido de Nico, 2026-10-22: que coincidan).
+
+/** Una fila de Movimientos como fila de cobro ({ fecha, activo, tipo, usd }),
+ *  con la misma forma que /api/cobros. null si no es un cobro. */
+export function filaDeMovimiento(m) {
+  // Una respuesta sin `cobro` (servidor anterior a este campo): dividendos e
+  // intereses enteros, lo de siempre.
+  const clase = m.cobro !== undefined ? m.cobro
+    : (m.type === 'DIVIDEND' || m.type === 'INTEREST') ? 'entero' : null
+  if (!clase) return null
+  const fecha = String(m.date || '').slice(0, 10)
+  if (fecha.length !== 10) return null
+  const activo = String(m.asset || '').trim().toUpperCase()
+  if (clase === 'mixto') return { fecha, activo, tipo: 'MIXTO', usd: Math.abs(Number(m.amount_usd) || 0) }
+  return { fecha, activo, tipo: m.type, usd: Number(m.amount_usd) || 0 }
+}
+
+/** Cuánto de una fila de cobro es plata cobrada: entera, o la parte de cupón de
+ *  un pago mixto. null si es un pago mixto que el cronograma no permite separar
+ *  (no se suma). */
+export function montoCobrado(fila, cerSeries) {
+  if (fila.tipo === 'MIXTO') return cuponDelPago(fila, cerSeries)
+  return fila.usd
+}
+
+/**
+ * Lo cobrado en un conjunto de filas de Movimientos, separado por tipo. El
+ * cupón de un pago mixto cuenta como dividendo (es la renta del bono).
+ * `sumar(filas, getUsd)` es el de la pantalla: convierte cada fila con el dólar
+ * de SU fecha y después suma (en dólares, la suma de siempre).
+ * @returns {{ total, DIVIDEND, INTEREST, pagos: {DIVIDEND, INTEREST}, mixtos, sinSeparar }}
+ */
+export function cobradoDe(movimientos, sumar, { cerSeries } = {}) {
+  const usdDe = new Map()
+  let mixtos = 0
+  let sinSeparar = 0
+  for (const m of movimientos) {
+    const f = filaDeMovimiento(m)
+    if (!f) continue
+    const usd = montoCobrado(f, cerSeries)
+    if (usd == null) { sinSeparar += 1; continue }
+    if (f.tipo === 'MIXTO') mixtos += 1
+    usdDe.set(m, { usd, tipo: f.tipo === 'INTEREST' ? 'INTEREST' : 'DIVIDEND' })
+  }
+  const filas = (tipo) => [...usdDe.keys()].filter(m => usdDe.get(m).tipo === tipo)
+  const suma = (tipo) => sumar(filas(tipo), m => usdDe.get(m).usd)
+  const DIVIDEND = suma('DIVIDEND')
+  const INTEREST = suma('INTEREST')
+  return {
+    total: DIVIDEND + INTEREST, DIVIDEND, INTEREST,
+    pagos: { DIVIDEND: filas('DIVIDEND').length, INTEREST: filas('INTEREST').length },
+    mixtos, sinSeparar,
+  }
+}
+
 /**
  * Las sumas de la pestaña, sobre lo que manda /api/cobros.
  * @returns {{ hoy, anio, total_anio, total_anterior_a_la_fecha, total_anterior,
@@ -101,18 +162,19 @@ export function resumirCobros(datos, { cerSeries } = {}) {
   const topeAnterior = sumarAnios(hoy, -1)
   const desde12 = sumarDias(hoy, -365)
 
-  const filas = [...(datos.cobros || [])]
+  const filas = []
   const mixtos = { separados: 0, sinSeparar: 0, usdSinSeparar: 0 }
   const porAnio = new Map((datos.anios_previos || []).map(a => [a.anio, a.usd]))
-  for (const p of datos.pagos_mixtos || []) {
-    const cupon = cuponDelPago(p, cerSeries)
-    if (cupon == null) {
+  for (const f of [...(datos.cobros || []), ...(datos.pagos_mixtos || [])]) {
+    const usd = montoCobrado(f, cerSeries)
+    if (f.tipo !== 'MIXTO') { filas.push(f); continue }
+    if (usd == null) {
       mixtos.sinSeparar += 1
-      mixtos.usdSinSeparar += p.usd
+      mixtos.usdSinSeparar += f.usd
       continue
     }
     mixtos.separados += 1
-    if (cupon > 0) filas.push({ fecha: p.fecha, activo: p.activo, tipo: 'DIVIDEND', usd: cupon })
+    if (usd > 0) filas.push({ fecha: f.fecha, activo: f.activo, tipo: 'DIVIDEND', usd })
   }
 
   const porMes = Array.from({ length: 12 }, () => [0, 0])

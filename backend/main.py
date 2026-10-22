@@ -17630,6 +17630,12 @@ def _build_movements(uid: int):
         return (has_date, m.get("date") or "")
     movements.sort(key=_sort_key, reverse=True)
 
+    # Qué fila es un cobro y cómo cuenta: la regla única de `cobros.py`. Viaja en
+    # la fila para que Movimientos ("Cobrado") y la pestaña Cobros cuenten igual.
+    import cobros as _cobros
+    for m in movements:
+        m["cobro"] = _cobros.clase_de_cobro(m)
+
     return movements
 
 

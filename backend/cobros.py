@@ -38,7 +38,9 @@ DOS LISTAS:
     Sólo los que además dicen "renta": una "Amortización" sola no trae cupón.
     La pantalla separa el cupón con el cronograma; si no puede, lo dice.
 
-El monto es con signo, igual que el KPI: una reversión del broker resta.
+El monto es con signo, igual que el KPI: una reversión del broker resta. Va sin
+redondear: Movimientos lo lee de la misma fila y los dos totales tienen que dar
+igual al centavo.
 """
 from __future__ import annotations
 
@@ -62,6 +64,23 @@ def es_pago_mixto(m) -> bool:
     return "amortiz" in notas and "renta" in notas
 
 
+def clase_de_cobro(m):
+    """LA regla de qué renglón de Movimientos es un cobro. 'entero' si cuenta
+    todo su monto (dividendo, cupón, interés), 'mixto' si sólo cuenta su parte de
+    cupón (la separa la pantalla con el cronograma), None si no es un cobro.
+
+    `main._build_movements` la estampa en cada fila (campo `cobro`) y `cobros()`
+    la usa para /api/cobros: Movimientos ("Cobrado", el total del filtro) y la
+    pestaña Cobros cuentan con la misma regla y la misma cuenta
+    (frontend/src/utils/cobros.js · montoCobrado). Pedido de Nico, 2026-10-22:
+    los dos números tienen que coincidir."""
+    if m.get("type") in TIPOS:
+        return "entero"
+    if es_pago_mixto(m):
+        return "mixto"
+    return None
+
+
 def cobros(movimientos: list, hoy: str, dias_hasta_el_pago: int) -> dict:
     """Las filas de Movimientos que son cobros, desde el 1/1 del año ANTERIOR (lo
     que necesitan la comparación, las barras y los últimos 12 meses) más el total
@@ -79,10 +98,11 @@ def cobros(movimientos: list, hoy: str, dias_hasta_el_pago: int) -> dict:
         if not usd:
             continue
         activo = (m.get("asset") or "").strip().upper()
-        if m.get("type") in TIPOS:
-            fila = {"fecha": f, "activo": activo, "tipo": m["type"], "usd": round(usd, 6)}
-        elif es_pago_mixto(m):
-            fila = {"fecha": f, "activo": activo, "tipo": "MIXTO", "usd": round(abs(usd), 6)}
+        clase = m.get("cobro", clase_de_cobro(m))
+        if clase == "entero":
+            fila = {"fecha": f, "activo": activo, "tipo": m["type"], "usd": usd}
+        elif clase == "mixto":
+            fila = {"fecha": f, "activo": activo, "tipo": "MIXTO", "usd": abs(usd)}
         else:
             continue
         if f >= desde:
