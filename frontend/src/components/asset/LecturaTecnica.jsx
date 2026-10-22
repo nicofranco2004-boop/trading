@@ -136,7 +136,7 @@ export default function LecturaTecnica({
   }
   if (!actual?.disponible) {
     if (moneda === 'ars' && datos.usd?.disponible) {
-      return marco(<p className="text-sm text-ink-2">No hay serie en pesos para este activo.</p>, false)
+      return marco(<p className="text-sm text-ink-2">Este activo no tiene precio en pesos.</p>, false)
     }
     // Sin velas todavía: el gráfico de siempre.
     return symbolMiniChart ? (
@@ -174,14 +174,14 @@ export default function LecturaTecnica({
     <>
       {diasViejo > 7 && (
         <div className="rounded-lg border border-rendi-warn/40 bg-rendi-warn/10 px-3.5 py-2.5 mb-3 text-[13px] text-ink-1">
-          <b className="text-rendi-warn font-semibold">Estos precios son del {fechaCorta(ultimaFecha)}.</b> No se pudieron actualizar desde entonces.
+          <b className="text-rendi-warn font-semibold">Los precios son del {fechaCorta(ultimaFecha)}.</b> No se pudieron actualizar desde ese día.
         </div>
       )}
       {moneda === 'ars' && distintas && (
         <div className="rounded-lg border border-rendi-warn/40 bg-rendi-warn/10 px-3.5 py-3 mb-3">
-          <div className="text-sm font-semibold text-rendi-warn">En pesos se ve distinto que en dólares.</div>
+          <div className="text-sm font-semibold text-rendi-warn">En pesos la tendencia es otra que en dólares.</div>
           <p className="text-[13px] text-ink-1 leading-relaxed mt-1">
-            Parte del movimiento en pesos es el dólar, no la empresa. Por eso Rendi lee la tendencia en dólares.
+            Parte de lo que se mueve en pesos es el dólar, no la empresa. Por eso Rendi mira la tendencia en dólares.
           </p>
         </div>
       )}
@@ -197,16 +197,16 @@ export default function LecturaTecnica({
         onZoom={zoom} onMover={mover} />
       <p className="text-[11.5px] text-ink-2 mt-1">
         {semanales && 'Cada vela es una semana. '}
-        {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita, o pasá a velas semanales. '}
-        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás; arrastrando te movés en el tiempo.</span>
+        {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita o pasá a velas semanales. '}
+        <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás. Arrastrá para ir más atrás o más adelante.</span>
       </p>
 
       <div className="flex flex-wrap gap-1.5 mt-3" role="group" aria-label="Qué líneas mostrar">
         {tipo === 'velas'
-          ? <Chip activo fijo puntos>Velas: sube · baja</Chip>
+          ? <Chip activo fijo puntos>Velas: subió · bajó</Chip>
           : <Chip activo fijo color={COLOR.precio}>Precio</Chip>}
-        <Chip activo={ver.s200} onClick={() => alternar('s200')} color={COLOR.media200} grueso>Media 200 días</Chip>
-        <Chip activo={ver.s50} onClick={() => alternar('s50')} color={COLOR.media50}>Media 50 días</Chip>
+        <Chip activo={ver.s200} onClick={() => alternar('s200')} color={COLOR.media200} grueso>Promedio 200 días</Chip>
+        <Chip activo={ver.s50} onClick={() => alternar('s50')} color={COLOR.media50}>Promedio 50 días</Chip>
         {promedio != null && (
           <Chip activo={ver.prom} onClick={() => alternar('prom')} color={COLOR.promedio} punteado>Tu precio promedio</Chip>
         )}
@@ -224,12 +224,12 @@ export default function LecturaTecnica({
           if (r == null) return null
           return (
             <Tarjeta t={{
-              id: 'tuyo', titulo: 'Contra tu precio', tono: r >= 0 ? 'pos' : 'neg',
-              veredicto: `${Math.abs(r * 100).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}% ${r >= 0 ? 'arriba' : 'abajo'}`,
+              id: 'tuyo', titulo: 'Contra lo que pagaste', tono: r >= 0 ? 'pos' : 'neg',
+              veredicto: `${r >= 0 ? 'Ganás' : 'Perdés'} ${Math.abs(r * 100).toLocaleString('es-AR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`,
               texto: moneda === 'usd'
                 ? (lineaSinTc
-                  ? 'Lo que vale hoy contra lo que pagaste: el mismo resultado de arriba. La línea de tu precio no se dibuja porque a alguna compra le falta el dólar de ese día.'
-                  : 'Lo que vale hoy contra lo que pagaste: el mismo resultado de arriba. La línea punteada es tu precio, con el dólar del día de cada compra.')
+                  ? 'Es el mismo resultado de arriba. La línea de tu precio promedio no se dibuja porque a alguna compra le falta el dólar de ese día.'
+                  : 'Es el mismo resultado de arriba. La línea punteada es tu precio promedio, con el dólar del día de cada compra.')
                 : 'Lo que vale hoy contra lo que pagaste, todo en pesos.',
             }} />
           )
@@ -237,11 +237,11 @@ export default function LecturaTecnica({
       </div>
 
       <p className="text-[12px] text-ink-2 mt-3 leading-relaxed">
-        {moneda === 'usd' && 'La tendencia se lee en dólares, aunque arriba de todo tengas elegido ver la app en pesos: en pesos el precio sube también con el dólar. Para verla en pesos, tocá «Pesos» en este gráfico. '}
+        {moneda === 'usd' && 'Se mira en dólares aunque uses la app en pesos, porque en pesos el precio también sube con el dólar. Para verlo en pesos, tocá «Pesos» arriba del gráfico. '}
         {actual.convertida === 'mep' && (moneda === 'usd'
-          ? 'Acá, el precio en pesos de cada día dividido por el dólar MEP de ese día. '
-          : 'En pesos: el precio en dólares de cada día por el dólar MEP de ese día. ')}
-        Al cierre del {fechaCorta(actual.lectura?.fecha)}. Describe cómo se movió el precio; no es una recomendación de compra o venta.
+          ? 'El precio en pesos de cada día está pasado a dólares con el MEP de ese día. '
+          : 'El precio en dólares de cada día está pasado a pesos con el MEP de ese día. ')}
+        Datos al cierre del {fechaCorta(actual.lectura?.fecha)}. Muestra cómo se movió el precio: no es una recomendación para comprar ni vender.
       </p>
     </>
   )
@@ -249,9 +249,9 @@ export default function LecturaTecnica({
 
 function Marco({ moneda, setMoneda, rango, setRango, tipo, setTipo, conPesos = true, children }) {
   return (
-    <section className="mb-5" aria-label="Lectura técnica">
+    <section className="mb-5" aria-label="Análisis técnico">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-        <div className="text-[12.5px] text-ink-2 font-medium">Lectura técnica</div>
+        <div className="text-[12.5px] text-ink-2 font-medium">Análisis técnico</div>
         <div className="flex flex-wrap items-center gap-2">
           <Segmento etiqueta="Tipo de gráfico" valor={tipo} alElegir={setTipo}
             opciones={[['linea', 'Línea'], ['velas', 'Velas']]} />
@@ -338,7 +338,7 @@ function BarraRsi({ rsi }) {
         <span className="absolute right-0">100</span>
       </div>
       <div className="flex justify-between text-[11px] text-ink-2 mt-0.5">
-        <span>bajas fuertes</span><span>parejo</span><span>subas fuertes</span>
+        <span>← pierde fuerza</span><span>toma fuerza →</span>
       </div>
     </div>
   )
@@ -497,7 +497,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
           onMouseLeave={() => { setHover(null); arrastre.current = null }}
           onTouchStart={e => mover(e.touches[0].clientX)} onTouchMove={e => mover(e.touches[0].clientX)}
           onTouchEnd={() => setHover(null)}
-          role="img" aria-label={`Precio con media de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
+          role="img" aria-label={`Precio con su promedio de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
             <defs>
               <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
@@ -552,7 +552,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
                 style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%` }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-ink-0 font-semibold text-[12px]">{fmtPrecio(ph.c, moneda)}</span>
-                  <span className="text-ink-2">{ph.semana ? `sem. ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
+                  <span className="text-ink-2">{ph.semana ? `semana del ${fechaCorta(ph.d)}` : fechaCorta(ph.d)}</span>
                 </div>
                 {conVelas && (() => {
                   const vela = velaCompleta(ph, hover > 0 ? puntos[hover - 1].c : null)
@@ -616,7 +616,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       {/* RSI. */}
       <div className="mt-2 border-t border-line/40 pt-2.5">
         <div className="flex justify-between items-baseline text-[12px] text-ink-2 mr-[72px]">
-          <span>Fuerza del movimiento (RSI 14 días)</span>
+          <span>Fuerza (RSI)</span>
         </div>
         <div className="relative mt-1.5">
           <div className="relative mr-[72px] h-14">
