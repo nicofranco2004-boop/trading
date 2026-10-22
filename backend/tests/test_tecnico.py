@@ -134,8 +134,8 @@ class FichaTest(unittest.TestCase):
         self.client = TestClient(main.app)
         tag = uuid.uuid4().hex[:8]
         with main.db_abierta() as conn:
-            for t in ("velas_diarias", "velas_estado", "watchlist", "positions", "brokers",
-                      "fx_rates_daily"):
+            for t in ("velas_diarias", "velas_estado", "velas_correcciones", "watchlist", "positions",
+                      "brokers", "fx_rates_daily"):
                 conn.execute(f"DELETE FROM {t}")
             cur = conn.execute(
                 "INSERT INTO users (email, password_hash, approved, email_verified, tier) "

@@ -15,6 +15,8 @@ cada vista con lo que hay guardado:
   · pesos: la de BYMA si existe; si no, la de afuera × el MEP de cada día.
 El dólar de cada día sale de `fx.serie_diaria`: la MISMA regla que
 `fx.fx_for_date` (el último MEP conocido; el blue sólo si no hubo ninguno).
+Las velas llegan ya corregidas por `velas_diarias.serie` (cambios de ratio de un
+CEDEAR y precios rotos de un día, que Yahoo no corrige): acá no se corrige nada.
 
 QUÉ NO HACE. No sabe nada del usuario: tu precio promedio y tus compras se
 dibujan en la pantalla con lo que ya tiene la ficha.
@@ -181,68 +183,6 @@ def _convertir(conn, velas: list, por: str) -> list:
     return out
 
 
-# El cociente "CEDEAR en pesos ÷ acción de afuera" es (dólar ÷ ratio): se mueve
-# despacio. Si salta más que esto en un día mientras afuera casi no se movió, el
-# salto no es del precio: es BYMA cambiando el ratio, o un día con un precio roto.
-SALTO_RATIO = 0.25
-QUIETO_AFUERA = 0.10
-
-
-def corregir_ratio(byma: list, afuera: list) -> list:
-    """La serie de un CEDEAR en pesos sin los saltos falsos.
-
-    POR QUÉ (auditoría 22/10). Cuando BYMA cambia el ratio de un CEDEAR (de 10
-    a 20 por acción), el precio de cada CEDEAR se parte a la mitad de un día
-    para el otro. Con un split de una acción, Yahoo reescribe la historia vieja;
-    con el ratio de un CEDEAR, NO: la serie queda con un escalón de −50 % (XLE,
-    DuPont, TQQQ en el último año) y la media de 200 en pesos queda inflada 10
-    meses, diciendo "bajista" con la acción subiendo afuera. Es como si el kiosco
-    vendiera los alfajores de a medio: el precio por unidad cae, el alfajor no.
-
-    Cómo: día por día, el cociente pesos ÷ afuera contra el del día anterior.
-      · salta y al día siguiente vuelve → un precio roto de ese día: se saca;
-      · salta y se queda → cambio de ratio: toda la historia ANTERIOR se lleva a
-        la escala nueva (como hace Yahoo con un split).
-    Sólo con días que tienen las dos series; los demás pasan como están."""
-    if not byma or not afuera:
-        return byma
-    ny = {v["date"]: v["close"] for v in afuera}
-    comunes = [i for i, v in enumerate(byma) if ny.get(v["date"])]
-    if len(comunes) < 3:
-        return byma
-    q = {i: byma[i]["close"] / ny[byma[i]["date"]] for i in comunes}
-    fuera = set()
-    factores = []   # (índice desde el que rige la escala nueva, factor)
-    for k in range(1, len(comunes)):
-        i_prev, i = comunes[k - 1], comunes[k]
-        if i_prev in fuera:
-            continue
-        salto = q[i] / q[i_prev]
-        mov_ny = abs(ny[byma[i]["date"]] / ny[byma[i_prev]["date"]] - 1)
-        if abs(salto - 1) <= SALTO_RATIO or mov_ny >= QUIETO_AFUERA:
-            continue
-        sig = comunes[k + 1] if k + 1 < len(comunes) else None
-        if sig is not None and abs(q[sig] / q[i_prev] - 1) <= SALTO_RATIO:
-            fuera.add(i)                      # vuelve al día siguiente: precio roto
-        else:
-            factores.append((i, salto))       # se queda: cambio de ratio
-    if not fuera and not factores:
-        return byma
-    out = []
-    for i, v in enumerate(byma):
-        if i in fuera:
-            continue
-        f = 1.0
-        for desde, factor in factores:
-            if i < desde:
-                f *= factor
-        if f != 1.0:
-            v = {**v, **{k: (v[k] * f if v.get(k) is not None else None)
-                         for k in ("open", "high", "low", "close")}}
-        out.append(v)
-    return out
-
-
 def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
     """La serie de `asset` en `moneda` ('usd' | 'ars') con lo que hay guardado.
     {velas, ticker, convertida} o {velas: []} si no hay.
@@ -267,7 +207,7 @@ def serie(conn, asset: str, moneda: str = "usd", local: bool = False) -> dict:
 
     if moneda == "ars":
         if byma:
-            return {"velas": corregir_ratio(byma, afuera), "ticker": simbolo_byma(a), "convertida": None}
+            return {"velas": byma, "ticker": simbolo_byma(a), "convertida": None}
         if afuera:
             return {"velas": _convertir(conn, afuera, "multiplicar"), "ticker": de_afuera, "convertida": "mep"}
         return {"velas": []}
@@ -288,8 +228,7 @@ def cierre_de(conn, simbolo: str):
     if not s:
         return None
     ticker = yahoo_de_cripto(s) or (s if s.endswith(".BA") else velas_diarias.ticker_de_afuera(s))
-    v = conn.execute("SELECT date, close FROM velas_diarias WHERE symbol=? ORDER BY date DESC LIMIT 1",
-                     (ticker,)).fetchone()
+    v = velas_diarias.ultima_vela(conn, ticker)
     return {"fecha": v["date"], "cierre": v["close"]} if v else None
 
 
