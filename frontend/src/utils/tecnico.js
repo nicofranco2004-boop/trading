@@ -66,9 +66,12 @@ export function tarjetas(l) {
 
   if (l.rsi != null) {
     out.push({
-      id: 'rsi', titulo: 'Fuerza del movimiento',
+      id: 'rsi', titulo: 'Fuerza del movimiento (RSI)',
       veredicto: veredictoRsi(l.rsi), tono: 'neutro', rsi: l.rsi,
-      texto: `RSI ${Math.round(l.rsi)}. Abajo de ${RSI_CASTIGADO} es «muy castigado»; arriba de ${RSI_ESTIRADO}, «muy estirado».`,
+      texto: `${Math.round(l.rsi)} de 100. Mide si en las últimas 14 ruedas pesaron más las subas o las bajas (50 es parejo). `
+        + `Abajo de ${RSI_CASTIGADO}: bajas muy fuertes, a veces viene un rebote. `
+        + `Arriba de ${RSI_ESTIRADO}: subas muy fuertes, a veces viene una pausa.`,
+      cruce: textoCruceRsi(l.rsi_cruce),
     })
   }
 
@@ -85,12 +88,23 @@ export function tarjetas(l) {
   return out
 }
 
+// El RSI dicho como quién viene ganando: las subas o las bajas de las últimas
+// 14 ruedas. «Castigado/estirado» no se entendía (Nico, 2026-10-22).
 export function veredictoRsi(rsi) {
-  if (rsi < RSI_CASTIGADO) return 'Muy castigado'
-  if (rsi < 45) return 'Normal, tirando a castigado'
-  if (rsi <= 55) return 'Normal'
-  if (rsi <= RSI_ESTIRADO) return 'Normal, tirando a estirado'
-  return 'Muy estirado'
+  if (rsi < RSI_CASTIGADO) return 'Bajó muy fuerte y rápido'
+  if (rsi < 45) return 'Pesan más las bajas'
+  if (rsi <= 55) return 'Parejo'
+  if (rsi <= RSI_ESTIRADO) return 'Pesan más las subas'
+  return 'Subió muy fuerte y rápido'
+}
+
+/** El último cruce de 30 o 70 (de `lectura.rsi_cruce`), en palabras. null si no hubo. */
+export function textoCruceRsi(c) {
+  if (!c) return null
+  const cuando = c.hace === 0 ? 'En la última rueda' : c.hace === 1 ? 'Hace 1 rueda' : `Hace ${c.hace} ruedas`
+  if (c.tipo === 'salio_de_abajo') return `${cuando} volvió a pasar ${RSI_CASTIGADO} para arriba: muchos lo leen como que vuelve a tomar fuerza.`
+  if (c.tipo === 'salio_de_arriba') return `${cuando} bajó de ${RSI_ESTIRADO}: muchos lo leen como que pierde fuerza.`
+  return null
 }
 
 /**

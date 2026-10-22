@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, veredictoRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -16,7 +16,8 @@ describe('tarjetas', () => {
     expect(fondo.tono).toBe('neg')
     expect(fondo.texto).toBe('Está 8,4% abajo de su media de 200 días, y esa media viene bajando.')
     expect(t.find(x => x.id === 'corto').veredicto).toBe('Débil')
-    expect(t.find(x => x.id === 'rsi').veredicto).toBe('Normal, tirando a castigado')
+    expect(t.find(x => x.id === 'rsi').veredicto).toBe('Pesan más las bajas')
+    expect(t.find(x => x.id === 'rsi').texto).toContain('38 de 100. Mide si en las últimas 14 ruedas pesaron más las subas o las bajas')
     expect(t.find(x => x.id === 'maximo').veredicto).toBe('16,6% abajo')
   })
 
@@ -35,12 +36,20 @@ describe('tarjetas', () => {
 })
 
 describe('veredictoRsi', () => {
-  it('usa los cortes de 30 y 70', () => {
-    expect(veredictoRsi(25)).toBe('Muy castigado')
-    expect(veredictoRsi(30)).toBe('Normal, tirando a castigado')
-    expect(veredictoRsi(50)).toBe('Normal')
-    expect(veredictoRsi(70)).toBe('Normal, tirando a estirado')
-    expect(veredictoRsi(71)).toBe('Muy estirado')
+  it('dice quién viene ganando, con los cortes de 30 y 70', () => {
+    expect(veredictoRsi(25)).toBe('Bajó muy fuerte y rápido')
+    expect(veredictoRsi(30)).toBe('Pesan más las bajas')
+    expect(veredictoRsi(50)).toBe('Parejo')
+    expect(veredictoRsi(70)).toBe('Pesan más las subas')
+    expect(veredictoRsi(71)).toBe('Subió muy fuerte y rápido')
+  })
+
+  it('cuenta cuándo volvió a pasar 30 para arriba o bajó de 70', () => {
+    expect(textoCruceRsi({ tipo: 'salio_de_abajo', hace: 3 }))
+      .toBe('Hace 3 ruedas volvió a pasar 30 para arriba: muchos lo leen como que vuelve a tomar fuerza.')
+    expect(textoCruceRsi({ tipo: 'salio_de_arriba', hace: 0 }))
+      .toBe('En la última rueda bajó de 70: muchos lo leen como que pierde fuerza.')
+    expect(textoCruceRsi(null)).toBeNull()
   })
 })
 

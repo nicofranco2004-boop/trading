@@ -73,6 +73,27 @@ def rsi(cierres: list, n: int = 14) -> list:
     return out
 
 
+# Cuántas ruedas para atrás se mira si el RSI cruzó 30 o 70.
+RUEDAS_CRUCE_RSI = 10
+
+
+def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
+    """El último cruce del RSI hacia AFUERA de una zona extrema en las últimas
+    `RUEDAS_CRUCE_RSI` ruedas: {'tipo': 'salio_de_abajo'|'salio_de_arriba',
+    'hace': ruedas}. Salir de abajo de 30 es lo que muchos leen como "vuelve a
+    tomar fuerza"; salir de arriba de 70, "pierde fuerza". None si no hubo."""
+    n = len(r)
+    for i in range(n - 1, max(0, n - 1 - RUEDAS_CRUCE_RSI), -1):
+        a, b = r[i - 1], r[i]
+        if a is None or b is None:
+            continue
+        if a < abajo <= b:
+            return {"tipo": "salio_de_abajo", "hace": n - 1 - i}
+        if a > arriba >= b:
+            return {"tipo": "salio_de_arriba", "hace": n - 1 - i}
+    return None
+
+
 def _pct(a, b):
     return (a / b - 1.0) * 100.0 if (a is not None and b) else None
 
@@ -101,6 +122,7 @@ def lectura(velas: list) -> dict:
         "dist_media200": _pct(ultimo, m200[-1]),
         "pendiente_media200": _pct(m200[-1], m200_antes),
         "rsi": r[-1],
+        "rsi_cruce": cruce_rsi(r),
         "maximo_12m": maximo,
         "dist_maximo_12m": _pct(ultimo, maximo),
         "minimo_12m": minimo,

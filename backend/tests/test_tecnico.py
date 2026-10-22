@@ -109,6 +109,17 @@ class CuentasTest(unittest.TestCase):
             self.assertAlmostEqual(a, r, places=9)
         self.assertTrue(all(v is None for v in nuestro[:14]))
 
+    def test_cruce_del_rsi(self):
+        # Vuelve a pasar 30 para arriba hace 2 ruedas.
+        r = [None, 40, 35, 28, 25, 27, 31, 33, 34]
+        self.assertEqual(tecnico.cruce_rsi(r), {"tipo": "salio_de_abajo", "hace": 2})
+        # Baja de 70 en la última rueda.
+        self.assertEqual(tecnico.cruce_rsi([60, 72, 75, 69]), {"tipo": "salio_de_arriba", "hace": 0})
+        # Entrar a la zona (bajar de 30) no es "salir": no se avisa.
+        self.assertIsNone(tecnico.cruce_rsi([40, 35, 29, 25]))
+        # Un cruce de hace más de 10 ruedas ya no cuenta.
+        self.assertIsNone(tecnico.cruce_rsi([25, 35] + [40] * 12))
+
     def test_rsi_extremos(self):
         sube = [float(i) for i in range(1, 40)]
         self.assertEqual(tecnico.rsi(sube)[-1], 100.0)

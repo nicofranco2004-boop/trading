@@ -1,7 +1,7 @@
 // LecturaTecnica — el gráfico técnico y su lectura en la ficha del activo.
 // ════════════════════════════════════════════════════════════════════════════
 // Gráfico de precio con las medias de 50 y 200 días, tu precio promedio y tus
-// compras y ventas; la fuerza del movimiento (RSI) abajo; y cuatro tarjetas en
+// compras y ventas; la fuerza del movimiento (RSI) abajo; y tarjetas en
 // castellano. Se mide en DÓLARES por defecto: un CEDEAR en pesos sube con el
 // dólar aunque la empresa no se mueva (ver backend/tecnico.py).
 //
@@ -9,10 +9,12 @@
 // Si el activo todavía no tiene velas (recién agregado, o un bono/fondo), se
 // muestra el gráfico de 30 días de siempre (`AssetMiniChart`).
 //
-// Una sola vista para compu y celular (R6): el gráfico es `width: 100%` y las
-// tarjetas se acomodan en la grilla.
+// Una sola vista para compu y celular (R6): el gráfico es `width: 100%`, los
+// precios del eje van en su propia columna a la derecha (no tapan la línea) y
+// las tarjetas se acomodan en la grilla. Colores sólo por variables del tema
+// (R8): `rgb(var(--token))` en el SVG, que sigue al modo claro y al oscuro.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'
 import { api } from '../../utils/api'
 import {
@@ -30,6 +32,7 @@ const COLOR = {
 const W = 1000
 const H = 260
 const H_RSI = 64
+const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
 
 function fmtPrecio(x, moneda) {
   if (x == null) return '—'
@@ -54,6 +57,8 @@ export default function LecturaTecnica({
   const [moneda, setMoneda] = useState('usd')
   const [rango, setRango] = useState('1a')
   const [datos, setDatos] = useState({ usd: undefined, ars: undefined })
+  // Qué líneas se ven: la leyenda prende y apaga cada una.
+  const [ver, setVer] = useState({ s200: true, s50: true, prom: true, marcas: true })
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
   // los mira y es otra cuenta en el servidor). Otro activo = otro componente
@@ -109,6 +114,7 @@ export default function LecturaTecnica({
   const promedio = lineaPromedio(actual.puntos, pnlPct)
   const lista = tarjetas(actual.lectura)
   const distintas = tendenciasDistintas(datos.usd?.lectura, datos.ars?.lectura)
+  const alternar = (k) => setVer(x => ({ ...x, [k]: !x[k] }))
 
   return (
     <Marco moneda={moneda} setMoneda={setMoneda} rango={rango} setRango={setRango}
@@ -122,16 +128,17 @@ export default function LecturaTecnica({
         </div>
       )}
 
-      <Grafico puntos={puntos} moneda={moneda} promedio={promedio}
-        marcas={marcas(lotes, operaciones)} />
+      <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
+        marcas={ver.marcas ? marcas(lotes, operaciones) : []} ver={ver} />
 
-      <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[12px] text-ink-2 mt-2.5">
-        <Leyenda color={COLOR.precio}>Precio</Leyenda>
-        <Leyenda color={COLOR.media200} grueso>Media 200 días</Leyenda>
-        <Leyenda color={COLOR.media50}>Media 50 días</Leyenda>
-        {promedio != null && <Leyenda color={COLOR.promedio} punteado>Tu precio promedio</Leyenda>}
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rendi-pos-fill" />Compras</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rendi-neg-fill" />Ventas</span>
+      <div className="flex flex-wrap gap-1.5 mt-3" role="group" aria-label="Qué líneas mostrar">
+        <Chip activo fijo color={COLOR.precio}>Precio</Chip>
+        <Chip activo={ver.s200} onClick={() => alternar('s200')} color={COLOR.media200} grueso>Media 200 días</Chip>
+        <Chip activo={ver.s50} onClick={() => alternar('s50')} color={COLOR.media50}>Media 50 días</Chip>
+        {promedio != null && (
+          <Chip activo={ver.prom} onClick={() => alternar('prom')} color={COLOR.promedio} punteado>Tu precio promedio</Chip>
+        )}
+        <Chip activo={ver.marcas} onClick={() => alternar('marcas')} puntos>Tus compras y ventas</Chip>
       </div>
 
       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -164,38 +171,48 @@ function Marco({ moneda, setMoneda, rango, setRango, conPesos = true, children }
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="text-[12.5px] text-ink-2 font-medium">Lectura técnica</div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex gap-0.5 bg-bg-2 border border-line rounded p-0.5" role="group" aria-label="Moneda">
-            {[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])].map(([id, label]) => (
-              <button key={id} type="button" onClick={() => setMoneda(id)} aria-pressed={moneda === id}
-                className={`px-2.5 py-1 text-xs rounded-sm transition-colors ${moneda === id ? 'bg-bg-1 text-ink-0 font-medium shadow-sm' : 'text-ink-2 hover:text-ink-0'}`}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="inline-flex gap-0.5 bg-bg-2 border border-line rounded p-0.5" role="group" aria-label="Rango">
-            {RANGOS.map(r => (
-              <button key={r.id} type="button" onClick={() => setRango(r.id)} aria-pressed={rango === r.id}
-                className={`px-2 py-1 text-xs rounded-sm tabular transition-colors ${rango === r.id ? 'bg-bg-1 text-ink-0 font-medium shadow-sm' : 'text-ink-2 hover:text-ink-0'}`}>
-                {r.label}
-              </button>
-            ))}
-          </div>
+          <Segmento etiqueta="Moneda" valor={moneda} alElegir={setMoneda}
+            opciones={[['usd', 'Dólares'], ...(conPesos ? [['ars', 'Pesos']] : [])]} />
+          <Segmento etiqueta="Rango" valor={rango} alElegir={setRango}
+            opciones={RANGOS.map(r => [r.id, r.label])} />
         </div>
       </div>
-      <div className="bg-bg-1 border border-line/60 rounded-lg p-3">{children}</div>
+      <div className="bg-bg-1 border border-line/60 rounded-xl p-3 sm:p-4">{children}</div>
     </section>
   )
 }
 
-function Leyenda({ color, grueso, punteado, children }) {
+function Segmento({ etiqueta, valor, alElegir, opciones }) {
   return (
-    <span className="inline-flex items-center gap-1.5">
-      <svg width="16" height="6" aria-hidden="true">
-        <line x1="0" y1="3" x2="16" y2="3" stroke={color} strokeWidth={grueso ? 3 : 2}
-          strokeDasharray={punteado ? '4 3' : undefined} />
-      </svg>
-      {children}
+    <div className="inline-flex gap-0.5 bg-bg-2 border border-line rounded-lg p-0.5" role="group" aria-label={etiqueta}>
+      {opciones.map(([id, label]) => (
+        <button key={id} type="button" onClick={() => alElegir(id)} aria-pressed={valor === id}
+          className={`min-h-[32px] px-2.5 text-xs rounded tabular transition-colors ${valor === id ? 'bg-bg-1 text-ink-0 font-medium shadow-sm' : 'text-ink-2 hover:text-ink-0'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Chip({ activo, fijo, onClick, color, grueso, punteado, puntos, children }) {
+  const muestra = puntos ? (
+    <span className="inline-flex gap-0.5" aria-hidden="true">
+      <span className="w-2 h-2 rounded-full bg-rendi-pos-fill" />
+      <span className="w-2 h-2 rounded-full bg-rendi-neg-fill" />
     </span>
+  ) : (
+    <svg width="16" height="6" aria-hidden="true">
+      <line x1="0" y1="3" x2="16" y2="3" stroke={color} strokeWidth={grueso ? 3 : 2}
+        strokeDasharray={punteado ? '4 3' : undefined} />
+    </svg>
+  )
+  const clase = `inline-flex items-center gap-1.5 min-h-[30px] px-2.5 rounded-full border text-[12px] transition-colors ${activo ? 'border-line-2 bg-bg-2/60 text-ink-1' : 'border-line text-ink-3 opacity-60'}`
+  if (fijo) return <span className={clase}>{muestra}{children}</span>
+  return (
+    <button type="button" onClick={onClick} aria-pressed={!!activo} className={`${clase} hover:text-ink-0`}>
+      {muestra}{children}
+    </button>
   )
 }
 
@@ -205,37 +222,72 @@ function Tarjeta({ t }) {
     <div className="rounded-lg border border-line/60 bg-bg-2/40 px-3.5 py-3">
       <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
       <div className={`text-[15px] font-semibold mt-0.5 ${tono}`}>{t.veredicto}</div>
-      <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1">{t.texto}</div>
-      {t.rsi != null && (
-        <div className="mt-2" aria-hidden="true">
-          <div className="relative h-1.5 rounded-full overflow-hidden bg-bg-3">
-            <div className="absolute inset-y-0 left-0 bg-rendi-pos-fill/30" style={{ width: `${RSI_CASTIGADO}%` }} />
-            <div className="absolute inset-y-0 right-0 bg-rendi-neg-fill/30" style={{ width: `${100 - RSI_ESTIRADO}%` }} />
-          </div>
-          <div className="relative h-0">
-            <div className="absolute -top-2.5 w-1 h-3.5 rounded-full bg-ink-0" style={{ left: `calc(${Math.min(100, Math.max(0, t.rsi))}% - 2px)` }} />
-          </div>
-          <div className="flex justify-between text-[11px] text-ink-3 mt-1.5"><span>castigado</span><span>estirado</span></div>
+      {t.rsi != null && <BarraRsi rsi={t.rsi} />}
+      <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
+      {t.cruce && (
+        <div className="text-[12.5px] text-ink-0 leading-relaxed mt-2 rounded border border-rendi-accent/30 bg-rendi-accent/10 px-2.5 py-1.5">
+          {t.cruce}
         </div>
       )}
     </div>
   )
 }
 
-function Grafico({ puntos, moneda, promedio, marcas: lista }) {
+// La regla del RSI dibujada: 0 a 100, con 30 y 70 marcados y dónde está hoy.
+function BarraRsi({ rsi }) {
+  const pos = Math.min(100, Math.max(0, rsi))
+  return (
+    <div className="mt-2.5" aria-hidden="true">
+      <div className="relative h-2 rounded-full overflow-hidden bg-bg-3">
+        <div className="absolute inset-y-0 left-0 bg-rendi-neg-fill/35" style={{ width: `${RSI_CASTIGADO}%` }} />
+        <div className="absolute inset-y-0 right-0 bg-rendi-pos-fill/35" style={{ width: `${100 - RSI_ESTIRADO}%` }} />
+      </div>
+      <div className="relative h-0">
+        <div className="absolute -top-3 w-1 h-4 rounded-full bg-ink-0 shadow-sm" style={{ left: `calc(${pos}% - 2px)` }} />
+      </div>
+      <div className="relative h-4 mt-1 text-[11px] text-ink-3 tabular">
+        <span className="absolute left-0">0</span>
+        <span className="absolute -translate-x-1/2" style={{ left: `${RSI_CASTIGADO}%` }}>{RSI_CASTIGADO}</span>
+        <span className="absolute -translate-x-1/2" style={{ left: '50%' }}>50</span>
+        <span className="absolute -translate-x-1/2" style={{ left: `${RSI_ESTIRADO}%` }}>{RSI_ESTIRADO}</span>
+        <span className="absolute right-0">100</span>
+      </div>
+      <div className="flex justify-between text-[11px] text-ink-2 mt-0.5">
+        <span>bajas fuertes</span><span>parejo</span><span>subas fuertes</span>
+      </div>
+    </div>
+  )
+}
+
+// Rótulos de meses para el eje de abajo: el primer día de cada mes, salteando
+// para que entren unos 6.
+function rotulosDeMeses(puntos) {
+  const cambios = []
+  for (let i = 1; i < puntos.length; i++) {
+    if (puntos[i].d.slice(0, 7) !== puntos[i - 1].d.slice(0, 7)) cambios.push(i)
+  }
+  const paso = Math.max(1, Math.ceil(cambios.length / 6))
+  return cambios.filter((_, k) => k % paso === 0).map(i => {
+    const [y, m] = puntos[i].d.split('-')
+    return { i, texto: m === '01' ? y : MESES[Number(m) - 1] }
+  })
+}
+
+function Grafico({ puntos, moneda, promedio, marcas: lista, ver }) {
   const ref = useRef(null)
+  const gid = useId().replace(/:/g, '')
   const [hover, setHover] = useState(null)
 
-  const { escalaY, path, min, max } = useMemo(() => {
+  const { escalaY, path, area, min, max } = useMemo(() => {
     const valores = []
     for (const p of puntos) {
       valores.push(p.c)
-      if (p.s50 != null) valores.push(p.s50)
-      if (p.s200 != null) valores.push(p.s200)
+      if (ver.s50 && p.s50 != null) valores.push(p.s50)
+      if (ver.s200 && p.s200 != null) valores.push(p.s200)
     }
     if (promedio != null) valores.push(promedio)
     let lo = Math.min(...valores), hi = Math.max(...valores)
-    const margen = (hi - lo) * 0.06 || hi * 0.02 || 1
+    const margen = (hi - lo) * 0.08 || hi * 0.02 || 1
     lo -= margen; hi += margen
     const y = (val) => H - ((val - lo) / (hi - lo)) * H
     const x = (i) => (puntos.length > 1 ? (i / (puntos.length - 1)) * W : W / 2)
@@ -248,8 +300,13 @@ function Grafico({ puntos, moneda, promedio, marcas: lista }) {
       })
       return d
     }
-    return { escalaY: y, path: { c: linea('c'), s50: linea('s50'), s200: linea('s200') }, min: lo, max: hi }
-  }, [puntos, promedio])
+    const c = linea('c')
+    return {
+      escalaY: y, min: lo, max: hi,
+      path: { c, s50: linea('s50'), s200: linea('s200') },
+      area: c ? `${c}L${x(puntos.length - 1).toFixed(1)},${H}L0,${H}Z` : '',
+    }
+  }, [puntos, promedio, ver.s50, ver.s200])
 
   const rsiPath = useMemo(() => {
     let d = '', abierto = false
@@ -270,68 +327,146 @@ function Grafico({ puntos, moneda, promedio, marcas: lista }) {
     .map(m => ({ ...m, i: indiceDeFecha(puntos, m.fecha) }))
     .filter(m => m.i != null)
 
-  function mover(e) {
+  // El mouse o el dedo: el punto más cercano en el tiempo.
+  function mover(clientX) {
     const r = ref.current?.getBoundingClientRect()
     if (!r || !puntos.length) return
-    const i = Math.round(((e.clientX - r.left) / r.width) * (puntos.length - 1))
+    const i = Math.round(((clientX - r.left) / r.width) * (puntos.length - 1))
     setHover(Math.max(0, Math.min(puntos.length - 1, i)))
   }
   const ph = hover != null ? puntos[hover] : null
-  const ticks = [max - (max - min) * 0.15, (max + min) / 2, min + (max - min) * 0.15]
   const ultimo = puntos[puntos.length - 1]
+  const ticks = [max - (max - min) * 0.12, (max + min) / 2, min + (max - min) * 0.12]
+  const meses = rotulosDeMeses(puntos)
+  // Los rótulos del eje se esconden si chocan con la etiqueta del último precio
+  // o con la de tu precio (que pesan más).
+  const promCerca = promedio != null && ultimo && Math.abs(pctY(promedio) - pctY(ultimo.c)) < 9
+  const cerca = (val) => (ultimo && Math.abs(pctY(val) - pctY(ultimo.c)) < 7)
+    || (promedio != null && !promCerca && Math.abs(pctY(val) - pctY(promedio)) < 7)
+  const rsiCerca = (nivel) => ultimo?.rsi != null && Math.abs(nivel - ultimo.rsi) < 12
 
   return (
     <div>
-      <div ref={ref} className="relative select-none" onMouseMove={mover} onMouseLeave={() => setHover(null)}
-        role="img" aria-label={`Precio con media de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-56 sm:h-64 block" aria-hidden="true">
-          {ticks.map((t, k) => (
-            <line key={k} x1="0" x2={W} y1={escalaY(t)} y2={escalaY(t)} stroke={v('chart-grid')} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+      <div className="relative">
+        {/* Área del gráfico: deja libre la columna de la derecha para los precios. */}
+        <div ref={ref} className="relative mr-[72px] h-56 sm:h-64 select-none touch-pan-y"
+          onMouseMove={e => mover(e.clientX)} onMouseLeave={() => setHover(null)}
+          onTouchStart={e => mover(e.touches[0].clientX)} onTouchMove={e => mover(e.touches[0].clientX)}
+          onTouchEnd={() => setHover(null)}
+          role="img" aria-label={`Precio con media de 200 y de 50 días. Último cierre ${fmtPrecio(ultimo?.c, moneda)}.`}>
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
+            <defs>
+              <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" style={{ stopColor: COLOR.precio, stopOpacity: 0.12 }} />
+                <stop offset="100%" style={{ stopColor: COLOR.precio, stopOpacity: 0 }} />
+              </linearGradient>
+            </defs>
+            {ticks.map((t, k) => (
+              <line key={k} x1="0" x2={W} y1={escalaY(t)} y2={escalaY(t)} stroke={v('chart-grid')} strokeWidth="1"
+                strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+            ))}
+            <path d={area} fill={`url(#area-${gid})`} />
+            {ver.s200 && <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+            {ver.s50 && <path d={path.s50} fill="none" stroke={COLOR.media50} strokeWidth="1.6" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+            {promedio != null && (
+              <line x1="0" x2={W} y1={escalaY(promedio)} y2={escalaY(promedio)} stroke={COLOR.promedio}
+                strokeWidth="1.3" strokeDasharray="6 5" vectorEffect="non-scaling-stroke" />
+            )}
+            <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          </svg>
+
+          {/* Marcas y el punto del mouse van en HTML: un círculo dentro de un
+              SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}
+          {visibles.map((m, k) => (
+            <span key={k} title={`${m.tipo === 'compra' ? 'Compraste' : 'Vendiste'} el ${fechaCorta(m.fecha)}`}
+              className={`absolute w-3 h-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1 shadow-sm ${m.tipo === 'compra' ? 'bg-rendi-pos-fill' : 'bg-rendi-neg-fill'}`}
+              style={{ left: `${pctX(m.i)}%`, top: `${pctY(puntos[m.i].c)}%` }} />
           ))}
-          <path d={path.s200} fill="none" stroke={COLOR.media200} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
-          <path d={path.s50} fill="none" stroke={COLOR.media50} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-          {promedio != null && (
-            <line x1="0" x2={W} y1={escalaY(promedio)} y2={escalaY(promedio)} stroke={COLOR.promedio}
-              strokeWidth="1.2" strokeDasharray="6 5" vectorEffect="non-scaling-stroke" />
+          {ultimo && (
+            <span aria-hidden="true" className="absolute w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
+              style={{ left: '100%', top: `${pctY(ultimo.c)}%`, background: COLOR.precio }} />
           )}
-          <path d={path.c} fill="none" stroke={COLOR.precio} strokeWidth="1.6" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        </svg>
-
-        {/* Los rótulos del eje y las marcas van en HTML: un círculo dentro de un
-            SVG estirado (preserveAspectRatio=none) se deformaría en óvalo. */}
-        {ticks.map((t, k) => (
-          <span key={k} className="absolute right-0 -translate-y-1/2 text-[11px] text-ink-3 tabular bg-bg-1/80 px-1 rounded-xs pointer-events-none"
-            style={{ top: `${pctY(t)}%` }}>{fmtPrecio(t, moneda)}</span>
-        ))}
-        {visibles.map((m, k) => (
-          <span key={k} title={`${m.tipo === 'compra' ? 'Compra' : 'Venta'} · ${fechaCorta(m.fecha)}`}
-            className={`absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1 ${m.tipo === 'compra' ? 'bg-rendi-pos-fill' : 'bg-rendi-neg-fill'}`}
-            style={{ left: `${pctX(m.i)}%`, top: `${pctY(puntos[m.i].c)}%` }} />
-        ))}
-        {ph && (
-          <>
-            <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/40" style={{ left: `${pctX(hover)}%` }} />
-            <div className="pointer-events-none absolute top-1 left-1 rounded border border-line-2 bg-bg-raised px-2 py-1 text-[11px] leading-tight whitespace-nowrap shadow-sm tabular">
-              <span className="text-ink-3">{fechaCorta(ph.d)}</span>
-              <span className="mx-1.5 text-ink-0 font-medium">{fmtPrecio(ph.c, moneda)}</span>
-              {ph.s200 != null && <span className="text-ink-2">· media 200 {fmtPrecio(ph.s200, moneda)}</span>}
-              {ph.rsi != null && <span className="text-ink-2"> · RSI {Math.round(ph.rsi)}</span>}
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="mt-3 border-t border-line/40 pt-2">
-        <div className="flex justify-between text-[11px] text-ink-2">
-          <span>Fuerza del movimiento (RSI 14 días)</span>
-          <span className="tabular text-ink-0">{ultimo?.rsi != null ? Math.round(ultimo.rsi) : '—'}</span>
+          {ph && (
+            <>
+              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/50" style={{ left: `${pctX(hover)}%` }} />
+              <span aria-hidden="true" className="pointer-events-none absolute w-2.5 h-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg-1"
+                style={{ left: `${pctX(hover)}%`, top: `${pctY(ph.c)}%`, background: COLOR.precio }} />
+              <div className={`pointer-events-none absolute top-2 rounded-lg border border-line-2 bg-bg-raised px-2.5 py-2 text-[12px] leading-snug shadow-sm tabular min-w-[150px] ${pctX(hover) > 55 ? '-translate-x-[calc(100%+10px)]' : 'translate-x-[10px]'}`}
+                style={{ left: `${pctX(hover)}%` }}>
+                <div className="text-ink-3">{fechaCorta(ph.d)}</div>
+                <div className="text-ink-0 font-semibold text-[13px]">{fmtPrecio(ph.c, moneda)}</div>
+                {ph.s200 != null && <Fila color={COLOR.media200} k="Media 200" v={fmtPrecio(ph.s200, moneda)} />}
+                {ph.s50 != null && <Fila color={COLOR.media50} k="Media 50" v={fmtPrecio(ph.s50, moneda)} />}
+                {ph.rsi != null && <Fila k="RSI" v={Math.round(ph.rsi)} />}
+              </div>
+            </>
+          )}
         </div>
-        <svg viewBox={`0 0 ${W} ${H_RSI}`} preserveAspectRatio="none" className="w-full h-14 block mt-1" aria-hidden="true">
-          <rect x="0" y="0" width={W} height={H_RSI * (1 - RSI_ESTIRADO / 100)} fill={v('rendi-neg-fill')} fillOpacity="0.08" />
-          <rect x="0" y={H_RSI * (1 - RSI_CASTIGADO / 100)} width={W} height={H_RSI * (RSI_CASTIGADO / 100)} fill={v('rendi-pos-fill')} fillOpacity="0.08" />
-          <path d={rsiPath} fill="none" stroke={v('ink-1')} strokeWidth="1.3" vectorEffect="non-scaling-stroke" />
-        </svg>
+
+        {/* Columna de precios: la grilla, tu precio y el último precio. */}
+        <div className="absolute inset-y-0 right-0 w-[68px] pointer-events-none">
+          {ticks.map((t, k) => !cerca(t) && (
+            <span key={k} className="absolute left-1.5 -translate-y-1/2 text-[11px] text-ink-3 tabular whitespace-nowrap"
+              style={{ top: `${pctY(t)}%` }}>{fmtPrecio(t, moneda).replace(/^US\$ /, '')}</span>
+          ))}
+          {promedio != null && !promCerca && (
+            <span className="absolute left-0 -translate-y-1/2 rounded border border-dashed border-ink-3 bg-bg-1 px-1 text-[10.5px] text-ink-1 tabular whitespace-nowrap"
+              style={{ top: `${pctY(promedio)}%` }}>Tu precio</span>
+          )}
+          {ultimo && (
+            <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular whitespace-nowrap"
+              style={{ top: `${pctY(ultimo.c)}%`, background: COLOR.precio, color: v('bg-0') }}>
+              {fmtPrecio(ultimo.c, moneda).replace(/^US\$ /, '')}
+            </span>
+          )}
+        </div>
       </div>
+
+      {/* Meses. */}
+      <div className="relative mr-[72px] h-5 mt-1.5 text-[11px] text-ink-3">
+        {meses.map(m => (
+          <span key={m.i} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: `${pctX(m.i)}%` }}>{m.texto}</span>
+        ))}
+      </div>
+
+      {/* RSI. */}
+      <div className="mt-2 border-t border-line/40 pt-2.5">
+        <div className="flex justify-between items-baseline text-[12px] text-ink-2 mr-[72px]">
+          <span>Fuerza del movimiento (RSI 14 días)</span>
+        </div>
+        <div className="relative mt-1.5">
+          <div className="relative mr-[72px] h-14">
+            <svg viewBox={`0 0 ${W} ${H_RSI}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
+              <rect x="0" y="0" width={W} height={H_RSI * (1 - RSI_ESTIRADO / 100)} fill={v('rendi-pos-fill')} fillOpacity="0.09" />
+              <rect x="0" y={H_RSI * (1 - RSI_CASTIGADO / 100)} width={W} height={H_RSI * (RSI_CASTIGADO / 100)} fill={v('rendi-neg-fill')} fillOpacity="0.09" />
+              <line x1="0" x2={W} y1={H_RSI / 2} y2={H_RSI / 2} stroke={v('chart-grid')} strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+              <path d={rsiPath} fill="none" stroke={v('ink-1')} strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
+            </svg>
+            {ph?.rsi != null && (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 w-px bg-ink-2/50" style={{ left: `${pctX(hover)}%` }} />
+            )}
+          </div>
+          <div className="absolute inset-y-0 right-0 w-[68px] text-[11px] text-ink-3 tabular pointer-events-none">
+            {!rsiCerca(RSI_ESTIRADO) && <span className="absolute left-1.5 -translate-y-1/2" style={{ top: `${100 - RSI_ESTIRADO}%` }}>{RSI_ESTIRADO}</span>}
+            {!rsiCerca(RSI_CASTIGADO) && <span className="absolute left-1.5 -translate-y-1/2" style={{ top: `${100 - RSI_CASTIGADO}%` }}>{RSI_CASTIGADO}</span>}
+            {ultimo?.rsi != null && (
+              <span className="absolute left-0 -translate-y-1/2 rounded px-1.5 py-0.5 font-semibold"
+                style={{ top: `${100 - ultimo.rsi}%`, background: v('ink-1'), color: v('bg-0') }}>{Math.round(ultimo.rsi)}</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Fila({ color, k, v: valor }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-ink-2">
+      <span className="inline-flex items-center gap-1.5">
+        {color && <span className="w-2 h-0.5 rounded-full" style={{ background: color }} />}{k}
+      </span>
+      <span className="text-ink-1">{valor}</span>
     </div>
   )
 }
