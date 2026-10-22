@@ -1,6 +1,6 @@
 // tecnico.js — lo que la ficha del activo dibuja encima de la lectura técnica.
 // ════════════════════════════════════════════════════════════════════════════
-// Los NÚMEROS (medias, RSI, máximo del año) vienen hechos de GET /api/tecnico
+// Los NÚMEROS (medias, RSI, ADX, Squeeze, máximo del año) vienen hechos de GET /api/tecnico
 // (backend/tecnico.py), en UN lugar. Acá viven las palabras de cada tarjeta y lo
 // que sólo sabe la ficha: tus compras, tus ventas y tu precio promedio.
 //
@@ -75,7 +75,7 @@ export function velasSemanales(puntos = []) {
       actual = { ...p, d: p.d, o: v.o, h: v.h, l: v.l, c: v.c, semana: true }
     } else {
       actual = { ...actual, h: Math.max(actual.h, v.h), l: Math.min(actual.l, v.l), c: v.c,
-        s50: p.s50, s200: p.s200, rsi: p.rsi }
+        s50: p.s50, s200: p.s200, rsi: p.rsi, adx: p.adx, squeeze: p.squeeze, squeeze_color: p.squeeze_color }
     }
   }
   if (actual) out.push(actual)
@@ -161,6 +161,9 @@ export function tarjetas(l) {
     })
   }
 
+  const fuerza = tarjetaFuerza(l)
+  if (fuerza) out.push(fuerza)
+
   if (l.dist_maximo_12m != null) {
     // El máximo es de CIERRE (el servidor): cerrar en récord da exactamente 0.
     const enMaximo = l.dist_maximo_12m >= -0.1
@@ -193,6 +196,84 @@ export function textoCruceRsi(c) {
   if (c.tipo === 'salio_de_abajo') return `${cuando} volvió a pasar ${RSI_CASTIGADO} para arriba: suele leerse como que dejó de caer y empieza a tomar fuerza.`
   if (c.tipo === 'salio_de_arriba') return `${cuando} bajó de ${RSI_ESTIRADO}: suele leerse como que empieza a perder fuerza.`
   return null
+}
+
+// ─── Fuerza de la tendencia: ADX + Squeeze ──────────────────────────────────
+// El combo de TradingView «DMI/ADX/KEYLEVEL 14 14 23» + «SQZMOM_LB»: el ADX
+// dice CUÁNTA fuerza tiene la tendencia (no para dónde va) y arriba de 23 se lee
+// como "hay tendencia"; el Squeeze dice para DÓNDE empuja.
+
+// La línea clave del ADX (la misma que `tecnico.ADX_CLAVE` del servidor).
+export const ADX_CLAVE = 23
+// Lo que tiene que subir o bajar el ADX en 3 días de mercado para decir que la
+// fuerza crece o se afloja (menos es ruido).
+const ADX_QUIETO = 0.5
+
+/** El color del Squeeze dicho en palabras: hacia dónde empuja y si con más o
+ *  menos empuje que el día anterior. */
+export function textoSqueeze(color) {
+  switch (color) {
+    case 'verde_fuerte': return 'está en verde: empuja a favor de la suba'
+    case 'verde_apagado': return 'está en verde, a favor de la suba, pero con menos empuje que el día anterior'
+    case 'rojo_fuerte': return 'está en rojo: empuja a favor de la baja'
+    case 'rojo_apagado': return 'está en rojo, a favor de la baja, pero con menos empuje que el día anterior'
+    default: return null
+  }
+}
+
+/**
+ * La tarjeta «Fuerza de la tendencia». Veredicto por el ADX (si hay tendencia
+ * con fuerza o no); el color, por el Squeeze (verde, a favor de la suba; rojo,
+ * de la baja). Con pocos datos lo dice en vez de inventar. null sin lectura.
+ */
+export function tarjetaFuerza(l) {
+  if (!l || !l.ruedas) return null
+  if (l.adx == null || l.squeeze == null) {
+    return {
+      id: 'fuerza', titulo: 'Fuerza de la tendencia', veredicto: 'Faltan datos', tono: 'neutro',
+      texto: `Para medirla hacen falta unos 40 días de mercado y este activo tiene ${l.ruedas}.`,
+    }
+  }
+  const conFuerza = l.adx >= ADX_CLAVE
+  const sube = l.squeeze > 0
+  const cruce = l.adx_cruce
+  const veredicto = !conFuerza ? 'Sin tendencia clara'
+    : cruce?.tipo === 'paso_arriba' ? 'Toma fuerza'
+      : (l.adx_pendiente ?? 0) < -ADX_QUIETO ? 'La fuerza afloja'
+        : 'Tendencia con fuerza'
+  const hacia = l.adx_pendiente == null ? ''
+    : l.adx_pendiente > ADX_QUIETO ? ', y subiendo'
+      : l.adx_pendiente < -ADX_QUIETO ? ', y bajando' : ''
+  const sq = textoSqueeze(l.squeeze_color)
+  return {
+    id: 'fuerza', titulo: 'Fuerza de la tendencia',
+    veredicto, tono: conFuerza ? (sube ? 'pos' : 'neg') : 'neutro', adx: l.adx,
+    texto: `El ADX está en ${Math.round(l.adx)}, ${conFuerza ? 'arriba' : 'abajo'} de la línea de ${ADX_CLAVE}${hacia}. `
+      + `El ADX mide cuánta fuerza tiene la tendencia, no para dónde va: arriba de ${ADX_CLAVE} hay tendencia con fuerza; abajo, el precio va más de costado. `
+      + (sq ? `La dirección la marca el Squeeze, que ${sq}.` : '')
+      + (l.squeeze_activo ? ' Además el precio se mueve poco («apretado»): suele ser la antesala de un movimiento más grande, para cualquier lado.' : ''),
+    cruce: textoCruceAdx(cruce, l.squeeze),
+  }
+}
+
+/**
+ * El último cruce del ADX por 23 (de `lectura.adx_cruce`), en palabras. Si pasó
+ * para arriba con el Squeeze del mismo lado ese día y hoy, la frase dice para
+ * dónde. null si no hubo.
+ */
+export function textoCruceAdx(c, squeezeHoy) {
+  if (!c) return null
+  const cuando = c.hace === 0 ? 'En el último día de mercado' : c.hace === 1 ? 'Hace 1 día de mercado' : `Hace ${c.hace} días de mercado`
+  if (c.tipo === 'paso_abajo') {
+    return `${cuando} la fuerza (ADX) bajó de ${ADX_CLAVE}: suele leerse como que la tendencia se queda sin fuerza y el precio pasa a moverse de costado.`
+  }
+  if (c.tipo !== 'paso_arriba') return null
+  const hoy = squeezeHoy > 0 ? 1 : squeezeHoy < 0 ? -1 : 0
+  if (hoy !== 0 && c.squeeze === hoy) {
+    return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba con el Squeeze en ${hoy > 0 ? 'verde' : 'rojo'}: `
+      + `suele leerse como el arranque de una ${hoy > 0 ? 'suba' : 'baja'} con fuerza.`
+  }
+  return `${cuando} la fuerza (ADX) pasó ${ADX_CLAVE} para arriba: suele leerse como que la tendencia toma fuerza.`
 }
 
 /**

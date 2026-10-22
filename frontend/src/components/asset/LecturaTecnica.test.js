@@ -26,6 +26,14 @@ const ARS = {
   lectura: { ...USD.lectura, dist_media200: 24, pendiente_media200: 3 },
 }
 
+// Con la fuerza de la tendencia: el ADX pasó 23 ayer con el Squeeze en verde.
+const CON_FUERZA = {
+  ...USD,
+  puntos: USD.puntos.map((p, i) => ({ ...p, adx: 10 + i * 0.03, squeeze: Math.sin(i / 9), squeeze_color: Math.sin(i / 9) > 0 ? 'verde_fuerte' : 'rojo_fuerte' })),
+  lectura: { ...USD.lectura, adx: 24.6, adx_pendiente: 1.8, adx_cruce: { tipo: 'paso_arriba', hace: 1, squeeze: 1 },
+    squeeze: 0.8, squeeze_color: 'verde_fuerte', squeeze_activo: false },
+}
+
 let respuestas
 vi.mock('../../utils/api', () => ({
   api: {
@@ -166,5 +174,27 @@ describe('LecturaTecnica', () => {
     const t = await dibujar({ pnlPctUsd: null })
     expect(t).not.toContain('Contra lo que pagaste')
     expect(t).not.toContain('Tu precio promedio')
+  })
+
+  it('fuerza de la tendencia: panel del ADX con el Squeeze y la tarjeta con su frase destacada', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': CON_FUERZA }
+    const t = await dibujar({ pnlPctUsd: null })
+    expect(t).toContain('Fuerza de la tendencia (ADX)')
+    expect(t).toContain('a favor de la suba')
+    expect(t).toContain('Toma fuerza')
+    expect(t).toContain('la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: suele leerse como el arranque de una suba con fuerza.')
+    // El panel: una barra por día con Squeeze y la línea del ADX.
+    const nodos = (n) => [n, ...(n.childNodes || []).flatMap(nodos)]
+    const panel = nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith('Fuerza de la tendencia'))
+    expect(panel.getAttribute('aria-label')).toContain('(ADX): 25, con la línea de 23')
+    const barras = nodos(montado.contenedor).find(n => n.getAttribute?.('aria-label')?.startsWith('Barras del Squeeze'))
+    expect(nodos(barras).filter(n => n.nodeName === 'RECT').length).toBeGreaterThan(200)
+  })
+
+  it('sin ADX (pocos días) no dibuja el panel y la tarjeta dice que faltan datos', async () => {
+    respuestas = { '/tecnico/AAPL?moneda=usd': { ...USD, lectura: { ...USD.lectura, ruedas: 30, adx: null, squeeze: null } } }
+    const t = await dibujar({ pnlPctUsd: null })
+    expect(t).not.toContain('Fuerza de la tendencia (ADX)')
+    expect(t).toContain('Para medirla hacen falta unos 40 días de mercado')
   })
 })

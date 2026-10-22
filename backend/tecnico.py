@@ -1,9 +1,10 @@
 """Lectura técnica de un activo: medias, fuerza del movimiento y máximo del año.
 
 QUÉ ES. Toma las velas que guarda `velas_diarias` y arma, para la ficha del
-activo, la serie del gráfico (precio, media de 50, media de 200, RSI) y los
-números de la lectura (dónde está el precio contra cada media, hacia dónde va la
-de 200, el RSI y la distancia al máximo de 12 meses). Las PALABRAS ("alcista",
+activo, la serie del gráfico (precio, media de 50, media de 200, RSI, ADX y
+Squeeze) y los números de la lectura (dónde está el precio contra cada media,
+hacia dónde va la de 200, el RSI, la fuerza de la tendencia y la distancia al
+máximo de 12 meses). Las PALABRAS ("alcista",
 "muy estirado") las pone la pantalla; acá van sólo los números, en un lugar.
 
 EN QUÉ MONEDA. La tendencia se lee en DÓLARES por defecto: un CEDEAR en pesos
@@ -98,6 +99,188 @@ def cruce_rsi(r: list, abajo: float = 30.0, arriba: float = 70.0):
     return None
 
 
+# ─── Fuerza de la tendencia: ADX + Squeeze Momentum ──────────────────────────
+#
+# El combo que Nico mira en TradingView («DMI/ADX/KEYLEVEL 14 14 23» +
+# «SQZMOM_LB 20 2 20 1,5», el de Jaime Merino): el ADX dice CUÁNTA fuerza tiene
+# la tendencia (no para dónde va) y arriba de 23 se lee como "hay tendencia";
+# el Squeeze dice para DÓNDE empuja (positivo, a favor de la suba; negativo, de
+# la baja). Las cuentas copian las de TradingView paso por paso para que los
+# números den iguales: `ta.dmi` para el ADX y el script original de LazyBear
+# para el Squeeze. Van sobre las velas DIARIAS (no hay velas de 4 horas).
+
+# La línea clave del ADX: arriba, tendencia con fuerza.
+ADX_CLAVE = 23
+# Cuántas ruedas para atrás se mira si el ADX cruzó la línea clave.
+RUEDAS_CRUCE_ADX = 10
+
+
+def _velas_completas(velas: list):
+    """Máximos, mínimos y cierres de cada vela. Si a una vela le falta algo
+    (Yahoo a veces manda el máximo roto y se guarda sólo el cierre), se completa
+    como la dibuja la pantalla (`velaCompleta` de utils/tecnico.js): la apertura
+    con el cierre anterior y el máximo/mínimo con la apertura y el cierre."""
+    hs, ls, cs = [], [], []
+    prev = None
+    for v in velas:
+        c = v["close"]
+        o = v.get("open") if v.get("open") is not None else (prev if prev is not None else c)
+        h = max(v["high"], o, c) if v.get("high") is not None else max(o, c)
+        lo = min(v["low"], o, c) if v.get("low") is not None else min(o, c)
+        hs.append(h)
+        ls.append(lo)
+        cs.append(c)
+        prev = c
+    return hs, ls, cs
+
+
+def _rma(xs: list, n: int) -> list:
+    """El promedio de Wilder (`ta.rma` de TradingView): arranca con el promedio
+    simple de los primeros `n` valores y después cada día pesa 1/n. Un hueco
+    (None) lo hace arrancar de nuevo, como en TradingView."""
+    out, prev, ventana = [None] * len(xs), None, []
+    for i, x in enumerate(xs):
+        if x is None:
+            prev, ventana = None, []
+            continue
+        if prev is None:
+            ventana.append(x)
+            if len(ventana) > n:
+                ventana.pop(0)
+            if len(ventana) == n:
+                prev = sum(ventana) / n
+        else:
+            prev = (prev * (n - 1) + x) / n
+        out[i] = prev
+    return out
+
+
+def _rango_verdadero(hs: list, ls: list, cs: list) -> list:
+    """El rango de cada día contando el salto desde el cierre anterior (`ta.tr`).
+    El primer día no tiene cierre anterior: None, como en TradingView."""
+    return [None] + [max(hs[i] - ls[i], abs(hs[i] - cs[i - 1]), abs(ls[i] - cs[i - 1]))
+                     for i in range(1, len(cs))]
+
+
+def adx(velas: list, n: int = 14, suavizado: int = None) -> dict:
+    """ADX, +DI y −DI con el suavizado de Wilder: lo mismo que `ta.dmi(n,
+    suavizado)` de TradingView. {'adx', 'di_mas', 'di_menos'}: listas del largo
+    de `velas`, None mientras no haya historia suficiente (el ADX necesita unas
+    2×n ruedas)."""
+    suavizado = suavizado or n
+    hs, ls, cs = _velas_completas(velas)
+    tr = _rango_verdadero(hs, ls, cs)
+    dm_mas, dm_menos = [None], [None]
+    for i in range(1, len(cs)):
+        sube, baja = hs[i] - hs[i - 1], ls[i - 1] - ls[i]
+        dm_mas.append(sube if (sube > baja and sube > 0) else 0.0)
+        dm_menos.append(baja if (baja > sube and baja > 0) else 0.0)
+    atr, s_mas, s_menos = _rma(tr, n), _rma(dm_mas, n), _rma(dm_menos, n)
+    di_mas, di_menos, dx = [None] * len(cs), [None] * len(cs), [None] * len(cs)
+    ult_mas = ult_menos = None
+    for i in range(len(cs)):
+        if atr[i] is None:
+            continue
+        # Con el rango en 0 (un precio que no se mueve) TradingView repite el
+        # último valor conocido (`fixnan`).
+        if atr[i] > 0:
+            ult_mas, ult_menos = 100.0 * s_mas[i] / atr[i], 100.0 * s_menos[i] / atr[i]
+        if ult_mas is None:
+            continue
+        di_mas[i], di_menos[i] = ult_mas, ult_menos
+        total = ult_mas + ult_menos
+        dx[i] = abs(ult_mas - ult_menos) / (total if total else 1.0)
+    return {
+        "adx": [100.0 * x if x is not None else None for x in _rma(dx, suavizado)],
+        "di_mas": di_mas,
+        "di_menos": di_menos,
+    }
+
+
+def _regresion(ys: list, n: int) -> list:
+    """`ta.linreg(y, n, 0)`: la recta de mínimos cuadrados de los últimos `n`
+    valores, evaluada en el último. None hasta tener `n` seguidos."""
+    out = [None] * len(ys)
+    sx = n * (n - 1) / 2.0
+    sxx = (n - 1) * n * (2 * n - 1) / 6.0
+    for i in range(n - 1, len(ys)):
+        w = ys[i - n + 1:i + 1]
+        if any(y is None for y in w):
+            continue
+        sy = sum(w)
+        sxy = sum(k * y for k, y in enumerate(w))
+        pendiente = (n * sxy - sx * sy) / (n * sxx - sx * sx)
+        out[i] = (sy - pendiente * sx) / n + pendiente * (n - 1)
+    return out
+
+
+def squeeze(velas: list, largo_bb: int = 20, mult_bb: float = 2.0,
+            largo_kc: int = 20, mult_kc: float = 1.5, como_lazybear: bool = True) -> dict:
+    """El Squeeze Momentum de LazyBear («SQZMOM_LB»).
+
+    · valor: la regresión lineal de `largo_kc` días de
+      `cierre − promedio(promedio(máximo de 20, mínimo de 20), promedio de 20 cierres)`.
+      Positivo: el precio empuja para arriba; negativo, para abajo.
+    · color: 'verde_fuerte' (positivo y creciendo), 'verde_apagado' (positivo y
+      bajando), 'rojo_fuerte' (negativo y bajando), 'rojo_apagado' (negativo y
+      subiendo). Contra el día anterior, como el script (un valor en 0 va rojo).
+    · activo: True cuando las bandas de Bollinger quedan DENTRO de las de Keltner
+      (el precio está "apretado", juntando fuerza); False si no.
+
+    `como_lazybear`: el script original arma las Bollinger con `mult_kc` (1,5) y
+    no con `mult_bb` (2): es un error conocido del script, pero es lo que
+    dibuja TradingView con «SQZMOM_LB 20 2 20 1,5». Se copia para que el punto
+    de "apretado" dé igual que lo que ve la persona. Sólo cambia `activo`."""
+    hs, ls, cs = _velas_completas(velas)
+    N = len(cs)
+    m_bb, m_kc = media(cs, largo_bb), media(cs, largo_kc)
+    tr = _rango_verdadero(hs, ls, cs)
+    k_bb = mult_kc if como_lazybear else mult_bb
+    activo = [None] * N
+    for i in range(N):
+        if m_bb[i] is None or m_kc[i] is None or i < largo_kc:
+            continue
+        w = cs[i - largo_bb + 1:i + 1]
+        desvio = (sum((x - m_bb[i]) ** 2 for x in w) / largo_bb) ** 0.5   # poblacional, como `ta.stdev`
+        rango = sum(tr[i - largo_kc + 1:i + 1]) / largo_kc
+        activo[i] = (m_bb[i] - k_bb * desvio > m_kc[i] - mult_kc * rango
+                     and m_bb[i] + k_bb * desvio < m_kc[i] + mult_kc * rango)
+    base = [None] * N
+    for i in range(largo_kc - 1, N):
+        medio = (max(hs[i - largo_kc + 1:i + 1]) + min(ls[i - largo_kc + 1:i + 1])) / 2.0
+        base[i] = cs[i] - (medio + m_kc[i]) / 2.0
+    valor = _regresion(base, largo_kc)
+    color = [None] * N
+    for i in range(N):
+        x = valor[i]
+        if x is None:
+            continue
+        antes = valor[i - 1] if (i > 0 and valor[i - 1] is not None) else 0.0
+        if x > 0:
+            color[i] = "verde_fuerte" if x > antes else "verde_apagado"
+        else:
+            color[i] = "rojo_fuerte" if x < antes else "rojo_apagado"
+    return {"valor": valor, "color": color, "activo": activo}
+
+
+def cruce_adx(a: list, s: list = None, clave: float = ADX_CLAVE):
+    """El último cruce del ADX por la línea clave en las últimas
+    `RUEDAS_CRUCE_ADX` ruedas: {'tipo': 'paso_arriba'|'paso_abajo', 'hace':
+    ruedas, 'squeeze': signo del Squeeze ESE día (1, -1 o 0)}. Pasar 23 para
+    arriba es lo que se lee como "la tendencia toma fuerza". None si no hubo."""
+    n = len(a)
+    for i in range(n - 1, max(0, n - 1 - RUEDAS_CRUCE_ADX), -1):
+        x0, x1 = a[i - 1], a[i]
+        if x0 is None or x1 is None:
+            continue
+        tipo = "paso_arriba" if x0 < clave <= x1 else "paso_abajo" if x0 >= clave > x1 else None
+        if tipo:
+            sq = s[i] if s else None
+            return {"tipo": tipo, "hace": n - 1 - i,
+                    "squeeze": (1 if sq > 0 else -1 if sq < 0 else 0) if sq is not None else None}
+    return None
+
+
 def _pct(a, b):
     return (a / b - 1.0) * 100.0 if (a is not None and b) else None
 
@@ -116,9 +299,10 @@ def _desde_dias(velas: list, dias: int) -> int:
     return len(velas)
 
 
-def lectura(velas: list, m50=None, m200=None, r=None) -> dict:
-    """Los números de la lectura técnica sobre la última vela. Las medias y el
-    RSI se pueden pasar ya calculados (la ficha los calcula para el gráfico)."""
+def lectura(velas: list, m50=None, m200=None, r=None, dmi=None, sqz=None) -> dict:
+    """Los números de la lectura técnica sobre la última vela. Las medias, el
+    RSI, el ADX y el Squeeze se pueden pasar ya calculados (la ficha los calcula
+    para el gráfico)."""
     cierres = [v["close"] for v in velas]
     n = len(cierres)
     if not n:
@@ -126,6 +310,9 @@ def lectura(velas: list, m50=None, m200=None, r=None) -> dict:
     m50 = m50 if m50 is not None else media(cierres, 50)
     m200 = m200 if m200 is not None else media(cierres, 200)
     r = r if r is not None else rsi(cierres)
+    dmi = dmi if dmi is not None else adx(velas)
+    sqz = sqz if sqz is not None else squeeze(velas)
+    a = dmi["adx"]
     ultimo = cierres[-1]
     i_anio = _desde_dias(velas, DIAS_ANIO)
     anio = velas[i_anio:]
@@ -155,6 +342,16 @@ def lectura(velas: list, m50=None, m200=None, r=None) -> dict:
         "minimo_12m": minimo,
         "volumen_vs_promedio": (vol_hoy / (sum(vols) / len(vols))) if (vol_hoy and len(vols) >= 10) else None,
         "anio_completo": i_anio > 0,
+        "adx": a[-1],
+        "di_mas": dmi["di_mas"][-1],
+        "di_menos": dmi["di_menos"][-1],
+        # Cuánto cambió el ADX en los últimos 3 días de mercado: si la fuerza
+        # crece o se afloja.
+        "adx_pendiente": (a[-1] - a[-4]) if (n >= 4 and a[-1] is not None and a[-4] is not None) else None,
+        "adx_cruce": cruce_adx(a, sqz["valor"]),
+        "squeeze": sqz["valor"][-1],
+        "squeeze_color": sqz["color"][-1],
+        "squeeze_activo": sqz["activo"][-1],
     }
 
 
@@ -244,16 +441,24 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         return {"asset": (asset or "").upper(), "moneda": moneda, "disponible": False}
     cierres = [v["close"] for v in velas]
     m50, m200, r = media(cierres, 50), media(cierres, 200), rsi(cierres)
+    dmi, sqz = adx(velas), squeeze(velas)
     desde = _desde_dias(velas, DIAS_GRAFICO)
 
     def _r(x, d=4):
         return round(x, d) if x is not None else None
 
+    def _sig(x):
+        # El Squeeze está en unidades de precio: con decimales fijos el de una
+        # cripto de US$ 0,0004 daría 0. Van 6 cifras significativas.
+        return float(f"{x:.6g}") if x is not None else None
+
     # o/h/l: apertura, máximo y mínimo, para el gráfico de velas. Pueden venir
     # vacíos (una vela de Yahoo con el máximo roto se guarda sólo con cierre).
     puntos = [{"d": velas[i]["date"], "o": _r(velas[i].get("open")), "h": _r(velas[i].get("high")),
                "l": _r(velas[i].get("low")), "c": _r(cierres[i]), "s50": _r(m50[i]),
-               "s200": _r(m200[i]), "rsi": _r(r[i], 2)} for i in range(desde, len(velas))]
+               "s200": _r(m200[i]), "rsi": _r(r[i], 2), "adx": _r(dmi["adx"][i], 2),
+               "squeeze": _sig(sqz["valor"][i]), "squeeze_color": sqz["color"][i]}
+              for i in range(desde, len(velas))]
     return {
         "asset": (asset or "").upper(),
         "moneda": moneda,
@@ -261,7 +466,7 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
         "ticker": s["ticker"],
         "convertida": s["convertida"],
         "puntos": puntos,
-        "lectura": lectura(velas, m50, m200, r),
+        "lectura": lectura(velas, m50, m200, r, dmi, sqz),
         # El último cierre del instrumento con el que se valúa tu tenencia
         # (`ref`): la pantalla lo compara con el precio en vivo para que la línea
         # de tu precio no se corra lo que se movió hoy (auditoría 22/10).

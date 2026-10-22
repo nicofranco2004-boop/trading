@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tarjetas, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
+import { tarjetas, tarjetaFuerza, textoCruceAdx, textoSqueeze, velasSemanales, ADX_CLAVE, veredictoRsi, textoCruceRsi, lineaPromedio, marcas, indiceDeFecha, recortar, tendenciasDistintas } from './tecnico'
 
 const L = {
   ruedas: 760, fecha: '2026-10-21', precio: 228.97,
@@ -182,5 +182,67 @@ describe('arreglos de la auditoría', () => {
       { op_type: 'Cupón', entry_date: '2026-01-01', date: '2026-02-01', pnl_usd: 3 },
       { op_type: 'Amortización', entry_date: '2026-01-01', date: '2026-03-01', pnl_usd: 0 },
     ])).toEqual([])
+  })
+})
+
+describe('fuerza de la tendencia (ADX + Squeeze)', () => {
+  const F = { ...L, adx: 31.4, di_mas: 30, di_menos: 12, adx_pendiente: 2.1, adx_cruce: null,
+    squeeze: 4.2, squeeze_color: 'verde_fuerte', squeeze_activo: false }
+
+  it('arriba de 23 con el Squeeze en verde: tendencia con fuerza, a favor de la suba', () => {
+    const t = tarjetaFuerza(F)
+    expect(t.veredicto).toBe('Tendencia con fuerza')
+    expect(t.tono).toBe('pos')
+    expect(t.texto).toBe('El ADX está en 31, arriba de la línea de 23, y subiendo. '
+      + 'El ADX mide cuánta fuerza tiene la tendencia, no para dónde va: arriba de 23 hay tendencia con fuerza; abajo, el precio va más de costado. '
+      + 'La dirección la marca el Squeeze, que está en verde: empuja a favor de la suba.')
+    expect(t.cruce).toBeNull()
+    expect(tarjetas(F).map(x => x.id)).toContain('fuerza')
+  })
+
+  it('el color lo pone el Squeeze; abajo de 23 no hay tendencia clara', () => {
+    expect(tarjetaFuerza({ ...F, squeeze: -3, squeeze_color: 'rojo_apagado' }).tono).toBe('neg')
+    expect(tarjetaFuerza({ ...F, squeeze: -3, squeeze_color: 'rojo_apagado' }).texto)
+      .toContain('está en rojo, a favor de la baja, pero con menos empuje que el día anterior.')
+    const sin = tarjetaFuerza({ ...F, adx: 17.2, adx_pendiente: -0.2 })
+    expect(sin.veredicto).toBe('Sin tendencia clara')
+    expect(sin.tono).toBe('neutro')
+    expect(sin.texto).toMatch(/^El ADX está en 17, abajo de la línea de 23\. /)
+    expect(tarjetaFuerza({ ...F, adx_pendiente: -1.5 }).veredicto).toBe('La fuerza afloja')
+    expect(tarjetaFuerza({ ...F, squeeze_activo: true }).texto).toContain('el precio se mueve poco («apretado»)')
+  })
+
+  it('cuando el ADX pasa 23 con el Squeeze del mismo lado, la frase destacada dice para dónde', () => {
+    const t = tarjetaFuerza({ ...F, adx: 24.4, adx_cruce: { tipo: 'paso_arriba', hace: 1, squeeze: 1 } })
+    expect(t.veredicto).toBe('Toma fuerza')
+    expect(t.cruce).toBe('Hace 1 día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en verde: '
+      + 'suele leerse como el arranque de una suba con fuerza.')
+    expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 0, squeeze: -1 }, -2))
+      .toBe('En el último día de mercado la fuerza (ADX) pasó 23 para arriba con el Squeeze en rojo: suele leerse como el arranque de una baja con fuerza.')
+    // El Squeeze cambió de lado desde el cruce: no se dice para dónde.
+    expect(textoCruceAdx({ tipo: 'paso_arriba', hace: 4, squeeze: -1 }, 2))
+      .toBe('Hace 4 días de mercado la fuerza (ADX) pasó 23 para arriba: suele leerse como que la tendencia toma fuerza.')
+    expect(textoCruceAdx({ tipo: 'paso_abajo', hace: 2, squeeze: 1 }, 1)).toContain('bajó de 23')
+    expect(textoCruceAdx(null, 1)).toBeNull()
+  })
+
+  it('con pocos datos lo dice en vez de inventar', () => {
+    const t = tarjetaFuerza({ ruedas: 25, adx: null, squeeze: null })
+    expect(t.veredicto).toBe('Faltan datos')
+    expect(t.texto).toContain('tiene 25')
+    expect(tarjetaFuerza(null)).toBeNull()
+    expect(ADX_CLAVE).toBe(23)
+  })
+
+  it('nunca promete: «suele leerse», ni «se viene» ni «comprá»', () => {
+    const textos = [textoSqueeze('verde_fuerte'), textoSqueeze('rojo_fuerte'),
+      textoCruceAdx({ tipo: 'paso_arriba', hace: 1, squeeze: 1 }, 1), tarjetaFuerza(F).texto].join(' ')
+    expect(textos).not.toMatch(/se viene|comprá|vendé|va a subir|va a bajar/i)
+  })
+
+  it('las velas semanales llevan el ADX y el Squeeze del último día', () => {
+    const pts = ['2026-10-12', '2026-10-13', '2026-10-14'].map((d, i) => ({ d, c: 10 + i, adx: 20 + i, squeeze: i - 1, squeeze_color: `c${i}` }))
+    const [semana] = velasSemanales(pts)
+    expect([semana.adx, semana.squeeze, semana.squeeze_color]).toEqual([22, 1, 'c2'])
   })
 })
