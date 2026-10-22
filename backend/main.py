@@ -11619,15 +11619,18 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
 
 class PositionGroupEditIn(BaseModel):
     """Edición a nivel GRUPO (todos los lotes de un mismo broker+activo+moneda)."""
-    broker: str
-    asset: str                                   # el activo ACTUAL (identifica al grupo)
-    currency: Optional[str] = None               # el grupo se arma por moneda (la fila agregada también)
-    new_asset: Optional[str] = None              # renombrar el ticker
+    # Largo máximo en los textos: `new_asset` se guarda en CADA lote y además en el
+    # registro de deshacer, así que un nombre gigante se multiplica en disco. Sin
+    # tope, era un vector para llenar la base. MAX_STR = 100 (RENDI-A01).
+    broker: str = Field(..., max_length=MAX_STR)
+    asset: str = Field(..., max_length=MAX_STR)  # el activo ACTUAL (identifica al grupo)
+    currency: Optional[str] = Field(None, max_length=16)  # el grupo se arma por moneda
+    new_asset: Optional[str] = Field(None, max_length=MAX_STR)  # renombrar el ticker
     # Cambiar el TIPO (CEDEAR ↔ acción): el código suele ser el mismo (AMZN, IREN),
     # así que renombrar no alcanza — es el tipo lo que decide con qué precio se valúa.
     new_asset_type: Optional[str] = Field(None, max_length=16)
     avg_price: Optional[float] = Field(None, gt=0)   # nuevo precio PROMEDIO ponderado
-    tc_mode: Optional[str] = None                # 'historical' | 'fixed'
+    tc_mode: Optional[str] = Field(None, max_length=16)   # 'historical' | 'fixed'
     tc_value: Optional[float] = Field(None, gt=0)
 
 
@@ -36036,9 +36039,15 @@ _ALLOWED_PLAN_EVENTS = {
     "upgrade_promo_clicked",
 }
 
+# Tope del `props` de telemetría ya serializado. Es un puñado de banderas y códigos
+# cortos; 2 KB sobra. Sin tope, `props` aceptaba un objeto de cualquier tamaño y lo
+# guardaba tal cual, sin límite de pedidos: el camino más barato para llenarle el
+# disco a la base con una cuenta gratis (RENDI-B06).
+_PLAN_TRACK_PROPS_MAX = 2000
+
 
 @app.post("/api/plan/track", status_code=204)
-def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
+def plan_track(data: PlanEventIn, request: Request, uid: int = Depends(get_effective_user)):
     """Registra un evento de paywall para analytics de conversión.
 
     Whitelist de event_names para evitar spam. Solo eventos clave del flow
@@ -36048,21 +36057,23 @@ def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
         # No es error fatal — descartamos silenciosamente para que el client
         # no necesite manejar el rechazo (es telemetría, no acción crítica).
         return
+    # Tope de pedidos: es telemetría fire-and-forget, nadie legítimo manda 60/min.
+    _check_rate_limit(request, max_calls=60, window_seconds=60, suffix="plan_track")
     from ai import quota
     conn = get_db()
     try:
         tier = quota.get_tier(conn, uid)
+        props_json = json.dumps(data.props or {}, ensure_ascii=False)
+        if len(props_json) > _PLAN_TRACK_PROPS_MAX:
+            # props gigante: se descarta (el evento se registra igual; es telemetría,
+            # no vale la pena ni rechazar el pedido ni guardar basura).
+            props_json = "{}"
         with conn:
             conn.execute(
                 """INSERT INTO plan_events
                        (user_id, tier, event_name, feature_id, source, props_json)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    uid, tier, data.event,
-                    data.feature_id,
-                    data.source,
-                    json.dumps(data.props or {}, ensure_ascii=False),
-                ),
+                (uid, tier, data.event, data.feature_id, data.source, props_json),
             )
     finally:
         conn.close()
