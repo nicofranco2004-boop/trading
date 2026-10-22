@@ -1594,7 +1594,16 @@ def revert_batch(conn, *, uid: int, batch_id: str, helpers,
                     _venta = conn.execute(
                         """SELECT 1 FROM operations o
                             WHERE o.user_id=? AND o.broker=? AND o.asset=? AND o.op_type='Venta'
-                              AND (? IS NULL OR o.date >= ?)
+                              -- CAST en el primer parámetro: Postgres no puede
+                              -- deducir su tipo cuando lo único que se le pregunta
+                              -- es si está vacío (no hay con qué compararlo), y
+                              -- aborta con «could not determine data type».
+                              -- SQLite acepta el CAST igual, así que la consulta
+                              -- sigue siendo una sola para los dos motores.
+                              -- ⚠️ SIN signos de pregunta en este comentario: el
+                              -- shim los cuenta como parámetros, aunque estén
+                              -- adentro de un comentario SQL.
+                              AND (CAST(? AS TEXT) IS NULL OR o.date >= ?)
                               AND NOT EXISTS (SELECT 1 FROM import_op_links k
                                                WHERE k.batch_id=? AND k.operation_id=o.id)
                             LIMIT 1""",

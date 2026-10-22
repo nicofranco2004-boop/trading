@@ -404,6 +404,9 @@ _HOY_TXT = "to_char(now() at time zone 'utc', 'YYYY-MM-DD')"
 #
 # El único que sí lee el tipo es scripts/pg_type_audit.py, que corre contra la
 # SQLite de producción a propósito: ese no pasa por acá.
+_RE_PRAGMA_FK = re.compile(
+    r"^\s*PRAGMA\s+foreign_keys\s*=\s*(ON|OFF|1|0|TRUE|FALSE)\s*;?\s*$", re.I)
+
 _RE_PRAGMA_TABLE_INFO = re.compile(
     r"^\s*PRAGMA\s+table_info\s*\(\s*[\"']?([A-Za-z_]\w*)[\"']?\s*\)\s*;?\s*$", re.I)
 _RE_FROM_SQLITE_MASTER = re.compile(r"\bFROM\s+sqlite_master\b", re.I)
@@ -610,6 +613,27 @@ def traducir(sql: str) -> str:
     m = _RE_PRAGMA_TABLE_INFO.match(sql)
     if m:
         return _TABLE_INFO_SQL.format(tabla=m.group(1))
+
+    # `PRAGMA foreign_keys` — lo usan los fixtures para sembrar filas en cualquier
+    # orden sin que la base les reclame el padre.
+    #
+    # En SQLite las claves foráneas están APAGADAS por default y `get_db()` las
+    # prende (main.py:662). En Postgres están siempre activas y no hay interruptor
+    # equivalente... salvo `session_replication_role`, que suspende los triggers
+    # internos con los que Postgres implementa las FK.
+    #
+    # ⚠️ SUSPENDE MÁS QUE LAS FK: `replica` también apaga los triggers y reglas de
+    # usuario. Acá es EXACTO porque el esquema no tiene ninguno — medido sobre
+    # `schema_pg.sql`: 0 `CREATE TRIGGER`, 0 `CREATE RULE`, 14 `REFERENCES`. Si
+    # algún día se agrega un trigger, esta equivalencia deja de ser exacta y hay
+    # que volver acá. `tests/test_pgshim.py` lo tiene congelado con ese conteo.
+    #
+    # Verificado que el rol lo permite en el Postgres local Y en Supabase (que da
+    # menos permisos): si no lo permitiera, fallaría al ejecutar, no en silencio.
+    m = _RE_PRAGMA_FK.match(sql)
+    if m:
+        prendido = m.group(1).upper() in ("ON", "1", "TRUE")
+        return "SET session_replication_role = '%s'" % ("origin" if prendido else "replica")
 
     # `sub` con lambda y no con string: el texto de reemplazo tiene barras y
     # `re.sub` las interpretaría como grupos.
