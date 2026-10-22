@@ -17239,6 +17239,25 @@ def _cobro_manual(d: dict):
     return realized_pnl.leer_cobro(d)
 
 
+def _tipo_de_fila_importada(d) -> str:
+    """El tipo con que se MUESTRA una fila de `import_normalized_tx` (Movimientos y
+    el CSV para el contador). `d` trae operation_type, asset_symbol, asset_type y
+    notes.
+
+    La amortización de un bono que el archivo trae SIN cantidad (Balanz, IOL, el
+    genérico) se importa como DIVIDEND. El persister la anota como lo que es
+    —'Amortización', capital que vuelve, sin ganancia (`_is_amort_capital_return`)—,
+    pero las dos listas la mostraban como "Dividendo": Movimientos la sumaba a
+    "Cobrado" y a la pestaña Cobros, y los pagos de AL30/GD30 contaban entero el
+    capital devuelto como renta. Misma regla que el persister, para que la fila
+    diga lo mismo que la cuenta."""
+    op_type = (d["operation_type"] or "").upper()
+    if op_type in ("DIVIDEND", "INTEREST") and _import_persister._is_amort_capital_return(
+            op_type, d["asset_symbol"], d["asset_type"], d["notes"]):
+        return "AMORTIZATION"
+    return op_type
+
+
 def _build_movements(uid: int):
     """Las filas de /api/movements, sin el decorador HTTP.
 
@@ -17447,7 +17466,8 @@ def _build_movements(uid: int):
         tx_rows = conn.execute(
             f"""SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out,
+                      t.asset_type
                 FROM {tx_vivas('t')}
                 WHERE b.user_id = ?
                 ORDER BY t.date DESC""",
@@ -17455,7 +17475,7 @@ def _build_movements(uid: int):
         ).fetchall()
         for r in tx_rows:
             d = dict(r)
-            op_type = (d.get("operation_type") or "").upper()
+            op_type = _tipo_de_fila_importada(d)
             # La conversión importada casi nunca trae moneda (en el backup de prod
             # del 2026-08-16, 533 de 534 sin `currency`): caía al `else` de abajo y
             # mostraba los PESOS como dólares (comprar US$1.000 → "US$1.400.000").
@@ -17641,6 +17661,12 @@ def _build_movements(uid: int):
         has_date = 1 if m.get("date") else 0
         return (has_date, m.get("date") or "")
     movements.sort(key=_sort_key, reverse=True)
+
+    # Qué fila es un cobro y cómo cuenta: la regla única de `cobros.py`. Viaja en
+    # la fila para que Movimientos ("Cobrado") y la pestaña Cobros cuenten igual.
+    import cobros as _cobros
+    for m in movements:
+        m["cobro"] = _cobros.clase_de_cobro(m)
 
     return movements
 
@@ -19548,6 +19574,24 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     return {"ok": True, **({"undo_token": out["undo_token"]} if out.get("undo_token") else {})}
 
 
+@app.get("/api/cobros")
+def get_cobros(uid: int = Depends(get_effective_user)):
+    """La pestaña Cobros de Movimientos: los cobros (dividendos, cupones,
+    intereses) en dólares al dólar del día de cada uno, y los pagos de bonos que
+    traen cupón y amortización juntos.
+
+    Sobre las MISMAS filas que Movimientos (`_build_movements`), como las
+    comisiones de abajo. Qué cuenta como cobro vive en `cobros.py`; las sumas,
+    el cupón de los pagos mixtos y el estimado los arma la pantalla
+    (frontend/src/utils/cobros.js): necesitan el cronograma de los bonos y la
+    equivalencia CEDEAR → acción, que viven allá. `dias_hasta_el_pago` es la
+    regla medida de los dividendos (`dividendos.REGLAS`): la pantalla la usa para
+    saber cuándo entra un dividendo del que sólo se conoce el corte."""
+    import cobros as _cobros
+    return _cobros.cobros(_build_movements(uid), _iso_today(),
+                          _dividendos.REGLAS["dias_hasta_el_pago"])
+
+
 @app.get("/api/insights/commissions")
 def get_commissions_total(uid: int = Depends(get_effective_user)):
     """Total de comisiones e impuestos, sobre las MISMAS filas que Movimientos.
@@ -19848,7 +19892,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
         tx_rows = conn.execute(
             f"""SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.asset_type
                FROM {tx_vivas('t')}
                WHERE b.user_id = ?""",
             (uid,),
@@ -19861,7 +19905,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                 continue
             rows.append({
                 "fecha": r["date"],
-                "tipo": _humanize_tx_type(r["operation_type"]),
+                "tipo": _humanize_tx_type(_tipo_de_fila_importada(r)),
                 "broker": r["broker"] or "",
                 "activo": r["asset_symbol"] or r["asset_name"] or "",
                 "cantidad": r["quantity"],
