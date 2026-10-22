@@ -2,6 +2,42 @@
 
 Última sesión: 2026-08-14 (sesión 8). Pegá el bloque de abajo en una sesión nueva.
 
+> 🔴 **RECORDATORIO DE NICO (22/10/2026) — antes de pasar UN SOLO dato a Supabase,
+> la sesión que haga el pasaje tiene que FRENAR y pedirle a Nico que active esto.**
+> Nico ya pagó el plan Pro de Supabase. Lo tiene que hacer él en el panel; la sesión
+> le da los clicks y verifica.
+>
+> **1. Apagar la "Data API" (la puerta de atrás).** Supabase publica cada tabla del
+> esquema `public` en una dirección web propia (`https://<proyecto>.supabase.co/rest/v1/...`),
+> que se abre con la "clave pública" (`anon`). Rendi NO usa esa puerta: el backend
+> entra directo a Postgres con `DATABASE_URL`, y el frontend no habla con Supabase
+> (verificado el 22/10: no hay `supabase-js` ni ninguna dirección de Supabase en el
+> repo). Si la puerta queda abierta, la única cerradura es la de abajo.
+> Panel: Project Settings → **Data API** → apagar "Enable Data API" (o sacar `public`
+> de "Exposed schemas").
+>
+> **2. Prender la seguridad a nivel de fila (RLS) en TODAS las tablas.** Las tablas
+> que crea `schema_pg.sql` (y las que se crean en caliente, como `fci_catalog` y
+> `fci_prices`) nacen con RLS **apagada**: así nacen las tablas creadas por SQL, a
+> diferencia de las que se crean con clicks en el panel. Con RLS apagada y la Data
+> API prendida, cualquiera con la clave pública lee la tabla `users` entera. Es el
+> caso del video que mandó Nico: "una de cada diez apps hechas con IA lo tiene
+> abierto". Prender RLS sin escribir ninguna regla = nadie entra por la Data API;
+> el backend no se entera, porque entra como dueño de la base (`postgres`), que
+> saltea RLS. ⚠️ Verificarlo con la app andando, no suponerlo: si el usuario de
+> `DATABASE_URL` NO es el dueño, RLS lo deja sin datos.
+>
+> **3. Dejar prendido el "Spend Cap" del plan Pro.** Organization → Billing →
+> **Cost Control** → "Spend cap" en ON. Es lo que convierte "te llega una factura"
+> en "el servicio se frena": las alertas de presupuesto sólo avisan, el tope corta.
+>
+> **Cómo se verifica que quedó:** Supabase → **Advisors → Security Advisor** →
+> "Refresh". Tiene que dar **cero** avisos de "RLS Disabled in Public". Y después
+> de prender `DATABASE_URL`, la app tiene que mostrar las carteras normal (eso prueba
+> que el backend sigue entrando).
+>
+> Está también como paso 9-bis de la secuencia del día (sección "1. Cómo es el día").
+
 ---
 
 Estoy migrando Rendi (app de tracking de inversiones, ~1.084 usuarios reales, plata
@@ -1105,6 +1141,11 @@ motivo es concreto, no una preferencia de estilo:
     9.  Correr la VERIFICACIÓN COMPLETA (niveles 1, 2 y 3) con `PG_DSN_VERIF`
         puesta. **Ya no hay que pasarle `tablas_origen`: la lee sola del origen**
         (sesión 8). Si hay UN hallazgo: no se sigue.
+    9-bis. 🔴 CERRAR LA PUERTA DE SUPABASE (pedírselo a Nico, ver el
+        recordatorio de arriba de todo): Data API apagada, RLS prendida en
+        TODAS las tablas, Spend Cap en ON, Security Advisor en cero. Sin esto
+        no se sigue: con datos reales adentro y RLS apagada, la tabla `users`
+        se lee entera con la clave pública.
     10. Prender `DATABASE_URL` y reiniciar, con los escritores del arranque
         apagados (punto 0b).
     11. Los chequeos de los primeros 10 minutos (punto 3), con la app TODAVÍA en
