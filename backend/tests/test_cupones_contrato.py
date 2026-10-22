@@ -114,13 +114,27 @@ class CuponesContratoTest(unittest.TestCase):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
-                pass
+                # Deshacer, no sólo ignorar: en Postgres una instrucción que falla
+                # DEJA LA TRANSACCIÓN INUTILIZABLE, y todo lo que venga después
+                # revienta con «current transaction is aborted» sin relación
+                # aparente. SQLite no hace eso, por eso nunca se notó.
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
         self.conn.commit()
         try:        # los ids de broker van al fixture (parent_broker_id)
             self.conn.execute("DELETE FROM sqlite_sequence WHERE name='brokers'")
             self.conn.commit()
         except Exception:
-            pass
+            # `sqlite_sequence` es una tabla INTERNA de SQLite: en Postgres no
+            # existe. El DELETE falla, y ahí no alcanza con ignorarlo — deja la
+            # transacción inutilizable y lo siguiente revienta con «current
+            # transaction is aborted», lejos y sin relación aparente.
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
 
     def tearDown(self):
         main.app.dependency_overrides.pop(main.get_effective_user, None)

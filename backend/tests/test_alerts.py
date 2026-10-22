@@ -30,7 +30,14 @@ def clean(monkeypatch):
         try:
             conn.execute(f"DELETE FROM {t}")
         except Exception:
-            pass
+            # Deshacer, no sólo ignorar: en Postgres una instrucción que falla
+            # DEJA LA TRANSACCIÓN INUTILIZABLE, y todo lo que venga después
+            # revienta con «current transaction is aborted» sin relación
+            # aparente. SQLite no hace eso, por eso nunca se notó.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     conn.execute("INSERT INTO users (id,email,name,password_hash) VALUES (1,'a@a.co','A','x')")          # free
     conn.execute("INSERT INTO users (id,email,name,password_hash,tier) VALUES (2,'b@b.co','B','x','plus')")  # plus
     conn.commit()

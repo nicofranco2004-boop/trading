@@ -37,7 +37,14 @@ class _Base(unittest.TestCase):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
-                pass
+                # Deshacer, no sólo ignorar: en Postgres una instrucción que falla
+                # DEJA LA TRANSACCIÓN INUTILIZABLE, y todo lo que venga después
+                # revienta con «current transaction is aborted» sin relación
+                # aparente. SQLite no hace eso, por eso nunca se notó.
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             (f"r5-{id(self)}@t", "x")).lastrowid
@@ -174,7 +181,14 @@ class ReEstampadoPorMesEsInocuoTest(unittest.TestCase):
             try:
                 self.conn.execute(f"DELETE FROM {t}")
             except Exception:
-                pass
+                # Deshacer, no sólo ignorar: en Postgres una instrucción que falla
+                # DEJA LA TRANSACCIÓN INUTILIZABLE, y todo lo que venga después
+                # revienta con «current transaction is aborted» sin relación
+                # aparente. SQLite no hace eso, por eso nunca se notó.
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
         self.uid = self.conn.execute(
             "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
             (f"r5-cascada-{id(self)}@t", "x")).lastrowid

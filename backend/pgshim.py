@@ -1052,6 +1052,33 @@ class Connection:
     def cursor(self):
         return Cursor(self._c.cursor())
 
+    @property
+    def in_transaction(self) -> bool:
+        """¿Esta conexión dejó una transacción abierta? (igual que sqlite3)
+
+        Existe porque hay tests que lo vigilan, y vigilan algo importante: una
+        conexión que vuelve al llamador con una escritura abierta retiene los
+        locks de todo lo que tocó. En SQLite eso deja a cualquier otro escritor
+        esperando o con «database is locked» — el incidente del 12 y 13/08 y el
+        motivo de toda esta migración. En Postgres queda `idle in transaction`,
+        que es lo mismo pero peor: no se corta solo.
+
+        `sqlite3` lo expone como propiedad; psycopg lo dice en
+        `info.transaction_status`. Se traduce a bool con el MISMO significado:
+          IDLE                  -> False (no hay nada abierto)
+          INTRANS / INERROR     -> True  (hay una transacción abierta; la
+                                          segunda, además, ya está arruinada)
+          ACTIVE                -> True  (hay un comando corriendo)
+        """
+        try:
+            import psycopg
+            st = self._c.info.transaction_status
+            return st != psycopg.pq.TransactionStatus.IDLE
+        except Exception:
+            # Si no se puede saber, se contesta "no" y NO se inventa: un True
+            # falso haría fallar tests por algo que no pasó.
+            return False
+
     def commit(self):
         self._c.commit()
 
