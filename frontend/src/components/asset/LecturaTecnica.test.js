@@ -119,14 +119,18 @@ describe('LecturaTecnica', () => {
     expect(texto(montado.contenedor)).toContain('11,9% arriba')
   })
 
-  it('con el botón Velas dibuja velas, y en 2 años son semanales', async () => {
+  it('con el botón Velas dibuja velas diarias, y semanales sólo si se eligen', async () => {
     respuestas = { '/tecnico/AAPL?moneda=usd': USD, '/tecnico/AAPL?moneda=ars': ARS }
     await dibujar({ pnlPctUsd: 0.1 })
     await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Velas'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(texto(montado.contenedor)).toContain('Velas: sube · baja')
     expect(texto(montado.contenedor)).not.toContain('Cada vela es una semana')
+    // En 2 años siguen siendo diarias; las semanales se eligen.
     await clic(montado.contenedor, buscarBoton(montado.contenedor, '2A'))
+    for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
+    expect(texto(montado.contenedor)).toContain('Cada vela es un día')
+    await clic(montado.contenedor, buscarBoton(montado.contenedor, 'Semanales'))
     for (let i = 0; i < 2; i++) await montado.redibujar(h(LecturaTecnica, { asset: 'AAPL', symbolMiniChart: 'AAPL.BA', pnlPctUsd: 0.1 }))
     expect(texto(montado.contenedor)).toContain('Cada vela es una semana')
   })

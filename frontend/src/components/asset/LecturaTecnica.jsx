@@ -74,6 +74,9 @@ export default function LecturaTecnica({
   // Zoom con la rueda y arrastre: qué ruedas se ven ({ n: cuántas, fin: hasta
   // cuál, sin incluirla }). null = el rango del botón (3M/1A/2A).
   const [ventana, setVentana] = useState(null)
+  // Velas diarias siempre; semanales sólo si se eligen (para mirar el panorama
+  // de 2 años). El análisis (Fibonacci, giros) se hace sobre las diarias.
+  const [intervalo, setIntervalo] = useState('dia')
   const elegirRango = (r) => { setRango(r); setVentana(null) }
 
   // Dólares al abrir; pesos recién la primera vez que se tocan (la mayoría no
@@ -129,8 +132,7 @@ export default function LecturaTecnica({
   const nVista = Math.min(ventana?.n ?? (RANGOS.find(r => r.id === rango)?.ruedas || 252), total)
   const finVista = Math.min(ventana?.fin ?? total, total)
   const diarios = actual.puntos.slice(Math.max(0, finVista - nVista), finVista)
-  // Más de ~300 velas diarias son rayitas: se agrupan por semana.
-  const semanales = tipo === 'velas' && diarios.length > 300
+  const semanales = tipo === 'velas' && intervalo === 'semana'
   const puntos = semanales ? velasSemanales(diarios) : diarios
   const vista = { n: nVista, fin: finVista, total }
   const zoom = (factor, f) => { const v2 = zoomVentana(vista, factor, f); if (v2) setVentana(v2) }
@@ -152,11 +154,18 @@ export default function LecturaTecnica({
         </div>
       )}
 
+      {tipo === 'velas' && (
+        <div className="flex justify-end mb-2">
+          <Segmento etiqueta="Cada vela es" valor={intervalo} alElegir={setIntervalo}
+            opciones={[['dia', 'Diarias'], ['semana', 'Semanales']]} />
+        </div>
+      )}
       <Grafico puntos={puntos} moneda={moneda} promedio={ver.prom ? promedio : null}
         marcas={ver.marcas ? marcas(lotes, operaciones) : []} ver={ver} tipo={tipo}
         onZoom={zoom} onMover={mover} />
       <p className="text-[11.5px] text-ink-3 mt-1">
         {semanales && 'Cada vela es una semana. '}
+        {tipo === 'velas' && !semanales && diarios.length > 300 && 'Cada vela es un día: acercá con la ruedita, o pasá a velas semanales. '}
         <span className="hidden sm:inline">Con la ruedita del mouse acercás o alejás; arrastrando te movés en el tiempo.</span>
       </p>
 
