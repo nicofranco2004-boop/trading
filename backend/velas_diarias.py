@@ -53,6 +53,15 @@ DIAS_GUARDADOS = 3 * 366
 # 1,5% deja pasar el redondeo y las correcciones chicas de un cierre; un split
 # mueve el precio 50% o más.
 TOLERANCIA_REESCRITURA = 0.015
+# Cuántos días repetidos distintos alcanzan para decir "la historia cambió". Un
+# split mueve TODOS los días anteriores a él; Yahoo corrigiendo un cierre suelto
+# mueve uno. No es "la mayoría": si Yahoo aplica el split dos semanas tarde, la
+# mayoría de los días del último mes ya vienen después del split y son iguales.
+DIAS_DISTINTOS_REESCRITURA = 3
+# Cada cuánto se baja la historia entera aunque no se haya visto nada raro: la
+# red de seguridad para lo que la comparación del último mes no puede ver (un
+# split que Yahoo ajusta más de un mes tarde).
+DIAS_ENTRE_COMPLETAS = 30
 # Cuántos tickers se le piden a Yahoo por tanda, y el tope de cada tanda.
 TANDA = 25
 TOPE_TANDA_SEG = 120.0
@@ -60,29 +69,53 @@ TOPE_TANDA_SEG = 120.0
 # que nunca se bajaron van primero).
 TOPE_CORRIDA_SEG = 15 * 60
 
-_TIPOS_RENTA_FIJA = frozenset({'BOND', 'BONO', 'ON', 'LETRA', 'LECAP'})
-
-
 # ─── Qué activos se siguen ───────────────────────────────────────────────────
 
-def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto) -> list:
+def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
+              cedears_byma: frozenset = frozenset()) -> list:
     """Los tickers de Yahoo que representan este activo. [] = no tiene serie
-    técnica (efectivo, bonos, letras, fondos)."""
-    from snapshots_job import simbolo_byma
+    técnica (efectivo, bonos, letras, fondos, monedas estables).
+
+    `cedears_byma`: los códigos en pesos que BYMA lista como CEDEAR. Sirve para
+    reconocer un CEDEAR que vino sin `asset_type` (SPY importado en IOL): sin
+    esto sólo se guardaba su precio en pesos y no la acción de afuera."""
+    from cripto import CRIPTO_ESTABLES
+    from snapshots_job import _FIXED_INCOME_TYPES, simbolo_byma
+    from main import CEDEAR_USD_RATIOS
     a = (asset or '').strip().upper()
     tipo = (asset_type or '').strip().upper()
-    if not a or a in ('USD', 'USDT', 'ARS') or a.startswith('FCI:'):
+    if not a or a in ('USD', 'ARS') or a in CRIPTO_ESTABLES or a.startswith('FCI:'):
         return []
-    if tipo in _TIPOS_RENTA_FIJA or _es_bono(a):
+    if tipo in _FIXED_INCOME_TYPES or _es_bono(a):
         return []
     if es_cripto(a):
         return [es_cripto(a)]
     if a.endswith('.BA'):
         a, en_pesos = a[:-3], True
-    if tipo == 'CEDEAR':
+    pesos = simbolo_byma(a)
+    es_cedear = tipo == 'CEDEAR' or (en_pesos and pesos[:-3] in cedears_byma)
+    if es_cedear:
+        if a in CEDEAR_USD_RATIOS:
+            # Su '.BA' en Yahoo cotiza en dólares y roto (BAC ≈ 9): la serie en
+            # pesos se arma de la acción de afuera, como el gráfico de la ficha.
+            return [a]
         # La acción de afuera (dólares) y el CEDEAR en pesos.
-        return [a, simbolo_byma(a)]
-    return [simbolo_byma(a)] if en_pesos else [a]
+        return [a, pesos]
+    return [pesos] if en_pesos else [a]
+
+
+def _cedears_de_byma() -> frozenset:
+    """Los códigos que BYMA lista como CEDEAR (data912 → arg_cedears, la misma
+    fuente que ya cotiza los CEDEARs en pesos). Si data912 no contesta, vacío:
+    los CEDEARs etiquetados se siguen igual y a los otros les falta sólo la serie
+    en dólares esa noche."""
+    try:
+        from main import _fetch_data912_equities
+        feed = _fetch_data912_equities() or {}
+    except Exception as ex:
+        log.warning("velas: no se pudo leer la lista de CEDEARs de BYMA: %s", ex)
+        return frozenset()
+    return frozenset(s for s, v in feed.items() if (v or {}).get('mercado') == 'arg_cedears')
 
 
 def _es_bono(asset: str) -> bool:
@@ -104,6 +137,7 @@ def simbolos_a_seguir(conn) -> list:
     from cripto import yahoo_de_cripto
     from snapshots_job import _broker_name_sets, position_price_key
 
+    cedears = _cedears_de_byma()
     tickers = set()
     brokers = [dict(r) for r in conn.execute(
         "SELECT id, user_id, name, currency, parent_broker_id FROM brokers").fetchall()]
@@ -120,11 +154,11 @@ def simbolos_a_seguir(conn) -> list:
         ars, ar_usd = sets.get(p['user_id'], (set(), set()))
         clave = position_price_key(p, ars, ar_usd)
         en_pesos = str(clave).upper().endswith('.BA')
-        tickers.update(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto))
+        tickers.update(_yahoo_de(p['asset'], p.get('asset_type'), en_pesos, yahoo_de_cripto, cedears))
 
     for r in conn.execute("SELECT symbol, asset_type FROM watchlist").fetchall():
         sym = (r['symbol'] or '').upper()
-        tickers.update(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto))
+        tickers.update(_yahoo_de(sym, r['asset_type'], sym.endswith('.BA'), yahoo_de_cripto, cedears))
 
     return sorted(t for t in tickers if t)
 
@@ -170,7 +204,11 @@ def _bajar(ticker: str, periodo: str):
     return _yahoo._historia(ticker, periodo, '1d', False, 10.0)
 
 
-def _guardar(conn, ticker: str, velas: dict) -> int:
+def _guardar(conn, ticker: str, velas: dict, *, completa: bool) -> int:
+    """Una bajada COMPLETA reemplaza todo lo del ticker (si Yahoo reescribió la
+    historia, no puede quedar ningún día viejo); una incremental pisa sus días."""
+    if completa:
+        conn.execute("DELETE FROM velas_diarias WHERE symbol=?", (ticker,))
     for f, (o, h, l, c, v) in velas.items():
         conn.execute(
             """INSERT INTO velas_diarias (symbol, date, open, high, low, close, volume)
@@ -187,9 +225,9 @@ def _historia_reescrita(conn, ticker: str, velas: dict) -> bool:
     """¿Los días que ya teníamos vuelven con otro cierre? Entonces Yahoo
     reescribió la historia (split) y lo guardado no sirve más.
 
-    Cuenta la MAYORÍA de los días repetidos, no uno: un split mueve todos los
-    días viejos a la vez, mientras que Yahoo corrigiendo un cierre suelto es un
-    solo día, y eso alcanza con pisarlo (lo hace el guardado)."""
+    Alcanzan `DIAS_DISTINTOS_REESCRITURA` días distintos (o todos, si se
+    repiten menos): un split mueve todos los días anteriores a él, mientras que
+    Yahoo corrigiendo un cierre suelto mueve uno, y eso alcanza con pisarlo."""
     if not velas:
         return False
     fechas = sorted(velas)
@@ -203,18 +241,29 @@ def _historia_reescrita(conn, ticker: str, velas: dict) -> bool:
             comparados += 1
             if abs(nueva[3] / r['close'] - 1) > TOLERANCIA_REESCRITURA:
                 distintos += 1
-    return comparados > 0 and distintos * 2 > comparados
+    return distintos >= DIAS_DISTINTOS_REESCRITURA or (0 < comparados == distintos)
 
 
 def _anotar(conn, ticker: str, *, completa: bool, ok: bool, filas: int = 0, error: str = None):
+    # `CASE WHEN ?=1`, no `CASE WHEN ?`: SQLite acepta un entero como condición,
+    # Postgres exige un booleano.
     conn.execute(
         """INSERT INTO velas_estado (symbol, ultima_corrida, ultima_completa, ok, filas, error)
-           VALUES (?, datetime('now'), CASE WHEN ? THEN datetime('now') END, ?, ?, ?)
+           VALUES (?, datetime('now'), CASE WHEN ?=1 THEN datetime('now') END, ?, ?, ?)
            ON CONFLICT(symbol) DO UPDATE SET
              ultima_corrida=datetime('now'),
-             ultima_completa=CASE WHEN ? THEN datetime('now') ELSE velas_estado.ultima_completa END,
+             ultima_completa=CASE WHEN ?=1 THEN datetime('now') ELSE velas_estado.ultima_completa END,
              ok=excluded.ok, filas=excluded.filas, error=excluded.error""",
         (ticker, 1 if completa else 0, 1 if ok else 0, filas, error, 1 if completa else 0))
+
+
+def _toca_completa(est: dict, hoy: str) -> bool:
+    """Nunca se bajó entera, o hace más de `DIAS_ENTRE_COMPLETAS` que no."""
+    ultima = (est or {}).get('ultima_completa')
+    if not ultima:
+        return True
+    limite = (date.fromisoformat(hoy) - timedelta(days=DIAS_ENTRE_COMPLETAS)).isoformat()
+    return str(ultima)[:10] <= limite
 
 
 def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
@@ -224,7 +273,12 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     Los que nunca se bajaron (o se bajaron mal) van primero: con el tope de
     tiempo, una noche lenta deja sin actualizar a los que ya tenían 3 años, no
-    a los que no tienen nada."""
+    a los que no tienen nada.
+
+    Nunca se espera a Yahoo con una escritura abierta: cada tanda baja todo,
+    escribe y confirma; los que hay que rebajar enteros (split) se piden DESPUÉS
+    de confirmar. En SQLite una escritura abierta traba a todos los demás que
+    quieren escribir, y Yahoo puede tardar 30 s en contestar."""
     from fechas import hoy_art
     from pricing import yahoo as _yahoo
     bajar = bajar or _bajar
@@ -247,10 +301,11 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
             res["sin_tiempo"] = len(pendientes) - i
             break
         tanda = pendientes[i:i + TANDA]
-        pedidos = {t: (PERIODO_INCREMENTAL if (estado.get(t) or {}).get('ultima_completa')
-                       else PERIODO_COMPLETO) for t in tanda}
+        pedidos = {t: (PERIODO_COMPLETO if _toca_completa(estado.get(t), hoy)
+                       else PERIODO_INCREMENTAL) for t in tanda}
         bajadas, _ = _yahoo.varios(lambda t: bajar(t, pedidos[t]), tanda,
                                    tope=TOPE_TANDA_SEG, que="velas diarias")
+        a_rebajar = []
         for t in tanda:
             velas = _velas_de(bajadas.get(t), hoy)
             completa = pedidos[t] == PERIODO_COMPLETO
@@ -259,25 +314,33 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
                 res["sin_datos"].append(t)
                 continue
             if not completa and _historia_reescrita(conn, t, velas):
-                # Se baja entera y se reemplaza todo lo del ticker.
-                try:
-                    velas = _velas_de(bajar(t, PERIODO_COMPLETO), hoy)
-                except Exception as ex:
-                    log.warning("velas %s: la historia cambió y no se pudo rebajar: %s", t, ex)
-                    velas = {}
-                if not velas:
-                    _anotar(conn, t, completa=False, ok=False,
-                            error="La historia cambió y no se pudo bajar de nuevo")
-                    res["sin_datos"].append(t)
-                    continue
-                conn.execute("DELETE FROM velas_diarias WHERE symbol=?", (t,))
-                completa = True
-                res["reescritas"].append(t)
-            n = _guardar(conn, t, velas)
+                a_rebajar.append(t)
+                continue
+            n = _guardar(conn, t, velas, completa=completa)
             _anotar(conn, t, completa=completa, ok=True, filas=n)
             res["filas"] += n
             res["completas" if completa else "incrementales"] += 1
         conn.commit()
+
+        if a_rebajar:
+            # Con la tanda ya confirmada: acá no hay ninguna escritura abierta.
+            rebajadas, _ = _yahoo.varios(lambda t: bajar(t, PERIODO_COMPLETO), a_rebajar,
+                                         tope=TOPE_TANDA_SEG, que="velas diarias (historia cambiada)")
+            for t in a_rebajar:
+                velas = _velas_de(rebajadas.get(t), hoy)
+                if not velas:
+                    # Lo viejo queda como estaba (mejor que borrarlo sin reemplazo)
+                    # y la noche siguiente se vuelve a detectar y a intentar.
+                    _anotar(conn, t, completa=False, ok=False,
+                            error="La historia cambió y no se pudo bajar de nuevo")
+                    res["sin_datos"].append(t)
+                    continue
+                n = _guardar(conn, t, velas, completa=True)
+                _anotar(conn, t, completa=True, ok=True, filas=n)
+                res["filas"] += n
+                res["completas"] += 1
+                res["reescritas"].append(t)
+            conn.commit()
 
     piso = (date.fromisoformat(hoy) - timedelta(days=DIAS_GUARDADOS)).isoformat()
     conn.execute("DELETE FROM velas_diarias WHERE date < ?", (piso,))

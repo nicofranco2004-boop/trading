@@ -18,6 +18,7 @@ Los casos que importan:
 Corre con: cd backend && python3 -m pytest tests/test_velas_diarias.py
 """
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -103,8 +104,12 @@ class VelasDiariasTest(unittest.TestCase):
         self.h = {"Authorization": f"Bearer {main.create_token(self.uid)}"}
         self.hoy = hoy_art_date()
         self.yahoo = YahooFalso(self.hoy)
+        # La lista de CEDEARs de BYMA (data912) también es red: vacía salvo en
+        # el test que la necesita.
+        self.byma = {}
         self._p = [mock.patch("main._check_rate_limit"),
-                   mock.patch("pricing.yahoo._historia", self.yahoo)]
+                   mock.patch("pricing.yahoo._historia", self.yahoo),
+                   mock.patch("main._fetch_data912_equities", lambda: self.byma)]
         for p in self._p:
             p.start()
 
@@ -156,6 +161,32 @@ class VelasDiariasTest(unittest.TestCase):
         self.assertEqual(seguidos, {"AAPL", "AAPL.BA", "GGAL.BA", "MSFT", "BTC-USD",
                                     "NVDA", "YPFD.BA"})
 
+    def test_cedear_sin_etiqueta_bac_y_monedas_estables(self):
+        # SPY cargado en IOL sin tipo, como llega de muchos imports: BYMA lo lista
+        # como CEDEAR, así que también se guarda SPY de Nueva York (dólares).
+        self.byma = {"SPY": {"mercado": "arg_cedears"}, "GGAL": {"mercado": "arg_stocks"},
+                     "BAC": {"mercado": "arg_cedears"}}
+        self._broker("IOL", "ARS")
+        self._broker("Binance", "USDT")
+        self._posicion("IOL", "SPY")
+        self._posicion("IOL", "GGAL")
+        self._posicion("IOL", "BAC", "CEDEAR")
+        self._posicion("Binance", "USDC", "CRYPTO")
+        with main.db_abierta() as conn:
+            seguidos = set(velas_diarias.simbolos_a_seguir(conn))
+        self.assertEqual(seguidos, {"SPY", "SPY.BA", "GGAL.BA", "BAC"},
+                         "GGAL es acción local (sin serie de afuera); BAC sólo en dólares "
+                         "(su '.BA' de Yahoo viene roto); USDC no tiene nada que medir")
+
+    def test_sin_la_lista_de_byma_se_sigue_lo_etiquetado(self):
+        self.byma = {}          # data912 no contestó
+        self._broker("IOL", "ARS")
+        self._posicion("IOL", "SPY")
+        self._posicion("IOL", "AAPL", "CEDEAR")
+        with main.db_abierta() as conn:
+            seguidos = set(velas_diarias.simbolos_a_seguir(conn))
+        self.assertEqual(seguidos, {"SPY.BA", "AAPL", "AAPL.BA"})
+
     def test_primera_noche_baja_3_anios_y_la_siguiente_un_mes(self):
         self._broker("Schwab", "USD")
         self._posicion("Schwab", "MSFT", "STOCK")
@@ -191,6 +222,66 @@ class VelasDiariasTest(unittest.TestCase):
         self.assertEqual(cierres, {200.0},
                          "no puede quedar ningún 800 viejo: sería una caída de 75% inventada")
         self.assertEqual(len(self._velas("NVDA")), 760)
+
+    def test_split_que_yahoo_ajusta_tarde(self):
+        # Split hace 15 ruedas. Las primeras noches Yahoo muestra la caída real
+        # (800 → 200) sin ajustar lo viejo; recién después reescribe la historia.
+        # En el último mes, 15 días ya coinciden y 7 no: con la regla de "la
+        # mayoría" esto pasaba de largo y quedaba una caída de 75% inventada.
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "NVDA", "STOCK")
+        split = _ruedas(self.hoy, 15)[0]
+        self.yahoo.precios["NVDA"] = lambda d: 200.0 if d >= split else 800.0
+        main._run_velas_diarias_job()
+
+        libre = []
+
+        def ajustado(d):
+            # Mientras Rendi rebaja la historia, otro tiene que poder escribir.
+            if self.yahoo.pedidos and self.yahoo.pedidos[-1][1] == "3y":
+                c = sqlite3.connect(main.DB_PATH, timeout=0)
+                try:
+                    c.execute("BEGIN IMMEDIATE")
+                    c.rollback()
+                    libre.append(True)
+                except sqlite3.OperationalError:
+                    libre.append(False)
+                finally:
+                    c.close()
+            return 200.0
+        self.yahoo.precios["NVDA"] = ajustado
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo", "3y"])
+        self.assertEqual({v["close"] for v in self._velas("NVDA")}, {200.0})
+        self.assertTrue(libre and all(libre),
+                        "Rendi no puede tener la base tomada mientras espera a Yahoo")
+
+    def test_una_correccion_suelta_no_rebaja_todo(self):
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda d: 400.0
+        main._run_velas_diarias_job()
+        corregido = _ruedas(self.hoy, 5)[0]
+        self.yahoo.precios["MSFT"] = lambda d: 420.0 if d == corregido else 400.0
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["1mo"])
+        self.assertIn(420.0, {v["close"] for v in self._velas("MSFT")})
+
+    def test_cada_30_dias_se_baja_la_historia_entera(self):
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        self.yahoo.precios["MSFT"] = lambda d: 400.0
+        main._run_velas_diarias_job()
+        hace_31 = (self.hoy - timedelta(days=31)).isoformat() + " 03:00:00"
+        with main.db_abierta() as conn:
+            conn.execute("UPDATE velas_estado SET ultima_completa=? WHERE symbol='MSFT'", (hace_31,))
+            conn.commit()
+        self.yahoo.pedidos.clear()
+        main._run_velas_diarias_job()
+        self.assertEqual([p[1] for p in self.yahoo.pedidos], ["3y"])
+        self.assertEqual(len(self._velas("MSFT")), 760)
 
     def test_filas_rotas_de_yahoo_no_entran(self):
         self._broker("IOL", "ARS")
