@@ -15,6 +15,13 @@ import { isBymaHolding, fciLabel } from './valuation'
 import { isCrypto } from './crypto'
 import { cedearRatio } from './cedearRatio'
 import { tarjetas, veredictoRsi, RSI_CASTIGADO, RSI_ESTIRADO } from './tecnico'
+import { hoyISO } from './fecha'
+
+// Una lectura cuya última vela tiene más días corridos que esto no describe el
+// precio de hoy (Yahoo dejó de mandar velas, cambió el ticker): va «sin
+// lectura» con su fecha, en vez de contarse en el porcentaje. Un fin de semana
+// largo con feriados son 5 días; las velas se guardan cada noche.
+export const DIAS_LECTURA_VIEJA = 10
 
 /**
  * ¿Este lote es una acción ARGENTINA (no un CEDEAR)? Entonces su lectura en
@@ -66,9 +73,12 @@ export function lecturaDeFila(indice, p) {
  * 'bajista' | 'sin', palabra, motivo }. «Sin lectura» cuando no hay velas o no
  * alcanzan para la media de 200 (la ficha dice «Faltan datos»).
  */
-export function tendencia(x) {
+export function tendencia(x, hoy = hoyISO()) {
   if (!x || !x.disponible || !x.lectura) {
     return { id: 'sin', palabra: 'Sin lectura', motivo: 'Todavía no hay historia de precios guardada para este activo.' }
+  }
+  if (lecturaVieja(x, hoy)) {
+    return { id: 'sin', palabra: 'Sin lectura', motivo: `El último precio guardado es del ${fechaCorta(x.lectura.fecha)}: no describe el de hoy.` }
   }
   const fondo = tarjetas(x.lectura).find(t => t.id === 'fondo')
   if (fondo?.veredicto === 'Alcista') return { id: 'alcista', palabra: 'Alcista', motivo: fondo.texto }
@@ -76,9 +86,22 @@ export function tendencia(x) {
   return { id: 'sin', palabra: 'Sin lectura', motivo: fondo?.texto || 'Faltan datos.' }
 }
 
-/** El RSI de la fila y su palabra («Pesan más las subas»). null si no hay. */
-export function fuerza(x) {
-  const rsi = x?.disponible ? x.lectura?.rsi : null
+/** ¿La última vela es de hace más de DIAS_LECTURA_VIEJA días corridos? */
+export function lecturaVieja(x, hoy = hoyISO()) {
+  const f = x?.lectura?.fecha
+  if (!f) return false
+  return (Date.parse(hoy + 'T00:00:00Z') - Date.parse(f + 'T00:00:00Z')) / 86400000 > DIAS_LECTURA_VIEJA
+}
+
+function fechaCorta(iso) {
+  const [y, m, d] = String(iso).split('-')
+  return `${d}/${m}/${y}`
+}
+
+/** El RSI de la fila y su palabra («Pesan más las subas»). null si no hay o
+ *  si la lectura es vieja. */
+export function fuerza(x, hoy = hoyISO()) {
+  const rsi = x?.disponible && !lecturaVieja(x, hoy) ? x.lectura?.rsi : null
   if (rsi == null) return null
   return { rsi, palabra: veredictoRsi(rsi) }
 }
@@ -117,7 +140,7 @@ function cuando(iso) {
  *   { total, grupos: { alcista, bajista, sin } con { valor, pct, nombres[] },
  *     cambios: [{ asset, tono: 'pos'|'neg'|'aviso', texto }] }
  */
-export function radiografia(lotes = [], valorDe, indice, extra = []) {
+export function radiografia(lotes = [], valorDe, indice, extra = [], hoy = hoyISO()) {
   const porActivo = new Map()   // clave → { nombre, valor, x }
   const sumar = (k, nombre, valor, x) => {
     if (!(valor > 0)) return
@@ -136,7 +159,7 @@ export function radiografia(lotes = [], valorDe, indice, extra = []) {
   for (const e of extra) sumar(`extra:${e.nombre}`, e.nombre, Number(e.valor), null)
 
   const grupos = { alcista: [], bajista: [], sin: [] }
-  for (const a of porActivo.values()) grupos[tendencia(a.x).id].push(a)
+  for (const a of porActivo.values()) grupos[tendencia(a.x, hoy).id].push(a)
   const ids = ['alcista', 'bajista', 'sin']
   const valores = ids.map(id => grupos[id].reduce((s, a) => s + a.valor, 0))
   const pcts = repartirCien(valores)
@@ -150,7 +173,9 @@ export function radiografia(lotes = [], valorDe, indice, extra = []) {
   // Lo que cambió: primero los cruces de la media de 200 (la tendencia de
   // fondo), después los de 50, después el RSI en un extremo; dentro de cada
   // uno, lo que más pesa en tu cartera primero.
-  const conLectura = [...porActivo.values()].filter(a => a.x?.disponible).sort((a, b) => b.valor - a.valor)
+  // Sólo lecturas de hoy: una serie cortada no tiene «esta semana» (el servidor
+  // ya cuenta los cruces desde hoy; el RSI viejo se saca acá).
+  const conLectura = [...porActivo.values()].filter(a => a.x?.disponible && !lecturaVieja(a.x, hoy)).sort((a, b) => b.valor - a.valor)
   const cambios = []
   for (const n of [200, 50]) {
     for (const a of conLectura) {

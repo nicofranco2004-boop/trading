@@ -1582,7 +1582,7 @@ export default function PositionsMobile() {
 
   return (
     <FdhCtx.Provider value={fdhCtx}>
-    <LecturasTecnicasProvider value={lecturas.indice}>
+    <LecturasTecnicasProvider value={lecturas}>
     <div className="pb-8">
       <RecalculoDeCartera cobro={recalculo.cobro} recalculando={recalculo.recalculando}
         total={heroValor} formato={fmtRecalculo} />
@@ -1726,7 +1726,7 @@ export default function PositionsMobile() {
           onCambio={(cobro) => recalculo.anotar(cobro, loadAll)} className="mt-3" />
         {/* Radiografía técnica: el MISMO componente que Cartera de escritorio (R6). */}
         <RadiografiaTecnica lotes={enriched} valorDe={valorUsdDeFila} extra={radiografiaExtra}
-          indice={lecturas.indice} cargando={lecturas.cargando} className="mt-3" />
+          indice={lecturas.indice} cargando={lecturas.cargando} error={lecturas.error} className="mt-3" />
       </div>
 
       {/* Los ajustes de vista viven en un sheet, así que la lista tiene que
@@ -3122,10 +3122,12 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
       {/* Tendencia de fondo y fuerza (RSI): las mismas celdas que la compu. El
           lote de una fila abierta no las repite. */}
       <Celda>
-        {(p.is_cash || p._isLot) ? <Vacio /> : (
+        {(p.is_cash || p._isLot) ? <Vacio /> : tecnica.estado === 'cargando' ? (
+          <div className={`${LINEA_1} text-ink-3`}>…</div>
+        ) : tecnica.estado === 'error' ? <Vacio /> : (
           <>
-            <TendenciaChip x={tecnica} className="text-[11.5px]" />
-            {tecnica?.disponible && <FuerzaRsi x={tecnica} className="mt-[5px]" />}
+            <TendenciaChip x={tecnica.x} className="text-[11.5px]" />
+            <FuerzaRsi x={tecnica.x} sinGuion className="mt-[5px]" />
           </>
         )}
       </Celda>

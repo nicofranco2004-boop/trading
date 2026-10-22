@@ -26,31 +26,46 @@ import { RSI_CASTIGADO, RSI_ESTIRADO } from '../utils/tecnico'
 /**
  * Pide la lectura de todos los activos de la cartera de una vez. Vuelve a pedir
  * sólo si cambia QUÉ activos hay (no con cada refresco de precios: las velas son
- * de cierre y se guardan de noche). → { indice, cargando }
+ * de cierre y se guardan de noche). → { indice, cargando, error }
+ *
+ * Si el pedido falla, `error` y `indice` null: NO un índice vacío, que la
+ * pantalla leería como «ningún activo tiene lectura» (y no es eso lo que pasó).
  */
 export function useLecturasCartera(lotes) {
   const pedido = useMemo(() => activosParaLeer(lotes), [lotes])
   const firma = JSON.stringify(pedido)
-  const [estado, setEstado] = useState({ firma: null, indice: null })
+  const [estado, setEstado] = useState({ firma: null, indice: null, error: false })
   useEffect(() => {
     if (!pedido.length) return undefined
     let vivo = true
     api.post('/tecnico/cartera', { activos: pedido })
-      .then(r => { if (vivo) setEstado({ firma, indice: indexarLecturas(r?.lecturas) }) })
-      .catch(() => { if (vivo) setEstado({ firma, indice: new Map() }) })
+      .then(r => { if (vivo) setEstado({ firma, indice: indexarLecturas(r?.lecturas), error: false }) })
+      .catch(() => { if (vivo) setEstado({ firma, indice: null, error: true }) })
     return () => { vivo = false }
     // `firma` resume `pedido`: depender del array haría un pedido por render.
   }, [firma])
   const listo = estado.firma === firma
-  return { indice: listo ? estado.indice : null, cargando: pedido.length > 0 && !listo }
+  return {
+    indice: listo ? estado.indice : null,
+    cargando: pedido.length > 0 && !listo,
+    error: listo && estado.error,
+  }
 }
 
-// Para las filas del celular (componentes memo, adentro de otros): el índice
-// viaja por contexto en vez de por cinco niveles de props.
+/** Lo que muestra una fila de la tabla: 'cargando' | 'error' | 'listo' (con su
+ *  lectura `x`, que puede ser null = sin lectura). Lo usan las dos tablas. */
+export function lecturaDeLaFila(lecturas, p) {
+  if (lecturas?.cargando) return { estado: 'cargando', x: null }
+  if (lecturas?.error || !lecturas?.indice) return { estado: 'error', x: null }
+  return { estado: 'listo', x: lecturaDeFila(lecturas.indice, p) }
+}
+
+// Para las filas del celular (componentes memo, adentro de otros): las lecturas
+// viajan por contexto en vez de por cinco niveles de props.
 const LecturasCtx = createContext(null)
 export const LecturasTecnicasProvider = LecturasCtx.Provider
 export function useLecturaDeFila(p) {
-  return lecturaDeFila(useContext(LecturasCtx), p)
+  return lecturaDeLaFila(useContext(LecturasCtx), p)
 }
 
 const TONO = {
@@ -74,9 +89,9 @@ export function TendenciaChip({ x, className = '' }) {
 
 /** La fuerza del movimiento: la barrita 0–100 con 30 y 70 marcados (la misma
  *  regla que la ficha) y el número. «—» si no hay. */
-export function FuerzaRsi({ x, className = '' }) {
+export function FuerzaRsi({ x, className = '', sinGuion = false }) {
   const f = fuerza(x)
-  if (!f) return <span className={`text-ink-3 ${className}`}>—</span>
+  if (!f) return sinGuion ? null : <span className={`text-ink-3 ${className}`}>—</span>
   const pos = Math.min(100, Math.max(0, f.rsi))
   return (
     <span className={`inline-flex items-center gap-2 ${className}`} title={`RSI ${Math.round(f.rsi)} de 100: ${f.palabra.toLowerCase()}`}>
@@ -106,13 +121,21 @@ function Lista({ nombres, max = 6 }) {
  * lo que suma al total sin ser posición (plazos fijos); `indice`/`cargando`: lo
  * que devuelve `useLecturasCartera`.
  */
-export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice, cargando, className = '' }) {
+export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice, cargando, error, className = '' }) {
   const { hidden } = usePrivacy()
   const r = useMemo(
     () => (indice ? radiografia(lotes, valorDe, indice, extra) : null),
     [lotes, valorDe, indice, extra])
 
   if (!lotes?.some(p => !p.is_cash)) return null
+  if (error) {
+    return (
+      <section aria-label="Radiografía técnica" className={`bg-bg-1 border border-line rounded-xl px-4 sm:px-5 py-4 ${className}`}>
+        <div className="text-[12px] text-ink-2 font-medium">Radiografía técnica · medida en dólares</div>
+        <p className="text-[13.5px] text-ink-1 mt-1.5">No pudimos traer la lectura técnica de tus activos ahora. Probá recargar la página en un rato.</p>
+      </section>
+    )
+  }
   if (cargando || !r) {
     return <div className={`h-36 rounded-xl bg-bg-2/40 border border-line esqueleto ${className}`} aria-label="Cargando la radiografía técnica" />
   }
@@ -127,8 +150,9 @@ export default function RadiografiaTecnica({ lotes, valorDe, extra = [], indice,
         <div className="text-[12px] text-ink-2 font-medium">Radiografía técnica · medida en dólares</div>
         {sinNinguna ? (
           <p className="text-[15px] text-ink-1 leading-snug">
-            Todavía no hay lectura técnica de tus activos: hace falta casi un año de precios guardados
-            (200 ruedas) para saber hacia dónde va cada uno.
+            Ninguno de tus activos tiene todavía una tendencia de fondo para leer: bonos, fondos y
+            efectivo no tienen historia de precios en Rendi, y una acción o un CEDEAR necesita 200
+            ruedas de precios guardados.
           </p>
         ) : (
           <p className="text-[19px] sm:text-[21px] font-semibold leading-snug text-ink-0">

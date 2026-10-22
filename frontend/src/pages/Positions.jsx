@@ -64,8 +64,7 @@ import { preciosQueCambiaron, hayPrecios } from '../utils/preciosEnVivo'
 import { useUltimoPedido } from '../hooks/useUltimoPedido'
 import { useEnVuelo } from '../hooks/useEnVuelo'
 import PesoEnCartera from '../components/PesoEnCartera'
-import RadiografiaTecnica, { useLecturasCartera, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
-import { lecturaDeFila } from '../utils/radiografia'
+import RadiografiaTecnica, { useLecturasCartera, lecturaDeLaFila, TendenciaChip, FuerzaRsi } from '../components/RadiografiaTecnica'
 import { relojVisible, PRECIOS_CARTERA_MS } from '../utils/relojVisible'
 import { useFueraDeHorarioDe } from '../hooks/useFueraDeHorario'
 import { impactoFueraDeHorario, sumarTenencias } from '../utils/fueraDeHorario'
@@ -1822,15 +1821,17 @@ function PositionsDesktop() {
   // Las dos columnas técnicas de una fila (las dos tablas). El lote de una fila
   // abierta no las repite; el efectivo no tiene.
   const celdasTecnicas = (p, isLot) => {
-    const x = lecturaDeFila(lecturas.indice, p)
-    const nada = <span className="text-ink-3">{isLot ? '' : '—'}</span>
-    const cargando = lecturas.cargando && !p.is_cash && !isLot
-    return (
-      <>
-        <td className={tdClass}>{cargando ? <span className="text-ink-3">…</span> : (p.is_cash || isLot) ? nada : <TendenciaChip x={x} />}</td>
-        <td className={tdClass}>{cargando ? <span className="text-ink-3">…</span> : (p.is_cash || isLot) ? nada : <FuerzaRsi x={x} />}</td>
-      </>
+    const { estado, x } = lecturaDeLaFila(lecturas, p)
+    const gris = (t, title) => <span className="text-ink-3" title={title}>{t}</span>
+    const celda = (lleno) => (
+      <td className={tdClass}>
+        {(p.is_cash || isLot) ? gris(isLot ? '' : '—')
+          : estado === 'cargando' ? gris('…')
+            : estado === 'error' ? gris('—', 'No pudimos traer la lectura técnica')
+              : lleno}
+      </td>
     )
+    return <>{celda(<TendenciaChip x={x} />)}{celda(<FuerzaRsi x={x} />)}</>
   }
   const heroInvested = totals.invested + pfInvestedUsd
   const heroPnl = heroValue - heroInvested
@@ -2147,7 +2148,7 @@ function PositionsDesktop() {
       {/* Radiografía técnica: cuánto de tu plata está en tendencia alcista. La
           MISMA pieza que en el celular (R6). */}
       <RadiografiaTecnica lotes={positions} valorDe={valorDeLote} extra={radiografiaExtra}
-        indice={lecturas.indice} cargando={lecturas.cargando} className="mb-5" />
+        indice={lecturas.indice} cargando={lecturas.cargando} error={lecturas.error} className="mb-5" />
 
       {/* Banner de variación diaria deshabilitado — requiere snapshots
           confiables (cron server-side) que aún no están implementados. */}

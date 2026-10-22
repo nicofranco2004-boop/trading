@@ -181,6 +181,23 @@ class RadiografiaTest(unittest.TestCase):
         self.assertEqual(c[("KO", False)]["cambios"], [], "un cruce de hace 30 ruedas no es de esta semana")
         self.assertEqual(c[("AAPL", False)]["cambios"], [])
 
+    def test_velas_cortadas_no_son_de_esta_semana(self):
+        # MSFT cruzó su media hace 28 ruedas y sus velas se cortaron 3 ruedas
+        # después (Yahoo dejó de mandarlas). Contado desde su última vela, el
+        # cruce caía «esta semana»; contado desde hoy, es de hace un mes.
+        self._broker("Schwab", "USD")
+        self._posicion("Schwab", "MSFT", "STOCK")
+        n = self.n
+        self.yahoo.precios["MSFT"] = lambda i, d: 150.0 if i >= n - 28 else 100 - i * 0.01
+        main._run_velas_diarias_job()
+        with main.db_abierta() as conn:
+            conn.execute("DELETE FROM velas_diarias WHERE symbol='MSFT' AND date > ?",
+                         (self.dias[n - 26].isoformat(),))
+            conn.commit()
+        x = self._cartera([{"asset": "MSFT"}])[("MSFT", False)]
+        self.assertEqual(x["lectura"]["fecha"], self.dias[n - 26].isoformat())
+        self.assertEqual(x["cambios"], [], "un cruce de hace un mes no es de esta semana")
+
     def test_lo_que_no_tiene_lectura(self):
         self._armar()
         c = self._cartera([{"asset": "AL30", "local": True}, {"asset": "FCI PIONERO PESOS"},
@@ -206,7 +223,7 @@ class RadiografiaTest(unittest.TestCase):
         r = self.client.post("/api/tecnico/cartera",
                              json={"activos": [{"asset": f"A{i}"} for i in range(tecnico.MAX_ACTIVOS_CARTERA + 1)]},
                              headers=self.h)
-        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 422, "el tope se corta al leer el pedido")
         r = self.client.post("/api/tecnico/cartera", json={"activos": [{"asset": "AAPL"}]})
         self.assertIn(r.status_code, (401, 403))
 

@@ -332,9 +332,11 @@ def para_la_ficha(conn, asset: str, moneda: str = "usd", local: bool = False, re
 
 # ─── La radiografía de la Cartera: varios activos de una vez ────────────────
 
-# «Lo que cambió esta semana»: los cruces de los últimos 7 días corridos desde
-# la última vela (por FECHA, no por cantidad de velas: la cripto cotiza los 7
-# días y la bolsa 5).
+# «Lo que cambió esta semana»: los cruces de los últimos 7 días corridos
+# contados desde HOY (por FECHA, no por cantidad de velas: la cripto cotiza los
+# 7 días y la bolsa 5). Desde hoy y no desde la última vela: si un activo dejó
+# de tener velas nuevas (Yahoo falló, cambió el ticker), un cruce de hace un mes
+# no puede salir como «de esta semana».
 DIAS_CAMBIOS = 7
 # Tope de activos por pedido: una cartera grande tiene ~60; esto frena un
 # pedido armado a mano que haga leer miles de series.
@@ -365,6 +367,8 @@ def para_la_cartera(conn, activos: list) -> list:
     `lectura` que la ficha (así las palabras salen de la misma regla) y
     `cambios`: los cruces de la media de 200 y de 50 de los últimos
     `DIAS_CAMBIOS` días. Sin velas: `disponible` False, nunca se inventa."""
+    from fechas import hoy_art_date
+    desde = (hoy_art_date() - timedelta(days=DIAS_CAMBIOS)).isoformat()
     out, vistos = [], set()
     for asset, local in activos:
         a = (asset or "").strip().upper()
@@ -377,7 +381,6 @@ def para_la_cartera(conn, activos: list) -> list:
             out.append({"asset": a, "local": bool(local), "disponible": False})
             continue
         cierres = [v["close"] for v in velas]
-        desde = (date.fromisoformat(velas[-1]["date"]) - timedelta(days=DIAS_CAMBIOS)).isoformat()
         medias = {200: media(cierres, 200), 50: media(cierres, 50)}
         cambios = []
         for n in (200, 50):

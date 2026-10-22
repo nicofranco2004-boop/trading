@@ -11397,8 +11397,13 @@ class ActivoTecnicoIn(BaseModel):
     local: bool = False
 
 
+from tecnico import MAX_ACTIVOS_CARTERA  # noqa: E402 (tecnico sólo importa datetime arriba)
+
+
 class CarteraTecnicaIn(BaseModel):
-    activos: List[ActivoTecnicoIn] = Field(default_factory=list)
+    # El tope va en el modelo: una lista gigante se corta al leerla, antes de
+    # armar un objeto por elemento.
+    activos: List[ActivoTecnicoIn] = Field(default_factory=list, max_length=MAX_ACTIVOS_CARTERA)
 
 
 @app.post("/api/tecnico/cartera")
@@ -11409,8 +11414,6 @@ def post_tecnico_cartera(body: CarteraTecnicaIn, uid: int = Depends(get_effectiv
     (un fondo con espacios en el nombre) vuelve como «sin lectura», sin tirar
     abajo el resto del pedido."""
     import tecnico
-    if len(body.activos) > tecnico.MAX_ACTIVOS_CARTERA:
-        raise HTTPException(400, f"Máximo {tecnico.MAX_ACTIVOS_CARTERA} activos por pedido")
     validos, invalidos = [], []
     for a in body.activos:
         sym = (a.asset or "").strip().upper()

@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   esLoteLocal, esAccionLocal, activosParaLeer, indexarLecturas, lecturaDeFila, tendencia, fuerza,
-  repartirCien, radiografia,
+  repartirCien, radiografia, lecturaVieja,
 } from './radiografia'
+import { lecturaDeLaFila } from '../components/RadiografiaTecnica'
 import { computeBrokerValue, setBrokersRegistry } from './valuation'
 import { tarjetas } from './tecnico'
 
@@ -118,5 +119,43 @@ describe('radiografia, con la valuación de la Cartera', () => {
   it('el RSI en la zona del medio no es un cambio; 70 justo tampoco', () => {
     const indice = indexarLecturas([lec('NVDA', false, { ...ALCISTA, rsi: 70 }), lec('KO', false, { ...BAJISTA, rsi: 30 })])
     expect(radiografia(POS, valorDe, indice).cambios).toEqual([])
+  })
+})
+
+describe('lo que no se puede leer no se inventa', () => {
+  const HOY = '2026-10-22'
+  it('una lectura de hace más de 10 días va sin lectura, con su fecha, y sin RSI', () => {
+    const vieja = lec('MSFT', false, { ...ALCISTA, fecha: '2026-09-17' })
+    expect(lecturaVieja(vieja, HOY)).toBe(true)
+    expect(tendencia(vieja, HOY)).toMatchObject({ id: 'sin', palabra: 'Sin lectura' })
+    expect(tendencia(vieja, HOY).motivo).toContain('17/09/2026')
+    expect(fuerza(vieja, HOY)).toBeNull()
+    // Un fin de semana largo (viernes → martes) sigue siendo de hoy.
+    const finde = lec('MSFT', false, { ...ALCISTA, fecha: '2026-10-16' })
+    expect(tendencia(finde, HOY).id).toBe('alcista')
+  })
+
+  it('la radiografía no cuenta como alcista una lectura vieja ni su RSI como cambio', () => {
+    const lotes = [
+      { id: 1, broker: 'Schwab', asset: 'MSFT', asset_type: 'STOCK' },
+      { id: 2, broker: 'Schwab', asset: 'NVDA', asset_type: 'STOCK' },
+    ]
+    const indice = indexarLecturas([
+      lec('MSFT', false, { ...ALCISTA, rsi: 80, fecha: '2026-09-17' }),
+      lec('NVDA', false, { ...ALCISTA, fecha: '2026-10-21' }),
+    ])
+    const r = radiografia(lotes, () => 100, indice, [], HOY)
+    expect(r.grupos.alcista.nombres).toEqual(['NVDA'])
+    expect(r.grupos.sin.nombres).toEqual(['MSFT'])
+    expect(r.cambios).toEqual([])
+  })
+
+  it('si el pedido falla, la fila dice error, no «sin lectura»', () => {
+    const p = { asset: 'NVDA', asset_type: 'STOCK', broker: 'Schwab' }
+    expect(lecturaDeLaFila({ cargando: false, error: true, indice: null }, p).estado).toBe('error')
+    expect(lecturaDeLaFila({ cargando: true, error: false, indice: null }, p).estado).toBe('cargando')
+    const listo = lecturaDeLaFila({ cargando: false, error: false, indice: indexarLecturas([lec('NVDA', false, ALCISTA)]) }, p)
+    expect(listo.estado).toBe('listo')
+    expect(tendencia(listo.x).id).toBe('alcista')
   })
 })
