@@ -12,7 +12,7 @@
 // sólo por variables del tema (R8).
 
 import { indiceDeFecha } from '../../utils/tecnico'
-import { nivelTexto, rayas, rotulosQueEntran, tarjetaFibonacci } from '../../utils/fibonacci'
+import { rayas, rotuloNivel, rotulosQueEntran, tarjetaFibonacci } from '../../utils/fibonacci'
 
 // Magenta: no se confunde con ninguna otra línea del gráfico (precio, media de
 // 200 azul, media de 50 naranja, velas verdes y rojas). Variable del tema (R8),
@@ -107,7 +107,7 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
           style={{ left: `${x0}%`, right: 0, top: `${tops[k]}%`, borderTop: `1px ${r.extremo ? 'solid' : 'dashed'} ${COLOR_FIB}`, opacity: r.extremo ? 0.9 : 0.7 }}>
           {conRotulo.has(k) && (
             <span className={`absolute rounded bg-bg-1/85 px-1 text-[10.5px] leading-tight tabular whitespace-nowrap text-ink-1 ${rotuloAdentro ? 'left-1 -translate-y-full' : 'right-full mr-1 -translate-y-1/2'}`}>
-              {nivelTexto(r.nivel)} · {precio(r.precio)}
+              {rotuloNivel(r.nivel, fib.dir)} · {precio(r.precio)}
             </span>
           )}
         </div>
@@ -166,6 +166,7 @@ export function TarjetaFibonacci({ fib, precio, fecha }) {
       <div className="text-[12px] text-ink-2 font-medium">{t.titulo}</div>
       <div className="text-[15px] font-semibold mt-0.5 text-ink-0">{t.veredicto}</div>
       <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.texto}</div>
+      {t.explicacion && <div className="text-[12.5px] text-ink-1 leading-relaxed mt-1.5">{t.explicacion}</div>}
       <div className="text-[11.5px] text-ink-3 leading-relaxed mt-2">{t.pie}</div>
     </div>
   )

@@ -60,13 +60,13 @@ describe('Fibonacci en la ficha', () => {
     const antes = await dibujar()
     expect(antes).toContain('Fibonacci')            // el botón
     expect(antes).not.toContain('Fibonacci de la última suba')
-    expect(antes).not.toContain('0,618 ·')
+    expect(antes).not.toContain('61,8 % ·')
     const t = await prender()
     expect(t).toContain('Fibonacci de la última suba')
-    expect(t).toContain('Bajó hasta el 0,382')
-    expect(t).toContain('Hoy está entre el 0,382 y el 0,5')
-    expect(t).toContain('0 · US$ 176,75')            // el final del tramo, siempre con rótulo
-    expect(t).toContain('1 · US$ 108,90')            // el arranque
+    expect(t).toContain('Devolvió el 45 % de la suba')
+    expect(t).toContain('está entre el 38,2 % y el 50 % de la suba')
+    expect(t).toContain('Pico · US$ 176,75')         // el final del tramo, siempre con rótulo
+    expect(t).toContain('Arranque · US$ 108,90')
     expect(t).toContain('no es una recomendación')
     // Apagarlo lo saca.
     const despues = await prender()
@@ -78,7 +78,7 @@ describe('Fibonacci en la ficha', () => {
     await dibujar()
     const t = await prender()
     expect(t).toContain('Sin tramo claro')
-    expect(t).not.toContain('0,618 ·')
+    expect(t).not.toContain('61,8 % ·')
   })
 
   it('al prenderlo con un tramo corto, el gráfico se acerca al tramo', async () => {
@@ -101,7 +101,7 @@ describe('Fibonacci en la ficha', () => {
     respuesta = DATOS(corto)
     await dibujar()
     const t = await prender()
-    for (const n of ['0 ·', '0,236 ·', '0,382 ·', '0,5 ·', '0,618 ·', '0,786 ·', '1 ·']) expect(t).toContain(n)
+    for (const n of ['Pico ·', '23,6 % ·', '38,2 % ·', '50 % ·', '61,8 % ·', '78,6 % ·', 'Arranque ·']) expect(t).toContain(n)
   })
 
   it('con zoom o arrastre, lo que queda fuera de la vista no se dibuja en otro lugar', async () => {
@@ -122,7 +122,7 @@ describe('Fibonacci en la ficha', () => {
     expect(posicion(medio, FIB.desde.fecha).donde).toBe('antes')
     expect(preciosDeLaCapa(FIB, medio)).toEqual([108.9, 176.75])
     montado = await montar(capa(medio))
-    expect(texto(montado.contenedor)).toContain('0,5 ·')
+    expect(texto(montado.contenedor)).toContain('50 % ·')
     expect(buscar(montado.contenedor, 'svg')).toBeNull()
     await montado.desmontar()
     // Con todo a la vista, sí.

@@ -3,13 +3,27 @@
 // Las CUENTAS (picos, pozos, tramos, rupturas y niveles) vienen hechas de
 // GET /api/tecnico en el campo `fibonacci` (backend/estructura.py). Acá sólo se
 // dicen en castellano y se decide qué rótulo del gráfico entra.
+//
+// El tono es el del resto del análisis técnico (Nico, 22/10: «claro, conciso,
+// del día a día, sin tecnicismos que no sirven»): «días de mercado» y no
+// «ruedas», cada nivel dicho por lo que significa para quien mira («hasta dónde
+// podría volver a bajar antes de seguir subiendo») y el porcentaje como dato al
+// lado, nunca como jerga («el 0,618»).
 
 export const NIVELES_FIB = [0.236, 0.382, 0.5, 0.618, 0.786]
 
-/** 0.5 → "0,5"; 0.618 → "0,618". */
-export const nivelTexto = (r) => r.toLocaleString('es-AR', { maximumFractionDigits: 3 })
+/** 0.5 → "50 %"; 0.618 → "61,8 %". */
+export const nivelPct = (r) => `${(r * 100).toLocaleString('es-AR', { maximumFractionDigits: 1 })} %`
 
-/** El nivel más lejano que el precio llegó a tocar: 0 si no llegó al 0,236,
+/** El rótulo de una raya del gráfico: los extremos por su nombre (el pico o el
+ *  piso donde terminó el tramo, y su arranque), los niveles por su porcentaje. */
+export function rotuloNivel(nivel, dir) {
+  if (nivel === 0) return dir === 'suba' ? 'Pico' : 'Piso'
+  if (nivel === 1) return 'Arranque'
+  return nivelPct(nivel)
+}
+
+/** El nivel más lejano que el precio llegó a tocar: 0 si no llegó al 23,6 %,
  *  1 si pasó el arranque del tramo. */
 export function nivelAlcanzado(r) {
   if (r == null) return null
@@ -64,18 +78,18 @@ function textoEnCurso(e, precio, fecha) {
 }
 
 /**
- * La tarjeta del Fibonacci: { titulo, veredicto, texto, pie }. `precio` y
+ * La tarjeta del Fibonacci: { titulo, veredicto, texto, explicacion?, pie }. `precio` y
  * `fecha` formatean como el resto de la ficha. Describe, no recomienda.
  */
 export function tarjetaFibonacci(f, precio, fecha) {
   if (!f) return null
   const n = f.n_pivote ?? 3
-  const pie = `Un pico o un pozo recién se confirma ${n} ruedas después: hasta entonces no se sabe si alguno de los ${n} días siguientes lo supera. `
+  const pie = `Un pico o un pozo recién se confirma ${n} días de mercado después: hasta entonces no se sabe si alguno de esos días lo supera. `
     + 'Describe cómo se movió el precio; no es una recomendación de compra o venta.'
   if (!f.disponible) {
     if (f.motivo === 'pocos_datos') {
       return { titulo: 'Fibonacci', veredicto: 'Faltan datos', pie,
-        texto: `Para ver picos y pozos hacen falta al menos 30 ruedas y hay ${f.ruedas}.` }
+        texto: `Para ver picos y pozos hacen falta al menos 30 días de mercado y este activo tiene ${f.ruedas}.` }
     }
     const e = f.en_curso
     const enCurso = e ? `${e.dir === 'suba' ? 'Suba' : 'Bajada'} en curso` : null
@@ -107,33 +121,42 @@ export function tarjetaFibonacci(f, precio, fecha) {
   }
 
   const suba = f.dir === 'suba'
-  const alcanzado = nivelAlcanzado(f.retroceso_maximo?.valor ?? f.retroceso_hoy)
-  const verbo = suba ? 'Bajó' : 'Recuperó'
-  const veredicto = alcanzado === 0
-    ? `Todavía no ${suba ? 'bajó' : 'subió'} al 0,236`
-    : alcanzado === 1 ? `${verbo} más allá del arranque` : `${verbo} hasta el ${nivelTexto(alcanzado)}`
   const [a, b] = f.entre || []
-  const hoy = a === 0
-    ? `Hoy está cerca del final de la ${f.dir}, antes del 0,236`
-    : b === 1 ? `Hoy está entre el 0,786 y el arranque de la ${f.dir}` : `Hoy está entre el ${nivelTexto(a)} y el ${nivelTexto(b)}`
-  const cuanto = `${suba ? 'devolvió' : 'recuperó'} el ${pct0(f.retroceso_hoy)} de la ${f.dir}`
+  const hoy = f.retroceso_hoy
+  const veredicto = hoy < 0.05
+    ? `Sigue cerca del ${suba ? 'pico' : 'piso'}`
+    : `${suba ? 'Devolvió' : 'Recuperó'} el ${pct0(hoy)} de la ${f.dir}`
+
   // Si nunca llegó a formar un segundo pico, lo que defendía era su arranque.
   const contra = f.ruptura.nivel_fecha === f.desde.fecha
     ? `donde había arrancado (${precio(f.ruptura.nivel)})`
-    : `${suba ? 'su último pozo más alto' : 'su último techo más bajo'} (${precio(f.ruptura.nivel)}, del ${fecha(f.ruptura.nivel_fecha)})`
-  // El pico (o piso) se confirma 3 ruedas después: a veces el precio ya había
-  // cerrado del otro lado antes de que se supiera cuál era el nivel a defender.
+    : `su ${suba ? 'último pozo más alto' : 'último techo más bajo'} (${precio(f.ruptura.nivel)}, del ${fecha(f.ruptura.nivel_fecha)})`
+  // El pico (o piso) se confirma 3 días de mercado después: a veces el precio
+  // ya había cerrado del otro lado antes de que se supiera cuál era el nivel.
   const fuera = f.ruptura.cerro_fuera_fecha
   const fin = fuera && fuera !== f.ruptura.fecha
-    ? `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}: ese día se confirmó que el nivel a defender era ${contra}, y el precio ya había cerrado ${suba ? 'debajo' : 'encima'} el ${fecha(fuera)}.`
-    : `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}, cuando cerró ${suba ? 'debajo' : 'encima'} de ${contra}.`
+    ? `El ${fecha(f.ruptura.fecha)} se confirmó que el nivel a defender era ${contra}, y el precio ya había cerrado ${suba ? 'debajo' : 'encima'} el ${fecha(fuera)}: ahí terminó la ${f.dir}.`
+    : `El ${fecha(f.ruptura.fecha)} cerró ${suba ? 'debajo' : 'encima'} de ${contra}: ahí terminó la ${f.dir}.`
+
+  const zona = a === 0
+    ? `${suba ? 'devolvió' : 'recuperó'} menos del 23,6 % de la ${f.dir}`
+    : b === 1
+      ? `${suba ? 'devolvió' : 'recuperó'} casi toda la ${f.dir} (más del 78,6 %)`
+      : `está entre el ${nivelPct(a)} y el ${nivelPct(b)} de la ${f.dir}`
   const rm = f.retroceso_maximo
-  const lejos = rm && alcanzado > 0
-    ? ` Lo más ${suba ? 'bajo' : 'alto'} que llegó${rm.precio != null ? ` fue ${precio(rm.precio)},` : ''} el ${fecha(rm.fecha)}.` : ''
+  const lejos = rm && rm.precio != null && rm.valor >= 0.05
+    ? ` Lo más ${suba ? 'bajo' : 'alto'} que llegó fue ${precio(rm.precio)}, el ${fecha(rm.fecha)} (${rm.valor >= 1 ? `pasó el arranque de la ${f.dir}` : `${pct0(rm.valor)} de la ${f.dir}`}).`
+    : ''
+  const hoyTxt = f.precio_hoy != null ? `Hoy está en ${precio(f.precio_hoy)}: ${zona}.` : `Hoy ${zona}.`
+  const queSon = suba
+    ? 'Las rayas marcan hasta dónde podría volver a bajar antes de seguir subiendo: muchos miran el 38,2 %, el 50 % y el 61,8 % de la suba. Pasar el 78,6 % es devolver casi toda la suba.'
+    : 'Las rayas marcan hasta dónde podría volver a subir antes de seguir bajando: muchos miran el 38,2 %, el 50 % y el 61,8 % de la bajada. Pasar el 78,6 % es recuperar casi toda la bajada.'
+
   return {
     titulo: suba ? 'Fibonacci de la última suba' : 'Fibonacci de la última bajada',
     veredicto, pie,
-    texto: `De la última ${f.dir} (de ${precio(f.desde.precio)} el ${fecha(f.desde.fecha)} a ${precio(f.hasta.precio)} el ${fecha(f.hasta.fecha)}).${lejos} `
-      + `${hoy}: ${cuanto}. ${fin}`,
+    texto: `La última ${f.dir} fue de ${precio(f.desde.precio)} (${fecha(f.desde.fecha)}) a ${precio(f.hasta.precio)} (${fecha(f.hasta.fecha)}). ${fin} `
+      + `${hoyTxt}${lejos}`,
+    explicacion: queSon,
   }
 }
