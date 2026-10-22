@@ -954,6 +954,13 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
         onClick={expandable ? () => setOpen(o => !o) : undefined}
         role={expandable ? 'button' : undefined}
         aria-expanded={expandable ? open : undefined}
+        // Decía ser un botón pero el teclado no llegaba: sin tabIndex no se
+        // podía enfocar, y sin Enter/Espacio no se podía abrir.
+        tabIndex={expandable ? 0 : undefined}
+        onKeyDown={expandable ? (e => {
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o) }
+        }) : undefined}
       >
         {isMacro ? (
           <div className={`w-9 h-9 rounded-xl grid place-items-center flex-none ${cls}`}>

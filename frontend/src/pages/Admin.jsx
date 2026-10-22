@@ -506,8 +506,9 @@ export default function Admin() {
                             >Asesor</button>
                             <button
                               onClick={() => setGiftPickerFor(null)}
+                              aria-label="Cerrar"
                               className="text-xs text-ink-3 hover:text-ink-0 px-1"
-                            >✕</button>
+                            ><span aria-hidden="true">✕</span></button>
                           </div>
                         ) : (
                           <button

@@ -91,6 +91,7 @@ export default function MovementsTable({
             <button
               onClick={() => onPage(p => Math.max(0, p - 1))}
               disabled={page === 0}
+              aria-label="Página anterior"
               className="p-1.5 rounded-sm border border-line bg-bg-2 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={12} />
@@ -98,6 +99,7 @@ export default function MovementsTable({
             <button
               onClick={() => onPage(p => Math.min(totalPages - 1, p + 1))}
               disabled={page >= totalPages - 1}
+              aria-label="Página siguiente"
               className="p-1.5 rounded-sm border border-line bg-bg-2 hover:bg-bg-3 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <ChevronRight size={12} />
