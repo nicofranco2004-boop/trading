@@ -2544,6 +2544,25 @@ def init_db():
             );
         """)
 
+        # Cambios de ratio de CEDEAR (cambios_ratio.py): la lista única que leen
+        # el aviso «Ajustar» de Posiciones y los gráficos en pesos. Tabla nueva,
+        # sin ALTER: segura en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS cambios_ratio (
+                cedear TEXT NOT NULL,            -- código en pesos, sin '.BA': 'XLE'
+                fecha TEXT NOT NULL,             -- primer día que BYMA cotizó a la escala nueva
+                factor REAL,                     -- por cuánto se multiplicó la cantidad (2; 1/3); NULL si no es redondo
+                factor_medido REAL,
+                estado TEXT NOT NULL,            -- 'confirmado' | 'dudoso' | 'descartado'
+                origen TEXT NOT NULL,            -- 'cociente', 'yahoo…', 'manual' (la corrida no pisa 'manual')
+                motivo TEXT,
+                precio_antes REAL,
+                precio_despues REAL,
+                actualizado TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (cedear, fecha)
+            );
+        """)
+
         # ─── TWR: períodos SELLADOS ──────────────────────────────────────────
         # Append-only. Cada mes cerrado se calcula UNA vez y no se reescribe nunca.
         # Sin esto el número de ayer cambia hoy: `_migrate_snapshots_netdep` corre
@@ -12233,79 +12252,23 @@ def delete_position(pid: int, uid: int = Depends(get_effective_user)):
 # la plata: quantity*=F, buy_price/=F, `invested` (el cost basis que usa el P&L)
 # INTACTO. Idempotente vía positions.split_adjusted_through (watermark por lote).
 
-_splits_cache = {}  # { 'SYM.BA': (timestamp, [(ex_date, factor)]) }
 
+def _fetch_ba_splits(ba_symbol: str, conn=None):
+    """Cambios de ratio CONFIRMADOS de un CEDEAR, [(fecha, factor)], de la lista
+    única (`cambios_ratio.py`), la misma que leen los gráficos en pesos.
 
-# Por símbolo: la lista de splits de una cartera se precalienta en paralelo
-# (`_precalentar_splits`), así que esto sólo lo paga quien pide UN símbolo.
-SPLITS_TOPE_SEG = 5.0
-
-
-def _splits_de_yahoo(ba_symbol: str):
-    return yf.Ticker(ba_symbol).splits
-
-
-def _parsear_splits(s) -> list:
-    """Serie de yfinance → [(ex_date 'YYYY-MM-DD', factor)]. Normaliza el índice
-    tz-aware (idx.date().isoformat()) para NUNCA comparar el timestamp crudo
-    contra entry_date."""
-    out = []
-    for idx, factor in s.items():
-        try:
-            d = idx.date().isoformat()
-        except Exception:
-            d = str(idx)[:10]
-        f = float(factor)
-        if f and f > 0:
-            out.append((d, f))
-    return out
-
-
-def _splits_fallaron(ba_symbol: str, now: float) -> list:
-    """Yahoo falló o no contestó: se sirve lo último que se supo (o nada) y se
-    vuelve a probar en `EVENTOS_REINTENTO_SEG`, no en 6 h — "Yahoo no contestó"
-    no es "este papel no tuvo splits"."""
-    cached = _splits_cache.get(ba_symbol)
-    out = cached[1] if cached else []
-    _splits_cache[ba_symbol] = (now - EVENTS_TTL + EVENTOS_REINTENTO_SEG, out)
-    return out
-
-
-def _precalentar_splits(ba_symbols) -> None:
-    """Trae a la caché los splits de varios `.BA` a la vez, con UN tope para
-    todos. /split-check los pedía de a uno dentro del bucle de posiciones, sin
-    tope: con Yahoo colgado, cada CEDEAR de la cartera sumaba hasta 30 s."""
-    import time as _t
-    now = _t.time()
-    faltan = [s for s in dict.fromkeys(ba_symbols)
-              if not (_splits_cache.get(s) and (now - _splits_cache[s][0]) < EVENTS_TTL)]
-    if not faltan:
-        return
-    hechos, _ = _yahoo.varios(_splits_de_yahoo, faltan, tope=_yahoo.TOPE_PANTALLA_SEG,
-                              que="splits de la cartera")
-    for sym in faltan:
-        try:
-            _splits_cache[sym] = (now, _parsear_splits(hechos[sym]))
-        except Exception as ex:   # no llegó, falló o vino ilegible
-            log.warning("fetch splits %s falló: %r", sym, ex)
-            _splits_fallaron(sym, now)
-
-
-def _fetch_ba_splits(ba_symbol: str):
-    """Splits de un símbolo .BA vía yfinance, cacheado con el TTL de eventos (6h)."""
-    import time as _t
-    now = _t.time()
-    cached = _splits_cache.get(ba_symbol)
-    if cached and (now - cached[0]) < EVENTS_TTL:
-        return cached[1]
-    try:
-        out = _parsear_splits(_yahoo.con_tope(_splits_de_yahoo, ba_symbol, tope=SPLITS_TOPE_SEG,
-                                              que=f"splits {ba_symbol}"))
-    except Exception as ex:
-        log.warning("fetch splits %s falló: %s", ba_symbol, ex)
-        return _splits_fallaron(ba_symbol, now)
-    _splits_cache[ba_symbol] = (now, out)
-    return out
+    Antes se le preguntaba a Yahoo, en cada pedido, por la especie en pesos
+    (`XLE.BA`). Medido el 22/10/2026: esa lista viene VACÍA en 33 cambios reales
+    de los últimos 3 años (los 27 del 24/01/2024 —AAPL, MELI, JPM…—, TQQQ y los
+    ETFs sectoriales de diciembre de 2025), así que el aviso nunca aparecía y la
+    persona veía la mitad de lo que tenía; y trae alguno que no existe (DDD.BA
+    1:3, copiado de DuPont), que ofrecía dividir la tenencia por 3. La lista se
+    arma de noche con las velas guardadas: acá no hay red."""
+    import cambios_ratio
+    if conn is not None:
+        return cambios_ratio.confirmados(conn, ba_symbol)
+    with db_abierta() as c:
+        return cambios_ratio.confirmados(c, ba_symbol)
 
 
 _SPLIT_DEDUP_DAYS = 7  # ventana para tratar logs separados como el MISMO evento
@@ -12330,7 +12293,8 @@ def _dedup_splits(splits):
     return out
 
 
-def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = ""):
+def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "",
+                       corp_fechas=(), conn=None):
     """Splits del .BA aplicables a un lote: posteriores a la compra (entry), al
     watermark de ajuste (wm) Y a la fecha de la foto de tenencia (foto_wm). SSoT
     compartida por /split-check y /adjust-ratio para que detección y escritura nunca
@@ -12342,11 +12306,17 @@ def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "")
       watermark y re-aplicaría → 9×/100×).
     - foto_wm (fecha del Resumen): la foto ya trae el ratio actual → filtra los splits
       HASTA su fecha, pero SIN ventana de dedup: la fecha de la foto no es un evento de
-      split, así que un split legítimo 1-7 días DESPUÉS de la foto NO se debe tragar."""
+      split, así que un split legítimo 1-7 días DESPUÉS de la foto NO se debe tragar.
+    - corp_fechas: días en que el broker ACREDITÓ (o debitó) ese activo a $0 en un
+      import. Un cambio a ≤7 días de una de ellas ya vino en el import → no se ofrece
+      (sin esto, Balanz Resultados —que trae el split sin descripción— y cualquier
+      broker que lo describa distinto quedaban a un clic de duplicar la tenencia)."""
     out = []
-    for d, f in _dedup_splits(_fetch_ba_splits(f"{base_symbol}.BA")):
+    for d, f in _dedup_splits(_fetch_ba_splits(f"{base_symbol}.BA", conn)):
         if entry and d <= entry:           # comprado el día del split o después → ya al ratio nuevo
             continue
+        if any(_dias_entre(d, c) <= _SPLIT_DEDUP_DAYS for c in corp_fechas or ()):
+            continue                        # el import ya trajo los CEDEARs nuevos
         if foto_wm and d <= foto_wm:        # la foto ya lo refleja (sin ventana de dedup)
             continue
         if wm:
@@ -12361,64 +12331,112 @@ def _applicable_splits(base_symbol: str, entry: str, wm: str, foto_wm: str = "")
     return out
 
 
-# Un lote cargado a mano / por CSV suele venir SIN la fecha real de compra (queda
-# la del import). Si esa fecha cae después del split, _applicable_splits lo
-# descarta como "comprado post-split" y el usuario nunca ve el aviso — aunque las
-# cantidades sean las VIEJAS (reporte de un usuario con el CEDEAR de SPY, ago-2026).
-# No alcanza con ignorar la fecha: si cargó las cantidades de HOY (ya post-split),
-# ajustar las volvería a multiplicar. Hace falta EVIDENCIA de que el lote está en
-# la escala vieja, y la da el PRECIO: si lo cargó a ~F veces lo que cotiza hoy, el
-# precio es pre-split.
-#
-# ⚠️ DESACTIVADA (audit 2026-08-10). El razonamiento original estaba INVERTIDO.
-#
-# La idea era: si el precio cargado es ~F veces el de hoy, el lote está en la
-# escala vieja. Pero el ratio se calcula como (buy_price / precio_hoy) / F, así
-# que una caída REAL de exactamente F veces da ratio = 1.0 — el centro exacto de
-# la banda, no afuera como decía el comentario. O sea que la señal disparaba
-# justo en el caso que creía excluir, y aplicar el ajuste MULTIPLICA la tenencia
-# por F. Con splits inversos (F<1) era peor: la banda se cumplía con subidas de
-# 4× a 13%, corrientes en pesos, y el ajuste borraba el 90% de los nominales.
-# Encima el precio venía del cache sin chequear su antigüedad, así que un precio
-# congelado (los .BA se congelan seguido) alcanzaba para disparar todo.
-#
-# No hay banda que arregle esto: dos escenarios distintos producen exactamente
-# el mismo número. Haría falta una señal independiente del precio (histórico a
-# la fecha del split, o coherencia invested/quantity). Hasta entonces, con la
-# fecha de compra alcanza: es lo que había antes y nunca rompió una posición.
-_SPLIT_PRICE_EVIDENCE_ENABLED = False
+def _dias_entre(a: str, b: str) -> int:
+    try:
+        return abs((date.fromisoformat(str(a)[:10]) - date.fromisoformat(str(b)[:10])).days)
+    except ValueError:
+        return 10 ** 6
 
 
-def _cached_ba_price(conn, base_symbol: str, broker: str, uid: int):
-    """Último precio conocido del `.BA` (pesos), SOLO si el lote está en un broker
-    en pesos — así se compara contra buy_price en la MISMA moneda. Un CEDEAR
-    dentro de un broker USD tiene el costo en dólares y el `.BA` en pesos: sin FX
-    no son comparables, y ahí preferimos no opinar (devolvemos None). Usa el cache
-    de precios: cero red en el request."""
+# ─── ¿En qué escala cargó la persona el lote? ────────────────────────────────
+# Que la compra sea anterior al cambio dice que el lote ERA de la escala vieja,
+# no que la persona lo haya cargado así: pudo cargar a mano, con la fecha
+# original, la cantidad que el broker le muestra HOY (ya duplicada). Ajustar ese
+# lote lo duplica de nuevo.
+#
+# La señal es el precio que cargó contra el cierre del CEDEAR EL DÍA QUE DICE
+# QUE COMPRÓ (las velas guardadas), no contra el de hoy. La versión anterior
+# comparaba contra el de hoy y estaba invertida: una caída real de F veces daba
+# justo el centro de la banda, y la desactivó la auditoría del 2026-08-10. Contra
+# el cierre de ese día, las dos escalas están a F veces de distancia (F ≥ 2) y
+# una compra real cae a pocos puntos del cierre: las bandas no se pisan.
+#
+# La serie guardada puede venir CRUDA (XLE: el escalón está en las velas) o
+# CORREGIDA por Yahoo (NVDA: Yahoo reescribió los días viejos). Se mira en las
+# propias velas cuál de las dos es, cambio por cambio.
+_ESCALA_BANDA = 1.35
+
+
+def _escala_del_lote(conn, base: str, entry: str, buy_price, applicable) -> str:
+    """'vieja' (cargado antes del cambio, como estaba) · 'nueva' (ya cargó la
+    cantidad de hoy: NO ajustar) · 'ninguna' (el precio no se parece a ninguna
+    escala: preguntar) · 'sin_datos' (no hay velas del día de compra)."""
+    import cambios_ratio
     try:
-        br = conn.execute(
-            "SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
-            (uid, broker)).fetchone()
-    except ERR_OPERACIONAL:
-        return None
-    if not br or (br["currency"] or "").upper() != "ARS":
-        return None
-    from snapshots_job import read_last_prices
-    px = read_last_prices(conn, [f"{base_symbol}.BA"]).get(f"{base_symbol}.BA")
-    try:
-        px = float(px or 0)
+        bp = float(buy_price or 0)
     except (TypeError, ValueError):
-        return None
-    return px if px > 0 else None
+        return "sin_datos"
+    if not (entry and bp > 0 and applicable):
+        return "sin_datos"
+    combinado = 1.0
+    for _, f in applicable:
+        combinado *= f
+    if 1 / 1.5 < combinado < 1.5:
+        return "sin_datos"          # escalas demasiado cerca para distinguirlas
+    serie = {r["date"]: r["close"] for r in conn.execute(
+        "SELECT date, close FROM velas_diarias WHERE symbol=? ORDER BY date", (f"{base}.BA",))}
+    previas = [d for d in serie if d <= entry[:10]]
+    if not previas or _dias_entre(previas[-1], entry) > 7:
+        return "sin_datos"
+    vieja = serie[previas[-1]]
+    for d, f in applicable:
+        escalon = cambios_ratio._escalon_en_pesos(serie, d)
+        if escalon is None:
+            return "sin_datos"
+        if abs(escalon / f - 1) <= 0.25:
+            continue                # serie cruda: antes del cambio ya está en la escala vieja
+        if abs(escalon - 1) <= 0.25:
+            vieja *= f              # serie corregida por Yahoo: se lleva a la escala vieja
+            continue
+        return "sin_datos"
+    if 1 / _ESCALA_BANDA <= bp / vieja <= _ESCALA_BANDA:
+        return "vieja"
+    if 1 / _ESCALA_BANDA <= bp / (vieja / combinado) <= _ESCALA_BANDA:
+        return "nueva"
+    return "ninguna"
 
 
-def _splits_solo_excluidos_por_fecha(base_symbol: str, entry: str, wm: str, foto_wm: str = ""):
-    """Splits que pasarían todos los filtros salvo el de `entry` (fecha de compra)."""
-    if not entry:
+def _lote_en_pesos(conn, uid: int, row) -> bool:
+    """El precio del lote está en pesos (comparable con el `.BA`)."""
+    if (row["currency"] or "").upper() not in ("", "ARS"):
+        return False
+    br = conn.execute("SELECT currency FROM brokers WHERE user_id=? AND name=? LIMIT 1",
+                      (uid, row["broker"])).fetchone()
+    return bool(br) and (br["currency"] or "").upper() == "ARS"
+
+
+def _corporate_zero_dates(conn, uid: int) -> dict:
+    """Días en que un import acreditó o debitó cada activo A $0 (precio 0 y monto
+    0), por (broker, activo), diga lo que diga la descripción. Es la forma en que
+    todos los importadores que traen un split lo traen (Balanz, PPI, Schwab, el
+    lote gratis de Balanz Resultados), y la foto cuando completa con CEDEARs de un
+    cambio de ratio. Lo usa `_applicable_splits` sólo con ventana de ±7 días
+    alrededor de un cambio confirmado: un $0 de otra fecha (un dividendo en
+    acciones) no tapa nada."""
+    out = {}
+    for r in conn.execute(
+        "SELECT n.broker b, UPPER(n.asset_symbol) a, n.date d "
+        f"FROM {TX_VIVAS} "
+        "WHERE b.user_id=? "
+        "  AND n.operation_type IN ('BUY','SELL') AND COALESCE(n.asset_symbol,'') <> '' "
+        "  AND COALESCE(n.unit_price,0) = 0 AND COALESCE(n.gross_amount,0) = 0",
+        (uid,),
+    ):
+        out.setdefault((r["b"], r["a"]), []).append((r["d"] or "")[:10])
+    return out
+
+
+def _fechas_del_par(broker: str, base: str, mapa: dict, pair_cache: dict, conn, uid: int) -> list:
+    """Las fechas de `mapa` del activo en el PAR de brokers (padre ↔ '· USD')."""
+    if not mapa:
         return []
-    sin_fecha = _applicable_splits(base_symbol, "", wm, foto_wm=foto_wm)
-    con_fecha = {d for d, _ in _applicable_splits(base_symbol, entry, wm, foto_wm=foto_wm)}
-    return [(d, f) for d, f in sin_fecha if d not in con_fecha]
+    if broker not in pair_cache:
+        from importing.persister import broker_pair as _bp
+        try:
+            pair_cache[broker] = tuple(_bp(conn, uid, broker))
+        except Exception:
+            pair_cache[broker] = (broker,)
+    return [d for pb in pair_cache[broker] for d in mapa.get((pb, base), [])]
 
 
 def _foto_split_watermarks(conn, uid: int) -> dict:
@@ -12502,6 +12520,50 @@ def _foto_wm_for(broker: str, base: str, foto_map: dict, pair_cache: dict, conn,
     return max((foto_map.get((pb, base), "") for pb in pair_cache[broker]), default="")
 
 
+def _cambios_a_ofrecer(conn, uid: int, row, marcas: dict, pair_cache: dict):
+    """(cambios, evidencia) que /split-check ofrece y /adjust-ratio aplica para
+    UN lote: una sola decisión para los dos, así detección y escritura nunca
+    divergen. `cambios` = [] → no hay nada que ofrecer.
+
+    `marcas`: {'foto', 'corp', 'cero'} = _foto_split_watermarks,
+    _corporate_split_watermarks y _corporate_zero_dates de la persona (se leen una
+    vez por pedido). `evidencia`:
+      · 'fecha'    — comprado antes del cambio y el precio cargado no lo contradice;
+      · 'pregunta' — hay velas del día de compra y el precio cargado no coincide con
+                     ninguna de las dos escalas: el front pregunta en vez de afirmar.
+    Si el precio cargado está en la escala NUEVA (cargó a mano la cantidad de hoy
+    con la fecha original), no se ofrece: ajustar lo duplicaría."""
+    asset = (row["asset"] or "").upper()
+    base = asset[:-3] if asset.endswith(".BA") else asset
+    if not base:
+        return [], None
+    entry = (row["entry_date"] or "")[:10]
+    wm = ((row["split_adjusted_through"] if "split_adjusted_through" in row.keys() else "") or "")[:10]
+    # El split que Balanz bookeó como LOTE (posición ya post-split) cuenta como
+    # ya-ajustado → vía `wm` (evento real + ventana de dedup para el skew con yfinance).
+    wm = max(wm, _foto_wm_for(row["broker"], base, marcas["corp"], pair_cache, conn, uid))
+    # La foto de tenencia también: si el Resumen ya concilió este activo (cantidad
+    # ACTUAL, post-split), re-aplicar multiplica un lote que la foto ya compensó. Va
+    # como foto_wm aparte (sin ventana de dedup).
+    foto_wm = _foto_wm_for(row["broker"], base, marcas["foto"], pair_cache, conn, uid)
+    corp_fechas = _fechas_del_par(row["broker"], base, marcas["cero"], pair_cache, conn, uid)
+    cambios = _applicable_splits(base, entry, wm, foto_wm=foto_wm,
+                                 corp_fechas=corp_fechas, conn=conn)
+    if not cambios:
+        return [], None
+    escala = (_escala_del_lote(conn, base, entry, row["buy_price"], cambios)
+              if _lote_en_pesos(conn, uid, row) else "sin_datos")
+    if escala == "nueva":
+        return [], None
+    return cambios, ("pregunta" if escala == "ninguna" else "fecha")
+
+
+def _marcas_de_split(conn, uid: int) -> dict:
+    return {"foto": _foto_split_watermarks(conn, uid),
+            "corp": _corporate_split_watermarks(conn, uid),
+            "cero": _corporate_zero_dates(conn, uid)}
+
+
 @app.post("/api/positions/{pid}/adjust-ratio")
 def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
     """Ajusta un lote de CEDEAR por el/los cambio(s) de ratio (split) que el SERVER
@@ -12546,22 +12608,11 @@ def adjust_position_ratio(pid: int, uid: int = Depends(get_effective_user)):
         broker_is_ars = bool(broker_row) and (broker_row["currency"] or "").upper() == "ARS"
         if excluded or not (asset_type == "CEDEAR" or broker_is_ars):
             raise HTTPException(400, "El ajuste por cambio de ratio es solo para CEDEARs o equities en brokers ARS.")
-        asset = (row["asset"] or "").upper()
-        base = asset[:-3] if asset.endswith(".BA") else asset
-        entry = (row["entry_date"] or "")[:10]
-        wm = ((row["split_adjusted_through"] if "split_adjusted_through" in row.keys() else "") or "")[:10]
-        _pair_cache = {}
-        # El split que Balanz bookeó como LOTE (posición ya post-split) cuenta como
-        # ya-ajustado → vía `wm` (evento real + ventana de dedup para el skew con yfinance).
-        # Si el user aprieta "Ajustar" igual, esto lo vuelve no-op en vez de duplicar.
-        wm = max(wm, _foto_wm_for(row["broker"], base, _corporate_split_watermarks(conn, uid), _pair_cache, conn, uid))
-        # La foto de tenencia también cuenta como watermark: si el Resumen ya concilió
-        # este activo (cantidad ACTUAL, post-split), NO re-aplicamos el split (sino,
-        # multiplica un lote pre-split que la foto ya compensó → doble-conteo). Se pasa
-        # como foto_wm aparte (sin ventana de dedup). Mismo criterio read-time que /split-check.
-        foto_wm = _foto_wm_for(row["broker"], base, _foto_split_watermarks(conn, uid), _pair_cache, conn, uid)
-        # Re-derivar los splits aplicables EN EL SERVER (no confiar en el cliente).
-        applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)
+        # Re-derivar los cambios EN EL SERVER (no confiar en el cliente), con la
+        # misma decisión que /split-check: si el aviso no lo ofrece, esto no lo
+        # aplica aunque lo llamen a mano (Balanz ya lo trajo, la foto lo concilió,
+        # o el lote ya está en la escala nueva).
+        applicable, _ = _cambios_a_ofrecer(conn, uid, row, _marcas_de_split(conn, uid), {})
         if not applicable:
             return {**dict(row), "already_applied": True}
         combined = 1.0
@@ -12620,34 +12671,14 @@ def positions_split_check(uid: int = Depends(get_effective_user)):
                       )""",
             (uid,),
         ).fetchall()
-        # Foto de tenencia como watermark: un activo que el Resumen ya concilió está al
-        # ratio ACTUAL (post-split) → no hay que ofrecer "Ajustar". Se deriva read-time.
-        _foto_map = _foto_split_watermarks(conn, uid)
-        # Split que Balanz ya bookeó como LOTE en los Movimientos (la posición ya está
-        # post-split): también es watermark, con ventana de dedup (evento de split real).
-        _corp_map = _corporate_split_watermarks(conn, uid)
+        marcas = _marcas_de_split(conn, uid)
         _pair_cache = {}
-        # Todos los splits de la cartera de una vez, con un tope para todos: el
-        # bucle de abajo los lee de la caché (`_applicable_splits` → `_fetch_ba_splits`).
-        _bases = [(r["asset"] or "").upper() for r in rows]
-        _precalentar_splits(f"{a[:-3] if a.endswith('.BA') else a}.BA" for a in _bases
-                            if a and a != ".BA")
         suggestions = []
         for r in rows:
-            asset = (r["asset"] or "").upper()
-            base = asset[:-3] if asset.endswith(".BA") else asset
-            if not base:
-                continue
-            entry = (r["entry_date"] or "")[:10]
-            wm = ((r["split_adjusted_through"] if "split_adjusted_through" in r.keys() else "") or "")[:10]
-            # El split-como-lote de Balanz cuenta como ya-ajustado → va por la vía `wm`
-            # (misma semántica: evento real + ventana de dedup para el skew con yfinance).
-            wm = max(wm, _foto_wm_for(r["broker"], base, _corp_map, _pair_cache, conn, uid))
-            foto_wm = _foto_wm_for(r["broker"], base, _foto_map, _pair_cache, conn, uid)
-            applicable = _applicable_splits(base, entry, wm, foto_wm=foto_wm)  # SSoT con /adjust-ratio
-            evidencia = "fecha"
+            applicable, evidencia = _cambios_a_ofrecer(conn, uid, r, marcas, _pair_cache)  # SSoT con /adjust-ratio
             if not applicable:
                 continue
+            asset = (r["asset"] or "").upper()
             combined = 1.0
             for _, f in applicable:
                 combined *= f
@@ -12660,9 +12691,9 @@ def positions_split_check(uid: int = Depends(get_effective_user)):
                 "ex_date": max(d for d, _ in applicable),
                 "current_qty": cur_qty,
                 "suggested_qty": round(cur_qty * combined, 6),
-                # 'fecha' = la compra es anterior al split (certeza).
-                # 'precio' = la fecha no sirve pero el precio cargado delata la
-                #            escala vieja → el front lo pregunta en vez de afirmarlo.
+                # 'fecha'    = la compra es anterior al cambio (certeza).
+                # 'pregunta' = el precio cargado no coincide con ninguna escala del
+                #              día de compra → el front pregunta en vez de afirmarlo.
                 "evidence": evidencia,
                 "buy_price": round(float(r["buy_price"] or 0), 6),
                 "raw_splits": [{"ex_date": d, "factor": f} for d, f in applicable],
@@ -41962,6 +41993,38 @@ def import_classify_tenencia(
     return {**primero, "files": hallados}
 
 
+def _marcar_cambios_de_ratio(conn, uid: int, pair, rec, seed_date: str) -> None:
+    """Llena `rec.por_ratio`: de cada hueco de la foto, cuántos CEDEARs NO son una
+    compra sino lo que el broker acreditó por un cambio de ratio confirmado sobre
+    lotes que Rendi tiene en la escala vieja. Es la MISMA decisión que el aviso
+    «Ajustar» (`_cambios_a_ofrecer`): si el aviso no lo ofrecería para ese lote
+    (Balanz ya lo trajo, otra foto lo concilió, ya está en la escala nueva), la
+    foto tampoco lo explica así, y el hueco entra como compra, igual que antes."""
+    if not rec.to_seed:
+        return
+    marcas, cache = _marcas_de_split(conn, uid), {}
+    ph = ",".join("?" * len(pair))
+    for h, gap in rec.to_seed:
+        if not gap or gap <= 0:
+            continue
+        extra, detalles = 0.0, set()
+        for lote in conn.execute(
+                f"SELECT * FROM positions WHERE user_id=? AND COALESCE(is_cash,0)=0 "
+                f"AND broker IN ({ph}) AND UPPER(asset)=? AND COALESCE(quantity,0) > 0",
+                (uid, *pair, (h.ticker or "").upper())).fetchall():
+            cambios, _ = _cambios_a_ofrecer(conn, uid, lote, marcas, cache)
+            cambios = [(d, f) for d, f in cambios if d <= seed_date]
+            factor = 1.0
+            for _, f in cambios:
+                factor *= f
+            if factor <= 1:
+                continue
+            extra += float(lote["quantity"] or 0) * (factor - 1)
+            detalles.update(f"×{f:g} del {d[8:10]}/{d[5:7]}/{d[:4]}" for d, f in cambios)
+        if extra > 1e-9:
+            rec.por_ratio[h.ticker] = (round(extra, 6), ", ".join(sorted(detalles)))
+
+
 def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, current,
                             seed_date, *, complete, currency="ARS", gate_over=False):
     """Modo OVERRIDE (la foto PISA): sobre `rec`, reduce lo que Rendi tiene de MÁS
@@ -41975,6 +42038,7 @@ def _tenencia_apply_override(conn, uid, broker, pair, rec, invested_by_asset, cu
     DESPUÉS de las compras reales en el replay del rebuild. Muta rec.over/
     rec.not_in_snapshot a lo aplicado. Devuelve (seed_txs, override_info).
     Compartido por Balanz/IEB/Cocos/BMB (path general) y la partición de PPI."""
+    _marcar_cambios_de_ratio(conn, uid, pair, rec, seed_date)
     from importing.rebuild import _is_safe_to_rebuild
     pair_l = list(pair)
     ph = ",".join("?" * len(pair_l))
@@ -42613,6 +42677,7 @@ def import_tenencia_preview(
                     seed_date, complete=_complete, gate_over=es_contexto_asesor)
             else:
                 override_info = None
+                _marcar_cambios_de_ratio(conn, uid, pair, rec, seed_date)
                 seed_txs = _import_tenencia.build_tenencia_seed_txs(broker, rec, seed_date)
 
         # ── Cash true-up: la foto es la verdad de HOY → ajustamos el efectivo al
@@ -45285,6 +45350,14 @@ def _run_velas_diarias_job():
             _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
     except Exception as e:
         _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
+    # Con las velas ya al día: la lista de cambios de ratio de CEDEAR sale de
+    # ellas (cambios_ratio.py). Aparte, para que un error acá no toque las velas.
+    try:
+        import cambios_ratio
+        with db_abierta() as conn:
+            _velas_log.info("Cambios de ratio: %s", cambios_ratio.correr(conn))
+    except Exception as e:
+        _velas_log.error(f"Cambios de ratio falló: {e}", exc_info=True)
 
 
 def _run_backup_db_job():

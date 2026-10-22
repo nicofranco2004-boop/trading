@@ -166,6 +166,14 @@ class ReconcileResult:
     # —como estaba al principio— porque ahora la usan dos marcadores distintos y
     # alcanza tanto a COMPRAS sinteticas (to_seed) como a VENTAS (not_in_snapshot).
     requieren_aprobacion: set = field(default_factory=set)
+    # {ticker: (cantidad, detalle)} — parte del hueco que NO es una compra: son
+    # los CEDEARs que el broker acreditó por un cambio de ratio confirmado
+    # (cambios_ratio.py) sobre lotes que Rendi tenía en la escala vieja. Entran a
+    # $0, como los trae Balanz en Movimientos. Sin esto la foto los sembraba al
+    # precio del día con un aporte sintético: medido con XLE (10 → 20 el
+    # 05/12/2025), $558.000 de un aporte que nunca existió y -6% en vez de +77%.
+    # Lo llena el caller (main._marcar_cambios_de_ratio), que tiene la base.
+    por_ratio: dict = field(default_factory=dict)
 
 
 _FECHA_EN_NOMBRE = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
@@ -631,7 +639,12 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
     from .schema import NormalizedTx, OP_BUY, OP_SELL, OP_DEPOSIT
     txs = []
     idx = -20000  # negativo, no colisiona con row_index reales (igual que el seed)
-    total = round(sum(gap * h.price_per1 for h, gap in reconcile.to_seed), 4)
+    def _partes(h, gap):
+        """(a $0 por cambio de ratio, comprado) del hueco de un activo."""
+        cero = min(gap, max(0.0, float((reconcile.por_ratio.get(h.ticker) or (0.0, ""))[0])))
+        return round(cero, 6), round(gap - cero, 6)
+
+    total = round(sum(_partes(h, gap)[1] * h.price_per1 for h, gap in reconcile.to_seed), 4)
     if total > 0:
         txs.append(NormalizedTx(
             row_index=idx, date=seed_date, broker=broker,
@@ -639,15 +652,28 @@ def build_tenencia_seed_txs(broker: str, reconcile: ReconcileResult,
             notes=TENENCIA_SEED_DEPOSIT_NOTE))
         idx += 1
     for h, gap in reconcile.to_seed:
+        marca = (f" {MARCA_APROBACION}" if h.ticker in reconcile.requieren_aprobacion else "")
+        cero, comprado = _partes(h, gap)
+        if cero > 1e-9:
+            # Mismo prefijo que la apertura: es parte de la foto (watermark de
+            # splits, exención del barrido de vencimientos, borrado en bloque).
+            detalle = (reconcile.por_ratio.get(h.ticker) or (0, ""))[1]
+            txs.append(NormalizedTx(
+                row_index=idx, date=seed_date, broker=broker, operation_type=OP_BUY,
+                asset_symbol=h.ticker, asset_type=h.asset_type,
+                quantity=cero, unit_price=0.0, gross_amount=0.0, currency=currency,
+                notes=(f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker}: acreditados por el "
+                       f"cambio de ratio{(' ' + detalle) if detalle else ''} (a $0)" + marca)))
+            idx += 1
+        if comprado <= 1e-9:
+            continue
         txs.append(NormalizedTx(
             row_index=idx, date=seed_date, broker=broker, operation_type=OP_BUY,
             asset_symbol=h.ticker, asset_type=h.asset_type,
-            quantity=gap, unit_price=h.price_per1,
-            gross_amount=round(gap * h.price_per1, 4), currency=currency,
+            quantity=comprado, unit_price=h.price_per1,
+            gross_amount=round(comprado * h.price_per1, 4), currency=currency,
             notes=(f"{TENENCIA_APERTURA_NOTE_PREFIX} {h.ticker} a precio de "
-                   f"{seed_date} (P&L 0)"
-                   + (f" {MARCA_APROBACION}"
-                      if h.ticker in reconcile.requieren_aprobacion else ""))))
+                   f"{seed_date} (P&L 0)" + marca)))
         idx += 1
     if override:
         # Reducciones que llevan el estado EXACTO a la foto. Precio/monto 0 +

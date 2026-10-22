@@ -11,6 +11,8 @@ import { useEnVuelo } from '../hooks/useEnVuelo'
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-AR', { maximumFractionDigits: 2 })
 const baseTicker = (a) => (a || '').replace(/\.BA$/i, '')
+// '2025-12-05' → '05/12/2025'
+const fechaAR = (d) => (d || '').slice(0, 10).split('-').reverse().join('/')
 // F>=1 → "×3" (split normal); F<1 → "1:N" (split inverso, la cantidad se reduce)
 const ratioLabel = (f) => (Number(f) >= 1 ? `×${fmt(f)}` : `1:${fmt(1 / Number(f || 1))}`)
 
@@ -65,14 +67,14 @@ export default function SplitRatioBanner({ onAdjusted }) {
               No perdiste plata — cambió el ratio del CEDEAR (split). Ajustá para que el P&amp;L deje de
               mostrar una diferencia que no es real.
             </p>
-            {/* Cuando la posición no tiene fecha real de compra (CSV / carga a
-                mano), la detección se apoya en el precio cargado: es una
-                sospecha fundada, no una certeza → se PREGUNTA, no se afirma. */}
-            {suggestions.some((s) => s.evidence === 'precio') && (
+            {/* 'pregunta': el precio que cargó no coincide con el del CEDEAR el día
+                de compra en ninguna de las dos escalas (antes o después del
+                cambio). Es una duda, no una certeza → se PREGUNTA, no se afirma. */}
+            {suggestions.some((s) => s.evidence === 'pregunta') && (
               <p className="text-ink-2 mt-1">
-                Ojo: {suggestions.filter((s) => s.evidence === 'precio').map((s) => baseTicker(s.asset)).join(', ')}{' '}
-                no tiene la fecha real de compra, así que lo deducimos del precio que cargaste.
-                Si ya cargaste las cantidades actualizadas del broker, no lo ajustes.
+                Ojo: en {suggestions.filter((s) => s.evidence === 'pregunta').map((s) => baseTicker(s.asset)).join(', ')}{' '}
+                el precio que cargaste no coincide con el de ese día, así que no sabemos si cargaste
+                la cantidad de antes o la de ahora. Ajustá sólo si tu broker te acreditó más CEDEARs.
               </p>
             )}
             <div className="mt-2 flex flex-wrap gap-2">
@@ -99,7 +101,7 @@ export default function SplitRatioBanner({ onAdjusted }) {
             <p>
               <strong className="text-ink-0">{baseTicker(active.asset)}</strong> tuvo un{' '}
               {active.factor < 1 ? 'split inverso' : 'split'} de <strong>{ratioLabel(active.factor)}</strong>{' '}
-              el {active.ex_date}. Tu inversión no cambia:{' '}
+              el {fechaAR(active.ex_date)}. Tu inversión no cambia:{' '}
               {active.factor < 1
                 ? 'se reduce la cantidad de nominales y sube el precio unitario en la misma proporción.'
                 : 'se multiplica la cantidad de nominales y baja el precio unitario en la misma proporción.'}
@@ -114,12 +116,13 @@ export default function SplitRatioBanner({ onAdjusted }) {
                 <span>queda igual</span>
               </div>
             </div>
-            {active.evidence === 'precio' && (
+            {active.evidence === 'pregunta' && (
               <p className="rounded-md border border-amber-500/40 bg-amber-500/[0.07] px-3 py-2 text-xs text-ink-1">
-                Esta posición no tiene fecha de compra real, así que nos guiamos por el precio que
-                cargaste ({fmt(active.buy_price)}), que parece anterior al cambio de ratio.
-                <strong className="text-ink-0"> Confirmá solo si la cantidad que ves es la de antes del split.</strong>{' '}
-                Si ya la habías actualizado, cerrá esto: ajustar la multiplicaría de más.
+                El precio que cargaste ({fmt(active.buy_price)}) no coincide con el que tenía el CEDEAR
+                ese día, ni antes ni después del cambio.
+                <strong className="text-ink-0"> Confirmá sólo si tu broker te acreditó {fmt(active.suggested_qty - active.current_qty)} CEDEARs
+                más el {fechaAR(active.ex_date)}.</strong>{' '}
+                Si la cantidad que ves ya es la de hoy, cerrá esto: ajustar la multiplicaría de más.
               </p>
             )}
             <p className="text-ink-3 text-xs">
@@ -128,7 +131,7 @@ export default function SplitRatioBanner({ onAdjusted }) {
             </p>
             {active.raw_splits?.length > 1 && (
               <p className="text-ink-3 text-xs">
-                Splits detectados: {active.raw_splits.map((r) => `×${fmt(r.factor)} (${r.ex_date})`).join(', ')}.
+                Splits detectados: {active.raw_splits.map((r) => `×${fmt(r.factor)} (${fechaAR(r.ex_date)})`).join(', ')}.
               </p>
             )}
             {err && <div className="text-rendi-neg text-xs">{err}</div>}

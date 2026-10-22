@@ -6547,7 +6547,8 @@ class SplitRatioAdjustTest(unittest.TestCase):
     # La 2ª pasada por PRECIO se desactivó tras el audit (2026-08-10): el ratio
     # de una caída real de F veces daba exactamente 1.0, el centro de la banda,
     # así que la señal disparaba justo en el caso que creía excluir y el ajuste
-    # multiplicaba la tenencia. Ver el comentario de _SPLIT_PRICE_EVIDENCE_ENABLED.
+    # multiplicaba la tenencia. La evidencia por precio de hoy es `_escala_del_lote`
+    # (main.py): compara contra el cierre del DÍA DE COMPRA, no el de hoy.
     def test_sin_fecha_de_compra_no_se_ofrece_por_precio(self):
         """Un lote cuya fecha es posterior al split NO se ajusta, aunque el
         precio 'parezca' pre-split: no hay forma de distinguirlo de una caída
