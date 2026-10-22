@@ -11,7 +11,9 @@ Los casos:
     pozo de arranque al pico, la ruptura es el primer cierre debajo del último
     pozo más alto, y los niveles y el retroceso de hoy son los esperados;
   · la misma figura al revés (una bajada);
-  · un activo lateral: "sin tramo claro", no un tramo inventado;
+  · un activo lateral: "sin tramo claro" (tramos chicos), no uno inventado;
+  · una suba larga que nunca se rompió: lo dice y cuenta la suba en curso;
+  · un tramo de hace más de un año: no se mide;
   · pocos datos: lo dice;
   · velas rotas (sin máximo/mínimo): no se cae ni inventa una mecha;
   · una acción argentina: los niveles salen en la moneda del gráfico;
@@ -127,6 +129,16 @@ class EstructuraPuraTest(unittest.TestCase):
             parcial = estructura.tramos(v[:corte])["confirmados"]
             self.assertEqual(parcial, final[:len(parcial)], f"cambió el pasado al agregar días (corte {corte})")
 
+    def test_tramo_de_hace_mas_de_un_anio_no_se_mide(self):
+        # La suba de la figura y después más de un año quieto: no se mide.
+        cierres, _ = _dibujo(SUBA)
+        cierres += [cierres[-1]] * (estructura.MAX_RUEDAS_DESDE_EL_FINAL + 30)
+        v = [{"date": f"{i:04d}", "open": o, "high": h, "low": l, "close": c}
+             for i, (o, h, l, c) in enumerate(_velas_de(cierres))]
+        f = estructura.fibonacci(v)
+        self.assertEqual((f["disponible"], f["motivo"]), (False, "tramo_viejo"))
+        self.assertEqual(f["viejo"]["dir"], "suba")
+
     def test_superado_cuenta_el_tramo_vivo(self):
         # Después de la suba rota, el precio vuelve a subir y pasa el pico (sin
         # que la bajada en el medio sea un movimiento claro): el Fibonacci de esa
@@ -216,6 +228,7 @@ class FibonacciFichaTest(unittest.TestCase):
         i128 = donde[11]
         self.assertAlmostEqual(f["retroceso_maximo"]["valor"], (p1 - velas[i128][2]) / (p1 - p0), places=3)
         self.assertEqual(f["retroceso_maximo"]["fecha"], self._fecha(i128, n))
+        self.assertEqual(f["retroceso_maximo"]["precio"], round(velas[i128][2], 4))
         # El tramo vivo es la bajada desde el pico, y todavía no se rompió.
         self.assertEqual(f["en_curso"]["dir"], "bajada")
         self.assertEqual(f["en_curso"]["desde"]["fecha"], self._fecha(i170, n))
@@ -252,12 +265,26 @@ class FibonacciFichaTest(unittest.TestCase):
         ficha = self._fib("ZZFB")
         f = ficha["fibonacci"]
         self.assertFalse(f["disponible"])
-        self.assertEqual(f["motivo"], "sin_tramo_claro")
+        self.assertEqual(f["motivo"], "tramos_chicos")
         velas = [{"date": p["d"], "open": p["o"], "high": p["h"], "low": p["l"], "close": p["c"]}
                  for p in ficha["puntos"]]
         crudos = estructura.tramos(velas)["confirmados"]
         self.assertGreaterEqual(len(crudos), 1, "hay tramos: los descarta el tamaño, no la falta de pivotes")
         self.assertFalse(any(estructura._es_claro(velas, t) for t in crudos))
+
+    def test_suba_que_nunca_se_rompio(self):
+        # De 100 a 300 en 400 ruedas con picos y pozos cada vez más altos y
+        # ningún cierre debajo del último pozo: no terminó ningún tramo.
+        self._tener("Schwab", "USD", "ZZFB", "STOCK")
+        vertices = [100]
+        for k in range(40):
+            vertices += [vertices[-1] + 8, vertices[-1] + 3]
+        cierres, _ = _dibujo(vertices, paso=5)
+        self.yahoo.velas["ZZFB"] = _velas_de(cierres)
+        f = self._fib("ZZFB")["fibonacci"]
+        self.assertEqual((f["disponible"], f["motivo"]), (False, "sin_tramo_terminado"))
+        self.assertEqual(f["en_curso"]["dir"], "suba")
+        self.assertIn("debajo_de", f["en_curso"]["se_rompe_si_cierra"])
 
     def test_pocos_datos(self):
         self._tener("Schwab", "USD", "ZZFB", "STOCK")

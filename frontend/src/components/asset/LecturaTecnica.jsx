@@ -17,7 +17,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import AssetMiniChart from '../home/AssetMiniChart'
-import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa } from './CapaFibonacci'
+import CapaFibonacci, { COLOR_FIB, TarjetaFibonacci, preciosDeLaCapa, ventanaDelTramo } from './CapaFibonacci'
 import { api } from '../../utils/api'
 import {
   RANGOS, RSI_CASTIGADO, RSI_ESTIRADO, tarjetas, lineaPromedio, marcas,
@@ -182,7 +182,12 @@ export default function LecturaTecnica({
         )}
         <Chip activo={ver.marcas} onClick={() => alternar('marcas')} puntos>Tus compras y ventas</Chip>
         {actual.fibonacci && (
-          <Chip activo={ver.fib} onClick={() => alternar('fib')} color={COLOR_FIB}>Fibonacci</Chip>
+          <Chip activo={ver.fib} onClick={() => {
+            // Al prenderlo, el gráfico se acerca al tramo medido (si se ve chico).
+            const v2 = !ver.fib && ventanaDelTramo(actual.puntos, actual.fibonacci, nVista)
+            if (v2) setVentana(v2)
+            alternar('fib')
+          }} color={COLOR_FIB}>Fibonacci</Chip>
         )}
       </div>
 
@@ -362,7 +367,7 @@ function Grafico({ puntos, moneda, promedio, marcas: lista, ver, tipo = 'linea',
       if (ver.s50 && p.s50 != null) valores.push(p.s50)
       if (ver.s200 && p.s200 != null) valores.push(p.s200)
     }
-    valores.push(...preciosDeLaCapa(fibonacci))
+    valores.push(...preciosDeLaCapa(fibonacci, puntos))
     let lo = Math.min(...valores), hi = Math.max(...valores)
     // Tu precio entra en la escala sólo si está cerca de lo que se ve. Si está
     // muy lejos (ganás 70 %, o perdés 60 %), estirar la escala aplastaría el

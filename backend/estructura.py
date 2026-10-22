@@ -57,7 +57,7 @@ NIVELES = (0.236, 0.382, 0.5, 0.618, 0.786)
 # pocos días y no se mide. Ver `_es_claro`.
 MIN_RANGOS_TRAMO = 4.0
 # Un tramo que terminó hace más que esto (en ruedas, ~1 año) ya no describe
-# cómo se mueve el precio hoy: "sin tramo claro" en vez de medir uno viejo.
+# cómo se mueve el precio hoy: 'tramo_viejo' en vez de medir uno viejo.
 MAX_RUEDAS_DESDE_EL_FINAL = 252
 # Menos ruedas que esto no alcanza para hablar de estructura.
 MIN_RUEDAS = 30
@@ -127,7 +127,7 @@ def tramos(velas: list, n: int = N_PIVOTE) -> dict:
             else:
                 ult_pozo = p["i"]
             if estado is not None and p["i"] > estado["inicio"]:
-                _aplicar(estado, p, altos, bajos)
+                _aplicar(estado, p, altos, bajos, cierres, i)
 
         # 2. El extremo del tramo vivo (el máximo de una suba, el mínimo de una bajada).
         if estado is not None:
@@ -143,17 +143,17 @@ def tramos(velas: list, n: int = N_PIVOTE) -> dict:
             # Este primer tramo no se informa: empezó antes de la historia guardada.
             if ult_pico is not None and c > altos[ult_pico]:
                 ini = min(range(ult_pico, i + 1), key=lambda j: bajos[j])
-                estado = _nuevo("suba", ini, i, piv, altos, bajos, primero=True)
+                estado = _nuevo("suba", ini, i, piv, altos, bajos, cierres, primero=True)
             elif ult_pozo is not None and c < bajos[ult_pozo]:
                 ini = max(range(ult_pozo, i + 1), key=lambda j: altos[j])
-                estado = _nuevo("bajada", ini, i, piv, altos, bajos, primero=True)
+                estado = _nuevo("bajada", ini, i, piv, altos, bajos, cierres, primero=True)
             continue
         if estado["dir"] == "suba" and c < bajos[estado["protegido"]]:
             confirmados.append(_cerrar(estado, i))
-            estado = _nuevo("bajada", estado["extremo"], i, piv, altos, bajos)
+            estado = _nuevo("bajada", estado["extremo"], i, piv, altos, bajos, cierres)
         elif estado["dir"] == "bajada" and c > altos[estado["protegido"]]:
             confirmados.append(_cerrar(estado, i))
-            estado = _nuevo("suba", estado["extremo"], i, piv, altos, bajos)
+            estado = _nuevo("suba", estado["extremo"], i, piv, altos, bajos, cierres)
 
     en_curso = None
     if estado is not None:
@@ -162,7 +162,7 @@ def tramos(velas: list, n: int = N_PIVOTE) -> dict:
     return {"confirmados": confirmados, "en_curso": en_curso}
 
 
-def _aplicar(estado: dict, p: dict, altos: list, bajos: list) -> None:
+def _aplicar(estado: dict, p: dict, altos: list, bajos: list, cierres: list, hoy: int) -> None:
     """Un pivote confirmado dentro del tramo vivo. En una suba:
       · un POZO es candidato a "pozo más alto": el más bajo desde el pico más
         alto del tramo ("pendiente");
@@ -173,6 +173,11 @@ def _aplicar(estado: dict, p: dict, altos: list, bajos: list) -> None:
         cierre lo rompe, el pico más alto fue el final.
       · el primer pico del tramo no protege nada todavía: un pozo es "más
         alto" recién cuando queda entre dos picos.
+      · un pozo que algún cierre ya perforó (entre su día y `hoy`) no pasa a
+        defenderse: como el pico se confirma 3 ruedas después, el precio pudo
+        haberlo cerrado por debajo antes de que se sepa. Decir "se termina si
+        cierra debajo de X" cuando ya cerró debajo sería falso; queda el que
+        se defendía antes.
     En una bajada, al revés."""
     suba = estado["dir"] == "suba"
     if p["tipo"] == ("pozo" if suba else "pico"):
@@ -185,18 +190,26 @@ def _aplicar(estado: dict, p: dict, altos: list, bajos: list) -> None:
         estado["previo"], estado["pendiente"] = p["i"], None
         return
     mas_extremo = altos[p["i"]] > altos[previo] if suba else bajos[p["i"]] < bajos[previo]
-    if estado["pendiente"] is not None:
-        estado["protegido"] = estado["pendiente"]
+    cand = estado["pendiente"]
+    if cand is not None and _en_pie(cand, suba, altos, bajos, cierres, hoy):
+        estado["protegido"] = cand
     if mas_extremo:
         estado["previo"], estado["pendiente"] = p["i"], None
 
 
+def _en_pie(j: int, suba: bool, altos: list, bajos: list, cierres: list, hoy: int) -> bool:
+    """¿Ningún cierre desde el día `j` hasta `hoy` pasó el pozo (o techo) de `j`?"""
+    tramo = cierres[j:hoy + 1]
+    return min(tramo) >= bajos[j] if suba else max(tramo) <= altos[j]
+
+
 def _nuevo(direccion: str, inicio: int, hoy: int, piv: list, altos: list, bajos: list,
-           primero: bool = False) -> dict:
+           cierres: list, primero: bool = False) -> dict:
     """Un tramo que arranca en `inicio` (el extremo del que se rompió). Hasta que
     haga su segundo pico más alto con un pozo en el medio, lo que defiende es su
     propio arranque. Los pivotes que ya se confirmaron entre el arranque y hoy
-    se le aplican en orden: el tramo nuevo nace sabiendo lo que pasó."""
+    se le aplican en orden: el tramo nuevo nace sabiendo lo que pasó, y con los
+    cierres hasta hoy (un pozo que ya se perforó no se defiende)."""
     serie = altos if direccion == "suba" else bajos
     rango = range(inicio, hoy + 1)
     extremo = (max(rango, key=lambda j: serie[j]) if direccion == "suba"
@@ -205,7 +218,7 @@ def _nuevo(direccion: str, inicio: int, hoy: int, piv: list, altos: list, bajos:
               "pendiente": None, "previo": None, "primero": primero}
     for p in piv:
         if p["confirmado"] <= hoy and p["i"] > inicio:
-            _aplicar(estado, p, altos, bajos)
+            _aplicar(estado, p, altos, bajos, cierres, hoy)
     return estado
 
 
@@ -227,11 +240,12 @@ def _es_claro(velas: list, t: dict) -> bool:
 def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
     """El Fibonacci del último tramo confirmado, listo para la ficha.
 
-    {'disponible': False, 'motivo': 'pocos_datos'|'sin_tramo_claro'|'superado',
+    {'disponible': False, 'motivo': 'pocos_datos'|'sin_tramo_terminado'|'tramos_chicos'|
+     'tramo_viejo'|'superado',
      'en_curso': {...}} o
     {'disponible': True, 'dir', 'desde': {fecha, precio}, 'hasta': {fecha, precio},
      'ruptura': {fecha, cierre, nivel}, 'niveles': [{nivel, precio}],
-     'retroceso_hoy', 'retroceso_maximo': {valor, fecha}, 'entre': [a, b],
+     'retroceso_hoy', 'retroceso_maximo': {valor, precio, fecha}, 'entre': [a, b],
      'en_curso': {...} | None, 'n_pivote', 'tramos': [...]}
 
     El retroceso es la parte del tramo que el precio devolvió: 0 = sigue en el
@@ -245,13 +259,22 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
         return {"disponible": False, "motivo": "pocos_datos", "ruedas": len(velas), "n_pivote": n}
     res = tramos(velas, n)
     hoy = len(velas) - 1
-    validos = [t for t in res["confirmados"] if not t["primero"] and _es_claro(velas, t)]
+    terminados = [t for t in res["confirmados"] if not t["primero"]]
+    validos = [t for t in terminados if _es_claro(velas, t)]
     lista = [_tramo_para_afuera(velas, t) for t in validos[-4:]]
     en_curso = _en_curso_para_afuera(velas, res["en_curso"])
     base = {"disponible": False, "ruedas": len(velas), "n_pivote": n, "tramos": lista,
             "en_curso": en_curso}
-    if not validos or hoy - validos[-1]["fin"] > MAX_RUEDAS_DESDE_EL_FINAL:
-        return {**base, "motivo": "sin_tramo_claro"}
+    # Tres motivos distintos para no medir, y la pantalla dice cada uno:
+    #   · ningún tramo terminó todavía (una suba que viene de lejos y nunca se rompió);
+    #   · terminaron, pero todos del tamaño de unas pocas velas (un activo lateral);
+    #   · el último claro terminó hace más de un año.
+    if not terminados:
+        return {**base, "motivo": "sin_tramo_terminado"}
+    if not validos:
+        return {**base, "motivo": "tramos_chicos"}
+    if hoy - validos[-1]["fin"] > MAX_RUEDAS_DESDE_EL_FINAL:
+        return {**base, "motivo": "tramo_viejo", "viejo": lista[-1]}
 
     t = validos[-1]
     suba = t["dir"] == "suba"
@@ -271,8 +294,8 @@ def fibonacci(velas: list, n: int = N_PIVOTE) -> dict:
     if despues:
         j = (min(despues, key=lambda x: _bajo(velas[x])) if suba
              else max(despues, key=lambda x: _alto(velas[x])))
-        r_max = {"valor": _r(retroceso(_bajo(velas[j]) if suba else _alto(velas[j]))),
-                 "fecha": velas[j]["date"]}
+        extremo = _bajo(velas[j]) if suba else _alto(velas[j])
+        r_max = {"valor": _r(retroceso(extremo)), "precio": _r(extremo), "fecha": velas[j]["date"]}
     else:
         r_max = None
     r_hoy = retroceso(velas[hoy]["close"])

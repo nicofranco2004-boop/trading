@@ -5,7 +5,7 @@
 //   · sin tramo para medir: la tarjeta lo dice y no hay rayas de niveles.
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { createElement as h } from 'react'
-import { instalarNavegadorMinimo, montar, texto, buscarBoton, clic } from '../../testing/navegadorMinimo'
+import { instalarNavegadorMinimo, montar, texto, buscar, buscarBoton, clic } from '../../testing/navegadorMinimo'
 
 const puntos = Array.from({ length: 252 }, (_, i) => {
   const d = new Date(Date.UTC(2025, 9, 1) + i * 86400000).toISOString().slice(0, 10)
@@ -74,11 +74,64 @@ describe('Fibonacci en la ficha', () => {
   })
 
   it('sin tramo claro: lo dice y no dibuja niveles', async () => {
-    respuesta = DATOS({ disponible: false, motivo: 'sin_tramo_claro', n_pivote: 3, ruedas: 252, en_curso: null })
+    respuesta = DATOS({ disponible: false, motivo: 'tramos_chicos', n_pivote: 3, ruedas: 252, en_curso: null })
     await dibujar()
     const t = await prender()
     expect(t).toContain('Sin tramo claro')
     expect(t).not.toContain('0,618 ·')
+  })
+
+  it('al prenderlo con un tramo corto, el gráfico se acerca al tramo', async () => {
+    const { ventanaDelTramo } = await import('./CapaFibonacci')
+    // Tramo de las últimas 30 ruedas en un gráfico de 252: se ven 63 (el mínimo).
+    const corto = {
+      ...FIB, desde: { fecha: puntos[222].d, precio: 100 }, hasta: { fecha: puntos[240].d, precio: 200 },
+      ruptura: { fecha: puntos[245].d, cierre: 180, nivel: 185, nivel_fecha: puntos[236].d },
+      niveles: [0.236, 0.382, 0.5, 0.618, 0.786].map(n => ({ nivel: n, precio: 200 - n * 100 })),
+    }
+    expect(ventanaDelTramo(puntos, corto, 252)).toEqual({ n: 63, fin: 252 })
+    // Tramo de 100 ruedas: 160, con aire antes del arranque.
+    expect(ventanaDelTramo(puntos, { ...FIB, desde: { fecha: puntos[152].d, precio: 150 } }, 252)).toEqual({ n: 160, fin: 252 })
+    // Ya se ve entero: no toca nada. Sin tramo, o arranca antes del gráfico: tampoco.
+    expect(ventanaDelTramo(puntos, FIB, 252)).toBeNull()
+    expect(ventanaDelTramo(puntos, corto, 63)).toBeNull()
+    expect(ventanaDelTramo(puntos, { disponible: false }, 252)).toBeNull()
+    expect(ventanaDelTramo(puntos, { ...FIB, desde: { fecha: '2020-01-01', precio: 1 } }, 252)).toBeNull()
+    // Montado: con el tramo corto, al prender aparecen las 7 rayas con rótulo.
+    respuesta = DATOS(corto)
+    await dibujar()
+    const t = await prender()
+    for (const n of ['0 ·', '0,236 ·', '0,382 ·', '0,5 ·', '0,618 ·', '0,786 ·', '1 ·']) expect(t).toContain(n)
+  })
+
+  it('con zoom o arrastre, lo que queda fuera de la vista no se dibuja en otro lugar', async () => {
+    const { default: Capa, posicion, preciosDeLaCapa } = await import('./CapaFibonacci')
+    const capa = (vista) => h(Capa, {
+      fib: FIB, puntos: vista, pctX: (i) => (i / (vista.length - 1)) * 100, pctY: (v) => 100 - (v - 100), precio: (x) => `US$ ${x}`,
+    })
+    // Ventana corrida al pasado (antes del arranque del tramo): nada, y la escala no se estira.
+    const pasado = puntos.slice(0, 15)
+    expect(posicion(pasado, FIB.desde.fecha).donde).toBe('despues')
+    expect(preciosDeLaCapa(FIB, pasado)).toEqual([])
+    montado = await montar(capa(pasado))
+    expect(texto(montado.contenedor)).toBe('')
+    await montado.desmontar()
+    // Ventana que empieza a mitad del tramo: las rayas desde el borde, pero no
+    // la raya del tramo ni su arranque (quedarían en una fecha que no es la suya).
+    const medio = puntos.slice(60)
+    expect(posicion(medio, FIB.desde.fecha).donde).toBe('antes')
+    expect(preciosDeLaCapa(FIB, medio)).toEqual([108.9, 176.75])
+    montado = await montar(capa(medio))
+    expect(texto(montado.contenedor)).toContain('0,5 ·')
+    expect(buscar(montado.contenedor, 'svg')).toBeNull()
+    await montado.desmontar()
+    // Con todo a la vista, sí.
+    montado = await montar(capa(puntos))
+    expect(buscar(montado.contenedor, 'svg')).not.toBeNull()
+    // Una vela semanal cubre su semana: el miércoles cae adentro, el lunes siguiente no.
+    const semanal = [{ d: '2026-10-05', semana: true }, { d: '2026-10-12', semana: true }]
+    expect(posicion(semanal, '2026-10-14').donde).toBe('adentro')
+    expect(posicion(semanal, '2026-10-19').donde).toBe('despues')
   })
 
   it('una respuesta vieja sin el campo no muestra el botón', async () => {

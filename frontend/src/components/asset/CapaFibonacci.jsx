@@ -16,28 +16,66 @@ import { nivelTexto, rayas, rotulosQueEntran, tarjetaFibonacci } from '../../uti
 
 export const COLOR_FIB = 'rgb(var(--data-amber))'
 
-/** Los precios que el gráfico tiene que mostrar para que la capa entre entera. */
-export function preciosDeLaCapa(f) {
+/**
+ * Los precios que el gráfico tiene que mostrar para que la capa entre entera.
+ * Nada si lo que se dibuja empieza después de lo que se ve (la ventana está
+ * corrida al pasado): estirar la escala por algo invisible aplastaría las velas.
+ */
+export function preciosDeLaCapa(f, puntos) {
   if (!f) return []
-  if (f.disponible) return [f.desde.precio, f.hasta.precio]
+  if (f.disponible) {
+    return posicion(puntos, f.desde.fecha).donde === 'despues' ? [] : [f.desde.precio, f.hasta.precio]
+  }
   const e = f.en_curso
-  if (!e) return []
+  if (!e || posicion(puntos, e.se_rompe_si_cierra.fecha).donde === 'despues') return []
   return [e.se_rompe_si_cierra.debajo_de ?? e.se_rompe_si_cierra.encima_de]
 }
 
-// x (0 a 100) de una fecha; antes del gráfico, el borde izquierdo.
-function xDe(puntos, fecha, pctX) {
+/**
+ * La ventana del gráfico ({ n, fin }, como el zoom de la ruedita) que muestra
+ * el tramo medido con aire a los costados: desde un poco antes de su arranque
+ * hasta hoy. null si ya se ve con lo que hay (`nVista` ruedas) o si el tramo
+ * arranca antes de los datos del gráfico. Un tramo de 3 semanas en un gráfico
+ * de 1 año ocupa un 5 % del ancho y los rótulos de sus niveles no entran.
+ */
+export const RUEDAS_MINIMAS_FIB = 63
+export function ventanaDelTramo(puntos, f, nVista) {
+  const fecha = f?.disponible ? f.desde.fecha : null
+  if (!fecha || !puntos?.length || fecha < puntos[0].d) return null
   const i = indiceDeFecha(puntos, fecha)
-  return i == null ? 0 : pctX(i)
+  const desdeElTramo = puntos.length - i
+  const n = Math.min(puntos.length, Math.max(RUEDAS_MINIMAS_FIB, Math.round(desdeElTramo * 1.6)))
+  return n < nVista ? { n, fin: puntos.length } : null
+}
+
+/**
+ * Dónde cae una fecha en lo que se ve: { donde: 'antes'|'adentro'|'despues', i }.
+ * Una vela semanal cubre hasta 6 días después de su fecha (la del lunes).
+ * Con zoom o arrastre la ventana puede no incluir el tramo: lo que cae afuera
+ * no se dibuja en un lugar que no es el suyo.
+ */
+export function posicion(puntos, fecha) {
+  if (!puntos?.length || !fecha) return { donde: 'despues', i: null }
+  if (fecha < puntos[0].d) return { donde: 'antes', i: null }
+  const ultimo = puntos[puntos.length - 1]
+  const limite = ultimo.semana
+    ? new Date(Date.parse(ultimo.d + 'T00:00:00Z') + 6 * 86400000).toISOString().slice(0, 10)
+    : ultimo.d
+  if (fecha > limite) return { donde: 'despues', i: null }
+  return { donde: 'adentro', i: indiceDeFecha(puntos, fecha) }
 }
 
 export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
   if (!fib || !puntos.length) return null
   if (!fib.disponible) return <CorteEnCurso e={fib.en_curso} puntos={puntos} pctX={pctX} pctY={pctY} precio={precio} />
 
-  const x0 = xDe(puntos, fib.desde.fecha, pctX)
-  const x1 = xDe(puntos, fib.hasta.fecha, pctX)
-  const xr = xDe(puntos, fib.ruptura.fecha, pctX)
+  const p0 = posicion(puntos, fib.desde.fecha)
+  if (p0.donde === 'despues') return null
+  const p1 = posicion(puntos, fib.hasta.fecha)
+  const pr = posicion(puntos, fib.ruptura.fecha)
+  // Las rayas arrancan en el arranque del tramo, o en el borde si arrancó antes.
+  const x0 = p0.donde === 'adentro' ? pctX(p0.i) : 0
+  const x1 = p1.donde === 'adentro' ? pctX(p1.i) : null
   const lista = rayas(fib)
   const tops = lista.map(r => pctY(r.precio))
   const conRotulo = rotulosQueEntran(lista, tops, fib.entre)
@@ -65,16 +103,21 @@ export default function CapaFibonacci({ fib, puntos, pctX, pctY, precio }) {
           )}
         </div>
       ))}
-      {/* El tramo medido: del arranque al final. */}
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
-        <line x1={x0} y1={pctY(fib.desde.precio)} x2={x1} y2={pctY(fib.hasta.precio)} stroke={COLOR_FIB}
-          strokeWidth="3" strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity="0.85" />
-      </svg>
-      <Punto x={x0} y={pctY(fib.desde.precio)} titulo="Arranque del tramo" />
-      <Punto x={x1} y={pctY(fib.hasta.precio)} titulo="Final del tramo" />
-      <span className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border-2 bg-bg-1"
-        style={{ left: `${xr}%`, top: `${pctY(fib.ruptura.cierre)}%`, borderColor: COLOR_FIB }}
-        title={`Ruptura: cerró ${precio(fib.ruptura.cierre)}`} />
+      {/* El tramo medido, del arranque al final: sólo si se ven los dos (una
+          raya cortada en el borde tendría una inclinación que no es la suya). */}
+      {p0.donde === 'adentro' && x1 != null && (
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+          <line x1={x0} y1={pctY(fib.desde.precio)} x2={x1} y2={pctY(fib.hasta.precio)} stroke={COLOR_FIB}
+            strokeWidth="3" strokeLinecap="round" vectorEffect="non-scaling-stroke" opacity="0.85" />
+        </svg>
+      )}
+      {p0.donde === 'adentro' && <Punto x={x0} y={pctY(fib.desde.precio)} titulo="Arranque del tramo" />}
+      {x1 != null && <Punto x={x1} y={pctY(fib.hasta.precio)} titulo="Final del tramo" />}
+      {pr.donde === 'adentro' && (
+        <span className="absolute -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border-2 bg-bg-1"
+          style={{ left: `${pctX(pr.i)}%`, top: `${pctY(fib.ruptura.cierre)}%`, borderColor: COLOR_FIB }}
+          title={`Ruptura: cerró ${precio(fib.ruptura.cierre)}`} />
+      )}
     </div>
   )
 }
@@ -91,7 +134,9 @@ function CorteEnCurso({ e, puntos, pctX, pctY, precio }) {
   if (!e) return null
   const suba = e.dir === 'suba'
   const corte = suba ? e.se_rompe_si_cierra.debajo_de : e.se_rompe_si_cierra.encima_de
-  const x = xDe(puntos, e.se_rompe_si_cierra.fecha, pctX)
+  const pos = posicion(puntos, e.se_rompe_si_cierra.fecha)
+  if (pos.donde === 'despues') return null
+  const x = pos.donde === 'adentro' ? pctX(pos.i) : 0
   return (
     <div className="pointer-events-none absolute inset-0" aria-hidden="true">
       <div className="absolute h-0" style={{ left: `${x}%`, right: 0, top: `${pctY(corte)}%`, borderTop: `1.5px dashed ${COLOR_FIB}` }}>

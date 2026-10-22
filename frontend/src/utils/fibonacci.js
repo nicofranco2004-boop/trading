@@ -69,27 +69,40 @@ function textoEnCurso(e, precio, fecha) {
  */
 export function tarjetaFibonacci(f, precio, fecha) {
   if (!f) return null
-  const pie = `Un pico o un pozo recién se confirma ${f.n_pivote ?? 3} ruedas después: hasta entonces no se sabe si algún día lo supera. `
+  const n = f.n_pivote ?? 3
+  const pie = `Un pico o un pozo recién se confirma ${n} ruedas después: hasta entonces no se sabe si alguno de los ${n} días siguientes lo supera. `
     + 'Describe cómo se movió el precio; no es una recomendación de compra o venta.'
   if (!f.disponible) {
     if (f.motivo === 'pocos_datos') {
       return { titulo: 'Fibonacci', veredicto: 'Faltan datos', pie,
         texto: `Para ver picos y pozos hacen falta al menos 30 ruedas y hay ${f.ruedas}.` }
     }
+    const e = f.en_curso
+    const enCurso = e ? `${e.dir === 'suba' ? 'Suba' : 'Bajada'} en curso` : null
+    const cola = e ? ` ${textoEnCurso(e, precio, fecha)} Recién ahí se mide su Fibonacci.` : ''
+    const tramo = (t) => `${t.dir} (de ${precio(t.desde.precio)} el ${fecha(t.desde.fecha)} a ${precio(t.hasta.precio)} el ${fecha(t.hasta.fecha)})`
     if (f.motivo === 'superado' && f.superado) {
-      const s = f.superado
       return {
-        titulo: 'Fibonacci', veredicto: f.en_curso ? `${f.en_curso.dir === 'suba' ? 'Suba' : 'Bajada'} en curso` : 'Sin tramo para medir', pie,
-        texto: `La última ${s.dir} (de ${precio(s.desde.precio)} el ${fecha(s.desde.fecha)} a ${precio(s.hasta.precio)} el ${fecha(s.hasta.fecha)}) `
-          + 'ya quedó atrás: el precio salió de ese tramo y sus niveles no dicen nada hoy. '
-          + textoEnCurso(f.en_curso, precio, fecha)
-          + (f.en_curso ? ' Recién ahí se mide su Fibonacci.' : ''),
+        titulo: 'Fibonacci', veredicto: enCurso || 'Sin tramo para medir', pie,
+        texto: `La última ${tramo(f.superado)} ya quedó atrás: el precio salió de ese tramo y sus niveles no dicen nada hoy.${cola}`,
       }
     }
+    if (f.motivo === 'sin_tramo_terminado') {
+      return {
+        titulo: 'Fibonacci', veredicto: enCurso || 'Sin tramo para medir', pie,
+        texto: `En la historia guardada todavía no terminó ninguna suba ni bajada: el Fibonacci se mide sobre un tramo que ya se rompió.${cola}`,
+      }
+    }
+    if (f.motivo === 'tramo_viejo') {
+      return {
+        titulo: 'Fibonacci', veredicto: 'Sin tramo reciente', pie,
+        texto: `${f.viejo ? `La última ${tramo(f.viejo)}` : 'El último tramo claro'} terminó hace más de un año: sus niveles ya no describen cómo se mueve hoy.${cola}`,
+      }
+    }
+    // tramos_chicos: un activo lateral.
     return {
       titulo: 'Fibonacci', veredicto: 'Sin tramo claro', pie,
-      texto: 'En el último año no hubo una suba ni una bajada clara: los movimientos fueron del tamaño de lo que el precio se mueve en pocos días, y con eso no se dibuja un Fibonacci. '
-        + textoEnCurso(f.en_curso, precio, fecha),
+      texto: `No hubo una suba ni una bajada clara: los movimientos fueron del tamaño de lo que el precio se mueve en pocos días, y con eso no se dibuja un Fibonacci.${cola}`,
     }
   }
 
@@ -104,10 +117,14 @@ export function tarjetaFibonacci(f, precio, fecha) {
     ? `Hoy está cerca del final de la ${f.dir}, antes del 0,236`
     : b === 1 ? `Hoy está entre el 0,786 y el arranque de la ${f.dir}` : `Hoy está entre el ${nivelTexto(a)} y el ${nivelTexto(b)}`
   const cuanto = `${suba ? 'devolvió' : 'recuperó'} el ${pct0(f.retroceso_hoy)} de la ${f.dir}`
-  const fin = `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}, cuando cerró ${suba ? 'debajo de su último pozo más alto' : 'encima de su último techo más bajo'} `
-    + `(${precio(f.ruptura.nivel)}, del ${fecha(f.ruptura.nivel_fecha)}).`
-  const lejos = f.retroceso_maximo && alcanzado > 0
-    ? ` Lo más lejos que llegó fue el ${fecha(f.retroceso_maximo.fecha)}.` : ''
+  // Si nunca llegó a formar un segundo pico, lo que defendía era su arranque.
+  const contra = f.ruptura.nivel_fecha === f.desde.fecha
+    ? `donde había arrancado (${precio(f.ruptura.nivel)})`
+    : `${suba ? 'su último pozo más alto' : 'su último techo más bajo'} (${precio(f.ruptura.nivel)}, del ${fecha(f.ruptura.nivel_fecha)})`
+  const fin = `La ${f.dir} se dio por terminada el ${fecha(f.ruptura.fecha)}, cuando cerró ${suba ? 'debajo' : 'encima'} de ${contra}.`
+  const rm = f.retroceso_maximo
+  const lejos = rm && alcanzado > 0
+    ? ` Lo más ${suba ? 'bajo' : 'alto'} que llegó${rm.precio != null ? ` fue ${precio(rm.precio)},` : ''} el ${fecha(rm.fecha)}.` : ''
   return {
     titulo: suba ? 'Fibonacci de la última suba' : 'Fibonacci de la última bajada',
     veredicto, pie,
