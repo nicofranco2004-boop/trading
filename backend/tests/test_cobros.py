@@ -9,10 +9,16 @@ Lo que se prueba:
   · Un cobro en pesos vale los dólares del día en que se cobró, no los de hoy:
     $14.500 del día en que el dólar estaba a 1.450 son US$ 10, aunque el dólar
     del usuario hoy sea 2.000.
-  · El total es el mismo "Cobrado" de Movimientos (dividendos + intereses de
+  · Los cobros son el mismo "Cobrado" de Movimientos (dividendos + intereses de
     /api/movements): las dos pantallas leen las mismas filas.
-  · La amortización de un bono NO es un cobro: es capital que vuelve.
-  · La comparación con el año anterior es contra el MISMO PERÍODO (1/1 → hoy).
+  · La amortización sola de un bono NO es un cobro: es capital que vuelve.
+  · El pago que trae cupón y amortización en UN renglón ("Renta y
+    Amortización", con o sin cantidad) no va entero a cobros ni se pierde:
+    viaja en `pagos_mixtos` para que la pantalla separe el cupón con el
+    cronograma (frontend/src/utils/cobros.js · cuponDelPago).
+
+Las sumas (mes, año, activo) las hace la pantalla y se prueban en
+frontend/src/utils/cobros.test.js.
 
 Las fechas salen de HOY (no son fijas): una prueba con fecha escrita a mano
 vence sola cuando el año cambia.
@@ -93,13 +99,9 @@ class Cobros(unittest.TestCase):
         self._importar(f"{hoy},DIVIDENDO,{self.BROKER},GGAL,,,14500,,,,ARS,\n")
         c = self._cobros()
         # 14.500 / 1.450 (el del día) = 10. Con el del usuario hoy serían 7,25.
-        self.assertAlmostEqual(c["total_anio"], 10.0, places=2)
-        self.assertEqual(c["anio"], self.anio)
-        self.assertAlmostEqual(c["por_mes"][self.hoy.month - 1]["anio"], 10.0, places=2)
-        self.assertEqual([a["activo"] for a in c["por_activo"]], ["GGAL"])
-        self.assertEqual(c["por_activo"][0]["tipos"], ["DIVIDEND"])
-        self.assertEqual(len(c["ultimos_12_meses"]), 1)
-        self.assertEqual(c["ultimos_12_meses"][0]["fecha"], hoy)
+        self.assertEqual(c["cobros"], [{"fecha": hoy, "activo": "GGAL", "tipo": "DIVIDEND", "usd": 10.0}])
+        self.assertEqual(c["hoy"], hoy)
+        self.assertEqual(c["dias_hasta_el_pago"], 21)
 
     def test_un_cupon_confirmado_en_la_bandeja_va_al_dolar_de_su_dia(self):
         """El cupón en pesos de la bandeja de Cartera: la fila guarda el dólar del
@@ -111,11 +113,10 @@ class Cobros(unittest.TestCase):
             "coupon_amount": 25000, "currency": "ARS"})
         self.assertEqual(r.status_code, 200, r.text)
         c = self._cobros()
-        self.assertAlmostEqual(c["total_anio"], 20.0, places=2)   # 25.000 / 1.250
-        self.assertEqual([a["activo"] for a in c["por_activo"]], ["TX26"])
+        self.assertEqual([(x["activo"], round(x["usd"], 2)) for x in c["cobros"]], [("TX26", 20.0)])   # 25.000 / 1.250
 
     # ── el mismo número que Movimientos ─────────────────────────────────────
-    def test_el_total_es_el_cobrado_de_movimientos_y_la_amortizacion_no_cuenta(self):
+    def test_los_cobros_son_el_cobrado_de_movimientos_y_la_amortizacion_no_cuenta(self):
         hoy = self.hoy.isoformat()
         self._dolar_del_dia(hoy, 1000)
         self._importar(
@@ -127,16 +128,14 @@ class Cobros(unittest.TestCase):
             "coupon_amount": 4, "amort_amount": 40, "currency": "USD"})
         self.assertEqual(r.status_code, 200, r.text)
         c = self._cobros()
-        self.assertAlmostEqual(c["total_anio"], 30 + 5 + 4, places=2)
-        self.assertAlmostEqual(c["total_anio"], self._cobrado_de_movimientos(), places=2)
-        self.assertEqual([a["activo"] for a in c["por_activo"]], ["KO", "GGAL", "AL30"])
-        self.assertAlmostEqual(sum(a["usd"] for a in c["por_activo"]), c["total_anio"], places=2)
+        self.assertAlmostEqual(sum(x["usd"] for x in c["cobros"]), 30 + 5 + 4, places=2)
+        self.assertAlmostEqual(sum(x["usd"] for x in c["cobros"]), self._cobrado_de_movimientos(), places=2)
+        self.assertEqual(c["pagos_mixtos"], [])
 
-    def test_la_amortizacion_importada_sin_cantidad_no_es_un_cobro(self):
-        """Balanz/IOL mandan la amortización como un cobro sin cantidad; el
-        importador la guarda como DIVIDEND y el persister la anota como
-        'Amortización' (capital que vuelve). Movimientos tiene que decir lo mismo:
-        antes la mostraba como "Dividendo" y la sumaba a lo cobrado."""
+    def test_la_amortizacion_sola_importada_no_es_un_cobro(self):
+        """El archivo trae el cupón y la amortización en renglones separados: el de
+        amortización (capital que vuelve) no entra en ninguna de las dos listas, y
+        Movimientos y el CSV del contador lo llaman amortización."""
         hoy = self.hoy.isoformat()
         self._importar(
             f"{hoy},RENTA,{self.BROKER},AL30,,,4,,,,USD,Renta AL30\n"
@@ -145,45 +144,55 @@ class Cobros(unittest.TestCase):
         tipos = sorted((m["type"], m["amount_usd"]) for m in r.json() if m["asset"] == "AL30")
         self.assertEqual(tipos, [("AMORTIZATION", 40), ("DIVIDEND", 4)])
         c = self._cobros()
-        self.assertAlmostEqual(c["total_anio"], 4, places=2)
-        self.assertAlmostEqual(c["total_anio"], self._cobrado_de_movimientos(), places=2)
-        # El CSV para el contador lee las mismas filas: tampoco la llama dividendo.
+        self.assertEqual([(x["activo"], x["usd"]) for x in c["cobros"]], [("AL30", 4.0)])
+        self.assertEqual(c["pagos_mixtos"], [])
+        self.assertAlmostEqual(sum(x["usd"] for x in c["cobros"]), self._cobrado_de_movimientos(), places=2)
         with mock.patch.object(main, "_gate_export", lambda *a, **k: None):
             r = self.client.get("/api/export/transactions.csv", headers=self.h)
         self.assertEqual(r.status_code, 200, r.text)
         al30 = sorted(l.split(",")[1] for l in r.text.splitlines() if ",AL30," in l)
         self.assertEqual(al30, ["AMORTIZACIÓN", "DIVIDENDO"], r.text)
 
-    # ── contra el año anterior ──────────────────────────────────────────────
-    def test_el_anio_anterior_se_compara_contra_el_mismo_periodo(self):
+    # ── cupón y amortización en un solo renglón ──────────────────────────────
+    def test_renta_y_amortizacion_sin_cantidad_viaja_como_pago_mixto(self):
+        """Balanz sin cantidad: "Renta y Amortización" es UN renglón con las dos
+        partes. No va entero a cobros (inflaba el cupón) ni se pierde: viaja
+        aparte para que la pantalla separe el cupón con el cronograma."""
+        hoy = self.hoy.isoformat()
+        self._importar(f"{hoy},DIVIDENDO,{self.BROKER},AL30,,,43.20,,,,USD,Renta y Amortización AL30\n")
+        c = self._cobros()
+        self.assertEqual(c["cobros"], [])
+        self.assertEqual(c["pagos_mixtos"], [{"fecha": hoy, "activo": "AL30", "tipo": "MIXTO", "usd": 43.2}])
+
+    def test_renta_y_amortizacion_con_cantidad_tambien(self):
+        """Balanz con cantidad: el lector lo importa como una VENTA de los
+        nominales devueltos (`cobros_bonos.ventas_que_son_amortizacion`). Esos
+        cupones antes no aparecían en ningún lado de Cobros."""
+        hoy = self.hoy.isoformat()
+        compra = (self.hoy.replace(day=1) if self.hoy.day > 1 else self.hoy).isoformat()
+        self._importar(
+            f"{compra},COMPRA,{self.BROKER},AL30,1000,0.60,,,,,USD,\n"
+            f"{hoy},VENTA,{self.BROKER},AL30,80,0.54,,,,,USD,Renta y Amortización AL30\n")
+        c = self._cobros()
+        self.assertEqual(c["cobros"], [])
+        self.assertEqual([(x["activo"], round(x["usd"], 2)) for x in c["pagos_mixtos"]], [("AL30", 43.2)])
+
+    # ── el rango ────────────────────────────────────────────────────────────
+    def test_cobros_desde_el_anio_anterior_y_totales_de_los_viejos(self):
         ant = self.anio - 1
         hoy = self.hoy.isoformat()
-        principio, fin = f"{ant}-01-01", f"{ant}-12-31"
         self._importar(
             f"{hoy},DIVIDENDO,{self.BROKER},KO,,,50,,,,USD,\n"
-            f"{principio},DIVIDENDO,{self.BROKER},KO,,,20,,,,USD,\n"
-            f"{fin},DIVIDENDO,{self.BROKER},KO,,,15,,,,USD,\n")
+            f"{ant}-01-01,DIVIDENDO,{self.BROKER},KO,,,20,,,,USD,\n"
+            f"{ant - 2}-06-01,DIVIDENDO,{self.BROKER},KO,,,7,,,,USD,\n"
+            f"{ant - 2}-07-01,DIVIDENDO,{self.BROKER},KO,,,8,,,,USD,\n")
         c = self._cobros()
-        self.assertAlmostEqual(c["total_anio"], 50, places=2)
-        self.assertAlmostEqual(c["total_anterior"], 35, places=2)
-        # El 31/12 del año anterior es posterior a "hoy hace un año", salvo que hoy
-        # sea justo 31/12: entonces entra.
-        esperado = 35 if (self.hoy.month, self.hoy.day) == (12, 31) else 20
-        self.assertAlmostEqual(c["total_anterior_a_la_fecha"], esperado, places=2)
-        self.assertAlmostEqual(c["por_mes"][0]["anterior"], 20, places=2)
-        self.assertAlmostEqual(c["por_mes"][11]["anterior"], 15, places=2)
-        self.assertEqual([y["anio"] for y in c["por_anio"]], [ant, self.anio])
-        # La historia para el estimado: sólo los últimos 12 meses (hasta hoy).
-        fechas = [u["fecha"] for u in c["ultimos_12_meses"]]
-        self.assertIn(hoy, fechas)
-        self.assertNotIn(principio, fechas)
+        self.assertEqual([x["fecha"] for x in c["cobros"]], [f"{ant}-01-01", hoy])
+        self.assertEqual(c["anios_previos"], [{"anio": ant - 2, "usd": 15.0}])
 
-    def test_sin_cobros_todo_en_cero(self):
+    def test_sin_cobros_todo_vacio(self):
         c = self._cobros()
-        self.assertEqual(c["total_anio"], 0)
-        self.assertEqual(c["por_activo"], [])
-        self.assertEqual(len(c["por_mes"]), 12)
-        self.assertEqual(c["ultimos_12_meses"], [])
+        self.assertEqual((c["cobros"], c["pagos_mixtos"], c["anios_previos"]), ([], [], []))
 
 
 if __name__ == "__main__":

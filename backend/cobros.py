@@ -7,8 +7,10 @@ mes, por año y por activo.
 
 LAS FILAS SON LAS DE MOVIMIENTOS. Este módulo no lee ninguna tabla: recibe las
 filas que arma `main._build_movements` (lo mismo que devuelve /api/movements) y
-las agrupa. Así "Cobrado" de Movimientos y los totales de Cobros coinciden POR
-CONSTRUCCIÓN, como ya pasa con las comisiones (`/api/insights/commissions`).
+elige cuáles son cobros. Las SUMAS (por mes, año, activo) las hace la pantalla
+(frontend/src/utils/cobros.js · resumirCobros), en UN lugar, porque una parte de
+los cupones sólo se puede separar con el cronograma de cada bono, que vive allá
+(utils/bondSchedule.js, el mismo de Eventos y del estimado).
 
 EL DÓLAR DE CADA COBRO ES EL DE SU DÍA, y no se resuelve acá: ya viene en
 `amount_usd` de cada fila.
@@ -20,16 +22,27 @@ EL DÓLAR DE CADA COBRO ES EL DE SU DÍA, y no se resuelve acá: ya viene en
   Lo que NO se suma: `operations.pnl_usd` de un dividendo importado, que va al
   dólar del día del IMPORT (persister._persist_dividend_or_interest).
 
-QUÉ CUENTA COMO COBRO: los tipos DIVIDEND (dividendo, cupón, renta) e INTEREST
-(interés, interés de plazo fijo). La AMORTIZACIÓN de un bono no: es el capital
-propio que vuelve, no algo que la inversión pagó. Mismo criterio que el KPI
-"Cobrado" de Movimientos (Operations.jsx · computeMovementKpis).
+DOS LISTAS:
+  · `cobros`: los tipos DIVIDEND (dividendo, cupón, renta) e INTEREST (interés,
+    interés de plazo fijo), enteros. Mismo universo que el KPI "Cobrado" de
+    Movimientos (Operations.jsx · computeMovementKpis).
+  · `pagos_mixtos`: pagos de un bono que el broker trae en UN renglón con el
+    cupón y la amortización juntos ("Renta y Amortización"). Una parte es renta
+    y otra es capital propio que vuelve; sumarlos enteros inflaba los cupones y
+    descartarlos los perdía. Llegan de dos formas, las dos importadas, con la
+    marca de siempre en la nota ("amortiz", la misma de
+    `cobros_bonos.ventas_que_son_amortizacion` y del persister):
+      – sin cantidad: DIVIDEND que Movimientos muestra como AMORTIZATION
+        (`main._tipo_de_fila_importada`);
+      – con cantidad (Balanz): una VENTA de los nominales que se devolvieron.
+    Sólo los que además dicen "renta": una "Amortización" sola no trae cupón.
+    La pantalla separa el cupón con el cronograma; si no puede, lo dice.
 
-El monto es con signo, igual que ese KPI: una reversión del broker resta.
+El monto es con signo, igual que el KPI: una reversión del broker resta.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 TIPOS = ("DIVIDEND", "INTEREST")
 
@@ -39,83 +52,55 @@ def _fecha(m) -> str | None:
     return f if len(f) == 10 and f[4] == "-" and f[7] == "-" else None
 
 
-def _r(v: float) -> float:
-    return round(v, 2)
+def es_pago_mixto(m) -> bool:
+    """Un renglón importado de un bono con cupón y amortización juntos."""
+    if m.get("source") != "import" or m.get("transfer_out"):
+        return False
+    if m.get("type") not in ("AMORTIZATION", "SELL"):
+        return False
+    notas = (m.get("notes") or "").lower()
+    return "amortiz" in notas and "renta" in notas
 
 
-def resumir(movimientos: list, hoy: str) -> dict:
-    """Agrupa las filas de Movimientos que son cobros.
+def cobros(movimientos: list, hoy: str, dias_hasta_el_pago: int) -> dict:
+    """Las filas de Movimientos que son cobros, desde el 1/1 del año ANTERIOR (lo
+    que necesitan la comparación, las barras y los últimos 12 meses) más el total
+    de cada año previo (para la vista "Por año").
 
-    `hoy` es la fecha de Argentina (AAAA-MM-DD): define el año en curso, el
-    "mismo período del año anterior" y la ventana de los últimos 12 meses.
-
-    Devuelve:
-      anio, total_anio                → lo cobrado en el año en curso.
-      total_anterior_a_la_fecha       → lo cobrado del 1/1 al mismo día del año
-                                        anterior: la comparación justa en octubre.
-      total_anterior                  → el año anterior completo.
-      por_mes  [12]                   → {mes, anio, anterior}: cada mes de los dos años.
-      por_anio                        → {anio, usd}: todos los años con cobros.
-      por_activo                      → los del año en curso, de mayor a menor:
-                                        {activo, tipos, usd, cobros}.
-      ultimos_12_meses                → {fecha, activo, tipo, usd}: la historia
-                                        con la que la pantalla estima los próximos 12.
-    """
+    `hoy` es la fecha de Argentina (AAAA-MM-DD)."""
     hoy_d = date.fromisoformat(hoy[:10])
-    anio = hoy_d.year
-    anterior = anio - 1
-    # El mismo día del año anterior (el 29/2 cae al 28).
-    try:
-        tope_anterior = hoy_d.replace(year=anterior).isoformat()
-    except ValueError:
-        tope_anterior = hoy_d.replace(year=anterior, day=28).isoformat()
-    desde_12m = (hoy_d - timedelta(days=365)).isoformat()
-
-    por_mes = {m: [0.0, 0.0] for m in range(1, 13)}
-    por_anio: dict = {}
-    por_activo: dict = {}
-    total_anterior_a_la_fecha = 0.0
-    ultimos = []
-
+    desde = date(hoy_d.year - 1, 1, 1).isoformat()
+    filas, mixtos, anios_previos = [], [], {}
     for m in movimientos:
-        tipo = m.get("type")
-        if tipo not in TIPOS:
-            continue
         f = _fecha(m)
         if not f:
             continue
         usd = float(m.get("amount_usd") or 0)
         if not usd:
             continue
-        y, mes = int(f[:4]), int(f[5:7])
         activo = (m.get("asset") or "").strip().upper()
-        por_anio[y] = por_anio.get(y, 0.0) + usd
-        if y == anio:
-            por_mes[mes][0] += usd
-            a = por_activo.setdefault(activo, {"activo": activo, "tipos": set(), "usd": 0.0, "cobros": 0})
-            a["tipos"].add(tipo)
-            a["usd"] += usd
-            a["cobros"] += 1
-        elif y == anterior:
-            por_mes[mes][1] += usd
-            if f <= tope_anterior:
-                total_anterior_a_la_fecha += usd
-        if desde_12m < f <= hoy:
-            ultimos.append({"fecha": f, "activo": activo, "tipo": tipo, "usd": _r(usd)})
-
-    activos = sorted(por_activo.values(), key=lambda a: -a["usd"])
-    for a in activos:
-        a["tipos"] = sorted(a["tipos"])
-        a["usd"] = _r(a["usd"])
-    ultimos.sort(key=lambda c: c["fecha"])
+        if m.get("type") in TIPOS:
+            fila = {"fecha": f, "activo": activo, "tipo": m["type"], "usd": round(usd, 6)}
+        elif es_pago_mixto(m):
+            fila = {"fecha": f, "activo": activo, "tipo": "MIXTO", "usd": round(abs(usd), 6)}
+        else:
+            continue
+        if f >= desde:
+            (filas if fila["tipo"] != "MIXTO" else mixtos).append(fila)
+        else:
+            # Años viejos: de los cobros enteros alcanza con el total del año; los
+            # mixtos viajan uno por uno, porque su cupón lo separa la pantalla.
+            y = int(f[:4])
+            if fila["tipo"] == "MIXTO":
+                mixtos.append(fila)
+            else:
+                anios_previos[y] = anios_previos.get(y, 0.0) + usd
+    filas.sort(key=lambda c: c["fecha"])
+    mixtos.sort(key=lambda c: c["fecha"])
     return {
         "hoy": hoy_d.isoformat(),
-        "anio": anio,
-        "total_anio": _r(por_anio.get(anio, 0.0)),
-        "total_anterior_a_la_fecha": _r(total_anterior_a_la_fecha),
-        "total_anterior": _r(por_anio.get(anterior, 0.0)),
-        "por_mes": [{"mes": k, "anio": _r(v[0]), "anterior": _r(v[1])} for k, v in por_mes.items()],
-        "por_anio": [{"anio": k, "usd": _r(v)} for k, v in sorted(por_anio.items())],
-        "por_activo": activos,
-        "ultimos_12_meses": ultimos,
+        "dias_hasta_el_pago": dias_hasta_el_pago,
+        "cobros": filas,
+        "pagos_mixtos": mixtos,
+        "anios_previos": [{"anio": k, "usd": round(v, 2)} for k, v in sorted(anios_previos.items())],
     }

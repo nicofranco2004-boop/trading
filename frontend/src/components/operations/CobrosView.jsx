@@ -1,10 +1,16 @@
 // CobrosView — la pestaña "Cobros" de Movimientos: lo que te pagaron tus
 // inversiones (dividendos, cupones, intereses).
 // ═══════════════════════════════════════════════════════════════════════════
-// Lo cobrado llega armado de GET /api/cobros (las mismas filas de Movimientos,
-// cada una en dólares del día en que se cobró). El estimado y el próximo cobro
-// salen de utils/cobros.js, con el cronograma de los bonos y los dividendos
-// anunciados de Novedades. Acá sólo se dibuja.
+// Los cobros llegan renglón por renglón de GET /api/cobros (las mismas filas de
+// Movimientos, cada una en dólares del día en que se cobró). Las sumas, el cupón
+// de los pagos mixtos, el estimado y el próximo cobro salen de utils/cobros.js,
+// con el cronograma de los bonos y los dividendos anunciados de Eventos. Acá
+// sólo se pide y se dibuja.
+//
+// El estimado espera TODO lo que lo alimenta (posiciones, operaciones, eventos,
+// el dólar de hoy y, si hay bonos CER, su serie): publicado antes, el número
+// cambiaba solo segundos después. Si algo de eso falla, se dice que no se pudo
+// calcular; un estimado de US$ 0 por un pedido caído sería un dato falso.
 //
 // Sistema visual (frontend/CLAUDE.md):
 //   • Números en Geist con `tabular` (R1). Los tickers también en sans: este
@@ -30,8 +36,8 @@ import { upcomingBondEvents, normalizeBackendEvents } from '../../utils/upcoming
 import { useCerSeries } from '../../hooks/useCerSeries'
 import { getBondMeta } from '../../utils/bondMeta'
 import {
-  estimarProximos12, proximoCobro, dividendosAnunciados, barras, variacionAnual,
-  tipoDeCobro, fechaLarga,
+  resumirCobros, estimarProximos12, proximoCobro, dividendosAnunciados, barras,
+  variacionAnual, tipoDeCobro, fechaLarga,
 } from '../../utils/cobros'
 
 const VISTAS = [
@@ -39,6 +45,16 @@ const VISTAS = [
   { id: 'trimestre', label: 'Por trimestre' },
   { id: 'anio', label: 'Por año' },
 ]
+
+// La vista elegida se recuerda en el navegador. Con el almacenamiento bloqueado
+// (modo privado de algunos navegadores) leer o escribir tira un error: la
+// pestaña sigue andando, sólo no recuerda la vista.
+function leerVista() {
+  try { return localStorage.getItem('rendi_cobros_vista') || 'mes' } catch { return 'mes' }
+}
+function guardarVista(v) {
+  try { localStorage.setItem('rendi_cobros_vista', v) } catch { /* sin almacenamiento */ }
+}
 
 /** US$ con decimales sólo cuando el número es chico. */
 function usd(v) {
@@ -128,24 +144,27 @@ function Leyenda({ vista, anio }) {
 
 export default function CobrosView({ conTitulo = false }) {
   const { valuationDollar } = useCurrency()
-  const [vista, setVista] = useState(() => localStorage.getItem('rendi_cobros_vista') || 'mes')
-  useEffect(() => { localStorage.setItem('rendi_cobros_vista', vista) }, [vista])
+  const [vista, setVistaEstado] = useState(leerVista)
+  const setVista = (v) => { setVistaEstado(v); guardarVista(v) }
 
-  const [resumen, setResumen] = useState(null)
+  const [datos, setDatos] = useState(null)
   const [error, setError] = useState(null)
   // Lo que alimenta el estimado. `null` = todavía no volvió.
   const [positions, setPositions] = useState(null)
+  const [operations, setOperations] = useState(null)
   const [eventos, setEventos] = useState(null)
-  const [dolar, setDolar] = useState(null)
+  const [dolar, setDolar] = useState(undefined)        // undefined = no volvió; null = falló
+  const [falloEstimado, setFalloEstimado] = useState(false)
   const [valorCartera, setValorCartera] = useState(null)
 
   const tieneCer = (positions || []).some(p => !p.is_cash && getBondMeta(p.asset)?.type === 'cer')
-  const { series: cerSeries } = useCerSeries(tieneCer)
+  const { series: cerSeries, loaded: cerListo } = useCerSeries(tieneCer)
 
   useEffect(() => {
     let vivo = true
+    const fallo = () => { if (vivo) setFalloEstimado(true) }
     api.get('/cobros')
-      .then(r => { if (vivo) setResumen(r) })
+      .then(r => { if (vivo) setDatos(r) })
       .catch(e => { if (vivo) setError(e.message || 'No pudimos traer tus cobros.') })
     Promise.all([api.get('/positions'), api.get('/brokers')])
       .then(([pos, bkrs]) => {
@@ -155,11 +174,17 @@ export default function CobrosView({ conTitulo = false }) {
         setBrokersRegistry(bkrs || [])
         setPositions(pos || [])
       })
-      .catch(() => { if (vivo) setPositions([]) })
+      .catch(fallo)
+    // Las operaciones cerradas: para saber cuántas acciones tenías al cobrar.
+    api.get('/operations')
+      .then(ops => { if (vivo) setOperations(ops || []) })
+      .catch(fallo)
+    // Sin eventos de las empresas el estimado sigue valiendo (sale de tu historia
+    // y del cronograma); sólo no hay dividendos anunciados.
     api.get('/events/portfolio?days=365')
       .then(r => { if (vivo) setEventos(r?.events || []) })
       .catch(() => { if (vivo) setEventos([]) })
-    api.get('/dolar').then(d => { if (vivo) setDolar(d) }).catch(() => {})
+    api.get('/dolar').then(d => { if (vivo) setDolar(d || null) }).catch(() => { if (vivo) setDolar(null) })
     // El valor de la cartera: la última foto que sirve como medición (`apto`).
     api.get('/snapshots?days=10')
       .then(s => {
@@ -171,8 +196,10 @@ export default function CobrosView({ conTitulo = false }) {
     return () => { vivo = false }
   }, [])
 
-  const tc = pickFinancialRate(dolar, valuationDollar)
-  const listoEstimado = positions != null && eventos != null
+  const tc = dolar ? pickFinancialRate(dolar, valuationDollar) : undefined
+  const resumen = useMemo(() => resumirCobros(datos, { cerSeries }), [datos, cerSeries])
+  const listoEstimado = !falloEstimado && positions != null && operations != null && eventos != null
+    && dolar !== undefined && (!tieneCer || cerListo)
   const hoy = resumen?.hoy
 
   const { estimado, proximo } = useMemo(() => {
@@ -180,14 +207,18 @@ export default function CobrosView({ conTitulo = false }) {
     const eventosBonos = upcomingBondEvents(positions, { windowDays: 365, cerSeries, today: hoy })
     const anunciados = dividendosAnunciados(normalizeBackendEvents(eventos, { today: hoy }), hoy)
     const est = estimarProximos12({
-      ultimos12: resumen.ultimos_12_meses, positions, eventosBonos,
+      ultimos12: resumen.ultimos_12_meses, positions, operations, eventosBonos,
       anunciados: anunciados.map(e => e.ticker), tc,
     })
     return {
       estimado: est,
-      proximo: proximoCobro({ estimado: est, eventosBonos, anunciados, positions, tcCedear: tc, tc }),
+      proximo: proximoCobro({
+        estimado: est, eventosBonos, anunciados, tc,
+        cobroCtx: { positions, tc },
+        diasHastaElPago: resumen.dias_hasta_el_pago || 0,
+      }),
     }
-  }, [resumen, listoEstimado, positions, eventos, cerSeries, tc, hoy])
+  }, [resumen, listoEstimado, positions, operations, eventos, cerSeries, tc, hoy])
 
   const filas = useMemo(() => barras(resumen, estimado, vista), [resumen, estimado, vista])
 
@@ -200,7 +231,7 @@ export default function CobrosView({ conTitulo = false }) {
 
   const anio = resumen.anio
   const nadaNunca = !resumen.por_anio.length && !(estimado?.total > 0)
-  if (nadaNunca && listoEstimado) {
+  if (nadaNunca && (listoEstimado || falloEstimado)) {
     return (
       <Panel>
         <EmptyState
@@ -253,20 +284,25 @@ export default function CobrosView({ conTitulo = false }) {
         </Kpi>
         <Kpi
           label="Próximos 12 meses (estimado)"
-          sub={!estimado ? 'Calculando…'
+          sub={falloEstimado ? 'No se pudo calcular: no llegaron tus posiciones u operaciones. Probá recargar.'
+            : !estimado ? 'Calculando…'
             : pctCartera != null ? `${pct(pctCartera, 1)} de tu cartera por año`
             : `${usd(estimado.total / 12)} por mes`}
         >
-          {estimado ? usd(estimado.total) : '…'}
+          {estimado ? usd(estimado.total) : falloEstimado ? '—' : '…'}
         </Kpi>
         <Kpi
           label="Próximo cobro"
-          sub={!listoEstimado ? 'Calculando…'
+          sub={falloEstimado ? 'No se pudo calcular'
+            : !listoEstimado ? 'Calculando…'
             : !proximo ? 'No hay ninguno que se pueda anticipar'
-            : `${fechaLarga(proximo.fecha)} · ${
-              proximo.fuente === 'cronograma' ? (proximo.conAmortizacion ? 'cupón + amortización, según el cronograma' : 'según el cronograma del bono')
-              : proximo.fuente === 'anunciado' ? (proximo.corte ? 'fecha de corte, antes de impuestos' : 'anunciado, antes de impuestos')
-              : 'estimado por lo que te pagó el año pasado'}`}
+            : proximo.corte
+              // Sólo se conoce el corte: la plata entra unos días después (regla medida).
+              ? `cerca del ${fechaLarga(proximo.fecha)} · el corte es el ${fechaLarga(proximo.corte)}${proximo.usd != null ? ', antes de impuestos' : ''}`
+              : `${fechaLarga(proximo.fecha)} · ${
+                proximo.fuente === 'cronograma' ? (proximo.conAmortizacion ? 'cupón + amortización, según el cronograma' : 'según el cronograma del bono')
+                : proximo.fuente === 'anunciado' ? 'anunciado, antes de impuestos'
+                : 'estimado por lo que te pagó el año pasado'}`}
         >
           {proximo
             ? <span className="text-xl">{proximo.activo} · {proximo.usd != null ? usd(proximo.usd) : 'monto a confirmar'}</span>
@@ -315,12 +351,24 @@ export default function CobrosView({ conTitulo = false }) {
         </Panel>
       </div>
 
+      {resumen.mixtos.sinSeparar > 0 && (
+        <Panel padding="sm">
+          <p className="text-xs text-ink-2 leading-relaxed">
+            <span className="font-medium text-ink-1">Falta una parte: </span>
+            {resumen.mixtos.sinSeparar === 1 ? 'un pago de bono trae' : `${resumen.mixtos.sinSeparar} pagos de bonos traen`} el cupón y la amortización juntos (<span className="tabular">{usd(resumen.mixtos.usdSinSeparar)}</span> en total) y el cronograma no dice cuánto es cupón, así que no {resumen.mixtos.sinSeparar === 1 ? 'entra' : 'entran'} en lo cobrado. Contarlos enteros sumaría como renta el capital que te devolvieron.
+          </p>
+        </Panel>
+      )}
+
       {estimado && (
         <Panel padding="sm">
           <p className="text-xs text-ink-2 leading-relaxed">
             <span className="font-medium text-ink-1">Cómo se estima: </span>
             los cupones de tus bonos salen de su cronograma (sin la amortización, que es tu capital que vuelve).
-            Para tus acciones, CEDEARs y ETFs se repite lo que te pagaron en los últimos 12 meses: si compraste o vendiste desde entonces, el estimado no lo sabe.
+            Para tus acciones, CEDEARs y ETFs se repite lo que te pagaron en los últimos 12 meses, ajustado a lo que tenés hoy contra lo que tenías cuando cobraste.
+            {estimado.sinAjustar.length > 0 && (
+              <> De {estimado.sinAjustar.join(', ')} no se sabe cuánto tenías al cobrar (falta la fecha de compra de algún lote), así que se repite lo cobrado sin ajustar.</>
+            )}
             {estimado.sinHistoria.length > 0 && (
               <> {estimado.sinHistoria.join(', ')} {estimado.sinHistoria.length === 1 ? 'tiene' : 'tienen'} un dividendo anunciado pero no {estimado.sinHistoria.length === 1 ? 'entra' : 'entran'}: todavía no hay cobros {estimado.sinHistoria.length === 1 ? 'suyos' : 'de ellos'} anotados para saber cada cuánto paga{estimado.sinHistoria.length === 1 ? '' : 'n'}.</>
             )}

@@ -19538,17 +19538,20 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
 
 @app.get("/api/cobros")
 def get_cobros(uid: int = Depends(get_effective_user)):
-    """La pestaña Cobros de Movimientos: dividendos, cupones e intereses por mes,
-    por año y por activo, en dólares al dólar del día de cada cobro.
+    """La pestaña Cobros de Movimientos: los cobros (dividendos, cupones,
+    intereses) en dólares al dólar del día de cada uno, y los pagos de bonos que
+    traen cupón y amortización juntos.
 
     Sobre las MISMAS filas que Movimientos (`_build_movements`), como las
-    comisiones de abajo: el total coincide con el "Cobrado" de esa pantalla por
-    construcción. La agrupación y lo que cuenta como cobro viven en `cobros.py`.
-    El estimado de los próximos 12 meses lo arma la pantalla
-    (frontend/src/utils/cobros.js): necesita el cronograma de los bonos y la
-    equivalencia CEDEAR → acción, que viven allá."""
+    comisiones de abajo. Qué cuenta como cobro vive en `cobros.py`; las sumas,
+    el cupón de los pagos mixtos y el estimado los arma la pantalla
+    (frontend/src/utils/cobros.js): necesitan el cronograma de los bonos y la
+    equivalencia CEDEAR → acción, que viven allá. `dias_hasta_el_pago` es la
+    regla medida de los dividendos (`dividendos.REGLAS`): la pantalla la usa para
+    saber cuándo entra un dividendo del que sólo se conoce el corte."""
     import cobros as _cobros
-    return _cobros.resumir(_build_movements(uid), _iso_today())
+    return _cobros.cobros(_build_movements(uid), _iso_today(),
+                          _dividendos.REGLAS["dias_hasta_el_pago"])
 
 
 @app.get("/api/insights/commissions")

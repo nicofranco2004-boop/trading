@@ -63,21 +63,26 @@ function Leyenda() {
   )
 }
 
-export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx, onClose, onVerActivo }) {
+export default function CalendarioEventos({ positions = [], cerSeries, cobroCtx, eventosDelAnio = null, onClose, onVerActivo }) {
   const hoy = hoyISO()
-  const [backend, setBackend] = useState(null)
+  // `eventosDelAnio`: los eventos que Eventos ya trajo, cuando su ventana es de
+  // un año (1Y). Entonces son exactamente los mismos y no se vuelven a pedir
+  // (cada pedido puede salir a buscar a Yahoo los tickers vencidos).
+  const [pedidos, setPedidos] = useState(null)
+  const backend = eventosDelAnio || pedidos
   const [error, setError] = useState(false)
   const [filtro, setFiltro] = useState('todo')
   const [idxMes, setIdxMes] = useState(0)
   const [diaElegido, setDiaElegido] = useState(null)
 
   useEffect(() => {
+    if (eventosDelAnio) return undefined
     let vivo = true
     api.get('/events/portfolio?days=365')
-      .then(r => { if (vivo) setBackend(r?.events || []) })
-      .catch(() => { if (vivo) { setBackend([]); setError(true) } })
+      .then(r => { if (vivo) setPedidos(r?.events || []) })
+      .catch(() => { if (vivo) { setPedidos([]); setError(true) } })
     return () => { vivo = false }
-  }, [])
+  }, [eventosDelAnio])
 
   const todos = useMemo(() => {
     if (backend == null) return []

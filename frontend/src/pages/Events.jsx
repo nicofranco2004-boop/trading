@@ -379,6 +379,7 @@ export default function Events({ embedded = false }) {
           positions={positions}
           cerSeries={cerSeries}
           cobroCtx={cobroCtx}
+          eventosDelAnio={windowDays >= 365 && llego.cartera && !fallo.cartera ? portfolioEvents : null}
           onClose={() => setVerCalendario(false)}
           onVerActivo={(t) => navigate(`/activo/${encodeURIComponent(t)}`)}
         />
