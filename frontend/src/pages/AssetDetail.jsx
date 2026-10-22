@@ -23,7 +23,7 @@ import Skeleton from '../components/Skeleton'
 import EmptyState from '../components/EmptyState'
 import { api } from '../utils/api'
 import { pctSigned, colorClass, pctTxt, LOCALE } from '../utils/format'
-import { isBymaHolding, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
+import { isBymaHolding, lotMissingPurchaseRate, priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, costBasisRate, setBrokersRegistry, valuationPriceKey } from '../utils/valuation'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { cedearRatio } from '../utils/cedearRatio'
 import { empresaDeTenencias } from '../utils/buscadorRapido'
@@ -204,6 +204,21 @@ export default function AssetDetail() {
     const pnlPct = investedUsd > 0 ? pnlUsd / investedUsd : null
     const avgCostUsd = qty > 0 ? investedUsd / qty : null
 
+    // Para la LÍNEA de tu precio en el gráfico técnico: siempre al dólar del
+    // día de cada compra, sea cual sea la preferencia de arriba. Con "dólar de
+    // hoy" el costo en pesos se divide por el dólar actual y el resultado es, en
+    // el fondo, la ganancia en PESOS: dibujada en dólares, la línea quedaba ~30 %
+    // abajo de donde compraste (auditoría 22/10). Si a algún lote le falta el
+    // dólar de compra, no se dibuja (`lineaSinTc`) en vez de dibujarla corrida.
+    let investedCompra = 0
+    let lineaSinTc = false
+    for (const p of openLots) {
+      investedCompra += valueLot(p, { brokers, prices, tcValuacion, tcCedear, tcCripto, costBasis: 'purchase' }).investedUsd
+      const enArs = brokers.find(b => b.name === p.broker)?.currency === 'ARS'
+      if (lotMissingPurchaseRate(p, 'purchase', enArs)) lineaSinTc = true
+    }
+    const pnlPctCompra = investedCompra > 0 && !lineaSinTc ? valueUsd / investedCompra - 1 : null
+
     // Operaciones cerradas (tienen pnl_usd) → stats de operatoria
     const closed = operations.filter(o => o.pnl_usd != null)
     const realizedTotal = closed.reduce((s, o) => s + (o.pnl_usd || 0), 0)
@@ -214,7 +229,7 @@ export default function AssetDetail() {
     const worst = closed.reduce((m, o) => (m == null || o.pnl_usd < m.pnl_usd ? o : m), null)
 
     return {
-      lots, valueUsd, investedUsd, qty, pnlUsd, pnlPct, avgCostUsd,
+      lots, valueUsd, investedUsd, qty, pnlUsd, pnlPct, avgCostUsd, pnlPctCompra, lineaSinTc,
       realizedTotal, wins, losses, winRate, best, worst,
       tradesCount: closed.length,
       brokerCount: new Set(openLots.map(p => p.broker)).size,
@@ -307,6 +322,12 @@ export default function AssetDetail() {
           lotes={positions}
           operaciones={operations}
           pnlPctUsd={agg.lots.length > 0 ? agg.pnlPct : null}
+          pnlPctLinea={agg.lots.length > 0 ? agg.pnlPctCompra : null}
+          lineaSinTc={agg.lineaSinTc}
+          referencia={agg.lots.length > 0 ? {
+            simbolo: symbolFor(agg.lots[0], brokers),
+            precio: agg.lots[0].price_override ?? prices[symbolFor(agg.lots[0], brokers)] ?? null,
+          } : null}
           costoPesos={costoEnPesos(agg.lots)}
           accionLocal={esAccionLocal(asset, agg.lots)}
         />

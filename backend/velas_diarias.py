@@ -98,10 +98,19 @@ def _yahoo_de(asset: str, asset_type: str, en_pesos: bool, es_cripto,
         if a in CEDEAR_USD_RATIOS:
             # Su '.BA' en Yahoo cotiza en dólares y roto (BAC ≈ 9): la serie en
             # pesos se arma de la acción de afuera, como el gráfico de la ficha.
-            return [a]
+            return [ticker_de_afuera(a)]
         # La acción de afuera (dólares) y el CEDEAR en pesos.
-        return [a, pesos]
-    return [pesos] if en_pesos else [a]
+        return [ticker_de_afuera(a), pesos]
+    return [pesos] if en_pesos else [ticker_de_afuera(a)]
+
+
+def ticker_de_afuera(a: str) -> str:
+    """El nombre con que Yahoo cotiza la acción de afuera: las acciones con
+    clase van con guión ('BRK.B' → 'BRK-B'). Con el punto, Yahoo no la encuentra
+    y la serie en dólares de Berkshire no se guardaba (auditoría 22/10). La usa
+    también `tecnico.serie` para leerla: un solo traductor."""
+    a = (a or '').strip().upper()
+    return a.replace('.', '-') if '.' in a and not a.endswith('.BA') else a
 
 
 def _cedears_de_byma() -> frozenset:
@@ -290,8 +299,20 @@ def actualizar(conn, tickers: list, *, bajar=None, hoy: str = None,
 
     estado = {r['symbol']: dict(r) for r in conn.execute(
         "SELECT symbol, ultima_completa, ok FROM velas_estado").fetchall()}
-    pendientes = sorted(set(t for t in (tickers or []) if t),
-                        key=lambda t: (bool((estado.get(t) or {}).get('ultima_completa')), t))
+    def _turno(t):
+        # Primero lo que nunca se intentó, después lo que necesita la historia
+        # entera, después la puesta al día, y AL FINAL lo que falló la última
+        # vez. Antes "lo que nunca se bajó" iba primero siempre, y un símbolo
+        # que nunca trae datos (inventado en una watchlist) nunca deja de ser
+        # "nunca bajado": con miles, se comían el tope de la noche y los activos
+        # de verdad no se actualizaban (auditoría de seguridad 22/10).
+        e = estado.get(t)
+        if e is None:
+            return 0
+        if not e.get('ok'):
+            return 3
+        return 1 if _toca_completa(e, hoy) else 2
+    pendientes = sorted(set(t for t in (tickers or []) if t), key=lambda t: (_turno(t), t))
 
     res = {"pedidos": len(pendientes), "completas": 0, "incrementales": 0,
            "reescritas": [], "sin_datos": [], "sin_tiempo": 0, "filas": 0}
