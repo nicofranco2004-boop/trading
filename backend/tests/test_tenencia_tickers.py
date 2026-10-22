@@ -97,11 +97,13 @@ class NormalizarTickersTest(unittest.TestCase):
 
     # ── lo que NO se toca ───────────────────────────────────────────────────
     def test_no_toca_los_tickers_que_terminan_en_D_de_verdad(self):
-        # AMD, GOLD, HD… sin la allowlist quedarían AM, GOL, H.
-        for t in ("AMD", "GOLD", "HD"):
+        # AMD, GOLD, HD… sin la allowlist quedarían AM, GOL, H. GOLD llega como
+        # B: Barrick cambió de código y lo que manda un broker se guarda con el
+        # vigente (tickers_renombrados.RENOMBRADOS_AL_IMPORTAR) — pero nunca GOL.
+        for t, queda in (("AMD", "AMD"), ("GOLD", "B"), ("HD", "HD")):
             snap = _snap(_h(t, 10, tipo="STOCK"))
             normalizar_tickers(snap)
-            self.assertEqual(snap.holdings[0].ticker, t)
+            self.assertEqual(snap.holdings[0].ticker, queda)
 
     def test_no_toca_los_tipos_fuera_del_gate(self):
         # consolidate_cd sólo actúa sobre BOND/STOCK/CEDEAR. Un FCI que termina
