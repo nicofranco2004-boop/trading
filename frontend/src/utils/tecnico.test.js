@@ -14,18 +14,19 @@ describe('tarjetas', () => {
     const fondo = t.find(x => x.id === 'fondo')
     expect(fondo.veredicto).toBe('Bajista')
     expect(fondo.tono).toBe('neg')
-    expect(fondo.texto).toBe('Está 8,4% abajo de su media de 200 días, y esa media viene bajando.')
-    expect(t.find(x => x.id === 'corto').veredicto).toBe('Débil')
-    expect(t.find(x => x.id === 'rsi').veredicto).toBe('Pesan más las bajas')
-    expect(t.find(x => x.id === 'rsi').texto).toContain('38 de 100. Mide si en las últimas 14 ruedas pesaron más las subas o las bajas')
-    expect(t.find(x => x.id === 'maximo').veredicto).toBe('16,6% abajo')
+    expect(fondo.texto).toBe('El precio está 8,4% abajo de su promedio de los últimos 200 días. Ese promedio viene bajando. '
+      + 'Estar abajo de ese promedio es la señal más usada de que la tendencia de fondo es bajista.')
+    expect(t.find(x => x.id === 'corto').veredicto).toBe('Bajista')
+    expect(t.find(x => x.id === 'rsi').veredicto).toBe('Pierde fuerza')
+    expect(t.find(x => x.id === 'rsi').texto).toContain('38 de 100. Compara las subas con las bajas de las últimas 3 semanas. Arriba de 50 el precio toma fuerza')
+    expect(t.find(x => x.id === 'maximo').veredicto).toBe('16,6% por debajo')
   })
 
   it('con pocas ruedas dice que faltan datos en vez de inventar la media', () => {
     const t = tarjetas({ ruedas: 120, media200: null, dist_media200: null, media50: 10, dist_media50: 2, rsi: 50, dist_maximo_12m: -3, anio_completo: false })
     const fondo = t.find(x => x.id === 'fondo')
     expect(fondo.veredicto).toBe('Faltan datos')
-    expect(fondo.texto).toContain('hay 120')
+    expect(fondo.texto).toContain('tiene 120')
     expect(t.find(x => x.id === 'maximo').titulo).toBe('Máximo del período')
   })
 
@@ -37,18 +38,18 @@ describe('tarjetas', () => {
 
 describe('veredictoRsi', () => {
   it('dice quién viene ganando, con los cortes de 30 y 70', () => {
-    expect(veredictoRsi(25)).toBe('Bajó muy fuerte y rápido')
-    expect(veredictoRsi(30)).toBe('Pesan más las bajas')
-    expect(veredictoRsi(50)).toBe('Parejo')
-    expect(veredictoRsi(70)).toBe('Pesan más las subas')
-    expect(veredictoRsi(71)).toBe('Subió muy fuerte y rápido')
+    expect(veredictoRsi(25)).toBe('Cayó muy rápido')
+    expect(veredictoRsi(30)).toBe('Pierde fuerza')
+    expect(veredictoRsi(50)).toBe('Sin fuerza clara')
+    expect(veredictoRsi(70)).toBe('Toma fuerza')
+    expect(veredictoRsi(71)).toBe('Subió muy rápido')
   })
 
   it('cuenta cuándo volvió a pasar 30 para arriba o bajó de 70', () => {
     expect(textoCruceRsi({ tipo: 'salio_de_abajo', hace: 3 }))
-      .toBe('Hace 3 ruedas volvió a pasar 30 para arriba: muchos lo leen como que vuelve a tomar fuerza.')
+      .toBe('Hace 3 días de mercado volvió a pasar 30 para arriba: suele leerse como que dejó de caer y empieza a tomar fuerza.')
     expect(textoCruceRsi({ tipo: 'salio_de_arriba', hace: 0 }))
-      .toBe('En la última rueda bajó de 70: muchos lo leen como que pierde fuerza.')
+      .toBe('En el último día de mercado bajó de 70: suele leerse como que empieza a perder fuerza.')
     expect(textoCruceRsi(null)).toBeNull()
   })
 })
@@ -162,7 +163,8 @@ describe('arreglos de la auditoría', () => {
   })
   it('sin el dato de hace un mes no dice hacia dónde va la media', () => {
     const t = tarjetas({ ruedas: 210, media200: 10, dist_media200: 5, pendiente_media200: null })
-    expect(t.find(x => x.id === 'fondo').texto).toBe('Está 5,0% arriba de su media de 200 días.')
+    expect(t.find(x => x.id === 'fondo').texto).toBe('El precio está 5,0% arriba de su promedio de los últimos 200 días. '
+      + 'Estar arriba de ese promedio es la señal más usada de que la tendencia de fondo es alcista.')
   })
   it('en su máximo cuando cierra en el máximo de cierre', () => {
     const t = tarjetas({ ruedas: 400, dist_maximo_12m: 0, anio_completo: true })
