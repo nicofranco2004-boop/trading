@@ -32,7 +32,7 @@ export default function Privacidad() {
       <main className="max-w-3xl mx-auto px-6 py-12 prose-rendi">
         <p className="text-[12.5px] text-ink-2 mb-2 font-medium">Legal</p>
         <h1 className="text-3xl font-semibold tracking-tight mb-1">Política de Privacidad</h1>
-        <p className="text-sm text-ink-3 mb-10">Última actualización: 4 de octubre de 2026</p>
+        <p className="text-sm text-ink-3 mb-10">Última actualización: 22 de octubre de 2026</p>
 
         {/* Resumen prominente */}
         <div className="border border-data-violet/40 bg-data-violet/[0.06] rounded-lg p-5 mb-10">
@@ -162,6 +162,14 @@ export default function Privacidad() {
               <strong className="text-ink-0">Comunicación transaccional (ejecución del contrato).</strong>{' '}
               Para enviarte emails operativos: bienvenida, recibo de pago, recordatorio de
               vencimiento de un plazo fijo o de tu suscripción, y alertas relevantes.
+            </li>
+            <li>
+              <strong className="text-ink-0">Comunicaciones promocionales (con baja en un click).</strong>{' '}
+              De vez en cuando te podemos escribir con novedades de Rendi, pruebas gratis o
+              regalos de plan. Cada uno de esos emails trae al pie un link para dejar de
+              recibirlos, y también podés pedirlo escribiendo a soporte@rendi.finance.
+              Darte de baja no cambia los emails de tu cuenta (códigos de acceso, recibos y
+              las alertas que configuraste).
             </li>
             <li>
               <strong className="text-ink-0">Seguridad y prevención de abuso (interés legítimo).</strong>{' '}
@@ -302,7 +310,7 @@ export default function Privacidad() {
               <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">openai.com/policies/privacy-policy</a>.
             </li>
             <li>
-              <strong className="text-ink-0">Resend (emails transaccionales).</strong>{' '}
+              <strong className="text-ink-0">Resend (envío de emails).</strong>{' '}
               Recibe tu email y el contenido del mensaje para entregártelo. Política:{' '}
               <a href="https://resend.com/legal/privacy-policy" target="_blank" rel="noopener noreferrer" className="text-data-violet hover:underline">resend.com/legal/privacy-policy</a>.
             </li>

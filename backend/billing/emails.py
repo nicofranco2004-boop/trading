@@ -90,6 +90,20 @@ def envio_masivo():
         _modo.masivo = previo
 
 
+@contextmanager
+def con_baja(url: Optional[str]):
+    """Los mails de este hilo, mientras dure el bloque, son PROMOCIONALES: llevan
+    el link para dejar de recibirlos (ver `_send`, `baja_url`). Lo pone
+    `main._envio_masivo` alrededor de cada mail de una campaña del panel, así
+    una campaña nueva lo trae sin que nadie se acuerde de agregarlo."""
+    previo = getattr(_modo, "baja_url", None)
+    _modo.baja_url = url
+    try:
+        yield
+    finally:
+        _modo.baja_url = previo
+
+
 def _esperar_turno() -> None:
     """Deja PAUSA_ENTRE_ENVIOS entre un pedido a Resend y el siguiente, para
     todos los hilos del proceso. Cada mail RESERVA su turno (el siguiente libre)
@@ -350,7 +364,8 @@ def can_deliver(to: str) -> bool:
 def _send(to: str, subject: str, html: str, text: str,
           from_addr: Optional[str] = None,
           reply_to: Optional[str] = None,
-          append_footer: bool = True) -> bool:
+          append_footer: bool = True,
+          baja_url: Optional[str] = None) -> bool:
     """Backend-agnostic send. Retorna True si se envió OK.
 
     from_addr opcional: si no se pasa, usa _from_address() (default).
@@ -365,6 +380,13 @@ def _send(to: str, subject: str, html: str, text: str,
 
     append_footer: por default agregamos el footer con WhatsApp. Para
     feedback interno (que viene al equipo, no al user) lo deshabilitamos.
+
+    baja_url: sólo los mails PROMOCIONALES (las campañas del panel; si no se
+    pasa, se toma el de `con_baja`). Agrega al pie el link "dejar de recibir
+    estos mails" y los encabezados List-Unsubscribe, que Gmail y Yahoo muestran
+    como un botón "Desuscribirse" al lado del remitente. La Ley 25.326 (art. 27)
+    pide que toda comunicación comercial ofrezca la baja. Los transaccionales
+    (código, recibo, alertas que armó la persona) no lo llevan.
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
@@ -384,6 +406,9 @@ def _send(to: str, subject: str, html: str, text: str,
             f"¿Dudas? Escribinos por WhatsApp: +54 9 2914 37-3695\n"
             f"({SUPPORT_WHATSAPP_URL})"
         )
+    baja_url = baja_url or getattr(_modo, "baja_url", None)
+    if baja_url:
+        text, html = _con_pie_de_baja(text, html, baja_url)
     if not _is_configured():
         log.info("=== EMAIL (no provider configured, logging only) ===")
         log.info("  FROM:     %s", sender)
@@ -403,6 +428,13 @@ def _send(to: str, subject: str, html: str, text: str,
     }
     if reply_to:
         payload["reply_to"] = reply_to
+    if baja_url:
+        # RFC 8058: con el -Post, el botón del cliente de correo da la baja en
+        # un click sin abrir nada (un POST a la misma dirección).
+        payload["headers"] = {
+            "List-Unsubscribe": f"<{baja_url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        }
     if getattr(_modo, "masivo", False):
         return _pedir_a_resend(payload, to, subject)
     # Mail suelto: lo manda el cartero, en su turno. Se espera la respuesta
@@ -417,6 +449,24 @@ def _send(to: str, subject: str, html: str, text: str,
     _anotar(EN_COLA)
     log.info("Email en cola para %s: %s", to, subject)
     return True
+
+
+def _con_pie_de_baja(text: str, html_body: str, baja_url: str) -> tuple:
+    """(texto, html) con el link para dejar de recibir mails promocionales al
+    final. En el html va antes de `</body>` si el mail viene envuelto
+    (`_wrap_html`), o al final si es de los planos."""
+    text = f"{text}\n\nSi no querés recibir más mails como este: {baja_url}"
+    pie = (
+        '<p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:24px 0 0;">'
+        'Si no querés recibir más mails como este, '
+        f'<a href="{html.escape(baja_url, quote=True)}" style="color:#6b7280;">'
+        'dejá de recibirlos acá</a>.</p>'
+    )
+    if "</body>" in html_body:
+        html_body = html_body.replace("</body>", pie + "</body>", 1)
+    else:
+        html_body = html_body + pie
+    return text, html_body
 
 
 def _pedir_a_resend(payload: dict, to: str, subject: str) -> bool:
@@ -1975,6 +2025,7 @@ _MOTIVOS_TEXTO = {
     "sin_noticias": "no hubo noticias que contar",
     "narracion_descartada": "narración descartada (el modelo inventó números)",
     "sin_email": "sin casilla de mail",
+    "tope_de_intentos": "ya se intentó el máximo de veces hoy (el cron corrió de más o falla siempre)",
 }
 
 

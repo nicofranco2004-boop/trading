@@ -1457,6 +1457,12 @@ def init_db():
             # recibieron (el botón principal) del resto de los que están en
             # pausa. Sin índice encima.
             conn.execute("ALTER TABLE users ADD COLUMN pausa_email_sent_at TEXT")
+        if user_cols and 'marketing_baja_at' not in user_cols:
+            # Cuándo pidió NO recibir más mails promocionales (el link "dejar de
+            # recibir" de cada campaña del panel). NULL = los recibe. Lo mira
+            # `_envio_masivo` antes de cada mail: la Ley 25.326 (art. 27) pide
+            # que toda comunicación comercial ofrezca la baja y la respete.
+            conn.execute("ALTER TABLE users ADD COLUMN marketing_baja_at TEXT")
         if user_cols and 'pro_trial_until' not in user_cols:
             # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
             # está perdiendo). Es una marca aparte a propósito: si se hiciera
@@ -27327,6 +27333,153 @@ def _marca_en_columna(conn, columna):
     return marcar, desmarcar
 
 
+# ─── Baja de los mails promocionales ──────────────────────────────────────────
+# Cada mail de las campañas del panel lleva un link "dejar de recibir" (y los
+# encabezados List-Unsubscribe) a /api/email/baja?u=<id>&t=<firma>. La firma
+# hace que el link sólo dé de baja a SU destinatario: sin ella, cambiando el
+# número cualquiera daba de baja a cualquiera. No pide iniciar sesión: la Ley
+# 25.326 (art. 27) pide que la baja sea simple, y el que la pide puede no
+# acordarse de la contraseña.
+
+def _firma_baja(uid) -> str:
+    # Subclave propia derivada de SECRET_KEY: el link viaja en mails, y la
+    # clave que firma las sesiones no tiene que firmar nada que ande suelto.
+    clave = hmac.new(SECRET_KEY.encode(), b"rendi:baja-mail:v1", hashlib.sha256).digest()
+    return hmac.new(clave, str(int(uid)).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _url_de_baja(uid) -> str:
+    from billing import emails
+    return f"{emails.APP_URL}/api/email/baja?u={int(uid)}&t={_firma_baja(uid)}"
+
+
+def _se_dio_de_baja(conn, uid) -> bool:
+    r = conn.execute("SELECT marketing_baja_at FROM users WHERE id=?", (int(uid),)).fetchone()
+    return bool(r and r["marketing_baja_at"])
+
+
+def _mandar_con_baja(mandar, t):
+    """El mail de una campaña, como PROMOCIONAL: con el link de baja de SU
+    destinatario al pie (ver `emails.con_baja`)."""
+    from billing import emails
+    with emails.con_baja(_url_de_baja(t["id"])):
+        return mandar(t)
+
+
+def _pagina_baja(titulo: str, texto: str, *, boton: str = "", accion: str = "",
+                 status: int = 200) -> Response:
+    """La página que ve quien toca el link de baja. HTML suelto, sin la app:
+    tiene que andar aunque no haya sesión y aunque el frontend no cargue."""
+    import html as _html
+    form = ""
+    if boton:
+        form = (f'<form method="post" action="{_html.escape(accion, quote=True)}">'
+                f'<button type="submit">{_html.escape(boton)}</button></form>')
+    cuerpo = f"""<!doctype html>
+<html lang="es-AR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Rendi · mails promocionales</title>
+<style>
+  body{{margin:0;background:#f5f7fa;color:#1a1f2e;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}}
+  main{{max-width:480px;margin:48px auto;padding:32px 24px;background:#fff;border-radius:8px}}
+  h1{{font-size:20px;margin:0 0 12px}}
+  p{{margin:0 0 20px;color:#374151}}
+  button{{font:inherit;font-weight:600;padding:10px 18px;border:0;border-radius:6px;background:#1a1f2e;color:#fff;cursor:pointer}}
+  button:focus-visible{{outline:3px solid #5b4ddb;outline-offset:2px}}
+  a{{color:#4338ca}}
+</style></head>
+<body><main>
+<h1>{_html.escape(titulo)}</h1>
+<p>{_html.escape(texto)}</p>
+{form}
+<p style="margin-top:24px;font-size:14px"><a href="https://rendi.finance">Ir a Rendi</a></p>
+</main></body></html>"""
+    return Response(content=cuerpo, status_code=status, media_type="text/html; charset=utf-8")
+
+
+_BAJA_QUE_SIGUE = ("Los mails de tu cuenta te siguen llegando igual: los códigos para entrar, "
+                   "los recibos de pago y las alertas que armaste vos.")
+
+
+def _baja_valida(u, t):
+    """El id del link si la firma es suya; None si no."""
+    try:
+        uid = int(u)
+    except (TypeError, ValueError):
+        return None
+    if uid <= 0 or not t or not hmac.compare_digest(str(t), _firma_baja(uid)):
+        return None
+    return uid
+
+
+def _baja_invalida():
+    return _pagina_baja(
+        "Este link no es válido",
+        "Puede que se haya cortado al copiarlo. Si querés dejar de recibir nuestros mails "
+        "promocionales, escribinos a soporte@rendi.finance y lo hacemos a mano.",
+        status=400)
+
+
+@app.get("/api/email/baja")
+def email_baja_pagina(request: Request, u: str = "", t: str = ""):
+    """El link del pie de los mails promocionales. NO da de baja al abrirse:
+    los antivirus de los correos abren los links solos, y eso daba de baja a
+    gente que no lo pidió. Muestra un botón; la baja es el POST."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    accion = f"/api/email/baja?u={uid}&t={_firma_baja(uid)}"
+    with db_abierta() as conn:
+        dado_de_baja = _se_dio_de_baja(conn, uid)
+    if dado_de_baja:
+        return _pagina_baja(
+            "Ya no te mandamos mails promocionales",
+            "Si cambiaste de idea, podés volver a recibirlos. " + _BAJA_QUE_SIGUE,
+            boton="Volver a recibirlos", accion=accion.replace("/baja?", "/alta?"))
+    return _pagina_baja(
+        "¿Dejar de recibir los mails promocionales de Rendi?",
+        "Son los mails que mandamos a mano: novedades, pruebas gratis, regalos de plan. "
+        + _BAJA_QUE_SIGUE,
+        boton="Sí, no quiero recibirlos", accion=accion)
+
+
+@app.post("/api/email/baja")
+def email_baja(request: Request, u: str = "", t: str = ""):
+    """Da de baja de los mails promocionales. Lo llaman el botón de la página y,
+    sin abrir nada, el botón "Desuscribirse" de Gmail/Yahoo (List-Unsubscribe-Post)."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET marketing_baja_at=? WHERE id=? AND marketing_baja_at IS NULL",
+                     (datetime.utcnow().isoformat(), uid))
+        conn.commit()
+    log.info("email-baja: uid=%s pidió no recibir mails promocionales", uid)
+    return _pagina_baja(
+        "Listo: no te vamos a mandar más mails promocionales",
+        _BAJA_QUE_SIGUE,
+        boton="Me equivoqué, quiero recibirlos",
+        accion=f"/api/email/alta?u={uid}&t={_firma_baja(uid)}")
+
+
+@app.post("/api/email/alta")
+def email_alta(request: Request, u: str = "", t: str = ""):
+    """Deshace la baja (el "me equivoqué")."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET marketing_baja_at=NULL WHERE id=?", (uid,))
+        conn.commit()
+    log.info("email-baja: uid=%s volvió a aceptar mails promocionales", uid)
+    return _pagina_baja("Listo: vas a volver a recibirlos",
+                        "Gracias. Podés darte de baja cuando quieras desde el pie de cualquiera de esos mails.")
+
+
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
                   inicio=None, inciertos_previos=0):
     """Manda un mail a cada destinatario, de a uno. Es el motor de los seis
@@ -27339,6 +27492,11 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     previa y el click).
 
     Por cada uno:
+      0. Si pidió no recibir más mails promocionales (`marketing_baja_at`), no
+         se le manda: va en descartados. Se mira ACÁ, en el momento de mandar,
+         y no sólo en la lista de cada campaña: así ninguna campaña —tampoco
+         una nueva— se lo puede saltear. Y cada mail que sale lleva su link
+         de baja (`_mandar_con_baja`).
       1. `marcar(t)` se queda con la persona ANTES de mandar. Devuelve la marca,
          o None si ya la tiene otro pedido (doble click, otra pestaña) → se
          saltea. Se gana con un UPDATE/INSERT condicional: dos pedidos a la vez
@@ -27401,6 +27559,16 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
             break
         quien = {"id": t["id"], "email": t["email"]}
         try:
+            if _se_dio_de_baja(conn, t["id"]):
+                ya_no_estan.append({"id": t["id"]})
+                continue
+        except Exception as ex:
+            # Sin poder confirmar que NO pidió la baja, no se le manda.
+            log.error("%s: no se pudo leer la baja de uid=%s: %s", campaña, t["id"], ex)
+            _deshacer_transaccion(conn)
+            fallados.append(quien)
+            continue
+        try:
             marca = marcar(t)
             conn.commit()
         except Exception as ex:
@@ -27424,7 +27592,7 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
                 _deshacer_transaccion(conn)
                 raise
 
-        estado = tanda.mandar(marca, lambda t=t: mandar(t), _devolver,
+        estado = tanda.mandar(marca, lambda t=t: _mandar_con_baja(mandar, t), _devolver,
                               que=f"{campaña} uid={t['id']}")
         if estado == emails.ENVIADO:
             enviados.append(quien)
@@ -27514,6 +27682,7 @@ def _reengagement_candidatos(conn, data, ids=None):
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
           AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -27626,6 +27795,7 @@ def _gift_plan_candidatos(conn, data, ids=None):
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
           AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -27789,6 +27959,7 @@ def _trial_invite_elegibles(conn, ids=None):
         f"""SELECT id, email, name FROM users
              WHERE COALESCE(is_admin,0) = 0
                AND managed_by IS NULL
+               AND marketing_baja_at IS NULL
                AND COALESCE(email_verified,0) = 1
                AND TRIM(COALESCE(email,'')) <> ''{filtro}""", params).fetchall()
 
@@ -28028,6 +28199,7 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
                        AND managed_by IS NULL
+                       AND marketing_baja_at IS NULL
                        AND TRIM(COALESCE(email,'')) <> ''""",
                     tuple(int(v["id"]) for v in vivos)).fetchall():
                 datos[int(r["id"])] = dict(r)
@@ -28205,6 +28377,7 @@ def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
              WHERE requires_plan = 1
                AND COALESCE(is_admin,0) = 0
                AND managed_by IS NULL
+               AND marketing_baja_at IS NULL
                AND COALESCE(email_verified,0) = 1
                AND TRIM(COALESCE(email,'')) <> ''
                {filtro}
@@ -28384,6 +28557,7 @@ def _broadcast_destinatarios(conn, data, plan, ids=None):
     rows = conn.execute(
         "SELECT id, email, name, email_verified, tier "
         "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL"  # sin shadows del Plan Asesor
+        " AND marketing_baja_at IS NULL"   # pidió no recibir promocionales
         + filtro + " ORDER BY created_at ASC", params
     ).fetchall()
     targets = []
