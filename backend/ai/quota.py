@@ -382,6 +382,27 @@ def _window_floor(conn, user_id: int):
     return piso
 
 
+def dia_de_la_cuota() -> str:
+    """El día con el que se estampa `users.quota_window_from`, `'YYYY-MM-DD'`.
+
+    ⚠️ **NO es `fechas.hoy_art()`, y la diferencia es a propósito.** El «hoy» de
+    Rendi es el día calendario argentino, pero el bloque de cuota de IA quedó en
+    día UTC: está anotado como «UTC a propósito — la cuota se mueve entera o no se
+    mueve» en `PENDIENTES` de tests/test_un_solo_calendario.py, y moverlo es una
+    decisión de producto pendiente (los ~19 sitios van juntos o no va ninguno).
+
+    Existe para que ese día se calcule en UN lugar. Hasta ahora había seis copias
+    escritas como `date('now','localtime')` ADENTRO del SQL — invisibles para el
+    guard de relojes, que sólo mira código Python, y además intraducibles a
+    Postgres: el shim las rechaza y con ellas se caía el `tier = ?` de la misma
+    sentencia, o sea que el usuario no cambiaba de plan.
+
+    El día que se tome la decisión, se cambia acá y en los otros sitios del
+    bloque: no hay que volver a buscar seis strings de SQL.
+    """
+    return date.today().isoformat()
+
+
 def note_tier_change(conn, user_id: int) -> None:
     """Marca que desde HOY corre la cuota del plan nuevo.
 
@@ -391,7 +412,7 @@ def note_tier_change(conn, user_id: int) -> None:
     try:
         with conn:
             conn.execute("UPDATE users SET quota_window_from=? WHERE id=?",
-                         (date.today().isoformat(), user_id))
+                         (dia_de_la_cuota(), user_id))
     except Exception as ex:
         log.warning("no pudimos marcar el corte de cuota uid=%s: %s", user_id, ex)
 

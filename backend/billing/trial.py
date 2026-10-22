@@ -396,6 +396,7 @@ def start(conn, user_id: int, del_beta: bool = False) -> dict:
 
 def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int,
               del_beta: bool = False) -> dict:
+    from ai import quota as _q   # el día de la cuota, en UN solo lugar
     with conn:
         # trial_ends_at fija CUÁL crédito es el del trial. Sin esto, "usó el
         # trial alguna vez" quedaba pegado para siempre y el cron le bajaba el
@@ -414,13 +415,14 @@ def _start_tx(conn, user_id: int, until: str, now_iso: str, cap: int,
                       -- gastó su análisis de Free, el primer día de Pro no puede
                       -- salirle 1/60 (el día 1 es el que decide si la prueba se
                       -- usa o se quema).
-                      quota_window_from=date('now','localtime'),
+                      quota_window_from=?,
                       trial_started_at=?, trial_used_at=?, trial_ends_at=?,
                       credit_anchor_plan=NULL, credit_anchor_period=NULL,
                       credit_anchor_amount_usd=NULL, credit_anchor_at=NULL
                 WHERE id=? AND trial_used_at IS NULL
                   AND (credit_active_until IS NULL OR credit_active_until <= ?)""",
-            (until, now_iso, now_iso, until, user_id, now_iso),
+            (until, _q.dia_de_la_cuota(), now_iso, now_iso, until,
+               user_id, now_iso),
         )
         if cur.rowcount == 0:
             return {"ok": False, "can_start": False, "reason": "already_used"}

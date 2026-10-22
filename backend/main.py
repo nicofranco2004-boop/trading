@@ -28528,10 +28528,11 @@ def admin_billing_restore_tier(email: str, uid: int = Depends(get_admin_user)):
                    f"(credito activo hasta {cau})")
         if fuente == "trial":
             detalle += " [prueba gratis: etapa por calendario, sin anchor]"
+        from ai import quota as _q   # el día de la cuota, en UN solo lugar
         with conn:
             conn.execute(
-                "UPDATE users SET tier = ?, quota_window_from = date('now','localtime') WHERE id = ?",
-                (target_plan, target_uid),
+                "UPDATE users SET tier = ?, quota_window_from = ? WHERE id = ?",
+                (target_plan, _q.dia_de_la_cuota(), target_uid),
             )
             conn.execute(
                 """INSERT INTO credit_ledger
@@ -28677,17 +28678,19 @@ def admin_billing_grant_comp(
         before_iso = state["active_until"]
 
         with conn:
+            from ai import quota as _q
             conn.execute(
                 """UPDATE users
                    SET tier = ?,
-                       quota_window_from = date('now','localtime'),
+                       quota_window_from = ?,
                        credit_active_until = ?,
                        credit_anchor_plan = ?,
                        credit_anchor_period = 'monthly',
                        credit_anchor_amount_usd = 0,
                        credit_anchor_at = ?
                    WHERE id = ?""",
-                (plan, after_iso, plan, now.isoformat(), target_uid),
+                (plan, _q.dia_de_la_cuota(), after_iso, plan,
+                 now.isoformat(), target_uid),
             )
             conn.execute(
                 """INSERT INTO credit_ledger
@@ -36544,8 +36547,9 @@ def _rebill_activate(conn, uid: int, metadata: dict, sub_id: str, payload: dict,
     before_tier = before_row["tier"] if before_row else None
 
     with conn:
-        conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
-                     "WHERE id = ?", (target_tier, uid))
+        from ai import quota as _q
+        conn.execute("UPDATE users SET tier = ?, quota_window_from = ? "
+                     "WHERE id = ?", (target_tier, _q.dia_de_la_cuota(), uid))
 
         # ⭐ PRIMERO por el id de Rebill, que es la IDENTIDAD de la suscripción.
         #
@@ -37255,8 +37259,9 @@ def _process_preapproval_event(conn, preapproval_id: str):
             before_row = conn.execute("SELECT tier FROM users WHERE id = ?", (user_id,)).fetchone()
             before_tier = before_row["tier"] if before_row else None
             with conn:
-                conn.execute("UPDATE users SET tier = ?, quota_window_from = date('now','localtime') "
-                             "WHERE id = ?", (target_tier, user_id))
+                from ai import quota as _q
+                conn.execute("UPDATE users SET tier = ?, quota_window_from = ? "
+                             "WHERE id = ?", (target_tier, _q.dia_de_la_cuota(), user_id))
                 conn.execute(
                     "UPDATE billing_events SET user_id = ? WHERE mp_data_id = ?",
                     (user_id, preapproval_id),
