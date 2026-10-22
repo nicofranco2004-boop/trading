@@ -60,6 +60,16 @@ def dia_art(instante_utc: datetime) -> date:
     return (instante_utc - timedelta(hours=ART_OFFSET_HORAS)).date()
 
 
+MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+
+
+def fecha_legible(d: date) -> str:
+    """`date(2026, 9, 19)` → "19 de septiembre". Para el texto que lee una
+    persona (mails, avisos): nadie lee "2026-09-19"."""
+    return "%d de %s" % (d.day, MESES_ES[d.month - 1])
+
+
 def inicio_dia_art_en_utc(d: date) -> str:
     """El instante en que EMPIEZA el día argentino `d`, escrito en UTC con el
     formato de las columnas `datetime('now')` (`'YYYY-MM-DD HH:MM:SS'`).

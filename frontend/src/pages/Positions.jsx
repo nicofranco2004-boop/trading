@@ -46,7 +46,7 @@ import StalePricesNotice from '../components/StalePricesNotice'
 import { usd, ars, pct, fmtUsd, fmtArs, pctSigned, colorClass, pctTxt, parseNum, parseNumOrNull, numToInput, numACampo } from '../utils/format'
 import { leerVenta, cuerpoDeVenta, leerConversion, cuerpoDeConversion } from '../utils/formulariosCartera'
 import { api, errorMessage } from '../utils/api'
-import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
+import { computeBrokerValue, sellPriceSuggestion, priceSymbol, fciLabel, isArUsdBroker, setBrokersRegistry, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, brokerCurrencyLabel, cashAssetLabel, sumRowUSDT, sumRowARS } from '../utils/valuation'
 import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import TcMissingBadge from '../components/TcMissingBadge'
 import { EtiquetaMoneda, EtiquetaEfectivo, EtiquetaBono, EtiquetaFaltaTc } from '../components/EtiquetaFila'
@@ -1600,7 +1600,11 @@ function PositionsDesktop() {
         valueArs: c.valueArs, investedArs: invArs, pnlArs: c.pnlArs,
         priceLocal: c.priceArs,
         avgUsd: qty > 0 ? invUsd / qty : null,
-        avgArs: qty > 0 ? invArs / qty : null,
+        // Los pesos pagados, sin comisiones: la MISMA regla que la sección de una
+        // sola pata y que el celular (avgCostArsPerUnit). Con `invArs` (que lleva
+        // las comisiones) la misma compra mostraba otro promedio según la cuenta
+        // estuviera unificada o no.
+        avgArs: avgCostArsPerUnit(p),
         ccy: 'ARS',
       }
     }
@@ -2534,12 +2538,17 @@ function PositionsDesktop() {
                       // eso `_buildAgg` deja `invested: null` en la fila mixta.
                       // Vale porque las dos patas tienen el MISMO instrumento:
                       // cambia la moneda con la que se pagó, no la cosa comprada.
-                      const avgPriceArs = c._v
-                        ? (c._v.avgArs ?? (c._v.avgUsd != null ? c._v.avgUsd * tcValuacion : null))
-                        : ((!p.is_cash && p.quantity > 0 && p.invested) ? p.invested / p.quantity : null)
                       // En vista USD el promedio se rutea por el modo (ver
                       // routedAvgPriceUsd); en 'today' da lo mismo que antes.
                       const avgPriceUsdDisp = c._v ? c._v.avgUsd : routedAvgPriceUsd(p, tcValuacion, true)
+                      // En pesos, los pesos que se pagaron (avgCostArsPerUnit, el
+                      // mismo helper que el celular). Un lote con el costo en
+                      // DÓLARES no tiene precio en pesos: antes `invested / quantity`
+                      // publicaba esos dólares rotulados ARS; ahora se deriva ×tc.
+                      const avgPriceArs = c._v
+                        ? (c._v.avgArs ?? (c._v.avgUsd != null ? c._v.avgUsd * tcValuacion : null))
+                        : (avgCostArsPerUnit(p)
+                          ?? (avgPriceUsdDisp != null ? avgPriceUsdDisp * tcValuacion : null))
                       // El broker REAL del lote, no la moneda de la sección: es
                       // la misma corrección que ya tiene el TOTAL del día. Con una
                       // sección de una sola pata ARS da exactamente lo de antes.

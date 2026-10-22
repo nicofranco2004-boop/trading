@@ -378,6 +378,9 @@ export default function Admin() {
       {/* ── Feedback: "¿qué te está pareciendo Rendi?" a los que están en la prueba ── */}
       <FeedbackPruebaPanel toast={toast} />
 
+      {/* ── Cuentas en pausa: terminó la prueba y no eligieron plan ── */}
+      <ReactivarPausaPanel toast={toast} />
+
       {/* ── Campaña regalo Pro: avisar que les regalamos un mes + cargá historial ── */}
       <TrialInvitePanel toast={toast} />
       <GiftPlanPanel toast={toast} />
@@ -503,8 +506,9 @@ export default function Admin() {
                             >Asesor</button>
                             <button
                               onClick={() => setGiftPickerFor(null)}
+                              aria-label="Cerrar"
                               className="text-xs text-ink-3 hover:text-ink-0 px-1"
-                            >✕</button>
+                            ><span aria-hidden="true">✕</span></button>
                           </div>
                         ) : (
                           <button
@@ -575,7 +579,7 @@ function Row({ label, children }) {
 }
 
 // ─── Envíos masivos: de a tandas, con lo que se vio ──────────────────────────
-// Los cinco mails masivos de este panel mandan con este hook (y el backend con
+// Los seis mails masivos de este panel mandan con este hook (y el backend con
 // `_envio_masivo`): la lista de la pantalla parte en tandas (utils/envioEnTandas),
 // se ve el avance, y al terminar —también si se corta— se recarga la vista
 // previa: con la lista vieja en pantalla el próximo click se armaría con datos
@@ -1292,6 +1296,243 @@ function FeedbackPruebaTabla({ filas, conFecha = false }) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+// ─── ReactivarPausaPanel — mail a las cuentas EN PAUSA ───────────────────────
+// Las que terminaron la prueba (o el plan) y no eligieron uno: no pueden
+// entrar. Misma regla que el muro de la app, del lado del backend. El mail va
+// personalizado (nombre, desde cuándo; al que no cargó nada le llega otro que
+// le pregunta qué pasó), y cada fila deja ver el mail EXACTO que le llegaría.
+// De la cartera sólo viaja SI cargó algo: ni activos ni cantidades, tampoco
+// acá (la Política de Privacidad reserva esos datos para prestar el servicio). Dos botones: los que nunca lo recibieron
+// (principal) y todos los que están en pausa.
+function ReactivarPausaPanel({ toast }) {
+  const { preview, loading, recargar: loadPreview } = useVistaPrevia(
+    () => api.post('/admin/email/reactivar-pausa', { confirm: false }), toast)
+  // envio.enviando: null | 'nuevos' | 'todos' (qué botón está mandando)
+  const envio = useEnvioEnTandas({ url: '/admin/email/reactivar-pausa', toast, recargar: loadPreview })
+  const ocupado = envio.enviando !== null
+  const [probando, setProbando] = useState(null)
+
+  const nuevos = preview?.nuevos || []
+  const yaRecibieron = preview?.ya_recibieron || []
+  const todas = [...nuevos, ...yaRecibieron]
+  // Las filas con `espera` se ven pero no salen: los botones cuentan sólo las otras.
+  const nuevosListos = nuevos.filter(t => !t.espera)
+  const todosListos = todas.filter(t => !t.espera)
+  const conCartera = todas.filter(t => t.con_cartera).length
+
+  async function pruebaAMi(conCarteraCargada) {
+    setProbando(conCarteraCargada ? 'con' : 'sin')
+    try {
+      const r = await api.post('/admin/email/reactivar-pausa',
+        { prueba_a_mi: true, con_cartera: conCarteraCargada })
+      toast.push(
+        r.sent
+          ? `Te lo mandé a ${r.to}. Fijate si cayó en Principal y respondelo para ver que la respuesta te llegue.`
+          : `No salió el mail de prueba a ${r.to}.`,
+        { type: r.sent ? 'success' : 'warn' }
+      )
+    } catch (e) {
+      toast.push('Error al mandar la prueba: ' + e.message, { type: 'error' })
+    } finally { setProbando(null) }
+  }
+
+  async function send(grupo) {
+    const lista = grupo === 'nuevos' ? nuevosListos : todosListos
+    const n = lista.length
+    if (n === 0) return
+    const yaLoTenian = lista.filter(t => t.sent_at).length
+    const msg = grupo === 'nuevos'
+      ? `¿Mandar el mail a ${n === 1 ? '1 cuenta en pausa que nunca lo recibió' : `${n} cuentas en pausa que nunca lo recibieron`}?`
+      : `¿Mandar el mail a TODAS las cuentas en pausa (${n})?` +
+        (yaLoTenian ? `\n\n${yaLoTenian} ya lo ${yaLoTenian === 1 ? 'recibió' : 'recibieron'} antes: les llega la versión de recordatorio.` : '')
+    await envio.enviar({
+      clave: grupo, pregunta: msg, cuerpo: { grupo }, lote: preview?.lote,
+      vistos: lista.map(t => ({ id: t.id, sent_at: t.sent_at })),
+    })
+  }
+
+  return (
+    <div className="bg-bg-2/60 border border-line/80 dark:border-line/50 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Clock size={16} className="text-data-violet" />
+          <h2 className="font-semibold text-ink-0">Cuentas en pausa · volver a Rendi</h2>
+        </div>
+        <button
+          onClick={loadPreview}
+          disabled={loading || ocupado}
+          className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded bg-bg-2 dark:bg-bg-2/40 text-ink-2 hover:text-ink-0 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> {preview ? 'Recalcular' : 'Ver destinatarios'}
+        </button>
+      </div>
+
+      <p className="text-xs text-ink-3 leading-relaxed">
+        A los que se les terminó la prueba (o el plan) y no eligieron uno: hoy no pueden entrar. Es la misma
+        regla que el cartel «en pausa» de la lista de usuarios. El mail va con el nombre de cada uno y desde cuándo
+        está en pausa. Si cargó algo, le dice que todo sigue guardado; si no, le pregunta qué pasó. Nunca nombra
+        lo que hay en su cartera: la Política de Privacidad promete usar esos datos sólo para el servicio. Tocá
+        una fila para ver su mail. En gris: los
+        que llevan menos de {preview?.min_dias ?? 3} días en pausa, a los que todavía no les llegó el aviso
+        automático «terminó tu prueba», o a los que les llegó otro mail de Rendi en las
+        últimas {preview?.espera_horas ?? 24} h. Las respuestas llegan a soporte@. Al que paga, deja de aparecer.
+      </p>
+
+      {preview && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <ConvCell label="En pausa" value={preview.en_pausa} hint={`${conCartera} cargaron datos`} />
+            <ConvCell label="Nunca lo recibieron" value={nuevos.length}
+                      hint={`${nuevosListos.length} se pueden mandar hoy`} />
+            <ConvCell label="Ya lo recibieron" value={yaRecibieron.length} hint="siguen en pausa" />
+          </div>
+
+          <div className="flex items-center gap-4 flex-wrap">
+            <button
+              onClick={() => pruebaAMi(true)}
+              disabled={probando !== null}
+              className="text-xs text-data-violet hover:underline disabled:opacity-50"
+            >
+              {probando === 'con' ? 'Mandando…' : 'Mandarme la versión «con cartera»'}
+            </button>
+            <button
+              onClick={() => pruebaAMi(false)}
+              disabled={probando !== null}
+              className="text-xs text-data-violet hover:underline disabled:opacity-50"
+            >
+              {probando === 'sin' ? 'Mandando…' : 'Mandarme la versión «sin cartera»'}
+            </button>
+          </div>
+
+          {nuevos.length > 0 ? (
+            <PausaTabla filas={nuevos} />
+          ) : (
+            <p className="text-sm text-ink-3">
+              {preview.en_pausa === 0
+                ? 'No hay cuentas en pausa ahora.'
+                : 'Todas las cuentas en pausa ya lo recibieron.'}
+            </p>
+          )}
+
+          <div className="flex items-center justify-between gap-3 pt-1 border-t border-line/30 flex-wrap">
+            <p className="text-[11px] text-ink-3 max-w-md">
+              Envía vía Resend, de a {preview.lote ?? 20} por vez. Si un envío falla, esa persona sigue en la lista
+              para la próxima.
+            </p>
+            <button
+              onClick={() => send('nuevos')}
+              disabled={ocupado || loading || nuevosListos.length === 0}
+              className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded bg-data-violet text-white font-medium hover:bg-data-violet/90 disabled:opacity-40 disabled:cursor-not-allowed press"
+            >
+              <Send size={14} /> {envio.enviando === 'nuevos'
+                ? envio.textoEnviando
+                : `Enviar a ${nuevosListos.length} que nunca lo recibieron`}
+            </button>
+          </div>
+
+          {yaRecibieron.length > 0 && (
+            <div className="space-y-2 pt-3 border-t border-line/30">
+              <h3 className="text-sm font-medium text-ink-1">
+                Ya lo recibieron y siguen en pausa ({yaRecibieron.length})
+              </h3>
+              <PausaTabla filas={yaRecibieron} conFecha />
+            </div>
+          )}
+
+          {todas.length > 0 && (
+            <div className="flex items-center justify-between gap-3 pt-3 border-t border-line/30 flex-wrap">
+              <p className="text-[11px] text-ink-3 max-w-md">
+                Para mandárselo a todos los que están en pausa, lo hayan recibido o no. A los que ya lo tenían les
+                llega la versión de recordatorio (otra apertura, mismo asunto).
+              </p>
+              <button
+                onClick={() => send('todos')}
+                disabled={ocupado || loading || todosListos.length === 0}
+                className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded border border-data-violet/60 text-data-violet font-medium hover:bg-data-violet/10 disabled:opacity-40 disabled:cursor-not-allowed press"
+              >
+                <Send size={14} /> {envio.enviando === 'todos'
+                  ? envio.textoEnviando
+                  : `Mandar a todos los en pausa (${todosListos.length})`}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      <ResultadoEnvio envio={envio} sinLista={!preview}
+        descartados="ya no se podían mandar (pagaron, o les llegó otro mail hace poco)"
+        trabadas="Aparece en «Ya lo recibieron»: a partir de mañana se lo podés mandar con «Mandar a todos»." />
+    </div>
+  )
+}
+
+// "2026-10-03" → "3/10". La fecha ya viene como día argentino.
+function diaCorto(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '')
+  return m ? `${Number(m[3])}/${Number(m[2])}` : '—'
+}
+
+function PausaTabla({ filas, conFecha = false }) {
+  const [abierta, setAbierta] = useState(null)   // id de la fila con el mail a la vista
+  const columnas = conFecha ? 5 : 4
+  return (
+    <div className="max-h-80 overflow-auto border border-line/40 rounded-sm bg-bg-1/40">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-line/40 text-ink-3 sticky top-0 bg-bg-2/80 backdrop-blur">
+            <th className="text-left px-2 py-1">Email</th>
+            <th className="text-left px-2 py-1">Saludo</th>
+            <th className="text-left px-2 py-1">Cargó datos</th>
+            <th className="text-right px-2 py-1">En pausa</th>
+            {conFecha && <th className="text-right px-2 py-1">Lo recibió</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map(r => (
+            <PausaFila key={r.id} r={r} conFecha={conFecha} columnas={columnas}
+              abierta={abierta === r.id}
+              alTocar={() => setAbierta(a => (a === r.id ? null : r.id))} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function PausaFila({ r, conFecha, columnas, abierta, alTocar }) {
+  return (
+    <>
+      <tr onClick={alTocar} title="Ver el mail que le llega"
+        className={`border-b border-line/20 cursor-pointer hover:bg-bg-2/60 ${r.espera ? 'opacity-60' : ''}`}>
+        <td className="px-2 py-1 text-ink-1">
+          {r.email}
+          {r.espera && <div className="text-[10px] text-rendi-warn">{r.espera}</div>}
+        </td>
+        <td className="px-2 py-1 text-ink-2 whitespace-nowrap" title={r.name ? `Nombre cargado: ${r.name}` : 'Sin nombre cargado'}>
+          {r.saludo ? `Hola ${r.saludo},` : <span className="text-ink-3">Hola, (sin nombre)</span>}
+        </td>
+        <td className="px-2 py-1 text-ink-2">
+          {r.con_cartera ? 'sí' : <span className="text-ink-3">nada cargado</span>}
+        </td>
+        <td className="px-2 py-1 text-right tabular text-ink-2 whitespace-nowrap">
+          desde {diaCorto(r.pausa_desde)} · {r.dias_en_pausa} {r.dias_en_pausa === 1 ? 'día' : 'días'}
+        </td>
+        {conFecha && (
+          <td className="px-2 py-1 text-right tabular text-ink-2">{fechaCortaAR(r.sent_at)}</td>
+        )}
+      </tr>
+      {abierta && r.mail && (
+        <tr className="border-b border-line/20 bg-bg-2/40">
+          <td colSpan={columnas} className="px-3 py-2.5 text-ink-1 space-y-2">
+            <div><span className="text-ink-3">Asunto:</span> {r.mail.asunto}</div>
+            <div className="whitespace-pre-line leading-relaxed">{r.mail.texto}</div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

@@ -1,8 +1,8 @@
 // Envíos masivos del panel de admin, de a tandas.
 //
-// Los cinco mails masivos de /admin (re-engagement, regalo de plan, invitación
-// a la prueba, feedback de la prueba y el mail libre) mandan igual, y el
-// backend también (`_envio_masivo` en main.py):
+// Los seis mails masivos de /admin (re-engagement, regalo de plan, invitación
+// a la prueba, feedback de la prueba, cuentas en pausa y el mail libre) mandan
+// igual, y el backend también (`_envio_masivo` en main.py):
 //
 //   · La lista que se VE en pantalla viaja en tandas de `lote` personas por
 //     pedido. Cada pedido tiene que terminar antes del corte de ~30 s del proxy

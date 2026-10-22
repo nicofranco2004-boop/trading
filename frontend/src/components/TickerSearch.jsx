@@ -179,9 +179,10 @@ export default function TickerSearch({ value, onChange, currency = 'ARS', placeh
           <button
             type="button"
             onClick={() => { setQuery(''); onChange(''); inputRef.current?.focus() }}
+            aria-label="Borrar la búsqueda"
             className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-3 hover:text-ink-2 dark:hover:text-ink-1"
           >
-            <X size={14} />
+            <X size={14} aria-hidden="true" />
           </button>
         )}
       </div>

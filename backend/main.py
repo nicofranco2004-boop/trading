@@ -1450,6 +1450,19 @@ def init_db():
             # lo recibieron de los que sí (a esos se les puede volver a mandar,
             # pero sólo con el botón aparte). Sin índice encima.
             conn.execute("ALTER TABLE users ADD COLUMN trial_feedback_email_sent_at TEXT")
+        if user_cols and 'pausa_email_sent_at' not in user_cols:
+            # Timestamp ISO del ÚLTIMO mail "tu cuenta está en pausa" (terminó la
+            # prueba y no eligió plan). NULL = nunca. Lo usa
+            # /api/admin/email/reactivar-pausa para separar a los que nunca lo
+            # recibieron (el botón principal) del resto de los que están en
+            # pausa. Sin índice encima.
+            conn.execute("ALTER TABLE users ADD COLUMN pausa_email_sent_at TEXT")
+        if user_cols and 'marketing_baja_at' not in user_cols:
+            # Cuándo pidió NO recibir más mails promocionales (el link "dejar de
+            # recibir" de cada campaña del panel). NULL = los recibe. Lo mira
+            # `_envio_masivo` antes de cada mail: la Ley 25.326 (art. 27) pide
+            # que toda comunicación comercial ofrezca la baja y la respete.
+            conn.execute("ALTER TABLE users ADD COLUMN marketing_baja_at TEXT")
         if user_cols and 'pro_trial_until' not in user_cols:
             # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
             # está perdiendo). Es una marca aparte a propósito: si se hiciera
@@ -3911,6 +3924,38 @@ def motivo_de_pausa(conn, uid: int) -> Optional[str]:
         return None
 
 
+def resumen_de_lo_guardado(conn, uid: int) -> Optional[str]:
+    """"4 brokers y 312 movimientos": lo que la cuenta tiene guardado, en la
+    frase que se le dice a alguien con la cuenta en pausa. None si no cargó
+    nada (o no se pudo contar): se omite la frase antes que decir "tus 0
+    brokers".
+
+    La usa el muro (`/api/auth/me` → `pausa_resumen`). El mail a las cuentas
+    en pausa (/api/admin/email/reactivar-pausa) sólo mira si es None (cargó
+    algo o no), para que "cargó algo" sea la misma regla en los dos: el mail
+    NO repite la frase, porque es promoción y la Política de Privacidad
+    reserva los datos de cartera para prestar el servicio."""
+    try:
+        # El contador OFICIAL, el mismo que usa la cuota del plan y el
+        # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
+        # distinto en las cuentas con sub-brokers, y el muro terminaba
+        # diciendo "6 brokers" donde el mail del mismo día decía 4.
+        from ai import plan as _plan
+        nb = _plan.count_broker_accounts(conn, uid) or 0
+        nm = conn.execute(
+            "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
+        ).fetchone()["c"] or 0
+    except Exception as ex:
+        log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
+        return None
+    partes = []
+    if nb:
+        partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
+    if nm:
+        partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
+    return " y ".join(partes) or None
+
+
 def get_effective_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
@@ -4886,27 +4931,8 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
         # que sabrían contar esto, están justamente bloqueados.
         # Si no hay nada que contar, no se manda: el muro omite la frase antes
         # que decir "tus 0 brokers".
-        d["pausa_resumen"] = None
-        if d["cuenta_en_pausa"]:
-            try:
-                # El contador OFICIAL, el mismo que usa la cuota del plan y el
-                # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
-                # distinto en las cuentas con sub-brokers, y el muro terminaba
-                # diciendo "6 brokers" donde el mail del mismo día decía 4.
-                from ai import plan as _plan
-                nb = _plan.count_broker_accounts(conn, uid) or 0
-                nm = conn.execute(
-                    "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
-                ).fetchone()["c"] or 0
-                partes = []
-                if nb:
-                    partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
-                if nm:
-                    partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
-                if partes:
-                    d["pausa_resumen"] = " y ".join(partes)
-            except Exception as ex:
-                log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
+        d["pausa_resumen"] = (resumen_de_lo_guardado(conn, uid)
+                              if d["cuenta_en_pausa"] else None)
 
         sub_status = d.get("subscription_status")
         cred_active = bool(d.get("credit_days_remaining", 0) > 0)
@@ -27128,9 +27154,9 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 
 
 # ─── Envíos masivos del panel de admin ────────────────────────────────────────
-# Los cinco mails que el admin le manda a mucha gente desde el panel
-# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba y
-# el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
+# Los seis mails que el admin le manda a mucha gente desde el panel
+# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba,
+# cuentas en pausa y el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
 # su loop y cada arreglo quedaba en uno solo: el de feedback tenía pausa, tandas
 # y freno al doble click, y los otros cuatro mandaban todo de un tirón.
 #
@@ -27290,7 +27316,8 @@ def _sigue_existiendo(conn, uid):
 # Columnas de `users` donde un envío masivo anota a quién ya le mandó. Lista
 # cerrada: el nombre va pegado al SQL.
 _MARCAS_DE_ENVIO = ("reengagement_email_sent_at", "gift_plan_email_sent_at",
-                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at")
+                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at",
+                    "pausa_email_sent_at")
 
 
 def _marca_en_columna(conn, columna):
@@ -27326,9 +27353,156 @@ def _marca_en_columna(conn, columna):
     return marcar, desmarcar
 
 
+# ─── Baja de los mails promocionales ──────────────────────────────────────────
+# Cada mail de las campañas del panel lleva un link "dejar de recibir" (y los
+# encabezados List-Unsubscribe) a /api/email/baja?u=<id>&t=<firma>. La firma
+# hace que el link sólo dé de baja a SU destinatario: sin ella, cambiando el
+# número cualquiera daba de baja a cualquiera. No pide iniciar sesión: la Ley
+# 25.326 (art. 27) pide que la baja sea simple, y el que la pide puede no
+# acordarse de la contraseña.
+
+def _firma_baja(uid) -> str:
+    # Subclave propia derivada de SECRET_KEY: el link viaja en mails, y la
+    # clave que firma las sesiones no tiene que firmar nada que ande suelto.
+    clave = hmac.new(SECRET_KEY.encode(), b"rendi:baja-mail:v1", hashlib.sha256).digest()
+    return hmac.new(clave, str(int(uid)).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _url_de_baja(uid) -> str:
+    from billing import emails
+    return f"{emails.APP_URL}/api/email/baja?u={int(uid)}&t={_firma_baja(uid)}"
+
+
+def _se_dio_de_baja(conn, uid) -> bool:
+    r = conn.execute("SELECT marketing_baja_at FROM users WHERE id=?", (int(uid),)).fetchone()
+    return bool(r and r["marketing_baja_at"])
+
+
+def _mandar_con_baja(mandar, t):
+    """El mail de una campaña, como PROMOCIONAL: con el link de baja de SU
+    destinatario al pie (ver `emails.con_baja`)."""
+    from billing import emails
+    with emails.con_baja(_url_de_baja(t["id"])):
+        return mandar(t)
+
+
+def _pagina_baja(titulo: str, texto: str, *, boton: str = "", accion: str = "",
+                 status: int = 200) -> Response:
+    """La página que ve quien toca el link de baja. HTML suelto, sin la app:
+    tiene que andar aunque no haya sesión y aunque el frontend no cargue."""
+    import html as _html
+    form = ""
+    if boton:
+        form = (f'<form method="post" action="{_html.escape(accion, quote=True)}">'
+                f'<button type="submit">{_html.escape(boton)}</button></form>')
+    cuerpo = f"""<!doctype html>
+<html lang="es-AR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Rendi · mails promocionales</title>
+<style>
+  body{{margin:0;background:#f5f7fa;color:#1a1f2e;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}}
+  main{{max-width:480px;margin:48px auto;padding:32px 24px;background:#fff;border-radius:8px}}
+  h1{{font-size:20px;margin:0 0 12px}}
+  p{{margin:0 0 20px;color:#374151}}
+  button{{font:inherit;font-weight:600;padding:10px 18px;border:0;border-radius:6px;background:#1a1f2e;color:#fff;cursor:pointer}}
+  button:focus-visible{{outline:3px solid #5b4ddb;outline-offset:2px}}
+  a{{color:#4338ca}}
+</style></head>
+<body><main>
+<h1>{_html.escape(titulo)}</h1>
+<p>{_html.escape(texto)}</p>
+{form}
+<p style="margin-top:24px;font-size:14px"><a href="https://rendi.finance">Ir a Rendi</a></p>
+</main></body></html>"""
+    return Response(content=cuerpo, status_code=status, media_type="text/html; charset=utf-8")
+
+
+_BAJA_QUE_SIGUE = ("Los mails de tu cuenta te siguen llegando igual: los códigos para entrar, "
+                   "los recibos de pago y las alertas que armaste vos.")
+
+
+def _baja_valida(u, t):
+    """El id del link si la firma es suya; None si no."""
+    try:
+        uid = int(u)
+    except (TypeError, ValueError):
+        return None
+    if uid <= 0 or not t or not hmac.compare_digest(str(t), _firma_baja(uid)):
+        return None
+    return uid
+
+
+def _baja_invalida():
+    return _pagina_baja(
+        "Este link no es válido",
+        "Puede que se haya cortado al copiarlo. Si querés dejar de recibir nuestros mails "
+        "promocionales, escribinos a soporte@rendi.finance y lo hacemos a mano.",
+        status=400)
+
+
+@app.get("/api/email/baja")
+def email_baja_pagina(request: Request, u: str = "", t: str = ""):
+    """El link del pie de los mails promocionales. NO da de baja al abrirse:
+    los antivirus de los correos abren los links solos, y eso daba de baja a
+    gente que no lo pidió. Muestra un botón; la baja es el POST."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    accion = f"/api/email/baja?u={uid}&t={_firma_baja(uid)}"
+    with db_abierta() as conn:
+        dado_de_baja = _se_dio_de_baja(conn, uid)
+    if dado_de_baja:
+        return _pagina_baja(
+            "Ya no te mandamos mails promocionales",
+            "Si cambiaste de idea, podés volver a recibirlos. " + _BAJA_QUE_SIGUE,
+            boton="Volver a recibirlos", accion=accion.replace("/baja?", "/alta?"))
+    return _pagina_baja(
+        "¿Dejar de recibir los mails promocionales de Rendi?",
+        "Son los mails que mandamos a mano: novedades, pruebas gratis, regalos de plan. "
+        + _BAJA_QUE_SIGUE,
+        boton="Sí, no quiero recibirlos", accion=accion)
+
+
+@app.post("/api/email/baja")
+def email_baja(request: Request, u: str = "", t: str = ""):
+    """Da de baja de los mails promocionales. Lo llaman el botón de la página y,
+    sin abrir nada, el botón "Desuscribirse" de Gmail/Yahoo (List-Unsubscribe-Post)."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET marketing_baja_at=? WHERE id=? AND marketing_baja_at IS NULL",
+                     (datetime.utcnow().isoformat(), uid))
+        conn.commit()
+    log.info("email-baja: uid=%s pidió no recibir mails promocionales", uid)
+    return _pagina_baja(
+        "Listo: no te vamos a mandar más mails promocionales",
+        _BAJA_QUE_SIGUE,
+        boton="Me equivoqué, quiero recibirlos",
+        accion=f"/api/email/alta?u={uid}&t={_firma_baja(uid)}")
+
+
+@app.post("/api/email/alta")
+def email_alta(request: Request, u: str = "", t: str = ""):
+    """Deshace la baja (el "me equivoqué")."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET marketing_baja_at=NULL WHERE id=?", (uid,))
+        conn.commit()
+    log.info("email-baja: uid=%s volvió a aceptar mails promocionales", uid)
+    return _pagina_baja("Listo: vas a volver a recibirlos",
+                        "Gracias. Podés darte de baja cuando quieras desde el pie de cualquiera de esos mails.")
+
+
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
                   inicio=None, inciertos_previos=0):
-    """Manda un mail a cada destinatario, de a uno. Es el motor de los cinco
+    """Manda un mail a cada destinatario, de a uno. Es el motor de los seis
     envíos masivos del panel de admin.
 
     `destinatarios`: los que el admin vio y que HOY siguen calificando (cada
@@ -27338,6 +27512,11 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     previa y el click).
 
     Por cada uno:
+      0. Si pidió no recibir más mails promocionales (`marketing_baja_at`), no
+         se le manda: va en descartados. Se mira ACÁ, en el momento de mandar,
+         y no sólo en la lista de cada campaña: así ninguna campaña —tampoco
+         una nueva— se lo puede saltear. Y cada mail que sale lleva su link
+         de baja (`_mandar_con_baja`).
       1. `marcar(t)` se queda con la persona ANTES de mandar. Devuelve la marca,
          o None si ya la tiene otro pedido (doble click, otra pestaña) → se
          saltea. Se gana con un UPDATE/INSERT condicional: dos pedidos a la vez
@@ -27400,6 +27579,16 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
             break
         quien = {"id": t["id"], "email": t["email"]}
         try:
+            if _se_dio_de_baja(conn, t["id"]):
+                ya_no_estan.append({"id": t["id"]})
+                continue
+        except Exception as ex:
+            # Sin poder confirmar que NO pidió la baja, no se le manda.
+            log.error("%s: no se pudo leer la baja de uid=%s: %s", campaña, t["id"], ex)
+            _deshacer_transaccion(conn)
+            fallados.append(quien)
+            continue
+        try:
             marca = marcar(t)
             conn.commit()
         except Exception as ex:
@@ -27423,7 +27612,7 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
                 _deshacer_transaccion(conn)
                 raise
 
-        estado = tanda.mandar(marca, lambda t=t: mandar(t), _devolver,
+        estado = tanda.mandar(marca, lambda t=t: _mandar_con_baja(mandar, t), _devolver,
                               que=f"{campaña} uid={t['id']}")
         if estado == emails.ENVIADO:
             enviados.append(quien)
@@ -27513,6 +27702,7 @@ def _reengagement_candidatos(conn, data, ids=None):
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
           AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -27625,6 +27815,7 @@ def _gift_plan_candidatos(conn, data, ids=None):
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
           AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -27788,6 +27979,7 @@ def _trial_invite_elegibles(conn, ids=None):
         f"""SELECT id, email, name FROM users
              WHERE COALESCE(is_admin,0) = 0
                AND managed_by IS NULL
+               AND marketing_baja_at IS NULL
                AND COALESCE(email_verified,0) = 1
                AND TRIM(COALESCE(email,'')) <> ''{filtro}""", params).fetchall()
 
@@ -27877,6 +28069,64 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
         conn.close()
 
 
+def _otros_mails_de_rendi(conn, mails: dict, propia: str):
+    """Todos los mails que Rendi le mandó por iniciativa propia a cada persona,
+    menos el de la columna `propia` (el mail que se está por mandar, que cada
+    endpoint mira aparte). `mails` = {uid: email}.
+
+    Devuelve ({uid: [fechas UTC]}, {uid: {tipos de aviso automático ya salidos}}).
+    Junta:
+      · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
+      · los otros mails a mano de este panel (_MARCAS_DE_ENVIO, columnas de
+        users; el mail libre: broadcast_send_log).
+    Sin los segundos, alguien que recibió el re-engagement hace un minuto
+    recibía también el de feedback: dos mails en el mismo minuto. Es la regla
+    de los dos mails que la usan (feedback de la prueba y cuentas en pausa);
+    si una cambia acá, cambia para las dos."""
+    otros = {uid: [] for uid in mails}
+    avisos = {uid: set() for uid in mails}
+    if not mails:
+        return otros, avisos
+    ph = ",".join("?" for _ in mails)
+    cols = [c for c in _MARCAS_DE_ENVIO if c != propia]
+    try:
+        for r in conn.execute(
+                f"SELECT id, {', '.join(cols)} FROM users WHERE id IN ({ph})",
+                tuple(mails)).fetchall():
+            for col in cols:
+                f = _fecha_utc(r[col])
+                if f:
+                    otros[int(r["id"])].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudieron leer las marcas de users: %s", ex)
+        _deshacer_transaccion(conn)
+    try:
+        for r in conn.execute(
+            f"""SELECT user_id, kind, sent_at FROM trial_email_log
+                 WHERE user_id IN ({ph})""", tuple(mails)).fetchall():
+            uid = int(r["user_id"])
+            avisos[uid].add(r["kind"])
+            f = _fecha_utc(r["sent_at"])
+            if f:
+                otros[uid].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudo leer trial_email_log: %s", ex)
+        _deshacer_transaccion(conn)
+    por_mail = {(m or "").strip().lower(): uid for uid, m in mails.items()}
+    ph = ",".join("?" for _ in por_mail)
+    try:
+        for r in conn.execute(
+            f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
+                 WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
+            f = _fecha_utc(r["sent_at"])
+            if f and r["e"] in por_mail:
+                otros[por_mail[r["e"]]].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudo leer broadcast_send_log: %s", ex)
+        _deshacer_transaccion(conn)
+    return otros, avisos
+
+
 @app.post("/api/admin/email/feedback-prueba")
 def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(get_admin_user)):
     """Mail "¿qué te está pareciendo Rendi?" a quienes están EN LA PRUEBA GRATIS.
@@ -27956,65 +28206,27 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
         def _horas_desde(d):
             return round((ahora - d).total_seconds() / 3600, 1) if d else None
 
-        # Una fila por persona con todo lo que hace falta para decidir:
-        # la marca de ESTE mail, cuándo arrancó la prueba y las marcas de los
-        # otros mails que se mandan a mano desde este mismo panel.
+        # Una fila por persona con todo lo que hace falta para decidir: la
+        # marca de ESTE mail y cuándo arrancó la prueba. Los otros mails que le
+        # llegaron los junta `_otros_mails_de_rendi`.
         datos = {}
         if vivos:
             ph = ",".join("?" for _ in vivos)
             for r in conn.execute(
                 f"""SELECT id, email, trial_feedback_email_sent_at AS enviado,
-                           trial_started_at, trial_ends_at,
-                           reengagement_email_sent_at, gift_plan_email_sent_at,
-                           trial_invite_email_sent_at
+                           trial_started_at, trial_ends_at
                       FROM users
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
                        AND managed_by IS NULL
+                       AND marketing_baja_at IS NULL
                        AND TRIM(COALESCE(email,'')) <> ''""",
                     tuple(int(v["id"]) for v in vivos)).fetchall():
                 datos[int(r["id"])] = dict(r)
 
-        # Todos los mails que Rendi le mandó por iniciativa propia, como fechas:
-        #   · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
-        #   · los otros mails a mano de este panel (re-engagement, regalo,
-        #     invitación: columnas de users; el mail libre: broadcast_send_log).
-        # Sin los segundos, alguien que recibió el re-engagement hace un minuto
-        # recibía este también: dos mails en el mismo minuto.
-        otros_mails = {uid: [] for uid in datos}
-        avisos_enviados = {uid: set() for uid in datos}
-        for uid, d in datos.items():
-            for col in ("reengagement_email_sent_at", "gift_plan_email_sent_at",
-                        "trial_invite_email_sent_at"):
-                f = _fecha_utc(d.get(col))
-                if f:
-                    otros_mails[uid].append(f)
-        if datos:
-            ph = ",".join("?" for _ in datos)
-            try:
-                for r in conn.execute(
-                    f"""SELECT user_id, kind, sent_at FROM trial_email_log
-                         WHERE user_id IN ({ph})""", tuple(datos)).fetchall():
-                    uid = int(r["user_id"])
-                    avisos_enviados[uid].add(r["kind"])
-                    f = _fecha_utc(r["sent_at"])
-                    if f:
-                        otros_mails[uid].append(f)
-            except Exception as ex:
-                log.warning("feedback-prueba: no se pudo leer trial_email_log: %s", ex)
-                _deshacer_transaccion(conn)
-            por_mail = {(d["email"] or "").strip().lower(): uid for uid, d in datos.items()}
-            ph = ",".join("?" for _ in por_mail)
-            try:
-                for r in conn.execute(
-                    f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
-                         WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
-                    f = _fecha_utc(r["sent_at"])
-                    if f and r["e"] in por_mail:
-                        otros_mails[por_mail[r["e"]]].append(f)
-            except Exception as ex:
-                log.warning("feedback-prueba: no se pudo leer broadcast_send_log: %s", ex)
-                _deshacer_transaccion(conn)
+        otros_mails, avisos_enviados = _otros_mails_de_rendi(
+            conn, {uid: d["email"] for uid, d in datos.items()},
+            propia="trial_feedback_email_sent_at")
 
         ventana = _td(hours=FEEDBACK_PRUEBA_ESPERA_HORAS)
         # Cómo se llama en el panel cada aviso automático de la prueba.
@@ -28120,6 +28332,233 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
         conn.close()
 
 
+# Campaña "tu cuenta está en pausa" (/api/admin/email/reactivar-pausa).
+# Días en pausa antes de poder mandarle: el día después de que termina la
+# prueba le llega solo el aviso automático "Terminó tu prueba", que dice casi
+# lo mismo. Otro mail en esos días se lee como insistencia, no como una persona
+# que escribe.
+REACTIVAR_PAUSA_MIN_DIAS = 3
+# Horas que tiene que esperar alguien a quien le llegó OTRO mail de Rendi (o
+# este mismo) antes de que se le pueda mandar: dos el mismo día son spam.
+REACTIVAR_PAUSA_ESPERA_HORAS = 24
+
+
+class ReactivarPausaEmailIn(BaseModel):
+    confirm: bool = False                 # False = DRY RUN (las listas, no manda nada)
+    grupo: str = "nuevos"                 # 'nuevos' (nunca lo recibieron) | 'todos' (todos los en pausa)
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+    prueba_a_mi: bool = False             # manda UNO al mail del admin logueado y no toca a nadie
+    con_cartera: bool = True              # (sólo prueba_a_mi) qué versión del mail mandarse
+
+
+def _pausa_desde(d: dict, ahora: datetime) -> Optional[datetime]:
+    """Desde cuándo está en pausa (UTC): lo último que le daba acceso y ya
+    venció — el fin de la prueba, del crédito (un plan que pagó o le
+    regalaron) o de la prueba de Pro. Si nada de eso existió (la prueba nunca
+    arrancó: `motivo_de_pausa` = 'prueba_usada'), desde que creó la cuenta."""
+    vencidos = [f for f in (_fecha_utc(d.get("trial_ends_at")),
+                            _fecha_utc(d.get("credit_active_until")),
+                            _fecha_utc(d.get("pro_trial_until")))
+                if f is not None and f <= ahora]
+    if vencidos:
+        return max(vencidos)
+    return _fecha_utc(d.get("created_at"))
+
+
+def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
+    """Una fila por cada cuenta EN PAUSA con mail confirmado, con todo lo que
+    el mail personaliza y lo que decide si se le puede mandar hoy.
+
+    🔒 De la cartera sólo sale SI cargó algo (para elegir cuál de los dos
+    mails): ni activos, ni montos, ni cuántos brokers o movimientos, tampoco
+    hacia el panel. La Política de Privacidad promete usar los datos de
+    cartera sólo para prestar el servicio, y esto es un mail para que vuelva
+    a pagar (ver emails.reactivar_pausa_contenido).
+
+    ⭐ "Está en pausa" lo decide `cuenta_en_pausa`, la MISMA función que pone
+    el muro en la app y la etiqueta "en pausa" del panel de usuarios. Con un
+    criterio propio acá (p. ej. "trial_ends_at vencido") se colaría el que
+    pagó, que conserva su trial_ends_at. Sin mail confirmado no entra: esa
+    persona no llegó a usar nada, y el panel la muestra como "sin confirmar".
+
+    `ids` = sólo esos (los que vio el admin)."""
+    from billing import emails
+    from billing import trial as _trial
+    from fechas import dia_art
+
+    filtro, params = _filtro_ids("id", ids)
+    filas = []
+    for r in conn.execute(
+        f"""SELECT id, email, name, created_at, trial_started_at, trial_ends_at,
+                   credit_active_until, pro_trial_until,
+                   pausa_email_sent_at AS enviado
+              FROM users
+             WHERE requires_plan = 1
+               AND COALESCE(is_admin,0) = 0
+               AND managed_by IS NULL
+               AND marketing_baja_at IS NULL
+               AND COALESCE(email_verified,0) = 1
+               AND TRIM(COALESCE(email,'')) <> ''
+               {filtro}
+             ORDER BY id""", params).fetchall():
+        d = dict(r)
+        if cuenta_en_pausa(conn, d["id"]):
+            filas.append(d)
+
+    otros_mails, avisos_enviados = _otros_mails_de_rendi(
+        conn, {d["id"]: d["email"] for d in filas}, propia="pausa_email_sent_at")
+    ventana = timedelta(hours=REACTIVAR_PAUSA_ESPERA_HORAS)
+
+    def _horas_desde(f):
+        return (ahora - f).total_seconds() / 3600 if f else None
+
+    out = []
+    for d in filas:
+        uid_ = d["id"]
+        desde = _pausa_desde(d, ahora)
+        dias = int((_horas_desde(desde) or 0) // 24)
+        # La misma definición de "cargó algo" que la frase del muro.
+        con_cartera = resumen_de_lo_guardado(conn, uid_) is not None
+        otro = _horas_desde(max(otros_mails[uid_])) if otros_mails[uid_] else None
+        propio = _horas_desde(_fecha_utc(d["enviado"]))
+        # El aviso automático "Terminó tu prueba" todavía no salió y su
+        # ventana sigue abierta: sale en la próxima corrida del cron.
+        fin_pendiente = False
+        if _trial.MAIL_ENDED not in avisos_enviados[uid_]:
+            v = _trial.ventanas_de_aviso(d["trial_started_at"], d["trial_ends_at"]).get(
+                _trial.MAIL_ENDED)
+            fin_pendiente = bool(v) and ahora < v[1] and v[0] <= ahora + ventana
+        espera = None
+        if dias < REACTIVAR_PAUSA_MIN_DIAS:
+            espera = (f"lleva {dias} {'día' if dias == 1 else 'días'} en pausa · "
+                      f"entra con {REACTIVAR_PAUSA_MIN_DIAS}")
+        elif fin_pendiente:
+            espera = ("todavía no le llegó el aviso automático «terminó tu prueba» · "
+                      "se le puede mandar después")
+        elif otro is not None and otro < REACTIVAR_PAUSA_ESPERA_HORAS:
+            espera = (f"le llegó otro mail de Rendi {_hace_txt(otro)} · "
+                      "se le puede mandar a partir de mañana")
+        elif propio is not None and propio < REACTIVAR_PAUSA_ESPERA_HORAS:
+            espera = (f"lo recibió {_hace_txt(propio)} · "
+                      "se le puede volver a mandar a partir de mañana")
+        pausa_dia = dia_art(desde) if desde else None
+        asunto, _html, texto = emails.reactivar_pausa_contenido(
+            d.get("name") or "", con_cartera=con_cartera,
+            pausa_desde=pausa_dia, reenvio=bool(d["enviado"]))
+        out.append({
+            "id": uid_, "email": d["email"], "name": d.get("name"),
+            "saludo": emails.nombre_de_pila(d.get("name")),
+            "motivo": motivo_de_pausa(conn, uid_),
+            "pausa_desde": pausa_dia.isoformat() if pausa_dia else None,
+            "dias_en_pausa": dias,
+            "con_cartera": con_cartera,
+            "sent_at": d["enviado"],
+            "espera": espera,
+            # El mail EXACTO que le llegaría a esta persona hoy.
+            "mail": {"asunto": asunto, "texto": texto},
+            # Para mandar hace falta la fecha como día; esto no viaja al panel.
+            "_pausa_dia": pausa_dia,
+        })
+    # Los más recientes primero: el que pausó hace una semana todavía se acuerda
+    # de lo que cargó.
+    out.sort(key=lambda f: (f["pausa_desde"] or ""), reverse=True)
+    return out
+
+
+def _sin_privados(fila: dict) -> dict:
+    return {k: v for k, v in fila.items() if not k.startswith("_")}
+
+
+@app.post("/api/admin/email/reactivar-pausa")
+def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(get_admin_user)):
+    """Mail a las cuentas EN PAUSA: se les terminó la prueba (o el plan) y no
+    eligieron uno, así que no pueden entrar. Mismo motor y mismas reglas que el
+    de feedback de la prueba.
+
+    Dos botones en el panel:
+      • 'nuevos' → los que NUNCA lo recibieron. Es el principal.
+      • 'todos'  → todos los que están en pausa, lo hayan recibido o no. Al que
+        ya lo recibió le llega la versión de reenvío (otra apertura).
+    Al que pagó (o volvió a tener acceso) deja de aparecer: se pregunta a
+    `cuenta_en_pausa` en cada pedido, también al mandar.
+
+    Personalizado por persona (ver emails.reactivar_pausa_contenido): saludo
+    con su nombre y desde cuándo está en pausa. Si cargó algo, el mail le
+    dice que todo sigue guardado; si no, le pregunta qué pasó. NUNCA nombra
+    lo que hay adentro de la cartera (Política de Privacidad). La vista
+    previa trae el mail exacto de cada fila.
+
+    No se le manda (se ve en gris, con el motivo en `espera`) a quien:
+      · lleva menos de REACTIVAR_PAUSA_MIN_DIAS días en pausa;
+      · todavía no recibió el aviso automático "Terminó tu prueba";
+      · recibió otro mail de Rendi —o este— hace menos de
+        REACTIVAR_PAUSA_ESPERA_HORAS horas.
+    El backend la descarta aunque venga en `vistos`.
+
+    `vistos` = cada persona que el admin vio, CON la fecha de envío que vio
+    (obligatorio para mandar, de a ENVIO_MASIVO_LOTE). Se marca ANTES de
+    mandar contra esa fecha: un doble click no le manda dos veces a nadie.
+
+    `prueba_a_mi=True` manda UN mail al admin que aprieta el botón, en la
+    versión que pide (`con_cartera`), y no toca a nadie más."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
+    from billing import emails
+    from fechas import hoy_art_date
+
+    if data.grupo not in ("nuevos", "todos"):
+        raise HTTPException(422, "grupo debe ser 'nuevos' o 'todos'")
+    conn = get_db()
+    try:
+        if data.prueba_a_mi:
+            yo = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
+            if not yo or not (yo["email"] or "").strip():
+                raise HTTPException(400, "Tu cuenta no tiene un mail cargado.")
+            try:
+                ok = emails.send_reactivar_pausa(
+                    to=yo["email"], user_name=(yo["name"] or ""),
+                    con_cartera=data.con_cartera,
+                    pausa_desde=hoy_art_date() - timedelta(days=7))
+            except Exception as ex:
+                log.error("reactivar-pausa: la prueba al admin falló: %s", ex)
+                ok = False
+            return {"prueba": True, "to": yo["email"], "sent": bool(ok)}
+
+        ahora = datetime.utcnow()
+        if not data.confirm:
+            filas = _reactivar_pausa_filas(conn, ahora)
+            return {
+                "dry_run": True,
+                "en_pausa": len(filas),
+                "nuevos": [_sin_privados(f) for f in filas if not f["sent_at"]],
+                "ya_recibieron": [_sin_privados(f) for f in filas if f["sent_at"]],
+                "min_dias": REACTIVAR_PAUSA_MIN_DIAS,
+                "lote": ENVIO_MASIVO_LOTE,
+                "espera_horas": REACTIVAR_PAUSA_ESPERA_HORAS,
+            }
+
+        visto = _vistos_o_422(data.vistos)
+        grupo = [t for t in _reactivar_pausa_filas(conn, ahora, ids=list(visto))
+                 if not t["espera"] and (data.grupo == "todos" or not t["sent_at"])]
+        for t in grupo:
+            # La marca que se compara es la que VIO el admin, no la que leyó
+            # este pedido (el doble click de "mandar a todos").
+            t["visto"] = visto[t["id"]]
+        marcar, desmarcar = _marca_en_columna(conn, "pausa_email_sent_at")
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_reactivar_pausa(
+                to=t["email"], user_name=(t.get("name") or ""),
+                con_cartera=t["con_cartera"], pausa_desde=t["_pausa_dia"],
+                reenvio=t["visto"] is not None),
+            campaña=f"reactivar-pausa ({data.grupo})", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["grupo"] = data.grupo
+        return res
+    finally:
+        conn.close()
+
+
 def _broadcast_hash(subject, body, branded):
     """Identifica ESTE mail (asunto + cuerpo + branded) en broadcast_send_log:
     el mismo texto no se le vuelve a mandar a quien ya lo recibió, y uno con
@@ -28138,6 +28577,7 @@ def _broadcast_destinatarios(conn, data, plan, ids=None):
     rows = conn.execute(
         "SELECT id, email, name, email_verified, tier "
         "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL"  # sin shadows del Plan Asesor
+        " AND marketing_baja_at IS NULL"   # pidió no recibir promocionales
         + filtro + " ORDER BY created_at ASC", params
     ).fetchall()
     targets = []
@@ -40289,16 +40729,13 @@ class AIVozIn(BaseModel):
     sig: str = Field(..., min_length=8, max_length=128)
 
 
-_MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
-             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
-
-
 def _fecha_legible(iso: str) -> str:
     """"2026-09-19" → "19 de septiembre". La fecha sale de la base en formato de
     máquina y así se le estaba mostrando al usuario. Nadie lee una fecha así."""
+    from fechas import fecha_legible
     try:
         a, m, d = str(iso).split("-")
-        return "%d de %s" % (int(d), _MESES_ES[int(m) - 1])
+        return fecha_legible(date(int(a), int(m), int(d)))
     except Exception:
         return str(iso)
 
@@ -43132,6 +43569,17 @@ _wallbit_sync_locks = defaultdict(threading.Lock)
 #   2. deployar
 #   3. confirmar en los logs: "credenciales: ... 0 migradas ahora"
 #   4. recién entonces rotar SECRET_KEY
+#
+# ⚠️ ORDEN OBLIGATORIO PARA ROTAR CREDENTIALS_KEY (agregado tras el incidente de
+# Railway del 2026-10-21). Cambiarla a secas deja todo ilegible: la nueva no abre
+# lo cifrado con la vieja, y SECRET_KEY tampoco. Por eso existe
+# CREDENTIALS_KEY_ANTERIOR, que sólo descifra:
+#   1. crear CREDENTIALS_KEY_ANTERIOR con una COPIA del valor actual de
+#      CREDENTIALS_KEY, y deployar sin tocar nada más de esto
+#   2. confirmar en los logs: "CREDENTIALS_KEY_ANTERIOR es IGUAL" (la copia está bien)
+#   3. poner el valor nuevo en CREDENTIALS_KEY y deployar → la migración re-cifra
+#   4. redeployar y confirmar "0 migradas ahora" + "SEGURO borrar CREDENTIALS_KEY_ANTERIOR"
+#   5. recién entonces borrar CREDENTIALS_KEY_ANTERIOR
 
 def _fernet_de(material: str):
     """Fernet(sha256(material)) → 32 bytes urlsafe-b64. Es la derivación de
@@ -43149,8 +43597,18 @@ def _creds_clave_propia() -> Optional[str]:
     return (os.environ.get("CREDENTIALS_KEY") or "").strip() or None
 
 
+def _creds_clave_anterior() -> Optional[str]:
+    """CREDENTIALS_KEY_ANTERIOR: el valor que tenía CREDENTIALS_KEY antes de
+    rotarla. Sólo descifra. Se ignora si no hay CREDENTIALS_KEY: sin clave propia
+    el sistema es el de antes y no hay nada que rotar."""
+    if not _creds_clave_propia():
+        return None
+    return (os.environ.get("CREDENTIALS_KEY_ANTERIOR") or "").strip() or None
+
+
 def _wallbit_cipher():
-    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), SECRET_KEY (legacy, sólo
+    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), CREDENTIALS_KEY_ANTERIOR
+    (sólo descifra, mientras dura una rotación), SECRET_KEY (legacy, sólo
     descifra)]. El nombre `_wallbit_` quedó de cuando Wallbit era el único
     conector; hoy cifra también el refresh token de IOL."""
     from cryptography.fernet import MultiFernet
@@ -43158,6 +43616,9 @@ def _wallbit_cipher():
     propia = _creds_clave_propia()
     if propia:
         claves.append(_fernet_de(propia))
+    anterior = _creds_clave_anterior()
+    if anterior and anterior != propia:
+        claves.append(_fernet_de(anterior))
     claves.append(_fernet_de(SECRET_KEY or "dev-insecure"))
     return MultiFernet(claves)
 
@@ -43229,13 +43690,28 @@ def _migrar_credenciales_a_credentials_key() -> None:
         #      "SEGURO rotar" era la única en INFO y era justo la que había que leer.
         # Este renglón ES el gate de la rotación de SECRET_KEY: si no se ve, el
         # procedimiento no se puede hacer.
+        # La rotación de CREDENTIALS_KEY tiene su propio semáforo, en la misma
+        # línea para que haya UN solo renglón que leer.
+        anterior = _creds_clave_anterior()
+        if not anterior:
+            sobre_anterior = ""
+        elif anterior == propia:
+            sobre_anterior = (" CREDENTIALS_KEY_ANTERIOR es IGUAL a CREDENTIALS_KEY: la copia "
+                              "está bien, ya podés poner el valor nuevo en CREDENTIALS_KEY.")
+        elif migradas:
+            sobre_anterior = " NO borres CREDENTIALS_KEY_ANTERIOR todavía."
+        elif ilegibles:
+            sobre_anterior = (" NO borres CREDENTIALS_KEY_ANTERIOR: hay ilegibles; compará "
+                              "con el número de antes de rotar.")
+        else:
+            sobre_anterior = " SEGURO borrar CREDENTIALS_KEY_ANTERIOR."
         if migradas:
             log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, %d migradas ahora, %d "
                         "ilegibles. NO rotes SECRET_KEY todavía: redeployá y confirmá "
-                        "'0 migradas ahora'.", ya, migradas, ilegibles)
+                        "'0 migradas ahora'.%s", ya, migradas, ilegibles, sobre_anterior)
         else:
             log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, 0 migradas ahora, %d "
-                        "ilegibles. SEGURO rotar SECRET_KEY.", ya, ilegibles)
+                        "ilegibles. SEGURO rotar SECRET_KEY.%s", ya, ilegibles, sobre_anterior)
     except Exception as e:
         log.warning("credenciales: la migración a CREDENTIALS_KEY falló (%s). Siguen "
                     "legibles con SECRET_KEY. NO rotes SECRET_KEY.", e)
@@ -43279,9 +43755,10 @@ def _log_config_arranque() -> None:
     # trabajo para el que no es.
     _misma = bool(os.environ.get("OPENAI_API_KEY")) and \
         os.environ.get("OPENAI_API_KEY") == os.environ.get("VOZ_SIGNING_KEY")
-    log.warning("config al arrancar: %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
+    log.warning("config al arrancar: %s | %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
                 _forma("SECRET_KEY"), _forma("ANTHROPIC_API_KEY"),
-                _forma("CREDENTIALS_KEY"), _forma("OPENAI_API_KEY"),
+                _forma("CREDENTIALS_KEY"), _forma("CREDENTIALS_KEY_ANTERIOR"),
+                _forma("OPENAI_API_KEY"),
                 _forma("VOZ_SIGNING_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE",
                 "  ⚠️ OPENAI_API_KEY y VOZ_SIGNING_KEY son LA MISMA — no debería" if _misma else "")
 
