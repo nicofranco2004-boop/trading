@@ -37,10 +37,17 @@ vi.mock('../components/CurrencySwitcher', () => ({ default: () => null }))
 vi.mock('../components/RecommendationsModal', () => ({ default: () => null }))
 vi.mock('../components/Toast', () => ({ useToast: () => null }))
 vi.mock('../hooks/usePushNotifications', () => ({ usePushNotifications: () => push }))
+// Importar historial vive adentro del menú de Registrar (2026-10-19), que sólo
+// se dibuja al tocarlo. Acá se lo dibuja como un enlace más, con lo que el
+// menú lateral le pasa: si el lateral deja de pasárselo, «Importar» falta en la
+// compu y la comparación con el celular da rojo.
+vi.mock('../components/RegistrarMenu', () => ({
+  default: ({ importar }) => (importar ? <a href={importar.to}>Importar historial</a> : null),
+}))
 
 import More, { seccionesDelMenuMas } from './More'
 import Sidebar from '../components/Sidebar'
-import MobileTabBar, { QUICK_ACTIONS } from '../components/mobile/MobileTabBar'
+import MobileTabBar, { QUICK_ACTIONS, QuickActionsSheet } from '../components/mobile/MobileTabBar'
 import fuenteDeApp from '../App.jsx?raw'
 import { EncabezadoCompacto, encabezadoCompactoVisible } from './PositionsMobile'
 import { accionDelPedido } from '../utils/registrar'
@@ -50,20 +57,27 @@ const dibujar = (Componente, u, c) => {
   usuario = u; cliente = c
   return renderToStaticMarkup(<MemoryRouter initialEntries={['/mas']}><Componente /></MemoryRouter>)
 }
-// Arriba del <nav> del menú lateral va el logo, que lleva a "/" para todos
-// (también al asesor, que no tiene esa pantalla en su menú): es el logo, no
-// una entrada del menú. Se exige que sea lo ÚNICO que hay ahí arriba: un
-// enlace nuevo en esa franja tiene que estar también en el celular.
+// Arriba del <nav> del menú lateral va primero el logo, que lleva a "/" para
+// todos (también al asesor, que no tiene esa pantalla en su menú): es el logo,
+// no una entrada del menú, y se descuenta. Lo demás de esa franja (Registrar
+// con Importar adentro, la campanita de Alertas) SÍ cuenta: tiene que estar
+// también en el celular.
 const menuCompu = (u, c) => {
   const html = dibujar(Sidebar, u, c)
   const corte = html.indexOf('<nav')
   expect(corte, 'el menú lateral perdió su <nav>').toBeGreaterThan(0)
-  expect(rutas(html.slice(0, corte)), 'arriba del menú lateral sólo va el logo').toEqual(['/'])
-  return { html, rutas: rutas(html.slice(corte)) }
+  const arriba = rutas(html.slice(0, corte))
+  expect(arriba[0], 'lo primero del menú lateral es el logo').toBe('/')
+  return { html, rutas: [...arriba.slice(1), ...rutas(html.slice(corte))] }
 }
+// Del lado del celular cuenta «Más» y también la hoja del "+" de la barra de
+// abajo: Importar vive ahí (2026-10-19), como adentro de Registrar en la compu.
+// La hoja sólo existe si la barra tiene el "+" (el asesor en su nivel no).
 const menuMas = (u, c) => {
   const html = dibujar(More, u, c)
-  return { html, rutas: rutas(html) }
+  const conMas = dibujar(MobileTabBar, u, c).includes('Abrir acciones rápidas')
+  const hoja = conMas ? rutas(dibujar(() => <QuickActionsSheet onClose={() => {}} />, u, c)) : []
+  return { html, rutas: [...rutas(html), ...hoja] }
 }
 const titulos = (html) => [...html.matchAll(/<h2[^>]*>\s*([^<]*?)\s*<\/h2>/g)].map(m => m[1])
 const ordenadas = (r) => [...new Set(r)].sort()
@@ -290,5 +304,23 @@ describe('decisiones de producto (2026-10-01)', () => {
     expect(encabezadoCompactoVisible(300, 93)).toBe(false)
     expect(encabezadoCompactoVisible(93, 93)).toBe(true)
     expect(encabezadoCompactoVisible(40, 140)).toBe(true)
+  })
+})
+
+describe('Importar historial: en el "+" del celular, no en «Más»', () => {
+  it('usuario común: está en la hoja del "+", con su franja, y «Más» ya no lo lista', () => {
+    usuario = { tier: 'pro' }; cliente = null
+    const hoja = renderToStaticMarkup(<MemoryRouter><QuickActionsSheet onClose={() => {}} /></MemoryRouter>)
+    expect(hoja).toContain('href="/imports"')
+    expect(hoja).toContain('Importar historial')
+    expect(hoja).toContain('¿Tenés el historial del broker?')
+    // Va después de las acciones a mano, aparte.
+    expect(hoja.indexOf('Importar historial')).toBeGreaterThan(hoja.indexOf('Buscar activo'))
+    expect(rutas(dibujar(More, { tier: 'pro' }, null))).not.toContain('/imports')
+  })
+  it('asesor adentro de un cliente: también en el "+"', () => {
+    usuario = { tier: 'advisor' }; cliente = CLIENTE
+    const hoja = renderToStaticMarkup(<MemoryRouter><QuickActionsSheet onClose={() => {}} /></MemoryRouter>)
+    expect(hoja).toContain('href="/imports"')
   })
 })

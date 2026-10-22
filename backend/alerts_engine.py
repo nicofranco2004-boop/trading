@@ -41,6 +41,7 @@ from money_fmt import fmt_num
 
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 log = logging.getLogger("alerts")
 
@@ -84,10 +85,90 @@ def _quotes_for(symbols: list) -> dict:
         return {}
 
 
-def price_for_alert(symbol: str):
+def price_for_alert(symbol: str, en_dolares: bool = False):
     """Precio actual de UN símbolo — para armar el edge-trigger al crear la
-    alerta (arma según de qué lado del umbral está hoy)."""
+    alerta (arma según de qué lado del umbral está hoy). `en_dolares`: un CEDEAR
+    vigilado en dólares (ver `cedear_en_dolares`)."""
+    if en_dolares:
+        return precios_cedear_en_dolares([symbol]).get(symbol)
     return _prices_for([symbol]).get(symbol)
+
+
+# ─── CEDEAR en dólares ────────────────────────────────────────────────────────
+# Un CEDEAR cotiza en la Bolsa en pesos (AAPL) y en dólares (AAPLD). Una alerta
+# de precio lo guarda como 'AAPL.BA' + la moneda: 'ARS' mira el precio en pesos,
+# 'USD' el precio en dólares — el MISMO que muestra el buscador de "Registrar
+# compra" (main.cedears_con_dolares → cedears_dolar.universo: el AAPLD de hoy si
+# está cerca de pesos ÷ MEP, si no pesos ÷ MEP).
+#
+# Antes la moneda era sólo un rótulo: «AAPL baja a US$ 15» se comparaba contra
+# el precio EN PESOS (~$20.000) y no avisaba nunca. Por eso el alta rechaza una
+# moneda que el activo no tiene (ver main.alerts_create).
+
+def cedear_en_dolares(kind, scope, symbol, currency) -> bool:
+    """¿Es una alerta de precio sobre un CEDEAR vigilado en dólares?
+
+    Sólo el aviso de precio: en el de % la moneda no cambia nada que se vea (el
+    movimiento es el del CEDEAR) y "toda mi cartera" se expande a símbolos que
+    llevan su propio riel."""
+    return (kind == "price_target" and (scope or "ticker") == "ticker"
+            and bool(symbol) and str(symbol).upper().endswith(".BA")
+            and str(currency or "").upper() == "USD")
+
+
+def _es_cedear_usd(alert, symbol) -> bool:
+    return cedear_en_dolares(_campo(alert, "kind"), _campo(alert, "scope"),
+                             symbol, _campo(alert, "currency"))
+
+
+def _campo(alert, k):
+    try:
+        return alert[k]
+    except (KeyError, IndexError):
+        return None
+
+
+def cedears_con_dolares():
+    """Los CEDEARs de la Bolsa con su precio en dólares (`main.cedears_con_dolares`),
+    o None si la lista no se pudo armar (data912 caído): "no sé" no es "no tiene"."""
+    try:
+        import main
+        items = (main.cedears_con_dolares() or {}).get("items")
+    except Exception as ex:
+        log.warning("alerts: no se pudo armar la lista de CEDEARs en dólares: %s", ex)
+        return None
+    return items or None
+
+
+def _codigos(it) -> set:
+    """Cómo puede venir escrito el CEDEAR en una alerta: el código de la Bolsa
+    (BRKB.BA, el que arma priceSymbol) o el ticker de Rendi (BRK-B.BA)."""
+    return {f"{c}.BA" for c in (it.get("pesos"), it.get("s")) if c}
+
+
+def precios_cedear_en_dolares(symbols, items=None) -> dict:
+    """{símbolo '.BA': precio en dólares} de los que tienen especie en dólares."""
+    syms = {str(s).upper() for s in symbols if s and str(s).upper().endswith(".BA")}
+    if not syms:
+        return {}
+    if items is None:
+        items = cedears_con_dolares() or []
+    out = {}
+    for it in items:
+        if not (it.get("dolares") and it.get("px_usd")):
+            continue
+        for cod in _codigos(it) & syms:
+            out[cod] = float(it["px_usd"])
+    return out
+
+
+def tiene_precio_en_dolares(symbol):
+    """True / False si el CEDEAR tiene (o no) especie en dólares; None si la
+    lista no está (no se puede saber)."""
+    items = cedears_con_dolares()
+    if items is None:
+        return None
+    return str(symbol or "").upper() in precios_cedear_en_dolares([symbol], items)
 
 
 def _holding_symbols(conn, uid: int) -> list:
@@ -382,6 +463,30 @@ def _podar_movimientos(conn, now: datetime) -> None:
         log.warning("alerts: no se pudieron podar los movimientos viejos: %s", ex)
 
 
+# ─── «Una sola vez» ───────────────────────────────────────────────────────────
+
+def _cumplio_una_vez(conn, alert) -> None:
+    """Una alerta «una sola vez» que acaba de dar su aviso queda apagada. Es el
+    ÚNICO lugar que la apaga: precio, % de un activo, % de toda la cartera, en
+    la rueda o fuera de ella, primer aviso o el del doble.
+
+    El apagado se escribe en el momento (va en la misma transacción que el
+    aviso: un corte del proceso no la deja prendida), pero el ciclo NO corta
+    acá. Los demás activos de la misma alerta se siguen mirando —el ciclo usa
+    la lista de alertas que leyó al arrancar, no la base— y todo lo que pasó el
+    % en esta pasada sale en el MISMO aviso agrupado (`_entregar_pendientes`).
+
+    Antes cortaba con el primer activo: «toda mi cartera, 3 %» con AAPL −8 %,
+    KO −4 % y NVDA +5 % en la misma pasada avisaba sólo AAPL y se apagaba; KO y
+    NVDA no llegaban nunca (medido el 21/10/2026). Y el aviso del doble en la
+    rueda no la apagaba: seguía avisando.
+
+    Regla (Nico, 2026-10-21): «una vez» en toda la cartera es UN aviso con
+    todos los que pasaron el % en esa pasada, y después se apaga."""
+    if alert["repeat"] == "once":
+        conn.execute("UPDATE alerts SET active=0 WHERE id=?", (alert["id"],))
+
+
 # ─── Mensajes ─────────────────────────────────────────────────────────────────
 
 def _display_symbol(symbol: str) -> str:
@@ -416,6 +521,14 @@ def _ccy_for(symbol, fallback=None) -> str:
     return (fallback or "USD")
 
 
+def _moneda(alert, symbol) -> str:
+    """La moneda en que se muestra el precio de ESTE aviso: la del riel del
+    símbolo (`_ccy_for`), salvo un CEDEAR vigilado en dólares."""
+    if _es_cedear_usd(alert, symbol):
+        return "USD"
+    return _ccy_for(symbol, _campo(alert, "currency"))
+
+
 def _fmt(price, currency) -> str:
     """Precio en convención argentina. Mostraba los pesos bien ($7.350) y los
     dólares a la inglesa (US$2,145.30) en el MISMO mail; ahora los dos salen
@@ -427,7 +540,7 @@ def _fmt(price, currency) -> str:
 
 def _compose_message(alert, symbol, price, change_pct) -> str:
     sym = _display_symbol(symbol)
-    ccy = _ccy_for(symbol, alert["currency"])
+    ccy = _moneda(alert, symbol)
     if alert["kind"] == "price_target":
         thr = _fmt(alert["threshold"], ccy)
         cur = _fmt(price, ccy)
@@ -455,15 +568,6 @@ def _short_label(alert, symbol, price, change_pct) -> str:
         return _compose_message(alert, symbol, price, change_pct)
     verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
     return f"{_display_symbol(symbol)} {verbo} {_fmt_pct(change_pct)}%"
-
-
-def _group_line(alert, symbol, price, change_pct) -> str:
-    """Un renglón de la lista del mail agrupado: el movimiento y a cuánto
-    cotiza, en la moneda del activo (un CEDEAR cotiza en pesos)."""
-    base = _short_label(alert, symbol, price, change_pct)
-    if price is None:
-        return base
-    return f"{base} y cotiza a {_fmt(price, _ccy_for(symbol, alert['currency']))}"
 
 
 def _cuando_item(it) -> str:
@@ -566,64 +670,151 @@ def _deliver(conn, alert, items) -> tuple:
             row = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["email"]:
                 from billing import emails
-                if len(items) == 1:
-                    it = items[0]
-                    detail = (_detalle_fuera(it["symbol"], it["change_pct"], it["price"], fuera)
-                              if fuera else
-                              _email_detail(alert, it["symbol"], it["price"], it["change_pct"]))
-                    lines = None
-                elif mixto:
-                    # Rueda y pre/post en el mismo aviso: cada renglón dice dónde.
-                    detail = (f"se movieron {len(items)} activos de tu cartera. Lo de Wall "
-                              f"Street fuera de la rueda es un anticipo: todavía no se suma "
-                              f"a tu cartera.")
-                    lines = [it["line"] + (f" ({_cuando_item(it)})" if it.get("fuera") else " hoy")
-                             for it in items]
-                elif fuera:
-                    detail = (f"en el {_NOMBRE_FRANJA[fuera['sesion']]} de Wall Street se están "
-                              f"moviendo {len(items)} activos de tu cartera. Es un anticipo: "
-                              f"todavía no se suma a tu cartera.")
-                    lines = [it["line"] for it in items]
-                else:
-                    detail = f"se movieron {len(items)} activos de tu cartera hoy:"
-                    lines = [it["line"] for it in items]
                 email_ok = emails.send_alert_email(
                     to=row["email"], user_name=(row["name"] or ""),
-                    heading=heading, detail=detail, lines=lines)
+                    **_contenido_del_mail(alert, items, fuera, mixto, client_label, heading))
         except Exception as ex:
             log.warning("alerts email uid=%s falló: %s", uid, ex)
 
     return push_ok, email_ok
 
 
-def _email_detail(alert, symbol, price=None, change_pct=None) -> str:
-    """Cuerpo del mail: los NÚMEROS, no una invitación a ir a buscarlos.
+# ─── El mail ──────────────────────────────────────────────────────────────────
+# Diseño del tablero «Cómo llega por mail» (lienzo de Alertas, 19/10/2026): un
+# titular grande, UNA oración, la lista si son varios, UN botón y al pie lo que
+# se puede hacer con la alerta. El asunto no se arma acá: es `heading` (el
+# titular que nombra los movimientos, ver `_deliver`).
 
-    Antes decía "tuvo un movimiento importante hoy, entrá a Rendi para ver
-    cómo impacta en tu cartera": el título traía más información que el
-    cuerpo, y un mail que no dice nada no se abre. Gmail mide justamente eso
-    para decidir la pestaña — medido el 2026-09-09 sobre la casilla del
-    fundador, las ÚNICAS alertas que se salieron de Actualizaciones son las
-    que estaban leídas. `price` y `change_pct` ya los tenía _deliver() al
-    lado; sólo no se los pasaba a esta función."""
-    sym = _display_symbol(symbol)
-    ccy = _ccy_for(symbol, alert["currency"])
-    cur = _fmt(price, ccy)
+# «Mis alertas»: donde está la alerta que saltó, con su interruptor para
+# pausarla o volver a prenderla y el formulario para cambiarle el %. Es la misma
+# ruta a la que lleva el push.
+_MIS_ALERTAS = "/alertas?tab=mis"
+
+
+def _pct_con_signo(v) -> str:
+    """"+8,4%" / "−5,6%": el % de la lista, con el signo que en el asunto dice
+    el verbo ("subió" / "cayó"). Mismo redondeo que el asunto (`_fmt_pct`)."""
+    return f"{'+' if (v or 0) >= 0 else '−'}{_fmt_pct(v)}%"
+
+
+def _email_detail(alert, symbol, price=None, change_pct=None, doble=False) -> str:
+    """La oración del mail de UN activo en la rueda (el mail le antepone "Hola
+    Juan, "): lo que el titular no dice, que es a cuánto está ahora.
+
+    Tiene que traer NÚMEROS. Antes decía "tuvo un movimiento importante hoy,
+    entrá a Rendi para ver cómo impacta en tu cartera": el título traía más
+    información que el cuerpo, y un mail que no dice nada no se abre. Gmail mide
+    justamente eso para decidir la pestaña — medido el 2026-09-09 sobre la
+    casilla del fundador, las ÚNICAS alertas que se salieron de Actualizaciones
+    son las que estaban leídas. El titular ya lleva el % (o el precio marcado);
+    esto lleva el precio de ahora, en la moneda del activo."""
+    cur = _fmt(price, _moneda(alert, symbol))
+    ahora = f" Ahora está en {cur}." if price is not None else ""
     if alert["kind"] == "price_target":
-        thr = _fmt(alert["threshold"], ccy)
-        lado = "subió hasta" if alert["direction"] == "above" else "bajó hasta"
-        if price is None:
-            return f"{sym} cruzó los {thr} que habías marcado."
-        return (f"{sym} {lado} {cur}. Vos habías marcado {thr}, "
-                f"así que ya lo cruzó.")
-    desde = ("desde que armaste la alerta"
-             if (alert["baseline"] or "prev_close") == "set_price"
-             else "desde el cierre de ayer")
-    if change_pct is None:
-        return f"{sym} se movió {desde}."
-    verbo = "subió" if (change_pct or 0) >= 0 else "cayó"
-    cotiza = f" y cotiza a {cur}" if price is not None else ""
-    return f"{sym} {verbo} {_fmt_pct(change_pct)}% {desde}{cotiza}."
+        return f"es el precio que marcaste.{ahora}"
+    if doble:
+        return f"ya es el doble del límite que marcaste.{ahora}"
+    return f"pasó el límite que marcaste.{ahora}"
+
+
+def _titulo_precio(alert, symbol, price) -> str:
+    """«GGAL llegó a $8.000»: el precio que la persona MARCÓ, no el de ahora (ése
+    va en la oración). Es lo que reconoce de un vistazo — lo eligió ella."""
+    ccy = _moneda(alert, symbol)
+    marcado = alert["threshold"] if alert["threshold"] is not None else price
+    return f"{_display_symbol(symbol)} llegó a {_fmt(marcado, ccy)}"
+
+
+def _fila(it, mixto: bool) -> dict:
+    """Un renglón de la lista del agrupado: quién y cuánto. Lo que haga falta
+    aclarar (que fue en el pre-mercado, que es el doble) va en una nota chica
+    abajo del nombre, no en la columna del %."""
+    f = it.get("fuera")
+    nombre = _quien(it["symbol"], f) if f else _display_symbol(it["symbol"])
+    notas = []
+    if mixto:
+        notas.append(_cuando_item(it))
+    if f and f.get("via") != "propio":
+        notas.append(_desde_byma(f).lstrip(", "))
+    if it.get("doble"):
+        notas.append(_SUFIJO_DOBLE.strip(" ()"))
+    return {"nombre": nombre, "pct": it.get("change_pct"),
+            "pct_txt": _pct_con_signo(it.get("change_pct")), "nota": " · ".join(notas)}
+
+
+def _contenido_del_mail(alert, items, fuera, mixto: bool, client_label, heading) -> dict:
+    """Todo lo que lleva el mail: asunto, titular, oración, lista, botón y pie.
+    Devuelve los argumentos de `emails.send_alert_email` (menos el destinatario).
+
+    El asunto es `heading`, el mismo texto del push, salvo en el aviso de precio:
+    ahí asunto y titular dicen el precio MARCADO («GGAL llegó a $8.000») y la
+    oración el de ahora. El push sigue diciendo el de ahora («GGAL alcanzó
+    $8.012»): esta función arma sólo el mail.
+
+      · Un precio: «GGAL llegó a $8.000» / «es el precio que marcaste. Ahora
+        está en $8.012.» / botón «Ver GGAL».
+      · Un %: el titular es el mismo del asunto («AAPL cayó 5% hoy») / «pasó el
+        límite que marcaste. Ahora está en …» / botón «Ver AAPL».
+      · Varios: «3 de tus activos se movieron fuerte hoy» / la lista de ticker y
+        % / botón «Ver mi cartera».
+    El pie: si era «una sola vez», que ya cumplió y cómo volver a activarla; si
+    no, cómo cambiar el % (o pausarla, la de precio). Los dos van a «Mis
+    alertas». Antes el botón llevaba a /dashboard, que no dice nada del aviso."""
+    una_vez = alert["repeat"] == "once"
+    if una_vez:
+        pie = ("Esta alerta ya cumplió.", "Volver a activarla", _MIS_ALERTAS)
+    elif alert["kind"] == "price_target":
+        pie = ("Te volvemos a avisar si lo cruza de nuevo.", "Pausarla o cambiarla", _MIS_ALERTAS)
+    else:
+        pie = ("¿Demasiados avisos?", "Cambiá el %", _MIS_ALERTAS)
+
+    if len(items) == 1:
+        it = items[0]
+        sym = _display_symbol(it["symbol"])
+        if fuera:
+            # El pre/post explica qué franja, contra qué cierre y que es un
+            # anticipo: es más que una oración, pero sin eso el % engaña.
+            titulo = it["message"]
+            detail = _detalle_fuera(it["symbol"], it["change_pct"], it["price"], fuera)
+        elif alert["kind"] == "price_target":
+            titulo = _titulo_precio(alert, it["symbol"], it["price"])
+            detail = _email_detail(alert, it["symbol"], it["price"])
+            heading = f"[{client_label}] {titulo}" if client_label else titulo
+        else:
+            titulo = it["message"]
+            detail = _email_detail(alert, it["symbol"], it["price"], it["change_pct"],
+                                   doble=bool(it.get("doble")))
+        contenido = {"titulo": titulo, "detail": detail, "filas": None,
+                     "cta_label": f"Ver {sym}", "cta_path": f"/activo/{quote(sym, safe='')}"}
+    else:
+        n = len(items)
+        if mixto:
+            titulo = f"{n} de tus activos se movieron fuerte"
+            detail = ("pasaron el límite que marcaste. Lo de Wall Street fuera de la "
+                      "rueda es un anticipo: todavía no se suma a tu cartera.")
+        elif fuera:
+            franja = _NOMBRE_FRANJA[fuera["sesion"]]
+            titulo = f"{n} de tus activos se mueven fuerte en el {franja}"
+            detail = (f"pasaron el límite que marcaste en el {franja} de Wall Street. "
+                      f"Es un anticipo: todavía no se suma a tu cartera.")
+        else:
+            titulo = f"{n} de tus activos se movieron fuerte hoy"
+            detail = "pasaron el límite que marcaste."
+        contenido = {"titulo": titulo, "detail": detail,
+                     "filas": [_fila(it, mixto) for it in items],
+                     "cta_label": "Ver mi cartera", "cta_path": "/posiciones"}
+
+    if client_label:
+        # Plan Asesor: la alerta es de una cuenta que administra. Su cartera, su
+        # ficha y su «Mis alertas» no son las de esa cuenta: se entra desde
+        # Clientes. El asunto ya lleva «[Cliente]» adelante.
+        contenido["detail"] = contenido["detail"].rstrip(".") + f", en la cuenta de {client_label}."
+        contenido["cta_label"], contenido["cta_path"] = "Ver mis clientes", "/clientes"
+        pie = (f"Para cambiarla, entrá a la cuenta de {client_label}.",
+               "Ir a mis clientes", "/clientes")
+    contenido["pie"] = pie
+    contenido["heading"] = heading
+    return contenido
 
 
 def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: list,
@@ -642,15 +833,12 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
         # que es su acción en Nueva York. El precio es el de allá, en dólares.
         message = _mensaje_fuera(symbol, change_pct, fuera)
         label = _etiqueta_fuera(symbol, change_pct, fuera)
-        line = _renglon_fuera(symbol, change_pct, price, fuera)
     else:
         message = _compose_message(alert, symbol, price, change_pct)
         label = _short_label(alert, symbol, price, change_pct)
-        line = _group_line(alert, symbol, price, change_pct)
     if doble:
         # El segundo aviso del mismo movimiento dice por qué vuelve a llegar.
         message += _SUFIJO_DOBLE
-        line += _SUFIJO_DOBLE
     cur = conn.execute(
         """INSERT INTO alert_events
            (alert_id, user_id, symbol, fired_at, price, message,
@@ -669,9 +857,9 @@ def _fire(conn, alert, symbol, price, change_pct, now: datetime, pendientes: lis
     pendientes.append({
         "alert": alert, "symbol": symbol, "price": price,
         "change_pct": change_pct, "message": message,
-        "label": label, "line": line,
+        "label": label,
         "event_id": cur.lastrowid,
-        "fuera": fuera,
+        "fuera": fuera, "doble": doble,
     })
     log.info("alert %s fired (uid=%s sym=%s): %s",
              alert["id"], alert["user_id"], symbol, message)
@@ -754,11 +942,6 @@ def _mensaje_fuera(symbol, change_pct, fuera) -> str:
             f"{_desde_byma(fuera)}")
 
 
-def _renglon_fuera(symbol, change_pct, price, fuera) -> str:
-    base = _etiqueta_fuera(symbol, change_pct, fuera) + _desde_byma(fuera)
-    return f"{base} y cotiza a {_fmt(price, 'USD')}" if price else base
-
-
 def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
     """El cuerpo del mail: qué franja, contra qué, y que es un anticipo.
 
@@ -793,8 +976,7 @@ def _detalle_fuera(symbol, change_pct, price, fuera) -> str:
     return txt
 
 
-def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
-                            deactivated: set = None) -> int:
+def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime) -> int:
     """Las pct_move "En el día" en el pre y el post mercado de Wall Street.
 
     Reglas (decididas el 2026-10-15):
@@ -811,8 +993,10 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         anoche, el pre de hoy y la rueda de hoy se miden contra el mismo cierre;
         si ya se avisó «+3 %» contra ese cierre, ni el pre ni la apertura lo
         repiten. El post de hoy (contra el cierre de hoy) o un cambio de sentido
-        sí avisan. Una alerta "una sola vez" se apaga con el primer aviso, sea
-        en la rueda o fuera de ella.
+        sí avisan. Una alerta "una sola vez" se apaga con su primer aviso, sea
+        en la rueda o fuera de ella — y ese aviso lleva todo lo que pasó el % en
+        el ciclo, también lo de la rueda de BYMA si coincide con el pre
+        (`_cumplio_una_vez`).
       · Si dos tenencias siguen a la misma acción (NVDA y el CEDEAR de NVDA) y
         dan el MISMO %, un solo renglón; si dan distinto (en invierno el CEDEAR
         se mide desde el cierre de BYMA), dos.
@@ -822,13 +1006,10 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         anterior, así no se tiene tomada la base mientras se espera a Yahoo.
     """
     import fuera_de_horario as fdh
-    deactivated = deactivated if deactivated is not None else set()
     candidatas = []
     for a, sym in units:
         if a["kind"] != "pct_move" or (a["baseline"] or "prev_close") != "prev_close":
             continue
-        if a["id"] in deactivated:
-            continue      # una «una sola vez» que ya avisó en este mismo ciclo
         if sym in _crypto_symbols():
             continue
         ref = fdh.referencia_en_eeuu(sym)
@@ -882,8 +1063,6 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
     fired = 0
     mismo_ref = set()     # (alerta, acción de EE.UU., sentido, %, base) ya avisados en ESTE ciclo
     for a, sym, ref, via, pct, precio, clave, doble in cruzaron:
-        if a["id"] in deactivated:
-            continue
         # NVDA en Schwab y el CEDEAR de NVDA son la MISMA suba sólo si dicen el
         # mismo número desde el mismo cierre (en verano). En invierno el CEDEAR
         # se mide desde el cierre de BYMA y da otro %: son dos renglones. Juntarlos
@@ -901,11 +1080,9 @@ def _evaluar_fuera_de_rueda(conn, units: list, pendientes: list, now: datetime,
         _anotar_aviso(conn, a, sym, clave[0], clave[1], pct, doble)
         mismo_ref.add(igual)
         fired += 1
-        if a["repeat"] == "once":
-            # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
-            # rueda (auditoría 2026-10-15: seguía avisando día tras día).
-            conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-            deactivated.add(a["id"])
+        # «Una sola vez» es una sola vez, también si el aviso fue fuera de la
+        # rueda (auditoría 2026-10-15: seguía avisando día tras día).
+        _cumplio_una_vez(conn, a)
     return fired
 
 
@@ -956,6 +1133,10 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
             bucket.add(sym)
 
     prices = _prices_for(list(price_syms)) if price_syms else {}
+    # Los CEDEARs vigilados en dólares: su precio sale aparte (ver
+    # `cedear_en_dolares`). Mismo símbolo que la alerta en pesos, otro precio.
+    usd_syms = {sym for a, sym in units if _es_cedear_usd(a, sym)}
+    precios_usd = precios_cedear_en_dolares(usd_syms) if usd_syms else {}
     quotes = _quotes_for(list(quote_syms)) if quote_syms else {}
 
     market_open = _market_open_now(now)
@@ -973,25 +1154,24 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # un envío por alerta. Ver `_entregar_pendientes`.
     pendientes: list = []
     fired = 0
-    deactivated: set = set()   # alertas 'once' de pct_move ya disparadas este ciclo
+    # Una «una sola vez» que avisa en el ciclo se apaga ahí mismo, pero sus
+    # otros activos se siguen mirando: van todos en el mismo aviso (ver
+    # `_cumplio_una_vez`).
     for a, sym in units:
-        if a["id"] in deactivated:
-            continue
         # Acciones/CEDEARs/bonos: solo disparan en horario de mercado (evita saltos
         # de madrugada sobre precios congelados). Cripto: 24/7.
         tradeable = (sym in _crypto_symbols()) or market_open
 
         if a["kind"] == "price_target":
-            price = prices.get(sym)
+            price = (precios_usd if _es_cedear_usd(a, sym) else prices).get(sym)
             met = condition_met("price_target", a["direction"], a["threshold"], price, None)
             if met is None:
                 continue  # sin precio → no adivinar
             if a["armed"] and met and tradeable:
                 _fire(conn, a, sym, price, None, now, pendientes)
                 fired += 1
-                new_active = 0 if a["repeat"] == "once" else 1
-                conn.execute("UPDATE alerts SET armed=0, active=? WHERE id=?",
-                             (new_active, a["id"]))
+                conn.execute("UPDATE alerts SET armed=0 WHERE id=?", (a["id"],))
+                _cumplio_una_vez(conn, a)
             elif not a["armed"] and not met:
                 conn.execute("UPDATE alerts SET armed=1 WHERE id=?", (a["id"],))  # re-arma (cualquier hora)
         else:  # pct_move
@@ -1034,9 +1214,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     # "Siempre" = avisar CADA X%: re-anclar al precio actual.
                     conn.execute("UPDATE alerts SET anchor_price=? WHERE id=?",
                                  (fire_price, a["id"]))
-                if a["repeat"] == "once":
-                    conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                    deactivated.add(a["id"])
+                _cumplio_una_vez(conn, a)
             else:
                 # "En el día": edge-trigger POR SÍMBOLO + tope de 1 aviso por jornada.
                 #  • dispara al cruzar el umbral;
@@ -1066,6 +1244,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     fired += 1
                     _set_sym_fired(conn, a["id"], sym, today)
                     _anotar_aviso(conn, a, sym, base, side, change, doble=True)
+                    _cumplio_una_vez(conn, a)
                     continue
                 if not armed or not tradeable or fired_today:
                     continue
@@ -1074,18 +1253,15 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
                     # post de anoche o el pre de hoy, contra el mismo cierre): no se
                     # manda nada. El día NO se marca como avisado: si en la rueda
                     # da vuelta (pre +3 %, después −3 %), eso sí se avisa. Y una
-                    # alerta «una sola vez» ya cumplió: se apaga.
-                    if a["repeat"] == "once":
-                        conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                        deactivated.add(a["id"])
+                    # alerta «una sola vez» ya cumplió: se apaga — sin callar a
+                    # los otros activos de la cartera que se movieron ahora.
+                    _cumplio_una_vez(conn, a)
                     continue
                 _fire(conn, a, sym, fire_price, change, now, pendientes)
                 fired += 1
                 _set_sym_fired(conn, a["id"], sym, today)
                 _anotar_aviso(conn, a, sym, base, side, change, doble=False)
-                if a["repeat"] == "once":
-                    conn.execute("UPDATE alerts SET active=0 WHERE id=?", (a["id"],))
-                    deactivated.add(a["id"])
+                _cumplio_una_vez(conn, a)
 
     # Pre y post mercado de Wall Street (anticipo, con su propio estado).
     # ⚠️ ANTES se confirma lo escrito en el loop: esto pregunta a Yahoo (hasta
@@ -1094,7 +1270,7 @@ def evaluate_alerts(conn, only_user: int = None) -> dict:
     # conexión). Adentro, la red va antes que cualquier escritura.
     conn.commit()
     try:
-        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now, deactivated)
+        fired += _evaluar_fuera_de_rueda(conn, units, pendientes, now)
     except Exception as ex:
         log.warning("alerts fuera de la rueda falló: %s", ex)
 

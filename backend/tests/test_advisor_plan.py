@@ -519,6 +519,40 @@ class ReviewFixesTest(AdvisorBase):
         r = self.http.post("/api/advisor/group-op", json=body, headers=self._hdr(self.advisor))
         self.assertEqual(r.status_code, 400)  # ninguna fila válida
 
+    def test_group_op_en_dolares_en_cuenta_argentina_va_a_su_pata_y_se_deshace(self):
+        # 20/10: dólares en una cuenta en pesos ya no se saltean — van a la pata
+        # '· USD' del cliente (la crea si no existe), como una compra del propio
+        # cliente. El autodepósito queda en DÓLARES y el deshacer devuelve todo ahí.
+        body = {"asset": "AAPL", "currency": "USD", "asset_type": "CEDEAR",
+                "rows": [{"client_uid": self.client_uid, "broker": "Cocos",
+                          "quantity": 10, "buy_price": 18}]}
+        r = self.http.post("/api/advisor/group-op", json=body, headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["skipped"], [])
+        conn = main.get_db()
+        try:
+            lote = conn.execute(
+                "SELECT broker, currency FROM positions WHERE user_id=? AND asset='AAPL'",
+                (self.client_uid,)).fetchone()
+            self.assertEqual((lote["broker"], lote["currency"]), ("Cocos · USD", "USD"))
+            item = conn.execute(
+                "SELECT autodep_native, autodep_usd FROM advisor_op_batch_items WHERE batch_id=?",
+                (r.json()["batch_id"],)).fetchone()
+            self.assertAlmostEqual(item["autodep_native"], 180.0, places=2)
+            self.assertAlmostEqual(item["autodep_usd"], 180.0, places=2)   # no 180 ÷ MEP
+        finally:
+            conn.close()
+        u = self.http.post(f"/api/advisor/group-op/{r.json()['batch_id']}/undo",
+                           headers=self._hdr(self.advisor))
+        self.assertEqual(u.status_code, 200, u.text)
+        conn = main.get_db()
+        try:
+            caja = conn.execute("SELECT invested FROM positions WHERE user_id=? AND broker=? "
+                                "AND is_cash=1", (self.client_uid, "Cocos · USD")).fetchone()
+            self.assertAlmostEqual(float(caja["invested"] or 0) if caja else 0.0, 0.0, places=6)
+        finally:
+            conn.close()
+
     def test_undo_parcial_no_marca_lote_y_permite_reintento(self):
         # Lote a 2 clientes → revocar B → undo revierte A y NO estampa
         # undone_at → re-activar B → segundo undo revierte B y cierra el lote.
@@ -803,6 +837,18 @@ class ClaimFlowTest(AdvisorBase):
         # que no tiene nada que ver con lo que cada test intenta probar.
         main._rate_store.pop(f"testclient|claim_ip", None)
         main._rate_store.pop("testclient|reset_pw_ip", None)
+        # El token crudo vive sólo en el mail (en la base está su huella, RENDI-10):
+        # lo capturamos del claim_url que recibe el envío, como haría el cliente real.
+        from unittest.mock import patch as _patch
+        from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+        self._claim_tokens = []
+
+        def _cap(**kw):
+            self._claim_tokens.append(_parse_qs(_urlparse(kw["claim_url"]).query)["token"][0])
+            return True
+        _p = _patch("billing.emails.send_advisor_claim", side_effect=_cap)
+        _p.start()
+        self.addCleanup(_p.stop)
 
     def _invite(self, email=None, uid=None):
         # Email único por default: la tabla de users es COMPARTIDA entre tests
@@ -814,12 +860,9 @@ class ClaimFlowTest(AdvisorBase):
             json={"email": email}, headers=self._hdr(uid or self.advisor))
 
     def _token_for_client(self):
-        conn = main.get_db()
-        row = conn.execute(
-            "SELECT token FROM advisor_claim_tokens WHERE user_id=? AND used_at IS NULL",
-            (self.client_uid,)).fetchone()
-        conn.close()
-        return row["token"] if row else None
+        # El último token crudo capturado del mail = el vínculo vivo (cada invite
+        # invalida el previo). En la base sólo está su huella (RENDI-10).
+        return self._claim_tokens[-1] if self._claim_tokens else None
 
     def _claim(self, token, password="unaClaveLarga1"):
         # /api/auth/claim setea la cookie de sesión del CLIENTE en la respuesta.
@@ -862,7 +905,7 @@ class ClaimFlowTest(AdvisorBase):
         self._invite()
         conn = main.get_db()
         old_row = conn.execute("SELECT used_at FROM advisor_claim_tokens WHERE token=?",
-                               (old_token,)).fetchone()
+                               (main._hash_token(old_token),)).fetchone()
         conn.close()
         self.assertIsNotNone(old_row["used_at"])
 
@@ -970,7 +1013,8 @@ class ClaimFlowTest(AdvisorBase):
         self._invite()
         token = self._token_for_client()
         token_id = main.get_db().execute(
-            "SELECT id FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()["id"]
+            "SELECT id FROM advisor_claim_tokens WHERE token=?",
+            (main._hash_token(token),)).fetchone()["id"]
         conn_a = main.get_db()
         cur_a = conn_a.execute(
             "UPDATE advisor_claim_tokens SET used_at=datetime('now') WHERE id=? AND used_at IS NULL",
@@ -989,7 +1033,7 @@ class ClaimFlowTest(AdvisorBase):
         token = self._token_for_client()
         conn = main.get_db()
         conn.execute("UPDATE advisor_claim_tokens SET expires_at='2000-01-01T00:00:00' WHERE token=?",
-                     (token,))
+                     (main._hash_token(token),))
         conn.commit(); conn.close()
         r = self._claim(token, "unaClaveLarga1")
         self.assertEqual(r.status_code, 400)
@@ -3771,6 +3815,24 @@ class LinkRequestTest(AdvisorBase):
         super().setUp()
         for k in ("linkreq_preview_ip", "linkreq_respond_ip", "claim_ip"):
             main._rate_store.pop(f"testclient|{k}", None)
+        # Los tokens crudos viven sólo en el mail (en la base está su huella,
+        # RENDI-10): los capturamos de las dos clases de envío que usa esta clase.
+        from unittest.mock import patch as _patch
+        from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+        self._acceso_tokens, self._claim_tokens = [], []
+
+        def _cap_acceso(**kw):
+            self._acceso_tokens.append(_parse_qs(_urlparse(kw["url"]).query)["token"][0])
+            return True
+
+        def _cap_claim(**kw):
+            self._claim_tokens.append(_parse_qs(_urlparse(kw["claim_url"]).query)["token"][0])
+            return True
+        for destino, efecto in (("send_advisor_access_request", _cap_acceso),
+                                ("send_advisor_claim", _cap_claim)):
+            _p = _patch(f"billing.emails.{destino}", side_effect=efecto)
+            _p.start()
+            self.addCleanup(_p.stop)
         conn = main.get_db()
         # El cliente que YA tiene Rendi propio: approved=1, sin managed_by.
         self.real_email = f"ya.tiene.rendi.{uuid.uuid4().hex[:10]}@example.com"
@@ -3803,7 +3865,14 @@ class LinkRequestTest(AdvisorBase):
             """SELECT * FROM advisor_link_requests
                WHERE advisor_uid=? ORDER BY id DESC LIMIT 1""", (self.advisor,)).fetchone()
         conn.close()
-        return row
+        if row is None:
+            return None
+        # La fila trae la HUELLA del token; para responder/preview hace falta el
+        # crudo, que vive en el mail (RENDI-10). Se devuelve el último capturado.
+        d = dict(row)
+        if self._acceso_tokens:
+            d["token"] = self._acceso_tokens[-1]
+        return d
 
     def _responder(self, token, accept, uid=None):
         headers = self._hdr(uid) if uid else {}
@@ -3876,7 +3945,7 @@ class LinkRequestTest(AdvisorBase):
         self._invite(mode="link_request")
         conn = main.get_db()
         st = conn.execute("SELECT status FROM advisor_link_requests WHERE token=?",
-                          (viejo,)).fetchone()["status"]
+                          (main._hash_token(viejo),)).fetchone()["status"]
         conn.close()
         self.assertEqual(st, "cancelled")
 
@@ -4046,12 +4115,9 @@ class LinkRequestTest(AdvisorBase):
         self.assertEqual(self._invite(email=juan_email).status_code, 200)
         self._invite(mode="link_request")
         token = self._pedido()["token"]
-        # Juan reclama de verdad, por el endpoint público.
-        conn = main.get_db()
-        claim_tok = conn.execute(
-            "SELECT token FROM advisor_claim_tokens WHERE user_id=? AND used_at IS NULL",
-            (self.client_uid,)).fetchone()["token"]
-        conn.close()
+        # Juan reclama de verdad, por el endpoint público. El token crudo del
+        # claim se capturó del mail (en la base está su huella, RENDI-10).
+        claim_tok = self._claim_tokens[-1]
         rc = self.http.post("/api/auth/claim",
                             json={"token": claim_tok, "new_password": "unaClaveLarga1"})
         self.http.cookies.clear()
@@ -4227,3 +4293,44 @@ class AdvisorAlertsAgrupadasTest(AdvisorAlertsAuditTest):
         self.assertIsNone(mails[0]["lines"])
         self.assertEqual(mails[0]["heading"], "La cartera de Juan P subió 10,0% hoy")
         self.assertIn("y hoy vale", mails[0]["detail"])
+
+
+class TokenClaimComoHuellaTest(AdvisorBase):
+    """RENDI-10 parte B: el endpoint real de invitación guarda la huella del token
+    de claim, no el token. El valor de la base no sirve para reclamar la cuenta."""
+
+    def setUp(self):
+        super().setUp()
+        main._rate_store.pop("testclient|claim_preview_ip", None)
+        from unittest.mock import patch as _patch
+        from urllib.parse import urlparse as _u, parse_qs as _q
+        self._claim_tokens = []
+
+        def _cap(**kw):
+            self._claim_tokens.append(_q(_u(kw["claim_url"]).query)["token"][0])
+            return True
+        _p = _patch("billing.emails.send_advisor_claim", side_effect=_cap)
+        _p.start()
+        self.addCleanup(_p.stop)
+
+    def test_invite_guarda_huella_y_el_valor_de_la_base_no_reclama(self):
+        r = self.http.post(
+            f"/api/advisor/clients/{self.client_uid}/invite",
+            json={"email": f"huella.{uuid.uuid4().hex[:8]}@example.com"},
+            headers=self._hdr(self.advisor))
+        self.assertEqual(r.status_code, 200, r.text)
+        crudo = self._claim_tokens[-1]
+        conn = main.get_db()
+        guardado = conn.execute(
+            "SELECT token FROM advisor_claim_tokens WHERE user_id=? AND used_at IS NULL",
+            (self.client_uid,)).fetchone()["token"]
+        conn.close()
+        # En la base está la huella, no el token del mail.
+        self.assertNotEqual(guardado, crudo)
+        self.assertEqual(guardado, main._hash_token(crudo))
+        self.assertEqual(len(guardado), 64)
+        # El valor guardado NO abre la pantalla de claim; el crudo del mail SÍ.
+        self.assertEqual(
+            self.http.get(f"/api/auth/claim/preview?token={guardado}").status_code, 400)
+        self.assertEqual(
+            self.http.get(f"/api/auth/claim/preview?token={crudo}").status_code, 200)

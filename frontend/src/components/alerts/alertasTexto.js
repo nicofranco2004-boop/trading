@@ -14,6 +14,36 @@ export function monedaDe(symbol) {
   return String(symbol || '').toUpperCase().endsWith('.BA') ? 'ARS' : 'USD'
 }
 
+// Un aviso de precio de un CEDEAR en DÓLARES (AAPL en la Bolsa como AAPLD): se
+// guarda 'AAPL.BA' + currency 'USD' y el servidor lo mira con el precio en
+// dólares (alerts_engine.cedear_en_dolares — la misma regla, del otro lado).
+export function esCedearEnDolares(a) {
+  return !!a && a.kind === 'price_target' && (a.scope || 'ticker') === 'ticker'
+    && String(a.symbol || '').toUpperCase().endsWith('.BA')
+    && String(a.currency || '').toUpperCase() === 'USD'
+}
+
+// Con qué clave buscar el precio de ahora de un aviso: el mismo CEDEAR tiene
+// un precio en pesos y otro en dólares.
+export function claveDePrecio(a) {
+  const s = String(a?.symbol || '').toUpperCase()
+  return esCedearEnDolares(a) ? `${s}|USD` : s
+}
+
+// En qué monedas se puede marcar el precio de un activo — la regla del
+// servidor (main._moneda_del_aviso): la moneda tiene que ser una que el activo
+// TIENE, no un rótulo. `dolares` = dolaresPorSimbolo(…) (Map), `undefined`
+// mientras carga, `null` si no llegó: en esos dos casos un CEDEAR conserva los
+// dólares (decide el servidor) en vez de borrar la elección de la persona.
+export function monedasPosibles(symbol, dolares) {
+  const s = String(symbol || '').toUpperCase()
+  if (!s) return ['ARS', 'USD']
+  if (s.startsWith('FCI:')) return ['ARS', 'USD']   // los hay en pesos y en dólares
+  if (!s.endsWith('.BA')) return ['USD']
+  if (dolares instanceof Map) return dolares.has(s) ? ['ARS', 'USD'] : ['ARS']
+  return ['ARS', 'USD']
+}
+
 // El ticker como lo lee una persona: sin el .BA del riel, el FCI: de los fondos
 // ni el -USD de las cripto (BTC-USD → BTC).
 export function simbolo(s) {
@@ -41,7 +71,10 @@ export function frase(a) {
   if (!a) return { quien: '', que: '' }
   if (a.kind === 'price_target') {
     const verbo = a.direction === 'below' ? 'baja a' : 'sube a'
-    return { quien: simbolo(a.symbol), que: `${verbo} ${fmtPrecio(a.threshold, a.currency)}` }
+    // «AAPL (CEDEAR)»: sin eso, el CEDEAR en dólares y la acción de Nasdaq se
+    // leen igual («AAPL sube a US$ …») y son precios 15 veces distintos.
+    const quien = esCedearEnDolares(a) ? `${simbolo(a.symbol)} (CEDEAR)` : simbolo(a.symbol)
+    return { quien, que: `${verbo} ${fmtPrecio(a.threshold, a.currency)}` }
   }
   const cartera = a.scope === 'holdings'
   const partes = []
@@ -58,7 +91,8 @@ export function frase(a) {
 export function confirmacion(a) {
   if (a.kind === 'price_target') {
     if (!a.symbol || !(Number(a.threshold) > 0)) return null
-    return `Te avisamos cuando ${simbolo(a.symbol)} ${a.direction === 'below' ? 'baje' : 'suba'} a ${fmtPrecio(a.threshold, a.currency)}.`
+    const quien = esCedearEnDolares(a) ? `el CEDEAR de ${simbolo(a.symbol)} en dólares` : simbolo(a.symbol)
+    return `Te avisamos cuando ${quien} ${a.direction === 'below' ? 'baje' : 'suba'} a ${fmtPrecio(a.threshold, a.currency)}.`
   }
   const up = Number(a.up_pct) > 0, down = Number(a.down_pct) > 0
   if (!up && !down) return null

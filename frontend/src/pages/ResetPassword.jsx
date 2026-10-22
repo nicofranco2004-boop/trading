@@ -21,7 +21,12 @@ import PageMeta from '../components/PageMeta'
 
 export default function ResetPassword() {
   const [searchParams] = useSearchParams()
-  const token = searchParams.get('token') || ''
+  // El token es una credencial de un solo uso: se captura UNA vez y se borra de
+  // la URL al toque (mismo patrón que ClaimAccount). Si no, el auto-login de más
+  // abajo dispara trackEvent('login') con /reset-password?token=XXX todavía en la
+  // barra, y GA pega la URL a TODOS los eventos → el token se le escapa a Google
+  // igual (audit 2026-10-22).
+  const [token] = useState(() => searchParams.get('token') || '')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
@@ -29,9 +34,13 @@ export default function ResetPassword() {
   const { login } = useAuth()
   const navigate = useNavigate()
 
-  // Sin token en URL → al login (no podemos hacer nada útil acá)
+  // Sin token en URL → al login (no podemos hacer nada útil acá). Con token, lo
+  // sacamos de la barra de direcciones (ya quedó capturado arriba).
   useEffect(() => {
-    if (!token) navigate('/login')
+    if (!token) { navigate('/login'); return }
+    if (window.location.search.includes('token=')) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
   }, [token, navigate])
 
   async function handleSubmit(e) {

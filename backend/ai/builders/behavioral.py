@@ -65,6 +65,16 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
         tc_cedear=tc_cedear,
     )
 
+    # Recorte por plan ANTES de armar el prompt: a la IA sólo le llegan los
+    # detectores que el plan de la cuenta permite ver. Sin esto, pedir el análisis
+    # por IA devolvía los 12 narrados aunque la pantalla mostrara 3 (RENDI-A04).
+    from ai import plan as _plan
+    # tier_override = la lente del asesor (lo pone ai_analyze, nunca el navegador):
+    # un asesor que mira a un cliente ve los detectores con SU plan, no con el del cliente.
+    tope = _plan.detectores_visibles(conn, user_id, tier_override=kwargs.get("tier_override"))
+    todas = full.get("cards", []) or []
+    permitidas = todas[:tope] if tope is not None else todas
+
     # Adelgazamos las cards — el LLM no necesita evidence/references/score,
     # solo lo necesario para interpretar y narrar.
     cards = [
@@ -76,7 +86,7 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
             "value_label": c.get("value_label"),
             "one_liner": c.get("one_liner"),
         }
-        for c in full.get("cards", [])
+        for c in permitidas
     ]
 
     return {

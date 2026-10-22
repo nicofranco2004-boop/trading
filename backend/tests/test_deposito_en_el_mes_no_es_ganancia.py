@@ -66,7 +66,7 @@ class DepositoEnElMes(unittest.TestCase):
                 pass
         self.conn.commit()
         self.uid = self.conn.execute(
-            "INSERT INTO users (email, password_hash, approved) VALUES (?,?,1)",
+            "INSERT INTO users (email, password_hash, approved, tier) VALUES (?,?,1,'plus')",
             ("deposito_en_el_mes@rendi.test", "x")).lastrowid
         self.conn.execute("INSERT INTO brokers (user_id, name, currency) VALUES (?,?,?)",
                           (self.uid, self.BROKER, "USDT"))

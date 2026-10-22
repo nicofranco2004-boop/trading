@@ -42,6 +42,7 @@ from cryptography.fernet import InvalidToken
 
 CLAVE_PROPIA = "credentials-key-de-test-" + "k" * 40
 SECRET_ROTADA = "secret-key-despues-de-rotar-" + "z" * 40
+CLAVE_NUEVA = "credentials-key-rotada-tras-railway-" + "n" * 30
 
 
 class CredentialsKeyTest(unittest.TestCase):
@@ -57,10 +58,12 @@ class CredentialsKeyTest(unittest.TestCase):
         self.conn.commit()
         self._secret_original = main.SECRET_KEY
         os.environ.pop("CREDENTIALS_KEY", None)
+        os.environ.pop("CREDENTIALS_KEY_ANTERIOR", None)
 
     def tearDown(self):
         main.SECRET_KEY = self._secret_original
         os.environ.pop("CREDENTIALS_KEY", None)
+        os.environ.pop("CREDENTIALS_KEY_ANTERIOR", None)
         self.conn.close()
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -237,6 +240,101 @@ class CredentialsKeyTest(unittest.TestCase):
             main._migrar_credenciales_a_credentials_key()
         self.assertTrue(any("SEGURO rotar SECRET_KEY" in m for m in segunda.output),
                         segunda.output)
+
+
+    # ── rotar CREDENTIALS_KEY (incidente de Railway, 2026-10-21) ─────────────
+    # La clave propia también puede filtrarse. Rotarla a secas pierde todo: la
+    # nueva no abre lo de la vieja y SECRET_KEY tampoco. CREDENTIALS_KEY_ANTERIOR
+    # es la vieja en modo sólo-lectura mientras la migración re-cifra.
+
+    def _guardar_bajo_credentials_key(self, plano: str, broker: str = "wallbit") -> None:
+        """Estado de producción desde 2026-09-08: todo cifrado bajo la clave propia."""
+        os.environ["CREDENTIALS_KEY"] = CLAVE_PROPIA
+        self.conn.execute(
+            "INSERT INTO user_broker_credentials (user_id,broker,api_key_enc) VALUES (?,?,?)",
+            (self.UID, broker, main._wallbit_encrypt(plano)))
+        self.conn.commit()
+
+    def test_control_negativo_rotar_credentials_key_a_secas_la_pierde(self):
+        """Por qué hace falta CREDENTIALS_KEY_ANTERIOR."""
+        self._guardar_bajo_credentials_key("se-pierde-sin-anterior")
+        os.environ["CREDENTIALS_KEY"] = CLAVE_NUEVA
+        with self.assertRaises(InvalidToken):
+            main._wallbit_decrypt(self._enc_guardado())
+
+    def test_rotar_credentials_key_con_anterior_no_pierde_nada(self):
+        """EL TEST QUE IMPORTA de la rotación: vieja → (anterior + nueva) →
+        migración → se borra la anterior → la credencial se sigue leyendo, y
+        quedó cifrada con la nueva y SÓLO con la nueva."""
+        self._guardar_bajo_credentials_key("api-key-que-sobrevive")
+        os.environ["CREDENTIALS_KEY_ANTERIOR"] = CLAVE_PROPIA
+        os.environ["CREDENTIALS_KEY"] = CLAVE_NUEVA
+        self.assertEqual(main._wallbit_decrypt(self._enc_guardado()), "api-key-que-sobrevive")
+
+        main._migrar_credenciales_a_credentials_key()
+        enc = self._enc_guardado()
+        self.assertEqual(main._fernet_de(CLAVE_NUEVA).decrypt(enc.encode()).decode(),
+                         "api-key-que-sobrevive")
+        with self.assertRaises(InvalidToken):
+            main._fernet_de(CLAVE_PROPIA).decrypt(enc.encode())
+
+        os.environ.pop("CREDENTIALS_KEY_ANTERIOR")
+        self.assertEqual(main._wallbit_decrypt(enc), "api-key-que-sobrevive")
+
+    def test_rotar_las_dos_a_la_vez_tambien_sobrevive(self):
+        """Tras el incidente se rotan SECRET_KEY y CREDENTIALS_KEY. Como desde el
+        08/09 nada depende de SECRET_KEY, cambiarla en el mismo deploy no afecta."""
+        self._guardar_bajo_credentials_key("dos-rotaciones")
+        main.SECRET_KEY = SECRET_ROTADA
+        os.environ["CREDENTIALS_KEY_ANTERIOR"] = CLAVE_PROPIA
+        os.environ["CREDENTIALS_KEY"] = CLAVE_NUEVA
+        main._migrar_credenciales_a_credentials_key()
+        os.environ.pop("CREDENTIALS_KEY_ANTERIOR")
+        self.assertEqual(main._wallbit_decrypt(self._enc_guardado()), "dos-rotaciones")
+
+    def test_anterior_sin_clave_propia_se_ignora(self):
+        """Sin CREDENTIALS_KEY el sistema es el de antes: la anterior no puede
+        pasar a ser la que cifra por quedar primera en la lista."""
+        os.environ["CREDENTIALS_KEY_ANTERIOR"] = CLAVE_PROPIA
+        enc = main._wallbit_encrypt("sin-propia")
+        self.assertEqual(main._fernet_de(main.SECRET_KEY).decrypt(enc.encode()).decode(),
+                         "sin-propia")
+
+    def test_gate_confirma_que_la_copia_de_la_anterior_esta_bien(self):
+        """Paso 2 del runbook: antes de cambiar CREDENTIALS_KEY, la anterior es
+        una copia. El log tiene que decir que coinciden SIN mostrar ninguna."""
+        self._guardar_bajo_credentials_key("copia")
+        os.environ["CREDENTIALS_KEY_ANTERIOR"] = CLAVE_PROPIA
+        r = self._gate()
+        self.assertIn("CREDENTIALS_KEY_ANTERIOR es IGUAL", r.getMessage())
+        self.assertNotIn(CLAVE_PROPIA, r.getMessage())
+        self.assertGreaterEqual(r.levelno, logging.WARNING)
+
+    def test_gate_de_la_anterior_en_las_dos_pasadas(self):
+        """Primera pasada tras rotar: re-cifra y dice que NO se borre la anterior.
+        Segunda: 0 migradas y SEGURO borrarla. Las dos en WARNING."""
+        self._guardar_bajo_credentials_key("dos-pasadas-anterior")
+        os.environ["CREDENTIALS_KEY_ANTERIOR"] = CLAVE_PROPIA
+        os.environ["CREDENTIALS_KEY"] = CLAVE_NUEVA
+        primera = self._gate()
+        self.assertIn("NO borres CREDENTIALS_KEY_ANTERIOR todavía", primera.getMessage())
+        self.assertGreaterEqual(primera.levelno, logging.WARNING)
+        segunda = self._gate()
+        self.assertIn("0 migradas ahora", segunda.getMessage())
+        self.assertIn("SEGURO borrar CREDENTIALS_KEY_ANTERIOR", segunda.getMessage())
+        self.assertGreaterEqual(segunda.levelno, logging.WARNING)
+
+    def test_gate_no_autoriza_borrar_la_anterior_con_ilegibles(self):
+        """Si la anterior estaba mal copiada, la fila no abre con ninguna: no se
+        toca (sigue recuperable) y el log NO dice que se pueda borrar."""
+        self._guardar_bajo_credentials_key("mal-copiada")
+        antes = self._enc_guardado()
+        os.environ["CREDENTIALS_KEY_ANTERIOR"] = "una-copia-equivocada-" + "q" * 30
+        os.environ["CREDENTIALS_KEY"] = CLAVE_NUEVA
+        r = self._gate()
+        self.assertNotIn("SEGURO borrar", r.getMessage())
+        self.assertIn("NO borres CREDENTIALS_KEY_ANTERIOR", r.getMessage())
+        self.assertEqual(self._enc_guardado(), antes, "una fila ilegible no se reescribe")
 
 
 if __name__ == "__main__":

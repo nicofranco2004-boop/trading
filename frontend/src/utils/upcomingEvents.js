@@ -198,6 +198,23 @@ export function dividendPayout(event, positions, opts = {}) {
   }
 }
 
+// Cobro estimado del evento según tu tenencia. Lo usan la agenda de Eventos y
+// su calendario ("Ver calendario"): un solo lugar para la misma cuenta.
+//   • Bono: details.total ya es el total (coupon×qty, calculado en upcomingBondEvents).
+//   • Dividendo: lo resuelve dividendPayout, que convierte la tenencia a la
+//     escala del subyacente (130 CEDEARs de AVGO = 3,33 acciones). Antes en
+//     Events.jsx se multiplicaba por la cantidad cruda y el cobro salía hasta
+//     58× inflado.
+//   • Otros (earnings, macro): sin cobro.
+// `ctx`: { positions, prices, tc, tickerShares } — el `cobroCtx` de Events.jsx.
+export function eventCobro(event, ctx) {
+  const { eventType, details, ticker } = event
+  if (eventType?.startsWith('bond_') && typeof details?.total === 'number') {
+    return { amount: details.total, currency: details.currency || 'USD', shares: ctx?.tickerShares?.get(ticker) || null }
+  }
+  return dividendPayout(event, ctx?.positions, { prices: ctx?.prices, tc: ctx?.tc })
+}
+
 export function groupEventsByAsset(events) {
   const map = new Map()
   for (const ev of events) {

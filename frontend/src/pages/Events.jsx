@@ -39,7 +39,7 @@ import {
   upcomingBondEvents,
   normalizeBackendEvents,
   mergeEvents,
-  dividendPayout,
+  eventCobro,
   formatRelativeDate,
   countryFlag,
   isMacroEvent,
@@ -51,6 +51,7 @@ import { useDemora } from '../hooks/useDemora'
 import { useAlVerse, entrada } from '../hooks/useAlVerse'
 import AnimatedNumber from '../components/AnimatedNumber'
 import CargaPorPasos from '../components/novedades/CargaPorPasos'
+import CalendarioEventos from '../components/novedades/CalendarioEventos'
 import {
   pasosEventosParaTi, pasosEventosPopulares, empresasDeLaCartera, chipsDeEmpresas,
 } from '../utils/cargaPorPasos'
@@ -110,6 +111,7 @@ export default function Events({ embedded = false }) {
   }
 
   const [windowDays, setWindowDays] = useState(90)
+  const [verCalendario, setVerCalendario] = useState(false)
   const [filter, setFilter] = useState('all')
   const [positions, setPositions] = useState([])
   // Serie de ajuste CER: sin ella los cupones de TX26/TZX salen hasta 37× por
@@ -360,7 +362,28 @@ export default function Events({ embedded = false }) {
             </button>
           )
         })}
+        {/* El calendario por mes de lo de tu cartera: cobros y balances con fecha
+            conocida (components/novedades/CalendarioEventos.jsx). */}
+        {tab === 'portfolio' && (
+          <button
+            onClick={() => setVerCalendario(true)}
+            className="ml-auto inline-flex items-center gap-1.5 text-xs bg-data-violet/10 text-data-violet hover:bg-data-violet/15 border border-data-violet/30 px-3 py-1.5 rounded-full font-medium transition-colors"
+          >
+            <Calendar size={13} strokeWidth={2} /> Ver calendario
+          </button>
+        )}
       </div>
+
+      {verCalendario && (
+        <CalendarioEventos
+          positions={positions}
+          cerSeries={cerSeries}
+          cobroCtx={cobroCtx}
+          eventosDelAnio={windowDays >= 365 && llego.cartera && !fallo.cartera ? portfolioEvents : null}
+          onClose={() => setVerCalendario(false)}
+          onVerActivo={(t) => navigate(`/activo/${encodeURIComponent(t)}`)}
+        />
+      )}
 
       {/* Briefing de eventos — CTA on-demand. Reusa el topic `events`
           (una sola llamada IA). NO se auto-genera: dispara solo al click. */}
@@ -954,6 +977,13 @@ function AgendaCard({ event, tab, tickerValueUsd, portfolioTotalUsd, cobroCtx })
         onClick={expandable ? () => setOpen(o => !o) : undefined}
         role={expandable ? 'button' : undefined}
         aria-expanded={expandable ? open : undefined}
+        // Decía ser un botón pero el teclado no llegaba: sin tabIndex no se
+        // podía enfocar, y sin Enter/Espacio no se podía abrir.
+        tabIndex={expandable ? 0 : undefined}
+        onKeyDown={expandable ? (e => {
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o) }
+        }) : undefined}
       >
         {isMacro ? (
           <div className={`w-9 h-9 rounded-xl grid place-items-center flex-none ${cls}`}>
@@ -1113,20 +1143,6 @@ function renderDetail(event, payout) {
     if (details?.amort > 0)  return `${eventType === 'bond_maturity' ? 'Vencimiento' : 'Amortización'} ${cur} ${details.amort.toFixed(2)}`
   }
   return ''
-}
-
-// Cobro estimado del evento según tu tenencia.
-//   • Bono: details.total ya es el total (coupon×qty, calculado en upcomingBondEvents).
-//   • Dividendo: lo resuelve dividendPayout, que convierte la tenencia a la
-//     escala del subyacente (130 CEDEARs de AVGO = 3,33 acciones). Antes acá se
-//     multiplicaba por la cantidad cruda y el cobro salía hasta 58× inflado.
-//   • Otros (earnings, macro): sin cobro.
-function eventCobro(event, ctx) {
-  const { eventType, details, ticker } = event
-  if (eventType?.startsWith('bond_') && typeof details?.total === 'number') {
-    return { amount: details.total, currency: details.currency || 'USD', shares: ctx?.tickerShares?.get(ticker) || null }
-  }
-  return dividendPayout(event, ctx?.positions, { prices: ctx?.prices, tc: ctx?.tc })
 }
 
 // ─── Spotlight hero ─────────────────────────────────────────────────────────

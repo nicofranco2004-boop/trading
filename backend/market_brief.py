@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import NamedTuple, Optional
 
@@ -967,9 +968,38 @@ SIN_ACTIVOS = "sin_activos"                      # no tiene cartera cargada
 SIN_NOTICIAS = "sin_noticias"                    # no hubo material que narrar
 NARRACION_DESCARTADA = "narracion_descartada"    # el modelo inventó números
 SIN_EMAIL = "sin_email"                          # la cuenta no tiene casilla
+TOPE_DE_INTENTOS = "tope_de_intentos"            # ya se intentó hoy demasiadas veces
 
 MOTIVOS = (APAGADO, YA_LO_RECIBIERON, SIN_ACTIVOS, SIN_NOTICIAS,
-           NARRACION_DESCARTADA, SIN_EMAIL)
+           NARRACION_DESCARTADA, SIN_EMAIL, TOPE_DE_INTENTOS)
+
+# Cuántas veces por día se le puede pedir el resumen al modelo para UNA
+# persona. A quien le falló (narración descartada, mail rechazado) no se lo
+# sella, así que la corrida siguiente lo reintenta: está bien, es el
+# reintento. Lo que no está bien es que sea sin fin: con el cron mal
+# configurado (cada minuto en vez de una vez por día) o alguien con el token
+# pegándole en loop, cada corrida volvía a pagar hasta ~12 pedidos a la IA por
+# cada persona que falla. Es el caso del video que mandó Nico: una función
+# que se dispara sola y una factura a la mañana. Cada pedido a la IA cuenta,
+# salga bien o mal.
+#
+# La cuenta vive en memoria: un reinicio (un deploy) la pone en cero. Alcanza
+# para cortar el loop, que es lo caro; no hace falta que sobreviva al deploy.
+MAX_INTENTOS_POR_DIA = 3
+_intentos_del_dia: dict = {}
+_intentos_lock = threading.Lock()
+
+
+def _tomar_intento(uid: int, day: str) -> bool:
+    """Anota un intento de (persona, día). False si ya no le quedan."""
+    with _intentos_lock:
+        for clave in [k for k in _intentos_del_dia if k[1] != day]:
+            del _intentos_del_dia[clave]     # los de días pasados no sirven más
+        n = _intentos_del_dia.get((uid, day), 0)
+        if n >= MAX_INTENTOS_POR_DIA:
+            return False
+        _intentos_del_dia[(uid, day)] = n + 1
+        return True
 
 
 class Armado(NamedTuple):
@@ -1147,6 +1177,9 @@ def run_briefs(get_db, only_uid: int = None) -> dict:
         # 4) Recién ahora se narra y se manda.
         from billing import emails
         for uid in pending:
+            if not _tomar_intento(uid, day):
+                motivos[TOPE_DE_INTENTOS] += 1
+                continue
             try:
                 armado = build_brief(conn, uid, day, contexto=contexto)
                 if not armado.brief:

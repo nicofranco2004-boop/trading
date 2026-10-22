@@ -3176,7 +3176,11 @@ export function handleDemoRequest(method, path, body) {
       }
     }
     if (basePath === '/plan/features') {
-      // Demo siempre simula Pro para mostrar todas las features sin paywall
+      // Demo siempre simula Pro para mostrar todas las features sin paywall.
+      // `access` es la fila 'pro' de backend/ai/plan.py copiada clave por
+      // clave: le faltó 'alerts.pct_move' y el demo mostraba «Los avisos por %
+      // son de Rendi Plus» justo en lo que el video del 21/10 invita a probar.
+      // demoPermisos.test.jsx la compara con la del servidor.
       return {
         tier: 'pro',
         limits: {
@@ -3185,6 +3189,9 @@ export function handleDemoRequest(method, path, body) {
           brokers_can_create: true,
           brokers_grandfather: false,
           behavioral_tags_visible: null,
+          alerts_max: null,
+          alerts_current: 1,          // la de AAPL de GET /alerts
+          alerts_can_create: true,
         },
         access: {
           'ai.followup': true,
@@ -3193,6 +3200,7 @@ export function handleDemoRequest(method, path, body) {
           'reportes.historicos': true,
           'export.csv': true,
           'tax.helper': false,
+          'alerts.pct_move': true,
         },
       }
     }

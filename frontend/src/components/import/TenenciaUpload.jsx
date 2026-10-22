@@ -73,7 +73,7 @@ export default function TenenciaUpload({
            onClick={e => e.stopPropagation()}>
         <div className="flex items-start justify-between mb-1">
           <h2 className="text-lg font-semibold text-ink-1">{title}</h2>
-          <button onClick={onClose} className="text-ink-3 hover:text-ink-1 text-xl leading-none">×</button>
+          <button type="button" onClick={onClose} aria-label="Cerrar" className="text-ink-3 hover:text-ink-1 text-xl leading-none"><span aria-hidden="true">×</span></button>
         </div>
         <p className="text-sm text-ink-3 mb-4">
           {introText || (<>La Cuenta Corriente no trae las posiciones que ya tenías antes. Subí la

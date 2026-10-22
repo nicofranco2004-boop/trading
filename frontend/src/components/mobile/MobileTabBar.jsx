@@ -3,7 +3,9 @@
 // 5 tabs: Home · Posiciones · [+] · Insights · Más.
 // El "+" no es navegación — abre un sheet de quick actions (Nueva op, Nueva
 // posición, Watchlist, Buscar). El sheet vive como sibling acá para no tener
-// que duplicar lógica en cada página.
+// que duplicar lógica en cada página. Abajo, en una franja aparte, «Importar
+// historial» (como adentro del botón Registrar de la compu; 2026-10-19 salió
+// de «Más» y vino acá).
 //
 // Patrón del audit:
 // - Tab bar fija al fondo, h=56px, separada del body por border-line.
@@ -15,7 +17,7 @@
 // el switch desktop/mobile a nivel layout.
 
 import { useState } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Briefcase, Compass, MoreHorizontal, Plus,
   PlusCircle, Repeat, Star, Search, TrendingDown,
@@ -28,7 +30,7 @@ import { useAuth } from '../../contexts/AuthContext'
 import { useAdvisorContext } from '../../contexts/AdvisorContext'
 import { useAlertsContext } from '../../contexts/AlertsContext'
 import { menuVisible } from '../../utils/navegacion'
-import { direccionDeRegistrar } from '../../utils/registrar'
+import { direccionDeRegistrar, IMPORTAR_HISTORIAL } from '../../utils/registrar'
 
 const TABS = [
   // "Inicio", igual que en "Más" (antes: "Home" acá y "Resumen" allá, para
@@ -227,8 +229,15 @@ const TONE_CLASS = {
   info:   'bg-data-cyan/10 text-data-cyan border-data-cyan/30',
 }
 
-function QuickActionsSheet({ onClose }) {
+// Exportada para la prueba que compara a dónde lleva el celular con el menú de
+// la compu (Importar vive acá, no en «Más»).
+export function QuickActionsSheet({ onClose }) {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const { clientCtx } = useAdvisorContext()
+  // Quién ve Importar sale de la lista compartida (utils/navegacion.js), la
+  // misma que usa el botón Registrar de la compu.
+  const { importar } = menuVisible({ user, clientCtx })
 
   function handleAction(action) {
     // Sin evento propio: cada acción ya se mide donde llega (la pantalla, o
@@ -267,6 +276,27 @@ function QuickActionsSheet({ onClose }) {
           )
         })}
       </ul>
+      {importar && (() => {
+        const ImportIcon = importar.icon
+        return (
+          <div className="mx-3 mb-3 pt-2 border-t border-line">
+            <p className="px-3 pt-1 pb-1 text-[12px] text-ink-3">{IMPORTAR_HISTORIAL.pregunta}</p>
+            <Link
+              to={importar.to}
+              onClick={onClose}
+              className="w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-bg-1 hover:bg-bg-2/60 active:bg-bg-3 transition-colors text-left"
+            >
+              <span className="w-10 h-10 rounded-full border border-dashed border-data-violet/60 text-data-violet flex items-center justify-center flex-shrink-0">
+                <ImportIcon size={16} strokeWidth={1.75} aria-hidden="true" />
+              </span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-medium text-ink-0 leading-tight">{IMPORTAR_HISTORIAL.label}</span>
+                <span className="block text-[11px] text-ink-3 leading-tight mt-0.5">{IMPORTAR_HISTORIAL.sub}</span>
+              </span>
+            </Link>
+          </div>
+        )
+      })()}
     </BottomSheet>
   )
 }

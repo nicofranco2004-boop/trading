@@ -901,8 +901,8 @@ export default function ImportWizard({ onClose, onConfirmed, onWallbitConnected,
           <h2 className="font-semibold text-ink-0 text-sm sm:text-base">
             Importar
           </h2>
-          <button onClick={onClose} className="text-ink-3 hover:text-ink-2 dark:hover:text-ink-0">
-            <X size={18} />
+          <button type="button" onClick={onClose} aria-label="Cerrar" className="text-ink-3 hover:text-ink-2 dark:hover:text-ink-0">
+            <X size={18} aria-hidden="true" />
           </button>
         </div>
 

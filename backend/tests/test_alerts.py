@@ -280,20 +280,33 @@ def test_pct_move_once_deactivates(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
 
-def test_pct_move_once_holdings_fires_once_then_stops(clean, monkeypatch):
-    # holdings 'once': dispara el/los que se movieron este ciclo y se apaga.
+def test_pct_move_once_holdings_fires_once_then_stops(clean, buzon, monkeypatch):
+    # holdings 'once': UN aviso con TODOS los que se movieron este ciclo, y se
+    # apaga. Antes se apagaba con el primero y salteaba el resto: con estos tres
+    # avisaba sólo AAPL (medido el 21/10/2026). La prueba vieja miraba nada más
+    # que quedara apagada, así que no lo veía.
     conn = clean
-    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None,
-              down_pct=5, threshold=None, repeat="once")
-    monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "KO"])
+    mails, pushes = buzon
+    aid = _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+                    down_pct=3, threshold=None, repeat="once", channel="both")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda conn, uid: ["AAPL", "KO", "NVDA", "MSFT"])
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
-        "AAPL": _q(90, -8.0),
-        "KO":   _q(60, -6.0),
+        "AAPL": _q(90, -8.0, sym="AAPL"),
+        "KO":   _q(60, -4.0, sym="KO"),
+        "NVDA": _q(140, 5.0, sym="NVDA"),
+        "MSFT": _q(400, 1.0, sym="MSFT"),     # no pasa el %: no entra
     })
-    ae.evaluate_alerts(conn, only_user=1)
-    assert conn.execute("SELECT active FROM alerts").fetchone()["active"] == 0
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 3
+    assert [e["symbol"] for e in _events(conn)] == ["AAPL", "KO", "NVDA"]
+    # Los tres en UN aviso: un mail y un push, con la lista.
+    assert len(mails) == 1 and len(pushes) == 1
+    assert [(f["nombre"], f["pct_txt"]) for f in mails[0]["filas"]] == [
+        ("AAPL", "−8%"), ("NVDA", "+5%"), ("KO", "−4%")]
+    assert mails[0]["pie"][0] == "Esta alerta ya cumplió."
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
     # próximo ciclo: inactiva → 0 disparos
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+    assert len(mails) == 1
 
 
 # ── Horario de mercado + baseline "Desde ahora" (set_price) ──────────────────
@@ -346,14 +359,23 @@ def test_set_price_once_deactivates(clean, monkeypatch):
 
 # ─── Formato de plata (convención argentina) ────────────────────────────────
 # Se testea a través de las funciones que ARMAN el mensaje (_compose_message
-# arma el asunto, _email_detail arma el cuerpo), no contra fmt_money suelto:
+# arma el asunto, _contenido_del_mail el mail entero), no contra fmt_money suelto:
 # un test del primitivo pasaría en verde aunque el call site se olvide de
 # usarlo, que es exactamente el bug que había.
 
 def _alert(kind="pct_move", currency="USD", threshold=None,
            direction=None, baseline="prev_close"):
     return {"kind": kind, "currency": currency, "threshold": threshold,
-            "direction": direction, "baseline": baseline, "id": 1}
+            "direction": direction, "baseline": baseline, "id": 1, "repeat": "always"}
+
+
+def _todo_el_mail(a, symbol, price, change_pct) -> str:
+    """Asunto + titular + oración del mail de UN activo, armados por el mismo
+    camino que `_deliver`."""
+    it = {"symbol": symbol, "price": price, "change_pct": change_pct,
+          "message": ae._compose_message(a, symbol, price, change_pct)}
+    c = ae._contenido_del_mail(a, [it], None, False, None, it["message"])
+    return " | ".join([c["heading"], c["titulo"], c["detail"]])
 
 
 def test_dolares_en_formato_argentino_en_asunto_y_cuerpo():
@@ -362,7 +384,8 @@ def test_dolares_en_formato_argentino_en_asunto_y_cuerpo():
     assert "US$ 2.145,30" in ae._email_detail(a, "MELI", 2145.30, -3.14)
     c = _alert(kind="price_target", threshold=200.0, direction="above")
     assert "US$ 200,10" in ae._compose_message(c, "MSFT", 200.10, None)
-    assert "US$ 200,00" in ae._email_detail(c, "MSFT", 200.10, None)
+    mail = _todo_el_mail(c, "MSFT", 200.10, None)
+    assert "US$ 200,00" in mail and "US$ 200,10" in mail   # lo marcado y lo de ahora
 
 
 def test_pesos_siguen_con_punto_de_miles_y_sin_decimales():
@@ -372,10 +395,14 @@ def test_pesos_siguen_con_punto_de_miles_y_sin_decimales():
 
 def test_el_cuerpo_del_mail_trae_los_numeros_y_no_manda_a_buscarlos():
     """El bug original: el cuerpo decía 'entrá a Rendi para ver' y el asunto
-    informaba más que el mail. El cuerpo tiene que traer % y precio."""
-    body = ae._email_detail(_alert(), "MELI", 2145.30, -3.14)
-    assert "3,1%" in body and "US$ 2.145,30" in body
-    assert "Entrá a Rendi" not in body
+    informaba más que el mail. El mail tiene que traer % y precio: el % va en
+    el titular grande y el precio de ahora en la oración (diseño 19/10)."""
+    a = _alert()
+    it = {"symbol": "MELI", "price": 2145.30, "change_pct": -3.14,
+          "message": ae._compose_message(a, "MELI", 2145.30, -3.14)}
+    c = ae._contenido_del_mail(a, [it], None, False, None, it["message"])
+    assert "3,1%" in c["titulo"] and "US$ 2.145,30" in c["detail"]
+    assert "Entrá a Rendi" not in c["detail"]
 
 
 # ─── Que el aviso sea del DÍA que dice ──────────────────────────────────────
@@ -508,8 +535,15 @@ def test_la_moneda_sale_del_activo_y_no_de_la_fila_de_la_alerta():
     cuerpo = ae._email_detail(a, "INTC.BA", 31020.0, -5.77)
     assert "$31.020" in cuerpo and "US$" not in cuerpo
     assert "US$" not in ae._compose_message(
-        _alert(kind="price_target", currency="USD", threshold=30000.0, direction="below"),
+        _alert(kind="price_target", currency="ARS", threshold=30000.0, direction="below"),
         "INTC.BA", 31020.0, None)
+    # Un aviso de PRECIO de un CEDEAR guardado en dólares, en cambio, es el
+    # CEDEAR en dólares (INTCD): el motor le pasa el precio en dólares y se
+    # muestra en US$ (ver test_alertas_cedear_dolares). Hasta el 20/10 esa
+    # combinación era la trampa del selector $/US$ y se mostraba en pesos.
+    assert "US$ 20,14" in ae._compose_message(
+        _alert(kind="price_target", currency="USD", threshold=20.0, direction="below"),
+        "INTC.BA", 20.14, None)
     # …y el activo que sí está en dólares no se toca, con la misma alerta.
     assert "US$ 212,29" in ae._email_detail(a, "NVDA", 212.29, -3.4)
 
@@ -666,13 +700,16 @@ def test_toda_la_cartera_manda_un_solo_mail_con_la_lista(clean, buzon, monkeypat
 
     assert len(mails) == 1 and len(pushes) == 1        # UN mail y UN push
     m = mails[0]
-    assert m["lines"] == [                             # ordenado por tamaño del movimiento
-        "INTC cayó 5,8% y cotiza a $31.020",
-        "NVDA cayó 3,4% y cotiza a $14.080",
-        "NFLX subió 3,4% y cotiza a $2.675",
+    assert [(f["nombre"], f["pct_txt"]) for f in m["filas"]] == [   # del más grande al más chico
+        ("INTC", "−5,8%"),
+        ("NVDA", "−3,4%"),
+        ("NFLX", "+3,4%"),
     ]
+    # El asunto nombra los movimientos; el titular los cuenta (la lista va abajo).
     assert m["heading"] == "INTC cayó 5,8%, NVDA cayó 3,4% y 1 más hoy"
-    assert "se movieron 3 activos de tu cartera hoy" in m["detail"]
+    assert m["titulo"] == "3 de tus activos se movieron fuerte hoy"
+    assert m["detail"] == "pasaron el límite que marcaste."
+    assert (m["cta_label"], m["cta_path"]) == ("Ver mi cartera", "/posiciones")
     # …y en la app siguen siendo tres avisos, los tres marcados como entregados.
     ev = _events(conn)
     assert [e["symbol"] for e in ev] == ["INTC.BA", "NVDA.BA", "NFLX.BA"]
@@ -691,8 +728,9 @@ def test_dos_activos_se_nombran_los_dos(clean, buzon, monkeypatch):
     assert mails[0]["heading"] == "KO subió 11% y AAPL cayó 8% hoy"
 
 
-def test_un_solo_activo_manda_el_mail_de_siempre(clean, buzon, monkeypatch):
-    """El agrupado no puede cambiarle el mail al que se movió uno solo."""
+def test_un_solo_activo_manda_su_mail_sin_lista(clean, buzon, monkeypatch):
+    """El agrupado no puede cambiarle el mail al que se movió uno solo: sin
+    lista, con su titular y el botón a su ficha."""
     conn = clean
     mails, pushes = buzon
     aid = _mk_alert(conn, kind="pct_move", symbol="AAPL", down_pct=3,
@@ -700,9 +738,10 @@ def test_un_solo_activo_manda_el_mail_de_siempre(clean, buzon, monkeypatch):
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(90.0, -5.0)})
     ae.evaluate_alerts(conn, only_user=1)
     assert len(mails) == 1
-    assert mails[0]["heading"] == "AAPL cayó 5% hoy"
-    assert mails[0]["lines"] is None
-    assert mails[0]["detail"] == "AAPL cayó 5% desde el cierre de ayer y cotiza a US$ 90,00."
+    assert mails[0]["heading"] == mails[0]["titulo"] == "AAPL cayó 5% hoy"
+    assert mails[0]["filas"] is None
+    assert mails[0]["detail"] == "pasó el límite que marcaste. Ahora está en US$ 90,00."
+    assert (mails[0]["cta_label"], mails[0]["cta_path"]) == ("Ver AAPL", "/activo/AAPL")
     assert pushes[0]["tag"] == f"alert-{aid}-AAPL"     # el tag por activo, como antes
 
 
@@ -934,7 +973,8 @@ def test_varios_en_el_pre_salen_en_un_solo_mail(clean, monkeypatch):
     assert len(mails) == 1                                    # UN mail, no tres
     # Del más grande al más chico, como el resto de los avisos agrupados.
     assert mails[0]["heading"] == "NVDA cae 3,5%, AAPL en Nueva York sube 3,4% y 1 más en el pre-mercado"
-    assert len(mails[0]["lines"]) == 3
+    assert len(mails[0]["filas"]) == 3
+    assert mails[0]["titulo"] == "3 de tus activos se mueven fuerte en el pre-mercado"
     assert "Es un anticipo" in mails[0]["detail"]
 
 
@@ -952,8 +992,9 @@ def test_rueda_y_pre_a_la_vez_tambien_van_en_un_solo_mail(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 2
     assert len(mails) == 1
     assert mails[0]["heading"] == "GGAL cayó 4% hoy y NVDA cae 3,5% en el pre-mercado"
-    assert any(l.endswith("(en el pre-mercado)") for l in mails[0]["lines"])
-    assert any(l.endswith(" hoy") for l in mails[0]["lines"])
+    # Cada renglón dice dónde fue.
+    notas = {f["nombre"]: f["nota"] for f in mails[0]["filas"]}
+    assert notas == {"GGAL": "hoy", "NVDA": "en el pre-mercado"}
 
 
 
@@ -1133,15 +1174,68 @@ def test_la_misma_accion_por_dos_papeles_es_un_solo_renglon(clean, monkeypatch):
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
 
 
-def test_una_vez_apagada_en_la_rueda_no_suma_avisos_del_pre_en_el_mismo_ciclo(clean, monkeypatch):
+def test_una_vez_junta_la_rueda_y_el_pre_del_mismo_ciclo_en_un_aviso(clean, monkeypatch):
     # Desde el 1/11, de 11 a 11:30 coinciden BYMA abierta y el pre de Nueva York.
+    # «Una vez» es UN aviso con todo lo que pasó el % en la pasada: YPFD en la
+    # rueda y NVDA en el pre van juntos, y después se apaga. Hasta el 21/10/2026
+    # el aviso de YPFD la apagaba y NVDA no llegaba nunca (lo pedía esta misma
+    # prueba, de la auditoría del 15/10).
     conn = clean
-    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
-              threshold=None, repeat="once")
+    conn.execute("UPDATE users SET email='a@a.co' WHERE id=1"); conn.commit()
+    aid = _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3, down_pct=3,
+                    threshold=None, repeat="once", channel="email")
     monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["YPFD.BA", "NVDA"])
     _fuera(monkeypatch, [_cot("SPY", -0.3), _cot("NVDA", -3.5)], {"NVDA": 6}, ahora=_A_LAS_1115)
     monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"YPFD.BA": _q(40000, -4.0, sym="YPFD.BA")})
+    mails = _mails_reales(monkeypatch)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 2
+    assert len(mails) == 1
+    assert mails[0]["heading"] == "YPFD cayó 4% hoy y NVDA cae 3,5% en el pre-mercado"
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 0
+
+
+def _reactivar(aid):
+    """«Volver a activarla» desde Mis alertas: el mismo PATCH de la pantalla."""
+    main.alerts_update(aid, main.AlertUpdateIn(active=True), uid=1)
+
+
+def test_una_vez_ya_avisada_no_calla_al_resto_de_la_cartera(clean, monkeypatch):
+    # «Toda mi cartera, una vez», reactivada después del aviso del pre de NVDA.
+    # En la rueda NVDA sigue con la MISMA suba (no se repite) y KO cae 4 %: KO se
+    # avisa y la alerta se apaga. Antes NVDA, primero en la lista, la apagaba en
+    # silencio y KO no llegaba nunca.
+    conn = clean
+    aid = _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=3,
+                    down_pct=3, threshold=None, repeat="once")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["NVDA", "KO"])
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4), _cot("KO", 0.3)],
+           {"NVDA": 6, "KO": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1            # NVDA en el pre
+    _reactivar(aid)
+    _fdh._vaciar_cache()
+    monkeypatch.setattr(_fdh, "_pedir_yahoo", _como_yahoo([_cot("SPY", 0.1, estado="REGULAR")]))
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
+        "NVDA": _q(103.2, 3.2, sym="NVDA"), "KO": _q(57.6, -4.0, sym="KO")})
     assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["symbol"] == "KO"
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
+
+
+def test_una_vez_tambien_se_apaga_con_el_aviso_del_doble(clean, monkeypatch):
+    # Reactivada después del aviso del pre: si la misma suba llega al doble en la
+    # rueda, ése es su aviso y se apaga. Antes el doble de la rueda la dejaba
+    # prendida (el del pre sí la apagaba) y seguía avisando.
+    conn = clean
+    aid = _mk_alert(conn, kind="pct_move", up_pct=3, down_pct=3, threshold=None,
+                    symbol="NVDA", repeat="once")
+    _fuera(monkeypatch, [_cot("SPY", 0.2), _cot("NVDA", 3.4)], {"NVDA": 6})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    _reactivar(aid)
+    _rueda(monkeypatch, 6.5)
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+    assert _events(conn)[-1]["message"] == "NVDA subió 6,5% hoy (el doble de tu alerta)"
+    assert conn.execute("SELECT active FROM alerts WHERE id=?", (aid,)).fetchone()["active"] == 0
 
 
 # ── Segundo aviso al doble del umbral (Nico, 2026-10-15) ─────────────────────
@@ -1362,3 +1456,189 @@ def test_patch_valida_canal_como_el_alta(clean):
     with pytest.raises(ValueError):
         main.AlertUpdateIn(repeat="nunca")
     assert main.AlertUpdateIn(channel="email").channel == "email"
+
+
+# ── El mail tal como llega (diseño «Cómo llega por mail», 19/10/2026) ────────
+# Corre el camino de producción entero: el motor dispara, `_deliver` arma el
+# contenido, `send_alert_email` arma el HTML y el texto. Lo único mockeado es
+# `_send`, el escalón que habla con Resend. Así se prueba lo que la persona ve
+# —el titular, el botón y a dónde lleva cada link—, no los argumentos sueltos.
+#
+# Con MUESTRAS_MAIL_ALERTAS=<carpeta> además guarda cada mail en HTML, para
+# mirarlo en el navegador tal cual sale.
+
+def _cartero(monkeypatch, nombre="Juan Pérez"):
+    from billing import emails as _emails
+    conn = main.get_db()
+    conn.execute("UPDATE users SET name=? WHERE id=1", (nombre,)); conn.commit()
+    conn.close()
+    enviados = []
+    monkeypatch.setattr(ae, "_deliver", _ENTREGA_REAL)
+    monkeypatch.setattr(_emails, "_send", lambda to, subject, html_, text, **kw:
+                        enviados.append({"to": to, "subject": subject, "html": html_,
+                                         "text": text, **kw}) or True)
+    return enviados
+
+
+def _guardar_muestra(nombre, mail):
+    carpeta = os.environ.get("MUESTRAS_MAIL_ALERTAS")
+    if carpeta:
+        os.makedirs(carpeta, exist_ok=True)
+        with open(os.path.join(carpeta, f"{nombre}.html"), "w", encoding="utf-8") as f:
+            f.write(mail["html"])
+        with open(os.path.join(carpeta, f"{nombre}.txt"), "w", encoding="utf-8") as f:
+            f.write(f"Asunto: {mail['subject']}\n\n{mail['text']}")
+
+
+def _boton(html_) -> tuple:
+    """(texto, link) del botón violeta: el <a> que está adentro de la celda violeta."""
+    import re
+    m = re.search(r'background:#8B7DFF;border-radius:8px;">\s*<a href="([^"]+)"[^>]*>([^<]+)</a>', html_)
+    assert m, "el mail no tiene el botón"
+    return m.group(2), m.group(1)
+
+
+def _titular(html_) -> str:
+    import re
+    return re.search(r"<h1[^>]*>([^<]+)</h1>", html_).group(1)
+
+
+def test_mail_de_precio_como_el_diseno(clean, monkeypatch):
+    conn = clean
+    enviados = _cartero(monkeypatch)
+    _mk_alert(conn, symbol="GGAL.BA", currency="ARS", threshold=8000.0, direction="above",
+              repeat="once", channel="email")
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"GGAL.BA": 8012.0})
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 1
+
+    assert len(enviados) == 1
+    m = enviados[0]
+    _guardar_muestra("mail-precio", m)
+    # Asunto y titular: el precio MARCADO.
+    assert m["subject"] == "GGAL llegó a $8.000"
+    assert _titular(m["html"]) == "GGAL llegó a $8.000"
+    # Una oración con el nombre de pila y el precio de ahora.
+    assert "Hola Juan, es el precio que marcaste. Ahora está en $8.012." in m["html"]
+    assert _boton(m["html"]) == ("Ver GGAL", "https://rendi.finance/activo/GGAL")
+    # «Una sola vez»: el motor la apagó y el pie lo dice, con el link a Mis alertas.
+    assert conn.execute("SELECT active FROM alerts").fetchone()["active"] == 0
+    assert ('Esta alerta ya cumplió. <a href="https://rendi.finance/alertas?tab=mis"'
+            in m["html"])
+    assert ">Volver a activarla</a>" in m["html"]
+    assert "/dashboard" not in m["html"]
+    # Lo que ya estaba bien sigue: respuesta a soporte y versión de texto.
+    assert m["reply_to"] == "soporte@rendi.finance"
+    assert m["text"].startswith("GGAL llegó a $8.000\n\nHola Juan, es el precio que marcaste.")
+    assert "Ver GGAL: https://rendi.finance/activo/GGAL" in m["text"]
+    assert "Esta alerta ya cumplió. Volver a activarla: https://rendi.finance/alertas?tab=mis" in m["text"]
+
+
+def test_mail_de_precio_que_se_repite_no_dice_que_cumplio(clean, monkeypatch):
+    conn = clean
+    enviados = _cartero(monkeypatch)
+    _mk_alert(conn, symbol="AAPL", threshold=200.0, direction="below",
+              repeat="always", channel="email")
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"AAPL": 198.5})
+    ae.evaluate_alerts(conn, only_user=1)
+    m = enviados[0]
+    assert m["subject"] == _titular(m["html"]) == "AAPL llegó a US$ 200,00"
+    assert "Ahora está en US$ 198,50." in m["html"]
+    assert "ya cumplió" not in m["html"]
+    assert 'href="https://rendi.finance/alertas?tab=mis"' in m["html"]
+
+
+def test_mail_agrupado_como_el_diseno(clean, monkeypatch):
+    conn = clean
+    enviados = _cartero(monkeypatch)
+    _mk_alert(conn, kind="pct_move", scope="holdings", symbol=None, up_pct=5, down_pct=5,
+              threshold=None, repeat="always", channel="email")
+    monkeypatch.setattr(ae, "_holding_symbols", lambda c, u: ["YPFD.BA", "MELI.BA", "GGAL.BA", "KO"])
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {
+        "YPFD.BA": _q(41200.0, 8.4, sym="YPFD.BA"),
+        "MELI.BA": _q(21150.0, -5.6, sym="MELI.BA"),
+        "GGAL.BA": _q(7480.0, -5.2, sym="GGAL.BA"),
+        "KO": _q(60.0, 0.4, sym="KO"),            # no cruza: no va en el mail
+    })
+    assert ae.evaluate_alerts(conn, only_user=1)["fired"] == 3
+
+    assert len(enviados) == 1                    # uno solo, con los tres
+    m = enviados[0]
+    _guardar_muestra("mail-movimiento", m)
+    # El asunto nombra los movimientos; el titular los cuenta.
+    assert m["subject"] == "YPFD subió 8,4%, MELI cayó 5,6% y 1 más hoy"
+    assert _titular(m["html"]) == "3 de tus activos se movieron fuerte hoy"
+    assert "Hola Juan, pasaron el límite que marcaste." in m["html"]
+    # La lista: ticker y %, en verde si sube y en rojo si cae, del más grande al más chico.
+    import re
+    filas = re.findall(r">(\w+)</td><td align=\"right\"[^>]*color:(#[0-9A-F]{6});[^>]*>([^<]+)</td>",
+                       m["html"])
+    assert filas == [("YPFD", "#0A8149", "+8,4%"),
+                     ("MELI", "#C62B38", "−5,6%"),
+                     ("GGAL", "#C62B38", "−5,2%")]
+    assert _boton(m["html"]) == ("Ver mi cartera", "https://rendi.finance/posiciones")
+    assert ('¿Demasiados avisos? <a href="https://rendi.finance/alertas?tab=mis"'
+            in m["html"]) and ">Cambiá el %</a>" in m["html"]
+    assert "/dashboard" not in m["html"]
+    assert m["reply_to"] == "soporte@rendi.finance"
+    assert "  YPFD  +8,4%\n  MELI  −5,6%\n  GGAL  −5,2%" in m["text"]
+    assert "Ver mi cartera: https://rendi.finance/posiciones" in m["text"]
+    assert "¿Demasiados avisos? Cambiá el %: https://rendi.finance/alertas?tab=mis" in m["text"]
+
+
+def test_mail_de_un_movimiento_de_una_sola_vez(clean, monkeypatch):
+    conn = clean
+    enviados = _cartero(monkeypatch)
+    _mk_alert(conn, kind="pct_move", symbol="AAPL", down_pct=3, threshold=None,
+              repeat="once", channel="email")
+    monkeypatch.setattr(ae, "_quotes_for", lambda syms: {"AAPL": _q(90.0, -5.0)})
+    ae.evaluate_alerts(conn, only_user=1)
+    m = enviados[0]
+    _guardar_muestra("mail-un-movimiento", m)
+    assert m["subject"] == _titular(m["html"]) == "AAPL cayó 5% hoy"
+    assert "Hola Juan, pasó el límite que marcaste. Ahora está en US$ 90,00." in m["html"]
+    assert _boton(m["html"]) == ("Ver AAPL", "https://rendi.finance/activo/AAPL")
+    assert "Esta alerta ya cumplió." in m["html"]
+
+
+def test_sin_nombre_que_sirva_saluda_a_secas(clean, monkeypatch):
+    conn = clean
+    enviados = _cartero(monkeypatch, nombre="nico_2004")
+    _mk_alert(conn, symbol="AAPL", threshold=200.0, channel="email")
+    monkeypatch.setattr(ae, "_prices_for", lambda syms: {"AAPL": 201.0})
+    ae.evaluate_alerts(conn, only_user=1)
+    assert "Hola, es el precio que marcaste." in enviados[0]["html"]
+
+
+def test_borrar_alerta_no_toca_el_estado_de_otro_usuario(clean):
+    """RENDI-06: borrar una alerta propia no debe resetear el estado de las
+    alertas de OTRO usuario.
+
+    `alert_symbol_state` no tiene columna user_id, así que su borrado se ata por
+    subquery a `alerts` (y antes de borrar la alerta, si no el subquery ya no la
+    encontraría). Pasar el id de una alerta ajena no debe borrar nada. El camino
+    es el del endpoint real (`main.alerts_delete`), no un DELETE suelto."""
+    conn = clean
+    # Alerta de B (uid=2) con su estado "ya avisé hoy".
+    aid_b = _mk_alert(conn, user_id=2, symbol="MSFT")
+    conn.execute("INSERT INTO alert_symbol_state (alert_id, symbol, armed, last_fired_date) "
+                 "VALUES (?,?,0,?)", (aid_b, "MSFT", "2026-10-21"))
+    # Alerta de A (uid=1) con su propio estado.
+    aid_a = _mk_alert(conn, user_id=1, symbol="AAPL")
+    conn.execute("INSERT INTO alert_symbol_state (alert_id, symbol, armed, last_fired_date) "
+                 "VALUES (?,?,0,?)", (aid_a, "AAPL", "2026-10-21"))
+    conn.commit()
+
+    # A (uid=1) intenta borrar la alerta de B pasando su id.
+    main.alerts_delete(alert_id=aid_b, uid=1)
+
+    # La alerta de B y su estado siguen intactos: el ataque no tocó nada ajeno.
+    assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_b,)).fetchone() is not None
+    fila_b = conn.execute(
+        "SELECT last_fired_date FROM alert_symbol_state WHERE alert_id=?", (aid_b,)).fetchone()
+    assert fila_b is not None and fila_b[0] == "2026-10-21"
+
+    # Y A sí puede borrar LO SUYO: se va la alerta y su estado (no rompimos el borrado normal).
+    main.alerts_delete(alert_id=aid_a, uid=1)
+    assert conn.execute("SELECT 1 FROM alerts WHERE id=?", (aid_a,)).fetchone() is None
+    assert conn.execute(
+        "SELECT 1 FROM alert_symbol_state WHERE alert_id=?", (aid_a,)).fetchone() is None

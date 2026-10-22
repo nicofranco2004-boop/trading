@@ -5,7 +5,9 @@
 // con un ✦ pequeño en la esquina superior derecha que aparece al hover.
 //
 // UX:
-//   - Desktop: ✦ aparece con fade al hover, top-right del wrapper
+//   - Desktop: ✦ aparece con fade al hover, arriba a la derecha del wrapper —
+//     o en el primer hueco libre a la izquierda si esa esquina tiene una
+//     etiqueta o un botón (lugarDelBoton.js). Nunca tapa contenido.
 //   - Mobile: ✦ siempre visible pero chico (cuando isMobile)
 //   - Double-click sobre el wrapper → atajo de power user (también abre)
 //   - Tooltip "Preguntar a la IA sobre esto" en hover del botón
@@ -22,13 +24,14 @@
 //     <ComponentePropio />
 //   </AskAIAbout>
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { Sparkles } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { track } from '../../utils/track'
 import { useVoz } from '../../contexts/VozContext'
 import { isAIDiscovered, markAIDiscovered } from './AIDiscoveryBanner'
 import { usePreciosPendientes, TEXTO_PRECIOS_PENDIENTES } from './preciosPendientes'
+import { lugarDelBoton } from './lugarDelBoton'
 
 export default function AskAIAbout({
   topic,
@@ -51,6 +54,36 @@ export default function AskAIAbout({
   const isMobile = useIsMobile()
   // Sin las cotizaciones de hoy, la IA leería la cartera al costo (ver preciosPendientes).
   const pendientes = usePreciosPendientes()
+
+  // Dónde va el ✦: la esquina de arriba a la derecha si está libre; si ahí hay
+  // una etiqueta o un botón, el primer hueco a su izquierda (ver lugarDelBoton).
+  // Se recalcula cuando la tarjeta cambia de tamaño (llegan los datos, gira el celular).
+  const tarjetaRef = useRef(null)
+  const botonRef = useRef(null)
+  const [lugar, setLugar] = useState(null)
+  // En el celular, si la pastilla «✦ Analizar» no entra, queda el ✦ solo.
+  const compacto = !!lugar?.compacto
+  const anchoLleno = useRef(0)
+  useLayoutEffect(() => {
+    const tarjeta = tarjetaRef.current, boton = botonRef.current
+    if (!tarjeta || !boton) return
+    let cuadro = 0
+    const ubicar = () => {
+      cancelAnimationFrame(cuadro)
+      cuadro = requestAnimationFrame(() => {
+        // El ancho de la pastilla entera se anota mientras se ve entera: una vez
+        // achicada, medirla daría el ancho chico.
+        if (boton.dataset.compacto !== '1') anchoLleno.current = boton.offsetWidth
+        const l = lugarDelBoton(tarjeta, boton, anchoLleno.current)
+        setLugar(prev => (l && prev && prev.top === l.top && prev.right === l.right && !!prev.compacto === !!l.compacto ? prev : l))
+      })
+    }
+    ubicar()
+    if (typeof ResizeObserver === 'undefined') return () => cancelAnimationFrame(cuadro)
+    const ro = new ResizeObserver(ubicar)
+    ro.observe(tarjeta)
+    return () => { ro.disconnect(); cancelAnimationFrame(cuadro) }
+  }, [isMobile])
 
   // Refresh discovered flag al montar — sigue al banner si el user lo cierra
   useEffect(() => {
@@ -86,6 +119,7 @@ export default function AskAIAbout({
 
   return (
     <div
+      ref={tarjetaRef}
       className={`relative ${className}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -94,12 +128,16 @@ export default function AskAIAbout({
       {/* Children — el componente real (chart, tabla, etc.) */}
       {children}
 
-      {/* Botón flotante — top-right del wrapper.
+      {/* Botón flotante — arriba a la derecha del wrapper, corrido al primer
+          hueco libre si ahí hay algo (el `style` pisa al top-2/right-2).
           Desktop: solo ícono que aparece al hover (UX minimalista).
           Mobile:  pill "✦ Analizar" siempre visible, más prominente —
                    no hay hover, hay que dar señal visual clara. */}
       <button
+        ref={botonRef}
         type="button"
+        style={lugar ? { top: lugar.top, right: lugar.right } : undefined}
+        data-compacto={compacto ? '1' : undefined}
         onClick={(e) => {
           e.stopPropagation()
           preguntarle('hover_button')
@@ -118,7 +156,7 @@ export default function AskAIAbout({
           'transition-all duration-150',
           isMobile
             // Mobile: pill con icono + label, mayor área tappable
-            ? 'h-8 px-2.5 gap-1 rounded-sm border-data-violet/45 shadow-sm shadow-data-violet/10 active:bg-data-violet/15 text-[11px] font-medium'
+            ? `h-8 ${compacto ? 'w-8' : 'px-2.5 gap-1'} rounded-sm border-data-violet/45 shadow-sm shadow-data-violet/10 active:bg-data-violet/15 text-[11px] font-medium`
             // Desktop: solo icono, hover-reveal (o always-on en pre-discovery)
             : [
               rounded ? 'w-7 h-7 rounded-sm' : 'w-6 h-6 rounded-sm',
@@ -131,7 +169,7 @@ export default function AskAIAbout({
         ].join(' ')}
       >
         <Sparkles size={isMobile ? 12 : 13} strokeWidth={1.75} />
-        {isMobile && <span>Analizar</span>}
+        {isMobile && !compacto && <span>Analizar</span>}
       </button>
 
       {/* Pulse animation para pre-discovery */}

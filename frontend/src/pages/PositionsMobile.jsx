@@ -17,7 +17,9 @@
 import { useEffect, useMemo, useState, useRef, useCallback, lazy, Suspense, memo, createContext, useContext } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ArrowDownUp, Search, Repeat, Star, Check, Briefcase, Plus, Pencil, Trash2, X, TrendingDown, TrendingUp, Download, Wallet, ChevronDown, ArrowRight, MoreVertical } from 'lucide-react'
-import { groupBrokersIntoAccounts, brokerLegLabel } from '../utils/brokerAccounts'
+import { groupBrokersIntoAccounts } from '../utils/brokerAccounts'
+import { brokersParaElegir, formularioDeCaja, cuentaDe } from '../utils/pataDeLaMoneda'
+import { opcionesDeVenta, etiquetaDeVenta } from '../utils/opcionesDeVenta'
 import { useVoz } from '../contexts/VozContext'
 import AssetLogo from '../components/AssetLogo'
 import FlashValue from '../components/FlashValue'
@@ -29,7 +31,7 @@ import UpgradeModal from '../components/plan/UpgradeModal'
 // ETFs/INDICES/AR_LIDER/AR_GENERAL/BONDS_*). Lazy-load para que el primer
 // render de /cartera no espere a parsearlo — solo cuando el user abre el flow.
 const AddPositionFlow = lazy(() => import('../components/AddPositionFlow'))
-import { PositionFormModal, SellModal, ConvertModal, EditGroupModal, EMPTY_POS, today } from './Positions'
+import { PositionFormModal, SellModal, ConvertModal, EditGroupModal, EMPTY_POS, today, formDesdeElFlujo, formDeCompraDeFila, compraDeFilaSinMoneda } from './Positions'
 import CashFlowModal from '../components/cash/CashFlowModal'
 import CashMenuModal from '../components/cash/CashMenuModal'
 import ConvertMenuModal from '../components/cash/ConvertMenuModal'
@@ -40,6 +42,7 @@ import PlazosFijosGroup from '../components/PlazosFijosGroup'
 import PosicionesArchivadas from '../components/PosicionesArchivadas'
 import { lineaDelBono } from '../utils/lineaDelBono'
 import { filaSinUnaPata } from '../utils/filaFusionada'
+import { pctEnVista } from '../utils/pctDeLaFila'
 import PfFormModal from '../components/PfFormModal'
 import SplitRatioBanner from '../components/SplitRatioBanner'
 import CuponesPorCobrar from '../components/CuponesPorCobrar'
@@ -51,9 +54,10 @@ import { useToast } from '../components/Toast'
 import { api } from '../utils/api'
 import { fmtUsd, ars, pctSigned, pctVar, colorClass, LOCALE, parseNum, parseNumOrNull, numACampo } from '../utils/format'
 import { cuerpoDeVenta, cuerpoDeConversion } from '../utils/formulariosCartera'
-import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
+import { priceSymbol, fciLabel, isArUsdBroker, costInPesos, costInUsd, cryptoCostInUsd, cryptoUsdLotValue, pesoLotUsd, usdLotValue, isFciSym, trustMktValue, buildPriceSymbols, costBasisRate, cashAssetLabel, setBrokersRegistry, avgCostUsdPerUnit, avgCostArsPerUnit, sellPriceSuggestion, sellCurrency } from '../utils/valuation'
+import { linkDeAlerta } from '../components/alerts/alertaDePosicion'
 import { isBondPosition } from '../utils/tickers'
-import TcMissingBadge from '../components/TcMissingBadge'
+import { EtiquetaMoneda } from '../components/EtiquetaFila'
 import { isCrypto, cryptoBrokerFactor } from '../utils/crypto'
 import { useCurrency, pickFinancialRate } from '../contexts/CurrencyContext'
 import { track } from '../utils/track'
@@ -269,6 +273,8 @@ export default function PositionsMobile() {
   //              'sell'       → modal de venta con FIFO preview
   //              'cashflow'   → depositar / retirar (solo cash positions)
   const [addModal, setAddModal] = useState(null)
+  // Lo que el buscador del alta abre ya escrito (ver compraDeFilaSinMoneda).
+  const [flowQuery, setFlowQuery] = useState('')
   const [pfFormOpen, setPfFormOpen] = useState(false)
   const [pfReloadKey, setPfReloadKey] = useState(0)
   const [pfTotals, setPfTotals] = useState({})
@@ -342,34 +348,20 @@ export default function PositionsMobile() {
 
   function openSellFlow(source) {
     track('position_sell_started', { source: source || 'unknown' })
-    const sellable = positions.filter(p => !p.is_cash)
-    if (sellable.length === 0) {
+    // Una opción por (cuenta, activo, MONEDA) — opcionesDeVenta, la misma lista
+    // que escritorio: "NFLX · Cocos · en pesos" / "en dólares", no una por
+    // sub-broker. Es la unidad sobre la que corre el FIFO del servidor.
+    const opciones = opcionesDeVenta(positions, brokers)
+    if (opciones.length === 0) {
       toast.push('No tenés posiciones para vender. Agregá una primero.', { type: 'info' })
       return
     }
-    if (sellable.length === 1) {
-      openSell(sellable[0])
+    if (opciones.length === 1) {
+      abrirVenta(opciones[0], opciones[0].lots[0])
       return
     }
-    // Antes esto sólo mostraba un aviso ("tocá la posición en la lista") y el
-    // selector nunca existió en mobile, mientras desktop sí lo tenía. Se agrupa
-    // por (activo, broker): así un activo comprado en las dos monedas de la
-    // cuenta aparece como DOS opciones, que es la unidad sobre la que corre el
-    // FIFO y la que el usuario tiene que poder elegir.
-    const porPata = new Map()
-    for (const p of sellable) {
-      const k = `${p.asset}\u0000${p.broker}`
-      if (!porPata.has(k)) porPata.set(k, [])
-      porPata.get(k).push(p)
-    }
     setSellQuery('')
-    setSellPicker([...porPata.values()].map(lots => ({
-      asset: lots[0].asset,
-      broker: lots[0].broker,
-      lots,
-      qty: lots.reduce((t, l) => t + (l.quantity || 0), 0),
-      valueUsd: lots.reduce((t, l) => t + (l.valueUsd || 0), 0),
-    })).sort((a, b) => b.valueUsd - a.valueUsd))
+    setSellPicker(opciones.sort((a, b) => b.valueUsd - a.valueUsd))
   }
 
   // ─── Handlers de acciones por posición ──────────────────────────────────
@@ -378,21 +370,25 @@ export default function PositionsMobile() {
 
   function openSell(p) {
     if (p.is_cash) return
-    // Fila que fusiona las dos patas de la cuenta: no hay UN broker al que
-    // mandar la escritura, y elegir el primer lote la metería en el ledger FIFO
-    // equivocado. Se abren los lotes — cada uno es su posición real, con su
-    // broker y su precio de compra.
-    if (filaSinUnaPata(p)) {
-      onToggleTickerRef(p)
-      toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí de cuál abajo.', { type: 'info' })
+    // Fila que junta compras en pesos y en dólares: se pregunta cuál se vende
+    // (la misma lista del botón Vender). Si es una sola moneda —aunque viva en
+    // Cocos y en Cocos · USD— va directo: el servidor busca en toda la cuenta.
+    const opciones = opcionesDeVenta(p._lots || [p], brokers)
+    if (opciones.length > 1) {
+      setSellQuery('')
+      setSellPicker(opciones)
       return
     }
-    const broker = brokers.find(b => b.name === p.broker)
-    // La moneda de la venta la decide el LOTE antes que el broker — `sellCurrency`,
-    // la misma que usa desktop. Antes acá se miraba sólo `broker.currency`, así que
-    // un lote en pesos alojado en una cuenta en dólares se registraba en una moneda
-    // distinta según el aparato desde el que se vendiera.
-    const sellCcy = sellCurrency(p, broker)
+    if (!opciones.length) return
+    abrirVenta(opciones[0], filaSinUnaPata(p) ? opciones[0].lots[0] : p)
+  }
+
+  // `o`: la opción de venta (cuenta, activo, moneda). `p`: una fila o lote de
+  // ella, sólo para sugerir el precio de hoy.
+  function abrirVenta(o, p) {
+    // La moneda de la venta la decide el LOTE antes que el broker (opcionesDeVenta
+    // usa `sellCurrency`, la misma regla que el servidor y que escritorio).
+    const sellCcy = o.moneda
     const isARS = sellCcy === 'ARS'
     // El precio sugerido lo calcula `sellPriceSuggestion`, que vive al lado de la
     // valuación: usa LA MISMA key que `buildPriceSymbols` pide y que la valuación
@@ -411,8 +407,9 @@ export default function PositionsMobile() {
     // absurdo devuelve undefined y acá caemos al costo.
     const suggested = price ?? p.buy_price ?? ''
     setSellForm({
-      broker: p.broker,
-      asset: p.asset,
+      // La pata de esa moneda: ahí entra lo cobrado.
+      broker: o.broker,
+      asset: o.asset,
       currency: sellCcy,
       quantity: '',
       // Con coma (numACampo): un "12.345" crudo se leía doce mil al corregirlo.
@@ -442,20 +439,14 @@ export default function PositionsMobile() {
   }
 
   function openCashFlow(p, direction) {
-    const broker = brokers.find(b => b.name === p.broker)
-    setCashFlowForm({
-      broker: p.broker,
-      currency: broker?.currency || 'USDT',
-      direction,
-      amount: '',
-      // El saldo es `invested`, que es la columna que el backend descuenta y
-      // sobre la que valida el sobregiro. El `|| p.quantity` que había acá no
-      // existe en escritorio y no describe ningún dato real: el efectivo nace
-      // sin `quantity` (los INSERT de posiciones cash no la escriben), así que
-      // sólo podía dejar pasar un retiro que el servidor iba a rechazar.
-      available: p.invested || 0,
-      date: today(),
-    })
+    // El saldo es `invested` de la caja (formularioDeCaja lo lee de la fila de
+    // efectivo de ESA pata), que es la columna que el backend descuenta y sobre
+    // la que valida el sobregiro. Mismo armado que escritorio.
+    setCashFlowForm(formularioDeCaja({
+      brokers, positions, brokerName: p.broker,
+      moneda: cuentaDe(p.broker, brokers) !== p.broker ? 'USD' : 'ARS',
+      direction, date: today(),
+    }))
     setAddModal('cashflow')
   }
 
@@ -468,25 +459,20 @@ export default function PositionsMobile() {
       toast.push('Primero agregá un broker.', { type: 'info' })
       return
     }
-    setCashMenuForm({ broker: brokers[0].name, direction })
+    setCashMenuForm({ broker: brokersParaElegir(brokers)[0]?.name || brokers[0].name, direction, moneda: 'ARS' })
     setAddModal('cash-menu')
   }
 
   function continueCashMenu() {
     const brokerName = cashMenuForm.broker
-    const broker = brokers.find(b => b.name === brokerName)
-    if (!broker) return
-    // El saldo disponible (tope del retiro) sale de la posición cash real del
-    // broker; si todavía no tiene una, arranca en 0 y sólo se puede depositar.
-    const cashPos = positions.find(p => p.broker === brokerName && p.is_cash)
-    setCashFlowForm({
-      broker: brokerName,
-      currency: broker.currency || 'USDT',
-      direction: cashMenuForm.direction,
-      amount: '',
-      available: cashPos?.invested || 0,
-      date: today(),
-    })
+    if (!brokers.some(b => b.name === brokerName)) return
+    // El saldo disponible (tope del retiro) sale de la caja real de la cuenta en
+    // la moneda elegida; si todavía no existe, arranca en 0 y sólo se puede
+    // depositar.
+    setCashFlowForm(formularioDeCaja({
+      brokers, positions, brokerName, moneda: cashMenuForm.moneda,
+      direction: cashMenuForm.direction, date: today(),
+    }))
     setAddModal('cashflow')
   }
 
@@ -507,6 +493,8 @@ export default function PositionsMobile() {
         // corría el capital aportado, que es el denominador del rendimiento.
         // Escritorio la manda desde siempre.
         date: cashFlowForm.date,
+        // Dólares "en Cocos" → la caja de 'Cocos · USD' (la crea si no existe).
+        currency: cashFlowForm.moneda || null,
         // `tc_blue` es el fallback para dolarizar un flujo en pesos cuando no
         // hay cotización guardada de esa fecha. El backend resuelve primero por
         // la fecha (`_manual_flow_rate`).
@@ -606,38 +594,25 @@ export default function PositionsMobile() {
   // flow normal: no tiene sentido "comprar más" de una posición de caja.
   function openBuyForPosition(p) {
     if (!p || p.is_cash) return openNewPositionFlow('mobile_row_menu')
-    if (p._multiBroker || (p && p.broker == null)) {
-      onToggleTickerRef(p)
-      toast.push('Esta fila junta tus compras en pesos y en dólares. Elegí a cuál agregarla abajo.', { type: 'info' })
+    // El mismo armado que escritorio: con la fila que junta pesos y dólares se
+    // abre el buscador con el ticker escrito, para elegir cuál se compró.
+    setAddForm(formDeCompraDeFila(p, brokers))
+    if (compraDeFilaSinMoneda(p, brokers)) {
+      setFlowQuery(p.asset)
+      setAddModal('add-flow')
       return
     }
-    setAddForm({
-      ...EMPTY_POS,
-      broker: p.broker,
-      asset: p.asset,
-      asset_type: p.asset_type || '',
-      currency: p.currency || '',
-      entry_date: today(),
-    })
     setAddModal('add')
   }
 
   // ─── "Crear alerta" ─────────────────────────────────────────────────────
-  // Abre /alertas con el ticker precargado en SU riel (.BA/ARS para CEDEARs y
-  // brokers AR·USD, pelado/USD para el resto) — espejo de la valuación.
+  // El ticker en su riel y, si es un CEDEAR comprado en dólares, en dólares:
+  // ver components/alerts/alertaDePosicion (el mismo que la compu).
   function openAlertForPosition(p) {
     if (!p || p.is_cash) return
-    // Cripto SIEMPRE por su ticker pelado en USD (BTC→BTC-USD); nunca .BA,
-    // que no cotiza y dejaría la alerta muerta.
-    if (isCrypto(p.asset)) {
-      navigate(`/alertas?new=${encodeURIComponent(p.asset)}&ccy=USD`)
-      return
-    }
-    const arsRail = costInPesos(p) || p.asset_type === 'CEDEAR' || isArUsdBroker(p.broker)
-    const sym = priceSymbol(p.asset, arsRail, p.asset_type)
-    const ccy = arsRail ? 'ARS' : 'USD'
-    navigate(`/alertas?new=${encodeURIComponent(sym)}&ccy=${ccy}`)
+    navigate(linkDeAlerta(p))
   }
+
 
   // ─── "Editar posición" de una fila AGREGADA ─────────────────────────────
   // El agregado es sintético: su `id` es la string 'agg:<broker>:<ticker>', así
@@ -1190,6 +1165,9 @@ export default function PositionsMobile() {
         // rutearlo no cambia nada; con costo en pesos, en cambio, tomar
         // `buy_price` crudo lo inflaría ~1500×.
         avgPriceUsd: avgPriceUsdDe(p, isAR, tcValuacion, tcCedear, costBasis, criptoProm),
+        // Y en pesos, los pesos que se pagaron — no el promedio en USD × el dólar
+        // de hoy (ver avgCostArsPerUnit). null fuera de un broker ARS: se deriva.
+        avgPriceArs: isAR ? avgCostArsPerUnit(p) : null,
       }
     })
   }, [positions, prices, prevClose, arsBrokerSet, exchangeBrokerSet, tcValuacion, tcCedear, tcCripto, costBasis])
@@ -1220,7 +1198,7 @@ export default function PositionsMobile() {
     if (a.is_cash && !b.is_cash) return 1
     if (!a.is_cash && b.is_cash) return -1
     switch (sortBy) {
-      case 'pnl':   return (b.pnlPct || 0) - (a.pnlPct || 0)
+      case 'pnl':   return (pctEnVista(b, currency) || 0) - (pctEnVista(a, currency) || 0)
       case 'alpha': return (a.asset || '').localeCompare(b.asset || '')
       case 'value':
       default:      return (b.valueUsd || 0) - (a.valueUsd || 0)
@@ -1320,6 +1298,7 @@ export default function PositionsMobile() {
         // `...lots[0]` de arriba traía el del primer lote, que es el precio de
         // una sola compra y no el promedio del ticker.
         avgPriceUsd: avgPriceUsdDe({ ...lots[0], quantity: totalQty, _lots: lots }, isAR, tcValuacion, tcCedear, costBasis, criptoProm),
+        avgPriceArs: isAR ? avgCostArsPerUnit({ ...lots[0], quantity: totalQty, _lots: lots }) : null,
       })
     }
     return [...out, ...cash]
@@ -1418,7 +1397,7 @@ export default function PositionsMobile() {
     }
     groups.sort((a, b) => b.totalUsd - a.totalUsd)
     return groups
-  }, [filteredByBroker, enriched, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas])
+  }, [filteredByBroker, enriched, brokerFilter, brokers, sortBy, expandedTickers, showAllLots, tcValuacion, cuentasSeparadas, currency])
 
   // Lista plana cuando hay filtro de broker activo
   const flatList = useMemo(() => {
@@ -1428,7 +1407,7 @@ export default function PositionsMobile() {
     const agg = aggregateMobile([...filteredByBroker], junta)
     agg.sort(comparePositions)
     return flattenMobile(agg)
-  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas])
+  }, [filteredByBroker, brokerFilter, sortBy, expandedTickers, showAllLots, tcValuacion, brokers, cuentasSeparadas, currency])
 
   // ¿Hay algo que desglosar en lo que se ve? Sale de los MISMOS grupos que se
   // dibujan (`grouped` / `flatList`), no de una regla aparte — misma decisión
@@ -1971,10 +1950,11 @@ export default function PositionsMobile() {
           AddPositionFlow se lazy-loadea para no bloquear el primer render
           de /cartera con ~600 tickers parseados. Mientras carga el chunk,
           mostramos un placeholder neutro (no flicker). */}
-      {/* "¿Qué querés vender?" del botón + . Espeja el selector de desktop, con
-          una entrada por (activo, pata): un activo comprado en las dos monedas
-          de la cuenta aparece dos veces, porque el FIFO consume los lotes de una
-          pata sola y hay que poder elegir cuál. */}
+      {/* "¿Qué querés vender?" del botón + . La misma lista que escritorio
+          (opcionesDeVenta): una entrada por (cuenta, activo, moneda). Un activo
+          comprado en pesos y en dólares aparece dos veces porque el FIFO del
+          servidor corre por moneda; las varias compras de la misma moneda van
+          en una sola entrada. */}
       {sellPicker && (
         <BottomSheet open onClose={() => { setSellPicker(null); setSellQuery('') }} title="¿Qué querés vender?">
           <div className="px-4 pb-4">
@@ -1999,47 +1979,40 @@ export default function PositionsMobile() {
           <div className="px-4 pb-4 space-y-1 max-h-[55vh] overflow-y-auto">
             {sellPicker
               // Por ticker, por nombre mostrado (los FCI se conocen por el largo)
-              // y por broker, que es lo que separa las dos patas del mismo activo.
-              .filter(({ asset, broker }) => {
+              // y por cuenta y moneda ("cocos dólares").
+              .filter(o => {
                 const q = sellQuery.trim().toLowerCase()
-                return !q || `${asset} ${fciLabel(asset)} ${broker}`.toLowerCase().includes(q)
+                return !q || `${o.asset} ${fciLabel(o.asset)} ${etiquetaDeVenta(o)}`.toLowerCase().includes(q)
               })
-              .map(({ asset, broker, lots, qty }) => {
-              const b = brokers.find(x => x.name === broker)
-              const esArs = (b?.currency || '').toUpperCase() === 'ARS'
+              .map(o => {
+              const esArs = o.moneda === 'ARS'
               return (
                 <button
-                  key={`${asset}:${broker}`}
+                  key={o.key}
                   type="button"
                   onClick={() => {
                     setSellPicker(null)
-                    setTimeout(() => openSell(lots.length === 1 ? lots[0] : {
-                      ...lots[0],
-                      quantity: qty,
-                      _lots: lots,
-                    }), 0)
+                    setTimeout(() => abrirVenta(o, o.lots[0]), 0)
                   }}
                   className="w-full flex items-center gap-3 px-3 py-3 rounded text-left active:bg-bg-2 transition-colors"
                 >
-                  <AssetLogo asset={asset} size={26} />
+                  <AssetLogo asset={o.asset} size={26} />
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-[15px] font-medium text-ink-0 truncate">{fciLabel(asset)}</span>
-                      <span className={`text-[9px] leading-none font-semibold px-1 py-[2px] rounded-sm flex-none ${esArs ? 'bg-rendi-warn/15 text-rendi-warn' : 'bg-data-cyan/15 text-data-cyan'}`}>
-                        {esArs ? 'ARS' : 'USD'}
-                      </span>
+                      <span className="text-[15px] font-medium text-ink-0 truncate">{fciLabel(o.asset)}</span>
+                      <EtiquetaMoneda corta className="text-[10px]" moneda={esArs ? 'ARS' : 'USD'} />
                     </span>
-                    <span className="block text-[12.5px] text-ink-3 truncate">
-                      {brokerLegLabel(broker, brokers)} · {qty} unidades
-                      {lots.length > 1 ? ` · ${lots.length} lotes` : ''}
+                    <span className="block text-[12.5px] text-ink-3 truncate tabular">
+                      {etiquetaDeVenta(o)} · {o.qty.toLocaleString('es-AR', { maximumFractionDigits: 6 })} unidades
+                      {o.lots.length > 1 ? ` · ${o.lots.length} compras` : ''}
                     </span>
                   </span>
                   <ArrowRight size={16} strokeWidth={1.75} className="text-ink-3 flex-none" />
                 </button>
               )
             })}
-            {sellQuery.trim() && !sellPicker.some(({ asset, broker }) =>
-              `${asset} ${fciLabel(asset)} ${broker}`.toLowerCase().includes(sellQuery.trim().toLowerCase())) && (
+            {sellQuery.trim() && !sellPicker.some(o =>
+              `${o.asset} ${fciLabel(o.asset)} ${etiquetaDeVenta(o)}`.toLowerCase().includes(sellQuery.trim().toLowerCase())) && (
               <p className="text-[13px] text-ink-3 py-8 text-center">
                 Ningún activo coincide con «{sellQuery.trim()}».
               </p>
@@ -2055,15 +2028,17 @@ export default function PositionsMobile() {
           </div>
         }>
           <AddPositionFlow
-            onClose={() => setAddModal(null)}
+            onClose={() => { setFlowQuery(''); setAddModal(null) }}
             brokers={brokers}
             initialBroker={addForm.broker || null}
+            initialQuery={flowQuery}
             onPlazoFijo={() => { setAddModal(null); setPfFormOpen(true) }}
             // MAN-01: sin brokers, en vez de un dead-end ("creá desde Config")
             // ofrecemos crear el primero acá mismo (cierra el flow + abre el alta).
             onCreateBroker={() => { setAddModal(null); setShowAddBroker(true) }}
-            onAssetSelected={({ asset, broker }) => {
-              setAddForm(f => ({ ...f, asset, broker: broker || f.broker }))
+            onAssetSelected={sel => {
+              setFlowQuery('')
+              setAddForm(f => formDesdeElFlujo(f, sel))
               setAddModal('add')
             }}
           />
@@ -2113,6 +2088,7 @@ export default function PositionsMobile() {
           form={sellForm}
           setForm={setSellForm}
           positions={positions}
+          brokers={brokers}
           tcValuacion={tcValuacion}
           // Faltaba: el mismo modal en desktop (Positions.jsx:2942) sí la pasa.
           // Sin `fxHist`, el TC por fecha degradaba al MEP de hoy y una venta
@@ -2154,6 +2130,7 @@ export default function PositionsMobile() {
         <EditGroupModal
           group={groupTarget}
           ctx={groupCtx}
+          brokers={brokers}
           onClose={() => { setAddModal(null); setGroupTarget(null) }}
           onSave={saveGroup}
         />
@@ -2829,8 +2806,11 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   // (Positions.jsx:979: `const basePnl = isARS ? c.pnlArs : c.pnl`). Antes iba
   // en la moneda del BROKER (`pnlLocal`), así que con el toggle en pesos un
   // broker USD seguía mostrando dólares.
-  // El PORCENTAJE no se toca: sigue siendo `p.pnlPct`, el retorno NOMINAL EN
-  // PESOS para posiciones ARS, igual que el desktop. Es decisión del dueño.
+  // El PORCENTAJE sale de la MISMA moneda que el monto (ver pctEnVista), igual
+  // que el desktop desde 932bebfc. Hasta el 21/10 acá se dejaba el % nominal en
+  // pesos también con la vista en dólares, y el comentario decía que así lo
+  // hacía el desktop — no era cierto: GGAL salía "−$133 · +13,4 %" en el
+  // celular y "−USD 132,56 · −16,4 %" en la compu, la misma posición.
   // En la fila que fusiona las dos monedas, `aggregateMobile` fuerza isAR=false y
   // manda el PORCENTAJE a la base display (pnlUsd/investedUsd, ruteada por
   // tc_compra). Si el MONTO siguiera saliendo de `pnlUsdToday` (base HOY), en la
@@ -2839,6 +2819,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   const pnlDisplay = displayCurrency === 'ARS'
     ? ((p._multiCcy ? p.pnlUsd : p.pnlUsdToday) * tcValuacion)
     : p.pnlUsd
+  const pnlPctDisplay = pctEnVista(p, displayCurrency)
   const [accionesAbiertas, setAccionesAbiertas] = useState(false)
   // Selector de pata para la fila que junta las dos monedas de la cuenta:
   // 'sell' | 'edit' | null. Desktop abre un modal con lo mismo.
@@ -2863,7 +2844,12 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
       if (!m.has(k)) m.set(k, [])
       m.get(k).push(l)
     }
-    return [...m.values()].map(lots => ({ broker: lots[0].broker, lots }))
+    // La moneda viaja con la pata: rotular por `lots[0].isAR` (la moneda del
+    // BROKER) decía "En dólares" sobre un lote en pesos alojado en la pata USD.
+    return [...m.values()].map(lots => ({
+      broker: lots[0].broker, lots,
+      moneda: sellCurrency(lots[0], brokerDe?.(lots[0].broker)),
+    }))
   })()
 
   // Los ítems del menú los decide `buildPositionActions`, el mismo que usa la
@@ -2891,10 +2877,11 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
     }),
     onSell: onSell && (pos => {
       track('mobile_row_action', { code: 'sell', asset: p.asset })
-      // La fila fusionada no tiene UN broker al que mandar la venta: primero se
-      // elige la pata (el FIFO consume los lotes de ésa).
-      if (pos._multiBroker) setPataPara('sell')
-      else onSell(pos)
+      // Directo a `onSell`: la venta ya pregunta pesos o dólares cuando la fila
+      // junta las dos (opcionesDeVenta), y si es UNA moneda en dos patas va
+      // directo — el servidor busca los lotes en toda la cuenta. El selector de
+      // patas de abajo queda sólo para EDITAR.
+      onSell(pos)
     }),
     onAlert,
     onEdit: onEditPos && (pos => {
@@ -2975,8 +2962,11 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
   const valorDisp = displayCurrency === 'ARS' ? p.valueUsd * tcValuacion : p.valueUsd
   const dayDisp = p.dayVarUsd == null ? null
     : displayCurrency === 'ARS' ? p.dayVarUsd * tcValuacion : p.dayVarUsd
-  const avgDisp = p.avgPriceUsd == null ? null
-    : displayCurrency === 'ARS' ? p.avgPriceUsd * tcValuacion : p.avgPriceUsd
+  // En pesos, el promedio en pesos que se pagó; sólo si no lo hay (costo en
+  // dólares, otra moneda) se deriva del de USD. Mismo criterio que el desktop.
+  const avgDisp = displayCurrency === 'ARS'
+    ? (p.avgPriceArs ?? (p.avgPriceUsd != null ? p.avgPriceUsd * tcValuacion : null))
+    : p.avgPriceUsd
 
   // La línea de contexto del ancla. Para un LOTE va la fecha de compra, que es
   // lo único que lo distingue de sus hermanos. Se corta la fecha a mano en vez
@@ -3036,23 +3026,13 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
                 guarda como 'USDT' (centinela interno) pero son dólares reales. */}
             <span className="inline-flex items-center gap-1 min-w-0">
               <span className="truncate">{p.is_cash ? cashAssetLabel(p) : fciLabel(p.asset)}</span>
-              {/* Las dos monedas, como chips de color: entran donde el texto
-                  "ARS + USD · N lotes" se cortaba, y el color las hace legibles
-                  de un vistazo sin leer. */}
+              {/* La moneda, en la pastilla corta ("$", "US$", "$ y US$") de
+                  EtiquetaFila: el ancla mide 118px y tiene `truncate`, así que
+                  va UNA sola etiqueta — dos dejaban la segunda cortada fuera de
+                  la vista y la fila se leía como de una sola moneda. */}
               {enCuentaUnificada && !p.is_cash && !p._isLot && (
-                p._multiBroker ? (
-                  // UN chip, no dos: el ancla mide 118px y tiene `truncate`, así
-                  // que el segundo quedaba cortado fuera de la vista y la fila
-                  // se leía como si tuviera una sola moneda — justo lo contrario
-                  // de lo que el chip viene a decir.
-                  <span className="text-[8.5px] leading-none font-semibold px-1 py-[2px] rounded-sm flex-none whitespace-nowrap bg-data-violet/15 text-data-violet">
-                    ARS+USD
-                  </span>
-                ) : (
-                  <span className={`text-[8.5px] leading-none font-semibold px-1 py-[2px] rounded-sm flex-none ${p.isAR ? 'bg-rendi-warn/15 text-rendi-warn' : 'bg-data-cyan/15 text-data-cyan'}`}>
-                    {p.isAR ? 'ARS' : 'USD'}
-                  </span>
-                )
+                <EtiquetaMoneda corta className="text-[10px]"
+                  moneda={p._multiBroker ? 'AMBAS' : (p.isAR ? 'ARS' : 'USD')} />
               )}
             </span>
           </div>
@@ -3075,11 +3055,8 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
         <FdhDeLaFila p={p} moneda={displayCurrency} />
       </Celda>
 
-      {/* P&L — el monto y el % se colorean por SEPARADO. No es cosmético: para
-          una posición ARS el % es el retorno NOMINAL EN PESOS y el monto sigue
-          al toggle, así que pueden tener signos distintos (AL30: −$44 en USD,
-          +0,4% en pesos). Pintarlos del mismo color haría pasar uno de los dos
-          por lo que no es. */}
+      {/* P&L — el monto y el % están en la MISMA moneda (pctEnVista), así que
+          tienen el mismo signo. Se siguen coloreando cada uno por su número. */}
       <Celda>
         {p.is_cash ? <Vacio /> : !p.priceTrusted ? (
           /* Sin cotización el valor ES el costo y el P&L es 0 por construcción.
@@ -3091,7 +3068,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
             <div className={`${LINEA_1} ${colorClass(pnlDisplay)}`}>
               {montoCard(pnlDisplay, displayCurrency, { signed: true })}
             </div>
-            <div className={`${LINEA_2} ${colorClass(p.pnlPct)}`}>{pctSigned(p.pnlPct)}</div>
+            <div className={`${LINEA_2} ${colorClass(pnlPctDisplay)}`}>{pctSigned(pnlPctDisplay)}</div>
           </>
         )}
       </Celda>
@@ -3180,35 +3157,23 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
         open
         onClose={() => setPataPara(null)}
         title={fciLabel(p.asset)}
-        eyebrow={pataPara === 'sell' ? '¿De cuál vendés?' : '¿Cuál editás?'}
+        eyebrow="¿Cuál editás?"
       >
         <div className="px-4 pb-4 space-y-1">
           <p className="text-[13px] text-ink-3 leading-relaxed pb-1">
             Tenés este activo comprado en las dos monedas de la cuenta. Cada una
             tiene su propio precio de compra y su tipo de cambio.
           </p>
-          {patasDeLaFila.map(({ broker, lots }) => {
+          {patasDeLaFila.map(({ broker, lots, moneda }) => {
             const qty = lots.reduce((t, l) => t + (l.quantity || 0), 0)
-            const esArs = !!lots[0]?.isAR
+            const esArs = moneda === 'ARS'
             return (
               <button
-                key={broker}
+                key={`${broker}:${moneda}`}
                 type="button"
                 onClick={() => {
                   setPataPara(null)
-                  if (pataPara === 'sell') {
-                    // VENDER siempre abre el formulario, tenga la pata uno o
-                    // varios lotes: el FIFO consume los lotes de esa pata sola,
-                    // así que alcanza con un representante que lleve su broker.
-                    // Antes, con dos o más lotes, esto sólo desplegaba la lista
-                    // y el usuario se quedaba sin poder elegir cuánto ni a qué
-                    // precio — la venta simplemente no ocurría.
-                    onSell?.(lots.length === 1 ? lots[0] : {
-                      ...lots[0],
-                      quantity: lots.reduce((t, l) => t + (l.quantity || 0), 0),
-                      _lots: lots,
-                    })
-                  } else if (lots.length === 1) {
+                  if (lots.length === 1) {
                     onEditPos?.(lots[0])
                   } else {
                     // EDITAR sí se despliega: cada lote tiene su propio precio
@@ -3221,7 +3186,7 @@ const PositionRow = memo(function PositionRow({ p, brokerDe, enCuentaUnificada =
               >
                 <span className="min-w-0">
                   <span className="block text-[15px] font-medium text-ink-0">
-                    {esArs ? 'ARS' : 'USD'}
+                    {esArs ? 'En pesos' : 'En dólares'}
                   </span>
                   <span className="block text-[12.5px] text-ink-3">
                     {qty} unidades · {lots.length} {lots.length === 1 ? 'lote' : 'lotes'}

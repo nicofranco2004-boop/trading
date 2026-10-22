@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel, sellPriceSuggestion, buildPriceSymbols, coberturaDePrecios } from './valuation.js'
+import { computeBrokerValue, computePf, priceSymbol, costInPesos, pesoLotUsd, trustMktValue, costInUsd, usdLotValue, isFciSym, holdingHasReliableFundamentals, costBasisRate, valueEquityLot, lotMissingPurchaseRate, avgCostUsdPerUnit, avgCostArsPerUnit, valuationPriceKey, setBrokersRegistry, isArUsdBroker, valuePositionLot, cashAssetLabel, sellPriceSuggestion, buildPriceSymbols, coberturaDePrecios } from './valuation.js'
 import { cedearEspecieBase } from './tickers.js'
 
 describe('priceSymbol — clases de acción US (BRK B)', () => {
@@ -1458,5 +1458,39 @@ describe('sellPriceSuggestion — prefill del modal de venta', () => {
       const r = sellPriceSuggestion(p, precios, opts(arsSet.has(p.broker)))
       expect(r, `${p.asset} en ${p.broker} no encontró su precio`).not.toBeUndefined()
     }
+  })
+})
+
+// ── avgCostArsPerUnit: "Precio prom." en pesos = los pesos que se pagaron ────────
+describe('avgCostArsPerUnit', () => {
+  it('GGAL del demo: ARS 850.000 por 200 acciones = $4.250 (no USD 4,05 × 1.424 = $5.764)', () => {
+    expect(avgCostArsPerUnit({ asset: 'GGAL', currency: 'ARS', quantity: 200, invested: 850000 })).toBe(4250)
+  })
+
+  it('varias compras: promedio ponderado por cantidad, sin comisiones', () => {
+    const fila = {
+      asset: 'GGAL', quantity: 300, invested: 1250000,
+      _lots: [
+        { asset: 'GGAL', currency: 'ARS', quantity: 200, invested: 850000, commissions: 5000 },
+        { asset: 'GGAL', currency: 'ARS', quantity: 100, invested: 400000, commissions: 2000 },
+      ],
+    }
+    expect(avgCostArsPerUnit(fila)).toBeCloseTo(1250000 / 300, 6)
+  })
+
+  it('un lote con el costo en dólares no tiene precio en pesos: null (se deriva)', () => {
+    expect(avgCostArsPerUnit({ asset: 'AL30', currency: 'USD', quantity: 60, invested: 3300 })).toBe(null)
+    expect(avgCostArsPerUnit({ asset: 'BTC', currency: 'USD', quantity: 0.1, invested: 6000 })).toBe(null)
+    const mixta = { asset: 'AL30', quantity: 120, _lots: [
+      { asset: 'AL30', currency: 'ARS', quantity: 60, invested: 4692000 },
+      { asset: 'AL30', currency: 'USD', quantity: 60, invested: 3300 },
+    ] }
+    expect(avgCostArsPerUnit(mixta)).toBe(null)
+  })
+
+  it('efectivo, sin cantidad o sin costo: null', () => {
+    expect(avgCostArsPerUnit({ is_cash: true, quantity: 1, invested: 180000 })).toBe(null)
+    expect(avgCostArsPerUnit({ asset: 'GGAL', quantity: 0, invested: 1 })).toBe(null)
+    expect(avgCostArsPerUnit({ asset: 'GGAL', quantity: 10, invested: 0 })).toBe(null)
   })
 })

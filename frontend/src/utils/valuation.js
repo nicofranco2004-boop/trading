@@ -744,6 +744,21 @@ export function sellPriceSuggestion(p, prices, { enPesos, cedearRate, tcCripto, 
   // broker (así se carga), así que no se convierte. Mobile no lo respetaba —
   // otra forma de la misma divergencia entre aparatos.
   if (p.price_override != null) return p.price_override
+  // Lote en DÓLARES (no cripto) alojado en un broker EN PESOS — así deja el
+  // importador de Balanz los CEDEARs pagados en dólares, y así quedaron compras
+  // viejas: se lee igual que lo valúa Cartera (`usdLotValue`), el precio .BA ÷
+  // MEP. Con la key de "broker en dólares" se leía el ticker de Nueva York y a un
+  // CEDEAR de US$ 18 se le sugería US$ 230 (auditoría 20/10), y el guard ×50 no
+  // lo frenaba.
+  const _b = _brokersByName.get(p.broker)
+  if (!isArsBroker && _b && (_b.currency || '').toUpperCase() === 'ARS' && costInUsd(p)) {
+    const sym = priceSymbol(p.asset, true, p.asset_type)
+    const raw = (prices || {})[sym]
+    if (raw == null) return undefined
+    const precio = sym.endsWith('.BA') ? (cedearRate > 0 ? raw / cedearRate : undefined) : raw
+    if (precio == null || !Number.isFinite(precio)) return undefined
+    return trustMktValue(precio, p.buy_price, p.asset_type, false) ? precio : undefined
+  }
   const key = valuationPriceKey(p, !!isArsBroker)
   const raw = key ? (prices || {})[key] : undefined
   if (raw == null) return undefined
@@ -1255,6 +1270,37 @@ export function avgCostUsdPerUnit(p, rate, costBasis = 'today', isArsBroker = fa
     const costIsPesos = isArsBroker ? !costInUsd(l) : costInPesos(l)
     cost += costIsPesos ? inv / costBasisRate(l, rate, costBasis) : inv
   }
+  return cost > 0 ? cost / qty : null
+}
+
+/**
+ * avgCostArsPerUnit — costo promedio POR UNIDAD en PESOS, para una posición de un
+ * broker en pesos. Es la columna "Precio prom." de Cartera con la vista en pesos.
+ *
+ * Son los pesos que se pagaron, sin pasar por ningún dólar: el peso no tiene
+ * "dólar de compra", así que el modo 'today' | 'purchase' no lo toca. Por eso NO
+ * se puede derivar de `avgCostUsdPerUnit × dólar de hoy`: en modo 'purchase' ese
+ * promedio en USD está al dólar de CADA compra, y multiplicarlo por el de hoy da
+ * un precio que nadie pagó. Medido en el demo (GGAL, 200 acciones, ARS 850.000):
+ * USD 4,05 × 1.424 = $5.764 en el celular contra los $4.250 reales, mientras la
+ * ganancia de al lado (+$114.000) sí salía de los $4.250.
+ *
+ * SIN comisiones, igual que `avgCostUsdPerUnit`, para que las dos vistas midan lo
+ * mismo.
+ *
+ * Devuelve null cuando algún lote tiene el costo en DÓLARES (bono/ON/FCI-USD,
+ * CEDEAR comprado a MEP, cripto comprada en dólares): ahí no hay un precio en
+ * pesos que se haya pagado y quien llama lo deriva del promedio en USD × dólar.
+ *
+ * @param p  posición o agregado (con `_lots` si es multi-lote) de un broker ARS
+ * @returns number|null
+ */
+export function avgCostArsPerUnit(p) {
+  const qty = p?.quantity || 0
+  if (!p || p.is_cash || qty <= 0) return null
+  const lots = (p._lots && p._lots.length) ? p._lots : [p]
+  if (lots.some(l => costInUsd(l) || cryptoCostInUsd(l))) return null
+  const cost = lots.reduce((s, l) => s + (l?.invested || 0), 0)
   return cost > 0 ? cost / qty : null
 }
 

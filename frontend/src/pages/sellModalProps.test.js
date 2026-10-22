@@ -88,6 +88,13 @@ describe('SellModal — contrato de props', () => {
     const sinTc = renders().filter(r => !/\btcValuacion\s*=/.test(r.props))
     expect(sinTc.map(r => r.archivo)).toEqual([])
   })
+
+  // Sin `brokers` el modal no sabe qué es "la cuenta" (Cocos + Cocos · USD) y
+  // los lotes que muestra no son los que cierra el servidor (opcionesDeVenta).
+  it('TODOS los renderers pasan brokers', () => {
+    const sinBrokers = renders().filter(r => !/\bbrokers\s*=/.test(r.props))
+    expect(sinBrokers.map(r => r.archivo)).toEqual([])
+  })
 })
 
 describe('el extractor no se corta en las arrow functions', () => {

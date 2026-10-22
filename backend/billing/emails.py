@@ -90,6 +90,20 @@ def envio_masivo():
         _modo.masivo = previo
 
 
+@contextmanager
+def con_baja(url: Optional[str]):
+    """Los mails de este hilo, mientras dure el bloque, son PROMOCIONALES: llevan
+    el link para dejar de recibirlos (ver `_send`, `baja_url`). Lo pone
+    `main._envio_masivo` alrededor de cada mail de una campaña del panel, así
+    una campaña nueva lo trae sin que nadie se acuerde de agregarlo."""
+    previo = getattr(_modo, "baja_url", None)
+    _modo.baja_url = url
+    try:
+        yield
+    finally:
+        _modo.baja_url = previo
+
+
 def _esperar_turno() -> None:
     """Deja PAUSA_ENTRE_ENVIOS entre un pedido a Resend y el siguiente, para
     todos los hilos del proceso. Cada mail RESERVA su turno (el siguiente libre)
@@ -350,7 +364,8 @@ def can_deliver(to: str) -> bool:
 def _send(to: str, subject: str, html: str, text: str,
           from_addr: Optional[str] = None,
           reply_to: Optional[str] = None,
-          append_footer: bool = True) -> bool:
+          append_footer: bool = True,
+          baja_url: Optional[str] = None) -> bool:
     """Backend-agnostic send. Retorna True si se envió OK.
 
     from_addr opcional: si no se pasa, usa _from_address() (default).
@@ -365,6 +380,13 @@ def _send(to: str, subject: str, html: str, text: str,
 
     append_footer: por default agregamos el footer con WhatsApp. Para
     feedback interno (que viene al equipo, no al user) lo deshabilitamos.
+
+    baja_url: sólo los mails PROMOCIONALES (las campañas del panel; si no se
+    pasa, se toma el de `con_baja`). Agrega al pie el link "dejar de recibir
+    estos mails" y los encabezados List-Unsubscribe, que Gmail y Yahoo muestran
+    como un botón "Desuscribirse" al lado del remitente. La Ley 25.326 (art. 27)
+    pide que toda comunicación comercial ofrezca la baja. Los transaccionales
+    (código, recibo, alertas que armó la persona) no lo llevan.
 
     Si no hay provider configurado, loguea a console (modo dev) y retorna
     False — el caller asume que el evento no se notificó pero no falla."""
@@ -384,6 +406,9 @@ def _send(to: str, subject: str, html: str, text: str,
             f"¿Dudas? Escribinos por WhatsApp: +54 9 2914 37-3695\n"
             f"({SUPPORT_WHATSAPP_URL})"
         )
+    baja_url = baja_url or getattr(_modo, "baja_url", None)
+    if baja_url:
+        text, html = _con_pie_de_baja(text, html, baja_url)
     if not _is_configured():
         log.info("=== EMAIL (no provider configured, logging only) ===")
         log.info("  FROM:     %s", sender)
@@ -403,6 +428,13 @@ def _send(to: str, subject: str, html: str, text: str,
     }
     if reply_to:
         payload["reply_to"] = reply_to
+    if baja_url:
+        # RFC 8058: con el -Post, el botón del cliente de correo da la baja en
+        # un click sin abrir nada (un POST a la misma dirección).
+        payload["headers"] = {
+            "List-Unsubscribe": f"<{baja_url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        }
     if getattr(_modo, "masivo", False):
         return _pedir_a_resend(payload, to, subject)
     # Mail suelto: lo manda el cartero, en su turno. Se espera la respuesta
@@ -417,6 +449,24 @@ def _send(to: str, subject: str, html: str, text: str,
     _anotar(EN_COLA)
     log.info("Email en cola para %s: %s", to, subject)
     return True
+
+
+def _con_pie_de_baja(text: str, html_body: str, baja_url: str) -> tuple:
+    """(texto, html) con el link para dejar de recibir mails promocionales al
+    final. En el html va antes de `</body>` si el mail viene envuelto
+    (`_wrap_html`), o al final si es de los planos."""
+    text = f"{text}\n\nSi no querés recibir más mails como este: {baja_url}"
+    pie = (
+        '<p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:24px 0 0;">'
+        'Si no querés recibir más mails como este, '
+        f'<a href="{html.escape(baja_url, quote=True)}" style="color:#6b7280;">'
+        'dejá de recibirlos acá</a>.</p>'
+    )
+    if "</body>" in html_body:
+        html_body = html_body.replace("</body>", pie + "</body>", 1)
+    else:
+        html_body = html_body + pie
+    return text, html_body
 
 
 def _pedir_a_resend(payload: dict, to: str, subject: str) -> bool:
@@ -939,18 +989,74 @@ def _from_alerts() -> str:
     return os.environ.get("EMAIL_FROM_ALERTS", _from_noreply())
 
 
+# Los colores del tablero «Cómo llega por mail» (lienzo de Alertas, 19/10/2026).
+# Un aviso es otra cosa que un recibo o una bienvenida: no lleva la franja negra
+# con el logo ni el pie de WhatsApp, lleva lo que pasó y UN botón. Por eso tiene
+# su propio envoltorio en vez de `_wrap_html`.
+_AVISO_VERDE = "#0A8149"
+_AVISO_ROJO = "#C62B38"
+_AVISO_VIOLETA = "#8B7DFF"
+_AVISO_LINK = "#5B4DDB"
+_AVISO_LINEA = "#E5E6EE"
+_AVISO_FUENTE = "Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
+
+
+def _wrap_aviso(body: str, preheader: str = "") -> str:
+    """El envoltorio de los avisos: fondo gris lavanda, una tarjeta blanca con
+    «rendi.» arriba y el contenido. Todo con tablas y estilos en línea, que es
+    lo único que Gmail y Outlook respetan (un `display:flex` lo tiran).
+
+    `preheader` es el renglón gris que Gmail muestra al lado del asunto en la
+    bandeja: va escondido en el cuerpo. Sin él, la bandeja mostraba «rendi.»."""
+    oculto = (f'<div style="display:none;max-height:0;overflow:hidden;opacity:0;'
+              f'color:transparent;">{html.escape(preheader)}</div>') if preheader else ""
+    return f"""<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rendi</title></head>
+<body style="margin:0;padding:0;background:#ECECF3;font-family:{_AVISO_FUENTE};color:#15171E;">
+  {oculto}
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#ECECF3;padding:32px 12px;">
+    <tr><td align="center">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;background:#FFFFFF;border:1px solid {_AVISO_LINEA};border-radius:12px;">
+        <tr><td style="padding:36px 40px;">
+          <div style="font-size:20px;font-weight:700;letter-spacing:-0.02em;color:#15171E;margin:0 0 24px;">rendi<span style="color:{_AVISO_VIOLETA};">.</span></div>
+          {body}
+        </td></tr>
+      </table>
+      <p style="max-width:560px;font-size:12px;line-height:1.6;color:#6B7280;margin:16px auto 0;">
+        Si algo no cierra, respondé este mail y te contestamos.
+      </p>
+    </td></tr>
+  </table>
+</body></html>"""
+
+
 def send_alert_email(*, to: str, user_name: str = "", heading: str,
                      detail: str, cta_path: str = "/dashboard",
-                     lines: Optional[list] = None) -> bool:
+                     lines: Optional[list] = None, titulo: Optional[str] = None,
+                     filas: Optional[list] = None, cta_label: str = "Ver en Rendi",
+                     pie: Optional[tuple] = None) -> bool:
     """Email de una alerta disparada (precio, % de variacion, movimiento del
-    libro del asesor). Template branded: logo arriba y boton a Rendi, igual
-    que el brief del asesor.
+    libro del asesor). Diseño del tablero «Cómo llega por mail» (19/10/2026):
+    un titular grande, UNA oración, la lista si son varios, UN botón y al pie
+    lo que se puede hacer con la alerta.
 
-    `heading` = titulo corto (ej. 'MELI cayo 3.1% hoy'), tambien es el asunto.
-    `detail` = el cuerpo, y tiene que traer LOS NUMEROS. Antes decia "entra a
-    Rendi para ver como impacta en tu cartera": el asunto informaba mas que el
-    cuerpo y el mail no se abria. Los numeros los arma quien dispara la
-    alerta (alerts_engine._email_detail / advisor_alerts).
+    `heading` = el ASUNTO. Es lo que decide si el mail se abre, así que nombra
+    los movimientos ("INTC cayó 5,8%, NVDA cayó 3,4% y 1 más hoy"), nunca
+    "4 alertas".
+    `titulo` = el titular grande del cuerpo; sin él, el mismo `heading`. En el
+    agrupado el asunto nombra los movimientos y el titular los cuenta ("3 de
+    tus activos se movieron fuerte hoy"), porque la lista va justo abajo.
+    `detail` = la oración, en minúscula: el mail le antepone "Hola Juan, ". Tiene
+    que traer LOS NUMEROS que el titular no tenga. Antes decía "entrá a Rendi
+    para ver cómo impacta en tu cartera": el asunto informaba más que el cuerpo
+    y el mail no se abría. Los arma quien dispara la alerta
+    (alerts_engine._contenido_del_mail / advisor_alerts).
+    `filas` = la lista del agrupado: [{'nombre': 'YPFD', 'pct': 8.4,
+    'pct_txt': '+8,4%', 'nota': ''}], el % en verde si sube y en rojo si cae.
+    `lines` = la lista en texto suelto, la que todavía usa el libro del asesor.
+    `cta_label` / `cta_path` = el botón ("Ver GGAL" → /activo/GGAL).
+    `pie` = (texto, link, ruta): ("Esta alerta ya cumplió.", "Volver a
+    activarla", "/alertas?tab=mis"). Sin `pie`, el genérico que lleva a Alertas.
 
     `cta_path` default = /dashboard. OJO: el default era
     /config?tab=notificaciones, una ruta MUERTA -- las alertas se mudaron a
@@ -960,47 +1066,69 @@ def send_alert_email(*, to: str, user_name: str = "", heading: str,
     reply_to a soporte@: si el usuario contesta el aviso, el mail le llega al
     equipo en vez de perderse en no_reply@.
 
-    `lines` opcional: cuando una alerta de "toda mi cartera" dispara con varios
-    activos a la vez, va UN mail con la lista en vez de uno por activo. Antes
-    salían cuatro mails en el mismo minuto — molesto de leer, y además la señal
-    más fuerte de "correo automático" que mira Gmail para decidir la pestaña.
-    Sin `lines` el mail es exactamente el de siempre."""
-    name = (user_name or "").strip()
-    safe_name = html.escape(name)
-    hi = f"Hola {safe_name}, " if safe_name else ""
+    Una alerta de "toda mi cartera" que dispara con varios activos a la vez
+    manda UN mail con la lista, no uno por activo. Antes salían cuatro mails en
+    el mismo minuto — molesto de leer, y además la señal más fuerte de "correo
+    automático" que mira Gmail para decidir la pestaña."""
+    # "Hola Juan," y no "Hola Juan Pérez,": el mismo saludo que los mails
+    # personales (`nombre_de_pila`). Si el nombre no sirve, "Hola," a secas.
+    pila = nombre_de_pila(user_name)
+    hola = f"Hola {pila}, " if pila else "Hola, "
+    titular = titulo or heading
     url = f"{APP_URL}{cta_path}"
-    alerts_url = f"{APP_URL}/alertas"
-    lista_html = ""
-    if lines:
+    if pie is None:
+        pie = ("Recibís este aviso porque configuraste una alerta.",
+               "Cambiarla o apagarla", "/alertas")
+    pie_txt, pie_link, pie_path = pie
+    pie_url = f"{APP_URL}{pie_path}"
+
+    lista_html = lista_txt = ""
+    if filas:
+        renglones = []
+        for i, f in enumerate(filas):
+            color = _AVISO_VERDE if (f.get("pct") or 0) >= 0 else _AVISO_ROJO
+            borde = "" if i == 0 else f"border-top:1px solid {_AVISO_LINEA};"
+            nota = (f'<div style="font-size:13px;font-weight:400;color:#6B7280;margin-top:2px;">'
+                    f'{html.escape(f["nota"])}</div>') if f.get("nota") else ""
+            renglones.append(
+                f'<tr><td style="padding:12px 0;{borde}font-size:16px;font-weight:600;color:#15171E;">'
+                f'{html.escape(f["nombre"])}{nota}</td>'
+                f'<td align="right" style="padding:12px 0;{borde}font-size:16px;font-weight:600;'
+                f'color:{color};white-space:nowrap;vertical-align:top;">{html.escape(f["pct_txt"])}</td></tr>')
+        lista_html = (
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="margin:0 0 24px;">' + "".join(renglones) + "</table>")
+        lista_txt = "\n".join(
+            f"  {f['nombre']}  {f['pct_txt']}" + (f" ({f['nota']})" if f.get("nota") else "")
+            for f in filas) + "\n\n"
+    elif lines:
         renglones = "".join(
             f'<li style="margin:0 0 8px;">{html.escape(str(l))}</li>' for l in lines)
         lista_html = (
-            '<ul style="font-size:15px;line-height:1.6;color:#374151;'
-            'margin:0 0 20px;padding-left:20px;">' + renglones + "</ul>")
+            '<ul style="font-size:16px;line-height:1.6;color:#3D4351;'
+            'margin:0 0 24px;padding-left:20px;">' + renglones + "</ul>")
+        lista_txt = "\n".join(f"  · {l}" for l in lines) + "\n\n"
+
+    oracion = f"{hola}{detail}"
     body_html = f"""
-      <h1 style="font-size:22px;font-weight:700;margin:0 0 16px;">{html.escape(heading)}</h1>
-      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 {'8px' if lines else '20px'};">
-        {hi}{html.escape(detail)}
-      </p>
+      <h1 style="font-size:28px;font-weight:700;letter-spacing:-0.02em;line-height:1.2;color:#15171E;margin:0 0 10px;">{html.escape(titular)}</h1>
+      <p style="font-size:16px;line-height:1.6;color:#3D4351;margin:0 0 24px;">{html.escape(oracion)}</p>
       {lista_html}
-      <div style="text-align:center;margin:24px 0;">
-        <a href="{url}" style="display:inline-block;background:#8B7BFF;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:15px;">
-          Ver en Rendi
-        </a>
-      </div>
-      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:16px 0 0;">
-        Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o apagarla
-        en <a href="{alerts_url}" style="color:#5b4ddb;">Alertas</a>, y si algo no cierra
-        respondeme este mail.
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;"><tr>
+        <td style="background:{_AVISO_VIOLETA};border-radius:8px;">
+          <a href="{html.escape(url)}" style="display:inline-block;color:#FFFFFF;text-decoration:none;padding:14px 28px;font-weight:600;font-size:15px;">{html.escape(cta_label)}</a>
+        </td>
+      </tr></table>
+      <p style="font-size:13px;line-height:1.6;color:#6B7280;margin:0;">
+        {html.escape(pie_txt)} <a href="{html.escape(pie_url)}" style="color:{_AVISO_LINK};">{html.escape(pie_link)}</a>
       </p>
     """
-    lista_txt = ("\n" + "\n".join(f"  · {l}" for l in lines) + "\n") if lines else ""
-    text = (f"{heading}\n\n{hi}{detail}\n{lista_txt}\n"
-            f"Ver en Rendi: {url}\n\n"
-            f"Recib\u00eds este aviso porque configuraste una alerta. Pod\u00e9s editarla o "
-            f"apagarla en {alerts_url}, y si algo no cierra respondeme este mail.\n\n"
-            "\u2014 Rendi")
-    return _send(to, heading, _wrap_html(body_html), text,
+    text = (f"{titular}\n\n{oracion}\n\n{lista_txt}"
+            f"{cta_label}: {url}\n\n"
+            f"{pie_txt} {pie_link}: {pie_url}\n\n"
+            "Si algo no cierra, respondé este mail y te contestamos.\n\n"
+            "— Rendi")
+    return _send(to, heading, _wrap_aviso(body_html, preheader=oracion), text,
                  from_addr=_from_alerts(),
                  reply_to="soporte@rendi.finance")
 
@@ -1475,6 +1603,117 @@ def send_trial_feedback(*, to: str, user_name: str = "", reenvio: bool = False) 
                  reply_to="soporte@rendi.finance")
 
 
+# ─── Campaña: cuentas en pausa (terminó la prueba y no eligieron plan) ──────
+
+def reactivar_pausa_contenido(user_name: str = "", *, con_cartera: bool,
+                              pausa_desde=None, reenvio: bool = False) -> tuple:
+    """(asunto, html, texto) del mail a una cuenta EN PAUSA: se le terminó la
+    prueba (o el plan) y no eligió uno, así que no puede entrar.
+
+    Separado del envío, como feedback_prueba_contenido, para que el panel de
+    admin muestre EXACTAMENTE el mail de cada persona.
+
+    🔒 Lo que este mail NO dice: nada de lo que hay ADENTRO de la cartera —ni
+    activos, ni montos, ni cuántos brokers o movimientos—. La Política de
+    Privacidad promete que los datos de cartera se usan "exclusivamente para
+    prestarte el servicio" y "no para publicidad", y este mail es para que
+    alguien que no paga vuelva a pagar. Además un mail viaja y se queda en
+    una bandeja que puede ver otro. Decidido por Nico el 2026-10-21.
+
+    Lo personalizado:
+      · `user_name` → el saludo (nombre_de_pila: "Hola," a secas si no sirve).
+      · `pausa_desde` (date, día argentino) → "está en pausa desde el 3 de
+        octubre". Sin fecha, la frase la omite antes que inventarla.
+      · `con_cartera` (¿cargó algo?) → cuál de los dos mails:
+          · con cartera: lo suyo sigue guardado, entra donde lo dejó.
+          · sin cartera: no hay nada guardado que ofrecerle, así que pregunta
+            qué pasó — es la única forma de saber por qué no convirtió — y de
+            paso cuenta que importar es un archivo. No dice "vi que no
+            cargaste nada": suena a que alguien miró su cuenta.
+
+    Formato PLANO y firma personal, igual que el de feedback: un mail con
+    pinta de escrito 1-a-1 cae en Principal y se contesta.
+
+    `reenvio=True` es para quien ya lo recibió: misma idea, otra apertura (un
+    mail idéntico delata el botón). Mismo asunto, para que Gmail los junte.
+    No dice "te escribí": la marca de envío puede existir sin que haya salido."""
+    nombre = nombre_de_pila(user_name)
+    saludo = f"Hola {nombre}," if nombre else "Hola,"
+    desde = ""
+    if pausa_desde:
+        from fechas import fecha_legible
+        desde = f" desde el {fecha_legible(pausa_desde)}"
+    planes_txt = "rendi.finance/planes"
+    planes_html = f'<a href="{_TRIAL_URL}" style="color:#5b4ddb;">{planes_txt}</a>'
+
+    if con_cartera:
+        asunto = "Tu cartera sigue guardada en Rendi"
+        if reenvio:
+            apertura = (f"un recordatorio corto: tu cuenta de Rendi sigue en pausa{desde}, "
+                        "y todo lo que cargaste sigue guardado, sin tocar.")
+        else:
+            apertura = (f"tu cuenta de Rendi está en pausa{desde}. Lo que cargaste no se "
+                        "borró: está todo guardado, tal cual lo dejaste.")
+        parrafos = [
+            "Elegís un plan y entrás justo donde lo dejaste, con tu cartera valuada a "
+            "precios de hoy. No hay que importar nada de nuevo.",
+            ("Los planes están en ", ""),
+            "Y si algo te frenó —el precio, algo que no funcionó o algo que te faltó—, "
+            "respondé este mail y contame. Lo leo yo, y es lo que decide qué arreglamos "
+            "primero.",
+        ]
+    else:
+        asunto = "Una pregunta corta sobre Rendi"
+        if reenvio:
+            apertura = (f"un recordatorio corto: tu cuenta de Rendi sigue en pausa{desde}, "
+                        "y me sigue sirviendo saber qué pasó.")
+        else:
+            apertura = (f"tu cuenta de Rendi está en pausa{desde}, y me gustaría saber "
+                        "qué pasó.")
+        parrafos = [
+            "¿No tuviste tiempo, no encontraste cómo importar tus movimientos, o Rendi no "
+            "era lo que buscabas? Con una línea de respuesta alcanza, y lo leo yo.",
+            "Por si fue lo segundo: con el archivo de movimientos que te da tu broker "
+            "(Cocos, IOL, Balanz, Bull Market, PPI y otros), Rendi arma tu cartera sola y "
+            "te muestra tu rendimiento real en dólares.",
+            ("Si querés volver, elegís un plan en ", " y arrancás de ahí."),
+        ]
+
+    # Un párrafo en tupla es el que lleva el link a los planes: (antes, después).
+    def _p_html(p):
+        if isinstance(p, tuple):
+            return f"{html.escape(p[0])}{planes_html}{html.escape(p[1])}"
+        return html.escape(p)
+
+    def _p_txt(p):
+        return f"{p[0]}{_TRIAL_URL}{p[1]}" if isinstance(p, tuple) else p
+
+    estilo_p = 'style="margin:0 0 14px;"'
+    body_html = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\','
+        'Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#1a1f2e;">'
+        f'<p {estilo_p}>{html.escape(saludo)} {html.escape(apertura)}</p>'
+        + "".join(f'<p {estilo_p}>{_p_html(p)}</p>' for p in parrafos)
+        + '<p style="margin:18px 0 0;">Nicolás — Rendi</p>'
+        '</div>'
+    )
+    texto = (f"{saludo} {apertura}\n\n"
+             + "\n\n".join(_p_txt(p) for p in parrafos)
+             + "\n\nNicolás — Rendi")
+    return asunto, body_html, texto
+
+
+def send_reactivar_pausa(*, to: str, user_name: str = "", con_cartera: bool,
+                         pausa_desde=None, reenvio: bool = False) -> bool:
+    """Mail a una cuenta en pausa (ver reactivar_pausa_contenido). Lo dispara a
+    mano el admin (/api/admin/email/reactivar-pausa); no lo manda ningún cron.
+    Las respuestas van a soporte@."""
+    asunto, body_html, texto = reactivar_pausa_contenido(
+        user_name, con_cartera=con_cartera, pausa_desde=pausa_desde, reenvio=reenvio)
+    return _send(to, asunto, body_html, texto, from_addr=_from_support(),
+                 reply_to="soporte@rendi.finance")
+
+
 # ─── Campaña: avisar que la prueba gratis está disponible ───────────────────
 
 # Tres textos para la MISMA campaña. Se manda de a tandas de 50, así que se
@@ -1786,6 +2025,7 @@ _MOTIVOS_TEXTO = {
     "sin_noticias": "no hubo noticias que contar",
     "narracion_descartada": "narración descartada (el modelo inventó números)",
     "sin_email": "sin casilla de mail",
+    "tope_de_intentos": "ya se intentó el máximo de veces hoy (el cron corrió de más o falla siempre)",
 }
 
 

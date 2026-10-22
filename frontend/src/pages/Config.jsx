@@ -46,6 +46,7 @@ import { useAdvisorContext } from '../contexts/AdvisorContext'
 import { alTerminar, vecesMas } from '../data/prueba'
 import { TRIAL_TOTAL_DAYS, TRIAL_PLUS_DAYS, FREE_FEATURES, PRO_FEATURES } from '../data/planCatalog'
 import { confirmar } from '../utils/confirmar'
+import { brokersParaElegir } from '../utils/pataDeLaMoneda'
 
 const DOLAR_REFRESH_MS = 600_000 // 10 min
 
@@ -451,7 +452,8 @@ export default function Config() {
             </MetaRow>
             <MetaRow label="Brokers">
               <span className="tabular">
-                {brokers.length} {brokers.length === 1 ? 'conectado' : 'conectados'}
+                {/* Cuentas: la pata en dólares ("Cocos · USD") no es otro broker. */}
+                {brokersParaElegir(brokers).length} {brokersParaElegir(brokers).length === 1 ? 'conectado' : 'conectados'}
                 <span className="text-ink-3 ml-1.5">· se gestionan desde /posiciones</span>
               </span>
             </MetaRow>

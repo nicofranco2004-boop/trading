@@ -277,6 +277,17 @@ export default function Heatmap({ defaultMarket = "sp500" }) {
               <g
                 key={b.symbol}
                 onClick={() => setSelected({ ...b, symbol: cleanSymbol(b.symbol) })}
+                // Con teclado también: Tab llega a cada cuadro y Enter abre el
+                // detalle, igual que el click.
+                role="button"
+                tabIndex={0}
+                aria-label={`${cleanSymbol(b.symbol)}: ver detalle`}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setSelected({ ...b, symbol: cleanSymbol(b.symbol) })
+                  }
+                }}
                 onPointerEnter={e => { if (e.pointerType === 'mouse') setEncima(b.symbol) }}
                 className={mapaVisto ? 'celda-entra' : 'celda-antes'}
                 // La ola: cada cuadro arranca según qué tan lejos está de la

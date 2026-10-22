@@ -50,7 +50,11 @@ export const GROUPS = [
 // (unseenCount), ver el render en Sidebar.
 export const LOOSE = [
   { to: '/alertas', label: 'Alertas',  icon: Bell },
-  { to: '/imports', label: 'Importar', icon: Upload },
+  // `enRegistrar`: no es una fila del menú, vive ADENTRO del botón Registrar
+  // (el de la compu y el "+" del celular), en su franja de abajo (pedido de
+  // Nico, 2026-10-19). Sigue en esta lista para que la regla de quién lo ve sea
+  // una sola y para que el buscador ⌘K lo encuentre.
+  { to: '/imports', label: 'Importar', icon: Upload, enRegistrar: true },
 ]
 
 // Plan Asesor en SU nivel (sin haber entrado a un cliente): su home. Dashboard
@@ -87,11 +91,14 @@ export const UTILIDADES = [
 export function menuVisible({ user, clientCtx } = {}) {
   const isAdvisor = user?.tier === 'advisor'
   const atOwnLevel = isAdvisor && !clientCtx
+  const loose = atOwnLevel ? LOOSE.filter(i => i.to === '/alertas') : LOOSE
   return {
     isAdvisor,
     atOwnLevel,
     groups: atOwnLevel ? [] : GROUPS,
-    loose: atOwnLevel ? LOOSE.filter(i => i.to === '/alertas') : LOOSE,
+    loose,
+    // Lo que va adentro del botón Registrar (compu y celular), o null.
+    importar: loose.find(i => i.enRegistrar) || null,
     asesorPropio: atOwnLevel ? ASESOR_PROPIO : [],
     // Dentro de un cliente, "Clientes" sigue accesible para volver al roster.
     clientesDesdeCliente: isAdvisor && !atOwnLevel,

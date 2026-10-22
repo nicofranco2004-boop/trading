@@ -42,7 +42,10 @@ export default function CashFlowModal({ form, setForm, tcValuacion, fxHist, onCl
 
   return (
     <Modal
-      title={`${esDeposito ? 'Depositar en' : 'Retirar de'} ${form.broker}`}
+      // `cuenta` + moneda: "Depositar dólares en Cocos", no "en Cocos · USD".
+      title={form.moneda
+        ? `${esDeposito ? 'Depositar' : 'Retirar'} ${form.moneda === 'ARS' ? 'pesos' : 'dólares'} ${esDeposito ? 'en' : 'de'} ${form.cuenta || form.broker}`
+        : `${esDeposito ? 'Depositar en' : 'Retirar de'} ${form.broker}`}
       onClose={onClose}
     >
       <div className="space-y-4">

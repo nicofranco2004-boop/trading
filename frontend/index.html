@@ -268,7 +268,14 @@
     t.src=v;s=b.getElementsByTagName(e)[0];
     s.parentNode.insertBefore(t,s)}(window, document,'script',
     'https://connect.facebook.net/en_US/fbevents.js');
-    if (!location.pathname.startsWith('/i/') && !location.pathname.startsWith('/claim') && !location.pathname.startsWith('/acceso')) {
+    // Mismo criterio que src/utils/rutasSensibles.js (acá va inline porque corre
+    // antes del bundle): no reportar rutas con secreto/PII ni ninguna URL con
+    // token/email/code en la query — fbevents manda la location completa a Meta.
+    var _p = location.pathname, _q = location.search || '';
+    var _sensible = ['/i/', '/claim', '/acceso', '/reset-password', '/verify-email']
+        .some(function (r) { return _p.indexOf(r) === 0; })
+      || /[?&](token|email|code)=/.test(_q);
+    if (!_sensible) {
       fbq('init', '1281911210681122');
       fbq('track', 'PageView');
     }

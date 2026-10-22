@@ -1450,6 +1450,19 @@ def init_db():
             # lo recibieron de los que sí (a esos se les puede volver a mandar,
             # pero sólo con el botón aparte). Sin índice encima.
             conn.execute("ALTER TABLE users ADD COLUMN trial_feedback_email_sent_at TEXT")
+        if user_cols and 'pausa_email_sent_at' not in user_cols:
+            # Timestamp ISO del ÚLTIMO mail "tu cuenta está en pausa" (terminó la
+            # prueba y no eligió plan). NULL = nunca. Lo usa
+            # /api/admin/email/reactivar-pausa para separar a los que nunca lo
+            # recibieron (el botón principal) del resto de los que están en
+            # pausa. Sin índice encima.
+            conn.execute("ALTER TABLE users ADD COLUMN pausa_email_sent_at TEXT")
+        if user_cols and 'marketing_baja_at' not in user_cols:
+            # Cuándo pidió NO recibir más mails promocionales (el link "dejar de
+            # recibir" de cada campaña del panel). NULL = los recibe. Lo mira
+            # `_envio_masivo` antes de cada mail: la Ley 25.326 (art. 27) pide
+            # que toda comunicación comercial ofrezca la baja y la respete.
+            conn.execute("ALTER TABLE users ADD COLUMN marketing_baja_at TEXT")
         if user_cols and 'pro_trial_until' not in user_cols:
             # Prueba de Pro ENCIMA de un plan pago (el Plus que quiere ver qué se
             # está perdiendo). Es una marca aparte a propósito: si se hiciera
@@ -2502,6 +2515,32 @@ def init_db():
                 desde TEXT NOT NULL,
                 ok INTEGER NOT NULL DEFAULT 1,   -- 0 = la fuente no dio serie
                 fetched_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+
+        # Velas diarias para el análisis técnico (velas_diarias.py). NO es
+        # `asset_price_history`: ésta SE PISA cuando Yahoo reescribe la historia
+        # (un split), aquella no pisa nunca. Tablas nuevas, sin ALTER: el índice
+        # va en el mismo bloque que su tabla y es seguro en una base ya creada.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS velas_diarias (
+                symbol TEXT NOT NULL,            -- ticker de Yahoo: 'AAPL', 'GGAL.BA', 'BTC-USD'
+                date TEXT NOT NULL,              -- 'YYYY-MM-DD'
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL NOT NULL,             -- ajustado por splits, no por dividendos
+                volume REAL,
+                fetched_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (symbol, date)
+            );
+            CREATE TABLE IF NOT EXISTS velas_estado (
+                symbol TEXT PRIMARY KEY,
+                ultima_corrida TEXT,
+                ultima_completa TEXT,            -- NULL = nunca se bajó la historia entera
+                ok INTEGER NOT NULL DEFAULT 0,
+                filas INTEGER DEFAULT 0,
+                error TEXT
             );
         """)
 
@@ -3663,6 +3702,24 @@ def init_db():
         except Exception as ex:
             log.warning("no se pudo limpiar el precio de las cajas vacías: %s", ex)
 
+        # Tokens de reseteo: hasta 2026-10 se guardaban en claro y no se borraban
+        # los vencidos (RENDI-10). La migración (borrar usados/vencidos + pasar a
+        # huella los vivos) vive en una función para que el test la atraviese. En
+        # WARNING como las de arriba (init_db corre antes del basicConfig).
+        try:
+            _vivos, _migrados = _migrar_reset_tokens_a_huella(conn)
+            log.warning("tokens de reseteo: %d vivos, %d pasados a huella ahora",
+                        _vivos, _migrados)
+        except Exception as ex:
+            log.warning("no se pudieron migrar los tokens de reseteo a huella: %s", ex)
+
+        # Links de asesor (claim + pedido de acceso): misma huella, sin borrar filas.
+        try:
+            _n = _migrar_tokens_link_a_huella(conn)
+            log.warning("tokens de links de asesor: %d pasados a huella ahora", _n)
+        except Exception as ex:
+            log.warning("no se pudieron migrar los tokens de links de asesor a huella: %s", ex)
+
         conn.commit()
 
 
@@ -3680,6 +3737,37 @@ def create_token(user_id: int, pw_changed_at: Optional[str] = None) -> str:
     if pw_changed_at:
         payload["pca"] = pw_changed_at  # password_changed_at — invalida tokens viejos al cambiar pass
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+# Margen para el desfasaje entre el reloj del proceso (iat del token) y el de la
+# base (password_changed_at): el token que se emite AL cambiar la contraseña no
+# debe cortarse a sí mismo por una diferencia de milisegundos.
+_PWD_CHANGE_GRACE_S = 5
+
+
+def _token_posterior_al_cambio(payload: dict, pwd_changed_at: str) -> bool:
+    """¿El token se emitió DESPUÉS del último cambio de contraseña? True = sigue
+    válido; False = hay que echarlo.
+
+    Compara la fecha de emisión del token (`iat`, epoch UTC) contra
+    `password_changed_at`. Así alcanza también a las cuentas viejas cuyos tokens
+    NO llevan `pca` (se crearon cuando la columna estaba vacía): antes esas
+    sesiones sobrevivían al cambio de contraseña. Con un token sin `iat` cae al
+    criterio anterior (`pca`). Ante cualquier duda de formato devuelve True: un
+    error de parseo no puede dejar a nadie afuera de su cuenta — el cambio de
+    contraseña ya exige la contraseña actual o el link de reseteo."""
+    from datetime import timezone
+    iat = payload.get("iat")
+    if iat is None:
+        pca = payload.get("pca")
+        return not (pca and pca != pwd_changed_at)
+    try:
+        dt = datetime.fromisoformat(str(pwd_changed_at).replace(" ", "T"))
+        cambio_epoch = dt.replace(tzinfo=timezone.utc).timestamp()
+        return float(iat) >= cambio_epoch - _PWD_CHANGE_GRACE_S
+    except (ValueError, TypeError):
+        pca = payload.get("pca")
+        return not (pca and pca != pwd_changed_at)
 
 
 def get_current_user(
@@ -3724,8 +3812,11 @@ def get_current_user(
     if not row:
         raise HTTPException(401, "Token inválido")
     request.state.rendi_requires_plan = marca
-    pca = payload.get("pca")
-    if pca and row["password_changed_at"] and pca != row["password_changed_at"]:
+    # El token queda invalidado si se emitió ANTES del último cambio de contraseña.
+    # Se mira la fecha de emisión (iat), no sólo la marca `pca`, para alcanzar
+    # también a las cuentas viejas cuyos tokens no la llevan (RENDI-11).
+    if row["password_changed_at"] and not _token_posterior_al_cambio(
+            payload, row["password_changed_at"]):
         raise HTTPException(401, "Token expirado por cambio de contraseña")
     return uid
 
@@ -3909,6 +4000,38 @@ def motivo_de_pausa(conn, uid: int) -> Optional[str]:
     except Exception as ex:
         log.warning("pausa_motivo falló uid=%s: %s", uid, ex)
         return None
+
+
+def resumen_de_lo_guardado(conn, uid: int) -> Optional[str]:
+    """"4 brokers y 312 movimientos": lo que la cuenta tiene guardado, en la
+    frase que se le dice a alguien con la cuenta en pausa. None si no cargó
+    nada (o no se pudo contar): se omite la frase antes que decir "tus 0
+    brokers".
+
+    La usa el muro (`/api/auth/me` → `pausa_resumen`). El mail a las cuentas
+    en pausa (/api/admin/email/reactivar-pausa) sólo mira si es None (cargó
+    algo o no), para que "cargó algo" sea la misma regla en los dos: el mail
+    NO repite la frase, porque es promoción y la Política de Privacidad
+    reserva los datos de cartera para prestar el servicio."""
+    try:
+        # El contador OFICIAL, el mismo que usa la cuota del plan y el
+        # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
+        # distinto en las cuentas con sub-brokers, y el muro terminaba
+        # diciendo "6 brokers" donde el mail del mismo día decía 4.
+        from ai import plan as _plan
+        nb = _plan.count_broker_accounts(conn, uid) or 0
+        nm = conn.execute(
+            "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
+        ).fetchone()["c"] or 0
+    except Exception as ex:
+        log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
+        return None
+    partes = []
+    if nb:
+        partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
+    if nm:
+        partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
+    return " y ".join(partes) or None
 
 
 def get_effective_user(
@@ -4147,6 +4270,99 @@ def _frontend_url() -> str:
 def _gen_reset_token() -> str:
     """URL-safe random ~43 chars (~256 bits de entropía)."""
     return secrets.token_urlsafe(32)
+
+
+def _validar_cron_token(request: Request, *nombres_env: str) -> None:
+    """Puerta común de los crons externos (cron-job.org). RENDI-05.
+
+    Reemplaza la comparación con `!=`, que cortaba en la primera letra distinta y
+    dejaba adivinar el token a cronómetro: ahora `hmac.compare_digest` (tiempo
+    constante). Acepta el token por la cabecera `X-Cron-Token` (preferida) o por
+    `?token=` (compat: cron-job.org lo manda así hoy); cuando llega por la URL
+    loguea un aviso —la URL queda en los logs de todos los proxies— para migrarlo
+    a la cabecera y cerrar esa fuga. Varios `nombres_env`: vale cualquiera que esté
+    seteado (p.ej. el token propio o el de snapshots como respaldo). Falla cerrado:
+    sin ninguna variable → 503; token ausente o que no coincide → 401."""
+    esperados = [v for v in ((os.environ.get(n) or "").strip() for n in nombres_env) if v]
+    if not esperados:
+        raise HTTPException(503, f"Cron no configurado (falta {nombres_env[0]}).")
+    en_cabecera = (request.headers.get("x-cron-token") or "").strip()
+    en_url = (request.query_params.get("token") or "").strip()
+    got = en_cabecera or en_url
+    ok = bool(got) and any(
+        hmac.compare_digest(got.encode("utf-8"), e.encode("utf-8")) for e in esperados)
+    if not ok:
+        raise HTTPException(401, "Token inválido.")
+    if en_url and not en_cabecera:
+        log.warning("cron %s: token recibido por URL (queda en los logs) — migrar a "
+                    "la cabecera X-Cron-Token", request.url.path)
+
+
+def _hash_token(token: str) -> str:
+    """Huella SHA-256 (hex, 64 chars) de un token de link, para guardar EN REPOSO.
+
+    El token aleatorio viaja en claro al usuario (mail/URL) pero en la base se
+    guarda sólo esta huella: si se filtra una copia de la base, el valor guardado
+    no sirve para usar el link (no se puede volver atrás a la huella). Al validar,
+    se hashea el token entrante y se compara contra lo guardado. No lleva sal a
+    propósito: son 256 bits aleatorios, no hay nada que adivinar por diccionario.
+
+    Hoy lo usa el token de reseteo de contraseña. Los otros tres tokens de link
+    (claim, link-request de asesor, informe público) comparten el mismo patrón y
+    se migran a este helper con su propia migración de links vivos — RENDI-10."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+_TOKEN_HASH_LEN = 64  # un SHA-256 hex; sirve para distinguir "ya hasheado" de un token crudo
+
+
+def _es_huella(valor: str) -> bool:
+    """¿`valor` ya es una huella SHA-256 (64 hex)? Para migraciones idempotentes."""
+    return (len(valor or "") == _TOKEN_HASH_LEN
+            and all(c in "0123456789abcdef" for c in valor))
+
+
+def _migrar_reset_tokens_a_huella(conn) -> tuple:
+    """Deja `password_reset_tokens` sin ningún token en claro. Idempotente.
+
+    (1) Borra los usados y los vencidos: ya no sirven y hasta 2026-10 no se
+    borraban nunca. (2) Pasa a huella los pocos vivos que quedaran en claro, para
+    que una copia de la base no permita usar el link. Devuelve (vivos, migrados).
+
+    Es una función con nombre —y no SQL suelto en el arranque— para que el test la
+    atraviese por el mismo camino que corre en producción."""
+    conn.execute(
+        "DELETE FROM password_reset_tokens WHERE used_at IS NOT NULL OR expires_at < ?",
+        (datetime.utcnow().isoformat(),))
+    vivos = conn.execute("SELECT id, token FROM password_reset_tokens").fetchall()
+    en_claro = [r for r in vivos if not _es_huella(r["token"])]
+    for r in en_claro:
+        conn.execute("UPDATE password_reset_tokens SET token=? WHERE id=?",
+                     (_hash_token(r["token"]), r["id"]))
+    return len(vivos), len(en_claro)
+
+
+def _migrar_tokens_link_a_huella(conn) -> int:
+    """Pasa a huella los tokens en claro de los links de ASESOR: claim (reclamar
+    cuenta) y link-request (pedido de acceso). RENDI-10 parte B. Idempotente.
+
+    A diferencia de los de reseteo NO se borra ninguna fila: `used_at`, `status` y
+    los conteos por fecha deben quedar intactos. Sólo se reescribe la columna
+    `token` de claro a huella, y eso preserva los links VIVOS (el token del mail
+    se hashea al validar y sigue matcheando). Devuelve cuántos se convirtieron.
+
+    `advisor_reports` queda afuera a propósito: ahí el token crudo también vive en
+    `wa_text` y el asesor re-comparte el link desde su historial, así que hashearlo
+    es una decisión de producto (parte C), no un cambio mecánico."""
+    convertidos = 0
+    for tabla in ("advisor_claim_tokens", "advisor_link_requests"):
+        filas = conn.execute(f"SELECT id, token FROM {tabla}").fetchall()
+        for r in filas:
+            if r["token"] and not _es_huella(r["token"]):
+                conn.execute(f"UPDATE {tabla} SET token=? WHERE id=?",
+                             (_hash_token(r["token"]), r["id"]))
+                convertidos += 1
+    return convertidos
 
 
 # ─── Login history / device tracking ─────────────────────────────────────────
@@ -4673,8 +4889,9 @@ def forgot_password(data: ForgotPasswordIn, request: Request):
                 conn.execute(
                     """INSERT INTO password_reset_tokens (user_id, token, expires_at)
                        VALUES (?, ?, ?)""",
-                    (user["id"], token, expires),
+                    (user["id"], _hash_token(token), expires),
                 )
+            # El token crudo va SÓLO al mail; en la base quedó su huella.
             reset_url = f"{_frontend_url()}/reset-password?token={token}"
             try:
                 from billing import emails
@@ -4708,7 +4925,7 @@ def reset_password(data: ResetPasswordIn, request: Request, response: Response):
         row = conn.execute(
             """SELECT id, user_id, expires_at, used_at FROM password_reset_tokens
                WHERE token = ?""",
-            (data.token,),
+            (_hash_token(data.token),),
         ).fetchone()
         if not row or row["used_at"]:
             raise HTTPException(400, "Link inválido o ya usado. Pedí uno nuevo.")
@@ -4886,27 +5103,8 @@ def me(request: Request, uid: int = Depends(get_effective_user)):
         # que sabrían contar esto, están justamente bloqueados.
         # Si no hay nada que contar, no se manda: el muro omite la frase antes
         # que decir "tus 0 brokers".
-        d["pausa_resumen"] = None
-        if d["cuenta_en_pausa"]:
-            try:
-                # El contador OFICIAL, el mismo que usa la cuota del plan y el
-                # mail de cierre. Un COUNT(*) crudo sobre `brokers` cuenta
-                # distinto en las cuentas con sub-brokers, y el muro terminaba
-                # diciendo "6 brokers" donde el mail del mismo día decía 4.
-                from ai import plan as _plan
-                nb = _plan.count_broker_accounts(conn, uid) or 0
-                nm = conn.execute(
-                    "SELECT COUNT(*) c FROM operations WHERE user_id=?", (uid,)
-                ).fetchone()["c"] or 0
-                partes = []
-                if nb:
-                    partes.append(f"{nb} broker" + ("s" if nb != 1 else ""))
-                if nm:
-                    partes.append(f"{nm} movimiento" + ("s" if nm != 1 else ""))
-                if partes:
-                    d["pausa_resumen"] = " y ".join(partes)
-            except Exception as ex:
-                log.warning("pausa_resumen falló uid=%s: %s", uid, ex)
+        d["pausa_resumen"] = (resumen_de_lo_guardado(conn, uid)
+                              if d["cuenta_en_pausa"] else None)
 
         sub_status = d.get("subscription_status")
         cred_active = bool(d.get("credit_days_remaining", 0) > 0)
@@ -9826,8 +10024,11 @@ def _fetch_data912_equities():
                 sym = item.get('symbol')
                 close = item.get('c')
                 if sym and close and close > 0:
+                    # `mercado`: de qué lista vino. El buscador de CEDEARs
+                    # (cedears_dolar) lee SÓLO los de arg_cedears: con las acciones
+                    # argentinas mezcladas, YPFD se leía como "YPF en dólares".
                     result[sym] = {'c': float(close), 'pct': item.get('pct_change'),
-                                   'v': item.get('v')}
+                                   'v': item.get('v'), 'mercado': endpoint}
         if result:  # sólo pisamos el cache si hubo data nueva
             _data912_eq_cache['data'] = result
             _data912_eq_cache['ts'] = now
@@ -10318,6 +10519,46 @@ def _log_etapas_precios(crono: "_Cronometro", pedidos: int, sin_cache: int) -> N
     log.log(logging.WARNING if total >= 10 else logging.INFO,
             "precios: %d símbolos (%d sin caché) en %.1f s — %s",
             pedidos, sin_cache, total, crono.texto())
+
+
+@app.get("/api/cedears")
+def get_cedears(uid: int = Depends(get_effective_user)):
+    """Todos los CEDEARs de BYMA con su precio en pesos y en dólares (especie D).
+
+    Lo lee el buscador de "Registrar compra": en un broker argentino cada CEDEAR
+    aparece en pesos y en dólares, y al elegir el de dólares el formulario se
+    precarga con `px_usd`. Ver cedears_dolar.py (qué precio en dólares se usa y
+    por qué no siempre es el de BYMA)."""
+    return cedears_con_dolares()
+
+
+def cedears_con_dolares() -> dict:
+    """{'mep', 'items'[, 'parcial']}: la lista de `GET /api/cedears`. La leen
+    también las alertas de precio de un CEDEAR en dólares (alerts_engine), para
+    que el aviso mire el MISMO precio en dólares que muestra el buscador."""
+    import cedears_dolar
+    feed = {s: f for s, f in (_fetch_data912_equities() or {}).items()
+            if f.get('mercado') == 'arg_cedears'}
+    mep = _current_cedear_rate()
+    # Antes de la apertura el feed de BYMA viene a la mitad (medido 20/10: 465
+    # códigos a las 10:23 contra 1.025 a las 9:56): faltan raíces y especies, y
+    # con lo que falta los pares se arman peor (Petrobras y Vale quedaban sin
+    # dólares). Con un feed parcial se devuelve la última lista armada con uno
+    # completo — los precios del feed son los del último cierre igual.
+    items = cedears_dolar.universo(feed, mep)
+    ult = _CEDEARS_ULTIMO
+    if ult["items"] and len(feed) < 0.8 * ult["n_feed"]:
+        return {"mep": mep, "items": ult["items"], "parcial": True}
+    if items and len(feed) >= ult["n_feed"] * 0.8:
+        ult["items"], ult["n_feed"] = items, max(len(feed), ult["n_feed"])
+    return {"mep": mep, "items": items}
+
+
+# La última lista de CEDEARs armada con un feed completo (ver get_cedears). En
+# memoria: si el proceso arranca antes de la apertura, la primera lista es la del
+# feed parcial, sin raíces disfrazadas (cedears_dolar._PRECIO_DE_DOLAR) pero con
+# menos dólares hasta que el feed se complete.
+_CEDEARS_ULTIMO = {"items": None, "n_feed": 0}
 
 
 @app.get("/api/prices")
@@ -11440,6 +11681,11 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     # Auto-fill entry_date a hoy (ARGENTINO) si no viene del cliente. Con UTC,
     # una posición dada de alta a las 22:00 nacía fechada mañana.
     entry_date = p.entry_date or _iso_today()
+    # La pata de la cuenta que corresponde a la moneda: una compra en dólares
+    # "en Cocos" vive en 'Cocos · USD', que es donde están sus dólares. De acá
+    # para abajo todo (la fila, la caja, el autodepósito, el borrado) usa ESTE
+    # broker y no el que vino en el pedido.
+    broker = _pata_de_la_moneda(conn, uid, p.broker, p.currency)
     # Moneda nativa del lote: explícita del form, o inferida del broker
     # (ARS si el broker es ARS, USD si es el sub-broker '· USD'/USDT). Sin
     # esto los lotes manuales quedaban NULL y se mezclaban ARS+USD en el FIFO.
@@ -11447,7 +11693,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
     if not resolved_ccy and not p.is_cash:
         _br = conn.execute(
             "SELECT currency FROM brokers WHERE user_id=? AND name=?",
-            (uid, p.broker)).fetchone()
+            (uid, broker)).fetchone()
         resolved_ccy = "ARS" if (_br and _br["currency"] == "ARS") else "USD"
     # TC de compra: si el usuario dejó el campo en blanco y el lote es en pesos,
     # se completa con el dólar de la FECHA de la compra (hoy o retroactiva —
@@ -11470,7 +11716,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
         """INSERT INTO positions (user_id, broker, asset, is_cash, buy_price, quantity,
            invested, tc_compra, price_override, notes, entry_date, commissions, asset_type, currency)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (uid, p.broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
+        (uid, broker, p.asset, int(p.is_cash), p.buy_price, p.quantity,
          invested, tc_compra, p.price_override, p.notes, entry_date, p.commissions or 0,
          (p.asset_type or None), resolved_ccy),
     )
@@ -11486,14 +11732,21 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
             # depositamos el faltante (sube cash + capital aportado) antes
             # de debitar el costo. Así el cash queda ≥ 0 y el P&L no miente.
             _adm: dict = {}
-            _autodep = _autodeposit_if_overdraw(conn, uid, p.broker, cost, entry_date,
+            _autodep = _autodeposit_if_overdraw(conn, uid, broker, cost, entry_date,
                                                 meta_out=_adm, ref=f"pos:{new_id}")
             if meta_out is not None:
                 # El caller (op grupal) persiste esto para que el undo acredite
                 # EXACTO lo debitado y revierta el autodepósito si lo hubo.
                 meta_out.update({"cost": cost, "autodep_native": _autodep,
+                                 # Los dólares del autodepósito tal como se
+                                 # asentaron, y la caja real (la pata de la
+                                 # moneda): quien persiste el undo los copia en
+                                 # vez de recalcularlos con la moneda del broker
+                                 # que vino en el pedido.
+                                 "autodep_usd": (_adm or {}).get("usd"),
+                                 "broker": broker,
                                  "entry_date": entry_date})
-            _adjust_broker_cash(conn, uid, p.broker, -cost)
+            _adjust_broker_cash(conn, uid, broker, -cost)
             # Reversibilidad del alta manual: guardamos en la fila lo que debitó y el
             # autodepósito que disparó (si hubo). El borrado tiene que devolver
             # `cost − autodep` y revertir el flujo mensual del autodepósito; devolver
@@ -11508,7 +11761,7 @@ def _insert_manual_position(conn, uid: int, p: PositionIn, meta_out: dict = None
                                   # desde Cartera); guardamos el de origen para que el
                                   # borrado detecte el cambio en vez de devolver la plata
                                   # al broker equivocado.
-                                  "broker": p.broker}),
+                                  "broker": broker}),
                  new_id, uid))
 
     return conn.execute(
@@ -11564,12 +11817,18 @@ def create_position(p: PositionIn, uid: int = Depends(get_effective_user)):
 
 class PositionGroupEditIn(BaseModel):
     """Edición a nivel GRUPO (todos los lotes de un mismo broker+activo+moneda)."""
-    broker: str
-    asset: str                                   # el activo ACTUAL (identifica al grupo)
-    currency: Optional[str] = None               # el grupo se arma por moneda (la fila agregada también)
-    new_asset: Optional[str] = None              # renombrar el ticker
+    # Largo máximo en los textos: `new_asset` se guarda en CADA lote y además en el
+    # registro de deshacer, así que un nombre gigante se multiplica en disco. Sin
+    # tope, era un vector para llenar la base. MAX_STR = 100 (RENDI-A01).
+    broker: str = Field(..., max_length=MAX_STR)
+    asset: str = Field(..., max_length=MAX_STR)  # el activo ACTUAL (identifica al grupo)
+    currency: Optional[str] = Field(None, max_length=16)  # el grupo se arma por moneda
+    new_asset: Optional[str] = Field(None, max_length=MAX_STR)  # renombrar el ticker
+    # Cambiar el TIPO (CEDEAR ↔ acción): el código suele ser el mismo (AMZN, IREN),
+    # así que renombrar no alcanza — es el tipo lo que decide con qué precio se valúa.
+    new_asset_type: Optional[str] = Field(None, max_length=16)
     avg_price: Optional[float] = Field(None, gt=0)   # nuevo precio PROMEDIO ponderado
-    tc_mode: Optional[str] = None                # 'historical' | 'fixed'
+    tc_mode: Optional[str] = Field(None, max_length=16)   # 'historical' | 'fixed'
     tc_value: Optional[float] = Field(None, gt=0)
 
 
@@ -11601,6 +11860,24 @@ def _src_tx_for_position(conn, uid: int, pid: int):
     ).fetchone()
 
 
+def _cambiar_tipo_del_lote(conn, uid: int, pid: int, asset_type: str) -> None:
+    """Pone el tipo de activo de UN lote, y también en la fila del import que lo
+    creó (si vino de un archivo). Es la única puerta de las dos ediciones (un lote
+    y la posición entera).
+
+    La fila del import es la que manda después: el rehacer del FIFO
+    (`rebuild_pair_asset`, que corre al borrar una operación o al reimportar) vuelve
+    a escribir los lotes con el tipo del evento, y la reconstrucción de la historia
+    (`ledger_replay`) lo lee de ahí antes que de `positions`. Cambiar sólo
+    `positions` duraba hasta la próxima de esas y el activo volvía a ser CEDEAR."""
+    conn.execute("UPDATE positions SET asset_type=? WHERE id=? AND user_id=?",
+                 (asset_type, pid, uid))
+    src = _src_tx_for_position(conn, uid, pid)
+    if src:
+        conn.execute("UPDATE import_normalized_tx SET asset_type=? WHERE id=?",
+                     (asset_type, src["id"]))
+
+
 def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     """Edita TODOS los lotes de un activo de una sola vez. Reversible.
 
@@ -11616,6 +11893,9 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
       • `tc_mode` → 'historical': el TC de la FECHA de cada lote (lo mismo que hace el
         alta manual); 'fixed': un único TC para todos. Un TC no se prorratea — no es
         una magnitud repartible como la plata.
+      • `new_asset_type` → IGUALAR, como el ticker. Es lo que separa el CEDEAR de
+        AMZN de la acción AMZN (mismo código): sin esto, «pasar a la acción» cambiaba
+        el promedio y el activo se seguía valuando con el precio del CEDEAR.
 
     La cantidad NO se edita acá: repartirla exige decidir de qué lote sacar, y eso
     cambia el FIFO y las fechas de compra. Eso sigue siendo por lote.
@@ -11627,13 +11907,14 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     asset = (p.asset or "").strip()
     # Renombrar A un código que ya no cotiza (SQ) deja el grupo con el vigente.
     new_asset = ticker_vigente((p.new_asset or "").strip())
+    new_type = (p.new_asset_type or "").strip().upper() or None
     if not broker or not asset:
         raise HTTPException(400, "Falta el broker o el activo")
     if p.tc_mode and p.tc_mode not in ("historical", "fixed"):
         raise HTTPException(400, "tc_mode inválido")
     if p.tc_mode == "fixed" and not p.tc_value:
         raise HTTPException(400, "Falta el tipo de cambio")
-    if not new_asset and p.avg_price is None and not p.tc_mode:
+    if not new_asset and p.avg_price is None and not p.tc_mode and not new_type:
         raise HTTPException(400, "No mandaste ningún cambio")
 
     lots = _group_lots(conn, uid, broker, asset, p.currency)
@@ -11655,12 +11936,14 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
     snap_lots, snap_src = [], []
     for l in lots:
         snap_lots.append({"id": l["id"], "asset": l["asset"], "buy_price": l["buy_price"],
-                          "invested": l["invested"], "tc_compra": l["tc_compra"]})
+                          "invested": l["invested"], "tc_compra": l["tc_compra"],
+                          "asset_type": l["asset_type"]})
         src = _src_tx_for_position(conn, uid, l["id"])
         if src:
             snap_src.append({"id": src["id"], "asset_symbol": src["asset_symbol"],
                              "unit_price": src["unit_price"], "gross_amount": src["gross_amount"],
-                             "tc_compra": src["tc_compra"] if "tc_compra" in src.keys() else None})
+                             "tc_compra": src["tc_compra"] if "tc_compra" in src.keys() else None,
+                             "asset_type": src["asset_type"]})
 
     # ── Precio promedio: escalado proporcional ────────────────────────
     if p.avg_price is not None:
@@ -11705,6 +11988,11 @@ def _edit_position_group(conn, uid: int, p: "PositionGroupEditIn") -> dict:
             if src:
                 conn.execute("UPDATE import_normalized_tx SET tc_compra=? WHERE id=?",
                              (tc, src["id"]))
+
+    # ── Tipo de activo (CEDEAR ↔ acción) ──────────────────────────────
+    if new_type:
+        for l in lots:
+            _cambiar_tipo_del_lote(conn, uid, l["id"], new_type)
 
     # ── Renombrar el activo ───────────────────────────────────────────
     if new_asset and new_asset != asset:
@@ -11773,11 +12061,19 @@ def _undo_edit_position_group(conn, uid: int, token: str) -> dict:
             "UPDATE positions SET asset=?, buy_price=?, invested=?, tc_compra=? "
             "WHERE id=? AND user_id=?",
             (l["asset"], l["buy_price"], l["invested"], l["tc_compra"], l["id"], uid))
+        # El tipo, sólo si la foto lo guardó: las ediciones anteriores a que se
+        # pudiera cambiar no lo tocaron, y su undo tampoco tiene que tocarlo.
+        if "asset_type" in l:
+            conn.execute("UPDATE positions SET asset_type=? WHERE id=? AND user_id=?",
+                         (l["asset_type"], l["id"], uid))
     for s in pl.get("src", []):
         conn.execute(
             "UPDATE import_normalized_tx SET asset_symbol=?, unit_price=?, gross_amount=?, "
             "tc_compra=? WHERE id=?",
             (s["asset_symbol"], s["unit_price"], s["gross_amount"], s["tc_compra"], s["id"]))
+        if "asset_type" in s:
+            conn.execute("UPDATE import_normalized_tx SET asset_type=? WHERE id=?",
+                         (s["asset_type"], s["id"]))
     if pl.get("new_asset"):
         pair = pl.get("pair") or [pl.get("broker")]
         _ph = ",".join("?" * len(pair))
@@ -11836,7 +12132,8 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
         # Ni editar una fila de efectivo, ni convertir un lote en efectivo (ver
         # _EFECTIVO_NO_SE_EDITA).
         _actual = conn.execute(
-            "SELECT is_cash, broker FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
+            "SELECT is_cash, broker, asset_type FROM positions WHERE id=? AND user_id=?",
+            (pid, uid)).fetchone()
         if p.is_cash or (_actual and _actual["is_cash"]):
             raise HTTPException(400, _EFECTIVO_NO_SE_EDITA)
         # Mover el lote a OTRO broker: ese broker tiene que existir (el alta ya lo
@@ -11871,6 +12168,12 @@ def update_position(pid: int, p: PositionIn, uid: int = Depends(get_effective_us
              p.tc_compra, p.price_override, p.notes, p.commissions or 0,
              p.entry_date, (p.asset_type or None), p.currency, pid, uid),
         )
+        # Pasó de CEDEAR a acción (o al revés): también en la fila del import, si
+        # el lote vino de un archivo — si no, el próximo rehacer lo devuelve al
+        # tipo viejo (ver _cambiar_tipo_del_lote).
+        _tipo = (p.asset_type or "").strip().upper()
+        if _actual and _tipo and _tipo != (_actual["asset_type"] or "").upper():
+            _cambiar_tipo_del_lote(conn, uid, pid, _tipo)
         conn.commit()
         # FIXED: include user_id in SELECT to prevent IDOR data leak
         row = conn.execute("SELECT * FROM positions WHERE id=? AND user_id=?", (pid, uid)).fetchone()
@@ -12794,6 +13097,17 @@ class CashFlowIn(BaseModel):
     # depósito") — monthly_entries bookea el AÑO/MES de esta fecha (mismo
     # patrón que _autodeposit_if_overdraw, que ya registra retro por fecha).
     date: Optional[str] = Field(None, max_length=10)
+    # Moneda del movimiento ('ARS'|'USD'). None → la del broker (lo de siempre).
+    # Dólares "en Cocos" van a la caja de 'Cocos · USD' (ver _pata_de_la_moneda).
+    currency: Optional[str] = Field(None, max_length=8)
+
+    @field_validator('currency')
+    @classmethod
+    def clean_currency(cls, v):
+        if not v:
+            return None
+        u = v.strip().upper()
+        return u if u in ('ARS', 'USD', 'USDT') else None
 
     @field_validator('direction')
     @classmethod
@@ -13924,6 +14238,23 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 ).fetchone()
                 if not broker_row:
                     raise HTTPException(404, f"Broker '{data.broker_name}' no encontrado")
+                # Dólares "en Cocos" → la caja de 'Cocos · USD' (y pesos en un
+                # sub-broker dólar → la del padre). Si el retiro rebota por saldo, la
+                # transacción entera se deshace, incluido el sub-broker recién creado.
+                # En una variable propia (no se pisa el pedido: ver la venta).
+                broker_name = _pata_de_la_moneda(conn, uid, data.broker_name, data.currency)
+                if broker_name != data.broker_name:
+                    broker_row = conn.execute(
+                        "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker_name)
+                    ).fetchone()
+                # Una moneda que la cuenta no tiene (pesos en IBKR) no se acepta: antes
+                # pasaba y un depósito de $100.000 quedaba anotado como US$ 100.000.
+                if data.currency:
+                    _pedida = "ARS" if data.currency.upper() == "ARS" else "USD"
+                    _caja = "ARS" if broker_row["currency"] == "ARS" else "USD"
+                    if _pedida != _caja:
+                        raise HTTPException(400, f"{data.broker_name} no tiene caja en "
+                                                 f"{'pesos' if _pedida == 'ARS' else 'dólares'}.")
 
                 currency = broker_row['currency']   # 'USDT' or 'ARS'
                 sign = 1 if data.direction == 'deposit' else -1
@@ -13933,7 +14264,7 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 # había caja); un DEPÓSITO pasa siempre, aunque el saldo siga en rojo
                 # (la idea es ir achicando el descubierto). La puerta toma el saldo
                 # antes de leerlo: dos movimientos a la vez cuentan los dos.
-                _adjust_broker_cash(conn, uid, data.broker_name, sign * data.amount,
+                _adjust_broker_cash(conn, uid, broker_name, sign * data.amount,
                                     permite_negativo=False)
 
                 # 3 & 4. Ambas entradas (broker + global) se guardan en USD.
@@ -13968,12 +14299,12 @@ def cash_flow(data: CashFlowIn, uid: int = Depends(get_effective_user)):
                 # El día del movimiento: el que eligió la persona, o hoy (argentino)
                 # si no mandó ninguno.
                 _flujo_id = _registrar_flujo_a_mano(
-                    conn, uid, data.broker_name, _fy, _fm, data.direction, amount_usd,
+                    conn, uid, broker_name, _fy, _fm, data.direction, amount_usd,
                     native_amount=data.amount,
                     fecha=(_fd.date().isoformat() if _fd_ok else _iso_today()),
                     origen="efectivo")
                 # Phase 8 — repair chain for both touched brokers.
-                _repair_monthly_chain(conn, uid, data.broker_name)
+                _repair_monthly_chain(conn, uid, broker_name)
                 _repair_monthly_chain(conn, uid, 'global')
 
             # Un depósito o retiro cambia lo aportado: lo que la IA tenía guardado
@@ -14993,6 +15324,11 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     """
     parent_id = parent_broker_row['id']
     parent_name = parent_broker_row['name']
+    # El turno de escritura ANTES de mirar si existe: dos pedidos a la vez que
+    # traen los primeros dólares de la cuenta (un depósito y una venta) veían
+    # los dos que no había pata, los dos la creaban y el segundo rebotaba con
+    # "UNIQUE constraint failed". Con el turno, el segundo espera y la encuentra.
+    _tomar_turno(conn, uid)
     sibling = conn.execute(
         "SELECT * FROM brokers WHERE user_id=? AND parent_broker_id=? AND currency='USDT'",
         (uid, parent_id),
@@ -15020,6 +15356,67 @@ def _ensure_usd_sibling(conn, uid: int, parent_broker_row) -> dict:
     return dict(conn.execute(
         "SELECT * FROM brokers WHERE id=? AND user_id=?", (cur.lastrowid, uid)
     ).fetchone())
+
+
+def _pata_de_la_moneda(conn, uid: int, broker: str, currency: Optional[str],
+                       crear: bool = True) -> str:
+    """El broker REAL donde vive algo hecho "en `broker`" en la moneda `currency`.
+
+    Cada broker tiene UNA caja de efectivo y esa caja tiene UNA moneda. Los
+    dólares de una cuenta argentina viven en su sub-broker '<Padre> · USD'
+    (`_ensure_usd_sibling`). El usuario ya no elige ese sub-broker: elige "Cocos"
+    y la moneda, y esto lo traduce. Lo cargado a mano va ENTERO a la pata (lote y
+    plata). OJO: el importador NO hace lo mismo con los CEDEAR pagados en dólares —
+    deja el lote en el padre y saca la plata de la pata (`persister.cash_broker_for`,
+    a propósito, por un reporte de Balanz). Las dos formas conviven: el FIFO y la
+    cuenta unificada miran el par entero (`broker_pair`).
+
+      • broker ARS  + moneda USD → el sub-broker '· USD' (se crea si no existe).
+      • sub-broker '· USD' de un padre ARS + moneda ARS → el padre.
+      • cualquier otro caso (sin moneda, misma moneda, broker del exterior,
+        broker desconocido) → el mismo `broker`, sin tocar nada.
+
+    Sin esto, una compra en dólares anotada a "Cocos" descontaba los dólares de
+    la caja de PESOS, y el autodepósito del faltante quedaba asentado como pesos
+    (medido: un aporte de US$ 30.000 anotado como US$ 19).
+
+    Lo usan las tres puertas por donde entra o sale plata de una cuenta a mano:
+    el alta de una compra (`_insert_manual_position`, que también usan el chat y la
+    compra grupal del asesor), la venta (`/api/positions/sell`) y el
+    depósito/retiro (`/api/cash/flow`). El chat además resuelve la pata al validar
+    (`_register_trade`) y lee dónde quedó con `_pata_existente`.
+    """
+    if not currency:
+        return broker
+    ccy = "ARS" if currency.strip().upper() == "ARS" else "USD"
+    row = conn.execute(
+        "SELECT * FROM brokers WHERE user_id=? AND name=?", (uid, broker)
+    ).fetchone()
+    if not row:
+        return broker
+    if row["currency"] == "ARS":
+        if ccy == "USD":
+            if crear:
+                return _ensure_usd_sibling(conn, uid, row)["name"]
+            hijo = conn.execute(
+                "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=? "
+                "AND currency='USDT' LIMIT 1", (uid, row["id"])).fetchone()
+            return hijo["name"] if hijo else broker
+        return broker
+    if ccy == "ARS" and row["parent_broker_id"]:
+        padre = conn.execute(
+            "SELECT name, currency FROM brokers WHERE user_id=? AND id=?",
+            (uid, row["parent_broker_id"]),
+        ).fetchone()
+        if padre and padre["currency"] == "ARS":
+            return padre["name"]
+    return broker
+
+
+def _pata_existente(conn, uid: int, broker: str, currency: Optional[str]) -> str:
+    """Lo mismo que `_pata_de_la_moneda` pero SIN crear la pata: para leer dónde
+    quedó algo (el deshacer del chat), nunca para escribir."""
+    return _pata_de_la_moneda(conn, uid, broker, currency, crear=False)
 
 
 @app.post("/api/conversions")
@@ -15332,9 +15729,18 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
     with db_abierta() as conn:
         try:
             with conn:  # transacción
+                # Lo cobrado entra a la caja de SU moneda: una venta en dólares "en
+                # Cocos" acredita en 'Cocos · USD'. Los lotes se buscan igual en
+                # todo el par (ver broker_pair abajo), así que esto sólo decide a qué
+                # caja va la plata y con qué broker se asienta la venta.
+                # En una variable propia, NO en `data.broker`: el decorador
+                # @reintentar_si_trabada vuelve a llamar con el MISMO pedido, y si la
+                # primera vuelta se deshizo después de crear la pata, el reintento
+                # arrancaba con un broker que ya no existía.
+                broker = _pata_de_la_moneda(conn, uid, data.broker, data.currency)
                 # Obtener moneda del broker
                 br = conn.execute(
-                    "SELECT currency FROM brokers WHERE name=? AND user_id=?", (data.broker, uid)
+                    "SELECT currency FROM brokers WHERE name=? AND user_id=?", (broker, uid)
                 ).fetchone()
                 currency = br["currency"] if br else "USDT"
                 # Moneda de venta normalizada (USDT→USD) + blue actual como fallback
@@ -15354,7 +15760,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 # la fila donde vive el lote), pero deja el modelo FIFO idéntico al del
                 # import/rebuild. El cash sigue per-broker (entra al broker de la venta).
                 from importing.persister import broker_pair
-                _pair = broker_pair(conn, uid, data.broker)
+                _pair = broker_pair(conn, uid, broker)
                 _ph = ",".join("?" * len(_pair))
                 # Posiciones del par, FIFO por entry_date (NULLs al final), tie-break por id.
                 all_positions = conn.execute(
@@ -15573,11 +15979,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                         (_json_sell.dumps({
                             "src": "fifo_sell",
                             "cash": round(data.exit_price * take - chunk_commission_native, 6),
-                            # OJO: el cash se acredita a `data.broker`, pero la operación se
+                            # OJO: el cash se acredita a `broker`, pero la operación se
                             # estampa con el broker del LOTE — en un par padre↔'· USD' pueden
                             # ser distintos. Sin esto, el borrado reversaba el cash del broker
                             # EQUIVOCADO y dejaba los dos saldos corridos.
-                            "cash_broker": data.broker,
+                            "cash_broker": broker,
                             "pnl_usd": round(pnl_usd, 2),
                             "lot": {
                                 "id": p["id"], "broker": p["broker"], "asset": p["asset"],
@@ -15629,7 +16035,7 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
 
                 # ── Phase 2 — acreditar proceeds al cash del broker (moneda nativa) ──
                 if total_proceeds_native > 0:
-                    _adjust_broker_cash(conn, uid, data.broker, total_proceeds_native)
+                    _adjust_broker_cash(conn, uid, broker, total_proceeds_native)
 
                 # ── Registrar P&L realizado en monthly_entries ────────────────────────
                 # Usar el año/mes de la operación (no necessarily el mes actual).
@@ -15650,11 +16056,11 @@ def sell_position_fifo(data: SellIn, uid: int = Depends(get_effective_user)):
                 else:
                     pnl_for_broker = total_pnl_usd
 
-                _update_monthly_pnl_realized(conn, uid, data.broker, op_year, op_month, pnl_for_broker)
+                _update_monthly_pnl_realized(conn, uid, broker, op_year, op_month, pnl_for_broker)
                 _update_monthly_pnl_realized(conn, uid, 'global',    op_year, op_month, total_pnl_usd)
 
                 # Phase 8 — repair chain for both touched brokers (still in tx).
-                _repair_monthly_chain(conn, uid, data.broker)
+                _repair_monthly_chain(conn, uid, broker)
                 _repair_monthly_chain(conn, uid, 'global')
 
                 ops = [dict(conn.execute(
@@ -16982,6 +17388,25 @@ def _cobro_manual(d: dict):
     return realized_pnl.leer_cobro(d)
 
 
+def _tipo_de_fila_importada(d) -> str:
+    """El tipo con que se MUESTRA una fila de `import_normalized_tx` (Movimientos y
+    el CSV para el contador). `d` trae operation_type, asset_symbol, asset_type y
+    notes.
+
+    La amortización de un bono que el archivo trae SIN cantidad (Balanz, IOL, el
+    genérico) se importa como DIVIDEND. El persister la anota como lo que es
+    —'Amortización', capital que vuelve, sin ganancia (`_is_amort_capital_return`)—,
+    pero las dos listas la mostraban como "Dividendo": Movimientos la sumaba a
+    "Cobrado" y a la pestaña Cobros, y los pagos de AL30/GD30 contaban entero el
+    capital devuelto como renta. Misma regla que el persister, para que la fila
+    diga lo mismo que la cuenta."""
+    op_type = (d["operation_type"] or "").upper()
+    if op_type in ("DIVIDEND", "INTEREST") and _import_persister._is_amort_capital_return(
+            op_type, d["asset_symbol"], d["asset_type"], d["notes"]):
+        return "AMORTIZATION"
+    return op_type
+
+
 def _build_movements(uid: int):
     """Las filas de /api/movements, sin el decorador HTTP.
 
@@ -17190,7 +17615,8 @@ def _build_movements(uid: int):
         tx_rows = conn.execute(
             f"""SELECT t.id, t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.transfer_out,
+                      t.asset_type
                 FROM {tx_vivas('t')}
                 WHERE b.user_id = ?
                 ORDER BY t.date DESC""",
@@ -17198,7 +17624,7 @@ def _build_movements(uid: int):
         ).fetchall()
         for r in tx_rows:
             d = dict(r)
-            op_type = (d.get("operation_type") or "").upper()
+            op_type = _tipo_de_fila_importada(d)
             # La conversión importada casi nunca trae moneda (en el backup de prod
             # del 2026-08-16, 533 de 534 sin `currency`): caía al `else` de abajo y
             # mostraba los PESOS como dólares (comprar US$1.000 → "US$1.400.000").
@@ -17384,6 +17810,12 @@ def _build_movements(uid: int):
         has_date = 1 if m.get("date") else 0
         return (has_date, m.get("date") or "")
     movements.sort(key=_sort_key, reverse=True)
+
+    # Qué fila es un cobro y cómo cuenta: la regla única de `cobros.py`. Viaja en
+    # la fila para que Movimientos ("Cobrado") y la pestaña Cobros cuenten igual.
+    import cobros as _cobros
+    for m in movements:
+        m["cobro"] = _cobros.clase_de_cobro(m)
 
     return movements
 
@@ -19291,6 +19723,24 @@ def delete_movement(movement_id: str, uid: int = Depends(get_effective_user)):
     return {"ok": True, **({"undo_token": out["undo_token"]} if out.get("undo_token") else {})}
 
 
+@app.get("/api/cobros")
+def get_cobros(uid: int = Depends(get_effective_user)):
+    """La pestaña Cobros de Movimientos: los cobros (dividendos, cupones,
+    intereses) en dólares al dólar del día de cada uno, y los pagos de bonos que
+    traen cupón y amortización juntos.
+
+    Sobre las MISMAS filas que Movimientos (`_build_movements`), como las
+    comisiones de abajo. Qué cuenta como cobro vive en `cobros.py`; las sumas,
+    el cupón de los pagos mixtos y el estimado los arma la pantalla
+    (frontend/src/utils/cobros.js): necesitan el cronograma de los bonos y la
+    equivalencia CEDEAR → acción, que viven allá. `dias_hasta_el_pago` es la
+    regla medida de los dividendos (`dividendos.REGLAS`): la pantalla la usa para
+    saber cuándo entra un dividendo del que sólo se conoce el corte."""
+    import cobros as _cobros
+    return _cobros.cobros(_build_movements(uid), _iso_today(),
+                          _dividendos.REGLAS["dias_hasta_el_pago"])
+
+
 @app.get("/api/insights/commissions")
 def get_commissions_total(uid: int = Depends(get_effective_user)):
     """Total de comisiones e impuestos, sobre las MISMAS filas que Movimientos.
@@ -19591,7 +20041,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
         tx_rows = conn.execute(
             f"""SELECT t.date, t.broker, t.operation_type, t.asset_symbol,
                       t.asset_name, t.quantity, t.unit_price, t.gross_amount,
-                      t.currency, t.fees, t.notes, t.gross_amount_usd
+                      t.currency, t.fees, t.notes, t.gross_amount_usd, t.asset_type
                FROM {tx_vivas('t')}
                WHERE b.user_id = ?""",
             (uid,),
@@ -19604,7 +20054,7 @@ def export_transactions_csv(request: Request, uid: int = Depends(get_effective_u
                 continue
             rows.append({
                 "fecha": r["date"],
-                "tipo": _humanize_tx_type(r["operation_type"]),
+                "tipo": _humanize_tx_type(_tipo_de_fila_importada(r)),
                 "broker": r["broker"] or "",
                 "activo": r["asset_symbol"] or r["asset_name"] or "",
                 "cantidad": r["quantity"],
@@ -19973,7 +20423,7 @@ def wrapped_year(year: int, uid: int = Depends(get_effective_user)):
 
 
 @app.get("/api/behavioral/insights")
-def behavioral_insights(uid: int = Depends(get_effective_user)):
+def behavioral_insights(request: Request, uid: int = Depends(get_effective_user)):
     """Detecta sesgos comportamentales sobre el historial del usuario.
     Sprint 3 + 3.1 + 3.2 del plan post-auditoría. 10 detectores en total.
 
@@ -20013,9 +20463,26 @@ def behavioral_insights(uid: int = Depends(get_effective_user)):
                 inflation_monthly = _fetch_inflation_ar()
         except Exception:
             inflation_monthly = {}
+        # Cuántos detectores puede ver esta cuenta (None = todos). Se resuelve con
+        # conn viva; el recorte se aplica después del build (que no usa conn).
+        # El plan que manda es el de QUIEN pide: si un asesor mira la cuenta de un
+        # cliente (contexto), los ve con SU plan, no con el del cliente — si no, al
+        # asesor (que paga) se le recortarían los detectores del cliente.
+        from ai import plan as _plan
+        plan_uid = getattr(request.state, "rendi_auth_uid", uid)
+        tope_detectores = _plan.detectores_visibles(conn, plan_uid)
     finally:
         conn.close()
-    return build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
+    result = build_behavioral_insights(ops, positions, prices, inflation_monthly, tc_blue, tc_cedear)
+    # Recorte EN EL SERVIDOR: a quien no tiene todos los detectores se le dan los
+    # primeros N completos; del resto sólo viaja el `code` (lo único que el preview
+    # educativo del front necesita), nunca el análisis personal. Antes iban los 12
+    # completos y el recorte vivía sólo en la pantalla — una cortina, no una puerta.
+    if tope_detectores is not None and isinstance(result.get("cards"), list):
+        cards = result["cards"]
+        result["cards"] = (cards[:tope_detectores]
+                           + [{"code": c.get("code")} for c in cards[tope_detectores:]])
+    return result
 
 
 def _resolve_op_currency(conn, uid: int, broker_name: str, currency_in: Optional[str]) -> str:
@@ -26903,9 +27370,9 @@ def admin_users_search(q: str = "", limit: int = 30, uid: int = Depends(get_admi
 
 
 # ─── Envíos masivos del panel de admin ────────────────────────────────────────
-# Los cinco mails que el admin le manda a mucha gente desde el panel
-# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba y
-# el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
+# Los seis mails que el admin le manda a mucha gente desde el panel
+# (re-engagement, regalo de plan, invitación a la prueba, feedback de la prueba,
+# cuentas en pausa y el mail libre) salen por el MISMO motor, `_envio_masivo`. Antes cada uno tenía
 # su loop y cada arreglo quedaba en uno solo: el de feedback tenía pausa, tandas
 # y freno al doble click, y los otros cuatro mandaban todo de un tirón.
 #
@@ -27065,7 +27532,8 @@ def _sigue_existiendo(conn, uid):
 # Columnas de `users` donde un envío masivo anota a quién ya le mandó. Lista
 # cerrada: el nombre va pegado al SQL.
 _MARCAS_DE_ENVIO = ("reengagement_email_sent_at", "gift_plan_email_sent_at",
-                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at")
+                    "trial_invite_email_sent_at", "trial_feedback_email_sent_at",
+                    "pausa_email_sent_at")
 
 
 def _marca_en_columna(conn, columna):
@@ -27101,9 +27569,156 @@ def _marca_en_columna(conn, columna):
     return marcar, desmarcar
 
 
+# ─── Baja de los mails promocionales ──────────────────────────────────────────
+# Cada mail de las campañas del panel lleva un link "dejar de recibir" (y los
+# encabezados List-Unsubscribe) a /api/email/baja?u=<id>&t=<firma>. La firma
+# hace que el link sólo dé de baja a SU destinatario: sin ella, cambiando el
+# número cualquiera daba de baja a cualquiera. No pide iniciar sesión: la Ley
+# 25.326 (art. 27) pide que la baja sea simple, y el que la pide puede no
+# acordarse de la contraseña.
+
+def _firma_baja(uid) -> str:
+    # Subclave propia derivada de SECRET_KEY: el link viaja en mails, y la
+    # clave que firma las sesiones no tiene que firmar nada que ande suelto.
+    clave = hmac.new(SECRET_KEY.encode(), b"rendi:baja-mail:v1", hashlib.sha256).digest()
+    return hmac.new(clave, str(int(uid)).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _url_de_baja(uid) -> str:
+    from billing import emails
+    return f"{emails.APP_URL}/api/email/baja?u={int(uid)}&t={_firma_baja(uid)}"
+
+
+def _se_dio_de_baja(conn, uid) -> bool:
+    r = conn.execute("SELECT marketing_baja_at FROM users WHERE id=?", (int(uid),)).fetchone()
+    return bool(r and r["marketing_baja_at"])
+
+
+def _mandar_con_baja(mandar, t):
+    """El mail de una campaña, como PROMOCIONAL: con el link de baja de SU
+    destinatario al pie (ver `emails.con_baja`)."""
+    from billing import emails
+    with emails.con_baja(_url_de_baja(t["id"])):
+        return mandar(t)
+
+
+def _pagina_baja(titulo: str, texto: str, *, boton: str = "", accion: str = "",
+                 status: int = 200) -> Response:
+    """La página que ve quien toca el link de baja. HTML suelto, sin la app:
+    tiene que andar aunque no haya sesión y aunque el frontend no cargue."""
+    import html as _html
+    form = ""
+    if boton:
+        form = (f'<form method="post" action="{_html.escape(accion, quote=True)}">'
+                f'<button type="submit">{_html.escape(boton)}</button></form>')
+    cuerpo = f"""<!doctype html>
+<html lang="es-AR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Rendi · mails promocionales</title>
+<style>
+  body{{margin:0;background:#f5f7fa;color:#1a1f2e;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif}}
+  main{{max-width:480px;margin:48px auto;padding:32px 24px;background:#fff;border-radius:8px}}
+  h1{{font-size:20px;margin:0 0 12px}}
+  p{{margin:0 0 20px;color:#374151}}
+  button{{font:inherit;font-weight:600;padding:10px 18px;border:0;border-radius:6px;background:#1a1f2e;color:#fff;cursor:pointer}}
+  button:focus-visible{{outline:3px solid #5b4ddb;outline-offset:2px}}
+  a{{color:#4338ca}}
+</style></head>
+<body><main>
+<h1>{_html.escape(titulo)}</h1>
+<p>{_html.escape(texto)}</p>
+{form}
+<p style="margin-top:24px;font-size:14px"><a href="https://rendi.finance">Ir a Rendi</a></p>
+</main></body></html>"""
+    return Response(content=cuerpo, status_code=status, media_type="text/html; charset=utf-8")
+
+
+_BAJA_QUE_SIGUE = ("Los mails de tu cuenta te siguen llegando igual: los códigos para entrar, "
+                   "los recibos de pago y las alertas que armaste vos.")
+
+
+def _baja_valida(u, t):
+    """El id del link si la firma es suya; None si no."""
+    try:
+        uid = int(u)
+    except (TypeError, ValueError):
+        return None
+    if uid <= 0 or not t or not hmac.compare_digest(str(t), _firma_baja(uid)):
+        return None
+    return uid
+
+
+def _baja_invalida():
+    return _pagina_baja(
+        "Este link no es válido",
+        "Puede que se haya cortado al copiarlo. Si querés dejar de recibir nuestros mails "
+        "promocionales, escribinos a soporte@rendi.finance y lo hacemos a mano.",
+        status=400)
+
+
+@app.get("/api/email/baja")
+def email_baja_pagina(request: Request, u: str = "", t: str = ""):
+    """El link del pie de los mails promocionales. NO da de baja al abrirse:
+    los antivirus de los correos abren los links solos, y eso daba de baja a
+    gente que no lo pidió. Muestra un botón; la baja es el POST."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    accion = f"/api/email/baja?u={uid}&t={_firma_baja(uid)}"
+    with db_abierta() as conn:
+        dado_de_baja = _se_dio_de_baja(conn, uid)
+    if dado_de_baja:
+        return _pagina_baja(
+            "Ya no te mandamos mails promocionales",
+            "Si cambiaste de idea, podés volver a recibirlos. " + _BAJA_QUE_SIGUE,
+            boton="Volver a recibirlos", accion=accion.replace("/baja?", "/alta?"))
+    return _pagina_baja(
+        "¿Dejar de recibir los mails promocionales de Rendi?",
+        "Son los mails que mandamos a mano: novedades, pruebas gratis, regalos de plan. "
+        + _BAJA_QUE_SIGUE,
+        boton="Sí, no quiero recibirlos", accion=accion)
+
+
+@app.post("/api/email/baja")
+def email_baja(request: Request, u: str = "", t: str = ""):
+    """Da de baja de los mails promocionales. Lo llaman el botón de la página y,
+    sin abrir nada, el botón "Desuscribirse" de Gmail/Yahoo (List-Unsubscribe-Post)."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET marketing_baja_at=? WHERE id=? AND marketing_baja_at IS NULL",
+                     (datetime.utcnow().isoformat(), uid))
+        conn.commit()
+    log.info("email-baja: uid=%s pidió no recibir mails promocionales", uid)
+    return _pagina_baja(
+        "Listo: no te vamos a mandar más mails promocionales",
+        _BAJA_QUE_SIGUE,
+        boton="Me equivoqué, quiero recibirlos",
+        accion=f"/api/email/alta?u={uid}&t={_firma_baja(uid)}")
+
+
+@app.post("/api/email/alta")
+def email_alta(request: Request, u: str = "", t: str = ""):
+    """Deshace la baja (el "me equivoqué")."""
+    _check_rate_limit(request, 30, 300, "email-baja")
+    uid = _baja_valida(u, t)
+    if uid is None:
+        return _baja_invalida()
+    with db_abierta() as conn:
+        conn.execute("UPDATE users SET marketing_baja_at=NULL WHERE id=?", (uid,))
+        conn.commit()
+    log.info("email-baja: uid=%s volvió a aceptar mails promocionales", uid)
+    return _pagina_baja("Listo: vas a volver a recibirlos",
+                        "Gracias. Podés darte de baja cuando quieras desde el pie de cualquiera de esos mails.")
+
+
 def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, campaña,
                   inicio=None, inciertos_previos=0):
-    """Manda un mail a cada destinatario, de a uno. Es el motor de los cinco
+    """Manda un mail a cada destinatario, de a uno. Es el motor de los seis
     envíos masivos del panel de admin.
 
     `destinatarios`: los que el admin vio y que HOY siguen calificando (cada
@@ -27113,6 +27728,11 @@ def _envio_masivo(conn, destinatarios, vistos, *, marcar, mandar, desmarcar, cam
     previa y el click).
 
     Por cada uno:
+      0. Si pidió no recibir más mails promocionales (`marketing_baja_at`), no
+         se le manda: va en descartados. Se mira ACÁ, en el momento de mandar,
+         y no sólo en la lista de cada campaña: así ninguna campaña —tampoco
+         una nueva— se lo puede saltear. Y cada mail que sale lleva su link
+         de baja (`_mandar_con_baja`).
       1. `marcar(t)` se queda con la persona ANTES de mandar. Devuelve la marca,
          o None si ya la tiene otro pedido (doble click, otra pestaña) → se
          saltea. Se gana con un UPDATE/INSERT condicional: dos pedidos a la vez
@@ -27175,6 +27795,16 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
             break
         quien = {"id": t["id"], "email": t["email"]}
         try:
+            if _se_dio_de_baja(conn, t["id"]):
+                ya_no_estan.append({"id": t["id"]})
+                continue
+        except Exception as ex:
+            # Sin poder confirmar que NO pidió la baja, no se le manda.
+            log.error("%s: no se pudo leer la baja de uid=%s: %s", campaña, t["id"], ex)
+            _deshacer_transaccion(conn)
+            fallados.append(quien)
+            continue
+        try:
             marca = marcar(t)
             conn.commit()
         except Exception as ex:
@@ -27198,7 +27828,7 @@ def _envio_masivo_en_fila(conn, destinatarios, vistos, *, marcar, mandar, desmar
                 _deshacer_transaccion(conn)
                 raise
 
-        estado = tanda.mandar(marca, lambda t=t: mandar(t), _devolver,
+        estado = tanda.mandar(marca, lambda t=t: _mandar_con_baja(mandar, t), _devolver,
                               que=f"{campaña} uid={t['id']}")
         if estado == emails.ENVIADO:
             enviados.append(quien)
@@ -27288,6 +27918,7 @@ def _reengagement_candidatos(conn, data, ids=None):
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
           AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -27400,6 +28031,7 @@ def _gift_plan_candidatos(conn, data, ids=None):
         FROM users u
         WHERE COALESCE(u.is_admin,0) = 0
           AND u.managed_by IS NULL          -- sin shadows del Plan Asesor
+          AND u.marketing_baja_at IS NULL   -- pidió no recibir promocionales
           {filtro}
         ORDER BY u.created_at ASC
     """, params).fetchall()
@@ -27563,6 +28195,7 @@ def _trial_invite_elegibles(conn, ids=None):
         f"""SELECT id, email, name FROM users
              WHERE COALESCE(is_admin,0) = 0
                AND managed_by IS NULL
+               AND marketing_baja_at IS NULL
                AND COALESCE(email_verified,0) = 1
                AND TRIM(COALESCE(email,'')) <> ''{filtro}""", params).fetchall()
 
@@ -27652,6 +28285,64 @@ def admin_email_trial_invite(data: TrialInviteEmailIn, uid: int = Depends(get_ad
         conn.close()
 
 
+def _otros_mails_de_rendi(conn, mails: dict, propia: str):
+    """Todos los mails que Rendi le mandó por iniciativa propia a cada persona,
+    menos el de la columna `propia` (el mail que se está por mandar, que cada
+    endpoint mira aparte). `mails` = {uid: email}.
+
+    Devuelve ({uid: [fechas UTC]}, {uid: {tipos de aviso automático ya salidos}}).
+    Junta:
+      · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
+      · los otros mails a mano de este panel (_MARCAS_DE_ENVIO, columnas de
+        users; el mail libre: broadcast_send_log).
+    Sin los segundos, alguien que recibió el re-engagement hace un minuto
+    recibía también el de feedback: dos mails en el mismo minuto. Es la regla
+    de los dos mails que la usan (feedback de la prueba y cuentas en pausa);
+    si una cambia acá, cambia para las dos."""
+    otros = {uid: [] for uid in mails}
+    avisos = {uid: set() for uid in mails}
+    if not mails:
+        return otros, avisos
+    ph = ",".join("?" for _ in mails)
+    cols = [c for c in _MARCAS_DE_ENVIO if c != propia]
+    try:
+        for r in conn.execute(
+                f"SELECT id, {', '.join(cols)} FROM users WHERE id IN ({ph})",
+                tuple(mails)).fetchall():
+            for col in cols:
+                f = _fecha_utc(r[col])
+                if f:
+                    otros[int(r["id"])].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudieron leer las marcas de users: %s", ex)
+        _deshacer_transaccion(conn)
+    try:
+        for r in conn.execute(
+            f"""SELECT user_id, kind, sent_at FROM trial_email_log
+                 WHERE user_id IN ({ph})""", tuple(mails)).fetchall():
+            uid = int(r["user_id"])
+            avisos[uid].add(r["kind"])
+            f = _fecha_utc(r["sent_at"])
+            if f:
+                otros[uid].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudo leer trial_email_log: %s", ex)
+        _deshacer_transaccion(conn)
+    por_mail = {(m or "").strip().lower(): uid for uid, m in mails.items()}
+    ph = ",".join("?" for _ in por_mail)
+    try:
+        for r in conn.execute(
+            f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
+                 WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
+            f = _fecha_utc(r["sent_at"])
+            if f and r["e"] in por_mail:
+                otros[por_mail[r["e"]]].append(f)
+    except Exception as ex:
+        log.warning("otros mails: no se pudo leer broadcast_send_log: %s", ex)
+        _deshacer_transaccion(conn)
+    return otros, avisos
+
+
 @app.post("/api/admin/email/feedback-prueba")
 def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(get_admin_user)):
     """Mail "¿qué te está pareciendo Rendi?" a quienes están EN LA PRUEBA GRATIS.
@@ -27731,65 +28422,27 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
         def _horas_desde(d):
             return round((ahora - d).total_seconds() / 3600, 1) if d else None
 
-        # Una fila por persona con todo lo que hace falta para decidir:
-        # la marca de ESTE mail, cuándo arrancó la prueba y las marcas de los
-        # otros mails que se mandan a mano desde este mismo panel.
+        # Una fila por persona con todo lo que hace falta para decidir: la
+        # marca de ESTE mail y cuándo arrancó la prueba. Los otros mails que le
+        # llegaron los junta `_otros_mails_de_rendi`.
         datos = {}
         if vivos:
             ph = ",".join("?" for _ in vivos)
             for r in conn.execute(
                 f"""SELECT id, email, trial_feedback_email_sent_at AS enviado,
-                           trial_started_at, trial_ends_at,
-                           reengagement_email_sent_at, gift_plan_email_sent_at,
-                           trial_invite_email_sent_at
+                           trial_started_at, trial_ends_at
                       FROM users
                      WHERE id IN ({ph})
                        AND COALESCE(is_admin,0) = 0
                        AND managed_by IS NULL
+                       AND marketing_baja_at IS NULL
                        AND TRIM(COALESCE(email,'')) <> ''""",
                     tuple(int(v["id"]) for v in vivos)).fetchall():
                 datos[int(r["id"])] = dict(r)
 
-        # Todos los mails que Rendi le mandó por iniciativa propia, como fechas:
-        #   · los automáticos de la prueba (trial_email_log), y qué tipos ya salieron;
-        #   · los otros mails a mano de este panel (re-engagement, regalo,
-        #     invitación: columnas de users; el mail libre: broadcast_send_log).
-        # Sin los segundos, alguien que recibió el re-engagement hace un minuto
-        # recibía este también: dos mails en el mismo minuto.
-        otros_mails = {uid: [] for uid in datos}
-        avisos_enviados = {uid: set() for uid in datos}
-        for uid, d in datos.items():
-            for col in ("reengagement_email_sent_at", "gift_plan_email_sent_at",
-                        "trial_invite_email_sent_at"):
-                f = _fecha_utc(d.get(col))
-                if f:
-                    otros_mails[uid].append(f)
-        if datos:
-            ph = ",".join("?" for _ in datos)
-            try:
-                for r in conn.execute(
-                    f"""SELECT user_id, kind, sent_at FROM trial_email_log
-                         WHERE user_id IN ({ph})""", tuple(datos)).fetchall():
-                    uid = int(r["user_id"])
-                    avisos_enviados[uid].add(r["kind"])
-                    f = _fecha_utc(r["sent_at"])
-                    if f:
-                        otros_mails[uid].append(f)
-            except Exception as ex:
-                log.warning("feedback-prueba: no se pudo leer trial_email_log: %s", ex)
-                _deshacer_transaccion(conn)
-            por_mail = {(d["email"] or "").strip().lower(): uid for uid, d in datos.items()}
-            ph = ",".join("?" for _ in por_mail)
-            try:
-                for r in conn.execute(
-                    f"""SELECT LOWER(email) AS e, sent_at FROM broadcast_send_log
-                         WHERE LOWER(email) IN ({ph})""", tuple(por_mail)).fetchall():
-                    f = _fecha_utc(r["sent_at"])
-                    if f and r["e"] in por_mail:
-                        otros_mails[por_mail[r["e"]]].append(f)
-            except Exception as ex:
-                log.warning("feedback-prueba: no se pudo leer broadcast_send_log: %s", ex)
-                _deshacer_transaccion(conn)
+        otros_mails, avisos_enviados = _otros_mails_de_rendi(
+            conn, {uid: d["email"] for uid, d in datos.items()},
+            propia="trial_feedback_email_sent_at")
 
         ventana = _td(hours=FEEDBACK_PRUEBA_ESPERA_HORAS)
         # Cómo se llama en el panel cada aviso automático de la prueba.
@@ -27895,6 +28548,233 @@ def admin_email_feedback_prueba(data: TrialFeedbackEmailIn, uid: int = Depends(g
         conn.close()
 
 
+# Campaña "tu cuenta está en pausa" (/api/admin/email/reactivar-pausa).
+# Días en pausa antes de poder mandarle: el día después de que termina la
+# prueba le llega solo el aviso automático "Terminó tu prueba", que dice casi
+# lo mismo. Otro mail en esos días se lee como insistencia, no como una persona
+# que escribe.
+REACTIVAR_PAUSA_MIN_DIAS = 3
+# Horas que tiene que esperar alguien a quien le llegó OTRO mail de Rendi (o
+# este mismo) antes de que se le pueda mandar: dos el mismo día son spam.
+REACTIVAR_PAUSA_ESPERA_HORAS = 24
+
+
+class ReactivarPausaEmailIn(BaseModel):
+    confirm: bool = False                 # False = DRY RUN (las listas, no manda nada)
+    grupo: str = "nuevos"                 # 'nuevos' (nunca lo recibieron) | 'todos' (todos los en pausa)
+    vistos: Optional[List[VistoEnvio]] = Field(None, max_length=ENVIO_MASIVO_LOTE)
+    inciertos_seguidos: int = Field(0, ge=0, le=100)
+    prueba_a_mi: bool = False             # manda UNO al mail del admin logueado y no toca a nadie
+    con_cartera: bool = True              # (sólo prueba_a_mi) qué versión del mail mandarse
+
+
+def _pausa_desde(d: dict, ahora: datetime) -> Optional[datetime]:
+    """Desde cuándo está en pausa (UTC): lo último que le daba acceso y ya
+    venció — el fin de la prueba, del crédito (un plan que pagó o le
+    regalaron) o de la prueba de Pro. Si nada de eso existió (la prueba nunca
+    arrancó: `motivo_de_pausa` = 'prueba_usada'), desde que creó la cuenta."""
+    vencidos = [f for f in (_fecha_utc(d.get("trial_ends_at")),
+                            _fecha_utc(d.get("credit_active_until")),
+                            _fecha_utc(d.get("pro_trial_until")))
+                if f is not None and f <= ahora]
+    if vencidos:
+        return max(vencidos)
+    return _fecha_utc(d.get("created_at"))
+
+
+def _reactivar_pausa_filas(conn, ahora: datetime, ids=None) -> list:
+    """Una fila por cada cuenta EN PAUSA con mail confirmado, con todo lo que
+    el mail personaliza y lo que decide si se le puede mandar hoy.
+
+    🔒 De la cartera sólo sale SI cargó algo (para elegir cuál de los dos
+    mails): ni activos, ni montos, ni cuántos brokers o movimientos, tampoco
+    hacia el panel. La Política de Privacidad promete usar los datos de
+    cartera sólo para prestar el servicio, y esto es un mail para que vuelva
+    a pagar (ver emails.reactivar_pausa_contenido).
+
+    ⭐ "Está en pausa" lo decide `cuenta_en_pausa`, la MISMA función que pone
+    el muro en la app y la etiqueta "en pausa" del panel de usuarios. Con un
+    criterio propio acá (p. ej. "trial_ends_at vencido") se colaría el que
+    pagó, que conserva su trial_ends_at. Sin mail confirmado no entra: esa
+    persona no llegó a usar nada, y el panel la muestra como "sin confirmar".
+
+    `ids` = sólo esos (los que vio el admin)."""
+    from billing import emails
+    from billing import trial as _trial
+    from fechas import dia_art
+
+    filtro, params = _filtro_ids("id", ids)
+    filas = []
+    for r in conn.execute(
+        f"""SELECT id, email, name, created_at, trial_started_at, trial_ends_at,
+                   credit_active_until, pro_trial_until,
+                   pausa_email_sent_at AS enviado
+              FROM users
+             WHERE requires_plan = 1
+               AND COALESCE(is_admin,0) = 0
+               AND managed_by IS NULL
+               AND marketing_baja_at IS NULL
+               AND COALESCE(email_verified,0) = 1
+               AND TRIM(COALESCE(email,'')) <> ''
+               {filtro}
+             ORDER BY id""", params).fetchall():
+        d = dict(r)
+        if cuenta_en_pausa(conn, d["id"]):
+            filas.append(d)
+
+    otros_mails, avisos_enviados = _otros_mails_de_rendi(
+        conn, {d["id"]: d["email"] for d in filas}, propia="pausa_email_sent_at")
+    ventana = timedelta(hours=REACTIVAR_PAUSA_ESPERA_HORAS)
+
+    def _horas_desde(f):
+        return (ahora - f).total_seconds() / 3600 if f else None
+
+    out = []
+    for d in filas:
+        uid_ = d["id"]
+        desde = _pausa_desde(d, ahora)
+        dias = int((_horas_desde(desde) or 0) // 24)
+        # La misma definición de "cargó algo" que la frase del muro.
+        con_cartera = resumen_de_lo_guardado(conn, uid_) is not None
+        otro = _horas_desde(max(otros_mails[uid_])) if otros_mails[uid_] else None
+        propio = _horas_desde(_fecha_utc(d["enviado"]))
+        # El aviso automático "Terminó tu prueba" todavía no salió y su
+        # ventana sigue abierta: sale en la próxima corrida del cron.
+        fin_pendiente = False
+        if _trial.MAIL_ENDED not in avisos_enviados[uid_]:
+            v = _trial.ventanas_de_aviso(d["trial_started_at"], d["trial_ends_at"]).get(
+                _trial.MAIL_ENDED)
+            fin_pendiente = bool(v) and ahora < v[1] and v[0] <= ahora + ventana
+        espera = None
+        if dias < REACTIVAR_PAUSA_MIN_DIAS:
+            espera = (f"lleva {dias} {'día' if dias == 1 else 'días'} en pausa · "
+                      f"entra con {REACTIVAR_PAUSA_MIN_DIAS}")
+        elif fin_pendiente:
+            espera = ("todavía no le llegó el aviso automático «terminó tu prueba» · "
+                      "se le puede mandar después")
+        elif otro is not None and otro < REACTIVAR_PAUSA_ESPERA_HORAS:
+            espera = (f"le llegó otro mail de Rendi {_hace_txt(otro)} · "
+                      "se le puede mandar a partir de mañana")
+        elif propio is not None and propio < REACTIVAR_PAUSA_ESPERA_HORAS:
+            espera = (f"lo recibió {_hace_txt(propio)} · "
+                      "se le puede volver a mandar a partir de mañana")
+        pausa_dia = dia_art(desde) if desde else None
+        asunto, _html, texto = emails.reactivar_pausa_contenido(
+            d.get("name") or "", con_cartera=con_cartera,
+            pausa_desde=pausa_dia, reenvio=bool(d["enviado"]))
+        out.append({
+            "id": uid_, "email": d["email"], "name": d.get("name"),
+            "saludo": emails.nombre_de_pila(d.get("name")),
+            "motivo": motivo_de_pausa(conn, uid_),
+            "pausa_desde": pausa_dia.isoformat() if pausa_dia else None,
+            "dias_en_pausa": dias,
+            "con_cartera": con_cartera,
+            "sent_at": d["enviado"],
+            "espera": espera,
+            # El mail EXACTO que le llegaría a esta persona hoy.
+            "mail": {"asunto": asunto, "texto": texto},
+            # Para mandar hace falta la fecha como día; esto no viaja al panel.
+            "_pausa_dia": pausa_dia,
+        })
+    # Los más recientes primero: el que pausó hace una semana todavía se acuerda
+    # de lo que cargó.
+    out.sort(key=lambda f: (f["pausa_desde"] or ""), reverse=True)
+    return out
+
+
+def _sin_privados(fila: dict) -> dict:
+    return {k: v for k, v in fila.items() if not k.startswith("_")}
+
+
+@app.post("/api/admin/email/reactivar-pausa")
+def admin_email_reactivar_pausa(data: ReactivarPausaEmailIn, uid: int = Depends(get_admin_user)):
+    """Mail a las cuentas EN PAUSA: se les terminó la prueba (o el plan) y no
+    eligieron uno, así que no pueden entrar. Mismo motor y mismas reglas que el
+    de feedback de la prueba.
+
+    Dos botones en el panel:
+      • 'nuevos' → los que NUNCA lo recibieron. Es el principal.
+      • 'todos'  → todos los que están en pausa, lo hayan recibido o no. Al que
+        ya lo recibió le llega la versión de reenvío (otra apertura).
+    Al que pagó (o volvió a tener acceso) deja de aparecer: se pregunta a
+    `cuenta_en_pausa` en cada pedido, también al mandar.
+
+    Personalizado por persona (ver emails.reactivar_pausa_contenido): saludo
+    con su nombre y desde cuándo está en pausa. Si cargó algo, el mail le
+    dice que todo sigue guardado; si no, le pregunta qué pasó. NUNCA nombra
+    lo que hay adentro de la cartera (Política de Privacidad). La vista
+    previa trae el mail exacto de cada fila.
+
+    No se le manda (se ve en gris, con el motivo en `espera`) a quien:
+      · lleva menos de REACTIVAR_PAUSA_MIN_DIAS días en pausa;
+      · todavía no recibió el aviso automático "Terminó tu prueba";
+      · recibió otro mail de Rendi —o este— hace menos de
+        REACTIVAR_PAUSA_ESPERA_HORAS horas.
+    El backend la descarta aunque venga en `vistos`.
+
+    `vistos` = cada persona que el admin vio, CON la fecha de envío que vio
+    (obligatorio para mandar, de a ENVIO_MASIVO_LOTE). Se marca ANTES de
+    mandar contra esa fecha: un doble click no le manda dos veces a nadie.
+
+    `prueba_a_mi=True` manda UN mail al admin que aprieta el botón, en la
+    versión que pide (`con_cartera`), y no toca a nadie más."""
+    t0 = time.monotonic()   # el tope de tiempo del envío corre desde que llega el pedido
+    from billing import emails
+    from fechas import hoy_art_date
+
+    if data.grupo not in ("nuevos", "todos"):
+        raise HTTPException(422, "grupo debe ser 'nuevos' o 'todos'")
+    conn = get_db()
+    try:
+        if data.prueba_a_mi:
+            yo = conn.execute("SELECT email, name FROM users WHERE id=?", (uid,)).fetchone()
+            if not yo or not (yo["email"] or "").strip():
+                raise HTTPException(400, "Tu cuenta no tiene un mail cargado.")
+            try:
+                ok = emails.send_reactivar_pausa(
+                    to=yo["email"], user_name=(yo["name"] or ""),
+                    con_cartera=data.con_cartera,
+                    pausa_desde=hoy_art_date() - timedelta(days=7))
+            except Exception as ex:
+                log.error("reactivar-pausa: la prueba al admin falló: %s", ex)
+                ok = False
+            return {"prueba": True, "to": yo["email"], "sent": bool(ok)}
+
+        ahora = datetime.utcnow()
+        if not data.confirm:
+            filas = _reactivar_pausa_filas(conn, ahora)
+            return {
+                "dry_run": True,
+                "en_pausa": len(filas),
+                "nuevos": [_sin_privados(f) for f in filas if not f["sent_at"]],
+                "ya_recibieron": [_sin_privados(f) for f in filas if f["sent_at"]],
+                "min_dias": REACTIVAR_PAUSA_MIN_DIAS,
+                "lote": ENVIO_MASIVO_LOTE,
+                "espera_horas": REACTIVAR_PAUSA_ESPERA_HORAS,
+            }
+
+        visto = _vistos_o_422(data.vistos)
+        grupo = [t for t in _reactivar_pausa_filas(conn, ahora, ids=list(visto))
+                 if not t["espera"] and (data.grupo == "todos" or not t["sent_at"])]
+        for t in grupo:
+            # La marca que se compara es la que VIO el admin, no la que leyó
+            # este pedido (el doble click de "mandar a todos").
+            t["visto"] = visto[t["id"]]
+        marcar, desmarcar = _marca_en_columna(conn, "pausa_email_sent_at")
+        res = _envio_masivo(
+            conn, grupo, visto, marcar=marcar, desmarcar=desmarcar,
+            mandar=lambda t: emails.send_reactivar_pausa(
+                to=t["email"], user_name=(t.get("name") or ""),
+                con_cartera=t["con_cartera"], pausa_desde=t["_pausa_dia"],
+                reenvio=t["visto"] is not None),
+            campaña=f"reactivar-pausa ({data.grupo})", inicio=t0,
+            inciertos_previos=data.inciertos_seguidos)
+        res["grupo"] = data.grupo
+        return res
+    finally:
+        conn.close()
+
+
 def _broadcast_hash(subject, body, branded):
     """Identifica ESTE mail (asunto + cuerpo + branded) en broadcast_send_log:
     el mismo texto no se le vuelve a mandar a quien ya lo recibió, y uno con
@@ -27913,6 +28793,7 @@ def _broadcast_destinatarios(conn, data, plan, ids=None):
     rows = conn.execute(
         "SELECT id, email, name, email_verified, tier "
         "FROM users WHERE COALESCE(is_admin,0)=0 AND managed_by IS NULL"  # sin shadows del Plan Asesor
+        " AND marketing_baja_at IS NULL"   # pidió no recibir promocionales
         + filtro + " ORDER BY created_at ASC", params
     ).fetchall()
     targets = []
@@ -33176,6 +34057,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
         # o USD que se venden a pesos) e es INDEPENDIENTE del broker (que es
         # siempre el padre ARS) → no se fuerza.
         currency = str(fields.get("currency") or "").strip().upper()
+        _sin_caja_usd = False   # dólares en una cuenta AR que todavía no tiene pata USD
         if _is_convert:
             if broker and broker_ccy != "ARS":
                 _TRADE_DRAFT.pop(uid, None)
@@ -33212,12 +34094,33 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                                "Si acepta el de hoy, re-llamá con "
                                "price_source='market_today'; si dio otro, mandá tc=<ese número>")
         elif broker_ccy:
+            # Dólares "en Cocos": van a la pata en dólares de la cuenta, como en la
+            # app (_pata_de_la_moneda). El usuario ya no ve 'Cocos · USD' en
+            # ninguna lista, así que mandarlo a nombrarla era un callejón sin salida.
+            # Si la pata existe, se valida contra ELLA (su caja, su id); si no
+            # existe, la caja en dólares está en 0 y la crea la escritura.
+            # Sólo CEDEARs (y la plata): es lo único que el chat registra en dólares
+            # en una cuenta argentina. Una acción argentina "en dólares" casi
+            # siempre es el modelo equivocándose de moneda, y este control es la
+            # red que lo frena (test_currency_broker_mismatch_rejected).
+            if (currency == "USD" and broker_ccy == "ARS"
+                    and (action in ("deposit", "withdraw")
+                         or (action in ("buy", "sell") and kind == "CEDEAR"))):
+                _leg = conn.execute(
+                    "SELECT name FROM brokers WHERE user_id=? AND parent_broker_id=? "
+                    "AND currency != 'ARS' ORDER BY id LIMIT 1",
+                    (uid, brokers[broker]["id"])).fetchone()
+                if _leg and _leg["name"] in brokers:
+                    broker = _leg["name"]
+                else:
+                    _sin_caja_usd = True
+                broker_ccy = "USD"
             if currency and currency != broker_ccy:
                 _TRADE_DRAFT.pop(uid, None)
                 return {"error": (
                     f"{broker} opera en {broker_ccy}, pero la operación vino en "
                     f"{currency}. Si el activo lo tiene en la otra moneda es otro "
-                    f"broker (o el sub-broker '· USD'). Confirmá con el usuario."
+                    f"broker. Confirmá con el usuario."
                 )}
             currency = broker_ccy   # server manda: la moneda es la del broker
         elif currency not in ("ARS", "USD"):
@@ -33565,7 +34468,7 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
             # retiro (o pata origen de una transferencia): no puede dejar el
             # cash negativo — mismo predicado que el endpoint (que igual lo
             # re-chequea al ejecutar; acá evitamos armar un pendiente muerto)
-            cash_row = conn.execute(
+            cash_row = None if _sin_caja_usd else conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, broker)).fetchone()
             cash_now = float(cash_row["invested"] or 0) if cash_row else 0.0
@@ -33577,7 +34480,9 @@ def _register_trade_handler(input_data: dict, uid: int, request_id=None,
                     "si el monto o el broker son otros."
                 )}
         elif action == "buy":
-            cash_row = conn.execute(
+            # Sin pata en dólares todavía, la caja en dólares está en 0 (la de
+            # `broker`, que sigue siendo el padre, es la de PESOS).
+            cash_row = None if _sin_caja_usd else conn.execute(
                 "SELECT invested FROM positions WHERE user_id=? AND broker=? AND is_cash=1 LIMIT 1",
                 (uid, broker)).fetchone()
             cash_now = float(cash_row["invested"] or 0) if cash_row else 0.0
@@ -33680,13 +34585,23 @@ def _execute_confirmed_trade(p: dict, uid: int) -> dict:
                 _tc = _current_cedear_rate() or _user_tc_blue(_c2, uid)
             finally:
                 _c2.close()
+            # Con la moneda: dólares "en Cocos" van a la pata en dólares (y la
+            # crea si hace falta). El deshacer tiene que apuntar a ESA caja, no al
+            # broker que nombró el usuario.
             cash_flow(CashFlowIn(
                 broker_name=broker_name, direction=p["action"],
-                amount=p["amount"], tc_blue=_tc,
+                amount=p["amount"], tc_blue=_tc, currency=p.get("currency"),
                 date=None if p.get("date_is_today") else p.get("date")), uid)
             _ai_cache_invalidate(uid)   # cash_flow no lo hace (create_position sí)
+            _c3 = get_db()
+            try:
+                _fila = _c3.execute(
+                    "SELECT id FROM brokers WHERE user_id=? AND name=?",
+                    (uid, _pata_existente(_c3, uid, broker_name, p.get("currency")))).fetchone()
+            finally:
+                _c3.close()
             _LAST_CHAT_TRADE[uid] = {
-                "kind": p["action"], "broker_id": p.get("broker_id"),
+                "kind": p["action"], "broker_id": (_fila["id"] if _fila else p.get("broker_id")),
                 "amount": p["amount"], "tc_used": _tc,
                 "summary": _register_trade_summary(p), "ts": now}
         elif p["action"] == "convert":
@@ -34072,7 +34987,7 @@ def _undo_last_trade_handler(uid: int) -> dict:
             _LAST_CHAT_TRADE.pop(uid, None)
             return {"error": "El broker de esa operación ya no existe. Revisá desde la app."}
         with conn:
-            row = conn.execute("SELECT quantity FROM positions WHERE id=? AND user_id=?",
+            row = conn.execute("SELECT quantity, broker, undo_meta_json FROM positions WHERE id=? AND user_id=?",
                                (info["position_id"], uid)).fetchone()
             if not row:
                 _LAST_CHAT_TRADE.pop(uid, None)
@@ -34086,7 +35001,21 @@ def _undo_last_trade_handler(uid: int) -> dict:
             if conn.execute("DELETE FROM positions WHERE id=? AND user_id=? AND quantity=?",
                             (info["position_id"], uid, row["quantity"])).rowcount != 1:
                 return {"error": "Esa compra ya se está deshaciendo. Nada más para deshacer."}
-            _adjust_broker_cash(conn, uid, br["name"], info["cash_debited"])
+            # La plata vuelve a la caja de la que SALIÓ, que el alta dejó anotada
+            # en la fila (`undo_meta_json.broker`, ver _insert_manual_position).
+            # Ni el broker que eligió el chat (una compra en dólares "en Cocos" se
+            # debita de 'Cocos · USD') ni el broker ACTUAL del lote (si se lo movió
+            # a otro broker después, la plata no salió de ahí).
+            # Si ese nombre ya no existe (un renombre que no reescribió la nota),
+            # el broker actual del lote: el renombre sí lo arrastra.
+            import json as _json_undo
+            try:
+                _caja = (_json_undo.loads(row["undo_meta_json"] or "{}") or {}).get("broker")
+            except (TypeError, ValueError):
+                _caja = None
+            if not _caja or not _broker_existe(conn, uid, _caja):
+                _caja = row["broker"] if _broker_existe(conn, uid, row["broker"]) else br["name"]
+            _adjust_broker_cash(conn, uid, _caja, info["cash_debited"])
     finally:
         conn.close()
     _LAST_CHAT_TRADE.pop(uid, None)
@@ -35455,7 +36384,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
         # Build packet PRIMERO (es barato y determinístico) para ver si hay
         # cache hit antes de tocar el cupo.
         try:
-            packet = build_packet(conn, uid, **_params_de_boton(params))
+            packet = build_packet(conn, uid, **_params_de_boton(params), tier_override=_lente_analyze)
         except Exception as ex:
             log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
             raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
@@ -35769,9 +36698,15 @@ _ALLOWED_PLAN_EVENTS = {
     "upgrade_promo_clicked",
 }
 
+# Tope del `props` de telemetría ya serializado. Es un puñado de banderas y códigos
+# cortos; 2 KB sobra. Sin tope, `props` aceptaba un objeto de cualquier tamaño y lo
+# guardaba tal cual, sin límite de pedidos: el camino más barato para llenarle el
+# disco a la base con una cuenta gratis (RENDI-B06).
+_PLAN_TRACK_PROPS_MAX = 2000
+
 
 @app.post("/api/plan/track", status_code=204)
-def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
+def plan_track(data: PlanEventIn, request: Request, uid: int = Depends(get_effective_user)):
     """Registra un evento de paywall para analytics de conversión.
 
     Whitelist de event_names para evitar spam. Solo eventos clave del flow
@@ -35781,21 +36716,23 @@ def plan_track(data: PlanEventIn, uid: int = Depends(get_effective_user)):
         # No es error fatal — descartamos silenciosamente para que el client
         # no necesite manejar el rechazo (es telemetría, no acción crítica).
         return
+    # Tope de pedidos: es telemetría fire-and-forget, nadie legítimo manda 60/min.
+    _check_rate_limit(request, max_calls=60, window_seconds=60, suffix="plan_track")
     from ai import quota
     conn = get_db()
     try:
         tier = quota.get_tier(conn, uid)
+        props_json = json.dumps(data.props or {}, ensure_ascii=False)
+        if len(props_json) > _PLAN_TRACK_PROPS_MAX:
+            # props gigante: se descarta (el evento se registra igual; es telemetría,
+            # no vale la pena ni rechazar el pedido ni guardar basura).
+            props_json = "{}"
         with conn:
             conn.execute(
                 """INSERT INTO plan_events
                        (user_id, tier, event_name, feature_id, source, props_json)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    uid, tier, data.event,
-                    data.feature_id,
-                    data.source,
-                    json.dumps(data.props or {}, ensure_ascii=False),
-                ),
+                (uid, tier, data.event, data.feature_id, data.source, props_json),
             )
     finally:
         conn.close()
@@ -38345,11 +39282,17 @@ def _params_de_boton(params) -> dict:
     Los builders son `build(conn, user_id, **params)`: un `params` con la clave
     `conn` o `user_id` chocaba con los argumentos posicionales (TypeError) y el ✦
     se quedaba sin paquete. Y sólo pasan claves de texto: el resto no tiene cómo
-    ser un argumento válido."""
+    ser un argumento válido.
+
+    `tier_override` se excluye por SEGURIDAD, no por choque de firma: es la lente
+    del plan que decide cuántos detectores pagos ve la IA. La pone el servidor
+    (ai_analyze / ai_chat, desde _tier_con_lente); si se dejara pasar desde el
+    navegador, un Free mandaría `tier_override='pro'` en el ✦ y se autoservería
+    los detectores de un plan que no pagó. No la saques de esta lista."""
     if not isinstance(params, dict):
         return {}
     return {k: v for k, v in params.items()
-            if isinstance(k, str) and k not in ("conn", "user_id")}
+            if isinstance(k, str) and k not in ("conn", "user_id", "tier_override")}
 
 
 def _podar_lo_que_ya_esta(nodo):
@@ -39201,7 +40144,12 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
             if _topico:
                 _pconn = get_db()
                 try:
-                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params))
+                    # tier_override = la lente del asesor (idéntico a ai_analyze):
+                    # si un asesor abre el ✦ dentro de un cliente Free/Plus, el
+                    # armador recorta los detectores por el plan del ASESOR, no del
+                    # cliente. Sin esto, el ✦ del chat cortaba por el plan del cliente
+                    # (RENDI-A04, segundo call site — la regla de propagación).
+                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params), tier_override=_lens_override)
                 finally:
                     _pconn.close()
                 _paquete = _podar_lo_que_ya_esta(_paquete)
@@ -40002,16 +40950,13 @@ class AIVozIn(BaseModel):
     sig: str = Field(..., min_length=8, max_length=128)
 
 
-_MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
-             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
-
-
 def _fecha_legible(iso: str) -> str:
     """"2026-09-19" → "19 de septiembre". La fecha sale de la base en formato de
     máquina y así se le estaba mostrando al usuario. Nadie lee una fecha así."""
+    from fechas import fecha_legible
     try:
         a, m, d = str(iso).split("-")
-        return "%d de %s" % (int(d), _MESES_ES[int(m) - 1])
+        return fecha_legible(date(int(a), int(m), int(d)))
     except Exception:
         return str(iso)
 
@@ -42845,6 +43790,17 @@ _wallbit_sync_locks = defaultdict(threading.Lock)
 #   2. deployar
 #   3. confirmar en los logs: "credenciales: ... 0 migradas ahora"
 #   4. recién entonces rotar SECRET_KEY
+#
+# ⚠️ ORDEN OBLIGATORIO PARA ROTAR CREDENTIALS_KEY (agregado tras el incidente de
+# Railway del 2026-10-21). Cambiarla a secas deja todo ilegible: la nueva no abre
+# lo cifrado con la vieja, y SECRET_KEY tampoco. Por eso existe
+# CREDENTIALS_KEY_ANTERIOR, que sólo descifra:
+#   1. crear CREDENTIALS_KEY_ANTERIOR con una COPIA del valor actual de
+#      CREDENTIALS_KEY, y deployar sin tocar nada más de esto
+#   2. confirmar en los logs: "CREDENTIALS_KEY_ANTERIOR es IGUAL" (la copia está bien)
+#   3. poner el valor nuevo en CREDENTIALS_KEY y deployar → la migración re-cifra
+#   4. redeployar y confirmar "0 migradas ahora" + "SEGURO borrar CREDENTIALS_KEY_ANTERIOR"
+#   5. recién entonces borrar CREDENTIALS_KEY_ANTERIOR
 
 def _fernet_de(material: str):
     """Fernet(sha256(material)) → 32 bytes urlsafe-b64. Es la derivación de
@@ -42862,8 +43818,18 @@ def _creds_clave_propia() -> Optional[str]:
     return (os.environ.get("CREDENTIALS_KEY") or "").strip() or None
 
 
+def _creds_clave_anterior() -> Optional[str]:
+    """CREDENTIALS_KEY_ANTERIOR: el valor que tenía CREDENTIALS_KEY antes de
+    rotarla. Sólo descifra. Se ignora si no hay CREDENTIALS_KEY: sin clave propia
+    el sistema es el de antes y no hay nada que rotar."""
+    if not _creds_clave_propia():
+        return None
+    return (os.environ.get("CREDENTIALS_KEY_ANTERIOR") or "").strip() or None
+
+
 def _wallbit_cipher():
-    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), SECRET_KEY (legacy, sólo
+    """MultiFernet [CREDENTIALS_KEY (cifra y descifra), CREDENTIALS_KEY_ANTERIOR
+    (sólo descifra, mientras dura una rotación), SECRET_KEY (legacy, sólo
     descifra)]. El nombre `_wallbit_` quedó de cuando Wallbit era el único
     conector; hoy cifra también el refresh token de IOL."""
     from cryptography.fernet import MultiFernet
@@ -42871,6 +43837,9 @@ def _wallbit_cipher():
     propia = _creds_clave_propia()
     if propia:
         claves.append(_fernet_de(propia))
+    anterior = _creds_clave_anterior()
+    if anterior and anterior != propia:
+        claves.append(_fernet_de(anterior))
     claves.append(_fernet_de(SECRET_KEY or "dev-insecure"))
     return MultiFernet(claves)
 
@@ -42942,13 +43911,28 @@ def _migrar_credenciales_a_credentials_key() -> None:
         #      "SEGURO rotar" era la única en INFO y era justo la que había que leer.
         # Este renglón ES el gate de la rotación de SECRET_KEY: si no se ve, el
         # procedimiento no se puede hacer.
+        # La rotación de CREDENTIALS_KEY tiene su propio semáforo, en la misma
+        # línea para que haya UN solo renglón que leer.
+        anterior = _creds_clave_anterior()
+        if not anterior:
+            sobre_anterior = ""
+        elif anterior == propia:
+            sobre_anterior = (" CREDENTIALS_KEY_ANTERIOR es IGUAL a CREDENTIALS_KEY: la copia "
+                              "está bien, ya podés poner el valor nuevo en CREDENTIALS_KEY.")
+        elif migradas:
+            sobre_anterior = " NO borres CREDENTIALS_KEY_ANTERIOR todavía."
+        elif ilegibles:
+            sobre_anterior = (" NO borres CREDENTIALS_KEY_ANTERIOR: hay ilegibles; compará "
+                              "con el número de antes de rotar.")
+        else:
+            sobre_anterior = " SEGURO borrar CREDENTIALS_KEY_ANTERIOR."
         if migradas:
             log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, %d migradas ahora, %d "
                         "ilegibles. NO rotes SECRET_KEY todavía: redeployá y confirmá "
-                        "'0 migradas ahora'.", ya, migradas, ilegibles)
+                        "'0 migradas ahora'.%s", ya, migradas, ilegibles, sobre_anterior)
         else:
             log.warning("credenciales: %d ya bajo CREDENTIALS_KEY, 0 migradas ahora, %d "
-                        "ilegibles. SEGURO rotar SECRET_KEY.", ya, ilegibles)
+                        "ilegibles. SEGURO rotar SECRET_KEY.%s", ya, ilegibles, sobre_anterior)
     except Exception as e:
         log.warning("credenciales: la migración a CREDENTIALS_KEY falló (%s). Siguen "
                     "legibles con SECRET_KEY. NO rotes SECRET_KEY.", e)
@@ -42992,9 +43976,10 @@ def _log_config_arranque() -> None:
     # trabajo para el que no es.
     _misma = bool(os.environ.get("OPENAI_API_KEY")) and \
         os.environ.get("OPENAI_API_KEY") == os.environ.get("VOZ_SIGNING_KEY")
-    log.warning("config al arrancar: %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
+    log.warning("config al arrancar: %s | %s | %s | %s | %s | %s | RENDI_ENV=%s%s",
                 _forma("SECRET_KEY"), _forma("ANTHROPIC_API_KEY"),
-                _forma("CREDENTIALS_KEY"), _forma("OPENAI_API_KEY"),
+                _forma("CREDENTIALS_KEY"), _forma("CREDENTIALS_KEY_ANTERIOR"),
+                _forma("OPENAI_API_KEY"),
                 _forma("VOZ_SIGNING_KEY"), os.environ.get("RENDI_ENV") or "AUSENTE",
                 "  ⚠️ OPENAI_API_KEY y VOZ_SIGNING_KEY son LA MISMA — no debería" if _misma else "")
 
@@ -43566,12 +44551,7 @@ def iol_lab_run_cron(request: Request):
     """Renueva el refresh token de TODOS los testers con medición activa. Lo pega
     cron-job.org cada hora. Auth: X-Cron-Token o ?token= contra IOL_LAB_CRON_TOKEN.
     Sin token configurado → 503. Sincrónico: son 1-3 cuentas, un POST cada una."""
-    expected = (os.environ.get("IOL_LAB_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "IOL Lab cron no configurado (falta IOL_LAB_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token") or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "IOL_LAB_CRON_TOKEN")
     return _iol_lab_refresh_all()
 
 
@@ -44296,6 +45276,20 @@ def _run_daily_snapshot_job():
         _snapshot_log.info(f"Daily snapshot result: {result}")
     except Exception as e:
         _snapshot_log.error(f"Daily snapshot job failed: {e}", exc_info=True)
+    # Después de la foto, nunca antes: si Yahoo está lento, que se demore esto
+    # y no la foto. Y aparte: un error acá no toca la foto.
+    _run_velas_diarias_job()
+
+
+def _run_velas_diarias_job():
+    """Pone al día las velas diarias del análisis técnico (velas_diarias.py)."""
+    _velas_log = logging.getLogger("velas_diarias")
+    try:
+        import velas_diarias
+        with db_abierta() as conn:
+            _velas_log.info("Velas diarias: %s", velas_diarias.correr(conn))
+    except Exception as e:
+        _velas_log.error(f"Velas diarias falló: {e}", exc_info=True)
 
 
 def _run_backup_db_job():
@@ -45610,6 +46604,37 @@ def _valor_vivo_mercado(conn, uid: int) -> Optional[float]:
 # conversión, importar desde importing.pipeline.
 
 
+def _es_periodo_en_curso(period_type: str, period_key: str) -> bool:
+    """¿El período pedido es el que está corriendo ahora (en hora argentina)?
+
+    El período en curso es gratis (es el que muestra el inicio); los CERRADOS son
+    de plan pago. Mismo reloj ART que el resto del archivo — de 21 a 24 UTC, el
+    mes y el año en curso seguían siendo "actual" acá, no según la hora del proceso."""
+    today = _hoy_art_date()
+    if period_type == "day":
+        return period_key == _iso_today()
+    if period_type == "week":
+        iy, iw, _wd = today.isocalendar()
+        return period_key == f"{iy}-W{iw:02d}"
+    if period_type == "month":
+        return period_key == today.strftime("%Y-%m")
+    if period_type == "year":
+        return period_key == str(today.year)
+    return False
+
+
+def _tiene_reportes_historicos(conn, uid: int) -> bool:
+    """¿La cuenta tiene acceso a los períodos cerrados de Reportes? Falla cerrado
+    (ante un error de plan, NO se regala). El teaser lo pinta el front; el corte
+    de verdad vive acá, porque un gate sólo en el navegador es una cortina."""
+    try:
+        from ai import plan as _plan
+        return _plan.can_access(conn, uid, "reportes.historicos")
+    except Exception:
+        log.exception("plan para reportes.historicos uid=%s", uid)
+        return False
+
+
 @app.get("/api/reports/timeline")
 def reports_timeline(
     broker: str = "global",
@@ -45634,6 +46659,12 @@ def reports_timeline(
         raise HTTPException(400, "months debe estar entre 1 y 36")
     conn = get_db()
     try:
+        # Los meses pasados son de plan pago (igual que /reports/years): a quien no
+        # lo tiene se le da sólo el mes en curso. Antes se mandaban los 36 y el
+        # front los escondía — datos pagos viajando igual. El teaser lo pinta el
+        # front con LockedSection; el corte de verdad es éste.
+        if not _tiene_reportes_historicos(conn, uid):
+            months = 1
         bench_data = _bench_para_reportes()
         # live_value es el TOTAL del portfolio (snapshots no se desagregan
         # por broker). Solo aplica como end_value del período en curso cuando
@@ -45904,6 +46935,15 @@ def reports_period_detail(
         raise HTTPException(400, "period_type inválido")
     conn = get_db()
     try:
+        # Los períodos CERRADOS son de plan pago; el EN CURSO es gratis (lo muestra
+        # el inicio). Un deep-link directo a un período pasado desde una cuenta sin
+        # plan se corta acá, no sólo en la pantalla.
+        en_curso = _es_periodo_en_curso(period_type, period_key)
+        if not en_curso and not _tiene_reportes_historicos(conn, uid):
+            raise HTTPException(403, {
+                "code": "plan_requerido",
+                "message": "Ver un período cerrado es parte de un plan pago.",
+            })
         bench_data = _bench_para_reportes()
         # AUDIT H-9: rate LIVE (misma cascada que el cron) — ver _live_valuation_rate.
         tc_blue = _live_valuation_rate(conn, uid)
@@ -45912,27 +46952,12 @@ def reports_period_detail(
         # Esto permite ver el delta intraday vs cierre de ayer / lunes /
         # 1 enero, aunque el cron del snapshot diario todavía no haya corrido.
         live_value = None
-        is_current_period_for_live = False
+        # El valor LIVE sólo aplica al período EN CURSO y a la vista global. El
+        # "¿es el período en curso?" lo decide `_es_periodo_en_curso` (mismo reloj
+        # ART), el mismo que usa el gate de plan de arriba — una sola fuente.
+        is_current_period_for_live = en_curso and broker == "global"
         if broker == "global":
             live_value = _latest_snapshot_value(conn, uid)
-            # ⚠️ EL MISMO RELOJ QUE LA RAMA `day` DE ABAJO.
-            # Estas cuatro ramas decidían con dos calendarios distintos: `day`
-            # comparaba contra `_iso_today()` (argentino) y las otras tres contra
-            # `date.today()`, que es la hora local del proceso — UTC en Railway.
-            # De 21:00 a 23:59 ART el mes y el año en curso dejaban de
-            # reconocerse como actuales, así que el reporte del período vivo
-            # cerraba con el último snapshot en vez del valor live.
-            today = _hoy_art_date()
-            if period_type == "day" and period_key == _iso_today():
-                is_current_period_for_live = True
-            elif period_type == "week":
-                iy, iw, _wd = today.isocalendar()
-                if period_key == f"{iy}-W{iw:02d}":
-                    is_current_period_for_live = True
-            elif period_type == "month" and period_key == today.strftime("%Y-%m"):
-                is_current_period_for_live = True
-            elif period_type == "year" and period_key == str(today.year):
-                is_current_period_for_live = True
             if is_current_period_for_live:
                 try:
                     lv = _valor_vivo_mercado(conn, uid)
@@ -46246,6 +47271,40 @@ def alerts_list(uid: int = Depends(get_effective_user)):
         conn.close()
 
 
+def _moneda_del_aviso(symbol: str, currency) -> str:
+    """La moneda de un aviso de precio: la que el activo TIENE, nunca un rótulo.
+
+    El motor compara el número que marcó la persona contra el precio del activo
+    en esta moneda. Antes se guardaba lo que mandara el formulario y no se
+    convertía nada: «AAPL (CEDEAR) baja a US$ 15» se comparaba contra el precio
+    en PESOS y no avisaba nunca; «AAPL (Nasdaq) sube a $ 300.000», al revés.
+
+      · '.BA' (CEDEAR / acción / bono de la Bolsa) → pesos; en dólares sólo un
+        CEDEAR que cotiza en dólares (AAPLD), con ese precio
+        (alerts_engine.cedear_en_dolares).
+      · FCI → la que diga (los hay en pesos y en dólares).
+      · el resto (acción de EE.UU., cripto) → dólares.
+    Sin moneda → la del riel."""
+    import alerts_engine as _ae
+    ccy = (currency or "").strip().upper() or None
+    if ccy not in (None, "ARS", "USD"):
+        raise HTTPException(400, "Moneda inválida: pesos (ARS) o dólares (USD).")
+    symbol = _ae._norm_sym(symbol)   # cripto de un broker AR: BTC.BA → BTC
+    nombre = _ae._display_symbol(symbol)
+    if symbol.startswith("FCI:"):
+        return ccy or "ARS"
+    if symbol.endswith(".BA"):
+        if ccy != "USD":
+            return "ARS"
+        if _ae.tiene_precio_en_dolares(symbol) is False:
+            raise HTTPException(400, f"{nombre} no cotiza en dólares en la Bolsa: "
+                                     f"poné el precio en pesos.")
+        return "USD"
+    if ccy == "ARS":
+        raise HTTPException(400, f"{nombre} cotiza en dólares: poné el precio en US$.")
+    return "USD"
+
+
 @app.post("/api/alerts")
 def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
     """Crea una alerta. Gatea por cantidad (check_alert_quota) y por capacidad
@@ -46277,8 +47336,7 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
                 raise HTTPException(400, "Dirección inválida para precio objetivo (above/below).")
             if not (threshold and threshold > 0):
                 raise HTTPException(400, "Ingresá el precio objetivo.")
-            if not currency:
-                currency = "ARS" if symbol.endswith(".BA") else "USD"
+            currency = _moneda_del_aviso(symbol, currency)
         else:  # pct_move — umbral asimétrico (sube ≥ up_pct% y/o cae ≥ down_pct%)
             if data.scope == "ticker" and not symbol:
                 raise HTTPException(400, "Elegí un ticker o la opción 'toda mi cartera'.")
@@ -46306,7 +47364,8 @@ def alerts_create(data: AlertCreateIn, uid: int = Depends(get_effective_user)):
         anchor_price = None
         resolved = True
         if symbol:  # ticker-scope (price_target siempre; pct_move de un activo)
-            current_price = _ae.price_for_alert(symbol)
+            current_price = _ae.price_for_alert(symbol, en_dolares=_ae.cedear_en_dolares(
+                data.kind, data.scope, symbol, currency))
             resolved = current_price is not None
             if data.kind == "price_target":
                 met = _ae.condition_met("price_target", data.direction, threshold,
@@ -46391,10 +47450,16 @@ def alerts_delete(alert_id: int, uid: int = Depends(get_effective_user)):
     conn = get_db()
     try:
         with conn:
+            # `alert_symbol_state` no tiene user_id: se ata por subquery a `alerts`
+            # para no tocar el estado de alertas AJENAS, y se borra ANTES que la
+            # alerta (después el subquery ya no la encontraría). Sin este candado,
+            # pasar el id de una alerta de otro reseteaba su "ya te avisé".
+            conn.execute(
+                "DELETE FROM alert_symbol_state WHERE alert_id IN "
+                "(SELECT id FROM alerts WHERE id=? AND user_id=?)", (alert_id, uid))
             conn.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, uid))
             conn.execute("DELETE FROM alert_events WHERE alert_id=? AND user_id=?",
                          (alert_id, uid))
-            conn.execute("DELETE FROM alert_symbol_state WHERE alert_id=?", (alert_id,))
         return {"ok": True}
     finally:
         conn.close()
@@ -46463,13 +47528,7 @@ def alerts_evaluate(request: Request):
     corte de ~30 s del proxy: el cron veía un error con los avisos saliendo, y
     sin guarda un segundo ping podía encimar otra corrida. 200 = "arrancó"; el
     resultado va al registro."""
-    expected = (os.environ.get("ALERTS_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Alertas cron no configurado (falta ALERTS_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "ALERTS_CRON_TOKEN")
     return _correr_en_fondo("alertas", _evaluar_alertas_job)
 
 
@@ -46496,13 +47555,7 @@ def snapshots_run_cron(request: Request):
     Lo pega un cron externo (cron-job.org) 1x/día ~03:00 UTC, después del cierre de
     NYSE/BCBA. Auth: header X-Cron-Token o ?token= contra SNAPSHOT_CRON_TOKEN. Sin
     token configurado → 503 (endpoint cerrado)."""
-    expected = (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Snapshot cron no configurado (falta SNAPSHOT_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "SNAPSHOT_CRON_TOKEN")
     # El job es el wrapper existente: corre + loguea + captura errores.
     return _correr_en_fondo("snapshot_diario", _run_daily_snapshot_job)
 
@@ -46552,13 +47605,7 @@ def billing_run_cron(request: Request):
     ⚠️ 200 significa "arrancó", no "terminó bien": el resultado va a los logs de
     Railway. Es la misma limitación que el cron de snapshots.
     """
-    expected = (os.environ.get("BILLING_CRON_TOKEN") or "").strip()
-    if not expected:
-        raise HTTPException(503, "Billing cron no configurado (falta BILLING_CRON_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "BILLING_CRON_TOKEN")
     solo_avisos = (request.query_params.get("solo_avisos") or "").strip().lower() in (
         "1", "true", "si", "sí")
     return {**_correr_en_fondo(
@@ -46933,14 +47980,7 @@ def advisor_brief_run_cron(request: Request):
 
     Auth: header X-Cron-Token o ?token= contra ADVISOR_BRIEF_TOKEN (o el de
     snapshots como fallback, para no multiplicar secretos)."""
-    expected = ((os.environ.get("ADVISOR_BRIEF_TOKEN") or "").strip()
-                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
-    if not expected:
-        raise HTTPException(503, "Brief no configurado (falta ADVISOR_BRIEF_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "ADVISOR_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN")
     kind = (request.query_params.get("kind") or "open").strip().lower()
     if kind not in ("open", "close"):
         raise HTTPException(400, "kind debe ser 'open' o 'close'.")
@@ -47055,14 +48095,7 @@ def market_brief_run_cron(request: Request):
     al de snapshots para no multiplicar secretos (mismo criterio que el brief
     del asesor: así se da de alta el cron sin tocar Railway).
     """
-    expected = ((os.environ.get("MARKET_BRIEF_TOKEN") or "").strip()
-                or (os.environ.get("SNAPSHOT_CRON_TOKEN") or "").strip())
-    if not expected:
-        raise HTTPException(503, "Resumen de mercado no configurado (falta MARKET_BRIEF_TOKEN).")
-    got = (request.headers.get("x-cron-token")
-           or request.query_params.get("token") or "").strip()
-    if got != expected:
-        raise HTTPException(401, "Token inválido.")
+    _validar_cron_token(request, "MARKET_BRIEF_TOKEN", "SNAPSHOT_CRON_TOKEN")
 
     def _bg():
         # El parte de la corrida sale por DOS canales: el registro (para
@@ -47940,7 +48973,8 @@ def advisor_invite_client(
                 """INSERT INTO advisor_claim_tokens
                        (user_id, advisor_uid, token, email, expires_at)
                    VALUES (?,?,?,?,?)""",
-                (client_uid, uid, token, email_norm, expires))
+                (client_uid, uid, _hash_token(token), email_norm, expires))
+        # El token crudo va SÓLO al mail; en la base quedó su huella (RENDI-10).
         claim_url = f"{_frontend_url()}/claim?token={token}"
         # El envío es LA operación (audit: un fallo silencioso dejaba al asesor
         # esperando a un cliente que nunca recibió nada). send devuelve bool.
@@ -48053,7 +49087,8 @@ def _advisor_link_request(conn, uid: int, shadow_uid: int, target, data: Advisor
             """INSERT INTO advisor_link_requests
                    (advisor_uid, client_uid, shadow_uid, permission, token, email, expires_at)
                VALUES (?,?,?,?,?,?,?)""",
-            (uid, target_uid, shadow_uid, permission, token, email_norm, expires))
+            (uid, target_uid, shadow_uid, permission, _hash_token(token), email_norm, expires))
+    # El token crudo va SÓLO al mail; en la base quedó su huella (RENDI-10).
     url = f"{_frontend_url()}/acceso?token={token}"
     sent = False
     try:
@@ -48188,7 +49223,8 @@ def link_request_preview(token: str, request: Request):
     conn = get_db()
     try:
         req = conn.execute(
-            "SELECT * FROM advisor_link_requests WHERE token=?", (token,)).fetchone()
+            "SELECT * FROM advisor_link_requests WHERE token=?",
+            (_hash_token(token),)).fetchone()
         if not req:
             raise HTTPException(400, "Link inválido.")
         adv = conn.execute("SELECT name, email FROM users WHERE id=?",
@@ -48231,7 +49267,8 @@ def link_request_respond(data: LinkRequestRespondIn, request: Request):
     conn = get_db()
     try:
         req = conn.execute(
-            "SELECT * FROM advisor_link_requests WHERE token=?", (data.token,)).fetchone()
+            "SELECT * FROM advisor_link_requests WHERE token=?",
+            (_hash_token(data.token),)).fetchone()
         if not req:
             raise HTTPException(400, "Link inválido.")
         if data.accept:
@@ -48261,12 +49298,13 @@ def claim_preview(token: str, request: Request):
                LEFT JOIN advisor_clients ac
                       ON ac.advisor_uid = ct.advisor_uid AND ac.client_uid = ct.user_id
                WHERE ct.token=? AND ct.used_at IS NULL""",
-            (token,),
+            (_hash_token(token),),
         ).fetchone()
         if not row:
             raise HTTPException(400, "Link inválido o ya usado.")
         exp = conn.execute(
-            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?", (token,)).fetchone()
+            "SELECT expires_at FROM advisor_claim_tokens WHERE token=?",
+            (_hash_token(token),)).fetchone()
         if exp and datetime.fromisoformat(exp["expires_at"]) < datetime.utcnow():
             raise HTTPException(400, "El link expiró. Pedile a tu asesor que te invite de nuevo.")
         # Marca del asesor (audit): el claim es EL momento donde el cliente
@@ -48275,7 +49313,7 @@ def claim_preview(token: str, request: Request):
             """SELECT ap.display_name, ap.cnv_matricula, ap.logo_data
                FROM advisor_profile ap
                JOIN advisor_claim_tokens ct ON ct.advisor_uid = ap.advisor_uid
-               WHERE ct.token=?""", (token,)).fetchone()
+               WHERE ct.token=?""", (_hash_token(token),)).fetchone()
         return {
             "advisor_name": (prof["display_name"] if prof and prof["display_name"] else None)
                             or row["advisor_name"] or row["advisor_email"].split("@")[0],
@@ -48303,7 +49341,7 @@ def claim_account(data: ClaimAccountIn, request: Request, response: Response):
         row = conn.execute(
             """SELECT id, user_id, email, expires_at, used_at
                FROM advisor_claim_tokens WHERE token=?""",
-            (data.token,),
+            (_hash_token(data.token),),
         ).fetchone()
         if not row or row["used_at"]:
             raise HTTPException(400, "Link inválido o ya usado. Pedile a tu asesor que te invite de nuevo.")
@@ -49562,9 +50600,13 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
             # Guard de moneda: un lote ARS no puede caer en un broker USD del
             # cliente (mezcla ARS+USD en el FIFO + débito de cash en la moneda
             # equivocada). Se saltea la fila con razón explícita.
-            if batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
-                hint = " — usá su sub-cuenta dólar (crear desde la Cartera del cliente)" \
-                    if _ccy_family(batch_ccy) == "USD" else ""
+            # Dólares en una cuenta argentina SÍ pasan: van a su pata en dólares
+            # (_pata_de_la_moneda, adentro de _insert_manual_position), igual que
+            # una compra del propio cliente. Pesos en un broker en dólares, no.
+            if batch_ccy and _ccy_family(batch_ccy) == "USD" and bc == "ARS":
+                pass
+            elif batch_ccy and _ccy_family(batch_ccy) != _ccy_family(bc):
+                hint = ""
                 skipped.append({"client_uid": cid,
                                 "reason": f"moneda del lote ({batch_ccy}) ≠ moneda del broker {row['broker']!r} ({bc}){hint}"})
                 continue
@@ -49596,13 +50638,12 @@ def _advisor_group_op_apply(uid: int, asset: str, asset_type, currency, entry_da
                 _adep_n = float(meta.get("autodep_native") or 0)
                 _adep_usd = None
                 if _adep_n > 0:
-                    # Misma conversión que _autodeposit_if_overdraw (ahora MEP de la
-                    # fecha) — se persiste para revertir el flujo. Tiene que usar el
-                    # MISMO rate o el undo revierte un monto distinto del aplicado.
-                    _bc = broker_ccy.get((row["client_uid"], row["broker"]))
-                    _tcb = (_autodeposit_rate(conn, row["client_uid"], meta.get("entry_date"))
-                            if _bc == "ARS" else 0)
-                    _adep_usd = round(_adep_n / _tcb, 2) if (_bc == "ARS" and _tcb > 0) else round(_adep_n, 2)
+                    # Los dólares que _autodeposit_if_overdraw ASENTÓ (meta_out), no
+                    # una segunda cuenta: antes se recalculaban acá con la moneda del
+                    # broker pedido, y con la compra en dólares mandada a la pata
+                    # en dólares (_pata_de_la_moneda) esa moneda ya no es la de la caja.
+                    _adep_usd = (round(float(meta["autodep_usd"]), 2)
+                                 if meta.get("autodep_usd") is not None else round(_adep_n, 2))
                 conn.execute(
                     """INSERT INTO advisor_op_batch_items
                        (batch_id, client_uid, position_id, cost_debited,
@@ -49985,8 +51026,16 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                 # PREVIO al lote (audit: acreditar el costo entero dejaba cash
                 # y capital aportado fantasma en cada cuenta sin fondos).
                 credit = round((cost or 0) - autodep_n, 6)
+                # La caja de la que SALIÓ la plata (la anotó el alta en la fila), no
+                # el broker actual del lote: si el cliente lo movió de broker después,
+                # el crédito y el autodepósito iban a parar a la cuenta equivocada.
+                try:
+                    _caja = ((json.loads(pos["undo_meta_json"] or "{}") or {}).get("broker")
+                             or pos["broker"])
+                except (TypeError, ValueError):
+                    _caja = pos["broker"]
                 if credit > 0:
-                    _adjust_broker_cash(conn, cid, pos["broker"], credit)
+                    _adjust_broker_cash(conn, cid, _caja, credit)
                 if autodep_n > 0 and it["autodep_usd"]:
                     _ym = str(it["autodep_ym"] or "")
                     try:
@@ -50003,10 +51052,10 @@ def advisor_group_op_undo(batch_id: int, uid: int = Depends(get_current_user)):
                                     .get("autodep") or {}).get("flujo_id")
                         except (TypeError, ValueError):
                             _fid = None
-                        _restar_flujo_a_mano(conn, cid, pos["broker"], _ay, _am, 'deposit',
+                        _restar_flujo_a_mano(conn, cid, _caja, _ay, _am, 'deposit',
                                              float(it["autodep_usd"]), native_amount=autodep_n,
                                              flujo_id=_fid, motivo="operacion_grupal_deshecha")
-                        _repair_monthly_chain(conn, cid, pos["broker"])
+                        _repair_monthly_chain(conn, cid, _caja)
                         _repair_monthly_chain(conn, cid, 'global')
                 conn.execute(
                     "UPDATE advisor_op_batch_items SET status='undone' WHERE id=?",

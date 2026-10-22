@@ -16,7 +16,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Sunrise, Briefcase, Bell } from 'lucide-react'
 import AssetLogo from '../AssetLogo'
-import { frase, estado, fechaCorta, horaArgentina, diaArgentina } from './alertasTexto'
+import { frase, estado, fechaCorta, horaArgentina, diaArgentina, claveDePrecio } from './alertasTexto'
 
 export default function MisAlertas({ items, events, precios, resumen, hoy, onEditar, onPausar, onIrACrear, cargando }) {
   const [verHistorial, setVerHistorial] = useState(false)
@@ -56,7 +56,7 @@ export default function MisAlertas({ items, events, precios, resumen, hoy, onEdi
         )}
         {ordenadas.map(a => {
           const { quien, que } = frase(a)
-          const est = estado(a, a.symbol ? precios[a.symbol.toUpperCase()] : null, events, hoy)
+          const est = estado(a, a.symbol ? precios[claveDePrecio(a)] : null, events, hoy)
           const cartera = a.scope === 'holdings'
           return (
             <Fila key={a.id}
