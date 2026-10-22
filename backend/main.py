@@ -35725,7 +35725,7 @@ def ai_analyze(data: AIAnalyzeIn, request: Request, uid: int = Depends(get_effec
         # Build packet PRIMERO (es barato y determinístico) para ver si hay
         # cache hit antes de tocar el cupo.
         try:
-            packet = build_packet(conn, uid, **_params_de_boton(params))
+            packet = build_packet(conn, uid, **_params_de_boton(params), tier_override=_lente_analyze)
         except Exception as ex:
             log.exception(f"AI builder fallo (uid={uid}, screen={screen})")
             raise HTTPException(500, f"Error construyendo packet: {type(ex).__name__}")
@@ -38621,11 +38621,17 @@ def _params_de_boton(params) -> dict:
     Los builders son `build(conn, user_id, **params)`: un `params` con la clave
     `conn` o `user_id` chocaba con los argumentos posicionales (TypeError) y el ✦
     se quedaba sin paquete. Y sólo pasan claves de texto: el resto no tiene cómo
-    ser un argumento válido."""
+    ser un argumento válido.
+
+    `tier_override` se excluye por SEGURIDAD, no por choque de firma: es la lente
+    del plan que decide cuántos detectores pagos ve la IA. La pone el servidor
+    (ai_analyze / ai_chat, desde _tier_con_lente); si se dejara pasar desde el
+    navegador, un Free mandaría `tier_override='pro'` en el ✦ y se autoservería
+    los detectores de un plan que no pagó. No la saques de esta lista."""
     if not isinstance(params, dict):
         return {}
     return {k: v for k, v in params.items()
-            if isinstance(k, str) and k not in ("conn", "user_id")}
+            if isinstance(k, str) and k not in ("conn", "user_id", "tier_override")}
 
 
 def _podar_lo_que_ya_esta(nodo):
@@ -39477,7 +39483,12 @@ def ai_chat(data: AIChatIn, request: Request, uid: int = Depends(get_effective_u
             if _topico:
                 _pconn = get_db()
                 try:
-                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params))
+                    # tier_override = la lente del asesor (idéntico a ai_analyze):
+                    # si un asesor abre el ✦ dentro de un cliente Free/Plus, el
+                    # armador recorta los detectores por el plan del ASESOR, no del
+                    # cliente. Sin esto, el ✦ del chat cortaba por el plan del cliente
+                    # (RENDI-A04, segundo call site — la regla de propagación).
+                    _paquete = _topico[0](_pconn, uid, **_params_de_boton(data.analisis.params), tier_override=_lens_override)
                 finally:
                     _pconn.close()
                 _paquete = _podar_lo_que_ya_esta(_paquete)

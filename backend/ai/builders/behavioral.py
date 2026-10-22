@@ -69,7 +69,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # detectores que el plan de la cuenta permite ver. Sin esto, pedir el análisis
     # por IA devolvía los 12 narrados aunque la pantalla mostrara 3 (RENDI-A04).
     from ai import plan as _plan
-    tope = _plan.detectores_visibles(conn, user_id)
+    # tier_override = la lente del asesor (lo pone ai_analyze, nunca el navegador):
+    # un asesor que mira a un cliente ve los detectores con SU plan, no con el del cliente.
+    tope = _plan.detectores_visibles(conn, user_id, tier_override=kwargs.get("tier_override"))
     todas = full.get("cards", []) or []
     permitidas = todas[:tope] if tope is not None else todas
 

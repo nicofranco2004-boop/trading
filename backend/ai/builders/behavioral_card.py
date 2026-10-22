@@ -86,7 +86,9 @@ def build(conn, user_id: int, **kwargs) -> Dict[str, Any]:
     # una card que la pantalla le muestra con candado) — RENDI-A04. El orden de
     # `cards` es el mismo que usa la pantalla para decidir cuáles son visibles.
     from ai import plan as _plan
-    tope = _plan.detectores_visibles(conn, user_id)
+    # tier_override = la lente del asesor (lo pone ai_analyze, nunca el navegador):
+    # un asesor que mira a un cliente puede pedir por IA un detector que SU plan incluye.
+    tope = _plan.detectores_visibles(conn, user_id, tier_override=kwargs.get("tier_override"))
     if tope is not None:
         idx = next((i for i, c in enumerate(cards)
                     if (c.get("code") or "").lower() == code), None)

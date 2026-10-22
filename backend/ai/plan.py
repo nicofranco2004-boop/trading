@@ -164,17 +164,22 @@ def can_access(conn, user_id: int, feature_id: str) -> bool:
     return bool(limits["can_access"].get(feature_id, False))
 
 
-def detectores_visibles(conn, user_id: int):
+def detectores_visibles(conn, user_id: int, tier_override: str | None = None):
     """Cuántos detectores de comportamiento ve la cuenta: None = todos (sin tope),
     N = sólo los primeros N. Es el MISMO número que alimenta la pantalla
     (`behavioral_tags_visible`), para que el recorte del servidor y el del front
     coincidan. Falla cerrado: ante cualquier error devuelve 1 — nunca se regalan
     los detectores pagos por un bug de plan.
 
+    `tier_override` = la LENTE con la que servir cuando un asesor mira la cuenta de
+    un cliente (ver `_tier_con_lente` en main.py): sin esto, al asesor —que paga—
+    se le recortaban los detectores con el plan del cliente. Lo setea el servidor,
+    NUNCA el navegador.
+
     Lo usan los TRES lugares que exponen el dato (la pantalla y los dos builders
     de IA), para que el criterio viva en un solo lado."""
     try:
-        return get_plan_features(conn, user_id)["limits"].get("behavioral_tags_visible")
+        return get_plan_features(conn, user_id, tier_override)["limits"].get("behavioral_tags_visible")
     except Exception:
         return 1
 

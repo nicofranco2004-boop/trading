@@ -94,3 +94,34 @@ class BehavioralPlanGateTest(unittest.TestCase):
                 self.assertIsNotNone(_b_card.build(conn, self.plus, code="d5"))
         finally:
             conn.close()
+
+    # ── la LENTE del asesor: el builder sirve por el plan de quien MIRA ──────
+    # Cuando un asesor abre el ✦ dentro de un cliente Free, el recorte tiene que
+    # ser por el plan del ASESOR (lente 'pro'), no por el del cliente — si no, al
+    # asesor (que paga) la IA le narra 3 de 12, aunque la pantalla se los muestre
+    # todos (el endpoint /insights ya corta por rendi_auth_uid). La lente la pone
+    # el SERVIDOR; acá se prueba que el builder la respeta. Que ai_chat/ai_analyze
+    # efectivamente la pasen se prueba punta a punta en test_ai_boton_analizar.
+    def test_builder_behavioral_con_lente_pro_abre_los_12_en_un_free(self):
+        conn = main.get_db()
+        try:
+            with patch.object(_behav, "build_behavioral_insights", return_value=_doce_cards()):
+                sin_lente = _b_build.build(conn, self.free)
+                con_lente = _b_build.build(conn, self.free, tier_override="pro")
+        finally:
+            conn.close()
+        self.assertEqual(len(sin_lente["cards"]), 3)     # el cliente Free, sin lente
+        self.assertEqual(len(con_lente["cards"]), 12)    # el asesor, con lente
+
+    def test_builder_card_con_lente_pro_narra_lo_que_el_free_tiene_bloqueado(self):
+        conn = main.get_db()
+        try:
+            with patch.object(_behav, "build_behavioral_insights", return_value=_doce_cards()):
+                # d5 bloqueado para el Free a secas…
+                with self.assertRaises(ValueError):
+                    _b_card.build(conn, self.free, code="d5")
+                # …pero el asesor, con lente 'pro', lo narra.
+                self.assertIsNotNone(
+                    _b_card.build(conn, self.free, code="d5", tier_override="pro"))
+        finally:
+            conn.close()

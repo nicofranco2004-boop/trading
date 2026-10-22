@@ -29,7 +29,21 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 import main
+import behavioral as _behav
 from ai import quota
+
+
+def _doce_cards():
+    """12 detectores fijos para probar el RECORTE, no el cálculo (igual que
+    test_behavioral_plan_gate). Cada card thinned conserva su `code` dN."""
+    return {
+        "cards": [
+            {"code": f"d{i}", "title": f"Sesgo {i}", "severity": "high",
+             "detected": True, "value_label": f"{i}%", "one_liner": f"linea {i}"}
+            for i in range(12)
+        ],
+        "summary": {}, "generated_at": "z",
+    }
 
 
 class _TB:
@@ -479,3 +493,130 @@ class LaPodaNoSeComeLoQueLaFotoNoTieneTest(unittest.TestCase):
         main._podar_lo_que_ya_esta(paquete)
         self.assertEqual(paquete["total_value_usd"], 100)
         self.assertIn("weight_pct", paquete["top_holdings"][0])
+
+
+# ─── La lente del asesor en los DETECTORES que ve la IA (RENDI-A04) ───────────
+# El gemelo del cupo de análisis de más arriba, pero para el RECORTE de
+# detectores. El ✦ de Comportamiento pasa por /api/ai/chat y arma el paquete con
+# el builder `behavioral`. Si un asesor abre ese ✦ dentro de un cliente Free, el
+# builder recortaba los detectores por el plan del CLIENTE (3 de 12) aunque la
+# PANTALLA se los muestre todos (el endpoint /insights ya corta por
+# rendi_auth_uid). La IA narraba 3 y la pantalla mostraba 12 — y encima le cobra
+# al asesor el análisis para darle de menos.
+#
+# ⚠️ ESTE ES EL CALL SITE QUE LA REGLA DE PROPAGACIÓN CAZÓ: /api/ai/analyze ya le
+# pasaba la lente a su build_packet, pero /api/ai/chat —por donde pasa el ✦ de
+# verdad— no. Arreglar uno de dos habría dejado el botón real roto.
+
+class LaLenteDelAsesorEnLosDetectoresTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = main.get_db()
+        tag = os.urandom(5).hex()
+        self.asesor = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,email_verified,tier) "
+            "VALUES (?,?,1,1,'advisor')", ("asesor-det-%s@rendi.test" % tag, "x")).lastrowid
+        self.cliente = self.conn.execute(
+            "INSERT INTO users (email,password_hash,approved,email_verified,tier) "
+            "VALUES (?,?,1,1,'free')", ("cliente-det-%s@rendi.test" % tag, "x")).lastrowid
+        self.conn.execute("UPDATE users SET managed_by=? WHERE id=?", (self.asesor, self.cliente))
+        self.conn.execute(
+            "INSERT INTO advisor_clients (advisor_uid, client_uid, link_type, "
+            "permission, status, label) VALUES (?,?,'managed','read_write','active','C')",
+            (self.asesor, self.cliente))
+        self.conn.commit()
+        self.client = TestClient(main.app)
+        self.visto = {}
+
+        def fake_create(**kw):
+            self.visto.update(kw)
+            return _Resp([_TB("Listo.")])
+
+        self.mc = MagicMock()
+        self.mc.messages.create.side_effect = fake_create
+        self._p1 = patch.object(main, "_get_anthropic_client", return_value=self.mc)
+        self._p2 = patch.object(main, "_kick_bench_refresh", lambda: None)
+        self._p3 = patch.object(_behav, "build_behavioral_insights", return_value=_doce_cards())
+        self._p1.start(); self._p2.start(); self._p3.start()
+
+    def tearDown(self):
+        for p in (self._p1, self._p2, self._p3):
+            try:
+                p.stop()
+            except Exception:
+                pass
+        try:
+            self.conn.execute("DELETE FROM advisor_clients WHERE advisor_uid=?", (self.asesor,))
+            self.conn.execute("DELETE FROM ai_usage_daily WHERE user_id IN (?,?)",
+                              (self.asesor, self.cliente))
+            self.conn.execute("UPDATE users SET managed_by=NULL WHERE id=?", (self.cliente,))
+            self.conn.execute("DELETE FROM users WHERE id IN (?,?)", (self.asesor, self.cliente))
+            self.conn.commit()
+            self.conn.close()
+        except Exception:
+            pass
+
+    def _ctx(self):
+        """El bloque de contexto que viaja pegado al primer mensaje (ahí va el
+        `analisis_del_boton` con las cards)."""
+        for m in self.visto.get("messages", []):
+            c = m.get("content")
+            if isinstance(c, list) and c:
+                return c[0].get("text", "")
+        return ""
+
+    def _boton_behavioral(self, auth_uid, ctx=None):
+        h = {"Authorization": f"Bearer {main.create_token(auth_uid)}"}
+        if ctx:
+            h["X-Rendi-Client-Id"] = str(ctx)
+        return self.client.post(
+            "/api/ai/chat", headers=h,
+            json={"messages": [{"role": "user", "content": "lo que sea"}],
+                  "snapshot": SNAP, "stream": False,
+                  "analisis": {"screen": "behavioral", "params": {}}})
+
+    def test_el_cliente_free_mirandose_a_si_mismo_ve_3(self):
+        """Control. Sin asesor, el Free recorta a 3. Si esto NO fuera 3, el test
+        de abajo no probaría que la lente abrió nada."""
+        r = self._boton_behavioral(self.cliente)
+        self.assertEqual(r.status_code, 200, r.text)
+        ctx = self._ctx()
+        self.assertIn('"d0"', ctx)        # las 3 primeras llegan
+        self.assertNotIn('"d5"', ctx)     # la 6ta, bloqueada
+        self.assertNotIn('"d11"', ctx)    # la 12va, bloqueada
+
+    def test_el_asesor_dentro_del_free_ve_los_12(self):
+        """El arreglo, punta a punta: el ✦ del asesor arma el paquete con la
+        lente 'pro' y a la IA le llegan los 12 detectores, igual que la pantalla.
+        Sin el fix en /api/ai/chat este test ve sólo 3."""
+        r = self._boton_behavioral(self.asesor, ctx=self.cliente)
+        self.assertEqual(r.status_code, 200, r.text)
+        ctx = self._ctx()
+        self.assertIn('"d0"', ctx)
+        self.assertIn('"d5"', ctx)
+        self.assertIn('"d11"', ctx)       # el 12vo, que sin lente no llegaba
+
+
+class ElNavegadorNoPuedeInyectarLaLenteTest(unittest.TestCase):
+    """El candado del arreglo: la lente la pone el SERVIDOR, nunca el navegador."""
+
+    def test_params_de_boton_descarta_un_tier_override_del_cliente(self):
+        """Si el navegador mete `tier_override` en los params del ✦,
+        _params_de_boton lo tira. Sin esto, un Free se autoservía los detectores
+        pagos mandando tier_override='pro' en el cuerpo del pedido."""
+        limpio = main._params_de_boton(
+            {"tier_override": "pro", "code": "d5", "asset": "AAPL"})
+        self.assertNotIn("tier_override", limpio)
+        self.assertEqual(limpio, {"code": "d5", "asset": "AAPL"})  # lo legítimo pasa
+
+    def test_los_DOS_armadores_de_paquete_le_pasan_la_lente(self):
+        """Guard de propagación, gemelo del de can_analyze. El paquete del ✦ se
+        arma en DOS lugares —/api/ai/analyze y /api/ai/chat— y la lente tiene que
+        viajar en los dos. /api/ai/chat (el botón real) era el que la olvidaba."""
+        import inspect
+        fuente = inspect.getsource(main)
+        sitios = re.findall(r"\*\*_params_de_boton\([^)]*\)[^\n]*", fuente)
+        self.assertEqual(len(sitios), 2,
+                         "cambió la cantidad de armadores de paquete: %r" % (sitios,))
+        for s in sitios:
+            self.assertIn("tier_override", s,
+                          "este armador se quedó sin lente: %s" % s.strip())
